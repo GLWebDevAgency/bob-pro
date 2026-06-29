@@ -18,11 +18,14 @@ Exécuté par les tests `facturx-conformance.test.ts` sur des factures réelleme
 
 ## 3. Conformité légale complète (à brancher en prod)
 
-Le garde-fou interne ne remplace pas les validateurs officiels. Avant mise en production, ajouter au pipeline CI :
+Le garde-fou interne ne remplace pas les validateurs officiels. La CI (`.github/workflows/ci.yml`,
+job `facturx-conformance`) le fait déjà :
 
-- **Schematron EN 16931** officiel (règles BR/BR-CO/BR-S… complètes) appliqué au XML CII généré
-  (ex. `mustangproject` CLI, ou les XSLT de `ConnectingEurope/eInvoicing-EN16931`).
-- **veraPDF** en profil **PDF/A-3b** sur le PDF hybride.
+1. `node apps/api/scripts/generate-facturx-sample.mjs` génère un PDF hybride + XML CII (et échoue
+   si `validateFacturXBasic` n'est pas vert).
+2. **Mustang CLI** (`org.mustangproject`) applique le **Schematron EN 16931** au XML CII — gate bloquant.
+3. **veraPDF** (embarqué dans Mustang) valide le **PDF/A-3b** — informatif tant que l'embarquage des
+   polices n'est pas fait (cf. limites ci-dessous), puis bloquant une fois le post-traitement en place.
 
 ### Limites connues du PDF actuel (pdf-lib)
 

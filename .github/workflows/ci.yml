@@ -24,3 +24,36 @@ jobs:
       - run: pnpm test
       - run: pnpm build
       - run: pnpm lint
+
+  facturx-conformance:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgresql://postgres@localhost:5432/bobpro
+      # Validateur Factur-X officiel (Schematron EN 16931 + PDF/A via veraPDF embarqué).
+      # Mettre à jour vers la dernière version publiée sur Maven Central si besoin.
+      MUSTANG_VERSION: "2.16.1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+          cache: pnpm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @bob/core build
+      - run: pnpm --filter @bob/api build
+      - name: Générer un échantillon Factur-X (PDF hybride + XML CII)
+        run: node apps/api/scripts/generate-facturx-sample.mjs facturx-sample
+      - name: Télécharger le validateur Mustang
+        run: curl -fsSL -o mustang-cli.jar "https://repo1.maven.org/maven2/org/mustangproject/Mustang-CLI/${MUSTANG_VERSION}/Mustang-CLI-${MUSTANG_VERSION}.jar"
+      - name: Schematron EN 16931 sur le XML CII (gate bloquant)
+        run: java -jar mustang-cli.jar --action validate --source facturx-sample/factur-x.xml --no-notices
+      - name: veraPDF PDF/A-3 sur le PDF (informatif — embarquage polices = post-traitement prod)
+        continue-on-error: true
+        run: java -jar mustang-cli.jar --action validate --source facturx-sample/facture-x.pdf --no-notices
