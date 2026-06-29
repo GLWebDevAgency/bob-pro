@@ -26,6 +26,7 @@ import {
   ProfileController,
   DocumentsController,
   ExpensesController,
+  ChantiersController,
   PublicSignatureController,
 } from './api.controllers';
 
@@ -50,6 +51,7 @@ import {
     ProfileController,
     DocumentsController,
     ExpensesController,
+    ChantiersController,
     PublicSignatureController,
   ],
   providers: [

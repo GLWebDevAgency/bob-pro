@@ -5,12 +5,14 @@ import type {
   Invoice,
   Payment,
   Expense,
+  Chantier,
   CompanyRepository,
   CustomerRepository,
   QuoteRepository,
   InvoiceRepository,
   PaymentRepository,
   ExpenseRepository,
+  ChantierRepository,
 } from '@bob/core';
 
 export class InMemoryCompanyRepository implements CompanyRepository {
@@ -90,5 +92,18 @@ export class InMemoryExpenseRepository implements ExpenseRepository {
   }
   async listByCompany(companyId: string): Promise<Expense[]> {
     return [...this.map.values()].filter((e) => e.companyId === companyId);
+  }
+}
+
+export class InMemoryChantierRepository implements ChantierRepository {
+  private readonly map = new Map<string, Chantier>();
+  async save(c: Chantier): Promise<void> {
+    this.map.set(c.id, c);
+  }
+  async findById(id: string): Promise<Chantier | null> {
+    return this.map.get(id) ?? null;
+  }
+  async listByCompany(companyId: string): Promise<Chantier[]> {
+    return [...this.map.values()].filter((c) => c.companyId === companyId);
   }
 }

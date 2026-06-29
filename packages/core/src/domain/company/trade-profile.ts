@@ -1,6 +1,6 @@
 import { type Trade } from './company';
 import { type VatRate } from '../billing/shared/vat-rate';
-import { type PlanTier, tierAtLeast } from '../subscription/plan';
+import { type PlanTier, type AddOn, tierAtLeast } from '../subscription/plan';
 
 /**
  * Configuration par métier : le métier façonne le PRODUIT (modules pertinents, vocabulaire,
@@ -44,6 +44,12 @@ export const MODULE_UNLOCK_TIER: Record<ModuleKey, PlanTier> = {
   retenue_garantie: 'pro',
   cra: 'pro',
   abonnements: 'pro',
+};
+
+/** Modules débloqués par un add-on (en plus du palier). Le Pack BTP ouvre les modules chantier
+ * lourds à un Solo (Solo + Pack = chantiers complets sans passer Pro ; inclus de fait dès Pro). */
+export const ADDON_MODULES: Record<AddOn, readonly ModuleKey[]> = {
+  vertical_btp: ['situations_travaux', 'retenue_garantie'],
 };
 
 export interface TradeProfile {
@@ -143,8 +149,9 @@ export interface TradeConfig {
  * Point de vérité unique : métier × palier -> config produit résolue.
  * Le métier décide la PERTINENCE (quels modules), le palier décide le DROIT (lesquels actifs).
  */
-export function resolveTradeConfig(trade: Trade, tier: PlanTier): TradeConfig {
+export function resolveTradeConfig(trade: Trade, tier: PlanTier, addOns: readonly AddOn[] = []): TradeConfig {
   const p = TRADE_PROFILES[trade];
+  const grantedByAddOn = (key: ModuleKey): boolean => addOns.some((a) => ADDON_MODULES[a].includes(key));
   return {
     trade,
     label: p.label,
@@ -154,7 +161,7 @@ export function resolveTradeConfig(trade: Trade, tier: PlanTier): TradeConfig {
       key,
       label: MODULE_LABELS[key],
       unlockTier: MODULE_UNLOCK_TIER[key],
-      active: tierAtLeast(tier, MODULE_UNLOCK_TIER[key]),
+      active: tierAtLeast(tier, MODULE_UNLOCK_TIER[key]) || grantedByAddOn(key),
     })),
   };
 }

@@ -88,3 +88,22 @@ export const TIER_ORDER: readonly PlanTier[] = ['free', 'solo', 'pro', 'business
 export function tierAtLeast(tier: PlanTier, min: PlanTier): boolean {
   return TIER_ORDER.indexOf(tier) >= TIER_ORDER.indexOf(min);
 }
+
+/** Add-ons verticaux orthogonaux aux paliers (monétisation des métiers sans prix-métier). */
+export type AddOn = 'vertical_btp';
+
+export interface AddOnPlan {
+  addOn: AddOn;
+  label: string;
+  priceCents: number; // mensuel, en supplément
+  tagline: string;
+}
+
+export const ADDON_CATALOG: Record<AddOn, AddOnPlan> = {
+  vertical_btp: {
+    addOn: 'vertical_btp',
+    label: 'Pack Chantier BTP',
+    priceCents: 1000,
+    tagline: 'Chantiers, situations de travaux, retenue de garantie',
+  },
+};

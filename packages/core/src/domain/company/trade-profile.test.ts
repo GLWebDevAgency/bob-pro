@@ -28,4 +28,11 @@ describe('TradeProfile — produit adapté au métier', () => {
     const pro = resolveTradeConfig('plombier', 'pro');
     expect(pro.modules.find((m) => m.key === 'situations_travaux')?.active).toBe(true);
   });
+
+  it('add-on Pack BTP : modules chantier actifs sur Solo (sans passer Pro)', () => {
+    const soloPlus = resolveTradeConfig('plombier', 'solo', ['vertical_btp']);
+    expect(soloPlus.modules.find((m) => m.key === 'situations_travaux')?.active).toBe(true);
+    const soloSans = resolveTradeConfig('plombier', 'solo');
+    expect(soloSans.modules.find((m) => m.key === 'situations_travaux')?.active).toBe(false);
+  });
 });

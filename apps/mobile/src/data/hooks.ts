@@ -82,6 +82,31 @@ export function useInvoicePaymentLink() {
   });
 }
 
+export function useChantiers() {
+  const client = useBobClient();
+  return useQuery({
+    queryKey: ['chantiers'],
+    queryFn: async () => {
+      const r = await client.listChantiers();
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+  });
+}
+
+export function useCreateChantier() {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { name: string; customerId?: string | null; address?: string | null }) => {
+      const r = await client.createChantier(input);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['chantiers'] }),
+  });
+}
+
 export function useProfile() {
   const client = useBobClient();
   return useQuery({

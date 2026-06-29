@@ -2,6 +2,7 @@ import { ScrollView, View, Text } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../../src/theme';
+import { useProfile } from '../../src/data/hooks';
 import { GradientHeader, Card, Button, font } from '../../src/components/ui';
 
 const FOLDERS = [
@@ -16,6 +17,8 @@ const FOLDERS = [
 export default function Documents() {
   const { colors, theme } = useTheme();
   const router = useRouter();
+  const { data: profile } = useProfile();
+  const hasChantiers = (profile?.modules ?? []).some((m) => m.key === 'chantiers');
   return (
     <ScrollView style={{ flex: 1, backgroundColor: colors.bg }} contentContainerStyle={{ paddingBottom: 120 }}>
       <GradientHeader>
@@ -23,8 +26,9 @@ export default function Documents() {
         <Text style={[font('pageTitle'), { color: '#fff', marginTop: 4 }]}>Documents</Text>
         <Text style={[font('body'), { color: 'rgba(255,255,255,0.8)', marginTop: 4 }]}>Je classe, tu retrouves. Même 3 ans après.</Text>
       </GradientHeader>
-      <View style={{ paddingHorizontal: 20, paddingTop: 16 }}>
+      <View style={{ paddingHorizontal: 20, paddingTop: 16, gap: 10 }}>
         <Button title="Scanner un document" onPress={() => router.push('/scan-document')} />
+        {hasChantiers ? <Button title="Mes chantiers" variant="secondary" onPress={() => router.push('/chantiers')} /> : null}
       </View>
       <View style={{ padding: 20, flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
         {FOLDERS.map((f) => (

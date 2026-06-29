@@ -18,6 +18,7 @@ import type {
   CompanyProps,
   CustomerProps,
   RecordExpenseInput,
+  CreateChantierInput,
 } from '@bob/core';
 import { Throttle } from '@nestjs/throttler';
 import { BackendService } from './backend.service';
@@ -182,6 +183,19 @@ export class PublicSignatureController {
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   async sign(@Param('token') token: string, @Body() body: { signerName: string }) {
     return unwrap(await this.backend.publicSignQuote(token, body.signerName));
+  }
+}
+
+@Controller('chantiers')
+export class ChantiersController {
+  constructor(private readonly backend: BackendService) {}
+  @Get()
+  async list() {
+    return unwrap(await this.backend.listChantiers());
+  }
+  @Post()
+  async create(@Body() body: Omit<CreateChantierInput, 'companyId'>) {
+    return unwrap(await this.backend.createChantier(body));
   }
 }
 

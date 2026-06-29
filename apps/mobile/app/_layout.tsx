@@ -48,6 +48,7 @@ export default function RootLayout() {
                     <Stack.Screen name="diagnostic" />
                     <Stack.Screen name="onboarding" />
                     <Stack.Screen name="scan-document" options={{ presentation: 'modal' }} />
+                    <Stack.Screen name="chantiers" />
                   </Stack>
                 </BobClientProvider>
               </AuthGate>

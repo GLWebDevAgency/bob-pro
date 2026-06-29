@@ -20,6 +20,8 @@ import type {
   ExpenseProps,
   RecordExpenseInput,
   TradeConfig,
+  ChantierProps,
+  CreateChantierInput,
 } from '@bob/core';
 
 export interface QuoteView {
@@ -72,6 +74,8 @@ export interface BobClient {
   extractDocument(input: { contentBase64: string; mimeType: string }): Promise<Result<OcrExtraction, AppError>>;
   recordExpense(input: Omit<RecordExpenseInput, 'companyId'>): Promise<Result<{ id: string }, AppError>>;
   listExpenses(): Promise<Result<ExpenseProps[], AppError>>;
+  createChantier(input: Omit<CreateChantierInput, 'companyId'>): Promise<Result<{ id: string }, AppError>>;
+  listChantiers(): Promise<Result<ChantierProps[], AppError>>;
   listCustomers(): Promise<Result<CustomerListItem[], AppError>>;
   getCashflow(input: { scenario: Scenario; horizon: Horizon }): Promise<Result<CashflowProjection, AppError>>;
   createQuote(input: Omit<CreateQuoteInput, 'companyId'>): Promise<Result<CreateQuoteOutput, AppError>>;

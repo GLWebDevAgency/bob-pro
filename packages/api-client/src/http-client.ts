@@ -15,6 +15,8 @@ import type {
   ExpenseProps,
   RecordExpenseInput,
   TradeConfig,
+  ChantierProps,
+  CreateChantierInput,
 } from '@bob/core';
 import type { BobClient, QuoteView, InvoiceView, SubscriptionView } from './client';
 
@@ -88,6 +90,12 @@ export class HttpBobClient implements BobClient {
   }
   listExpenses() {
     return this.req<ExpenseProps[]>('GET', '/expenses');
+  }
+  createChantier(input: Omit<CreateChantierInput, 'companyId'>) {
+    return this.req<{ id: string }>('POST', '/chantiers', input);
+  }
+  listChantiers() {
+    return this.req<ChantierProps[]>('GET', '/chantiers');
   }
   listCustomers() {
     return this.req<CustomerListItem[]>('GET', '/customers');

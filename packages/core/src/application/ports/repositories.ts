@@ -4,6 +4,7 @@ import { type Quote } from '../../domain/billing/quote/quote';
 import { type Invoice } from '../../domain/billing/invoice/invoice';
 import { type Payment } from '../../domain/payment/payment';
 import { type Expense } from '../../domain/expense/expense';
+import { type Chantier } from '../../domain/chantier/chantier';
 
 export interface CompanyRepository {
   findById(id: string): Promise<Company | null>;
@@ -37,4 +38,10 @@ export interface ExpenseRepository {
   save(e: Expense): Promise<void>;
   findById(id: string): Promise<Expense | null>;
   listByCompany(companyId: string): Promise<Expense[]>;
+}
+
+export interface ChantierRepository {
+  save(c: Chantier): Promise<void>;
+  findById(id: string): Promise<Chantier | null>;
+  listByCompany(companyId: string): Promise<Chantier[]>;
 }

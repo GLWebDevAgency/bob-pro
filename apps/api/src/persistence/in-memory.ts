@@ -7,12 +7,14 @@ import {
   type Invoice,
   type Payment,
   type Expense,
+  type Chantier,
   type CompanyRepository,
   type CustomerRepository,
   type QuoteRepository,
   type InvoiceRepository,
   type PaymentRepository,
   type ExpenseRepository,
+  type ChantierRepository,
   type SequenceCounterPort,
   type CounterKey,
   type IdGeneratorPort,
@@ -99,6 +101,19 @@ export class InMemoryExpenseRepository implements ExpenseRepository {
   }
   async listByCompany(companyId: string): Promise<Expense[]> {
     return [...this.map.values()].filter((e) => e.companyId === companyId);
+  }
+}
+
+export class InMemoryChantierRepository implements ChantierRepository {
+  private readonly map = new Map<string, Chantier>();
+  async save(c: Chantier): Promise<void> {
+    this.map.set(c.id, c);
+  }
+  async findById(id: string): Promise<Chantier | null> {
+    return this.map.get(id) ?? null;
+  }
+  async listByCompany(companyId: string): Promise<Chantier[]> {
+    return [...this.map.values()].filter((c) => c.companyId === companyId);
   }
 }
 

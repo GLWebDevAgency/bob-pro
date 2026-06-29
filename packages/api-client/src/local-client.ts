@@ -18,6 +18,7 @@ import {
   ExtractDocument,
   DemoOcrAdapter,
   RecordExpense,
+  CreateChantier,
   ok,
   err,
   appNotFound,
@@ -40,6 +41,8 @@ import {
   type RecordExpenseInput,
   type PlanTier,
   type TradeConfig,
+  type ChantierProps,
+  type CreateChantierInput,
 } from '@bob/core';
 import {
   InMemoryCompanyRepository,
@@ -48,6 +51,7 @@ import {
   InMemoryInvoiceRepository,
   InMemoryPaymentRepository,
   InMemoryExpenseRepository,
+  InMemoryChantierRepository,
 } from './in-memory/repositories';
 import { InMemorySequenceCounter, CounterIdGenerator, FixtureCashflowSnapshot } from './in-memory/services';
 import type { BobClient, QuoteView, InvoiceView, SubscriptionView } from './client';
@@ -68,6 +72,7 @@ export class LocalBobClient implements BobClient {
   private readonly ids = new CounterIdGenerator();
   private readonly ocr: DemoOcrAdapter;
   private readonly expenses = new InMemoryExpenseRepository();
+  private readonly chantiers = new InMemoryChantierRepository();
   private readonly counters = new InMemorySequenceCounter();
   private readonly clock: ClockPort;
   private readonly snapshots: FixtureCashflowSnapshot;
@@ -180,6 +185,15 @@ export class LocalBobClient implements BobClient {
   async listExpenses(): Promise<Result<ExpenseProps[], AppError>> {
     const list = await this.expenses.listByCompany(this.companyId);
     return ok(list.map((e) => e.toProps()));
+  }
+
+  async createChantier(input: Omit<CreateChantierInput, 'companyId'>): Promise<Result<{ id: string }, AppError>> {
+    return new CreateChantier({ chantiers: this.chantiers, ids: this.ids, clock: this.clock }).execute({ companyId: this.companyId, ...input });
+  }
+
+  async listChantiers(): Promise<Result<ChantierProps[], AppError>> {
+    const list = await this.chantiers.listByCompany(this.companyId);
+    return ok(list.map((c) => c.toProps()));
   }
 
   async createQuote(input: Omit<CreateQuoteInput, 'companyId'>): Promise<Result<CreateQuoteOutput, AppError>> {

@@ -25,6 +25,7 @@ import {
   buildFacturXBasicXml,
   ExtractDocument,
   RecordExpense,
+  CreateChantier,
   MERCIER_PROPS,
   CASH_SNAPSHOT,
   type Result,
@@ -46,13 +47,15 @@ import {
   type CustomerProps,
   type DiagnosticResult,
   type TradeConfig,
+  type ChantierProps,
+  type CreateChantierInput,
   type OcrExtraction,
   type OcrPort,
   type RecordExpenseInput,
   type ExpenseProps,
 } from '@bob/core';
 import { BobAgent, ModelRouter, type BobCapabilities, type AgentRun } from '@bob/ai';
-import { UuidGenerator, FixtureCashflowSnapshot } from './persistence/in-memory';
+import { UuidGenerator, FixtureCashflowSnapshot, InMemoryChantierRepository } from './persistence/in-memory';
 import { PERSISTENCE, type Persistence } from './persistence/persistence';
 import { Metrics } from './observability/metrics';
 import { AppLogger, getPrincipal } from './observability/logger';
@@ -109,6 +112,8 @@ export class BackendService {
   private readonly ids = new UuidGenerator();
   private readonly clock: ClockPort = new SystemClock();
   private readonly snapshots = new FixtureCashflowSnapshot(CASH_SNAPSHOT);
+  // Module Chantiers (BTP) en mémoire pour l'instant — persistance Prisma = incrément suivant.
+  private readonly chantiers = new InMemoryChantierRepository();
   private readonly subscription: Subscription;
 
   /** Tenant courant : companyId du Principal authentifié (défaut = société de seed en démo). */
@@ -311,7 +316,32 @@ export class BackendService {
   async getProfile(): Promise<Result<TradeConfig, AppError>> {
     const company = await this.p.companies.findById(this.companyId());
     if (!company) return { ok: false, error: appNotFound('company', this.companyId()) };
-    return ok(resolveTradeConfig(company.trade, this.subscription.tier));
+    return ok(resolveTradeConfig(company.trade, this.subscription.tier, this.subscription.addOns));
+  }
+
+  // ——— Module Chantiers (vertical BTP, gated par métier × palier/add-on) ———
+  private async chantiersAllowed(): Promise<boolean> {
+    const company = await this.p.companies.findById(this.companyId());
+    if (!company) return false;
+    return resolveTradeConfig(company.trade, this.subscription.tier, this.subscription.addOns).modules.some(
+      (m) => m.key === 'chantiers' && m.active,
+    );
+  }
+
+  async createChantier(input: Omit<CreateChantierInput, 'companyId'>): Promise<Result<{ id: string }, AppError>> {
+    if (!(await this.chantiersAllowed()))
+      return { ok: false, error: appForbidden('Module Chantiers non inclus dans ton offre (Pro ou Pack BTP).') };
+    const r = await new CreateChantier({ chantiers: this.chantiers, ids: this.ids, clock: this.clock }).execute({
+      companyId: this.companyId(),
+      ...input,
+    });
+    if (r.ok) this.logger.audit('chantier.created', { companyId: this.companyId(), id: r.value.id });
+    return r;
+  }
+
+  async listChantiers(): Promise<Result<ChantierProps[], AppError>> {
+    const list = await this.chantiers.listByCompany(this.companyId());
+    return ok(list.map((c) => c.toProps()));
   }
 
   async getDiagnostic(): Promise<Result<DiagnosticResult, AppError>> {
