@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   DocNumber,
   type Company,
@@ -117,7 +118,9 @@ export class InMemorySequenceCounter implements SequenceCounterPort {
 
 export class UuidGenerator implements IdGeneratorPort {
   newId(): string {
-    return `srv-${Math.random().toString(36).slice(2, 10)}-${Date.now().toString(36)}`;
+    // Cryptographiquement aléatoire (122 bits) : ids non énumérables — important car l'id de devis
+    // sert de jeton dans le lien de signature publique.
+    return randomUUID();
   }
 }
 

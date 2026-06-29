@@ -1,7 +1,26 @@
-import { Linking } from 'react-native';
+import { Linking, Alert } from 'react-native';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { Scenario, Horizon, CreateQuoteInput, PaymentMethod, RecordExpenseInput, PlanTier } from '@bob/core';
 import { useBobClient } from './client';
+
+/** Ouvre une URL externe en remontant un échec à l'utilisateur (lien Stripe/paiement). */
+function openUrl(url: string): void {
+  if (!url) {
+    Alert.alert('Lien indisponible', 'Aucun lien fourni. Réessaie plus tard.');
+    return;
+  }
+  void Linking.openURL(url).catch(() => Alert.alert('Lien indisponible', "Impossible d'ouvrir le lien."));
+}
+
+/** Traduit une AppError en message utilisateur (paywall, dépendance, …). */
+function alertError(e: unknown): void {
+  let message = 'Action impossible. Réessaie.';
+  if (e && typeof e === 'object' && 'kind' in e) {
+    const err = e as { kind: string; reason?: string };
+    if (err.kind === 'forbidden') message = err.reason ?? 'Action non autorisée pour ton offre.';
+  }
+  Alert.alert('Oups', message);
+}
 
 const keys = {
   customers: ['customers'] as const,
@@ -32,9 +51,8 @@ export function useStartCheckout() {
       if (!r.ok) throw r.error;
       return r.value;
     },
-    onSuccess: (v) => {
-      void Linking.openURL(v.url);
-    },
+    onSuccess: (v) => openUrl(v.url),
+    onError: alertError,
   });
 }
 
@@ -46,9 +64,8 @@ export function useBillingPortal() {
       if (!r.ok) throw r.error;
       return r.value;
     },
-    onSuccess: (v) => {
-      void Linking.openURL(v.url);
-    },
+    onSuccess: (v) => openUrl(v.url),
+    onError: alertError,
   });
 }
 
@@ -60,9 +77,8 @@ export function useInvoicePaymentLink() {
       if (!r.ok) throw r.error;
       return r.value;
     },
-    onSuccess: (v) => {
-      void Linking.openURL(v.url);
-    },
+    onSuccess: (v) => openUrl(v.url),
+    onError: alertError,
   });
 }
 

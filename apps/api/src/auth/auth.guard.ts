@@ -29,8 +29,9 @@ export class SupabaseAuthGuard implements CanActivate {
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const req = context.switchToHttp().getRequest<RequestLike>();
-    // Infra + endpoints publics (signature client à distance par lien tokenisé) toujours ouverts.
-    if (req.url.startsWith('/health') || req.url.startsWith('/metrics') || req.url.startsWith('/public/')) return true;
+    // Infra + endpoints publics EXPLICITES (signature client à distance). Préfixe étroit volontaire :
+    // tout nouvel endpoint public doit être ajouté ici sciemment (pas d'ouverture /public/* large).
+    if (req.url.startsWith('/health') || req.url.startsWith('/metrics') || req.url.startsWith('/public/sign/')) return true;
 
     if (isDemoMode()) {
       // Démo : tenant via header x-company-id (par défaut la société de seed).

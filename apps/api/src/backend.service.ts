@@ -92,6 +92,7 @@ export interface SignatureView {
   customerName: string;
   status: string;
   signed: boolean;
+  expired: boolean;
   validUntil: string | null;
   lines: { label: string; qty: number; unitPriceHT: number; vatRate: number }[];
   totals: Totals;
@@ -237,6 +238,7 @@ export class BackendService {
       customerName: customer?.name ?? '',
       status: q.status,
       signed: q.signature !== null,
+      expired: q.validUntil !== null && q.validUntil < this.clock.today(),
       validUntil: q.validUntil,
       lines: q.lines.map((l) => ({ label: l.label, qty: l.qty, unitPriceHT: l.unitPriceHT, vatRate: l.vatRate })),
       totals: q.totals(),
@@ -244,7 +246,13 @@ export class BackendService {
   }
 
   async publicSignQuote(token: string, signerName: string): Promise<Result<{ status: string }, AppError>> {
-    return new SignQuote({ quotes: this.p.quotes, clock: this.clock }).execute({ quoteId: token, signerName });
+    const q = await this.p.quotes.findById(token);
+    if (!q) return { ok: false, error: appNotFound('quote', token) };
+    if (q.validUntil !== null && q.validUntil < this.clock.today())
+      return { ok: false, error: appForbidden('Devis expiré : signature impossible.') };
+    const r = await new SignQuote({ quotes: this.p.quotes, clock: this.clock }).execute({ quoteId: token, signerName });
+    if (r.ok) this.logger.audit('quote.public_signed', { quoteId: token, signerName });
+    return r;
   }
 
   async askBob(message: string): Promise<Result<AgentRun, AppError>> {

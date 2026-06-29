@@ -51,7 +51,7 @@ jobs:
       - name: Générer un échantillon Factur-X (PDF hybride + XML CII)
         run: node apps/api/scripts/generate-facturx-sample.mjs facturx-sample
       - name: Télécharger le validateur Mustang
-        run: curl -fsSL -o mustang-cli.jar "https://repo1.maven.org/maven2/org/mustangproject/Mustang-CLI/${MUSTANG_VERSION}/Mustang-CLI-${MUSTANG_VERSION}.jar"
+        run: curl -fsSL --retry 3 --retry-delay 5 -o mustang-cli.jar "https://repo1.maven.org/maven2/org/mustangproject/Mustang-CLI/${MUSTANG_VERSION}/Mustang-CLI-${MUSTANG_VERSION}.jar"
       - name: Schematron EN 16931 sur le XML CII (gate bloquant)
         run: java -jar mustang-cli.jar --action validate --source facturx-sample/factur-x.xml --no-notices
       - name: veraPDF PDF/A-3 sur le PDF (informatif — embarquage polices = post-traitement prod)

@@ -10,6 +10,7 @@ interface SignatureView {
   customerName: string;
   status: string;
   signed: boolean;
+  expired: boolean;
   validUntil: string | null;
   lines: { label: string; qty: number; unitPriceHT: number; vatRate: number }[];
   totals: { ht: number; vat: number; ttc: number; netToPay: number };
@@ -69,6 +70,7 @@ export default function SignPage({ params }: { params: Promise<{ token: string }
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ signerName: name.trim() }),
       });
+      if (r.status === 429) throw new Error('Trop de tentatives. Réessayez dans une minute.');
       if (!r.ok) throw new Error('Signature impossible. Réessayez.');
       setDone(true);
     } catch (e: unknown) {
@@ -124,6 +126,10 @@ export default function SignPage({ params }: { params: Promise<{ token: string }
       {alreadySigned ? (
         <p style={{ marginTop: 20, padding: 14, background: '#E8F6EE', color: '#1E7E47', borderRadius: 12, fontWeight: 600 }}>
           ✓ Devis signé — merci ! L&apos;artisan en est informé.
+        </p>
+      ) : quote.expired ? (
+        <p style={{ marginTop: 20, padding: 14, background: '#FDEEE6', color: '#B9531B', borderRadius: 12, fontWeight: 600 }}>
+          Ce devis a expiré{quote.validUntil ? ` le ${quote.validUntil}` : ''} et ne peut plus être signé. Contactez l&apos;artisan.
         </p>
       ) : (
         <div style={{ marginTop: 20 }}>

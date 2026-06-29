@@ -165,6 +165,7 @@ export class DocumentsController {
 export class PublicSignatureController {
   constructor(private readonly backend: BackendService) {}
   @Get(':token')
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
   async get(@Param('token') token: string) {
     return unwrap(await this.backend.publicQuoteForSignature(token));
   }
