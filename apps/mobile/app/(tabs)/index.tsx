@@ -1,5 +1,6 @@
-import { ScrollView, View, Text } from 'react-native';
+import { ScrollView, View, Text, Pressable } from 'react-native';
 import { useRouter } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
 import { formatEUR } from '@bob/core';
 import { useTheme } from '../../src/theme';
 import { useCashflow, useCustomers } from '../../src/data/hooks';
@@ -18,7 +19,12 @@ export default function Aujourdhui() {
   return (
     <ScrollView style={{ flex: 1, backgroundColor: colors.bg }} contentContainerStyle={{ paddingBottom: 120 }}>
       <GradientHeader>
-        <Text style={[font('eyebrow'), { color: 'rgba(255,255,255,0.7)' }]}>MERCIER PLOMBERIE</Text>
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Text style={[font('eyebrow'), { color: 'rgba(255,255,255,0.7)' }]}>MERCIER PLOMBERIE</Text>
+          <Pressable onPress={() => router.push('/compte')} accessibilityRole="button" accessibilityLabel="Mon compte">
+            <Ionicons name="person-circle-outline" size={28} color="rgba(255,255,255,0.9)" />
+          </Pressable>
+        </View>
         <Text style={[font('pageTitle'), { color: '#fff', marginTop: 4 }]}>{greeting(personality, 'Julien')}</Text>
         <Text style={[font('body'), { color: 'rgba(255,255,255,0.8)', marginTop: 4 }]}>
           {todaySubtitle(personality, aSurveiller.length)}

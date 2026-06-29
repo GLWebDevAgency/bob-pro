@@ -11,6 +11,8 @@ import {
   seedCompany,
   seedCustomers,
   CASH_SNAPSHOT,
+  PLAN_CATALOG,
+  planEntitlements,
   ok,
   err,
   appNotFound,
@@ -36,7 +38,7 @@ import {
   InMemoryPaymentRepository,
 } from './in-memory/repositories';
 import { InMemorySequenceCounter, CounterIdGenerator, FixtureCashflowSnapshot } from './in-memory/services';
-import type { BobClient, QuoteView, InvoiceView } from './client';
+import type { BobClient, QuoteView, InvoiceView, SubscriptionView } from './client';
 
 export interface LocalBobClientOptions {
   clock?: ClockPort;
@@ -93,6 +95,21 @@ export class LocalBobClient implements BobClient {
       dueAt: i.dueAt,
       paid: i.paid,
     };
+  }
+
+  async getSubscription(): Promise<Result<SubscriptionView, AppError>> {
+    return ok({
+      tier: 'pro',
+      status: 'active',
+      currentPeriodEnd: null,
+      features: [...planEntitlements('pro')],
+      catalog: Object.values(PLAN_CATALOG).map((p) => ({
+        tier: p.tier,
+        label: p.label,
+        priceCents: p.priceCents,
+        features: [...p.features],
+      })),
+    });
   }
 
   async listCustomers(): Promise<Result<CustomerListItem[], AppError>> {

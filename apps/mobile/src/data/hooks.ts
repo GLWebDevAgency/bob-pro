@@ -11,6 +11,18 @@ const keys = {
   quote: (id: string) => ['quote', id] as const,
 };
 
+export function useSubscription() {
+  const client = useBobClient();
+  return useQuery({
+    queryKey: ['subscription'],
+    queryFn: async () => {
+      const r = await client.getSubscription();
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+  });
+}
+
 export function useCustomers() {
   const client = useBobClient();
   return useQuery({

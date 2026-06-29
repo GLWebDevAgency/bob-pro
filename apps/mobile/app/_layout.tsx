@@ -24,6 +24,7 @@ export default function RootLayout() {
                 <Stack.Screen name="(tabs)" />
                 <Stack.Screen name="devis/new" options={{ presentation: 'modal' }} />
                 <Stack.Screen name="client/[id]" />
+                <Stack.Screen name="compte" />
               </Stack>
             </ThemeProvider>
           </BobClientProvider>

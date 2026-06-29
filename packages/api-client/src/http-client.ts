@@ -10,7 +10,7 @@ import type {
   Horizon,
   PaymentMethod,
 } from '@bob/core';
-import type { BobClient, QuoteView, InvoiceView } from './client';
+import type { BobClient, QuoteView, InvoiceView, SubscriptionView } from './client';
 
 export interface HttpBobClientOptions {
   baseUrl: string;
@@ -55,6 +55,9 @@ export class HttpBobClient implements BobClient {
     }
   }
 
+  getSubscription() {
+    return this.req<SubscriptionView>('GET', '/subscription');
+  }
   listCustomers() {
     return this.req<CustomerListItem[]>('GET', '/customers');
   }

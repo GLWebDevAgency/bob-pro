@@ -47,8 +47,17 @@ export interface InvoiceView {
  * Deux implémentations : LocalBobClient (fixtures, hors-ligne — V1) et, plus tard, HttpBobClient (NestJS).
  * L'UI ne connaît que cette interface : brancher le backend = changer d'implémentation, sans toucher aux écrans.
  */
+export interface SubscriptionView {
+  tier: string;
+  status: string;
+  currentPeriodEnd: string | null;
+  features: string[];
+  catalog: { tier: string; label: string; priceCents: number; features: string[] }[];
+}
+
 export interface BobClient {
   readonly companyId: string;
+  getSubscription(): Promise<Result<SubscriptionView, AppError>>;
   listCustomers(): Promise<Result<CustomerListItem[], AppError>>;
   getCashflow(input: { scenario: Scenario; horizon: Horizon }): Promise<Result<CashflowProjection, AppError>>;
   createQuote(input: Omit<CreateQuoteInput, 'companyId'>): Promise<Result<CreateQuoteOutput, AppError>>;
