@@ -1,0 +1,9 @@
+node_modules
+dist
+.turbo
+*.log
+.expo
+.env*
+!.env.example
+_design_extract
+*.zip
