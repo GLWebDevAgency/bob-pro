@@ -17,11 +17,13 @@ export interface CustomerRepository {
 
 export interface QuoteRepository {
   findById(id: string): Promise<Quote | null>;
+  listByCompany(companyId: string): Promise<Quote[]>;
   save(q: Quote): Promise<void>;
 }
 
 export interface InvoiceRepository {
   findById(id: string): Promise<Invoice | null>;
+  listByCompany(companyId: string): Promise<Invoice[]>;
   save(i: Invoice): Promise<void>;
 }
 

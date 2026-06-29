@@ -39,12 +39,14 @@ function makeEnv() {
   };
   const quoteRepo: QuoteRepository = {
     findById: async (id) => quotesMap.get(id) ?? null,
+    listByCompany: async (companyId) => [...quotesMap.values()].filter((q) => q.companyId === companyId),
     save: async (q) => {
       quotesMap.set(q.id, q);
     },
   };
   const invoiceRepo: InvoiceRepository = {
     findById: async (id) => invoicesMap.get(id) ?? null,
+    listByCompany: async (companyId) => [...invoicesMap.values()].filter((i) => i.companyId === companyId),
     save: async (i) => {
       invoicesMap.set(i.id, i);
     },

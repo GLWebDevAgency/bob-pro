@@ -1,0 +1,168 @@
+import {
+  CreateQuote,
+  SendQuote,
+  SignQuote,
+  GenerateInvoiceFromQuote,
+  IssueInvoice,
+  RegisterPayment,
+  ListCustomers,
+  GetCashflow,
+  SystemClock,
+  seedCompany,
+  seedCustomers,
+  CASH_SNAPSHOT,
+  ok,
+  err,
+  appNotFound,
+  type ClockPort,
+  type CreateQuoteInput,
+  type IssueInvoiceInput,
+  type Quote,
+  type Invoice,
+  type Result,
+  type AppError,
+  type Scenario,
+  type Horizon,
+  type PaymentMethod,
+  type CashflowProjection,
+  type CustomerListItem,
+  type CreateQuoteOutput,
+} from '@bob/core';
+import {
+  InMemoryCompanyRepository,
+  InMemoryCustomerRepository,
+  InMemoryQuoteRepository,
+  InMemoryInvoiceRepository,
+  InMemoryPaymentRepository,
+} from './in-memory/repositories';
+import { InMemorySequenceCounter, CounterIdGenerator, FixtureCashflowSnapshot } from './in-memory/services';
+import type { BobClient, QuoteView, InvoiceView } from './client';
+
+export interface LocalBobClientOptions {
+  clock?: ClockPort;
+}
+
+/** Implémentation locale (hors-ligne, fixtures) de BobClient : exécute les use cases du domaine en mémoire. */
+export class LocalBobClient implements BobClient {
+  readonly companyId: string;
+
+  private readonly companies = new InMemoryCompanyRepository();
+  private readonly customers = new InMemoryCustomerRepository();
+  private readonly quotes = new InMemoryQuoteRepository();
+  private readonly invoices = new InMemoryInvoiceRepository();
+  private readonly payments = new InMemoryPaymentRepository();
+  private readonly ids = new CounterIdGenerator();
+  private readonly counters = new InMemorySequenceCounter();
+  private readonly clock: ClockPort;
+  private readonly snapshots: FixtureCashflowSnapshot;
+
+  constructor(opts?: LocalBobClientOptions) {
+    const company = seedCompany();
+    this.companyId = company.id;
+    this.companies.seed(company);
+    this.customers.seed(seedCustomers());
+    this.clock = opts?.clock ?? new SystemClock();
+    this.snapshots = new FixtureCashflowSnapshot(CASH_SNAPSHOT);
+  }
+
+  private mapQuote(q: Quote): QuoteView {
+    return {
+      id: q.id,
+      companyId: q.companyId,
+      customerId: q.customerId,
+      status: q.status,
+      number: q.number,
+      depositPct: q.depositPct,
+      lines: [...q.lines],
+      totals: q.totals(),
+      validUntil: q.validUntil,
+      signed: q.signature !== null,
+    };
+  }
+
+  private mapInvoice(i: Invoice): InvoiceView {
+    return {
+      id: i.id,
+      companyId: i.companyId,
+      customerId: i.customerId,
+      kind: i.kind,
+      status: i.status,
+      number: i.number,
+      totals: i.totals(),
+      mentions: [...i.mentions],
+      dueAt: i.dueAt,
+      paid: i.paid,
+    };
+  }
+
+  async listCustomers(): Promise<Result<CustomerListItem[], AppError>> {
+    return new ListCustomers({ customers: this.customers }).execute({ companyId: this.companyId });
+  }
+
+  async getCashflow(input: { scenario: Scenario; horizon: Horizon }): Promise<Result<CashflowProjection, AppError>> {
+    return new GetCashflow({ snapshots: this.snapshots }).execute({ companyId: this.companyId, ...input });
+  }
+
+  async createQuote(input: Omit<CreateQuoteInput, 'companyId'>): Promise<Result<CreateQuoteOutput, AppError>> {
+    return new CreateQuote({
+      quotes: this.quotes,
+      companies: this.companies,
+      customers: this.customers,
+      ids: this.ids,
+      clock: this.clock,
+    }).execute({ companyId: this.companyId, ...input });
+  }
+
+  async sendQuote(quoteId: string): Promise<Result<{ number: string }, AppError>> {
+    return new SendQuote({ quotes: this.quotes, counters: this.counters, clock: this.clock }).execute({ quoteId });
+  }
+
+  async signQuote(input: { quoteId: string; signerName: string }): Promise<Result<{ status: string }, AppError>> {
+    return new SignQuote({ quotes: this.quotes, clock: this.clock }).execute(input);
+  }
+
+  async generateInvoice(input: { quoteId: string; mode?: 'deposit' | 'final' }): Promise<Result<{ invoiceId: string }, AppError>> {
+    return new GenerateInvoiceFromQuote({ quotes: this.quotes, invoices: this.invoices, ids: this.ids }).execute(input);
+  }
+
+  async issueInvoice(input: IssueInvoiceInput): Promise<Result<{ number: string }, AppError>> {
+    return new IssueInvoice({
+      invoices: this.invoices,
+      companies: this.companies,
+      customers: this.customers,
+      counters: this.counters,
+      clock: this.clock,
+    }).execute(input);
+  }
+
+  async registerPayment(input: { invoiceId: string; amount: number; method: PaymentMethod }): Promise<Result<{ status: string }, AppError>> {
+    return new RegisterPayment({
+      invoices: this.invoices,
+      payments: this.payments,
+      ids: this.ids,
+      clock: this.clock,
+    }).execute(input);
+  }
+
+  async getQuote(id: string): Promise<Result<QuoteView, AppError>> {
+    const q = await this.quotes.findById(id);
+    if (!q) return err(appNotFound('quote', id));
+    return ok(this.mapQuote(q));
+  }
+
+  async listQuotes(): Promise<Result<QuoteView[], AppError>> {
+    const list = await this.quotes.listByCompany(this.companyId);
+    return ok(list.map((q) => this.mapQuote(q)));
+  }
+
+  async getInvoice(id: string): Promise<Result<InvoiceView, AppError>> {
+    const i = await this.invoices.findById(id);
+    if (!i) return err(appNotFound('invoice', id));
+    return ok(this.mapInvoice(i));
+  }
+
+  async listInvoices(): Promise<Result<InvoiceView[], AppError>> {
+    const list = await this.invoices.listByCompany(this.companyId);
+    return ok(list.map((i) => this.mapInvoice(i)));
+  }
+}
