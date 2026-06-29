@@ -50,6 +50,9 @@ export class Customer {
   get avgDelayDays(): number {
     return this.p.avgDelayDays;
   }
+  get score(): number {
+    return this.scoreVo.value;
+  }
   get isSubcontractingBtp(): boolean {
     return this.p.isSubcontractingBtp === true;
   }

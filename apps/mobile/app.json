@@ -1,0 +1,16 @@
+{
+  "expo": {
+    "name": "Bob Pro",
+    "slug": "bob-pro",
+    "scheme": "bobpro",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "splash": { "backgroundColor": "#0C2340" },
+    "plugins": ["expo-router", "expo-font", "expo-secure-store"],
+    "ios": { "supportsTablet": true, "bundleIdentifier": "fr.bobpro.app" },
+    "android": { "package": "fr.bobpro.app" },
+    "experiments": { "typedRoutes": true }
+  }
+}
