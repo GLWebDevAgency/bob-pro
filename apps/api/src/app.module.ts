@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { BackendService } from './backend.service';
+import { PersistenceModule } from './persistence/persistence.module';
 import { SupabaseAuthGuard } from './auth/auth.guard';
 import {
   HealthController,
@@ -12,6 +13,7 @@ import {
 } from './api.controllers';
 
 @Module({
+  imports: [PersistenceModule],
   controllers: [
     HealthController,
     CustomersController,

@@ -156,4 +156,47 @@ export class Quote extends AggregateRoot<string> {
     this.record({ type: 'QuoteExpired', occurredAt: at, version: 1 });
     return ok(undefined);
   }
+
+  // ——— Persistance (réhydratation depuis la base, sans rejouer les invariants/events) ———
+  toSnapshot(): QuoteSnapshot {
+    return {
+      id: this.id,
+      companyId: this.companyId,
+      customerId: this.customerId,
+      status: this._status,
+      lines: this._lines.map((l) => ({ ...l })),
+      number: this._number?.value ?? null,
+      depositPct: this._depositPct?.value ?? null,
+      validUntil: this._validUntil,
+      signature: this._signature,
+    };
+  }
+
+  static rehydrate(s: QuoteSnapshot): Quote {
+    const q = new Quote(s.id, s.companyId, s.customerId, s.validUntil);
+    q._status = s.status;
+    q._lines = s.lines.map((l) => ({ ...l }));
+    if (s.number) {
+      const n = DocNumber.of(s.number);
+      if (n.ok) q._number = n.value;
+    }
+    if (s.depositPct !== null) {
+      const p = Percentage.of(s.depositPct);
+      if (p.ok) q._depositPct = p.value;
+    }
+    q._signature = s.signature;
+    return q;
+  }
+}
+
+export interface QuoteSnapshot {
+  id: string;
+  companyId: string;
+  customerId: string;
+  status: QuoteStatus;
+  lines: QuoteLine[];
+  number: string | null;
+  depositPct: number | null;
+  validUntil: DateOnly | null;
+  signature: Signature | null;
 }

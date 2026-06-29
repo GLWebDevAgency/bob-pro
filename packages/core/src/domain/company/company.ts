@@ -101,4 +101,9 @@ export class Company {
       return err({ code: 'VALIDATION', field: 'address', message: 'Adresse complete requise.' });
     return ok(undefined);
   }
+
+  /** Snapshot de persistance (réhydratation via Company.of). */
+  toProps(): CompanyProps {
+    return { ...this.p, address: { ...this.p.address } };
+  }
 }

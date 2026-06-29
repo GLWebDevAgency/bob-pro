@@ -158,4 +158,62 @@ export class Invoice extends AggregateRoot<string> {
     this.record({ type: 'InvoiceCancelled', occurredAt: at, version: 1 });
     return ok(undefined);
   }
+
+  // ——— Persistance ———
+  toSnapshot(): InvoiceSnapshot {
+    return {
+      id: this.id,
+      companyId: this.companyId,
+      customerId: this.customerId,
+      kind: this.kind,
+      status: this._status,
+      lines: this._lines.map((l) => ({ ...l })),
+      number: this._number?.value ?? null,
+      frozenTotals: this._frozenTotals,
+      mentions: [...this._mentions],
+      issuedAt: this._issuedAt,
+      dueAt: this._dueAt,
+      paid: this._paid,
+      depositPct: this._depositPct?.value ?? null,
+      parentQuoteId: this.parentQuoteId,
+    };
+  }
+
+  static rehydrate(s: InvoiceSnapshot): Invoice {
+    let dep: Percentage | null = null;
+    if (s.depositPct !== null) {
+      const p = Percentage.of(s.depositPct);
+      if (p.ok) dep = p.value;
+    }
+    const inv = new Invoice(s.id, s.companyId, s.customerId, s.kind, dep, s.parentQuoteId);
+    inv._status = s.status;
+    inv._lines = s.lines.map((l) => ({ ...l }));
+    if (s.number) {
+      const n = DocNumber.of(s.number);
+      if (n.ok) inv._number = n.value;
+    }
+    inv._frozenTotals = s.frozenTotals;
+    inv._mentions = [...s.mentions];
+    inv._issuedAt = s.issuedAt;
+    inv._dueAt = s.dueAt;
+    inv._paid = s.paid;
+    return inv;
+  }
+}
+
+export interface InvoiceSnapshot {
+  id: string;
+  companyId: string;
+  customerId: string;
+  kind: InvoiceKind;
+  status: InvoiceStatus;
+  lines: QuoteLine[];
+  number: string | null;
+  frozenTotals: Totals | null;
+  mentions: string[];
+  issuedAt: DateOnly | null;
+  dueAt: DateOnly | null;
+  paid: number;
+  depositPct: number | null;
+  parentQuoteId: string | null;
 }

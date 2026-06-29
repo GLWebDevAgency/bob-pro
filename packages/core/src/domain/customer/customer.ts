@@ -65,4 +65,9 @@ export class Customer {
   scoreBand(): ScoreBand {
     return this.scoreVo.band();
   }
+
+  /** Snapshot de persistance (réhydratation via Customer.of). */
+  toProps(): CustomerProps {
+    return { ...this.p, address: { ...this.p.address } };
+  }
 }

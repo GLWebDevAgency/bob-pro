@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import {
   CreateQuote,
   SendQuote,
@@ -9,12 +9,11 @@ import {
   ListCustomers,
   GetCashflow,
   SystemClock,
-  seedCompany,
-  seedCustomers,
-  CASH_SNAPSHOT,
   buildRelance,
   ok,
   appNotFound,
+  MERCIER_PROPS,
+  CASH_SNAPSHOT,
   type Result,
   type AppError,
   type CreateQuoteInput,
@@ -28,16 +27,8 @@ import {
   type Totals,
 } from '@bob/core';
 import { BobAgent, ModelRouter, type BobCapabilities, type AgentRun } from '@bob/ai';
-import {
-  InMemoryCompanyRepository,
-  InMemoryCustomerRepository,
-  InMemoryQuoteRepository,
-  InMemoryInvoiceRepository,
-  InMemoryPaymentRepository,
-  InMemorySequenceCounter,
-  UuidGenerator,
-  FixtureCashflowSnapshot,
-} from './persistence/in-memory';
+import { UuidGenerator, FixtureCashflowSnapshot } from './persistence/in-memory';
+import { PERSISTENCE, type Persistence } from './persistence/persistence';
 import { hasClaudeKey, hasGlmKey } from './config/env';
 
 export interface QuoteView {
@@ -67,29 +58,17 @@ export interface InvoiceView {
 }
 
 /**
- * Autorité serveur : wire les use cases du domaine sur des adapters in-memory (V1, sans base).
- * Mêmes opérations que LocalBobClient — l'app bascule en HttpBobClient sans changer d'écran.
+ * Autorité serveur : wire les use cases du domaine sur le bundle Persistence injecté
+ * (in-memory en démo, Prisma/Postgres en prod). L'app bascule en HttpBobClient sans changer d'écran.
  */
 @Injectable()
 export class BackendService {
-  private readonly companies = new InMemoryCompanyRepository();
-  private readonly customers = new InMemoryCustomerRepository();
-  private readonly quotes = new InMemoryQuoteRepository();
-  private readonly invoices = new InMemoryInvoiceRepository();
-  private readonly payments = new InMemoryPaymentRepository();
-  private readonly counters = new InMemorySequenceCounter();
   private readonly ids = new UuidGenerator();
   private readonly clock: ClockPort = new SystemClock();
-  private readonly snapshots: FixtureCashflowSnapshot;
-  readonly companyId: string;
+  private readonly snapshots = new FixtureCashflowSnapshot(CASH_SNAPSHOT);
+  readonly companyId = MERCIER_PROPS.id;
 
-  constructor() {
-    const company = seedCompany();
-    this.companyId = company.id;
-    this.companies.seed(company);
-    this.customers.seed(seedCustomers());
-    this.snapshots = new FixtureCashflowSnapshot(CASH_SNAPSHOT);
-  }
+  constructor(@Inject(PERSISTENCE) private readonly p: Persistence) {}
 
   private mapQuote(q: Quote): QuoteView {
     return {
@@ -122,62 +101,62 @@ export class BackendService {
   }
 
   listCustomers() {
-    return new ListCustomers({ customers: this.customers }).execute({ companyId: this.companyId });
+    return new ListCustomers({ customers: this.p.customers }).execute({ companyId: this.companyId });
   }
   getCashflow(scenario: Scenario, horizon: Horizon) {
     return new GetCashflow({ snapshots: this.snapshots }).execute({ companyId: this.companyId, scenario, horizon });
   }
   createQuote(input: Omit<CreateQuoteInput, 'companyId'>) {
     return new CreateQuote({
-      quotes: this.quotes,
-      companies: this.companies,
-      customers: this.customers,
+      quotes: this.p.quotes,
+      companies: this.p.companies,
+      customers: this.p.customers,
       ids: this.ids,
       clock: this.clock,
     }).execute({ companyId: this.companyId, ...input });
   }
   sendQuote(quoteId: string) {
-    return new SendQuote({ quotes: this.quotes, counters: this.counters, clock: this.clock }).execute({ quoteId });
+    return new SendQuote({ quotes: this.p.quotes, counters: this.p.counters, clock: this.clock }).execute({ quoteId });
   }
   signQuote(input: { quoteId: string; signerName: string }) {
-    return new SignQuote({ quotes: this.quotes, clock: this.clock }).execute(input);
+    return new SignQuote({ quotes: this.p.quotes, clock: this.clock }).execute(input);
   }
   generateInvoice(input: { quoteId: string; mode?: 'deposit' | 'final' }) {
-    return new GenerateInvoiceFromQuote({ quotes: this.quotes, invoices: this.invoices, ids: this.ids }).execute(input);
+    return new GenerateInvoiceFromQuote({ quotes: this.p.quotes, invoices: this.p.invoices, ids: this.ids }).execute(input);
   }
   issueInvoice(input: { invoiceId: string }) {
     return new IssueInvoice({
-      invoices: this.invoices,
-      companies: this.companies,
-      customers: this.customers,
-      counters: this.counters,
+      invoices: this.p.invoices,
+      companies: this.p.companies,
+      customers: this.p.customers,
+      counters: this.p.counters,
       clock: this.clock,
     }).execute(input);
   }
   registerPayment(input: { invoiceId: string; amount: number; method: PaymentMethod }) {
     return new RegisterPayment({
-      invoices: this.invoices,
-      payments: this.payments,
+      invoices: this.p.invoices,
+      payments: this.p.payments,
       ids: this.ids,
       clock: this.clock,
     }).execute(input);
   }
   async getQuote(id: string): Promise<Result<QuoteView, AppError>> {
-    const q = await this.quotes.findById(id);
+    const q = await this.p.quotes.findById(id);
     if (!q) return { ok: false, error: appNotFound('quote', id) };
     return ok(this.mapQuote(q));
   }
   async listQuotes(): Promise<Result<QuoteView[], AppError>> {
-    const list = await this.quotes.listByCompany(this.companyId);
+    const list = await this.p.quotes.listByCompany(this.companyId);
     return ok(list.map((q) => this.mapQuote(q)));
   }
   async getInvoice(id: string): Promise<Result<InvoiceView, AppError>> {
-    const i = await this.invoices.findById(id);
+    const i = await this.p.invoices.findById(id);
     if (!i) return { ok: false, error: appNotFound('invoice', id) };
     return ok(this.mapInvoice(i));
   }
   async listInvoices(): Promise<Result<InvoiceView[], AppError>> {
-    const list = await this.invoices.listByCompany(this.companyId);
+    const list = await this.p.invoices.listByCompany(this.companyId);
     return ok(list.map((i) => this.mapInvoice(i)));
   }
 
@@ -193,7 +172,7 @@ export class BackendService {
         if (!r.ok) return r;
         const sorted = [...r.value].filter((c) => c.outstanding > 0).sort((a, b) => b.outstanding - a.outstanding);
         const top = sorted[0];
-        const message2 = buildRelance({
+        const draft = buildRelance({
           customerName: top?.name ?? 'le client',
           docNumber: 'dernière facture',
           amountCents: top?.outstanding ?? 0,
@@ -201,7 +180,7 @@ export class BackendService {
           tone: 'cordial',
           personality: 'Pote',
         });
-        return ok({ subject: message2.subject, body: message2.body });
+        return ok({ subject: draft.subject, body: draft.body });
       },
     };
     const agent = new BobAgent({
