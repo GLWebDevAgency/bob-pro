@@ -35,7 +35,9 @@ export * from './domain/payment/payment';
 export * from './domain/dunning/relance-plan';
 export * from './domain/compliance/einvoice-transmission';
 export * from './domain/compliance/diagnostic';
+export * from './domain/compliance/facturx';
 export * from './domain/company/trade-profile';
+export * from './domain/ocr/ocr-extraction';
 
 // Couche Application — use cases, ports, fixtures
 export * from './application/result';
@@ -59,3 +61,8 @@ export * from './application/ports/payment';
 
 // Ports de sortie (PDF, notification)
 export * from './application/ports/output';
+
+// OCR documents (port + use case + adapter démo déterministe)
+export * from './application/ports/ocr';
+export * from './application/ocr/extract-document';
+export * from './application/ocr/demo-ocr-adapter';

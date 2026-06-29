@@ -10,6 +10,7 @@ import type {
   Horizon,
   PaymentMethod,
   DiagnosticResult,
+  OcrExtraction,
 } from '@bob/core';
 import type { BobClient, QuoteView, InvoiceView, SubscriptionView } from './client';
 
@@ -61,6 +62,9 @@ export class HttpBobClient implements BobClient {
   }
   getDiagnostic() {
     return this.req<DiagnosticResult>('GET', '/diagnostic');
+  }
+  extractDocument(input: { contentBase64: string; mimeType: string }) {
+    return this.req<OcrExtraction>('POST', '/documents/ocr', input);
   }
   listCustomers() {
     return this.req<CustomerListItem[]>('GET', '/customers');

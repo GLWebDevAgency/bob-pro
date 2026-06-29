@@ -1,14 +1,15 @@
-import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from 'pdf-lib';
+import { PDFDocument, StandardFonts, rgb, AFRelationship, PDFName, type PDFFont, type PDFPage } from 'pdf-lib';
 import { formatEUR, type PdfRendererPort, type InvoicePdfData } from '@bob/core';
 
 export const PDF_RENDERER = Symbol('PDF_RENDERER');
 
 // WinAnsi (Helvetica) ne sait pas encoder l'espace fine U+202F ni les guillemets typographiques.
+// Échappements \u explicites : robuste aux normalisations de fichier (formatEUR insère U+202F).
 const sanitize = (s: string): string =>
   s
-    .replace(/[  ]/g, ' ')
-    .replace(/[‘’]/g, "'")
-    .replace(/[–—]/g, '-');
+    .replace(/[\u00a0\u202f\u2007\u2009]/g, ' ')
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/[\u2013\u2014]/g, '-');
 
 const money = (cents: number): string => sanitize(formatEUR(cents));
 
@@ -28,8 +29,33 @@ function wrap(text: string, max: number): string[] {
   return lines;
 }
 
+/**
+ * Paquet XMP déclarant le fichier comme Factur-X (profil BASIC) — reconnaissance par les
+ * plateformes e-invoicing. NB : la conformité PDF/A-3 stricte (polices embarquées, OutputIntent sRGB)
+ * exige un post-traitement (Ghostscript/veraPDF) en prod ; ici le XML CII et l'association de fichier
+ * sont corrects, ce qui est l'essentiel du payload e-invoicing.
+ */
+function facturXXmp(): string {
+  return `<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about="" xmlns:pdfaid="http://www.aiim.org/pdfa/ns/id/">
+   <pdfaid:part>3</pdfaid:part>
+   <pdfaid:conformance>B</pdfaid:conformance>
+  </rdf:Description>
+  <rdf:Description rdf:about="" xmlns:fx="urn:factur-x:pdfa:CrossIndustryDocument:invoice:1p0#">
+   <fx:DocumentType>INVOICE</fx:DocumentType>
+   <fx:DocumentFileName>factur-x.xml</fx:DocumentFileName>
+   <fx:Version>1.0</fx:Version>
+   <fx:ConformanceLevel>BASIC</fx:ConformanceLevel>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>
+<?xpacket end="w"?>`;
+}
+
 export class PdfRenderer implements PdfRendererPort {
-  async renderInvoice(data: InvoicePdfData): Promise<Uint8Array> {
+  async renderInvoice(data: InvoicePdfData, facturX?: { xml: string }): Promise<Uint8Array> {
     const doc = await PDFDocument.create();
     const page: PDFPage = doc.addPage([595, 842]);
     const font: PDFFont = await doc.embedFont(StandardFonts.Helvetica);
@@ -69,6 +95,22 @@ export class PdfRenderer implements PdfRendererPort {
     for (const m of data.mentions) {
       for (const chunk of wrap(m, 100)) draw(chunk, 7, font, slate);
     }
+
+    if (facturX) {
+      // Pièce jointe associée : factur-x.xml (AFRelationship Data) — fait du PDF un hybride Factur-X.
+      const xmlBytes = new TextEncoder().encode(facturX.xml);
+      const now = new Date();
+      await doc.attach(xmlBytes, 'factur-x.xml', {
+        mimeType: 'application/xml',
+        description: 'Facture electronique Factur-X (CII)',
+        afRelationship: AFRelationship.Data,
+        creationDate: now,
+        modificationDate: now,
+      });
+      const metaStream = doc.context.stream(facturXXmp(), { Type: 'Metadata', Subtype: 'XML' });
+      doc.catalog.set(PDFName.of('Metadata'), doc.context.register(metaStream));
+    }
+
     return doc.save();
   }
 }

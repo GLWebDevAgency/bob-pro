@@ -14,6 +14,8 @@ import {
   PLAN_CATALOG,
   planEntitlements,
   runDiagnostic,
+  ExtractDocument,
+  DemoOcrAdapter,
   ok,
   err,
   appNotFound,
@@ -31,6 +33,7 @@ import {
   type CustomerListItem,
   type CreateQuoteOutput,
   type DiagnosticResult,
+  type OcrExtraction,
 } from '@bob/core';
 import {
   InMemoryCompanyRepository,
@@ -56,6 +59,7 @@ export class LocalBobClient implements BobClient {
   private readonly invoices = new InMemoryInvoiceRepository();
   private readonly payments = new InMemoryPaymentRepository();
   private readonly ids = new CounterIdGenerator();
+  private readonly ocr = new DemoOcrAdapter();
   private readonly counters = new InMemorySequenceCounter();
   private readonly clock: ClockPort;
   private readonly snapshots: FixtureCashflowSnapshot;
@@ -127,6 +131,10 @@ export class LocalBobClient implements BobClient {
         asOf: '2026-06-29',
       }),
     );
+  }
+
+  async extractDocument(input: { contentBase64: string; mimeType: string }): Promise<Result<OcrExtraction, AppError>> {
+    return new ExtractDocument({ ocr: this.ocr }).execute(input);
   }
 
   async listCustomers(): Promise<Result<CustomerListItem[], AppError>> {

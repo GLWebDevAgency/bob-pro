@@ -140,6 +140,24 @@ export class InvoicesController {
       disposition: `inline; filename="facture-${id}.pdf"`,
     });
   }
+  @Get(':id/facturx.xml')
+  async facturx(@Param('id') id: string): Promise<StreamableFile> {
+    const xml = unwrap(await this.backend.invoiceFacturXXml(id));
+    return new StreamableFile(Buffer.from(xml, 'utf-8'), {
+      type: 'application/xml',
+      disposition: `attachment; filename="factur-x-${id}.xml"`,
+    });
+  }
+}
+
+@Controller('documents')
+export class DocumentsController {
+  constructor(private readonly backend: BackendService) {}
+  @Post('ocr')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  async ocr(@Body() body: { contentBase64: string; mimeType: string }) {
+    return unwrap(await this.backend.extractDocument(body));
+  }
 }
 
 @Controller('jobs')

@@ -16,8 +16,11 @@ export interface InvoicePdfData {
 }
 
 export interface PdfRendererPort {
-  /** Rend une facture conforme en PDF (octets). Factur-X = incrément suivant (PDF/A-3 + XML embarqué). */
-  renderInvoice(data: InvoicePdfData): Promise<Uint8Array>;
+  /**
+   * Rend une facture conforme en PDF (octets). Si `facturX` est fourni, le XML CII est embarqué
+   * comme pièce jointe associée (AFRelationship Data) + métadonnées XMP Factur-X (hybride e-invoicing).
+   */
+  renderInvoice(data: InvoicePdfData, facturX?: { xml: string }): Promise<Uint8Array>;
 }
 
 export type NotificationChannel = 'email' | 'sms';

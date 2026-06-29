@@ -35,6 +35,17 @@ export function useDiagnostic() {
   });
 }
 
+export function useExtractDocument() {
+  const client = useBobClient();
+  return useMutation({
+    mutationFn: async (input: { contentBase64: string; mimeType: string }) => {
+      const r = await client.extractDocument(input);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+  });
+}
+
 export function useCustomers() {
   const client = useBobClient();
   return useQuery({

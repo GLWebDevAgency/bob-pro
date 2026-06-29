@@ -8,6 +8,7 @@ import { ObservabilityModule } from './observability/observability.module';
 import { CorrelationMiddleware } from './observability/correlation.middleware';
 import { paymentGatewayProvider } from './payments/payment-gateway';
 import { PDF_RENDERER, PdfRenderer } from './documents/pdf-renderer';
+import { ocrProvider } from './ocr/ocr';
 import { NOTIFIER, DemoNotifier } from './notifications/notifier';
 import { RelanceService } from './jobs/relance.service';
 import { SupabaseAuthGuard } from './auth/auth.guard';
@@ -22,6 +23,7 @@ import {
   JobsController,
   OnboardingController,
   DiagnosticController,
+  DocumentsController,
 } from './api.controllers';
 
 @Module({
@@ -42,11 +44,13 @@ import {
     JobsController,
     OnboardingController,
     DiagnosticController,
+    DocumentsController,
   ],
   providers: [
     BackendService,
     RelanceService,
     paymentGatewayProvider,
+    ocrProvider,
     { provide: PDF_RENDERER, useClass: PdfRenderer },
     { provide: NOTIFIER, useClass: DemoNotifier },
     { provide: APP_GUARD, useClass: ThrottlerGuard },

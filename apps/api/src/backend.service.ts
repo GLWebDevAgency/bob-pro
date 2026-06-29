@@ -20,6 +20,9 @@ import {
   PLAN_CATALOG,
   planEntitlements,
   runDiagnostic,
+  facturXDataFromInvoice,
+  buildFacturXBasicXml,
+  ExtractDocument,
   MERCIER_PROPS,
   CASH_SNAPSHOT,
   type Result,
@@ -40,6 +43,8 @@ import {
   type CompanyProps,
   type CustomerProps,
   type DiagnosticResult,
+  type OcrExtraction,
+  type OcrPort,
 } from '@bob/core';
 import { BobAgent, ModelRouter, type BobCapabilities, type AgentRun } from '@bob/ai';
 import { UuidGenerator, FixtureCashflowSnapshot } from './persistence/in-memory';
@@ -48,6 +53,7 @@ import { Metrics } from './observability/metrics';
 import { AppLogger, getPrincipal } from './observability/logger';
 import { PAYMENT_GATEWAY } from './payments/payment-gateway';
 import { PDF_RENDERER } from './documents/pdf-renderer';
+import { OCR_PORT } from './ocr/ocr';
 import { hasClaudeKey, hasGlmKey } from './config/env';
 
 export interface QuoteView {
@@ -96,6 +102,7 @@ export class BackendService {
     @Inject(PERSISTENCE) private readonly p: Persistence,
     @Inject(PAYMENT_GATEWAY) private readonly gateway: PaymentGatewayPort,
     @Inject(PDF_RENDERER) private readonly pdf: PdfRendererPort,
+    @Inject(OCR_PORT) private readonly ocr: OcrPort,
     private readonly metrics: Metrics,
     private readonly logger: AppLogger,
   ) {
@@ -318,9 +325,50 @@ export class BackendService {
       totals: { ht: totals.ht, vat: totals.vat, ttc: totals.ttc, netToPay: totals.netToPay },
       mentions: [...inv.mentions],
     };
-    const bytes = await this.pdf.renderInvoice(data);
-    this.logger.audit('invoice.pdf', { invoiceId, number: data.number });
+    // Facture émise -> PDF hybride Factur-X (XML CII embarqué).
+    let facturX: { xml: string } | undefined;
+    if (inv.number && inv.issuedAt) {
+      const buyer = customer.toProps();
+      const fxData = facturXDataFromInvoice(inv, company, {
+        name: customer.name,
+        ...(buyer.siren ? { siren: buyer.siren } : {}),
+        address: buyer.address,
+      });
+      facturX = { xml: buildFacturXBasicXml(fxData) };
+    }
+    const bytes = await this.pdf.renderInvoice(data, facturX);
+    this.logger.audit('invoice.pdf', { invoiceId, number: data.number, facturX: !!facturX });
     return ok(bytes);
+  }
+
+  /** XML Factur-X (CII BASIC) seul, pour transmission e-invoicing. Facture émise requise. */
+  async invoiceFacturXXml(invoiceId: string): Promise<Result<string, AppError>> {
+    const inv = await this.p.invoices.findById(invoiceId);
+    if (!inv) return { ok: false, error: appNotFound('invoice', invoiceId) };
+    if (!inv.number || !inv.issuedAt)
+      return { ok: false, error: appForbidden('Facture non émise : Factur-X indisponible.') };
+    const company = await this.p.companies.findById(inv.companyId);
+    const customer = await this.p.customers.findById(inv.customerId);
+    if (!company || !customer) return { ok: false, error: appNotFound('company-or-customer', invoiceId) };
+    const buyer = customer.toProps();
+    const fxData = facturXDataFromInvoice(inv, company, {
+      name: customer.name,
+      ...(buyer.siren ? { siren: buyer.siren } : {}),
+      address: buyer.address,
+    });
+    return ok(buildFacturXBasicXml(fxData));
+  }
+
+  /** OCR d'un document fournisseur (base64) -> extraction structurée, scopée au tenant. */
+  async extractDocument(input: { contentBase64: string; mimeType: string }): Promise<Result<OcrExtraction, AppError>> {
+    const r = await new ExtractDocument({ ocr: this.ocr }).execute(input);
+    if (r.ok)
+      this.logger.audit('document.ocr', {
+        companyId: this.companyId(),
+        mimeType: input.mimeType,
+        confidence: r.value.confidence,
+      });
+    return r;
   }
 
   // ——— Onboarding / multi-tenant ———

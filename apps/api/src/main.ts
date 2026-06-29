@@ -1,5 +1,6 @@
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
 import { loadEnv } from './config/env';
@@ -7,8 +8,10 @@ import { AppLogger } from './observability/logger';
 
 async function bootstrap(): Promise<void> {
   const env = loadEnv();
-  const app = await NestFactory.create(AppModule, { bufferLogs: true });
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, { bufferLogs: true });
   app.useLogger(app.get(AppLogger));
+  // Documents base64 (OCR) : le défaut Express (100 ko) est trop petit pour une photo.
+  app.useBodyParser('json', { limit: '12mb' });
   app.use(helmet());
   app.enableCors();
   await app.listen(env.PORT);

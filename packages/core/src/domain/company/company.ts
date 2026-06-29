@@ -66,6 +66,15 @@ export class Company {
   get name(): string {
     return this.p.name;
   }
+  get siren(): string {
+    return this.p.siren;
+  }
+  get siret(): string {
+    return this.p.siret;
+  }
+  get legalForm(): LegalForm {
+    return this.p.legalForm;
+  }
   get trade(): Trade {
     return this.p.trade;
   }
