@@ -4,6 +4,7 @@ import { BackendService } from './backend.service';
 import { PersistenceModule } from './persistence/persistence.module';
 import { ObservabilityModule } from './observability/observability.module';
 import { CorrelationMiddleware } from './observability/correlation.middleware';
+import { paymentGatewayProvider } from './payments/payment-gateway';
 import { SupabaseAuthGuard } from './auth/auth.guard';
 import {
   HealthController,
@@ -12,6 +13,7 @@ import {
   QuotesController,
   InvoicesController,
   AiController,
+  SubscriptionController,
 } from './api.controllers';
 
 @Module({
@@ -23,8 +25,9 @@ import {
     QuotesController,
     InvoicesController,
     AiController,
+    SubscriptionController,
   ],
-  providers: [BackendService, { provide: APP_GUARD, useClass: SupabaseAuthGuard }],
+  providers: [BackendService, paymentGatewayProvider, { provide: APP_GUARD, useClass: SupabaseAuthGuard }],
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {

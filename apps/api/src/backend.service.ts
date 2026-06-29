@@ -12,6 +12,10 @@ import {
   buildRelance,
   ok,
   appNotFound,
+  appForbidden,
+  Subscription,
+  PLAN_CATALOG,
+  planEntitlements,
   MERCIER_PROPS,
   CASH_SNAPSHOT,
   type Result,
@@ -25,12 +29,15 @@ import {
   type ClockPort,
   type QuoteLine,
   type Totals,
+  type PlanTier,
+  type PaymentGatewayPort,
 } from '@bob/core';
 import { BobAgent, ModelRouter, type BobCapabilities, type AgentRun } from '@bob/ai';
 import { UuidGenerator, FixtureCashflowSnapshot } from './persistence/in-memory';
 import { PERSISTENCE, type Persistence } from './persistence/persistence';
 import { Metrics } from './observability/metrics';
 import { AppLogger } from './observability/logger';
+import { PAYMENT_GATEWAY } from './payments/payment-gateway';
 import { hasClaudeKey, hasGlmKey } from './config/env';
 
 export interface QuoteView {
@@ -68,13 +75,19 @@ export class BackendService {
   private readonly ids = new UuidGenerator();
   private readonly clock: ClockPort = new SystemClock();
   private readonly snapshots = new FixtureCashflowSnapshot(CASH_SNAPSHOT);
+  private readonly subscription: Subscription;
   readonly companyId = MERCIER_PROPS.id;
 
   constructor(
     @Inject(PERSISTENCE) private readonly p: Persistence,
+    @Inject(PAYMENT_GATEWAY) private readonly gateway: PaymentGatewayPort,
     private readonly metrics: Metrics,
     private readonly logger: AppLogger,
-  ) {}
+  ) {
+    const seed = Subscription.start({ id: 'sub-mercier', companyId: MERCIER_PROPS.id, tier: 'pro', status: 'active' });
+    if (!seed.ok) throw new Error('abonnement de seed invalide');
+    this.subscription = seed.value;
+  }
 
   private mapQuote(q: Quote): QuoteView {
     return {
@@ -208,5 +221,45 @@ export class BackendService {
     if (!r.ok && r.error.kind === 'dependency' && r.error.port === 'money-guard') this.metrics.aiGuardViolations.inc();
     this.logger.audit('ai.ask', { model, intent, outcome, ms });
     return r;
+  }
+
+  // ——— Monétisation ———
+  getSubscription() {
+    return {
+      tier: this.subscription.tier,
+      status: this.subscription.status,
+      currentPeriodEnd: this.subscription.currentPeriodEnd,
+      features: [...planEntitlements(this.subscription.tier)],
+      catalog: Object.values(PLAN_CATALOG),
+    };
+  }
+
+  startCheckout(tier: PlanTier) {
+    return this.gateway.createSubscriptionCheckout({
+      companyId: this.companyId,
+      tier,
+      successUrl: 'https://demo.bobpro.fr/abo/ok',
+      cancelUrl: 'https://demo.bobpro.fr/abo/cancel',
+    });
+  }
+
+  billingPortal() {
+    return this.gateway.createBillingPortal({ companyId: this.companyId, returnUrl: 'https://demo.bobpro.fr/compte' });
+  }
+
+  /** Lien de paiement en ligne d'une facture — gated par l'offre (Pro+). */
+  async invoicePaymentLink(invoiceId: string): Promise<Result<{ url: string }, AppError>> {
+    if (!this.subscription.can('online_payment')) {
+      return { ok: false, error: appForbidden("Le paiement en ligne nécessite l'offre Pro ou Business.") };
+    }
+    const inv = await this.p.invoices.findById(invoiceId);
+    if (!inv) return { ok: false, error: appNotFound('invoice', invoiceId) };
+    const link = await this.gateway.createInvoicePaymentLink({
+      invoiceId,
+      amountCents: inv.totals().netToPay,
+      label: `Facture ${inv.number ?? ''}`,
+    });
+    this.logger.audit('invoice.payment_link', { invoiceId, amountCents: inv.totals().netToPay });
+    return ok(link);
   }
 }

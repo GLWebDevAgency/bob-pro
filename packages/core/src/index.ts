@@ -49,3 +49,8 @@ export * from './application/billing/register-payment';
 export * from './application/queries/list-customers';
 export * from './application/queries/get-cashflow';
 export * from './application/fixtures/index';
+
+// Monétisation
+export * from './domain/subscription/plan';
+export * from './domain/subscription/subscription';
+export * from './application/ports/payment';

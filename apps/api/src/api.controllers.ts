@@ -1,5 +1,5 @@
 import { Controller, Get, Post, Body, Param, Query, HttpException, HttpStatus } from '@nestjs/common';
-import type { CreateQuoteInput, Scenario, Horizon, PaymentMethod } from '@bob/core';
+import type { CreateQuoteInput, Scenario, Horizon, PaymentMethod, PlanTier } from '@bob/core';
 import { BackendService } from './backend.service';
 import { unwrap } from './http/result';
 
@@ -85,6 +85,27 @@ export class InvoicesController {
   @Post(':id/pay')
   async pay(@Param('id') id: string, @Body() body: { amount: number; method: PaymentMethod }) {
     return unwrap(await this.backend.registerPayment({ invoiceId: id, amount: body.amount, method: body.method }));
+  }
+  @Post(':id/payment-link')
+  async paymentLink(@Param('id') id: string) {
+    return unwrap(await this.backend.invoicePaymentLink(id));
+  }
+}
+
+@Controller('subscription')
+export class SubscriptionController {
+  constructor(private readonly backend: BackendService) {}
+  @Get()
+  get() {
+    return this.backend.getSubscription();
+  }
+  @Post('checkout')
+  checkout(@Body() body: { tier: PlanTier }) {
+    return this.backend.startCheckout(body.tier);
+  }
+  @Post('portal')
+  portal() {
+    return this.backend.billingPortal();
   }
 }
 
