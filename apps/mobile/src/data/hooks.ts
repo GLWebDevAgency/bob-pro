@@ -82,6 +82,18 @@ export function useInvoicePaymentLink() {
   });
 }
 
+export function useProfile() {
+  const client = useBobClient();
+  return useQuery({
+    queryKey: ['profile'],
+    queryFn: async () => {
+      const r = await client.getProfile();
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+  });
+}
+
 export function useDiagnostic() {
   const client = useBobClient();
   return useQuery({

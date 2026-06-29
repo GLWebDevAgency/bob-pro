@@ -3,13 +3,13 @@ import { PLAN_CATALOG, planCan } from './plan';
 import { Subscription } from './subscription';
 
 describe('Offres & entitlements', () => {
-  it('catalogue : Gratuit 0 € / Solo 14 € / Pro 29 € / Business 59 €', () => {
+  it('catalogue : Gratuit 0 € / Solo 14 € / Pro 39 € / Business 69 €', () => {
     expect(PLAN_CATALOG.free.priceCents).toBe(0);
     expect(PLAN_CATALOG.solo.priceCents).toBe(1400);
-    expect(PLAN_CATALOG.pro.priceCents).toBe(2900);
-    expect(PLAN_CATALOG.business.priceCents).toBe(5900);
+    expect(PLAN_CATALOG.pro.priceCents).toBe(3900);
+    expect(PLAN_CATALOG.business.priceCents).toBe(6900);
     // Annuel ~ -20 %.
-    expect(PLAN_CATALOG.pro.annualMonthlyCents).toBe(2400);
+    expect(PLAN_CATALOG.pro.annualMonthlyCents).toBe(3100);
   });
   it('feature-gating : IA Bob = Pro+, paiement en ligne = Business', () => {
     expect(planCan('free', 'ai_quota')).toBe(true);

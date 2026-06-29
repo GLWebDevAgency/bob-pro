@@ -14,6 +14,7 @@ import type {
   OcrExtraction,
   ExpenseProps,
   RecordExpenseInput,
+  TradeConfig,
 } from '@bob/core';
 import type { BobClient, QuoteView, InvoiceView, SubscriptionView } from './client';
 
@@ -75,6 +76,9 @@ export class HttpBobClient implements BobClient {
   }
   getDiagnostic() {
     return this.req<DiagnosticResult>('GET', '/diagnostic');
+  }
+  getProfile() {
+    return this.req<TradeConfig>('GET', '/profile');
   }
   extractDocument(input: { contentBase64: string; mimeType: string }) {
     return this.req<OcrExtraction>('POST', '/documents/ocr', input);

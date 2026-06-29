@@ -47,16 +47,16 @@ export const PLAN_CATALOG: Record<PlanTier, Plan> = {
   pro: {
     tier: 'pro',
     label: 'Pro',
-    priceCents: 2900,
-    annualMonthlyCents: 2400,
+    priceCents: 3900,
+    annualMonthlyCents: 3100,
     tagline: 'Bob pilote ta paperasse',
     features: ['einvoice_emission', 'ocr', 'ai_assistant', 'auto_dunning', 'cashflow_forecast'],
   },
   business: {
     tier: 'business',
     label: 'Business',
-    priceCents: 5900,
-    annualMonthlyCents: 4900,
+    priceCents: 6900,
+    annualMonthlyCents: 5500,
     tagline: 'Pour les équipes',
     features: [
       'einvoice_emission',

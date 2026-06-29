@@ -20,6 +20,7 @@ import {
   PLAN_CATALOG,
   planEntitlements,
   runDiagnostic,
+  resolveTradeConfig,
   facturXDataFromInvoice,
   buildFacturXBasicXml,
   ExtractDocument,
@@ -44,6 +45,7 @@ import {
   type CompanyProps,
   type CustomerProps,
   type DiagnosticResult,
+  type TradeConfig,
   type OcrExtraction,
   type OcrPort,
   type RecordExpenseInput,
@@ -304,6 +306,12 @@ export class BackendService {
       features: [...planEntitlements(this.subscription.tier)],
       catalog: Object.values(PLAN_CATALOG),
     };
+  }
+
+  async getProfile(): Promise<Result<TradeConfig, AppError>> {
+    const company = await this.p.companies.findById(this.companyId());
+    if (!company) return { ok: false, error: appNotFound('company', this.companyId()) };
+    return ok(resolveTradeConfig(company.trade, this.subscription.tier));
   }
 
   async getDiagnostic(): Promise<Result<DiagnosticResult, AppError>> {

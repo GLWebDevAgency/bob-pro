@@ -19,6 +19,7 @@ import type {
   OcrExtraction,
   ExpenseProps,
   RecordExpenseInput,
+  TradeConfig,
 } from '@bob/core';
 
 export interface QuoteView {
@@ -67,6 +68,7 @@ export interface BobClient {
   billingPortal(): Promise<Result<{ url: string }, AppError>>;
   invoicePaymentLink(invoiceId: string): Promise<Result<{ url: string }, AppError>>;
   getDiagnostic(): Promise<Result<DiagnosticResult, AppError>>;
+  getProfile(): Promise<Result<TradeConfig, AppError>>;
   extractDocument(input: { contentBase64: string; mimeType: string }): Promise<Result<OcrExtraction, AppError>>;
   recordExpense(input: Omit<RecordExpenseInput, 'companyId'>): Promise<Result<{ id: string }, AppError>>;
   listExpenses(): Promise<Result<ExpenseProps[], AppError>>;

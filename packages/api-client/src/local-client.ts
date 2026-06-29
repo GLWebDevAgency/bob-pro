@@ -14,6 +14,7 @@ import {
   PLAN_CATALOG,
   planEntitlements,
   runDiagnostic,
+  resolveTradeConfig,
   ExtractDocument,
   DemoOcrAdapter,
   RecordExpense,
@@ -38,6 +39,7 @@ import {
   type ExpenseProps,
   type RecordExpenseInput,
   type PlanTier,
+  type TradeConfig,
 } from '@bob/core';
 import {
   InMemoryCompanyRepository,
@@ -138,6 +140,10 @@ export class LocalBobClient implements BobClient {
 
   async invoicePaymentLink(invoiceId: string): Promise<Result<{ url: string }, AppError>> {
     return ok({ url: `https://demo.bobpro.fr/pay/${invoiceId}` });
+  }
+
+  async getProfile(): Promise<Result<TradeConfig, AppError>> {
+    return ok(resolveTradeConfig(seedCompany().trade, 'business'));
   }
 
   async getDiagnostic(): Promise<Result<DiagnosticResult, AppError>> {

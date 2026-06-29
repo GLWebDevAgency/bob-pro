@@ -7,6 +7,7 @@ import { formatEUR, type CreateQuoteInput } from '@bob/core';
 import { useTheme } from '../../src/theme';
 import {
   useCustomers,
+  useProfile,
   useCreateQuote,
   useSendQuote,
   useSignQuote,
@@ -16,11 +17,6 @@ import {
 } from '../../src/data/hooks';
 import { Card, Button, Chip, MoneyText, Badge, SectionHeader, font } from '../../src/components/ui';
 
-const PRESET_LINES = [
-  { label: 'Chauffe-eau 200 L', category: 'supply' as const, qty: 1, unitPriceHT: 80000, vatRate: 10 as const },
-  { label: "Main d'oeuvre (pose)", category: 'labor' as const, qty: 1, unitPriceHT: 68000, vatRate: 10 as const },
-];
-
 type Step = 'compose' | 'sent' | 'signed' | 'invoiced' | 'paid';
 
 export default function DevisNew() {
@@ -28,6 +24,13 @@ export default function DevisNew() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { data: customers } = useCustomers();
+  const { data: profile } = useProfile();
+  // TVA par défaut adaptée au métier (BTP 10 %, autres 20 %) — cf. resolveTradeConfig.
+  const vatRate = profile?.defaultVatRate ?? 10;
+  const lines = [
+    { label: 'Chauffe-eau 200 L', category: 'supply' as const, qty: 1, unitPriceHT: 80000, vatRate },
+    { label: "Main d'oeuvre (pose)", category: 'labor' as const, qty: 1, unitPriceHT: 68000, vatRate },
+  ];
 
   const [customerId, setCustomerId] = useState<string | null>(null);
   const [deposit, setDeposit] = useState(true);
@@ -52,7 +55,7 @@ export default function DevisNew() {
     issueInvoice.isPending ||
     registerPayment.isPending;
 
-  const ttc = PRESET_LINES.reduce((s, l) => s + Math.round(l.qty * l.unitPriceHT * (1 + l.vatRate / 100)), 0);
+  const ttc = lines.reduce((s, l) => s + Math.round(l.qty * l.unitPriceHT * (1 + l.vatRate / 100)), 0);
   const net = deposit ? Math.round(ttc * 0.3) : ttc;
   const customer = (customers ?? []).find((c) => c.id === customerId) ?? null;
 
@@ -70,7 +73,7 @@ export default function DevisNew() {
       if (!customerId) return;
       const input: Omit<CreateQuoteInput, 'companyId'> = {
         customerId,
-        lines: [...PRESET_LINES],
+        lines: [...lines],
         context: { housingOlderThan2y: true },
         ...(deposit ? { depositPct: 30 } : {}),
       };
@@ -134,7 +137,7 @@ export default function DevisNew() {
 
             <Card>
               <SectionHeader title="Lignes" />
-              {PRESET_LINES.map((l) => (
+              {lines.map((l) => (
                 <View key={l.label} style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6 }}>
                   <Text style={[font('body'), { color: colors.ink800, flex: 1 }]}>{l.label}</Text>
                   <MoneyText cents={l.unitPriceHT} />
@@ -142,7 +145,7 @@ export default function DevisNew() {
               ))}
               <View style={{ height: 1, backgroundColor: colors.lineSoft, marginVertical: 10 }} />
               <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                <Text style={[font('cardTitle'), { color: colors.ink900 }]}>Total TTC (TVA 10 %)</Text>
+                <Text style={[font('cardTitle'), { color: colors.ink900 }]}>Total TTC (TVA {vatRate} %)</Text>
                 <MoneyText cents={ttc} variant="big" />
               </View>
               <View style={{ marginTop: 12, flexDirection: 'row', alignItems: 'center', gap: 10 }}>

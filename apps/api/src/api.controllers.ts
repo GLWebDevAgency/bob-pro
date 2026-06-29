@@ -72,6 +72,15 @@ export class DiagnosticController {
   }
 }
 
+@Controller('profile')
+export class ProfileController {
+  constructor(private readonly backend: BackendService) {}
+  @Get()
+  async get() {
+    return unwrap(await this.backend.getProfile());
+  }
+}
+
 @Controller('cashflow')
 export class CashflowController {
   constructor(private readonly backend: BackendService) {}
