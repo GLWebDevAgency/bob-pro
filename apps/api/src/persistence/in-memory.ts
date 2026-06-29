@@ -42,8 +42,8 @@ export class InMemoryCustomerRepository implements CustomerRepository {
   async findById(id: string): Promise<Customer | null> {
     return this.map.get(id) ?? null;
   }
-  async listByCompany(_companyId: string): Promise<Customer[]> {
-    return [...this.map.values()];
+  async listByCompany(companyId: string): Promise<Customer[]> {
+    return [...this.map.values()].filter((c) => c.companyId === companyId);
   }
   async save(c: Customer): Promise<void> {
     this.map.set(c.id, c);

@@ -122,7 +122,7 @@ export function companyPropsToCreate(p: CompanyProps) {
 }
 
 interface CustomerRow {
-  id: string; type: string; name: string; siren: string | null; isInternational: boolean;
+  id: string; companyId: string; type: string; name: string; siren: string | null; isInternational: boolean;
   addrLine1: string; addrZip: string; addrCity: string; email: string | null; phone: string | null;
   ptLabel: string | null; score: number; avgDelayDays: number; outstanding: number; isSubcontractingBtp: boolean;
 }
@@ -130,6 +130,7 @@ interface CustomerRow {
 export function customerRowToProps(row: CustomerRow): CustomerProps {
   const props: CustomerProps = {
     id: row.id,
+    companyId: row.companyId,
     type: row.type as CustomerType,
     name: row.name,
     address: { line1: row.addrLine1, zip: row.addrZip, city: row.addrCity },
@@ -146,10 +147,10 @@ export function customerRowToProps(row: CustomerRow): CustomerProps {
   return props;
 }
 
-export function customerPropsToCreate(p: CustomerProps, companyId: string) {
+export function customerPropsToCreate(p: CustomerProps) {
   return {
     id: p.id,
-    companyId,
+    companyId: p.companyId,
     type: p.type,
     name: p.name,
     siren: p.siren ?? null,

@@ -16,6 +16,7 @@ const baseCompany: CompanyProps = {
 };
 const baseCustomer: CustomerProps = {
   id: 'k1',
+  companyId: 'c1',
   type: 'b2c',
   name: 'Martin',
   address: { line1: 'x', zip: '75001', city: 'Paris' },

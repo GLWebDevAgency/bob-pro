@@ -21,6 +21,7 @@ export class RegisterPayment {
 
     const payment = Payment.record({
       id: this.deps.ids.newId(),
+      companyId: invoice.companyId,
       invoiceId: invoice.id,
       amount: input.amount,
       method: input.method,

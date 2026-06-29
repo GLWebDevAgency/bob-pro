@@ -13,6 +13,9 @@ import {
   ok,
   appNotFound,
   appForbidden,
+  appDomain,
+  Company,
+  Customer,
   Subscription,
   PLAN_CATALOG,
   planEntitlements,
@@ -33,12 +36,14 @@ import {
   type PaymentGatewayPort,
   type PdfRendererPort,
   type InvoicePdfData,
+  type CompanyProps,
+  type CustomerProps,
 } from '@bob/core';
 import { BobAgent, ModelRouter, type BobCapabilities, type AgentRun } from '@bob/ai';
 import { UuidGenerator, FixtureCashflowSnapshot } from './persistence/in-memory';
 import { PERSISTENCE, type Persistence } from './persistence/persistence';
 import { Metrics } from './observability/metrics';
-import { AppLogger } from './observability/logger';
+import { AppLogger, getPrincipal } from './observability/logger';
 import { PAYMENT_GATEWAY } from './payments/payment-gateway';
 import { PDF_RENDERER } from './documents/pdf-renderer';
 import { hasClaudeKey, hasGlmKey } from './config/env';
@@ -79,7 +84,11 @@ export class BackendService {
   private readonly clock: ClockPort = new SystemClock();
   private readonly snapshots = new FixtureCashflowSnapshot(CASH_SNAPSHOT);
   private readonly subscription: Subscription;
-  readonly companyId = MERCIER_PROPS.id;
+
+  /** Tenant courant : companyId du Principal authentifié (défaut = société de seed en démo). */
+  private companyId(): string {
+    return getPrincipal()?.companyId ?? MERCIER_PROPS.id;
+  }
 
   constructor(
     @Inject(PERSISTENCE) private readonly p: Persistence,
@@ -124,10 +133,10 @@ export class BackendService {
   }
 
   listCustomers() {
-    return new ListCustomers({ customers: this.p.customers }).execute({ companyId: this.companyId });
+    return new ListCustomers({ customers: this.p.customers }).execute({ companyId: this.companyId() });
   }
   getCashflow(scenario: Scenario, horizon: Horizon) {
-    return new GetCashflow({ snapshots: this.snapshots }).execute({ companyId: this.companyId, scenario, horizon });
+    return new GetCashflow({ snapshots: this.snapshots }).execute({ companyId: this.companyId(), scenario, horizon });
   }
   createQuote(input: Omit<CreateQuoteInput, 'companyId'>) {
     return new CreateQuote({
@@ -136,7 +145,7 @@ export class BackendService {
       customers: this.p.customers,
       ids: this.ids,
       clock: this.clock,
-    }).execute({ companyId: this.companyId, ...input });
+    }).execute({ companyId: this.companyId(), ...input });
   }
   sendQuote(quoteId: string) {
     return new SendQuote({ quotes: this.p.quotes, counters: this.p.counters, clock: this.clock }).execute({ quoteId });
@@ -174,7 +183,7 @@ export class BackendService {
     return ok(this.mapQuote(q));
   }
   async listQuotes(): Promise<Result<QuoteView[], AppError>> {
-    const list = await this.p.quotes.listByCompany(this.companyId);
+    const list = await this.p.quotes.listByCompany(this.companyId());
     return ok(list.map((q) => this.mapQuote(q)));
   }
   async getInvoice(id: string): Promise<Result<InvoiceView, AppError>> {
@@ -183,7 +192,7 @@ export class BackendService {
     return ok(this.mapInvoice(i));
   }
   async listInvoices(): Promise<Result<InvoiceView[], AppError>> {
-    const list = await this.p.invoices.listByCompany(this.companyId);
+    const list = await this.p.invoices.listByCompany(this.companyId());
     return ok(list.map((i) => this.mapInvoice(i)));
   }
 
@@ -240,7 +249,7 @@ export class BackendService {
 
   startCheckout(tier: PlanTier) {
     return this.gateway.createSubscriptionCheckout({
-      companyId: this.companyId,
+      companyId: this.companyId(),
       tier,
       successUrl: 'https://demo.bobpro.fr/abo/ok',
       cancelUrl: 'https://demo.bobpro.fr/abo/cancel',
@@ -248,7 +257,7 @@ export class BackendService {
   }
 
   billingPortal() {
-    return this.gateway.createBillingPortal({ companyId: this.companyId, returnUrl: 'https://demo.bobpro.fr/compte' });
+    return this.gateway.createBillingPortal({ companyId: this.companyId(), returnUrl: 'https://demo.bobpro.fr/compte' });
   }
 
   /** Lien de paiement en ligne d'une facture — gated par l'offre (Pro+). */
@@ -293,5 +302,24 @@ export class BackendService {
     const bytes = await this.pdf.renderInvoice(data);
     this.logger.audit('invoice.pdf', { invoiceId, number: data.number });
     return ok(bytes);
+  }
+
+  // ——— Onboarding / multi-tenant ———
+  /** Crée (ou met à jour) la société du tenant courant — première étape de l'onboarding. */
+  async registerCompany(input: Omit<CompanyProps, 'id'>): Promise<Result<{ companyId: string }, AppError>> {
+    const r = Company.of({ id: this.companyId(), ...input });
+    if (!r.ok) return { ok: false, error: appDomain(r.error) };
+    await this.p.companies.save(r.value);
+    this.logger.audit('company.registered', { companyId: this.companyId(), name: input.name });
+    return ok({ companyId: this.companyId() });
+  }
+
+  async createCustomer(input: Omit<CustomerProps, 'id' | 'companyId'>): Promise<Result<{ id: string }, AppError>> {
+    const id = this.ids.newId();
+    const r = Customer.of({ id, companyId: this.companyId(), ...input });
+    if (!r.ok) return { ok: false, error: appDomain(r.error) };
+    await this.p.customers.save(r.value);
+    this.logger.audit('customer.created', { id, companyId: this.companyId() });
+    return ok({ id });
   }
 }

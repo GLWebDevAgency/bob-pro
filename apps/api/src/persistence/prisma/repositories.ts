@@ -5,7 +5,6 @@ import {
   Invoice,
   Payment,
   DocNumber,
-  MERCIER_PROPS,
   type CompanyRepository,
   type CustomerRepository,
   type QuoteRepository,
@@ -55,7 +54,7 @@ export class PrismaCustomerRepository implements CustomerRepository {
     return rows.map((row) => Customer.of(customerRowToProps(row))).flatMap((r) => (r.ok ? [r.value] : []));
   }
   async save(c: Customer): Promise<void> {
-    const data = customerPropsToCreate(c.toProps(), MERCIER_PROPS.id);
+    const data = customerPropsToCreate(c.toProps());
     await this.prisma.customer.upsert({ where: { id: data.id }, create: data, update: data });
   }
 }
@@ -143,7 +142,7 @@ export class PrismaPaymentRepository implements PaymentRepository {
     await this.prisma.payment.create({
       data: {
         id: p.id,
-        companyId: MERCIER_PROPS.id,
+        companyId: p.companyId,
         invoiceId: p.invoiceId,
         amount: p.amount,
         method: p.method,
@@ -156,6 +155,7 @@ export class PrismaPaymentRepository implements PaymentRepository {
     return rows.flatMap((row) => {
       const r = Payment.record({
         id: row.id,
+        companyId: row.companyId,
         invoiceId: row.invoiceId,
         amount: row.amount,
         method: row.method,

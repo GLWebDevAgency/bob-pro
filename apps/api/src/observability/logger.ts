@@ -2,12 +2,23 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { Injectable, type LoggerService } from '@nestjs/common';
 import pino from 'pino';
 
+export interface Principal {
+  userId: string;
+  companyId: string;
+}
+
 interface RequestContext {
   correlationId: string;
+  principal?: Principal;
 }
 
 export const requestContext = new AsyncLocalStorage<RequestContext>();
 export const getCorrelationId = (): string => requestContext.getStore()?.correlationId ?? '-';
+export const getPrincipal = (): Principal | undefined => requestContext.getStore()?.principal;
+export const setPrincipal = (principal: Principal): void => {
+  const store = requestContext.getStore();
+  if (store) store.principal = principal;
+};
 
 export const rootLogger = pino({
   level: process.env.LOG_LEVEL ?? 'info',

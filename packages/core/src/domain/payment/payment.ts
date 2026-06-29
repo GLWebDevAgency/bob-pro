@@ -7,6 +7,7 @@ export type PaymentMethod = 'card' | 'transfer' | 'cash';
 export class Payment extends AggregateRoot<string> {
   private constructor(
     id: string,
+    readonly companyId: string,
     readonly invoiceId: string,
     readonly amount: number, // centimes
     readonly method: PaymentMethod,
@@ -17,12 +18,13 @@ export class Payment extends AggregateRoot<string> {
 
   static record(p: {
     id: string;
+    companyId: string;
     invoiceId: string;
     amount: number;
     method: PaymentMethod;
     receivedAt: Instant;
   }): DomainResult<Payment> {
     if (p.amount <= 0) return err({ code: 'VALIDATION', field: 'amount', message: 'Montant > 0 requis.' });
-    return ok(new Payment(p.id, p.invoiceId, p.amount, p.method, p.receivedAt));
+    return ok(new Payment(p.id, p.companyId, p.invoiceId, p.amount, p.method, p.receivedAt));
   }
 }

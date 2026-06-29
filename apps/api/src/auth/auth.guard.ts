@@ -1,6 +1,7 @@
 import { Injectable, type CanActivate, type ExecutionContext } from '@nestjs/common';
 import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from 'jose';
 import { MERCIER_PROPS } from '@bob/core';
+import { setPrincipal } from '../observability/logger';
 import { isDemoMode } from '../config/env';
 
 interface RequestLike {
@@ -29,7 +30,13 @@ export class SupabaseAuthGuard implements CanActivate {
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const req = context.switchToHttp().getRequest<RequestLike>();
     if (req.url.startsWith('/health') || req.url.startsWith('/metrics')) return true;
-    if (isDemoMode()) return true;
+
+    if (isDemoMode()) {
+      // Démo : tenant via header x-company-id (par défaut la société de seed).
+      const tenant = req.headers['x-company-id'];
+      setPrincipal({ userId: 'demo', companyId: (typeof tenant === 'string' && tenant) || MERCIER_PROPS.id });
+      return true;
+    }
 
     const auth = req.headers['authorization'];
     if (typeof auth !== 'string' || !auth.startsWith('Bearer ')) return false;
@@ -41,8 +48,8 @@ export class SupabaseAuthGuard implements CanActivate {
       const { payload } = await jwtVerify(token, jwks, {
         audience: process.env.SUPABASE_JWT_AUD ?? 'authenticated',
       });
-      // V1 mono-tenant : companyId = société de seed. Multi-tenant -> dériver de payload.app_metadata.
-      req.principal = { userId: String(payload.sub ?? ''), companyId: MERCIER_PROPS.id };
+      const meta = (payload as { app_metadata?: { company_id?: string } }).app_metadata;
+      setPrincipal({ userId: String(payload.sub ?? ''), companyId: meta?.company_id ?? MERCIER_PROPS.id });
       return true;
     } catch {
       return false;

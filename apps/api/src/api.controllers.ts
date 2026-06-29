@@ -9,7 +9,15 @@ import {
   HttpStatus,
   StreamableFile,
 } from '@nestjs/common';
-import type { CreateQuoteInput, Scenario, Horizon, PaymentMethod, PlanTier } from '@bob/core';
+import type {
+  CreateQuoteInput,
+  Scenario,
+  Horizon,
+  PaymentMethod,
+  PlanTier,
+  CompanyProps,
+  CustomerProps,
+} from '@bob/core';
 import { Throttle } from '@nestjs/throttler';
 import { BackendService } from './backend.service';
 import { RelanceService } from './jobs/relance.service';
@@ -38,6 +46,19 @@ export class CustomersController {
   @Get()
   async list() {
     return unwrap(await this.backend.listCustomers());
+  }
+  @Post()
+  async create(@Body() body: Omit<CustomerProps, 'id' | 'companyId'>) {
+    return unwrap(await this.backend.createCustomer(body));
+  }
+}
+
+@Controller('onboarding')
+export class OnboardingController {
+  constructor(private readonly backend: BackendService) {}
+  @Post('company')
+  async company(@Body() body: Omit<CompanyProps, 'id'>) {
+    return unwrap(await this.backend.registerCompany(body));
   }
 }
 

@@ -1,4 +1,4 @@
-import { seedCompany, seedCustomers, MERCIER_PROPS } from '@bob/core';
+import { seedCompany, seedCustomers } from '@bob/core';
 import type { Persistence } from '../persistence';
 import { PrismaService } from './prisma.service';
 import {
@@ -31,7 +31,7 @@ export class PrismaPersistence implements Persistence {
   async seed(): Promise<void> {
     const company = companyPropsToCreate(seedCompany().toProps());
     await this.prisma.company.upsert({ where: { id: company.id }, create: company, update: company });
-    for (const customer of seedCustomers().map((c) => customerPropsToCreate(c.toProps(), MERCIER_PROPS.id))) {
+    for (const customer of seedCustomers().map((c) => customerPropsToCreate(c.toProps()))) {
       await this.prisma.customer.upsert({ where: { id: customer.id }, create: customer, update: customer });
     }
   }

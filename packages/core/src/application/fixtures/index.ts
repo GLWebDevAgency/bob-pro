@@ -19,7 +19,7 @@ export const MERCIER_PROPS: CompanyProps = {
 };
 
 /** Les 6 clients du proto avec leurs scores (Durand 96 · Martin 62 · Sevres 78 · Lefevre 99 · Bernard 88 · Camping 50). */
-export const CUSTOMER_PROPS: CustomerProps[] = [
+export const CUSTOMER_PROPS: Omit<CustomerProps, 'companyId'>[] = [
   { id: 'cust-durand', type: 'b2b', name: 'Durand SARL', siren: '552081317', address: { line1: '3 av. du Chantier', zip: '92100', city: 'Boulogne' }, email: 'compta@durand.fr', score: 96, avgDelayDays: 2, outstanding: 0 },
   { id: 'cust-martin', type: 'b2c', name: 'M. Martin', address: { line1: '8 rue Oberkampf', zip: '75011', city: 'Paris' }, score: 62, avgDelayDays: 18, outstanding: 162800 },
   { id: 'cust-sevres', type: 'b2g', name: 'Mairie de Sevres', siren: '219200720', address: { line1: '54 Grande Rue', zip: '92310', city: 'Sevres' }, paymentTermsLabel: 'Mandat administratif', score: 78, avgDelayDays: 9, outstanding: 0 },
@@ -39,7 +39,7 @@ export function seedCompany(): Company {
 
 export function seedCustomers(): Customer[] {
   return CUSTOMER_PROPS.map((p) => {
-    const r = Customer.of(p);
+    const r = Customer.of({ ...p, companyId: MERCIER_PROPS.id });
     if (!r.ok) throw new Error(`Fixture customer invalide: ${p.id}`);
     return r.value;
   });

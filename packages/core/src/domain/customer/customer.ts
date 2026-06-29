@@ -6,6 +6,7 @@ export type CustomerType = 'b2c' | 'b2b' | 'b2g';
 
 export interface CustomerProps {
   id: string;
+  companyId: string;
   type: CustomerType;
   name: string;
   siren?: string;
@@ -34,6 +35,9 @@ export class Customer {
 
   get id(): string {
     return this.p.id;
+  }
+  get companyId(): string {
+    return this.p.companyId;
   }
   get type(): CustomerType {
     return this.p.type;
