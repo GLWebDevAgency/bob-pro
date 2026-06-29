@@ -9,6 +9,7 @@ import type {
   Scenario,
   Horizon,
   PaymentMethod,
+  PlanTier,
   DiagnosticResult,
   OcrExtraction,
   ExpenseProps,
@@ -61,6 +62,9 @@ export class HttpBobClient implements BobClient {
 
   getSubscription() {
     return this.req<SubscriptionView>('GET', '/subscription');
+  }
+  startCheckout(tier: PlanTier) {
+    return this.req<{ url: string }>('POST', '/subscription/checkout', { tier });
   }
   getDiagnostic() {
     return this.req<DiagnosticResult>('GET', '/diagnostic');

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { ScrollView, View, Text } from 'react-native';
 import { formatEUR, type Scenario, type Horizon } from '@bob/core';
 import { useTheme } from '../../src/theme';
-import { useCashflow } from '../../src/data/hooks';
+import { useCashflow, useExpenses } from '../../src/data/hooks';
 import { GradientHeader, Card, MoneyText, SectionHeader, Chip, Badge, font } from '../../src/components/ui';
 
 const HORIZONS: Horizon[] = [7, 30, 60, 90];
@@ -13,6 +13,8 @@ export default function Argent() {
   const [scenario, setScenario] = useState<Scenario>('realiste');
   const [horizon, setHorizon] = useState<Horizon>(30);
   const { data } = useCashflow(scenario, horizon);
+  const { data: expenses } = useExpenses();
+  const toPay = (expenses ?? []).filter((e) => e.status === 'to_pay');
 
   return (
     <ScrollView style={{ flex: 1, backgroundColor: colors.bg }} contentContainerStyle={{ paddingBottom: 120 }}>
@@ -58,6 +60,25 @@ export default function Argent() {
             Le solde bancaire « ment » : Bob déduit la TVA à reverser et les charges à venir pour te donner le vrai disponible.
           </Text>
         </Card>
+
+        {toPay.length > 0 ? (
+          <View>
+            <SectionHeader title="Dépenses à venir" />
+            {toPay.map((e) => (
+              <Card key={e.id} style={{ marginBottom: 8 }}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[font('cardTitle'), { color: colors.ink900 }]}>{e.supplierName}</Text>
+                    <Text style={[font('meta'), { color: colors.slate400 }]}>
+                      {e.documentDate} · {e.category}
+                    </Text>
+                  </View>
+                  <Text style={[font('cardTitle'), { color: colors.ink900 }]}>{formatEUR(e.totalTtcCents)}</Text>
+                </View>
+              </Card>
+            ))}
+          </View>
+        ) : null}
       </View>
     </ScrollView>
   );

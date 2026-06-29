@@ -37,6 +37,7 @@ import {
   type OcrExtraction,
   type ExpenseProps,
   type RecordExpenseInput,
+  type PlanTier,
 } from '@bob/core';
 import {
   InMemoryCompanyRepository,
@@ -121,6 +122,11 @@ export class LocalBobClient implements BobClient {
         features: [...p.features],
       })),
     });
+  }
+
+  async startCheckout(tier: PlanTier): Promise<Result<{ url: string }, AppError>> {
+    // Démo hors-ligne : pas de passerelle de paiement, on renvoie une URL de démonstration.
+    return ok({ url: `https://demo.bobpro.fr/abo/${tier}` });
   }
 
   async getDiagnostic(): Promise<Result<DiagnosticResult, AppError>> {

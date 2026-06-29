@@ -1,5 +1,6 @@
+import { Linking } from 'react-native';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import type { Scenario, Horizon, CreateQuoteInput, PaymentMethod, RecordExpenseInput } from '@bob/core';
+import type { Scenario, Horizon, CreateQuoteInput, PaymentMethod, RecordExpenseInput, PlanTier } from '@bob/core';
 import { useBobClient } from './client';
 
 const keys = {
@@ -19,6 +20,20 @@ export function useSubscription() {
       const r = await client.getSubscription();
       if (!r.ok) throw r.error;
       return r.value;
+    },
+  });
+}
+
+export function useStartCheckout() {
+  const client = useBobClient();
+  return useMutation({
+    mutationFn: async (tier: PlanTier) => {
+      const r = await client.startCheckout(tier);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: (v) => {
+      void Linking.openURL(v.url);
     },
   });
 }

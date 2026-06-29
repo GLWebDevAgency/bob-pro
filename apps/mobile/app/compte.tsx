@@ -2,9 +2,9 @@ import { ScrollView, View, Text, Pressable } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { formatEUR } from '@bob/core';
+import { formatEUR, type PlanTier } from '@bob/core';
 import { useTheme } from '../src/theme';
-import { useSubscription, useDiagnostic } from '../src/data/hooks';
+import { useSubscription, useDiagnostic, useStartCheckout } from '../src/data/hooks';
 import { Card, Badge, Button, SectionHeader, font } from '../src/components/ui';
 
 export default function Compte() {
@@ -13,6 +13,7 @@ export default function Compte() {
   const router = useRouter();
   const { data } = useSubscription();
   const { data: diag } = useDiagnostic();
+  const checkout = useStartCheckout();
 
   return (
     <ScrollView style={{ flex: 1, backgroundColor: colors.bg }} contentContainerStyle={{ paddingBottom: 40 }}>
@@ -78,7 +79,12 @@ export default function Compte() {
                 </View>
               ) : (
                 <View style={{ marginTop: 12 }}>
-                  <Button title={`Passer à ${p.label}`} variant="secondary" />
+                  <Button
+                    title={checkout.isPending ? 'Redirection…' : `Passer à ${p.label}`}
+                    variant="secondary"
+                    disabled={checkout.isPending}
+                    onPress={() => checkout.mutate(p.tier as PlanTier)}
+                  />
                 </View>
               )}
             </Card>

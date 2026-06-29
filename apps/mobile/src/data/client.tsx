@@ -1,11 +1,27 @@
 import { createContext, useContext, useMemo, type ReactNode } from 'react';
-import { LocalBobClient, type BobClient } from '@bob/api-client';
+import { LocalBobClient, HttpBobClient, type BobClient } from '@bob/api-client';
 
 const BobClientContext = createContext<BobClient | null>(null);
 
-/** Fournit la façade data. Par défaut : LocalBobClient (hors-ligne, fixtures). Plus tard : HttpBobClient. */
+/**
+ * Sélection de la façade data :
+ * - `EXPO_PUBLIC_API_URL` défini → HttpBobClient (backend NestJS réel) ;
+ * - sinon → LocalBobClient (hors-ligne, fixtures déterministes).
+ * L'UI ne dépend que de l'interface BobClient : brancher le backend = poser une variable d'env.
+ */
+function defaultClient(): BobClient {
+  const baseUrl = process.env.EXPO_PUBLIC_API_URL;
+  if (baseUrl) {
+    return new HttpBobClient({
+      baseUrl,
+      companyId: process.env.EXPO_PUBLIC_COMPANY_ID ?? 'company-mercier',
+    });
+  }
+  return new LocalBobClient();
+}
+
 export function BobClientProvider({ children, client }: { children: ReactNode; client?: BobClient }) {
-  const value = useMemo<BobClient>(() => client ?? new LocalBobClient(), [client]);
+  const value = useMemo<BobClient>(() => client ?? defaultClient(), [client]);
   return <BobClientContext.Provider value={value}>{children}</BobClientContext.Provider>;
 }
 

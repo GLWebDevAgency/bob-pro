@@ -14,6 +14,7 @@ import type {
   QuoteStatus,
   InvoiceStatus,
   InvoiceKind,
+  PlanTier,
   DiagnosticResult,
   OcrExtraction,
   ExpenseProps,
@@ -62,6 +63,7 @@ export interface SubscriptionView {
 export interface BobClient {
   readonly companyId: string;
   getSubscription(): Promise<Result<SubscriptionView, AppError>>;
+  startCheckout(tier: PlanTier): Promise<Result<{ url: string }, AppError>>;
   getDiagnostic(): Promise<Result<DiagnosticResult, AppError>>;
   extractDocument(input: { contentBase64: string; mimeType: string }): Promise<Result<OcrExtraction, AppError>>;
   recordExpense(input: Omit<RecordExpenseInput, 'companyId'>): Promise<Result<{ id: string }, AppError>>;
