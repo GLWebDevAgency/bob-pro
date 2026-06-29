@@ -1,12 +1,30 @@
 import 'react-native-gesture-handler';
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
+import { View, ActivityIndicator } from 'react-native';
 import { Stack } from 'expo-router';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { ThemeProvider } from '../src/theme';
+import { ThemeProvider, useTheme } from '../src/theme';
+import { AuthProvider, useAuth } from '../src/data/auth';
 import { BobClientProvider } from '../src/data/client';
+import { LoginScreen } from '../src/screens/LoginScreen';
+
+/** Porte d'authentification : en mode connecté (Supabase configuré), exige une session. */
+function AuthGate({ children }: { children: ReactNode }) {
+  const { enabled, session, loading } = useAuth();
+  const { colors } = useTheme();
+  if (enabled && loading) {
+    return (
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg }}>
+        <ActivityIndicator color={colors.ink800} />
+      </View>
+    );
+  }
+  if (enabled && !session) return <LoginScreen />;
+  return <>{children}</>;
+}
 
 export default function RootLayout() {
   const [queryClient] = useState(
@@ -17,20 +35,24 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
         <QueryClientProvider client={queryClient}>
-          <BobClientProvider>
-            <ThemeProvider>
+          <ThemeProvider>
+            <AuthProvider>
               <StatusBar style="light" />
-              <Stack screenOptions={{ headerShown: false }}>
-                <Stack.Screen name="(tabs)" />
-                <Stack.Screen name="devis/new" options={{ presentation: 'modal' }} />
-                <Stack.Screen name="client/[id]" />
-                <Stack.Screen name="compte" />
-                <Stack.Screen name="diagnostic" />
-                <Stack.Screen name="onboarding" />
-                <Stack.Screen name="scan-document" options={{ presentation: 'modal' }} />
-              </Stack>
-            </ThemeProvider>
-          </BobClientProvider>
+              <AuthGate>
+                <BobClientProvider>
+                  <Stack screenOptions={{ headerShown: false }}>
+                    <Stack.Screen name="(tabs)" />
+                    <Stack.Screen name="devis/new" options={{ presentation: 'modal' }} />
+                    <Stack.Screen name="client/[id]" />
+                    <Stack.Screen name="compte" />
+                    <Stack.Screen name="diagnostic" />
+                    <Stack.Screen name="onboarding" />
+                    <Stack.Screen name="scan-document" options={{ presentation: 'modal' }} />
+                  </Stack>
+                </BobClientProvider>
+              </AuthGate>
+            </AuthProvider>
+          </ThemeProvider>
         </QueryClientProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>

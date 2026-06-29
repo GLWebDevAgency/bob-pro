@@ -1,5 +1,6 @@
 import { createContext, useContext, useMemo, type ReactNode } from 'react';
 import { LocalBobClient, HttpBobClient, type BobClient } from '@bob/api-client';
+import { getAccessToken } from './supabase';
 
 const BobClientContext = createContext<BobClient | null>(null);
 
@@ -12,12 +13,10 @@ const BobClientContext = createContext<BobClient | null>(null);
 function defaultClient(): BobClient {
   const baseUrl = process.env.EXPO_PUBLIC_API_URL;
   if (baseUrl) {
-    const token = process.env.EXPO_PUBLIC_API_TOKEN;
     return new HttpBobClient({
       baseUrl,
       companyId: process.env.EXPO_PUBLIC_COMPANY_ID ?? 'company-mercier',
-      // En prod, remplacer par la session Supabase : getToken: () => supabase.auth.getSession()...
-      ...(token ? { getToken: async () => token } : {}),
+      getToken: getAccessToken, // session Supabase, ou EXPO_PUBLIC_API_TOKEN, ou null (démo)
     });
   }
   return new LocalBobClient();

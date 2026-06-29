@@ -5,6 +5,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { formatEUR, type PlanTier } from '@bob/core';
 import { useTheme } from '../src/theme';
 import { useSubscription, useDiagnostic, useStartCheckout, useBillingPortal } from '../src/data/hooks';
+import { useAuth } from '../src/data/auth';
 import { Card, Badge, Button, SectionHeader, font } from '../src/components/ui';
 
 export default function Compte() {
@@ -15,6 +16,7 @@ export default function Compte() {
   const { data: diag } = useDiagnostic();
   const checkout = useStartCheckout();
   const portal = useBillingPortal();
+  const { enabled: authEnabled, signOut } = useAuth();
 
   return (
     <ScrollView style={{ flex: 1, backgroundColor: colors.bg }} contentContainerStyle={{ paddingBottom: 40 }}>
@@ -101,6 +103,12 @@ export default function Compte() {
         <Text style={[font('meta'), { color: colors.slate400, textAlign: 'center', marginTop: 4 }]}>
           Paiement sécurisé via Stripe · résiliable à tout moment.
         </Text>
+
+        {authEnabled ? (
+          <View style={{ marginTop: 8 }}>
+            <Button title="Se déconnecter" variant="secondary" onPress={() => void signOut()} />
+          </View>
+        ) : null}
       </View>
     </ScrollView>
   );
