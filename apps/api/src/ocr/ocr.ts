@@ -4,6 +4,7 @@ import {
   err,
   appDomain,
   DemoOcrAdapter,
+  SystemClock,
   type OcrPort,
   type OcrExtractInput,
   type OcrExtraction,
@@ -78,6 +79,6 @@ export const ocrProvider = {
   provide: OCR_PORT,
   useFactory: (): OcrPort => {
     if (!isDemoMode() && hasClaudeKey()) return new ClaudeVisionOcrAdapter(process.env.ANTHROPIC_API_KEY as string);
-    return new DemoOcrAdapter();
+    return new DemoOcrAdapter(new SystemClock());
   },
 };

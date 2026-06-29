@@ -1,6 +1,8 @@
 import { type Result, ok } from '../../shared-kernel/result';
+import { addDays } from '../../shared-kernel/time';
 import { type AppError } from '../result';
 import { type OcrPort, type OcrExtractInput } from '../ports/ocr';
+import { type ClockPort } from '../ports/services';
 import { type OcrExtraction, type ExpenseCategoryGuess } from '../../domain/ocr/ocr-extraction';
 
 // FNV-1a 32 bits — déterministe (pas de Date.now / Math.random) : démo reproductible.
@@ -26,6 +28,8 @@ const SUPPLIERS: { name: string; siren: string | null; cat: ExpenseCategoryGuess
  * (parité avec/sans IA). Réutilisé par le client local (mobile démo) et le backend en DEMO_MODE.
  */
 export class DemoOcrAdapter implements OcrPort {
+  constructor(private readonly clock?: ClockPort) {}
+
   async extractDocument(input: OcrExtractInput): Promise<Result<OcrExtraction, AppError>> {
     const h = hash32(input.contentBase64);
     const sup = SUPPLIERS[h % SUPPLIERS.length]!;
@@ -33,12 +37,12 @@ export class DemoOcrAdapter implements OcrPort {
     const vatRate = [20, 10, 5.5][h % 3]!;
     const totalHtCents = Math.round(totalTtcCents / (1 + vatRate / 100));
     const vatCents = totalTtcCents - totalHtCents;
-    const month = String(1 + ((h >>> 16) % 12)).padStart(2, '0');
-    const day = String(1 + ((h >>> 8) % 28)).padStart(2, '0');
+    // Date dans le passé récent (0..89 j avant aujourd'hui) : réaliste + jamais future, déterministe par jour.
+    const documentDate = addDays(this.clock?.today() ?? '2026-06-29', -(h % 90));
     const extraction: OcrExtraction = {
       supplierName: sup.name,
       supplierSiren: sup.siren,
-      documentDate: `2026-${month}-${day}`,
+      documentDate,
       totalTtcCents,
       totalHtCents,
       vatCents,

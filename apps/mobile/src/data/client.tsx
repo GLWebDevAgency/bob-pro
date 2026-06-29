@@ -12,9 +12,12 @@ const BobClientContext = createContext<BobClient | null>(null);
 function defaultClient(): BobClient {
   const baseUrl = process.env.EXPO_PUBLIC_API_URL;
   if (baseUrl) {
+    const token = process.env.EXPO_PUBLIC_API_TOKEN;
     return new HttpBobClient({
       baseUrl,
       companyId: process.env.EXPO_PUBLIC_COMPANY_ID ?? 'company-mercier',
+      // En prod, remplacer par la session Supabase : getToken: () => supabase.auth.getSession()...
+      ...(token ? { getToken: async () => token } : {}),
     });
   }
   return new LocalBobClient();

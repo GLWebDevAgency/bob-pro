@@ -34,6 +34,20 @@ describe('Expense.record', () => {
     expect(Expense.record({ ...base, supplierSiren: '123456789' }).ok).toBe(false); // Luhn KO
   });
 
+  it('rejette HT/TVA > TTC et statut/source inconnus', () => {
+    expect(Expense.record({ ...base, totalHtCents: 20000, totalTtcCents: 12000 }).ok).toBe(false);
+    expect(Expense.record({ ...base, vatCents: 20000, totalTtcCents: 12000 }).ok).toBe(false);
+    expect(Expense.record({ ...base, status: 'weird' as unknown as 'to_pay' }).ok).toBe(false);
+    expect(Expense.record({ ...base, source: 'x' as unknown as 'ocr' }).ok).toBe(false);
+  });
+
+  it('rejette une date future (avec horloge) ; rehydrate ne revalide pas', () => {
+    expect(Expense.record({ ...base, documentDate: '2030-01-01' }, { today: '2026-06-29' }).ok).toBe(false);
+    expect(Expense.record({ ...base, documentDate: '2026-06-01' }, { today: '2026-06-29' }).ok).toBe(true);
+    const e = Expense.rehydrate({ ...base, documentDate: '2030-01-01' });
+    expect(e.documentDate).toBe('2030-01-01');
+  });
+
   it('accepte et conserve un SIREN valide ; markPaid bascule le statut', () => {
     const r = Expense.record({ ...base, supplierSiren: '732829320' });
     expect(r.ok).toBe(true);

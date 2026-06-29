@@ -41,6 +41,7 @@ export class HttpBobClient implements BobClient {
         method,
         headers: {
           'content-type': 'application/json',
+          'x-company-id': this.companyId,
           ...(token ? { authorization: `Bearer ${token}` } : {}),
         },
       };
@@ -82,7 +83,10 @@ export class HttpBobClient implements BobClient {
     return this.req<CustomerListItem[]>('GET', '/customers');
   }
   getCashflow(input: { scenario: Scenario; horizon: Horizon }) {
-    return this.req<CashflowProjection>('GET', `/cashflow?scenario=${input.scenario}&horizon=${input.horizon}`);
+    return this.req<CashflowProjection>(
+      'GET',
+      `/cashflow?scenario=${encodeURIComponent(input.scenario)}&horizon=${encodeURIComponent(String(input.horizon))}`,
+    );
   }
   createQuote(input: Omit<CreateQuoteInput, 'companyId'>) {
     return this.req<CreateQuoteOutput>('POST', '/quotes', input);

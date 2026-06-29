@@ -35,6 +35,9 @@ export function validateFacturXBasic(d: FacturXInvoiceData): FacturXValidationRe
   if (d.taxBasisTotalCents + d.taxTotalCents !== d.grandTotalCents) fail('BR-CO-15', 'Base + TVA ≠ total TTC.');
   if (d.grandTotalCents - d.prepaidCents !== d.duePayableCents) fail('BR-CO-16', 'TTC − acompte ≠ net à payer.');
   if (d.prepaidCents < 0) fail('BR-CO-16', 'Acompte négatif interdit.');
+  if (d.duePayableCents < 0) fail('BR-CO-16', 'Net à payer négatif interdit.');
+  if (d.lineTotalHTCents < 0 || d.taxBasisTotalCents < 0 || d.grandTotalCents < 0)
+    fail('BR-CO-15', 'Montant total négatif interdit.');
 
   // Ventilation TVA (BR-CO-10/14 niveau ventilation)
   const basisSum = d.vatBreakdown.reduce((s, b) => s + b.basisCents, 0);
@@ -47,7 +50,7 @@ export function validateFacturXBasic(d: FacturXInvoiceData): FacturXValidationRe
     if (b.category === 'S') {
       if (b.ratePct <= 0) fail('BR-S-05', 'Catégorie S : taux de TVA > 0 requis.');
       const expected = Math.round((b.basisCents * b.ratePct) / 100);
-      if (b.vatCents !== expected) fail('BR-CO-17', `TVA catégorie S incohérente (taux ${b.ratePct} %).`);
+      if (Math.abs(b.vatCents - expected) > 1) fail('BR-CO-17', `TVA catégorie S incohérente (taux ${b.ratePct} %).`);
     } else if (b.category === 'E') {
       if (b.ratePct !== 0) fail('BR-E-05', 'Catégorie E : taux 0 requis.');
       if (b.vatCents !== 0) fail('BR-E-09', 'Catégorie E : montant de TVA 0 requis.');
@@ -59,6 +62,27 @@ export function validateFacturXBasic(d: FacturXInvoiceData): FacturXValidationRe
   }
   if (d.vatBreakdown.filter((b) => b.category === 'E').length > 1)
     fail('BR-E-01', 'Au plus une ventilation de catégorie E.');
+
+  // Croisement lignes <-> ventilation (BR-CO-18 / BR-S-08 / BR-E-08 / BR-Z-08) :
+  // chaque couple (catégorie, taux) des lignes doit avoir exactement une ventilation de base égale.
+  const lineGroups = new Map<string, number>();
+  for (const l of d.lines) {
+    const k = `${l.vatCategory}|${l.vatRatePct}`;
+    lineGroups.set(k, (lineGroups.get(k) ?? 0) + l.netAmountCents);
+  }
+  const breakdownGroups = new Map<string, number>();
+  for (const b of d.vatBreakdown) {
+    const k = `${b.category}|${b.ratePct}`;
+    if (breakdownGroups.has(k)) fail('BR-CO-18', `Ventilation TVA en double pour (${k}).`);
+    breakdownGroups.set(k, b.basisCents);
+  }
+  for (const [k, basis] of lineGroups) {
+    if (!breakdownGroups.has(k)) fail('BR-CO-18', `Aucune ventilation TVA pour (${k}).`);
+    else if (breakdownGroups.get(k) !== basis) fail('BR-CO-18', `Base de ventilation (${k}) ≠ somme des lignes.`);
+  }
+  for (const k of breakdownGroups.keys()) {
+    if (!lineGroups.has(k)) fail('BR-CO-18', `Ventilation TVA (${k}) sans ligne correspondante.`);
+  }
 
   return { valid: violations.length === 0, violations };
 }

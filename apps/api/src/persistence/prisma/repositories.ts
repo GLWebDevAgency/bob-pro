@@ -180,15 +180,13 @@ export class PrismaExpenseRepository implements ExpenseRepository {
   async findById(id: string): Promise<Expense | null> {
     const row = await this.prisma.expense.findUnique({ where: { id } });
     if (!row) return null;
-    const r = Expense.record(this.toProps(row));
-    return r.ok ? r.value : null;
+    return Expense.rehydrate(this.toProps(row));
   }
   async listByCompany(companyId: string): Promise<Expense[]> {
+    // Réhydratation (données déjà validées) : ne jamais faire disparaître une dépense persistée
+    // — sinon la trésorerie sous-compterait les charges (cf. revue EN 16931 / cashflow).
     const rows = await this.prisma.expense.findMany({ where: { companyId } });
-    return rows.flatMap((row) => {
-      const r = Expense.record(this.toProps(row));
-      return r.ok ? [r.value] : [];
-    });
+    return rows.map((row) => Expense.rehydrate(this.toProps(row)));
   }
   private toProps(row: {
     id: string;

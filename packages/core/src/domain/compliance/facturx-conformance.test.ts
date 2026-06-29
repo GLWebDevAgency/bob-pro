@@ -71,6 +71,21 @@ describe('Conformité Factur-X e2e (devis→facture émise → validation EN 169
     expect(res.violations.some((v) => v.rule === 'BR-CO-15')).toBe(true);
   });
 
+  it('détecte une ventilation TVA incohérente avec les lignes (BR-CO-18)', () => {
+    const inv = issuedInvoice(seedCompany(), [{ label: 'X', category: 'labor', qty: 1, unitPriceHT: 10000, vatRate: 20 }], 6);
+    const base = facturXDataFromInvoice(inv, seedCompany(), BUYER);
+    // Lignes en S/20 mais ventilation déclarée en Z/0 (mislabel d'exonération).
+    const broken: FacturXInvoiceData = {
+      ...base,
+      vatBreakdown: [{ category: 'Z', ratePct: 0, basisCents: base.taxBasisTotalCents, vatCents: 0 }],
+      taxTotalCents: 0,
+      grandTotalCents: base.taxBasisTotalCents,
+      duePayableCents: base.taxBasisTotalCents,
+    };
+    const res = validateFacturXBasic(broken);
+    expect(res.violations.some((v) => v.rule === 'BR-CO-18')).toBe(true);
+  });
+
   it('détecte un acompte mal réparti (BR-CO-16)', () => {
     const inv = issuedInvoice(seedCompany(), [{ label: 'X', category: 'labor', qty: 1, unitPriceHT: 10000, vatRate: 20 }], 5);
     const base = facturXDataFromInvoice(inv, seedCompany(), BUYER);

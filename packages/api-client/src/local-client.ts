@@ -64,7 +64,7 @@ export class LocalBobClient implements BobClient {
   private readonly invoices = new InMemoryInvoiceRepository();
   private readonly payments = new InMemoryPaymentRepository();
   private readonly ids = new CounterIdGenerator();
-  private readonly ocr = new DemoOcrAdapter();
+  private readonly ocr: DemoOcrAdapter;
   private readonly expenses = new InMemoryExpenseRepository();
   private readonly counters = new InMemorySequenceCounter();
   private readonly clock: ClockPort;
@@ -76,6 +76,7 @@ export class LocalBobClient implements BobClient {
     this.companies.seed(company);
     this.customers.seed(seedCustomers());
     this.clock = opts?.clock ?? new SystemClock();
+    this.ocr = new DemoOcrAdapter(this.clock);
     this.snapshots = new FixtureCashflowSnapshot(CASH_SNAPSHOT);
   }
 
@@ -157,7 +158,7 @@ export class LocalBobClient implements BobClient {
   }
 
   async recordExpense(input: Omit<RecordExpenseInput, 'companyId'>): Promise<Result<{ id: string }, AppError>> {
-    return new RecordExpense({ expenses: this.expenses, ids: this.ids }).execute({ companyId: this.companyId, ...input });
+    return new RecordExpense({ expenses: this.expenses, ids: this.ids, clock: this.clock }).execute({ companyId: this.companyId, ...input });
   }
 
   async listExpenses(): Promise<Result<ExpenseProps[], AppError>> {

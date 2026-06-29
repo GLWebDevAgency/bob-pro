@@ -379,7 +379,7 @@ export class BackendService {
   }
 
   async recordExpense(input: Omit<RecordExpenseInput, 'companyId'>): Promise<Result<{ id: string }, AppError>> {
-    const r = await new RecordExpense({ expenses: this.p.expenses, ids: this.ids }).execute({
+    const r = await new RecordExpense({ expenses: this.p.expenses, ids: this.ids, clock: this.clock }).execute({
       companyId: this.companyId(),
       ...input,
     });
