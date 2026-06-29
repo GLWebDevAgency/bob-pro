@@ -19,6 +19,7 @@ import {
   DemoOcrAdapter,
   RecordExpense,
   CreateChantier,
+  AutofillCompanyFromSiret,
   ok,
   err,
   appNotFound,
@@ -43,6 +44,7 @@ import {
   type TradeConfig,
   type ChantierProps,
   type CreateChantierInput,
+  type CompanyLookupResult,
 } from '@bob/core';
 import {
   InMemoryCompanyRepository,
@@ -53,6 +55,7 @@ import {
   InMemoryExpenseRepository,
   InMemoryChantierRepository,
 } from './in-memory/repositories';
+import { DemoCompanyLookupAdapter } from './in-memory/company-lookup';
 import { InMemorySequenceCounter, CounterIdGenerator, FixtureCashflowSnapshot } from './in-memory/services';
 import type { BobClient, QuoteView, InvoiceView, SubscriptionView } from './client';
 
@@ -73,6 +76,7 @@ export class LocalBobClient implements BobClient {
   private readonly ocr: DemoOcrAdapter;
   private readonly expenses = new InMemoryExpenseRepository();
   private readonly chantiers = new InMemoryChantierRepository();
+  private readonly companyLookup = new DemoCompanyLookupAdapter();
   private readonly counters = new InMemorySequenceCounter();
   private readonly clock: ClockPort;
   private readonly snapshots: FixtureCashflowSnapshot;
@@ -149,6 +153,10 @@ export class LocalBobClient implements BobClient {
 
   async getProfile(): Promise<Result<TradeConfig, AppError>> {
     return ok(resolveTradeConfig(seedCompany().trade, 'business'));
+  }
+
+  async lookupCompany(siret: string): Promise<Result<CompanyLookupResult, AppError>> {
+    return new AutofillCompanyFromSiret({ lookup: this.companyLookup }).execute({ siret });
   }
 
   async getDiagnostic(): Promise<Result<DiagnosticResult, AppError>> {

@@ -82,6 +82,17 @@ export class ProfileController {
   }
 }
 
+@Controller('company')
+export class CompanyLookupController {
+  constructor(private readonly backend: BackendService) {}
+  // Throttle modéré : protège l'API publique amont (Recherche d'entreprises, 7 req/s).
+  @Throttle({ default: { limit: 20, ttl: 60000 } })
+  @Get('lookup')
+  async lookup(@Query('siret') siret: string) {
+    return unwrap(await this.backend.lookupCompany(siret ?? ''));
+  }
+}
+
 @Controller('cashflow')
 export class CashflowController {
   constructor(private readonly backend: BackendService) {}

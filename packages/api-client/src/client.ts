@@ -22,6 +22,7 @@ import type {
   TradeConfig,
   ChantierProps,
   CreateChantierInput,
+  CompanyLookupResult,
 } from '@bob/core';
 
 export interface QuoteView {
@@ -71,6 +72,7 @@ export interface BobClient {
   invoicePaymentLink(invoiceId: string): Promise<Result<{ url: string }, AppError>>;
   getDiagnostic(): Promise<Result<DiagnosticResult, AppError>>;
   getProfile(): Promise<Result<TradeConfig, AppError>>;
+  lookupCompany(siret: string): Promise<Result<CompanyLookupResult, AppError>>;
   extractDocument(input: { contentBase64: string; mimeType: string }): Promise<Result<OcrExtraction, AppError>>;
   recordExpense(input: Omit<RecordExpenseInput, 'companyId'>): Promise<Result<{ id: string }, AppError>>;
   listExpenses(): Promise<Result<ExpenseProps[], AppError>>;

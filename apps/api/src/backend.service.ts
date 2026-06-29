@@ -26,6 +26,7 @@ import {
   ExtractDocument,
   RecordExpense,
   CreateChantier,
+  AutofillCompanyFromSiret,
   MERCIER_PROPS,
   CASH_SNAPSHOT,
   type Result,
@@ -49,6 +50,8 @@ import {
   type TradeConfig,
   type ChantierProps,
   type CreateChantierInput,
+  type CompanyLookupPort,
+  type CompanyLookupResult,
   type OcrExtraction,
   type OcrPort,
   type RecordExpenseInput,
@@ -56,6 +59,7 @@ import {
 } from '@bob/core';
 import { BobAgent, ModelRouter, type BobCapabilities, type AgentRun } from '@bob/ai';
 import { UuidGenerator, FixtureCashflowSnapshot, InMemoryChantierRepository } from './persistence/in-memory';
+import { RechercheEntreprisesAdapter } from './adapters/recherche-entreprises.adapter';
 import { PERSISTENCE, type Persistence } from './persistence/persistence';
 import { Metrics } from './observability/metrics';
 import { AppLogger, getPrincipal } from './observability/logger';
@@ -114,6 +118,8 @@ export class BackendService {
   private readonly snapshots = new FixtureCashflowSnapshot(CASH_SNAPSHOT);
   // Module Chantiers (BTP) en mémoire pour l'instant — persistance Prisma = incrément suivant.
   private readonly chantiers = new InMemoryChantierRepository();
+  // Recherche d'entreprise par SIRET (API publique gratuite) — autofill onboarding/client.
+  private readonly companyLookup: CompanyLookupPort = new RechercheEntreprisesAdapter();
   private readonly subscription: Subscription;
 
   /** Tenant courant : companyId du Principal authentifié (défaut = société de seed en démo). */
@@ -317,6 +323,10 @@ export class BackendService {
     const company = await this.p.companies.findById(this.companyId());
     if (!company) return { ok: false, error: appNotFound('company', this.companyId()) };
     return ok(resolveTradeConfig(company.trade, this.subscription.tier, this.subscription.addOns));
+  }
+
+  async lookupCompany(siret: string): Promise<Result<CompanyLookupResult, AppError>> {
+    return new AutofillCompanyFromSiret({ lookup: this.companyLookup }).execute({ siret });
   }
 
   // ——— Module Chantiers (vertical BTP, gated par métier × palier/add-on) ———

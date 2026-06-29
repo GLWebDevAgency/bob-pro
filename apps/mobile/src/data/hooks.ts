@@ -107,6 +107,17 @@ export function useCreateChantier() {
   });
 }
 
+export function useLookupCompany() {
+  const client = useBobClient();
+  return useMutation({
+    mutationFn: async (siret: string) => {
+      const r = await client.lookupCompany(siret);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+  });
+}
+
 export function useProfile() {
   const client = useBobClient();
   return useQuery({

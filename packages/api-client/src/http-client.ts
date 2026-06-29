@@ -17,6 +17,7 @@ import type {
   TradeConfig,
   ChantierProps,
   CreateChantierInput,
+  CompanyLookupResult,
 } from '@bob/core';
 import type { BobClient, QuoteView, InvoiceView, SubscriptionView } from './client';
 
@@ -81,6 +82,9 @@ export class HttpBobClient implements BobClient {
   }
   getProfile() {
     return this.req<TradeConfig>('GET', '/profile');
+  }
+  lookupCompany(siret: string) {
+    return this.req<CompanyLookupResult>('GET', `/company/lookup?siret=${encodeURIComponent(siret)}`);
   }
   extractDocument(input: { contentBase64: string; mimeType: string }) {
     return this.req<OcrExtraction>('POST', '/documents/ocr', input);

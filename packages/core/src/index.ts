@@ -40,12 +40,14 @@ export * from './domain/compliance/diagnostic';
 export * from './domain/compliance/facturx';
 export * from './domain/compliance/facturx-validation';
 export * from './domain/company/trade-profile';
+export * from './domain/company/naf-to-trade';
 export * from './domain/ocr/ocr-extraction';
 
 // Couche Application — use cases, ports, fixtures
 export * from './application/result';
 export * from './application/ports/repositories';
 export * from './application/ports/services';
+export * from './application/ports/company-lookup';
 export * from './application/billing/create-quote';
 export * from './application/billing/send-quote';
 export * from './application/billing/sign-quote';
@@ -57,6 +59,7 @@ export * from './application/queries/list-customers';
 export * from './application/queries/get-cashflow';
 export * from './application/expenses/record-expense';
 export * from './application/chantier/create-chantier';
+export * from './application/company/autofill-company';
 export * from './application/fixtures/index';
 
 // Monétisation
