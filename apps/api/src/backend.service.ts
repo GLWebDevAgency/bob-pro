@@ -31,6 +31,8 @@ import {
   type Totals,
   type PlanTier,
   type PaymentGatewayPort,
+  type PdfRendererPort,
+  type InvoicePdfData,
 } from '@bob/core';
 import { BobAgent, ModelRouter, type BobCapabilities, type AgentRun } from '@bob/ai';
 import { UuidGenerator, FixtureCashflowSnapshot } from './persistence/in-memory';
@@ -38,6 +40,7 @@ import { PERSISTENCE, type Persistence } from './persistence/persistence';
 import { Metrics } from './observability/metrics';
 import { AppLogger } from './observability/logger';
 import { PAYMENT_GATEWAY } from './payments/payment-gateway';
+import { PDF_RENDERER } from './documents/pdf-renderer';
 import { hasClaudeKey, hasGlmKey } from './config/env';
 
 export interface QuoteView {
@@ -81,6 +84,7 @@ export class BackendService {
   constructor(
     @Inject(PERSISTENCE) private readonly p: Persistence,
     @Inject(PAYMENT_GATEWAY) private readonly gateway: PaymentGatewayPort,
+    @Inject(PDF_RENDERER) private readonly pdf: PdfRendererPort,
     private readonly metrics: Metrics,
     private readonly logger: AppLogger,
   ) {
@@ -261,5 +265,33 @@ export class BackendService {
     });
     this.logger.audit('invoice.payment_link', { invoiceId, amountCents: inv.totals().netToPay });
     return ok(link);
+  }
+
+  /** Génère le PDF conforme d'une facture (mentions figées + totaux déterministes). */
+  async invoicePdf(invoiceId: string): Promise<Result<Uint8Array, AppError>> {
+    const inv = await this.p.invoices.findById(invoiceId);
+    if (!inv) return { ok: false, error: appNotFound('invoice', invoiceId) };
+    const company = await this.p.companies.findById(inv.companyId);
+    const customer = await this.p.customers.findById(inv.customerId);
+    if (!company || !customer) return { ok: false, error: appNotFound('company-or-customer', invoiceId) };
+    const addr = customer.toProps().address;
+    const totals = inv.totals();
+    const data: InvoicePdfData = {
+      number: inv.number ?? '(brouillon)',
+      companyName: company.name,
+      companyAddress: `${company.address.line1}, ${company.address.zip} ${company.address.city}`,
+      companyRcsOrRm: company.rcsOrRm ?? null,
+      customerName: customer.name,
+      customerAddress: `${addr.line1}, ${addr.zip} ${addr.city}`,
+      issuedAt: inv.issuedAt,
+      dueAt: inv.dueAt,
+      kind: inv.kind,
+      lines: inv.lines.map((l) => ({ label: l.label, qty: l.qty, unitPriceHT: l.unitPriceHT, vatRate: l.vatRate })),
+      totals: { ht: totals.ht, vat: totals.vat, ttc: totals.ttc, netToPay: totals.netToPay },
+      mentions: [...inv.mentions],
+    };
+    const bytes = await this.pdf.renderInvoice(data);
+    this.logger.audit('invoice.pdf', { invoiceId, number: data.number });
+    return ok(bytes);
   }
 }

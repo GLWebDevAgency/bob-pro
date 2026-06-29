@@ -1,10 +1,14 @@
 import { Module, type NestModule, type MiddlewareConsumer } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
+import { ScheduleModule } from '@nestjs/schedule';
 import { BackendService } from './backend.service';
 import { PersistenceModule } from './persistence/persistence.module';
 import { ObservabilityModule } from './observability/observability.module';
 import { CorrelationMiddleware } from './observability/correlation.middleware';
 import { paymentGatewayProvider } from './payments/payment-gateway';
+import { PDF_RENDERER, PdfRenderer } from './documents/pdf-renderer';
+import { NOTIFIER, DemoNotifier } from './notifications/notifier';
+import { RelanceService } from './jobs/relance.service';
 import { SupabaseAuthGuard } from './auth/auth.guard';
 import {
   HealthController,
@@ -14,10 +18,11 @@ import {
   InvoicesController,
   AiController,
   SubscriptionController,
+  JobsController,
 } from './api.controllers';
 
 @Module({
-  imports: [ObservabilityModule, PersistenceModule],
+  imports: [ScheduleModule.forRoot(), ObservabilityModule, PersistenceModule],
   controllers: [
     HealthController,
     CustomersController,
@@ -26,8 +31,16 @@ import {
     InvoicesController,
     AiController,
     SubscriptionController,
+    JobsController,
   ],
-  providers: [BackendService, paymentGatewayProvider, { provide: APP_GUARD, useClass: SupabaseAuthGuard }],
+  providers: [
+    BackendService,
+    RelanceService,
+    paymentGatewayProvider,
+    { provide: PDF_RENDERER, useClass: PdfRenderer },
+    { provide: NOTIFIER, useClass: DemoNotifier },
+    { provide: APP_GUARD, useClass: SupabaseAuthGuard },
+  ],
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {

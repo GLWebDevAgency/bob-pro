@@ -54,3 +54,6 @@ export * from './application/fixtures/index';
 export * from './domain/subscription/plan';
 export * from './domain/subscription/subscription';
 export * from './application/ports/payment';
+
+// Ports de sortie (PDF, notification)
+export * from './application/ports/output';

@@ -1,6 +1,17 @@
-import { Controller, Get, Post, Body, Param, Query, HttpException, HttpStatus } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  Param,
+  Query,
+  HttpException,
+  HttpStatus,
+  StreamableFile,
+} from '@nestjs/common';
 import type { CreateQuoteInput, Scenario, Horizon, PaymentMethod, PlanTier } from '@bob/core';
 import { BackendService } from './backend.service';
+import { RelanceService } from './jobs/relance.service';
 import { unwrap } from './http/result';
 
 @Controller('health')
@@ -89,6 +100,23 @@ export class InvoicesController {
   @Post(':id/payment-link')
   async paymentLink(@Param('id') id: string) {
     return unwrap(await this.backend.invoicePaymentLink(id));
+  }
+  @Get(':id/pdf')
+  async pdf(@Param('id') id: string): Promise<StreamableFile> {
+    const bytes = unwrap(await this.backend.invoicePdf(id));
+    return new StreamableFile(Buffer.from(bytes), {
+      type: 'application/pdf',
+      disposition: `inline; filename="facture-${id}.pdf"`,
+    });
+  }
+}
+
+@Controller('jobs')
+export class JobsController {
+  constructor(private readonly relances: RelanceService) {}
+  @Post('run-relances')
+  run() {
+    return this.relances.runRelances();
   }
 }
 
