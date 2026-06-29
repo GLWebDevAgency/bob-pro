@@ -8,6 +8,7 @@
       "@bob/tokens": ["../../packages/tokens/src/index.ts"],
       "@bob/core": ["../../packages/core/src/index.ts"],
       "@bob/api-client": ["../../packages/api-client/src/index.ts"],
+      "@bob/ai": ["../../packages/ai/src/index.ts"],
       "@/*": ["./*"]
     }
   },
