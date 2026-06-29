@@ -14,7 +14,7 @@ export type VatCategory = 'S' | 'E' | 'Z';
 
 export interface FacturXParty {
   name: string;
-  legalId?: string; // SIRET (BT-30), schemeID 0002
+  legalId?: string; // SIREN (BT-30), schemeID 0002 (registre SIRENE)
   vatId?: string; // n° TVA intracom (BT-31, schemeID VA) — omis en franchise
   address: { line1: string; postcode: string; city: string; countryCode: string };
 }
@@ -69,7 +69,7 @@ const KIND_TO_TYPECODE: Record<InvoiceKind, string> = {
 // ——— Helpers de formatage (purs) ———
 const eur = (cents: number): string => (cents / 100).toFixed(2);
 const pct = (rate: number): string => rate.toFixed(2);
-const qtyStr = (q: number): string => (Number.isInteger(q) ? String(q) : String(q));
+const qtyStr = (q: number): string => (Number.isInteger(q) ? String(q) : q.toFixed(4).replace(/\.?0+$/, ''));
 const dateCII = (d: string): string => d.replace(/-/g, ''); // YYYY-MM-DD -> YYYYMMDD (format 102)
 
 const xmlEscape = (s: string): string =>
@@ -229,15 +229,8 @@ export interface FacturXBuyer {
 export function facturXDataFromInvoice(invoice: Invoice, company: Company, buyer: FacturXBuyer): FacturXInvoiceData {
   const totals = invoice.totals();
   const franchise = company.isVatFranchise();
-  const categoryFor = (rate: number): VatCategory => (franchise ? 'E' : rate > 0 ? 'S' : 'Z');
 
-  // Base HT par taux (somme arrondie par ligne, identique au domaine).
-  const basisByRate = new Map<number, number>();
-  for (const l of invoice.lines) {
-    const base = Math.round(l.qty * l.unitPriceHT);
-    basisByRate.set(l.vatRate, (basisByRate.get(l.vatRate) ?? 0) + base);
-  }
-
+  // Lignes : en franchise, la TVA est inapplicable -> catégorie E, taux 0 (BR-E-5).
   const lines: FacturXLine[] = invoice.lines.map((l, i) => ({
     id: l.id || String(i + 1),
     name: l.label,
@@ -245,28 +238,45 @@ export function facturXDataFromInvoice(invoice: Invoice, company: Company, buyer
     unitCode: 'C62',
     unitPriceHTCents: l.unitPriceHT,
     netAmountCents: Math.round(l.qty * l.unitPriceHT),
-    vatCategory: categoryFor(l.vatRate),
-    vatRatePct: l.vatRate,
+    vatCategory: franchise ? 'E' : l.vatRate > 0 ? 'S' : 'Z',
+    vatRatePct: franchise ? 0 : l.vatRate,
   }));
 
-  const vatBreakdown: FacturXVatBreakdown[] = [...basisByRate.entries()]
-    .sort((a, b) => a[0] - b[0])
-    .map(([rate, basis]) => {
-      const cat = categoryFor(rate);
-      const entry: FacturXVatBreakdown = {
-        category: cat,
+  let vatBreakdown: FacturXVatBreakdown[];
+  let taxTotalCents: number;
+  let grandTotalCents: number;
+  let duePayableCents: number;
+
+  if (franchise) {
+    // Franchise en base : un seul groupe E, taux 0, TVA 0 (BR-E-5/6/9). Total = HT, jamais de TVA.
+    vatBreakdown = [{ category: 'E', ratePct: 0, basisCents: totals.ht, vatCents: 0, exemptionReason: FR_293B }];
+    taxTotalCents = 0;
+    grandTotalCents = totals.ht;
+    duePayableCents = totals.ttc > 0 ? Math.round((totals.ht * totals.netToPay) / totals.ttc) : totals.ht;
+  } else {
+    // Base HT par taux (somme arrondie par ligne, identique au domaine). VAT depuis totals().
+    const basisByRate = new Map<number, number>();
+    for (const l of invoice.lines) {
+      const base = Math.round(l.qty * l.unitPriceHT);
+      basisByRate.set(l.vatRate, (basisByRate.get(l.vatRate) ?? 0) + base);
+    }
+    vatBreakdown = [...basisByRate.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([rate, basis]) => ({
+        category: rate > 0 ? ('S' as VatCategory) : ('Z' as VatCategory),
         ratePct: rate,
         basisCents: basis,
         vatCents: totals.vatByRate[String(rate)] ?? 0,
-      };
-      if (cat === 'E') entry.exemptionReason = FR_293B;
-      return entry;
-    });
+      }));
+    taxTotalCents = totals.vat;
+    grandTotalCents = totals.ttc;
+    duePayableCents = totals.netToPay;
+  }
 
   const sellerVatId = franchise ? undefined : frenchVatNumber(company.siren);
   const seller: FacturXParty = {
     name: company.name,
-    legalId: company.siret,
+    legalId: company.siren, // BT-30 : SIREN (9 chiffres) sous schemeID 0002 (registre SIRENE)
     ...(sellerVatId ? { vatId: sellerVatId } : {}),
     address: { line1: company.address.line1, postcode: company.address.zip, city: company.address.city, countryCode: 'FR' },
   };
@@ -276,7 +286,6 @@ export function facturXDataFromInvoice(invoice: Invoice, company: Company, buyer
     address: { line1: buyer.address.line1, postcode: buyer.address.zip, city: buyer.address.city, countryCode: 'FR' },
   };
 
-  const prepaid = Math.max(0, totals.ttc - totals.netToPay);
   return {
     number: invoice.number ?? 'BROUILLON',
     typeCode: KIND_TO_TYPECODE[invoice.kind],
@@ -289,9 +298,9 @@ export function facturXDataFromInvoice(invoice: Invoice, company: Company, buyer
     vatBreakdown,
     lineTotalHTCents: totals.ht,
     taxBasisTotalCents: totals.ht,
-    taxTotalCents: totals.vat,
-    grandTotalCents: totals.ttc,
-    prepaidCents: prepaid,
-    duePayableCents: totals.netToPay,
+    taxTotalCents,
+    grandTotalCents,
+    prepaidCents: Math.max(0, grandTotalCents - duePayableCents),
+    duePayableCents,
   };
 }

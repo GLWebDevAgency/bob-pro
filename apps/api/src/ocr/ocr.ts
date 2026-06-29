@@ -15,6 +15,8 @@ import { hasClaudeKey, isDemoMode } from '../config/env';
 
 export const OCR_PORT = Symbol('OCR_PORT');
 
+const ACCEPTED_MIME = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
+
 const SYSTEM_PROMPT =
   "Tu es un extracteur de factures/tickets fournisseurs FRANÇAIS. Réponds UNIQUEMENT par un objet JSON valide (sans markdown, sans texte autour). " +
   'Montants en CENTIMES entiers. Mets null si une valeur est absente/illisible. ' +
@@ -31,6 +33,9 @@ export class ClaudeVisionOcrAdapter implements OcrPort {
   ) {}
 
   async extractDocument(input: OcrExtractInput): Promise<Result<OcrExtraction, AppError>> {
+    // Défense en profondeur : revalide le MIME avant de l'envoyer au modèle (payload vision valide).
+    if (!ACCEPTED_MIME.includes(input.mimeType))
+      return err({ kind: 'validation', issues: [{ field: 'mimeType', message: `Type non supporté : ${input.mimeType}` }] });
     const block =
       input.mimeType === 'application/pdf'
         ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: input.contentBase64 } }
@@ -47,12 +52,15 @@ export class ClaudeVisionOcrAdapter implements OcrPort {
         }),
       });
       if (!res.ok) return err({ kind: 'dependency', port: 'ocr', cause: `HTTP ${res.status}` });
-      const data = (await res.json()) as { content?: { text?: string }[] };
-      const text = data.content?.[0]?.text ?? '';
-      const start = text.indexOf('{');
-      const end = text.lastIndexOf('}');
+      const data = (await res.json()) as { content?: { type?: string; text?: string }[]; stop_reason?: string };
+      if (data.stop_reason === 'max_tokens')
+        return err({ kind: 'dependency', port: 'ocr', cause: 'Réponse OCR tronquée (max_tokens).' });
+      const textBlock = data.content?.find((c) => c.type === 'text') ?? data.content?.[0];
+      const raw = (textBlock?.text ?? '').replace(/```json/gi, '').replace(/```/g, '').trim();
+      const start = raw.indexOf('{');
+      const end = raw.lastIndexOf('}');
       if (start < 0 || end <= start) return err({ kind: 'dependency', port: 'ocr', cause: 'Réponse OCR non-JSON.' });
-      const parsed = JSON.parse(text.slice(start, end + 1)) as OcrExtractionDraft;
+      const parsed = JSON.parse(raw.slice(start, end + 1)) as OcrExtractionDraft;
       const norm = makeOcrExtraction(parsed);
       if (!norm.ok) return err(appDomain(norm.error));
       return ok(norm.value);

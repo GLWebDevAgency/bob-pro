@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { buildFacturXBasicXml, facturXDataFromInvoice, frenchVatNumber, type FacturXInvoiceData } from './facturx';
 import { Invoice } from '../billing/invoice/invoice';
-import { seedCompany } from '../../application/fixtures/index';
+import { Company } from '../company/company';
+import { seedCompany, MERCIER_PROPS } from '../../application/fixtures/index';
 
 const baseData = (): FacturXInvoiceData => ({
   number: 'F-2026-0001',
@@ -103,10 +104,28 @@ describe('facturXDataFromInvoice — mapping depuis l’agrégat', () => {
       [10, 5000, 500, 'S'],
       [20, 20000, 4000, 'S'],
     ]);
-    expect(data.seller.legalId).toBe(company.siret);
+    expect(data.seller.legalId).toBe(company.siren); // BT-30 = SIREN sous schemeID 0002
     expect(data.seller.vatId).toBeDefined(); // réel -> n° TVA présent
     expect(data.buyer.legalId).toBeUndefined();
     // l’arithmétique sérialisée reste cohérente
     expect(data.taxBasisTotalCents + data.taxTotalCents).toBe(data.grandTotalCents);
+  });
+
+  it('franchise : un seul groupe E (taux 0, TVA 0) même si une ligne porte un taux erroné', () => {
+    const company = (Company.of({ ...MERCIER_PROPS, vatRegime: 'franchise' }) as { ok: true; value: Company }).value;
+    const inv = (Invoice.composeStandalone({ id: 'inv2', companyId: company.id, customerId: 'c' }) as { ok: true; value: Invoice }).value;
+    inv.addLine({ id: 'l1', label: 'Prestation', category: 'labor', qty: 1, unitPriceHT: 10000, vatRate: 20 });
+
+    const data = facturXDataFromInvoice(inv, company, { name: 'Client', address: { line1: 'x', zip: '75001', city: 'Paris' } });
+
+    expect(data.taxTotalCents).toBe(0); // jamais de TVA en franchise
+    expect(data.grandTotalCents).toBe(10000); // total = HT
+    expect(data.duePayableCents).toBe(10000);
+    expect(data.vatBreakdown).toHaveLength(1);
+    const b0 = data.vatBreakdown[0]!;
+    expect(b0).toMatchObject({ category: 'E', ratePct: 0, vatCents: 0, basisCents: 10000 });
+    expect(b0.exemptionReason).toContain('293 B');
+    expect(data.seller.vatId).toBeUndefined();
+    expect(data.lines[0]!).toMatchObject({ vatCategory: 'E', vatRatePct: 0 });
   });
 });

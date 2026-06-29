@@ -41,4 +41,9 @@ describe('makeOcrExtraction — validation/normalisation', () => {
     expect(makeOcrExtraction({ supplierName: 'X', documentDate: 'nope', totalTtcCents: 100 }).ok).toBe(false);
     expect(makeOcrExtraction({ supplierName: 'X', documentDate: '2026-01-01', totalTtcCents: 1.5 }).ok).toBe(false);
   });
+
+  it('rejette une date calendaire impossible (2026-02-30)', () => {
+    expect(makeOcrExtraction({ supplierName: 'X', documentDate: '2026-02-30', totalTtcCents: 100 }).ok).toBe(false);
+    expect(makeOcrExtraction({ supplierName: 'X', documentDate: '2026-04-31', totalTtcCents: 100 }).ok).toBe(false);
+  });
 });
