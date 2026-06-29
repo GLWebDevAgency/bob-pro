@@ -1,13 +1,22 @@
-import { Controller, Get, Post, Body, Param, Query } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, Query, HttpException, HttpStatus } from '@nestjs/common';
 import type { CreateQuoteInput, Scenario, Horizon, PaymentMethod } from '@bob/core';
 import { BackendService } from './backend.service';
 import { unwrap } from './http/result';
 
 @Controller('health')
 export class HealthController {
+  constructor(private readonly backend: BackendService) {}
+
   @Get()
   health() {
     return { ok: true, service: 'bob-pro-api', mode: process.env.DEMO_MODE !== 'false' ? 'demo' : 'live' };
+  }
+
+  @Get('ready')
+  async ready() {
+    const r = await this.backend.listCustomers();
+    if (!r.ok) throw new HttpException({ ready: false, error: r.error }, HttpStatus.SERVICE_UNAVAILABLE);
+    return { ready: true, customers: r.value.length };
   }
 }
 

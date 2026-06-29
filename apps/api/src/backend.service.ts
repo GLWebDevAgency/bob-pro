@@ -29,6 +29,8 @@ import {
 import { BobAgent, ModelRouter, type BobCapabilities, type AgentRun } from '@bob/ai';
 import { UuidGenerator, FixtureCashflowSnapshot } from './persistence/in-memory';
 import { PERSISTENCE, type Persistence } from './persistence/persistence';
+import { Metrics } from './observability/metrics';
+import { AppLogger } from './observability/logger';
 import { hasClaudeKey, hasGlmKey } from './config/env';
 
 export interface QuoteView {
@@ -68,7 +70,11 @@ export class BackendService {
   private readonly snapshots = new FixtureCashflowSnapshot(CASH_SNAPSHOT);
   readonly companyId = MERCIER_PROPS.id;
 
-  constructor(@Inject(PERSISTENCE) private readonly p: Persistence) {}
+  constructor(
+    @Inject(PERSISTENCE) private readonly p: Persistence,
+    private readonly metrics: Metrics,
+    private readonly logger: AppLogger,
+  ) {}
 
   private mapQuote(q: Quote): QuoteView {
     return {
@@ -124,22 +130,26 @@ export class BackendService {
   generateInvoice(input: { quoteId: string; mode?: 'deposit' | 'final' }) {
     return new GenerateInvoiceFromQuote({ quotes: this.p.quotes, invoices: this.p.invoices, ids: this.ids }).execute(input);
   }
-  issueInvoice(input: { invoiceId: string }) {
-    return new IssueInvoice({
+  async issueInvoice(input: { invoiceId: string }) {
+    const r = await new IssueInvoice({
       invoices: this.p.invoices,
       companies: this.p.companies,
       customers: this.p.customers,
       counters: this.p.counters,
       clock: this.clock,
     }).execute(input);
+    if (r.ok) this.logger.audit('invoice.issued', { invoiceId: input.invoiceId, number: r.value.number });
+    return r;
   }
-  registerPayment(input: { invoiceId: string; amount: number; method: PaymentMethod }) {
-    return new RegisterPayment({
+  async registerPayment(input: { invoiceId: string; amount: number; method: PaymentMethod }) {
+    const r = await new RegisterPayment({
       invoices: this.p.invoices,
       payments: this.p.payments,
       ids: this.ids,
       clock: this.clock,
     }).execute(input);
+    if (r.ok) this.logger.audit('payment.registered', { invoiceId: input.invoiceId, amount: input.amount, status: r.value.status });
+    return r;
   }
   async getQuote(id: string): Promise<Result<QuoteView, AppError>> {
     const q = await this.p.quotes.findById(id);
@@ -160,7 +170,7 @@ export class BackendService {
     return ok(list.map((i) => this.mapInvoice(i)));
   }
 
-  askBob(message: string): Promise<Result<AgentRun, AppError>> {
+  async askBob(message: string): Promise<Result<AgentRun, AppError>> {
     const caps: BobCapabilities = {
       computePayout: async () => {
         const r = await this.getCashflow('realiste', 30);
@@ -187,6 +197,16 @@ export class BackendService {
       router: new ModelRouter({ hasClaudeKey: hasClaudeKey(), hasGlmKey: hasGlmKey() }),
       caps,
     });
-    return agent.ask(message);
+    const start = Date.now();
+    const r = await agent.ask(message);
+    const ms = Date.now() - start;
+    const intent = r.ok ? r.value.intent : 'error';
+    const model = r.ok ? r.value.model : 'demo';
+    const outcome = r.ok ? 'ok' : 'error';
+    this.metrics.aiRequests.inc({ model, intent, outcome });
+    this.metrics.aiDuration.observe({ model, intent }, ms / 1000);
+    if (!r.ok && r.error.kind === 'dependency' && r.error.port === 'money-guard') this.metrics.aiGuardViolations.inc();
+    this.logger.audit('ai.ask', { model, intent, outcome, ms });
+    return r;
   }
 }
