@@ -1,56 +1,112 @@
 import { frenchVatNumber, nafToTrade, type CompanyLookupPort, type CompanyLookupResult } from '@bob/core';
 
+/** Erreur de dépendance amont (API indisponible/throttlée) — distincte d'un « non trouvé » (null). */
+export class CompanyLookupUnavailableError extends Error {
+  constructor(cause: string) {
+    super(cause);
+    this.name = 'CompanyLookupUnavailableError';
+  }
+}
+
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // SIRET = clé stable -> cache long
+const CACHE_MAX = 500;
+
 /**
  * Adapter réel du CompanyLookupPort sur l'API publique Recherche d'entreprises (gratuite, sans clé).
  * https://recherche-entreprises.api.gouv.fr — 7 req/s par IP (429 + Retry-After).
- * URL configurable (env) pour pointer un miroir/cache si besoin. Dégradation gracieuse : renvoie null en cas d'échec.
+ *
+ * - Cache mémoire (TTL 24 h) des résultats trouvés : absorbe les hits répétés, protège le quota amont.
+ * - Cooldown process-wide sur 429 (respecte Retry-After) : on cesse de marteler l'API pendant le throttle.
+ * - Sémantique : `null` = entreprise introuvable (HTTP 200, 0 résultat) ; on LÈVE CompanyLookupUnavailableError
+ *   en cas de panne amont (timeout, 429, 5xx, JSON corrompu) pour que l'app distingue « introuvable »
+ *   d'« indisponible » (saisie manuelle).
+ * - URL configurable (env) mais validée (https) au démarrage (anti-SSRF de configuration).
  */
 export class RechercheEntreprisesAdapter implements CompanyLookupPort {
+  private static cooldownUntil = 0;
+  private static cache = new Map<string, { value: CompanyLookupResult; exp: number }>();
+
   constructor(
     private readonly baseUrl = process.env.RECHERCHE_ENTREPRISES_URL ?? 'https://recherche-entreprises.api.gouv.fr',
     private readonly timeoutMs = 5000,
-  ) {}
+  ) {
+    let u: URL;
+    try {
+      u = new URL(this.baseUrl);
+    } catch {
+      throw new Error(`RECHERCHE_ENTREPRISES_URL invalide: ${this.baseUrl}`);
+    }
+    if (u.protocol !== 'https:') throw new Error(`RECHERCHE_ENTREPRISES_URL doit être en https: ${this.baseUrl}`);
+  }
 
   async lookupBySiret(siret: string): Promise<CompanyLookupResult | null> {
     const v = siret.replace(/\s/g, '');
+
+    const cached = RechercheEntreprisesAdapter.cache.get(v);
+    if (cached && cached.exp > nowMs()) return cached.value;
+
+    if (nowMs() < RechercheEntreprisesAdapter.cooldownUntil)
+      throw new CompanyLookupUnavailableError('Service entreprises temporairement indisponible (throttle).');
+
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    let res: Response;
     try {
-      const res = await fetch(`${this.baseUrl}/search?q=${encodeURIComponent(v)}&per_page=1`, {
+      res = await fetch(`${this.baseUrl}/search?q=${encodeURIComponent(v)}&per_page=1`, {
         headers: { accept: 'application/json' },
         signal: controller.signal,
       });
-      if (!res.ok) return null;
-      const data = (await res.json()) as RechercheEntreprisesResponse;
-      const r = data.results?.[0];
-      if (!r) return null;
-      const siege = r.siege ?? {};
-      const naf = r.activite_principale ?? null;
-      const line1 =
-        [siege.numero_voie, siege.type_voie, siege.libelle_voie].filter(Boolean).join(' ').trim() ||
-        (siege.adresse ?? '');
-      const address =
-        siege.code_postal && siege.libelle_commune
-          ? { line1, zip: siege.code_postal, city: siege.libelle_commune }
-          : null;
-      const siren = r.siren ?? v.slice(0, 9);
-      const tva = Array.isArray(r.tva) ? r.tva[0] : typeof r.tva === 'string' ? r.tva : null;
-      return {
-        siren,
-        siret: siege.siret ?? v,
-        denomination: r.nom_complet ?? r.nom_raison_sociale ?? `Entreprise ${siren}`,
-        nafApe: naf,
-        trade: nafToTrade(naf),
-        address,
-        tvaIntracom: tva ?? (/^\d{9}$/.test(siren) ? frenchVatNumber(siren) : null),
-        rge: Boolean(r.complements?.est_rge),
-      };
-    } catch {
-      return null;
+    } catch (e) {
+      throw new CompanyLookupUnavailableError(e instanceof Error ? e.message : 'réseau');
     } finally {
       clearTimeout(timer);
     }
+
+    if (res.status === 429) {
+      const retryAfter = Number(res.headers.get('retry-after')) || 60;
+      RechercheEntreprisesAdapter.cooldownUntil = nowMs() + retryAfter * 1000;
+      throw new CompanyLookupUnavailableError('Quota API entreprises atteint.');
+    }
+    if (!res.ok) throw new CompanyLookupUnavailableError(`HTTP ${res.status}`);
+
+    let data: RechercheEntreprisesResponse;
+    try {
+      data = (await res.json()) as RechercheEntreprisesResponse;
+    } catch {
+      throw new CompanyLookupUnavailableError('Réponse amont illisible.');
+    }
+
+    const r = data.results?.[0];
+    if (!r) return null; // 200 + 0 résultat = réellement introuvable
+
+    const siege = r.siege ?? {};
+    const naf = r.activite_principale ?? null;
+    const line1 =
+      [siege.numero_voie, siege.type_voie, siege.libelle_voie].filter(Boolean).join(' ').trim() || (siege.adresse ?? '');
+    const address =
+      siege.code_postal && siege.libelle_commune ? { line1, zip: siege.code_postal, city: siege.libelle_commune } : null;
+    const siren = r.siren ?? v.slice(0, 9);
+    const tva = Array.isArray(r.tva) ? r.tva[0] : typeof r.tva === 'string' ? r.tva : null;
+    const result: CompanyLookupResult = {
+      siren,
+      siret: siege.siret ?? v,
+      denomination: r.nom_complet ?? r.nom_raison_sociale ?? `Entreprise ${siren}`,
+      nafApe: naf,
+      trade: nafToTrade(naf),
+      address,
+      tvaIntracom: tva ?? (/^\d{9}$/.test(siren) ? frenchVatNumber(siren) : null),
+      rge: Boolean(r.complements?.est_rge),
+    };
+
+    if (RechercheEntreprisesAdapter.cache.size >= CACHE_MAX)
+      RechercheEntreprisesAdapter.cache.delete(RechercheEntreprisesAdapter.cache.keys().next().value as string);
+    RechercheEntreprisesAdapter.cache.set(v, { value: result, exp: nowMs() + CACHE_TTL_MS });
+    return result;
   }
+}
+
+function nowMs(): number {
+  return new Date().getTime();
 }
 
 interface RechercheEntreprisesResponse {

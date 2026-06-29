@@ -1,15 +1,16 @@
 import { frenchVatNumber, type CompanyLookupPort, type CompanyLookupResult } from '@bob/core';
 
-/** Profils déterministes pour la démo/offline (clés = SIRET sans espaces). */
+/** Profils déterministes pour la démo/offline (clés = SIRET Luhn-valides, sans espaces).
+ * Aligné sur l'entreprise de seed (MERCIER_PROPS) pour que l'autofill du SIRET démo soit atteignable. */
 const FIXTURES: Record<string, CompanyLookupResult> = {
-  '40483304800010': {
-    siren: '404833048',
-    siret: '40483304800010',
-    denomination: 'MERCIER PLOMBERIE',
+  '73282932000074': {
+    siren: '732829320',
+    siret: '73282932000074',
+    denomination: 'Mercier Plomberie',
     nafApe: '43.22A',
     trade: 'plombier',
-    address: { line1: '12 rue des Artisans', zip: '69003', city: 'Lyon' },
-    tvaIntracom: frenchVatNumber('404833048'),
+    address: { line1: '12 rue des Artisans', zip: '92000', city: 'Nanterre' },
+    tvaIntracom: frenchVatNumber('732829320'),
     rge: true,
   },
 };

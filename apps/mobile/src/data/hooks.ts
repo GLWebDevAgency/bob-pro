@@ -12,14 +12,19 @@ function openUrl(url: string): void {
   void Linking.openURL(url).catch(() => Alert.alert('Lien indisponible', "Impossible d'ouvrir le lien."));
 }
 
-/** Traduit une AppError en message utilisateur (paywall, dépendance, …). */
-function alertError(e: unknown): void {
-  let message = 'Action impossible. Réessaie.';
+/** Traduit une AppError en message utilisateur lisible (paywall, dépendance amont, introuvable, …). */
+export function appErrorMessage(e: unknown): string {
   if (e && typeof e === 'object' && 'kind' in e) {
     const err = e as { kind: string; reason?: string };
-    if (err.kind === 'forbidden') message = err.reason ?? 'Action non autorisée pour ton offre.';
+    if (err.kind === 'forbidden') return err.reason ?? 'Action non autorisée pour ton offre.';
+    if (err.kind === 'dependency') return 'Service indisponible pour le moment. Réessaie ou saisis les infos à la main.';
+    if (err.kind === 'not_found') return 'Introuvable.';
   }
-  Alert.alert('Oups', message);
+  return 'Action impossible. Réessaie.';
+}
+
+function alertError(e: unknown): void {
+  Alert.alert('Oups', appErrorMessage(e));
 }
 
 const keys = {
@@ -82,10 +87,11 @@ export function useInvoicePaymentLink() {
   });
 }
 
-export function useChantiers() {
+export function useChantiers(enabled = true) {
   const client = useBobClient();
   return useQuery({
     queryKey: ['chantiers'],
+    enabled,
     queryFn: async () => {
       const r = await client.listChantiers();
       if (!r.ok) throw r.error;
@@ -104,6 +110,7 @@ export function useCreateChantier() {
       return r.value;
     },
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['chantiers'] }),
+    onError: alertError,
   });
 }
 

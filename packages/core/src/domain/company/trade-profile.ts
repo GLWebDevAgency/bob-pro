@@ -46,10 +46,11 @@ export const MODULE_UNLOCK_TIER: Record<ModuleKey, PlanTier> = {
   abonnements: 'pro',
 };
 
-/** Modules débloqués par un add-on (en plus du palier). Le Pack BTP ouvre les modules chantier
- * lourds à un Solo (Solo + Pack = chantiers complets sans passer Pro ; inclus de fait dès Pro). */
+/** Modules débloqués par un add-on (en plus du palier). Le Pack BTP octroie le module Chantiers
+ * ET les modules chantier lourds — conforme au tagline « Pack Chantier BTP » : tout acheteur
+ * (même au palier gratuit) obtient bien ce qui est vendu. Inclus de fait dès Pro via le palier. */
 export const ADDON_MODULES: Record<AddOn, readonly ModuleKey[]> = {
-  vertical_btp: ['situations_travaux', 'retenue_garantie'],
+  vertical_btp: ['chantiers', 'situations_travaux', 'retenue_garantie'],
 };
 
 export interface TradeProfile {

@@ -17,6 +17,11 @@ export function loadEnv(): Env {
   if (!parsed.success) {
     throw new Error(`Variables d'environnement invalides : ${parsed.error.toString()}`);
   }
+  // Garde-fou : en production, le mode démo (auth pass-through) exposerait des endpoints sans token
+  // et consommerait des ressources externes (API publiques) de façon anonyme. On refuse de démarrer.
+  if (process.env.NODE_ENV === 'production' && parsed.data.DEMO_MODE !== 'false') {
+    throw new Error("Refus de démarrer : en production, DEMO_MODE doit valoir 'false' (l'auth pass-through démo désactive la sécurité).");
+  }
   return parsed.data;
 }
 

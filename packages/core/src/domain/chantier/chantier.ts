@@ -15,7 +15,8 @@ export interface ChantierProps {
 
 /**
  * Agrégat Chantier — module vertical BTP (regroupe devis/factures d'un même chantier).
- * Pertinent pour les métiers du bâtiment (cf. TradeProfile) ; débloqué par palier Pro ou Pack BTP.
+ * Pertinent pour les métiers du bâtiment (cf. TradeProfile) ; débloqué dès le palier Solo (métiers BTP),
+ * ou via le Pack BTP (qui ouvre aussi les modules chantier lourds).
  */
 export class Chantier {
   private constructor(private readonly p: ChantierProps) {}

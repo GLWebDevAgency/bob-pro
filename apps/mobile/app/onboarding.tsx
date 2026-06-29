@@ -41,6 +41,8 @@ export default function Onboarding() {
           placeholder="14 chiffres"
           placeholderTextColor={colors.slate300}
           keyboardType="number-pad"
+          accessibilityLabel="Numéro SIRET (14 chiffres)"
+          accessibilityHint="Pré-remplit ton entreprise et ton métier"
           style={{ flex: 1, backgroundColor: colors.lineSoft, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12, color: colors.ink800 }}
         />
         <Button
@@ -57,7 +59,9 @@ export default function Onboarding() {
       </View>
       {lookup.isPending ? <ActivityIndicator color={colors.ink800} /> : null}
       {lookup.isError ? (
-        <Text style={[font('sub'), { color: '#c0392b' }]}>SIRET introuvable. Choisis ton métier ci-dessous.</Text>
+        <Text accessibilityLiveRegion="polite" accessibilityRole="alert" style={[font('sub'), { color: '#c0392b' }]}>
+          SIRET introuvable. Choisis ton métier ci-dessous.
+        </Text>
       ) : null}
       {found ? (
         <Card>

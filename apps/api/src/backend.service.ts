@@ -340,16 +340,26 @@ export class BackendService {
 
   async createChantier(input: Omit<CreateChantierInput, 'companyId'>): Promise<Result<{ id: string }, AppError>> {
     if (!(await this.chantiersAllowed()))
-      return { ok: false, error: appForbidden('Module Chantiers non inclus dans ton offre (Pro ou Pack BTP).') };
-    const r = await new CreateChantier({ chantiers: this.chantiers, ids: this.ids, clock: this.clock }).execute({
-      companyId: this.companyId(),
-      ...input,
-    });
+      return {
+        ok: false,
+        error: appForbidden('Module Chantiers réservé aux métiers du bâtiment (offre Solo minimum, ou Pack BTP).'),
+      };
+    const r = await new CreateChantier({
+      chantiers: this.chantiers,
+      customers: this.p.customers,
+      ids: this.ids,
+      clock: this.clock,
+    }).execute({ companyId: this.companyId(), ...input });
     if (r.ok) this.logger.audit('chantier.created', { companyId: this.companyId(), id: r.value.id });
     return r;
   }
 
   async listChantiers(): Promise<Result<ChantierProps[], AppError>> {
+    if (!(await this.chantiersAllowed()))
+      return {
+        ok: false,
+        error: appForbidden('Module Chantiers réservé aux métiers du bâtiment (offre Solo minimum, ou Pack BTP).'),
+      };
     const list = await this.chantiers.listByCompany(this.companyId());
     return ok(list.map((c) => c.toProps()));
   }

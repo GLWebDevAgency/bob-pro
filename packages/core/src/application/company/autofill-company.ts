@@ -17,7 +17,13 @@ export class AutofillCompanyFromSiret {
   async execute(input: AutofillCompanyInput): Promise<Result<CompanyLookupResult, AppError>> {
     const v = Siret.of(input.siret);
     if (!v.ok) return err(appDomain(v.error));
-    const res = await this.deps.lookup.lookupBySiret(v.value.value);
+    let res: CompanyLookupResult | null;
+    try {
+      res = await this.deps.lookup.lookupBySiret(v.value.value);
+    } catch (e) {
+      // Panne amont (timeout/429/5xx) — distincte d'un « introuvable » : l'app proposera la saisie manuelle.
+      return err({ kind: 'dependency', port: 'recherche-entreprises', cause: e instanceof Error ? e.message : 'lookup' });
+    }
     if (!res) return err(appNotFound('company', v.value.value));
     return ok(res);
   }

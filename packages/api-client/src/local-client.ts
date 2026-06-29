@@ -196,7 +196,7 @@ export class LocalBobClient implements BobClient {
   }
 
   async createChantier(input: Omit<CreateChantierInput, 'companyId'>): Promise<Result<{ id: string }, AppError>> {
-    return new CreateChantier({ chantiers: this.chantiers, ids: this.ids, clock: this.clock }).execute({ companyId: this.companyId, ...input });
+    return new CreateChantier({ chantiers: this.chantiers, customers: this.customers, ids: this.ids, clock: this.clock }).execute({ companyId: this.companyId, ...input });
   }
 
   async listChantiers(): Promise<Result<ChantierProps[], AppError>> {

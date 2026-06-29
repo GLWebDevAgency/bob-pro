@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ScrollView, View, Text, TextInput, Pressable } from 'react-native';
+import { ScrollView, View, Text, TextInput, Pressable, ActivityIndicator } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -11,12 +11,11 @@ export default function Chantiers() {
   const { colors, semantic } = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { data: profile } = useProfile();
-  const { data: chantiers } = useChantiers();
+  const { data: profile, isLoading: profileLoading } = useProfile();
+  const moduleActive = (profile?.modules ?? []).some((m) => m.key === 'chantiers' && m.active);
+  const { data: chantiers } = useChantiers(moduleActive);
   const create = useCreateChantier();
   const [name, setName] = useState('');
-
-  const moduleActive = (profile?.modules ?? []).some((m) => m.key === 'chantiers' && m.active);
 
   return (
     <ScrollView style={{ flex: 1, backgroundColor: colors.bg }} contentContainerStyle={{ paddingBottom: 40 }}>
@@ -30,11 +29,13 @@ export default function Chantiers() {
       <View style={{ padding: 20, gap: 16 }}>
         <Text style={[font('pageTitle'), { color: colors.ink900 }]}>Chantiers</Text>
 
-        {!moduleActive ? (
+        {profileLoading ? (
+          <ActivityIndicator color={colors.ink800} style={{ marginTop: 24 }} />
+        ) : !moduleActive ? (
           <Card>
             <Text style={[font('cardTitle'), { color: colors.ink900 }]}>Module Chantiers</Text>
             <Text style={[font('sub'), { color: colors.slate500, marginTop: 4 }]}>
-              Regroupe devis, factures et situations par chantier. Inclus dans Pro, ou via le Pack BTP (+10 €/mois).
+              Regroupe devis, factures et situations par chantier. Inclus dès l’offre Solo (métiers du bâtiment), ou via le Pack BTP (+10 €/mois).
             </Text>
             <View style={{ marginTop: 12 }}>
               <Button title="Voir les offres" onPress={() => router.push('/compte')} />

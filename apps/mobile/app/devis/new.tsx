@@ -14,6 +14,7 @@ import {
   useGenerateInvoice,
   useIssueInvoice,
   useRegisterPayment,
+  appErrorMessage,
 } from '../../src/data/hooks';
 import { Card, Button, Chip, MoneyText, Badge, SectionHeader, font } from '../../src/components/ui';
 
@@ -64,7 +65,7 @@ export default function DevisNew() {
     try {
       await fn();
     } catch (e) {
-      setError(e && typeof e === 'object' ? JSON.stringify(e) : 'Une erreur est survenue.');
+      setError(appErrorMessage(e));
     }
   };
 
@@ -157,7 +158,7 @@ export default function DevisNew() {
               </View>
             </Card>
 
-            <Button title="Envoyer pour signature" onPress={onSend} disabled={!customerId || busy} loading={busy} />
+            <Button title="Envoyer pour signature" onPress={onSend} disabled={!customerId || busy || !profile} loading={busy} />
           </>
         ) : null}
 
