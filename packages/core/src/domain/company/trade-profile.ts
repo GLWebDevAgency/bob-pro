@@ -1,21 +1,160 @@
 import { type Trade } from './company';
+import { type VatRate } from '../billing/shared/vat-rate';
+import { type PlanTier, tierAtLeast } from '../subscription/plan';
+
+/**
+ * Configuration par métier : le métier façonne le PRODUIT (modules pertinents, vocabulaire,
+ * défaut TVA), JAMAIS le prix. Quoi montrer = métier ; quoi débloquer = palier (cf.
+ * docs/strategy/2026-pricing-verticalisation.md). Source unique consommée par mobile ET web.
+ */
+export type ModuleKey =
+  | 'devis_factures' // socle (tous métiers, gratuit)
+  | 'chantiers'
+  | 'acomptes'
+  | 'situations_travaux'
+  | 'retenue_garantie'
+  | 'cra' // compte rendu d'activité
+  | 'frais_refactures'
+  | 'forfaits'
+  | 'abonnements'
+  | 'cession_droits';
+
+export const MODULE_LABELS: Record<ModuleKey, string> = {
+  devis_factures: 'Devis & factures',
+  chantiers: 'Chantiers',
+  acomptes: 'Acomptes',
+  situations_travaux: 'Situations de travaux',
+  retenue_garantie: 'Retenue de garantie',
+  cra: 'Compte rendu d’activité',
+  frais_refactures: 'Frais refacturés',
+  forfaits: 'Forfaits',
+  abonnements: 'Abonnements',
+  cession_droits: 'Cession de droits',
+};
+
+/** Palier minimal qui débloque chaque module (socle = free ; modules à valeur = pro). */
+export const MODULE_UNLOCK_TIER: Record<ModuleKey, PlanTier> = {
+  devis_factures: 'free',
+  chantiers: 'solo',
+  acomptes: 'solo',
+  frais_refactures: 'solo',
+  forfaits: 'solo',
+  cession_droits: 'solo',
+  situations_travaux: 'pro',
+  retenue_garantie: 'pro',
+  cra: 'pro',
+  abonnements: 'pro',
+};
 
 export interface TradeProfile {
   trade: Trade;
   label: string;
-  /** Modules/vocabulaire adaptés au métier (onboarding adaptatif). */
-  modules: string[];
+  modules: readonly ModuleKey[]; // modules pertinents (devis_factures toujours inclus)
+  defaultVatRate: VatRate;
+  vocabulary: { customer: string; project: string };
 }
 
-/** Onboarding adaptatif : le métier change le vocabulaire et les modules mis en avant. */
 export const TRADE_PROFILES: Record<Trade, TradeProfile> = {
-  plombier: { trade: 'plombier', label: 'Plombier', modules: ['Chantiers', 'Acomptes', 'Photos', 'TVA travaux 10 %', 'Retenue de garantie'] },
-  electricien: { trade: 'electricien', label: 'Électricien', modules: ['Chantiers', 'Devis', 'TVA travaux', 'Décennale'] },
-  macon: { trade: 'macon', label: 'Maçon', modules: ['Chantiers', 'Situations de travaux', 'Retenue de garantie', 'Décennale'] },
-  peintre: { trade: 'peintre', label: 'Peintre', modules: ['Chantiers', 'TVA travaux', 'Photos avant/après'] },
-  paysagiste: { trade: 'paysagiste', label: 'Paysagiste', modules: ['Chantiers', 'Entretien récurrent', 'TVA travaux'] },
-  consultant: { trade: 'consultant', label: 'Consultant', modules: ['Missions', 'TJM', 'Compte rendu d’activité (CRA)', 'Frais refacturés'] },
-  photographe: { trade: 'photographe', label: 'Photographe', modules: ['Prestations', 'Cession de droits', 'Acomptes'] },
-  coach: { trade: 'coach', label: 'Coach', modules: ['Séances', 'Forfaits', 'Abonnements'] },
-  autre: { trade: 'autre', label: 'Autre', modules: ['Devis', 'Factures', 'Trésorerie'] },
+  plombier: {
+    trade: 'plombier',
+    label: 'Plombier',
+    modules: ['devis_factures', 'chantiers', 'acomptes', 'situations_travaux', 'retenue_garantie'],
+    defaultVatRate: 10,
+    vocabulary: { customer: 'Client', project: 'Chantier' },
+  },
+  electricien: {
+    trade: 'electricien',
+    label: 'Électricien',
+    modules: ['devis_factures', 'chantiers', 'acomptes', 'retenue_garantie'],
+    defaultVatRate: 10,
+    vocabulary: { customer: 'Client', project: 'Chantier' },
+  },
+  macon: {
+    trade: 'macon',
+    label: 'Maçon',
+    modules: ['devis_factures', 'chantiers', 'situations_travaux', 'retenue_garantie'],
+    defaultVatRate: 10,
+    vocabulary: { customer: 'Client', project: 'Chantier' },
+  },
+  peintre: {
+    trade: 'peintre',
+    label: 'Peintre',
+    modules: ['devis_factures', 'chantiers', 'acomptes'],
+    defaultVatRate: 10,
+    vocabulary: { customer: 'Client', project: 'Chantier' },
+  },
+  paysagiste: {
+    trade: 'paysagiste',
+    label: 'Paysagiste',
+    modules: ['devis_factures', 'chantiers', 'abonnements'],
+    defaultVatRate: 10,
+    vocabulary: { customer: 'Client', project: 'Chantier' },
+  },
+  consultant: {
+    trade: 'consultant',
+    label: 'Consultant',
+    modules: ['devis_factures', 'cra', 'frais_refactures'],
+    defaultVatRate: 20,
+    vocabulary: { customer: 'Client', project: 'Mission' },
+  },
+  photographe: {
+    trade: 'photographe',
+    label: 'Photographe',
+    modules: ['devis_factures', 'acomptes', 'cession_droits'],
+    defaultVatRate: 20,
+    vocabulary: { customer: 'Client', project: 'Prestation' },
+  },
+  coach: {
+    trade: 'coach',
+    label: 'Coach',
+    modules: ['devis_factures', 'forfaits', 'abonnements'],
+    defaultVatRate: 20,
+    vocabulary: { customer: 'Client', project: 'Séance' },
+  },
+  autre: {
+    trade: 'autre',
+    label: 'Autre',
+    modules: ['devis_factures'],
+    defaultVatRate: 20,
+    vocabulary: { customer: 'Client', project: 'Projet' },
+  },
 };
+
+export function tradeProfile(trade: Trade): TradeProfile {
+  return TRADE_PROFILES[trade];
+}
+
+export interface TradeModuleStatus {
+  key: ModuleKey;
+  label: string;
+  unlockTier: PlanTier;
+  active: boolean; // débloqué au palier courant
+}
+
+export interface TradeConfig {
+  trade: Trade;
+  label: string;
+  vocabulary: { customer: string; project: string };
+  defaultVatRate: VatRate;
+  modules: TradeModuleStatus[];
+}
+
+/**
+ * Point de vérité unique : métier × palier -> config produit résolue.
+ * Le métier décide la PERTINENCE (quels modules), le palier décide le DROIT (lesquels actifs).
+ */
+export function resolveTradeConfig(trade: Trade, tier: PlanTier): TradeConfig {
+  const p = TRADE_PROFILES[trade];
+  return {
+    trade,
+    label: p.label,
+    vocabulary: { ...p.vocabulary },
+    defaultVatRate: p.defaultVatRate,
+    modules: p.modules.map((key) => ({
+      key,
+      label: MODULE_LABELS[key],
+      unlockTier: MODULE_UNLOCK_TIER[key],
+      active: tierAtLeast(tier, MODULE_UNLOCK_TIER[key]),
+    })),
+  };
+}

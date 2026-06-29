@@ -80,3 +80,11 @@ export function planEntitlements(tier: PlanTier): ReadonlySet<Feature> {
 export function planCan(tier: PlanTier, feature: Feature): boolean {
   return PLAN_CATALOG[tier].features.includes(feature);
 }
+
+/** Ordre croissant des paliers — sert à savoir si un palier en couvre un autre. */
+export const TIER_ORDER: readonly PlanTier[] = ['free', 'solo', 'pro', 'business'];
+
+/** Vrai si `tier` est au moins au niveau de `min` (free < solo < pro < business). */
+export function tierAtLeast(tier: PlanTier, min: PlanTier): boolean {
+  return TIER_ORDER.indexOf(tier) >= TIER_ORDER.indexOf(min);
+}
