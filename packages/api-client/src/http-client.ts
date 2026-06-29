@@ -9,6 +9,7 @@ import type {
   Scenario,
   Horizon,
   PaymentMethod,
+  DiagnosticResult,
 } from '@bob/core';
 import type { BobClient, QuoteView, InvoiceView, SubscriptionView } from './client';
 
@@ -57,6 +58,9 @@ export class HttpBobClient implements BobClient {
 
   getSubscription() {
     return this.req<SubscriptionView>('GET', '/subscription');
+  }
+  getDiagnostic() {
+    return this.req<DiagnosticResult>('GET', '/diagnostic');
   }
   listCustomers() {
     return this.req<CustomerListItem[]>('GET', '/customers');

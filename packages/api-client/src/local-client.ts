@@ -13,6 +13,7 @@ import {
   CASH_SNAPSHOT,
   PLAN_CATALOG,
   planEntitlements,
+  runDiagnostic,
   ok,
   err,
   appNotFound,
@@ -29,6 +30,7 @@ import {
   type CashflowProjection,
   type CustomerListItem,
   type CreateQuoteOutput,
+  type DiagnosticResult,
 } from '@bob/core';
 import {
   InMemoryCompanyRepository,
@@ -110,6 +112,21 @@ export class LocalBobClient implements BobClient {
         features: [...p.features],
       })),
     });
+  }
+
+  async getDiagnostic(): Promise<Result<DiagnosticResult, AppError>> {
+    const company = seedCompany();
+    const types = [...new Set(seedCustomers().map((c) => c.type))];
+    return ok(
+      runDiagnostic({
+        country: 'FR',
+        trade: company.trade,
+        vatRegime: company.vatRegime,
+        customerTypes: types,
+        hasDecennale: company.hasValidDecennale('2026-06-29'),
+        asOf: '2026-06-29',
+      }),
+    );
   }
 
   async listCustomers(): Promise<Result<CustomerListItem[], AppError>> {

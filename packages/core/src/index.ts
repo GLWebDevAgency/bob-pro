@@ -34,6 +34,8 @@ export * from './domain/billing/invoice/invoice';
 export * from './domain/payment/payment';
 export * from './domain/dunning/relance-plan';
 export * from './domain/compliance/einvoice-transmission';
+export * from './domain/compliance/diagnostic';
+export * from './domain/company/trade-profile';
 
 // Couche Application — use cases, ports, fixtures
 export * from './application/result';

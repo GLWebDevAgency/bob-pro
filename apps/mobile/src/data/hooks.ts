@@ -23,6 +23,18 @@ export function useSubscription() {
   });
 }
 
+export function useDiagnostic() {
+  const client = useBobClient();
+  return useQuery({
+    queryKey: ['diagnostic'],
+    queryFn: async () => {
+      const r = await client.getDiagnostic();
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+  });
+}
+
 export function useCustomers() {
   const client = useBobClient();
   return useQuery({

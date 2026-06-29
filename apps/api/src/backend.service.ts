@@ -19,6 +19,7 @@ import {
   Subscription,
   PLAN_CATALOG,
   planEntitlements,
+  runDiagnostic,
   MERCIER_PROPS,
   CASH_SNAPSHOT,
   type Result,
@@ -38,6 +39,7 @@ import {
   type InvoicePdfData,
   type CompanyProps,
   type CustomerProps,
+  type DiagnosticResult,
 } from '@bob/core';
 import { BobAgent, ModelRouter, type BobCapabilities, type AgentRun } from '@bob/ai';
 import { UuidGenerator, FixtureCashflowSnapshot } from './persistence/in-memory';
@@ -245,6 +247,23 @@ export class BackendService {
       features: [...planEntitlements(this.subscription.tier)],
       catalog: Object.values(PLAN_CATALOG),
     };
+  }
+
+  async getDiagnostic(): Promise<Result<DiagnosticResult, AppError>> {
+    const company = await this.p.companies.findById(this.companyId());
+    if (!company) return { ok: false, error: appNotFound('company', this.companyId()) };
+    const customers = await this.p.customers.listByCompany(this.companyId());
+    const customerTypes = [...new Set(customers.map((c) => c.type))];
+    return ok(
+      runDiagnostic({
+        country: 'FR',
+        trade: company.trade,
+        vatRegime: company.vatRegime,
+        customerTypes,
+        hasDecennale: company.hasValidDecennale(this.clock.today()),
+        asOf: this.clock.today(),
+      }),
+    );
   }
 
   startCheckout(tier: PlanTier) {

@@ -4,14 +4,15 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { formatEUR } from '@bob/core';
 import { useTheme } from '../src/theme';
-import { useSubscription } from '../src/data/hooks';
+import { useSubscription, useDiagnostic } from '../src/data/hooks';
 import { Card, Badge, Button, SectionHeader, font } from '../src/components/ui';
 
 export default function Compte() {
-  const { colors, theme } = useTheme();
+  const { colors, theme, semantic } = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { data } = useSubscription();
+  const { data: diag } = useDiagnostic();
 
   return (
     <ScrollView style={{ flex: 1, backgroundColor: colors.bg }} contentContainerStyle={{ paddingBottom: 40 }}>
@@ -28,6 +29,32 @@ export default function Compte() {
         <Card>
           <Text style={[font('cardTitle'), { color: colors.ink800 }]}>Mercier Plomberie</Text>
           <Text style={[font('sub'), { color: colors.slate400, marginTop: 2 }]}>EI · SIRET 732 829 320 00074 · RM 92</Text>
+        </Card>
+
+        <SectionHeader title="Conformité 2026" />
+        <Card>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+            <View style={{ flex: 1 }}>
+              <Text style={[font('cardTitle'), { color: colors.ink900 }]}>Diagnostic de conformité</Text>
+              <Text style={[font('sub'), { color: colors.slate400, marginTop: 2 }]}>
+                Facture électronique, TVA, mentions légales — ta préparation à la réforme.
+              </Text>
+            </View>
+            {diag ? (
+              <Text
+                style={[
+                  font('bigNum'),
+                  { color: diag.band === 'green' ? semantic.success : diag.band === 'orange' ? semantic.warning : semantic.danger },
+                ]}
+              >
+                {diag.score}
+              </Text>
+            ) : null}
+          </View>
+          <View style={{ marginTop: 12, gap: 8 }}>
+            <Button title="Voir mon diagnostic" onPress={() => router.push('/diagnostic')} />
+            <Button title="Configurer mon métier" variant="secondary" onPress={() => router.push('/onboarding')} />
+          </View>
         </Card>
 
         <SectionHeader title="Ton offre" />
