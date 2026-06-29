@@ -25,6 +25,7 @@ import {
   DiagnosticController,
   DocumentsController,
   ExpensesController,
+  PublicSignatureController,
 } from './api.controllers';
 
 @Module({
@@ -47,6 +48,7 @@ import {
     DiagnosticController,
     DocumentsController,
     ExpensesController,
+    PublicSignatureController,
   ],
   providers: [
     BackendService,

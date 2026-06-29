@@ -85,6 +85,18 @@ export interface InvoiceView {
   paid: number;
 }
 
+/** Vue publique d'un devis pour la page de signature client à distance (lien tokenisé). */
+export interface SignatureView {
+  number: string | null;
+  companyName: string;
+  customerName: string;
+  status: string;
+  signed: boolean;
+  validUntil: string | null;
+  lines: { label: string; qty: number; unitPriceHT: number; vatRate: number }[];
+  totals: Totals;
+}
+
 /**
  * Autorité serveur : wire les use cases du domaine sur le bundle Persistence injecté
  * (in-memory en démo, Prisma/Postgres en prod). L'app bascule en HttpBobClient sans changer d'écran.
@@ -210,6 +222,29 @@ export class BackendService {
   async listInvoices(): Promise<Result<InvoiceView[], AppError>> {
     const list = await this.p.invoices.listByCompany(this.companyId());
     return ok(list.map((i) => this.mapInvoice(i)));
+  }
+
+  // ——— Signature client à distance (public, par lien tokenisé) ———
+  /** Vue publique d'un devis par son token (= identifiant du devis en V1). */
+  async publicQuoteForSignature(token: string): Promise<Result<SignatureView, AppError>> {
+    const q = await this.p.quotes.findById(token);
+    if (!q) return { ok: false, error: appNotFound('quote', token) };
+    const company = await this.p.companies.findById(q.companyId);
+    const customer = await this.p.customers.findById(q.customerId);
+    return ok({
+      number: q.number,
+      companyName: company?.name ?? '',
+      customerName: customer?.name ?? '',
+      status: q.status,
+      signed: q.signature !== null,
+      validUntil: q.validUntil,
+      lines: q.lines.map((l) => ({ label: l.label, qty: l.qty, unitPriceHT: l.unitPriceHT, vatRate: l.vatRate })),
+      totals: q.totals(),
+    });
+  }
+
+  async publicSignQuote(token: string, signerName: string): Promise<Result<{ status: string }, AppError>> {
+    return new SignQuote({ quotes: this.p.quotes, clock: this.clock }).execute({ quoteId: token, signerName });
   }
 
   async askBob(message: string): Promise<Result<AgentRun, AppError>> {

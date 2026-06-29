@@ -161,6 +161,20 @@ export class DocumentsController {
   }
 }
 
+@Controller('public/sign')
+export class PublicSignatureController {
+  constructor(private readonly backend: BackendService) {}
+  @Get(':token')
+  async get(@Param('token') token: string) {
+    return unwrap(await this.backend.publicQuoteForSignature(token));
+  }
+  @Post(':token')
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  async sign(@Param('token') token: string, @Body() body: { signerName: string }) {
+    return unwrap(await this.backend.publicSignQuote(token, body.signerName));
+  }
+}
+
 @Controller('expenses')
 export class ExpensesController {
   constructor(private readonly backend: BackendService) {}

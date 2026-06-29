@@ -29,7 +29,8 @@ export class SupabaseAuthGuard implements CanActivate {
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const req = context.switchToHttp().getRequest<RequestLike>();
-    if (req.url.startsWith('/health') || req.url.startsWith('/metrics')) return true;
+    // Infra + endpoints publics (signature client à distance par lien tokenisé) toujours ouverts.
+    if (req.url.startsWith('/health') || req.url.startsWith('/metrics') || req.url.startsWith('/public/')) return true;
 
     if (isDemoMode()) {
       // Démo : tenant via header x-company-id (par défaut la société de seed).
