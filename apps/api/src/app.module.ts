@@ -1,6 +1,7 @@
 import { Module, type NestModule, type MiddlewareConsumer } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { ScheduleModule } from '@nestjs/schedule';
+import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { BackendService } from './backend.service';
 import { PersistenceModule } from './persistence/persistence.module';
 import { ObservabilityModule } from './observability/observability.module';
@@ -22,7 +23,12 @@ import {
 } from './api.controllers';
 
 @Module({
-  imports: [ScheduleModule.forRoot(), ObservabilityModule, PersistenceModule],
+  imports: [
+    ScheduleModule.forRoot(),
+    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 100 }]),
+    ObservabilityModule,
+    PersistenceModule,
+  ],
   controllers: [
     HealthController,
     CustomersController,
@@ -39,6 +45,7 @@ import {
     paymentGatewayProvider,
     { provide: PDF_RENDERER, useClass: PdfRenderer },
     { provide: NOTIFIER, useClass: DemoNotifier },
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
     { provide: APP_GUARD, useClass: SupabaseAuthGuard },
   ],
 })

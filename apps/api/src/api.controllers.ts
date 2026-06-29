@@ -10,6 +10,7 @@ import {
   StreamableFile,
 } from '@nestjs/common';
 import type { CreateQuoteInput, Scenario, Horizon, PaymentMethod, PlanTier } from '@bob/core';
+import { Throttle } from '@nestjs/throttler';
 import { BackendService } from './backend.service';
 import { RelanceService } from './jobs/relance.service';
 import { unwrap } from './http/result';
@@ -141,6 +142,7 @@ export class SubscriptionController {
 export class AiController {
   constructor(private readonly backend: BackendService) {}
   @Post('ask')
+  @Throttle({ default: { limit: 5, ttl: 10_000 } })
   async ask(@Body() body: { message: string }) {
     return unwrap(await this.backend.askBob(body.message));
   }
