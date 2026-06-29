@@ -1,0 +1,189 @@
+// Bob Pro — schéma Postgres (source de vérité financière). Aligné sur le blueprint §6.2.
+// Statut : modèle DB documenté. Les adapters Prisma + la réhydratation des agrégats sont
+// l'incrément suivant ; l'API tourne aujourd'hui sur des adapters in-memory (DEMO_MODE).
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum LegalForm { EI EURL SASU SARL SAS micro }
+enum VatRegime { franchise reel_simpl reel_normal }
+enum CustomerType { b2c b2b b2g }
+enum DocKind { quote invoice deposit_invoice credit_note situation }
+enum QuoteStatus { draft sent viewed signed refused expired }
+enum InvoiceStatus { draft issued partially_paid paid late cancelled }
+enum TransmissionStatus { issued transmitted received accepted refused paid }
+enum LineCategory { labor supply travel disbursement subscription }
+enum PaymentMethod { card transfer cash }
+enum EinvoiceChannel { pdp chorus_pro ereporting }
+
+model Company {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ownerUserId  String   @db.Uuid
+  name         String
+  legalForm    LegalForm
+  siren        String   @db.Char(9)
+  siret        String   @unique @db.Char(14)
+  apeCode      String?
+  trade        String
+  vatRegime    VatRegime
+  rcsOrRm      String?
+  addrLine1    String
+  addrZip      String
+  addrCity     String
+  iban         String?
+  bic          String?
+  insurerName  String?
+  policyNo     String?
+  coverage     String?
+  policyExpiresAt DateTime?
+  customers    Customer[]
+  quotes       Quote[]
+  invoices     Invoice[]
+  payments     Payment[]
+  counters     DocumentCounter[]
+  @@index([ownerUserId])
+  @@map("companies")
+}
+
+model Customer {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  companyId     String   @db.Uuid
+  company       Company  @relation(fields: [companyId], references: [id])
+  type          CustomerType
+  name          String
+  siren         String?  @db.Char(9)
+  isInternational Boolean @default(false)
+  addrLine1     String
+  addrZip       String
+  addrCity      String
+  email         String?
+  phone         String?
+  ptDays        Int      @default(30)
+  ptEndOfMonth  Boolean  @default(false)
+  ptLabel       String   @default("Paiement à 30 jours")
+  score         Int      @default(0)
+  avgDelayDays  Int      @default(0)
+  outstanding   Int      @default(0)
+  @@unique([companyId, siren], name: "uniq_customer_siren_per_company")
+  @@index([companyId])
+  @@index([companyId, type])
+  @@map("customers")
+}
+
+model Quote {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  companyId     String   @db.Uuid
+  company       Company  @relation(fields: [companyId], references: [id])
+  customerId    String   @db.Uuid
+  status        QuoteStatus @default(draft)
+  number        String?
+  fiscalYear    Int?
+  sequence      Int?
+  sentAt        DateTime?
+  validUntil    DateTime?
+  depositPct    Int?
+  totalsHt      Int      @default(0)
+  totalsVat     Int      @default(0)
+  totalsTtc     Int      @default(0)
+  totalsNetToPay Int     @default(0)
+  vatByRate     Json     @default("{}")
+  legalMentions String[] @default([])
+  lines         LineItem[] @relation("QuoteLines")
+  @@unique([companyId, number], name: "uniq_quote_number")
+  @@index([companyId, status])
+  @@index([companyId, customerId])
+  @@map("quotes")
+}
+
+model Invoice {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  companyId     String   @db.Uuid
+  company       Company  @relation(fields: [companyId], references: [id])
+  customerId    String   @db.Uuid
+  kind          DocKind
+  status        InvoiceStatus @default(draft)
+  number        String?
+  fiscalYear    Int?
+  sequence      Int?
+  issuedAt      DateTime?
+  dueAt         DateTime?
+  parentQuoteId String?  @db.Uuid
+  depositPct    Int?
+  totalsHt      Int      @default(0)
+  totalsVat     Int      @default(0)
+  totalsTtc     Int      @default(0)
+  totalsNetToPay Int     @default(0)
+  vatByRate     Json     @default("{}")
+  legalMentions String[] @default([])
+  lines         LineItem[] @relation("InvoiceLines")
+  payments      Payment[]
+  transmission  EinvoiceTransmission?
+  @@unique([companyId, fiscalYear, sequence], name: "uniq_invoice_seq")
+  @@unique([companyId, number], name: "uniq_invoice_number")
+  @@index([companyId, status])
+  @@index([dueAt])
+  @@map("invoices")
+}
+
+model LineItem {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  quoteId     String?  @db.Uuid
+  quote       Quote?   @relation("QuoteLines", fields: [quoteId], references: [id])
+  invoiceId   String?  @db.Uuid
+  invoice     Invoice? @relation("InvoiceLines", fields: [invoiceId], references: [id])
+  position    Int
+  label       String
+  category    LineCategory
+  qty         Decimal  @db.Decimal(12, 3)
+  unit        String?
+  unitPriceHt Int
+  vatRate     Decimal  @db.Decimal(4, 2) // CHECK (vatRate IN (0,2.1,5.5,10,20)) via migration SQL
+  @@index([quoteId])
+  @@index([invoiceId])
+  @@map("line_items")
+}
+
+model Payment {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  companyId  String   @db.Uuid
+  company    Company  @relation(fields: [companyId], references: [id])
+  invoiceId  String   @db.Uuid
+  invoice    Invoice  @relation(fields: [invoiceId], references: [id])
+  amount     Int
+  method     PaymentMethod
+  receivedAt DateTime
+  @@index([invoiceId])
+  @@map("payments")
+}
+
+model EinvoiceTransmission {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  invoiceId     String   @unique @db.Uuid
+  invoice       Invoice  @relation(fields: [invoiceId], references: [id])
+  channel       EinvoiceChannel
+  status        TransmissionStatus @default(issued)
+  ereportingKind String?
+  scope         String?
+  receiptRef    String?
+  transmittedAt DateTime?
+  receivedAt    DateTime?
+  @@index([status])
+  @@map("einvoice_transmissions")
+}
+
+// Numérotation sans trou : allouée par le use case via SELECT ... FOR UPDATE sur cette table.
+model DocumentCounter {
+  companyId  String  @db.Uuid
+  company    Company @relation(fields: [companyId], references: [id])
+  counterKey String // 'quote' | 'invoice' | 'credit'
+  fiscalYear Int
+  nextValue  Int     @default(1)
+  @@id([companyId, counterKey, fiscalYear])
+  @@map("document_counters")
+}

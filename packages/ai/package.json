@@ -2,11 +2,14 @@
   "name": "@bob/ai",
   "version": "0.0.0",
   "type": "module",
-  "main": "./dist/index.js",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js", "require": "./dist/index.cjs" }
+  },
   "scripts": {
-    "build": "tsup src/index.ts --format esm --dts --external @bob/core",
+    "build": "tsup src/index.ts --format esm,cjs --dts --external @bob/core",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src"
