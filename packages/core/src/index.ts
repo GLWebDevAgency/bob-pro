@@ -37,6 +37,7 @@ export * from './domain/dunning/relance-plan';
 export * from './domain/compliance/einvoice-transmission';
 export * from './domain/compliance/diagnostic';
 export * from './domain/compliance/facturx';
+export * from './domain/compliance/facturx-validation';
 export * from './domain/company/trade-profile';
 export * from './domain/ocr/ocr-extraction';
 
