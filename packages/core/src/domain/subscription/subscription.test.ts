@@ -3,14 +3,21 @@ import { PLAN_CATALOG, planCan } from './plan';
 import { Subscription } from './subscription';
 
 describe('Offres & entitlements', () => {
-  it('catalogue : Solo 19 € / Pro 39 € / Business 79 €', () => {
-    expect(PLAN_CATALOG.solo.priceCents).toBe(1900);
-    expect(PLAN_CATALOG.pro.priceCents).toBe(3900);
-    expect(PLAN_CATALOG.business.priceCents).toBe(7900);
+  it('catalogue : Gratuit 0 € / Solo 14 € / Pro 29 € / Business 59 €', () => {
+    expect(PLAN_CATALOG.free.priceCents).toBe(0);
+    expect(PLAN_CATALOG.solo.priceCents).toBe(1400);
+    expect(PLAN_CATALOG.pro.priceCents).toBe(2900);
+    expect(PLAN_CATALOG.business.priceCents).toBe(5900);
+    // Annuel ~ -20 %.
+    expect(PLAN_CATALOG.pro.annualMonthlyCents).toBe(2400);
   });
-  it('feature-gating par offre', () => {
-    expect(planCan('solo', 'online_payment')).toBe(false);
-    expect(planCan('pro', 'online_payment')).toBe(true);
+  it('feature-gating : IA Bob = Pro+, paiement en ligne = Business', () => {
+    expect(planCan('free', 'ai_quota')).toBe(true);
+    expect(planCan('free', 'ai_assistant')).toBe(false);
+    expect(planCan('solo', 'ai_assistant')).toBe(false); // Solo ne débloque PAS Bob illimité
+    expect(planCan('pro', 'ai_assistant')).toBe(true);
+    expect(planCan('pro', 'online_payment')).toBe(false); // paiement en ligne réservé à Business
+    expect(planCan('business', 'online_payment')).toBe(true);
     expect(planCan('pro', 'team')).toBe(false);
     expect(planCan('business', 'team')).toBe(true);
   });
@@ -25,7 +32,8 @@ describe('Subscription', () => {
 
   it('can() combine statut actif ET offre', () => {
     const pro = sub({ id: 's1', companyId: 'c1', tier: 'pro', status: 'active' });
-    expect(pro.can('online_payment')).toBe(true);
+    expect(pro.can('ai_assistant')).toBe(true);
+    expect(pro.can('online_payment')).toBe(false); // Business uniquement
     expect(pro.can('team')).toBe(false);
   });
   it('un abonnement résilié n’ouvre plus rien', () => {

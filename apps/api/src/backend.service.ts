@@ -122,7 +122,7 @@ export class BackendService {
     private readonly metrics: Metrics,
     private readonly logger: AppLogger,
   ) {
-    const seed = Subscription.start({ id: 'sub-mercier', companyId: MERCIER_PROPS.id, tier: 'pro', status: 'active' });
+    const seed = Subscription.start({ id: 'sub-mercier', companyId: MERCIER_PROPS.id, tier: 'business', status: 'active' });
     if (!seed.ok) throw new Error('abonnement de seed invalide');
     this.subscription = seed.value;
   }

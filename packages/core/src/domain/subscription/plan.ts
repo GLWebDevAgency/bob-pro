@@ -1,34 +1,75 @@
-export type PlanTier = 'solo' | 'pro' | 'business';
+export type PlanTier = 'free' | 'solo' | 'pro' | 'business';
 
 export type Feature =
-  | 'ai_assistant' // Bob (toutes offres)
+  | 'ai_quota' // Bob en quota découverte (palier gratuit)
+  | 'ai_assistant' // Bob l'IA illimité (fair use)
+  | 'einvoice_emission' // émission de factures électroniques (2027)
+  | 'ocr' // OCR des dépenses fournisseurs
+  | 'cashflow_forecast' // trésorerie prévisionnelle
+  | 'auto_dunning' // relances automatiques rédigées par l'IA
   | 'online_payment' // paiement en ligne des factures par les clients
   | 'invoice_advance' // avance sur facture
-  | 'team' // membres d'équipe
+  | 'team' // membres d'équipe / rôles
   | 'priority_support'
   | 'insurance'; // assurance décennale / RC Pro partenaire
 
 export interface Plan {
   tier: PlanTier;
   label: string;
-  priceCents: number; // par mois
+  priceCents: number; // mensuel
+  annualMonthlyCents: number; // équivalent mensuel facturé à l'année (~ -20 %)
+  tagline: string;
   features: readonly Feature[];
 }
 
-/** Offres du proto : Solo 19 € / Pro 39 € / Business 79 €. */
+/**
+ * Modèle « conformité gratuite, intelligence payante » (cf. docs/strategy/2026-pricing-strategy.md).
+ * Différenciation par VALEUR/VOLUME/IA — jamais par appareil (web + mobile à tous les paliers).
+ * Réception e-facture 2026 = socle gratuit (commodité) ; Bob l'IA = aimant premium (Pro+).
+ */
 export const PLAN_CATALOG: Record<PlanTier, Plan> = {
-  solo: { tier: 'solo', label: 'Solo', priceCents: 1900, features: ['ai_assistant'] },
+  free: {
+    tier: 'free',
+    label: 'Découverte',
+    priceCents: 0,
+    annualMonthlyCents: 0,
+    tagline: 'Conforme 2026, gratuitement',
+    features: ['ai_quota'],
+  },
+  solo: {
+    tier: 'solo',
+    label: 'Solo',
+    priceCents: 1400,
+    annualMonthlyCents: 1200,
+    tagline: 'Facture sans limite',
+    features: ['einvoice_emission', 'ocr'],
+  },
   pro: {
     tier: 'pro',
     label: 'Pro',
-    priceCents: 3900,
-    features: ['ai_assistant', 'online_payment', 'invoice_advance'],
+    priceCents: 2900,
+    annualMonthlyCents: 2400,
+    tagline: 'Bob pilote ta paperasse',
+    features: ['einvoice_emission', 'ocr', 'ai_assistant', 'auto_dunning', 'cashflow_forecast'],
   },
   business: {
     tier: 'business',
     label: 'Business',
-    priceCents: 7900,
-    features: ['ai_assistant', 'online_payment', 'invoice_advance', 'team', 'priority_support', 'insurance'],
+    priceCents: 5900,
+    annualMonthlyCents: 4900,
+    tagline: 'Pour les équipes',
+    features: [
+      'einvoice_emission',
+      'ocr',
+      'ai_assistant',
+      'auto_dunning',
+      'cashflow_forecast',
+      'online_payment',
+      'invoice_advance',
+      'team',
+      'priority_support',
+      'insurance',
+    ],
   },
 };
 

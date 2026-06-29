@@ -66,21 +66,24 @@ export default function Compte() {
           const current = p.tier === data?.tier;
           return (
             <Card key={p.tier} style={current ? { borderColor: theme.ink2, borderWidth: 2 } : undefined}>
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                <View>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                <View style={{ flex: 1 }}>
                   <Text style={[font('cardTitle'), { color: colors.ink900 }]}>{p.label}</Text>
-                  <Text style={[font('sub'), { color: colors.slate400 }]}>{p.features.length} fonctionnalités incluses</Text>
+                  <Text style={[font('sub'), { color: colors.slate400 }]}>{p.tagline}</Text>
                 </View>
                 <View style={{ alignItems: 'flex-end' }}>
-                  <Text style={[font('bigNum'), { color: colors.ink900 }]}>{formatEUR(p.priceCents)}</Text>
-                  <Text style={[font('meta'), { color: colors.slate400 }]}>/ mois</Text>
+                  <Text style={[font('bigNum'), { color: colors.ink900 }]}>{p.priceCents === 0 ? 'Gratuit' : formatEUR(p.priceCents)}</Text>
+                  {p.priceCents > 0 ? <Text style={[font('meta'), { color: colors.slate400 }]}>/ mois</Text> : null}
+                  {p.annualMonthlyCents > 0 && p.annualMonthlyCents < p.priceCents ? (
+                    <Text style={[font('meta'), { color: semantic.success }]}>{formatEUR(p.annualMonthlyCents)}/mois en annuel</Text>
+                  ) : null}
                 </View>
               </View>
               {current ? (
                 <View style={{ marginTop: 10 }}>
                   <Badge label={`Offre actuelle · ${data?.status}`} tone="success" />
                 </View>
-              ) : (
+              ) : p.tier !== 'free' ? (
                 <View style={{ marginTop: 12 }}>
                   <Button
                     title={checkout.isPending ? 'Redirection…' : `Passer à ${p.label}`}
@@ -89,7 +92,7 @@ export default function Compte() {
                     onPress={() => checkout.mutate(p.tier as PlanTier)}
                   />
                 </View>
-              )}
+              ) : null}
             </Card>
           );
         })}

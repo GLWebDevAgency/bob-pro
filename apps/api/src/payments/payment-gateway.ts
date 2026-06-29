@@ -22,7 +22,7 @@ export class StripePaymentGateway implements PaymentGatewayPort {
   private readonly stripe: Stripe;
   constructor(
     apiKey: string,
-    private readonly priceIds: Record<PlanTier, string>,
+    private readonly priceIds: Partial<Record<PlanTier, string>>,
   ) {
     this.stripe = new Stripe(apiKey);
   }
@@ -32,9 +32,11 @@ export class StripePaymentGateway implements PaymentGatewayPort {
     successUrl: string;
     cancelUrl: string;
   }): Promise<CheckoutResult> {
+    const price = this.priceIds[input.tier];
+    if (!price) throw new Error(`Aucun price Stripe configuré pour l'offre ${input.tier} (le palier gratuit n'a pas de checkout).`);
     const session = await this.stripe.checkout.sessions.create({
       mode: 'subscription',
-      line_items: [{ price: this.priceIds[input.tier], quantity: 1 }],
+      line_items: [{ price, quantity: 1 }],
       success_url: input.successUrl,
       cancel_url: input.cancelUrl,
       client_reference_id: input.companyId,

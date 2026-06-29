@@ -57,7 +57,7 @@ export interface SubscriptionView {
   status: string;
   currentPeriodEnd: string | null;
   features: string[];
-  catalog: { tier: string; label: string; priceCents: number; features: string[] }[];
+  catalog: { tier: string; label: string; priceCents: number; annualMonthlyCents: number; tagline: string; features: string[] }[];
 }
 
 export interface BobClient {

@@ -112,14 +112,16 @@ export class LocalBobClient implements BobClient {
 
   async getSubscription(): Promise<Result<SubscriptionView, AppError>> {
     return ok({
-      tier: 'pro',
+      tier: 'business',
       status: 'active',
       currentPeriodEnd: null,
-      features: [...planEntitlements('pro')],
+      features: [...planEntitlements('business')],
       catalog: Object.values(PLAN_CATALOG).map((p) => ({
         tier: p.tier,
         label: p.label,
         priceCents: p.priceCents,
+        annualMonthlyCents: p.annualMonthlyCents,
+        tagline: p.tagline,
         features: [...p.features],
       })),
     });
