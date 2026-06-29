@@ -67,6 +67,12 @@ export class HttpBobClient implements BobClient {
   startCheckout(tier: PlanTier) {
     return this.req<{ url: string }>('POST', '/subscription/checkout', { tier });
   }
+  billingPortal() {
+    return this.req<{ url: string }>('POST', '/subscription/portal');
+  }
+  invoicePaymentLink(invoiceId: string) {
+    return this.req<{ url: string }>('POST', `/invoices/${invoiceId}/payment-link`);
+  }
   getDiagnostic() {
     return this.req<DiagnosticResult>('GET', '/diagnostic');
   }

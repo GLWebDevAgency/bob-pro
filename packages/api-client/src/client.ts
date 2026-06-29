@@ -64,6 +64,8 @@ export interface BobClient {
   readonly companyId: string;
   getSubscription(): Promise<Result<SubscriptionView, AppError>>;
   startCheckout(tier: PlanTier): Promise<Result<{ url: string }, AppError>>;
+  billingPortal(): Promise<Result<{ url: string }, AppError>>;
+  invoicePaymentLink(invoiceId: string): Promise<Result<{ url: string }, AppError>>;
   getDiagnostic(): Promise<Result<DiagnosticResult, AppError>>;
   extractDocument(input: { contentBase64: string; mimeType: string }): Promise<Result<OcrExtraction, AppError>>;
   recordExpense(input: Omit<RecordExpenseInput, 'companyId'>): Promise<Result<{ id: string }, AppError>>;

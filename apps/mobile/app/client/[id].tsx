@@ -2,8 +2,9 @@ import { ScrollView, View, Text, Pressable } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { formatEUR } from '@bob/core';
 import { useTheme } from '../../src/theme';
-import { useCustomers } from '../../src/data/hooks';
+import { useCustomers, useInvoices, useInvoicePaymentLink } from '../../src/data/hooks';
 import { Card, Badge, ScoreBar, MoneyText, Button, SectionHeader, font } from '../../src/components/ui';
 
 export default function ClientDetail() {
@@ -12,7 +13,10 @@ export default function ClientDetail() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { data } = useCustomers();
+  const { data: invoices } = useInvoices();
+  const pay = useInvoicePaymentLink();
   const customer = (data ?? []).find((c) => c.id === id) ?? null;
+  const custInvoices = (invoices ?? []).filter((i) => i.customerId === id && i.status !== 'draft');
 
   const einvoice =
     customer?.type === 'b2g'
@@ -60,6 +64,34 @@ export default function ClientDetail() {
             <SectionHeader title="Encours" />
             <MoneyText cents={customer.outstanding} variant="big" color={customer.outstanding > 0 ? semantic.danger : semantic.success} />
           </Card>
+
+          {custInvoices.length > 0 ? (
+            <Card>
+              <SectionHeader title="Factures" />
+              {custInvoices.map((inv) => {
+                const payable = inv.status === 'issued' || inv.status === 'partially_paid' || inv.status === 'late';
+                return (
+                  <View key={inv.id} style={{ marginTop: 10 }}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <Text style={[font('cardTitle'), { color: colors.ink900 }]}>{inv.number ?? '—'}</Text>
+                      <Text style={[font('cardTitle'), { color: colors.ink900 }]}>{formatEUR(inv.totals.netToPay)}</Text>
+                    </View>
+                    <Text style={[font('meta'), { color: colors.slate400 }]}>{inv.status}</Text>
+                    {payable ? (
+                      <View style={{ marginTop: 8 }}>
+                        <Button
+                          title={pay.isPending ? 'Lien…' : 'Lien de paiement'}
+                          variant="secondary"
+                          disabled={pay.isPending}
+                          onPress={() => pay.mutate(inv.id)}
+                        />
+                      </View>
+                    ) : null}
+                  </View>
+                );
+              })}
+            </Card>
+          ) : null}
 
           <Button title="Créer un devis" onPress={() => router.push('/devis/new')} />
         </View>

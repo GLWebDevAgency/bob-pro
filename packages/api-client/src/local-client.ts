@@ -130,6 +130,14 @@ export class LocalBobClient implements BobClient {
     return ok({ url: `https://demo.bobpro.fr/abo/${tier}` });
   }
 
+  async billingPortal(): Promise<Result<{ url: string }, AppError>> {
+    return ok({ url: 'https://demo.bobpro.fr/portail' });
+  }
+
+  async invoicePaymentLink(invoiceId: string): Promise<Result<{ url: string }, AppError>> {
+    return ok({ url: `https://demo.bobpro.fr/pay/${invoiceId}` });
+  }
+
   async getDiagnostic(): Promise<Result<DiagnosticResult, AppError>> {
     const company = seedCompany();
     const types = [...new Set(seedCustomers().map((c) => c.type))];

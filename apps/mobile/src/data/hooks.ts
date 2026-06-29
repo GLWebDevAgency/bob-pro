@@ -38,6 +38,34 @@ export function useStartCheckout() {
   });
 }
 
+export function useBillingPortal() {
+  const client = useBobClient();
+  return useMutation({
+    mutationFn: async () => {
+      const r = await client.billingPortal();
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: (v) => {
+      void Linking.openURL(v.url);
+    },
+  });
+}
+
+export function useInvoicePaymentLink() {
+  const client = useBobClient();
+  return useMutation({
+    mutationFn: async (invoiceId: string) => {
+      const r = await client.invoicePaymentLink(invoiceId);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: (v) => {
+      void Linking.openURL(v.url);
+    },
+  });
+}
+
 export function useDiagnostic() {
   const client = useBobClient();
   return useQuery({

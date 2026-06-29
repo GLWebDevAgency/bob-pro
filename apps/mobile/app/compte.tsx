@@ -4,7 +4,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { formatEUR, type PlanTier } from '@bob/core';
 import { useTheme } from '../src/theme';
-import { useSubscription, useDiagnostic, useStartCheckout } from '../src/data/hooks';
+import { useSubscription, useDiagnostic, useStartCheckout, useBillingPortal } from '../src/data/hooks';
 import { Card, Badge, Button, SectionHeader, font } from '../src/components/ui';
 
 export default function Compte() {
@@ -14,6 +14,7 @@ export default function Compte() {
   const { data } = useSubscription();
   const { data: diag } = useDiagnostic();
   const checkout = useStartCheckout();
+  const portal = useBillingPortal();
 
   return (
     <ScrollView style={{ flex: 1, backgroundColor: colors.bg }} contentContainerStyle={{ paddingBottom: 40 }}>
@@ -91,6 +92,12 @@ export default function Compte() {
           );
         })}
 
+        <Button
+          title={portal.isPending ? 'Ouverture…' : 'Gérer mon abonnement'}
+          variant="secondary"
+          disabled={portal.isPending}
+          onPress={() => portal.mutate()}
+        />
         <Text style={[font('meta'), { color: colors.slate400, textAlign: 'center', marginTop: 4 }]}>
           Paiement sécurisé via Stripe · résiliable à tout moment.
         </Text>
