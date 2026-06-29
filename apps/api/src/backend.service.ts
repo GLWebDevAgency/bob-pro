@@ -23,6 +23,7 @@ import {
   facturXDataFromInvoice,
   buildFacturXBasicXml,
   ExtractDocument,
+  RecordExpense,
   MERCIER_PROPS,
   CASH_SNAPSHOT,
   type Result,
@@ -45,6 +46,8 @@ import {
   type DiagnosticResult,
   type OcrExtraction,
   type OcrPort,
+  type RecordExpenseInput,
+  type ExpenseProps,
 } from '@bob/core';
 import { BobAgent, ModelRouter, type BobCapabilities, type AgentRun } from '@bob/ai';
 import { UuidGenerator, FixtureCashflowSnapshot } from './persistence/in-memory';
@@ -145,7 +148,11 @@ export class BackendService {
     return new ListCustomers({ customers: this.p.customers }).execute({ companyId: this.companyId() });
   }
   getCashflow(scenario: Scenario, horizon: Horizon) {
-    return new GetCashflow({ snapshots: this.snapshots }).execute({ companyId: this.companyId(), scenario, horizon });
+    return new GetCashflow({ snapshots: this.snapshots, expenses: this.p.expenses }).execute({
+      companyId: this.companyId(),
+      scenario,
+      horizon,
+    });
   }
   createQuote(input: Omit<CreateQuoteInput, 'companyId'>) {
     return new CreateQuote({
@@ -369,6 +376,20 @@ export class BackendService {
         confidence: r.value.confidence,
       });
     return r;
+  }
+
+  async recordExpense(input: Omit<RecordExpenseInput, 'companyId'>): Promise<Result<{ id: string }, AppError>> {
+    const r = await new RecordExpense({ expenses: this.p.expenses, ids: this.ids }).execute({
+      companyId: this.companyId(),
+      ...input,
+    });
+    if (r.ok) this.logger.audit('expense.recorded', { companyId: this.companyId(), id: r.value.id, ttc: input.totalTtcCents });
+    return r;
+  }
+
+  async listExpenses(): Promise<Result<ExpenseProps[], AppError>> {
+    const list = await this.p.expenses.listByCompany(this.companyId());
+    return ok(list.map((e) => e.toProps()));
   }
 
   // ——— Onboarding / multi-tenant ———

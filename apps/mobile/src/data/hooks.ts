@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import type { Scenario, Horizon, CreateQuoteInput, PaymentMethod } from '@bob/core';
+import type { Scenario, Horizon, CreateQuoteInput, PaymentMethod, RecordExpenseInput } from '@bob/core';
 import { useBobClient } from './client';
 
 const keys = {
@@ -42,6 +42,34 @@ export function useExtractDocument() {
       const r = await client.extractDocument(input);
       if (!r.ok) throw r.error;
       return r.value;
+    },
+  });
+}
+
+export function useExpenses() {
+  const client = useBobClient();
+  return useQuery({
+    queryKey: ['expenses'],
+    queryFn: async () => {
+      const r = await client.listExpenses();
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+  });
+}
+
+export function useRecordExpense() {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: Omit<RecordExpenseInput, 'companyId'>) => {
+      const r = await client.recordExpense(input);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['expenses'] });
+      void qc.invalidateQueries({ queryKey: ['cashflow'] });
     },
   });
 }

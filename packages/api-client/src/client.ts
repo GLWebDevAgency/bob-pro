@@ -16,6 +16,8 @@ import type {
   InvoiceKind,
   DiagnosticResult,
   OcrExtraction,
+  ExpenseProps,
+  RecordExpenseInput,
 } from '@bob/core';
 
 export interface QuoteView {
@@ -62,6 +64,8 @@ export interface BobClient {
   getSubscription(): Promise<Result<SubscriptionView, AppError>>;
   getDiagnostic(): Promise<Result<DiagnosticResult, AppError>>;
   extractDocument(input: { contentBase64: string; mimeType: string }): Promise<Result<OcrExtraction, AppError>>;
+  recordExpense(input: Omit<RecordExpenseInput, 'companyId'>): Promise<Result<{ id: string }, AppError>>;
+  listExpenses(): Promise<Result<ExpenseProps[], AppError>>;
   listCustomers(): Promise<Result<CustomerListItem[], AppError>>;
   getCashflow(input: { scenario: Scenario; horizon: Horizon }): Promise<Result<CashflowProjection, AppError>>;
   createQuote(input: Omit<CreateQuoteInput, 'companyId'>): Promise<Result<CreateQuoteOutput, AppError>>;

@@ -32,6 +32,7 @@ export * from './domain/billing/shared/state-machines';
 export * from './domain/billing/quote/quote';
 export * from './domain/billing/invoice/invoice';
 export * from './domain/payment/payment';
+export * from './domain/expense/expense';
 export * from './domain/dunning/relance-plan';
 export * from './domain/compliance/einvoice-transmission';
 export * from './domain/compliance/diagnostic';
@@ -52,6 +53,7 @@ export * from './application/billing/issue-invoice';
 export * from './application/billing/register-payment';
 export * from './application/queries/list-customers';
 export * from './application/queries/get-cashflow';
+export * from './application/expenses/record-expense';
 export * from './application/fixtures/index';
 
 // Monétisation

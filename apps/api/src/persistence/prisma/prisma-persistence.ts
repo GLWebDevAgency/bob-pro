@@ -7,6 +7,7 @@ import {
   PrismaQuoteRepository,
   PrismaInvoiceRepository,
   PrismaPaymentRepository,
+  PrismaExpenseRepository,
   PrismaSequenceCounter,
 } from './repositories';
 import { companyPropsToCreate, customerPropsToCreate } from './mappers';
@@ -17,6 +18,7 @@ export class PrismaPersistence implements Persistence {
   readonly quotes: PrismaQuoteRepository;
   readonly invoices: PrismaInvoiceRepository;
   readonly payments: PrismaPaymentRepository;
+  readonly expenses: PrismaExpenseRepository;
   readonly counters: PrismaSequenceCounter;
 
   constructor(private readonly prisma: PrismaService) {
@@ -25,6 +27,7 @@ export class PrismaPersistence implements Persistence {
     this.quotes = new PrismaQuoteRepository(prisma);
     this.invoices = new PrismaInvoiceRepository(prisma);
     this.payments = new PrismaPaymentRepository(prisma);
+    this.expenses = new PrismaExpenseRepository(prisma);
     this.counters = new PrismaSequenceCounter(prisma);
   }
 

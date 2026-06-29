@@ -5,11 +5,13 @@ import {
   type Quote,
   type Invoice,
   type Payment,
+  type Expense,
   type CompanyRepository,
   type CustomerRepository,
   type QuoteRepository,
   type InvoiceRepository,
   type PaymentRepository,
+  type ExpenseRepository,
   type SequenceCounterPort,
   type CounterKey,
   type IdGeneratorPort,
@@ -83,6 +85,19 @@ export class InMemoryPaymentRepository implements PaymentRepository {
   }
   async listByInvoice(invoiceId: string): Promise<Payment[]> {
     return this.list.filter((p) => p.invoiceId === invoiceId);
+  }
+}
+
+export class InMemoryExpenseRepository implements ExpenseRepository {
+  private readonly map = new Map<string, Expense>();
+  async save(e: Expense): Promise<void> {
+    this.map.set(e.id, e);
+  }
+  async findById(id: string): Promise<Expense | null> {
+    return this.map.get(id) ?? null;
+  }
+  async listByCompany(companyId: string): Promise<Expense[]> {
+    return [...this.map.values()].filter((e) => e.companyId === companyId);
   }
 }
 

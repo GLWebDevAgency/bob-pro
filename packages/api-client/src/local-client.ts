@@ -16,6 +16,7 @@ import {
   runDiagnostic,
   ExtractDocument,
   DemoOcrAdapter,
+  RecordExpense,
   ok,
   err,
   appNotFound,
@@ -34,6 +35,8 @@ import {
   type CreateQuoteOutput,
   type DiagnosticResult,
   type OcrExtraction,
+  type ExpenseProps,
+  type RecordExpenseInput,
 } from '@bob/core';
 import {
   InMemoryCompanyRepository,
@@ -41,6 +44,7 @@ import {
   InMemoryQuoteRepository,
   InMemoryInvoiceRepository,
   InMemoryPaymentRepository,
+  InMemoryExpenseRepository,
 } from './in-memory/repositories';
 import { InMemorySequenceCounter, CounterIdGenerator, FixtureCashflowSnapshot } from './in-memory/services';
 import type { BobClient, QuoteView, InvoiceView, SubscriptionView } from './client';
@@ -60,6 +64,7 @@ export class LocalBobClient implements BobClient {
   private readonly payments = new InMemoryPaymentRepository();
   private readonly ids = new CounterIdGenerator();
   private readonly ocr = new DemoOcrAdapter();
+  private readonly expenses = new InMemoryExpenseRepository();
   private readonly counters = new InMemorySequenceCounter();
   private readonly clock: ClockPort;
   private readonly snapshots: FixtureCashflowSnapshot;
@@ -142,7 +147,16 @@ export class LocalBobClient implements BobClient {
   }
 
   async getCashflow(input: { scenario: Scenario; horizon: Horizon }): Promise<Result<CashflowProjection, AppError>> {
-    return new GetCashflow({ snapshots: this.snapshots }).execute({ companyId: this.companyId, ...input });
+    return new GetCashflow({ snapshots: this.snapshots, expenses: this.expenses }).execute({ companyId: this.companyId, ...input });
+  }
+
+  async recordExpense(input: Omit<RecordExpenseInput, 'companyId'>): Promise<Result<{ id: string }, AppError>> {
+    return new RecordExpense({ expenses: this.expenses, ids: this.ids }).execute({ companyId: this.companyId, ...input });
+  }
+
+  async listExpenses(): Promise<Result<ExpenseProps[], AppError>> {
+    const list = await this.expenses.listByCompany(this.companyId);
+    return ok(list.map((e) => e.toProps()));
   }
 
   async createQuote(input: Omit<CreateQuoteInput, 'companyId'>): Promise<Result<CreateQuoteOutput, AppError>> {

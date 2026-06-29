@@ -5,7 +5,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { formatEUR } from '@bob/core';
 import { useTheme } from '../src/theme';
-import { useExtractDocument } from '../src/data/hooks';
+import { useExtractDocument, useRecordExpense } from '../src/data/hooks';
 import { Card, Button, Badge, SectionHeader, font } from '../src/components/ui';
 
 const CATEGORY_LABEL: Record<string, string> = {
@@ -22,6 +22,7 @@ export default function ScanDocument() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const extract = useExtractDocument();
+  const record = useRecordExpense();
   const data = extract.data;
 
   async function capture(from: 'camera' | 'library'): Promise<void> {
@@ -95,7 +96,29 @@ export default function ScanDocument() {
                 {data.supplierSiren ? <Row label="SIREN" value={data.supplierSiren} colors={colors} /> : null}
               </View>
             </Card>
-            <Button title="Utiliser ces infos" onPress={() => router.back()} />
+            {record.isError ? (
+              <Text style={[font('sub'), { color: semantic.danger }]}>Enregistrement impossible. Réessaie.</Text>
+            ) : null}
+            <Button
+              title={record.isPending ? 'Enregistrement…' : 'Enregistrer la dépense'}
+              disabled={record.isPending}
+              onPress={() =>
+                record.mutate(
+                  {
+                    supplierName: data.supplierName,
+                    supplierSiren: data.supplierSiren,
+                    documentDate: data.documentDate,
+                    totalTtcCents: data.totalTtcCents,
+                    totalHtCents: data.totalHtCents,
+                    vatCents: data.vatCents,
+                    vatRatePct: data.vatRatePctApplied,
+                    category: data.categoryGuess,
+                    source: 'ocr',
+                  },
+                  { onSuccess: () => router.back() },
+                )
+              }
+            />
           </>
         ) : null}
       </View>

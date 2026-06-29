@@ -24,6 +24,7 @@ import {
   OnboardingController,
   DiagnosticController,
   DocumentsController,
+  ExpensesController,
 } from './api.controllers';
 
 @Module({
@@ -45,6 +46,7 @@ import {
     OnboardingController,
     DiagnosticController,
     DocumentsController,
+    ExpensesController,
   ],
   providers: [
     BackendService,

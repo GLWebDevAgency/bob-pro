@@ -17,6 +17,7 @@ import type {
   PlanTier,
   CompanyProps,
   CustomerProps,
+  RecordExpenseInput,
 } from '@bob/core';
 import { Throttle } from '@nestjs/throttler';
 import { BackendService } from './backend.service';
@@ -157,6 +158,19 @@ export class DocumentsController {
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   async ocr(@Body() body: { contentBase64: string; mimeType: string }) {
     return unwrap(await this.backend.extractDocument(body));
+  }
+}
+
+@Controller('expenses')
+export class ExpensesController {
+  constructor(private readonly backend: BackendService) {}
+  @Get()
+  async list() {
+    return unwrap(await this.backend.listExpenses());
+  }
+  @Post()
+  async create(@Body() body: Omit<RecordExpenseInput, 'companyId'>) {
+    return unwrap(await this.backend.recordExpense(body));
   }
 }
 

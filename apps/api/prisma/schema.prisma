@@ -94,6 +94,7 @@ model Company {
   quotes          Quote[]
   invoices        Invoice[]
   payments        Payment[]
+  expenses        Expense[]
   counters        DocumentCounter[]
   @@map("companies")
 }
@@ -199,6 +200,25 @@ model Payment {
   receivedAt DateTime
   @@index([invoiceId])
   @@map("payments")
+}
+
+model Expense {
+  id            String   @id
+  companyId     String
+  company       Company  @relation(fields: [companyId], references: [id])
+  supplierName  String
+  supplierSiren String?  @db.Char(9)
+  documentDate  String
+  totalTtcCents Int
+  totalHtCents  Int?
+  vatCents      Int?
+  vatRatePct    Float?
+  category      String
+  status        String   @default("to_pay")
+  source        String   @default("manual")
+  createdAt     DateTime @default(now())
+  @@index([companyId])
+  @@map("expenses")
 }
 
 // Numérotation sans trou : INSERT ... ON CONFLICT DO UPDATE +1 RETURNING (atomique).

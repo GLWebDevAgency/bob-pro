@@ -1,5 +1,5 @@
 import { type DomainResult, ok, err } from '../../shared-kernel/result';
-import { type DateOnly } from '../../shared-kernel/time';
+import { type DateOnly, isValidDateOnly } from '../../shared-kernel/time';
 import { Siren } from '../../shared-kernel/identifiers';
 
 /** Catégorie de dépense devinée par l'OCR (mappable plus tard sur une dépense comptable). */
@@ -52,13 +52,6 @@ export interface OcrExtractionDraft {
 
 const isInt = (n: unknown): n is number => typeof n === 'number' && Number.isInteger(n);
 const isFiniteNum = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n);
-const isDateOnly = (s: string): boolean => {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
-  // Date.parse roule silencieusement les dates impossibles (2026-02-30 -> mars) : on vérifie le round-trip.
-  const d = new Date(`${s}T00:00:00.000Z`);
-  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
-};
-
 const clamp01 = (n: number): number => Math.max(0, Math.min(1, n));
 
 /** Valide et normalise une extraction OCR brute. Tolérant au bruit (SIREN/champs optionnels). */
@@ -68,7 +61,7 @@ export function makeOcrExtraction(draft: OcrExtractionDraft): DomainResult<OcrEx
     return err({ code: 'VALIDATION', field: 'supplierName', message: 'Nom du fournisseur introuvable.' });
 
   const dateRaw = (draft.documentDate ?? '').trim();
-  if (!isDateOnly(dateRaw))
+  if (!isValidDateOnly(dateRaw))
     return err({ code: 'VALIDATION', field: 'documentDate', message: 'Date du document introuvable ou invalide.' });
 
   if (!isInt(draft.totalTtcCents) || (draft.totalTtcCents as number) < 0)

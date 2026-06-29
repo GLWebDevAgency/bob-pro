@@ -4,12 +4,17 @@ import {
   Quote,
   Invoice,
   Payment,
+  Expense,
   DocNumber,
   type CompanyRepository,
   type CustomerRepository,
   type QuoteRepository,
   type InvoiceRepository,
   type PaymentRepository,
+  type ExpenseRepository,
+  type ExpenseCategory,
+  type ExpenseStatus,
+  type ExpenseSource,
   type SequenceCounterPort,
   type CounterKey,
 } from '@bob/core';
@@ -163,6 +168,56 @@ export class PrismaPaymentRepository implements PaymentRepository {
       });
       return r.ok ? [r.value] : [];
     });
+  }
+}
+
+export class PrismaExpenseRepository implements ExpenseRepository {
+  constructor(private readonly prisma: PrismaService) {}
+  async save(e: Expense): Promise<void> {
+    const data = e.toProps();
+    await this.prisma.expense.upsert({ where: { id: data.id }, create: data, update: data });
+  }
+  async findById(id: string): Promise<Expense | null> {
+    const row = await this.prisma.expense.findUnique({ where: { id } });
+    if (!row) return null;
+    const r = Expense.record(this.toProps(row));
+    return r.ok ? r.value : null;
+  }
+  async listByCompany(companyId: string): Promise<Expense[]> {
+    const rows = await this.prisma.expense.findMany({ where: { companyId } });
+    return rows.flatMap((row) => {
+      const r = Expense.record(this.toProps(row));
+      return r.ok ? [r.value] : [];
+    });
+  }
+  private toProps(row: {
+    id: string;
+    companyId: string;
+    supplierName: string;
+    supplierSiren: string | null;
+    documentDate: string;
+    totalTtcCents: number;
+    totalHtCents: number | null;
+    vatCents: number | null;
+    vatRatePct: number | null;
+    category: string;
+    status: string;
+    source: string;
+  }) {
+    return {
+      id: row.id,
+      companyId: row.companyId,
+      supplierName: row.supplierName,
+      supplierSiren: row.supplierSiren,
+      documentDate: row.documentDate,
+      totalTtcCents: row.totalTtcCents,
+      totalHtCents: row.totalHtCents,
+      vatCents: row.vatCents,
+      vatRatePct: row.vatRatePct,
+      category: row.category as ExpenseCategory,
+      status: row.status as ExpenseStatus,
+      source: row.source as ExpenseSource,
+    };
   }
 }
 

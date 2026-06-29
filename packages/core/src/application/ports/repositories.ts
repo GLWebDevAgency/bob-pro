@@ -3,6 +3,7 @@ import { type Customer } from '../../domain/customer/customer';
 import { type Quote } from '../../domain/billing/quote/quote';
 import { type Invoice } from '../../domain/billing/invoice/invoice';
 import { type Payment } from '../../domain/payment/payment';
+import { type Expense } from '../../domain/expense/expense';
 
 export interface CompanyRepository {
   findById(id: string): Promise<Company | null>;
@@ -30,4 +31,10 @@ export interface InvoiceRepository {
 export interface PaymentRepository {
   save(p: Payment): Promise<void>;
   listByInvoice(invoiceId: string): Promise<Payment[]>;
+}
+
+export interface ExpenseRepository {
+  save(e: Expense): Promise<void>;
+  findById(id: string): Promise<Expense | null>;
+  listByCompany(companyId: string): Promise<Expense[]>;
 }

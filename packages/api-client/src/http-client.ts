@@ -11,6 +11,8 @@ import type {
   PaymentMethod,
   DiagnosticResult,
   OcrExtraction,
+  ExpenseProps,
+  RecordExpenseInput,
 } from '@bob/core';
 import type { BobClient, QuoteView, InvoiceView, SubscriptionView } from './client';
 
@@ -65,6 +67,12 @@ export class HttpBobClient implements BobClient {
   }
   extractDocument(input: { contentBase64: string; mimeType: string }) {
     return this.req<OcrExtraction>('POST', '/documents/ocr', input);
+  }
+  recordExpense(input: Omit<RecordExpenseInput, 'companyId'>) {
+    return this.req<{ id: string }>('POST', '/expenses', input);
+  }
+  listExpenses() {
+    return this.req<ExpenseProps[]>('GET', '/expenses');
   }
   listCustomers() {
     return this.req<CustomerListItem[]>('GET', '/customers');

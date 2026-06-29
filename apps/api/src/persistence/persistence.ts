@@ -6,6 +6,7 @@ import {
   type QuoteRepository,
   type InvoiceRepository,
   type PaymentRepository,
+  type ExpenseRepository,
   type SequenceCounterPort,
 } from '@bob/core';
 import {
@@ -14,6 +15,7 @@ import {
   InMemoryQuoteRepository,
   InMemoryInvoiceRepository,
   InMemoryPaymentRepository,
+  InMemoryExpenseRepository,
   InMemorySequenceCounter,
 } from './in-memory';
 
@@ -26,6 +28,7 @@ export interface Persistence {
   quotes: QuoteRepository;
   invoices: InvoiceRepository;
   payments: PaymentRepository;
+  expenses: ExpenseRepository;
   counters: SequenceCounterPort;
   seed(): Promise<void>;
 }
@@ -36,6 +39,7 @@ export class InMemoryPersistence implements Persistence {
   readonly quotes = new InMemoryQuoteRepository();
   readonly invoices = new InMemoryInvoiceRepository();
   readonly payments = new InMemoryPaymentRepository();
+  readonly expenses = new InMemoryExpenseRepository();
   readonly counters = new InMemorySequenceCounter();
   async seed(): Promise<void> {
     this.companies.seed(seedCompany());
