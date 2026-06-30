@@ -23,6 +23,8 @@ import type {
   ChantierProps,
   CreateChantierInput,
   CompanyLookupResult,
+  VatCheckResult,
+  AddressSuggestion,
 } from '@bob/core';
 
 export interface QuoteView {
@@ -73,6 +75,8 @@ export interface BobClient {
   getDiagnostic(): Promise<Result<DiagnosticResult, AppError>>;
   getProfile(): Promise<Result<TradeConfig, AppError>>;
   lookupCompany(siret: string): Promise<Result<CompanyLookupResult, AppError>>;
+  checkVat(vatNumber: string): Promise<Result<VatCheckResult, AppError>>;
+  searchAddress(query: string): Promise<Result<AddressSuggestion[], AppError>>;
   extractDocument(input: { contentBase64: string; mimeType: string }): Promise<Result<OcrExtraction, AppError>>;
   recordExpense(input: Omit<RecordExpenseInput, 'companyId'>): Promise<Result<{ id: string }, AppError>>;
   listExpenses(): Promise<Result<ExpenseProps[], AppError>>;

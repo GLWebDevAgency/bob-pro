@@ -4,7 +4,7 @@ import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { TRADE_PROFILES, resolveTradeConfig, type Trade } from '@bob/core';
 import { useTheme } from '../src/theme';
-import { useLookupCompany } from '../src/data/hooks';
+import { useLookupCompany, useCheckVat } from '../src/data/hooks';
 import { Card, Chip, Button, SectionHeader, font } from '../src/components/ui';
 
 const TIER_LABEL: Record<string, string> = { free: 'Gratuit', solo: 'Solo', pro: 'Pro', business: 'Business' };
@@ -17,6 +17,7 @@ export default function Onboarding() {
   const [trade, setTrade] = useState<Trade | null>(null);
   const [siret, setSiret] = useState('');
   const lookup = useLookupCompany();
+  const vatCheck = useCheckVat();
   const selected = trade ? resolveTradeConfig(trade, 'free') : null;
   const found = lookup.data;
 
@@ -52,6 +53,7 @@ export default function Onboarding() {
             lookup.mutate(siret, {
               onSuccess: (r) => {
                 if (r.trade) setTrade(r.trade);
+                if (r.tvaIntracom) vatCheck.mutate(r.tvaIntracom);
               },
             })
           }
@@ -72,7 +74,18 @@ export default function Onboarding() {
             </Text>
           ) : null}
           {found.tvaIntracom ? (
-            <Text style={[font('meta'), { color: colors.slate400, marginTop: 4 }]}>TVA {found.tvaIntracom}</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4 }}>
+              <Text style={[font('meta'), { color: colors.slate400 }]}>TVA {found.tvaIntracom}</Text>
+              {vatCheck.isPending ? (
+                <Text style={[font('meta'), { color: colors.slate400 }]}>· vérification…</Text>
+              ) : vatCheck.data?.status === 'valid' ? (
+                <Chip label="Vérifiée (VIES)" active />
+              ) : vatCheck.data?.status === 'invalid' ? (
+                <Text style={[font('meta'), { color: '#c0392b' }]}>· invalide</Text>
+              ) : vatCheck.data?.status === 'unverified' ? (
+                <Text style={[font('meta'), { color: colors.slate400 }]}>· non vérifiée</Text>
+              ) : null}
+            </View>
           ) : null}
           {found.rge ? (
             <View style={{ marginTop: 8, alignSelf: 'flex-start' }}>

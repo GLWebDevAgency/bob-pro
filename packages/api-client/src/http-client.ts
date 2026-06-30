@@ -18,6 +18,8 @@ import type {
   ChantierProps,
   CreateChantierInput,
   CompanyLookupResult,
+  VatCheckResult,
+  AddressSuggestion,
 } from '@bob/core';
 import type { BobClient, QuoteView, InvoiceView, SubscriptionView } from './client';
 
@@ -85,6 +87,12 @@ export class HttpBobClient implements BobClient {
   }
   lookupCompany(siret: string) {
     return this.req<CompanyLookupResult>('GET', `/company/lookup?siret=${encodeURIComponent(siret)}`);
+  }
+  checkVat(vatNumber: string) {
+    return this.req<VatCheckResult>('GET', `/vat/check?vat=${encodeURIComponent(vatNumber)}`);
+  }
+  searchAddress(query: string) {
+    return this.req<AddressSuggestion[]>('GET', `/address/search?q=${encodeURIComponent(query)}`);
   }
   extractDocument(input: { contentBase64: string; mimeType: string }) {
     return this.req<OcrExtraction>('POST', '/documents/ocr', input);

@@ -20,6 +20,8 @@ import {
   RecordExpense,
   CreateChantier,
   AutofillCompanyFromSiret,
+  ValidateVatNumber,
+  SearchAddress,
   ok,
   err,
   appNotFound,
@@ -45,6 +47,8 @@ import {
   type ChantierProps,
   type CreateChantierInput,
   type CompanyLookupResult,
+  type VatCheckResult,
+  type AddressSuggestion,
 } from '@bob/core';
 import {
   InMemoryCompanyRepository,
@@ -56,6 +60,7 @@ import {
   InMemoryChantierRepository,
 } from './in-memory/repositories';
 import { DemoCompanyLookupAdapter } from './in-memory/company-lookup';
+import { DemoVatAdapter, DemoAddressAdapter } from './in-memory/enrichment';
 import { InMemorySequenceCounter, CounterIdGenerator, FixtureCashflowSnapshot } from './in-memory/services';
 import type { BobClient, QuoteView, InvoiceView, SubscriptionView } from './client';
 
@@ -77,6 +82,8 @@ export class LocalBobClient implements BobClient {
   private readonly expenses = new InMemoryExpenseRepository();
   private readonly chantiers = new InMemoryChantierRepository();
   private readonly companyLookup = new DemoCompanyLookupAdapter();
+  private readonly vat = new DemoVatAdapter();
+  private readonly addresses = new DemoAddressAdapter();
   private readonly counters = new InMemorySequenceCounter();
   private readonly clock: ClockPort;
   private readonly snapshots: FixtureCashflowSnapshot;
@@ -157,6 +164,14 @@ export class LocalBobClient implements BobClient {
 
   async lookupCompany(siret: string): Promise<Result<CompanyLookupResult, AppError>> {
     return new AutofillCompanyFromSiret({ lookup: this.companyLookup }).execute({ siret });
+  }
+
+  async checkVat(vatNumber: string): Promise<Result<VatCheckResult, AppError>> {
+    return new ValidateVatNumber({ vat: this.vat, clock: this.clock }).execute({ vatNumber });
+  }
+
+  async searchAddress(query: string): Promise<Result<AddressSuggestion[], AppError>> {
+    return new SearchAddress({ addresses: this.addresses }).execute({ query });
   }
 
   async getDiagnostic(): Promise<Result<DiagnosticResult, AppError>> {

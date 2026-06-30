@@ -93,6 +93,27 @@ export class CompanyLookupController {
   }
 }
 
+@Controller('vat')
+export class VatController {
+  constructor(private readonly backend: BackendService) {}
+  @Throttle({ default: { limit: 30, ttl: 60000 } })
+  @Get('check')
+  async check(@Query('vat') vat: string) {
+    return unwrap(await this.backend.checkVat(vat ?? ''));
+  }
+}
+
+@Controller('address')
+export class AddressController {
+  constructor(private readonly backend: BackendService) {}
+  // Autocomplétion : throttle plus large (BAN ~50 req/s), keyé par IP.
+  @Throttle({ default: { limit: 60, ttl: 60000 } })
+  @Get('search')
+  async search(@Query('q') q: string) {
+    return unwrap(await this.backend.searchAddress(q ?? ''));
+  }
+}
+
 @Controller('cashflow')
 export class CashflowController {
   constructor(private readonly backend: BackendService) {}

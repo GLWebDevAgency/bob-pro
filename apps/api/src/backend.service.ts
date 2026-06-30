@@ -27,6 +27,8 @@ import {
   RecordExpense,
   CreateChantier,
   AutofillCompanyFromSiret,
+  ValidateVatNumber,
+  SearchAddress,
   MERCIER_PROPS,
   CASH_SNAPSHOT,
   type Result,
@@ -52,6 +54,10 @@ import {
   type CreateChantierInput,
   type CompanyLookupPort,
   type CompanyLookupResult,
+  type VatValidationPort,
+  type VatCheckResult,
+  type AddressAutocompletePort,
+  type AddressSuggestion,
   type OcrExtraction,
   type OcrPort,
   type RecordExpenseInput,
@@ -60,6 +66,8 @@ import {
 import { BobAgent, ModelRouter, type BobCapabilities, type AgentRun } from '@bob/ai';
 import { UuidGenerator, FixtureCashflowSnapshot, InMemoryChantierRepository } from './persistence/in-memory';
 import { RechercheEntreprisesAdapter } from './adapters/recherche-entreprises.adapter';
+import { ViesVatAdapter } from './adapters/vies-vat.adapter';
+import { BanAddressAdapter } from './adapters/ban-address.adapter';
 import { PERSISTENCE, type Persistence } from './persistence/persistence';
 import { Metrics } from './observability/metrics';
 import { AppLogger, getPrincipal } from './observability/logger';
@@ -120,6 +128,9 @@ export class BackendService {
   private readonly chantiers = new InMemoryChantierRepository();
   // Recherche d'entreprise par SIRET (API publique gratuite) — autofill onboarding/client.
   private readonly companyLookup: CompanyLookupPort = new RechercheEntreprisesAdapter();
+  // Validation TVA (VIES) + autocomplétion d'adresse (BAN) — APIs publiques gratuites.
+  private readonly vat: VatValidationPort = new ViesVatAdapter();
+  private readonly addresses: AddressAutocompletePort = new BanAddressAdapter();
   private readonly subscription: Subscription;
 
   /** Tenant courant : companyId du Principal authentifié (défaut = société de seed en démo). */
@@ -327,6 +338,14 @@ export class BackendService {
 
   async lookupCompany(siret: string): Promise<Result<CompanyLookupResult, AppError>> {
     return new AutofillCompanyFromSiret({ lookup: this.companyLookup }).execute({ siret });
+  }
+
+  async checkVat(vatNumber: string): Promise<Result<VatCheckResult, AppError>> {
+    return new ValidateVatNumber({ vat: this.vat, clock: this.clock }).execute({ vatNumber });
+  }
+
+  async searchAddress(query: string): Promise<Result<AddressSuggestion[], AppError>> {
+    return new SearchAddress({ addresses: this.addresses }).execute({ query });
   }
 
   // ——— Module Chantiers (vertical BTP, gated par métier × palier/add-on) ———

@@ -125,6 +125,28 @@ export function useLookupCompany() {
   });
 }
 
+export function useCheckVat() {
+  const client = useBobClient();
+  return useMutation({
+    mutationFn: async (vatNumber: string) => {
+      const r = await client.checkVat(vatNumber);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+  });
+}
+
+export function useSearchAddress() {
+  const client = useBobClient();
+  return useMutation({
+    mutationFn: async (query: string) => {
+      const r = await client.searchAddress(query);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+  });
+}
+
 export function useProfile() {
   const client = useBobClient();
   return useQuery({

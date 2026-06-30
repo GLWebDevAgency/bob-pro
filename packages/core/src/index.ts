@@ -48,6 +48,8 @@ export * from './application/result';
 export * from './application/ports/repositories';
 export * from './application/ports/services';
 export * from './application/ports/company-lookup';
+export * from './application/ports/vat-validation';
+export * from './application/ports/address-autocomplete';
 export * from './application/billing/create-quote';
 export * from './application/billing/send-quote';
 export * from './application/billing/sign-quote';
@@ -60,6 +62,8 @@ export * from './application/queries/get-cashflow';
 export * from './application/expenses/record-expense';
 export * from './application/chantier/create-chantier';
 export * from './application/company/autofill-company';
+export * from './application/company/validate-vat';
+export * from './application/company/search-address';
 export * from './application/fixtures/index';
 
 // Monétisation
