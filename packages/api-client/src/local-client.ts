@@ -82,8 +82,18 @@ export class LocalBobClient implements BobClient {
   private readonly expenses = new InMemoryExpenseRepository();
   private readonly chantiers = new InMemoryChantierRepository();
   private readonly companyLookup = new DemoCompanyLookupAdapter();
-  // Unité de travail in-memory (exécution directe) — parité avec la Persistence backend.
-  private readonly uow = { runInTransaction: <T>(fn: () => Promise<T>): Promise<T> => fn() };
+  // Unité de travail in-memory : annule l'allocation du compteur si fn lève (pas de trou) — parité backend.
+  private readonly uow = {
+    runInTransaction: async <T>(fn: () => Promise<T>): Promise<T> => {
+      const snap = this.counters.snapshot();
+      try {
+        return await fn();
+      } catch (e) {
+        this.counters.restore(snap);
+        throw e;
+      }
+    },
+  };
   private readonly vat = new DemoVatAdapter();
   private readonly addresses = new DemoAddressAdapter();
   private readonly counters = new InMemorySequenceCounter();

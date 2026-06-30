@@ -85,4 +85,8 @@ describe('operationNatureOf', () => {
     expect(operationNatureOf([{ category: 'labor' }])).toBe('services');
     expect(operationNatureOf([{ category: 'supply' }, { category: 'labor' }])).toBe('mixte');
   });
+  it('les débours ne pilotent pas la nature : supply + disbursement => biens', () => {
+    expect(operationNatureOf([{ category: 'supply' }, { category: 'disbursement' }])).toBe('biens');
+    expect(operationNatureOf([{ category: 'labor' }, { category: 'disbursement' }])).toBe('services');
+  });
 });

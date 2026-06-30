@@ -43,9 +43,16 @@ export class InMemoryPersistence implements Persistence {
   readonly payments = new InMemoryPaymentRepository();
   readonly expenses = new InMemoryExpenseRepository();
   readonly counters = new InMemorySequenceCounter();
-  // En mémoire (JS mono-thread) : pas de transaction réelle, exécution directe — suffisant pour démo/tests.
+  // En mémoire (JS mono-thread) : pas de transaction réelle, mais on annule l'allocation du compteur
+  // si `fn` lève — sinon une erreur métier après allocation laisserait un trou (symétrie avec Prisma).
   async runInTransaction<T>(fn: () => Promise<T>): Promise<T> {
-    return fn();
+    const snap = this.counters.snapshot();
+    try {
+      return await fn();
+    } catch (e) {
+      this.counters.restore(snap);
+      throw e;
+    }
   }
   async seed(): Promise<void> {
     this.companies.seed(seedCompany());

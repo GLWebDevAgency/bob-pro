@@ -12,8 +12,10 @@ const NATURE_LABEL: Record<OperationNature, string> = {
 
 /** Nature des opérations à partir des catégories de lignes (mention obligatoire réforme 2026/2027). */
 export function operationNatureOf(lines: readonly { category: LineCategory }[]): OperationNature {
-  const hasBiens = lines.some((l) => l.category === 'supply');
-  const hasServices = lines.some((l) => l.category !== 'supply');
+  // Les débours (remboursement de frais avancés, hors base TVA) ne pilotent ni « biens » ni « services ».
+  const taxable = lines.filter((l) => l.category !== 'disbursement');
+  const hasBiens = taxable.some((l) => l.category === 'supply');
+  const hasServices = taxable.some((l) => l.category !== 'supply');
   return hasBiens && hasServices ? 'mixte' : hasBiens ? 'biens' : 'services';
 }
 

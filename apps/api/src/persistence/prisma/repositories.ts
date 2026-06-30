@@ -108,6 +108,14 @@ export class PrismaInvoiceRepository implements InvoiceRepository {
     if (!row) return null;
     return Invoice.rehydrate(invoiceRowToSnapshot(row));
   }
+  async lockById(id: string): Promise<Invoice | null> {
+    // Verrou de ligne DANS la transaction courante (sérialise émission/encaissement concurrents) + reload frais.
+    const db = this.prisma.client();
+    await db.$queryRaw`SELECT id FROM invoices WHERE id = ${id} FOR UPDATE`;
+    const row = await db.invoice.findUnique({ where: { id }, include: LINES_INCLUDE });
+    if (!row) return null;
+    return Invoice.rehydrate(invoiceRowToSnapshot(row));
+  }
   async listByCompany(companyId: string): Promise<Invoice[]> {
     const rows = await this.prisma.invoice.findMany({ where: { companyId }, include: LINES_INCLUDE });
     return rows.map((row) => Invoice.rehydrate(invoiceRowToSnapshot(row)));

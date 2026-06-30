@@ -19,6 +19,13 @@ export class InMemorySequenceCounter implements SequenceCounterPort {
     const prefix = input.counterKey === 'quote' ? 'D' : 'F';
     return { sequence: next, formatted: DocNumber.format(prefix, input.fiscalYear, next) };
   }
+  snapshot(): Map<string, number> {
+    return new Map(this.counters);
+  }
+  restore(snap: Map<string, number>): void {
+    this.counters.clear();
+    for (const [k, v] of snap) this.counters.set(k, v);
+  }
 }
 
 /** Générateur d'ID RN-safe (pas de crypto.randomUUID requis sur Hermes). */

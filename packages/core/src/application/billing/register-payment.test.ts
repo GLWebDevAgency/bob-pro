@@ -20,6 +20,7 @@ function makeDeps(opts: { existingKey?: string | null; status?: string }) {
   } as unknown as Invoice;
   const invoices: InvoiceRepository = {
     findById: async () => invoice,
+    lockById: async () => invoice,
     listByCompany: async () => [],
     save: async () => {
       invoiceSaves++;

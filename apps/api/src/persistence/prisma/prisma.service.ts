@@ -43,7 +43,9 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
    */
   withTenant<T>(companyId: string, fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
     return this.$transaction(async (tx) => {
-      await tx.$executeRawUnsafe(`SET LOCAL app.current_company_id = '${companyId.replace(/'/g, "''")}'`);
+      // set_config(name, value, is_local=true) : équivalent à SET LOCAL mais PARAMÉTRÉ (pas d'interpolation
+      // de chaîne) -> élimine le vecteur d'injection dans le GUC tenant (vs $executeRawUnsafe).
+      await tx.$executeRaw`SELECT set_config('app.current_company_id', ${companyId}, true)`;
       return fn(tx);
     });
   }

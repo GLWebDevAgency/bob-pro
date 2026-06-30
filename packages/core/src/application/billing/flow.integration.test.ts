@@ -46,6 +46,7 @@ function makeEnv() {
   };
   const invoiceRepo: InvoiceRepository = {
     findById: async (id) => invoicesMap.get(id) ?? null,
+    lockById: async (id) => invoicesMap.get(id) ?? null,
     listByCompany: async (companyId) => [...invoicesMap.values()].filter((i) => i.companyId === companyId),
     save: async (i) => {
       invoicesMap.set(i.id, i);

@@ -1,9 +1,10 @@
-import { type Result, ok, err, type DomainError } from '../../shared-kernel/result';
+import { type Result, ok, err } from '../../shared-kernel/result';
 import { type AppError, appDomain, appNotFound } from '../result';
 import { PaymentTerms } from '../../shared-kernel/payment-terms';
 import { buildMentions, operationNatureOf } from '../../domain/services/build-mentions';
 import { type InvoiceRepository, type CompanyRepository, type CustomerRepository } from '../ports/repositories';
 import { type SequenceCounterPort, type ClockPort, type UnitOfWorkPort } from '../ports/services';
+import { TxDomainError } from './tx-error';
 
 export interface IssueInvoiceInput {
   invoiceId: string;
@@ -19,27 +20,22 @@ export interface IssueInvoiceDeps {
   clock: ClockPort;
 }
 
-/** Sentinelle : lever dans la transaction pour déclencher le rollback sur erreur métier (no-gap). */
-class TxDomainError extends Error {
-  constructor(readonly domainError: DomainError) {
-    super('tx-domain');
-  }
-}
-
 /**
- * Alloue le numéro de facture (no-gap) ET fige totaux + mentions + save, dans UNE transaction.
- * Si quoi que ce soit échoue, la transaction est annulée -> le numéro n'est PAS consommé -> aucun trou fiscal.
+ * Alloue le numéro de facture (no-gap) ET fige totaux + mentions + save, dans UNE transaction, sous
+ * VERROU de ligne (lockById). Concurrence : la 2ᵉ émission de la même facture bloque sur le verrou,
+ * relit une facture déjà numérotée et s'abrête AVANT d'allouer -> aucun numéro orphelin (pas de trou).
+ * Toute erreur (métier via TxDomainError, ou infra) annule la transaction -> numéro non consommé.
  */
 export class IssueInvoice {
   constructor(private readonly deps: IssueInvoiceDeps) {}
 
   async execute(input: IssueInvoiceInput): Promise<Result<{ number: string }, AppError>> {
-    const invoice = await this.deps.invoices.findById(input.invoiceId);
-    if (!invoice) return err(appNotFound('invoice', input.invoiceId));
-    const company = await this.deps.companies.findById(invoice.companyId);
-    if (!company) return err(appNotFound('company', invoice.companyId));
-    const customer = await this.deps.customers.findById(invoice.customerId);
-    if (!customer) return err(appNotFound('customer', invoice.customerId));
+    const pre = await this.deps.invoices.findById(input.invoiceId);
+    if (!pre) return err(appNotFound('invoice', input.invoiceId));
+    const company = await this.deps.companies.findById(pre.companyId);
+    if (!company) return err(appNotFound('company', pre.companyId));
+    const customer = await this.deps.customers.findById(pre.customerId);
+    if (!customer) return err(appNotFound('customer', pre.customerId));
 
     const termsR = PaymentTerms.of(input.terms ?? { days: 30, endOfMonth: false, label: 'Paiement a 30 jours' });
     if (!termsR.ok) return err(appDomain(termsR.error));
@@ -47,6 +43,10 @@ export class IssueInvoice {
 
     try {
       const number = await this.deps.uow.runInTransaction(async () => {
+        const invoice = await this.deps.invoices.lockById(input.invoiceId);
+        if (!invoice) throw new TxDomainError({ code: 'VALIDATION', field: 'invoice', message: 'Facture introuvable.' });
+        // Déjà numérotée (course gagnée par une autre émission) -> on s'abrête avant d'allouer un numéro.
+        if (invoice.number) throw new TxDomainError({ code: 'INVALID_TRANSITION', from: invoice.status, to: 'issued' });
         const alloc = await this.deps.counters.allocate({ companyId: invoice.companyId, counterKey: 'invoice', fiscalYear });
         const assigned = invoice.assignNumber(alloc.formatted, this.deps.clock.now());
         if (!assigned.ok) throw new TxDomainError(assigned.error);

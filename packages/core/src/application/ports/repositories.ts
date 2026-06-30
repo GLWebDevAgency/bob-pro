@@ -25,6 +25,9 @@ export interface QuoteRepository {
 
 export interface InvoiceRepository {
   findById(id: string): Promise<Invoice | null>;
+  /** Verrouille la ligne (SELECT … FOR UPDATE) DANS une transaction et renvoie une copie fraîche.
+   * Sérialise les opérations concurrentes (encaissement, émission) sur une même facture. */
+  lockById(id: string): Promise<Invoice | null>;
   listByCompany(companyId: string): Promise<Invoice[]>;
   save(i: Invoice): Promise<void>;
 }

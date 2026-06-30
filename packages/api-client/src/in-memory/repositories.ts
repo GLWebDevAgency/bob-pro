@@ -1,8 +1,8 @@
+import { Invoice } from '@bob/core';
 import type {
   Company,
   Customer,
   Quote,
-  Invoice,
   Payment,
   Expense,
   Chantier,
@@ -63,6 +63,10 @@ export class InMemoryInvoiceRepository implements InvoiceRepository {
   private readonly map = new Map<string, Invoice>();
   async findById(id: string): Promise<Invoice | null> {
     return this.map.get(id) ?? null;
+  }
+  async lockById(id: string): Promise<Invoice | null> {
+    const stored = this.map.get(id);
+    return stored ? Invoice.rehydrate(stored.toSnapshot()) : null;
   }
   async listByCompany(companyId: string): Promise<Invoice[]> {
     return [...this.map.values()].filter((i) => i.companyId === companyId);

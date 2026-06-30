@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import {
   DocNumber,
+  Invoice,
   type Company,
   type Customer,
   type Quote,
-  type Invoice,
   type Payment,
   type Expense,
   type Chantier,
@@ -73,6 +73,12 @@ export class InMemoryInvoiceRepository implements InvoiceRepository {
   async findById(id: string): Promise<Invoice | null> {
     return this.map.get(id) ?? null;
   }
+  async lockById(id: string): Promise<Invoice | null> {
+    // Mono-thread JS : pas de verrou réel ; on renvoie une COPIE (comme Prisma) pour isoler les
+    // mutations jusqu'au save (pas de mutation en place de l'agrégat stocké en cas d'erreur).
+    const stored = this.map.get(id);
+    return stored ? Invoice.rehydrate(stored.toSnapshot()) : null;
+  }
   async listByCompany(companyId: string): Promise<Invoice[]> {
     return [...this.map.values()].filter((i) => i.companyId === companyId);
   }
@@ -131,6 +137,14 @@ export class InMemorySequenceCounter implements SequenceCounterPort {
     this.counters.set(key, next);
     const prefix = input.counterKey === 'quote' ? 'D' : 'F';
     return { sequence: next, formatted: DocNumber.format(prefix, input.fiscalYear, next) };
+  }
+  // Annulation in-memory (rollback symétrique à la transaction Prisma) : pas de trou si fn() lève.
+  snapshot(): Map<string, number> {
+    return new Map(this.counters);
+  }
+  restore(snap: Map<string, number>): void {
+    this.counters.clear();
+    for (const [k, v] of snap) this.counters.set(k, v);
   }
 }
 

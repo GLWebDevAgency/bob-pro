@@ -51,7 +51,11 @@ export class SupabaseAuthGuard implements CanActivate {
         audience: process.env.SUPABASE_JWT_AUD ?? 'authenticated',
       });
       const meta = (payload as { app_metadata?: { company_id?: string } }).app_metadata;
-      setPrincipal({ userId: String(payload.sub ?? ''), companyId: meta?.company_id ?? MERCIER_PROPS.id });
+      // Valide le format du company_id (issu du JWT) à la frontière : neutralise tout métacaractère
+      // avant qu'il n'atteigne la couche persistance / le GUC RLS. Sinon -> tenant démo.
+      const raw = meta?.company_id;
+      const companyId = typeof raw === 'string' && /^[A-Za-z0-9-]{1,64}$/.test(raw) ? raw : MERCIER_PROPS.id;
+      setPrincipal({ userId: String(payload.sub ?? ''), companyId });
       return true;
     } catch {
       return false;

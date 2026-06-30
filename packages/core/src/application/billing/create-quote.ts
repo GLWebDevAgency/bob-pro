@@ -37,7 +37,8 @@ export class CreateQuote {
     const company = await this.deps.companies.findById(input.companyId);
     if (!company) return err(appNotFound('company', input.companyId));
     const customer = await this.deps.customers.findById(input.customerId);
-    if (!customer) return err(appNotFound('customer', input.customerId));
+    // Intégrité référentielle / anti-IDOR : le client doit appartenir au tenant (cf. CreateChantier).
+    if (!customer || customer.companyId !== input.companyId) return err(appNotFound('customer', input.customerId));
 
     const composed = Quote.compose({
       id: this.deps.ids.newId(),
