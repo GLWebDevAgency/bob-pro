@@ -27,4 +27,7 @@ export function loadEnv(): Env {
 
 export const hasClaudeKey = (): boolean => !!process.env.ANTHROPIC_API_KEY;
 export const hasGlmKey = (): boolean => !!process.env.GLM_API_KEY;
+export const hasDeepseekKey = (): boolean => !!process.env.DEEPSEEK_API_KEY;
+export const hasMistralKey = (): boolean => !!process.env.MISTRAL_API_KEY;
+export const hasOpenaiKey = (): boolean => !!process.env.OPENAI_API_KEY;
 export const isDemoMode = (): boolean => process.env.DEMO_MODE !== 'false';

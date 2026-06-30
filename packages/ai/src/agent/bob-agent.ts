@@ -1,12 +1,18 @@
 import { type Result, ok, err, type AppError, formatEUR } from '@bob/core';
 import { ModelRouter, type ModelChoice } from '../router/model-router';
 import { renderWithGuard } from '../guardrails/money-guard';
+import { type LlmPort } from '../llm/port';
 import { type BobActions, type PayableInvoice } from './actions';
 import { buildBobTools } from '../tools/registry';
 import { type AnyTool } from '../tools/tool';
 import { type AgentAutonomy, DEFAULT_AUTONOMY, requiresConfirmation } from './autonomy';
+import { type BobIntent, detectIntent } from './intent';
+import { classifyWithLlm, classifyWithRegex } from './classifier';
 
-export type BobIntent = 'payout' | 'relance' | 'encaisser' | 'factures' | 'unknown';
+// Ré-export pour compatibilité (anciens imports depuis bob-agent).
+export { detectIntent };
+export type { BobIntent };
+
 export type AgentRunKind = 'answer' | 'proposed' | 'done';
 
 export interface ActionCard {
@@ -24,21 +30,12 @@ export interface PendingAction {
 export interface AgentRun {
   kind: AgentRunKind;
   intent: BobIntent;
-  model: ModelChoice;
+  /** Modèle effectif (provider routé, id de modèle réel, ou « demo »). */
+  model: string;
   plan: string[];
   card: ActionCard;
   /** Présent quand kind === 'proposed' : action à confirmer puis à exécuter via confirm(). */
   pending?: PendingAction;
-}
-
-export function detectIntent(message: string): BobIntent {
-  const m = message.toLowerCase();
-  // « payé(e/s) » = participe (paiement reçu) ; « payer/verser » = se verser (payout) — d'où la distinction.
-  if (/(encaiss|paiement re[çc]u|re[çc]u le paiement|marque.*pay|r[ée]gl[ée]|\bpay[ée]e?s?\b)/.test(m)) return 'encaisser';
-  if (/(liste|mes factures|factures impay|reste (à|a) encaisser|à encaisser)/.test(m)) return 'factures';
-  if (/(relanc|rappel|en retard|impay)/.test(m)) return 'relance';
-  if (/(verser|me paye|me payer|combien|salaire)/.test(m)) return 'payout';
-  return 'unknown';
 }
 
 /** Résout la facture visée par le message parmi les factures encaissables. null = ambigu. */
@@ -62,6 +59,8 @@ export function resolveInvoice(message: string, invoices: PayableInvoice[]): Pay
 export interface BobAgentDeps {
   router: ModelRouter;
   actions: BobActions;
+  /** Optionnel : si fourni (clé configurée), Bob qualifie la demande par tool-calling LLM. Sinon regex. */
+  llm?: LlmPort;
 }
 
 export interface AskOptions {
@@ -84,10 +83,25 @@ export class BobAgent {
     return this.tools.find((t) => t.name === name);
   }
 
+  /** Qualifie la demande : LLM tool-calling si disponible (avec repli déterministe), sinon regex. */
+  private async classify(message: string, routedModel: ModelChoice) {
+    if (this.deps.llm && routedModel !== 'demo') {
+      try {
+        return await classifyWithLlm(this.deps.llm, message);
+      } catch {
+        // LLM indisponible : on retombe sur la détection déterministe (jamais bloquant).
+      }
+    }
+    return classifyWithRegex(message);
+  }
+
   async ask(message: string, opts: AskOptions = {}): Promise<Result<AgentRun, AppError>> {
     const autonomy = opts.autonomy ?? DEFAULT_AUTONOMY;
-    const model = this.deps.router.route('agent.plan').model;
-    const intent = detectIntent(message);
+    const routed = this.deps.router.route('intent.detect');
+    const classification = await this.classify(message, routed.model);
+    const model = classification.model !== 'demo' ? classification.model : routed.model;
+    const intent = classification.intent;
+    const reference = classification.reference;
 
     if (intent === 'payout') {
       const r = await this.deps.actions.computePayout();
@@ -130,7 +144,7 @@ export class BobAgent {
     if (intent === 'encaisser') {
       const r = await this.deps.actions.listPayableInvoices();
       if (!r.ok) return err(r.error);
-      const invoice = resolveInvoice(message, r.value);
+      const invoice = resolveInvoice(reference ?? message, r.value);
       if (!invoice) {
         const body = r.value.length
           ? `Laquelle ?\n${r.value.map((i) => `• ${i.number} — ${i.customerName} : ${formatEUR(i.remainingCents)}`).join('\n')}`

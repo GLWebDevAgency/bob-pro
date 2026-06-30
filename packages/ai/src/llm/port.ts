@@ -10,17 +10,43 @@ export interface LlmResult {
   model: string;
 }
 
-export interface LlmStreamEvent {
-  type: 'token' | 'done';
-  text?: string;
+/** Spécification d'un outil exposé au LLM (tool-calling) — schéma JSON des arguments. */
+export interface LlmToolSpec {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>; // JSON Schema
+}
+
+export interface LlmToolCall {
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
+export interface LlmCompletion {
+  /** Texte de l'assistant (si le modèle répond en clair plutôt que d'appeler un outil). */
+  text: string | null;
+  /** Appels d'outils demandés par le modèle (vide si réponse texte). */
+  toolCalls: LlmToolCall[];
+  model: string;
+  finishReason?: string;
+}
+
+export interface LlmCompleteOptions {
+  system?: string;
+  tools?: LlmToolSpec[];
+  toolChoice?: 'auto' | 'required' | 'none';
+  temperature?: number;
+  maxTokens?: number;
 }
 
 /**
- * Abstraction d'un fournisseur LLM. Les adapters réels (Claude, GLM) vivent côté backend
- * (apps/api), où les clés sont sécurisées. Le package @bob/ai ne fournit que l'adapter démo.
+ * Abstraction d'un fournisseur LLM (provider-agnostique : Claude, GLM, DeepSeek, OpenAI…).
+ * Les adapters réels vivent côté backend (apps/api), où les clés sont sécurisées.
+ * `complete` porte le tool-calling (cœur du cerveau agentique) ; `generate` reste pour le texte simple.
  */
 export interface LlmPort {
   readonly id: string;
+  complete(messages: LlmMessage[], opts?: LlmCompleteOptions): Promise<LlmCompletion>;
   generate(messages: LlmMessage[]): Promise<LlmResult>;
   health(): Promise<{ healthy: boolean }>;
 }

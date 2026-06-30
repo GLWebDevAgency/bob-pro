@@ -75,7 +75,8 @@ import { AppLogger, getPrincipal } from './observability/logger';
 import { PAYMENT_GATEWAY } from './payments/payment-gateway';
 import { PDF_RENDERER } from './documents/pdf-renderer';
 import { OCR_PORT } from './ocr/ocr';
-import { hasClaudeKey, hasGlmKey } from './config/env';
+import { hasClaudeKey, hasGlmKey, hasDeepseekKey, hasMistralKey, hasOpenaiKey } from './config/env';
+import { buildLlmForProvider } from './ai/providers';
 
 export interface QuoteView {
   id: string;
@@ -323,10 +324,17 @@ export class BackendService {
   }
 
   private bobAgent(): BobAgent {
-    return new BobAgent({
-      router: new ModelRouter({ hasClaudeKey: hasClaudeKey(), hasGlmKey: hasGlmKey() }),
-      actions: this.buildBobActions(),
+    const router = new ModelRouter({
+      hasClaudeKey: hasClaudeKey(),
+      hasGlmKey: hasGlmKey(),
+      hasDeepseekKey: hasDeepseekKey(),
+      hasMistralKey: hasMistralKey(),
+      hasOpenaiKey: hasOpenaiKey(),
     });
+    // Le fournisseur qui qualifie la demande (tool-calling) est choisi par le routeur ; sinon regex.
+    const provider = router.route('intent.detect').model;
+    const llm = provider !== 'demo' ? buildLlmForProvider(provider) : undefined;
+    return new BobAgent({ router, actions: this.buildBobActions(), llm });
   }
 
   async askBob(message: string, autonomy?: AgentAutonomy): Promise<Result<AgentRun, AppError>> {

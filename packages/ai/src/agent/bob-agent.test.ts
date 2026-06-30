@@ -3,6 +3,7 @@ import { ok } from '@bob/core';
 import { BobAgent } from './bob-agent';
 import { ModelRouter } from '../router/model-router';
 import { type BobActions } from './actions';
+import { type LlmPort } from '../llm/port';
 
 const actions: BobActions = {
   computePayout: async () => ok({ payoutCents: 180000, availableCents: 495000 }),
@@ -76,5 +77,46 @@ describe('BobAgent (démo)', () => {
   it('demande inconnue : aide sans rien inventer', async () => {
     const r = await makeAgent().ask('Bonjour Bob');
     expect(r.ok && r.value.intent).toBe('unknown');
+  });
+});
+
+describe('BobAgent — chemin LLM (tool-calling) + fallback', () => {
+  const routerWithKey = new ModelRouter({ hasClaudeKey: false, hasGlmKey: true });
+
+  it('utilise le tool-call du LLM pour router + résoudre la facture', async () => {
+    const llm: LlmPort = {
+      id: 'fake',
+      async complete() {
+        return { text: null, toolCalls: [{ name: 'encaisser_facture', arguments: { reference: '2026-014' } }], model: 'glm' };
+      },
+      async generate() {
+        return { text: '', model: 'glm' };
+      },
+      async health() {
+        return { healthy: true };
+      },
+    };
+    const agent = new BobAgent({ router: routerWithKey, actions, llm });
+    const r = await agent.ask('tu peux noter que la 14 est réglée', { autonomy: 'auto' });
+    expect(r.ok && r.value.intent).toBe('encaisser');
+    expect(r.ok && r.value.kind).toBe('done');
+  });
+
+  it('retombe sur la regex si le LLM échoue (jamais bloquant)', async () => {
+    const llm: LlmPort = {
+      id: 'down',
+      async complete() {
+        throw new Error('LLM indisponible');
+      },
+      async generate() {
+        throw new Error('down');
+      },
+      async health() {
+        return { healthy: false };
+      },
+    };
+    const agent = new BobAgent({ router: routerWithKey, actions, llm });
+    const r = await agent.ask('combien je peux me verser ?');
+    expect(r.ok && r.value.intent).toBe('payout');
   });
 });
