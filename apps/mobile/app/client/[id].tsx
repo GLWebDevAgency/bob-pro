@@ -1,10 +1,10 @@
-import { ScrollView, View, Text, Pressable } from 'react-native';
+import { ScrollView, View, Text, Pressable, Alert } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { formatEUR } from '@bob/core';
 import { useTheme } from '../../src/theme';
-import { useCustomers, useInvoices, useInvoicePaymentLink } from '../../src/data/hooks';
+import { useCustomers, useInvoices, useInvoicePaymentLink, useRegisterPayment, appErrorMessage } from '../../src/data/hooks';
 import { Card, Badge, ScoreBar, MoneyText, Button, SectionHeader, font } from '../../src/components/ui';
 
 export default function ClientDetail() {
@@ -15,6 +15,7 @@ export default function ClientDetail() {
   const { data } = useCustomers();
   const { data: invoices } = useInvoices();
   const pay = useInvoicePaymentLink();
+  const register = useRegisterPayment();
   const customer = (data ?? []).find((c) => c.id === id) ?? null;
   const custInvoices = (invoices ?? []).filter((i) => i.customerId === id && i.status !== 'draft');
 
@@ -78,13 +79,28 @@ export default function ClientDetail() {
                     </View>
                     <Text style={[font('meta'), { color: colors.slate400 }]}>{inv.status}</Text>
                     {payable ? (
-                      <View style={{ marginTop: 8 }}>
-                        <Button
-                          title={pay.isPending ? 'Lien…' : 'Lien de paiement'}
-                          variant="secondary"
-                          disabled={pay.isPending}
-                          onPress={() => pay.mutate(inv.id)}
-                        />
+                      <View style={{ marginTop: 8, flexDirection: 'row', gap: 8 }}>
+                        <View style={{ flex: 1 }}>
+                          <Button
+                            title={register.isPending ? '…' : 'Marquer payée'}
+                            disabled={register.isPending}
+                            onPress={() => {
+                              const remaining = Math.max(0, inv.totals.ttc - inv.paid);
+                              register.mutate(
+                                { invoiceId: inv.id, amount: remaining, method: 'transfer' },
+                                { onError: (e) => Alert.alert('Oups', appErrorMessage(e)) },
+                              );
+                            }}
+                          />
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Button
+                            title={pay.isPending ? 'Lien…' : 'Lien de paiement'}
+                            variant="secondary"
+                            disabled={pay.isPending}
+                            onPress={() => pay.mutate(inv.id)}
+                          />
+                        </View>
                       </View>
                     ) : null}
                   </View>

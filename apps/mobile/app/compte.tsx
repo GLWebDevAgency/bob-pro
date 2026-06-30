@@ -1,12 +1,17 @@
+import { useEffect, useState } from 'react';
 import { ScrollView, View, Text, Pressable } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { formatEUR, type PlanTier } from '@bob/core';
+import { AUTONOMY_LABELS, type AgentAutonomy } from '@bob/ai';
 import { useTheme } from '../src/theme';
 import { useSubscription, useDiagnostic, useStartCheckout, useBillingPortal } from '../src/data/hooks';
+import { getAutonomy, setAutonomy as persistAutonomy } from '../src/data/settings';
 import { useAuth } from '../src/data/auth';
 import { Card, Badge, Button, SectionHeader, font } from '../src/components/ui';
+
+const AUTONOMY_ORDER: AgentAutonomy[] = ['confirm_all', 'confirm_outbound', 'auto'];
 
 export default function Compte() {
   const { colors, theme, semantic } = useTheme();
@@ -17,6 +22,15 @@ export default function Compte() {
   const checkout = useStartCheckout();
   const portal = useBillingPortal();
   const { enabled: authEnabled, signOut } = useAuth();
+  const aiEnabled = (data?.features ?? []).includes('ai_assistant');
+  const [autonomy, setAutonomy] = useState<AgentAutonomy>('confirm_outbound');
+  useEffect(() => {
+    void getAutonomy().then(setAutonomy);
+  }, []);
+  const chooseAutonomy = (mode: AgentAutonomy): void => {
+    setAutonomy(mode);
+    void persistAutonomy(mode);
+  };
 
   return (
     <ScrollView style={{ flex: 1, backgroundColor: colors.bg }} contentContainerStyle={{ paddingBottom: 40 }}>
@@ -60,6 +74,36 @@ export default function Compte() {
             <Button title="Configurer mon métier" variant="secondary" onPress={() => router.push('/onboarding')} />
           </View>
         </Card>
+
+        {aiEnabled ? (
+          <>
+            <SectionHeader title="Autonomie de Bob" />
+            <Card>
+              <Text style={[font('sub'), { color: colors.slate400, marginBottom: 8 }]}>
+                Jusqu’où Bob agit sans te demander. L’envoi au client demande toujours ton feu vert en mode recommandé.
+              </Text>
+              {AUTONOMY_ORDER.map((mode) => {
+                const active = autonomy === mode;
+                return (
+                  <Pressable
+                    key={mode}
+                    onPress={() => chooseAutonomy(mode)}
+                    accessibilityRole="radio"
+                    accessibilityState={{ selected: active }}
+                    style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 10 }}
+                  >
+                    <Ionicons
+                      name={active ? 'radio-button-on' : 'radio-button-off'}
+                      size={22}
+                      color={active ? semantic.ai : colors.slate400}
+                    />
+                    <Text style={[font('body'), { color: colors.ink800, flex: 1 }]}>{AUTONOMY_LABELS[mode]}</Text>
+                  </Pressable>
+                );
+              })}
+            </Card>
+          </>
+        ) : null}
 
         <SectionHeader title="Ton offre" />
         {(data?.catalog ?? []).map((p) => {

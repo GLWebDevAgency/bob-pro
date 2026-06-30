@@ -7,7 +7,10 @@ import { type Result, type AppError } from '@bob/core';
 export interface Tool<In, Out> {
   readonly name: string;
   readonly description: string;
+  /** L'outil modifie l'état (vs simple lecture). */
   readonly mutating: boolean;
+  /** L'action sort vers un tiers (client) ou est difficilement réversible -> confirmation par défaut. */
+  readonly outbound: boolean;
   readonly compliance: 'low' | 'medium' | 'high';
   parse(raw: unknown): Result<In, AppError>;
   run(input: In): Promise<Result<Out, AppError>>;

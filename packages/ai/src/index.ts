@@ -3,5 +3,7 @@ export * from './llm/demo-adapter';
 export * from './router/model-router';
 export * from './guardrails/money-guard';
 export * from './tools/tool';
-export * from './agent/capabilities';
+export * from './tools/registry';
+export * from './agent/actions';
+export * from './agent/autonomy';
 export * from './agent/bob-agent';

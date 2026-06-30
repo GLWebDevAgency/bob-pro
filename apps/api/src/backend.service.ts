@@ -19,6 +19,7 @@ import {
   Subscription,
   PLAN_CATALOG,
   planEntitlements,
+  planCan,
   runDiagnostic,
   resolveTradeConfig,
   facturXDataFromInvoice,
@@ -63,7 +64,7 @@ import {
   type RecordExpenseInput,
   type ExpenseProps,
 } from '@bob/core';
-import { BobAgent, ModelRouter, type BobCapabilities, type AgentRun } from '@bob/ai';
+import { BobAgent, ModelRouter, type BobActions, type AgentRun, type PendingAction, type AgentAutonomy } from '@bob/ai';
 import { UuidGenerator, FixtureCashflowSnapshot, InMemoryChantierRepository } from './persistence/in-memory';
 import { RechercheEntreprisesAdapter } from './adapters/recherche-entreprises.adapter';
 import { ViesVatAdapter } from './adapters/vies-vat.adapter';
@@ -279,8 +280,9 @@ export class BackendService {
     return r;
   }
 
-  async askBob(message: string): Promise<Result<AgentRun, AppError>> {
-    const caps: BobCapabilities = {
+  /** Surface d'actions de Bob (parité) — délègue aux mêmes use cases que l'UI manuelle. */
+  private buildBobActions(): BobActions {
+    return {
       computePayout: async () => {
         const r = await this.getCashflow('realiste', 30);
         if (!r.ok) return r;
@@ -289,8 +291,7 @@ export class BackendService {
       draftRelance: async () => {
         const r = await this.listCustomers();
         if (!r.ok) return r;
-        const sorted = [...r.value].filter((c) => c.outstanding > 0).sort((a, b) => b.outstanding - a.outstanding);
-        const top = sorted[0];
+        const top = [...r.value].filter((c) => c.outstanding > 0).sort((a, b) => b.outstanding - a.outstanding)[0];
         const draft = buildRelance({
           customerName: top?.name ?? 'le client',
           docNumber: 'dernière facture',
@@ -301,13 +302,39 @@ export class BackendService {
         });
         return ok({ subject: draft.subject, body: draft.body });
       },
+      listPayableInvoices: async () => {
+        const [inv, cust] = await Promise.all([this.listInvoices(), this.listCustomers()]);
+        if (!inv.ok) return inv;
+        const names = new Map((cust.ok ? cust.value : []).map((c) => [c.id, c.name]));
+        const payable = inv.value
+          .filter((i) => ['issued', 'partially_paid', 'late'].includes(i.status) && i.number)
+          .map((i) => ({
+            id: i.id,
+            number: i.number ?? i.id,
+            remainingCents: Math.max(0, i.totals.ttc - i.paid),
+            customerName: names.get(i.customerId) ?? 'Client',
+          }))
+          .filter((i) => i.remainingCents > 0);
+        return ok(payable);
+      },
+      registerPayment: async (input) =>
+        this.registerPayment({ invoiceId: input.invoiceId, amount: input.amountCents, method: 'transfer' }),
     };
-    const agent = new BobAgent({
+  }
+
+  private bobAgent(): BobAgent {
+    return new BobAgent({
       router: new ModelRouter({ hasClaudeKey: hasClaudeKey(), hasGlmKey: hasGlmKey() }),
-      caps,
+      actions: this.buildBobActions(),
     });
+  }
+
+  async askBob(message: string, autonomy?: AgentAutonomy): Promise<Result<AgentRun, AppError>> {
+    // L'assistant agentique est réservé aux offres avec IA (Pro+). Sans lui, l'app reste 100 % manuelle.
+    if (!planCan(this.subscription.tier, 'ai_assistant'))
+      return { ok: false, error: appForbidden("L'assistant Bob est inclus à partir de l'offre Pro.") };
     const start = Date.now();
-    const r = await agent.ask(message);
+    const r = await this.bobAgent().ask(message, { autonomy });
     const ms = Date.now() - start;
     const intent = r.ok ? r.value.intent : 'error';
     const model = r.ok ? r.value.model : 'demo';
@@ -316,6 +343,14 @@ export class BackendService {
     this.metrics.aiDuration.observe({ model, intent }, ms / 1000);
     if (!r.ok && r.error.kind === 'dependency' && r.error.port === 'money-guard') this.metrics.aiGuardViolations.inc();
     this.logger.audit('ai.ask', { model, intent, outcome, ms });
+    return r;
+  }
+
+  async confirmBob(pending: PendingAction): Promise<Result<AgentRun, AppError>> {
+    if (!planCan(this.subscription.tier, 'ai_assistant'))
+      return { ok: false, error: appForbidden("L'assistant Bob est inclus à partir de l'offre Pro.") };
+    const r = await this.bobAgent().confirm(pending);
+    this.logger.audit('ai.confirm', { tool: pending.tool, outcome: r.ok ? 'ok' : 'error' });
     return r;
   }
 

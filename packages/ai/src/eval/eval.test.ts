@@ -4,13 +4,15 @@ import { BobAgent } from '../agent/bob-agent';
 import { detectIntent, type BobIntent } from '../agent/bob-agent';
 import { ModelRouter } from '../router/model-router';
 import { renderWithGuard } from '../guardrails/money-guard';
-import { type BobCapabilities } from '../agent/capabilities';
+import { type BobActions } from '../agent/actions';
 
-const caps: BobCapabilities = {
+const actions: BobActions = {
   computePayout: async () => ok({ payoutCents: 180000, availableCents: 495000 }),
   draftRelance: async () => ok({ subject: 'Petit rappel', body: 'Bonjour, un petit rappel pour votre facture.' }),
+  listPayableInvoices: async () => ok([]),
+  registerPayment: async () => ok({ status: 'paid' }),
 };
-const agent = new BobAgent({ router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }), caps });
+const agent = new BobAgent({ router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }), actions });
 
 const INTENT_CASES: { msg: string; expected: BobIntent }[] = [
   { msg: 'Combien je peux me verser ce mois ?', expected: 'payout' },

@@ -20,6 +20,7 @@ import type {
   RecordExpenseInput,
   CreateChantierInput,
 } from '@bob/core';
+import { type AgentAutonomy, type PendingAction } from '@bob/ai';
 import { Throttle } from '@nestjs/throttler';
 import { BackendService } from './backend.service';
 import { RelanceService } from './jobs/relance.service';
@@ -275,7 +276,12 @@ export class AiController {
   constructor(private readonly backend: BackendService) {}
   @Post('ask')
   @Throttle({ default: { limit: 5, ttl: 10_000 } })
-  async ask(@Body() body: { message: string }) {
-    return unwrap(await this.backend.askBob(body.message));
+  async ask(@Body() body: { message: string; autonomy?: AgentAutonomy }) {
+    return unwrap(await this.backend.askBob(body.message, body.autonomy));
+  }
+  @Post('confirm')
+  @Throttle({ default: { limit: 10, ttl: 10_000 } })
+  async confirm(@Body() body: PendingAction) {
+    return unwrap(await this.backend.confirmBob(body));
   }
 }

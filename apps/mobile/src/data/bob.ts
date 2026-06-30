@@ -1,13 +1,16 @@
-import { BobAgent, ModelRouter, type BobCapabilities } from '@bob/ai';
+import { BobAgent, ModelRouter, type BobActions, type PayableInvoice } from '@bob/ai';
 import { ok, buildRelance } from '@bob/core';
 import type { BobClient } from '@bob/api-client';
 
+const PAYABLE = new Set(['issued', 'partially_paid', 'late']);
+
 /**
- * Construit l'agent Bob pour l'app : ses capacités s'appuient sur le BobClient (donc le domaine).
- * Les clés LLM vivent côté backend — sur le device, le routeur tombe en mode démo déterministe.
+ * Construit l'agent Bob pour l'app : ses ACTIONS s'appuient sur le BobClient (donc les mêmes use cases
+ * que l'UI manuelle) — parité totale. Les clés LLM vivent côté backend ; sur le device, le routeur
+ * tombe en mode démo déterministe.
  */
 export function makeBobAgent(client: BobClient): BobAgent {
-  const caps: BobCapabilities = {
+  const actions: BobActions = {
     async computePayout() {
       const r = await client.getCashflow({ scenario: 'realiste', horizon: 30 });
       if (!r.ok) return r;
@@ -27,6 +30,24 @@ export function makeBobAgent(client: BobClient): BobAgent {
       });
       return ok({ subject: message.subject, body: message.body });
     },
+    async listPayableInvoices() {
+      const [inv, cust] = await Promise.all([client.listInvoices(), client.listCustomers()]);
+      if (!inv.ok) return inv;
+      const names = new Map((cust.ok ? cust.value : []).map((c) => [c.id, c.name]));
+      const payable: PayableInvoice[] = inv.value
+        .filter((i) => PAYABLE.has(i.status) && i.number)
+        .map((i) => ({
+          id: i.id,
+          number: i.number ?? i.id,
+          remainingCents: Math.max(0, i.totals.ttc - i.paid),
+          customerName: names.get(i.customerId) ?? 'Client',
+        }))
+        .filter((i) => i.remainingCents > 0);
+      return ok(payable);
+    },
+    async registerPayment(input) {
+      return client.registerPayment({ invoiceId: input.invoiceId, amount: input.amountCents, method: 'transfer' });
+    },
   };
-  return new BobAgent({ router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }), caps });
+  return new BobAgent({ router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }), actions });
 }
