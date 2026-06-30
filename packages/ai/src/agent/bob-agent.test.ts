@@ -127,6 +127,45 @@ describe('BobAgent — chemin LLM (tool-calling) + fallback', () => {
     expect(r.ok && r.value.intent).toBe('unknown');
   });
 
+  const llmTwoEncaisse: LlmPort = {
+    id: 'fake',
+    async complete() {
+      return {
+        text: null,
+        toolCalls: [
+          { name: 'encaisser_facture', arguments: { reference: '2026-014' } },
+          { name: 'encaisser_facture', arguments: { reference: '2026-021' } },
+        ],
+        model: 'glm',
+      };
+    },
+    async generate() {
+      return { text: '', model: 'glm' };
+    },
+    async health() {
+      return { healthy: true };
+    },
+  };
+
+  it('plan multi-étapes : 2 encaissements exécutés en auto', async () => {
+    const r = await new BobAgent({ router: routerWithKey, actions, llm: llmTwoEncaisse }).ask('encaisse Durand et Martin', {
+      autonomy: 'auto',
+    });
+    expect(r.ok && r.value.kind).toBe('done');
+    if (r.ok) expect(r.value.plan.length).toBe(2);
+  });
+
+  it('plan multi-étapes : confirm_all propose le lot, puis confirm l’exécute', async () => {
+    const agent = new BobAgent({ router: routerWithKey, actions, llm: llmTwoEncaisse });
+    const p = await agent.ask('encaisse Durand et Martin', { autonomy: 'confirm_all' });
+    expect(p.ok && p.value.kind).toBe('proposed');
+    expect(p.ok && p.value.pending?.batch?.length).toBe(2);
+    if (p.ok && p.value.pending) {
+      const r = await agent.confirm(p.value.pending);
+      expect(r.ok && r.value.kind).toBe('done');
+    }
+  });
+
   it('retombe sur la regex si le LLM échoue (jamais bloquant)', async () => {
     const llm: LlmPort = {
       id: 'down',

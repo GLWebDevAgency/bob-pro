@@ -20,11 +20,26 @@ export interface ActionCard {
   body: string;
 }
 
+export interface BatchItem {
+  tool: string;
+  args: Record<string, unknown>;
+  label: string;
+}
+
 export interface PendingAction {
   tool: string;
   args: Record<string, unknown>;
   /** Libellé lisible de l'action proposée (affiché sur le bouton de confirmation). */
   label: string;
+  /** Pour un plan multi-étapes : la suite d'actions à exécuter en lot après confirmation. */
+  batch?: BatchItem[];
+}
+
+/** Choix proposé en cas d'ambiguïté (rendu comme boutons / modale côté UI). */
+export interface AgentChoice {
+  label: string;
+  /** Valeur à renvoyer (ex. numéro de facture) si l'utilisateur sélectionne ce choix. */
+  value: string;
 }
 
 export interface AgentRun {
@@ -36,6 +51,8 @@ export interface AgentRun {
   card: ActionCard;
   /** Présent quand kind === 'proposed' : action à confirmer puis à exécuter via confirm(). */
   pending?: PendingAction;
+  /** Présent en cas d'ambiguïté : options à présenter à l'utilisateur (modale de choix). */
+  choices?: AgentChoice[];
 }
 
 /** Résout la facture visée par le message parmi les factures encaissables. null = ambigu. */
@@ -98,10 +115,39 @@ export class BobAgent {
   async ask(message: string, opts: AskOptions = {}): Promise<Result<AgentRun, AppError>> {
     const autonomy = opts.autonomy ?? DEFAULT_AUTONOMY;
     const routed = this.deps.router.route('intent.detect');
-    const classification = await this.classify(message, routed.model);
-    const model = classification.model !== 'demo' ? classification.model : routed.model;
-    const intent = classification.intent;
-    const reference = classification.reference;
+    const plan = await this.classify(message, routed.model);
+    const model = plan.model !== 'demo' ? plan.model : routed.model;
+    const steps = plan.steps.filter((s) => s.intent !== 'unknown');
+
+    if (steps.length === 0) return ok(this.unknownRun(model));
+    if (steps.length > 1) return this.runMulti(steps, autonomy, model);
+    return this.runSingle(steps[0]!, autonomy, model, message);
+  }
+
+  private unknownRun(model: string): AgentRun {
+    return {
+      kind: 'answer',
+      intent: 'unknown',
+      model,
+      plan: ['Comprendre la demande'],
+      card: {
+        title: 'Bob',
+        body:
+          'Je ne traite que l’administratif et le financier de ton activité (je ne réponds pas aux questions hors de ce périmètre). ' +
+          'Je peux : encaisser une facture (« encaisse la facture 2026-014 »), lister tes impayés, préparer une relance, ou calculer ce que tu peux te verser.',
+      },
+    };
+  }
+
+  /** Exécute une demande à UNE étape (comportement historique, cartes riches). */
+  private async runSingle(
+    step: { intent: BobIntent; reference: string | null },
+    autonomy: AgentAutonomy,
+    model: string,
+    message: string,
+  ): Promise<Result<AgentRun, AppError>> {
+    const intent = step.intent;
+    const reference = step.reference;
 
     if (intent === 'payout') {
       const r = await this.deps.actions.computePayout();
@@ -146,10 +192,15 @@ export class BobAgent {
       if (!r.ok) return err(r.error);
       const invoice = resolveInvoice(reference ?? message, r.value);
       if (!invoice) {
-        const body = r.value.length
-          ? `Laquelle ?\n${r.value.map((i) => `• ${i.number} — ${i.customerName} : ${formatEUR(i.remainingCents)}`).join('\n')}`
-          : 'Aucune facture en attente d’encaissement.';
-        return ok({ kind: 'answer', intent, model, plan: ['Chercher la facture'], card: { title: 'Quelle facture ?', body } });
+        const body = r.value.length ? 'Laquelle veux-tu encaisser ?' : 'Aucune facture en attente d’encaissement.';
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Chercher la facture'],
+          card: { title: 'Quelle facture ?', body },
+          choices: r.value.map((i) => ({ label: `${i.number} — ${i.customerName} · ${formatEUR(i.remainingCents)}`, value: i.number })),
+        });
       }
       const tool = this.tool('encaisser_facture')!;
       const args = { invoiceId: invoice.id, amountCents: invoice.remainingCents };
@@ -175,29 +226,107 @@ export class BobAgent {
       });
     }
 
-    return ok({
-      kind: 'answer',
-      intent: 'unknown',
-      model,
-      plan: ['Comprendre la demande'],
-      card: {
-        title: 'Bob',
-        body:
-          'Je ne traite que l’administratif et le financier de ton activité (je ne réponds pas aux questions hors de ce périmètre). ' +
-          'Je peux : encaisser une facture (« encaisse la facture 2026-014 »), lister tes impayés, préparer une relance, ou calculer ce que tu peux te verser.',
-      },
-    });
+    return ok(this.unknownRun(model)); // ne devrait pas arriver (unknown filtré en amont)
   }
 
-  /** Exécute une action précédemment proposée (après confirmation utilisateur). */
+  /**
+   * Plan à PLUSIEURS étapes (ex. « encaisse Durand puis relance Martin »). Stratégie « batch » :
+   * on résout tout d'abord ; si une étape est ambiguë -> on demande de préciser (rien exécuté) ;
+   * si une action modifiante requiert confirmation (selon l'autonomie) -> on propose TOUT le lot à
+   * confirmer ; sinon on exécute tout en ordre. Simple et fiable (pas d'état de reprise complexe).
+   */
+  private async runMulti(
+    steps: { intent: BobIntent; reference: string | null }[],
+    autonomy: AgentAutonomy,
+    model: string,
+  ): Promise<Result<AgentRun, AppError>> {
+    const headIntent = steps[0]?.intent ?? 'unknown';
+    let payables: PayableInvoice[] = [];
+    if (steps.some((s) => s.intent === 'encaisser')) {
+      const r = await this.deps.actions.listPayableInvoices();
+      if (!r.ok) return err(r.error);
+      payables = r.value;
+    }
+    const actions: BatchItem[] = [];
+    for (const step of steps) {
+      if (step.intent === 'encaisser') {
+        const inv = resolveInvoice(step.reference ?? '', payables);
+        if (!inv) {
+          const body = payables.length ? 'Précise la facture à encaisser :' : 'Aucune facture en attente d’encaissement.';
+          return ok({
+            kind: 'answer',
+            intent: 'encaisser',
+            model,
+            plan: ['Lever l’ambiguïté'],
+            card: { title: 'Quelle facture ?', body },
+            choices: payables.map((i) => ({ label: `${i.number} — ${i.customerName} · ${formatEUR(i.remainingCents)}`, value: i.number })),
+          });
+        }
+        payables = payables.filter((i) => i.id !== inv.id); // évite de ré-encaisser la même dans le lot
+        actions.push({
+          tool: 'encaisser_facture',
+          args: { invoiceId: inv.id, amountCents: inv.remainingCents },
+          label: `Encaisser ${inv.number} · ${formatEUR(inv.remainingCents)} (${inv.customerName})`,
+        });
+      } else if (step.intent === 'payout') {
+        actions.push({ tool: 'tresorerie_versement', args: {}, label: 'Calculer ton versement possible' });
+      } else if (step.intent === 'relance') {
+        actions.push({ tool: 'relance_brouillon', args: {}, label: 'Préparer une relance' });
+      } else if (step.intent === 'factures') {
+        actions.push({ tool: 'factures_impayees', args: {}, label: 'Lister tes impayés' });
+      }
+    }
+    if (actions.length === 0) return ok(this.unknownRun(model));
+
+    const needConfirm = actions.some((a) => {
+      const t = this.tool(a.tool);
+      return t ? requiresConfirmation(t, autonomy) : false;
+    });
+    const listing = actions.map((a, i) => `${i + 1}. ${a.label}`).join('\n');
+    if (needConfirm) {
+      return ok({
+        kind: 'proposed',
+        intent: headIntent,
+        model,
+        plan: actions.map((a) => a.label),
+        card: { title: `${actions.length} actions à confirmer`, body: `Je vais :\n${listing}\nJe valide tout ?` },
+        pending: { tool: 'batch', args: {}, label: listing, batch: actions },
+      });
+    }
+    const r = await this.runBatch(actions);
+    if (!r.ok) return err(r.error);
+    return ok({ kind: 'done', intent: headIntent, model, plan: actions.map((a) => a.label), card: { title: 'Fait ✓', body: r.value } });
+  }
+
+  /** Exécute une suite d'actions en ordre, renvoie un récapitulatif ligne par ligne. */
+  private async runBatch(actions: BatchItem[]): Promise<Result<string, AppError>> {
+    const lines: string[] = [];
+    for (const a of actions) {
+      const tool = this.tool(a.tool);
+      if (!tool) return err({ kind: 'not_found', entity: 'tool', id: a.tool });
+      const parsed = tool.parse(a.args);
+      if (!parsed.ok) return err(parsed.error);
+      const run = await tool.run(parsed.value);
+      if (!run.ok) return err(run.error);
+      lines.push(`✓ ${a.label}`);
+    }
+    return ok(lines.join('\n'));
+  }
+
+  /** Exécute une action (ou un lot) précédemment proposé, après confirmation utilisateur. */
   async confirm(pending: PendingAction): Promise<Result<AgentRun, AppError>> {
+    const model = this.deps.router.route('agent.plan').model;
+    if (pending.batch && pending.batch.length > 0) {
+      const r = await this.runBatch(pending.batch);
+      if (!r.ok) return err(r.error);
+      return ok({ kind: 'done', intent: 'encaisser', model, plan: pending.batch.map((a) => a.label), card: { title: 'Fait ✓', body: r.value } });
+    }
     const tool = this.tool(pending.tool);
     if (!tool) return err({ kind: 'not_found', entity: 'tool', id: pending.tool });
     const parsed = tool.parse(pending.args);
     if (!parsed.ok) return err(parsed.error);
     const run = await tool.run(parsed.value);
     if (!run.ok) return err(run.error);
-    const model = this.deps.router.route('agent.plan').model;
     return ok({
       kind: 'done',
       intent: 'encaisser',

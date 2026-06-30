@@ -15,35 +15,53 @@ const fakeLlm = (completion: LlmCompletion): LlmPort => ({
   },
 });
 
-describe('classifyWithLlm (tool-calling)', () => {
+describe('classifyWithLlm (tool-calling -> plan)', () => {
   it('mappe un appel d’outil encaisser + référence', async () => {
     const r = await classifyWithLlm(
       fakeLlm({ text: null, toolCalls: [{ name: 'encaisser_facture', arguments: { reference: '2026-014' } }], model: 'glm' }),
       'la facture de Durand est payée',
     );
-    expect(r.intent).toBe('encaisser');
-    expect(r.reference).toBe('2026-014');
+    expect(r.steps).toHaveLength(1);
+    expect(r.steps[0]?.intent).toBe('encaisser');
+    expect(r.steps[0]?.reference).toBe('2026-014');
     expect(r.model).toBe('glm');
   });
 
-  it('réponse texte (aucun outil) -> unknown', async () => {
-    const r = await classifyWithLlm(fakeLlm({ text: 'Bonjour !', toolCalls: [], model: 'claude' }), 'salut');
-    expect(r.intent).toBe('unknown');
+  it('plan multi-étapes : plusieurs appels d’outils', async () => {
+    const r = await classifyWithLlm(
+      fakeLlm({
+        text: null,
+        toolCalls: [
+          { name: 'encaisser_facture', arguments: { reference: '2026-014' } },
+          { name: 'relance_brouillon', arguments: {} },
+        ],
+        model: 'glm',
+      }),
+      'encaisse la 14 puis prépare une relance',
+    );
+    expect(r.steps.map((s) => s.intent)).toEqual(['encaisser', 'relance']);
   });
 
-  it('outil inconnu -> unknown', async () => {
+  it('réponse texte (aucun outil) -> plan vide (hors périmètre)', async () => {
+    const r = await classifyWithLlm(fakeLlm({ text: 'Bonjour !', toolCalls: [], model: 'claude' }), 'salut');
+    expect(r.steps).toHaveLength(0);
+  });
+
+  it('outil inconnu -> ignoré', async () => {
     const r = await classifyWithLlm(fakeLlm({ text: null, toolCalls: [{ name: 'autre', arguments: {} }], model: 'glm' }), 'x');
-    expect(r.intent).toBe('unknown');
+    expect(r.steps).toHaveLength(0);
   });
 });
 
 describe('classifyWithRegex (fallback déterministe)', () => {
-  it('détecte le versement', () => {
-    expect(classifyWithRegex('combien je peux me verser').intent).toBe('payout');
+  it('détecte le versement (une seule étape)', () => {
+    const r = classifyWithRegex('combien je peux me verser');
+    expect(r.steps).toHaveLength(1);
+    expect(r.steps[0]?.intent).toBe('payout');
   });
   it('extrait la référence de facture', () => {
-    const c = classifyWithRegex('encaisse la facture 2026-014');
-    expect(c.intent).toBe('encaisser');
-    expect(c.reference).toBe('2026-014');
+    const r = classifyWithRegex('encaisse la facture 2026-014');
+    expect(r.steps[0]?.intent).toBe('encaisser');
+    expect(r.steps[0]?.reference).toBe('2026-014');
   });
 });

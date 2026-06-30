@@ -39,9 +39,15 @@ const TOOL_TO_INTENT: Record<string, BobIntent> = {
   encaisser_facture: 'encaisser',
 };
 
-export interface Classification {
+/** Une étape résolue d'un plan (une intention + sa référence éventuelle). */
+export interface PlanStep {
   intent: BobIntent;
   reference: string | null;
+}
+
+/** Plan = suite d'étapes (≥1) déduites de la demande, + modèle effectif. */
+export interface ClassifiedPlan {
+  steps: PlanStep[];
   model: string;
 }
 
@@ -52,22 +58,26 @@ const SYSTEM_PROMPT =
   "Pour TOUTE demande hors de ce périmètre (culture générale, code, autre domaine, conversation libre), " +
   "n'appelle AUCUN outil et ne tente pas d'y répondre — elle sera écartée poliment côté application.";
 
-/** Classifie via le LLM (tool-calling). En cas d'échec amont, lève — l'appelant retombe sur la regex. */
-export async function classifyWithLlm(llm: LlmPort, message: string): Promise<Classification> {
+/** Classifie via le LLM (tool-calling) : un plan = TOUS les appels d'outils (multi-étapes possible).
+ * En cas d'échec amont, lève — l'appelant retombe sur la regex. */
+export async function classifyWithLlm(llm: LlmPort, message: string): Promise<ClassifiedPlan> {
   const res = await llm.complete([{ role: 'user', content: message }], {
     system: SYSTEM_PROMPT,
     tools: LLM_TOOL_SPECS,
     toolChoice: 'auto',
     temperature: 0,
   });
-  const call = res.toolCalls[0];
-  const intent = call ? TOOL_TO_INTENT[call.name] : undefined;
-  if (!call || !intent) return { intent: 'unknown', reference: null, model: res.model };
-  const ref = call.arguments?.reference;
-  return { intent, reference: typeof ref === 'string' && ref.trim() ? ref.trim() : null, model: res.model };
+  const steps: PlanStep[] = [];
+  for (const call of res.toolCalls) {
+    const intent = TOOL_TO_INTENT[call.name];
+    if (!intent) continue;
+    const ref = call.arguments?.reference;
+    steps.push({ intent, reference: typeof ref === 'string' && ref.trim() ? ref.trim() : null });
+  }
+  return { steps, model: res.model };
 }
 
-/** Classifie de façon déterministe (sans LLM). */
-export function classifyWithRegex(message: string): Classification {
-  return { intent: detectIntent(message), reference: extractReference(message), model: 'demo' };
+/** Classifie de façon déterministe (sans LLM) : toujours une seule étape. */
+export function classifyWithRegex(message: string): ClassifiedPlan {
+  return { steps: [{ intent: detectIntent(message), reference: extractReference(message) }], model: 'demo' };
 }

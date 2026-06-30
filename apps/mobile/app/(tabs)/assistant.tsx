@@ -139,6 +139,13 @@ export default function Assistant() {
                     </View>
                   </View>
                 ) : null}
+                {it.run?.choices?.length ? (
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
+                    {it.run.choices.map((c) => (
+                      <Chip key={c.value} label={c.label} onPress={() => void ask(`encaisse la facture ${c.value}`)} />
+                    ))}
+                  </View>
+                ) : null}
               </Card>
             </View>
           ),
