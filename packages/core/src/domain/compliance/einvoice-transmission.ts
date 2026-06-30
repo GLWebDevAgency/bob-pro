@@ -3,7 +3,8 @@ import { type DomainResult, ok } from '../../shared-kernel/result';
 import { type Instant } from '../../shared-kernel/time';
 import { assertTransition, type TransmissionStatus, TRANSMISSION_TRANSITIONS } from '../billing/shared/state-machines';
 
-export type EinvoiceChannel = 'pdp' | 'chorus_pro' | 'ereporting';
+// 'pa' = Plateforme Agréée (terme officiel 2026/2027 remplaçant « PDP »).
+export type EinvoiceChannel = 'pa' | 'chorus_pro' | 'ereporting';
 
 /** Agrégat Compliance — cycle de transmission e-invoice (issued -> transmitted -> received -> accepted/refused -> paid). */
 export class EinvoiceTransmission extends AggregateRoot<string> {

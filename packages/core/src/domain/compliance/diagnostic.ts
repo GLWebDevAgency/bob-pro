@@ -90,11 +90,11 @@ function diagnoseFrance(input: DiagnosticInput): DiagnosticResult {
   });
 
   items.push({
-    id: 'pdp',
-    label: 'Choisir une Plateforme de Dématérialisation Partenaire (PDP)',
+    id: 'pa',
+    label: 'Choisir une Plateforme Agréée (PA)',
     status: 'todo',
     severity: 'important',
-    help: 'Le e-invoicing B2B domestique passe par une PDP agréée par l’administration. Bob t’aide à en choisir une.',
+    help: 'Le e-invoicing B2B domestique passe par une Plateforme Agréée (PA) par l’administration (terme remplaçant « PDP »). Bob t’aide à en choisir une.',
   });
 
   if (hasB2g) {

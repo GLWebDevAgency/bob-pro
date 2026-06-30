@@ -40,8 +40,8 @@ describe('einvoiceFor', () => {
   it('b2g => chorus_pro', () => {
     expect(einvoiceFor(cu({ type: 'b2g', siren: '732829320' }), co()).channel).toBe('chorus_pro');
   });
-  it('b2b => pdp', () => {
-    expect(einvoiceFor(cu({ type: 'b2b', siren: '732829320' }), co()).channel).toBe('pdp');
+  it('b2b => pa (Plateforme Agréée)', () => {
+    expect(einvoiceFor(cu({ type: 'b2b', siren: '732829320' }), co()).channel).toBe('pa');
   });
   it('b2b sans siren => non ready', () => {
     expect(einvoiceFor(cu({ type: 'b2b' }), co()).ready).toBe(false);

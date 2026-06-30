@@ -16,7 +16,7 @@ describe('runDiagnostic — conformité française', () => {
     expect(r.supported).toBe(true);
     expect(r.calendar.map((c) => c.date)).toEqual(['2026-09-01', '2027-09-01']);
     expect(r.items.some((i) => i.id === 'einvoice-reception')).toBe(true);
-    expect(r.items.some((i) => i.id === 'pdp')).toBe(true);
+    expect(r.items.some((i) => i.id === 'pa')).toBe(true);
     expect(r.score).toBeGreaterThan(0);
     expect(r.score).toBeLessThanOrEqual(100);
   });

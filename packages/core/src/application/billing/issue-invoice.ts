@@ -1,7 +1,7 @@
 import { type Result, ok, err, type DomainError } from '../../shared-kernel/result';
 import { type AppError, appDomain, appNotFound } from '../result';
 import { PaymentTerms } from '../../shared-kernel/payment-terms';
-import { buildMentions } from '../../domain/services/build-mentions';
+import { buildMentions, operationNatureOf } from '../../domain/services/build-mentions';
 import { type InvoiceRepository, type CompanyRepository, type CustomerRepository } from '../ports/repositories';
 import { type SequenceCounterPort, type ClockPort, type UnitOfWorkPort } from '../ports/services';
 
@@ -50,7 +50,13 @@ export class IssueInvoice {
         const alloc = await this.deps.counters.allocate({ companyId: invoice.companyId, counterKey: 'invoice', fiscalYear });
         const assigned = invoice.assignNumber(alloc.formatted, this.deps.clock.now());
         if (!assigned.ok) throw new TxDomainError(assigned.error);
-        const mentions = buildMentions({ company, customer, kind: 'invoice', asOf: this.deps.clock.today() });
+        const mentions = buildMentions({
+          company,
+          customer,
+          kind: 'invoice',
+          asOf: this.deps.clock.today(),
+          operationNature: operationNatureOf(invoice.lines),
+        });
         const issued = invoice.issue({ mentions, terms: termsR.value, issuedAt: this.deps.clock.today(), at: this.deps.clock.now() });
         if (!issued.ok) throw new TxDomainError(issued.error);
         await this.deps.invoices.save(invoice);

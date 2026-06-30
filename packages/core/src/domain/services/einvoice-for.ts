@@ -2,7 +2,8 @@ import { type Company } from '../company/company';
 import { type Customer } from '../customer/customer';
 
 export interface EinvoiceProfile {
-  channel: 'pdp' | 'chorus_pro' | 'ereporting';
+  // 'pa' = Plateforme Agréée (nouveau terme officiel remplaçant « PDP », cf. réforme 2026/2027).
+  channel: 'pa' | 'chorus_pro' | 'ereporting';
   ereportingKind?: 'transactions' | 'paiement';
   scope?: 'domestic' | 'international';
   label: string;
@@ -14,7 +15,7 @@ export function einvoiceFor(customer: Customer, company: Company): EinvoiceProfi
   if (customer.type === 'b2g')
     return { channel: 'chorus_pro', label: 'Client public · Chorus Pro', ready: issuerReady && !!customer.siren };
   if (customer.type === 'b2b')
-    return { channel: 'pdp', label: 'Facture electronique requise (PDP)', ready: issuerReady && !!customer.siren };
+    return { channel: 'pa', label: 'Facture electronique requise (Plateforme Agreee — PA)', ready: issuerReady && !!customer.siren };
   return {
     channel: 'ereporting',
     ereportingKind: 'transactions',

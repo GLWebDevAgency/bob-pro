@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildMentions } from './build-mentions';
+import { buildMentions, operationNatureOf } from './build-mentions';
 import { Company, type CompanyProps } from '../company/company';
 import { Customer, type CustomerProps } from '../customer/customer';
 
@@ -55,5 +55,34 @@ describe('buildMentions', () => {
   it('devis => Bon pour accord', () => {
     const m = buildMentions({ company: company(), customer: customer(), kind: 'quote', asOf: '2026-06-01', validUntilDays: 30 });
     expect(m.some((s) => s.toLowerCase().includes('bon pour accord'))).toBe(true);
+  });
+
+  // —— Réforme 2026/2027 ——
+  it('B2B => SIREN du client mentionné', () => {
+    const m = buildMentions({ company: company(), customer: customer({ type: 'b2b', siren: '552081317' }), kind: 'invoice', asOf: '2026-06-01' });
+    expect(m.some((s) => s.includes('SIREN 552081317'))).toBe(true);
+  });
+  it('B2C => pas de SIREN client', () => {
+    const m = buildMentions({ company: company(), customer: customer(), kind: 'invoice', asOf: '2026-06-01' });
+    expect(m.some((s) => s.includes('SIREN'))).toBe(false);
+  });
+  it('nature des opérations sur facture', () => {
+    const m = buildMentions({ company: company(), customer: customer(), kind: 'invoice', asOf: '2026-06-01', operationNature: 'services' });
+    expect(m.some((s) => s.includes('Prestation de services'))).toBe(true);
+  });
+  it('franchise : 293 B avant 2026-09-01, CIBS à partir', () => {
+    const before = buildMentions({ company: company({ vatRegime: 'franchise' }), customer: customer(), kind: 'invoice', asOf: '2026-08-31' });
+    expect(before.some((s) => s.includes('293 B'))).toBe(true);
+    const after = buildMentions({ company: company({ vatRegime: 'franchise' }), customer: customer(), kind: 'invoice', asOf: '2026-09-01' });
+    expect(after.some((s) => s.includes('CIBS'))).toBe(true);
+    expect(after.some((s) => s.includes('293 B'))).toBe(false);
+  });
+});
+
+describe('operationNatureOf', () => {
+  it('supply => biens, labor => services, mixte', () => {
+    expect(operationNatureOf([{ category: 'supply' }])).toBe('biens');
+    expect(operationNatureOf([{ category: 'labor' }])).toBe('services');
+    expect(operationNatureOf([{ category: 'supply' }, { category: 'labor' }])).toBe('mixte');
   });
 });

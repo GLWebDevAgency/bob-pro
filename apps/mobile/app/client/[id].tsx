@@ -23,7 +23,7 @@ export default function ClientDetail() {
     customer?.type === 'b2g'
       ? { label: 'Public · Chorus Pro', tone: 'b2g' as const }
       : customer?.type === 'b2b'
-        ? { label: 'Entreprise · PDP', tone: 'b2b' as const }
+        ? { label: 'Entreprise · PA', tone: 'b2b' as const }
         : { label: 'Particulier · e-reporting', tone: 'particulier' as const };
 
   return (
