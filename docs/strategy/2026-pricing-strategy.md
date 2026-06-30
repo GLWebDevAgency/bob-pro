@@ -4,6 +4,8 @@
 
 *Copilote administratif & financier pour artisans, indépendants et TPE — fenêtre réglementaire 2026/2027*
 
+> ✅ **STATUT IMPLÉMENTÉ (juin 2026).** Ce document était l'analyse *initiale*. L'état réellement codé dans `plan.ts` (et asserté par `subscription.test.ts`) est désormais : **Gratuit 0 € / Solo 14 € / Pro 39 € / Business 69 €**, le palier **Gratuit existe**, et **`ai_assistant` est réservé à Pro+** (pas dans free ni Solo). Le diagnostic « 19/39/79, IA dans tous les paliers, pas de Gratuit » décrivait l'état **AVANT correction** — résolu. La grille de référence finale (Pro 39 / Business 69) est dans [`2026-pricing-verticalisation.md`](2026-pricing-verticalisation.md). Le free porte un `ai_quota` (quota découverte de Bob) — à retirer si on veut un gratuit *strictement sans IA*.
+
 ---
 
 ## 1. VERDICT sur l'idée « web gratuit sans IA / Solo = mobile »
@@ -24,8 +26,8 @@
 ### Piège secondaire : « gratuit = tout le non-IA »
 Si le gratuit inclut devis→facture→Factur-X→encaissement **illimités**, l'artisan faible volume ne paiera jamais (*free trap*). On donnerait la commodité (déjà offerte par Henrri) et on garderait payant le facile à copier.
 
-### Incohérences code à corriger
-`packages/core/src/domain/subscription/plan.ts` : `ai_assistant` dans les 3 paliers (contredit la stratégie) ; prix 19/39/79 € (2–3× au-dessus du marché) ; aucun palier `Gratuit`.
+### Incohérences code à corriger — ✅ RÉSOLU
+~~`plan.ts` : `ai_assistant` dans les 3 paliers ; prix 19/39/79 € ; aucun palier `Gratuit`.~~ **Corrigé** : palier `free` ajouté, `ai_assistant` réservé à Pro+, grille recalibrée à 14/39/69 € (cf. bannière de statut en tête).
 
 > **Décision : freemium multi-plateforme (web ET mobile gratuits, parité conservée). Segmentation par VALEUR + VOLUME + IA, jamais par appareil. On vend l'intelligence et le temps gagné, pas un device.**
 
@@ -41,10 +43,10 @@ Si le gratuit inclut devis→facture→Factur-X→encaissement **illimités**, l
 |---|---|---|---|---|---|
 | **Découverte** (Gratuit) | 0 € | 0 € | Poussé par l'obligation 2026, faible volume | Web **+ mobile** (parité), devis→facture **~10/mois**, **réception** e-facture 2026, signature à distance (**3/mois**), diagnostic conformité, 1 user, **quota Bob 10–15 msg/mois** | — (aimant réglementaire) |
 | **Solo** | 14 € HT | 12 € (144 €/an) | Indépendant facturant régulièrement | Découverte **sans plafond**, **émission** e-facture 2027, OCR dépenses (~50/mois), tréso de base, relances semi-auto, signature illimitée | Plafonds volume + OCR + émission |
-| **Pro** ⭐ | 29 € HT | 24 € (288 €/an) | Artisan qui veut piloter & déléguer | Solo + **Bob l'IA illimité (fair use)** : OCR auto, relances rédigées IA, **trésorerie prévisionnelle**, diagnostic avancé, export comptable | **Bob illimité** + automatisation |
-| **Business** | 59 € HT | 49 € (588 €/an) | TPE avec équipe/sous-traitants | Pro + **multi-utilisateurs/rôles**, accès comptable, **paiement en ligne + avance sur facture**, support prioritaire | Équipe + paiement/financement (ancre haute) |
+| **Pro** ⭐ | **39 € HT** *(initial. 29, relevé à 39)* | 31 € (372 €/an) | Artisan qui veut piloter & déléguer | Solo + **Bob l'IA illimité (fair use)** : OCR auto, relances rédigées IA, **trésorerie prévisionnelle**, diagnostic avancé, export comptable | **Bob illimité** + automatisation |
+| **Business** | **69 € HT** *(initial. 59, relevé à 69)* | 55 € (660 €/an) | TPE avec équipe/sous-traitants | Pro + **multi-utilisateurs/rôles**, accès comptable, **paiement en ligne + avance sur facture**, support prioritaire | Équipe + paiement/financement (ancre haute) |
 
-- **Pro 29 € = palier cible.** Business 59 € = ancre/décoy. Solo 14 € au niveau Indy/Abby.
+- **Pro 39 € = palier cible** (relevé de 29 → 39, cf. verticalisation). Business 69 € = ancre/décoy. Solo 14 € au niveau Indy/Abby.
 - **−20 % annuel** (« 2 mois offerts »). Tous les paliers web + mobile.
 
 ---
@@ -104,11 +106,11 @@ Visiteur (SEO « logiciel facture électronique 2026 gratuit ») → **diagnosti
 
 ## 7. Plan 90 jours + métriques
 
-- **J0–30 (pricing & socle) :** corriger `plan.ts` (ajouter `FREE`, retirer `ai_assistant` de Solo, recalibrer 14/29/59 + annuel, Bob en quota au gratuit / illimité dès Pro) ; plafonds gratuits (10 factures, 3 signatures, quota Bob) ; essai Bob 14 j + garde-fous fair-use ; diagnostic no-signup.
+- **J0–30 (pricing & socle) :** ✅ `plan.ts` corrigé (`FREE` ajouté, `ai_assistant` retiré de Solo, grille 14/39/69 + annuel, Bob en quota au gratuit / illimité dès Pro). Reste : plafonds gratuits (10 factures, 3 signatures, quota Bob) ; essai Bob 14 j + garde-fous fair-use ; diagnostic no-signup.
 - **J31–60 (acquisition/activation) :** SEO « facturation électronique 2026/2027 », footer viral, lien de signature brandé, paywalls contextuels, A/B plafond factures (10 vs 15). Cible activation > 40 %, time-to-value < 2 min.
 - **J61–90 (conversion/expansion) :** optimiser fin d'essai, séquence email réglementaire, Pro « recommandé ». Cibles : conversion free→payant **2–5 %**, churn payant < 4 %, **NRR > 100 %**, **LTV/CAC > 3**, marge IA/compte positive, coefficient viral signatures.
 
 ---
 
 ## Synthèse en une phrase
-**Abandonner le gate par appareil ; garder le gratuit et l'IA premium. Offrir la conformité (web + mobile, parité totale) pour acquérir massivement avant sept. 2026, plafonner le volume pour ne pas cannibaliser, et vendre Bob l'IA + l'automatisation à 14/29/59 € avec Pro comme palier cible.**
+**Abandonner le gate par appareil ; garder le gratuit et l'IA premium. Offrir la conformité (web + mobile, parité totale) pour acquérir massivement avant sept. 2026, plafonner le volume pour ne pas cannibaliser, et vendre Bob l'IA + l'automatisation à 14/39/69 € avec Pro comme palier cible.**
