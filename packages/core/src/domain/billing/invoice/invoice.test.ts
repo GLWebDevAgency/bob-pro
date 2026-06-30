@@ -64,4 +64,15 @@ describe('Invoice', () => {
     expect(inv.registerPayment(28840, AT).ok).toBe(true);
     expect(inv.status).toBe('paid');
   });
+  it('registerPayment rejette le surpaiement (pas de trop-perçu silencieux)', () => {
+    const invR = Invoice.fromSignedQuote(signedDepositQuote(), 'deposit', 'inv1');
+    if (!invR.ok) throw new Error('inv');
+    const inv = invR.value;
+    inv.assignNumber(DocNumber.format('F', 2026, 1), AT);
+    inv.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT });
+    expect(inv.registerPayment(60000, AT).ok).toBe(false); // 60000 > 48840 dû -> rejeté
+    expect(inv.status).toBe('issued'); // état inchangé
+    expect(inv.registerPayment(48840, AT).ok).toBe(true); // paiement exact accepté
+    expect(inv.status).toBe('paid');
+  });
 });

@@ -130,8 +130,12 @@ export class Invoice extends AggregateRoot<string> {
     if (this._status !== 'issued' && this._status !== 'partially_paid' && this._status !== 'late')
       return err({ code: 'INVALID_TRANSITION', from: this._status, to: 'partially_paid' });
     if (amountCents <= 0) return err({ code: 'VALIDATION', field: 'amount', message: 'Montant > 0 requis.' });
-    this._paid += amountCents;
     const due = (this._frozenTotals ?? this.totals()).netToPay;
+    const remaining = due - this._paid;
+    // Pas de trop-perçu silencieux : un paiement supérieur au reste dû est rejeté (avoir/remboursement = flux dédié).
+    if (amountCents > remaining)
+      return err({ code: 'VALIDATION', field: 'amount', message: `Paiement supérieur au reste dû (${remaining} c).` });
+    this._paid += amountCents;
     if (this._paid >= due) {
       this._status = 'paid';
       this.record({ type: 'PaymentReceived', occurredAt: at, version: 1 });

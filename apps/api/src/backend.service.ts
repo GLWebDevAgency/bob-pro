@@ -204,16 +204,20 @@ export class BackendService {
       clock: this.clock,
     }).execute({ companyId: this.companyId(), ...input });
   }
-  sendQuote(quoteId: string) {
+  async sendQuote(quoteId: string) {
+    if (!(await this.ownedQuote(quoteId))) return { ok: false as const, error: appNotFound('quote', quoteId) };
     return new SendQuote({ quotes: this.p.quotes, counters: this.p.counters, clock: this.clock }).execute({ quoteId });
   }
-  signQuote(input: { quoteId: string; signerName: string }) {
+  async signQuote(input: { quoteId: string; signerName: string }) {
+    if (!(await this.ownedQuote(input.quoteId))) return { ok: false as const, error: appNotFound('quote', input.quoteId) };
     return new SignQuote({ quotes: this.p.quotes, clock: this.clock }).execute(input);
   }
-  generateInvoice(input: { quoteId: string; mode?: 'deposit' | 'final' }) {
+  async generateInvoice(input: { quoteId: string; mode?: 'deposit' | 'final' }) {
+    if (!(await this.ownedQuote(input.quoteId))) return { ok: false as const, error: appNotFound('quote', input.quoteId) };
     return new GenerateInvoiceFromQuote({ quotes: this.p.quotes, invoices: this.p.invoices, ids: this.ids }).execute(input);
   }
   async issueInvoice(input: { invoiceId: string }) {
+    if (!(await this.ownedInvoice(input.invoiceId))) return { ok: false as const, error: appNotFound('invoice', input.invoiceId) };
     const r = await new IssueInvoice({
       invoices: this.p.invoices,
       companies: this.p.companies,
@@ -225,6 +229,7 @@ export class BackendService {
     return r;
   }
   async registerPayment(input: { invoiceId: string; amount: number; method: PaymentMethod }) {
+    if (!(await this.ownedInvoice(input.invoiceId))) return { ok: false as const, error: appNotFound('invoice', input.invoiceId) };
     const r = await new RegisterPayment({
       invoices: this.p.invoices,
       payments: this.p.payments,
@@ -234,8 +239,19 @@ export class BackendService {
     if (r.ok) this.logger.audit('payment.registered', { invoiceId: input.invoiceId, amount: input.amount, status: r.value.status });
     return r;
   }
-  async getQuote(id: string): Promise<Result<QuoteView, AppError>> {
+  // ——— Garde multi-tenant : un accès par id n'est valide que si l'agrégat appartient au tenant courant.
+  // On renvoie null (=> not_found) plutôt qu'une erreur d'autorisation, pour ne pas divulguer l'existence.
+  private async ownedQuote(id: string): Promise<Quote | null> {
     const q = await this.p.quotes.findById(id);
+    return q && q.companyId === this.companyId() ? q : null;
+  }
+  private async ownedInvoice(id: string): Promise<Invoice | null> {
+    const i = await this.p.invoices.findById(id);
+    return i && i.companyId === this.companyId() ? i : null;
+  }
+
+  async getQuote(id: string): Promise<Result<QuoteView, AppError>> {
+    const q = await this.ownedQuote(id);
     if (!q) return { ok: false, error: appNotFound('quote', id) };
     return ok(this.mapQuote(q));
   }
@@ -244,7 +260,7 @@ export class BackendService {
     return ok(list.map((q) => this.mapQuote(q)));
   }
   async getInvoice(id: string): Promise<Result<InvoiceView, AppError>> {
-    const i = await this.p.invoices.findById(id);
+    const i = await this.ownedInvoice(id);
     if (!i) return { ok: false, error: appNotFound('invoice', id) };
     return ok(this.mapInvoice(i));
   }
@@ -481,7 +497,7 @@ export class BackendService {
     if (!this.subscription.can('online_payment')) {
       return { ok: false, error: appForbidden("Le paiement en ligne nécessite l'offre Pro ou Business.") };
     }
-    const inv = await this.p.invoices.findById(invoiceId);
+    const inv = await this.ownedInvoice(invoiceId);
     if (!inv) return { ok: false, error: appNotFound('invoice', invoiceId) };
     const link = await this.gateway.createInvoicePaymentLink({
       invoiceId,
@@ -494,7 +510,7 @@ export class BackendService {
 
   /** Génère le PDF conforme d'une facture (mentions figées + totaux déterministes). */
   async invoicePdf(invoiceId: string): Promise<Result<Uint8Array, AppError>> {
-    const inv = await this.p.invoices.findById(invoiceId);
+    const inv = await this.ownedInvoice(invoiceId);
     if (!inv) return { ok: false, error: appNotFound('invoice', invoiceId) };
     const company = await this.p.companies.findById(inv.companyId);
     const customer = await this.p.customers.findById(inv.customerId);
@@ -533,7 +549,7 @@ export class BackendService {
 
   /** XML Factur-X (CII BASIC) seul, pour transmission e-invoicing. Facture émise requise. */
   async invoiceFacturXXml(invoiceId: string): Promise<Result<string, AppError>> {
-    const inv = await this.p.invoices.findById(invoiceId);
+    const inv = await this.ownedInvoice(invoiceId);
     if (!inv) return { ok: false, error: appNotFound('invoice', invoiceId) };
     if (!inv.number || !inv.issuedAt)
       return { ok: false, error: appForbidden('Facture non émise : Factur-X indisponible.') };

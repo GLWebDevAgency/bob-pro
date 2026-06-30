@@ -12,8 +12,8 @@ export interface GuardResult {
 }
 
 // Détecte un montant monétaire : chiffres + séparateurs (espaces normaux/insécables/fines) suivis de la devise.
-const MONEY_RE = /\d[\d\s  .,]*(?:€|EUR|euros?)/gi;
-const stripWs = (s: string): string => s.replace(/[\s  ]/g, '');
+const MONEY_RE = /\d[\d\s.,]*(?:€|EUR|euros?)/gi;
+const stripWs = (s: string): string => s.replace(/[\s]/g, '');
 
 /**
  * Substitue les placeholders {{token}} par des montants calculés par le domaine,
