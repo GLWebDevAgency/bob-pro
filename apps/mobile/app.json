@@ -20,7 +20,9 @@
           "photosPermission": "Bob accède à tes photos pour scanner tes factures et tickets fournisseurs.",
           "cameraPermission": "Bob utilise l'appareil photo pour scanner tes factures et tickets fournisseurs."
         }
-      ]
+      ],
+      "expo-speech-recognition",
+      "expo-audio"
     ],
     "ios": {
       "supportsTablet": true,

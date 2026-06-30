@@ -9,6 +9,7 @@ import { useTheme } from '../../src/theme';
 import { useBobClient } from '../../src/data/client';
 import { useSubscription } from '../../src/data/hooks';
 import { makeBobAgent } from '../../src/data/bob';
+import { useVoiceInput } from '../../src/data/voice';
 import { getAutonomy } from '../../src/data/settings';
 import { Card, Button, Badge, Chip, font } from '../../src/components/ui';
 
@@ -83,6 +84,8 @@ export default function Assistant() {
   const cancel = (item: ChatItem): void => {
     setItems((prev) => prev.map((it) => (it.id === item.id ? { ...it, pending: undefined } : it)));
   };
+
+  const voice = useVoiceInput((text) => void ask(text));
 
   if (!entitled) {
     return (
@@ -170,6 +173,14 @@ export default function Assistant() {
           onSubmitEditing={() => void ask(input)}
           returnKeyType="send"
         />
+        <Pressable
+          onPress={() => (voice.listening ? void voice.stop() : void voice.start())}
+          accessibilityRole="button"
+          accessibilityLabel={voice.listening ? 'Arrêter la dictée' : 'Parler à Bob'}
+          style={{ width: 44, height: 44, borderRadius: 12, backgroundColor: voice.listening ? semantic.danger : colors.lineSoft, alignItems: 'center', justifyContent: 'center' }}
+        >
+          <Ionicons name={voice.listening ? 'stop' : 'mic'} size={22} color={voice.listening ? '#fff' : colors.ink800} />
+        </Pressable>
         <Pressable onPress={() => void ask(input)} accessibilityRole="button" accessibilityLabel="Envoyer" style={{ width: 44, height: 44, borderRadius: 12, backgroundColor: semantic.ai, alignItems: 'center', justifyContent: 'center' }}>
           <Ionicons name="arrow-up" size={22} color="#fff" />
         </Pressable>
