@@ -182,7 +182,9 @@ export class BobAgent {
       plan: ['Comprendre la demande'],
       card: {
         title: 'Bob',
-        body: 'Je peux : encaisser une facture (« encaisse la facture 2026-014 »), lister tes impayés, préparer une relance, ou calculer ce que tu peux te verser.',
+        body:
+          'Je ne traite que l’administratif et le financier de ton activité (je ne réponds pas aux questions hors de ce périmètre). ' +
+          'Je peux : encaisser une facture (« encaisse la facture 2026-014 »), lister tes impayés, préparer une relance, ou calculer ce que tu peux te verser.',
       },
     });
   }

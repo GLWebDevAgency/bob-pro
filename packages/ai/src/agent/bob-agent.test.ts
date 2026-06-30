@@ -102,6 +102,31 @@ describe('BobAgent — chemin LLM (tool-calling) + fallback', () => {
     expect(r.ok && r.value.kind).toBe('done');
   });
 
+  it('garde-fou périmètre : une demande hors-sujet (LLM répond en texte, pas d’outil) -> unknown', async () => {
+    const llm: LlmPort = {
+      id: 'fake',
+      async complete() {
+        // Hors périmètre : le LLM ne renvoie aucun appel d'outil (juste du texte, qu'on ignore).
+        return { text: 'La capitale du Japon est Tokyo.', toolCalls: [], model: 'glm' };
+      },
+      async generate() {
+        return { text: '', model: 'glm' };
+      },
+      async health() {
+        return { healthy: true };
+      },
+    };
+    const r = await new BobAgent({ router: routerWithKey, actions, llm }).ask('quelle est la capitale du Japon ?');
+    expect(r.ok && r.value.intent).toBe('unknown');
+    // Le texte libre du LLM n'est jamais affiché : on rend notre message de périmètre.
+    if (r.ok) expect(r.value.card.body).not.toContain('Tokyo');
+  });
+
+  it('garde-fou périmètre (sans LLM) : hors-sujet -> unknown', async () => {
+    const r = await makeAgent().ask('raconte-moi une blague');
+    expect(r.ok && r.value.intent).toBe('unknown');
+  });
+
   it('retombe sur la regex si le LLM échoue (jamais bloquant)', async () => {
     const llm: LlmPort = {
       id: 'down',
