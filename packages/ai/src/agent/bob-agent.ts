@@ -53,7 +53,16 @@ export interface AgentRun {
   pending?: PendingAction;
   /** Présent en cas d'ambiguïté : options à présenter à l'utilisateur (modale de choix). */
   choices?: AgentChoice[];
+  /** Présent pour une commande de navigation : route vers laquelle l'app doit rediriger (ex. /scan-document). */
+  navigate?: string;
 }
+
+/** Intents de navigation : Bob ouvre le bon écran (façon « Jarvis »). */
+const NAV_ROUTES: Partial<Record<BobIntent, { route: string; title: string; body: string }>> = {
+  scan: { route: '/scan-document', title: 'J’ouvre le scan', body: 'Prends le reçu / ticket en photo — je lis et je classe.' },
+  nouveau_devis: { route: '/devis/new', title: 'Nouveau devis', body: 'Je t’ouvre l’écran de création de devis.' },
+  voir_chantiers: { route: '/chantiers', title: 'Tes chantiers', body: 'J’ouvre tes chantiers.' },
+};
 
 /** Résout la facture visée par le message parmi les factures encaissables. null = ambigu. */
 export function resolveInvoice(message: string, invoices: PayableInvoice[]): PayableInvoice | null {
@@ -148,6 +157,11 @@ export class BobAgent {
   ): Promise<Result<AgentRun, AppError>> {
     const intent = step.intent;
     const reference = step.reference;
+
+    const nav = NAV_ROUTES[intent];
+    if (nav) {
+      return ok({ kind: 'done', intent, model, plan: [nav.title], card: { title: nav.title, body: nav.body }, navigate: nav.route });
+    }
 
     if (intent === 'payout') {
       const r = await this.deps.actions.computePayout();

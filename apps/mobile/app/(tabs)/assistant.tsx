@@ -55,6 +55,7 @@ export default function Assistant() {
       { id: nextId(), role: 'bob', text: run.card.body, run, pending: run.kind === 'proposed' ? run.pending : undefined },
     ]);
     if (run.kind === 'done') refreshAfterAction();
+    if (run.navigate) router.push(run.navigate as never); // commande « Jarvis » : Bob ouvre le bon écran
   };
 
   const ask = async (text: string): Promise<void> => {

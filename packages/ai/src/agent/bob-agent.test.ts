@@ -184,3 +184,23 @@ describe('BobAgent — chemin LLM (tool-calling) + fallback', () => {
     expect(r.ok && r.value.intent).toBe('payout');
   });
 });
+
+describe('BobAgent — navigation (Jarvis : ouvrir le bon écran)', () => {
+  const agent = () => new BobAgent({ router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }), actions });
+
+  it('« scanne ce reçu » -> ouvre le scanner OCR', async () => {
+    const r = await agent().ask('hello Bob, scanne ce reçu de fournitures pour le chantier');
+    expect(r.ok && r.value.intent).toBe('scan');
+    expect(r.ok && r.value.navigate).toBe('/scan-document');
+  });
+
+  it('« fais un devis » -> ouvre l’écran de devis', async () => {
+    const r = await agent().ask('fais-moi un devis');
+    expect(r.ok && r.value.navigate).toBe('/devis/new');
+  });
+
+  it('« mes chantiers » -> ouvre les chantiers', async () => {
+    const r = await agent().ask('montre mes chantiers');
+    expect(r.ok && r.value.navigate).toBe('/chantiers');
+  });
+});

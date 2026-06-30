@@ -30,6 +30,21 @@ export const LLM_TOOL_SPECS: LlmToolSpec[] = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'ouvrir_scan_recu',
+    description: 'Ouvrir le scanner caméra (OCR) pour numériser un reçu, ticket ou justificatif de dépense.',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'nouveau_devis',
+    description: "Ouvrir l'écran de création d'un nouveau devis.",
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'ouvrir_chantiers',
+    description: 'Ouvrir la liste des chantiers.',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+  },
 ];
 
 const TOOL_TO_INTENT: Record<string, BobIntent> = {
@@ -37,6 +52,9 @@ const TOOL_TO_INTENT: Record<string, BobIntent> = {
   relance_brouillon: 'relance',
   factures_impayees: 'factures',
   encaisser_facture: 'encaisser',
+  ouvrir_scan_recu: 'scan',
+  nouveau_devis: 'nouveau_devis',
+  ouvrir_chantiers: 'voir_chantiers',
 };
 
 /** Une étape résolue d'un plan (une intention + sa référence éventuelle). */
