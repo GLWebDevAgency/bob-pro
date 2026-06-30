@@ -30,9 +30,16 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
   }
 
   /**
-   * RLS : exécute `fn` dans une transaction avec le GUC tenant (app.current_company_id) posé.
-   * En prod, l'app se connecte via un rôle NON-superuser et toutes les requêtes tenant passent ici
-   * → la base applique les politiques de prisma/rls.sql (défense en profondeur).
+   * RLS (défense en profondeur, EN PLUS de la garde applicative IDOR déjà en place) : exécute `fn`
+   * dans une transaction avec le GUC tenant (app.current_company_id) posé, pour que la base applique
+   * les politiques de prisma/rls.sql.
+   *
+   * ⚠️ ACTIVATION (non branchée par défaut) : pour enrôler TOUTES les requêtes tenant, il faut
+   *   1) connecter l'app via un rôle Postgres NON-superuser (sinon FORCE RLS est ignoré),
+   *   2) rendre tous les `save` repo tx-aware (cf. inTransaction()) pour ne pas imbriquer de $transaction,
+   *   3) wrapper la requête (interceptor) dans withTenant.
+   * À déployer + valider sur une vraie base (charge/locks) avant activation — le garde applicatif
+   * (ownedQuote/ownedInvoice, vérifié cross-tenant → 404) reste la protection runtime primaire.
    */
   withTenant<T>(companyId: string, fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
     return this.$transaction(async (tx) => {
