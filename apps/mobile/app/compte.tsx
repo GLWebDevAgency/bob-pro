@@ -7,7 +7,7 @@ import { formatEUR, type PlanTier } from '@bob/core';
 import { AUTONOMY_LABELS, type AgentAutonomy } from '@bob/ai';
 import { useTheme } from '../src/theme';
 import { useSubscription, useDiagnostic, useStartCheckout, useBillingPortal } from '../src/data/hooks';
-import { getAutonomy, setAutonomy as persistAutonomy } from '../src/data/settings';
+import { getAutonomy, setAutonomy as persistAutonomy, getVoiceMode, setVoiceMode as persistVoiceMode, type VoiceMode } from '../src/data/settings';
 import { useAuth } from '../src/data/auth';
 import { Card, Badge, Button, SectionHeader, font } from '../src/components/ui';
 
@@ -30,6 +30,18 @@ export default function Compte() {
   const chooseAutonomy = (mode: AgentAutonomy): void => {
     setAutonomy(mode);
     void persistAutonomy(mode);
+  };
+  const [voiceMode, setVoiceMode] = useState<VoiceMode>('native');
+  useEffect(() => {
+    void getVoiceMode().then(setVoiceMode);
+  }, []);
+  const chooseVoice = (mode: VoiceMode): void => {
+    setVoiceMode(mode);
+    void persistVoiceMode(mode);
+  };
+  const VOICE_LABELS: Record<VoiceMode, string> = {
+    native: 'Dictée native (appareil, gratuit) — recommandé',
+    cloud: 'Dictée cloud (Whisper, plus précis — clé requise)',
   };
 
   return (
@@ -98,6 +110,32 @@ export default function Compte() {
                       color={active ? semantic.ai : colors.slate400}
                     />
                     <Text style={[font('body'), { color: colors.ink800, flex: 1 }]}>{AUTONOMY_LABELS[mode]}</Text>
+                  </Pressable>
+                );
+              })}
+            </Card>
+
+            <SectionHeader title="Dictée vocale" />
+            <Card>
+              <Text style={[font('sub'), { color: colors.slate400, marginBottom: 8 }]}>
+                Comment Bob t’écoute. La dictée native fonctionne sur l’appareil ; la dictée cloud (plus précise) nécessite une clé OpenAI côté serveur.
+              </Text>
+              {(['native', 'cloud'] as VoiceMode[]).map((mode) => {
+                const active = voiceMode === mode;
+                return (
+                  <Pressable
+                    key={mode}
+                    onPress={() => chooseVoice(mode)}
+                    accessibilityRole="radio"
+                    accessibilityState={{ selected: active }}
+                    style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 10 }}
+                  >
+                    <Ionicons
+                      name={active ? 'radio-button-on' : 'radio-button-off'}
+                      size={22}
+                      color={active ? semantic.ai : colors.slate400}
+                    />
+                    <Text style={[font('body'), { color: colors.ink800, flex: 1 }]}>{VOICE_LABELS[mode]}</Text>
                   </Pressable>
                 );
               })}

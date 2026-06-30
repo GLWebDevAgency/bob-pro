@@ -174,6 +174,15 @@ export class LocalBobClient implements BobClient {
     return new SearchAddress({ addresses: this.addresses }).execute({ query });
   }
 
+  async transcribe(): Promise<Result<{ text: string }, AppError>> {
+    // Démo hors-ligne : pas de STT cloud ; renvoie une transcription fixe.
+    return ok({ text: 'encaisse la facture 2026-014' });
+  }
+
+  async voiceConfig(): Promise<Result<{ cloudAvailable: boolean }, AppError>> {
+    return ok({ cloudAvailable: false });
+  }
+
   async getDiagnostic(): Promise<Result<DiagnosticResult, AppError>> {
     const company = seedCompany();
     const types = [...new Set(seedCustomers().map((c) => c.type))];

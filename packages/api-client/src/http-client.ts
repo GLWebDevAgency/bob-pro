@@ -94,6 +94,12 @@ export class HttpBobClient implements BobClient {
   searchAddress(query: string) {
     return this.req<AddressSuggestion[]>('GET', `/address/search?q=${encodeURIComponent(query)}`);
   }
+  transcribe(input: { audioBase64: string; mimeType: string }) {
+    return this.req<{ text: string }>('POST', '/voice/transcribe', input);
+  }
+  voiceConfig() {
+    return this.req<{ cloudAvailable: boolean }>('GET', '/voice/config');
+  }
   extractDocument(input: { contentBase64: string; mimeType: string }) {
     return this.req<OcrExtraction>('POST', '/documents/ocr', input);
   }

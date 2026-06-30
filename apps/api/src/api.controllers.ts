@@ -285,3 +285,17 @@ export class AiController {
     return unwrap(await this.backend.confirmBob(body));
   }
 }
+
+@Controller('voice')
+export class VoiceController {
+  constructor(private readonly backend: BackendService) {}
+  @Get('config')
+  config() {
+    return { cloudAvailable: this.backend.voiceCloudAvailable() };
+  }
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @Post('transcribe')
+  async transcribe(@Body() body: { audioBase64?: string; mimeType?: string }) {
+    return unwrap(await this.backend.transcribe({ audioBase64: body.audioBase64 ?? '', mimeType: body.mimeType ?? 'audio/m4a' }));
+  }
+}

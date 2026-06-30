@@ -1,5 +1,7 @@
 export * from './llm/port';
 export * from './llm/demo-adapter';
+export * from './voice/stt-port';
+export * from './voice/demo-stt';
 export * from './router/model-router';
 export * from './guardrails/money-guard';
 export * from './tools/tool';

@@ -76,7 +76,7 @@ import { PAYMENT_GATEWAY } from './payments/payment-gateway';
 import { PDF_RENDERER } from './documents/pdf-renderer';
 import { OCR_PORT } from './ocr/ocr';
 import { hasClaudeKey, hasGlmKey, hasDeepseekKey, hasMistralKey, hasOpenaiKey } from './config/env';
-import { buildLlmForProvider } from './ai/providers';
+import { buildLlmForProvider, buildSttCloud } from './ai/providers';
 
 export interface QuoteView {
   id: string;
@@ -133,6 +133,8 @@ export class BackendService {
   // Validation TVA (VIES) + autocomplétion d'adresse (BAN) — APIs publiques gratuites.
   private readonly vat: VatValidationPort = new ViesVatAdapter();
   private readonly addresses: AddressAutocompletePort = new BanAddressAdapter();
+  // STT cloud (Whisper) — actif seulement si une clé OpenAI est configurée ; sinon dictée native côté device.
+  private readonly stt = buildSttCloud();
   private readonly subscription: Subscription;
 
   /** Tenant courant : companyId du Principal authentifié (défaut = société de seed en démo). */
@@ -352,6 +354,24 @@ export class BackendService {
     if (!r.ok && r.error.kind === 'dependency' && r.error.port === 'money-guard') this.metrics.aiGuardViolations.inc();
     this.logger.audit('ai.ask', { model, intent, outcome, ms });
     return r;
+  }
+
+  voiceCloudAvailable(): boolean {
+    return !!this.stt;
+  }
+
+  async transcribe(input: { audioBase64: string; mimeType: string }): Promise<Result<{ text: string }, AppError>> {
+    if (!planCan(this.subscription.tier, 'ai_assistant'))
+      return { ok: false, error: appForbidden("La dictée vocale est incluse à partir de l'offre Pro.") };
+    if (!this.stt)
+      return { ok: false, error: appForbidden('Dictée cloud non configurée (clé OpenAI absente). Utilise la dictée native.') };
+    try {
+      const r = await this.stt.transcribe(input.audioBase64, input.mimeType);
+      this.logger.audit('voice.transcribe', { model: r.model, chars: r.text.length });
+      return ok({ text: r.text });
+    } catch (e) {
+      return { ok: false, error: { kind: 'dependency', port: 'whisper', cause: e instanceof Error ? e.message : 'stt' } };
+    }
   }
 
   async confirmBob(pending: PendingAction): Promise<Result<AgentRun, AppError>> {

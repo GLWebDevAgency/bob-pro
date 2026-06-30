@@ -25,3 +25,25 @@ export async function setAutonomy(mode: AgentAutonomy): Promise<void> {
     // best-effort
   }
 }
+
+/** Mode de dictée vocale : natif (sur l'appareil, gratuit, défaut) ou cloud (Whisper, plus précis, clé requise). */
+export type VoiceMode = 'native' | 'cloud';
+const KEY_VOICE = 'bob.voiceMode';
+
+export async function getVoiceMode(): Promise<VoiceMode> {
+  try {
+    const v = await AsyncStorage.getItem(KEY_VOICE);
+    if (v === 'native' || v === 'cloud') return v;
+  } catch {
+    // défaut
+  }
+  return 'native';
+}
+
+export async function setVoiceMode(mode: VoiceMode): Promise<void> {
+  try {
+    await AsyncStorage.setItem(KEY_VOICE, mode);
+  } catch {
+    // best-effort
+  }
+}

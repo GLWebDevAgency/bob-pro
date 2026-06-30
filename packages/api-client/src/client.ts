@@ -77,6 +77,8 @@ export interface BobClient {
   lookupCompany(siret: string): Promise<Result<CompanyLookupResult, AppError>>;
   checkVat(vatNumber: string): Promise<Result<VatCheckResult, AppError>>;
   searchAddress(query: string): Promise<Result<AddressSuggestion[], AppError>>;
+  transcribe(input: { audioBase64: string; mimeType: string }): Promise<Result<{ text: string }, AppError>>;
+  voiceConfig(): Promise<Result<{ cloudAvailable: boolean }, AppError>>;
   extractDocument(input: { contentBase64: string; mimeType: string }): Promise<Result<OcrExtraction, AppError>>;
   recordExpense(input: Omit<RecordExpenseInput, 'companyId'>): Promise<Result<{ id: string }, AppError>>;
   listExpenses(): Promise<Result<ExpenseProps[], AppError>>;

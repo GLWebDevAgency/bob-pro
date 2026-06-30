@@ -6,6 +6,8 @@ import {
   type LlmCompleteOptions,
   type LlmToolCall,
   type Provider,
+  type SttPort,
+  type SttResult,
 } from '@bob/ai';
 
 const TIMEOUT_MS = 12_000;
@@ -179,6 +181,43 @@ export function buildLlmForProvider(provider: Provider): LlmPort | undefined {
           })
         : undefined;
   }
+}
+
+/** STT cloud via OpenAI Whisper (audio/transcriptions). Lève en cas d'échec (l'appelant gère). */
+export class WhisperSttAdapter implements SttPort {
+  readonly id = 'whisper';
+  constructor(
+    private readonly apiKey: string,
+    private readonly model = process.env.WHISPER_MODEL ?? 'whisper-1',
+    private readonly baseUrl = process.env.OPENAI_URL ?? 'https://api.openai.com/v1',
+  ) {}
+
+  async transcribe(audioBase64: string, mimeType: string): Promise<SttResult> {
+    const bytes = Buffer.from(audioBase64, 'base64');
+    const ext = mimeType.includes('wav') ? 'wav' : mimeType.includes('mp3') || mimeType.includes('mpeg') ? 'mp3' : 'm4a';
+    const form = new FormData();
+    form.append('file', new Blob([bytes], { type: mimeType }), `audio.${ext}`);
+    form.append('model', this.model);
+    form.append('language', 'fr');
+    const res = await fetch(`${this.baseUrl}/audio/transcriptions`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${this.apiKey}` },
+      body: form,
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = (await res.json()) as { text?: string };
+    return { text: (data.text ?? '').trim(), model: this.model };
+  }
+
+  async health(): Promise<{ healthy: boolean }> {
+    return { healthy: !!this.apiKey };
+  }
+}
+
+/** STT cloud disponible uniquement si une clé OpenAI est configurée (Whisper). */
+export function buildSttCloud(): SttPort | undefined {
+  return process.env.OPENAI_API_KEY ? new WhisperSttAdapter(process.env.OPENAI_API_KEY) : undefined;
 }
 
 interface OpenAiResponse {
