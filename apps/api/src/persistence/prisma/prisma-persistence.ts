@@ -31,6 +31,10 @@ export class PrismaPersistence implements Persistence {
     this.counters = new PrismaSequenceCounter(prisma);
   }
 
+  runInTransaction<T>(fn: () => Promise<T>): Promise<T> {
+    return this.prisma.runInTransaction(fn);
+  }
+
   async seed(): Promise<void> {
     const company = companyPropsToCreate(seedCompany().toProps());
     await this.prisma.company.upsert({ where: { id: company.id }, create: company, update: company });

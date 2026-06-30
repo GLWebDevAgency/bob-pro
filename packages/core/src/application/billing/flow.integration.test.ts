@@ -56,7 +56,10 @@ function makeEnv() {
       paymentsArr.push(p);
     },
     listByInvoice: async (invoiceId) => paymentsArr.filter((p) => p.invoiceId === invoiceId),
+    findByIdempotencyKey: async (companyId, key) =>
+      paymentsArr.find((p) => p.companyId === companyId && p.idempotencyKey === key) ?? null,
   };
+  const uow = { runInTransaction: <T>(fn: () => Promise<T>): Promise<T> => fn() };
 
   let idCounter = 0;
   const ids: IdGeneratorPort = {
@@ -78,7 +81,7 @@ function makeEnv() {
     },
   };
 
-  return { company, customer, companyRepo, customerRepo, quoteRepo, invoiceRepo, paymentRepo, ids, clock, counters };
+  return { company, customer, companyRepo, customerRepo, quoteRepo, invoiceRepo, paymentRepo, uow, ids, clock, counters };
 }
 
 describe('Flux Devis -> signature -> facture -> paiement (intégration)', () => {
@@ -123,6 +126,7 @@ describe('Flux Devis -> signature -> facture -> paiement (intégration)', () => 
       companies: env.companyRepo,
       customers: env.customerRepo,
       counters: env.counters,
+      uow: env.uow,
       clock: env.clock,
     }).execute({ invoiceId });
     expect(issued.ok).toBe(true);
@@ -131,6 +135,7 @@ describe('Flux Devis -> signature -> facture -> paiement (intégration)', () => 
     const paid = await new RegisterPayment({
       invoices: env.invoiceRepo,
       payments: env.paymentRepo,
+      uow: env.uow,
       ids: env.ids,
       clock: env.clock,
     }).execute({ invoiceId, amount: 48840, method: 'transfer' });

@@ -133,18 +133,28 @@ export class PrismaInvoiceRepository implements InvoiceRepository {
       vatByRate: totals.vatByRate as Record<string, number>,
       legalMentions: s.mentions,
     };
-    await this.prisma.$transaction([
-      this.prisma.invoice.upsert({ where: { id: s.id }, create: { id: s.id, ...base }, update: base }),
-      this.prisma.lineItem.deleteMany({ where: { invoiceId: s.id } }),
-      this.prisma.lineItem.createMany({ data: s.lines.map((l, idx) => quoteLineToCreate(l, { invoiceId: s.id }, idx)) }),
-    ]);
+    const lines = s.lines.map((l, idx) => quoteLineToCreate(l, { invoiceId: s.id }, idx));
+    if (this.prisma.inTransaction()) {
+      // Déjà dans la transaction d'émission/encaissement : on exécute en séquence sur le client tx.
+      const tx = this.prisma.client();
+      await tx.invoice.upsert({ where: { id: s.id }, create: { id: s.id, ...base }, update: base });
+      await tx.lineItem.deleteMany({ where: { invoiceId: s.id } });
+      await tx.lineItem.createMany({ data: lines });
+    } else {
+      await this.prisma.$transaction([
+        this.prisma.invoice.upsert({ where: { id: s.id }, create: { id: s.id, ...base }, update: base }),
+        this.prisma.lineItem.deleteMany({ where: { invoiceId: s.id } }),
+        this.prisma.lineItem.createMany({ data: lines }),
+      ]);
+    }
   }
 }
 
 export class PrismaPaymentRepository implements PaymentRepository {
   constructor(private readonly prisma: PrismaService) {}
   async save(p: Payment): Promise<void> {
-    await this.prisma.payment.create({
+    // client() => participe à la transaction d'encaissement (paiement + facture atomiques).
+    await this.prisma.client().payment.create({
       data: {
         id: p.id,
         companyId: p.companyId,
@@ -152,8 +162,23 @@ export class PrismaPaymentRepository implements PaymentRepository {
         amount: p.amount,
         method: p.method,
         receivedAt: new Date(p.receivedAt),
+        idempotencyKey: p.idempotencyKey,
       },
     });
+  }
+  async findByIdempotencyKey(companyId: string, key: string): Promise<Payment | null> {
+    const row = await this.prisma.payment.findFirst({ where: { companyId, idempotencyKey: key } });
+    if (!row) return null;
+    const r = Payment.record({
+      id: row.id,
+      companyId: row.companyId,
+      invoiceId: row.invoiceId,
+      amount: row.amount,
+      method: row.method,
+      receivedAt: row.receivedAt.toISOString(),
+      idempotencyKey: row.idempotencyKey,
+    });
+    return r.ok ? r.value : null;
   }
   async listByInvoice(invoiceId: string): Promise<Payment[]> {
     const rows = await this.prisma.payment.findMany({ where: { invoiceId } });
@@ -225,7 +250,8 @@ export class PrismaSequenceCounter implements SequenceCounterPort {
     sequence: number;
     formatted: DocNumber;
   }> {
-    const rows = await this.prisma.$queryRaw<{ next_value: number | bigint }[]>`
+    // client() => participe à la transaction d'émission (allocation + save facture atomiques = no-gap réel).
+    const rows = await this.prisma.client().$queryRaw<{ next_value: number | bigint }[]>`
       INSERT INTO document_counters ("companyId", "counterKey", "fiscalYear", "nextValue")
       VALUES (${input.companyId}, ${input.counterKey}, ${input.fiscalYear}, 1)
       ON CONFLICT ("companyId", "counterKey", "fiscalYear")

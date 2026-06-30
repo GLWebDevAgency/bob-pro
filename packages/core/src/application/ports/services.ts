@@ -21,6 +21,15 @@ export interface IdGeneratorPort {
   newId(): string;
 }
 
+/**
+ * Unité de travail : exécute `fn` dans une transaction atomique. Si `fn` LÈVE, tout est annulé
+ * (rollback) — d'où, pour annuler sur erreur métier, on lève (cf. use cases d'émission/encaissement).
+ * Impl. in-memory = exécution directe (JS mono-thread) ; impl. Prisma = $transaction.
+ */
+export interface UnitOfWorkPort {
+  runInTransaction<T>(fn: () => Promise<T>): Promise<T>;
+}
+
 export interface CashflowSnapshotPort {
   get(companyId: string): Promise<{ bankBalance: number; receivables: number; charges: number; vatDue: number }>;
 }

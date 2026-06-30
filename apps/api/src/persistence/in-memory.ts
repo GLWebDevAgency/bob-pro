@@ -89,6 +89,9 @@ export class InMemoryPaymentRepository implements PaymentRepository {
   async listByInvoice(invoiceId: string): Promise<Payment[]> {
     return this.list.filter((p) => p.invoiceId === invoiceId);
   }
+  async findByIdempotencyKey(companyId: string, key: string): Promise<Payment | null> {
+    return this.list.find((p) => p.companyId === companyId && p.idempotencyKey === key) ?? null;
+  }
 }
 
 export class InMemoryExpenseRepository implements ExpenseRepository {

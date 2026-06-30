@@ -190,14 +190,16 @@ model LineItem {
 }
 
 model Payment {
-  id         String   @id
-  companyId  String
-  company    Company  @relation(fields: [companyId], references: [id])
-  invoiceId  String
-  invoice    Invoice  @relation(fields: [invoiceId], references: [id])
-  amount     Int
-  method     PaymentMethod
-  receivedAt DateTime
+  id             String        @id
+  companyId      String
+  company        Company       @relation(fields: [companyId], references: [id])
+  invoiceId      String
+  invoice        Invoice       @relation(fields: [invoiceId], references: [id])
+  amount         Int
+  method         PaymentMethod
+  receivedAt     DateTime
+  idempotencyKey String?
+  @@unique([companyId, idempotencyKey])
   @@index([invoiceId])
   @@map("payments")
 }

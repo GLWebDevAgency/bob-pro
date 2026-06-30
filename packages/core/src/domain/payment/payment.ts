@@ -12,6 +12,8 @@ export class Payment extends AggregateRoot<string> {
     readonly amount: number, // centimes
     readonly method: PaymentMethod,
     readonly receivedAt: Instant,
+    /** Clé d'idempotence : un même encaissement (retry réseau) ne doit pas créer deux paiements. */
+    readonly idempotencyKey: string | null,
   ) {
     super(id);
   }
@@ -23,8 +25,9 @@ export class Payment extends AggregateRoot<string> {
     amount: number;
     method: PaymentMethod;
     receivedAt: Instant;
+    idempotencyKey?: string | null;
   }): DomainResult<Payment> {
     if (p.amount <= 0) return err({ code: 'VALIDATION', field: 'amount', message: 'Montant > 0 requis.' });
-    return ok(new Payment(p.id, p.companyId, p.invoiceId, p.amount, p.method, p.receivedAt));
+    return ok(new Payment(p.id, p.companyId, p.invoiceId, p.amount, p.method, p.receivedAt, p.idempotencyKey ?? null));
   }
 }

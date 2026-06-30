@@ -82,6 +82,8 @@ export class LocalBobClient implements BobClient {
   private readonly expenses = new InMemoryExpenseRepository();
   private readonly chantiers = new InMemoryChantierRepository();
   private readonly companyLookup = new DemoCompanyLookupAdapter();
+  // Unité de travail in-memory (exécution directe) — parité avec la Persistence backend.
+  private readonly uow = { runInTransaction: <T>(fn: () => Promise<T>): Promise<T> => fn() };
   private readonly vat = new DemoVatAdapter();
   private readonly addresses = new DemoAddressAdapter();
   private readonly counters = new InMemorySequenceCounter();
@@ -256,6 +258,7 @@ export class LocalBobClient implements BobClient {
       companies: this.companies,
       customers: this.customers,
       counters: this.counters,
+      uow: this.uow,
       clock: this.clock,
     }).execute(input);
   }
@@ -264,6 +267,7 @@ export class LocalBobClient implements BobClient {
     return new RegisterPayment({
       invoices: this.invoices,
       payments: this.payments,
+      uow: this.uow,
       ids: this.ids,
       clock: this.clock,
     }).execute(input);

@@ -223,16 +223,18 @@ export class BackendService {
       companies: this.p.companies,
       customers: this.p.customers,
       counters: this.p.counters,
+      uow: this.p,
       clock: this.clock,
     }).execute(input);
     if (r.ok) this.logger.audit('invoice.issued', { invoiceId: input.invoiceId, number: r.value.number });
     return r;
   }
-  async registerPayment(input: { invoiceId: string; amount: number; method: PaymentMethod }) {
+  async registerPayment(input: { invoiceId: string; amount: number; method: PaymentMethod; idempotencyKey?: string | null }) {
     if (!(await this.ownedInvoice(input.invoiceId))) return { ok: false as const, error: appNotFound('invoice', input.invoiceId) };
     const r = await new RegisterPayment({
       invoices: this.p.invoices,
       payments: this.p.payments,
+      uow: this.p,
       ids: this.ids,
       clock: this.clock,
     }).execute(input);

@@ -30,6 +30,8 @@ export interface Persistence {
   payments: PaymentRepository;
   expenses: ExpenseRepository;
   counters: SequenceCounterPort;
+  /** Unité de travail : exécute `fn` atomiquement (transaction DB en prod ; direct en mémoire). */
+  runInTransaction<T>(fn: () => Promise<T>): Promise<T>;
   seed(): Promise<void>;
 }
 
@@ -41,6 +43,10 @@ export class InMemoryPersistence implements Persistence {
   readonly payments = new InMemoryPaymentRepository();
   readonly expenses = new InMemoryExpenseRepository();
   readonly counters = new InMemorySequenceCounter();
+  // En mémoire (JS mono-thread) : pas de transaction réelle, exécution directe — suffisant pour démo/tests.
+  async runInTransaction<T>(fn: () => Promise<T>): Promise<T> {
+    return fn();
+  }
   async seed(): Promise<void> {
     this.companies.seed(seedCompany());
     this.customers.seed(seedCustomers());
