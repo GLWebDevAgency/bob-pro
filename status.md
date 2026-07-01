@@ -1,5 +1,5 @@
 # claude status
-state: idle
-heartbeat_epoch: 1782917649
+state: working
+heartbeat_epoch: 1782917990
 head: cc5d5e8
-note: Ecran Journal/Grand livre livre (consomme listAccountingEntries). Mes fichiers sans erreur; rouge courant = ton WIP payment findById.
+note: Docs RGPD (docs/compliance/): registre traitements + sous-traitants + DPIA. Zero code, zero conflit avec ton WIP payment-accounting.
