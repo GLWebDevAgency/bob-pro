@@ -2,3 +2,6 @@ packages/ai/src/agent/bob-agent-voice.test.ts	1782874784	1800	M2: cablage voix d
 packages/ai/src/agent/autonomy.test.ts	1782876727	1800	M2 plancher de securite: safetyFloor + requiresConfirmation (autonomy)
 apps/mobile/app/(tabs)/documents.tsx	1782879615	1800	reflet mobile: onglet Documents en vraie bibliotheque (list + apercu URL signee)
 apps/mobile/src/data/documents.ts	1782879615	1800	reflet mobile: onglet Documents en vraie bibliotheque (list + apercu URL signee)
+apps/mobile/app/ventes.tsx	1782910130	3000	M3 reflet mobile: ecran Ventes (Devis&Factures) liste+actions parite, plancher securite en Alert; +entree dashboard +route
+apps/mobile/app/_layout.tsx	1782910130	3000	M3 reflet mobile: ecran Ventes (Devis&Factures) liste+actions parite, plancher securite en Alert; +entree dashboard +route
+apps/mobile/app/(tabs)/index.tsx	1782910130	3000	M3 reflet mobile: ecran Ventes (Devis&Factures) liste+actions parite, plancher securite en Alert; +entree dashboard +route
