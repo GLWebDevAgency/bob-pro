@@ -36,8 +36,20 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     expect(gen.ok).toBe(true);
     if (!gen.ok) return;
 
+    const draftPreview = await client.invoiceAccountingPreview(gen.value.invoiceId);
+    expect(draftPreview.ok && draftPreview.value.available).toBe(false);
+    if (draftPreview.ok) expect(draftPreview.value.reason).toContain('emise');
+
     const issued = await client.issueInvoice({ invoiceId: gen.value.invoiceId });
     expect(issued.ok && issued.value.number).toBe('F-2026-0001');
+
+    const preview = await client.invoiceAccountingPreview(gen.value.invoiceId);
+    expect(preview.ok).toBe(true);
+    if (!preview.ok) return;
+    expect(preview.value.available).toBe(true);
+    expect(preview.value.totalDebitCents).toBe(48840);
+    expect(preview.value.totalCreditCents).toBe(48840);
+    expect(preview.value.lines.map((line) => line.account)).toEqual(['411', '4191', '44571']);
 
     const paid = await client.registerPayment({ invoiceId: gen.value.invoiceId, amount: 48840, method: 'transfer' });
     expect(paid.ok && paid.value.status).toBe('paid');

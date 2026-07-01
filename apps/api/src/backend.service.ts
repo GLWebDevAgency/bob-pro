@@ -41,6 +41,7 @@ import {
   ListDocuments,
   GetDocumentDownloadUrl,
   buildDocumentStorageKey,
+  buildIssuedInvoiceAccountingEntry,
   MERCIER_PROPS,
   CASH_SNAPSHOT,
   type Result,
@@ -135,6 +136,26 @@ export interface InvoiceView {
   mentions: string[];
   dueAt: string | null;
   paid: number;
+}
+
+export interface AccountingPreviewLine {
+  account: string;
+  label: string;
+  debitCents: number;
+  creditCents: number;
+}
+
+export interface InvoiceAccountingPreview {
+  invoiceId: string;
+  available: boolean;
+  reason: string | null;
+  entryId: string | null;
+  reference: string | null;
+  entryDate: string | null;
+  label: string | null;
+  totalDebitCents: number;
+  totalCreditCents: number;
+  lines: AccountingPreviewLine[];
 }
 
 /** Vue publique d'un devis pour la page de signature client à distance (lien tokenisé). */
@@ -430,6 +451,45 @@ export class BackendService {
     if (!i) return { ok: false, error: appNotFound('invoice', id) };
     return ok(this.mapInvoice(i));
   }
+
+  async invoiceAccountingPreview(invoiceId: string): Promise<Result<InvoiceAccountingPreview, AppError>> {
+    const invoice = await this.ownedInvoice(invoiceId);
+    if (!invoice) return { ok: false, error: appNotFound('invoice', invoiceId) };
+    const chart = await this.p.chartOfAccounts.findByCompany(invoice.companyId);
+    const entry = buildIssuedInvoiceAccountingEntry({
+      entryId: `preview-invoice-${invoice.id}`,
+      invoice,
+      ...(chart ? { chart } : {}),
+    });
+    if (!entry.ok) {
+      return ok({
+        invoiceId,
+        available: false,
+        reason: 'message' in entry.error && typeof entry.error.message === 'string' ? entry.error.message : 'Aperçu comptable indisponible.',
+        entryId: null,
+        reference: invoice.number,
+        entryDate: invoice.issuedAt,
+        label: null,
+        totalDebitCents: 0,
+        totalCreditCents: 0,
+        lines: [],
+      });
+    }
+    const props = entry.value.toProps();
+    return ok({
+      invoiceId,
+      available: true,
+      reason: null,
+      entryId: props.id,
+      reference: props.reference,
+      entryDate: props.entryDate,
+      label: props.label,
+      totalDebitCents: entry.value.totalDebitCents,
+      totalCreditCents: entry.value.totalCreditCents,
+      lines: props.lines,
+    });
+  }
+
   async listInvoices(): Promise<Result<InvoiceView[], AppError>> {
     const list = await this.p.invoices.listByCompany(this.companyId());
     return ok(list.map((i) => this.mapInvoice(i)));

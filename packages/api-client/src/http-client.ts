@@ -33,6 +33,7 @@ import type {
   UploadDocumentClientInput,
   VoiceConfig,
   VoiceSynthesisResult,
+  InvoiceAccountingPreview,
 } from './client';
 
 export interface HttpBobClientOptions {
@@ -192,6 +193,9 @@ export class HttpBobClient implements BobClient {
   }
   getInvoice(id: string) {
     return this.req<InvoiceView>('GET', `/invoices/${id}`);
+  }
+  invoiceAccountingPreview(invoiceId: string) {
+    return this.req<InvoiceAccountingPreview>('GET', `/invoices/${invoiceId}/accounting-preview`);
   }
   listInvoices() {
     return this.req<InvoiceView[]>('GET', '/invoices');

@@ -19,6 +19,8 @@ import {
   runDiagnostic,
   resolveTradeConfig,
   buildDocumentStorageKey,
+  buildIssuedInvoiceAccountingEntry,
+  createFrenchOperationalChartOfAccounts,
   ExtractDocument,
   DemoOcrAdapter,
   RecordExpense,
@@ -79,6 +81,7 @@ import type {
   UploadDocumentClientInput,
   VoiceConfig,
   VoiceSynthesisResult,
+  InvoiceAccountingPreview,
 } from './client';
 
 export interface LocalBobClientOptions {
@@ -433,6 +436,44 @@ export class LocalBobClient implements BobClient {
     const i = await this.invoices.findById(id);
     if (!i) return err(appNotFound('invoice', id));
     return ok(this.mapInvoice(i));
+  }
+
+  async invoiceAccountingPreview(invoiceId: string): Promise<Result<InvoiceAccountingPreview, AppError>> {
+    const invoice = await this.invoices.findById(invoiceId);
+    if (!invoice) return err(appNotFound('invoice', invoiceId));
+    const chart = createFrenchOperationalChartOfAccounts(invoice.companyId);
+    const entry = buildIssuedInvoiceAccountingEntry({
+      entryId: `preview-invoice-${invoice.id}`,
+      invoice,
+      ...(chart.ok ? { chart: chart.value } : {}),
+    });
+    if (!entry.ok) {
+      return ok({
+        invoiceId,
+        available: false,
+        reason: 'message' in entry.error && typeof entry.error.message === 'string' ? entry.error.message : 'Aperçu comptable indisponible.',
+        entryId: null,
+        reference: invoice.number,
+        entryDate: invoice.issuedAt,
+        label: null,
+        totalDebitCents: 0,
+        totalCreditCents: 0,
+        lines: [],
+      });
+    }
+    const props = entry.value.toProps();
+    return ok({
+      invoiceId,
+      available: true,
+      reason: null,
+      entryId: props.id,
+      reference: props.reference,
+      entryDate: props.entryDate,
+      label: props.label,
+      totalDebitCents: entry.value.totalDebitCents,
+      totalCreditCents: entry.value.totalCreditCents,
+      lines: props.lines,
+    });
   }
 
   async listInvoices(): Promise<Result<InvoiceView[], AppError>> {

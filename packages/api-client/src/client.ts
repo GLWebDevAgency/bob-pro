@@ -99,6 +99,26 @@ export interface VoiceSynthesisResult {
   model: string;
 }
 
+export interface AccountingPreviewLine {
+  account: string;
+  label: string;
+  debitCents: number;
+  creditCents: number;
+}
+
+export interface InvoiceAccountingPreview {
+  invoiceId: string;
+  available: boolean;
+  reason: string | null;
+  entryId: string | null;
+  reference: string | null;
+  entryDate: string | null;
+  label: string | null;
+  totalDebitCents: number;
+  totalCreditCents: number;
+  lines: AccountingPreviewLine[];
+}
+
 /**
  * Façade data consommée par l'app mobile (via TanStack Query).
  * Deux implémentations : LocalBobClient (fixtures, hors-ligne — V1) et, plus tard, HttpBobClient (NestJS).
@@ -169,5 +189,6 @@ export interface BobClient {
   getQuote(id: string): Promise<Result<QuoteView, AppError>>;
   listQuotes(): Promise<Result<QuoteView[], AppError>>;
   getInvoice(id: string): Promise<Result<InvoiceView, AppError>>;
+  invoiceAccountingPreview(invoiceId: string): Promise<Result<InvoiceAccountingPreview, AppError>>;
   listInvoices(): Promise<Result<InvoiceView[], AppError>>;
 }
