@@ -1,11 +1,13 @@
+import { useMemo } from 'react';
 import { ScrollView, View, Text, Pressable, ActivityIndicator } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { formatEUR } from '@bob/core';
+import { InMemoryCompanyMemory, suggestExpenseDefaults } from '@bob/ai';
 import { useTheme } from '../src/theme';
-import { useExtractDocument, useRecordExpense } from '../src/data/hooks';
+import { useExtractDocument, useRecordExpense, useExpenses } from '../src/data/hooks';
 import { Card, Button, Badge, SectionHeader, font } from '../src/components/ui';
 
 const CATEGORY_LABEL: Record<string, string> = {
@@ -23,7 +25,24 @@ export default function ScanDocument() {
   const router = useRouter();
   const extract = useExtractDocument();
   const record = useRecordExpense();
+  const expenses = useExpenses();
   const data = extract.data;
+
+  // Mémoire d'entreprise dérivée de l'historique réel des dépenses (fournisseurs déjà classés).
+  const memory = useMemo(
+    () =>
+      new InMemoryCompanyMemory(
+        (expenses.data ?? []).map((e) => ({
+          name: e.supplierName,
+          siren: e.supplierSiren,
+          category: e.category,
+          vatRatePct: e.vatRatePct,
+        })),
+      ),
+    [expenses.data],
+  );
+  // Défauts proposés : la mémoire fait primer TA catégorie habituelle sur la devinette OCR (sinon fallback OCR).
+  const defaults = data ? suggestExpenseDefaults(memory, data) : null;
 
   async function capture(from: 'camera' | 'library'): Promise<void> {
     const perm =
@@ -91,9 +110,24 @@ export default function ScanDocument() {
                 <Row label="Date" value={data.documentDate} colors={colors} />
                 <Row label="Total TTC" value={formatEUR(data.totalTtcCents)} colors={colors} strong />
                 {data.vatCents !== null ? <Row label="TVA" value={formatEUR(data.vatCents)} colors={colors} /> : null}
-                {data.vatRatePctApplied !== null ? <Row label="Taux TVA" value={`${data.vatRatePctApplied} %`} colors={colors} /> : null}
-                <Row label="Catégorie" value={CATEGORY_LABEL[data.categoryGuess] ?? data.categoryGuess} colors={colors} />
-                {data.supplierSiren ? <Row label="SIREN" value={data.supplierSiren} colors={colors} /> : null}
+                {(defaults?.vatRatePct ?? data.vatRatePctApplied) !== null ? (
+                  <Row label="Taux TVA" value={`${defaults?.vatRatePct ?? data.vatRatePctApplied} %`} colors={colors} />
+                ) : null}
+                <View>
+                  <Row
+                    label="Catégorie"
+                    value={CATEGORY_LABEL[defaults?.category ?? data.categoryGuess] ?? data.categoryGuess}
+                    colors={colors}
+                  />
+                  {defaults?.source === 'memory' ? (
+                    <Text style={[font('meta'), { color: semantic.ai, marginTop: 2, textAlign: 'right' }]}>
+                      ✨ Proposé d’après ton historique
+                    </Text>
+                  ) : null}
+                </View>
+                {(defaults?.supplierSiren ?? data.supplierSiren) ? (
+                  <Row label="SIREN" value={(defaults?.supplierSiren ?? data.supplierSiren)!} colors={colors} />
+                ) : null}
               </View>
             </Card>
             {record.isError ? (
@@ -106,13 +140,13 @@ export default function ScanDocument() {
                 record.mutate(
                   {
                     supplierName: data.supplierName,
-                    supplierSiren: data.supplierSiren,
+                    supplierSiren: defaults?.supplierSiren ?? data.supplierSiren,
                     documentDate: data.documentDate,
                     totalTtcCents: data.totalTtcCents,
                     totalHtCents: data.totalHtCents,
                     vatCents: data.vatCents,
-                    vatRatePct: data.vatRatePctApplied,
-                    category: data.categoryGuess,
+                    vatRatePct: defaults?.vatRatePct ?? data.vatRatePctApplied,
+                    category: defaults?.category ?? data.categoryGuess,
                     source: 'ocr',
                   },
                   { onSuccess: () => router.back() },
