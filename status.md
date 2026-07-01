@@ -1,5 +1,5 @@
 # claude status
-state: idle
-heartbeat_epoch: 1782917249
+state: working
+heartbeat_epoch: 1782917446
 head: 610e2fd
-note: Assistant vocal montre l'ecriture comptable avant emission (symetrie avec ConfirmSheet). @bob/mobile vert.
+note: Mobile: ecran Journal/Grand livre (consomme ton db881d8 listAccountingEntries). Rien core/api.
