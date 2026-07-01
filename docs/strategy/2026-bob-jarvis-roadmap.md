@@ -88,6 +88,11 @@ Aucun use case modifié à ce stade (on pose le port + adapters + table + isolat
 - **Défaut par palier** : Solo 14€ → `confirm_all` · Pro 39€ → `confirm_outbound` · Business 69€ → `auto`.
 - **Module « Bob Autonomie » (dès Solo)** : +2€/mo → `confirm_outbound` ; +5€/mo → `auto`. *(Solo 14€ + 5€ = 19€ obtient l'auto sans acheter Business.)*
 - **Plancher de sécurité INVIOLABLE** (quel que soit le niveau/add-on) : les actions qui **bougent de l'argent** (encaissement) ou **sortent vers un tiers** (envoi devis/facture/relance) demandent **toujours** une confirmation (tap ou voix). L'`auto` accélère l'interne réversible, jamais le sensible → vendre l'auto pas cher reste sûr.
-- **Prérequis** : Bob (assistant) devient accessible **dès Solo** (en `confirm_all`) — ajuste le gating actuel (ai_assistant Pro+). À trancher.
-- **Faisabilité mobile/web** : entitlements pilotés par le **web (Stripe)** comme source de vérité ; l'app mobile lit l'entitlement (pattern subscription déjà en place). iOS : attention règles Apple IAP vs billing externe pour SaaS B2B — à valider. Décision technique Claude+Codex.
+- **Prérequis** : Bob (assistant) devient accessible **dès Solo** (en `confirm_all`) — ajuste le gating actuel (ai_assistant Pro+). **Option A retenue** (Claude+Codex).
+- **Faisabilité mobile/web** : entitlements pilotés par le **web (Stripe) = source de vérité** ; l'app mobile **lit** l'entitlement (pattern subscription déjà en place). **Pas d'achat in-app (IAP)** pour débloquer des fonctions SaaS B2B tant que non validé côté Apple → **checkout/gestion abonnement sur le web/portail**.
+
+### Convergence Claude+Codex (2026-07-01, msg refs 02:04)
+- ✅ Découplage autonomie/palier ; Option A (Bob dès Solo `confirm_all`) ; add-on autonomie = entitlement Stripe séparé (+2€ `confirm_outbound` / +5€ `auto`) ; Business inclut `auto`.
+- ✅ **Plancher de sécurité ÉTENDU** (inviolable même en `auto`, confirmation toujours requise) : mouvement d'argent (encaissement), **envoi vers un tiers** (devis/facture/relance), **suppression/purge de document**, **tout changement à portée légale/fiscale** (émission, mentions, numérotation).
+- ⏳ **Point encore ouvert (à réconcilier)** : la **segmentation des paliers** (qui/quoi par palier, profondeur de Bob par palier, anti-cannibalisation Solo+auto vs Pro). Débat en cours Claude↔Codex → position unique à présenter au user.
 
