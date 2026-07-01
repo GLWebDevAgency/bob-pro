@@ -1,10 +1,12 @@
+import { useState } from 'react';
 import { ScrollView, View, Text, Pressable } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { formatEUR } from '@bob/core';
 import { useTheme } from '../src/theme';
 import { useAccountingEntries, useSubscription } from '../src/data/hooks';
-import { Card, Badge, Button, SectionHeader, font } from '../src/components/ui';
+import { Card, Badge, Button, Chip, SectionHeader, font } from '../src/components/ui';
 import { AccountingLinesView } from '../src/components/AccountingLinesView';
 
 type Tone = 'b2b' | 'b2g' | 'particulier' | 'success' | 'warning' | 'danger' | 'ai';
@@ -27,8 +29,21 @@ export default function Comptabilite() {
   const { data: sub } = useSubscription();
   const entries = useAccountingEntries();
   const entitled = (sub?.features ?? []).includes('accounting_foundation');
+  const [filterJournal, setFilterJournal] = useState<string | null>(null);
 
   const sorted = [...(entries.data ?? [])].sort((a, b) => b.entryDate.localeCompare(a.entryDate));
+  const journalsPresent = Array.from(new Set(sorted.map((e) => e.journal)));
+  const filtered = filterJournal ? sorted.filter((e) => e.journal === filterJournal) : sorted;
+  const totals = filtered.reduce(
+    (acc, e) => {
+      for (const l of e.lines) {
+        acc.d += l.debitCents;
+        acc.c += l.creditCents;
+      }
+      return acc;
+    },
+    { d: 0, c: 0 },
+  );
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
@@ -75,7 +90,29 @@ export default function Comptabilite() {
             </Text>
           </Card>
         ) : (
-          sorted.map((e) => {
+          <>
+            {journalsPresent.length > 1 ? (
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                <Chip label="Tous" active={filterJournal === null} onPress={() => setFilterJournal(null)} />
+                {journalsPresent.map((jk) => (
+                  <Chip
+                    key={jk}
+                    label={(JOURNAL[jk] ?? { label: jk }).label}
+                    active={filterJournal === jk}
+                    onPress={() => setFilterJournal(jk)}
+                  />
+                ))}
+              </View>
+            ) : null}
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 2 }}>
+              <Text style={[font('meta'), { color: colors.slate400 }]}>
+                {filtered.length} écriture{filtered.length > 1 ? 's' : ''}
+              </Text>
+              <Text style={[font('meta'), { color: colors.slate500 }]}>
+                Débit {formatEUR(totals.d)} · Crédit {formatEUR(totals.c)}
+              </Text>
+            </View>
+            {filtered.map((e) => {
             const j = JOURNAL[e.journal] ?? { label: e.journal, tone: 'particulier' as Tone };
             return (
               <Card key={e.id}>
@@ -94,7 +131,8 @@ export default function Comptabilite() {
                 </View>
               </Card>
             );
-          })
+            })}
+          </>
         )}
       </ScrollView>
     </View>
