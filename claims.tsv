@@ -3,4 +3,3 @@ packages/ai/src/agent/autonomy.test.ts	1782876727	1800	M2 plancher de securite: 
 apps/mobile/app/(tabs)/documents.tsx	1782879615	1800	reflet mobile: onglet Documents en vraie bibliotheque (list + apercu URL signee)
 apps/mobile/src/data/documents.ts	1782879615	1800	reflet mobile: onglet Documents en vraie bibliotheque (list + apercu URL signee)
 apps/mobile/src/components/DocumentActions.tsx	1782912480	2400	navigation devis<->facture via parentQuoteId: lien facture generee (devis detail) + devis d'origine (facture detail) + garde 'deja facture' durable
-apps/mobile/app/ventes.tsx	1782912480	2400	navigation devis<->facture via parentQuoteId: lien facture generee (devis detail) + devis d'origine (facture detail) + garde 'deja facture' durable
