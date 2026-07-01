@@ -78,7 +78,7 @@ Aucun use case modifié à ce stade (on pose le port + adapters + table + isolat
 
 ## 7. Décisions user confirmées (2026-07-01)
 - **Stockage** : ✅ Supabase Storage privé + **immutabilité par versioning applicatif** (bascule S3 WORM repoussée). → M0 débloqué.
-- **TTS** : ✅ voix native par défaut + **Mistral Voxtral (souverain FR)** en premium palier Pro. → M2.
+- **Voix (STT + TTS)** : ✅ natif par défaut ; premium Pro = **Mistral, souverain FR/EU**, mais **2 produits DISTINCTS** (corrigé après recherche 2026-07) : STT = **Voxtral Transcribe** (`voxtral-mini-latest`, `/v1/audio/transcriptions`, `language:'fr'` + `context_bias` sur le lexique métier) ; TTS = **Voxtral TTS** (`voxtral-mini-tts`, `/v1/audio/speech`). ⚠️ `voxtral-small-2507` = compréhension audio (chat), **ni** l'un **ni** l'autre. Contraintes : usage commercial = **API payante** (poids CC BY-NC) ; **endpoint EU** + **Zero Data Retention** ; ne jamais persister l'audio brut. → M2.
 - **Mailer** : ✅ **Brevo (FR)**, email seul en v1 (SMS plus tard). → M3.
 - **Défauts non bloquants** (sauf objection) : wake-word repoussé en M5 (tap en attendant) ; reçus alignés 10 ans ; audios = **transcription texte seulement** conservée (RGPD).
 
