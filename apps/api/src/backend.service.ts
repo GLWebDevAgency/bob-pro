@@ -73,6 +73,7 @@ import {
   type OcrPort,
   type RecordExpenseInput,
   type ExpenseProps,
+  type NotificationPort,
   type DocumentKind,
   type DocumentLinkedEntityType,
   type DocumentOrigin,
@@ -102,6 +103,7 @@ import { PAYMENT_GATEWAY } from './payments/payment-gateway';
 import { PDF_RENDERER } from './documents/pdf-renderer';
 import { buildDocumentStorage, documentSha256 } from './documents/storage';
 import { OCR_PORT } from './ocr/ocr';
+import { NOTIFIER } from './notifications/notifier';
 import { hasClaudeKey, hasGlmKey, hasDeepseekKey, hasMistralKey, hasOpenaiKey } from './config/env';
 import { buildLlmForProvider, buildSttCloud, buildTtsCloud } from './ai/providers';
 import { clampAgentAutonomy } from './ai/autonomy-entitlements';
@@ -200,6 +202,11 @@ function nextArchiveRetryAt(now: string, attempts: number): string {
   return addMinutesIso(now, delayMinutes);
 }
 
+function publicSignatureUrl(token: string): string {
+  const base = (process.env.SIGN_WEB_BASE_URL ?? 'https://demo.bobpro.fr').replace(/\/$/, '');
+  return `${base}/sign/${encodeURIComponent(token)}`;
+}
+
 /**
  * Autorité serveur : wire les use cases du domaine sur le bundle Persistence injecté
  * (in-memory en démo, Prisma/Postgres en prod). L'app bascule en HttpBobClient sans changer d'écran.
@@ -232,6 +239,7 @@ export class BackendService {
     @Inject(PAYMENT_GATEWAY) private readonly gateway: PaymentGatewayPort,
     @Inject(PDF_RENDERER) private readonly pdf: PdfRendererPort,
     @Inject(OCR_PORT) private readonly ocr: OcrPort,
+    @Inject(NOTIFIER) private readonly notifier: NotificationPort,
     private readonly metrics: Metrics,
     private readonly logger: AppLogger,
   ) {
@@ -290,7 +298,8 @@ export class BackendService {
     }).execute({ companyId: this.companyId(), ...input });
   }
   async sendQuote(quoteId: string) {
-    if (!(await this.ownedQuote(quoteId))) return { ok: false as const, error: appNotFound('quote', quoteId) };
+    const quote = await this.ownedQuote(quoteId);
+    if (!quote) return { ok: false as const, error: appNotFound('quote', quoteId) };
     const sent = await new SendQuote({ quotes: this.p.quotes, counters: this.p.counters, uow: this.p, clock: this.clock }).execute({
       quoteId,
     });
@@ -302,9 +311,41 @@ export class BackendService {
     }).execute({ quoteId });
     if (token.ok) {
       this.logger.audit('quote.signature_token_created', { quoteId, expiresAt: token.value.expiresAt });
-      return ok({ ...sent.value, signatureToken: token.value.token, signatureTokenExpiresAt: token.value.expiresAt });
+      const emailSent = await this.notifyQuoteForSignature(quote, sent.value.number, token.value.token);
+      return ok({ ...sent.value, signatureToken: token.value.token, signatureTokenExpiresAt: token.value.expiresAt, emailSent });
     }
     return sent;
+  }
+
+  private async notifyQuoteForSignature(quote: Quote, number: string, token: string): Promise<boolean> {
+    const customer = await this.p.customers.findById(quote.customerId);
+    const company = await this.p.companies.findById(quote.companyId);
+    const email = customer?.toProps().email;
+    if (!email) {
+      this.logger.audit('quote.email_skipped', { quoteId: quote.id, reason: 'customer_email_missing' });
+      return false;
+    }
+    try {
+      await this.notifier.send({
+        channel: 'email',
+        to: email,
+        subject: `Devis ${number} à signer`,
+        body: [
+          `Bonjour ${customer?.name ?? ''},`,
+          '',
+          `${company?.name ?? 'Votre prestataire'} vous a envoyé le devis ${number}.`,
+          'Vous pouvez le consulter et le signer ici :',
+          publicSignatureUrl(token),
+          '',
+          'Ce lien est personnel. Si vous avez une question, répondez directement à votre prestataire.',
+        ].join('\n'),
+      });
+      this.logger.audit('quote.email_sent', { quoteId: quote.id, number, to: email });
+      return true;
+    } catch (e) {
+      this.logger.audit('quote.email_failed', { quoteId: quote.id, number, to: email, cause: e instanceof Error ? e.message : 'email' });
+      return false;
+    }
   }
   async signQuote(input: { quoteId: string; signerName: string }) {
     if (!(await this.ownedQuote(input.quoteId))) return { ok: false as const, error: appNotFound('quote', input.quoteId) };

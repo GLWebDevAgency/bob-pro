@@ -46,6 +46,11 @@ export class RelanceService {
       if (!overdue || inv.dueAt === null) continue;
       const daysLate = daysBetween(inv.dueAt, today);
       const customer = await this.p.customers.findById(inv.customerId);
+      const email = customer?.toProps().email;
+      if (!email) {
+        this.logger.audit('relance.email_skipped', { invoiceId: inv.id, reason: 'customer_email_missing' });
+        continue;
+      }
       const message = buildRelance({
         customerName: customer?.name ?? 'le client',
         docNumber: inv.number ?? '',
@@ -54,7 +59,7 @@ export class RelanceService {
         tone: toneForDaysLate(daysLate),
         personality: 'Pote',
       });
-      await this.notifier.send({ channel: 'email', to: customer?.name ?? 'client', subject: message.subject, body: message.body });
+      await this.notifier.send({ channel: 'email', to: email, subject: message.subject, body: message.body });
       sent += 1;
     }
     this.logger.audit('relances.run', { scanned: invoices.length, sent });

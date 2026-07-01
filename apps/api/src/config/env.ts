@@ -18,6 +18,11 @@ const schema = z.object({
   SUPABASE_URL: z.string().url().optional(),
   SUPABASE_SERVICE_ROLE_KEY: z.string().optional(),
   SUPABASE_STORAGE_BUCKET: z.string().default('bob-documents'),
+  BREVO_API_KEY: z.string().optional(),
+  BREVO_API_BASE_URL: z.string().url().default('https://api.brevo.com/v3'),
+  BREVO_SENDER_EMAIL: z.string().email().optional(),
+  BREVO_SENDER_NAME: z.string().default('Bob Pro'),
+  SIGN_WEB_BASE_URL: z.string().url().default('https://demo.bobpro.fr'),
 });
 
 export type Env = z.infer<typeof schema>;
