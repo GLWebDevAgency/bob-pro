@@ -18,6 +18,7 @@ const schema = z.object({
   SUPABASE_URL: z.string().url().optional(),
   SUPABASE_SERVICE_ROLE_KEY: z.string().optional(),
   SUPABASE_STORAGE_BUCKET: z.string().default('bob-documents'),
+  JOB_COMPANY_IDS: z.string().optional(),
   BREVO_API_KEY: z.string().optional(),
   BREVO_API_BASE_URL: z.string().url().default('https://api.brevo.com/v3'),
   BREVO_SENDER_EMAIL: z.string().email().optional(),
@@ -46,3 +47,9 @@ export const hasDeepseekKey = (): boolean => !!process.env.DEEPSEEK_API_KEY;
 export const hasMistralKey = (): boolean => !!process.env.MISTRAL_API_KEY;
 export const hasOpenaiKey = (): boolean => !!process.env.OPENAI_API_KEY;
 export const isDemoMode = (): boolean => process.env.DEMO_MODE !== 'false';
+
+export function jobCompanyIds(): string[] {
+  const raw = process.env.JOB_COMPANY_IDS;
+  if (!raw) return [];
+  return [...new Set(raw.split(',').map((id) => id.trim()).filter(Boolean))];
+}

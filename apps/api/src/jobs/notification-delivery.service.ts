@@ -6,6 +6,7 @@ import { PERSISTENCE, type Persistence } from '../persistence/persistence';
 import { type DeliverableNotificationJob, type NotificationJob } from '../persistence/notification-jobs';
 import { NOTIFIER } from '../notifications/notifier';
 import { AppLogger } from '../observability/logger';
+import { ScheduledTenantDirectory } from './tenant-directory';
 
 function addMinutesIso(instant: string, minutes: number): string {
   const d = new Date(instant);
@@ -25,6 +26,7 @@ export class NotificationDeliveryService {
   constructor(
     @Inject(PERSISTENCE) private readonly p: Persistence,
     @Inject(NOTIFIER) private readonly notifier: NotificationPort,
+    private readonly tenants: ScheduledTenantDirectory,
     private readonly logger: AppLogger,
   ) {}
 
@@ -95,17 +97,17 @@ export class NotificationDeliveryService {
   }
 
   async runAllCompanies(limitPerCompany = 25): Promise<{ companies: number; scanned: number; sent: number; failed: number }> {
-    const companies = await this.p.companies.list();
+    const companyIds = await this.tenants.listCompanyIds();
     let scanned = 0;
     let sent = 0;
     let failed = 0;
-    for (const company of companies) {
-      const result = await this.runForCompany(company.id, limitPerCompany);
+    for (const companyId of companyIds) {
+      const result = await this.runForCompany(companyId, limitPerCompany);
       scanned += result.scanned;
       sent += result.sent;
       failed += result.failed;
     }
-    return { companies: companies.length, scanned, sent, failed };
+    return { companies: companyIds.length, scanned, sent, failed };
   }
 
   run(): Promise<{ companies: number; scanned: number; sent: number; failed: number }> {

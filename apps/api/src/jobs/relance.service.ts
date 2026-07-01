@@ -4,6 +4,7 @@ import { SystemClock, buildRelance, type RelanceTone } from '@bob/core';
 import { PERSISTENCE, type Persistence } from '../persistence/persistence';
 import { AppLogger } from '../observability/logger';
 import { NotificationDeliveryService } from './notification-delivery.service';
+import { ScheduledTenantDirectory } from './tenant-directory';
 
 function daysBetween(a: string, b: string): number {
   const da = new Date(`${a}T00:00:00.000Z`).getTime();
@@ -26,6 +27,7 @@ export class RelanceService {
   constructor(
     @Inject(PERSISTENCE) private readonly p: Persistence,
     private readonly notificationDelivery: NotificationDeliveryService,
+    private readonly tenants: ScheduledTenantDirectory,
     private readonly logger: AppLogger,
   ) {}
 
@@ -76,15 +78,15 @@ export class RelanceService {
   }
 
   async runRelances(): Promise<{ companies: number; scanned: number; sent: number }> {
-    const companies = await this.p.companies.list();
+    const companyIds = await this.tenants.listCompanyIds();
     let scanned = 0;
     let sent = 0;
-    for (const company of companies) {
-      const result = await this.runRelancesForCompany(company.id);
+    for (const companyId of companyIds) {
+      const result = await this.runRelancesForCompany(companyId);
       scanned += result.scanned;
       sent += result.sent;
     }
-    this.logger.audit('relances.run_all', { companies: companies.length, scanned, sent });
-    return { companies: companies.length, scanned, sent };
+    this.logger.audit('relances.run_all', { companies: companyIds.length, scanned, sent });
+    return { companies: companyIds.length, scanned, sent };
   }
 }

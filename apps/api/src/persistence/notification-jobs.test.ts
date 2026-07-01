@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { NotificationPort } from '@bob/core';
 import { NotificationDeliveryService } from '../jobs/notification-delivery.service';
+import { ScheduledTenantDirectory } from '../jobs/tenant-directory';
 import type { AppLogger } from '../observability/logger';
 import { InMemoryNotificationJobRepository } from './in-memory';
 import { InMemoryPersistence } from './persistence';
@@ -70,7 +71,7 @@ describe('NotificationDeliveryService', () => {
     const notifier = {
       send: vi.fn<NotificationPort['send']>().mockRejectedValueOnce(new Error('brevo down')).mockResolvedValueOnce(undefined),
     } satisfies NotificationPort;
-    const service = new NotificationDeliveryService(persistence, notifier, logger);
+    const service = new NotificationDeliveryService(persistence, notifier, new ScheduledTenantDirectory(persistence, logger), logger);
 
     const job = await service.enqueue({
       companyId: 'co-1',

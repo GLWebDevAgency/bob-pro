@@ -1,15 +1,15 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { BackendService } from '../backend.service';
 import { AppLogger } from '../observability/logger';
-import { PERSISTENCE, type Persistence } from '../persistence/persistence';
+import { ScheduledTenantDirectory } from './tenant-directory';
 
 /** Retry durable de l'archivage documentaire. V1 in-process ; prod multi-tenant = worker service-role dédié. */
 @Injectable()
 export class DocumentArchiveService {
   constructor(
     private readonly backend: BackendService,
-    @Inject(PERSISTENCE) private readonly p: Persistence,
+    private readonly tenants: ScheduledTenantDirectory,
     private readonly logger: AppLogger,
   ) {}
 
@@ -29,21 +29,21 @@ export class DocumentArchiveService {
   }
 
   async runAllCompanies(limitPerCompany = 10): Promise<{ companies: number; scanned: number; archived: number; failed: number }> {
-    const companies = await this.p.companies.list();
+    const companyIds = await this.tenants.listCompanyIds();
     let scanned = 0;
     let archived = 0;
     let failed = 0;
-    for (const company of companies) {
-      const result = await this.backend.runDocumentArchiveJobs({ companyId: company.id, limit: limitPerCompany });
+    for (const companyId of companyIds) {
+      const result = await this.backend.runDocumentArchiveJobs({ companyId, limit: limitPerCompany });
       if (result.ok) {
         scanned += result.value.scanned;
         archived += result.value.archived;
         failed += result.value.failed;
       } else {
         failed += 1;
-        this.logger.warn(`Retry archivage documents impossible (${company.id}): ${JSON.stringify(result.error)}`, 'documents');
+        this.logger.warn(`Retry archivage documents impossible (${companyId}): ${JSON.stringify(result.error)}`, 'documents');
       }
     }
-    return { companies: companies.length, scanned, archived, failed };
+    return { companies: companyIds.length, scanned, archived, failed };
   }
 }

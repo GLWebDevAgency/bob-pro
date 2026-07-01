@@ -13,6 +13,7 @@ import { notifierProvider } from './notifications/notifier';
 import { RelanceService } from './jobs/relance.service';
 import { DocumentArchiveService } from './jobs/document-archive.service';
 import { NotificationDeliveryService } from './jobs/notification-delivery.service';
+import { ScheduledTenantDirectory } from './jobs/tenant-directory';
 import { SupabaseAuthGuard } from './auth/auth.guard';
 import { TenantPersistenceInterceptor } from './persistence/tenant-persistence.interceptor';
 import {
@@ -70,6 +71,7 @@ import {
     RelanceService,
     DocumentArchiveService,
     NotificationDeliveryService,
+    ScheduledTenantDirectory,
     paymentGatewayProvider,
     ocrProvider,
     { provide: PDF_RENDERER, useClass: PdfRenderer },

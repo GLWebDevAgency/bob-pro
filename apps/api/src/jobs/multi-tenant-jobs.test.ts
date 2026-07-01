@@ -3,6 +3,7 @@ import type { Company, Customer, Invoice, NotificationPort } from '@bob/core';
 import { NotificationDeliveryService } from './notification-delivery.service';
 import { RelanceService } from './relance.service';
 import { DocumentArchiveService } from './document-archive.service';
+import { ScheduledTenantDirectory } from './tenant-directory';
 import type { BackendService } from '../backend.service';
 import type { AppLogger } from '../observability/logger';
 import { InMemoryPersistence } from '../persistence/persistence';
@@ -39,12 +40,25 @@ function overdueInvoice(id: string, companyId: string, customerId: string): Invo
 }
 
 describe('scheduled jobs multi-tenant', () => {
+  it('utilise JOB_COMPANY_IDS comme source explicite de tenants', async () => {
+    const previous = process.env.JOB_COMPANY_IDS;
+    process.env.JOB_COMPANY_IDS = 'co-2, co-1, co-2';
+    try {
+      const directory = new ScheduledTenantDirectory(new InMemoryPersistence(), logger);
+
+      await expect(directory.listCompanyIds()).resolves.toEqual(['co-2', 'co-1']);
+    } finally {
+      if (previous === undefined) delete process.env.JOB_COMPANY_IDS;
+      else process.env.JOB_COMPANY_IDS = previous;
+    }
+  });
+
   it('livre les notifications dues pour chaque société connue', async () => {
     const persistence = new InMemoryPersistence();
     persistence.companies.seed(fakeCompany('co-1'));
     persistence.companies.seed(fakeCompany('co-2'));
     const notifier = { send: vi.fn<NotificationPort['send']>().mockResolvedValue(undefined) } satisfies NotificationPort;
-    const service = new NotificationDeliveryService(persistence, notifier, logger);
+    const service = new NotificationDeliveryService(persistence, notifier, new ScheduledTenantDirectory(persistence, logger), logger);
 
     await service.enqueue({
       companyId: 'co-1',
@@ -80,7 +94,7 @@ describe('scheduled jobs multi-tenant', () => {
       })),
       tryDeliver: vi.fn(async () => true),
     } as unknown as NotificationDeliveryService;
-    const service = new RelanceService(persistence, delivery, logger);
+    const service = new RelanceService(persistence, delivery, new ScheduledTenantDirectory(persistence, logger), logger);
 
     const result = await service.runRelances();
 
@@ -99,7 +113,7 @@ describe('scheduled jobs multi-tenant', () => {
         .mockResolvedValueOnce({ ok: true, value: { scanned: 1, archived: 1, failed: 0 } })
         .mockResolvedValueOnce({ ok: true, value: { scanned: 2, archived: 0, failed: 1 } }),
     } as unknown as BackendService;
-    const service = new DocumentArchiveService(backend, persistence, logger);
+    const service = new DocumentArchiveService(backend, new ScheduledTenantDirectory(persistence, logger), logger);
 
     const result = await service.runAllCompanies(10);
 
