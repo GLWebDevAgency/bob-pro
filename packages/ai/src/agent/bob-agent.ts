@@ -8,6 +8,16 @@ import { type AnyTool } from '../tools/tool';
 import { type AgentAutonomy, DEFAULT_AUTONOMY, requiresConfirmation } from './autonomy';
 import { type BobIntent, detectIntent } from './intent';
 import { classifyWithLlm, classifyWithRegex } from './classifier';
+import {
+  AgentRuntime,
+  type RuntimeInvocation,
+  type RuntimeOptions,
+  type AgentRunRecord,
+  type ActionPolicy,
+  type JournalStore,
+  type RuntimeClock,
+  type RuntimeIds,
+} from '../runtime';
 
 // Ré-export pour compatibilité (anciens imports depuis bob-agent).
 export { detectIntent };
@@ -82,11 +92,29 @@ export function resolveInvoice(message: string, invoices: PayableInvoice[]): Pay
   return invoices.length === 1 ? invoices[0]! : null;
 }
 
+/** Convertit une action proposée (simple ou lot) en invocations rejouables par le runtime. */
+export function pendingToInvocations(pending: PendingAction): RuntimeInvocation[] {
+  if (pending.batch && pending.batch.length > 0) {
+    return pending.batch.map((b) => ({ tool: b.tool, args: b.args, label: b.label }));
+  }
+  return [{ tool: pending.tool, args: pending.args, label: pending.label }];
+}
+
+/** Config optionnelle du runtime agentique (journal immuable + dry-run + rejeu + permissions par action). */
+export interface BobRuntimeConfig {
+  clock: RuntimeClock;
+  ids: RuntimeIds;
+  policy?: ActionPolicy;
+  store?: JournalStore;
+}
+
 export interface BobAgentDeps {
   router: ModelRouter;
   actions: BobActions;
   /** Optionnel : si fourni (clé configurée), Bob qualifie la demande par tool-calling LLM. Sinon regex. */
   llm?: LlmPort;
+  /** Optionnel : active dryRun()/runJournaled() (audit append-only + permissions par action). */
+  runtime?: BobRuntimeConfig;
 }
 
 export interface AskOptions {
@@ -100,9 +128,19 @@ export interface AskOptions {
  */
 export class BobAgent {
   private readonly tools: AnyTool[];
+  private readonly engine?: AgentRuntime;
 
   constructor(private readonly deps: BobAgentDeps) {
     this.tools = buildBobTools(deps.actions);
+    if (deps.runtime) {
+      this.engine = new AgentRuntime({
+        tools: this.tools,
+        clock: deps.runtime.clock,
+        ids: deps.runtime.ids,
+        ...(deps.runtime.policy ? { policy: deps.runtime.policy } : {}),
+        ...(deps.runtime.store ? { store: deps.runtime.store } : {}),
+      });
+    }
   }
 
   private tool(name: string): AnyTool | undefined {
@@ -356,5 +394,25 @@ export class BobAgent {
       plan: ['Exécuter l’action confirmée'],
       card: { title: 'Fait ✓', body: `${pending.label} — c’est noté.` },
     });
+  }
+
+  private requireEngine(): AgentRuntime {
+    if (!this.engine) {
+      throw new Error('BobAgent: runtime non configuré — fournis deps.runtime (clock + ids) pour dryRun/runJournaled.');
+    }
+    return this.engine;
+  }
+
+  /**
+   * Aperçu SANS effet de bord : évalue permissions + validation de chaque action et journalise en
+   * 'planned', mais N'EXÉCUTE RIEN. Sert à confirmer un plan (« voici ce que je vais faire ») avant exécution.
+   */
+  async dryRun(invocations: RuntimeInvocation[], opts: Omit<RuntimeOptions, 'mode'> = {}): Promise<AgentRunRecord> {
+    return this.requireEngine().run(invocations, { ...opts, mode: 'dry-run' });
+  }
+
+  /** Exécution JOURNALISÉE (audit append-only immuable) avec permissions par action. */
+  async runJournaled(invocations: RuntimeInvocation[], opts: Omit<RuntimeOptions, 'mode'> = {}): Promise<AgentRunRecord> {
+    return this.requireEngine().run(invocations, { ...opts, mode: 'live' });
   }
 }
