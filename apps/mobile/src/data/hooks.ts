@@ -1,6 +1,7 @@
 import { Linking, Alert } from 'react-native';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { Scenario, Horizon, CreateQuoteInput, PaymentMethod, RecordExpenseInput, PlanTier } from '@bob/core';
+import type { RegisterPaymentClientInput } from '@bob/api-client';
 import { useBobClient } from './client';
 
 /** Ouvre une URL externe en remontant un échec à l'utilisateur (lien Stripe/paiement). */
@@ -339,7 +340,7 @@ export function useRegisterPayment() {
   const client = useBobClient();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (input: { invoiceId: string; amount: number; method: PaymentMethod }) => {
+    mutationFn: async (input: RegisterPaymentClientInput) => {
       const r = await client.registerPayment(input);
       if (!r.ok) throw r.error;
       return r.value;

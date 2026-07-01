@@ -87,7 +87,12 @@ export default function ClientDetail() {
                             onPress={() => {
                               const remaining = Math.max(0, inv.totals.ttc - inv.paid);
                               register.mutate(
-                                { invoiceId: inv.id, amount: remaining, method: 'transfer' },
+                                {
+                                  invoiceId: inv.id,
+                                  amount: remaining,
+                                  method: 'transfer',
+                                  idempotencyKey: `mobile-client:payment:${inv.id}:${inv.paid}:${remaining}:transfer`,
+                                },
                                 { onError: (e) => Alert.alert('Oups', appErrorMessage(e)) },
                               );
                             }}

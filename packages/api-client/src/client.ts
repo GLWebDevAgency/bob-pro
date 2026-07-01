@@ -53,6 +53,19 @@ export interface InvoiceView {
   paid: number;
 }
 
+export interface RegisterPaymentClientInput {
+  invoiceId: string;
+  amount: number;
+  method: PaymentMethod;
+  idempotencyKey?: string | null;
+}
+
+export interface SendQuoteOutput {
+  number: string;
+  signatureToken?: string;
+  signatureTokenExpiresAt?: string;
+}
+
 /**
  * Façade data consommée par l'app mobile (via TanStack Query).
  * Deux implémentations : LocalBobClient (fixtures, hors-ligne — V1) et, plus tard, HttpBobClient (NestJS).
@@ -87,11 +100,11 @@ export interface BobClient {
   listCustomers(): Promise<Result<CustomerListItem[], AppError>>;
   getCashflow(input: { scenario: Scenario; horizon: Horizon }): Promise<Result<CashflowProjection, AppError>>;
   createQuote(input: Omit<CreateQuoteInput, 'companyId'>): Promise<Result<CreateQuoteOutput, AppError>>;
-  sendQuote(quoteId: string): Promise<Result<{ number: string }, AppError>>;
+  sendQuote(quoteId: string): Promise<Result<SendQuoteOutput, AppError>>;
   signQuote(input: { quoteId: string; signerName: string }): Promise<Result<{ status: string }, AppError>>;
   generateInvoice(input: { quoteId: string; mode?: 'deposit' | 'final' }): Promise<Result<{ invoiceId: string }, AppError>>;
   issueInvoice(input: IssueInvoiceInput): Promise<Result<{ number: string }, AppError>>;
-  registerPayment(input: { invoiceId: string; amount: number; method: PaymentMethod }): Promise<Result<{ status: string }, AppError>>;
+  registerPayment(input: RegisterPaymentClientInput): Promise<Result<{ status: string }, AppError>>;
   getQuote(id: string): Promise<Result<QuoteView, AppError>>;
   listQuotes(): Promise<Result<QuoteView[], AppError>>;
   getInvoice(id: string): Promise<Result<InvoiceView, AppError>>;

@@ -217,7 +217,11 @@ export class BobAgent {
         });
       }
       const tool = this.tool('encaisser_facture')!;
-      const args = { invoiceId: invoice.id, amountCents: invoice.remainingCents };
+      const args = {
+        invoiceId: invoice.id,
+        amountCents: invoice.remainingCents,
+        idempotencyKey: `bob:payment:${invoice.id}:${invoice.remainingCents}:transfer`,
+      };
       const label = `Encaisser ${invoice.number} · ${formatEUR(invoice.remainingCents)} (${invoice.customerName})`;
       if (requiresConfirmation(tool, autonomy)) {
         return ok({
@@ -279,7 +283,11 @@ export class BobAgent {
         payables = payables.filter((i) => i.id !== inv.id); // évite de ré-encaisser la même dans le lot
         actions.push({
           tool: 'encaisser_facture',
-          args: { invoiceId: inv.id, amountCents: inv.remainingCents },
+          args: {
+            invoiceId: inv.id,
+            amountCents: inv.remainingCents,
+            idempotencyKey: `bob:payment:${inv.id}:${inv.remainingCents}:transfer`,
+          },
           label: `Encaisser ${inv.number} · ${formatEUR(inv.remainingCents)} (${inv.customerName})`,
         });
       } else if (step.intent === 'payout') {

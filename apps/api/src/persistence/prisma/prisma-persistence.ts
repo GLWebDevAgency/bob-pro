@@ -7,6 +7,7 @@ import {
   PrismaQuoteRepository,
   PrismaInvoiceRepository,
   PrismaPaymentRepository,
+  PrismaPublicAccessTokenRepository,
   PrismaExpenseRepository,
   PrismaSequenceCounter,
 } from './repositories';
@@ -18,6 +19,7 @@ export class PrismaPersistence implements Persistence {
   readonly quotes: PrismaQuoteRepository;
   readonly invoices: PrismaInvoiceRepository;
   readonly payments: PrismaPaymentRepository;
+  readonly publicAccessTokens: PrismaPublicAccessTokenRepository;
   readonly expenses: PrismaExpenseRepository;
   readonly counters: PrismaSequenceCounter;
 
@@ -27,12 +29,17 @@ export class PrismaPersistence implements Persistence {
     this.quotes = new PrismaQuoteRepository(prisma);
     this.invoices = new PrismaInvoiceRepository(prisma);
     this.payments = new PrismaPaymentRepository(prisma);
+    this.publicAccessTokens = new PrismaPublicAccessTokenRepository(prisma);
     this.expenses = new PrismaExpenseRepository(prisma);
     this.counters = new PrismaSequenceCounter(prisma);
   }
 
   runInTransaction<T>(fn: () => Promise<T>): Promise<T> {
     return this.prisma.runInTransaction(fn);
+  }
+
+  runWithTenant<T>(companyId: string, fn: () => Promise<T>): Promise<T> {
+    return this.prisma.withTenant(companyId, () => fn());
   }
 
   async seed(): Promise<void> {

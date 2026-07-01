@@ -1,5 +1,5 @@
 import { Module, type NestModule, type MiddlewareConsumer } from '@nestjs/common';
-import { APP_GUARD } from '@nestjs/core';
+import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { ScheduleModule } from '@nestjs/schedule';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { BackendService } from './backend.service';
@@ -12,6 +12,7 @@ import { ocrProvider } from './ocr/ocr';
 import { NOTIFIER, DemoNotifier } from './notifications/notifier';
 import { RelanceService } from './jobs/relance.service';
 import { SupabaseAuthGuard } from './auth/auth.guard';
+import { TenantPersistenceInterceptor } from './persistence/tenant-persistence.interceptor';
 import {
   HealthController,
   CustomersController,
@@ -71,6 +72,7 @@ import {
     { provide: NOTIFIER, useClass: DemoNotifier },
     { provide: APP_GUARD, useClass: ThrottlerGuard },
     { provide: APP_GUARD, useClass: SupabaseAuthGuard },
+    { provide: APP_INTERCEPTOR, useClass: TenantPersistenceInterceptor },
   ],
 })
 export class AppModule implements NestModule {

@@ -8,7 +8,6 @@ import type {
   CashflowProjection,
   Scenario,
   Horizon,
-  PaymentMethod,
   PlanTier,
   DiagnosticResult,
   OcrExtraction,
@@ -21,7 +20,7 @@ import type {
   VatCheckResult,
   AddressSuggestion,
 } from '@bob/core';
-import type { BobClient, QuoteView, InvoiceView, SubscriptionView } from './client';
+import type { BobClient, QuoteView, InvoiceView, SubscriptionView, RegisterPaymentClientInput, SendQuoteOutput } from './client';
 
 export interface HttpBobClientOptions {
   baseUrl: string;
@@ -40,7 +39,12 @@ export class HttpBobClient implements BobClient {
     this.companyId = opts.companyId;
   }
 
-  private async req<T>(method: string, path: string, body?: unknown): Promise<Result<T, AppError>> {
+  private async req<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+    headers?: Record<string, string>,
+  ): Promise<Result<T, AppError>> {
     try {
       const token = this.opts.getToken ? await this.opts.getToken() : null;
       const init: RequestInit = {
@@ -48,6 +52,7 @@ export class HttpBobClient implements BobClient {
         headers: {
           'content-type': 'application/json',
           'x-company-id': this.companyId,
+          ...headers,
           ...(token ? { authorization: `Bearer ${token}` } : {}),
         },
       };
@@ -128,7 +133,7 @@ export class HttpBobClient implements BobClient {
     return this.req<CreateQuoteOutput>('POST', '/quotes', input);
   }
   sendQuote(quoteId: string) {
-    return this.req<{ number: string }>('POST', `/quotes/${quoteId}/send`);
+    return this.req<SendQuoteOutput>('POST', `/quotes/${quoteId}/send`);
   }
   signQuote(input: { quoteId: string; signerName: string }) {
     return this.req<{ status: string }>('POST', `/quotes/${input.quoteId}/sign`, { signerName: input.signerName });
@@ -139,8 +144,10 @@ export class HttpBobClient implements BobClient {
   issueInvoice(input: IssueInvoiceInput) {
     return this.req<{ number: string }>('POST', `/invoices/${input.invoiceId}/issue`, input);
   }
-  registerPayment(input: { invoiceId: string; amount: number; method: PaymentMethod }) {
-    return this.req<{ status: string }>('POST', `/invoices/${input.invoiceId}/pay`, { amount: input.amount, method: input.method });
+  registerPayment(input: RegisterPaymentClientInput) {
+    const body = { amount: input.amount, method: input.method, idempotencyKey: input.idempotencyKey ?? undefined };
+    const headers = input.idempotencyKey ? { 'idempotency-key': input.idempotencyKey } : undefined;
+    return this.req<{ status: string }>('POST', `/invoices/${input.invoiceId}/pay`, body, headers);
   }
   getQuote(id: string) {
     return this.req<QuoteView>('GET', `/quotes/${id}`);

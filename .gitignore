@@ -7,3 +7,9 @@ dist
 !.env.example
 _design_extract
 *.zip
+
+# Artefacts de build (jamais versionnés)
+.next
+out
+coverage
+*.tsbuildinfo

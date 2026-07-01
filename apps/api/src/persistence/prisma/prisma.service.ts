@@ -34,19 +34,35 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
    * dans une transaction avec le GUC tenant (app.current_company_id) posé, pour que la base applique
    * les politiques de prisma/rls.sql.
    *
-   * ⚠️ ACTIVATION (non branchée par défaut) : pour enrôler TOUTES les requêtes tenant, il faut
-   *   1) connecter l'app via un rôle Postgres NON-superuser (sinon FORCE RLS est ignoré),
-   *   2) rendre tous les `save` repo tx-aware (cf. inTransaction()) pour ne pas imbriquer de $transaction,
-   *   3) wrapper la requête (interceptor) dans withTenant.
-   * À déployer + valider sur une vraie base (charge/locks) avant activation — le garde applicatif
-   * (ownedQuote/ownedInvoice, vérifié cross-tenant → 404) reste la protection runtime primaire.
+   * Branchée via TenantPersistenceInterceptor. À valider en prod avec un rôle Postgres NON-superuser
+   * (sinon FORCE RLS est ignoré) ; le garde applicatif ownedQuote/ownedInvoice reste la première ligne.
    */
   withTenant<T>(companyId: string, fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+    if (this.inTransaction()) {
+      const tx = this.client() as Prisma.TransactionClient;
+      return tx
+        .$executeRaw`SELECT set_config('app.current_company_id', ${companyId}, true)`
+        .then(() => fn(tx));
+    }
     return this.$transaction(async (tx) => {
       // set_config(name, value, is_local=true) : équivalent à SET LOCAL mais PARAMÉTRÉ (pas d'interpolation
       // de chaîne) -> élimine le vecteur d'injection dans le GUC tenant (vs $executeRawUnsafe).
       await tx.$executeRaw`SELECT set_config('app.current_company_id', ${companyId}, true)`;
-      return fn(tx);
+      return txStorage.run(tx, () => fn(tx));
+    });
+  }
+
+  /** Lookup publique limitée à UN hash de token, pour résoudre le tenant avant d'appliquer la RLS métier. */
+  withPublicAccessTokenHash<T>(tokenHash: string, fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+    if (this.inTransaction()) {
+      const tx = this.client() as Prisma.TransactionClient;
+      return tx
+        .$executeRaw`SELECT set_config('app.public_access_token_hash', ${tokenHash}, true)`
+        .then(() => fn(tx));
+    }
+    return this.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT set_config('app.public_access_token_hash', ${tokenHash}, true)`;
+      return txStorage.run(tx, () => fn(tx));
     });
   }
 }

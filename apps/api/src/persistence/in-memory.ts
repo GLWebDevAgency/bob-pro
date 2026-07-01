@@ -2,9 +2,9 @@ import { randomUUID } from 'node:crypto';
 import {
   DocNumber,
   Invoice,
+  Quote,
   type Company,
   type Customer,
-  type Quote,
   type Payment,
   type Expense,
   type Chantier,
@@ -13,6 +13,8 @@ import {
   type QuoteRepository,
   type InvoiceRepository,
   type PaymentRepository,
+  type PublicAccessGrant,
+  type PublicAccessTokenRepository,
   type ExpenseRepository,
   type ChantierRepository,
   type SequenceCounterPort,
@@ -60,6 +62,10 @@ export class InMemoryQuoteRepository implements QuoteRepository {
   async findById(id: string): Promise<Quote | null> {
     return this.map.get(id) ?? null;
   }
+  async lockById(id: string): Promise<Quote | null> {
+    const stored = this.map.get(id);
+    return stored ? Quote.rehydrate(stored.toSnapshot()) : null;
+  }
   async listByCompany(companyId: string): Promise<Quote[]> {
     return [...this.map.values()].filter((q) => q.companyId === companyId);
   }
@@ -97,6 +103,42 @@ export class InMemoryPaymentRepository implements PaymentRepository {
   }
   async findByIdempotencyKey(companyId: string, key: string): Promise<Payment | null> {
     return this.list.find((p) => p.companyId === companyId && p.idempotencyKey === key) ?? null;
+  }
+}
+
+export class InMemoryPublicAccessTokenRepository implements PublicAccessTokenRepository {
+  private readonly rows = new Map<string, PublicAccessGrant & { token: string; lastUsedAt: string | null }>();
+
+  async create(input: {
+    companyId: string;
+    resourceType: 'quote';
+    resourceId: string;
+    scope: 'quote_signature';
+    expiresAt: string;
+  }): Promise<{ id: string; token: string }> {
+    const id = randomUUID();
+    const token = `pst_${randomUUID().replace(/-/g, '')}${randomUUID().replace(/-/g, '')}`;
+    this.rows.set(id, { id, token, ...input, revokedAt: null, lastUsedAt: null });
+    return { id, token };
+  }
+
+  async findActive(token: string, at: string): Promise<PublicAccessGrant | null> {
+    const row = [...this.rows.values()].find((r) => r.token === token);
+    if (!row || row.revokedAt !== null || row.expiresAt <= at) return null;
+    return {
+      id: row.id,
+      companyId: row.companyId,
+      resourceType: row.resourceType,
+      resourceId: row.resourceId,
+      scope: row.scope,
+      expiresAt: row.expiresAt,
+      revokedAt: row.revokedAt,
+    };
+  }
+
+  async markUsed(id: string, at: string): Promise<void> {
+    const row = this.rows.get(id);
+    if (row) this.rows.set(id, { ...row, lastUsedAt: at });
   }
 }
 

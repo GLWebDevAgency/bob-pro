@@ -6,6 +6,7 @@ import {
   type QuoteRepository,
   type InvoiceRepository,
   type PaymentRepository,
+  type PublicAccessTokenRepository,
   type ExpenseRepository,
   type SequenceCounterPort,
 } from '@bob/core';
@@ -15,6 +16,7 @@ import {
   InMemoryQuoteRepository,
   InMemoryInvoiceRepository,
   InMemoryPaymentRepository,
+  InMemoryPublicAccessTokenRepository,
   InMemoryExpenseRepository,
   InMemorySequenceCounter,
 } from './in-memory';
@@ -28,10 +30,13 @@ export interface Persistence {
   quotes: QuoteRepository;
   invoices: InvoiceRepository;
   payments: PaymentRepository;
+  publicAccessTokens: PublicAccessTokenRepository;
   expenses: ExpenseRepository;
   counters: SequenceCounterPort;
   /** Unité de travail : exécute `fn` atomiquement (transaction DB en prod ; direct en mémoire). */
   runInTransaction<T>(fn: () => Promise<T>): Promise<T>;
+  /** Défense tenant DB : no-op en mémoire, transaction RLS avec app.current_company_id côté Prisma. */
+  runWithTenant<T>(companyId: string, fn: () => Promise<T>): Promise<T>;
   seed(): Promise<void>;
 }
 
@@ -41,6 +46,7 @@ export class InMemoryPersistence implements Persistence {
   readonly quotes = new InMemoryQuoteRepository();
   readonly invoices = new InMemoryInvoiceRepository();
   readonly payments = new InMemoryPaymentRepository();
+  readonly publicAccessTokens = new InMemoryPublicAccessTokenRepository();
   readonly expenses = new InMemoryExpenseRepository();
   readonly counters = new InMemorySequenceCounter();
   // En mémoire (JS mono-thread) : pas de transaction réelle, mais on annule l'allocation du compteur
@@ -53,6 +59,9 @@ export class InMemoryPersistence implements Persistence {
       this.counters.restore(snap);
       throw e;
     }
+  }
+  async runWithTenant<T>(_companyId: string, fn: () => Promise<T>): Promise<T> {
+    return fn();
   }
   async seed(): Promise<void> {
     this.companies.seed(seedCompany());

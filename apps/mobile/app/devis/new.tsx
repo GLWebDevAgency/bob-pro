@@ -105,7 +105,12 @@ export default function DevisNew() {
   const onPay = () =>
     handle(async () => {
       if (!invoiceId) return;
-      await registerPayment.mutateAsync({ invoiceId, amount: net, method: 'transfer' });
+      await registerPayment.mutateAsync({
+        invoiceId,
+        amount: net,
+        method: 'transfer',
+        idempotencyKey: `mobile-wizard:payment:${invoiceId}:0:${net}:transfer`,
+      });
       setStep('paid');
     });
 

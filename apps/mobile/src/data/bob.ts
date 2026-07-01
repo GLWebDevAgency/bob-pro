@@ -46,7 +46,12 @@ export function makeBobAgent(client: BobClient): BobAgent {
       return ok(payable);
     },
     async registerPayment(input) {
-      return client.registerPayment({ invoiceId: input.invoiceId, amount: input.amountCents, method: 'transfer' });
+      return client.registerPayment({
+        invoiceId: input.invoiceId,
+        amount: input.amountCents,
+        method: 'transfer',
+        idempotencyKey: input.idempotencyKey ?? `mobile-bob:payment:${input.invoiceId}:${input.amountCents}:transfer`,
+      });
     },
   };
   return new BobAgent({ router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }), actions });

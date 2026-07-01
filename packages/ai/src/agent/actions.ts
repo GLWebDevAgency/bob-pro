@@ -19,5 +19,9 @@ export interface BobActions {
   draftRelance(): Promise<Result<{ subject: string; body: string }, AppError>>;
   listPayableInvoices(): Promise<Result<PayableInvoice[], AppError>>;
   // —— Mutation ——
-  registerPayment(input: { invoiceId: string; amountCents: number }): Promise<Result<{ status: string }, AppError>>;
+  registerPayment(input: {
+    invoiceId: string;
+    amountCents: number;
+    idempotencyKey?: string | null;
+  }): Promise<Result<{ status: string }, AppError>>;
 }

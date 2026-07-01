@@ -19,6 +19,9 @@ export interface CustomerRepository {
 
 export interface QuoteRepository {
   findById(id: string): Promise<Quote | null>;
+  /** Verrouille la ligne (SELECT ... FOR UPDATE) DANS une transaction et renvoie une copie fraîche.
+   * Sérialise les envois concurrents d'un même devis avant allocation du numéro. */
+  lockById(id: string): Promise<Quote | null>;
   listByCompany(companyId: string): Promise<Quote[]>;
   save(q: Quote): Promise<void>;
 }

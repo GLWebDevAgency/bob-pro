@@ -3,6 +3,7 @@ import {
   Get,
   Post,
   Body,
+  Headers,
   Param,
   Query,
   HttpException,
@@ -169,8 +170,19 @@ export class InvoicesController {
     return unwrap(await this.backend.issueInvoice({ invoiceId: id }));
   }
   @Post(':id/pay')
-  async pay(@Param('id') id: string, @Body() body: { amount: number; method: PaymentMethod }) {
-    return unwrap(await this.backend.registerPayment({ invoiceId: id, amount: body.amount, method: body.method }));
+  async pay(
+    @Param('id') id: string,
+    @Body() body: { amount: number; method: PaymentMethod; idempotencyKey?: string | null },
+    @Headers('idempotency-key') idempotencyHeader?: string,
+  ) {
+    return unwrap(
+      await this.backend.registerPayment({
+        invoiceId: id,
+        amount: body.amount,
+        method: body.method,
+        idempotencyKey: idempotencyHeader ?? body.idempotencyKey ?? null,
+      }),
+    );
   }
   @Post(':id/payment-link')
   async paymentLink(@Param('id') id: string) {

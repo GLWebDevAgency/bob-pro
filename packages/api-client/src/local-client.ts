@@ -62,7 +62,7 @@ import {
 import { DemoCompanyLookupAdapter } from './in-memory/company-lookup';
 import { DemoVatAdapter, DemoAddressAdapter } from './in-memory/enrichment';
 import { InMemorySequenceCounter, CounterIdGenerator, FixtureCashflowSnapshot } from './in-memory/services';
-import type { BobClient, QuoteView, InvoiceView, SubscriptionView } from './client';
+import type { BobClient, QuoteView, InvoiceView, SubscriptionView, SendQuoteOutput } from './client';
 
 export interface LocalBobClientOptions {
   clock?: ClockPort;
@@ -250,8 +250,8 @@ export class LocalBobClient implements BobClient {
     }).execute({ companyId: this.companyId, ...input });
   }
 
-  async sendQuote(quoteId: string): Promise<Result<{ number: string }, AppError>> {
-    return new SendQuote({ quotes: this.quotes, counters: this.counters, clock: this.clock }).execute({ quoteId });
+  async sendQuote(quoteId: string): Promise<Result<SendQuoteOutput, AppError>> {
+    return new SendQuote({ quotes: this.quotes, counters: this.counters, uow: this.uow, clock: this.clock }).execute({ quoteId });
   }
 
   async signQuote(input: { quoteId: string; signerName: string }): Promise<Result<{ status: string }, AppError>> {
@@ -273,7 +273,12 @@ export class LocalBobClient implements BobClient {
     }).execute(input);
   }
 
-  async registerPayment(input: { invoiceId: string; amount: number; method: PaymentMethod }): Promise<Result<{ status: string }, AppError>> {
+  async registerPayment(input: {
+    invoiceId: string;
+    amount: number;
+    method: PaymentMethod;
+    idempotencyKey?: string | null;
+  }): Promise<Result<{ status: string }, AppError>> {
     return new RegisterPayment({
       invoices: this.invoices,
       payments: this.payments,

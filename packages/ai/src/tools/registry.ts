@@ -41,19 +41,24 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
     run: () => actions.listPayableInvoices(),
   };
 
-  const registerPayment: Tool<{ invoiceId: string; amountCents: number }, { status: string }> = {
+  const registerPayment: Tool<
+    { invoiceId: string; amountCents: number; idempotencyKey?: string | null },
+    { status: string }
+  > = {
     name: 'encaisser_facture',
     description: 'Marque une facture comme encaissée (paiement reçu). Action interne réversible.',
     mutating: true,
     outbound: false, // encaissement = interne/réversible, pas un envoi vers un tiers
     compliance: 'medium',
-    parse: (raw): Result<{ invoiceId: string; amountCents: number }, AppError> => {
-      const r = raw as { invoiceId?: unknown; amountCents?: unknown };
+    parse: (raw): Result<{ invoiceId: string; amountCents: number; idempotencyKey?: string | null }, AppError> => {
+      const r = raw as { invoiceId?: unknown; amountCents?: unknown; idempotencyKey?: unknown };
       if (typeof r?.invoiceId !== 'string' || r.invoiceId.length === 0)
         return err(appValidation('invoiceId', 'Facture manquante.'));
       if (typeof r?.amountCents !== 'number' || !Number.isInteger(r.amountCents) || r.amountCents <= 0)
         return err(appValidation('amountCents', 'Montant invalide.'));
-      return ok({ invoiceId: r.invoiceId, amountCents: r.amountCents });
+      if (r.idempotencyKey !== undefined && r.idempotencyKey !== null && typeof r.idempotencyKey !== 'string')
+        return err(appValidation('idempotencyKey', 'Clé d’idempotence invalide.'));
+      return ok({ invoiceId: r.invoiceId, amountCents: r.amountCents, idempotencyKey: r.idempotencyKey ?? null });
     },
     run: (input) => actions.registerPayment(input),
   };

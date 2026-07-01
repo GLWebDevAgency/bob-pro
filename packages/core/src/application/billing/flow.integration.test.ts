@@ -39,6 +39,7 @@ function makeEnv() {
   };
   const quoteRepo: QuoteRepository = {
     findById: async (id) => quotesMap.get(id) ?? null,
+    lockById: async (id) => quotesMap.get(id) ?? null,
     listByCompany: async (companyId) => [...quotesMap.values()].filter((q) => q.companyId === companyId),
     save: async (q) => {
       quotesMap.set(q.id, q);
@@ -110,7 +111,7 @@ describe('Flux Devis -> signature -> facture -> paiement (intégration)', () => 
     expect(created.value.totals.ttc).toBe(162800);
     const quoteId = created.value.quoteId;
 
-    const sent = await new SendQuote({ quotes: env.quoteRepo, counters: env.counters, clock: env.clock }).execute({ quoteId });
+    const sent = await new SendQuote({ quotes: env.quoteRepo, counters: env.counters, uow: env.uow, clock: env.clock }).execute({ quoteId });
     expect(sent.ok).toBe(true);
     if (sent.ok) expect(sent.value.number).toBe('D-2026-0001');
 
@@ -159,7 +160,7 @@ describe('Flux Devis -> signature -> facture -> paiement (intégration)', () => 
       ids: env.ids,
       clock: env.clock,
     });
-    const send = new SendQuote({ quotes: env.quoteRepo, counters: env.counters, clock: env.clock });
+    const send = new SendQuote({ quotes: env.quoteRepo, counters: env.counters, uow: env.uow, clock: env.clock });
     const line = { label: 'Intervention', category: 'labor' as const, qty: 1, unitPriceHT: 50000, vatRate: 20 as const };
 
     const q1 = await create.execute({ companyId: env.company.id, customerId: env.customer.id, lines: [line] });

@@ -30,6 +30,8 @@ import {
   AutofillCompanyFromSiret,
   ValidateVatNumber,
   SearchAddress,
+  CreateQuoteSignatureToken,
+  ResolveQuoteSignatureToken,
   MERCIER_PROPS,
   CASH_SNAPSHOT,
   type Result,
@@ -115,6 +117,12 @@ export interface SignatureView {
   validUntil: string | null;
   lines: { label: string; qty: number; unitPriceHT: number; vatRate: number }[];
   totals: Totals;
+}
+
+interface ResolvedSignatureGrant {
+  grantId: string | null;
+  companyId: string;
+  quoteId: string;
 }
 
 /**
@@ -206,7 +214,20 @@ export class BackendService {
   }
   async sendQuote(quoteId: string) {
     if (!(await this.ownedQuote(quoteId))) return { ok: false as const, error: appNotFound('quote', quoteId) };
-    return new SendQuote({ quotes: this.p.quotes, counters: this.p.counters, clock: this.clock }).execute({ quoteId });
+    const sent = await new SendQuote({ quotes: this.p.quotes, counters: this.p.counters, uow: this.p, clock: this.clock }).execute({
+      quoteId,
+    });
+    if (!sent.ok) return sent;
+    const token = await new CreateQuoteSignatureToken({
+      quotes: this.p.quotes,
+      publicAccessTokens: this.p.publicAccessTokens,
+      clock: this.clock,
+    }).execute({ quoteId });
+    if (token.ok) {
+      this.logger.audit('quote.signature_token_created', { quoteId, expiresAt: token.value.expiresAt });
+      return ok({ ...sent.value, signatureToken: token.value.token, signatureTokenExpiresAt: token.value.expiresAt });
+    }
+    return sent;
   }
   async signQuote(input: { quoteId: string; signerName: string }) {
     if (!(await this.ownedQuote(input.quoteId))) return { ok: false as const, error: appNotFound('quote', input.quoteId) };
@@ -271,34 +292,60 @@ export class BackendService {
     return ok(list.map((i) => this.mapInvoice(i)));
   }
 
+  private async resolveSignatureGrant(token: string): Promise<Result<ResolvedSignatureGrant, AppError>> {
+    const resolved = await new ResolveQuoteSignatureToken({
+      publicAccessTokens: this.p.publicAccessTokens,
+      clock: this.clock,
+    }).execute({ token });
+    if (resolved.ok) return ok(resolved.value);
+
+    // Compat legacy démo : anciens liens où le token était directement l'id du devis.
+    // Les nouveaux liens passent par public_access_tokens et ne divulguent plus quoteId/companyId.
+    const legacyQuote = await this.p.quotes.findById(token);
+    if (!legacyQuote) return resolved;
+    return ok({ grantId: null, companyId: legacyQuote.companyId, quoteId: legacyQuote.id });
+  }
+
   // ——— Signature client à distance (public, par lien tokenisé) ———
-  /** Vue publique d'un devis par son token (= identifiant du devis en V1). */
+  /** Vue publique d'un devis par token opaque (legacy accepté temporairement en démo). */
   async publicQuoteForSignature(token: string): Promise<Result<SignatureView, AppError>> {
-    const q = await this.p.quotes.findById(token);
-    if (!q) return { ok: false, error: appNotFound('quote', token) };
-    const company = await this.p.companies.findById(q.companyId);
-    const customer = await this.p.customers.findById(q.customerId);
-    return ok({
-      number: q.number,
-      companyName: company?.name ?? '',
-      customerName: customer?.name ?? '',
-      status: q.status,
-      signed: q.signature !== null,
-      expired: q.validUntil !== null && q.validUntil < this.clock.today(),
-      validUntil: q.validUntil,
-      lines: q.lines.map((l) => ({ label: l.label, qty: l.qty, unitPriceHT: l.unitPriceHT, vatRate: l.vatRate })),
-      totals: q.totals(),
+    const grant = await this.resolveSignatureGrant(token);
+    if (!grant.ok) return grant;
+    return this.p.runWithTenant(grant.value.companyId, async () => {
+      const q = await this.p.quotes.findById(grant.value.quoteId);
+      if (!q) return { ok: false, error: appNotFound('quote', 'redacted') };
+      const company = await this.p.companies.findById(q.companyId);
+      const customer = await this.p.customers.findById(q.customerId);
+      if (grant.value.grantId) await this.p.publicAccessTokens.markUsed(grant.value.grantId, this.clock.now());
+      return ok({
+        number: q.number,
+        companyName: company?.name ?? '',
+        customerName: customer?.name ?? '',
+        status: q.status,
+        signed: q.signature !== null,
+        expired: q.validUntil !== null && q.validUntil < this.clock.today(),
+        validUntil: q.validUntil,
+        lines: q.lines.map((l) => ({ label: l.label, qty: l.qty, unitPriceHT: l.unitPriceHT, vatRate: l.vatRate })),
+        totals: q.totals(),
+      });
     });
   }
 
   async publicSignQuote(token: string, signerName: string): Promise<Result<{ status: string }, AppError>> {
-    const q = await this.p.quotes.findById(token);
-    if (!q) return { ok: false, error: appNotFound('quote', token) };
-    if (q.validUntil !== null && q.validUntil < this.clock.today())
-      return { ok: false, error: appForbidden('Devis expiré : signature impossible.') };
-    const r = await new SignQuote({ quotes: this.p.quotes, clock: this.clock }).execute({ quoteId: token, signerName });
-    if (r.ok) this.logger.audit('quote.public_signed', { quoteId: token, signerName });
-    return r;
+    const grant = await this.resolveSignatureGrant(token);
+    if (!grant.ok) return grant;
+    return this.p.runWithTenant(grant.value.companyId, async () => {
+      const q = await this.p.quotes.findById(grant.value.quoteId);
+      if (!q) return { ok: false, error: appNotFound('quote', 'redacted') };
+      if (q.validUntil !== null && q.validUntil < this.clock.today())
+        return { ok: false, error: appForbidden('Devis expiré : signature impossible.') };
+      const r = await new SignQuote({ quotes: this.p.quotes, clock: this.clock }).execute({ quoteId: grant.value.quoteId, signerName });
+      if (r.ok) {
+        if (grant.value.grantId) await this.p.publicAccessTokens.markUsed(grant.value.grantId, this.clock.now());
+        this.logger.audit('quote.public_signed', { quoteId: grant.value.quoteId, signerName });
+      }
+      return r;
+    });
   }
 
   /** Surface d'actions de Bob (parité) — délègue aux mêmes use cases que l'UI manuelle. */
@@ -339,7 +386,12 @@ export class BackendService {
         return ok(payable);
       },
       registerPayment: async (input) =>
-        this.registerPayment({ invoiceId: input.invoiceId, amount: input.amountCents, method: 'transfer' }),
+        this.registerPayment({
+          invoiceId: input.invoiceId,
+          amount: input.amountCents,
+          method: 'transfer',
+          idempotencyKey: input.idempotencyKey ?? `bob:payment:${input.invoiceId}:${input.amountCents}:transfer`,
+        }),
     };
   }
 
