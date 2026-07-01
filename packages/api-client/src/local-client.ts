@@ -7,6 +7,7 @@ import {
   IssueInvoice,
   RegisterPayment,
   RecordIssuedInvoiceAccountingEntry,
+  RecordPaymentAccountingEntry,
   ListAccountingEntries,
   ListCustomers,
   GetCashflow,
@@ -428,14 +429,32 @@ export class LocalBobClient implements BobClient {
     amount: number;
     method: PaymentMethod;
     idempotencyKey?: string | null;
-  }): Promise<Result<{ status: string }, AppError>> {
-    return new RegisterPayment({
+  }) {
+    let accountingAlreadyChecked = false;
+    const postPaymentAccounting = async (paymentId: string) => {
+      const accounting = await new RecordPaymentAccountingEntry({
+        invoices: this.invoices,
+        payments: this.payments,
+        entries: this.accountingEntries,
+        charts: this.chartOfAccounts,
+      }).execute({ companyId: this.companyId, paymentId });
+      if (accounting.ok) accountingAlreadyChecked = true;
+      return accounting;
+    };
+    const paid = await new RegisterPayment({
       invoices: this.invoices,
       payments: this.payments,
       uow: this.uow,
       ids: this.ids,
       clock: this.clock,
+      afterPaymentRecorded: ({ paymentId }) => postPaymentAccounting(paymentId),
     }).execute(input);
+    if (!paid.ok) return paid;
+    if (!accountingAlreadyChecked) {
+      const accounting = await postPaymentAccounting(paid.value.paymentId);
+      if (!accounting.ok) return accounting;
+    }
+    return paid;
   }
 
   async getQuote(id: string): Promise<Result<QuoteView, AppError>> {

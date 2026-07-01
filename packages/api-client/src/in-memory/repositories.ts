@@ -94,6 +94,9 @@ export class InMemoryPaymentRepository implements PaymentRepository {
   async save(p: Payment): Promise<void> {
     this.list.push(p);
   }
+  async findById(companyId: string, id: string): Promise<Payment | null> {
+    return this.list.find((p) => p.companyId === companyId && p.id === id) ?? null;
+  }
   async listByInvoice(invoiceId: string): Promise<Payment[]> {
     return this.list.filter((p) => p.invoiceId === invoiceId);
   }

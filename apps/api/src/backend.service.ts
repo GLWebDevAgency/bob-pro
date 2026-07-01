@@ -10,6 +10,7 @@ import {
   IssueInvoice,
   RegisterPayment,
   RecordIssuedInvoiceAccountingEntry,
+  RecordPaymentAccountingEntry,
   ListAccountingEntries,
   ListCustomers,
   GetCashflow,
@@ -445,14 +446,45 @@ export class BackendService {
   }
   async registerPayment(input: { invoiceId: string; amount: number; method: PaymentMethod; idempotencyKey?: string | null }) {
     if (!(await this.ownedInvoice(input.invoiceId))) return { ok: false as const, error: appNotFound('invoice', input.invoiceId) };
+    let accountingAlreadyChecked = false;
+    const postPaymentAccounting = async (paymentId: string) => {
+      const accounting = await new RecordPaymentAccountingEntry({
+        invoices: this.p.invoices,
+        payments: this.p.payments,
+        entries: this.p.accountingEntries,
+        charts: this.p.chartOfAccounts,
+      }).execute({ companyId: this.companyId(), paymentId });
+      if (accounting.ok) {
+        accountingAlreadyChecked = true;
+        if (accounting.value.created)
+          this.logger.audit('accounting.payment_posted', {
+            invoiceId: input.invoiceId,
+            paymentId,
+            entryId: accounting.value.id,
+            created: accounting.value.created,
+          });
+      }
+      return accounting;
+    };
     const r = await new RegisterPayment({
       invoices: this.p.invoices,
       payments: this.p.payments,
       uow: this.p,
       ids: this.ids,
       clock: this.clock,
+      afterPaymentRecorded: ({ paymentId }) => postPaymentAccounting(paymentId),
     }).execute(input);
-    if (r.ok) this.logger.audit('payment.registered', { invoiceId: input.invoiceId, amount: input.amount, status: r.value.status });
+    if (r.ok && !accountingAlreadyChecked) {
+      const accounting = await postPaymentAccounting(r.value.paymentId);
+      if (!accounting.ok) return { ok: false as const, error: accounting.error };
+    }
+    if (r.ok)
+      this.logger.audit('payment.registered', {
+        invoiceId: input.invoiceId,
+        paymentId: r.value.paymentId,
+        amount: input.amount,
+        status: r.value.status,
+      });
     return r;
   }
   // ——— Garde multi-tenant : un accès par id n'est valide que si l'agrégat appartient au tenant courant.

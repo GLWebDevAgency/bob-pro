@@ -36,6 +36,7 @@ export * from './domain/expense/expense';
 export * from './domain/accounting/chart-of-accounts';
 export * from './domain/accounting/accounting-entry';
 export * from './domain/accounting/invoice-accounting';
+export * from './domain/accounting/payment-accounting';
 export * from './domain/document/document';
 export * from './domain/chantier/chantier';
 export * from './domain/dunning/relance-plan';
@@ -85,6 +86,7 @@ export * from './application/accounting/initialize-chart-of-accounts';
 export * from './application/accounting/list-accounting-entries';
 export * from './application/accounting/record-accounting-entry';
 export * from './application/accounting/record-issued-invoice-accounting-entry';
+export * from './application/accounting/record-payment-accounting-entry';
 export * from './application/fixtures/index';
 
 // Monétisation

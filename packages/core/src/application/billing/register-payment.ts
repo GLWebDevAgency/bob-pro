@@ -11,6 +11,7 @@ export interface RegisterPaymentDeps {
   uow: UnitOfWorkPort;
   ids: IdGeneratorPort;
   clock: ClockPort;
+  afterPaymentRecorded?: (ctx: RegisterPaymentRecordedContext) => Promise<Result<unknown, AppError>>;
 }
 
 export interface RegisterPaymentInput {
@@ -19,6 +20,24 @@ export interface RegisterPaymentInput {
   method: PaymentMethod;
   /** Clé d'idempotence (retry réseau, double-tap) : si déjà vue, on ne ré-encaisse pas. */
   idempotencyKey?: string | null;
+}
+
+export interface RegisterPaymentOutput {
+  status: string;
+  paymentId: string;
+}
+
+export interface RegisterPaymentRecordedContext {
+  companyId: string;
+  invoiceId: string;
+  paymentId: string;
+  status: string;
+}
+
+class TxAppError extends Error {
+  constructor(readonly appError: AppError) {
+    super('tx-app-error');
+  }
 }
 
 function normalizeIdempotencyKey(key: string | null | undefined): Result<string | null, AppError> {
@@ -50,7 +69,7 @@ function idempotencyReplayMismatchError(): AppError {
 export class RegisterPayment {
   constructor(private readonly deps: RegisterPaymentDeps) {}
 
-  async execute(input: RegisterPaymentInput): Promise<Result<{ status: string }, AppError>> {
+  async execute(input: RegisterPaymentInput): Promise<Result<RegisterPaymentOutput, AppError>> {
     const key = normalizeIdempotencyKey(input.idempotencyKey);
     if (!key.ok) return key;
     const pre = await this.deps.invoices.findById(input.invoiceId);
@@ -62,15 +81,16 @@ export class RegisterPayment {
         if (existing.invoiceId !== input.invoiceId)
           return err(appDomain({ code: 'VALIDATION', field: 'idempotencyKey', message: 'Clé déjà utilisée pour une autre facture.' }));
         if (idempotencyReplayMismatch(existing, input)) return err(idempotencyReplayMismatchError());
-        return ok({ status: pre.status }); // déjà traité -> réponse idempotente
+        return ok({ status: pre.status, paymentId: existing.id }); // déjà traité -> réponse idempotente
       }
     }
 
     try {
-      const status = await this.deps.uow.runInTransaction(async () => {
+      const output = await this.deps.uow.runInTransaction(async () => {
         const invoice = await this.deps.invoices.lockById(input.invoiceId);
         if (!invoice) throw new TxDomainError({ code: 'VALIDATION', field: 'invoice', message: 'Facture introuvable.' });
-        const registered = invoice.registerPayment(input.amount, this.deps.clock.now());
+        const receivedAt = this.deps.clock.now();
+        const registered = invoice.registerPayment(input.amount, receivedAt);
         if (!registered.ok) throw new TxDomainError(registered.error);
         const payment = Payment.record({
           id: this.deps.ids.newId(),
@@ -78,17 +98,27 @@ export class RegisterPayment {
           invoiceId: invoice.id,
           amount: input.amount,
           method: input.method,
-          receivedAt: this.deps.clock.now(),
+          receivedAt,
           idempotencyKey: key.value,
         });
         if (!payment.ok) throw new TxDomainError(payment.error);
         await this.deps.payments.save(payment.value);
         await this.deps.invoices.save(invoice);
-        return invoice.status;
+        if (this.deps.afterPaymentRecorded) {
+          const after = await this.deps.afterPaymentRecorded({
+            companyId: invoice.companyId,
+            invoiceId: invoice.id,
+            paymentId: payment.value.id,
+            status: invoice.status,
+          });
+          if (!after.ok) throw new TxAppError(after.error);
+        }
+        return { status: invoice.status, paymentId: payment.value.id };
       });
-      return ok({ status });
+      return ok(output);
     } catch (e) {
       if (e instanceof TxDomainError) return err(appDomain(e.domainError));
+      if (e instanceof TxAppError) return err(e.appError);
       // Course d'idempotence : une insertion concurrente avec la même clé a gagné (violation d'unicité).
       // On honore le contrat idempotent en renvoyant l'état courant plutôt qu'une erreur 500.
       if (key.value) {
@@ -96,7 +126,7 @@ export class RegisterPayment {
         if (existing && existing.invoiceId === input.invoiceId) {
           if (idempotencyReplayMismatch(existing, input)) return err(idempotencyReplayMismatchError());
           const current = await this.deps.invoices.findById(input.invoiceId);
-          return ok({ status: current?.status ?? pre.status });
+          return ok({ status: current?.status ?? pre.status, paymentId: existing.id });
         }
       }
       throw e; // autre erreur d'infrastructure -> propager (transaction annulée)

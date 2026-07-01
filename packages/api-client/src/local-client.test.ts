@@ -60,11 +60,34 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     expect(entries.value[0]?.sourceId).toBe(gen.value.invoiceId);
     expect(entries.value[0]?.lines.map((line) => line.account)).toEqual(['411', '4191', '44571']);
 
-    const paid = await client.registerPayment({ invoiceId: gen.value.invoiceId, amount: 48840, method: 'transfer' });
+    const paid = await client.registerPayment({
+      invoiceId: gen.value.invoiceId,
+      amount: 48840,
+      method: 'transfer',
+      idempotencyKey: 'test:payment:deposit',
+    });
     expect(paid.ok && paid.value.status).toBe('paid');
+    if (paid.ok) expect(paid.value.paymentId).toBeTruthy();
 
     const inv = await client.getInvoice(gen.value.invoiceId);
     expect(inv.ok && inv.value.status).toBe('paid');
+
+    const paidEntries = await client.listAccountingEntries();
+    expect(paidEntries.ok).toBe(true);
+    if (!paidEntries.ok) return;
+    expect(paidEntries.value).toHaveLength(2);
+    expect(paidEntries.value[1]?.sourceType).toBe('payment');
+    expect(paidEntries.value[1]?.lines.map((line) => line.account)).toEqual(['512', '411']);
+
+    const replay = await client.registerPayment({
+      invoiceId: gen.value.invoiceId,
+      amount: 48840,
+      method: 'transfer',
+      idempotencyKey: 'test:payment:deposit',
+    });
+    expect(replay.ok && replay.value.paymentId).toBe(paid.ok ? paid.value.paymentId : null);
+    const replayEntries = await client.listAccountingEntries();
+    expect(replayEntries.ok && replayEntries.value).toHaveLength(2);
   });
 
   it('refuse un devis envoye hors-ligne', async () => {

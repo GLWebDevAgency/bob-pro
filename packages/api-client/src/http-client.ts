@@ -28,6 +28,7 @@ import type {
   InvoiceView,
   SubscriptionView,
   RegisterPaymentClientInput,
+  RegisterPaymentClientOutput,
   SendQuoteOutput,
   ListDocumentsClientInput,
   UploadDocumentClientInput,
@@ -184,7 +185,7 @@ export class HttpBobClient implements BobClient {
   registerPayment(input: RegisterPaymentClientInput) {
     const body = { amount: input.amount, method: input.method, idempotencyKey: input.idempotencyKey ?? undefined };
     const headers = input.idempotencyKey ? { 'idempotency-key': input.idempotencyKey } : undefined;
-    return this.req<{ status: string }>('POST', `/invoices/${input.invoiceId}/pay`, body, headers);
+    return this.req<RegisterPaymentClientOutput>('POST', `/invoices/${input.invoiceId}/pay`, body, headers);
   }
   getQuote(id: string) {
     return this.req<QuoteView>('GET', `/quotes/${id}`);

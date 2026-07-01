@@ -39,6 +39,7 @@ export interface InvoiceRepository {
 
 export interface PaymentRepository {
   save(p: Payment): Promise<void>;
+  findById(companyId: string, id: string): Promise<Payment | null>;
   listByInvoice(invoiceId: string): Promise<Payment[]>;
   /** Idempotence : retrouve un paiement déjà enregistré avec cette clé (null si aucun). */
   findByIdempotencyKey(companyId: string, key: string): Promise<Payment | null>;

@@ -65,6 +65,11 @@ export interface RegisterPaymentClientInput {
   idempotencyKey?: string | null;
 }
 
+export interface RegisterPaymentClientOutput {
+  status: string;
+  paymentId: string;
+}
+
 export interface SendQuoteOutput {
   number: string;
   signatureToken?: string;
@@ -197,7 +202,7 @@ export interface BobClient {
   refuseQuote(quoteId: string): Promise<Result<{ status: string }, AppError>>;
   generateInvoice(input: { quoteId: string; mode?: 'deposit' | 'final' }): Promise<Result<{ invoiceId: string }, AppError>>;
   issueInvoice(input: IssueInvoiceInput): Promise<Result<{ number: string }, AppError>>;
-  registerPayment(input: RegisterPaymentClientInput): Promise<Result<{ status: string }, AppError>>;
+  registerPayment(input: RegisterPaymentClientInput): Promise<Result<RegisterPaymentClientOutput, AppError>>;
   getQuote(id: string): Promise<Result<QuoteView, AppError>>;
   listQuotes(): Promise<Result<QuoteView[], AppError>>;
   getInvoice(id: string): Promise<Result<InvoiceView, AppError>>;

@@ -862,6 +862,28 @@ export class PrismaAccountingEntryRepository implements AccountingEntryRepositor
 
 export class PrismaPaymentRepository implements PaymentRepository {
   constructor(private readonly prisma: PrismaService) {}
+
+  private rowToPayment(row: {
+    id: string;
+    companyId: string;
+    invoiceId: string;
+    amount: number;
+    method: string;
+    receivedAt: Date;
+    idempotencyKey: string | null;
+  }): Payment | null {
+    const r = Payment.record({
+      id: row.id,
+      companyId: row.companyId,
+      invoiceId: row.invoiceId,
+      amount: row.amount,
+      method: row.method as Payment['method'],
+      receivedAt: row.receivedAt.toISOString(),
+      idempotencyKey: row.idempotencyKey,
+    });
+    return r.ok ? r.value : null;
+  }
+
   async save(p: Payment): Promise<void> {
     // client() => participe à la transaction d'encaissement (paiement + facture atomiques).
     await this.prisma.client().payment.create({
@@ -876,32 +898,19 @@ export class PrismaPaymentRepository implements PaymentRepository {
       },
     });
   }
+  async findById(companyId: string, id: string): Promise<Payment | null> {
+    const row = await this.prisma.client().payment.findFirst({ where: { companyId, id } });
+    return row ? this.rowToPayment(row) : null;
+  }
   async findByIdempotencyKey(companyId: string, key: string): Promise<Payment | null> {
     const row = await this.prisma.client().payment.findFirst({ where: { companyId, idempotencyKey: key } });
-    if (!row) return null;
-    const r = Payment.record({
-      id: row.id,
-      companyId: row.companyId,
-      invoiceId: row.invoiceId,
-      amount: row.amount,
-      method: row.method,
-      receivedAt: row.receivedAt.toISOString(),
-      idempotencyKey: row.idempotencyKey,
-    });
-    return r.ok ? r.value : null;
+    return row ? this.rowToPayment(row) : null;
   }
   async listByInvoice(invoiceId: string): Promise<Payment[]> {
     const rows = await this.prisma.client().payment.findMany({ where: { invoiceId } });
     return rows.flatMap((row) => {
-      const r = Payment.record({
-        id: row.id,
-        companyId: row.companyId,
-        invoiceId: row.invoiceId,
-        amount: row.amount,
-        method: row.method,
-        receivedAt: row.receivedAt.toISOString(),
-      });
-      return r.ok ? [r.value] : [];
+      const payment = this.rowToPayment(row);
+      return payment ? [payment] : [];
     });
   }
 }

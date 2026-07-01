@@ -60,6 +60,7 @@ function makeEnv() {
     save: async (p) => {
       paymentsArr.push(p);
     },
+    findById: async (companyId, id) => paymentsArr.find((p) => p.companyId === companyId && p.id === id) ?? null,
     listByInvoice: async (invoiceId) => paymentsArr.filter((p) => p.invoiceId === invoiceId),
     findByIdempotencyKey: async (companyId, key) =>
       paymentsArr.find((p) => p.companyId === companyId && p.idempotencyKey === key) ?? null,
@@ -145,7 +146,10 @@ describe('Flux Devis -> signature -> facture -> paiement (intégration)', () => 
       clock: env.clock,
     }).execute({ invoiceId, amount: 48840, method: 'transfer' });
     expect(paid.ok).toBe(true);
-    if (paid.ok) expect(paid.value.status).toBe('paid');
+    if (paid.ok) {
+      expect(paid.value.status).toBe('paid');
+      expect(paid.value.paymentId).toMatch(/^id-/);
+    }
 
     const invoice = await env.invoiceRepo.findById(invoiceId);
     expect(invoice?.status).toBe('paid');

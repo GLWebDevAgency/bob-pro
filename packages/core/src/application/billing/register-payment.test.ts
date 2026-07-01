@@ -31,6 +31,7 @@ function makeDeps(opts: { existingKey?: string | null; status?: string; existing
     save: async () => {
       paymentSaves++;
     },
+    findById: async () => null,
     listByInvoice: async () => [],
     findByIdempotencyKey: async (_c, key) =>
       opts.existingKey && key === opts.existingKey
@@ -50,15 +51,41 @@ describe('RegisterPayment — idempotence', () => {
   it('une clé déjà vue ne crée PAS un second paiement (réponse idempotente)', async () => {
     const { deps, counts } = makeDeps({ existingKey: 'k1', status: 'paid' });
     const r = await new RegisterPayment(deps).execute({ invoiceId: 'inv-1', amount: 1000, method: 'transfer', idempotencyKey: 'k1' });
-    expect(r.ok && r.value.status).toBe('paid');
+    expect(r.ok && r.value).toEqual({ status: 'paid', paymentId: 'pay-0' });
     expect(counts()).toEqual({ paymentSaves: 0, invoiceSaves: 0 });
   });
 
   it('sans clé connue : encaisse (paiement + facture sauvés ensemble)', async () => {
     const { deps, counts } = makeDeps({ existingKey: null });
     const r = await new RegisterPayment(deps).execute({ invoiceId: 'inv-1', amount: 1000, method: 'transfer', idempotencyKey: 'k2' });
-    expect(r.ok).toBe(true);
+    expect(r.ok && r.value).toEqual({ status: 'partially_paid', paymentId: 'pay-1' });
     expect(counts()).toEqual({ paymentSaves: 1, invoiceSaves: 1 });
+  });
+
+  it("appelle le hook applicatif apres l'enregistrement du paiement", async () => {
+    const { deps } = makeDeps({ existingKey: null });
+    const calls: unknown[] = [];
+    const r = await new RegisterPayment({
+      ...deps,
+      afterPaymentRecorded: async (ctx) => {
+        calls.push(ctx);
+        return ok(undefined);
+      },
+    }).execute({ invoiceId: 'inv-1', amount: 1000, method: 'transfer', idempotencyKey: 'k2' });
+
+    expect(r.ok).toBe(true);
+    expect(calls).toEqual([{ companyId: 'co-1', invoiceId: 'inv-1', paymentId: 'pay-1', status: 'partially_paid' }]);
+  });
+
+  it("renvoie l'erreur du hook applicatif pour rollback la transaction", async () => {
+    const { deps } = makeDeps({ existingKey: null });
+    const r = await new RegisterPayment({
+      ...deps,
+      afterPaymentRecorded: async () => ({ ok: false, error: { kind: 'dependency', port: 'accounting', cause: 'down' } }),
+    }).execute({ invoiceId: 'inv-1', amount: 1000, method: 'transfer', idempotencyKey: 'k2' });
+
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatchObject({ kind: 'dependency', port: 'accounting' });
   });
 
   it('clé déjà utilisée pour une AUTRE facture : rejet (anti-rejeu cross-facture)', async () => {
