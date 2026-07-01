@@ -249,6 +249,8 @@ export const FRENCH_OPERATIONAL_PCG_ACCOUNTS: readonly AccountingAccountInput[] 
   { code: '44571', label: 'TVA collectee', kind: 'liability', parentCode: '44' },
   { code: '4458', label: 'Taxes sur le chiffre d affaires a regulariser ou en attente', kind: 'liability', normalSide: 'mixed', parentCode: '44' },
   { code: '447', label: 'Autres impots, taxes et versements assimiles', kind: 'liability', parentCode: '44' },
+  { code: '46', label: 'Debiteurs divers et crediteurs divers', kind: 'asset', normalSide: 'mixed', parentCode: '4', postingAllowed: false },
+  { code: '467', label: 'Autres comptes debiteurs ou crediteurs', kind: 'asset', normalSide: 'mixed', parentCode: '46' },
 
   root('5', 'Comptes financiers'),
   { code: '51', label: 'Banques et etablissements financiers', kind: 'asset', parentCode: '5', postingAllowed: false },

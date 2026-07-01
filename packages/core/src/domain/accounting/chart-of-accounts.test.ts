@@ -113,6 +113,7 @@ describe('ChartOfAccounts', () => {
       expect(r.value.find('411')?.label).toBe('Clients');
       expect(r.value.find('44571')?.label).toBe('TVA collectee');
       expect(r.value.find('512')?.label).toBe('Banques');
+      expect(r.value.find('467')?.label).toBe('Autres comptes debiteurs ou crediteurs');
       expect(r.value.find('706')?.normalSide).toBe('credit');
       expect(r.value.find('606')?.normalSide).toBe('debit');
       expect(r.value.acceptsPosting('70')).toBe(false);

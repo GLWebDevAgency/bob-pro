@@ -35,6 +35,7 @@ export * from './domain/payment/payment';
 export * from './domain/expense/expense';
 export * from './domain/accounting/chart-of-accounts';
 export * from './domain/accounting/accounting-entry';
+export * from './domain/accounting/invoice-accounting';
 export * from './domain/document/document';
 export * from './domain/chantier/chantier';
 export * from './domain/dunning/relance-plan';
