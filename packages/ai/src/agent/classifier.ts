@@ -75,6 +75,11 @@ export const LLM_TOOL_SPECS: LlmToolSpec[] = [
     description: 'Ouvrir la liste des chantiers.',
     parameters: { type: 'object', properties: {}, additionalProperties: false },
   },
+  {
+    name: 'ouvrir_cloture',
+    description: 'Préparer le mois pour le comptable : anomalies, pièces manquantes, clôture.',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+  },
 ];
 
 const TOOL_TO_INTENT: Record<string, BobIntent> = {
@@ -88,6 +93,7 @@ const TOOL_TO_INTENT: Record<string, BobIntent> = {
   ouvrir_scan_recu: 'scan',
   nouveau_devis: 'nouveau_devis',
   ouvrir_chantiers: 'voir_chantiers',
+  ouvrir_cloture: 'cloture',
 };
 
 /** Une étape résolue d'un plan (une intention + sa référence éventuelle). */

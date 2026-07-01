@@ -75,6 +75,7 @@ const NAV_ROUTES: Partial<Record<BobIntent, { route: string; title: string; body
   scan: { route: '/scan-document', title: 'J’ouvre le scan', body: 'Prends le reçu / ticket en photo — je lis et je classe.' },
   nouveau_devis: { route: '/devis/new', title: 'Nouveau devis', body: 'Je t’ouvre l’écran de création de devis.' },
   voir_chantiers: { route: '/chantiers', title: 'Tes chantiers', body: 'J’ouvre tes chantiers.' },
+  cloture: { route: '/cloture', title: 'Clôture du mois', body: 'Je prépare ton mois : anomalies et pièces manquantes.' },
 };
 
 /** Résout la facture visée par le message parmi les factures encaissables. null = ambigu. */
