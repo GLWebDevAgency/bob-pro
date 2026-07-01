@@ -15,3 +15,4 @@ _design_extract
 out
 coverage
 *.tsbuildinfo
+.env*.local
