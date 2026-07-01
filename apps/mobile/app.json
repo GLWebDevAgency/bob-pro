@@ -22,7 +22,8 @@
         }
       ],
       "expo-speech-recognition",
-      "expo-audio"
+      "expo-audio",
+      "expo-sharing"
     ],
     "ios": {
       "supportsTablet": true,

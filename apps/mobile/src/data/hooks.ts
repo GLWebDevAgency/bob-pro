@@ -310,6 +310,18 @@ export function useAccountingEntries() {
   });
 }
 
+/** Export FEC (fichier des écritures comptables, conforme) sur une période — pour le cabinet comptable. */
+export function useExportFec() {
+  const client = useBobClient();
+  return useMutation({
+    mutationFn: async (input: { from: string; to: string }) => {
+      const r = await client.exportFec(input);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+  });
+}
+
 export function useCreateQuote() {
   const client = useBobClient();
   const qc = useQueryClient();

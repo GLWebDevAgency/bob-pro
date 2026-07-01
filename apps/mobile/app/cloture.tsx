@@ -1,9 +1,11 @@
-import { ScrollView, View, Text, Pressable } from 'react-native';
+import { ScrollView, View, Text, Pressable, Alert } from 'react-native';
 import { useRouter, type Href } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import * as Sharing from 'expo-sharing';
+import { writeAsStringAsync, cacheDirectory, EncodingType } from 'expo-file-system/legacy';
 import { useTheme } from '../src/theme';
-import { useInvoices, useQuotes, useSubscription } from '../src/data/hooks';
+import { useInvoices, useQuotes, useSubscription, useExportFec, appErrorMessage } from '../src/data/hooks';
 import { useDocuments } from '../src/data/documents';
 import { Card, Badge, Button, SectionHeader, font } from '../src/components/ui';
 
@@ -27,6 +29,7 @@ export default function Cloture() {
   const invoices = useInvoices();
   const quotes = useQuotes();
   const documents = useDocuments();
+  const exportFec = useExportFec();
   const entitled = (sub?.features ?? []).includes('accounting_operations');
 
   const mois = moisCourant();
@@ -58,6 +61,32 @@ export default function Cloture() {
   const anomaliesTotal = anomalies.reduce((s, i) => s + i.count, 0);
   const piecesTotal = pieces.reduce((s, i) => s + i.count, 0);
   const allClear = anomaliesTotal === 0 && piecesTotal === 0;
+
+  // Période FEC = le mois courant (de YYYY-MM-01 au dernier jour du mois).
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const [yy, mm] = mois.key.split('-').map(Number);
+  const fecFrom = `${mois.key}-01`;
+  const fecTo = `${mois.key}-${pad(new Date(yy ?? 2026, mm ?? 1, 0).getDate())}`;
+
+  const onExportFec = async (): Promise<void> => {
+    try {
+      const res = await exportFec.mutateAsync({ from: fecFrom, to: fecTo });
+      if (!cacheDirectory) {
+        Alert.alert('Export FEC', 'Stockage indisponible sur cet appareil.');
+        return;
+      }
+      const uri = `${cacheDirectory}${res.filename}`;
+      await writeAsStringAsync(uri, res.content, { encoding: EncodingType.UTF8 });
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(uri, { mimeType: res.mimeType || 'text/plain', dialogTitle: 'Export FEC' });
+      } else {
+        Alert.alert('Export FEC', `${res.filename} généré (${res.entryCount} écriture${res.entryCount > 1 ? 's' : ''}).`);
+      }
+      if (res.warnings.length) Alert.alert('Avertissements FEC', res.warnings.join('\n'));
+    } catch (e) {
+      Alert.alert('Oups', appErrorMessage(e));
+    }
+  };
 
   const Row = ({ item }: { item: CheckItem }) => {
     const done = item.count === 0;
@@ -153,9 +182,18 @@ export default function Cloture() {
               </Card>
             </View>
 
-            <Text style={[font('meta'), { color: colors.slate400, textAlign: 'center' }]}>
-              L’export FEC pour le cabinet arrive prochainement.
-            </Text>
+            <View>
+              <SectionHeader title="Export cabinet" />
+              <Button
+                title={exportFec.isPending ? 'Génération du FEC…' : 'Exporter pour le comptable (FEC)'}
+                variant="secondary"
+                disabled={exportFec.isPending}
+                onPress={() => void onExportFec()}
+              />
+              <Text style={[font('meta'), { color: colors.slate400, marginTop: 8, textAlign: 'center' }]}>
+                Fichier des écritures conforme (FEC) — {mois.label}.
+              </Text>
+            </View>
           </>
         )}
       </ScrollView>
