@@ -33,6 +33,7 @@ export * from './domain/billing/quote/quote';
 export * from './domain/billing/invoice/invoice';
 export * from './domain/payment/payment';
 export * from './domain/expense/expense';
+export * from './domain/accounting/accounting-entry';
 export * from './domain/document/document';
 export * from './domain/chantier/chantier';
 export * from './domain/dunning/relance-plan';
