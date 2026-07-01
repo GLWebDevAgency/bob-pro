@@ -1,5 +1,4 @@
 packages/ai/src/agent/bob-agent-voice.test.ts	1782874784	1800	M2: cablage voix dans BobAgent (spokenPrompt + confirmByVoice)
 apps/mobile/app/(tabs)/documents.tsx	1782879615	1800	reflet mobile: onglet Documents en vraie bibliotheque (list + apercu URL signee)
 apps/mobile/src/data/documents.ts	1782879615	1800	reflet mobile: onglet Documents en vraie bibliotheque (list + apercu URL signee)
-apps/mobile/src/components/DocumentActions.tsx	1782916879	2000	apercu comptable AVANT emission (draft previewable via ae140b9): DocumentActions emit + facture detail brouillon
 apps/mobile/app/facture/[id].tsx	1782916879	2000	apercu comptable AVANT emission (draft previewable via ae140b9): DocumentActions emit + facture detail brouillon
