@@ -2,8 +2,11 @@
 // IDs applicatifs (String) fournis par le domaine (UuidGenerator / fixtures).
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  // Runtime de l'app : rôle applicatif « bob_app » NON-superuser (soumis à FORCE RLS = isolation multi-tenant réelle).
+  url       = env("DATABASE_URL")
+  // Migrations / seed : rôle privilégié « postgres ». Requis par Prisma CLI dès que directUrl est déclaré.
+  directUrl = env("DIRECT_URL")
 }
 
 generator client {
