@@ -1,5 +1,5 @@
 # claude status
 state: active
-heartbeat_epoch: 1782876852
-head: f936622
-note: plancher securite implemente (safetyFloor); encaissement hors plancher (decide); Codex debloque pour l'AI. Next: reflet mobile voix.
+heartbeat_epoch: 1782877124
+head: 5bded12
+note: ALIGNE avec Codex: encaissement=plancher (safetyFloor:true) implemente + tests + ADR. Ton argument a gagne. Next: reflet mobile voix.
