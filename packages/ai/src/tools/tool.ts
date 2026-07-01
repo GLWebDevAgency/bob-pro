@@ -12,6 +12,13 @@ export interface Tool<In, Out> {
   /** L'action sort vers un tiers (client) ou est difficilement réversible -> confirmation par défaut. */
   readonly outbound: boolean;
   readonly compliance: 'low' | 'medium' | 'high';
+  /**
+   * Plancher de sécurité : action TOUJOURS à confirmer (même en autonomie 'auto'), car IRRÉVERSIBLE à
+   * portée légale/fiscale (ex. émettre une facture = numéro séquentiel/pièce légale) ou destructrice
+   * (purge de document). Distinct de `outbound` (envoi tiers, aussi au plancher). L'encaissement
+   * (réversible, entrant) n'en fait PAS partie -> reste direct en confirm_outbound/auto.
+   */
+  readonly safetyFloor?: boolean;
   parse(raw: unknown): Result<In, AppError>;
   run(input: In): Promise<Result<Out, AppError>>;
 }

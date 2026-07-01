@@ -93,7 +93,7 @@ Aucun use case modifié à ce stade (on pose le port + adapters + table + isolat
 
 ### Convergence Claude+Codex (2026-07-01, msg refs 02:04)
 - ✅ Découplage autonomie/palier ; Option A (Bob dès Solo `confirm_all`) ; add-on autonomie = entitlement Stripe séparé (+2€ `confirm_outbound` / +5€ `auto`) ; Business inclut `auto`.
-- ✅ **Plancher de sécurité ÉTENDU** (inviolable même en `auto`, confirmation toujours requise) : mouvement d'argent (encaissement), **envoi vers un tiers** (devis/facture/relance), **suppression/purge de document**, **tout changement à portée légale/fiscale** (émission, mentions, numérotation).
+- ✅ **Plancher de sécurité INVIOLABLE** (confirmation toujours requise, même en `auto`) : **envoi vers un tiers** (`outbound` : devis/facture/relance) + **irréversible légal/fiscal** (`safetyFloor` : émettre une facture = numéro séquentiel/pièce légale) + **purge de document**. ⚠️ **L'encaissement (« marquer payé ») N'EST PAS au plancher** — réversible + entrant + journalisé → reste **direct** en `confirm_outbound`/`auto` (confirmé seulement en `confirm_all`). Tranché Claude+Codex (2026-07) ; mécanisme implémenté (`Tool.safetyFloor` + `isSafetyFloor` + `requiresConfirmation`, packages/ai).
 - ✅ **Segmentation des paliers — RÉCONCILIÉE Claude+Codex** (handoffs 0416/0426), voir §9.
 
 ## 9. Segmentation des paliers — position unifiée (Claude + Codex)
