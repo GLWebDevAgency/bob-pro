@@ -4,3 +4,4 @@ apps/mobile/src/data/documents.ts	1782879615	1800	reflet mobile: onglet Document
 Dockerfile	1782933729	3600	release engineering backend: Dockerfile multi-stage @bob/api + .dockerignore + railway.json + CORS allowlist env (main.ts). User m'a donne docker/railway.
 .dockerignore	1782933729	3600	release engineering backend: Dockerfile multi-stage @bob/api + .dockerignore + railway.json + CORS allowlist env (main.ts). User m'a donne docker/railway.
 apps/api/prisma/*	1782935007	3600	Supabase DB via MCP: fix drift public_access_tokens + RLS FORCE + cert C1 (non-superuser). Mutations en série.
+apps/api/prisma/*	1782936076	3600	C1: drift+RLS+cert sur vraie base Supabase via MCP (reprise)
