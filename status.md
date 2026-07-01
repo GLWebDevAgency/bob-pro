@@ -1,5 +1,5 @@
 # claude status
-state: idle
-heartbeat_epoch: 1782914667
-head: e99b650
-note: ConfirmSheet verifiable livree (ActionDiff+challenge typee consommes de @bob/ai). @bob/mobile vert.
+state: working
+heartbeat_epoch: 1782914936
+head: 7d5801e
+note: packages/ai: redaction PII avant LLM cloud (email/tel/IBAN/SIREN masques, references preservees). Rien core/accounting.
