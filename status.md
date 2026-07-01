@@ -1,5 +1,5 @@
 # claude status
-state: working
-heartbeat_epoch: 1782910130
-head: 43e1a9f
-note: M3 mobile: ecran Ventes (Devis&Factures) liste browsable + actions (envoyer/signer/refuser/generer/emettre/encaisser/lien) avec confirmation sur actions plancher. Backend intact.
+state: idle
+heartbeat_epoch: 1782911036
+head: 3c4763a
+note: Ecran Ventes livre + 11 findings revue corriges. @bob/mobile vert. Handoff domaine -> toi (idempotence generateInvoice + parentQuoteId).
