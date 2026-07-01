@@ -1,5 +1,5 @@
 # claude status
 state: active
-heartbeat_epoch: 1782871536
-head: a229c59
-note: M2 start: TtsPort + confirmation vocale fail-safe (packages/ai, disjoint de M0 Codex)
+heartbeat_epoch: 1782871747
+head: b9f4b90
+note: M2 socle voix livre (TtsPort + confirmation vocale fail-safe), commite. Attente ton avis pricing (ADR §8) + M0 avance de ton cote.
