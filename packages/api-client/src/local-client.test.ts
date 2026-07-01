@@ -122,6 +122,37 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     expect(fec.value.content).toContain('BQ\tJournal de banque');
   });
 
+  it("preview l'ecriture comptable d'un encaissement hors-ligne", async () => {
+    const client = makeClient();
+    const created = await client.createQuote({
+      customerId: 'cust-martin',
+      lines: [{ label: 'Recherche fuite', category: 'labor', qty: 1, unitPriceHT: 12000, vatRate: 10 }],
+      context: { housingOlderThan2y: true },
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    expect((await client.sendQuote(created.value.quoteId)).ok).toBe(true);
+    expect((await client.signQuote({ quoteId: created.value.quoteId, signerName: 'M. Martin' })).ok).toBe(true);
+    const gen = await client.generateInvoice({ quoteId: created.value.quoteId });
+    expect(gen.ok).toBe(true);
+    if (!gen.ok) return;
+    expect((await client.issueInvoice({ invoiceId: gen.value.invoiceId })).ok).toBe(true);
+
+    const preview = await client.paymentAccountingPreview({
+      invoiceId: gen.value.invoiceId,
+      amountCents: 13200,
+      method: 'cash',
+    });
+
+    expect(preview.ok).toBe(true);
+    if (!preview.ok) return;
+    expect(preview.value.available).toBe(true);
+    expect(preview.value.remainingCents).toBe(13200);
+    expect(preview.value.totalDebitCents).toBe(13200);
+    expect(preview.value.totalCreditCents).toBe(13200);
+    expect(preview.value.lines.map((line) => line.account)).toEqual(['530', '411']);
+  });
+
   it('refuse un devis envoye hors-ligne', async () => {
     const client = makeClient();
     const created = await client.createQuote({

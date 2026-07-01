@@ -176,6 +176,16 @@ export class InvoicesController {
   async accountingPreview(@Param('id') id: string) {
     return unwrap(await this.backend.invoiceAccountingPreview(id));
   }
+  @Get(':id/payment-accounting-preview')
+  async paymentAccountingPreview(@Param('id') id: string, @Query('amount') amount: string, @Query('method') method?: PaymentMethod) {
+    return unwrap(
+      await this.backend.paymentAccountingPreview({
+        invoiceId: id,
+        amountCents: Number(amount),
+        method: method ?? 'transfer',
+      }),
+    );
+  }
   @Post(':id/issue')
   async issue(@Param('id') id: string) {
     return unwrap(await this.backend.issueInvoice({ invoiceId: id }));

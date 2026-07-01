@@ -10,6 +10,7 @@ import {
   RecordPaymentAccountingEntry,
   ListAccountingEntries,
   ExportFec,
+  PreviewPaymentAccountingEntry,
   ListCustomers,
   GetCashflow,
   SystemClock,
@@ -88,6 +89,7 @@ import type {
   VoiceConfig,
   VoiceSynthesisResult,
   InvoiceAccountingPreview,
+  PaymentAccountingPreview,
   AccountingEntryView,
 } from './client';
 
@@ -512,6 +514,19 @@ export class LocalBobClient implements BobClient {
       totalDebitCents: entry.value.totalDebitCents,
       totalCreditCents: entry.value.totalCreditCents,
       lines: props.lines,
+    });
+  }
+
+  async paymentAccountingPreview(input: {
+    invoiceId: string;
+    amountCents: number;
+    method: PaymentMethod;
+  }): Promise<Result<PaymentAccountingPreview, AppError>> {
+    return new PreviewPaymentAccountingEntry({ invoices: this.invoices }).execute({
+      companyId: this.companyId,
+      invoiceId: input.invoiceId,
+      amountCents: input.amountCents,
+      method: input.method,
     });
   }
 

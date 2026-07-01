@@ -61,4 +61,41 @@ describe('HttpBobClient', () => {
     expect(r.value.content).toContain('JournalCode');
     expect(r.value.descriptionContent).toContain('Descriptif FEC');
   });
+
+  it("loads a payment accounting preview for an invoice", async () => {
+    const preview = {
+      invoiceId: 'inv-1',
+      available: true,
+      reason: null,
+      reference: 'F-2026-0001',
+      amountCents: 12000,
+      remainingCents: 12000,
+      method: 'transfer',
+      totalDebitCents: 12000,
+      totalCreditCents: 12000,
+      lines: [
+        { account: '512', label: 'Encaissement F-2026-0001', debitCents: 12000, creditCents: 0 },
+        { account: '411', label: 'Encaissement F-2026-0001', debitCents: 0, creditCents: 12000 },
+      ],
+    };
+    const fetchMock = vi.fn(async (input: unknown) => {
+      const url = String(input);
+      if (url === 'https://api.bob.test/invoices/inv-1/payment-accounting-preview?amount=12000&method=transfer') {
+        return new Response(JSON.stringify(preview), { headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ error: { kind: 'not_found', resource: 'route' } }), {
+        status: 404,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-mercier' });
+    const r = await client.paymentAccountingPreview({ invoiceId: 'inv-1', amountCents: 12000, method: 'transfer' });
+
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(r.value).toEqual(preview);
+  });
 });

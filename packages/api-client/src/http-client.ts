@@ -8,6 +8,7 @@ import type {
   CashflowProjection,
   Scenario,
   Horizon,
+  PaymentMethod,
   PlanTier,
   DiagnosticResult,
   OcrExtraction,
@@ -35,6 +36,7 @@ import type {
   VoiceConfig,
   VoiceSynthesisResult,
   InvoiceAccountingPreview,
+  PaymentAccountingPreview,
   AccountingEntryView,
   ExportFecMetadata,
   ExportFecClientInput,
@@ -231,6 +233,10 @@ export class HttpBobClient implements BobClient {
   }
   invoiceAccountingPreview(invoiceId: string) {
     return this.req<InvoiceAccountingPreview>('GET', `/invoices/${invoiceId}/accounting-preview`);
+  }
+  paymentAccountingPreview(input: { invoiceId: string; amountCents: number; method: PaymentMethod }) {
+    const qs = new URLSearchParams({ amount: String(input.amountCents), method: input.method }).toString();
+    return this.req<PaymentAccountingPreview>('GET', `/invoices/${input.invoiceId}/payment-accounting-preview?${qs}`);
   }
   listInvoices() {
     return this.req<InvoiceView[]>('GET', '/invoices');

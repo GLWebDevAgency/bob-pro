@@ -13,6 +13,7 @@ import {
   RecordPaymentAccountingEntry,
   ListAccountingEntries,
   ExportFec,
+  PreviewPaymentAccountingEntry,
   ListCustomers,
   GetCashflow,
   SystemClock,
@@ -551,6 +552,15 @@ export class BackendService {
       totalDebitCents: entry.value.totalDebitCents,
       totalCreditCents: entry.value.totalCreditCents,
       lines: props.lines,
+    });
+  }
+
+  paymentAccountingPreview(input: { invoiceId: string; amountCents: number; method: PaymentMethod }) {
+    return new PreviewPaymentAccountingEntry({ invoices: this.p.invoices }).execute({
+      companyId: this.companyId(),
+      invoiceId: input.invoiceId,
+      amountCents: input.amountCents,
+      method: input.method,
     });
   }
 

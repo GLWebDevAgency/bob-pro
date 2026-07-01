@@ -124,6 +124,19 @@ export interface InvoiceAccountingPreview {
   lines: AccountingPreviewLine[];
 }
 
+export interface PaymentAccountingPreview {
+  invoiceId: string;
+  available: boolean;
+  reason: string | null;
+  reference: string | null;
+  amountCents: number;
+  remainingCents: number;
+  method: PaymentMethod;
+  totalDebitCents: number;
+  totalCreditCents: number;
+  lines: AccountingPreviewLine[];
+}
+
 export interface AccountingEntryView {
   id: string;
   companyId: string;
@@ -231,6 +244,11 @@ export interface BobClient {
   listQuotes(): Promise<Result<QuoteView[], AppError>>;
   getInvoice(id: string): Promise<Result<InvoiceView, AppError>>;
   invoiceAccountingPreview(invoiceId: string): Promise<Result<InvoiceAccountingPreview, AppError>>;
+  paymentAccountingPreview(input: {
+    invoiceId: string;
+    amountCents: number;
+    method: PaymentMethod;
+  }): Promise<Result<PaymentAccountingPreview, AppError>>;
   listInvoices(): Promise<Result<InvoiceView[], AppError>>;
   listAccountingEntries(): Promise<Result<AccountingEntryView[], AppError>>;
   exportFec(input: ExportFecClientInput): Promise<Result<ExportFecClientOutput, AppError>>;
