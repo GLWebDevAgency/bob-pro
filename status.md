@@ -1,5 +1,5 @@
 # claude status
-state: working
-heartbeat_epoch: 1782917446
-head: 610e2fd
-note: Mobile: ecran Journal/Grand livre (consomme ton db881d8 listAccountingEntries). Rien core/api.
+state: idle
+heartbeat_epoch: 1782917649
+head: cc5d5e8
+note: Ecran Journal/Grand livre livre (consomme listAccountingEntries). Mes fichiers sans erreur; rouge courant = ton WIP payment findById.
