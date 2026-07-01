@@ -94,5 +94,25 @@ Aucun use case modifié à ce stade (on pose le port + adapters + table + isolat
 ### Convergence Claude+Codex (2026-07-01, msg refs 02:04)
 - ✅ Découplage autonomie/palier ; Option A (Bob dès Solo `confirm_all`) ; add-on autonomie = entitlement Stripe séparé (+2€ `confirm_outbound` / +5€ `auto`) ; Business inclut `auto`.
 - ✅ **Plancher de sécurité ÉTENDU** (inviolable même en `auto`, confirmation toujours requise) : mouvement d'argent (encaissement), **envoi vers un tiers** (devis/facture/relance), **suppression/purge de document**, **tout changement à portée légale/fiscale** (émission, mentions, numérotation).
-- ⏳ **Point encore ouvert (à réconcilier)** : la **segmentation des paliers** (qui/quoi par palier, profondeur de Bob par palier, anti-cannibalisation Solo+auto vs Pro). Débat en cours Claude↔Codex → position unique à présenter au user.
+- ✅ **Segmentation des paliers — RÉCONCILIÉE Claude+Codex** (handoffs 0416/0426), voir §9.
+
+## 9. Segmentation des paliers — position unifiée (Claude + Codex)
+**Principe** : les paliers dimensionnent Bob selon la **maturité opérationnelle** ; l'autonomie règle sa **vitesse d'exécution** dans le périmètre déjà acheté. **Trois axes distincts** (Codex) : `ai_quota` (quantité) · `ai_capabilities` (quels outils Bob sait utiliser) · `autonomy_level` (mode : confirm_all/confirm_outbound/auto).
+
+| Palier | Phrase | Persona | Bob | Débloque |
+|---|---|---|---|---|
+| **Free** | « Je découvre » | prospect, test | quota découverte | conformité |
+| **Solo 14€** | « Je bosse seul » | artisan/freelance seul, activité simple, faible volume | **Bob Essentials** — *réactif* (fait ce que je demande), `confirm_all`, quota + OCR limités | facture illimitée, actions vocales simples |
+| **Pro 39€** | « Je délègue mon back-office » | indépendant qui facture bcp, artisan avec volume | **Bob Operations** — *proactif* (anticipe), `confirm_outbound` défaut, quotas hauts (fair use) | relances auto/planifiées, prévisionnel tréso, **paiement en ligne**, voix Voxtral, workflows docs |
+| **Business 69€** | « Je pilote une équipe + des contrôles » | TPE/agence avec équipe/compta | **Bob Control** — *gouverné*, `auto` inclus | multi-user, rôles, **audit exportable**, validations, policies par rôle/montant, gros volumes, intégrations |
+
+**Ligne de partage Solo↔Pro (clarification Claude)** : Solo = Bob **réactif** (je demande, Bob fait) ; Pro = Bob **proactif** (Bob anticipe : relance, prévoit, planifie). Plus clair qu'un simple seuil de quota.
+
+**Changements vs catalogue actuel (à acter)** — 2 challenges de Codex, acceptés :
+- **Paiement en ligne : Business → Pro** (levier d'encaissement fort pour indépendants ; Business vend la gouvernance, pas le paiement).
+- **Assurance + avance de facture** : sortent du **cœur** Business → deviennent des **add-ons/partenariats** orthogonaux.
+
+**Anti-cannibalisation (règle d'or, Codex)** : l'add-on autonomie change le **MODE d'exécution**, pas le **PÉRIMÈTRE métier**. Un Solo+auto (19€) = un Solo plus fluide (moins de confirmations sur l'interne réversible), **jamais** un Business low-cost (ni relances auto, ni prévisionnel, ni paiement en ligne, ni équipe, ni audit). Garde-fous : quotas par palier + outils Pro/Business exclusifs + plancher de sécurité (§8).
+
+**Anti-complexité (risque #1 de Codex)** : chaque palier = **une phrase** (ci-dessus). Le Module Autonomie = **un seul interrupteur** (« Bob agit plus vite, dans les limites de ton plan ») à 2 crans (+2€ confirmer-envoi / +5€ auto). Wording : « accélération contrôlée », jamais « tout automatique ».
 
