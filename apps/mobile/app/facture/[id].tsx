@@ -29,8 +29,8 @@ export default function FactureDetail() {
   // Assiette = netToPay (acompte si depositPct, sinon ttc) : c'est ce que le domaine autorise à encaisser.
   const remaining = inv ? Math.max(0, inv.totals.netToPay - inv.paid) : 0;
   const dueAt = formatDate(inv?.dueAt ?? null);
-  // Écriture comptable : disponible uniquement pour une facture émise (le domaine refuse les brouillons).
-  const acct = useInvoiceAccountingPreview(id, !!inv && inv.status !== 'draft');
+  // Écriture comptable : le domaine sait aussi la prévisualiser pour un brouillon (prospective, réf « à émettre »).
+  const acct = useInvoiceAccountingPreview(id, !!inv);
   const ledger = acct.data?.available ? acct.data : null;
 
   return (

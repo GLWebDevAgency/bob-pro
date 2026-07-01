@@ -14,6 +14,7 @@ import {
 } from '../data/hooks';
 import { Button, Badge } from './ui';
 import { useConfirm } from './ConfirmSheet';
+import { useBobClient } from '../data/client';
 
 // Profils de risque des actions manuelles (mêmes paliers que le registre d'outils de Bob -> confirmation typée).
 const OUTBOUND = { mutating: true, outbound: true, riskTier: 'outbound' } as const;
@@ -182,6 +183,7 @@ export function InvoiceActions({ invoice }: { invoice: InvoiceView }): ReactNode
   const link = useInvoicePaymentLink();
   const { busy, lock, run } = useActionLock();
   const confirm = useConfirm();
+  const client = useBobClient();
 
   if (invoice.status === 'draft') {
     return (
@@ -191,10 +193,13 @@ export function InvoiceActions({ invoice }: { invoice: InvoiceView }): ReactNode
         disabled={!!busy}
         onPress={() =>
           void (async () => {
+            // Aperçu comptable prévisionnel (le domaine sait prévisualiser un brouillon) — best-effort.
+            const preview = await client.invoiceAccountingPreview(invoice.id);
+            const accountingLines = preview.ok && preview.value.available ? preview.value.lines : undefined;
             const ok = await confirm({
               title: 'Émettre la facture',
               message: 'Numéro légal attribué et transmission e-invoicing.',
-              diff: buildActionDiff('emettre_facture', {}, { number: invoice.number }),
+              diff: buildActionDiff('emettre_facture', {}, { number: invoice.number, accountingLines }),
               challenge: challengeFor(FISCAL, 'confirm_all'),
             });
             if (ok) await run('issue', () => issue.mutateAsync(invoice.id));
