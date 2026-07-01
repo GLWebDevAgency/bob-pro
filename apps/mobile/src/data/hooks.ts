@@ -271,6 +271,18 @@ export function useInvoice(id: string) {
   });
 }
 
+export function useQuote(id: string) {
+  const client = useBobClient();
+  return useQuery({
+    queryKey: keys.quote(id),
+    queryFn: async () => {
+      const r = await client.getQuote(id);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+  });
+}
+
 export function useCreateQuote() {
   const client = useBobClient();
   const qc = useQueryClient();
@@ -293,7 +305,10 @@ export function useSendQuote() {
       if (!r.ok) throw r.error;
       return r.value;
     },
-    onSuccess: () => void qc.invalidateQueries({ queryKey: keys.quotes }),
+    onSuccess: (_data, quoteId) => {
+      void qc.invalidateQueries({ queryKey: keys.quotes });
+      void qc.invalidateQueries({ queryKey: keys.quote(quoteId) });
+    },
   });
 }
 
@@ -306,7 +321,10 @@ export function useSignQuote() {
       if (!r.ok) throw r.error;
       return r.value;
     },
-    onSuccess: () => void qc.invalidateQueries({ queryKey: keys.quotes }),
+    onSuccess: (_data, input) => {
+      void qc.invalidateQueries({ queryKey: keys.quotes });
+      void qc.invalidateQueries({ queryKey: keys.quote(input.quoteId) });
+    },
   });
 }
 
@@ -319,7 +337,10 @@ export function useRefuseQuote() {
       if (!r.ok) throw r.error;
       return r.value;
     },
-    onSuccess: () => void qc.invalidateQueries({ queryKey: keys.quotes }),
+    onSuccess: (_data, quoteId) => {
+      void qc.invalidateQueries({ queryKey: keys.quotes });
+      void qc.invalidateQueries({ queryKey: keys.quote(quoteId) });
+    },
   });
 }
 
@@ -345,7 +366,10 @@ export function useIssueInvoice() {
       if (!r.ok) throw r.error;
       return r.value;
     },
-    onSuccess: () => void qc.invalidateQueries({ queryKey: keys.invoices }),
+    onSuccess: (_data, invoiceId) => {
+      void qc.invalidateQueries({ queryKey: keys.invoices });
+      void qc.invalidateQueries({ queryKey: keys.invoice(invoiceId) });
+    },
   });
 }
 

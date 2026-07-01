@@ -85,7 +85,8 @@ export default function ClientDetail() {
                             title={register.isPending ? '…' : 'Marquer payée'}
                             disabled={register.isPending}
                             onPress={() => {
-                              const remaining = Math.max(0, inv.totals.ttc - inv.paid);
+                              // Assiette = netToPay (le domaine plafonne l'encaissement à netToPay, acompte compris).
+                              const remaining = Math.max(0, inv.totals.netToPay - inv.paid);
                               // Plancher de sécurité : l'encaissement modifie la compta -> confirmation explicite (même canal manuel).
                               Alert.alert(
                                 'Enregistrer le paiement',
