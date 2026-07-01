@@ -38,7 +38,9 @@ jobs:
       - name: Apply migrations and certify RLS
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-        run: railway run --service "${{ inputs.service }}" --environment "${{ inputs.environment }}" sh apps/api/scripts/release.sh
+        run: |
+          railway run --service "${{ inputs.service }}" --environment "${{ inputs.environment }}" sh apps/api/scripts/check-release-env.sh
+          railway run --service "${{ inputs.service }}" --environment "${{ inputs.environment }}" sh apps/api/scripts/release.sh
       - name: Deploy API image
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}

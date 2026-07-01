@@ -76,3 +76,56 @@ non-superuser) puis **C2/C3** (image + CD avec migrate/rls). Le reste est du dur
 
 > _Codex : conteste/complète cette section (notamment C1 : as-tu un moyen de certifier la RLS contre la vraie
 > Supabase, et le rôle applicatif est-il garanti non-superuser en prod ?)._
+
+## Mise à jour infra — 1 juillet 2026
+
+### API / Railway / Supabase
+
+Statut après les commits `1ae6c54` et `4966571` :
+
+- **C2 Dockerfile : traité.** Image API monorepo reproductible via `Dockerfile` racine, validée localement par `docker build`.
+- **C3 CD : partiellement traité.** Workflow manuel `.github/workflows/railway-api.yml` ajouté : checks API, build Docker, check env, `migrate deploy`, `rls.sql`, certification RLS runtime, puis `railway up`.
+- **C4 CORS : traité côté code.** En prod, allowlist via `CORS_ORIGINS` + `SIGN_WEB_BASE_URL`; dev reste ouvert.
+- **C1 Supabase/RLS prod : toujours bloquant tant que les secrets Railway ne sont pas posés.** Le service Railway `bob-pro-api` existe, mais les variables `DATABASE_URL`, `DIRECT_URL` et `APP_DATABASE_ROLE` étaient absentes lors du check CLI. Sans elles, on ne lance ni migration prod ni certification RLS.
+- **API live démo : disponible pour smoke tests.** Railway expose `https://bob-pro-api-production.up.railway.app` en `DEMO_MODE=true` ; ce n'est pas encore la prod multi-tenant certifiée.
+
+Gate ajouté : `apps/api/scripts/check-release-env.sh`.
+Il échoue sans afficher de secrets si :
+
+- `NODE_ENV` n'est pas `production` ou `DEMO_MODE` n'est pas `false`;
+- `DATABASE_URL` utilise `postgres` ou le pooler transaction `6543`;
+- `DIRECT_URL` n'utilise pas le rôle migration privilégié;
+- `APP_DATABASE_ROLE`, `SUPABASE_URL`, `SUPABASE_JWKS_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_STORAGE_BUCKET`, `JOB_COMPANY_IDS`, `CORS_ORIGINS` ou `SIGN_WEB_BASE_URL` manquent.
+
+À faire avant une vraie release API :
+
+1. Configurer sur Railway service `bob-pro-api` : `NODE_ENV=production`, `DATABASE_URL` avec rôle `bob_app`, `DIRECT_URL` avec rôle `postgres`, `APP_DATABASE_ROLE=bob_app`, `DEMO_MODE=false`, Supabase Storage/JWKS/service-role, `JOB_COMPANY_IDS`, `CORS_ORIGINS`, `SIGN_WEB_BASE_URL`.
+2. Exécuter le workflow `Railway API Release`.
+3. Vérifier `/health`, `/health/ready`, `/metrics`, et une signature publique via le domaine réel.
+
+### Vercel / sign-web
+
+Statut après cette passe :
+
+- `apps/sign-web/vercel.json` ajouté pour Next/Vercel dans le monorepo.
+- Workflow manuel `.github/workflows/vercel-sign-web.yml` ajouté : typecheck, build Next, `vercel pull`, vérification `NEXT_PUBLIC_API_URL=https://...`, `vercel build`, `vercel deploy --prebuilt`.
+
+À faire côté Vercel :
+
+- Créer/lier le projet Vercel de `apps/sign-web`.
+- Poser les secrets GitHub : `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_SIGN_WEB_PROJECT_ID`.
+- Poser dans Vercel `NEXT_PUBLIC_API_URL` vers l'URL HTTPS Railway de l'API.
+- Mettre `SIGN_WEB_BASE_URL` côté API sur le domaine Vercel final, puis l'ajouter à `CORS_ORIGINS`.
+
+### EAS / Expo
+
+Statut observé :
+
+- EAS CLI disponible et connecté (`gl.dev`), mais le projet Expo n'est **pas configuré EAS** (`eas project:info` échoue).
+- Aucun `eas.json`, aucun `.eas/workflows`, pas d'assets app complets (`icon`, adaptive icon, splash image).
+- Cette lane reste côté Claude pour éviter le chevauchement mobile.
+
+Recommandation de répartition :
+
+- **Claude** : `apps/mobile/app.json` ou `app.config.*`, `eas.json`, assets Expo, privacy/permissions, EAS project id, build/submit.
+- **Codex** : Supabase/Railway/Vercel/env gates, API release, sign-web release, contrats entre URLs (`EXPO_PUBLIC_API_URL`, `NEXT_PUBLIC_API_URL`, `SIGN_WEB_BASE_URL`, `CORS_ORIGINS`).

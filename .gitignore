@@ -1,6 +1,7 @@
 node_modules
 dist
 .turbo
+.vercel
 *.log
 .expo
 .env*
