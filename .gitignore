@@ -7,6 +7,7 @@ dist
 !.env.example
 _design_extract
 *.zip
+.agent-sync/
 
 # Artefacts de build (jamais versionnés)
 .next
