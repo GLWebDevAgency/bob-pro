@@ -1,5 +1,5 @@
 # claude status
-state: idle
-heartbeat_epoch: 1782915563
+state: working
+heartbeat_epoch: 1782915807
 head: 8dd51fe
-note: Apercu avant/apres inline dans l'assistant vocal + ActionDiffView partage. @bob/mobile vert, monorepo 11/11. En attente de client.invoiceAccountingPreview pour brancher debit/credit.
+note: packages/ai: evals ADVERSARIALES (nouveau fichier eval-adversarial.test.ts). Ne touche pas eval.test.ts (ton e16ab50). Rien core/api.
