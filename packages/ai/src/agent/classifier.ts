@@ -1,4 +1,5 @@
 import { type LlmPort, type LlmToolSpec } from '../llm/port';
+import { redactPII } from '../guardrails/pii-redaction';
 import { type BobIntent, detectIntent, extractReference } from './intent';
 
 /** Outils exposés au LLM pour la classification (params « humains » : référence, pas d'ID interne). */
@@ -111,7 +112,9 @@ const SYSTEM_PROMPT =
 /** Classifie via le LLM (tool-calling) : un plan = TOUS les appels d'outils (multi-étapes possible).
  * En cas d'échec amont, lève — l'appelant retombe sur la regex. */
 export async function classifyWithLlm(llm: LlmPort, message: string): Promise<ClassifiedPlan> {
-  const res = await llm.complete([{ role: 'user', content: message }], {
+  // Minimisation RGPD : on masque le PII incident (email/tél/IBAN/SIREN) AVANT l'envoi au LLM cloud.
+  // Les références métier (n° de facture, nom client) sont préservées — elles sont nécessaires à la résolution.
+  const res = await llm.complete([{ role: 'user', content: redactPII(message) }], {
     system: SYSTEM_PROMPT,
     tools: LLM_TOOL_SPECS,
     toolChoice: 'auto',

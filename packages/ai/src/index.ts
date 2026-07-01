@@ -7,6 +7,7 @@ export * from './voice/demo-tts';
 export * from './voice/voice-confirm';
 export * from './router/model-router';
 export * from './guardrails/money-guard';
+export * from './guardrails/pii-redaction';
 export * from './tools/tool';
 export * from './tools/registry';
 export * from './agent/actions';
