@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from 'react';
-import { View, Text, TextInput, Pressable, ScrollView } from 'react-native';
+import { View, Text, TextInput, Pressable, ScrollView, Modal } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -13,6 +14,7 @@ import { useVoiceInput, useSpeak } from '../../src/data/voice';
 import { getAutonomy } from '../../src/data/settings';
 import { Card, Button, Badge, Chip, font } from '../../src/components/ui';
 import { ThinkingIndicator } from '../../src/components/ThinkingIndicator';
+import { VoiceOrb, type OrbState } from '../../src/components/VoiceOrb';
 
 interface ChatItem {
   id: string;
@@ -44,6 +46,7 @@ export default function Assistant() {
   ]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
+  const [voiceMode, setVoiceMode] = useState(false); // overlay vocal immersif (mains-libres, façon Jarvis)
   const counter = useRef(0);
   const nextId = (): string => {
     counter.current += 1;
@@ -147,6 +150,14 @@ export default function Assistant() {
           <Text style={[font('cardTitle'), { color: '#fff' }]}>Bob</Text>
           <Text style={[font('meta'), { color: '#C9C2EE' }]}>• en ligne</Text>
         </View>
+        <Pressable
+          onPress={() => setVoiceMode(true)}
+          accessibilityRole="button"
+          accessibilityLabel="Mode vocal mains-libres"
+          style={{ marginLeft: 'auto', width: 38, height: 38, borderRadius: 12, backgroundColor: semantic.ai, alignItems: 'center', justifyContent: 'center' }}
+        >
+          <Ionicons name="sparkles-outline" size={20} color="#fff" />
+        </Pressable>
       </View>
 
       <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16, gap: 12 }}>
@@ -225,6 +236,56 @@ export default function Assistant() {
           <Ionicons name="arrow-up" size={22} color="#fff" />
         </Pressable>
       </View>
+
+      <Modal visible={voiceMode} animationType="fade" statusBarTranslucent onRequestClose={() => setVoiceMode(false)}>
+        {(() => {
+          const orbState: OrbState = voice.listening ? 'listening' : busy ? 'thinking' : 'idle';
+          const lastBob = [...items].reverse().find((it) => it.role === 'bob')?.text ?? '';
+          const status = voice.listening
+            ? 'Je t’écoute…'
+            : busy
+              ? 'Bob réfléchit…'
+              : awaitingConfirm
+                ? 'Dis « je confirme » ou « annule »'
+                : 'Appuie pour parler';
+          const pendingItem = items.find((x) => x.pending);
+          return (
+            <LinearGradient colors={[semantic.aiInk, semantic.ai]} start={{ x: 0, y: 0 }} end={{ x: 0.4, y: 1 }} style={{ flex: 1 }}>
+              <View style={{ flex: 1, paddingTop: insets.top + 8, paddingBottom: insets.bottom + 24, paddingHorizontal: 24 }}>
+                <Pressable onPress={() => setVoiceMode(false)} accessibilityLabel="Fermer le mode vocal" style={{ alignSelf: 'flex-end', width: 40, height: 40, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.14)', alignItems: 'center', justifyContent: 'center' }}>
+                  <Ionicons name="close" size={22} color="#fff" />
+                </Pressable>
+                <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', gap: 22 }}>
+                  <VoiceOrb state={orbState} />
+                  <Text style={[font('screenH1'), { color: '#fff', textAlign: 'center' }]}>{status}</Text>
+                  {lastBob ? (
+                    <Text style={[font('body'), { color: '#EDE8FB', textAlign: 'center' }]} numberOfLines={4}>
+                      {lastBob}
+                    </Text>
+                  ) : null}
+                </View>
+                {awaitingConfirm && pendingItem ? (
+                  <View style={{ flexDirection: 'row', gap: 10, marginBottom: 16 }}>
+                    <View style={{ flex: 1 }}>
+                      <Button title="Confirmer" onPress={() => void confirm(pendingItem)} disabled={busy} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Button title="Annuler" variant="secondary" onPress={() => cancel(pendingItem)} disabled={busy} />
+                    </View>
+                  </View>
+                ) : null}
+                <Pressable
+                  onPress={() => (voice.listening ? void voice.stop() : void voice.start())}
+                  accessibilityLabel={voice.listening ? 'Arrêter' : 'Parler'}
+                  style={{ alignSelf: 'center', width: 76, height: 76, borderRadius: 38, backgroundColor: voice.listening ? semantic.danger : '#fff', alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 16, shadowOffset: { width: 0, height: 8 }, elevation: 10 }}
+                >
+                  <Ionicons name={voice.listening ? 'stop' : 'mic'} size={32} color={voice.listening ? '#fff' : semantic.aiInk} />
+                </Pressable>
+              </View>
+            </LinearGradient>
+          );
+        })()}
+      </Modal>
     </View>
   );
 }
