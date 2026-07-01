@@ -8,6 +8,9 @@ export type Feature =
   | 'bob_control' // Bob gouverné : équipe, supervision, audit avancé
   | 'einvoice_emission' // émission de factures électroniques (2027)
   | 'ocr' // OCR des dépenses fournisseurs
+  | 'accounting_foundation' // socle invisible : plan comptable + écritures vérifiables simples
+  | 'accounting_operations' // pré-compta opérationnelle : TVA, rapprochement, clôture, export cabinet
+  | 'accounting_control' // contrôle comptable : personnalisation, rôles, audit exportable
   | 'cashflow_forecast' // trésorerie prévisionnelle
   | 'auto_dunning' // relances automatiques rédigées par l'IA
   | 'online_payment' // paiement en ligne des factures par les clients
@@ -65,7 +68,7 @@ export const PLAN_CATALOG: Record<PlanTier, Plan> = {
     priceCents: 1400,
     annualMonthlyCents: 1200,
     tagline: 'Bob Essentials pour indépendant',
-    features: ['einvoice_emission', 'ocr', 'ai_assistant', 'bob_essentials'],
+    features: ['einvoice_emission', 'ocr', 'accounting_foundation', 'ai_assistant', 'bob_essentials'],
     ai: { capability: 'essentials', defaultAutonomy: 'confirm_all', monthlyActions: 300 },
     limits: { documentStorageGb: 5, includedCompanies: 1, includedTeamSeats: 1 },
   },
@@ -78,6 +81,8 @@ export const PLAN_CATALOG: Record<PlanTier, Plan> = {
     features: [
       'einvoice_emission',
       'ocr',
+      'accounting_foundation',
+      'accounting_operations',
       'ai_assistant',
       'bob_essentials',
       'bob_operations',
@@ -97,6 +102,9 @@ export const PLAN_CATALOG: Record<PlanTier, Plan> = {
     features: [
       'einvoice_emission',
       'ocr',
+      'accounting_foundation',
+      'accounting_operations',
+      'accounting_control',
       'ai_assistant',
       'bob_essentials',
       'bob_operations',

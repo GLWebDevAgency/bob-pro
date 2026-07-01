@@ -14,13 +14,21 @@ describe('Offres & entitlements', () => {
   it('feature-gating : Solo = Essentials, Pro = Operations + paiement, Business = Control', () => {
     expect(planCan('free', 'ai_quota')).toBe(true);
     expect(planCan('free', 'ai_assistant')).toBe(false);
+    expect(planCan('free', 'accounting_foundation')).toBe(false);
     expect(planCan('solo', 'ai_assistant')).toBe(true);
     expect(planCan('solo', 'bob_essentials')).toBe(true);
+    expect(planCan('solo', 'accounting_foundation')).toBe(true);
+    expect(planCan('solo', 'accounting_operations')).toBe(false);
     expect(planCan('solo', 'bob_operations')).toBe(false);
     expect(planCan('pro', 'ai_assistant')).toBe(true);
     expect(planCan('pro', 'bob_operations')).toBe(true);
+    expect(planCan('pro', 'accounting_foundation')).toBe(true);
+    expect(planCan('pro', 'accounting_operations')).toBe(true);
+    expect(planCan('pro', 'accounting_control')).toBe(false);
     expect(planCan('pro', 'online_payment')).toBe(true);
     expect(planCan('business', 'bob_control')).toBe(true);
+    expect(planCan('business', 'accounting_operations')).toBe(true);
+    expect(planCan('business', 'accounting_control')).toBe(true);
     expect(planCan('business', 'online_payment')).toBe(true);
     expect(planCan('business', 'insurance')).toBe(false);
     expect(planCan('business', 'invoice_advance')).toBe(false);
@@ -48,6 +56,8 @@ describe('Subscription', () => {
     const pro = sub({ id: 's1', companyId: 'c1', tier: 'pro', status: 'active' });
     expect(pro.can('ai_assistant')).toBe(true);
     expect(pro.can('online_payment')).toBe(true);
+    expect(pro.can('accounting_operations')).toBe(true);
+    expect(pro.can('accounting_control')).toBe(false);
     expect(pro.can('team')).toBe(false);
   });
   it('un abonnement résilié n’ouvre plus rien', () => {
