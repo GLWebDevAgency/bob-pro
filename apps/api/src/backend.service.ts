@@ -102,6 +102,7 @@ import { AppLogger, getPrincipal } from './observability/logger';
 import { PAYMENT_GATEWAY } from './payments/payment-gateway';
 import { PDF_RENDERER } from './documents/pdf-renderer';
 import { buildDocumentStorage, documentSha256 } from './documents/storage';
+import { generatedInvoiceDocumentId, generatedInvoiceDocumentVersionId } from './documents/generated-document-ids';
 import { OCR_PORT } from './ocr/ocr';
 import { hasClaudeKey, hasGlmKey, hasDeepseekKey, hasMistralKey, hasOpenaiKey } from './config/env';
 import { buildLlmForProvider, buildSttCloud, buildTtsCloud } from './ai/providers';
@@ -899,6 +900,8 @@ export class BackendService {
   }
 
   private async storeDocument(input: {
+    id?: string;
+    versionId?: string;
     companyId?: string;
     kind: DocumentKind;
     origin: DocumentOrigin;
@@ -912,8 +915,8 @@ export class BackendService {
     reason?: string;
   }): Promise<Result<DocumentView, AppError>> {
     const companyId = input.companyId ?? this.companyId();
-    const id = this.ids.newId();
-    const versionId = this.ids.newId();
+    const id = input.id ?? this.ids.newId();
+    const versionId = input.versionId ?? this.ids.newId();
     const sha256 = documentSha256(input.bytes);
     const storageKey = buildDocumentStorageKey({
       companyId,
@@ -980,6 +983,8 @@ export class BackendService {
         const pdf = await this.renderInvoicePdf(inv);
         if (!pdf.ok) return pdf;
         const archived = await this.storeDocument({
+          id: generatedInvoiceDocumentId(companyId, invoiceId, 'invoice_pdf'),
+          versionId: generatedInvoiceDocumentVersionId(companyId, invoiceId, 'invoice_pdf'),
           companyId,
           kind: 'invoice_pdf',
           origin: 'generated',
@@ -1002,6 +1007,8 @@ export class BackendService {
         const xml = await this.buildInvoiceFacturXXml(inv);
         if (!xml.ok) return xml;
         const archived = await this.storeDocument({
+          id: generatedInvoiceDocumentId(companyId, invoiceId, 'facturx_xml'),
+          versionId: generatedInvoiceDocumentVersionId(companyId, invoiceId, 'facturx_xml'),
           companyId,
           kind: 'facturx_xml',
           origin: 'generated',
