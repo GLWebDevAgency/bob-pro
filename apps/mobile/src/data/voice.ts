@@ -1,8 +1,15 @@
 import { useCallback, useRef, useState } from 'react';
 import { Alert } from 'react-native';
 import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from 'expo-speech-recognition';
-import { useAudioRecorder, AudioModule, RecordingPresets } from 'expo-audio';
-import { readAsStringAsync, EncodingType } from 'expo-file-system/legacy';
+import {
+  useAudioRecorder,
+  AudioModule,
+  RecordingPresets,
+  createAudioPlayer,
+  setAudioModeAsync,
+  type AudioPlayer,
+} from 'expo-audio';
+import { readAsStringAsync, writeAsStringAsync, deleteAsync, cacheDirectory, EncodingType } from 'expo-file-system/legacy';
 import * as Speech from 'expo-speech';
 import { getVoiceMode } from './settings';
 import { useBobClient } from './client';
@@ -87,21 +94,116 @@ export function useVoiceInput(onTranscript: (text: string) => void) {
   return { listening, start, stop };
 }
 
+// mimeType renvoyé par Voxtral TTS -> extension de fichier pour que le décodeur natif le reconnaisse.
+function extForMime(mime: string | null): string {
+  switch ((mime ?? '').toLowerCase()) {
+    case 'audio/wav':
+    case 'audio/x-wav':
+      return 'wav';
+    case 'audio/ogg':
+    case 'audio/opus':
+      return 'ogg';
+    case 'audio/aac':
+      return 'aac';
+    case 'audio/mp4':
+    case 'audio/m4a':
+      return 'm4a';
+    default:
+      return 'mp3'; // audio/mpeg par défaut (sortie usuelle Voxtral TTS)
+  }
+}
+
 /**
- * Sortie vocale de Bob (TTS) — miroir de useVoiceInput. NATIF (expo-speech, on-device, gratuit, hors-ligne),
- * langue fr-FR. Le premium souverain (Voxtral TTS) passera par le backend derrière le TtsPort : quand un
- * TtsResult renverra un audioBase64, on lira l'audio (au lieu de la synthèse native) selon le voiceMode.
- * Les montants viennent TOUJOURS du domaine (jamais inventés) -> sûrs à vocaliser tels quels.
+ * Sortie vocale de Bob (TTS) — miroir de useVoiceInput. Deux canaux, MÊME texte de domaine :
+ *  - NATIF (expo-speech, on-device, gratuit, hors-ligne, fr-FR) : défaut, tous paliers.
+ *  - CLOUD souverain (Voxtral TTS via le backend) : quand voiceMode='cloud' ET que l'offre l'autorise
+ *    (Pro+ ; ttsCloudAvailable exposé par /voice/config). On synthétise côté serveur, on écrit l'audio
+ *    dans le cache, et on le lit avec expo-audio.
+ *
+ * FAIL-SAFE : toute anicroche cloud (offre non éligible, réseau, audio vide, décodage) retombe sur le
+ * natif. Bob parle TOUJOURS. Les montants viennent du domaine (jamais inventés) -> sûrs à vocaliser.
  */
 export function useSpeak() {
-  const speak = useCallback((text: string) => {
-    const t = text?.trim();
-    if (!t) return;
+  const client = useBobClient();
+  const playerRef = useRef<AudioPlayer | null>(null);
+  const fileRef = useRef<string | null>(null);
+  // Éligibilité TTS cloud : un seul appel /voice/config par session, mémoïsé (évite un round-trip par énoncé).
+  const ttsCloudReady = useRef<Promise<boolean> | null>(null);
+
+  const cleanupCloud = useCallback(async () => {
+    try {
+      playerRef.current?.remove();
+    } catch {
+      /* player déjà libéré */
+    }
+    playerRef.current = null;
+    const uri = fileRef.current;
+    fileRef.current = null;
+    if (uri) {
+      try {
+        await deleteAsync(uri, { idempotent: true });
+      } catch {
+        /* fichier cache éphémère : suppression best-effort */
+      }
+    }
+  }, []);
+
+  const speakNative = useCallback((t: string) => {
     Speech.stop(); // ne pas superposer deux réponses
     Speech.speak(t, { language: 'fr-FR', rate: 1.0 });
   }, []);
+
+  const speak = useCallback(
+    async (text: string) => {
+      const t = text?.trim();
+      if (!t) return;
+      // Couper toute sortie en cours (natif + cloud) avant d'en démarrer une nouvelle.
+      Speech.stop();
+      await cleanupCloud();
+
+      let mode: 'native' | 'cloud' = 'native';
+      try {
+        mode = await getVoiceMode();
+      } catch {
+        /* réglage illisible -> natif */
+      }
+      if (mode !== 'cloud') return speakNative(t);
+
+      try {
+        if (!ttsCloudReady.current) {
+          ttsCloudReady.current = client
+            .voiceConfig()
+            .then((r) => (r.ok ? !!r.value.ttsCloudAvailable : false))
+            .catch(() => false);
+        }
+        if (!(await ttsCloudReady.current)) return speakNative(t);
+
+        const r = await client.synthesizeSpeech({ text: t });
+        if (!(r.ok && r.value.audioBase64 && cacheDirectory)) return speakNative(t);
+
+        const uri = `${cacheDirectory}bob-tts-${Date.now()}.${extForMime(r.value.mimeType)}`;
+        await writeAsStringAsync(uri, r.value.audioBase64, { encoding: EncodingType.Base64 });
+        fileRef.current = uri;
+
+        await setAudioModeAsync({ playsInSilentMode: true }); // Bob s'entend même en mode silencieux
+        const player = createAudioPlayer(uri);
+        playerRef.current = player;
+        player.addListener('playbackStatusUpdate', (s) => {
+          if (s.didJustFinish) void cleanupCloud();
+        });
+        player.play();
+      } catch {
+        await cleanupCloud();
+        speakNative(t); // repli inconditionnel : la voix ne tombe jamais
+      }
+    },
+    [client, cleanupCloud, speakNative],
+  );
+
   const stopSpeaking = useCallback(() => {
     Speech.stop();
-  }, []);
+    void cleanupCloud();
+  }, [cleanupCloud]);
+
   return { speak, stopSpeaking };
 }
