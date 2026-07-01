@@ -6,3 +6,9 @@ packages/ai/src/tools/tool.ts	1782913430	3600	couche verifiabilite agent: riskTi
 packages/ai/src/tools/registry.ts	1782913430	3600	couche verifiabilite agent: riskTier + ActionDiff + ConfirmationChallenge (packages/ai runtime/agent/tools/autonomy)
 packages/ai/src/agent/autonomy.ts	1782913430	3600	couche verifiabilite agent: riskTier + ActionDiff + ConfirmationChallenge (packages/ai runtime/agent/tools/autonomy)
 packages/ai/src/runtime/*.ts	1782913430	3600	couche verifiabilite agent: riskTier + ActionDiff + ConfirmationChallenge (packages/ai runtime/agent/tools/autonomy)
+packages/ai/src/index.ts	1782913541	3600	verifiabilite agent: confirmation.ts + action-diff.ts + index + tests
+packages/ai/src/agent/confirmation.ts	1782913541	3600	verifiabilite agent: confirmation.ts + action-diff.ts + index + tests
+packages/ai/src/agent/action-diff.ts	1782913541	3600	verifiabilite agent: confirmation.ts + action-diff.ts + index + tests
+packages/ai/src/agent/confirmation.test.ts	1782913541	3600	verifiabilite agent: confirmation.ts + action-diff.ts + index + tests
+packages/ai/src/agent/action-diff.test.ts	1782913541	3600	verifiabilite agent: confirmation.ts + action-diff.ts + index + tests
+packages/ai/src/agent/autonomy.test.ts	1782913541	3600	verifiabilite agent: confirmation.ts + action-diff.ts + index + tests
