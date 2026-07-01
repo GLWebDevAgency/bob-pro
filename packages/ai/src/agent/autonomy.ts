@@ -14,20 +14,38 @@ export const AUTONOMY_LABELS: Record<AgentAutonomy, string> = {
   auto: 'Tout exécuter (réversible)',
 };
 
+import { type RiskTier } from '../tools/tool';
+
+/** Profil minimal d'un outil pour les décisions d'autonomie (structurel, pas de couplage au Tool complet). */
+export type ToolRiskProfile = { mutating: boolean; outbound: boolean; safetyFloor?: boolean; riskTier?: RiskTier };
+
+/** Paliers de risque au PLANCHER de sécurité : confirmation exigée même en 'auto'. */
+export const FLOOR_TIERS: readonly RiskTier[] = ['accounting', 'outbound', 'fiscal'];
+
 /**
- * Plancher de sécurité INVIOLABLE : actions confirmées MÊME en autonomie 'auto'. = envoi vers un tiers
- * (`outbound`) OU action irréversible légale/fiscale, purge ou comptable sensible (`safetyFloor`).
- * Rend « vendre l'auto pas cher » sûr : l'auto n'accélère que l'interne vraiment réversible.
+ * Palier de risque effectif d'un outil. Utilise `riskTier` s'il est fourni, sinon le DÉRIVE des booléens
+ * historiques (rétro-compatibilité) : lecture -> read ; sortant -> outbound ; sensible -> accounting ;
+ * sinon interne réversible.
  */
-export function isSafetyFloor(tool: { outbound: boolean; safetyFloor?: boolean }): boolean {
-  return tool.outbound || tool.safetyFloor === true;
+export function riskTierOf(tool: ToolRiskProfile): RiskTier {
+  if (tool.riskTier) return tool.riskTier;
+  if (!tool.mutating) return 'read';
+  if (tool.outbound) return 'outbound';
+  if (tool.safetyFloor) return 'accounting';
+  return 'reversible';
+}
+
+/**
+ * Plancher de sécurité INVIOLABLE : actions confirmées MÊME en autonomie 'auto'. Un outil est au plancher
+ * si son palier de risque effectif est accounting (impacte les livres), outbound (envoi tiers) ou fiscal
+ * (irréversible légal/fiscal, purge). Rend « vendre l'auto pas cher » sûr : l'auto n'accélère que l'interne réversible.
+ */
+export function isSafetyFloor(tool: ToolRiskProfile): boolean {
+  return FLOOR_TIERS.includes(riskTierOf(tool));
 }
 
 /** Décide si un outil doit être confirmé avant exécution, selon son profil et le mode d'autonomie. */
-export function requiresConfirmation(
-  tool: { mutating: boolean; outbound: boolean; safetyFloor?: boolean },
-  mode: AgentAutonomy,
-): boolean {
+export function requiresConfirmation(tool: ToolRiskProfile, mode: AgentAutonomy): boolean {
   if (!tool.mutating) return false; // lecture : jamais
   if (isSafetyFloor(tool)) return true; // plancher : toujours, même en 'auto'
   if (mode === 'confirm_all') return true;

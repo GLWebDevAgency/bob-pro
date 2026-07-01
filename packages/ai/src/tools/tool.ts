@@ -1,6 +1,18 @@
 import { type Result, type AppError } from '@bob/core';
 
 /**
+ * Palier de risque d'une action, du moins au plus sensible. Classe l'action pour choisir la policy,
+ * la confirmation typée et l'aperçu (ActionDiff). Ordonné : read < draft < reversible < accounting < outbound < fiscal.
+ * - read       : lecture pure, aucun effet.
+ * - draft      : crée/modifie un brouillon (réversible, sans portée externe).
+ * - reversible : mutation interne réversible non sensible.
+ * - accounting : impacte les livres (CA/TVA/relances) — ex. encaissement. PLANCHER de sécurité.
+ * - outbound   : sort vers un tiers (client) — ex. envoi devis. PLANCHER de sécurité.
+ * - fiscal     : irréversible à portée légale/fiscale — ex. émission de facture, purge. PLANCHER de sécurité.
+ */
+export type RiskTier = 'read' | 'draft' | 'reversible' | 'accounting' | 'outbound' | 'fiscal';
+
+/**
  * Contrat d'outil de Bob. Invariant de parité IA/manuel : un outil DÉLÈGUE à un use case via `run`,
  * il n'a aucune logique métier propre. `parse` valide strictement les arguments (anti-hallucination d'arguments).
  */
@@ -19,6 +31,12 @@ export interface Tool<In, Out> {
    * Distinct de `outbound` (envoi tiers, aussi au plancher).
    */
   readonly safetyFloor?: boolean;
+  /**
+   * Palier de risque explicite. Optionnel : s'il est absent, il est dérivé des booléens (voir riskTierOf).
+   * Il RAFFINE la classification (distingue accounting vs fiscal, draft vs reversible) et pilote la
+   * confirmation typée + l'aperçu ActionDiff.
+   */
+  readonly riskTier?: RiskTier;
   parse(raw: unknown): Result<In, AppError>;
   run(input: In): Promise<Result<Out, AppError>>;
 }

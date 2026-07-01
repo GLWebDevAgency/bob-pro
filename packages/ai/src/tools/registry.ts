@@ -18,6 +18,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
     outbound: false,
     compliance: 'low',
     parse: () => ok({}),
+    riskTier: 'read',
     run: () => actions.computePayout(),
   };
 
@@ -28,6 +29,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
     outbound: false,
     compliance: 'low',
     parse: () => ok({}),
+    riskTier: 'read',
     run: () => actions.draftRelance(),
   };
 
@@ -38,6 +40,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
     outbound: false,
     compliance: 'low',
     parse: () => ok({}),
+    riskTier: 'read',
     run: () => actions.listPayableInvoices(),
   };
 
@@ -48,6 +51,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
     outbound: false,
     compliance: 'medium',
     parse: () => ok({}),
+    riskTier: 'read',
     run: () => actions.listDocuments(),
   };
 
@@ -62,6 +66,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
       if (typeof r?.quoteId !== 'string' || r.quoteId.length === 0) return err(appValidation('quoteId', 'Devis manquant.'));
       return ok({ quoteId: r.quoteId });
     },
+    riskTier: 'outbound',
     run: (input) => actions.sendQuote(input),
   };
 
@@ -78,6 +83,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
         return err(appValidation('invoiceId', 'Facture manquante.'));
       return ok({ invoiceId: r.invoiceId });
     },
+    riskTier: 'fiscal',
     run: (input) => actions.issueInvoice(input),
   };
 
@@ -103,6 +109,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
         return err(appValidation('idempotencyKey', 'Clé d’idempotence invalide.'));
       return ok({ invoiceId: r.invoiceId, amountCents: r.amountCents, idempotencyKey: r.idempotencyKey ?? null });
     },
+    riskTier: 'accounting',
     run: (input) => actions.registerPayment(input),
   };
 

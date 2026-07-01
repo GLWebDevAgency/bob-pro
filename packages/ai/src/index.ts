@@ -11,5 +11,7 @@ export * from './tools/tool';
 export * from './tools/registry';
 export * from './agent/actions';
 export * from './agent/autonomy';
+export * from './agent/confirmation';
+export * from './agent/action-diff';
 export * from './agent/bob-agent';
 export * from './runtime';
