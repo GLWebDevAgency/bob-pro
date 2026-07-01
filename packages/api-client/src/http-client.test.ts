@@ -98,4 +98,38 @@ describe('HttpBobClient', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(r.value).toEqual(preview);
   });
+
+  it('loads expense defaults from the API memory endpoint', async () => {
+    const defaults = {
+      supplierName: 'Leroy Merlin',
+      supplierSiren: '552100554',
+      category: 'materiel',
+      vatRatePct: 20,
+      source: 'memory',
+    };
+    const fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      if (url === 'https://api.bob.test/expenses/defaults') {
+        expect(init?.method).toBe('POST');
+        expect(JSON.parse(String(init?.body))).toMatchObject({ supplierName: 'Leroy Merlin', categoryGuess: 'autre' });
+        return new Response(JSON.stringify(defaults), { headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ error: { kind: 'not_found', resource: 'route' } }), {
+        status: 404,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-mercier' });
+    const r = await client.suggestExpenseDefaults({
+      supplierName: 'Leroy Merlin',
+      supplierSiren: null,
+      vatRatePctApplied: null,
+      categoryGuess: 'autre',
+    });
+
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value).toEqual(defaults);
+  });
 });

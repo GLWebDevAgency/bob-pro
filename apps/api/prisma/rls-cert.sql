@@ -35,6 +35,7 @@ DELETE FROM line_items WHERE id IN ('rls-line-a', 'rls-line-b');
 DELETE FROM payments WHERE id IN ('rls-payment-a', 'rls-payment-b');
 DELETE FROM public_access_tokens WHERE id IN ('rls-token-a', 'rls-token-b');
 DELETE FROM expenses WHERE id IN ('rls-expense-a', 'rls-expense-b', 'rls-expense-cross');
+DELETE FROM supplier_memory_profiles WHERE id IN ('rls-supplier-a', 'rls-supplier-b', 'rls-supplier-cross');
 DELETE FROM document_versions WHERE id IN ('rls-docver-a', 'rls-docver-b');
 DELETE FROM documents WHERE id IN ('rls-doc-a', 'rls-doc-b', 'rls-doc-cross');
 DELETE FROM document_archive_jobs WHERE id IN ('rls-archive-a', 'rls-archive-b', 'rls-archive-cross');
@@ -56,6 +57,7 @@ DELETE FROM line_items WHERE id IN ('rls-line-a', 'rls-line-b');
 DELETE FROM payments WHERE id IN ('rls-payment-a', 'rls-payment-b');
 DELETE FROM public_access_tokens WHERE id IN ('rls-token-a', 'rls-token-b');
 DELETE FROM expenses WHERE id IN ('rls-expense-a', 'rls-expense-b', 'rls-expense-cross');
+DELETE FROM supplier_memory_profiles WHERE id IN ('rls-supplier-a', 'rls-supplier-b', 'rls-supplier-cross');
 DELETE FROM document_versions WHERE id IN ('rls-docver-a', 'rls-docver-b');
 DELETE FROM documents WHERE id IN ('rls-doc-a', 'rls-doc-b', 'rls-doc-cross');
 DELETE FROM document_archive_jobs WHERE id IN ('rls-archive-a', 'rls-archive-b', 'rls-archive-cross');
@@ -90,6 +92,13 @@ INSERT INTO public_access_tokens (id, "companyId", "tokenHash", "resourceType", 
 VALUES ('rls-token-a', 'rls-co-a', 'rls-hash-a', 'quote', 'rls-quote-a', 'quote_signature', '2026-12-31T00:00:00Z');
 INSERT INTO expenses (id, "companyId", "supplierName", "documentDate", "totalTtcCents", category)
 VALUES ('rls-expense-a', 'rls-co-a', 'Supplier A', '2026-01-01', 10000, 'materials');
+INSERT INTO supplier_memory_profiles (
+  id, "companyId", key, "displayName", siren, category, "vatRatePct", seen, "lastSeenAt", "updatedAt"
+)
+VALUES (
+  'rls-supplier-a', 'rls-co-a', 'supplier a', 'Supplier A', '552100554', 'materiel', 20, 1,
+  '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'
+);
 INSERT INTO documents (
   id, "companyId", kind, origin, status, filename, "mimeType", "byteSize", sha256, "storageKey",
   "linkedEntityType", "linkedEntityId", "documentDate", "issuedAt", "createdAt", "createdBy", "retentionUntil", "deletedAt"
@@ -163,6 +172,13 @@ INSERT INTO public_access_tokens (id, "companyId", "tokenHash", "resourceType", 
 VALUES ('rls-token-b', 'rls-co-b', 'rls-hash-b', 'quote', 'rls-quote-b', 'quote_signature', '2026-12-31T00:00:00Z');
 INSERT INTO expenses (id, "companyId", "supplierName", "documentDate", "totalTtcCents", category)
 VALUES ('rls-expense-b', 'rls-co-b', 'Supplier B', '2026-01-01', 20000, 'materials');
+INSERT INTO supplier_memory_profiles (
+  id, "companyId", key, "displayName", siren, category, "vatRatePct", seen, "lastSeenAt", "updatedAt"
+)
+VALUES (
+  'rls-supplier-b', 'rls-co-b', 'supplier b', 'Supplier B', '732829320', 'carburant', 20, 1,
+  '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'
+);
 INSERT INTO documents (
   id, "companyId", kind, origin, status, filename, "mimeType", "byteSize", sha256, "storageKey",
   "linkedEntityType", "linkedEntityId", "documentDate", "issuedAt", "createdAt", "createdBy", "retentionUntil", "deletedAt"
@@ -228,6 +244,7 @@ SELECT pg_temp.assert_eq((SELECT count(*) FROM line_items), 1, 'line_items tenan
 SELECT pg_temp.assert_eq((SELECT count(*) FROM payments), 1, 'payments tenant A');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM public_access_tokens), 1, 'public_access_tokens tenant A');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM expenses), 1, 'expenses tenant A');
+SELECT pg_temp.assert_eq((SELECT count(*) FROM supplier_memory_profiles), 1, 'supplier_memory_profiles tenant A');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM documents), 1, 'documents tenant A');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM document_versions), 1, 'document_versions tenant A');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM document_archive_jobs), 1, 'document_archive_jobs tenant A');
@@ -242,6 +259,7 @@ SELECT pg_temp.assert_eq((SELECT count(*) FROM documents WHERE id = 'rls-doc-b')
 SELECT pg_temp.assert_eq((SELECT count(*) FROM notification_jobs WHERE id = 'rls-notification-b'), 0, 'tenant A cannot read tenant B notification job');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM agent_journal_entries WHERE id = 'rls-agent-journal-b'), 0, 'tenant A cannot read tenant B agent journal');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM accounting_entries WHERE id = 'rls-accentry-b'), 0, 'tenant A cannot read tenant B accounting entry');
+SELECT pg_temp.assert_eq((SELECT count(*) FROM supplier_memory_profiles WHERE id = 'rls-supplier-b'), 0, 'tenant A cannot read tenant B supplier memory');
 
 DO $$
 BEGIN
@@ -249,6 +267,18 @@ BEGIN
     INSERT INTO expenses (id, "companyId", "supplierName", "documentDate", "totalTtcCents", category)
     VALUES ('rls-expense-cross', 'rls-co-b', 'Cross Supplier', '2026-01-01', 30000, 'materials');
     RAISE EXCEPTION 'RLS cert failed: cross-tenant expense insert succeeded';
+  EXCEPTION WHEN insufficient_privilege THEN
+    NULL;
+  END;
+  BEGIN
+    INSERT INTO supplier_memory_profiles (
+      id, "companyId", key, "displayName", category, seen, "lastSeenAt", "updatedAt"
+    )
+    VALUES (
+      'rls-supplier-cross', 'rls-co-b', 'cross supplier', 'Cross Supplier', 'materiel', 1,
+      '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'
+    );
+    RAISE EXCEPTION 'RLS cert failed: cross-tenant supplier memory insert succeeded';
   EXCEPTION WHEN insufficient_privilege THEN
     NULL;
   END;
@@ -348,6 +378,7 @@ SELECT pg_temp.assert_eq((SELECT count(*) FROM line_items), 1, 'line_items tenan
 SELECT pg_temp.assert_eq((SELECT count(*) FROM payments), 1, 'payments tenant B');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM public_access_tokens), 1, 'public_access_tokens tenant B');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM expenses), 1, 'expenses tenant B');
+SELECT pg_temp.assert_eq((SELECT count(*) FROM supplier_memory_profiles), 1, 'supplier_memory_profiles tenant B');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM documents), 1, 'documents tenant B');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM document_versions), 1, 'document_versions tenant B');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM document_archive_jobs), 1, 'document_archive_jobs tenant B');
@@ -362,6 +393,7 @@ SELECT pg_temp.assert_eq((SELECT count(*) FROM documents WHERE id = 'rls-doc-a')
 SELECT pg_temp.assert_eq((SELECT count(*) FROM notification_jobs WHERE id = 'rls-notification-a'), 0, 'tenant B cannot read tenant A notification job');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM agent_journal_entries WHERE id = 'rls-agent-journal-a'), 0, 'tenant B cannot read tenant A agent journal');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM accounting_entries WHERE id = 'rls-accentry-a'), 0, 'tenant B cannot read tenant A accounting entry');
+SELECT pg_temp.assert_eq((SELECT count(*) FROM supplier_memory_profiles WHERE id = 'rls-supplier-a'), 0, 'tenant B cannot read tenant A supplier memory');
 COMMIT;
 
 \echo 'RLS certification passed'

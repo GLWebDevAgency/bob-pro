@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { Prisma } from '@prisma/client';
+import { normalizeSupplierName, type RememberSupplierInput } from '@bob/ai';
 import type { JournalEntry } from '@bob/ai';
 import {
   Company,
@@ -46,6 +47,7 @@ import type {
 } from '../notification-jobs';
 import type { AgentJournalRepository } from '../agent-journal';
 import { newAgentJournalEntryId } from '../agent-journal';
+import type { SupplierMemoryProfile, SupplierMemoryRepository } from '../supplier-memory';
 import type { PrismaService } from './prisma.service';
 import {
   companyRowToProps,
@@ -68,6 +70,10 @@ function publicTokenHash(token: string): string {
 
 function newPublicToken(): string {
   return `pst_${randomBytes(32).toString('base64url')}`;
+}
+
+function supplierMemoryId(companyId: string, key: string): string {
+  return createHash('sha256').update(`${companyId}:${key}`, 'utf8').digest('hex').slice(0, 32);
 }
 
 export class PrismaCompanyRepository implements CompanyRepository {
@@ -1031,6 +1037,77 @@ export class PrismaExpenseRepository implements ExpenseRepository {
       category: row.category as ExpenseCategory,
       status: row.status as ExpenseStatus,
       source: row.source as ExpenseSource,
+    };
+  }
+}
+
+export class PrismaSupplierMemoryRepository implements SupplierMemoryRepository {
+  constructor(private readonly prisma: PrismaService) {}
+
+  async supplierProfile(companyId: string, supplierName: string): Promise<SupplierMemoryProfile | null> {
+    const key = normalizeSupplierName(supplierName);
+    if (!key) return null;
+    const row = await this.prisma.client().supplierMemoryProfile.findUnique({
+      where: { uniq_supplier_memory_company_key: { companyId, key } },
+    });
+    return row ? this.toProfile(row) : null;
+  }
+
+  async rememberSupplier(companyId: string, input: RememberSupplierInput, at: string): Promise<SupplierMemoryProfile> {
+    const key = normalizeSupplierName(input.name);
+    const row = await this.prisma.client().supplierMemoryProfile.upsert({
+      where: { uniq_supplier_memory_company_key: { companyId, key } },
+      create: {
+        id: supplierMemoryId(companyId, key),
+        companyId,
+        key,
+        displayName: input.name.trim() || input.name,
+        siren: input.siren ?? null,
+        category: input.category,
+        vatRatePct: input.vatRatePct ?? null,
+        seen: 1,
+        lastSeenAt: new Date(at),
+      },
+      update: {
+        displayName: input.name.trim() || input.name,
+        ...(input.siren !== undefined && input.siren !== null ? { siren: input.siren } : {}),
+        category: input.category,
+        ...(input.vatRatePct !== undefined && input.vatRatePct !== null ? { vatRatePct: input.vatRatePct } : {}),
+        seen: { increment: 1 },
+        lastSeenAt: new Date(at),
+      },
+    });
+    return this.toProfile(row);
+  }
+
+  async knownSupplierNames(companyId: string): Promise<string[]> {
+    const rows = await this.prisma.client().supplierMemoryProfile.findMany({
+      where: { companyId },
+      orderBy: { displayName: 'asc' },
+      select: { displayName: true },
+    });
+    return rows.map((row) => row.displayName);
+  }
+
+  private toProfile(row: {
+    companyId: string;
+    key: string;
+    displayName: string;
+    siren: string | null;
+    category: string;
+    vatRatePct: number | null;
+    seen: number;
+    lastSeenAt: Date;
+  }): SupplierMemoryProfile {
+    return {
+      companyId: row.companyId,
+      key: row.key,
+      displayName: row.displayName,
+      siren: row.siren,
+      category: row.category as ExpenseCategory,
+      vatRatePct: row.vatRatePct,
+      seen: row.seen,
+      lastSeenAt: row.lastSeenAt.toISOString(),
     };
   }
 }

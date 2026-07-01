@@ -88,6 +88,8 @@ import type {
   UploadDocumentClientInput,
   VoiceConfig,
   VoiceSynthesisResult,
+  SuggestExpenseDefaultsInput,
+  ExpenseDefaultsView,
   InvoiceAccountingPreview,
   PaymentAccountingPreview,
   AccountingEntryView,
@@ -106,6 +108,15 @@ function base64ByteSize(contentBase64: string): number {
 
 function localSha256(seq: number): string {
   return seq.toString(16).padStart(64, '0').slice(-64);
+}
+
+function normalizeSupplierNameLocal(name: string): string {
+  return name
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
 }
 
 function addYears(date: string, years: number): string {
@@ -349,6 +360,31 @@ export class LocalBobClient implements BobClient {
 
   async extractDocument(input: { contentBase64: string; mimeType: string }): Promise<Result<OcrExtraction, AppError>> {
     return new ExtractDocument({ ocr: this.ocr }).execute(input);
+  }
+
+  async suggestExpenseDefaults(input: SuggestExpenseDefaultsInput): Promise<Result<ExpenseDefaultsView, AppError>> {
+    const key = normalizeSupplierNameLocal(input.supplierName);
+    const expenses = await this.expenses.listByCompany(this.companyId);
+    const known = expenses
+      .map((expense) => expense.toProps())
+      .filter((expense) => normalizeSupplierNameLocal(expense.supplierName) === key)
+      .at(-1);
+    if (known) {
+      return ok({
+        supplierName: known.supplierName,
+        supplierSiren: input.supplierSiren ?? known.supplierSiren,
+        category: known.category,
+        vatRatePct: input.vatRatePctApplied ?? known.vatRatePct,
+        source: 'memory',
+      });
+    }
+    return ok({
+      supplierName: input.supplierName,
+      supplierSiren: input.supplierSiren ?? null,
+      category: input.categoryGuess,
+      vatRatePct: input.vatRatePctApplied ?? null,
+      source: 'ocr',
+    });
   }
 
   async listCustomers(): Promise<Result<CustomerListItem[], AppError>> {

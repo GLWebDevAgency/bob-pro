@@ -17,6 +17,8 @@ import type { DocumentArchiveJobRepository } from './document-archive-jobs';
 import type { NotificationJobRepository } from './notification-jobs';
 import type { AgentJournalRepository } from './agent-journal';
 import { InMemoryAgentJournalRepository } from './agent-journal';
+import type { SupplierMemoryRepository } from './supplier-memory';
+import { InMemorySupplierMemoryRepository } from './supplier-memory';
 import {
   InMemoryCompanyRepository,
   InMemoryCustomerRepository,
@@ -50,6 +52,7 @@ export interface Persistence {
   accountingEntries: AccountingEntryRepository;
   chartOfAccounts: ChartOfAccountsRepository;
   agentJournal: AgentJournalRepository;
+  supplierMemory: SupplierMemoryRepository;
   counters: SequenceCounterPort;
   /** Unité de travail : exécute `fn` atomiquement (transaction DB en prod ; direct en mémoire). */
   runInTransaction<T>(fn: () => Promise<T>): Promise<T>;
@@ -72,6 +75,7 @@ export class InMemoryPersistence implements Persistence {
   readonly accountingEntries = new InMemoryAccountingEntryRepository();
   readonly chartOfAccounts = new InMemoryChartOfAccountsRepository();
   readonly agentJournal = new InMemoryAgentJournalRepository();
+  readonly supplierMemory = new InMemorySupplierMemoryRepository();
   readonly counters = new InMemorySequenceCounter();
   // En mémoire (JS mono-thread) : pas de transaction réelle, mais on annule l'allocation du compteur
   // si `fn` lève — sinon une erreur métier après allocation laisserait un trou (symétrie avec Prisma).

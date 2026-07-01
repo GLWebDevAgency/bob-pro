@@ -24,6 +24,7 @@ BEGIN
     'accounting_accounts',
     'accounting_entries',
     'accounting_entry_lines',
+    'supplier_memory_profiles',
     'document_counters'
   ]) LOOP
     EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
@@ -106,6 +107,11 @@ CREATE POLICY tenant_isolation ON accounting_entries
 
 DROP POLICY IF EXISTS tenant_isolation ON accounting_entry_lines;
 CREATE POLICY tenant_isolation ON accounting_entry_lines
+  USING ("companyId" = current_setting('app.current_company_id', true))
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+
+DROP POLICY IF EXISTS tenant_isolation ON supplier_memory_profiles;
+CREATE POLICY tenant_isolation ON supplier_memory_profiles
   USING ("companyId" = current_setting('app.current_company_id', true))
   WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
 

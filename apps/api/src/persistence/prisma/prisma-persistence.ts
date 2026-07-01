@@ -15,6 +15,7 @@ import {
   PrismaAccountingEntryRepository,
   PrismaChartOfAccountsRepository,
   PrismaAgentJournalRepository,
+  PrismaSupplierMemoryRepository,
   PrismaSequenceCounter,
 } from './repositories';
 import { companyPropsToCreate, customerPropsToCreate } from './mappers';
@@ -33,6 +34,7 @@ export class PrismaPersistence implements Persistence {
   readonly accountingEntries: PrismaAccountingEntryRepository;
   readonly chartOfAccounts: PrismaChartOfAccountsRepository;
   readonly agentJournal: PrismaAgentJournalRepository;
+  readonly supplierMemory: PrismaSupplierMemoryRepository;
   readonly counters: PrismaSequenceCounter;
 
   constructor(private readonly prisma: PrismaService) {
@@ -49,6 +51,7 @@ export class PrismaPersistence implements Persistence {
     this.accountingEntries = new PrismaAccountingEntryRepository(prisma);
     this.chartOfAccounts = new PrismaChartOfAccountsRepository(prisma);
     this.agentJournal = new PrismaAgentJournalRepository(prisma);
+    this.supplierMemory = new PrismaSupplierMemoryRepository(prisma);
     this.counters = new PrismaSequenceCounter(prisma);
   }
 

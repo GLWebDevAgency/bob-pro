@@ -153,6 +153,39 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     expect(preview.value.lines.map((line) => line.account)).toEqual(['530', '411']);
   });
 
+  it("suggere les defauts de depense depuis l'historique fournisseur", async () => {
+    const client = makeClient();
+    const recorded = await client.recordExpense({
+      supplierName: 'Leroy Merlin',
+      supplierSiren: '552100554',
+      documentDate: '2026-05-12',
+      totalTtcCents: 12000,
+      totalHtCents: 10000,
+      vatCents: 2000,
+      vatRatePct: 20,
+      category: 'materiel',
+      source: 'ocr',
+    });
+    expect(recorded.ok).toBe(true);
+
+    const suggested = await client.suggestExpenseDefaults({
+      supplierName: 'LÉROY-MERLIN',
+      supplierSiren: null,
+      vatRatePctApplied: null,
+      categoryGuess: 'autre',
+    });
+
+    expect(suggested.ok).toBe(true);
+    if (!suggested.ok) return;
+    expect(suggested.value).toMatchObject({
+      supplierName: 'Leroy Merlin',
+      supplierSiren: '552100554',
+      category: 'materiel',
+      vatRatePct: 20,
+      source: 'memory',
+    });
+  });
+
   it('refuse un devis envoye hors-ligne', async () => {
     const client = makeClient();
     const created = await client.createQuote({

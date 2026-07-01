@@ -77,6 +77,7 @@ import {
   type AddressAutocompletePort,
   type AddressSuggestion,
   type OcrExtraction,
+  type ExpenseCategory,
   type OcrPort,
   type RecordExpenseInput,
   type ExpenseProps,
@@ -163,6 +164,14 @@ export interface InvoiceAccountingPreview {
   lines: AccountingPreviewLine[];
 }
 
+export interface ExpenseDefaultsView {
+  supplierName: string;
+  supplierSiren: string | null;
+  category: ExpenseCategory;
+  vatRatePct: number | null;
+  source: 'memory' | 'ocr';
+}
+
 /** Vue publique d'un devis pour la page de signature client à distance (lien tokenisé). */
 export interface SignatureView {
   number: string | null;
@@ -181,6 +190,8 @@ interface ResolvedSignatureGrant {
   companyId: string;
   quoteId: string;
 }
+
+const EXPENSE_CATEGORIES = new Set<ExpenseCategory>(['fournitures', 'materiel', 'carburant', 'repas', 'sous_traitance', 'autre']);
 
 class RollbackAppError extends Error {
   constructor(readonly appError: AppError) {
@@ -1277,12 +1288,66 @@ export class BackendService {
     return r;
   }
 
+  async suggestExpenseDefaults(input: {
+    supplierName: string;
+    supplierSiren?: string | null;
+    vatRatePctApplied?: number | null;
+    categoryGuess: ExpenseCategory;
+  }): Promise<Result<ExpenseDefaultsView, AppError>> {
+    const supplierName = input.supplierName.trim();
+    if (!supplierName) {
+      return { ok: false, error: { kind: 'validation', issues: [{ field: 'supplierName', message: 'Fournisseur requis.' }] } };
+    }
+    if (!EXPENSE_CATEGORIES.has(input.categoryGuess)) {
+      return { ok: false, error: { kind: 'validation', issues: [{ field: 'categoryGuess', message: 'Catégorie inconnue.' }] } };
+    }
+    const profile = await this.p.supplierMemory.supplierProfile(this.companyId(), supplierName);
+    if (profile) {
+      return ok({
+        supplierName: profile.displayName || supplierName,
+        supplierSiren: input.supplierSiren ?? profile.siren,
+        category: profile.category,
+        vatRatePct: input.vatRatePctApplied ?? profile.vatRatePct,
+        source: 'memory',
+      });
+    }
+    return ok({
+      supplierName,
+      supplierSiren: input.supplierSiren ?? null,
+      category: input.categoryGuess,
+      vatRatePct: input.vatRatePctApplied ?? null,
+      source: 'ocr',
+    });
+  }
+
   async recordExpense(input: Omit<RecordExpenseInput, 'companyId'>): Promise<Result<{ id: string }, AppError>> {
     const r = await new RecordExpense({ expenses: this.p.expenses, ids: this.ids, clock: this.clock }).execute({
       companyId: this.companyId(),
       ...input,
     });
-    if (r.ok) this.logger.audit('expense.recorded', { companyId: this.companyId(), id: r.value.id, ttc: input.totalTtcCents });
+    if (r.ok) {
+      this.logger.audit('expense.recorded', { companyId: this.companyId(), id: r.value.id, ttc: input.totalTtcCents });
+      try {
+        const profile = await this.p.supplierMemory.rememberSupplier(
+          this.companyId(),
+          {
+            name: input.supplierName,
+            siren: input.supplierSiren ?? null,
+            category: input.category,
+            vatRatePct: input.vatRatePct ?? null,
+          },
+          this.clock.now(),
+        );
+        this.logger.audit('memory.supplier_learned', {
+          companyId: this.companyId(),
+          supplierKey: profile.key,
+          seen: profile.seen,
+          sourceExpenseId: r.value.id,
+        });
+      } catch (e) {
+        this.logger.warn(`supplier memory update failed: ${e instanceof Error ? e.message : 'unknown'}`, 'BackendService');
+      }
+    }
     return r;
   }
 

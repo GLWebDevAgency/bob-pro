@@ -22,6 +22,7 @@ import type {
   CreateChantierInput,
   DocumentKind,
   DocumentLinkedEntityType,
+  ExpenseCategory,
 } from '@bob/core';
 import { type AgentAutonomy, type PendingAction } from '@bob/ai';
 import { Throttle } from '@nestjs/throttler';
@@ -342,6 +343,18 @@ export class ExpensesController {
   @Get()
   async list() {
     return unwrap(await this.backend.listExpenses());
+  }
+  @Post('defaults')
+  async defaults(
+    @Body()
+    body: {
+      supplierName: string;
+      supplierSiren?: string | null;
+      vatRatePctApplied?: number | null;
+      categoryGuess: ExpenseCategory;
+    },
+  ) {
+    return unwrap(await this.backend.suggestExpenseDefaults(body));
   }
   @Post()
   async create(@Body() body: Omit<RecordExpenseInput, 'companyId'>) {

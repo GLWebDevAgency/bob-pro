@@ -31,6 +31,8 @@ import type {
   RegisterPaymentClientInput,
   RegisterPaymentClientOutput,
   SendQuoteOutput,
+  SuggestExpenseDefaultsInput,
+  ExpenseDefaultsView,
   ListDocumentsClientInput,
   UploadDocumentClientInput,
   VoiceConfig,
@@ -177,6 +179,9 @@ export class HttpBobClient implements BobClient {
   }
   extractDocument(input: { contentBase64: string; mimeType: string }) {
     return this.req<OcrExtraction>('POST', '/documents/ocr', input);
+  }
+  suggestExpenseDefaults(input: SuggestExpenseDefaultsInput) {
+    return this.req<ExpenseDefaultsView>('POST', '/expenses/defaults', input);
   }
   recordExpense(input: Omit<RecordExpenseInput, 'companyId'>) {
     return this.req<{ id: string }>('POST', '/expenses', input);

@@ -195,6 +195,7 @@ model Company {
   agentJournalEntries AgentJournalEntry[]
   accountingAccounts  AccountingAccount[]
   accountingEntries   AccountingEntry[]
+  supplierMemory       SupplierMemoryProfile[]
   counters            DocumentCounter[]
 
   @@map("companies")
@@ -346,6 +347,25 @@ model Expense {
 
   @@index([companyId])
   @@map("expenses")
+}
+
+model SupplierMemoryProfile {
+  id          String   @id
+  companyId   String
+  company     Company  @relation(fields: [companyId], references: [id])
+  key         String
+  displayName String
+  siren       String?  @db.Char(9)
+  category    String
+  vatRatePct  Float?
+  seen        Int      @default(1)
+  lastSeenAt  DateTime
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([companyId, key], name: "uniq_supplier_memory_company_key")
+  @@index([companyId])
+  @@map("supplier_memory_profiles")
 }
 
 model StoredDocument {

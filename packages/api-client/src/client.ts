@@ -18,6 +18,7 @@ import type {
   DiagnosticResult,
   OcrExtraction,
   ExpenseProps,
+  ExpenseCategory,
   RecordExpenseInput,
   TradeConfig,
   ChantierProps,
@@ -154,6 +155,21 @@ export interface ExportFecClientInput {
   to: string;
 }
 
+export interface SuggestExpenseDefaultsInput {
+  supplierName: string;
+  supplierSiren?: string | null;
+  vatRatePctApplied?: number | null;
+  categoryGuess: ExpenseCategory;
+}
+
+export interface ExpenseDefaultsView {
+  supplierName: string;
+  supplierSiren: string | null;
+  category: ExpenseCategory;
+  vatRatePct: number | null;
+  source: 'memory' | 'ocr';
+}
+
 export interface ExportFecClientOutput {
   filename: string;
   mimeType: string;
@@ -227,6 +243,7 @@ export interface BobClient {
   uploadDocument(input: UploadDocumentClientInput): Promise<Result<DocumentView, AppError>>;
   documentDownloadUrl(documentId: string, ttlSeconds?: number): Promise<Result<DocumentDownloadUrl, AppError>>;
   extractDocument(input: { contentBase64: string; mimeType: string }): Promise<Result<OcrExtraction, AppError>>;
+  suggestExpenseDefaults(input: SuggestExpenseDefaultsInput): Promise<Result<ExpenseDefaultsView, AppError>>;
   recordExpense(input: Omit<RecordExpenseInput, 'companyId'>): Promise<Result<{ id: string }, AppError>>;
   listExpenses(): Promise<Result<ExpenseProps[], AppError>>;
   createChantier(input: Omit<CreateChantierInput, 'companyId'>): Promise<Result<{ id: string }, AppError>>;
