@@ -6,3 +6,4 @@ Dockerfile	1782933729	3600	release engineering backend: Dockerfile multi-stage @
 docs/store-readiness.md	1782939329	1800	MAJ statut C1 certifie dans store-readiness
 .github/workflows/vercel-sign-web.yml	1782939772	1800	fix 2 bugs latents workflow vercel-sign-web signales par Opus (rootDirectory + grep quote)
 .gitignore	1782939772	1800	fix 2 bugs latents workflow vercel-sign-web signales par Opus (rootDirectory + grep quote)
+apps/api/src/persistence/prisma/prisma-persistence.ts	1782945284	3600	fix boot seed RLS: upserts via withTenant tx (crash prod 42501)
