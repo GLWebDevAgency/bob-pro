@@ -1,7 +1,14 @@
 import { AggregateRoot } from '../../shared-kernel/aggregate';
 import { type DomainResult, ok } from '../../shared-kernel/result';
 import { type Instant } from '../../shared-kernel/time';
-import { type PlanTier, type Feature, type AddOn, planCan } from './plan';
+import {
+  type PlanTier,
+  type Feature,
+  type AddOn,
+  type AutonomyEntitlement,
+  planCanWithAddOns,
+  resolveAutonomyEntitlement,
+} from './plan';
 
 export type SubscriptionStatus = 'trialing' | 'active' | 'past_due' | 'canceled';
 
@@ -82,8 +89,12 @@ export class Subscription extends AggregateRoot<string> {
   isActive(): boolean {
     return this._status === 'active' || this._status === 'trialing';
   }
-  /** Capacité ouverte = abonnement actif ET incluse dans l'offre. */
+  /** Capacité ouverte = abonnement actif ET incluse dans l'offre ou un add-on éligible. */
   can(feature: Feature): boolean {
-    return this.isActive() && planCan(this._tier, feature);
+    return this.isActive() && planCanWithAddOns(this._tier, this._addOns, feature);
+  }
+
+  autonomyEntitlement(): AutonomyEntitlement {
+    return resolveAutonomyEntitlement(this._tier, this._addOns);
   }
 }

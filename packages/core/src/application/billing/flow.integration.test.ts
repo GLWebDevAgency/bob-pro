@@ -115,7 +115,7 @@ describe('Flux Devis -> signature -> facture -> paiement (intégration)', () => 
     expect(sent.ok).toBe(true);
     if (sent.ok) expect(sent.value.number).toBe('D-2026-0001');
 
-    const signed = await new SignQuote({ quotes: env.quoteRepo, clock: env.clock }).execute({ quoteId, signerName: 'M. Martin' });
+    const signed = await new SignQuote({ quotes: env.quoteRepo, uow: env.uow, clock: env.clock }).execute({ quoteId, signerName: 'M. Martin' });
     expect(signed.ok).toBe(true);
 
     const gen = await new GenerateInvoiceFromQuote({ quotes: env.quoteRepo, invoices: env.invoiceRepo, ids: env.ids }).execute({ quoteId });

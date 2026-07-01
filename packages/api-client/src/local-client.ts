@@ -2,6 +2,7 @@ import {
   CreateQuote,
   SendQuote,
   SignQuote,
+  RefuseQuote,
   GenerateInvoiceFromQuote,
   IssueInvoice,
   RegisterPayment,
@@ -12,9 +13,12 @@ import {
   seedCustomers,
   CASH_SNAPSHOT,
   PLAN_CATALOG,
+  ADDON_CATALOG,
   planEntitlements,
+  resolveAutonomyEntitlement,
   runDiagnostic,
   resolveTradeConfig,
+  buildDocumentStorageKey,
   ExtractDocument,
   DemoOcrAdapter,
   RecordExpense,
@@ -49,6 +53,8 @@ import {
   type CompanyLookupResult,
   type VatCheckResult,
   type AddressSuggestion,
+  type DocumentView,
+  type DocumentDownloadUrl,
 } from '@bob/core';
 import {
   InMemoryCompanyRepository,
@@ -56,16 +62,44 @@ import {
   InMemoryQuoteRepository,
   InMemoryInvoiceRepository,
   InMemoryPaymentRepository,
+  InMemoryPublicAccessTokenRepository,
   InMemoryExpenseRepository,
   InMemoryChantierRepository,
 } from './in-memory/repositories';
 import { DemoCompanyLookupAdapter } from './in-memory/company-lookup';
 import { DemoVatAdapter, DemoAddressAdapter } from './in-memory/enrichment';
 import { InMemorySequenceCounter, CounterIdGenerator, FixtureCashflowSnapshot } from './in-memory/services';
-import type { BobClient, QuoteView, InvoiceView, SubscriptionView, SendQuoteOutput } from './client';
+import type {
+  BobClient,
+  QuoteView,
+  InvoiceView,
+  SubscriptionView,
+  SendQuoteOutput,
+  ListDocumentsClientInput,
+  UploadDocumentClientInput,
+  VoiceConfig,
+  VoiceSynthesisResult,
+} from './client';
 
 export interface LocalBobClientOptions {
   clock?: ClockPort;
+}
+
+function base64ByteSize(contentBase64: string): number {
+  const raw = contentBase64.includes(',') ? contentBase64.slice(contentBase64.indexOf(',') + 1) : contentBase64;
+  const normalized = raw.replace(/\s/g, '');
+  const padding = normalized.endsWith('==') ? 2 : normalized.endsWith('=') ? 1 : 0;
+  return Math.max(0, Math.floor((normalized.length * 3) / 4) - padding);
+}
+
+function localSha256(seq: number): string {
+  return seq.toString(16).padStart(64, '0').slice(-64);
+}
+
+function addYears(date: string, years: number): string {
+  const d = new Date(`${date}T00:00:00.000Z`);
+  d.setUTCFullYear(d.getUTCFullYear() + years);
+  return d.toISOString().slice(0, 10);
 }
 
 /** Implémentation locale (hors-ligne, fixtures) de BobClient : exécute les use cases du domaine en mémoire. */
@@ -77,10 +111,13 @@ export class LocalBobClient implements BobClient {
   private readonly quotes = new InMemoryQuoteRepository();
   private readonly invoices = new InMemoryInvoiceRepository();
   private readonly payments = new InMemoryPaymentRepository();
+  private readonly publicAccessTokens = new InMemoryPublicAccessTokenRepository();
   private readonly ids = new CounterIdGenerator();
   private readonly ocr: DemoOcrAdapter;
   private readonly expenses = new InMemoryExpenseRepository();
   private readonly chantiers = new InMemoryChantierRepository();
+  private readonly documents: DocumentView[] = [];
+  private documentSeq = 0;
   private readonly companyLookup = new DemoCompanyLookupAdapter();
   // Unité de travail in-memory : annule l'allocation du compteur si fn lève (pas de trou) — parité backend.
   private readonly uow = {
@@ -146,6 +183,20 @@ export class LocalBobClient implements BobClient {
       status: 'active',
       currentPeriodEnd: null,
       features: [...planEntitlements('business')],
+      ai: PLAN_CATALOG.business.ai,
+      autonomyEntitlement: resolveAutonomyEntitlement('business'),
+      limits: PLAN_CATALOG.business.limits,
+      addOns: [],
+      addOnCatalog: Object.values(ADDON_CATALOG).map((a) => ({
+        addOn: a.addOn,
+        kind: a.kind,
+        label: a.label,
+        priceCents: a.priceCents,
+        tagline: a.tagline,
+        minTier: a.minTier,
+        grants: [...a.grants],
+        ...(a.autonomy ? { autonomy: a.autonomy } : {}),
+      })),
       catalog: Object.values(PLAN_CATALOG).map((p) => ({
         tier: p.tier,
         label: p.label,
@@ -153,6 +204,8 @@ export class LocalBobClient implements BobClient {
         annualMonthlyCents: p.annualMonthlyCents,
         tagline: p.tagline,
         features: [...p.features],
+        ai: p.ai,
+        limits: p.limits,
       })),
     });
   }
@@ -191,8 +244,75 @@ export class LocalBobClient implements BobClient {
     return ok({ text: 'encaisse la facture 2026-014' });
   }
 
-  async voiceConfig(): Promise<Result<{ cloudAvailable: boolean }, AppError>> {
-    return ok({ cloudAvailable: false });
+  async synthesizeSpeech(_input: { text: string }): Promise<Result<VoiceSynthesisResult, AppError>> {
+    return ok({ audioBase64: null, mimeType: null, model: 'native' });
+  }
+
+  async voiceConfig(): Promise<Result<VoiceConfig, AppError>> {
+    return ok({ cloudAvailable: false, ttsCloudAvailable: false });
+  }
+
+  async listDocuments(input: ListDocumentsClientInput = {}): Promise<Result<DocumentView[], AppError>> {
+    return ok(
+      this.documents
+        .filter((d) => input.includeDeleted === true || d.status === 'active')
+        .filter((d) => (input.kind !== undefined ? d.kind === input.kind : true))
+        .filter((d) => (input.linkedEntityType !== undefined ? d.linkedEntityType === input.linkedEntityType : true))
+        .filter((d) => (input.linkedEntityId !== undefined ? d.linkedEntityId === input.linkedEntityId : true)),
+    );
+  }
+
+  async uploadDocument(input: UploadDocumentClientInput): Promise<Result<DocumentView, AppError>> {
+    const byteSize = base64ByteSize(input.contentBase64);
+    if (byteSize <= 0) return err({ kind: 'validation', issues: [{ field: 'contentBase64', message: 'Document vide.' }] });
+    this.documentSeq += 1;
+    const id = `local-document-${this.documentSeq}`;
+    const sha256 = localSha256(this.documentSeq);
+    const storageKey = buildDocumentStorageKey({
+      companyId: this.companyId,
+      documentId: id,
+      version: 1,
+      sha256,
+      filename: input.filename,
+      mimeType: input.mimeType,
+    });
+    const today = this.clock.today();
+    const documentDate = input.documentDate ?? null;
+    const view: DocumentView = {
+      id,
+      companyId: this.companyId,
+      kind: input.kind ?? 'other',
+      origin: 'uploaded',
+      status: 'active',
+      filename: input.filename.trim() || 'document.bin',
+      mimeType: input.mimeType,
+      byteSize,
+      sha256,
+      storageKey,
+      version: 1,
+      linkedEntityType: input.linkedEntityType ?? null,
+      linkedEntityId: input.linkedEntityId ?? null,
+      documentDate,
+      issuedAt: null,
+      createdAt: this.clock.now(),
+      createdBy: 'local',
+      retentionUntil: addYears(documentDate ?? today, 10),
+    };
+    this.documents.unshift(view);
+    return ok(view);
+  }
+
+  async documentDownloadUrl(documentId: string, ttlSeconds = 300): Promise<Result<DocumentDownloadUrl, AppError>> {
+    const document = this.documents.find((d) => d.id === documentId && d.status === 'active');
+    if (!document) return err(appNotFound('document', documentId));
+    return ok({
+      url: `memory://local-documents/${encodeURIComponent(document.storageKey)}?ttl=${ttlSeconds}`,
+      expiresInSeconds: ttlSeconds,
+      filename: document.filename,
+      mimeType: document.mimeType,
+      byteSize: document.byteSize,
+      sha256: document.sha256,
+    });
   }
 
   async getDiagnostic(): Promise<Result<DiagnosticResult, AppError>> {
@@ -255,7 +375,16 @@ export class LocalBobClient implements BobClient {
   }
 
   async signQuote(input: { quoteId: string; signerName: string }): Promise<Result<{ status: string }, AppError>> {
-    return new SignQuote({ quotes: this.quotes, clock: this.clock }).execute(input);
+    return new SignQuote({ quotes: this.quotes, uow: this.uow, clock: this.clock }).execute(input);
+  }
+
+  async refuseQuote(quoteId: string): Promise<Result<{ status: string }, AppError>> {
+    return new RefuseQuote({
+      quotes: this.quotes,
+      publicAccessTokens: this.publicAccessTokens,
+      uow: this.uow,
+      clock: this.clock,
+    }).execute({ quoteId });
   }
 
   async generateInvoice(input: { quoteId: string; mode?: 'deposit' | 'final' }): Promise<Result<{ invoiceId: string }, AppError>> {

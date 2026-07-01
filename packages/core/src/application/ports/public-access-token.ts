@@ -23,4 +23,12 @@ export interface PublicAccessTokenRepository {
   }): Promise<{ id: string; token: string }>;
   findActive(token: string, at: Instant): Promise<PublicAccessGrant | null>;
   markUsed(id: string, at: Instant): Promise<void>;
+  revoke(id: string, at: Instant): Promise<void>;
+  revokeActiveFor(input: {
+    companyId: string;
+    resourceType: PublicAccessResourceType;
+    resourceId: string;
+    scope: PublicAccessScope;
+    at: Instant;
+  }): Promise<void>;
 }

@@ -5,6 +5,7 @@ import {
   Quote,
   type Company,
   type Customer,
+  type Document,
   type Payment,
   type Expense,
   type Chantier,
@@ -12,6 +13,7 @@ import {
   type CustomerRepository,
   type QuoteRepository,
   type InvoiceRepository,
+  type DocumentRepository,
   type PaymentRepository,
   type PublicAccessGrant,
   type PublicAccessTokenRepository,
@@ -22,6 +24,11 @@ import {
   type IdGeneratorPort,
   type CashflowSnapshotPort,
 } from '@bob/core';
+import type {
+  DocumentArchiveJob,
+  DocumentArchiveJobRepository,
+  EnqueueDocumentArchiveJobInput,
+} from './document-archive-jobs';
 
 /**
  * Adapters in-memory (stockent les objets de domaine directement — aucune réhydratation requise).
@@ -93,6 +100,86 @@ export class InMemoryInvoiceRepository implements InvoiceRepository {
   }
 }
 
+export class InMemoryDocumentRepository implements DocumentRepository {
+  private readonly map = new Map<string, Document>();
+  async save(d: Document): Promise<void> {
+    this.map.set(d.id, d);
+  }
+  async findById(companyId: string, id: string): Promise<Document | null> {
+    const d = this.map.get(id);
+    return d && d.companyId === companyId ? d : null;
+  }
+  async findByEntity(companyId: string, entityType: string, entityId: string): Promise<Document[]> {
+    return [...this.map.values()].filter((d) => {
+      const props = d.toProps();
+      return props.companyId === companyId && props.linkedEntityType === entityType && props.linkedEntityId === entityId;
+    });
+  }
+  async listByCompany(companyId: string): Promise<Document[]> {
+    return [...this.map.values()].filter((d) => d.companyId === companyId);
+  }
+  async listExpired(now: string): Promise<Document[]> {
+    return [...this.map.values()].filter((d) => d.status === 'active' && d.retentionUntil <= now);
+  }
+}
+
+export class InMemoryDocumentArchiveJobRepository implements DocumentArchiveJobRepository {
+  private readonly map = new Map<string, DocumentArchiveJob>();
+
+  async enqueue(input: EnqueueDocumentArchiveJobInput): Promise<void> {
+    const existing = [...this.map.values()].find(
+      (job) => job.companyId === input.companyId && job.invoiceId === input.invoiceId && job.reason === input.reason,
+    );
+    if (existing) {
+      if (existing.status !== 'done') {
+        this.map.set(existing.id, { ...existing, status: 'pending', nextAttemptAt: input.now, updatedAt: input.now });
+      }
+      return;
+    }
+    this.map.set(input.id, {
+      id: input.id,
+      companyId: input.companyId,
+      invoiceId: input.invoiceId,
+      reason: input.reason,
+      status: 'pending',
+      attempts: 0,
+      nextAttemptAt: input.now,
+      lastError: null,
+      createdAt: input.now,
+      updatedAt: input.now,
+    });
+  }
+
+  async listDue(companyId: string, now: string, limit: number): Promise<DocumentArchiveJob[]> {
+    return [...this.map.values()]
+      .filter((job) => job.companyId === companyId)
+      .filter((job) => job.status === 'pending' || job.status === 'failed')
+      .filter((job) => job.nextAttemptAt <= now)
+      .sort((a, b) => a.nextAttemptAt.localeCompare(b.nextAttemptAt))
+      .slice(0, limit)
+      .map((job) => ({ ...job }));
+  }
+
+  async markDone(id: string, at: string): Promise<void> {
+    const job = this.map.get(id);
+    if (job) this.map.set(id, { ...job, status: 'done', lastError: null, updatedAt: at });
+  }
+
+  async markFailed(id: string, at: string, nextAttemptAt: string, error: string): Promise<void> {
+    const job = this.map.get(id);
+    if (job) {
+      this.map.set(id, {
+        ...job,
+        status: 'failed',
+        attempts: job.attempts + 1,
+        nextAttemptAt,
+        lastError: error.slice(0, 2000),
+        updatedAt: at,
+      });
+    }
+  }
+}
+
 export class InMemoryPaymentRepository implements PaymentRepository {
   private readonly list: Payment[] = [];
   async save(p: Payment): Promise<void> {
@@ -139,6 +226,32 @@ export class InMemoryPublicAccessTokenRepository implements PublicAccessTokenRep
   async markUsed(id: string, at: string): Promise<void> {
     const row = this.rows.get(id);
     if (row) this.rows.set(id, { ...row, lastUsedAt: at });
+  }
+
+  async revoke(id: string, at: string): Promise<void> {
+    const row = this.rows.get(id);
+    if (row) this.rows.set(id, { ...row, revokedAt: at });
+  }
+
+  async revokeActiveFor(input: {
+    companyId: string;
+    resourceType: 'quote';
+    resourceId: string;
+    scope: 'quote_signature';
+    at: string;
+  }): Promise<void> {
+    for (const [id, row] of this.rows) {
+      if (
+        row.companyId === input.companyId &&
+        row.resourceType === input.resourceType &&
+        row.resourceId === input.resourceId &&
+        row.scope === input.scope &&
+        row.revokedAt === null &&
+        row.expiresAt > input.at
+      ) {
+        this.rows.set(id, { ...row, revokedAt: input.at });
+      }
+    }
   }
 }
 

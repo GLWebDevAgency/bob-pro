@@ -46,9 +46,62 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     expect(inv.ok && inv.value.status).toBe('paid');
   });
 
+  it('refuse un devis envoye hors-ligne', async () => {
+    const client = makeClient();
+    const created = await client.createQuote({
+      customerId: 'cust-martin',
+      lines: [{ label: 'Recherche fuite', category: 'labor', qty: 1, unitPriceHT: 12000, vatRate: 10 }],
+      context: { housingOlderThan2y: true },
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const quoteId = created.value.quoteId;
+
+    expect((await client.sendQuote(quoteId)).ok).toBe(true);
+    const refused = await client.refuseQuote(quoteId);
+    expect(refused.ok && refused.value.status).toBe('refused');
+
+    const quote = await client.getQuote(quoteId);
+    expect(quote.ok && quote.value.status).toBe('refused');
+    expect((await client.signQuote({ quoteId, signerName: 'M. Martin' })).ok).toBe(false);
+  });
+
   it('expose une projection de trésorerie', async () => {
     const r = await makeClient().getCashflow({ scenario: 'realiste', horizon: 30 });
     expect(r.ok).toBe(true);
     if (r.ok) expect(typeof r.value.available).toBe('number');
+  });
+
+  it('expose la voix locale sans audio cloud', async () => {
+    const client = makeClient();
+    const config = await client.voiceConfig();
+    expect(config.ok && config.value).toMatchObject({ cloudAvailable: false, ttsCloudAvailable: false });
+
+    const spoken = await client.synthesizeSpeech({ text: 'Bonjour Bob' });
+    expect(spoken.ok && spoken.value).toEqual({ audioBase64: null, mimeType: null, model: 'native' });
+  });
+
+  it('stocke et liste les documents dans le client local', async () => {
+    const client = makeClient();
+    const uploaded = await client.uploadDocument({
+      contentBase64: 'AQID',
+      mimeType: 'image/jpeg',
+      filename: 'ticket.jpg',
+      kind: 'expense_receipt',
+      linkedEntityType: 'expense',
+      linkedEntityId: 'exp-1',
+      documentDate: '2026-06-01',
+    });
+
+    expect(uploaded.ok).toBe(true);
+    if (!uploaded.ok) return;
+    expect(uploaded.value.byteSize).toBe(3);
+
+    const list = await client.listDocuments({ linkedEntityType: 'expense', linkedEntityId: 'exp-1' });
+    expect(list.ok && list.value.map((d) => d.id)).toEqual([uploaded.value.id]);
+
+    const url = await client.documentDownloadUrl(uploaded.value.id, 120);
+    expect(url.ok).toBe(true);
+    if (url.ok) expect(url.value.url).toContain('ttl=120');
   });
 });

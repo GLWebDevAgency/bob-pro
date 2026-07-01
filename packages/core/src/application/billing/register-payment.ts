@@ -30,6 +30,18 @@ function normalizeIdempotencyKey(key: string | null | undefined): Result<string 
   return ok(normalized);
 }
 
+function idempotencyReplayMismatch(existing: Payment, input: RegisterPaymentInput): boolean {
+  return existing.amount !== input.amount || existing.method !== input.method;
+}
+
+function idempotencyReplayMismatchError(): AppError {
+  return appDomain({
+    code: 'VALIDATION',
+    field: 'idempotencyKey',
+    message: 'Clé déjà utilisée avec des paramètres de paiement différents.',
+  });
+}
+
 /**
  * Encaisse un paiement et met à jour le statut de la facture, de façon ATOMIQUE, IDEMPOTENTE et
  * SÉRIALISÉE : la facture est relue SOUS VERROU (lockById) dans la transaction, donc deux paiements
@@ -49,6 +61,7 @@ export class RegisterPayment {
       if (existing) {
         if (existing.invoiceId !== input.invoiceId)
           return err(appDomain({ code: 'VALIDATION', field: 'idempotencyKey', message: 'Clé déjà utilisée pour une autre facture.' }));
+        if (idempotencyReplayMismatch(existing, input)) return err(idempotencyReplayMismatchError());
         return ok({ status: pre.status }); // déjà traité -> réponse idempotente
       }
     }
@@ -81,6 +94,7 @@ export class RegisterPayment {
       if (key.value) {
         const existing = await this.deps.payments.findByIdempotencyKey(pre.companyId, key.value);
         if (existing && existing.invoiceId === input.invoiceId) {
+          if (idempotencyReplayMismatch(existing, input)) return err(idempotencyReplayMismatchError());
           const current = await this.deps.invoices.findById(input.invoiceId);
           return ok({ status: current?.status ?? pre.status });
         }

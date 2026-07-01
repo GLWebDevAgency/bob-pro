@@ -1,9 +1,12 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { Prisma } from '@prisma/client';
+import type { JournalEntry } from '@bob/ai';
 import {
   Company,
   Customer,
   Quote,
   Invoice,
+  Document,
   Payment,
   Expense,
   DocNumber,
@@ -11,6 +14,9 @@ import {
   type CustomerRepository,
   type QuoteRepository,
   type InvoiceRepository,
+  type DocumentRepository,
+  type DocumentProps,
+  type DocumentVersionProps,
   type PaymentRepository,
   type PublicAccessGrant,
   type PublicAccessTokenRepository,
@@ -21,6 +27,13 @@ import {
   type SequenceCounterPort,
   type CounterKey,
 } from '@bob/core';
+import type {
+  DocumentArchiveJob,
+  DocumentArchiveJobRepository,
+  EnqueueDocumentArchiveJobInput,
+} from '../document-archive-jobs';
+import type { AgentJournalRepository } from '../agent-journal';
+import { newAgentJournalEntryId } from '../agent-journal';
 import type { PrismaService } from './prisma.service';
 import {
   companyRowToProps,
@@ -34,6 +47,7 @@ import {
 } from './mappers';
 
 const LINES_INCLUDE = { lines: { orderBy: { position: 'asc' as const } } };
+const DOCUMENT_INCLUDE = { versions: { orderBy: { version: 'asc' as const } } };
 
 function publicTokenHash(token: string): string {
   return createHash('sha256').update(token, 'utf8').digest('hex');
@@ -184,6 +198,322 @@ export class PrismaInvoiceRepository implements InvoiceRepository {
   }
 }
 
+interface DocumentVersionRow {
+  id: string;
+  documentId: string;
+  version: number;
+  storageKey: string;
+  sha256: string;
+  mimeType: string;
+  byteSize: number;
+  createdAt: Date;
+  reason: string;
+}
+
+interface DocumentRow {
+  id: string;
+  companyId: string;
+  kind: string;
+  origin: string;
+  status: string;
+  filename: string;
+  mimeType: string;
+  byteSize: number;
+  sha256: string;
+  storageKey: string;
+  linkedEntityType: string | null;
+  linkedEntityId: string | null;
+  documentDate: string | null;
+  issuedAt: string | null;
+  createdAt: Date;
+  createdBy: string | null;
+  retentionUntil: string;
+  deletedAt: Date | null;
+  versions: DocumentVersionRow[];
+}
+
+function documentRowToProps(row: DocumentRow): DocumentProps {
+  return {
+    id: row.id,
+    companyId: row.companyId,
+    kind: row.kind as DocumentProps['kind'],
+    origin: row.origin as DocumentProps['origin'],
+    status: row.status as DocumentProps['status'],
+    filename: row.filename,
+    mimeType: row.mimeType,
+    byteSize: row.byteSize,
+    sha256: row.sha256,
+    storageKey: row.storageKey,
+    linkedEntityType: row.linkedEntityType as DocumentProps['linkedEntityType'],
+    linkedEntityId: row.linkedEntityId,
+    documentDate: row.documentDate,
+    issuedAt: row.issuedAt,
+    createdAt: row.createdAt.toISOString(),
+    createdBy: row.createdBy,
+    retentionUntil: row.retentionUntil,
+    deletedAt: row.deletedAt?.toISOString() ?? null,
+    versions: row.versions.map((v) => ({
+      id: v.id,
+      documentId: v.documentId,
+      version: v.version,
+      storageKey: v.storageKey,
+      sha256: v.sha256,
+      mimeType: v.mimeType,
+      byteSize: v.byteSize,
+      createdAt: v.createdAt.toISOString(),
+      reason: v.reason,
+    })),
+  };
+}
+
+function documentPropsToData(p: DocumentProps) {
+  return {
+    companyId: p.companyId,
+    kind: p.kind,
+    origin: p.origin,
+    status: p.status,
+    filename: p.filename,
+    mimeType: p.mimeType,
+    byteSize: p.byteSize,
+    sha256: p.sha256,
+    storageKey: p.storageKey,
+    linkedEntityType: p.linkedEntityType,
+    linkedEntityId: p.linkedEntityId,
+    documentDate: p.documentDate,
+    issuedAt: p.issuedAt,
+    createdAt: new Date(p.createdAt),
+    createdBy: p.createdBy,
+    retentionUntil: p.retentionUntil,
+    deletedAt: p.deletedAt ? new Date(p.deletedAt) : null,
+  };
+}
+
+function documentVersionPropsToData(v: DocumentVersionProps) {
+  return {
+    documentId: v.documentId,
+    version: v.version,
+    storageKey: v.storageKey,
+    sha256: v.sha256,
+    mimeType: v.mimeType,
+    byteSize: v.byteSize,
+    createdAt: new Date(v.createdAt),
+    reason: v.reason,
+  };
+}
+
+export class PrismaDocumentRepository implements DocumentRepository {
+  constructor(private readonly prisma: PrismaService) {}
+  async save(d: Document): Promise<void> {
+    const p = d.toProps();
+    const db = this.prisma.client();
+    await db.storedDocument.upsert({
+      where: { id: p.id },
+      create: { id: p.id, ...documentPropsToData(p) },
+      update: documentPropsToData(p),
+    });
+    for (const version of p.versions) {
+      await db.storedDocumentVersion.upsert({
+        where: { id: version.id },
+        create: { id: version.id, ...documentVersionPropsToData(version) },
+        update: documentVersionPropsToData(version),
+      });
+    }
+  }
+  async findById(companyId: string, id: string): Promise<Document | null> {
+    const row = await this.prisma.client().storedDocument.findFirst({ where: { id, companyId }, include: DOCUMENT_INCLUDE });
+    return row ? Document.rehydrate(documentRowToProps(row)) : null;
+  }
+  async findByEntity(companyId: string, entityType: string, entityId: string): Promise<Document[]> {
+    const rows = await this.prisma.client().storedDocument.findMany({
+      where: { companyId, linkedEntityType: entityType as DocumentProps['linkedEntityType'], linkedEntityId: entityId },
+      include: DOCUMENT_INCLUDE,
+      orderBy: { createdAt: 'desc' },
+    });
+    return rows.map((row) => Document.rehydrate(documentRowToProps(row)));
+  }
+  async listByCompany(companyId: string): Promise<Document[]> {
+    const rows = await this.prisma.client().storedDocument.findMany({
+      where: { companyId },
+      include: DOCUMENT_INCLUDE,
+      orderBy: { createdAt: 'desc' },
+    });
+    return rows.map((row) => Document.rehydrate(documentRowToProps(row)));
+  }
+  async listExpired(now: string): Promise<Document[]> {
+    const rows = await this.prisma.client().storedDocument.findMany({
+      where: { status: 'active', retentionUntil: { lte: now } },
+      include: DOCUMENT_INCLUDE,
+      orderBy: { retentionUntil: 'asc' },
+    });
+    return rows.map((row) => Document.rehydrate(documentRowToProps(row)));
+  }
+}
+
+function archiveJobRowToView(row: {
+  id: string;
+  companyId: string;
+  invoiceId: string;
+  reason: string;
+  status: string;
+  attempts: number;
+  nextAttemptAt: Date;
+  lastError: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}): DocumentArchiveJob {
+  return {
+    id: row.id,
+    companyId: row.companyId,
+    invoiceId: row.invoiceId,
+    reason: 'invoice-issued',
+    status: row.status as DocumentArchiveJob['status'],
+    attempts: row.attempts,
+    nextAttemptAt: row.nextAttemptAt.toISOString(),
+    lastError: row.lastError,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+export class PrismaDocumentArchiveJobRepository implements DocumentArchiveJobRepository {
+  constructor(private readonly prisma: PrismaService) {}
+
+  async enqueue(input: EnqueueDocumentArchiveJobInput): Promise<void> {
+    const existing = await this.prisma.client().documentArchiveJob.findUnique({
+      where: {
+        uniq_document_archive_job: {
+          companyId: input.companyId,
+          invoiceId: input.invoiceId,
+          reason: input.reason,
+        },
+      },
+    });
+    if (existing) {
+      if (existing.status !== 'done') {
+        await this.prisma.client().documentArchiveJob.update({
+          where: { id: existing.id },
+          data: { status: 'pending', nextAttemptAt: new Date(input.now), lastError: null },
+        });
+      }
+      return;
+    }
+    await this.prisma.client().documentArchiveJob.create({
+      data: {
+        id: input.id,
+        companyId: input.companyId,
+        invoiceId: input.invoiceId,
+        reason: input.reason,
+        status: 'pending',
+        attempts: 0,
+        nextAttemptAt: new Date(input.now),
+      },
+    });
+  }
+
+  async listDue(companyId: string, now: string, limit: number): Promise<DocumentArchiveJob[]> {
+    const rows = await this.prisma.client().documentArchiveJob.findMany({
+      where: {
+        companyId,
+        status: { in: ['pending', 'failed'] },
+        nextAttemptAt: { lte: new Date(now) },
+      },
+      orderBy: [{ nextAttemptAt: 'asc' }, { createdAt: 'asc' }],
+      take: limit,
+    });
+    return rows.map(archiveJobRowToView);
+  }
+
+  async markDone(id: string, at: string): Promise<void> {
+    await this.prisma.client().documentArchiveJob.update({
+      where: { id },
+      data: { status: 'done', lastError: null, updatedAt: new Date(at) },
+    });
+  }
+
+  async markFailed(id: string, at: string, nextAttemptAt: string, error: string): Promise<void> {
+    const job = await this.prisma.client().documentArchiveJob.findUnique({ where: { id } });
+    if (!job) return;
+    await this.prisma.client().documentArchiveJob.update({
+      where: { id },
+      data: {
+        status: 'failed',
+        attempts: job.attempts + 1,
+        nextAttemptAt: new Date(nextAttemptAt),
+        lastError: error.slice(0, 2000),
+        updatedAt: new Date(at),
+      },
+    });
+  }
+}
+
+function journalRowToEntry(row: {
+  runId: string;
+  seq: number;
+  at: Date;
+  phase: string;
+  tool: string;
+  label: string;
+  args: Prisma.JsonValue;
+  mutating: boolean;
+  outbound: boolean;
+  compliance: string;
+  reason: string | null;
+  resultDigest: string | null;
+}): JournalEntry {
+  return {
+    seq: row.seq,
+    runId: row.runId,
+    at: row.at.toISOString(),
+    phase: row.phase as 'planned' | 'denied' | 'executed' | 'failed',
+    tool: row.tool,
+    label: row.label,
+    args: (row.args && typeof row.args === 'object' && !Array.isArray(row.args) ? row.args : {}) as Record<string, unknown>,
+    mutating: row.mutating,
+    outbound: row.outbound,
+    compliance: row.compliance as 'low' | 'medium' | 'high',
+    ...(row.reason !== null ? { reason: row.reason } : {}),
+    ...(row.resultDigest !== null ? { resultDigest: row.resultDigest } : {}),
+  };
+}
+
+export class PrismaAgentJournalRepository implements AgentJournalRepository {
+  constructor(private readonly prisma: PrismaService) {}
+
+  async append(companyId: string, entry: JournalEntry): Promise<void> {
+    try {
+      await this.prisma.client().agentJournalEntry.create({
+        data: {
+          id: newAgentJournalEntryId(),
+          companyId,
+          runId: entry.runId,
+          seq: entry.seq,
+          at: new Date(entry.at),
+          phase: entry.phase,
+          tool: entry.tool,
+          label: entry.label,
+          args: entry.args as Prisma.InputJsonValue,
+          mutating: entry.mutating,
+          outbound: entry.outbound,
+          compliance: entry.compliance,
+          reason: entry.reason ?? null,
+          resultDigest: entry.resultDigest ?? null,
+        },
+      });
+    } catch (e) {
+      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') return;
+      throw e;
+    }
+  }
+
+  async load(companyId: string, runId: string): Promise<JournalEntry[]> {
+    const rows = await this.prisma.client().agentJournalEntry.findMany({
+      where: { companyId, runId },
+      orderBy: { seq: 'asc' },
+    });
+    return rows.map(journalRowToEntry);
+  }
+}
+
 export class PrismaPaymentRepository implements PaymentRepository {
   constructor(private readonly prisma: PrismaService) {}
   async save(p: Payment): Promise<void> {
@@ -275,6 +605,30 @@ export class PrismaPublicAccessTokenRepository implements PublicAccessTokenRepos
 
   async markUsed(id: string, at: string): Promise<void> {
     await this.prisma.client().publicAccessToken.update({ where: { id }, data: { lastUsedAt: new Date(at) } });
+  }
+
+  async revoke(id: string, at: string): Promise<void> {
+    await this.prisma.client().publicAccessToken.update({ where: { id }, data: { revokedAt: new Date(at) } });
+  }
+
+  async revokeActiveFor(input: {
+    companyId: string;
+    resourceType: 'quote';
+    resourceId: string;
+    scope: 'quote_signature';
+    at: string;
+  }): Promise<void> {
+    await this.prisma.client().publicAccessToken.updateMany({
+      where: {
+        companyId: input.companyId,
+        resourceType: input.resourceType,
+        resourceId: input.resourceId,
+        scope: input.scope,
+        revokedAt: null,
+        expiresAt: { gt: new Date(input.at) },
+      },
+      data: { revokedAt: new Date(input.at) },
+    });
   }
 }
 

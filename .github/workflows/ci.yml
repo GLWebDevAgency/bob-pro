@@ -25,6 +25,57 @@ jobs:
       - run: pnpm build
       - run: pnpm lint
 
+  rls-certification:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: bobpro
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d bobpro"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bobpro
+      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bobpro
+      APP_DATABASE_URL: postgresql://bob_app:bob_app@localhost:5432/bobpro
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+          cache: pnpm
+      - run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @bob/api migrate
+      - name: Create non-superuser app role
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'bob_app') THEN
+              CREATE ROLE bob_app LOGIN PASSWORD 'bob_app' NOSUPERUSER NOBYPASSRLS;
+            ELSE
+              ALTER ROLE bob_app WITH LOGIN PASSWORD 'bob_app' NOSUPERUSER NOBYPASSRLS;
+            END IF;
+          END $$;
+          GRANT USAGE ON SCHEMA public TO bob_app;
+          GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO bob_app;
+          GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO bob_app;
+          SQL
+      - name: Apply RLS policies
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f apps/api/prisma/rls.sql
+      - name: Certify tenant isolation as app role
+        run: psql "$APP_DATABASE_URL" -v ON_ERROR_STOP=1 -f apps/api/prisma/rls-cert.sql
+
   facturx-conformance:
     runs-on: ubuntu-latest
     env:

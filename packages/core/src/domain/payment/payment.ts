@@ -27,7 +27,8 @@ export class Payment extends AggregateRoot<string> {
     receivedAt: Instant;
     idempotencyKey?: string | null;
   }): DomainResult<Payment> {
-    if (p.amount <= 0) return err({ code: 'VALIDATION', field: 'amount', message: 'Montant > 0 requis.' });
+    if (!Number.isSafeInteger(p.amount) || p.amount <= 0)
+      return err({ code: 'VALIDATION', field: 'amount', message: 'Montant > 0 requis en centimes entiers.' });
     return ok(new Payment(p.id, p.companyId, p.invoiceId, p.amount, p.method, p.receivedAt, p.idempotencyKey ?? null));
   }
 }

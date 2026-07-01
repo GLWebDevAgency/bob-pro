@@ -5,20 +5,26 @@ import {
   type CustomerRepository,
   type QuoteRepository,
   type InvoiceRepository,
+  type DocumentRepository,
   type PaymentRepository,
   type PublicAccessTokenRepository,
   type ExpenseRepository,
   type SequenceCounterPort,
 } from '@bob/core';
+import type { DocumentArchiveJobRepository } from './document-archive-jobs';
+import type { AgentJournalRepository } from './agent-journal';
+import { InMemoryAgentJournalRepository } from './agent-journal';
 import {
   InMemoryCompanyRepository,
   InMemoryCustomerRepository,
   InMemoryQuoteRepository,
   InMemoryInvoiceRepository,
+  InMemoryDocumentRepository,
   InMemoryPaymentRepository,
   InMemoryPublicAccessTokenRepository,
   InMemoryExpenseRepository,
   InMemorySequenceCounter,
+  InMemoryDocumentArchiveJobRepository,
 } from './in-memory';
 
 export const PERSISTENCE = Symbol('PERSISTENCE');
@@ -29,9 +35,12 @@ export interface Persistence {
   customers: CustomerRepository;
   quotes: QuoteRepository;
   invoices: InvoiceRepository;
+  documents: DocumentRepository;
+  documentArchiveJobs: DocumentArchiveJobRepository;
   payments: PaymentRepository;
   publicAccessTokens: PublicAccessTokenRepository;
   expenses: ExpenseRepository;
+  agentJournal: AgentJournalRepository;
   counters: SequenceCounterPort;
   /** Unité de travail : exécute `fn` atomiquement (transaction DB en prod ; direct en mémoire). */
   runInTransaction<T>(fn: () => Promise<T>): Promise<T>;
@@ -45,9 +54,12 @@ export class InMemoryPersistence implements Persistence {
   readonly customers = new InMemoryCustomerRepository();
   readonly quotes = new InMemoryQuoteRepository();
   readonly invoices = new InMemoryInvoiceRepository();
+  readonly documents = new InMemoryDocumentRepository();
+  readonly documentArchiveJobs = new InMemoryDocumentArchiveJobRepository();
   readonly payments = new InMemoryPaymentRepository();
   readonly publicAccessTokens = new InMemoryPublicAccessTokenRepository();
   readonly expenses = new InMemoryExpenseRepository();
+  readonly agentJournal = new InMemoryAgentJournalRepository();
   readonly counters = new InMemorySequenceCounter();
   // En mémoire (JS mono-thread) : pas de transaction réelle, mais on annule l'allocation du compteur
   // si `fn` lève — sinon une erreur métier après allocation laisserait un trou (symétrie avec Prisma).

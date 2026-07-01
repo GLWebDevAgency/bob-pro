@@ -25,6 +25,10 @@ import type {
   CompanyLookupResult,
   VatCheckResult,
   AddressSuggestion,
+  DocumentKind,
+  DocumentLinkedEntityType,
+  DocumentView,
+  DocumentDownloadUrl,
 } from '@bob/core';
 
 export interface QuoteView {
@@ -66,6 +70,34 @@ export interface SendQuoteOutput {
   signatureTokenExpiresAt?: string;
 }
 
+export interface ListDocumentsClientInput {
+  kind?: DocumentKind;
+  linkedEntityType?: DocumentLinkedEntityType;
+  linkedEntityId?: string;
+  includeDeleted?: boolean;
+}
+
+export interface UploadDocumentClientInput {
+  contentBase64: string;
+  mimeType: string;
+  filename: string;
+  kind?: DocumentKind;
+  linkedEntityType?: DocumentLinkedEntityType | null;
+  linkedEntityId?: string | null;
+  documentDate?: string | null;
+}
+
+export interface VoiceConfig {
+  cloudAvailable: boolean;
+  ttsCloudAvailable?: boolean;
+}
+
+export interface VoiceSynthesisResult {
+  audioBase64: string | null;
+  mimeType: string | null;
+  model: string;
+}
+
 /**
  * Façade data consommée par l'app mobile (via TanStack Query).
  * Deux implémentations : LocalBobClient (fixtures, hors-ligne — V1) et, plus tard, HttpBobClient (NestJS).
@@ -76,7 +108,30 @@ export interface SubscriptionView {
   status: string;
   currentPeriodEnd: string | null;
   features: string[];
-  catalog: { tier: string; label: string; priceCents: number; annualMonthlyCents: number; tagline: string; features: string[] }[];
+  ai?: { capability: string; defaultAutonomy: string; monthlyActions: number | null };
+  autonomyEntitlement?: string;
+  limits?: { documentStorageGb: number; includedCompanies: number; includedTeamSeats: number };
+  addOns?: string[];
+  addOnCatalog?: {
+    addOn: string;
+    kind: string;
+    label: string;
+    priceCents: number;
+    tagline: string;
+    minTier: string;
+    grants: string[];
+    autonomy?: string;
+  }[];
+  catalog: {
+    tier: string;
+    label: string;
+    priceCents: number;
+    annualMonthlyCents: number;
+    tagline: string;
+    features: string[];
+    ai?: { capability: string; defaultAutonomy: string; monthlyActions: number | null };
+    limits?: { documentStorageGb: number; includedCompanies: number; includedTeamSeats: number };
+  }[];
 }
 
 export interface BobClient {
@@ -91,7 +146,11 @@ export interface BobClient {
   checkVat(vatNumber: string): Promise<Result<VatCheckResult, AppError>>;
   searchAddress(query: string): Promise<Result<AddressSuggestion[], AppError>>;
   transcribe(input: { audioBase64: string; mimeType: string }): Promise<Result<{ text: string }, AppError>>;
-  voiceConfig(): Promise<Result<{ cloudAvailable: boolean }, AppError>>;
+  synthesizeSpeech(input: { text: string }): Promise<Result<VoiceSynthesisResult, AppError>>;
+  voiceConfig(): Promise<Result<VoiceConfig, AppError>>;
+  listDocuments(input?: ListDocumentsClientInput): Promise<Result<DocumentView[], AppError>>;
+  uploadDocument(input: UploadDocumentClientInput): Promise<Result<DocumentView, AppError>>;
+  documentDownloadUrl(documentId: string, ttlSeconds?: number): Promise<Result<DocumentDownloadUrl, AppError>>;
   extractDocument(input: { contentBase64: string; mimeType: string }): Promise<Result<OcrExtraction, AppError>>;
   recordExpense(input: Omit<RecordExpenseInput, 'companyId'>): Promise<Result<{ id: string }, AppError>>;
   listExpenses(): Promise<Result<ExpenseProps[], AppError>>;
@@ -102,6 +161,7 @@ export interface BobClient {
   createQuote(input: Omit<CreateQuoteInput, 'companyId'>): Promise<Result<CreateQuoteOutput, AppError>>;
   sendQuote(quoteId: string): Promise<Result<SendQuoteOutput, AppError>>;
   signQuote(input: { quoteId: string; signerName: string }): Promise<Result<{ status: string }, AppError>>;
+  refuseQuote(quoteId: string): Promise<Result<{ status: string }, AppError>>;
   generateInvoice(input: { quoteId: string; mode?: 'deposit' | 'final' }): Promise<Result<{ invoiceId: string }, AppError>>;
   issueInvoice(input: IssueInvoiceInput): Promise<Result<{ number: string }, AppError>>;
   registerPayment(input: RegisterPaymentClientInput): Promise<Result<{ status: string }, AppError>>;

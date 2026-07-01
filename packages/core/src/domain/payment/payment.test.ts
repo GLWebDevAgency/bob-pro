@@ -10,4 +10,8 @@ describe('Payment', () => {
     const r = Payment.record({ id: 'p1', companyId: 'c1', invoiceId: 'i1', amount: 0, method: 'cash', receivedAt: '2026-06-01T00:00:00.000Z' });
     expect(r.ok).toBe(false);
   });
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, 12.34])('refuse un montant non entier fini (%s)', (amount) => {
+    const r = Payment.record({ id: 'p1', companyId: 'c1', invoiceId: 'i1', amount, method: 'cash', receivedAt: '2026-06-01T00:00:00.000Z' });
+    expect(r.ok).toBe(false);
+  });
 });

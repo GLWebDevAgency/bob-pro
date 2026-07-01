@@ -7,6 +7,8 @@
     "migrate": "prisma migrate deploy",
     "db:push": "prisma db push",
     "build": "prisma generate && tsc -p tsconfig.json",
+    "test": "vitest run",
+    "lint": "eslint src",
     "start": "node dist/main.js",
     "dev": "node --watch dist/main.js",
     "typecheck": "prisma generate && tsc --noEmit"

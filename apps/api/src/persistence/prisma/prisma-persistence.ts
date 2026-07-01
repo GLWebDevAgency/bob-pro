@@ -6,9 +6,12 @@ import {
   PrismaCustomerRepository,
   PrismaQuoteRepository,
   PrismaInvoiceRepository,
+  PrismaDocumentRepository,
+  PrismaDocumentArchiveJobRepository,
   PrismaPaymentRepository,
   PrismaPublicAccessTokenRepository,
   PrismaExpenseRepository,
+  PrismaAgentJournalRepository,
   PrismaSequenceCounter,
 } from './repositories';
 import { companyPropsToCreate, customerPropsToCreate } from './mappers';
@@ -18,9 +21,12 @@ export class PrismaPersistence implements Persistence {
   readonly customers: PrismaCustomerRepository;
   readonly quotes: PrismaQuoteRepository;
   readonly invoices: PrismaInvoiceRepository;
+  readonly documents: PrismaDocumentRepository;
+  readonly documentArchiveJobs: PrismaDocumentArchiveJobRepository;
   readonly payments: PrismaPaymentRepository;
   readonly publicAccessTokens: PrismaPublicAccessTokenRepository;
   readonly expenses: PrismaExpenseRepository;
+  readonly agentJournal: PrismaAgentJournalRepository;
   readonly counters: PrismaSequenceCounter;
 
   constructor(private readonly prisma: PrismaService) {
@@ -28,9 +34,12 @@ export class PrismaPersistence implements Persistence {
     this.customers = new PrismaCustomerRepository(prisma);
     this.quotes = new PrismaQuoteRepository(prisma);
     this.invoices = new PrismaInvoiceRepository(prisma);
+    this.documents = new PrismaDocumentRepository(prisma);
+    this.documentArchiveJobs = new PrismaDocumentArchiveJobRepository(prisma);
     this.payments = new PrismaPaymentRepository(prisma);
     this.publicAccessTokens = new PrismaPublicAccessTokenRepository(prisma);
     this.expenses = new PrismaExpenseRepository(prisma);
+    this.agentJournal = new PrismaAgentJournalRepository(prisma);
     this.counters = new PrismaSequenceCounter(prisma);
   }
 

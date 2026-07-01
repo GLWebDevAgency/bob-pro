@@ -82,6 +82,53 @@ enum PublicAccessResourceType {
   quote
 }
 
+enum StoredDocumentKind {
+  invoice_pdf
+  quote_pdf
+  facturx_xml
+  expense_receipt
+  signed_quote
+  other
+}
+
+enum StoredDocumentOrigin {
+  generated
+  uploaded
+  ocr
+}
+
+enum StoredDocumentStatus {
+  active
+  deleted
+}
+
+enum StoredDocumentLinkedEntityType {
+  invoice
+  quote
+  expense
+  chantier
+  company
+}
+
+enum DocumentArchiveJobStatus {
+  pending
+  done
+  failed
+}
+
+enum AgentJournalPhase {
+  planned
+  denied
+  executed
+  failed
+}
+
+enum AgentComplianceLevel {
+  low
+  medium
+  high
+}
+
 model Company {
   id              String   @id
   name            String
@@ -107,6 +154,9 @@ model Company {
   payments        Payment[]
   publicAccessTokens PublicAccessToken[]
   expenses        Expense[]
+  documents       StoredDocument[]
+  documentArchiveJobs DocumentArchiveJob[]
+  agentJournalEntries AgentJournalEntry[]
   counters        DocumentCounter[]
   @@map("companies")
 }
@@ -249,6 +299,91 @@ model Expense {
   createdAt     DateTime @default(now())
   @@index([companyId])
   @@map("expenses")
+}
+
+model StoredDocument {
+  id               String                         @id
+  companyId        String
+  company          Company                        @relation(fields: [companyId], references: [id])
+  kind             StoredDocumentKind
+  origin           StoredDocumentOrigin
+  status           StoredDocumentStatus           @default(active)
+  filename         String
+  mimeType         String
+  byteSize         Int
+  sha256           String                         @db.Char(64)
+  storageKey       String                         @unique
+  linkedEntityType StoredDocumentLinkedEntityType?
+  linkedEntityId   String?
+  documentDate     String?
+  issuedAt         String?
+  createdAt        DateTime
+  createdBy        String?
+  retentionUntil   String
+  deletedAt        DateTime?
+  versions         StoredDocumentVersion[]
+  @@index([companyId, kind])
+  @@index([companyId, linkedEntityType, linkedEntityId])
+  @@index([companyId, retentionUntil])
+  @@map("documents")
+}
+
+model StoredDocumentVersion {
+  id         String         @id
+  documentId String
+  document   StoredDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  version    Int
+  storageKey String         @unique
+  sha256     String         @db.Char(64)
+  mimeType   String
+  byteSize   Int
+  createdAt  DateTime
+  reason     String
+  @@unique([documentId, version])
+  @@index([documentId])
+  @@map("document_versions")
+}
+
+model DocumentArchiveJob {
+  id            String                   @id
+  companyId     String
+  company       Company                  @relation(fields: [companyId], references: [id])
+  invoiceId     String
+  reason        String                   @default("invoice-issued")
+  status        DocumentArchiveJobStatus @default(pending)
+  attempts      Int                      @default(0)
+  nextAttemptAt DateTime
+  lastError     String?
+  createdAt     DateTime                 @default(now())
+  updatedAt     DateTime                 @updatedAt
+  @@unique([companyId, invoiceId, reason], name: "uniq_document_archive_job")
+  @@index([companyId, status, nextAttemptAt])
+  @@map("document_archive_jobs")
+}
+
+// Journal append-only des actions agentiques exécutées par Bob.
+// Une entrée = une intention/audit factuel ; l'application n'expose ni update ni delete.
+model AgentJournalEntry {
+  id           String               @id
+  companyId    String
+  company      Company              @relation(fields: [companyId], references: [id])
+  runId        String
+  seq          Int
+  at           DateTime
+  phase        AgentJournalPhase
+  tool         String
+  label        String
+  args         Json
+  mutating     Boolean
+  outbound     Boolean
+  compliance   AgentComplianceLevel
+  reason       String?
+  resultDigest String?
+  createdAt    DateTime             @default(now())
+  @@unique([companyId, runId, seq], name: "uniq_agent_journal_seq")
+  @@index([companyId, runId])
+  @@index([companyId, at])
+  @@map("agent_journal_entries")
 }
 
 // Numérotation sans trou : INSERT ... ON CONFLICT DO UPDATE +1 RETURNING (atomique).

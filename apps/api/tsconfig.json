@@ -10,6 +10,11 @@
     "skipLibCheck": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
+    "baseUrl": ".",
+    "paths": {
+      "@bob/core": ["../../packages/core/src/index.ts"],
+      "@bob/ai": ["../../packages/ai/src/index.ts"]
+    },
     "outDir": "dist",
     "declaration": false,
     "sourceMap": true

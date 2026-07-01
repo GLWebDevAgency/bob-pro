@@ -75,4 +75,14 @@ describe('Invoice', () => {
     expect(inv.registerPayment(48840, AT).ok).toBe(true); // paiement exact accepté
     expect(inv.status).toBe('paid');
   });
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, 12.34])('registerPayment rejette un montant non entier fini (%s)', (amount) => {
+    const invR = Invoice.fromSignedQuote(signedDepositQuote(), 'deposit', 'inv1');
+    if (!invR.ok) throw new Error('inv');
+    const inv = invR.value;
+    inv.assignNumber(DocNumber.format('F', 2026, 1), AT);
+    inv.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT });
+    expect(inv.registerPayment(amount, AT).ok).toBe(false);
+    expect(inv.paid).toBe(0);
+    expect(inv.status).toBe('issued');
+  });
 });

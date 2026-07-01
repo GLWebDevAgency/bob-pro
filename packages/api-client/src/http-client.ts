@@ -19,8 +19,21 @@ import type {
   CompanyLookupResult,
   VatCheckResult,
   AddressSuggestion,
+  DocumentView,
+  DocumentDownloadUrl,
 } from '@bob/core';
-import type { BobClient, QuoteView, InvoiceView, SubscriptionView, RegisterPaymentClientInput, SendQuoteOutput } from './client';
+import type {
+  BobClient,
+  QuoteView,
+  InvoiceView,
+  SubscriptionView,
+  RegisterPaymentClientInput,
+  SendQuoteOutput,
+  ListDocumentsClientInput,
+  UploadDocumentClientInput,
+  VoiceConfig,
+  VoiceSynthesisResult,
+} from './client';
 
 export interface HttpBobClientOptions {
   baseUrl: string;
@@ -102,8 +115,27 @@ export class HttpBobClient implements BobClient {
   transcribe(input: { audioBase64: string; mimeType: string }) {
     return this.req<{ text: string }>('POST', '/voice/transcribe', input);
   }
+  synthesizeSpeech(input: { text: string }) {
+    return this.req<VoiceSynthesisResult>('POST', '/voice/synthesize', input);
+  }
   voiceConfig() {
-    return this.req<{ cloudAvailable: boolean }>('GET', '/voice/config');
+    return this.req<VoiceConfig>('GET', '/voice/config');
+  }
+  listDocuments(input: ListDocumentsClientInput = {}) {
+    const params = new URLSearchParams();
+    if (input.kind !== undefined) params.set('kind', input.kind);
+    if (input.linkedEntityType !== undefined) params.set('linkedEntityType', input.linkedEntityType);
+    if (input.linkedEntityId !== undefined) params.set('linkedEntityId', input.linkedEntityId);
+    if (input.includeDeleted !== undefined) params.set('includeDeleted', String(input.includeDeleted));
+    const qs = params.toString();
+    return this.req<DocumentView[]>('GET', `/documents${qs ? `?${qs}` : ''}`);
+  }
+  uploadDocument(input: UploadDocumentClientInput) {
+    return this.req<DocumentView>('POST', '/documents/upload', input);
+  }
+  documentDownloadUrl(documentId: string, ttlSeconds?: number) {
+    const qs = ttlSeconds !== undefined ? `?ttl=${encodeURIComponent(String(ttlSeconds))}` : '';
+    return this.req<DocumentDownloadUrl>('GET', `/documents/${documentId}/download-url${qs}`);
   }
   extractDocument(input: { contentBase64: string; mimeType: string }) {
     return this.req<OcrExtraction>('POST', '/documents/ocr', input);
@@ -137,6 +169,9 @@ export class HttpBobClient implements BobClient {
   }
   signQuote(input: { quoteId: string; signerName: string }) {
     return this.req<{ status: string }>('POST', `/quotes/${input.quoteId}/sign`, { signerName: input.signerName });
+  }
+  refuseQuote(quoteId: string) {
+    return this.req<{ status: string }>('POST', `/quotes/${quoteId}/refuse`);
   }
   generateInvoice(input: { quoteId: string; mode?: 'deposit' | 'final' }) {
     return this.req<{ invoiceId: string }>('POST', `/quotes/${input.quoteId}/invoice`, { mode: input.mode });

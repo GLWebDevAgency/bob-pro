@@ -1,0 +1,48 @@
+import { type Document, type DocumentKind, type DocumentOrigin, type DocumentStatus, type DocumentLinkedEntityType } from '../../domain/document/document';
+import { type DateOnly, type Instant } from '../../shared-kernel/time';
+
+export interface DocumentView {
+  id: string;
+  companyId: string;
+  kind: DocumentKind;
+  origin: DocumentOrigin;
+  status: DocumentStatus;
+  filename: string;
+  mimeType: string;
+  byteSize: number;
+  sha256: string;
+  storageKey: string;
+  version: number;
+  linkedEntityType: DocumentLinkedEntityType | null;
+  linkedEntityId: string | null;
+  documentDate: DateOnly | null;
+  issuedAt: DateOnly | null;
+  createdAt: Instant;
+  createdBy: string | null;
+  retentionUntil: DateOnly;
+}
+
+export function documentToView(document: Document): DocumentView {
+  const p = document.toProps();
+  const latest = p.versions.reduce((max, v) => (v.version > max.version ? v : max), p.versions[0]!);
+  return {
+    id: p.id,
+    companyId: p.companyId,
+    kind: p.kind,
+    origin: p.origin,
+    status: p.status,
+    filename: p.filename,
+    mimeType: p.mimeType,
+    byteSize: p.byteSize,
+    sha256: p.sha256,
+    storageKey: p.storageKey,
+    version: latest.version,
+    linkedEntityType: p.linkedEntityType,
+    linkedEntityId: p.linkedEntityId,
+    documentDate: p.documentDate,
+    issuedAt: p.issuedAt,
+    createdAt: p.createdAt,
+    createdBy: p.createdBy,
+    retentionUntil: p.retentionUntil,
+  };
+}

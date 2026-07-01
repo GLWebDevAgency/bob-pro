@@ -129,7 +129,8 @@ export class Invoice extends AggregateRoot<string> {
   registerPayment(amountCents: number, at: Instant): DomainResult<void> {
     if (this._status !== 'issued' && this._status !== 'partially_paid' && this._status !== 'late')
       return err({ code: 'INVALID_TRANSITION', from: this._status, to: 'partially_paid' });
-    if (amountCents <= 0) return err({ code: 'VALIDATION', field: 'amount', message: 'Montant > 0 requis.' });
+    if (!Number.isSafeInteger(amountCents) || amountCents <= 0)
+      return err({ code: 'VALIDATION', field: 'amount', message: 'Montant > 0 requis en centimes entiers.' });
     const due = (this._frozenTotals ?? this.totals()).netToPay;
     const remaining = due - this._paid;
     // Pas de trop-perçu silencieux : un paiement supérieur au reste dû est rejeté (avoir/remboursement = flux dédié).

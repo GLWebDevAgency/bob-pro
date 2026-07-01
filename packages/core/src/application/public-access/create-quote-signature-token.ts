@@ -26,10 +26,19 @@ export class CreateQuoteSignatureToken {
     if (!quote) return err(appNotFound('quote', input.quoteId));
     if (!quote.number)
       return err(appDomain({ code: 'VALIDATION', field: 'quote', message: 'Devis non numéroté : lien de signature impossible.' }));
-    if (quote.status === 'refused' || quote.status === 'expired')
-      return err(appDomain({ code: 'INVALID_TRANSITION', from: quote.status, to: 'sent' }));
+    if (quote.status !== 'sent' && quote.status !== 'viewed')
+      return err(appDomain({ code: 'INVALID_TRANSITION', from: quote.status, to: 'signed' }));
+    if (quote.validUntil !== null && quote.validUntil < this.deps.clock.today())
+      return err(appDomain({ code: 'VALIDATION', field: 'validUntil', message: 'Devis expiré : lien de signature impossible.' }));
 
     const expiresAt = addDays(this.deps.clock.now(), SIGNATURE_TOKEN_TTL_DAYS);
+    await this.deps.publicAccessTokens.revokeActiveFor({
+      companyId: quote.companyId,
+      resourceType: 'quote',
+      resourceId: quote.id,
+      scope: 'quote_signature',
+      at: this.deps.clock.now(),
+    });
     const created = await this.deps.publicAccessTokens.create({
       companyId: quote.companyId,
       resourceType: 'quote',

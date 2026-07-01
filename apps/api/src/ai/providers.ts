@@ -8,6 +8,8 @@ import {
   type Provider,
   type SttPort,
   type SttResult,
+  type TtsPort,
+  type TtsResult,
 } from '@bob/ai';
 
 const TIMEOUT_MS = 12_000;
@@ -35,6 +37,15 @@ function safeParseArgs(raw: unknown): Record<string, unknown> {
     }
   }
   return {};
+}
+
+function audioExtension(mimeType: string): string {
+  if (mimeType.includes('wav')) return 'wav';
+  if (mimeType.includes('mp3') || mimeType.includes('mpeg')) return 'mp3';
+  if (mimeType.includes('webm')) return 'webm';
+  if (mimeType.includes('ogg') || mimeType.includes('opus')) return 'ogg';
+  if (mimeType.includes('mp4')) return 'mp4';
+  return 'm4a';
 }
 
 /**
@@ -194,7 +205,7 @@ export class WhisperSttAdapter implements SttPort {
 
   async transcribe(audioBase64: string, mimeType: string): Promise<SttResult> {
     const bytes = Buffer.from(audioBase64, 'base64');
-    const ext = mimeType.includes('wav') ? 'wav' : mimeType.includes('mp3') || mimeType.includes('mpeg') ? 'mp3' : 'm4a';
+    const ext = audioExtension(mimeType);
     const form = new FormData();
     form.append('file', new Blob([bytes], { type: mimeType }), `audio.${ext}`);
     form.append('model', this.model);
@@ -215,9 +226,91 @@ export class WhisperSttAdapter implements SttPort {
   }
 }
 
-/** STT cloud disponible uniquement si une clé OpenAI est configurée (Whisper). */
+/** STT cloud Mistral Voxtral Mini Transcribe. Audio brut non persisté : base64 entrant -> multipart sortant. */
+export class MistralVoxtralSttAdapter implements SttPort {
+  readonly id = 'mistral-voxtral-stt';
+  constructor(
+    private readonly apiKey: string,
+    private readonly model = process.env.MISTRAL_STT_MODEL ?? 'voxtral-mini-latest',
+    private readonly baseUrl = process.env.MISTRAL_URL ?? 'https://api.mistral.ai/v1',
+    private readonly contextBias = process.env.MISTRAL_STT_CONTEXT_BIAS ?? '',
+  ) {}
+
+  async transcribe(audioBase64: string, mimeType: string): Promise<SttResult> {
+    const bytes = Buffer.from(audioBase64, 'base64');
+    const form = new FormData();
+    form.append('file', new Blob([bytes], { type: mimeType }), `audio.${audioExtension(mimeType)}`);
+    form.append('model', this.model);
+    form.append('language', 'fr');
+    if (this.contextBias.trim()) form.append('context_bias', this.contextBias.trim());
+    const res = await fetch(`${this.baseUrl}/audio/transcriptions`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${this.apiKey}` },
+      body: form,
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = (await res.json()) as { text?: string };
+    return { text: (data.text ?? '').trim(), model: this.model };
+  }
+
+  async health(): Promise<{ healthy: boolean }> {
+    return { healthy: !!this.apiKey };
+  }
+}
+
+export class MistralVoxtralTtsAdapter implements TtsPort {
+  readonly id = 'mistral-voxtral-tts';
+  constructor(
+    private readonly apiKey: string,
+    private readonly model = process.env.MISTRAL_TTS_MODEL ?? 'voxtral-mini-tts-2603',
+    private readonly baseUrl = process.env.MISTRAL_URL ?? 'https://api.mistral.ai/v1',
+    private readonly voiceId = process.env.MISTRAL_TTS_VOICE_ID,
+    private readonly responseFormat: 'mp3' | 'wav' | 'pcm' | 'flac' | 'opus' = 'mp3',
+  ) {}
+
+  async synthesize(text: string): Promise<TtsResult> {
+    const body: Record<string, unknown> = {
+      model: this.model,
+      input: text,
+      response_format: this.responseFormat,
+    };
+    if (this.voiceId) body.voice_id = this.voiceId;
+    const res = await fetch(`${this.baseUrl}/audio/speech`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${this.apiKey}` },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const contentType = res.headers.get('content-type') ?? '';
+    if (contentType.includes('application/json')) {
+      const data = (await res.json()) as { audio_data?: string };
+      return { audioBase64: data.audio_data ?? '', mimeType: `audio/${this.responseFormat}`, model: this.model };
+    }
+    const bytes = Buffer.from(await res.arrayBuffer());
+    return { audioBase64: bytes.toString('base64'), mimeType: contentType || `audio/${this.responseFormat}`, model: this.model };
+  }
+
+  async health(): Promise<{ healthy: boolean }> {
+    return { healthy: !!this.apiKey };
+  }
+}
+
+/** STT cloud : Mistral Voxtral prioritaire si configuré, fallback OpenAI Whisper. */
 export function buildSttCloud(): SttPort | undefined {
-  return process.env.OPENAI_API_KEY ? new WhisperSttAdapter(process.env.OPENAI_API_KEY) : undefined;
+  const provider = process.env.STT_PROVIDER;
+  if ((provider === 'mistral' || !provider) && process.env.MISTRAL_API_KEY) {
+    return new MistralVoxtralSttAdapter(process.env.MISTRAL_API_KEY);
+  }
+  if ((provider === 'openai' || !provider) && process.env.OPENAI_API_KEY) {
+    return new WhisperSttAdapter(process.env.OPENAI_API_KEY);
+  }
+  return undefined;
+}
+
+export function buildTtsCloud(): TtsPort | undefined {
+  return process.env.MISTRAL_API_KEY ? new MistralVoxtralTtsAdapter(process.env.MISTRAL_API_KEY) : undefined;
 }
 
 interface OpenAiResponse {

@@ -10,6 +10,8 @@ import type {
   QuoteRepository,
   InvoiceRepository,
   PaymentRepository,
+  PublicAccessGrant,
+  PublicAccessTokenRepository,
   ExpenseRepository,
   ChantierRepository,
 } from '@bob/core';
@@ -89,6 +91,70 @@ export class InMemoryPaymentRepository implements PaymentRepository {
   }
   async findByIdempotencyKey(companyId: string, key: string): Promise<Payment | null> {
     return this.list.find((p) => p.companyId === companyId && p.idempotencyKey === key) ?? null;
+  }
+}
+
+export class InMemoryPublicAccessTokenRepository implements PublicAccessTokenRepository {
+  private readonly rows = new Map<string, PublicAccessGrant & { token: string; lastUsedAt: string | null }>();
+  private seq = 0;
+
+  async create(input: {
+    companyId: string;
+    resourceType: 'quote';
+    resourceId: string;
+    scope: 'quote_signature';
+    expiresAt: string;
+  }): Promise<{ id: string; token: string }> {
+    this.seq += 1;
+    const id = `local-public-grant-${this.seq}`;
+    const token = `local_pst_${this.seq}`;
+    this.rows.set(id, { id, token, ...input, revokedAt: null, lastUsedAt: null });
+    return { id, token };
+  }
+
+  async findActive(token: string, at: string): Promise<PublicAccessGrant | null> {
+    const row = [...this.rows.values()].find((r) => r.token === token);
+    if (!row || row.revokedAt !== null || row.expiresAt <= at) return null;
+    return {
+      id: row.id,
+      companyId: row.companyId,
+      resourceType: row.resourceType,
+      resourceId: row.resourceId,
+      scope: row.scope,
+      expiresAt: row.expiresAt,
+      revokedAt: row.revokedAt,
+    };
+  }
+
+  async markUsed(id: string, at: string): Promise<void> {
+    const row = this.rows.get(id);
+    if (row) this.rows.set(id, { ...row, lastUsedAt: at });
+  }
+
+  async revoke(id: string, at: string): Promise<void> {
+    const row = this.rows.get(id);
+    if (row) this.rows.set(id, { ...row, revokedAt: at });
+  }
+
+  async revokeActiveFor(input: {
+    companyId: string;
+    resourceType: 'quote';
+    resourceId: string;
+    scope: 'quote_signature';
+    at: string;
+  }): Promise<void> {
+    for (const [id, row] of this.rows) {
+      if (
+        row.companyId === input.companyId &&
+        row.resourceType === input.resourceType &&
+        row.resourceId === input.resourceId &&
+        row.scope === input.scope &&
+        row.revokedAt === null &&
+        row.expiresAt > input.at
+      ) {
+        this.rows.set(id, { ...row, revokedAt: input.at });
+      }
+    }
   }
 }
 

@@ -310,6 +310,19 @@ export function useSignQuote() {
   });
 }
 
+export function useRefuseQuote() {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (quoteId: string) => {
+      const r = await client.refuseQuote(quoteId);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: () => void qc.invalidateQueries({ queryKey: keys.quotes }),
+  });
+}
+
 export function useGenerateInvoice() {
   const client = useBobClient();
   const qc = useQueryClient();

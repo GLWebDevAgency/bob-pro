@@ -1,0 +1,131 @@
+import { type Result, ok, err } from '../../shared-kernel/result';
+import { type DateOnly } from '../../shared-kernel/time';
+import { Document, type DocumentKind, type DocumentLinkedEntityType, type DocumentOrigin } from '../../domain/document/document';
+import { type DocumentRepository } from '../ports/document-repository';
+import { type DocumentStoragePort } from '../ports/document-storage';
+import { type ClockPort } from '../ports/services';
+import { type AppError, appDomain } from '../result';
+import { documentToView, type DocumentView } from './document-view';
+
+export interface StoreDocumentInput {
+  id: string;
+  versionId: string;
+  companyId: string;
+  kind: DocumentKind;
+  origin: DocumentOrigin;
+  filename: string;
+  mimeType: string;
+  bytes: Uint8Array;
+  sha256: string;
+  storageKey: string;
+  linkedEntityType?: DocumentLinkedEntityType | null;
+  linkedEntityId?: string | null;
+  documentDate?: DateOnly | null;
+  issuedAt?: DateOnly | null;
+  createdBy?: string | null;
+  retentionUntil?: DateOnly;
+  reason?: string;
+}
+
+export interface StoreDocumentDeps {
+  documents: DocumentRepository;
+  storage: DocumentStoragePort;
+  clock: ClockPort;
+}
+
+function addYears(date: DateOnly, years: number): DateOnly {
+  const d = new Date(`${date}T00:00:00.000Z`);
+  d.setUTCFullYear(d.getUTCFullYear() + years);
+  return d.toISOString().slice(0, 10);
+}
+
+function dependencyError(port: string, e: unknown): AppError {
+  return { kind: 'dependency', port, cause: e instanceof Error ? e.message : String(e) };
+}
+
+async function bestEffortRemove(storage: DocumentStoragePort, companyId: string, storageKey: string): Promise<void> {
+  try {
+    await storage.remove(companyId, storageKey);
+  } catch {
+    // L'appelant reçoit l'erreur primaire ; la purge sera reprise par maintenance si besoin.
+  }
+}
+
+export class StoreDocument {
+  constructor(private readonly deps: StoreDocumentDeps) {}
+
+  async execute(input: StoreDocumentInput): Promise<Result<DocumentView, AppError>> {
+    if (input.bytes.byteLength === 0) {
+      return err({ kind: 'validation', issues: [{ field: 'bytes', message: 'Document vide.' }] });
+    }
+
+    const now = this.deps.clock.now();
+    const anchor = input.issuedAt ?? input.documentDate ?? this.deps.clock.today();
+    const linkedEntityType = input.linkedEntityType ?? null;
+    const linkedEntityId = input.linkedEntityId ?? null;
+    const document = Document.record({
+      id: input.id,
+      companyId: input.companyId,
+      kind: input.kind,
+      origin: input.origin,
+      status: 'active',
+      filename: input.filename,
+      mimeType: input.mimeType,
+      byteSize: input.bytes.byteLength,
+      sha256: input.sha256,
+      storageKey: input.storageKey,
+      linkedEntityType,
+      linkedEntityId,
+      documentDate: input.documentDate ?? null,
+      issuedAt: input.issuedAt ?? null,
+      createdAt: now,
+      createdBy: input.createdBy ?? null,
+      retentionUntil: input.retentionUntil ?? addYears(anchor, 10),
+      deletedAt: null,
+      versions: [
+        {
+          id: input.versionId,
+          documentId: input.id,
+          version: 1,
+          storageKey: input.storageKey,
+          sha256: input.sha256,
+          mimeType: input.mimeType,
+          byteSize: input.bytes.byteLength,
+          createdAt: now,
+          reason: input.reason ?? 'initial',
+        },
+      ],
+    });
+    if (!document.ok) return err(appDomain(document.error));
+
+    let stored;
+    try {
+      stored = await this.deps.storage.put({
+        companyId: input.companyId,
+        key: input.storageKey,
+        bytes: input.bytes,
+        contentType: input.mimeType,
+      });
+    } catch (e) {
+      return err(dependencyError('document-storage', e));
+    }
+
+    if (stored.sha256 !== input.sha256 || stored.sizeBytes !== input.bytes.byteLength) {
+      await bestEffortRemove(this.deps.storage, input.companyId, input.storageKey);
+      return err({
+        kind: 'dependency',
+        port: 'document-storage',
+        cause: 'Stored object metadata mismatch.',
+      });
+    }
+
+    try {
+      await this.deps.documents.save(document.value);
+    } catch (e) {
+      await bestEffortRemove(this.deps.storage, input.companyId, input.storageKey);
+      throw e;
+    }
+
+    return ok(documentToView(document.value));
+  }
+}

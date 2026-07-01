@@ -11,6 +11,7 @@ import { PDF_RENDERER, PdfRenderer } from './documents/pdf-renderer';
 import { ocrProvider } from './ocr/ocr';
 import { NOTIFIER, DemoNotifier } from './notifications/notifier';
 import { RelanceService } from './jobs/relance.service';
+import { DocumentArchiveService } from './jobs/document-archive.service';
 import { SupabaseAuthGuard } from './auth/auth.guard';
 import { TenantPersistenceInterceptor } from './persistence/tenant-persistence.interceptor';
 import {
@@ -66,6 +67,7 @@ import {
   providers: [
     BackendService,
     RelanceService,
+    DocumentArchiveService,
     paymentGatewayProvider,
     ocrProvider,
     { provide: PDF_RENDERER, useClass: PdfRenderer },

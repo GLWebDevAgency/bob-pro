@@ -3,6 +3,8 @@ import {
   CreateQuote,
   SendQuote,
   SignQuote,
+  RefuseQuote,
+  ExpireQuote,
   GenerateInvoiceFromQuote,
   IssueInvoice,
   RegisterPayment,
@@ -18,8 +20,10 @@ import {
   Customer,
   Subscription,
   PLAN_CATALOG,
+  ADDON_CATALOG,
   planEntitlements,
   planCan,
+  tierAtLeast,
   runDiagnostic,
   resolveTradeConfig,
   facturXDataFromInvoice,
@@ -32,6 +36,10 @@ import {
   SearchAddress,
   CreateQuoteSignatureToken,
   ResolveQuoteSignatureToken,
+  StoreDocument,
+  ListDocuments,
+  GetDocumentDownloadUrl,
+  buildDocumentStorageKey,
   MERCIER_PROPS,
   CASH_SNAPSHOT,
   type Result,
@@ -65,20 +73,38 @@ import {
   type OcrPort,
   type RecordExpenseInput,
   type ExpenseProps,
+  type DocumentKind,
+  type DocumentLinkedEntityType,
+  type DocumentOrigin,
+  type DocumentView,
+  type DocumentDownloadUrl,
 } from '@bob/core';
-import { BobAgent, ModelRouter, type BobActions, type AgentRun, type PendingAction, type AgentAutonomy } from '@bob/ai';
+import {
+  BobAgent,
+  ModelRouter,
+  pendingToInvocations,
+  type BobActions,
+  type AgentRun,
+  type PendingAction,
+  type AgentAutonomy,
+  type JournalEntry,
+} from '@bob/ai';
+import type { TtsResult } from '@bob/ai';
 import { UuidGenerator, FixtureCashflowSnapshot, InMemoryChantierRepository } from './persistence/in-memory';
 import { RechercheEntreprisesAdapter } from './adapters/recherche-entreprises.adapter';
 import { ViesVatAdapter } from './adapters/vies-vat.adapter';
 import { BanAddressAdapter } from './adapters/ban-address.adapter';
 import { PERSISTENCE, type Persistence } from './persistence/persistence';
+import { CompanyScopedJournalStore } from './persistence/agent-journal';
 import { Metrics } from './observability/metrics';
 import { AppLogger, getPrincipal } from './observability/logger';
 import { PAYMENT_GATEWAY } from './payments/payment-gateway';
 import { PDF_RENDERER } from './documents/pdf-renderer';
+import { buildDocumentStorage, documentSha256 } from './documents/storage';
 import { OCR_PORT } from './ocr/ocr';
 import { hasClaudeKey, hasGlmKey, hasDeepseekKey, hasMistralKey, hasOpenaiKey } from './config/env';
-import { buildLlmForProvider, buildSttCloud } from './ai/providers';
+import { buildLlmForProvider, buildSttCloud, buildTtsCloud } from './ai/providers';
+import { clampAgentAutonomy } from './ai/autonomy-entitlements';
 
 export interface QuoteView {
   id: string;
@@ -120,9 +146,58 @@ export interface SignatureView {
 }
 
 interface ResolvedSignatureGrant {
-  grantId: string | null;
+  grantId: string;
   companyId: string;
   quoteId: string;
+}
+
+export interface UploadDocumentInput {
+  contentBase64: string;
+  mimeType: string;
+  filename: string;
+  kind?: DocumentKind;
+  linkedEntityType?: DocumentLinkedEntityType | null;
+  linkedEntityId?: string | null;
+  documentDate?: string | null;
+}
+
+export interface ListDocumentsInput {
+  kind?: DocumentKind;
+  linkedEntityType?: DocumentLinkedEntityType;
+  linkedEntityId?: string;
+  includeDeleted?: boolean;
+}
+
+function decodeBase64Document(contentBase64: string): Result<Uint8Array, AppError> {
+  const raw = contentBase64.includes(',') ? contentBase64.slice(contentBase64.indexOf(',') + 1) : contentBase64;
+  const normalized = raw.replace(/\s/g, '');
+  if (!normalized || !/^[A-Za-z0-9+/]*={0,2}$/.test(normalized)) {
+    return { ok: false, error: { kind: 'validation', issues: [{ field: 'contentBase64', message: 'Base64 invalide.' }] } };
+  }
+  const bytes = Buffer.from(normalized, 'base64');
+  if (bytes.byteLength === 0) {
+    return { ok: false, error: { kind: 'validation', issues: [{ field: 'contentBase64', message: 'Document vide.' }] } };
+  }
+  return ok(bytes);
+}
+
+function appErrorSummary(error: AppError): string {
+  if (error.kind === 'domain') return `${error.error.code}:${'field' in error.error ? error.error.field : ''}`;
+  if (error.kind === 'not_found') return `not_found:${error.entity}:${error.id}`;
+  if (error.kind === 'forbidden') return `forbidden:${error.reason}`;
+  if (error.kind === 'validation') return `validation:${error.issues.map((i) => `${i.field}:${i.message}`).join(';')}`;
+  return `dependency:${error.port}:${error.cause}`;
+}
+
+function addMinutesIso(instant: string, minutes: number): string {
+  const d = new Date(instant);
+  d.setUTCMinutes(d.getUTCMinutes() + minutes);
+  return d.toISOString();
+}
+
+function nextArchiveRetryAt(now: string, attempts: number): string {
+  const delayMinutes = Math.min(60, Math.max(1, 2 ** attempts));
+  return addMinutesIso(now, delayMinutes);
 }
 
 /**
@@ -143,6 +218,8 @@ export class BackendService {
   private readonly addresses: AddressAutocompletePort = new BanAddressAdapter();
   // STT cloud (Whisper) — actif seulement si une clé OpenAI est configurée ; sinon dictée native côté device.
   private readonly stt = buildSttCloud();
+  private readonly tts = buildTtsCloud();
+  private readonly documentStorage = buildDocumentStorage();
   private readonly subscription: Subscription;
 
   /** Tenant courant : companyId du Principal authentifié (défaut = société de seed en démo). */
@@ -231,7 +308,18 @@ export class BackendService {
   }
   async signQuote(input: { quoteId: string; signerName: string }) {
     if (!(await this.ownedQuote(input.quoteId))) return { ok: false as const, error: appNotFound('quote', input.quoteId) };
-    return new SignQuote({ quotes: this.p.quotes, clock: this.clock }).execute(input);
+    return new SignQuote({ quotes: this.p.quotes, uow: this.p, clock: this.clock }).execute(input);
+  }
+  async refuseQuote(quoteId: string) {
+    if (!(await this.ownedQuote(quoteId))) return { ok: false as const, error: appNotFound('quote', quoteId) };
+    const r = await new RefuseQuote({
+      quotes: this.p.quotes,
+      publicAccessTokens: this.p.publicAccessTokens,
+      uow: this.p,
+      clock: this.clock,
+    }).execute({ quoteId });
+    if (r.ok) this.logger.audit('quote.refused', { quoteId, status: r.value.status });
+    return r;
   }
   async generateInvoice(input: { quoteId: string; mode?: 'deposit' | 'final' }) {
     if (!(await this.ownedQuote(input.quoteId))) return { ok: false as const, error: appNotFound('quote', input.quoteId) };
@@ -247,7 +335,11 @@ export class BackendService {
       uow: this.p,
       clock: this.clock,
     }).execute(input);
-    if (r.ok) this.logger.audit('invoice.issued', { invoiceId: input.invoiceId, number: r.value.number });
+    if (r.ok) {
+      this.logger.audit('invoice.issued', { invoiceId: input.invoiceId, number: r.value.number });
+      await this.enqueueInvoiceArchive(input.invoiceId);
+      await this.runDocumentArchiveJobs({ limit: 5 });
+    }
     return r;
   }
   async registerPayment(input: { invoiceId: string; amount: number; method: PaymentMethod; idempotencyKey?: string | null }) {
@@ -297,17 +389,11 @@ export class BackendService {
       publicAccessTokens: this.p.publicAccessTokens,
       clock: this.clock,
     }).execute({ token });
-    if (resolved.ok) return ok(resolved.value);
-
-    // Compat legacy démo : anciens liens où le token était directement l'id du devis.
-    // Les nouveaux liens passent par public_access_tokens et ne divulguent plus quoteId/companyId.
-    const legacyQuote = await this.p.quotes.findById(token);
-    if (!legacyQuote) return resolved;
-    return ok({ grantId: null, companyId: legacyQuote.companyId, quoteId: legacyQuote.id });
+    return resolved;
   }
 
   // ——— Signature client à distance (public, par lien tokenisé) ———
-  /** Vue publique d'un devis par token opaque (legacy accepté temporairement en démo). */
+  /** Vue publique d'un devis par token opaque. */
   async publicQuoteForSignature(token: string): Promise<Result<SignatureView, AppError>> {
     const grant = await this.resolveSignatureGrant(token);
     if (!grant.ok) return grant;
@@ -316,7 +402,7 @@ export class BackendService {
       if (!q) return { ok: false, error: appNotFound('quote', 'redacted') };
       const company = await this.p.companies.findById(q.companyId);
       const customer = await this.p.customers.findById(q.customerId);
-      if (grant.value.grantId) await this.p.publicAccessTokens.markUsed(grant.value.grantId, this.clock.now());
+      await this.p.publicAccessTokens.markUsed(grant.value.grantId, this.clock.now());
       return ok({
         number: q.number,
         companyName: company?.name ?? '',
@@ -337,11 +423,20 @@ export class BackendService {
     return this.p.runWithTenant(grant.value.companyId, async () => {
       const q = await this.p.quotes.findById(grant.value.quoteId);
       if (!q) return { ok: false, error: appNotFound('quote', 'redacted') };
-      if (q.validUntil !== null && q.validUntil < this.clock.today())
+      if (q.validUntil !== null && q.validUntil < this.clock.today()) {
+        const expired = await new ExpireQuote({
+          quotes: this.p.quotes,
+          publicAccessTokens: this.p.publicAccessTokens,
+          uow: this.p,
+          clock: this.clock,
+        }).execute({ quoteId: grant.value.quoteId });
+        if (expired.ok) this.logger.audit('quote.expired', { quoteId: grant.value.quoteId, status: expired.value.status });
         return { ok: false, error: appForbidden('Devis expiré : signature impossible.') };
-      const r = await new SignQuote({ quotes: this.p.quotes, clock: this.clock }).execute({ quoteId: grant.value.quoteId, signerName });
+      }
+      const r = await new SignQuote({ quotes: this.p.quotes, uow: this.p, clock: this.clock }).execute({ quoteId: grant.value.quoteId, signerName });
       if (r.ok) {
-        if (grant.value.grantId) await this.p.publicAccessTokens.markUsed(grant.value.grantId, this.clock.now());
+        await this.p.publicAccessTokens.markUsed(grant.value.grantId, this.clock.now());
+        await this.p.publicAccessTokens.revoke(grant.value.grantId, this.clock.now());
         this.logger.audit('quote.public_signed', { quoteId: grant.value.quoteId, signerName });
       }
       return r;
@@ -406,15 +501,25 @@ export class BackendService {
     // Le fournisseur qui qualifie la demande (tool-calling) est choisi par le routeur ; sinon regex.
     const provider = router.route('intent.detect').model;
     const llm = provider !== 'demo' ? buildLlmForProvider(provider) : undefined;
-    return new BobAgent({ router, actions: this.buildBobActions(), llm });
+    return new BobAgent({
+      router,
+      actions: this.buildBobActions(),
+      llm,
+      runtime: {
+        clock: this.clock,
+        ids: this.ids,
+        store: new CompanyScopedJournalStore(this.p.agentJournal, this.companyId()),
+      },
+    });
   }
 
   async askBob(message: string, autonomy?: AgentAutonomy): Promise<Result<AgentRun, AppError>> {
-    // L'assistant agentique est réservé aux offres avec IA (Pro+). Sans lui, l'app reste 100 % manuelle.
+    // L'assistant agentique est réservé aux offres avec IA (Solo+). Sans lui, l'app reste 100 % manuelle.
     if (!planCan(this.subscription.tier, 'ai_assistant'))
-      return { ok: false, error: appForbidden("L'assistant Bob est inclus à partir de l'offre Pro.") };
+      return { ok: false, error: appForbidden("L'assistant Bob est inclus à partir de l'offre Solo.") };
+    const effectiveAutonomy = clampAgentAutonomy(autonomy, this.subscription.autonomyEntitlement());
     const start = Date.now();
-    const r = await this.bobAgent().ask(message, { autonomy });
+    const r = await this.bobAgent().ask(message, { autonomy: effectiveAutonomy });
     const ms = Date.now() - start;
     const intent = r.ok ? r.value.intent : 'error';
     const model = r.ok ? r.value.model : 'demo';
@@ -422,17 +527,27 @@ export class BackendService {
     this.metrics.aiRequests.inc({ model, intent, outcome });
     this.metrics.aiDuration.observe({ model, intent }, ms / 1000);
     if (!r.ok && r.error.kind === 'dependency' && r.error.port === 'money-guard') this.metrics.aiGuardViolations.inc();
-    this.logger.audit('ai.ask', { model, intent, outcome, ms });
+    this.logger.audit('ai.ask', { model, intent, outcome, ms, requestedAutonomy: autonomy ?? null, effectiveAutonomy });
     return r;
+  }
+
+  async agentJournal(runId: string): Promise<Result<JournalEntry[], AppError>> {
+    if (!planCan(this.subscription.tier, 'ai_assistant'))
+      return { ok: false, error: appForbidden("L'assistant Bob est inclus à partir de l'offre Solo.") };
+    return ok(await this.p.agentJournal.load(this.companyId(), runId));
   }
 
   voiceCloudAvailable(): boolean {
     return !!this.stt;
   }
 
+  voiceTtsCloudAvailable(): boolean {
+    return !!this.tts && tierAtLeast(this.subscription.tier, 'pro');
+  }
+
   async transcribe(input: { audioBase64: string; mimeType: string }): Promise<Result<{ text: string }, AppError>> {
     if (!planCan(this.subscription.tier, 'ai_assistant'))
-      return { ok: false, error: appForbidden("La dictée vocale est incluse à partir de l'offre Pro.") };
+      return { ok: false, error: appForbidden("La dictée vocale est incluse à partir de l'offre Solo.") };
     if (!this.stt)
       return { ok: false, error: appForbidden('Dictée cloud non configurée (clé OpenAI absente). Utilise la dictée native.') };
     try {
@@ -444,12 +559,65 @@ export class BackendService {
     }
   }
 
+  async synthesizeSpeech(input: { text: string }): Promise<Result<TtsResult, AppError>> {
+    if (!planCan(this.subscription.tier, 'ai_assistant'))
+      return { ok: false, error: appForbidden("La voix de Bob est incluse à partir de l'offre Solo.") };
+    if (!tierAtLeast(this.subscription.tier, 'pro'))
+      return { ok: false, error: appForbidden("La voix cloud premium est incluse à partir de l'offre Pro.") };
+    if (!this.tts)
+      return { ok: false, error: appForbidden('Synthèse vocale cloud non configurée (clé Mistral absente). Utilise la voix native.') };
+    const text = input.text.trim();
+    if (!text) return { ok: false, error: { kind: 'validation', issues: [{ field: 'text', message: 'Texte requis.' }] } };
+    if (text.length > 1200)
+      return { ok: false, error: { kind: 'validation', issues: [{ field: 'text', message: 'Texte trop long pour la synthèse vocale.' }] } };
+    try {
+      const r = await this.tts.synthesize(text);
+      this.logger.audit('voice.synthesize', { model: r.model, chars: text.length, cloudAudio: r.audioBase64 !== null });
+      return ok(r);
+    } catch (e) {
+      return { ok: false, error: { kind: 'dependency', port: 'mistral-tts', cause: e instanceof Error ? e.message : 'tts' } };
+    }
+  }
+
   async confirmBob(pending: PendingAction): Promise<Result<AgentRun, AppError>> {
     if (!planCan(this.subscription.tier, 'ai_assistant'))
-      return { ok: false, error: appForbidden("L'assistant Bob est inclus à partir de l'offre Pro.") };
-    const r = await this.bobAgent().confirm(pending);
-    this.logger.audit('ai.confirm', { tool: pending.tool, outcome: r.ok ? 'ok' : 'error' });
-    return r;
+      return { ok: false, error: appForbidden("L'assistant Bob est inclus à partir de l'offre Solo.") };
+    try {
+      const record = await this.bobAgent().runJournaled(pendingToInvocations(pending), {
+        autonomy: this.subscription.autonomyEntitlement(),
+      });
+      const blocked = record.outcomes.find((o) => o.status === 'denied' || o.status === 'failed');
+      this.logger.audit('ai.confirm', {
+        tool: pending.tool,
+        runId: record.runId,
+        journalEntries: record.entries.length,
+        outcome: blocked ? 'error' : 'ok',
+      });
+      if (blocked) {
+        if (blocked.status === 'denied') return { ok: false, error: appForbidden(blocked.reason ?? 'Action refusée par la policy.') };
+        return {
+          ok: false,
+          error: { kind: 'dependency', port: 'agent-runtime', cause: blocked.reason ?? 'agent execution failed' },
+        };
+      }
+      const isBatch = pending.batch !== undefined && pending.batch.length > 0;
+      return ok({
+        kind: 'done',
+        intent: 'encaisser',
+        model: 'agent-runtime',
+        plan: record.outcomes.map((o) => o.label),
+        card: {
+          title: 'Fait ✓',
+          body: isBatch ? record.outcomes.map((o) => `✓ ${o.label}`).join('\n') : `${pending.label} — c’est noté.`,
+        },
+      });
+    } catch (e) {
+      this.logger.audit('ai.confirm', { tool: pending.tool, outcome: 'error', journal: 'failed' });
+      return {
+        ok: false,
+        error: { kind: 'dependency', port: 'agent-journal', cause: e instanceof Error ? e.message : 'journal append failed' },
+      };
+    }
   }
 
   // ——— Monétisation ———
@@ -459,6 +627,11 @@ export class BackendService {
       status: this.subscription.status,
       currentPeriodEnd: this.subscription.currentPeriodEnd,
       features: [...planEntitlements(this.subscription.tier)],
+      ai: PLAN_CATALOG[this.subscription.tier].ai,
+      autonomyEntitlement: this.subscription.autonomyEntitlement(),
+      limits: PLAN_CATALOG[this.subscription.tier].limits,
+      addOns: [...this.subscription.addOns],
+      addOnCatalog: Object.values(ADDON_CATALOG),
       catalog: Object.values(PLAN_CATALOG),
     };
   }
@@ -566,9 +739,15 @@ export class BackendService {
   async invoicePdf(invoiceId: string): Promise<Result<Uint8Array, AppError>> {
     const inv = await this.ownedInvoice(invoiceId);
     if (!inv) return { ok: false, error: appNotFound('invoice', invoiceId) };
+    const rendered = await this.renderInvoicePdf(inv);
+    if (rendered.ok) this.logger.audit('invoice.pdf', { invoiceId, number: inv.number ?? '(brouillon)', facturX: !!inv.number && !!inv.issuedAt });
+    return rendered;
+  }
+
+  private async renderInvoicePdf(inv: Invoice): Promise<Result<Uint8Array, AppError>> {
     const company = await this.p.companies.findById(inv.companyId);
     const customer = await this.p.customers.findById(inv.customerId);
-    if (!company || !customer) return { ok: false, error: appNotFound('company-or-customer', invoiceId) };
+    if (!company || !customer) return { ok: false, error: appNotFound('company-or-customer', inv.id) };
     const addr = customer.toProps().address;
     const totals = inv.totals();
     const data: InvoicePdfData = {
@@ -597,7 +776,6 @@ export class BackendService {
       facturX = { xml: buildFacturXBasicXml(fxData) };
     }
     const bytes = await this.pdf.renderInvoice(data, facturX);
-    this.logger.audit('invoice.pdf', { invoiceId, number: data.number, facturX: !!facturX });
     return ok(bytes);
   }
 
@@ -605,11 +783,15 @@ export class BackendService {
   async invoiceFacturXXml(invoiceId: string): Promise<Result<string, AppError>> {
     const inv = await this.ownedInvoice(invoiceId);
     if (!inv) return { ok: false, error: appNotFound('invoice', invoiceId) };
+    return this.buildInvoiceFacturXXml(inv);
+  }
+
+  private async buildInvoiceFacturXXml(inv: Invoice): Promise<Result<string, AppError>> {
     if (!inv.number || !inv.issuedAt)
       return { ok: false, error: appForbidden('Facture non émise : Factur-X indisponible.') };
     const company = await this.p.companies.findById(inv.companyId);
     const customer = await this.p.customers.findById(inv.customerId);
-    if (!company || !customer) return { ok: false, error: appNotFound('company-or-customer', invoiceId) };
+    if (!company || !customer) return { ok: false, error: appNotFound('company-or-customer', inv.id) };
     const buyer = customer.toProps();
     const fxData = facturXDataFromInvoice(inv, company, {
       name: customer.name,
@@ -617,6 +799,206 @@ export class BackendService {
       address: buyer.address,
     });
     return ok(buildFacturXBasicXml(fxData));
+  }
+
+  private async storeDocument(input: {
+    companyId?: string;
+    kind: DocumentKind;
+    origin: DocumentOrigin;
+    filename: string;
+    mimeType: string;
+    bytes: Uint8Array;
+    linkedEntityType?: DocumentLinkedEntityType | null;
+    linkedEntityId?: string | null;
+    documentDate?: string | null;
+    issuedAt?: string | null;
+    reason?: string;
+  }): Promise<Result<DocumentView, AppError>> {
+    const companyId = input.companyId ?? this.companyId();
+    const id = this.ids.newId();
+    const versionId = this.ids.newId();
+    const sha256 = documentSha256(input.bytes);
+    const storageKey = buildDocumentStorageKey({
+      companyId,
+      documentId: id,
+      version: 1,
+      sha256,
+      filename: input.filename,
+      mimeType: input.mimeType,
+    });
+    return new StoreDocument({
+      documents: this.p.documents,
+      storage: this.documentStorage,
+      clock: this.clock,
+    }).execute({
+      id,
+      versionId,
+      companyId,
+      kind: input.kind,
+      origin: input.origin,
+      filename: input.filename,
+      mimeType: input.mimeType,
+      bytes: input.bytes,
+      sha256,
+      storageKey,
+      linkedEntityType: input.linkedEntityType ?? null,
+      linkedEntityId: input.linkedEntityId ?? null,
+      documentDate: input.documentDate ?? null,
+      issuedAt: input.issuedAt ?? null,
+      createdBy: getPrincipal()?.userId ?? null,
+      reason: input.reason ?? 'initial',
+    });
+  }
+
+  private async enqueueInvoiceArchive(invoiceId: string): Promise<void> {
+    try {
+      const now = this.clock.now();
+      await this.p.documentArchiveJobs.enqueue({
+        id: this.ids.newId(),
+        companyId: this.companyId(),
+        invoiceId,
+        reason: 'invoice-issued',
+        now,
+      });
+    } catch (e) {
+      this.logger.warn(`Enqueue archivage facture impossible: ${e instanceof Error ? e.message : String(e)}`, 'documents');
+    }
+  }
+
+  private async archiveIssuedInvoiceDocumentsForCompany(
+    companyId: string,
+    invoiceId: string,
+  ): Promise<Result<{ created: number; skipped: number }, AppError>> {
+    const inv = await this.p.invoices.findById(invoiceId);
+    if (!inv || inv.companyId !== companyId) return { ok: false, error: appNotFound('invoice', invoiceId) };
+    if (!inv.number || !inv.issuedAt) return { ok: false, error: appForbidden('Facture non émise : archivage impossible.') };
+    let created = 0;
+    let skipped = 0;
+    try {
+      const existing = await this.p.documents.findByEntity(companyId, 'invoice', invoiceId);
+      const hasPdf = existing.some((d) => d.kind === 'invoice_pdf' && d.status === 'active');
+      const hasFacturX = existing.some((d) => d.kind === 'facturx_xml' && d.status === 'active');
+
+      if (!hasPdf) {
+        const pdf = await this.renderInvoicePdf(inv);
+        if (!pdf.ok) return pdf;
+        const archived = await this.storeDocument({
+          companyId,
+          kind: 'invoice_pdf',
+          origin: 'generated',
+          filename: `facture-${inv.number}.pdf`,
+          mimeType: 'application/pdf',
+          bytes: pdf.value,
+          linkedEntityType: 'invoice',
+          linkedEntityId: invoiceId,
+          documentDate: inv.issuedAt,
+          issuedAt: inv.issuedAt,
+          reason: 'invoice-issued',
+        });
+        if (!archived.ok) return archived;
+        created += 1;
+      } else {
+        skipped += 1;
+      }
+
+      if (!hasFacturX) {
+        const xml = await this.buildInvoiceFacturXXml(inv);
+        if (!xml.ok) return xml;
+        const archived = await this.storeDocument({
+          companyId,
+          kind: 'facturx_xml',
+          origin: 'generated',
+          filename: `factur-x-${inv.number}.xml`,
+          mimeType: 'application/xml',
+          bytes: Buffer.from(xml.value, 'utf-8'),
+          linkedEntityType: 'invoice',
+          linkedEntityId: invoiceId,
+          documentDate: inv.issuedAt,
+          issuedAt: inv.issuedAt,
+          reason: 'invoice-issued',
+        });
+        if (!archived.ok) return archived;
+        created += 1;
+      } else {
+        skipped += 1;
+      }
+      return ok({ created, skipped });
+    } catch (e) {
+      return { ok: false, error: { kind: 'dependency', port: 'document-archive', cause: e instanceof Error ? e.message : String(e) } };
+    }
+  }
+
+  async runDocumentArchiveJobs(input: { companyId?: string; limit?: number } = {}): Promise<Result<{ scanned: number; archived: number; failed: number }, AppError>> {
+    const companyId = input.companyId ?? this.companyId();
+    const limit = Math.max(1, Math.min(input.limit ?? 10, 50));
+    return this.p.runWithTenant(companyId, async () => {
+      const now = this.clock.now();
+      const jobs = await this.p.documentArchiveJobs.listDue(companyId, now, limit);
+      let archived = 0;
+      let failed = 0;
+      for (const job of jobs) {
+        const result = await this.archiveIssuedInvoiceDocumentsForCompany(companyId, job.invoiceId);
+        if (result.ok) {
+          await this.p.documentArchiveJobs.markDone(job.id, this.clock.now());
+          archived += result.value.created;
+          this.logger.audit('document.archive_job.done', {
+            companyId,
+            invoiceId: job.invoiceId,
+            created: result.value.created,
+            skipped: result.value.skipped,
+          });
+        } else {
+          failed += 1;
+          const failedAt = this.clock.now();
+          await this.p.documentArchiveJobs.markFailed(job.id, failedAt, nextArchiveRetryAt(failedAt, job.attempts), appErrorSummary(result.error));
+          this.logger.warn(`Archivage facture en retry: ${appErrorSummary(result.error)}`, 'documents');
+        }
+      }
+      return ok({ scanned: jobs.length, archived, failed });
+    });
+  }
+
+  async listDocuments(input: ListDocumentsInput = {}): Promise<Result<DocumentView[], AppError>> {
+    return new ListDocuments({ documents: this.p.documents }).execute({
+      companyId: this.companyId(),
+      ...(input.kind !== undefined ? { kind: input.kind } : {}),
+      ...(input.linkedEntityType !== undefined ? { linkedEntityType: input.linkedEntityType } : {}),
+      ...(input.linkedEntityId !== undefined ? { linkedEntityId: input.linkedEntityId } : {}),
+      ...(input.includeDeleted !== undefined ? { includeDeleted: input.includeDeleted } : {}),
+    });
+  }
+
+  async documentDownloadUrl(documentId: string, ttlSeconds?: number): Promise<Result<DocumentDownloadUrl, AppError>> {
+    return new GetDocumentDownloadUrl({ documents: this.p.documents, storage: this.documentStorage }).execute({
+      companyId: this.companyId(),
+      documentId,
+      ...(ttlSeconds !== undefined ? { ttlSeconds } : {}),
+    });
+  }
+
+  async uploadDocument(input: UploadDocumentInput): Promise<Result<DocumentView, AppError>> {
+    const decoded = decodeBase64Document(input.contentBase64);
+    if (!decoded.ok) return decoded;
+    const stored = await this.storeDocument({
+      kind: input.kind ?? 'other',
+      origin: 'uploaded',
+      filename: input.filename,
+      mimeType: input.mimeType,
+      bytes: decoded.value,
+      linkedEntityType: input.linkedEntityType ?? null,
+      linkedEntityId: input.linkedEntityId ?? null,
+      documentDate: input.documentDate ?? null,
+      reason: 'upload',
+    });
+    if (stored.ok) {
+      this.logger.audit('document.uploaded', {
+        companyId: this.companyId(),
+        documentId: stored.value.id,
+        kind: stored.value.kind,
+        byteSize: stored.value.byteSize,
+      });
+    }
+    return stored;
   }
 
   /** OCR d'un document fournisseur (base64) -> extraction structurée, scopée au tenant. */

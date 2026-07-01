@@ -9,7 +9,7 @@ const clock = { now: () => '2026-06-30T00:00:00.000Z', today: () => '2026-06-30'
 const ids = { newId: () => 'pay-1' };
 const uow = { runInTransaction: <T>(fn: () => Promise<T>): Promise<T> => fn() };
 
-function makeDeps(opts: { existingKey?: string | null; status?: string; existingInvoiceId?: string }) {
+function makeDeps(opts: { existingKey?: string | null; status?: string; existingInvoiceId?: string; existingAmount?: number; existingMethod?: string }) {
   let paymentSaves = 0;
   let invoiceSaves = 0;
   const invoice = {
@@ -33,7 +33,12 @@ function makeDeps(opts: { existingKey?: string | null; status?: string; existing
     listByInvoice: async () => [],
     findByIdempotencyKey: async (_c, key) =>
       opts.existingKey && key === opts.existingKey
-        ? ({ id: 'pay-0', invoiceId: opts.existingInvoiceId ?? 'inv-1' } as unknown as Payment)
+        ? ({
+            id: 'pay-0',
+            invoiceId: opts.existingInvoiceId ?? 'inv-1',
+            amount: opts.existingAmount ?? 1000,
+            method: opts.existingMethod ?? 'transfer',
+          } as unknown as Payment)
         : null,
   };
   const deps = { invoices, payments, uow, ids, clock };
@@ -57,6 +62,14 @@ describe('RegisterPayment — idempotence', () => {
 
   it('clé déjà utilisée pour une AUTRE facture : rejet (anti-rejeu cross-facture)', async () => {
     const { deps, counts } = makeDeps({ existingKey: 'k1', existingInvoiceId: 'inv-999' });
+    const r = await new RegisterPayment(deps).execute({ invoiceId: 'inv-1', amount: 1000, method: 'transfer', idempotencyKey: 'k1' });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.kind).toBe('domain');
+    expect(counts()).toEqual({ paymentSaves: 0, invoiceSaves: 0 });
+  });
+
+  it('clé déjà utilisée avec un montant différent : rejet (anti-rejeu incohérent)', async () => {
+    const { deps, counts } = makeDeps({ existingKey: 'k1', existingAmount: 500 });
     const r = await new RegisterPayment(deps).execute({ invoiceId: 'inv-1', amount: 1000, method: 'transfer', idempotencyKey: 'k1' });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.kind).toBe('domain');

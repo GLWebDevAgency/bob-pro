@@ -20,11 +20,14 @@ import type {
   CustomerProps,
   RecordExpenseInput,
   CreateChantierInput,
+  DocumentKind,
+  DocumentLinkedEntityType,
 } from '@bob/core';
 import { type AgentAutonomy, type PendingAction } from '@bob/ai';
 import { Throttle } from '@nestjs/throttler';
 import { BackendService } from './backend.service';
 import { RelanceService } from './jobs/relance.service';
+import { DocumentArchiveService } from './jobs/document-archive.service';
 import { unwrap } from './http/result';
 
 @Controller('health')
@@ -148,6 +151,10 @@ export class QuotesController {
   async sign(@Param('id') id: string, @Body() body: { signerName: string }) {
     return unwrap(await this.backend.signQuote({ quoteId: id, signerName: body.signerName }));
   }
+  @Post(':id/refuse')
+  async refuse(@Param('id') id: string) {
+    return unwrap(await this.backend.refuseQuote(id));
+  }
   @Post(':id/invoice')
   async invoice(@Param('id') id: string, @Body() body: { mode?: 'deposit' | 'final' }) {
     return unwrap(await this.backend.generateInvoice({ quoteId: id, mode: body.mode }));
@@ -209,6 +216,41 @@ export class InvoicesController {
 @Controller('documents')
 export class DocumentsController {
   constructor(private readonly backend: BackendService) {}
+  @Get()
+  async list(
+    @Query('kind') kind?: DocumentKind,
+    @Query('linkedEntityType') linkedEntityType?: DocumentLinkedEntityType,
+    @Query('linkedEntityId') linkedEntityId?: string,
+    @Query('includeDeleted') includeDeleted?: string,
+  ) {
+    return unwrap(
+      await this.backend.listDocuments({
+        ...(kind !== undefined ? { kind } : {}),
+        ...(linkedEntityType !== undefined ? { linkedEntityType } : {}),
+        ...(linkedEntityId !== undefined ? { linkedEntityId } : {}),
+        ...(includeDeleted !== undefined ? { includeDeleted: includeDeleted === 'true' } : {}),
+      }),
+    );
+  }
+  @Post('upload')
+  async upload(
+    @Body()
+    body: {
+      contentBase64: string;
+      mimeType: string;
+      filename: string;
+      kind?: DocumentKind;
+      linkedEntityType?: DocumentLinkedEntityType | null;
+      linkedEntityId?: string | null;
+      documentDate?: string | null;
+    },
+  ) {
+    return unwrap(await this.backend.uploadDocument(body));
+  }
+  @Get(':id/download-url')
+  async downloadUrl(@Param('id') id: string, @Query('ttl') ttl?: string) {
+    return unwrap(await this.backend.documentDownloadUrl(id, ttl ? Number(ttl) : undefined));
+  }
   @Post('ocr')
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   async ocr(@Body() body: { contentBase64: string; mimeType: string }) {
@@ -259,10 +301,17 @@ export class ExpensesController {
 
 @Controller('jobs')
 export class JobsController {
-  constructor(private readonly relances: RelanceService) {}
+  constructor(
+    private readonly relances: RelanceService,
+    private readonly documentArchives: DocumentArchiveService,
+  ) {}
   @Post('run-relances')
   run() {
     return this.relances.runRelances();
+  }
+  @Post('run-document-archives')
+  runDocumentArchives() {
+    return this.documentArchives.run();
   }
 }
 
@@ -296,6 +345,10 @@ export class AiController {
   async confirm(@Body() body: PendingAction) {
     return unwrap(await this.backend.confirmBob(body));
   }
+  @Get('runs/:runId/journal')
+  async journal(@Param('runId') runId: string) {
+    return unwrap(await this.backend.agentJournal(runId));
+  }
 }
 
 @Controller('voice')
@@ -303,11 +356,16 @@ export class VoiceController {
   constructor(private readonly backend: BackendService) {}
   @Get('config')
   config() {
-    return { cloudAvailable: this.backend.voiceCloudAvailable() };
+    return { cloudAvailable: this.backend.voiceCloudAvailable(), ttsCloudAvailable: this.backend.voiceTtsCloudAvailable() };
   }
   @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Post('transcribe')
   async transcribe(@Body() body: { audioBase64?: string; mimeType?: string }) {
     return unwrap(await this.backend.transcribe({ audioBase64: body.audioBase64 ?? '', mimeType: body.mimeType ?? 'audio/m4a' }));
+  }
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  @Post('synthesize')
+  async synthesize(@Body() body: { text?: string }) {
+    return unwrap(await this.backend.synthesizeSpeech({ text: body.text ?? '' }));
   }
 }

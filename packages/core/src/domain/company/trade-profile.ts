@@ -51,6 +51,10 @@ export const MODULE_UNLOCK_TIER: Record<ModuleKey, PlanTier> = {
  * (même au palier gratuit) obtient bien ce qui est vendu. Inclus de fait dès Pro via le palier. */
 export const ADDON_MODULES: Record<AddOn, readonly ModuleKey[]> = {
   vertical_btp: ['chantiers', 'situations_travaux', 'retenue_garantie'],
+  insurance: [],
+  invoice_advance: [],
+  autonomy_confirm_outbound: [],
+  autonomy_auto: [],
 };
 
 export interface TradeProfile {
