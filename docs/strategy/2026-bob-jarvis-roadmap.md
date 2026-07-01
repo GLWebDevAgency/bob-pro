@@ -75,3 +75,19 @@ Aucun use case modifié à ce stade (on pose le port + adapters + table + isolat
 5. **Wake-word** : vrai always-on (impacts batterie/RGPD micro) en M5, ou déclenchement au tap suffit ?
 6. **Rétention reçus** : 6 ans stricts ou alignés 10 ans (simplicité) ?
 7. **Audios bruts** : conservés (rejeu/qualité) ou seulement la transcription texte (RGPD) ?
+
+## 7. Décisions user confirmées (2026-07-01)
+- **Stockage** : ✅ Supabase Storage privé + **immutabilité par versioning applicatif** (bascule S3 WORM repoussée). → M0 débloqué.
+- **TTS** : ✅ voix native par défaut + **Mistral Voxtral (souverain FR)** en premium palier Pro. → M2.
+- **Mailer** : ✅ **Brevo (FR)**, email seul en v1 (SMS plus tard). → M3.
+- **Défauts non bloquants** (sauf objection) : wake-word repoussé en M5 (tap en attendant) ; reçus alignés 10 ans ; audios = **transcription texte seulement** conservée (RGPD).
+
+## 8. Modèle autonomie ↔ pricing (proposition à co-décider Claude+Codex, à confirmer user)
+**Principe : découpler l'ACCÈS à Bob et son NIVEAU D'AUTONOMIE.** L'autonomie par défaut monte avec le palier (valeur up-market), MAIS s'achète aussi **à la carte** (un solo n'a pas besoin de Business pour l'auto).
+
+- **Défaut par palier** : Solo 14€ → `confirm_all` · Pro 39€ → `confirm_outbound` · Business 69€ → `auto`.
+- **Module « Bob Autonomie » (dès Solo)** : +2€/mo → `confirm_outbound` ; +5€/mo → `auto`. *(Solo 14€ + 5€ = 19€ obtient l'auto sans acheter Business.)*
+- **Plancher de sécurité INVIOLABLE** (quel que soit le niveau/add-on) : les actions qui **bougent de l'argent** (encaissement) ou **sortent vers un tiers** (envoi devis/facture/relance) demandent **toujours** une confirmation (tap ou voix). L'`auto` accélère l'interne réversible, jamais le sensible → vendre l'auto pas cher reste sûr.
+- **Prérequis** : Bob (assistant) devient accessible **dès Solo** (en `confirm_all`) — ajuste le gating actuel (ai_assistant Pro+). À trancher.
+- **Faisabilité mobile/web** : entitlements pilotés par le **web (Stripe)** comme source de vérité ; l'app mobile lit l'entitlement (pattern subscription déjà en place). iOS : attention règles Apple IAP vs billing externe pour SaaS B2B — à valider. Décision technique Claude+Codex.
+
