@@ -108,6 +108,9 @@ describe('ExportFec', () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.value.filename).toBe('732829320FEC20261231.txt');
+    expect(r.value.descriptionFilename).toBe('732829320FEC20261231-description.txt');
+    expect(r.value.descriptionContent).toContain('Separateur de champs: tabulation.');
+    expect(r.value.descriptionContent).toContain('BQ: Journal de banque');
     expect(r.value.entryCount).toBe(2);
     expect(r.value.rowCount).toBe(5);
     expect(r.value.warnings).toEqual([]);

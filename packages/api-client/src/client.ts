@@ -145,6 +145,8 @@ export interface ExportFecClientOutput {
   filename: string;
   mimeType: string;
   content: string;
+  descriptionFilename: string;
+  descriptionContent: string;
   entryCount: number;
   rowCount: number;
   warnings: string[];

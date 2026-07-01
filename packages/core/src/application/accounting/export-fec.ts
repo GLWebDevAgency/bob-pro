@@ -38,6 +38,8 @@ export interface ExportFecOutput {
   filename: string;
   mimeType: string;
   content: string;
+  descriptionFilename: string;
+  descriptionContent: string;
   entryCount: number;
   rowCount: number;
   warnings: string[];
@@ -130,6 +132,46 @@ function serializeRows(rows: string[][]): string {
   return [FEC_HEADERS.join('\t'), ...rows.map((row) => row.join('\t'))].join('\n') + '\n';
 }
 
+function buildDescription(input: {
+  companyName: string;
+  siren: string;
+  from: DateOnly;
+  to: DateOnly;
+  filename: string;
+  warnings: string[];
+}): string {
+  const lines = [
+    'Descriptif du fichier des ecritures comptables (FEC)',
+    `Societe: ${input.companyName}`,
+    `SIREN: ${input.siren}`,
+    `Periode: ${input.from} au ${input.to}`,
+    `Fichier: ${input.filename}`,
+    '',
+    'Format',
+    '- Fichier texte UTF-8.',
+    '- Separateur de champs: tabulation.',
+    '- Premiere ligne: noms des champs.',
+    '- Dates: AAAAMMJJ.',
+    '- Montants: euros avec virgule decimale.',
+    '- Champs non utilises: vides, sans zero ni espace.',
+    '',
+    'Champs',
+    ...FEC_HEADERS.map((header, index) => `${index + 1}. ${header}`),
+    '',
+    'Codes journaux',
+    ...Object.entries(JOURNALS).map(([journal, meta]) => `- ${meta.code}: ${meta.label} (${journal})`),
+    '',
+    'Conventions Bob Pro',
+    '- EcritureNum est une sequence continue dans l export; toutes les lignes d une meme ecriture partagent le meme numero.',
+    '- PieceDate et ValidDate reprennent EcritureDate lorsque la date de piece ou de validation distincte n est pas stockee.',
+    '- CompAuxNum, CompAuxLib, EcritureLet, DateLet, Montantdevise et Idevise restent vides tant que la donnee n est pas utilisee.',
+    '',
+    'Alertes',
+    ...(input.warnings.length ? input.warnings.map((w) => `- ${w}`) : ['- Aucune alerte.']),
+  ];
+  return `${lines.join('\n')}\n`;
+}
+
 export class ExportFec {
   constructor(private readonly deps: ExportFecDeps) {}
 
@@ -150,14 +192,26 @@ export class ExportFec {
     const periodEntries = sortedEntries(entries, input.from, input.to);
     const warnings = new Set<string>();
     const rows = toFecRows(periodEntries, chart, warnings);
+    const filename = `${company.siren}FEC${compactDate(input.to)}.txt`;
+    const descriptionFilename = `${company.siren}FEC${compactDate(input.to)}-description.txt`;
+    const warningList = [...warnings];
 
     return ok({
-      filename: `${company.siren}FEC${compactDate(input.to)}.txt`,
+      filename,
       mimeType: 'text/plain; charset=utf-8',
       content: serializeRows(rows),
+      descriptionFilename,
+      descriptionContent: buildDescription({
+        companyName: company.name,
+        siren: company.siren,
+        from: input.from,
+        to: input.to,
+        filename,
+        warnings: warningList,
+      }),
       entryCount: periodEntries.length,
       rowCount: rows.length,
-      warnings: [...warnings],
+      warnings: warningList,
     });
   }
 }

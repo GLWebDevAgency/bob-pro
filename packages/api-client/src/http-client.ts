@@ -241,9 +241,14 @@ export class HttpBobClient implements BobClient {
     const qs = new URLSearchParams({ from: input.from, to: input.to }).toString();
     const r = await this.reqText(`/accounting/fec?${qs}`);
     if (!r.ok) return r;
+    const description = await this.reqText(`/accounting/fec-description?${qs}`);
+    if (!description.ok) return description;
     const disposition = r.value.headers.get('content-disposition') ?? '';
+    const descriptionDisposition = description.value.headers.get('content-disposition') ?? '';
     const filenameMatch = disposition.match(/filename="?([^";]+)"?/i);
+    const descriptionFilenameMatch = descriptionDisposition.match(/filename="?([^";]+)"?/i);
     const filename = filenameMatch?.[1] ?? `export-fec-${input.to.replace(/-/g, '')}.txt`;
+    const descriptionFilename = descriptionFilenameMatch?.[1] ?? `export-fec-${input.to.replace(/-/g, '')}-description.txt`;
     const rows = r.value.content.trimEnd() ? r.value.content.trimEnd().split('\n') : [];
     const bodyRows = Math.max(0, rows.length - 1);
     const entryNums = new Set(rows.slice(1).map((row) => row.split('\t')[2]).filter(Boolean));
@@ -253,6 +258,8 @@ export class HttpBobClient implements BobClient {
         filename,
         mimeType: r.value.contentType ?? 'text/plain; charset=utf-8',
         content: r.value.content,
+        descriptionFilename,
+        descriptionContent: description.value.content,
         entryCount: entryNums.size,
         rowCount: bodyRows,
         warnings: [],

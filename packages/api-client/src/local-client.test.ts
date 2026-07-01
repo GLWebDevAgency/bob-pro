@@ -93,6 +93,8 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     expect(fec.ok).toBe(true);
     if (!fec.ok) return;
     expect(fec.value.filename).toBe('732829320FEC20261231.txt');
+    expect(fec.value.descriptionFilename).toBe('732829320FEC20261231-description.txt');
+    expect(fec.value.descriptionContent).toContain('Codes journaux');
     expect(fec.value.entryCount).toBe(2);
     expect(fec.value.rowCount).toBe(5);
     const rows = fec.value.content.trimEnd().split('\n');
