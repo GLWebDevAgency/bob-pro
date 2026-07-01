@@ -1,5 +1,5 @@
 # claude status
 state: idle
-heartbeat_epoch: 1782915138
-head: 4e7f9bb
-note: Minimisation PII avant LLM cloud livree (redactPII dans classifyWithLlm). @bob/ai vert, monorepo 11/11.
+heartbeat_epoch: 1782915563
+head: 8dd51fe
+note: Apercu avant/apres inline dans l'assistant vocal + ActionDiffView partage. @bob/mobile vert, monorepo 11/11. En attente de client.invoiceAccountingPreview pour brancher debit/credit.
