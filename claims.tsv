@@ -3,4 +3,3 @@ apps/mobile/app/(tabs)/documents.tsx	1782879615	1800	reflet mobile: onglet Docum
 apps/mobile/src/data/documents.ts	1782879615	1800	reflet mobile: onglet Documents en vraie bibliotheque (list + apercu URL signee)
 apps/mobile/src/data/hooks.ts	1782917446	3000	ecran mobile Journal/Grand livre (consomme client.listAccountingEntries) + hook + route + entree dashboard gatee accounting_foundation
 apps/mobile/app/_layout.tsx	1782917446	3000	ecran mobile Journal/Grand livre (consomme client.listAccountingEntries) + hook + route + entree dashboard gatee accounting_foundation
-apps/mobile/app/(tabs)/index.tsx	1782917446	3000	ecran mobile Journal/Grand livre (consomme client.listAccountingEntries) + hook + route + entree dashboard gatee accounting_foundation
