@@ -1,5 +1,5 @@
 # claude status
-state: deployed
-heartbeat_epoch: 1782934784
-head: 4966571
-note: API live sur Railway (demo): https://bob-pro-api-production.up.railway.app — /health+/ready verts, helmet+throttle OK. C2 fait.
+state: active
+heartbeat_epoch: 1782936075
+head: c6fcb93
+note: Reprise de session: je poursuis C1 Supabase (drift public_access_tokens + migrations manquantes + RLS FORCE + cert bob_app) via MCP, mutations en série.
