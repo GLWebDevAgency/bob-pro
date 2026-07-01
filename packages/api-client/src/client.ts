@@ -152,6 +152,14 @@ export interface ExportFecClientOutput {
   warnings: string[];
 }
 
+export interface ExportFecMetadata {
+  filename: string;
+  descriptionFilename: string;
+  entryCount: number;
+  rowCount: number;
+  warnings: string[];
+}
+
 /**
  * Façade data consommée par l'app mobile (via TanStack Query).
  * Deux implémentations : LocalBobClient (fixtures, hors-ligne — V1) et, plus tard, HttpBobClient (NestJS).

@@ -36,6 +36,7 @@ import type {
   VoiceSynthesisResult,
   InvoiceAccountingPreview,
   AccountingEntryView,
+  ExportFecMetadata,
   ExportFecClientInput,
   ExportFecClientOutput,
 } from './client';
@@ -239,6 +240,8 @@ export class HttpBobClient implements BobClient {
   }
   async exportFec(input: ExportFecClientInput): Promise<Result<ExportFecClientOutput, AppError>> {
     const qs = new URLSearchParams({ from: input.from, to: input.to }).toString();
+    const metadata = await this.req<ExportFecMetadata>('GET', `/accounting/fec-metadata?${qs}`);
+    if (!metadata.ok) return metadata;
     const r = await this.reqText(`/accounting/fec?${qs}`);
     if (!r.ok) return r;
     const description = await this.reqText(`/accounting/fec-description?${qs}`);
@@ -247,11 +250,8 @@ export class HttpBobClient implements BobClient {
     const descriptionDisposition = description.value.headers.get('content-disposition') ?? '';
     const filenameMatch = disposition.match(/filename="?([^";]+)"?/i);
     const descriptionFilenameMatch = descriptionDisposition.match(/filename="?([^";]+)"?/i);
-    const filename = filenameMatch?.[1] ?? `export-fec-${input.to.replace(/-/g, '')}.txt`;
-    const descriptionFilename = descriptionFilenameMatch?.[1] ?? `export-fec-${input.to.replace(/-/g, '')}-description.txt`;
-    const rows = r.value.content.trimEnd() ? r.value.content.trimEnd().split('\n') : [];
-    const bodyRows = Math.max(0, rows.length - 1);
-    const entryNums = new Set(rows.slice(1).map((row) => row.split('\t')[2]).filter(Boolean));
+    const filename = filenameMatch?.[1] ?? metadata.value.filename;
+    const descriptionFilename = descriptionFilenameMatch?.[1] ?? metadata.value.descriptionFilename;
     return {
       ok: true,
       value: {
@@ -260,9 +260,9 @@ export class HttpBobClient implements BobClient {
         content: r.value.content,
         descriptionFilename,
         descriptionContent: description.value.content,
-        entryCount: entryNums.size,
-        rowCount: bodyRows,
-        warnings: [],
+        entryCount: metadata.value.entryCount,
+        rowCount: metadata.value.rowCount,
+        warnings: metadata.value.warnings,
       },
     };
   }

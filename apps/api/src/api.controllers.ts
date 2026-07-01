@@ -240,6 +240,17 @@ export class AccountingController {
       disposition: `attachment; filename="${fec.descriptionFilename}"`,
     });
   }
+  @Get('fec-metadata')
+  async fecMetadata(@Query('from') from: string, @Query('to') to: string) {
+    const fec = unwrap(await this.backend.exportFec({ from: from ?? '', to: to ?? '' }));
+    return {
+      filename: fec.filename,
+      descriptionFilename: fec.descriptionFilename,
+      entryCount: fec.entryCount,
+      rowCount: fec.rowCount,
+      warnings: fec.warnings,
+    };
+  }
 }
 
 @Controller('documents')
