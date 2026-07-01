@@ -8,3 +8,4 @@ apps/mobile/app/devis/[id].tsx	1782911342	3600	detail screens devis/facture + co
 apps/mobile/app/facture/[id].tsx	1782911342	3600	detail screens devis/facture + composant DocumentActions partage (source unique plancher securite) + refactor ventes + useQuote + routes
 apps/mobile/app/_layout.tsx	1782911342	3600	detail screens devis/facture + composant DocumentActions partage (source unique plancher securite) + refactor ventes + useQuote + routes
 apps/mobile/src/data/hooks.ts	1782911342	3600	detail screens devis/facture + composant DocumentActions partage (source unique plancher securite) + refactor ventes + useQuote + routes
+apps/mobile/app/client/[id].tsx	1782912197	1800	fix findings revue: assiette netToPay (acompte) + comments obsoletes post-74b00ff
