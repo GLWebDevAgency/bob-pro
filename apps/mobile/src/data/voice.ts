@@ -85,3 +85,21 @@ export function useVoiceInput(onTranscript: (text: string) => void) {
 
   return { listening, start, stop };
 }
+
+/**
+ * Sortie vocale de Bob (TTS) — miroir de useVoiceInput. NATIF par défaut (expo-speech, on-device, gratuit) ;
+ * le premium souverain (Voxtral TTS) passera par le backend derrière le TtsPort (lit l'audio renvoyé).
+ *
+ * SEAM : aujourd'hui no-op sûr (Bob affiche le texte). Pour activer la parole native, après build natif :
+ *   `npx expo install expo-speech` puis, ci-dessous :
+ *     import * as Speech from 'expo-speech';
+ *     speak = (text) => Speech.speak(text, { language: 'fr-FR' });  stopSpeaking = () => Speech.stop();
+ * (Les montants viennent TOUJOURS du domaine — jamais inventés — donc sûrs à vocaliser tels quels.)
+ */
+export function useSpeak() {
+  const speak = useCallback((_text: string) => {
+    /* no-op tant qu'expo-speech n'est pas installé (voir docstring) */
+  }, []);
+  const stopSpeaking = useCallback(() => {}, []);
+  return { speak, stopSpeaking };
+}

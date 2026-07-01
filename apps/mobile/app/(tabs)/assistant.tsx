@@ -9,7 +9,7 @@ import { useTheme } from '../../src/theme';
 import { useBobClient } from '../../src/data/client';
 import { useSubscription } from '../../src/data/hooks';
 import { makeBobAgent } from '../../src/data/bob';
-import { useVoiceInput } from '../../src/data/voice';
+import { useVoiceInput, useSpeak } from '../../src/data/voice';
 import { getAutonomy } from '../../src/data/settings';
 import { Card, Button, Badge, Chip, font } from '../../src/components/ui';
 
@@ -32,6 +32,10 @@ export default function Assistant() {
   const agent = useMemo(() => makeBobAgent(client), [client]);
   const { data: sub } = useSubscription();
   const entitled = (sub?.features ?? []).includes('ai_assistant');
+  const { speak } = useSpeak();
+  const [awaitingConfirm, setAwaitingConfirm] = useState<PendingAction | null>(null);
+  const awaitingRef = useRef<PendingAction | null>(null);
+  awaitingRef.current = awaitingConfirm;
 
   const [items, setItems] = useState<ChatItem[]>([
     { id: 'intro', role: 'bob', text: "Salut, moi c'est Bob. Dis-moi par exemple « encaisse la facture 2026-014 » — je m'en occupe." },
@@ -54,6 +58,9 @@ export default function Assistant() {
       ...prev,
       { id: nextId(), role: 'bob', text: run.card.body, run, pending: run.kind === 'proposed' ? run.pending : undefined },
     ]);
+    // Boucle vocale : mémorise l'action à confirmer à l'oral + fait parler Bob (TTS, natif via expo-speech).
+    setAwaitingConfirm(run.kind === 'proposed' ? run.pending ?? null : null);
+    speak(run.spokenPrompt ?? run.card.body);
     if (run.kind === 'done') refreshAfterAction();
     if (run.navigate) router.push(run.navigate as never); // commande « Jarvis » : Bob ouvre le bon écran
   };
@@ -73,6 +80,7 @@ export default function Assistant() {
 
   const confirm = async (item: ChatItem): Promise<void> => {
     if (!item.pending || busy) return;
+    setAwaitingConfirm(null);
     setBusy(true);
     const r = await agent.confirm(item.pending);
     setBusy(false);
@@ -83,10 +91,31 @@ export default function Assistant() {
   };
 
   const cancel = (item: ChatItem): void => {
+    setAwaitingConfirm(null);
     setItems((prev) => prev.map((it) => (it.id === item.id ? { ...it, pending: undefined } : it)));
   };
 
-  const voice = useVoiceInput((text) => void ask(text));
+  /**
+   * Voix : si Bob attend une confirmation, la réponse parlée passe par le chemin FAIL-SAFE `confirmByVoice`
+   * (jamais d'exécution sur une réponse ambiguë) ; sinon c'est une nouvelle demande.
+   */
+  const handleVoice = async (text: string): Promise<void> => {
+    const pending = awaitingRef.current;
+    if (!pending) {
+      void ask(text);
+      return;
+    }
+    setItems((prev) => [...prev, { id: nextId(), role: 'user', text }]);
+    setBusy(true);
+    const r = await agent.confirmByVoice(pending, text);
+    setBusy(false);
+    setAwaitingConfirm(null);
+    setItems((prev) => prev.map((it) => (it.pending ? { ...it, pending: undefined } : it)));
+    if (r.ok) pushBob(r.value);
+    else setItems((prev) => [...prev, { id: nextId(), role: 'bob', text: "L'action a échoué. Réessaie." }]);
+  };
+
+  const voice = useVoiceInput((text) => void handleVoice(text));
 
   if (!entitled) {
     return (
@@ -164,6 +193,12 @@ export default function Assistant() {
         ) : null}
       </ScrollView>
 
+      {awaitingConfirm ? (
+        <View style={{ paddingHorizontal: 16, paddingVertical: 6, backgroundColor: semantic.aiBg, flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          <Ionicons name="mic" size={14} color={semantic.ai} />
+          <Text style={[font('meta'), { color: semantic.aiInk }]}>Réponds à Bob : « je confirme » ou « annule »</Text>
+        </View>
+      ) : null}
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, padding: 12, paddingBottom: insets.bottom + 12, borderTopWidth: 1, borderTopColor: colors.line, backgroundColor: colors.surface }}>
         <TextInput
           value={input}
@@ -178,9 +213,9 @@ export default function Assistant() {
           onPress={() => (voice.listening ? void voice.stop() : void voice.start())}
           accessibilityRole="button"
           accessibilityLabel={voice.listening ? 'Arrêter la dictée' : 'Parler à Bob'}
-          style={{ width: 44, height: 44, borderRadius: 12, backgroundColor: voice.listening ? semantic.danger : colors.lineSoft, alignItems: 'center', justifyContent: 'center' }}
+          style={{ width: 44, height: 44, borderRadius: 12, backgroundColor: voice.listening ? semantic.danger : awaitingConfirm ? semantic.ai : colors.lineSoft, alignItems: 'center', justifyContent: 'center' }}
         >
-          <Ionicons name={voice.listening ? 'stop' : 'mic'} size={22} color={voice.listening ? '#fff' : colors.ink800} />
+          <Ionicons name={voice.listening ? 'stop' : 'mic'} size={22} color={voice.listening || awaitingConfirm ? '#fff' : colors.ink800} />
         </Pressable>
         <Pressable onPress={() => void ask(input)} accessibilityRole="button" accessibilityLabel="Envoyer" style={{ width: 44, height: 44, borderRadius: 12, backgroundColor: semantic.ai, alignItems: 'center', justifyContent: 'center' }}>
           <Ionicons name="arrow-up" size={22} color="#fff" />
