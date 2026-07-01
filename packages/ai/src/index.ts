@@ -15,4 +15,5 @@ export * from './agent/autonomy';
 export * from './agent/confirmation';
 export * from './agent/action-diff';
 export * from './agent/bob-agent';
+export * from './memory/company-memory';
 export * from './runtime';
