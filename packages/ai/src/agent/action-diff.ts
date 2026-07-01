@@ -1,4 +1,4 @@
-import { formatEUR } from '@bob/core';
+import { buildPaymentAccountingPreviewLines, formatEUR, type PaymentMethod } from '@bob/core';
 
 /**
  * Aperçu AVANT/APRÈS d'une action sensible — la « preuve » montrée à la confirmation : l'utilisateur voit
@@ -43,6 +43,10 @@ function intOr(v: unknown, fallback: number): number {
   return typeof v === 'number' && Number.isFinite(v) ? v : fallback;
 }
 
+function paymentMethodOrTransfer(v: unknown): PaymentMethod {
+  return v === 'cash' || v === 'card' || v === 'transfer' ? v : 'transfer';
+}
+
 /**
  * Construit l'aperçu d'une action à partir de ses arguments et de l'état AVANT. Renvoie null pour les
  * outils sans effet notable (lecture) ou inconnus.
@@ -50,11 +54,18 @@ function intOr(v: unknown, fallback: number): number {
 export function buildActionDiff(tool: string, args: Record<string, unknown>, before: DiffSnapshot = {}): ActionDiff | null {
   const num = before.number ?? null;
   let spec: { title: string; fields: ActionDiffField[] } | null = null;
+  let generatedAccounting: readonly AccountingLine[] = [];
 
   if (tool === 'encaisser_facture') {
     const remaining = Math.max(0, intOr(before.remainingCents, 0));
     const amount = Math.max(0, intOr(args.amountCents, 0));
     const after = Math.max(0, remaining - amount);
+    const preview = buildPaymentAccountingPreviewLines({
+      amountCents: amount,
+      method: paymentMethodOrTransfer(args.method),
+      reference: num ?? 'facture',
+    });
+    generatedAccounting = preview.ok ? preview.value : [];
     spec = {
       title: `Encaisser ${formatEUR(amount)}${num ? ` · ${num}` : ''}`,
       fields: [
@@ -78,6 +89,6 @@ export function buildActionDiff(tool: string, args: Record<string, unknown>, bef
   }
 
   if (!spec) return null; // lecture / outil sans aperçu d'état
-  const accounting = before.accountingLines?.filter((l) => l.debitCents > 0 || l.creditCents > 0) ?? [];
+  const accounting = (before.accountingLines ?? generatedAccounting).filter((l) => l.debitCents > 0 || l.creditCents > 0);
   return { tool, title: spec.title, fields: spec.fields, ...(accounting.length ? { accounting } : {}) };
 }

@@ -10,11 +10,22 @@ describe('buildActionDiff', () => {
     expect(reste?.after).toContain('0,00');
     expect(d!.fields.find((f) => f.label === 'Statut')?.after).toBe('Payée');
     expect(d!.title).toContain('2026-014');
+    expect(d!.accounting).toEqual([
+      { account: '512', label: 'Encaissement 2026-014', debitCents: 48840, creditCents: 0 },
+      { account: '411', label: 'Encaissement 2026-014', debitCents: 0, creditCents: 48840 },
+    ]);
   });
 
   it('encaisser (partiel) : reste > 0 -> statut Partielle', () => {
     const d = buildActionDiff('encaisser_facture', { amountCents: 20000 }, { remainingCents: 48840 });
     expect(d!.fields.find((f) => f.label === 'Statut')?.after).toBe('Partielle');
+    expect(d!.accounting?.map((l) => l.account)).toEqual(['512', '411']);
+  });
+
+  it('encaisser en especes : preview 530 / 411', () => {
+    const d = buildActionDiff('encaisser_facture', { amountCents: 1000, method: 'cash' }, { number: 'F-1', remainingCents: 1000 });
+
+    expect(d!.accounting?.map((l) => l.account)).toEqual(['530', '411']);
   });
 
   it('émettre : brouillon -> émise + numéro attribué', () => {

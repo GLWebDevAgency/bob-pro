@@ -1,8 +1,8 @@
-import { type DomainResult, err } from '../../shared-kernel/result';
+import { type DomainResult, ok, err } from '../../shared-kernel/result';
 import { type DateOnly } from '../../shared-kernel/time';
 import { type Invoice } from '../billing/invoice/invoice';
 import { type Payment, type PaymentMethod } from '../payment/payment';
-import { AccountingEntry, type AccountingEntryProps } from './accounting-entry';
+import { AccountingEntry, type AccountingEntryLineProps, type AccountingEntryProps } from './accounting-entry';
 import { type ChartOfAccounts } from './chart-of-accounts';
 
 export interface PaymentAccountingAccounts {
@@ -24,6 +24,13 @@ export interface BuildPaymentAccountingEntryInput {
   payment: Payment;
   invoice: Invoice;
   chart?: ChartOfAccounts;
+  accounts?: Partial<PaymentAccountingAccounts>;
+}
+
+export interface BuildPaymentAccountingPreviewLinesInput {
+  amountCents: number;
+  method?: PaymentMethod;
+  reference?: string | null;
   accounts?: Partial<PaymentAccountingAccounts>;
 }
 
@@ -50,6 +57,20 @@ function dateOnlyFromInstant(instant: string): DateOnly {
   return instant.slice(0, 10) as DateOnly;
 }
 
+export function buildPaymentAccountingPreviewLines(input: BuildPaymentAccountingPreviewLinesInput): DomainResult<AccountingEntryLineProps[]> {
+  if (!Number.isSafeInteger(input.amountCents) || input.amountCents <= 0)
+    return err(appValidation('amountCents', 'Montant > 0 requis en centimes entiers.'));
+
+  const accounts = mergeAccounts(input.accounts);
+  const reference = input.reference?.trim() || 'facture';
+  const label = `Encaissement ${reference}`;
+  const debitAccount = debitAccountFor(input.method ?? 'transfer', accounts);
+  return ok([
+    { account: debitAccount, label, debitCents: input.amountCents, creditCents: 0 },
+    { account: accounts.receivable, label, debitCents: 0, creditCents: input.amountCents },
+  ]);
+}
+
 /**
  * Produit l'ecriture comptable d'un encaissement client, sans effet de bord.
  *
@@ -68,8 +89,14 @@ export function buildPaymentAccountingEntry(input: BuildPaymentAccountingEntryIn
 
   const accounts = mergeAccounts(input.accounts);
   const reference = invoice.number ?? invoice.id;
-  const label = `Encaissement ${reference}`;
-  const debitAccount = debitAccountFor(payment.method, accounts);
+  const lines = buildPaymentAccountingPreviewLines({
+    amountCents: payment.amount,
+    method: payment.method,
+    reference,
+    accounts,
+  });
+  if (!lines.ok) return lines;
+  const label = lines.value[0]?.label ?? `Encaissement ${reference}`;
   const props: AccountingEntryProps = {
     id: input.entryId,
     companyId: payment.companyId,
@@ -79,10 +106,7 @@ export function buildPaymentAccountingEntry(input: BuildPaymentAccountingEntryIn
     entryDate: dateOnlyFromInstant(payment.receivedAt),
     reference,
     label,
-    lines: [
-      { account: debitAccount, label, debitCents: payment.amount, creditCents: 0 },
-      { account: accounts.receivable, label, debitCents: 0, creditCents: payment.amount },
-    ],
+    lines: lines.value,
   };
   return AccountingEntry.create(props, input.chart ? { chart: input.chart } : {});
 }

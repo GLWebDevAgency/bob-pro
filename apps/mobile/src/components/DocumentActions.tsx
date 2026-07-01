@@ -224,7 +224,7 @@ export function InvoiceActions({ invoice }: { invoice: InvoiceView }): ReactNode
                 void (async () => {
                   const ok = await confirm({
                     title: 'Enregistrer le paiement',
-                    message: 'Met à jour ta compta (CA, TVA, relances).',
+                    message: 'Met à jour le journal de banque, le compte client et les relances.',
                     diff: buildActionDiff(
                       'encaisser_facture',
                       { amountCents: remaining },

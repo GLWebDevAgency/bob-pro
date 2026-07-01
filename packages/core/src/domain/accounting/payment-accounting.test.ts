@@ -6,7 +6,7 @@ import { DocNumber } from '../billing/shared/doc-number';
 import { PaymentTerms } from '../../shared-kernel/payment-terms';
 import { Payment, type PaymentMethod } from '../payment/payment';
 import { createFrenchOperationalChartOfAccounts } from './chart-of-accounts';
-import { buildPaymentAccountingEntry } from './payment-accounting';
+import { buildPaymentAccountingEntry, buildPaymentAccountingPreviewLines } from './payment-accounting';
 
 const AT = '2026-06-01T10:00:00.000Z';
 const PAID_AT = '2026-06-07T15:30:00.000Z';
@@ -55,6 +55,25 @@ function payment(method: PaymentMethod = 'transfer', companyId = 'co-1') {
 }
 
 describe('buildPaymentAccountingEntry', () => {
+  it("preview les lignes d'encaissement sans paiement persiste", () => {
+    const r = buildPaymentAccountingPreviewLines({ amountCents: 48840, method: 'transfer', reference: 'F-2026-0001' });
+
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value).toEqual([
+        { account: '512', label: 'Encaissement F-2026-0001', debitCents: 48840, creditCents: 0 },
+        { account: '411', label: 'Encaissement F-2026-0001', debitCents: 0, creditCents: 48840 },
+      ]);
+    }
+  });
+
+  it("preview les especes sans paiement persiste", () => {
+    const r = buildPaymentAccountingPreviewLines({ amountCents: 1000, method: 'cash', reference: 'F-2026-0001' });
+
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.map((line) => line.account)).toEqual(['530', '411']);
+  });
+
   it('mappe un encaissement par virement en 512 / 411', () => {
     const chart = createFrenchOperationalChartOfAccounts('co-1');
     expect(chart.ok).toBe(true);
