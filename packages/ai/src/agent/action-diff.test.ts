@@ -34,4 +34,29 @@ describe('buildActionDiff', () => {
     expect(buildActionDiff('factures_impayees', {}, {})).toBeNull();
     expect(buildActionDiff('inconnu', {}, {})).toBeNull();
   });
+
+  it('émettre : attache l’écriture comptable fournie (débit/crédit)', () => {
+    const d = buildActionDiff('emettre_facture', {}, {
+      number: 'F2026-001',
+      accountingLines: [
+        { account: '411', label: 'Client', debitCents: 132000, creditCents: 0 },
+        { account: '706', label: 'Prestations', debitCents: 0, creditCents: 110000 },
+        { account: '44571', label: 'TVA collectée', debitCents: 0, creditCents: 22000 },
+      ],
+    });
+    expect(d!.accounting).toHaveLength(3);
+    expect(d!.accounting!.find((l) => l.account === '411')?.debitCents).toBe(132000);
+    // équilibre débit = crédit
+    const deb = d!.accounting!.reduce((s, l) => s + l.debitCents, 0);
+    const cred = d!.accounting!.reduce((s, l) => s + l.creditCents, 0);
+    expect(deb).toBe(cred);
+  });
+
+  it('lignes comptables vides (0/0) écartées ; absentes -> pas de champ accounting', () => {
+    const withEmpty = buildActionDiff('emettre_facture', {}, {
+      accountingLines: [{ account: '411', label: 'x', debitCents: 0, creditCents: 0 }],
+    });
+    expect(withEmpty!.accounting).toBeUndefined();
+    expect(buildActionDiff('emettre_facture', {}, {})!.accounting).toBeUndefined();
+  });
 });

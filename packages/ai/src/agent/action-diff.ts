@@ -11,16 +11,32 @@ export interface ActionDiffField {
   readonly before: string;
   readonly after: string;
 }
+
+/**
+ * Ligne d'écriture comptable (partie double) — exactement 1 débit OU 1 crédit non nul. Même forme que
+ * AccountingPreviewLine de @bob/api-client, pour un mapping 1:1 depuis client.invoiceAccountingPreview.
+ */
+export interface AccountingLine {
+  readonly account: string;
+  readonly label: string;
+  readonly debitCents: number;
+  readonly creditCents: number;
+}
+
 export interface ActionDiff {
   readonly tool: string;
   readonly title: string;
   readonly fields: readonly ActionDiffField[];
+  /** Écriture comptable prévisionnelle (débit/crédit) — optionnelle, fournie via le snapshot. */
+  readonly accounting?: readonly AccountingLine[];
 }
 
 /** État connu AVANT l'action (sous-ensemble lu via BobActions), passé au calcul du diff. */
 export interface DiffSnapshot {
   readonly number?: string | null;
   readonly remainingCents?: number;
+  /** Écriture comptable prévisionnelle (via client.invoiceAccountingPreview) — affichée telle quelle. */
+  readonly accountingLines?: readonly AccountingLine[];
 }
 
 function intOr(v: unknown, fallback: number): number {
@@ -33,39 +49,35 @@ function intOr(v: unknown, fallback: number): number {
  */
 export function buildActionDiff(tool: string, args: Record<string, unknown>, before: DiffSnapshot = {}): ActionDiff | null {
   const num = before.number ?? null;
+  let spec: { title: string; fields: ActionDiffField[] } | null = null;
 
   if (tool === 'encaisser_facture') {
     const remaining = Math.max(0, intOr(before.remainingCents, 0));
     const amount = Math.max(0, intOr(args.amountCents, 0));
     const after = Math.max(0, remaining - amount);
-    return {
-      tool,
+    spec = {
       title: `Encaisser ${formatEUR(amount)}${num ? ` · ${num}` : ''}`,
       fields: [
         { label: 'Reste dû', before: formatEUR(remaining), after: formatEUR(after) },
         { label: 'Statut', before: remaining > 0 ? 'À encaisser' : 'Payée', after: after === 0 ? 'Payée' : 'Partielle' },
       ],
     };
-  }
-
-  if (tool === 'emettre_facture') {
-    return {
-      tool,
+  } else if (tool === 'emettre_facture') {
+    spec = {
       title: 'Émettre la facture',
       fields: [
         { label: 'Statut', before: 'Brouillon', after: 'Émise' },
         { label: 'Numéro légal', before: num ?? '—', after: num ?? 'attribué à l’émission' },
       ],
     };
-  }
-
-  if (tool === 'envoyer_devis') {
-    return {
-      tool,
+  } else if (tool === 'envoyer_devis') {
+    spec = {
       title: `Envoyer le devis${num ? ` ${num}` : ''}`,
       fields: [{ label: 'Statut', before: 'Brouillon', after: 'Envoyé au client' }],
     };
   }
 
-  return null; // lecture / outil sans aperçu d'état
+  if (!spec) return null; // lecture / outil sans aperçu d'état
+  const accounting = before.accountingLines?.filter((l) => l.debitCents > 0 || l.creditCents > 0) ?? [];
+  return { tool, title: spec.title, fields: spec.fields, ...(accounting.length ? { accounting } : {}) };
 }
