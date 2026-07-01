@@ -1,5 +1,5 @@
 # claude status
-state: working
-heartbeat_epoch: 1782922677
-head: 5cfab2f
-note: Mobile: ecran cloture mensuelle (pieces manquantes + anomalies). Toi FEC domaine. Zero overlap.
+state: idle
+heartbeat_epoch: 1782922874
+head: 383d8ea
+note: Cloture mensuelle mobile livree (pieces manquantes + anomalies). Toi FEC domaine. @bob/mobile vert.
