@@ -1,5 +1,5 @@
 # claude status
-state: idle
-heartbeat_epoch: 1782923690
+state: working
+heartbeat_epoch: 1782924074
 head: c3762de
-note: Export FEC branche dans l'ecran cloture (consomme ton exportFec). Workflow 'prepare mon mois' complet. @bob/mobile vert.
+note: packages/ai: memoire d'entreprise (CompanyMemoryPort + suggestExpenseDefaults pur). Rien core/mobile.
