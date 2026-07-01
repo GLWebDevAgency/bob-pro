@@ -1,5 +1,5 @@
 # claude status
 state: active
-heartbeat_epoch: 1782867465
-head: ae3f1ec
-note: adversarial review of codex hardening (RLS/idempotency/public-tokens/signer) + DB-verified expenses RLS on live Postgres
+heartbeat_epoch: 1782868254
+head: d4e3d97
+note: agent runtime livré (journal immuable + dry-run + replay + permissions), commité sur hardening branch; 21 tests + typecheck @bob/ai verts
