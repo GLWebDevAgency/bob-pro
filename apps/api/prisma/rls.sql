@@ -19,6 +19,7 @@ BEGIN
     'documents',
     'document_versions',
     'document_archive_jobs',
+    'notification_jobs',
     'agent_journal_entries',
     'document_counters'
   ]) LOOP
@@ -77,6 +78,11 @@ CREATE POLICY tenant_isolation ON document_counters
 
 DROP POLICY IF EXISTS tenant_isolation ON document_archive_jobs;
 CREATE POLICY tenant_isolation ON document_archive_jobs
+  USING ("companyId" = current_setting('app.current_company_id', true))
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+
+DROP POLICY IF EXISTS tenant_isolation ON notification_jobs;
+CREATE POLICY tenant_isolation ON notification_jobs
   USING ("companyId" = current_setting('app.current_company_id', true))
   WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
 

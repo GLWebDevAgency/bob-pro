@@ -29,6 +29,12 @@ import type {
   DocumentArchiveJobRepository,
   EnqueueDocumentArchiveJobInput,
 } from './document-archive-jobs';
+import type {
+  DeliverableNotificationJob,
+  EnqueueNotificationJobInput,
+  NotificationJob,
+  NotificationJobRepository,
+} from './notification-jobs';
 
 /**
  * Adapters in-memory (stockent les objets de domaine directement — aucune réhydratation requise).
@@ -163,6 +169,83 @@ export class InMemoryDocumentArchiveJobRepository implements DocumentArchiveJobR
   async markDone(id: string, at: string): Promise<void> {
     const job = this.map.get(id);
     if (job) this.map.set(id, { ...job, status: 'done', lastError: null, updatedAt: at });
+  }
+
+  async markFailed(id: string, at: string, nextAttemptAt: string, error: string): Promise<void> {
+    const job = this.map.get(id);
+    if (job) {
+      this.map.set(id, {
+        ...job,
+        status: 'failed',
+        attempts: job.attempts + 1,
+        nextAttemptAt,
+        lastError: error.slice(0, 2000),
+        updatedAt: at,
+      });
+    }
+  }
+}
+
+export class InMemoryNotificationJobRepository implements NotificationJobRepository {
+  private readonly map = new Map<string, NotificationJob>();
+
+  async enqueue(input: EnqueueNotificationJobInput): Promise<NotificationJob> {
+    const existing = [...this.map.values()].find(
+      (job) => job.companyId === input.companyId && job.kind === input.kind && job.dedupeKey === input.dedupeKey,
+    );
+    if (existing) {
+      if (existing.status !== 'done') {
+        const updated: NotificationJob = {
+          ...existing,
+          notification: input.notification,
+          channel: input.notification.channel,
+          recipient: input.notification.to,
+          subject: input.notification.subject,
+          status: 'pending',
+          nextAttemptAt: input.now,
+          lastError: null,
+          updatedAt: input.now,
+        };
+        this.map.set(existing.id, updated);
+        return { ...updated };
+      }
+      return { ...existing };
+    }
+
+    const created: NotificationJob = {
+      id: input.id,
+      companyId: input.companyId,
+      kind: input.kind,
+      dedupeKey: input.dedupeKey,
+      channel: input.notification.channel,
+      recipient: input.notification.to,
+      subject: input.notification.subject,
+      notification: input.notification,
+      status: 'pending',
+      attempts: 0,
+      nextAttemptAt: input.now,
+      lastError: null,
+      createdAt: input.now,
+      updatedAt: input.now,
+    };
+    this.map.set(created.id, created);
+    return { ...created };
+  }
+
+  async listDue(companyId: string, now: string, limit: number): Promise<DeliverableNotificationJob[]> {
+    return [...this.map.values()]
+      .filter((job) => job.companyId === companyId)
+      .filter((job) => job.status === 'pending' || job.status === 'failed')
+      .filter((job) => job.notification !== null)
+      .filter((job) => job.nextAttemptAt <= now)
+      .sort((a, b) => a.nextAttemptAt.localeCompare(b.nextAttemptAt))
+      .slice(0, limit)
+      .map((job) => ({ ...job, notification: job.notification! }));
+  }
+
+  async markDone(id: string, at: string): Promise<void> {
+    const job = this.map.get(id);
+    if (job) this.map.set(id, { ...job, notification: null, status: 'done', lastError: null, updatedAt: at });
   }
 
   async markFailed(id: string, at: string, nextAttemptAt: string, error: string): Promise<void> {

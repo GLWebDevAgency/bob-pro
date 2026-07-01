@@ -12,6 +12,7 @@ import {
   type SequenceCounterPort,
 } from '@bob/core';
 import type { DocumentArchiveJobRepository } from './document-archive-jobs';
+import type { NotificationJobRepository } from './notification-jobs';
 import type { AgentJournalRepository } from './agent-journal';
 import { InMemoryAgentJournalRepository } from './agent-journal';
 import {
@@ -25,6 +26,7 @@ import {
   InMemoryExpenseRepository,
   InMemorySequenceCounter,
   InMemoryDocumentArchiveJobRepository,
+  InMemoryNotificationJobRepository,
 } from './in-memory';
 
 export const PERSISTENCE = Symbol('PERSISTENCE');
@@ -37,6 +39,7 @@ export interface Persistence {
   invoices: InvoiceRepository;
   documents: DocumentRepository;
   documentArchiveJobs: DocumentArchiveJobRepository;
+  notificationJobs: NotificationJobRepository;
   payments: PaymentRepository;
   publicAccessTokens: PublicAccessTokenRepository;
   expenses: ExpenseRepository;
@@ -56,6 +59,7 @@ export class InMemoryPersistence implements Persistence {
   readonly invoices = new InMemoryInvoiceRepository();
   readonly documents = new InMemoryDocumentRepository();
   readonly documentArchiveJobs = new InMemoryDocumentArchiveJobRepository();
+  readonly notificationJobs = new InMemoryNotificationJobRepository();
   readonly payments = new InMemoryPaymentRepository();
   readonly publicAccessTokens = new InMemoryPublicAccessTokenRepository();
   readonly expenses = new InMemoryExpenseRepository();

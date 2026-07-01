@@ -1,9 +1,9 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { SystemClock, buildRelance, MERCIER_PROPS, type NotificationPort, type RelanceTone } from '@bob/core';
+import { SystemClock, buildRelance, MERCIER_PROPS, type RelanceTone } from '@bob/core';
 import { PERSISTENCE, type Persistence } from '../persistence/persistence';
-import { NOTIFIER } from '../notifications/notifier';
 import { AppLogger } from '../observability/logger';
+import { NotificationDeliveryService } from './notification-delivery.service';
 
 function daysBetween(a: string, b: string): number {
   const da = new Date(`${a}T00:00:00.000Z`).getTime();
@@ -25,7 +25,7 @@ export class RelanceService {
 
   constructor(
     @Inject(PERSISTENCE) private readonly p: Persistence,
-    @Inject(NOTIFIER) private readonly notifier: NotificationPort,
+    private readonly notificationDelivery: NotificationDeliveryService,
     private readonly logger: AppLogger,
   ) {}
 
@@ -36,33 +36,42 @@ export class RelanceService {
 
   async runRelances(): Promise<{ scanned: number; sent: number }> {
     const today = this.clock.today();
-    const invoices = await this.p.invoices.listByCompany(MERCIER_PROPS.id);
-    let sent = 0;
-    for (const inv of invoices) {
-      const overdue =
-        (inv.status === 'issued' || inv.status === 'partially_paid' || inv.status === 'late') &&
-        inv.dueAt !== null &&
-        inv.dueAt < today;
-      if (!overdue || inv.dueAt === null) continue;
-      const daysLate = daysBetween(inv.dueAt, today);
-      const customer = await this.p.customers.findById(inv.customerId);
-      const email = customer?.toProps().email;
-      if (!email) {
-        this.logger.audit('relance.email_skipped', { invoiceId: inv.id, reason: 'customer_email_missing' });
-        continue;
+    return this.p.runWithTenant(MERCIER_PROPS.id, async () => {
+      const invoices = await this.p.invoices.listByCompany(MERCIER_PROPS.id);
+      let sent = 0;
+      for (const inv of invoices) {
+        const overdue =
+          (inv.status === 'issued' || inv.status === 'partially_paid' || inv.status === 'late') &&
+          inv.dueAt !== null &&
+          inv.dueAt < today;
+        if (!overdue || inv.dueAt === null) continue;
+        const daysLate = daysBetween(inv.dueAt, today);
+        const customer = await this.p.customers.findById(inv.customerId);
+        const email = customer?.toProps().email;
+        if (!email) {
+          this.logger.audit('relance.email_skipped', { invoiceId: inv.id, reason: 'customer_email_missing' });
+          continue;
+        }
+        const message = buildRelance({
+          customerName: customer?.name ?? 'le client',
+          docNumber: inv.number ?? '',
+          amountCents: inv.totals().netToPay - inv.paid,
+          daysLate,
+          tone: toneForDaysLate(daysLate),
+          personality: 'Pote',
+        });
+        const job = await this.notificationDelivery.enqueue({
+          companyId: inv.companyId,
+          kind: 'invoice-relance',
+          dedupeKey: `invoice:${inv.id}:relance:${today}`,
+          notification: { channel: 'email', to: email, subject: message.subject, body: message.body },
+        });
+        if (job.status !== 'done' && job.notification !== null && (await this.notificationDelivery.tryDeliver(inv.companyId, { ...job, notification: job.notification }))) {
+          sent += 1;
+        }
       }
-      const message = buildRelance({
-        customerName: customer?.name ?? 'le client',
-        docNumber: inv.number ?? '',
-        amountCents: inv.totals().netToPay - inv.paid,
-        daysLate,
-        tone: toneForDaysLate(daysLate),
-        personality: 'Pote',
-      });
-      await this.notifier.send({ channel: 'email', to: email, subject: message.subject, body: message.body });
-      sent += 1;
-    }
-    this.logger.audit('relances.run', { scanned: invoices.length, sent });
-    return { scanned: invoices.length, sent };
+      this.logger.audit('relances.run', { scanned: invoices.length, sent });
+      return { scanned: invoices.length, sent };
+    });
   }
 }

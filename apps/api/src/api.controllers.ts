@@ -302,6 +302,7 @@ export class ExpensesController {
 @Controller('jobs')
 export class JobsController {
   constructor(
+    private readonly backend: BackendService,
     private readonly relances: RelanceService,
     private readonly documentArchives: DocumentArchiveService,
   ) {}
@@ -312,6 +313,10 @@ export class JobsController {
   @Post('run-document-archives')
   runDocumentArchives() {
     return this.documentArchives.run();
+  }
+  @Post('run-notifications')
+  runNotifications() {
+    return this.backend.runNotificationJobs({ limit: 25 });
   }
 }
 

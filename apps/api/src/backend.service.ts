@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import {
   CreateQuote,
@@ -73,7 +74,6 @@ import {
   type OcrPort,
   type RecordExpenseInput,
   type ExpenseProps,
-  type NotificationPort,
   type DocumentKind,
   type DocumentLinkedEntityType,
   type DocumentOrigin,
@@ -103,10 +103,10 @@ import { PAYMENT_GATEWAY } from './payments/payment-gateway';
 import { PDF_RENDERER } from './documents/pdf-renderer';
 import { buildDocumentStorage, documentSha256 } from './documents/storage';
 import { OCR_PORT } from './ocr/ocr';
-import { NOTIFIER } from './notifications/notifier';
 import { hasClaudeKey, hasGlmKey, hasDeepseekKey, hasMistralKey, hasOpenaiKey } from './config/env';
 import { buildLlmForProvider, buildSttCloud, buildTtsCloud } from './ai/providers';
 import { clampAgentAutonomy } from './ai/autonomy-entitlements';
+import { NotificationDeliveryService } from './jobs/notification-delivery.service';
 
 export interface QuoteView {
   id: string;
@@ -207,6 +207,10 @@ function publicSignatureUrl(token: string): string {
   return `${base}/sign/${encodeURIComponent(token)}`;
 }
 
+function notificationDedupeHash(value: string): string {
+  return createHash('sha256').update(value, 'utf8').digest('hex');
+}
+
 /**
  * Autorité serveur : wire les use cases du domaine sur le bundle Persistence injecté
  * (in-memory en démo, Prisma/Postgres en prod). L'app bascule en HttpBobClient sans changer d'écran.
@@ -239,7 +243,7 @@ export class BackendService {
     @Inject(PAYMENT_GATEWAY) private readonly gateway: PaymentGatewayPort,
     @Inject(PDF_RENDERER) private readonly pdf: PdfRendererPort,
     @Inject(OCR_PORT) private readonly ocr: OcrPort,
-    @Inject(NOTIFIER) private readonly notifier: NotificationPort,
+    private readonly notificationDelivery: NotificationDeliveryService,
     private readonly metrics: Metrics,
     private readonly logger: AppLogger,
   ) {
@@ -311,13 +315,13 @@ export class BackendService {
     }).execute({ quoteId });
     if (token.ok) {
       this.logger.audit('quote.signature_token_created', { quoteId, expiresAt: token.value.expiresAt });
-      const emailSent = await this.notifyQuoteForSignature(quote, sent.value.number, token.value.token);
+      const emailSent = await this.enqueueAndTrySendQuoteForSignature(quote, sent.value.number, token.value.token);
       return ok({ ...sent.value, signatureToken: token.value.token, signatureTokenExpiresAt: token.value.expiresAt, emailSent });
     }
     return sent;
   }
 
-  private async notifyQuoteForSignature(quote: Quote, number: string, token: string): Promise<boolean> {
+  private async enqueueAndTrySendQuoteForSignature(quote: Quote, number: string, token: string): Promise<boolean> {
     const customer = await this.p.customers.findById(quote.customerId);
     const company = await this.p.companies.findById(quote.companyId);
     const email = customer?.toProps().email;
@@ -325,8 +329,11 @@ export class BackendService {
       this.logger.audit('quote.email_skipped', { quoteId: quote.id, reason: 'customer_email_missing' });
       return false;
     }
-    try {
-      await this.notifier.send({
+    const job = await this.notificationDelivery.enqueue({
+      companyId: quote.companyId,
+      kind: 'quote-signature',
+      dedupeKey: `quote:${quote.id}:signature-token:${notificationDedupeHash(token)}`,
+      notification: {
         channel: 'email',
         to: email,
         subject: `Devis ${number} à signer`,
@@ -339,13 +346,12 @@ export class BackendService {
           '',
           'Ce lien est personnel. Si vous avez une question, répondez directement à votre prestataire.',
         ].join('\n'),
-      });
-      this.logger.audit('quote.email_sent', { quoteId: quote.id, number, to: email });
-      return true;
-    } catch (e) {
-      this.logger.audit('quote.email_failed', { quoteId: quote.id, number, to: email, cause: e instanceof Error ? e.message : 'email' });
-      return false;
-    }
+      },
+    });
+    if (job.status === 'done' || job.notification === null) return true;
+    const sent = await this.notificationDelivery.tryDeliver(quote.companyId, { ...job, notification: job.notification });
+    this.logger.audit(sent ? 'quote.email_sent' : 'quote.email_queued_retry', { quoteId: quote.id, number, to: email, jobId: job.id });
+    return sent;
   }
   async signQuote(input: { quoteId: string; signerName: string }) {
     if (!(await this.ownedQuote(input.quoteId))) return { ok: false as const, error: appNotFound('quote', input.quoteId) };
@@ -1045,6 +1051,19 @@ export class BackendService {
       }
       return ok({ scanned: jobs.length, archived, failed });
     });
+  }
+
+  async runNotificationJobs(input: { companyId?: string; limit?: number } = {}): Promise<Result<{ scanned: number; sent: number; failed: number }, AppError>> {
+    const companyId = input.companyId ?? this.companyId();
+    const limit = Math.max(1, Math.min(input.limit ?? 25, 100));
+    try {
+      return ok(await this.notificationDelivery.runForCompany(companyId, limit));
+    } catch (e) {
+      return {
+        ok: false,
+        error: { kind: 'dependency', port: 'notification-jobs', cause: e instanceof Error ? e.message : String(e) },
+      };
+    }
   }
 
   async listDocuments(input: ListDocumentsInput = {}): Promise<Result<DocumentView[], AppError>> {

@@ -8,6 +8,7 @@ import {
   PrismaInvoiceRepository,
   PrismaDocumentRepository,
   PrismaDocumentArchiveJobRepository,
+  PrismaNotificationJobRepository,
   PrismaPaymentRepository,
   PrismaPublicAccessTokenRepository,
   PrismaExpenseRepository,
@@ -23,6 +24,7 @@ export class PrismaPersistence implements Persistence {
   readonly invoices: PrismaInvoiceRepository;
   readonly documents: PrismaDocumentRepository;
   readonly documentArchiveJobs: PrismaDocumentArchiveJobRepository;
+  readonly notificationJobs: PrismaNotificationJobRepository;
   readonly payments: PrismaPaymentRepository;
   readonly publicAccessTokens: PrismaPublicAccessTokenRepository;
   readonly expenses: PrismaExpenseRepository;
@@ -36,6 +38,7 @@ export class PrismaPersistence implements Persistence {
     this.invoices = new PrismaInvoiceRepository(prisma);
     this.documents = new PrismaDocumentRepository(prisma);
     this.documentArchiveJobs = new PrismaDocumentArchiveJobRepository(prisma);
+    this.notificationJobs = new PrismaNotificationJobRepository(prisma);
     this.payments = new PrismaPaymentRepository(prisma);
     this.publicAccessTokens = new PrismaPublicAccessTokenRepository(prisma);
     this.expenses = new PrismaExpenseRepository(prisma);

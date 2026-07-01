@@ -38,6 +38,7 @@ DELETE FROM expenses WHERE id IN ('rls-expense-a', 'rls-expense-b', 'rls-expense
 DELETE FROM document_versions WHERE id IN ('rls-docver-a', 'rls-docver-b');
 DELETE FROM documents WHERE id IN ('rls-doc-a', 'rls-doc-b', 'rls-doc-cross');
 DELETE FROM document_archive_jobs WHERE id IN ('rls-archive-a', 'rls-archive-b', 'rls-archive-cross');
+DELETE FROM notification_jobs WHERE id IN ('rls-notification-a', 'rls-notification-b', 'rls-notification-cross');
 DELETE FROM agent_journal_entries WHERE id IN ('rls-agent-journal-a', 'rls-agent-journal-b', 'rls-agent-journal-cross');
 DELETE FROM document_counters WHERE "companyId" IN ('rls-co-a', 'rls-co-b');
 DELETE FROM invoices WHERE id IN ('rls-invoice-a', 'rls-invoice-b');
@@ -55,6 +56,7 @@ DELETE FROM expenses WHERE id IN ('rls-expense-a', 'rls-expense-b', 'rls-expense
 DELETE FROM document_versions WHERE id IN ('rls-docver-a', 'rls-docver-b');
 DELETE FROM documents WHERE id IN ('rls-doc-a', 'rls-doc-b', 'rls-doc-cross');
 DELETE FROM document_archive_jobs WHERE id IN ('rls-archive-a', 'rls-archive-b', 'rls-archive-cross');
+DELETE FROM notification_jobs WHERE id IN ('rls-notification-a', 'rls-notification-b', 'rls-notification-cross');
 DELETE FROM agent_journal_entries WHERE id IN ('rls-agent-journal-a', 'rls-agent-journal-b', 'rls-agent-journal-cross');
 DELETE FROM document_counters WHERE "companyId" IN ('rls-co-a', 'rls-co-b');
 DELETE FROM invoices WHERE id IN ('rls-invoice-a', 'rls-invoice-b');
@@ -100,6 +102,14 @@ INSERT INTO document_counters ("companyId", "counterKey", "fiscalYear", "nextVal
 VALUES ('rls-co-a', 'quote', 2026, 2);
 INSERT INTO document_archive_jobs (id, "companyId", "invoiceId", reason, status, attempts, "nextAttemptAt", "createdAt", "updatedAt")
 VALUES ('rls-archive-a', 'rls-co-a', 'rls-invoice-a', 'invoice-issued', 'pending', 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+INSERT INTO notification_jobs (
+  id, "companyId", kind, "dedupeKey", channel, recipient, subject, payload, status, attempts, "nextAttemptAt", "createdAt", "updatedAt"
+)
+VALUES (
+  'rls-notification-a', 'rls-co-a', 'quote-signature', 'quote:rls-quote-a', 'email', 'client-a@example.com', 'Devis A',
+  '{"channel":"email","to":"client-a@example.com","subject":"Devis A","body":"Lien A"}'::jsonb,
+  'pending', 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'
+);
 INSERT INTO agent_journal_entries (
   id, "companyId", "runId", seq, at, phase, tool, label, args, mutating, outbound, compliance, reason, "resultDigest"
 )
@@ -146,6 +156,14 @@ INSERT INTO document_counters ("companyId", "counterKey", "fiscalYear", "nextVal
 VALUES ('rls-co-b', 'quote', 2026, 2);
 INSERT INTO document_archive_jobs (id, "companyId", "invoiceId", reason, status, attempts, "nextAttemptAt", "createdAt", "updatedAt")
 VALUES ('rls-archive-b', 'rls-co-b', 'rls-invoice-b', 'invoice-issued', 'pending', 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+INSERT INTO notification_jobs (
+  id, "companyId", kind, "dedupeKey", channel, recipient, subject, payload, status, attempts, "nextAttemptAt", "createdAt", "updatedAt"
+)
+VALUES (
+  'rls-notification-b', 'rls-co-b', 'quote-signature', 'quote:rls-quote-b', 'email', 'client-b@example.com', 'Devis B',
+  '{"channel":"email","to":"client-b@example.com","subject":"Devis B","body":"Lien B"}'::jsonb,
+  'pending', 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'
+);
 INSERT INTO agent_journal_entries (
   id, "companyId", "runId", seq, at, phase, tool, label, args, mutating, outbound, compliance, reason, "resultDigest"
 )
@@ -169,10 +187,12 @@ SELECT pg_temp.assert_eq((SELECT count(*) FROM expenses), 1, 'expenses tenant A'
 SELECT pg_temp.assert_eq((SELECT count(*) FROM documents), 1, 'documents tenant A');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM document_versions), 1, 'document_versions tenant A');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM document_archive_jobs), 1, 'document_archive_jobs tenant A');
+SELECT pg_temp.assert_eq((SELECT count(*) FROM notification_jobs), 1, 'notification_jobs tenant A');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM agent_journal_entries), 1, 'agent_journal_entries tenant A');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM document_counters), 1, 'document_counters tenant A');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM quotes WHERE id = 'rls-quote-b'), 0, 'tenant A cannot read tenant B quote');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM documents WHERE id = 'rls-doc-b'), 0, 'tenant A cannot read tenant B document');
+SELECT pg_temp.assert_eq((SELECT count(*) FROM notification_jobs WHERE id = 'rls-notification-b'), 0, 'tenant A cannot read tenant B notification job');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM agent_journal_entries WHERE id = 'rls-agent-journal-b'), 0, 'tenant A cannot read tenant B agent journal');
 
 DO $$
@@ -202,6 +222,19 @@ BEGIN
     INSERT INTO document_archive_jobs (id, "companyId", "invoiceId", reason, status, attempts, "nextAttemptAt", "createdAt", "updatedAt")
     VALUES ('rls-archive-cross', 'rls-co-b', 'rls-invoice-b', 'invoice-issued', 'pending', 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
     RAISE EXCEPTION 'RLS cert failed: cross-tenant document archive job insert succeeded';
+  EXCEPTION WHEN insufficient_privilege THEN
+    NULL;
+  END;
+  BEGIN
+    INSERT INTO notification_jobs (
+      id, "companyId", kind, "dedupeKey", channel, recipient, subject, payload, status, attempts, "nextAttemptAt", "createdAt", "updatedAt"
+    )
+    VALUES (
+      'rls-notification-cross', 'rls-co-b', 'quote-signature', 'quote:cross', 'email', 'cross@example.com', 'Cross',
+      '{"channel":"email","to":"cross@example.com","subject":"Cross","body":"Cross"}'::jsonb,
+      'pending', 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'
+    );
+    RAISE EXCEPTION 'RLS cert failed: cross-tenant notification job insert succeeded';
   EXCEPTION WHEN insufficient_privilege THEN
     NULL;
   END;
@@ -243,10 +276,12 @@ SELECT pg_temp.assert_eq((SELECT count(*) FROM expenses), 1, 'expenses tenant B'
 SELECT pg_temp.assert_eq((SELECT count(*) FROM documents), 1, 'documents tenant B');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM document_versions), 1, 'document_versions tenant B');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM document_archive_jobs), 1, 'document_archive_jobs tenant B');
+SELECT pg_temp.assert_eq((SELECT count(*) FROM notification_jobs), 1, 'notification_jobs tenant B');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM agent_journal_entries), 1, 'agent_journal_entries tenant B');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM document_counters), 1, 'document_counters tenant B');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM quotes WHERE id = 'rls-quote-a'), 0, 'tenant B cannot read tenant A quote');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM documents WHERE id = 'rls-doc-a'), 0, 'tenant B cannot read tenant A document');
+SELECT pg_temp.assert_eq((SELECT count(*) FROM notification_jobs WHERE id = 'rls-notification-a'), 0, 'tenant B cannot read tenant A notification job');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM agent_journal_entries WHERE id = 'rls-agent-journal-a'), 0, 'tenant B cannot read tenant A agent journal');
 COMMIT;
 
