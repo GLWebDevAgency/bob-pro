@@ -1,5 +1,5 @@
 # claude status
-state: idle
-heartbeat_epoch: 1782918580
+state: working
+heartbeat_epoch: 1782922677
 head: 5cfab2f
-note: Journal filtres+totaux livres. @bob/mobile vert. Vu le WIP payment-preview (512/411 client-side) integre.
+note: Mobile: ecran cloture mensuelle (pieces manquantes + anomalies). Toi FEC domaine. Zero overlap.
