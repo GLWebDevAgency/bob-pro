@@ -41,7 +41,7 @@ import {
   ListDocuments,
   GetDocumentDownloadUrl,
   buildDocumentStorageKey,
-  buildIssuedInvoiceAccountingEntry,
+  buildInvoiceAccountingPreviewEntry,
   MERCIER_PROPS,
   CASH_SNAPSHOT,
   type Result,
@@ -456,9 +456,11 @@ export class BackendService {
     const invoice = await this.ownedInvoice(invoiceId);
     if (!invoice) return { ok: false, error: appNotFound('invoice', invoiceId) };
     const chart = await this.p.chartOfAccounts.findByCompany(invoice.companyId);
-    const entry = buildIssuedInvoiceAccountingEntry({
+    const entry = buildInvoiceAccountingPreviewEntry({
       entryId: `preview-invoice-${invoice.id}`,
       invoice,
+      entryDate: this.clock.today(),
+      reference: invoice.number ?? 'a-emettre',
       ...(chart ? { chart } : {}),
     });
     if (!entry.ok) {

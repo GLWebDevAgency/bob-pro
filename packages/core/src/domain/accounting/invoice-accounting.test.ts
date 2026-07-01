@@ -5,7 +5,7 @@ import { type QuoteLine } from '../billing/shared/line';
 import { DocNumber } from '../billing/shared/doc-number';
 import { PaymentTerms } from '../../shared-kernel/payment-terms';
 import { createFrenchOperationalChartOfAccounts } from './chart-of-accounts';
-import { buildIssuedInvoiceAccountingEntry } from './invoice-accounting';
+import { buildIssuedInvoiceAccountingEntry, buildInvoiceAccountingPreviewEntry } from './invoice-accounting';
 
 const AT = '2026-06-01T10:00:00.000Z';
 const ISSUED = '2026-06-01';
@@ -83,6 +83,60 @@ describe('buildIssuedInvoiceAccountingEntry', () => {
     if (inv.ok) {
       const r = buildIssuedInvoiceAccountingEntry({ entryId: 'ae-1', invoice: inv.value });
       expect(r.ok).toBe(false);
+    }
+  });
+});
+
+describe('buildInvoiceAccountingPreviewEntry', () => {
+  it('preview une facture brouillon sans numero ni allocation no-gap', () => {
+    const chart = createFrenchOperationalChartOfAccounts('co-1');
+    expect(chart.ok).toBe(true);
+    const inv = Invoice.fromSignedQuote(signedQuote(null), 'final', 'inv-1');
+    expect(inv.ok).toBe(true);
+    if (!chart.ok || !inv.ok) return;
+
+    const r = buildInvoiceAccountingPreviewEntry({
+      entryId: 'preview-1',
+      invoice: inv.value,
+      entryDate: ISSUED,
+      reference: 'a-emettre',
+      chart: chart.value,
+    });
+
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(inv.value.number).toBeNull();
+      expect(r.value.reference).toBe('a-emettre');
+      expect(r.value.entryDate).toBe(ISSUED);
+      expect(r.value.totalDebitCents).toBe(162800);
+      expect(r.value.lines).toEqual([
+        { account: '411', label: 'Facture a-emettre', debitCents: 162800, creditCents: 0 },
+        { account: '707', label: 'Facture a-emettre', debitCents: 0, creditCents: 80000 },
+        { account: '706', label: 'Facture a-emettre', debitCents: 0, creditCents: 68000 },
+        { account: '44571', label: 'Facture a-emettre', debitCents: 0, creditCents: 14800 },
+      ]);
+    }
+  });
+
+  it("preview une facture d'acompte brouillon sur 4191", () => {
+    const chart = createFrenchOperationalChartOfAccounts('co-1');
+    expect(chart.ok).toBe(true);
+    const inv = Invoice.fromSignedQuote(signedQuote(30), 'deposit', 'inv-1');
+    expect(inv.ok).toBe(true);
+    if (!chart.ok || !inv.ok) return;
+
+    const r = buildInvoiceAccountingPreviewEntry({
+      entryId: 'preview-1',
+      invoice: inv.value,
+      entryDate: ISSUED,
+      reference: 'a-emettre',
+      chart: chart.value,
+    });
+
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.totalDebitCents).toBe(48840);
+      expect(r.value.lines.map((line) => line.account)).toEqual(['411', '4191', '44571']);
     }
   });
 });

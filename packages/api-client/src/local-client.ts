@@ -19,7 +19,7 @@ import {
   runDiagnostic,
   resolveTradeConfig,
   buildDocumentStorageKey,
-  buildIssuedInvoiceAccountingEntry,
+  buildInvoiceAccountingPreviewEntry,
   createFrenchOperationalChartOfAccounts,
   ExtractDocument,
   DemoOcrAdapter,
@@ -442,9 +442,11 @@ export class LocalBobClient implements BobClient {
     const invoice = await this.invoices.findById(invoiceId);
     if (!invoice) return err(appNotFound('invoice', invoiceId));
     const chart = createFrenchOperationalChartOfAccounts(invoice.companyId);
-    const entry = buildIssuedInvoiceAccountingEntry({
+    const entry = buildInvoiceAccountingPreviewEntry({
       entryId: `preview-invoice-${invoice.id}`,
       invoice,
+      entryDate: this.clock.today(),
+      reference: invoice.number ?? 'a-emettre',
       ...(chart.ok ? { chart: chart.value } : {}),
     });
     if (!entry.ok) {

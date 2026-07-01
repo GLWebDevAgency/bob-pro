@@ -37,8 +37,10 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     if (!gen.ok) return;
 
     const draftPreview = await client.invoiceAccountingPreview(gen.value.invoiceId);
-    expect(draftPreview.ok && draftPreview.value.available).toBe(false);
-    if (draftPreview.ok) expect(draftPreview.value.reason).toContain('emise');
+    expect(draftPreview.ok && draftPreview.value.available).toBe(true);
+    if (!draftPreview.ok) return;
+    expect(draftPreview.value.reference).toBe('a-emettre');
+    expect(draftPreview.value.lines.map((line) => line.account)).toEqual(['411', '4191', '44571']);
 
     const issued = await client.issueInvoice({ invoiceId: gen.value.invoiceId });
     expect(issued.ok && issued.value.number).toBe('F-2026-0001');

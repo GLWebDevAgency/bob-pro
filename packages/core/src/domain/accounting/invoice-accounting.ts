@@ -1,4 +1,5 @@
 import { type DomainResult, err } from '../../shared-kernel/result';
+import { type DateOnly } from '../../shared-kernel/time';
 import { type LineCategory } from '../billing/shared/line-item';
 import { type Invoice } from '../billing/invoice/invoice';
 import { AccountingEntry, type AccountingEntryLineProps, type AccountingEntryProps } from './accounting-entry';
@@ -29,6 +30,15 @@ export const DEFAULT_INVOICE_ACCOUNTING_ACCOUNTS: InvoiceAccountingAccounts = {
 export interface BuildInvoiceAccountingEntryInput {
   entryId: string;
   invoice: Invoice;
+  chart?: ChartOfAccounts;
+  accounts?: Partial<InvoiceAccountingAccounts>;
+}
+
+export interface BuildInvoiceAccountingPreviewEntryInput {
+  entryId: string;
+  invoice: Invoice;
+  entryDate: DateOnly;
+  reference?: string;
   chart?: ChartOfAccounts;
   accounts?: Partial<InvoiceAccountingAccounts>;
 }
@@ -79,23 +89,15 @@ function entryLinesFromSides(debits: Map<string, number>, credits: Map<string, n
   return lines;
 }
 
-/**
- * Produit l'ecriture comptable d'une facture emise, sans effet de bord.
- *
- * - Facture finale/situation : 411 debit ; 70x + 44571 credit.
- * - Facture d'acompte : 411 debit ; 4191 avances clients + 44571 credit.
- * - Avoir : ecriture inverse.
- *
- * Pour les acomptes, l'ecriture porte seulement sur `netToPay` : HT/TVA sont alloues au prorata
- * des composants de la facture, afin de ne pas comptabiliser 100% du CA sur un appel de 30%.
- */
-export function buildIssuedInvoiceAccountingEntry(input: BuildInvoiceAccountingEntryInput): DomainResult<AccountingEntry> {
+function buildInvoiceAccountingEntry(input: {
+  entryId: string;
+  invoice: Invoice;
+  entryDate: DateOnly;
+  reference: string;
+  chart?: ChartOfAccounts;
+  accounts?: Partial<InvoiceAccountingAccounts>;
+}): DomainResult<AccountingEntry> {
   const invoice = input.invoice;
-  if (!['issued', 'partially_paid', 'late', 'paid'].includes(invoice.status))
-    return err(appValidation('invoice', 'La facture doit etre emise avant comptabilisation.'));
-  if (!invoice.number) return err(appValidation('invoice.number', 'Numero de facture requis.'));
-  if (!invoice.issuedAt) return err(appValidation('invoice.issuedAt', "Date d'emission requise."));
-
   const totals = invoice.totals();
   if (!Number.isSafeInteger(totals.netToPay) || totals.netToPay <= 0)
     return err(appValidation('invoice.netToPay', 'Net a payer invalide.'));
@@ -125,7 +127,7 @@ export function buildIssuedInvoiceAccountingEntry(input: BuildInvoiceAccountingE
   const debit = new Map<string, number>();
   const credit = new Map<string, number>();
   const isCreditNote = invoice.kind === 'credit_note';
-  const label = `Facture ${invoice.number}`;
+  const label = `Facture ${input.reference}`;
 
   if (isCreditNote) addAmount(credit, accounts.receivable, totals.netToPay);
   else addAmount(debit, accounts.receivable, totals.netToPay);
@@ -142,10 +144,56 @@ export function buildIssuedInvoiceAccountingEntry(input: BuildInvoiceAccountingE
     journal: 'sales',
     sourceType: 'invoice',
     sourceId: invoice.id,
-    entryDate: invoice.issuedAt,
-    reference: invoice.number,
+    entryDate: input.entryDate,
+    reference: input.reference,
     label,
     lines: entryLinesFromSides(debit, credit, label),
   };
   return AccountingEntry.create(props, input.chart ? { chart: input.chart } : {});
+}
+
+/**
+ * Produit l'ecriture comptable d'une facture emise, sans effet de bord.
+ *
+ * - Facture finale/situation : 411 debit ; 70x + 44571 credit.
+ * - Facture d'acompte : 411 debit ; 4191 avances clients + 44571 credit.
+ * - Avoir : ecriture inverse.
+ *
+ * Pour les acomptes, l'ecriture porte seulement sur `netToPay` : HT/TVA sont alloues au prorata
+ * des composants de la facture, afin de ne pas comptabiliser 100% du CA sur un appel de 30%.
+ */
+export function buildIssuedInvoiceAccountingEntry(input: BuildInvoiceAccountingEntryInput): DomainResult<AccountingEntry> {
+  const invoice = input.invoice;
+  if (!['issued', 'partially_paid', 'late', 'paid'].includes(invoice.status))
+    return err(appValidation('invoice', 'La facture doit etre emise avant comptabilisation.'));
+  if (!invoice.number) return err(appValidation('invoice.number', 'Numero de facture requis.'));
+  if (!invoice.issuedAt) return err(appValidation('invoice.issuedAt', "Date d'emission requise."));
+
+  return buildInvoiceAccountingEntry({
+    entryId: input.entryId,
+    invoice,
+    entryDate: invoice.issuedAt,
+    reference: invoice.number,
+    ...(input.chart ? { chart: input.chart } : {}),
+    ...(input.accounts ? { accounts: input.accounts } : {}),
+  });
+}
+
+/**
+ * Aperçu prospectif de l'ecriture comptable d'une facture.
+ *
+ * Contrairement au mapper d'ecriture definitive, celui-ci n'exige pas que la facture soit emise :
+ * il sert l'ActionDiff avant confirmation d'emission, sans allouer de numero et sans effet de bord.
+ */
+export function buildInvoiceAccountingPreviewEntry(input: BuildInvoiceAccountingPreviewEntryInput): DomainResult<AccountingEntry> {
+  const reference = input.invoice.number ?? input.reference?.trim() ?? 'a-emettre';
+  const entryDate = input.invoice.issuedAt ?? input.entryDate;
+  return buildInvoiceAccountingEntry({
+    entryId: input.entryId,
+    invoice: input.invoice,
+    entryDate,
+    reference,
+    ...(input.chart ? { chart: input.chart } : {}),
+    ...(input.accounts ? { accounts: input.accounts } : {}),
+  });
 }
