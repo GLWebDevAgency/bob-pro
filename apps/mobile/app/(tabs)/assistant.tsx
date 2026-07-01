@@ -47,6 +47,7 @@ export default function Assistant() {
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [voiceMode, setVoiceMode] = useState(false); // overlay vocal immersif (mains-libres, façon Jarvis)
+  const [phaseLabel, setPhaseLabel] = useState<string | undefined>(undefined); // phase RÉELLE de Bob (comprend/agit)
   const counter = useRef(0);
   const nextId = (): string => {
     counter.current += 1;
@@ -78,8 +79,12 @@ export default function Assistant() {
     setItems((prev) => [...prev, { id: nextId(), role: 'user', text: message }]);
     setBusy(true);
     const autonomy = await getAutonomy();
-    const r = await agent.ask(message, { autonomy });
+    const r = await agent.ask(message, {
+      autonomy,
+      onPhase: (p) => setPhaseLabel(p === 'comprends' ? 'Bob comprend' : 'Bob agit'),
+    });
     setBusy(false);
+    setPhaseLabel(undefined);
     if (r.ok) pushBob(r.value);
     else setItems((prev) => [...prev, { id: nextId(), role: 'bob', text: "Désolé, je n'ai pas pu traiter ça." }]);
   };
@@ -198,7 +203,7 @@ export default function Assistant() {
             </View>
           ),
         )}
-        {busy ? <ThinkingIndicator /> : null}
+        {busy ? <ThinkingIndicator label={phaseLabel} /> : null}
         {items.length <= 1 ? (
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 4 }}>
             {SUGGESTIONS.map((s) => (
@@ -244,7 +249,7 @@ export default function Assistant() {
           const status = voice.listening
             ? 'Je t’écoute…'
             : busy
-              ? 'Bob réfléchit…'
+              ? phaseLabel ?? 'Bob réfléchit…'
               : awaitingConfirm
                 ? 'Dis « je confirme » ou « annule »'
                 : 'Appuie pour parler';

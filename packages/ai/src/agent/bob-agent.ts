@@ -120,8 +120,13 @@ export interface BobAgentDeps {
   runtime?: BobRuntimeConfig;
 }
 
+/** Phase de traitement émise pendant ask() — pour un indicateur d'activité « temps réel » côté UI. */
+export type AgentPhase = 'comprends' | 'agis';
+
 export interface AskOptions {
   autonomy?: AgentAutonomy;
+  /** Callback optionnel appelé aux étapes clés (comprends -> agis) pour animer un indicateur de phase. */
+  onPhase?: (phase: AgentPhase) => void;
 }
 
 /**
@@ -164,12 +169,14 @@ export class BobAgent {
 
   async ask(message: string, opts: AskOptions = {}): Promise<Result<AgentRun, AppError>> {
     const autonomy = opts.autonomy ?? DEFAULT_AUTONOMY;
+    opts.onPhase?.('comprends');
     const routed = this.deps.router.route('intent.detect');
     const plan = await this.classify(message, routed.model);
     const model = plan.model !== 'demo' ? plan.model : routed.model;
     const steps = plan.steps.filter((s) => s.intent !== 'unknown');
 
     if (steps.length === 0) return ok(this.unknownRun(model));
+    opts.onPhase?.('agis');
     if (steps.length > 1) return this.runMulti(steps, autonomy, model);
     return this.runSingle(steps[0]!, autonomy, model, message);
   }

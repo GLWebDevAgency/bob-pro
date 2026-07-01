@@ -11,7 +11,7 @@ const PHASES = ['Bob réfléchit', 'Je prépare', "J'analyse", 'Presque prêt'];
  * l'étoile de Bob tourne, le libellé de phase défile, trois points ondulent. Palette IA (indigo).
  * Monté uniquement pendant que Bob travaille ; se nettoie tout seul au démontage.
  */
-export function ThinkingIndicator() {
+export function ThinkingIndicator({ label }: { label?: string }) {
   const { semantic } = useTheme();
   const [phase, setPhase] = useState(0);
   const spin = useRef(new Animated.Value(0)).current;
@@ -34,14 +34,17 @@ export function ThinkingIndicator() {
       ),
     );
     dotLoops.forEach((l) => l.start());
-
-    const id = setInterval(() => setPhase((p) => (p + 1) % PHASES.length), 1500);
     return () => {
       spinLoop.stop();
       dotLoops.forEach((l) => l.stop());
-      clearInterval(id);
     };
   }, [spin, dots]);
+
+  useEffect(() => {
+    if (label) return; // une phase RÉELLE est fournie -> pas de cycle décoratif
+    const id = setInterval(() => setPhase((p) => (p + 1) % PHASES.length), 1500);
+    return () => clearInterval(id);
+  }, [label]);
 
   const rotate = spin.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
 
@@ -61,7 +64,7 @@ export function ThinkingIndicator() {
       accessibilityLabel="Bob réfléchit"
     >
       <Animated.Text style={{ color: semantic.ai, fontSize: 16, transform: [{ rotate }] }}>✳</Animated.Text>
-      <Text style={[font('sub'), { color: semantic.aiInk }]}>{PHASES[phase]}</Text>
+      <Text style={[font('sub'), { color: semantic.aiInk }]}>{label ?? PHASES[phase]}</Text>
       <View style={{ flexDirection: 'row', alignItems: 'flex-end', gap: 3 }}>
         {dots.map((v, i) => (
           <Animated.View

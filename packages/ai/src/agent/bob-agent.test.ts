@@ -79,6 +79,19 @@ describe('BobAgent (démo)', () => {
     const r = await makeAgent().ask('Bonjour Bob');
     expect(r.ok && r.value.intent).toBe('unknown');
   });
+
+  it('émet les phases comprends -> agis pour une action résolue', async () => {
+    const phases: string[] = [];
+    await makeAgent().ask('encaisse la facture 2026-014', { onPhase: (p) => phases.push(p) });
+    expect(phases).toContain('comprends');
+    expect(phases).toContain('agis');
+  });
+
+  it('demande inconnue : émet comprends mais jamais agis', async () => {
+    const phases: string[] = [];
+    await makeAgent().ask('Bonjour Bob', { onPhase: (p) => phases.push(p) });
+    expect(phases).toEqual(['comprends']);
+  });
 });
 
 describe('BobAgent — chemin LLM (tool-calling) + fallback', () => {
