@@ -108,6 +108,7 @@ import { hasClaudeKey, hasGlmKey, hasDeepseekKey, hasMistralKey, hasOpenaiKey } 
 import { buildLlmForProvider, buildSttCloud, buildTtsCloud } from './ai/providers';
 import { clampAgentAutonomy } from './ai/autonomy-entitlements';
 import { NotificationDeliveryService } from './jobs/notification-delivery.service';
+import { remainingInvoiceBalanceCents } from './billing/invoice-balance';
 
 export interface QuoteView {
   id: string;
@@ -524,7 +525,7 @@ export class BackendService {
           .map((i) => ({
             id: i.id,
             number: i.number ?? i.id,
-            remainingCents: Math.max(0, i.totals.ttc - i.paid),
+            remainingCents: remainingInvoiceBalanceCents(i),
             customerName: names.get(i.customerId) ?? 'Client',
           }))
           .filter((i) => i.remainingCents > 0);
