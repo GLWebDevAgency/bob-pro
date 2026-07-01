@@ -9,6 +9,7 @@ import {
   GenerateInvoiceFromQuote,
   IssueInvoice,
   RegisterPayment,
+  RecordIssuedInvoiceAccountingEntry,
   ListCustomers,
   GetCashflow,
   SystemClock,
@@ -175,6 +176,12 @@ interface ResolvedSignatureGrant {
   grantId: string;
   companyId: string;
   quoteId: string;
+}
+
+class RollbackAppError extends Error {
+  constructor(readonly appError: AppError) {
+    super('rollback-app-error');
+  }
 }
 
 export interface UploadDocumentInput {
@@ -399,14 +406,35 @@ export class BackendService {
   }
   async issueInvoice(input: { invoiceId: string }) {
     if (!(await this.ownedInvoice(input.invoiceId))) return { ok: false as const, error: appNotFound('invoice', input.invoiceId) };
-    const r = await new IssueInvoice({
-      invoices: this.p.invoices,
-      companies: this.p.companies,
-      customers: this.p.customers,
-      counters: this.p.counters,
-      uow: this.p,
-      clock: this.clock,
-    }).execute(input);
+    let r: Result<{ number: string }, AppError>;
+    try {
+      r = await this.p.runInTransaction(async () => {
+        const issued = await new IssueInvoice({
+          invoices: this.p.invoices,
+          companies: this.p.companies,
+          customers: this.p.customers,
+          counters: this.p.counters,
+          uow: this.p,
+          clock: this.clock,
+        }).execute(input);
+        if (!issued.ok) return issued;
+        const accounting = await new RecordIssuedInvoiceAccountingEntry({
+          invoices: this.p.invoices,
+          entries: this.p.accountingEntries,
+          charts: this.p.chartOfAccounts,
+        }).execute(input);
+        if (!accounting.ok) throw new RollbackAppError(accounting.error);
+        this.logger.audit('accounting.invoice_posted', {
+          invoiceId: input.invoiceId,
+          entryId: accounting.value.id,
+          created: accounting.value.created,
+        });
+        return issued;
+      });
+    } catch (e) {
+      if (e instanceof RollbackAppError) return { ok: false as const, error: e.appError };
+      throw e;
+    }
     if (r.ok) {
       this.logger.audit('invoice.issued', { invoiceId: input.invoiceId, number: r.value.number });
       await this.enqueueInvoiceArchive(input.invoiceId);
