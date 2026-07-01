@@ -5,3 +5,5 @@ apps/mobile/src/data/documents.ts	1782879615	1800	reflet mobile: onglet Document
 apps/mobile/app/ventes.tsx	1782910130	3000	M3 reflet mobile: ecran Ventes (Devis&Factures) liste+actions parite, plancher securite en Alert; +entree dashboard +route
 apps/mobile/app/_layout.tsx	1782910130	3000	M3 reflet mobile: ecran Ventes (Devis&Factures) liste+actions parite, plancher securite en Alert; +entree dashboard +route
 apps/mobile/app/(tabs)/index.tsx	1782910130	3000	M3 reflet mobile: ecran Ventes (Devis&Factures) liste+actions parite, plancher securite en Alert; +entree dashboard +route
+apps/mobile/src/components/ui/index.tsx	1782910839	2400	corriger findings revue: Button a11y label + client detail encaissement confirmation (parite plancher)
+apps/mobile/app/client/[id].tsx	1782910839	2400	corriger findings revue: Button a11y label + client detail encaissement confirmation (parite plancher)
