@@ -3,7 +3,7 @@ import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { formatEUR } from '@bob/core';
 import { useTheme } from '../../src/theme';
-import { useCashflow, useCustomers } from '../../src/data/hooks';
+import { useCashflow, useCustomers, useSubscription } from '../../src/data/hooks';
 import { GradientHeader, Card, MoneyText, SectionHeader, StatTile, font } from '../../src/components/ui';
 import { greeting, todaySubtitle, footerLine } from '../../src/copy';
 
@@ -12,6 +12,8 @@ export default function Aujourdhui() {
   const router = useRouter();
   const cashflow = useCashflow('realiste', 30);
   const customers = useCustomers();
+  const { data: sub } = useSubscription();
+  const canAccounting = (sub?.features ?? []).includes('accounting_foundation');
 
   const aSurveiller = (customers.data ?? []).filter((c) => c.outstanding > 0);
   const totalDu = aSurveiller.reduce((sum, c) => sum + c.outstanding, 0);
@@ -97,6 +99,26 @@ export default function Aujourdhui() {
             </Card>
           </Pressable>
         </View>
+
+        {canAccounting ? (
+          <View>
+            <SectionHeader title="Comptabilité" />
+            <Pressable onPress={() => router.push('/comptabilite')} accessibilityRole="button" accessibilityLabel="Journal comptable">
+              <Card>
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1 }}>
+                    <Ionicons name="book-outline" size={22} color={colors.ink600} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={[font('cardTitle'), { color: colors.ink900 }]}>Journal / Grand livre</Text>
+                      <Text style={[font('sub'), { color: colors.slate400, marginTop: 2 }]}>Chaque écriture, vérifiable</Text>
+                    </View>
+                  </View>
+                  <Ionicons name="chevron-forward" size={20} color={colors.slate400} />
+                </View>
+              </Card>
+            </Pressable>
+          </View>
+        ) : null}
 
         <Text style={[font('sub'), { color: colors.slate400, textAlign: 'center' }]}>{footerLine(personality)}</Text>
       </View>

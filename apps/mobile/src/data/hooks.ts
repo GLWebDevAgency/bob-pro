@@ -297,6 +297,19 @@ export function useInvoiceAccountingPreview(id: string, enabled = true) {
   });
 }
 
+/** Journal / grand livre : toutes les écritures comptables de la société (ventes, banque, OD…). */
+export function useAccountingEntries() {
+  const client = useBobClient();
+  return useQuery({
+    queryKey: ['accounting-entries'] as const,
+    queryFn: async () => {
+      const r = await client.listAccountingEntries();
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+  });
+}
+
 export function useCreateQuote() {
   const client = useBobClient();
   const qc = useQueryClient();

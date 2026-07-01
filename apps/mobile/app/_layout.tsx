@@ -54,6 +54,7 @@ export default function RootLayout() {
                     <Stack.Screen name="scan-document" options={{ presentation: 'modal' }} />
                     <Stack.Screen name="chantiers" />
                     <Stack.Screen name="ventes" />
+                    <Stack.Screen name="comptabilite" />
                   </Stack>
                   </ConfirmProvider>
                 </BobClientProvider>
