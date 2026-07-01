@@ -5,7 +5,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useQueryClient } from '@tanstack/react-query';
-import { buildActionDiff, type ActionDiff, type AgentRun, type PendingAction } from '@bob/ai';
+import { buildActionDiff, type ActionDiff, type AccountingLine, type AgentRun, type PendingAction } from '@bob/ai';
 import { useTheme } from '../../src/theme';
 import { useBobClient } from '../../src/data/client';
 import { useSubscription, useInvoices, useQuotes } from '../../src/data/hooks';
@@ -23,6 +23,8 @@ interface ChatItem {
   text: string;
   run?: AgentRun;
   pending?: PendingAction;
+  /** Écriture comptable prévisionnelle (émission), chargée en asynchrone après l'arrivée du message. */
+  accountingLines?: readonly AccountingLine[];
 }
 
 const SUGGESTIONS = ['Encaisse la facture 2026-014', 'Mes factures impayées', 'Combien je peux me verser ?', 'Prépare une relance'];
@@ -59,7 +61,7 @@ export default function Assistant() {
 
   // Aperçu avant/après d'une action proposée, calculé côté mobile depuis l'action + les données (snapshot).
   // Montre la « preuve » (reste dû, statut, numéro) avant que l'utilisateur ne confirme (voix ou tap).
-  const pendingDiff = (pending: PendingAction): ActionDiff | null => {
+  const pendingDiff = (pending: PendingAction, accountingLines?: readonly AccountingLine[]): ActionDiff | null => {
     const { tool, args } = pending;
     const invId = typeof args.invoiceId === 'string' ? args.invoiceId : '';
     const quoteId = typeof args.quoteId === 'string' ? args.quoteId : '';
@@ -71,7 +73,7 @@ export default function Assistant() {
     }
     if (tool === 'emettre_facture') {
       const inv = (invoices ?? []).find((i) => i.id === invId);
-      return buildActionDiff('emettre_facture', {}, { number: inv?.number ?? null });
+      return buildActionDiff('emettre_facture', {}, { number: inv?.number ?? null, ...(accountingLines ? { accountingLines } : {}) });
     }
     if (tool === 'envoyer_devis') {
       const q = (quotes ?? []).find((x) => x.id === quoteId);
@@ -86,15 +88,30 @@ export default function Assistant() {
   };
 
   const pushBob = (run: AgentRun): void => {
-    setItems((prev) => [
-      ...prev,
-      { id: nextId(), role: 'bob', text: run.card.body, run, pending: run.kind === 'proposed' ? run.pending : undefined },
-    ]);
+    const id = nextId();
+    const pending = run.kind === 'proposed' ? run.pending : undefined;
+    setItems((prev) => [...prev, { id, role: 'bob', text: run.card.body, run, pending }]);
     // Boucle vocale : mémorise l'action à confirmer à l'oral + fait parler Bob (TTS, natif via expo-speech).
-    setAwaitingConfirm(run.kind === 'proposed' ? run.pending ?? null : null);
+    setAwaitingConfirm(pending ?? null);
     if (voiceTurnRef.current) speak(run.spokenPrompt ?? run.card.body); // Bob ne parle que sur un tour vocal
     if (run.kind === 'done') refreshAfterAction();
     if (run.navigate) router.push(run.navigate as never); // commande « Jarvis » : Bob ouvre le bon écran
+
+    // Émission : enrichit l'aperçu avec l'écriture comptable prévisionnelle (async, best-effort).
+    const invId = pending?.tool === 'emettre_facture' && typeof pending.args.invoiceId === 'string' ? pending.args.invoiceId : null;
+    if (invId) {
+      void client
+        .invoiceAccountingPreview(invId)
+        .then((r) => {
+          if (r.ok && r.value.available && r.value.lines.length) {
+            const lines = r.value.lines;
+            setItems((prev) => prev.map((it) => (it.id === id ? { ...it, accountingLines: lines } : it)));
+          }
+        })
+        .catch(() => {
+          /* aperçu comptable best-effort : silencieux si indisponible */
+        });
+    }
   };
 
   const ask = async (text: string, fromVoice = false): Promise<void> => {
@@ -210,7 +227,7 @@ export default function Assistant() {
                 <Text style={[font('body'), { color: colors.ink800 }]}>{it.text}</Text>
                 {it.pending ? (
                   <>
-                    <ActionDiffView diff={pendingDiff(it.pending)} />
+                    <ActionDiffView diff={pendingDiff(it.pending, it.accountingLines)} />
                     <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
                       <View style={{ flex: 1 }}>
                         <Button title="Confirmer" onPress={() => void confirm(it)} disabled={busy} />
