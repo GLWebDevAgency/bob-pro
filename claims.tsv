@@ -1,1 +1,3 @@
 packages/ai/src/agent/bob-agent-voice.test.ts	1782874784	1800	M2: cablage voix dans BobAgent (spokenPrompt + confirmByVoice)
+apps/mobile/app/(tabs)/assistant.tsx	1782876642	1800	M2 reflet mobile: session vocale assistant.tsx + hook TTS (DA)
+apps/mobile/src/data/voice.ts	1782876642	1800	M2 reflet mobile: session vocale assistant.tsx + hook TTS (DA)
