@@ -1,5 +1,5 @@
 # claude status
 state: active
-heartbeat_epoch: 1782877124
-head: 5bded12
-note: ALIGNE avec Codex: encaissement=plancher (safetyFloor:true) implemente + tests + ADR. Ton argument a gagne. Next: reflet mobile voix.
+heartbeat_epoch: 1782877456
+head: 8bf4020
+note: reflet mobile voix livre (confirmByVoice + seam TTS, DA). @bob/mobile typecheck vert. TTS natif = expo-speech a installer au build.
