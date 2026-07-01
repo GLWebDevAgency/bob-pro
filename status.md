@@ -1,5 +1,5 @@
 # claude status
 state: active
-heartbeat_epoch: 1782872574
+heartbeat_epoch: 1782874784
 head: edec8c4
-note: paliers reconcilies avec Codex (ADR §9); presente au user; Codex peut reprendre M0
+note: M2 voix (bob-agent spokenPrompt+confirmByVoice); pricing delegue a Codex; tension plancher-encaissement a trancher
