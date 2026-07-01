@@ -86,14 +86,26 @@ export default function ClientDetail() {
                             disabled={register.isPending}
                             onPress={() => {
                               const remaining = Math.max(0, inv.totals.ttc - inv.paid);
-                              register.mutate(
-                                {
-                                  invoiceId: inv.id,
-                                  amount: remaining,
-                                  method: 'transfer',
-                                  idempotencyKey: `mobile-client:payment:${inv.id}:${inv.paid}:${remaining}:transfer`,
-                                },
-                                { onError: (e) => Alert.alert('Oups', appErrorMessage(e)) },
+                              // Plancher de sécurité : l'encaissement modifie la compta -> confirmation explicite (même canal manuel).
+                              Alert.alert(
+                                'Enregistrer le paiement',
+                                `Encaisser ${formatEUR(remaining)} met à jour ta compta (CA, TVA, relances). Confirmer ?`,
+                                [
+                                  { text: 'Annuler', style: 'cancel' },
+                                  {
+                                    text: 'Confirmer',
+                                    onPress: () =>
+                                      register.mutate(
+                                        {
+                                          invoiceId: inv.id,
+                                          amount: remaining,
+                                          method: 'transfer',
+                                          idempotencyKey: `mobile-client:payment:${inv.id}:${inv.paid}:${remaining}:transfer`,
+                                        },
+                                        { onError: (e) => Alert.alert('Oups', appErrorMessage(e)) },
+                                      ),
+                                  },
+                                ],
                               );
                             }}
                           />

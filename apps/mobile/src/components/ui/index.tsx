@@ -115,7 +115,12 @@ export function Button({
   if (variant === 'primary') {
     const g = parseGradient(grad.cta);
     return (
-      <Pressable onPress={disabled ? undefined : onPress} accessibilityRole="button" accessibilityState={{ disabled: !!disabled }}>
+      <Pressable
+        onPress={disabled ? undefined : onPress}
+        accessibilityRole="button"
+        accessibilityLabel={title}
+        accessibilityState={{ disabled: !!disabled, busy: !!loading }}
+      >
         <LinearGradient colors={g.colors} start={g.start} end={g.end} style={base}>
           {loading ? <ActivityIndicator color="#fff" /> : label('#fff')}
         </LinearGradient>
@@ -128,7 +133,8 @@ export function Button({
     <Pressable
       onPress={disabled ? undefined : onPress}
       accessibilityRole="button"
-      accessibilityState={{ disabled: !!disabled }}
+      accessibilityLabel={title}
+      accessibilityState={{ disabled: !!disabled, busy: !!loading }}
       style={[base, { backgroundColor: bg }]}
     >
       {label(fg)}

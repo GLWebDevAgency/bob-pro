@@ -80,6 +80,24 @@ export default function Aujourdhui() {
           </View>
         </View>
 
+        <View>
+          <SectionHeader title="Ventes" />
+          <Pressable onPress={() => router.push('/ventes')} accessibilityRole="button" accessibilityLabel="Devis et factures">
+            <Card>
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1 }}>
+                  <Ionicons name="document-text-outline" size={22} color={colors.ink600} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={[font('cardTitle'), { color: colors.ink900 }]}>Devis &amp; Factures</Text>
+                    <Text style={[font('sub'), { color: colors.slate400, marginTop: 2 }]}>Suivre et agir sur tes documents</Text>
+                  </View>
+                </View>
+                <Ionicons name="chevron-forward" size={20} color={colors.slate400} />
+              </View>
+            </Card>
+          </Pressable>
+        </View>
+
         <Text style={[font('sub'), { color: colors.slate400, textAlign: 'center' }]}>{footerLine(personality)}</Text>
       </View>
     </ScrollView>
