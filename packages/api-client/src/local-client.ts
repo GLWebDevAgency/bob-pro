@@ -6,6 +6,8 @@ import {
   GenerateInvoiceFromQuote,
   IssueInvoice,
   RegisterPayment,
+  RecordIssuedInvoiceAccountingEntry,
+  ListAccountingEntries,
   ListCustomers,
   GetCashflow,
   SystemClock,
@@ -67,6 +69,8 @@ import {
   InMemoryPublicAccessTokenRepository,
   InMemoryExpenseRepository,
   InMemoryChantierRepository,
+  InMemoryAccountingEntryRepository,
+  InMemoryChartOfAccountsRepository,
 } from './in-memory/repositories';
 import { DemoCompanyLookupAdapter } from './in-memory/company-lookup';
 import { DemoVatAdapter, DemoAddressAdapter } from './in-memory/enrichment';
@@ -82,6 +86,7 @@ import type {
   VoiceConfig,
   VoiceSynthesisResult,
   InvoiceAccountingPreview,
+  AccountingEntryView,
 } from './client';
 
 export interface LocalBobClientOptions {
@@ -119,6 +124,8 @@ export class LocalBobClient implements BobClient {
   private readonly ocr: DemoOcrAdapter;
   private readonly expenses = new InMemoryExpenseRepository();
   private readonly chantiers = new InMemoryChantierRepository();
+  private readonly accountingEntries = new InMemoryAccountingEntryRepository();
+  private readonly chartOfAccounts = new InMemoryChartOfAccountsRepository();
   private readonly documents: DocumentView[] = [];
   private documentSeq = 0;
   private readonly companyLookup = new DemoCompanyLookupAdapter();
@@ -148,6 +155,8 @@ export class LocalBobClient implements BobClient {
     this.clock = opts?.clock ?? new SystemClock();
     this.ocr = new DemoOcrAdapter(this.clock);
     this.snapshots = new FixtureCashflowSnapshot(CASH_SNAPSHOT);
+    const chart = createFrenchOperationalChartOfAccounts(this.companyId);
+    if (chart.ok) void this.chartOfAccounts.save(chart.value);
   }
 
   private mapQuote(q: Quote): QuoteView {
@@ -396,7 +405,7 @@ export class LocalBobClient implements BobClient {
   }
 
   async issueInvoice(input: IssueInvoiceInput): Promise<Result<{ number: string }, AppError>> {
-    return new IssueInvoice({
+    const issued = await new IssueInvoice({
       invoices: this.invoices,
       companies: this.companies,
       customers: this.customers,
@@ -404,6 +413,14 @@ export class LocalBobClient implements BobClient {
       uow: this.uow,
       clock: this.clock,
     }).execute(input);
+    if (!issued.ok) return issued;
+    const accounting = await new RecordIssuedInvoiceAccountingEntry({
+      invoices: this.invoices,
+      entries: this.accountingEntries,
+      charts: this.chartOfAccounts,
+    }).execute({ invoiceId: input.invoiceId });
+    if (!accounting.ok) return accounting;
+    return issued;
   }
 
   async registerPayment(input: {
@@ -481,5 +498,9 @@ export class LocalBobClient implements BobClient {
   async listInvoices(): Promise<Result<InvoiceView[], AppError>> {
     const list = await this.invoices.listByCompany(this.companyId);
     return ok(list.map((i) => this.mapInvoice(i)));
+  }
+
+  async listAccountingEntries(): Promise<Result<AccountingEntryView[], AppError>> {
+    return new ListAccountingEntries({ entries: this.accountingEntries }).execute({ companyId: this.companyId });
   }
 }

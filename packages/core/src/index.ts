@@ -82,6 +82,7 @@ export * from './application/documents/list-documents';
 export * from './application/documents/storage-key';
 export * from './application/documents/store-document';
 export * from './application/accounting/initialize-chart-of-accounts';
+export * from './application/accounting/list-accounting-entries';
 export * from './application/accounting/record-accounting-entry';
 export * from './application/accounting/record-issued-invoice-accounting-entry';
 export * from './application/fixtures/index';

@@ -119,6 +119,18 @@ export interface InvoiceAccountingPreview {
   lines: AccountingPreviewLine[];
 }
 
+export interface AccountingEntryView {
+  id: string;
+  companyId: string;
+  journal: string;
+  sourceType: string;
+  sourceId: string;
+  entryDate: string;
+  reference: string;
+  label: string;
+  lines: AccountingPreviewLine[];
+}
+
 /**
  * Façade data consommée par l'app mobile (via TanStack Query).
  * Deux implémentations : LocalBobClient (fixtures, hors-ligne — V1) et, plus tard, HttpBobClient (NestJS).
@@ -191,4 +203,5 @@ export interface BobClient {
   getInvoice(id: string): Promise<Result<InvoiceView, AppError>>;
   invoiceAccountingPreview(invoiceId: string): Promise<Result<InvoiceAccountingPreview, AppError>>;
   listInvoices(): Promise<Result<InvoiceView[], AppError>>;
+  listAccountingEntries(): Promise<Result<AccountingEntryView[], AppError>>;
 }

@@ -217,6 +217,15 @@ export class InvoicesController {
   }
 }
 
+@Controller('accounting')
+export class AccountingController {
+  constructor(private readonly backend: BackendService) {}
+  @Get('entries')
+  async entries() {
+    return unwrap(await this.backend.listAccountingEntries());
+  }
+}
+
 @Controller('documents')
 export class DocumentsController {
   constructor(private readonly backend: BackendService) {}

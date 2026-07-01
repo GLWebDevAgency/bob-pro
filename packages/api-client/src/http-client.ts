@@ -34,6 +34,7 @@ import type {
   VoiceConfig,
   VoiceSynthesisResult,
   InvoiceAccountingPreview,
+  AccountingEntryView,
 } from './client';
 
 export interface HttpBobClientOptions {
@@ -199,5 +200,8 @@ export class HttpBobClient implements BobClient {
   }
   listInvoices() {
     return this.req<InvoiceView[]>('GET', '/invoices');
+  }
+  listAccountingEntries() {
+    return this.req<AccountingEntryView[]>('GET', '/accounting/entries');
   }
 }

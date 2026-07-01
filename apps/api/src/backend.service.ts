@@ -10,6 +10,7 @@ import {
   IssueInvoice,
   RegisterPayment,
   RecordIssuedInvoiceAccountingEntry,
+  ListAccountingEntries,
   ListCustomers,
   GetCashflow,
   SystemClock,
@@ -523,6 +524,10 @@ export class BackendService {
   async listInvoices(): Promise<Result<InvoiceView[], AppError>> {
     const list = await this.p.invoices.listByCompany(this.companyId());
     return ok(list.map((i) => this.mapInvoice(i)));
+  }
+
+  listAccountingEntries() {
+    return new ListAccountingEntries({ entries: this.p.accountingEntries }).execute({ companyId: this.companyId() });
   }
 
   private async resolveSignatureGrant(token: string): Promise<Result<ResolvedSignatureGrant, AppError>> {

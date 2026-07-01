@@ -53,6 +53,13 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     expect(preview.value.totalCreditCents).toBe(48840);
     expect(preview.value.lines.map((line) => line.account)).toEqual(['411', '4191', '44571']);
 
+    const entries = await client.listAccountingEntries();
+    expect(entries.ok).toBe(true);
+    if (!entries.ok) return;
+    expect(entries.value).toHaveLength(1);
+    expect(entries.value[0]?.sourceId).toBe(gen.value.invoiceId);
+    expect(entries.value[0]?.lines.map((line) => line.account)).toEqual(['411', '4191', '44571']);
+
     const paid = await client.registerPayment({ invoiceId: gen.value.invoiceId, amount: 48840, method: 'transfer' });
     expect(paid.ok && paid.value.status).toBe('paid');
 
