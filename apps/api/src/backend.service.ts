@@ -480,6 +480,52 @@ export class BackendService {
           .filter((i) => i.remainingCents > 0);
         return ok(payable);
       },
+      listSendableQuotes: async () => {
+        const [quotes, cust] = await Promise.all([this.listQuotes(), this.listCustomers()]);
+        if (!quotes.ok) return quotes;
+        const names = new Map((cust.ok ? cust.value : []).map((c) => [c.id, c.name]));
+        return ok(
+          quotes.value
+            .filter((q) => ['draft', 'sent', 'viewed'].includes(q.status))
+            .map((q) => ({
+              id: q.id,
+              number: q.number,
+              customerName: names.get(q.customerId) ?? 'Client',
+              totalTtcCents: q.totals.ttc,
+              status: q.status,
+            })),
+        );
+      },
+      listIssuableInvoices: async () => {
+        const [invoices, cust] = await Promise.all([this.listInvoices(), this.listCustomers()]);
+        if (!invoices.ok) return invoices;
+        const names = new Map((cust.ok ? cust.value : []).map((c) => [c.id, c.name]));
+        return ok(
+          invoices.value
+            .filter((i) => i.status === 'draft' && !i.number)
+            .map((i) => ({
+              id: i.id,
+              number: i.number,
+              customerName: names.get(i.customerId) ?? 'Client',
+              totalTtcCents: i.totals.ttc,
+              status: i.status,
+            })),
+        );
+      },
+      listDocuments: async () => {
+        const r = await this.listDocuments({ includeDeleted: false });
+        if (!r.ok) return r;
+        return ok(
+          r.value.slice(0, 12).map((d) => ({
+            id: d.id,
+            filename: d.filename,
+            kind: d.kind,
+            linkedEntityType: d.linkedEntityType,
+            linkedEntityId: d.linkedEntityId,
+            createdAt: d.createdAt,
+          })),
+        );
+      },
       registerPayment: async (input) =>
         this.registerPayment({
           invoiceId: input.invoiceId,
@@ -487,6 +533,8 @@ export class BackendService {
           method: 'transfer',
           idempotencyKey: input.idempotencyKey ?? `bob:payment:${input.invoiceId}:${input.amountCents}:transfer`,
         }),
+      sendQuote: async (input) => this.sendQuote(input.quoteId),
+      issueInvoice: async (input) => this.issueInvoice({ invoiceId: input.invoiceId }),
     };
   }
 

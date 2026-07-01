@@ -11,10 +11,15 @@ function makeActions() {
     computePayout: async () => ok({ payoutCents: 180000, availableCents: 495000 }),
     draftRelance: async () => ok({ subject: 's', body: 'b' }),
     listPayableInvoices: async () => ok([{ id: 'inv-1', number: '2026-014', remainingCents: 132000, customerName: 'Durand' }]),
+    listSendableQuotes: async () => ok([{ id: 'quote-1', number: 'D2026-014', totalTtcCents: 132000, customerName: 'Durand', status: 'draft' }]),
+    listIssuableInvoices: async () => ok([{ id: 'draft-inv-1', number: null, totalTtcCents: 132000, customerName: 'Durand', status: 'draft' }]),
+    listDocuments: async () => ok([]),
     registerPayment: async () => {
       payments++;
       return ok({ status: 'paid' });
     },
+    sendQuote: async () => ok({ number: 'D2026-014' }),
+    issueInvoice: async () => ok({ number: 'F2026-001' }),
   };
   return { actions, payments: () => payments };
 }

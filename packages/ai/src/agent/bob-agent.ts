@@ -2,7 +2,7 @@ import { type Result, ok, err, type AppError, formatEUR } from '@bob/core';
 import { ModelRouter, type ModelChoice } from '../router/model-router';
 import { renderWithGuard } from '../guardrails/money-guard';
 import { type LlmPort } from '../llm/port';
-import { type BobActions, type PayableInvoice } from './actions';
+import { type AgentDocument, type BobActions, type IssuableInvoice, type PayableInvoice, type SendableQuote } from './actions';
 import { buildBobTools } from '../tools/registry';
 import { type AnyTool } from '../tools/tool';
 import { type AgentAutonomy, DEFAULT_AUTONOMY, requiresConfirmation } from './autonomy';
@@ -93,6 +93,49 @@ export function resolveInvoice(message: string, invoices: PayableInvoice[]): Pay
   });
   if (byCust) return byCust;
   return invoices.length === 1 ? invoices[0]! : null;
+}
+
+type BusinessDocumentTarget = SendableQuote | IssuableInvoice;
+
+function normalized(s: string): string {
+  return s.toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '');
+}
+
+function resolveBusinessDocument<T extends BusinessDocumentTarget>(message: string, docs: T[]): T | null {
+  if (docs.length === 0) return null;
+  const lower = normalized(message);
+  const numMatch = message.match(/\d{3,}(?:-\d+)?/);
+  if (numMatch) {
+    const ref = numMatch[0].replace(/\s/g, '');
+    const byNum = docs.find((d) => (d.number ?? d.id).replace(/\s/g, '').includes(ref) || d.id.replace(/\s/g, '').includes(ref));
+    if (byNum) return byNum;
+  }
+  const byCustomer = docs.find((d) => {
+    const first = normalized(d.customerName).split(/\s+/)[0] ?? '';
+    return first.length >= 3 && lower.includes(first);
+  });
+  if (byCustomer) return byCustomer;
+  return docs.length === 1 ? docs[0]! : null;
+}
+
+function displayRef(d: BusinessDocumentTarget): string {
+  return d.number ?? d.id;
+}
+
+function documentLine(d: AgentDocument): string {
+  const link = d.linkedEntityType && d.linkedEntityId ? ` · ${d.linkedEntityType} ${d.linkedEntityId}` : '';
+  return `• ${d.filename} — ${d.kind}${link}`;
+}
+
+function intentForTool(tool: string): BobIntent {
+  if (tool === 'envoyer_devis') return 'envoyer_devis';
+  if (tool === 'emettre_facture') return 'emettre_facture';
+  if (tool === 'documents_liste') return 'documents';
+  if (tool === 'encaisser_facture') return 'encaisser';
+  if (tool === 'relance_brouillon') return 'relance';
+  if (tool === 'factures_impayees') return 'factures';
+  if (tool === 'tresorerie_versement') return 'payout';
+  return 'unknown';
 }
 
 /** Convertit une action proposée (simple ou lot) en invocations rejouables par le runtime. */
@@ -249,6 +292,82 @@ export class BobAgent {
       return ok({ kind: 'answer', intent, model, plan: ['Lister les factures impayées'], card: { title: 'À encaisser', body } });
     }
 
+    if (intent === 'documents') {
+      const r = await this.deps.actions.listDocuments();
+      if (!r.ok) return err(r.error);
+      const docs = r.value.slice(0, 8);
+      const body = docs.length ? docs.map(documentLine).join('\n') : 'Aucun document archivé pour le moment.';
+      return ok({ kind: 'answer', intent, model, plan: ['Lister les documents archivés'], card: { title: 'Documents', body } });
+    }
+
+    if (intent === 'envoyer_devis') {
+      const r = await this.deps.actions.listSendableQuotes();
+      if (!r.ok) return err(r.error);
+      const quote = resolveBusinessDocument(reference ?? message, r.value);
+      if (!quote) {
+        const body = r.value.length ? 'Quel devis veux-tu envoyer ?' : 'Aucun devis prêt à envoyer.';
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Chercher le devis'],
+          card: { title: 'Quel devis ?', body },
+          choices: r.value.map((q) => ({ label: `${displayRef(q)} — ${q.customerName} · ${formatEUR(q.totalTtcCents)}`, value: displayRef(q) })),
+        });
+      }
+      const tool = this.tool('envoyer_devis')!;
+      const args = { quoteId: quote.id };
+      const label = `Envoyer le devis ${displayRef(quote)} à ${quote.customerName} (${formatEUR(quote.totalTtcCents)})`;
+      if (requiresConfirmation(tool, autonomy)) {
+        return ok({
+          kind: 'proposed',
+          intent,
+          model,
+          plan: ['Identifier le devis', 'Préparer le lien de signature', 'Attendre ta confirmation'],
+          card: { title: 'Envoi de devis à confirmer', body: `${label}\nJe l’envoie au client ?` },
+          pending: { tool: tool.name, args, label },
+          spokenPrompt: buildSpokenConfirmation(label),
+        });
+      }
+      const run = await tool.run(args);
+      if (!run.ok) return err(run.error);
+      return ok({ kind: 'done', intent, model, plan: ['Envoyer le devis'], card: { title: 'Devis envoyé ✓', body: `${label} — c’est envoyé.` } });
+    }
+
+    if (intent === 'emettre_facture') {
+      const r = await this.deps.actions.listIssuableInvoices();
+      if (!r.ok) return err(r.error);
+      const invoice = resolveBusinessDocument(reference ?? message, r.value);
+      if (!invoice) {
+        const body = r.value.length ? 'Quelle facture veux-tu émettre ?' : 'Aucune facture brouillon prête à émettre.';
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Chercher la facture brouillon'],
+          card: { title: 'Quelle facture ?', body },
+          choices: r.value.map((i) => ({ label: `${displayRef(i)} — ${i.customerName} · ${formatEUR(i.totalTtcCents)}`, value: displayRef(i) })),
+        });
+      }
+      const tool = this.tool('emettre_facture')!;
+      const args = { invoiceId: invoice.id };
+      const label = `Émettre la facture ${displayRef(invoice)} pour ${invoice.customerName} (${formatEUR(invoice.totalTtcCents)})`;
+      if (requiresConfirmation(tool, autonomy)) {
+        return ok({
+          kind: 'proposed',
+          intent,
+          model,
+          plan: ['Identifier la facture brouillon', 'Préparer l’émission légale', 'Attendre ta confirmation'],
+          card: { title: 'Émission de facture à confirmer', body: `${label}\nJe numérote et j’archive les pièces légales ?` },
+          pending: { tool: tool.name, args, label },
+          spokenPrompt: buildSpokenConfirmation(label),
+        });
+      }
+      const run = await tool.run(args);
+      if (!run.ok) return err(run.error);
+      return ok({ kind: 'done', intent, model, plan: ['Émettre la facture'], card: { title: 'Facture émise ✓', body: `${label} — c’est émis.` } });
+    }
+
     if (intent === 'encaisser') {
       const r = await this.deps.actions.listPayableInvoices();
       if (!r.ok) return err(r.error);
@@ -314,6 +433,18 @@ export class BobAgent {
       if (!r.ok) return err(r.error);
       payables = r.value;
     }
+    let sendableQuotes: SendableQuote[] = [];
+    if (steps.some((s) => s.intent === 'envoyer_devis')) {
+      const r = await this.deps.actions.listSendableQuotes();
+      if (!r.ok) return err(r.error);
+      sendableQuotes = r.value;
+    }
+    let issuableInvoices: IssuableInvoice[] = [];
+    if (steps.some((s) => s.intent === 'emettre_facture')) {
+      const r = await this.deps.actions.listIssuableInvoices();
+      if (!r.ok) return err(r.error);
+      issuableInvoices = r.value;
+    }
     const actions: BatchItem[] = [];
     for (const step of steps) {
       if (step.intent === 'encaisser') {
@@ -339,12 +470,52 @@ export class BobAgent {
           },
           label: `Encaisser ${inv.number} · ${formatEUR(inv.remainingCents)} (${inv.customerName})`,
         });
+      } else if (step.intent === 'envoyer_devis') {
+        const quote = resolveBusinessDocument(step.reference ?? '', sendableQuotes);
+        if (!quote) {
+          const body = sendableQuotes.length ? 'Précise le devis à envoyer :' : 'Aucun devis prêt à envoyer.';
+          return ok({
+            kind: 'answer',
+            intent: 'envoyer_devis',
+            model,
+            plan: ['Lever l’ambiguïté'],
+            card: { title: 'Quel devis ?', body },
+            choices: sendableQuotes.map((q) => ({ label: `${displayRef(q)} — ${q.customerName} · ${formatEUR(q.totalTtcCents)}`, value: displayRef(q) })),
+          });
+        }
+        sendableQuotes = sendableQuotes.filter((q) => q.id !== quote.id);
+        actions.push({
+          tool: 'envoyer_devis',
+          args: { quoteId: quote.id },
+          label: `Envoyer le devis ${displayRef(quote)} à ${quote.customerName}`,
+        });
+      } else if (step.intent === 'emettre_facture') {
+        const invoice = resolveBusinessDocument(step.reference ?? '', issuableInvoices);
+        if (!invoice) {
+          const body = issuableInvoices.length ? 'Précise la facture à émettre :' : 'Aucune facture brouillon prête à émettre.';
+          return ok({
+            kind: 'answer',
+            intent: 'emettre_facture',
+            model,
+            plan: ['Lever l’ambiguïté'],
+            card: { title: 'Quelle facture ?', body },
+            choices: issuableInvoices.map((i) => ({ label: `${displayRef(i)} — ${i.customerName} · ${formatEUR(i.totalTtcCents)}`, value: displayRef(i) })),
+          });
+        }
+        issuableInvoices = issuableInvoices.filter((i) => i.id !== invoice.id);
+        actions.push({
+          tool: 'emettre_facture',
+          args: { invoiceId: invoice.id },
+          label: `Émettre la facture ${displayRef(invoice)} pour ${invoice.customerName}`,
+        });
       } else if (step.intent === 'payout') {
         actions.push({ tool: 'tresorerie_versement', args: {}, label: 'Calculer ton versement possible' });
       } else if (step.intent === 'relance') {
         actions.push({ tool: 'relance_brouillon', args: {}, label: 'Préparer une relance' });
       } else if (step.intent === 'factures') {
         actions.push({ tool: 'factures_impayees', args: {}, label: 'Lister tes impayés' });
+      } else if (step.intent === 'documents') {
+        actions.push({ tool: 'documents_liste', args: {}, label: 'Lister les documents archivés' });
       }
     }
     if (actions.length === 0) return ok(this.unknownRun(model));
@@ -391,7 +562,13 @@ export class BobAgent {
     if (pending.batch && pending.batch.length > 0) {
       const r = await this.runBatch(pending.batch);
       if (!r.ok) return err(r.error);
-      return ok({ kind: 'done', intent: 'encaisser', model, plan: pending.batch.map((a) => a.label), card: { title: 'Fait ✓', body: r.value } });
+      return ok({
+        kind: 'done',
+        intent: intentForTool(pending.batch[0]?.tool ?? pending.tool),
+        model,
+        plan: pending.batch.map((a) => a.label),
+        card: { title: 'Fait ✓', body: r.value },
+      });
     }
     const tool = this.tool(pending.tool);
     if (!tool) return err({ kind: 'not_found', entity: 'tool', id: pending.tool });
@@ -401,7 +578,7 @@ export class BobAgent {
     if (!run.ok) return err(run.error);
     return ok({
       kind: 'done',
-      intent: 'encaisser',
+      intent: intentForTool(pending.tool),
       model,
       plan: ['Exécuter l’action confirmée'],
       card: { title: 'Fait ✓', body: `${pending.label} — c’est noté.` },

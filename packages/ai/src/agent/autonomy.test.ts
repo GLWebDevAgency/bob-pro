@@ -13,7 +13,7 @@ describe('requiresConfirmation', () => {
     for (const m of MODES) expect(requiresConfirmation(tool({ mutating: false }), m)).toBe(false);
   });
 
-  it('interne réversible (ex. encaissement) : confirmé en confirm_all, DIRECT en confirm_outbound/auto', () => {
+  it('interne réversible non sensible : confirmé en confirm_all, direct en confirm_outbound/auto', () => {
     const t = tool(); // mutante, non-outbound, non-floor
     expect(requiresConfirmation(t, 'confirm_all')).toBe(true);
     expect(requiresConfirmation(t, 'confirm_outbound')).toBe(false);

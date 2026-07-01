@@ -41,6 +41,46 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
     run: () => actions.listPayableInvoices(),
   };
 
+  const listDocuments: Tool<Record<string, never>, unknown> = {
+    name: 'documents_liste',
+    description: 'Liste les derniers documents archivés de la société (PDF, XML Factur-X, reçus, justificatifs).',
+    mutating: false,
+    outbound: false,
+    compliance: 'medium',
+    parse: () => ok({}),
+    run: () => actions.listDocuments(),
+  };
+
+  const sendQuote: Tool<{ quoteId: string }, { number: string }> = {
+    name: 'envoyer_devis',
+    description: 'Envoie un devis au client et crée/renouvelle son lien de signature.',
+    mutating: true,
+    outbound: true,
+    compliance: 'medium',
+    parse: (raw): Result<{ quoteId: string }, AppError> => {
+      const r = raw as { quoteId?: unknown };
+      if (typeof r?.quoteId !== 'string' || r.quoteId.length === 0) return err(appValidation('quoteId', 'Devis manquant.'));
+      return ok({ quoteId: r.quoteId });
+    },
+    run: (input) => actions.sendQuote(input),
+  };
+
+  const issueInvoice: Tool<{ invoiceId: string }, { number: string }> = {
+    name: 'emettre_facture',
+    description: 'Émet une facture définitive : numéro légal séquentiel, mentions et PDF/Factur-X archivés.',
+    mutating: true,
+    outbound: false,
+    compliance: 'high',
+    safetyFloor: true,
+    parse: (raw): Result<{ invoiceId: string }, AppError> => {
+      const r = raw as { invoiceId?: unknown };
+      if (typeof r?.invoiceId !== 'string' || r.invoiceId.length === 0)
+        return err(appValidation('invoiceId', 'Facture manquante.'));
+      return ok({ invoiceId: r.invoiceId });
+    },
+    run: (input) => actions.issueInvoice(input),
+  };
+
   const registerPayment: Tool<
     { invoiceId: string; amountCents: number; idempotencyKey?: string | null },
     { status: string }
@@ -66,5 +106,5 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
     run: (input) => actions.registerPayment(input),
   };
 
-  return [computePayout, draftRelance, listPayable, registerPayment] as AnyTool[];
+  return [computePayout, draftRelance, listPayable, listDocuments, sendQuote, issueInvoice, registerPayment] as AnyTool[];
 }

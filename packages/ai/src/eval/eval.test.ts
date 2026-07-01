@@ -10,7 +10,12 @@ const actions: BobActions = {
   computePayout: async () => ok({ payoutCents: 180000, availableCents: 495000 }),
   draftRelance: async () => ok({ subject: 'Petit rappel', body: 'Bonjour, un petit rappel pour votre facture.' }),
   listPayableInvoices: async () => ok([]),
+  listSendableQuotes: async () => ok([]),
+  listIssuableInvoices: async () => ok([]),
+  listDocuments: async () => ok([]),
   registerPayment: async () => ok({ status: 'paid' }),
+  sendQuote: async () => ok({ number: 'D2026-014' }),
+  issueInvoice: async () => ok({ number: 'F2026-001' }),
 };
 const agent = new BobAgent({ router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }), actions });
 

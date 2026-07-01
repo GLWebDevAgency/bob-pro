@@ -13,7 +13,27 @@ const actions: BobActions = {
       { id: 'inv-1', number: '2026-014', remainingCents: 132000, customerName: 'Durand SARL' },
       { id: 'inv-2', number: '2026-021', remainingCents: 45000, customerName: 'M. Martin' },
     ]),
+  listSendableQuotes: async () =>
+    ok([
+      { id: 'quote-1', number: 'D2026-014', totalTtcCents: 264000, customerName: 'Durand SARL', status: 'draft' },
+      { id: 'quote-2', number: 'D2026-021', totalTtcCents: 90000, customerName: 'M. Martin', status: 'sent' },
+    ]),
+  listIssuableInvoices: async () =>
+    ok([{ id: 'draft-inv-1', number: null, totalTtcCents: 264000, customerName: 'Durand SARL', status: 'draft' }]),
+  listDocuments: async () =>
+    ok([
+      {
+        id: 'doc-1',
+        filename: 'facture-F2026-001.pdf',
+        kind: 'invoice_pdf',
+        linkedEntityType: 'invoice',
+        linkedEntityId: 'inv-1',
+        createdAt: '2026-07-01T10:00:00.000Z',
+      },
+    ]),
   registerPayment: async () => ok({ status: 'paid' }),
+  sendQuote: async () => ok({ number: 'D2026-014' }),
+  issueInvoice: async () => ok({ number: 'F2026-001' }),
 };
 const makeAgent = () => new BobAgent({ router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }), actions });
 
@@ -73,6 +93,27 @@ describe('BobAgent (démo)', () => {
     const r = await makeAgent().ask('marque comme payé');
     expect(r.ok && r.value.kind).toBe('answer');
     expect(r.ok && r.value.intent).toBe('encaisser');
+  });
+
+  it('envoyer un devis : sortant client -> propose toujours une confirmation', async () => {
+    const r = await makeAgent().ask('envoie le devis 2026-014 au client', { autonomy: 'auto' });
+    expect(r.ok && r.value.intent).toBe('envoyer_devis');
+    expect(r.ok && r.value.kind).toBe('proposed');
+    if (r.ok) expect(r.value.pending?.tool).toBe('envoyer_devis');
+  });
+
+  it('émettre une facture : pièce légale -> propose toujours une confirmation', async () => {
+    const r = await makeAgent().ask('émets la facture Durand', { autonomy: 'auto' });
+    expect(r.ok && r.value.intent).toBe('emettre_facture');
+    expect(r.ok && r.value.kind).toBe('proposed');
+    if (r.ok) expect(r.value.pending?.tool).toBe('emettre_facture');
+  });
+
+  it('documents : liste les pièces archivées sans mutation', async () => {
+    const r = await makeAgent().ask('montre mes documents archivés');
+    expect(r.ok && r.value.intent).toBe('documents');
+    expect(r.ok && r.value.kind).toBe('answer');
+    if (r.ok) expect(r.value.card.body).toContain('facture-F2026-001.pdf');
   });
 
   it('demande inconnue : aide sans rien inventer', async () => {

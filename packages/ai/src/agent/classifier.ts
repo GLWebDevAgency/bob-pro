@@ -19,6 +19,35 @@ export const LLM_TOOL_SPECS: LlmToolSpec[] = [
     parameters: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
+    name: 'documents_liste',
+    description: 'Lister les documents archivés : factures PDF, XML Factur-X, reçus et justificatifs.',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'envoyer_devis',
+    description: 'Envoyer un devis au client pour signature.',
+    parameters: {
+      type: 'object',
+      properties: {
+        reference: { type: 'string', description: 'Numéro de devis, id ou nom du client' },
+      },
+      required: [],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'emettre_facture',
+    description: 'Émettre une facture définitive avec numéro légal.',
+    parameters: {
+      type: 'object',
+      properties: {
+        reference: { type: 'string', description: 'Numéro de facture, id ou nom du client' },
+      },
+      required: [],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'encaisser_facture',
     description: 'Marquer une facture comme encaissée (paiement reçu).',
     parameters: {
@@ -51,6 +80,9 @@ const TOOL_TO_INTENT: Record<string, BobIntent> = {
   tresorerie_versement: 'payout',
   relance_brouillon: 'relance',
   factures_impayees: 'factures',
+  documents_liste: 'documents',
+  envoyer_devis: 'envoyer_devis',
+  emettre_facture: 'emettre_facture',
   encaisser_facture: 'encaisser',
   ouvrir_scan_recu: 'scan',
   nouveau_devis: 'nouveau_devis',

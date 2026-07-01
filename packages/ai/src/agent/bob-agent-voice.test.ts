@@ -10,10 +10,15 @@ function makeActions() {
     computePayout: async () => ok({ payoutCents: 1, availableCents: 1 }),
     draftRelance: async () => ok({ subject: 's', body: 'b' }),
     listPayableInvoices: async () => ok([{ id: 'inv-1', number: '2026-014', remainingCents: 132000, customerName: 'Durand' }]),
+    listSendableQuotes: async () => ok([]),
+    listIssuableInvoices: async () => ok([]),
+    listDocuments: async () => ok([]),
     registerPayment: async () => {
       payments++;
       return ok({ status: 'paid' });
     },
+    sendQuote: async () => ok({ number: 'D2026-014' }),
+    issueInvoice: async () => ok({ number: 'F2026-001' }),
   };
   return { actions, payments: () => payments };
 }

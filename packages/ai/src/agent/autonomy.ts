@@ -16,8 +16,8 @@ export const AUTONOMY_LABELS: Record<AgentAutonomy, string> = {
 
 /**
  * Plancher de sécurité INVIOLABLE : actions confirmées MÊME en autonomie 'auto'. = envoi vers un tiers
- * (`outbound`) OU action irréversible légale/fiscale / purge (`safetyFloor`). L'encaissement (réversible,
- * entrant) n'en fait PAS partie. Rend « vendre l'auto pas cher » sûr : l'auto n'accélère que l'interne réversible.
+ * (`outbound`) OU action irréversible légale/fiscale, purge ou comptable sensible (`safetyFloor`).
+ * Rend « vendre l'auto pas cher » sûr : l'auto n'accélère que l'interne vraiment réversible.
  */
 export function isSafetyFloor(tool: { outbound: boolean; safetyFloor?: boolean }): boolean {
   return tool.outbound || tool.safetyFloor === true;
@@ -31,5 +31,5 @@ export function requiresConfirmation(
   if (!tool.mutating) return false; // lecture : jamais
   if (isSafetyFloor(tool)) return true; // plancher : toujours, même en 'auto'
   if (mode === 'confirm_all') return true;
-  return false; // interne réversible non-sensible (ex. encaissement) : direct en confirm_outbound et auto
+  return false; // interne réversible non-sensible : direct en confirm_outbound et auto
 }
