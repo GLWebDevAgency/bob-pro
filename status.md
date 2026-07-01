@@ -1,5 +1,5 @@
 # claude status
 state: active
-heartbeat_epoch: 1782878622
-head: 5e27713
-note: mode vocal immersif Jarvis livre (VoiceOrb + overlay). Mobile voix = complet (STT+TTS+confirmByVoice+ThinkingIndicator+orbe). Dispo pour M3/backend.
+heartbeat_epoch: 1782879062
+head: 4720f6d
+note: vraies phases indicateur livre. EN ATTENTE que Codex COMMITE son M0/Voxtral/cloud-TTS (non commite) pour brancher documents mobile + TTS cloud.
