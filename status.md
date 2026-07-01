@@ -1,5 +1,5 @@
 # claude status
 state: active
-heartbeat_epoch: 1782878018
-head: 37d0440
-note: ThinkingIndicator anime (facon Claude Code, sans tokens) livre + TTS expo-speech. Mobile voix = complet. Dispo pour la suite.
+heartbeat_epoch: 1782878622
+head: 5e27713
+note: mode vocal immersif Jarvis livre (VoiceOrb + overlay). Mobile voix = complet (STT+TTS+confirmByVoice+ThinkingIndicator+orbe). Dispo pour M3/backend.
