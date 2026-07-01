@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { SystemClock, buildRelance, MERCIER_PROPS, type RelanceTone } from '@bob/core';
+import { SystemClock, buildRelance, type RelanceTone } from '@bob/core';
 import { PERSISTENCE, type Persistence } from '../persistence/persistence';
 import { AppLogger } from '../observability/logger';
 import { NotificationDeliveryService } from './notification-delivery.service';
@@ -34,10 +34,10 @@ export class RelanceService {
     void this.runRelances();
   }
 
-  async runRelances(): Promise<{ scanned: number; sent: number }> {
+  async runRelancesForCompany(companyId: string): Promise<{ scanned: number; sent: number }> {
     const today = this.clock.today();
-    return this.p.runWithTenant(MERCIER_PROPS.id, async () => {
-      const invoices = await this.p.invoices.listByCompany(MERCIER_PROPS.id);
+    return this.p.runWithTenant(companyId, async () => {
+      const invoices = await this.p.invoices.listByCompany(companyId);
       let sent = 0;
       for (const inv of invoices) {
         const overdue =
@@ -73,5 +73,18 @@ export class RelanceService {
       this.logger.audit('relances.run', { scanned: invoices.length, sent });
       return { scanned: invoices.length, sent };
     });
+  }
+
+  async runRelances(): Promise<{ companies: number; scanned: number; sent: number }> {
+    const companies = await this.p.companies.list();
+    let scanned = 0;
+    let sent = 0;
+    for (const company of companies) {
+      const result = await this.runRelancesForCompany(company.id);
+      scanned += result.scanned;
+      sent += result.sent;
+    }
+    this.logger.audit('relances.run_all', { companies: companies.length, scanned, sent });
+    return { companies: companies.length, scanned, sent };
   }
 }

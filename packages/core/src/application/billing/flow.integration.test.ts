@@ -30,6 +30,7 @@ function makeEnv() {
 
   const companyRepo: CompanyRepository = {
     findById: async (id) => (id === company.id ? company : null),
+    list: async () => [company],
     save: async () => {},
   };
   const customerRepo: CustomerRepository = {

@@ -71,6 +71,10 @@ export class PrismaCompanyRepository implements CompanyRepository {
     const r = Company.of(companyRowToProps(row));
     return r.ok ? r.value : null;
   }
+  async list(): Promise<Company[]> {
+    const rows = await this.prisma.client().company.findMany({ orderBy: { id: 'asc' } });
+    return rows.map((row) => Company.of(companyRowToProps(row))).flatMap((r) => (r.ok ? [r.value] : []));
+  }
   async save(c: Company): Promise<void> {
     const data = companyPropsToCreate(c.toProps());
     await this.prisma.client().company.upsert({ where: { id: data.id }, create: data, update: data });

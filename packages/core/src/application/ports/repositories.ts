@@ -8,6 +8,7 @@ import { type Chantier } from '../../domain/chantier/chantier';
 
 export interface CompanyRepository {
   findById(id: string): Promise<Company | null>;
+  list(): Promise<Company[]>;
   save(c: Company): Promise<void>;
 }
 

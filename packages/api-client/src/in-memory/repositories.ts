@@ -25,6 +25,9 @@ export class InMemoryCompanyRepository implements CompanyRepository {
   async findById(id: string): Promise<Company | null> {
     return this.map.get(id) ?? null;
   }
+  async list(): Promise<Company[]> {
+    return [...this.map.values()];
+  }
   async save(c: Company): Promise<void> {
     this.map.set(c.id, c);
   }

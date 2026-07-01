@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
-import { MERCIER_PROPS, SystemClock, type Notification, type NotificationPort } from '@bob/core';
+import { SystemClock, type Notification, type NotificationPort } from '@bob/core';
 import { PERSISTENCE, type Persistence } from '../persistence/persistence';
 import { type DeliverableNotificationJob, type NotificationJob } from '../persistence/notification-jobs';
 import { NOTIFIER } from '../notifications/notifier';
@@ -30,7 +30,7 @@ export class NotificationDeliveryService {
 
   @Cron('*/5 * * * *')
   scheduled(): void {
-    void this.runForCompany(MERCIER_PROPS.id, 10)
+    void this.runAllCompanies(10)
       .then((r) => {
         if (r.scanned > 0) this.logger.audit('notification.jobs.scheduled', r);
       })
@@ -94,7 +94,21 @@ export class NotificationDeliveryService {
     });
   }
 
-  run(): Promise<{ scanned: number; sent: number; failed: number }> {
-    return this.runForCompany(MERCIER_PROPS.id, 25);
+  async runAllCompanies(limitPerCompany = 25): Promise<{ companies: number; scanned: number; sent: number; failed: number }> {
+    const companies = await this.p.companies.list();
+    let scanned = 0;
+    let sent = 0;
+    let failed = 0;
+    for (const company of companies) {
+      const result = await this.runForCompany(company.id, limitPerCompany);
+      scanned += result.scanned;
+      sent += result.sent;
+      failed += result.failed;
+    }
+    return { companies: companies.length, scanned, sent, failed };
+  }
+
+  run(): Promise<{ companies: number; scanned: number; sent: number; failed: number }> {
+    return this.runAllCompanies(25);
   }
 }
