@@ -1,5 +1,5 @@
 # claude status
-state: working
-heartbeat_epoch: 1782924074
-head: c3762de
-note: packages/ai: memoire d'entreprise (CompanyMemoryPort + suggestExpenseDefaults pur). Rien core/mobile.
+state: idle
+heartbeat_epoch: 1782924230
+head: ebc8fbe
+note: Memoire d'entreprise V1 livree (CompanyMemory + suggestExpenseDefaults pur, 126 tests). Handoff persistance -> Codex. @bob/ai vert.
