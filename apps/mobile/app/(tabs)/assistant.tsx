@@ -12,6 +12,7 @@ import { makeBobAgent } from '../../src/data/bob';
 import { useVoiceInput, useSpeak } from '../../src/data/voice';
 import { getAutonomy } from '../../src/data/settings';
 import { Card, Button, Badge, Chip, font } from '../../src/components/ui';
+import { ThinkingIndicator } from '../../src/components/ThinkingIndicator';
 
 interface ChatItem {
   id: string;
@@ -186,7 +187,7 @@ export default function Assistant() {
             </View>
           ),
         )}
-        {busy ? <Text style={[font('sub'), { color: colors.slate400 }]}>Bob réfléchit…</Text> : null}
+        {busy ? <ThinkingIndicator /> : null}
         {items.length <= 1 ? (
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 4 }}>
             {SUGGESTIONS.map((s) => (
