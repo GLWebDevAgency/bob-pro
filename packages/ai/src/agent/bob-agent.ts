@@ -18,6 +18,7 @@ import {
   type RuntimeClock,
   type RuntimeIds,
 } from '../runtime';
+import { buildSpokenConfirmation, parseVoiceConsent } from '../voice/voice-confirm';
 
 // Ré-export pour compatibilité (anciens imports depuis bob-agent).
 export { detectIntent };
@@ -65,6 +66,8 @@ export interface AgentRun {
   choices?: AgentChoice[];
   /** Présent pour une commande de navigation : route vers laquelle l'app doit rediriger (ex. /scan-document). */
   navigate?: string;
+  /** Texte à vocaliser (TTS) : prompt de confirmation parlé (action proposée) ou message parlé (annulation/re-demande). */
+  spokenPrompt?: string;
 }
 
 /** Intents de navigation : Bob ouvre le bon écran (façon « Jarvis »). */
@@ -269,6 +272,7 @@ export class BobAgent {
           plan: ['Identifier la facture', 'Préparer l’encaissement', 'Attendre ta confirmation'],
           card: { title: 'Encaissement à confirmer', body: `${label}\nDate : aujourd’hui. Je valide ?` },
           pending: { tool: tool.name, args, label },
+          spokenPrompt: buildSpokenConfirmation(label),
         });
       }
       const run = await tool.run(args);
@@ -351,6 +355,7 @@ export class BobAgent {
         plan: actions.map((a) => a.label),
         card: { title: `${actions.length} actions à confirmer`, body: `Je vais :\n${listing}\nJe valide tout ?` },
         pending: { tool: 'batch', args: {}, label: listing, batch: actions },
+        spokenPrompt: buildSpokenConfirmation(`${actions.length} actions : ${actions.map((a) => a.label).join(', ')}`),
       });
     }
     const r = await this.runBatch(actions);
@@ -414,5 +419,36 @@ export class BobAgent {
   /** Exécution JOURNALISÉE (audit append-only immuable) avec permissions par action. */
   async runJournaled(invocations: RuntimeInvocation[], opts: Omit<RuntimeOptions, 'mode'> = {}): Promise<AgentRunRecord> {
     return this.requireEngine().run(invocations, { ...opts, mode: 'live' });
+  }
+
+  /**
+   * Confirmation VOCALE d'une action proposée : interprète la réponse parlée (FAIL-SAFE via parseVoiceConsent)
+   * puis exécute (confirm), abandonne, ou re-demande. Jamais d'exécution sur une réponse ambiguë
+   * (plancher de sécurité vocal : sur une action sensible, l'ambiguïté ne déclenche jamais l'action).
+   */
+  async confirmByVoice(pending: PendingAction, transcript: string): Promise<Result<AgentRun, AppError>> {
+    const consent = parseVoiceConsent(transcript);
+    if (consent === 'confirm') return this.confirm(pending);
+    const model = this.deps.router.route('agent.plan').model;
+    if (consent === 'cancel') {
+      return ok({
+        kind: 'answer',
+        intent: 'unknown',
+        model,
+        plan: ['Annuler'],
+        card: { title: 'Annulé', body: 'Ok, j’annule — rien n’a été fait.' },
+        spokenPrompt: 'Ok, j’annule. Rien n’a été fait.',
+      });
+    }
+    // 'unclear' -> on re-propose, aucune exécution.
+    return ok({
+      kind: 'proposed',
+      intent: 'unknown',
+      model,
+      plan: ['Reformuler la confirmation'],
+      card: { title: 'Je n’ai pas compris', body: `${pending.label}\nDis « je confirme » ou « annule ».` },
+      pending,
+      spokenPrompt: buildSpokenConfirmation(pending.label),
+    });
   }
 }
