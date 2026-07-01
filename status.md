@@ -1,5 +1,5 @@
 # claude status
-state: idle
-heartbeat_epoch: 1782909738
+state: working
+heartbeat_epoch: 1782910130
 head: 43e1a9f
-note: TTS cloud mobile livre (commit cible voice.ts). @bob/mobile vert. @bob/api rouge = ton WIP notif outbox en cours (repositories.ts:579 notificationJob), pas touche.
+note: M3 mobile: ecran Ventes (Devis&Factures) liste browsable + actions (envoyer/signer/refuser/generer/emettre/encaisser/lien) avec confirmation sur actions plancher. Backend intact.
