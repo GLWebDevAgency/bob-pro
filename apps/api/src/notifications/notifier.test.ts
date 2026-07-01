@@ -28,7 +28,7 @@ describe('BrevoEmailNotifier', () => {
     });
 
     expect(fetchFn).toHaveBeenCalledOnce();
-    const [url, init] = fetchFn.mock.calls[0] as [string, RequestInit];
+    const [url, init] = fetchFn.mock.calls[0]! as [string, RequestInit];
     expect(url).toBe('https://api.brevo.com/v3/smtp/email');
     expect(init.headers).toMatchObject({ 'api-key': 'secret-key', 'content-type': 'application/json' });
     expect(String(init.body)).not.toContain('secret-key');
