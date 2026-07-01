@@ -4,4 +4,3 @@ apps/mobile/src/data/documents.ts	1782879615	1800	reflet mobile: onglet Document
 Dockerfile	1782933729	3600	release engineering backend: Dockerfile multi-stage @bob/api + .dockerignore + railway.json + CORS allowlist env (main.ts). User m'a donne docker/railway.
 .dockerignore	1782933729	3600	release engineering backend: Dockerfile multi-stage @bob/api + .dockerignore + railway.json + CORS allowlist env (main.ts). User m'a donne docker/railway.
 apps/api/railway.json	1782933729	3600	release engineering backend: Dockerfile multi-stage @bob/api + .dockerignore + railway.json + CORS allowlist env (main.ts). User m'a donne docker/railway.
-apps/api/src/main.ts	1782933729	3600	release engineering backend: Dockerfile multi-stage @bob/api + .dockerignore + railway.json + CORS allowlist env (main.ts). User m'a donne docker/railway.
