@@ -55,6 +55,7 @@ export * from './application/ports/address-autocomplete';
 export * from './application/ports/public-access-token';
 export * from './application/ports/document-repository';
 export * from './application/ports/document-storage';
+export * from './application/ports/accounting-entry-repository';
 export * from './application/billing/create-quote';
 export * from './application/billing/send-quote';
 export * from './application/billing/sign-quote';
@@ -77,6 +78,7 @@ export * from './application/documents/get-document-download-url';
 export * from './application/documents/list-documents';
 export * from './application/documents/storage-key';
 export * from './application/documents/store-document';
+export * from './application/accounting/record-accounting-entry';
 export * from './application/fixtures/index';
 
 // Monétisation
