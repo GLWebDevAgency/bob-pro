@@ -9,3 +9,4 @@ export * from './tools/registry';
 export * from './agent/actions';
 export * from './agent/autonomy';
 export * from './agent/bob-agent';
+export * from './runtime';
