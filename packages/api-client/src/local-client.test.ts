@@ -88,6 +88,36 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     expect(replay.ok && replay.value.paymentId).toBe(paid.ok ? paid.value.paymentId : null);
     const replayEntries = await client.listAccountingEntries();
     expect(replayEntries.ok && replayEntries.value).toHaveLength(2);
+
+    const fec = await client.exportFec({ from: '2026-01-01', to: '2026-12-31' });
+    expect(fec.ok).toBe(true);
+    if (!fec.ok) return;
+    expect(fec.value.filename).toBe('732829320FEC20261231.txt');
+    expect(fec.value.entryCount).toBe(2);
+    expect(fec.value.rowCount).toBe(5);
+    const rows = fec.value.content.trimEnd().split('\n');
+    expect(rows[0]?.split('\t')).toEqual([
+      'JournalCode',
+      'JournalLib',
+      'EcritureNum',
+      'EcritureDate',
+      'CompteNum',
+      'CompteLib',
+      'CompAuxNum',
+      'CompAuxLib',
+      'PieceRef',
+      'PieceDate',
+      'EcritureLib',
+      'Debit',
+      'Credit',
+      'EcritureLet',
+      'DateLet',
+      'ValidDate',
+      'Montantdevise',
+      'Idevise',
+    ]);
+    expect(fec.value.content).toContain('VE\tJournal des ventes');
+    expect(fec.value.content).toContain('BQ\tJournal de banque');
   });
 
   it('refuse un devis envoye hors-ligne', async () => {

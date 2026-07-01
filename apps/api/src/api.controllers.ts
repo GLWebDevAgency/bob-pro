@@ -224,6 +224,14 @@ export class AccountingController {
   async entries() {
     return unwrap(await this.backend.listAccountingEntries());
   }
+  @Get('fec')
+  async fec(@Query('from') from: string, @Query('to') to: string): Promise<StreamableFile> {
+    const fec = unwrap(await this.backend.exportFec({ from: from ?? '', to: to ?? '' }));
+    return new StreamableFile(Buffer.from(fec.content, 'utf-8'), {
+      type: fec.mimeType,
+      disposition: `attachment; filename="${fec.filename}"`,
+    });
+  }
 }
 
 @Controller('documents')

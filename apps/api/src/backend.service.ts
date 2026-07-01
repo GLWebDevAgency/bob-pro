@@ -12,6 +12,7 @@ import {
   RecordIssuedInvoiceAccountingEntry,
   RecordPaymentAccountingEntry,
   ListAccountingEntries,
+  ExportFec,
   ListCustomers,
   GetCashflow,
   SystemClock,
@@ -560,6 +561,14 @@ export class BackendService {
 
   listAccountingEntries() {
     return new ListAccountingEntries({ entries: this.p.accountingEntries }).execute({ companyId: this.companyId() });
+  }
+
+  exportFec(input: { from: string; to: string }) {
+    return new ExportFec({
+      companies: this.p.companies,
+      entries: this.p.accountingEntries,
+      charts: this.p.chartOfAccounts,
+    }).execute({ companyId: this.companyId(), from: input.from, to: input.to });
   }
 
   private async resolveSignatureGrant(token: string): Promise<Result<ResolvedSignatureGrant, AppError>> {

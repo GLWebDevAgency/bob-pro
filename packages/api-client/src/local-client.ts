@@ -9,6 +9,7 @@ import {
   RecordIssuedInvoiceAccountingEntry,
   RecordPaymentAccountingEntry,
   ListAccountingEntries,
+  ExportFec,
   ListCustomers,
   GetCashflow,
   SystemClock,
@@ -521,5 +522,13 @@ export class LocalBobClient implements BobClient {
 
   async listAccountingEntries(): Promise<Result<AccountingEntryView[], AppError>> {
     return new ListAccountingEntries({ entries: this.accountingEntries }).execute({ companyId: this.companyId });
+  }
+
+  async exportFec(input: { from: string; to: string }) {
+    return new ExportFec({
+      companies: this.companies,
+      entries: this.accountingEntries,
+      charts: this.chartOfAccounts,
+    }).execute({ companyId: this.companyId, ...input });
   }
 }

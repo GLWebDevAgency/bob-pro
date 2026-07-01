@@ -36,6 +36,8 @@ import type {
   VoiceSynthesisResult,
   InvoiceAccountingPreview,
   AccountingEntryView,
+  ExportFecClientInput,
+  ExportFecClientOutput,
 } from './client';
 
 export interface HttpBobClientOptions {
@@ -83,6 +85,36 @@ export class HttpBobClient implements BobClient {
         return { ok: false, error };
       }
       return { ok: true, value: data as T };
+    } catch (e) {
+      return { ok: false, error: { kind: 'dependency', port: 'api', cause: e instanceof Error ? e.message : 'réseau' } };
+    }
+  }
+
+  private async reqText(path: string): Promise<Result<{ content: string; headers: Headers; contentType: string | null }, AppError>> {
+    try {
+      const token = this.opts.getToken ? await this.opts.getToken() : null;
+      const res = await fetch(`${this.opts.baseUrl}${path}`, {
+        method: 'GET',
+        headers: {
+          'x-company-id': this.companyId,
+          ...(token ? { authorization: `Bearer ${token}` } : {}),
+        },
+      });
+      const contentType = res.headers.get('content-type');
+      const content = await res.text();
+      if (!res.ok) {
+        try {
+          const data = JSON.parse(content) as unknown;
+          const error: AppError =
+            data && typeof data === 'object' && 'error' in data
+              ? (data as { error: AppError }).error
+              : { kind: 'dependency', port: 'api', cause: `HTTP ${res.status}` };
+          return { ok: false, error };
+        } catch {
+          return { ok: false, error: { kind: 'dependency', port: 'api', cause: `HTTP ${res.status}` } };
+        }
+      }
+      return { ok: true, value: { content, headers: res.headers, contentType } };
     } catch (e) {
       return { ok: false, error: { kind: 'dependency', port: 'api', cause: e instanceof Error ? e.message : 'réseau' } };
     }
@@ -204,5 +236,27 @@ export class HttpBobClient implements BobClient {
   }
   listAccountingEntries() {
     return this.req<AccountingEntryView[]>('GET', '/accounting/entries');
+  }
+  async exportFec(input: ExportFecClientInput): Promise<Result<ExportFecClientOutput, AppError>> {
+    const qs = new URLSearchParams({ from: input.from, to: input.to }).toString();
+    const r = await this.reqText(`/accounting/fec?${qs}`);
+    if (!r.ok) return r;
+    const disposition = r.value.headers.get('content-disposition') ?? '';
+    const filenameMatch = disposition.match(/filename="?([^";]+)"?/i);
+    const filename = filenameMatch?.[1] ?? `export-fec-${input.to.replace(/-/g, '')}.txt`;
+    const rows = r.value.content.trimEnd() ? r.value.content.trimEnd().split('\n') : [];
+    const bodyRows = Math.max(0, rows.length - 1);
+    const entryNums = new Set(rows.slice(1).map((row) => row.split('\t')[2]).filter(Boolean));
+    return {
+      ok: true,
+      value: {
+        filename,
+        mimeType: r.value.contentType ?? 'text/plain; charset=utf-8',
+        content: r.value.content,
+        entryCount: entryNums.size,
+        rowCount: bodyRows,
+        warnings: [],
+      },
+    };
   }
 }
