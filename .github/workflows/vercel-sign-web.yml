@@ -32,27 +32,27 @@ jobs:
       - run: pnpm --filter @bob/sign-web build
       - name: Install Vercel CLI
         run: npm install -g vercel@50.4.5
+      # Le projet Vercel bob-pro-sign-web a rootDirectory=apps/sign-web : les commandes
+      # vercel doivent tourner depuis la RACINE du repo, sinon le chemin est doublé
+      # (apps/sign-web/apps/sign-web -> ENOENT).
       - name: Pull Vercel project settings
-        working-directory: apps/sign-web
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_SIGN_WEB_PROJECT_ID }}
         run: vercel pull --yes --environment="${{ inputs.environment }}" --token "$VERCEL_TOKEN"
       - name: Check public API URL
-        working-directory: apps/sign-web
+        # vercel pull peut quoter les valeurs (VAR="https://...") : le motif accepte les deux formes.
         run: |
-          if ! grep -q '^NEXT_PUBLIC_API_URL=https://' ".vercel/.env.${{ inputs.environment }}.local"; then
+          if ! grep -q '^NEXT_PUBLIC_API_URL="\?https://' ".vercel/.env.${{ inputs.environment }}.local"; then
             echo "NEXT_PUBLIC_API_URL must be configured as an https URL in Vercel ${{ inputs.environment }} env" >&2
             exit 1
           fi
       - name: Build with Vercel
-        working-directory: apps/sign-web
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: vercel build ${{ inputs.environment == 'production' && '--prod' || '--target=preview' }} --token "$VERCEL_TOKEN"
       - name: Deploy prebuilt output
-        working-directory: apps/sign-web
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: vercel deploy --prebuilt ${{ inputs.environment == 'production' && '--prod' || '--target=preview' }} --token "$VERCEL_TOKEN"
