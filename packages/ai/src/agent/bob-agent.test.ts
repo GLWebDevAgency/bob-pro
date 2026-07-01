@@ -34,19 +34,20 @@ describe('BobAgent (démo)', () => {
     expect(r.ok && r.value.kind).toBe('answer');
   });
 
-  it('encaisser par numéro : exécution directe en mode par défaut (interne/réversible)', async () => {
+  it('encaisser par numéro : confirmation TOUJOURS requise (plancher), même en mode par défaut', async () => {
     const r = await makeAgent().ask('encaisse la facture 2026-014');
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.value.intent).toBe('encaisser');
-      expect(r.value.kind).toBe('done');
+      expect(r.value.kind).toBe('proposed');
+      expect(r.value.pending?.args).toMatchObject({ invoiceId: 'inv-1' });
     }
   });
 
-  it('encaisser : résout la facture par nom de client (« est payée »)', async () => {
+  it('encaisser : résout la facture par nom de client (« est payée ») puis propose (plancher)', async () => {
     const r = await makeAgent().ask('la facture de Durand est payée');
     expect(r.ok && r.value.intent).toBe('encaisser');
-    expect(r.ok && r.value.kind).toBe('done');
+    expect(r.ok && r.value.kind).toBe('proposed');
   });
 
   it('encaisser : mode « tout confirmer » -> propose et attend confirmation', async () => {
@@ -99,7 +100,8 @@ describe('BobAgent — chemin LLM (tool-calling) + fallback', () => {
     const agent = new BobAgent({ router: routerWithKey, actions, llm });
     const r = await agent.ask('tu peux noter que la 14 est réglée', { autonomy: 'auto' });
     expect(r.ok && r.value.intent).toBe('encaisser');
-    expect(r.ok && r.value.kind).toBe('done');
+    // Plancher : même en 'auto', le posting d'un paiement se confirme (via un OK rapide).
+    expect(r.ok && r.value.kind).toBe('proposed');
   });
 
   it('garde-fou périmètre : une demande hors-sujet (LLM répond en texte, pas d’outil) -> unknown', async () => {
@@ -147,12 +149,12 @@ describe('BobAgent — chemin LLM (tool-calling) + fallback', () => {
     },
   };
 
-  it('plan multi-étapes : 2 encaissements exécutés en auto', async () => {
+  it('plan multi-étapes : 2 encaissements en auto -> plancher, propose le lot à confirmer', async () => {
     const r = await new BobAgent({ router: routerWithKey, actions, llm: llmTwoEncaisse }).ask('encaisse Durand et Martin', {
       autonomy: 'auto',
     });
-    expect(r.ok && r.value.kind).toBe('done');
-    if (r.ok) expect(r.value.plan.length).toBe(2);
+    expect(r.ok && r.value.kind).toBe('proposed');
+    if (r.ok) expect(r.value.pending?.batch?.length).toBe(2);
   });
 
   it('plan multi-étapes : confirm_all propose le lot, puis confirm l’exécute', async () => {

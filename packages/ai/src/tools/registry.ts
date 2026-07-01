@@ -46,10 +46,13 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
     { status: string }
   > = {
     name: 'encaisser_facture',
-    description: 'Marque une facture comme encaissée (paiement reçu). Action interne réversible.',
+    description: 'Marque une facture comme encaissée (paiement reçu). Réversible, mais impacte les livres (CA/TVA/relances).',
     mutating: true,
-    outbound: false, // encaissement = interne/réversible, pas un envoi vers un tiers
+    outbound: false, // pas un envoi vers un tiers…
     compliance: 'medium',
+    // …mais PLANCHER de sécurité : le POSTING d'un paiement modifie les livres (CA, TVA, statut client,
+    // relances, rapprochement) -> toujours confirmer (même en auto), via un OK voix/tap rapide (décision Claude+Codex).
+    safetyFloor: true,
     parse: (raw): Result<{ invoiceId: string; amountCents: number; idempotencyKey?: string | null }, AppError> => {
       const r = raw as { invoiceId?: unknown; amountCents?: unknown; idempotencyKey?: unknown };
       if (typeof r?.invoiceId !== 'string' || r.invoiceId.length === 0)
