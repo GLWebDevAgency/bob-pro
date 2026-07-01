@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { AccountingEntry, type AccountingEntryProps } from './accounting-entry';
+import { ChartOfAccounts } from './chart-of-accounts';
 
 const base: AccountingEntryProps = {
   id: 'ae-1',
@@ -13,7 +14,7 @@ const base: AccountingEntryProps = {
   lines: [
     { account: '411', label: 'Client Durand', debitCents: 120000, creditCents: 0 },
     { account: '706', label: 'Prestation', debitCents: 0, creditCents: 100000 },
-    { account: '445710', label: 'TVA collectee', debitCents: 0, creditCents: 20000 },
+    { account: '44571', label: 'TVA collectee', debitCents: 0, creditCents: 20000 },
   ],
 };
 
@@ -60,6 +61,60 @@ describe('AccountingEntry', () => {
     expect(AccountingEntry.create({ ...base, lines: [{ ...base.lines[0]!, debitCents: 12.5 }, base.lines[1]!] }).ok).toBe(false);
     expect(AccountingEntry.create({ ...base, lines: [{ ...base.lines[0]!, debitCents: -1 }, base.lines[1]!] }).ok).toBe(false);
     expect(AccountingEntry.create({ ...base, lines: [{ ...base.lines[0]!, account: 'client' }, base.lines[1]!] }).ok).toBe(false);
+    expect(AccountingEntry.create({ ...base, lines: [{ ...base.lines[0]!, account: '41' }, base.lines[1]!] }).ok).toBe(false);
+  });
+
+  it('refuse un compte absent ou inactif quand un plan comptable est fourni', () => {
+    const chart = ChartOfAccounts.create({
+      companyId: 'co-1',
+      accounts: [
+        { code: '411', label: 'Clients', kind: 'asset' },
+        { code: '706', label: 'Prestations', kind: 'revenue' },
+        { code: '44571', label: 'TVA collectee', kind: 'liability', active: false },
+      ],
+    });
+    expect(chart.ok).toBe(true);
+    if (chart.ok) {
+      expect(AccountingEntry.create(base, { chart: chart.value }).ok).toBe(false);
+      expect(
+        AccountingEntry.create(
+          {
+            ...base,
+            lines: [
+              base.lines[0]!,
+              base.lines[1]!,
+              { account: '999', label: 'Compte inconnu', debitCents: 0, creditCents: 20000 },
+            ],
+          },
+          { chart: chart.value },
+        ).ok,
+      ).toBe(false);
+    }
+  });
+
+  it('accepte tous les comptes actifs du plan comptable fourni', () => {
+    const chart = ChartOfAccounts.create({
+      companyId: 'co-1',
+      accounts: [
+        { code: '411', label: 'Clients', kind: 'asset' },
+        { code: '706', label: 'Prestations', kind: 'revenue' },
+        { code: '44571', label: 'TVA collectee', kind: 'liability' },
+      ],
+    });
+    expect(chart.ok).toBe(true);
+    if (chart.ok) expect(AccountingEntry.create(base, { chart: chart.value }).ok).toBe(true);
+  });
+
+  it('refuse un compte de regroupement meme present dans le plan comptable', () => {
+    const chart = ChartOfAccounts.create({
+      companyId: 'co-1',
+      accounts: [
+        { code: '41', label: 'Clients rattaches', kind: 'asset', postingAllowed: false },
+        { code: '706', label: 'Prestations', kind: 'revenue' },
+      ],
+    });
+    expect(chart.ok).toBe(true);
+    if (chart.ok) expect(AccountingEntry.create({ ...base, lines: [{ ...base.lines[0]!, account: '41' }, base.lines[1]!] }, { chart: chart.value }).ok).toBe(false);
   });
 
   it('refuse les metadonnees invalides', () => {

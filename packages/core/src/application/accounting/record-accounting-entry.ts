@@ -3,6 +3,7 @@ import { AccountingEntry, type AccountingEntryLineProps, type AccountingJournal,
 import { type AppError, appDomain } from '../result';
 import { type IdGeneratorPort } from '../ports/services';
 import { type AccountingEntryRepository } from '../ports/accounting-entry-repository';
+import { type ChartOfAccountsRepository } from '../ports/chart-of-accounts-repository';
 
 export interface RecordAccountingEntryInput {
   companyId: string;
@@ -17,6 +18,7 @@ export interface RecordAccountingEntryInput {
 
 export interface RecordAccountingEntryDeps {
   entries: AccountingEntryRepository;
+  charts?: ChartOfAccountsRepository;
   ids: IdGeneratorPort;
 }
 
@@ -29,7 +31,8 @@ export class RecordAccountingEntry {
 
   async execute(input: RecordAccountingEntryInput): Promise<Result<{ id: string; totalDebitCents: number; totalCreditCents: number }, AppError>> {
     const id = this.deps.ids.newId();
-    const entry = AccountingEntry.create({ id, ...input });
+    const chart = this.deps.charts ? await this.deps.charts.findByCompany(input.companyId) : null;
+    const entry = AccountingEntry.create({ id, ...input }, chart ? { chart } : {});
     if (!entry.ok) return err(appDomain(entry.error));
     await this.deps.entries.save(entry.value);
     return ok({ id, totalDebitCents: entry.value.totalDebitCents, totalCreditCents: entry.value.totalCreditCents });

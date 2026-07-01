@@ -1,5 +1,6 @@
 import { type DomainResult, ok, err } from '../../shared-kernel/result';
 import { type DateOnly, isValidDateOnly } from '../../shared-kernel/time';
+import { type ChartOfAccounts, isAccountingAccountCode, isPostingAccountCode } from './chart-of-accounts';
 
 export type AccountingJournal = 'sales' | 'purchases' | 'bank' | 'misc';
 export type AccountingSourceType = 'invoice' | 'expense' | 'payment' | 'bank_transaction' | 'manual_adjustment';
@@ -25,11 +26,14 @@ export interface AccountingEntryProps {
 
 const JOURNALS: readonly AccountingJournal[] = ['sales', 'purchases', 'bank', 'misc'];
 const SOURCE_TYPES: readonly AccountingSourceType[] = ['invoice', 'expense', 'payment', 'bank_transaction', 'manual_adjustment'];
-const ACCOUNT_RE = /^\d{3,12}$/;
 
 const isCents = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0;
 const total = (lines: AccountingEntryLineProps[], side: 'debitCents' | 'creditCents') =>
   lines.reduce((sum, line) => sum + line[side], 0);
+
+export interface AccountingEntryCreateOptions {
+  chart?: ChartOfAccounts;
+}
 
 function required(value: string, field: string): DomainResult<string> {
   const normalized = value.trim();
@@ -37,12 +41,20 @@ function required(value: string, field: string): DomainResult<string> {
   return ok(normalized);
 }
 
-function normalizeLine(line: AccountingEntryLineProps, index: number): DomainResult<AccountingEntryLineProps> {
+function normalizeLine(
+  line: AccountingEntryLineProps,
+  index: number,
+  opts: AccountingEntryCreateOptions,
+): DomainResult<AccountingEntryLineProps> {
   const field = `lines[${index}]`;
   const account = line.account.trim();
   const label = line.label.trim();
-  if (!ACCOUNT_RE.test(account))
+  if (!isAccountingAccountCode(account))
     return err({ code: 'VALIDATION', field: `${field}.account`, message: 'Compte comptable invalide.' });
+  if (!opts.chart && !isPostingAccountCode(account))
+    return err({ code: 'VALIDATION', field: `${field}.account`, message: 'Compte trop general pour une ecriture.' });
+  if (opts.chart && !opts.chart.acceptsPosting(account))
+    return err({ code: 'VALIDATION', field: `${field}.account`, message: 'Compte absent ou inactif du plan comptable.' });
   if (!label) return err({ code: 'VALIDATION', field: `${field}.label`, message: 'Libelle de ligne requis.' });
   if (!isCents(line.debitCents))
     return err({ code: 'VALIDATION', field: `${field}.debitCents`, message: 'Debit invalide.' });
@@ -67,7 +79,7 @@ function normalizeLine(line: AccountingEntryLineProps, index: number): DomainRes
 export class AccountingEntry {
   private constructor(private readonly p: AccountingEntryProps) {}
 
-  static create(props: AccountingEntryProps): DomainResult<AccountingEntry> {
+  static create(props: AccountingEntryProps, opts: AccountingEntryCreateOptions = {}): DomainResult<AccountingEntry> {
     const id = required(props.id, 'id');
     if (!id.ok) return id;
     const companyId = required(props.companyId, 'companyId');
@@ -88,7 +100,7 @@ export class AccountingEntry {
 
     const lines: AccountingEntryLineProps[] = [];
     for (const [index, line] of props.lines.entries()) {
-      const normalized = normalizeLine(line, index);
+      const normalized = normalizeLine(line, index, opts);
       if (!normalized.ok) return normalized;
       lines.push(normalized.value);
     }
