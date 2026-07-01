@@ -21,6 +21,9 @@ BEGIN
     'document_archive_jobs',
     'notification_jobs',
     'agent_journal_entries',
+    'accounting_accounts',
+    'accounting_entries',
+    'accounting_entry_lines',
     'document_counters'
   ]) LOOP
     EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
@@ -88,6 +91,21 @@ CREATE POLICY tenant_isolation ON notification_jobs
 
 DROP POLICY IF EXISTS tenant_isolation ON agent_journal_entries;
 CREATE POLICY tenant_isolation ON agent_journal_entries
+  USING ("companyId" = current_setting('app.current_company_id', true))
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+
+DROP POLICY IF EXISTS tenant_isolation ON accounting_accounts;
+CREATE POLICY tenant_isolation ON accounting_accounts
+  USING ("companyId" = current_setting('app.current_company_id', true))
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+
+DROP POLICY IF EXISTS tenant_isolation ON accounting_entries;
+CREATE POLICY tenant_isolation ON accounting_entries
+  USING ("companyId" = current_setting('app.current_company_id', true))
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+
+DROP POLICY IF EXISTS tenant_isolation ON accounting_entry_lines;
+CREATE POLICY tenant_isolation ON accounting_entry_lines
   USING ("companyId" = current_setting('app.current_company_id', true))
   WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
 

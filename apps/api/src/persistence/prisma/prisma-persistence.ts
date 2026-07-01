@@ -12,6 +12,8 @@ import {
   PrismaPaymentRepository,
   PrismaPublicAccessTokenRepository,
   PrismaExpenseRepository,
+  PrismaAccountingEntryRepository,
+  PrismaChartOfAccountsRepository,
   PrismaAgentJournalRepository,
   PrismaSequenceCounter,
 } from './repositories';
@@ -28,6 +30,8 @@ export class PrismaPersistence implements Persistence {
   readonly payments: PrismaPaymentRepository;
   readonly publicAccessTokens: PrismaPublicAccessTokenRepository;
   readonly expenses: PrismaExpenseRepository;
+  readonly accountingEntries: PrismaAccountingEntryRepository;
+  readonly chartOfAccounts: PrismaChartOfAccountsRepository;
   readonly agentJournal: PrismaAgentJournalRepository;
   readonly counters: PrismaSequenceCounter;
 
@@ -42,6 +46,8 @@ export class PrismaPersistence implements Persistence {
     this.payments = new PrismaPaymentRepository(prisma);
     this.publicAccessTokens = new PrismaPublicAccessTokenRepository(prisma);
     this.expenses = new PrismaExpenseRepository(prisma);
+    this.accountingEntries = new PrismaAccountingEntryRepository(prisma);
+    this.chartOfAccounts = new PrismaChartOfAccountsRepository(prisma);
     this.agentJournal = new PrismaAgentJournalRepository(prisma);
     this.counters = new PrismaSequenceCounter(prisma);
   }

@@ -40,6 +40,9 @@ DELETE FROM documents WHERE id IN ('rls-doc-a', 'rls-doc-b', 'rls-doc-cross');
 DELETE FROM document_archive_jobs WHERE id IN ('rls-archive-a', 'rls-archive-b', 'rls-archive-cross');
 DELETE FROM notification_jobs WHERE id IN ('rls-notification-a', 'rls-notification-b', 'rls-notification-cross');
 DELETE FROM agent_journal_entries WHERE id IN ('rls-agent-journal-a', 'rls-agent-journal-b', 'rls-agent-journal-cross');
+DELETE FROM accounting_entry_lines WHERE id IN ('rls-accline-a-1', 'rls-accline-a-2', 'rls-accline-b-1', 'rls-accline-b-2', 'rls-accline-cross');
+DELETE FROM accounting_entries WHERE id IN ('rls-accentry-a', 'rls-accentry-b', 'rls-accentry-cross');
+DELETE FROM accounting_accounts WHERE "companyId" IN ('rls-co-a', 'rls-co-b');
 DELETE FROM document_counters WHERE "companyId" IN ('rls-co-a', 'rls-co-b');
 DELETE FROM invoices WHERE id IN ('rls-invoice-a', 'rls-invoice-b');
 DELETE FROM quotes WHERE id IN ('rls-quote-a', 'rls-quote-b');
@@ -58,6 +61,9 @@ DELETE FROM documents WHERE id IN ('rls-doc-a', 'rls-doc-b', 'rls-doc-cross');
 DELETE FROM document_archive_jobs WHERE id IN ('rls-archive-a', 'rls-archive-b', 'rls-archive-cross');
 DELETE FROM notification_jobs WHERE id IN ('rls-notification-a', 'rls-notification-b', 'rls-notification-cross');
 DELETE FROM agent_journal_entries WHERE id IN ('rls-agent-journal-a', 'rls-agent-journal-b', 'rls-agent-journal-cross');
+DELETE FROM accounting_entry_lines WHERE id IN ('rls-accline-a-1', 'rls-accline-a-2', 'rls-accline-b-1', 'rls-accline-b-2', 'rls-accline-cross');
+DELETE FROM accounting_entries WHERE id IN ('rls-accentry-a', 'rls-accentry-b', 'rls-accentry-cross');
+DELETE FROM accounting_accounts WHERE "companyId" IN ('rls-co-a', 'rls-co-b');
 DELETE FROM document_counters WHERE "companyId" IN ('rls-co-a', 'rls-co-b');
 DELETE FROM invoices WHERE id IN ('rls-invoice-a', 'rls-invoice-b');
 DELETE FROM quotes WHERE id IN ('rls-quote-a', 'rls-quote-b');
@@ -117,6 +123,25 @@ VALUES (
   'rls-agent-journal-a', 'rls-co-a', 'rls-run-a', 1, '2026-01-01T00:00:00Z', 'planned',
   'encaisser_facture', 'Encaisser F-001', '{"invoiceId":"rls-invoice-a"}'::jsonb, true, false, 'high', NULL, NULL
 );
+INSERT INTO accounting_accounts (
+  "companyId", code, label, kind, "normalSide", "parentCode", active, "postingAllowed", "updatedAt"
+)
+VALUES
+  ('rls-co-a', '411', 'Clients', 'asset', 'debit', NULL, true, true, '2026-01-01T00:00:00Z'),
+  ('rls-co-a', '706', 'Prestations de services', 'revenue', 'credit', NULL, true, true, '2026-01-01T00:00:00Z');
+INSERT INTO accounting_entries (
+  id, "companyId", journal, "sourceType", "sourceId", "entryDate", reference, label, "createdAt"
+)
+VALUES (
+  'rls-accentry-a', 'rls-co-a', 'sales', 'invoice', 'rls-invoice-a', '2026-01-01', 'F-001', 'Facture F-001',
+  '2026-01-01T00:00:00Z'
+);
+INSERT INTO accounting_entry_lines (
+  id, "companyId", "entryId", position, account, label, "debitCents", "creditCents"
+)
+VALUES
+  ('rls-accline-a-1', 'rls-co-a', 'rls-accentry-a', 1, '411', 'Client A', 10000, 0),
+  ('rls-accline-a-2', 'rls-co-a', 'rls-accentry-a', 2, '706', 'Vente A', 0, 10000);
 COMMIT;
 
 -- Seed tenant B through RLS WITH CHECK policies.
@@ -171,6 +196,25 @@ VALUES (
   'rls-agent-journal-b', 'rls-co-b', 'rls-run-b', 1, '2026-01-01T00:00:00Z', 'planned',
   'encaisser_facture', 'Encaisser F-002', '{"invoiceId":"rls-invoice-b"}'::jsonb, true, false, 'high', NULL, NULL
 );
+INSERT INTO accounting_accounts (
+  "companyId", code, label, kind, "normalSide", "parentCode", active, "postingAllowed", "updatedAt"
+)
+VALUES
+  ('rls-co-b', '411', 'Clients', 'asset', 'debit', NULL, true, true, '2026-01-01T00:00:00Z'),
+  ('rls-co-b', '706', 'Prestations de services', 'revenue', 'credit', NULL, true, true, '2026-01-01T00:00:00Z');
+INSERT INTO accounting_entries (
+  id, "companyId", journal, "sourceType", "sourceId", "entryDate", reference, label, "createdAt"
+)
+VALUES (
+  'rls-accentry-b', 'rls-co-b', 'sales', 'invoice', 'rls-invoice-b', '2026-01-01', 'F-002', 'Facture F-002',
+  '2026-01-01T00:00:00Z'
+);
+INSERT INTO accounting_entry_lines (
+  id, "companyId", "entryId", position, account, label, "debitCents", "creditCents"
+)
+VALUES
+  ('rls-accline-b-1', 'rls-co-b', 'rls-accentry-b', 1, '411', 'Client B', 20000, 0),
+  ('rls-accline-b-2', 'rls-co-b', 'rls-accentry-b', 2, '706', 'Vente B', 0, 20000);
 COMMIT;
 
 -- Tenant A can see A and cannot see B, including child tables.
@@ -189,11 +233,15 @@ SELECT pg_temp.assert_eq((SELECT count(*) FROM document_versions), 1, 'document_
 SELECT pg_temp.assert_eq((SELECT count(*) FROM document_archive_jobs), 1, 'document_archive_jobs tenant A');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM notification_jobs), 1, 'notification_jobs tenant A');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM agent_journal_entries), 1, 'agent_journal_entries tenant A');
+SELECT pg_temp.assert_eq((SELECT count(*) FROM accounting_accounts), 2, 'accounting_accounts tenant A');
+SELECT pg_temp.assert_eq((SELECT count(*) FROM accounting_entries), 1, 'accounting_entries tenant A');
+SELECT pg_temp.assert_eq((SELECT count(*) FROM accounting_entry_lines), 2, 'accounting_entry_lines tenant A');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM document_counters), 1, 'document_counters tenant A');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM quotes WHERE id = 'rls-quote-b'), 0, 'tenant A cannot read tenant B quote');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM documents WHERE id = 'rls-doc-b'), 0, 'tenant A cannot read tenant B document');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM notification_jobs WHERE id = 'rls-notification-b'), 0, 'tenant A cannot read tenant B notification job');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM agent_journal_entries WHERE id = 'rls-agent-journal-b'), 0, 'tenant A cannot read tenant B agent journal');
+SELECT pg_temp.assert_eq((SELECT count(*) FROM accounting_entries WHERE id = 'rls-accentry-b'), 0, 'tenant A cannot read tenant B accounting entry');
 
 DO $$
 BEGIN
@@ -250,6 +298,33 @@ BEGIN
   EXCEPTION WHEN insufficient_privilege THEN
     NULL;
   END;
+  BEGIN
+    INSERT INTO accounting_accounts (
+      "companyId", code, label, kind, "normalSide", active, "postingAllowed", "updatedAt"
+    )
+    VALUES ('rls-co-b', '707', 'Cross revenue', 'revenue', 'credit', true, true, '2026-01-01T00:00:00Z');
+    RAISE EXCEPTION 'RLS cert failed: cross-tenant accounting account insert succeeded';
+  EXCEPTION WHEN insufficient_privilege THEN
+    NULL;
+  END;
+  BEGIN
+    INSERT INTO accounting_entries (
+      id, "companyId", journal, "sourceType", "sourceId", "entryDate", reference, label
+    )
+    VALUES ('rls-accentry-cross', 'rls-co-b', 'sales', 'invoice', 'rls-invoice-b', '2026-01-01', 'Cross', 'Cross tenant');
+    RAISE EXCEPTION 'RLS cert failed: cross-tenant accounting entry insert succeeded';
+  EXCEPTION WHEN insufficient_privilege THEN
+    NULL;
+  END;
+  BEGIN
+    INSERT INTO accounting_entry_lines (
+      id, "companyId", "entryId", position, account, label, "debitCents", "creditCents"
+    )
+    VALUES ('rls-accline-cross', 'rls-co-b', 'rls-accentry-b', 3, '411', 'Cross line', 100, 0);
+    RAISE EXCEPTION 'RLS cert failed: cross-tenant accounting entry line insert succeeded';
+  EXCEPTION WHEN insufficient_privilege THEN
+    NULL;
+  END;
 END;
 $$;
 COMMIT;
@@ -278,11 +353,15 @@ SELECT pg_temp.assert_eq((SELECT count(*) FROM document_versions), 1, 'document_
 SELECT pg_temp.assert_eq((SELECT count(*) FROM document_archive_jobs), 1, 'document_archive_jobs tenant B');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM notification_jobs), 1, 'notification_jobs tenant B');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM agent_journal_entries), 1, 'agent_journal_entries tenant B');
+SELECT pg_temp.assert_eq((SELECT count(*) FROM accounting_accounts), 2, 'accounting_accounts tenant B');
+SELECT pg_temp.assert_eq((SELECT count(*) FROM accounting_entries), 1, 'accounting_entries tenant B');
+SELECT pg_temp.assert_eq((SELECT count(*) FROM accounting_entry_lines), 2, 'accounting_entry_lines tenant B');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM document_counters), 1, 'document_counters tenant B');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM quotes WHERE id = 'rls-quote-a'), 0, 'tenant B cannot read tenant A quote');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM documents WHERE id = 'rls-doc-a'), 0, 'tenant B cannot read tenant A document');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM notification_jobs WHERE id = 'rls-notification-a'), 0, 'tenant B cannot read tenant A notification job');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM agent_journal_entries WHERE id = 'rls-agent-journal-a'), 0, 'tenant B cannot read tenant A agent journal');
+SELECT pg_temp.assert_eq((SELECT count(*) FROM accounting_entries WHERE id = 'rls-accentry-a'), 0, 'tenant B cannot read tenant A accounting entry');
 COMMIT;
 
 \echo 'RLS certification passed'

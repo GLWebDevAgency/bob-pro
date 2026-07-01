@@ -1,4 +1,4 @@
-import { Invoice, Quote } from '@bob/core';
+import { AccountingEntry, ChartOfAccounts, Invoice, Quote } from '@bob/core';
 import type {
   Company,
   Customer,
@@ -13,6 +13,8 @@ import type {
   PublicAccessGrant,
   PublicAccessTokenRepository,
   ExpenseRepository,
+  AccountingEntryRepository,
+  ChartOfAccountsRepository,
   ChantierRepository,
 } from '@bob/core';
 
@@ -174,6 +176,38 @@ export class InMemoryExpenseRepository implements ExpenseRepository {
   }
   async listByCompany(companyId: string): Promise<Expense[]> {
     return [...this.map.values()].filter((e) => e.companyId === companyId);
+  }
+}
+
+export class InMemoryAccountingEntryRepository implements AccountingEntryRepository {
+  private readonly map = new Map<string, AccountingEntry>();
+
+  async save(entry: AccountingEntry): Promise<void> {
+    this.map.set(entry.id, AccountingEntry.rehydrate(entry.toProps()));
+  }
+
+  async findById(companyId: string, id: string): Promise<AccountingEntry | null> {
+    const entry = this.map.get(id);
+    return entry && entry.companyId === companyId ? AccountingEntry.rehydrate(entry.toProps()) : null;
+  }
+
+  async listByCompany(companyId: string): Promise<AccountingEntry[]> {
+    return [...this.map.values()]
+      .filter((entry) => entry.companyId === companyId)
+      .map((entry) => AccountingEntry.rehydrate(entry.toProps()));
+  }
+}
+
+export class InMemoryChartOfAccountsRepository implements ChartOfAccountsRepository {
+  private readonly map = new Map<string, ChartOfAccounts>();
+
+  async save(chart: ChartOfAccounts): Promise<void> {
+    this.map.set(chart.companyId, ChartOfAccounts.rehydrate(chart.toProps()));
+  }
+
+  async findByCompany(companyId: string): Promise<ChartOfAccounts | null> {
+    const chart = this.map.get(companyId);
+    return chart ? ChartOfAccounts.rehydrate(chart.toProps()) : null;
   }
 }
 

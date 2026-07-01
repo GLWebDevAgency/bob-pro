@@ -135,6 +135,35 @@ enum AgentComplianceLevel {
   high
 }
 
+enum AccountingAccountKind {
+  asset
+  liability
+  equity
+  revenue
+  expense
+}
+
+enum AccountingNormalSide {
+  debit
+  credit
+  mixed
+}
+
+enum AccountingJournal {
+  sales
+  purchases
+  bank
+  misc
+}
+
+enum AccountingSourceType {
+  invoice
+  expense
+  payment
+  bank_transaction
+  manual_adjustment
+}
+
 model Company {
   id                  String               @id
   name                String
@@ -164,6 +193,8 @@ model Company {
   documentArchiveJobs DocumentArchiveJob[]
   notificationJobs    NotificationJob[]
   agentJournalEntries AgentJournalEntry[]
+  accountingAccounts  AccountingAccount[]
+  accountingEntries   AccountingEntry[]
   counters            DocumentCounter[]
 
   @@map("companies")
@@ -426,6 +457,60 @@ model AgentJournalEntry {
   @@index([companyId, runId])
   @@index([companyId, at])
   @@map("agent_journal_entries")
+}
+
+model AccountingAccount {
+  companyId      String
+  company        Company              @relation(fields: [companyId], references: [id])
+  code           String
+  label          String
+  kind           AccountingAccountKind
+  normalSide     AccountingNormalSide
+  parentCode     String?
+  active         Boolean              @default(true)
+  postingAllowed Boolean              @default(true)
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+
+  @@id([companyId, code])
+  @@index([companyId, parentCode])
+  @@index([companyId, active, postingAllowed])
+  @@map("accounting_accounts")
+}
+
+model AccountingEntry {
+  id         String                @id
+  companyId  String
+  company    Company               @relation(fields: [companyId], references: [id])
+  journal    AccountingJournal
+  sourceType AccountingSourceType
+  sourceId   String
+  entryDate  String
+  reference  String
+  label      String
+  createdAt  DateTime              @default(now())
+  lines      AccountingEntryLine[]
+
+  @@unique([id, companyId], name: "uniq_accounting_entry_id_company")
+  @@index([companyId, journal, entryDate])
+  @@index([companyId, sourceType, sourceId])
+  @@map("accounting_entries")
+}
+
+model AccountingEntryLine {
+  id          String          @id
+  companyId   String
+  entryId     String
+  entry       AccountingEntry @relation(fields: [entryId, companyId], references: [id, companyId], onDelete: Cascade)
+  position    Int
+  account     String
+  label       String
+  debitCents  Int
+  creditCents Int
+
+  @@unique([entryId, position], name: "uniq_accounting_entry_line_position")
+  @@index([companyId, account])
+  @@map("accounting_entry_lines")
 }
 
 // Numérotation sans trou : INSERT ... ON CONFLICT DO UPDATE +1 RETURNING (atomique).

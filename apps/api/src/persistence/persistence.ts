@@ -9,6 +9,8 @@ import {
   type PaymentRepository,
   type PublicAccessTokenRepository,
   type ExpenseRepository,
+  type AccountingEntryRepository,
+  type ChartOfAccountsRepository,
   type SequenceCounterPort,
 } from '@bob/core';
 import type { DocumentArchiveJobRepository } from './document-archive-jobs';
@@ -24,6 +26,8 @@ import {
   InMemoryPaymentRepository,
   InMemoryPublicAccessTokenRepository,
   InMemoryExpenseRepository,
+  InMemoryAccountingEntryRepository,
+  InMemoryChartOfAccountsRepository,
   InMemorySequenceCounter,
   InMemoryDocumentArchiveJobRepository,
   InMemoryNotificationJobRepository,
@@ -43,6 +47,8 @@ export interface Persistence {
   payments: PaymentRepository;
   publicAccessTokens: PublicAccessTokenRepository;
   expenses: ExpenseRepository;
+  accountingEntries: AccountingEntryRepository;
+  chartOfAccounts: ChartOfAccountsRepository;
   agentJournal: AgentJournalRepository;
   counters: SequenceCounterPort;
   /** Unité de travail : exécute `fn` atomiquement (transaction DB en prod ; direct en mémoire). */
@@ -63,6 +69,8 @@ export class InMemoryPersistence implements Persistence {
   readonly payments = new InMemoryPaymentRepository();
   readonly publicAccessTokens = new InMemoryPublicAccessTokenRepository();
   readonly expenses = new InMemoryExpenseRepository();
+  readonly accountingEntries = new InMemoryAccountingEntryRepository();
+  readonly chartOfAccounts = new InMemoryChartOfAccountsRepository();
   readonly agentJournal = new InMemoryAgentJournalRepository();
   readonly counters = new InMemorySequenceCounter();
   // En mémoire (JS mono-thread) : pas de transaction réelle, mais on annule l'allocation du compteur

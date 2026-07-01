@@ -9,6 +9,8 @@ import {
   Document,
   Payment,
   Expense,
+  ChartOfAccounts,
+  AccountingEntry,
   DocNumber,
   type CompanyRepository,
   type CustomerRepository,
@@ -21,6 +23,10 @@ import {
   type PublicAccessGrant,
   type PublicAccessTokenRepository,
   type ExpenseRepository,
+  type AccountingEntryProps,
+  type AccountingEntryRepository,
+  type AccountingAccountProps,
+  type ChartOfAccountsRepository,
   type ExpenseCategory,
   type ExpenseStatus,
   type ExpenseSource,
@@ -54,6 +60,7 @@ import {
 
 const LINES_INCLUDE = { lines: { orderBy: { position: 'asc' as const } } };
 const DOCUMENT_INCLUDE = { versions: { orderBy: { version: 'asc' as const } } };
+const ACCOUNTING_ENTRY_INCLUDE = { lines: { orderBy: { position: 'asc' as const } } };
 
 function publicTokenHash(token: string): string {
   return createHash('sha256').update(token, 'utf8').digest('hex');
@@ -666,6 +673,190 @@ export class PrismaAgentJournalRepository implements AgentJournalRepository {
       orderBy: { seq: 'asc' },
     });
     return rows.map(journalRowToEntry);
+  }
+}
+
+interface AccountingAccountRow {
+  companyId: string;
+  code: string;
+  label: string;
+  kind: string;
+  normalSide: string;
+  parentCode: string | null;
+  active: boolean;
+  postingAllowed: boolean;
+}
+
+function accountingAccountRowToProps(row: AccountingAccountRow): AccountingAccountProps {
+  return {
+    code: row.code,
+    label: row.label,
+    kind: row.kind as AccountingAccountProps['kind'],
+    normalSide: row.normalSide as AccountingAccountProps['normalSide'],
+    parentCode: row.parentCode,
+    active: row.active,
+    postingAllowed: row.postingAllowed,
+  };
+}
+
+function accountingAccountPropsToData(companyId: string, account: AccountingAccountProps) {
+  return {
+    companyId,
+    code: account.code,
+    label: account.label,
+    kind: account.kind,
+    normalSide: account.normalSide,
+    parentCode: account.parentCode,
+    active: account.active,
+    postingAllowed: account.postingAllowed,
+  };
+}
+
+export class PrismaChartOfAccountsRepository implements ChartOfAccountsRepository {
+  constructor(private readonly prisma: PrismaService) {}
+
+  async save(chart: ChartOfAccounts): Promise<void> {
+    const props = chart.toProps();
+    const codes = props.accounts.map((account) => account.code);
+    const persist = async () => {
+      const db = this.prisma.client();
+      await db.accountingAccount.deleteMany({
+        where: { companyId: props.companyId, code: { notIn: codes } },
+      });
+      for (const account of props.accounts) {
+        const data = accountingAccountPropsToData(props.companyId, account);
+        await db.accountingAccount.upsert({
+          where: { companyId_code: { companyId: props.companyId, code: account.code } },
+          create: data,
+          update: data,
+        });
+      }
+    };
+    if (this.prisma.inTransaction()) {
+      await persist();
+    } else {
+      await this.prisma.runInTransaction(persist);
+    }
+  }
+
+  async findByCompany(companyId: string): Promise<ChartOfAccounts | null> {
+    const rows = await this.prisma.client().accountingAccount.findMany({
+      where: { companyId },
+      orderBy: { code: 'asc' },
+    });
+    if (rows.length === 0) return null;
+    return ChartOfAccounts.rehydrate({ companyId, accounts: rows.map(accountingAccountRowToProps) });
+  }
+}
+
+interface AccountingEntryLineRow {
+  position: number;
+  account: string;
+  label: string;
+  debitCents: number;
+  creditCents: number;
+}
+
+interface AccountingEntryRow {
+  id: string;
+  companyId: string;
+  journal: string;
+  sourceType: string;
+  sourceId: string;
+  entryDate: string;
+  reference: string;
+  label: string;
+  lines: AccountingEntryLineRow[];
+}
+
+function accountingEntryRowToProps(row: AccountingEntryRow): AccountingEntryProps {
+  return {
+    id: row.id,
+    companyId: row.companyId,
+    journal: row.journal as AccountingEntryProps['journal'],
+    sourceType: row.sourceType as AccountingEntryProps['sourceType'],
+    sourceId: row.sourceId,
+    entryDate: row.entryDate,
+    reference: row.reference,
+    label: row.label,
+    lines: row.lines.map((line) => ({
+      account: line.account,
+      label: line.label,
+      debitCents: line.debitCents,
+      creditCents: line.creditCents,
+    })),
+  };
+}
+
+function accountingEntryLineId(entryId: string, index: number): string {
+  return `${entryId}:line:${String(index + 1).padStart(4, '0')}`;
+}
+
+export class PrismaAccountingEntryRepository implements AccountingEntryRepository {
+  constructor(private readonly prisma: PrismaService) {}
+
+  async save(entry: AccountingEntry): Promise<void> {
+    const props = entry.toProps();
+    const persist = async () => {
+      const db = this.prisma.client();
+      await db.accountingEntry.upsert({
+        where: { id: props.id },
+        create: {
+          id: props.id,
+          companyId: props.companyId,
+          journal: props.journal,
+          sourceType: props.sourceType,
+          sourceId: props.sourceId,
+          entryDate: props.entryDate,
+          reference: props.reference,
+          label: props.label,
+        },
+        update: {
+          companyId: props.companyId,
+          journal: props.journal,
+          sourceType: props.sourceType,
+          sourceId: props.sourceId,
+          entryDate: props.entryDate,
+          reference: props.reference,
+          label: props.label,
+        },
+      });
+      await db.accountingEntryLine.deleteMany({ where: { entryId: props.id } });
+      await db.accountingEntryLine.createMany({
+        data: props.lines.map((line, index) => ({
+          id: accountingEntryLineId(props.id, index),
+          companyId: props.companyId,
+          entryId: props.id,
+          position: index + 1,
+          account: line.account,
+          label: line.label,
+          debitCents: line.debitCents,
+          creditCents: line.creditCents,
+        })),
+      });
+    };
+    if (this.prisma.inTransaction()) {
+      await persist();
+    } else {
+      await this.prisma.runInTransaction(persist);
+    }
+  }
+
+  async findById(companyId: string, id: string): Promise<AccountingEntry | null> {
+    const row = await this.prisma.client().accountingEntry.findFirst({
+      where: { companyId, id },
+      include: ACCOUNTING_ENTRY_INCLUDE,
+    });
+    return row ? AccountingEntry.rehydrate(accountingEntryRowToProps(row)) : null;
+  }
+
+  async listByCompany(companyId: string): Promise<AccountingEntry[]> {
+    const rows = await this.prisma.client().accountingEntry.findMany({
+      where: { companyId },
+      include: ACCOUNTING_ENTRY_INCLUDE,
+      orderBy: [{ entryDate: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
+    });
+    return rows.map((row) => AccountingEntry.rehydrate(accountingEntryRowToProps(row)));
   }
 }
 
