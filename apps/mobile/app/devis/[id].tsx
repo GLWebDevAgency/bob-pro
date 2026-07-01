@@ -4,9 +4,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { formatEUR } from '@bob/core';
 import { useTheme } from '../../src/theme';
-import { useQuote, useCustomers } from '../../src/data/hooks';
+import { useQuote, useCustomers, useInvoices } from '../../src/data/hooks';
 import { Card, Badge, MoneyText, SectionHeader, font } from '../../src/components/ui';
-import { QuoteActions, hasQuoteActions, QUOTE_BADGE } from '../../src/components/DocumentActions';
+import { QuoteActions, hasQuoteActions, QUOTE_BADGE, INVOICE_BADGE } from '../../src/components/DocumentActions';
 
 function formatDate(iso: string | null): string | null {
   if (!iso) return null;
@@ -21,11 +21,14 @@ export default function DevisDetail() {
   const router = useRouter();
   const quote = useQuote(id);
   const customers = useCustomers();
+  const invoices = useInvoices();
 
   const q = quote.data ?? null;
   const customerName = q ? (customers.data ?? []).find((c) => c.id === q.customerId)?.name ?? 'Client' : 'Client';
   const badge = q ? QUOTE_BADGE[q.status] : null;
   const validUntil = formatDate(q?.validUntil ?? null);
+  // Factures issues de ce devis (lien durable via parentQuoteId exposé par le domaine).
+  const linkedInvoices = q ? (invoices.data ?? []).filter((i) => i.parentQuoteId === q.id) : [];
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
@@ -92,7 +95,37 @@ export default function DevisDetail() {
               ) : null}
             </Card>
 
-            {hasQuoteActions(q) ? <QuoteActions quote={q} customerName={customerName} /> : null}
+            {linkedInvoices.length > 0 ? (
+              <Card>
+                <SectionHeader title="Facture(s) générée(s)" />
+                <View style={{ gap: 4 }}>
+                  {linkedInvoices.map((f) => {
+                    const fb = INVOICE_BADGE[f.status];
+                    return (
+                      <Pressable
+                        key={f.id}
+                        onPress={() => router.push(`/facture/${f.id}`)}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Ouvrir la facture ${f.number ?? 'brouillon'}`}
+                        style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 8 }}
+                      >
+                        <Text style={[font('body'), { color: colors.ink800 }]}>{f.number ?? 'Brouillon'}</Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                          <Badge label={fb.label} tone={fb.tone} />
+                          <Ionicons name="chevron-forward" size={18} color={colors.slate400} />
+                        </View>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </Card>
+            ) : null}
+
+            {/* Pour un devis signé, on attend que les factures soient connues (évite d'afficher « Générer »
+                une fraction de seconde sur un devis déjà facturé). Les autres statuts ne dépendent pas des factures. */}
+            {hasQuoteActions(q) && (q.status !== 'signed' || !invoices.isLoading) ? (
+              <QuoteActions quote={q} customerName={customerName} alreadyInvoiced={linkedInvoices.length > 0} />
+            ) : null}
           </>
         ) : null}
       </ScrollView>

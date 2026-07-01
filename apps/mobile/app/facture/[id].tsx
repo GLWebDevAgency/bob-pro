@@ -97,6 +97,21 @@ export default function FactureDetail() {
               </Card>
             ) : null}
 
+            {inv.parentQuoteId ? (
+              <Pressable
+                onPress={() => router.push(`/devis/${inv.parentQuoteId}`)}
+                accessibilityRole="button"
+                accessibilityLabel="Ouvrir le devis d'origine"
+              >
+                <Card>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <Text style={[font('cardTitle'), { color: colors.ink900 }]}>Devis d&apos;origine</Text>
+                    <Ionicons name="chevron-forward" size={20} color={colors.slate400} />
+                  </View>
+                </Card>
+              </Pressable>
+            ) : null}
+
             {hasInvoiceActions(inv) ? <InvoiceActions invoice={inv} /> : null}
           </>
         ) : null}

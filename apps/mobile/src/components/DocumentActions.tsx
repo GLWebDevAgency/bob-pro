@@ -75,15 +75,24 @@ function useActionLock() {
   return { busy, lock, run };
 }
 
-export function QuoteActions({ quote, customerName }: { quote: QuoteView; customerName: string }): ReactNode {
+export function QuoteActions({
+  quote,
+  customerName,
+  alreadyInvoiced = false,
+}: {
+  quote: QuoteView;
+  customerName: string;
+  /** Vrai si une facture liée existe déjà (dérivé de InvoiceView.parentQuoteId) — garde DURABLE anti-doublon UI. */
+  alreadyInvoiced?: boolean;
+}): ReactNode {
   const send = useSendQuote();
   const sign = useSignQuote();
   const refuse = useRefuseQuote();
   const generate = useGenerateInvoice();
   const { busy, run } = useActionLock();
-  // Confort UX : masque l'action après un succès dans la session. La sûreté anti-doublon est garantie
-  // AU DOMAINE (GenerateInvoiceFromQuote est idempotent, dédup par parentQuoteId+kind) — ceci n'est
-  // qu'un retour visuel local (non partagé entre l'instance liste et l'instance détail).
+  // Confort UX : masque l'action après un succès dans la session (fallback quand la liste des factures liées
+  // n'est pas disponible). La sûreté anti-doublon est garantie AU DOMAINE (GenerateInvoiceFromQuote idempotent
+  // par parentQuoteId+kind) ; `alreadyInvoiced` rend le masquage durable là où l'appelant connaît les liens.
   const [invoiced, setInvoiced] = useState(false);
 
   if (quote.status === 'draft') {
@@ -135,7 +144,7 @@ export function QuoteActions({ quote, customerName }: { quote: QuoteView; custom
     );
   }
   if (quote.status === 'signed') {
-    if (invoiced) return <Badge label="Facture générée" tone="success" />;
+    if (invoiced || alreadyInvoiced) return <Badge label="Facture générée" tone="success" />;
     return (
       <Button
         title="Générer la facture"

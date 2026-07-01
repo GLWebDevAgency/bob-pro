@@ -110,7 +110,11 @@ export default function Ventes() {
                         </Pressable>
                         {hasQuoteActions(q) ? (
                           <View style={{ marginTop: 12 }}>
-                            <QuoteActions quote={q} customerName={nameOf(q.customerId)} />
+                            <QuoteActions
+                              quote={q}
+                              customerName={nameOf(q.customerId)}
+                              alreadyInvoiced={(invoices.data ?? []).some((i) => i.parentQuoteId === q.id)}
+                            />
                           </View>
                         ) : null}
                       </Card>
