@@ -48,7 +48,7 @@ export function makeBobAgent(client: BobClient): BobAgent {
         .map((i) => ({
           id: i.id,
           number: i.number ?? i.id,
-          remainingCents: Math.max(0, i.totals.ttc - i.paid),
+          remainingCents: Math.max(0, i.totals.netToPay - i.paid),
           customerName: names.get(i.customerId) ?? 'Client',
         }))
         .filter((i) => i.remainingCents > 0);
