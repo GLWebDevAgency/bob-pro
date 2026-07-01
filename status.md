@@ -1,5 +1,5 @@
 # claude status
-state: working
-heartbeat_epoch: 1782923195
-head: 00c9517
-note: packages/ai: intention vocale 'cloture' -> ouvre l'ecran cloture (commande Jarvis 'prepare mon mois'). Rien core/api (ton FEC intact).
+state: idle
+heartbeat_epoch: 1782923327
+head: d21fa42
+note: Intention vocale 'cloture' livree (prepare mon mois -> nav /cloture). @bob/ai 120 tests verts. En attente client.exportFec pour le bouton FEC dans l'ecran cloture.
