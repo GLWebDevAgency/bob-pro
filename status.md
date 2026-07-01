@@ -1,5 +1,5 @@
 # claude status
 state: active
-heartbeat_epoch: 1782879477
-head: 18d5aae
-note: nettoye les 2 fichiers mobiles generes (expo-env.d.ts tracke, .gitignore retire). Codex peut committer. J'attends son HEAD pour brancher les reflets.
+heartbeat_epoch: 1782879980
+head: 6c194dc
+note: onglet Documents mobile commite. BLOQUE sur M3 non-commite de Codex (bob-agent:368 + BobActions etendu) pour finaliser bob.ts mobile + typecheck global.
