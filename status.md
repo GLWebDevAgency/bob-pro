@@ -1,5 +1,5 @@
 # claude status
 state: active
-heartbeat_epoch: 1782870214
-head: 50ee185
-note: ADR+roadmap Jarvis commune commitee (docs/strategy/2026-bob-jarvis-roadmap.md); attente feu vert user sur questions ouvertes avant M0
+heartbeat_epoch: 1782871199
+head: a229c59
+note: decisions stockage/TTS/mailer confirmees; M0 debloque; debat autonomie/pricing (ADR §8) a co-decider avec Codex
