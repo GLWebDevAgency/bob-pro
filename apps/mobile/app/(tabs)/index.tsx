@@ -13,7 +13,9 @@ export default function Aujourdhui() {
   const cashflow = useCashflow('realiste', 30);
   const customers = useCustomers();
   const { data: sub } = useSubscription();
-  const canAccounting = (sub?.features ?? []).includes('accounting_foundation');
+  const features = sub?.features ?? [];
+  const canAccounting = features.includes('accounting_foundation');
+  const canClose = features.includes('accounting_operations');
 
   const aSurveiller = (customers.data ?? []).filter((c) => c.outstanding > 0);
   const totalDu = aSurveiller.reduce((sum, c) => sum + c.outstanding, 0);
@@ -117,6 +119,27 @@ export default function Aujourdhui() {
                 </View>
               </Card>
             </Pressable>
+            {canClose ? (
+              <Pressable
+                onPress={() => router.push('/cloture')}
+                accessibilityRole="button"
+                accessibilityLabel="Clôture du mois"
+                style={{ marginTop: 10 }}
+              >
+                <Card>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1 }}>
+                      <Ionicons name="calendar-clear-outline" size={22} color={colors.ink600} />
+                      <View style={{ flex: 1 }}>
+                        <Text style={[font('cardTitle'), { color: colors.ink900 }]}>Clôture du mois</Text>
+                        <Text style={[font('sub'), { color: colors.slate400, marginTop: 2 }]}>Préparer le mois pour le comptable</Text>
+                      </View>
+                    </View>
+                    <Ionicons name="chevron-forward" size={20} color={colors.slate400} />
+                  </View>
+                </Card>
+              </Pressable>
+            ) : null}
           </View>
         ) : null}
 

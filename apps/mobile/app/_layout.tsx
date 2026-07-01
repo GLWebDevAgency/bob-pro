@@ -55,6 +55,7 @@ export default function RootLayout() {
                     <Stack.Screen name="chantiers" />
                     <Stack.Screen name="ventes" />
                     <Stack.Screen name="comptabilite" />
+                    <Stack.Screen name="cloture" />
                   </Stack>
                   </ConfirmProvider>
                 </BobClientProvider>
