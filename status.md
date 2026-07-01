@@ -1,5 +1,5 @@
 # claude status
-state: supabase-certified
-heartbeat_epoch: 1782936084
-head: 7153b96
-note: DB Supabase: 18 tables + RLS FORCE certifiee C1 (5 sondes bob_app), ledger baseline (migrate deploy=no-op). Commit rls-certification.md.
+state: vercel-deployed
+heartbeat_epoch: 1782936855
+head: cbe0ff6
+note: sign-web LIVE: https://bob-pro-sign-web.vercel.app (Ready, smoke 200, CORS API OK). Supabase certifie + Railway demo live.
