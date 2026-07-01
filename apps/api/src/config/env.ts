@@ -8,6 +8,7 @@ const schema = z.object({
   OPENAI_API_KEY: z.string().optional(),
   MISTRAL_API_KEY: z.string().optional(),
   AI_ROUTER_DEFAULT: z.enum(['claude', 'glm']).default('claude'),
+  CORS_ORIGINS: z.string().optional(),
   STT_PROVIDER: z.enum(['mistral', 'openai']).optional(),
   MISTRAL_STT_MODEL: z.string().default('voxtral-mini-latest'),
   MISTRAL_STT_CONTEXT_BIAS: z.string().optional(),

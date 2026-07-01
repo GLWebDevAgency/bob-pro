@@ -5,6 +5,7 @@
   "scripts": {
     "generate": "prisma generate",
     "migrate": "prisma migrate deploy",
+    "release": "sh scripts/release.sh",
     "db:push": "prisma db push",
     "build": "prisma generate && tsc -p tsconfig.json",
     "test": "vitest run",

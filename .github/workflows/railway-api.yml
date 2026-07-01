@@ -1,0 +1,45 @@
+name: Railway API Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Railway environment
+        required: true
+        default: production
+      service:
+        description: Railway API service name or id
+        required: true
+        default: api
+
+jobs:
+  release-api:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: railway-api-${{ inputs.environment }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+          cache: pnpm
+      - run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @bob/api typecheck
+      - run: pnpm --filter @bob/api lint
+      - run: pnpm --filter @bob/api test
+      - run: docker build -f Dockerfile -t bob-pro-api:ci .
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+      - name: Apply migrations and certify RLS
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: railway run --service "${{ inputs.service }}" --environment "${{ inputs.environment }}" sh apps/api/scripts/release.sh
+      - name: Deploy API image
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: railway up --service "${{ inputs.service }}" --environment "${{ inputs.environment }}" --detach
