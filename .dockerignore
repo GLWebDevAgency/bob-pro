@@ -1,0 +1,16 @@
+.git
+.agent-sync
+.turbo
+node_modules
+**/node_modules
+**/dist
+**/.next
+**/.expo
+coverage
+*.log
+*.zip
+_design_extract
+.env
+**/.env
+**/.env.*
+!**/.env.example
