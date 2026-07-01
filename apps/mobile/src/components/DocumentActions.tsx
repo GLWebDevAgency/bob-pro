@@ -1,7 +1,7 @@
 import { useRef, useState, type ReactNode } from 'react';
 import { View, Alert } from 'react-native';
-import { formatEUR } from '@bob/core';
 import type { QuoteView, InvoiceView } from '@bob/api-client';
+import { challengeFor, buildActionDiff } from '@bob/ai';
 import {
   useSendQuote,
   useSignQuote,
@@ -13,6 +13,13 @@ import {
   appErrorMessage,
 } from '../data/hooks';
 import { Button, Badge } from './ui';
+import { useConfirm } from './ConfirmSheet';
+
+// Profils de risque des actions manuelles (mêmes paliers que le registre d'outils de Bob -> confirmation typée).
+const OUTBOUND = { mutating: true, outbound: true, riskTier: 'outbound' } as const;
+const REVERSIBLE = { mutating: true, outbound: false, riskTier: 'reversible' } as const;
+const ACCOUNTING = { mutating: true, outbound: false, riskTier: 'accounting' } as const;
+const FISCAL = { mutating: true, outbound: false, riskTier: 'fiscal' } as const;
 
 /**
  * Actions contextuelles d'un devis / d'une facture — SOURCE UNIQUE, partagée par la liste (ventes.tsx)
@@ -46,14 +53,6 @@ export const hasQuoteActions = (q: QuoteView): boolean =>
   q.status === 'draft' || q.status === 'sent' || q.status === 'viewed' || q.status === 'signed';
 export const hasInvoiceActions = (inv: InvoiceView): boolean =>
   inv.status === 'draft' || inv.status === 'issued' || inv.status === 'partially_paid' || inv.status === 'late';
-
-// Plancher de sécurité manuel. `destructive` (rouge iOS) réservé aux actions vraiment destructrices (refus).
-function confirmThen(title: string, message: string, onOk: () => void, destructive = false): void {
-  Alert.alert(title, message, [
-    { text: 'Annuler', style: 'cancel' },
-    { text: 'Confirmer', style: destructive ? 'destructive' : 'default', onPress: onOk },
-  ]);
-}
 
 // Verrou : `busy` (state) pilote spinner/disabled ; `lock` (ref) bloque un 2e tap avant tout re-render.
 function useActionLock() {
@@ -90,6 +89,7 @@ export function QuoteActions({
   const refuse = useRefuseQuote();
   const generate = useGenerateInvoice();
   const { busy, run } = useActionLock();
+  const confirm = useConfirm();
   // Confort UX : masque l'action après un succès dans la session (fallback quand la liste des factures liées
   // n'est pas disponible). La sûreté anti-doublon est garantie AU DOMAINE (GenerateInvoiceFromQuote idempotent
   // par parentQuoteId+kind) ; `alreadyInvoiced` rend le masquage durable là où l'appelant connaît les liens.
@@ -102,9 +102,15 @@ export function QuoteActions({
         loading={busy === 'send'}
         disabled={!!busy}
         onPress={() =>
-          confirmThen('Envoyer le devis', `Le devis part chez ${customerName}. Continuer ?`, () =>
-            void run('send', () => send.mutateAsync(quote.id)),
-          )
+          void (async () => {
+            const ok = await confirm({
+              title: 'Envoyer le devis',
+              message: `Le devis part chez ${customerName}.`,
+              diff: buildActionDiff('envoyer_devis', {}, { number: quote.number }),
+              challenge: challengeFor(OUTBOUND, 'confirm_all'),
+            });
+            if (ok) await run('send', () => send.mutateAsync(quote.id));
+          })()
         }
       />
     );
@@ -118,9 +124,14 @@ export function QuoteActions({
             loading={busy === 'sign'}
             disabled={!!busy}
             onPress={() =>
-              confirmThen('Signature sur place', 'Le client signe le devis maintenant. Confirmer ?', () =>
-                void run('sign', () => sign.mutateAsync({ quoteId: quote.id, signerName: customerName })),
-              )
+              void (async () => {
+                const ok = await confirm({
+                  title: 'Signature sur place',
+                  message: 'Le client signe le devis maintenant.',
+                  challenge: challengeFor(REVERSIBLE, 'confirm_all'),
+                });
+                if (ok) await run('sign', () => sign.mutateAsync({ quoteId: quote.id, signerName: customerName }));
+              })()
             }
           />
         </View>
@@ -131,12 +142,15 @@ export function QuoteActions({
             loading={busy === 'refuse'}
             disabled={!!busy}
             onPress={() =>
-              confirmThen(
-                'Refuser le devis',
-                'Marquer ce devis comme refusé par le client ?',
-                () => void run('refuse', () => refuse.mutateAsync(quote.id)),
-                true,
-              )
+              void (async () => {
+                const ok = await confirm({
+                  title: 'Refuser le devis',
+                  message: 'Marquer ce devis comme refusé par le client ?',
+                  challenge: challengeFor(REVERSIBLE, 'confirm_all'),
+                  destructive: true,
+                });
+                if (ok) await run('refuse', () => refuse.mutateAsync(quote.id));
+              })()
             }
           />
         </View>
@@ -167,6 +181,7 @@ export function InvoiceActions({ invoice }: { invoice: InvoiceView }): ReactNode
   const pay = useRegisterPayment();
   const link = useInvoicePaymentLink();
   const { busy, lock, run } = useActionLock();
+  const confirm = useConfirm();
 
   if (invoice.status === 'draft') {
     return (
@@ -175,11 +190,15 @@ export function InvoiceActions({ invoice }: { invoice: InvoiceView }): ReactNode
         loading={busy === 'issue'}
         disabled={!!busy}
         onPress={() =>
-          confirmThen(
-            'Émettre la facture',
-            'Action définitive : numéro légal attribué et transmission e-invoicing. Émettre ?',
-            () => void run('issue', () => issue.mutateAsync(invoice.id)),
-          )
+          void (async () => {
+            const ok = await confirm({
+              title: 'Émettre la facture',
+              message: 'Numéro légal attribué et transmission e-invoicing.',
+              diff: buildActionDiff('emettre_facture', {}, { number: invoice.number }),
+              challenge: challengeFor(FISCAL, 'confirm_all'),
+            });
+            if (ok) await run('issue', () => issue.mutateAsync(invoice.id));
+          })()
         }
       />
     );
@@ -197,19 +216,27 @@ export function InvoiceActions({ invoice }: { invoice: InvoiceView }): ReactNode
               loading={busy === 'pay'}
               disabled={!!busy}
               onPress={() =>
-                confirmThen(
-                  'Enregistrer le paiement',
-                  `Encaisser ${formatEUR(remaining)} met à jour ta compta (CA, TVA, relances). Confirmer ?`,
-                  () =>
-                    void run('pay', () =>
+                void (async () => {
+                  const ok = await confirm({
+                    title: 'Enregistrer le paiement',
+                    message: 'Met à jour ta compta (CA, TVA, relances).',
+                    diff: buildActionDiff(
+                      'encaisser_facture',
+                      { amountCents: remaining },
+                      { number: invoice.number, remainingCents: remaining },
+                    ),
+                    challenge: challengeFor(ACCOUNTING, 'confirm_all', { amountCents: remaining }),
+                  });
+                  if (ok)
+                    await run('pay', () =>
                       pay.mutateAsync({
                         invoiceId: invoice.id,
                         amount: remaining,
                         method: 'transfer',
                         idempotencyKey: `mobile:payment:${invoice.id}:${invoice.paid}:${remaining}:transfer`,
                       }),
-                    ),
-                )
+                    );
+                })()
               }
             />
           </View>

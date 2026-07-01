@@ -9,6 +9,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider, useTheme } from '../src/theme';
 import { AuthProvider, useAuth } from '../src/data/auth';
 import { BobClientProvider } from '../src/data/client';
+import { ConfirmProvider } from '../src/components/ConfirmSheet';
 import { LoginScreen } from '../src/screens/LoginScreen';
 
 /** Porte d'authentification : en mode connecté (Supabase configuré), exige une session. */
@@ -40,6 +41,7 @@ export default function RootLayout() {
               <StatusBar style="light" />
               <AuthGate>
                 <BobClientProvider>
+                  <ConfirmProvider>
                   <Stack screenOptions={{ headerShown: false }}>
                     <Stack.Screen name="(tabs)" />
                     <Stack.Screen name="devis/new" options={{ presentation: 'modal' }} />
@@ -53,6 +55,7 @@ export default function RootLayout() {
                     <Stack.Screen name="chantiers" />
                     <Stack.Screen name="ventes" />
                   </Stack>
+                  </ConfirmProvider>
                 </BobClientProvider>
               </AuthGate>
             </AuthProvider>

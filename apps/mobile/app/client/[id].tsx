@@ -3,9 +3,13 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { formatEUR } from '@bob/core';
+import { challengeFor, buildActionDiff } from '@bob/ai';
 import { useTheme } from '../../src/theme';
 import { useCustomers, useInvoices, useInvoicePaymentLink, useRegisterPayment, appErrorMessage } from '../../src/data/hooks';
 import { Card, Badge, ScoreBar, MoneyText, Button, SectionHeader, font } from '../../src/components/ui';
+import { useConfirm } from '../../src/components/ConfirmSheet';
+
+const ACCOUNTING = { mutating: true, outbound: false, riskTier: 'accounting' } as const;
 
 export default function ClientDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -16,6 +20,7 @@ export default function ClientDetail() {
   const { data: invoices } = useInvoices();
   const pay = useInvoicePaymentLink();
   const register = useRegisterPayment();
+  const confirm = useConfirm();
   const customer = (data ?? []).find((c) => c.id === id) ?? null;
   const custInvoices = (invoices ?? []).filter((i) => i.customerId === id && i.status !== 'draft');
 
@@ -84,31 +89,33 @@ export default function ClientDetail() {
                           <Button
                             title={register.isPending ? '…' : 'Marquer payée'}
                             disabled={register.isPending}
-                            onPress={() => {
-                              // Assiette = netToPay (le domaine plafonne l'encaissement à netToPay, acompte compris).
-                              const remaining = Math.max(0, inv.totals.netToPay - inv.paid);
-                              // Plancher de sécurité : l'encaissement modifie la compta -> confirmation explicite (même canal manuel).
-                              Alert.alert(
-                                'Enregistrer le paiement',
-                                `Encaisser ${formatEUR(remaining)} met à jour ta compta (CA, TVA, relances). Confirmer ?`,
-                                [
-                                  { text: 'Annuler', style: 'cancel' },
-                                  {
-                                    text: 'Confirmer',
-                                    onPress: () =>
-                                      register.mutate(
-                                        {
-                                          invoiceId: inv.id,
-                                          amount: remaining,
-                                          method: 'transfer',
-                                          idempotencyKey: `mobile-client:payment:${inv.id}:${inv.paid}:${remaining}:transfer`,
-                                        },
-                                        { onError: (e) => Alert.alert('Oups', appErrorMessage(e)) },
-                                      ),
-                                  },
-                                ],
-                              );
-                            }}
+                            onPress={() =>
+                              void (async () => {
+                                // Assiette = netToPay (le domaine plafonne l'encaissement à netToPay, acompte compris).
+                                const remaining = Math.max(0, inv.totals.netToPay - inv.paid);
+                                // Plancher de sécurité vérifiable : aperçu avant/après + re-confirmation du montant.
+                                const ok = await confirm({
+                                  title: 'Enregistrer le paiement',
+                                  message: 'Met à jour ta compta (CA, TVA, relances).',
+                                  diff: buildActionDiff(
+                                    'encaisser_facture',
+                                    { amountCents: remaining },
+                                    { number: inv.number, remainingCents: remaining },
+                                  ),
+                                  challenge: challengeFor(ACCOUNTING, 'confirm_all', { amountCents: remaining }),
+                                });
+                                if (ok)
+                                  register.mutate(
+                                    {
+                                      invoiceId: inv.id,
+                                      amount: remaining,
+                                      method: 'transfer',
+                                      idempotencyKey: `mobile-client:payment:${inv.id}:${inv.paid}:${remaining}:transfer`,
+                                    },
+                                    { onError: (e) => Alert.alert('Oups', appErrorMessage(e)) },
+                                  );
+                              })()
+                            }
                           />
                         </View>
                         <View style={{ flex: 1 }}>
