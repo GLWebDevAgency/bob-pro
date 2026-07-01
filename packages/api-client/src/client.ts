@@ -51,6 +51,7 @@ export interface InvoiceView {
   kind: InvoiceKind;
   status: InvoiceStatus;
   number: string | null;
+  parentQuoteId: string | null;
   totals: Totals;
   mentions: string[];
   dueAt: string | null;

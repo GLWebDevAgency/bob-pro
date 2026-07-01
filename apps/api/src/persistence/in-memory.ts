@@ -101,6 +101,9 @@ export class InMemoryInvoiceRepository implements InvoiceRepository {
     const stored = this.map.get(id);
     return stored ? Invoice.rehydrate(stored.toSnapshot()) : null;
   }
+  async findByParentQuoteId(companyId: string, parentQuoteId: string, kind: Invoice['kind']): Promise<Invoice | null> {
+    return [...this.map.values()].find((i) => i.companyId === companyId && i.parentQuoteId === parentQuoteId && i.kind === kind) ?? null;
+  }
   async listByCompany(companyId: string): Promise<Invoice[]> {
     return [...this.map.values()].filter((i) => i.companyId === companyId);
   }

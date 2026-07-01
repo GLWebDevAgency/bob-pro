@@ -239,6 +239,7 @@ model Invoice {
   payments       Payment[]
 
   @@unique([companyId, number], name: "uniq_invoice_number")
+  @@unique([companyId, parentQuoteId, kind], name: "uniq_invoice_parent_quote_kind")
   @@index([companyId, status])
   @@index([dueAt])
   @@map("invoices")

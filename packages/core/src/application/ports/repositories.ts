@@ -1,7 +1,7 @@
 import { type Company } from '../../domain/company/company';
 import { type Customer } from '../../domain/customer/customer';
 import { type Quote } from '../../domain/billing/quote/quote';
-import { type Invoice } from '../../domain/billing/invoice/invoice';
+import { type Invoice, type InvoiceKind } from '../../domain/billing/invoice/invoice';
 import { type Payment } from '../../domain/payment/payment';
 import { type Expense } from '../../domain/expense/expense';
 import { type Chantier } from '../../domain/chantier/chantier';
@@ -32,6 +32,7 @@ export interface InvoiceRepository {
   /** Verrouille la ligne (SELECT … FOR UPDATE) DANS une transaction et renvoie une copie fraîche.
    * Sérialise les opérations concurrentes (encaissement, émission) sur une même facture. */
   lockById(id: string): Promise<Invoice | null>;
+  findByParentQuoteId(companyId: string, parentQuoteId: string, kind: InvoiceKind): Promise<Invoice | null>;
   listByCompany(companyId: string): Promise<Invoice[]>;
   save(i: Invoice): Promise<void>;
 }

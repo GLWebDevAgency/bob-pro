@@ -21,6 +21,7 @@ function makeDeps(opts: { existingKey?: string | null; status?: string; existing
   const invoices: InvoiceRepository = {
     findById: async () => invoice,
     lockById: async () => invoice,
+    findByParentQuoteId: async () => null,
     listByCompany: async () => [],
     save: async () => {
       invoiceSaves++;

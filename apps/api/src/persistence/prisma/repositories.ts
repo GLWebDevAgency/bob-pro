@@ -166,6 +166,14 @@ export class PrismaInvoiceRepository implements InvoiceRepository {
     if (!row) return null;
     return Invoice.rehydrate(invoiceRowToSnapshot(row));
   }
+  async findByParentQuoteId(companyId: string, parentQuoteId: string, kind: Invoice['kind']): Promise<Invoice | null> {
+    const row = await this.prisma.client().invoice.findFirst({
+      where: { companyId, parentQuoteId, kind: invoiceKindToDocKind(kind) },
+      include: LINES_INCLUDE,
+      orderBy: { id: 'asc' },
+    });
+    return row ? Invoice.rehydrate(invoiceRowToSnapshot(row)) : null;
+  }
   async listByCompany(companyId: string): Promise<Invoice[]> {
     const rows = await this.prisma.client().invoice.findMany({ where: { companyId }, include: LINES_INCLUDE });
     return rows.map((row) => Invoice.rehydrate(invoiceRowToSnapshot(row)));

@@ -170,6 +170,7 @@ export class LocalBobClient implements BobClient {
       kind: i.kind,
       status: i.status,
       number: i.number,
+      parentQuoteId: i.parentQuoteId,
       totals: i.totals(),
       mentions: [...i.mentions],
       dueAt: i.dueAt,
