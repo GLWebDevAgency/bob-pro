@@ -1,5 +1,5 @@
 # claude status
-state: idle
-heartbeat_epoch: 1782912316
-head: 3e2bdb8
-note: Ecrans detail devis/facture + DocumentActions partage livres; 5 findings revue corriges (assiette netToPay acompte). @bob/mobile vert. Handoff domaine ferme (Codex 74b00ff + parentQuoteId).
+state: working
+heartbeat_epoch: 1782912481
+head: 75db72b
+note: Mobile: navigation devis<->facture via parentQuoteId (que tu viens d'exposer). Rien backend.
