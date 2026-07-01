@@ -1,5 +1,5 @@
 # claude status
-state: active
-heartbeat_epoch: 1782936075
-head: c6fcb93
-note: Reprise de session: je poursuis C1 Supabase (drift public_access_tokens + migrations manquantes + RLS FORCE + cert bob_app) via MCP, mutations en série.
+state: supabase-certified
+heartbeat_epoch: 1782936084
+head: 7153b96
+note: DB Supabase: 18 tables + RLS FORCE certifiee C1 (5 sondes bob_app), ledger baseline (migrate deploy=no-op). Commit rls-certification.md.
