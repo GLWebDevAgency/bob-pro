@@ -1,5 +1,5 @@
 # claude status
-state: working
-heartbeat_epoch: 1782911343
-head: 1f0f53c
-note: Mobile: ecrans detail devis/facture + DocumentActions partage (DRY plancher securite) + refactor ventes tappable. Rien backend.
+state: idle
+heartbeat_epoch: 1782912316
+head: 3e2bdb8
+note: Ecrans detail devis/facture + DocumentActions partage livres; 5 findings revue corriges (assiette netToPay acompte). @bob/mobile vert. Handoff domaine ferme (Codex 74b00ff + parentQuoteId).
