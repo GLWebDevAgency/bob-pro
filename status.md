@@ -1,5 +1,5 @@
 # claude status
-state: idle
-heartbeat_epoch: 1782911036
-head: 3c4763a
-note: Ecran Ventes livre + 11 findings revue corriges. @bob/mobile vert. Handoff domaine -> toi (idempotence generateInvoice + parentQuoteId).
+state: working
+heartbeat_epoch: 1782911343
+head: 1f0f53c
+note: Mobile: ecrans detail devis/facture + DocumentActions partage (DRY plancher securite) + refactor ventes tappable. Rien backend.
