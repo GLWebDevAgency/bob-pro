@@ -5,14 +5,15 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useQueryClient } from '@tanstack/react-query';
-import type { AgentRun, PendingAction } from '@bob/ai';
+import { buildActionDiff, type ActionDiff, type AgentRun, type PendingAction } from '@bob/ai';
 import { useTheme } from '../../src/theme';
 import { useBobClient } from '../../src/data/client';
-import { useSubscription } from '../../src/data/hooks';
+import { useSubscription, useInvoices, useQuotes } from '../../src/data/hooks';
 import { makeBobAgent } from '../../src/data/bob';
 import { useVoiceInput, useSpeak } from '../../src/data/voice';
 import { getAutonomy } from '../../src/data/settings';
 import { Card, Button, Badge, Chip, font } from '../../src/components/ui';
+import { ActionDiffView } from '../../src/components/ActionDiffView';
 import { ThinkingIndicator } from '../../src/components/ThinkingIndicator';
 import { VoiceOrb, type OrbState } from '../../src/components/VoiceOrb';
 
@@ -34,6 +35,8 @@ export default function Assistant() {
   const qc = useQueryClient();
   const agent = useMemo(() => makeBobAgent(client), [client]);
   const { data: sub } = useSubscription();
+  const { data: invoices } = useInvoices();
+  const { data: quotes } = useQuotes();
   const entitled = (sub?.features ?? []).includes('ai_assistant');
   const { speak } = useSpeak();
   const [awaitingConfirm, setAwaitingConfirm] = useState<PendingAction | null>(null);
@@ -52,6 +55,29 @@ export default function Assistant() {
   const nextId = (): string => {
     counter.current += 1;
     return `m-${counter.current}`;
+  };
+
+  // Aperçu avant/après d'une action proposée, calculé côté mobile depuis l'action + les données (snapshot).
+  // Montre la « preuve » (reste dû, statut, numéro) avant que l'utilisateur ne confirme (voix ou tap).
+  const pendingDiff = (pending: PendingAction): ActionDiff | null => {
+    const { tool, args } = pending;
+    const invId = typeof args.invoiceId === 'string' ? args.invoiceId : '';
+    const quoteId = typeof args.quoteId === 'string' ? args.quoteId : '';
+    if (tool === 'encaisser_facture') {
+      const inv = (invoices ?? []).find((i) => i.id === invId);
+      const remaining = inv ? Math.max(0, inv.totals.netToPay - inv.paid) : 0;
+      const amountCents = typeof args.amountCents === 'number' ? args.amountCents : remaining;
+      return buildActionDiff('encaisser_facture', { amountCents }, { number: inv?.number ?? null, remainingCents: remaining });
+    }
+    if (tool === 'emettre_facture') {
+      const inv = (invoices ?? []).find((i) => i.id === invId);
+      return buildActionDiff('emettre_facture', {}, { number: inv?.number ?? null });
+    }
+    if (tool === 'envoyer_devis') {
+      const q = (quotes ?? []).find((x) => x.id === quoteId);
+      return buildActionDiff('envoyer_devis', {}, { number: q?.number ?? null });
+    }
+    return null;
   };
 
   const refreshAfterAction = (): void => {
@@ -183,14 +209,17 @@ export default function Assistant() {
                 {it.run ? <Text style={[font('cardTitle'), { color: colors.ink900, marginBottom: 4 }]}>{it.run.card.title}</Text> : null}
                 <Text style={[font('body'), { color: colors.ink800 }]}>{it.text}</Text>
                 {it.pending ? (
-                  <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
-                    <View style={{ flex: 1 }}>
-                      <Button title="Confirmer" onPress={() => void confirm(it)} disabled={busy} />
+                  <>
+                    <ActionDiffView diff={pendingDiff(it.pending)} />
+                    <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
+                      <View style={{ flex: 1 }}>
+                        <Button title="Confirmer" onPress={() => void confirm(it)} disabled={busy} />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Button title="Annuler" variant="secondary" onPress={() => cancel(it)} disabled={busy} />
+                      </View>
                     </View>
-                    <View style={{ flex: 1 }}>
-                      <Button title="Annuler" variant="secondary" onPress={() => cancel(it)} disabled={busy} />
-                    </View>
-                  </View>
+                  </>
                 ) : null}
                 {it.run?.choices?.length ? (
                   <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>

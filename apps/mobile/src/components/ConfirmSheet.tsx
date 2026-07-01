@@ -5,6 +5,7 @@ import { formatEUR } from '@bob/core';
 import type { ActionDiff, ConfirmationChallenge } from '@bob/ai';
 import { useTheme } from '../theme';
 import { Card, Button, font } from './ui';
+import { ActionDiffView } from './ActionDiffView';
 
 /**
  * Feuille de confirmation VÉRIFIABLE — la « preuve » avant d'agir. Elle rend :
@@ -120,29 +121,7 @@ function ConfirmSheet({ req, onResolve }: { req: ConfirmRequest | null; onResolv
                 <Text style={[font('sub'), { color: colors.slate500, marginTop: 6 }]}>{req.message}</Text>
               ) : null}
 
-              {req.diff && req.diff.fields.length > 0 ? (
-                <View
-                  style={{
-                    marginTop: 12,
-                    borderRadius: 12,
-                    borderWidth: 1,
-                    borderColor: colors.lineSoft,
-                    padding: 12,
-                    gap: 8,
-                  }}
-                >
-                  {req.diff.fields.map((f) => (
-                    <View key={f.label} style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-                      <Text style={[font('meta'), { color: colors.slate400 }]}>{f.label}</Text>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                        <Text style={[font('sub'), { color: colors.slate500 }]}>{f.before}</Text>
-                        <Ionicons name="arrow-forward" size={13} color={colors.slate400} />
-                        <Text style={[font('sub'), { color: colors.ink900 }]}>{f.after}</Text>
-                      </View>
-                    </View>
-                  ))}
-                </View>
-              ) : null}
+              <ActionDiffView diff={req.diff} />
 
               {ch?.kind === 'amount' ? (
                 <View style={{ marginTop: 12 }}>
