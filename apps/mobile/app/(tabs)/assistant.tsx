@@ -36,6 +36,7 @@ export default function Assistant() {
   const [awaitingConfirm, setAwaitingConfirm] = useState<PendingAction | null>(null);
   const awaitingRef = useRef<PendingAction | null>(null);
   awaitingRef.current = awaitingConfirm;
+  const voiceTurnRef = useRef(false); // true = tour initié à la voix -> Bob répond à l'oral (sinon silencieux)
 
   const [items, setItems] = useState<ChatItem[]>([
     { id: 'intro', role: 'bob', text: "Salut, moi c'est Bob. Dis-moi par exemple « encaisse la facture 2026-014 » — je m'en occupe." },
@@ -60,14 +61,15 @@ export default function Assistant() {
     ]);
     // Boucle vocale : mémorise l'action à confirmer à l'oral + fait parler Bob (TTS, natif via expo-speech).
     setAwaitingConfirm(run.kind === 'proposed' ? run.pending ?? null : null);
-    speak(run.spokenPrompt ?? run.card.body);
+    if (voiceTurnRef.current) speak(run.spokenPrompt ?? run.card.body); // Bob ne parle que sur un tour vocal
     if (run.kind === 'done') refreshAfterAction();
     if (run.navigate) router.push(run.navigate as never); // commande « Jarvis » : Bob ouvre le bon écran
   };
 
-  const ask = async (text: string): Promise<void> => {
+  const ask = async (text: string, fromVoice = false): Promise<void> => {
     const message = text.trim();
     if (!message || busy) return;
+    voiceTurnRef.current = fromVoice;
     setInput('');
     setItems((prev) => [...prev, { id: nextId(), role: 'user', text: message }]);
     setBusy(true);
@@ -100,9 +102,10 @@ export default function Assistant() {
    * (jamais d'exécution sur une réponse ambiguë) ; sinon c'est une nouvelle demande.
    */
   const handleVoice = async (text: string): Promise<void> => {
+    voiceTurnRef.current = true; // tour vocal -> Bob répondra à l'oral
     const pending = awaitingRef.current;
     if (!pending) {
-      void ask(text);
+      void ask(text, true);
       return;
     }
     setItems((prev) => [...prev, { id: nextId(), role: 'user', text }]);

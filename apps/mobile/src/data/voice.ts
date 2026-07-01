@@ -3,6 +3,7 @@ import { Alert } from 'react-native';
 import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from 'expo-speech-recognition';
 import { useAudioRecorder, AudioModule, RecordingPresets } from 'expo-audio';
 import { readAsStringAsync, EncodingType } from 'expo-file-system/legacy';
+import * as Speech from 'expo-speech';
 import { getVoiceMode } from './settings';
 import { useBobClient } from './client';
 import { appErrorMessage } from './hooks';
@@ -87,19 +88,20 @@ export function useVoiceInput(onTranscript: (text: string) => void) {
 }
 
 /**
- * Sortie vocale de Bob (TTS) — miroir de useVoiceInput. NATIF par défaut (expo-speech, on-device, gratuit) ;
- * le premium souverain (Voxtral TTS) passera par le backend derrière le TtsPort (lit l'audio renvoyé).
- *
- * SEAM : aujourd'hui no-op sûr (Bob affiche le texte). Pour activer la parole native, après build natif :
- *   `npx expo install expo-speech` puis, ci-dessous :
- *     import * as Speech from 'expo-speech';
- *     speak = (text) => Speech.speak(text, { language: 'fr-FR' });  stopSpeaking = () => Speech.stop();
- * (Les montants viennent TOUJOURS du domaine — jamais inventés — donc sûrs à vocaliser tels quels.)
+ * Sortie vocale de Bob (TTS) — miroir de useVoiceInput. NATIF (expo-speech, on-device, gratuit, hors-ligne),
+ * langue fr-FR. Le premium souverain (Voxtral TTS) passera par le backend derrière le TtsPort : quand un
+ * TtsResult renverra un audioBase64, on lira l'audio (au lieu de la synthèse native) selon le voiceMode.
+ * Les montants viennent TOUJOURS du domaine (jamais inventés) -> sûrs à vocaliser tels quels.
  */
 export function useSpeak() {
-  const speak = useCallback((_text: string) => {
-    /* no-op tant qu'expo-speech n'est pas installé (voir docstring) */
+  const speak = useCallback((text: string) => {
+    const t = text?.trim();
+    if (!t) return;
+    Speech.stop(); // ne pas superposer deux réponses
+    Speech.speak(t, { language: 'fr-FR', rate: 1.0 });
   }, []);
-  const stopSpeaking = useCallback(() => {}, []);
+  const stopSpeaking = useCallback(() => {
+    Speech.stop();
+  }, []);
   return { speak, stopSpeaking };
 }
