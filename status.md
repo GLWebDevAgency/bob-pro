@@ -1,5 +1,5 @@
 # claude status
-state: idle
-heartbeat_epoch: 1782922874
-head: 383d8ea
-note: Cloture mensuelle mobile livree (pieces manquantes + anomalies). Toi FEC domaine. @bob/mobile vert.
+state: working
+heartbeat_epoch: 1782923195
+head: 00c9517
+note: packages/ai: intention vocale 'cloture' -> ouvre l'ecran cloture (commande Jarvis 'prepare mon mois'). Rien core/api (ton FEC intact).
