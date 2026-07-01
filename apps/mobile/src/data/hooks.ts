@@ -283,6 +283,20 @@ export function useQuote(id: string) {
   });
 }
 
+/** Aperçu de l'écriture comptable d'une facture émise (411/70x/44571). `enabled` = ne fetch que si pertinent. */
+export function useInvoiceAccountingPreview(id: string, enabled = true) {
+  const client = useBobClient();
+  return useQuery({
+    queryKey: ['accounting-preview', id] as const,
+    enabled,
+    queryFn: async () => {
+      const r = await client.invoiceAccountingPreview(id);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+  });
+}
+
 export function useCreateQuote() {
   const client = useBobClient();
   const qc = useQueryClient();

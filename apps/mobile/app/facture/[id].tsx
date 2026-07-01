@@ -4,9 +4,10 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { formatEUR } from '@bob/core';
 import { useTheme } from '../../src/theme';
-import { useInvoice, useCustomers } from '../../src/data/hooks';
+import { useInvoice, useCustomers, useInvoiceAccountingPreview } from '../../src/data/hooks';
 import { Card, Badge, MoneyText, SectionHeader, font } from '../../src/components/ui';
 import { InvoiceActions, hasInvoiceActions, INVOICE_BADGE } from '../../src/components/DocumentActions';
+import { AccountingLinesView } from '../../src/components/AccountingLinesView';
 
 function formatDate(iso: string | null): string | null {
   if (!iso) return null;
@@ -28,6 +29,9 @@ export default function FactureDetail() {
   // Assiette = netToPay (acompte si depositPct, sinon ttc) : c'est ce que le domaine autorise à encaisser.
   const remaining = inv ? Math.max(0, inv.totals.netToPay - inv.paid) : 0;
   const dueAt = formatDate(inv?.dueAt ?? null);
+  // Écriture comptable : disponible uniquement pour une facture émise (le domaine refuse les brouillons).
+  const acct = useInvoiceAccountingPreview(id, !!inv && inv.status !== 'draft');
+  const ledger = acct.data?.available ? acct.data : null;
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
@@ -94,6 +98,17 @@ export default function FactureDetail() {
                     </Text>
                   ))}
                 </View>
+              </Card>
+            ) : null}
+
+            {ledger && ledger.lines.length > 0 ? (
+              <Card>
+                <SectionHeader title="Écriture comptable" />
+                <AccountingLinesView
+                  lines={ledger.lines}
+                  totalDebitCents={ledger.totalDebitCents}
+                  totalCreditCents={ledger.totalCreditCents}
+                />
               </Card>
             ) : null}
 
