@@ -57,7 +57,7 @@ publication** (identité visuelle, pipeline de build, déclarations Apple/Play, 
 ### 🔴 Vrais trous (bloquants prod)
 | # | Manque | Pourquoi ça bloque |
 |---|---|---|
-| C1 | **RLS non prouvée en PROD avec le rôle non-superuser** | La cert tourne sur un Postgres temporaire. En prod, si `DATABASE_URL` utilise par erreur le rôle `postgres` (superuser), **FORCE RLS est BYPASSÉ → fuite cross-tenant**. Le end-to-end app→Supabase prod via `bob_app` (non-superuser) n'est **pas vérifié** (mdp non récupérable, egress bloqué). C'est LE gate sécurité #1 à prouver avant de vendre du multi-tenant. |
+| C1 | **RLS non prouvée en PROD avec le rôle non-superuser** — ✅ **certifiée sur la vraie base le 2026-07-01** (voir « Certification RLS » ci-dessous) | La cert tourne sur un Postgres temporaire. En prod, si `DATABASE_URL` utilise par erreur le rôle `postgres` (superuser), **FORCE RLS est BYPASSÉ → fuite cross-tenant**. Le end-to-end app→Supabase prod via `bob_app` (non-superuser) n'est **pas vérifié** (mdp non récupérable, egress bloqué). C'est LE gate sécurité #1 à prouver avant de vendre du multi-tenant. |
 | C2 | **Aucun Dockerfile / image** | Pas d'artefact de déploiement reproductible. |
 | C3 | **Aucune CD / job de déploiement** | `ci.yml` = test/lint/build + cert RLS sur DB jetable. **Rien ne déploie l'API ni n'applique `migrate deploy` + `rls.sql` contre la prod.** Déploiement et migration prod = manuels/indéfinis. |
 | C4 | **CORS ouvert à tous** | `app.enableCors()` sans allowlist d'origines ([main.ts](../apps/api/src/main.ts)) — à restreindre pour la prod. |
@@ -86,7 +86,20 @@ Statut après les commits `1ae6c54` et `4966571` :
 - **C2 Dockerfile : traité.** Image API monorepo reproductible via `Dockerfile` racine, validée localement par `docker build`.
 - **C3 CD : partiellement traité.** Workflow manuel `.github/workflows/railway-api.yml` ajouté : checks API, build Docker, check env, `migrate deploy`, `rls.sql`, certification RLS runtime, puis `railway up`.
 - **C4 CORS : traité côté code.** En prod, allowlist via `CORS_ORIGINS` + `SIGN_WEB_BASE_URL`; dev reste ouvert.
-- **C1 Supabase/RLS prod : toujours bloquant tant que les secrets Railway ne sont pas posés.** Le service Railway `bob-pro-api` existe, mais les variables `DATABASE_URL`, `DIRECT_URL` et `APP_DATABASE_ROLE` étaient absentes lors du check CLI. Sans elles, on ne lance ni migration prod ni certification RLS.
+- **C1 Supabase/RLS : ✅ certifiée sur la VRAIE base (2026-07-01, via MCP Supabase, Claude).** Drift résorbé
+  (18 tables + baseline `_prisma_migrations` 8/8 — migrations `sync_schema_drift_full` + `rls_all_tables_full`),
+  `ENABLE`+`FORCE` RLS + policy sur les 18 tables applicatives (conformes à `prisma/rls.sql`, y compris le lookup
+  public par hash sur `public_access_tokens`), GRANTs CRUD complets pour `bob_app`. Puis `rls-cert.sql` rejoué
+  contre `cvdkqjczgqoeshputacl` sous `SET ROLE bob_app` (NOSUPERUSER/NOBYPASSRLS vérifiés dans la cert) :
+  lecture scopée sur les 18 tables (own=N / other=0), 9 INSERT cross-tenant bloqués par `WITH CHECK` (42501),
+  lookup public visible uniquement via `app.public_access_token_hash`, seed+cert+cleanup en 1 transaction,
+  0 résidu vérifié. **Double preuve indépendante** : sondes adversariales sur la même base
+  (détail rejouable : [rls-certification.md](../apps/api/prisma/rls-certification.md)) + rejeu intégral de
+  `prisma/rls-cert.sql` (cette passe, seed effectué au travers des policies `WITH CHECK` sous `bob_app`). Advisors sécurité : rien de bloquant (INFO `_prisma_migrations` sans policy = deny-by-default ;
+  WARN « leaked password protection » à activer dans le dashboard Auth). **Reste opérationnel (pas re-bloquant
+  pour la cert)** : poser les secrets Railway (`DATABASE_URL` rôle `bob_app`, `DIRECT_URL` rôle migrations,
+  `APP_DATABASE_ROLE=bob_app`) — le gate `check-release-env.sh` + `release.sh` re-certifie avec le rôle runtime
+  exact à chaque déploiement.
 - **API live démo : disponible pour smoke tests.** Railway expose `https://bob-pro-api-production.up.railway.app` en `DEMO_MODE=true` ; ce n'est pas encore la prod multi-tenant certifiée.
 
 Gate ajouté : `apps/api/scripts/check-release-env.sh`.
