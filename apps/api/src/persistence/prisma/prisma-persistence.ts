@@ -65,9 +65,14 @@ export class PrismaPersistence implements Persistence {
 
   async seed(): Promise<void> {
     const company = companyPropsToCreate(seedCompany().toProps());
-    await this.prisma.company.upsert({ where: { id: company.id }, create: company, update: company });
-    for (const customer of seedCustomers().map((c) => customerPropsToCreate(c.toProps()))) {
-      await this.prisma.customer.upsert({ where: { id: customer.id }, create: customer, update: customer });
-    }
+    const customers = seedCustomers().map((c) => customerPropsToCreate(c.toProps()));
+    // FORCE RLS s'applique aussi au bootstrap : sous le rôle applicatif non-superuser, les upserts
+    // doivent passer par la transaction où le GUC tenant est posé, sinon WITH CHECK rejette (42501).
+    await this.prisma.withTenant(company.id, async (tx) => {
+      await tx.company.upsert({ where: { id: company.id }, create: company, update: company });
+      for (const customer of customers) {
+        await tx.customer.upsert({ where: { id: customer.id }, create: customer, update: customer });
+      }
+    });
   }
 }
