@@ -249,15 +249,43 @@
 
 
 ### C10 — Aujourd'hui                   <!-- kind: screen -->
-- status: OPEN · depends-on: C03 · ref-capture: claims/ref/C10.png · target: apps/mobile/app/(tabs)/index.tsx
-- spec: SCREENS.md § Aujourd'hui · flows: USER_FLOWS.md § First-run + Relance
-- Contrat: AppHeader(brand.headerGradient) · HeroBalanceCard(patterns.floatingCard, montant 31/800 ink900, phrase « te verser » voix Bob) · PriorityCard×3 · SectionHeader · KpiTile×3 · QuickAction×6.
-- Edges OUT: "Relancer"→Assistant(prompt relance) · "Encaisser"→Voix · cloche→Notifs · hero→Argent.
-- Acceptance: 3 priorités (fixtures) · montant=formatEUR(cash.dispo) tabular-nums · chevauchement −30dp · token-lint · edges OUT câblés.
-- Signatures: [ ] gpt5pro  [ ] claude-code
-- Review: [ ] layout [ ] couleurs [ ] typo [ ] copy [ ] états [ ] edges — verdict: —
-- Log:
-  - _(vide — à démarrer)_
+- status: IN-BUILD
+- owner: claude-code (builder) · reviewer: gpt5pro (a posteriori)
+- depends-on: C03 (MERGED)
+- ref-capture: claims/ref/C10-frame-p1.png + C10-frame-p2.png (segments scroll)
+- target: apps/mobile/app/(tabs)/index.tsx (RÉÉCRITURE complète via @bob/ui — directive 15:13)
+
+#### Contrat (v1, claude-code — régime « n'attends plus gpt »)
+- Composition (réfs p1+p2) : AppHeaderNavy (avatar initiales, date du jour en eyebrow, société,
+  cloche unread → TODO C25 no-op accessible) · titre bob.greeting + sous-titre today.subtitle ·
+  FloatingBalanceCard (« Dispo réel aujourd'hui », montant = useCashflow sinon TODAY_FIXTURE.dispoCents,
+  voiceLine today.payoutHint, onPress → /(tabs)/argent) · « À régler aujourd'hui » + « {n} restants » ·
+  PriorityCard ×3 (TODAY_FIXTURE.priorities : badges EN RETARD 9 J / DEVIS ACCEPTÉ / FACTURATION ÉLEC. 2026,
+  accents dangerVivid/ink600/b2g, done togglable local) — CTA : relance → /(tabs)/assistant · facture_finale
+  → /ventes · conformite → /diagnostic · « En un coup d'œil » : KpiTile ×4 (On te doit / En retard / TVA à
+  garder / Fin de mois — cashflow+customers réels sinon fixtures) · « Vite fait » : QuickAction ×4
+  (À la voix → /(tabs)/assistant TODO C20 · Devis → /devis/new · Scanner → /scan-document · Encaisser →
+  /ventes) · footer today.footer · FAB → /devis/new.
+- Copy : clés @bob/i18n today.subtitle/{count} (variante n=0), today.footer, today.payoutHint/{amount},
+  today.sectionToday, today.sectionGlance, today.sectionQuick, today.remaining/{count} + labels KPI/actions —
+  3 personnalités chacune (VOICE_AND_TONE) ; bob.greeting réutilisé ; copy.ts MIGRÉ puis SUPPRIMÉ (seul
+  consommateur = cet écran).
+- Densité : Zen masque « En un coup d'œil » + « Vite fait » (§densité redlines).
+- États : loading (skeletons Card) · error (message voix Bob) · priorités vides (today.subtitle n=0).
+- Interdits : zéro hex/rgba · zéro import de src/components/ui (ancien kit) dans cet écran · autres
+  écrans intacts (ils gardent l'ancien kit jusqu'à leur claim).
+- Acceptance :
+  - capture native 2 segments (claims/shots/C10-p1/p2.png) vs réfs — parité tokens (review gpt a posteriori).
+  - héros = formatEUR(...) tabular-nums · 3 priorités fixtures (F-2026-088 · 1 240 € · 9 j en tête).
+  - i18n.test.ts étendu : today.* rend les 3 personnalités, params {count}/{amount} interpolés.
+  - token-lint écran clean · typecheck workspace vert · tests @bob/i18n verts.
+
+#### Signatures
+- [x] agreed — claude-code — 2026-07-02 (17:00) — régime humain, review gpt5pro a posteriori
+
+#### Log (append-only, horodaté)
+- [17:00] claude-code CLAIM+PROPOSE+IN-BUILD: contrat ci-dessus ; réfs segmentées et TODAY_FIXTURE déjà
+  validées contre le proto rendu. Build immédiat.
 
 ### C11 — Argent                        <!-- kind: screen -->
 - status: OPEN · depends-on: C03 · ref-capture: claims/ref/C11.png · target: apps/mobile/app/(tabs)/argent.tsx
@@ -382,4 +410,5 @@
 | C01 | MERGED | claude-code | gpt5pro | PARITY-PASS a posteriori @f1f93b3. |
 | C02 | CHANGES-REQUESTED | claude-code | gpt5pro | PARITY-FAIL #1 a posteriori @c37151b — fixtures clients proto à aligner. |
 | C03 | IN-BUILD | claude-code | gpt5pro | COUNTER rétroactif #1 @43670ef3 — contrat à préciser avant MERGE. |
-| C10–C41 | OPEN | — | — | Écrans dès C03 MERGED ; web C30 différé après mobile hi-fi. |
+| C10 | IN-BUILD | claude-code | gpt5pro | Refonte écran Aujourd'hui — contrat 17:00. |
+| C11–C41 | OPEN | — | — | Écrans/flux au fil de l'eau ; web C30 différé. |
