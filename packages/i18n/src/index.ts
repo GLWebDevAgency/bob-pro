@@ -39,6 +39,135 @@ const fr = {
     pro: 'Votre bureau pro dans la poche.',
     direct: 'Ton bureau pro dans la poche.',
   },
+
+  // ── C10 — écran « Aujourd'hui » ────────────────────────────────────────────
+  'today.subtitle': {
+    pote: '{count} trucs à régler, et après tu factures tranquille.',
+    pro: 'Vous avez {count} priorités à traiter aujourd’hui.',
+    direct: '{count} priorités. Go.',
+  },
+  'today.subtitleNone': {
+    pote: 'Rien d’urgent. Profites-en.',
+    pro: 'Aucune priorité aujourd’hui.',
+    direct: 'RAS.',
+  },
+  'today.footer': {
+    pote: 'C’est tout pour aujourd’hui. Va bosser 🔧',
+    pro: 'Vous êtes à jour pour aujourd’hui.',
+    direct: 'Fini pour aujourd’hui.',
+  },
+  'today.payoutHint': {
+    pote: 'Tu peux te verser ~{amount} sans te mettre dans le rouge',
+    pro: 'Versement possible : {amount}, TVA et charges provisionnées.',
+    direct: 'Te verser : ~{amount}.',
+  },
+  'today.balanceLabel': {
+    pote: 'Dispo réel aujourd’hui',
+    pro: 'Disponible réel aujourd’hui',
+    direct: 'Dispo réel',
+  },
+  'today.sectionToday': {
+    pote: 'À régler aujourd’hui',
+    pro: 'À traiter aujourd’hui',
+    direct: 'À régler',
+  },
+  'today.remaining': {
+    pote: '{count} restants',
+    pro: '{count} restantes',
+    direct: 'reste {count}',
+  },
+  'today.sectionGlance': {
+    pote: 'En un coup d’œil',
+    pro: 'Vue d’ensemble',
+    direct: 'Les chiffres',
+  },
+  'today.sectionQuick': {
+    pote: 'Vite fait',
+    pro: 'Actions rapides',
+    direct: 'Raccourcis',
+  },
+  'today.kpiOwed': {
+    pote: 'On te doit',
+    pro: 'On vous doit',
+    direct: 'Dû',
+  },
+  'today.kpiLate': {
+    pote: 'En retard',
+    pro: 'En retard',
+    direct: 'Retard',
+  },
+  'today.kpiVat': {
+    pote: 'TVA à garder',
+    pro: 'TVA à provisionner',
+    direct: 'TVA',
+  },
+  'today.kpiEom': {
+    pote: 'Fin de mois',
+    pro: 'Solde fin de mois',
+    direct: 'Fin de mois',
+  },
+  'today.quickVoice': {
+    pote: 'À la voix',
+    pro: 'À la voix',
+    direct: 'Voix',
+  },
+  'today.quickQuote': {
+    pote: 'Devis',
+    pro: 'Devis',
+    direct: 'Devis',
+  },
+  'today.quickScan': {
+    pote: 'Scanner',
+    pro: 'Scanner',
+    direct: 'Scan',
+  },
+  'today.quickCollect': {
+    pote: 'Encaisser',
+    pro: 'Encaisser',
+    direct: 'Encaisser',
+  },
+  // Voix des 3 priorités du briefing (badges + sous-titres + CTA — VOICE_AND_TONE § Retard).
+  'today.prioLateBadge': {
+    pote: 'En retard {days} j',
+    pro: 'En retard {days} jours',
+    direct: 'Retard {days} j',
+  },
+  'today.prioLateHint': {
+    pote: 'Toujours pas payé. On le relance gentiment ?',
+    pro: 'Facture échue. Souhaitez-vous envoyer une relance ?',
+    direct: '{days} j de retard. On relance ?',
+  },
+  'today.ctaRelance': {
+    pote: 'Relancer',
+    pro: 'Envoyer une relance',
+    direct: 'Relancer',
+  },
+  'today.prioAcceptedBadge': {
+    pote: 'Devis accepté',
+    pro: 'Devis accepté',
+    direct: 'Accepté',
+  },
+  'today.prioFinalHint': {
+    pote: 'Acompte déjà encaissé. Reste {amount}. Y’a plus qu’à.',
+    pro: 'Acompte encaissé. Il reste {amount} à facturer.',
+    direct: 'Reste {amount}. On facture ?',
+  },
+  'today.ctaFinalInvoice': {
+    pote: 'Créer la facture',
+    pro: 'Créer la facture',
+    direct: 'Facturer',
+  },
+  'today.prioConformiteHint': {
+    pote: 'À configurer avant le 1er sept. 2026. Je t’explique en 2 min.',
+    pro: 'À configurer avant le 1er septembre 2026. Nous vous guidons en 2 minutes.',
+    direct: 'À faire avant sept. 2026. 2 min.',
+  },
+  // Erreur de chargement (repli fixtures) — la voix de Bob, jamais un code d'erreur.
+  'today.dataError': {
+    pote: 'Je n’arrive pas à joindre le serveur. Je t’affiche les derniers chiffres connus.',
+    pro: 'Connexion impossible. Les dernières valeurs connues sont affichées.',
+    direct: 'Hors ligne. Chiffres de secours.',
+  },
 } as const satisfies Record<string, Copy>;
 
 export type I18nKey = keyof typeof fr;

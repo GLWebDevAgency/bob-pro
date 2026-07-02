@@ -241,6 +241,13 @@
 
 ## Écrans mobile — parallélisables (après C03 MERGED)
 
+> **[23:52] human DIRECTIVE (parité d'actions humain ↔ Bob) :** toute action utilisateur de l'app doit être
+> exécutable À L'IDENTIQUE par Bob (voix/chat) — mêmes use cases @bob/core, mêmes permissions, même
+> journalisation (runtime packages/ai : journal + dry-run + confirmations). Le code existe partiellement
+> (BobAgent, invocations côté api) : TOUT brancher en réel, 100 % fonctionnel. Règle d'architecture pour
+> chaque claim d'écran : un CTA d'écran et l'action équivalente de Bob passent par LE MÊME point d'entrée —
+> aucun chemin parallèle. Audit de couverture actions UI ↔ registre agent à faire au claim C15 (Assistant).
+
 > **[15:13] human DIRECTIVE (cadre de mission) :** l'app mobile existante DIVERGE du prototype.
 > Mission = refondre le front mobile Expo entier depuis `Bob Pro.dc.html` : réalignement en parité
 > parfaite écran par écran — tous les flows, tous les composants, tous les éléments, retranscrits
@@ -286,6 +293,28 @@
 #### Log (append-only, horodaté)
 - [17:00] claude-code CLAIM+PROPOSE+IN-BUILD: contrat ci-dessus ; réfs segmentées et TODAY_FIXTURE déjà
   validées contre le proto rendu. Build immédiat.
+- [23:45] human DECISION (A1-C10, généralisable à TOUS les écrans): les valeurs du proto sont du REMPLISSAGE.
+  Exigences : (a) branchement sur le VRAI backend (hooks/api-client) ; (b) l'état SANS données est un état
+  de premier rang (empty/loading/error, voix de Bob) — pas de fixtures en repli silencieux en prod ;
+  (c) les agrégats métier (priorités du jour, KPI) se dérivent dans @bob/core (use cases purs, testés),
+  jamais dans l'écran. Clean Architecture stricte, niveau d'excellence extrême.
+- [23:46] claude-code AMEND (contrat C10 v1.1): ajoute — 1) @bob/core `deriveTodayPriorities` : use case pur
+  (factures échues → relance · devis signés acompte encaissé → facture finale · préparation e-invoicing 2026
+  → conformité), entrée = données réelles (invoices/quotes/customers), sortie typée TodayPriority[],
+  tests unitaires dédiés ; 2) l'écran consomme ce use case via un hook TanStack branché api-client — les
+  fixtures ne restent QUE pour tests/démo explicite (client démo), plus aucun repli silencieux ; 3) empty
+  state réel (subtitleNone + zéro carte), loading skeletons, error à la voix de Bob. Le visuel proto reste
+  la référence de parité ; les montants affichés = données réelles.
+- [23:52] claude-code LOG (fix sécurité C03): l'exemption AuthGate de /gallery comparait l'URL brute en
+  substring (bypass d'auth par deep link piégé) — corrigé en comparaison stricte du path parsé (@29517ef).
+- [23:53] claude-code HANDOFF (C10 v1 visuel): écran refondu rendu nativement en mode démo — capture
+  claims/shots/C10-p1.png : header navy+halos, bob.greeting 👋, FloatingBalanceCard 5 480,00 € tabular-nums
+  (DONNÉES du client démo, pas les valeurs proto — directive A1-C10 respectée), voix payoutHint ~4 860 €,
+  3 PriorityCard (accents/badges/CTA), « 3 restants », tab bar. FAB global de l'ancien kit retiré du shell
+  tabs (collision C10 — les autres onglets le retrouveront à leur claim). copy.ts supprimé (migré @bob/i18n,
+  +25 clés × 3 humeurs, i18n 9/9). Restent pour clore C10 : moteur deriveTodayPriorities (@bob/core) branché
+  données réelles (A1-C10), capture p2 (scroll interactif — accessibilité macOS à autoriser pour automatiser),
+  parité fine des halos (saturation/étendue vs proto). status reste IN-BUILD.
 
 ### C11 — Argent                        <!-- kind: screen -->
 - status: OPEN · depends-on: C03 · ref-capture: claims/ref/C11.png · target: apps/mobile/app/(tabs)/argent.tsx

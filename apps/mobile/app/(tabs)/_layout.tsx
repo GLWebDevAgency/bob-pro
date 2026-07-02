@@ -2,7 +2,6 @@ import { View } from 'react-native';
 import { Tabs, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../../src/theme';
-import { FAB } from '../../src/components/ui';
 
 export default function TabsLayout() {
   const { theme, semantic, colors } = useTheme();
@@ -44,7 +43,6 @@ export default function TabsLayout() {
           }}
         />
       </Tabs>
-      <FAB onPress={() => router.push('/devis/new')} />
     </View>
   );
 }

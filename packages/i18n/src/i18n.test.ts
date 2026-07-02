@@ -34,6 +34,38 @@ describe('i18n', () => {
     expect(PERSONALITY_LABELS[normalizePersonality('Direct')]).toBe('Direct');
   });
 
+  it("today.subtitle interpole {count} sur les 3 humeurs (variante n=0 séparée)", () => {
+    expect(t('today.subtitle', { params: { count: 3 } })).toBe(
+      '3 trucs à régler, et après tu factures tranquille.',
+    );
+    expect(t('today.subtitle', { personality: 'pro', params: { count: 3 } })).toBe(
+      'Vous avez 3 priorités à traiter aujourd’hui.',
+    );
+    expect(t('today.subtitle', { personality: 'direct', params: { count: 3 } })).toBe(
+      '3 priorités. Go.',
+    );
+    expect(t('today.subtitleNone')).toBe('Rien d’urgent. Profites-en.');
+    expect(t('today.subtitleNone', { personality: 'direct' })).toBe('RAS.');
+  });
+
+  it('today.payoutHint interpole {amount} sur les 3 humeurs', () => {
+    expect(t('today.payoutHint', { params: { amount: '2 000,00 €' } })).toBe(
+      'Tu peux te verser ~2 000,00 € sans te mettre dans le rouge',
+    );
+    expect(t('today.payoutHint', { personality: 'pro', params: { amount: '2 000,00 €' } })).toBe(
+      'Versement possible : 2 000,00 €, TVA et charges provisionnées.',
+    );
+    expect(t('today.payoutHint', { personality: 'direct', params: { amount: '2 000,00 €' } })).toBe(
+      'Te verser : ~2 000,00 €.',
+    );
+  });
+
+  it('today.footer décline les 3 humeurs (VOICE_AND_TONE § Pied de page)', () => {
+    expect(t('today.footer')).toBe('C’est tout pour aujourd’hui. Va bosser 🔧');
+    expect(t('today.footer', { personality: 'pro' })).toBe('Vous êtes à jour pour aujourd’hui.');
+    expect(t('today.footer', { personality: 'direct' })).toBe('Fini pour aujourd’hui.');
+  });
+
   it('refuse une clé inconnue à la compilation', () => {
     // @ts-expect-error — 'cle.inconnue' n'est pas une I18nKey : garantie compile-time.
     const invalid: () => string = () => t('cle.inconnue');
