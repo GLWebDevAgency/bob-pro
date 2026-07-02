@@ -1,7 +1,8 @@
 import 'react-native-gesture-handler';
 import { useState, type ReactNode } from 'react';
 import { View, ActivityIndicator } from 'react-native';
-import { Stack } from 'expo-router';
+import { Stack, usePathname } from 'expo-router';
+import { useURL } from 'expo-linking';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
@@ -26,6 +27,12 @@ import { LoginScreen } from '../src/screens/LoginScreen';
 function AuthGate({ children }: { children: ReactNode }) {
   const { enabled, session, loading } = useAuth();
   const { colors } = useTheme();
+  const pathname = usePathname();
+  const incomingUrl = useURL();
+  // La galerie @bob/ui (claim C03) est un outil de design sans données : hors porte d'auth.
+  // On teste aussi l'URL entrante : au boot par deep link, le Stack n'est pas encore monté
+  // et pathname vaut encore '/', ce qui bloquerait la navigation vers la galerie.
+  if (pathname === '/gallery' || (incomingUrl ?? '').includes('/gallery')) return <>{children}</>;
   if (enabled && loading) {
     return (
       <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg }}>
