@@ -1,4 +1,3 @@
-Dockerfile	1782933729	3600	release engineering backend: Dockerfile multi-stage @bob/api + .dockerignore + railway.json + CORS allowlist env (main.ts). User m'a donne docker/railway.
 .dockerignore	1782933729	3600	release engineering backend: Dockerfile multi-stage @bob/api + .dockerignore + railway.json + CORS allowlist env (main.ts). User m'a donne docker/railway.
 docs/store-readiness.md	1782939329	1800	MAJ statut C1 certifie dans store-readiness
 .github/workflows/vercel-sign-web.yml	1782939772	1800	fix 2 bugs latents workflow vercel-sign-web signales par Opus (rootDirectory + grep quote)
