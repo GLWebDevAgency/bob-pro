@@ -1,0 +1,16 @@
+# Build de production Android, déclenchée manuellement (expo.dev ou `eas workflow:run`).
+# La garde app.config.ts refuse la build si EXPO_PUBLIC_API_URL n'est pas l'API HTTPS réelle,
+# si un jeton statique est embarqué, ou si la config auth Supabase manque.
+# La soumission store (job submit) sera ajoutée quand les comptes Apple/Play existeront (I6).
+name: Build production (Android)
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  build_android_production:
+    name: Build Android (production)
+    type: build
+    params:
+      platform: android
+      profile: production

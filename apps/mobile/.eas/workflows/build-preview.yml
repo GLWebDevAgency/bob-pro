@@ -1,0 +1,24 @@
+# Build interne Android à chaque push mobile sur main (APK distribuable en interne).
+# iOS volontairement absent tant que le compte Apple Developer n'existe pas (I6, store-readiness).
+name: Build preview (Android)
+
+on:
+  push:
+    branches: ['main']
+    paths:
+      - 'apps/mobile/**'
+      - 'packages/**'
+      - 'pnpm-lock.yaml'
+
+concurrency:
+  group: ${{ workflow.filename }}-${{ github.ref }}
+  cancel_in_progress: true
+
+jobs:
+  build_android_preview:
+    name: Build Android (preview)
+    type: build
+    params:
+      platform: android
+      profile: preview
+      message: 'Preview auto — ${{ github.ref_name }}'
