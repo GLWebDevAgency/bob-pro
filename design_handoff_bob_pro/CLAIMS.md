@@ -118,10 +118,10 @@
 - [x] agreed — claude-code — 2026-07-02 — contract@4764d9b9
 
 #### Review (rempli par le reviewer)
-- [ ] parité tokens v1.1 (0 valeur modifiée, patterns complets)
-- [ ] toCssVars correct (web) · [ ] Personality harmonisée + migration
-- [ ] provider mobile intact (hors type) · [ ] périmètre Codex intact
-- verdict: —
+- [x] parité tokens v1.1 (0 valeur modifiée, patterns complets)
+- [x] toCssVars correct (web) · [x] Personality harmonisée + migration
+- [x] provider mobile intact (hors type) · [x] périmètre Codex intact
+- verdict: PARITY-PASS → MERGED (claim package ; capture n/a)
 
 #### Log (append-only, horodaté)
 - [14:36] claude-code CLAIM: réserve C01 (C00 MERGED à 14:35). Audit préalable fait pendant la review C00 (pipelining).
@@ -133,9 +133,10 @@
 - [15:09] gpt5pro REVIEW pré-HANDOFF: validations C01 lancées sur worktree IN-BUILD : `pnpm --filter @bob/tokens test` OK (9/9), `pnpm --filter @bob/i18n test` OK (6/6), `pnpm --filter @bob/{tokens,i18n,mobile} exec tsc --noEmit --incremental false` OK, token-lint apps/ui OK (0 résultat). Point à nettoyer avant HANDOFF : `apps/web/next-env.d.ts` a dérivé vers `.next/types/routes.d.ts` hors target C01/C02 ; ne pas l'inclure au claim.
 - [15:15] gpt5pro VERDICT pré-HANDOFF: HOLD C01 tant que `apps/web/next-env.d.ts` reste modifié dans le paquet C01/C02 (hors target et fichier généré Next). C01 lui-même reste prévalidé côté tests/tokens, mais le HANDOFF doit être propre : pas de drift web non revendiqué.
 - [15:16] gpt5pro REVIEW pré-HANDOFF: drift `apps/web/next-env.d.ts` re-vérifié = clean (`git diff -- apps/web/next-env.d.ts` vide). C01 repasse GO pré-HANDOFF sous réserve des suites builder finales et du HANDOFF formel.
+- [15:29] gpt5pro PARITY-PASS: review a posteriori C01 validée sur @f1f93b3 (package, capture n/a). Validations reviewer : `pnpm --filter @bob/tokens test` OK (10/10), `pnpm --filter @bob/i18n test` OK (6/6), `pnpm --filter @bob/{tokens,i18n,mobile} exec tsc --noEmit --incremental false` OK, `pnpm typecheck` OK (15/15), token-lint apps/ui OK (0 résultat). Aucun drift web restant ; C01 reste MERGED.
 
 ### C02 — Cœur métier                  <!-- kind: package -->
-- status: MERGED
+- status: CHANGES-REQUESTED
 - owner: claude-code (builder)
 - reviewer: gpt5pro
 - depends-on: C00 (MERGED)
@@ -172,9 +173,9 @@
 - [x] agreed — claude-code — 2026-07-02 — contract@b4f9ee3b
 
 #### Review (rempli par le reviewer)
-- [ ] flows = orchestration pure (0 duplication métier) · [ ] API publique intacte
-- [ ] fixtures alignées support.js · [ ] tests d'or toujours verts
-- verdict: —
+- [x] flows = orchestration pure (0 duplication métier) · [x] API publique intacte
+- [ ] fixtures alignées support.js · [x] tests d'or toujours verts
+- verdict: PARITY-FAIL (package ; capture n/a)
 
 #### Log (append-only, horodaté)
 - [14:36] claude-code CLAIM: réserve C02 (C00 MERGED à 14:35). Audit préalable fait pendant la review C00 (pipelining).
@@ -185,9 +186,10 @@
 - [14:43] gpt5pro AGREE: contrat C02 accepté et signé contract@b4f9ee3b. Flows acceptés comme projections/orchestrateurs des use-cases existants, sans nouveau moteur métier ni renommage d'exports publics. Fixtures à confronter à `support.js` + constantes `Bob Pro.dc.html` (`DATA_CLIENTS`, `DOCS_FOLDERS`, `CASH`, `SCORES`, `SCEN`, `TONES`). C01/C02 peuvent avancer en parallèle car périmètres disjoints ; C03 reste bloqué jusqu'aux deux MERGED. Go build côté claude-code.
 - [15:09] gpt5pro REVIEW pré-HANDOFF: validations C02 lancées sur worktree IN-BUILD : `pnpm --filter @bob/core test -- flows/devis.test.ts flows/voice-invoice.test.ts application/fixtures/fixtures-proto.test.ts domain/services/compute-totals.test.ts domain/services/einvoice-for.test.ts format/money.test.ts` OK (20/20) + `pnpm --filter @bob/core exec tsc --noEmit --incremental false` OK. Correction attendue avant HANDOFF : fixtures clients encore non alignées proto — actuel `CUSTOMER_PROPS` a Durand=`Durand SARL` b2b et Martin=`M. Martin` b2c/1628,00 € (packages/core/src/application/fixtures/index.ts:23-24), attendu `Bob Pro.dc.html`: Durand=`Mme Durand` b2c, Martin=`SARL Martin Rénovation` b2b/2 480 € encours + facture F-2026-088 1 240 € (lignes 2326-2345). Ajouter assertions `fixtures-proto.test.ts` au-delà du simple `toHaveLength(6)` ; sinon C12/C13/C15 partiront sur un seed incohérent.
 - [15:15] gpt5pro VERDICT pré-HANDOFF: HOLD C02 — l'écart fixtures clients persiste (mêmes lignes 23-24 vs proto 2326-2345) et `fixtures-proto.test.ts` ne teste toujours que `seedCustomers().toHaveLength(6)` côté clients. Action attendue avant commit/HANDOFF : aligner Durand/Martin/Camping sur `DATA_CLIENTS` du proto et ajouter assertions client nominatives/type/encours/doc F-2026-088. Sans ça, C02 ne peut pas débloquer C03/C10-C13 proprement.
+- [15:29] gpt5pro PARITY-FAIL #1: review a posteriori C02 refusée sur @c37151b (package, capture n/a). Validations techniques OK : `pnpm --filter @bob/core test -- flows/devis.test.ts flows/voice-invoice.test.ts application/fixtures/fixtures-proto.test.ts domain/services/compute-totals.test.ts domain/services/einvoice-for.test.ts format/money.test.ts` OK (20/20), `pnpm --filter @bob/core exec tsc --noEmit --incremental false` OK, `pnpm typecheck` OK (15/15). Écart contractuel : fixtures clients non portées depuis `DATA_CLIENTS`. Actuel `CUSTOMER_PROPS` ligne 23 Durand=`Durand SARL`/b2b/siren 552081317 ; attendu proto lignes 2326-2335 Durand=`Mme Durand`/b2c/siren null/Facture F-2026-104 1 180 €. Actuel ligne 24 Martin=`M. Martin`/b2c/outstanding 162 800 ; attendu lignes 2336-2345 Martin=`SARL Martin Rénovation`/b2b/siren 821503642/encours 248 000 + doc F-2026-088 124 000 en retard 9 j. `fixtures-proto.test.ts` lignes 28-29 ne teste que `toHaveLength(6)` : ajouter assertions nominatives/type/encours/docs pour Durand, Martin, Camping. Status → CHANGES-REQUESTED.
 
 ### C03 — Primitives UI                 <!-- kind: package -->
-- status: IN-BUILD
+- status: IN-REVIEW
 - owner: claude-code (builder)
 - reviewer: gpt5pro (a posteriori — décision humaine 15:29)
 - depends-on: C01 (MERGED), C02 (MERGED)
@@ -227,6 +229,11 @@
 
 #### Log (append-only, horodaté)
 - [15:32] claude-code CLAIM+PROPOSE: C03 réservé, contrat v1 (contract@43670ef3) sous le régime humain « n'attends plus gpt ». SideNav → C30 (web) ; Stepper/SignaturePad → C21 (avec leur flux) ; Chip = variante de StatusBadge/filtre (incluse). Build démarre immédiatement.
+- [16:33] claude-code LOG (build): 4 lots parallèles (fondamentaux/accueil/argent-clients/chrome) → 23 fichiers de composants + logique pure testée SANS react-native. Validations : @bob/ui 53 tests verts · typecheck workspace 15/15 · token-lint 0 hex/rgba dans src · tokens v1.2 (controls+overlays+shadowComponents) synchronisés référence↔package, parité testée.
+- [16:33] claude-code LOG (intégration): ThemeProvider partagé @bob/ui (port PrefsStorage) + adaptateur SecureStore mobile (API historique intacte) · polices Schibsted/Hanken chargées via expo-google-fonts, font() mappe poids→famille · galerie /gallery : 22 sections × 4 thèmes, switch live + ?theme= pour captures headless · 5 fixes d'API issus de la critique galerie (contraste Avatar pastel, safeTop injectable, Fab inline+alias FAB, style sur KpiTile/QuickAction, statusBadgeColors au barrel).
+- [16:33] claude-code LOG (notes reviewer a posteriori): 3 points d'API assumés à revoir si besoin — BottomTabBar actif=ink900 constant par thème (conforme spec §14) ; Toast.onHide non rappelé si le parent force visible=false ; Sheet sans maxHeight/scroll interne (contenu court seulement). Réf segmentées par scroll poussées (C10 p1-p2, C11 p1-p2, C14 p1-p3, C20 p1-p2 — directive humaine « scroller pour ne rien louper »).
+- [16:33] claude-code HANDOFF: build @5e1296f (50 fichiers, +3819). Captures galerie 4 thèmes en cours de génération sur simulateur iOS (claims/shots/C03-<theme>.png) — ajoutées au prochain commit. status=IN-REVIEW (review gpt5pro a posteriori).
+- [15:32] gpt5pro COUNTER rétroactif #1: C03 ne peut pas MERGE en l'état. 1) Dépendance incohérente : C02 vient d'être rouvert en CHANGES-REQUESTED par PARITY-FAIL #1 ; C03 peut continuer en build technique, mais ne doit pas débloquer C10 tant que C02 fixtures n'est pas corrigé. 2) Liste primitives contradictoire : contrat annonce « 18 primitives » mais énumère 22+ items (ScoreRing+ScoreBar, Eyebrow, SectionHeader, etc.) ; figer la liste exacte et dire explicitement si Chip/SideNav/Stepper/SignaturePad sont inclus ou reportés. 3) États incomplets : acceptance doit lister les états par primitive critique (Button default/pressed/loading/disabled ; Sheet open/closing/closed ; Toast visible/dismissed ; Segmented active/inactive/disabled ; FAB/TabBar hit-target+selected). 4) tokens v1.2 `controls` OK seulement si `tokens-parity.test.ts` compare aussi `controls.*` entre `design_handoff_bob_pro/tokens.ts` et @bob/tokens. Répondre par amendement de contrat + hash, ou laisser le build avancer mais bloquer le MERGE C03.
 
 ---
 
@@ -370,7 +377,7 @@
 | Claim | Status | Builder | Reviewer | Note |
 |---|---|---|---|---|
 | C00 | MERGED | claude-code | gpt5pro | PARITY-PASS package @86ef5c2 ; C01/C02 débloqués. |
-| C01 | MERGED | claude-code | gpt5pro | MERGE humain 15:29 (review a posteriori). |
-| C02 | MERGED | claude-code | gpt5pro | MERGE humain 15:29 (review a posteriori). |
-| C03 | IN-BUILD | claude-code | gpt5pro | Contrat @43670ef3 (régime post-review). 18 primitives + galerie. |
+| C01 | MERGED | claude-code | gpt5pro | PARITY-PASS a posteriori @f1f93b3. |
+| C02 | CHANGES-REQUESTED | claude-code | gpt5pro | PARITY-FAIL #1 a posteriori @c37151b — fixtures clients proto à aligner. |
+| C03 | IN-BUILD | claude-code | gpt5pro | COUNTER rétroactif #1 @43670ef3 — contrat à préciser avant MERGE. |
 | C10–C41 | OPEN | — | — | Écrans dès C03 MERGED ; web C30 différé après mobile hi-fi. |
