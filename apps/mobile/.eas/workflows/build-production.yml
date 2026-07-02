@@ -1,8 +1,11 @@
-# Build de production Android, déclenchée manuellement (expo.dev ou `eas workflow:run`).
+# Builds de production, déclenchées manuellement (expo.dev ou `eas workflow:run`).
 # La garde app.config.ts refuse la build si EXPO_PUBLIC_API_URL n'est pas l'API HTTPS réelle,
 # si un jeton statique est embarqué, ou si la config auth Supabase manque.
-# La soumission store (job submit) sera ajoutée quand les comptes Apple/Play existeront (I6).
-name: Build production (Android)
+# Pré-requis iOS (one-shot) : `eas build -p ios --profile production` en interactif
+# pour générer le certificat de distribution (Apple ID + 2FA), ensuite tout est non-interactif.
+# Les jobs submit (TestFlight / Play) seront ajoutés avec la clé API App Store Connect
+# et le service account Google Play.
+name: Build production
 
 on:
   workflow_dispatch: {}
@@ -13,4 +16,10 @@ jobs:
     type: build
     params:
       platform: android
+      profile: production
+  build_ios_production:
+    name: Build iOS (production)
+    type: build
+    params:
+      platform: ios
       profile: production
