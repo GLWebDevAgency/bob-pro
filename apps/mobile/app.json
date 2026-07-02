@@ -8,6 +8,8 @@
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
       "backgroundColor": "#0C2340"
     },
     "plugins": [
@@ -21,19 +23,52 @@
           "cameraPermission": "Bob utilise l'appareil photo pour scanner tes factures et tickets fournisseurs."
         }
       ],
-      "expo-speech-recognition",
-      "expo-audio",
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Bob écoute ta voix pour préparer devis, factures et relances en mains libres.",
+          "speechRecognitionPermission": "Bob transcrit tes demandes vocales pour agir sur tes documents."
+        }
+      ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Bob utilise le micro pour la commande vocale et te répondre à voix haute."
+        }
+      ],
       "expo-sharing"
     ],
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "fr.bobpro.app"
+      "bundleIdentifier": "fr.bobpro.app",
+      "infoPlist": {
+        "NSSpeechRecognitionUsageDescription": "Allow $(PRODUCT_NAME) to use speech recognition.",
+        "NSMicrophoneUsageDescription": "Allow $(PRODUCT_NAME) to use the microphone."
+      }
     },
     "android": {
-      "package": "fr.bobpro.app"
+      "package": "fr.bobpro.app",
+      "permissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"
+      ],
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0C2340"
+      }
     },
     "experiments": {
       "typedRoutes": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "c45313b8-9aa1-4776-bf37-31fd0482701a"
+      }
+    },
+    "owner": "gl.dev",
+    "icon": "./assets/icon.png"
   }
 }

@@ -1,0 +1,34 @@
+{
+  "cli": {
+    "version": ">= 16.0.0",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal"
+    },
+    "preview": {
+      "distribution": "internal",
+      "channel": "preview",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://bob-pro-api-production.up.railway.app",
+        "EXPO_PUBLIC_SUPABASE_URL": "https://cvdkqjczgqoeshputacl.supabase.co"
+      }
+    },
+    "production": {
+      "autoIncrement": true,
+      "channel": "production",
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://bob-pro-api-production.up.railway.app",
+        "EXPO_PUBLIC_SUPABASE_URL": "https://cvdkqjczgqoeshputacl.supabase.co"
+      }
+    }
+  },
+  "submit": {
+    "production": {}
+  }
+}
