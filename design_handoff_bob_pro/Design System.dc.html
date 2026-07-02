@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700;800&family=Hanken+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  *{ box-sizing:border-box; }
+  body{ margin:0; background:#E9ECF2; -webkit-font-smoothing:antialiased; }
+  ::selection{ background:#0C2340; color:#fff; }
+</style>
+</helmet>
+
+<div style="min-height:100vh; background:#E9ECF2; font-family:'Hanken Grotesk',system-ui,sans-serif; color:#0F2235; padding:0 0 80px;">
+
+  <!-- ============ COVER ============ -->
+  <div style="background:linear-gradient(168deg,#0C2340 0%,#122E52 58%,#163763 100%); color:#fff; padding:64px 56px 56px;">
+    <div style="max-width:1080px; margin:0 auto;">
+      <div style="display:flex; align-items:center; gap:16px; margin-bottom:54px;">
+        <span style="width:52px; height:52px; border-radius:16px; background:rgba(255,255,255,.96); display:flex; align-items:center; justify-content:center; box-shadow:0 14px 34px rgba(0,0,0,.3);">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#0C2340" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 3l2.4 6.6L21 12l-6.6 2.4L12 21l-2.4-6.6L3 12l6.6-2.4z"/></svg>
+        </span>
+        <div>
+          <div style="font-family:'Schibsted Grotesk'; font-weight:800; font-size:22px; letter-spacing:-.4px;">Bob Pro</div>
+          <div style="font-size:13px; color:rgba(255,255,255,.6); font-weight:500;">Ton bureau pro dans la poche</div>
+        </div>
+        <span style="margin-left:auto; display:inline-flex; align-items:center; gap:7px; background:rgba(110,231,183,.14); border:1px solid rgba(110,231,183,.34); color:#6EE7B7; font-size:12px; font-weight:700; padding:7px 13px; border-radius:999px;">
+          <span style="width:7px; height:7px; border-radius:50%; background:#6EE7B7;"></span>Identité figée · v1.0
+        </span>
+      </div>
+      <div style="font-size:13px; font-weight:700; letter-spacing:2.5px; text-transform:uppercase; color:rgba(255,255,255,.5); margin-bottom:16px;">Design System</div>
+      <h1 style="margin:0 0 18px; font-family:'Schibsted Grotesk'; font-weight:700; font-size:54px; line-height:1.02; letter-spacing:-1.4px; max-width:780px;">Les fondations visuelles, figées pour le développement.</h1>
+      <p style="margin:0; font-size:17px; line-height:1.6; color:rgba(255,255,255,.7); max-width:600px; font-weight:500;">La source unique de vérité : couleurs, typographie, espacements, composants, voix et écrans. Tout est tokenisé pour être repris tel quel côté mobile <b style="color:#fff; font-weight:700;">et</b> web (Next.js), sans dérive.</p>
+      <div style="display:flex; flex-wrap:wrap; gap:10px; margin-top:34px;">
+        <span style="background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.14); border-radius:10px; padding:9px 14px; font-size:13px; font-weight:600;">Schibsted Grotesk + Hanken Grotesk</span>
+        <span style="background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.14); border-radius:10px; padding:9px 14px; font-size:13px; font-weight:600;">4 thèmes de marque</span>
+        <span style="background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.14); border-radius:10px; padding:9px 14px; font-size:13px; font-weight:600;">iOS 402 × 874</span>
+        <span style="background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.14); border-radius:10px; padding:9px 14px; font-size:13px; font-weight:600;">Prêt pour les design tokens</span>
+      </div>
+    </div>
+  </div>
+
+  <div style="max-width:1080px; margin:0 auto; padding:0 56px;">
+
+    <!-- ============ 01 — LOGO ============ -->
+    <section style="margin-top:72px;">
+      <div style="font-size:12px; font-weight:700; letter-spacing:2px; text-transform:uppercase; color:#9AA7B4; margin-bottom:10px;">01 — Symbole &amp; logo</div>
+      <h2 style="margin:0 0 12px; font-family:'Schibsted Grotesk'; font-weight:700; font-size:28px; letter-spacing:-.5px;">Une étoile-boussole : le copilote qui guide.</h2>
+      <p style="margin:0 0 28px; font-size:15px; line-height:1.6; color:#5B6B7B; max-width:580px;">Un cercle (le cadran, le tableau de bord) et une étoile à quatre branches (le cap, l'assistance). Tracé en filaire, jamais rempli. Toujours posé dans un carré à coins arrondis.</p>
+      <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:18px;">
+        <div style="background:#fff; border:1px solid #ECEFF4; border-radius:18px; padding:32px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 6px 16px rgba(13,38,68,.05);">
+          <span style="width:72px; height:72px; border-radius:22px; background:#0C2340; display:flex; align-items:center; justify-content:center;"><svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 3l2.4 6.6L21 12l-6.6 2.4L12 21l-2.4-6.6L3 12l6.6-2.4z"/></svg></span>
+          <div style="font-size:12.5px; font-weight:600; color:#8A99A8;">Symbole sur marque</div>
+        </div>
+        <div style="background:#fff; border:1px solid #ECEFF4; border-radius:18px; padding:32px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 6px 16px rgba(13,38,68,.05);">
+          <span style="width:72px; height:72px; border-radius:22px; background:#fff; border:1px solid #E6EBF1; display:flex; align-items:center; justify-content:center; box-shadow:0 6px 16px rgba(13,38,68,.08);"><svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="#0C2340" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 3l2.4 6.6L21 12l-6.6 2.4L12 21l-2.4-6.6L3 12l6.6-2.4z"/></svg></span>
+          <div style="font-size:12.5px; font-weight:600; color:#8A99A8;">Symbole sur clair</div>
+        </div>
+        <div style="background:linear-gradient(150deg,#0C2340,#163763); border-radius:18px; padding:32px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px;">
+          <div style="display:flex; align-items:center; gap:12px;">
+            <span style="width:46px; height:46px; border-radius:14px; background:rgba(255,255,255,.96); display:flex; align-items:center; justify-content:center;"><svg width="25" height="25" viewBox="0 0 24 24" fill="none" stroke="#0C2340" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 3l2.4 6.6L21 12l-6.6 2.4L12 21l-2.4-6.6L3 12l6.6-2.4z"/></svg></span>
+            <span style="font-family:'Schibsted Grotesk'; font-weight:800; font-size:26px; color:#fff; letter-spacing:-.5px;">Bob</span>
+          </div>
+          <div style="font-size:12.5px; font-weight:600; color:rgba(255,255,255,.6);">Lockup horizontal</div>
+        </div>
+      </div>
+      <div style="margin-top:14px; display:flex; gap:11px; align-items:flex-start; background:#F1EBFA; border-radius:12px; padding:13px 15px;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6D28D9" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="margin-top:1px; flex-shrink:0;"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+        <span style="font-size:13px; color:#4B2A86; font-weight:500; line-height:1.55;">Nom public <b style="font-weight:700;">Bob</b> · produit <b style="font-weight:700;">Bob&nbsp;Pro</b> · assistant dans l'app <b style="font-weight:700;">Bob</b>. L'acronyme raconte l'histoire : <b style="font-weight:700;">B.O.B. = Bureau Opérationnel de Bord</b> (France) / <b style="font-weight:700;">Back Office Buddy</b> (international).</span>
+      </div>
+    </section>
+
+    <!-- ============ 02 — NEUTRES ============ -->
+    <section style="margin-top:72px;">
+      <div style="font-size:12px; font-weight:700; letter-spacing:2px; text-transform:uppercase; color:#9AA7B4; margin-bottom:10px;">02 — Couleurs · Neutres</div>
+      <h2 style="margin:0 0 12px; font-family:'Schibsted Grotesk'; font-weight:700; font-size:28px; letter-spacing:-.5px;">Encre &amp; surfaces</h2>
+      <p style="margin:0 0 28px; font-size:15px; line-height:1.6; color:#5B6B7B; max-width:580px;">Un fond bleuté très clair, des cartes blanches, une encre marine presque noire. Le contraste vient de la profondeur du bleu, pas du gris pur.</p>
+      <div style="background:#fff; border:1px solid #ECEFF4; border-radius:20px; padding:26px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 6px 16px rgba(13,38,68,.05); display:flex; flex-wrap:wrap; gap:22px;">
+        <div style="flex:1; min-width:122px;"><div style="height:58px; border-radius:12px; background:#0C2340;"></div><div style="margin-top:9px; font-weight:700; font-size:12.5px;">ink-900</div><div style="margin-top:1px; font-family:ui-monospace,Menlo,monospace; font-size:11.5px; color:#8A99A8;">#0C2340</div><div style="margin-top:3px; font-size:11.5px; color:#9AA7B4;">Titres, CTA</div></div>
+        <div style="flex:1; min-width:122px;"><div style="height:58px; border-radius:12px; background:#0F2235;"></div><div style="margin-top:9px; font-weight:700; font-size:12.5px;">ink-800</div><div style="margin-top:1px; font-family:ui-monospace,Menlo,monospace; font-size:11.5px; color:#8A99A8;">#0F2235</div><div style="margin-top:3px; font-size:11.5px; color:#9AA7B4;">Texte principal</div></div>
+        <div style="flex:1; min-width:122px;"><div style="height:58px; border-radius:12px; background:#1B3A63;"></div><div style="margin-top:9px; font-weight:700; font-size:12.5px;">ink-600</div><div style="margin-top:1px; font-family:ui-monospace,Menlo,monospace; font-size:11.5px; color:#8A99A8;">#1B3A63</div><div style="margin-top:3px; font-size:11.5px; color:#9AA7B4;">Accent marine</div></div>
+        <div style="flex:1; min-width:122px;"><div style="height:58px; border-radius:12px; background:#5B6B7B;"></div><div style="margin-top:9px; font-weight:700; font-size:12.5px;">slate-500</div><div style="margin-top:1px; font-family:ui-monospace,Menlo,monospace; font-size:11.5px; color:#8A99A8;">#5B6B7B</div><div style="margin-top:3px; font-size:11.5px; color:#9AA7B4;">Texte courant</div></div>
+        <div style="flex:1; min-width:122px;"><div style="height:58px; border-radius:12px; background:#8A99A8;"></div><div style="margin-top:9px; font-weight:700; font-size:12.5px;">slate-400</div><div style="margin-top:1px; font-family:ui-monospace,Menlo,monospace; font-size:11.5px; color:#8A99A8;">#8A99A8</div><div style="margin-top:3px; font-size:11.5px; color:#9AA7B4;">Légendes</div></div>
+        <div style="flex:1; min-width:122px;"><div style="height:58px; border-radius:12px; background:#A9B4C0;"></div><div style="margin-top:9px; font-weight:700; font-size:12.5px;">slate-300</div><div style="margin-top:1px; font-family:ui-monospace,Menlo,monospace; font-size:11.5px; color:#8A99A8;">#A9B4C0</div><div style="margin-top:3px; font-size:11.5px; color:#9AA7B4;">Discret / inactif</div></div>
+        <div style="flex:1; min-width:122px;"><div style="height:58px; border-radius:12px; background:#E0E6EE; box-shadow:inset 0 0 0 1px rgba(13,38,68,.05);"></div><div style="margin-top:9px; font-weight:700; font-size:12.5px;">line</div><div style="margin-top:1px; font-family:ui-monospace,Menlo,monospace; font-size:11.5px; color:#8A99A8;">#E0E6EE</div><div style="margin-top:3px; font-size:11.5px; color:#9AA7B4;">Bordures</div></div>
+        <div style="flex:1; min-width:122px;"><div style="height:58px; border-radius:12px; background:#EFF2F7; box-shadow:inset 0 0 0 1px rgba(13,38,68,.05);"></div><div style="margin-top:9px; font-weight:700; font-size:12.5px;">bg</div><div style="margin-top:1px; font-family:ui-monospace,Menlo,monospace; font-size:11.5px; color:#8A99A8;">#EFF2F7</div><div style="margin-top:3px; font-size:11.5px; color:#9AA7B4;">Fond d'app</div></div>
+        <div style="flex:1; min-width:122px;"><div style="height:58px; border-radius:12px; background:#FFFFFF; box-shadow:inset 0 0 0 1px rgba(13,38,68,.07);"></div><div style="margin-top:9px; font-weight:700; font-size:12.5px;">surface</div><div style="margin-top:1px; font-family:ui-monospace,Menlo,monospace; font-size:11.5px; color:#8A99A8;">#FFFFFF</div><div style="margin-top:3px; font-size:11.5px; color:#9AA7B4;">Cartes</div></div>
+      </div>
+    </section>
+
+    <!-- ============ 03 — MARQUE ============ -->
+    <section style="margin-top:72px;">
+      <div style="font-size:12px; font-weight:700; letter-spacing:2px; text-transform:uppercase; color:#9AA7B4; margin-bottom:10px;">03 — Couleurs · Marque</div>
+      <h2 style="margin:0 0 12px; font-family:'Schibsted Grotesk'; font-weight:700; font-size:28px; letter-spacing:-.5px;">Quatre thèmes, une seule mécanique</h2>
+      <p style="margin:0 0 28px; font-size:15px; line-height:1.6; color:#5B6B7B; max-width:600px;">Chaque thème = 5 valeurs (<code style="font-family:ui-monospace,Menlo,monospace; font-size:13px; background:#EFF2F6; padding:1px 6px; border-radius:5px;">d1 d2 d3 ink ink2</code>) qui alimentent dégradés, CTA, puces et icônes. <b style="color:#0F2235;">Marine</b> est le défaut. Changer de thème re-skinne toute l'app sans toucher au reste.</p>
+      <div style="display:flex; flex-direction:column; gap:14px;">
+
+        <div style="background:#fff; border:1px solid #ECEFF4; border-radius:18px; padding:20px 22px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 6px 16px rgba(13,38,68,.05); display:flex; align-items:center; gap:22px; flex-wrap:wrap;">
+          <div style="width:150px; flex-shrink:0;"><div style="display:flex; align-items:center; gap:8px;"><span style="font-family:'Schibsted Grotesk'; font-weight:700; font-size:17px;">Marine</span><span style="background:#0C2340; color:#fff; font-size:10px; font-weight:700; padding:2px 8px; border-radius:6px;">DÉFAUT</span></div><div style="font-size:12px; color:#9AA7B4; margin-top:3px;">Fintech, fiable</div></div>
+          <div style="height:50px; flex:1; min-width:240px; border-radius:11px; background:linear-gradient(168deg,#0C2340 0%,#122E52 58%,#163763 100%);"></div>
+          <div style="display:flex; gap:7px;">
+            <span style="width:34px; height:34px; border-radius:9px; background:#0C2340;" title="d1"></span><span style="width:34px; height:34px; border-radius:9px; background:#122E52;" title="d2"></span><span style="width:34px; height:34px; border-radius:9px; background:#163763;" title="d3"></span><span style="width:34px; height:34px; border-radius:9px; background:#1B3A63;" title="ink2"></span>
+          </div>
+        </div>
+
+        <div style="background:#fff; border:1px solid #ECEFF4; border-radius:18px; padding:20px 22px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 6px 16px rgba(13,38,68,.05); display:flex; align-items:center; gap:22px; flex-wrap:wrap;">
+          <div style="width:150px; flex-shrink:0;"><div style="font-family:'Schibsted Grotesk'; font-weight:700; font-size:17px;">Forêt</div><div style="font-size:12px; color:#9AA7B4; margin-top:3px;">Nature, paysage</div></div>
+          <div style="height:50px; flex:1; min-width:240px; border-radius:11px; background:linear-gradient(168deg,#0A3A2B 0%,#0E5A43 58%,#117A5A 100%);"></div>
+          <div style="display:flex; gap:7px;">
+            <span style="width:34px; height:34px; border-radius:9px; background:#0A3A2B;"></span><span style="width:34px; height:34px; border-radius:9px; background:#0E5A43;"></span><span style="width:34px; height:34px; border-radius:9px; background:#117A5A;"></span><span style="width:34px; height:34px; border-radius:9px; background:#0E6B4F;"></span>
+          </div>
+        </div>
+
+        <div style="background:#fff; border:1px solid #ECEFF4; border-radius:18px; padding:20px 22px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 6px 16px rgba(13,38,68,.05); display:flex; align-items:center; gap:22px; flex-wrap:wrap;">
+          <div style="width:150px; flex-shrink:0;"><div style="font-family:'Schibsted Grotesk'; font-weight:700; font-size:17px;">Graphite</div><div style="font-size:12px; color:#9AA7B4; margin-top:3px;">Sobre, premium</div></div>
+          <div style="height:50px; flex:1; min-width:240px; border-radius:11px; background:linear-gradient(168deg,#15181E 0%,#242A33 58%,#36404E 100%);"></div>
+          <div style="display:flex; gap:7px;">
+            <span style="width:34px; height:34px; border-radius:9px; background:#15181E;"></span><span style="width:34px; height:34px; border-radius:9px; background:#242A33;"></span><span style="width:34px; height:34px; border-radius:9px; background:#36404E;"></span><span style="width:34px; height:34px; border-radius:9px; background:#2C333F;"></span>
+          </div>
+        </div>
+
+        <div style="background:#fff; border:1px solid #ECEFF4; border-radius:18px; padding:20px 22px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 6px 16px rgba(13,38,68,.05); display:flex; align-items:center; gap:22px; flex-wrap:wrap;">
+          <div style="width:150px; flex-shrink:0;"><div style="font-family:'Schibsted Grotesk'; font-weight:700; font-size:17px;">Indigo</div><div style="font-size:12px; color:#9AA7B4; margin-top:3px;">Tech, créatif</div></div>
+          <div style="height:50px; flex:1; min-width:240px; border-radius:11px; background:linear-gradient(168deg,#272363 0%,#3A36A0 58%,#4F46E5 100%);"></div>
+          <div style="display:flex; gap:7px;">
+            <span style="width:34px; height:34px; border-radius:9px; background:#272363;"></span><span style="width:34px; height:34px; border-radius:9px; background:#3A36A0;"></span><span style="width:34px; height:34px; border-radius:9px; background:#4F46E5;"></span><span style="width:34px; height:34px; border-radius:9px; background:#4338CA;"></span>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ============ 04 — SÉMANTIQUE ============ -->
+    <section style="margin-top:72px;">
+      <div style="font-size:12px; font-weight:700; letter-spacing:2px; text-transform:uppercase; color:#9AA7B4; margin-bottom:10px;">04 — Couleurs · Sémantique &amp; IA</div>
+      <h2 style="margin:0 0 12px; font-family:'Schibsted Grotesk'; font-weight:700; font-size:28px; letter-spacing:-.5px;">Statuts, argent et intelligence</h2>
+      <p style="margin:0 0 28px; font-size:15px; line-height:1.6; color:#5B6B7B; max-width:580px;">Chaque couleur de statut va par paire : une teinte de texte saturée + un fond pastel pour les puces. L'<b style="color:#4338CA;">indigo IA</b> est réservé à l'assistant et aux fonctions intelligentes.</p>
+      <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:16px;">
+        <div style="background:#fff; border:1px solid #ECEFF4; border-radius:16px; overflow:hidden; box-shadow:0 1px 2px rgba(13,38,68,.04),0 5px 13px rgba(13,38,68,.05);"><div style="height:46px; background:#0E7C5A;"></div><div style="padding:14px 16px;"><div style="display:flex; align-items:center; gap:8px;"><span style="font-weight:700; font-size:14px;">Succès</span><span style="background:#EAF2EC; color:#0E7C5A; font-size:11px; font-weight:700; padding:3px 8px; border-radius:6px;">Payé</span></div><div style="margin-top:6px; font-family:ui-monospace,Menlo,monospace; font-size:11.5px; color:#8A99A8;">#0E7C5A · bg #EAF2EC</div></div></div>
+        <div style="background:#fff; border:1px solid #ECEFF4; border-radius:16px; overflow:hidden; box-shadow:0 1px 2px rgba(13,38,68,.04),0 5px 13px rgba(13,38,68,.05);"><div style="height:46px; background:#C77A12;"></div><div style="padding:14px 16px;"><div style="display:flex; align-items:center; gap:8px;"><span style="font-weight:700; font-size:14px;">Attention</span><span style="background:#FBF0DF; color:#C77A12; font-size:11px; font-weight:700; padding:3px 8px; border-radius:6px;">En attente</span></div><div style="margin-top:6px; font-family:ui-monospace,Menlo,monospace; font-size:11.5px; color:#8A99A8;">#C77A12 · bg #FBF0DF</div></div></div>
+        <div style="background:#fff; border:1px solid #ECEFF4; border-radius:16px; overflow:hidden; box-shadow:0 1px 2px rgba(13,38,68,.04),0 5px 13px rgba(13,38,68,.05);"><div style="height:46px; background:#C8463C;"></div><div style="padding:14px 16px;"><div style="display:flex; align-items:center; gap:8px;"><span style="font-weight:700; font-size:14px;">Retard</span><span style="background:#FBEAE8; color:#C8463C; font-size:11px; font-weight:700; padding:3px 8px; border-radius:6px;">En retard</span></div><div style="margin-top:6px; font-family:ui-monospace,Menlo,monospace; font-size:11.5px; color:#8A99A8;">#C8463C · vif #E5544B</div></div></div>
+        <div style="background:#fff; border:1px solid #ECEFF4; border-radius:16px; overflow:hidden; box-shadow:0 1px 2px rgba(13,38,68,.04),0 5px 13px rgba(13,38,68,.05);"><div style="height:46px; background:#1B3A63;"></div><div style="padding:14px 16px;"><div style="display:flex; align-items:center; gap:8px;"><span style="font-weight:700; font-size:14px;">Entreprise</span><span style="background:#E6EDF6; color:#1B3A63; font-size:11px; font-weight:700; padding:3px 8px; border-radius:6px;">B2B</span></div><div style="margin-top:6px; font-family:ui-monospace,Menlo,monospace; font-size:11.5px; color:#8A99A8;">#1B3A63 · bg #E6EDF6</div></div></div>
+        <div style="background:#fff; border:1px solid #ECEFF4; border-radius:16px; overflow:hidden; box-shadow:0 1px 2px rgba(13,38,68,.04),0 5px 13px rgba(13,38,68,.05);"><div style="height:46px; background:#4338CA;"></div><div style="padding:14px 16px;"><div style="display:flex; align-items:center; gap:8px;"><span style="font-weight:700; font-size:14px;">Public &amp; IA</span><span style="background:#EDEAFE; color:#4338CA; font-size:11px; font-weight:700; padding:3px 8px; border-radius:6px;">B2G</span></div><div style="margin-top:6px; font-family:ui-monospace,Menlo,monospace; font-size:11.5px; color:#8A99A8;">#4338CA · bg #EDEAFE</div></div></div>
+        <div style="background:#fff; border:1px solid #ECEFF4; border-radius:16px; overflow:hidden; box-shadow:0 1px 2px rgba(13,38,68,.04),0 5px 13px rgba(13,38,68,.05);"><div style="height:46px; background:#FBF0DF;"></div><div style="padding:14px 16px;"><div style="display:flex; align-items:center; gap:8px;"><span style="font-weight:700; font-size:14px;">Particulier</span><span style="background:#FBF0DF; color:#C77A12; font-size:11px; font-weight:700; padding:3px 8px; border-radius:6px;">Part.</span></div><div style="margin-top:6px; font-family:ui-monospace,Menlo,monospace; font-size:11.5px; color:#8A99A8;">accent #C77A12</div></div></div>
+      </div>
+    </section>
+
+    <!-- ============ 05 — TYPO ============ -->
+    <section style="margin-top:72px;">
+      <div style="font-size:12px; font-weight:700; letter-spacing:2px; text-transform:uppercase; color:#9AA7B4; margin-bottom:10px;">05 — Typographie</div>
+      <h2 style="margin:0 0 12px; font-family:'Schibsted Grotesk'; font-weight:700; font-size:28px; letter-spacing:-.5px;">Deux familles grotesques</h2>
+      <p style="margin:0 0 28px; font-size:15px; line-height:1.6; color:#5B6B7B; max-width:580px;">Schibsted Grotesk pour tout ce qui affirme — titres, chiffres, montants. Hanken Grotesk pour tout ce qui se lit — corps, boutons, labels. Les nombres sont toujours <code style="font-family:ui-monospace,Menlo,monospace; font-size:13px; background:#EFF2F6; padding:1px 6px; border-radius:5px;">tabular-nums</code>.</p>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:18px;">
+        <div style="background:#0C2340; color:#fff; border-radius:18px; padding:26px;"><div style="font-size:12px; font-weight:700; letter-spacing:1.5px; text-transform:uppercase; color:rgba(255,255,255,.5); margin-bottom:14px;">Display</div><div style="font-family:'Schibsted Grotesk'; font-weight:800; font-size:60px; line-height:.95; letter-spacing:-1.5px;">Aa</div><div style="margin-top:14px; font-family:'Schibsted Grotesk'; font-weight:700; font-size:18px;">Schibsted Grotesk</div><div style="margin-top:4px; font-size:13px; color:rgba(255,255,255,.55);">Weights 700 · 800</div></div>
+        <div style="background:#fff; border:1px solid #ECEFF4; border-radius:18px; padding:26px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 6px 16px rgba(13,38,68,.05);"><div style="font-size:12px; font-weight:700; letter-spacing:1.5px; text-transform:uppercase; color:#9AA7B4; margin-bottom:14px;">Texte</div><div style="font-family:'Hanken Grotesk'; font-weight:600; font-size:60px; line-height:.95; letter-spacing:-1px;">Aa</div><div style="margin-top:14px; font-family:'Hanken Grotesk'; font-weight:700; font-size:18px;">Hanken Grotesk</div><div style="margin-top:4px; font-size:13px; color:#8A99A8;">Weights 500 · 600 · 700</div></div>
+      </div>
+      <div style="background:#fff; border:1px solid #ECEFF4; border-radius:18px; padding:8px 26px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 6px 16px rgba(13,38,68,.05);">
+        <div style="display:flex; align-items:center; gap:20px; padding:18px 0; border-bottom:1px solid #F1F4F7;"><div style="width:190px; flex-shrink:0;"><div style="font-weight:700; font-size:13px;">Montant héros</div><div style="font-family:ui-monospace,Menlo,monospace; font-size:11.5px; color:#8A99A8; margin-top:2px;">Schibsted 800 · 42px</div></div><div style="font-family:'Schibsted Grotesk'; font-weight:800; font-size:42px; letter-spacing:-1px; color:#0C2340;">~2 000 €</div></div>
+        <div style="display:flex; align-items:center; gap:20px; padding:18px 0; border-bottom:1px solid #F1F4F7;"><div style="width:190px; flex-shrink:0;"><div style="font-weight:700; font-size:13px;">Titre d'écran</div><div style="font-family:ui-monospace,Menlo,monospace; font-size:11.5px; color:#8A99A8; margin-top:2px;">Schibsted 700 · 30 / -.5</div></div><div style="font-family:'Schibsted Grotesk'; font-weight:700; font-size:30px; letter-spacing:-.5px;">Salut Julien 👋</div></div>
+        <div style="display:flex; align-items:center; gap:20px; padding:18px 0; border-bottom:1px solid #F1F4F7;"><div style="width:190px; flex-shrink:0;"><div style="font-weight:700; font-size:13px;">En-tête de section</div><div style="font-family:ui-monospace,Menlo,monospace; font-size:11.5px; color:#8A99A8; margin-top:2px;">Schibsted 700 · 17px</div></div><div style="font-family:'Schibsted Grotesk'; font-weight:700; font-size:17px;">À régler aujourd'hui</div></div>
+        <div style="display:flex; align-items:center; gap:20px; padding:18px 0; border-bottom:1px solid #F1F4F7;"><div style="width:190px; flex-shrink:0;"><div style="font-weight:700; font-size:13px;">Texte courant</div><div style="font-family:ui-monospace,Menlo,monospace; font-size:11.5px; color:#8A99A8; margin-top:2px;">Hanken 500 · 14.5px</div></div><div style="font-family:'Hanken Grotesk'; font-weight:500; font-size:14.5px; color:#5B6B7B;">Toujours pas payé. On le relance gentiment ?</div></div>
+        <div style="display:flex; align-items:center; gap:20px; padding:18px 0; border-bottom:1px solid #F1F4F7;"><div style="width:190px; flex-shrink:0;"><div style="font-weight:700; font-size:13px;">Bouton</div><div style="font-family:ui-monospace,Menlo,monospace; font-size:11.5px; color:#8A99A8; margin-top:2px;">Hanken 700 · 16px</div></div><div style="font-family:'Hanken Grotesk'; font-weight:700; font-size:16px; color:#0C2340;">Encaisser maintenant</div></div>
+        <div style="display:flex; align-items:center; gap:20px; padding:18px 0;"><div style="width:190px; flex-shrink:0;"><div style="font-weight:700; font-size:13px;">Sur-titre / label</div><div style="font-family:ui-monospace,Menlo,monospace; font-size:11.5px; color:#8A99A8; margin-top:2px;">Hanken 700 · 12 / .4 · UPPER</div></div><div style="font-family:'Hanken Grotesk'; font-weight:700; font-size:12px; letter-spacing:.4px; text-transform:uppercase; color:#8A99A8;">Dispo réel aujourd'hui</div></div>
+      </div>
+    </section>
+
+    <!-- ============ 06 — RAYONS / ÉLÉVATION / GRADIENTS ============ -->
+    <section style="margin-top:72px;">
+      <div style="font-size:12px; font-weight:700; letter-spacing:2px; text-transform:uppercase; color:#9AA7B4; margin-bottom:10px;">06 — Forme &amp; profondeur</div>
+      <h2 style="margin:0 0 12px; font-family:'Schibsted Grotesk'; font-weight:700; font-size:28px; letter-spacing:-.5px;">Rayons, élévation, dégradés</h2>
+      <p style="margin:0 0 28px; font-size:15px; line-height:1.6; color:#5B6B7B; max-width:580px;">Des coins généreux et doux ; des ombres basses, larges et bleutées (jamais grises) ; quatre dégradés de marque dérivés des tokens du thème.</p>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px;">
+        <div style="background:#fff; border:1px solid #ECEFF4; border-radius:18px; padding:24px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 6px 16px rgba(13,38,68,.05);">
+          <div style="font-weight:700; font-size:14px; margin-bottom:18px;">Rayons</div>
+          <div style="display:flex; align-items:flex-end; gap:16px; flex-wrap:wrap;">
+            <div style="text-align:center;"><div style="width:56px; height:56px; background:#EFF2F6; border:1.5px solid #CBD4DE; border-radius:8px;"></div><div style="margin-top:8px; font-family:ui-monospace,Menlo,monospace; font-size:11px; color:#8A99A8;">8</div></div>
+            <div style="text-align:center;"><div style="width:56px; height:56px; background:#EFF2F6; border:1.5px solid #CBD4DE; border-radius:11px;"></div><div style="margin-top:8px; font-family:ui-monospace,Menlo,monospace; font-size:11px; color:#8A99A8;">11</div></div>
+            <div style="text-align:center;"><div style="width:56px; height:56px; background:#EFF2F6; border:1.5px solid #CBD4DE; border-radius:16px;"></div><div style="margin-top:8px; font-family:ui-monospace,Menlo,monospace; font-size:11px; color:#8A99A8;">16</div></div>
+            <div style="text-align:center;"><div style="width:56px; height:56px; background:#EFF2F6; border:1.5px solid #CBD4DE; border-radius:22px;"></div><div style="margin-top:8px; font-family:ui-monospace,Menlo,monospace; font-size:11px; color:#8A99A8;">22</div></div>
+            <div style="text-align:center;"><div style="width:56px; height:56px; background:#EFF2F6; border:1.5px solid #CBD4DE; border-radius:50%;"></div><div style="margin-top:8px; font-family:ui-monospace,Menlo,monospace; font-size:11px; color:#8A99A8;">pill</div></div>
+          </div>
+        </div>
+        <div style="background:#fff; border:1px solid #ECEFF4; border-radius:18px; padding:24px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 6px 16px rgba(13,38,68,.05);">
+          <div style="font-weight:700; font-size:14px; margin-bottom:18px;">Élévation</div>
+          <div style="display:flex; gap:18px; flex-wrap:wrap;">
+            <div style="text-align:center;"><div style="width:74px; height:56px; background:#fff; border-radius:14px; box-shadow:0 1px 2px rgba(13,38,68,.05);"></div><div style="margin-top:10px; font-family:ui-monospace,Menlo,monospace; font-size:11px; color:#8A99A8;">e0</div></div>
+            <div style="text-align:center;"><div style="width:74px; height:56px; background:#fff; border-radius:14px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 6px 16px rgba(13,38,68,.06);"></div><div style="margin-top:10px; font-family:ui-monospace,Menlo,monospace; font-size:11px; color:#8A99A8;">e1 rest</div></div>
+            <div style="text-align:center;"><div style="width:74px; height:56px; background:#fff; border-radius:14px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 8px 22px rgba(13,38,68,.09);"></div><div style="margin-top:10px; font-family:ui-monospace,Menlo,monospace; font-size:11px; color:#8A99A8;">e2 raised</div></div>
+            <div style="text-align:center;"><div style="width:74px; height:56px; background:#0C2340; border-radius:14px; box-shadow:0 14px 34px rgba(12,35,64,.34);"></div><div style="margin-top:10px; font-family:ui-monospace,Menlo,monospace; font-size:11px; color:#8A99A8;">e3 pop</div></div>
+          </div>
+        </div>
+      </div>
+      <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-top:16px;">
+        <div><div style="height:64px; border-radius:14px; background:linear-gradient(168deg,#0C2340 0%,#122E52 58%,#163763 100%);"></div><div style="margin-top:9px; font-weight:700; font-size:12.5px;">header</div><div style="font-family:ui-monospace,Menlo,monospace; font-size:11px; color:#8A99A8;">168° · d1→d2→d3</div></div>
+        <div><div style="height:64px; border-radius:14px; background:linear-gradient(150deg,#0C2340,#163763);"></div><div style="margin-top:9px; font-weight:700; font-size:12.5px;">hero</div><div style="font-family:ui-monospace,Menlo,monospace; font-size:11px; color:#8A99A8;">150° · d1→d3</div></div>
+        <div><div style="height:64px; border-radius:14px; background:linear-gradient(145deg,#1B3A63,#0C2340);"></div><div style="margin-top:9px; font-weight:700; font-size:12.5px;">fab</div><div style="font-family:ui-monospace,Menlo,monospace; font-size:11px; color:#8A99A8;">145° · ink2→d1</div></div>
+        <div><div style="height:64px; border-radius:14px; background:linear-gradient(135deg,#0C2340,#1B3A63);"></div><div style="margin-top:9px; font-weight:700; font-size:12.5px;">cta</div><div style="font-family:ui-monospace,Menlo,monospace; font-size:11px; color:#8A99A8;">135° · d1→ink2</div></div>
+      </div>
+    </section>
+
+    <!-- ============ 07 — COMPOSANTS ============ -->
+    <section style="margin-top:72px;">
+      <div style="font-size:12px; font-weight:700; letter-spacing:2px; text-transform:uppercase; color:#9AA7B4; margin-bottom:10px;">07 — Composants</div>
+      <h2 style="margin:0 0 12px; font-family:'Schibsted Grotesk'; font-weight:700; font-size:28px; letter-spacing:-.5px;">La bibliothèque</h2>
+      <p style="margin:0 0 28px; font-size:15px; line-height:1.6; color:#5B6B7B; max-width:580px;">Les briques d'interface, rendues dans le thème Marine. Chaque composant suit les mêmes tokens — donc se porte tel quel sur le web.</p>
+
+      <!-- Signature : carte trésorerie flottante -->
+      <div style="background:#fff; border:1px solid #ECEFF4; border-radius:18px; padding:22px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 6px 16px rgba(13,38,68,.05); margin-bottom:16px;">
+        <div style="display:flex; align-items:center; gap:10px; margin-bottom:18px;">
+          <span style="font-size:12px; font-weight:700; letter-spacing:.4px; text-transform:uppercase; color:#9AA7B4;">Geste signature · carte trésorerie flottante</span>
+          <span style="background:#EDEAFE; color:#4338CA; font-size:10.5px; font-weight:700; padding:3px 8px; border-radius:6px;">ACCUEIL</span>
+        </div>
+        <div style="display:grid; grid-template-columns:300px 1fr; gap:28px; align-items:start;">
+          <div style="border-radius:22px; overflow:hidden; background:#EFF2F7; box-shadow:inset 0 0 0 1px rgba(13,38,68,.05);">
+            <div style="background:linear-gradient(168deg,#0C2340,#163763); border-radius:0 0 26px 26px; padding:20px 18px 40px;">
+              <div style="color:#fff; font-family:'Schibsted Grotesk'; font-weight:700; font-size:20px; letter-spacing:-.4px;">Salut Julien 👋</div>
+              <div style="color:rgba(255,255,255,.62); font-size:12.5px; margin-top:2px;">3 trucs à régler, et après tu factures tranquille.</div>
+            </div>
+            <div style="margin:-30px 14px 16px; background:#fff; border:1px solid #EAEEF3; border-radius:20px; padding:15px 16px; box-shadow:0 2px 4px rgba(13,38,68,.05),0 18px 36px rgba(12,35,64,.17);">
+              <div style="display:flex; align-items:flex-start; justify-content:space-between;">
+                <div>
+                  <div style="font-size:10px; font-weight:700; letter-spacing:.5px; text-transform:uppercase; color:#8A99A8;">Dispo réel aujourd'hui</div>
+                  <div style="margin-top:3px; font-family:'Schibsted Grotesk'; font-weight:800; font-size:27px; letter-spacing:-.6px; color:#0C2340; font-variant-numeric:tabular-nums;">4 950 €</div>
+                </div>
+                <span style="width:26px; height:26px; border-radius:50%; background:#F1F4F7; display:flex; align-items:center; justify-content:center; color:#8A99A8; font-weight:700;">›</span>
+              </div>
+              <div style="height:1px; background:#EEF1F5; margin:12px 0;"></div>
+              <div style="display:flex; align-items:center; gap:9px;">
+                <span style="flex-shrink:0; width:26px; height:26px; border-radius:9px; background:#EAF2EC; display:flex; align-items:center; justify-content:center;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0E7C5A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v11"/><path d="M7.5 9.5L12 14l4.5-4.5"/><path d="M5 20h14"/></svg></span>
+                <span style="font-size:12px; font-weight:600; color:#0E7C5A; line-height:1.3;">Tu peux te verser <b>~2 000 €</b> sans te mettre dans le rouge</span>
+              </div>
+            </div>
+          </div>
+          <div>
+            <p style="margin:0 0 14px; font-size:14.5px; line-height:1.6; color:#5B6B7B;">La carte blanche <b style="color:#0F2235;">chevauche la couture</b> en-tête navy → contenu clair (marge&nbsp;-30&nbsp;dp). Le chiffre devient le héros : navy massif sur blanc, en <code style="background:#F1F4F7; padding:1px 5px; border-radius:5px; font-size:12.5px;">tabular-nums</code>. La ligne verte est une <b style="color:#0F2235;">phrase à la voix de Bob</b>, jamais un pill qui se coupe.</p>
+            <div style="display:flex; flex-wrap:wrap; gap:8px;">
+              <span style="background:#F1F4F7; border-radius:8px; padding:6px 11px; font-size:12px; font-weight:600; color:#5B6B7B;">radius 22</span>
+              <span style="background:#F1F4F7; border-radius:8px; padding:6px 11px; font-size:12px; font-weight:600; color:#5B6B7B;">marge -30&nbsp;dp</span>
+              <span style="background:#F1F4F7; border-radius:8px; padding:6px 11px; font-size:12px; font-weight:600; color:#5B6B7B;">ombre e3</span>
+              <span style="background:#F1F4F7; border-radius:8px; padding:6px 11px; font-size:12px; font-weight:600; color:#5B6B7B;">chiffre 31/800</span>
+              <span style="background:#F1F4F7; border-radius:8px; padding:6px 11px; font-size:12px; font-weight:600; color:#5B6B7B;">ink-900 sur blanc</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px;">
+
+        <!-- Boutons -->
+        <div style="background:#fff; border:1px solid #ECEFF4; border-radius:18px; padding:22px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 6px 16px rgba(13,38,68,.05);">
+          <div style="font-size:12px; font-weight:700; letter-spacing:.4px; text-transform:uppercase; color:#9AA7B4; margin-bottom:16px;">Boutons</div>
+          <div style="display:flex; flex-direction:column; gap:10px;">
+            <button style="width:100%; background:linear-gradient(135deg,#0C2340,#1B3A63); color:#fff; border:none; border-radius:15px; padding:14px; font-size:15px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer;">Primaire — Encaisser</button>
+            <button style="width:100%; background:#fff; color:#1B3A63; border:1px solid #D9E0E8; border-radius:15px; padding:13px; font-size:14px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer;">Secondaire</button>
+            <div style="display:flex; gap:10px;">
+              <button style="flex:1; background:#4338CA; color:#fff; border:none; border-radius:13px; padding:11px; font-size:13.5px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer;">IA</button>
+              <button style="flex:1; background:#fff; color:#C8463C; border:1px solid #F3D6D2; border-radius:13px; padding:11px; font-size:13.5px; font-weight:600; font-family:'Hanken Grotesk'; cursor:pointer;">Danger</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Chips + segmented -->
+        <div style="background:#fff; border:1px solid #ECEFF4; border-radius:18px; padding:22px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 6px 16px rgba(13,38,68,.05);">
+          <div style="font-size:12px; font-weight:700; letter-spacing:.4px; text-transform:uppercase; color:#9AA7B4; margin-bottom:16px;">Filtres &amp; segments</div>
+          <div style="display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap;">
+            <span style="background:#0C2340; color:#fff; border-radius:11px; padding:8px 14px; font-size:13px; font-weight:600;">Tous</span>
+            <span style="background:#fff; color:#5B6B7B; border-radius:11px; padding:8px 14px; font-size:13px; font-weight:600; box-shadow:0 1px 2px rgba(13,38,68,.06);">Particuliers</span>
+            <span style="background:#fff; color:#5B6B7B; border-radius:11px; padding:8px 14px; font-size:13px; font-weight:600; box-shadow:0 1px 2px rgba(13,38,68,.06);">Entreprises</span>
+          </div>
+          <div style="display:flex; gap:4px; background:#EFF2F6; border-radius:12px; padding:4px;">
+            <span style="flex:1; text-align:center; background:#fff; box-shadow:0 1px 3px rgba(13,38,68,.12); color:#0C2340; border-radius:9px; padding:8px 0; font-size:13px; font-weight:700;">30 j</span>
+            <span style="flex:1; text-align:center; color:#94A3B0; border-radius:9px; padding:8px 0; font-size:13px; font-weight:700;">60 j</span>
+            <span style="flex:1; text-align:center; color:#94A3B0; border-radius:9px; padding:8px 0; font-size:13px; font-weight:700;">90 j</span>
+          </div>
+        </div>
+
+        <!-- Priority card -->
+        <div style="background:#fff; border:1px solid #ECEFF4; border-radius:18px; padding:22px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 6px 16px rgba(13,38,68,.05);">
+          <div style="font-size:12px; font-weight:700; letter-spacing:.4px; text-transform:uppercase; color:#9AA7B4; margin-bottom:16px;">Carte priorité</div>
+          <div style="position:relative; display:flex; gap:13px; background:#fff; border-radius:20px; padding:15px 16px 15px 17px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 7px 20px rgba(13,38,68,.08);">
+            <span style="position:absolute; left:0; top:16px; bottom:16px; width:4px; border-radius:0 4px 4px 0; background:#C8463C;"></span>
+            <span style="flex-shrink:0; width:26px; height:26px; margin-top:1px; border-radius:50%; border:2px solid #D6DEE6;"></span>
+            <div style="flex:1;">
+              <span style="display:inline-block; background:#FBEAE8; color:#C8463C; font-size:11px; font-weight:700; padding:3px 8px; border-radius:7px; margin-bottom:7px;">EN RETARD 9 J</span>
+              <div style="font-weight:700; font-size:15.5px; color:#0F2235;">Martin te doit 1 240 €</div>
+              <div style="font-size:13.5px; color:#5B6B7B; margin-top:2px;">Toujours pas payé. On le relance ?</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Client row + score -->
+        <div style="background:#fff; border:1px solid #ECEFF4; border-radius:18px; padding:22px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 6px 16px rgba(13,38,68,.05);">
+          <div style="font-size:12px; font-weight:700; letter-spacing:.4px; text-transform:uppercase; color:#9AA7B4; margin-bottom:16px;">Ligne client &amp; score</div>
+          <div style="display:flex; align-items:center; gap:12px; margin-bottom:14px;">
+            <span style="flex-shrink:0; width:44px; height:44px; border-radius:14px; background:linear-gradient(135deg,#475569,#334155); display:flex; align-items:center; justify-content:center; color:#fff; font-weight:700; font-size:15px; font-family:'Schibsted Grotesk';">SM</span>
+            <div style="flex:1;"><div style="font-weight:700; font-size:15px;">SARL Martin</div><div style="font-size:13px; color:#8A99A8;">Paie à 22 j · SIREN vérifié</div></div>
+            <span style="font-weight:700; font-size:14px; color:#C8463C; font-variant-numeric:tabular-nums;">2 480 €</span>
+          </div>
+          <div style="display:flex; align-items:center; gap:10px;">
+            <div style="flex:1; height:7px; border-radius:4px; background:#EFF2F6; overflow:hidden;"><div style="width:62%; height:100%; background:#C77A12; border-radius:4px;"></div></div>
+            <span style="font-size:12px; font-weight:700; color:#C77A12;">62 · À surveiller</span>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- FAB + nav -->
+      <div style="background:#fff; border:1px solid #ECEFF4; border-radius:18px; padding:22px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 6px 16px rgba(13,38,68,.05); margin-top:16px;">
+        <div style="font-size:12px; font-weight:700; letter-spacing:.4px; text-transform:uppercase; color:#9AA7B4; margin-bottom:18px;">Navigation &amp; action flottante</div>
+        <div style="display:flex; align-items:center; gap:28px; flex-wrap:wrap;">
+          <div style="display:flex; align-items:center; gap:30px; background:#fff; border-radius:22px; padding:12px 26px; box-shadow:0 -1px 0 #EEF1F5 inset, 0 8px 24px rgba(13,38,68,.1); border:1px solid #F0F3F7;">
+            <span style="display:flex; flex-direction:column; align-items:center; gap:4px; color:#0C2340;"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10l9-7 9 7v10a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg><span style="font-size:10.5px; font-weight:700;">Aujourd'hui</span></span>
+            <span style="display:flex; flex-direction:column; align-items:center; gap:4px; color:#9AA7B4;"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.4"/><path d="M3 20a6 6 0 0 1 12 0"/><path d="M16 6h5M18.5 3.5v5"/></svg><span style="font-size:10.5px; font-weight:600;">Clients</span></span>
+            <span style="display:flex; flex-direction:column; align-items:center; gap:4px; color:#9AA7B4;"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18v12H3z"/><path d="M3 10h18"/></svg><span style="font-size:10.5px; font-weight:600;">Argent</span></span>
+            <span style="display:flex; flex-direction:column; align-items:center; gap:4px; color:#4338CA;"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.4 6.6L21 12l-6.6 2.4L12 21l-2.4-6.6L3 12l6.6-2.4z"/></svg><span style="font-size:10.5px; font-weight:700;">Assistant</span></span>
+          </div>
+          <span style="width:60px; height:60px; border-radius:20px; background:linear-gradient(145deg,#1B3A63,#0C2340); display:flex; align-items:center; justify-content:center; box-shadow:0 12px 26px rgba(12,35,64,.4);"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg></span>
+          <span style="display:inline-flex; align-items:center; gap:9px; background:#0C2340; color:#fff; padding:12px 18px; border-radius:14px; box-shadow:0 10px 24px rgba(12,35,64,.28);"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6EE7B7" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 6"/></svg><span style="font-size:13.5px; font-weight:600;">Facture envoyée · toast</span></span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 08 — VOIX & TON ============ -->
+    <section style="margin-top:72px;">
+      <div style="font-size:12px; font-weight:700; letter-spacing:2px; text-transform:uppercase; color:#9AA7B4; margin-bottom:10px;">08 — Voix &amp; ton</div>
+      <h2 style="margin:0 0 12px; font-family:'Schibsted Grotesk'; font-weight:700; font-size:28px; letter-spacing:-.5px;">Bob a trois humeurs</h2>
+      <p style="margin:0 0 28px; font-size:15px; line-height:1.6; color:#5B6B7B; max-width:600px;">Bob ne juge jamais, va droit à l'action, parle en chiffres concrets — et <b style="color:#0F2235;">fait</b> au lieu de seulement répondre. Le ton est un réglage ; par défaut, Bob est <b style="color:#0F2235;">Pote</b>.</p>
+      <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:16px;">
+        <div style="background:#fff; border:1px solid #ECEFF4; border-radius:18px; padding:22px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 6px 16px rgba(13,38,68,.05);">
+          <div style="display:flex; align-items:center; gap:8px; margin-bottom:14px;"><span style="font-family:'Schibsted Grotesk'; font-weight:700; font-size:16px;">Pote</span><span style="background:#0C2340; color:#fff; font-size:10px; font-weight:700; padding:2px 8px; border-radius:6px;">DÉFAUT</span></div>
+          <div style="font-weight:600; font-size:15px; color:#0F2235;">« Salut Julien 👋 »</div>
+          <div style="font-size:13.5px; color:#5B6B7B; margin-top:6px; line-height:1.5;">3 trucs à régler, et après tu factures tranquille.</div>
+          <div style="margin-top:14px; padding-top:14px; border-top:1px solid #F1F4F7; font-size:12.5px; color:#8A99A8;">Tutoiement · chaleureux · emoji parcimonieux</div>
+        </div>
+        <div style="background:#fff; border:1px solid #ECEFF4; border-radius:18px; padding:22px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 6px 16px rgba(13,38,68,.05);">
+          <div style="font-family:'Schibsted Grotesk'; font-weight:700; font-size:16px; margin-bottom:14px;">Pro</div>
+          <div style="font-weight:600; font-size:15px; color:#0F2235;">« Bonjour Julien »</div>
+          <div style="font-size:13.5px; color:#5B6B7B; margin-top:6px; line-height:1.5;">Vous avez 3 priorités à traiter aujourd'hui.</div>
+          <div style="margin-top:14px; padding-top:14px; border-top:1px solid #F1F4F7; font-size:12.5px; color:#8A99A8;">Vouvoiement · sobre · sans emoji</div>
+        </div>
+        <div style="background:#fff; border:1px solid #ECEFF4; border-radius:18px; padding:22px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 6px 16px rgba(13,38,68,.05);">
+          <div style="font-family:'Schibsted Grotesk'; font-weight:700; font-size:16px; margin-bottom:14px;">Direct</div>
+          <div style="font-weight:600; font-size:15px; color:#0F2235;">« Julien — »</div>
+          <div style="font-size:13.5px; color:#5B6B7B; margin-top:6px; line-height:1.5;">3 priorités. Go.</div>
+          <div style="margin-top:14px; padding-top:14px; border-top:1px solid #F1F4F7; font-size:12.5px; color:#8A99A8;">Ultra-court · efficace · zéro fioriture</div>
+        </div>
+      </div>
+      <div style="margin-top:16px; background:#0C2340; border-radius:18px; padding:24px 26px; color:#fff;">
+        <div style="font-size:12px; font-weight:700; letter-spacing:.4px; text-transform:uppercase; color:rgba(255,255,255,.5); margin-bottom:16px;">Comment parle Bob</div>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:14px;">
+          <div style="display:flex; gap:11px; align-items:flex-start;"><span style="flex-shrink:0; width:24px; height:24px; border-radius:7px; background:rgba(110,231,183,.16); display:flex; align-items:center; justify-content:center;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#6EE7B7" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 6"/></svg></span><div style="font-size:13.5px; line-height:1.5; color:rgba(255,255,255,.92);">« Si Martin ne paie pas cette semaine, ta tréso sera juste autour du 28. Je relance ? »</div></div>
+          <div style="display:flex; gap:11px; align-items:flex-start;"><span style="flex-shrink:0; width:24px; height:24px; border-radius:7px; background:rgba(229,84,75,.18); display:flex; align-items:center; justify-content:center;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#F2A09A" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18M6 6l12 12"/></svg></span><div style="font-size:13.5px; line-height:1.5; color:rgba(255,255,255,.55);">« Votre échéancier prévisionnel indique une tension de liquidité potentielle. »</div></div>
+          <div style="display:flex; gap:11px; align-items:flex-start;"><span style="flex-shrink:0; width:24px; height:24px; border-radius:7px; background:rgba(110,231,183,.16); display:flex; align-items:center; justify-content:center;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#6EE7B7" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 6"/></svg></span><div style="font-size:13.5px; line-height:1.5; color:rgba(255,255,255,.92);">« Il me manque le SIREN de ce client pour une facture conforme. Je le cherche ? »</div></div>
+          <div style="display:flex; gap:11px; align-items:flex-start;"><span style="flex-shrink:0; width:24px; height:24px; border-radius:7px; background:rgba(229,84,75,.18); display:flex; align-items:center; justify-content:center;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#F2A09A" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18M6 6l12 12"/></svg></span><div style="font-size:13.5px; line-height:1.5; color:rgba(255,255,255,.55);">« Champ SIREN obligatoire. Document non catégorisé. »</div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 09 — ÉCRANS ============ -->
+    <section style="margin-top:72px;">
+      <div style="font-size:12px; font-weight:700; letter-spacing:2px; text-transform:uppercase; color:#9AA7B4; margin-bottom:10px;">09 — Inventaire des écrans</div>
+      <h2 style="margin:0 0 12px; font-family:'Schibsted Grotesk'; font-weight:700; font-size:28px; letter-spacing:-.5px;">Le périmètre de l'app</h2>
+      <p style="margin:0 0 28px; font-size:15px; line-height:1.6; color:#5B6B7B; max-width:580px;">5 onglets principaux, un bouton de création central, et les parcours qui se superposent en surcouche.</p>
+      <div style="display:flex; flex-wrap:wrap; gap:10px;">
+        <span style="background:#0C2340; color:#fff; border-radius:11px; padding:10px 15px; font-size:13.5px; font-weight:600;">Aujourd'hui</span>
+        <span style="background:#fff; border:1px solid #E6EBF1; border-radius:11px; padding:10px 15px; font-size:13.5px; font-weight:600; color:#1B3A63;">Clients + fiche</span>
+        <span style="background:#fff; border:1px solid #E6EBF1; border-radius:11px; padding:10px 15px; font-size:13.5px; font-weight:600; color:#1B3A63;">Argent</span>
+        <span style="background:#fff; border:1px solid #E6EBF1; border-radius:11px; padding:10px 15px; font-size:13.5px; font-weight:600; color:#1B3A63;">Documents + dossier</span>
+        <span style="background:#EDEAFE; border:1px solid #DAD2FB; border-radius:11px; padding:10px 15px; font-size:13.5px; font-weight:600; color:#4338CA;">Assistant IA</span>
+        <span style="background:#fff; border:1px solid #E6EBF1; border-radius:11px; padding:10px 15px; font-size:13.5px; font-weight:600; color:#1B3A63;">Facture à la voix</span>
+        <span style="background:#fff; border:1px solid #E6EBF1; border-radius:11px; padding:10px 15px; font-size:13.5px; font-weight:600; color:#1B3A63;">Onboarding adaptatif</span>
+        <span style="background:#fff; border:1px solid #E6EBF1; border-radius:11px; padding:10px 15px; font-size:13.5px; font-weight:600; color:#1B3A63;">Diagnostic 2026</span>
+        <span style="background:#fff; border:1px solid #E6EBF1; border-radius:11px; padding:10px 15px; font-size:13.5px; font-weight:600; color:#1B3A63;">Mon compte + abonnement</span>
+        <span style="background:#fff; border:1px solid #E6EBF1; border-radius:11px; padding:10px 15px; font-size:13.5px; font-weight:600; color:#1B3A63;">Équipe &amp; rôles</span>
+        <span style="background:#fff; border:1px solid #E6EBF1; border-radius:11px; padding:10px 15px; font-size:13.5px; font-weight:600; color:#1B3A63;">Paywall</span>
+        <span style="background:#fff; border:1px solid #E6EBF1; border-radius:11px; padding:10px 15px; font-size:13.5px; font-weight:600; color:#1B3A63;">Authentification</span>
+      </div>
+    </section>
+
+    <!-- ============ 10 — RÈGLES D'OR ============ -->
+    <section style="margin-top:72px;">
+      <div style="font-size:12px; font-weight:700; letter-spacing:2px; text-transform:uppercase; color:#9AA7B4; margin-bottom:10px;">10 — Règles d'or</div>
+      <h2 style="margin:0 0 28px; font-family:'Schibsted Grotesk'; font-weight:700; font-size:28px; letter-spacing:-.5px;">À respecter côté dev</h2>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px;">
+        <div style="background:#fff; border:1px solid #ECEFF4; border-radius:16px; padding:20px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 5px 13px rgba(13,38,68,.05); display:flex; gap:13px;"><span style="flex-shrink:0; width:30px; height:30px; border-radius:9px; background:#EAF2EC; display:flex; align-items:center; justify-content:center;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#0E7C5A" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 6"/></svg></span><div><div style="font-weight:700; font-size:14.5px; margin-bottom:3px;">Tokens, pas de valeurs en dur</div><div style="font-size:13px; color:#5B6B7B; line-height:1.5;">Toute couleur de marque dérive du thème actif (5 tokens). Aucun hex de marque codé en dur dans un composant.</div></div></div>
+        <div style="background:#fff; border:1px solid #ECEFF4; border-radius:16px; padding:20px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 5px 13px rgba(13,38,68,.05); display:flex; gap:13px;"><span style="flex-shrink:0; width:30px; height:30px; border-radius:9px; background:#EAF2EC; display:flex; align-items:center; justify-content:center;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#0E7C5A" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 6"/></svg></span><div><div style="font-weight:700; font-size:14.5px; margin-bottom:3px;">Chiffres tabulaires</div><div style="font-size:13px; color:#5B6B7B; line-height:1.5;">Tout montant en <code style="font-family:ui-monospace,Menlo,monospace; font-size:12px;">tabular-nums</code> + espace fine comme séparateur de milliers.</div></div></div>
+        <div style="background:#fff; border:1px solid #ECEFF4; border-radius:16px; padding:20px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 5px 13px rgba(13,38,68,.05); display:flex; gap:13px;"><span style="flex-shrink:0; width:30px; height:30px; border-radius:9px; background:#EAF2EC; display:flex; align-items:center; justify-content:center;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#0E7C5A" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 6"/></svg></span><div><div style="font-weight:700; font-size:14.5px; margin-bottom:3px;">Icônes filaires only</div><div style="font-size:13px; color:#5B6B7B; line-height:1.5;">Traits 2–2.4, bouts arrondis, viewBox 24. Jamais d'icône pleine ni multicolore.</div></div></div>
+        <div style="background:#fff; border:1px solid #ECEFF4; border-radius:16px; padding:20px; box-shadow:0 1px 2px rgba(13,38,68,.04),0 5px 13px rgba(13,38,68,.05); display:flex; gap:13px;"><span style="flex-shrink:0; width:30px; height:30px; border-radius:9px; background:#FBEAE8; display:flex; align-items:center; justify-content:center;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#C8463C" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18M6 6l12 12"/></svg></span><div><div style="font-weight:700; font-size:14.5px; margin-bottom:3px;">Pas d'apparition à opacité 0</div><div style="font-size:13px; color:#5B6B7B; line-height:1.5;">Le contenu au repos ne démarre jamais invisible — réserver les animations d'entrée aux surcouches transitoires.</div></div></div>
+      </div>
+      <div style="margin-top:40px; padding-top:28px; border-top:1px solid #DDE3EB; display:flex; align-items:center; gap:13px; flex-wrap:wrap;">
+        <span style="width:34px; height:34px; border-radius:11px; background:#0C2340; display:flex; align-items:center; justify-content:center;"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 3l2.4 6.6L21 12l-6.6 2.4L12 21l-2.4-6.6L3 12l6.6-2.4z"/></svg></span>
+        <div style="font-size:13.5px; color:#8A99A8;"><b style="color:#0F2235; font-weight:700;">Bob Pro Design System v1.0</b> — figé pour le développement mobile &amp; web (Next.js).</div>
+      </div>
+    </section>
+
+  </div>
+</div>
+</x-dc>
+</body>
+</html>
