@@ -41,7 +41,7 @@ describe('flows/devis (C21 — 6 étapes, projection des use-cases)', () => {
     s = expectOk(devisNext(s));
     expect(s.step).toBe('signature');
     expect(devisNext(s).ok).toBe(false); // pas de signature, pas d'avance
-    s = devisEdit(s, { signerName: 'M. Martin' });
+    s = devisEdit(s, { signerName: 'M. Bernard' });
     s = expectOk(devisNext(s));
     expect(s.step).toBe('acompte');
 

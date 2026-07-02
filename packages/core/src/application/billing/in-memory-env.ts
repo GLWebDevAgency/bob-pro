@@ -25,7 +25,9 @@ import {
 export function makeEnv() {
   const company = seedCompany();
   const customers = seedCustomers();
-  const customer = customers[1]!; // M. Martin (b2c)
+  // Client b2c du test d'or TVA 10 % chauffe-eau (HT 1480 / TVA 148 / TTC 1628 / acompte 488,40).
+  // Martin est devenu b2b à l'alignement proto (C02 PARITY-FAIL #1) → on prend M. Bernard.
+  const customer = customers.find((c) => c.id === 'cust-bernard')!; // M. Bernard (b2c)
 
   const quotesMap = new Map<string, Quote>();
   const invoicesMap = new Map<string, Invoice>();

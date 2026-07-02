@@ -104,7 +104,7 @@ describe('deriveTodayPriorities', () => {
     expect(quoteA.ok).toBe(true);
     if (!quoteA.ok) return;
     expect((await send.execute({ quoteId: quoteA.value.quoteId })).ok).toBe(true);
-    expect((await sign.execute({ quoteId: quoteA.value.quoteId, signerName: 'Durand SARL' })).ok).toBe(true);
+    expect((await sign.execute({ quoteId: quoteA.value.quoteId, signerName: 'Mme Durand' })).ok).toBe(true);
     const depositA = await generate.execute({ quoteId: quoteA.value.quoteId, mode: 'deposit' });
     expect(depositA.ok).toBe(true);
     if (!depositA.ok) return;
@@ -118,7 +118,7 @@ describe('deriveTodayPriorities', () => {
     }).execute({ invoiceId: depositA.value.invoiceId, amount: 48840, method: 'transfer' });
     expect(paidA.ok).toBe(true);
 
-    // Devis B (Martin, sans acompte) : facture finale émise le 2026-06-01, échue au 2026-07-01, JAMAIS payée.
+    // Devis B (Bernard, sans acompte) : facture finale émise le 2026-06-01, échue au 2026-07-01, JAMAIS payée.
     const quoteB = await create.execute({
       companyId: env.company.id,
       customerId: env.customer.id,
@@ -127,7 +127,7 @@ describe('deriveTodayPriorities', () => {
     expect(quoteB.ok).toBe(true);
     if (!quoteB.ok) return;
     expect((await send.execute({ quoteId: quoteB.value.quoteId })).ok).toBe(true);
-    expect((await sign.execute({ quoteId: quoteB.value.quoteId, signerName: 'M. Martin' })).ok).toBe(true);
+    expect((await sign.execute({ quoteId: quoteB.value.quoteId, signerName: 'M. Bernard' })).ok).toBe(true);
     const finalB = await generate.execute({ quoteId: quoteB.value.quoteId, mode: 'final' });
     expect(finalB.ok).toBe(true);
     if (!finalB.ok) return;
@@ -153,7 +153,7 @@ describe('deriveTodayPriorities', () => {
     expect(priorities[0]).toMatchObject({
       kind: 'relance',
       invoiceId: finalB.value.invoiceId,
-      customerName: 'M. Martin',
+      customerName: 'M. Bernard',
       docNumber: 'F-2026-0002',
       amountCents: 60000, // netToPay entier, rien d'encaissé
       daysLate: 9, // échéance 2026-07-01 → aujourd'hui 2026-07-10
@@ -161,7 +161,7 @@ describe('deriveTodayPriorities', () => {
     expect(priorities[1]).toMatchObject({
       kind: 'facture_finale',
       quoteId: quoteA.value.quoteId,
-      customerName: 'Durand SARL',
+      customerName: 'Mme Durand',
       docNumber: 'D-2026-0001',
       amountCents: 162800 - 48840, // ttc du devis − acompte net encaissé (plafond netToPay)
     });

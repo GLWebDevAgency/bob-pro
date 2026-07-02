@@ -18,14 +18,25 @@ export const MERCIER_PROPS: CompanyProps = {
   decennale: { insurer: 'AXA', policyNo: 'DEC-2026-1182', coverage: 'France entiere', expiresAt: '2027-12-31' },
 };
 
-/** Les 6 clients du proto avec leurs scores (Durand 96 · Martin 62 · Sevres 78 · Lefevre 99 · Bernard 88 · Camping 50). */
+/**
+ * Les 6 clients du proto, portés depuis `DATA_CLIENTS` de Bob Pro.dc.html (lignes ~2326-2400) avec
+ * leurs scores `SCORES` (Durand 96 · Martin 62 · Sèvres 78 · Lefèvre 99 · Bernard 88 · Camping 50).
+ * Encours en CENTIMES fidèles au proto ; les ids `cust-*` restent stables (consommés par
+ * api-client/api/mobile). avgDelayDays = « délai » proto (« — » → 0).
+ */
 export const CUSTOMER_PROPS: Omit<CustomerProps, 'companyId'>[] = [
-  { id: 'cust-durand', type: 'b2b', name: 'Durand SARL', siren: '552081317', address: { line1: '3 av. du Chantier', zip: '92100', city: 'Boulogne' }, email: 'compta@durand.fr', score: 96, avgDelayDays: 2, outstanding: 0 },
-  { id: 'cust-martin', type: 'b2c', name: 'M. Martin', address: { line1: '8 rue Oberkampf', zip: '75011', city: 'Paris' }, score: 62, avgDelayDays: 18, outstanding: 162800 },
-  { id: 'cust-sevres', type: 'b2g', name: 'Mairie de Sevres', siren: '219200720', address: { line1: '54 Grande Rue', zip: '92310', city: 'Sevres' }, paymentTermsLabel: 'Mandat administratif', score: 78, avgDelayDays: 9, outstanding: 0 },
-  { id: 'cust-lefevre', type: 'b2c', name: 'Mme Lefevre', address: { line1: '2 imp. des Lilas', zip: '92500', city: 'Rueil' }, score: 99, avgDelayDays: 0, outstanding: 0 },
-  { id: 'cust-bernard', type: 'b2c', name: 'M. Bernard', address: { line1: '17 rue Verte', zip: '92800', city: 'Puteaux' }, score: 88, avgDelayDays: 4, outstanding: 45000 },
-  { id: 'cust-camping', type: 'b2b', name: 'Camping Les Pins', siren: '440829834', address: { line1: 'Route de la Plage', zip: '85160', city: 'Saint-Jean-de-Monts' }, score: 50, avgDelayDays: 35, outstanding: 320000 },
+  // Mme Durand — b2c, à jour (facture F-2026-104 de 1 180 € payée le 12 juin, acompte 590 €, devis signé 1 770 €).
+  { id: 'cust-durand', type: 'b2c', name: 'Mme Durand', address: { line1: '12 rue des Lilas', zip: '92310', city: 'Sèvres' }, email: 'm.durand@email.fr', phone: '06 12 34 56 78', paymentTermsLabel: 'Paiement à réception', score: 96, avgDelayDays: 6, outstanding: 0 },
+  // SARL Martin Rénovation — b2b, 2 480 € en retard dont F-2026-088 (1 240 €, en retard 9 j) ; paie à 22 j.
+  { id: 'cust-martin', type: 'b2b', name: 'SARL Martin Rénovation', siren: '821503642', address: { line1: 'ZA des Bruyères', zip: '92140', city: 'Clamart' }, email: 'contact@martin-renov.fr', phone: '01 45 22 10 90', paymentTermsLabel: 'Paiement à 30 jours', score: 62, avgDelayDays: 22, outstanding: 248000 },
+  // Mairie de Sèvres — b2g, 1 850 € en attente (facture Chorus F-2026-090 transmise, marché entretien).
+  { id: 'cust-sevres', type: 'b2g', name: 'Mairie de Sèvres', siren: '217504028', address: { line1: '54 Grande Rue', zip: '92310', city: 'Sèvres' }, email: 'marches@ville-sevres.fr', phone: '01 41 14 10 10', paymentTermsLabel: 'Mandat administratif', score: 78, avgDelayDays: 34, outstanding: 185000 },
+  // Boulangerie Lefèvre — b2b, contrat entretien annuel, à jour (F-2026-077 et F-2026-055 payées).
+  { id: 'cust-lefevre', type: 'b2b', name: 'Boulangerie Lefèvre', siren: '402118553', address: { line1: '3 place du Marché', zip: '92310', city: 'Sèvres' }, email: 'boulangerie.lefevre@email.fr', phone: '06 88 77 66 55', paymentTermsLabel: 'Paiement à 15 jours', score: 99, avgDelayDays: 11, outstanding: 0 },
+  // M. Bernard — b2c, devis chauffe-eau 200 L (1 480 €) en attente, aucun encours.
+  { id: 'cust-bernard', type: 'b2c', name: 'M. Bernard', address: { line1: '8 allée des Roses', zip: '92190', city: 'Meudon' }, email: 'p.bernard@email.fr', phone: '06 33 22 11 00', paymentTermsLabel: 'Paiement à réception', score: 88, avgDelayDays: 0, outstanding: 0 },
+  // Camping Les Pins — b2b, nouveau client (0 €), facturation électronique à configurer.
+  { id: 'cust-camping', type: 'b2b', name: 'Camping Les Pins', siren: '789220117', address: { line1: 'Route du Littoral', zip: '83700', city: 'Saint-Raphaël' }, email: 'contact@camping-lespins.fr', phone: '04 94 00 11 22', paymentTermsLabel: 'À définir', score: 50, avgDelayDays: 0, outstanding: 0 },
 ];
 
 /** Snapshot de trésorerie du proto (« le solde ment » : 6 820 € banque mais TVA + charges à venir). */
