@@ -1,5 +1,5 @@
 # claude status
-state: vercel-deployed
-heartbeat_epoch: 1782936855
-head: cbe0ff6
-note: sign-web LIVE: https://bob-pro-sign-web.vercel.app (Ready, smoke 200, CORS API OK). Supabase certifie + Railway demo live.
+state: done
+heartbeat_epoch: 1782967111
+head: e999959
+note: PROD COMPLETE: API Railway live (mode:live, e2e JWT+RLS OK), CD sign-web vert, CI verte, EAS configuré + build Android en cours. Claims tous libérés.
