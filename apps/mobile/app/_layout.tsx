@@ -6,6 +6,16 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { useFonts } from 'expo-font';
+import {
+  SchibstedGrotesk_700Bold,
+  SchibstedGrotesk_800ExtraBold,
+} from '@expo-google-fonts/schibsted-grotesk';
+import {
+  HankenGrotesk_500Medium,
+  HankenGrotesk_600SemiBold,
+  HankenGrotesk_700Bold,
+} from '@expo-google-fonts/hanken-grotesk';
 import { ThemeProvider, useTheme } from '../src/theme';
 import { AuthProvider, useAuth } from '../src/data/auth';
 import { BobClientProvider } from '../src/data/client';
@@ -31,6 +41,15 @@ export default function RootLayout() {
   const [queryClient] = useState(
     () => new QueryClient({ defaultOptions: { queries: { staleTime: 30_000, retry: false } } }),
   );
+  // Identité typographique du proto (tokens.fonts) — une famille par poids (Android).
+  const [fontsLoaded] = useFonts({
+    SchibstedGrotesk_700Bold,
+    SchibstedGrotesk_800ExtraBold,
+    HankenGrotesk_500Medium,
+    HankenGrotesk_600SemiBold,
+    HankenGrotesk_700Bold,
+  });
+  if (!fontsLoaded) return null;
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
@@ -56,6 +75,7 @@ export default function RootLayout() {
                     <Stack.Screen name="ventes" />
                     <Stack.Screen name="comptabilite" />
                     <Stack.Screen name="cloture" />
+                    <Stack.Screen name="gallery" />
                   </Stack>
                   </ConfirmProvider>
                 </BobClientProvider>

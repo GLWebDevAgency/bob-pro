@@ -176,6 +176,41 @@ export const controls = {
 } as const;
 
 // ----------------------------------------------------------------------------
+// VOILES & HALOS — usage sur navy (header, héros) + scrim (v1.2, redlines/dc.html)
+// ----------------------------------------------------------------------------
+export const overlays = {
+  white70: 'rgba(255,255,255,.7)',
+  white66: 'rgba(255,255,255,.66)', // sous-titre header navy
+  white60: 'rgba(255,255,255,.6)',
+  white50: 'rgba(255,255,255,.5)',
+  white16: 'rgba(255,255,255,.16)',
+  white14: 'rgba(255,255,255,.14)', // bord cloche
+  white10: 'rgba(255,255,255,.1)', // fond cloche
+  white08: 'rgba(255,255,255,.08)', // séparateur sur navy
+  white07: 'rgba(255,255,255,.07)',
+  scrim: 'rgba(12,35,64,.45)', // voile des sheets
+  successPill: 'rgba(52,211,153,.18)', // pill « sans risque » (texte = successOnDark)
+  unreadDot: '#FF7A6B', // point non-lu de la cloche
+  haloIndigo: ['rgba(67,56,202,.55)', 'rgba(67,56,202,0)'], // halo header top-right
+  haloGreen: ['rgba(16,185,129,.4)', 'rgba(16,185,129,0)'], // halo header bottom-left
+  haloMint: ['rgba(110,231,183,.32)', 'rgba(110,231,183,0)'],
+  haloWhite: ['rgba(255,255,255,.16)', 'rgba(255,255,255,0)'],
+} as const;
+
+// Ombres de composants (v1.2, redlines) — web string + équivalent RN
+export const shadowComponents = {
+  priorityCard: '0 7px 20px rgba(13,38,68,.06)',
+  heroMoney: '0 12px 30px rgba(12,35,64,.22)',
+  tabBar: '0 8px 24px rgba(13,38,68,.08)',
+} as const;
+
+export const shadowComponentsNative = {
+  priorityCard: { shadowColor: '#0D2644', shadowOpacity: 0.06, shadowRadius: 20, shadowOffset: { width: 0, height: 7 }, elevation: 4 },
+  heroMoney: { shadowColor: '#0C2340', shadowOpacity: 0.22, shadowRadius: 30, shadowOffset: { width: 0, height: 12 }, elevation: 10 },
+  tabBar: { shadowColor: '#0D2644', shadowOpacity: 0.08, shadowRadius: 24, shadowOffset: { width: 0, height: 8 }, elevation: 8 },
+} as const;
+
+// ----------------------------------------------------------------------------
 // PATTERNS SIGNATURE — recettes de composition figées (le « geste » Bob Pro)
 // ----------------------------------------------------------------------------
 export const patterns = {

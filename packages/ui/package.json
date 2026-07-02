@@ -5,14 +5,37 @@
   "main": "./dist/index.js",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "react-native": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "react-native": "./src/index.ts",
+      "import": "./dist/index.js"
+    }
+  },
   "scripts": {
-    "build": "tsup src/index.ts --format esm --dts",
+    "build": "tsup src/index.ts --format esm --dts --external react,react-native,expo-linear-gradient,react-native-svg",
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src"
   },
+  "peerDependencies": {
+    "expo-linear-gradient": "*",
+    "react": ">=19",
+    "react-native": ">=0.80",
+    "react-native-svg": ">=15"
+  },
+  "dependencies": {
+    "@bob/core": "workspace:*",
+    "@bob/i18n": "workspace:*",
+    "@bob/tokens": "workspace:*"
+  },
   "devDependencies": {
+    "@types/react": "^19.2.0",
+    "expo-linear-gradient": "^56.0.4",
+    "react": "19.2.3",
+    "react-native": "0.85.3",
+    "react-native-svg": "^15.15.4",
     "tsup": "^8.3.0",
     "typescript": "^5.6.0",
     "vitest": "^3.2.6"
