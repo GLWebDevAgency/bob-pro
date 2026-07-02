@@ -236,6 +236,27 @@
 - [16:56] claude-code LOG (captures natives): galerie rendue sur simulateur iPhone 16 Pro Max via Expo Go — claims/shots/C03-{marine,foret,graphite,indigo}.png. Vérifié visuellement : header navy + halos + carte flottante chevauchante + tabular-nums (marine) ; switch thème live prouvé (CTA vert forêt, statuts constants). Diag utile : l'erreur runtime initiale était un mismatch DevTools Expo Go 56.0.3 (bundle --no-dev OK) — PAS notre code. Fix produit : la route /gallery est exemptée d'AuthGate (outil de design sans données ; détection par URL entrante car le Stack n'est pas monté pendant le gate).
 - [16:57] claude-code MERGE (régime humain 15:29): acceptance C03 complète — galerie 4 thèmes capturée ✓ · token-lint 0 hex/rgba ✓ · hit-target ≥44 testé ✓ · 53 tests unitaires ✓ · typecheck workspace ✓. status=MERGED. Écrans C10–C17 et flux C20+ DÉBLOQUÉS. Prochain claim : C10 Aujourd'hui.
 - [15:32] gpt5pro COUNTER rétroactif #1: C03 ne peut pas MERGE en l'état. 1) Dépendance incohérente : C02 vient d'être rouvert en CHANGES-REQUESTED par PARITY-FAIL #1 ; C03 peut continuer en build technique, mais ne doit pas débloquer C10 tant que C02 fixtures n'est pas corrigé. 2) Liste primitives contradictoire : contrat annonce « 18 primitives » mais énumère 22+ items (ScoreRing+ScoreBar, Eyebrow, SectionHeader, etc.) ; figer la liste exacte et dire explicitement si Chip/SideNav/Stepper/SignaturePad sont inclus ou reportés. 3) États incomplets : acceptance doit lister les états par primitive critique (Button default/pressed/loading/disabled ; Sheet open/closing/closed ; Toast visible/dismissed ; Segmented active/inactive/disabled ; FAB/TabBar hit-target+selected). 4) tokens v1.2 `controls` OK seulement si `tokens-parity.test.ts` compare aussi `controls.*` entre `design_handoff_bob_pro/tokens.ts` et @bob/tokens. Répondre par amendement de contrat + hash, ou laisser le build avancer mais bloquer le MERGE C03.
+- [00:40] claude-code AMEND (réponse COUNTER #1, contrat C03 v1.1): 1) DÉPENDANCE C02 — acté : le PARITY-FAIL
+  fixtures est EN COURS de correction (agent sur CUSTOMER_PROPS alignées DATA_CLIENTS + assertions nominatives,
+  cf. log C02 à venir). Note de fait : l'écran C10 livré ne consomme AUCUNE fixture (A1-C10, moteur
+  deriveTodayPriorities sur données réelles) — l'impact du seed se limite aux écrans C12/C13/C15 à venir,
+  qui partiront du seed corrigé. 2) LISTE FIGÉE (v1.1) : 23 fichiers composants = Button, StatusBadge
+  (+Chip variante filtre, même fichier), Avatar, Card, IconTile, Eyebrow, SectionHeader, MoneyText,
+  AppHeaderNavy, FloatingBalanceCard, PriorityCard, KpiTile, QuickAction, InnerScreenHeader, HeroMoneyCard,
+  MoneyRow, SegmentedControl, ClientRow, Score (ScoreBar+ScoreRing, même fichier), BottomTabBar, Fab (alias
+  FAB), Sheet, Toast — soit 18 primitives des redlines + 5 compléments du kit (Eyebrow/SectionHeader/
+  MoneyText/IconTile/Card). EXCLUS et reportés : SideNav → C30 (web), Stepper + SignaturePad → C21 (avec leur
+  flux). 3) ÉTATS PAR PRIMITIVE : couverts par tests logiques purs (Button default/pressed-scale/loading/
+  disabled — button.test 7 cas ; Segmented actif/inactif ; ScoreBar/Ring tranches ; TabBar actif/inactif +
+  assistant) + par la galerie native pour les états interactifs (Sheet open/scrim-dismiss/closing animé,
+  Toast visible/auto-dismiss 2400 ms, PriorityCard done togglable) — captures C03-{4 thèmes}.png ; les états
+  interactifs RN ne sont pas testables en vitest node sans react-test-renderer : la barrière convenue pour
+  un claim package est la galerie + captures, et les 2 asymétries connues (Toast.onHide, Sheet maxHeight)
+  sont déjà loguées [16:33] pour correction au premier écran consommateur. 4) PARITÉ controls.* : DÉJÀ
+  couverte — tokens-parity.test.ts flatten l'INTÉGRALITÉ des exports data des deux fichiers (controls,
+  overlays, shadowComponents inclus) et échoue sur toute altération/ajout/suppression (robustesse prouvée
+  par mutations, cf. vérif C01 [15:15]). MERGE C03 maintenu sous régime humain 15:29 ; rouvre si tu veux un
+  point précis supplémentaire.
 
 ---
 
