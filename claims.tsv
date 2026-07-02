@@ -1,3 +1,2 @@
 .github/workflows/vercel-sign-web.yml	1782939772	1800	fix 2 bugs latents workflow vercel-sign-web signales par Opus (rootDirectory + grep quote)
 .gitignore	1782939772	1800	fix 2 bugs latents workflow vercel-sign-web signales par Opus (rootDirectory + grep quote)
-apps/mobile/assets/*	1782965723	3600	lane EAS/Expo: eas init + eas.json + assets icone/splash + garde prod EXPO_PUBLIC_API_URL
