@@ -23,6 +23,7 @@ export * from './domain/services/build-mentions';
 export * from './domain/services/score-customer';
 export * from './domain/services/einvoice-for';
 export * from './domain/services/project-cashflow';
+export * from './domain/services/cashflow-band';
 export * from './domain/services/build-relance';
 
 // Domaine — agrégats billing & machines à états
@@ -77,6 +78,7 @@ export * from './application/public-access/resolve-quote-signature-token';
 export * from './application/queries/list-customers';
 export * from './application/queries/get-cashflow';
 export * from './application/today/derive-today-priorities';
+export * from './application/argent/build-ledger-view';
 export * from './application/expenses/record-expense';
 export * from './application/chantier/create-chantier';
 export * from './application/company/autofill-company';

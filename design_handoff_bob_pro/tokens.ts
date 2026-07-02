@@ -1,5 +1,5 @@
 /**
- * Bob Pro — Design Tokens (figés, v1.2)
+ * Bob Pro — Design Tokens (figés, v1.3)
  * Source unique de vérité pour apps/mobile (React Native) ET apps/web (Next.js).
  * Primitives neutres + sémantiques + 4 thèmes de marque. Zéro dépendance.
  *
@@ -110,14 +110,14 @@ export const shadow = {
   e0: '0 1px 2px rgba(13,38,68,.05)',                                 // hairline
   e1: '0 1px 2px rgba(13,38,68,.04), 0 6px 16px rgba(13,38,68,.06)',  // carte au repos
   e2: '0 1px 2px rgba(13,38,68,.04), 0 8px 22px rgba(13,38,68,.06)',  // carte surélevée
-  e3: '0 14px 34px rgba(12,35,64,.3)',                                // pop (FAB, héros)
+  e3: '0 18px 36px rgba(12,35,64,.17)',                               // pop (héros, carte flottante) — réf dc.html
 } as const;
 
 /** Équivalents RN (shadowColor #0D2644). */
 export const shadowNative = {
   e1: { shadowColor: '#0D2644', shadowOpacity: 0.06, shadowRadius: 16, shadowOffset: { width: 0, height: 6 }, elevation: 3 },
   e2: { shadowColor: '#0D2644', shadowOpacity: 0.06, shadowRadius: 22, shadowOffset: { width: 0, height: 8 }, elevation: 5 },
-  e3: { shadowColor: '#0C2340', shadowOpacity: 0.30, shadowRadius: 34, shadowOffset: { width: 0, height: 14 }, elevation: 12 },
+  e3: { shadowColor: '#0C2340', shadowOpacity: 0.17, shadowRadius: 36, shadowOffset: { width: 0, height: 18 }, elevation: 12 },
 } as const;
 
 // Espacements récurrents du proto (px / dp)
@@ -145,6 +145,7 @@ export const controls = {
   ringTrack: '#E6EBF1', // piste du ScoreRing
   buttonSecondaryBorder: '#D9E0E8', // bord du bouton secondaire
   dangerBadgeBg: '#FBE7E4', // fond badge retard/impayé (redlines §7)
+  tabInactive: '#9AA7B4', // item de tab bar au repos (réf §14)
 } as const;
 
 // ----------------------------------------------------------------------------
@@ -164,20 +165,33 @@ export const overlays = {
   successPill: 'rgba(52,211,153,.18)', // pill « sans risque » (texte = successOnDark)
   unreadDot: '#FF7A6B', // point non-lu de la cloche
   haloIndigo: ['rgba(67,56,202,.55)', 'rgba(67,56,202,0)'], // halo header top-right
-  haloGreen: ['rgba(16,185,129,.4)', 'rgba(16,185,129,0)'], // halo header bottom-left
+  haloGreen: ['rgba(16,185,129,.4)', 'rgba(16,185,129,0)'], // halo héros Argent (émeraude)
+  haloGreenDeep: ['rgba(14,124,90,.4)', 'rgba(14,124,90,0)'], // halo header bottom-left (success)
   haloMint: ['rgba(110,231,183,.32)', 'rgba(110,231,183,0)'],
   haloWhite: ['rgba(255,255,255,.16)', 'rgba(255,255,255,0)'],
+} as const;
+
+/** Pastille utilisateur (initiales) — dégradé bleu→indigo constant sur tous les thèmes (§8). */
+export const avatarGradient = 'linear-gradient(135deg, #3B82F6, #4338CA)';
+
+/** Carte info « Conformité » (lavande) — la seule priorité non actionnable (réf p. Aujourd'hui). */
+export const conformityCard = {
+  bgTop: '#F3F1FE', // dégradé 180° — haut
+  bgBottom: '#FBFAFF', // dégradé 180° — bas
+  border: '#E3DEFB',
 } as const;
 
 // Ombres de composants (v1.2, redlines) — web string + équivalent RN
 export const shadowComponents = {
   priorityCard: '0 7px 20px rgba(13,38,68,.06)',
+  conformityCard: '0 7px 20px rgba(67,56,202,.07)', // ombre douce indigo de la carte lavande
   heroMoney: '0 12px 30px rgba(12,35,64,.22)',
   tabBar: '0 8px 24px rgba(13,38,68,.08)',
 } as const;
 
 export const shadowComponentsNative = {
   priorityCard: { shadowColor: '#0D2644', shadowOpacity: 0.06, shadowRadius: 20, shadowOffset: { width: 0, height: 7 }, elevation: 4 },
+  conformityCard: { shadowColor: '#4338CA', shadowOpacity: 0.07, shadowRadius: 20, shadowOffset: { width: 0, height: 7 }, elevation: 4 },
   heroMoney: { shadowColor: '#0C2340', shadowOpacity: 0.22, shadowRadius: 30, shadowOffset: { width: 0, height: 12 }, elevation: 10 },
   tabBar: { shadowColor: '#0D2644', shadowOpacity: 0.08, shadowRadius: 24, shadowOffset: { width: 0, height: 8 }, elevation: 8 },
 } as const;
@@ -198,6 +212,7 @@ export const patterns = {
     radius: 22,                   // = radius.cardXl
     padding: [17, 18, 16],        // dp — haut / côtés / bas
     numberSize: 31, numberWeight: 800, numberColor: '#0C2340', // ink900
+    numberTracking: -0.6,         // letter-spacing du montant héros (réf dc.html)
     elevation: shadow.e3,         // ombre profonde = effet flottant
     divider: '#EEF1F5',
     voiceLineColor: '#0E7C5A',    // phrase « te verser », en success
@@ -209,4 +224,11 @@ export const patterns = {
   /** Rangée d'argent (grand-livre) : label à gauche, montant tabular-nums à droite,
    *  coloré par signe (success / dangerVivid). Séparateur lineSoft entre les lignes. */
   moneyRow: { divider: '#F1F4F7', positive: '#0E7C5A', negative: '#E5544B', total: '#0C2340' },
+  /** Tab bar pill flottante (§14) : le contenu défile dessous et s'estompe dans le fondu
+   *  (bg teinté 0 → .92 → opaque) ; padding du conteneur absolu (26 = safe-area proto). */
+  bottomTabBar: {
+    fade: ['rgba(239,242,247,0)', 'rgba(239,242,247,.92)', '#EFF2F7'],
+    fadeLocations: [0, 0.32, 0.6],
+    padding: [8, 10, 26], // haut / côtés / bas
+  },
 } as const;

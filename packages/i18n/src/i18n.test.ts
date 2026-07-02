@@ -66,6 +66,31 @@ describe('i18n', () => {
     expect(t('today.footer', { personality: 'direct' })).toBe('Fini pour aujourd’hui.');
   });
 
+  it('argent.* : copy pote exacte du proto (C11 — « LE SOLDE MENT »)', () => {
+    expect(t('argent.subtitle')).toBe('Le vrai état des comptes, sans te mentir.');
+    expect(t('argent.heroLabel')).toBe('Ce mois-ci, tu peux te verser');
+    expect(t('argent.heroPill')).toBe('sans risque');
+    expect(t('argent.soldeMent').toUpperCase()).toBe('LE SOLDE MENT');
+    expect(t('argent.tipTitle')).toBe('Ton vrai dispo, pas le solde');
+  });
+
+  it('argent.bandCreux décline les 3 humeurs (notes de tranche de la prévision)', () => {
+    expect(t('argent.bandCreux')).toBe('Creux, surveille');
+    expect(t('argent.bandCreux', { personality: 'pro' })).toBe('Creux à surveiller');
+    expect(t('argent.bandCreux', { personality: 'direct' })).toBe('Creux');
+    expect(t('argent.bandPasse')).toBe('Ça passe');
+  });
+
+  it('argent.heroUpside interpole {upTo}/{name}/{amount} et les relances gèrent le singulier/pluriel', () => {
+    expect(
+      t('argent.heroUpside', { params: { upTo: '3 400 €', name: 'Martin', amount: '1 240 €' } }),
+    ).toBe('Tu peux monter à 3 400 € si Martin règle ses 1 240 €. Je te préviens dès qu’il paie.');
+    expect(t('argent.ctaRelanceOne')).toBe('Laisse l’assistant relancer ce client');
+    expect(t('argent.ctaRelanceMany', { params: { count: 2 } })).toBe(
+      'Laisse l’assistant relancer 2 clients',
+    );
+  });
+
   it('refuse une clé inconnue à la compilation', () => {
     // @ts-expect-error — 'cle.inconnue' n'est pas une I18nKey : garantie compile-time.
     const invalid: () => string = () => t('cle.inconnue');

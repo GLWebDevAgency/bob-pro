@@ -204,6 +204,215 @@ const fr = {
     pro: 'Connexion impossible pour le moment. Veuillez réessayer dans un instant.',
     direct: 'Hors ligne. Réessaie.',
   },
+
+  // ── C11 — écran « Argent » (copy pote = exacte du proto) ─────────────────────
+  'argent.eyebrow': {
+    pote: 'Ta tréso',
+    pro: 'Votre trésorerie',
+    direct: 'Tréso',
+  },
+  'argent.title': {
+    pote: 'Argent',
+    pro: 'Argent',
+    direct: 'Argent',
+  },
+  'argent.subtitle': {
+    pote: 'Le vrai état des comptes, sans te mentir.',
+    pro: 'L’état réel de vos comptes, en toute transparence.',
+    direct: 'Les comptes, sans mentir.',
+  },
+  'argent.heroLabel': {
+    pote: 'Ce mois-ci, tu peux te verser',
+    pro: 'Ce mois-ci, vous pouvez vous verser',
+    direct: 'À te verser ce mois-ci',
+  },
+  'argent.heroPill': {
+    pote: 'sans risque',
+    pro: 'sans risque',
+    direct: 'sans risque',
+  },
+  // Phrase conditionnelle du héros : le « monter à » vient du scénario optimiste réel.
+  'argent.heroUpside': {
+    pote: 'Tu peux monter à {upTo} si {name} règle ses {amount}. Je te préviens dès qu’il paie.',
+    pro: 'Vous pouvez atteindre {upTo} si {name} règle ses {amount}. Nous vous préviendrons dès réception.',
+    direct: 'Jusqu’à {upTo} si {name} paie ses {amount}.',
+  },
+  'argent.heroCaption': {
+    pote: 'TVA et charges déjà mises de côté. Le reste est à toi.',
+    pro: 'TVA et charges provisionnées. Le solde est disponible.',
+    direct: 'TVA et charges déjà de côté.',
+  },
+  // Grand-livre « Argent disponible réel » — badge + labels des rangées.
+  'argent.ledgerTitle': {
+    pote: 'Argent disponible réel',
+    pro: 'Argent disponible réel',
+    direct: 'Dispo réel',
+  },
+  'argent.soldeMent': {
+    pote: 'Le solde ment',
+    pro: 'Solde incomplet',
+    direct: 'Le solde ment',
+  },
+  'argent.rowBank': {
+    pote: 'Solde bancaire',
+    pro: 'Solde bancaire',
+    direct: 'Solde bancaire',
+  },
+  'argent.rowReceivables': {
+    pote: 'Factures clients attendues',
+    pro: 'Factures clients attendues',
+    direct: 'Factures attendues',
+  },
+  'argent.rowCharges': {
+    pote: 'Charges & achats prévus',
+    pro: 'Charges et achats prévus',
+    direct: 'Charges prévues',
+  },
+  'argent.rowVat': {
+    pote: 'TVA à reverser',
+    pro: 'TVA à reverser',
+    direct: 'TVA à reverser',
+  },
+  'argent.rowCotisations': {
+    pote: 'Cotisations & abonnements',
+    pro: 'Cotisations et abonnements',
+    direct: 'Cotisations & abos',
+  },
+  'argent.rowTotal': {
+    pote: 'Disponible prudent',
+    pro: 'Disponible prudent',
+    direct: 'Disponible prudent',
+  },
+  // Prévision de tréso — titre, segments et notes de tranche (dérivées de cashflowBand).
+  'argent.forecastTitle': {
+    pote: 'Prévision de tréso',
+    pro: 'Prévision de trésorerie',
+    direct: 'Prévision',
+  },
+  'argent.horizonLabel': {
+    pote: '{days} j',
+    pro: '{days} j',
+    direct: '{days} j',
+  },
+  'argent.scenarioOptimiste': {
+    pote: 'Optimiste',
+    pro: 'Optimiste',
+    direct: 'Optimiste',
+  },
+  'argent.scenarioRealiste': {
+    pote: 'Réaliste',
+    pro: 'Réaliste',
+    direct: 'Réaliste',
+  },
+  'argent.scenarioPrudent': {
+    pote: 'Prudent',
+    pro: 'Prudent',
+    direct: 'Prudent',
+  },
+  'argent.bandTranquille': {
+    pote: 'Tranquille',
+    pro: 'Confortable',
+    direct: 'Large',
+  },
+  'argent.bandPasse': {
+    pote: 'Ça passe',
+    pro: 'Correct',
+    direct: 'Ça passe',
+  },
+  'argent.bandCreux': {
+    pote: 'Creux, surveille',
+    pro: 'Creux à surveiller',
+    direct: 'Creux',
+  },
+  'argent.bandRepart': {
+    pote: 'Ça repart',
+    pro: 'En reprise',
+    direct: 'Ça repart',
+  },
+  // « À surveiller » — mauvais payeurs réels (scoring @bob/core) + relais assistant.
+  'argent.watchTitle': {
+    pote: 'À surveiller',
+    pro: 'À surveiller',
+    direct: 'À surveiller',
+  },
+  'argent.watchLateBadge': {
+    pote: 'Paie en retard',
+    pro: 'Paie en retard',
+    direct: 'Retard',
+  },
+  'argent.watchOutstanding': {
+    pote: '{amount} en cours',
+    pro: '{amount} en cours',
+    direct: '{amount} en cours',
+  },
+  'argent.ctaRelanceOne': {
+    pote: 'Laisse l’assistant relancer ce client',
+    pro: 'Confier la relance à l’assistant',
+    direct: 'Relancer ce client',
+  },
+  'argent.ctaRelanceMany': {
+    pote: 'Laisse l’assistant relancer {count} clients',
+    pro: 'Confier {count} relances à l’assistant',
+    direct: 'Relancer {count} clients',
+  },
+  // « À mettre de côté » — réserve TVA + charges dérivée (buildLedgerView.reserve).
+  'argent.reserveTitle': {
+    pote: 'Mise de côté auto',
+    pro: 'Mise de côté automatique',
+    direct: 'Mise de côté',
+  },
+  'argent.reserveBody': {
+    pote: 'Je réserve la TVA et les charges à chaque encaissement. Tu ne touches qu’à ton vrai dispo.',
+    pro: 'La TVA et les charges sont réservées à chaque encaissement. Vous ne touchez qu’au disponible réel.',
+    direct: 'TVA et charges réservées à chaque encaissement.',
+  },
+  'argent.reserveVat': {
+    pote: 'TVA réservée',
+    pro: 'TVA réservée',
+    direct: 'TVA réservée',
+  },
+  'argent.reserveCharges': {
+    pote: 'Charges',
+    pro: 'Charges',
+    direct: 'Charges',
+  },
+  // Astuce « première fois » (coach-mark, dismiss persisté).
+  'argent.tipEyebrow': {
+    pote: 'Astuce · première fois',
+    pro: 'Astuce · première fois',
+    direct: 'Astuce',
+  },
+  'argent.tipAuthor': {
+    pote: 'Bob',
+    pro: 'Bob',
+    direct: 'Bob',
+  },
+  'argent.tipTitle': {
+    pote: 'Ton vrai dispo, pas le solde',
+    pro: 'Votre vrai disponible, pas le solde',
+    direct: 'Le vrai dispo, pas le solde',
+  },
+  'argent.tipBody': {
+    pote: 'Le solde bancaire, lui, il ment. Ici tu vois ce qu’il te reste vraiment une fois les charges et la TVA mises de côté — glisse les scénarios et l’horizon 7 → 90 j.',
+    pro: 'Le solde bancaire est trompeur. Ici, vous voyez ce qu’il vous reste réellement une fois les charges et la TVA provisionnées — parcourez les scénarios et l’horizon 7 → 90 j.',
+    direct: 'Le solde ment. Ici : le vrai reste après charges et TVA. Scénarios + horizon 7 → 90 j.',
+  },
+  'argent.tipCta': {
+    pote: 'Compris, c’est parti',
+    pro: 'Compris',
+    direct: 'Compris',
+  },
+  'argent.tipSkip': {
+    pote: 'Tout passer',
+    pro: 'Tout passer',
+    direct: 'Passer',
+  },
+  // Erreur de chargement — la voix de Bob, jamais un chiffre inventé (A1-C10).
+  'argent.dataError': {
+    pote: 'Je n’arrive pas à lire tes comptes, là. On réessaie dans un instant ?',
+    pro: 'Impossible de consulter vos comptes pour le moment. Veuillez réessayer dans un instant.',
+    direct: 'Comptes injoignables. Réessaie.',
+  },
 } as const satisfies Record<string, Copy>;
 
 export type I18nKey = keyof typeof fr;

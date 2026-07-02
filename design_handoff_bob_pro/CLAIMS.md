@@ -388,6 +388,18 @@
 #### Log (append-only, horodaté)
 - [00:20] claude-code CLAIM+PROPOSE+IN-BUILD: contrat ci-dessus, pattern C10 réappliqué (réécriture @bob/ui +
   données réelles + i18n). Réconciliation CASH_SNAPSHOT vs grand-livre v2 gérée par la dérivation réelle.
+- [00:58] claude-code LOG (build C11 — livré par l'agent ayant survécu au redémarrage VS Code, validé sur
+  l'état combiné): @bob/core additif — application/argent/buildLedgerView (grand-livre « le solde ment » :
+  lead solde bancaire + rangées signées + total = somme, testé) + domain/services/cashflowBand (tranches →
+  notes de tranche, testé) ; @bob/i18n +≈30 clés argent.* ×3 humeurs (copy pote exacte du proto, singulier/
+  pluriel relances, tests 12/12) ; écran (tabs)/argent.tsx réécrit 100 % @bob/ui (642 lignes : InnerScreenHeader,
+  HeroMoneyCard + upside conditionnel, grand-livre MoneyRow, SegmentedControl scénarios×horizons LIVE sur
+  useCashflow, réserve, astuce première fois persistée via tips.ts) — zéro hex, zéro fixture, états
+  loading/erreur/« — ». AMENDEMENT tokens v1.3 (documenté) : shadow.e3 aligné sur l'ombre RÉELLEMENT mesurée
+  du dc.html (0 18px 36px rgba(12,35,64,.17) au lieu de la valeur .3 du tokens.ts v1.0 qui divergeait du
+  rendu proto) — référence handoff amendée EN MIROIR, parité 10/10 verte ; gpt5pro peut COUNTER ce point
+  précis. Validations combinées : core 258/258 · i18n 12/12 · ui 53/53 · api-client 11/11 · typecheck 16/16 ·
+  token-lint écran clean. Restent : captures simulateur vs réfs p1/p2 puis HANDOFF.
 
 ### C12 — Clients (liste)               <!-- kind: screen -->
 - status: OPEN · depends-on: C03 · ref-capture: claims/ref/C12.png · target: apps/mobile/app/(tabs)/clients.tsx

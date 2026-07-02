@@ -143,31 +143,41 @@ const WEIGHT_SUFFIX: Record<string, string> = {
   '800': '800ExtraBold',
 };
 
+/** Graisses chargées par l'app (RN_EXPO_GUIDE §2) — une famille par poids. */
+export type FontWeight = 500 | 600 | 700 | 800;
+
 /**
  * Convertit une entrée de l'échelle typographique des tokens en TextStyle RN.
- * fontFamily cible les familles chargées par expo-google-fonts (une par poids —
- * exigence Android) ; fontWeight reste en secours si la police n'est pas chargée.
+ * `weight` permet de dévier de la graisse par défaut de l'échelle (ex. body en 700)
+ * en changeant de FAMILLE — jamais via fontWeight : une famille expo-google-fonts
+ * n'a qu'une face, iOS retomberait sur SF et Android ferait un faux gras.
  */
-export function font(key: ScaleKey): TextStyle {
+export function font(key: ScaleKey, weight?: FontWeight): TextStyle {
   const t = typeScale[key];
-  const weight = String(t.weight);
+  const w = String(weight ?? t.weight);
   const base = (t.family === 'display' ? fonts.display : fonts.text).replace(/\s+/g, '');
-  const suffix = WEIGHT_SUFFIX[weight];
+  const suffix = WEIGHT_SUFFIX[w];
   const style: TextStyle = {
     fontSize: t.size,
-    fontWeight: weight as TextStyle['fontWeight'],
-    ...(suffix !== undefined ? { fontFamily: `${base}_${suffix}` } : {}),
+    ...(suffix !== undefined
+      ? { fontFamily: `${base}_${suffix}` }
+      : { fontWeight: w as TextStyle['fontWeight'] }), // secours : graisse hors familles chargées
   };
   if ('tracking' in t && typeof t.tracking === 'number') style.letterSpacing = t.tracking;
   if ('uppercase' in t && t.uppercase) style.textTransform = 'uppercase';
   return style;
 }
 
-/** Parse "linear-gradient(168deg, #a 0%, #b 58%, #c 100%)" pour expo-linear-gradient. */
+/**
+ * Parse "linear-gradient(168deg, #a 0%, #b 58%, #c 100%)" pour expo-linear-gradient.
+ * Angle CSS → start/end (guide §5 : 180deg = haut→bas, 90deg = gauche→droite) ;
+ * les stops % deviennent `locations` (transmis seulement si complets).
+ */
 export function parseGradient(css: string): {
   colors: [string, string, ...string[]];
   start: { x: number; y: number };
   end: { x: number; y: number };
+  locations?: [number, number, ...number[]];
 } {
   const hexes = css.match(/#[0-9a-fA-F]{3,8}/g) ?? [neutrals.ink900, neutrals.ink600];
   const colors = (hexes.length >= 2 ? hexes : [hexes[0] ?? neutrals.ink900, hexes[0] ?? neutrals.ink600]) as [
@@ -175,5 +185,17 @@ export function parseGradient(css: string): {
     string,
     ...string[],
   ];
-  return { colors, start: { x: 0, y: 0 }, end: { x: 0.4, y: 1 } };
+  const deg = Number(/(-?\d+(?:\.\d+)?)deg/.exec(css)?.[1] ?? 180);
+  const rad = ((deg % 360) * Math.PI) / 180;
+  const dx = Math.sin(rad);
+  const dy = -Math.cos(rad);
+  const start = { x: 0.5 - dx / 2, y: 0.5 - dy / 2 };
+  const end = { x: 0.5 + dx / 2, y: 0.5 + dy / 2 };
+  const stops = [...css.matchAll(/(\d+(?:\.\d+)?)%/g)].map((m) => Number(m[1]) / 100);
+  return {
+    colors,
+    start,
+    end,
+    ...(stops.length === colors.length ? { locations: stops as [number, number, ...number[]] } : {}),
+  };
 }
