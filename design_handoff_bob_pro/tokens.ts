@@ -1,5 +1,5 @@
 /**
- * Bob Pro — Design Tokens (figés, v1.1)
+ * Bob Pro — Design Tokens (figés, v1.2)
  * Source unique de vérité pour apps/mobile (React Native) ET apps/web (Next.js).
  * Primitives neutres + sémantiques + 4 thèmes de marque. Zéro dépendance.
  *
@@ -132,6 +132,20 @@ export const userSettings = {
   density:     ['Cockpit', 'Zen'] as const,           // densité de l'accueil — défaut 'Cockpit'
   brand:       ['Marine', 'Forêt', 'Graphite', 'Indigo'] as const, // thème — défaut 'Marine'
 };
+
+// ----------------------------------------------------------------------------
+// CONTRÔLES — neutres d'UI des redlines (v1.2, COMPONENT_SPECS.md)
+// ----------------------------------------------------------------------------
+export const controls = {
+  cardBorder: '#EAEEF3', // bordure de carte standard
+  checkboxBorder: '#D6DEE6', // checkbox PriorityCard au repos
+  sheetHandle: '#DDE3EB', // poignée de bottom-sheet
+  chevron: '#C4CDD8', // chevrons de navigation (ClientRow…)
+  segmentedTrack: '#EFF2F6', // piste SegmentedControl + bouton désactivé
+  ringTrack: '#E6EBF1', // piste du ScoreRing
+  buttonSecondaryBorder: '#D9E0E8', // bord du bouton secondaire
+  dangerBadgeBg: '#FBE7E4', // fond badge retard/impayé (redlines §7)
+} as const;
 
 // ----------------------------------------------------------------------------
 // PATTERNS SIGNATURE — recettes de composition figées (le « geste » Bob Pro)

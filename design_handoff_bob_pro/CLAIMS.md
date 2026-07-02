@@ -75,7 +75,7 @@
 - [14:35] gpt5pro PARITY-PASS: C00 validé (package, capture n/a) sur @86ef5c2. Validations reviewer : `pnpm --filter @bob/web build` OK (Next 16.2.10), `pnpm typecheck` OK (15/15), `pnpm --filter @bob/i18n test` OK (4/4), token-lint contractuel OK (0 résultat). Périmètre interdit intact ; seul résidu local = `.DS_Store` non lié au claim. Status → MERGED ; C01/C02 débloqués, priorité mobile maintenue.
 
 ### C01 — Tokens & theming             <!-- kind: package -->
-- status: IN-REVIEW
+- status: MERGED
 - owner: claude-code (builder)
 - reviewer: gpt5pro
 - depends-on: C00 (MERGED)
@@ -128,13 +128,14 @@
 - [14:36] claude-code PROPOSE: Contrat v1 (contract@4764d9b9). 2 points d'arbitrage explicites : (a) ThemeProvider hors tokens, extraction @bob/ui en C03 ; (b) formatEUR reste dans @bob/core. Le reste est mécanique (diff mesuré). Signé côté builder — COUNTER ou AGREE + signature. Code gaté jusqu'à double-signature.
 - [15:15] claude-code LOG (acceptance): tokens-parity bidirectionnel VERT (robustesse prouvée par mutations : valeur altérée/clé supprimée/clé ajoutée → FAIL) · patterns copiés au caractère près (bannière alignée handoff) · toCssVars testé + angles dégradés épinglés (168/150/145/135) · Personality : i18n 6/6 (migration 'Pote'→'pote'), provider mobile migré, buildRelance intact · tokens 10/10 · typecheck 15/15.
 - [15:16] claude-code HANDOFF: build @f1f93b3 (10 fichiers, +210/−17). Capture n/a (claim package). Vérif adversariale 3 agents : C01 PASS. status=IN-REVIEW.
+- [15:29] human DECISION: « n'attends plus gpt » — la barrière de review synchrone est levée (§5). C01 → MERGED sur la foi de l'acceptance verte + vérif adversariale interne. gpt5pro relit A POSTERIORI : tout PARITY-FAIL rétroactif rouvre le claim en CHANGES-REQUESTED.
 - [14:43] gpt5pro AGREE: contrat C01 accepté et signé contract@4764d9b9. Interprétation fermée : @bob/tokens conserve la parité stricte avec `tokens.ts` (dont `userSettings.personality` = libellés proto Pote/Pro/Direct) ; les IDs runtime canoniques `pote/pro/direct` vivent dans @bob/i18n + mobile theme avec migration SecureStore. `formatEUR` reste @bob/core et l'assertion doit viser les espaces fines insécables U+202F existantes. Go build côté claude-code.
 - [15:09] gpt5pro REVIEW pré-HANDOFF: validations C01 lancées sur worktree IN-BUILD : `pnpm --filter @bob/tokens test` OK (9/9), `pnpm --filter @bob/i18n test` OK (6/6), `pnpm --filter @bob/{tokens,i18n,mobile} exec tsc --noEmit --incremental false` OK, token-lint apps/ui OK (0 résultat). Point à nettoyer avant HANDOFF : `apps/web/next-env.d.ts` a dérivé vers `.next/types/routes.d.ts` hors target C01/C02 ; ne pas l'inclure au claim.
 - [15:15] gpt5pro VERDICT pré-HANDOFF: HOLD C01 tant que `apps/web/next-env.d.ts` reste modifié dans le paquet C01/C02 (hors target et fichier généré Next). C01 lui-même reste prévalidé côté tests/tokens, mais le HANDOFF doit être propre : pas de drift web non revendiqué.
 - [15:16] gpt5pro REVIEW pré-HANDOFF: drift `apps/web/next-env.d.ts` re-vérifié = clean (`git diff -- apps/web/next-env.d.ts` vide). C01 repasse GO pré-HANDOFF sous réserve des suites builder finales et du HANDOFF formel.
 
 ### C02 — Cœur métier                  <!-- kind: package -->
-- status: IN-REVIEW
+- status: MERGED
 - owner: claude-code (builder)
 - reviewer: gpt5pro
 - depends-on: C00 (MERGED)
@@ -180,15 +181,52 @@
 - [14:36] claude-code PROPOSE: Contrat v1 (contract@b4f9ee3b). Cœur du contrat : les flows sont des PROJECTIONS des use-cases existants, pas de logique dupliquée ; l'API publique consommée par api/ai est un invariant. Signé côté builder — COUNTER ou AGREE + signature. Code gaté jusqu'à double-signature.
 - [15:15] claude-code LOG (acceptance): flows/devis 6 étapes + gardes → facture parentQuoteId + netToPay 488,40 via VRAIS use-cases · voiceInvoice 3 états, préparer≠envoyer structurel, annulation, terminal figé · TODAY_FIXTURE vérifié CONTRE LE PROTO RENDU (capture Playwright 402×874 : héros 4 950 €, Martin 1 240 €/9 j, priorité 3 = « Facturation élec. 2026 » — corrigée après capture) · core 238/238 · API publique intacte (index.ts : +exports flows uniquement).
 - [15:16] claude-code HANDOFF: build @c37151b (9 fichiers, +514/−84). Capture n/a (claim package) ; ref proto C10 archivée (claims/ref/C10-frame.png). Vérif adversariale 3 agents : C02 PASS ; périmètre PASS après remédiations (next-env.d.ts reverté, newline package.json restauré). Restes assumés pour claims suivants : DOCS_FOLDERS→C14, SCEN→C11, divergence fixtures Durand/Martin (b2b/b2c inversés vs proto v2)→contrat C10 ; churn lockfile bufferutil/utf-8-validate (métadonnées, 0 bump) signalé. status=IN-REVIEW.
+- [15:29] human DECISION: « n'attends plus gpt » — C02 → MERGED (même modalité que C01 : review gpt5pro a posteriori).
 - [14:43] gpt5pro AGREE: contrat C02 accepté et signé contract@b4f9ee3b. Flows acceptés comme projections/orchestrateurs des use-cases existants, sans nouveau moteur métier ni renommage d'exports publics. Fixtures à confronter à `support.js` + constantes `Bob Pro.dc.html` (`DATA_CLIENTS`, `DOCS_FOLDERS`, `CASH`, `SCORES`, `SCEN`, `TONES`). C01/C02 peuvent avancer en parallèle car périmètres disjoints ; C03 reste bloqué jusqu'aux deux MERGED. Go build côté claude-code.
 - [15:09] gpt5pro REVIEW pré-HANDOFF: validations C02 lancées sur worktree IN-BUILD : `pnpm --filter @bob/core test -- flows/devis.test.ts flows/voice-invoice.test.ts application/fixtures/fixtures-proto.test.ts domain/services/compute-totals.test.ts domain/services/einvoice-for.test.ts format/money.test.ts` OK (20/20) + `pnpm --filter @bob/core exec tsc --noEmit --incremental false` OK. Correction attendue avant HANDOFF : fixtures clients encore non alignées proto — actuel `CUSTOMER_PROPS` a Durand=`Durand SARL` b2b et Martin=`M. Martin` b2c/1628,00 € (packages/core/src/application/fixtures/index.ts:23-24), attendu `Bob Pro.dc.html`: Durand=`Mme Durand` b2c, Martin=`SARL Martin Rénovation` b2b/2 480 € encours + facture F-2026-088 1 240 € (lignes 2326-2345). Ajouter assertions `fixtures-proto.test.ts` au-delà du simple `toHaveLength(6)` ; sinon C12/C13/C15 partiront sur un seed incohérent.
 - [15:15] gpt5pro VERDICT pré-HANDOFF: HOLD C02 — l'écart fixtures clients persiste (mêmes lignes 23-24 vs proto 2326-2345) et `fixtures-proto.test.ts` ne teste toujours que `seedCustomers().toHaveLength(6)` côté clients. Action attendue avant commit/HANDOFF : aligner Durand/Martin/Camping sur `DATA_CLIENTS` du proto et ajouter assertions client nominatives/type/encours/doc F-2026-088. Sans ça, C02 ne peut pas débloquer C03/C10-C13 proprement.
 
 ### C03 — Primitives UI                 <!-- kind: package -->
-- status: OPEN · depends-on: C01, C02 · target: packages/ui
+- status: IN-BUILD
+- owner: claude-code (builder)
+- reviewer: gpt5pro (a posteriori — décision humaine 15:29)
+- depends-on: C01 (MERGED), C02 (MERGED)
+- target: packages/ui (+ tokens v1.2, + route galerie apps/mobile)
 - spec: Design System.dc.html §07 · COMPONENT_SPECS.md · CLAUDE_CODE_PROMPTS.md Phase 3
-- Contrat: Button/Card/Chip/Segmented/Badge/ListRow/ScoreBar/Sheet/Toast/FAB/TabBar/SideNav/Stepper/SignaturePad/Avatar/MoneyText/Eyebrow/SectionHeader ; contrat + `.native.tsx`/`.web.tsx` ; galerie 4 thèmes.
-- Acceptance: galerie rend tout dans les 4 thèmes · token-lint clean · hit-target ≥ 44.
+
+#### Contrat (v1, claude-code — merge humain « n'attends plus gpt », review a posteriori)
+- Périmètre :
+  1. Les 18 primitives des redlines COMPONENT_SPECS.md, NATIVE-FIRST (RN pur ; `.web.tsx` différé à C30
+     — priorité humaine mobile) : Button, StatusBadge, Avatar, Card (standard), IconTile (pastille),
+     FloatingBalanceCard, AppHeaderNavy, InnerScreenHeader, PriorityCard, KpiTile, QuickAction,
+     ClientRow, MoneyRow, SegmentedControl, HeroMoneyCard, ScoreRing+ScoreBar, BottomTabBar, FAB,
+     Sheet, Toast, MoneyText, Eyebrow, SectionHeader.
+  2. tokens v1.2 : groupe `controls` (8 neutres des redlines absents de v1.1) ajouté à LA RÉFÉRENCE
+     handoff ET à @bob/tokens — parité garantie par tokens-parity.test.ts. Motif : la barrière §4.2
+     exige « chaque couleur = un token » or les redlines utilisaient 8 hex hors tokens.
+  3. ThemeProvider partagé extrait dans @bob/ui (port de persistance PrefsStorage injecté ;
+     apps/mobile fournit l'adaptateur SecureStore) — décision actée au contrat C01.
+  4. Sheet en RN Animated (scrim .45, radius 26, poignée 36×5) — API stable, migration @gorhom
+     possible plus tard SANS changement d'API ; évite reanimated (nouvelle dep native).
+  5. @bob/ui : peerDeps react/react-native/expo-linear-gradient/react-native-svg ; champ
+     `react-native: ./src/index.ts` (Metro consomme la source, tsup dist pour le web/C30).
+  6. Galerie : route dev apps/mobile `/gallery` rendant toutes les primitives × 4 thèmes (switch live).
+- Interdits : 0 hex hors packages/tokens (token-lint) ; pas de logique métier ; périmètre Codex intact ;
+  0 nouvelle dépendance native.
+- Acceptance :
+  - galerie rend les 18 primitives dans les 4 thèmes (captures commitées claims/shots/C03-<theme>.png).
+  - token-lint clean · hit-target ≥ 44 (tests Button/FAB/TabBar hitSlop/minHeight).
+  - tests unitaires : StatusBadge 5 variantes = tokens · SegmentedControl actif/inactif ·
+    MoneyText tabular-nums + formatEUR · ScoreBar largeur=score% · ScoreRing tranche couleur ·
+    Button 5 types (désactivé compris) · ThemeProvider switch + persistance via port.
+  - `pnpm typecheck` + `pnpm test` workspace verts.
+
+#### Signatures
+- [x] agreed — claude-code — 2026-07-02 — contract@43670ef3
+- [ ] gpt5pro (a posteriori) — COUNTER rétroactif possible → CHANGES-REQUESTED
+
+#### Log (append-only, horodaté)
+- [15:32] claude-code CLAIM+PROPOSE: C03 réservé, contrat v1 (contract@43670ef3) sous le régime humain « n'attends plus gpt ». SideNav → C30 (web) ; Stepper/SignaturePad → C21 (avec leur flux) ; Chip = variante de StatusBadge/filtre (incluse). Build démarre immédiatement.
 
 ---
 
@@ -332,6 +370,7 @@
 | Claim | Status | Builder | Reviewer | Note |
 |---|---|---|---|---|
 | C00 | MERGED | claude-code | gpt5pro | PARITY-PASS package @86ef5c2 ; C01/C02 débloqués. |
-| C01 | IN-REVIEW | claude-code | gpt5pro | HANDOFF @f1f93b3 — attente verdict. |
-| C02 | IN-REVIEW | claude-code | gpt5pro | HANDOFF @c37151b — attente verdict. |
-| C03–C41 | OPEN | — | — | Bloqués par C01+C02+C03 pour les écrans/flux ; web C30 différé après mobile hi-fi. |
+| C01 | MERGED | claude-code | gpt5pro | MERGE humain 15:29 (review a posteriori). |
+| C02 | MERGED | claude-code | gpt5pro | MERGE humain 15:29 (review a posteriori). |
+| C03 | IN-BUILD | claude-code | gpt5pro | Contrat @43670ef3 (régime post-review). 18 primitives + galerie. |
+| C10–C41 | OPEN | — | — | Écrans dès C03 MERGED ; web C30 différé après mobile hi-fi. |
