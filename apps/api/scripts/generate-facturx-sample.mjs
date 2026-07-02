@@ -11,7 +11,7 @@ import {
   buildFacturXBasicXml,
   validateFacturXBasic,
 } from '@bob/core';
-import { PdfRenderer } from '../dist/documents/pdf-renderer.js';
+import { PdfRenderer } from '../dist/apps/api/src/documents/pdf-renderer.js';
 
 const unwrap = (r, label) => {
   if (!r || r.ok !== true) {
