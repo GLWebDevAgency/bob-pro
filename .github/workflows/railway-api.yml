@@ -10,7 +10,7 @@ on:
       service:
         description: Railway API service name or id
         required: true
-        default: api
+        default: bob-pro-api
 
 jobs:
   release-api:
@@ -35,13 +35,18 @@ jobs:
       - run: docker build -f Dockerfile -t bob-pro-api:ci .
       - name: Install Railway CLI
         run: npm install -g @railway/cli
+      # Inputs texte libre passés via env (jamais interpolés dans le shell) — anti-injection.
       - name: Apply migrations and certify RLS
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_SERVICE: ${{ inputs.service }}
+          RAILWAY_ENV: ${{ inputs.environment }}
         run: |
-          railway run --service "${{ inputs.service }}" --environment "${{ inputs.environment }}" sh apps/api/scripts/check-release-env.sh
-          railway run --service "${{ inputs.service }}" --environment "${{ inputs.environment }}" sh apps/api/scripts/release.sh
+          railway run --service "$RAILWAY_SERVICE" --environment "$RAILWAY_ENV" sh apps/api/scripts/check-release-env.sh
+          railway run --service "$RAILWAY_SERVICE" --environment "$RAILWAY_ENV" sh apps/api/scripts/release.sh
       - name: Deploy API image
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-        run: railway up --service "${{ inputs.service }}" --environment "${{ inputs.environment }}" --detach
+          RAILWAY_SERVICE: ${{ inputs.service }}
+          RAILWAY_ENV: ${{ inputs.environment }}
+        run: railway up --service "$RAILWAY_SERVICE" --environment "$RAILWAY_ENV" --detach
