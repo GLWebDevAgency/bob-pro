@@ -29,6 +29,9 @@ jobs:
           cache: pnpm
       - run: sudo apt-get update && sudo apt-get install -y postgresql-client
       - run: pnpm install --frozen-lockfile
+      # Construit @bob/api ET ses dépendances workspace (@bob/core, @bob/ai, …) :
+      # les tests résolvent les packages via leur entry dist.
+      - run: pnpm --filter "@bob/api..." build
       - run: pnpm --filter @bob/api typecheck
       - run: pnpm --filter @bob/api lint
       - run: pnpm --filter @bob/api test
