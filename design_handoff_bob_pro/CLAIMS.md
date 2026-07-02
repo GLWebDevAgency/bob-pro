@@ -326,10 +326,40 @@
   validation backend prod avec session réelle.
 
 ### C11 — Argent                        <!-- kind: screen -->
-- status: OPEN · depends-on: C03 · ref-capture: claims/ref/C11.png · target: apps/mobile/app/(tabs)/argent.tsx
-- spec: SCREENS.md § Argent · flows: USER_FLOWS.md § Trésorerie
-- Contrat: hero navy « te verser » 42px · grand-livre « LE SOLDE MENT » (rangée d'argent, pattern) · Segmented horizons 7/30/60/90 · Segmented scénarios (optimiste/réaliste/prudent) · « à surveiller » · « à mettre de côté » (réserve TVA/charges).
-- Acceptance: cashflow depuis core par scénario×horizon · réserve calculée · token-lint.
+- status: IN-BUILD
+- owner: claude-code (builder) · reviewer: gpt5pro (a posteriori)
+- depends-on: C03 (MERGED), C10 (pattern données réelles)
+- ref-capture: claims/ref/C11-frame-p1.png + C11-frame-p2.png (+ C11-frame-astuce.png : tip « première fois »)
+- target: apps/mobile/app/(tabs)/argent.tsx (RÉÉCRITURE complète via @bob/ui)
+
+#### Contrat (v1, claude-code — régimes « n'attends plus gpt » + données réelles A1-C10 + parité d'actions)
+- Composition (réfs p1+p2) : InnerScreenHeader (eyebrow « TA TRÉSO », titre « Argent », sous-titre voix Bob)
+  · HeroMoneyCard navy 150deg (« Ce mois-ci, tu peux te verser » + montant heroNum 42/800 tabular-nums +
+  pill « sans risque » + phrase conditionnelle voix Bob) · Card « Argent disponible réel » badge
+  « LE SOLDE MENT » (warning) : MoneyRow lead solde bancaire + rangées (+factures attendues / −charges &
+  achats prévus / −TVA à reverser / −cotisations & abonnements) + MoneyRow total « Disponible prudent » ·
+  Card « Prévision de tréso » : montant + note voix Bob + SegmentedControl horizons 7/30/60/90 j +
+  SegmentedControl scénarios (Optimiste/Réaliste/Prudent) · « à surveiller » (liste risques si données) ·
+  « à mettre de côté » (réserve TVA + charges dérivée) · astuce « première fois » (Sheet/Card overlay,
+  dismiss persisté prefs) — voir C11-frame-astuce.png.
+- Données 100 % réelles (A1-C10) : useCashflow(scenario, horizon) pour héros/prévision/scénarios ; le
+  grand-livre depuis les agrégats du client (cashflow.details si exposé, sinon dérivation @bob/core
+  additive) ; réserve = TVA due + charges à venir (use case pur si calcul nécessaire) ; AUCUNE fixture dans
+  l'écran ; états loading/erreur/absence par ligne (« — »).
+- Copy : clés @bob/i18n argent.* (3 personnalités) — header, heroLabel, pill, grand-livre (labels lignes),
+  soldeMent, prévision notes par tranche, réserve, astuce (titre+corps+cta).
+- Parité d'actions : aucune action mutante sur cet écran (lecture seule) ; toute CTA future documentée.
+- Interdits : hex/rgba, ancien kit, imports fixtures, casse des autres écrans.
+- Acceptance : captures p1+p2 (segments) vs réfs · cashflow scénario×horizon switch live · grand-livre somme
+  cohérente (total = lead + Σ rangées, testé si dérivation core) · réserve calculée · singuliers/pluriels ·
+  i18n tests étendus · typecheck + token-lint écran clean.
+
+#### Signatures
+- [x] agreed — claude-code — 2026-07-03 (00:20) — régime humain, review gpt5pro a posteriori
+
+#### Log (append-only, horodaté)
+- [00:20] claude-code CLAIM+PROPOSE+IN-BUILD: contrat ci-dessus, pattern C10 réappliqué (réécriture @bob/ui +
+  données réelles + i18n). Réconciliation CASH_SNAPSHOT vs grand-livre v2 gérée par la dérivation réelle.
 
 ### C12 — Clients (liste)               <!-- kind: screen -->
 - status: OPEN · depends-on: C03 · ref-capture: claims/ref/C12.png · target: apps/mobile/app/(tabs)/clients.tsx
@@ -449,4 +479,5 @@
 | C02 | CHANGES-REQUESTED | claude-code | gpt5pro | PARITY-FAIL #1 a posteriori @c37151b — fixtures clients proto à aligner. |
 | C03 | IN-BUILD | claude-code | gpt5pro | COUNTER rétroactif #1 @43670ef3 — contrat à préciser avant MERGE. |
 | C10 | IN-BUILD | claude-code | gpt5pro | Refonte écran Aujourd'hui — contrat 17:00. |
-| C11–C41 | OPEN | — | — | Écrans/flux au fil de l'eau ; web C30 différé. |
+| C11 | IN-BUILD | claude-code | gpt5pro | Refonte Argent — contrat 00:20. |
+| C12–C41 | OPEN | — | — | Écrans/flux au fil de l'eau ; web C30 différé. |
