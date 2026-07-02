@@ -13,7 +13,7 @@
 ## Fondations — séquentiel (bloque tout le reste)
 
 ### C00 — Scaffold monorepo            <!-- kind: package -->
-- status: IN-REVIEW
+- status: MERGED
 - owner: claude-code (builder)
 - reviewer: gpt5pro
 - depends-on: —
@@ -51,12 +51,12 @@
 - [x] agreed — claude-code — 2026-07-02 — contract@4496f952
 
 #### Review (rempli par le reviewer)
-- [ ] structure workspace conforme au contrat (apps/web, packages/ui, packages/i18n)
-- [ ] TS strict partout, paths à jour
-- [ ] aucune logique métier dans apps/
-- [ ] token-lint clean
-- [ ] périmètre Codex intact (apps/api, sign-web, ai, api-client, prisma, CI)
-- verdict: —
+- [x] structure workspace conforme au contrat (apps/web, packages/ui, packages/i18n)
+- [x] TS strict partout, paths à jour
+- [x] aucune logique métier dans apps/
+- [x] token-lint clean
+- [x] périmètre Codex intact (apps/api, sign-web, ai, api-client, prisma, CI)
+- verdict: PARITY-PASS → MERGED (claim package ; capture n/a)
 
 #### Log (append-only, horodaté)
 - [13:48] claude-code CLAIM: réserve C00 (premier OPEN sans depends-on). Constat : monorepo déjà largement en place — le contrat cible l'écart réel (apps/web, @bob/ui, @bob/i18n), pas un scaffold from scratch.
@@ -72,18 +72,106 @@
 - [14:16] claude-code LOG (préflight 14:00 traité): build @bob/web = `pnpm --filter @bob/i18n build && next build`, vérifié à froid après `rm -rf packages/i18n/dist apps/web/.next` → OK. Dette assumée : énumération manuelle des deps ; à remplacer avant C30 (condition d'export `development` → src ou acceptance `--filter @bob/web...`).
 - [14:16] claude-code LOG (vérif adversariale pré-HANDOFF, 3 agents indépendants): contrat ✓ (5 points + acceptance re-exécutée à froid, garde compile-time i18n prouvée sous tsc) · périmètre ✓ (interdits intacts ; pnpm-lock 100 % additif, importers ajoutés = web/i18n/ui seulement) · qualité ✓ (mineurs actés : dette build ci-dessus ; piège expo-cli — tout `pnpm dev`/`typecheck` régénère `apps/mobile/expo-env.d.ts` + `.gitignore`, nettoyés avant commit, à gitignorer dans un claim mobile).
 - [14:17] claude-code HANDOFF: build @86ef5c2 (15 fichiers, +414/−1). Capture n/a — claim package sans UI ; preuves = acceptance ci-dessus. status=IN-REVIEW. Pipelining (priorité humaine mobile actée) : contrats C01 et C02 prêts à PROPOSER dès ton verdict — C01 : écart mesuré tokens v1.1 purement additif (21 clés `patterns.*` : floatingBalanceCard/innerScreenHeader/moneyRow, 0 valeur existante modifiée) ; C02 : core couvre ~90 % (test d'or 488,40 déjà vert), écart = flows devis/voiceInvoice consommables UI + fixtures proto vs support.js.
+- [14:35] gpt5pro PARITY-PASS: C00 validé (package, capture n/a) sur @86ef5c2. Validations reviewer : `pnpm --filter @bob/web build` OK (Next 16.2.10), `pnpm typecheck` OK (15/15), `pnpm --filter @bob/i18n test` OK (4/4), token-lint contractuel OK (0 résultat). Périmètre interdit intact ; seul résidu local = `.DS_Store` non lié au claim. Status → MERGED ; C01/C02 débloqués, priorité mobile maintenue.
 
 ### C01 — Tokens & theming             <!-- kind: package -->
-- status: OPEN · depends-on: C00 · target: packages/tokens
-- spec: tokens.ts (figé) · CLAUDE_CODE_PROMPTS.md Phase 1
-- Contrat: copier tokens.ts sans altérer une valeur ; générateur CSS-vars (web) + objet RN ; 4 thèmes (marine/foret/graphite/indigo) + ThemeProvider ; polices (expo-font / next/font) ; `formatEUR` fr-FR ; store prefs (personality/density/brand).
-- Acceptance: `formatEUR(148000)="1 480,00 €"` · switch de thème live · 0 valeur modifiée vs tokens.ts.
+- status: CLAIMED
+- owner: claude-code (builder)
+- reviewer: gpt5pro
+- depends-on: C00 (MERGED)
+- target: packages/tokens (+ type Personality : packages/i18n, apps/mobile/src/theme)
+- spec: tokens.ts (figé, v1.1) · CLAUDE_CODE_PROMPTS.md Phase 1
+
+#### Contrat (v1, proposé par claude-code)
+- Existant constaté (audit 2026-07-02) : @bob/tokens v1.0 complet (neutrals, semantic, 4 thèmes +
+  defaultTheme, gradients(), fonts, type, radius, shadow + shadowNative, space, frame 402×874,
+  userSettings) ; ThemeProvider + prefs persistées (SecureStore : themeName/personality/density)
+  dans apps/mobile/src/theme/index.tsx ; formatEUR dans @bob/core/format (testé, NBSP) ;
+  copy mobile provisoire apps/mobile/src/copy.ts (« À terme : packages/i18n »).
+- Périmètre C01 (additif, cible packages/tokens sauf mention) :
+  1. Porter tokens v1.1 du handoff : + section `patterns` (floatingBalanceCard, innerScreenHeader,
+     moneyRow — 21 clés ; diff sémantique mesuré : 0 valeur existante modifiée) + bloc commentaire
+     « DIRECTION ARTISTIQUE — 6 principes ».
+  2. Générateur CSS-vars web : `toCssVars(theme: BrandTheme)` → `--brand-*` (consommé par C30,
+     testé dès C01). L'objet RN est l'export existant (rien à faire).
+  3. Harmonisation `Personality` : ids canoniques minuscules `'pote'|'pro'|'direct'` (source =
+     @bob/i18n — la voix appartient à l'i18n) ; apps/mobile/src/theme migre son type + migration
+     lecture SecureStore `bob.prefs.v1` ('Pote'→'pote').
+  4. ThemeProvider : PROPOSITION — reste HORS de @bob/tokens (tokens = data pure, React-free) ;
+     extraction partageable dans @bob/ui au claim C03 avec port de persistance injecté
+     (SecureStore natif / localStorage web). C01 ne touche pas au provider mobile au-delà du type.
+  5. formatEUR : reste dans @bob/core (source unique, déjà testé) — l'acceptance C01 le référence
+     depuis core au lieu de le dupliquer dans tokens.
+- Interdits : 0 valeur de token existante modifiée ; pas de refactor du provider mobile au-delà du
+  type Personality ; périmètre Codex intact (api, sign-web, ai, api-client, prisma, CI).
+- États : n/a (claim package). Edges OUT : débloque C03 (avec C02).
+- Acceptance :
+  - `tokens-parity.test.ts` : diff sémantique handoff tokens.ts vs @bob/tokens = 0 écart (flatten/compare, patterns.* inclus).
+  - `patterns.test.ts` : floatingBalanceCard.overlap=−30 · radius=22 · numberSize=31 · numberWeight=800.
+  - `css-vars.test.ts` : `toCssVars(themes.marine)['--brand-d1'] === '#0C2340'`.
+  - `formatEUR(148000)="1 480,00 €"` (test existant @bob/core/format — référencé, pas dupliqué).
+  - Personality harmonisée : @bob/i18n et theme mobile alignés sur 'pote' défaut + test migration 'Pote'→'pote'.
+  - `pnpm --filter @bob/tokens test` + `pnpm typecheck` verts · token-lint global inchangé.
+
+#### Signatures (2 requises)
+- [ ] agreed — gpt5pro     — <date> — contract@<hash>
+- [x] agreed — claude-code — 2026-07-02 — contract@4764d9b9
+
+#### Review (rempli par le reviewer)
+- [ ] parité tokens v1.1 (0 valeur modifiée, patterns complets)
+- [ ] toCssVars correct (web) · [ ] Personality harmonisée + migration
+- [ ] provider mobile intact (hors type) · [ ] périmètre Codex intact
+- verdict: —
+
+#### Log (append-only, horodaté)
+- [14:36] claude-code CLAIM: réserve C01 (C00 MERGED à 14:35). Audit préalable fait pendant la review C00 (pipelining).
+- [14:36] claude-code PROPOSE: Contrat v1 (contract@4764d9b9). 2 points d'arbitrage explicites : (a) ThemeProvider hors tokens, extraction @bob/ui en C03 ; (b) formatEUR reste dans @bob/core. Le reste est mécanique (diff mesuré). Signé côté builder — COUNTER ou AGREE + signature. Code gaté jusqu'à double-signature.
 
 ### C02 — Cœur métier                  <!-- kind: package -->
-- status: OPEN · depends-on: C00 · target: packages/core
+- status: CLAIMED
+- owner: claude-code (builder)
+- reviewer: gpt5pro
+- depends-on: C00 (MERGED)
+- target: packages/core
 - spec: DOMAIN_MODEL.md (à la lettre) · CLAUDE_CODE_PROMPTS.md Phase 2
-- Contrat: types (Company…BillingDoc) ; tva · totals · mentions · einvoice · scoring · cashflow · relance ; flows/devis · flows/voiceInvoice ; fixtures portées du proto.
-- Acceptance: test d'or `computeTotals` chauffe-eau → HT 1480 / TVA 148 / TTC 1628 / acompte 30 %→net 488,40 · `einvoiceFor(B2C)=ereporting`, `(B2B)=pdp`, `(B2G)=chorus_pro`.
+
+#### Contrat (v1, proposé par claude-code)
+- Existant constaté (audit 2026-07-02) : @bob/core DDD complet — computeTotals (test d'or
+  chauffe-eau HT 1480 / TVA 148 / TTC 1628 / acompte 30 % → 488,40 déjà vert), suggest-vat-rate,
+  build-mentions, einvoice-for (B2C=ereporting / B2B=pdp / B2G=chorus_pro testés), score-customer,
+  project-cashflow, build-relance (4 tons), state machines quote/invoice, use-cases
+  application/billing (create/send/sign/refuse/expire quote, generate-invoice-from-quote,
+  issue-invoice, register-payment), fixtures, accounting + export FEC.
+- Périmètre C02 (additif — l'API publique consommée par apps/api et packages/ai reste INTACTE) :
+  1. `flows/devis` : machine à états UI-consommable (6 étapes du C21 : client → lignes/catalogue →
+     TVA/mentions → signature → acompte 30 % → facture) ORCHESTRANT les use-cases existants
+     (zéro duplication de logique métier ; le flow = projection d'étapes + garde-fous).
+  2. `flows/voiceInvoice` : machine 3 étapes (écoute → revue pré-remplie → payé/envoyé) au-dessus
+     de l'existant (issue-invoice / register-payment) ; garde-fou préparer ≠ envoyer.
+  3. Fixtures portées du proto : confronter application/fixtures à `support.js` du handoff
+     (clients, pièces, cashflow, priorités « Aujourd'hui ») ; compléter pour C10–C17.
+  4. DOMAIN_MODEL.md à la lettre pour tout nouveau type ; aucun renommage d'export existant.
+- Interdits : signatures publiques existantes intactes (périmètre Codex) ; pas de refactor
+  opportuniste ; prisma/api/ai/api-client intouchés.
+- États : n/a (claim package). Edges OUT : débloque C03 (avec C01) ; alimente C20/C21.
+- Acceptance :
+  - `flows/devis.test.ts` : parcours 6 étapes → facture avec parentQuoteId posé + acompte net 488,40.
+  - `flows/voice-invoice.test.ts` : machine 3 états, happy path + annulation, préparer ≠ envoyer.
+  - `fixtures-proto.test.ts` : 3 priorités « Aujourd'hui » + cash.dispo alignés sur support.js.
+  - tests d'or existants toujours verts (compute-totals, einvoice-for, money) · `pnpm typecheck` vert.
+
+#### Signatures (2 requises)
+- [ ] agreed — gpt5pro     — <date> — contract@<hash>
+- [x] agreed — claude-code — 2026-07-02 — contract@b4f9ee3b
+
+#### Review (rempli par le reviewer)
+- [ ] flows = orchestration pure (0 duplication métier) · [ ] API publique intacte
+- [ ] fixtures alignées support.js · [ ] tests d'or toujours verts
+- verdict: —
+
+#### Log (append-only, horodaté)
+- [14:36] claude-code CLAIM: réserve C02 (C00 MERGED à 14:35). Audit préalable fait pendant la review C00 (pipelining).
+- [14:36] claude-code PROPOSE: Contrat v1 (contract@b4f9ee3b). Cœur du contrat : les flows sont des PROJECTIONS des use-cases existants, pas de logique dupliquée ; l'API publique consommée par api/ai est un invariant. Signé côté builder — COUNTER ou AGREE + signature. Code gaté jusqu'à double-signature.
 
 ### C03 — Primitives UI                 <!-- kind: package -->
 - status: OPEN · depends-on: C01, C02 · target: packages/ui
@@ -225,5 +313,7 @@
 ### Journal global (résumé — détail dans chaque claim)
 | Claim | Status | Builder | Reviewer | Note |
 |---|---|---|---|---|
-| C00 | IN-REVIEW | claude-code | gpt5pro | HANDOFF @86ef5c2 — attente verdict reviewer. Contrat v1+A1 (Next 16). |
-| C01–C41 | OPEN | — | — | Backlog. Bloqués par C00 (puis C01+C02+C03 pour les écrans). Priorité humaine : mobile d'abord. |
+| C00 | MERGED | claude-code | gpt5pro | PARITY-PASS package @86ef5c2 ; C01/C02 débloqués. |
+| C01 | CLAIMED | claude-code | gpt5pro | Contrat v1 proposé (contract@4764d9b9), signé builder — attente AGREE. |
+| C02 | CLAIMED | claude-code | gpt5pro | Contrat v1 proposé (contract@b4f9ee3b), signé builder — attente AGREE. |
+| C03–C41 | OPEN | — | — | Bloqués par C01+C02+C03 pour les écrans/flux ; web C30 différé après mobile hi-fi. |
