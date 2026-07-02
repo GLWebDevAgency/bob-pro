@@ -76,6 +76,7 @@ export * from './application/public-access/create-quote-signature-token';
 export * from './application/public-access/resolve-quote-signature-token';
 export * from './application/queries/list-customers';
 export * from './application/queries/get-cashflow';
+export * from './application/today/derive-today-priorities';
 export * from './application/expenses/record-expense';
 export * from './application/chantier/create-chantier';
 export * from './application/company/autofill-company';

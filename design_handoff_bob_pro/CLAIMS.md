@@ -315,6 +315,15 @@
   +25 clés × 3 humeurs, i18n 9/9). Restent pour clore C10 : moteur deriveTodayPriorities (@bob/core) branché
   données réelles (A1-C10), capture p2 (scroll interactif — accessibilité macOS à autoriser pour automatiser),
   parité fine des halos (saturation/étendue vs proto). status reste IN-BUILD.
+- [00:18] claude-code LOG (A1-C10 livré): deriveTodayPriorities dans @bob/core (use case pur, union discriminée,
+  8 tests — core 246/246) : relances (netToPay−paid, avoirs exclus, tri retard/montant), factures finales
+  (devis signé + acompte payé + pas de finale), conformité sur signal réel du diagnostic (rien d'inventé).
+  Hook useTodayPriorities (compose 4 queries réelles). Écran : ZÉRO import fixture — skeletons / erreur voix
+  Bob sans chiffres / « — » quand la donnée n'existe pas (TVA) / subtitleNone si vide. Pluriels singuliers
+  gérés (subtitleOne/remainingOne). Vérifié au simulateur (mode démo = 1 priorité conformité réelle, date du
+  jour réelle, KPI dérivés) — captures claims/shots/C10-realdata-p1.png. Parité d'actions documentée en tête
+  d'écran (mêmes points d'entrée que Bob). Restent : capture p2 (accessibilité macOS), parité fine halos,
+  validation backend prod avec session réelle.
 
 ### C11 — Argent                        <!-- kind: screen -->
 - status: OPEN · depends-on: C03 · ref-capture: claims/ref/C11.png · target: apps/mobile/app/(tabs)/argent.tsx

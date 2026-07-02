@@ -1,6 +1,16 @@
+import { useMemo } from 'react';
 import { Linking, Alert } from 'react-native';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import type { Scenario, Horizon, CreateQuoteInput, PaymentMethod, RecordExpenseInput, PlanTier } from '@bob/core';
+import { deriveTodayPriorities, todayCompanyFromDiagnostic } from '@bob/core';
+import type {
+  Scenario,
+  Horizon,
+  CreateQuoteInput,
+  PaymentMethod,
+  RecordExpenseInput,
+  PlanTier,
+  TodayPriority,
+} from '@bob/core';
 import type { RegisterPaymentClientInput } from '@bob/api-client';
 import { useBobClient } from './client';
 
@@ -257,6 +267,44 @@ export function useInvoices() {
       return r.value;
     },
   });
+}
+
+/** Date locale du jour (DateOnly) — l'échéance d'une facture se juge en calendrier local, pas UTC. */
+function localToday(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/**
+ * Priorités du briefing « Aujourd'hui » (C10, amendement A1-C10) : compose les queries RÉELLES
+ * (factures + devis + clients + diagnostic conformité) et projette via @bob/core deriveTodayPriorities
+ * — l'agrégat métier se calcule dans le core, jamais dans l'écran. Aucun repli fixtures :
+ * pas de données → zéro priorité (l'état vide est un état de premier rang).
+ */
+export function useTodayPriorities(): { priorities: TodayPriority[]; isLoading: boolean; isError: boolean } {
+  const invoices = useInvoices();
+  const quotes = useQuotes();
+  const customers = useCustomers();
+  const diagnostic = useDiagnostic();
+  const today = localToday();
+
+  const priorities = useMemo<TodayPriority[]>(() => {
+    if (!invoices.data || !quotes.data || !customers.data) return [];
+    return deriveTodayPriorities({
+      invoices: invoices.data,
+      quotes: quotes.data,
+      customers: customers.data,
+      // Signal conformité uniquement si le diagnostic réel a répondu — sinon on n'invente rien.
+      ...(diagnostic.data ? { company: todayCompanyFromDiagnostic(diagnostic.data) } : {}),
+      today,
+    });
+  }, [invoices.data, quotes.data, customers.data, diagnostic.data, today]);
+
+  return {
+    priorities,
+    isLoading: invoices.isLoading || quotes.isLoading || customers.isLoading || diagnostic.isLoading,
+    isError: invoices.isError || quotes.isError || customers.isError || diagnostic.isError,
+  };
 }
 
 export function useInvoice(id: string) {

@@ -46,6 +46,11 @@ const fr = {
     pro: 'Vous avez {count} priorités à traiter aujourd’hui.',
     direct: '{count} priorités. Go.',
   },
+  'today.subtitleOne': {
+    pote: 'Un truc à régler, et après tu factures tranquille.',
+    pro: 'Vous avez une priorité à traiter aujourd’hui.',
+    direct: '1 priorité. Go.',
+  },
   'today.subtitleNone': {
     pote: 'Rien d’urgent. Profites-en.',
     pro: 'Aucune priorité aujourd’hui.',
@@ -75,6 +80,11 @@ const fr = {
     pote: '{count} restants',
     pro: '{count} restantes',
     direct: 'reste {count}',
+  },
+  'today.remainingOne': {
+    pote: '1 restant',
+    pro: '1 restante',
+    direct: 'reste 1',
   },
   'today.sectionGlance': {
     pote: 'En un coup d’œil',
@@ -126,7 +136,13 @@ const fr = {
     pro: 'Encaisser',
     direct: 'Encaisser',
   },
-  // Voix des 3 priorités du briefing (badges + sous-titres + CTA — VOICE_AND_TONE § Retard).
+  // Voix des priorités du briefing (titres + badges + sous-titres + CTA — VOICE_AND_TONE § Retard).
+  // Les priorités sont DÉRIVÉES des données réelles (@bob/core deriveTodayPriorities, A1-C10).
+  'today.prioRelanceTitle': {
+    pote: 'Relancer {name}',
+    pro: 'Relancer {name}',
+    direct: 'Relance {name}',
+  },
   'today.prioLateBadge': {
     pote: 'En retard {days} j',
     pro: 'En retard {days} jours',
@@ -147,6 +163,11 @@ const fr = {
     pro: 'Devis accepté',
     direct: 'Accepté',
   },
+  'today.prioFinalTitle': {
+    pote: 'Créer la facture finale — {name}',
+    pro: 'Créer la facture finale — {name}',
+    direct: 'Facture finale — {name}',
+  },
   'today.prioFinalHint': {
     pote: 'Acompte déjà encaissé. Reste {amount}. Y’a plus qu’à.',
     pro: 'Acompte encaissé. Il reste {amount} à facturer.',
@@ -157,16 +178,31 @@ const fr = {
     pro: 'Créer la facture',
     direct: 'Facturer',
   },
+  'today.prioConformiteTitle': {
+    pote: 'Ta réception de factures n’est pas prête',
+    pro: 'Votre réception de factures n’est pas prête',
+    direct: 'Réception de factures : pas prête',
+  },
+  'today.prioConformiteBadge': {
+    pote: 'Facturation élec. 2026',
+    pro: 'Facturation électronique 2026',
+    direct: 'Fact. élec. 2026',
+  },
   'today.prioConformiteHint': {
     pote: 'À configurer avant le 1er sept. 2026. Je t’explique en 2 min.',
     pro: 'À configurer avant le 1er septembre 2026. Nous vous guidons en 2 minutes.',
     direct: 'À faire avant sept. 2026. 2 min.',
   },
-  // Erreur de chargement (repli fixtures) — la voix de Bob, jamais un code d'erreur.
+  'today.ctaDiagnostic': {
+    pote: 'Faire le diagnostic',
+    pro: 'Lancer le diagnostic',
+    direct: 'Diagnostic',
+  },
+  // Erreur de chargement — la voix de Bob, jamais un code d'erreur ni un chiffre inventé (A1-C10).
   'today.dataError': {
-    pote: 'Je n’arrive pas à joindre le serveur. Je t’affiche les derniers chiffres connus.',
-    pro: 'Connexion impossible. Les dernières valeurs connues sont affichées.',
-    direct: 'Hors ligne. Chiffres de secours.',
+    pote: 'Je n’arrive pas à joindre le serveur. On réessaie dans un instant ?',
+    pro: 'Connexion impossible pour le moment. Veuillez réessayer dans un instant.',
+    direct: 'Hors ligne. Réessaie.',
   },
 } as const satisfies Record<string, Copy>;
 
