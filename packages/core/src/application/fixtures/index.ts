@@ -31,6 +31,46 @@ export const CUSTOMER_PROPS: Omit<CustomerProps, 'companyId'>[] = [
 /** Snapshot de trésorerie du proto (« le solde ment » : 6 820 € banque mais TVA + charges à venir). */
 export const CASH_SNAPSHOT = { bankBalance: 682000, receivables: 300000, charges: 100000, vatDue: 124000 };
 
+/**
+ * Écran « Aujourd'hui » du proto v2 (Bob Pro.dc.html) — montants en centimes.
+ * Héros « Dispo réel aujourd'hui » = 4 950 € ; CASH = projections par horizon (7/30/60/90 j)
+ * avec la note de Bob ; 3 priorités du briefing (relance Martin F-2026-088 · facture finale
+ * Durand · conformité SIREN).
+ */
+export const TODAY_FIXTURE = {
+  dispoCents: 495000,
+  cashByHorizon: {
+    7: { cents: 540000, note: 'Tranquille' },
+    30: { cents: 495000, note: 'Ça passe' },
+    60: { cents: 310000, note: 'Creux, surveille' },
+    90: { cents: 720000, note: 'Ça repart' },
+  },
+  priorities: [
+    {
+      id: 'prio-relance-martin',
+      kind: 'relance',
+      title: 'Relancer SARL Martin Rénovation',
+      docNumber: 'F-2026-088',
+      amountCents: 124000,
+      daysLate: 9,
+    },
+    {
+      id: 'prio-facture-durand',
+      kind: 'facture_finale',
+      title: 'Créer la facture finale',
+      customerName: 'Mme Durand',
+      amountCents: 118000,
+    },
+    {
+      id: 'prio-conformite-einvoice',
+      kind: 'conformite',
+      title: "Ta réception de factures n'est pas prête",
+      badge: 'Facturation élec. 2026',
+      cta: 'Faire le diagnostic',
+    },
+  ],
+} as const;
+
 export function seedCompany(): Company {
   const r = Company.of(MERCIER_PROPS);
   if (!r.ok) throw new Error('Fixture company invalide');

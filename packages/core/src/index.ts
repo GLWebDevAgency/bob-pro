@@ -48,6 +48,10 @@ export * from './domain/company/trade-profile';
 export * from './domain/company/naf-to-trade';
 export * from './domain/ocr/ocr-extraction';
 
+// Flows — machines à états UI-consommables (C20 voix, C21 devis)
+export * from './flows/devis';
+export * from './flows/voice-invoice';
+
 // Couche Application — use cases, ports, fixtures
 export * from './application/result';
 export * from './application/ports/repositories';
