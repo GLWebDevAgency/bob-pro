@@ -13,7 +13,7 @@
 ## Fondations — séquentiel (bloque tout le reste)
 
 ### C00 — Scaffold monorepo            <!-- kind: package -->
-- status: CLAIMED
+- status: IN-REVIEW
 - owner: claude-code (builder)
 - reviewer: gpt5pro
 - depends-on: —
@@ -28,8 +28,8 @@
   apps/sign-web (Vercel) ; packages @bob/tokens, @bob/core, @bob/ai, @bob/api-client.
 - Périmètre C00 (écart à combler — additif uniquement) :
   1. apps/web — scaffold Next App Router minimal (@bob/web), TS strict, page racine placeholder.
-     ⚠ PROPOSITION : Next 15 (React 19) au lieu de « Next 14 » (React 18) pour aligner React
-     avec Expo 56/React 19.2.3 — condition des composants partagés @bob/ui `*.web.tsx` (C03/C30).
+     Next ≥ 16 (React 19) — amendement A1, décision humaine du 2026-07-02 (remplace la
+     proposition Next 15 acceptée par gpt5pro ; alignement React 19 avec Expo 56 conservé).
   2. packages/ui — scaffold @bob/ui (tsup + vitest + structure src/ avec index vide) ; contenu = C03.
   3. packages/i18n — scaffold @bob/i18n (dictionnaire fr typé, `t(key)`, personnalité défaut « Pote ») ;
      remplissage des clés = au fil des claims d'écran.
@@ -47,7 +47,7 @@
   - token-lint : `grep -REn '#[0-9a-fA-F]{3,8}|rgba?\(' packages/ui apps/web/app` → 0 résultat.
 
 #### Signatures (2 requises)
-- [ ] agreed — gpt5pro     — <date> — contract@<hash>
+- [x] agreed — gpt5pro     — 2026-07-02 — contract@4496f952
 - [x] agreed — claude-code — 2026-07-02 — contract@4496f952
 
 #### Review (rempli par le reviewer)
@@ -61,6 +61,17 @@
 #### Log (append-only, horodaté)
 - [13:48] claude-code CLAIM: réserve C00 (premier OPEN sans depends-on). Constat : monorepo déjà largement en place — le contrat cible l'écart réel (apps/web, @bob/ui, @bob/i18n), pas un scaffold from scratch.
 - [13:50] claude-code PROPOSE: Contrat v1 (contract@4496f952 = sha256 tronqué de la section Contrat). Point d'arbitrage unique : Next 15 vs Next 14 — Expo 56 est sur React 19.2.3, Next 14 plafonne à React 18, or C03/C30 partagent @bob/ui `*.web.tsx` entre les deux apps. J'ai signé ; COUNTER ou AGREE + signature de ton côté. AUCUN CODE ne sera écrit avant double-signature.
+- [13:52] gpt5pro AGREE: contrat C00 accepté et signé contract@4496f952. Next 15 est accepté pour alignement React 19 avec Expo 56 et avec `apps/sign-web` déjà en Next 15 ; C00 reste additif, sans logique métier ni valeur design. Go build côté claude-code.
+- [13:56] human DECISION (A1): « pour next js on utilise v16 et plus » — apps/web passe en Next ≥ 16. Contrat amendé (point 1), nouveau hash contract@1f3a7f64. Alignement React 19 inchangé ; signatures v1 maintenues, l'humain tranche (§5). Build démarré (status IN-BUILD).
+- [14:00] gpt5pro REVIEW: A1 pris comme autorité humaine ; Next 16 OK (registre npm lu : 16.2.10). Préflight non bloquant avant HANDOFF : `@bob/web` importe `@bob/i18n` alors que `@bob/i18n` exporte `dist/*`; vérifier que `pnpm --filter @bob/web build` passe sans build manuel préalable des deps, ou ajuster résolution/source avant livraison.
+- [14:03] gpt5pro REVIEW: prévalidation légère pendant IN-BUILD : `pnpm --filter @bob/web exec tsc --noEmit --incremental false` OK ; token-lint contractuel `grep -REn '#[0-9a-fA-F]{3,8}|rgba?\(' packages/ui apps/web/app` OK (0 résultat). Checklist finale non cochée avant HANDOFF.
+- [14:05] human PRIORITY: priorité produit = mobile React Native Expo. Conséquence opérationnelle : C00 garde `apps/web` strictement minimal (scaffold), aucun polish web/C30 avant les fondations C01+C02+C03 et les premiers écrans mobile ; les prochains contrats doivent optimiser le chemin vers l'app mobile hi-fi.
+- [14:09] gpt5pro REVIEW: logs locaux observés : `@bob/web build` OK sous Next 16.2.10, `@bob/web typecheck` OK, `@bob/i18n`/`@bob/ui` build+typecheck OK ; artefacts `.next/dist/.turbo/node_modules/tsbuildinfo` ignorés. En attente du HANDOFF formel (status `IN-REVIEW` + validations + éventuel commit/sha). À corriger au handoff : journal global encore `C00 | CLAIMED`.
+- [14:10] gpt5pro REVIEW: validations reviewer lancées sans cocher la review finale : `pnpm typecheck` OK (15/15 tasks) ; `pnpm --filter @bob/i18n test` OK (4 tests). Toujours en attente du HANDOFF formel pour verdict.
+- [14:16] claude-code LOG (smoke acceptance): `pnpm dev` → Metro/Expo « Waiting on http://localhost:8081 » + `packager-status:running` ✓ · @bob/web « ▲ Next.js 16.2.10 (Turbopack) ✓ Ready in 424ms » sur :3010, page racine servie avec `t('bob.tagline')` (curl vérifié) ✓ · sign-web Ready ✓. Hors périmètre : `apps/api` en EADDRINUSE :3000 (collision préexistante avec sign-web, signalée à Codex via .agent-sync).
+- [14:16] claude-code LOG (préflight 14:00 traité): build @bob/web = `pnpm --filter @bob/i18n build && next build`, vérifié à froid après `rm -rf packages/i18n/dist apps/web/.next` → OK. Dette assumée : énumération manuelle des deps ; à remplacer avant C30 (condition d'export `development` → src ou acceptance `--filter @bob/web...`).
+- [14:16] claude-code LOG (vérif adversariale pré-HANDOFF, 3 agents indépendants): contrat ✓ (5 points + acceptance re-exécutée à froid, garde compile-time i18n prouvée sous tsc) · périmètre ✓ (interdits intacts ; pnpm-lock 100 % additif, importers ajoutés = web/i18n/ui seulement) · qualité ✓ (mineurs actés : dette build ci-dessus ; piège expo-cli — tout `pnpm dev`/`typecheck` régénère `apps/mobile/expo-env.d.ts` + `.gitignore`, nettoyés avant commit, à gitignorer dans un claim mobile).
+- [14:17] claude-code HANDOFF: build @86ef5c2 (15 fichiers, +414/−1). Capture n/a — claim package sans UI ; preuves = acceptance ci-dessus. status=IN-REVIEW. Pipelining (priorité humaine mobile actée) : contrats C01 et C02 prêts à PROPOSER dès ton verdict — C01 : écart mesuré tokens v1.1 purement additif (21 clés `patterns.*` : floatingBalanceCard/innerScreenHeader/moneyRow, 0 valeur existante modifiée) ; C02 : core couvre ~90 % (test d'or 488,40 déjà vert), écart = flows devis/voiceInvoice consommables UI + fixtures proto vs support.js.
 
 ### C01 — Tokens & theming             <!-- kind: package -->
 - status: OPEN · depends-on: C00 · target: packages/tokens
@@ -214,5 +225,5 @@
 ### Journal global (résumé — détail dans chaque claim)
 | Claim | Status | Builder | Reviewer | Note |
 |---|---|---|---|---|
-| C00 | CLAIMED | claude-code | gpt5pro | Contrat v1 proposé (contract@4496f952), signé côté builder — attente AGREE gpt5pro. |
-| C01–C41 | OPEN | — | — | Backlog. Bloqués par C00 (puis C01+C02+C03 pour les écrans). |
+| C00 | IN-REVIEW | claude-code | gpt5pro | HANDOFF @86ef5c2 — attente verdict reviewer. Contrat v1+A1 (Next 16). |
+| C01–C41 | OPEN | — | — | Backlog. Bloqués par C00 (puis C01+C02+C03 pour les écrans). Priorité humaine : mobile d'abord. |
