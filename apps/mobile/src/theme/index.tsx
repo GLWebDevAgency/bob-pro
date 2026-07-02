@@ -10,8 +10,9 @@ import {
   type ThemeName,
   type BrandTheme,
 } from '@bob/tokens';
+import { DEFAULT_PERSONALITY, normalizePersonality, type Personality } from '@bob/i18n';
 
-export type Personality = 'Pote' | 'Pro' | 'Direct';
+export type { Personality };
 export type Density = 'Cockpit' | 'Zen';
 
 interface Prefs {
@@ -20,7 +21,11 @@ interface Prefs {
   density: Density;
 }
 
-const DEFAULT_PREFS: Prefs = { themeName: defaultTheme, personality: 'Pote', density: 'Cockpit' };
+const DEFAULT_PREFS: Prefs = {
+  themeName: defaultTheme,
+  personality: DEFAULT_PERSONALITY,
+  density: 'Cockpit',
+};
 const PREFS_KEY = 'bob.prefs.v1';
 
 interface ThemeContextValue {
@@ -48,7 +53,13 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       .then((raw) => {
         if (active && raw) {
           try {
-            setPrefs((p) => ({ ...p, ...(JSON.parse(raw) as Partial<Prefs>) }));
+            const stored = JSON.parse(raw) as Partial<Prefs> & { personality?: unknown };
+            setPrefs((p) => ({
+              ...p,
+              ...stored,
+              // Migration legacy 'Pote'/'Pro'/'Direct' → ids canoniques @bob/i18n.
+              personality: normalizePersonality(stored.personality ?? p.personality),
+            }));
           } catch {
             /* prefs corrompues : on garde les valeurs par défaut */
           }

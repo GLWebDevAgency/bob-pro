@@ -8,6 +8,24 @@ export type Personality = 'pote' | 'pro' | 'direct';
 
 export const DEFAULT_PERSONALITY: Personality = 'pote';
 
+const PERSONALITIES: readonly Personality[] = ['pote', 'pro', 'direct'];
+
+/** Libellés d'affichage (réglages, proto, @bob/core.buildRelance) — les ids runtime restent minuscules. */
+export const PERSONALITY_LABELS: Readonly<Record<Personality, 'Pote' | 'Pro' | 'Direct'>> = {
+  pote: 'Pote',
+  pro: 'Pro',
+  direct: 'Direct',
+};
+
+/** Normalise une valeur persistée ou legacy ('Pote'/'Pro'/'Direct') vers l'id canonique. */
+export function normalizePersonality(value: unknown): Personality {
+  if (typeof value !== 'string') return DEFAULT_PERSONALITY;
+  const lower = value.toLowerCase();
+  return (PERSONALITIES as readonly string[]).includes(lower)
+    ? (lower as Personality)
+    : DEFAULT_PERSONALITY;
+}
+
 type Copy = Readonly<Record<Personality, string>>;
 
 const fr = {
