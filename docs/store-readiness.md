@@ -3,7 +3,15 @@
 Évaluation de la capacité à publier Bob Pro. Deux périmètres, évalués séparément :
 **Mobile / soumission** (Claude) et **Backend / prod / infra** (Codex, section à compléter).
 
-## Verdict mobile : ⛔ pas encore publiable
+## Verdict mobile : 🟠 build de test possible — bloquants B1–B4 levés le 2026-07-02
+
+> **Mise à jour 2026-07-02 (Claude)** : B1/B2 (icône + adaptive icon générées depuis les tokens du design
+> system — orbe Bob, gradient hero marine, halo indigo `semantic.ai`, ✳ blanc), B3 (`eas.json` +
+> projet EAS `@gl.dev/bob-pro`, id `c45313b8-9aa1-4776-bf37-31fd0482701a`), B4 (API **en prod réelle** sur
+> Railway + garde `app.config.ts` qui refuse une build production sans `EXPO_PUBLIC_API_URL` HTTPS réel,
+> avec `EXPO_PUBLIC_API_TOKEN` embarqué, ou sans config auth Supabase). I4 fait (descriptions FR micro/voix).
+> Première build Android preview lancée sur EAS. Restent I1/I2/I3/I5/I6 (politique de confidentialité
+> publique, questionnaires stores, privacy manifest à valider, screenshots/fiches, comptes développeur).
 
 L'app est **fonctionnellement complète** et tourne (en mode démo hors-ligne), mais il manque le **packaging de
 publication** (identité visuelle, pipeline de build, déclarations Apple/Play, backend de prod câblé).
@@ -76,6 +84,26 @@ non-superuser) puis **C2/C3** (image + CD avec migrate/rls). Le reste est du dur
 
 > _Codex : conteste/complète cette section (notamment C1 : as-tu un moyen de certifier la RLS contre la vraie
 > Supabase, et le rôle applicatif est-il garanti non-superuser en prod ?)._
+
+## Mise à jour infra — 2 juillet 2026 : API EN PROD RÉELLE ✅
+
+- **API Railway en production** : `https://bob-pro-api-production.up.railway.app` en `NODE_ENV=production`,
+  `DEMO_MODE=false`, `DATABASE_URL` = `bob_app` via pooler session IPv4 (5432), `DIRECT_URL` = `postgres`.
+  E2E prouvé : `/health` → `mode:"live"`, `/health/ready` 200, sans token → 403, login Supabase réel
+  (`demo@bobpro.fr`, ES256) → `GET /customers` 200 avec les 6 clients scopés `company-mercier` (RLS mordante).
+- **Fix embarqué** : le seed de boot passait hors GUC tenant → crash 42501 sous FORCE RLS ; corrigé en
+  l'exécutant via `withTenant` (commit `e529ce5`) — la RLS a bloqué sa première écriture non-scopée, preuve
+  en conditions réelles.
+- **`release.sh` complet exécuté contre la vraie base** (migrate no-op, grants, rls.sql, cert RLS sous
+  `bob_app`) : `Bob Pro API release checks passed`.
+- **Repo GitHub** : `GLWebDevAgency/bob-pro` (privé) créé et poussé (`main` = tip). CI **verte** (fix chemin
+  dist Factur-X `41bfa00`). Secrets posés : `VERCEL_ORG_ID`, `VERCEL_SIGN_WEB_PROJECT_ID`, `VERCEL_TOKEN`
+  (⚠️ token CLI temporaire — **créer un PAT durable** dans le dashboard Vercel et remplacer le secret ;
+  l'API interdit de créer un PAT depuis un token OAuth). `RAILWAY_TOKEN` **manquant** (à créer dans le
+  dashboard Railway pour activer `railway-api.yml`).
+- **Vercel preview** : `NEXT_PUBLIC_API_URL` ajoutée à l'env *preview* (n'existait qu'en *production* —
+  détecté par le gate du workflow corrigé).
+- **Seed/tenant** : `company-mercier` seedé + bucket Storage privé `bob-documents` créé.
 
 ## Mise à jour infra — 1 juillet 2026
 
