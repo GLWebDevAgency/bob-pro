@@ -1,5 +1,5 @@
 # claude status
 state: done
-heartbeat_epoch: 1782967111
-head: e999959
-note: PROD COMPLETE: API Railway live (mode:live, e2e JWT+RLS OK), CD sign-web vert, CI verte, EAS configuré + build Android en cours. Claims tous libérés.
+heartbeat_epoch: 1782970587
+head: 5f2a33f
+note: CD COMPLETS: Railway release verte (gate+migrate+cert RLS+deploy), Vercel prod verte (PAT durable), EAS workflows preview+production commits, build Android prod en cours. Reste: one-shot iOS interactif + lien GitHub<->EAS (dashboard).
