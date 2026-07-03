@@ -174,6 +174,8 @@ interface ActivityItem {
   amountCents: number;
   amountColor: string;
   iconTone: StatusBadgeVariant;
+  /** Détail de pièce C16 — la rangée navigue (retour humain 20:27 : « plus cliquables »). */
+  href: `/facture/${string}` | `/devis/${string}`;
 }
 
 /** Barre de skeleton (chargement) — même gabarit que la donnée qu'elle remplace. */
@@ -253,21 +255,23 @@ function KpiCell({ label, value, color }: { label: string; value: string; color:
 }
 
 /** Rangée d'activité (pièce réelle) : pastille doc → titre + « date · note » → montant teinté. */
-function ActivityRow({ item, divider }: { item: ActivityItem; divider: boolean }) {
-  const { colors } = useTheme();
+function ActivityRow({ item, divider, onPress }: { item: ActivityItem; divider: boolean; onPress: () => void }) {
+  const { colors, controls } = useTheme();
   const palette = useStatusBadgePalette();
   const meta = item.date !== null ? `${dateLabel(item.date)} · ${item.note}` : item.note;
   return (
-    <View
-      accessible
+    <Pressable
+      accessibilityRole="button"
       accessibilityLabel={`${item.title}, ${meta}, ${formatEURWhole(item.amountCents)}`}
-      style={{
+      onPress={onPress}
+      style={({ pressed }) => ({
         flexDirection: 'row',
         alignItems: 'center',
         gap: 11,
         paddingVertical: 11,
+        opacity: pressed ? 0.7 : 1,
         ...(divider ? { borderBottomWidth: 1, borderBottomColor: colors.lineSoft } : {}),
-      }}
+      })}
     >
       <IconTile tone={item.iconTone} size={30} radius={9}>
         <FileTextIcon color={statusBadgeColors(item.iconTone, palette).fg} size={15} />
@@ -288,7 +292,8 @@ function ActivityRow({ item, divider }: { item: ActivityItem; divider: boolean }
       >
         {formatEURWhole(item.amountCents)}
       </Text>
-    </View>
+      <ChevronRightIcon color={controls.chevron} size={14} strokeWidth={2} />
+    </Pressable>
   );
 }
 
@@ -411,6 +416,7 @@ export default function ClientDetail() {
               : t('fiche.statusIssued', { personality });
       const signedCents = inv.kind === 'credit_note' ? -inv.totals.netToPay : inv.totals.netToPay;
       items.push({
+        href: `/facture/${inv.id}` as const,
         key: `invoice-${inv.id}`,
         title: `${t(DOC_LABEL[inv.kind], { personality })}${inv.number ? ` ${inv.number}` : ''}`,
         date: inv.dueAt,
@@ -438,6 +444,7 @@ export default function ClientDetail() {
               ? 'fiche.statusQuoteExpired'
               : 'fiche.statusQuotePending';
       items.push({
+        href: `/devis/${quote.id}` as const,
         key: `quote-${quote.id}`,
         title: `${t('fiche.docQuote', { personality })}${quote.number ? ` ${quote.number}` : ''}`,
         date: quote.validUntil,
@@ -791,7 +798,12 @@ export default function ClientDetail() {
                 ) : (
                   <Card radius={18} padding={0} style={{ paddingHorizontal: 14 }}>
                     {activity.map((item, index) => (
-                      <ActivityRow key={item.key} item={item} divider={index < activity.length - 1} />
+                      <ActivityRow
+                        key={item.key}
+                        item={item}
+                        divider={index < activity.length - 1}
+                        onPress={() => router.push(item.href)}
+                      />
                     ))}
                   </Card>
                 )
