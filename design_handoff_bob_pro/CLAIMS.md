@@ -491,10 +491,57 @@
   C10-C12 réappliqué ; standing et montants réutilisent deriveCustomerStandings (zéro duplication).
 
 ### C14 — Documents (coffre-fort)        <!-- kind: screen -->
-- status: OPEN · depends-on: C03 · ref-capture: claims/ref/C14.png
+- status: IN-BUILD
+- owner: claude-code (builder) · reviewer: gpt5pro (a posteriori)
+- depends-on: C03 (MERGED)
+- ref-capture: claims/ref/C14-frame-p1.png + p2 + p3 (+ astuce) · target: apps/mobile/app/(tabs)/documents.tsx (RÉÉCRITURE @bob/ui)
 - spec: SCREENS.md § Documents · INTEGRATION_MAP.md §3 (coffre + OCR)
-- Contrat: recherche langage naturel · carte Scan (overlay OCR animé, balayage) · « À valider » · dossiers (clients/chantiers/achats/assurances/fiscal/banque) · **section Compta&conformité** (export FEC, factures récentes cliquables, mémoire fournisseurs).
-- Acceptance: scan→extraction simulée→classement · détail doc enrichi (origine/SHA-256/rétention 10 ans) · edges → C16.
+
+#### Contrat (v2, claude-code — régimes en vigueur : données réelles, parité d'actions, use cases purs @bob/core, review a posteriori)
+- Composition (réf dc.html §isDocs, extraite ligne à ligne) : InnerScreenHeader (« TON COFFRE-FORT » /
+  « Documents » / « Je classe, tu retrouves. Même 3 ans après. ») · champ recherche (loupe 18/2 slate300,
+  placeholder « la facture du radiateur de mars », filtre réel sur le coffre) · carte Scan dégradé cta
+  (puce caméra 46 r14, « Scanner un document » / « Je lis, j'extrais la TVA, je classe. », chevron) →
+  /scan-document (flux OCR existant = parité d'actions) · « À valider » (badge count indigo) : docs OCR
+  non classés (vignette 46×58, badge FACTURE FOURNISSEUR, chips métriques, CTA « Classer là »/« Autre
+  dossier ») · « Tes dossiers » : grille 2col — **6 dossiers du proto : Chantiers/Achats/Assurances/
+  Fiscal & social/Banque/Comptable** (le texte v1 « clients » corrigé : la réf visuelle prime), counts
+  réels · « Compta & conformité » : carte verte « mois prêt » (dégradé F0F7F3→FBFEFC, ventes/achats/
+  justificatifs manquants dérivés réels, bouton « Exporter (FEC / comptable) » → client.exportFec réel) ·
+  carte « Factures récentes » (rows cliquables → /facture/[id], canal B2B→PDP · B2C→e-reporting ·
+  B2G→Chorus) · bandeau mémoire fournisseurs (aiInk, compte réel de fournisseurs distincts) ·
+  footer « {n} documents · chiffré et sauvegardé ».
+- **Use cases purs @bob/core (directive humaine 08:07 : le socle s'enrichit pour Bob autant que l'UI)** :
+  · `deriveVaultView` (application/documents) — projections documents/expenses/invoices/customers →
+    { toValidate, folders (mapping v1 documenté : chantier→Chantiers · expense/receipt→Achats ·
+    pièces de facturation→Comptable · Assurances/Fiscal/Banque à 0 tant que le modèle n'a pas de
+    catégorie), monthSummary (ventes = docs facture du mois · achats = dépenses du mois · TVA récup. =
+    somme vatCents du mois — écart proto assumé : « TVA estimée » non dérivable sans date d'émission ·
+    justificatifs manquants = dépenses sans reçu lié), recentInvoices (canal par type client),
+    supplierMemory (distincts normalisés + exemples), totalCount } — testé.
+  · `searchVault` — filtre normalisé (nom de fichier / fournisseur / dossier) — testé.
+- Données 100 % réelles : useDocuments/listExpenses/useInvoices/useCustomers ; états loading skeletons /
+  erreur voix de Bob / coffre vide = empty state de premier rang ; AUCUNE fixture dans l'écran.
+- Copy : clés @bob/i18n docs.* ×3 humeurs. Tokens v1.4 (couleurs écran Documents : violet deep 6D28D9,
+  chips métriques F6F8FA, vignette doc, carte mois-prêt, mémoire fournisseurs E5DBF6) ajoutés en miroir
+  handoff ↔ @bob/tokens (parité).
+- Écarts proto assumés (documentés en tête d'écran) : carte « Attestation décennale / EXPIRE 22 J » NON
+  rendue (aucune donnée d'échéance d'assurance dans le modèle — s'ajoutera avec le domaine conformité) ·
+  « Classer là » v1 ouvre le détail/flux scan si aucun use case de classement côté client (pas de chemin
+  fantôme) · overlay OCR animé = écran /scan-document existant (hors périmètre C14).
+- Acceptance : capture simulateur vs réf p1-p3 (structure, carte scan, dossiers, compta) · recherche
+  filtre réellement · export FEC déclenche client.exportFec et confirme (artefact réel du core) ·
+  factures récentes → /facture/[id] · tests core (deriveVaultView/searchVault) + i18n étendus ·
+  typecheck + token-lint clean · zéro fixture écran.
+
+#### Signatures
+- [x] agreed — claude-code — 2026-07-03 (08:17) — régime humain, review gpt5pro a posteriori
+
+#### Log (append-only, horodaté)
+- [08:17] claude-code CLAIM+PROPOSE+IN-BUILD: réserve C14 (C03 MERGED ; C13 IN-BUILD en parallèle,
+  périmètres disjoints — collision surveillée sur @bob/i18n index.ts, commit chirurgical si besoin).
+  Réf extraite du dc.html (§isDocs 39317→52940) + DOCS_FOLDERS (6 dossiers, teintes = tokens existants
+  sauf violet deep). Doctrine A1-C10 réappliquée : dérivations en use cases purs @bob/core.
 
 ### C15 — Assistant (Bob)               <!-- kind: screen -->
 - status: OPEN · depends-on: C03 · ref-capture: claims/ref/C15.png
