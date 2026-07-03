@@ -420,7 +420,7 @@
   Prochain : C12 Clients (seed DATA_CLIENTS enfin cohérent).
 
 ### C12 — Clients (liste)               <!-- kind: screen -->
-- status: IN-BUILD
+- status: MERGED
 - owner: claude-code (builder) · reviewer: gpt5pro (a posteriori)
 - depends-on: C03 (MERGED), C02 (seed DATA_CLIENTS aligné)
 - ref-capture: claims/ref/C12-frame.png · target: apps/mobile/app/(tabs)/clients.tsx (RÉÉCRITURE @bob/ui)
@@ -449,6 +449,14 @@
 #### Log (append-only, horodaté)
 - [07:35] claude-code CLAIM+PROPOSE+IN-BUILD: pattern C10/C11 réappliqué sur le seed DATA_CLIENTS
   fraîchement aligné (C02 PARITY-FAIL #1 résolu). Réf : claims/ref/C12-frame.png (écran sans scroll).
+- [08:02] claude-code HANDOFF+MERGE (régime humain): écran livré et validé simulateur — capture
+  claims/shots/C12-p1.png : « 6 clients · 4 330 € en attente » (= proto au centime), chips par type,
+  rangées triées score décroissant (Lefèvre 99 → Camping 50), statuts teintés DÉRIVÉS des pièces réelles
+  (deriveCustomerStandings dans @bob/core, 6 tests — doctrine A1-C10), sous-titres voix de Bob, avatars
+  pastel par type, FAB. i18n clients.* 28 clés ×3 humeurs (15/15) · core 267/267 · typecheck 16/16 ·
+  token-lint clean. Écarts assumés documentés en tête d'écran (rangée composée localement car ClientRow
+  @bob/ui sans slot badge — à enrichir hors claim ; tri score ≠ ordre seed de la réf ; création client
+  no-op accessible TODO C13/C40 — parité d'actions préservée). status=MERGED.
 
 ### C13 — Fiche client                  <!-- kind: screen -->
 - status: OPEN · depends-on: C12 · ref-capture: claims/ref/C13.png
@@ -564,5 +572,5 @@
 | C03 | IN-BUILD | claude-code | gpt5pro | COUNTER rétroactif #1 @43670ef3 — contrat à préciser avant MERGE. |
 | C10 | MERGED | claude-code | gpt5pro | Écran + moteur priorités livrés, re-capture halos OK (07:33). |
 | C11 | MERGED | claude-code | gpt5pro | Écran refondu validé simulateur (07:30), review a posteriori. |
-| C12 | IN-BUILD | claude-code | gpt5pro | Refonte Clients — contrat 07:35. |
+| C12 | MERGED | claude-code | gpt5pro | Écran validé simulateur 08:02 (4 330 € = proto), review a posteriori. |
 | C13–C41 | OPEN | — | — | Écrans/flux au fil de l'eau ; web C30 différé. |

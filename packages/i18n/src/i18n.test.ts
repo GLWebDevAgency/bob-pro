@@ -91,6 +91,46 @@ describe('i18n', () => {
     );
   });
 
+  it('clients.* : copy pote exacte du proto (C12 — carnet, recherche, filtres, statuts)', () => {
+    expect(t('clients.eyebrow')).toBe('Ton carnet');
+    expect(t('clients.title')).toBe('Clients');
+    expect(t('clients.searchPlaceholder')).toBe('Rechercher un client…');
+    expect(t('clients.filterAll')).toBe('Tous');
+    expect(t('clients.filterB2c')).toBe('Particuliers');
+    expect(t('clients.filterB2b')).toBe('Entreprises');
+    expect(t('clients.filterB2g')).toBe('Public');
+    expect(t('clients.upToDate')).toBe('À jour');
+    expect(t('clients.statusPaid')).toBe('payé');
+    expect(t('clients.statusLate')).toBe('en retard');
+    expect(t('clients.statusPending')).toBe('en attente');
+    expect(t('clients.statusQuote')).toBe('devis');
+    expect(t('clients.statusNew')).toBe('nouveau');
+    expect(t('clients.badgeB2c').toUpperCase()).toBe('PART.');
+  });
+
+  it('clients.subtitle interpole {count}/{total} sur les 3 humeurs (variante 1 client séparée)', () => {
+    expect(t('clients.subtitle', { params: { count: 6, total: '4 330 €' } })).toBe(
+      '6 clients · 4 330 € en attente',
+    );
+    expect(t('clients.subtitle', { personality: 'pro', params: { count: 6, total: '4 330 €' } })).toBe(
+      '6 clients · 4 330 € en attente',
+    );
+    expect(t('clients.subtitle', { personality: 'direct', params: { count: 6, total: '4 330 €' } })).toBe(
+      '6 clients · 4 330 € dus',
+    );
+    expect(t('clients.subtitleOne', { params: { total: '120 €' } })).toBe('1 client · 120 € en attente');
+  });
+
+  it('clients : sous-titres contextuels, empty state et erreur déclinent les 3 humeurs', () => {
+    expect(t('clients.subLateDays', { params: { days: 9 } })).toBe('Paie avec 9 j de retard');
+    expect(t('clients.subLateDays', { personality: 'direct', params: { days: 9 } })).toBe('Retard : 9 j');
+    expect(t('clients.subPendingB2g')).toBe('Suivi via Chorus Pro');
+    expect(t('clients.emptyTitle')).toBe('Ton carnet est vide');
+    expect(t('clients.emptyTitle', { personality: 'pro' })).toBe('Votre carnet est vide');
+    expect(t('clients.noResults', { personality: 'direct' })).toBe('Aucun résultat.');
+    expect(t('clients.dataError').length).toBeGreaterThan(0);
+  });
+
   it('refuse une clé inconnue à la compilation', () => {
     // @ts-expect-error — 'cle.inconnue' n'est pas une I18nKey : garantie compile-time.
     const invalid: () => string = () => t('cle.inconnue');

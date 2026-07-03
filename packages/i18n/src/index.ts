@@ -413,6 +413,172 @@ const fr = {
     pro: 'Impossible de consulter vos comptes pour le moment. Veuillez réessayer dans un instant.',
     direct: 'Comptes injoignables. Réessaie.',
   },
+
+  // ── C12 — écran « Clients » (copy pote = exacte du proto) ────────────────────
+  'clients.eyebrow': {
+    pote: 'Ton carnet',
+    pro: 'Votre carnet',
+    direct: 'Carnet',
+  },
+  'clients.title': {
+    pote: 'Clients',
+    pro: 'Clients',
+    direct: 'Clients',
+  },
+  // {total} = montant déjà formaté (formatEUR) — l'écran teinte le montant en danger.
+  'clients.subtitle': {
+    pote: '{count} clients · {total} en attente',
+    pro: '{count} clients · {total} en attente',
+    direct: '{count} clients · {total} dus',
+  },
+  'clients.subtitleOne': {
+    pote: '1 client · {total} en attente',
+    pro: '1 client · {total} en attente',
+    direct: '1 client · {total} dus',
+  },
+  'clients.searchPlaceholder': {
+    pote: 'Rechercher un client…',
+    pro: 'Rechercher un client…',
+    direct: 'Chercher un client…',
+  },
+  // Chips filtres par type (Tous / Particuliers / Entreprises / Public).
+  'clients.filterAll': {
+    pote: 'Tous',
+    pro: 'Tous',
+    direct: 'Tous',
+  },
+  'clients.filterB2c': {
+    pote: 'Particuliers',
+    pro: 'Particuliers',
+    direct: 'Particuliers',
+  },
+  'clients.filterB2b': {
+    pote: 'Entreprises',
+    pro: 'Entreprises',
+    direct: 'Entreprises',
+  },
+  'clients.filterB2g': {
+    pote: 'Public',
+    pro: 'Public',
+    direct: 'Public',
+  },
+  // Badges type sur la rangée (le badge uppercase la valeur : « PART. », « B2B », « B2G »).
+  'clients.badgeB2c': {
+    pote: 'Part.',
+    pro: 'Part.',
+    direct: 'Part.',
+  },
+  'clients.badgeB2b': {
+    pote: 'B2B',
+    pro: 'B2B',
+    direct: 'B2B',
+  },
+  'clients.badgeB2g': {
+    pote: 'B2G',
+    pro: 'B2G',
+    direct: 'B2G',
+  },
+  // Montant + mot de statut à droite de la rangée (statuts dérivés — deriveCustomerStandings).
+  'clients.upToDate': {
+    pote: 'À jour',
+    pro: 'À jour',
+    direct: 'À jour',
+  },
+  'clients.statusPaid': {
+    pote: 'payé',
+    pro: 'payé',
+    direct: 'payé',
+  },
+  'clients.statusLate': {
+    pote: 'en retard',
+    pro: 'en retard',
+    direct: 'retard',
+  },
+  'clients.statusPending': {
+    pote: 'en attente',
+    pro: 'en attente',
+    direct: 'attente',
+  },
+  'clients.statusQuote': {
+    pote: 'devis',
+    pro: 'devis',
+    direct: 'devis',
+  },
+  'clients.statusNew': {
+    pote: 'nouveau',
+    pro: 'nouveau',
+    direct: 'nouveau',
+  },
+  // Sous-titres contextuels par statut (dérivés des pièces réelles — jamais du remplissage).
+  'clients.subUpToDate': {
+    pote: 'Rien en attente — nickel',
+    pro: 'Aucun règlement en attente',
+    direct: 'Rien en attente',
+  },
+  'clients.subLateDays': {
+    pote: 'Paie avec {days} j de retard',
+    pro: 'Règlement en retard de {days} jours',
+    direct: 'Retard : {days} j',
+  },
+  'clients.subLate': {
+    pote: 'Un règlement traîne — on relance ?',
+    pro: 'Un règlement est en retard',
+    direct: 'Règlement en retard',
+  },
+  'clients.subPending': {
+    pote: 'Facture envoyée, en attente de règlement',
+    pro: 'Facture émise, règlement attendu',
+    direct: 'Facture en attente',
+  },
+  'clients.subPendingB2g': {
+    pote: 'Suivi via Chorus Pro',
+    pro: 'Transmission et suivi via Chorus Pro',
+    direct: 'Chorus Pro',
+  },
+  'clients.subQuote': {
+    pote: 'Devis envoyé, en attente de réponse',
+    pro: 'Devis transmis, en attente de réponse',
+    direct: 'Devis en attente',
+  },
+  'clients.subNew': {
+    pote: 'Tout nouveau — rien de facturé',
+    pro: 'Nouveau client — aucune facturation',
+    direct: 'Nouveau. Rien facturé.',
+  },
+  // Création client (bouton + du header et FAB) — même point d'entrée humain ↔ Bob.
+  'clients.addClient': {
+    pote: 'Nouveau client',
+    pro: 'Nouveau client',
+    direct: 'Nouveau client',
+  },
+  // 0 client — invitation à créer (l'état vide est un état de premier rang, A1-C10).
+  'clients.emptyTitle': {
+    pote: 'Ton carnet est vide',
+    pro: 'Votre carnet est vide',
+    direct: 'Carnet vide',
+  },
+  'clients.emptyBody': {
+    pote: 'Ajoute ton premier client et je m’occupe du reste : devis, factures, relances.',
+    pro: 'Ajoutez votre premier client : devis, factures et relances suivront.',
+    direct: 'Ajoute un client. Le reste suit.',
+  },
+  'clients.emptyCta': {
+    pote: 'Ajouter mon premier client',
+    pro: 'Ajouter un client',
+    direct: 'Ajouter un client',
+  },
+  // 0 résultat de recherche/filtre — on n'affiche jamais une liste inventée.
+  'clients.noResults': {
+    pote: 'Personne ne correspond. Essaie un autre nom ou un autre filtre.',
+    pro: 'Aucun client ne correspond à votre recherche.',
+    direct: 'Aucun résultat.',
+  },
+  // Erreur de chargement — la voix de Bob, jamais un chiffre inventé (A1-C10).
+  'clients.dataError': {
+    pote: 'Je n’arrive pas à ouvrir ton carnet, là. On réessaie dans un instant ?',
+    pro: 'Impossible de charger vos clients pour le moment. Veuillez réessayer dans un instant.',
+    direct: 'Carnet injoignable. Réessaie.',
+  },
 } as const satisfies Record<string, Copy>;
 
 export type I18nKey = keyof typeof fr;

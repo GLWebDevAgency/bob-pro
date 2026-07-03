@@ -79,6 +79,7 @@ export * from './application/queries/list-customers';
 export * from './application/queries/get-cashflow';
 export * from './application/today/derive-today-priorities';
 export * from './application/argent/build-ledger-view';
+export * from './application/clients/derive-customer-standings';
 export * from './application/expenses/record-expense';
 export * from './application/chantier/create-chantier';
 export * from './application/company/autofill-company';
