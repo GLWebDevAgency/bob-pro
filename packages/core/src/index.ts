@@ -97,6 +97,7 @@ export * from './application/documents/document-view';
 export * from './application/documents/get-document-download-url';
 export * from './application/documents/list-documents';
 export * from './application/documents/search-vault';
+export * from './application/search/search-global';
 export * from './application/documents/storage-key';
 export * from './application/documents/store-document';
 export * from './application/accounting/initialize-chart-of-accounts';

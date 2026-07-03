@@ -495,6 +495,22 @@ export default function Documents() {
         ) : searching ? (
           /* Résultats de recherche — rows réelles, ouverture du document */
           <View style={{ paddingHorizontal: 18, paddingTop: 20, gap: 10 }}>
+            {/* A7 : porte d'entrée vers la recherche GLOBALE (clients + pièces + docs). */}
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t('search.everywhere', { personality, params: { query: trimmedQuery } })}
+              onPress={() => router.push({ pathname: '/recherche', params: { q: trimmedQuery } })}
+            >
+              <Card>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                  <SearchIcon color={semantic.b2b} />
+                  <Text style={{ ...font('body', 700), fontSize: 14, color: semantic.b2b, flex: 1 }} numberOfLines={1}>
+                    {t('search.everywhere', { personality, params: { query: trimmedQuery } })}
+                  </Text>
+                  <ChevronRightIcon color={controls.chevron} size={14} strokeWidth={2} />
+                </View>
+              </Card>
+            </Pressable>
             {results.length === 0 ? (
               <Card>
                 <Text style={[font('sub'), { color: colors.slate500 }]}>

@@ -2922,6 +2922,40 @@ const fr = {
     direct: 'Envoi KO. Réessaie.',
   },
 
+  // ── A7 — recherche globale (/recherche) ─────────────────────────────────────
+  'search.back': { pote: 'Fermer', pro: 'Fermer', direct: 'Fermer' },
+  'search.eyebrow': { pote: 'Recherche', pro: 'Recherche', direct: 'Recherche' },
+  'search.title': { pote: 'Tout retrouver', pro: 'Tout retrouver', direct: 'Recherche' },
+  'search.subtitle': {
+    pote: 'Un nom, un numéro de pièce, un fichier — je fouille partout.',
+    pro: 'Un nom de client, un numéro de pièce ou un fichier — recherche sur tout votre espace.',
+    direct: 'Nom, numéro, fichier.',
+  },
+  'search.placeholder': {
+    pote: '« mairie », « F-2026-0001 », « leroy »…',
+    pro: '« mairie », « F-2026-0001 », « leroy »…',
+    direct: 'Nom, numéro, fichier…',
+  },
+  'search.hint': {
+    pote: 'Tape un nom de client, un numéro de devis ou de facture, un fichier — je ramène tout ce qui colle.',
+    pro: 'Saisissez un nom de client, un numéro de pièce ou un nom de fichier : les résultats couvrent tout votre espace.',
+    direct: 'Tape, je cherche partout.',
+  },
+  'search.noResults': {
+    pote: 'Rien pour « {query} » — essaie un nom de client ou un numéro de pièce.',
+    pro: 'Aucun résultat pour « {query} ». Essayez un nom de client ou un numéro de pièce.',
+    direct: 'Rien pour « {query} ».',
+  },
+  'search.sectionClients': { pote: 'Clients', pro: 'Clients', direct: 'Clients' },
+  'search.sectionPieces': { pote: 'Devis & factures', pro: 'Devis et factures', direct: 'Pièces' },
+  'search.sectionDocs': { pote: 'Documents', pro: 'Documents', direct: 'Docs' },
+  'search.draftNumber': { pote: 'Brouillon', pro: 'Brouillon', direct: 'Brouillon' },
+  'search.everywhere': {
+    pote: 'Chercher « {query} » partout',
+    pro: 'Rechercher « {query} » sur tout l’espace',
+    direct: '« {query} » partout',
+  },
+
   // ── A2-C10 — encaisser depuis le briefing ───────────────────────────────────
   'today.ctaCollect': { pote: 'Encaisser', pro: 'Encaisser', direct: 'Encaisser' },
   'today.collectDone': {
