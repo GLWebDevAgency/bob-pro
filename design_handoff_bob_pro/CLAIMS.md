@@ -589,6 +589,35 @@
   typecheck clean. SUITE ANNONCÉE (A2-C14, directives 10:20-10:40) : moteur OCR LLM réel —
   Mistral OCR en priorité (clé API dispo), garde-fous stricts sur l'extraction, proposition de
   classement/tags/renommage par le modèle, chaîne de repli (Claude Vision, Gemini, GLM, DeepSeek).
+- [11:20] claude-code AMENDEMENT A2-C14 livré (directives humaines 10:20-11:05 : « LLM avec leur
+  version OCR, priorité Mistral (clé dispo), garde-fous, tel un expert-comptable de renom — tags,
+  classement, renommage ») :
+  · AUDIT : l'OCR réel n'utilisait QUE Claude Vision (ANTHROPIC_API_KEY) — Mistral absent alors
+    que la clé existe et que Voxtral est déjà branché pour STT/TTS. Corrigé.
+  · Contrat domaine enrichi (@bob/core, additif) : OcrExtraction + suggestedTags (kebab, ≤ 8,
+    jamais vide : catégorie+fournisseur en secours) + suggestedFilename (nom canonique
+    AAAA-MM-JJ_fournisseur_MONTANTeur via canonicalReceiptFilename). GARDE-FOUS durcis dans
+    makeOcrExtraction : date bornée (2000 → demain, anti-hallucination), plafond 1 M€, cohérence
+    HT+TVA=TTC (sinon dégradation des détails + confiance plafonnée ≤ .6 — jamais de confiance
+    aveugle), TVA > TTC écartée, taux hors barème français {0, 2.1, 5.5, 10, 20} écartés,
+    tags/nom de fichier assainis. 9 tests domaine ajoutés (core 295/295 → tout vert).
+  · apps/api : **MistralOcrAdapter EN PRIORITÉ** — pipeline 2 temps : POST /v1/ocr
+    (`mistral-ocr-latest`, le modèle OCR DÉDIÉ — document → markdown fidèle) puis extraction
+    structurée température 0 / json_object (`mistral-small-latest`, env MISTRAL_OCR_MODEL /
+    MISTRAL_OCR_EXTRACT_MODEL) avec prompt « expert-comptable » (n'invente rien, null si
+    illisible). rawText = markdown OCR (pas la paraphrase du modèle). Garde d'entrée (MIME +
+    10 Mo max) AVANT tout appel, timeout 25 s. `FallbackOcrChain` : Mistral → Claude Vision →
+    slots Gemini/GLM/DeepSeek prêts (OcrPort) ; erreur de validation du payload = définitive
+    (pas de retry inutile). Sans clé/DEMO_MODE : DemoOcrAdapter (enrichi tags+nom canonique,
+    parité hors-ligne). 6 tests api (fetch mocké) — apps/api 37/37.
+  · Mobile : le justificatif versé au coffre prend le NOM CANONIQUE proposé par l'OCR (la
+    recherche du coffre le retrouve par fournisseur/date/montant) ; les tags proposés s'affichent
+    à l'extraction (chips #chantier-durand…). Persistance des tags sur Document = domaine à
+    étendre (follow-up loggé — nécessite champ tags + migration ; les tags vivent déjà dans
+    l'extraction et le nom de fichier).
+  · Restes assumés : adapters Gemini/GLM/DeepSeek à brancher quand les clés seront fournies
+    (interface prête) ; endpoint HTTP /documents/:id/classify à implémenter côté apps/api
+    (le contrat client existe, le local client le sert — suivre au claim backend C40+).
 
 ### C15 — Assistant (Bob)               <!-- kind: screen -->
 - status: MERGED

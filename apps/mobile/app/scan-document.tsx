@@ -135,6 +135,13 @@ export default function ScanDocument() {
                 {(defaults?.supplierSiren ?? data.supplierSiren) ? (
                   <Row label="SIREN" value={(defaults?.supplierSiren ?? data.supplierSiren)!} colors={colors} />
                 ) : null}
+                {data.suggestedTags.length > 0 ? (
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
+                    {data.suggestedTags.map((tag) => (
+                      <Badge key={tag} label={`#${tag}`} tone="ai" />
+                    ))}
+                  </View>
+                ) : null}
               </View>
             </Card>
             {record.isError ? (
@@ -165,7 +172,8 @@ export default function ScanDocument() {
                         void client
                           .uploadDocument({
                             ...photo,
-                            filename: `recu-${data.supplierName.toLowerCase().replace(/\s+/g, '-')}.jpg`,
+                            // Nom canonique « expert-comptable » proposé par l'OCR (A2-C14).
+                            filename: `${data.suggestedFilename}.${photo.mimeType === 'image/png' ? 'png' : 'jpg'}`,
                             kind: 'expense_receipt',
                             linkedEntityType: 'expense',
                             linkedEntityId: out.id,

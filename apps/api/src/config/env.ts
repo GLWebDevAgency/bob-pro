@@ -14,6 +14,9 @@ const schema = z.object({
   MISTRAL_STT_CONTEXT_BIAS: z.string().optional(),
   MISTRAL_TTS_MODEL: z.string().default('voxtral-mini-tts-2603'),
   MISTRAL_TTS_VOICE_ID: z.string().optional(),
+  // OCR (A2-C14) : modèle OCR DÉDIÉ Mistral (≠ Voxtral/chat) + petit modèle d'extraction structurée.
+  MISTRAL_OCR_MODEL: z.string().default('mistral-ocr-latest'),
+  MISTRAL_OCR_EXTRACT_MODEL: z.string().default('mistral-small-latest'),
   DATABASE_URL: z.string().optional(),
   SUPABASE_JWKS_URL: z.string().optional(),
   SUPABASE_URL: z.string().url().optional(),

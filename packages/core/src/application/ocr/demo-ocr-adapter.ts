@@ -3,7 +3,7 @@ import { addDays } from '../../shared-kernel/time';
 import { type AppError } from '../result';
 import { type OcrPort, type OcrExtractInput } from '../ports/ocr';
 import { type ClockPort } from '../ports/services';
-import { type OcrExtraction, type ExpenseCategoryGuess } from '../../domain/ocr/ocr-extraction';
+import { canonicalReceiptFilename, normalizeSuggestedTags, type OcrExtraction, type ExpenseCategoryGuess } from '../../domain/ocr/ocr-extraction';
 
 // FNV-1a 32 bits — déterministe (pas de Date.now / Math.random) : démo reproductible.
 function hash32(s: string): number {
@@ -51,6 +51,8 @@ export class DemoOcrAdapter implements OcrPort {
       categoryGuess: sup.cat,
       confidence: 0.78 + (h % 20) / 100,
       rawText: `${sup.name}\nTOTAL TTC ${(totalTtcCents / 100).toFixed(2)} EUR\nTVA ${vatRate}%`,
+      suggestedTags: normalizeSuggestedTags([sup.cat, sup.name]),
+      suggestedFilename: canonicalReceiptFilename({ documentDate, supplierName: sup.name, totalTtcCents }),
     };
     return ok(extraction);
   }
