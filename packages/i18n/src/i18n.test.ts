@@ -477,6 +477,52 @@ describe('i18n — C23 diag.*', () => {
     expect(t('onboard.previewBody')).toBe('Dernier truc : vérifions que t’es paré pour 2026.');
   });
 
+  it('auth.* : copy proto exacte (login, inscription SIRET, mails) sur les 3 humeurs — C24', () => {
+    // Proto §auth (dc.html) : titres/champs/CTA à l'identique en Pote.
+    expect(t('auth.loginTitle')).toBe('Bon retour 👋');
+    expect(t('auth.loginSub')).toBe('Connecte-toi pour reprendre où tu en étais.');
+    expect(t('auth.emailLabel')).toBe('Email professionnel');
+    expect(t('auth.loginCta')).toBe('Se connecter');
+    expect(t('auth.forgot')).toBe('Mot de passe oublié ?');
+    expect(t('auth.switchToSignup')).toBe('Pas encore de compte ? Créer');
+    expect(t('auth.switchToLogin')).toBe('Déjà un compte ? Se connecter');
+    expect(t('auth.signupTitle')).toBe('Crée ton compte');
+    expect(t('auth.signupSub')).toBe('Ton bureau pro, prêt en 2 minutes.');
+    // Écart honnête vs proto : « 2FA » retiré du footer (non implémenté).
+    expect(t('auth.footerSecure')).not.toContain('2FA');
+    expect(t('auth.siretSub')).toContain('On récupère tes infos officielles');
+    expect(t('auth.siretSub', { personality: 'pro' })).toBe(
+      'Vos informations officielles seront récupérées automatiquement.',
+    );
+    expect(t('auth.errCredentials', { personality: 'direct' })).toBe('Identifiants KO.');
+    expect(t('auth.verifyBody', { params: { email: 'julien@mercier-plomberie.fr' } })).toBe(
+      'Je t’ai envoyé un lien de confirmation à julien@mercier-plomberie.fr. Clique dessus, puis reviens te connecter.',
+    );
+    expect(t('auth.resetSent', { personality: 'pro', params: { email: 'j@m.fr' } })).toBe(
+      'Si un compte existe pour j@m.fr, le lien de réinitialisation a été envoyé.',
+    );
+  });
+
+  it('auth.bio* / lock* : biométrie interpolée {method} sur les 3 humeurs — C24', () => {
+    expect(t('auth.bioTitle', { params: { method: 'Face ID' } })).toBe('Déverrouille avec Face ID');
+    expect(t('auth.bioTitle', { personality: 'pro', params: { method: 'Touch ID' } })).toBe(
+      'Déverrouillage par Touch ID',
+    );
+    expect(t('auth.bioAccept', { params: { method: 'Face ID' } })).toBe('Activer Face ID');
+    expect(t('auth.bioEnabled', { personality: 'direct', params: { method: 'Face ID' } })).toBe(
+      'Face ID : ON.',
+    );
+    expect(t('auth.bioLater')).toBe('Plus tard');
+    expect(t('auth.lockTitle')).toBe('Bob Pro est verrouillé');
+    expect(t('auth.lockBody', { params: { method: 'Face ID' } })).toBe(
+      'Ta session est bien au chaud — déverrouille avec Face ID.',
+    );
+    expect(t('auth.lockFallback', { personality: 'direct' })).toBe('Mot de passe');
+    expect(t('auth.bioFailed', { personality: 'pro' })).toBe(
+      'Authentification non reconnue. Réessayez.',
+    );
+  });
+
   it('onboard.previewTitle interpole {trade} sur les 3 humeurs, CTA « C’est parti » / « Plus tard »', () => {
     expect(t('onboard.previewTitle', { params: { trade: 'plombier' } })).toBe(
       'Ton espace plombier est prêt',
@@ -492,5 +538,36 @@ describe('i18n — C23 diag.*', () => {
     expect(t('onboard.vatFranchiseSub', { personality: 'pro' })).toBe(
       'Art. 293 B du CGI — facturation sans TVA, mention obligatoire.',
     );
+  });
+
+  it('catalogue.* : titre proto « Mon catalogue », marqueur « prix indicatif » décliné ×3, suggestions devis', () => {
+    expect(t('catalogue.title')).toBe('Mon catalogue');
+    expect(t('catalogue.searchPlaceholder')).toBe('Chercher une prestation…');
+    expect(t('catalogue.indicative')).toBe('prix indicatif');
+    expect(t('catalogue.indicative', { personality: 'pro' })).toBe('Prix indicatif');
+    expect(t('catalogue.indicative', { personality: 'direct' })).toBe('indicatif');
+    expect(t('catalogue.suggestTitle')).toBe('Depuis ton catalogue');
+    expect(t('catalogue.suggestTitle', { personality: 'pro' })).toBe('Depuis votre catalogue');
+    expect(t('catalogue.vatRatePct', { params: { rate: '5,5' } })).toBe('5,5 %');
+    expect(t('catalogue.sheetCustomizeTitle')).toBe('Mets ton prix');
+  });
+
+  it('reglages.* : titre proto « Facturation & modèles », numérotation sans trou déclinée ×3, {trade} interpolé', () => {
+    expect(t('reglages.title')).toBe('Facturation & modèles');
+    expect(t('reglages.title', { personality: 'pro' })).toBe('Facturation & modèles');
+    expect(t('reglages.numberingBody')).toBe(
+      'Chaque facture prend le numéro suivant, sans trou ni doublon — c’est la loi, et je m’en occupe.',
+    );
+    expect(t('reglages.numberingBody', { personality: 'pro' })).toBe(
+      'Numérotation séquentielle sans rupture, allouée à l’émission — exigence légale gérée automatiquement.',
+    );
+    expect(t('reglages.numberingBody', { personality: 'direct' })).toBe(
+      'Séquence sans trou, allouée à l’émission. Géré.',
+    );
+    expect(t('reglages.vatDefaultLabel', { params: { trade: 'Plombier' } })).toBe(
+      'TVA par défaut de ton métier (Plombier)',
+    );
+    expect(t('reglages.soonBadge', { personality: 'pro' })).toBe('À venir');
+    expect(t('reglages.mentionsEmpty', { personality: 'direct' })).toBe('Visible dès ta première facture.');
   });
 });

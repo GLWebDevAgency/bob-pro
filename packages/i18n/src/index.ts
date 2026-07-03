@@ -2480,8 +2480,10 @@ const fr = {
 
   // ── C24 — Auth (login refondu, inscription SIRET→lookup, biométrie) ─────────
   // Copy pote = exacte du proto §auth quand elle existe (titres, champs, CTA).
-  // Écart assumé : le footer proto « Chiffré de bout en bout · 2FA · conforme RGPD »
-  // perd « 2FA » (non implémenté — on n'affiche pas une promesse fantôme).
+  // Écarts assumés sur le footer proto « Chiffré de bout en bout · 2FA · conforme RGPD » :
+  // « 2FA » retiré (non implémenté) et « de bout en bout » corrigé en « connexion
+  // chiffrée » (l'archi est TLS client↔serveur, pas du E2E — le serveur lit les
+  // données pour facturer/relancer). On n'affiche jamais une promesse fantôme.
   'auth.loginTitle': {
     pote: 'Bon retour 👋',
     pro: 'Bon retour.',
@@ -2524,8 +2526,8 @@ const fr = {
     direct: 'Un compte ? Connexion',
   },
   'auth.footerSecure': {
-    pote: 'Chiffré de bout en bout · conforme RGPD',
-    pro: 'Chiffré de bout en bout · conforme RGPD',
+    pote: 'Connexion chiffrée · conforme RGPD',
+    pro: 'Connexion chiffrée · conforme RGPD',
     direct: 'Chiffré · RGPD',
   },
   'auth.resetSent': {

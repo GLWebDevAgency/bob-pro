@@ -23,6 +23,7 @@ import { BobClientProvider } from '../src/data/client';
 import { PushNotificationsBridge } from '../src/data/push';
 import { ConfirmProvider } from '../src/components/ConfirmSheet';
 import { LoginScreen } from '../src/screens/LoginScreen';
+import { BiometricGate } from '../src/screens/BiometricGate';
 
 /** Porte d'authentification : en mode connecté (Supabase configuré), exige une session. */
 function AuthGate({ children }: { children: ReactNode }) {
@@ -44,7 +45,8 @@ function AuthGate({ children }: { children: ReactNode }) {
     );
   }
   if (enabled && !session) return <LoginScreen />;
-  return <>{children}</>;
+  // C24 : session persistée + opt-in biométrie → Face ID/Touch ID avant l'app (dégradé honnête).
+  return <BiometricGate>{children}</BiometricGate>;
 }
 
 export default function RootLayout() {
@@ -68,8 +70,10 @@ export default function RootLayout() {
           <ThemeProvider>
             <AuthProvider>
               <StatusBar style="light" />
-              <AuthGate>
-                <BobClientProvider>
+              {/* C24 : le client data vit AU-DESSUS de la porte d'auth — l'inscription
+                  (lookup SIRET public) en a besoin AVANT toute session. */}
+              <BobClientProvider>
+                <AuthGate>
                   {/* C25 : token push Expo au boot connecté + deep link au tap (dégradé honnête Expo Go). */}
                   <PushNotificationsBridge />
                   <ConfirmProvider>
@@ -80,6 +84,8 @@ export default function RootLayout() {
                     <Stack.Screen name="facture/[id]" />
                     <Stack.Screen name="client/[id]" />
                     <Stack.Screen name="compte" />
+                    <Stack.Screen name="catalogue" />
+                    <Stack.Screen name="reglages-facturation" />
                     <Stack.Screen name="diagnostic" />
                     <Stack.Screen name="notifications" />
                     <Stack.Screen name="onboarding" />
@@ -92,8 +98,8 @@ export default function RootLayout() {
                     <Stack.Screen name="gallery" />
                   </Stack>
                   </ConfirmProvider>
-                </BobClientProvider>
-              </AuthGate>
+                </AuthGate>
+              </BobClientProvider>
             </AuthProvider>
           </ThemeProvider>
         </QueryClientProvider>
