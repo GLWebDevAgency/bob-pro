@@ -816,10 +816,39 @@
 
 ## Transverse
 
-### C40 — Contrats d'API + mock (TanStack) <!-- kind: package -->
-- status: OPEN · depends-on: C02 · target: packages/core/api
-- spec: CLAUDE_CODE_PROMPTS.md Phase 6 · INTEGRATION_MAP.md (points d'intégration réels)
-- Contrat: contrats typés (auth/company/customers/billing/payments/documents+OCR/compliance/cashflow/subscription/team) · adaptateur mock sur fixtures · client TanStack partagé · TODO aux frontières (PDP/Chorus/e-reporting/banque/CB/OCR/PDF Factur-X/signature).
+### C40 — Contrats d'API réels + parité agent complète <!-- kind: package -->
+- status: IN-BUILD
+- owner: claude-code (builder) · reviewer: gpt5pro (a posteriori)
+- depends-on: C02, C15 (audit), C20 (registre extensible) · directive humaine PROD 100 % [14:50]
+- target: packages/api-client + packages/ai + apps/mobile/src/data (apps/api INTERDIT — endpoints existants)
+
+#### Contrat (v1, claude-code — AMENDÉ par la directive « app de prod 100 %, plus seulement une démo »)
+- Objectif : fermer le chemin de PRODUCTION du mobile — le mode connecté (Supabase session + API Railway)
+  devient le chemin PRINCIPAL, le LocalBobClient reste un adaptateur de dev.
+- Périmètre :
+  1. JOURNAL ON-DEVICE (TODO ⑧, majeur) : BobClient (api-client) expose askBob/confirmBob/getRunJournal
+     sur les endpoints EXISTANTS POST /ai/ask · POST /ai/confirm · GET /ai/runs/:id/journal ; en mode HTTP,
+     apps/mobile/src/data/bob.ts route l'agent par le SERVEUR (autonomie clampée par l'offre, journal
+     append-only company-scoped) au lieu d'instancier l'agent en local ; le local reste le chemin démo.
+  2. OUTILS AGENT MANQUANTS (TODO ⑤⑥⑦) : capacités optionnelles generer_facture (deposit/final, fiscal),
+     export_fec (accounting), intent+navigation diagnostic — mêmes use cases que l'UI, pattern C20.
+  3. CRÉER CLIENT (TODO partagé C12) : use case côté client (createCustomer si l'endpoint existe côté api ;
+     sinon TODO documenté SANS bouton fantôme) + entrée UI C12 + outil agent creer_client si faisable.
+  4. VALIDATION PROD : l'app en mode connecté (vrai .env, session Supabase du user démo) fonctionne sur
+     les écrans refondus — checklist loggée (login, briefing, argent, clients, fiche, documents, assistant
+     ask/confirm JOURNALISÉ serveur, voix). Toute rupture = fix dans le claim.
+- Interdits : apps/api (périmètre Codex/session OCR) · rupture d'API publique · fixtures en prod.
+- Acceptance : tests api-client (ask/confirm joués contre un stub HTTP local) · @bob/ai registre étendu
+  testé · typecheck workspace · checklist prod loggée au claim (avec captures si session dispo).
+
+#### Signatures
+- [x] agreed — claude-code — 2026-07-03 (14:52) — régime humain, review gpt5pro a posteriori
+
+#### Log (append-only, horodaté)
+- [14:52] claude-code CLAIM+PROPOSE+IN-BUILD: directive PROD 100 % gravée (mémoire + contrat). NB : la
+  validation connectée sur simulateur nécessite un LOGIN (saisie) — accessibilité macOS toujours refusée :
+  soit l'humain l'autorise (Réglages → Confidentialité → Accessibilité), soit il tape le login démo une
+  fois sur le simulateur ; sinon la checklist prod sera validée via les tests HTTP + preuves API.
 
 ### C41 — A11y / états / tests / sweep parité <!-- kind: package -->
 - status: OPEN · depends-on: (tous les écrans) · spec: CLAUDE_CODE_PROMPTS.md Phase 7
@@ -841,4 +870,5 @@
 | C13 | MERGED | claude-code | gpt5pro | Fiche validée simulateur 08:47, review a posteriori. |
 | C15 | MERGED | claude-code | gpt5pro | Chat sur agent réel validé 11:10 ; audit parité : 9 OK / 8 TODO (① journal on-device prioritaire). |
 | C20 | MERGED | claude-code | gpt5pro | Flux 3 étapes validé 13:26 ; TODO parité ③④ résolus. |
+| C40 | IN-BUILD | claude-code | gpt5pro | Chemin PROD : journal on-device + outils agent + validation connectée — contrat 14:52. |
 | C16–C41 | OPEN | — | — | Écrans/flux au fil de l'eau ; web C30 différé. |
