@@ -880,6 +880,23 @@
   /invoices/:id/credit-note à poser côté apps/api ; ② préfixe « A » du compteur 'credit'
   dans les impls serveur (in-memory + Prisma) — la sandbox apps/api est en WIP session A,
   non touchée volontairement. Core 355 ✓ api-client 27 ✓ typecheck mobile ✓.
+- [00:40] claude-code (session B) A7 MERGE (commit 148f6c2) : RECHERCHE GLOBALE — use case
+  pur searchGlobal (@bob/core, 4 tests : accents/casse, pièce par numéro OU nom de client,
+  brouillons sans numéro trouvables, docs via searchVault SOURCE UNIQUE C14, requête vide
+  = vide jamais « tout ») + écran /recherche (pattern écran poussé A3-C17, ?q= deep-linkable,
+  sections Clients / Devis & factures / Documents masquées si vides, hint/noResults voix de
+  Bob, +12 clés ×3) + porte d'entrée « Chercher partout » en tête des résultats du coffre.
+  Core 359 ✓ typecheck ✓. NOTE ENV : le gate d'AUTH (session A, C22/C24) est actif au
+  simulateur → les deep links atterrissent sur le login ; captures suspendues jusqu'à une
+  connexion humaine (identifiants démo transmis : demo@bobpro.fr).
+- [00:50] claude-code (session B) A8 MERGE (commit cb28ee4) : DESTINATION DU CLASSEMENT —
+  le 1-tap « Classer là » (proposition IA, validé A1-C14) reste premier ; lien discret
+  « Choisir un autre dossier… » → Sheet des destinations RÉELLES : dépense rapprochée en
+  tête (SparkSmallIcon success) + chantiers OUVERTS (FolderSmallIcon b2b) ; classifyDocument
+  linkedEntityType 'chantier' (cible validée par le domaine — aucun nouveau chemin). Un doc
+  classé chantier compte dans le dossier Chantiers ET dans l'onglet Docs de la fiche client
+  (A1-C13). État vide honnête (docs.pickEmpty). +7 clés ×3. Typecheck ✓ i18n 46 ✓.
+  → LE PROGRAMME « toutes les suggestions » (21:40) EST SOLDÉ : A1..A8 livrés (8/8).
 
 ### C17 — Compta & conformité            <!-- kind: screen -->
 - status: MERGED
@@ -1348,9 +1365,48 @@
   la correction est de sécurité, pas seulement d'UX d'inscription.
 
 ### C26 — Compte / Abo / Équipe / Paywall <!-- kind: flow -->
-- status: OPEN · depends-on: C03 · ref-capture: claims/ref/C26.png
-- Contrat: offres Solo 19 / Pro 39 (active) / Business 79 · factures d'abo · services (paiement CB 1,2 %, avance, assurance, comptable) · équipe & rôles · paywall Business (79 €).
-- Acceptance: offre active désactivée · paywall = 79 €.
+- status: IN-BUILD
+- owner: claude-code A (builder) · reviewer: gpt5pro (a posteriori)
+- depends-on: C03 (MERGED), C24 (MERGED — identité/session), C27 (MERGED — lien réglages facturation)
+- ref-capture: dc.html §compte/abonnement (lu au build, lignes ~1446-1560) · target: apps/mobile/app/compte.tsx (REFONTE onglets Profil/Abonnement)
+
+#### Contrat (v2, claude-code A — amende le mini-contrat v1, régime prod 100 %)
+- CONSTAT : le domaine Subscription EXISTE (@bob/core domain/subscription : tiers solo/pro/business,
+  planCan, tierAtLeast) mais le serveur le seede EN DUR (`sub-mercier`, tier business, singleton pour
+  TOUS les tenants — backend.service.ts constructor) et rien n'est exposé au client. Il n'y a AUCUN
+  paiement d'abonnement réel (pas de Stripe billing). Réalité produit : ACCÈS ANTICIPÉ — toutes les
+  capacités ouvertes, 0 €/mois.
+- CORE (pur, testé) : application/compte/derive-account-view — entrées = identité (nullable),
+  CompanyProps|null, TradeConfig|null (modules réels du GET /profile), SubscriptionInfo|null ;
+  sortie = AccountView (Profil : entreprise/connexions/équipe ; Abonnement : offre courante, grille,
+  factures d'abo, services) avec états HONNÊTES : offre courante = « Accès anticipé · 0 €/mois ·
+  toutes les fonctions ouvertes » tant que le serveur n'expose pas GET /subscription ; grille
+  Solo 19 / Pro 39 / Business 79 = CONSTANTE PRODUIT posée dans domain/subscription/plan.ts (source
+  unique, prix en centimes) affichée en PREVIEW avec CTA honnête « disponible à l'ouverture de la
+  facturation » (JAMAIS un bouton qui prétend souscrire) ; factures d'abo = état vide honnête ;
+  services en plus (paiement CB, avance, assurance, comptable) = badges dérivés du réel (module
+  actif dans TradeConfig sinon « À venir ») ; banque = « À connecter » (aucun bridge bancaire).
+- ÉCRAN compte.tsx refondu : onglets Profil/Abonnement (SegmentedControl @bob/ui), parité
+  structurelle avec le proto (cartes, sections, badge BUSINESS sur Équipe & rôles), identité via
+  useIdentity (JAMAIS Mercier en dur — démo = seed), email = session réelle, Se déconnecter =
+  signOut réel, lien « Facturation & modèles » → reglages-facturation (C27). États sans-données
+  de premier rang.
+- SERVEUR (séquencé APRÈS C24b — même fichier backend.service.ts) : sous-claim C26b — subscription
+  dérivée PAR TENANT (plus de singleton Mercier), GET /subscription ; le mobile branchera
+  SubscriptionInfo réel alors.
+- i18n : section NOUVELLE account.* ×3 humeurs en FIN de dict (ancres étroites — C24b édite la
+  section auth.* en parallèle).
+- Acceptance : derive-account-view testé (early-access honnête, grille constante, jamais ACTIVE
+  inventé) · captures C26-p1 (profil) + C26-p2 (abonnement) · i18n tests · typecheck + token-lint.
+
+#### Signatures
+- [x] agreed — claude-code A — 2026-07-04 (00:52) — régime humain, review gpt5pro a posteriori
+
+#### Log (append-only, horodaté)
+- [2026-07-04 00:52] claude-code A CLAIM+AMEND v2+IN-BUILD: le v1 (« Pro 39 active, paywall 79 »)
+  décrivait le REMPLISSAGE du proto — en prod il n'y a pas de billing : l'écran dit la vérité
+  (accès anticipé) et la grille devient une constante produit. Singleton sub-mercier du serveur
+  tracé → C26b après C24b (collision backend.service.ts sinon).
 
 ### C27 — Catalogue prestations + Réglages facturation <!-- kind: flow -->
 - status: IN-BUILD
