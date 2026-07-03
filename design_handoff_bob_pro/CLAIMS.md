@@ -1282,6 +1282,48 @@
   i18n 42 · typecheck 16/16. Restes déploiement : migration+rls.sql sur la base, BREVO_* en prod.
   status=MERGED.
 
+### C24b — Provisioning tenant à l'inscription (sécurité multi-tenant) <!-- kind: flow -->
+- status: IN-BUILD
+- owner: claude-code A (builder) · reviewer: gpt5pro (a posteriori)
+- depends-on: C24 (MERGED) · tabou apps/api levé au titre de la directive « 100 % prod à chaque fois » (chantier OCR session B intouchable)
+- target: apps/api/src/auth/* + backend.service + packages/api-client + apps/mobile (fin d'onboarding)
+
+#### Contrat (v1, claude-code A — correction de sécurité, régime prod 100 %)
+- CONSTAT (audit expert 2026-07-04) : trois trous cohérents dans la chaîne multi-tenant —
+  (1) auth.guard.ts:57 : JWT prod valide SANS app_metadata.company_id → principal retombe sur
+  MERCIER_PROPS.id = LECTURE CROSS-TENANT du tenant démo par tout compte neuf ; (2)
+  backend.service.ts companyId() : même fallback = ÉCRITURE cross-tenant (registerCompany écraserait
+  la société démo) ; (3) le mobile n'appelle jamais POST /onboarding/company après signUp → compte
+  sans tenant à vie. Le « repli silencieux » interdit par directive, version sécurité.
+- SERVEUR : guard prod → principal.companyId NULLABLE, aucun fallback hors mode démo ; endpoints
+  tenant → 403 code PROVISIONING_REQUIRED si null (seuls passent sans tenant : GET /company/lookup,
+  POST /onboarding/company, infra/health/metrics/public/sign — liste blanche explicite) ;
+  POST /onboarding/company sans tenant → crée la company avec id DÉTERMINISTE `company-<userId>`
+  (retry idempotent, zéro orpheline) + écrit app_metadata.company_id via l'API admin Supabase
+  (SUPABASE_SERVICE_ROLE_KEY déjà dans env.ts/Railway) — clé absente ou échec admin = erreur
+  EXPLICITE loggée (pattern MisconfiguredEmailNotifier), jamais silencieux ; avec tenant → update
+  de SA société (comportement actuel conservé). JAMAIS d'input companyId côté client
+  (anti-auto-rattachement à un tenant arbitraire). BackendService.companyId() : fallback Mercier
+  supprimé — le principal est OBLIGATOIRE (les tests posent un principal explicite).
+- CLIENT : api-client registerCompany (HTTP + Local) ; mobile : fin d'onboarding C22 (ou premier
+  login d'un JWT sans tenant → redirection onboarding) appelle registerCompany puis
+  supabase.auth.refreshSession() (JWT frais avec company_id) ; états honnêtes (provisioning en
+  cours / échec voix Bob, pas de spinner infini).
+- DÉMO : inchangée (guard pass-through + x-company-id). Le user demo@bobpro.fr a déjà son
+  app_metadata.company_id : non impacté.
+- Acceptance : tests guard (sans company_id → 403 tenant, liste blanche OK, jamais Mercier hors
+  démo) · provisioning (admin mocké : succès pose app_metadata + id déterministe idempotent, échec
+  explicite) · grep : plus AUCUN MERCIER_PROPS.id de fallback dans auth/backend hors chemin démo ·
+  api-client + typecheck + tests api verts.
+
+#### Signatures
+- [x] agreed — claude-code A — 2026-07-04 (00:45) — régime humain, review gpt5pro a posteriori
+
+#### Log (append-only, horodaté)
+- [2026-07-04 00:45] claude-code A CLAIM+PROPOSE+IN-BUILD: annoncé à l'humain au MERGE C24. Découverte
+  en cartographiant : le fallback Mercier du guard fait d'un compte neuf un lecteur du tenant démo —
+  la correction est de sécurité, pas seulement d'UX d'inscription.
+
 ### C26 — Compte / Abo / Équipe / Paywall <!-- kind: flow -->
 - status: OPEN · depends-on: C03 · ref-capture: claims/ref/C26.png
 - Contrat: offres Solo 19 / Pro 39 (active) / Business 79 · factures d'abo · services (paiement CB 1,2 %, avance, assurance, comptable) · équipe & rôles · paywall Business (79 €).
@@ -1424,5 +1466,6 @@
 | C17 | MERGED | claude-code (session B) | gpt5pro | Grand-livre @bob/ui + export FEC partageable (shareFec ×2 écrans). |
 | C22 | MERGED | claude-code A | gpt5pro | Flux 5 étapes validé 22:17 (preview adaptatif core). |
 | C24 | MERGED | claude-code A | gpt5pro | Auth 100 % prod (login+SIRET+biométrie) + checklist PROD connectée — 07-04 00:35. Reste : C24b provisioning tenant. |
+| C24b | IN-BUILD | claude-code A | gpt5pro | Sécurité multi-tenant : fallback Mercier supprimé + provisioning app_metadata via admin Supabase — 07-04 00:45. |
 | C27 | MERGED | claude-code A | gpt5pro | Catalogue 63 prestations/9 métiers + suggestions devis/voix — 07-04 00:36. |
 | C26, C41 | OPEN | — | — | Web C30 différé après mobile hi-fi. |
