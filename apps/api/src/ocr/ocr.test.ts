@@ -139,7 +139,7 @@ describe('FallbackOcrChain (Mistral prioritaire, replis ordonnés)', () => {
   it('rend le premier succès sans appeler les moteurs suivants', async () => {
     const first = new StubEngine(ok(VALID_EXTRACTION));
     const second = new StubEngine(ok({ ...VALID_EXTRACTION, supplierName: 'Autre' }));
-    const chain = new FallbackOcrChain([first, second]);
+    const chain = new FallbackOcrChain([{ name: 'first', port: first }, { name: 'second', port: second }]);
     const r = await chain.extractDocument(INPUT);
     expect(r.ok && r.value.supplierName).toBe('Cedeo');
     expect(second.calls).toBe(0);
@@ -148,7 +148,7 @@ describe('FallbackOcrChain (Mistral prioritaire, replis ordonnés)', () => {
   it('bascule sur le repli quand le prioritaire échoue (dependency)', async () => {
     const first = new StubEngine(err({ kind: 'dependency', port: 'ocr', cause: 'HTTP 500' }));
     const second = new StubEngine(ok(VALID_EXTRACTION));
-    const chain = new FallbackOcrChain([first, second]);
+    const chain = new FallbackOcrChain([{ name: 'first', port: first }, { name: 'second', port: second }]);
     const r = await chain.extractDocument(INPUT);
     expect(r.ok).toBe(true);
     expect(first.calls).toBe(1);
@@ -158,9 +158,84 @@ describe('FallbackOcrChain (Mistral prioritaire, replis ordonnés)', () => {
   it("ne réessaie PAS ailleurs sur une erreur de validation du payload (définitive)", async () => {
     const first = new StubEngine(err({ kind: 'validation', issues: [{ field: 'mimeType', message: 'nope' }] }));
     const second = new StubEngine(ok(VALID_EXTRACTION));
-    const chain = new FallbackOcrChain([first, second]);
+    const chain = new FallbackOcrChain([{ name: 'first', port: first }, { name: 'second', port: second }]);
     const r = await chain.extractDocument(INPUT);
     expect(r.ok).toBe(false);
     expect(second.calls).toBe(0);
+  });
+});
+
+describe('FallbackOcrChain — disjoncteur (#7) et observabilité (#8)', () => {
+  it('disjoncte un moteur après 3 échecs consécutifs, le retente après 60 s', async () => {
+    const failing = new StubEngine(err({ kind: 'dependency', port: 'ocr', cause: 'HTTP 500' }));
+    const backup = new StubEngine(ok(VALID_EXTRACTION));
+    let clock = 0;
+    const events: { engine: string; skipped?: string }[] = [];
+    const chain = new FallbackOcrChain(
+      [{ name: 'primary', port: failing }, { name: 'backup', port: backup }],
+      (e) => events.push({ engine: e.engine, ...(e.skipped ? { skipped: e.skipped } : {}) }),
+      () => clock,
+    );
+
+    await chain.extractDocument(INPUT);
+    await chain.extractDocument(INPUT);
+    await chain.extractDocument(INPUT); // 3e échec → disjoncté
+    expect(failing.calls).toBe(3);
+
+    await chain.extractDocument(INPUT); // sauté (breaker ouvert)
+    expect(failing.calls).toBe(3);
+    expect(events.some((e) => e.engine === 'primary' && e.skipped === 'breaker_open')).toBe(true);
+
+    clock = 61_000; // demi-ouvert : on retente
+    await chain.extractDocument(INPUT);
+    expect(failing.calls).toBe(4);
+  });
+});
+
+describe('MistralOcrAdapter — contrat structurel (#1) et multi-pièces (#4)', () => {
+  it('impose le schéma via json_schema strict (premier appel chat)', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ pages: [{ markdown: 'FACTURE TOTAL 184,90' }] }))
+      .mockResolvedValueOnce(jsonResponse({ choices: [{ message: { content: JSON.stringify(DRAFT) } }] }));
+    vi.stubGlobal('fetch', fetchMock);
+    const adapter = new MistralOcrAdapter('key-test');
+    await adapter.extractDocument(INPUT);
+    const chatBody = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)) as {
+      response_format: { type: string; json_schema?: { strict?: boolean } };
+    };
+    expect(chatBody.response_format.type).toBe('json_schema');
+    expect(chatBody.response_format.json_schema?.strict).toBe(true);
+  });
+
+  it('replie sur json_object si l’API refuse json_schema (400)', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ pages: [{ markdown: 'FACTURE TOTAL 184,90' }] }))
+      .mockResolvedValueOnce(jsonResponse({ error: 'bad response_format' }, 400))
+      .mockResolvedValueOnce(jsonResponse({ choices: [{ message: { content: JSON.stringify(DRAFT) } }] }));
+    vi.stubGlobal('fetch', fetchMock);
+    const adapter = new MistralOcrAdapter('key-test');
+    const r = await adapter.extractDocument(INPUT);
+    expect(r.ok).toBe(true);
+    const retryBody = JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body)) as { response_format: { type: string } };
+    expect(retryBody.response_format.type).toBe('json_object');
+  });
+
+  it('refuse un document contenant PLUSIEURS pièces (une facture par scan)', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      jsonResponse({
+        pages: [
+          { markdown: 'FACTURE N° 118 — TOTAL TTC 100,00' },
+          { markdown: 'FACTURE N° 119 — TOTAL TTC 200,00' },
+        ],
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const adapter = new MistralOcrAdapter('key-test');
+    const r = await adapter.extractDocument({ ...INPUT, mimeType: 'application/pdf' });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.kind).toBe('validation');
+    expect(fetchMock).toHaveBeenCalledTimes(1); // pas d'appel extraction gaspillé
   });
 });

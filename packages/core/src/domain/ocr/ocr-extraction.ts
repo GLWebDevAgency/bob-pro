@@ -102,6 +102,68 @@ export function canonicalReceiptFilename(input: {
   return `${input.documentDate}_${kebab(input.supplierName) || 'fournisseur'}_${euros}.${cents}eur`;
 }
 
+/** Texte normalisé pour la recherche de preuves : accents/espaces/insécables aplatis. */
+function evidenceHaystack(rawText: string): string {
+  return rawText
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[\s\u00a0\u202f]+/g, '')
+    .toLowerCase();
+}
+
+/** Variantes plausibles d'un montant en centimes dans une pièce française : 184,90 · 184.90 · 18490(cts). */
+function amountVariants(cents: number): string[] {
+  const euros = Math.trunc(cents / 100);
+  const dec = String(cents % 100).padStart(2, '0');
+  const intWithSeparators = String(euros); // les espaces des milliers sont aplatis par le haystack
+  const variants = [`${intWithSeparators},${dec}`, `${intWithSeparators}.${dec}`];
+  if (dec === '00') variants.push(String(euros)); // « TOTAL 45 € »
+  return variants;
+}
+
+const FR_MONTHS = ['janvier','fevrier','mars','avril','mai','juin','juillet','aout','septembre','octobre','novembre','decembre'];
+
+/** Variantes plausibles d'une date AAAA-MM-JJ : 03/07/2026 · 3/7/2026 · 2026-07-03 · 3juillet2026. */
+function dateVariants(dateOnly: DateOnly): string[] {
+  const [y = '', m = '', d = ''] = dateOnly.split('-');
+  const dayNum = String(Number(d));
+  const monthNum = String(Number(m));
+  const month = FR_MONTHS[Number(m) - 1] ?? '';
+  return [
+    dateOnly,
+    `${d}/${m}/${y}`,
+    `${dayNum}/${monthNum}/${y}`,
+    `${d}/${m}/${y.slice(2)}`,
+    `${dayNum}${month}${y}`,
+    `${dayNum}${month}`,
+  ].filter((v) => v.length > 0);
+}
+
+export interface OcrEvidence {
+  amountFound: boolean;
+  dateFound: boolean;
+  supplierFound: boolean;
+  /** Score de preuve ∈ [0,1] : 0.35 de base + 0.35 montant + 0.15 date + 0.15 fournisseur. */
+  score: number;
+}
+
+/**
+ * #2 (excellence) — GROUNDING : cherche le montant TTC, la date et le fournisseur extraits
+ * DANS le texte OCR. Pur et déterministe ; sert aussi à dériver la confiance (#3).
+ */
+export function assessOcrEvidence(
+  extraction: { supplierName: string; documentDate: DateOnly; totalTtcCents: number },
+  rawText: string,
+): OcrEvidence {
+  const haystack = evidenceHaystack(rawText);
+  if (haystack.length === 0) return { amountFound: false, dateFound: false, supplierFound: false, score: 0.35 };
+  const amountFound = amountVariants(extraction.totalTtcCents).some((v) => haystack.includes(v));
+  const dateFound = dateVariants(extraction.documentDate).some((v) => haystack.includes(evidenceHaystack(v)));
+  const supplierFound = haystack.includes(evidenceHaystack(extraction.supplierName));
+  const score = 0.35 + (amountFound ? 0.35 : 0) + (dateFound ? 0.15 : 0) + (supplierFound ? 0.15 : 0);
+  return { amountFound, dateFound, supplierFound, score: Math.min(1, score) };
+}
+
 /**
  * Valide et normalise une extraction OCR brute. Tolérant au bruit (SIREN/champs optionnels),
  * INTRANSIGEANT sur la vraisemblance (garde-fous LLM, A2-C14) : date bornée (2000 → demain),
@@ -172,10 +234,26 @@ export function makeOcrExtraction(
   }
 
   const currency = (draft.currency ?? 'EUR').trim().toUpperCase() || 'EUR';
+  // #5 (excellence) : tout l'aval (Expense, formatEUR, compta) suppose l'euro — on refuse
+  // clairement plutôt que d'enregistrer un montant faux. Conversion multi-devises : plus tard.
+  if (currency !== 'EUR')
+    return err({ code: 'VALIDATION', field: 'currency', message: `Devise non gérée pour l'instant : ${currency} (EUR uniquement).` });
   const categoryGuess: ExpenseCategoryGuess = CATEGORIES.includes(draft.categoryGuess as ExpenseCategoryGuess)
     ? (draft.categoryGuess as ExpenseCategoryGuess)
     : 'autre';
+
+  // #2/#3 (excellence) : VÉRIFICATION DE PROVENANCE — un chiffre n'est cru que s'il se
+  // retrouve dans le texte OCR. La confiance finale est DÉRIVÉE DES FAITS (preuves trouvées),
+  // plafonnée par l'auto-évaluation du modèle (jamais rehaussée par elle).
   const rawText = (draft.rawText ?? '').toString();
+  const evidence = assessOcrEvidence(
+    { supplierName, documentDate: dateRaw, totalTtcCents },
+    rawText,
+  );
+  if (rawText.trim().length > 0) {
+    confidence = Math.min(confidence, evidence.score);
+    if (!evidence.amountFound) confidence = Math.min(confidence, 0.45);
+  }
 
   const suggestedTags = normalizeSuggestedTags(draft.suggestedTags);
   if (suggestedTags.length === 0) {

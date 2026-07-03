@@ -22,7 +22,8 @@ function props(over: Partial<DocumentProps> = {}): DocumentProps {
     issuedAt: null,
     createdAt: '2026-06-01T10:00:00.000Z',
     createdBy: 'user-1',
-    retentionUntil: '2036-06-01',
+    tags: [],
+  retentionUntil: '2036-06-01',
     deletedAt: null,
     versions: [
       {

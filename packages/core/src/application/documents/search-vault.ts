@@ -13,7 +13,7 @@ export function searchVault(
   if (tokens.length === 0) return [...documents];
   return documents
     .filter((doc) => {
-      const haystack = `${normalizeFilename(doc.filename)} ${vaultFolderOf(doc) ?? ''}`;
+      const haystack = `${normalizeFilename(doc.filename)} ${(doc.tags ?? []).join(' ')} ${vaultFolderOf(doc) ?? ''}`;
       return tokens.every((t) => haystack.includes(t));
     })
     .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));

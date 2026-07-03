@@ -1,3 +1,4 @@
+import type { AgentAutonomy, AgentRun, JournalEntry, PendingAction } from '@bob/ai';
 import type {
   Result,
   AppError,
@@ -5,6 +6,7 @@ import type {
   CreateQuoteOutput,
   IssueInvoiceInput,
   CustomerListItem,
+  CustomerProps,
   CashflowProjection,
   Scenario,
   Horizon,
@@ -92,6 +94,8 @@ export interface UploadDocumentClientInput {
   linkedEntityType?: DocumentLinkedEntityType | null;
   linkedEntityId?: string | null;
   documentDate?: string | null;
+  /** Tags de classement/recherche (#11) — proposés par l'OCR, confirmés à l'enregistrement. */
+  tags?: string[];
 }
 
 export interface ClassifyDocumentClientInput {
@@ -194,6 +198,16 @@ export interface ExportFecMetadata {
   rowCount: number;
   warnings: string[];
 }
+
+/** POST /ai/ask — DTO serveur constaté (AiController) : { message, autonomy? } -> AgentRun. */
+export interface AskBobClientInput {
+  message: string;
+  /** Autonomie DEMANDÉE — le serveur la clampe par l'offre (autonomyEntitlement) ; le local aussi. */
+  autonomy?: AgentAutonomy;
+}
+
+/** POST /customers — DTO serveur constaté (CustomersController) : CustomerProps sans id/companyId. */
+export type CreateCustomerClientInput = Omit<CustomerProps, 'id' | 'companyId'>;
 
 /**
  * Façade data consommée par l'app mobile (via TanStack Query).

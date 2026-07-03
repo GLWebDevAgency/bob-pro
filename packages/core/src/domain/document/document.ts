@@ -38,6 +38,8 @@ export interface DocumentProps {
   retentionUntil: DateOnly;
   deletedAt: Instant | null;
   versions: DocumentVersionProps[];
+  /** Tags de classement/recherche (#11 excellence) — normalisés, ≤ 16. */
+  tags: string[];
 }
 
 const KINDS: readonly DocumentKind[] = ['invoice_pdf', 'quote_pdf', 'facturx_xml', 'expense_receipt', 'signed_quote', 'other'];
@@ -124,7 +126,9 @@ export class Document {
       return err({ code: 'VALIDATION', field: 'versions', message: 'La version courante ne correspond pas aux métadonnées.' });
     }
 
-    return ok(new Document({ ...props, filename, versions }));
+    const tags = [...new Set(props.tags.map((t) => t.trim().toLowerCase()).filter((t) => t.length >= 2 && t.length <= 32))].slice(0, 16);
+
+    return ok(new Document({ ...props, filename, versions, tags }));
   }
 
   static rehydrate(props: DocumentProps): Document {

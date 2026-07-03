@@ -64,6 +64,7 @@ const BASES: Record<PromptTask, PromptBase> = {
     rules: [
       'Réponds UNIQUEMENT par un objet JSON valide (sans markdown, sans texte autour).',
       'Montants en CENTIMES entiers. Mets null si une valeur est absente ou illisible.',
+      'currency = code ISO 4217 de la devise RÉELLE de la pièce (EUR, USD…). Ne convertis JAMAIS un montant dans une autre devise.',
       'categoryGuess parmi: fournitures|materiel|carburant|repas|sous_traitance|autre. confidence entre 0 et 1.',
       'suggestedTags: 3 à 6 tags courts et utiles pour retrouver/classer la pièce (fournisseur, catégorie, ' +
         "chantier/mission ou client si mentionné sur la pièce, nature de l'achat).",

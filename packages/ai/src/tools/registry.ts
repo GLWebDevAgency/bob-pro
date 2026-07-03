@@ -13,6 +13,10 @@ import {
   type BobActions,
   type CreateQuoteActionInput,
   type RecordExpenseActionInput,
+  type GenerateInvoiceActionInput,
+  type ExportFecActionInput,
+  type FecExportSummary,
+  type CreateCustomerActionInput,
 } from '../agent/actions';
 
 function appValidation(field: string, message: string): AppError {
@@ -21,6 +25,9 @@ function appValidation(field: string, message: string): AppError {
 
 const LINE_CATEGORIES: readonly LineCategory[] = ['labor', 'supply', 'travel', 'disbursement', 'subscription'];
 const EXPENSE_CATEGORIES: readonly ExpenseCategory[] = ['fournitures', 'materiel', 'carburant', 'repas', 'sous_traitance', 'autre'];
+const CUSTOMER_TYPES: readonly CreateCustomerActionInput['type'][] = ['b2c', 'b2b', 'b2g'];
+const INVOICE_MODES: readonly NonNullable<GenerateInvoiceActionInput['mode']>[] = ['deposit', 'final'];
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 
 /** Valide strictement une ligne de devis dictée/planifiée par l'agent (anti-hallucination d'arguments). */
 function parseLine(raw: unknown, index: number): Result<LineInput, AppError> {
@@ -231,6 +238,82 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
       run: (input) => recordExpenseAction(input),
     };
     tools.push(scanDepense as AnyTool);
+  }
+
+  // —— Outils OPTIONNELS (parité C15 TODO ⑤⑥ + créer client, C40) — même pattern par capacités ——
+  const generateInvoiceAction = actions.generateInvoice?.bind(actions);
+  if (generateInvoiceAction) {
+    const genererFacture: Tool<GenerateInvoiceActionInput, { invoiceId: string }> = {
+      name: 'generer_facture',
+      description:
+        'Génère la facture (acompte « deposit » ou solde « final ») d’un devis signé — même use case GenerateInvoiceFromQuote que l’UI.',
+      mutating: true,
+      outbound: false,
+      compliance: 'high',
+      // Palier fiscal (contrat C40) : entre dans la chaîne de facturation légale -> toujours confirmer.
+      safetyFloor: true,
+      riskTier: 'fiscal',
+      parse: (raw): Result<GenerateInvoiceActionInput, AppError> => {
+        const r = raw as { quoteId?: unknown; mode?: unknown };
+        if (typeof r?.quoteId !== 'string' || r.quoteId.length === 0) return err(appValidation('quoteId', 'Devis manquant.'));
+        if (r.mode !== undefined && !(typeof r.mode === 'string' && (INVOICE_MODES as readonly string[]).includes(r.mode)))
+          return err(appValidation('mode', 'Mode de facture invalide (deposit | final).'));
+        return ok({
+          quoteId: r.quoteId,
+          ...(typeof r.mode === 'string' ? { mode: r.mode as GenerateInvoiceActionInput['mode'] } : {}),
+        });
+      },
+      run: (input) => generateInvoiceAction(input),
+    };
+    tools.push(genererFacture as AnyTool);
+  }
+
+  const exportFecAction = actions.exportFec?.bind(actions);
+  if (exportFecAction) {
+    const exportFec: Tool<ExportFecActionInput, FecExportSummary> = {
+      name: 'export_fec',
+      description:
+        'Prépare l’export FEC (fichier des écritures comptables) d’une période — même use case ExportFec que l’écran compta ; renvoie le résumé (fichier, nombre d’écritures), jamais le contenu.',
+      mutating: false,
+      outbound: false,
+      compliance: 'high',
+      // Palier comptable (contrat C40) : donnée réglementée, classée accounting pour la policy/l'audit.
+      riskTier: 'accounting',
+      parse: (raw): Result<ExportFecActionInput, AppError> => {
+        const r = raw as { from?: unknown; to?: unknown };
+        if (typeof r?.from !== 'string' || !DATE_ONLY.test(r.from))
+          return err(appValidation('from', 'Début de période (YYYY-MM-DD) invalide.'));
+        if (typeof r?.to !== 'string' || !DATE_ONLY.test(r.to))
+          return err(appValidation('to', 'Fin de période (YYYY-MM-DD) invalide.'));
+        if (r.to < r.from) return err(appValidation('to', 'La fin de période précède le début.'));
+        return ok({ from: r.from, to: r.to });
+      },
+      run: (input) => exportFecAction(input),
+    };
+    tools.push(exportFec as AnyTool);
+  }
+
+  const createCustomerAction = actions.createCustomer?.bind(actions);
+  if (createCustomerAction) {
+    const creerClient: Tool<CreateCustomerActionInput, { id: string }> = {
+      name: 'creer_client',
+      description:
+        'Crée une fiche client minimale (nom + type particulier/entreprise/public) — même use case createCustomer que l’écran Clients.',
+      mutating: true,
+      outbound: false,
+      compliance: 'low',
+      // Fiche interne réversible (brouillon de carnet) : pas de plancher.
+      riskTier: 'draft',
+      parse: (raw): Result<CreateCustomerActionInput, AppError> => {
+        const r = raw as { name?: unknown; type?: unknown };
+        if (typeof r?.name !== 'string' || r.name.trim().length === 0) return err(appValidation('name', 'Nom du client manquant.'));
+        if (typeof r?.type !== 'string' || !(CUSTOMER_TYPES as readonly string[]).includes(r.type))
+          return err(appValidation('type', 'Type de client invalide (b2c | b2b | b2g).'));
+        return ok({ name: r.name.trim(), type: r.type as CreateCustomerActionInput['type'] });
+      },
+      run: (input) => createCustomerAction(input),
+    };
+    tools.push(creerClient as AnyTool);
   }
 
   return tools;

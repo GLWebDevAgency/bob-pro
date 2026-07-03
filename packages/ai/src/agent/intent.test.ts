@@ -23,3 +23,25 @@ describe('detectIntent — clôture (préparer le mois)', () => {
     expect(detectIntent('Quel temps fait-il ?')).toBe('unknown');
   });
 });
+
+describe('detectIntent — diagnostic 2026 (C40 TODO ⑦)', () => {
+  it('reconnaît la chip « Prêt pour 2026 ? » et les demandes de diagnostic', () => {
+    for (const m of [
+      'Prêt pour 2026 ?',
+      'prête pour 2026',
+      'On est prêts pour 2026 ?',
+      'Fais mon diagnostic',
+      'Lance le diagnostic de conformité',
+      'Je suis en règle sur la conformité 2026 ?',
+      'conformité facturation électronique, ça donne quoi ?',
+    ]) {
+      expect(detectIntent(m)).toBe('diagnostic');
+    }
+  });
+
+  it('ne détourne pas les intentions existantes', () => {
+    expect(detectIntent('Prépare le mois')).toBe('cloture');
+    expect(detectIntent('Combien je peux me verser ?')).toBe('payout');
+    expect(detectIntent('Un devis pour 2026')).toBe('nouveau_devis');
+  });
+});

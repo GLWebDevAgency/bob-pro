@@ -36,6 +36,7 @@ function makeDocument(over: Partial<DocumentProps> = {}): Document {
     createdBy: 'local',
     deletedAt: null,
     retentionUntil: '2036-07-01',
+    tags: [],
     versions: [
       {
         id: `${id}-v1`,

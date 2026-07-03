@@ -388,6 +388,7 @@ model StoredDocument {
   createdBy        String?
   retentionUntil   String
   deletedAt        DateTime?
+  tags             String[]                        @default([])
   versions         StoredDocumentVersion[]
 
   @@index([companyId, kind])

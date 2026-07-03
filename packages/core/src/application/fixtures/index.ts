@@ -146,6 +146,7 @@ export function seedVaultDocuments(companyId: string, now: Instant, today: DateO
     linkedEntityId: string | null;
     documentDate: DateOnly;
     createdAt: Instant;
+    tags?: string[];
   }): DocumentView => ({
     id: input.id,
     companyId,
@@ -172,11 +173,12 @@ export function seedVaultDocuments(companyId: string, now: Instant, today: DateO
     createdAt: input.createdAt,
     createdBy: 'local',
     retentionUntil,
+    tags: input.tags ?? [],
   });
   const twoMinutesAgo = new Date(Date.parse(now) - 120_000).toISOString();
   return [
-    mk({ id: 'seed-doc-leroy', kind: 'expense_receipt', origin: 'ocr', filename: 'recu-leroy-merlin.jpg', mimeType: 'image/jpeg', byteSize: 482_000, linkedEntityType: null, linkedEntityId: null, documentDate: today, createdAt: twoMinutesAgo }),
-    mk({ id: 'seed-doc-cedeo', kind: 'expense_receipt', origin: 'ocr', filename: 'recu-cedeo-robinetterie.jpg', mimeType: 'image/jpeg', byteSize: 391_000, linkedEntityType: 'expense', linkedEntityId: 'local-expense-cedeo', documentDate: `${month}-01`, createdAt: now }),
+    mk({ id: 'seed-doc-leroy', kind: 'expense_receipt', origin: 'ocr', filename: 'recu-leroy-merlin.jpg', mimeType: 'image/jpeg', byteSize: 482_000, linkedEntityType: null, linkedEntityId: null, documentDate: today, createdAt: twoMinutesAgo, tags: ['fournitures', 'leroy-merlin'] }),
+    mk({ id: 'seed-doc-cedeo', kind: 'expense_receipt', origin: 'ocr', filename: 'recu-cedeo-robinetterie.jpg', mimeType: 'image/jpeg', byteSize: 391_000, linkedEntityType: 'expense', linkedEntityId: 'local-expense-cedeo', documentDate: `${month}-01`, createdAt: now, tags: ['materiel', 'cedeo', 'robinetterie'] }),
     mk({ id: 'seed-doc-f104', kind: 'invoice_pdf', origin: 'generated', filename: 'facture-F-2026-104.pdf', mimeType: 'application/pdf', byteSize: 128_000, linkedEntityType: null, linkedEntityId: null, documentDate: `${month}-01`, createdAt: now }),
   ];
 }

@@ -1,0 +1,120 @@
+import { describe, it, expect } from 'vitest';
+import { ok } from '@bob/core';
+import { buildBobTools } from './registry';
+import { type BobActions } from '../agent/actions';
+import { isSafetyFloor, requiresConfirmation, riskTierOf } from '../agent/autonomy';
+
+/** Surface d'actions minimale (hôte legacy type apps/api) : AUCUNE capacité optionnelle. */
+const baseActions: BobActions = {
+  computePayout: async () => ok({ payoutCents: 1000, availableCents: 2000 }),
+  draftRelance: async () => ok({ subject: 's', body: 'b' }),
+  listPayableInvoices: async () => ok([]),
+  listSendableQuotes: async () => ok([]),
+  listIssuableInvoices: async () => ok([]),
+  listDocuments: async () => ok([]),
+  registerPayment: async () => ok({ status: 'paid' }),
+  sendQuote: async () => ok({ number: 'D-1' }),
+  issueInvoice: async () => ok({ number: 'F-1' }),
+};
+
+/** Hôte complet (mobile / LocalBobClient) : toutes les capacités optionnelles C20 + C40. */
+function fullActions(calls: Record<string, unknown[]>): BobActions {
+  const track = (name: string, input: unknown) => {
+    calls[name] = [...(calls[name] ?? []), input];
+  };
+  return {
+    ...baseActions,
+    createQuote: async (input) => (track('createQuote', input), ok({ quoteId: 'q-1' })),
+    recordExpense: async (input) => (track('recordExpense', input), ok({ id: 'exp-1' })),
+    generateInvoice: async (input) => (track('generateInvoice', input), ok({ invoiceId: 'inv-9' })),
+    exportFec: async (input) => (
+      track('exportFec', input),
+      ok({ filename: '732829320FEC20261231.txt', entryCount: 2, rowCount: 5, warnings: [] })
+    ),
+    createCustomer: async (input) => (track('createCustomer', input), ok({ id: 'cust-9' })),
+  };
+}
+
+function tool(actions: BobActions, name: string) {
+  return buildBobTools(actions).find((t) => t.name === name);
+}
+
+describe('registre par capacités — C40 TODO ⑤⑥ + creer_client', () => {
+  it("n'expose PAS les outils optionnels si l'hôte ne fournit pas l'action (rétro-compat apps/api)", () => {
+    const names = buildBobTools(baseActions).map((t) => t.name);
+    expect(names).not.toContain('generer_facture');
+    expect(names).not.toContain('export_fec');
+    expect(names).not.toContain('creer_client');
+    expect(names).not.toContain('creer_devis');
+    expect(names).not.toContain('scan_depense');
+  });
+
+  it("expose les outils optionnels quand l'hôte fournit les actions (C20 + C40)", () => {
+    const names = buildBobTools(fullActions({})).map((t) => t.name);
+    for (const n of ['creer_devis', 'scan_depense', 'generer_facture', 'export_fec', 'creer_client']) {
+      expect(names).toContain(n);
+    }
+  });
+
+  it('generer_facture : palier FISCAL (plancher — confirmation même en auto), deposit/final validés', async () => {
+    const calls: Record<string, unknown[]> = {};
+    const t = tool(fullActions(calls), 'generer_facture')!;
+    expect(riskTierOf(t)).toBe('fiscal');
+    expect(isSafetyFloor(t)).toBe(true);
+    expect(requiresConfirmation(t, 'auto')).toBe(true);
+
+    expect(t.parse({}).ok).toBe(false); // quoteId manquant
+    expect(t.parse({ quoteId: 'q-1', mode: 'partial' }).ok).toBe(false); // mode inconnu
+    const parsed = t.parse({ quoteId: 'q-1', mode: 'deposit' });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const run = await t.run(parsed.value);
+    expect(run.ok && run.value).toEqual({ invoiceId: 'inv-9' });
+    expect(calls.generateInvoice).toEqual([{ quoteId: 'q-1', mode: 'deposit' }]);
+  });
+
+  it('generer_facture : le mode est optionnel (défaut du use case, jamais inventé ici)', () => {
+    const t = tool(fullActions({}), 'generer_facture')!;
+    const parsed = t.parse({ quoteId: 'q-1' });
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(parsed.value).toEqual({ quoteId: 'q-1' });
+  });
+
+  it('export_fec : lecture réglementée (accounting, non mutante), période stricte YYYY-MM-DD ordonnée', async () => {
+    const calls: Record<string, unknown[]> = {};
+    const t = tool(fullActions(calls), 'export_fec')!;
+    expect(t.mutating).toBe(false);
+    expect(riskTierOf(t)).toBe('accounting');
+    expect(requiresConfirmation(t, 'confirm_all')).toBe(false); // lecture : jamais de confirmation
+
+    expect(t.parse({ from: '2026-1-1', to: '2026-12-31' }).ok).toBe(false);
+    expect(t.parse({ from: '2026-12-31', to: '2026-01-01' }).ok).toBe(false); // période inversée
+    const parsed = t.parse({ from: '2026-01-01', to: '2026-12-31' });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const run = await t.run(parsed.value);
+    expect(run.ok && run.value).toMatchObject({ filename: '732829320FEC20261231.txt', entryCount: 2 });
+    expect(calls.exportFec).toEqual([{ from: '2026-01-01', to: '2026-12-31' }]);
+  });
+
+  it('creer_client : brouillon de carnet (draft, pas de plancher), nom + type stricts', async () => {
+    const calls: Record<string, unknown[]> = {};
+    const t = tool(fullActions(calls), 'creer_client')!;
+    expect(riskTierOf(t)).toBe('draft');
+    expect(isSafetyFloor(t)).toBe(false);
+    expect(requiresConfirmation(t, 'confirm_outbound')).toBe(false); // interne réversible : direct
+    expect(requiresConfirmation(t, 'confirm_all')).toBe(true);
+
+    expect(t.parse({ name: '  ', type: 'b2c' }).ok).toBe(false);
+    expect(t.parse({ name: 'Mme Durand', type: 'b2x' }).ok).toBe(false);
+    const parsed = t.parse({ name: '  Mme Durand ', type: 'b2c' });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const run = await t.run(parsed.value);
+    expect(run.ok && run.value).toEqual({ id: 'cust-9' });
+    expect(calls.createCustomer).toEqual([{ name: 'Mme Durand', type: 'b2c' }]);
+  });
+});

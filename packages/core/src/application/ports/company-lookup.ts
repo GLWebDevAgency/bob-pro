@@ -22,4 +22,10 @@ export interface CompanyLookupResult {
  */
 export interface CompanyLookupPort {
   lookupBySiret(siret: string): Promise<CompanyLookupResult | null>;
+  /**
+   * #6 (excellence OCR) — vérifie qu'un SIREN existe à l'annuaire.
+   * true/false = réponse de l'annuaire · null = service indisponible (ne rien décider).
+   * Optionnelle : les adapters qui ne la fournissent pas ne bloquent rien.
+   */
+  verifySiren?(siren: string): Promise<boolean | null>;
 }

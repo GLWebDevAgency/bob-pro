@@ -39,6 +39,19 @@ export class RechercheEntreprisesAdapter implements CompanyLookupPort {
     if (u.protocol !== 'https:') throw new Error(`RECHERCHE_ENTREPRISES_URL doit être en https: ${this.baseUrl}`);
   }
 
+  /** #6 : le même endpoint /search accepte un SIREN — on confirme l'existence sans bloquer. */
+  async verifySiren(siren: string): Promise<boolean | null> {
+    const v = siren.replace(/\s/g, '');
+    if (!/^\d{9}$/.test(v)) return false;
+    try {
+      const result = await this.lookupBySiret(v);
+      if (result === null) return false;
+      return result.siren === v || result.siret.startsWith(v);
+    } catch {
+      return null; // annuaire indisponible : on ne décide rien (le SIREN Luhn-valide reste)
+    }
+  }
+
   async lookupBySiret(siret: string): Promise<CompanyLookupResult | null> {
     const v = siret.replace(/\s/g, '');
 

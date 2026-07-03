@@ -640,6 +640,21 @@
     (les bases sont prêtes) ; adapters providers.ts → modelFor(provider, tier) au lieu des
     modèles fixes ; observabilité par tâche (latence/coût/taux de refus par modèle) pour ajuster
     le catalogue avec des faits.
+- [12:20] claude-code AMENDEMENT A4-C14 livré (directive humaine 11:55 : « traite tous [les
+  13 points] pour passer à l'excellence ») — les 13 failles du doc ocr-et-prompting.md sont
+  traitées, cf. la mise à jour du §5 du doc pour le détail. Points saillants : contrat de
+  sortie IMPOSÉ (json_schema strict / tool use forcé) · vérification de PROVENANCE
+  (assessOcrEvidence : un chiffre n'est cru que s'il se retrouve dans le texte OCR) ·
+  confiance dérivée des preuves · devise réelle exigée (faille ATTRAPÉE PAR LE BANC LIVE :
+  le hint dictait "EUR", GitHub USD passait — corrigé, rejet 100 %) · multi-pièces rejetées ·
+  SIREN confirmé à l'annuaire · retry + disjoncteur par moteur · observabilité ocr.engine ·
+  redactPII sur rawText · tags persistés de bout en bout (domaine → Postgres
+  documents.tags → recherche du coffre, migration 20260703120000) · banc d'éval golden
+  (10 pièces annotées, scoreur par champ, seuils contractuels, exécuté LIVE sur Mistral :
+  TTC/date/TVA 100 %, fournisseur 89 %, catégorie 67 % à améliorer). Vérifs : core 308 ·
+  ai 146 · api 42 (+1 live gaté) · api-client 14 · typecheck partout (hors WIP C15).
+  Suivi : brancher le pack sur assistant.chat au fil de C15 (bases prêtes) ; améliorer la
+  précision catégorie via le golden set ; exécuter la migration tags au prochain deploy.
 
 ### C15 — Assistant (Bob)               <!-- kind: screen -->
 - status: MERGED

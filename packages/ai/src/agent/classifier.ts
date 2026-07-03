@@ -80,6 +80,11 @@ export const LLM_TOOL_SPECS: LlmToolSpec[] = [
     description: 'Préparer le mois pour le comptable : anomalies, pièces manquantes, clôture.',
     parameters: { type: 'object', properties: {}, additionalProperties: false },
   },
+  {
+    name: 'ouvrir_diagnostic',
+    description: 'Ouvrir le diagnostic de conformité 2026 (facturation électronique) : « suis-je prêt pour 2026 ? ».',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+  },
 ];
 
 const TOOL_TO_INTENT: Record<string, BobIntent> = {
@@ -94,6 +99,7 @@ const TOOL_TO_INTENT: Record<string, BobIntent> = {
   nouveau_devis: 'nouveau_devis',
   ouvrir_chantiers: 'voir_chantiers',
   ouvrir_cloture: 'cloture',
+  ouvrir_diagnostic: 'diagnostic',
 };
 
 /** Une étape résolue d'un plan (une intention + sa référence éventuelle). */

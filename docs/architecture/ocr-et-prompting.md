@@ -160,7 +160,35 @@ remplace pas l'étage 3 (on garde la défense en profondeur), mais ça élimine 
 
 ## 5. Failles et manques identifiés (audit franc)
 
-Classés par gravité. ✅ = mitigé aujourd'hui · ⚠️ = manque réel à traiter.
+> **MISE À JOUR 2026-07-03 (A4-C14 « passer à l'excellence ») : les 13 points ont été traités.**
+> Le tableau ci-dessous garde le diagnostic d'origine ; les résolutions :
+> **#1** json_schema strict (Mistral) + tool use forcé (Claude) — repli json_object sur 400 ·
+> **#2** `assessOcrEvidence` : montant/date/fournisseur re-cherchés dans le markdown OCR
+> (variantes françaises : virgule/point, milliers, dates longues) ·
+> **#3** la confiance est DÉRIVÉE des preuves, l'auto-évaluation du modèle n'est qu'un plafond ;
+> montant introuvable → ≤ 0.45 ·
+> **#4** heuristique multi-pièces (≥ 2 pages avec en-tête de pièce) → rejet clair avant tout
+> appel d'extraction ·
+> **#5** devise ≠ EUR rejetée + le prompt exige la devise RÉELLE (jamais de conversion) —
+> faille détectée PAR le banc live (#13) puis corrigée ·
+> **#6** `verifySiren` (annuaire recherche-entreprises, non bloquant : indisponible = on ne
+> décide rien) ·
+> **#7** retry unique sur 429/5xx + disjoncteur par moteur (3 échecs → 60 s) ·
+> **#8** événements `ocr.engine` structurés {moteur, ms, issue} + audit `document.ocr`
+> enrichi {ms, degraded} ·
+> **#9** `redactPII` sur rawText avant de quitter le serveur (le grounding a lieu avant) ·
+> **#10** tests adversariaux (path traversal, consignes cachées, balises dans les tags) ·
+> **#11** `tags` persistés de bout en bout : domaine Document → DocumentView → StoreDocument →
+> uploadDocument → colonne Postgres `documents.tags` (migration 20260703120000) → recherche
+> du coffre ·
+> **#12** bases du pack prêtes pour assistant/diagnostic — branchement au fil de C15
+> (session parallèle, ne pas collisionner) ·
+> **#13** banc d'évaluation : golden set annoté (10 pièces, 2 métiers) + scoreur par champ
+> (@bob/ai) + runner LIVE gaté (`OCR_EVAL=1`) avec seuils contractuels. Première exécution
+> réelle (Mistral) : TTC 100 % · date 100 % · TVA 100 % · fournisseur 89 % · rejet devise
+> 100 % après correction · catégorie 67 % (champ à améliorer, non contractualisé).
+
+Classés par gravité. ✅ = mitigé aujourd'hui · ⚠️ = manque réel à traiter (diagnostic d'origine).
 
 | # | Faille / manque | État | Détail & recommandation |
 |---|---|---|---|

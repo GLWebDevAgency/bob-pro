@@ -29,6 +29,8 @@ export interface VaultDocumentData {
   linkedEntityId: string | null;
   documentDate: DateOnly | null;
   createdAt: Instant;
+  /** Tags persistés (#11) — participent à la recherche du coffre. */
+  tags?: readonly string[];
 }
 
 export interface VaultExpenseData {

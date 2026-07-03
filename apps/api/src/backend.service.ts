@@ -97,6 +97,7 @@ import {
   type PendingAction,
   type AgentAutonomy,
   type JournalEntry,
+  redactPII,
 } from '@bob/ai';
 import type { TtsResult } from '@bob/ai';
 import { UuidGenerator, FixtureCashflowSnapshot, InMemoryChantierRepository } from './persistence/in-memory';
@@ -208,6 +209,8 @@ export interface UploadDocumentInput {
   linkedEntityType?: DocumentLinkedEntityType | null;
   linkedEntityId?: string | null;
   documentDate?: string | null;
+  /** Tags de classement/recherche (#11). */
+  tags?: string[];
 }
 
 export interface ListDocumentsInput {
@@ -1265,6 +1268,7 @@ export class BackendService {
       linkedEntityId: input.linkedEntityId ?? null,
       documentDate: input.documentDate ?? null,
       reason: 'upload',
+      ...(input.tags ? { tags: input.tags } : {}),
     });
     if (stored.ok) {
       this.logger.audit('document.uploaded', {
@@ -1292,14 +1296,29 @@ export class BackendService {
           };
         })()
       : undefined;
+    const startedAt = Date.now();
     const r = await new ExtractDocument({ ocr: this.ocr }).execute({ ...input, ...(trade ? { trade } : {}) });
-    if (r.ok)
-      this.logger.audit('document.ocr', {
-        companyId: this.companyId(),
-        mimeType: input.mimeType,
-        confidence: r.value.confidence,
-      });
-    return r;
+    if (!r.ok) return r;
+
+    let value = r.value;
+    // #6 (excellence) : SIREN Luhn-valide ≠ SIREN existant — confirmation annuaire, non bloquante.
+    if (value.supplierSiren !== null && this.companyLookup.verifySiren) {
+      const exists = await this.companyLookup.verifySiren(value.supplierSiren);
+      if (exists === false) value = { ...value, supplierSiren: null };
+    }
+    // #9 (excellence) : le texte OCR peut contenir des PII (IBAN, tél, email) — rédigé avant
+    // de quitter le serveur/partir en log. Le grounding (#2) a déjà eu lieu sur l'original.
+    value = { ...value, rawText: redactPII(value.rawText) };
+
+    // #8 (excellence) : audit exploitable — latence + signal de dégradation (garde-fous).
+    this.logger.audit('document.ocr', {
+      companyId: this.companyId(),
+      mimeType: input.mimeType,
+      confidence: value.confidence,
+      ms: Date.now() - startedAt,
+      degraded: value.confidence <= 0.6,
+    });
+    return ok(value);
   }
 
   async suggestExpenseDefaults(input: {

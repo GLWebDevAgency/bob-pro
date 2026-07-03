@@ -260,6 +260,7 @@ interface DocumentRow {
   createdBy: string | null;
   retentionUntil: string;
   deletedAt: Date | null;
+  tags: string[];
   versions: DocumentVersionRow[];
 }
 
@@ -283,6 +284,7 @@ function documentRowToProps(row: DocumentRow): DocumentProps {
     createdBy: row.createdBy,
     retentionUntil: row.retentionUntil,
     deletedAt: row.deletedAt?.toISOString() ?? null,
+    tags: row.tags ?? [],
     versions: row.versions.map((v) => ({
       id: v.id,
       documentId: v.documentId,
@@ -316,6 +318,7 @@ function documentPropsToData(p: DocumentProps) {
     createdBy: p.createdBy,
     retentionUntil: p.retentionUntil,
     deletedAt: p.deletedAt ? new Date(p.deletedAt) : null,
+    tags: [...p.tags],
   };
 }
 

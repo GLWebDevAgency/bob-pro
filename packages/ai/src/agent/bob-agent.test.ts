@@ -259,4 +259,11 @@ describe('BobAgent — navigation (Jarvis : ouvrir le bon écran)', () => {
     const r = await agent().ask('montre mes chantiers');
     expect(r.ok && r.value.navigate).toBe('/chantiers');
   });
+
+  it('« Prêt pour 2026 ? » (chip C15) -> ouvre le diagnostic conformité (C40 ⑦)', async () => {
+    const r = await agent().ask('Prêt pour 2026 ?');
+    expect(r.ok && r.value.intent).toBe('diagnostic');
+    expect(r.ok && r.value.kind).toBe('done');
+    expect(r.ok && r.value.navigate).toBe('/diagnostic');
+  });
 });

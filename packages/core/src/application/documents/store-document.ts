@@ -25,6 +25,8 @@ export interface StoreDocumentInput {
   createdBy?: string | null;
   retentionUntil?: DateOnly;
   reason?: string;
+  /** Tags proposés par l'OCR, confirmés à l'enregistrement (#11). */
+  tags?: string[];
 }
 
 export interface StoreDocumentDeps {
@@ -80,6 +82,7 @@ export class StoreDocument {
       issuedAt: input.issuedAt ?? null,
       createdAt: now,
       createdBy: input.createdBy ?? null,
+      tags: input.tags ?? [],
       retentionUntil: input.retentionUntil ?? addYears(anchor, 10),
       deletedAt: null,
       versions: [

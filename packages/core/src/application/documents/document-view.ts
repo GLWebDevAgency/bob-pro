@@ -20,6 +20,7 @@ export interface DocumentView {
   createdAt: Instant;
   createdBy: string | null;
   retentionUntil: DateOnly;
+  tags: string[];
 }
 
 export function documentToView(document: Document): DocumentView {
@@ -44,5 +45,6 @@ export function documentToView(document: Document): DocumentView {
     createdAt: p.createdAt,
     createdBy: p.createdBy,
     retentionUntil: p.retentionUntil,
+    tags: [...p.tags],
   };
 }

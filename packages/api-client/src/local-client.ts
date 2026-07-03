@@ -332,6 +332,7 @@ export class LocalBobClient implements BobClient {
       createdAt: this.clock.now(),
       createdBy: 'local',
       retentionUntil: addYears(documentDate ?? today, 10),
+      tags: [...new Set((input.tags ?? []).map((t) => t.trim().toLowerCase()).filter((t) => t.length >= 2 && t.length <= 32))].slice(0, 16),
     };
     this.documents.unshift(view);
     return ok(view);

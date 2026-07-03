@@ -46,10 +46,53 @@ function ocrSystemPrompt(input: OcrExtractInput, today: string): string {
   return `${buildSystemPrompt('ocr.extract', ctx)}\nSchéma exact: ${SCHEMA_HINT}`;
 }
 
+/**
+ * #1 (excellence) — CONTRAT STRUCTUREL : le schéma n'est plus seulement « prié » dans le
+ * prompt, il est IMPOSÉ par l'API (json_schema strict chez Mistral, tool use forcé chez
+ * Claude). makeOcrExtraction reste le contrat exécutoire final (défense en profondeur).
+ */
+const OCR_JSON_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: [
+    'supplierName',
+    'supplierSiren',
+    'documentDate',
+    'totalTtcCents',
+    'totalHtCents',
+    'vatCents',
+    'vatRatePctApplied',
+    'currency',
+    'categoryGuess',
+    'confidence',
+    'rawText',
+    'suggestedTags',
+    'suggestedFilename',
+  ],
+  properties: {
+    supplierName: { type: ['string', 'null'] },
+    supplierSiren: { type: ['string', 'null'] },
+    documentDate: { type: ['string', 'null'], description: 'YYYY-MM-DD' },
+    totalTtcCents: { type: ['integer', 'null'] },
+    totalHtCents: { type: ['integer', 'null'] },
+    vatCents: { type: ['integer', 'null'] },
+    vatRatePctApplied: { type: ['number', 'null'] },
+    currency: { type: 'string' },
+    categoryGuess: {
+      type: 'string',
+      enum: ['fournitures', 'materiel', 'carburant', 'repas', 'sous_traitance', 'autre'],
+    },
+    confidence: { type: 'number' },
+    rawText: { type: 'string' },
+    suggestedTags: { type: 'array', items: { type: 'string' } },
+    suggestedFilename: { type: ['string', 'null'] },
+  },
+} as const;
+
 const SCHEMA_HINT =
   '{"supplierName":string|null,"supplierSiren":string|null,"documentDate":"YYYY-MM-DD"|null,' +
   '"totalTtcCents":int|null,"totalHtCents":int|null,"vatCents":int|null,"vatRatePctApplied":number|null,' +
-  '"currency":"EUR","categoryGuess":"...","confidence":number,"rawText":string,' +
+  '"currency":"code ISO 4217 reel (EUR, USD...)","categoryGuess":"...","confidence":number,"rawText":string,' +
   '"suggestedTags":[string],"suggestedFilename":string|null}';
 
 function guardInput(input: OcrExtractInput): AppError | null {
@@ -67,6 +110,22 @@ async function fetchWithTimeout(url: string, init: RequestInit): Promise<Respons
     return await fetch(url, { ...init, signal: controller.signal });
   } finally {
     clearTimeout(timer);
+  }
+}
+
+const RETRYABLE_STATUS = new Set([429, 502, 503, 504]);
+const RETRY_BACKOFF_MS = 400;
+
+/** #7 (excellence) : un seul retry sur erreur transitoire (429/5xx, réseau) — jamais sur 4xx métier. */
+async function fetchWithRetry(url: string, init: RequestInit): Promise<Response> {
+  try {
+    const first = await fetchWithTimeout(url, init);
+    if (!RETRYABLE_STATUS.has(first.status)) return first;
+    await new Promise((resolve) => setTimeout(resolve, RETRY_BACKOFF_MS));
+    return await fetchWithTimeout(url, init);
+  } catch {
+    await new Promise((resolve) => setTimeout(resolve, RETRY_BACKOFF_MS));
+    return await fetchWithTimeout(url, init);
   }
 }
 
@@ -108,38 +167,68 @@ export class MistralOcrAdapter implements OcrPort {
         input.mimeType === 'application/pdf'
           ? { type: 'document_url', document_url: dataUri }
           : { type: 'image_url', image_url: dataUri };
-      const ocrRes = await fetchWithTimeout('https://api.mistral.ai/v1/ocr', {
+      const ocrRes = await fetchWithRetry('https://api.mistral.ai/v1/ocr', {
         method: 'POST',
         headers: { authorization: `Bearer ${this.apiKey}`, 'content-type': 'application/json' },
         body: JSON.stringify({ model: this.ocrModel, document, include_image_base64: false }),
       });
       if (!ocrRes.ok) return err({ kind: 'dependency', port: 'ocr', cause: `mistral-ocr HTTP ${ocrRes.status}` });
       const ocrData = (await ocrRes.json()) as { pages?: { markdown?: string }[] };
-      const markdown = (ocrData.pages ?? [])
-        .map((p) => p.markdown ?? '')
-        .join('\n\n')
-        .trim();
+      const pages = (ocrData.pages ?? []).map((p) => p.markdown ?? '');
+      const markdown = pages.join('\n\n').trim();
       if (!markdown) return err({ kind: 'dependency', port: 'ocr', cause: 'mistral-ocr : document illisible (aucun texte).' });
 
-      // 2) Extraction structurée par l'expert-comptable (température 0, JSON strict).
-      const chatRes = await fetchWithTimeout('https://api.mistral.ai/v1/chat/completions', {
-        method: 'POST',
-        headers: { authorization: `Bearer ${this.apiKey}`, 'content-type': 'application/json' },
-        body: JSON.stringify({
+      // #4 (excellence) : plusieurs pièces dans un même document → extraction fausse garantie.
+      // Heuristique prudente : ≥ 2 pages portant chacune un EN-TÊTE de pièce distinct.
+      const pieceHeaders = pages.filter((page) => /facture\s*(n°|no|num|#)|ticket\s+de\s+caisse|re[çc]u\s*(n°|no|#)/i.test(page)).length;
+      if (pages.length > 1 && pieceHeaders >= 2)
+        return err({
+          kind: 'validation',
+          issues: [{ field: 'contentBase64', message: 'Plusieurs pièces détectées dans le document — scanne-les une par une.' }],
+        });
+
+      return this.extractFromMarkdown(markdown, input);
+    } catch (e) {
+      return err({ kind: 'dependency', port: 'ocr', cause: e instanceof Error ? e.message : 'ocr' });
+    }
+  }
+
+  /**
+   * Étape 2 seule (extraction structurée sur un markdown OCR) — publique pour le banc
+   * d'évaluation (#13) : on évalue le prompt/modèle sur un jeu de pièces annotées sans
+   * refaire l'étape OCR image.
+   */
+  async extractFromMarkdown(markdown: string, input: OcrExtractInput): Promise<Result<OcrExtraction, AppError>> {
+    try {
+      const body = (format: unknown): string =>
+        JSON.stringify({
           model: this.extractModel,
           temperature: 0,
-          response_format: { type: 'json_object' },
+          response_format: format,
           messages: [
             { role: 'system', content: ocrSystemPrompt(input, this.clock.today()) },
             { role: 'user', content: `Pièce fournisseur (OCR markdown) :\n\n${markdown.slice(0, 24_000)}` },
           ],
-        }),
+        });
+      // #1 : schéma IMPOSÉ (json_schema strict) ; si l'API le refuse (400), repli json_object.
+      let chatRes = await fetchWithRetry('https://api.mistral.ai/v1/chat/completions', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${this.apiKey}`, 'content-type': 'application/json' },
+        body: body({ type: 'json_schema', json_schema: { name: 'ocr_extraction', strict: true, schema: OCR_JSON_SCHEMA } }),
       });
+      if (chatRes.status === 400) {
+        chatRes = await fetchWithRetry('https://api.mistral.ai/v1/chat/completions', {
+          method: 'POST',
+          headers: { authorization: `Bearer ${this.apiKey}`, 'content-type': 'application/json' },
+          body: body({ type: 'json_object' }),
+        });
+      }
       if (!chatRes.ok) return err({ kind: 'dependency', port: 'ocr', cause: `mistral-extract HTTP ${chatRes.status}` });
       const chatData = (await chatRes.json()) as { choices?: { message?: { content?: string } }[] };
       const draft = parseModelJson(chatData.choices?.[0]?.message?.content ?? '');
       if (!draft) return err({ kind: 'dependency', port: 'ocr', cause: 'mistral-extract : réponse non-JSON.' });
-      // Le rawText de référence = le markdown OCR (fidèle), pas la paraphrase du modèle.
+      // Le rawText de référence = le markdown OCR (fidèle), pas la paraphrase du modèle —
+      // c'est lui qui alimente la vérification de provenance (#2) côté domaine.
       const norm = makeOcrExtraction({ ...draft, rawText: markdown }, { today: this.clock.today() });
       if (!norm.ok) return err(appDomain(norm.error));
       return ok(norm.value);
@@ -169,23 +258,36 @@ export class ClaudeVisionOcrAdapter implements OcrPort {
         ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: input.contentBase64 } }
         : { type: 'image', source: { type: 'base64', media_type: input.mimeType, data: input.contentBase64 } };
     try {
-      const res = await fetchWithTimeout('https://api.anthropic.com/v1/messages', {
+      const res = await fetchWithRetry('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: { 'x-api-key': this.apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
         body: JSON.stringify({
           model: this.model,
           max_tokens: 4096,
           system: ocrSystemPrompt(input, this.clock.today()),
-          messages: [{ role: 'user', content: [block, { type: 'text', text: 'Extrais les champs du document au format JSON demandé.' }] }],
+          // #1 (excellence) : le schéma est IMPOSÉ par tool use forcé — plus de parsing texte.
+          tools: [
+            {
+              name: 'ocr_extraction',
+              description: "Restitue les champs extraits de la pièce fournisseur.",
+              input_schema: OCR_JSON_SCHEMA,
+            },
+          ],
+          tool_choice: { type: 'tool', name: 'ocr_extraction' },
+          messages: [{ role: 'user', content: [block, { type: 'text', text: 'Extrais les champs du document.' }] }],
         }),
       });
       if (!res.ok) return err({ kind: 'dependency', port: 'ocr', cause: `claude-vision HTTP ${res.status}` });
-      const data = (await res.json()) as { content?: { type?: string; text?: string }[]; stop_reason?: string };
+      const data = (await res.json()) as {
+        content?: { type?: string; text?: string; name?: string; input?: unknown }[];
+        stop_reason?: string;
+      };
       if (data.stop_reason === 'max_tokens')
         return err({ kind: 'dependency', port: 'ocr', cause: 'Réponse OCR tronquée (max_tokens).' });
-      const textBlock = data.content?.find((c) => c.type === 'text') ?? data.content?.[0];
-      const draft = parseModelJson(textBlock?.text ?? '');
-      if (!draft) return err({ kind: 'dependency', port: 'ocr', cause: 'claude-vision : réponse non-JSON.' });
+      const toolBlock = data.content?.find((c) => c.type === 'tool_use' && c.name === 'ocr_extraction');
+      const draft = (toolBlock?.input ?? null) as OcrExtractionDraft | null;
+      if (!draft || typeof draft !== 'object')
+        return err({ kind: 'dependency', port: 'ocr', cause: 'claude-vision : réponse hors contrat (tool_use absent).' });
       const norm = makeOcrExtraction(draft, { today: this.clock.today() });
       if (!norm.ok) return err(appDomain(norm.error));
       return ok(norm.value);
@@ -199,32 +301,99 @@ export class ClaudeVisionOcrAdapter implements OcrPort {
   }
 }
 
+export interface NamedOcrEngine {
+  readonly name: string;
+  readonly port: OcrPort;
+}
+
+/** Événement d'observabilité par tentative moteur (#8) — loggé structuré côté provider. */
+export interface OcrAttemptEvent {
+  engine: string;
+  ok: boolean;
+  ms: number;
+  error?: string;
+  skipped?: 'breaker_open';
+}
+
+/** #7 — disjoncteur par moteur : 3 échecs consécutifs → ouvert 60 s (puis demi-ouvert). */
+const BREAKER_THRESHOLD = 3;
+const BREAKER_OPEN_MS = 60_000;
+
+class EngineBreaker {
+  private failures = 0;
+  private openedAt: number | null = null;
+
+  constructor(private readonly now: () => number) {}
+
+  canPass(): boolean {
+    if (this.openedAt === null) return true;
+    if (this.now() - this.openedAt >= BREAKER_OPEN_MS) return true; // demi-ouvert : on retente
+    return false;
+  }
+
+  record(ok: boolean): void {
+    if (ok) {
+      this.failures = 0;
+      this.openedAt = null;
+      return;
+    }
+    this.failures += 1;
+    if (this.failures >= BREAKER_THRESHOLD) this.openedAt = this.now();
+  }
+}
+
 /**
  * Chaîne de repli OCR : essaie chaque moteur dans l'ordre, premier résultat VALIDE gagne
  * (chaque moteur repasse déjà par les garde-fous du domaine). Une erreur de validation du
- * payload (MIME/taille) est définitive — inutile de réessayer ailleurs.
+ * payload est définitive — inutile de réessayer ailleurs. Un moteur en panne répétée est
+ * disjoncté 60 s (#7) ; chaque tentative est observable (#8).
  * Ordre voulu (directive) : Mistral OCR → Claude Vision → (Gemini, GLM, DeepSeek : slots
  * prêts — ajouter un adapter implémentant OcrPort quand la clé existe).
  */
 export class FallbackOcrChain implements OcrPort {
-  constructor(private readonly engines: readonly OcrPort[]) {
+  private readonly breakers: EngineBreaker[];
+
+  constructor(
+    private readonly engines: readonly NamedOcrEngine[],
+    private readonly observer?: (event: OcrAttemptEvent) => void,
+    now: () => number = () => Date.now(),
+  ) {
     if (engines.length === 0) throw new Error('FallbackOcrChain : au moins un moteur requis.');
+    this.breakers = engines.map(() => new EngineBreaker(now));
   }
 
   async extractDocument(input: OcrExtractInput): Promise<Result<OcrExtraction, AppError>> {
     let lastError: AppError = { kind: 'dependency', port: 'ocr', cause: 'Aucun moteur OCR disponible.' };
-    for (const engine of this.engines) {
-      const r = await engine.extractDocument(input);
-      if (r.ok) return r;
-      if (r.error.kind === 'validation') return r; // payload invalide : définitif
+    for (let i = 0; i < this.engines.length; i++) {
+      const { name, port } = this.engines[i]!;
+      const breaker = this.breakers[i]!;
+      if (!breaker.canPass()) {
+        this.observer?.({ engine: name, ok: false, ms: 0, skipped: 'breaker_open' });
+        continue;
+      }
+      const startedAt = Date.now();
+      const r = await port.extractDocument(input);
+      const ms = Date.now() - startedAt;
+      if (r.ok) {
+        breaker.record(true);
+        this.observer?.({ engine: name, ok: true, ms });
+        return r;
+      }
+      if (r.error.kind === 'validation') {
+        // Payload invalide ou multi-pièces : définitif, et ce n'est PAS une panne moteur.
+        this.observer?.({ engine: name, ok: false, ms, error: 'validation' });
+        return r;
+      }
+      breaker.record(false);
+      this.observer?.({ engine: name, ok: false, ms, error: 'cause' in r.error ? String(r.error.cause) : r.error.kind });
       lastError = r.error;
     }
     return err(lastError);
   }
 
   async health(): Promise<{ healthy: boolean }> {
-    for (const engine of this.engines) {
-      const h = await engine.health();
+    for (const { port } of this.engines) {
+      const h = await port.health();
       if (h.healthy) return { healthy: true };
     }
     return { healthy: false };
@@ -240,10 +409,13 @@ export const ocrProvider = {
   provide: OCR_PORT,
   useFactory: (): OcrPort => {
     if (isDemoMode()) return new DemoOcrAdapter(new SystemClock());
-    const engines: OcrPort[] = [];
-    if (hasMistralKey()) engines.push(new MistralOcrAdapter(process.env.MISTRAL_API_KEY as string));
-    if (hasClaudeKey()) engines.push(new ClaudeVisionOcrAdapter(process.env.ANTHROPIC_API_KEY as string));
+    const engines: NamedOcrEngine[] = [];
+    if (hasMistralKey())
+      engines.push({ name: 'mistral-ocr', port: new MistralOcrAdapter(process.env.MISTRAL_API_KEY as string) });
+    if (hasClaudeKey())
+      engines.push({ name: 'claude-vision', port: new ClaudeVisionOcrAdapter(process.env.ANTHROPIC_API_KEY as string) });
     if (engines.length === 0) return new DemoOcrAdapter(new SystemClock());
-    return new FallbackOcrChain(engines);
+    // #8 : chaque tentative moteur part en log structuré (moteur, latence, issue).
+    return new FallbackOcrChain(engines, (event) => console.info(JSON.stringify({ evt: 'ocr.engine', ...event })));
   },
 };

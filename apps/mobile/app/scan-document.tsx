@@ -178,6 +178,7 @@ export default function ScanDocument() {
                             linkedEntityType: 'expense',
                             linkedEntityId: out.id,
                             documentDate: data.documentDate,
+                            tags: data.suggestedTags,
                           })
                           .then(() => queryClient.invalidateQueries({ queryKey: ['documents'] }));
                       }

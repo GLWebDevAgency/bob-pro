@@ -7,6 +7,8 @@ export * from './voice/demo-tts';
 export * from './voice/voice-confirm';
 export * from './router/model-router';
 export * from './prompt/prompt-pack';
+export * from './eval/ocr-golden';
+export * from './eval/ocr-eval';
 export * from './guardrails/money-guard';
 export * from './guardrails/pii-redaction';
 export * from './tools/tool';
