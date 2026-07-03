@@ -225,11 +225,13 @@ export interface PieceDetailViewProps {
   actions?: ReactNode;
   /** Ouvre le PDF archivé (si un document lié existe au coffre). */
   onOpenPdf?: (() => void) | undefined;
+  /** Envoie le PDF au client (A4) — feuille de partage native sur le vrai fichier. */
+  onSharePdf?: (() => void) | undefined;
   /** Sections réelles supplémentaires (aperçu comptable…) rendues sous les mentions. */
   extra?: ReactNode;
 }
 
-export function PieceDetailView({ view, onClose, onOpenQuote, onOpenInvoice, actions, onOpenPdf, extra, nextStepAction }: PieceDetailViewProps) {
+export function PieceDetailView({ view, onClose, onOpenQuote, onOpenInvoice, actions, onOpenPdf, onSharePdf, extra, nextStepAction }: PieceDetailViewProps) {
   const { personality, colors, semantic, controls } = useTheme();
   const identity = useIdentity();
   const insets = useSafeAreaInsets();
@@ -680,6 +682,28 @@ export function PieceDetailView({ view, onClose, onOpenQuote, onOpenInvoice, act
               <Text style={{ ...font('sub', 700), fontSize: 14.5, color: colors.ink600 }}>
                 {t('piece.actionPdf', { personality })}
               </Text>
+            </Pressable>
+          ) : null}
+          {onSharePdf ? (
+            /* A4 : le client reçoit le VRAI fichier (feuille de partage native) — icône
+               seule, même gabarit que le bouton PDF (l'action primaire reste à droite). */
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t('piece.actionSharePdf', { personality })}
+              onPress={onSharePdf}
+              style={{
+                alignItems: 'center',
+                justifyContent: 'center',
+                backgroundColor: colors.surface,
+                borderWidth: 1,
+                borderColor: controls.buttonSecondaryBorder,
+                borderRadius: 15,
+                paddingVertical: 15,
+                paddingHorizontal: 15,
+                minHeight: 44,
+              }}
+            >
+              <SendIcon color={colors.ink600} size={17} />
             </Pressable>
           ) : null}
           <View style={{ flex: 1 }}>{actions}</View>

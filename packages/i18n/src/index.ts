@@ -2019,6 +2019,22 @@ const fr = {
   'piece.frozenBadge': { pote: 'Figé à l’émission', pro: 'Figé à l’émission', direct: 'Figé' },
   // Actions
   'piece.actionPdf': { pote: 'PDF', pro: 'PDF', direct: 'PDF' },
+  // A4 — envoi du PDF au client (feuille de partage native, vrai fichier)
+  'piece.actionSharePdf': {
+    pote: 'Envoyer le PDF',
+    pro: 'Envoyer le PDF',
+    direct: 'Envoyer',
+  },
+  'piece.shareUnavailable': {
+    pote: 'Le partage n’est pas dispo sur cet appareil — ouvre le PDF et envoie-le à la main.',
+    pro: 'Le partage n’est pas disponible sur cet appareil. Ouvrez le PDF pour l’envoyer manuellement.',
+    direct: 'Partage indispo. Ouvre le PDF.',
+  },
+  'piece.shareError': {
+    pote: 'Je n’ai pas réussi à préparer le fichier. On réessaie ?',
+    pro: 'Le fichier n’a pas pu être préparé. Veuillez réessayer.',
+    direct: 'Échec de préparation. Réessaie.',
+  },
   'piece.actionEncaisser': { pote: 'Encaisser', pro: 'Encaisser', direct: 'Encaisser' },
   'piece.actionEnvoyer': { pote: 'Envoyer au client', pro: 'Envoyer au client', direct: 'Envoyer' },
   'piece.actionRelancer': { pote: 'Relancer', pro: 'Relancer', direct: 'Relancer' },
@@ -2984,6 +3000,193 @@ const fr = {
     pro: 'Clôturer le mois',
     direct: 'Clôture',
   },
+
+  // ── C27 — catalogue de prestations ──────────────────────────────────────────
+  'catalogue.eyebrow': { pote: 'Ton catalogue', pro: 'Votre catalogue', direct: 'Catalogue' },
+  'catalogue.title': {
+    pote: 'Mon catalogue',
+    pro: 'Catalogue de prestations',
+    direct: 'Catalogue',
+  },
+  'catalogue.subtitle': {
+    pote: 'Tes prestations, tes prix — je les garde et je te les propose au devis.',
+    pro: 'Vos prestations et vos prix, proposés automatiquement dans vos devis.',
+    direct: 'Tes prix. Proposés au devis.',
+  },
+  'catalogue.searchPlaceholder': {
+    pote: 'Chercher une prestation…',
+    pro: 'Rechercher une prestation…',
+    direct: 'Chercher…',
+  },
+  'catalogue.catAll': { pote: 'Tout', pro: 'Tout', direct: 'Tout' },
+  'catalogue.indicative': {
+    pote: 'prix indicatif',
+    pro: 'Prix indicatif',
+    direct: 'indicatif',
+  },
+  'catalogue.persoBadge': { pote: 'ton prix', pro: 'Votre prix', direct: 'ton prix' },
+  'catalogue.add': {
+    pote: 'Ajouter une prestation',
+    pro: 'Ajouter une prestation',
+    direct: 'Ajouter',
+  },
+  'catalogue.sheetAddTitle': {
+    pote: 'Nouvelle prestation',
+    pro: 'Nouvelle prestation',
+    direct: 'Nouvelle prestation',
+  },
+  'catalogue.sheetEditTitle': {
+    pote: 'Modifier la prestation',
+    pro: 'Modifier la prestation',
+    direct: 'Modifier',
+  },
+  'catalogue.sheetCustomizeTitle': {
+    pote: 'Mets ton prix',
+    pro: 'Personnaliser la prestation',
+    direct: 'Ton prix',
+  },
+  'catalogue.sheetCustomizeHint': {
+    pote: 'Le prix affiché est un indicatif marché — enregistre le tien, c’est lui qui comptera.',
+    pro: 'Le prix affiché est indicatif : enregistrez le vôtre, il sera utilisé partout.',
+    direct: 'Prix indicatif. Mets le tien.',
+  },
+  'catalogue.labelField': { pote: 'Libellé', pro: 'Libellé', direct: 'Libellé' },
+  'catalogue.labelPlaceholder': {
+    pote: 'Ex. Chauffe-eau 200 L posé',
+    pro: 'Ex. Chauffe-eau 200 L posé',
+    direct: 'Ex. Chauffe-eau 200 L posé',
+  },
+  'catalogue.priceField': {
+    pote: 'Prix unitaire HT',
+    pro: 'Prix unitaire HT',
+    direct: 'PU HT',
+  },
+  'catalogue.vatField': { pote: 'TVA', pro: 'TVA', direct: 'TVA' },
+  'catalogue.vatRatePct': { pote: '{rate} %', pro: '{rate} %', direct: '{rate} %' },
+  'catalogue.categoryField': { pote: 'Catégorie', pro: 'Catégorie', direct: 'Catégorie' },
+  'catalogue.save': { pote: 'Enregistrer', pro: 'Enregistrer', direct: 'Enregistrer' },
+  'catalogue.delete': {
+    pote: 'Supprimer la prestation',
+    pro: 'Supprimer la prestation',
+    direct: 'Supprimer',
+  },
+  'catalogue.savedToast': {
+    pote: 'C’est noté — ta presta est au catalogue.',
+    pro: 'Prestation enregistrée.',
+    direct: 'Enregistré.',
+  },
+  'catalogue.deletedToast': {
+    pote: 'Presta retirée.',
+    pro: 'Prestation supprimée.',
+    direct: 'Supprimé.',
+  },
+  'catalogue.empty': {
+    pote: 'Rien ici pour l’instant. Ajoute ta première presta ou change de filtre.',
+    pro: 'Aucune prestation ne correspond.',
+    direct: 'Rien.',
+  },
+  'catalogue.dataError': {
+    pote: 'Je n’arrive pas à ouvrir ton catalogue, là. On réessaie ?',
+    pro: 'Impossible de charger le catalogue. Veuillez réessayer.',
+    direct: 'Catalogue injoignable. Réessaie.',
+  },
+  'catalogue.suggestTitle': {
+    pote: 'Depuis ton catalogue',
+    pro: 'Depuis votre catalogue',
+    direct: 'Catalogue',
+  },
+  'catalogue.back': { pote: 'Retour', pro: 'Retour', direct: 'Retour' },
+
+  // ── C27 — réglages facturation (Facturation & modèles) ─────────────────────
+  'reglages.eyebrow': { pote: 'Tes réglages', pro: 'Vos réglages', direct: 'Réglages' },
+  'reglages.title': {
+    pote: 'Facturation & modèles',
+    pro: 'Facturation & modèles',
+    direct: 'Facturation & modèles',
+  },
+  'reglages.subtitle': {
+    pote: 'Ce que je mets sur tes devis et factures.',
+    pro: 'Ce qui figure sur vos devis et factures.',
+    direct: 'Ce qui part sur tes factures.',
+  },
+  'reglages.catalogueRow': {
+    pote: 'Mon catalogue de prestations',
+    pro: 'Catalogue de prestations',
+    direct: 'Catalogue',
+  },
+  'reglages.catalogueRowSub': {
+    pote: 'Tes prestations et tes prix',
+    pro: 'Vos prestations et vos prix',
+    direct: 'Prestations & prix',
+  },
+  'reglages.sectionVat': {
+    pote: 'TVA & mentions légales',
+    pro: 'TVA & mentions légales',
+    direct: 'TVA & mentions',
+  },
+  'reglages.vatDefaultLabel': {
+    pote: 'TVA par défaut de ton métier ({trade})',
+    pro: 'TVA par défaut du métier ({trade})',
+    direct: 'TVA par défaut ({trade})',
+  },
+  'reglages.mentionsAuto': {
+    pote: 'Pénalités de retard, TVA, décennale si bâtiment… je pose les mentions obligatoires tout seul sur chaque pièce, selon ton régime et ton client.',
+    pro: 'Les mentions obligatoires (pénalités de retard, TVA, assurance décennale le cas échéant) sont générées automatiquement sur chaque pièce, selon votre régime et votre client.',
+    direct: 'Mentions obligatoires : posées automatiquement, pièce par pièce.',
+  },
+  'reglages.mentionsPreviewTitle': {
+    pote: 'Sur ta dernière facture',
+    pro: 'Sur votre dernière facture',
+    direct: 'Dernière facture',
+  },
+  'reglages.mentionsEmpty': {
+    pote: 'Émets ta première facture et tu verras ici les mentions exactes.',
+    pro: 'Les mentions exactes apparaîtront ici dès votre première facture émise.',
+    direct: 'Visible dès ta première facture.',
+  },
+  'reglages.sectionNumbering': {
+    pote: 'Numérotation',
+    pro: 'Numérotation',
+    direct: 'Numérotation',
+  },
+  'reglages.numberingBody': {
+    pote: 'Chaque facture prend le numéro suivant, sans trou ni doublon — c’est la loi, et je m’en occupe.',
+    pro: 'Numérotation séquentielle sans rupture, allouée à l’émission — exigence légale gérée automatiquement.',
+    direct: 'Séquence sans trou, allouée à l’émission. Géré.',
+  },
+  'reglages.lastNumber': {
+    pote: 'Dernier numéro émis',
+    pro: 'Dernier numéro émis',
+    direct: 'Dernier numéro',
+  },
+  'reglages.noNumberYet': {
+    pote: 'Aucune facture émise pour l’instant.',
+    pro: 'Aucune facture émise pour le moment.',
+    direct: 'Aucune facture émise.',
+  },
+  'reglages.sectionLogo': { pote: 'Logo', pro: 'Logo', direct: 'Logo' },
+  'reglages.logoSoon': {
+    pote: 'Ton logo sur tes devis et factures — j’y travaille, ça arrive.',
+    pro: 'L’ajout de votre logo sur vos documents arrive prochainement.',
+    direct: 'Logo sur les PDF : bientôt.',
+  },
+  'reglages.sectionRib': {
+    pote: 'Coordonnées bancaires (RIB)',
+    pro: 'Coordonnées bancaires (RIB)',
+    direct: 'RIB',
+  },
+  'reglages.ribSoon': {
+    pote: 'Ton RIB sur les factures pour les virements — ça arrive aussi.',
+    pro: 'L’affichage du RIB sur les factures (paiement par virement) arrive prochainement.',
+    direct: 'RIB sur factures : bientôt.',
+  },
+  'reglages.soonBadge': { pote: 'Bientôt', pro: 'À venir', direct: 'Bientôt' },
+  'reglages.dataError': {
+    pote: 'Je n’arrive pas à lire tes réglages, là. On réessaie ?',
+    pro: 'Impossible de charger les réglages. Veuillez réessayer.',
+    direct: 'Réglages injoignables. Réessaie.',
+  },
+  'reglages.back': { pote: 'Retour', pro: 'Retour', direct: 'Retour' },
 } as const satisfies Record<string, Copy>;
 
 export type I18nKey = keyof typeof fr;

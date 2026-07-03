@@ -7,7 +7,7 @@
  * L'aperçu comptable (fonctionnalité réelle antérieure) est conservé sous les mentions.
  */
 import { useMemo } from 'react';
-import { ActivityIndicator, Linking, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Linking, Text, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { buildPieceView, type PieceLinkedRef } from '@bob/core';
 import { t } from '@bob/i18n';
@@ -16,6 +16,7 @@ import { Button } from '@bob/ui';
 import { useCustomers, useGenerateInvoice, useInvoice, useInvoiceAccountingPreview, useInvoices, useQuotes } from '../../src/data/hooks';
 import { useDocuments } from '../../src/data/documents';
 import { useBobClient } from '../../src/data/client';
+import { shareDocument } from '../../src/lib/share-document';
 import { InvoiceActions, hasInvoiceActions } from '../../src/components/DocumentActions';
 import { AccountingLinesView } from '../../src/components/AccountingLinesView';
 import { PieceDetailView } from '../../src/components/PieceDetailView';
@@ -75,6 +76,19 @@ export default function FactureDetail() {
         if (r.ok) await Linking.openURL(r.value.url);
       }
     : null;
+  // A4 : le client reçoit le VRAI fichier via la feuille de partage (repli honnête sinon).
+  const sharePdf = pdfDoc
+    ? async (): Promise<void> => {
+        const r = await client.documentDownloadUrl(pdfDoc.id);
+        if (!r.ok) {
+          Alert.alert('Oups', t('piece.shareError', { personality }));
+          return;
+        }
+        const shared = await shareDocument({ url: r.value.url, filename: pdfDoc.filename, mimeType: pdfDoc.mimeType });
+        if (shared === 'unavailable') Alert.alert('Oups', t('piece.shareUnavailable', { personality }));
+        else if (shared === 'error') Alert.alert('Oups', t('piece.shareError', { personality }));
+      }
+    : null;
 
   if (invoice.isLoading || customers.isLoading) {
     return (
@@ -103,6 +117,7 @@ export default function FactureDetail() {
       onOpenQuote={(ref: PieceLinkedRef) => router.push(`/devis/${ref.id}`)}
       onOpenInvoice={(ref: PieceLinkedRef) => router.push(`/facture/${ref.id}`)}
       onOpenPdf={openPdf ? () => void openPdf() : undefined}
+      onSharePdf={sharePdf ? () => void sharePdf() : undefined}
       actions={hasInvoiceActions(inv) ? <InvoiceActions invoice={inv} /> : null}
       nextStepAction={
         view.nextStep ? (
