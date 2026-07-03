@@ -864,10 +864,25 @@ const fr = {
     direct: 'Aucun document.',
   },
   'fiche.infosEmpty': {
-    pote: 'Les infos détaillées arrivent bientôt — adresse, contacts, conditions.',
-    pro: 'Les informations détaillées arrivent prochainement — adresse, contacts, conditions.',
-    direct: 'Infos détaillées : bientôt.',
+    pote: 'Aucune coordonnée renseignée pour l’instant — email, téléphone, SIREN.',
+    pro: 'Aucune coordonnée renseignée pour le moment (email, téléphone, SIREN).',
+    direct: 'Aucune coordonnée.',
   },
+  // A1-C13 — onglets remplis (chantiers réels, docs liés aux pièces, coordonnées).
+  'fiche.chantierOpen': { pote: 'En cours', pro: 'En cours', direct: 'En cours' },
+  'fiche.chantierClosed': { pote: 'Terminé', pro: 'Terminé', direct: 'Terminé' },
+  'fiche.chantierOpenedOn': {
+    pote: 'Ouvert le {date}',
+    pro: 'Ouvert le {date}',
+    direct: '{date}',
+  },
+  'fiche.infoType': { pote: 'Type', pro: 'Type', direct: 'Type' },
+  'fiche.infoSiren': { pote: 'SIREN', pro: 'SIREN', direct: 'SIREN' },
+  'fiche.infoEmail': { pote: 'Email', pro: 'Email', direct: 'Email' },
+  'fiche.infoPhone': { pote: 'Téléphone', pro: 'Téléphone', direct: 'Tél.' },
+  'fiche.infoScore': { pote: 'Score de paiement', pro: 'Score de paiement', direct: 'Score' },
+  'fiche.infoDelay': { pote: 'Délai moyen constaté', pro: 'Délai moyen constaté', direct: 'Délai moyen' },
+  'fiche.infoDelayDays': { pote: '{days} jours', pro: '{days} jours', direct: '{days} j' },
   // CTA sticky contextuelle par standing (deriveCustomerStandings + moteur relance C10).
   'fiche.ctaRelanceDoc': {
     pote: 'Relancer {doc} · {amount}',

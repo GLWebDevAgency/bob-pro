@@ -68,12 +68,16 @@ import {
   useTheme,
   type StatusBadgeVariant,
 } from '@bob/ui';
-import { useCustomers, useInvoices, useQuotes } from '../../src/data/hooks';
+import { useChantiers, useCustomers, useInvoices, useQuotes } from '../../src/data/hooks';
+import { useDocuments } from '../../src/data/documents';
+import { useBobClient } from '../../src/data/client';
 import {
   ChevronLeftIcon,
   ChevronRightIcon,
   EllipsisIcon,
+  FileIcon,
   FileTextIcon,
+  FolderSmallIcon,
   MailIcon,
   PhoneIcon,
   SendIcon,
@@ -101,11 +105,18 @@ const TAB_LABEL: Record<TabKey, I18nKey> = {
   infos: 'fiche.tabInfos',
 };
 
-/** États vides des onglets non fonctionnels (claims chantiers/C14/infos à venir). */
+/** États vides des onglets (états de premier rang — jamais une liste inventée). */
 const TAB_EMPTY: Record<Exclude<TabKey, 'activity'>, I18nKey> = {
   chantiers: 'fiche.chantiersEmpty',
   docs: 'fiche.docsEmpty',
   infos: 'fiche.infosEmpty',
+};
+
+/** Libellé du type client (mêmes clés que le détail de pièce C16 — source unique). */
+const TYPE_KEY: Record<CustomerListItem['type'], I18nKey> = {
+  b2b: 'piece.typeB2b',
+  b2c: 'piece.typeB2c',
+  b2g: 'piece.typeB2g',
 };
 
 const DOC_LABEL: Record<InvoiceView['kind'], I18nKey> = {
@@ -305,9 +316,13 @@ export default function ClientDetail() {
   const params = useLocalSearchParams<{ id: string }>();
   const id = typeof params.id === 'string' ? params.id : '';
 
+  const client = useBobClient();
   const customers = useCustomers();
   const invoices = useInvoices();
   const quotes = useQuotes();
+  // A1-C13 : onglets remplis — chantiers réels du client + docs liés à SES pièces.
+  const chantiers = useChantiers();
+  const documents = useDocuments();
   const [tab, setTab] = useState<TabKey>('activity');
 
   const today = localToday();
@@ -358,6 +373,54 @@ export default function ClientDetail() {
   const email = customer?.email ?? null;
   const phone = customer?.phone ?? null;
   const avgDelayDays = customer?.avgDelayDays ?? 0;
+
+  // Chantiers DU client (module vertical BTP) — rangées réelles, aucun détail fantôme.
+  const custChantiers = useMemo(
+    () => (chantiers.data ?? []).filter((c) => c.customerId === id),
+    [chantiers.data, id],
+  );
+
+  // Docs DU client = documents du coffre liés à SES pièces (factures, devis, chantiers).
+  const custDocs = useMemo(() => {
+    const invoiceIds = new Set(custInvoices.map((i) => i.id));
+    const quoteIds = new Set(custQuotes.map((q) => q.id));
+    const chantierIds = new Set(custChantiers.map((c) => c.id));
+    return (documents.data ?? [])
+      .filter(
+        (d) =>
+          d.linkedEntityId !== null &&
+          ((d.linkedEntityType === 'invoice' && invoiceIds.has(d.linkedEntityId)) ||
+            (d.linkedEntityType === 'quote' && quoteIds.has(d.linkedEntityId)) ||
+            (d.linkedEntityType === 'chantier' && chantierIds.has(d.linkedEntityId))),
+      )
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }, [documents.data, custInvoices, custQuotes, custChantiers]);
+
+  // Ouverture d'un document = même chemin que le coffre C14 (URL signée → viewer système).
+  const openDocument = async (docId: string): Promise<void> => {
+    const r = await client.documentDownloadUrl(docId);
+    if (r.ok) await Linking.openURL(r.value.url);
+  };
+
+  // Coordonnées réelles (onglet Infos) — chaque rangée n'existe que si la donnée existe.
+  const infoRows = useMemo(() => {
+    if (!customer) return [] as { key: I18nKey; value: string }[];
+    return [
+      { key: 'fiche.infoType' as I18nKey, value: t(TYPE_KEY[customer.type], { personality }) },
+      ...(siren ? [{ key: 'fiche.infoSiren' as I18nKey, value: formatSiren(siren) }] : []),
+      ...(email ? [{ key: 'fiche.infoEmail' as I18nKey, value: email }] : []),
+      ...(phone ? [{ key: 'fiche.infoPhone' as I18nKey, value: phone }] : []),
+      { key: 'fiche.infoScore' as I18nKey, value: `${customer.score}/100` },
+      ...(avgDelayDays > 0
+        ? [
+            {
+              key: 'fiche.infoDelay' as I18nKey,
+              value: t('fiche.infoDelayDays', { personality, params: { days: avgDelayDays } }),
+            },
+          ]
+        : []),
+    ];
+  }, [customer, siren, email, phone, avgDelayDays, personality]);
 
   const booting = customers.isLoading || invoices.isLoading || quotes.isLoading;
   const docsUnavailable = invoices.data === undefined || quotes.data === undefined;
@@ -807,12 +870,138 @@ export default function ClientDetail() {
                     ))}
                   </Card>
                 )
-              ) : (
-                // Onglets à venir (chantiers / C14 docs / infos) : état vide propre, voix de Bob.
+              ) : tab === 'chantiers' ? (
+                chantiers.isLoading ? (
+                  <Card>
+                    <SkeletonBar width="62%" />
+                  </Card>
+                ) : custChantiers.length === 0 ? (
+                  <Card>
+                    <Text style={[font('sub'), { color: colors.slate500, lineHeight: 19 }]}>
+                      {t(TAB_EMPTY.chantiers, { personality })}
+                    </Text>
+                  </Card>
+                ) : (
+                  <Card radius={18} padding={0} style={{ paddingHorizontal: 14 }}>
+                    {custChantiers.map((chantier, index) => (
+                      <View
+                        key={chantier.id}
+                        style={{
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          gap: 11,
+                          paddingVertical: 12,
+                          borderBottomWidth: index < custChantiers.length - 1 ? 1 : 0,
+                          borderBottomColor: colors.lineSoft,
+                        }}
+                      >
+                        <IconTile tone={chantier.status === 'open' ? 'b2b' : 'success'} size={34} radius={10}>
+                          <FolderSmallIcon
+                            color={chantier.status === 'open' ? semantic.b2b : semantic.success}
+                          />
+                        </IconTile>
+                        <View style={{ flex: 1, minWidth: 0 }}>
+                          <Text style={{ ...font('body', 700), fontSize: 14, color: colors.ink800 }} numberOfLines={1}>
+                            {chantier.name}
+                          </Text>
+                          <Text style={[font('meta'), { color: colors.slate400, marginTop: 1 }]} numberOfLines={1}>
+                            {[
+                              chantier.address,
+                              t('fiche.chantierOpenedOn', {
+                                personality,
+                                params: { date: dateLabel(chantier.openedAt) },
+                              }),
+                            ]
+                              .filter(Boolean)
+                              .join(' · ')}
+                          </Text>
+                        </View>
+                        <StatusBadge
+                          label={t(chantier.status === 'open' ? 'fiche.chantierOpen' : 'fiche.chantierClosed', {
+                            personality,
+                          })}
+                          variant={chantier.status === 'open' ? 'b2b' : 'success'}
+                        />
+                      </View>
+                    ))}
+                  </Card>
+                )
+              ) : tab === 'docs' ? (
+                documents.isLoading ? (
+                  <Card>
+                    <SkeletonBar width="62%" />
+                  </Card>
+                ) : custDocs.length === 0 ? (
+                  <Card>
+                    <Text style={[font('sub'), { color: colors.slate500, lineHeight: 19 }]}>
+                      {t(TAB_EMPTY.docs, { personality })}
+                    </Text>
+                  </Card>
+                ) : (
+                  <Card radius={18} padding={0} style={{ paddingHorizontal: 14 }}>
+                    {custDocs.map((docItem, index) => (
+                      <Pressable
+                        key={docItem.id}
+                        accessibilityRole="button"
+                        accessibilityLabel={docItem.filename}
+                        onPress={() => void openDocument(docItem.id)}
+                        style={{
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          gap: 11,
+                          paddingVertical: 12,
+                          borderBottomWidth: index < custDocs.length - 1 ? 1 : 0,
+                          borderBottomColor: colors.lineSoft,
+                        }}
+                      >
+                        <IconTile tone="b2b" size={34} radius={10}>
+                          <FileIcon color={semantic.b2b} />
+                        </IconTile>
+                        <View style={{ flex: 1, minWidth: 0 }}>
+                          <Text style={{ ...font('body', 700), fontSize: 14, color: colors.ink800 }} numberOfLines={1}>
+                            {docItem.filename}
+                          </Text>
+                          <Text style={[font('meta'), { color: colors.slate400, marginTop: 1 }]}>
+                            {dateLabel((docItem.documentDate ?? docItem.createdAt).slice(0, 10))}
+                          </Text>
+                        </View>
+                        <ChevronRightIcon color={controls.chevron} size={14} strokeWidth={2} />
+                      </Pressable>
+                    ))}
+                  </Card>
+                )
+              ) : infoRows.length === 0 ? (
                 <Card>
                   <Text style={[font('sub'), { color: colors.slate500, lineHeight: 19 }]}>
-                    {t(TAB_EMPTY[tab], { personality })}
+                    {t(TAB_EMPTY.infos, { personality })}
                   </Text>
+                </Card>
+              ) : (
+                <Card radius={18} padding={0} style={{ paddingHorizontal: 14 }}>
+                  {infoRows.map((row, index) => (
+                    <View
+                      key={row.key}
+                      style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        gap: 12,
+                        paddingVertical: 12,
+                        borderBottomWidth: index < infoRows.length - 1 ? 1 : 0,
+                        borderBottomColor: colors.lineSoft,
+                      }}
+                    >
+                      <Text style={[font('meta'), { color: colors.slate400 }]}>
+                        {t(row.key, { personality })}
+                      </Text>
+                      <Text
+                        style={{ ...font('sub', 600), color: colors.ink800, flexShrink: 1 }}
+                        numberOfLines={1}
+                      >
+                        {row.value}
+                      </Text>
+                    </View>
+                  ))}
                 </Card>
               )}
             </>
