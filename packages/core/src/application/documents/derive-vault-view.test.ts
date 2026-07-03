@@ -107,13 +107,14 @@ describe('deriveVaultView — à valider (OCR non classé)', () => {
     expect(v.toValidate.map((p) => p.id)).toEqual(['b', 'a']);
   });
 
-  it('rapproche la dépense dont le fournisseur figure dans le nom de fichier (casse/accents ignorés)', () => {
+  it('rapproche la dépense dont le fournisseur figure dans le nom de fichier (casse/accents/tirets ignorés)', () => {
     const v = deriveVaultView({
       ...EMPTY,
-      documents: [doc({ id: 'a', origin: 'ocr', filename: 'Recu-LEROY MERLIN-27juin.jpg' })],
+      documents: [doc({ id: 'a', origin: 'ocr', filename: 'recu-leroy-merlin.jpg' })],
       expenses: [expense({ supplierName: 'Leroy Merlin' })],
     });
     expect(v.toValidate[0]?.matchedExpense?.supplierName).toBe('Leroy Merlin');
+    expect(v.toValidate[0]?.matchedExpense?.id).toBe('exp-1');
     expect(v.toValidate[0]?.matchedExpense?.vatCents).toBe(3082);
   });
 });

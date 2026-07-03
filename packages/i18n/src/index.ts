@@ -948,6 +948,21 @@ const fr = {
     pro: 'Classer',
     direct: 'Classer',
   },
+  'docs.open': {
+    pote: 'Ouvrir',
+    pro: 'Ouvrir',
+    direct: 'Ouvrir',
+  },
+  'docs.classifiedToast': {
+    pote: '{supplier} classé · Achats ✓',
+    pro: 'Document classé : {supplier} → Achats.',
+    direct: '{supplier} → Achats.',
+  },
+  'docs.classifyError': {
+    pote: 'Le classement a raté, là. On réessaie ?',
+    pro: 'Le classement a échoué. Veuillez réessayer.',
+    direct: 'Classement raté. Réessaie.',
+  },
   'docs.otherFolder': {
     pote: 'Autre dossier',
     pro: 'Autre dossier',
@@ -1148,6 +1163,166 @@ const fr = {
     pote: 'Je n’arrive pas à ouvrir ton coffre-fort, là. On réessaie dans un instant ?',
     pro: 'Impossible de charger vos documents pour le moment. Veuillez réessayer dans un instant.',
     direct: 'Coffre injoignable. Réessaie.',
+  },
+
+  // ── C15 — écran « Assistant (Bob) » ──────────────────────────────────────────
+  // En-tête « Bob · en ligne » (copy pote = exacte du proto §isAssistant).
+  'assistant.title': {
+    pote: 'Bob',
+    pro: 'Bob',
+    direct: 'Bob',
+  },
+  'assistant.online': {
+    pote: 'en ligne',
+    pro: 'en ligne',
+    direct: 'en ligne',
+  },
+  'assistant.offlinePill': {
+    pote: 'hors ligne',
+    pro: 'hors ligne',
+    direct: 'hors ligne',
+  },
+  'assistant.subtitle': {
+    pote: 'Demande. Je fais — pas juste je réponds.',
+    pro: 'Demandez. J’agis — je ne me contente pas de répondre.',
+    direct: 'Demande. J’exécute.',
+  },
+  // Bulle d'accueil (historique vide) — la promesse de Bob, voix du proto.
+  'assistant.welcome': {
+    pote: 'Salut, moi c’est Bob 👋 Dis-moi quoi faire — créer, relancer, classer, t’expliquer ta tréso. Je m’en occupe pour de vrai.',
+    pro: 'Bonjour, je suis Bob. Indiquez-moi quoi faire — créer, relancer, classer, analyser votre trésorerie. Je m’en occupe réellement.',
+    direct: 'Bob. Dis quoi faire — créer, relancer, classer, ta tréso. Je gère.',
+  },
+  // Chips de suggestion (proto) — chaque libellé déclenche une VRAIE requête agent
+  // (les verbes matchent detectIntent @bob/ai : relance / payout / cloture).
+  'assistant.chipRelance': {
+    pote: 'Relance les retards',
+    pro: 'Relancer les retards',
+    direct: 'Relance les retards',
+  },
+  'assistant.chipPayout': {
+    pote: 'Je peux me payer combien ?',
+    pro: 'Combien puis-je me verser ?',
+    direct: 'Je me paie combien ?',
+  },
+  'assistant.chipMonth': {
+    pote: 'Prépare le mois',
+    pro: 'Préparer le mois',
+    direct: 'Prépare le mois',
+  },
+  'assistant.chipDiag': {
+    pote: 'Prêt pour 2026 ?',
+    pro: 'Prêt pour 2026 ?',
+    direct: 'Prêt 2026 ?',
+  },
+  // Commandes canoniques : ?prompt=relance_devis (edge C13) + chips de désambiguïsation
+  // ({ref} = numéro de pièce). Formulées pour matcher les intents @bob/ai à coup sûr.
+  'assistant.cmdSendQuote': {
+    pote: 'Renvoie le devis {ref} au client',
+    pro: 'Renvoyer le devis {ref} au client',
+    direct: 'Renvoie le devis {ref}',
+  },
+  // Variante sans référence (edge ?prompt=relance_devis) : l'agent résout le devis,
+  // ou propose le choix s'il y en a plusieurs — jamais d'exécution sur ambiguïté.
+  'assistant.cmdRelanceQuote': {
+    pote: 'Renvoie le devis au client',
+    pro: 'Renvoyer le devis au client',
+    direct: 'Renvoie le devis',
+  },
+  'assistant.cmdIssue': {
+    pote: 'Émets la facture {ref}',
+    pro: 'Émettre la facture {ref}',
+    direct: 'Émets la facture {ref}',
+  },
+  'assistant.cmdCollect': {
+    pote: 'Encaisse la facture {ref}',
+    pro: 'Encaisser la facture {ref}',
+    direct: 'Encaisse la facture {ref}',
+  },
+  'assistant.placeholder': {
+    pote: 'Demande-moi un truc…',
+    pro: 'Demandez-moi une tâche…',
+    direct: 'Demande…',
+  },
+  // Indicateur de saisie (3 points animés) + phases RÉELLES émises par l'agent (onPhase).
+  'assistant.thinking': {
+    pote: 'Bob réfléchit',
+    pro: 'Bob réfléchit',
+    direct: 'Réflexion',
+  },
+  'assistant.phaseUnderstand': {
+    pote: 'Bob comprend',
+    pro: 'Bob analyse',
+    direct: 'Analyse',
+  },
+  'assistant.phaseAct': {
+    pote: 'Bob agit',
+    pro: 'Bob exécute',
+    direct: 'Exécution',
+  },
+  // Cartes d'action : confirmation explicite (préparer ≠ envoyer) + garde-fou affiché.
+  'assistant.confirm': {
+    pote: 'Valider',
+    pro: 'Valider',
+    direct: 'Valider',
+  },
+  'assistant.cancel': {
+    pote: 'Annuler',
+    pro: 'Annuler',
+    direct: 'Annuler',
+  },
+  'assistant.guardrail': {
+    pote: 'Rien ne part sans ton OK.',
+    pro: 'Aucune action n’est exécutée sans votre validation.',
+    direct: 'Rien sans ton OK.',
+  },
+  'assistant.canceled': {
+    pote: 'Ok, j’annule — rien n’a été fait.',
+    pro: 'Action annulée — aucune modification effectuée.',
+    direct: 'Annulé. Rien fait.',
+  },
+  // États d'échec — la voix de Bob, jamais un code d'erreur (A1-C10).
+  'assistant.error': {
+    pote: 'Je n’ai pas réussi à traiter ça, là. On réessaie ?',
+    pro: 'Le traitement a échoué. Veuillez réessayer.',
+    direct: 'Raté. Réessaie.',
+  },
+  'assistant.actionError': {
+    pote: 'L’action a échoué — on vérifie et on réessaie ?',
+    pro: 'L’action a échoué. Veuillez vérifier puis réessayer.',
+    direct: 'Action ratée. Réessaie.',
+  },
+  'assistant.offline': {
+    pote: 'Je n’arrive pas à joindre le serveur, là. Rien n’est perdu — on réessaie dans un instant ?',
+    pro: 'Connexion au serveur impossible pour le moment. Vos données sont intactes — veuillez réessayer dans un instant.',
+    direct: 'Serveur injoignable. Réessaie.',
+  },
+  // Micro de l'input — dictée branchée au claim C20 (Facture à la voix).
+  'assistant.micSoon': {
+    pote: 'Parler à Bob — bientôt',
+    pro: 'Dictée vocale — bientôt disponible',
+    direct: 'Micro : bientôt',
+  },
+  'assistant.send': {
+    pote: 'Envoyer',
+    pro: 'Envoyer',
+    direct: 'Envoyer',
+  },
+  // Garde d'abonnement (feature ai_assistant) — l'app reste 100 % utilisable à la main.
+  'assistant.lockedTitle': {
+    pote: 'Bob, ton copilote',
+    pro: 'Bob, votre copilote',
+    direct: 'Bob, ton copilote',
+  },
+  'assistant.lockedBody': {
+    pote: 'Bob exécute pour toi — encaisser, relancer, suivre ta tréso — en langage naturel. Inclus dès l’offre Pro. Sans lui, tout reste faisable à la main.',
+    pro: 'Bob exécute vos tâches — encaissements, relances, trésorerie — en langage naturel. Inclus à partir de l’offre Pro. Sans lui, l’application reste entièrement fonctionnelle.',
+    direct: 'Bob exécute : encaisser, relancer, tréso. Dès l’offre Pro.',
+  },
+  'assistant.lockedCta': {
+    pote: 'Voir les offres',
+    pro: 'Voir les offres',
+    direct: 'Les offres',
   },
 } as const satisfies Record<string, Copy>;
 

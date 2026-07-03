@@ -69,8 +69,10 @@ export interface VaultPendingDoc {
   id: string;
   filename: string;
   receivedAt: Instant;
-  /** Dépense dont le fournisseur se retrouve dans le nom de fichier — chips métriques réelles. */
+  /** Dépense dont le fournisseur se retrouve dans le nom de fichier — chips métriques réelles
+   *  ET cible du « Classer là » (ClassifyDocument, A1-C14). */
   matchedExpense: {
+    id: string;
     supplierName: string;
     totalTtcCents: number;
     vatCents: number | null;
@@ -154,6 +156,11 @@ export function normalizeSupplierName(name: string): string {
     .toLowerCase();
 }
 
+/** Nom de fichier normalisé pour le rapprochement : tirets/underscores/points → espaces. */
+export function normalizeFilename(filename: string): string {
+  return normalizeSupplierName(filename.replace(/[-_./]/g, ' '));
+}
+
 /**
  * Dossier d'un document — mapping v1 documenté (le modèle n'a pas encore de catégorie de
  * dossier) : chantier → Chantiers · dépense/reçu → Achats · pièce de facturation → Comptable.
@@ -178,7 +185,7 @@ function deriveToValidate(
     .filter((d) => d.origin === 'ocr' && d.linkedEntityType === null)
     .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
     .map((d) => {
-      const filename = normalizeSupplierName(d.filename);
+      const filename = normalizeFilename(d.filename);
       const matched = expenses.find(
         (e) => normalizeSupplierName(e.supplierName).length > 0 && filename.includes(normalizeSupplierName(e.supplierName)),
       );
@@ -188,6 +195,7 @@ function deriveToValidate(
         receivedAt: d.createdAt,
         matchedExpense: matched
           ? {
+              id: matched.id,
               supplierName: matched.supplierName,
               totalTtcCents: matched.totalTtcCents,
               vatCents: matched.vatCents,

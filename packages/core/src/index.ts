@@ -85,6 +85,7 @@ export * from './application/chantier/create-chantier';
 export * from './application/company/autofill-company';
 export * from './application/company/validate-vat';
 export * from './application/company/search-address';
+export * from './application/documents/classify-document';
 export * from './application/documents/derive-vault-view';
 export * from './application/documents/document-view';
 export * from './application/documents/get-document-download-url';

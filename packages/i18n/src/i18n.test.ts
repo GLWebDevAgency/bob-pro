@@ -205,9 +205,56 @@ describe('i18n — C14 docs.*', () => {
     expect(t('docs.footerOne')).toBe('1 document · chiffré et sauvegardé');
   });
 
+  it('confirme le classement OCR (A1-C14) sur les 3 humeurs', () => {
+    expect(t('docs.classifiedToast', { params: { supplier: 'Leroy Merlin' } })).toBe(
+      'Leroy Merlin classé · Achats ✓',
+    );
+    expect(t('docs.classifiedToast', { personality: 'direct', params: { supplier: 'Cedeo' } })).toBe(
+      'Cedeo → Achats.',
+    );
+    expect(t('docs.open')).toBe('Ouvrir');
+  });
+
   it('sous-titres factures récentes par canal (proto : PDP / e-reporting / Chorus)', () => {
     expect(t('docs.recentSubB2b', { params: { kind: 'Acompte' } })).toBe('Acompte · B2B → PDP');
     expect(t('docs.recentSubB2c')).toBe('Particulier · B2C → e-reporting');
     expect(t('docs.recentSubB2g', { personality: 'direct' })).toBe('B2G → Chorus');
+  });
+});
+
+describe('i18n — C15 assistant.*', () => {
+  it('copy pote exacte du proto (accueil, sous-titre, placeholder, chips)', () => {
+    expect(t('assistant.welcome')).toBe(
+      'Salut, moi c’est Bob 👋 Dis-moi quoi faire — créer, relancer, classer, t’expliquer ta tréso. Je m’en occupe pour de vrai.',
+    );
+    expect(t('assistant.subtitle')).toBe('Demande. Je fais — pas juste je réponds.');
+    expect(t('assistant.placeholder')).toBe('Demande-moi un truc…');
+    expect(t('assistant.chipRelance')).toBe('Relance les retards');
+    expect(t('assistant.chipPayout')).toBe('Je peux me payer combien ?');
+    expect(t('assistant.chipMonth')).toBe('Prépare le mois');
+    expect(t('assistant.chipDiag')).toBe('Prêt pour 2026 ?');
+  });
+
+  it('décline les 3 humeurs (Pro vouvoie sans emoji, Direct ultra-court)', () => {
+    expect(t('assistant.welcome', { personality: 'pro' })).not.toContain('👋');
+    expect(t('assistant.subtitle', { personality: 'pro' })).toBe(
+      'Demandez. J’agis — je ne me contente pas de répondre.',
+    );
+    expect(t('assistant.subtitle', { personality: 'direct' })).toBe('Demande. J’exécute.');
+    expect(t('assistant.offline', { personality: 'direct' })).toBe('Serveur injoignable. Réessaie.');
+  });
+
+  it('confirmation explicite : libellés Valider/Annuler + garde-fou + commandes {ref}', () => {
+    expect(t('assistant.confirm')).toBe('Valider');
+    expect(t('assistant.cancel')).toBe('Annuler');
+    expect(t('assistant.guardrail', { personality: 'pro' })).toBe(
+      'Aucune action n’est exécutée sans votre validation.',
+    );
+    expect(t('assistant.cmdSendQuote', { params: { ref: 'D-2026-014' } })).toBe(
+      'Renvoie le devis D-2026-014 au client',
+    );
+    expect(t('assistant.cmdCollect', { params: { ref: '2026-014' } })).toBe(
+      'Encaisse la facture 2026-014',
+    );
   });
 });

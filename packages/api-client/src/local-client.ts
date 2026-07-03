@@ -16,6 +16,8 @@ import {
   SystemClock,
   seedCompany,
   seedCustomers,
+  seedExpenses,
+  seedVaultDocuments,
   CASH_SNAPSHOT,
   PLAN_CATALOG,
   ADDON_CATALOG,
@@ -93,6 +95,7 @@ import type {
   InvoiceAccountingPreview,
   PaymentAccountingPreview,
   AccountingEntryView,
+  ClassifyDocumentClientInput,
 } from './client';
 
 export interface LocalBobClientOptions {
@@ -172,6 +175,10 @@ export class LocalBobClient implements BobClient {
     this.snapshots = new FixtureCashflowSnapshot(CASH_SNAPSHOT);
     const chart = createFrenchOperationalChartOfAccounts(this.companyId);
     if (chart.ok) void this.chartOfAccounts.save(chart.value);
+    // Coffre de démo (A1-C14) : dépenses fournisseurs + reçu Leroy Merlin « à valider »
+    // → exerce le flux réel scan → proposition → « Classer là » → dossier Achats.
+    for (const expense of seedExpenses(this.companyId, this.clock.today())) void this.expenses.save(expense);
+    this.documents.push(...seedVaultDocuments(this.companyId, this.clock.now(), this.clock.today()));
   }
 
   private mapQuote(q: Quote): QuoteView {
@@ -328,6 +335,16 @@ export class LocalBobClient implements BobClient {
     };
     this.documents.unshift(view);
     return ok(view);
+  }
+
+  async classifyDocument(input: ClassifyDocumentClientInput): Promise<Result<DocumentView, AppError>> {
+    const document = this.documents.find((d) => d.id === input.documentId && d.status === 'active');
+    if (!document) return err(appNotFound('document', input.documentId));
+    if (!input.linkedEntityId.trim())
+      return err({ kind: 'validation', issues: [{ field: 'linkedEntityId', message: 'Rattachement métier incomplet.' }] });
+    document.linkedEntityType = input.linkedEntityType;
+    document.linkedEntityId = input.linkedEntityId;
+    return ok({ ...document });
   }
 
   async documentDownloadUrl(documentId: string, ttlSeconds = 300): Promise<Result<DocumentDownloadUrl, AppError>> {

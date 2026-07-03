@@ -168,6 +168,21 @@ export class Document {
     return ok(undefined);
   }
 
+  /**
+   * Classe le document : rattachement métier confirmé (proposition OCR validée par
+   * l'artisan, ou par Bob — parité d'actions). Un document supprimé ne se classe pas.
+   */
+  classify(link: { linkedEntityType: DocumentLinkedEntityType; linkedEntityId: string }): DomainResult<void> {
+    if (this.p.status !== 'active') return err({ code: 'INVALID_TRANSITION', from: this.p.status, to: 'active' });
+    if (!LINKED_ENTITY_TYPES.includes(link.linkedEntityType))
+      return err({ code: 'VALIDATION', field: 'linkedEntityType', message: 'Type de rattachement inconnu.' });
+    if (!nonEmpty(link.linkedEntityId))
+      return err({ code: 'VALIDATION', field: 'linkedEntityId', message: 'Rattachement métier incomplet.' });
+    this.p.linkedEntityType = link.linkedEntityType;
+    this.p.linkedEntityId = link.linkedEntityId;
+    return ok(undefined);
+  }
+
   markDeleted(at: Instant): DomainResult<void> {
     if (this.p.status === 'deleted') return ok(undefined);
     this.p.status = 'deleted';

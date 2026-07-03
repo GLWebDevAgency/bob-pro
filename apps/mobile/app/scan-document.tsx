@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useRef } from 'react';
 import { ScrollView, View, Text, Pressable, ActivityIndicator } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -7,7 +7,9 @@ import * as ImagePicker from 'expo-image-picker';
 import { formatEUR } from '@bob/core';
 import { InMemoryCompanyMemory, suggestExpenseDefaults } from '@bob/ai';
 import { useTheme } from '../src/theme';
+import { useQueryClient } from '@tanstack/react-query';
 import { useExtractDocument, useRecordExpense, useExpenses } from '../src/data/hooks';
+import { useBobClient } from '../src/data/client';
 import { Card, Button, Badge, SectionHeader, font } from '../src/components/ui';
 
 const CATEGORY_LABEL: Record<string, string> = {
@@ -26,6 +28,10 @@ export default function ScanDocument() {
   const extract = useExtractDocument();
   const record = useRecordExpense();
   const expenses = useExpenses();
+  const client = useBobClient();
+  const queryClient = useQueryClient();
+  // Photo conservée pour le versement au coffre (justificatif lié à la dépense — C14).
+  const photoRef = useRef<{ contentBase64: string; mimeType: string } | null>(null);
   const data = extract.data;
 
   // Mémoire d'entreprise dérivée de l'historique réel des dépenses (fournisseurs déjà classés).
@@ -57,6 +63,7 @@ export default function ScanDocument() {
     const asset = res.canceled ? null : res.assets[0];
     if (!asset || !asset.base64) return;
     const mimeType = asset.uri.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
+    photoRef.current = { contentBase64: asset.base64, mimeType };
     extract.mutate({ contentBase64: asset.base64, mimeType });
   }
 
@@ -149,7 +156,26 @@ export default function ScanDocument() {
                     category: defaults?.category ?? data.categoryGuess,
                     source: 'ocr',
                   },
-                  { onSuccess: () => router.back() },
+                  {
+                    onSuccess: (out) => {
+                      // Le reçu scanné rejoint le coffre, LIÉ à la dépense (justificatif réel —
+                      // le « justificatif manquant » de la compta tombe). Échec non bloquant.
+                      const photo = photoRef.current;
+                      if (photo) {
+                        void client
+                          .uploadDocument({
+                            ...photo,
+                            filename: `recu-${data.supplierName.toLowerCase().replace(/\s+/g, '-')}.jpg`,
+                            kind: 'expense_receipt',
+                            linkedEntityType: 'expense',
+                            linkedEntityId: out.id,
+                            documentDate: data.documentDate,
+                          })
+                          .then(() => queryClient.invalidateQueries({ queryKey: ['documents'] }));
+                      }
+                      router.back();
+                    },
+                  },
                 )
               }
             />

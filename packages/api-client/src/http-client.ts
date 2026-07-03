@@ -43,6 +43,7 @@ import type {
   ExportFecMetadata,
   ExportFecClientInput,
   ExportFecClientOutput,
+  ClassifyDocumentClientInput,
 } from './client';
 
 export interface HttpBobClientOptions {
@@ -172,6 +173,10 @@ export class HttpBobClient implements BobClient {
   }
   uploadDocument(input: UploadDocumentClientInput) {
     return this.req<DocumentView>('POST', '/documents/upload', input);
+  }
+  classifyDocument(input: ClassifyDocumentClientInput) {
+    const { documentId, ...body } = input;
+    return this.req<DocumentView>('POST', `/documents/${documentId}/classify`, body);
   }
   documentDownloadUrl(documentId: string, ttlSeconds?: number) {
     const qs = ttlSeconds !== undefined ? `?ttl=${encodeURIComponent(String(ttlSeconds))}` : '';

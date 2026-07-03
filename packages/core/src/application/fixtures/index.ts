@@ -1,5 +1,9 @@
 import { Company, type CompanyProps } from '../../domain/company/company';
 import { Customer, type CustomerProps } from '../../domain/customer/customer';
+import { Expense, type ExpenseProps } from '../../domain/expense/expense';
+import { type DateOnly, type Instant } from '../../shared-kernel/time';
+import { type DocumentView } from '../documents/document-view';
+import { buildDocumentStorageKey } from '../documents/storage-key';
 
 /** Entreprise de seed du prototype : Mercier Plomberie (artisan plombier, réel simplifié, BTP décennale). */
 export const MERCIER_PROPS: CompanyProps = {
@@ -94,4 +98,85 @@ export function seedCustomers(): Customer[] {
     if (!r.ok) throw new Error(`Fixture customer invalide: ${p.id}`);
     return r.value;
   });
+}
+
+// ── Coffre-fort de démo (claim C14, amendement A1-C14) ───────────────────────
+// Le mode démo légitime = le client démo (LocalBobClient), jamais l'écran :
+// ces seeds exercent le flux réel scan → à valider → « Classer là » → dossier Achats.
+
+/** Dépenses fournisseurs du proto (mémoire fournisseurs ×3, achats du mois, TVA récup.). */
+export function seedExpenses(companyId: string, today: DateOnly): Expense[] {
+  const month = today.slice(0, 7);
+  const year = Number(today.slice(0, 4));
+  const monthNum = Number(today.slice(5, 7));
+  const prevMonth =
+    monthNum === 1 ? `${year - 1}-12` : `${year}-${String(monthNum - 1).padStart(2, '0')}`;
+  const specs: Omit<ExpenseProps, 'companyId'>[] = [
+    // Leroy Merlin — la dépense OCR rapprochée du reçu « à valider » (proto : 184,90 € / TVA 30,82 €).
+    { id: 'local-expense-leroy', supplierName: 'Leroy Merlin', supplierSiren: null, documentDate: today, totalTtcCents: 18490, totalHtCents: 15408, vatCents: 3082, vatRatePct: 20, category: 'fournitures', status: 'to_pay', source: 'ocr' },
+    // Cedeo — robinetterie, reçu déjà classé (dossier Achats).
+    { id: 'local-expense-cedeo', supplierName: 'Cedeo', supplierSiren: null, documentDate: `${month}-01`, totalTtcCents: 34200, totalHtCents: 28500, vatCents: 5700, vatRatePct: 20, category: 'materiel', status: 'paid', source: 'ocr' },
+    // Point P — matériaux, mois précédent (mémoire fournisseurs sans peser sur le mois courant).
+    { id: 'local-expense-pointp', supplierName: 'Point P', supplierSiren: null, documentDate: `${prevMonth}-14`, totalTtcCents: 52040, totalHtCents: 43367, vatCents: 8673, vatRatePct: 20, category: 'materiel', status: 'paid', source: 'manual' },
+  ];
+  return specs.map((spec) => {
+    const r = Expense.record({ ...spec, companyId }, { today });
+    if (!r.ok) throw new Error(`Fixture expense invalide: ${spec.id}`);
+    return r.value;
+  });
+}
+
+const SEED_DOC_SHA = 'a'.repeat(64);
+
+/**
+ * Documents de démo : reçu Leroy Merlin scanné NON CLASSÉ (carte « À valider », créé il y a
+ * 2 min), reçu Cedeo lié à sa dépense (dossier Achats), facture PDF du mois (Comptable + 1 vente).
+ */
+export function seedVaultDocuments(companyId: string, now: Instant, today: DateOnly): DocumentView[] {
+  const month = today.slice(0, 7);
+  const retentionUntil = `${Number(today.slice(0, 4)) + 10}${today.slice(4)}`;
+  const mk = (input: {
+    id: string;
+    kind: DocumentView['kind'];
+    origin: DocumentView['origin'];
+    filename: string;
+    mimeType: string;
+    byteSize: number;
+    linkedEntityType: DocumentView['linkedEntityType'];
+    linkedEntityId: string | null;
+    documentDate: DateOnly;
+    createdAt: Instant;
+  }): DocumentView => ({
+    id: input.id,
+    companyId,
+    kind: input.kind,
+    origin: input.origin,
+    status: 'active',
+    filename: input.filename,
+    mimeType: input.mimeType,
+    byteSize: input.byteSize,
+    sha256: SEED_DOC_SHA,
+    storageKey: buildDocumentStorageKey({
+      companyId,
+      documentId: input.id,
+      version: 1,
+      sha256: SEED_DOC_SHA,
+      filename: input.filename,
+      mimeType: input.mimeType,
+    }),
+    version: 1,
+    linkedEntityType: input.linkedEntityType,
+    linkedEntityId: input.linkedEntityId,
+    documentDate: input.documentDate,
+    issuedAt: null,
+    createdAt: input.createdAt,
+    createdBy: 'local',
+    retentionUntil,
+  });
+  const twoMinutesAgo = new Date(Date.parse(now) - 120_000).toISOString();
+  return [
+    mk({ id: 'seed-doc-leroy', kind: 'expense_receipt', origin: 'ocr', filename: 'recu-leroy-merlin.jpg', mimeType: 'image/jpeg', byteSize: 482_000, linkedEntityType: null, linkedEntityId: null, documentDate: today, createdAt: twoMinutesAgo }),
+    mk({ id: 'seed-doc-cedeo', kind: 'expense_receipt', origin: 'ocr', filename: 'recu-cedeo-robinetterie.jpg', mimeType: 'image/jpeg', byteSize: 391_000, linkedEntityType: 'expense', linkedEntityId: 'local-expense-cedeo', documentDate: `${month}-01`, createdAt: now }),
+    mk({ id: 'seed-doc-f104', kind: 'invoice_pdf', origin: 'generated', filename: 'facture-F-2026-104.pdf', mimeType: 'application/pdf', byteSize: 128_000, linkedEntityType: null, linkedEntityId: null, documentDate: `${month}-01`, createdAt: now }),
+  ];
 }

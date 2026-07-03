@@ -572,6 +572,23 @@
   pas de chemin fantôme, à ajouter avec le domaine dossiers) · tuiles dossiers non navigables v1 ·
   interactions tactiles (saisie recherche, tap export) non automatisables en headless — vérifiées
   par tests purs + typecheck, à confirmer d'un geste au prochain passage humain. status=MERGED.
+- [11:00] claude-code AMENDEMENT A1-C14 (directive humaine 10:15 : « Classer là intervient après
+  que l'IA via OCR a traité le document scanné et proposé où le classer — important ») : le
+  classement est maintenant RÉEL de bout en bout. (1) Domaine : `Document.classify` (invariants :
+  actif, rattachement complet, type connu). (2) Use case pur `ClassifyDocument` (@bob/core, 4 tests)
+  — même chemin pour l'UI et pour Bob. (3) Client : `classifyDocument` (interface + LocalBobClient +
+  HttpBobClient POST /documents/:id/classify) + 3 tests. (4) Coffre de DÉMO seedé dans le client
+  démo (fixtures core : 3 dépenses fournisseurs Leroy Merlin/Cedeo/Point P + reçu Leroy « à
+  valider » + reçu Cedeo classé + facture PDF du mois) — le mode démo légitime, jamais l'écran.
+  (5) Écran : « Classer là » = mutation réelle → invalidations → toast « Leroy Merlin classé ·
+  Achats ✓ » ; « Ouvrir » en secondaire ; rapprochement OCR durci (normalizeFilename : tirets/
+  points → espaces). (6) Flux scan complété : le reçu photographié est VERSÉ AU COFFRE lié à la
+  dépense enregistrée (le « justificatif manquant » de la compta tombe). Capture riche validée
+  simulateur : claims/shots/C14-a1-classer.png (badge, chips 184,90 € / TVA 30,82 € / date,
+  « Je pense : dépense Leroy Merlin », boutons). core 289/289 · api-client 14/14 · i18n 26/26 ·
+  typecheck clean. SUITE ANNONCÉE (A2-C14, directives 10:20-10:40) : moteur OCR LLM réel —
+  Mistral OCR en priorité (clé API dispo), garde-fous stricts sur l'extraction, proposition de
+  classement/tags/renommage par le modèle, chaîne de repli (Claude Vision, Gemini, GLM, DeepSeek).
 
 ### C15 — Assistant (Bob)               <!-- kind: screen -->
 - status: IN-BUILD

@@ -12,11 +12,14 @@
  *
  * PARITÉ D'ACTIONS : scan → /scan-document (extractDocument/recordExpense, mêmes use cases que
  * Bob) · export → client.exportFec (artefact FEC réel du core) · facture → /facture/[id].
+ * « Classer là » (A1-C14) : confirmation RÉELLE du classement proposé après OCR —
+ * client.classifyDocument (use case ClassifyDocument @bob/core, même chemin pour Bob).
  * Écarts proto assumés : carte « Attestation décennale » non rendue (pas d'échéance d'assurance
- * dans le modèle) · « Classer là » remplacé par « Ouvrir » (aucun use case de classement côté
- * client : pas de chemin fantôme) · tuiles dossiers non navigables v1 (détail dossier à venir).
+ * dans le modèle) · tuiles dossiers non navigables v1 (détail dossier à venir) · « Autre
+ * dossier » viendra avec le domaine dossiers (picker) — en attendant, bouton « Ouvrir ».
  */
 import { useMemo, useState } from 'react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Linking, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -141,7 +144,17 @@ function DocThumb() {
 }
 
 /** Carte « À valider » — doc OCR non classé, métriques réelles du rapprochement dépense. */
-function PendingCard({ doc, onOpen }: { doc: VaultPendingDoc; onOpen: () => void }) {
+function PendingCard({
+  doc,
+  onOpen,
+  onClassify,
+  classifying,
+}: {
+  doc: VaultPendingDoc;
+  onOpen: () => void;
+  onClassify: (expenseId: string) => void;
+  classifying: boolean;
+}) {
   const { personality, colors, semantic } = useTheme();
   const exp = doc.matchedExpense;
   return (
@@ -226,15 +239,29 @@ function PendingCard({ doc, onOpen }: { doc: VaultPendingDoc; onOpen: () => void
         <View style={{ height: 13 }} />
       )}
 
-      <Button
-        title={t('docs.classify', { personality })}
-        variant="ai"
-        size="compact"
-        radius={12}
-        style={{ alignSelf: 'flex-start' }}
-        onPress={onOpen}
-        accessibilityLabel={`${t('docs.classify', { personality })} — ${doc.filename}`}
-      />
+      <View style={{ flexDirection: 'row', gap: 9 }}>
+        {exp ? (
+          <Button
+            title={t('docs.classify', { personality })}
+            variant="ai"
+            size="compact"
+            radius={12}
+            loading={classifying}
+            style={{ flex: 1 }}
+            onPress={() => onClassify(exp.id)}
+            accessibilityLabel={`${t('docs.classify', { personality })} — ${exp.supplierName}`}
+          />
+        ) : null}
+        <Button
+          title={t('docs.open', { personality })}
+          variant="secondary"
+          size="compact"
+          radius={12}
+          {...(exp ? {} : { style: { alignSelf: 'flex-start' } })}
+          onPress={onOpen}
+          accessibilityLabel={`${t('docs.open', { personality })} — ${doc.filename}`}
+        />
+      </View>
     </View>
   );
 }
@@ -248,9 +275,30 @@ export default function Documents() {
   const invoices = useInvoices();
   const customers = useCustomers();
   const exportFec = useExportFec();
+  const queryClient = useQueryClient();
 
   const [query, setQuery] = useState('');
   const [toast, setToast] = useState<string | null>(null);
+
+  // « Classer là » (A1-C14) : confirme la proposition OCR — même use case que Bob.
+  const classify = useMutation({
+    mutationFn: async (input: { documentId: string; expenseId: string; supplier: string }) => {
+      const r = await client.classifyDocument({
+        documentId: input.documentId,
+        linkedEntityType: 'expense',
+        linkedEntityId: input.expenseId,
+      });
+      if (!r.ok) throw r.error;
+      return input;
+    },
+    onSuccess: (input) => {
+      void queryClient.invalidateQueries({ queryKey: ['documents'] });
+      void queryClient.invalidateQueries({ queryKey: ['expenses'] });
+      setToast(t('docs.classifiedToast', { personality, params: { supplier: input.supplier } }));
+    },
+    onError: () => setToast(t('docs.classifyError', { personality })),
+  });
+
 
   const cta = parseGradient(grad.cta);
   const folderTints = useFolderTints();
@@ -496,7 +544,19 @@ export default function Documents() {
                 </View>
                 <View style={{ gap: 11 }}>
                   {view.toValidate.map((p) => (
-                    <PendingCard key={p.id} doc={p} onOpen={() => void openDocument(p.id)} />
+                    <PendingCard
+                      key={p.id}
+                      doc={p}
+                      onOpen={() => void openDocument(p.id)}
+                      classifying={classify.isPending && classify.variables?.documentId === p.id}
+                      onClassify={(expenseId) =>
+                        classify.mutate({
+                          documentId: p.id,
+                          expenseId,
+                          supplier: p.matchedExpense?.supplierName ?? p.filename,
+                        })
+                      }
+                    />
                   ))}
                 </View>
               </View>

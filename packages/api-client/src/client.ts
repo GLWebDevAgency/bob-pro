@@ -94,6 +94,12 @@ export interface UploadDocumentClientInput {
   documentDate?: string | null;
 }
 
+export interface ClassifyDocumentClientInput {
+  documentId: string;
+  linkedEntityType: DocumentLinkedEntityType;
+  linkedEntityId: string;
+}
+
 export interface VoiceConfig {
   cloudAvailable: boolean;
   ttsCloudAvailable?: boolean;
@@ -242,6 +248,8 @@ export interface BobClient {
   listDocuments(input?: ListDocumentsClientInput): Promise<Result<DocumentView[], AppError>>;
   uploadDocument(input: UploadDocumentClientInput): Promise<Result<DocumentView, AppError>>;
   documentDownloadUrl(documentId: string, ttlSeconds?: number): Promise<Result<DocumentDownloadUrl, AppError>>;
+  /** Confirme le classement proposé après OCR (A1-C14) — même use case pour l'UI et Bob. */
+  classifyDocument(input: ClassifyDocumentClientInput): Promise<Result<DocumentView, AppError>>;
   extractDocument(input: { contentBase64: string; mimeType: string }): Promise<Result<OcrExtraction, AppError>>;
   suggestExpenseDefaults(input: SuggestExpenseDefaultsInput): Promise<Result<ExpenseDefaultsView, AppError>>;
   recordExpense(input: Omit<RecordExpenseInput, 'companyId'>): Promise<Result<{ id: string }, AppError>>;

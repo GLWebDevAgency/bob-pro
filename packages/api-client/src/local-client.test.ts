@@ -245,3 +245,39 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     if (url.ok) expect(url.value.url).toContain('ttl=120');
   });
 });
+
+describe('coffre de démo + classement (A1-C14)', () => {
+  it('seede le reçu Leroy Merlin « à valider » et les dépenses fournisseurs', async () => {
+    const client = makeClient();
+    const docs = await client.listDocuments();
+    expect(docs.ok).toBe(true);
+    if (!docs.ok) return;
+    const leroy = docs.value.find((d) => d.id === 'seed-doc-leroy');
+    expect(leroy).toMatchObject({ origin: 'ocr', linkedEntityType: null, kind: 'expense_receipt' });
+    const expenses = await client.listExpenses();
+    expect(expenses.ok && expenses.value.map((e) => e.supplierName).sort()).toEqual(
+      ['Cedeo', 'Leroy Merlin', 'Point P'],
+    );
+  });
+
+  it('« Classer là » rattache le reçu à la dépense (sort d’à valider, dossier Achats)', async () => {
+    const client = makeClient();
+    const r = await client.classifyDocument({
+      documentId: 'seed-doc-leroy',
+      linkedEntityType: 'expense',
+      linkedEntityId: 'local-expense-leroy',
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.linkedEntityId).toBe('local-expense-leroy');
+    const linked = await client.listDocuments({ linkedEntityType: 'expense', linkedEntityId: 'local-expense-leroy' });
+    expect(linked.ok && linked.value.map((d) => d.id)).toEqual(['seed-doc-leroy']);
+  });
+
+  it('refuse un document inconnu ou un rattachement vide', async () => {
+    const client = makeClient();
+    const missing = await client.classifyDocument({ documentId: 'nope', linkedEntityType: 'expense', linkedEntityId: 'x' });
+    expect(missing.ok).toBe(false);
+    const incomplete = await client.classifyDocument({ documentId: 'seed-doc-leroy', linkedEntityType: 'expense', linkedEntityId: '  ' });
+    expect(incomplete.ok).toBe(false);
+  });
+});
