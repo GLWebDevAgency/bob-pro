@@ -68,6 +68,7 @@ import {
   type CustomerProps,
   type DiagnosticResult,
   type TradeConfig,
+  type OcrExtractInput,
   type ChantierProps,
   type CreateChantierInput,
   type CompanyLookupPort,
@@ -1278,7 +1279,20 @@ export class BackendService {
 
   /** OCR d'un document fournisseur (base64) -> extraction structurée, scopée au tenant. */
   async extractDocument(input: { contentBase64: string; mimeType: string }): Promise<Result<OcrExtraction, AppError>> {
-    const r = await new ExtractDocument({ ocr: this.ocr }).execute(input);
+    // A3-C14 : le prompt OCR est personnalisé par l'activité (TradeConfig) — données typées, pas de texte libre.
+    const company = await this.p.companies.findById(this.companyId());
+    const trade = company
+      ? ((): NonNullable<OcrExtractInput['trade']> => {
+          const config = resolveTradeConfig(company.trade, this.subscription.tier, this.subscription.addOns);
+          return {
+            label: config.label,
+            customerWord: config.vocabulary.customer,
+            projectWord: config.vocabulary.project,
+            defaultVatRatePct: config.defaultVatRate,
+          };
+        })()
+      : undefined;
+    const r = await new ExtractDocument({ ocr: this.ocr }).execute({ ...input, ...(trade ? { trade } : {}) });
     if (r.ok)
       this.logger.audit('document.ocr', {
         companyId: this.companyId(),

@@ -23,11 +23,56 @@ export interface RoutingContext {
   hasMistralKey?: boolean;
   /** Mode souveraineté : ne router que vers des fournisseurs UE (Mistral). Pour un déploiement « full EU ». */
   euOnly?: boolean;
+  /** Overrides d'env pour le catalogue de modèles (`<PROVIDER>_MODEL_<TIER>`). */
+  envOverrides?: Readonly<Record<string, string | undefined>>;
+}
+
+/** Palier de capacité — décide du MODÈLE précis chez le fournisseur retenu. */
+export type CapabilityTier = 'frontier' | 'balanced' | 'fast';
+
+/**
+ * Catalogue modèle par fournisseur × palier (A3-C14). Surclassable par env
+ * (`<PROVIDER>_MODEL_<TIER>`, ex. CLAUDE_MODEL_FRONTIER=claude-fable-5 si l'org a accès
+ * au tier Mythos/Fable, au-dessus d'Opus). GLM et DeepSeek : open source, économiques.
+ */
+export const MODEL_CATALOG: Record<Provider, Record<CapabilityTier, string>> = {
+  claude: { frontier: 'claude-opus-4-8', balanced: 'claude-sonnet-5', fast: 'claude-haiku-4-5-20251001' },
+  mistral: { frontier: 'mistral-large-latest', balanced: 'mistral-small-latest', fast: 'mistral-small-latest' },
+  openai: { frontier: 'gpt-5', balanced: 'gpt-5-mini', fast: 'gpt-4o-mini' },
+  glm: { frontier: 'glm-4-plus', balanced: 'glm-4-flash', fast: 'glm-4-flash' },
+  deepseek: { frontier: 'deepseek-reasoner', balanced: 'deepseek-chat', fast: 'deepseek-chat' },
+};
+
+/** Palier requis par tâche : critique → frontier · rédaction/synthèse → balanced · volume → fast. */
+export const TASK_TIER: Record<TaskType, CapabilityTier> = {
+  'intent.detect': 'fast',
+  'agent.plan': 'frontier',
+  'agent.summarize': 'balanced',
+  'relance.draft': 'balanced',
+  'mentions.phrase': 'frontier',
+  'diagnostic.explain': 'frontier',
+  'cashflow.narrate': 'balanced',
+  'ocr.postprocess': 'fast',
+  'customer.classify': 'fast',
+};
+
+/** Modèle précis pour (fournisseur, palier), avec override d'environnement optionnel. */
+export function modelFor(
+  provider: Provider,
+  tier: CapabilityTier,
+  envOverrides?: Readonly<Record<string, string | undefined>>,
+): string {
+  const key = `${provider.toUpperCase()}_MODEL_${tier.toUpperCase()}`;
+  return envOverrides?.[key] ?? MODEL_CATALOG[provider][tier];
 }
 
 export interface RoutingDecision {
   model: ModelChoice;
   reason: string;
+  /** Palier de capacité requis par la tâche (absent en mode démo). */
+  tier?: CapabilityTier;
+  /** Modèle précis retenu chez le fournisseur (absent en mode démo). */
+  modelId?: string;
 }
 
 /**
@@ -75,7 +120,13 @@ export class ModelRouter {
     for (let i = 0; i < chain.length; i++) {
       const p = chain[i]!;
       if (this.available(p)) {
-        return { model: p, reason: i === 0 ? `modèle préféré pour ${task}` : `fallback #${i} pour ${task}` };
+        const tier = TASK_TIER[task];
+        return {
+          model: p,
+          reason: i === 0 ? `modèle préféré pour ${task}` : `fallback #${i} pour ${task}`,
+          tier,
+          modelId: modelFor(p, tier, this.ctx.envOverrides),
+        };
       }
     }
     return {

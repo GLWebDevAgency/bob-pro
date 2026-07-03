@@ -7,6 +7,16 @@ export interface OcrExtractInput {
   contentBase64: string;
   /** ex. 'image/jpeg' | 'image/png' | 'image/webp' | 'application/pdf'. */
   mimeType: string;
+  /**
+   * Contexte métier optionnel (A3-C14) — projection de TradeConfig, DONNÉES pures :
+   * les adapters LLM s'en servent pour personnaliser le prompt (activité, vocabulaire, TVA).
+   */
+  trade?: {
+    label: string;
+    customerWord: string;
+    projectWord: string;
+    defaultVatRatePct?: number;
+  };
 }
 
 /**

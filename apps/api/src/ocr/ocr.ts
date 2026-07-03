@@ -12,6 +12,7 @@ import {
   type Result,
   type AppError,
 } from '@bob/core';
+import { buildSystemPrompt, type PromptContext } from '@bob/ai';
 import { hasClaudeKey, hasMistralKey, isDemoMode } from '../config/env';
 
 export const OCR_PORT = Symbol('OCR_PORT');
@@ -22,17 +23,28 @@ const MAX_BASE64_LENGTH = 14_000_000;
 const TIMEOUT_MS = 25_000;
 
 /**
- * Prompt « expert-comptable de renom » (A2-C14) : extraction stricte + intelligence de
- * classement. N'INVENTE RIEN (null si illisible) ; les garde-fous du domaine revalident tout.
+ * Prompt « expert-comptable » (A2/A3-C14) : base figée + contexte métier typé via le
+ * constructeur de prompts @bob/ai (buildSystemPrompt) — personnalisé par l'activité,
+ * jamais par du texte libre. Les garde-fous du domaine revalident toute sortie.
  */
-const SYSTEM_PROMPT =
-  "Tu es l'expert-comptable d'un artisan français : rigoureux, tu n'inventes JAMAIS une valeur. " +
-  'Réponds UNIQUEMENT par un objet JSON valide (sans markdown, sans texte autour). ' +
-  'Montants en CENTIMES entiers. Mets null si une valeur est absente ou illisible. ' +
-  'categoryGuess parmi: fournitures|materiel|carburant|repas|sous_traitance|autre. confidence entre 0 et 1. ' +
-  'suggestedTags: 3 à 6 tags courts et utiles pour retrouver/classer la pièce (fournisseur, catégorie, ' +
-  "chantier ou client si mentionné sur la pièce, nature de l'achat). " +
-  "suggestedFilename: nom canonique d'archivage SANS extension, format AAAA-MM-JJ_fournisseur_objet.";
+function ocrSystemPrompt(input: OcrExtractInput, today: string): string {
+  const ctx: PromptContext = {
+    ...(input.trade
+      ? {
+          trade: {
+            label: input.trade.label,
+            customerWord: input.trade.customerWord,
+            projectWord: input.trade.projectWord,
+            ...(input.trade.defaultVatRatePct !== undefined
+              ? { defaultVatRatePct: input.trade.defaultVatRatePct }
+              : {}),
+          },
+        }
+      : {}),
+    today,
+  };
+  return `${buildSystemPrompt('ocr.extract', ctx)}\nSchéma exact: ${SCHEMA_HINT}`;
+}
 
 const SCHEMA_HINT =
   '{"supplierName":string|null,"supplierSiren":string|null,"documentDate":"YYYY-MM-DD"|null,' +
@@ -118,7 +130,7 @@ export class MistralOcrAdapter implements OcrPort {
           temperature: 0,
           response_format: { type: 'json_object' },
           messages: [
-            { role: 'system', content: `${SYSTEM_PROMPT} Schéma exact: ${SCHEMA_HINT}` },
+            { role: 'system', content: ocrSystemPrompt(input, this.clock.today()) },
             { role: 'user', content: `Pièce fournisseur (OCR markdown) :\n\n${markdown.slice(0, 24_000)}` },
           ],
         }),
@@ -163,8 +175,8 @@ export class ClaudeVisionOcrAdapter implements OcrPort {
         body: JSON.stringify({
           model: this.model,
           max_tokens: 4096,
-          system: SYSTEM_PROMPT,
-          messages: [{ role: 'user', content: [block, { type: 'text', text: `Extrais les champs au format JSON: ${SCHEMA_HINT}` }] }],
+          system: ocrSystemPrompt(input, this.clock.today()),
+          messages: [{ role: 'user', content: [block, { type: 'text', text: 'Extrais les champs du document au format JSON demandé.' }] }],
         }),
       });
       if (!res.ok) return err({ kind: 'dependency', port: 'ocr', cause: `claude-vision HTTP ${res.status}` });

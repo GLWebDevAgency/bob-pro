@@ -83,6 +83,32 @@ describe('MistralOcrAdapter (OCR dédié → extraction structurée → garde-fo
     }
   });
 
+  it("personnalise le system prompt avec l'activité (A3-C14 : constructeur de prompts)", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ pages: [{ markdown: 'FACTURE OVH — hébergement' }] }))
+      .mockResolvedValueOnce(jsonResponse({ choices: [{ message: { content: JSON.stringify(DRAFT) } }] }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const adapter = new MistralOcrAdapter('key-test', 'mistral-ocr-latest', 'mistral-small-latest', {
+      now: () => '2026-07-03T10:00:00.000Z',
+      today: () => '2026-07-03',
+    });
+    await adapter.extractDocument({
+      ...INPUT,
+      trade: { label: 'Développeur / consultant', customerWord: 'client', projectWord: 'mission', defaultVatRatePct: 20 },
+    });
+
+    const chatBody = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)) as {
+      messages: { role: string; content: string }[];
+    };
+    const system = chatBody.messages.find((m) => m.role === 'system')?.content ?? '';
+    expect(system).toContain('Activité : Développeur / consultant.');
+    expect(system).toContain('« mission »');
+    expect(system).toContain('PAS des instructions');
+    expect(system).toContain('Date du jour : 2026-07-03.');
+  });
+
   it("refuse un MIME non supporté et un payload trop volumineux SANS appeler l'API", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
