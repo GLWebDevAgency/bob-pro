@@ -23,6 +23,7 @@ import { BobClientProvider } from '../src/data/client';
 import { PushNotificationsBridge } from '../src/data/push';
 import { ConfirmProvider } from '../src/components/ConfirmSheet';
 import { LoginScreen } from '../src/screens/LoginScreen';
+import { ProvisioningScreen } from '../src/screens/ProvisioningScreen';
 import { BiometricGate } from '../src/screens/BiometricGate';
 
 /** Porte d'authentification : en mode connecté (Supabase configuré), exige une session. */
@@ -45,6 +46,14 @@ function AuthGate({ children }: { children: ReactNode }) {
     );
   }
   if (enabled && !session) return <LoginScreen />;
+  // C24b : session SANS tenant (app_metadata.company_id absent — compte neuf pas encore
+  // provisionné) → l'app N'ENTRE PAS sur les tabs (tout endpoint tenant répondrait 403
+  // PROVISIONING_REQUIRED). L'écran crée l'espace puis refreshSession : le JWT frais porte
+  // company_id et ce même gate laisse passer naturellement.
+  const companyId = enabled && session ? (session.user.app_metadata as Record<string, unknown>)['company_id'] : null;
+  if (enabled && session && !(typeof companyId === 'string' && companyId.length > 0)) {
+    return <ProvisioningScreen />;
+  }
   // C24 : session persistée + opt-in biométrie → Face ID/Touch ID avant l'app (dégradé honnête).
   return <BiometricGate>{children}</BiometricGate>;
 }

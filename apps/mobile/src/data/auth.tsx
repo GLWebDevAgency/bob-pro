@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useMemo, useState, type ReactNode
 import { AppState } from 'react-native';
 import { useQueryClient } from '@tanstack/react-query';
 import type { AuthError, Session } from '@supabase/supabase-js';
+import type { CompanyLookupResult } from '@bob/core';
 import { supabase, supabaseEnabled, getAccessToken } from './supabase';
 
 /**
@@ -55,12 +56,14 @@ export interface SignUpInput {
   firstName: string;
   fullName: string;
   /**
-   * Instantané entreprise du lookup SIRET (C24) — posé en user_metadata à l'inscription.
-   * POST /onboarding/company exige une session (guard JWT) ET un tenant provisionné
-   * (app_metadata.company_id) : impossible AVANT confirmation email. L'instantané garde
-   * l'info côté compte ; le provisioning serveur la consommera (TODO serveur documenté).
+   * Fiche entreprise COMPLÈTE du lookup SIRET (C24b) — posée en user_metadata à l'inscription
+   * (snapshot JSON ~400 octets : très en deçà de toute limite du raw_user_meta_data jsonb).
+   * POST /onboarding/company exige une session (guard JWT) : impossible AVANT confirmation
+   * email. Le ProvisioningScreen relit ce snapshot après le premier login et l'envoie tel quel
+   * à registerCompany — TOUTES les infos officielles (dénomination, NAF, forme juridique,
+   * adresse, TVA, date de création) finissent en base.
    */
-  company?: { siret: string; name: string } | undefined;
+  company?: CompanyLookupResult | undefined;
 }
 
 interface AuthValue {
@@ -138,7 +141,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             data: {
               first_name: firstName,
               full_name: fullName,
-              ...(company ? { company_siret: company.siret, company_name: company.name } : {}),
+              // siret/name à plat (lisibles dans le dashboard) + snapshot complet pour le provisioning.
+              ...(company
+                ? { company_siret: company.siret, company_name: company.denomination, company_snapshot: company }
+                : {}),
             },
           },
         });

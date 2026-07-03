@@ -9,14 +9,11 @@
  *   Recherche d'entreprises) → récap officiel pré-rempli → compte (prénom+email+mdp) →
  *   signUp réel (user_metadata.first_name/full_name → useIdentity) → « Vérifie tes mails ».
  *
- * ORDRE signUp / POST company (constaté dans apps/api) : POST /onboarding/company est
- * derrière SupabaseAuthGuard (session exigée en prod) ET écrit sur le tenant du Principal
- * (app_metadata.company_id — non provisionné pour un compte neuf : repli seed côté guard).
- * L'appeler AVANT session est impossible, et APRÈS confirmation il écrirait sur le mauvais
- * tenant → on ne l'appelle PAS ici. L'instantané entreprise (siret+nom) part dans
- * user_metadata au signUp ; le provisioning serveur le consommera.
- * TODO serveur (handoff Codex) : à l'inscription, provisionner le tenant
- * (app_metadata.company_id) puis enchaîner POST /onboarding/company depuis user_metadata.
+ * ORDRE signUp / POST company (C24b) : POST /onboarding/company exige une session (guard JWT),
+ * impossible AVANT la confirmation email → on ne l'appelle PAS ici. La fiche entreprise
+ * COMPLÈTE du lookup (dénomination, NAF, forme juridique, adresse, TVA, date de création)
+ * part en user_metadata.company_snapshot au signUp ; après le premier login, le
+ * ProvisioningScreen la relit et provisionne le tenant (registerCompany → app_metadata.company_id).
  *
  * Écarts assumés vs proto §auth :
  * · SSO Google/Apple et « lien magique » non câblés → non affichés (pas de bouton fantôme) ;
@@ -45,6 +42,7 @@ import { Card, Stepper, font, useTheme } from '@bob/ui';
 import { useAuth, type AuthErrorCode } from '../data/auth';
 import { markFreshLogin } from '../data/biometric';
 import { useLookupCompany } from '../data/hooks';
+import { CompanyFicheCard, formatSiret } from '../components/CompanyFicheCard';
 import { ChevronLeftIcon, LockIcon, MailIcon, SparkIcon } from '../components/icons';
 
 type Step = 'login' | 'siret' | 'company' | 'account' | 'verify';
@@ -75,12 +73,6 @@ function lookupErrorKey(error: AppError): I18nKey {
     default:
       return 'auth.errUnknown';
   }
-}
-
-/** 14 chiffres → « 123 456 789 00012 » (groupes SIREN 3-3-3 + NIC 5). */
-function formatSiret(digits: string): string {
-  const parts = [digits.slice(0, 3), digits.slice(3, 6), digits.slice(6, 9), digits.slice(9, 14)];
-  return parts.filter(Boolean).join(' ');
 }
 
 const MIN_PASSWORD_LENGTH = 8;
@@ -289,7 +281,8 @@ export function LoginScreen() {
       password,
       firstName: cleanFirst,
       fullName: cleanFirst,
-      company: company ? { siret: company.siret, name: company.denomination } : undefined,
+      // C24b : snapshot COMPLET de la fiche annuaire — le provisioning l'enverra tel quel en base.
+      company: company ?? undefined,
     });
     setBusy(false);
     if (res.error) {
@@ -413,60 +406,9 @@ export function LoginScreen() {
           {say('auth.companySub')}
         </Text>
       </View>
-      <Card padding={16} radius={16} style={{ gap: 12 }}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-          <Text style={[font('label', 700), { flex: 1, fontSize: 16.5, color: colors.ink900 }]}>
-            {company.denomination}
-          </Text>
-          {company.rge ? (
-            <View
-              style={{
-                backgroundColor: semantic.successBg,
-                borderRadius: 7,
-                paddingHorizontal: 8,
-                paddingVertical: 3,
-              }}
-            >
-              <Text style={[font('label', 700), { fontSize: 11, color: semantic.success }]}>
-                {say('auth.companyRge')}
-              </Text>
-            </View>
-          ) : null}
-        </View>
-        {(
-          [
-            { label: say('auth.companySiretLabel'), value: formatSiret(company.siret) },
-            { label: say('auth.companyNafLabel'), value: company.nafApe },
-            {
-              label: say('auth.companyAddressLabel'),
-              value: company.address
-                ? `${company.address.line1}, ${company.address.zip} ${company.address.city}`
-                : null,
-            },
-            { label: say('auth.companyTvaLabel'), value: company.tvaIntracom },
-          ] as const
-        )
-          .filter((row): row is { label: string; value: string } => row.value !== null)
-          .map((row, i) => (
-            <View
-              key={row.label}
-              style={{
-                flexDirection: 'row',
-                gap: 12,
-                paddingTop: 10,
-                borderTopWidth: i === 0 ? 0 : 1,
-                borderTopColor: colors.lineSoft,
-              }}
-            >
-              <Text style={[font('label', 600), { width: 104, fontSize: 12.5, color: colors.slate400 }]}>
-                {row.label}
-              </Text>
-              <Text style={[font('sub'), { flex: 1, fontSize: 13.5, color: colors.ink800 }]}>
-                {row.value}
-              </Text>
-            </View>
-          ))}
-      </Card>
+      {/* Fiche société COMPLÈTE (C24b) : tout ce que l'annuaire officiel connaît —
+          composant partagé avec le ProvisioningScreen (lignes absentes masquées). */}
+      <CompanyFicheCard company={company} />
       <PrimaryCta label={say('auth.companyConfirm')} onPress={() => goTo('account')} />
       <GhostLink label={say('auth.companyEdit')} onPress={() => goTo('siret')} />
     </View>
