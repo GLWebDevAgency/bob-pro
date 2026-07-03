@@ -1062,6 +1062,27 @@
 #### Log (append-only, horodaté)
 - [16:35] claude-code CLAIM+PROPOSE+IN-BUILD: dernier gros TODO métier de l'audit parité (①②). Envoi réel
   conditionné à la surface serveur constatée (lecture apps/api) — sinon contrat client + handoff Codex.
+- [21:36] human DIRECTIVE (A1-C25): « pour les notifs on veut du 100 % prod aussi, ne fais pas les choses
+  à moitié ». Contrat amendé v2 : le tabou apps/api est LEVÉ pour ce claim (l'humain prime ; le chantier
+  OCR de la session parallèle reste intouchable — fichiers disjoints).
+- [21:37] claude-code AMEND (contrat C25 v2 — notifications de PRODUCTION, constat : l'infra serveur
+  existe déjà : jobs/notification-delivery.service.ts + ScheduleModule cron + notification_jobs persistées
+  multi-tenant JOB_COMPANY_IDS) :
+  1. SERVEUR (apps/api, hors fichiers OCR) : exposer aux mobiles ce que les jobs produisent — GET
+     /notifications (persistées, lu/non-lu, company-scoped RLS), POST /notifications/:id/read, POST
+     /devices (enregistrement token push Expo par user/tenant) ; brancher le CANAL D'ENVOI effectif des
+     relances (mailer via env — clé absente = échec propre loggé, jamais silencieux) et push Expo
+     (expo-server-sdk ou fetch API Expo Push) dans notification-delivery ; le cron des relances
+     automatiques suit la politique derive-relance-plan (cordial→ferme→mise en demeure L441-10).
+  2. CLIENT : BobClient.listNotifications/markNotificationRead/registerDevice (HTTP+Local) ; mobile :
+     expo-notifications (permission honnête, getExpoPushTokenAsync avec projectId EAS si dispo — en
+     Expo Go/simulateur : enregistrement dégradé documenté, le pipeline reste prod-ready), deep link au
+     tap (route de la notif).
+  3. ÉCRAN : branché sur GET /notifications RÉEL (serveur = source de vérité, lu/non-lu persistés) ;
+     badge cloche C10 = count non-lus serveur ; le mode démo Local dérive localement (adaptateur).
+  4. PARITÉ ② : outil agent envoyer_relance (outbound, confirmation) branché sur le canal réel.
+  5. Acceptance étendue : tests serveur (delivery service : email/push mockés, échec propre sans clé),
+     tests client (stub HTTP), cron testé (multi-tenant-jobs pattern existant).
 
 ### C26 — Compte / Abo / Équipe / Paywall <!-- kind: flow -->
 - status: OPEN · depends-on: C03 · ref-capture: claims/ref/C26.png
