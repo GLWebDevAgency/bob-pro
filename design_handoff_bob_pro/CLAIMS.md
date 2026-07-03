@@ -945,6 +945,13 @@
   ai 146/146 · core 316/316 · i18n 33/33 · typecheck 16/16. Restes : validation connectée simulateur (login
   humain ou accessibilité) — preuves API curl en cours ; registre d'outils optionnels côté SERVEUR (BackendService)
   = TODO apps/api. status=MERGED.
+- [16:02] claude-code LOG (PREUVE DE PRODUCTION, checklist C40): exécutée contre l'infra RÉELLE —
+  login Supabase (demo@bobpro.fr, password grant) → JWT ES256 émis ✓ · GET /customers (API Railway,
+  DEMO_MODE=false, RLS bob_app) → 200 scopé tenant ✓ · POST /ai/ask {"combien je peux me verser ce
+  mois-ci ?"} → 200 AgentRun réel : intent payout, plan ["Lire la trésorerie réelle","Calculer le
+  versement sans risque"], carte « Tu peux te verser 4 528,88 € sans risque. Je garde le reste pour la
+  TVA et les charges. » (mistral-small, journalisé serveur) ✓. Le chemin de prod ask est PROUVÉ de bout
+  en bout ; confirm (mutation réelle) réservé à la validation humaine sur simulateur connecté.
 
 ### C41 — A11y / états / tests / sweep parité <!-- kind: package -->
 - status: OPEN · depends-on: (tous les écrans) · spec: CLAUDE_CODE_PROMPTS.md Phase 7
