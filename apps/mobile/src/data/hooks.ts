@@ -11,7 +11,7 @@ import type {
   PlanTier,
   TodayPriority,
 } from '@bob/core';
-import type { RegisterPaymentClientInput } from '@bob/api-client';
+import type { CreateCustomerClientInput, RegisterPaymentClientInput } from '@bob/api-client';
 import { useBobClient } from './client';
 
 /** Ouvre une URL externe en remontant un échec à l'utilisateur (lien Stripe/paiement). */
@@ -230,6 +230,20 @@ export function useCustomers() {
       if (!r.ok) throw r.error;
       return r.value;
     },
+  });
+}
+
+/** Création client (C12/C40) — MÊME use case que l'outil agent creer_client (parité d'actions). */
+export function useCreateCustomer() {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: CreateCustomerClientInput) => {
+      const r = await client.createCustomer(input);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: () => void qc.invalidateQueries({ queryKey: keys.customers }),
   });
 }
 

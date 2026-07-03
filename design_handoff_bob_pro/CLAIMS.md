@@ -900,7 +900,7 @@
 ## Transverse
 
 ### C40 — Contrats d'API réels + parité agent complète <!-- kind: package -->
-- status: IN-BUILD
+- status: MERGED
 - owner: claude-code (builder) · reviewer: gpt5pro (a posteriori)
 - depends-on: C02, C15 (audit), C20 (registre extensible) · directive humaine PROD 100 % [14:50]
 - target: packages/api-client + packages/ai + apps/mobile/src/data (apps/api INTERDIT — endpoints existants)
@@ -932,6 +932,19 @@
   validation connectée sur simulateur nécessite un LOGIN (saisie) — accessibilité macOS toujours refusée :
   soit l'humain l'autorise (Réglages → Confidentialité → Accessibilité), soit il tape le login démo une
   fois sur le simulateur ; sinon la checklist prod sera validée via les tests HTTP + preuves API.
+- [15:58] claude-code HANDOFF+MERGE (régime humain): chemin de prod livré — BobClient expose askBob/
+  confirmBob/getRunJournal sur les endpoints serveur EXISTANTS (DTO constatés : AgentRun/PendingAction/
+  JournalEntry de @bob/ai des deux côtés → mapping 1:1 avec l'écran C15, zéro adaptation UI) ; en mode HTTP
+  l'assistant est journalisé SERVEUR (autonomie clampée par l'offre), en Local l'agent est hébergé on-device
+  avec journal lisible (InMemoryJournalStore) — TODO ⑧ FAIT côté client, GAP serveur documenté (1 ligne :
+  exposer runId dans la réponse confirm — apps/api hors périmètre, à passer à Codex/session api). TODO ⑤⑥⑦
+  FAITS (generer_facture fiscal+safetyFloor, export_fec accounting, intent diagnostic → navigate /diagnostic
+  sans toucher l'écran C15). CRÉER CLIENT FAIT de bout en bout : POST /customers constaté → client HTTP/Local
+  + useCreateCustomer + Sheet « nouveau client » (C12 : +/Fab/empty-state) + outil agent creer_client (draft)
+  — un seul point d'entrée humain↔Bob. i18n +8 clés clients.create*. Validations : api-client 24/24 ·
+  ai 146/146 · core 316/316 · i18n 33/33 · typecheck 16/16. Restes : validation connectée simulateur (login
+  humain ou accessibilité) — preuves API curl en cours ; registre d'outils optionnels côté SERVEUR (BackendService)
+  = TODO apps/api. status=MERGED.
 
 ### C41 — A11y / états / tests / sweep parité <!-- kind: package -->
 - status: OPEN · depends-on: (tous les écrans) · spec: CLAUDE_CODE_PROMPTS.md Phase 7
@@ -953,6 +966,6 @@
 | C13 | MERGED | claude-code | gpt5pro | Fiche validée simulateur 08:47, review a posteriori. |
 | C15 | MERGED | claude-code | gpt5pro | Chat sur agent réel validé 11:10 ; audit parité : 9 OK / 8 TODO (① journal on-device prioritaire). |
 | C20 | MERGED | claude-code | gpt5pro | Flux 3 étapes validé 13:26 ; TODO parité ③④ résolus. |
-| C40 | IN-BUILD | claude-code | gpt5pro | Chemin PROD : journal on-device + outils agent + validation connectée — contrat 14:52. |
+| C40 | MERGED | claude-code | gpt5pro | Livré 15:58 : ask/confirm/journal + ⑤⑥⑦ + créer client. Gap serveur runId → Codex. |
 | C21 | IN-BUILD | claude-code | gpt5pro | Flux devis 6 étapes + Stepper/SignaturePad — contrat 14:58, parallèle C40. |
 | C16–C41 | OPEN | — | — | C16 dès les réfs C21 ; web C30 différé. |

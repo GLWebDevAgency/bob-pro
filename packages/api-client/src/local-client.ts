@@ -1,4 +1,19 @@
 import {
+  BobAgent,
+  ModelRouter,
+  InMemoryJournalStore,
+  pendingToInvocations,
+  type BobActions,
+  type AgentRun,
+  type AgentAutonomy,
+  type PendingAction,
+  type JournalEntry,
+  type PayableInvoice,
+  type SendableQuote,
+  type IssuableInvoice,
+  type AgentDocument,
+} from '@bob/ai';
+import {
   CreateQuote,
   SendQuote,
   SignQuote,
@@ -35,10 +50,15 @@ import {
   AutofillCompanyFromSiret,
   ValidateVatNumber,
   SearchAddress,
+  Customer,
+  buildRelance,
   ok,
   err,
   appNotFound,
+  appForbidden,
+  appDomain,
   type ClockPort,
+  type IdGeneratorPort,
   type CreateQuoteInput,
   type IssueInvoiceInput,
   type Quote,
@@ -96,10 +116,14 @@ import type {
   PaymentAccountingPreview,
   AccountingEntryView,
   ClassifyDocumentClientInput,
+  AskBobClientInput,
+  CreateCustomerClientInput,
 } from './client';
 
 export interface LocalBobClientOptions {
   clock?: ClockPort;
+  /** Générateur d'ids injectable (tests déterministes — ex. journal d'agent rejouable). */
+  ids?: IdGeneratorPort;
 }
 
 function base64ByteSize(contentBase64: string): number {
@@ -128,6 +152,17 @@ function addYears(date: string, years: number): string {
   return d.toISOString().slice(0, 10);
 }
 
+// —— Assistant local (C40 ⑧, parité serveur) ——————————————————————————————————
+const PAYABLE_STATUSES = new Set(['issued', 'partially_paid', 'late']);
+const SENDABLE_QUOTE_STATUSES = new Set(['draft', 'sent', 'viewed']);
+
+/** Clamp d'autonomie identique au serveur (apps/api ai/autonomy-entitlements) : jamais au-delà de l'offre. */
+const AUTONOMY_RANK: Record<AgentAutonomy, number> = { confirm_all: 0, confirm_outbound: 1, auto: 2 };
+function clampAutonomy(requested: AgentAutonomy | undefined, entitlement: AgentAutonomy): AgentAutonomy {
+  const desired = requested ?? entitlement;
+  return AUTONOMY_RANK[desired] <= AUTONOMY_RANK[entitlement] ? desired : entitlement;
+}
+
 /** Implémentation locale (hors-ligne, fixtures) de BobClient : exécute les use cases du domaine en mémoire. */
 export class LocalBobClient implements BobClient {
   readonly companyId: string;
@@ -138,7 +173,7 @@ export class LocalBobClient implements BobClient {
   private readonly invoices = new InMemoryInvoiceRepository();
   private readonly payments = new InMemoryPaymentRepository();
   private readonly publicAccessTokens = new InMemoryPublicAccessTokenRepository();
-  private readonly ids = new CounterIdGenerator();
+  private readonly ids: IdGeneratorPort;
   private readonly ocr: DemoOcrAdapter;
   private readonly expenses = new InMemoryExpenseRepository();
   private readonly chantiers = new InMemoryChantierRepository();
@@ -164,6 +199,9 @@ export class LocalBobClient implements BobClient {
   private readonly counters = new InMemorySequenceCounter();
   private readonly clock: ClockPort;
   private readonly snapshots: FixtureCashflowSnapshot;
+  // Assistant local (C40 ⑧) : journal append-only en mémoire + agent @bob/ai instancié à la demande.
+  private readonly journal = new InMemoryJournalStore();
+  private agent: BobAgent | null = null;
 
   constructor(opts?: LocalBobClientOptions) {
     const company = seedCompany();
@@ -171,6 +209,7 @@ export class LocalBobClient implements BobClient {
     this.companies.seed(company);
     this.customers.seed(seedCustomers());
     this.clock = opts?.clock ?? new SystemClock();
+    this.ids = opts?.ids ?? new CounterIdGenerator();
     this.ocr = new DemoOcrAdapter(this.clock);
     this.snapshots = new FixtureCashflowSnapshot(CASH_SNAPSHOT);
     const chart = createFrenchOperationalChartOfAccounts(this.companyId);
@@ -207,6 +246,7 @@ export class LocalBobClient implements BobClient {
       parentQuoteId: i.parentQuoteId,
       totals: i.totals(),
       mentions: [...i.mentions],
+      lines: i.lines.map((l) => ({ ...l })),
       dueAt: i.dueAt,
       paid: i.paid,
     };
@@ -409,6 +449,15 @@ export class LocalBobClient implements BobClient {
     return new ListCustomers({ customers: this.customers }).execute({ companyId: this.companyId });
   }
 
+  /** Crée une fiche client — même chemin que POST /customers côté serveur (Customer.of + save). */
+  async createCustomer(input: CreateCustomerClientInput): Promise<Result<{ id: string }, AppError>> {
+    const id = this.ids.newId();
+    const r = Customer.of({ id, companyId: this.companyId, ...input });
+    if (!r.ok) return err(appDomain(r.error));
+    await this.customers.save(r.value);
+    return ok({ id });
+  }
+
   async getCashflow(input: { scenario: Scenario; horizon: Horizon }): Promise<Result<CashflowProjection, AppError>> {
     return new GetCashflow({ snapshots: this.snapshots, expenses: this.expenses }).execute({ companyId: this.companyId, ...input });
   }
@@ -599,5 +648,193 @@ export class LocalBobClient implements BobClient {
       entries: this.accountingEntries,
       charts: this.chartOfAccounts,
     }).execute({ companyId: this.companyId, ...input });
+  }
+
+  // ── Assistant Bob local (C40 ⑧) — équivalent on-device du chemin serveur /ai ──────────────────
+  // MÊME surface d'actions que le serveur (parité : chaque outil délègue à un use case ci-dessus),
+  // MÊMES capacités optionnelles que le mobile (creer_devis, scan_depense, generer_facture,
+  // export_fec, creer_client) — le mode démo exerce tout le registre.
+
+  /** Autonomie maximale de l'offre locale (démo = business, aligné sur getSubscription). */
+  private autonomyEntitlement(): AgentAutonomy {
+    return resolveAutonomyEntitlement('business') as AgentAutonomy;
+  }
+
+  private bobActions(): BobActions {
+    return {
+      computePayout: async () => {
+        const r = await this.getCashflow({ scenario: 'realiste', horizon: 30 });
+        if (!r.ok) return r;
+        return ok({ payoutCents: r.value.payout, availableCents: r.value.available });
+      },
+      draftRelance: async () => {
+        const r = await this.listCustomers();
+        if (!r.ok) return r;
+        const top = [...r.value].filter((c) => c.outstanding > 0).sort((a, b) => b.outstanding - a.outstanding)[0];
+        const draft = buildRelance({
+          customerName: top?.name ?? 'le client',
+          docNumber: 'dernière facture',
+          amountCents: top?.outstanding ?? 0,
+          daysLate: 7,
+          tone: 'cordial',
+          personality: 'Pote',
+        });
+        return ok({ subject: draft.subject, body: draft.body });
+      },
+      listPayableInvoices: async () => {
+        const [inv, cust] = await Promise.all([this.listInvoices(), this.listCustomers()]);
+        if (!inv.ok) return inv;
+        const names = new Map((cust.ok ? cust.value : []).map((c) => [c.id, c.name]));
+        const payable: PayableInvoice[] = inv.value
+          .filter((i) => PAYABLE_STATUSES.has(i.status) && i.number)
+          .map((i) => ({
+            id: i.id,
+            number: i.number ?? i.id,
+            remainingCents: Math.max(0, i.totals.netToPay - i.paid),
+            customerName: names.get(i.customerId) ?? 'Client',
+          }))
+          .filter((i) => i.remainingCents > 0);
+        return ok(payable);
+      },
+      listSendableQuotes: async () => {
+        const [q, cust] = await Promise.all([this.listQuotes(), this.listCustomers()]);
+        if (!q.ok) return q;
+        const names = new Map((cust.ok ? cust.value : []).map((c) => [c.id, c.name]));
+        const quotes: SendableQuote[] = q.value
+          .filter((x) => SENDABLE_QUOTE_STATUSES.has(x.status))
+          .map((x) => ({
+            id: x.id,
+            number: x.number,
+            customerName: names.get(x.customerId) ?? 'Client',
+            totalTtcCents: x.totals.ttc,
+            status: x.status,
+          }));
+        return ok(quotes);
+      },
+      listIssuableInvoices: async () => {
+        const [inv, cust] = await Promise.all([this.listInvoices(), this.listCustomers()]);
+        if (!inv.ok) return inv;
+        const names = new Map((cust.ok ? cust.value : []).map((c) => [c.id, c.name]));
+        const invoices: IssuableInvoice[] = inv.value
+          .filter((x) => x.status === 'draft')
+          .map((x) => ({
+            id: x.id,
+            number: x.number,
+            customerName: names.get(x.customerId) ?? 'Client',
+            totalTtcCents: x.totals.ttc,
+            status: x.status,
+          }));
+        return ok(invoices);
+      },
+      listDocuments: async () => {
+        const r = await this.listDocuments();
+        if (!r.ok) return r;
+        const docs: AgentDocument[] = r.value.slice(0, 12).map((d) => ({
+          id: d.id,
+          filename: d.filename,
+          kind: d.kind,
+          linkedEntityType: d.linkedEntityType,
+          linkedEntityId: d.linkedEntityId,
+          createdAt: d.createdAt,
+        }));
+        return ok(docs);
+      },
+      registerPayment: async (input) =>
+        this.registerPayment({
+          invoiceId: input.invoiceId,
+          amount: input.amountCents,
+          method: 'transfer',
+          idempotencyKey: input.idempotencyKey ?? `local-bob:payment:${input.invoiceId}:${input.amountCents}:transfer`,
+        }),
+      sendQuote: async (input) => this.sendQuote(input.quoteId),
+      issueInvoice: async (input) => this.issueInvoice({ invoiceId: input.invoiceId }),
+      // —— Capacités optionnelles (C20 ③④ + C40 ⑤⑥ + creer_client) ——
+      createQuote: async (input) => {
+        const r = await this.createQuote({
+          customerId: input.customerId,
+          lines: input.lines,
+          ...(input.depositPct !== undefined ? { depositPct: input.depositPct } : {}),
+        });
+        if (!r.ok) return r;
+        return ok({ quoteId: r.value.quoteId });
+      },
+      recordExpense: async (input) =>
+        this.recordExpense({
+          supplierName: input.supplierName,
+          documentDate: input.documentDate ?? this.clock.today(),
+          totalTtcCents: input.totalTtcCents,
+          category: input.category,
+          vatRatePct: input.vatRatePct ?? null,
+          source: 'manual',
+        }),
+      generateInvoice: async (input) =>
+        this.generateInvoice({ quoteId: input.quoteId, ...(input.mode !== undefined ? { mode: input.mode } : {}) }),
+      exportFec: async (input) => {
+        const r = await this.exportFec(input);
+        if (!r.ok) return r;
+        return ok({
+          filename: r.value.filename,
+          entryCount: r.value.entryCount,
+          rowCount: r.value.rowCount,
+          warnings: [...r.value.warnings],
+        });
+      },
+      createCustomer: async (input) =>
+        // Défauts neutres d'une fiche minimale : adresse à compléter, aucun historique (score 100, encours 0).
+        this.createCustomer({
+          name: input.name,
+          type: input.type,
+          address: { line1: '', zip: '', city: '' },
+          score: 100,
+          avgDelayDays: 0,
+          outstanding: 0,
+        }),
+    };
+  }
+
+  /** Agent local, journalisé en mémoire — même construction que le serveur (runtime clock+ids+store). */
+  private bobAgent(): BobAgent {
+    if (!this.agent) {
+      this.agent = new BobAgent({
+        router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }),
+        actions: this.bobActions(),
+        runtime: { clock: this.clock, ids: this.ids, store: this.journal },
+      });
+    }
+    return this.agent;
+  }
+
+  /** POST /ai/ask local : autonomie demandée clampée par l'offre, comme le serveur. */
+  async askBob(input: AskBobClientInput): Promise<Result<AgentRun, AppError>> {
+    const autonomy = clampAutonomy(input.autonomy, this.autonomyEntitlement());
+    return this.bobAgent().ask(input.message, { autonomy });
+  }
+
+  /** POST /ai/confirm local : exécution JOURNALISÉE (append-only) — mêmes sémantiques que le serveur. */
+  async confirmBob(pending: PendingAction): Promise<Result<AgentRun, AppError>> {
+    const record = await this.bobAgent().runJournaled(pendingToInvocations(pending), {
+      autonomy: this.autonomyEntitlement(),
+    });
+    const blocked = record.outcomes.find((o) => o.status === 'denied' || o.status === 'failed');
+    if (blocked) {
+      if (blocked.status === 'denied') return err(appForbidden(blocked.reason ?? 'Action refusée par la policy.'));
+      return err({ kind: 'dependency', port: 'agent-runtime', cause: blocked.reason ?? 'agent execution failed' });
+    }
+    const isBatch = pending.batch !== undefined && pending.batch.length > 0;
+    return ok({
+      kind: 'done',
+      intent: 'encaisser',
+      model: 'agent-runtime',
+      plan: record.outcomes.map((o) => o.label),
+      card: {
+        title: 'Fait ✓',
+        body: isBatch ? record.outcomes.map((o) => `✓ ${o.label}`).join('\n') : `${pending.label} — c’est noté.`,
+      },
+    });
+  }
+
+  /** GET /ai/runs/:runId/journal local : entrées d'audit du run (journal mémoire append-only). */
+  async getRunJournal(runId: string): Promise<Result<JournalEntry[], AppError>> {
+    return ok(await this.journal.load(runId));
   }
 }

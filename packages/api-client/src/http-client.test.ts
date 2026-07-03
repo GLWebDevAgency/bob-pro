@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { AgentRun, JournalEntry, PendingAction } from '@bob/ai';
 import { HttpBobClient } from './http-client';
 
 describe('HttpBobClient', () => {
@@ -131,5 +132,163 @@ describe('HttpBobClient', () => {
 
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.value).toEqual(defaults);
+  });
+});
+
+describe('HttpBobClient — assistant Bob (C40 ⑧ : ask/confirm/journal serveur)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const proposedRun: AgentRun = {
+    kind: 'proposed',
+    intent: 'encaisser',
+    model: 'demo',
+    plan: ['Identifier la facture', 'Préparer l’encaissement', 'Attendre ta confirmation'],
+    card: { title: 'Encaissement à confirmer', body: 'Encaisser 2026-014 · 1 320,00 € (Durand)\nJe valide ?' },
+    pending: {
+      tool: 'encaisser_facture',
+      args: { invoiceId: 'inv-1', amountCents: 132000 },
+      label: 'Encaisser 2026-014 · 1 320,00 € (Durand)',
+    },
+  };
+
+  it('askBob POSTe /ai/ask (message + autonomie demandée) et rend l’AgentRun du serveur tel quel', async () => {
+    const fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      if (url === 'https://api.bob.test/ai/ask') {
+        expect(init?.method).toBe('POST');
+        const headers = init?.headers as Record<string, string>;
+        expect(headers['x-company-id']).toBe('company-mercier');
+        expect(headers.authorization).toBe('Bearer test-token');
+        expect(JSON.parse(String(init?.body))).toEqual({ message: 'encaisse la facture 2026-014', autonomy: 'confirm_all' });
+        return new Response(JSON.stringify(proposedRun), { headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ error: { kind: 'not_found', resource: 'route' } }), { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-mercier', getToken: async () => 'test-token' });
+    const r = await client.askBob({ message: 'encaisse la facture 2026-014', autonomy: 'confirm_all' });
+
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(r.value).toEqual(proposedRun);
+    expect(r.value.pending?.tool).toBe('encaisser_facture'); // rejouable tel quel via confirmBob
+  });
+
+  it('confirmBob POSTe la PendingAction telle quelle sur /ai/confirm et rend le run « done »', async () => {
+    const doneRun: AgentRun = {
+      kind: 'done',
+      intent: 'encaisser',
+      model: 'agent-runtime',
+      plan: ['Encaisser 2026-014 · 1 320,00 € (Durand)'],
+      card: { title: 'Fait ✓', body: 'Encaisser 2026-014 · 1 320,00 € (Durand) — c’est noté.' },
+    };
+    const pending: PendingAction = proposedRun.pending!;
+    const fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      if (url === 'https://api.bob.test/ai/confirm') {
+        expect(init?.method).toBe('POST');
+        expect(JSON.parse(String(init?.body))).toEqual(pending);
+        return new Response(JSON.stringify(doneRun), { headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ error: { kind: 'not_found', resource: 'route' } }), { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-mercier' });
+    const r = await client.confirmBob(pending);
+
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value).toEqual(doneRun);
+  });
+
+  it('confirmBob remonte l’AppError du serveur (garde-fou/paywall) sans la maquiller', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ ok: false, error: { kind: 'forbidden', reason: "L'assistant Bob est inclus à partir de l'offre Solo." } }), {
+          status: 403,
+          headers: { 'content-type': 'application/json' },
+        }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-mercier' });
+    const r = await client.confirmBob(proposedRun.pending!);
+
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toEqual({ kind: 'forbidden', reason: "L'assistant Bob est inclus à partir de l'offre Solo." });
+  });
+
+  it('getRunJournal lit GET /ai/runs/:runId/journal (audit append-only company-scoped)', async () => {
+    const entries: JournalEntry[] = [
+      {
+        seq: 1,
+        runId: 'run-7',
+        at: '2026-07-03T10:00:00.000Z',
+        phase: 'planned',
+        tool: 'encaisser_facture',
+        label: 'Encaisser 2026-014',
+        args: { invoiceId: 'inv-1', amountCents: 132000 },
+        mutating: true,
+        outbound: false,
+        compliance: 'medium',
+      },
+      {
+        seq: 2,
+        runId: 'run-7',
+        at: '2026-07-03T10:00:00.100Z',
+        phase: 'executed',
+        tool: 'encaisser_facture',
+        label: 'Encaisser 2026-014',
+        args: { invoiceId: 'inv-1', amountCents: 132000 },
+        mutating: true,
+        outbound: false,
+        compliance: 'medium',
+        resultDigest: 'status=paid',
+      },
+    ];
+    const fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      if (url === 'https://api.bob.test/ai/runs/run-7/journal') {
+        expect(init?.method).toBe('GET');
+        return new Response(JSON.stringify(entries), { headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ error: { kind: 'not_found', resource: 'route' } }), { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-mercier' });
+    const r = await client.getRunJournal('run-7');
+
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value).toEqual(entries);
+  });
+
+  it('createCustomer POSTe /customers (DTO CustomersController) et rend l’id créé', async () => {
+    const input = {
+      name: 'Mme Nguyen',
+      type: 'b2c' as const,
+      address: { line1: '4 rue Basse', zip: '92310', city: 'Sèvres' },
+      score: 100,
+      avgDelayDays: 0,
+      outstanding: 0,
+    };
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      if (String(url) === 'https://api.bob.test/customers' && init?.method === 'POST') {
+        expect(JSON.parse(String(init?.body))).toEqual(input);
+        return new Response(JSON.stringify({ id: 'cust-42' }), { headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ error: { kind: 'not_found', resource: 'route' } }), { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-mercier' });
+    const r = await client.createCustomer(input);
+
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value).toEqual({ id: 'cust-42' });
   });
 });

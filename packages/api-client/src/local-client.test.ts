@@ -1,9 +1,21 @@
 import { describe, it, expect } from 'vitest';
+import type { JournalEntry } from '@bob/ai';
 import { LocalBobClient } from './local-client';
 import { FixtureClock } from './in-memory/services';
 
 function makeClient(): LocalBobClient {
   return new LocalBobClient({ clock: new FixtureClock('2026-06-01') });
+}
+
+/** Ids déterministes (id-1, id-2, …) — rend le journal d'agent sondable dans les tests. */
+function seqIds() {
+  let n = 0;
+  return {
+    newId: () => {
+      n += 1;
+      return `id-${n}`;
+    },
+  };
 }
 
 describe('LocalBobClient (couche data hors-ligne)', () => {
@@ -243,6 +255,103 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     const url = await client.documentDownloadUrl(uploaded.value.id, 120);
     expect(url.ok).toBe(true);
     if (url.ok) expect(url.value.url).toContain('ttl=120');
+  });
+});
+
+describe('assistant Bob local (C40 ⑧ — ask/confirm/journal on-device) + créer client', () => {
+  it('crée une fiche client minimale et la liste (même use case que le « + » de C12)', async () => {
+    const client = makeClient();
+    const created = await client.createCustomer({
+      name: 'Mme Nguyen',
+      type: 'b2c',
+      address: { line1: '', zip: '', city: '' },
+      score: 100,
+      avgDelayDays: 0,
+      outstanding: 0,
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const list = await client.listCustomers();
+    expect(list.ok).toBe(true);
+    if (!list.ok) return;
+    expect(list.value).toHaveLength(7);
+    expect(list.value.find((c) => c.id === created.value.id)).toMatchObject({ name: 'Mme Nguyen', type: 'b2c' });
+  });
+
+  it('refuse un score hors domaine (Customer.of fait foi, comme le serveur)', async () => {
+    const r = await makeClient().createCustomer({
+      name: 'M. Hors-Borne',
+      type: 'b2c',
+      address: { line1: '', zip: '', city: '' },
+      score: 250,
+      avgDelayDays: 0,
+      outstanding: 0,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.kind).toBe('domain');
+  });
+
+  it('askBob propose (plancher) puis confirmBob exécute EN JOURNALISANT — le journal est lisible on-device', async () => {
+    const client = new LocalBobClient({ clock: new FixtureClock('2026-06-01'), ids: seqIds() });
+
+    // Pièce réelle : devis signé -> facture émise F-2026-0001 (chaîne de use cases, zéro fixture).
+    const created = await client.createQuote({
+      customerId: 'cust-martin',
+      lines: [{ label: 'Recherche fuite', category: 'labor', qty: 1, unitPriceHT: 12000, vatRate: 10 }],
+      context: { housingOlderThan2y: true },
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    expect((await client.sendQuote(created.value.quoteId)).ok).toBe(true);
+    expect((await client.signQuote({ quoteId: created.value.quoteId, signerName: 'M. Martin' })).ok).toBe(true);
+    const gen = await client.generateInvoice({ quoteId: created.value.quoteId });
+    expect(gen.ok).toBe(true);
+    if (!gen.ok) return;
+    expect((await client.issueInvoice({ invoiceId: gen.value.invoiceId })).ok).toBe(true);
+
+    // ask : action sensible -> TOUJOURS proposée (plancher comptable), même avec l'autonomie max locale.
+    const asked = await client.askBob({ message: 'encaisse la facture F-2026-0001', autonomy: 'auto' });
+    expect(asked.ok).toBe(true);
+    if (!asked.ok) return;
+    expect(asked.value.kind).toBe('proposed');
+    expect(asked.value.pending?.tool).toBe('encaisser_facture');
+    expect(asked.value.pending?.args).toMatchObject({ invoiceId: gen.value.invoiceId, amountCents: 13200 });
+
+    // confirm : exécution réelle via le runtime journalisé — la facture passe payée.
+    const confirmed = await client.confirmBob(asked.value.pending!);
+    expect(confirmed.ok).toBe(true);
+    if (!confirmed.ok) return;
+    expect(confirmed.value.kind).toBe('done');
+    expect(confirmed.value.card.title).toBe('Fait ✓');
+    const paid = await client.getInvoice(gen.value.invoiceId);
+    expect(paid.ok && paid.value.status).toBe('paid');
+
+    // journal : append-only, lisible via getRunJournal (ids déterministes -> on sonde les runs candidats).
+    const entries: JournalEntry[] = [];
+    for (let n = 1; n <= 12; n += 1) {
+      const r = await client.getRunJournal(`id-${n}`);
+      if (r.ok) entries.push(...r.value);
+    }
+    const run = entries.filter((e) => e.tool === 'encaisser_facture');
+    expect(run.map((e) => e.phase)).toEqual(['planned', 'executed']);
+    expect(run[0]?.args).toMatchObject({ invoiceId: gen.value.invoiceId });
+    expect(run[1]?.resultDigest).toContain('status=paid');
+    expect(new Set(run.map((e) => e.runId)).size).toBe(1); // même run, seq monotone
+    expect(run.map((e) => e.seq)).toEqual([1, 2]);
+  });
+
+  it('getRunJournal d’un run inconnu rend une liste vide (parité serveur)', async () => {
+    const r = await makeClient().getRunJournal('run-inconnu');
+    expect(r.ok && r.value).toEqual([]);
+  });
+
+  it('« Prêt pour 2026 ? » -> navigation /diagnostic à travers l’adaptateur local (C40 ⑦)', async () => {
+    const r = await makeClient().askBob({ message: 'Prêt pour 2026 ?' });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.intent).toBe('diagnostic');
+    expect(r.value.navigate).toBe('/diagnostic');
   });
 });
 

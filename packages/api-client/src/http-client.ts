@@ -1,3 +1,4 @@
+import type { AgentRun, JournalEntry, PendingAction } from '@bob/ai';
 import type {
   Result,
   AppError,
@@ -44,6 +45,8 @@ import type {
   ExportFecClientInput,
   ExportFecClientOutput,
   ClassifyDocumentClientInput,
+  AskBobClientInput,
+  CreateCustomerClientInput,
 } from './client';
 
 export interface HttpBobClientOptions {
@@ -202,6 +205,19 @@ export class HttpBobClient implements BobClient {
   }
   listCustomers() {
     return this.req<CustomerListItem[]>('GET', '/customers');
+  }
+  createCustomer(input: CreateCustomerClientInput) {
+    return this.req<{ id: string }>('POST', '/customers', input);
+  }
+  // —— Assistant Bob (C40 ⑧) : l'agent tourne CÔTÉ SERVEUR — journal company-scoped, autonomie clampée ——
+  askBob(input: AskBobClientInput) {
+    return this.req<AgentRun>('POST', '/ai/ask', input);
+  }
+  confirmBob(pending: PendingAction) {
+    return this.req<AgentRun>('POST', '/ai/confirm', pending);
+  }
+  getRunJournal(runId: string) {
+    return this.req<JournalEntry[]>('GET', `/ai/runs/${encodeURIComponent(runId)}/journal`);
   }
   getCashflow(input: { scenario: Scenario; horizon: Horizon }) {
     return this.req<CashflowProjection>(

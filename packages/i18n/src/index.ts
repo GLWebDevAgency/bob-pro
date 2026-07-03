@@ -579,6 +579,48 @@ const fr = {
     pro: 'Impossible de charger vos clients pour le moment. Veuillez réessayer dans un instant.',
     direct: 'Carnet injoignable. Réessaie.',
   },
+  // Feuille « créer un client » (C40, TODO partagé C12) — création MINIMALE : nom + type,
+  // le reste se complète sur la fiche. Même use case createCustomer que l'outil agent creer_client.
+  'clients.createTitle': {
+    pote: 'Nouveau client',
+    pro: 'Nouveau client',
+    direct: 'Nouveau client',
+  },
+  'clients.createHint': {
+    pote: 'Juste le nom et le type — le reste, on complétera sur sa fiche.',
+    pro: 'Renseignez le nom et le type ; les autres informations pourront être complétées sur la fiche.',
+    direct: 'Nom + type. Le reste après.',
+  },
+  'clients.createNameLabel': {
+    pote: 'Nom',
+    pro: 'Nom',
+    direct: 'Nom',
+  },
+  'clients.createNamePlaceholder': {
+    pote: 'Mme Durand, SARL Martin…',
+    pro: 'Nom du client ou de l’entreprise',
+    direct: 'Nom du client',
+  },
+  'clients.createTypeLabel': {
+    pote: 'C’est qui ?',
+    pro: 'Type de client',
+    direct: 'Type',
+  },
+  'clients.createSubmit': {
+    pote: 'Ajouter au carnet',
+    pro: 'Créer le client',
+    direct: 'Créer',
+  },
+  'clients.createSuccess': {
+    pote: '{name} est dans ton carnet ✓',
+    pro: '{name} a été ajouté à votre carnet.',
+    direct: '{name} créé.',
+  },
+  'clients.createError': {
+    pote: 'Je n’ai pas réussi à créer la fiche. On réessaie ?',
+    pro: 'La création du client a échoué. Veuillez réessayer.',
+    direct: 'Création impossible. Réessaie.',
+  },
 
   // ── C13 — écran « Fiche client » ─────────────────────────────────────────────
   // Barre retour + menu « … » (no-op accessible, menu TODO).
@@ -1531,6 +1573,422 @@ const fr = {
     pote: 'L’action a échoué — rien n’est perdu, on réessaie ?',
     pro: 'L’action a échoué. Veuillez réessayer.',
     direct: 'Raté. Réessaie.',
+  },
+
+  // ── C21 — flux « Devis → signature → facture » ───────────────────────────────
+  // Chrome du flux (modal 6 étapes piloté par @bob/core flows/devis).
+  'devis.title': {
+    pote: 'Nouveau devis',
+    pro: 'Nouveau devis',
+    direct: 'Nouveau devis',
+  },
+  'devis.close': {
+    pote: 'Fermer',
+    pro: 'Fermer',
+    direct: 'Fermer',
+  },
+  'devis.back': {
+    pote: 'Retour',
+    pro: 'Retour',
+    direct: 'Retour',
+  },
+  'devis.next': {
+    pote: 'Continuer',
+    pro: 'Continuer',
+    direct: 'Suite',
+  },
+  // Titres des 6 étapes de la machine (client → lignes → TVA/mentions → signature → acompte → facture).
+  'devis.stepClient': {
+    pote: 'Le client',
+    pro: 'Le client',
+    direct: 'Client',
+  },
+  'devis.stepLines': {
+    pote: 'Les prestations',
+    pro: 'Les prestations',
+    direct: 'Prestations',
+  },
+  'devis.stepVat': {
+    pote: 'TVA & mentions',
+    pro: 'TVA & mentions',
+    direct: 'TVA & mentions',
+  },
+  'devis.stepSignature': {
+    pote: 'Signature',
+    pro: 'Signature',
+    direct: 'Signature',
+  },
+  'devis.stepDeposit': {
+    pote: 'Acompte',
+    pro: 'Acompte',
+    direct: 'Acompte',
+  },
+  'devis.stepInvoice': {
+    pote: 'La facture',
+    pro: 'La facture',
+    direct: 'Facture',
+  },
+  // Étape 1 — client (liste réelle, sélection).
+  'devis.clientTitle': {
+    pote: 'C’est pour qui ?',
+    pro: 'Pour quel client ?',
+    direct: 'Le client ?',
+  },
+  'devis.clientSub': {
+    pote: 'Choisis le client — je remplis le reste du devis.',
+    pro: 'Sélectionnez le client : le devis se complète ensuite.',
+    direct: 'Choisis. Je remplis.',
+  },
+  'devis.noCustomers': {
+    pote: 'Ton carnet est vide — ajoute d’abord un client depuis l’onglet Clients.',
+    pro: 'Votre carnet est vide. Créez d’abord un client depuis l’onglet Clients.',
+    direct: 'Carnet vide. Ajoute un client d’abord.',
+  },
+  // Étape 2 — lignes (saisie libre : libellé, qté, PU HT, catégorie ; TVA suggérée).
+  'devis.linesTitle': {
+    pote: 'Qu’est-ce qu’on facture ?',
+    pro: 'Détaillez les prestations',
+    direct: 'Les lignes.',
+  },
+  'devis.linesSub': {
+    pote: 'Ajoute tes prestations — les totaux se calculent tout seuls.',
+    pro: 'Ajoutez vos prestations : les totaux se calculent automatiquement.',
+    direct: 'Ajoute. Je calcule.',
+  },
+  'devis.lineLabelPlaceholder': {
+    pote: 'Prestation (ex. chauffe-eau 200 L posé)',
+    pro: 'Prestation (ex. chauffe-eau 200 L posé)',
+    direct: 'Prestation…',
+  },
+  'devis.qtyLabel': {
+    pote: 'Qté',
+    pro: 'Qté',
+    direct: 'Qté',
+  },
+  'devis.unitPriceLabel': {
+    pote: 'PU HT (€)',
+    pro: 'PU HT (€)',
+    direct: 'PU HT (€)',
+  },
+  'devis.addLine': {
+    pote: 'Ajouter la ligne',
+    pro: 'Ajouter la ligne',
+    direct: 'Ajouter',
+  },
+  'devis.removeLine': {
+    pote: 'Retirer {label}',
+    pro: 'Retirer {label}',
+    direct: 'Retirer {label}',
+  },
+  'devis.linesEmpty': {
+    pote: 'Aucune ligne pour l’instant — ajoute ta première prestation juste au-dessus.',
+    pro: 'Aucune ligne pour le moment. Ajoutez votre première prestation ci-dessus.',
+    direct: 'Zéro ligne. Ajoute.',
+  },
+  'devis.vatSuggested': {
+    pote: 'TVA suggérée : {rate} %',
+    pro: 'TVA suggérée : {rate} %',
+    direct: 'TVA suggérée : {rate} %',
+  },
+  'devis.totalHt': {
+    pote: 'Total HT',
+    pro: 'Total HT',
+    direct: 'Total HT',
+  },
+  'devis.vatRate': {
+    pote: 'TVA {rate} %',
+    pro: 'TVA {rate} %',
+    direct: 'TVA {rate} %',
+  },
+  'devis.totalTtc': {
+    pote: 'Total TTC',
+    pro: 'Total TTC',
+    direct: 'Total TTC',
+  },
+  // Étape 3 — TVA & mentions (contexte logement → taux, mentions ajoutées à la génération).
+  'devis.vatTitle': {
+    pote: 'La bonne TVA, sans te tromper',
+    pro: 'Le taux de TVA adapté',
+    direct: 'La TVA.',
+  },
+  'devis.vatSub': {
+    pote: 'Dis-moi le contexte du chantier — j’applique le bon taux partout.',
+    pro: 'Indiquez le contexte du chantier : le taux s’applique à tout le devis.',
+    direct: 'Le contexte. J’applique.',
+  },
+  'devis.vatStandard': {
+    pote: 'Taux normal — 20 %',
+    pro: 'Taux normal — 20 %',
+    direct: 'Normal — 20 %',
+  },
+  'devis.vatHousing': {
+    pote: 'Logement de plus de 2 ans — 10 %',
+    pro: 'Logement de plus de 2 ans — 10 %',
+    direct: 'Logement > 2 ans — 10 %',
+  },
+  'devis.vatEnergy': {
+    pote: 'Rénovation énergétique — 5,5 %',
+    pro: 'Rénovation énergétique — 5,5 %',
+    direct: 'Réno énergétique — 5,5 %',
+  },
+  'devis.vatHint': {
+    pote: 'Je mets tout le devis à {rate} % — et je revérifie le taux au moment de générer (franchise, autoliquidation).',
+    pro: 'Le devis passe à {rate} %. Le taux est revérifié à la génération (franchise, autoliquidation).',
+    direct: 'Tout à {rate} %. Revérifié à la génération.',
+  },
+  'devis.mentionsTitle': {
+    pote: 'Mentions légales ajoutées',
+    pro: 'Mentions légales ajoutées',
+    direct: 'Mentions légales',
+  },
+  'devis.mentionsBody': {
+    pote: 'Devis gratuit · validité · pénalités de retard (L441-10) · décennale si BTP · bon pour accord. J’ajoute tout à la génération.',
+    pro: 'Devis gratuit · validité · pénalités de retard (art. L441-10) · assurance décennale le cas échéant · bon pour accord. Ajoutées automatiquement à la génération.',
+    direct: 'Gratuit · validité · L441-10 · décennale · bon pour accord. Ajoutées auto.',
+  },
+  // Étape 4 — signature au doigt (SignaturePad) + nom du signataire.
+  'devis.signTitle': {
+    pote: 'Fais signer ton client ici',
+    pro: 'Faites signer votre client ici',
+    direct: 'Signature client.',
+  },
+  'devis.signSub': {
+    pote: 'Bon pour accord — il signe du doigt, direct sur ton téléphone.',
+    pro: 'Bon pour accord — signature au doigt, directement sur votre téléphone.',
+    direct: 'Bon pour accord. Au doigt.',
+  },
+  'devis.signPlaceholder': {
+    pote: 'Signe ici du doigt',
+    pro: 'Signez ici du doigt',
+    direct: 'Signe ici.',
+  },
+  'devis.signClear': {
+    pote: 'Effacer',
+    pro: 'Effacer',
+    direct: 'Effacer',
+  },
+  'devis.signerLabel': {
+    pote: 'Nom du signataire',
+    pro: 'Nom du signataire',
+    direct: 'Signataire',
+  },
+  'devis.signerPlaceholder': {
+    pote: 'Ex. M. Bernard',
+    pro: 'Ex. M. Bernard',
+    direct: 'Nom…',
+  },
+  // Étape 5 — acompte (30 % défaut, éditable ; net réel calculé par le core).
+  'devis.depositTitle': {
+    pote: 'Un acompte pour lancer le chantier ?',
+    pro: 'Souhaitez-vous demander un acompte ?',
+    direct: 'Acompte ?',
+  },
+  'devis.depositSub': {
+    pote: '30 % c’est l’usage — le solde partira en facture finale.',
+    pro: '30 % est l’usage. Le solde fera l’objet de la facture finale.',
+    direct: '30 % = l’usage. Solde en facture finale.',
+  },
+  'devis.depositPct': {
+    pote: '{pct} %',
+    pro: '{pct} %',
+    direct: '{pct} %',
+  },
+  'devis.depositNone': {
+    pote: 'Sans acompte',
+    pro: 'Sans acompte',
+    direct: 'Sans',
+  },
+  'devis.depositSummary': {
+    pote: 'Acompte {pct} % — net à encaisser {amount}.',
+    pro: 'Acompte de {pct} % — net à encaisser : {amount}.',
+    direct: 'Acompte {pct} % · net {amount}.',
+  },
+  'devis.depositNetLabel': {
+    pote: 'À encaisser à la signature',
+    pro: 'Net à encaisser à la signature',
+    direct: 'À encaisser',
+  },
+  'devis.depositFullLabel': {
+    pote: 'Facture unique — net à payer',
+    pro: 'Facture unique — net à payer',
+    direct: 'Facture unique — net',
+  },
+  // Étape 6 — génération (chaîne réelle createQuote → sendQuote → signQuote → generateInvoice → issueInvoice).
+  'devis.generateCta': {
+    pote: 'Générer la facture',
+    pro: 'Générer la facture',
+    direct: 'Facturer',
+  },
+  'devis.confirmTitle': {
+    pote: 'Facture à générer',
+    pro: 'Facture à générer',
+    direct: 'Facture à générer',
+  },
+  'devis.confirmBody': {
+    pote: 'J’envoie le devis, j’enregistre la signature de {name} et j’émets la facture ({amount}) avec son numéro légal.',
+    pro: 'Le devis est envoyé, la signature de {name} est enregistrée, puis la facture ({amount}) est émise avec son numéro légal.',
+    direct: 'Envoi + signature {name} + émission {amount}.',
+  },
+  'devis.generating': {
+    pote: 'Je génère ta facture…',
+    pro: 'Génération de la facture…',
+    direct: 'Génération…',
+  },
+  'devis.successTitle': {
+    pote: 'Facture générée !',
+    pro: 'Facture générée',
+    direct: 'Générée.',
+  },
+  'devis.successBody': {
+    pote: 'La facture {number} de {name} est émise — net à encaisser {amount}. Je surveille et je relance si besoin.',
+    pro: 'La facture {number} de {name} est émise — net à encaisser : {amount}. Suivi et relances automatiques.',
+    direct: '{number} émise pour {name}. Net {amount}.',
+  },
+  'devis.seeInvoice': {
+    pote: 'Voir la facture',
+    pro: 'Voir la facture',
+    direct: 'Voir la facture',
+  },
+  'devis.toastDone': {
+    pote: 'Facture {number} émise ✓',
+    pro: 'Facture {number} émise ✓',
+    direct: '{number} émise ✓',
+  },
+  'devis.retry': {
+    pote: 'Réessayer',
+    pro: 'Réessayer',
+    direct: 'Réessayer',
+  },
+  // Gardes de la machine (devisNext bloqué) — la voix de Bob, jamais un code d'erreur.
+  'devis.guardClient': {
+    pote: 'Choisis d’abord le client — je ne fais pas de devis fantôme.',
+    pro: 'Sélectionnez un client avant de continuer.',
+    direct: 'Le client d’abord.',
+  },
+  'devis.guardLines': {
+    pote: 'Ajoute au moins une prestation avant de continuer.',
+    pro: 'Ajoutez au moins une prestation avant de continuer.',
+    direct: 'Une ligne minimum.',
+  },
+  'devis.guardSignature': {
+    pote: 'Il me faut la signature et le nom du client pour continuer.',
+    pro: 'La signature et le nom du client sont requis pour continuer.',
+    direct: 'Signature + nom requis.',
+  },
+  'devis.guardDeposit': {
+    pote: 'L’acompte doit rester entre 0 et 100 %.',
+    pro: 'L’acompte doit être compris entre 0 et 100 %.',
+    direct: 'Acompte : 0 à 100 %.',
+  },
+  // Erreurs use cases / transitions — la voix de Bob (A1-C10).
+  'devis.errAction': {
+    pote: 'La génération a raté — rien n’est perdu, on réessaie ?',
+    pro: 'La génération a échoué. Vos saisies sont conservées — veuillez réessayer.',
+    direct: 'Raté. Rien perdu. Réessaie.',
+  },
+  'devis.dataError': {
+    pote: 'Je n’arrive pas à ouvrir ton carnet, là. On réessaie dans un instant ?',
+    pro: 'Impossible de charger vos clients pour le moment. Veuillez réessayer dans un instant.',
+    direct: 'Carnet injoignable. Réessaie.',
+  },
+
+  // ── C16 — écran « Détail pièce » ─────────────────────────────────────────────
+  'piece.kindDevis': { pote: 'Devis', pro: 'Devis', direct: 'Devis' },
+  'piece.kindFacture': { pote: 'Facture', pro: 'Facture', direct: 'Facture' },
+  'piece.kindAcompte': { pote: 'Facture d’acompte', pro: 'Facture d’acompte', direct: 'Acompte' },
+  'piece.kindAvoir': { pote: 'Avoir', pro: 'Avoir', direct: 'Avoir' },
+  'piece.kindSituation': { pote: 'Situation de travaux', pro: 'Situation de travaux', direct: 'Situation' },
+  'piece.draftNumber': {
+    pote: 'Brouillon — numérotée à l’émission',
+    pro: 'Brouillon — le numéro sera attribué à l’émission',
+    direct: 'Brouillon',
+  },
+  // Statuts (badge header)
+  'piece.statusDraft': { pote: 'Brouillon', pro: 'Brouillon', direct: 'Brouillon' },
+  'piece.statusIssued': { pote: 'Émise', pro: 'Émise', direct: 'Émise' },
+  'piece.statusPartiallyPaid': { pote: 'Encaissée en partie', pro: 'Partiellement payée', direct: 'Partielle' },
+  'piece.statusPaid': { pote: 'Payée ✓', pro: 'Payée', direct: 'Payée' },
+  'piece.statusLate': { pote: 'En retard', pro: 'En retard', direct: 'Retard' },
+  'piece.statusCancelled': { pote: 'Annulée', pro: 'Annulée', direct: 'Annulée' },
+  'piece.statusSent': { pote: 'Envoyé', pro: 'Envoyé', direct: 'Envoyé' },
+  'piece.statusViewed': { pote: 'Vu par le client', pro: 'Consulté', direct: 'Vu' },
+  'piece.statusSigned': { pote: 'Signé ✓', pro: 'Signé', direct: 'Signé' },
+  'piece.statusRefused': { pote: 'Refusé', pro: 'Refusé', direct: 'Refusé' },
+  'piece.statusExpired': { pote: 'Expiré', pro: 'Expiré', direct: 'Expiré' },
+  // Nav croisée
+  'piece.linkedQuote': { pote: 'Devis d’origine', pro: 'Devis d’origine', direct: 'Devis' },
+  'piece.linkedInvoice': { pote: 'Facture liée', pro: 'Facture liée', direct: 'Facture' },
+  'piece.linkedAvoir': {
+    pote: 'Avoir émis sur cette facture',
+    pro: 'Avoir émis sur cette facture',
+    direct: 'Avoir émis',
+  },
+  'piece.linkedSituation': { pote: 'Situation de travaux', pro: 'Situation de travaux', direct: 'Situation' },
+  'piece.progress': { pote: 'avancement {pct} %', pro: 'avancement {pct} %', direct: '{pct} %' },
+  // Parties
+  'piece.issuer': { pote: 'Émetteur', pro: 'Émetteur', direct: 'Émetteur' },
+  'piece.customer': { pote: 'Client', pro: 'Client', direct: 'Client' },
+  'piece.typeB2b': { pote: 'Entreprise', pro: 'Entreprise', direct: 'B2B' },
+  'piece.typeB2c': { pote: 'Particulier', pro: 'Particulier', direct: 'B2C' },
+  'piece.typeB2g': { pote: 'Public', pro: 'Secteur public', direct: 'B2G' },
+  // Lignes & totaux
+  'piece.catLabor': { pote: 'Main-d’œuvre', pro: 'Main-d’œuvre', direct: 'MO' },
+  'piece.catSupply': { pote: 'Fourniture', pro: 'Fourniture', direct: 'Fourn.' },
+  'piece.catTravel': { pote: 'Déplacement', pro: 'Déplacement', direct: 'Dépl.' },
+  'piece.catDisbursement': { pote: 'Débours', pro: 'Débours', direct: 'Débours' },
+  'piece.catSubscription': { pote: 'Abonnement', pro: 'Abonnement', direct: 'Abo' },
+  'piece.vatPerLine': { pote: 'TVA {rate} %', pro: 'TVA {rate} %', direct: '{rate} %' },
+  'piece.totalHt': { pote: 'Total HT', pro: 'Total HT', direct: 'HT' },
+  'piece.totalVat': { pote: 'TVA', pro: 'TVA', direct: 'TVA' },
+  'piece.totalTtc': { pote: 'Total TTC', pro: 'Total TTC', direct: 'TTC' },
+  'piece.deposit': {
+    pote: 'Acompte {pct} % à la commande : {amount}',
+    pro: 'Acompte de {pct} % à la commande : {amount}',
+    direct: 'Acompte {pct} % : {amount}',
+  },
+  // Suivi de paiement
+  'piece.paymentTitle': { pote: 'Suivi de paiement', pro: 'Suivi de paiement', direct: 'Paiement' },
+  'piece.paidLabel': { pote: 'Encaissé', pro: 'Encaissé', direct: 'Encaissé' },
+  'piece.remainingLabel': { pote: 'Reste à encaisser', pro: 'Reste à encaisser', direct: 'Reste' },
+  'piece.paidDone': {
+    pote: 'Tout est encaissé — beau boulot 💪',
+    pro: 'Facture intégralement encaissée.',
+    direct: 'Soldée.',
+  },
+  // e-facture
+  'piece.ereportingTitle': { pote: 'Vente à un particulier', pro: 'Vente à un particulier', direct: 'B2C' },
+  'piece.ereportingBody': {
+    pote: 'Pas de transmission PDP — la donnée part en e-reporting (déclaration à l’administration).',
+    pro: 'Aucune transmission PDP requise : les données partent en e-reporting auprès de l’administration.',
+    direct: 'Pas de PDP : e-reporting.',
+  },
+  'piece.transmissionPa': { pote: 'Facture électronique · PDP', pro: 'Facture électronique · plateforme agréée', direct: 'e-facture · PDP' },
+  'piece.transmissionChorus': { pote: 'Facture électronique · Chorus Pro', pro: 'Facture électronique · Chorus Pro', direct: 'Chorus Pro' },
+  'piece.stepEmise': { pote: 'Émise', pro: 'Émise', direct: 'Émise' },
+  'piece.stepTransmise': { pote: 'Transmise', pro: 'Transmise', direct: 'Transmise' },
+  'piece.stepRecue': { pote: 'Reçue', pro: 'Reçue', direct: 'Reçue' },
+  'piece.stepAcceptee': { pote: 'Acceptée', pro: 'Acceptée', direct: 'Acceptée' },
+  'piece.stepPayee': { pote: 'Payée', pro: 'Payée', direct: 'Payée' },
+  // Mentions
+  'piece.mentionsTitle': { pote: 'Mentions légales', pro: 'Mentions légales', direct: 'Mentions' },
+  'piece.frozenBadge': { pote: 'Figé à l’émission', pro: 'Figé à l’émission', direct: 'Figé' },
+  // Actions
+  'piece.actionPdf': { pote: 'PDF', pro: 'PDF', direct: 'PDF' },
+  'piece.actionEncaisser': { pote: 'Encaisser', pro: 'Encaisser', direct: 'Encaisser' },
+  'piece.actionEnvoyer': { pote: 'Envoyer au client', pro: 'Envoyer au client', direct: 'Envoyer' },
+  'piece.actionRelancer': { pote: 'Relancer', pro: 'Relancer', direct: 'Relancer' },
+  'piece.actionFacturer': { pote: 'Créer la facture', pro: 'Générer la facture', direct: 'Facturer' },
+  'piece.actionEmettre': { pote: 'Émettre', pro: 'Émettre la facture', direct: 'Émettre' },
+  // États
+  'piece.notFound': {
+    pote: 'Je ne retrouve pas cette pièce. Elle a peut-être été supprimée ?',
+    pro: 'Pièce introuvable.',
+    direct: 'Introuvable.',
+  },
+  'piece.dataError': {
+    pote: 'Je n’arrive pas à ouvrir cette pièce, là. On réessaie dans un instant ?',
+    pro: 'Impossible de charger cette pièce pour le moment. Veuillez réessayer.',
+    direct: 'Pièce injoignable. Réessaie.',
   },
 } as const satisfies Record<string, Copy>;
 

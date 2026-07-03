@@ -15,10 +15,11 @@
  *
  * PARITÉ D'ACTIONS humain ↔ Bob (directive 23:52) :
  * · rangée → /client/[id] (fiche client C13 — les CTA relance/facture y vivent) ;
- * · « + » du header, CTA empty state et Fab = LE MÊME point d'entrée création client —
- *   aucun use case createCustomer côté BobClient ni route /client/new aujourd'hui :
- *   no-op accessible, TODO C13/C40 (brancher le use case que Bob invoquera, jamais un
- *   chemin parallèle).
+ * · « + » du header, CTA empty state et Fab = LE MÊME point d'entrée création client
+ *   (C40) : Sheet @bob/ui « nouveau client » MINIMALE (nom + type, le reste se complète
+ *   sur la fiche) → useCreateCustomer → client.createCustomer — le MÊME use case que
+ *   l'outil agent creer_client (jamais un chemin parallèle). Succès = Toast + liste
+ *   rafraîchie ; erreur = voix de Bob dans la feuille.
  *
  * Écarts assumés vs réf (composants @bob/ui figés pour ce claim) :
  * · ClientRow ne porte ni badge type inline ni mot de statut sous le montant (props
@@ -30,7 +31,7 @@
  * Zéro hex/rgba : useTheme()/@bob/tokens. Zéro import de src/components/ui (ancien kit).
  */
 import { useMemo, useState } from 'react';
-import { Pressable, ScrollView, Text, TextInput, View } from 'react-native';
+import { KeyboardAvoidingView, Platform, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import {
   deriveCustomerStandings,
@@ -49,18 +50,15 @@ import {
   Chip,
   Fab,
   InnerScreenHeader,
+  Sheet,
   StatusBadge,
+  Toast,
   font,
   useTheme,
   type StatusBadgeVariant,
 } from '@bob/ui';
-import { useCustomers, useInvoices, useQuotes } from '../../src/data/hooks';
-import { ChevronRightIcon, PlusIcon, SearchIcon } from '../../src/components/icons';
-
-// TODO C13/C40 — création client : aucune route /client/new ni use case createCustomer
-// côté BobClient aujourd'hui. Point d'entrée UNIQUE (header +, empty state, Fab) gardé
-// no-op accessible ; brancher ici le use case que Bob invoquera (parité d'actions).
-const createClient = (): undefined => undefined;
+import { useCreateCustomer, useCustomers, useInvoices, useQuotes } from '../../src/data/hooks';
+import { CheckIcon, ChevronRightIcon, PlusIcon, SearchIcon } from '../../src/components/icons';
 
 type TypeFilter = 'tous' | CustomerListItem['type'];
 
@@ -121,13 +119,13 @@ function rowSubtitle(type: CustomerListItem['type'], standing: CustomerStanding,
 }
 
 /** Bouton « + » navy du header (réf : 42×42, radius 13, aplat ink du thème). */
-function AddClientButton() {
+function AddClientButton({ onPress }: { onPress: () => void }) {
   const { personality, theme, colors } = useTheme();
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={t('clients.addClient', { personality })}
-      onPress={createClient}
+      onPress={onPress}
       hitSlop={6}
       style={({ pressed }) => [
         {
@@ -295,6 +293,122 @@ function CustomerRowCard({
   );
 }
 
+/**
+ * Feuille « nouveau client » (C40) — création MINIMALE : nom + type. Le reste (adresse,
+ * SIREN, email…) se complète sur la fiche ; défauts neutres identiques à l'outil agent
+ * creer_client (adresse vide, score 100, aucun historique) — MÊME use case createCustomer.
+ */
+function CreateClientSheet({
+  visible,
+  onClose,
+  onCreated,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  onCreated: (name: string) => void;
+}) {
+  const { personality, colors, semantic } = useTheme();
+  const createCustomer = useCreateCustomer();
+  const [name, setName] = useState('');
+  const [type, setType] = useState<CustomerListItem['type']>('b2c');
+  const [failed, setFailed] = useState(false);
+  const trimmed = name.trim();
+
+  const reset = (): void => {
+    setName('');
+    setType('b2c');
+    setFailed(false);
+  };
+
+  const submit = (): void => {
+    if (!trimmed || createCustomer.isPending) return;
+    setFailed(false);
+    createCustomer.mutate(
+      {
+        name: trimmed,
+        type,
+        address: { line1: '', zip: '', city: '' },
+        score: 100,
+        avgDelayDays: 0,
+        outstanding: 0,
+      },
+      {
+        onSuccess: () => {
+          reset();
+          onCreated(trimmed);
+        },
+        onError: () => setFailed(true),
+      },
+    );
+  };
+
+  return (
+    <Sheet visible={visible} onClose={onClose}>
+      <KeyboardAvoidingView {...(Platform.OS === 'ios' ? { behavior: 'padding' as const } : {})}>
+        <Text style={[font('pageTitle'), { fontSize: 20, color: colors.ink900 }]}>
+          {t('clients.createTitle', { personality })}
+        </Text>
+        <Text style={[font('sub'), { color: colors.slate500, lineHeight: 19, marginTop: 4 }]}>
+          {t('clients.createHint', { personality })}
+        </Text>
+
+        <Text style={[font('label', 700), { fontSize: 12, color: colors.slate400, marginTop: 16 }]}>
+          {t('clients.createNameLabel', { personality }).toUpperCase()}
+        </Text>
+        <TextInput
+          value={name}
+          onChangeText={setName}
+          placeholder={t('clients.createNamePlaceholder', { personality })}
+          placeholderTextColor={colors.slate300}
+          autoCorrect={false}
+          returnKeyType="done"
+          onSubmitEditing={submit}
+          accessibilityLabel={t('clients.createNameLabel', { personality })}
+          style={[
+            font('body'),
+            {
+              marginTop: 7,
+              borderWidth: 1,
+              borderColor: colors.lineSoft,
+              borderRadius: 12,
+              paddingVertical: 11,
+              paddingHorizontal: 13,
+              color: colors.ink800,
+            },
+          ]}
+        />
+
+        <Text style={[font('label', 700), { fontSize: 12, color: colors.slate400, marginTop: 14 }]}>
+          {t('clients.createTypeLabel', { personality }).toUpperCase()}
+        </Text>
+        <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+          {FILTERS.filter((f): f is { key: CustomerListItem['type']; label: I18nKey } => f.key !== 'tous').map((f) => (
+            <Chip key={f.key} label={t(f.label, { personality })} active={type === f.key} onPress={() => setType(f.key)} />
+          ))}
+        </View>
+
+        {failed ? (
+          <Text
+            accessibilityRole="alert"
+            style={[font('sub'), { color: semantic.danger, lineHeight: 19, marginTop: 12 }]}
+          >
+            {t('clients.createError', { personality })}
+          </Text>
+        ) : null}
+
+        <Button
+          title={t('clients.createSubmit', { personality })}
+          variant="primary"
+          disabled={!trimmed}
+          loading={createCustomer.isPending}
+          style={{ marginTop: 16 }}
+          onPress={submit}
+        />
+      </KeyboardAvoidingView>
+    </Sheet>
+  );
+}
+
 export default function Clients() {
   const { personality, colors } = useTheme();
   const router = useRouter();
@@ -304,6 +418,10 @@ export default function Clients() {
 
   const [filter, setFilter] = useState<TypeFilter>('tous');
   const [query, setQuery] = useState('');
+  // Création client (C40) : UN SEUL point d'entrée pour le « + », l'empty state et le Fab.
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createdToast, setCreatedToast] = useState<string | null>(null);
+  const openCreate = (): void => setCreateOpen(true);
 
   // Standing par client — dérivé dans @bob/core depuis les pièces réelles (repli client sans pièce).
   const standings = useMemo(
@@ -351,7 +469,7 @@ export default function Clients() {
         <InnerScreenHeader
           eyebrow={t('clients.eyebrow', { personality })}
           title={t('clients.title', { personality })}
-          action={<AddClientButton />}
+          action={<AddClientButton onPress={openCreate} />}
         />
         {/* Sous-titre hors InnerScreenHeader : le montant interpolé est teinté (la prop subtitle est un string). */}
         {carnet !== undefined && carnet.length > 0 && !booting ? (
@@ -406,7 +524,7 @@ export default function Clients() {
                 title={t('clients.emptyCta', { personality })}
                 variant="primary"
                 style={{ marginTop: 14 }}
-                onPress={createClient}
+                onPress={openCreate}
               />
             </Card>
           ) : list.length === 0 ? (
@@ -437,7 +555,22 @@ export default function Clients() {
         </View>
       </ScrollView>
 
-      <Fab onPress={createClient} accessibilityLabel={t('clients.addClient', { personality })} />
+      <Fab onPress={openCreate} accessibilityLabel={t('clients.addClient', { personality })} />
+
+      <CreateClientSheet
+        visible={createOpen}
+        onClose={() => setCreateOpen(false)}
+        onCreated={(name) => {
+          setCreateOpen(false);
+          setCreatedToast(t('clients.createSuccess', { personality, params: { name } }));
+        }}
+      />
+      <Toast
+        message={createdToast ?? ''}
+        visible={createdToast !== null}
+        onHide={() => setCreatedToast(null)}
+        icon={<CheckIcon color={colors.surface} />}
+      />
     </View>
   );
 }

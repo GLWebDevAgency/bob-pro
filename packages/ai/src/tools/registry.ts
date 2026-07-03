@@ -260,7 +260,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
           return err(appValidation('mode', 'Mode de facture invalide (deposit | final).'));
         return ok({
           quoteId: r.quoteId,
-          ...(typeof r.mode === 'string' ? { mode: r.mode as GenerateInvoiceActionInput['mode'] } : {}),
+          ...(typeof r.mode === 'string' ? { mode: r.mode as NonNullable<GenerateInvoiceActionInput['mode']> } : {}),
         });
       },
       run: (input) => generateInvoiceAction(input),

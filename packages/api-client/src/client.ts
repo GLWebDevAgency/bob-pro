@@ -59,6 +59,8 @@ export interface InvoiceView {
   mentions: string[];
   dueAt: string | null;
   paid: number;
+  /** Lignes de la pièce (C16 — l'entité domaine les porte depuis toujours). */
+  lines: QuoteLine[];
 }
 
 export interface RegisterPaymentClientInput {
@@ -271,6 +273,17 @@ export interface BobClient {
   createChantier(input: Omit<CreateChantierInput, 'companyId'>): Promise<Result<{ id: string }, AppError>>;
   listChantiers(): Promise<Result<ChantierProps[], AppError>>;
   listCustomers(): Promise<Result<CustomerListItem[], AppError>>;
+  /** Crée une fiche client — même use case pour l'UI (C12) et l'outil agent creer_client (C40). */
+  createCustomer(input: CreateCustomerClientInput): Promise<Result<{ id: string }, AppError>>;
+  // —— Assistant Bob (C40, TODO ⑧ « journal on-device ») — endpoints /ai existants ——
+  /** POST /ai/ask : en HTTP l'agent tourne CÔTÉ SERVEUR (autonomie clampée par l'offre, journal
+   * append-only company-scoped) ; l'adaptateur local exécute l'agent @bob/ai on-device (mode dev). */
+  askBob(input: AskBobClientInput): Promise<Result<AgentRun, AppError>>;
+  /** POST /ai/confirm : exécute l'action proposée (PendingAction) via le runtime JOURNALISÉ. */
+  confirmBob(pending: PendingAction): Promise<Result<AgentRun, AppError>>;
+  /** GET /ai/runs/:runId/journal : entrées d'audit append-only d'un run (company-scoped côté serveur).
+   * NB : les DTO AgentRun de ask/confirm n'exposent pas (encore) le runId — voir rapport C40. */
+  getRunJournal(runId: string): Promise<Result<JournalEntry[], AppError>>;
   getCashflow(input: { scenario: Scenario; horizon: Horizon }): Promise<Result<CashflowProjection, AppError>>;
   createQuote(input: Omit<CreateQuoteInput, 'companyId'>): Promise<Result<CreateQuoteOutput, AppError>>;
   sendQuote(quoteId: string): Promise<Result<SendQuoteOutput, AppError>>;
