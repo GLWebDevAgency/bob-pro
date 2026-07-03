@@ -1196,6 +1196,23 @@
 #### Log (append-only, horodaté)
 - [22:57] claude-code A CLAIM+PROPOSE+IN-BUILD: l'auth réelle existe (Supabase+guard JWT prouvés en C40) —
   le claim est l'UX complète (login refondu, inscription SIRET→lookup réel, biométrie) + identité posée.
+- [2026-07-04 00:35] claude-code A HANDOFF+MERGE (régime humain): C24 COMPLET. LoginScreen réécrit @bob/ui
+  (login + inscription SIRET→lookupCompany réel→signUp Supabase avec user_metadata first_name/full_name →
+  alimente useIdentity + reset mdp) ; data/auth.tsx : signUp/resetPassword, AuthErrorCode 9 codes mappés
+  voix Bob ; biométrie opt-in (biometric.ts + BiometricGate, dégradé honnête simulateur) ; _layout :
+  BobClientProvider AU-DESSUS de la porte d'auth (lookup SIRET public avant session). Correctif expert
+  i18n : footer « Chiffré de bout en bout » → « Connexion chiffrée · conforme RGPD » (l'archi est TLS,
+  pas E2E — même logique que le retrait 2FA : jamais de promesse de sécurité fausse). Capture C24-p1
+  (login) obtenue après purge réelle de session — pièges documentés : la session Supabase SURVIT à la
+  réinstallation d'Expo Go (keychain) → `simctl keychain reset` ; le bundle Metro inline les env → `--clear`
+  obligatoire (sinon l'app retombe en démo silencieusement) ; dialogue permission notifs levé par
+  applesimutils. CHECKLIST PROD CONNECTÉE à l'écran (captures PROD-argent/clients/notifications) : session
+  Supabase réelle persistée, Argent/Clients/Notifications sur données tenant réelles (Mairie de Sèvres
+  F-2026-0001 · 1 850 € · 15 j retard · ton NEUTRE, garde-fou L441-10 affiché, relances auto actives).
+  Validations : i18n 46 ✓ · core 352 ✓ · typecheck 16/16 ✓. RESTE (claim suivant C24b) : provisioning
+  tenant à l'inscription — endpoint serveur + app_metadata.company_id via API admin Supabase (service-role
+  key déjà dans l'env Railway) ; d'ici là un compte neuf n'a pas de tenant (signUp réel mais données
+  vides — honnête, pas de fixture). status=MERGED.
 
 ### C25 — Relances auto + Notifications   <!-- kind: flow -->
 - status: MERGED
@@ -1295,6 +1312,17 @@
 #### Log (append-only, horodaté)
 - [22:57] claude-code A CLAIM+PROPOSE+IN-BUILD: en parallèle de C24 (périmètres disjoints : C24 =
   screens/auth ; C27 = catalogue+core+intégration devis/voix). i18n partagé : relecture avant édition.
+- [2026-07-04 00:36] claude-code A HANDOFF+MERGE (régime humain): C27 COMPLET. Core : application/
+  catalogue/derive-catalogue pur testé — 63 prestations / 9 métiers dérivées de TRADE_PROFILES,
+  TOUJOURS `indicative: true` (charte « jamais un centime inventé » : la voix reconnaît les libellés
+  mais N'INJECTE JAMAIS un prix indicatif — voice-invoice-draft testé sur ce point). Mobile :
+  data/catalogue.ts (personnalisation AsyncStorage : prix propres, favoris — TODO serveur documenté
+  pour la persistance tenant), écrans catalogue.tsx (liste par catégorie, édition Sheet) +
+  reglages-facturation.tsx (lecture réelle du profil, mentions/numérotation garanties core — AUCUN
+  formulaire fantôme : RIB/logo affichés seulement quand un endpoint réel existera) ; devis/new :
+  suggestions catalogue au fil de la saisie SANS casser la saisie libre. Validations : core 352 ✓
+  (dont derive-catalogue) · i18n 46 ✓ · typecheck 16/16 ✓. Commits scopés c24/c27 distincts + fix
+  HEAD (CollectInvoiceButton manquant de 1ddf718 réparé). status=MERGED.
 
 ---
 
@@ -1395,6 +1423,6 @@
 | C25 | MERGED | claude-code A | gpt5pro | 100 % prod livré 22:40 (endpoints+push+cron core, TODO ①② fermés). |
 | C17 | MERGED | claude-code (session B) | gpt5pro | Grand-livre @bob/ui + export FEC partageable (shareFec ×2 écrans). |
 | C22 | MERGED | claude-code A | gpt5pro | Flux 5 étapes validé 22:17 (preview adaptatif core). |
-| C24 | IN-BUILD | claude-code A | gpt5pro | Auth réelle (login+SIRET+biométrie) — 22:57. |
-| C27 | IN-BUILD | claude-code A | gpt5pro | Catalogue par métier + intégration devis/voix — 22:57. |
+| C24 | MERGED | claude-code A | gpt5pro | Auth 100 % prod (login+SIRET+biométrie) + checklist PROD connectée — 07-04 00:35. Reste : C24b provisioning tenant. |
+| C27 | MERGED | claude-code A | gpt5pro | Catalogue 63 prestations/9 métiers + suggestions devis/voix — 07-04 00:36. |
 | C26, C41 | OPEN | — | — | Web C30 différé après mobile hi-fi. |
