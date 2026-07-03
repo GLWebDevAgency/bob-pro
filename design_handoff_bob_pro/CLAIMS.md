@@ -1190,4 +1190,5 @@
 | C21 | MERGED | claude-code | gpt5pro | Flux validé 16:10 ; Stepper+SignaturePad livrés (réserve C03 soldée). |
 | C23 | MERGED | claude-code | gpt5pro | Diagnostic expert-comptable v2 livré 16:32 (audit réel + plan daté 3 axes). |
 | C25 | IN-BUILD | claude-code | gpt5pro | Relances réelles + Notifications — contrat 16:35, ferme TODO ①②. |
-| C17–C41 | OPEN | — | — | Web C30 différé après mobile hi-fi. |
+| C17 | IN-BUILD | claude-code | gpt5pro | Compta & conformité (mois prêt dérivé + FEC réel) — contrat 21:58. |
+| C22-C27, C41 | OPEN | — | — | Web C30 différé après mobile hi-fi. |
