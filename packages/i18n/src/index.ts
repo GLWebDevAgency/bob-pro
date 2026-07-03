@@ -2456,6 +2456,291 @@ const fr = {
     direct: 'CRA + frais refacturés',
   },
 
+  // ── C24 — Auth (login refondu, inscription SIRET→lookup, biométrie) ─────────
+  // Copy pote = exacte du proto §auth quand elle existe (titres, champs, CTA).
+  // Écart assumé : le footer proto « Chiffré de bout en bout · 2FA · conforme RGPD »
+  // perd « 2FA » (non implémenté — on n'affiche pas une promesse fantôme).
+  'auth.loginTitle': {
+    pote: 'Bon retour 👋',
+    pro: 'Bon retour.',
+    direct: 'Reconnecte-toi.',
+  },
+  'auth.loginSub': {
+    pote: 'Connecte-toi pour reprendre où tu en étais.',
+    pro: 'Connectez-vous pour reprendre où vous en étiez.',
+    direct: 'Reprends où t’en étais.',
+  },
+  'auth.emailLabel': {
+    pote: 'Email professionnel',
+    pro: 'Email professionnel',
+    direct: 'Email pro',
+  },
+  'auth.emailPlaceholder': {
+    pote: 'julien@mercier-plomberie.fr',
+    pro: 'julien@mercier-plomberie.fr',
+    direct: 'julien@mercier-plomberie.fr',
+  },
+  'auth.passwordLabel': {
+    pote: 'Mot de passe',
+    pro: 'Mot de passe',
+    direct: 'Mot de passe',
+  },
+  'auth.loginCta': { pote: 'Se connecter', pro: 'Se connecter', direct: 'Se connecter' },
+  'auth.forgot': {
+    pote: 'Mot de passe oublié ?',
+    pro: 'Mot de passe oublié ?',
+    direct: 'Mdp oublié ?',
+  },
+  'auth.switchToSignup': {
+    pote: 'Pas encore de compte ? Créer',
+    pro: 'Pas encore de compte ? Créer',
+    direct: 'Pas de compte ? Créer',
+  },
+  'auth.switchToLogin': {
+    pote: 'Déjà un compte ? Se connecter',
+    pro: 'Déjà un compte ? Se connecter',
+    direct: 'Un compte ? Connexion',
+  },
+  'auth.footerSecure': {
+    pote: 'Chiffré de bout en bout · conforme RGPD',
+    pro: 'Chiffré de bout en bout · conforme RGPD',
+    direct: 'Chiffré · RGPD',
+  },
+  'auth.resetSent': {
+    pote: 'Si un compte existe pour {email}, le lien de réinitialisation est parti 📬',
+    pro: 'Si un compte existe pour {email}, le lien de réinitialisation a été envoyé.',
+    direct: '{email} : lien envoyé si le compte existe.',
+  },
+  'auth.resetNeedEmail': {
+    pote: 'Mets ton email d’abord — je saurai où envoyer le lien.',
+    pro: 'Renseignez votre email : le lien y sera envoyé.',
+    direct: 'Email d’abord.',
+  },
+  'auth.errFields': {
+    pote: 'Il me faut ton email et ton mot de passe.',
+    pro: 'Email et mot de passe sont requis.',
+    direct: 'Email + mdp requis.',
+  },
+  'auth.errCredentials': {
+    pote: 'Email ou mot de passe pas bon — réessaie.',
+    pro: 'Email ou mot de passe incorrect.',
+    direct: 'Identifiants KO.',
+  },
+  'auth.errEmailNotConfirmed': {
+    pote: 'Ton mail n’est pas encore confirmé — clique sur le lien que je t’ai envoyé.',
+    pro: 'Votre email n’est pas confirmé : cliquez sur le lien reçu.',
+    direct: 'Mail non confirmé. Va voir tes mails.',
+  },
+  'auth.errUserExists': {
+    pote: 'Un compte existe déjà avec cet email — connecte-toi plutôt.',
+    pro: 'Un compte existe déjà pour cet email. Connectez-vous.',
+    direct: 'Compte déjà là. Connecte-toi.',
+  },
+  'auth.errWeakPassword': {
+    pote: 'Trop court, ton mot de passe — vise 8 caractères minimum.',
+    pro: 'Mot de passe trop faible : 8 caractères minimum.',
+    direct: 'Mdp trop faible. 8 mini.',
+  },
+  'auth.errEmailInvalid': {
+    pote: 'Cet email a l’air bancal — vérifie-le ?',
+    pro: 'Le format de l’email est invalide.',
+    direct: 'Email invalide.',
+  },
+  'auth.errRateLimited': {
+    pote: 'Doucement — trop d’essais d’un coup. Réessaie dans une minute.',
+    pro: 'Trop de tentatives. Veuillez patienter une minute.',
+    direct: 'Trop d’essais. Attends 1 min.',
+  },
+  'auth.errNetwork': {
+    pote: 'Pas de réseau, là. Réessaie dès que ça capte.',
+    pro: 'Connexion impossible. Vérifiez votre réseau.',
+    direct: 'Réseau KO. Réessaie.',
+  },
+  'auth.errUnknown': {
+    pote: 'Ça a raté, et c’est pas toi. Réessaie ?',
+    pro: 'Une erreur est survenue. Veuillez réessayer.',
+    direct: 'Erreur. Réessaie.',
+  },
+  'auth.signupTitle': {
+    pote: 'Crée ton compte',
+    pro: 'Créez votre compte',
+    direct: 'Ton compte.',
+  },
+  'auth.signupSub': {
+    pote: 'Ton bureau pro, prêt en 2 minutes.',
+    pro: 'Votre bureau professionnel, prêt en 2 minutes.',
+    direct: 'Prêt en 2 minutes.',
+  },
+  'auth.stepSiret': { pote: 'Ton SIRET', pro: 'Votre SIRET', direct: 'SIRET' },
+  'auth.stepCompany': { pote: 'Ton entreprise', pro: 'Votre entreprise', direct: 'Entreprise' },
+  'auth.stepAccount': { pote: 'Ton compte', pro: 'Votre compte', direct: 'Compte' },
+  'auth.siretTitle': {
+    pote: 'C’est quoi, ton SIRET ?',
+    pro: 'Quel est votre SIRET ?',
+    direct: 'Ton SIRET ?',
+  },
+  'auth.siretSub': {
+    pote: 'On récupère tes infos officielles — zéro paperasse à retaper.',
+    pro: 'Vos informations officielles seront récupérées automatiquement.',
+    direct: 'Je récupère tes infos officielles.',
+  },
+  'auth.siretPlaceholder': {
+    pote: '123 456 789 00012',
+    pro: '123 456 789 00012',
+    direct: '123 456 789 00012',
+  },
+  'auth.siretCta': {
+    pote: 'Récupérer mes infos',
+    pro: 'Récupérer mes informations',
+    direct: 'Chercher',
+  },
+  'auth.siretSkip': {
+    pote: 'Continuer sans SIRET',
+    pro: 'Continuer sans SIRET',
+    direct: 'Sans SIRET',
+  },
+  'auth.errSiretInvalid': {
+    pote: 'Ce SIRET a l’air bancal — 14 chiffres, vérifie-le ?',
+    pro: 'SIRET invalide : 14 chiffres attendus.',
+    direct: 'SIRET invalide. 14 chiffres.',
+  },
+  'auth.errSiretNotFound': {
+    pote: 'Introuvable à l’annuaire — vérifie le numéro ?',
+    pro: 'SIRET introuvable à l’annuaire des entreprises.',
+    direct: 'Introuvable. Vérifie.',
+  },
+  'auth.errLookupDown': {
+    pote: 'L’annuaire ne répond pas, là. Réessaie, ou passe l’étape.',
+    pro: 'L’annuaire des entreprises ne répond pas. Réessayez ou passez l’étape.',
+    direct: 'Annuaire KO. Réessaie ou passe.',
+  },
+  'auth.companyTitle': {
+    pote: 'Voilà ce que j’ai trouvé',
+    pro: 'Voici ce que nous avons trouvé',
+    direct: 'Trouvé.',
+  },
+  'auth.companySub': {
+    pote: 'Vérifie que c’est bien toi — tout vient de l’annuaire officiel.',
+    pro: 'Vérifiez ces informations : elles proviennent de l’annuaire officiel.',
+    direct: 'Vérifie. Source : annuaire officiel.',
+  },
+  'auth.companySiretLabel': { pote: 'SIRET', pro: 'SIRET', direct: 'SIRET' },
+  'auth.companyNafLabel': {
+    pote: 'Activité (NAF)',
+    pro: 'Activité (code NAF)',
+    direct: 'NAF',
+  },
+  'auth.companyAddressLabel': { pote: 'Adresse', pro: 'Adresse', direct: 'Adresse' },
+  'auth.companyTvaLabel': {
+    pote: 'TVA intracom',
+    pro: 'TVA intracommunautaire',
+    direct: 'TVA intracom',
+  },
+  'auth.companyRge': { pote: 'Certifié RGE ✓', pro: 'Certification RGE ✓', direct: 'RGE ✓' },
+  'auth.companyConfirm': {
+    pote: 'C’est bien moi',
+    pro: 'C’est bien mon entreprise',
+    direct: 'C’est moi',
+  },
+  'auth.companyEdit': {
+    pote: 'Ce n’est pas moi — corriger le SIRET',
+    pro: 'Ce n’est pas mon entreprise — corriger le SIRET',
+    direct: 'Pas moi. Corriger.',
+  },
+  'auth.accountTitle': {
+    pote: 'Dernière étape : ton compte',
+    pro: 'Dernière étape : votre compte',
+    direct: 'Ton compte.',
+  },
+  'auth.accountSub': {
+    pote: 'Prénom, email, mot de passe — et c’est parti.',
+    pro: 'Prénom, email et mot de passe suffisent.',
+    direct: 'Prénom + email + mdp.',
+  },
+  'auth.firstNameLabel': { pote: 'Prénom', pro: 'Prénom', direct: 'Prénom' },
+  'auth.firstNamePlaceholder': { pote: 'Julien', pro: 'Julien', direct: 'Julien' },
+  'auth.passwordHint': {
+    pote: '8 caractères minimum',
+    pro: '8 caractères minimum',
+    direct: '8 caractères mini',
+  },
+  'auth.errFirstName': {
+    pote: 'Dis-moi ton prénom — c’est comme ça que je t’appellerai.',
+    pro: 'Renseignez votre prénom.',
+    direct: 'Prénom requis.',
+  },
+  'auth.signupCta': {
+    pote: 'Créer mon compte',
+    pro: 'Créer mon compte',
+    direct: 'Créer',
+  },
+  'auth.verifyTitle': {
+    pote: 'Vérifie tes mails 📬',
+    pro: 'Vérifiez vos emails',
+    direct: 'Va voir tes mails.',
+  },
+  'auth.verifyBody': {
+    pote: 'Je t’ai envoyé un lien de confirmation à {email}. Clique dessus, puis reviens te connecter.',
+    pro: 'Un lien de confirmation a été envoyé à {email}. Cliquez dessus, puis revenez vous connecter.',
+    direct: 'Lien envoyé à {email}. Clique, puis reviens.',
+  },
+  'auth.verifyCta': {
+    pote: 'Retour à la connexion',
+    pro: 'Retour à la connexion',
+    direct: 'Connexion',
+  },
+  'auth.bioTitle': {
+    pote: 'Déverrouille avec {method}',
+    pro: 'Déverrouillage par {method}',
+    direct: '{method} ?',
+  },
+  'auth.bioBody': {
+    pote: 'Ta session reste chiffrée sur l’appareil — tu rentres d’un regard, sans mot de passe.',
+    pro: 'Votre session reste chiffrée sur l’appareil : l’accès se fait sans mot de passe.',
+    direct: 'Session chiffrée. Accès sans mdp.',
+  },
+  'auth.bioAccept': {
+    pote: 'Activer {method}',
+    pro: 'Activer {method}',
+    direct: 'Activer',
+  },
+  'auth.bioLater': { pote: 'Plus tard', pro: 'Plus tard', direct: 'Plus tard' },
+  'auth.bioEnabled': {
+    pote: '{method} activé ✓',
+    pro: '{method} activé.',
+    direct: '{method} : ON.',
+  },
+  'auth.bioPrompt': {
+    pote: 'Déverrouille Bob Pro',
+    pro: 'Déverrouillez Bob Pro',
+    direct: 'Déverrouille Bob Pro',
+  },
+  'auth.bioFailed': {
+    pote: 'Pas reconnu — réessaie ?',
+    pro: 'Authentification non reconnue. Réessayez.',
+    direct: 'Raté. Réessaie.',
+  },
+  'auth.lockTitle': {
+    pote: 'Bob Pro est verrouillé',
+    pro: 'Bob Pro est verrouillé',
+    direct: 'Verrouillé.',
+  },
+  'auth.lockBody': {
+    pote: 'Ta session est bien au chaud — déverrouille avec {method}.',
+    pro: 'Votre session est protégée : déverrouillez avec {method}.',
+    direct: '{method} pour entrer.',
+  },
+  'auth.lockCta': {
+    pote: 'Déverrouiller',
+    pro: 'Déverrouiller',
+    direct: 'Déverrouiller',
+  },
+  'auth.lockFallback': {
+    pote: 'Utiliser mon mot de passe',
+    pro: 'Utiliser mon mot de passe',
+    direct: 'Mot de passe',
+  },
+
   // ── C25 — écran Notifications (cloche C10) ─────────────────────────────────
   'notif.back': { pote: 'Fermer', pro: 'Fermer', direct: 'Fermer' },
   'notif.eyebrow': { pote: 'Quoi de neuf', pro: 'Votre activité', direct: 'Notifs' },
@@ -2622,7 +2907,7 @@ const fr = {
   },
 
   // ── C17 — écran « Comptabilité » (grand-livre) ──────────────────────────────
-  'compta.back': { pote: 'Fermer', pro: 'Fermer', direct: 'Fermer' },
+  'compta.back': { pote: 'Documents', pro: 'Documents', direct: 'Documents' },
   'compta.eyebrow': { pote: 'Ta compta', pro: 'Votre comptabilité', direct: 'Compta' },
   'compta.title': { pote: 'Comptabilité', pro: 'Comptabilité', direct: 'Comptabilité' },
   'compta.subtitle': {
@@ -2647,14 +2932,14 @@ const fr = {
     direct: 'Prêt comptable',
   },
   'compta.entriesMonth': {
-    pote: '{count} écritures ce mois-ci',
-    pro: '{count} écritures sur le mois en cours',
-    direct: '{count} écritures ce mois',
+    pote: '{count} écritures ce mois-ci · passées toutes seules',
+    pro: '{count} écritures sur le mois en cours · générées automatiquement',
+    direct: '{count} écritures ce mois · auto',
   },
   'compta.entriesMonthOne': {
-    pote: '1 écriture ce mois-ci',
-    pro: '1 écriture sur le mois en cours',
-    direct: '1 écriture ce mois',
+    pote: '1 écriture ce mois-ci · passée toute seule',
+    pro: '1 écriture sur le mois en cours · générée automatiquement',
+    direct: '1 écriture ce mois · auto',
   },
   'compta.balanced': { pote: 'Équilibré ✓', pro: 'Équilibré', direct: 'Équilibré' },
   'compta.unbalanced': { pote: 'Déséquilibré !', pro: 'Déséquilibre détecté', direct: 'Déséquilibré' },

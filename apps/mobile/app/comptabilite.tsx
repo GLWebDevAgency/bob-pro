@@ -1,14 +1,17 @@
 /**
- * Comptabilité — le grand-livre (claim C17, refonte DA A1-C17). 100 % @bob/ui :
- * rangée « Fermer » + InnerScreenHeader (pattern écrans poussés) → HÉROS dégradé vert
- * « Prêt pour le comptable » (recette vault.monthReady de Documents — dans l'app,
- * « compta prête » = vert succès) avec la SIGNATURE visuelle de l'écran : l'équation de
- * la partie double (Débit = Crédit en tabular-nums, « = » succès / « ≠ » danger) +
- * export FEC PARTAGEABLE (feuille de partage native, repli toast) → SectionHeader
- * « Le journal » + chips par journal → écritures réelles (IconTile teintée par journal,
- * hairline, AccountingLinesView) → clôture → footer voix de Bob.
- * Résumés dérivés par summarizeAccountingEntries (@bob/core — parité d'actions, l'écran
- * ne calcule rien). Paywall accounting_foundation conservé. Zéro hex, zéro fixture.
+ * Comptabilité — le grand-livre (claim C17, parité stricte A3-C17 sur la réf
+ * « Bob Pro.dc.html » §COMPTABILITÉ). Structure de la réf : la PAGE ENTIÈRE défile ;
+ * seule la rangée retour « ‹ Documents » est sticky (fond bg à .92 — token
+ * patterns.bottomTabBar.fade[1] ; le backdrop-blur CSS n'a pas d'équivalent RN sans
+ * dépendance, l'opacité .92 assure la lisibilité). L'en-tête (eyebrow/titre/sous-titre)
+ * DÉFILE avec le contenu (réf : padding 2/20/4 — pas d'InnerScreenHeader ici, son
+ * paddingTop 56 est le gabarit des onglets sans rangée retour).
+ * Puis : HÉROS vert vault.monthReady radius 20 (équation Débit = Crédit 20px
+ * Schibsted-800, signe 23px success/dangerVivid — LA signature) + export FEC
+ * PARTAGEABLE → « Le journal » + chips par journal → bandeau contextuel filtré →
+ * écritures (IconTile teintée, hairline, AccountingLinesView) → clôture → footer.
+ * Résumés dérivés par summarizeAccountingEntries (@bob/core — l'écran ne calcule rien).
+ * Paywall accounting_foundation conservé. Zéro hex, zéro fixture.
  */
 import { useMemo, useState, type ReactNode } from 'react';
 import { Pressable, ScrollView, Text, View } from 'react-native';
@@ -16,14 +19,13 @@ import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { formatEUR, summarizeAccountingEntries } from '@bob/core';
-import { vault } from '@bob/tokens';
+import { patterns, vault } from '@bob/tokens';
 import { t, type I18nKey } from '@bob/i18n';
 import {
   Button,
   Card,
   Chip,
   IconTile,
-  InnerScreenHeader,
   SectionHeader,
   StatusBadge,
   Toast,
@@ -76,13 +78,13 @@ function SkeletonBlock({ height }: { height: number }) {
   return <View style={{ height, borderRadius: 18, backgroundColor: colors.lineSoft }} />;
 }
 
-/** Colonne de l'équation partie double : label eyebrow + montant tabular. */
+/** Colonne de l'équation partie double : label eyebrow + montant tabular (réf : 20px/800). */
 function EquationSide({ label, cents, align }: { label: string; cents: number; align: 'left' | 'right' }) {
   const { colors } = useTheme();
   const alignItems = align === 'left' ? ('flex-start' as const) : ('flex-end' as const);
   return (
     <View style={{ flex: 1, alignItems }}>
-      <Text style={[font('eyebrow'), { letterSpacing: 0.4, color: colors.slate500 }]}>{label}</Text>
+      <Text style={[font('eyebrow'), { letterSpacing: 0.4, color: colors.slate400 }]}>{label}</Text>
       <Text
         style={{ ...font('bigNum'), fontSize: 20, color: colors.ink900, marginTop: 2, fontVariant: ['tabular-nums'] }}
         numberOfLines={1}
@@ -120,7 +122,7 @@ export default function Comptabilite() {
     [sorted, filterJournal],
   );
 
-  /** Icône du journal, teintée comme sa pastille (mêmes sémantiques que la tab Documents). */
+  /** Icône du journal, teintée comme sa pastille (mêmes sémantiques que la réf). */
   const journalIcon = (journal: string): ReactNode => {
     switch (journal) {
       case 'sales':
@@ -155,74 +157,100 @@ export default function Comptabilite() {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <View style={{ paddingTop: insets.top + 10, paddingHorizontal: 16 }}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={t('compta.back', { personality })}
-          onPress={() => router.back()}
-          hitSlop={8}
-          style={{ flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'flex-start', minHeight: 34 }}
-        >
-          <ChevronLeftIcon color={colors.ink800} size={18} strokeWidth={2.2} />
-          <Text style={[font('label', 600), { fontSize: 15, color: colors.ink800 }]}>
-            {t('compta.back', { personality })}
-          </Text>
-        </Pressable>
-      </View>
-
-      <InnerScreenHeader
-        eyebrow={t('compta.eyebrow', { personality })}
-        title={t('compta.title', { personality })}
-        subtitle={t('compta.subtitle', { personality })}
-      />
-
       <ScrollView
         style={{ flex: 1 }}
-        contentContainerStyle={{ paddingHorizontal: 18, paddingTop: 14, paddingBottom: insets.bottom + 34 }}
+        stickyHeaderIndices={[0]}
         showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: insets.bottom + 34 }}
       >
+        {/* [0] Rangée retour — SEUL élément sticky (réf : bg .92, « ‹ Documents » b2b).
+            Divergence deep-link assumée : ouvert depuis le briefing, back() y retourne. */}
+        <View
+          style={{
+            paddingTop: insets.top + 10,
+            paddingHorizontal: 16,
+            paddingBottom: 8,
+            backgroundColor: patterns.bottomTabBar.fade[1],
+          }}
+        >
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={t('compta.back', { personality })}
+            onPress={() => router.back()}
+            hitSlop={8}
+            style={{ flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'flex-start', minHeight: 34 }}
+          >
+            <ChevronLeftIcon color={semantic.b2b} size={19} strokeWidth={2.2} />
+            <Text style={[font('label', 600), { fontSize: 15, color: semantic.b2b }]}>
+              {t('compta.back', { personality })}
+            </Text>
+          </Pressable>
+        </View>
+
+        {/* En-tête — DÉFILE avec le contenu (réf : padding 2/20/4). */}
+        <View style={{ paddingTop: 2, paddingHorizontal: 20, paddingBottom: 4 }}>
+          <Text style={[font('eyebrow'), { color: colors.slate400 }]}>{t('compta.eyebrow', { personality })}</Text>
+          <Text style={[font('pageTitle'), { color: colors.ink800, marginTop: 2 }]} accessibilityRole="header">
+            {t('compta.title', { personality })}
+          </Text>
+          <Text style={[font('body'), { color: colors.slate500, marginTop: 3 }]}>
+            {t('compta.subtitle', { personality })}
+          </Text>
+        </View>
+
         {!entitled ? (
-          <Card>
-            <Text style={[font('cardTitle'), { color: colors.ink900 }]}>
-              {t('compta.paywallTitle', { personality })}
-            </Text>
-            <Text style={[font('sub'), { color: colors.slate500, marginTop: 6, lineHeight: 19 }]}>
-              {t('compta.paywallBody', { personality })}
-            </Text>
-            <View style={{ height: 12 }} />
-            <Button
-              title={t('compta.paywallCta', { personality })}
-              variant="secondary"
-              onPress={() => router.push('/compte')}
-            />
-          </Card>
+          <View style={{ paddingTop: 16, paddingHorizontal: 18 }}>
+            <Card>
+              <Text style={[font('cardTitle'), { color: colors.ink900 }]}>
+                {t('compta.paywallTitle', { personality })}
+              </Text>
+              <Text style={[font('sub'), { color: colors.slate500, marginTop: 6, lineHeight: 19 }]}>
+                {t('compta.paywallBody', { personality })}
+              </Text>
+              <View style={{ height: 12 }} />
+              <Button
+                title={t('compta.paywallCta', { personality })}
+                variant="secondary"
+                onPress={() => router.push('/compte')}
+              />
+            </Card>
+          </View>
         ) : entries.isLoading ? (
-          <View style={{ gap: 12 }}>
-            <SkeletonBlock height={170} />
+          <View style={{ paddingTop: 16, paddingHorizontal: 18, gap: 12 }}>
+            <SkeletonBlock height={190} />
             <SkeletonBlock height={150} />
             <SkeletonBlock height={150} />
           </View>
         ) : entries.isError ? (
-          <Card>
-            <Text accessibilityRole="alert" style={[font('sub'), { color: colors.slate500 }]}>
-              {t('compta.dataError', { personality })}
-            </Text>
-            <View style={{ height: 12 }} />
-            <Button
-              title={t('compta.retry', { personality })}
-              variant="secondary"
-              onPress={() => void entries.refetch()}
-            />
-          </Card>
+          <View style={{ paddingTop: 16, paddingHorizontal: 18 }}>
+            <Card>
+              <Text accessibilityRole="alert" style={[font('sub'), { color: colors.slate500 }]}>
+                {t('compta.dataError', { personality })}
+              </Text>
+              <View style={{ height: 12 }} />
+              <Button
+                title={t('compta.retry', { personality })}
+                variant="secondary"
+                onPress={() => void entries.refetch()}
+              />
+            </Card>
+          </View>
         ) : (
           <>
-            {/* HÉROS « Prêt pour le comptable » — dégradé vert (recette mois prêt de Documents),
+            {/* HÉROS « Prêt pour le comptable » (réf : marges 16/18, radius 20) —
                 équation de la partie double en signature, export FEC partageable. */}
             <LinearGradient
               colors={[vault.monthReadyTop, vault.monthReadyBottom]}
               start={{ x: 0.5, y: 0 }}
               end={{ x: 0.5, y: 1 }}
-              style={{ borderRadius: 18, borderWidth: 1, borderColor: vault.monthReadyBorder, padding: 16 }}
+              style={{
+                marginTop: 16,
+                marginHorizontal: 18,
+                borderRadius: 20,
+                borderWidth: 1,
+                borderColor: vault.monthReadyBorder,
+                padding: 16,
+              }}
             >
               <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 11 }}>
                 <IconTile tone="success" size={34} radius={10}>
@@ -247,7 +275,7 @@ export default function Comptabilite() {
               </View>
 
               {/* L'équation : la partie double tient (=) ou ne tient pas (≠) — au centime. */}
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 15 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 16 }}>
                 <EquationSide label={t('compta.debitLabel', { personality })} cents={summary.totalDebitCents} align="left" />
                 <Text
                   accessibilityLabel={t(summary.balanced ? 'compta.balanced' : 'compta.unbalanced', { personality })}
@@ -269,7 +297,7 @@ export default function Comptabilite() {
                 onPress={runExport}
                 style={({ pressed }) => [
                   {
-                    marginTop: 15,
+                    marginTop: 16,
                     backgroundColor: semantic.success,
                     borderRadius: 12,
                     paddingVertical: 12,
@@ -287,7 +315,7 @@ export default function Comptabilite() {
             </LinearGradient>
 
             {sorted.length === 0 ? (
-              <View style={{ marginTop: 12 }}>
+              <View style={{ paddingTop: 12, paddingHorizontal: 18 }}>
                 <Card>
                   <Text style={[font('sub'), { color: colors.slate500, lineHeight: 19 }]}>
                     {t('compta.empty', { personality })}
@@ -296,7 +324,8 @@ export default function Comptabilite() {
               </View>
             ) : (
               <>
-                <View style={{ marginTop: 22 }}>
+                {/* « Le journal » (réf : padding 22/20/12) */}
+                <View style={{ paddingTop: 22, paddingHorizontal: 20 }}>
                   <SectionHeader
                     title={t('compta.sectionJournal', { personality })}
                     action={
@@ -310,7 +339,7 @@ export default function Comptabilite() {
                 </View>
 
                 {summary.byJournal.length > 1 ? (
-                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingHorizontal: 18, paddingBottom: 4 }}>
                     <Chip
                       label={t('compta.chipAll', { personality })}
                       active={filterJournal === null}
@@ -327,14 +356,16 @@ export default function Comptabilite() {
                   </View>
                 ) : null}
 
-                {/* Bandeau contextuel : compte + totaux du sous-ensemble filtré uniquement. */}
+                {/* Bandeau contextuel (réf : padding 10/20/2) — sous-ensemble filtré uniquement. */}
                 {filterJournal !== null ? (
                   <View
                     style={{
                       flexDirection: 'row',
                       justifyContent: 'space-between',
-                      paddingHorizontal: 2,
-                      marginBottom: 10,
+                      alignItems: 'center',
+                      paddingTop: 10,
+                      paddingHorizontal: 20,
+                      paddingBottom: 2,
                     }}
                   >
                     <Text style={[font('meta'), { color: colors.slate400 }]}>
@@ -354,21 +385,22 @@ export default function Comptabilite() {
                   </View>
                 ) : null}
 
-                <View style={{ gap: 11 }}>
+                {/* Écritures (réf : padding 10/18/0, gap 11, cartes padding 15) */}
+                <View style={{ paddingTop: 10, paddingHorizontal: 18, gap: 11 }}>
                   {filtered.map((entry) => (
-                    <Card key={entry.id}>
+                    <Card key={entry.id} padding={15}>
                       <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 11 }}>
                         <IconTile tone={JOURNAL_TONE[entry.journal] ?? 'b2g'} size={34} radius={10}>
                           {journalIcon(entry.journal)}
                         </IconTile>
                         <View style={{ flex: 1, minWidth: 0 }}>
                           <Text
-                            style={{ ...font('cardTitle'), color: colors.ink900, fontVariant: ['tabular-nums'] }}
+                            style={{ ...font('cardTitle'), color: colors.ink800, fontVariant: ['tabular-nums'] }}
                             numberOfLines={1}
                           >
                             {entry.reference}
                           </Text>
-                          <Text style={[font('meta'), { color: colors.slate400, marginTop: 2 }]} numberOfLines={1}>
+                          <Text style={[font('meta'), { color: colors.slate300, marginTop: 2 }]} numberOfLines={1}>
                             {entry.label} · {formatDate(entry.entryDate)}
                           </Text>
                         </View>
@@ -393,23 +425,23 @@ export default function Comptabilite() {
               </>
             )}
 
-            {/* Clôture du mois — écran réel existant */}
+            {/* Clôture du mois (réf : padding 12/18/0, carte 15) */}
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={t('compta.closeCta', { personality })}
               onPress={() => router.push('/cloture')}
-              style={{ marginTop: 12 }}
+              style={{ paddingTop: 12, paddingHorizontal: 18 }}
             >
-              <Card>
+              <Card padding={15}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 11 }}>
                   <IconTile tone="b2g" size={34} radius={10}>
                     <LockIcon color={semantic.b2g} size={15} strokeWidth={2} />
                   </IconTile>
                   <View style={{ flex: 1, minWidth: 0 }}>
-                    <Text style={[font('cardTitle'), { color: colors.ink900 }]}>
+                    <Text style={[font('cardTitle'), { color: colors.ink800 }]}>
                       {t('compta.closeCta', { personality })}
                     </Text>
-                    <Text style={[font('meta'), { color: colors.slate400, marginTop: 2 }]} numberOfLines={1}>
+                    <Text style={[font('meta'), { color: colors.slate300, marginTop: 2 }]} numberOfLines={1}>
                       {t('compta.closeSub', { personality })}
                     </Text>
                   </View>
@@ -418,10 +450,18 @@ export default function Comptabilite() {
               </Card>
             </Pressable>
 
+            {/* Footer voix de Bob (réf : padding 22/30/8) */}
             <Text
               style={[
                 font('meta', 500),
-                { color: colors.slate300, textAlign: 'center', paddingTop: 22, paddingBottom: 8 },
+                {
+                  fontSize: 12.5,
+                  color: colors.slate300,
+                  textAlign: 'center',
+                  paddingTop: 22,
+                  paddingHorizontal: 30,
+                  paddingBottom: 8,
+                },
               ]}
             >
               {t('compta.footer', { personality })}
