@@ -527,6 +527,15 @@
   status=MERGED. NB commit combiné : embarque le SOCLE CORE du claim C14 (deriveVaultView/searchVault +
   einvoice-transmission, session builder parallèle, stable et couvert par les 285 tests) — l'écran C14
   reste à son owner.
+- [23:30] claude-code (session B) A1-C13 MERGE (programme « toutes les suggestions » 21:40,
+  commit 583d420) : les 3 onglets « à venir » sont REMPLIS de réel — Chantiers (useChantiers
+  filtré client : IconTile b2b/success par statut, nom, adresse · « Ouvert le {date} »,
+  StatusBadge En cours/Terminé ; rangées non pressables : pas d'écran détail chantier, pas
+  de chemin fantôme) · Docs (documents du coffre liés à SES pièces — invoice/quote/chantier
+  ids du client —, ouverture URL signée comme C14) · Infos (type via piece.typeB2*, SIREN
+  formaté, email, téléphone, score /100, délai moyen — chaque rangée n'existe que si la
+  donnée existe ; tout vide → fiche.infosEmpty recopié honnête). +10 clés i18n ×3 humeurs.
+  i18n 46 ✓ typecheck ✓.
 
 ### C14 — Documents (coffre-fort)        <!-- kind: screen -->
 - status: MERGED
@@ -839,6 +848,15 @@
 - [21:20] NOTE env : expo-file-system/expo-sharing déclarés mais NON matérialisés par pnpm (store
   désynchronisé — install locale requise hors sandbox) → volet « export FEC partageable » de C17
   bloqué (shareFec écrit, non importé/bundlé) ; summarizeAccountingEntries livré (3 tests).
+- [23:32] claude-code (session B) A4-C16 MERGE (programme « toutes les suggestions » 21:40,
+  commit 081071e) : ENVOI DU PDF AU CLIENT — helper shareDocument (URL signée →
+  File.downloadFileAsync vers le cache → feuille de partage native ; replis honnêtes
+  'unavailable'/'error' → Alert voix de Bob) + bouton icône « Envoyer » (SendIcon, gabarit
+  du bouton PDF) dans la barre sticky de PieceDetailView, branché sur /facture/[id] ET
+  /devis/[id] uniquement quand un PDF existe au coffre (pas de bouton fantôme). +3 clés
+  i18n ×3 humeurs (actionSharePdf, shareUnavailable, shareError). Typecheck ✓ i18n 46 ✓.
+  NB : partage réel à valider sur device physique (simulateur headless : pas de tap) —
+  même primitive que shareFec (éprouvée).
 
 ### C17 — Compta & conformité            <!-- kind: screen -->
 - status: MERGED
