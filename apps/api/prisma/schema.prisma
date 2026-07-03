@@ -177,6 +177,8 @@ model Company {
   addrLine1           String
   addrZip             String
   addrCity            String
+  tvaIntracom         String?
+  dateCreation        DateTime?            @db.Date
   iban                String?
   bic                 String?
   insurerName         String?

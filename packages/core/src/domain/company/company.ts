@@ -42,6 +42,10 @@ export interface CompanyProps {
   vatRegime: VatRegime;
   rcsOrRm?: string;
   address: Address;
+  /** N° TVA intracom (fiche annuaire à l'inscription — C24b « fiche société complète »). */
+  tvaIntracom?: string;
+  /** Date de création de l'entreprise (fiche annuaire, ISO yyyy-mm-dd). */
+  dateCreation?: DateOnly;
   iban?: string;
   bic?: string;
   decennale?: InsurancePolicy;
@@ -86,6 +90,12 @@ export class Company {
   }
   get rcsOrRm(): string | undefined {
     return this.p.rcsOrRm;
+  }
+  get tvaIntracom(): string | undefined {
+    return this.p.tvaIntracom;
+  }
+  get dateCreation(): DateOnly | undefined {
+    return this.p.dateCreation;
   }
   get decennale(): InsurancePolicy | undefined {
     return this.p.decennale;

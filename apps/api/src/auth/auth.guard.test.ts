@@ -1,0 +1,176 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ForbiddenException } from '@nestjs/common';
+import type { ExecutionContext } from '@nestjs/common';
+import { jwtVerify } from 'jose';
+import { MERCIER_PROPS } from '@bob/core';
+import { getPrincipal, requestContext, type Principal } from '../observability/logger';
+import { SupabaseAuthGuard } from './auth.guard';
+
+// jose est mocké : on teste la POLITIQUE du guard (principal, liste blanche, 403 provisioning),
+// pas la crypto — jwtVerify est piloté par chaque test.
+vi.mock('jose', () => ({
+  createRemoteJWKSet: vi.fn(() => async () => ({})),
+  jwtVerify: vi.fn(),
+}));
+const jwtVerifyMock = vi.mocked(jwtVerify);
+
+interface TestRequest {
+  url: string;
+  method?: string;
+  headers: Record<string, string | undefined>;
+}
+
+function ctx(req: TestRequest): ExecutionContext {
+  return { switchToHttp: () => ({ getRequest: () => req }) } as unknown as ExecutionContext;
+}
+
+/** Exécute canActivate dans un contexte de requête ALS et capture le Principal posé. */
+async function activate(
+  guard: SupabaseAuthGuard,
+  req: TestRequest,
+): Promise<{ allowed: boolean; principal: Principal | undefined }> {
+  return requestContext.run({ correlationId: 'test' }, async () => {
+    const allowed = await guard.canActivate(ctx(req));
+    return { allowed, principal: getPrincipal() };
+  });
+}
+
+const BEARER = { authorization: 'Bearer jwt-de-test' };
+
+describe('SupabaseAuthGuard — mode démo (inchangé C24b)', () => {
+  beforeEach(() => {
+    vi.stubEnv('DEMO_MODE', 'true');
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('pose le tenant x-company-id, sinon la société de seed', async () => {
+    const guard = new SupabaseAuthGuard();
+    const custom = await activate(guard, { url: '/quotes', method: 'GET', headers: { 'x-company-id': 'co-autre' } });
+    expect(custom.allowed).toBe(true);
+    expect(custom.principal).toEqual({ userId: 'demo', companyId: 'co-autre' });
+
+    const seeded = await activate(guard, { url: '/quotes', method: 'GET', headers: {} });
+    expect(seeded.allowed).toBe(true);
+    expect(seeded.principal).toEqual({ userId: 'demo', companyId: MERCIER_PROPS.id });
+  });
+});
+
+describe('SupabaseAuthGuard — prod (JWT Supabase, C24b provisioning)', () => {
+  beforeEach(() => {
+    vi.stubEnv('DEMO_MODE', 'false');
+    vi.stubEnv('SUPABASE_JWKS_URL', 'https://exemple.supabase.co/auth/v1/.well-known/jwks.json');
+    jwtVerifyMock.mockReset();
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  function payload(companyId?: unknown): { payload: Record<string, unknown> } {
+    return {
+      payload: {
+        sub: 'a1b2c3d4-0000-4000-8000-1234567890ab',
+        ...(companyId !== undefined ? { app_metadata: { company_id: companyId } } : {}),
+      },
+    };
+  }
+
+  it('JWT valide AVEC company_id conforme : principal complet, accès tenant', async () => {
+    jwtVerifyMock.mockResolvedValue(payload('company-a1b2') as never);
+    const r = await activate(new SupabaseAuthGuard(), { url: '/quotes', method: 'GET', headers: BEARER });
+    expect(r.allowed).toBe(true);
+    expect(r.principal).toEqual({ userId: 'a1b2c3d4-0000-4000-8000-1234567890ab', companyId: 'company-a1b2' });
+  });
+
+  it('JWT valide SANS company_id sur un endpoint tenant : 403 PROVISIONING_REQUIRED — plus JAMAIS le tenant démo', async () => {
+    jwtVerifyMock.mockResolvedValue(payload() as never);
+    const guard = new SupabaseAuthGuard();
+    await requestContext.run({ correlationId: 'test' }, async () => {
+      let thrown: unknown = null;
+      try {
+        await guard.canActivate(ctx({ url: '/quotes', method: 'GET', headers: BEARER }));
+      } catch (e) {
+        thrown = e;
+      }
+      expect(thrown).toBeInstanceOf(ForbiddenException);
+      expect((thrown as ForbiddenException).getResponse()).toMatchObject({ code: 'PROVISIONING_REQUIRED' });
+      // Aucun principal Mercier posé en douce : le repli cross-tenant est mort.
+      expect(getPrincipal()).toBeUndefined();
+    });
+  });
+
+  it('company_id NON CONFORME (métacaractères) : traité comme absent → 403, jamais utilisé', async () => {
+    jwtVerifyMock.mockResolvedValue(payload("mercier'; DROP TABLE companies;--") as never);
+    const guard = new SupabaseAuthGuard();
+    await expect(
+      requestContext.run({ correlationId: 'test' }, () =>
+        guard.canActivate(ctx({ url: '/customers', method: 'GET', headers: BEARER })),
+      ),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('PUBLIC inscription : GET /company/lookup passe SANS Authorization (pas encore de compte à l’étape SIRET)', async () => {
+    const guard = new SupabaseAuthGuard();
+
+    const anonymous = await activate(guard, { url: '/company/lookup?siret=73282932000074', method: 'GET', headers: {} });
+    expect(anonymous.allowed).toBe(true);
+    expect(anonymous.principal).toBeUndefined(); // public : aucun principal, aucune donnée tenant derrière
+
+    // Un Bearer statique/invalide (EXPO_PUBLIC_API_TOKEN de dev) ne doit PAS casser l'endpoint public :
+    // la route est traitée AVANT toute vérification du header.
+    jwtVerifyMock.mockRejectedValue(new Error('jamais appelé'));
+    const staleBearer = await activate(guard, { url: '/company/lookup?siret=1', method: 'GET', headers: BEARER });
+    expect(staleBearer.allowed).toBe(true);
+    expect(jwtVerifyMock).not.toHaveBeenCalled();
+  });
+
+  it('liste blanche tenant-optionnel : POST /onboarding/company exige un JWT VALIDE, companyId null admis', async () => {
+    jwtVerifyMock.mockResolvedValue(payload() as never);
+    const guard = new SupabaseAuthGuard();
+
+    const onboarding = await activate(guard, { url: '/onboarding/company', method: 'POST', headers: BEARER });
+    expect(onboarding.allowed).toBe(true);
+    expect(onboarding.principal).toEqual({ userId: 'a1b2c3d4-0000-4000-8000-1234567890ab', companyId: null });
+
+    // SANS JWT : refus — le provisioning a besoin du userId signé (id déterministe + app_metadata).
+    const anonymous = await activate(guard, { url: '/onboarding/company', method: 'POST', headers: {} });
+    expect(anonymous.allowed).toBe(false);
+  });
+
+  it('les listes blanches sont STRICTES : autre méthode ou autre chemin → refus/403', async () => {
+    jwtVerifyMock.mockResolvedValue(payload() as never);
+    const guard = new SupabaseAuthGuard();
+    // POST /company/lookup n'est PAS public (seul GET l'est) : JWT sans tenant → 403 provisioning.
+    await expect(
+      requestContext.run({ correlationId: 'test' }, () =>
+        guard.canActivate(ctx({ url: '/company/lookup', method: 'POST', headers: BEARER })),
+      ),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(
+      requestContext.run({ correlationId: 'test' }, () =>
+        guard.canActivate(ctx({ url: '/onboarding/company/extra', method: 'POST', headers: BEARER })),
+      ),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('JWT invalide : refus simple (false ≠ 403 provisioning) ; Bearer absent : refus', async () => {
+    jwtVerifyMock.mockRejectedValue(new Error('signature invalide'));
+    const guard = new SupabaseAuthGuard();
+    const bad = await activate(guard, { url: '/quotes', method: 'GET', headers: BEARER });
+    expect(bad.allowed).toBe(false);
+    expect(bad.principal).toBeUndefined();
+
+    const missing = await activate(guard, { url: '/quotes', method: 'GET', headers: {} });
+    expect(missing.allowed).toBe(false);
+  });
+
+  it('infra toujours ouverte, sans principal : /health, /metrics, /public/sign/', async () => {
+    const guard = new SupabaseAuthGuard();
+    for (const url of ['/health', '/health/ready', '/metrics', '/public/sign/tok-1']) {
+      const r = await activate(guard, { url, method: 'GET', headers: {} });
+      expect(r.allowed).toBe(true);
+      expect(r.principal).toBeUndefined();
+    }
+  });
+});

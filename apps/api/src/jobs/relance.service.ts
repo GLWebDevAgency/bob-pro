@@ -1,7 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import {
-  MERCIER_PROPS,
   SystemClock,
   deriveRelancePlan,
   ok,
@@ -13,7 +12,7 @@ import {
   type Result,
 } from '@bob/core';
 import { PERSISTENCE, type Persistence } from '../persistence/persistence';
-import { AppLogger, getPrincipal } from '../observability/logger';
+import { AppLogger, requireTenant } from '../observability/logger';
 import { NotificationDeliveryService } from './notification-delivery.service';
 import { ScheduledTenantDirectory } from './tenant-directory';
 
@@ -121,9 +120,10 @@ export class RelanceService {
    * BobClient.sendRelance devient réel). Tous les tons sont permis ici : le geste EST la
    * validation (y compris la mise en demeure L441-10). Refus honnête sinon.
    */
-  /** Variante requête HTTP : tenant du Principal authentifié (même règle que BackendService). */
+  /** Variante requête HTTP : tenant du Principal authentifié (même règle que BackendService —
+   * C24b : tenant OBLIGATOIRE, le repli société de démo est supprimé). */
   sendRelance(invoiceId: string): Promise<Result<{ jobId: string; status: string; tone: string }, AppError>> {
-    return this.sendRelanceForInvoice(getPrincipal()?.companyId ?? MERCIER_PROPS.id, invoiceId);
+    return this.sendRelanceForInvoice(requireTenant(), invoiceId);
   }
 
   async sendRelanceForInvoice(

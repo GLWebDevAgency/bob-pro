@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { MERCIER_PROPS } from '@bob/core';
 import { InMemoryPersistence } from '../persistence/persistence';
+import { requestContext } from '../observability/logger';
 import { NotificationsApiService } from './notifications-api.service';
 
-const TENANT = MERCIER_PROPS.id; // sans Principal (tests), le service retombe sur le tenant de seed
+const TENANT = 'co-test';
+// C24b : plus AUCUN repli tenant — les tests posent un Principal explicite (comme le guard en requête).
+const asTenant = <T>(fn: () => Promise<T>): Promise<T> =>
+  requestContext.run({ correlationId: 'test', principal: { userId: 'user-test', companyId: TENANT } }, fn);
 
 async function seedJob(p: InMemoryPersistence, id: string, dedupeKey: string, at: string): Promise<void> {
   await p.notificationJobs.enqueue({
@@ -31,7 +34,7 @@ describe('NotificationsApiService — fil company-scoped (C25)', () => {
       now: '2026-07-03T07:00:00.000Z',
     });
 
-    const r = await service.list();
+    const r = await asTenant(() => service.list());
 
     expect(r.ok).toBe(true);
     if (!r.ok) return;
@@ -50,12 +53,12 @@ describe('NotificationsApiService — fil company-scoped (C25)', () => {
     const service = new NotificationsApiService(p);
     await seedJob(p, 'job-1', 'invoice:inv-1:relance:2026-07-03', '2026-07-03T06:00:00.000Z');
 
-    const first = await service.markRead('job-1');
+    const first = await asTenant(() => service.markRead('job-1'));
     expect(first.ok && first.value.readAt).not.toBeNull();
-    const again = await service.markRead('job-1');
+    const again = await asTenant(() => service.markRead('job-1'));
     expect(again.ok && first.ok && again.value.readAt).toBe(first.ok ? first.value.readAt : null); // première lecture conservée
 
-    const ghost = await service.markRead('job-ghost');
+    const ghost = await asTenant(() => service.markRead('job-ghost'));
     expect(!ghost.ok && ghost.error.kind).toBe('not_found');
   });
 
@@ -63,11 +66,11 @@ describe('NotificationsApiService — fil company-scoped (C25)', () => {
     const p = new InMemoryPersistence();
     const service = new NotificationsApiService(p);
 
-    const bad = await service.registerDevice({ expoPushToken: 'pas-un-token' });
+    const bad = await asTenant(() => service.registerDevice({ expoPushToken: 'pas-un-token' }));
     expect(!bad.ok && bad.error.kind).toBe('validation');
 
-    const ok1 = await service.registerDevice({ expoPushToken: 'ExponentPushToken[abcdef123456]', platform: 'ios' });
-    const ok2 = await service.registerDevice({ expoPushToken: 'ExponentPushToken[abcdef123456]', platform: 'ios' });
+    const ok1 = await asTenant(() => service.registerDevice({ expoPushToken: 'ExponentPushToken[abcdef123456]', platform: 'ios' }));
+    const ok2 = await asTenant(() => service.registerDevice({ expoPushToken: 'ExponentPushToken[abcdef123456]', platform: 'ios' }));
     expect(ok1.ok && ok2.ok).toBe(true);
     if (!ok1.ok || !ok2.ok) return;
     expect(ok2.value.id).toBe(ok1.value.id); // upsert, pas de doublon

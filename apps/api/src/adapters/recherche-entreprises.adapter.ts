@@ -1,4 +1,10 @@
-import { frenchVatNumber, nafToTrade, type CompanyLookupPort, type CompanyLookupResult } from '@bob/core';
+import {
+  frenchVatNumber,
+  nafToTrade,
+  natureJuridiqueToLegalForm,
+  type CompanyLookupPort,
+  type CompanyLookupResult,
+} from '@bob/core';
 
 /** Erreur de dépendance amont (API indisponible/throttlée) — distincte d'un « non trouvé » (null). */
 export class CompanyLookupUnavailableError extends Error {
@@ -100,12 +106,23 @@ export class RechercheEntreprisesAdapter implements CompanyLookupPort {
       siege.code_postal && siege.libelle_commune ? { line1, zip: siege.code_postal, city: siege.libelle_commune } : null;
     const siren = r.siren ?? v.slice(0, 9);
     const tva = Array.isArray(r.tva) ? r.tva[0] : typeof r.tva === 'string' ? r.tva : null;
+    // Fiche société COMPLÈTE (C24b) : nature_juridique (code INSEE, ex. 5710) + date_creation
+    // (ISO) sont renvoyés par l'API réelle — on les remonte, mappés prudemment (code inconnu →
+    // null, l'utilisateur choisit). PAS de dirigeants : minimisation RGPD, inutile pour facturer.
+    const natureJuridique = typeof r.nature_juridique === 'string' && r.nature_juridique ? r.nature_juridique : null;
+    const dateCreation =
+      typeof r.date_creation === 'string' && /^\d{4}-\d{2}-\d{2}/.test(r.date_creation)
+        ? r.date_creation.slice(0, 10)
+        : null;
     const result: CompanyLookupResult = {
       siren,
       siret: siege.siret ?? v,
       denomination: r.nom_complet ?? r.nom_raison_sociale ?? `Entreprise ${siren}`,
       nafApe: naf,
       trade: nafToTrade(naf),
+      natureJuridiqueCode: natureJuridique,
+      legalForm: natureJuridiqueToLegalForm(natureJuridique),
+      dateCreation,
       address,
       tvaIntracom: tva ?? (/^\d{9}$/.test(siren) ? frenchVatNumber(siren) : null),
       rge: Boolean(r.complements?.est_rge),
@@ -128,6 +145,8 @@ interface RechercheEntreprisesResponse {
     nom_complet?: string;
     nom_raison_sociale?: string;
     activite_principale?: string;
+    nature_juridique?: string;
+    date_creation?: string;
     tva?: string[] | string | null;
     complements?: { est_rge?: boolean };
     siege?: {

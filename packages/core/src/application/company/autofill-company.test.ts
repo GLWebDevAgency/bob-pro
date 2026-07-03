@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { AutofillCompanyFromSiret } from './autofill-company';
 import { type CompanyLookupPort, type CompanyLookupResult } from '../ports/company-lookup';
 import { nafToTrade } from '../../domain/company/naf-to-trade';
+import { natureJuridiqueToLegalForm } from '../../domain/company/nature-juridique';
 
 const PROFILE: CompanyLookupResult = {
   siren: '356000000',
@@ -9,6 +10,9 @@ const PROFILE: CompanyLookupResult = {
   denomination: 'LA POSTE',
   nafApe: '43.22A',
   trade: 'plombier',
+  natureJuridiqueCode: '5710',
+  legalForm: 'SAS',
+  dateCreation: '1991-01-01',
   address: { line1: '9 rue du Colonel Pierre Avia', zip: '75015', city: 'Paris' },
   tvaIntracom: 'FR39356000000',
   rge: false,
@@ -52,5 +56,17 @@ describe('nafToTrade', () => {
     expect(nafToTrade('70.22Z')).toBe('consultant');
     expect(nafToTrade('53.10Z')).toBeNull();
     expect(nafToTrade(null)).toBeNull();
+  });
+});
+
+describe('natureJuridiqueToLegalForm', () => {
+  it('mappe les codes INSEE sans ambiguïté, null sinon (l’utilisateur choisit)', () => {
+    expect(natureJuridiqueToLegalForm('1000')).toBe('EI');
+    expect(natureJuridiqueToLegalForm('5498')).toBe('EURL');
+    expect(natureJuridiqueToLegalForm('5499')).toBe('SARL');
+    expect(natureJuridiqueToLegalForm('5710')).toBe('SAS'); // SASU incluse (même code INSEE)
+    expect(natureJuridiqueToLegalForm('6540')).toBeNull(); // SCI : hors périmètre LegalForm
+    expect(natureJuridiqueToLegalForm('9220')).toBeNull(); // association
+    expect(natureJuridiqueToLegalForm(null)).toBeNull();
   });
 });

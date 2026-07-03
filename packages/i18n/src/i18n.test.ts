@@ -523,6 +523,22 @@ describe('i18n — C23 diag.*', () => {
     );
   });
 
+  it('auth.provisioning* + fiche société : provisioning tenant après confirmation (C24b) sur les 3 humeurs', () => {
+    expect(t('auth.provisioningTitle')).toBe('On prépare ton espace');
+    expect(t('auth.provisioningTitle', { personality: 'pro' })).toBe('Préparation de votre espace');
+    expect(t('auth.provisioningTitle', { personality: 'direct' })).toBe('Espace en création.');
+    expect(t('auth.provisioningBody')).toContain('infos officielles');
+    expect(t('auth.provisioningError', { personality: 'direct' })).toBe('Création KO. Réessaie.');
+    expect(t('auth.provisioningRetry')).toBe('Réessayer');
+    expect(t('auth.provisioningSiretIntro', { personality: 'pro' })).toContain('SIRET');
+    expect(t('auth.provisioningLegalFormLabel')).toBe('Sa forme juridique ?');
+    expect(t('auth.provisioningConfirmCta', { personality: 'direct' })).toBe('Créer');
+    expect(t('auth.provisioningSignOut')).toBe('Se déconnecter');
+    // Fiche société complète au récap : forme juridique + date de création (lignes masquées si null).
+    expect(t('auth.companyLegalFormLabel')).toBe('Forme juridique');
+    expect(t('auth.companyCreatedLabel', { personality: 'pro' })).toBe('Date de création');
+  });
+
   it('onboard.previewTitle interpole {trade} sur les 3 humeurs, CTA « C’est parti » / « Plus tard »', () => {
     expect(t('onboard.previewTitle', { params: { trade: 'plombier' } })).toBe(
       'Ton espace plombier est prêt',
@@ -569,5 +585,49 @@ describe('i18n — C23 diag.*', () => {
     );
     expect(t('reglages.soonBadge', { personality: 'pro' })).toBe('À venir');
     expect(t('reglages.mentionsEmpty', { personality: 'direct' })).toBe('Visible dès ta première facture.');
+  });
+});
+
+describe('i18n — C26 account.*', () => {
+  it('en-tête, onglets et sections du compte sur les 3 humeurs', () => {
+    expect(t('account.title')).toBe('Mon compte');
+    expect(t('account.eyebrow')).toBe('Ton compte');
+    expect(t('account.eyebrow', { personality: 'pro' })).toBe('Votre compte');
+    expect(t('account.tabProfile')).toBe('Profil');
+    expect(t('account.tabSubscription')).toBe('Abonnement');
+    expect(t('account.sectionCompany')).toBe('Entreprise');
+    expect(t('account.sectionConnections')).toBe('Connexions');
+    expect(t('account.sectionPlans')).toBe('Changer d’offre');
+    expect(t('account.sectionPlans', { personality: 'direct' })).toBe('Offres');
+    expect(t('account.signOut', { personality: 'direct' })).toBe('Déconnexion');
+  });
+
+  it('honnêteté : accès anticipé, CTA plans indisponibles, factures d’abo vides, banque à connecter', () => {
+    expect(t('account.offerEarlyAccess')).toBe('Accès anticipé');
+    expect(t('account.offerEarlyBody', { personality: 'direct' })).toBe(
+      'Tout ouvert. 0 €. Prévenu avant tout changement.',
+    );
+    expect(t('account.planCtaUnavailable', { personality: 'pro' })).toBe(
+      'Disponible à l’ouverture de la facturation',
+    );
+    expect(t('account.invoicesEmpty')).toBe(
+      'Tu ne paies rien pendant l’accès anticipé — donc zéro facture. Elles s’afficheront ici le moment venu.',
+    );
+    expect(t('account.connToConnect')).toBe('À connecter');
+    expect(t('account.serviceSoon', { personality: 'pro' })).toBe('À venir');
+    expect(t('account.serviceActive')).toBe('Actif');
+  });
+
+  it('services, parrainage, équipe et erreurs à la voix de Bob', () => {
+    expect(t('account.serviceOnlinePaymentSub')).toBe('Encaisse par carte — 1,2 % par encaissement');
+    expect(t('account.serviceInsurance', { personality: 'direct' })).toBe('Décennale & RC Pro');
+    expect(t('account.referralSoon', { personality: 'pro' })).toBe(
+      'Prochainement : un mois offert pour vous deux.',
+    );
+    expect(t('account.teamRowSub', { personality: 'direct' })).toBe('Invitations, rôles. Bientôt.');
+    expect(t('account.companyEmpty', { personality: 'pro' })).toBe(
+      'Les informations de votre entreprise s’afficheront ici une fois votre société reliée à votre compte.',
+    );
+    expect(t('account.dataError', { personality: 'direct' })).toBe('Profil injoignable. Réessaie.');
   });
 });

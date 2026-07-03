@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
-import { MERCIER_PROPS, SystemClock, appNotFound, ok, type AppError, type Result } from '@bob/core';
+import { SystemClock, appNotFound, ok, type AppError, type Result } from '@bob/core';
 import { PERSISTENCE, type Persistence } from '../persistence/persistence';
 import { type NotificationJob } from '../persistence/notification-jobs';
-import { getPrincipal } from '../observability/logger';
+import { getPrincipal, requireTenant } from '../observability/logger';
 import { notificationRoute } from './notification-route';
 
 /**
@@ -60,9 +60,9 @@ export class NotificationsApiService {
 
   constructor(@Inject(PERSISTENCE) private readonly p: Persistence) {}
 
-  /** Tenant courant — même règle que BackendService (Principal posé par le guard, seed en démo). */
+  /** Tenant courant — même règle que BackendService (C24b : tenant OBLIGATOIRE, zéro repli démo). */
   private companyId(): string {
-    return getPrincipal()?.companyId ?? MERCIER_PROPS.id;
+    return requireTenant();
   }
 
   async list(limitRaw?: string): Promise<Result<NotificationItemDto[], AppError>> {

@@ -341,5 +341,34 @@ describe('HttpBobClient — assistant Bob (C40 ⑧ : ask/confirm/journal serveur
     const device = await client.registerDevice({ expoPushToken: 'ExponentPushToken[abc]', platform: 'ios' });
     expect(device.ok && device.value).toEqual({ id: 'dev-1' });
   });
+
+  it('C24b : registerCompany → POST /onboarding/company, id décidé par le serveur (jamais envoyé)', async () => {
+    const input = {
+      name: 'Durand Élec',
+      legalForm: 'EI' as const,
+      siren: '732829320',
+      siret: '73282932000074',
+      trade: 'electricien' as const,
+      vatRegime: 'franchise' as const,
+      address: { line1: '4 rue du Forgeron', zip: '92310', city: 'Sèvres' },
+    };
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      if (String(url) === 'https://api.bob.test/onboarding/company' && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+        expect(body).toEqual(input);
+        expect(body).not.toHaveProperty('id'); // anti-rattachement : l'id vient TOUJOURS du serveur
+        return new Response(JSON.stringify({ companyId: 'company-user-1' }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ error: { kind: 'not_found', resource: 'route' } }), { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-mercier' });
+
+    const r = await client.registerCompany(input);
+
+    expect(r.ok && r.value).toEqual({ companyId: 'company-user-1' });
+  });
 });
 

@@ -68,6 +68,7 @@ export function quoteLineToCreate(l: QuoteLine, owner: { quoteId?: string; invoi
 interface CompanyRow {
   id: string; name: string; legalForm: string; siren: string; siret: string; apeCode: string | null;
   trade: string; vatRegime: string; rcsOrRm: string | null; addrLine1: string; addrZip: string; addrCity: string;
+  tvaIntracom: string | null; dateCreation: Date | null;
   iban: string | null; bic: string | null; insurerName: string | null; policyNo: string | null;
   coverage: string | null; policyExpiresAt: Date | null;
 }
@@ -85,6 +86,8 @@ export function companyRowToProps(row: CompanyRow): CompanyProps {
   };
   if (row.apeCode) props.apeCode = row.apeCode;
   if (row.rcsOrRm) props.rcsOrRm = row.rcsOrRm;
+  if (row.tvaIntracom) props.tvaIntracom = row.tvaIntracom;
+  if (row.dateCreation) props.dateCreation = row.dateCreation.toISOString().slice(0, 10);
   if (row.iban) props.iban = row.iban;
   if (row.bic) props.bic = row.bic;
   if (row.insurerName && row.policyNo && row.coverage && row.policyExpiresAt) {
@@ -112,6 +115,8 @@ export function companyPropsToCreate(p: CompanyProps) {
     addrLine1: p.address.line1,
     addrZip: p.address.zip,
     addrCity: p.address.city,
+    tvaIntracom: p.tvaIntracom ?? null,
+    dateCreation: p.dateCreation ? new Date(p.dateCreation) : null,
     iban: p.iban ?? null,
     bic: p.bic ?? null,
     insurerName: p.decennale?.insurer ?? null,

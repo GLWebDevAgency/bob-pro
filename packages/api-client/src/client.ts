@@ -25,6 +25,7 @@ import type {
   TradeConfig,
   ChantierProps,
   CreateChantierInput,
+  CompanyProps,
   CompanyLookupResult,
   VatCheckResult,
   AddressSuggestion,
@@ -294,6 +295,10 @@ export interface BobClient {
   getDiagnostic(): Promise<Result<DiagnosticResult, AppError>>;
   getProfile(): Promise<Result<TradeConfig, AppError>>;
   lookupCompany(siret: string): Promise<Result<CompanyLookupResult, AppError>>;
+  /** POST /onboarding/company (C24b) : crée la société du compte (provisioning tenant à
+   * l'inscription — id décidé PAR LE SERVEUR, jamais fourni par le client) ou met à jour
+   * SA société quand le tenant existe déjà. Local (démo) : la société seedée. */
+  registerCompany(input: Omit<CompanyProps, 'id'>): Promise<Result<{ companyId: string }, AppError>>;
   checkVat(vatNumber: string): Promise<Result<VatCheckResult, AppError>>;
   searchAddress(query: string): Promise<Result<AddressSuggestion[], AppError>>;
   transcribe(input: { audioBase64: string; mimeType: string }): Promise<Result<{ text: string }, AppError>>;

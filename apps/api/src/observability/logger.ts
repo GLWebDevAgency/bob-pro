@@ -4,7 +4,12 @@ import pino from 'pino';
 
 export interface Principal {
   userId: string;
-  companyId: string;
+  /**
+   * Tenant du user authentifié. NULL = JWT valide SANS app_metadata.company_id conforme
+   * (compte neuf, pas encore provisionné — C24b) : seuls les endpoints de la liste blanche
+   * du guard (lookup public, provisioning) sont joignables dans cet état.
+   */
+  companyId: string | null;
 }
 
 interface RequestContext {
@@ -18,6 +23,21 @@ export const getPrincipal = (): Principal | undefined => requestContext.getStore
 export const setPrincipal = (principal: Principal): void => {
   const store = requestContext.getStore();
   if (store) store.principal = principal;
+};
+
+/**
+ * Tenant courant OBLIGATOIRE (C24b — plus AUCUN repli sur la société de démo).
+ * Principal absent ou sans tenant ici = bug d'ordonnancement : le guard doit avoir bloqué
+ * en amont (403 PROVISIONING_REQUIRED) — on échoue EXPLICITEMENT, jamais un tenant par défaut.
+ */
+export const requireTenant = (): string => {
+  const companyId = getPrincipal()?.companyId ?? null;
+  if (companyId === null) {
+    throw new Error(
+      'Aucun tenant sur le Principal — le guard doit avoir refusé la requête (PROVISIONING_REQUIRED) avant ce point.',
+    );
+  }
+  return companyId;
 };
 
 export const rootLogger = pino({

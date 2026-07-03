@@ -43,9 +43,10 @@ export class HealthController {
 
   @Get('ready')
   async ready() {
-    const r = await this.backend.listCustomers();
+    // C24b : sonde SANS tenant (aucun Principal sur /health ; plus de repli société de démo).
+    const r = await this.backend.readiness();
     if (!r.ok) throw new HttpException({ ready: false, error: r.error }, HttpStatus.SERVICE_UNAVAILABLE);
-    return { ready: true, customers: r.value.length };
+    return { ready: true, customers: r.value.customers };
   }
 }
 
@@ -92,7 +93,10 @@ export class ProfileController {
 @Controller('company')
 export class CompanyLookupController {
   constructor(private readonly backend: BackendService) {}
-  // Throttle modéré : protège l'API publique amont (Recherche d'entreprises, 7 req/s).
+  // PUBLIC assumé (guard C24b) : à l'étape SIRET de l'inscription, l'utilisateur n'a pas encore
+  // de compte (aucun JWT possible) et les données renvoyées sont l'annuaire OFFICIEL public
+  // (Recherche d'entreprises) — zéro donnée tenant. Garde-fou : ce throttle 20/min par IP
+  // (anti-abus + protège le quota amont 7 req/s).
   @Throttle({ default: { limit: 20, ttl: 60000 } })
   @Get('lookup')
   async lookup(@Query('siret') siret: string) {

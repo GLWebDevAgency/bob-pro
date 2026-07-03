@@ -108,7 +108,8 @@ import { BanAddressAdapter } from './adapters/ban-address.adapter';
 import { PERSISTENCE, type Persistence } from './persistence/persistence';
 import { CompanyScopedJournalStore } from './persistence/agent-journal';
 import { Metrics } from './observability/metrics';
-import { AppLogger, getPrincipal } from './observability/logger';
+import { AppLogger, getPrincipal, requireTenant } from './observability/logger';
+import { SUPABASE_ADMIN, type SupabaseAdminPort } from './auth/supabase-admin';
 import { PAYMENT_GATEWAY } from './payments/payment-gateway';
 import { PDF_RENDERER } from './documents/pdf-renderer';
 import { buildDocumentStorage, documentSha256 } from './documents/storage';
@@ -288,9 +289,13 @@ export class BackendService {
   private readonly documentStorage = buildDocumentStorage();
   private readonly subscription: Subscription;
 
-  /** Tenant courant : companyId du Principal authentifié (défaut = société de seed en démo). */
+  /**
+   * Tenant courant : companyId du Principal posé par le guard (en démo : société de seed via
+   * le guard, plus jamais ici). Principal absent ou sans tenant = bug d'ordonnancement — le
+   * guard répond 403 PROVISIONING_REQUIRED avant : on échoue explicitement (C24b, zéro repli).
+   */
   private companyId(): string {
-    return getPrincipal()?.companyId ?? MERCIER_PROPS.id;
+    return requireTenant();
   }
 
   constructor(
@@ -298,6 +303,7 @@ export class BackendService {
     @Inject(PAYMENT_GATEWAY) private readonly gateway: PaymentGatewayPort,
     @Inject(PDF_RENDERER) private readonly pdf: PdfRendererPort,
     @Inject(OCR_PORT) private readonly ocr: OcrPort,
+    @Inject(SUPABASE_ADMIN) private readonly supabaseAdmin: SupabaseAdminPort,
     private readonly notificationDelivery: NotificationDeliveryService,
     private readonly metrics: Metrics,
     private readonly logger: AppLogger,
@@ -343,6 +349,15 @@ export class BackendService {
 
   listCustomers() {
     return new ListCustomers({ customers: this.p.customers }).execute({ companyId: this.companyId() });
+  }
+  /**
+   * Sonde de readiness (/health/ready) : exerce la persistance SANS tenant — aucun Principal
+   * n'est posé sur /health (guard pass-through) et le repli démo a été supprimé (C24b).
+   * Le tenant sonde n'existe pas : seul l'aller-retour persistance compte (RLS → liste vide).
+   */
+  async readiness(): Promise<Result<{ customers: number }, AppError>> {
+    const list = await this.p.customers.listByCompany('readiness-probe');
+    return ok({ customers: list.length });
   }
   getCashflow(scenario: Scenario, horizon: Horizon) {
     return new GetCashflow({ snapshots: this.snapshots, expenses: this.p.expenses }).execute({
@@ -1420,13 +1435,58 @@ export class BackendService {
   }
 
   // ——— Onboarding / multi-tenant ———
-  /** Crée (ou met à jour) la société du tenant courant — première étape de l'onboarding. */
+  /**
+   * Crée (ou met à jour) la société du tenant courant — première étape de l'onboarding.
+   *
+   * C24b — deux chemins, JAMAIS d'id accepté du client (anti-rattachement à un tenant arbitraire) :
+   * - Principal AVEC tenant (démo, ou compte déjà provisionné) : met à jour SA société.
+   * - Principal SANS tenant (prod, compte neuf) : PROVISIONING — id DÉTERMINISTE
+   *   `company-<userId>` (userId Supabase = UUID → conforme /^[A-Za-z0-9-]{1,64}$/ ; un retry
+   *   recrée la MÊME company : idempotent, zéro orpheline), sauvegarde de la Company PUIS
+   *   écriture d'app_metadata.company_id via l'API admin Supabase. Échec admin = erreur
+   *   EXPLICITE loggée (le client réessaie ; la company déjà créée est réutilisée telle quelle).
+   */
   async registerCompany(input: Omit<CompanyProps, 'id'>): Promise<Result<{ companyId: string }, AppError>> {
-    const r = Company.of({ id: this.companyId(), ...input });
+    const principal = getPrincipal();
+    if (!principal) {
+      // Bug d'ordonnancement : le guard pose TOUJOURS un principal sur cet endpoint (liste blanche).
+      throw new Error('registerCompany sans Principal — le guard doit authentifier avant ce point.');
+    }
+
+    if (principal.companyId !== null) {
+      // Tenant déjà provisionné (ou démo) : comportement historique — update de SA société.
+      const r = Company.of({ id: principal.companyId, ...input });
+      if (!r.ok) return { ok: false, error: appDomain(r.error) };
+      await this.p.companies.save(r.value);
+      this.logger.audit('company.registered', { companyId: principal.companyId, name: input.name });
+      return ok({ companyId: principal.companyId });
+    }
+
+    // Provisioning (prod, compte neuf). Le guard garantit le format du sub ; on re-vérifie à la
+    // frontière avant que l'id ne serve de GUC RLS.
+    const companyId = `company-${principal.userId}`;
+    if (principal.userId === '' || !/^[A-Za-z0-9-]{1,64}$/.test(companyId)) {
+      throw new Error(`provisioning tenant : userId inattendu (« ${principal.userId} ») — id de company non dérivable.`);
+    }
+    const r = Company.of({ id: companyId, ...input });
     if (!r.ok) return { ok: false, error: appDomain(r.error) };
-    await this.p.companies.save(r.value);
-    this.logger.audit('company.registered', { companyId: this.companyId(), name: input.name });
-    return ok({ companyId: this.companyId() });
+    // Le TenantPersistenceInterceptor n'a PAS ouvert de transaction tenant (companyId null) :
+    // on pose ici le GUC RLS sur l'id provisionné pour que la politique WITH CHECK passe.
+    await this.p.runWithTenant(companyId, () => this.p.companies.save(r.value));
+    try {
+      await this.supabaseAdmin.setUserCompanyId(principal.userId, companyId);
+    } catch (e) {
+      const cause = e instanceof Error ? e.message : 'supabase-admin';
+      // Company déjà sauvée : le retry re-dérive le MÊME id et ré-écrit — idempotent, zéro orpheline.
+      this.logger.error(
+        `provisioning tenant ${companyId} : écriture app_metadata.company_id échouée (${cause}) — retry client possible, company idempotente`,
+        undefined,
+        'BackendService',
+      );
+      return { ok: false, error: { kind: 'dependency', port: 'supabase-admin', cause } };
+    }
+    this.logger.audit('company.provisioned', { companyId, userId: principal.userId, name: input.name });
+    return ok({ companyId });
   }
 
   async createCustomer(input: Omit<CustomerProps, 'id' | 'companyId'>): Promise<Result<{ id: string }, AppError>> {

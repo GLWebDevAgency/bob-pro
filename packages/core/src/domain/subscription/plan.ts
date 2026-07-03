@@ -50,6 +50,7 @@ export interface Plan {
  * Modèle « conformité gratuite, intelligence graduée » (cf. docs/strategy/2026-bob-jarvis-roadmap.md).
  * Différenciation par VALEUR/VOLUME/IA — jamais par appareil (web + mobile à tous les paliers).
  * Solo = Bob réactif ; Pro = Bob opérationnel ; Business = Bob gouverné pour équipe.
+ * Prix mensuels (CONSTANTE PRODUIT, contrat C26 v2) : Solo 19 € / Pro 39 € / Business 79 €.
  */
 export const PLAN_CATALOG: Record<PlanTier, Plan> = {
   free: {
@@ -65,8 +66,8 @@ export const PLAN_CATALOG: Record<PlanTier, Plan> = {
   solo: {
     tier: 'solo',
     label: 'Solo',
-    priceCents: 1400,
-    annualMonthlyCents: 1200,
+    priceCents: 1900,
+    annualMonthlyCents: 1500,
     tagline: 'Bob Essentials pour indépendant',
     features: ['einvoice_emission', 'ocr', 'accounting_foundation', 'ai_assistant', 'bob_essentials'],
     ai: { capability: 'essentials', defaultAutonomy: 'confirm_all', monthlyActions: 300 },
@@ -96,8 +97,8 @@ export const PLAN_CATALOG: Record<PlanTier, Plan> = {
   business: {
     tier: 'business',
     label: 'Business',
-    priceCents: 6900,
-    annualMonthlyCents: 5500,
+    priceCents: 7900,
+    annualMonthlyCents: 6300,
     tagline: 'Bob Control pour piloter en équipe',
     features: [
       'einvoice_emission',
@@ -135,6 +136,50 @@ export const TIER_ORDER: readonly PlanTier[] = ['free', 'solo', 'pro', 'business
 export function tierAtLeast(tier: PlanTier, min: PlanTier): boolean {
   return TIER_ORDER.indexOf(tier) >= TIER_ORDER.indexOf(min);
 }
+
+// ----------------------------------------------------------------------------
+// Grille publique « Changer d'offre » (claim C26) — paliers payants uniquement.
+// ----------------------------------------------------------------------------
+
+/** Paliers payants affichés dans la grille publique (C26). */
+export const PAID_TIERS = ['solo', 'pro', 'business'] as const;
+export type PaidTier = (typeof PAID_TIERS)[number];
+
+export interface PlanGridEntry {
+  tier: PaidTier;
+  label: string;
+  /** Prix mensuel en centimes — LU dans PLAN_CATALOG (source unique, jamais dupliqué). */
+  monthlyCents: number;
+  /** Descriptif court de la grille — dérivé des `features` réelles du palier, rien d'inventé. */
+  blurb: string;
+}
+
+/**
+ * Grille tarifaire publique (CONSTANTE PRODUIT, contrat C26 v2 : Solo 19 / Pro 39 / Business 79).
+ * Les prix sont LUS dans PLAN_CATALOG — une seule source de vérité. Les descriptifs reflètent
+ * les `features` effectives du palier (pas les promesses du proto : « plusieurs banques » ou
+ * « relances » en Solo n'existent pas dans le catalogue → absents ici).
+ */
+export const PLAN_PRICING: Readonly<Record<PaidTier, PlanGridEntry>> = {
+  solo: {
+    tier: 'solo',
+    label: PLAN_CATALOG.solo.label,
+    monthlyCents: PLAN_CATALOG.solo.priceCents,
+    blurb: 'Devis & factures illimités · Scan des dépenses (OCR) · Facturation électronique',
+  },
+  pro: {
+    tier: 'pro',
+    label: PLAN_CATALOG.pro.label,
+    monthlyCents: PLAN_CATALOG.pro.priceCents,
+    blurb: 'Tout Solo + Paiement en ligne · Relances automatiques · Trésorerie prévisionnelle',
+  },
+  business: {
+    tier: 'business',
+    label: PLAN_CATALOG.business.label,
+    monthlyCents: PLAN_CATALOG.business.priceCents,
+    blurb: 'Tout Pro + Équipe & rôles · Contrôle comptable avancé · Support prioritaire',
+  },
+};
 
 /** Add-ons orthogonaux aux paliers : vertical, partenaire ou accélération contrôlée. */
 export type AddOn =

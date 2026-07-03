@@ -51,6 +51,7 @@ import {
   AutofillCompanyFromSiret,
   ValidateVatNumber,
   SearchAddress,
+  Company,
   Customer,
   deriveRelancePlan,
   ok,
@@ -80,6 +81,7 @@ import {
   type TradeConfig,
   type ChantierProps,
   type CreateChantierInput,
+  type CompanyProps,
   type CompanyLookupResult,
   type VatCheckResult,
   type AddressSuggestion,
@@ -380,6 +382,15 @@ export class LocalBobClient implements BobClient {
 
   async lookupCompany(siret: string): Promise<Result<CompanyLookupResult, AppError>> {
     return new AutofillCompanyFromSiret({ lookup: this.companyLookup }).execute({ siret });
+  }
+
+  /** C24b (adaptateur démo) : pas de provisioning Supabase hors-ligne — met à jour la société
+   * seedée et renvoie SON id (parité de contrat avec le serveur : l'id vient TOUJOURS du serveur). */
+  async registerCompany(input: Omit<CompanyProps, 'id'>): Promise<Result<{ companyId: string }, AppError>> {
+    const r = Company.of({ id: this.companyId, ...input });
+    if (!r.ok) return err(appDomain(r.error));
+    await this.companies.save(r.value);
+    return ok({ companyId: this.companyId });
   }
 
   async checkVat(vatNumber: string): Promise<Result<VatCheckResult, AppError>> {

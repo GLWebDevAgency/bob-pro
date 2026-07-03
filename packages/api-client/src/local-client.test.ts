@@ -25,6 +25,32 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     if (r.ok) expect(r.value.length).toBe(6);
   });
 
+  it('C24b : registerCompany renvoie l’id de la société seedée (parité de contrat — id serveur, jamais client)', async () => {
+    const client = makeClient();
+    const r = await client.registerCompany({
+      name: 'Durand Élec',
+      legalForm: 'EI',
+      siren: '732829320',
+      siret: '73282932000074',
+      trade: 'electricien',
+      vatRegime: 'franchise',
+      address: { line1: '4 rue du Forgeron', zip: '92310', city: 'Sèvres' },
+    });
+    expect(r.ok && r.value.companyId).toBe(client.companyId);
+
+    // SIRET incohérent avec le SIREN : refus du domaine (Company.of), pas d'écriture fantôme.
+    const bad = await client.registerCompany({
+      name: 'Bancal SARL',
+      legalForm: 'SARL',
+      siren: '732829320',
+      siret: '99999999900011',
+      trade: 'autre',
+      vatRegime: 'franchise',
+      address: { line1: '1 rue Test', zip: '75001', city: 'Paris' },
+    });
+    expect(!bad.ok && bad.error.kind).toBe('domain');
+  });
+
   it('déroule le flux Devis -> facture -> paiement hors-ligne', async () => {
     const client = makeClient();
     const created = await client.createQuote({

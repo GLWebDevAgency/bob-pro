@@ -2791,6 +2791,57 @@ const fr = {
     pro: 'Utiliser mon mot de passe',
     direct: 'Mot de passe',
   },
+  // C24b — fiche société complète (récap inscription) + provisioning tenant après confirmation.
+  'auth.companyLegalFormLabel': {
+    pote: 'Forme juridique',
+    pro: 'Forme juridique',
+    direct: 'Forme',
+  },
+  'auth.companyCreatedLabel': {
+    pote: 'Créée le',
+    pro: 'Date de création',
+    direct: 'Créée le',
+  },
+  'auth.provisioningTitle': {
+    pote: 'On prépare ton espace',
+    pro: 'Préparation de votre espace',
+    direct: 'Espace en création.',
+  },
+  'auth.provisioningBody': {
+    pote: 'Deux secondes — je crée ton espace avec les infos officielles de ta boîte.',
+    pro: 'Votre espace est en cours de création avec les informations officielles de votre entreprise.',
+    direct: 'Je crée ton espace. 2 s.',
+  },
+  'auth.provisioningError': {
+    pote: 'La création de ton espace a raté — et c’est pas toi. On réessaie ?',
+    pro: 'La création de votre espace a échoué. Veuillez réessayer.',
+    direct: 'Création KO. Réessaie.',
+  },
+  'auth.provisioningRetry': {
+    pote: 'Réessayer',
+    pro: 'Réessayer',
+    direct: 'Réessayer',
+  },
+  'auth.provisioningSiretIntro': {
+    pote: 'Ton compte est prêt ! Il me manque juste ton entreprise — donne-moi ton SIRET, je m’occupe du reste.',
+    pro: 'Votre compte est prêt. Renseignez votre SIRET : la fiche de votre entreprise sera créée automatiquement.',
+    direct: 'Compte OK. SIRET, et je fais le reste.',
+  },
+  'auth.provisioningLegalFormLabel': {
+    pote: 'Sa forme juridique ?',
+    pro: 'Forme juridique de l’entreprise',
+    direct: 'Forme juridique ?',
+  },
+  'auth.provisioningConfirmCta': {
+    pote: 'Créer mon espace',
+    pro: 'Créer mon espace',
+    direct: 'Créer',
+  },
+  'auth.provisioningSignOut': {
+    pote: 'Se déconnecter',
+    pro: 'Se déconnecter',
+    direct: 'Déconnexion',
+  },
 
   // ── C25 — écran Notifications (cloche C10) ─────────────────────────────────
   'notif.back': { pote: 'Fermer', pro: 'Fermer', direct: 'Fermer' },
@@ -3256,6 +3307,179 @@ const fr = {
     direct: 'Réglages injoignables. Réessaie.',
   },
   'reglages.back': { pote: 'Retour', pro: 'Retour', direct: 'Retour' },
+
+  // ── C26 — Compte & abonnement ───────────────────────────────────────────────
+  'account.back': { pote: 'Retour', pro: 'Retour', direct: 'Retour' },
+  'account.eyebrow': { pote: 'Ton compte', pro: 'Votre compte', direct: 'Compte' },
+  'account.title': { pote: 'Mon compte', pro: 'Mon compte', direct: 'Mon compte' },
+  'account.subtitle': {
+    pote: 'Ton profil, ton offre, ton équipe.',
+    pro: 'Votre profil, votre offre, votre équipe.',
+    direct: 'Profil · offre · équipe.',
+  },
+  'account.tabProfile': { pote: 'Profil', pro: 'Profil', direct: 'Profil' },
+  'account.tabSubscription': {
+    pote: 'Abonnement',
+    pro: 'Abonnement',
+    direct: 'Abonnement',
+  },
+  'account.sectionCompany': { pote: 'Entreprise', pro: 'Entreprise', direct: 'Entreprise' },
+  'account.companyName': {
+    pote: 'Raison sociale',
+    pro: 'Raison sociale',
+    direct: 'Raison sociale',
+  },
+  'account.companySiret': { pote: 'SIRET', pro: 'SIRET', direct: 'SIRET' },
+  'account.companyLegalTrade': {
+    pote: 'Forme · activité',
+    pro: 'Forme · activité',
+    direct: 'Forme · activité',
+  },
+  'account.companyVat': { pote: 'Régime TVA', pro: 'Régime TVA', direct: 'TVA' },
+  'account.companyEmpty': {
+    pote: 'Ta fiche entreprise s’affichera ici dès que ton compte sera relié à ta société.',
+    pro: 'Les informations de votre entreprise s’afficheront ici une fois votre société reliée à votre compte.',
+    direct: 'Fiche entreprise : pas encore reliée.',
+  },
+  'account.billingRow': {
+    pote: 'Facturation & modèles',
+    pro: 'Facturation & modèles',
+    direct: 'Facturation & modèles',
+  },
+  'account.billingRowSub': {
+    pote: 'Logo, RIB, mentions, numérotation',
+    pro: 'Logo, RIB, mentions, numérotation',
+    direct: 'Logo · RIB · mentions · numéros',
+  },
+  'account.sectionConnections': {
+    pote: 'Connexions',
+    pro: 'Connexions',
+    direct: 'Connexions',
+  },
+  'account.connBank': { pote: 'Banque', pro: 'Banque', direct: 'Banque' },
+  'account.connPayment': { pote: 'Paiement', pro: 'Paiement', direct: 'Paiement' },
+  'account.connAccountant': { pote: 'Comptable', pro: 'Comptable', direct: 'Comptable' },
+  'account.connToConnect': {
+    pote: 'À connecter',
+    pro: 'À connecter',
+    direct: 'À connecter',
+  },
+  'account.connSoon': { pote: 'À venir', pro: 'À venir', direct: 'Bientôt' },
+  'account.referralTitle': {
+    pote: 'Parraine un pote',
+    pro: 'Parrainez un confrère',
+    direct: 'Parrainage',
+  },
+  'account.referralSoon': {
+    pote: 'Bientôt : un mois offert pour vous deux.',
+    pro: 'Prochainement : un mois offert pour vous deux.',
+    direct: 'Bientôt. Un mois offert chacun.',
+  },
+  'account.teamRow': {
+    pote: 'Équipe & rôles',
+    pro: 'Équipe & rôles',
+    direct: 'Équipe & rôles',
+  },
+  'account.teamRowSub': {
+    pote: 'Invite, attribue des rôles — bientôt.',
+    pro: 'Invitations et rôles — prochainement.',
+    direct: 'Invitations, rôles. Bientôt.',
+  },
+  'account.signOut': {
+    pote: 'Se déconnecter',
+    pro: 'Se déconnecter',
+    direct: 'Déconnexion',
+  },
+  'account.offerLabel': { pote: 'Ton offre', pro: 'Votre offre', direct: 'Offre' },
+  'account.offerEarlyAccess': {
+    pote: 'Accès anticipé',
+    pro: 'Accès anticipé',
+    direct: 'Accès anticipé',
+  },
+  'account.offerPerMonth': { pote: '/mois', pro: '/mois', direct: '/mois' },
+  'account.offerOpenPill': { pote: 'tout ouvert', pro: 'Tout ouvert', direct: 'ouvert' },
+  'account.offerEarlyBody': {
+    pote: 'Toutes les fonctions sont ouvertes et tu ne paies rien. Je te préviens bien avant que ça change.',
+    pro: 'Toutes les fonctions sont ouvertes, sans frais. Vous serez prévenu avant toute évolution.',
+    direct: 'Tout ouvert. 0 €. Prévenu avant tout changement.',
+  },
+  'account.sectionPlans': {
+    pote: 'Changer d’offre',
+    pro: 'Changer d’offre',
+    direct: 'Offres',
+  },
+  'account.planCtaUnavailable': {
+    pote: 'Dispo à l’ouverture de la facturation',
+    pro: 'Disponible à l’ouverture de la facturation',
+    direct: 'À l’ouverture de la facturation',
+  },
+  'account.planCurrent': {
+    pote: 'Ton offre actuelle',
+    pro: 'Votre offre actuelle',
+    direct: 'Offre actuelle',
+  },
+  'account.sectionSubInvoices': {
+    pote: 'Mes factures d’abonnement',
+    pro: 'Mes factures d’abonnement',
+    direct: 'Factures d’abo',
+  },
+  'account.invoicesEmpty': {
+    pote: 'Tu ne paies rien pendant l’accès anticipé — donc zéro facture. Elles s’afficheront ici le moment venu.',
+    pro: 'Aucune facture : l’accès anticipé est gratuit. Elles apparaîtront ici le moment venu.',
+    direct: 'Accès anticipé : 0 facture.',
+  },
+  'account.sectionServices': {
+    pote: 'Services en plus',
+    pro: 'Services en plus',
+    direct: 'Services',
+  },
+  'account.serviceOnlinePayment': {
+    pote: 'Paiement en ligne',
+    pro: 'Paiement en ligne',
+    direct: 'Paiement en ligne',
+  },
+  'account.serviceOnlinePaymentSub': {
+    pote: 'Encaisse par carte — 1,2 % par encaissement',
+    pro: 'Encaissement par carte — 1,2 % par transaction',
+    direct: 'CB — 1,2 % par encaissement',
+  },
+  'account.serviceAdvance': {
+    pote: 'Avance sur facture',
+    pro: 'Avance sur facture',
+    direct: 'Avance sur facture',
+  },
+  'account.serviceAdvanceSub': {
+    pote: 'Ton argent sans attendre l’échéance',
+    pro: 'Financement de vos factures avant l’échéance',
+    direct: 'Cash avant échéance',
+  },
+  'account.serviceInsurance': {
+    pote: 'Assurance décennale & RC Pro',
+    pro: 'Assurance décennale & RC Pro',
+    direct: 'Décennale & RC Pro',
+  },
+  'account.serviceInsuranceSub': {
+    pote: 'Couvert via un partenaire, sans paperasse',
+    pro: 'Couverture via un partenaire assureur',
+    direct: 'Via partenaire',
+  },
+  'account.serviceAccountant': {
+    pote: 'Comptable partenaire',
+    pro: 'Comptable partenaire',
+    direct: 'Comptable partenaire',
+  },
+  'account.serviceAccountantSub': {
+    pote: 'Un pro de la compta qui connaît déjà tes dossiers',
+    pro: 'Un expert-comptable partenaire, connecté à vos données',
+    direct: 'Expert-comptable connecté',
+  },
+  'account.serviceActive': { pote: 'Actif', pro: 'Actif', direct: 'Actif' },
+  'account.serviceSoon': { pote: 'À venir', pro: 'À venir', direct: 'Bientôt' },
+  'account.dataError': {
+    pote: 'Je n’arrive pas à lire ton profil, là. On réessaie ?',
+    pro: 'Impossible de charger le profil. Veuillez réessayer.',
+    direct: 'Profil injoignable. Réessaie.',
+  },
 } as const satisfies Record<string, Copy>;
 
 export type I18nKey = keyof typeof fr;

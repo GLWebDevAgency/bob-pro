@@ -9,6 +9,9 @@ const FIXTURES: Record<string, CompanyLookupResult> = {
     denomination: 'Mercier Plomberie',
     nafApe: '43.22A',
     trade: 'plombier',
+    natureJuridiqueCode: '1000', // entrepreneur individuel — cohérent avec MERCIER_PROPS.legalForm 'EI'
+    legalForm: 'EI',
+    dateCreation: '2015-03-01',
     address: { line1: '12 rue des Artisans', zip: '92000', city: 'Nanterre' },
     tvaIntracom: frenchVatNumber('732829320'),
     rge: true,
@@ -21,7 +24,8 @@ export class DemoCompanyLookupAdapter implements CompanyLookupPort {
     const v = siret.replace(/\s/g, '');
     if (FIXTURES[v]) return FIXTURES[v];
     if (!/^\d{14}$/.test(v)) return null;
-    // Profil dérivé plausible (le n° TVA reste mathématiquement correct).
+    // Profil dérivé plausible (le n° TVA reste mathématiquement correct) — les champs de la
+    // fiche officielle restent honnêtement null : la démo n'invente pas une raison sociale.
     const siren = v.slice(0, 9);
     return {
       siren,
@@ -29,6 +33,9 @@ export class DemoCompanyLookupAdapter implements CompanyLookupPort {
       denomination: `Entreprise ${siren}`,
       nafApe: null,
       trade: null,
+      natureJuridiqueCode: null,
+      legalForm: null,
+      dateCreation: null,
       address: null,
       tvaIntracom: frenchVatNumber(siren),
       rge: false,

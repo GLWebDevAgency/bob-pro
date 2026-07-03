@@ -17,6 +17,7 @@ import { DocumentArchiveService } from './jobs/document-archive.service';
 import { NotificationDeliveryService } from './jobs/notification-delivery.service';
 import { ScheduledTenantDirectory } from './jobs/tenant-directory';
 import { SupabaseAuthGuard } from './auth/auth.guard';
+import { supabaseAdminProvider } from './auth/supabase-admin';
 import { TenantPersistenceInterceptor } from './persistence/tenant-persistence.interceptor';
 import {
   HealthController,
@@ -85,6 +86,7 @@ import {
     { provide: PDF_RENDERER, useClass: PdfRenderer },
     notifierProvider,
     expoPushProvider,
+    supabaseAdminProvider,
     NotificationsApiService,
     { provide: APP_GUARD, useClass: ThrottlerGuard },
     { provide: APP_GUARD, useClass: SupabaseAuthGuard },

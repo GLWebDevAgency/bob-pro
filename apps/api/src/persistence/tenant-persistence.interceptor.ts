@@ -14,7 +14,10 @@ export class TenantPersistenceInterceptor implements NestInterceptor {
 
   intercept(_context: ExecutionContext, next: CallHandler): Observable<unknown> {
     const principal = getPrincipal();
-    if (!principal) return next.handle();
+    // Assertion défensive C24b : un Principal SANS tenant (companyId null) ne pose JAMAIS le GUC
+    // RLS — seuls les endpoints de la liste blanche du guard arrivent ici dans cet état (lookup
+    // public, provisioning), et registerCompany ouvre lui-même runWithTenant sur l'id provisionné.
+    if (!principal || principal.companyId === null) return next.handle();
     return from(this.persistence.runWithTenant(principal.companyId, () => lastValueFrom(next.handle())));
   }
 }

@@ -18,6 +18,7 @@ import type {
   TradeConfig,
   ChantierProps,
   CreateChantierInput,
+  CompanyProps,
   CompanyLookupResult,
   VatCheckResult,
   AddressSuggestion,
@@ -152,6 +153,10 @@ export class HttpBobClient implements BobClient {
   }
   lookupCompany(siret: string) {
     return this.req<CompanyLookupResult>('GET', `/company/lookup?siret=${encodeURIComponent(siret)}`);
+  }
+  /** C24b : le serveur décide l'id (provisioning déterministe company-<userId>) — jamais d'id envoyé. */
+  registerCompany(input: Omit<CompanyProps, 'id'>) {
+    return this.req<{ companyId: string }>('POST', '/onboarding/company', input);
   }
   checkVat(vatNumber: string) {
     return this.req<VatCheckResult>('GET', `/vat/check?vat=${encodeURIComponent(vatNumber)}`);
