@@ -1138,8 +1138,33 @@
   status=MERGED.
 
 ### C24 — Auth                           <!-- kind: flow -->
-- status: OPEN · depends-on: C03 · ref-capture: claims/ref/C24.png
-- Contrat: 4 étapes (SIRET → récup infos → biométrie → entrée) · edges → Onboarding (nouveau) ou Aujourd'hui.
+- status: IN-BUILD
+- owner: claude-code A (builder) · reviewer: gpt5pro (a posteriori)
+- depends-on: C03 (MERGED), C22 (MERGED)
+- ref-capture: dc.html §auth (extraire au build) · target: apps/mobile/src/screens/LoginScreen.tsx (RÉÉCRITURE @bob/ui) + inscription
+
+#### Contrat (v1, claude-code A — régimes prod 100 %)
+- Flux proto 4 étapes ADAPTÉ à l'auth réelle Supabase : CONNEXION (écran refondu @bob/ui : email+mdp →
+  session réelle, erreurs voix Bob, mdp oublié → resetPasswordForEmail Supabase) · INSCRIPTION (SIRET →
+  lookupCompany RÉEL (endpoint /company/lookup existant, recherche-entreprises) → récap infos pré-remplies
+  → création compte Supabase signUp + POST /company (registerCompany existant) → handoff /onboarding C22) ·
+  BIOMÉTRIE (expo-local-authentication : Face ID/Touch ID pour déverrouiller la session persistée — opt-in,
+  dégradé honnête simulateur/Expo Go) · entrée → /(tabs).
+- Identité : à l'inscription, user_metadata.first_name/full_name posés (alimente useIdentity — directive
+  Mercier=démo). PROD : aucun compte fantôme — signUp réel avec confirmation email Supabase (état « vérifie
+  tes mails » honnête).
+- Copy : clés @bob/i18n auth.* ×3 humeurs. Interdits : hex, ancien kit, fixtures, logique auth dans l'écran
+  (data/auth.tsx reste la couche).
+- Acceptance : login réel fonctionne (session persistée — testable au simulateur SI login humain/
+  accessibilité) · lookup SIRET réel · signUp câblé (validation par preuve API si besoin) · biométrie
+  opt-in dégradée proprement · captures · i18n tests · typecheck + token-lint clean.
+
+#### Signatures
+- [x] agreed — claude-code A — 2026-07-03 (22:57) — régime humain, review gpt5pro a posteriori
+
+#### Log (append-only, horodaté)
+- [22:57] claude-code A CLAIM+PROPOSE+IN-BUILD: l'auth réelle existe (Supabase+guard JWT prouvés en C40) —
+  le claim est l'UX complète (login refondu, inscription SIRET→lookup réel, biométrie) + identité posée.
 
 ### C25 — Relances auto + Notifications   <!-- kind: flow -->
 - status: MERGED
@@ -1215,8 +1240,30 @@
 - Acceptance: offre active désactivée · paywall = 79 €.
 
 ### C27 — Catalogue prestations + Réglages facturation <!-- kind: flow -->
-- status: OPEN · depends-on: C03 · ref-capture: claims/ref/C27.png
-- Contrat: catalogue (prix/TVA par métier) réutilisé par C20/C21 · réglages logo/RIB/mentions/modèles/numérotation.
+- status: IN-BUILD
+- owner: claude-code A (builder) · reviewer: gpt5pro (a posteriori)
+- depends-on: C03 (MERGED), C21 (MERGED — le devis le consommera), C22 (MERGED — TRADE_PROFILES)
+- ref-capture: dc.html §catalogue/réglages (extraire au build) · target: apps/mobile/app/catalogue.tsx (nouveau) + réglages + intégration devis/voix
+
+#### Contrat (v1, claude-code A — régimes prod 100 %)
+- CATALOGUE : use case pur @bob/core application/catalogue/ — prestations par métier (libellé, PU HT
+  indicatif, TVA suggérée, catégorie labor/supply/travel) DÉRIVÉES de TRADE_PROFILES (vocabulaire C22) +
+  prestations personnelles de l'artisan (persistance réelle si endpoint, sinon SecureStore local typé +
+  TODO serveur documenté). Écran catalogue (liste par catégorie, ajout/édition Sheet, prix modifiables).
+- INTÉGRATION C20/C21 : l'étape lignes du devis (devis/new) et la dérivation voix (voice-invoice-draft)
+  proposent le catalogue (suggestions au fil de la saisie) — SANS casser la saisie libre.
+- RÉGLAGES FACTURATION (écran) : lecture réelle du profil (mentions, numérotation — déjà garanties core),
+  RIB/logo : édition seulement si endpoints réels, sinon lecture + TODO (pas de formulaire fantôme).
+- Copy : clés @bob/i18n catalogue.* + reglages.* ×3 humeurs.
+- Acceptance : catalogue dérivé testé (métiers → prestations cohérentes) · suggestions dans devis/voix
+  câblées · persistance réelle ou TODO · captures · i18n tests · typecheck + token-lint clean.
+
+#### Signatures
+- [x] agreed — claude-code A — 2026-07-03 (22:57) — régime humain, review gpt5pro a posteriori
+
+#### Log (append-only, horodaté)
+- [22:57] claude-code A CLAIM+PROPOSE+IN-BUILD: en parallèle de C24 (périmètres disjoints : C24 =
+  screens/auth ; C27 = catalogue+core+intégration devis/voix). i18n partagé : relecture avant édition.
 
 ---
 
@@ -1317,4 +1364,6 @@
 | C25 | MERGED | claude-code A | gpt5pro | 100 % prod livré 22:40 (endpoints+push+cron core, TODO ①② fermés). |
 | C17 | MERGED | claude-code (session B) | gpt5pro | Grand-livre @bob/ui + export FEC partageable (shareFec ×2 écrans). |
 | C22 | MERGED | claude-code A | gpt5pro | Flux 5 étapes validé 22:17 (preview adaptatif core). |
-| C24, C26, C27, C41 | OPEN | — | — | Web C30 différé après mobile hi-fi. |
+| C24 | IN-BUILD | claude-code A | gpt5pro | Auth réelle (login+SIRET+biométrie) — 22:57. |
+| C27 | IN-BUILD | claude-code A | gpt5pro | Catalogue par métier + intégration devis/voix — 22:57. |
+| C26, C41 | OPEN | — | — | Web C30 différé après mobile hi-fi. |
