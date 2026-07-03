@@ -7,7 +7,7 @@
  */
 import type { ReactNode } from 'react';
 import { Pressable, Text, View, type StyleProp, type ViewStyle } from 'react-native';
-import { formatEUR } from '@bob/core';
+import { formatEURWhole } from '@bob/core';
 import { shadowNative } from '@bob/tokens';
 import { font, useTheme } from '../theme';
 
@@ -17,7 +17,7 @@ export interface KpiTileProps {
   /** Style du conteneur (grilles : flexBasis, flex…). */
   style?: StyleProp<ViewStyle>;
   label: string;
-  /** Montant en centimes (formatEUR) — absent : tuile vide « — » (slate300). */
+  /** Montant en centimes (formatEURWhole, arrondi à l'euro) — absent : tuile vide « — ». */
   amountCents?: number;
   /** Teinte du montant — danger = dangerVivid (retard/impayé). Défaut : ink (ink800). */
   tone?: KpiTone;
@@ -36,7 +36,7 @@ export function KpiTile({ style,
     ink: colors.ink800,
   };
   const empty = amountCents === undefined;
-  const amount = empty ? '—' : formatEUR(amountCents);
+  const amount = empty ? '—' : formatEURWhole(amountCents);
 
   return (
     <Pressable

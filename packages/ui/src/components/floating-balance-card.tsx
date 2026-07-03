@@ -6,7 +6,7 @@
  */
 import type { ReactNode } from 'react';
 import { Pressable, Text, View } from 'react-native';
-import { formatEUR } from '@bob/core';
+import { formatEURWhole } from '@bob/core';
 import { patterns, shadowNative } from '@bob/tokens';
 import { font, useTheme } from '../theme';
 
@@ -35,7 +35,7 @@ export function FloatingBalanceCard({
   voiceIcon,
 }: FloatingBalanceCardProps) {
   const { colors, semantic, controls } = useTheme();
-  const amount = formatEUR(amountCents);
+  const amount = formatEURWhole(amountCents);
 
   return (
     <Pressable

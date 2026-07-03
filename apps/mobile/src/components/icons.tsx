@@ -147,3 +147,24 @@ export function ShieldIcon({ color, size = 15, strokeWidth = 2 }: IconProps) {
     </Svg>
   );
 }
+
+/* ── Écran Clients (C12) ──────────────────────────────────────────────────── */
+
+/** Recherche — loupe (champ « Rechercher un client… », 18/2 slate300 — tracé exact du proto). */
+export function SearchIcon({ color, size = 18, strokeWidth = 2 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" stroke={color} strokeWidth={strokeWidth} {...common}>
+      <Circle cx={11} cy={11} r={7} />
+      <Path d="M21 21l-4.3-4.3" />
+    </Svg>
+  );
+}
+
+/** Plus — nouveau client (bouton navy du header : 22/2.4 blanc — tracé exact du proto). */
+export function PlusIcon({ color, size = 22, strokeWidth = 2.4 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" stroke={color} strokeWidth={strokeWidth} {...common}>
+      <Path d="M12 5v14M5 12h14" />
+    </Svg>
+  );
+}

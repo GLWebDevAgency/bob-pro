@@ -28,7 +28,7 @@ import { ScrollView, Text, View, type StyleProp, type ViewStyle } from 'react-na
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
-import { MERCIER_PROPS, formatEUR, type TodayPriority } from '@bob/core';
+import { MERCIER_PROPS, formatEURWhole, type TodayPriority } from '@bob/core';
 import { patterns, shadowNative } from '@bob/tokens';
 import { t } from '@bob/i18n';
 import {
@@ -178,7 +178,7 @@ function TodayPriorityCard({
         <PriorityCard
           status="retard"
           title={t('today.prioRelanceTitle', { personality, params: { name } })}
-          subtitle={`${reference}${formatEUR(priority.amountCents)} — ${t('today.prioLateHint', {
+          subtitle={`${reference}${formatEURWhole(priority.amountCents)} — ${t('today.prioLateHint', {
             personality,
             params: { days: priority.daysLate },
           })}`}
@@ -211,7 +211,7 @@ function TodayPriorityCard({
           title={t('today.prioFinalTitle', { personality, params: { name } })}
           subtitle={t('today.prioFinalHint', {
             personality,
-            params: { amount: formatEUR(priority.amountCents) },
+            params: { amount: formatEURWhole(priority.amountCents) },
           })}
           badge={
             <StatusBadge label={t('today.prioAcceptedBadge', { personality }).toUpperCase()} variant="b2b" />
@@ -313,7 +313,7 @@ export default function Aujourdhui() {
             amountCents={cashflow.data.available}
             voiceLine={t('today.payoutHint', {
               personality,
-              params: { amount: formatEUR(cashflow.data.payout) },
+              params: { amount: formatEURWhole(cashflow.data.payout) },
             })}
             chevronIcon={<ChevronRightIcon color={colors.slate400} size={15} strokeWidth={2.4} />}
             voiceIcon={<DepositIcon color={semantic.success} size={16} />}
