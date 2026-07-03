@@ -555,10 +555,41 @@
   sauf violet deep). Doctrine A1-C10 réappliquée : dérivations en use cases purs @bob/core.
 
 ### C15 — Assistant (Bob)               <!-- kind: screen -->
-- status: OPEN · depends-on: C03 · ref-capture: claims/ref/C15.png
+- status: IN-BUILD
+- owner: claude-code (builder) · reviewer: gpt5pro (a posteriori)
+- depends-on: C03 (MERGED) · directive parité d'actions [23:52]
+- ref-capture: claims/ref/C15-frame.png (+ C15-frame-astuce.png) · target: apps/mobile/app/(tabs)/assistant.tsx (RÉÉCRITURE @bob/ui)
 - spec: SCREENS.md § Assistant · VOICE_AND_TONE.md
-- Contrat: fil de chat (« Bob • en ligne ») · suggestions (chips) · **cartes d'action** (relance/cashflow/compta/diagnostic) · indicateur de saisie · Bob AGIT (garde-fous : préparer≠envoyer).
-- Acceptance: chip→échange scripté + carte d'action · actions sensibles demandent validation.
+
+#### Contrat (v1, claude-code — AMENDEMENT à la spec backlog : « échange scripté » REMPLACÉ par le
+#### branchement RÉEL sur BobAgent, conformément à la directive humaine parité d'actions)
+- Composition (réf C15-frame.png) : header « Bob · en ligne » (avatar IconTile ai + point statut) +
+  sous-titre « Demande. Je fais — pas juste je réponds. » · fil de chat (bulle d'accueil voix Bob,
+  bulles user/Bob, indicateur de saisie 3 points animés) · CARTES D'ACTION typées dans le fil (proposition
+  d'action de Bob : titre, détail, diff/aperçu si dispo, boutons Valider/Annuler — réutilise
+  ConfirmSheet/ActionDiffView existants s'ils collent au design, sinon @bob/ui Card+Button) · chips
+  suggestions horizontales (« Relance les retards », « Je peux me payer combien ? », …) · input
+  « Demande-moi un truc… » + micro (TODO C20) + envoi.
+- Branchement 100 % RÉEL : le fil parle au VRAI agent (client existant → apps/api → packages/ai BobAgent :
+  runtime journalisé, dry-run, confirmations). Les actions sensibles (envoi relance, émission facture)
+  passent par la confirmation explicite (préparer ≠ envoyer) — MÊMES use cases que les CTA d'écrans.
+  Param d'entrée ?prompt=relance (edges C10/C13) pré-remplit et soumet la demande de relance.
+- AUDIT PARITÉ D'ACTIONS (directive [23:52]) : tableau de couverture actions UI ↔ registre agent
+  (packages/ai invocations) livré dans le Log du claim — toute action d'écran sans équivalent agent (ou
+  l'inverse) est listée avec TODO chiffré.
+- Copy : clés @bob/i18n assistant.* ×3 humeurs. États : hors-ligne/erreur (voix Bob), agent qui réfléchit,
+  historique vide (bulle d'accueil), refus/garde-fou.
+- Interdits : hex/rgba, ancien kit, fixtures, échanges scriptés en dur (le démo passe par le LocalBobClient
+  s'il expose l'agent, sinon état « hors ligne » honnête + TODO).
+- Acceptance : capture vs réf · chips → vraie requête agent · action sensible → confirmation explicite
+  (journalisée) · ?prompt=relance fonctionne · tableau d'audit livré · i18n tests · typecheck + token-lint.
+
+#### Signatures
+- [x] agreed — claude-code — 2026-07-03 (08:50) — régime humain, review gpt5pro a posteriori
+
+#### Log (append-only, horodaté)
+- [08:50] claude-code CLAIM+PROPOSE+IN-BUILD: amendement assumé vs backlog (« échange scripté » → agent
+  réel) au titre de la directive parité d'actions. Audit de couverture inclus dans le claim.
 
 ### C16 — Détail pièce                   <!-- kind: screen -->
 - status: OPEN · depends-on: C03 · ref-capture: claims/ref/C16.png
@@ -659,4 +690,5 @@
 | C11 | MERGED | claude-code | gpt5pro | Écran refondu validé simulateur (07:30), review a posteriori. |
 | C12 | MERGED | claude-code | gpt5pro | Écran validé simulateur 08:02 (4 330 € = proto), review a posteriori. |
 | C13 | MERGED | claude-code | gpt5pro | Fiche validée simulateur 08:47, review a posteriori. |
-| C14–C41 | OPEN | — | — | Écrans/flux au fil de l'eau ; web C30 différé. |
+| C15 | IN-BUILD | claude-code | gpt5pro | Assistant branché BobAgent réel + audit parité — contrat 08:50. |
+| C16–C41 | OPEN | — | — | Écrans/flux au fil de l'eau ; web C30 différé. |
