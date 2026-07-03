@@ -118,3 +118,41 @@ describe('registre par capacités — C40 TODO ⑤⑥ + creer_client', () => {
     expect(calls.createCustomer).toEqual([{ name: 'Mme Durand', type: 'b2c' }]);
   });
 });
+
+describe('relance_brouillon ciblable — C25 (TODO ① audit parité C15)', () => {
+  function relanceTool(calls: unknown[]) {
+    const actions: BobActions = {
+      ...baseActions,
+      draftRelance: async (input) => {
+        calls.push(input);
+        return ok({ subject: 's', body: 'b' });
+      },
+    };
+    return tool(actions, 'relance_brouillon')!;
+  }
+
+  it('lecture non mutante, cible optionnelle validée strictement (anti-hallucination)', () => {
+    const t = relanceTool([]);
+    expect(t.mutating).toBe(false);
+    expect(riskTierOf(t)).toBe('read');
+    expect(requiresConfirmation(t, 'confirm_all')).toBe(false); // lecture : jamais de confirmation
+
+    expect(t.parse({ invoiceId: '' }).ok).toBe(false);
+    expect(t.parse({ invoiceId: 42 }).ok).toBe(false);
+    expect(t.parse({ customerId: '' }).ok).toBe(false);
+    const untargeted = t.parse({});
+    expect(untargeted.ok && untargeted.value).toEqual({}); // sans cible : défaut de l'hôte
+  });
+
+  it("transmet la cible à l'hôte telle quelle (invoiceId / customerId)", async () => {
+    const calls: unknown[] = [];
+    const t = relanceTool(calls);
+    const byInvoice = t.parse({ invoiceId: 'inv-1' });
+    const byCustomer = t.parse({ customerId: 'cust-2' });
+    expect(byInvoice.ok && byCustomer.ok).toBe(true);
+    if (!byInvoice.ok || !byCustomer.ok) return;
+    await t.run(byInvoice.value);
+    await t.run(byCustomer.value);
+    expect(calls).toEqual([{ invoiceId: 'inv-1' }, { customerId: 'cust-2' }]);
+  });
+});

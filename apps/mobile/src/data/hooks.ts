@@ -1,7 +1,12 @@
 import { useMemo } from 'react';
 import { Linking, Alert } from 'react-native';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { deriveTodayPriorities, todayCompanyFromDiagnostic } from '@bob/core';
+import {
+  deriveRelancePlan,
+  deriveTodayPriorities,
+  deriveUpcomingDues,
+  todayCompanyFromDiagnostic,
+} from '@bob/core';
 import type {
   Scenario,
   Horizon,
@@ -10,6 +15,9 @@ import type {
   RecordExpenseInput,
   PlanTier,
   TodayPriority,
+  RelancePersonality,
+  RelancePlanEntry,
+  UpcomingDueEntry,
 } from '@bob/core';
 import type { CreateCustomerClientInput, RegisterPaymentClientInput } from '@bob/api-client';
 import { useBobClient } from './client';
@@ -318,6 +326,68 @@ export function useTodayPriorities(): { priorities: TodayPriority[]; isLoading: 
     priorities,
     isLoading: invoices.isLoading || quotes.isLoading || customers.isLoading || diagnostic.isLoading,
     isError: invoices.isError || quotes.isError || customers.isError || diagnostic.isError,
+  };
+}
+
+/** Fil de notifications réelles (C25) — la cloche C10 et l'écran /notifications partagent CETTE
+ * dérivation (une seule vérité). Agrégats @bob/core (deriveRelancePlan + deriveUpcomingDues +
+ * diagnostic réel) sur les queries partagées — aucun repli fixtures : pas de données, pas d'items. */
+export interface NotificationsFeed {
+  /** Relances dues maintenant (palier atteint), tri du plan : retard puis montant. */
+  due: RelancePlanEntry[];
+  /** Relances planifiées (facture échue, premier palier pas encore atteint). */
+  scheduled: RelancePlanEntry[];
+  /** Échéances dans les 7 jours (pas encore en retard). */
+  upcoming: UpcomingDueEntry[];
+  /** Réception e-facture 2026 non configurée (signal réel du diagnostic — jamais inventé). */
+  conformite: boolean;
+  /** Items « à signaler » (badge non-lu de la cloche) : dues + échéances + conformité. */
+  count: number;
+  isLoading: boolean;
+  isError: boolean;
+  refetch: () => void;
+}
+
+export function useNotificationsFeed(personality?: RelancePersonality): NotificationsFeed {
+  const invoices = useInvoices();
+  const customers = useCustomers();
+  const diagnostic = useDiagnostic();
+  const today = localToday();
+
+  const plan = useMemo<RelancePlanEntry[]>(() => {
+    if (!invoices.data || !customers.data) return [];
+    return deriveRelancePlan({
+      invoices: invoices.data,
+      customers: customers.data,
+      today,
+      ...(personality !== undefined ? { personality } : {}),
+    });
+  }, [invoices.data, customers.data, today, personality]);
+
+  const upcoming = useMemo<UpcomingDueEntry[]>(() => {
+    if (!invoices.data || !customers.data) return [];
+    return deriveUpcomingDues({ invoices: invoices.data, customers: customers.data, today });
+  }, [invoices.data, customers.data, today]);
+
+  const due = plan.filter((e) => e.dueNow);
+  const scheduled = plan.filter((e) => !e.dueNow);
+  const conformite = diagnostic.data
+    ? !todayCompanyFromDiagnostic(diagnostic.data).einvoiceReceptionConfigured
+    : false;
+
+  return {
+    due,
+    scheduled,
+    upcoming,
+    conformite,
+    count: due.length + upcoming.length + (conformite ? 1 : 0),
+    isLoading: invoices.isLoading || customers.isLoading || diagnostic.isLoading,
+    isError: invoices.isError || customers.isError || diagnostic.isError,
+    refetch: () => {
+      void invoices.refetch();
+      void customers.refetch();
+      void diagnostic.refetch();
+    },
   };
 }
 

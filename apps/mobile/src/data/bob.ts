@@ -10,7 +10,7 @@ import {
   type IssuableInvoice,
   type AgentDocument,
 } from '@bob/ai';
-import { ok, buildRelance, type AppError, type Result } from '@bob/core';
+import { ok, deriveRelancePlan, type AppError, type Result } from '@bob/core';
 import { HttpBobClient, type BobClient } from '@bob/api-client';
 
 const PAYABLE = new Set(['issued', 'partially_paid', 'late']);
@@ -64,19 +64,28 @@ export function makeBobAgent(client: BobClient): BobAssistant {
       if (!r.ok) return r;
       return ok({ payoutCents: r.value.payout, availableCents: r.value.available });
     },
-    async draftRelance() {
-      const r = await client.listCustomers();
-      if (!r.ok) return r;
-      const overdue = [...r.value].filter((c) => c.outstanding > 0).sort((a, b) => b.outstanding - a.outstanding)[0];
-      const message = buildRelance({
-        customerName: overdue?.name ?? 'le client',
-        docNumber: 'dernière facture',
-        amountCents: overdue?.outstanding ?? 0,
-        daysLate: 7,
-        tone: 'cordial',
-        personality: 'Pote',
-      });
-      return ok({ subject: message.subject, body: message.body });
+    // C25 ① : brouillon CIBLABLE (invoiceId/customerId), dérivé du plan de relances réel
+    // (@bob/core deriveRelancePlan — ton escaladé par ancienneté, reste dû netToPay − paid).
+    // Défaut sans cible : la plus urgente du plan (retard puis montant) — fini le « plus gros
+    // encours, J+7 inventé » pointé par l'audit parité C15.
+    async draftRelance(input) {
+      const [inv, cust] = await Promise.all([client.listInvoices(), client.listCustomers()]);
+      if (!inv.ok) return inv;
+      if (!cust.ok) return cust;
+      const plan = deriveRelancePlan({ invoices: inv.value, customers: cust.value, today: localDateOnly() });
+      const entry = input?.invoiceId
+        ? plan.find((e) => e.invoiceId === input.invoiceId)
+        : input?.customerId
+          ? plan.find((e) => e.customerId === input.customerId)
+          : plan[0];
+      if (!entry) {
+        return ok(
+          input?.invoiceId || input?.customerId
+            ? { subject: 'Rien à relancer pour cette cible', body: 'Aucun retard sur cette cible — facture réglée ou pas encore échue. Je ne relance pas pour rien.' }
+            : { subject: 'Rien à relancer', body: 'Aucune facture en retard — tout est réglé ou dans les temps. 🎉' },
+        );
+      }
+      return ok({ subject: entry.message.subject, body: entry.message.body });
     },
     async listPayableInvoices() {
       const [inv, cust] = await Promise.all([client.listInvoices(), client.listCustomers()]);

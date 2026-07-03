@@ -2397,6 +2397,71 @@ const fr = {
     pro: '{tone} · prévue le {date}',
     direct: '{tone} · {date}',
   },
+
+  // ── C17 — écran « Comptabilité » (grand-livre) ──────────────────────────────
+  'compta.eyebrow': { pote: 'Ta compta', pro: 'Votre comptabilité', direct: 'Compta' },
+  'compta.title': { pote: 'Comptabilité', pro: 'Comptabilité', direct: 'Comptabilité' },
+  'compta.subtitle': {
+    pote: 'Chaque pièce passe son écriture toute seule — vérifiable, exportable.',
+    pro: 'Journal des écritures en partie double — vérifiable, exportable.',
+    direct: 'Le journal. Vérifiable.',
+  },
+  'compta.paywallTitle': {
+    pote: 'Comptabilité incluse dès l’offre Solo',
+    pro: 'Comptabilité incluse à partir de l’offre Solo',
+    direct: 'Dès l’offre Solo',
+  },
+  'compta.paywallBody': {
+    pote: 'Le grand livre (écritures en partie double, export cabinet) fait partie des offres avec comptabilité.',
+    pro: 'Le grand livre (partie double, export cabinet) est disponible dans les offres avec comptabilité.',
+    direct: 'Grand livre + export FEC : offres avec compta.',
+  },
+  'compta.paywallCta': { pote: 'Voir les offres', pro: 'Voir les offres', direct: 'Offres' },
+  'compta.summaryTitle': {
+    pote: 'Prêt pour le comptable',
+    pro: 'Prêt pour votre comptable',
+    direct: 'Prêt comptable',
+  },
+  'compta.entriesMonth': {
+    pote: '{count} écritures ce mois-ci',
+    pro: '{count} écritures sur le mois en cours',
+    direct: '{count} écritures ce mois',
+  },
+  'compta.entriesMonthOne': {
+    pote: '1 écriture ce mois-ci',
+    pro: '1 écriture sur le mois en cours',
+    direct: '1 écriture ce mois',
+  },
+  'compta.balanced': { pote: 'Équilibré ✓', pro: 'Équilibré', direct: 'Équilibré' },
+  'compta.unbalanced': { pote: 'Déséquilibré !', pro: 'Déséquilibre détecté', direct: 'Déséquilibré' },
+  'compta.totalsLine': {
+    pote: 'Débit {debit} · Crédit {credit}',
+    pro: 'Débit {debit} · Crédit {credit}',
+    direct: 'D {debit} · C {credit}',
+  },
+  'compta.entriesCount': { pote: '{count} écritures', pro: '{count} écritures', direct: '{count}' },
+  'compta.entriesCountOne': { pote: '1 écriture', pro: '1 écriture', direct: '1' },
+  'compta.chipAll': { pote: 'Tous', pro: 'Tous', direct: 'Tous' },
+  'compta.journalSales': { pote: 'Ventes', pro: 'Ventes', direct: 'VE' },
+  'compta.journalPurchases': { pote: 'Achats', pro: 'Achats', direct: 'AC' },
+  'compta.journalBank': { pote: 'Banque', pro: 'Banque', direct: 'BQ' },
+  'compta.journalMisc': { pote: 'OD', pro: 'Opérations diverses', direct: 'OD' },
+  'compta.empty': {
+    pote: 'Aucune écriture pour l’instant. Émets une facture — je passe l’écriture tout seul.',
+    pro: 'Aucune écriture pour le moment. Émettez une facture : l’écriture est passée automatiquement.',
+    direct: 'Vide. Émets une facture.',
+  },
+  'compta.dataError': {
+    pote: 'Je n’arrive pas à ouvrir le journal, là. On réessaie ?',
+    pro: 'Impossible de charger le journal. Veuillez réessayer.',
+    direct: 'Journal injoignable. Réessaie.',
+  },
+  'compta.retry': { pote: 'Réessayer', pro: 'Réessayer', direct: 'Réessayer' },
+  'compta.closeCta': {
+    pote: 'Clôturer le mois',
+    pro: 'Clôturer le mois',
+    direct: 'Clôture',
+  },
 } as const satisfies Record<string, Copy>;
 
 export type I18nKey = keyof typeof fr;

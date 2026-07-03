@@ -78,6 +78,7 @@ export default function RootLayout() {
                     <Stack.Screen name="client/[id]" />
                     <Stack.Screen name="compte" />
                     <Stack.Screen name="diagnostic" />
+                    <Stack.Screen name="notifications" />
                     <Stack.Screen name="onboarding" />
                     <Stack.Screen name="scan-document" options={{ presentation: 'modal' }} />
                     <Stack.Screen name="voix" options={{ presentation: 'modal' }} />

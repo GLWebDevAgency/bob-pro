@@ -32,6 +32,15 @@ export interface AgentDocument {
   createdAt: string;
 }
 
+/** Outil relance_brouillon (parité C15 TODO ① — C25) : cible optionnelle. Sans cible, l'hôte
+ * prépare la relance la plus urgente (retard le plus long puis montant — plan @bob/core). */
+export interface DraftRelanceActionInput {
+  /** Facture précise à relancer (prioritaire sur customerId si les deux sont fournis). */
+  invoiceId?: string;
+  /** Client à relancer (sa facture échue la plus urgente). */
+  customerId?: string;
+}
+
 /** Outil creer_devis (parité C15 TODO ④) — mêmes entrées que le use case CreateQuote de l'UI. */
 export interface CreateQuoteActionInput {
   customerId: string;
@@ -87,7 +96,10 @@ export interface CreateCustomerActionInput {
 export interface BobActions {
   // —— Lecture ——
   computePayout(): Promise<Result<{ payoutCents: number; availableCents: number }, AppError>>;
-  draftRelance(): Promise<Result<{ subject: string; body: string }, AppError>>;
+  /** Brouillon de relance — CIBLABLE par facture/client (C25 ①). Défaut sans cible : la plus
+   * urgente. Les hôtes historiques sans paramètre restent assignables (TODO Codex apps/api :
+   * porter la cible côté serveur — voir rapport C25). */
+  draftRelance(input?: DraftRelanceActionInput): Promise<Result<{ subject: string; body: string }, AppError>>;
   listPayableInvoices(): Promise<Result<PayableInvoice[], AppError>>;
   listSendableQuotes(): Promise<Result<SendableQuote[], AppError>>;
   listIssuableInvoices(): Promise<Result<IssuableInvoice[], AppError>>;

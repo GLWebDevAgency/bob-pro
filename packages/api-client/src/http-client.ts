@@ -32,6 +32,7 @@ import type {
   RegisterPaymentClientInput,
   RegisterPaymentClientOutput,
   SendQuoteOutput,
+  SendRelanceClientOutput,
   SuggestExpenseDefaultsInput,
   ExpenseDefaultsView,
   ListDocumentsClientInput,
@@ -242,6 +243,18 @@ export class HttpBobClient implements BobClient {
   }
   issueInvoice(input: IssueInvoiceInput) {
     return this.req<{ number: string }>('POST', `/invoices/${input.invoiceId}/issue`, input);
+  }
+  /** C25 ② : AUCUN endpoint d'envoi ciblé côté serveur (constaté) — échec propre, sans appel
+   * réseau fantôme. À brancher sur POST /invoices/:id/relance quand Codex l'exposera. */
+  async sendRelance(_invoiceId: string): Promise<Result<SendRelanceClientOutput, AppError>> {
+    return {
+      ok: false,
+      error: {
+        kind: 'dependency',
+        port: 'api/relance',
+        cause: 'Envoi de relance non disponible côté serveur — endpoint POST /invoices/:id/relance à venir (contrat C25).',
+      },
+    };
   }
   registerPayment(input: RegisterPaymentClientInput) {
     const body = { amount: input.amount, method: input.method, idempotencyKey: input.idempotencyKey ?? undefined };

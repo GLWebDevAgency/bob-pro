@@ -364,6 +364,45 @@ describe('i18n — C16 piece.*', () => {
   });
 });
 
+describe('i18n — C25 notif.* + relance.*', () => {
+  it('notif.* : copy de la cloche sur les 3 humeurs, items interpolés {name}/{doc}/{amount}/{days}', () => {
+    expect(t('notif.title')).toBe('Notifications');
+    expect(t('notif.subtitle')).toBe('Je te préviens quand ça compte — pas pour rien.');
+    expect(t('notif.subtitle', { personality: 'pro' })).toBe('L’essentiel de votre activité, au bon moment.');
+    expect(t('notif.subtitle', { personality: 'direct' })).toBe('L’essentiel. Rien d’autre.');
+    expect(t('notif.itemRelanceTitle', { params: { name: 'SARL Martin' } })).toBe('Relance SARL Martin');
+    expect(
+      t('notif.itemRelanceSub', { params: { doc: 'F-2026-088', amount: '1 240 €', days: 9 } }),
+    ).toBe('F-2026-088 · 1 240 € · 9 j de retard');
+    expect(
+      t('notif.itemDueSub', { personality: 'direct', params: { doc: 'F-2026-104', amount: '920 €', days: 3 } }),
+    ).toBe('F-2026-104 · 920 € · J-3');
+    expect(t('notif.actionView')).toBe('Voir la pièce');
+    expect(t('notif.actionRelance')).toBe('Relancer');
+    expect(t('notif.conformiteSub')).toBe('Réception des e-factures à configurer avant le 1ᵉʳ sept. 2026.');
+    expect(t('notif.empty')).toBe('Rien à signaler — tout roule.');
+    expect(t('notif.empty', { personality: 'direct' })).toBe('RAS.');
+    expect(t('notif.dataError', { personality: 'pro' }).length).toBeGreaterThan(0);
+  });
+
+  it('relance.* : 4 tons du proto, file interpolée {count}, garde-fou L441-10 sur les 3 humeurs', () => {
+    expect(t('relance.toneCordial')).toBe('Cordial');
+    expect(t('relance.toneNeutre')).toBe('Neutre');
+    expect(t('relance.toneFerme')).toBe('Ferme');
+    expect(t('relance.toneMed')).toBe('Mise en demeure');
+    expect(t('relance.autoTitle')).toBe('Relances automatiques');
+    expect(t('relance.autoSub')).toBe('Bob relance les retards tout seul, au bon moment.');
+    expect(t('relance.queue', { params: { count: 2 } })).toBe('Actives · 2 clients en file');
+    expect(t('relance.queueOne', { personality: 'pro' })).toBe('Actives · 1 client en file d’attente');
+    expect(t('relance.medWarning')).toContain('L441-10');
+    expect(t('relance.medWarning', { personality: 'pro' })).toContain('40 €');
+    expect(t('relance.medWarning', { personality: 'direct' })).toContain('jamais sans ta validation');
+    expect(t('relance.scheduledLine', { params: { tone: 'Ferme', date: '15/07/2026' } })).toBe(
+      'Ferme · le 15/07/2026',
+    );
+  });
+});
+
 describe('i18n — C23 diag.*', () => {
   it('copy pote exacte du proto §diag* (intro, question plateforme, résultat)', () => {
     expect(t('diag.title')).toBe('Diagnostic 2026');

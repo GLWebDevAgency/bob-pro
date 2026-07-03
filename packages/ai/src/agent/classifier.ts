@@ -11,8 +11,16 @@ export const LLM_TOOL_SPECS: LlmToolSpec[] = [
   },
   {
     name: 'relance_brouillon',
-    description: 'Rédiger un brouillon de relance pour la facture impayée la plus urgente (sans envoyer).',
-    parameters: { type: 'object', properties: {}, additionalProperties: false },
+    description:
+      'Rédiger un brouillon de relance pour une facture impayée (sans envoyer). Ciblable : facture ou client précis ; sans référence, la plus urgente.',
+    parameters: {
+      type: 'object',
+      properties: {
+        reference: { type: 'string', description: 'Numéro de facture (ex. 2026-014) ou nom du client à relancer' },
+      },
+      required: [],
+      additionalProperties: false,
+    },
   },
   {
     name: 'factures_impayees',

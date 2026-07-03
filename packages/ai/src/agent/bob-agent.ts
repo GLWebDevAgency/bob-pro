@@ -83,8 +83,26 @@ const NAV_ROUTES: Partial<Record<BobIntent, { route: string; title: string; body
   },
 };
 
-/** Résout la facture visée par le message parmi les factures encaissables. null = ambigu. */
-export function resolveInvoice(message: string, invoices: PayableInvoice[]): PayableInvoice | null {
+/** Mots non discriminants d'une raison sociale / civilité — jamais utilisés pour cibler. */
+const NAME_STOPWORDS = new Set(['sarl', 'sas', 'sasu', 'eurl', 'sci', 'ets', 'ste', 'societe', 'mme', 'mr', 'mlle']);
+
+/** Mots significatifs (≥ 3 lettres, hors formes juridiques) d'un nom de client — « SARL Martin »
+ * comme « M. Martin » se résolvent par « martin » (C25 ① : cible par nom, pas premier mot). */
+function significantNameWords(name: string): string[] {
+  return name
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((w) => w.length >= 3 && !NAME_STOPWORDS.has(w));
+}
+
+/** Résout la facture visée par le message parmi les factures encaissables. null = ambigu.
+ * `fallbackToSingle` (défaut true) : une seule facture = la cible implicite — désactivé pour la
+ * relance (C25 ①), où seule une cible EXPLICITE (numéro / nom) doit primer sur le plan. */
+export function resolveInvoice(
+  message: string,
+  invoices: PayableInvoice[],
+  opts: { fallbackToSingle?: boolean } = {},
+): PayableInvoice | null {
   if (invoices.length === 0) return null;
   const numMatch = message.match(/\d{3,}(?:-\d+)?/);
   if (numMatch) {
@@ -93,12 +111,9 @@ export function resolveInvoice(message: string, invoices: PayableInvoice[]): Pay
     if (byNum) return byNum;
   }
   const lower = message.toLowerCase();
-  const byCust = invoices.find((i) => {
-    const first = i.customerName.toLowerCase().split(/\s+/)[0] ?? '';
-    return first.length >= 3 && lower.includes(first);
-  });
+  const byCust = invoices.find((i) => significantNameWords(i.customerName).some((w) => lower.includes(w)));
   if (byCust) return byCust;
-  return invoices.length === 1 ? invoices[0]! : null;
+  return (opts.fallbackToSingle ?? true) && invoices.length === 1 ? invoices[0]! : null;
 }
 
 type BusinessDocumentTarget = SendableQuote | IssuableInvoice;
@@ -278,13 +293,23 @@ export class BobAgent {
     }
 
     if (intent === 'relance') {
-      const r = await this.deps.actions.draftRelance();
+      // Parité C15 TODO ① (C25) : « relance Martin » / « relance la 2026-014 » cible la bonne
+      // facture parmi les encaissables — même résolution que l'encaissement. Sans cible : défaut
+      // de l'hôte (la relance la plus urgente du plan @bob/core).
+      const payable = await this.deps.actions.listPayableInvoices();
+      const target = payable.ok
+        ? resolveInvoice(reference ?? message, payable.value, { fallbackToSingle: false })
+        : null;
+      const r = await this.deps.actions.draftRelance(target ? { invoiceId: target.id } : undefined);
       if (!r.ok) return err(r.error);
       return ok({
         kind: 'answer',
         intent,
         model,
-        plan: ['Repérer la facture en retard', 'Rédiger la relance'],
+        plan: [
+          target ? `Cibler la facture ${target.number} (${target.customerName})` : 'Repérer la facture en retard',
+          'Rédiger la relance',
+        ],
         card: { title: r.value.subject, body: r.value.body },
       });
     }
@@ -434,7 +459,8 @@ export class BobAgent {
   ): Promise<Result<AgentRun, AppError>> {
     const headIntent = steps[0]?.intent ?? 'unknown';
     let payables: PayableInvoice[] = [];
-    if (steps.some((s) => s.intent === 'encaisser')) {
+    // Chargées pour l'encaissement, et pour une relance CIBLÉE (C25 ① — « puis relance Martin »).
+    if (steps.some((s) => s.intent === 'encaisser' || (s.intent === 'relance' && s.reference !== null))) {
       const r = await this.deps.actions.listPayableInvoices();
       if (!r.ok) return err(r.error);
       payables = r.value;
@@ -517,7 +543,17 @@ export class BobAgent {
       } else if (step.intent === 'payout') {
         actions.push({ tool: 'tresorerie_versement', args: {}, label: 'Calculer ton versement possible' });
       } else if (step.intent === 'relance') {
-        actions.push({ tool: 'relance_brouillon', args: {}, label: 'Préparer une relance' });
+        // Cible explicite uniquement (numéro / nom) — sinon l'hôte prend la plus urgente du plan.
+        const target = step.reference ? resolveInvoice(step.reference, payables, { fallbackToSingle: false }) : null;
+        actions.push(
+          target
+            ? {
+                tool: 'relance_brouillon',
+                args: { invoiceId: target.id },
+                label: `Préparer la relance de ${target.number} (${target.customerName})`,
+              }
+            : { tool: 'relance_brouillon', args: {}, label: 'Préparer une relance' },
+        );
       } else if (step.intent === 'factures') {
         actions.push({ tool: 'factures_impayees', args: {}, label: 'Lister tes impayés' });
       } else if (step.intent === 'documents') {

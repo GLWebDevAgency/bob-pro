@@ -11,6 +11,7 @@ import {
 import { type AnyTool, type Tool } from './tool';
 import {
   type BobActions,
+  type DraftRelanceActionInput,
   type CreateQuoteActionInput,
   type RecordExpenseActionInput,
   type GenerateInvoiceActionInput,
@@ -67,15 +68,27 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
     run: () => actions.computePayout(),
   };
 
-  const draftRelance: Tool<Record<string, never>, { subject: string; body: string }> = {
+  const draftRelance: Tool<DraftRelanceActionInput, { subject: string; body: string }> = {
     name: 'relance_brouillon',
-    description: 'Rédige un brouillon de relance pour la facture impayée la plus urgente (n’envoie rien).',
+    description:
+      'Rédige un brouillon de relance pour une facture impayée — ciblable par facture ou client (défaut : la plus urgente). N’envoie rien.',
     mutating: false,
     outbound: false,
     compliance: 'low',
-    parse: () => ok({}),
+    // Cible optionnelle (parité C15 TODO ① — C25) : invoiceId prime sur customerId.
+    parse: (raw): Result<DraftRelanceActionInput, AppError> => {
+      const r = raw as { invoiceId?: unknown; customerId?: unknown };
+      if (r?.invoiceId !== undefined && (typeof r.invoiceId !== 'string' || r.invoiceId.length === 0))
+        return err(appValidation('invoiceId', 'Facture ciblée invalide.'));
+      if (r?.customerId !== undefined && (typeof r.customerId !== 'string' || r.customerId.length === 0))
+        return err(appValidation('customerId', 'Client ciblé invalide.'));
+      return ok({
+        ...(typeof r?.invoiceId === 'string' ? { invoiceId: r.invoiceId } : {}),
+        ...(typeof r?.customerId === 'string' ? { customerId: r.customerId } : {}),
+      });
+    },
     riskTier: 'read',
-    run: () => actions.draftRelance(),
+    run: (input) => actions.draftRelance(input),
   };
 
   const listPayable: Tool<Record<string, never>, unknown> = {

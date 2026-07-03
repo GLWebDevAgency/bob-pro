@@ -54,6 +54,28 @@ describe('BobAgent (démo)', () => {
     expect(r.ok && r.value.kind).toBe('answer');
   });
 
+  it('relance CIBLÉE (C25 ①) : « relance Martin » vise sa facture, sans cible → défaut hôte', async () => {
+    const targets: unknown[] = [];
+    const spyActions: BobActions = {
+      ...actions,
+      draftRelance: async (input) => {
+        targets.push(input);
+        return ok({ subject: 'Relance', body: 'Brouillon.' });
+      },
+    };
+    const agent = new BobAgent({ router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }), actions: spyActions });
+
+    const targeted = await agent.ask('Relance Martin pour sa facture');
+    expect(targeted.ok && targeted.value.intent).toBe('relance');
+    expect(targeted.ok && targeted.value.plan[0]).toContain('2026-021'); // facture de M. Martin
+
+    const generic = await agent.ask('Relance les clients en retard');
+    expect(generic.ok && generic.value.kind).toBe('answer');
+
+    // Cible explicite transmise à l'hôte ; demande générique = undefined (défaut : la plus urgente).
+    expect(targets).toEqual([{ invoiceId: 'inv-2' }, undefined]);
+  });
+
   it('encaisser par numéro : confirmation TOUJOURS requise (plancher), même en mode par défaut', async () => {
     const r = await makeAgent().ask('encaisse la facture 2026-014');
     expect(r.ok).toBe(true);

@@ -44,7 +44,7 @@ import {
   font,
   useTheme,
 } from '@bob/ui';
-import { useCashflow, useCustomers, useTodayPriorities } from '../../src/data/hooks';
+import { useCashflow, useCustomers, useNotificationsFeed, useTodayPriorities } from '../../src/data/hooks';
 import {
   CalendarIcon,
   ChevronRightIcon,
@@ -266,6 +266,8 @@ export default function Aujourdhui() {
   const cashflow = useCashflow('realiste', 30);
   const customers = useCustomers();
   const today = useTodayPriorities();
+  // C25 : fil de notifications réel (queries partagées avec /notifications — coût nul en plus).
+  const notifications = useNotificationsFeed();
 
   // « Fait » togglable local — le moteur de tâches arrive avec C25 (relances).
   const [done, setDone] = useState<Record<string, boolean>>({});
@@ -303,9 +305,11 @@ export default function Aujourdhui() {
                   : t('today.subtitle', { personality, params: { count: remaining } })
           }
           bellIcon={<Feather name="bell" size={20} color={colors.surface} />}
-          hasUnread
+          // C25 : pastille dérivée du fil RÉEL (relances dues + échéances + conformité) — mêmes
+          // queries partagées que l'écran /notifications, jamais un point rouge inventé.
+          hasUnread={notifications.count > 0}
           onAvatarPress={() => router.push('/compte')}
-          onBellPress={() => undefined} // TODO C25 — écran Notifications
+          onBellPress={() => router.push('/notifications')}
         />
 
         {cashflow.data ? (
