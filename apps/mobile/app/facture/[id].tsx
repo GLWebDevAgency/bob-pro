@@ -17,7 +17,7 @@ import { useCustomers, useGenerateInvoice, useInvoice, useInvoiceAccountingPrevi
 import { useDocuments } from '../../src/data/documents';
 import { useBobClient } from '../../src/data/client';
 import { shareDocument } from '../../src/lib/share-document';
-import { InvoiceActions, hasInvoiceActions } from '../../src/components/DocumentActions';
+import { InvoiceActions, canCreateCreditNote, hasInvoiceActions } from '../../src/components/DocumentActions';
 import { AccountingLinesView } from '../../src/components/AccountingLinesView';
 import { PieceDetailView } from '../../src/components/PieceDetailView';
 
@@ -118,7 +118,12 @@ export default function FactureDetail() {
       onOpenInvoice={(ref: PieceLinkedRef) => router.push(`/facture/${ref.id}`)}
       onOpenPdf={openPdf ? () => void openPdf() : undefined}
       onSharePdf={sharePdf ? () => void sharePdf() : undefined}
-      actions={hasInvoiceActions(inv) ? <InvoiceActions invoice={inv} /> : null}
+      actions={
+        hasInvoiceActions(inv) || canCreateCreditNote(inv) ? (
+          // withCreditNote (A6) : « Créer un avoir » — détail uniquement, jamais en liste.
+          <InvoiceActions invoice={inv} withCreditNote />
+        ) : null
+      }
       nextStepAction={
         view.nextStep ? (
           <Button

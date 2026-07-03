@@ -50,7 +50,12 @@ export class IssueInvoice {
         // Déjà numérotée (retry réseau ou course gagnée par une autre émission) -> réponse idempotente.
         if (invoice.number) return invoice.number;
 
-        const alloc = await this.deps.counters.allocate({ companyId: invoice.companyId, counterKey: 'invoice', fiscalYear });
+        // Un avoir tire sa propre séquence sans trou (A-AAAA-XXXX) — jamais celle des factures.
+        const alloc = await this.deps.counters.allocate({
+          companyId: invoice.companyId,
+          counterKey: invoice.kind === 'credit_note' ? 'credit' : 'invoice',
+          fiscalYear,
+        });
         const assigned = invoice.assignNumber(alloc.formatted, this.deps.clock.now());
         if (!assigned.ok) throw new TxDomainError(assigned.error);
         const mentions = buildMentions({

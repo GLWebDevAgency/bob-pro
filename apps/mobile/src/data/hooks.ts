@@ -580,6 +580,20 @@ export function useGenerateInvoice() {
   });
 }
 
+/** A6 : avoir TOTAL (brouillon) d'une facture émise — même use case que Bob (parité d'actions). */
+export function useCreateCreditNote() {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { invoiceId: string }) => {
+      const r = await client.createCreditNote(input);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: () => void qc.invalidateQueries({ queryKey: keys.invoices }),
+  });
+}
+
 export function useIssueInvoice() {
   const client = useBobClient();
   const qc = useQueryClient();

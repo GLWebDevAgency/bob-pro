@@ -243,6 +243,10 @@ export class HttpBobClient implements BobClient {
   generateInvoice(input: { quoteId: string; mode?: 'deposit' | 'final' }) {
     return this.req<{ invoiceId: string }>('POST', `/quotes/${input.quoteId}/invoice`, { mode: input.mode });
   }
+  /** A6 — endpoint serveur à poser (suivi CLAIMS, même précédent que classifyDocument). */
+  createCreditNote(input: { invoiceId: string }) {
+    return this.req<{ creditNoteId: string }>('POST', `/invoices/${input.invoiceId}/credit-note`);
+  }
   issueInvoice(input: IssueInvoiceInput) {
     return this.req<{ number: string }>('POST', `/invoices/${input.invoiceId}/issue`, input);
   }

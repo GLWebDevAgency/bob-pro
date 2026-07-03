@@ -328,6 +328,8 @@ export interface BobClient {
   signQuote(input: { quoteId: string; signerName: string }): Promise<Result<{ status: string }, AppError>>;
   refuseQuote(quoteId: string): Promise<Result<{ status: string }, AppError>>;
   generateInvoice(input: { quoteId: string; mode?: 'deposit' | 'final' }): Promise<Result<{ invoiceId: string }, AppError>>;
+  /** A6 : avoir TOTAL (brouillon) d'une facture émise — même use case pour l'UI et Bob. */
+  createCreditNote(input: { invoiceId: string }): Promise<Result<{ creditNoteId: string }, AppError>>;
   issueInvoice(input: IssueInvoiceInput): Promise<Result<{ number: string }, AppError>>;
   /** C25 ② : envoi RÉEL d'une relance ciblée — POST /invoices/:id/relance (ton du plan @bob/core,
    * confirmation côté UI/agent avant l'appel : action sortante vers un tiers). */

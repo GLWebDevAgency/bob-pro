@@ -70,6 +70,7 @@ export * from './application/billing/send-quote';
 export * from './application/billing/sign-quote';
 export * from './application/billing/refuse-quote';
 export * from './application/billing/expire-quote';
+export * from './application/billing/create-credit-note';
 export * from './application/billing/generate-invoice-from-quote';
 export * from './application/billing/issue-invoice';
 export * from './application/billing/register-payment';

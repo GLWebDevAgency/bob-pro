@@ -88,6 +88,26 @@ export class Invoice extends AggregateRoot<string> {
     return ok(new Invoice(input.id, input.companyId, input.customerId, 'final', null, null));
   }
 
+  /**
+   * Avoir TOTAL sur une facture émise (A6) : mêmes lignes, kind credit_note, même devis
+   * parent (la nav croisée retrouve l'avoir par parentQuoteId). L'avoir naît BROUILLON —
+   * l'émission (IssueInvoice) lui alloue son numéro A- et poste l'écriture INVERSE
+   * (buildIssuedInvoiceAccountingEntry gère isCreditNote).
+   */
+  static creditNoteFor(source: Invoice, id: string): DomainResult<Invoice> {
+    if (source.kind === 'credit_note')
+      return err({ code: 'VALIDATION', field: 'invoice', message: 'Un avoir ne se crée pas sur un avoir.' });
+    if (source.status === 'draft' || source.status === 'cancelled')
+      return err({
+        code: 'VALIDATION',
+        field: 'invoice',
+        message: 'Un avoir ne se crée que sur une facture émise (un brouillon se corrige ou s’annule).',
+      });
+    const creditNote = new Invoice(id, source.companyId, source.customerId, 'credit_note', null, source.parentQuoteId);
+    for (const line of source.lines) creditNote._lines.push({ ...line });
+    return ok(creditNote);
+  }
+
   get status(): InvoiceStatus {
     return this._status;
   }

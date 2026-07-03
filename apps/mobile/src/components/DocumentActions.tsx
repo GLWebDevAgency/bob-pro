@@ -1,11 +1,13 @@
 import { useRef, useState, type ReactNode } from 'react';
 import { View, Alert } from 'react-native';
+import { router } from 'expo-router';
 import type { QuoteView, InvoiceView } from '@bob/api-client';
 import { challengeFor, buildActionDiff } from '@bob/ai';
 import {
   useSendQuote,
   useSignQuote,
   useRefuseQuote,
+  useCreateCreditNote,
   useGenerateInvoice,
   useIssueInvoice,
   useRegisterPayment,
@@ -54,6 +56,11 @@ export const hasQuoteActions = (q: QuoteView): boolean =>
   q.status === 'draft' || q.status === 'sent' || q.status === 'viewed' || q.status === 'signed';
 export const hasInvoiceActions = (inv: InvoiceView): boolean =>
   inv.status === 'draft' || inv.status === 'issued' || inv.status === 'partially_paid' || inv.status === 'late';
+
+/** A6 : un avoir se crée sur une facture ÉMISE (payée comprise) — jamais sur un avoir. */
+export const canCreateCreditNote = (inv: InvoiceView): boolean =>
+  inv.kind !== 'credit_note' &&
+  (inv.status === 'issued' || inv.status === 'partially_paid' || inv.status === 'paid' || inv.status === 'late');
 
 // ── Encaissement : invariants partagés (InvoiceActions + briefing A2-C10) ─────────────────
 // Assiette = netToPay (acompte si depositPct, sinon ttc) : le domaine PLAFONNE le paiement à
@@ -206,13 +213,51 @@ export function QuoteActions({
   return null; // refused / expired : rien à faire
 }
 
-export function InvoiceActions({ invoice }: { invoice: InvoiceView }): ReactNode {
+export function InvoiceActions({
+  invoice,
+  withCreditNote = false,
+}: {
+  invoice: InvoiceView;
+  /** A6 : propose « Créer un avoir » (détail de pièce uniquement — action rare, pas en liste). */
+  withCreditNote?: boolean;
+}): ReactNode {
   const issue = useIssueInvoice();
   const pay = useRegisterPayment();
   const link = useInvoicePaymentLink();
+  const createCreditNote = useCreateCreditNote();
   const { busy, lock, run } = useActionLock();
   const confirm = useConfirm();
   const client = useBobClient();
+
+  // A6 : avoir TOTAL — confirmation FISCAL (l'avoir s'émettra avec son numéro A- et
+  // l'écriture inverse), puis navigation vers le brouillon créé.
+  const creditNoteButton = withCreditNote && canCreateCreditNote(invoice) && (
+    <Button
+      title="Créer un avoir"
+      variant="secondary"
+      loading={busy === 'credit'}
+      disabled={!!busy}
+      onPress={() =>
+        void (async () => {
+          const ok = await confirm({
+            title: 'Créer un avoir',
+            message: `Avoir total sur ${invoice.number ?? 'cette facture'} : il s'émettra avec son propre numéro (A-) et passera l'écriture comptable inverse.`,
+            challenge: challengeFor(FISCAL, 'confirm_all'),
+          });
+          if (!ok) return;
+          await run('credit', async () => {
+            const out = await createCreditNote.mutateAsync({ invoiceId: invoice.id });
+            router.push(`/facture/${out.creditNoteId}`);
+          });
+        })()
+      }
+    />
+  );
+
+  if (invoice.status === 'paid') {
+    // Facture payée : plus rien à encaisser — reste l'avoir (correction/geste commercial).
+    return creditNoteButton || null;
+  }
 
   if (invoice.status === 'draft') {
     return (
@@ -277,8 +322,9 @@ export function InvoiceActions({ invoice }: { invoice: InvoiceView }): ReactNode
             }}
           />
         </View>
+        {creditNoteButton ? <View style={{ flex: 1 }}>{creditNoteButton}</View> : null}
       </View>
     );
   }
-  return null; // paid / cancelled : rien à faire
+  return null; // cancelled : rien à faire
 }

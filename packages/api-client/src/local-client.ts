@@ -18,6 +18,7 @@ import {
   SendQuote,
   SignQuote,
   RefuseQuote,
+  CreateCreditNote,
   GenerateInvoiceFromQuote,
   IssueInvoice,
   RegisterPayment,
@@ -623,6 +624,12 @@ export class LocalBobClient implements BobClient {
   async issueInvoice(input: IssueInvoiceInput): Promise<Result<{ number: string }, AppError>> {
     await this.ready;
     return this.issueInvoiceInternal(input);
+  }
+
+  /** A6 : avoir TOTAL (brouillon) — s'émet ensuite par issueInvoice (numéro A-, écriture inverse). */
+  async createCreditNote(input: { invoiceId: string }): Promise<Result<{ creditNoteId: string }, AppError>> {
+    await this.ready;
+    return new CreateCreditNote({ invoices: this.invoices, ids: this.ids }).execute(input);
   }
 
   private async issueInvoiceInternal(
