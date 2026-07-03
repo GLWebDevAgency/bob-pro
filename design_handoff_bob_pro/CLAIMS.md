@@ -416,9 +416,35 @@
   Prochain : C12 Clients (seed DATA_CLIENTS enfin cohérent).
 
 ### C12 — Clients (liste)               <!-- kind: screen -->
-- status: OPEN · depends-on: C03 · ref-capture: claims/ref/C12.png · target: apps/mobile/app/(tabs)/clients.tsx
-- Contrat: recherche · Chips filtres (tous/en retard/pros/particuliers) · ListRow(avatar squircle, encours, ScoreBar) · Badge B2B/B2C/B2G · FAB→nouveau client.
-- Acceptance: filtre + tri par score · scoring depuis core · edges → C13.
+- status: IN-BUILD
+- owner: claude-code (builder) · reviewer: gpt5pro (a posteriori)
+- depends-on: C03 (MERGED), C02 (seed DATA_CLIENTS aligné)
+- ref-capture: claims/ref/C12-frame.png · target: apps/mobile/app/(tabs)/clients.tsx (RÉÉCRITURE @bob/ui)
+
+#### Contrat (v1, claude-code — régimes en vigueur : données réelles, parité d'actions, review a posteriori)
+- Composition (réf C12-frame.png) : InnerScreenHeader (« TON CARNET » / « Clients » / « {n} clients ·
+  {total} € en attente » — total dérivé des données réelles, cf. KPI C10 4 330 €) · bouton + rond navy
+  en tête (nouveau client) · recherche (champ arrondi placeholder « Rechercher un client… ») · Chips
+  filtres (Tous/Particuliers/Entreprises/Public — actifs = theme.ink) · Card liste : ClientRow par client
+  (Avatar squircle initiales — tones du proto, nom 14.5/700, sous-titre contextuel, montant à droite teinté
+  par statut : « À jour/payé » success · « {montant} en retard » danger · « {montant} en attente » warning ·
+  « {montant} devis » slate + chevron) · badge type B2C/B2B/B2G · FAB → nouveau client.
+- Données 100 % réelles : useCustomers (+ dérivation encours/statut par client depuis invoices réelles si
+  le client l'expose ; sinon outstanding du customer) ; tri par score (scoring core) ; états loading
+  skeletons / erreur voix Bob / 0 client (empty state d'invitation à créer).
+- Copy : clés @bob/i18n clients.* ×3 humeurs (header, placeholder recherche, filtres, statuts montants,
+  empty state).
+- Edges : row → /client/[id] (C13) · + et FAB → création (route existante ou stub loggé TODO).
+- Parité d'actions : la création client et la relance passent par les mêmes points d'entrée que Bob.
+- Acceptance : capture vs réf (structure, chips, rows, badges) · filtres fonctionnels (chips) · tri score ·
+  i18n tests étendus · typecheck + token-lint clean · zéro fixture dans l'écran.
+
+#### Signatures
+- [x] agreed — claude-code — 2026-07-03 (07:35) — régime humain, review gpt5pro a posteriori
+
+#### Log (append-only, horodaté)
+- [07:35] claude-code CLAIM+PROPOSE+IN-BUILD: pattern C10/C11 réappliqué sur le seed DATA_CLIENTS
+  fraîchement aligné (C02 PARITY-FAIL #1 résolu). Réf : claims/ref/C12-frame.png (écran sans scroll).
 
 ### C13 — Fiche client                  <!-- kind: screen -->
 - status: OPEN · depends-on: C12 · ref-capture: claims/ref/C13.png
@@ -534,4 +560,5 @@
 | C03 | IN-BUILD | claude-code | gpt5pro | COUNTER rétroactif #1 @43670ef3 — contrat à préciser avant MERGE. |
 | C10 | IN-BUILD | claude-code | gpt5pro | Refonte écran Aujourd'hui — contrat 17:00. |
 | C11 | MERGED | claude-code | gpt5pro | Écran refondu validé simulateur (07:30), review a posteriori. |
-| C12–C41 | OPEN | — | — | Écrans/flux au fil de l'eau ; web C30 différé. |
+| C12 | IN-BUILD | claude-code | gpt5pro | Refonte Clients — contrat 07:35. |
+| C13–C41 | OPEN | — | — | Écrans/flux au fil de l'eau ; web C30 différé. |
