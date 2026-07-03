@@ -260,6 +260,9 @@ model Invoice {
   dueAt          DateTime?
   parentQuoteId  String?
   depositPct     Int?
+  // Acompte déjà facturé, déduit du net à payer d'une finale (A2-C16).
+  depositDeductionCents Int    @default(0)
+  depositInvoiceId      String?
   paidCents      Int           @default(0)
   totalsHt       Int           @default(0)
   totalsVat      Int           @default(0)

@@ -1946,6 +1946,16 @@ const fr = {
     pro: 'Total du chantier TTC',
     direct: 'Chantier TTC',
   },
+  'piece.depositDeducted': {
+    pote: 'Acompte déjà facturé{number}',
+    pro: 'Acompte déjà facturé{number}',
+    direct: 'Acompte facturé{number}',
+  },
+  'piece.linkedDeposit': {
+    pote: 'Facture d’acompte',
+    pro: 'Facture d’acompte',
+    direct: 'Acompte',
+  },
   'piece.amountDuePartial': {
     pote: 'Net à payer (cette facture)',
     pro: 'Net à payer — cette facture',
@@ -2273,6 +2283,120 @@ const fr = {
     direct: 'À prévenir.',
   },
   'diag.itemAccountantDone': { pote: 'Il est au courant ✓', pro: 'Informé ✓', direct: 'OK ✓' },
+
+  // ── C25 — écran Notifications (cloche C10) ─────────────────────────────────
+  'notif.back': { pote: 'Fermer', pro: 'Fermer', direct: 'Fermer' },
+  'notif.eyebrow': { pote: 'Quoi de neuf', pro: 'Votre activité', direct: 'Notifs' },
+  'notif.title': { pote: 'Notifications', pro: 'Notifications', direct: 'Notifications' },
+  'notif.subtitle': {
+    pote: 'Je te préviens quand ça compte — pas pour rien.',
+    pro: 'L’essentiel de votre activité, au bon moment.',
+    direct: 'L’essentiel. Rien d’autre.',
+  },
+  'notif.sectionDue': {
+    pote: 'À relancer maintenant',
+    pro: 'Relances à traiter',
+    direct: 'À relancer',
+  },
+  'notif.sectionUpcoming': {
+    pote: 'Échéances proches',
+    pro: 'Échéances à venir',
+    direct: 'Échéances',
+  },
+  'notif.sectionScheduled': {
+    pote: 'Prochaines relances',
+    pro: 'Prochaines relances',
+    direct: 'Prochaines relances',
+  },
+  'notif.itemRelanceTitle': {
+    pote: 'Relance {name}',
+    pro: 'Relance à envoyer à {name}',
+    direct: '{name} — relance',
+  },
+  'notif.itemRelanceSub': {
+    pote: '{doc} · {amount} · {days} j de retard',
+    pro: '{doc} · {amount} · {days} jours de retard',
+    direct: '{doc} · {amount} · {days} j',
+  },
+  'notif.itemRelanceSubOne': {
+    pote: '{doc} · {amount} · 1 j de retard',
+    pro: '{doc} · {amount} · 1 jour de retard',
+    direct: '{doc} · {amount} · 1 j',
+  },
+  'notif.actionView': { pote: 'Voir la pièce', pro: 'Voir la facture', direct: 'Voir' },
+  'notif.actionRelance': { pote: 'Relancer', pro: 'Relancer', direct: 'Relancer' },
+  'notif.itemDueTitle': {
+    pote: 'Échéance {name}',
+    pro: 'Échéance de {name}',
+    direct: '{name} — échéance',
+  },
+  'notif.itemDueSub': {
+    pote: '{doc} · {amount} · échéance dans {days} j',
+    pro: '{doc} · {amount} · échéance dans {days} jours',
+    direct: '{doc} · {amount} · J-{days}',
+  },
+  'notif.itemDueToday': {
+    pote: '{doc} · {amount} · échéance aujourd’hui',
+    pro: '{doc} · {amount} · échéance ce jour',
+    direct: '{doc} · {amount} · aujourd’hui',
+  },
+  'notif.conformiteTitle': { pote: 'Conformité 2026', pro: 'Conformité 2026', direct: 'Conformité 2026' },
+  'notif.conformiteSub': {
+    pote: 'Réception des e-factures à configurer avant le 1ᵉʳ sept. 2026.',
+    pro: 'La réception des factures électroniques est à configurer avant le 1ᵉʳ septembre 2026.',
+    direct: 'Réception e-factures : avant sept. 2026.',
+  },
+  'notif.empty': {
+    pote: 'Rien à signaler — tout roule.',
+    pro: 'Rien à signaler — tout est en ordre.',
+    direct: 'RAS.',
+  },
+  'notif.dataError': {
+    pote: 'J’arrive pas à charger tes notifs. On réessaie ?',
+    pro: 'Impossible de charger les notifications. Veuillez réessayer.',
+    direct: 'Chargement KO. Réessaie.',
+  },
+  'notif.retry': { pote: 'Réessayer', pro: 'Réessayer', direct: 'Réessayer' },
+
+  // ── C25 — relances automatiques (plan @bob/core, tons buildRelance) ────────
+  'relance.autoTitle': {
+    pote: 'Relances automatiques',
+    pro: 'Relances automatiques',
+    direct: 'Relances auto',
+  },
+  'relance.autoSub': {
+    pote: 'Bob relance les retards tout seul, au bon moment.',
+    pro: 'Les retards sont relancés automatiquement, au bon moment.',
+    direct: 'Relances auto. Au bon moment.',
+  },
+  'relance.queue': {
+    pote: 'Actives · {count} clients en file',
+    pro: 'Actives · {count} clients en file d’attente',
+    direct: 'Actives · {count} en file',
+  },
+  'relance.queueOne': {
+    pote: 'Actives · 1 client en file',
+    pro: 'Actives · 1 client en file d’attente',
+    direct: 'Actives · 1 en file',
+  },
+  'relance.medWarning': {
+    pote: 'La mise en demeure (L441-10 + indemnité 40 €) n’est jamais envoyée sans ta validation.',
+    pro: 'La mise en demeure (art. L441-10 + indemnité de 40 €) n’est jamais envoyée sans votre validation.',
+    direct: 'Mise en demeure (L441-10 + 40 €) : jamais sans ta validation.',
+  },
+  'relance.toneCordial': { pote: 'Cordial', pro: 'Cordial', direct: 'Cordial' },
+  'relance.toneNeutre': { pote: 'Neutre', pro: 'Neutre', direct: 'Neutre' },
+  'relance.toneFerme': { pote: 'Ferme', pro: 'Ferme', direct: 'Ferme' },
+  'relance.toneMed': {
+    pote: 'Mise en demeure',
+    pro: 'Mise en demeure',
+    direct: 'Mise en demeure',
+  },
+  'relance.scheduledLine': {
+    pote: '{tone} · le {date}',
+    pro: '{tone} · prévue le {date}',
+    direct: '{tone} · {date}',
+  },
 } as const satisfies Record<string, Copy>;
 
 export type I18nKey = keyof typeof fr;

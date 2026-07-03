@@ -181,3 +181,34 @@ describe('buildPieceView — A1-C16 : lisibilité acompte + pont facture finale'
     expect(v.nextStep).toBeNull();
   });
 });
+
+describe('buildPieceView — A2-C16 : la finale porte la TRACE de l’acompte (flow corrélé)', () => {
+  it('finale avec déduction : net à payer = solde, ligne de déduction + nav vers l’acompte', () => {
+    const v = buildPieceView({
+      source: 'invoice',
+      invoice: invoice({
+        kind: 'final',
+        // Réalité domaine après fix : totals du chantier, netToPay = solde (ttc − acompte).
+        totals: { ht: 135667, vatByRate: { '20': 27133 }, vat: 27133, ttc: 162800, netToPay: 113960 },
+        depositDeductionCents: 48840,
+        depositInvoiceId: 'inv-acompte',
+      }),
+      customer: MARTIN,
+      depositInvoice: { id: 'inv-acompte', number: 'F-2026-0001', ttcCents: 48840 },
+    });
+    expect(v.amountDue).toEqual({ cents: 113960, isPartialOfTtc: true });
+    expect(v.depositDeduction).toEqual({
+      amountCents: 48840,
+      invoiceRef: { id: 'inv-acompte', number: 'F-2026-0001', ttcCents: 48840 },
+    });
+  });
+
+  it('sans déduction : rien d’affiché (finale simple, acompte inexistant)', () => {
+    const v = buildPieceView({
+      source: 'invoice',
+      invoice: invoice({ kind: 'final', totals: { ht: 135667, vatByRate: { '20': 27133 }, vat: 27133, ttc: 162800, netToPay: 162800 } }),
+      customer: MARTIN,
+    });
+    expect(v.depositDeduction).toBeNull();
+  });
+});

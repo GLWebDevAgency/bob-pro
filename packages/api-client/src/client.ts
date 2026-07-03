@@ -61,6 +61,10 @@ export interface InvoiceView {
   paid: number;
   /** Lignes de la pièce (C16 — l'entité domaine les porte depuis toujours). */
   lines: QuoteLine[];
+  /** Acompte déjà facturé, déduit du net à payer d'une finale (0 = aucun) — A2-C16. */
+  depositDeductionCents: number;
+  /** Facture d'acompte déduite (nav croisée). */
+  depositInvoiceId: string | null;
 }
 
 export interface RegisterPaymentClientInput {
@@ -211,6 +215,17 @@ export interface AskBobClientInput {
 /** POST /customers — DTO serveur constaté (CustomersController) : CustomerProps sans id/companyId. */
 export type CreateCustomerClientInput = Omit<CustomerProps, 'id' | 'companyId'>;
 
+/** Envoi RÉEL d'une relance ciblée (C25 ② — CONTRAT CLIENT, serveur à venir).
+ * Constat apps/api (2026-07-03) : l'infra d'envoi EXISTE (RelanceService cron 6 h → buildRelance
+ * 4 tons par ancienneté + notification_jobs dédupliquées + notifier Brevo/Demo), mais AUCUN
+ * endpoint company-scoped ciblé — seul POST /jobs/run-relances (batch multi-tenant, usage ops).
+ * Contrat attendu (TODO Codex) : POST /invoices/:id/relance → { jobId, status }, en réutilisant
+ * NotificationDeliveryService.enqueue (dedupeKey `invoice:{id}:relance:{today}`) + tryDeliver. */
+export interface SendRelanceClientOutput {
+  jobId: string;
+  status: string;
+}
+
 /**
  * Façade data consommée par l'app mobile (via TanStack Query).
  * Deux implémentations : LocalBobClient (fixtures, hors-ligne — V1) et, plus tard, HttpBobClient (NestJS).
@@ -291,6 +306,10 @@ export interface BobClient {
   refuseQuote(quoteId: string): Promise<Result<{ status: string }, AppError>>;
   generateInvoice(input: { quoteId: string; mode?: 'deposit' | 'final' }): Promise<Result<{ invoiceId: string }, AppError>>;
   issueInvoice(input: IssueInvoiceInput): Promise<Result<{ number: string }, AppError>>;
+  /** C25 ② : envoi réel d'une relance — ÉCHOUE PROPREMENT tant que le serveur n'expose pas
+   * l'endpoint ciblé (voir SendRelanceClientOutput). Aucune UI ni outil agent ne s'y branche
+   * d'ici là (pas de bouton fantôme) : la relance passe par l'assistant (brouillon) en attendant. */
+  sendRelance(invoiceId: string): Promise<Result<SendRelanceClientOutput, AppError>>;
   registerPayment(input: RegisterPaymentClientInput): Promise<Result<RegisterPaymentClientOutput, AppError>>;
   getQuote(id: string): Promise<Result<QuoteView, AppError>>;
   listQuotes(): Promise<Result<QuoteView[], AppError>>;

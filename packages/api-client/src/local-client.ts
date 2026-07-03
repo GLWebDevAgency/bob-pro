@@ -51,7 +51,7 @@ import {
   ValidateVatNumber,
   SearchAddress,
   Customer,
-  buildRelance,
+  deriveRelancePlan,
   ok,
   err,
   appNotFound,
@@ -106,6 +106,7 @@ import type {
   InvoiceView,
   SubscriptionView,
   SendQuoteOutput,
+  SendRelanceClientOutput,
   ListDocumentsClientInput,
   UploadDocumentClientInput,
   VoiceConfig,
@@ -274,6 +275,8 @@ export class LocalBobClient implements BobClient {
       totals: i.totals(),
       mentions: [...i.mentions],
       lines: i.lines.map((l) => ({ ...l })),
+      depositDeductionCents: i.depositDeductionCents,
+      depositInvoiceId: i.depositInvoiceId,
       dueAt: i.dueAt,
       paid: i.paid,
     };
@@ -557,6 +560,16 @@ export class LocalBobClient implements BobClient {
     return issued;
   }
 
+  /** C25 ② : l'envoi réel est une capacité SERVEUR (notifier + notification_jobs) — le mode démo
+   * ne simule jamais un envoi sortant. Échec propre, même contrat que l'adaptateur HTTP. */
+  async sendRelance(_invoiceId: string): Promise<Result<SendRelanceClientOutput, AppError>> {
+    return err({
+      kind: 'dependency',
+      port: 'api/relance',
+      cause: 'Envoi de relance non disponible côté serveur — endpoint POST /invoices/:id/relance à venir (contrat C25).',
+    });
+  }
+
   async registerPayment(input: {
     invoiceId: string;
     amount: number;
@@ -698,19 +711,26 @@ export class LocalBobClient implements BobClient {
         if (!r.ok) return r;
         return ok({ payoutCents: r.value.payout, availableCents: r.value.available });
       },
-      draftRelance: async () => {
-        const r = await this.listCustomers();
-        if (!r.ok) return r;
-        const top = [...r.value].filter((c) => c.outstanding > 0).sort((a, b) => b.outstanding - a.outstanding)[0];
-        const draft = buildRelance({
-          customerName: top?.name ?? 'le client',
-          docNumber: 'dernière facture',
-          amountCents: top?.outstanding ?? 0,
-          daysLate: 7,
-          tone: 'cordial',
-          personality: 'Pote',
-        });
-        return ok({ subject: draft.subject, body: draft.body });
+      // C25 ① : brouillon CIBLABLE, dérivé du plan de relances réel (@bob/core — ton par
+      // ancienneté, reste dû netToPay − paid). Fini le « plus gros encours, J+7 inventé ».
+      draftRelance: async (input) => {
+        const [inv, cust] = await Promise.all([this.listInvoices(), this.listCustomers()]);
+        if (!inv.ok) return inv;
+        if (!cust.ok) return cust;
+        const plan = deriveRelancePlan({ invoices: inv.value, customers: cust.value, today: this.clock.today() });
+        const entry = input?.invoiceId
+          ? plan.find((e) => e.invoiceId === input.invoiceId)
+          : input?.customerId
+            ? plan.find((e) => e.customerId === input.customerId)
+            : plan[0]; // tri du plan : retard le plus long puis montant
+        if (!entry) {
+          return ok(
+            input?.invoiceId || input?.customerId
+              ? { subject: 'Rien à relancer pour cette cible', body: 'Aucun retard sur cette cible — facture réglée ou pas encore échue. Je ne relance pas pour rien.' }
+              : { subject: 'Rien à relancer', body: 'Aucune facture en retard — tout est réglé ou dans les temps. 🎉' },
+          );
+        }
+        return ok({ subject: entry.message.subject, body: entry.message.body });
       },
       listPayableInvoices: async () => {
         const [inv, cust] = await Promise.all([this.listInvoices(), this.listCustomers()]);

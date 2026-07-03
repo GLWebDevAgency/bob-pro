@@ -28,6 +28,8 @@ export interface IssueInvoiceArgs {
 export class Invoice extends AggregateRoot<string> {
   private _status: InvoiceStatus = 'draft';
   private _lines: QuoteLine[] = [];
+  private _depositDeductionCents = 0;
+  private _depositInvoiceId: string | null = null;
   private _number: DocNumber | null = null;
   private _frozenTotals: Totals | null = null;
   private _mentions: string[] = [];
@@ -47,7 +49,15 @@ export class Invoice extends AggregateRoot<string> {
     super(id);
   }
 
-  static fromSignedQuote(quote: Quote, mode: 'deposit' | 'final', id: string): DomainResult<Invoice> {
+  static fromSignedQuote(
+    quote: Quote,
+    mode: 'deposit' | 'final',
+    id: string,
+    opts?: {
+      /** Acompte DÉJÀ FACTURÉ sur ce devis : la finale le déduit (jamais de double facturation). */
+      depositDeduction?: { amountCents: number; invoiceId: string };
+    },
+  ): DomainResult<Invoice> {
     if (quote.status !== 'signed')
       return err({ code: 'VALIDATION', field: 'quote', message: 'Le devis doit etre signe.' });
     let dep: Percentage | null = null;
@@ -59,6 +69,16 @@ export class Invoice extends AggregateRoot<string> {
     const kind: InvoiceKind = mode === 'deposit' ? 'deposit' : 'final';
     const inv = new Invoice(id, quote.companyId, quote.customerId, kind, dep, quote.id);
     for (const l of quote.lines) inv._lines.push({ ...l });
+    if (mode === 'final' && opts?.depositDeduction) {
+      const { amountCents, invoiceId } = opts.depositDeduction;
+      if (!Number.isSafeInteger(amountCents) || amountCents < 0)
+        return err({ code: 'VALIDATION', field: 'depositDeduction', message: 'Déduction d’acompte invalide (centimes entiers ≥ 0 requis).' });
+      const ttc = inv.totals().ttc;
+      if (amountCents > ttc)
+        return err({ code: 'VALIDATION', field: 'depositDeduction', message: 'Déduction d’acompte supérieure au TTC du chantier.' });
+      inv._depositDeductionCents = amountCents;
+      inv._depositInvoiceId = invoiceId;
+    }
     return ok(inv);
   }
 
@@ -87,6 +107,14 @@ export class Invoice extends AggregateRoot<string> {
   get paid(): number {
     return this._paid;
   }
+  /** Acompte déjà facturé, déduit du net à payer de la finale (0 = aucun). */
+  get depositDeductionCents(): number {
+    return this._depositDeductionCents;
+  }
+  /** Facture d'acompte déduite (traçabilité + nav croisée). */
+  get depositInvoiceId(): string | null {
+    return this._depositInvoiceId;
+  }
 
   addLine(line: QuoteLine): DomainResult<void> {
     if (this._status !== 'draft')
@@ -101,7 +129,12 @@ export class Invoice extends AggregateRoot<string> {
 
   totals(): Totals {
     if (this._frozenTotals) return this._frozenTotals;
-    return computeTotals([...this._lines], this._depositPct ? { depositPct: this._depositPct.value } : undefined);
+    const base = computeTotals([...this._lines], this._depositPct ? { depositPct: this._depositPct.value } : undefined);
+    if (this._depositDeductionCents > 0) {
+      // Facture finale après acompte : le net à payer est LE SOLDE (ttc − acompte facturé).
+      return { ...base, netToPay: Math.max(0, base.ttc - this._depositDeductionCents) };
+    }
+    return base;
   }
 
   assignNumber(n: DocNumber, at: Instant): DomainResult<void> {
@@ -181,6 +214,8 @@ export class Invoice extends AggregateRoot<string> {
       paid: this._paid,
       depositPct: this._depositPct?.value ?? null,
       parentQuoteId: this.parentQuoteId,
+      depositDeductionCents: this._depositDeductionCents,
+      depositInvoiceId: this._depositInvoiceId,
     };
   }
 
@@ -202,6 +237,8 @@ export class Invoice extends AggregateRoot<string> {
     inv._issuedAt = s.issuedAt;
     inv._dueAt = s.dueAt;
     inv._paid = s.paid;
+    inv._depositDeductionCents = s.depositDeductionCents ?? 0;
+    inv._depositInvoiceId = s.depositInvoiceId ?? null;
     return inv;
   }
 }
@@ -221,4 +258,7 @@ export interface InvoiceSnapshot {
   paid: number;
   depositPct: number | null;
   parentQuoteId: string | null;
+  /** Acompte déjà facturé déduit de la finale — optionnels : snapshots antérieurs compatibles. */
+  depositDeductionCents?: number;
+  depositInvoiceId?: string | null;
 }

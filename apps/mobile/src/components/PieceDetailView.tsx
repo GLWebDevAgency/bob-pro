@@ -306,6 +306,20 @@ export function PieceDetailView({ view, onClose, onOpenQuote, onOpenInvoice, act
               {...(onOpenInvoice ? { onPress: () => onOpenInvoice(view.linkedInvoice!) } : {})}
             />
           ) : null}
+          {view.depositDeduction?.invoiceRef ? (
+            <LinkedCard
+              gradient={[conformityCard.bgTop, conformityCard.bgBottom]}
+              border={conformityCard.border}
+              chipBg={semantic.b2gBg}
+              icon={<ReturnArrowIcon color={semantic.b2g} />}
+              label={t('piece.linkedDeposit', { personality })}
+              labelColor={pieceDetail.linkedLabelInk}
+              value={view.depositDeduction.invoiceRef.number ?? ''}
+              valueColor={semantic.aiInk}
+              chevronColor={semantic.b2g}
+              {...(onOpenInvoice ? { onPress: () => onOpenInvoice(view.depositDeduction!.invoiceRef!) } : {})}
+            />
+          ) : null}
           {view.creditNote ? (
             <LinkedCard
               bg={semantic.warningBg}
@@ -394,12 +408,30 @@ export function PieceDetailView({ view, onClose, onOpenQuote, onOpenInvoice, act
                   </Text>
                 </View>
                 {view.amountDue.isPartialOfTtc ? (
-                  // Acompte/situation : le TTC du CHANTIER n'est qu'un contexte —
-                  // le héros de la pièce est son net à payer (A1-C16).
+                  // Acompte/situation/finale après acompte : le TTC du CHANTIER n'est qu'un
+                  // contexte — le héros de la pièce est son net à payer (A1/A2-C16).
                   <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 3 }}>
                     <Text style={[font('sub'), { color: colors.slate500 }]}>{t('piece.chantierTtc', { personality })}</Text>
                     <Text style={{ ...font('sub', 600), color: colors.ink800, fontVariant: ['tabular-nums'] }}>
                       {formatEUR(view.totals.ttc)}
+                    </Text>
+                  </View>
+                ) : null}
+                {view.depositDeduction ? (
+                  // La trace de l'acompte : tout le flow est corrélé (devis → acompte → solde).
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 3 }}>
+                    <Text style={[font('sub'), { color: colors.slate500 }]}>
+                      {t('piece.depositDeducted', {
+                        personality,
+                        params: {
+                          number: view.depositDeduction.invoiceRef?.number
+                            ? ` (${view.depositDeduction.invoiceRef.number})`
+                            : '',
+                        },
+                      })}
+                    </Text>
+                    <Text style={{ ...font('sub', 700), color: semantic.success, fontVariant: ['tabular-nums'] }}>
+                      −{formatEUR(view.depositDeduction.amountCents)}
                     </Text>
                   </View>
                 ) : null}

@@ -47,6 +47,7 @@ export default function FactureDetail() {
       : [];
     const credit = siblings.find((i) => i.kind === 'credit_note');
     const situation = siblings.find((i) => i.kind === 'situation');
+    const deposit = siblings.find((i) => i.kind === 'deposit');
     const hasFinalInvoice = siblings.some((i) => i.kind === 'final');
     return buildPieceView({
       source: 'invoice',
@@ -56,6 +57,7 @@ export default function FactureDetail() {
       ...(parent ? { parentQuote: { id: parent.id, number: parent.number, ttcCents: parent.totals.ttc } } : {}),
       ...(credit ? { creditNote: { id: credit.id, number: credit.number, ttcCents: credit.totals.ttc } } : {}),
       ...(situation ? { situation: { id: situation.id, number: situation.number, ttcCents: situation.totals.ttc } } : {}),
+      ...(deposit ? { depositInvoice: { id: deposit.id, number: deposit.number, ttcCents: deposit.totals.netToPay } } : {}),
     });
   }, [invoice.data, invoices.data, quotes.data, customers.data]);
 

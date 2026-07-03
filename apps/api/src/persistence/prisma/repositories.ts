@@ -204,6 +204,8 @@ export class PrismaInvoiceRepository implements InvoiceRepository {
       dueAt: s.dueAt ? new Date(s.dueAt) : null,
       parentQuoteId: s.parentQuoteId,
       depositPct: s.depositPct,
+      depositDeductionCents: s.depositDeductionCents ?? 0,
+      depositInvoiceId: s.depositInvoiceId ?? null,
       paidCents: s.paid,
       totalsHt: totals.ht,
       totalsVat: totals.vat,

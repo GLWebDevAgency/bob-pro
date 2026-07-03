@@ -26,7 +26,17 @@ export class GenerateInvoiceFromQuote {
     const existing = await this.deps.invoices.findByParentQuoteId(quote.companyId, quote.id, kind);
     if (existing) return ok({ invoiceId: existing.id });
 
-    const created = Invoice.fromSignedQuote(quote, mode, this.deps.ids.newId());
+    // Facture FINALE après acompte : l'acompte déjà ÉMIS (fiscalement existant) est déduit
+    // du net à payer — le flow reste corrélé de bout en bout (devis → acompte → solde).
+    let depositDeduction: { amountCents: number; invoiceId: string } | undefined;
+    if (mode === 'final') {
+      const deposit = await this.deps.invoices.findByParentQuoteId(quote.companyId, quote.id, 'deposit');
+      if (deposit && deposit.status !== 'draft' && deposit.status !== 'cancelled') {
+        depositDeduction = { amountCents: deposit.totals().netToPay, invoiceId: deposit.id };
+      }
+    }
+
+    const created = Invoice.fromSignedQuote(quote, mode, this.deps.ids.newId(), depositDeduction ? { depositDeduction } : undefined);
     if (!created.ok) return err(appDomain(created.error));
 
     try {

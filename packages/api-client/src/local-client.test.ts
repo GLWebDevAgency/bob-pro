@@ -402,3 +402,36 @@ describe('coffre de démo + classement (A1-C14)', () => {
     expect(incomplete.ok).toBe(false);
   });
 });
+
+describe('flow corrélé devis → acompte → FINALE (A2-C16)', () => {
+  it('la facture finale déduit l’acompte émis : netToPay = solde, traçabilité posée', async () => {
+    const client = makeClient();
+    const quote = await client.createQuote({
+      customerId: 'cust-durand',
+      depositPct: 30,
+      lines: [{ label: 'Chantier test', category: 'labor', qty: 1, unitPriceHT: 135667, vatRate: 20 }],
+    });
+    expect(quote.ok).toBe(true);
+    if (!quote.ok) return;
+    await client.sendQuote(quote.value.quoteId);
+    await client.signQuote({ quoteId: quote.value.quoteId, signerName: 'Mme Durand' });
+
+    const acompte = await client.generateInvoice({ quoteId: quote.value.quoteId, mode: 'deposit' });
+    expect(acompte.ok).toBe(true);
+    if (!acompte.ok) return;
+    await client.issueInvoice({ invoiceId: acompte.value.invoiceId });
+    await client.registerPayment({ invoiceId: acompte.value.invoiceId, amount: 48840, method: 'card' });
+
+    const finale = await client.generateInvoice({ quoteId: quote.value.quoteId, mode: 'final' });
+    expect(finale.ok).toBe(true);
+    if (!finale.ok) return;
+    const view = await client.getInvoice(finale.value.invoiceId);
+    expect(view.ok).toBe(true);
+    if (!view.ok) return;
+    // Le solde EXACT : 1 628,00 − 488,40 = 1 139,60 € — jamais de double facturation.
+    expect(view.value.totals.ttc).toBe(162800);
+    expect(view.value.totals.netToPay).toBe(113960);
+    expect(view.value.depositDeductionCents).toBe(48840);
+    expect(view.value.depositInvoiceId).toBe(acompte.value.invoiceId);
+  });
+});

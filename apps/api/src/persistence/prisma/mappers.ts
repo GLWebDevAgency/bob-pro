@@ -194,6 +194,7 @@ export function quoteRowToSnapshot(row: QuoteRow): QuoteSnapshot {
 interface InvoiceRow {
   id: string; companyId: string; customerId: string; kind: string; status: string; number: string | null;
   issuedAt: Date | null; dueAt: Date | null; parentQuoteId: string | null; depositPct: number | null;
+  depositDeductionCents: number; depositInvoiceId: string | null;
   paidCents: number; totalsHt: number; totalsVat: number; totalsTtc: number; totalsNetToPay: number;
   vatByRate: unknown; legalMentions: string[]; lines: LineRow[];
 }
@@ -225,5 +226,7 @@ export function invoiceRowToSnapshot(row: InvoiceRow): InvoiceSnapshot {
     paid: row.paidCents,
     depositPct: row.depositPct,
     parentQuoteId: row.parentQuoteId,
+    depositDeductionCents: row.depositDeductionCents ?? 0,
+    depositInvoiceId: row.depositInvoiceId ?? null,
   };
 }

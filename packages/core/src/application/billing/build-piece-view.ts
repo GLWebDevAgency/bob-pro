@@ -26,6 +26,9 @@ export interface PieceInvoiceData {
   dueAt: string | null;
   lines: readonly QuoteLine[];
   customerId: string;
+  /** Acompte déjà facturé déduit (A2-C16) — 0/null si aucun. */
+  depositDeductionCents?: number;
+  depositInvoiceId?: string | null;
 }
 
 export interface PieceQuoteData {
@@ -62,6 +65,8 @@ export type BuildPieceViewInput =
       parentQuote?: PieceLinkedRef;
       creditNote?: PieceLinkedRef;
       situation?: PieceLinkedRef;
+      /** Facture d'acompte du même devis (nav croisée + libellé de la déduction). */
+      depositInvoice?: PieceLinkedRef;
       /** Une facture FINALE existe déjà sur le même devis (le pont « créer la finale » se tait). */
       hasFinalInvoice?: boolean;
     }
@@ -127,6 +132,8 @@ export interface PieceView {
   mentions: readonly string[];
   /** Mentions figées à l'émission (facture non brouillon). */
   frozen: boolean;
+  /** Facture finale : acompte déjà facturé, affiché en déduction avant le net à payer. */
+  depositDeduction: { amountCents: number; invoiceRef: PieceLinkedRef | null } | null;
   /** Pièces liées à afficher en nav croisée. */
   linkedQuote: PieceLinkedRef | null;
   linkedInvoice: PieceLinkedRef | null;
@@ -257,6 +264,7 @@ export function buildPieceView(input: BuildPieceViewInput): PieceView {
       signedAmountCents: q.totals.ttc,
       amountDue: { cents: q.totals.ttc, isPartialOfTtc: false },
       nextStep: null,
+      depositDeduction: null,
       transmission: null,
       isEreporting: false,
       situationProgressPct: null,
@@ -315,6 +323,10 @@ export function buildPieceView(input: BuildPieceViewInput): PieceView {
     signedAmountCents: isCredit ? -Math.abs(inv.totals.ttc) : inv.totals.ttc,
     amountDue: { cents: inv.totals.netToPay, isPartialOfTtc },
     nextStep,
+    depositDeduction:
+      (inv.depositDeductionCents ?? 0) > 0
+        ? { amountCents: inv.depositDeductionCents ?? 0, invoiceRef: input.depositInvoice ?? null }
+        : null,
     transmission:
       emitted && !isCredit && channel !== null && channel !== 'ereporting'
         ? { channel, steps: buildTransmissionSteps(inv.status) }

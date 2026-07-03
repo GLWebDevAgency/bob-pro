@@ -146,6 +146,8 @@ export interface InvoiceView {
   paid: number;
   /** Lignes de la pièce (C16). */
   lines: QuoteLine[];
+  depositDeductionCents: number;
+  depositInvoiceId: string | null;
 }
 
 export interface AccountingPreviewLine {
@@ -333,6 +335,8 @@ export class BackendService {
       dueAt: i.dueAt,
       paid: i.paid,
       lines: i.lines.map((l) => ({ ...l })),
+      depositDeductionCents: i.depositDeductionCents,
+      depositInvoiceId: i.depositInvoiceId,
     };
   }
 
