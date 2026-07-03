@@ -1941,6 +1941,26 @@ const fr = {
   'piece.totalHt': { pote: 'Total HT', pro: 'Total HT', direct: 'HT' },
   'piece.totalVat': { pote: 'TVA', pro: 'TVA', direct: 'TVA' },
   'piece.totalTtc': { pote: 'Total TTC', pro: 'Total TTC', direct: 'TTC' },
+  'piece.chantierTtc': {
+    pote: 'Total chantier TTC',
+    pro: 'Total du chantier TTC',
+    direct: 'Chantier TTC',
+  },
+  'piece.amountDuePartial': {
+    pote: 'Net à payer (cette facture)',
+    pro: 'Net à payer — cette facture',
+    direct: 'Net à payer',
+  },
+  'piece.nextStepBody': {
+    pote: 'Acompte encaissé ✓ Reste à facturer sur le chantier : {amount}.',
+    pro: 'Acompte encaissé. Reste à facturer sur ce chantier : {amount}.',
+    direct: 'Reste à facturer : {amount}.',
+  },
+  'piece.actionFacturerSolde': {
+    pote: 'Créer la facture finale',
+    pro: 'Générer la facture finale',
+    direct: 'Facture finale',
+  },
   'piece.deposit': {
     pote: 'Acompte {pct} % à la commande : {amount}',
     pro: 'Acompte de {pct} % à la commande : {amount}',
@@ -1990,6 +2010,269 @@ const fr = {
     pro: 'Impossible de charger cette pièce pour le moment. Veuillez réessayer.',
     direct: 'Pièce injoignable. Réessaie.',
   },
+
+  // ── C23 — flux « Diagnostic 2026 » (copy pote = exacte du proto §diag*) ───────
+  'diag.title': { pote: 'Diagnostic 2026', pro: 'Diagnostic 2026', direct: 'Diagnostic 2026' },
+  'diag.close': { pote: 'Fermer', pro: 'Fermer', direct: 'Fermer' },
+  'diag.back': { pote: 'Retour', pro: 'Retour', direct: 'Retour' },
+  'diag.introTitle': {
+    pote: 'Prêt pour la facture électronique 2026 ?',
+    pro: 'Prêt pour la facturation électronique 2026 ?',
+    direct: 'Prêt pour 2026 ?',
+  },
+  // {count} = nombre de questions du parcours (adaptatif) — avec 3, la phrase = proto exact.
+  'diag.introBody': {
+    pote: 'À partir du 1ᵉʳ sept. 2026, ton entreprise devra recevoir ses factures en électronique. {count} questions, je te dis où t’en es.',
+    pro: 'Au 1ᵉʳ septembre 2026, votre entreprise devra recevoir ses factures au format électronique. {count} questions pour faire le point.',
+    direct: 'Sept. 2026 : réception e-facture obligatoire. {count} questions.',
+  },
+  'diag.introCta': {
+    pote: 'C’est parti — 2 min',
+    pro: 'Commencer — 2 minutes',
+    direct: 'Go — 2 min',
+  },
+  // Étape audit — constats automatiques du dossier (v2 : zéro question inutile).
+  'diag.auditEyebrow': { pote: 'Ton dossier', pro: 'Votre dossier', direct: 'Dossier' },
+  'diag.auditTitle': {
+    pote: 'J’ai déjà regardé ton dossier',
+    pro: 'Bob a déjà analysé votre dossier',
+    direct: 'Dossier déjà audité',
+  },
+  'diag.auditMix': {
+    pote: 'Tes clients : {b2c} particuliers · {b2b} pros · {b2g} public',
+    pro: 'Vos clients : {b2c} particuliers · {b2b} professionnels · {b2g} secteur public',
+    direct: '{b2c} B2C · {b2b} B2B · {b2g} B2G',
+  },
+  'diag.auditContinue': { pote: 'OK, la suite', pro: 'Continuer', direct: 'Suite' },
+  // Questions (max 3, adaptatives) — Q plateforme = copy proto exacte.
+  'diag.questionTag': {
+    pote: 'Question {n} / {total}',
+    pro: 'Question {n} / {total}',
+    direct: 'Q{n} / {total}',
+  },
+  'diag.qPlatform': {
+    pote: 'T’as déjà choisi ta plateforme agréée ?',
+    pro: 'Avez-vous choisi votre plateforme agréée ?',
+    direct: 'Plateforme agréée choisie ?',
+  },
+  'diag.qPlatformYes': { pote: 'Oui, c’est fait', pro: 'Oui, c’est fait', direct: 'Oui' },
+  'diag.qPlatformNo': { pote: 'Pas encore', pro: 'Pas encore', direct: 'Non' },
+  'diag.qPlatformUnknown': {
+    pote: 'C’est quoi, une plateforme ?',
+    pro: 'Je ne sais pas encore',
+    direct: 'Aucune idée',
+  },
+  'diag.qOffApp': {
+    pote: 'Il t’arrive d’encaisser en dehors de l’app ?',
+    pro: 'Encaissez-vous parfois hors de l’application (caisse, espèces) ?',
+    direct: 'Encaissements hors app ?',
+  },
+  'diag.qOffAppYes': { pote: 'Oui, ça arrive', pro: 'Oui, parfois', direct: 'Oui' },
+  'diag.qOffAppNo': { pote: 'Non, tout passe ici', pro: 'Non, tout passe par l’application', direct: 'Non' },
+  'diag.qOffAppUnknown': { pote: 'Je sais pas trop', pro: 'Je ne sais pas', direct: 'Sais pas' },
+  'diag.qAccountant': {
+    pote: 'T’es accompagné par un comptable ?',
+    pro: 'Êtes-vous accompagné par un expert-comptable ?',
+    direct: 'Un comptable t’accompagne ?',
+  },
+  'diag.qAccountantYes': { pote: 'Oui, j’ai un comptable', pro: 'Oui, un expert-comptable', direct: 'Oui' },
+  'diag.qAccountantOga': { pote: 'Oui, un OGA / CGA', pro: 'Oui, un OGA / CGA', direct: 'OGA / CGA' },
+  'diag.qAccountantNo': { pote: 'Non, je gère seul', pro: 'Non, je gère seul', direct: 'Non' },
+  // Résultat — titre par tranche de score (mêmes seuils que l'anneau : >75 · 50–75 · <50).
+  'diag.resultTitleHigh': { pote: 'Prêt pour 2026 🎉', pro: 'Vous êtes prêt pour 2026', direct: 'Prêt.' },
+  'diag.resultTitleMid': { pote: 'Presque prêt 💪', pro: 'Presque prêt', direct: 'Presque.' },
+  'diag.resultTitleLow': { pote: 'Faut s’y mettre 🔧', pro: 'Des actions sont nécessaires', direct: 'Pas prêt.' },
+  // {count} = points à régler — avec 2, la phrase pote = proto exact.
+  'diag.resultBody': {
+    pote: '{count} trucs à régler et tu seras tranquille pour septembre 2026.',
+    pro: '{count} points à traiter avant septembre 2026.',
+    direct: '{count} points à régler.',
+  },
+  'diag.resultBodyOne': {
+    pote: '1 truc à régler et tu seras tranquille pour septembre 2026.',
+    pro: '1 point à traiter avant septembre 2026.',
+    direct: '1 point à régler.',
+  },
+  'diag.resultBodyNone': {
+    pote: 'Tout est en place pour septembre 2026. Beau boulot.',
+    pro: 'Tout est en place pour l’échéance de septembre 2026.',
+    direct: 'Tout est prêt.',
+  },
+  'diag.axisReception': { pote: 'Réception 2026', pro: 'Réception 2026', direct: 'Réception' },
+  'diag.axisEmission': { pote: 'Émission 2027', pro: 'Émission 2027', direct: 'Émission' },
+  'diag.axisDonnees': { pote: 'Qualité des données', pro: 'Qualité des données', direct: 'Données' },
+  'diag.planTitle': { pote: 'Ton plan d’action', pro: 'Votre plan d’action', direct: 'Plan d’action' },
+  'diag.deadline': { pote: 'avant le {date}', pro: 'échéance {date}', direct: '{date}' },
+  'diag.resultCta': { pote: 'Configurer ma réception', pro: 'Configurer la réception', direct: 'Configurer' },
+  'diag.resultLater': { pote: 'Plus tard', pro: 'Plus tard', direct: 'Plus tard' },
+  'diag.dataError': {
+    pote: 'J’arrive pas à lire ton dossier, là. On réessaie ?',
+    pro: 'Impossible de charger le diagnostic pour le moment.',
+    direct: 'Chargement KO. Réessaie.',
+  },
+  'diag.retry': { pote: 'Réessayer', pro: 'Réessayer', direct: 'Réessayer' },
+  // Items du plan d'action (labels + détails) — libellés proto exacts quand ils existent.
+  'diag.itemReception': {
+    pote: 'Plateforme de réception',
+    pro: 'Plateforme de réception',
+    direct: 'Plateforme réception',
+  },
+  'diag.itemReceptionTodo': {
+    pote: 'À configurer — le plus urgent',
+    pro: 'À configurer — priorité n° 1',
+    direct: 'À configurer. Urgent.',
+  },
+  'diag.itemReceptionDone': {
+    pote: 'Choisie et inscrite à l’annuaire ✓',
+    pro: 'Choisie et inscrite à l’annuaire ✓',
+    direct: 'OK ✓',
+  },
+  'diag.itemFranchise': {
+    pote: 'Franchise en base (293 B)',
+    pro: 'Franchise en base (art. 293 B)',
+    direct: 'Franchise 293 B',
+  },
+  'diag.itemFranchiseNote': {
+    pote: 'Pas de TVA facturée, mais la réforme s’applique quand même',
+    pro: 'La franchise ne dispense pas de la facturation électronique',
+    direct: 'Concerné quand même.',
+  },
+  'diag.itemArchive': { pote: 'Archivage 10 ans', pro: 'Archivage 10 ans', direct: 'Archivage 10 ans' },
+  'diag.itemArchiveDone': {
+    pote: 'Coffre-fort automatique ✓',
+    pro: 'Assuré par le coffre-fort ✓',
+    direct: 'OK ✓',
+  },
+  'diag.itemEmission': {
+    pote: 'Factures B2B en électronique',
+    pro: 'Émission B2B électronique',
+    direct: 'Émission B2B',
+  },
+  'diag.itemEmissionTodo': {
+    pote: 'À prévoir via ta plateforme — sept. 2027',
+    pro: 'À prévoir via votre plateforme agréée',
+    direct: 'Via la plateforme. 2027.',
+  },
+  'diag.itemEmissionDone': {
+    pote: 'Prête via ta plateforme ✓',
+    pro: 'Prête via votre plateforme ✓',
+    direct: 'OK ✓',
+  },
+  'diag.itemChorus': {
+    pote: 'Clients publics · Chorus Pro',
+    pro: 'Clients publics · Chorus Pro',
+    direct: 'B2G · Chorus Pro',
+  },
+  'diag.itemChorusDone': { pote: 'Déjà en place ✓', pro: 'Déjà en vigueur ✓', direct: 'OK ✓' },
+  'diag.itemEreporting': {
+    pote: 'e-reporting de tes ventes aux particuliers',
+    pro: 'e-reporting des ventes aux particuliers',
+    direct: 'e-reporting B2C',
+  },
+  'diag.itemEreportingTodo': {
+    pote: 'Tes ventes B2C remonteront via la plateforme',
+    pro: 'Les ventes B2C remonteront via la plateforme',
+    direct: 'Via la plateforme.',
+  },
+  'diag.itemEreportingDone': {
+    pote: 'Couvert par ta plateforme ✓',
+    pro: 'Couvert par votre plateforme ✓',
+    direct: 'OK ✓',
+  },
+  'diag.itemOffApp': {
+    pote: 'Encaissements hors app',
+    pro: 'Encaissements hors application',
+    direct: 'Encaissements hors app',
+  },
+  'diag.itemOffAppTodo': {
+    pote: 'À centraliser ici, sinon ton e-reporting sera incomplet',
+    pro: 'À centraliser pour un e-reporting complet',
+    direct: 'À centraliser.',
+  },
+  'diag.itemPayments': {
+    pote: 'e-reporting des encaissements',
+    pro: 'e-reporting des paiements',
+    direct: 'e-reporting paiements',
+  },
+  'diag.itemPaymentsDone': {
+    pote: 'L’app suit déjà tes paiements ✓',
+    pro: 'Suivi des paiements assuré ✓',
+    direct: 'OK ✓',
+  },
+  'diag.itemFacturx': { pote: 'Format Factur-X', pro: 'Format Factur-X', direct: 'Factur-X' },
+  'diag.itemFacturxDone': {
+    pote: 'Géré automatiquement ✓',
+    pro: 'Géré automatiquement ✓',
+    direct: 'OK ✓',
+  },
+  'diag.itemSiren': {
+    pote: 'SIREN de tes clients pros',
+    pro: 'SIREN de vos clients professionnels',
+    direct: 'SIREN clients pros',
+  },
+  'diag.itemSirenTodo': {
+    pote: '{count} fiches à compléter',
+    pro: '{count} fiches à compléter',
+    direct: '{count} fiches.',
+  },
+  'diag.itemSirenTodoOne': {
+    pote: '1 fiche à compléter',
+    pro: '1 fiche à compléter',
+    direct: '1 fiche.',
+  },
+  'diag.itemSirenDone': {
+    pote: 'Toutes tes fiches sont complètes ✓',
+    pro: 'Toutes les fiches sont complètes ✓',
+    direct: 'OK ✓',
+  },
+  'diag.itemMentions': {
+    pote: 'Mentions sur tes factures',
+    pro: 'Mentions sur vos factures',
+    direct: 'Mentions factures',
+  },
+  'diag.itemMentionsDone': { pote: 'Conformes ✓', pro: 'Conformes ✓', direct: 'OK ✓' },
+  'diag.itemNumbering': {
+    pote: 'Numérotation sans trou',
+    pro: 'Numérotation séquentielle',
+    direct: 'Numérotation',
+  },
+  'diag.itemNumberingDone': {
+    pote: 'Garantie par l’app ✓',
+    pro: 'Garantie par l’application ✓',
+    direct: 'OK ✓',
+  },
+  'diag.itemVat': { pote: 'TVA par ligne', pro: 'TVA par ligne', direct: 'TVA par ligne' },
+  'diag.itemVatDone': {
+    pote: 'Calculée automatiquement ✓',
+    pro: 'Calculée automatiquement ✓',
+    direct: 'OK ✓',
+  },
+  'diag.itemDecennale': {
+    pote: 'Assurance décennale (bâtiment)',
+    pro: 'Assurance décennale (bâtiment)',
+    direct: 'Décennale',
+  },
+  'diag.itemDecennaleDone': {
+    pote: 'À jour ✓ — propre à ton métier',
+    pro: 'À jour ✓ — spécifique à votre métier',
+    direct: 'À jour ✓',
+  },
+  'diag.itemDecennaleTodo': {
+    pote: 'À souscrire — obligatoire pour ton métier',
+    pro: 'À souscrire — obligatoire pour votre métier',
+    direct: 'À souscrire.',
+  },
+  'diag.itemAccountant': {
+    pote: 'Ton comptable dans la boucle',
+    pro: 'Votre comptable informé',
+    direct: 'Comptable',
+  },
+  'diag.itemAccountantTodo': {
+    pote: 'Préviens-le pour la bascule 2026',
+    pro: 'À informer pour la bascule 2026',
+    direct: 'À prévenir.',
+  },
+  'diag.itemAccountantDone': { pote: 'Il est au courant ✓', pro: 'Informé ✓', direct: 'OK ✓' },
 } as const satisfies Record<string, Copy>;
 
 export type I18nKey = keyof typeof fr;

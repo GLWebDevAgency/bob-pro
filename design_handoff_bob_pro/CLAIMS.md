@@ -782,6 +782,22 @@
     non déterministes, accessibilité macOS refusée) — vérifié par les 8 tests purs + typecheck ;
     un gest humain sur une pièce de la liste Ventes suffit à confirmer visuellement.
   · C17 (Compta & conformité) DÉBLOQUÉ (C14 + C16 MERGED). status=MERGED.
+- [16:40] claude-code AMENDEMENT A1-C16 (retour humain 16:25 sur captures device : « les chiffres
+  de la facture d'acompte ne se comprennent pas ; et il manque le lien vers la facture
+  d'après ») — les chiffres étaient COHÉRENTS côté domaine (acompte 488,40 encaissé ; reste
+  1 140 € = solde chantier au briefing) mais la VUE était trompeuse :
+  · La facture d'acompte titrait « Total TTC 1 628,00 € » (les totals du CHANTIER portés par
+    la pièce) alors que son dû est 488,40 €. Corrigé : PieceView.amountDue (= netToPay) devient
+    LE héros « Net à payer (cette facture) : 488,40 € » ; le TTC chantier passe en ligne de
+    contexte « Total chantier TTC ». Facture finale classique : héros = TTC inchangé.
+  · PONT vers la suite : acompte PAYÉ sans facture finale → carte « Acompte encaissé ✓ Reste
+    à facturer sur le chantier : 1 139,60 € » + bouton « Créer la facture finale » branché sur
+    generate-invoice-from-quote (MÊME use case que le briefing et que Bob) → route sur le
+    brouillon créé pour l'émettre. Pont muet si la finale existe / acompte non payé / pas de
+    parent (4 tests). Fixtures de test réalignées sur la réalité du domaine (les totals d'une
+    facture d'acompte sont ceux du chantier — la capture device faisait foi).
+  · core 326 · i18n 37 (+4 clés piece.*) · typecheck clean. À re-vérifier d'un tap sur
+    F-2026-0001 (l'app a été rechargée).
 
 ### C17 — Compta & conformité            <!-- kind: screen -->
 - status: OPEN · depends-on: C14, C16 · ref-capture: claims/ref/C17.png

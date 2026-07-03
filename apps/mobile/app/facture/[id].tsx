@@ -12,7 +12,8 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { buildPieceView, type PieceLinkedRef } from '@bob/core';
 import { t } from '@bob/i18n';
 import { Card, SectionHeader, font, useTheme } from '@bob/ui';
-import { useCustomers, useInvoice, useInvoiceAccountingPreview, useInvoices, useQuotes } from '../../src/data/hooks';
+import { Button } from '@bob/ui';
+import { useCustomers, useGenerateInvoice, useInvoice, useInvoiceAccountingPreview, useInvoices, useQuotes } from '../../src/data/hooks';
 import { useDocuments } from '../../src/data/documents';
 import { useBobClient } from '../../src/data/client';
 import { InvoiceActions, hasInvoiceActions } from '../../src/components/DocumentActions';
@@ -31,6 +32,9 @@ export default function FactureDetail() {
   const documents = useDocuments();
   const acct = useInvoiceAccountingPreview(id, !!invoice.data);
   const ledger = acct.data?.available ? acct.data : null;
+  // Pont A1-C16 : générer la facture finale = MÊME use case que le briefing et que Bob
+  // (generate-invoice-from-quote) — brouillon créé, on route dessus pour l'émettre.
+  const generate = useGenerateInvoice();
 
   const view = useMemo(() => {
     const inv = invoice.data;
@@ -43,10 +47,12 @@ export default function FactureDetail() {
       : [];
     const credit = siblings.find((i) => i.kind === 'credit_note');
     const situation = siblings.find((i) => i.kind === 'situation');
+    const hasFinalInvoice = siblings.some((i) => i.kind === 'final');
     return buildPieceView({
       source: 'invoice',
       invoice: inv,
       customer,
+      hasFinalInvoice,
       ...(parent ? { parentQuote: { id: parent.id, number: parent.number, ttcCents: parent.totals.ttc } } : {}),
       ...(credit ? { creditNote: { id: credit.id, number: credit.number, ttcCents: credit.totals.ttc } } : {}),
       ...(situation ? { situation: { id: situation.id, number: situation.number, ttcCents: situation.totals.ttc } } : {}),
@@ -96,6 +102,24 @@ export default function FactureDetail() {
       onOpenInvoice={(ref: PieceLinkedRef) => router.push(`/facture/${ref.id}`)}
       onOpenPdf={openPdf ? () => void openPdf() : undefined}
       actions={hasInvoiceActions(inv) ? <InvoiceActions invoice={inv} /> : null}
+      nextStepAction={
+        view.nextStep ? (
+          <Button
+            title={t('piece.actionFacturerSolde', { personality })}
+            variant="primary"
+            size="compact"
+            radius={12}
+            loading={generate.isPending}
+            style={{ alignSelf: 'flex-start' }}
+            onPress={() =>
+              generate.mutate(
+                { quoteId: view.nextStep!.quoteId, mode: 'final' },
+                { onSuccess: (out) => router.push(`/facture/${out.invoiceId}`) },
+              )
+            }
+          />
+        ) : null
+      }
       extra={
         ledger && ledger.lines.length > 0 ? (
           <Card>

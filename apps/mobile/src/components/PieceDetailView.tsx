@@ -215,6 +215,8 @@ function TransmissionDots({ steps, personality }: { steps: readonly PieceTransmi
 export interface PieceDetailViewProps {
   view: PieceView;
   onClose: () => void;
+  /** Pont réel « créer la facture finale » (rendu si view.nextStep) — action injectée par la route. */
+  nextStepAction?: ReactNode;
   /** Navigation croisée — le parent route (devis ↔ facture). */
   onOpenQuote?: (ref: PieceLinkedRef) => void;
   onOpenInvoice?: (ref: PieceLinkedRef) => void;
@@ -226,7 +228,7 @@ export interface PieceDetailViewProps {
   extra?: ReactNode;
 }
 
-export function PieceDetailView({ view, onClose, onOpenQuote, onOpenInvoice, actions, onOpenPdf, extra }: PieceDetailViewProps) {
+export function PieceDetailView({ view, onClose, onOpenQuote, onOpenInvoice, actions, onOpenPdf, extra, nextStepAction }: PieceDetailViewProps) {
   const { personality, colors, semantic, controls } = useTheme();
   const insets = useSafeAreaInsets();
   const kindLabel = t(KIND_KEY[view.kind], { personality });
@@ -391,6 +393,16 @@ export function PieceDetailView({ view, onClose, onOpenQuote, onOpenInvoice, act
                     {formatEUR(view.totals.vat)}
                   </Text>
                 </View>
+                {view.amountDue.isPartialOfTtc ? (
+                  // Acompte/situation : le TTC du CHANTIER n'est qu'un contexte —
+                  // le héros de la pièce est son net à payer (A1-C16).
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 3 }}>
+                    <Text style={[font('sub'), { color: colors.slate500 }]}>{t('piece.chantierTtc', { personality })}</Text>
+                    <Text style={{ ...font('sub', 600), color: colors.ink800, fontVariant: ['tabular-nums'] }}>
+                      {formatEUR(view.totals.ttc)}
+                    </Text>
+                  </View>
+                ) : null}
                 <View
                   style={{
                     flexDirection: 'row',
@@ -403,7 +415,7 @@ export function PieceDetailView({ view, onClose, onOpenQuote, onOpenInvoice, act
                   }}
                 >
                   <Text style={{ ...font('body', 700), fontSize: 15, color: colors.ink800 }}>
-                    {t('piece.totalTtc', { personality })}
+                    {t(view.amountDue.isPartialOfTtc ? 'piece.amountDuePartial' : 'piece.totalTtc', { personality })}
                   </Text>
                   <Text
                     style={{
@@ -413,7 +425,9 @@ export function PieceDetailView({ view, onClose, onOpenQuote, onOpenInvoice, act
                       fontVariant: ['tabular-nums'],
                     }}
                   >
-                    {view.signedAmountCents < 0 ? `−${formatEUR(Math.abs(view.signedAmountCents))}` : formatEUR(view.totals.ttc)}
+                    {view.signedAmountCents < 0
+                      ? `−${formatEUR(Math.abs(view.signedAmountCents))}`
+                      : formatEUR(view.amountDue.cents)}
                   </Text>
                 </View>
                 {view.deposit ? (
@@ -505,6 +519,24 @@ export function PieceDetailView({ view, onClose, onOpenQuote, onOpenInvoice, act
                   </Text>
                 </View>
               ) : null}
+            </PieceCard>
+          ) : null}
+
+          {/* Pont réel : acompte payé → la suite du chantier (A1-C16) */}
+          {view.nextStep && nextStepAction ? (
+            <PieceCard>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 11, marginBottom: 12 }}>
+                <View style={{ width: 34, height: 34, borderRadius: 10, backgroundColor: semantic.successBg, alignItems: 'center', justifyContent: 'center' }}>
+                  <FileIcon color={semantic.success} size={17} />
+                </View>
+                <Text style={{ ...font('sub', 600), fontSize: 13.5, color: colors.slate500, flex: 1, lineHeight: 19 }}>
+                  {t('piece.nextStepBody', {
+                    personality,
+                    params: { amount: formatEUR(view.nextStep.remainingToInvoiceCents) },
+                  })}
+                </Text>
+              </View>
+              {nextStepAction}
             </PieceCard>
           ) : null}
 

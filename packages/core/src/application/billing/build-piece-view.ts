@@ -55,7 +55,16 @@ export interface PieceLinkedRef {
 }
 
 export type BuildPieceViewInput =
-  | { source: 'invoice'; invoice: PieceInvoiceData; customer: PieceCustomerData | null; parentQuote?: PieceLinkedRef; creditNote?: PieceLinkedRef; situation?: PieceLinkedRef }
+  | {
+      source: 'invoice';
+      invoice: PieceInvoiceData;
+      customer: PieceCustomerData | null;
+      parentQuote?: PieceLinkedRef;
+      creditNote?: PieceLinkedRef;
+      situation?: PieceLinkedRef;
+      /** Une facture FINALE existe déjà sur le même devis (le pont « créer la finale » se tait). */
+      hasFinalInvoice?: boolean;
+    }
   | { source: 'quote'; quote: PieceQuoteData; customer: PieceCustomerData | null; finalInvoice?: PieceLinkedRef };
 
 // ── Sortie ──
@@ -98,6 +107,17 @@ export interface PieceView {
   suivi: { paidCents: number; remainingCents: number; isPaid: boolean } | null;
   /** Avoir : montant SIGNÉ négatif (affichage « −488,40 € »). */
   signedAmountCents: number;
+  /**
+   * LE montant de la pièce (héros) = netToPay : pour un acompte/situation il est INFÉRIEUR
+   * au TTC du chantier — l'écran doit afficher « Net à payer » et non « Total TTC »
+   * (A1-C16 : une facture d'acompte de 488,40 € ne titre pas 1 628,00 €).
+   */
+  amountDue: { cents: number; isPartialOfTtc: boolean };
+  /**
+   * Pont réel vers la suite du chantier : acompte PAYÉ sans facture finale existante →
+   * « Créer la facture finale » avec le reste à facturer EXACT (ttc chantier − acompte).
+   */
+  nextStep: { kind: 'facture_finale'; quoteId: string; remainingToInvoiceCents: number } | null;
   /** Frise e-facture (b2b/b2g émise+) — null pour B2C (encart e-reporting) et brouillons. */
   transmission: { channel: EinvoiceChannel; steps: readonly PieceTransmissionStep[] } | null;
   /** B2C : la donnée part en e-reporting (pas de PDP). */
@@ -235,6 +255,8 @@ export function buildPieceView(input: BuildPieceViewInput): PieceView {
       deposit: q.depositPct !== null && q.depositPct > 0 ? { pct: q.depositPct, amountCents: q.totals.netToPay } : null,
       suivi: null,
       signedAmountCents: q.totals.ttc,
+      amountDue: { cents: q.totals.ttc, isPartialOfTtc: false },
+      nextStep: null,
       transmission: null,
       isEreporting: false,
       situationProgressPct: null,
@@ -256,6 +278,22 @@ export function buildPieceView(input: BuildPieceViewInput): PieceView {
   const channel = customer ? einvoiceChannelFor(customer.type) : null;
   const emitted = inv.status !== 'draft';
 
+  const isPartialOfTtc = !isCredit && inv.totals.netToPay < inv.totals.ttc;
+  const parentTtc = input.parentQuote?.ttcCents;
+  const nextStep =
+    inv.kind === 'deposit' &&
+    inv.status === 'paid' &&
+    input.hasFinalInvoice !== true &&
+    inv.parentQuoteId !== null &&
+    parentTtc !== undefined &&
+    parentTtc > inv.totals.netToPay
+      ? {
+          kind: 'facture_finale' as const,
+          quoteId: inv.parentQuoteId,
+          remainingToInvoiceCents: parentTtc - inv.totals.netToPay,
+        }
+      : null;
+
   const progress =
     inv.kind === 'situation' && input.parentQuote?.ttcCents !== undefined && input.parentQuote.ttcCents > 0
       ? Math.min(100, Math.round((inv.totals.ttc / input.parentQuote.ttcCents) * 100))
@@ -275,6 +313,8 @@ export function buildPieceView(input: BuildPieceViewInput): PieceView {
       ? { paidCents: inv.paid, remainingCents: remaining, isPaid: inv.status === 'paid' || remaining === 0 }
       : null,
     signedAmountCents: isCredit ? -Math.abs(inv.totals.ttc) : inv.totals.ttc,
+    amountDue: { cents: inv.totals.netToPay, isPartialOfTtc },
+    nextStep,
     transmission:
       emitted && !isCredit && channel !== null && channel !== 'ereporting'
         ? { channel, steps: buildTransmissionSteps(inv.status) }
