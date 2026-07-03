@@ -45,3 +45,7 @@ export * from './components/bottom-tab-bar';
 export * from './components/fab';
 export * from './components/sheet';
 export * from './components/toast';
+
+// Flux (réserve C03 — devis C21)
+export * from './components/stepper';
+export * from './components/signature-pad';

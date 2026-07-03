@@ -316,3 +316,47 @@ export function CheckIcon({ color, size = 16, strokeWidth = 2.6 }: IconProps) {
     </Svg>
   );
 }
+
+/* ── Écran Détail pièce (C16) — tracés exacts du proto §showPiece ───────────
+   NB coordination : CloseIcon (C20, plus haut) et SendIcon (C13) existent déjà —
+   mêmes tracés, seul le défaut de taille diffère : passer size/strokeWidth au call-site. */
+
+/** Pièce liée — flèche de retour 17/2 (devis d'origine ↔ facture). */
+export function ReturnArrowIcon({ color, size = 17, strokeWidth = 2 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" stroke={color} strokeWidth={strokeWidth} {...common}>
+      <Path d="M4 7h11a4 4 0 0 1 0 8H9" />
+      <Path d="M8 11l-4 4 4 4" />
+    </Svg>
+  );
+}
+
+/** Avoir — flèche circulaire 17/2. */
+export function RotateIcon({ color, size = 17, strokeWidth = 2 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" stroke={color} strokeWidth={strokeWidth} {...common}>
+      <Path d="M3 12a9 9 0 1 0 9-9" />
+      <Path d="M3 4v5h5" />
+    </Svg>
+  );
+}
+
+/** Situation de travaux — courbe d'avancement 17/2. */
+export function ChartIcon({ color, size = 17, strokeWidth = 2 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" stroke={color} strokeWidth={strokeWidth} {...common}>
+      <Path d="M3 3v18h18" />
+      <Path d="M7 14l3-3 3 3 5-6" />
+    </Svg>
+  );
+}
+
+/** Cadenas — mentions figées 11/2.4. */
+export function LockIcon({ color, size = 11, strokeWidth = 2.4 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" stroke={color} strokeWidth={strokeWidth} {...common}>
+      <Rect x={5} y={11} width={14} height={10} rx={2} />
+      <Path d="M8 11V7a4 4 0 0 1 8 0v4" />
+    </Svg>
+  );
+}

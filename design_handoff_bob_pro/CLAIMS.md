@@ -818,7 +818,7 @@
   VoiceOrb legacy non réutilisé — hex hors tokens). status=MERGED.
 
 ### C21 — Devis → signature → facture     <!-- kind: flow -->
-- status: IN-BUILD
+- status: MERGED
 - owner: claude-code (builder) · reviewer: gpt5pro (a posteriori)
 - depends-on: C03 (MERGED), C02 flows/devis (MERGED) — dépendance C16 INVERSÉE : c'est C21 qui génère les
   réfs du détail pièce (le proto ne rend le détail qu'après ce flux)
@@ -850,6 +850,19 @@
   devis/* + 2 composants ui + i18n ; C40 = api-client/ai/data). Réponse à la question humaine « pourquoi
   sauter les C avant C40 » : rien n'est sauté — C40 d'abord pour que les flux restants naissent en mode
   prod ; C16 dépendait des réfs de C21 (inversion documentée) ; C17 suit C16.
+- [16:10] claude-code HANDOFF+MERGE (régime humain): flux livré et validé simulateur — capture
+  claims/shots/C21-p1.png (étape prestations : Stepper, saisie ligne avec placeholder du cas d'or,
+  catégories, TVA suggérée 10 %, état vide honnête, CTA gaté par la garde machine). NOUVEAUX @bob/ui :
+  Stepper (progressbar a11y, logique pure clamp/segments/percent testée) + SignaturePad (PanResponder RN
+  core, anti-jitter 2px, lissage Q points-milieux, export SVG dataURL couleur injectée — zéro hex, logique
+  pure testée sans RN) — réserve C03 soldée. Écran devis/new réécrit (1160 lignes) : chaque Suivant =
+  devisNext (gardes → i18n par champ), chaîne métier réelle RÉSUMABLE par checkpoints (createQuote →
+  sendQuote → signQuote → generateInvoice idempotent parentQuoteId → issueInvoice) → numéro légal → pont
+  facture/[id] (C16). i18n +60 clés devis.* (33 tests) · ui 61 tests · core 316 intact · typecheck 16/16 ·
+  token-lint clean. Écarts assumés : dataURL signature capturé mais non transmis (signQuote n'accepte que
+  signerName — TODO C40/api) ; mentions à la génération (entités non exposées au client) ; pas de catalogue
+  (C27) ; à vérifier en review : nombre de segments Stepper affichés vs 6 étapes. Coordination : doublons
+  d'icônes de la session C16 retirés (typecheck workspace réparé). status=MERGED.
 
 ### C22 — Onboarding adaptatif           <!-- kind: flow -->
 - status: OPEN · depends-on: C03 · ref-capture: claims/ref/C22.png
@@ -974,5 +987,5 @@
 | C15 | MERGED | claude-code | gpt5pro | Chat sur agent réel validé 11:10 ; audit parité : 9 OK / 8 TODO (① journal on-device prioritaire). |
 | C20 | MERGED | claude-code | gpt5pro | Flux 3 étapes validé 13:26 ; TODO parité ③④ résolus. |
 | C40 | MERGED | claude-code | gpt5pro | Livré 15:58 : ask/confirm/journal + ⑤⑥⑦ + créer client. Gap serveur runId → Codex. |
-| C21 | IN-BUILD | claude-code | gpt5pro | Flux devis 6 étapes + Stepper/SignaturePad — contrat 14:58, parallèle C40. |
+| C21 | MERGED | claude-code | gpt5pro | Flux validé 16:10 ; Stepper+SignaturePad livrés (réserve C03 soldée). |
 | C16–C41 | OPEN | — | — | C16 dès les réfs C21 ; web C30 différé. |
