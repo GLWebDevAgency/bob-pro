@@ -459,9 +459,36 @@
   no-op accessible TODO C13/C40 — parité d'actions préservée). status=MERGED.
 
 ### C13 — Fiche client                  <!-- kind: screen -->
-- status: OPEN · depends-on: C12 · ref-capture: claims/ref/C13.png
-- Contrat: en-tête client · onglets (aperçu/pièces/docs) · canal e-invoice (einvoiceFor) · CTA contextuelle (relance/devis/encaisser) · encours + délai moyen.
-- Acceptance: CTA dépend du statut client · edges → C16, C20, C15(relance).
+- status: IN-BUILD
+- owner: claude-code (builder) · reviewer: gpt5pro (a posteriori)
+- depends-on: C12 (MERGED)
+- ref-capture: claims/ref/C13-frame-p1.png + C13-frame-p2.png · target: apps/mobile/app/client/[id].tsx (RÉÉCRITURE @bob/ui)
+
+#### Contrat (v1, claude-code — régimes en vigueur)
+- Composition (réfs p1+p2, fiche SARL Martin) : barre retour « ‹ Clients » + menu « … » · en-tête (Avatar
+  squircle tone par type, nom cardTitle, badge type + SIREN si b2b/b2g — partyLine adaptatif, RIEN pour b2c)
+  · 4 actions rapides (Devis / Relancer / Appeler / Email — tuiles blanches icône+label) · 3 KPI (Encours
+  teinté par statut · Délai moyen · CA 12 mois) · Card « Score de paiement » (ScoreBar + « {score}/100 » +
+  légende dérivée de la tranche) · Card conformité e-invoicing (canal einvoiceFor(customer) : PDP b2b /
+  e-reporting b2c / Chorus Pro b2g — copy dédiée par canal) · Segmented onglets Activité/Chantiers/Docs/
+  Infos · liste Activité (pièces réelles du client : type, numéro, date, note statut, montant teinté) ·
+  CTA sticky contextuelle (dérivée du standing C12 : en retard → « Relancer {doc} · {montant} » ; devis en
+  attente → « Relancer le devis » ; à jour → « Nouveau devis ») · états loading/erreur/aucune pièce.
+- Données 100 % réelles : useCustomers + useInvoices + useQuotes filtrées par id (réutilise
+  deriveCustomerStandings pour le standing et les montants) ; einvoiceFor de @bob/core pour le canal.
+- Copy : clés @bob/i18n fiche.* ×3 humeurs.
+- Parité d'actions : Relancer → /(tabs)/assistant (même point d'entrée que Bob) · Devis → /devis/new ·
+  Appeler/Email → Linking tel:/mailto: (actions device) · CTA sticky = même use case que la carte C10.
+- Acceptance : capture vs réfs · partyLine adaptatif (b2c sans SIREN — test sur Durand) · CTA contextuelle
+  par standing · canal e-invoice correct par type · i18n tests étendus · typecheck + token-lint clean ·
+  zéro fixture.
+
+#### Signatures
+- [x] agreed — claude-code — 2026-07-03 (08:03) — régime humain, review gpt5pro a posteriori
+
+#### Log (append-only, horodaté)
+- [08:03] claude-code CLAIM+PROPOSE+IN-BUILD: réfs capturées ce matin (fiche Martin, p1+p2). Pattern
+  C10-C12 réappliqué ; standing et montants réutilisent deriveCustomerStandings (zéro duplication).
 
 ### C14 — Documents (coffre-fort)        <!-- kind: screen -->
 - status: OPEN · depends-on: C03 · ref-capture: claims/ref/C14.png
@@ -573,4 +600,5 @@
 | C10 | MERGED | claude-code | gpt5pro | Écran + moteur priorités livrés, re-capture halos OK (07:33). |
 | C11 | MERGED | claude-code | gpt5pro | Écran refondu validé simulateur (07:30), review a posteriori. |
 | C12 | MERGED | claude-code | gpt5pro | Écran validé simulateur 08:02 (4 330 € = proto), review a posteriori. |
-| C13–C41 | OPEN | — | — | Écrans/flux au fil de l'eau ; web C30 différé. |
+| C13 | IN-BUILD | claude-code | gpt5pro | Refonte Fiche client — contrat 08:03. |
+| C14–C41 | OPEN | — | — | Écrans/flux au fil de l'eau ; web C30 différé. |
