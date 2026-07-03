@@ -763,10 +763,38 @@
   VoiceOrb legacy non réutilisé — hex hors tokens). status=MERGED.
 
 ### C21 — Devis → signature → facture     <!-- kind: flow -->
-- status: OPEN · depends-on: C03, C16 · ref-capture: claims/ref/C21.png
-- spec: flows/devis (core) · USER_FLOWS.md § Devis
-- Contrat: 6 étapes (client → lignes/catalogue → TVA/mentions → signature doigt → acompte 30 % → facture générée) · SignaturePad · atterrit sur C16 (facture générée).
-- Acceptance: net acompte 488,40 · parentQuoteId posé · edges → C16.
+- status: IN-BUILD
+- owner: claude-code (builder) · reviewer: gpt5pro (a posteriori)
+- depends-on: C03 (MERGED), C02 flows/devis (MERGED) — dépendance C16 INVERSÉE : c'est C21 qui génère les
+  réfs du détail pièce (le proto ne rend le détail qu'après ce flux)
+- ref-capture: à générer depuis le proto pendant le build (flux devis étape par étape) · target:
+  apps/mobile/app/devis/new.tsx (RÉÉCRITURE) + composants Stepper/SignaturePad reportés de C03
+- spec: flows/devis (@bob/core, 6 étapes testées) · USER_FLOWS.md § Devis · réserve C03 : Stepper+SignaturePad
+
+#### Contrat (v1, claude-code — régimes en vigueur : prod 100 %, données réelles, parité d'actions)
+- Flux 6 étapes PILOTÉ par la machine réelle @bob/core flows/devis (startDevis/devisEdit/devisNext/devisBack,
+  gardes par étape) : client (liste réelle + création C40 si dispo) → lignes (catalogue métier + saisie
+  libre, prix réels) → TVA/mentions (suggestVatRate + buildMentions réels, contexte logement >2 ans) →
+  signature au doigt (NOUVEAU SignaturePad @bob/ui : react-native-svg path, effaçable, hit ≥44 — signature
+  = image dataURL passée au use case signQuote) → acompte (30 % défaut, éditable, net calculé par core) →
+  facture générée (generateInvoice deposit via LA chaîne réelle, numéro légal, atterrit sur l'écran détail
+  facture existant — pont vers C16).
+- NOUVEAUX @bob/ui (réserve C03) : Stepper (progression 6 étapes, points/barre, a11y) + SignaturePad —
+  logique pure séparée (.logic.ts testé), zéro hex/rgba, tests hit-target.
+- Copy : clés @bob/i18n devis.* ×3 humeurs. États : gardes de la machine (messages par étape), erreurs
+  use cases (voix Bob), brouillon conservé au retour arrière.
+- Parité : le flux appelle les MÊMES use cases que l'agent (creer_devis C20 / generer_facture C40).
+- Acceptance : acompte net 488,40 sur le cas d'or (test flow existant + parcours UI) · parentQuoteId posé ·
+  captures des 6 étapes vs proto (à générer) · i18n tests · typecheck + token-lint · ui tests (Stepper/Pad).
+
+#### Signatures
+- [x] agreed — claude-code — 2026-07-03 (14:58) — régime humain, review gpt5pro a posteriori
+
+#### Log (append-only, horodaté)
+- [14:58] claude-code CLAIM+PROPOSE+IN-BUILD: lancé EN PARALLÈLE de C40 (périmètres disjoints : C21 =
+  devis/* + 2 composants ui + i18n ; C40 = api-client/ai/data). Réponse à la question humaine « pourquoi
+  sauter les C avant C40 » : rien n'est sauté — C40 d'abord pour que les flux restants naissent en mode
+  prod ; C16 dépendait des réfs de C21 (inversion documentée) ; C17 suit C16.
 
 ### C22 — Onboarding adaptatif           <!-- kind: flow -->
 - status: OPEN · depends-on: C03 · ref-capture: claims/ref/C22.png
@@ -871,4 +899,5 @@
 | C15 | MERGED | claude-code | gpt5pro | Chat sur agent réel validé 11:10 ; audit parité : 9 OK / 8 TODO (① journal on-device prioritaire). |
 | C20 | MERGED | claude-code | gpt5pro | Flux 3 étapes validé 13:26 ; TODO parité ③④ résolus. |
 | C40 | IN-BUILD | claude-code | gpt5pro | Chemin PROD : journal on-device + outils agent + validation connectée — contrat 14:52. |
-| C16–C41 | OPEN | — | — | Écrans/flux au fil de l'eau ; web C30 différé. |
+| C21 | IN-BUILD | claude-code | gpt5pro | Flux devis 6 étapes + Stepper/SignaturePad — contrat 14:58, parallèle C40. |
+| C16–C41 | OPEN | — | — | C16 dès les réfs C21 ; web C30 différé. |
