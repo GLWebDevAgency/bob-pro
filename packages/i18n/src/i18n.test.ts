@@ -445,4 +445,39 @@ describe('i18n — C23 diag.*', () => {
     );
     expect(t('diag.dataError', { personality: 'direct' })).toBe('Chargement KO. Réessaie.');
   });
+
+  it('onboard.* : copy pote exacte du proto (C22 — bienvenue, métier, clientèle, pédagogie 293 B)', () => {
+    expect(t('onboard.welcomeTitle')).toBe('Ton bureau pro,\ndans ta poche.');
+    expect(t('onboard.welcomeBody')).toBe(
+      'Devis, factures, paiements, tréso, docs et conformité 2026. Bob s’occupe de la paperasse — toi, tu bosses.',
+    );
+    expect(t('onboard.welcomeCta')).toBe('Commencer');
+    expect(t('onboard.tradeTitle')).toBe('Tu fais quoi, au juste ?');
+    expect(t('onboard.tradeSub')).toBe('L’app va parler ton langage.');
+    expect(t('onboard.tradeIncludes')).toBe('Ton espace inclura');
+    expect(t('onboard.clientTitle')).toBe('Tu bosses surtout pour qui ?');
+    expect(t('onboard.clientSub')).toBe('Ça décide de tes obligations de facturation élec.');
+    // Pédagogie voix Bob (contrat C22) : la franchise 293 B ne dispense PAS de la facture élec.
+    expect(t('onboard.vatFranchiseNote')).toBe(
+      'Tu ne factures pas la TVA, mais la facture élec. te concerne quand même : dès septembre 2026, tu devras recevoir les factures de tes fournisseurs en électronique.',
+    );
+    expect(t('onboard.previewBody')).toBe('Dernier truc : vérifions que t’es paré pour 2026.');
+  });
+
+  it('onboard.previewTitle interpole {trade} sur les 3 humeurs, CTA « C’est parti » / « Plus tard »', () => {
+    expect(t('onboard.previewTitle', { params: { trade: 'plombier' } })).toBe(
+      'Ton espace plombier est prêt',
+    );
+    expect(t('onboard.previewTitle', { personality: 'pro', params: { trade: 'électricien' } })).toBe(
+      'Votre espace électricien est prêt',
+    );
+    expect(t('onboard.previewTitle', { personality: 'direct', params: { trade: 'pro' } })).toBe(
+      'Espace pro : prêt.',
+    );
+    expect(t('onboard.previewCta')).toBe('C’est parti');
+    expect(t('onboard.later', { personality: 'direct' })).toBe('Plus tard');
+    expect(t('onboard.vatFranchiseSub', { personality: 'pro' })).toBe(
+      'Art. 293 B du CGI — facturation sans TVA, mention obligatoire.',
+    );
+  });
 });

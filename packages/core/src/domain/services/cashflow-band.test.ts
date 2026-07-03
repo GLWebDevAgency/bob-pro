@@ -3,7 +3,7 @@ import { cashflowBand, type CashflowSeriesPoint } from './cashflow-band';
 import { projectCashflow, type Horizon } from './project-cashflow';
 
 function point(horizon: Horizon, available: number, payout: number): CashflowSeriesPoint {
-  return { horizon, projection: { available, payout, risk: available < 0 } };
+  return { horizon, projection: { available, payout, vatDue: 0, risk: available < 0 } };
 }
 
 describe('cashflowBand', () => {

@@ -2555,6 +2555,14 @@ const fr = {
     direct: '{tone} · {date}',
   },
 
+  // ── A2-C10 — encaisser depuis le briefing ───────────────────────────────────
+  'today.ctaCollect': { pote: 'Encaisser', pro: 'Encaisser', direct: 'Encaisser' },
+  'today.collectDone': {
+    pote: '{amount} au chaud — joli.',
+    pro: 'Paiement de {amount} enregistré.',
+    direct: '{amount} encaissé.',
+  },
+
   // ── C17 — écran « Comptabilité » (grand-livre) ──────────────────────────────
   'compta.back': { pote: 'Fermer', pro: 'Fermer', direct: 'Fermer' },
   'compta.eyebrow': { pote: 'Ta compta', pro: 'Votre comptabilité', direct: 'Compta' },

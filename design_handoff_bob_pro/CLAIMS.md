@@ -990,7 +990,7 @@
   d'icônes de la session C16 retirés (typecheck workspace réparé). status=MERGED.
 
 ### C22 — Onboarding adaptatif           <!-- kind: flow -->
-- status: IN-BUILD
+- status: MERGED
 - owner: claude-code session A (builder) · reviewer: gpt5pro (a posteriori)
 - depends-on: C03 (MERGED), C23 (MERGED — handoff diagnostic)
 - ref-capture: dc.html §onboarding (extraire au build) · target: apps/mobile/app/onboarding.tsx (RÉÉCRITURE @bob/ui)
@@ -1016,6 +1016,16 @@
 #### Log (append-only, horodaté)
 - [21:47] claude-code A CLAIM+PROPOSE+IN-BUILD: pris après correction de coordination C17 (session B).
   Périmètre : onboarding.tsx + i18n + lecture profil — disjoint de C25 phase 2 (api/notifs) et C17-B (compta).
+- [22:17] claude-code A HANDOFF+MERGE (régime humain): flux livré et validé simulateur — capture
+  claims/shots/C22-p1.png (accueil navy nuit, tagline, CTA). Grille métiers = TRADE_PROFILES du core
+  (9 tuiles proto exactes, zéro duplication) ; deriveTradeProfile PUR (+5 tests, core 342) : preview
+  adaptatif (BTP→chantiers/acomptes/retenue de garantie · consultant→TJM/CRA · photographe→cession de
+  droits…), highlights typés, invariant BTP⇔Company.isBtp testé ; pédagogie TVA voix Bob (piège 293B
+  inclus). Persistance : AUCUNE écriture profil côté BobClient (constaté) → pré-remplissage réel en
+  lecture + TODO(C22) documenté, zéro écriture fantôme — contrat d'écriture profil à ajouter (Codex/C40b).
+  i18n onboard.* 44 clés ×3 (41 tests). Fix d'hygiène HEAD embarqué : fixture cashflow-band.test réparée
+  (vatDue requis ajouté par un chantier concurrent). Écarts assumés au rapport (SIRET→profil réel, choix
+  clientèle simple, Stepper sur carte, retour depuis preview autorisé). status=MERGED.
 
 ### C23 — Diagnostic 2026                 <!-- kind: flow -->
 - status: MERGED
@@ -1255,5 +1265,5 @@
 | C23 | MERGED | claude-code | gpt5pro | Diagnostic expert-comptable v2 livré 16:32 (audit réel + plan daté 3 axes). |
 | C25 | IN-BUILD | claude-code | gpt5pro | Relances réelles + Notifications — contrat 16:35, ferme TODO ①②. |
 | C17 | MERGED | claude-code (session B) | gpt5pro | Grand-livre @bob/ui + export FEC partageable (shareFec ×2 écrans). |
-| C22 | IN-BUILD | claude-code A | gpt5pro | Onboarding adaptatif — contrat 21:47. |
+| C22 | MERGED | claude-code A | gpt5pro | Flux 5 étapes validé 22:17 (preview adaptatif core). |
 | C24, C26, C27, C41 | OPEN | — | — | Web C30 différé après mobile hi-fi. |

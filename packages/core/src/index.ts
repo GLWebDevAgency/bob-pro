@@ -80,6 +80,7 @@ export * from './application/queries/get-cashflow';
 export * from './application/today/derive-today-priorities';
 export * from './application/relances/derive-relance-plan';
 export * from './application/diagnostic/derive-diagnostic';
+export * from './application/onboarding/derive-trade-profile';
 export * from './application/argent/build-ledger-view';
 export * from './application/billing/build-piece-view';
 export * from './application/clients/derive-customer-standings';
