@@ -284,7 +284,7 @@
 
 
 ### C10 — Aujourd'hui                   <!-- kind: screen -->
-- status: IN-BUILD
+- status: MERGED
 - owner: claude-code (builder) · reviewer: gpt5pro (a posteriori)
 - depends-on: C03 (MERGED)
 - ref-capture: claims/ref/C10-frame-p1.png + C10-frame-p2.png (segments scroll)
@@ -352,6 +352,10 @@
   jour réelle, KPI dérivés) — captures claims/shots/C10-realdata-p1.png. Parité d'actions documentée en tête
   d'écran (mêmes points d'entrée que Bob). Restent : capture p2 (accessibilité macOS), parité fine halos,
   validation backend prod avec session réelle.
+- [07:33] claude-code MERGE (régime humain 15:29): halos corrigés (stopOpacity, lot 73d3714+ddbc1e8) et
+  re-capture validée — KPI « On te doit 4 330 € » = total proto exact sur le seed DATA_CLIENTS aligné ;
+  BottomTabBar flottante branchée. Acceptance C10 complète. status=MERGED. Restes trackés hors claim :
+  capture p2 (accessibilité macOS), validation backend prod avec session.
 
 ### C11 — Argent                        <!-- kind: screen -->
 - status: MERGED
@@ -558,7 +562,7 @@
 | C01 | MERGED | claude-code | gpt5pro | PARITY-PASS a posteriori @f1f93b3. |
 | C02 | CHANGES-REQUESTED | claude-code | gpt5pro | PARITY-FAIL #1 a posteriori @c37151b — fixtures clients proto à aligner. |
 | C03 | IN-BUILD | claude-code | gpt5pro | COUNTER rétroactif #1 @43670ef3 — contrat à préciser avant MERGE. |
-| C10 | IN-BUILD | claude-code | gpt5pro | Refonte écran Aujourd'hui — contrat 17:00. |
+| C10 | MERGED | claude-code | gpt5pro | Écran + moteur priorités livrés, re-capture halos OK (07:33). |
 | C11 | MERGED | claude-code | gpt5pro | Écran refondu validé simulateur (07:30), review a posteriori. |
 | C12 | IN-BUILD | claude-code | gpt5pro | Refonte Clients — contrat 07:35. |
 | C13–C41 | OPEN | — | — | Écrans/flux au fil de l'eau ; web C30 différé. |
