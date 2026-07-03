@@ -6,7 +6,6 @@ import { Pressable, Text, View } from 'react-native';
 import { useTheme, font } from '../theme';
 import {
   BADGE_FONT_SIZE,
-  BADGE_FONT_WEIGHT,
   BADGE_PADDING_HORIZONTAL,
   BADGE_PADDING_VERTICAL,
   BADGE_RADIUS,
@@ -56,12 +55,7 @@ export function StatusBadge({ label, variant }: StatusBadgeProps) {
         paddingHorizontal: BADGE_PADDING_HORIZONTAL,
       }}
     >
-      <Text
-        style={[
-          font('label'),
-          { fontSize: BADGE_FONT_SIZE, fontWeight: BADGE_FONT_WEIGHT, color: fg },
-        ]}
-      >
+      <Text style={[font('label', 700), { fontSize: BADGE_FONT_SIZE, color: fg }]}>
         {label}
       </Text>
     </View>

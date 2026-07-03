@@ -1,7 +1,9 @@
 /**
  * KpiTile — tuile « En un coup d'œil » (grille 2×2, COMPONENT_SPECS.md §5).
- * Surface radius 18, padding 15, ombre e1. Ligne icône 16 + label 12.5/600 slate500,
- * puis montant 21/800 (bigNum) teinté par tone. Le chiffre est le héros : tabular-nums.
+ * Surface radius 18, padding 15, ombre e1. Ligne icône 16 (stroke 2.2, couleur sémantique)
+ * + label 12.5/600 slate500, puis montant 21/800 (bigNum) teinté par tone.
+ * Sans donnée (`amountCents` absent) : « — » en slate300 — jamais un chiffre inventé.
+ * Le chiffre est le héros : tabular-nums.
  */
 import type { ReactNode } from 'react';
 import { Pressable, Text, View, type StyleProp, type ViewStyle } from 'react-native';
@@ -15,9 +17,9 @@ export interface KpiTileProps {
   /** Style du conteneur (grilles : flexBasis, flex…). */
   style?: StyleProp<ViewStyle>;
   label: string;
-  /** Montant en centimes, formaté via formatEUR (@bob/core). */
-  amountCents: number;
-  /** Teinte du montant — danger = dangerVivid (retard/impayé). Défaut : ink. */
+  /** Montant en centimes (formatEUR) — absent : tuile vide « — » (slate300). */
+  amountCents?: number;
+  /** Teinte du montant — danger = dangerVivid (retard/impayé). Défaut : ink (ink800). */
   tone?: KpiTone;
   /** Icône 16 injectée (aucune lib d'icônes dans @bob/ui). */
   icon?: ReactNode;
@@ -31,9 +33,10 @@ export function KpiTile({ style,
     success: semantic.success,
     danger: semantic.dangerVivid,
     warning: semantic.warning,
-    ink: colors.ink900,
+    ink: colors.ink800,
   };
-  const amount = formatEUR(amountCents);
+  const empty = amountCents === undefined;
+  const amount = empty ? '—' : formatEUR(amountCents);
 
   return (
     <Pressable
@@ -51,7 +54,7 @@ export function KpiTile({ style,
         ...shadowNative.e1,
       }, style]}
     >
-      <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
         {icon ? (
           <View
             style={{
@@ -59,7 +62,6 @@ export function KpiTile({ style,
               height: 16,
               alignItems: 'center',
               justifyContent: 'center',
-              marginRight: 7,
             }}
           >
             {icon}
@@ -70,9 +72,9 @@ export function KpiTile({ style,
       <Text
         style={{
           ...font('bigNum'),
-          color: toneColor[tone],
+          color: empty ? colors.slate300 : toneColor[tone],
           fontVariant: ['tabular-nums'],
-          marginTop: 8,
+          marginTop: 7,
         }}
       >
         {amount}

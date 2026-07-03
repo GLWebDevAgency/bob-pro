@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { neutrals, semantic } from '@bob/tokens';
+import { controls, neutrals, semantic } from '@bob/tokens';
 import { ASSISTANT_TAB_KEY, tabColor } from './bottom-tab-bar.logic';
 
 describe('tabColor (§14)', () => {
@@ -12,9 +12,9 @@ describe('tabColor (§14)', () => {
     expect(tabColor(ASSISTANT_TAB_KEY, true)).toBe(semantic.ai);
   });
 
-  it('rend slate300 pour tout onglet inactif, assistant compris', () => {
-    expect(tabColor('accueil', false)).toBe(neutrals.slate300);
-    expect(tabColor(ASSISTANT_TAB_KEY, false)).toBe(neutrals.slate300);
+  it('rend controls.tabInactive pour tout onglet inactif, assistant compris', () => {
+    expect(tabColor('accueil', false)).toBe(controls.tabInactive);
+    expect(tabColor(ASSISTANT_TAB_KEY, false)).toBe(controls.tabInactive);
   });
 
   it("expose la clé réservée de l'assistant", () => {

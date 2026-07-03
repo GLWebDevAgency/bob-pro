@@ -315,8 +315,7 @@ export default function GalleryScreen() {
               title="Activer la facturation électronique"
               subtitle="Obligatoire au 1er septembre 2026"
               badge={<StatusBadge label="Chorus Pro" variant="b2g" />}
-              checkIcon={checkIcon}
-              onToggle={noop}
+              leadingIcon={<Feather name="shield" size={15} color={semantic.b2g} />}
             />
             <PriorityCard
               status="marine"

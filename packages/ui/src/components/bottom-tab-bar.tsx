@@ -1,19 +1,21 @@
 /**
- * BottomTabBar — barre d'onglets flottante (COMPONENT_SPECS.md §14).
- * Conteneur surface radius 22, ombre tabBar, 5 items colonne (icône 23 + label 10/600).
- * Actif = ink900 (assistant = semantic.ai), inactif = slate300 — voir bottom-tab-bar.logic.
+ * BottomTabBar — barre d'onglets pill flottante (COMPONENT_SPECS.md §14).
+ * Pill surface radius 22, ombre e2 + bordure carte (Android), 5 items colonne
+ * (icône 23 stroke 1.9 + label 10/600). Actif = ink900 (assistant = semantic.ai),
+ * inactif = controls.tabInactive — voir bottom-tab-bar.logic.
  *
- * Note redlines : le « fondu de fond » (dégradé transparent→bg) derrière la barre est
- * volontairement OMIS — il exigerait un littéral rgba (token-lint) et aucun token
- * overlay teinté bg n'existe en v1.2. À réintroduire si un token dédié est ajouté.
+ * `floating` : conteneur absolu bas + fondu bg (patterns.bottomTabBar.fade) pour que
+ * le contenu défile dessous en s'estompant — le pill ne colle jamais aux bords.
  */
 import type { ReactNode } from 'react';
 import { Pressable, Text, View } from 'react-native';
-import { shadowComponentsNative } from '@bob/tokens';
+import { LinearGradient } from 'expo-linear-gradient';
+import { patterns, shadowNative } from '@bob/tokens';
 import { font, useTheme } from '../theme';
 import { tabColor } from './bottom-tab-bar.logic';
 
 const ICON_SIZE = 23;
+const TAB_BAR = patterns.bottomTabBar;
 
 /** Icône injectée : nœud prêt à l'emploi, ou render-prop recevant couleur/taille du slot. */
 export type BottomTabIcon =
@@ -32,22 +34,32 @@ export interface BottomTabBarProps {
   readonly onSelect: (key: string) => void;
   /** Marge basse (safe-area) — 26 dans le proto. */
   readonly insetBottom?: number;
+  /** true = conteneur absolu bas + fondu de fond (écrans) ; false = pill nu (galerie). */
+  readonly floating?: boolean;
 }
 
-export function BottomTabBar({ items, activeKey, onSelect, insetBottom = 26 }: BottomTabBarProps) {
-  const { colors, radius } = useTheme();
+export function BottomTabBar({
+  items,
+  activeKey,
+  onSelect,
+  insetBottom = TAB_BAR.padding[2],
+  floating = false,
+}: BottomTabBarProps) {
+  const { colors, controls, radius } = useTheme();
 
-  return (
+  const pill = (
     <View
       accessibilityRole="tablist"
       style={{
         flexDirection: 'row',
         backgroundColor: colors.surface,
         borderRadius: radius.cardXl,
+        borderWidth: 1,
+        borderColor: controls.cardBorder,
         paddingVertical: 8,
         paddingHorizontal: 6,
-        marginBottom: insetBottom,
-        ...shadowComponentsNative.tabBar,
+        ...(floating ? {} : { marginBottom: insetBottom }),
+        ...shadowNative.e2,
       }}
     >
       {items.map((item) => {
@@ -84,6 +96,34 @@ export function BottomTabBar({ items, activeKey, onSelect, insetBottom = 26 }: B
           </Pressable>
         );
       })}
+    </View>
+  );
+
+  if (!floating) return pill;
+
+  return (
+    <View
+      pointerEvents="box-none"
+      style={{ position: 'absolute', left: 0, right: 0, bottom: 0 }}
+    >
+      <LinearGradient
+        pointerEvents="none"
+        colors={[...TAB_BAR.fade] as [string, string, ...string[]]}
+        locations={[...TAB_BAR.fadeLocations] as [number, number, ...number[]]}
+        start={{ x: 0.5, y: 0 }}
+        end={{ x: 0.5, y: 1 }}
+        style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
+      />
+      <View
+        pointerEvents="box-none"
+        style={{
+          paddingTop: TAB_BAR.padding[0],
+          paddingHorizontal: TAB_BAR.padding[1],
+          paddingBottom: insetBottom,
+        }}
+      >
+        {pill}
+      </View>
     </View>
   );
 }

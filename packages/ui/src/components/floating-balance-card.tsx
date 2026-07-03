@@ -5,7 +5,7 @@
  * Le chiffre est le héros (31/800 ink900, tabular-nums) ; la rangée verte = la voix de Bob.
  */
 import type { ReactNode } from 'react';
-import { Pressable, Text, View, type TextStyle } from 'react-native';
+import { Pressable, Text, View } from 'react-native';
 import { formatEUR } from '@bob/core';
 import { patterns, shadowNative } from '@bob/tokens';
 import { font, useTheme } from '../theme';
@@ -56,14 +56,14 @@ export function FloatingBalanceCard({
         ...shadowNative.e3,
       }}
     >
-      <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+      <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
         <View style={{ flex: 1 }}>
           <Text style={[font('eyebrow'), { color: colors.slate400 }]}>{label}</Text>
           <Text
             style={{
               ...font('bigNum'),
               fontSize: P.numberSize,
-              fontWeight: String(P.numberWeight) as TextStyle['fontWeight'],
+              letterSpacing: P.numberTracking,
               color: P.numberColor,
               fontVariant: ['tabular-nums'],
               marginTop: 3,
@@ -76,6 +76,7 @@ export function FloatingBalanceCard({
           style={{
             width: 30,
             height: 30,
+            marginTop: 3,
             borderRadius: 15,
             backgroundColor: colors.lineSoft,
             alignItems: 'center',
@@ -93,7 +94,7 @@ export function FloatingBalanceCard({
           style={{
             width: 30,
             height: 30,
-            borderRadius: 15,
+            borderRadius: 10,
             backgroundColor: semantic.successBg,
             alignItems: 'center',
             justifyContent: 'center',
@@ -103,11 +104,11 @@ export function FloatingBalanceCard({
         </View>
         <Text
           style={{
-            ...font('sub'),
-            fontWeight: '600',
+            ...font('sub', 600),
             color: P.voiceLineColor,
             marginLeft: 10,
             flex: 1,
+            lineHeight: 18,
           }}
         >
           {voiceLine}

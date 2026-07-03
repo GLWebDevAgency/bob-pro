@@ -1,6 +1,9 @@
 /**
  * Button — redlines §18. 4 types (primaire dégradé cta · secondaire · IA · danger léger)
  * + état désactivé. Hauteur ≥ 44, radius 11–15, icône injectée, press scale 0.94.
+ * `size="compact"` : CTA de carte priorité (réf dc.html) — padding 9/15, texte 13.5/600,
+ * fond primaire en aplat ink (pas de dégradé aux petites tailles), hitSlop pour ≥ 44.
+ * `trailingIcon` : icône après le libellé (ex. chevron › du diagnostic).
  */
 import type { ReactNode } from 'react';
 import {
@@ -14,6 +17,10 @@ import {
 import { LinearGradient } from 'expo-linear-gradient';
 import { useTheme, font, parseGradient } from '../theme';
 import {
+  BUTTON_COMPACT_FONT_SIZE,
+  BUTTON_COMPACT_HIT_SLOP,
+  BUTTON_COMPACT_PADDING_HORIZONTAL,
+  BUTTON_COMPACT_PADDING_VERTICAL,
   BUTTON_ICON_GAP,
   BUTTON_MIN_HEIGHT,
   BUTTON_PRESSED_SCALE,
@@ -23,6 +30,8 @@ import {
 } from './button.logic';
 
 export type { ButtonVariant };
+
+export type ButtonSize = 'regular' | 'compact';
 
 export interface ButtonProps {
   title: string;
@@ -34,6 +43,10 @@ export interface ButtonProps {
   radius?: number;
   /** Icône injectée (aucune librairie d'icônes) — rendue à gauche, gap 7. */
   icon?: ReactNode;
+  /** Icône rendue APRÈS le libellé (chevron de navigation…). */
+  trailingIcon?: ReactNode;
+  /** compact = CTA de carte (padding 9/15, 13.5/600) ; regular = bouton plein (défaut). */
+  size?: ButtonSize;
   style?: StyleProp<ViewStyle>;
   accessibilityLabel?: string;
 }
@@ -46,10 +59,13 @@ export function Button({
   loading = false,
   radius,
   icon,
+  trailingIcon,
+  size = 'regular',
   style,
   accessibilityLabel,
 }: ButtonProps) {
-  const { colors, semantic, controls, grad } = useTheme();
+  const { colors, semantic, controls, grad, theme } = useTheme();
+  const compact = size === 'compact';
 
   const appearance = resolveButtonAppearance(variant, disabled, {
     surface: colors.surface,
@@ -61,7 +77,10 @@ export function Button({
     buttonSecondaryBorder: controls.buttonSecondaryBorder,
   });
   const borderRadius = clampButtonRadius(radius);
-  const gradient = appearance.gradient ? parseGradient(grad.cta) : null;
+  // Aux petites tailles la réf pose un aplat ink : le dégradé cta reste aux boutons pleins.
+  const gradient = appearance.gradient && !compact ? parseGradient(grad.cta) : null;
+  const backgroundColor =
+    appearance.gradient && compact ? theme.ink : appearance.backgroundColor;
 
   const content = (
     <View
@@ -70,8 +89,12 @@ export function Button({
         alignItems: 'center',
         justifyContent: 'center',
         gap: BUTTON_ICON_GAP,
-        minHeight: BUTTON_MIN_HEIGHT,
-        paddingHorizontal: 18,
+        ...(compact
+          ? {
+              paddingVertical: BUTTON_COMPACT_PADDING_VERTICAL,
+              paddingHorizontal: BUTTON_COMPACT_PADDING_HORIZONTAL,
+            }
+          : { minHeight: BUTTON_MIN_HEIGHT, paddingHorizontal: 18 }),
       }}
     >
       {loading ? (
@@ -79,7 +102,15 @@ export function Button({
       ) : (
         icon
       )}
-      <Text style={[font('button'), { color: appearance.textColor }]}>{title}</Text>
+      <Text
+        style={[
+          compact ? { ...font('sub', 600), fontSize: BUTTON_COMPACT_FONT_SIZE } : font('button'),
+          { color: appearance.textColor },
+        ]}
+      >
+        {title}
+      </Text>
+      {loading ? null : trailingIcon}
     </View>
   );
 
@@ -90,16 +121,16 @@ export function Button({
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel ?? title}
       accessibilityState={{ disabled, busy: loading }}
+      {...(compact ? { hitSlop: BUTTON_COMPACT_HIT_SLOP } : {})}
       style={({ pressed }) => [
         {
           borderRadius,
-          minHeight: BUTTON_MIN_HEIGHT,
-          minWidth: BUTTON_MIN_HEIGHT,
           overflow: 'hidden',
-          backgroundColor: appearance.backgroundColor,
+          backgroundColor,
           borderColor: appearance.borderColor,
           borderWidth: appearance.borderWidth,
           transform: [{ scale: pressed && !disabled ? BUTTON_PRESSED_SCALE : 1 }],
+          ...(compact ? {} : { minHeight: BUTTON_MIN_HEIGHT, minWidth: BUTTON_MIN_HEIGHT }),
         },
         style,
       ]}

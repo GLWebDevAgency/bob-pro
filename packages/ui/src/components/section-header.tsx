@@ -19,7 +19,7 @@ export function SectionHeader({ title, action }: SectionHeaderProps) {
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'space-between',
-        marginBottom: 12,
+        marginBottom: 13,
       }}
     >
       <Text accessibilityRole="header" style={[font('section'), { color: colors.ink800 }]}>

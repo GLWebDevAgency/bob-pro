@@ -34,6 +34,12 @@ export interface ButtonAppearance {
 
 /** Hauteur minimale — hit-target terrain-first (redlines §18 : ≥ 44). */
 export const BUTTON_MIN_HEIGHT = 48;
+/** CTA compact des cartes priorité (réf dc.html) : padding 9/15, texte 13.5/600.
+ *  La cible tactile ≥ 44 est garantie par hitSlop côté composant. */
+export const BUTTON_COMPACT_PADDING_VERTICAL = 9;
+export const BUTTON_COMPACT_PADDING_HORIZONTAL = 15;
+export const BUTTON_COMPACT_FONT_SIZE = 13.5;
+export const BUTTON_COMPACT_HIT_SLOP = 6;
 /** Écart icône ↔ libellé (redlines §18). */
 export const BUTTON_ICON_GAP = 7;
 /** Échelle au press (redlines §18 : scale 0.94). */

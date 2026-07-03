@@ -1,8 +1,10 @@
 /**
- * Aujourd'hui — le briefing du jour (claim C10 v1.1, réfs claims/ref/C10-frame-p1/p2.png).
- * Composition 100 % @bob/ui : AppHeaderNavy → FloatingBalanceCard (geste signature) →
- * « À régler aujourd'hui » (PriorityCard dérivées) → « En un coup d'œil » (KpiTile ×4) →
- * « Vite fait » (QuickAction ×4) → footer voix de Bob → Fab.
+ * Aujourd'hui — le briefing du jour (claim C10 v1.1 + rattrapage DA pixel-perfect,
+ * réf design_handoff_bob_pro/Bob Pro.dc.html). Composition 100 % @bob/ui :
+ * AppHeaderNavy (halos radiaux) → FloatingBalanceCard (geste signature) →
+ * « À régler aujourd'hui » (PriorityCard ; conformité = carte info lavande, sans checkbox) →
+ * « En un coup d'œil » (KpiTile ×4 iconées) → « Vite fait » (QuickAction ×4) → footer.
+ * PAS de FAB sur cet écran : les réglages s'ouvrent via l'avatar (JM) → profil.
  *
  * DONNÉES RÉELLES (amendement A1-C10) : tout vient des queries du BobClient
  * (useCashflow/useCustomers/useTodayPriorities) ; les priorités sont dérivées dans @bob/core
@@ -33,7 +35,6 @@ import {
   AppHeaderNavy,
   Button,
   Card,
-  Fab,
   FloatingBalanceCard,
   KpiTile,
   PriorityCard,
@@ -44,6 +45,15 @@ import {
   useTheme,
 } from '@bob/ui';
 import { useCashflow, useCustomers, useTodayPriorities } from '../../src/data/hooks';
+import {
+  CalendarIcon,
+  ChevronRightIcon,
+  ClockIcon,
+  CurrencyIcon,
+  DepositIcon,
+  ShieldIcon,
+  TrendUpIcon,
+} from '../../src/components/icons';
 
 // TODO C24 (auth) : identité réelle de l'artisan — le proto est Julien, Mercier Plomberie.
 const USER = { firstName: 'Julien', initials: 'JM' } as const;
@@ -84,17 +94,6 @@ function SkeletonTile() {
       <View
         style={{ height: 21, width: '70%', borderRadius: 6, backgroundColor: colors.lineSoft, marginTop: 10 }}
       />
-    </Card>
-  );
-}
-
-/** Tuile KPI sans donnée : l'état vide (« — ») est un état de premier rang — jamais un chiffre fixture. */
-function EmptyTile({ label }: { label: string }) {
-  const { colors } = useTheme();
-  return (
-    <Card style={KPI_TILE}>
-      <Text style={{ ...font('meta'), fontSize: 12.5, color: colors.slate500 }}>{label}</Text>
-      <Text style={{ ...font('bigNum'), color: colors.slate400, marginTop: 8 }}>—</Text>
     </Card>
   );
 }
@@ -140,7 +139,17 @@ function HeroPlaceholder({ loading }: { loading: boolean }) {
       {loading ? (
         <View style={{ height: 31, width: '46%', borderRadius: 8, backgroundColor: colors.lineSoft, marginTop: 6 }} />
       ) : (
-        <Text style={{ ...font('bigNum'), fontSize: HERO.numberSize, color: colors.slate400, marginTop: 3 }}>—</Text>
+        <Text
+          style={{
+            ...font('bigNum'),
+            fontSize: HERO.numberSize,
+            letterSpacing: HERO.numberTracking,
+            color: colors.slate400,
+            marginTop: 3,
+          }}
+        >
+          —
+        </Text>
       )}
     </View>
   );
@@ -183,6 +192,8 @@ function TodayPriorityCard({
             <Button
               title={t('today.ctaRelance', { personality })}
               variant="primary"
+              size="compact"
+              radius={11}
               icon={<Feather name="send" size={15} color={colors.surface} />}
               style={{ alignSelf: 'flex-start' }}
               onPress={() => router.push('/(tabs)/assistant')}
@@ -209,7 +220,9 @@ function TodayPriorityCard({
             <Button
               title={t('today.ctaFinalInvoice', { personality })}
               variant="primary"
-              icon={<Feather name="file-text" size={15} color={colors.surface} />}
+              size="compact"
+              radius={11}
+              icon={<Feather name="file-plus" size={15} color={colors.surface} />}
               style={{ alignSelf: 'flex-start' }}
               onPress={() => router.push('/ventes')}
             />
@@ -219,11 +232,13 @@ function TodayPriorityCard({
       );
     }
     case 'conformite':
+      // Carte INFO (réf) : jamais de checkbox — puce bouclier, fond lavande, CTA chevron.
       return (
         <PriorityCard
           status="conformite"
           title={t('today.prioConformiteTitle', { personality })}
           subtitle={t('today.prioConformiteHint', { personality })}
+          leadingIcon={<ShieldIcon color={semantic.b2g} />}
           badge={
             <StatusBadge label={t('today.prioConformiteBadge', { personality }).toUpperCase()} variant="b2g" />
           }
@@ -231,11 +246,13 @@ function TodayPriorityCard({
             <Button
               title={t('today.ctaDiagnostic', { personality })}
               variant="ai"
+              size="compact"
+              radius={11}
+              trailingIcon={<ChevronRightIcon color={colors.surface} size={15} strokeWidth={2.2} />}
               style={{ alignSelf: 'flex-start' }}
               onPress={() => router.push('/diagnostic')}
             />
           }
-          {...common}
         />
       );
   }
@@ -284,7 +301,7 @@ export default function Aujourdhui() {
                   ? t('today.subtitleOne', { personality })
                   : t('today.subtitle', { personality, params: { count: remaining } })
           }
-          bellIcon={<Feather name="bell" size={18} color={colors.surface} />}
+          bellIcon={<Feather name="bell" size={20} color={colors.surface} />}
           hasUnread
           onAvatarPress={() => router.push('/compte')}
           onBellPress={() => undefined} // TODO C25 — écran Notifications
@@ -298,15 +315,15 @@ export default function Aujourdhui() {
               personality,
               params: { amount: formatEUR(cashflow.data.payout) },
             })}
-            chevronIcon={<Feather name="chevron-right" size={16} color={colors.slate500} />}
-            voiceIcon={<Feather name="download" size={15} color={semantic.success} />}
+            chevronIcon={<ChevronRightIcon color={colors.slate400} size={15} strokeWidth={2.4} />}
+            voiceIcon={<DepositIcon color={semantic.success} size={16} />}
             onPress={() => router.push('/(tabs)/argent')}
           />
         ) : (
           <HeroPlaceholder loading={cashflow.isLoading} />
         )}
 
-        <View style={{ paddingHorizontal: 20, paddingTop: 24, gap: 24 }}>
+        <View style={{ paddingHorizontal: 18, paddingTop: 22, gap: 20 }}>
           {hasError ? (
             <Card>
               <Text style={[font('sub'), { color: colors.slate500 }]}>
@@ -321,7 +338,7 @@ export default function Aujourdhui() {
               {...(displayed.length > 0
                 ? {
                     action: (
-                      <Text style={[font('meta'), { color: colors.slate400 }]}>
+                      <Text style={[font('label'), { color: colors.slate400 }]}>
                         {remaining === 1
                           ? t('today.remainingOne', { personality })
                           : t('today.remaining', { personality, params: { count: remaining } })}
@@ -331,12 +348,12 @@ export default function Aujourdhui() {
                 : {})}
             />
             {today.isLoading ? (
-              <View style={{ gap: 12 }}>
+              <View style={{ gap: 11 }}>
                 <SkeletonPriority />
                 <SkeletonPriority />
               </View>
             ) : displayed.length > 0 ? (
-              <View style={{ gap: 12 }}>
+              <View style={{ gap: 11 }}>
                 {displayed.map((p) => (
                   <TodayPriorityCard key={p.id} priority={p} done={!!done[p.id]} onToggle={toggle(p.id)} />
                 ))}
@@ -354,7 +371,7 @@ export default function Aujourdhui() {
           {cockpit ? (
             <View>
               <SectionHeader title={t('today.sectionGlance', { personality })} />
-              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 11 }}>
                 {glanceLoading ? (
                   <>
                     <SkeletonTile />
@@ -364,44 +381,37 @@ export default function Aujourdhui() {
                   </>
                 ) : (
                   <>
-                    {owedCents !== undefined ? (
-                      <KpiTile
-                        style={KPI_TILE}
-                        label={t('today.kpiOwed', { personality })}
-                        amountCents={owedCents}
-                        tone="success"
-                        icon={<Feather name="trending-up" size={14} color={semantic.success} />}
-                        onPress={() => router.push('/(tabs)/clients')}
-                      />
-                    ) : (
-                      <EmptyTile label={t('today.kpiOwed', { personality })} />
-                    )}
-                    {lateCents !== undefined ? (
-                      <KpiTile
-                        style={KPI_TILE}
-                        label={t('today.kpiLate', { personality })}
-                        amountCents={lateCents}
-                        tone="danger"
-                        icon={<Feather name="clock" size={14} color={semantic.dangerVivid} />}
-                        onPress={() => router.push('/(tabs)/clients')}
-                      />
-                    ) : (
-                      <EmptyTile label={t('today.kpiLate', { personality })} />
-                    )}
-                    {/* TVA : pas encore d'endpoint côté client → état vide (jamais un chiffre fixture). */}
-                    <EmptyTile label={t('today.kpiVat', { personality })} />
-                    {eomCents !== undefined ? (
-                      <KpiTile
-                        style={KPI_TILE}
-                        label={t('today.kpiEom', { personality })}
-                        amountCents={eomCents}
-                        tone="ink"
-                        icon={<Feather name="calendar" size={14} color={colors.slate400} />}
-                        onPress={() => router.push('/(tabs)/argent')}
-                      />
-                    ) : (
-                      <EmptyTile label={t('today.kpiEom', { personality })} />
-                    )}
+                    <KpiTile
+                      style={KPI_TILE}
+                      label={t('today.kpiOwed', { personality })}
+                      {...(owedCents !== undefined ? { amountCents: owedCents } : {})}
+                      tone="success"
+                      icon={<TrendUpIcon color={semantic.success} />}
+                      onPress={() => router.push('/(tabs)/clients')}
+                    />
+                    <KpiTile
+                      style={KPI_TILE}
+                      label={t('today.kpiLate', { personality })}
+                      {...(lateCents !== undefined ? { amountCents: lateCents } : {})}
+                      tone="danger"
+                      icon={<ClockIcon color={semantic.dangerVivid} />}
+                      onPress={() => router.push('/(tabs)/clients')}
+                    />
+                    {/* TVA : pas encore d'endpoint côté client → « — » (jamais un chiffre fixture). */}
+                    <KpiTile
+                      style={KPI_TILE}
+                      label={t('today.kpiVat', { personality })}
+                      tone="warning"
+                      icon={<CurrencyIcon color={semantic.warning} />}
+                    />
+                    <KpiTile
+                      style={KPI_TILE}
+                      label={t('today.kpiEom', { personality })}
+                      {...(eomCents !== undefined ? { amountCents: eomCents } : {})}
+                      tone="ink"
+                      icon={<CalendarIcon color={colors.ink600} />}
+                      onPress={() => router.push('/(tabs)/argent')}
+                    />
                   </>
                 )}
               </View>
@@ -411,7 +421,7 @@ export default function Aujourdhui() {
           {cockpit ? (
             <View>
               <SectionHeader title={t('today.sectionQuick', { personality })} />
-              <View style={{ flexDirection: 'row', gap: 8 }}>
+              <View style={{ flexDirection: 'row', gap: 10 }}>
                 <QuickAction
                   style={{ flex: 1 }}
                   label={t('today.quickVoice', { personality })}
@@ -423,7 +433,7 @@ export default function Aujourdhui() {
                   style={{ flex: 1 }}
                   label={t('today.quickQuote', { personality })}
                   tone="b2b"
-                  icon={<Feather name="file-text" size={18} color={semantic.b2b} />}
+                  icon={<Feather name="file" size={18} color={semantic.b2b} />}
                   onPress={() => router.push('/devis/new')}
                 />
                 <QuickAction
@@ -444,13 +454,16 @@ export default function Aujourdhui() {
             </View>
           ) : null}
 
-          <Text style={[font('sub'), { color: colors.slate400, textAlign: 'center' }]}>
+          <Text
+            style={[
+              font('meta', 500),
+              { color: colors.slate300, textAlign: 'center', paddingTop: 6, paddingBottom: 8 },
+            ]}
+          >
             {t('today.footer', { personality })}
           </Text>
         </View>
       </ScrollView>
-
-      <Fab onPress={() => router.push('/devis/new')} accessibilityLabel="Nouveau devis" />
     </View>
   );
 }
