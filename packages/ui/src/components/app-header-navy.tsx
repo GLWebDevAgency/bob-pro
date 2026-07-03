@@ -10,6 +10,7 @@ import { Animated, Easing, Pressable, Text, View, type StyleProp, type ViewStyle
 import { LinearGradient } from 'expo-linear-gradient';
 import Svg, { Circle, Defs, RadialGradient, Stop } from 'react-native-svg';
 import { avatarGradient, frame } from '@bob/tokens';
+import { rgbaStop } from './halo-stops';
 import { font, parseGradient, useTheme } from '../theme';
 
 export interface AppHeaderNavyProps {
@@ -31,16 +32,6 @@ export interface AppHeaderNavyProps {
   bellIcon?: ReactNode;
   /** Affiche le point non-lu sur la cloche. */
   hasUnread?: boolean;
-}
-
-/** Alpha d'un littéral rgba token → couleur pleine + stopOpacity (react-native-svg
- *  ignore l'alpha de stopColor sur certaines versions : le glow devenait un aplat). */
-function rgbaStop(token: string): { color: string; opacity: number } {
-  const m = /rgba?\(([^)]+)\)/.exec(token);
-  if (!m?.[1]) return { color: token, opacity: 1 };
-  const parts = m[1].split(',').map((v) => Number(v.trim()));
-  const [r = 0, g = 0, b = 0, a = 1] = parts;
-  return { color: `rgb(${r},${g},${b})`, opacity: a };
 }
 
 /** Glow radial décoratif : couleur→transparent à 70 % (réf dc.html), aucun bord net. */

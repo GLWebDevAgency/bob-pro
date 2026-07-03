@@ -7,6 +7,7 @@
 import { StyleSheet, Text, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import Svg, { Defs, RadialGradient, Rect, Stop } from 'react-native-svg';
+import { rgbaStop } from './halo-stops';
 import { formatEUR } from '@bob/core';
 import { shadowComponentsNative } from '@bob/tokens';
 import { font, parseGradient, useTheme } from '../theme';
@@ -36,8 +37,16 @@ export function HeroMoneyCard({ label, amountCents, pill, caption }: HeroMoneyCa
         <Svg pointerEvents="none" style={StyleSheet.absoluteFill}>
           <Defs>
             <RadialGradient id="heroMoneyHalo" cx="85%" cy="8%" r="75%">
-              <Stop offset="0" stopColor={overlays.haloGreen[0]} />
-              <Stop offset="1" stopColor={overlays.haloGreen[1]} />
+              <Stop
+                offset="0"
+                stopColor={rgbaStop(overlays.haloGreen[0]).color}
+                stopOpacity={rgbaStop(overlays.haloGreen[0]).opacity}
+              />
+              <Stop
+                offset="1"
+                stopColor={rgbaStop(overlays.haloGreen[1]).color}
+                stopOpacity={rgbaStop(overlays.haloGreen[1]).opacity}
+              />
             </RadialGradient>
           </Defs>
           <Rect width="100%" height="100%" fill="url(#heroMoneyHalo)" />

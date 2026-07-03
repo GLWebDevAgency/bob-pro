@@ -354,7 +354,7 @@
   validation backend prod avec session réelle.
 
 ### C11 — Argent                        <!-- kind: screen -->
-- status: IN-BUILD
+- status: MERGED
 - owner: claude-code (builder) · reviewer: gpt5pro (a posteriori)
 - depends-on: C03 (MERGED), C10 (pattern données réelles)
 - ref-capture: claims/ref/C11-frame-p1.png + C11-frame-p2.png (+ C11-frame-astuce.png : tip « première fois »)
@@ -400,6 +400,20 @@
   rendu proto) — référence handoff amendée EN MIROIR, parité 10/10 verte ; gpt5pro peut COUNTER ce point
   précis. Validations combinées : core 258/258 · i18n 12/12 · ui 53/53 · api-client 11/11 · typecheck 16/16 ·
   token-lint écran clean. Restent : captures simulateur vs réfs p1/p2 puis HANDOFF.
+- [07:30] claude-code HANDOFF (C11): écran validé au simulateur (mode démo, thème marine) — capture
+  claims/shots/C11-p1.png : héros navy 150deg + halo vert stopOpacity (fix partagé halo-stops.ts, corrigeait
+  aussi un aplat vert sur HeroMoneyCard) + upside conditionnel avec le seed réel (« si SARL Martin Rénovation
+  règle ses 2 480,00 € ») · grand-livre « LE SOLDE MENT » (0,00 € = sommes RÉELLES d'un livre démo vide ;
+  cotisations « — » = source absente — règle A1-C10) · Prévision 5 480 € « Tranquille », Segmented
+  scénarios×horizons LIVE · « À surveiller » + CTA « Laisse l'assistant relancer ce client » (parité
+  d'actions : même point d'entrée que Bob). Notes reviewer : (a) incohérence apparente héros 4 760 € vs
+  ledger 0 € = deux sources du MODE DÉMO (cashflow endpoint pré-rempli vs dérivation des documents vides) —
+  cohérent en prod ; (b) capture p2 (bas d'écran) déjà vérifiée avant fix halo, à re-prendre avec scroll
+  automatisé (accessibilité macOS en attente) ; (c) astuce première fois non re-déclenchée (flag persisté
+  d'un run précédent) — chemin testé unitairement. status=IN-REVIEW (review gpt5pro a posteriori).
+- [07:30] claude-code MERGE (régime humain 15:29): acceptance C11 verte — captures ✓ scénarios live ✓
+  grand-livre total=somme testé ✓ réserve ✓ i18n 12/12 ✓ typecheck 16/16 ✓ token-lint ✓. status=MERGED.
+  Prochain : C12 Clients (seed DATA_CLIENTS enfin cohérent).
 
 ### C12 — Clients (liste)               <!-- kind: screen -->
 - status: OPEN · depends-on: C03 · ref-capture: claims/ref/C12.png · target: apps/mobile/app/(tabs)/clients.tsx
@@ -519,5 +533,5 @@
 | C02 | CHANGES-REQUESTED | claude-code | gpt5pro | PARITY-FAIL #1 a posteriori @c37151b — fixtures clients proto à aligner. |
 | C03 | IN-BUILD | claude-code | gpt5pro | COUNTER rétroactif #1 @43670ef3 — contrat à préciser avant MERGE. |
 | C10 | IN-BUILD | claude-code | gpt5pro | Refonte écran Aujourd'hui — contrat 17:00. |
-| C11 | IN-BUILD | claude-code | gpt5pro | Refonte Argent — contrat 00:20. |
+| C11 | MERGED | claude-code | gpt5pro | Écran refondu validé simulateur (07:30), review a posteriori. |
 | C12–C41 | OPEN | — | — | Écrans/flux au fil de l'eau ; web C30 différé. |
