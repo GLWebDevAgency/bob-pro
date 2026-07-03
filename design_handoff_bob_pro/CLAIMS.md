@@ -852,6 +852,8 @@
 
 ## Flux — parallélisables (après C03 ; certains dépendent d'écrans)
 
+- [21:45] claude-code (session A) COORD: j'avais redéclaré C17 au journal par erreur (contrat v2 déjà posé par la session B) — journal corrigé, je prends C22. Le claim reste à la session B.
+
 ### C20 — Facture à la voix              <!-- kind: flow -->
 - status: MERGED
 - owner: claude-code (builder) · reviewer: gpt5pro (a posteriori)
@@ -949,9 +951,32 @@
   d'icônes de la session C16 retirés (typecheck workspace réparé). status=MERGED.
 
 ### C22 — Onboarding adaptatif           <!-- kind: flow -->
-- status: OPEN · depends-on: C03 · ref-capture: claims/ref/C22.png
-- Contrat: 5 étapes · grille métier (adapte le vocabulaire : plombier→retenue de garantie, etc.) · clientèle B2B/B2C/B2G · régime TVA · handoff → Diagnostic.
-- Acceptance: preview « ton espace <métier> » adaptatif · edges → C23/C10.
+- status: IN-BUILD
+- owner: claude-code session A (builder) · reviewer: gpt5pro (a posteriori)
+- depends-on: C03 (MERGED), C23 (MERGED — handoff diagnostic)
+- ref-capture: dc.html §onboarding (extraire au build) · target: apps/mobile/app/onboarding.tsx (RÉÉCRITURE @bob/ui)
+
+#### Contrat (v1, claude-code A — régimes prod 100 %, données réelles)
+- Flux 5 étapes (dc.html §ob*) : métier (grille de métiers du proto — le choix ADAPTE le vocabulaire de
+  l'app : plombier → retenue de garantie/décennale, électricien → Consuel, etc., via le profil réel) ·
+  clientèle (b2c/b2b/b2g/mixte) · régime TVA (franchise 293B / réel simplifié / réel normal — copy
+  pédagogique voix Bob) · preview « ton espace {métier} » adaptatif · handoff → /diagnostic (C23) puis
+  /(tabs) (C10).
+- PROD : les réponses PERSISTENT dans le profil réel (useProfile/endpoint company/profil constaté — si
+  écriture absente côté client/serveur : Stepper local + TODO documenté, pas d'écriture fantôme ; lecture
+  seule = le flux pré-remplit depuis le profil existant).
+- Réutilise Stepper @bob/ui (C21). Copy : clés @bob/i18n onboard.* ×3 humeurs (grille métiers = libellés
+  proto exacts). États : retour arrière, skip honnête (« Plus tard »), erreurs voix Bob.
+- Acceptance : 5 étapes machine locale simple (pas de sur-ingénierie : useState étape + gardes) · preview
+  adaptatif testé (unité pure si dérivation) · persistance réelle constatée ou TODO · captures · i18n
+  tests · typecheck + token-lint clean.
+
+#### Signatures
+- [x] agreed — claude-code A — 2026-07-03 (21:47) — régime humain, review gpt5pro a posteriori
+
+#### Log (append-only, horodaté)
+- [21:47] claude-code A CLAIM+PROPOSE+IN-BUILD: pris après correction de coordination C17 (session B).
+  Périmètre : onboarding.tsx + i18n + lecture profil — disjoint de C25 phase 2 (api/notifs) et C17-B (compta).
 
 ### C23 — Diagnostic 2026                 <!-- kind: flow -->
 - status: MERGED
@@ -1190,5 +1215,6 @@
 | C21 | MERGED | claude-code | gpt5pro | Flux validé 16:10 ; Stepper+SignaturePad livrés (réserve C03 soldée). |
 | C23 | MERGED | claude-code | gpt5pro | Diagnostic expert-comptable v2 livré 16:32 (audit réel + plan daté 3 axes). |
 | C25 | IN-BUILD | claude-code | gpt5pro | Relances réelles + Notifications — contrat 16:35, ferme TODO ①②. |
-| C17 | IN-BUILD | claude-code | gpt5pro | Compta & conformité (mois prêt dérivé + FEC réel) — contrat 21:58. |
-| C22-C27, C41 | OPEN | — | — | Web C30 différé après mobile hi-fi. |
+| C17 | IN-BUILD | claude-code (session B) | gpt5pro | Contrat v2 posé par la session parallèle — export FEC partageable. |
+| C22 | IN-BUILD | claude-code A | gpt5pro | Onboarding adaptatif — contrat 21:47. |
+| C24, C26, C27, C41 | OPEN | — | — | Web C30 différé après mobile hi-fi. |
