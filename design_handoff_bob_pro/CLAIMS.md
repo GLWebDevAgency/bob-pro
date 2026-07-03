@@ -857,6 +857,29 @@
   i18n ×3 humeurs (actionSharePdf, shareUnavailable, shareError). Typecheck ✓ i18n 46 ✓.
   NB : partage réel à valider sur device physique (simulateur headless : pas de tap) —
   même primitive que shareFec (éprouvée).
+- [23:55] claude-code (session B) A5 MERGE (commit 01a2caa) : « DÉJÀ FACTURÉ » GÉNÉRALISÉ —
+  la facture finale déduit TOUT ce qui a été facturé sur le devis (acompte ET situations
+  ÉMISES, situations successives BTP), plus seulement l'acompte. Domaine : invoiceId de la
+  déduction devient string | null (composite) — snapshot/Prisma compatibles (champ déjà
+  nullable). GenerateInvoiceFromQuote somme les netToPay des pièces émises (brouillons
+  exclus — pas d'existence fiscale) via listByCompany (AUCUN changement de port : zéro
+  risque de conflit avec le WIP persistence session A). buildPieceView ne cite une pièce
+  que si l'id correspond ; l'UI bascule sur « Déjà facturé (acompte + situations) »
+  (piece.alreadyInvoiced ×3). +4 tests core (352) ✓ api-client 27 ✓.
+- [00:10] claude-code (session B) A6 MERGE (commit a9e1dc3) : CRÉATION D'AVOIR —
+  Invoice.creditNoteFor (avoir TOTAL, mêmes lignes, même devis parent, naît BROUILLON ;
+  refusé sur brouillon et sur avoir) + use case CreateCreditNote (idempotent par devis,
+  3 tests). Émission par LE circuit normal : IssueInvoice alloue la séquence 'credit'
+  (CounterKey existant, enfin branché) → numéro A-AAAA-XXXX (DocNumber élargi [DFA]),
+  écriture comptable INVERSE déjà portée par buildIssuedInvoiceAccountingEntry
+  (isCreditNote). Client : BobClient.createCreditNote + LocalBobClient + HttpBobClient.
+  Mobile : useCreateCreditNote + « Créer un avoir » (confirmation FISCAL, DÉTAIL de pièce
+  uniquement — action rare, pas en liste ; facture payée comprise : c'est alors sa seule
+  action) → navigation vers le brouillon (Émettre → A-2026-0001).
+  SUIVIS SERVEUR (comme le précédent classifyDocument) : ① endpoint POST
+  /invoices/:id/credit-note à poser côté apps/api ; ② préfixe « A » du compteur 'credit'
+  dans les impls serveur (in-memory + Prisma) — la sandbox apps/api est en WIP session A,
+  non touchée volontairement. Core 355 ✓ api-client 27 ✓ typecheck mobile ✓.
 
 ### C17 — Compta & conformité            <!-- kind: screen -->
 - status: MERGED
