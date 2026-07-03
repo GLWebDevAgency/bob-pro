@@ -798,6 +798,20 @@
     facture d'acompte sont ceux du chantier — la capture device faisait foi).
   · core 326 · i18n 37 (+4 clés piece.*) · typecheck clean. À re-vérifier d'un tap sur
     F-2026-0001 (l'app a été rechargée).
+- [21:20] claude-code AMENDEMENT A2-C16 (retour humain 21:05 : « pas de trace de l'acompte dans le
+  brouillon de la facture finale — tout doit être corrélé ») — VRAI BUG MÉTIER : la finale générée
+  portait netToPay = TTC COMPLET (1 628,00 €), l'acompte déjà facturé aurait été RE-facturé. Fix
+  au niveau DOMAINE : Invoice.depositDeductionCents/-InvoiceId (invariants, snapshot compatible),
+  totals().netToPay = max(0, ttc − acompte) ; GenerateInvoiceFromQuote(final) déduit l'acompte ÉMIS
+  automatiquement ; colonnes invoices.* + migration 20260703210000 + mappers prisma ; InvoiceView
+  exposé (local+api) ; vue : ligne « Acompte déjà facturé (F-2026-0001) −488,40 € » + net à payer =
+  solde 1 139,60 € + nav croisée « Facture d'acompte ». Tests e2e devis→acompte payé→finale (core
+  336 · api-client 25 · api 42). Migration à exécuter au deploy. Commit 40a05d0.
+- [21:20] NOTE C13 : rangées Activité de la fiche client rendues cliquables → détail C16 (retour
+  humain 20:27).
+- [21:20] NOTE env : expo-file-system/expo-sharing déclarés mais NON matérialisés par pnpm (store
+  désynchronisé — install locale requise hors sandbox) → volet « export FEC partageable » de C17
+  bloqué (shareFec écrit, non importé/bundlé) ; summarizeAccountingEntries livré (3 tests).
 
 ### C17 — Compta & conformité            <!-- kind: screen -->
 - status: IN-BUILD
