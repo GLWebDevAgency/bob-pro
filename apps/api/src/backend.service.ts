@@ -17,7 +17,7 @@ import {
   ListCustomers,
   GetCashflow,
   SystemClock,
-  buildRelance,
+  deriveRelancePlan,
   ok,
   appNotFound,
   appForbidden,
@@ -60,6 +60,7 @@ import {
   type ClockPort,
   type QuoteLine,
   type Totals,
+  type TodayInvoiceData,
   type PlanTier,
   type PaymentGatewayPort,
   type PdfRendererPort,
@@ -670,19 +671,41 @@ export class BackendService {
         if (!r.ok) return r;
         return ok({ payoutCents: r.value.payout, availableCents: r.value.available });
       },
-      draftRelance: async () => {
-        const r = await this.listCustomers();
-        if (!r.ok) return r;
-        const top = [...r.value].filter((c) => c.outstanding > 0).sort((a, b) => b.outstanding - a.outstanding)[0];
-        const draft = buildRelance({
-          customerName: top?.name ?? 'le client',
-          docNumber: 'dernière facture',
-          amountCents: top?.outstanding ?? 0,
-          daysLate: 7,
-          tone: 'cordial',
-          personality: 'Pote',
+      // C25 ① : brouillon CIBLABLE (invoiceId/customerId), dérivé du plan de relances réel
+      // (@bob/core deriveRelancePlan) — même moteur que le cron, le mobile et le LocalBobClient.
+      draftRelance: async (input) => {
+        const [inv, cust] = await Promise.all([this.listInvoices(), this.listCustomers()]);
+        if (!inv.ok) return inv;
+        if (!cust.ok) return cust;
+        // La vue serveur type kind/status en string large : projection stricte vers le moteur core.
+        const plan = deriveRelancePlan({
+          invoices: inv.value.map((i) => ({
+            id: i.id,
+            customerId: i.customerId,
+            kind: i.kind as TodayInvoiceData['kind'],
+            status: i.status as TodayInvoiceData['status'],
+            number: i.number,
+            parentQuoteId: i.parentQuoteId,
+            totals: i.totals,
+            dueAt: i.dueAt,
+            paid: i.paid,
+          })),
+          customers: cust.value,
+          today: this.clock.today(),
         });
-        return ok({ subject: draft.subject, body: draft.body });
+        const entry = input?.invoiceId
+          ? plan.find((e) => e.invoiceId === input.invoiceId)
+          : input?.customerId
+            ? plan.find((e) => e.customerId === input.customerId)
+            : plan[0]; // tri du plan : retard le plus long puis montant
+        if (!entry) {
+          return ok(
+            input?.invoiceId || input?.customerId
+              ? { subject: 'Rien à relancer pour cette cible', body: 'Aucun retard sur cette cible — facture réglée ou pas encore échue. Je ne relance pas pour rien.' }
+              : { subject: 'Rien à relancer', body: 'Aucune facture en retard — tout est réglé ou dans les temps. 🎉' },
+          );
+        }
+        return ok({ subject: entry.message.subject, body: entry.message.body });
       },
       listPayableInvoices: async () => {
         const [inv, cust] = await Promise.all([this.listInvoices(), this.listCustomers()]);

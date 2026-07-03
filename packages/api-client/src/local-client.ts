@@ -107,6 +107,8 @@ import type {
   SubscriptionView,
   SendQuoteOutput,
   SendRelanceClientOutput,
+  NotificationView,
+  RegisterDeviceClientInput,
   ListDocumentsClientInput,
   UploadDocumentClientInput,
   VoiceConfig,
@@ -153,6 +155,16 @@ function addYears(date: string, years: number): string {
   return d.toISOString().slice(0, 10);
 }
 
+/** Horloge décalée de n jours dans le passé — le seed démo a un HISTORIQUE (facture échue
+ *  issue d'un vrai flow antidaté, jamais un statut fabriqué à la main). */
+function clockDaysAgo(days: number): ClockPort {
+  const shiftMs = days * 86_400_000;
+  return {
+    now: () => new Date(Date.now() - shiftMs).toISOString(),
+    today: () => new Date(Date.now() - shiftMs).toISOString().slice(0, 10),
+  };
+}
+
 // —— Assistant local (C40 ⑧, parité serveur) ——————————————————————————————————
 const PAYABLE_STATUSES = new Set(['issued', 'partially_paid', 'late']);
 const SENDABLE_QUOTE_STATUSES = new Set(['draft', 'sent', 'viewed']);
@@ -182,6 +194,11 @@ export class LocalBobClient implements BobClient {
   private readonly chartOfAccounts = new InMemoryChartOfAccountsRepository();
   private readonly documents: DocumentView[] = [];
   private documentSeq = 0;
+  // Fil de notifications local (C25, adaptateur démo) — alimenté par sendRelance, lu/non-lu en mémoire.
+  private readonly notifications: NotificationView[] = [];
+  private readonly relanceDedupe = new Map<string, string>();
+  private notificationSeq = 0;
+  private readonly pushDevices = new Map<string, string>();
   private readonly companyLookup = new DemoCompanyLookupAdapter();
   // Unité de travail in-memory : annule l'allocation du compteur si fn lève (pas de trou) — parité backend.
   private readonly uow = {
@@ -229,7 +246,35 @@ export class LocalBobClient implements BobClient {
   private ready: Promise<void> = Promise.resolve();
 
   private async seedBillingDemo(): Promise<void> {
-    const created = await this.createQuote({
+    // Le seed n'emprunte QUE les variantes *Internal : les méthodes publiques attendent
+    // this.ready (= cette promesse) — les appeler ici serait un interblocage.
+
+    // ── Facture ÉCHUE réelle (A2-C10) : le MÊME flow, exécuté « il y a 45 jours » (horloge
+    // décalée) — la mairie n'a pas payé son mandat administratif. Le briefing propose la
+    // relance ET l'encaissement direct ; 1 850,00 € TTC = l'encours fixture de cust-sevres
+    // (la facture MATÉRIALISE le chiffre du proto, elle ne le double pas). Semée en premier :
+    // la numérotation reste chronologique et sans trou (F-2026-0001 = la plus ancienne).
+    const past = clockDaysAgo(45);
+    const sevres = await this.createQuoteInternal(
+      {
+        customerId: 'cust-sevres',
+        lines: [
+          { label: 'Remplacement chauffe-eau — bâtiment mairie', category: 'labor', qty: 1, unitPriceHT: 154167, vatRate: 20 },
+        ],
+      },
+      past,
+    );
+    if (sevres.ok) {
+      const sevresQuoteId = sevres.value.quoteId;
+      await this.sendQuoteInternal(sevresQuoteId, past);
+      await this.signQuoteInternal({ quoteId: sevresQuoteId, signerName: 'Mairie de Sèvres' }, past);
+      const sevresInvoice = await this.generateInvoiceInternal({ quoteId: sevresQuoteId, mode: 'final' });
+      if (sevresInvoice.ok) await this.issueInvoiceInternal({ invoiceId: sevresInvoice.value.invoiceId }, past);
+    }
+
+    // ── Chantier Martin (C16) : devis signé avec acompte (test d'or 488,40), acompte émis
+    // puis ENCAISSÉ → le briefing propose la facture finale.
+    const created = await this.createQuoteInternal({
       customerId: 'cust-martin',
       depositPct: 30,
       lines: [
@@ -239,13 +284,13 @@ export class LocalBobClient implements BobClient {
     });
     if (!created.ok) return;
     const quoteId = created.value.quoteId;
-    await this.sendQuote(quoteId);
-    await this.signQuote({ quoteId, signerName: 'SARL Martin Rénovation' });
-    const generated = await this.generateInvoice({ quoteId, mode: 'deposit' });
+    await this.sendQuoteInternal(quoteId);
+    await this.signQuoteInternal({ quoteId, signerName: 'SARL Martin Rénovation' });
+    const generated = await this.generateInvoiceInternal({ quoteId, mode: 'deposit' });
     if (!generated.ok) return;
-    await this.issueInvoice({ invoiceId: generated.value.invoiceId });
+    await this.issueInvoiceInternal({ invoiceId: generated.value.invoiceId });
     // L'acompte est encaissé — plafonné netToPay (488,40 €), comme la doctrine l'exige.
-    await this.registerPayment({ invoiceId: generated.value.invoiceId, amount: 48840, method: 'card' });
+    await this.registerPaymentInternal({ invoiceId: generated.value.invoiceId, amount: 48840, method: 'card' });
   }
 
   private mapQuote(q: Quote): QuoteView {
@@ -510,25 +555,51 @@ export class LocalBobClient implements BobClient {
     return ok(list.map((c) => c.toProps()));
   }
 
+  // Écritures billing : barrière this.ready (le seed démo doit être ENTIÈREMENT posé avant
+  // toute écriture utilisateur — sinon la numérotation sans-trou se mélange, cf. tests).
+  // Les variantes *Internal (sans barrière, clock injectable) servent le seed lui-même.
+
   async createQuote(input: Omit<CreateQuoteInput, 'companyId'>): Promise<Result<CreateQuoteOutput, AppError>> {
+    await this.ready;
+    return this.createQuoteInternal(input);
+  }
+
+  private createQuoteInternal(
+    input: Omit<CreateQuoteInput, 'companyId'>,
+    clock: ClockPort = this.clock,
+  ): Promise<Result<CreateQuoteOutput, AppError>> {
     return new CreateQuote({
       quotes: this.quotes,
       companies: this.companies,
       customers: this.customers,
       ids: this.ids,
-      clock: this.clock,
+      clock,
     }).execute({ companyId: this.companyId, ...input });
   }
 
   async sendQuote(quoteId: string): Promise<Result<SendQuoteOutput, AppError>> {
-    return new SendQuote({ quotes: this.quotes, counters: this.counters, uow: this.uow, clock: this.clock }).execute({ quoteId });
+    await this.ready;
+    return this.sendQuoteInternal(quoteId);
+  }
+
+  private sendQuoteInternal(quoteId: string, clock: ClockPort = this.clock): Promise<Result<SendQuoteOutput, AppError>> {
+    return new SendQuote({ quotes: this.quotes, counters: this.counters, uow: this.uow, clock }).execute({ quoteId });
   }
 
   async signQuote(input: { quoteId: string; signerName: string }): Promise<Result<{ status: string }, AppError>> {
-    return new SignQuote({ quotes: this.quotes, uow: this.uow, clock: this.clock }).execute(input);
+    await this.ready;
+    return this.signQuoteInternal(input);
+  }
+
+  private signQuoteInternal(
+    input: { quoteId: string; signerName: string },
+    clock: ClockPort = this.clock,
+  ): Promise<Result<{ status: string }, AppError>> {
+    return new SignQuote({ quotes: this.quotes, uow: this.uow, clock }).execute(input);
   }
 
   async refuseQuote(quoteId: string): Promise<Result<{ status: string }, AppError>> {
+    await this.ready;
     return new RefuseQuote({
       quotes: this.quotes,
       publicAccessTokens: this.publicAccessTokens,
@@ -538,17 +609,33 @@ export class LocalBobClient implements BobClient {
   }
 
   async generateInvoice(input: { quoteId: string; mode?: 'deposit' | 'final' }): Promise<Result<{ invoiceId: string }, AppError>> {
+    await this.ready;
+    return this.generateInvoiceInternal(input);
+  }
+
+  private generateInvoiceInternal(input: {
+    quoteId: string;
+    mode?: 'deposit' | 'final';
+  }): Promise<Result<{ invoiceId: string }, AppError>> {
     return new GenerateInvoiceFromQuote({ quotes: this.quotes, invoices: this.invoices, ids: this.ids }).execute(input);
   }
 
   async issueInvoice(input: IssueInvoiceInput): Promise<Result<{ number: string }, AppError>> {
+    await this.ready;
+    return this.issueInvoiceInternal(input);
+  }
+
+  private async issueInvoiceInternal(
+    input: IssueInvoiceInput,
+    clock: ClockPort = this.clock,
+  ): Promise<Result<{ number: string }, AppError>> {
     const issued = await new IssueInvoice({
       invoices: this.invoices,
       companies: this.companies,
       customers: this.customers,
       counters: this.counters,
       uow: this.uow,
-      clock: this.clock,
+      clock,
     }).execute(input);
     if (!issued.ok) return issued;
     const accounting = await new RecordIssuedInvoiceAccountingEntry({
@@ -560,17 +647,71 @@ export class LocalBobClient implements BobClient {
     return issued;
   }
 
-  /** C25 ② : l'envoi réel est une capacité SERVEUR (notifier + notification_jobs) — le mode démo
-   * ne simule jamais un envoi sortant. Échec propre, même contrat que l'adaptateur HTTP. */
-  async sendRelance(_invoiceId: string): Promise<Result<SendRelanceClientOutput, AppError>> {
-    return err({
-      kind: 'dependency',
-      port: 'api/relance',
-      cause: 'Envoi de relance non disponible côté serveur — endpoint POST /invoices/:id/relance à venir (contrat C25).',
-    });
+  /** C25 ② (adaptateur DÉMO) : mêmes règles que le serveur (plan @bob/core, dédup quotidienne,
+   * refus honnête), mais l'« envoi » alimente le fil local au lieu du mailer — le mode démo
+   * journalise, il ne contacte jamais un tiers. */
+  async sendRelance(invoiceId: string): Promise<Result<SendRelanceClientOutput, AppError>> {
+    const [inv, cust] = await Promise.all([this.listInvoices(), this.listCustomers()]);
+    if (!inv.ok) return inv;
+    if (!cust.ok) return cust;
+    const plan = deriveRelancePlan({ invoices: inv.value, customers: cust.value, today: this.clock.today() });
+    const entry = plan.find((e) => e.invoiceId === invoiceId);
+    if (!entry) {
+      return err({
+        kind: 'validation',
+        issues: [{ field: 'invoiceId', message: 'Facture non relançable — réglée, annulée ou pas encore échue.' }],
+      });
+    }
+    const dedupeKey = `${invoiceId}:${this.clock.today()}`;
+    const existing = this.relanceDedupe.get(dedupeKey);
+    if (existing) return ok({ jobId: existing, status: 'done', tone: entry.tone });
+    const item: NotificationView = {
+      id: `notif-${(this.notificationSeq += 1)}`,
+      kind: 'invoice-relance',
+      title: entry.message.subject,
+      body: null, // sémantique serveur : le payload est purgé après livraison (hygiène PII)
+      channel: 'email',
+      status: 'done',
+      route: `/facture/${entry.invoiceId}`,
+      readAt: null,
+      createdAt: this.clock.now(),
+    };
+    this.notifications.unshift(item);
+    this.relanceDedupe.set(dedupeKey, item.id);
+    return ok({ jobId: item.id, status: 'done', tone: entry.tone });
+  }
+
+  async listNotifications(): Promise<Result<NotificationView[], AppError>> {
+    return ok(this.notifications.map((n) => ({ ...n })));
+  }
+
+  async markNotificationRead(id: string): Promise<Result<NotificationView, AppError>> {
+    const item = this.notifications.find((n) => n.id === id);
+    if (!item) return err(appNotFound('notification', id));
+    item.readAt ??= this.clock.now(); // idempotent : première lecture conservée
+    return ok({ ...item });
+  }
+
+  async registerDevice(input: RegisterDeviceClientInput): Promise<Result<{ id: string }, AppError>> {
+    // Démo : aucun push sortant — on mémorise le token (même contrat, idempotent par token).
+    const existing = this.pushDevices.get(input.expoPushToken);
+    if (existing) return ok({ id: existing });
+    const id = `device-${this.pushDevices.size + 1}`;
+    this.pushDevices.set(input.expoPushToken, id);
+    return ok({ id });
   }
 
   async registerPayment(input: {
+    invoiceId: string;
+    amount: number;
+    method: PaymentMethod;
+    idempotencyKey?: string | null;
+  }) {
+    await this.ready;
+    return this.registerPaymentInternal(input);
+  }
+
+  private async registerPaymentInternal(input: {
     invoiceId: string;
     amount: number;
     method: PaymentMethod;
@@ -624,6 +765,7 @@ export class LocalBobClient implements BobClient {
   }
 
   async invoiceAccountingPreview(invoiceId: string): Promise<Result<InvoiceAccountingPreview, AppError>> {
+    await this.ready;
     const invoice = await this.invoices.findById(invoiceId);
     if (!invoice) return err(appNotFound('invoice', invoiceId));
     const chart = createFrenchOperationalChartOfAccounts(invoice.companyId);
@@ -683,10 +825,12 @@ export class LocalBobClient implements BobClient {
   }
 
   async listAccountingEntries(): Promise<Result<AccountingEntryView[], AppError>> {
+    await this.ready;
     return new ListAccountingEntries({ entries: this.accountingEntries }).execute({ companyId: this.companyId });
   }
 
   async exportFec(input: { from: string; to: string }) {
+    await this.ready;
     return new ExportFec({
       companies: this.companies,
       entries: this.accountingEntries,
@@ -840,6 +984,13 @@ export class LocalBobClient implements BobClient {
           avgDelayDays: 0,
           outstanding: 0,
         }),
+      // C25 ② : outil envoyer_relance — même chemin que le bouton « Relancer » de l'écran
+      // Notifications (sendRelance) ; en démo, l'envoi alimente le fil local (jamais un tiers).
+      sendRelance: async (input) => {
+        const r = await this.sendRelance(input.invoiceId);
+        if (!r.ok) return r;
+        return ok({ jobId: r.value.jobId, status: r.value.status, ...(r.value.tone !== undefined ? { tone: r.value.tone } : {}) });
+      },
     };
   }
 

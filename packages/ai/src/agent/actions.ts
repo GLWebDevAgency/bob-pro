@@ -41,6 +41,21 @@ export interface DraftRelanceActionInput {
   customerId?: string;
 }
 
+/** Outil envoyer_relance (parité C15 TODO ② — C25) : envoi RÉEL de la relance d'une facture
+ * échue (email au client + miroir push), ton choisi par le plan @bob/core côté hôte/serveur.
+ * Sortant vers un tiers — TOUJOURS confirmé (plancher), mise en demeure L441-10 incluse. */
+export interface SendRelanceActionInput {
+  invoiceId: string;
+}
+
+export interface SendRelanceActionOutput {
+  jobId: string;
+  /** done | pending | failed (échec = job en retry côté serveur, cause loggée). */
+  status: string;
+  /** Ton effectivement envoyé (cordial | neutre | ferme | miseendemeure). */
+  tone?: string;
+}
+
 /** Outil creer_devis (parité C15 TODO ④) — mêmes entrées que le use case CreateQuote de l'UI. */
 export interface CreateQuoteActionInput {
   customerId: string;
@@ -120,4 +135,7 @@ export interface BobActions {
   generateInvoice?(input: GenerateInvoiceActionInput): Promise<Result<{ invoiceId: string }, AppError>>;
   exportFec?(input: ExportFecActionInput): Promise<Result<FecExportSummary, AppError>>;
   createCustomer?(input: CreateCustomerActionInput): Promise<Result<{ id: string }, AppError>>;
+  /** Envoi réel de relance (C25 ②) — même endpoint que le bouton « Relancer » de l'écran
+   * Notifications (client.sendRelance). Sortant : plancher de confirmation dans le registre. */
+  sendRelance?(input: SendRelanceActionInput): Promise<Result<SendRelanceActionOutput, AppError>>;
 }

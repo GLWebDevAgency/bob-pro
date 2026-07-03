@@ -192,6 +192,7 @@ model Company {
   documents           StoredDocument[]
   documentArchiveJobs DocumentArchiveJob[]
   notificationJobs    NotificationJob[]
+  devices             Device[]
   agentJournalEntries AgentJournalEntry[]
   accountingAccounts  AccountingAccount[]
   accountingEntries   AccountingEntry[]
@@ -449,12 +450,29 @@ model NotificationJob {
   attempts      Int                   @default(0)
   nextAttemptAt DateTime
   lastError     String?
+  readAt        DateTime?
   createdAt     DateTime              @default(now())
   updatedAt     DateTime              @updatedAt
 
   @@unique([companyId, kind, dedupeKey], name: "uniq_notification_job")
   @@index([companyId, status, nextAttemptAt])
   @@map("notification_jobs")
+}
+
+// Appareils enregistrés pour le push Expo (C25) — un token par device, company-scoped (RLS).
+model Device {
+  id            String   @id
+  companyId     String
+  company       Company  @relation(fields: [companyId], references: [id])
+  userId        String?
+  expoPushToken String
+  platform      String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([companyId, expoPushToken], name: "uniq_device_token")
+  @@index([companyId])
+  @@map("devices")
 }
 
 // Journal append-only des actions agentiques exécutées par Bob.

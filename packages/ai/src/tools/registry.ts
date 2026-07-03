@@ -12,6 +12,8 @@ import { type AnyTool, type Tool } from './tool';
 import {
   type BobActions,
   type DraftRelanceActionInput,
+  type SendRelanceActionInput,
+  type SendRelanceActionOutput,
   type CreateQuoteActionInput,
   type RecordExpenseActionInput,
   type GenerateInvoiceActionInput,
@@ -304,6 +306,32 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
       run: (input) => exportFecAction(input),
     };
     tools.push(exportFec as AnyTool);
+  }
+
+  // —— Outil OPTIONNEL envoyer_relance (parité C15 TODO ② — C25) : ENVOI réel, même endpoint
+  // que le bouton « Relancer » de l'écran Notifications (client.sendRelance → POST /invoices/:id/relance).
+  const sendRelanceAction = actions.sendRelance?.bind(actions);
+  if (sendRelanceAction) {
+    const envoyerRelance: Tool<SendRelanceActionInput, SendRelanceActionOutput> = {
+      name: 'envoyer_relance',
+      description:
+        'Envoie RÉELLEMENT la relance d’une facture en retard au client (email + notification) — ton choisi par le plan de relances (mise en demeure L441-10 incluse).',
+      mutating: true,
+      outbound: true,
+      compliance: 'medium',
+      // Sortant vers un tiers ET mise en demeure possible → PLANCHER : toujours confirmer, même en
+      // auto (promesse produit relance.medWarning : « jamais envoyée sans ta validation »).
+      safetyFloor: true,
+      riskTier: 'outbound',
+      parse: (raw): Result<SendRelanceActionInput, AppError> => {
+        const r = raw as { invoiceId?: unknown };
+        if (typeof r?.invoiceId !== 'string' || r.invoiceId.length === 0)
+          return err(appValidation('invoiceId', 'Facture manquante.'));
+        return ok({ invoiceId: r.invoiceId });
+      },
+      run: (input) => sendRelanceAction(input),
+    };
+    tools.push(envoyerRelance as AnyTool);
   }
 
   const createCustomerAction = actions.createCustomer?.bind(actions);

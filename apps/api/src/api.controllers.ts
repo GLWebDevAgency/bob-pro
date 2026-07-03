@@ -29,6 +29,7 @@ import { Throttle } from '@nestjs/throttler';
 import { BackendService } from './backend.service';
 import { RelanceService } from './jobs/relance.service';
 import { DocumentArchiveService } from './jobs/document-archive.service';
+import { NotificationsApiService } from './notifications/notifications-api.service';
 import { unwrap } from './http/result';
 
 @Controller('health')
@@ -164,10 +165,20 @@ export class QuotesController {
 
 @Controller('invoices')
 export class InvoicesController {
-  constructor(private readonly backend: BackendService) {}
+  constructor(
+    private readonly backend: BackendService,
+    private readonly relances: RelanceService,
+  ) {}
   @Get()
   async list() {
     return unwrap(await this.backend.listInvoices());
+  }
+  /** C25 ② : envoi RÉEL d'une relance ciblée (ton du plan @bob/core, mise en demeure incluse —
+   * le geste utilisateur EST la validation). Throttlé : action sortante vers un tiers. */
+  @Post(':id/relance')
+  @Throttle({ default: { limit: 5, ttl: 10_000 } })
+  async sendRelance(@Param('id') id: string) {
+    return unwrap(await this.relances.sendRelance(id));
   }
   @Get(':id')
   async get(@Param('id') id: string) {
@@ -359,6 +370,30 @@ export class ExpensesController {
   @Post()
   async create(@Body() body: Omit<RecordExpenseInput, 'companyId'>) {
     return unwrap(await this.backend.recordExpense(body));
+  }
+}
+
+/** Fil de notifications (C25) — le mobile lit ce que les jobs produisent, company-scoped (Principal + RLS). */
+@Controller('notifications')
+export class NotificationsController {
+  constructor(private readonly notifications: NotificationsApiService) {}
+  @Get()
+  async list(@Query('limit') limit?: string) {
+    return unwrap(await this.notifications.list(limit));
+  }
+  @Post(':id/read')
+  async markRead(@Param('id') id: string) {
+    return unwrap(await this.notifications.markRead(id));
+  }
+}
+
+/** Appareils push Expo (C25) — enregistrement idempotent par tenant/user. */
+@Controller('devices')
+export class DevicesController {
+  constructor(private readonly notifications: NotificationsApiService) {}
+  @Post()
+  async register(@Body() body: { expoPushToken?: string; platform?: string }) {
+    return unwrap(await this.notifications.registerDevice(body));
   }
 }
 

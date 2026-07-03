@@ -291,4 +291,55 @@ describe('HttpBobClient — assistant Bob (C40 ⑧ : ask/confirm/journal serveur
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.value).toEqual({ id: 'cust-42' });
   });
+
+  it('C25 : relance ciblée réelle + fil de notifications + devices (endpoints serveur)', async () => {
+    const item = {
+      id: 'job-1',
+      kind: 'invoice-relance',
+      title: 'Facture F-2026-0002 — relance ferme',
+      body: null,
+      channel: 'email',
+      status: 'done',
+      route: '/facture/inv-1',
+      readAt: null,
+      createdAt: '2026-07-03T06:00:00.000Z',
+    };
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      const u = String(url);
+      const method = init?.method ?? 'GET';
+      if (u === 'https://api.bob.test/invoices/inv-1/relance' && method === 'POST') {
+        return new Response(JSON.stringify({ jobId: 'job-1', status: 'done', tone: 'ferme' }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (u === 'https://api.bob.test/notifications' && method === 'GET') {
+        return new Response(JSON.stringify([item]), { headers: { 'content-type': 'application/json' } });
+      }
+      if (u === 'https://api.bob.test/notifications/job-1/read' && method === 'POST') {
+        return new Response(JSON.stringify({ ...item, readAt: '2026-07-03T08:00:00.000Z' }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (u === 'https://api.bob.test/devices' && method === 'POST') {
+        expect(JSON.parse(String(init?.body))).toEqual({ expoPushToken: 'ExponentPushToken[abc]', platform: 'ios' });
+        return new Response(JSON.stringify({ id: 'dev-1' }), { headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ error: { kind: 'not_found', resource: 'route' } }), { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-mercier' });
+
+    const sent = await client.sendRelance('inv-1');
+    expect(sent.ok && sent.value).toEqual({ jobId: 'job-1', status: 'done', tone: 'ferme' });
+
+    const feed = await client.listNotifications();
+    expect(feed.ok && feed.value).toEqual([item]);
+
+    const read = await client.markNotificationRead('job-1');
+    expect(read.ok && read.value.readAt).toBe('2026-07-03T08:00:00.000Z');
+
+    const device = await client.registerDevice({ expoPushToken: 'ExponentPushToken[abc]', platform: 'ios' });
+    expect(device.ok && device.value).toEqual({ id: 'dev-1' });
+  });
 });
+

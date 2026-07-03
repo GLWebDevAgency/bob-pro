@@ -2515,6 +2515,24 @@ const fr = {
   },
   'notif.retry': { pote: 'Réessayer', pro: 'Réessayer', direct: 'Réessayer' },
 
+  // ── C25 v2 — fil serveur (GET /notifications) + envoi réel ─────────────────
+  'notif.sectionFeed': {
+    pote: 'Activité',
+    pro: 'Activité récente',
+    direct: 'Activité',
+  },
+  'notif.feedDone': { pote: 'Envoyée', pro: 'Envoyée', direct: 'Envoyée' },
+  'notif.feedPending': {
+    pote: 'En cours d’envoi…',
+    pro: 'Envoi en cours…',
+    direct: 'En cours…',
+  },
+  'notif.feedFailed': {
+    pote: 'Échec d’envoi — je réessaie tout seul',
+    pro: 'Échec d’envoi — nouvelle tentative planifiée',
+    direct: 'Échec. Je retente.',
+  },
+
   // ── C25 — relances automatiques (plan @bob/core, tons buildRelance) ────────
   'relance.autoTitle': {
     pote: 'Relances automatiques',
@@ -2553,6 +2571,31 @@ const fr = {
     pote: '{tone} · le {date}',
     pro: '{tone} · prévue le {date}',
     direct: '{tone} · {date}',
+  },
+  'relance.confirmTitle': {
+    pote: 'On envoie la relance ?',
+    pro: 'Confirmer l’envoi de la relance',
+    direct: 'Envoyer la relance ?',
+  },
+  'relance.confirmBody': {
+    pote: 'J’envoie la relance de {amount} à {name}, au ton du plan. Tu valides ?',
+    pro: 'La relance de {amount} sera envoyée à {name}, au ton prévu par le plan.',
+    direct: '{name} · {amount}. J’envoie ?',
+  },
+  'relance.confirmMedNote': {
+    pote: 'Ton mise en demeure (L441-10 + indemnité 40 €) — c’est du sérieux.',
+    pro: 'Mise en demeure (art. L441-10, indemnité forfaitaire de 40 €).',
+    direct: 'Mise en demeure L441-10 + 40 €.',
+  },
+  'relance.sentToast': {
+    pote: 'Relance envoyée à {name} ✓',
+    pro: 'Relance envoyée à {name}.',
+    direct: '{name} : relancé.',
+  },
+  'relance.sendError': {
+    pote: 'L’envoi a raté — réessaie dans un instant.',
+    pro: 'L’envoi de la relance a échoué. Veuillez réessayer.',
+    direct: 'Envoi KO. Réessaie.',
   },
 
   // ── A2-C10 — encaisser depuis le briefing ───────────────────────────────────

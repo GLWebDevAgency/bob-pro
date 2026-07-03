@@ -356,6 +356,33 @@
   re-capture validée — KPI « On te doit 4 330 € » = total proto exact sur le seed DATA_CLIENTS aligné ;
   BottomTabBar flottante branchée. Acceptance C10 complète. status=MERGED. Restes trackés hors claim :
   capture p2 (accessibilité macOS), validation backend prod avec session.
+- [22:52] claude-code (session B) A2-C10+A3-C10 MERGE (programme « toutes les suggestions,
+  ultra clean, 100 % prod » — demande humaine 21:40) :
+  · A3-C10 TVA RÉELLE : CashflowProjection expose vatDue (passthrough @bob/core testé — le
+    KPI lit LE MÊME chiffre que celui qui ampute la dispo du héros, jamais un chiffre
+    parallèle). Tuile TVA branchée (amountCents réel, press → /comptabilite). Le « — »
+    honnête n'était plus nécessaire : la donnée existe.
+  · A2-C10 ENCAISSER DEPUIS LE BRIEFING : invariants d'encaissement extraits en SOURCE
+    UNIQUE dans DocumentActions (collectRemainingCents plafonné netToPay, isCollectible,
+    paymentIdempotencyKey, collectConfirmSpec = diff+challenge ACCOUNTING) — InvoiceActions
+    refactoré dessus, nouveau CollectInvoiceButton (@bob/ui, verrou anti-double-tap,
+    Alert appErrorMessage) posé sur la carte relance à côté de « Relancer ». Toast voix de
+    Bob (today.collectDone, +2 clés ×3 humeurs). useRegisterPayment invalide désormais
+    AUSSI customers/cashflow/accounting-entries (un paiement change l'encours, la tréso
+    et le journal — le briefing se rafraîchit sans re-navigation).
+  · SEED : facture ÉCHUE réelle (Mairie de Sèvres, F-2026-0001, 1 850,00 € TTC = l'encours
+    fixture — la facture MATÉRIALISE le chiffre du proto) via le MÊME flow antidaté 45 j
+    (clockDaysAgo, variantes *Internal). Au passage, VRAIE course corrigée : les écritures
+    publiques du LocalBobClient n'attendaient pas this.ready → numérotation mélangée seed/
+    user ; barrière posée sur createQuote/sendQuote/signQuote/refuseQuote/generateInvoice/
+    issueInvoice/registerPayment + lectures comptables. Tests api-client réalignés
+    (F-2026-0003, FEC 5 écritures/13 lignes) : 27/27 ✓.
+  · Acceptance : capture a2a3-c10-aujourdhui.png (carte « EN RETARD 15 J » Mairie de
+    Sèvres 1 850 € avec Relancer + Encaisser côte à côte, « 3 trucs à régler ») ✓ ·
+    core 343 ✓ · api-client 27 ✓ · typecheck mobile ✓. KPI TVA sous la ligne de flottaison
+    (scroll headless impossible — couvert par test core + typecheck).
+  · Env captures : dialogue notifications iOS (C25 push) débloqué via applesimutils
+    (brew wix/brew) --setPermissions notifications=YES — recette réutilisable.
 
 ### C11 — Argent                        <!-- kind: screen -->
 - status: MERGED
@@ -886,6 +913,16 @@
     closeSub, footer).
   · Acceptance : capture device c17-comptabilite.png (équation 976,80 = 976,80 verte,
     pastilles bleu/vert par journal) ✓ · typecheck ✓ · i18n 39 ✓. status=MERGED.
+- [22:52] claude-code (session B) A2-C17 (parité VISUAL_PARITY_COMPTA.md, brief humain 22:30) :
+  checklist des 9 points passée — 8/9 déjà conformes (mapping journaux, bandeau contextuel,
+  héros, badge sur la ligne de titre, états, i18n). 2 verrous posés : « = / ≠ » 21 → 23 px
+  (spec équation) · PORTE D'ENTRÉE ajoutée dans (tabs)/documents.tsx (demande humaine 22:05 :
+  « il manque un accès à la compta ») — carte IconTile success ChartIcon + compta.title/
+  subtitle + chevron → /comptabilite, sous le héros « mois prêt » ; second accès : KPI TVA
+  du briefing (A3-C10) presse vers /comptabilite. Divergence de la réf assumée : rangée
+  retour « Fermer » (pattern maison C25) au lieu de « ‹ Documents » — l'écran s'ouvre
+  depuis Documents ET depuis le briefing, un libellé de provenance mentirait. Nouvelle
+  capture c17-comptabilite.png (équation 2 826,80 = 2 826,80 sur seed enrichi A2-C10).
 
 ---
 
@@ -1105,7 +1142,7 @@
 - Contrat: 4 étapes (SIRET → récup infos → biométrie → entrée) · edges → Onboarding (nouveau) ou Aujourd'hui.
 
 ### C25 — Relances auto + Notifications   <!-- kind: flow -->
-- status: IN-BUILD
+- status: MERGED
 - owner: claude-code (builder) · reviewer: gpt5pro (a posteriori)
 - depends-on: C15 (MERGED), C40 (MERGED) — ferme les TODO ①② de l'audit parité
 - ref-capture: dc.html §notifications/relances (extraire au build) · target: apps/mobile/app/notifications.tsx (nouveau) + moteur
@@ -1157,6 +1194,20 @@
   4. PARITÉ ② : outil agent envoyer_relance (outbound, confirmation) branché sur le canal réel.
   5. Acceptance étendue : tests serveur (delivery service : email/push mockés, échec propre sans clé),
      tests client (stub HTTP), cron testé (multi-tenant-jobs pattern existant).
+- [22:40] claude-code A HANDOFF+MERGE (régime humain): C25 COMPLET (phases 1+2). Serveur : migration
+  additive readAt+devices (RLS pattern repo, à appliquer au déploiement) · GET /notifications (fil purgé
+  PII, route de deep link dérivée de la dedupeKey) · POST /notifications/:id/read (idempotent, anti-IDOR)
+  · POST /devices (token Expo validé strict, upsert tenant) · POST /invoices/:id/relance (throttlé,
+  refus honnêtes — le contrat sendRelance devient RÉEL). Delivery : Brevo (clé absente hors démo →
+  MisconfiguredEmailNotifier, échec explicite jamais silencieux) + PUSH Expo (chunké 100, tickets loggés,
+  DeviceNotRegistered → purge) en MIROIR de l'email réussi. Cron relances aligné sur DEFAULT_RELANCE_POLICY
+  du core (J+3/10/20/30, un seul endroit fait foi) ; MISE EN DEMEURE JAMAIS AUTO-ENVOYÉE (le geste confirmé
+  = la validation, L441-10 + 40 € testés). Agent : outil envoyer_relance (outbound, safetyFloor même en
+  auto). Mobile : expo-notifications + PushNotificationsBridge (permission honnête, tap → deep link ; push
+  distant = dev build, dégradé assumé), fil Activité + badge cloche = non-lus SERVEUR, bouton Relancer =
+  envoi réel confirmé. TODO ①② de l'audit parité FERMÉS. api 59 · core 342 · ai 151 · api-client 27 ·
+  i18n 42 · typecheck 16/16. Restes déploiement : migration+rls.sql sur la base, BREVO_* en prod.
+  status=MERGED.
 
 ### C26 — Compte / Abo / Équipe / Paywall <!-- kind: flow -->
 - status: OPEN · depends-on: C03 · ref-capture: claims/ref/C26.png
@@ -1263,7 +1314,7 @@
 | C40 | MERGED | claude-code | gpt5pro | Livré 15:58 : ask/confirm/journal + ⑤⑥⑦ + créer client. Gap serveur runId → Codex. |
 | C21 | MERGED | claude-code | gpt5pro | Flux validé 16:10 ; Stepper+SignaturePad livrés (réserve C03 soldée). |
 | C23 | MERGED | claude-code | gpt5pro | Diagnostic expert-comptable v2 livré 16:32 (audit réel + plan daté 3 axes). |
-| C25 | IN-BUILD | claude-code | gpt5pro | Relances réelles + Notifications — contrat 16:35, ferme TODO ①②. |
+| C25 | MERGED | claude-code A | gpt5pro | 100 % prod livré 22:40 (endpoints+push+cron core, TODO ①② fermés). |
 | C17 | MERGED | claude-code (session B) | gpt5pro | Grand-livre @bob/ui + export FEC partageable (shareFec ×2 écrans). |
 | C22 | MERGED | claude-code A | gpt5pro | Flux 5 étapes validé 22:17 (preview adaptatif core). |
 | C24, C26, C27, C41 | OPEN | — | — | Web C30 différé après mobile hi-fi. |

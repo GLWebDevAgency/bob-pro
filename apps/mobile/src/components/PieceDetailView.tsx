@@ -20,6 +20,7 @@ import {
 } from '@bob/core';
 import { conformityCard, patterns, pieceDetail, shadowNative } from '@bob/tokens';
 import { t, type Personality } from '@bob/i18n';
+import { useIdentity } from '../data/identity';
 import { StatusBadge, font, useTheme } from '@bob/ui';
 import {
   ChartIcon,
@@ -230,6 +231,7 @@ export interface PieceDetailViewProps {
 
 export function PieceDetailView({ view, onClose, onOpenQuote, onOpenInvoice, actions, onOpenPdf, extra, nextStepAction }: PieceDetailViewProps) {
   const { personality, colors, semantic, controls } = useTheme();
+  const identity = useIdentity();
   const insets = useSafeAreaInsets();
   const kindLabel = t(KIND_KEY[view.kind], { personality });
 
@@ -366,7 +368,7 @@ export function PieceDetailView({ view, onClose, onOpenQuote, onOpenInvoice, act
                   <Text style={{ ...font('meta', 600), fontSize: 11, color: colors.slate300 }}>
                     {t('piece.issuer', { personality })}
                   </Text>
-                  <Text style={{ ...font('body', 700), fontSize: 14, color: colors.ink800 }}>Mercier Plomberie</Text>
+                  <Text style={{ ...font('body', 700), fontSize: 14, color: colors.ink800 }}>{identity.companyName ?? '—'}</Text>
                 </View>
               </View>
               <View style={{ paddingVertical: 11 }}>

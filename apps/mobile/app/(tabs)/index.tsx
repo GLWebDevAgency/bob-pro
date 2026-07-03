@@ -29,6 +29,8 @@ import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { MERCIER_PROPS, formatEURWhole, type TodayPriority } from '@bob/core';
+import { useIdentity } from '../../src/data/identity';
+import type { InvoiceView } from '@bob/api-client';
 import { patterns, shadowNative } from '@bob/tokens';
 import { t } from '@bob/i18n';
 import {
@@ -41,10 +43,12 @@ import {
   QuickAction,
   SectionHeader,
   StatusBadge,
+  Toast,
   font,
   useTheme,
 } from '@bob/ui';
-import { useCashflow, useCustomers, useNotificationsFeed, useTodayPriorities } from '../../src/data/hooks';
+import { useCashflow, useCustomers, useInvoices, useNotificationsFeed, useTodayPriorities } from '../../src/data/hooks';
+import { CollectInvoiceButton } from '../../src/components/CollectInvoiceButton';
 import {
   CalendarIcon,
   ChevronRightIcon,
@@ -55,8 +59,6 @@ import {
   TrendUpIcon,
 } from '../../src/components/icons';
 
-// TODO C24 (auth) : identité réelle de l'artisan — le proto est Julien, Mercier Plomberie.
-const USER = { firstName: 'Julien', initials: 'JM' } as const;
 
 /** Cap d'affichage du briefing (le tri est fait par @bob/core ; l'UI ne montre que le dessus de la pile). */
 const DISPLAY_CAP = 3;
@@ -160,10 +162,15 @@ function TodayPriorityCard({
   priority,
   done,
   onToggle,
+  invoice,
+  onCollected,
 }: {
   priority: TodayPriority;
   done: boolean;
   onToggle: () => void;
+  /** Facture réelle de la relance (A2-C10) — active « Encaisser » directement sur la carte. */
+  invoice?: InvoiceView | undefined;
+  onCollected?: (amountCents: number) => void;
 }) {
   const { personality, colors, semantic } = useTheme();
   const router = useRouter();
@@ -189,16 +196,26 @@ function TodayPriorityCard({
             />
           }
           cta={
-            <Button
-              title={t('today.ctaRelance', { personality })}
-              variant="primary"
-              size="compact"
-              radius={11}
-              icon={<Feather name="send" size={15} color={colors.surface} />}
-              style={{ alignSelf: 'flex-start' }}
-              // ?prompt=relance : l'assistant pré-remplit ET soumet la demande (C15).
-              onPress={() => router.push({ pathname: '/(tabs)/assistant', params: { prompt: 'relance' } })}
-            />
+            <View style={{ flexDirection: 'row', gap: 8, alignSelf: 'flex-start' }}>
+              <Button
+                title={t('today.ctaRelance', { personality })}
+                variant="primary"
+                size="compact"
+                radius={11}
+                icon={<Feather name="send" size={15} color={colors.surface} />}
+                // ?prompt=relance : l'assistant pré-remplit ET soumet la demande (C15).
+                onPress={() => router.push({ pathname: '/(tabs)/assistant', params: { prompt: 'relance' } })}
+              />
+              {/* A2-C10 : encaisser SANS quitter le briefing — mêmes invariants que InvoiceActions
+                  (assiette netToPay, confirmation ACCOUNTING, idempotence). */}
+              {invoice ? (
+                <CollectInvoiceButton
+                  invoice={invoice}
+                  title={t('today.ctaCollect', { personality })}
+                  {...(onCollected ? { onDone: onCollected } : {})}
+                />
+              ) : null}
+            </View>
           }
           {...common}
         />
@@ -260,18 +277,23 @@ function TodayPriorityCard({
 }
 
 export default function Aujourdhui() {
+  const identity = useIdentity();
   const { personality, density, colors, semantic } = useTheme();
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const cashflow = useCashflow('realiste', 30);
   const customers = useCustomers();
   const today = useTodayPriorities();
+  // A2-C10 : mêmes queries que useTodayPriorities (cache partagé, coût nul) — la carte
+  // relance a besoin de la facture RÉELLE pour encaisser avec les invariants du domaine.
+  const invoices = useInvoices();
   // C25 : fil de notifications réel (queries partagées avec /notifications — coût nul en plus).
   const notifications = useNotificationsFeed();
 
   // « Fait » togglable local — le moteur de tâches arrive avec C25 (relances).
   const [done, setDone] = useState<Record<string, boolean>>({});
   const toggle = (id: string) => () => setDone((d) => ({ ...d, [id]: !d[id] }));
+  const [toast, setToast] = useState<string | null>(null);
 
   const displayed = today.priorities.slice(0, DISPLAY_CAP);
   const remaining = displayed.filter((p) => !done[p.id]).length;
@@ -292,9 +314,13 @@ export default function Aujourdhui() {
         <AppHeaderNavy
           {...(insets.top > 0 ? { safeTop: insets.top } : {})}
           dateLabel={todayLabel()}
-          companyName={MERCIER_PROPS.name} // TODO C24 — société réelle du compte connecté
-          initials={USER.initials}
-          title={t('bob.greeting', { personality, params: { name: USER.firstName } })}
+          companyName={identity.companyName ?? ''}
+          initials={identity.initials}
+          title={
+            identity.firstName
+              ? t('bob.greeting', { personality, params: { name: identity.firstName } })
+              : t('bob.tagline', { personality })
+          }
           subtitle={
             !todayReady
               ? '' // pas de compte inventé pendant le chargement / en erreur
@@ -305,9 +331,9 @@ export default function Aujourdhui() {
                   : t('today.subtitle', { personality, params: { count: remaining } })
           }
           bellIcon={<Feather name="bell" size={20} color={colors.surface} />}
-          // C25 : pastille dérivée du fil RÉEL (relances dues + échéances + conformité) — mêmes
-          // queries partagées que l'écran /notifications, jamais un point rouge inventé.
-          hasUnread={notifications.count > 0}
+          // C25 v2 : pastille = NON-LUS du fil SERVEUR (GET /notifications, lu/non-lu persistés) —
+          // même query que l'écran /notifications, jamais un point rouge inventé.
+          hasUnread={notifications.unreadCount > 0}
           onAvatarPress={() => router.push('/compte')}
           onBellPress={() => router.push('/notifications')}
         />
@@ -360,7 +386,18 @@ export default function Aujourdhui() {
             ) : displayed.length > 0 ? (
               <View style={{ gap: 11 }}>
                 {displayed.map((p) => (
-                  <TodayPriorityCard key={p.id} priority={p} done={!!done[p.id]} onToggle={toggle(p.id)} />
+                  <TodayPriorityCard
+                    key={p.id}
+                    priority={p}
+                    done={!!done[p.id]}
+                    onToggle={toggle(p.id)}
+                    invoice={
+                      p.kind === 'relance' ? (invoices.data ?? []).find((i) => i.id === p.invoiceId) : undefined
+                    }
+                    onCollected={(cents) =>
+                      setToast(t('today.collectDone', { personality, params: { amount: formatEURWhole(cents) } }))
+                    }
+                  />
                 ))}
               </View>
             ) : todayReady ? (
@@ -402,12 +439,15 @@ export default function Aujourdhui() {
                       icon={<ClockIcon color={semantic.dangerVivid} />}
                       onPress={() => router.push('/(tabs)/clients')}
                     />
-                    {/* TVA : pas encore d'endpoint côté client → « — » (jamais un chiffre fixture). */}
+                    {/* TVA à provisionner (A3-C10) : le MÊME chiffre que celui qui ampute la
+                        dispo du héros (CashflowProjection.vatDue) — jamais un chiffre parallèle. */}
                     <KpiTile
                       style={KPI_TILE}
                       label={t('today.kpiVat', { personality })}
+                      {...(cashflow.data ? { amountCents: cashflow.data.vatDue } : {})}
                       tone="warning"
                       icon={<CurrencyIcon color={semantic.warning} />}
+                      onPress={() => router.push('/comptabilite')}
                     />
                     <KpiTile
                       style={KPI_TILE}
@@ -469,6 +509,13 @@ export default function Aujourdhui() {
           </Text>
         </View>
       </ScrollView>
+
+      <Toast
+        message={toast ?? ''}
+        visible={toast !== null}
+        onHide={() => setToast(null)}
+        icon={<Feather name="check" size={16} color={colors.surface} />}
+      />
     </View>
   );
 }

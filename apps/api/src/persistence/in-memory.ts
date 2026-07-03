@@ -39,6 +39,7 @@ import type {
   NotificationJob,
   NotificationJobRepository,
 } from './notification-jobs';
+import type { DeviceRecord, DeviceRepository, RegisterDeviceInput } from './devices';
 
 /**
  * Adapters in-memory (stockent les objets de domaine directement — aucune réhydratation requise).
@@ -214,6 +215,7 @@ export class InMemoryNotificationJobRepository implements NotificationJobReposit
           status: 'pending',
           nextAttemptAt: input.now,
           lastError: null,
+          readAt: null, // contenu ré-émis = non lu
           updatedAt: input.now,
         };
         this.map.set(existing.id, updated);
@@ -235,6 +237,7 @@ export class InMemoryNotificationJobRepository implements NotificationJobReposit
       attempts: 0,
       nextAttemptAt: input.now,
       lastError: null,
+      readAt: null,
       createdAt: input.now,
       updatedAt: input.now,
     };
@@ -269,6 +272,67 @@ export class InMemoryNotificationJobRepository implements NotificationJobReposit
         lastError: error.slice(0, 2000),
         updatedAt: at,
       });
+    }
+  }
+
+  async listRecent(companyId: string, limit: number): Promise<NotificationJob[]> {
+    return [...this.map.values()]
+      .filter((job) => job.companyId === companyId)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, limit)
+      .map((job) => ({ ...job }));
+  }
+
+  async markRead(id: string, companyId: string, at: string): Promise<NotificationJob | null> {
+    const job = this.map.get(id);
+    if (!job || job.companyId !== companyId) return null;
+    const read: NotificationJob = { ...job, readAt: job.readAt ?? at, updatedAt: at };
+    this.map.set(id, read);
+    return { ...read };
+  }
+}
+
+/** Appareils push Expo (C25) — idempotent sur (companyId, token). */
+export class InMemoryDeviceRepository implements DeviceRepository {
+  private readonly map = new Map<string, DeviceRecord>();
+
+  async register(input: RegisterDeviceInput): Promise<DeviceRecord> {
+    const existing = [...this.map.values()].find(
+      (d) => d.companyId === input.companyId && d.expoPushToken === input.expoPushToken,
+    );
+    if (existing) {
+      const updated: DeviceRecord = {
+        ...existing,
+        userId: input.userId,
+        platform: input.platform,
+        updatedAt: input.now,
+      };
+      this.map.set(existing.id, updated);
+      return { ...updated };
+    }
+    const created: DeviceRecord = {
+      id: input.id,
+      companyId: input.companyId,
+      userId: input.userId,
+      expoPushToken: input.expoPushToken,
+      platform: input.platform,
+      createdAt: input.now,
+      updatedAt: input.now,
+    };
+    this.map.set(created.id, created);
+    return { ...created };
+  }
+
+  async listByCompany(companyId: string): Promise<DeviceRecord[]> {
+    return [...this.map.values()]
+      .filter((d) => d.companyId === companyId)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      .map((d) => ({ ...d }));
+  }
+
+  async removeByToken(companyId: string, expoPushToken: string): Promise<void> {
+    for (const [id, d] of this.map) {
+      if (d.companyId === companyId && d.expoPushToken === expoPushToken) this.map.delete(id);
     }
   }
 }

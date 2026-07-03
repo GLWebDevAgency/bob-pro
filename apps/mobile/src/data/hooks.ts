@@ -19,7 +19,7 @@ import type {
   RelancePlanEntry,
   UpcomingDueEntry,
 } from '@bob/core';
-import type { CreateCustomerClientInput, RegisterPaymentClientInput } from '@bob/api-client';
+import type { CreateCustomerClientInput, NotificationView, RegisterPaymentClientInput } from '@bob/api-client';
 import { useBobClient } from './client';
 
 /** Ouvre une URL externe en remontant un échec à l'utilisateur (lien Stripe/paiement). */
@@ -53,6 +53,7 @@ const keys = {
   invoices: ['invoices'] as const,
   invoice: (id: string) => ['invoice', id] as const,
   quote: (id: string) => ['quote', id] as const,
+  notifications: ['notifications'] as const,
 };
 
 export function useSubscription() {
@@ -330,9 +331,15 @@ export function useTodayPriorities(): { priorities: TodayPriority[]; isLoading: 
 }
 
 /** Fil de notifications réelles (C25) — la cloche C10 et l'écran /notifications partagent CETTE
- * dérivation (une seule vérité). Agrégats @bob/core (deriveRelancePlan + deriveUpcomingDues +
- * diagnostic réel) sur les queries partagées — aucun repli fixtures : pas de données, pas d'items. */
+ * dérivation (une seule vérité). Deux sources honnêtes (C25 v2) :
+ * · items = GET /notifications — le SERVEUR est la source de vérité (lu/non-lu persistés) ; le
+ *   LocalBobClient dérive localement en démo. La pastille de la cloche = NON-LUS de ce fil ;
+ * · plan/échéances/conformité = agrégats @bob/core sur les queries partagées (actionnable). */
 export interface NotificationsFeed {
+  /** Fil serveur (relances envoyées/en retry, liens de signature) — récents d'abord. */
+  items: NotificationView[];
+  /** Non-lus du fil serveur = pastille de la cloche C10 (directive C25 v2). */
+  unreadCount: number;
   /** Relances dues maintenant (palier atteint), tri du plan : retard puis montant. */
   due: RelancePlanEntry[];
   /** Relances planifiées (facture échue, premier palier pas encore atteint). */
@@ -341,7 +348,7 @@ export interface NotificationsFeed {
   upcoming: UpcomingDueEntry[];
   /** Réception e-facture 2026 non configurée (signal réel du diagnostic — jamais inventé). */
   conformite: boolean;
-  /** Items « à signaler » (badge non-lu de la cloche) : dues + échéances + conformité. */
+  /** Items actionnables (dues + échéances + conformité) — états vides de l'écran. */
   count: number;
   isLoading: boolean;
   isError: boolean;
@@ -349,10 +356,21 @@ export interface NotificationsFeed {
 }
 
 export function useNotificationsFeed(personality?: RelancePersonality): NotificationsFeed {
+  const client = useBobClient();
   const invoices = useInvoices();
   const customers = useCustomers();
   const diagnostic = useDiagnostic();
   const today = localToday();
+
+  // Fil serveur (source de vérité lu/non-lu) — même query key pour la cloche et l'écran.
+  const feed = useQuery({
+    queryKey: keys.notifications,
+    queryFn: async () => {
+      const r = await client.listNotifications();
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+  });
 
   const plan = useMemo<RelancePlanEntry[]>(() => {
     if (!invoices.data || !customers.data) return [];
@@ -374,21 +392,55 @@ export function useNotificationsFeed(personality?: RelancePersonality): Notifica
   const conformite = diagnostic.data
     ? !todayCompanyFromDiagnostic(diagnostic.data).einvoiceReceptionConfigured
     : false;
+  const items = feed.data ?? [];
 
   return {
+    items,
+    unreadCount: items.filter((n) => n.readAt === null).length,
     due,
     scheduled,
     upcoming,
     conformite,
     count: due.length + upcoming.length + (conformite ? 1 : 0),
-    isLoading: invoices.isLoading || customers.isLoading || diagnostic.isLoading,
-    isError: invoices.isError || customers.isError || diagnostic.isError,
+    isLoading: invoices.isLoading || customers.isLoading || diagnostic.isLoading || feed.isLoading,
+    isError: invoices.isError || customers.isError || diagnostic.isError || feed.isError,
     refetch: () => {
       void invoices.refetch();
       void customers.refetch();
       void diagnostic.refetch();
+      void feed.refetch();
     },
   };
+}
+
+/** Marque une notification lue (POST /notifications/:id/read — persisté serveur, idempotent). */
+export function useMarkNotificationRead() {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      const r = await client.markNotificationRead(id);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: () => void qc.invalidateQueries({ queryKey: keys.notifications }),
+  });
+}
+
+/** Envoi RÉEL d'une relance ciblée (C25 ② — POST /invoices/:id/relance). À n'appeler qu'APRÈS
+ * confirmation explicite (action sortante ; mise en demeure possible). Même endpoint que l'outil
+ * agent envoyer_relance — parité d'actions. */
+export function useSendRelance() {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (invoiceId: string) => {
+      const r = await client.sendRelance(invoiceId);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: () => void qc.invalidateQueries({ queryKey: keys.notifications }),
+  });
 }
 
 export function useInvoice(id: string) {
@@ -556,6 +608,11 @@ export function useRegisterPayment() {
     onSuccess: (_data, vars) => {
       void qc.invalidateQueries({ queryKey: keys.invoices });
       void qc.invalidateQueries({ queryKey: keys.invoice(vars.invoiceId) });
+      // Un paiement change AUSSI l'encours client, la trésorerie et le journal comptable —
+      // le briefing (KPI, héros) et la compta se rafraîchissent sans re-navigation (A2-C10).
+      void qc.invalidateQueries({ queryKey: keys.customers });
+      void qc.invalidateQueries({ queryKey: ['cashflow'] });
+      void qc.invalidateQueries({ queryKey: ['accounting-entries'] });
     },
   });
 }

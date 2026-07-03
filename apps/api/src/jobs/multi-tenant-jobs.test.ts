@@ -26,16 +26,25 @@ function fakeCustomer(id: string, companyId: string, email: string): Customer {
   } as unknown as Customer;
 }
 
-function overdueInvoice(id: string, companyId: string, customerId: string): Invoice {
+/** DateOnly à `days` jours dans le passé (le plan @bob/core juge le retard vs aujourd'hui). */
+function daysAgo(days: number): string {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() - days);
+  return d.toISOString().slice(0, 10);
+}
+
+function overdueInvoice(id: string, companyId: string, customerId: string, daysLate = 12): Invoice {
   return {
     id,
     companyId,
     customerId,
+    kind: 'final',
     status: 'issued',
-    dueAt: '2026-06-01',
+    parentQuoteId: null,
+    dueAt: daysAgo(daysLate),
     number: `F-${id}`,
     paid: 0,
-    totals: () => ({ netToPay: 12_000 }),
+    totals: () => ({ ht: 10_000, vatByRate: {}, vat: 2_000, ttc: 12_000, netToPay: 12_000 }),
   } as unknown as Invoice;
 }
 
@@ -79,13 +88,13 @@ describe('scheduled jobs multi-tenant', () => {
     expect(notifier.send).toHaveBeenCalledTimes(2);
   });
 
-  it('prépare les relances en parcourant toutes les sociétés', async () => {
+  it('prépare les relances en parcourant toutes les sociétés (politique @bob/core)', async () => {
     const persistence = new InMemoryPersistence();
     persistence.companies.seed(fakeCompany('co-1'));
     persistence.companies.seed(fakeCompany('co-2'));
     persistence.customers.seed([fakeCustomer('cu-1', 'co-1', 'a@example.com'), fakeCustomer('cu-2', 'co-2', 'b@example.com')]);
-    await persistence.invoices.save(overdueInvoice('inv-1', 'co-1', 'cu-1'));
-    await persistence.invoices.save(overdueInvoice('inv-2', 'co-2', 'cu-2'));
+    await persistence.invoices.save(overdueInvoice('inv-1', 'co-1', 'cu-1', 12)); // J+12 → ton neutre
+    await persistence.invoices.save(overdueInvoice('inv-2', 'co-2', 'cu-2', 25)); // J+25 → ton ferme
     const delivery = {
       enqueue: vi.fn(async (input: { notification: unknown }) => ({
         id: 'job',
@@ -101,6 +110,30 @@ describe('scheduled jobs multi-tenant', () => {
     expect(result).toEqual({ companies: 2, scanned: 2, sent: 2 });
     expect(delivery.enqueue).toHaveBeenCalledTimes(2);
     expect(delivery.tryDeliver).toHaveBeenCalledTimes(2);
+    // Le ton vient de DEFAULT_RELANCE_POLICY (@bob/core) — plus de barème local 15/30/45.
+    const subjects = (delivery.enqueue as ReturnType<typeof vi.fn>).mock.calls.map(
+      (c) => (c[0] as { notification: { subject: string } }).notification.subject,
+    );
+    expect(subjects[0]).toContain('relance'); // neutre : « — relance »
+    expect(subjects[1]).toContain('relance ferme');
+  });
+
+  it('mise en demeure : JAMAIS envoyée par le cron (validation humaine requise — endpoint ciblé)', async () => {
+    const persistence = new InMemoryPersistence();
+    persistence.companies.seed(fakeCompany('co-1'));
+    persistence.customers.seed([fakeCustomer('cu-1', 'co-1', 'a@example.com')]);
+    await persistence.invoices.save(overdueInvoice('inv-med', 'co-1', 'cu-1', 45)); // J+45 → mise en demeure
+    const delivery = {
+      enqueue: vi.fn(),
+      tryDeliver: vi.fn(),
+    } as unknown as NotificationDeliveryService;
+    const service = new RelanceService(persistence, delivery, new ScheduledTenantDirectory(persistence, logger), logger);
+
+    const result = await service.runRelancesForCompany('co-1');
+
+    expect(result).toEqual({ scanned: 1, sent: 0 });
+    expect(delivery.enqueue).not.toHaveBeenCalled();
+    expect(logger.audit).toHaveBeenCalledWith('relance.med_awaiting_validation', expect.objectContaining({ invoiceId: 'inv-med' }));
   });
 
   it('lance les archives documentaires sur chaque société connue', async () => {

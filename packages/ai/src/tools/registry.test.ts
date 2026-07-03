@@ -156,3 +156,36 @@ describe('relance_brouillon ciblable — C25 (TODO ① audit parité C15)', () =
     expect(calls).toEqual([{ invoiceId: 'inv-1' }, { customerId: 'cust-2' }]);
   });
 });
+
+describe('envoyer_relance — C25 ② (envoi réel, capacité optionnelle)', () => {
+  it("absent sans l'action hôte (pas de capacité fantôme)", () => {
+    expect(buildBobTools(baseActions).map((t) => t.name)).not.toContain('envoyer_relance');
+  });
+
+  it('sortant + PLANCHER (mise en demeure possible : toujours confirmer, même en auto), invoiceId strict', async () => {
+    const calls: unknown[] = [];
+    const actions: BobActions = {
+      ...baseActions,
+      sendRelance: async (input) => {
+        calls.push(input);
+        return ok({ jobId: 'job-1', status: 'done', tone: 'ferme' });
+      },
+    };
+    const t = tool(actions, 'envoyer_relance')!;
+    expect(t.mutating).toBe(true);
+    expect(t.outbound).toBe(true);
+    expect(riskTierOf(t)).toBe('outbound');
+    expect(isSafetyFloor(t)).toBe(true);
+    expect(requiresConfirmation(t, 'auto')).toBe(true); // « jamais envoyée sans ta validation »
+
+    expect(t.parse({}).ok).toBe(false);
+    expect(t.parse({ invoiceId: '' }).ok).toBe(false);
+    const parsed = t.parse({ invoiceId: 'inv-1' });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const run = await t.run(parsed.value);
+    expect(run.ok && run.value).toEqual({ jobId: 'job-1', status: 'done', tone: 'ferme' });
+    expect(calls).toEqual([{ invoiceId: 'inv-1' }]);
+  });
+});

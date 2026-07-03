@@ -1,6 +1,7 @@
 import { Injectable, type Provider } from '@nestjs/common';
 import { type NotificationPort, type Notification } from '@bob/core';
 import { AppLogger } from '../observability/logger';
+import { isDemoMode } from '../config/env';
 
 export const NOTIFIER = Symbol('NOTIFIER');
 
@@ -76,10 +77,21 @@ export class BrevoEmailNotifier implements NotificationPort {
   }
 }
 
+/** Clé absente HORS démo : chaque envoi échoue EXPLICITEMENT (le job passe failed, cause loggée
+ * par le delivery service) — jamais un faux succès silencieux (directive C25). */
+export class MisconfiguredEmailNotifier implements NotificationPort {
+  async send(): Promise<void> {
+    throw new Error('BREVO_API_KEY / BREVO_SENDER_EMAIL manquants — envoi email impossible (configurer le mailer).');
+  }
+}
+
 export function buildNotifier(logger: AppLogger): NotificationPort {
   const apiKey = process.env.BREVO_API_KEY;
   const senderEmail = process.env.BREVO_SENDER_EMAIL;
-  if (!apiKey || !senderEmail) return new DemoNotifier(logger);
+  if (!apiKey || !senderEmail) {
+    // Démo assumée (DEMO_MODE=true) : trace d'audit sans envoi réel. En prod : échec propre par job.
+    return isDemoMode() ? new DemoNotifier(logger) : new MisconfiguredEmailNotifier();
+  }
   return new BrevoEmailNotifier(logger, {
     apiKey,
     senderEmail,

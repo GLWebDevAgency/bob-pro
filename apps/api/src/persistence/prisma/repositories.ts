@@ -45,6 +45,7 @@ import type {
   NotificationJob,
   NotificationJobRepository,
 } from '../notification-jobs';
+import type { DeviceRecord, DeviceRepository, RegisterDeviceInput } from '../devices';
 import type { AgentJournalRepository } from '../agent-journal';
 import { newAgentJournalEntryId } from '../agent-journal';
 import type { SupplierMemoryProfile, SupplierMemoryRepository } from '../supplier-memory';
@@ -508,6 +509,7 @@ function notificationJobRowToView(row: {
   attempts: number;
   nextAttemptAt: Date;
   lastError: string | null;
+  readAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }): NotificationJob {
@@ -524,6 +526,7 @@ function notificationJobRowToView(row: {
     attempts: row.attempts,
     nextAttemptAt: row.nextAttemptAt.toISOString(),
     lastError: row.lastError,
+    readAt: row.readAt ? row.readAt.toISOString() : null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -558,6 +561,7 @@ export class PrismaNotificationJobRepository implements NotificationJobRepositor
             status: 'pending',
             nextAttemptAt: new Date(input.now),
             lastError: null,
+            readAt: null, // contenu ré-émis = non lu
           },
         });
         return notificationJobRowToView(row);
@@ -617,6 +621,76 @@ export class PrismaNotificationJobRepository implements NotificationJobRepositor
       },
     });
   }
+
+  async listRecent(companyId: string, limit: number): Promise<NotificationJob[]> {
+    const rows = await this.prisma.client().notificationJob.findMany({
+      where: { companyId },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+    });
+    return rows.map(notificationJobRowToView);
+  }
+
+  async markRead(id: string, companyId: string, at: string): Promise<NotificationJob | null> {
+    // Filtre companyId EXPLICITE (défense anti-IDOR applicative, en plus du RLS).
+    const job = await this.prisma.client().notificationJob.findFirst({ where: { id, companyId } });
+    if (!job) return null;
+    if (job.readAt) return notificationJobRowToView(job); // idempotent : première lecture conservée
+    const row = await this.prisma.client().notificationJob.update({
+      where: { id },
+      data: { readAt: new Date(at), updatedAt: new Date(at) },
+    });
+    return notificationJobRowToView(row);
+  }
+}
+
+/** Appareils push Expo (C25) — idempotent sur (companyId, expoPushToken). */
+export class PrismaDeviceRepository implements DeviceRepository {
+  constructor(private readonly prisma: PrismaService) {}
+
+  async register(input: RegisterDeviceInput): Promise<DeviceRecord> {
+    const row = await this.prisma.client().device.upsert({
+      where: { uniq_device_token: { companyId: input.companyId, expoPushToken: input.expoPushToken } },
+      create: {
+        id: input.id,
+        companyId: input.companyId,
+        userId: input.userId,
+        expoPushToken: input.expoPushToken,
+        platform: input.platform,
+      },
+      update: { userId: input.userId, platform: input.platform },
+    });
+    return deviceRowToRecord(row);
+  }
+
+  async listByCompany(companyId: string): Promise<DeviceRecord[]> {
+    const rows = await this.prisma.client().device.findMany({ where: { companyId }, orderBy: { createdAt: 'asc' } });
+    return rows.map(deviceRowToRecord);
+  }
+
+  async removeByToken(companyId: string, expoPushToken: string): Promise<void> {
+    await this.prisma.client().device.deleteMany({ where: { companyId, expoPushToken } });
+  }
+}
+
+function deviceRowToRecord(row: {
+  id: string;
+  companyId: string;
+  userId: string | null;
+  expoPushToken: string;
+  platform: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}): DeviceRecord {
+  return {
+    id: row.id,
+    companyId: row.companyId,
+    userId: row.userId,
+    expoPushToken: row.expoPushToken,
+    platform: row.platform,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
 }
 
 function journalRowToEntry(row: {

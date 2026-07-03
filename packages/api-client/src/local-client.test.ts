@@ -55,8 +55,9 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     expect(draftPreview.value.lines.map((line) => line.account)).toEqual(['411', '4191', '44571']);
 
     const issued = await client.issueInvoice({ invoiceId: gen.value.invoiceId });
-    // Le seed démo (C16) a émis F-2026-0001 : la numérotation SANS TROU continue à 0002.
-    expect(issued.ok && issued.value.number).toBe('F-2026-0002');
+    // Le seed démo a émis F-2026-0001 (mairie ÉCHUE, A2-C10) puis F-2026-0002 (acompte
+    // Martin) : la numérotation SANS TROU continue à 0003.
+    expect(issued.ok && issued.value.number).toBe('F-2026-0003');
 
     const preview = await client.invoiceAccountingPreview(gen.value.invoiceId);
     expect(preview.ok).toBe(true);
@@ -117,10 +118,10 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     expect(fec.value.filename).toBe('732829320FEC20261231.txt');
     expect(fec.value.descriptionFilename).toBe('732829320FEC20261231-description.txt');
     expect(fec.value.descriptionContent).toContain('Codes journaux');
-    // Le FEC embarque AUSSI les écritures du seed démo (facture 0001 + son paiement) :
-    // 4 écritures, 10 lignes — l'export reste équilibré et sans trou.
-    expect(fec.value.entryCount).toBe(4);
-    expect(fec.value.rowCount).toBe(10);
+    // Le FEC embarque AUSSI les écritures du seed démo (facture échue 0001 de la mairie,
+    // acompte 0002 + son paiement) : 5 écritures, 13 lignes — équilibré et sans trou.
+    expect(fec.value.entryCount).toBe(5);
+    expect(fec.value.rowCount).toBe(13);
     const rows = fec.value.content.trimEnd().split('\n');
     expect(rows[0]?.split('\t')).toEqual([
       'JournalCode',
@@ -307,7 +308,7 @@ describe('assistant Bob local (C40 ⑧ — ask/confirm/journal on-device) + cré
   it('askBob propose (plancher) puis confirmBob exécute EN JOURNALISANT — le journal est lisible on-device', async () => {
     const client = new LocalBobClient({ clock: new FixtureClock('2026-06-01'), ids: seqIds() });
 
-    // Pièce réelle : devis signé -> facture émise F-2026-0001 (chaîne de use cases, zéro fixture).
+    // Pièce réelle : devis signé -> facture émise F-2026-0003 (le seed occupe 0001-0002).
     const created = await client.createQuote({
       customerId: 'cust-martin',
       lines: [{ label: 'Recherche fuite', category: 'labor', qty: 1, unitPriceHT: 12000, vatRate: 10 }],
@@ -323,7 +324,7 @@ describe('assistant Bob local (C40 ⑧ — ask/confirm/journal on-device) + cré
     expect((await client.issueInvoice({ invoiceId: gen.value.invoiceId })).ok).toBe(true);
 
     // ask : action sensible -> TOUJOURS proposée (plancher comptable), même avec l'autonomie max locale.
-    const asked = await client.askBob({ message: 'encaisse la facture F-2026-0001', autonomy: 'auto' });
+    const asked = await client.askBob({ message: 'encaisse la facture F-2026-0003', autonomy: 'auto' });
     expect(asked.ok).toBe(true);
     if (!asked.ok) return;
     expect(asked.value.kind).toBe('proposed');
@@ -433,5 +434,74 @@ describe('flow corrélé devis → acompte → FINALE (A2-C16)', () => {
     expect(view.value.totals.netToPay).toBe(113960);
     expect(view.value.depositDeductionCents).toBe(48840);
     expect(view.value.depositInvoiceId).toBe(acompte.value.invoiceId);
+  });
+});
+
+describe('LocalBobClient — C25 relances réelles + fil de notifications (adaptateur démo)', () => {
+  /** Horloge mobile : la démo doit pouvoir « vieillir » une facture pour exercer le plan. */
+  class MovableClock {
+    constructor(public day: string) {}
+    now(): string {
+      return `${this.day}T09:00:00.000Z`;
+    }
+    today(): string {
+      return this.day;
+    }
+  }
+
+  it('sendRelance : refus avant échéance, envoi journalisé au ton du plan, dédup, lu/non-lu, device', async () => {
+    const clock = new MovableClock('2026-06-01');
+    const client = new LocalBobClient({ clock });
+    const quote = await client.createQuote({
+      customerId: 'cust-martin',
+      lines: [{ label: 'Intervention', category: 'labor', qty: 1, unitPriceHT: 50000, vatRate: 20 }],
+    });
+    expect(quote.ok).toBe(true);
+    if (!quote.ok) return;
+    await client.sendQuote(quote.value.quoteId);
+    await client.signQuote({ quoteId: quote.value.quoteId, signerName: 'SARL Martin Rénovation' });
+    const finale = await client.generateInvoice({ quoteId: quote.value.quoteId, mode: 'final' });
+    expect(finale.ok).toBe(true);
+    if (!finale.ok) return;
+    await client.issueInvoice({ invoiceId: finale.value.invoiceId });
+
+    // Pas encore échue (émise à J, échéance +30 j) : refus honnête, rien de journalisé.
+    const early = await client.sendRelance(finale.value.invoiceId);
+    expect(!early.ok && early.error.kind).toBe('validation');
+    const emptyFeed = await client.listNotifications();
+    expect(emptyFeed.ok && emptyFeed.value).toHaveLength(0);
+
+    // 12 jours de retard → ton NEUTRE du plan @bob/core (J+10), journalisé dans le fil local.
+    clock.day = '2026-07-13';
+    const sent = await client.sendRelance(finale.value.invoiceId);
+    expect(sent.ok).toBe(true);
+    if (!sent.ok) return;
+    expect(sent.value).toMatchObject({ status: 'done', tone: 'neutre' });
+
+    // Dédup quotidienne : même jobId, pas de doublon dans le fil.
+    const again = await client.sendRelance(finale.value.invoiceId);
+    expect(again.ok && again.value.jobId).toBe(sent.value.jobId);
+
+    const feed = await client.listNotifications();
+    expect(feed.ok).toBe(true);
+    if (!feed.ok) return;
+    expect(feed.value).toHaveLength(1);
+    expect(feed.value[0]).toMatchObject({
+      kind: 'invoice-relance',
+      route: `/facture/${finale.value.invoiceId}`,
+      status: 'done',
+      readAt: null,
+    });
+
+    // Lu/non-lu persisté (idempotent), inconnu → not_found.
+    const read = await client.markNotificationRead(feed.value[0]!.id);
+    expect(read.ok && read.value.readAt).not.toBeNull();
+    const ghost = await client.markNotificationRead('notif-ghost');
+    expect(!ghost.ok && ghost.error.kind).toBe('not_found');
+
+    // Device push : enregistrement idempotent par token (aucun push sortant en démo).
+    const d1 = await client.registerDevice({ expoPushToken: 'ExponentPushToken[demo]', platform: 'ios' });
+    const d2 = await client.registerDevice({ expoPushToken: 'ExponentPushToken[demo]' });
+    expect(d1.ok && d2.ok && d1.value.id === (d2.ok ? d2.value.id : '')).toBe(true);
   });
 });

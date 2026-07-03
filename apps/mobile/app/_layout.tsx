@@ -20,6 +20,7 @@ import {
 import { ThemeProvider, useTheme } from '../src/theme';
 import { AuthProvider, useAuth } from '../src/data/auth';
 import { BobClientProvider } from '../src/data/client';
+import { PushNotificationsBridge } from '../src/data/push';
 import { ConfirmProvider } from '../src/components/ConfirmSheet';
 import { LoginScreen } from '../src/screens/LoginScreen';
 
@@ -69,6 +70,8 @@ export default function RootLayout() {
               <StatusBar style="light" />
               <AuthGate>
                 <BobClientProvider>
+                  {/* C25 : token push Expo au boot connecté + deep link au tap (dégradé honnête Expo Go). */}
+                  <PushNotificationsBridge />
                   <ConfirmProvider>
                   <Stack screenOptions={{ headerShown: false }}>
                     <Stack.Screen name="(tabs)" />

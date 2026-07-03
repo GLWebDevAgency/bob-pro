@@ -20,6 +20,7 @@ BEGIN
     'document_versions',
     'document_archive_jobs',
     'notification_jobs',
+    'devices',
     'agent_journal_entries',
     'accounting_accounts',
     'accounting_entries',
@@ -87,6 +88,11 @@ CREATE POLICY tenant_isolation ON document_archive_jobs
 
 DROP POLICY IF EXISTS tenant_isolation ON notification_jobs;
 CREATE POLICY tenant_isolation ON notification_jobs
+  USING ("companyId" = current_setting('app.current_company_id', true))
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+
+DROP POLICY IF EXISTS tenant_isolation ON devices;
+CREATE POLICY tenant_isolation ON devices
   USING ("companyId" = current_setting('app.current_company_id', true))
   WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
 

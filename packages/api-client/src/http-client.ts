@@ -33,6 +33,8 @@ import type {
   RegisterPaymentClientOutput,
   SendQuoteOutput,
   SendRelanceClientOutput,
+  NotificationView,
+  RegisterDeviceClientInput,
   SuggestExpenseDefaultsInput,
   ExpenseDefaultsView,
   ListDocumentsClientInput,
@@ -244,17 +246,18 @@ export class HttpBobClient implements BobClient {
   issueInvoice(input: IssueInvoiceInput) {
     return this.req<{ number: string }>('POST', `/invoices/${input.invoiceId}/issue`, input);
   }
-  /** C25 ② : AUCUN endpoint d'envoi ciblé côté serveur (constaté) — échec propre, sans appel
-   * réseau fantôme. À brancher sur POST /invoices/:id/relance quand Codex l'exposera. */
-  async sendRelance(_invoiceId: string): Promise<Result<SendRelanceClientOutput, AppError>> {
-    return {
-      ok: false,
-      error: {
-        kind: 'dependency',
-        port: 'api/relance',
-        cause: 'Envoi de relance non disponible côté serveur — endpoint POST /invoices/:id/relance à venir (contrat C25).',
-      },
-    };
+  /** C25 ② : envoi RÉEL — le serveur choisit le ton (plan @bob/core) et livre email + miroir push. */
+  sendRelance(invoiceId: string) {
+    return this.req<SendRelanceClientOutput>('POST', `/invoices/${invoiceId}/relance`);
+  }
+  listNotifications() {
+    return this.req<NotificationView[]>('GET', '/notifications');
+  }
+  markNotificationRead(id: string) {
+    return this.req<NotificationView>('POST', `/notifications/${id}/read`);
+  }
+  registerDevice(input: RegisterDeviceClientInput) {
+    return this.req<{ id: string }>('POST', '/devices', input);
   }
   registerPayment(input: RegisterPaymentClientInput) {
     const body = { amount: input.amount, method: input.method, idempotencyKey: input.idempotencyKey ?? undefined };

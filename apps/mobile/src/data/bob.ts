@@ -209,6 +209,14 @@ export function makeBobAgent(client: BobClient): BobAssistant {
         outstanding: 0,
       });
     },
+    // —— Parité C15 TODO ② (C25) : outil envoyer_relance — MÊME endpoint que le bouton
+    // « Relancer » de l'écran Notifications (client.sendRelance). Sortant : plancher de
+    // confirmation posé par le registre (mise en demeure possible, jamais sans validation).
+    async sendRelance(input) {
+      const r = await client.sendRelance(input.invoiceId);
+      if (!r.ok) return r;
+      return ok({ jobId: r.value.jobId, status: r.value.status, ...(r.value.tone !== undefined ? { tone: r.value.tone } : {}) });
+    },
   };
   return new BobAgent({ router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }), actions });
 }

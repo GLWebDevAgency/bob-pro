@@ -10,6 +10,8 @@ import { paymentGatewayProvider } from './payments/payment-gateway';
 import { PDF_RENDERER, PdfRenderer } from './documents/pdf-renderer';
 import { ocrProvider } from './ocr/ocr';
 import { notifierProvider } from './notifications/notifier';
+import { expoPushProvider } from './notifications/expo-push';
+import { NotificationsApiService } from './notifications/notifications-api.service';
 import { RelanceService } from './jobs/relance.service';
 import { DocumentArchiveService } from './jobs/document-archive.service';
 import { NotificationDeliveryService } from './jobs/notification-delivery.service';
@@ -37,6 +39,8 @@ import {
   ExpensesController,
   ChantiersController,
   PublicSignatureController,
+  NotificationsController,
+  DevicesController,
 } from './api.controllers';
 
 @Module({
@@ -67,6 +71,8 @@ import {
     ExpensesController,
     ChantiersController,
     PublicSignatureController,
+    NotificationsController,
+    DevicesController,
   ],
   providers: [
     BackendService,
@@ -78,6 +84,8 @@ import {
     ocrProvider,
     { provide: PDF_RENDERER, useClass: PdfRenderer },
     notifierProvider,
+    expoPushProvider,
+    NotificationsApiService,
     { provide: APP_GUARD, useClass: ThrottlerGuard },
     { provide: APP_GUARD, useClass: SupabaseAuthGuard },
     { provide: APP_INTERCEPTOR, useClass: TenantPersistenceInterceptor },

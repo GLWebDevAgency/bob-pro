@@ -215,15 +215,38 @@ export interface AskBobClientInput {
 /** POST /customers — DTO serveur constaté (CustomersController) : CustomerProps sans id/companyId. */
 export type CreateCustomerClientInput = Omit<CustomerProps, 'id' | 'companyId'>;
 
-/** Envoi RÉEL d'une relance ciblée (C25 ② — CONTRAT CLIENT, serveur à venir).
- * Constat apps/api (2026-07-03) : l'infra d'envoi EXISTE (RelanceService cron 6 h → buildRelance
- * 4 tons par ancienneté + notification_jobs dédupliquées + notifier Brevo/Demo), mais AUCUN
- * endpoint company-scoped ciblé — seul POST /jobs/run-relances (batch multi-tenant, usage ops).
- * Contrat attendu (TODO Codex) : POST /invoices/:id/relance → { jobId, status }, en réutilisant
- * NotificationDeliveryService.enqueue (dedupeKey `invoice:{id}:relance:{today}`) + tryDeliver. */
+/** Envoi RÉEL d'une relance ciblée (C25 ② — endpoint POST /invoices/:id/relance, DTO serveur
+ * constaté : { jobId, status, tone }). Le serveur choisit le ton via le plan @bob/core
+ * (deriveRelancePlan, dédup quotidienne `invoice:{id}:relance:{today}`) et livre email + miroir
+ * push. La mise en demeure passe par CE geste uniquement (le cron ne l'envoie jamais seul). */
 export interface SendRelanceClientOutput {
   jobId: string;
+  /** done | pending | failed (échec = job en retry côté serveur, cause loggée). */
   status: string;
+  /** Ton effectivement envoyé (cordial | neutre | ferme | miseendemeure). */
+  tone?: string;
+}
+
+/** GET /notifications — fil réel du tenant : ce que les JOBS serveur ont produit (relances
+ * envoyées/en retry, liens de signature), avec état lu/non-lu PERSISTÉ. */
+export interface NotificationView {
+  id: string;
+  kind: string;
+  title: string;
+  /** Corps disponible tant que non livré (purgé ensuite côté serveur — hygiène PII). */
+  body: string | null;
+  channel: string;
+  status: string;
+  /** Deep link mobile (ex. /facture/inv-1) — null si aucune cible. */
+  route: string | null;
+  readAt: string | null;
+  createdAt: string;
+}
+
+/** POST /devices — enregistrement du token push Expo du device (idempotent par tenant/token). */
+export interface RegisterDeviceClientInput {
+  expoPushToken: string;
+  platform?: 'ios' | 'android' | 'web';
 }
 
 /**
@@ -306,10 +329,16 @@ export interface BobClient {
   refuseQuote(quoteId: string): Promise<Result<{ status: string }, AppError>>;
   generateInvoice(input: { quoteId: string; mode?: 'deposit' | 'final' }): Promise<Result<{ invoiceId: string }, AppError>>;
   issueInvoice(input: IssueInvoiceInput): Promise<Result<{ number: string }, AppError>>;
-  /** C25 ② : envoi réel d'une relance — ÉCHOUE PROPREMENT tant que le serveur n'expose pas
-   * l'endpoint ciblé (voir SendRelanceClientOutput). Aucune UI ni outil agent ne s'y branche
-   * d'ici là (pas de bouton fantôme) : la relance passe par l'assistant (brouillon) en attendant. */
+  /** C25 ② : envoi RÉEL d'une relance ciblée — POST /invoices/:id/relance (ton du plan @bob/core,
+   * confirmation côté UI/agent avant l'appel : action sortante vers un tiers). */
   sendRelance(invoiceId: string): Promise<Result<SendRelanceClientOutput, AppError>>;
+  // —— Fil de notifications + push (C25) — endpoints /notifications et /devices ——
+  /** GET /notifications : le fil du tenant (serveur = source de vérité ; Local = dérivé démo). */
+  listNotifications(): Promise<Result<NotificationView[], AppError>>;
+  /** POST /notifications/:id/read : marque lue (idempotent, persisté côté serveur). */
+  markNotificationRead(id: string): Promise<Result<NotificationView, AppError>>;
+  /** POST /devices : enregistre le token push Expo du device (idempotent par tenant/token). */
+  registerDevice(input: RegisterDeviceClientInput): Promise<Result<{ id: string }, AppError>>;
   registerPayment(input: RegisterPaymentClientInput): Promise<Result<RegisterPaymentClientOutput, AppError>>;
   getQuote(id: string): Promise<Result<QuoteView, AppError>>;
   listQuotes(): Promise<Result<QuoteView[], AppError>>;

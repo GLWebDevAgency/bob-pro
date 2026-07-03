@@ -401,6 +401,19 @@ describe('i18n — C25 notif.* + relance.*', () => {
       'Ferme · le 15/07/2026',
     );
   });
+
+  it('C25 v2 : fil serveur (statuts d’envoi) + confirmation d’envoi réel interpolée', () => {
+    expect(t('notif.sectionFeed', { personality: 'pro' })).toBe('Activité récente');
+    expect(t('notif.feedDone')).toBe('Envoyée');
+    expect(t('notif.feedFailed', { personality: 'direct' })).toBe('Échec. Je retente.');
+    expect(t('relance.confirmTitle')).toBe('On envoie la relance ?');
+    expect(t('relance.confirmBody', { params: { name: 'SARL Martin', amount: '1 240 €' } })).toBe(
+      'J’envoie la relance de 1 240 € à SARL Martin, au ton du plan. Tu valides ?',
+    );
+    expect(t('relance.confirmMedNote', { personality: 'pro' })).toContain('L441-10');
+    expect(t('relance.sentToast', { params: { name: 'SARL Martin' } })).toBe('Relance envoyée à SARL Martin ✓');
+    expect(t('relance.sendError', { personality: 'direct' })).toBe('Envoi KO. Réessaie.');
+  });
 });
 
 describe('i18n — C23 diag.*', () => {

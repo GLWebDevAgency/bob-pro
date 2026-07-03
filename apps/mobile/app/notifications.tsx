@@ -1,27 +1,30 @@
 /**
- * Notifications — la cloche C10 enfin câblée (claim C25, réf dc.html §showNotifs + §showRelances).
+ * Notifications — la cloche C10 enfin câblée (claim C25 v2, réf dc.html §showNotifs + §showRelances).
  *
- * DONNÉES RÉELLES, une seule vérité : useNotificationsFeed (hooks) compose les queries partagées
- * (factures + clients + diagnostic) et projette via @bob/core — deriveRelancePlan (relances dues
- * et planifiées, ton escaladé par ancienneté, message buildRelance) + deriveUpcomingDues
- * (échéances ≤ 7 j) + todayCompanyFromDiagnostic (conformité e-invoicing). L'écran ne calcule
- * AUCUNE règle ; aucun repli fixtures : pas de données → état vide de premier rang (voix Bob).
+ * DONNÉES RÉELLES, une seule vérité : useNotificationsFeed (hooks) compose
+ * · le FIL SERVEUR (GET /notifications — jobs réels : relances envoyées/en retry ; lu/non-lu
+ *   PERSISTÉS via POST /notifications/:id/read ; le LocalBobClient dérive en démo) ;
+ * · les agrégats @bob/core sur les queries partagées — deriveRelancePlan (relances dues et
+ *   planifiées, ton escaladé par ancienneté) + deriveUpcomingDues (échéances ≤ 7 j) +
+ *   todayCompanyFromDiagnostic (conformité e-invoicing).
+ * L'écran ne calcule AUCUNE règle ; aucun repli fixtures : pas de données → état vide (voix Bob).
  *
- * PARITÉ D'ACTIONS (directive 23:52) : « Relancer » → /(tabs)/assistant?prompt=relance — le MÊME
- * point d'entrée que l'agent (relance_brouillon, désormais ciblable C25 ①) ; « Voir la pièce » →
- * /facture/[id] (C16) ; conformité → /diagnostic (C23).
+ * PARITÉ D'ACTIONS (directive 23:52) : « Relancer » = ENVOI RÉEL confirmé → client.sendRelance
+ * (POST /invoices/:id/relance) — le MÊME endpoint que l'outil agent envoyer_relance ; tap d'un
+ * item du fil → lu + deep link (route posée par le serveur) ; « Voir la pièce » → /facture/[id]
+ * (C16) ; conformité → /diagnostic (C23).
  *
  * Écarts assumés vs proto (honnêteté avant pixel) :
- * · « Tout marquer lu » et le toggle « Relances automatiques » : AUCUNE persistance/endpoint côté
- *   serveur (constaté apps/api) → pas de bouton fantôme ; la carte relances auto est informative
- *   (le cron serveur EST actif : RelanceService 6 h) et la file affichée est le plan réel ;
- * · pas de flux « Bob a relancé / paiement reçu » : aucun endpoint de lecture des
- *   notification_jobs — items dérivés de l'état réel uniquement (relances, échéances, conformité) ;
- * · la cadence (J+3/10/20/30, DEFAULT_RELANCE_POLICY) est portée par @bob/core, pas éditable ici
- *   tant que le serveur n'expose pas de réglage (écran cadence du proto non construit).
+ * · toggle « Relances automatiques » : aucun réglage serveur → carte informative (le cron EST
+ *   actif : RelanceService 6 h, politique DEFAULT_RELANCE_POLICY du core), pas de switch fantôme ;
+ * · « Tout marquer lu » : le lu se pose item par item (endpoint unitaire) — pas de bouton global
+ *   tant que le serveur n'expose pas de batch ;
+ * · l'écran cadence éditable du proto n'existe pas (pas de réglage serveur) — la mise en demeure
+ *   n'est JAMAIS envoyée par le cron : elle attend le geste confirmé ici (relance.medWarning).
  */
+import { useState } from 'react';
 import { Pressable, ScrollView, Text, View } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, type Href } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   formatEURWhole,
@@ -29,6 +32,7 @@ import {
   type RelanceTone,
   type UpcomingDueEntry,
 } from '@bob/core';
+import type { NotificationView } from '@bob/api-client';
 import { PERSONALITY_LABELS, t, type I18nKey, type Personality } from '@bob/i18n';
 import {
   Avatar,
@@ -38,13 +42,16 @@ import {
   InnerScreenHeader,
   SectionHeader,
   StatusBadge,
+  Toast,
   font,
   useTheme,
   type StatusBadgeVariant,
 } from '@bob/ui';
-import { useNotificationsFeed } from '../src/data/hooks';
+import { useMarkNotificationRead, useNotificationsFeed, useSendRelance } from '../src/data/hooks';
+import { useConfirm } from '../src/components/ConfirmSheet';
 import {
   CalendarIcon,
+  CheckIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   SendIcon,
@@ -83,8 +90,19 @@ function toneColor(tone: RelanceTone, semantic: { particulier: string; b2b: stri
 
 // ── Cartes ────────────────────────────────────────────────────────────────────
 
-/** Relance DUE : ton badgé + reste dû + actions (voir la pièce / relancer via l'assistant). */
-function DueRelanceCard({ entry, personality }: { entry: RelancePlanEntry; personality: Personality }) {
+/** Relance DUE : ton badgé + reste dû + actions — voir la pièce, ou ENVOI RÉEL confirmé (C25 v2 :
+ * même endpoint POST /invoices/:id/relance que l'outil agent envoyer_relance, parité d'actions). */
+function DueRelanceCard({
+  entry,
+  personality,
+  sending,
+  onRelance,
+}: {
+  entry: RelancePlanEntry;
+  personality: Personality;
+  sending: boolean;
+  onRelance: (entry: RelancePlanEntry) => void;
+}) {
   const { colors, semantic } = useTheme();
   const router = useRouter();
   const doc = displayDoc(entry.docNumber, entry.invoiceId);
@@ -122,11 +140,59 @@ function DueRelanceCard({ entry, personality }: { entry: RelancePlanEntry; perso
           variant="primary"
           size="compact"
           radius={11}
+          loading={sending}
           icon={<SendIcon color={colors.surface} size={14} />}
-          // ?prompt=relance : l'assistant pré-remplit ET soumet (C15) — même use case que Bob.
-          onPress={() => router.push({ pathname: '/(tabs)/assistant', params: { prompt: 'relance' } })}
+          // Envoi RÉEL après confirmation explicite (sortant ; mise en demeure possible).
+          onPress={() => onRelance(entry)}
         />
       </View>
+    </Card>
+  );
+}
+
+/** Item du fil serveur (GET /notifications) — pastille non-lu, statut d'envoi, tap = lu + route. */
+function FeedItemCard({
+  item,
+  personality,
+  onPress,
+}: {
+  item: NotificationView;
+  personality: Personality;
+  onPress: (item: NotificationView) => void;
+}) {
+  const { colors, semantic, controls } = useTheme();
+  const statusKey: I18nKey =
+    item.status === 'done' ? 'notif.feedDone' : item.status === 'failed' ? 'notif.feedFailed' : 'notif.feedPending';
+  const statusColor = item.status === 'failed' ? semantic.danger : colors.slate500;
+  return (
+    <Card padding={13}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={item.title}
+        accessibilityState={{ selected: item.readAt === null }}
+        onPress={() => onPress(item)}
+        style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}
+      >
+        <IconTile tone={item.status === 'failed' ? 'danger' : 'b2g'} size={34} radius={11}>
+          <SendIcon color={item.status === 'failed' ? semantic.danger : semantic.b2g} size={16} />
+        </IconTile>
+        <View style={{ flex: 1 }}>
+          <Text
+            numberOfLines={1}
+            style={[font('label', item.readAt === null ? 700 : 600), { fontSize: 14, color: colors.ink800 }]}
+          >
+            {item.title}
+          </Text>
+          <Text style={[font('meta'), { color: statusColor, marginTop: 2 }]}>
+            {`${t(statusKey, { personality })} · ${frDate(item.createdAt.slice(0, 10))}`}
+          </Text>
+        </View>
+        {item.readAt === null ? (
+          <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: semantic.ai }} />
+        ) : (
+          <ChevronRightIcon color={controls.chevron} size={15} />
+        )}
+      </Pressable>
     </Card>
   );
 }
@@ -214,14 +280,46 @@ export default function Notifications() {
   const { colors, semantic, personality } = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const confirm = useConfirm();
   // La copy des messages du plan suit l'humeur de Bob (PERSONALITY_LABELS : ids i18n → domaine).
   const feed = useNotificationsFeed(PERSONALITY_LABELS[personality]);
+  const markRead = useMarkNotificationRead();
+  const sendRelance = useSendRelance();
+  const [toast, setToast] = useState<string | null>(null);
 
   const ready = !feed.isLoading && !feed.isError;
   const planCount = feed.due.length + feed.scheduled.length;
   /** « clients en file » (réf : « Actives · 2 clients en file ») — clients uniques du plan réel. */
   const queuedCustomers = new Set([...feed.due, ...feed.scheduled].map((e) => e.customerId)).size;
-  const hasNews = feed.count > 0 || feed.scheduled.length > 0;
+  const hasNews = feed.count > 0 || feed.scheduled.length > 0 || feed.items.length > 0;
+
+  /** Item du fil : lu persisté (serveur) + deep link vers la pièce si la notif en porte un. */
+  const openFeedItem = (item: NotificationView): void => {
+    if (item.readAt === null) markRead.mutate(item.id);
+    if (item.route !== null) router.push(item.route as Href);
+  };
+
+  /** ENVOI RÉEL confirmé (C25 ② — action sortante, mise en demeure jamais sans validation). */
+  const relanceNow = async (entry: RelancePlanEntry): Promise<void> => {
+    const name = entry.customerName || displayDoc(entry.docNumber, entry.invoiceId);
+    const body = t('relance.confirmBody', {
+      personality,
+      params: { name, amount: formatEURWhole(entry.amountCents) },
+    });
+    const message =
+      entry.tone === 'miseendemeure' ? `${body}\n${t('relance.confirmMedNote', { personality })}` : body;
+    const okToSend = await confirm({
+      title: t('relance.confirmTitle', { personality }),
+      message,
+      challenge: { kind: 'tap' },
+      destructive: entry.tone === 'miseendemeure',
+    });
+    if (!okToSend) return;
+    sendRelance.mutate(entry.invoiceId, {
+      onSuccess: () => setToast(t('relance.sentToast', { personality, params: { name } })),
+      onError: () => setToast(t('relance.sendError', { personality })),
+    });
+  };
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
@@ -284,12 +382,29 @@ export default function Notifications() {
           </Card>
         ) : (
           <View style={{ gap: 20 }}>
+            {feed.items.length > 0 ? (
+              <View>
+                <SectionHeader title={t('notif.sectionFeed', { personality })} />
+                <View style={{ gap: 10 }}>
+                  {feed.items.map((item) => (
+                    <FeedItemCard key={item.id} item={item} personality={personality} onPress={openFeedItem} />
+                  ))}
+                </View>
+              </View>
+            ) : null}
+
             {feed.due.length > 0 ? (
               <View>
                 <SectionHeader title={t('notif.sectionDue', { personality })} />
                 <View style={{ gap: 10 }}>
                   {feed.due.map((entry) => (
-                    <DueRelanceCard key={entry.invoiceId} entry={entry} personality={personality} />
+                    <DueRelanceCard
+                      key={entry.invoiceId}
+                      entry={entry}
+                      personality={personality}
+                      sending={sendRelance.isPending && sendRelance.variables === entry.invoiceId}
+                      onRelance={(e) => void relanceNow(e)}
+                    />
                   ))}
                 </View>
               </View>
@@ -383,6 +498,13 @@ export default function Notifications() {
           </View>
         )}
       </ScrollView>
+
+      <Toast
+        message={toast ?? ''}
+        visible={toast !== null}
+        onHide={() => setToast(null)}
+        icon={<CheckIcon color={colors.surface} size={15} />}
+      />
     </View>
   );
 }

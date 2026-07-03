@@ -6,6 +6,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { formatEUR, type PlanTier } from '@bob/core';
 import { AUTONOMY_LABELS, type AgentAutonomy } from '@bob/ai';
 import { useTheme } from '../src/theme';
+import { useIdentity } from '../src/data/identity';
 import { useSubscription, useDiagnostic, useStartCheckout, useBillingPortal } from '../src/data/hooks';
 import { getAutonomy, setAutonomy as persistAutonomy, getVoiceMode, setVoiceMode as persistVoiceMode, type VoiceMode } from '../src/data/settings';
 import { useAuth } from '../src/data/auth';
@@ -14,6 +15,7 @@ import { Card, Badge, Button, SectionHeader, font } from '../src/components/ui';
 const AUTONOMY_ORDER: AgentAutonomy[] = ['confirm_all', 'confirm_outbound', 'auto'];
 
 export default function Compte() {
+  const identity = useIdentity();
   const { colors, theme, semantic } = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
@@ -57,8 +59,10 @@ export default function Compte() {
         <Text style={[font('pageTitle'), { color: colors.ink900 }]}>Compte & abonnement</Text>
 
         <Card>
-          <Text style={[font('cardTitle'), { color: colors.ink800 }]}>Mercier Plomberie</Text>
-          <Text style={[font('sub'), { color: colors.slate400, marginTop: 2 }]}>EI · SIRET 732 829 320 00074 · RM 92</Text>
+          <Text style={[font('cardTitle'), { color: colors.ink800 }]}>{identity.companyName ?? '—'}</Text>
+          {identity.legalLine ? (
+            <Text style={[font('sub'), { color: colors.slate400, marginTop: 2 }]}>{identity.legalLine}</Text>
+          ) : null}
         </Card>
 
         <SectionHeader title="Conformité 2026" />
