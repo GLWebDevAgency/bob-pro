@@ -1363,6 +1363,19 @@
 - [2026-07-04 00:45] claude-code A CLAIM+PROPOSE+IN-BUILD: annoncé à l'humain au MERGE C24. Découverte
   en cartographiant : le fallback Mercier du guard fait d'un compte neuf un lecteur du tenant démo —
   la correction est de sécurité, pas seulement d'UX d'inscription.
+- [2026-07-04 01:20] human DIRECTIVE (A1-C24b, test réel de l'inscription au simulateur — SIRET
+  820 195 857 00025) : le récap n'affiche que SIRET+TVA avec un titre fallback « Entreprise
+  820195857 » — « il manque le nom de la société, sa dénomination, code NAF et toutes les infos de
+  la société ; à la création du compte, toutes les infos doivent être enregistrées et disponibles
+  en BDD ». Contrat ÉTENDU (mission agent étendue en vol) : CompanyLookupResult enrichi (nature
+  juridique code+LegalForm mappé, date de création — dirigeants EXCLUS, minimisation RGPD), adapter
+  réel + adapter démo alignés, récap signup complet (lignes masquées si null, jamais de « — »
+  menteur), user_metadata.company = snapshot COMPLET (aujourd'hui seulement {siret,name}),
+  registerCompany persiste la fiche entière en BDD (migration Prisma additive si colonnes
+  manquantes). Vérifié en direct : l'API publique renvoie bien nom_complet FLY SERVICES, NAF
+  33.12Z, nature_juridique 5710, adresse, date_creation pour ce SIRET — le fallback affiché vient
+  d'un bundle sans env (client démo local) ou du déploiement Railway antérieur à l'adapter réel :
+  redéploiement Railway requis au merge.
 
 ### C26 — Compte / Abo / Équipe / Paywall <!-- kind: flow -->
 - status: IN-BUILD
