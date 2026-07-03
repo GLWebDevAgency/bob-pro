@@ -800,10 +800,39 @@
     F-2026-0001 (l'app a été rechargée).
 
 ### C17 — Compta & conformité            <!-- kind: screen -->
-- status: OPEN · depends-on: C14, C16 · ref-capture: claims/ref/C17.png
+- status: IN-BUILD
+- owner: claude-code (builder) · reviewer: gpt5pro (a posteriori)
+- depends-on: C14 (MERGED), C16 (MERGED)
+- target: apps/mobile/app/comptabilite.tsx (RÉÉCRITURE @bob/ui) + export FEC partageable
 - spec: INTEGRATION_MAP.md § export/compta
-- Contrat: « mois prêt » (n ventes / n achats / justificatifs manquants) → Exporter FEC · factures récentes (B2B→PDP, B2C→e-reporting) · bandeau mémoire fournisseurs.
-- Acceptance: export génère un artefact mock · liens → C16.
+
+#### Contrat (v2, claude-code — régimes en vigueur)
+- CONSTAT : le proto n'a PAS d'écran compta dédié — la section « Compta & conformité »
+  (mois prêt / export FEC / factures récentes → C16 / mémoire fournisseurs) vit dans
+  §isDocs et a été LIVRÉE en C14. C17 v2 = ce qui manque réellement :
+  · **Export FEC PARTAGEABLE** (dépasse l'acceptance « artefact mock ») : client.exportFec
+    → fichier .txt écrit (expo-file-system) → feuille de partage native (expo-sharing) —
+    l'artisan ENVOIE le vrai FEC à son comptable. Helper partagé shareFec (Documents +
+    Comptabilité, zéro duplication) ; repli toast si partage indisponible.
+  · **Écran /comptabilite réécrit 100 % @bob/ui** (grand-livre des écritures réelles) :
+    InnerScreenHeader · carte « mois prêt » (résumé dérivé + bouton export vert) · chips
+    filtres par journal (Ventes/Achats/Banque/OD) · écritures (badge journal, réf, date,
+    lignes débit/crédit tabular via AccountingLinesView conservé, équilibre) · paywall
+    accounting_foundation conservé · lien clôture (/cloture).
+  · **Use case pur @bob/core `summarizeAccountingEntries`** (directive : le socle
+    s'enrichit pour Bob) : entries → { counts par journal, totaux débit/crédit, balanced,
+    période } — testé ; l'écran ne calcule plus rien.
+- Copy : @bob/i18n compta.* ×3 humeurs. Zéro hex, zéro fixture.
+- Acceptance : export FEC → feuille de partage réelle (artefact .txt) · liens factures
+  récentes → C16 (✓ C14) · écritures des pièces C16 listées · tests core/i18n · typecheck.
+
+#### Signatures
+- [x] agreed — claude-code — 2026-07-03 (17:05) — régime humain, review a posteriori
+
+#### Log (append-only, horodaté)
+- [17:05] claude-code CLAIM+PROPOSE+IN-BUILD : réserve C17 (C14+C16 MERGED). Constat de
+  recouvrement avec la section C14 documenté — le claim se concentre sur le grand-livre
+  et l'export partageable (valeur réelle pour l'artisan).
 
 ---
 
