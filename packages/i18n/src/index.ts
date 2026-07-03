@@ -2284,6 +2284,163 @@ const fr = {
   },
   'diag.itemAccountantDone': { pote: 'Il est au courant ✓', pro: 'Informé ✓', direct: 'OK ✓' },
 
+  // ── C22 — flux « Onboarding adaptatif » (copy pote = exacte du proto §onb*) ──
+  'onboard.back': { pote: 'Retour', pro: 'Retour', direct: 'Retour' },
+  'onboard.later': { pote: 'Plus tard', pro: 'Plus tard', direct: 'Plus tard' },
+  'onboard.welcomeTitle': {
+    pote: 'Ton bureau pro,\ndans ta poche.',
+    pro: 'Votre bureau professionnel,\ndans votre poche.',
+    direct: 'Ton bureau pro.\nDans ta poche.',
+  },
+  'onboard.welcomeBody': {
+    pote: 'Devis, factures, paiements, tréso, docs et conformité 2026. Bob s’occupe de la paperasse — toi, tu bosses.',
+    pro: 'Devis, factures, paiements, trésorerie, documents et conformité 2026. Bob s’occupe de l’administratif.',
+    direct: 'Devis, factures, paiements, tréso, conformité 2026. Bob gère la paperasse.',
+  },
+  'onboard.welcomeCta': { pote: 'Commencer', pro: 'Commencer', direct: 'Commencer' },
+  'onboard.stepTrade': { pote: 'Ton métier', pro: 'Votre métier', direct: 'Métier' },
+  'onboard.stepClient': { pote: 'Ta clientèle', pro: 'Votre clientèle', direct: 'Clientèle' },
+  'onboard.stepVat': { pote: 'Ta TVA', pro: 'Votre TVA', direct: 'TVA' },
+  'onboard.stepPreview': { pote: 'Ton espace', pro: 'Votre espace', direct: 'Espace' },
+  'onboard.tradeTitle': {
+    pote: 'Tu fais quoi, au juste ?',
+    pro: 'Quel est votre métier ?',
+    direct: 'Ton métier ?',
+  },
+  'onboard.tradeSub': {
+    pote: 'L’app va parler ton langage.',
+    pro: 'L’application adoptera votre vocabulaire.',
+    direct: 'L’app parlera ton langage.',
+  },
+  'onboard.tradeIncludes': {
+    pote: 'Ton espace inclura',
+    pro: 'Votre espace inclura',
+    direct: 'Ton espace :',
+  },
+  'onboard.profileError': {
+    pote: 'J’ai pas réussi à lire ton profil — choisis ton métier ci-dessous.',
+    pro: 'Impossible de lire votre profil — sélectionnez votre métier ci-dessous.',
+    direct: 'Profil illisible. Choisis ton métier.',
+  },
+  'onboard.continue': { pote: 'Continuer', pro: 'Continuer', direct: 'Continuer' },
+  'onboard.clientTitle': {
+    pote: 'Tu bosses surtout pour qui ?',
+    pro: 'Pour qui travaillez-vous principalement ?',
+    direct: 'Tes clients ?',
+  },
+  'onboard.clientSub': {
+    pote: 'Ça décide de tes obligations de facturation élec.',
+    pro: 'Cela détermine vos obligations de facturation électronique.',
+    direct: 'Ça fixe tes obligations 2026.',
+  },
+  'onboard.clientB2c': { pote: 'Particuliers', pro: 'Particuliers', direct: 'Particuliers' },
+  'onboard.clientB2cSub': {
+    pote: 'Tes ventes remonteront en e-reporting.',
+    pro: 'Ventes déclarées via e-reporting.',
+    direct: 'e-reporting.',
+  },
+  'onboard.clientB2b': { pote: 'Entreprises', pro: 'Entreprises', direct: 'Entreprises' },
+  'onboard.clientB2bSub': {
+    pote: 'Factures élec. via plateforme dès 2026.',
+    pro: 'Factures électroniques via plateforme dès 2026.',
+    direct: 'e-invoicing 2026.',
+  },
+  'onboard.clientB2g': { pote: 'Le public', pro: 'Le secteur public', direct: 'Public' },
+  'onboard.clientB2gSub': {
+    pote: 'Chorus Pro — c’est déjà la règle.',
+    pro: 'Chorus Pro, déjà en vigueur.',
+    direct: 'Chorus Pro.',
+  },
+  'onboard.clientMixte': { pote: 'Un peu de tout', pro: 'Clientèle mixte', direct: 'Mixte' },
+  'onboard.clientMixteSub': {
+    pote: 'Je jongle entre les régimes pour toi.',
+    pro: 'Les différents régimes sont gérés.',
+    direct: 'Tous les régimes.',
+  },
+  'onboard.vatTitle': {
+    pote: 'Et la TVA, t’es sur quel régime ?',
+    pro: 'Quel est votre régime de TVA ?',
+    direct: 'Ton régime TVA ?',
+  },
+  'onboard.vatSub': {
+    pote: 'Je règle tes factures et tes déclarations dessus.',
+    pro: 'Vos factures et déclarations s’y adapteront.',
+    direct: 'Ça règle tes factures.',
+  },
+  'onboard.vatFranchise': {
+    pote: 'Franchise en base',
+    pro: 'Franchise en base',
+    direct: 'Franchise en base',
+  },
+  'onboard.vatFranchiseSub': {
+    pote: 'Art. 293 B — tu factures sans TVA, mention obligatoire.',
+    pro: 'Art. 293 B du CGI — facturation sans TVA, mention obligatoire.',
+    direct: '293 B — sans TVA, mention obligatoire.',
+  },
+  'onboard.vatReelSimpl': { pote: 'Réel simplifié', pro: 'Réel simplifié', direct: 'Réel simplifié' },
+  'onboard.vatReelSimplSub': {
+    pote: 'TVA déclarée une fois par an (CA12), avec des acomptes.',
+    pro: 'Déclaration annuelle (CA12) avec acomptes semestriels.',
+    direct: 'CA12 annuelle + acomptes.',
+  },
+  'onboard.vatReelNormal': { pote: 'Réel normal', pro: 'Réel normal', direct: 'Réel normal' },
+  'onboard.vatReelNormalSub': {
+    pote: 'TVA déclarée chaque mois ou trimestre (CA3).',
+    pro: 'Déclaration mensuelle ou trimestrielle (CA3).',
+    direct: 'CA3 mensuelle ou trimestrielle.',
+  },
+  'onboard.vatFranchiseNote': {
+    pote: 'Tu ne factures pas la TVA, mais la facture élec. te concerne quand même : dès septembre 2026, tu devras recevoir les factures de tes fournisseurs en électronique.',
+    pro: 'Vous ne facturez pas la TVA, mais la facturation électronique vous concerne quand même : dès septembre 2026, la réception des factures électroniques s’impose à tous les assujettis.',
+    direct: 'Pas de TVA facturée, mais la facture élec. te concerne quand même : réception obligatoire dès septembre 2026.',
+  },
+  'onboard.vatReelNote': {
+    pote: 'Je mets ta TVA de côté au fil des encaissements — zéro mauvaise surprise à la déclaration.',
+    pro: 'La TVA est provisionnée au fil des encaissements — aucune surprise à la déclaration.',
+    direct: 'TVA provisionnée au fil de l’eau.',
+  },
+  'onboard.previewTitle': {
+    pote: 'Ton espace {trade} est prêt',
+    pro: 'Votre espace {trade} est prêt',
+    direct: 'Espace {trade} : prêt.',
+  },
+  'onboard.previewBody': {
+    pote: 'Dernier truc : vérifions que t’es paré pour 2026.',
+    pro: 'Dernière étape : vérifions votre préparation pour 2026.',
+    direct: 'Dernier truc : le check 2026.',
+  },
+  'onboard.previewCta': { pote: 'C’est parti', pro: 'C’est parti', direct: 'C’est parti' },
+  'onboard.hlDecennale': {
+    pote: 'Ta décennale suivie et rappelée',
+    pro: 'Assurance décennale suivie',
+    direct: 'Décennale suivie',
+  },
+  'onboard.hlConsuel': {
+    pote: 'Consuel et attestations à portée de main',
+    pro: 'Consuel et attestations centralisés',
+    direct: 'Consuel centralisé',
+  },
+  'onboard.hlRetenue': {
+    pote: 'Retenue de garantie gérée sur tes factures',
+    pro: 'Retenue de garantie gérée',
+    direct: 'Retenue de garantie gérée',
+  },
+  'onboard.hlTvaTravaux': {
+    pote: 'TVA travaux 10 % par défaut',
+    pro: 'TVA travaux 10 % par défaut',
+    direct: 'TVA travaux 10 %',
+  },
+  'onboard.hlCession': {
+    pote: 'Cession de droits sur tes factures',
+    pro: 'Cession de droits intégrée',
+    direct: 'Cession de droits',
+  },
+  'onboard.hlCra': {
+    pote: 'CRA et frais refacturés intégrés',
+    pro: 'CRA et frais refacturés intégrés',
+    direct: 'CRA + frais refacturés',
+  },
+
   // ── C25 — écran Notifications (cloche C10) ─────────────────────────────────
   'notif.back': { pote: 'Fermer', pro: 'Fermer', direct: 'Fermer' },
   'notif.eyebrow': { pote: 'Quoi de neuf', pro: 'Votre activité', direct: 'Notifs' },
@@ -2442,6 +2599,19 @@ const fr = {
   },
   'compta.entriesCount': { pote: '{count} écritures', pro: '{count} écritures', direct: '{count}' },
   'compta.entriesCountOne': { pote: '1 écriture', pro: '1 écriture', direct: '1' },
+  'compta.sectionJournal': { pote: 'Le journal', pro: 'Le journal', direct: 'Journal' },
+  'compta.debitLabel': { pote: 'Débit', pro: 'Débit', direct: 'Débit' },
+  'compta.creditLabel': { pote: 'Crédit', pro: 'Crédit', direct: 'Crédit' },
+  'compta.closeSub': {
+    pote: 'Verrouille les écritures et fige le mois — plus rien ne bouge.',
+    pro: 'Verrouille les écritures du mois : plus aucune modification possible.',
+    direct: 'Fige le mois.',
+  },
+  'compta.footer': {
+    pote: 'Chaque écriture est passée toute seule — vérifiable ligne à ligne.',
+    pro: 'Chaque écriture est générée automatiquement — vérifiable ligne à ligne.',
+    direct: 'Automatique. Vérifiable.',
+  },
   'compta.chipAll': { pote: 'Tous', pro: 'Tous', direct: 'Tous' },
   'compta.journalSales': { pote: 'Ventes', pro: 'Ventes', direct: 'VE' },
   'compta.journalPurchases': { pote: 'Achats', pro: 'Achats', direct: 'AC' },

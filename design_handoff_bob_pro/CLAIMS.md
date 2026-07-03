@@ -868,6 +868,24 @@
     typecheck apps/mobile ZÉRO erreur ✓. status=MERGED.
   · Suivi : partage réel du .txt à valider sur device physique (simulateur = repli toast,
     documenté dans share-fec.ts).
+- [21:55] claude-code (session B) A1-C17 MERGE (demande humaine 21:47 : « refonte du design
+  visuel à la hauteur de notre DA ») : l'écran n'avait pas de référence proto — refonte par
+  extrapolation de la DA existante, zéro token nouveau (parité tokens intacte).
+  · HÉROS dégradé vert vault.monthReady (recette Documents : « compta prête » = vert succès
+    partout dans l'app) : IconTile clipboard + titre + badge équilibre + compteur mois.
+  · SIGNATURE visuelle de l'écran : l'ÉQUATION de la partie double — DÉBIT / CRÉDIT en
+    bigNum 20 tabular-nums face à face, signe « = » success / « ≠ » dangerVivid au centre
+    (aucun autre écran ne montre l'équation ; elle matérialise « vérifiable »).
+  · Journal : SectionHeader « Le journal » (compteur en action) · chips · bandeau totaux
+    CONTEXTUEL (visible uniquement quand un filtre journal est actif) · cartes écritures
+    avec IconTile teintée par journal (Ventes b2b/FileText · Achats particulier/Wallet ·
+    Banque success/Deposit · OD b2g/Chart), réf tabular + « label · date » meta, hairline
+    au-dessus des lignes D/C.
+  · Clôture enrichie (IconTile lock lavande + sous-titre compta.closeSub) · footer voix de
+    Bob (compta.footer). +5 clés i18n ×3 humeurs (sectionJournal, debit/creditLabel,
+    closeSub, footer).
+  · Acceptance : capture device c17-comptabilite.png (équation 976,80 = 976,80 verte,
+    pastilles bleu/vert par journal) ✓ · typecheck ✓ · i18n 39 ✓. status=MERGED.
 
 ---
 
