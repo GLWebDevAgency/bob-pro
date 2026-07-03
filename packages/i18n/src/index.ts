@@ -1966,6 +1966,12 @@ const fr = {
     pro: 'Acompte déjà facturé{number}',
     direct: 'Acompte facturé{number}',
   },
+  // A5 — déduction composite (acompte + situations émises) : pas de pièce unique à citer.
+  'piece.alreadyInvoiced': {
+    pote: 'Déjà facturé (acompte + situations)',
+    pro: 'Déjà facturé (acompte et situations)',
+    direct: 'Déjà facturé',
+  },
   'piece.linkedDeposit': {
     pote: 'Facture d’acompte',
     pro: 'Facture d’acompte',

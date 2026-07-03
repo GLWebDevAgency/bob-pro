@@ -203,6 +203,22 @@ describe('buildPieceView — A2-C16 : la finale porte la TRACE de l’acompte (f
     });
   });
 
+  it('A5 : déduction COMPOSITE (acompte + situations) — montant affiché, aucune pièce citée', () => {
+    const v = buildPieceView({
+      source: 'invoice',
+      invoice: invoice({
+        kind: 'final',
+        totals: { ht: 135667, vatByRate: { '20': 27133 }, vat: 27133, ttc: 162800, netToPay: 48840 },
+        depositDeductionCents: 113960, // acompte 48 840 + situation 65 120
+        depositInvoiceId: null,
+      }),
+      customer: MARTIN,
+      // Même si la route passe l'acompte en nav croisée, la déduction composite ne le cite pas.
+      depositInvoice: { id: 'inv-acompte', number: 'F-2026-0001', ttcCents: 48840 },
+    });
+    expect(v.depositDeduction).toEqual({ amountCents: 113960, invoiceRef: null });
+  });
+
   it('sans déduction : rien d’affiché (finale simple, acompte inexistant)', () => {
     const v = buildPieceView({
       source: 'invoice',

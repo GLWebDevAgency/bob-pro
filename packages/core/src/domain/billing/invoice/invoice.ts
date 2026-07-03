@@ -54,8 +54,10 @@ export class Invoice extends AggregateRoot<string> {
     mode: 'deposit' | 'final',
     id: string,
     opts?: {
-      /** Acompte DÉJÀ FACTURÉ sur ce devis : la finale le déduit (jamais de double facturation). */
-      depositDeduction?: { amountCents: number; invoiceId: string };
+      /** DÉJÀ FACTURÉ sur ce devis (acompte, situations émises) : la finale le déduit —
+       *  jamais de double facturation. invoiceId = la pièce source si UNIQUE, null si la
+       *  déduction est composite (acompte + situations, A5). */
+      depositDeduction?: { amountCents: number; invoiceId: string | null };
     },
   ): DomainResult<Invoice> {
     if (quote.status !== 'signed')

@@ -325,7 +325,15 @@ export function buildPieceView(input: BuildPieceViewInput): PieceView {
     nextStep,
     depositDeduction:
       (inv.depositDeductionCents ?? 0) > 0
-        ? { amountCents: inv.depositDeductionCents ?? 0, invoiceRef: input.depositInvoice ?? null }
+        ? {
+            amountCents: inv.depositDeductionCents ?? 0,
+            // Réf UNIQUEMENT si la déduction pointe cette pièce précise — une déduction
+            // composite (acompte + situations, A5) n'a pas de pièce unique à citer.
+            invoiceRef:
+              inv.depositInvoiceId != null && input.depositInvoice?.id === inv.depositInvoiceId
+                ? (input.depositInvoice ?? null)
+                : null,
+          }
         : null,
     transmission:
       emitted && !isCredit && channel !== null && channel !== 'ereporting'

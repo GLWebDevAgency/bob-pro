@@ -26,13 +26,25 @@ export class GenerateInvoiceFromQuote {
     const existing = await this.deps.invoices.findByParentQuoteId(quote.companyId, quote.id, kind);
     if (existing) return ok({ invoiceId: existing.id });
 
-    // Facture FINALE après acompte : l'acompte déjà ÉMIS (fiscalement existant) est déduit
-    // du net à payer — le flow reste corrélé de bout en bout (devis → acompte → solde).
-    let depositDeduction: { amountCents: number; invoiceId: string } | undefined;
+    // Facture FINALE : TOUT ce qui a déjà été facturé sur ce devis (acompte ET situations
+    // ÉMISES — situations successives BTP, A5) est déduit du net à payer. Le flow reste
+    // corrélé de bout en bout : devis → acompte → situations → solde exact.
+    let depositDeduction: { amountCents: number; invoiceId: string | null } | undefined;
     if (mode === 'final') {
-      const deposit = await this.deps.invoices.findByParentQuoteId(quote.companyId, quote.id, 'deposit');
-      if (deposit && deposit.status !== 'draft' && deposit.status !== 'cancelled') {
-        depositDeduction = { amountCents: deposit.totals().netToPay, invoiceId: deposit.id };
+      const alreadyInvoiced = (await this.deps.invoices.listByCompany(quote.companyId)).filter(
+        (i) =>
+          i.parentQuoteId === quote.id &&
+          (i.kind === 'deposit' || i.kind === 'situation') &&
+          i.status !== 'draft' &&
+          i.status !== 'cancelled',
+      );
+      const amountCents = alreadyInvoiced.reduce((sum, i) => sum + i.totals().netToPay, 0);
+      if (amountCents > 0) {
+        // Réf de nav : la pièce source si UNIQUE — composite (plusieurs pièces) sinon.
+        depositDeduction = {
+          amountCents,
+          invoiceId: alreadyInvoiced.length === 1 ? (alreadyInvoiced[0]?.id ?? null) : null,
+        };
       }
     }
 

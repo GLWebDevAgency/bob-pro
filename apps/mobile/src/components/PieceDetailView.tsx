@@ -422,17 +422,16 @@ export function PieceDetailView({ view, onClose, onOpenQuote, onOpenInvoice, act
                   </View>
                 ) : null}
                 {view.depositDeduction ? (
-                  // La trace de l'acompte : tout le flow est corrélé (devis → acompte → solde).
+                  // La trace du déjà-facturé : tout le flow est corrélé (devis → acompte →
+                  // situations → solde). Réf citée si unique, libellé composite sinon (A5).
                   <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 3 }}>
                     <Text style={[font('sub'), { color: colors.slate500 }]}>
-                      {t('piece.depositDeducted', {
-                        personality,
-                        params: {
-                          number: view.depositDeduction.invoiceRef?.number
-                            ? ` (${view.depositDeduction.invoiceRef.number})`
-                            : '',
-                        },
-                      })}
+                      {view.depositDeduction.invoiceRef?.number
+                        ? t('piece.depositDeducted', {
+                            personality,
+                            params: { number: ` (${view.depositDeduction.invoiceRef.number})` },
+                          })
+                        : t('piece.alreadyInvoiced', { personality })}
                     </Text>
                     <Text style={{ ...font('sub', 700), color: semantic.success, fontVariant: ['tabular-nums'] }}>
                       −{formatEUR(view.depositDeduction.amountCents)}

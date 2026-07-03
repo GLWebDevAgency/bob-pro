@@ -125,4 +125,59 @@ describe('GenerateInvoiceFromQuote', () => {
     expect(await env.invoices.listByCompany(env.quote.companyId)).toHaveLength(1);
     expect(env.counts()).toEqual({ saveCalls: 1 });
   });
+
+  // ── A5 : « déjà facturé » GÉNÉRALISÉ — la finale déduit acompte ET situations émises ──
+
+  /** Pièce déjà émise sur le devis (acompte ou situation BTP) — snapshot minimal réaliste. */
+  function issuedSibling(id: string, kind: 'deposit' | 'situation', ht: number, netToPay: number): Invoice {
+    const vat = Math.round(ht * 0.2);
+    return Invoice.rehydrate({
+      id,
+      companyId: 'co-1',
+      customerId: 'cus-1',
+      kind,
+      status: 'issued',
+      lines: [{ id: `${id}-l1`, label: 'Avancement', category: 'labor', qty: 1, unitPriceHT: ht, vatRate: 20 }],
+      number: `F-${id}`,
+      frozenTotals: { ht, vatByRate: { '20': vat }, vat, ttc: ht + vat, netToPay },
+      mentions: [],
+      issuedAt: '2026-06-10',
+      dueAt: '2026-07-10',
+      paid: 0,
+      depositPct: null,
+      parentQuoteId: 'quote-1',
+    });
+  }
+
+  it('A5 : la finale déduit la SOMME acompte + situations émises, sans pièce unique citée', async () => {
+    const env = makeEnv();
+    // Acompte émis 36 000 c + situation émise 24 000 c (devis 120 000 c TTC).
+    await env.invoices.save(issuedSibling('dep', 'deposit', 30000, 36000));
+    await env.invoices.save(issuedSibling('sit', 'situation', 20000, 24000));
+
+    const generated = await env.usecase.execute({ quoteId: env.quote.id, mode: 'final' });
+    expect(generated.ok).toBe(true);
+    if (!generated.ok) return;
+    const final = await env.invoices.findById(generated.value.invoiceId);
+    expect(final?.totals().ttc).toBe(120000);
+    // Solde exact = 120 000 − 36 000 − 24 000 ; déduction composite → pas d'invoiceId unique.
+    expect(final?.totals().netToPay).toBe(60000);
+    expect(final?.toSnapshot().depositDeductionCents).toBe(60000);
+    expect(final?.toSnapshot().depositInvoiceId).toBeNull();
+  });
+
+  it('A5 : une pièce déjà facturée UNIQUE reste citée (invoiceId conservé) ; brouillon exclu', async () => {
+    const env = makeEnv();
+    await env.invoices.save(issuedSibling('dep', 'deposit', 30000, 36000));
+    // Une situation restée BROUILLON n'existe pas fiscalement : elle ne se déduit pas.
+    const draft = issuedSibling('sit-draft', 'situation', 20000, 24000);
+    await env.invoices.save(Invoice.rehydrate({ ...draft.toSnapshot(), status: 'draft', number: null }));
+
+    const generated = await env.usecase.execute({ quoteId: env.quote.id, mode: 'final' });
+    expect(generated.ok).toBe(true);
+    if (!generated.ok) return;
+    const final = await env.invoices.findById(generated.value.invoiceId);
+    expect(final?.totals().netToPay).toBe(84000); // 120 000 − 36 000
+    expect(final?.toSnapshot().depositInvoiceId).toBe('dep');
+  });
 });
