@@ -39,6 +39,7 @@ import { conformityCard, shadowComponentsNative, shadowNative, vault, vaultShado
 import { t, type Personality } from '@bob/i18n';
 import { Button, Card, InnerScreenHeader, Toast, font, parseGradient, useTheme } from '@bob/ui';
 import { useBobClient } from '../../src/data/client';
+import { shareFec } from '../../src/lib/share-fec';
 import { useCustomers, useExpenses, useExportFec, useInvoices } from '../../src/data/hooks';
 import { useDocuments } from '../../src/data/documents';
 import {
@@ -335,7 +336,14 @@ export default function Documents() {
     exportFec.mutate(
       { from: `${today.slice(0, 7)}-01`, to: today },
       {
-        onSuccess: (out) => setToast(t('docs.exportDone', { personality, params: { filename: out.filename } })),
+        onSuccess: (out) => {
+          // C17 : le VRAI fichier part au comptable (feuille de partage native) ;
+          // repli honnête si le partage est indisponible — le FEC est généré, on le dit.
+          void shareFec(out).then((r) => {
+            if (r === 'unavailable')
+              setToast(t('docs.exportDone', { personality, params: { filename: out.filename } }));
+          });
+        },
         onError: () => setToast(t('docs.exportError', { personality })),
       },
     );

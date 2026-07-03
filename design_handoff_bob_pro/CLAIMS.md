@@ -814,7 +814,7 @@
   bloqué (shareFec écrit, non importé/bundlé) ; summarizeAccountingEntries livré (3 tests).
 
 ### C17 — Compta & conformité            <!-- kind: screen -->
-- status: IN-BUILD
+- status: MERGED
 - owner: claude-code (builder) · reviewer: gpt5pro (a posteriori)
 - depends-on: C14 (MERGED), C16 (MERGED)
 - target: apps/mobile/app/comptabilite.tsx (RÉÉCRITURE @bob/ui) + export FEC partageable
@@ -847,6 +847,27 @@
 - [17:05] claude-code CLAIM+PROPOSE+IN-BUILD : réserve C17 (C14+C16 MERGED). Constat de
   recouvrement avec la section C14 documenté — le claim se concentre sur le grand-livre
   et l'export partageable (valeur réelle pour l'artisan).
+- [21:50] claude-code (session B) HANDOFF+MERGE (régime « n'attends plus gpt ») : C17 v2 livré.
+  · Fausse alerte pnpm levée : expo-file-system 56.0.8 + expo-sharing 56.0.19 sont HOISTÉS à
+    la racine node_modules (pas dans apps/mobile/node_modules) — l'API File/Paths existe,
+    shareFec valide, RIEN à installer. Le blocage loggé à 15:12 n'en était pas un.
+  · Écran /comptabilite RÉÉCRIT 100 % @bob/ui : rangée « Fermer » + InnerScreenHeader
+    (pattern écrans poussés C25) · carte « Prêt pour le comptable » (summarizeAccountingEntries
+    @bob/core : compte mois, badge Équilibré/Déséquilibré success/danger, totaux D/C) ·
+    bouton export vert (désactivé à 0 écriture) · chips journaux dérivées de byJournal ·
+    bandeau compte+totaux FILTRÉS · écritures (StatusBadge journal, réf tabular-nums,
+    AccountingLinesView conservé) · paywall accounting_foundation conservé · lien /cloture.
+    Copy compta.* (22 clés ×3 humeurs, +compta.back). Zéro hex, zéro fixture, zéro calcul
+    dans l'écran.
+  · Export FEC PARTAGEABLE branché aux DEUX endroits (source unique src/lib/share-fec.ts) :
+    Comptabilité (exercice : 1er janv → aujourd'hui) + Documents (mois courant, toast en
+    repli 'unavailable' — honnête sur simulateur).
+  · Acceptance : capture device captures/c17-comptabilite.png (données réelles du seed :
+    F-2026-0001, écritures VE 411/4191/44571 + BQ 512/411, D=C 976,80 €, badge Équilibré,
+    chips Tous/Ventes/Banque, clôture) ✓ · tests core summarize 3 ✓ · i18n 39 ✓ ·
+    typecheck apps/mobile ZÉRO erreur ✓. status=MERGED.
+  · Suivi : partage réel du .txt à valider sur device physique (simulateur = repli toast,
+    documenté dans share-fec.ts).
 
 ---
 
@@ -1215,6 +1236,6 @@
 | C21 | MERGED | claude-code | gpt5pro | Flux validé 16:10 ; Stepper+SignaturePad livrés (réserve C03 soldée). |
 | C23 | MERGED | claude-code | gpt5pro | Diagnostic expert-comptable v2 livré 16:32 (audit réel + plan daté 3 axes). |
 | C25 | IN-BUILD | claude-code | gpt5pro | Relances réelles + Notifications — contrat 16:35, ferme TODO ①②. |
-| C17 | IN-BUILD | claude-code (session B) | gpt5pro | Contrat v2 posé par la session parallèle — export FEC partageable. |
+| C17 | MERGED | claude-code (session B) | gpt5pro | Grand-livre @bob/ui + export FEC partageable (shareFec ×2 écrans). |
 | C22 | IN-BUILD | claude-code A | gpt5pro | Onboarding adaptatif — contrat 21:47. |
 | C24, C26, C27, C41 | OPEN | — | — | Web C30 différé après mobile hi-fi. |

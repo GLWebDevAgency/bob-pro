@@ -291,6 +291,9 @@ importers:
 
   packages/api-client:
     dependencies:
+      '@bob/ai':
+        specifier: workspace:*
+        version: link:../ai
       '@bob/core':
         specifier: workspace:*
         version: link:../core

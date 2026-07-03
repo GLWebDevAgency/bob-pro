@@ -2399,6 +2399,7 @@ const fr = {
   },
 
   // ── C17 — écran « Comptabilité » (grand-livre) ──────────────────────────────
+  'compta.back': { pote: 'Fermer', pro: 'Fermer', direct: 'Fermer' },
   'compta.eyebrow': { pote: 'Ta compta', pro: 'Votre comptabilité', direct: 'Compta' },
   'compta.title': { pote: 'Comptabilité', pro: 'Comptabilité', direct: 'Comptabilité' },
   'compta.subtitle': {
