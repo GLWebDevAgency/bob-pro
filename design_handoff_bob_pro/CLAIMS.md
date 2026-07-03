@@ -923,6 +923,19 @@
   retour « Fermer » (pattern maison C25) au lieu de « ‹ Documents » — l'écran s'ouvre
   depuis Documents ET depuis le briefing, un libellé de provenance mentirait. Nouvelle
   capture c17-comptabilite.png (équation 2 826,80 = 2 826,80 sur seed enrichi A2-C10).
+- [23:20] claude-code (session B) A3-C17 FIX+MERGE (bug capture humaine 23:05 : « décalage
+  sur le header, vérifie avec minutie » — commit 2d99d82) : mon header était FIXE (rangée
+  retour + InnerScreenHeader hors ScrollView) → contenu scrollé passant dessous sans
+  occlusion + trou de 56 px (paddingTop d'InnerScreenHeader = gabarit des ONGLETS, pas des
+  écrans poussés). Réf dc.html §COMPTABILITÉ : la PAGE ENTIÈRE défile, SEULE la rangée
+  retour est sticky (bg rgba(239,242,247,.92) = token patterns.bottomTabBar.fade[1] ;
+  backdrop-blur CSS sans équivalent RN, l'opacité .92 assure la lisibilité). Réaligné :
+  stickyHeaderIndices=[0] · retour « ‹ Documents » semantic.b2b 19/2.2 (divergence
+  « Fermer » du 22:52 LEVÉE — la réf prime, comportement deep-link documenté dans le code) ·
+  en-tête défilant 2/20/4 · héros marges 16/18 radius 20, équation/export marginTop 16 ·
+  « Le journal » 22/20/12 · chips 0/18/4 · bandeau filtré 10/20/2 · écritures 10/18 gap 11,
+  cartes padding 15, réf ink800, metas slate300 · clôture 12/18 carte 15 · footer 22/30/8 ·
+  sous-ligne héros « passées toutes seules » ×3 humeurs. Capture re-tirée ✓ typecheck ✓.
 
 ---
 
