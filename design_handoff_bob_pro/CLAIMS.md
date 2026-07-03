@@ -713,10 +713,50 @@
   (un seul point d'entrée, C40). Détail complet dans le rapport d'agent (transcript C15).
 
 ### C16 — Détail pièce                   <!-- kind: screen -->
-- status: OPEN · depends-on: C03 · ref-capture: claims/ref/C16.png
+- status: IN-BUILD
+- owner: claude-code (builder) · reviewer: gpt5pro (a posteriori)
+- depends-on: C03 (MERGED)
+- ref-capture: réf extraite du dc.html §showPiece (268409→283k) · target: apps/mobile/app/devis/[id].tsx + facture/[id].tsx (RÉÉCRITURE @bob/ui, vue partagée)
 - spec: INTEGRATION_MAP.md §1/§5/§6/§7 · DOMAIN_MODEL.md
-- Contrat: vue paramétrée par kind (devis|facture|acompte|avoir|situation) depuis BillingDoc · header (n° sans trou, badge type+statut) · parties (partyLine adaptatif SIREN/B2C) · lignes catégorisées · Totals (acompte proportionnel) · mentions figées (badge « FIGÉ À L'ÉMISSION ») · nav croisée devis↔facture (parentQuoteId) · frise cycle de vie PDP/e-reporting/Chorus selon einvoiceFor · « Encaisser » (Émise→Payée + suivi).
-- Acceptance: test d'or acompte 488,40 · B2C sans SIREN · encaissement bascule statut+frise · avoir en négatif · situation d'avancement (%).
+
+#### Contrat (v2, claude-code — régimes en vigueur : données réelles, parité d'actions, use cases purs @bob/core, review a posteriori)
+- Composition (réf §showPiece) : header sticky (croix 38 r12, eyebrow kindLabel, n° 18/800
+  tabular, badge statut teinté 11.5/700) · cartes de NAV CROISÉE (devis↔facture lié : lavande
+  conformityCard + n° aiInk ; avoir émis : ambre ; situation : bleu acier — nouvelles teintes
+  tokens v1.5 `pieceDetail`) · carte parties (Émetteur + date · Client + badge type +
+  **partyLine adaptatif** : SIREN/TVA pour b2b/b2g, RIEN pour un particulier) · carte lignes
+  (label 14/600, badge catégorie segmentedTrack 10.5/700, PU € tabular + TVA %/ligne) +
+  totaux (HT/TVA 13.5/600 · TTC 19/800 ink900) + encart acompte devis (successBg,
+  « Acompte {pct} % à la commande : {montant} ») · Suivi de paiement (encaissé success ·
+  reste à encaisser 18/800 — **plafonné netToPay**, doctrine billing) + encart payé ·
+  encart e-reporting (B2C, ambre) OU frise transmission PDP/Chorus (5 étapes, dots teintés
+  par l'état dérivé du statut réel) · mentions légales (bullets) + badge « FIGÉ À L'ÉMISSION »
+  (cadenas, warning) si émise · barre sticky basse (fondu bg) : PDF (secondaire) + action
+  primaire par état (Encaisser / Envoyer / Relancer — parité d'actions : mêmes use cases que Bob).
+- **Use case pur @bob/core `buildPieceView`** (application/billing) : projections
+  invoice|quote + customer (+ liés parentQuoteId/avoir/situation) → vue complète
+  { kindKey, statusKey+tone, partyLine, lines, totals, deposit, suivi (paid/remaining
+  plafonné netToPay), transmission (canal einvoiceChannelFor + étapes par statut),
+  mentionsFrozen, primaryActionKey } — testé, dont TEST D'OR acompte 488,40 (30 % de
+  1 628,00 €), B2C sans SIREN, avoir en négatif, situation avancement %.
+- Données 100 % réelles : useInvoice/useQuote/useCustomers + InvoiceView.lines AJOUTÉ
+  (additif : l'entité domaine les porte déjà ; mappers local + api) ; états loading/erreur/
+  introuvable premiers ; AUCUNE fixture écran.
+- Copy : @bob/i18n piece.* ×3 humeurs. Tokens v1.5 : groupe `pieceDetail` (avoir ambre
+  #F0DEBE/#F6E4C6/#8A5A12/#6B4310 · situation #E9EFF7/#D3E0EF/#D7E3F2/#3B5B85 · lié
+  #6B5FC7) en miroir handoff↔package (parité).
+- Périmètre INTERDIT : devis/new.tsx + tout fichier du WIP C21/C40 (session parallèle).
+- Acceptance : capture simulateur (deep link) vs réf · test d'or 488,40 vert · B2C sans
+  SIREN vert · encaissement bascule statut+suivi (registerPayment réel) · avoir négatif ·
+  situation % · tests core/i18n · typecheck + token-lint clean.
+
+#### Signatures
+- [x] agreed — claude-code — 2026-07-03 (15:25) — régime humain, review gpt5pro a posteriori
+
+#### Log (append-only, horodaté)
+- [15:25] claude-code CLAIM+PROPOSE+IN-BUILD : réserve C16 (C03 MERGED ; C21/C40 IN-BUILD en
+  parallèle sur les FLUX devis — C16 = la VUE ; collision évitée par périmètre interdit).
+  Réf extraite ligne à ligne du dc.html §showPiece. Doctrine A1-C10 + use cases purs.
 
 ### C17 — Compta & conformité            <!-- kind: screen -->
 - status: OPEN · depends-on: C14, C16 · ref-capture: claims/ref/C17.png
