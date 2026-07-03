@@ -2,6 +2,10 @@ import { type DomainResult, ok, err } from '../shared-kernel/result';
 import { assertTransition } from '../domain/billing/shared/state-machines';
 import { type LineInput } from '../domain/billing/shared/line-item';
 
+// Dérivation pure transcript -> brouillon (client réel, lignes, TVA, moyen d'encaissement) —
+// même module de flow C20, ré-exporté ici pour surfacer via l'index sans toucher au reste du core.
+export * from './voice-invoice-draft';
+
 /**
  * Flow Facture à la voix (C20) — 3 étapes : écoute (onde) → revue pré-remplie → terminée.
  * PROJECTION pure : la reconnaissance vocale et la création de facture restent hors du

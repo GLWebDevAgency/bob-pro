@@ -1,6 +1,19 @@
 import { useCallback, useRef, useState } from 'react';
 import { Alert } from 'react-native';
-import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from 'expo-speech-recognition';
+// Module NATIF absent d'Expo Go : chargement paresseux + stubs sûrs (Rules of Hooks respectées —
+// le stub de hook est une fonction stable qui ne fait rien). En dev build, le vrai module est utilisé.
+type SpeechModule = typeof import('expo-speech-recognition');
+let speech: SpeechModule | null = null;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  speech = require('expo-speech-recognition') as SpeechModule;
+} catch {
+  speech = null; // Expo Go / simulateur sans module natif → secours texte de l'écran (C20)
+}
+export const speechRecognitionAvailable = speech !== null;
+const ExpoSpeechRecognitionModule = speech?.ExpoSpeechRecognitionModule ?? null;
+const useSpeechRecognitionEvent: SpeechModule['useSpeechRecognitionEvent'] =
+  speech?.useSpeechRecognitionEvent ?? ((() => undefined) as unknown as SpeechModule['useSpeechRecognitionEvent']);
 import {
   useAudioRecorder,
   AudioModule,
@@ -15,17 +28,30 @@ import { getVoiceMode } from './settings';
 import { useBobClient } from './client';
 import { appErrorMessage } from './hooks';
 
+/** Accroc du canal voix : refus micro, module natif absent (Expo Go), transcription ratée. */
+export type VoiceInputIssue = 'denied' | 'unavailable' | 'failed';
+
 /**
  * Entrée vocale de Bob. NATIF par défaut (expo-speech-recognition, sur l'appareil, gratuit) ;
  * CLOUD en option (enregistrement -> backend Whisper) selon le réglage. La voix n'est qu'un canal :
  * transcription -> onTranscript(text) -> MÊME cerveau Bob.
  * NB : nécessite un build natif (les modules micro ne tournent pas en bundle JS pur).
+ * `onIssue` (optionnel) : l'écran affiche l'état honnête lui-même (C20) au lieu des Alert historiques.
  */
-export function useVoiceInput(onTranscript: (text: string) => void) {
+export function useVoiceInput(
+  onTranscript: (text: string) => void,
+  opts: { onIssue?: (issue: VoiceInputIssue) => void } = {},
+) {
   const client = useBobClient();
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const [listening, setListening] = useState(false);
   const mode = useRef<'native' | 'cloud'>('native');
+  const onIssueRef = useRef(opts.onIssue);
+  onIssueRef.current = opts.onIssue;
+  const report = useCallback((issue: VoiceInputIssue, title: string, message: string): void => {
+    if (onIssueRef.current) onIssueRef.current(issue);
+    else Alert.alert(title, message);
+  }, []);
 
   // —— Événements de la reconnaissance NATIVE ——
   useSpeechRecognitionEvent('result', (e) => {
@@ -47,9 +73,13 @@ export function useVoiceInput(onTranscript: (text: string) => void) {
     mode.current = await getVoiceMode();
     try {
       if (mode.current === 'native') {
+        if (!ExpoSpeechRecognitionModule) {
+          report('unavailable', 'Dictée', "La dictée native n'est pas disponible ici.");
+          return;
+        }
         const perm = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
         if (!perm.granted) {
-          Alert.alert('Micro', 'Autorise le micro pour parler à Bob.');
+          report('denied', 'Micro', 'Autorise le micro pour parler à Bob.');
           return;
         }
         setListening(true);
@@ -57,7 +87,7 @@ export function useVoiceInput(onTranscript: (text: string) => void) {
       } else {
         const perm = await AudioModule.requestRecordingPermissionsAsync();
         if (!perm.granted) {
-          Alert.alert('Micro', 'Autorise le micro pour la dictée cloud.');
+          report('denied', 'Micro', 'Autorise le micro pour la dictée cloud.');
           return;
         }
         setListening(true);
@@ -66,14 +96,14 @@ export function useVoiceInput(onTranscript: (text: string) => void) {
       }
     } catch {
       setListening(false);
-      Alert.alert('Dictée', "Le micro n'a pas pu démarrer.");
+      report('unavailable', 'Dictée', "Le micro n'a pas pu démarrer.");
     }
-  }, [recorder]);
+  }, [recorder, report]);
 
   const stop = useCallback(async () => {
     try {
       if (mode.current === 'native') {
-        await ExpoSpeechRecognitionModule.stop();
+        await ExpoSpeechRecognitionModule?.stop();
         return;
       }
       // CLOUD : arrêter l'enregistrement -> base64 -> backend Whisper.
@@ -84,12 +114,12 @@ export function useVoiceInput(onTranscript: (text: string) => void) {
       const base64 = await readAsStringAsync(uri, { encoding: EncodingType.Base64 });
       const r = await client.transcribe({ audioBase64: base64, mimeType: 'audio/m4a' });
       if (r.ok && r.value.text) onTranscript(r.value.text);
-      else Alert.alert('Dictée', r.ok ? 'Rien compris, réessaie.' : appErrorMessage(r.error));
+      else report('failed', 'Dictée', r.ok ? 'Rien compris, réessaie.' : appErrorMessage(r.error));
     } catch {
       setListening(false);
-      Alert.alert('Dictée', 'La transcription a échoué.');
+      report('failed', 'Dictée', 'La transcription a échoué.');
     }
-  }, [recorder, client]);
+  }, [recorder, client, report]);
 
   return { listening, start, stop };
 }

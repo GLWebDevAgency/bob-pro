@@ -258,3 +258,38 @@ describe('i18n — C15 assistant.*', () => {
     );
   });
 });
+
+describe('i18n — C20 voix.*', () => {
+  it('copy pote exacte du proto (écoute, revue, issue, succès)', () => {
+    expect(t('voix.title')).toBe('Facture à la voix');
+    expect(t('voix.listening')).toBe('Je t’écoute…');
+    expect(t('voix.listenHint')).toBe('Parle normalement — adresse, prestation, prix, paiement.');
+    expect(t('voix.done')).toBe('C’est tout bon');
+    expect(t('voix.reviewLead')).toBe('Voilà ce que j’ai compris');
+    expect(t('voix.reviewSub')).toBe('Relis vite fait, et hop.');
+    expect(t('voix.doneTitlePaid')).toBe('Payé ! 💸');
+    expect(t('voix.finish')).toBe('Nickel, on continue');
+  });
+
+  it('décline les 3 humeurs et interpole {amount}/{name}/{number}/{rate}', () => {
+    expect(t('voix.listening', { personality: 'pro' })).toBe('Je vous écoute…');
+    expect(t('voix.doneTitlePaid', { personality: 'direct' })).toBe('Payé.');
+    expect(t('voix.collectCta', { params: { amount: '245,00 €' } })).toBe(
+      'Encaisser maintenant · 245,00 €',
+    );
+    expect(t('voix.vatRate', { params: { rate: 20 } })).toBe('TVA 20 %');
+    expect(
+      t('voix.donePaidText', { params: { amount: '245,00 €', number: 'F-2026-118' } }),
+    ).toBe('245,00 € encaissés. La facture F-2026-118 est émise, classée, et ta tréso est à jour.');
+    expect(
+      t('voix.confirmSendBody', { personality: 'pro', params: { name: 'Mme Durand', amount: '245,00 €' } }),
+    ).toBe('La facture de Mme Durand (245,00 €) sera émise avec son numéro légal.');
+  });
+
+  it('micro refusé/indisponible et erreurs : voix de Bob sur les 3 humeurs', () => {
+    expect(t('voix.micDenied', { personality: 'direct' })).toBe('Micro refusé. Réglages, ou écris.');
+    expect(t('voix.micUnavailable').length).toBeGreaterThan(0);
+    expect(t('voix.errNoLines')).toBe('Je n’ai pas entendu de prestation ni de montant — on réessaie ?');
+    expect(t('voix.errNoCustomer', { personality: 'pro' })).toBe('Sélectionnez le client avant de facturer.');
+  });
+});

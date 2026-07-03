@@ -1324,6 +1324,214 @@ const fr = {
     pro: 'Voir les offres',
     direct: 'Les offres',
   },
+
+  // ── C20 — flux « Facture à la voix » ─────────────────────────────────────────
+  // Étape 1 — écoute (fond navy, orbe micro, onde animée, transcription).
+  'voix.title': {
+    pote: 'Facture à la voix',
+    pro: 'Facture à la voix',
+    direct: 'Facture à la voix',
+  },
+  'voix.listening': {
+    pote: 'Je t’écoute…',
+    pro: 'Je vous écoute…',
+    direct: 'J’écoute.',
+  },
+  'voix.idle': {
+    pote: 'Appuie sur le micro et raconte-moi le chantier.',
+    pro: 'Touchez le micro et décrivez la prestation.',
+    direct: 'Micro, puis parle.',
+  },
+  'voix.listenHint': {
+    pote: 'Parle normalement — adresse, prestation, prix, paiement.',
+    pro: 'Parlez normalement — adresse, prestation, prix, paiement.',
+    direct: 'Adresse, prestation, prix, paiement.',
+  },
+  'voix.done': {
+    pote: 'C’est tout bon',
+    pro: 'Terminer la dictée',
+    direct: 'Tout bon',
+  },
+  'voix.close': {
+    pote: 'Fermer',
+    pro: 'Fermer',
+    direct: 'Fermer',
+  },
+  // Micro refusé / indisponible — état honnête, la saisie texte garde le flux utilisable.
+  'voix.micDenied': {
+    pote: 'Le micro est coupé pour Bob — autorise-le dans les réglages, ou écris ta facture juste en dessous.',
+    pro: 'L’accès au micro est refusé. Autorisez-le dans les réglages, ou saisissez la facture ci-dessous.',
+    direct: 'Micro refusé. Réglages, ou écris.',
+  },
+  'voix.micUnavailable': {
+    pote: 'Pas de dictée dispo ici — écris ta facture juste en dessous, ça marche pareil.',
+    pro: 'La dictée vocale est indisponible sur cet appareil. Saisissez la facture ci-dessous.',
+    direct: 'Pas de micro ici. Écris.',
+  },
+  'voix.micFailed': {
+    pote: 'J’ai raté la transcription — on réessaie, ou tu me l’écris ?',
+    pro: 'La transcription a échoué. Réessayez, ou saisissez le texte.',
+    direct: 'Transcription ratée. Réessaie ou écris.',
+  },
+  'voix.typePlaceholder': {
+    pote: 'Écris ta facture ici…',
+    pro: 'Saisissez la facture…',
+    direct: 'Écris ici…',
+  },
+  // Étape 2 — revue (facture pré-remplie, corrections).
+  'voix.reviewLead': {
+    pote: 'Voilà ce que j’ai compris',
+    pro: 'Voici ce que j’ai compris',
+    direct: 'Compris :',
+  },
+  'voix.reviewTitle': {
+    pote: 'Facture prête',
+    pro: 'Facture prête',
+    direct: 'Prête.',
+  },
+  'voix.reviewSub': {
+    pote: 'Relis vite fait, et hop.',
+    pro: 'Relisez rapidement avant de valider.',
+    direct: 'Relis. Go.',
+  },
+  'voix.retry': {
+    pote: 'Reprendre',
+    pro: 'Reprendre',
+    direct: 'Reprendre',
+  },
+  'voix.pickCustomer': {
+    pote: 'C’est pour qui ? Choisis le client :',
+    pro: 'Sélectionnez le client :',
+    direct: 'Le client ?',
+  },
+  'voix.catLabor': {
+    pote: 'Main d’œuvre',
+    pro: 'Main d’œuvre',
+    direct: 'Main d’œuvre',
+  },
+  'voix.catSupply': {
+    pote: 'Fourniture',
+    pro: 'Fourniture',
+    direct: 'Fourniture',
+  },
+  'voix.catTravel': {
+    pote: 'Déplacement',
+    pro: 'Déplacement',
+    direct: 'Déplacement',
+  },
+  'voix.totalHt': {
+    pote: 'Total HT',
+    pro: 'Total HT',
+    direct: 'Total HT',
+  },
+  'voix.vatRate': {
+    pote: 'TVA {rate} %',
+    pro: 'TVA {rate} %',
+    direct: 'TVA {rate} %',
+  },
+  'voix.totalTtc': {
+    pote: 'Total TTC',
+    pro: 'Total TTC',
+    direct: 'Total TTC',
+  },
+  // Étape 3 — issue : Encaisser vs Envoyer (préparer ≠ envoyer, confirmation explicite).
+  'voix.collectCta': {
+    pote: 'Encaisser maintenant · {amount}',
+    pro: 'Encaisser {amount}',
+    direct: 'Encaisser · {amount}',
+  },
+  'voix.sendCta': {
+    pote: 'Envoyer la facture',
+    pro: 'Envoyer la facture',
+    direct: 'Envoyer',
+  },
+  'voix.confirmCollectTitle': {
+    pote: 'Encaissement à confirmer',
+    pro: 'Encaissement à confirmer',
+    direct: 'Encaissement à confirmer',
+  },
+  'voix.confirmCollectBody': {
+    pote: 'J’émets la facture de {name} et j’encaisse {amount} — rien ne part sans ton OK.',
+    pro: 'La facture de {name} sera émise (numéro légal) puis encaissée : {amount}.',
+    direct: 'Émission + encaissement {amount} pour {name}.',
+  },
+  'voix.confirmSendTitle': {
+    pote: 'Envoi à confirmer',
+    pro: 'Envoi à confirmer',
+    direct: 'Envoi à confirmer',
+  },
+  'voix.confirmSendBody': {
+    pote: 'J’émets la facture de {name} ({amount}) avec son numéro légal, prête à partir.',
+    pro: 'La facture de {name} ({amount}) sera émise avec son numéro légal.',
+    direct: 'Émission facture {name} · {amount}.',
+  },
+  // Succès (écran vert) + toast au retour Aujourd'hui.
+  'voix.doneTitlePaid': {
+    pote: 'Payé ! 💸',
+    pro: 'Paiement reçu',
+    direct: 'Payé.',
+  },
+  'voix.donePaidText': {
+    pote: '{amount} encaissés. La facture {number} est émise, classée, et ta tréso est à jour.',
+    pro: '{amount} encaissés. Facture {number} émise, classée, trésorerie mise à jour.',
+    direct: '{amount} encaissés. {number} émise, classée.',
+  },
+  'voix.doneTitleSent': {
+    pote: 'C’est parti !',
+    pro: 'Facture envoyée',
+    direct: 'Envoyée.',
+  },
+  'voix.doneSentText': {
+    pote: 'La facture {number} de {name} est émise et prête à partir. Je surveille et je relance si besoin.',
+    pro: 'La facture {number} de {name} est émise. Suivi et relances automatiques.',
+    direct: '{number} émise pour {name}. Relance auto si besoin.',
+  },
+  'voix.doneInvoiceLabel': {
+    pote: 'Facture',
+    pro: 'Facture',
+    direct: 'Facture',
+  },
+  'voix.doneComptaLabel': {
+    pote: 'Compta',
+    pro: 'Comptabilité',
+    direct: 'Compta',
+  },
+  'voix.doneComptaValue': {
+    pote: 'À jour ✓',
+    pro: 'À jour ✓',
+    direct: 'À jour ✓',
+  },
+  'voix.finish': {
+    pote: 'Nickel, on continue',
+    pro: 'Continuer',
+    direct: 'Suite.',
+  },
+  'voix.toastPaid': {
+    pote: '{amount} encaissés ✓',
+    pro: '{amount} encaissés ✓',
+    direct: '{amount} ✓',
+  },
+  'voix.toastSent': {
+    pote: 'Facture {number} émise ✓',
+    pro: 'Facture {number} émise ✓',
+    direct: '{number} émise ✓',
+  },
+  // Erreurs — la voix de Bob, jamais un code (A1-C10).
+  'voix.errNoLines': {
+    pote: 'Je n’ai pas entendu de prestation ni de montant — on réessaie ?',
+    pro: 'Aucune prestation ou montant reconnu. Veuillez réessayer.',
+    direct: 'Pas de montant. Réessaie.',
+  },
+  'voix.errNoCustomer': {
+    pote: 'Il me faut le client avant de facturer — choisis-le ci-dessus.',
+    pro: 'Sélectionnez le client avant de facturer.',
+    direct: 'Choisis le client.',
+  },
+  'voix.errAction': {
+    pote: 'L’action a échoué — rien n’est perdu, on réessaie ?',
+    pro: 'L’action a échoué. Veuillez réessayer.',
+    direct: 'Raté. Réessaie.',
+  },
 } as const satisfies Record<string, Copy>;
 
 export type I18nKey = keyof typeof fr;

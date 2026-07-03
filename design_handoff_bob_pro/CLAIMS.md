@@ -714,7 +714,7 @@
 ## Flux — parallélisables (après C03 ; certains dépendent d'écrans)
 
 ### C20 — Facture à la voix              <!-- kind: flow -->
-- status: IN-BUILD
+- status: MERGED
 - owner: claude-code (builder) · reviewer: gpt5pro (a posteriori)
 - depends-on: C03 (MERGED), C02 (flows/voiceInvoice MERGED), C15 (assistant MERGED)
 - ref-capture: claims/ref/C20-frame-p1.png + p2 · target: apps/mobile/app/voix.tsx (route à créer) + hooks
@@ -746,6 +746,21 @@
 #### Log (append-only, horodaté)
 - [11:12] claude-code CLAIM+PROPOSE+IN-BUILD: réfs déjà capturées (p1/p2). La machine à états C02 et le
   pipeline vocal @bob/ai existent — le claim est l'ÉCRAN du flux + le câblage réel + les entrées C10/C15.
+- [13:26] claude-code HANDOFF+MERGE (régime humain): flux livré et validé simulateur — capture
+  claims/shots/C20-p1.png conforme (navy profond, orbe verte, onde 7 barres animée SANS opacity-0,
+  voix Bob, CTA gaté). Machine RÉELLE @bob/core pilote les 3 étapes ; NOUVEAU voice-invoice-draft
+  (dérivation pure transcript→brouillon, 5 tests : client reconnu parmi les customers réels, jamais un
+  centime inventé, « total TTC » borne le document) ; STT réel (natif/Voxtral) avec SECOURS TEXTE honnête
+  (fix : module natif expo-speech-recognition chargé PARESSEUSEMENT — absent d'Expo Go, il crashait la
+  route ; stub sûr + speechRecognitionAvailable) ; issue = confirmation explicite ConfirmSheet/challengeFor
+  puis LA chaîne UI réelle (createQuote→sendQuote→signQuote→generateInvoice→issueInvoice[→registerPayment])
+  → succès numéro légal réel → retour Aujourd'hui. Entrées rebranchées : QuickAction voix (C10) + micro
+  assistant (C15) → /voix. PARITÉ : TODO ③④ de l'audit RÉSOLUS — registre @bob/ai extensible par capacités
+  optionnelles de l'hôte, outils creer_devis (draft) + scan_depense (accounting+safetyFloor) branchés sur
+  les MÊMES use cases côté mobile ; restes tracés C40 (intents chat → invocation directe via classifieur
+  LLM serveur ; journal on-device ⑧ inchangé). Validations : i18n 29/29 (36 clés voix.*) · core 308/308 ·
+  ai 132/132 · typecheck 16/16 · token-lint clean. Écarts assumés au rapport (SMS→émission = frontière C40,
+  VoiceOrb legacy non réutilisé — hex hors tokens). status=MERGED.
 
 ### C21 — Devis → signature → facture     <!-- kind: flow -->
 - status: OPEN · depends-on: C03, C16 · ref-capture: claims/ref/C21.png
@@ -825,5 +840,5 @@
 | C12 | MERGED | claude-code | gpt5pro | Écran validé simulateur 08:02 (4 330 € = proto), review a posteriori. |
 | C13 | MERGED | claude-code | gpt5pro | Fiche validée simulateur 08:47, review a posteriori. |
 | C15 | MERGED | claude-code | gpt5pro | Chat sur agent réel validé 11:10 ; audit parité : 9 OK / 8 TODO (① journal on-device prioritaire). |
-| C20 | IN-BUILD | claude-code | gpt5pro | Flux voix sur machine réelle — contrat 11:12. |
+| C20 | MERGED | claude-code | gpt5pro | Flux 3 étapes validé 13:26 ; TODO parité ③④ résolus. |
 | C16–C41 | OPEN | — | — | Écrans/flux au fil de l'eau ; web C30 différé. |

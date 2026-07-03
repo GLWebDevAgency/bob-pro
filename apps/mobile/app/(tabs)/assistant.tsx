@@ -4,7 +4,7 @@
  * dégradé IA, pill statut, sous-titre assistant.subtitle) → fil de chat (bulle
  * d'accueil voix Bob, bulles user/Bob, indicateur de saisie 3 points animés, cartes
  * d'action avec aperçu avant/après + Valider/Annuler) → chips suggestions du proto →
- * input « Demande-moi un truc… » + micro (TODO C20) + envoi.
+ * input « Demande-moi un truc… » + micro (→ /voix, C20) + envoi.
  *
  * BRANCHEMENT 100 % RÉEL (couche présentation refaite, transport conservé) : le fil
  * parle au VRAI agent — makeBobAgent(client) → BobAgent (@bob/ai : intents, autonomie,
@@ -23,8 +23,8 @@
  * RÉELLE de l'agent (onPhase comprends/agit) sur l'indicateur de saisie.
  *
  * Écarts assumés vs réf/ancien écran :
- * · mode vocal mains-libres (VoiceOrb + STT/TTS) retiré de CET écran — le micro est le
- *   point d'entrée TODO C20 ; confirmByVoice (@bob/ai) et data/voice restent intacts ;
+ * · mode vocal mains-libres (VoiceOrb + STT/TTS) retiré de CET écran — le micro ouvre le
+ *   flux /voix (C20) ; confirmByVoice (@bob/ai) et data/voice restent intacts ;
  * · badges « plan · modèle » de l'ancien écran non repris (le proto n'affiche pas de
  *   télémétrie — choix produit ThinkingIndicator conservé) ;
  * · dégradés via tokens (conformityCard.bgTop→bg · ai→indigo.d2), pas les hex du proto ;
@@ -597,11 +597,11 @@ export default function Assistant() {
               onSubmitEditing={() => void ask(input)}
               style={[font('body'), { flex: 1, padding: 0, color: colors.ink800 }]}
             />
-            {/* Micro — TODO C20 (Facture à la voix) : point d'entrée accessible, no-op. */}
+            {/* Micro — entrée du flux « Facture à la voix » (C20). */}
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel={t('assistant.micSoon', { personality })}
-              onPress={() => undefined}
+              accessibilityLabel={t('voix.title', { personality })}
+              onPress={() => router.push('/voix')}
               style={{
                 width: 38,
                 height: 38,

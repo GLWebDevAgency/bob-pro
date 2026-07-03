@@ -1,4 +1,4 @@
-import { type Result, type AppError } from '@bob/core';
+import { type Result, type AppError, type LineInput, type ExpenseCategory } from '@bob/core';
 
 export interface PayableInvoice {
   id: string;
@@ -32,6 +32,23 @@ export interface AgentDocument {
   createdAt: string;
 }
 
+/** Outil creer_devis (parité C15 TODO ④) — mêmes entrées que le use case CreateQuote de l'UI. */
+export interface CreateQuoteActionInput {
+  customerId: string;
+  lines: LineInput[];
+  depositPct?: number;
+}
+
+/** Outil scan_depense (parité C15 TODO ③) — mêmes entrées que RecordExpense (l'OCR reste côté UI). */
+export interface RecordExpenseActionInput {
+  supplierName: string;
+  totalTtcCents: number;
+  category: ExpenseCategory;
+  /** DateOnly (YYYY-MM-DD) — défaut : aujourd'hui, résolu par l'hôte (device/serveur). */
+  documentDate?: string;
+  vatRatePct?: number | null;
+}
+
 /**
  * Surface d'actions de Bob — implémentée par l'app via le BobClient (donc le domaine/use cases).
  * INVARIANT DE PARITÉ : chaque action faisable à la main dans l'UI a ici sa méthode, et les deux
@@ -54,4 +71,9 @@ export interface BobActions {
   }): Promise<Result<{ status: string }, AppError>>;
   sendQuote(input: { quoteId: string }): Promise<Result<{ number: string }, AppError>>;
   issueInvoice(input: { invoiceId: string }): Promise<Result<{ number: string }, AppError>>;
+  // —— Mutation, OPTIONNELLES (parité C15 TODO ③④, C20) ——
+  // Optionnelles pour rester rétro-compatibles avec les hôtes existants (apps/api) : le registre
+  // n'expose l'outil que si l'hôte fournit l'action — même use case que l'UI, jamais un chemin parallèle.
+  createQuote?(input: CreateQuoteActionInput): Promise<Result<{ quoteId: string }, AppError>>;
+  recordExpense?(input: RecordExpenseActionInput): Promise<Result<{ id: string }, AppError>>;
 }

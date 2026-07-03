@@ -13,6 +13,12 @@ import type { BobClient } from '@bob/api-client';
 const PAYABLE = new Set(['issued', 'partially_paid', 'late']);
 const SENDABLE_QUOTE = new Set(['draft', 'sent', 'viewed']); // devis qu'on peut (r)envoyer au client
 
+/** DateOnly locale du device — la date d'une dépense se juge en calendrier local, pas UTC. */
+function localDateOnly(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 /**
  * Construit l'agent Bob pour l'app : ses ACTIONS s'appuient sur le BobClient (donc les mêmes use cases
  * que l'UI manuelle) — parité totale. Les clés LLM vivent côté backend ; sur le device, le routeur
@@ -110,6 +116,28 @@ export function makeBobAgent(client: BobClient): BobAgent {
     },
     async issueInvoice(input) {
       return client.issueInvoice({ invoiceId: input.invoiceId });
+    },
+    // —— Parité C15 TODO ④ : outil creer_devis — même use case CreateQuote que l'écran devis ——
+    async createQuote(input) {
+      const r = await client.createQuote({
+        customerId: input.customerId,
+        lines: input.lines,
+        ...(input.depositPct !== undefined ? { depositPct: input.depositPct } : {}),
+      });
+      if (!r.ok) return r;
+      return ok({ quoteId: r.value.quoteId });
+    },
+    // —— Parité C15 TODO ③ : outil scan_depense — même use case RecordExpense que l'écran Documents
+    // (l'extraction OCR reste côté UI : Bob enregistre une dépense déjà chiffrée, jamais inventée) ——
+    async recordExpense(input) {
+      return client.recordExpense({
+        supplierName: input.supplierName,
+        documentDate: input.documentDate ?? localDateOnly(),
+        totalTtcCents: input.totalTtcCents,
+        category: input.category,
+        vatRatePct: input.vatRatePct ?? null,
+        source: 'manual',
+      });
     },
   };
   return new BobAgent({ router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }), actions });

@@ -296,3 +296,23 @@ export function FileIcon({ color, size = 16, strokeWidth = 2 }: IconProps) {
     </Svg>
   );
 }
+
+/* ── Flux « Facture à la voix » (C20) — tracés exacts du proto §showVoice ──── */
+
+/** Fermer — croix des surcouches plein écran (16/2.2 sur pastille). */
+export function CloseIcon({ color, size = 16, strokeWidth = 2.2 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" stroke={color} strokeWidth={strokeWidth} {...common}>
+      <Path d="M6 6l12 12M18 6L6 18" />
+    </Svg>
+  );
+}
+
+/** Coche — succès (écran vert 48/2.6, toast 16). */
+export function CheckIcon({ color, size = 16, strokeWidth = 2.6 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" stroke={color} strokeWidth={strokeWidth} {...common}>
+      <Path d="M4 12.5l5 5L20 6.5" />
+    </Svg>
+  );
+}

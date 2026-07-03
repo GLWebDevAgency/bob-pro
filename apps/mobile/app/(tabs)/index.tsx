@@ -18,7 +18,7 @@
  * · relance          → /(tabs)/assistant (prompt assistant → runtime agent, use cases relance @bob/core) ;
  * · facture finale   → /ventes (écran ventes → generate-invoice-from-quote, le use case que Bob invoque) ;
  * · diagnostic       → /diagnostic (getDiagnostic — même query que Bob) ;
- * · « Vite fait »    : voix → /(tabs)/assistant (TODO C20) · devis → /devis/new ·
+ * · « Vite fait »    : voix → /voix (C20 — flux facture à la voix) · devis → /devis/new ·
  *                      scan → /scan-document · encaisser → /ventes (register-payment).
  *
  * Densité Zen : masque « En un coup d'œil » + « Vite fait ». Zéro hex/rgba : useTheme()/@bob/tokens.
@@ -428,7 +428,7 @@ export default function Aujourdhui() {
                   label={t('today.quickVoice', { personality })}
                   tone="success"
                   icon={<Feather name="mic" size={18} color={semantic.success} />}
-                  onPress={() => router.push('/(tabs)/assistant')} // TODO C20 — facture à la voix
+                  onPress={() => router.push('/voix')} // C20 — flux facture à la voix
                 />
                 <QuickAction
                   style={{ flex: 1 }}
