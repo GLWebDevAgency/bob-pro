@@ -1,5 +1,5 @@
 /**
- * Bob Pro — Design Tokens (figés, v1.3)
+ * Bob Pro — Design Tokens (figés, v1.4)
  * Source unique de vérité pour apps/mobile (React Native) ET apps/web (Next.js).
  * Primitives neutres + sémantiques + 4 thèmes de marque. Zéro dépendance.
  *
@@ -207,6 +207,29 @@ export const conformityCard = {
   bgTop: '#F3F1FE', // dégradé 180° — haut
   bgBottom: '#FBFAFF', // dégradé 180° — bas
   border: '#E3DEFB',
+} as const;
+
+/** Écran Documents — coffre-fort & compta (v1.4, réf dc.html §isDocs). */
+export const vault = {
+  aiDeep: '#6D28D9', // violet fournisseur/OCR (badge, dossier Fiscal, mémoire)
+  aiDeepBg: '#E5DBF6', // puce du bandeau mémoire fournisseurs
+  scanChipBg: 'rgba(124,108,246,.2)', // puce caméra de la carte Scan (sur dégradé cta)
+  scanChipBorder: 'rgba(124,108,246,.34)',
+  scanChipIcon: '#B7AEFB',
+  scanShadow: '0 10px 24px rgba(12,35,64,.2)',
+  metricChipBg: '#F6F8FA', // chips Montant / TVA / Date de la carte à valider
+  toValidateBorder: '#ECEAFB', // bordure lavande de la carte à valider
+  thumbTop: '#F1F3F7', // vignette document (dégradé 160°)
+  thumbBottom: '#E2E7EF',
+  thumbBorder: '#DCE2EA',
+  thumbBar: '#C9D2DD',
+  monthReadyTop: '#F0F7F3', // carte « mois prêt » (dégradé 180°)
+  monthReadyBottom: '#FBFEFC',
+  monthReadyBorder: '#DCEDE3',
+} as const;
+
+export const vaultShadowNative = {
+  scan: { shadowColor: '#0C2340', shadowOpacity: 0.2, shadowRadius: 24, shadowOffset: { width: 0, height: 10 }, elevation: 8 },
 } as const;
 
 // Ombres de composants (v1.2, redlines) — web string + équivalent RN

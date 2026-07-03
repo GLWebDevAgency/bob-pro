@@ -4,7 +4,10 @@ import { type Instant } from '../../shared-kernel/time';
 import { assertTransition, type TransmissionStatus, TRANSMISSION_TRANSITIONS } from '../billing/shared/state-machines';
 
 // 'pa' = Plateforme Agréée (terme officiel 2026/2027 remplaçant « PDP »).
-export type EinvoiceChannel = 'pa' | 'chorus_pro' | 'ereporting';
+// Source unique du type : domain/services/einvoice-for (règle par type de client, C13) —
+// ré-exporté ici pour l'agrégat de transmission sans double déclaration (TS2308 au barrel).
+import { type EinvoiceChannel } from '../services/einvoice-for';
+export { type EinvoiceChannel };
 
 /** Agrégat Compliance — cycle de transmission e-invoice (issued -> transmitted -> received -> accepted/refused -> paid). */
 export class EinvoiceTransmission extends AggregateRoot<string> {

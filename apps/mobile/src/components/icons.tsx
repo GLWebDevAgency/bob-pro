@@ -168,3 +168,118 @@ export function PlusIcon({ color, size = 22, strokeWidth = 2.4 }: IconProps) {
     </Svg>
   );
 }
+
+/* ── Fiche client (C13) ───────────────────────────────────────────────────── */
+
+/** Chevron ‹ — barre retour « ‹ Clients » (18/2.2 ink800). */
+export function ChevronLeftIcon({ color, size = 18, strokeWidth = 2.2 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" stroke={color} strokeWidth={strokeWidth} {...common}>
+      <Path d="M15 6l-6 6 6 6" />
+    </Svg>
+  );
+}
+
+/** « … » — menu de la fiche (3 points pleins, pastille du header). */
+export function EllipsisIcon({ color, size = 18 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24">
+      <Circle cx={5} cy={12} r={1.7} fill={color} />
+      <Circle cx={12} cy={12} r={1.7} fill={color} />
+      <Circle cx={19} cy={12} r={1.7} fill={color} />
+    </Svg>
+  );
+}
+
+/** Document à coin plié + lignes — tuile « Devis » et rangées d'activité (lucide file-text). */
+export function FileTextIcon({ color, size = 18, strokeWidth = 2 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" stroke={color} strokeWidth={strokeWidth} {...common}>
+      <Path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
+      <Path d="M14 3v5h5" />
+      <Path d="M9 13h6" />
+      <Path d="M9 17h6" />
+    </Svg>
+  );
+}
+
+/** Avion papier — tuile « Relancer » (lucide send). */
+export function SendIcon({ color, size = 18, strokeWidth = 2 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" stroke={color} strokeWidth={strokeWidth} {...common}>
+      <Path d="M22 2L11 13" />
+      <Path d="M22 2l-7 20-4-9-9-4z" />
+    </Svg>
+  );
+}
+
+/** Combiné — tuile « Appeler » (lucide phone). */
+export function PhoneIcon({ color, size = 18, strokeWidth = 2 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" stroke={color} strokeWidth={strokeWidth} {...common}>
+      <Path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z" />
+    </Svg>
+  );
+}
+
+/** Enveloppe — tuile « Email » (lucide mail). */
+export function MailIcon({ color, size = 18, strokeWidth = 2 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" stroke={color} strokeWidth={strokeWidth} {...common}>
+      <Rect x={3} y={5} width={18} height={14} rx={2} />
+      <Path d="M3 7l9 6 9-6" />
+    </Svg>
+  );
+}
+
+/* ── Écran Documents (C14) — tracés exacts du proto §isDocs ───────────────── */
+
+/** Tuile dossier — dossier plat 18/2 (différent du dossier à onglet de la tab bar). */
+export function FolderSmallIcon({ color, size = 18, strokeWidth = 2 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" stroke={color} strokeWidth={strokeWidth} {...common}>
+      <Path d="M3 7h5l2 2h11a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1z" />
+    </Svg>
+  );
+}
+
+/** « Mois prêt pour le comptable » — presse-papiers coché 17/2 success. */
+export function ClipboardCheckIcon({ color, size = 17, strokeWidth = 2 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" stroke={color} strokeWidth={strokeWidth} {...common}>
+      <Path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" />
+      <Rect x={9} y={2} width={6} height={4} rx={1} />
+      <Path d="M9 14l2 2 4-4" />
+    </Svg>
+  );
+}
+
+/** Mémoire fournisseurs — bulle de dialogue 16/2 violet deep. */
+export function ChatIcon({ color, size = 16, strokeWidth = 2 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" stroke={color} strokeWidth={strokeWidth} {...common}>
+      <Path d="M4 4h16v12H5.2L4 17.2z" />
+      <Path d="M8 9h8" />
+      <Path d="M8 12h5" />
+    </Svg>
+  );
+}
+
+/** Suggestion IA de la carte « À valider » — petite étincelle 15/2 indigo. */
+export function SparkSmallIcon({ color, size = 15, strokeWidth = 2 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" stroke={color} strokeWidth={strokeWidth} {...common}>
+      <Path d="M12 3l1.6 4.6L18 9l-4.4 1.4L12 15l-1.6-4.6L6 9l4.4-1.4z" />
+    </Svg>
+  );
+}
+
+/** Rangée facture récente — fichier à coin plié 16/2 (tracé Feather « file » du proto). */
+export function FileIcon({ color, size = 16, strokeWidth = 2 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" stroke={color} strokeWidth={strokeWidth} {...common}>
+      <Path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <Path d="M14 2v6h6" />
+    </Svg>
+  );
+}

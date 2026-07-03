@@ -201,3 +201,31 @@ export function pendingTotalCents(standings: readonly CustomerStanding[]): numbe
     0,
   );
 }
+
+/** Borne basse de la fenêtre « 12 derniers mois » (année − 1, 29 févr. → 28 févr.). */
+function oneYearBefore(today: DateOnly): DateOnly {
+  const year = Number(today.slice(0, 4)) - 1;
+  const monthDay = today.slice(5) === '02-29' ? '02-28' : today.slice(5);
+  return `${year}-${monthDay}`;
+}
+
+/**
+ * CA des 12 derniers mois d'un client (centimes) — KPI « CA 12 mois » de la fiche C13.
+ * Σ netToPay des factures ENGAGÉES (hors brouillon/annulée), avoirs déduits : netToPay
+ * (jamais ttc) somme acompte + finale sans double compte. La fenêtre se juge sur `dueAt`
+ * — seule date exposée par la vue facture — bornée à « aujourd'hui − 12 mois » ; une
+ * échéance future reste du CA courant, une facture engagée sans échéance connue compte.
+ * Le caller passe les factures DU client (fonction pure, aucune I/O).
+ */
+export function revenueLast12MonthsCents(
+  invoices: readonly StandingInvoiceData[],
+  today: DateOnly,
+): number {
+  const from = oneYearBefore(today);
+  return invoices.reduce((sum, invoice) => {
+    if (invoice.status === 'draft' || invoice.status === 'cancelled') return sum;
+    if (invoice.dueAt !== null && invoice.dueAt < from) return sum;
+    const signed = invoice.kind === 'credit_note' ? -invoice.totals.netToPay : invoice.totals.netToPay;
+    return sum + signed;
+  }, 0);
+}

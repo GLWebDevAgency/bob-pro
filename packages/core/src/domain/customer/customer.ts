@@ -48,6 +48,12 @@ export class Customer {
   get siren(): string | undefined {
     return this.p.siren;
   }
+  get email(): string | undefined {
+    return this.p.email;
+  }
+  get phone(): string | undefined {
+    return this.p.phone;
+  }
   get outstanding(): number {
     return this.p.outstanding;
   }

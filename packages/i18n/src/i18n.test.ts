@@ -131,9 +131,83 @@ describe('i18n', () => {
     expect(t('clients.dataError').length).toBeGreaterThan(0);
   });
 
+  it('fiche.* : copy du contrat C13 (score par tranche, conformité PA, actions)', () => {
+    expect(t('fiche.scoreTitle')).toBe('Score de paiement');
+    expect(t('fiche.scoreBad')).toBe('Paiements difficiles — reste vigilant');
+    expect(t('fiche.scoreGood')).toBe('Bon payeur — nickel');
+    expect(t('fiche.compliBodyPa')).toBe('Plateforme détectée · SIREN vérifié ✓ Tout est prêt.');
+    expect(t('fiche.actionQuote')).toBe('Devis');
+    expect(t('fiche.actionRelance')).toBe('Relancer');
+    expect(t('fiche.actionCall')).toBe('Appeler');
+    expect(t('fiche.actionEmail')).toBe('Email');
+  });
+
+  it('fiche.scoreMid interpole {days} sur les 3 humeurs (légende 50–75)', () => {
+    expect(t('fiche.scoreMid', { params: { days: 22 } })).toBe('À surveiller · délai moyen 22 j');
+    expect(t('fiche.scoreMid', { personality: 'pro', params: { days: 22 } })).toBe(
+      'À surveiller · délai moyen de 22 jours',
+    );
+    expect(t('fiche.scoreMid', { personality: 'direct', params: { days: 22 } })).toBe(
+      'À surveiller · 22 j de délai',
+    );
+  });
+
+  it('fiche : CTA sticky par standing ({doc}/{amount}) et partyLine adaptatif b2b/b2g', () => {
+    expect(t('fiche.ctaRelanceDoc', { params: { doc: 'F-2026-088', amount: '1 240 €' } })).toBe(
+      'Relancer F-2026-088 · 1 240 €',
+    );
+    expect(t('fiche.ctaRelanceQuote')).toBe('Relancer le devis');
+    expect(t('fiche.ctaNewQuote')).toBe('Nouveau devis');
+    expect(t('fiche.badgeB2b')).toBe('Entreprise');
+    expect(t('fiche.sirenLabel', { params: { siren: '821 503 642' } })).toBe('SIREN 821 503 642');
+    expect(t('fiche.statusLate', { personality: 'direct', params: { days: 9 } })).toBe('Retard 9 j');
+    expect(t('fiche.notFound').length).toBeGreaterThan(0);
+    expect(t('fiche.dataError', { personality: 'pro' }).length).toBeGreaterThan(0);
+  });
+
   it('refuse une clé inconnue à la compilation', () => {
     // @ts-expect-error — 'cle.inconnue' n'est pas une I18nKey : garantie compile-time.
     const invalid: () => string = () => t('cle.inconnue');
     expect(typeof invalid).toBe('function');
+  });
+});
+
+describe('i18n — C14 docs.*', () => {
+  it('décline le coffre-fort sur les 3 humeurs', () => {
+    expect(t('docs.subtitle')).toBe('Je classe, tu retrouves. Même 3 ans après.');
+    expect(t('docs.subtitle', { personality: 'pro' })).toBe(
+      'Classement automatique, retrouvable des années après.',
+    );
+    expect(t('docs.subtitle', { personality: 'direct' })).toBe('Je classe. Tu retrouves.');
+  });
+
+  it('interpole le résumé du mois et la mémoire fournisseurs', () => {
+    expect(t('docs.monthReadyTitle', { params: { month: 'Juillet' } })).toBe(
+      'Juillet est prêt pour le comptable',
+    );
+    expect(t('docs.monthVat', { params: { amount: '31 €' } })).toBe('TVA récup. 31 €');
+    expect(t('docs.memoryBody', { params: { examples: 'Leroy Merlin, Cedeo', count: 4 } })).toBe(
+      'J’ai reconnu Leroy Merlin, Cedeo… 4 fournisseurs mémorisés pour classer plus vite.',
+    );
+    expect(t('docs.memoryBodyOne', { params: { examples: 'Cedeo' } })).toBe(
+      'J’ai reconnu Cedeo — 1 fournisseur mémorisé pour classer plus vite.',
+    );
+  });
+
+  it('pluralise dossiers, justificatifs et footer (One/None séparés)', () => {
+    expect(t('docs.folderCount', { params: { count: 38 } })).toBe('38 documents');
+    expect(t('docs.folderCountOne')).toBe('1 document');
+    expect(t('docs.folderCountNone')).toBe('Vide');
+    expect(t('docs.monthMissingOne')).toBe('1 justificatif manquant');
+    expect(t('docs.footer', { params: { count: 141 } })).toBe(
+      '141 documents · chiffré et sauvegardé',
+    );
+    expect(t('docs.footerOne')).toBe('1 document · chiffré et sauvegardé');
+  });
+
+  it('sous-titres factures récentes par canal (proto : PDP / e-reporting / Chorus)', () => {
+    expect(t('docs.recentSubB2b', { params: { kind: 'Acompte' } })).toBe('Acompte · B2B → PDP');
+    expect(t('docs.recentSubB2c')).toBe('Particulier · B2C → e-reporting');
+    expect(t('docs.recentSubB2g', { personality: 'direct' })).toBe('B2G → Chorus');
   });
 });

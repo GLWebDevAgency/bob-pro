@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { einvoiceFor } from './einvoice-for';
+import { einvoiceChannelFor, einvoiceFor } from './einvoice-for';
 import { Company, type CompanyProps } from '../company/company';
 import { Customer, type CustomerProps } from '../customer/customer';
 
@@ -50,5 +50,14 @@ describe('einvoiceFor', () => {
     const p = einvoiceFor(cu({ type: 'b2c' }), co());
     expect(p.channel).toBe('ereporting');
     expect(p.ereportingKind).toBe('transactions');
+  });
+
+  it('einvoiceChannelFor (projections, fiche C13) = même règle que les entités', () => {
+    expect(einvoiceChannelFor('b2g')).toBe('chorus_pro');
+    expect(einvoiceChannelFor('b2b')).toBe('pa');
+    expect(einvoiceChannelFor('b2c')).toBe('ereporting');
+    for (const type of ['b2c', 'b2b', 'b2g'] as const) {
+      expect(einvoiceFor(cu({ type, siren: '732829320' }), co()).channel).toBe(einvoiceChannelFor(type));
+    }
   });
 });

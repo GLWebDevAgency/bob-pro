@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   deriveCustomerStandings,
   pendingTotalCents,
+  revenueLast12MonthsCents,
   type CustomerStanding,
   type DeriveCustomerStandingsInput,
   type StandingCustomerData,
@@ -133,5 +134,34 @@ describe('deriveCustomerStandings', () => {
     );
     // Avoir « encaissable » exclu de l'encours ; l'avoir émis compte comme historique engagé → à jour.
     expect(s).toEqual({ customerId: 'cust-1', kind: 'a_jour', amountCents: 0, daysLate: 0 });
+  });
+});
+
+describe('revenueLast12MonthsCents (KPI « CA 12 mois » de la fiche C13)', () => {
+  it('Σ netToPay des factures engagées de la fenêtre — acompte + finale sans double compte', () => {
+    // Devis proto 1 628 € ttc : acompte 30 % net 488,40 € + finale net 1 139,60 € = 1 628 €.
+    const cents = revenueLast12MonthsCents(
+      [
+        invoice({ customerId: 'c', kind: 'deposit', status: 'paid', totals: { netToPay: 48840 }, dueAt: '2026-05-10' }),
+        invoice({ customerId: 'c', kind: 'final', status: 'issued', totals: { netToPay: 113960 }, dueAt: '2026-07-20' }),
+      ],
+      TODAY,
+    );
+    expect(cents).toBe(162800);
+  });
+
+  it('exclut brouillons/annulées et la facture échue il y a plus de 12 mois ; déduit les avoirs ; garde la facture sans échéance', () => {
+    const cents = revenueLast12MonthsCents(
+      [
+        invoice({ customerId: 'c', status: 'draft', totals: { netToPay: 99900 } }),
+        invoice({ customerId: 'c', status: 'cancelled', totals: { netToPay: 99900 } }),
+        invoice({ customerId: 'c', status: 'paid', totals: { netToPay: 50000 }, dueAt: '2025-07-02' }), // hors fenêtre
+        invoice({ customerId: 'c', status: 'paid', totals: { netToPay: 50000 }, dueAt: '2025-07-03' }), // borne incluse
+        invoice({ customerId: 'c', kind: 'credit_note', status: 'issued', totals: { netToPay: 12000 }, dueAt: '2026-06-01' }),
+        invoice({ customerId: 'c', status: 'issued', totals: { netToPay: 30000 }, dueAt: null }),
+      ],
+      TODAY,
+    );
+    expect(cents).toBe(50000 - 12000 + 30000);
   });
 });

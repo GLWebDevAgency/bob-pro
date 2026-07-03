@@ -579,6 +579,576 @@ const fr = {
     pro: 'Impossible de charger vos clients pour le moment. Veuillez réessayer dans un instant.',
     direct: 'Carnet injoignable. Réessaie.',
   },
+
+  // ── C13 — écran « Fiche client » ─────────────────────────────────────────────
+  // Barre retour + menu « … » (no-op accessible, menu TODO).
+  'fiche.back': {
+    pote: 'Clients',
+    pro: 'Clients',
+    direct: 'Clients',
+  },
+  'fiche.more': {
+    pote: 'Options',
+    pro: 'Options',
+    direct: 'Options',
+  },
+  // partyLine adaptatif : badge type + SIREN seulement b2b/b2g (RIEN pour un particulier).
+  'fiche.badgeB2b': {
+    pote: 'Entreprise',
+    pro: 'Entreprise',
+    direct: 'Entreprise',
+  },
+  'fiche.badgeB2g': {
+    pote: 'Public',
+    pro: 'Secteur public',
+    direct: 'Public',
+  },
+  'fiche.sirenLabel': {
+    pote: 'SIREN {siren}',
+    pro: 'SIREN {siren}',
+    direct: 'SIREN {siren}',
+  },
+  // 4 actions rapides (tuiles blanches icône+label) — parité d'actions humain ↔ Bob.
+  'fiche.actionQuote': {
+    pote: 'Devis',
+    pro: 'Devis',
+    direct: 'Devis',
+  },
+  'fiche.actionRelance': {
+    pote: 'Relancer',
+    pro: 'Relancer',
+    direct: 'Relancer',
+  },
+  'fiche.actionCall': {
+    pote: 'Appeler',
+    pro: 'Appeler',
+    direct: 'Appeler',
+  },
+  'fiche.actionEmail': {
+    pote: 'Email',
+    pro: 'Email',
+    direct: 'Email',
+  },
+  // 3 KPI (Encours teinté par statut · Délai moyen · CA 12 mois).
+  'fiche.kpiOutstanding': {
+    pote: 'Encours',
+    pro: 'Encours',
+    direct: 'Encours',
+  },
+  'fiche.kpiAvgDelay': {
+    pote: 'Délai moyen',
+    pro: 'Délai moyen',
+    direct: 'Délai moyen',
+  },
+  'fiche.kpiRevenue12m': {
+    pote: 'CA 12 mois',
+    pro: 'CA 12 mois',
+    direct: 'CA 12 mois',
+  },
+  'fiche.kpiDays': {
+    pote: '{days} j',
+    pro: '{days} j',
+    direct: '{days} j',
+  },
+  // Score de paiement (ScoreBar §13) + légende par tranche (<50 · 50–75 · >75).
+  'fiche.scoreTitle': {
+    pote: 'Score de paiement',
+    pro: 'Score de paiement',
+    direct: 'Score de paiement',
+  },
+  'fiche.scoreBad': {
+    pote: 'Paiements difficiles — reste vigilant',
+    pro: 'Paiements difficiles — vigilance recommandée',
+    direct: 'Mauvais payeur. Vigilance.',
+  },
+  'fiche.scoreMid': {
+    pote: 'À surveiller · délai moyen {days} j',
+    pro: 'À surveiller · délai moyen de {days} jours',
+    direct: 'À surveiller · {days} j de délai',
+  },
+  'fiche.scoreMidBare': {
+    pote: 'À surveiller',
+    pro: 'À surveiller',
+    direct: 'À surveiller',
+  },
+  'fiche.scoreGood': {
+    pote: 'Bon payeur — nickel',
+    pro: 'Bon payeur — aucun souci constaté',
+    direct: 'Bon payeur.',
+  },
+  // Conformité e-invoicing par canal (einvoiceChannelFor @bob/core) : PA b2b · e-reporting b2c · Chorus Pro b2g.
+  'fiche.compliTitlePa': {
+    pote: 'Facturation électronique requise',
+    pro: 'Facturation électronique requise',
+    direct: 'Facturation électronique requise',
+  },
+  'fiche.compliBodyPa': {
+    pote: 'Plateforme détectée · SIREN vérifié ✓ Tout est prêt.',
+    pro: 'Plateforme agréée détectée · SIREN vérifié ✓ Dossier prêt.',
+    direct: 'Plateforme détectée · SIREN vérifié ✓ Prêt.',
+  },
+  'fiche.compliTitleB2c': {
+    pote: 'Vente aux particuliers',
+    pro: 'Vente aux particuliers',
+    direct: 'Vente aux particuliers',
+  },
+  'fiche.compliBodyB2c': {
+    pote: 'Pas de plateforme pour un particulier : je déclare la vente en e-reporting. Rien à faire de ton côté.',
+    pro: 'Aucune plateforme requise pour un particulier : la vente est déclarée en e-reporting automatiquement.',
+    direct: 'Particulier : e-reporting auto. Rien à faire.',
+  },
+  'fiche.compliTitleB2g': {
+    pote: 'Client public · Chorus Pro',
+    pro: 'Client public · Chorus Pro',
+    direct: 'Client public · Chorus Pro',
+  },
+  'fiche.compliBodyB2g': {
+    pote: 'Les factures partent sur Chorus Pro · je suis le mandat administratif pour toi.',
+    pro: 'Les factures sont déposées sur Chorus Pro · le mandat administratif est suivi automatiquement.',
+    direct: 'Dépôt Chorus Pro · mandat suivi.',
+  },
+  'fiche.compliSirenMissing': {
+    pote: 'SIREN manquant — complète la fiche et tout est prêt.',
+    pro: 'SIREN manquant — complétez la fiche pour finaliser la préparation.',
+    direct: 'SIREN manquant. Complète la fiche.',
+  },
+  // Onglets (SegmentedControl) — Activité fonctionnelle, le reste en état vide propre (claims à venir).
+  'fiche.tabActivity': {
+    pote: 'Activité',
+    pro: 'Activité',
+    direct: 'Activité',
+  },
+  'fiche.tabChantiers': {
+    pote: 'Chantiers',
+    pro: 'Chantiers',
+    direct: 'Chantiers',
+  },
+  'fiche.tabDocs': {
+    pote: 'Docs',
+    pro: 'Docs',
+    direct: 'Docs',
+  },
+  'fiche.tabInfos': {
+    pote: 'Infos',
+    pro: 'Infos',
+    direct: 'Infos',
+  },
+  // Types de pièces (BillingDoc réels) — titre de rangée d'activité.
+  'fiche.docInvoice': {
+    pote: 'Facture',
+    pro: 'Facture',
+    direct: 'Facture',
+  },
+  'fiche.docDeposit': {
+    pote: 'Acompte',
+    pro: 'Facture d’acompte',
+    direct: 'Acompte',
+  },
+  'fiche.docSituation': {
+    pote: 'Situation',
+    pro: 'Facture de situation',
+    direct: 'Situation',
+  },
+  'fiche.docCreditNote': {
+    pote: 'Avoir',
+    pro: 'Avoir',
+    direct: 'Avoir',
+  },
+  'fiche.docQuote': {
+    pote: 'Devis',
+    pro: 'Devis',
+    direct: 'Devis',
+  },
+  // Notes de statut des pièces (dérivées des statuts réels — jamais du remplissage).
+  'fiche.statusLate': {
+    pote: 'En retard {days} j',
+    pro: 'En retard de {days} jours',
+    direct: 'Retard {days} j',
+  },
+  'fiche.statusLateBare': {
+    pote: 'En retard',
+    pro: 'En retard',
+    direct: 'Retard',
+  },
+  'fiche.statusPaid': {
+    pote: 'Réglée',
+    pro: 'Réglée',
+    direct: 'Réglée',
+  },
+  'fiche.statusPartial': {
+    pote: 'Réglée en partie',
+    pro: 'Partiellement réglée',
+    direct: 'Partiel',
+  },
+  'fiche.statusIssued': {
+    pote: 'En attente',
+    pro: 'En attente de règlement',
+    direct: 'En attente',
+  },
+  'fiche.statusQuotePending': {
+    pote: 'En attente de réponse',
+    pro: 'En attente de réponse',
+    direct: 'Attente réponse',
+  },
+  'fiche.statusQuoteSigned': {
+    pote: 'Signé',
+    pro: 'Signé',
+    direct: 'Signé',
+  },
+  'fiche.statusQuoteRefused': {
+    pote: 'Refusé',
+    pro: 'Refusé',
+    direct: 'Refusé',
+  },
+  'fiche.statusQuoteExpired': {
+    pote: 'Expiré',
+    pro: 'Expiré',
+    direct: 'Expiré',
+  },
+  // États vides (états de premier rang, A1-C10) — la voix de Bob, jamais une liste inventée.
+  'fiche.activityEmpty': {
+    pote: 'Aucune pièce pour l’instant — le premier devis lancera l’historique.',
+    pro: 'Aucune pièce pour le moment. Le premier devis initiera l’historique.',
+    direct: 'Aucune pièce. Fais un devis.',
+  },
+  'fiche.chantiersEmpty': {
+    pote: 'Aucun chantier relié pour l’instant — j’y rangerai tes interventions.',
+    pro: 'Aucun chantier associé pour le moment.',
+    direct: 'Aucun chantier.',
+  },
+  'fiche.docsEmpty': {
+    pote: 'Aucun document classé ici pour l’instant.',
+    pro: 'Aucun document classé pour le moment.',
+    direct: 'Aucun document.',
+  },
+  'fiche.infosEmpty': {
+    pote: 'Les infos détaillées arrivent bientôt — adresse, contacts, conditions.',
+    pro: 'Les informations détaillées arrivent prochainement — adresse, contacts, conditions.',
+    direct: 'Infos détaillées : bientôt.',
+  },
+  // CTA sticky contextuelle par standing (deriveCustomerStandings + moteur relance C10).
+  'fiche.ctaRelanceDoc': {
+    pote: 'Relancer {doc} · {amount}',
+    pro: 'Relancer {doc} · {amount}',
+    direct: 'Relancer {doc} · {amount}',
+  },
+  'fiche.ctaRelanceAmount': {
+    pote: 'Relancer · {amount}',
+    pro: 'Relancer · {amount}',
+    direct: 'Relancer · {amount}',
+  },
+  'fiche.ctaRelanceQuote': {
+    pote: 'Relancer le devis',
+    pro: 'Relancer le devis',
+    direct: 'Relancer le devis',
+  },
+  'fiche.ctaNewQuote': {
+    pote: 'Nouveau devis',
+    pro: 'Nouveau devis',
+    direct: 'Nouveau devis',
+  },
+  // Client introuvable (id inconnu / supprimé) — message + retour.
+  'fiche.notFound': {
+    pote: 'Je ne trouve pas ce client — il a peut-être été supprimé.',
+    pro: 'Client introuvable — il a peut-être été supprimé.',
+    direct: 'Client introuvable.',
+  },
+  'fiche.backToClients': {
+    pote: 'Retour aux clients',
+    pro: 'Retour aux clients',
+    direct: 'Retour aux clients',
+  },
+  // Lien device (tel:/mailto:) impossible à ouvrir.
+  'fiche.linkError': {
+    pote: 'Impossible d’ouvrir l’app sur ton téléphone. Réessaie ?',
+    pro: 'Impossible d’ouvrir l’application associée.',
+    direct: 'Ouverture impossible.',
+  },
+  // Erreur de chargement — la voix de Bob, jamais un chiffre inventé (A1-C10).
+  'fiche.dataError': {
+    pote: 'Je n’arrive pas à ouvrir cette fiche, là. On réessaie dans un instant ?',
+    pro: 'Impossible de charger cette fiche pour le moment. Veuillez réessayer dans un instant.',
+    direct: 'Fiche injoignable. Réessaie.',
+  },
+
+  // ── C14 — écran « Documents » (coffre-fort) ─────────────────────────────────
+  'docs.eyebrow': {
+    pote: 'Ton coffre-fort',
+    pro: 'Votre coffre-fort',
+    direct: 'Coffre-fort',
+  },
+  'docs.title': {
+    pote: 'Documents',
+    pro: 'Documents',
+    direct: 'Documents',
+  },
+  'docs.subtitle': {
+    pote: 'Je classe, tu retrouves. Même 3 ans après.',
+    pro: 'Classement automatique, retrouvable des années après.',
+    direct: 'Je classe. Tu retrouves.',
+  },
+  'docs.searchPlaceholder': {
+    pote: '« la facture du radiateur de mars »',
+    pro: 'Rechercher un document…',
+    direct: 'Chercher…',
+  },
+  'docs.scanTitle': {
+    pote: 'Scanner un document',
+    pro: 'Scanner un document',
+    direct: 'Scanner',
+  },
+  'docs.scanSub': {
+    pote: 'Je lis, j’extrais la TVA, je classe.',
+    pro: 'Lecture, extraction de TVA et classement automatiques.',
+    direct: 'Je lis, j’extrais, je classe.',
+  },
+  'docs.sectionToValidate': {
+    pote: 'À valider',
+    pro: 'À valider',
+    direct: 'À valider',
+  },
+  'docs.badgeSupplierInvoice': {
+    pote: 'Facture fournisseur',
+    pro: 'Facture fournisseur',
+    direct: 'Fournisseur',
+  },
+  'docs.agoMinutes': {
+    pote: 'il y a {n} min',
+    pro: 'il y a {n} min',
+    direct: '{n} min',
+  },
+  'docs.agoHours': {
+    pote: 'il y a {n} h',
+    pro: 'il y a {n} h',
+    direct: '{n} h',
+  },
+  'docs.metricAmount': {
+    pote: 'Montant ',
+    pro: 'Montant ',
+    direct: 'Montant ',
+  },
+  'docs.metricVat': {
+    pote: 'TVA récup. ',
+    pro: 'TVA récupérable ',
+    direct: 'TVA ',
+  },
+  'docs.metricDate': {
+    pote: 'Date ',
+    pro: 'Date ',
+    direct: 'Date ',
+  },
+  // Rapprochement réel (deriveVaultView.matchedExpense) — jamais une invention.
+  'docs.aiGuessExpense': {
+    pote: 'Je pense : dépense {supplier}',
+    pro: 'Rapprochement probable : dépense {supplier}',
+    direct: 'Sûrement : {supplier}',
+  },
+  'docs.classify': {
+    pote: 'Classer là',
+    pro: 'Classer',
+    direct: 'Classer',
+  },
+  'docs.otherFolder': {
+    pote: 'Autre dossier',
+    pro: 'Autre dossier',
+    direct: 'Autre',
+  },
+  'docs.sectionFolders': {
+    pote: 'Tes dossiers',
+    pro: 'Vos dossiers',
+    direct: 'Dossiers',
+  },
+  'docs.folderChantiers': {
+    pote: 'Chantiers',
+    pro: 'Chantiers',
+    direct: 'Chantiers',
+  },
+  'docs.folderAchats': {
+    pote: 'Achats',
+    pro: 'Achats',
+    direct: 'Achats',
+  },
+  'docs.folderAssurances': {
+    pote: 'Assurances',
+    pro: 'Assurances',
+    direct: 'Assurances',
+  },
+  'docs.folderFiscal': {
+    pote: 'Fiscal & social',
+    pro: 'Fiscal & social',
+    direct: 'Fiscal & social',
+  },
+  'docs.folderBanque': {
+    pote: 'Banque',
+    pro: 'Banque',
+    direct: 'Banque',
+  },
+  'docs.folderComptable': {
+    pote: 'Comptable',
+    pro: 'Comptable',
+    direct: 'Comptable',
+  },
+  'docs.folderCount': {
+    pote: '{count} documents',
+    pro: '{count} documents',
+    direct: '{count} docs',
+  },
+  'docs.folderCountOne': {
+    pote: '1 document',
+    pro: '1 document',
+    direct: '1 doc',
+  },
+  'docs.folderCountNone': {
+    pote: 'Vide',
+    pro: 'Aucun document',
+    direct: '0',
+  },
+  'docs.sectionCompta': {
+    pote: 'Compta & conformité',
+    pro: 'Comptabilité & conformité',
+    direct: 'Compta',
+  },
+  'docs.monthReadyTitle': {
+    pote: '{month} est prêt pour le comptable',
+    pro: '{month} est prêt pour votre comptable',
+    direct: '{month} : prêt comptable',
+  },
+  'docs.monthSales': {
+    pote: '{count} ventes',
+    pro: '{count} ventes',
+    direct: '{count} ventes',
+  },
+  'docs.monthSalesOne': {
+    pote: '1 vente',
+    pro: '1 vente',
+    direct: '1 vente',
+  },
+  'docs.monthPurchases': {
+    pote: '{count} achats',
+    pro: '{count} achats',
+    direct: '{count} achats',
+  },
+  'docs.monthPurchasesOne': {
+    pote: '1 achat',
+    pro: '1 achat',
+    direct: '1 achat',
+  },
+  'docs.monthVat': {
+    pote: 'TVA récup. {amount}',
+    pro: 'TVA récupérable {amount}',
+    direct: 'TVA {amount}',
+  },
+  'docs.monthMissing': {
+    pote: '{count} justificatifs manquants',
+    pro: '{count} justificatifs manquants',
+    direct: '{count} justifs manquants',
+  },
+  'docs.monthMissingOne': {
+    pote: '1 justificatif manquant',
+    pro: '1 justificatif manquant',
+    direct: '1 justif manquant',
+  },
+  'docs.exportCta': {
+    pote: 'Exporter (FEC / comptable)',
+    pro: 'Exporter (FEC / comptable)',
+    direct: 'Exporter FEC',
+  },
+  'docs.exportDone': {
+    pote: 'C’est prêt : {filename} est généré pour ton comptable.',
+    pro: 'Export généré : {filename}.',
+    direct: '{filename} généré.',
+  },
+  'docs.exportError': {
+    pote: 'L’export a raté, là. On réessaie dans un instant ?',
+    pro: 'L’export a échoué. Veuillez réessayer.',
+    direct: 'Export raté. Réessaie.',
+  },
+  'docs.sectionRecent': {
+    pote: 'Factures récentes',
+    pro: 'Factures récentes',
+    direct: 'Factures récentes',
+  },
+  'docs.kindDeposit': {
+    pote: 'Acompte',
+    pro: 'Acompte',
+    direct: 'Acompte',
+  },
+  'docs.kindFinal': {
+    pote: 'Facture',
+    pro: 'Facture',
+    direct: 'Facture',
+  },
+  'docs.kindCreditNote': {
+    pote: 'Avoir',
+    pro: 'Avoir',
+    direct: 'Avoir',
+  },
+  'docs.kindSituation': {
+    pote: 'Situation',
+    pro: 'Situation',
+    direct: 'Situation',
+  },
+  // Canal e-facture (copy proto : PDP reste le mot que tout le monde connaît).
+  'docs.recentSubB2b': {
+    pote: '{kind} · B2B → PDP',
+    pro: '{kind} · B2B → plateforme agréée',
+    direct: '{kind} · B2B → PDP',
+  },
+  'docs.recentSubB2c': {
+    pote: 'Particulier · B2C → e-reporting',
+    pro: 'Particulier · B2C → e-reporting',
+    direct: 'B2C → e-reporting',
+  },
+  'docs.recentSubB2g': {
+    pote: 'Public · B2G → Chorus Pro',
+    pro: 'Client public · B2G → Chorus Pro',
+    direct: 'B2G → Chorus',
+  },
+  'docs.memoryTitle': {
+    pote: 'Mémoire fournisseurs',
+    pro: 'Mémoire fournisseurs',
+    direct: 'Fournisseurs connus',
+  },
+  'docs.memoryBody': {
+    pote: 'J’ai reconnu {examples}… {count} fournisseurs mémorisés pour classer plus vite.',
+    pro: 'Fournisseurs reconnus : {examples}… {count} mémorisés pour accélérer le classement.',
+    direct: '{examples}… {count} fournisseurs en mémoire.',
+  },
+  'docs.memoryBodyOne': {
+    pote: 'J’ai reconnu {examples} — 1 fournisseur mémorisé pour classer plus vite.',
+    pro: 'Fournisseur reconnu : {examples} — 1 mémorisé.',
+    direct: '{examples} — 1 fournisseur en mémoire.',
+  },
+  'docs.footer': {
+    pote: '{count} documents · chiffré et sauvegardé',
+    pro: '{count} documents · chiffrés et sauvegardés',
+    direct: '{count} docs · chiffrés',
+  },
+  'docs.footerOne': {
+    pote: '1 document · chiffré et sauvegardé',
+    pro: '1 document · chiffré et sauvegardé',
+    direct: '1 doc · chiffré',
+  },
+  'docs.emptyTitle': {
+    pote: 'Rien encore',
+    pro: 'Aucun document pour le moment',
+    direct: 'Vide',
+  },
+  'docs.emptyBody': {
+    pote: 'Tes factures, devis signés et reçus scannés se rangent ici tout seuls — et je les garde bien au chaud.',
+    pro: 'Vos factures, devis signés et reçus scannés seront classés ici automatiquement et conservés.',
+    direct: 'Scanne ou facture : ça se range ici.',
+  },
+  'docs.noResults': {
+    pote: 'Rien trouvé pour « {query} ». Essaie un autre mot ?',
+    pro: 'Aucun document ne correspond à « {query} ».',
+    direct: 'Rien pour « {query} ».',
+  },
+  'docs.dataError': {
+    pote: 'Je n’arrive pas à ouvrir ton coffre-fort, là. On réessaie dans un instant ?',
+    pro: 'Impossible de charger vos documents pour le moment. Veuillez réessayer dans un instant.',
+    direct: 'Coffre injoignable. Réessaie.',
+  },
 } as const satisfies Record<string, Copy>;
 
 export type I18nKey = keyof typeof fr;

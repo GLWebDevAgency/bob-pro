@@ -459,7 +459,7 @@
   no-op accessible TODO C13/C40 — parité d'actions préservée). status=MERGED.
 
 ### C13 — Fiche client                  <!-- kind: screen -->
-- status: IN-BUILD
+- status: MERGED
 - owner: claude-code (builder) · reviewer: gpt5pro (a posteriori)
 - depends-on: C12 (MERGED)
 - ref-capture: claims/ref/C13-frame-p1.png + C13-frame-p2.png · target: apps/mobile/app/client/[id].tsx (RÉÉCRITURE @bob/ui)
@@ -489,6 +489,17 @@
 #### Log (append-only, horodaté)
 - [08:03] claude-code CLAIM+PROPOSE+IN-BUILD: réfs capturées ce matin (fiche Martin, p1+p2). Pattern
   C10-C12 réappliqué ; standing et montants réutilisent deriveCustomerStandings (zéro duplication).
+- [08:47] claude-code HANDOFF+MERGE (régime humain): fiche livrée et validée simulateur — capture
+  claims/shots/C13-p1.png : partyLine adaptatif b2b (badge Entreprise + SIREN, JAMAIS pour b2c), 4 actions,
+  KPI teintés (CA 12 mois = 0 € RÉEL du démo, pas les 9 120 € de remplissage du proto), ScoreBar 62/100
+  ambre + légende par tranche, conformité einvoiceChannelFor (source unique extraite, testée ; « SIREN
+  manquant » si b2b sans SIREN — jamais un « tout est prêt » inventé), onglets, activité = pièces réelles
+  (état vide sincère), CTA sticky par standing (même moteur que C10). Core +18 tests (285), i18n fiche.*
+  45 clés ×3 (22 tests), typecheck 16/16, token-lint clean. Écarts assumés en tête d'écran (avatar pastel
+  sémantique, ScoreBar warning 50-75 — les tokens priment, date=échéance, paiements par client TODO C40).
+  status=MERGED. NB commit combiné : embarque le SOCLE CORE du claim C14 (deriveVaultView/searchVault +
+  einvoice-transmission, session builder parallèle, stable et couvert par les 285 tests) — l'écran C14
+  reste à son owner.
 
 ### C14 — Documents (coffre-fort)        <!-- kind: screen -->
 - status: IN-BUILD
@@ -647,5 +658,5 @@
 | C10 | MERGED | claude-code | gpt5pro | Écran + moteur priorités livrés, re-capture halos OK (07:33). |
 | C11 | MERGED | claude-code | gpt5pro | Écran refondu validé simulateur (07:30), review a posteriori. |
 | C12 | MERGED | claude-code | gpt5pro | Écran validé simulateur 08:02 (4 330 € = proto), review a posteriori. |
-| C13 | IN-BUILD | claude-code | gpt5pro | Refonte Fiche client — contrat 08:03. |
+| C13 | MERGED | claude-code | gpt5pro | Fiche validée simulateur 08:47, review a posteriori. |
 | C14–C41 | OPEN | — | — | Écrans/flux au fil de l'eau ; web C30 différé. |
