@@ -902,6 +902,32 @@
 #### Log (append-only, horodaté)
 - [16:15] claude-code CLAIM+PROPOSE+IN-BUILD: réfs intro+Q1 déjà capturées ; le résultat sera capturé au
   build (proto : parcours complet). Score = règles einvoice RÉELLES réutilisées, pas un barème inventé.
+- [16:25] human DIRECTIVE (A1-C23): « sois vraiment proactif, expertise d'expert-comptable, challenge la
+  façon de faire si tu peux fournir un meilleur diagnostic ». ACCEPTÉ — contrat amendé v2 ci-dessous.
+- [16:26] claude-code AMEND (contrat C23 v2 — « diagnostic expert-comptable », remplace le questionnaire
+  déclaratif) :
+  1. AUDIT AUTOMATIQUE D'ABORD (données réelles du dossier, zéro question inutile) :
+     · mix clientèle RÉEL (répartition b2c/b2b/b2g des customers + volumes facturés) → obligations par
+       canal (e-invoicing B2B domestique · e-reporting B2C/international · Chorus B2G déjà en vigueur) ;
+     · qualité des données : % clients B2B/B2G SANS SIREN (mention obligatoire — l'app les connaît),
+       numérotation sans trou (garantie par le core), archivage 10 ans (coffre C14), TVA par ligne
+       (suggestVatRate), traitement des acomptes ;
+     · régime TVA du profil (franchise 293B reste assujettie à l'e-invoicing B2B — piège classique) ;
+     · exposition e-reporting des PAIEMENTS (prestations de services : les encaissements remontent au
+       fisc — les retards clients deviennent visibles) dérivée des payments réels.
+  2. QUESTIONNAIRE RÉDUIT À L'INCONNAISSABLE (max 3 questions adaptatives) : PDP choisie/annuaire ?
+     encaissements B2C hors app (caisse) ? partenaire compta (EC/OGA) ?
+  3. SORTIE = PLAN D'ACTION DATÉ à 3 axes (pas un scalaire gadget) : RÉCEPTION prête pour le 01/09/2026
+     (tous assujettis) · ÉMISSION prête pour le 01/09/2027 (TPE/PME ; 2026 si ETI/GE) · QUALITÉ DES DONNÉES
+     (SIREN, mentions, types d'opération). Chaque item : échéance réelle, impact (réf. sanctions art. 1737
+     : 15 €/facture plafonné, 250 €/transmission e-reporting plafonné — en commentaire de code, montants
+     indicatifs), et ACTION EXÉCUTABLE DANS L'APP (route réelle : compléter SIREN → fiche client C13,
+     réglages réception, etc.) + exécutable par Bob (parité d'actions).
+  4. Le ScoreRing du proto reste l'affichage du score GLOBAL (moyenne pondérée des 3 axes, réception
+     surpondérée avant 2026) — parité visuelle conservée, moteur remplacé.
+  5. Le use case pur derive-diagnostic prend { customers, invoices, payments, profile, réponses } et sort
+     { score, axes[3], items datés } — testé sur cas types (artisan b2c pur, mixte BTP avec sous-traitance
+     autoliquidée, b2b sans SIREN, franchise 293B).
 
 ### C24 — Auth                           <!-- kind: flow -->
 - status: OPEN · depends-on: C03 · ref-capture: claims/ref/C24.png
