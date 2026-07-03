@@ -591,7 +591,7 @@
   classement/tags/renommage par le modèle, chaîne de repli (Claude Vision, Gemini, GLM, DeepSeek).
 
 ### C15 — Assistant (Bob)               <!-- kind: screen -->
-- status: IN-BUILD
+- status: MERGED
 - owner: claude-code (builder) · reviewer: gpt5pro (a posteriori)
 - depends-on: C03 (MERGED) · directive parité d'actions [23:52]
 - ref-capture: claims/ref/C15-frame.png (+ C15-frame-astuce.png) · target: apps/mobile/app/(tabs)/assistant.tsx (RÉÉCRITURE @bob/ui)
@@ -626,6 +626,25 @@
 #### Log (append-only, horodaté)
 - [08:50] claude-code CLAIM+PROPOSE+IN-BUILD: amendement assumé vs backlog (« échange scripté » → agent
   réel) au titre de la directive parité d'actions. Audit de couverture inclus dans le claim.
+- [11:10] claude-code HANDOFF+MERGE (régime humain): écran livré et validé simulateur (iPhone 16 Pro 402×874)
+  — capture claims/shots/C15-p1.png conforme à la réf (header Bob·en ligne, bulle d'accueil, chips, input+
+  micro+envoi, onglet Assistant en ai). PRÉSENTATION refaite 100 % @bob/ui, PIPELINE AGENT RÉEL conservé :
+  ask() avec phases live, cartes d'action ActionDiffView (aperçu comptable réel), Valider = agent.confirm
+  (flux journalisé), garde-fous préparer≠envoyer, ?prompt=relance|relance_devis câblés depuis C10/C11/C13.
+  i18n assistant.* 31 clés ×3 (26 tests) · core 289/289 · typecheck 16/16 · token-lint clean. status=MERGED.
+- [11:10] claude-code AUDIT PARITÉ D'ACTIONS (livrable directive [23:52]) — synthèse : 9 actions OK
+  (même use case UI↔agent : encaisser, émettre, envoyer devis, relance devis, relance impayé brouillon,
+  versement tréso, impayés, documents, multi-actions batch) · 3 ASSUMÉ hors périmètre agent (tel/mailto,
+  signature client final, réglages compte) · 8 TODO chiffrés :
+  ① draftRelance ciblé par client (vise le plus gros encours aujourd'hui) — C25 ;
+  ② envoi réel des relances 4 tons — C25 ;
+  ③ outil scan_depense (extractDocument+recordExpense existent côté UI) — C20/C40 ;
+  ④ outil creer_devis — C20/C21 ; ⑤ outil generer_facture deposit/final (absent de BobActions) — C40 ;
+  ⑥ outil export_fec — C40 ; ⑦ intent diagnostic — C23 ; ⑧ MAJEUR : journal d'audit on-device —
+  BobClient (api-client) n'expose pas ask/confirm : le mobile instancie l'agent en LOCAL sans
+  runtime journalisé ; le serveur a déjà POST /ai/ask|confirm + GET /ai/runs/:id/journal → brancher
+  data/bob.ts sur ces endpoints en mode HTTP (C40, priorité haute). Créer client : TODO partagé UI+agent
+  (un seul point d'entrée, C40). Détail complet dans le rapport d'agent (transcript C15).
 
 ### C16 — Détail pièce                   <!-- kind: screen -->
 - status: OPEN · depends-on: C03 · ref-capture: claims/ref/C16.png
@@ -726,5 +745,5 @@
 | C11 | MERGED | claude-code | gpt5pro | Écran refondu validé simulateur (07:30), review a posteriori. |
 | C12 | MERGED | claude-code | gpt5pro | Écran validé simulateur 08:02 (4 330 € = proto), review a posteriori. |
 | C13 | MERGED | claude-code | gpt5pro | Fiche validée simulateur 08:47, review a posteriori. |
-| C15 | IN-BUILD | claude-code | gpt5pro | Assistant branché BobAgent réel + audit parité — contrat 08:50. |
+| C15 | MERGED | claude-code | gpt5pro | Chat sur agent réel validé 11:10 ; audit parité : 9 OK / 8 TODO (① journal on-device prioritaire). |
 | C16–C41 | OPEN | — | — | Écrans/flux au fil de l'eau ; web C30 différé. |

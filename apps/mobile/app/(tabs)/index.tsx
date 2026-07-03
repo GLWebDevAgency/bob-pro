@@ -196,7 +196,8 @@ function TodayPriorityCard({
               radius={11}
               icon={<Feather name="send" size={15} color={colors.surface} />}
               style={{ alignSelf: 'flex-start' }}
-              onPress={() => router.push('/(tabs)/assistant')}
+              // ?prompt=relance : l'assistant pré-remplit ET soumet la demande (C15).
+              onPress={() => router.push({ pathname: '/(tabs)/assistant', params: { prompt: 'relance' } })}
             />
           }
           {...common}

@@ -274,6 +274,19 @@ export function SparkSmallIcon({ color, size = 15, strokeWidth = 2 }: IconProps)
   );
 }
 
+/* ── Écran Assistant (C15) — tracés exacts du proto §isAssistant ──────────── */
+
+/** Micro — bouton dictée de l'input (18/2 slate500 — branché au claim C20). */
+export function MicIcon({ color, size = 18, strokeWidth = 2 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" stroke={color} strokeWidth={strokeWidth} {...common}>
+      <Rect x={9} y={2} width={6} height={12} rx={3} />
+      <Path d="M5 10a7 7 0 0 0 14 0" />
+      <Path d="M12 18v3" />
+    </Svg>
+  );
+}
+
 /** Rangée facture récente — fichier à coin plié 16/2 (tracé Feather « file » du proto). */
 export function FileIcon({ color, size = 16, strokeWidth = 2 }: IconProps) {
   return (

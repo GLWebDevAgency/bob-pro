@@ -481,12 +481,14 @@ export default function ClientDetail() {
                   personality,
                   params: { amount: formatEURWhole(standing.amountCents) },
                 }),
-          onPress: () => router.push('/(tabs)/assistant'),
+          // ?prompt=relance : l'assistant pré-remplit ET soumet la demande (C15).
+          onPress: () => router.push({ pathname: '/(tabs)/assistant', params: { prompt: 'relance' } }),
         }
       : standing.kind === 'devis'
         ? {
             label: t('fiche.ctaRelanceQuote', { personality }),
-            onPress: () => router.push('/(tabs)/assistant'),
+            // relance de devis = renvoi au client (envoyer_devis) — même use case que Bob.
+            onPress: () => router.push({ pathname: '/(tabs)/assistant', params: { prompt: 'relance_devis' } }),
           }
         : {
             label: t('fiche.ctaNewQuote', { personality }),
@@ -668,7 +670,7 @@ export default function ClientDetail() {
                 <ActionTile
                   label={t('fiche.actionRelance', { personality })}
                   icon={<SendIcon color={colors.ink600} size={19} />}
-                  onPress={() => router.push('/(tabs)/assistant')}
+                  onPress={() => router.push({ pathname: '/(tabs)/assistant', params: { prompt: 'relance' } })}
                 />
                 <ActionTile
                   label={t('fiche.actionCall', { personality })}

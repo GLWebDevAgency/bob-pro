@@ -570,7 +570,8 @@ export default function Argent() {
                   variant="primary"
                   radius={15}
                   icon={<Ionicons name="sparkles" size={16} color={colors.surface} />}
-                  onPress={() => router.push('/(tabs)/assistant')}
+                  // ?prompt=relance : l'assistant pré-remplit ET soumet la demande (C15).
+                  onPress={() => router.push({ pathname: '/(tabs)/assistant', params: { prompt: 'relance' } })}
                 />
               </View>
             </View>
