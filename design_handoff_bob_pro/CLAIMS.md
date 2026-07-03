@@ -1376,6 +1376,28 @@
   33.12Z, nature_juridique 5710, adresse, date_creation pour ce SIRET — le fallback affiché vient
   d'un bundle sans env (client démo local) ou du déploiement Railway antérieur à l'adapter réel :
   redéploiement Railway requis au merge.
+- [2026-07-04 01:55] claude-code A HANDOFF+MERGE (régime humain): C24b COMPLET (contrat + extension
+  directive). SÉCURITÉ : guard sans fallback Mercier (Principal.companyId nullable, 403
+  PROVISIONING_REQUIRED jeté ≠ JWT invalide), liste blanche 2 NIVEAUX (GET /company/lookup PUBLIC
+  sans Authorization — l'étape SIRET n'a pas encore de compte, annuaire public + throttle ; traité
+  AVANT lecture du header : un Bearer statique ne casse plus l'endpoint · POST /onboarding/company
+  JWT requis tenant optionnel), backend.companyId() requireTenant, interceptor : companyId null ne
+  pose JAMAIS le GUC RLS, /health/ready réparé (dépendait silencieusement du fallback).
+  PROVISIONING : id déterministe `company-<userId>` idempotent, app_metadata via admin GoTrue (PUT
+  vérifié MERGE clé-à-clé dans le code GoTrue — providers préservés), env absente →
+  MisconfiguredSupabaseAdmin explicite. FICHE SOCIÉTÉ (directive 01:20) : port et adapters
+  enrichis de natureJuridiqueCode/legalForm mappé (nature-juridique.ts INSEE 1000→EI 5498→EURL 5499→SARL
+  5710→SAS, inconnu→choix utilisateur)/dateCreation ; récap signup COMPLET (CompanyFicheCard,
+  lignes masquées si null) ; user_metadata.company_snapshot = fiche entière re-validée
+  structurellement au provisioning ; CompanyProps+tvaIntracom/dateCreation persistés — MIGRATION
+  additive 20260704020000_company_fiche_annuaire. Mobile : gate ProvisioningScreen (jamais de tabs
+  sans tenant), refreshSession() au succès, échec voix Bob + retry, zéro repli démo. Validations :
+  api 73 ✓ (dont guard 8 + provisioning 5) · api-client 29 ✓ · core 374 ✓ · i18n 50 ✓ · typecheck
+  16/16 ✓ · grep : plus AUCUN fallback MERCIER_PROPS.id hors chemin démo assumé. Commits scopés
+  (packages+api puis mobile ; socle core/i18n C26 embarqué au commit 1 — index/dict partagés).
+  RESTES DÉPLOIEMENT : prisma migrate deploy (20260703230000 notifications + 20260704020000 fiche)
+  + redeploy Railway (image du 02/07) + LegalForm n'inclut pas SCI/SNC/asso (décision produit).
+  status=MERGED.
 
 ### C26 — Compte / Abo / Équipe / Paywall <!-- kind: flow -->
 - status: IN-BUILD
@@ -1420,6 +1442,23 @@
   décrivait le REMPLISSAGE du proto — en prod il n'y a pas de billing : l'écran dit la vérité
   (accès anticipé) et la grille devient une constante produit. Singleton sub-mercier du serveur
   tracé → C26b après C24b (collision backend.service.ts sinon).
+- [2026-07-04 01:55] claude-code A HANDOFF+MERGE (régime humain): C26 COMPLET. Core :
+  derive-account-view pur (13 tests — early-access honnête quand subscription null, service
+  « Actif » seulement si module TradeConfig réel, résilié → retour early-access jamais plan
+  fantôme) ; PRIX POSÉS DANS PLAN_CATALOG (solo 1900, business 7900 centimes — source unique,
+  PLAN_PRICING = vue dérivée, blurbs dérivés des features réelles : « Relances » déplacé Solo→Pro
+  car auto_dunning est une feature pro). Écran compte.tsx refondu : onglets Profil/Abonnement
+  100 % @bob/ui, onglet ADRESSABLE /compte?tab=abonnement (deep link notifications, réactif écran
+  monté — ajout coordinateur), identité useIdentity + email session, signOut réel, erreur profil =
+  bannière SANS bloquer la déconnexion. i18n 47 clés account.* ×3. Écarts assumés (billing
+  inexistant) : « Pro 39 ACTIVE »→« Accès anticipé 0 € », essai 14 j non rendu, factures d'abo
+  vides, « Crédit Agricole Connectée »→« À connecter », montants inventés des services retirés,
+  parrainage/équipe non pressables (aucun flux cible) ; réglages autonomie/dictée retirés de
+  compte.tsx : ils vivent déjà dans (tabs)/assistant.tsx (vérifié, pas de perte). Captures
+  C26-p1 (profil) + C26-p2 (abonnement via deep link tab) — prises par le coordinateur en mode
+  démo (gate auth actif). Validations : core 374 ✓ · i18n 50 ✓ · typecheck 16/16 ✓. RESTE : C26b
+  (GET /subscription par tenant, plus de singleton sub-mercier — l'écran branchera SubscriptionInfo
+  sans changement). status=MERGED.
 
 ### C27 — Catalogue prestations + Réglages facturation <!-- kind: flow -->
 - status: IN-BUILD
@@ -1558,6 +1597,7 @@
 | C17 | MERGED | claude-code (session B) | gpt5pro | Grand-livre @bob/ui + export FEC partageable (shareFec ×2 écrans). |
 | C22 | MERGED | claude-code A | gpt5pro | Flux 5 étapes validé 22:17 (preview adaptatif core). |
 | C24 | MERGED | claude-code A | gpt5pro | Auth 100 % prod (login+SIRET+biométrie) + checklist PROD connectée — 07-04 00:35. Reste : C24b provisioning tenant. |
-| C24b | IN-BUILD | claude-code A | gpt5pro | Sécurité multi-tenant : fallback Mercier supprimé + provisioning app_metadata via admin Supabase — 07-04 00:45. |
+| C24b | MERGED | claude-code A | gpt5pro | Cross-tenant fermé (guard+service+GUC) + provisioning `company-<userId>` + fiche société complète en BDD — 07-04 01:55. Reste déploiement : migrate deploy + redeploy Railway. |
 | C27 | MERGED | claude-code A | gpt5pro | Catalogue 63 prestations/9 métiers + suggestions devis/voix — 07-04 00:36. |
-| C26, C41 | OPEN | — | — | Web C30 différé après mobile hi-fi. |
+| C26 | MERGED | claude-code A | gpt5pro | Compte/Abo honnête (accès anticipé 0 €, grille PLAN_CATALOG 19/39/79 preview) — 07-04 01:55. Reste : C26b subscription par tenant. |
+| C41 | OPEN | — | — | Sweep final a11y/états/parité. Web C30 différé après mobile hi-fi. |
