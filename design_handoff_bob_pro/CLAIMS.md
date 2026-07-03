@@ -988,10 +988,37 @@
 - Contrat: 4 étapes (SIRET → récup infos → biométrie → entrée) · edges → Onboarding (nouveau) ou Aujourd'hui.
 
 ### C25 — Relances auto + Notifications   <!-- kind: flow -->
-- status: OPEN · depends-on: C15 · ref-capture: claims/ref/C25.png
-- spec: relance (core, 4 tons + L441-10) · INTEGRATION_MAP.md § relances
-- Contrat: moteur de relance (échéance dépassée→ton→canal) reliant les pièces (C16) · écran Notifications.
-- Acceptance: 4 tons depuis core · mise en demeure = texte légal · edges ↔ C16.
+- status: IN-BUILD
+- owner: claude-code (builder) · reviewer: gpt5pro (a posteriori)
+- depends-on: C15 (MERGED), C40 (MERGED) — ferme les TODO ①② de l'audit parité
+- ref-capture: dc.html §notifications/relances (extraire au build) · target: apps/mobile/app/notifications.tsx (nouveau) + moteur
+
+#### Contrat (v1, claude-code — régimes prod 100 %, données réelles, parité d'actions)
+- MOTEUR (use case pur additif @bob/core application/relances/) : derive-relance-plan — entrée = invoices/
+  customers/payments réels + politique (délais par ton) ; sortie = plan de relances par facture échue
+  (ton cordial → ferme → mise en demeure selon l'ancienneté, canal, prochaine échéance de relance) en
+  RÉUTILISANT buildRelance (4 tons, L441-10 : la mise en demeure émet le texte légal exact + intérêts
+  retard/indemnité 40 € — déjà dans le domaine) et deriveTodayPriorities (candidates). Testé (tons par
+  ancienneté, texte légal présent, avoirs exclus).
+- PARITÉ ①② : l'outil agent relance_brouillon devient CIBLABLE par client/facture (arg optionnel) ;
+  l'ENVOI réel : constater ce que le serveur expose (notification_jobs existe en base — lire apps/api) ;
+  si un endpoint d'envoi existe → le brancher (client + outil agent envoyer_relance outbound+confirmation) ;
+  sinon → préparer le contrat client (méthode typée + TODO serveur documenté à Codex), l'UI reste honnête
+  (« préparée, envoi à venir » — pas de bouton fantôme).
+- ÉCRAN Notifications (nouveau, cloche C10 enfin câblée) : liste des notifications réelles (relances
+  planifiées/envoyées, échéances, conformité) depuis les données réelles ; états vide/erreur voix Bob ;
+  actions par item (voir la facture → C16, relancer → assistant).
+- Copy : clés @bob/i18n notif.* + relance.* ×3 humeurs. Interdits : hex, ancien kit, fixtures, duplication
+  du moteur relance.
+- Acceptance : plan de relances testé (4 tons, L441-10 texte légal) · cloche C10 → écran réel · outil agent
+  ciblé testé · captures écran · i18n tests · typecheck + token-lint clean.
+
+#### Signatures
+- [x] agreed — claude-code — 2026-07-03 (16:35) — régime humain, review gpt5pro a posteriori
+
+#### Log (append-only, horodaté)
+- [16:35] claude-code CLAIM+PROPOSE+IN-BUILD: dernier gros TODO métier de l'audit parité (①②). Envoi réel
+  conditionné à la surface serveur constatée (lecture apps/api) — sinon contrat client + handoff Codex.
 
 ### C26 — Compte / Abo / Équipe / Paywall <!-- kind: flow -->
 - status: OPEN · depends-on: C03 · ref-capture: claims/ref/C26.png
@@ -1098,4 +1125,5 @@
 | C40 | MERGED | claude-code | gpt5pro | Livré 15:58 : ask/confirm/journal + ⑤⑥⑦ + créer client. Gap serveur runId → Codex. |
 | C21 | MERGED | claude-code | gpt5pro | Flux validé 16:10 ; Stepper+SignaturePad livrés (réserve C03 soldée). |
 | C23 | MERGED | claude-code | gpt5pro | Diagnostic expert-comptable v2 livré 16:32 (audit réel + plan daté 3 axes). |
+| C25 | IN-BUILD | claude-code | gpt5pro | Relances réelles + Notifications — contrat 16:35, ferme TODO ①②. |
 | C17–C41 | OPEN | — | — | Web C30 différé après mobile hi-fi. |
