@@ -1020,6 +1020,33 @@ const fr = {
     pro: 'Le classement a échoué. Veuillez réessayer.',
     direct: 'Classement raté. Réessaie.',
   },
+  // A8 — choisir la cible du classement (la proposition IA reste le 1-tap par défaut)
+  'docs.pickOther': {
+    pote: 'Choisir un autre dossier…',
+    pro: 'Choisir une autre destination…',
+    direct: 'Autre dossier…',
+  },
+  'docs.pickTitle': {
+    pote: 'Où je le range ?',
+    pro: 'Où classer ce document ?',
+    direct: 'Classer où ?',
+  },
+  'docs.pickProposalMeta': {
+    pote: 'Ma proposition — dépense rapprochée',
+    pro: 'Proposition de Bob — dépense rapprochée',
+    direct: 'Proposition IA',
+  },
+  'docs.pickChantierMeta': { pote: 'Chantier en cours', pro: 'Chantier en cours', direct: 'Chantier' },
+  'docs.classifiedIntoToast': {
+    pote: 'Classé dans « {name} » ✓',
+    pro: 'Document classé dans « {name} ».',
+    direct: '→ {name}.',
+  },
+  'docs.pickEmpty': {
+    pote: 'Pas d’autre destination pour l’instant — crée un chantier et je saurai y ranger tes documents.',
+    pro: 'Aucune autre destination disponible. Créez un chantier pour y classer des documents.',
+    direct: 'Aucune autre destination.',
+  },
   'docs.otherFolder': {
     pote: 'Autre dossier',
     pro: 'Autre dossier',

@@ -37,10 +37,10 @@ import {
 } from '@bob/core';
 import { conformityCard, shadowComponentsNative, shadowNative, vault, vaultShadowNative } from '@bob/tokens';
 import { t, type Personality } from '@bob/i18n';
-import { Button, Card, InnerScreenHeader, Toast, font, parseGradient, useTheme } from '@bob/ui';
+import { Button, Card, IconTile, InnerScreenHeader, Sheet, Toast, font, parseGradient, useTheme } from '@bob/ui';
 import { useBobClient } from '../../src/data/client';
 import { shareFec } from '../../src/lib/share-fec';
-import { useCustomers, useExpenses, useExportFec, useInvoices } from '../../src/data/hooks';
+import { useChantiers, useCustomers, useExpenses, useExportFec, useInvoices } from '../../src/data/hooks';
 import { useDocuments } from '../../src/data/documents';
 import {
   ChartIcon,
@@ -150,11 +150,14 @@ function PendingCard({
   doc,
   onOpen,
   onClassify,
+  onPickTarget,
   classifying,
 }: {
   doc: VaultPendingDoc;
   onOpen: () => void;
   onClassify: (expenseId: string) => void;
+  /** A8 : ouvre le choix d'une AUTRE destination (chantiers…) — le 1-tap IA reste premier. */
+  onPickTarget: () => void;
   classifying: boolean;
 }) {
   const { personality, colors, semantic } = useTheme();
@@ -264,6 +267,19 @@ function PendingCard({
           accessibilityLabel={`${t('docs.open', { personality })} — ${doc.filename}`}
         />
       </View>
+
+      {/* A8 : autre destination (chantier…) — lien discret, la proposition IA reste le 1-tap. */}
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={t('docs.pickOther', { personality })}
+        onPress={onPickTarget}
+        hitSlop={6}
+        style={{ alignSelf: 'flex-start', marginTop: 10 }}
+      >
+        <Text style={{ ...font('meta', 600), fontSize: 12.5, color: semantic.b2b }}>
+          {t('docs.pickOther', { personality })}
+        </Text>
+      </Pressable>
     </View>
   );
 }
@@ -281,14 +297,27 @@ export default function Documents() {
 
   const [query, setQuery] = useState('');
   const [toast, setToast] = useState<string | null>(null);
+  // A8 : doc en cours de classement manuel (Sheet des destinations réelles).
+  const [pickerDoc, setPickerDoc] = useState<VaultPendingDoc | null>(null);
+  const chantiers = useChantiers();
+  const openChantiers = useMemo(
+    () => (chantiers.data ?? []).filter((c) => c.status === 'open'),
+    [chantiers.data],
+  );
 
-  // « Classer là » (A1-C14) : confirme la proposition OCR — même use case que Bob.
+  // « Classer là » (A1-C14) + picker de cible (A8) : confirme le classement — même use
+  // case que Bob (classifyDocument), la cible peut être la dépense proposée OU un chantier.
   const classify = useMutation({
-    mutationFn: async (input: { documentId: string; expenseId: string; supplier: string }) => {
+    mutationFn: async (input: {
+      documentId: string;
+      linkedEntityType: 'expense' | 'chantier';
+      linkedEntityId: string;
+      toast: string;
+    }) => {
       const r = await client.classifyDocument({
         documentId: input.documentId,
-        linkedEntityType: 'expense',
-        linkedEntityId: input.expenseId,
+        linkedEntityType: input.linkedEntityType,
+        linkedEntityId: input.linkedEntityId,
       });
       if (!r.ok) throw r.error;
       return input;
@@ -296,7 +325,8 @@ export default function Documents() {
     onSuccess: (input) => {
       void queryClient.invalidateQueries({ queryKey: ['documents'] });
       void queryClient.invalidateQueries({ queryKey: ['expenses'] });
-      setToast(t('docs.classifiedToast', { personality, params: { supplier: input.supplier } }));
+      setPickerDoc(null);
+      setToast(input.toast);
     },
     onError: () => setToast(t('docs.classifyError', { personality })),
   });
@@ -573,12 +603,17 @@ export default function Documents() {
                       key={p.id}
                       doc={p}
                       onOpen={() => void openDocument(p.id)}
+                      onPickTarget={() => setPickerDoc(p)}
                       classifying={classify.isPending && classify.variables?.documentId === p.id}
                       onClassify={(expenseId) =>
                         classify.mutate({
                           documentId: p.id,
-                          expenseId,
-                          supplier: p.matchedExpense?.supplierName ?? p.filename,
+                          linkedEntityType: 'expense',
+                          linkedEntityId: expenseId,
+                          toast: t('docs.classifiedToast', {
+                            personality,
+                            params: { supplier: p.matchedExpense?.supplierName ?? p.filename },
+                          }),
                         })
                       }
                     />
@@ -886,6 +921,96 @@ export default function Documents() {
           </>
         ) : null}
       </ScrollView>
+
+      {/* A8 : Sheet des destinations RÉELLES — proposition IA en tête, puis chantiers ouverts. */}
+      <Sheet visible={pickerDoc !== null} onClose={() => setPickerDoc(null)}>
+        <Text style={[font('cardTitle'), { color: colors.ink900, marginBottom: 12 }]} accessibilityRole="header">
+          {t('docs.pickTitle', { personality })}
+        </Text>
+        {pickerDoc?.matchedExpense ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={pickerDoc.matchedExpense.supplierName}
+            disabled={classify.isPending}
+            onPress={() =>
+              classify.mutate({
+                documentId: pickerDoc.id,
+                linkedEntityType: 'expense',
+                linkedEntityId: pickerDoc.matchedExpense!.id,
+                toast: t('docs.classifiedToast', {
+                  personality,
+                  params: { supplier: pickerDoc.matchedExpense!.supplierName },
+                }),
+              })
+            }
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 11,
+              paddingVertical: 12,
+              borderBottomWidth: 1,
+              borderBottomColor: colors.lineSoft,
+            }}
+          >
+            <IconTile tone="success" size={34} radius={10}>
+              <SparkSmallIcon color={semantic.success} />
+            </IconTile>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={{ ...font('body', 700), fontSize: 14, color: colors.ink800 }} numberOfLines={1}>
+                {pickerDoc.matchedExpense.supplierName}
+              </Text>
+              <Text style={[font('meta'), { color: colors.slate400, marginTop: 1 }]}>
+                {t('docs.pickProposalMeta', { personality })}
+              </Text>
+            </View>
+            <ChevronRightIcon color={controls.chevron} size={14} strokeWidth={2} />
+          </Pressable>
+        ) : null}
+        {openChantiers.map((chantier, i) => (
+          <Pressable
+            key={chantier.id}
+            accessibilityRole="button"
+            accessibilityLabel={chantier.name}
+            disabled={classify.isPending}
+            onPress={() =>
+              pickerDoc
+                ? classify.mutate({
+                    documentId: pickerDoc.id,
+                    linkedEntityType: 'chantier',
+                    linkedEntityId: chantier.id,
+                    toast: t('docs.classifiedIntoToast', { personality, params: { name: chantier.name } }),
+                  })
+                : undefined
+            }
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 11,
+              paddingVertical: 12,
+              borderBottomWidth: i < openChantiers.length - 1 ? 1 : 0,
+              borderBottomColor: colors.lineSoft,
+            }}
+          >
+            <IconTile tone="b2b" size={34} radius={10}>
+              <FolderSmallIcon color={semantic.b2b} />
+            </IconTile>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={{ ...font('body', 700), fontSize: 14, color: colors.ink800 }} numberOfLines={1}>
+                {chantier.name}
+              </Text>
+              <Text style={[font('meta'), { color: colors.slate400, marginTop: 1 }]}>
+                {t('docs.pickChantierMeta', { personality })}
+              </Text>
+            </View>
+            <ChevronRightIcon color={controls.chevron} size={14} strokeWidth={2} />
+          </Pressable>
+        ))}
+        {!pickerDoc?.matchedExpense && openChantiers.length === 0 ? (
+          <Text style={[font('sub'), { color: colors.slate500, lineHeight: 19 }]}>
+            {t('docs.pickEmpty', { personality })}
+          </Text>
+        ) : null}
+      </Sheet>
 
       <Toast
         message={toast ?? ''}
