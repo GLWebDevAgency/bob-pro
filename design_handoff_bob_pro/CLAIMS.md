@@ -870,9 +870,38 @@
 - Acceptance: preview « ton espace <métier> » adaptatif · edges → C23/C10.
 
 ### C23 — Diagnostic 2026                 <!-- kind: flow -->
-- status: OPEN · depends-on: C03 · ref-capture: claims/ref/C23.png
-- Contrat: questionnaire → **score animé (count-up + anneau)** → checklist priorisée → CTA « configurer dans l'app ».
-- Acceptance: score = règle einvoice/conformité (core) · anneau sans opacité-0.
+- status: IN-BUILD
+- owner: claude-code (builder) · reviewer: gpt5pro (a posteriori)
+- depends-on: C03 (MERGED), C40 (intent diagnostic MERGED)
+- ref-capture: claims/ref/C23-frame-p1.png (intro) + p2 (question) · target: apps/mobile/app/diagnostic.tsx (RÉÉCRITURE @bob/ui)
+
+#### Contrat (v1, claude-code — régimes en vigueur : prod 100 %, données réelles, use cases purs)
+- Flux (réfs p1+p2 + dc.html §diag*) : INTRO plein écran indigo sombre (pastille bouclier, « Prêt pour la
+  facture électronique 2026 ? », explication réforme, CTA blanc « C'est parti — 2 min », fermeture ×) →
+  QUESTIONNAIRE 3 questions (barre de progression, question pageTitle blanc, options cartes sombres —
+  clientèle / réception factures d'achat / envoi factures de vente, selon dc.html) → RÉSULTAT : ScoreRing
+  animé count-up (couleur par tranche, JAMAIS d'opacity-0) + checklist priorisée dérivée + CTA « Configurer
+  dans l'app ».
+- Score et checklist = USE CASE PUR @bob/core (nouveau application/diagnostic/derive-diagnostic.ts si le
+  diagnostic réel existant (useDiagnostic/endpoint compliance) ne couvre pas le questionnaire) : règles
+  einvoice réelles (einvoiceChannelFor par type de clientèle, échéances réforme sept. 2026), testé. Si un
+  diagnostic serveur existe (C13 l'utilise déjà), le questionnaire l'ENRICHIT (réponses → recalcul local
+  pur) — zéro duplication de règles : réutilise les services einvoice existants.
+- Le résultat PERSISTE ce qui doit l'être via les endpoints existants s'ils existent (sinon état local +
+  TODO documenté — pas d'écriture fantôme). Sortie : « Configurer » → routes réelles (compte/réglages).
+- Copy : clés @bob/i18n diag.* ×3 humeurs (copy proto exacte). Thème : fond indigo sombre du proto via
+  tokens (themes.indigo.d1/d2 ou conformityCard) — zéro hex.
+- Entrées : C10 priorité conformité CTA · C13 carte conformité · chip assistant (navigate C40) — déjà
+  câblées vers /diagnostic.
+- Acceptance : captures intro/question/résultat vs réfs · score dérivé testé (cas b2c/b2b/mixte) · anneau
+  animé sans opacity-0 (prop déjà testée C03) · i18n tests · typecheck + token-lint clean.
+
+#### Signatures
+- [x] agreed — claude-code — 2026-07-03 (16:15) — régime humain, review gpt5pro a posteriori
+
+#### Log (append-only, horodaté)
+- [16:15] claude-code CLAIM+PROPOSE+IN-BUILD: réfs intro+Q1 déjà capturées ; le résultat sera capturé au
+  build (proto : parcours complet). Score = règles einvoice RÉELLES réutilisées, pas un barème inventé.
 
 ### C24 — Auth                           <!-- kind: flow -->
 - status: OPEN · depends-on: C03 · ref-capture: claims/ref/C24.png
@@ -988,4 +1017,5 @@
 | C20 | MERGED | claude-code | gpt5pro | Flux 3 étapes validé 13:26 ; TODO parité ③④ résolus. |
 | C40 | MERGED | claude-code | gpt5pro | Livré 15:58 : ask/confirm/journal + ⑤⑥⑦ + créer client. Gap serveur runId → Codex. |
 | C21 | MERGED | claude-code | gpt5pro | Flux validé 16:10 ; Stepper+SignaturePad livrés (réserve C03 soldée). |
-| C16–C41 | OPEN | — | — | C16 dès les réfs C21 ; web C30 différé. |
+| C23 | IN-BUILD | claude-code | gpt5pro | Diagnostic 2026 (score dérivé des règles réelles) — contrat 16:15. |
+| C17–C41 | OPEN | — | — | Web C30 différé après mobile hi-fi. |
