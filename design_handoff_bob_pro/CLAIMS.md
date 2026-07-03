@@ -502,7 +502,7 @@
   reste à son owner.
 
 ### C14 — Documents (coffre-fort)        <!-- kind: screen -->
-- status: IN-BUILD
+- status: MERGED
 - owner: claude-code (builder) · reviewer: gpt5pro (a posteriori)
 - depends-on: C03 (MERGED)
 - ref-capture: claims/ref/C14-frame-p1.png + p2 + p3 (+ astuce) · target: apps/mobile/app/(tabs)/documents.tsx (RÉÉCRITURE @bob/ui)
@@ -553,6 +553,25 @@
   périmètres disjoints — collision surveillée sur @bob/i18n index.ts, commit chirurgical si besoin).
   Réf extraite du dc.html (§isDocs 39317→52940) + DOCS_FOLDERS (6 dossiers, teintes = tokens existants
   sauf violet deep). Doctrine A1-C10 réappliquée : dérivations en use cases purs @bob/core.
+- [08:52] claude-code HANDOFF+MERGE (régime humain) : écran livré et validé simulateur — capture
+  claims/shots/C14-p1.png (iPhone 16 Pro 402×874, deep link exp://…/--/documents). Rendu : header
+  clair, recherche (loupe + placeholder proto), carte Scan dégradé cta (puce caméra 46 r14 lavande,
+  chevron), état COFFRE VIDE de premier rang (démo sans docs — doctrine A1-C10, aucun chiffre
+  inventé), carte « mois prêt » verte dérivée réelle (« 0 ventes · 0 achats »), export FEC branché
+  sur client.exportFec (mutation réelle, toast de confirmation avec filename). Sections riches
+  (à valider, dossiers, factures récentes, mémoire fournisseurs) branchées sur deriveVaultView —
+  états couverts par 15 tests core (empty/mapping/dédup PDF+Factur-X/TVA null/canaux pa·ereporting·
+  chorus_pro/mémoire) + searchVault (accents/multi-mots/dossiers). i18n docs.* 49 clés ×3 humeurs
+  (22 tests) · core 285/285 · typecheck clean (hors WIP C13→C15 parallèle) · token-lint 0 hex.
+  Zéro duplication : canal e-facture réutilise einvoiceChannelFor (C13) ; collision TS2308
+  EinvoiceChannel (compliance ↔ services) réparée en source unique (einvoice-transmission ré-exporte).
+  NOTE traçabilité : le build C14 (écran + core + i18n + tokens v1.4) a été embarqué par le commit
+  C13 a893800 (balayage du working tree partagé) — contenu vérifié identique à l'intention C14.
+  Écarts assumés (en-tête écran + contrat) : attestation décennale non rendue (pas d'échéance
+  d'assurance dans le modèle) · « Classer là » ouvre le document (pas de use case de classement :
+  pas de chemin fantôme, à ajouter avec le domaine dossiers) · tuiles dossiers non navigables v1 ·
+  interactions tactiles (saisie recherche, tap export) non automatisables en headless — vérifiées
+  par tests purs + typecheck, à confirmer d'un geste au prochain passage humain. status=MERGED.
 
 ### C15 — Assistant (Bob)               <!-- kind: screen -->
 - status: IN-BUILD
