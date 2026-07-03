@@ -348,3 +348,18 @@ describe('i18n — C21 devis.*', () => {
     expect(t('devis.errAction', { personality: 'pro' }).length).toBeGreaterThan(0);
   });
 });
+
+describe('i18n — C16 piece.*', () => {
+  it('interpole l’acompte et l’avancement sur les 3 humeurs', () => {
+    expect(t('piece.deposit', { params: { pct: 30, amount: '488,40 €' } })).toBe(
+      'Acompte 30 % à la commande : 488,40 €',
+    );
+    expect(t('piece.progress', { personality: 'direct', params: { pct: 40 } })).toBe('40 %');
+    expect(t('piece.vatPerLine', { params: { rate: 20 } })).toBe('TVA 20 %');
+  });
+
+  it('décline statuts et badge figé', () => {
+    expect(t('piece.statusPartiallyPaid', { personality: 'pro' })).toBe('Partiellement payée');
+    expect(t('piece.frozenBadge')).toBe('Figé à l’émission');
+  });
+});

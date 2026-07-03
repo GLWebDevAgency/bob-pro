@@ -144,6 +144,8 @@ export interface InvoiceView {
   mentions: string[];
   dueAt: string | null;
   paid: number;
+  /** Lignes de la pièce (C16). */
+  lines: QuoteLine[];
 }
 
 export interface AccountingPreviewLine {
@@ -330,6 +332,7 @@ export class BackendService {
       mentions: [...i.mentions],
       dueAt: i.dueAt,
       paid: i.paid,
+      lines: i.lines.map((l) => ({ ...l })),
     };
   }
 

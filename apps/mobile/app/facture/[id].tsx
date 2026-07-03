@@ -1,145 +1,113 @@
-import { ScrollView, View, Text, Pressable } from 'react-native';
+/**
+ * Facture — détail de pièce (claim C16, réf dc.html §showPiece). La VUE vient de
+ * buildPieceView (@bob/core, use case pur — parité d'actions) via PieceDetailView ;
+ * les ACTIONS restent InvoiceActions (source unique, confirmations typées, mêmes use
+ * cases que Bob). Nav croisée réelle : devis parent, avoir, situation (parentQuoteId).
+ * Le PDF s'ouvre depuis le coffre (document lié) quand il existe — sinon pas de bouton.
+ * L'aperçu comptable (fonctionnalité réelle antérieure) est conservé sous les mentions.
+ */
+import { useMemo } from 'react';
+import { ActivityIndicator, Linking, Text, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
-import { formatEUR } from '@bob/core';
-import { useTheme } from '../../src/theme';
-import { useInvoice, useCustomers, useInvoiceAccountingPreview } from '../../src/data/hooks';
-import { Card, Badge, MoneyText, SectionHeader, font } from '../../src/components/ui';
-import { InvoiceActions, hasInvoiceActions, INVOICE_BADGE } from '../../src/components/DocumentActions';
+import { buildPieceView, type PieceLinkedRef } from '@bob/core';
+import { t } from '@bob/i18n';
+import { Card, SectionHeader, font, useTheme } from '@bob/ui';
+import { useCustomers, useInvoice, useInvoiceAccountingPreview, useInvoices, useQuotes } from '../../src/data/hooks';
+import { useDocuments } from '../../src/data/documents';
+import { useBobClient } from '../../src/data/client';
+import { InvoiceActions, hasInvoiceActions } from '../../src/components/DocumentActions';
 import { AccountingLinesView } from '../../src/components/AccountingLinesView';
-
-function formatDate(iso: string | null): string | null {
-  if (!iso) return null;
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? null : d.toLocaleDateString('fr-FR');
-}
+import { PieceDetailView } from '../../src/components/PieceDetailView';
 
 export default function FactureDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { colors, semantic } = useTheme();
-  const insets = useSafeAreaInsets();
+  const { personality, colors } = useTheme();
   const router = useRouter();
+  const client = useBobClient();
   const invoice = useInvoice(id);
+  const invoices = useInvoices();
+  const quotes = useQuotes();
   const customers = useCustomers();
-
-  const inv = invoice.data ?? null;
-  const customerName = inv ? (customers.data ?? []).find((c) => c.id === inv.customerId)?.name ?? 'Client' : 'Client';
-  const badge = inv ? INVOICE_BADGE[inv.status] : null;
-  // Assiette = netToPay (acompte si depositPct, sinon ttc) : c'est ce que le domaine autorise à encaisser.
-  const remaining = inv ? Math.max(0, inv.totals.netToPay - inv.paid) : 0;
-  const dueAt = formatDate(inv?.dueAt ?? null);
-  // Écriture comptable : le domaine sait aussi la prévisualiser pour un brouillon (prospective, réf « à émettre »).
-  const acct = useInvoiceAccountingPreview(id, !!inv);
+  const documents = useDocuments();
+  const acct = useInvoiceAccountingPreview(id, !!invoice.data);
   const ledger = acct.data?.available ? acct.data : null;
 
-  return (
-    <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <View style={{ paddingTop: insets.top + 8, paddingHorizontal: 20, paddingBottom: 8 }}>
-        <Pressable
-          onPress={() => router.back()}
-          accessibilityRole="button"
-          accessibilityLabel="Retour"
-          style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}
-        >
-          <Ionicons name="chevron-back" size={22} color={colors.ink800} />
-          <Text style={[font('body'), { color: colors.ink800 }]}>Devis &amp; Factures</Text>
-        </Pressable>
-      </View>
+  const view = useMemo(() => {
+    const inv = invoice.data;
+    if (!inv) return null;
+    const customer = (customers.data ?? []).find((c) => c.id === inv.customerId) ?? null;
+    const parent = inv.parentQuoteId ? (quotes.data ?? []).find((q) => q.id === inv.parentQuoteId) : undefined;
+    // Pièces sœurs du même devis parent : avoir émis / situation liée (réel, sans ambiguïté).
+    const siblings = inv.parentQuoteId
+      ? (invoices.data ?? []).filter((i) => i.parentQuoteId === inv.parentQuoteId && i.id !== inv.id)
+      : [];
+    const credit = siblings.find((i) => i.kind === 'credit_note');
+    const situation = siblings.find((i) => i.kind === 'situation');
+    return buildPieceView({
+      source: 'invoice',
+      invoice: inv,
+      customer,
+      ...(parent ? { parentQuote: { id: parent.id, number: parent.number, ttcCents: parent.totals.ttc } } : {}),
+      ...(credit ? { creditNote: { id: credit.id, number: credit.number, ttcCents: credit.totals.ttc } } : {}),
+      ...(situation ? { situation: { id: situation.id, number: situation.number, ttcCents: situation.totals.ttc } } : {}),
+    });
+  }, [invoice.data, invoices.data, quotes.data, customers.data]);
 
-      <ScrollView contentContainerStyle={{ padding: 20, paddingTop: 8, gap: 16, paddingBottom: 40 }}>
-        {invoice.isLoading ? (
-          <Card>
-            <Text style={[font('body'), { color: colors.slate500 }]}>Chargement…</Text>
-          </Card>
-        ) : invoice.isError ? (
-          <Card>
-            <Text accessibilityRole="alert" style={[font('body'), { color: colors.slate500 }]}>
-              Facture introuvable.
-            </Text>
-          </Card>
-        ) : inv && badge ? (
-          <>
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-              <View style={{ flex: 1, paddingRight: 12 }}>
-                <Text style={[font('screenH1'), { color: colors.ink900 }]}>{inv.number ?? 'Brouillon'}</Text>
-                <Text style={[font('sub'), { color: colors.slate400, marginTop: 2 }]}>{customerName}</Text>
-              </View>
-              <Badge label={badge.label} tone={badge.tone} />
-            </View>
-
-            <Card>
-              <SectionHeader title="Montant" />
-              <Row label="Total HT" value={formatEUR(inv.totals.ht)} colors={colors} />
-              <Row label="TVA" value={formatEUR(inv.totals.vat)} colors={colors} />
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 8 }}>
-                <Text style={[font('cardTitle'), { color: colors.ink900 }]}>Total TTC</Text>
-                <MoneyText cents={inv.totals.ttc} variant="big" />
-              </View>
-              {inv.paid > 0 ? <Row label="Déjà encaissé" value={formatEUR(inv.paid)} colors={colors} /> : null}
-              {remaining > 0 && remaining !== inv.totals.ttc ? (
-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 8 }}>
-                  <Text style={[font('cardTitle'), { color: colors.ink900 }]}>Reste à encaisser</Text>
-                  <MoneyText cents={remaining} color={semantic.danger} />
-                </View>
-              ) : null}
-              {dueAt ? (
-                <Text style={[font('meta'), { color: colors.slate400, marginTop: 10 }]}>Échéance : {dueAt}</Text>
-              ) : null}
-            </Card>
-
-            {inv.mentions.length > 0 ? (
-              <Card>
-                <SectionHeader title="Mentions légales" />
-                <View style={{ gap: 6 }}>
-                  {inv.mentions.map((m, i) => (
-                    <Text key={i} style={[font('meta'), { color: colors.slate500 }]}>
-                      • {m}
-                    </Text>
-                  ))}
-                </View>
-              </Card>
-            ) : null}
-
-            {ledger && ledger.lines.length > 0 ? (
-              <Card>
-                <SectionHeader title="Écriture comptable" />
-                <AccountingLinesView
-                  lines={ledger.lines}
-                  totalDebitCents={ledger.totalDebitCents}
-                  totalCreditCents={ledger.totalCreditCents}
-                />
-              </Card>
-            ) : null}
-
-            {inv.parentQuoteId ? (
-              <Pressable
-                onPress={() => router.push(`/devis/${inv.parentQuoteId}`)}
-                accessibilityRole="button"
-                accessibilityLabel="Ouvrir le devis d'origine"
-              >
-                <Card>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <Text style={[font('cardTitle'), { color: colors.ink900 }]}>Devis d&apos;origine</Text>
-                    <Ionicons name="chevron-forward" size={20} color={colors.slate400} />
-                  </View>
-                </Card>
-              </Pressable>
-            ) : null}
-
-            {hasInvoiceActions(inv) ? <InvoiceActions invoice={inv} /> : null}
-          </>
-        ) : null}
-      </ScrollView>
-    </View>
+  // PDF archivé au coffre (document lié à la facture) — bouton absent sinon (pas de chemin fantôme).
+  const pdfDoc = useMemo(
+    () =>
+      (documents.data ?? []).find(
+        (d) => d.linkedEntityType === 'invoice' && d.linkedEntityId === id && d.kind === 'invoice_pdf',
+      ) ?? null,
+    [documents.data, id],
   );
-}
+  const openPdf = pdfDoc
+    ? async (): Promise<void> => {
+        const r = await client.documentDownloadUrl(pdfDoc.id);
+        if (r.ok) await Linking.openURL(r.value.url);
+      }
+    : null;
 
-function Row({ label, value, colors }: { label: string; value: string; colors: { slate500: string; ink800: string } }) {
+  if (invoice.isLoading || customers.isLoading) {
+    return (
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg }}>
+        <ActivityIndicator color={colors.ink800} />
+      </View>
+    );
+  }
+  if (invoice.isError || !view || !invoice.data) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', backgroundColor: colors.bg, padding: 18 }}>
+        <Card>
+          <Text accessibilityRole="alert" style={[font('sub'), { color: colors.slate500 }]}>
+            {t(invoice.isError ? 'piece.dataError' : 'piece.notFound', { personality })}
+          </Text>
+        </Card>
+      </View>
+    );
+  }
+  const inv = invoice.data;
+
   return (
-    <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 2 }}>
-      <Text style={[font('sub'), { color: colors.slate500 }]}>{label}</Text>
-      <Text style={[font('sub'), { color: colors.ink800 }]}>{value}</Text>
-    </View>
+    <PieceDetailView
+      view={view}
+      onClose={() => router.back()}
+      onOpenQuote={(ref: PieceLinkedRef) => router.push(`/devis/${ref.id}`)}
+      onOpenInvoice={(ref: PieceLinkedRef) => router.push(`/facture/${ref.id}`)}
+      onOpenPdf={openPdf ? () => void openPdf() : undefined}
+      actions={hasInvoiceActions(inv) ? <InvoiceActions invoice={inv} /> : null}
+      extra={
+        ledger && ledger.lines.length > 0 ? (
+          <Card>
+            <SectionHeader title="Écriture comptable" />
+            <AccountingLinesView
+              lines={ledger.lines}
+              totalDebitCents={ledger.totalDebitCents}
+              totalCreditCents={ledger.totalCreditCents}
+            />
+          </Card>
+        ) : null
+      }
+    />
   );
 }

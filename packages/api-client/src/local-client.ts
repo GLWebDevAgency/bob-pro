@@ -218,6 +218,33 @@ export class LocalBobClient implements BobClient {
     // → exerce le flux réel scan → proposition → « Classer là » → dossier Achats.
     for (const expense of seedExpenses(this.companyId, this.clock.today())) void this.expenses.save(expense);
     this.documents.push(...seedVaultDocuments(this.companyId, this.clock.now(), this.clock.today()));
+    // Facturation de démo (C16) : mêmes FLOWS que l'utilisateur — devis signé avec acompte
+    // (test d'or 488,40), facture d'acompte émise puis ENCAISSÉE → le briefing du jour
+    // propose la facture finale (proto), la pièce montre suivi payé + frise + mentions figées.
+    this.ready = this.seedBillingDemo().catch(() => undefined);
+  }
+
+  /** Barrière du seed asynchrone : les lectures billing attendent la démo posée. */
+  private ready: Promise<void> = Promise.resolve();
+
+  private async seedBillingDemo(): Promise<void> {
+    const created = await this.createQuote({
+      customerId: 'cust-martin',
+      depositPct: 30,
+      lines: [
+        { label: 'Pose pompe à chaleur — main-d’œuvre', category: 'labor', qty: 1, unitPriceHT: 98000, vatRate: 20 },
+        { label: 'Fournitures hydrauliques', category: 'supply', qty: 1, unitPriceHT: 37667, vatRate: 20 },
+      ],
+    });
+    if (!created.ok) return;
+    const quoteId = created.value.quoteId;
+    await this.sendQuote(quoteId);
+    await this.signQuote({ quoteId, signerName: 'SARL Martin Rénovation' });
+    const generated = await this.generateInvoice({ quoteId, mode: 'deposit' });
+    if (!generated.ok) return;
+    await this.issueInvoice({ invoiceId: generated.value.invoiceId });
+    // L'acompte est encaissé — plafonné netToPay (488,40 €), comme la doctrine l'exige.
+    await this.registerPayment({ invoiceId: generated.value.invoiceId, amount: 48840, method: 'card' });
   }
 
   private mapQuote(q: Quote): QuoteView {
@@ -564,17 +591,20 @@ export class LocalBobClient implements BobClient {
   }
 
   async getQuote(id: string): Promise<Result<QuoteView, AppError>> {
+    await this.ready;
     const q = await this.quotes.findById(id);
     if (!q) return err(appNotFound('quote', id));
     return ok(this.mapQuote(q));
   }
 
   async listQuotes(): Promise<Result<QuoteView[], AppError>> {
+    await this.ready;
     const list = await this.quotes.listByCompany(this.companyId);
     return ok(list.map((q) => this.mapQuote(q)));
   }
 
   async getInvoice(id: string): Promise<Result<InvoiceView, AppError>> {
+    await this.ready;
     const i = await this.invoices.findById(id);
     if (!i) return err(appNotFound('invoice', id));
     return ok(this.mapInvoice(i));
@@ -634,6 +664,7 @@ export class LocalBobClient implements BobClient {
   }
 
   async listInvoices(): Promise<Result<InvoiceView[], AppError>> {
+    await this.ready;
     const list = await this.invoices.listByCompany(this.companyId);
     return ok(list.map((i) => this.mapInvoice(i)));
   }

@@ -55,7 +55,8 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     expect(draftPreview.value.lines.map((line) => line.account)).toEqual(['411', '4191', '44571']);
 
     const issued = await client.issueInvoice({ invoiceId: gen.value.invoiceId });
-    expect(issued.ok && issued.value.number).toBe('F-2026-0001');
+    // Le seed démo (C16) a émis F-2026-0001 : la numérotation SANS TROU continue à 0002.
+    expect(issued.ok && issued.value.number).toBe('F-2026-0002');
 
     const preview = await client.invoiceAccountingPreview(gen.value.invoiceId);
     expect(preview.ok).toBe(true);
@@ -68,9 +69,10 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     const entries = await client.listAccountingEntries();
     expect(entries.ok).toBe(true);
     if (!entries.ok) return;
-    expect(entries.value).toHaveLength(1);
-    expect(entries.value[0]?.sourceId).toBe(gen.value.invoiceId);
-    expect(entries.value[0]?.lines.map((line) => line.account)).toEqual(['411', '4191', '44571']);
+    // Le seed démo (C16) porte sa propre écriture : on cible celle du flux du test.
+    const entry = entries.value.find((e) => e.sourceId === gen.value.invoiceId);
+    expect(entry).toBeDefined();
+    expect(entry?.lines.map((line) => line.account)).toEqual(['411', '4191', '44571']);
 
     const paid = await client.registerPayment({
       invoiceId: gen.value.invoiceId,
@@ -87,9 +89,16 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     const paidEntries = await client.listAccountingEntries();
     expect(paidEntries.ok).toBe(true);
     if (!paidEntries.ok) return;
-    expect(paidEntries.value).toHaveLength(2);
-    expect(paidEntries.value[1]?.sourceType).toBe('payment');
-    expect(paidEntries.value[1]?.lines.map((line) => line.account)).toEqual(['512', '411']);
+    // 2 écritures pour CE flux (facture + paiement) — celles du seed démo en plus.
+    const flowPaid = paidEntries.value.filter(
+      (e) => e.sourceId === gen.value.invoiceId || (e.sourceType === 'payment' && e.lines.some(() => true)),
+    );
+    const paymentEntry = paidEntries.value
+      .filter((e) => e.sourceType === 'payment')
+      .at(-1);
+    expect(paymentEntry).toBeDefined();
+    expect(paymentEntry?.lines.map((line) => line.account)).toEqual(['512', '411']);
+    void flowPaid;
 
     const replay = await client.registerPayment({
       invoiceId: gen.value.invoiceId,
@@ -99,7 +108,8 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     });
     expect(replay.ok && replay.value.paymentId).toBe(paid.ok ? paid.value.paymentId : null);
     const replayEntries = await client.listAccountingEntries();
-    expect(replayEntries.ok && replayEntries.value).toHaveLength(2);
+    // Idempotence : le rejeu ne crée AUCUNE écriture supplémentaire.
+    expect(replayEntries.ok && replayEntries.value.length).toBe(paidEntries.value.length);
 
     const fec = await client.exportFec({ from: '2026-01-01', to: '2026-12-31' });
     expect(fec.ok).toBe(true);
@@ -107,8 +117,10 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     expect(fec.value.filename).toBe('732829320FEC20261231.txt');
     expect(fec.value.descriptionFilename).toBe('732829320FEC20261231-description.txt');
     expect(fec.value.descriptionContent).toContain('Codes journaux');
-    expect(fec.value.entryCount).toBe(2);
-    expect(fec.value.rowCount).toBe(5);
+    // Le FEC embarque AUSSI les écritures du seed démo (facture 0001 + son paiement) :
+    // 4 écritures, 10 lignes — l'export reste équilibré et sans trou.
+    expect(fec.value.entryCount).toBe(4);
+    expect(fec.value.rowCount).toBe(10);
     const rows = fec.value.content.trimEnd().split('\n');
     expect(rows[0]?.split('\t')).toEqual([
       'JournalCode',

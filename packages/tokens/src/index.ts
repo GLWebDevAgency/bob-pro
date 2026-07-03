@@ -1,5 +1,5 @@
 /**
- * Bob Pro — Design Tokens (figés, v1.4)
+ * Bob Pro — Design Tokens (figés, v1.5)
  * Source unique de vérité pour apps/mobile (React Native) ET apps/web (Next.js).
  * Primitives neutres + sémantiques + 4 thèmes de marque. Zéro dépendance.
  *
@@ -230,6 +230,19 @@ export const vault = {
 
 export const vaultShadowNative = {
   scan: { shadowColor: '#0C2340', shadowOpacity: 0.2, shadowRadius: 24, shadowOffset: { width: 0, height: 10 }, elevation: 8 },
+} as const;
+
+/** Détail pièce (C16) — nav croisée : avoir (ambre), situation (bleu acier), pièce liée. */
+export const pieceDetail = {
+  creditBorder: '#F0DEBE', // carte « avoir émis » (fond = warningBg)
+  creditChipBg: '#F6E4C6',
+  creditInk: '#8A5A12',
+  creditInkStrong: '#6B4310',
+  situationBg: '#E9EFF7', // carte « situation de travaux »
+  situationBorder: '#D3E0EF',
+  situationChipBg: '#D7E3F2',
+  situationInk: '#3B5B85',
+  linkedLabelInk: '#6B5FC7', // libellé de la pièce liée (carte lavande conformityCard)
 } as const;
 
 // Ombres de composants (v1.2, redlines) — web string + équivalent RN

@@ -713,7 +713,7 @@
   (un seul point d'entrée, C40). Détail complet dans le rapport d'agent (transcript C15).
 
 ### C16 — Détail pièce                   <!-- kind: screen -->
-- status: IN-BUILD
+- status: MERGED
 - owner: claude-code (builder) · reviewer: gpt5pro (a posteriori)
 - depends-on: C03 (MERGED)
 - ref-capture: réf extraite du dc.html §showPiece (268409→283k) · target: apps/mobile/app/devis/[id].tsx + facture/[id].tsx (RÉÉCRITURE @bob/ui, vue partagée)
@@ -757,6 +757,31 @@
 - [15:25] claude-code CLAIM+PROPOSE+IN-BUILD : réserve C16 (C03 MERGED ; C21/C40 IN-BUILD en
   parallèle sur les FLUX devis — C16 = la VUE ; collision évitée par périmètre interdit).
   Réf extraite ligne à ligne du dc.html §showPiece. Doctrine A1-C10 + use cases purs.
+- [16:15] claude-code HANDOFF+MERGE (régime humain) : C16 livré.
+  · @bob/core `buildPieceView` (8 tests) : TEST D'OR vert — devis 1 628,00 € TTC acompte 30 %
+    → deposit 488,40 € (= netToPay du domaine) ; partyLine adaptatif (b2b/b2g « SIREN 821 503
+    642 », B2C RIEN) ; avoir signé négatif ; situation = ttc/ttc parent (40 %) ; reste à
+    encaisser PLAFONNÉ netToPay ; frise PDP dérivée du statut réel (pas d'invention) ;
+    primaryAction par état. InvoiceView.lines exposé (client local + http + api — l'entité
+    les portait déjà). Tokens v1.5 `pieceDetail` (avoir ambre, situation bleu acier, lié
+    lavande) en miroir, parité verte. i18n piece.* 47 clés ×3 (35 tests i18n).
+  · Écrans : PieceDetailView (vue partagée 100 % @bob/ui, réf §showPiece : header sticky,
+    nav croisée, parties, lignes catégorisées + totaux + acompte, suivi, e-reporting/frise,
+    mentions + FIGÉ À L'ÉMISSION, barre sticky PDF + action) ; devis/[id] et facture/[id]
+    réécrits — ACTIONS = QuoteActions/InvoiceActions conservés (source unique, confirmations
+    typées, parité Bob) ; PDF ouvert depuis le coffre si un document lié existe (sinon pas
+    de bouton) ; aperçu comptable réel conservé sous les mentions (hors proto, assumé).
+  · DÉMO ENRICHIE par les VRAIS FLOWS (LocalBobClient.seedBillingDemo) : createQuote →
+    sendQuote → signQuote → generateInvoice(deposit) → issueInvoice (F-2026-0001, numérotation
+    sans trou) → registerPayment 488,40. Capture claims/shots/C16-today-seed.png : le briefing
+    affiche « Créer la facture finale — SARL Martin Rénovation · Acompte déjà encaissé.
+    Reste 1 140 € » (dérivé réel 1 628,00 − 488,40) et le dispo recalculé. Tests api-client
+    réalignés sur la numérotation continue (24/24).
+  · Vérifs : core 316 · api-client 24 · i18n 35 · typecheck clean (hors WIP C21/C40) ·
+    token-lint 0 hex. LIMITE connue : capture du détail lui-même = tap requis (ids runtime
+    non déterministes, accessibilité macOS refusée) — vérifié par les 8 tests purs + typecheck ;
+    un gest humain sur une pièce de la liste Ventes suffit à confirmer visuellement.
+  · C17 (Compta & conformité) DÉBLOQUÉ (C14 + C16 MERGED). status=MERGED.
 
 ### C17 — Compta & conformité            <!-- kind: screen -->
 - status: OPEN · depends-on: C14, C16 · ref-capture: claims/ref/C17.png
