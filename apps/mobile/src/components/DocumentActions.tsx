@@ -55,6 +55,35 @@ export const hasQuoteActions = (q: QuoteView): boolean =>
 export const hasInvoiceActions = (inv: InvoiceView): boolean =>
   inv.status === 'draft' || inv.status === 'issued' || inv.status === 'partially_paid' || inv.status === 'late';
 
+// ── Encaissement : invariants partagés (InvoiceActions + briefing A2-C10) ─────────────────
+// Assiette = netToPay (acompte si depositPct, sinon ttc) : le domaine PLAFONNE le paiement à
+// netToPay (invoice.ts). Baser sur ttc ferait rejeter l'encaissement d'une facture d'acompte.
+export const collectRemainingCents = (invoice: Pick<InvoiceView, 'totals' | 'paid'>): number =>
+  Math.max(0, invoice.totals.netToPay - invoice.paid);
+
+/** Encaissable = statut vivant ET reste dû strictement positif. */
+export const isCollectible = (inv: InvoiceView): boolean =>
+  (inv.status === 'issued' || inv.status === 'partially_paid' || inv.status === 'late') &&
+  collectRemainingCents(inv) > 0;
+
+/** Clé d'idempotence du paiement manuel — même recette partout (anti double encaissement). */
+export const paymentIdempotencyKey = (invoice: Pick<InvoiceView, 'id' | 'paid'>, remaining: number): string =>
+  `mobile:payment:${invoice.id}:${invoice.paid}:${remaining}:transfer`;
+
+/** Confirmation typée de l'encaissement — SOURCE UNIQUE du diff et du challenge ACCOUNTING. */
+export function collectConfirmSpec(invoice: InvoiceView, remaining: number) {
+  return {
+    title: 'Enregistrer le paiement',
+    message: 'Met à jour le journal de banque, le compte client et les relances.',
+    diff: buildActionDiff(
+      'encaisser_facture',
+      { amountCents: remaining },
+      { number: invoice.number, remainingCents: remaining },
+    ),
+    challenge: challengeFor(ACCOUNTING, 'confirm_all', { amountCents: remaining }),
+  };
+}
+
 // Verrou : `busy` (state) pilote spinner/disabled ; `lock` (ref) bloque un 2e tap avant tout re-render.
 function useActionLock() {
   const [busy, setBusy] = useState<string | null>(null);
@@ -209,9 +238,7 @@ export function InvoiceActions({ invoice }: { invoice: InvoiceView }): ReactNode
     );
   }
   if (invoice.status === 'issued' || invoice.status === 'partially_paid' || invoice.status === 'late') {
-    // Assiette = netToPay (acompte si depositPct, sinon ttc) : le domaine PLAFONNE le paiement à netToPay
-    // (invoice.ts). Baser sur ttc ferait rejeter l'encaissement d'une facture d'acompte.
-    const remaining = Math.max(0, invoice.totals.netToPay - invoice.paid);
+    const remaining = collectRemainingCents(invoice);
     return (
       <View style={{ flexDirection: 'row', gap: 8 }}>
         {remaining > 0 ? (
@@ -222,23 +249,14 @@ export function InvoiceActions({ invoice }: { invoice: InvoiceView }): ReactNode
               disabled={!!busy}
               onPress={() =>
                 void (async () => {
-                  const ok = await confirm({
-                    title: 'Enregistrer le paiement',
-                    message: 'Met à jour le journal de banque, le compte client et les relances.',
-                    diff: buildActionDiff(
-                      'encaisser_facture',
-                      { amountCents: remaining },
-                      { number: invoice.number, remainingCents: remaining },
-                    ),
-                    challenge: challengeFor(ACCOUNTING, 'confirm_all', { amountCents: remaining }),
-                  });
+                  const ok = await confirm(collectConfirmSpec(invoice, remaining));
                   if (ok)
                     await run('pay', () =>
                       pay.mutateAsync({
                         invoiceId: invoice.id,
                         amount: remaining,
                         method: 'transfer',
-                        idempotencyKey: `mobile:payment:${invoice.id}:${invoice.paid}:${remaining}:transfer`,
+                        idempotencyKey: paymentIdempotencyKey(invoice, remaining),
                       }),
                     );
                 })()

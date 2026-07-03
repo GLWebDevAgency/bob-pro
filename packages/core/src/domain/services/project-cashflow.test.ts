@@ -11,4 +11,7 @@ describe('projectCashflow', () => {
   it('expose un payout positif quand la dispo est saine', () => {
     expect(projectCashflow(base, 'realiste', 30).payout).toBeGreaterThan(0);
   });
+  it('expose la TVA a provisionner telle quelle (le KPI briefing lit le MEME chiffre que la dispo)', () => {
+    expect(projectCashflow(base, 'realiste', 30).vatDue).toBe(124000);
+  });
 });

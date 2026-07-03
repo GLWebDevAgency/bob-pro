@@ -43,6 +43,7 @@ import { shareFec } from '../../src/lib/share-fec';
 import { useCustomers, useExpenses, useExportFec, useInvoices } from '../../src/data/hooks';
 import { useDocuments } from '../../src/data/documents';
 import {
+  ChartIcon,
   ChatIcon,
   ChevronRightIcon,
   ClipboardCheckIcon,
@@ -697,6 +698,51 @@ export default function Documents() {
                   </Text>
                 </Pressable>
               </LinearGradient>
+
+              {/* Accès au grand-livre (C17) : la compta complète (journal, équilibre, clôture)
+                  vit sur son écran dédié — ici, la porte d'entrée. */}
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={t('compta.title', { personality })}
+                onPress={() => router.push('/comptabilite')}
+                style={{ marginBottom: 12 }}
+              >
+                <View
+                  style={{
+                    backgroundColor: colors.surface,
+                    borderRadius: 18,
+                    borderWidth: 1,
+                    borderColor: controls.cardBorder,
+                    padding: 16,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 11,
+                    ...shadowNative.e1,
+                  }}
+                >
+                  <View
+                    style={{
+                      width: 34,
+                      height: 34,
+                      borderRadius: 10,
+                      backgroundColor: semantic.successBg,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                  >
+                    <ChartIcon color={semantic.success} />
+                  </View>
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text style={{ ...font('body', 700), fontSize: 14, color: colors.ink800 }}>
+                      {t('compta.title', { personality })}
+                    </Text>
+                    <Text style={{ ...font('meta', 500), color: colors.slate300, marginTop: 1 }} numberOfLines={1}>
+                      {t('compta.subtitle', { personality })}
+                    </Text>
+                  </View>
+                  <ChevronRightIcon color={controls.chevron} size={14} strokeWidth={2} />
+                </View>
+              </Pressable>
 
               {view.recentInvoices.length > 0 ? (
                 <View

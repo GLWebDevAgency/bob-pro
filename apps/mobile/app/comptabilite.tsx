@@ -253,7 +253,7 @@ export default function Comptabilite() {
                   accessibilityLabel={t(summary.balanced ? 'compta.balanced' : 'compta.unbalanced', { personality })}
                   style={{
                     ...font('bigNum'),
-                    fontSize: 21,
+                    fontSize: 23,
                     color: summary.balanced ? semantic.success : semantic.dangerVivid,
                   }}
                 >
