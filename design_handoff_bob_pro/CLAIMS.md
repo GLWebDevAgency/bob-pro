@@ -663,10 +663,38 @@
 ## Flux — parallélisables (après C03 ; certains dépendent d'écrans)
 
 ### C20 — Facture à la voix              <!-- kind: flow -->
-- status: OPEN · depends-on: C03 · ref-capture: claims/ref/C20.png
-- spec: SCREENS.md § Voix · flows/voiceInvoice (core) · USER_FLOWS.md § Voix
-- Contrat: 3 étapes (écoute/onde → revue facture pré-remplie → payé/envoyé) · encaisser vs envoyer · retour Aujourd'hui.
-- Acceptance: machine à états depuis core · onde sans opacité-0 au repos · edges → C10.
+- status: IN-BUILD
+- owner: claude-code (builder) · reviewer: gpt5pro (a posteriori)
+- depends-on: C03 (MERGED), C02 (flows/voiceInvoice MERGED), C15 (assistant MERGED)
+- ref-capture: claims/ref/C20-frame-p1.png + p2 · target: apps/mobile/app/voix.tsx (route à créer) + hooks
+- spec: SCREENS.md § Voix · flows/voice-invoice (@bob/core) · USER_FLOWS.md § Voix · mémoire Voxtral
+
+#### Contrat (v1, claude-code — régimes en vigueur : données réelles, parité d'actions, use cases purs)
+- Flux 3 étapes piloté par la machine RÉELLE @bob/core flows/voice-invoice (C02) :
+  1. ÉCOUTE : VoiceOrb/onde animée (JAMAIS d'opacity-0 au repos — charte §4.7), transcription réelle via
+     le pipeline voix existant (@bob/ai + data/voice, endpoints /voice/transcribe) ; état micro refusé/
+     indisponible honnête (voix Bob).
+  2. REVUE : facture pré-remplie dérivée du transcript (client reconnu, lignes, montants — use cases réels
+     createQuote/issueInvoice selon le cas) rendue en Card @bob/ui (parties, lignes, Totals) ; corrections
+     (retour écoute, brouillon conservé — voiceRetry).
+  3. ISSUE : « Encaisser » vs « Envoyer » = confirmation EXPLICITE (voiceConfirm, préparer≠envoyer) →
+     MÊMES use cases que l'UI/agent (registerPayment / issueInvoice+sendInvoice) → toast succès → retour
+     Aujourd'hui (edge C10).
+- PARITÉ D'ACTIONS (TODO ③④ de l'audit C15) : exposer côté agent les outils scan_depense et creer_devis
+  si le registre packages/ai est extensible SANS toucher apps/api ; sinon TODO C40 documenté au log.
+- Entrées : QuickAction « À la voix » (C10) rebranchée de l'assistant vers /voix · micro de l'assistant
+  (C15) → /voix. Copy : clés @bob/i18n voix.* ×3 humeurs. États : loading/erreur/refus micro/hors-ligne.
+- Interdits : hex/rgba, ancien kit, fixtures, duplication de la machine à états (flows/voice-invoice fait foi).
+- Acceptance : captures vs réfs p1/p2 · machine core pilote les 3 étapes (states testés déjà en C02) ·
+  onde animée au repos sans opacity-0 · confirmation explicite journalisée · edges C10/C15 câblés ·
+  i18n tests · typecheck + token-lint clean.
+
+#### Signatures
+- [x] agreed — claude-code — 2026-07-03 (11:12) — régime humain, review gpt5pro a posteriori
+
+#### Log (append-only, horodaté)
+- [11:12] claude-code CLAIM+PROPOSE+IN-BUILD: réfs déjà capturées (p1/p2). La machine à états C02 et le
+  pipeline vocal @bob/ai existent — le claim est l'ÉCRAN du flux + le câblage réel + les entrées C10/C15.
 
 ### C21 — Devis → signature → facture     <!-- kind: flow -->
 - status: OPEN · depends-on: C03, C16 · ref-capture: claims/ref/C21.png
@@ -746,4 +774,5 @@
 | C12 | MERGED | claude-code | gpt5pro | Écran validé simulateur 08:02 (4 330 € = proto), review a posteriori. |
 | C13 | MERGED | claude-code | gpt5pro | Fiche validée simulateur 08:47, review a posteriori. |
 | C15 | MERGED | claude-code | gpt5pro | Chat sur agent réel validé 11:10 ; audit parité : 9 OK / 8 TODO (① journal on-device prioritaire). |
+| C20 | IN-BUILD | claude-code | gpt5pro | Flux voix sur machine réelle — contrat 11:12. |
 | C16–C41 | OPEN | — | — | Écrans/flux au fil de l'eau ; web C30 différé. |
