@@ -78,6 +78,7 @@ export * from './application/public-access/resolve-quote-signature-token';
 export * from './application/queries/list-customers';
 export * from './application/queries/get-cashflow';
 export * from './application/today/derive-today-priorities';
+export * from './application/diagnostic/derive-diagnostic';
 export * from './application/argent/build-ledger-view';
 export * from './application/billing/build-piece-view';
 export * from './application/clients/derive-customer-standings';

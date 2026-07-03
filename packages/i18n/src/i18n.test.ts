@@ -363,3 +363,47 @@ describe('i18n — C16 piece.*', () => {
     expect(t('piece.frozenBadge')).toBe('Figé à l’émission');
   });
 });
+
+describe('i18n — C23 diag.*', () => {
+  it('copy pote exacte du proto §diag* (intro, question plateforme, résultat)', () => {
+    expect(t('diag.title')).toBe('Diagnostic 2026');
+    expect(t('diag.introTitle')).toBe('Prêt pour la facture électronique 2026 ?');
+    // {count}=3 questions → phrase intro du proto à l'identique.
+    expect(t('diag.introBody', { params: { count: 3 } })).toBe(
+      'À partir du 1ᵉʳ sept. 2026, ton entreprise devra recevoir ses factures en électronique. 3 questions, je te dis où t’en es.',
+    );
+    expect(t('diag.introCta')).toBe('C’est parti — 2 min');
+    expect(t('diag.qPlatform')).toBe('T’as déjà choisi ta plateforme agréée ?');
+    expect(t('diag.qPlatformYes')).toBe('Oui, c’est fait');
+    expect(t('diag.qPlatformUnknown')).toBe('C’est quoi, une plateforme ?');
+    expect(t('diag.resultTitleMid')).toBe('Presque prêt 💪');
+    // {count}=2 points → corps résultat du proto à l'identique.
+    expect(t('diag.resultBody', { params: { count: 2 } })).toBe(
+      '2 trucs à régler et tu seras tranquille pour septembre 2026.',
+    );
+    expect(t('diag.itemReception')).toBe('Plateforme de réception');
+    expect(t('diag.itemReceptionTodo')).toBe('À configurer — le plus urgent');
+    expect(t('diag.itemSirenTodo', { params: { count: 2 } })).toBe('2 fiches à compléter');
+    expect(t('diag.itemDecennaleDone')).toBe('À jour ✓ — propre à ton métier');
+    expect(t('diag.itemFacturxDone')).toBe('Géré automatiquement ✓');
+    expect(t('diag.resultCta')).toBe('Configurer ma réception');
+    expect(t('diag.resultLater')).toBe('Plus tard');
+  });
+
+  it('décline le parcours sur les 3 humeurs (questions adaptatives, axes, plan d’action)', () => {
+    expect(t('diag.questionTag', { params: { n: 1, total: 3 } })).toBe('Question 1 / 3');
+    expect(t('diag.questionTag', { personality: 'direct', params: { n: 2, total: 2 } })).toBe('Q2 / 2');
+    expect(t('diag.auditMix', { personality: 'pro', params: { b2c: 4, b2b: 2, b2g: 1 } })).toBe(
+      'Vos clients : 4 particuliers · 2 professionnels · 1 secteur public',
+    );
+    expect(t('diag.qOffApp', { personality: 'pro' })).toBe(
+      'Encaissez-vous parfois hors de l’application (caisse, espèces) ?',
+    );
+    expect(t('diag.axisReception', { personality: 'direct' })).toBe('Réception');
+    expect(t('diag.deadline', { params: { date: '01/09/2026' } })).toBe('avant le 01/09/2026');
+    expect(t('diag.itemFranchiseNote', { personality: 'pro' })).toBe(
+      'La franchise ne dispense pas de la facturation électronique',
+    );
+    expect(t('diag.dataError', { personality: 'direct' })).toBe('Chargement KO. Réessaie.');
+  });
+});

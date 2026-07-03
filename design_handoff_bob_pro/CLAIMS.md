@@ -911,7 +911,7 @@
 - Acceptance: preview « ton espace <métier> » adaptatif · edges → C23/C10.
 
 ### C23 — Diagnostic 2026                 <!-- kind: flow -->
-- status: IN-BUILD
+- status: MERGED
 - owner: claude-code (builder) · reviewer: gpt5pro (a posteriori)
 - depends-on: C03 (MERGED), C40 (intent diagnostic MERGED)
 - ref-capture: claims/ref/C23-frame-p1.png (intro) + p2 (question) · target: apps/mobile/app/diagnostic.tsx (RÉÉCRITURE @bob/ui)
@@ -969,6 +969,19 @@
   5. Le use case pur derive-diagnostic prend { customers, invoices, payments, profile, réponses } et sort
      { score, axes[3], items datés } — testé sur cas types (artisan b2c pur, mixte BTP avec sous-traitance
      autoliquidée, b2b sans SIREN, franchise 293B).
+- [16:32] claude-code HANDOFF+MERGE (régime humain): diagnostic expert-comptable livré et intro validée
+  simulateur — capture claims/shots/C23-p1.png (pixel-fidèle à la réf). Moteur v2 : deriveDiagnostic pur
+  (6 tests) — échéances LUES dans les faits serveur (réception 01/09/2026 tous assujettis · émission
+  01/09/2027 TPE/PME, 2026 ETI/GE — jamais re-déclarées), canaux via einvoiceChannelFor réutilisé, piège
+  franchise 293B codé/testé, audit auto du dossier réel (mix clientèle par volumes TTC, SIREN b2b/b2g
+  manquants avec route /client/{id}, exposition e-reporting paiements dérivée des paid, acquis structurels
+  relayés), questionnaire réduit à 3 questions adaptatives, plan d'action daté 3 axes (réception
+  surpondérée avant 2026, testé), sanctions art. 1737 en commentaire de code uniquement. Sûreté de type :
+  labelKey/detailKey = unions littérales core → clé i18n manquante casse le typecheck mobile (sans
+  dépendance core→i18n). i18n diag.* 58 clés ×3 (37 tests) · core 322 · typecheck 16/16 · token-lint clean.
+  Persistance : aucun endpoint d'écriture → état local + TODO documenté (pas d'écriture fantôme). Parcours
+  interactif complet (constats→questions→résultat) : validation humaine au premier tap (ou accessibilité).
+  status=MERGED.
 
 ### C24 — Auth                           <!-- kind: flow -->
 - status: OPEN · depends-on: C03 · ref-capture: claims/ref/C24.png
@@ -1084,5 +1097,5 @@
 | C20 | MERGED | claude-code | gpt5pro | Flux 3 étapes validé 13:26 ; TODO parité ③④ résolus. |
 | C40 | MERGED | claude-code | gpt5pro | Livré 15:58 : ask/confirm/journal + ⑤⑥⑦ + créer client. Gap serveur runId → Codex. |
 | C21 | MERGED | claude-code | gpt5pro | Flux validé 16:10 ; Stepper+SignaturePad livrés (réserve C03 soldée). |
-| C23 | IN-BUILD | claude-code | gpt5pro | Diagnostic 2026 (score dérivé des règles réelles) — contrat 16:15. |
+| C23 | MERGED | claude-code | gpt5pro | Diagnostic expert-comptable v2 livré 16:32 (audit réel + plan daté 3 axes). |
 | C17–C41 | OPEN | — | — | Web C30 différé après mobile hi-fi. |
