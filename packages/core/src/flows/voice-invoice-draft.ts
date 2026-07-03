@@ -7,10 +7,13 @@ import { type VoiceInvoiceDraft } from './voice-invoice';
  * Dérivation PURE du brouillon « Facture à la voix » (C20) depuis un transcript FR :
  * client reconnu parmi les clients RÉELS, lignes chiffrées, TVA et moyen d'encaissement.
  * Règle d'or (DA §4) : on ne fabrique JAMAIS un montant — chaque centime vient d'un montant
- * énoncé. Convention (proto §voice) : un montant de ligne énoncé est HT ; « total X € TTC »
- * (ou un montant unique sans catégorie) est TTC et borne le document ; le reliquat HT devient
- * la ligne de main-d'œuvre/prestation. Zéro montant exploitable -> lines vide (voiceCaptured
- * refusera : l'état « rien compris » est un état de premier rang).
+ * énoncé OU du prix ENREGISTRÉ par l'artisan pour une prestation de son catalogue qu'il a
+ * nommée (C27 — jamais d'un prix indicatif métier : ceux-là sont ignorés ici). Convention
+ * (proto §voice) : un montant de ligne énoncé est HT ; « total X € TTC » (ou un montant unique
+ * sans catégorie) est TTC et borne le document ; le reliquat HT devient la ligne de
+ * main-d'œuvre/prestation. Catalogue (C27) : SEULEMENT quand aucun montant n'est exploitable,
+ * les prestations perso nommées dans le transcript se chiffrent à LEUR prix — sinon, zéro
+ * ligne (voiceCaptured refusera : l'état « rien compris » est un état de premier rang).
  */
 
 export interface VoiceCustomerRef {
@@ -18,11 +21,28 @@ export interface VoiceCustomerRef {
   readonly name: string;
 }
 
+/**
+ * Prestation du catalogue (C27) utilisable à la voix. Seuls les PRIX DE L'ARTISAN chiffrent
+ * une ligne : une prestation `indicative` (suggestion métier) n'est JAMAIS utilisée ici —
+ * défense en profondeur, même si l'appelant devrait déjà ne passer que les perso.
+ */
+export interface VoicePrestation {
+  readonly label: string;
+  readonly category: LineCategory;
+  /** Prix unitaire HT en centimes — enregistré par l'artisan. */
+  readonly unitPriceHT: number;
+  readonly vatRate: VatRate;
+  /** true = PU indicatif métier → ignoré par la dérivation voix. */
+  readonly indicative?: boolean;
+}
+
 export interface DeriveVoiceInvoiceDraftInput {
   transcript: string;
   customers: readonly VoiceCustomerRef[];
   /** Taux métier (TradeConfig.defaultVatRate) si le transcript ne précise rien — sinon 20. */
   defaultVatRate?: number;
+  /** Catalogue de l'artisan (C27) — PU par défaut d'une prestation NOMMÉE sans montant énoncé. */
+  prestations?: readonly VoicePrestation[];
 }
 
 export interface VoiceInvoiceDerivation {
@@ -120,6 +140,30 @@ function parseLaborDuration(normalized: string): string | null {
   return m[2] !== undefined ? `${m[1]}h${m[2].padStart(2, '0')}` : `${m[1]} h`;
 }
 
+/** Mots non discriminants d'un libellé de prestation (articles/prépositions parlés). */
+const LABEL_STOPWORDS = new Set([
+  'les', 'des', 'une', 'aux', 'sur', 'pour', 'avec', 'sans', 'chez', 'par', 'dans',
+]);
+
+/**
+ * Prestations du catalogue NOMMÉES dans le transcript (C27) : tous les mots significatifs du
+ * libellé (≥ 3 lettres, hors articles et nombres — « 200 L » n'est pas exigé à l'oral) doivent
+ * être énoncés. Les indicatifs métier sont ignorés — seul le prix de l'artisan chiffre.
+ */
+function matchPrestations(
+  normalized: string,
+  prestations: readonly VoicePrestation[],
+): VoicePrestation[] {
+  const words = ` ${normalized.replace(/[,€%]/g, ' ').replace(/\s+/g, ' ').trim()} `;
+  return prestations.filter((p) => {
+    if (p.indicative === true) return false;
+    const labelWords = normalize(p.label)
+      .split(' ')
+      .filter((w) => w.length >= 3 && !LABEL_STOPWORDS.has(w) && !/\d/.test(w));
+    return labelWords.length > 0 && labelWords.every((w) => words.includes(` ${w} `));
+  });
+}
+
 const KIND_LINE: Partial<Record<AmountKind, { label: string; category: LineCategory }>> = {
   supply: { label: 'Fournitures / matériel', category: 'supply' },
   travel: { label: 'Déplacement', category: 'travel' },
@@ -130,8 +174,9 @@ const KIND_LINE: Partial<Record<AmountKind, { label: string; category: LineCateg
 export function deriveVoiceInvoiceDraft(input: DeriveVoiceInvoiceDraftInput): VoiceInvoiceDerivation {
   const transcript = input.transcript.trim();
   const normalized = normalize(transcript);
+  const spokenRate = parseVatRate(normalized);
   const vatRate: VatRate =
-    parseVatRate(normalized) ?? (input.defaultVatRate !== undefined && isVatRate(input.defaultVatRate) ? input.defaultVatRate : 20);
+    spokenRate ?? (input.defaultVatRate !== undefined && isVatRate(input.defaultVatRate) ? input.defaultVatRate : 20);
   const laborDuration = parseLaborDuration(normalized);
   const laborLabel = laborDuration !== null ? `Main-d’œuvre · ${laborDuration}` : 'Main-d’œuvre';
 
@@ -154,6 +199,20 @@ export function deriveVoiceInvoiceDraft(input: DeriveVoiceInvoiceDraftInput): Vo
       vatRate,
     };
   });
+
+  // Catalogue (C27) : AUCUN montant exploitable mais une prestation PERSO nommée → son prix
+  // enregistré chiffre la ligne (le centime vient de l'artisan, jamais d'un indicatif métier).
+  if (lines.length === 0 && totalTtc === null && input.prestations !== undefined) {
+    for (const p of matchPrestations(normalized, input.prestations)) {
+      lines.push({
+        label: p.label,
+        category: p.category,
+        qty: 1,
+        unitPriceHT: p.unitPriceHT,
+        vatRate: spokenRate ?? p.vatRate, // le taux énoncé prime, sinon celui gardé au catalogue
+      });
+    }
+  }
 
   if (totalTtc !== null) {
     const totalHt = Math.round(totalTtc / (1 + vatRate / 100));

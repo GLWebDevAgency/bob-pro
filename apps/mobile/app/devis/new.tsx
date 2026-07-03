@@ -6,8 +6,11 @@
  * étapes N'EXISTE QUE dans la machine — aucun useState d'étape parallèle.
  *
  * Étapes : 1 client (liste RÉELLE useCustomers, états vide/erreur de premier rang) ·
- * 2 lignes (saisie libre label/qté/PU/catégorie — AUCUN catalogue : il n'existe pas
- * encore dans les hooks, C27) · 3 TVA/mentions (contexte logement → taux appliqué à
+ * 2 lignes (saisie libre label/qté/PU/catégorie + SUGGESTIONS du catalogue C27 au fil de
+ * la saisie du libellé — searchCatalogue @bob/core sur useCatalogue : tap = pré-remplit
+ * libellé/PU/catégorie, la TVA reste pilotée par l'étape 3 qui s'applique à TOUT le devis ;
+ * la saisie libre reste INTACTE, la suggestion est optionnelle) · 3 TVA/mentions (contexte
+ * logement → taux appliqué à
  * tout le devis ; le taux est REVALIDÉ par le use case CreateQuote via suggestVatRate
  * — franchise/autoliquidation remontent en erreur réelle à la génération ; l'aperçu
  * buildMentions n'est pas exposé côté client → carte informative honnête) ·
@@ -27,7 +30,7 @@
  * signature/acompte/facture) — l'encaissement vit sur l'écran facture (C16, parité
  * InvoiceActions). Zéro hex/rgba — tout vient de useTheme()/@bob/tokens.
  */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -48,8 +51,10 @@ import {
   devisEdit,
   devisNext,
   formatEUR,
+  searchCatalogue,
   startDevis,
   DEVIS_STEPS,
+  type CataloguePrestation,
   type CustomerListItem,
   type DevisDraft,
   type DevisFlowState,
@@ -86,6 +91,7 @@ import {
   useSendQuote,
   useSignQuote,
 } from '../../src/data/hooks';
+import { useCatalogue } from '../../src/data/catalogue';
 import { useConfirm } from '../../src/components/ConfirmSheet';
 import { CheckIcon, ChevronLeftIcon, CloseIcon } from '../../src/components/icons';
 
@@ -184,6 +190,7 @@ export default function DevisNew() {
   const confirm = useConfirm();
   const customers = useCustomers();
   const { data: profile } = useProfile();
+  const catalogue = useCatalogue();
   const createQuote = useCreateQuote();
   const sendQuote = useSendQuote();
   const signQuote = useSignQuote();
@@ -287,6 +294,25 @@ export default function DevisNew() {
   const lineQtyValue = parsePositive(lineQty);
   const linePriceValue = parsePositive(linePrice);
   const lineValid = lineLabel.trim() !== '' && lineQtyValue !== null && linePriceValue !== null;
+
+  // Suggestions du catalogue (C27) au fil de la saisie du libellé — searchCatalogue @bob/core
+  // (accents/casse ignorés). La saisie LIBRE reste reine : proposer n'impose jamais.
+  const suggestions = useMemo<CataloguePrestation[]>(() => {
+    const q = lineLabel.trim();
+    if (q.length < 2) return [];
+    const exact = q.toLowerCase();
+    return searchCatalogue(catalogue.prestations, q)
+      .filter((p) => p.label.toLowerCase() !== exact) // suggestion déjà reprise → plus rien à proposer
+      .slice(0, 4);
+  }, [catalogue.prestations, lineLabel]);
+
+  /** Tap suggestion : pré-remplit libellé/PU/catégorie — la TVA reste pilotée par l'étape 3
+   * (UN taux pour tout le devis, revalidé par CreateQuote) ; tout reste éditable après. */
+  const applySuggestion = (p: CataloguePrestation): void => {
+    setLineLabel(p.label);
+    setLinePrice((p.unitPriceHT / 100).toFixed(2).replace('.', ','));
+    setLineCat(p.category);
+  };
 
   const addLine = (): void => {
     if (!lineValid || lineQtyValue === null || linePriceValue === null) return;
@@ -648,6 +674,54 @@ export default function DevisNew() {
                     },
                   ]}
                 />
+
+                {/* Suggestions du catalogue (C27) — tap = pré-remplit, saisie libre intacte */}
+                {suggestions.length > 0 ? (
+                  <View style={{ marginTop: 10, gap: 6 }}>
+                    <Text style={[font('label', 700), { fontSize: 11.5, color: colors.slate400 }]}>
+                      {t('catalogue.suggestTitle', { personality }).toUpperCase()}
+                    </Text>
+                    {suggestions.map((p) => (
+                      <Pressable
+                        key={p.id}
+                        onPress={() => applySuggestion(p)}
+                        accessibilityRole="button"
+                        accessibilityLabel={`${p.label} · ${formatEUR(p.unitPriceHT)}`}
+                        style={{
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          gap: 10,
+                          minHeight: 44,
+                          borderWidth: 1,
+                          borderColor: controls.cardBorder,
+                          borderRadius: 12,
+                          paddingHorizontal: 12,
+                          paddingVertical: 9,
+                        }}
+                      >
+                        <View style={{ flex: 1 }}>
+                          <Text style={[font('label', 600), { fontSize: 13.5, color: colors.ink900 }]}>
+                            {p.label}
+                          </Text>
+                          {p.indicative ? (
+                            <Text style={[font('meta'), { fontSize: 11.5, color: colors.slate400, marginTop: 1 }]}>
+                              {t('catalogue.indicative', { personality })}
+                            </Text>
+                          ) : null}
+                        </View>
+                        <Text
+                          style={[
+                            font('label', 700),
+                            { fontSize: 13.5, color: colors.ink800, fontVariant: ['tabular-nums'] },
+                          ]}
+                        >
+                          {formatEUR(p.unitPriceHT)}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                ) : null}
+
                 <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
                   <View style={{ width: 86 }}>
                     <Text style={[font('meta'), { color: colors.slate400, marginBottom: 4 }]}>

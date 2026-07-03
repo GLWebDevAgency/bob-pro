@@ -73,6 +73,7 @@ import {
   useSendQuote,
   useSignQuote,
 } from '../src/data/hooks';
+import { useCustomPrestations } from '../src/data/catalogue';
 import { useVoiceInput, type VoiceInputIssue } from '../src/data/voice';
 import { useConfirm } from '../src/components/ConfirmSheet';
 import {
@@ -251,6 +252,9 @@ export default function Voix() {
   const confirm = useConfirm();
   const { data: customers } = useCustomers();
   const { data: profile } = useProfile();
+  // Catalogue C27 : SEULES les prestations PERSO (prix de l'artisan) chiffrent une ligne
+  // nommée sans montant énoncé — jamais un indicatif métier (règle d'or du core).
+  const { data: prestations } = useCustomPrestations();
   const createQuote = useCreateQuote();
   const sendQuote = useSendQuote();
   const signQuote = useSignQuote();
@@ -299,6 +303,7 @@ export default function Voix() {
       transcript,
       customers: customers ?? [],
       ...(profile ? { defaultVatRate: profile.defaultVatRate } : {}),
+      ...(prestations !== undefined ? { prestations } : {}),
     });
     const next = voiceCaptured(flow, derived.draft);
     if (!next.ok) {
