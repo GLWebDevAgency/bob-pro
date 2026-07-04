@@ -93,6 +93,8 @@ export * from './application/billing/build-piece-view';
 export * from './application/clients/derive-customer-standings';
 export * from './application/clients/derive-aged-balance';
 export * from './application/expenses/record-expense';
+export * from './application/expenses/pay-expense';
+export * from './application/expenses/summarize-expenses';
 export * from './application/chantier/create-chantier';
 export * from './application/company/autofill-company';
 export * from './application/company/validate-vat';
@@ -132,3 +134,7 @@ export * from './application/ocr/demo-ocr-adapter';
 
 // Échéancier fiscal (C-EXP5 v1 — P09 : deriveFiscalCalendar)
 export * from './application/fiscal/derive-fiscal-calendar';
+
+// Recouvrement conforme (C-EXP2 vA — P12 pénalités chiffrées + P04 chrono prescription)
+export * from './domain/dunning/late-penalties';
+export * from './domain/dunning/prescription';

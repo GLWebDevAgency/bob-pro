@@ -18,6 +18,7 @@ import type {
   InvoiceKind,
   PlanTier,
   DiagnosticResult,
+  FiscalDeadline,
   OcrExtraction,
   ExpenseProps,
   ExpenseCategory,
@@ -315,6 +316,11 @@ export interface BobClient {
   billingPortal(): Promise<Result<{ url: string }, AppError>>;
   invoicePaymentLink(invoiceId: string): Promise<Result<{ url: string }, AppError>>;
   getDiagnostic(): Promise<Result<DiagnosticResult, AppError>>;
+  /** GET /fiscal-calendar (C-EXP5b) : échéances fiscales à venir (fenêtre 90 j) dérivées de la
+   * fiche société par deriveFiscalCalendar (@bob/core). fiscalYearEnd / périodicité URSSAF pas
+   * encore capturés côté serveur : les échéances concernées arrivent en confidence 'assumed'
+   * (hypothèse honnête à confirmer) ; amountHint toujours null en v1 (aucun montant inventé). */
+  getFiscalCalendar(): Promise<Result<FiscalDeadline[], AppError>>;
   getProfile(): Promise<Result<TradeConfig, AppError>>;
   lookupCompany(siret: string): Promise<Result<CompanyLookupResult, AppError>>;
   /** POST /onboarding/company (C24b) : crée la société du compte (provisioning tenant à
@@ -334,6 +340,8 @@ export interface BobClient {
   extractDocument(input: { contentBase64: string; mimeType: string }): Promise<Result<OcrExtraction, AppError>>;
   suggestExpenseDefaults(input: SuggestExpenseDefaultsInput): Promise<Result<ExpenseDefaultsView, AppError>>;
   recordExpense(input: Omit<RecordExpenseInput, 'companyId'>): Promise<Result<{ id: string }, AppError>>;
+  /** E4 : règle une dépense (to_pay→paid + décaissement 401/512) — même use case que Bob. */
+  payExpense(input: { expenseId: string }): Promise<Result<{ status: string }, AppError>>;
   listExpenses(): Promise<Result<ExpenseProps[], AppError>>;
   createChantier(input: Omit<CreateChantierInput, 'companyId'>): Promise<Result<{ id: string }, AppError>>;
   listChantiers(): Promise<Result<ChantierProps[], AppError>>;

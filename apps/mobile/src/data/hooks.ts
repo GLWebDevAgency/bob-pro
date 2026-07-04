@@ -230,6 +230,24 @@ export function useRecordExpense() {
   });
 }
 
+/** E4 : régler une dépense — même use case que Bob ; rafraîchit charges, journal et tréso. */
+export function usePayExpense() {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { expenseId: string }) => {
+      const r = await client.payExpense(input);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['expenses'] });
+      void qc.invalidateQueries({ queryKey: ['accounting-entries'] });
+      void qc.invalidateQueries({ queryKey: ['cashflow'] });
+    },
+  });
+}
+
 export function useCustomers() {
   const client = useBobClient();
   return useQuery({

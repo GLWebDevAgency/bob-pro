@@ -22,6 +22,7 @@ import {
   GenerateInvoiceFromQuote,
   IssueInvoice,
   RegisterPayment,
+  PayExpense,
   RecordExpenseAccountingEntries,
   RecordIssuedInvoiceAccountingEntry,
   RecordPaymentAccountingEntry,
@@ -41,6 +42,7 @@ import {
   planEntitlements,
   resolveAutonomyEntitlement,
   runDiagnostic,
+  deriveFiscalCalendar,
   resolveTradeConfig,
   buildDocumentStorageKey,
   buildInvoiceAccountingPreviewEntry,
@@ -75,6 +77,7 @@ import {
   type CustomerListItem,
   type CreateQuoteOutput,
   type DiagnosticResult,
+  type FiscalDeadline,
   type OcrExtraction,
   type ExpenseProps,
   type RecordExpenseInput,
@@ -402,6 +405,26 @@ export class LocalBobClient implements BobClient {
     return ok(resolveTradeConfig(seedCompany().trade, 'business'));
   }
 
+  /** C-EXP5b (adaptateur démo) : MÊMES règles que le serveur — deriveFiscalCalendar sur la fiche
+   * société du seed, fenêtre 90 j, fiscalYearEnd/périodicité URSSAF inconnus comme en prod
+   * (le use case émet ces échéances en 'assumed', honnête). */
+  async getFiscalCalendar(): Promise<Result<FiscalDeadline[], AppError>> {
+    const company = seedCompany();
+    return ok(
+      deriveFiscalCalendar({
+        company: {
+          legalForm: company.legalForm,
+          vatRegime: company.vatRegime,
+          dateCreation: company.dateCreation ?? null,
+        },
+        asOf: this.clock.today(),
+        horizonDays: 90,
+        fiscalYearEnd: null,
+        urssafPeriodicity: null,
+      }),
+    );
+  }
+
   async lookupCompany(siret: string): Promise<Result<CompanyLookupResult, AppError>> {
     return new AutofillCompanyFromSiret({ lookup: this.companyLookup }).execute({ siret });
   }
@@ -606,7 +629,19 @@ export class LocalBobClient implements BobClient {
     return recorded;
   }
 
+  /** E4 : règle la dépense — transition + écriture de décaissement à la date du jour. */
+  async payExpense(input: { expenseId: string }): Promise<Result<{ status: string }, AppError>> {
+    await this.ready;
+    return new PayExpense({
+      expenses: this.expenses,
+      entries: this.accountingEntries,
+      clock: this.clock,
+      charts: this.chartOfAccounts,
+    }).execute(input);
+  }
+
   async listExpenses(): Promise<Result<ExpenseProps[], AppError>> {
+    await this.ready;
     const list = await this.expenses.listByCompany(this.companyId);
     return ok(list.map((e) => e.toProps()));
   }
@@ -1032,6 +1067,8 @@ export class LocalBobClient implements BobClient {
         }));
         return ok(docs);
       },
+      // C-EXP5b : lecture du calendrier fiscal — même use case que getFiscalCalendar (parité humain↔Bob).
+      listFiscalDeadlines: async () => this.getFiscalCalendar(),
       registerPayment: async (input) =>
         this.registerPayment({
           invoiceId: input.invoiceId,

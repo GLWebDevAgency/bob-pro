@@ -12,6 +12,7 @@ import type {
   PaymentMethod,
   PlanTier,
   DiagnosticResult,
+  FiscalDeadline,
   OcrExtraction,
   ExpenseProps,
   RecordExpenseInput,
@@ -149,6 +150,10 @@ export class HttpBobClient implements BobClient {
   getDiagnostic() {
     return this.req<DiagnosticResult>('GET', '/diagnostic');
   }
+  /** C-EXP5b : échéancier fiscal du tenant, servi par le serveur (deriveFiscalCalendar). */
+  getFiscalCalendar() {
+    return this.req<FiscalDeadline[]>('GET', '/fiscal-calendar');
+  }
   getProfile() {
     return this.req<TradeConfig>('GET', '/profile');
   }
@@ -202,6 +207,10 @@ export class HttpBobClient implements BobClient {
   }
   recordExpense(input: Omit<RecordExpenseInput, 'companyId'>) {
     return this.req<{ id: string }>('POST', '/expenses', input);
+  }
+  /** E4 — endpoint serveur à poser (suivi CLAIMS) : règlement d'une dépense fournisseur. */
+  payExpense(input: { expenseId: string }) {
+    return this.req<{ status: string }>('POST', `/expenses/${input.expenseId}/pay`);
   }
   listExpenses() {
     return this.req<ExpenseProps[]>('GET', '/expenses');

@@ -29,6 +29,7 @@ import {
   formatEUR,
   formatEURWhole,
   searchVault,
+  summarizeExpenses,
   type VaultDocumentData,
   type VaultFolderKey,
   type VaultPendingDoc,
@@ -51,6 +52,7 @@ import {
   FolderSmallIcon,
   SearchIcon,
   SparkSmallIcon,
+  WalletIcon,
 } from '../../src/components/icons';
 
 const MONTHS_CAP = [
@@ -349,6 +351,12 @@ export default function Documents() {
       today: todayISO(),
     });
   }, [documents.data, expenses.data, invoices.data, customers.data]);
+
+  // E10 : reste à payer réel (summarizeExpenses @bob/core) — sous-titre de la porte Dépenses.
+  const expensesToPayCents = useMemo(
+    () => summarizeExpenses(expenses.data ?? [], { month: todayISO().slice(0, 7) }).toPayCents,
+    [expenses.data],
+  );
 
   const trimmedQuery = query.trim();
   const results: VaultDocumentData[] = useMemo(
@@ -749,6 +757,50 @@ export default function Documents() {
                   </Text>
                 </Pressable>
               </LinearGradient>
+
+              {/* Accès aux Dépenses (E10) : reste à payer réel en sous-titre — E4 payer. */}
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={t('dep.title', { personality })}
+                onPress={() => router.push('/depenses')}
+                style={{ marginBottom: 12 }}
+              >
+                <View
+                  style={{
+                    backgroundColor: colors.surface,
+                    borderRadius: 18,
+                    borderWidth: 1,
+                    borderColor: controls.cardBorder,
+                    padding: 16,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 11,
+                    ...shadowNative.e1,
+                  }}
+                >
+                  <View
+                    style={{
+                      width: 34,
+                      height: 34,
+                      borderRadius: 10,
+                      backgroundColor: semantic.particulierBg,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                  >
+                    <WalletIcon color={semantic.particulier} size={17} strokeWidth={2} />
+                  </View>
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text style={{ ...font('body', 700), fontSize: 14, color: colors.ink800 }}>
+                      {t('dep.title', { personality })}
+                    </Text>
+                    <Text style={{ ...font('meta', 500), color: colors.slate300, marginTop: 1 }} numberOfLines={1}>
+                      {t('dep.toPay', { personality })} · {formatEUR(expensesToPayCents)}
+                    </Text>
+                  </View>
+                  <ChevronRightIcon color={controls.chevron} size={14} strokeWidth={2} />
+                </View>
+              </Pressable>
 
               {/* Accès au grand-livre (C17) : la compta complète (journal, équilibre, clôture)
                   vit sur son écran dédié — ici, la porte d'entrée. */}
