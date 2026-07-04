@@ -144,10 +144,11 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     expect(fec.value.filename).toBe('732829320FEC20261231.txt');
     expect(fec.value.descriptionFilename).toBe('732829320FEC20261231-description.txt');
     expect(fec.value.descriptionContent).toContain('Codes journaux');
-    // Le FEC embarque AUSSI les écritures du seed démo (facture échue 0001 de la mairie,
-    // acompte 0002 + son paiement) : 5 écritures, 13 lignes — équilibré et sans trou.
-    expect(fec.value.entryCount).toBe(5);
-    expect(fec.value.rowCount).toBe(13);
+    // Le FEC embarque AUSSI les écritures du seed démo : facture échue 0001 (mairie),
+    // acompte 0002 + son paiement, ET le cycle achats (3 achats AC + 2 décaissements BQ
+    // des dépenses payées — expertise chantier 1) : 10 écritures, 26 lignes.
+    expect(fec.value.entryCount).toBe(10);
+    expect(fec.value.rowCount).toBe(26);
     const rows = fec.value.content.trimEnd().split('\n');
     expect(rows[0]?.split('\t')).toEqual([
       'JournalCode',
@@ -171,6 +172,9 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     ]);
     expect(fec.value.content).toContain('VE\tJournal des ventes');
     expect(fec.value.content).toContain('BQ\tJournal de banque');
+    // Le journal des ACHATS n'est plus un chemin mort : les dépenses postent 6xx/44566/401.
+    expect(fec.value.content).toContain('AC\tJournal des achats');
+    expect(fec.value.content).toContain('44566');
   });
 
   it("preview l'ecriture comptable d'un encaissement hors-ligne", async () => {

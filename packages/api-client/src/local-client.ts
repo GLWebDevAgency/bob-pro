@@ -22,6 +22,7 @@ import {
   GenerateInvoiceFromQuote,
   IssueInvoice,
   RegisterPayment,
+  RecordExpenseAccountingEntries,
   RecordIssuedInvoiceAccountingEntry,
   RecordPaymentAccountingEntry,
   ListAccountingEntries,
@@ -242,11 +243,27 @@ export class LocalBobClient implements BobClient {
     // Facturation de démo (C16) : mêmes FLOWS que l'utilisateur — devis signé avec acompte
     // (test d'or 488,40), facture d'acompte émise puis ENCAISSÉE → le briefing du jour
     // propose la facture finale (proto), la pièce montre suivi payé + frise + mentions figées.
-    this.ready = this.seedBillingDemo().catch(() => undefined);
+    // Puis cycle achats : les dépenses seedées postent leurs écritures (journal AC + BQ),
+    // exactement comme recordExpense le fait pour l'utilisateur — le grand-livre démo est complet.
+    this.ready = this.seedBillingDemo()
+      .then(() => this.seedExpenseAccountingDemo())
+      .catch(() => undefined);
   }
 
   /** Barrière du seed asynchrone : les lectures billing attendent la démo posée. */
   private ready: Promise<void> = Promise.resolve();
+
+  /** Écritures du cycle achats pour les dépenses seedées (même use case que recordExpense). */
+  private async seedExpenseAccountingDemo(): Promise<void> {
+    const postEntries = new RecordExpenseAccountingEntries({
+      expenses: this.expenses,
+      entries: this.accountingEntries,
+      charts: this.chartOfAccounts,
+    });
+    for (const expense of await this.expenses.listByCompany(this.companyId)) {
+      await postEntries.execute({ expenseId: expense.id });
+    }
+  }
 
   private async seedBillingDemo(): Promise<void> {
     // Le seed n'emprunte QUE les variantes *Internal : les méthodes publiques attendent
@@ -550,7 +567,22 @@ export class LocalBobClient implements BobClient {
   }
 
   async recordExpense(input: Omit<RecordExpenseInput, 'companyId'>): Promise<Result<{ id: string }, AppError>> {
-    return new RecordExpense({ expenses: this.expenses, ids: this.ids, clock: this.clock }).execute({ companyId: this.companyId, ...input });
+    await this.ready;
+    const recorded = await new RecordExpense({ expenses: this.expenses, ids: this.ids, clock: this.clock }).execute({
+      companyId: this.companyId,
+      ...input,
+    });
+    if (!recorded.ok) return recorded;
+    // Cycle achats (audit expert-comptable, chantier 1) : la dépense POSTE son écriture
+    // 6xx/44566/401 au journal AC (+ décaissement 401/512 si payée) — comme la facture
+    // poste la sienne à l'émission. Sans cela : FEC non exhaustif, TVA déductible injustifiée.
+    const accounting = await new RecordExpenseAccountingEntries({
+      expenses: this.expenses,
+      entries: this.accountingEntries,
+      charts: this.chartOfAccounts,
+    }).execute({ expenseId: recorded.value.id });
+    if (!accounting.ok) return accounting;
+    return recorded;
   }
 
   async listExpenses(): Promise<Result<ExpenseProps[], AppError>> {
