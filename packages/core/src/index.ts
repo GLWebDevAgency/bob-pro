@@ -129,3 +129,6 @@ export * from './application/ports/output';
 export * from './application/ports/ocr';
 export * from './application/ocr/extract-document';
 export * from './application/ocr/demo-ocr-adapter';
+
+// Échéancier fiscal (C-EXP5 v1 — P09 : deriveFiscalCalendar)
+export * from './application/fiscal/derive-fiscal-calendar';
