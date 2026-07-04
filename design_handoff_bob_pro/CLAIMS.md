@@ -1398,6 +1398,16 @@
   RESTES DÉPLOIEMENT : prisma migrate deploy (20260703230000 notifications + 20260704020000 fiche)
   + redeploy Railway (image du 02/07) + LegalForm n'inclut pas SCI/SNC/asso (décision produit).
   status=MERGED.
+- [2026-07-04 02:15] claude-code A DEPLOY (C24b + tout l'arriéré serveur) : (1) prisma migrate
+  deploy sur la base réelle — 4 migrations appliquées (document_tags, invoice_deposit_deduction,
+  notifications_read_devices, company_fiche_annuaire) ; (2) prisma/rls.sql appliqué (policies des
+  tables neuves dont devices — le reste tracé au log C25 est SOLDÉ) ; (3) railway up → nouvelle
+  image live. PREUVES E2E sur l'instance de prod : GET /company/lookup?siret=82019585700025 SANS
+  token → 200 fiche COMPLÈTE (FLY SERVICES · 33.12Z · SAS/5710 · 2016-03-01 · adresse · TVA) ;
+  /health/ready → 200 (sonde sans tenant) ; /customers et POST /onboarding/company sans token →
+  403. L'inscription de bout en bout (SIRET → fiche → signUp → provisioning tenant → BDD) est
+  opérationnelle en prod. Reste env : BREVO_* absent en prod (emails de relance en échec explicite
+  assumé — secret à poser par l'humain).
 
 ### C26 — Compte / Abo / Équipe / Paywall <!-- kind: flow -->
 - status: IN-BUILD
