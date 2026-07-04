@@ -997,6 +997,53 @@
 
 ---
 
+## E — Expertise comptable (audit multi-agents 2026-07-04, session B)
+
+Directive humaine : « sois proactif, améliore fonctionnalités/data/expertise — tu es
+l'expert-comptable de renom » + « toujours du 100 % prod ». Audit 5 lentilles (écritures
+d'achats, TVA, FEC/lettrage, balance âgée, seuils) → 9 chantiers classés. Rapport complet :
+transcript workflow wf_fb597a24-2e3.
+
+#### Log (append-only, horodaté)
+- [02:10] claude-code (session B) E1 MERGE (commit 693f6f6) : CYCLE ACHATS COMPTABILISÉ —
+  constat bloquant : aucune écriture d'achat jamais postée (journal AC mort, FEC réduit à
+  VE+BQ = non-exhaustif art. A47 A-1 LPF, produits sans charges, TVA déductible injustifiée
+  art. 271 CGI). Builder domaine expense-accounting (6xx=TTC−TVA débit · 44566 débit
+  SEULEMENT si TVA mentionnée, art. 242 nonies A · 401 crédit ; mapping catégorie→PCG
+  documenté : fournitures/materiel/carburant/autre→606, repas→625, sous_traitance→611 ;
+  vigilance immobilisation >~500 € HT commentée) + décaissement 401/512 (journal BQ) +
+  use case RecordExpenseAccountingEntries idempotent (expense:{id}:recorded/:paid).
+  Câblé recordExpense + dépenses seedées : FEC démo 10 écritures/26 lignes, journal AC
+  vivant, chip « Achats » sur l'écran compta. 10 tests. Core 384 ✓ api-client 29 ✓.
+- [02:25] claude-code (session B) E2 MERGE (commit 3cdc9ec) : POSITION DE TVA RÉELLE —
+  deriveVatPosition (exigibilité à l'ENCAISSEMENT art. 269, 2-c CGI : collectée =
+  round(vat×paid/ttc) par pièce vivante — l'or 488,40 rend 81,40 —, avoirs émis
+  régularisés, déductible = TVA mentionnée, sorties netDue/credit séparées).
+  GetCashflow dérive vatDue des factures RÉELLES (repli snapshot sans repo) →
+  le héros dispo, la réserve payout ET le KPI TVA du briefing lisent LE même chiffre ;
+  build-ledger-view lit la déductible AU GRAND-LIVRE (44566/44562 d'E1). La fixture
+  CASH_SNAPSHOT.vatDue ne sert plus qu'en repli. Démo : crédit de TVA honnête (0 à
+  provisionner, dispo 6 535,10 €). +5 tests. Core 389 ✓.
+- BACKLOG CLASSÉ (à dérouler, périmètres au rapport) :
+  · E3 (S) socle dates — InvoiceView.issuedAt + listPayments datés (débloque balance âgée,
+    CA 12 mois sur date d'émission, seuils 293 B) ;
+  · E4 (M) PayExpense — transition to_pay→paid AVEC décaissement (le builder E1 est prêt),
+    action UI sur les dépenses à payer ;
+  · E5 (M) balance âgée clients — deriveAgedBalance (not_due/1-30/31-60/61-90/90+),
+    surfaçage Argent + Bob ;
+  · E6 (L) seuils de franchise 293 B — vat-thresholds datés (37 500/41 250 · 85 000/93 500)
+    + CA encaissé annuel + alerte diagnostic/briefing (le plus gros risque fiscal produit :
+    'tva-franchise' est aujourd'hui TOUJOURS 'ok') ;
+  · E7 (M) FEC probant — lettrage EcritureLet/DateLet (dérivable de Payment.invoiceId),
+    auxiliaires 411xxx/401xxx, ValidDate, libellé « Avoir » sur credit_note ;
+  · E8 (L) calendrier fiscal TVA — CA3/CA12/acomptes par régime + période de liquidation ;
+  · E9 (S) hygiène — FEC ISO 8859-15 (arrêté 29/07/2013), CashflowSnapshotPort.vatDue
+    optionnel, EcritureNum par journal.
+  SUIVIS SERVEUR : apps/api recordExpense doit poster les écritures E1 (même use case) —
+  WIP session A, non touché.
+
+---
+
 ## Flux — parallélisables (après C03 ; certains dépendent d'écrans)
 
 - [21:45] claude-code (session A) COORD: j'avais redéclaré C17 au journal par erreur (contrat v2 déjà posé par la session B) — journal corrigé, je prends C22. Le claim reste à la session B.
