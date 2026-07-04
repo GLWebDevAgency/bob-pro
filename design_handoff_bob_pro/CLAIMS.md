@@ -1544,6 +1544,48 @@ transcript workflow wf_fb597a24-2e3.
 #### Log (append-only, horodaté)
 - [2026-07-04 02:20] claude-code A CLAIM+PROPOSE+IN-BUILD: séquencé après C24b comme prévu au log
   C26 (même fichier backend.service.ts, plus de collision).
+- [2026-07-04 02:40] claude-code A HANDOFF+MERGE (régime humain): C26b COMPLET. subscriptionFor(
+  companyId) par requête (`sub-<companyId>`, early-access business pour tous — LE point unique qui
+  lira la table billing), 10 usages adaptés sans changement de gating, GET /subscription →
+  SubscriptionView (⊂ SubscriptionInfo core, types stricts) + earlyAccess/priceCents, Local aligné,
+  compte.tsx branché (earlyAccess:true → rendu accès anticipé identique, garanti tests core).
+  Jobs/cron : aucun ne gate par offre aujourd'hui (vérifié) ; le jour venu ils passeront leur
+  companyId explicite. grep sub-mercier : VIDE — dernier Mercier serveur éradiqué (reste le tenant
+  démo du guard, assumé). Validations : api 79 ✓ · api-client 31 ✓ · core 389 ✓ · typecheck 16/16 ✓.
+  status=MERGED.
+
+### C-EXP — Expertise comptable (audit multi-agents 2026-07-04) <!-- kind: expertise -->
+- Source : `docs/architecture/expertise-comptable-roadmap.md` — 34 propositions consolidées,
+  CHAQUE référence vérifiée adversarialement (Légifrance/BOFiP + code du repo). 6 claims dérivés :
+  C-EXP1 conformité-pièces (quick-wins purs) · C-EXP2 recouvrement-conforme (B2C/B2G, pénalités
+  calculées, prescription) · C-EXP3 vigie-seuils-anomalies (293 B temps réel, doublons, DAS2, CFE) ·
+  C-EXP4 moteur-tva (exigibilité, CA3/CA12, fin RSI 2027) · C-EXP5 argent-daté (deriveFiscalCalendar,
+  provisions URSSAF/IS, point bas 90 j) · C-EXP6 e-facturation-niveau-2 (Factur-X entrant,
+  e-reporting, connecteur PA, lettrage FEC).
+
+#### C-EXP1 v1 — conformité immédiate des pièces et relances (P01+P14+P11)
+- status: IN-BUILD · owner: claude-code A · reviewer: gpt5pro (a posteriori)
+- Contrat : trois NON-CONFORMITÉS ACTIVES corrigées sans donnée nouvelle —
+  (P01) les relances/mise en demeure réclament 40 € et citent L441-10 à des PARTICULIERS :
+  brancher sur customer.type — B2C = base code civil (art. 1344/1344-1/1231-6, intérêt légal,
+  jamais 40 €), B2G = L2192-13 CCP, B2B inchangé ;
+  (P14) mention d'escompte OBLIGATOIRE absente (L441-9 : « Escompte pour paiement anticipé :
+  néant » par défaut) + taux de pénalités stipulé « taux légal » SOUS le plancher L441-10 II
+  (min. 3× taux légal) → stipuler le défaut légal BCE+10 ; mentions pros ≠ consommateurs dans
+  buildMentions (L441-9 vise les ventes entre pros) ;
+  (P11) mention certifiée taux réduits 10 %/5,5 % (remplaçant légal de l'attestation Cerfa depuis
+  le 16/2/2025, art. 41 LF 2025, BOI-TVA-LIQ-30-20-90-40) imprimée sur devis+factures quand des
+  lignes bâtiment à taux réduit existent (booléens suggestVatRate déjà saisis).
+- Acceptance : tests par type de client (B2B/B2C/B2G) sur mentions + relances · aucune régression
+  des tests core · typecheck.
+
+#### Signatures (C-EXP1)
+- [x] agreed — claude-code A — 2026-07-04 (02:40) — régime humain, review gpt5pro a posteriori
+
+#### Log C-EXP (append-only, horodaté)
+- [2026-07-04 02:40] claude-code A AUDIT+CLAIM: audit 58 agents (4 cartographes, 6 experts,
+  vérification adversariale par proposition — 46/47 retenues, 1 réfutée), rapport commité.
+  C-EXP1 v1 lancé en priorité : risque juridique actif sur chaque facture émise.
 
 ### C27 — Catalogue prestations + Réglages facturation <!-- kind: flow -->
 - status: IN-BUILD
@@ -1684,5 +1726,7 @@ transcript workflow wf_fb597a24-2e3.
 | C24 | MERGED | claude-code A | gpt5pro | Auth 100 % prod (login+SIRET+biométrie) + checklist PROD connectée — 07-04 00:35. Reste : C24b provisioning tenant. |
 | C24b | MERGED | claude-code A | gpt5pro | Cross-tenant fermé (guard+service+GUC) + provisioning `company-<userId>` + fiche société complète en BDD — 07-04 01:55. Reste déploiement : migrate deploy + redeploy Railway. |
 | C27 | MERGED | claude-code A | gpt5pro | Catalogue 63 prestations/9 métiers + suggestions devis/voix — 07-04 00:36. |
-| C26 | MERGED | claude-code A | gpt5pro | Compte/Abo honnête (accès anticipé 0 €, grille PLAN_CATALOG 19/39/79 preview) — 07-04 01:55. Reste : C26b subscription par tenant. |
+| C26 | MERGED | claude-code A | gpt5pro | Compte/Abo honnête (accès anticipé 0 €, grille PLAN_CATALOG 19/39/79 preview) — 07-04 01:55. |
+| C26b | MERGED | claude-code A | gpt5pro | Subscription par tenant + GET /subscription, grep sub-mercier vide — 07-04 02:40. |
+| C-EXP1 | IN-BUILD | claude-code A | gpt5pro | Conformité pièces/relances (P01 B2C · P14 escompte+plancher pénalités · P11 mention taux réduits) — 07-04 02:40. Roadmap : docs/architecture/expertise-comptable-roadmap.md. |
 | C41 | OPEN | — | — | Sweep final a11y/états/parité. Web C30 différé après mobile hi-fi. |
