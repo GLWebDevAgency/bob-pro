@@ -1093,11 +1093,23 @@ transcript workflow wf_fb597a24-2e3.
   → PROGRAMME E INTÉGRALEMENT SOLDÉ (E1..E10 + BOB-1) : cycle achats, TVA encaissements,
   socle dates, balance âgée, seuils 293 B, FEC probant lettré ISO 8859-15, écran Dépenses
   + PayExpense, et Bob armé en expert-comptable de poche.
+- [07:05] claude-code (session B) CLOTURE-1+BOB-2 MERGE (commit 2796c43) : DOSSIER DE
+  L'EXPERT ASSOCIÉ (vision « le cercle ») — deriveTrialBalance (@bob/core, 4 tests) :
+  BALANCE GÉNÉRALE cumulée par compte (tri PCG, solde signé, équilibre au centime) +
+  RÉSULTAT PROVISOIRE = produits (7) − charges (6), jambes exposées — test de la perte
+  honnête : les avances clients 4191 ne sont JAMAIS du produit. Écran Clôture : section
+  « Balance générale » (héros résultat teinté ±, rows compte/D/C/solde tabular, badge
+  équilibre, totaux) + export FEC basculé sur shareFec (l'écriture UTF-8 legacy
+  contredisait le charset ISO 8859-15 d'E9 — source unique rétablie). BOB-2 : 4e pouvoir
+  « combien je gagne ? » (intent resultat AVANT payout, testé ; outil LLM
+  resultat_provisoire ; réponse honnête sans capacité hôte). PREUVE e2e démo : bénéfice
+  provisoire +668,92 € (produits 1 541,67 − charges 872,75) — chiffres du grand-livre.
+  Core 526 ✓ ai 159 ✓ api-client 38 ✓ typecheck ✓.
   SUIVIS SERVEUR (session A) : apps/api recordExpense doit poster les écritures E1 ·
   GET /payments · POST /expenses/:id/pay · annualEncaissedCents dans le getDiagnostic
   serveur · port auxiliaire FEC dans l'exportFec serveur · encodage Latin-9 du FEC servi ·
-  fournir getVatPosition/getAgedBalance/listUnpaidExpenses/payExpense dans les BobActions
-  serveur (BOB-1).
+  fournir getVatPosition/getAgedBalance/listUnpaidExpenses/payExpense/getTrialBalance
+  dans les BobActions serveur (BOB-1/BOB-2).
 
 ---
 
