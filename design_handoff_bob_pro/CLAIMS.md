@@ -1596,8 +1596,32 @@ transcript workflow wf_fb597a24-2e3.
 - Acceptance : tests par type de client (B2B/B2C/B2G) sur mentions + relances · aucune régression
   des tests core · typecheck.
 
+#### C-EXP2 v1 volet A — pénalités chiffrées + chrono prescription (P12+P04)
+- status: IN-BUILD · owner: claude-code A · reviewer: gpt5pro (a posteriori)
+- Périmètre NÉGOCIÉ (table de fusion 03:25) : la balance âgée P16/E5 est MERGÉE par la session B —
+  ce volet couvre uniquement domain/dunning + services/build-relance + application/relances
+  (zone A). Le socle E3 de B (InvoiceView.issuedAt + listPayments datés) DÉBLOQUE l'ancrage P04.
+- Contrat :
+  (P12) computeLatePenalties — référentiel semestriel VERSIONNÉ (taux BCE refi + taux d'intérêt
+  légal ; S1 2026 : BCE+10 = 12,15 %), pénalités B2B de plein droit dès le lendemain de l'échéance
+  (L441-10 II, TTC × taux × jours/365, plancher 3× taux légal vérifié), B2G BCE+8 (L2192-12/13
+  CCP, décret 2013-269), B2C = intérêt légal SEULEMENT à compter de la mise en demeure
+  (1344-1/1231-6), 40 € D441-5 pros uniquement ; les MED B2B/B2G CHIFFRENT pénalités + 40 €
+  (fini « l'argent dû de plein droit, abandonné ») ; semestre hors référentiel → dernier connu
+  avec flag stale explicite (jamais un taux inventé).
+  (P04) chrono de prescription par facture — B2C 2 ans (L218-2 conso, ancre prudente
+  min(émission, échéance)), B2B 5 ans (L110-4), B2G déchéance quadriennale (loi 68-1250 :
+  31/12 de N+4, réclamation écrite interruptive) ; paiement partiel = reconnaissance (art. 2240)
+  → ré-ancre ; sortie : deadline + jours restants + palier d'urgence, intégrée à
+  derive-relance-plan.
+- Acceptance : tests par type × ancienneté × semestre · MED chiffrées (textes exacts) · aucune
+  régression core · typecheck. UI mobile = claim séparé (v1 = moteur + textes relances).
+
 #### Signatures (C-EXP1)
 - [x] agreed — claude-code A — 2026-07-04 (02:40) — régime humain, review gpt5pro a posteriori
+
+#### Signatures (C-EXP2 v1 volet A)
+- [x] agreed — claude-code A — 2026-07-04 (03:40) — régime humain, review gpt5pro a posteriori
 
 #### Log C-EXP (append-only, horodaté)
 - [2026-07-04 02:40] claude-code A AUDIT+CLAIM: audit 58 agents (4 cartographes, 6 experts,
@@ -1781,5 +1805,6 @@ transcript workflow wf_fb597a24-2e3.
 | C26b | MERGED | claude-code A | gpt5pro | Subscription par tenant + GET /subscription, grep sub-mercier vide — 07-04 02:40. |
 | C-EXP1 | MERGED | claude-code A | gpt5pro | Conformité pièces/relances par type de client (B2C code civil · B2G CCP · plancher BCE+10 · escompte · mention taux réduits) — 07-04 03:05. Roadmap : docs/architecture/expertise-comptable-roadmap.md. |
 | C-EXP5 | IN-BUILD | claude-code A | gpt5pro | deriveFiscalCalendar (P09) — échéancier fiscal par forme juridique/date création/régime — 07-04 03:10. |
-| C-EXP2, C-EXP3 | — | session B ? | gpt5pro | Fichiers E6 détectés (vat-thresholds, aged-balance) : session B invitée à réserver ici. |
+| C-EXP2 vA | IN-BUILD | claude-code A | gpt5pro | Pénalités CHIFFRÉES (BCE+10/BCE+8, plancher 3× légal, MED chiffrées) + chrono prescription (2 ans/5 ans/déchéance quadriennale) — 07-04 03:40. |
+| C-EXP2 P16, C-EXP3 P02 | MERGED (=E5/E6, session B) | claude-code B | gpt5pro | Balance âgée écran Argent + seuils 293 B réels au diagnostic — f3f03a7. |
 | C41 | OPEN | — | — | Sweep final a11y/états/parité. Web C30 différé après mobile hi-fi. |
