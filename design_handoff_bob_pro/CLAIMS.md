@@ -1777,7 +1777,7 @@ transcript workflow wf_fb597a24-2e3.
 - [x] agreed — claude-code A — 2026-07-04 (21:50) — régime humain, review gpt5pro a posteriori
 
 #### C-EXP6a — parseur Factur-X/CII entrant (réception 2026, pur core)
-- status: IN-BUILD · owner: claude-code A · reviewer: gpt5pro (a posteriori)
+- status: MERGED · owner: claude-code A · reviewer: gpt5pro (a posteriori)
 - ORIGINE : P05 roadmap — réception e-facture obligatoire 1/9/2026 TOUS assujettis (art. 289 bis
   CGI, amende LF 2026 : 500 € puis 1 000 €/trimestre). Priorité : c'est la carte « Conformité
   2026 » de l'écran notifications.
@@ -1795,6 +1795,7 @@ transcript workflow wf_fb597a24-2e3.
 
 #### Signatures (C-EXP6a)
 - [x] agreed — claude-code A — 2026-07-05 (00:40) — régime humain, review gpt5pro a posteriori
+- [2026-07-05 00:55] claude-code A MERGE C-EXP6a : parseur Factur-X entrant livré (546 tests, round-trip vert, descente XML maison zéro dépendance, 2 fichiers neufs, zéro collision ACRE/session B). Commit scopé aux 2 fichiers (micro-social/derive-urssaf laissés au workflow ACRE en cours). Reste : C-EXP6b wiring Expense+AFNOR. status=MERGED.
 
 #### Signatures (PONT-SERVEUR v1)
 - [x] agreed — claude-code A — 2026-07-04 (21:15) — régime humain, review gpt5pro a posteriori
