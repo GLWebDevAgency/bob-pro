@@ -1,6 +1,15 @@
 import { type InvoiceKind } from '../../domain/billing/invoice/invoice';
 import { type InvoiceStatus } from '../../domain/billing/shared/state-machines';
 import { type ExpenseStatus } from '../../domain/expense/expense';
+import { type LegalForm, type Trade } from '../../domain/company/company';
+import { type MicroActivityCategory } from '../../domain/fiscal/micro-social';
+import { type DateOnly } from '../../shared-kernel/time';
+import { type UrssafPeriodicity } from '../fiscal/derive-fiscal-calendar';
+import {
+  deriveUrssafProvision,
+  type UrssafPaymentData,
+  type UrssafProvision,
+} from '../fiscal/derive-urssaf-provision';
 
 /**
  * Use case pur « grand-livre du vrai dispo » (claim C11 — « LE SOLDE MENT »).
@@ -14,8 +23,11 @@ import { type ExpenseStatus } from '../../domain/expense/expense';
  * · factures attendues    → factures émises encaissables : netToPay − paid (plafond netToPay, jamais ttc) ;
  * · charges & achats      → dépenses « à payer » (TTC) ;
  * · TVA à reverser        → TVA collectée (4457x, écritures de vente) − TVA déductible (dépenses) ;
- * · cotisations & abonnements → AUCUNE source côté client aujourd'hui → toujours `null`
- *   (TODO C40 : contrat cotisations sociales/abonnements récurrents).
+ * · cotisations sociales  → C-EXP5c (P03) : company MICRO + encaissements datés + asOf fournis
+ *   (entrées ADDITIVES, pattern C-EXP2 vA) → provision URSSAF réelle de la période de déclaration
+ *   courante (deriveUrssafProvision — CA ENCAISSÉ × taux D613-4 CSS versionnés, option VFL) et la
+ *   déclaration pré-calculée exposée en `urssaf` ; données absentes, ou forme non micro (TNS au
+ *   réel/IS : aucune source encore — P23/P34) → `null` honnête, comportement historique intact.
  */
 
 // ── Entrées (projections minimales, structurellement compatibles avec les vues api-client) ──
@@ -45,11 +57,32 @@ export interface LedgerEntryData {
   lines: readonly LedgerEntryLineData[];
 }
 
+/**
+ * Fiche société minimale pour la ligne cotisations (C-EXP5c) — seul `legalForm === 'micro'`
+ * déclenche la provision URSSAF ; les autres formes restent à `null` (aucune source, P23/P34).
+ */
+export interface LedgerCompanyData {
+  legalForm: LegalForm;
+  trade: Trade;
+  /** Périodicité de déclaration URSSAF — null/absent = inconnue (trimestrielle supposée, assumed). */
+  urssafPeriodicity?: UrssafPeriodicity | null;
+  /** Catégorie micro déclarée au profil — prime sur la dérivation métier. */
+  microCategory?: MicroActivityCategory;
+  /** Option versement libératoire (art. 151-0 CGI) — absent = non prise. */
+  vfl?: boolean;
+}
+
 /** `undefined` = source indisponible (chargement/erreur) → lignes `null`, jamais 0 inventé. */
 export interface BuildLedgerViewInput {
   invoices?: readonly LedgerInvoiceData[] | undefined;
   expenses?: readonly LedgerExpenseData[] | undefined;
   accountingEntries?: readonly LedgerEntryData[] | undefined;
+  /** C-EXP5c (ADDITIFS — les trois requis ensemble pour la ligne cotisations d'un micro). */
+  company?: LedgerCompanyData | undefined;
+  /** Encaissements datés (listPayments, socle E3) — le use case filtre la période courante. */
+  payments?: readonly UrssafPaymentData[] | undefined;
+  /** Date du jour — ancre la période de déclaration URSSAF courante. */
+  asOf?: DateOnly | undefined;
 }
 
 // ── Sortie (lignes signées : + = entre, − = sort ; null = donnée absente) ──
@@ -63,12 +96,20 @@ export interface LedgerView {
   chargesCents: number | null;
   /** − TVA nette à reverser (collectée − déductible, plancher 0). */
   vatCents: number | null;
-  /** − Cotisations & abonnements — toujours null (aucune source, voir en-tête). */
+  /**
+   * − Cotisations sociales : provision URSSAF micro de la période courante (C-EXP5c) quand
+   * company micro + payments + asOf sont fournis ; sinon null (« — », jamais un chiffre inventé).
+   */
   cotisationsCents: number | null;
   /** Somme des lignes présentes (« Disponible prudent ») — null si aucune ligne. */
   totalCents: number | null;
   /** « À mettre de côté » : TVA due + charges à venir, en valeurs positives. */
   reserve: { vatCents: number | null; chargesCents: number | null };
+  /**
+   * La déclaration URSSAF pré-calculée (doctrine « Bob FAIT ») derrière cotisationsCents —
+   * période, CA encaissé, taux, montant, date limite, explain. null si la ligne est absente.
+   */
+  urssaf: UrssafProvision | null;
 }
 
 // ── Règles métier ──
@@ -156,8 +197,26 @@ export function buildLedgerView(input: BuildLedgerViewInput): LedgerView {
     vatCents = negate(Math.max(0, collected - deductible)); // plancher 0
   }
 
-  // Aucune source « cotisations & abonnements » exposée par le client — ligne absente (« — »).
-  const cotisationsCents: number | null = null;
+  // Cotisations sociales (C-EXP5c) : provision URSSAF réelle si la company est MICRO et que les
+  // encaissements datés + la date du jour sont fournis — sinon ligne absente (« — »), y compris
+  // pour les formes non micro (TNS au réel / IS : aucune source encore, P23/P34).
+  let urssaf: UrssafProvision | null = null;
+  if (
+    input.company !== undefined &&
+    input.company.legalForm === 'micro' &&
+    input.payments !== undefined &&
+    input.asOf !== undefined
+  ) {
+    urssaf = deriveUrssafProvision({
+      payments: input.payments,
+      asOf: input.asOf,
+      periodicity: input.company.urssafPeriodicity ?? null,
+      trade: input.company.trade,
+      ...(input.company.microCategory !== undefined ? { category: input.company.microCategory } : {}),
+      ...(input.company.vfl !== undefined ? { vfl: input.company.vfl } : {}),
+    });
+  }
+  const cotisationsCents: number | null = urssaf === null ? null : negate(urssaf.provisionCents);
 
   const lines = [bankCents, receivablesCents, chargesCents, vatCents, cotisationsCents];
   const present = lines.filter((cents): cents is number => cents !== null);
@@ -174,5 +233,6 @@ export function buildLedgerView(input: BuildLedgerViewInput): LedgerView {
       vatCents: vatCents === null ? null : negate(vatCents),
       chargesCents: chargesCents === null ? null : negate(chargesCents),
     },
+    urssaf,
   };
 }

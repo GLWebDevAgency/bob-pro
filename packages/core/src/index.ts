@@ -138,3 +138,7 @@ export * from './application/fiscal/derive-fiscal-calendar';
 // Recouvrement conforme (C-EXP2 vA — P12 pénalités chiffrées + P04 chrono prescription)
 export * from './domain/dunning/late-penalties';
 export * from './domain/dunning/prescription';
+
+// Provision URSSAF micro (C-EXP5c — P03 : taux D613-4 CSS versionnés + déclaration pré-calculée)
+export * from './domain/fiscal/micro-social';
+export * from './application/fiscal/derive-urssaf-provision';

@@ -112,3 +112,64 @@ describe('buildLedgerView', () => {
     expect(view.vatCents).toBe(0);
   });
 });
+
+// ── C-EXP5c : ligne cotisations = provision URSSAF micro (entrées ADDITIVES) ──
+
+describe('buildLedgerView — cotisations URSSAF micro (C-EXP5c)', () => {
+  const micro = { legalForm: 'micro', trade: 'plombier' } as const;
+
+  it('company micro + encaissements datés + asOf → provision réelle, déduite du total', () => {
+    const view = buildLedgerView({
+      invoices: [invoice({ totals: { netToPay: 80000 } })],
+      company: { ...micro, urssafPeriodicity: 'quarterly' },
+      payments: [
+        { receivedAt: '2026-07-10', amountCents: 500_000 },
+        { receivedAt: '2026-08-21', amountCents: 640_000 },
+        { receivedAt: '2026-09-30', amountCents: 100_000 },
+        { receivedAt: '2026-06-30', amountCents: 999_999 }, // T2 — hors période courante
+      ],
+      asOf: '2026-08-15',
+    });
+
+    // 12 400 € encaissés au T3 × 21,2 % (BIC prestations 2026) = 2 628,80 € — en négatif (ça sort).
+    expect(view.cotisationsCents).toBe(-262_880);
+    expect(view.totalCents).toBe(80000 - 262_880); // la ligne compte dans le « Disponible prudent »
+    expect(view.urssaf?.periodLabel).toBe('T3 2026');
+    expect(view.urssaf?.encaissedCents).toBe(1_240_000);
+    expect(view.urssaf?.declareBy).toBe('2026-10-31');
+    expect(view.urssaf?.provisionCents).toBe(262_880);
+    expect(view.urssaf?.confidence).toBe('certain');
+  });
+
+  it('rien d’encaissé sur la période → 0 réel (donnée présente), pas un « — »', () => {
+    const view = buildLedgerView({
+      company: { ...micro, urssafPeriodicity: 'monthly' },
+      payments: [{ receivedAt: '2026-05-02', amountCents: 300_000 }], // hors mois courant
+      asOf: '2026-07-04',
+    });
+    expect(view.cotisationsCents).toBe(0); // jamais un -0
+    expect(view.totalCents).toBe(0);
+    expect(view.urssaf?.provisionCents).toBe(0);
+  });
+
+  it('données absentes → null honnête et comportement historique intact', () => {
+    // company sans payments/asOf, payments sans company : chaque combinaison incomplète → null.
+    expect(buildLedgerView({ company: micro }).cotisationsCents).toBeNull();
+    expect(buildLedgerView({ company: micro }).urssaf).toBeNull();
+    expect(
+      buildLedgerView({ payments: [{ receivedAt: '2026-07-10', amountCents: 1000 }], asOf: '2026-07-15' })
+        .cotisationsCents,
+    ).toBeNull();
+    expect(buildLedgerView({ company: micro, payments: [] }).cotisationsCents).toBeNull(); // asOf manquant
+  });
+
+  it('forme non micro → null honnête (TNS au réel / IS : aucune source encore, P23/P34)', () => {
+    const view = buildLedgerView({
+      company: { legalForm: 'SASU', trade: 'plombier' },
+      payments: [{ receivedAt: '2026-07-10', amountCents: 500_000 }],
+      asOf: '2026-08-15',
+    });
+    expect(view.cotisationsCents).toBeNull();
+    expect(view.urssaf).toBeNull();
+  });
+});
