@@ -7,6 +7,7 @@ import {
   type VatPosition,
   type AgedBalance,
   type TrialBalance,
+  type IncomeStatement,
 } from '@bob/core';
 
 /** Dépense fournisseur encore à payer (BOB-1 — ciblage de payer_depense par nom). */
@@ -159,6 +160,9 @@ export interface BobActions {
   /** Balance générale + résultat provisoire (deriveTrialBalance @bob/core, CLOTURE-1) —
    * « combien je gagne ? » répond produits − charges du grand-livre réel. */
   getTrialBalance?(): Promise<Result<TrialBalance, AppError>>;
+  /** Compte de résultat normé (deriveIncomeStatement @bob/core, CDR-1) — la cascade
+   * exploitation/financier/exceptionnel/net enrichit la réponse « combien je gagne ? ». */
+  getIncomeStatement?(): Promise<Result<IncomeStatement, AppError>>;
   // —— Mutation ——
   registerPayment(input: {
     invoiceId: string;

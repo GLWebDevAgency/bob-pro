@@ -112,6 +112,7 @@ export * from './application/accounting/initialize-chart-of-accounts';
 export * from './application/accounting/list-accounting-entries';
 export * from './application/accounting/summarize-accounting-entries';
 export * from './application/accounting/derive-trial-balance';
+export * from './application/accounting/derive-income-statement';
 export * from './application/accounting/export-fec';
 export * from './application/accounting/preview-payment-accounting-entry';
 export * from './application/accounting/record-accounting-entry';

@@ -410,6 +410,32 @@ export class BobAgent {
     }
 
     if (intent === 'resultat') {
+      // BOB-3/CDR-1 : compte de résultat NORMÉ en priorité (cascade exploitation/financier/
+      // exceptionnel/net) ; repli BOB-2 sur le résultat provisoire de la balance.
+      const getIncome = this.deps.actions.getIncomeStatement?.bind(this.deps.actions);
+      if (getIncome) {
+        const ri = await getIncome();
+        if (!ri.ok) return err(ri.error);
+        const s = ri.value;
+        const signed = (c: number): string => `${c >= 0 ? '+' : '−'}${formatEUR(Math.abs(c))}`;
+        const verdict =
+          s.resultatNetCents >= 0
+            ? `Résultat net : +${formatEUR(s.resultatNetCents)} 🎉`
+            : `Résultat net : −${formatEUR(Math.abs(s.resultatNetCents))} — on regarde les charges ensemble ?`;
+        const lignes = [
+          `Résultat d'exploitation : ${signed(s.resultatExploitationCents)}`,
+          ...(s.resultatFinancierCents !== 0 ? [`Résultat financier : ${signed(s.resultatFinancierCents)}`] : []),
+          ...(s.resultatExceptionnelCents !== 0 ? [`Résultat exceptionnel : ${signed(s.resultatExceptionnelCents)}`] : []),
+        ];
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Dériver le compte de résultat', 'Exploitation → financier → exceptionnel → net'],
+          card: { title: 'Ton compte de résultat', body: `${lignes.join('\n')}\n${verdict}` },
+        });
+      }
+
       // BOB-2 : résultat provisoire — produits − charges au grand-livre réel (CLOTURE-1).
       const getBalanceSheet = this.deps.actions.getTrialBalance?.bind(this.deps.actions);
       if (!getBalanceSheet) {

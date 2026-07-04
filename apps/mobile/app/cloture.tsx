@@ -3,7 +3,7 @@ import { ScrollView, View, Text, Pressable, Alert } from 'react-native';
 import { useRouter, type Href } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { deriveTrialBalance, formatEUR } from '@bob/core';
+import { deriveTrialBalance, deriveIncomeStatement, formatEUR } from '@bob/core';
 import { useTheme } from '../src/theme';
 import { useAccountingEntries, useInvoices, useQuotes, useSubscription, useExportFec, appErrorMessage } from '../src/data/hooks';
 import { useDocuments } from '../src/data/documents';
@@ -37,6 +37,9 @@ export default function Cloture() {
   // CLOTURE-1 : balance générale + résultat provisoire (deriveTrialBalance @bob/core —
   // LE document que l'expert associé ouvre en premier ; même dérivation pour Bob).
   const balance = useMemo(() => deriveTrialBalance(entries.data ?? []), [entries.data]);
+  // CDR-1 : compte de résultat normé (cascade exploitation/financier/exceptionnel/net) —
+  // mapping PCG vérifié adversarialement ; décompose le résultat sans jamais le changer.
+  const income = useMemo(() => deriveIncomeStatement(entries.data ?? []), [entries.data]);
 
   const mois = moisCourant();
   const inv = invoices.data ?? [];
@@ -251,6 +254,84 @@ export default function Cloture() {
                       D {formatEUR(balance.totalDebitCents)} · C {formatEUR(balance.totalCreditCents)}
                     </Text>
                   </View>
+                </Card>
+              </View>
+            ) : null}
+
+            {/* CDR-1 : compte de résultat normé — la cascade que l'expert associé attend. */}
+            {balance.rows.length > 0 ? (
+              <View>
+                <SectionHeader title="Compte de résultat" />
+                <Card>
+                  {(
+                    [
+                      { label: 'Produits d’exploitation', cents: income.exploitationProduitsCents },
+                      { label: 'Charges d’exploitation', cents: -income.exploitationChargesCents },
+                      { label: 'Résultat d’exploitation', cents: income.resultatExploitationCents, strong: true },
+                      ...(income.financierProduitsCents !== 0 || income.financierChargesCents !== 0
+                        ? [{ label: 'Résultat financier', cents: income.resultatFinancierCents, strong: true }]
+                        : []),
+                      ...(income.resultatExceptionnelCents !== 0
+                        ? [{ label: 'Résultat exceptionnel', cents: income.resultatExceptionnelCents, strong: true }]
+                        : []),
+                    ] as { label: string; cents: number; strong?: boolean }[]
+                  ).map((r) => (
+                    <View
+                      key={r.label}
+                      style={{
+                        flexDirection: 'row',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        paddingVertical: r.strong ? 8 : 6,
+                        borderTopWidth: r.strong ? 1 : 0,
+                        borderTopColor: colors.lineSoft,
+                      }}
+                    >
+                      <Text style={[r.strong ? font('cardTitle') : font('body'), { color: colors.ink800 }]}>
+                        {r.label}
+                      </Text>
+                      <Text
+                        style={[
+                          r.strong ? font('cardTitle') : font('body'),
+                          {
+                            color: r.cents >= 0 ? colors.ink900 : semantic.warning,
+                            fontVariant: ['tabular-nums'],
+                          },
+                        ]}
+                      >
+                        {r.cents >= 0 ? '' : '−'}{formatEUR(Math.abs(r.cents))}
+                      </Text>
+                    </View>
+                  ))}
+                  <View
+                    style={{
+                      flexDirection: 'row',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      marginTop: 8,
+                      paddingTop: 10,
+                      borderTopWidth: 2,
+                      borderTopColor: income.resultatNetCents >= 0 ? semantic.success : semantic.warning,
+                    }}
+                  >
+                    <Text style={[font('cardTitle'), { color: colors.ink900 }]}>Résultat net</Text>
+                    <Text
+                      style={[
+                        font('screenH1'),
+                        {
+                          color: income.resultatNetCents >= 0 ? semantic.success : semantic.warning,
+                          fontVariant: ['tabular-nums'],
+                        },
+                      ]}
+                    >
+                      {income.resultatNetCents >= 0 ? '+' : '−'}{formatEUR(Math.abs(income.resultatNetCents))}
+                    </Text>
+                  </View>
+                  {income.impotBeneficesCents !== 0 ? (
+                    <Text style={[font('meta'), { color: colors.slate400, marginTop: 6 }]}>
+                      Après impôt sur les bénéfices de {formatEUR(income.impotBeneficesCents)}.
+                    </Text>
+                  ) : null}
                 </Card>
               </View>
             ) : null}
