@@ -5,7 +5,7 @@ import { seedCompany } from '../fixtures';
 import { type CompanyRepository } from '../ports/repositories';
 import { type AccountingEntryRepository } from '../ports/accounting-entry-repository';
 import { type ChartOfAccountsRepository } from '../ports/chart-of-accounts-repository';
-import { ExportFec, FEC_HEADERS } from './export-fec';
+import { ExportFec, FEC_HEADERS, type FecAuxiliaryData } from './export-fec';
 
 function entry(props: AccountingEntryProps): AccountingEntry {
   const r = AccountingEntry.create(props);
@@ -59,6 +59,19 @@ function makeUseCase(entries: AccountingEntry[], chart: ChartOfAccounts | null =
     companies: new MemoryCompanies(),
     entries: new MemoryEntries(entries),
     charts: new MemoryCharts(chart),
+  });
+}
+
+function makeUseCaseWithAuxiliary(
+  entries: AccountingEntry[],
+  auxiliary: FecAuxiliaryData,
+  chart: ChartOfAccounts | null = null,
+): ExportFec {
+  return new ExportFec({
+    companies: new MemoryCompanies(),
+    entries: new MemoryEntries(entries),
+    charts: new MemoryCharts(chart),
+    auxiliary: { get: async () => auxiliary },
   });
 }
 
@@ -158,5 +171,105 @@ describe('ExportFec', () => {
 
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toMatchObject({ kind: 'validation' });
+  });
+
+  // ── E7 : FEC probant — lettrage 411 + comptes auxiliaires clients/fournisseurs ──
+
+  const AUX: FecAuxiliaryData = {
+    invoices: [
+      { id: 'inv-paid', status: 'paid', customerId: 'cust-sevres' },
+      { id: 'inv-open', status: 'issued', customerId: 'cust-sevres' },
+    ],
+    payments: [{ id: 'pay-1', invoiceId: 'inv-paid', receivedAt: '2026-07-02T10:00:00.000Z' }],
+    customers: [{ id: 'cust-sevres', name: 'Mairie de Sèvres' }],
+    expenses: [{ id: 'exp-1', supplierName: 'Leroy Merlin' }],
+  };
+
+  function saleEntry(id: string, sourceId: string, ref: string): AccountingEntry {
+    return entry({
+      id,
+      companyId: 'company-mercier',
+      journal: 'sales',
+      sourceType: 'invoice',
+      sourceId,
+      entryDate: '2026-07-01',
+      reference: ref,
+      label: `Facture ${ref}`,
+      lines: [
+        { account: '411', label: `Facture ${ref}`, debitCents: 12000, creditCents: 0 },
+        { account: '706', label: `Facture ${ref}`, debitCents: 0, creditCents: 12000 },
+      ],
+    });
+  }
+
+  it('E7 : lettrage posé sur les 411 de la facture SOLDÉE et de son encaissement — jamais sur l’ouverte', async () => {
+    const entries = [
+      saleEntry('e-sale-paid', 'inv-paid', 'F-2026-0001'),
+      saleEntry('e-sale-open', 'inv-open', 'F-2026-0002'),
+      entry({
+        id: 'e-pay',
+        companyId: 'company-mercier',
+        journal: 'bank',
+        sourceType: 'payment',
+        sourceId: 'pay-1',
+        entryDate: '2026-07-02',
+        reference: 'F-2026-0001',
+        label: 'Encaissement F-2026-0001',
+        lines: [
+          { account: '512', label: 'Encaissement', debitCents: 12000, creditCents: 0 },
+          { account: '411', label: 'Encaissement', debitCents: 0, creditCents: 12000 },
+        ],
+      }),
+    ];
+    const r = await makeUseCaseWithAuxiliary(entries, AUX).execute({
+      companyId: 'company-mercier',
+      from: '2026-01-01',
+      to: '2026-12-31',
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const rows = r.value.content.trimEnd().split('\n').slice(1).map((l) => l.split('\t'));
+    const on411 = rows.filter((row) => row[4] === '411');
+    // Facture payée (vente + encaissement) : lettre AA + DateLet = date du règlement.
+    const lettered = on411.filter((row) => row[13] === 'AA');
+    expect(lettered).toHaveLength(2);
+    expect(lettered.every((row) => row[14] === '20260702')).toBe(true);
+    // Facture ouverte : JAMAIS lettrée (lettrage partiel interdit).
+    const open = rows.find((row) => row[8] === 'F-2026-0002' && row[4] === '411');
+    expect(open?.[13]).toBe('');
+    expect(open?.[14]).toBe('');
+    // Auxiliaire client sur TOUTES les lignes 411 (solde justifiable par tiers).
+    expect(on411.every((row) => row[6] === '411CUST-SEVRES' && row[7] === 'Mairie de Sèvres')).toBe(true);
+  });
+
+  it('E7 : auxiliaire FOURNISSEUR sur les lignes 401 des écritures de dépense', async () => {
+    const purchase = entry({
+      id: 'e-exp',
+      companyId: 'company-mercier',
+      journal: 'purchases',
+      sourceType: 'expense',
+      sourceId: 'exp-1',
+      entryDate: '2026-07-03',
+      reference: 'Leroy Merlin',
+      label: 'Achat Leroy Merlin',
+      lines: [
+        { account: '606', label: 'Achat', debitCents: 15408, creditCents: 0 },
+        { account: '44566', label: 'Achat', debitCents: 3082, creditCents: 0 },
+        { account: '401', label: 'Achat', debitCents: 0, creditCents: 18490 },
+      ],
+    });
+    const r = await makeUseCaseWithAuxiliary([purchase], AUX).execute({
+      companyId: 'company-mercier',
+      from: '2026-01-01',
+      to: '2026-12-31',
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const rows = r.value.content.trimEnd().split('\n').slice(1).map((l) => l.split('\t'));
+    const on401 = rows.find((row) => row[4] === '401');
+    expect(on401?.[6]).toBe('401LEROY-MERLIN');
+    expect(on401?.[7]).toBe('Leroy Merlin');
+    // Les lignes de charge/TVA ne portent PAS d'auxiliaire.
+    expect(rows.find((row) => row[4] === '606')?.[6]).toBe('');
   });
 });

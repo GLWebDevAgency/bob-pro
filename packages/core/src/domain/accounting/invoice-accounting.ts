@@ -127,7 +127,8 @@ function buildInvoiceAccountingEntry(input: {
   const debit = new Map<string, number>();
   const credit = new Map<string, number>();
   const isCreditNote = invoice.kind === 'credit_note';
-  const label = `Facture ${input.reference}`;
+  // E7 : un avoir se lit « Avoir A-… » au journal — jamais « Facture » (libellé probant).
+  const label = `${invoice.kind === 'credit_note' ? 'Avoir' : 'Facture'} ${input.reference}`;
 
   if (isCreditNote) addAmount(credit, accounts.receivable, totals.netToPay);
   else addAmount(debit, accounts.receivable, totals.netToPay);

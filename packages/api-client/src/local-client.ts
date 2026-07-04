@@ -915,6 +915,24 @@ export class LocalBobClient implements BobClient {
       companies: this.companies,
       entries: this.accountingEntries,
       charts: this.chartOfAccounts,
+      // E7 — FEC PROBANT : lettrage 411 (factures soldées + encaissements, DateLet =
+      // dernier règlement) et comptes auxiliaires clients/fournisseurs, dérivés du vivant.
+      auxiliary: {
+        get: async (companyId) => {
+          const [invoices, payments, customers, expenses] = await Promise.all([
+            this.invoices.listByCompany(companyId),
+            this.payments.listByCompany(companyId),
+            this.customers.listByCompany(companyId),
+            this.expenses.listByCompany(companyId),
+          ]);
+          return {
+            invoices: invoices.map((i) => ({ id: i.id, status: i.status, customerId: i.customerId })),
+            payments: payments.map((p) => ({ id: p.id, invoiceId: p.invoiceId, receivedAt: p.receivedAt })),
+            customers: customers.map((c) => ({ id: c.id, name: c.name })),
+            expenses: expenses.map((e) => ({ id: e.id, supplierName: e.supplierName })),
+          };
+        },
+      },
     }).execute({ companyId: this.companyId, ...input });
   }
 

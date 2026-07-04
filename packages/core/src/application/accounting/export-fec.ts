@@ -45,10 +45,27 @@ export interface ExportFecOutput {
   warnings: string[];
 }
 
+/**
+ * Données auxiliaires du FEC probant (E7) — port dédié (ISP) : fournies, elles remplissent
+ * lettrage (EcritureLet/DateLet), comptes auxiliaires clients (411) et fournisseurs (401) ;
+ * absentes, les colonnes restent vides (compat implémentations amont).
+ */
+export interface FecAuxiliaryData {
+  invoices: { id: string; status: string; customerId: string }[];
+  payments: { id: string; invoiceId: string; receivedAt: string }[];
+  customers: { id: string; name: string }[];
+  expenses: { id: string; supplierName: string }[];
+}
+
+export interface FecAuxiliaryDataPort {
+  get(companyId: string): Promise<FecAuxiliaryData>;
+}
+
 export interface ExportFecDeps {
   companies: CompanyRepository;
   entries: AccountingEntryRepository;
   charts?: ChartOfAccountsRepository;
+  auxiliary?: FecAuxiliaryDataPort;
 }
 
 const JOURNALS: Record<AccountingJournal, { code: string; label: string }> = {
@@ -97,12 +114,119 @@ function sortedEntries(entries: AccountingEntry[], from: DateOnly, to: DateOnly)
     .sort((a, b) => a.entryDate.localeCompare(b.entryDate) || a.journal.localeCompare(b.journal) || a.id.localeCompare(b.id));
 }
 
-function toFecRows(entries: AccountingEntry[], chart: ChartOfAccounts | null, warnings: Set<string>): string[][] {
+/** Code de lettrage séquentiel : AA, AB … AZ, BA … (convention cabinet, stable par export). */
+export function lettrageCode(index: number): string {
+  const first = Math.floor(index / 26) % 26;
+  const second = index % 26;
+  return `${String.fromCharCode(65 + first)}${String.fromCharCode(65 + second)}`;
+}
+
+/** Identifiant d'auxiliaire déterministe : majuscules alphanumériques (accents/espaces → tiret). */
+function auxNum(prefix: string, raw: string): string {
+  const slug = raw
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return `${prefix}${slug}`;
+}
+
+interface FecRowEnrichment {
+  /** (compte 411) lettrage par entryId — posé UNIQUEMENT sur les factures SOLDÉES. */
+  lettrageByEntryId: Map<string, { code: string; date: string }>;
+  /** Auxiliaire par entryId pour les lignes 411 (client) — num + libellé. */
+  customerAuxByEntryId: Map<string, { num: string; label: string }>;
+  /** Auxiliaire par entryId pour les lignes 401 (fournisseur). */
+  supplierAuxByEntryId: Map<string, { num: string; label: string }>;
+}
+
+/**
+ * Dérive le lettrage et les auxiliaires depuis les données vivantes (E7) :
+ * · lettrage 411 : une facture PAYÉE reçoit un code (AA, AB…) posé sur SA ligne 411
+ *   (écriture de vente) ET sur les lignes 411 de ses encaissements — DateLet = date du
+ *   dernier paiement. Une facture non soldée ne se lettre JAMAIS (lettrage partiel interdit) ;
+ * · auxiliaires : 411 → client de la pièce (num déterministe + nom), 401 → fournisseur
+ *   de la dépense. Le solde d'un auxiliaire devient justifiable ligne à ligne.
+ */
+function deriveFecEnrichment(entries: AccountingEntry[], aux: FecAuxiliaryData): FecRowEnrichment {
+  const enrichment: FecRowEnrichment = {
+    lettrageByEntryId: new Map(),
+    customerAuxByEntryId: new Map(),
+    supplierAuxByEntryId: new Map(),
+  };
+  const customerName = new Map(aux.customers.map((c) => [c.id, c.name]));
+  const invoiceById = new Map(aux.invoices.map((i) => [i.id, i]));
+  const paymentById = new Map(aux.payments.map((p) => [p.id, p]));
+  const expenseById = new Map(aux.expenses.map((e) => [e.id, e]));
+  const paymentsByInvoice = new Map<string, { receivedAt: string }[]>();
+  for (const p of aux.payments) {
+    const list = paymentsByInvoice.get(p.invoiceId) ?? [];
+    list.push(p);
+    paymentsByInvoice.set(p.invoiceId, list);
+  }
+
+  // Lettres allouées par ordre stable (id de facture) — un export = un lettrage reproductible.
+  const paidInvoices = aux.invoices.filter((i) => i.status === 'paid').sort((a, b) => a.id.localeCompare(b.id));
+  const letterByInvoice = new Map<string, { code: string; date: string }>();
+  let letterIndex = 0;
+  for (const invoice of paidInvoices) {
+    const payments = paymentsByInvoice.get(invoice.id) ?? [];
+    if (payments.length === 0) continue; // soldée sans encaissement tracé : rien à lettrer
+    const lastPayment = payments.map((p) => p.receivedAt.slice(0, 10)).sort().at(-1) ?? '';
+    letterByInvoice.set(invoice.id, { code: lettrageCode(letterIndex), date: lastPayment });
+    letterIndex += 1;
+  }
+
+  for (const entry of entries) {
+    // Facture liée à l'écriture : directe (vente/avoir) ou via l'encaissement.
+    const invoiceId =
+      entry.sourceType === 'invoice'
+        ? entry.sourceId
+        : entry.sourceType === 'payment'
+          ? (paymentById.get(entry.sourceId)?.invoiceId ?? null)
+          : null;
+    if (invoiceId !== null) {
+      const lettre = letterByInvoice.get(invoiceId);
+      if (lettre) enrichment.lettrageByEntryId.set(entry.id, lettre);
+      const invoice = invoiceById.get(invoiceId);
+      const name = invoice ? customerName.get(invoice.customerId) : undefined;
+      if (invoice && name !== undefined)
+        enrichment.customerAuxByEntryId.set(entry.id, { num: auxNum('411', invoice.customerId), label: name });
+    }
+    if (entry.sourceType === 'expense') {
+      const expense = expenseById.get(entry.sourceId);
+      if (expense)
+        enrichment.supplierAuxByEntryId.set(entry.id, {
+          num: auxNum('401', expense.supplierName),
+          label: expense.supplierName,
+        });
+    }
+  }
+  return enrichment;
+}
+
+function toFecRows(
+  entries: AccountingEntry[],
+  chart: ChartOfAccounts | null,
+  warnings: Set<string>,
+  enrichment: FecRowEnrichment | null,
+): string[][] {
   const rows: string[][] = [];
   for (const [entryIndex, entry] of entries.entries()) {
     const journal = JOURNALS[entry.journal];
     const ecritureNum = String(entryIndex + 1).padStart(6, '0');
     for (const line of entry.lines) {
+      // E7 : lettrage et auxiliaire ne se posent que sur les lignes de TIERS concernées.
+      const isCustomerLine = line.account.startsWith('411');
+      const isSupplierLine = line.account.startsWith('401');
+      const lettre = enrichment && isCustomerLine ? (enrichment.lettrageByEntryId.get(entry.id) ?? null) : null;
+      const auxiliary =
+        enrichment && isCustomerLine
+          ? (enrichment.customerAuxByEntryId.get(entry.id) ?? null)
+          : enrichment && isSupplierLine
+            ? (enrichment.supplierAuxByEntryId.get(entry.id) ?? null)
+            : null;
       rows.push([
         journal.code,
         journal.label,
@@ -110,15 +234,15 @@ function toFecRows(entries: AccountingEntry[], chart: ChartOfAccounts | null, wa
         compactDate(entry.entryDate),
         line.account,
         accountLabel(chart, line.account, warnings),
-        '',
-        '',
+        auxiliary?.num ?? '',
+        auxiliary?.label ?? '',
         entry.reference,
         compactDate(entry.entryDate),
         line.label || entry.label,
         centsToFecAmount(line.debitCents),
         centsToFecAmount(line.creditCents),
-        '',
-        '',
+        lettre?.code ?? '',
+        lettre ? compactDate(lettre.date) : '',
         compactDate(entry.entryDate),
         '',
         '',
@@ -164,7 +288,9 @@ function buildDescription(input: {
     'Conventions Bob Pro',
     '- EcritureNum est une sequence continue dans l export; toutes les lignes d une meme ecriture partagent le meme numero.',
     '- PieceDate et ValidDate reprennent EcritureDate lorsque la date de piece ou de validation distincte n est pas stockee.',
-    '- CompAuxNum, CompAuxLib, EcritureLet, DateLet, Montantdevise et Idevise restent vides tant que la donnee n est pas utilisee.',
+    '- Lettrage (EcritureLet/DateLet): pose sur les lignes 411 des factures SOLDEES et de leurs encaissements; DateLet = date du dernier reglement. Une facture non soldee n est jamais lettree.',
+    '- Comptes auxiliaires: CompAuxNum/CompAuxLib renseignes sur les lignes 411 (client de la piece) et 401 (fournisseur de la depense); identifiants deterministes derives du tiers.',
+    '- Montantdevise et Idevise restent vides (comptabilite tenue en euros).',
     '',
     'Alertes',
     ...(input.warnings.length ? input.warnings.map((w) => `- ${w}`) : ['- Aucune alerte.']),
@@ -185,13 +311,15 @@ export class ExportFec {
     const company = await this.deps.companies.findById(input.companyId);
     if (!company) return err(appNotFound('company', input.companyId));
 
-    const [entries, chart] = await Promise.all([
+    const [entries, chart, auxiliary] = await Promise.all([
       this.deps.entries.listByCompany(input.companyId),
       this.deps.charts ? this.deps.charts.findByCompany(input.companyId) : Promise.resolve(null),
+      this.deps.auxiliary ? this.deps.auxiliary.get(input.companyId) : Promise.resolve(null),
     ]);
     const periodEntries = sortedEntries(entries, input.from, input.to);
     const warnings = new Set<string>();
-    const rows = toFecRows(periodEntries, chart, warnings);
+    const enrichment = auxiliary ? deriveFecEnrichment(periodEntries, auxiliary) : null;
+    const rows = toFecRows(periodEntries, chart, warnings, enrichment);
     const filename = `${company.siren}FEC${compactDate(input.to)}.txt`;
     const descriptionFilename = `${company.siren}FEC${compactDate(input.to)}-description.txt`;
     const warningList = [...warnings];
