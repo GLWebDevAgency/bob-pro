@@ -29,6 +29,7 @@ import type {
   BobClient,
   QuoteView,
   InvoiceView,
+  PaymentView,
   SubscriptionView,
   RegisterPaymentClientInput,
   RegisterPaymentClientOutput,
@@ -251,6 +252,10 @@ export class HttpBobClient implements BobClient {
   /** A6 — endpoint serveur à poser (suivi CLAIMS, même précédent que classifyDocument). */
   createCreditNote(input: { invoiceId: string }) {
     return this.req<{ creditNoteId: string }>('POST', `/invoices/${input.invoiceId}/credit-note`);
+  }
+  /** E3 — endpoint serveur à poser (suivi CLAIMS) : encaissements datés du tenant. */
+  listPayments() {
+    return this.req<PaymentView[]>('GET', '/payments');
   }
   issueInvoice(input: IssueInvoiceInput) {
     return this.req<{ number: string }>('POST', `/invoices/${input.invoiceId}/issue`, input);

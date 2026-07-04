@@ -376,6 +376,33 @@ const fr = {
     pro: 'Charges',
     direct: 'Charges',
   },
+  // E5 — balance âgée clients (pilotage du poste clients, tranches de retard).
+  'argent.agedTitle': {
+    pote: 'Qui te doit quoi',
+    pro: 'Balance âgée clients',
+    direct: 'Balance âgée',
+  },
+  'argent.agedOverdue': {
+    pote: 'dont {amount} déjà en retard',
+    pro: 'dont {amount} échus',
+    direct: 'échu : {amount}',
+  },
+  'argent.agedNotDue': { pote: 'Pas encore échu', pro: 'Non échu', direct: 'Non échu' },
+  'argent.aged1_30': { pote: 'Retard 1-30 j', pro: 'Échu 1-30 jours', direct: '1-30 j' },
+  'argent.aged31_60': { pote: 'Retard 31-60 j', pro: 'Échu 31-60 jours', direct: '31-60 j' },
+  'argent.aged61_90': { pote: 'Retard 61-90 j', pro: 'Échu 61-90 jours', direct: '61-90 j' },
+  'argent.aged90': {
+    pote: 'Plus de 90 j — on sécurise ?',
+    pro: 'Échu +90 jours — risque d’irrécouvrabilité',
+    direct: '+90 j — risque',
+  },
+  'argent.agedUnknown': { pote: 'Sans échéance', pro: 'Sans échéance', direct: 'Sans échéance' },
+  'argent.agedDays': { pote: '{days} j', pro: '{days} j', direct: '{days} j' },
+  'argent.agedEmpty': {
+    pote: 'Personne ne te doit rien — carnet propre.',
+    pro: 'Aucun encours client — poste clients à jour.',
+    direct: 'Aucun encours.',
+  },
   // Astuce « première fois » (coach-mark, dismiss persisté).
   'argent.tipEyebrow': {
     pote: 'Astuce · première fois',

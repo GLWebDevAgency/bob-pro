@@ -103,6 +103,11 @@ export class InMemoryPaymentRepository implements PaymentRepository {
   async findByIdempotencyKey(companyId: string, key: string): Promise<Payment | null> {
     return this.list.find((p) => p.companyId === companyId && p.idempotencyKey === key) ?? null;
   }
+  /** E3 : encaissements datés du tenant (CA encaissé annuel, seuils 293 B) —
+   *  méthode du repo CONCRET, le port core reste inchangé (apps/api en WIP). */
+  async listByCompany(companyId: string): Promise<Payment[]> {
+    return this.list.filter((p) => p.companyId === companyId);
+  }
 }
 
 export class InMemoryPublicAccessTokenRepository implements PublicAccessTokenRepository {

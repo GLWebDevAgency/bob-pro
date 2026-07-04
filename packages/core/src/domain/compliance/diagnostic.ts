@@ -1,4 +1,5 @@
 import { type Trade, type VatRegime } from '../company/company';
+import { assessVatFranchise } from './vat-thresholds';
 
 /** Pays couverts. France encodée ; structure prête pour l'expansion européenne/internationale. */
 export type Country = 'FR' | 'BE' | 'LU' | 'DE' | 'ES' | 'IT';
@@ -10,6 +11,10 @@ export interface DiagnosticInput {
   customerTypes: ('b2c' | 'b2b' | 'b2g')[];
   hasDecennale: boolean;
   asOf: string; // DateOnly
+  /** Recettes ENCAISSÉES de l'année civile en cours (centimes) — alimente la surveillance
+   *  RÉELLE des seuils de franchise 293 B (E6). Absent → l'item reste informatif (on
+   *  n'invente pas une alerte sans donnée). */
+  annualEncaissedCents?: number | null;
 }
 
 export type ItemStatus = 'ok' | 'todo' | 'na';
@@ -135,13 +140,55 @@ function diagnoseFrance(input: DiagnosticInput): DiagnosticResult {
   });
 
   if (input.vatRegime === 'franchise') {
-    items.push({
-      id: 'tva-franchise',
-      label: 'Franchise en base : surveiller les seuils',
-      status: 'ok',
-      severity: 'info',
-      help: 'Franchise en base (art. 293 B du CGI) : pas de TVA facturée, mention obligatoire. Surveille les seuils (85 000 € ventes / 37 500 € services).',
-    });
+    // E6 : surveillance RÉELLE des seuils 293 B quand les encaissements sont fournis —
+    // artisan = prestations de services (fourniture-et-pose : la pose rend la prestation
+    // prépondérante ; position documentée, seuils services 37 500 / 41 250 €).
+    const revenue = input.annualEncaissedCents ?? null;
+    if (revenue === null) {
+      items.push({
+        id: 'tva-franchise',
+        label: 'Franchise en base : surveiller les seuils',
+        status: 'ok',
+        severity: 'info',
+        help: 'Franchise en base (art. 293 B du CGI) : pas de TVA facturée, mention obligatoire. Surveille les seuils (85 000 € ventes / 37 500 € services).',
+      });
+    } else {
+      const franchise = assessVatFranchise({ activity: 'services', annualRevenueCents: revenue });
+      const base = Math.round(franchise.thresholds.baseCents / 100).toLocaleString('fr-FR');
+      if (franchise.standing === 'over_majored') {
+        items.push({
+          id: 'tva-franchise',
+          label: 'Seuil majoré de franchise DÉPASSÉ : TVA immédiate',
+          status: 'todo',
+          severity: 'critical',
+          help: `Tes recettes encaissées dépassent le seuil majoré (41 250 €) : la TVA est due dès le jour du dépassement — chaque facture émise sans TVA depuis expose à un rappel avec pénalités. Passe au régime réel sans attendre.`,
+        });
+      } else if (franchise.standing === 'over_base') {
+        items.push({
+          id: 'tva-franchise',
+          label: 'Seuil de franchise dépassé : TVA au 1er janvier',
+          status: 'todo',
+          severity: 'important',
+          help: `Tes recettes encaissées dépassent ${base} € : la franchise tient jusqu'au 31 décembre (tolérance sous 41 250 €), puis TVA obligatoire au 1er janvier. Anticipe tes prix et ta trésorerie.`,
+        });
+      } else if (franchise.standing === 'approaching') {
+        items.push({
+          id: 'tva-franchise',
+          label: `Franchise en base : ${franchise.ratioPct} % du seuil atteint`,
+          status: 'todo',
+          severity: 'important',
+          help: `Tes recettes encaissées approchent du seuil de ${base} € (art. 293 B). Au rythme actuel, prépare la bascule TVA : devis en cours à ajuster, immatriculation au réel à anticiper.`,
+        });
+      } else {
+        items.push({
+          id: 'tva-franchise',
+          label: 'Franchise en base : seuils sous contrôle',
+          status: 'ok',
+          severity: 'info',
+          help: `Recettes encaissées à ${franchise.ratioPct} % du seuil de ${base} € (art. 293 B) — Bob surveille en continu et t'alertera à 80 %.`,
+        });
+      }
+    }
   } else {
     items.push({
       id: 'tva-reel',

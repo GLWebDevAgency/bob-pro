@@ -108,6 +108,7 @@ import type {
   BobClient,
   QuoteView,
   InvoiceView,
+  PaymentView,
   SubscriptionView,
   SendQuoteOutput,
   SendRelanceClientOutput,
@@ -343,6 +344,7 @@ export class LocalBobClient implements BobClient {
       depositDeductionCents: i.depositDeductionCents,
       depositInvoiceId: i.depositInvoiceId,
       dueAt: i.dueAt,
+      issuedAt: i.issuedAt,
       paid: i.paid,
     };
   }
@@ -509,16 +511,26 @@ export class LocalBobClient implements BobClient {
   }
 
   async getDiagnostic(): Promise<Result<DiagnosticResult, AppError>> {
+    await this.ready;
     const company = seedCompany();
     const types = [...new Set(seedCustomers().map((c) => c.type))];
+    const today = this.clock.today();
+    // E6 : recettes ENCAISSÉES de l'année civile — la surveillance des seuils de
+    // franchise 293 B lit du RÉEL (paiements datés), jamais un statut décoratif.
+    const year = today.slice(0, 4);
+    const payments = await this.payments.listByCompany(this.companyId);
+    const annualEncaissedCents = payments
+      .filter((p) => p.receivedAt.slice(0, 4) === year)
+      .reduce((sum, p) => sum + p.amount, 0);
     return ok(
       runDiagnostic({
         country: 'FR',
         trade: company.trade,
         vatRegime: company.vatRegime,
         customerTypes: types,
-        hasDecennale: company.hasValidDecennale('2026-06-29'),
-        asOf: '2026-06-29',
+        hasDecennale: company.hasValidDecennale(today),
+        asOf: today,
+        annualEncaissedCents,
       }),
     );
   }
@@ -768,6 +780,15 @@ export class LocalBobClient implements BobClient {
   }) {
     await this.ready;
     return this.registerPaymentInternal(input);
+  }
+
+  /** E3 : encaissements datés du tenant — CA encaissé annuel (293 B), lettrage futur. */
+  async listPayments(): Promise<Result<PaymentView[], AppError>> {
+    await this.ready;
+    const list = await this.payments.listByCompany(this.companyId);
+    return ok(
+      list.map((p) => ({ id: p.id, invoiceId: p.invoiceId, amountCents: p.amount, method: p.method, receivedAt: p.receivedAt })),
+    );
   }
 
   private async registerPaymentInternal(input: {

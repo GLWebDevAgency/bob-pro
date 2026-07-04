@@ -67,6 +67,18 @@ export interface InvoiceView {
   depositDeductionCents: number;
   /** Facture d'acompte déduite (nav croisée). */
   depositInvoiceId: string | null;
+  /** Date d'émission (E3 — socle dates : CA 12 mois, balance âgée, seuils 293 B).
+   *  Nullable ET optionnelle : une API amont pas encore à jour la laisse absente. */
+  issuedAt?: string | null;
+}
+
+/** Encaissement daté (E3) — la matière du CA encaissé annuel et du lettrage à venir. */
+export interface PaymentView {
+  id: string;
+  invoiceId: string;
+  amountCents: number;
+  method: PaymentMethod;
+  receivedAt: string;
 }
 
 export interface RegisterPaymentClientInput {
@@ -357,6 +369,8 @@ export interface BobClient {
   /** POST /devices : enregistre le token push Expo du device (idempotent par tenant/token). */
   registerDevice(input: RegisterDeviceClientInput): Promise<Result<{ id: string }, AppError>>;
   registerPayment(input: RegisterPaymentClientInput): Promise<Result<RegisterPaymentClientOutput, AppError>>;
+  /** E3 : encaissements datés du tenant — CA encaissé annuel (seuils 293 B), lettrage futur. */
+  listPayments(): Promise<Result<PaymentView[], AppError>>;
   getQuote(id: string): Promise<Result<QuoteView, AppError>>;
   listQuotes(): Promise<Result<QuoteView[], AppError>>;
   getInvoice(id: string): Promise<Result<InvoiceView, AppError>>;

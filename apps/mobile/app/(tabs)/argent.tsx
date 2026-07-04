@@ -38,6 +38,7 @@ import {
   type Scenario,
 } from '@bob/core';
 import { patterns, shadowNative } from '@bob/tokens';
+import { deriveAgedBalance, AGED_BUCKETS, type AgedBucketKey } from '@bob/core';
 import { t, type I18nKey } from '@bob/i18n';
 import {
   Avatar,
@@ -309,6 +310,13 @@ export default function Argent() {
     [invoices.data, expenses.data, entries.data],
   );
   const ledgerLoading = invoices.isLoading || expenses.isLoading || entries.isLoading;
+
+  // E5 : balance âgée clients (deriveAgedBalance @bob/core — même vérité pour Bob).
+  const aged = useMemo(() => {
+    const d = new Date();
+    const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    return deriveAgedBalance({ invoices: invoices.data ?? [], customers: customers.data ?? [], today });
+  }, [invoices.data, customers.data]);
 
   const series: CashflowSeriesPoint[] = [];
   if (cash7.data) series.push({ horizon: 7, projection: cash7.data });
@@ -632,6 +640,119 @@ export default function Argent() {
               ))}
             </View>
           </Card>
+
+          {/* ── Balance âgée clients (E5 — deriveAgedBalance @bob/core) ─────── */}
+          <View style={{ marginTop: 20 }}>
+            <SectionHeader
+              title={t('argent.agedTitle', { personality })}
+              {...(aged.totalCents !== 0
+                ? {
+                    action: (
+                      <Text style={{ ...font('label'), color: colors.ink800, fontVariant: ['tabular-nums'] }}>
+                        {formatEUR(aged.totalCents)}
+                      </Text>
+                    ),
+                  }
+                : {})}
+            />
+            {ledgerLoading ? (
+              <Card>
+                <SkeletonBar width="62%" />
+              </Card>
+            ) : aged.totalCents === 0 ? (
+              <Card>
+                <Text style={[font('sub'), { color: colors.slate500, lineHeight: 19 }]}>
+                  {t('argent.agedEmpty', { personality })}
+                </Text>
+              </Card>
+            ) : (
+              <Card radius={18} padding={0} style={{ paddingHorizontal: 16, paddingVertical: 4 }}>
+                {(
+                  [
+                    ['not_due', 'argent.agedNotDue'],
+                    ['d1_30', 'argent.aged1_30'],
+                    ['d31_60', 'argent.aged31_60'],
+                    ['d61_90', 'argent.aged61_90'],
+                    ['d90_plus', 'argent.aged90'],
+                    ['unknown', 'argent.agedUnknown'],
+                  ] as const satisfies readonly (readonly [AgedBucketKey, I18nKey])[]
+                )
+                  .filter(([bucket]) => aged.buckets[bucket] !== 0)
+                  .map(([bucket, labelKey]) => (
+                    <View
+                      key={bucket}
+                      style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        gap: 12,
+                        paddingVertical: 11,
+                        borderBottomWidth: 1,
+                        borderBottomColor: colors.lineSoft,
+                      }}
+                    >
+                      <Text
+                        style={[
+                          font('sub'),
+                          { color: bucket === 'd90_plus' ? semantic.dangerVivid : colors.slate500 },
+                        ]}
+                      >
+                        {t(labelKey, { personality })}
+                      </Text>
+                      <Text
+                        style={{
+                          ...font('sub', 700),
+                          color:
+                            bucket === 'not_due' || bucket === 'unknown'
+                              ? colors.ink800
+                              : bucket === 'd90_plus'
+                                ? semantic.dangerVivid
+                                : semantic.warning,
+                          fontVariant: ['tabular-nums'],
+                        }}
+                      >
+                        {formatEUR(aged.buckets[bucket])}
+                      </Text>
+                    </View>
+                  ))}
+                {/* Par client : les 3 plus gros dus, navigation fiche (retard max en badge). */}
+                {aged.byCustomer.slice(0, 3).map((line, index, top) => (
+                  <Pressable
+                    key={line.customerId}
+                    accessibilityRole="button"
+                    accessibilityLabel={line.customerName}
+                    onPress={() => router.push(`/client/${line.customerId}`)}
+                    style={{
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 10,
+                      paddingVertical: 12,
+                      borderBottomWidth: index < top.length - 1 ? 1 : 0,
+                      borderBottomColor: colors.lineSoft,
+                    }}
+                  >
+                    <Text style={{ ...font('body', 700), fontSize: 14, color: colors.ink800, flex: 1 }} numberOfLines={1}>
+                      {line.customerName}
+                    </Text>
+                    {line.maxDaysLate > 0 ? (
+                      <StatusBadge
+                        label={t('argent.agedDays', { personality, params: { days: line.maxDaysLate } })}
+                        variant={line.maxDaysLate > 90 ? 'danger' : 'particulier'}
+                      />
+                    ) : null}
+                    <Text style={{ ...font('sub', 700), color: colors.ink800, fontVariant: ['tabular-nums'] }}>
+                      {formatEUR(line.totalCents)}
+                    </Text>
+                  </Pressable>
+                ))}
+                {aged.overdueCents > 0 ? (
+                  <Text style={[font('meta', 500), { color: colors.slate400, paddingTop: 4, paddingBottom: 10 }]}>
+                    {t('argent.agedOverdue', { personality, params: { amount: formatEUR(aged.overdueCents) } })}
+                  </Text>
+                ) : null}
+              </Card>
+            )}
+          </View>
         </View>
       </ScrollView>
 
