@@ -1024,23 +1024,40 @@ transcript workflow wf_fb597a24-2e3.
   build-ledger-view lit la déductible AU GRAND-LIVRE (44566/44562 d'E1). La fixture
   CASH_SNAPSHOT.vatDue ne sert plus qu'en repli. Démo : crédit de TVA honnête (0 à
   provisionner, dispo 6 535,10 €). +5 tests. Core 389 ✓.
-- BACKLOG CLASSÉ (à dérouler, périmètres au rapport) :
-  · E3 (S) socle dates — InvoiceView.issuedAt + listPayments datés (débloque balance âgée,
-    CA 12 mois sur date d'émission, seuils 293 B) ;
-  · E4 (M) PayExpense — transition to_pay→paid AVEC décaissement (le builder E1 est prêt),
-    action UI sur les dépenses à payer ;
-  · E5 (M) balance âgée clients — deriveAgedBalance (not_due/1-30/31-60/61-90/90+),
-    surfaçage Argent + Bob ;
-  · E6 (L) seuils de franchise 293 B — vat-thresholds datés (37 500/41 250 · 85 000/93 500)
-    + CA encaissé annuel + alerte diagnostic/briefing (le plus gros risque fiscal produit :
-    'tva-franchise' est aujourd'hui TOUJOURS 'ok') ;
+- [03:40] claude-code (session B) E3+E5+E6 MERGE (commit f3f03a7) :
+  · E3 SOCLE DATES — InvoiceView.issuedAt (optionnel/nullable, API amont tolérée) +
+    PaymentView/listPayments (encaissements datés). Port core INCHANGÉ : listByCompany vit
+    sur le repo CONCRET api-client (apps/api en WIP session A) — endpoint GET /payments en
+    suivi serveur.
+  · E5 BALANCE ÂGÉE — deriveAgedBalance (@bob/core, 4 tests : assiette netToPay−paid,
+    avoirs négatifs dans leur tranche, non échu/1-30/31-60/61-90/+90/sans échéance,
+    +90 j = risque d'irrécouvrabilité, par client trié + retard max) + section « Qui te
+    doit quoi » sur Argent (tranches teintées warning/dangerVivid, top 3 clients
+    naviguables → fiche, « dont échu », +11 clés ×3 humeurs, états vide/squelette).
+  · E6 SEUILS 293 B RÉELS — domain/compliance/vat-thresholds (seuils 2025-2026 versionnés
+    par année d'effet : services 37 500/41 250 · ventes 85 000/93 500 ; 6 tests dont
+    « exactement au seuil = pas encore dépassé ») ; DiagnosticInput.annualEncaissedCents
+    OPTIONNEL (compat apps/api) ; l'item 'tva-franchise' devient DÉRIVÉ : ok <80 % →
+    todo/important à 80 % (« prépare la bascule ») → « TVA au 1er janvier » au-delà de la
+    base → todo/CRITICAL au-delà du majoré (« TVA immédiate, chaque facture sans TVA =
+    rappel + pénalités »). Le diagnostic local lit les paiements ENCAISSÉS de l'année +
+    asOf = aujourd'hui (fini le 2026-06-29 en dur). Position documentée : artisan =
+    prestations (fourniture-et-pose, pose prépondérante).
+  Core 414 ✓ api-client 31 ✓ typecheck mobile ✓.
+- COORDINATION AUDITS (2 programmes d'expertise en parallèle — table de correspondance) :
+  session A tient C-EXP1..6 (docs/architecture/expertise-comptable-roadmap.md) et NE PREND
+  PAS balance âgée / seuils / TVA encaissements (E5/E6/E2, session B) ; en retour E8
+  (calendrier fiscal TVA) SORT du backlog B — couvert par C-EXP5 (session A, module
+  application/fiscal/ vierge, zéro chevauchement).
+- BACKLOG B RESTANT :
+  · E4 (M) PayExpense — transition to_pay→paid AVEC décaissement (builder E1 prêt) ;
+    attend une surface UI dépenses (aucun écran liste dépenses aujourd'hui) ;
   · E7 (M) FEC probant — lettrage EcritureLet/DateLet (dérivable de Payment.invoiceId),
     auxiliaires 411xxx/401xxx, ValidDate, libellé « Avoir » sur credit_note ;
-  · E8 (L) calendrier fiscal TVA — CA3/CA12/acomptes par régime + période de liquidation ;
   · E9 (S) hygiène — FEC ISO 8859-15 (arrêté 29/07/2013), CashflowSnapshotPort.vatDue
     optionnel, EcritureNum par journal.
-  SUIVIS SERVEUR : apps/api recordExpense doit poster les écritures E1 (même use case) —
-  WIP session A, non touché.
+  SUIVIS SERVEUR : apps/api recordExpense doit poster les écritures E1 · GET /payments ·
+  annualEncaissedCents dans le getDiagnostic serveur — WIP session A, non touché.
 
 ---
 
