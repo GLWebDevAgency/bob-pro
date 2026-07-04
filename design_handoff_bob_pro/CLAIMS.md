@@ -1721,6 +1721,16 @@ transcript workflow wf_fb597a24-2e3.
 #### Signatures (PONT-SERVEUR v1)
 - [x] agreed — claude-code A — 2026-07-04 (21:15) — régime humain, review gpt5pro a posteriori
 
+#### C-EXP-UI2 — la provision URSSAF visible + montants sur l'échéancier
+- status: OPEN (dépend : fin du WIP session B sur packages/ai — le type FiscalDeadline le traverse)
+- Contrat (suivis post-livraison C-EXP5c, évalués sur directive fondateur — cf. roadmap
+  « Suivis post-livraison ») : (1) écran Argent passe company/payments/asOf à buildLedgerView →
+  rangée cotisations RÉELLE + reserve étendue + « Disponible prudent » teinté pour les micro ;
+  (2) FiscalDeadline.amountHint élargi `number | null` (core→api→api-client→ai) + branché sur
+  deriveUrssafProvision : « URSSAF 31/10 · ~2 628,80 € » ; (3) v2 moteurs : décalage 1re
+  déclaration ~90 j après dateCreation (cible créateurs). Plancher 0 sans report = CONFORME
+  (documenté roadmap, ne pas rouvrir).
+
 #### Signatures (C-EXP-UI1, C-EXP5c)
 - [x] agreed — claude-code A — 2026-07-04 (20:40) — régime humain, review gpt5pro a posteriori
 
@@ -1756,6 +1766,17 @@ transcript workflow wf_fb597a24-2e3.
   explicite only). Validations : core 518 ✓ (+27) · typecheck 16/16 ✓. RESTES documentés :
   amountHint de l'échéance URSSAF (type partagé, WIP B), décalage 90 j 1re déclaration, câblage
   écran Argent (C-EXP-UI1 vague suivante). status=MERGED.
+- [2026-07-04 21:30] claude-code A HANDOFF+MERGE C-EXP-UI1 (régime humain): COMPLET. Argent :
+  section « À venir » (useFiscalCalendar — date FR, label, explain voix Bob, badge « À CONFIRMER »
+  sur les assumed, jamais de montant en v1, états vide/erreur honnêtes). Notifications (écran du
+  plan de relances) : pénalités courues (« +0,51 €/jour · 7,72 € courus » — B2G Mairie de Sèvres,
+  BCE+8 exact vérifié à la main) + pastille prescription par urgence (« t'as jusqu'au
+  31/12/2030 » déchéance quadriennale). Zéro calcul à l'écran, zéro hex. i18n 8 clés ×3 (+3
+  tests). CAPTURES données réelles : C-EXP-UI1-argent.png + C-EXP-UI1-relances.png — NOTE ENV :
+  l'agent a réussi le scroll par drag CGEvent (script Swift scratchpad) : les captures sous la
+  ligne de flottaison sont donc AUTOMATISABLES désormais. Validations : i18n 53 ✓ · typecheck
+  16/16 ✓. SUIVIS évalués sur directive fondateur → claim C-EXP-UI2 posé (OPEN, attend fin WIP B
+  sur ai/) + v2 moteurs (décalage 90 j) + plancher 0 documenté conforme. status=MERGED.
 - [2026-07-04 04:10] human DIRECTIVE (identité produit — s'applique à TOUS les claims C-EXP/E,
   sessions A et B) : « Bob, c'est ton assistant comptable, ton expert-comptable de poche, il gère
   toute ta compta mieux que ton comptable. Tu n'as presque plus besoin d'un expert-comptable —
@@ -1960,5 +1981,8 @@ transcript workflow wf_fb597a24-2e3.
 | C-EXP2 vA | MERGED | claude-code A | gpt5pro | Pénalités CHIFFRÉES (12,15 % S1 2026, MED « 27,71 € + 40 € ») + chrono prescription (2/5 ans, déchéance quadriennale, ré-ancre art. 2240) — 07-04 20:22. |
 | C-EXP5b | MERGED | claude-code A | gpt5pro | GET /fiscal-calendar + client + outil agent echeances_fiscales (parité humain↔Bob) — 07-04 20:22. |
 | C-EXP5c | MERGED | claude-code A | gpt5pro | Provision URSSAF micro (D613-4 CSS 2026 vérifiés, déclaration pré-calculée « Bob FAIT », dispo prudent teinté) — 07-04 21:05. |
+| C-EXP-UI1 | MERGED | claude-code A | gpt5pro | Échéancier écran Argent + pénalités/prescription sur les relances, captures réelles — 07-04 21:30. |
+| C-EXP-UI2 | OPEN | claude-code A | gpt5pro | Provision URSSAF visible (écran) + amountHint échéancier — attend fin WIP B packages/ai. |
+| PONT-SERVEUR | IN-BUILD | claude-code A | gpt5pro | 7 endpoints/actions : l'API prod rattrape le client démo — 07-04 21:15. |
 | C-EXP2 P16, C-EXP3 P02 | MERGED (=E5/E6, session B) | claude-code B | gpt5pro | Balance âgée écran Argent + seuils 293 B réels au diagnostic — f3f03a7. |
 | C41 | OPEN | — | — | Sweep final a11y/états/parité. Web C30 différé après mobile hi-fi. |

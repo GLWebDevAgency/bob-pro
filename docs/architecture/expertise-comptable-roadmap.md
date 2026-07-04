@@ -471,3 +471,16 @@ Six claims cohérents, quick-wins d'abord. Les numéros P## renvoient au tableau
 ---
 
 *Rapport établi le 3 juillet 2026. Références vérifiées entre le 1er et le 4 juillet 2026 (Légifrance, BOFiP, service-public.gouv.fr, economie.gouv.fr). Les corrections du vérificateur adversarial priment sur les fiches d'experts initiales ; les items marqués **(CORRIGÉ)** signalent les références ou mécanismes rectifiés.*
+
+---
+
+## Suivis post-livraison (évalués le 4 juillet 2026, directive fondateur)
+
+Évaluation des TODO résiduels des claims livrés (C-EXP1/2vA/5/5b/5c) — chaque item classé « à faire » entre dans un claim ou la v2 des moteurs ; les comportements conformes sont documentés pour ne pas resurgir.
+
+| TODO | Verdict | Où |
+|---|---|---|
+| `FiscalDeadline.amountHint` figé à `null` (l'échéance URSSAF n'affiche pas « ~2 629 € » alors que `deriveUrssafProvision` sait le calculer) | **IMPORTANT — doctrine « Bob FAIT »** : une date sans montant est une alerte, pas une préparation. Élargir le type à `number \| null` (il traverse core→api→api-client→ai : attendre la fin du WIP session B sur packages/ai) puis brancher le module URSSAF. | **Claim C-EXP-UI2** |
+| Rangée « cotisations » de l'écran Argent toujours `null` + `reserve` sans les cotisations (le câblage `company/payments/asOf` → `buildLedgerView` n'est pas fait) | **IMPORTANT — la moitié visible de P03** : la provision existe, l'artisan ne la voit pas ; le « Disponible prudent » ment encore aux micro. | **Claim C-EXP-UI2** |
+| Décalage de la 1ʳᵉ déclaration URSSAF (~90 j après la création — pas d'échéance avant) non modélisé | **IMPORTANT pour la cible acquisition** (créateurs) : afficher une échéance trop tôt à un nouvel inscrit = fausse information au premier contact. Ancrer sur `dateCreation` (en BDD depuis C24b). | **v2 moteurs fiscaux** (deriveFiscalCalendar + deriveUrssafProvision) |
+| Remboursements > encaissements → CA plancher 0 sans report sur la période suivante | **CONFORME, rien à faire** : le micro-social ne connaît ni CA négatif ni report d'une période sur l'autre — le plancher 0 est le comportement réglementaire exact. Documenté ici pour éviter la resurgence. | — |
