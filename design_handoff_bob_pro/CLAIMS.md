@@ -1760,6 +1760,26 @@ transcript workflow wf_fb597a24-2e3.
 #### Signatures (C-EXP5d)
 - [x] agreed — claude-code A — 2026-07-04 (21:50) — régime humain, review gpt5pro a posteriori
 
+#### C-EXP6a — parseur Factur-X/CII entrant (réception 2026, pur core)
+- status: IN-BUILD · owner: claude-code A · reviewer: gpt5pro (a posteriori)
+- ORIGINE : P05 roadmap — réception e-facture obligatoire 1/9/2026 TOUS assujettis (art. 289 bis
+  CGI, amende LF 2026 : 500 € puis 1 000 €/trimestre). Priorité : c'est la carte « Conformité
+  2026 » de l'écran notifications.
+- Périmètre v1 STRICT (zéro collision, nouveaux fichiers only) : module PUR
+  `packages/core/src/domain/compliance/parse-facturx.ts` (+ test) — INVERSE exact de
+  `buildFacturXBasicXml` (facturx.ts, générateur stable) : lit un XML CII/Factur-X profil BASIC
+  et renvoie une donnée structurée (vendeur, SIREN, n° facture, échéance, HT/TVA/TTC par taux,
+  devise) avec un Result typé (XML malformé/profil non géré → erreur explicite, jamais un parse
+  silencieux). AUCUN wiring dans ce claim : pas d'Expense modifiée, pas de diagnostic touché, pas
+  d'export index.ts (le module se teste en relatif) — le branchement Expense + statuts AFNOR
+  Approuver/Refuser = C-EXP6b (après stabilisation du modèle Expense côté session B).
+- Acceptance : ROUND-TRIP testé (facturXDataFromInvoice → buildFacturXBasicXml → parseFacturX ⇒
+  égalité structurelle) + XML réel d'exemple + cas d'erreur (XML vide, balise manquante, profil
+  inconnu) · aucune régression · typecheck.
+
+#### Signatures (C-EXP6a)
+- [x] agreed — claude-code A — 2026-07-05 (00:40) — régime humain, review gpt5pro a posteriori
+
 #### Signatures (PONT-SERVEUR v1)
 - [x] agreed — claude-code A — 2026-07-04 (21:15) — régime humain, review gpt5pro a posteriori
 
