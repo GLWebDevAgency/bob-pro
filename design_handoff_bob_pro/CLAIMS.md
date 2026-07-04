@@ -1726,6 +1726,28 @@ transcript workflow wf_fb597a24-2e3.
 - Acceptance : tests api par endpoint (tenant + 403) · outils Bob testés côté serveur · aucune
   régression · typecheck. Redeploy Railway au merge.
 
+#### C-EXP5d — ACRE : la provision URSSAF des créateurs enfin juste (question humaine 21:45)
+- status: IN-BUILD · owner: claude-code A · reviewer: gpt5pro (a posteriori)
+- ORIGINE : question fondateur (« l'ACRE, l'ARCE et les autres aides ? ») — évaluée : l'ACRE
+  divise ~par 2 les cotisations des 3 premiers trimestres civils suivant la création → notre
+  provision au taux plein est ~doublée pour un CRÉATEUR (la cible d'acquisition). dateCreation
+  est en BDD (C24b) : la fenêtre se dérive, l'éligibilité jamais (demande sous 45 j) → booléen
+  explicite.
+- Contrat : table de taux ACRE micro VERSIONNÉE (vérifier décret 2026-69 du 6/2/2026 par
+  recherche officielle au build) dans micro-social.ts ; fenêtre = du trimestre civil de création
+  à la fin du 3e trimestre civil suivant (dérivée de dateCreation) ; deriveUrssafProvision
+  accepte `acre?: boolean | null` — true + dans la fenêtre → taux réduit + explain teinté
+  (« taux ACRE jusqu'au 30/6/2027 ») ; true hors fenêtre → taux plein + explain « ton ACRE est
+  terminée » ; null → taux plein + si dateCreation < 12 mois, flag `askAcre: true` (l'UI posera
+  la question — jamais deviné). VFL cumulable inchangé.
+- GARDE-FOU ARCE (roadmap, gravé) : l'ARCE n'est JAMAIS du CA — règle de non-pollution des
+  encaissements à imposer le jour de l'agrégation bancaire (provision + 293 B faussées sinon).
+- Acceptance : taux ACRE 2026 sourcés · fenêtre testée (bornes trimestres civils, année de
+  création partielle) · askAcre testé · aucune régression · typecheck.
+
+#### Signatures (C-EXP5d)
+- [x] agreed — claude-code A — 2026-07-04 (21:50) — régime humain, review gpt5pro a posteriori
+
 #### Signatures (PONT-SERVEUR v1)
 - [x] agreed — claude-code A — 2026-07-04 (21:15) — régime humain, review gpt5pro a posteriori
 

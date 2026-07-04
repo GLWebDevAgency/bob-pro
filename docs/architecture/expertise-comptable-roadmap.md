@@ -484,3 +484,12 @@ Six claims cohérents, quick-wins d'abord. Les numéros P## renvoient au tableau
 | Rangée « cotisations » de l'écran Argent toujours `null` + `reserve` sans les cotisations (le câblage `company/payments/asOf` → `buildLedgerView` n'est pas fait) | **IMPORTANT — la moitié visible de P03** : la provision existe, l'artisan ne la voit pas ; le « Disponible prudent » ment encore aux micro. | **Claim C-EXP-UI2** |
 | Décalage de la 1ʳᵉ déclaration URSSAF (~90 j après la création — pas d'échéance avant) non modélisé | **IMPORTANT pour la cible acquisition** (créateurs) : afficher une échéance trop tôt à un nouvel inscrit = fausse information au premier contact. Ancrer sur `dateCreation` (en BDD depuis C24b). | **v2 moteurs fiscaux** (deriveFiscalCalendar + deriveUrssafProvision) |
 | Remboursements > encaissements → CA plancher 0 sans report sur la période suivante | **CONFORME, rien à faire** : le micro-social ne connaît ni CA négatif ni report d'une période sur l'autre — le plancher 0 est le comportement réglementaire exact. Documenté ici pour éviter la resurgence. | — |
+
+### Aides à la création (question fondateur, 4 juillet 2026)
+
+| Sujet | Verdict | Où |
+|---|---|---|
+| **ACRE** (exonération ~50 % des cotisations micro, 3 premiers trimestres civils) | **CRITIQUE pour les créateurs** : la provision URSSAF au taux plein double le chiffre d'un bénéficiaire. Fenêtre dérivable de `dateCreation` (BDD) ; éligibilité = booléen demandé (demande sous 45 j, jamais devinable). | **C-EXP5d (lancé)** |
+| **ARCE** (60 % des droits ARE en capital) | **Garde-fou structurel** : l'ARCE n'est pas du CA — à l'arrivée de l'agrégation bancaire, ce versement ne doit JAMAIS entrer dans les encaissements (provision URSSAF + vigie 293 B faussées sinon). Simulateur maintien ARE vs ARCE = contenu conseil, plus tard. | Règle gravée ici ; à imposer au claim « agrégation bancaire » |
+| **Exonérations zonées** (France Ruralités Revitalisation, QPV — impôts/CFE) | Dérivables de l'ADRESSE en BDD via Open Data des zonages — à instruire comme chantier (fort pour l'implantation rurale des artisans). | Backlog chantier |
+| JEI, aides régionales/Agefiph | Hors cible artisans / trop variables pour un moteur — contenu éditorial éventuel. | Écartées |
