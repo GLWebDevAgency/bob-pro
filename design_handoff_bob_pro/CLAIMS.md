@@ -1586,6 +1586,22 @@ transcript workflow wf_fb597a24-2e3.
 - [2026-07-04 02:40] claude-code A AUDIT+CLAIM: audit 58 agents (4 cartographes, 6 experts,
   vérification adversariale par proposition — 46/47 retenues, 1 réfutée), rapport commité.
   C-EXP1 v1 lancé en priorité : risque juridique actif sur chaque facture émise.
+- [2026-07-04 03:05] claude-code A HANDOFF+MERGE C-EXP1 (régime humain): COMPLET. P01 : relances/MED
+  par customer.type (B2C code civil sans 40 € ni L441-10 · B2G L2192-12/13 CCP BCE+8 · B2B inchangé),
+  repli prudent b2c si client inconnu, le type traverse jobs/relance.service jusqu'à l'email (testé
+  bout en bout), agent IA même moteur. P14 : plancher L441-10 II respecté (stipulation BCE+10, plus
+  de « taux légal » irrégulier), escompte « néant » L441-9, bloc pros gated isProfessional() — rien
+  aux particuliers. P11 : mention certifiée 279-0 bis / 278-0 bis A imprimée sur les pièces à taux
+  réduit (booléens suggestVatRate en veto quand fournis), issue-invoice fige lineVatRates → PDF.
+  Textes légaux exacts au rapport d'agent. NOTE (préexistant, hors périmètre) : les DEVIS ne passent
+  pas encore par buildMentions (buildPieceView renvoie mentions:[]) — la mention certifiée devis
+  attend P15/C-EXP6. Validations : core 404 ✓ (+15) · api 80 ✓ · ai 151 ✓ · typecheck 16/16 ✓.
+  status=MERGED.
+- [2026-07-04 03:05] claude-code A COORDINATION → session B : détecté dans le working tree vos
+  fichiers E6 (compliance/vat-thresholds + diagnostic branché annualEncaissedCents) et
+  clients/derive-aged-balance — c'est P02/P16 de la roadmap (C-EXP3/C-EXP2). Je vous les LAISSE :
+  merci de réserver les claims C-EXP2/C-EXP3 ici même au protocole. Session A part sur C-EXP5 v1
+  (P09 deriveFiscalCalendar — module vierge, zéro chevauchement).
 
 ### C27 — Catalogue prestations + Réglages facturation <!-- kind: flow -->
 - status: IN-BUILD
@@ -1728,5 +1744,7 @@ transcript workflow wf_fb597a24-2e3.
 | C27 | MERGED | claude-code A | gpt5pro | Catalogue 63 prestations/9 métiers + suggestions devis/voix — 07-04 00:36. |
 | C26 | MERGED | claude-code A | gpt5pro | Compte/Abo honnête (accès anticipé 0 €, grille PLAN_CATALOG 19/39/79 preview) — 07-04 01:55. |
 | C26b | MERGED | claude-code A | gpt5pro | Subscription par tenant + GET /subscription, grep sub-mercier vide — 07-04 02:40. |
-| C-EXP1 | IN-BUILD | claude-code A | gpt5pro | Conformité pièces/relances (P01 B2C · P14 escompte+plancher pénalités · P11 mention taux réduits) — 07-04 02:40. Roadmap : docs/architecture/expertise-comptable-roadmap.md. |
+| C-EXP1 | MERGED | claude-code A | gpt5pro | Conformité pièces/relances par type de client (B2C code civil · B2G CCP · plancher BCE+10 · escompte · mention taux réduits) — 07-04 03:05. Roadmap : docs/architecture/expertise-comptable-roadmap.md. |
+| C-EXP5 | IN-BUILD | claude-code A | gpt5pro | deriveFiscalCalendar (P09) — échéancier fiscal par forme juridique/date création/régime — 07-04 03:10. |
+| C-EXP2, C-EXP3 | — | session B ? | gpt5pro | Fichiers E6 détectés (vat-thresholds, aged-balance) : session B invitée à réserver ici. |
 | C41 | OPEN | — | — | Sweep final a11y/états/parité. Web C30 différé après mobile hi-fi. |
