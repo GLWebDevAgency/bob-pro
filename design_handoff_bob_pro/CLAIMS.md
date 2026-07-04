@@ -1696,6 +1696,31 @@ transcript workflow wf_fb597a24-2e3.
 #### Signatures (C-EXP5b)
 - [x] agreed — claude-code A — 2026-07-04 (04:00) — régime humain, review gpt5pro a posteriori
 
+#### PONT-SERVEUR v1 — l'API de prod rattrape le client démo (7 trous)
+- status: IN-BUILD · owner: claude-code A · reviewer: gpt5pro (a posteriori)
+- CONSTAT : les vagues E (session B) et C-EXP (session A) ont livré leurs use cases dans @bob/core
+  et le LocalBobClient (démo complète) — mais l'API de prod ne les sert pas : en connecté réel,
+  Dépenses/avoir/vigie 293 B/outils Bob échouent. Suivis serveur tracés par B en mémoire + audit
+  parité C15.
+- Contrat (tout est mécanique — les use cases existent, on branche) :
+  1. POST /expenses/:id/pay → PayExpense (transition to_pay→paid + décaissement 401/512, E4) ;
+  2. recordExpense poste les écritures E1 (RecordExpenseAccountingEntries idempotent, cycle achats) ;
+  3. GET /payments (paiements datés du tenant — socle E3, alimente balance âgée/prescription) ;
+  4. GET /company/me (fiche société BDD du tenant — débloque ENFIN companyName/legalLine en
+     connecté : useIdentity affichera la vraie raison sociale, TODO tracé depuis C24) ;
+  5. getDiagnostic serveur : annualEncaissedCents réel (encaissements année civile → la vigie
+     293 B E6 marche en prod) ;
+  6. POST /invoices/:id/credit-note → CreateCreditNote (avoir A6, compteur préfixe A) ;
+  7. Actions Bob serveur : position_tva, balance_agee, payer_depense (mutation registre
+     accounting) câblées dans les BobActions de BackendService (pattern echeances_fiscales
+     C-EXP5b/BOB-1) — parité humain↔Bob en PROD.
+  HORS PÉRIMÈTRE v1 (E9 session B en cours sur le FEC) : port auxiliaire FEC serveur.
+- Acceptance : tests api par endpoint (tenant + 403) · outils Bob testés côté serveur · aucune
+  régression · typecheck. Redeploy Railway au merge.
+
+#### Signatures (PONT-SERVEUR v1)
+- [x] agreed — claude-code A — 2026-07-04 (21:15) — régime humain, review gpt5pro a posteriori
+
 #### Signatures (C-EXP-UI1, C-EXP5c)
 - [x] agreed — claude-code A — 2026-07-04 (20:40) — régime humain, review gpt5pro a posteriori
 
