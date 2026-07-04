@@ -1720,6 +1720,17 @@ transcript workflow wf_fb597a24-2e3.
   api-client getFiscalCalendar HTTP+Local, outil agent echeances_fiscales (lecture seule, intent/
   classifier routés, assumed signalés « à confirmer ») — MÊME use case partout, parité humain↔Bob.
   Validations : api 85 ✓ · api-client 35 ✓ · ai 155 ✓ · typecheck 16/16 ✓. status=MERGED.
+- [2026-07-04 21:05] claude-code A HANDOFF+MERGE C-EXP5c (régime humain): COMPLET. micro-social
+  (taux D613-4 CSS versionnés VÉRIFIÉS sur Légifrance au build — 2026 décret 2025-943 : ventes
+  12,3 · BIC presta 21,2 · BNC 25,6 [abaissé vs 26,1 programmés] · Cipav 23,2 ; VFL 1/1,7/2,2 ;
+  hors table → stale) + deriveUrssafProvision (déclaration PRÉ-CALCULÉE sur le CA ENCAISSÉ de la
+  période courante, avoirs déduits — exemple testé : plombier micro T3 12 400 € → « mets
+  2 628,80 € de côté, à déclarer au plus tard le 31 octobre ») + build-ledger-view branché
+  (entrées additives : micro + paiements datés → cotisationsCents réel + champ urssaf ; sinon
+  null honnête, historique intact). Catégorie jamais devinée en silence (confidence, Cipav
+  explicite only). Validations : core 518 ✓ (+27) · typecheck 16/16 ✓. RESTES documentés :
+  amountHint de l'échéance URSSAF (type partagé, WIP B), décalage 90 j 1re déclaration, câblage
+  écran Argent (C-EXP-UI1 vague suivante). status=MERGED.
 - [2026-07-04 04:10] human DIRECTIVE (identité produit — s'applique à TOUS les claims C-EXP/E,
   sessions A et B) : « Bob, c'est ton assistant comptable, ton expert-comptable de poche, il gère
   toute ta compta mieux que ton comptable. Tu n'as presque plus besoin d'un expert-comptable —
@@ -1923,5 +1934,6 @@ transcript workflow wf_fb597a24-2e3.
 | C-EXP5 | MERGED | claude-code A | gpt5pro | deriveFiscalCalendar : URSSAF/IS/CFE/TVA/comptes datés par fiche société, 27 tests, amountHint null (montants = P03/P23) — 07-04 03:55. Reste : UI échéancier + montants. |
 | C-EXP2 vA | MERGED | claude-code A | gpt5pro | Pénalités CHIFFRÉES (12,15 % S1 2026, MED « 27,71 € + 40 € ») + chrono prescription (2/5 ans, déchéance quadriennale, ré-ancre art. 2240) — 07-04 20:22. |
 | C-EXP5b | MERGED | claude-code A | gpt5pro | GET /fiscal-calendar + client + outil agent echeances_fiscales (parité humain↔Bob) — 07-04 20:22. |
+| C-EXP5c | MERGED | claude-code A | gpt5pro | Provision URSSAF micro (D613-4 CSS 2026 vérifiés, déclaration pré-calculée « Bob FAIT », dispo prudent teinté) — 07-04 21:05. |
 | C-EXP2 P16, C-EXP3 P02 | MERGED (=E5/E6, session B) | claude-code B | gpt5pro | Balance âgée écran Argent + seuils 293 B réels au diagnostic — f3f03a7. |
 | C41 | OPEN | — | — | Sweep final a11y/états/parité. Web C30 différé après mobile hi-fi. |
