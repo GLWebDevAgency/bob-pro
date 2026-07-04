@@ -179,6 +179,21 @@ export function useProfile() {
   });
 }
 
+/** C-EXP-UI1 : échéancier fiscal 90 j (client.getFiscalCalendar — deriveFiscalCalendar serveur/démo).
+ * Dates réelles dérivées de la fiche société ; amountHint null en v1 → l'écran n'affiche JAMAIS
+ * de montant. Les échéances 'assumed' (périodicité/clôture inconnues) se badgent « à confirmer ». */
+export function useFiscalCalendar() {
+  const client = useBobClient();
+  return useQuery({
+    queryKey: ['fiscal-calendar'],
+    queryFn: async () => {
+      const r = await client.getFiscalCalendar();
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+  });
+}
+
 export function useDiagnostic() {
   const client = useBobClient();
   return useQuery({

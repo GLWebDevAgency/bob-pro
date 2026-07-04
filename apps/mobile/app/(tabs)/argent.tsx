@@ -34,12 +34,13 @@ import {
   formatEUR,
   type CashflowBand,
   type CashflowSeriesPoint,
+  type FiscalDeadline,
   type Horizon,
   type Scenario,
 } from '@bob/core';
 import { patterns, shadowNative } from '@bob/tokens';
 import { deriveAgedBalance, AGED_BUCKETS, type AgedBucketKey } from '@bob/core';
-import { t, type I18nKey } from '@bob/i18n';
+import { t, type I18nKey, type Personality } from '@bob/i18n';
 import {
   Avatar,
   Button,
@@ -60,6 +61,7 @@ import {
   useCashflow,
   useCustomers,
   useExpenses,
+  useFiscalCalendar,
   useInvoices,
 } from '../../src/data/hooks';
 import { useFirstTimeTip } from '../../src/data/tips';
@@ -169,6 +171,88 @@ function EmptyMoneyRow({
       >
         —
       </Text>
+    </View>
+  );
+}
+
+// ── Échéancier fiscal « À venir » (C-EXP-UI1 — deriveFiscalCalendar C-EXP5/5b) ──
+
+const FR_MONTHS_SHORT = [
+  'janv.',
+  'févr.',
+  'mars',
+  'avr.',
+  'mai',
+  'juin',
+  'juil.',
+  'août',
+  'sept.',
+  'oct.',
+  'nov.',
+  'déc.',
+] as const;
+
+/** '2026-09-15' → '15 sept.' (+ année si différente de l'année en cours) — présentation pure. */
+function frShortDate(dateOnly: string): string {
+  const [y, m, d] = dateOnly.split('-');
+  if (y === undefined || m === undefined || d === undefined) return dateOnly;
+  const month = FR_MONTHS_SHORT[Number(m) - 1] ?? m;
+  return y === String(new Date().getFullYear()) ? `${Number(d)} ${month}` : `${Number(d)} ${month} ${y}`;
+}
+
+/**
+ * Rangée d'échéance fiscale : date FR courte, label, explain à la voix de Bob — JAMAIS de
+ * montant (amountHint null en v1, P03/P23 les brancheront). Les échéances 'assumed'
+ * (périodicité URSSAF / clôture inconnues) portent un badge discret « à confirmer ».
+ */
+function FiscalDeadlineRow({
+  deadline,
+  personality,
+  last,
+}: {
+  deadline: FiscalDeadline;
+  personality: Personality;
+  last: boolean;
+}) {
+  const { colors } = useTheme();
+  return (
+    <View
+      accessible
+      accessibilityLabel={`${frShortDate(deadline.date)}, ${deadline.label}`}
+      style={{
+        flexDirection: 'row',
+        alignItems: 'flex-start',
+        gap: 12,
+        paddingVertical: 11,
+        ...(last ? {} : { borderBottomWidth: 1, borderBottomColor: colors.lineSoft }),
+      }}
+    >
+      <View style={{ minWidth: 62 }}>
+        <Text
+          style={[font('label', 700), { fontSize: 13.5, color: colors.ink800, fontVariant: ['tabular-nums'] }]}
+        >
+          {frShortDate(deadline.date)}
+        </Text>
+      </View>
+      <View style={{ flex: 1 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
+          <Text
+            numberOfLines={2}
+            style={[font('label', 600), { fontSize: 14, color: colors.ink800, flexShrink: 1 }]}
+          >
+            {deadline.label}
+          </Text>
+          {deadline.confidence === 'assumed' ? (
+            <StatusBadge
+              label={t('argent.upcomingAssumed', { personality }).toUpperCase()}
+              variant="particulier"
+            />
+          ) : null}
+        </View>
+        <Text style={[font('meta'), { color: colors.slate500, marginTop: 2, lineHeight: 16 }]}>
+          {deadline.explain}
+        </Text>
+      </View>
     </View>
   );
 }
@@ -310,6 +394,9 @@ export default function Argent() {
     [invoices.data, expenses.data, entries.data],
   );
   const ledgerLoading = invoices.isLoading || expenses.isLoading || entries.isLoading;
+
+  // C-EXP-UI1 : échéancier fiscal 90 j — dates dérivées de la fiche société, aucun montant en v1.
+  const fiscal = useFiscalCalendar();
 
   // E5 : balance âgée clients (deriveAgedBalance @bob/core — même vérité pour Bob).
   const aged = useMemo(() => {
@@ -750,6 +837,42 @@ export default function Argent() {
                     {t('argent.agedOverdue', { personality, params: { amount: formatEUR(aged.overdueCents) } })}
                   </Text>
                 ) : null}
+              </Card>
+            )}
+          </View>
+
+          {/* ── À venir — échéancier fiscal (C-EXP-UI1 : dates réelles, jamais de montant) ── */}
+          <View style={{ marginTop: 20 }}>
+            <SectionHeader title={t('argent.upcomingTitle', { personality })} />
+            {fiscal.isLoading ? (
+              <Card>
+                <SkeletonMoneyRow />
+                <SkeletonMoneyRow divider={false} />
+              </Card>
+            ) : fiscal.isError ? (
+              // Bannière discrète : l'échéancier manque, le reste de l'écran reste utilisable.
+              <Card>
+                <Text style={[font('sub'), { color: colors.slate500, lineHeight: 19 }]}>
+                  {t('argent.upcomingError', { personality })}
+                </Text>
+              </Card>
+            ) : (fiscal.data ?? []).length === 0 ? (
+              // État vide honnête : rien à l'horizon 90 j (voix Bob), aucune ligne fantôme.
+              <Card>
+                <Text style={[font('sub'), { color: colors.slate500, lineHeight: 19 }]}>
+                  {t('argent.upcomingEmpty', { personality })}
+                </Text>
+              </Card>
+            ) : (
+              <Card radius={18} padding={0} style={{ paddingHorizontal: 16, paddingVertical: 4 }}>
+                {(fiscal.data ?? []).map((deadline, index, all) => (
+                  <FiscalDeadlineRow
+                    key={deadline.id}
+                    deadline={deadline}
+                    personality={personality}
+                    last={index === all.length - 1}
+                  />
+                ))}
               </Card>
             )}
           </View>

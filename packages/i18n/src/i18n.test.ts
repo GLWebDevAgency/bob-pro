@@ -631,3 +631,44 @@ describe('i18n — C26 account.*', () => {
     expect(t('account.dataError', { personality: 'direct' })).toBe('Profil injoignable. Réessaie.');
   });
 });
+
+describe('i18n — C-EXP-UI1 argent.upcoming* + relance pénalités/prescription', () => {
+  it('échéancier fiscal : section, état vide 90 j honnête, erreur discrète, badge assumed ×3', () => {
+    expect(t('argent.upcomingTitle')).toBe('À venir');
+    expect(t('argent.upcomingTitle', { personality: 'pro' })).toBe('Échéances à venir');
+    expect(t('argent.upcomingEmpty')).toContain('90');
+    expect(t('argent.upcomingEmpty', { personality: 'pro' })).toBe(
+      'Aucune échéance fiscale dans les 90 prochains jours.',
+    );
+    expect(t('argent.upcomingEmpty', { personality: 'direct' })).toBe('Rien sous 90 j.');
+    expect(t('argent.upcomingError', { personality: 'direct' })).toBe('Échéances injoignables.');
+    expect(t('argent.upcomingAssumed').toUpperCase()).toBe('À CONFIRMER');
+  });
+
+  it('pénalités courues : {daily}/{accrued} interpolés sur les 3 humeurs (jamais calculés ici)', () => {
+    expect(t('relance.penaltiesLine', { params: { daily: '0,62 €', accrued: '27,71 €' } })).toBe(
+      '+0,62 €/jour · 27,71 € courus',
+    );
+    expect(
+      t('relance.penaltiesLine', { personality: 'pro', params: { daily: '0,62 €', accrued: '27,71 €' } }),
+    ).toBe('+0,62 € par jour · 27,71 € courus à ce jour');
+    expect(
+      t('relance.penaltiesLine', { personality: 'direct', params: { daily: '0,62 €', accrued: '27,71 €' } }),
+    ).toBe('+0,62 €/j · 27,71 €');
+  });
+
+  it('chrono de prescription : lointaine discrète, urgente « c’est perdu », prescrite grave ×3', () => {
+    expect(t('relance.prescriptionFar', { params: { date: '12/03/2029' } })).toBe(
+      'Prescription : t’as jusqu’au 12/03/2029.',
+    );
+    expect(t('relance.prescriptionLost', { params: { date: '15/09/2026' } })).toBe(
+      'Après le 15/09/2026, c’est perdu — plus aucun recours.',
+    );
+    expect(t('relance.prescriptionLost', { personality: 'direct', params: { date: '15/09/2026' } })).toBe(
+      'Après le 15/09/2026 : perdu.',
+    );
+    expect(t('relance.prescriptionDead', { personality: 'pro', params: { date: '02/01/2026' } })).toBe(
+      'Créance prescrite depuis le 02/01/2026 — aucun recours judiciaire possible.',
+    );
+  });
+});

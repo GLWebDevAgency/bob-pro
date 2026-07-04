@@ -3560,6 +3560,54 @@ const fr = {
     pro: 'Impossible de charger le profil. Veuillez réessayer.',
     direct: 'Profil injoignable. Réessaie.',
   },
+
+  // ── C-EXP-UI1 — les moteurs d'expertise à l'écran ──────────────────────────
+  // Échéancier fiscal sur l'écran Argent (deriveFiscalCalendar, C-EXP5/5b) :
+  // dates réelles dérivées de la fiche société, JAMAIS de montant (amountHint null en v1).
+  'argent.upcomingTitle': {
+    pote: 'À venir',
+    pro: 'Échéances à venir',
+    direct: 'À venir',
+  },
+  'argent.upcomingEmpty': {
+    pote: 'Rien à l’horizon : aucune échéance fiscale dans les 90 prochains jours. Tranquille.',
+    pro: 'Aucune échéance fiscale dans les 90 prochains jours.',
+    direct: 'Rien sous 90 j.',
+  },
+  'argent.upcomingError': {
+    pote: 'J’arrive pas à charger tes échéances, là. Le reste de l’écran reste bon.',
+    pro: 'Impossible de charger les échéances fiscales pour le moment.',
+    direct: 'Échéances injoignables.',
+  },
+  // Badge des échéances 'assumed' (périodicité/clôture inconnues → hypothèse honnête).
+  'argent.upcomingAssumed': {
+    pote: 'à confirmer',
+    pro: 'À confirmer',
+    direct: 'à confirmer',
+  },
+  // Recouvrement (écran relances) : pénalités courues P12 — b2b/b2g seulement,
+  // formatées depuis LatePenalties (dailyCents/interestCents), zéro calcul à l'écran.
+  'relance.penaltiesLine': {
+    pote: '+{daily}/jour · {accrued} courus',
+    pro: '+{daily} par jour · {accrued} courus à ce jour',
+    direct: '+{daily}/j · {accrued}',
+  },
+  // Chrono de prescription P04 — paliers d'urgence de derivePrescription.
+  'relance.prescriptionFar': {
+    pote: 'Prescription : t’as jusqu’au {date}.',
+    pro: 'Prescription : action possible jusqu’au {date}.',
+    direct: 'Prescription {date}.',
+  },
+  'relance.prescriptionLost': {
+    pote: 'Après le {date}, c’est perdu — plus aucun recours.',
+    pro: 'Après le {date}, la créance sera prescrite : plus aucun recours judiciaire.',
+    direct: 'Après le {date} : perdu.',
+  },
+  'relance.prescriptionDead': {
+    pote: 'Trop tard : prescrite depuis le {date}. Plus de recours en justice.',
+    pro: 'Créance prescrite depuis le {date} — aucun recours judiciaire possible.',
+    direct: 'Prescrite depuis le {date}.',
+  },
 } as const satisfies Record<string, Copy>;
 
 export type I18nKey = keyof typeof fr;

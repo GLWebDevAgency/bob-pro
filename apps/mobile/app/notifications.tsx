@@ -27,6 +27,7 @@ import { Pressable, ScrollView, Text, View } from 'react-native';
 import { useRouter, type Href } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
+  formatEUR,
   formatEURWhole,
   type RelancePlanEntry,
   type RelanceTone,
@@ -88,6 +89,97 @@ function toneColor(tone: RelanceTone, semantic: { particulier: string; b2b: stri
   return TONE_BADGE[tone] === 'danger' ? semantic.danger : TONE_BADGE[tone] === 'b2b' ? semantic.b2b : semantic.particulier;
 }
 
+// ── Expertise par facture échue (C-EXP-UI1 — données du moteur, ZÉRO calcul ici) ──
+
+/** Pastille de prescription par palier d'urgence (P04 derivePrescription) — couleurs sémantiques. */
+function prescriptionDisplay(
+  prescription: NonNullable<RelancePlanEntry['prescription']>,
+  personality: Personality,
+  palette: { success: string; warning: string; danger: string; far: string },
+): { dot: string; color: string; weight: 500 | 600 | 700; text: string } {
+  const date = frDate(prescription.deadline);
+  switch (prescription.urgency) {
+    case 'prescrite':
+      // État grave : la créance est morte juridiquement — plus aucun recours.
+      return {
+        dot: palette.danger,
+        color: palette.danger,
+        weight: 700,
+        text: t('relance.prescriptionDead', { personality, params: { date } }),
+      };
+    case 'urgente':
+      return {
+        dot: palette.danger,
+        color: palette.danger,
+        weight: 600,
+        text: t('relance.prescriptionLost', { personality, params: { date } }),
+      };
+    case 'a_surveiller':
+      return {
+        dot: palette.warning,
+        color: palette.warning,
+        weight: 600,
+        text: t('relance.prescriptionLost', { personality, params: { date } }),
+      };
+    case 'lointaine':
+      // Discret : l'échéance est loin, on informe sans alarmer.
+      return {
+        dot: palette.success,
+        color: palette.far,
+        weight: 500,
+        text: t('relance.prescriptionFar', { personality, params: { date } }),
+      };
+  }
+}
+
+/**
+ * Sous-bloc expertise d'une facture échue (C-EXP-UI1) — tout vient de deriveRelancePlan :
+ * · pénalités courues P12 (« +0,62 €/jour · 27,71 € courus ») — b2b/b2g seulement : en b2c
+ *   sans mise en demeure les montants sont à 0 de plein droit → rien d'affiché ;
+ * · chrono de prescription P04 (pastille par urgence + deadline JJ/MM/AAAA).
+ * Rien à afficher (données manquantes → null côté moteur) → le bloc disparaît, jamais inventé.
+ */
+function ExpertiseMeta({ entry, personality }: { entry: RelancePlanEntry; personality: Personality }) {
+  const { colors, semantic } = useTheme();
+  const { penalties, prescription } = entry;
+
+  const penaltiesLine =
+    penalties !== null && (penalties.interestCents > 0 || penalties.dailyCents > 0)
+      ? t('relance.penaltiesLine', {
+          personality,
+          params: { daily: formatEUR(penalties.dailyCents), accrued: formatEUR(penalties.interestCents) },
+        })
+      : null;
+  const chrono =
+    prescription !== null
+      ? prescriptionDisplay(prescription, personality, {
+          success: semantic.success,
+          warning: semantic.warning,
+          danger: semantic.danger,
+          far: colors.slate400,
+        })
+      : null;
+  if (penaltiesLine === null && chrono === null) return null;
+
+  return (
+    <View style={{ marginTop: 8, gap: 4 }}>
+      {penaltiesLine !== null ? (
+        <Text style={[font('meta', 600), { color: semantic.warning, fontVariant: ['tabular-nums'] }]}>
+          {penaltiesLine}
+        </Text>
+      ) : null}
+      {chrono !== null ? (
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          <View style={{ width: 7, height: 7, borderRadius: 3.5, backgroundColor: chrono.dot }} />
+          <Text style={[font('meta', chrono.weight), { color: chrono.color, flex: 1, lineHeight: 16 }]}>
+            {chrono.text}
+          </Text>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
 // ── Cartes ────────────────────────────────────────────────────────────────────
 
 /** Relance DUE : ton badgé + reste dû + actions — voir la pièce, ou ENVOI RÉEL confirmé (C25 v2 :
@@ -127,6 +219,8 @@ function DueRelanceCard({
         </View>
         <StatusBadge label={t(TONE_LABEL[entry.tone], { personality }).toUpperCase()} variant={TONE_BADGE[entry.tone]} />
       </View>
+      {/* C-EXP-UI1 : pénalités courues + chrono de prescription — chiffrés par le moteur. */}
+      <ExpertiseMeta entry={entry} personality={personality} />
       <View style={{ flexDirection: 'row', gap: 8, marginTop: 13 }}>
         <Button
           title={t('notif.actionView', { personality })}
@@ -256,6 +350,8 @@ function ScheduledRelanceRow({ entry, personality }: { entry: RelancePlanEntry; 
           {formatEURWhole(entry.amountCents)}
         </Text>
       </View>
+      {/* C-EXP-UI1 : une facture planifiée est DÉJÀ échue — pénalités/prescription visibles aussi. */}
+      <ExpertiseMeta entry={entry} personality={personality} />
     </Card>
   );
 }
