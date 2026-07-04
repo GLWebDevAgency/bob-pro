@@ -1060,16 +1060,36 @@ transcript workflow wf_fb597a24-2e3.
   « Facture ») · descriptif FEC mis à jour. PREUVE DÉMO : 411 lettrés AA + DateLet
   20260704, auxiliaires 411CUST-SEVRES/401POINT-P etc. +2 tests. Core 443 ✓
   api-client 31 ✓ typecheck ✓.
+- [05:20] claude-code (session B) E4+E10 MERGE (commit 5f17c77 — décision produit assumée :
+  l'écran Dépenses MANQUAIT, le blocage saute) : use case PayExpense (to_pay→paid +
+  décaissement 401/512 à la DATE RÉELLE du règlement, idempotent bout en bout, 3 tests) +
+  summarizeExpenses (reste à payer / décaissé du mois / TVA déductible du mois / par
+  catégorie). Écran /depenses (pattern poussé A3-C17) : héros dette fournisseurs vivante,
+  tuiles mois, scan, liste à-payer-d'abord, « Payer » confirmé au palier ACCOUNTING.
+  Porte d'entrée Documents avec reste à payer réel. Client complet (payExpense Local+Http,
+  endpoint POST /expenses/:id/pay en suivi). +27 clés ×3. Core 488 ✓ api-client 35 ✓.
+- [05:50] claude-code (session B) BOB-1 MERGE (commit 1166440 — vision produit 04/07 :
+  « Bob gère ta compta mieux que ton comptable ; l'expert associé signe le bilan ») :
+  TROIS POUVOIRS D'EXPERT pour l'agent (pattern C-EXP5b, actions optionnelles
+  rétro-compatibles, réponses honnêtes sans capacité hôte) :
+  · position_tva (lecture) — « combien de TVA je dois ? » répond avec LE chiffre du
+    cashflow (deriveVatPosition) : collectée/déductible → à provisionner OU crédit ;
+  · balance_agee (lecture) — « qui me doit quoi ? » : total dû, dont échu, top clients
+    + retard max, alerte +90 j ;
+  · payer_depense (mutation registre, palier accounting) — « règle la dépense Leroy
+    Merlin » : liste réelle → résolution par fournisseur → PROPOSITION → PayExpense.
+  Intents déterministes anti-collision (dépense≠encaissement, TVA≠payout,
+  balance≠relance — testés). PREUVE e2e démo : crédit TVA 93,15 € exact · balance
+  Sèvres 1 850 €/15 j · ask→confirm→écriture 401/512 postée, dépense soldée.
+  ai 158 ✓ api-client 35 ✓ typecheck ✓.
 - BACKLOG B RESTANT :
-  · E4 (M) PayExpense — transition to_pay→paid AVEC décaissement (builder E1 prêt) ;
-    attend une surface UI dépenses (aucun écran liste dépenses aujourd'hui — décision
-    produit) ;
   · E9 (S) hygiène — FEC ISO 8859-15 (arrêté 29/07/2013 ; notre sortie UTF-8 est
     documentée au descriptif — translittération à traiter en session dédiée),
     CashflowSnapshotPort.vatDue optionnel, EcritureNum par journal.
   SUIVIS SERVEUR : apps/api recordExpense doit poster les écritures E1 · GET /payments ·
-  annualEncaissedCents dans le getDiagnostic serveur · port auxiliaire FEC dans
-  l'exportFec serveur — WIP session A, non touché.
+  POST /expenses/:id/pay · annualEncaissedCents dans le getDiagnostic serveur · port
+  auxiliaire FEC dans l'exportFec serveur · fournir getVatPosition/getAgedBalance/
+  listUnpaidExpenses/payExpense dans les BobActions serveur (BOB-1) — session A.
 
 ---
 
