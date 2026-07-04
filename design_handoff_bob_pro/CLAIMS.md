@@ -1653,6 +1653,33 @@ transcript workflow wf_fb597a24-2e3.
 - [2026-07-04 02:40] claude-code A AUDIT+CLAIM: audit 58 agents (4 cartographes, 6 experts,
   vérification adversariale par proposition — 46/47 retenues, 1 réfutée), rapport commité.
   C-EXP1 v1 lancé en priorité : risque juridique actif sur chaque facture émise.
+- [2026-07-04 20:22] claude-code A HANDOFF+MERGE C-EXP2 vA (régime humain): COMPLET.
+  late-penalties (référentiel semestriel versionné : S1 2026 BCE refi 2,15 % → B2B 12,15 %,
+  plancher 3× taux légal 2,62 % [arrêté 15/12/2025] vérifié ; B2G BCE+8 non dérogeable ; B2C
+  intérêt légal à compter de la MED seulement, jamais 40 € ; hors table → dernier semestre connu
+  + stale:true) + prescription (B2C 2 ans ancre prudente · B2B 5 ans · B2G déchéance quadriennale
+  31/12 N+4 · paiement partiel art. 2240 ré-ancre · paliers d'urgence). MED B2B/B2G CHIFFRÉES —
+  exemple réel : 1 850 € échue 45 j → « 27,71 € de pénalités + 40,00 € d'indemnité, soit
+  1 917,71 € » ; sans montants = textes historiques octet pour octet. derive-relance-plan expose
+  penalties/prescription par facture (socle E3, optionnel — pas de donnée, pas de chiffre).
+  Validations : core 488 ✓ · typecheck 16/16 ✓. Reste : UI (chrono prescription + montants à
+  l'écran relances) après la vague B. status=MERGED.
+- [2026-07-04 20:22] claude-code A HANDOFF+MERGE C-EXP5b (régime humain): COMPLET (l'agent
+  a calé en cours de route, travail vérifié et validé à la reprise). GET /fiscal-calendar
+  (JWT+tenant, company BDD, horizon 90 j, fiscalYearEnd/urssafPeriodicity null → assumed honnête),
+  api-client getFiscalCalendar HTTP+Local, outil agent echeances_fiscales (lecture seule, intent/
+  classifier routés, assumed signalés « à confirmer ») — MÊME use case partout, parité humain↔Bob.
+  Validations : api 85 ✓ · api-client 35 ✓ · ai 155 ✓ · typecheck 16/16 ✓. status=MERGED.
+- [2026-07-04 04:10] human DIRECTIVE (identité produit — s'applique à TOUS les claims C-EXP/E,
+  sessions A et B) : « Bob, c'est ton assistant comptable, ton expert-comptable de poche, il gère
+  toute ta compta mieux que ton comptable. Tu n'as presque plus besoin d'un expert-comptable —
+  sauf à la fin : un expert-comptable ASSOCIÉ signe le bilan, ça fait partie du cercle. »
+  DOCTRINE dérivée pour les claims d'expertise : (1) chaque moteur débouche sur « Bob le FAIT »
+  (déclaration URSSAF pré-calculée prête à valider, brouillon CA3 prêt à télédéclarer, écritures
+  passées automatiquement, dossier de clôture EC-ready) — jamais un simple rappel « pense à » ;
+  (2) le dossier de clôture + lettrage FEC (P24/E7) est LE livrable du cercle : Bob prépare,
+  l'EC associé signe ; (3) « Comptable partenaire » (écran Compte) = maillon final du cercle,
+  pas un teaser. Les acceptances des prochains claims se formulent en « ce que Bob fait seul ».
 - [2026-07-04 03:55] claude-code A HANDOFF+MERGE C-EXP5 (régime humain): COMPLET. deriveFiscalCalendar
   (application/fiscal/, use case pur ~500 l., 27 tests) — échéances datées dérivées de la fiche
   société : URSSAF micro mensuel/trimestriel (périodicité inconnue → 1re occurrence de CHAQUE
@@ -1844,6 +1871,7 @@ transcript workflow wf_fb597a24-2e3.
 | C26b | MERGED | claude-code A | gpt5pro | Subscription par tenant + GET /subscription, grep sub-mercier vide — 07-04 02:40. |
 | C-EXP1 | MERGED | claude-code A | gpt5pro | Conformité pièces/relances par type de client (B2C code civil · B2G CCP · plancher BCE+10 · escompte · mention taux réduits) — 07-04 03:05. Roadmap : docs/architecture/expertise-comptable-roadmap.md. |
 | C-EXP5 | MERGED | claude-code A | gpt5pro | deriveFiscalCalendar : URSSAF/IS/CFE/TVA/comptes datés par fiche société, 27 tests, amountHint null (montants = P03/P23) — 07-04 03:55. Reste : UI échéancier + montants. |
-| C-EXP2 vA | IN-BUILD | claude-code A | gpt5pro | Pénalités CHIFFRÉES (BCE+10/BCE+8, plancher 3× légal, MED chiffrées) + chrono prescription (2 ans/5 ans/déchéance quadriennale) — 07-04 03:40. |
+| C-EXP2 vA | MERGED | claude-code A | gpt5pro | Pénalités CHIFFRÉES (12,15 % S1 2026, MED « 27,71 € + 40 € ») + chrono prescription (2/5 ans, déchéance quadriennale, ré-ancre art. 2240) — 07-04 20:22. |
+| C-EXP5b | MERGED | claude-code A | gpt5pro | GET /fiscal-calendar + client + outil agent echeances_fiscales (parité humain↔Bob) — 07-04 20:22. |
 | C-EXP2 P16, C-EXP3 P02 | MERGED (=E5/E6, session B) | claude-code B | gpt5pro | Balance âgée écran Argent + seuils 293 B réels au diagnostic — f3f03a7. |
 | C41 | OPEN | — | — | Sweep final a11y/états/parité. Web C30 différé après mobile hi-fi. |
