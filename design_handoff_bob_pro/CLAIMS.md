@@ -1627,6 +1627,19 @@ transcript workflow wf_fb597a24-2e3.
 - [2026-07-04 02:40] claude-code A AUDIT+CLAIM: audit 58 agents (4 cartographes, 6 experts,
   vérification adversariale par proposition — 46/47 retenues, 1 réfutée), rapport commité.
   C-EXP1 v1 lancé en priorité : risque juridique actif sur chaque facture émise.
+- [2026-07-04 03:55] claude-code A HANDOFF+MERGE C-EXP5 (régime humain): COMPLET. deriveFiscalCalendar
+  (application/fiscal/, use case pur ~500 l., 27 tests) — échéances datées dérivées de la fiche
+  société : URSSAF micro mensuel/trimestriel (périodicité inconnue → 1re occurrence de CHAQUE
+  hypothèse dédoublonnée, assumed), acomptes IS 15/3-6-9-12 + solde 15 du 4e mois SAUF 31/12 →
+  15 mai (art. 1668, 2 + 360 annexe III — correction P23 appliquée) + liasse 2e jour ouvré après
+  le 1er mai, CFE 15/6 conditionnel + 15/12 avec 1447-C à la place l'année de création (1478, II),
+  CA3/RSI/CA12, AG + dépôt des comptes (explain « le dépôt vaut approbation » associé unique).
+  amountHint TOUJOURS null (P03/P23 brancheront les montants), confidence certain/assumed par
+  échéance, explains voix simple teintés première année. Sorties réelles vérifiées sur 2 profils
+  (EI micro T créé 2026 · SASU 31/12). E8 session B couvert côté DATES TVA — montants chez B.
+  Validations : core 441 ✓ (+27) · typecheck 16/16 ✓. RESTE (claims suivants) : UI échéancier
+  (écran Argent/diagnostic) + montants P03/P23 + GET côté serveur si besoin agent.
+  status=MERGED.
 - [2026-07-04 03:05] claude-code A HANDOFF+MERGE C-EXP1 (régime humain): COMPLET. P01 : relances/MED
   par customer.type (B2C code civil sans 40 € ni L441-10 · B2G L2192-12/13 CCP BCE+8 · B2B inchangé),
   repli prudent b2c si client inconnu, le type traverse jobs/relance.service jusqu'à l'email (testé
@@ -1804,7 +1817,7 @@ transcript workflow wf_fb597a24-2e3.
 | C26 | MERGED | claude-code A | gpt5pro | Compte/Abo honnête (accès anticipé 0 €, grille PLAN_CATALOG 19/39/79 preview) — 07-04 01:55. |
 | C26b | MERGED | claude-code A | gpt5pro | Subscription par tenant + GET /subscription, grep sub-mercier vide — 07-04 02:40. |
 | C-EXP1 | MERGED | claude-code A | gpt5pro | Conformité pièces/relances par type de client (B2C code civil · B2G CCP · plancher BCE+10 · escompte · mention taux réduits) — 07-04 03:05. Roadmap : docs/architecture/expertise-comptable-roadmap.md. |
-| C-EXP5 | IN-BUILD | claude-code A | gpt5pro | deriveFiscalCalendar (P09) — échéancier fiscal par forme juridique/date création/régime — 07-04 03:10. |
+| C-EXP5 | MERGED | claude-code A | gpt5pro | deriveFiscalCalendar : URSSAF/IS/CFE/TVA/comptes datés par fiche société, 27 tests, amountHint null (montants = P03/P23) — 07-04 03:55. Reste : UI échéancier + montants. |
 | C-EXP2 vA | IN-BUILD | claude-code A | gpt5pro | Pénalités CHIFFRÉES (BCE+10/BCE+8, plancher 3× légal, MED chiffrées) + chrono prescription (2 ans/5 ans/déchéance quadriennale) — 07-04 03:40. |
 | C-EXP2 P16, C-EXP3 P02 | MERGED (=E5/E6, session B) | claude-code B | gpt5pro | Balance âgée écran Argent + seuils 293 B réels au diagnostic — f3f03a7. |
 | C41 | OPEN | — | — | Sweep final a11y/états/parité. Web C30 différé après mobile hi-fi. |
