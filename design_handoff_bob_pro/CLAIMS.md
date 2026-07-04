@@ -1110,6 +1110,22 @@ transcript workflow wf_fb597a24-2e3.
   serveur · port auxiliaire FEC dans l'exportFec serveur · encodage Latin-9 du FEC servi ·
   fournir getVatPosition/getAgedBalance/listUnpaidExpenses/payExpense/getTrialBalance
   dans les BobActions serveur (BOB-1/BOB-2).
+- [01:10] claude-code (session B) CDR-1+BOB-3 MERGE (commit de01522) : COMPTE DE RÉSULTAT
+  NORMÉ — le document que l'expert associé lit après la balance. deriveIncomeStatement
+  (@bob/core, 6 tests) avec mapping compte PCG → rubrique CONÇU ET VÉRIFIÉ adversarialement
+  (workflow wf_386fd432-c06 : panel expert+prof → contrôleur fiscal, 3 corrections dont
+  ajout du 73 et séparation classe 69 participation/IS). Cascade française : résultat
+  d'exploitation / financier / courant / exceptionnel / net. DEUX VERROUS gravés au code :
+  (1) matching PLUS-LONG-PRÉFIXE (681 exploitation ≠ 686 financier ≠ 687 exceptionnel ;
+  6811 → 681 ; idem 78/79) ; (2) convention de signe alignée sur deriveTrialBalance
+  (produit = −balance, charge = +balance) absorbant RRR à contre-sens (709/609) et
+  destockage. INVARIANT prouvé par test croisé : résultat net = classe 7 − classe 6 (la
+  ventilation décompose sans jamais changer le total). Pièges testés : 63≠695, 65≠67,
+  691≠695, cessions 675/775 exceptionnelles. Écran Clôture : section « Compte de résultat »
+  (cascade, résultat net teinté). BOB-3 : « combien je gagne ? » répond la cascade
+  (getIncomeStatement, repli BOB-2). Preuve e2e : résultat d'exploitation +668,92 € =
+  résultat net (démo sans financier/exceptionnel). Core 546 ✓ ai 159 ✓ api-client 38 ✓.
+  SUIVI SERVEUR (session A) : getIncomeStatement dans les BobActions serveur.
 
 ---
 
@@ -1965,6 +1981,79 @@ transcript workflow wf_fb597a24-2e3.
 
 ## Transverse
 
+### AUDIT-2026-07-05 — Revue bloquante branche/app (GPT → Claude) <!-- kind: review -->
+- status: CHANGES-REQUESTED
+- owner: claude-code A/B (fixer) · reviewer: gpt5pro
+- origin: revue gpt5pro ultra-poussee de la branche `hardening/integrity-rls-conformite-deps`
+  vs `origin/main` (131 commits audites, 362 fichiers changes). Hors perimetre de cette revue :
+  WIP apparu ensuite `C-EXP6a` / `parse-facturx.ts` non valide ici.
+- target principal:
+  `apps/api/src/api.controllers.ts`, `apps/api/src/jobs/relance.service.ts`,
+  `packages/core/src/domain/accounting/invoice-accounting.ts`,
+  `packages/core/src/domain/billing/invoice/invoice.ts`,
+  `packages/core/src/application/billing/generate-invoice-from-quote.ts`,
+  `packages/core/src/application/accounting/export-fec.ts`,
+  `packages/core/src/application/argent/derive-vat-position.ts`,
+  `packages/core/src/domain/accounting/expense-accounting.ts`,
+  `packages/core/src/domain/payment/payment.ts`, lint config / `packages/ui/src/theme.tsx`,
+  `packages/ai/src/prompt/prompt-pack.ts`.
+
+#### Findings a corriger avant nouveau merge
+1. **P1 securite multi-tenant — endpoint jobs trop large.**
+   `POST /jobs/run-relances` appelle `RelanceService.runRelances()` sans garde scheduler/admin
+   (`api.controllers.ts:453`), puis liste tous les tenants si `JOB_COMPANY_IDS` est vide
+   (`tenant-directory.ts:13`, `relance.service.ts:173`). Un utilisateur authentifie peut donc
+   declencher les relances emails/notifications de toutes les societes. Corriger par garde
+   service-role/secret scheduler ou retirer l'endpoint public ; conserver seulement la relance
+   ciblee tenant-scoped `POST /invoices/:id/relance`.
+2. **P1 compta — facture finale apres acompte/situation desequilibree.**
+   La finale reduit seulement `totals().netToPay` (`invoice.ts:152`) alors que l'ecriture de vente
+   credite encore le CA + TVA complets (`invoice-accounting.ts:101`). Exemple 1 000 HT + 200 TVA,
+   acompte 360 TTC : finale debit 411 = 840, credits = 1 200 => rejet par `AccountingEntry.create`
+   (`accounting-entry.ts:108`). Il faut solder l'avance client (`4191`) et traiter la TVA deja
+   facturee/encaissee selon la doctrine retenue, pas seulement baisser le net a payer.
+3. **P1 conformite FEC — API annonce Latin-9 mais envoie UTF-8.**
+   `ExportFec` declare `text/plain; charset=iso-8859-15` (`export-fec.ts:332`) mais le controller
+   fait `Buffer.from(fec.content, 'utf-8')` (`api.controllers.ts:278`). Utiliser
+   `encodeLatin9(...).bytes` pour FEC et description, et remonter les caracteres remplaces comme
+   warning exploitable.
+4. **P1 fiscal/business — TVA deductible ignore le regime de l'entreprise.**
+   `deriveVatPosition` somme toutes les `expense.vatCents` (`derive-vat-position.ts:44/60`) et le
+   cycle achat poste `44566` des que la piece porte de la TVA (`expense-accounting.ts:69`), meme
+   pour une franchise en base. Bob peut annoncer une TVA deductible / un credit de TVA inexistant.
+   Passer `company.vatRegime` aux moteurs TVA/depenses/ledger ; en franchise, pas de `44566`, pas
+   de deductible, la TVA fournisseur non recuperable reste en charge TTC.
+5. **P2 validation runtime — payment method non validee.**
+   `POST /invoices/:id/pay` transmet `body.method` directement (`api.controllers.ts:234`) et
+   `Payment.record` ne valide que le montant (`payment.ts:21`). Une methode inconnue peut partir en
+   banque par defaut (`payment-accounting.ts:50`) ou finir en erreur DB. Centraliser la validation
+   `card|transfer|cash` dans le domaine/use case et garder le preview aligne.
+6. **P2 CI/hygiene — lint et worktree.**
+   `pnpm lint` echoue : `react-hooks/exhaustive-deps` desactive sans plugin (`theme.tsx:122`,
+   `.eslintrc.cjs`) et `no-control-regex` sur `prompt-pack.ts:47`. Ne pas committer les pollutions
+   `.DS_Store`, `.playwright-mcp/`, ni la mutation Cloudflare du handoff HTML
+   (`/cdn-cgi/email-protection`, `email-decode.min.js`).
+
+#### Acceptance obligatoire
+- Tests API : un utilisateur tenant ne peut pas appeler `POST /jobs/run-relances` en global ; le
+  chemin scheduler/admin attendu passe ; `POST /invoices/:id/relance` reste tenant-scoped.
+- Tests compta : scenario devis signe -> facture acompte emise -> facture finale emise -> ecriture
+  finale equilibree, avec lignes 411/706/44571/4191 attendues ; couvrir aussi acompte+situation si
+  le moteur les additionne.
+- Tests FEC API : export contenant `e`, `€`, `oe/œ` ou accents produit des octets Latin-9 conformes
+  au MIME declare, pas du UTF-8 ; description idem.
+- Tests TVA regime : entreprise `franchise` + depense fournisseur avec `vatCents` ne produit ni
+  `44566`, ni deductible, ni credit TVA affiche par Bob ; entreprise `reel_*` conserve le
+  comportement actuel.
+- Tests paiement : methode inconnue refusee proprement en validation avant mutation/persistence ;
+  les methodes `card`, `transfer`, `cash` restent OK et gardent leurs comptes.
+- Validation finale : `pnpm typecheck`, `pnpm test`, `pnpm build`, `pnpm lint` verts ; status git
+  nettoye des fichiers generes non intentionnels.
+
+#### Log
+- [2026-07-05 01:50] gpt5pro REVIEW: build/typecheck/test etaient verts sur l'etat audite ;
+  `pnpm lint` KO. Verdict : CHANGES-REQUESTED, pas de prod/merge serein avant les 4 P1 ci-dessus.
+
 ### C40 — Contrats d'API réels + parité agent complète <!-- kind: package -->
 - status: MERGED
 - owner: claude-code (builder) · reviewer: gpt5pro (a posteriori)
@@ -2059,4 +2148,5 @@ transcript workflow wf_fb597a24-2e3.
 | C-EXP-UI2 | OPEN | claude-code A | gpt5pro | Provision URSSAF visible (écran) + amountHint échéancier — attend fin WIP B packages/ai. |
 | PONT-SERVEUR | MERGED | claude-code A | gpt5pro | 7 points livrés (pay expense atomique, cycle achats posté, payments datés, /company/me → identité réelle branchée, 293 B prod, avoir A- [fix préfixe F trouvé], Bob serveur e2e) — 07-05 00:15. |
 | C-EXP2 P16, C-EXP3 P02 | MERGED (=E5/E6, session B) | claude-code B | gpt5pro | Balance âgée écran Argent + seuils 293 B réels au diagnostic — f3f03a7. |
+| AUDIT-2026-07-05 | CHANGES-REQUESTED | claude-code A/B | gpt5pro | Revue branche/app : relances jobs multi-tenant, finale apres acompte desequilibree, FEC API UTF-8 mal declare, TVA franchise deductible, validation paiement, lint/hygiene. |
 | C41 | OPEN | — | — | Sweep final a11y/états/parité. Web C30 différé après mobile hi-fi. |
