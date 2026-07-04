@@ -1819,6 +1819,18 @@ transcript workflow wf_fb597a24-2e3.
   ligne de flottaison sont donc AUTOMATISABLES désormais. Validations : i18n 53 ✓ · typecheck
   16/16 ✓. SUIVIS évalués sur directive fondateur → claim C-EXP-UI2 posé (OPEN, attend fin WIP B
   sur ai/) + v2 moteurs (décalage 90 j) + plancher 0 documenté conforme. status=MERGED.
+- [2026-07-05 00:15] claude-code A HANDOFF+MERGE PONT-SERVEUR v1 (régime humain): COMPLET — les 7
+  points, chacun testé (api 103 ✓ +18 · api-client 38 ✓ +3 · typecheck 16/16). Saillants : ①
+  PayExpense en transaction tenant ATOMIQUE (transition + 401/512, rollback commun) · ②
+  recordExpense poste 606/44566/401 dans la même transaction · ④ GET /company/me + useIdentity
+  BRANCHÉ dans la foulée (commit dédié) — l'app connectée affiche enfin la vraie raison sociale
+  (TODO C24 fermé ; LocalBobClient.getCompanyMe → TODO session B tracé) · ⑤ vigie 293 B réelle en
+  prod (annualEncaissedCents dérivé des paiements année civile, test discriminant 40 000 € →
+  seuil dépassé) · ⑥ FIX TROUVÉ : compteurs serveur formataient les avoirs en préfixe F → alignés
+  A- (in-memory + Prisma, table générique, zéro migration) · ⑦ Bob serveur e2e : « règle la
+  dépense Leroy Merlin » → proposed → confirm → écriture 401/512 (parité humain↔Bob EN PROD).
+  Hors périmètre assumé : port FEC auxiliaire (E9 B). REDEPLOY à la fin de la vague (avec ACRE).
+  status=MERGED.
 - [2026-07-04 04:10] human DIRECTIVE (identité produit — s'applique à TOUS les claims C-EXP/E,
   sessions A et B) : « Bob, c'est ton assistant comptable, ton expert-comptable de poche, il gère
   toute ta compta mieux que ton comptable. Tu n'as presque plus besoin d'un expert-comptable —
@@ -2025,6 +2037,6 @@ transcript workflow wf_fb597a24-2e3.
 | C-EXP5c | MERGED | claude-code A | gpt5pro | Provision URSSAF micro (D613-4 CSS 2026 vérifiés, déclaration pré-calculée « Bob FAIT », dispo prudent teinté) — 07-04 21:05. |
 | C-EXP-UI1 | MERGED | claude-code A | gpt5pro | Échéancier écran Argent + pénalités/prescription sur les relances, captures réelles — 07-04 21:30. |
 | C-EXP-UI2 | OPEN | claude-code A | gpt5pro | Provision URSSAF visible (écran) + amountHint échéancier — attend fin WIP B packages/ai. |
-| PONT-SERVEUR | IN-BUILD | claude-code A | gpt5pro | 7 endpoints/actions : l'API prod rattrape le client démo — 07-04 21:15. |
+| PONT-SERVEUR | MERGED | claude-code A | gpt5pro | 7 points livrés (pay expense atomique, cycle achats posté, payments datés, /company/me → identité réelle branchée, 293 B prod, avoir A- [fix préfixe F trouvé], Bob serveur e2e) — 07-05 00:15. |
 | C-EXP2 P16, C-EXP3 P02 | MERGED (=E5/E6, session B) | claude-code B | gpt5pro | Balance âgée écran Argent + seuils 293 B réels au diagnostic — f3f03a7. |
 | C41 | OPEN | — | — | Sweep final a11y/états/parité. Web C30 différé après mobile hi-fi. |
