@@ -168,6 +168,7 @@ function intentForTool(tool: string): BobIntent {
   if (tool === 'position_tva') return 'tva';
   if (tool === 'balance_agee') return 'balance';
   if (tool === 'payer_depense') return 'payer_depense';
+  if (tool === 'resultat_provisoire') return 'resultat';
   return 'unknown';
 }
 
@@ -404,6 +405,38 @@ export class BobAgent {
         card: {
           title: 'Ta position de TVA',
           body: `Collectée sur tes encaissements : ${formatEUR(p.collectedCents)}\nDéductible sur tes achats : ${formatEUR(p.deductibleCents)}\n${verdict}`,
+        },
+      });
+    }
+
+    if (intent === 'resultat') {
+      // BOB-2 : résultat provisoire — produits − charges au grand-livre réel (CLOTURE-1).
+      const getBalanceSheet = this.deps.actions.getTrialBalance?.bind(this.deps.actions);
+      if (!getBalanceSheet) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier la capacité de l’hôte'],
+          card: { title: 'Résultat provisoire', body: 'Je n’ai pas accès à la balance générale sur cet appareil pour le moment.' },
+        });
+      }
+      const r = await getBalanceSheet();
+      if (!r.ok) return err(r.error);
+      const tb = r.value;
+      const verdict =
+        tb.resultCents >= 0
+          ? `Bénéfice provisoire : +${formatEUR(tb.resultCents)} 🎉`
+          : `Perte provisoire : −${formatEUR(Math.abs(tb.resultCents))} — on regarde les charges ensemble ?`;
+      const equilibre = tb.balanced ? '' : '\n⚠ Balance déséquilibrée — je vérifie le journal.';
+      return ok({
+        kind: 'answer',
+        intent,
+        model,
+        plan: ['Dériver la balance générale', 'Produits (classe 7) − charges (classe 6)'],
+        card: {
+          title: 'Ton résultat provisoire',
+          body: `Produits : ${formatEUR(tb.revenueCents)}\nCharges : ${formatEUR(tb.chargesCents)}\n${verdict}${equilibre}`,
         },
       });
     }

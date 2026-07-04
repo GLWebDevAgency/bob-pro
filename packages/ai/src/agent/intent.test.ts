@@ -75,3 +75,12 @@ describe('detectIntent — BOB-1 (expert-comptable de poche)', () => {
     expect(detectIntent('encaisse la facture F-2026-0001')).toBe('encaisser');
   });
 });
+
+describe('detectIntent — BOB-2 (résultat provisoire)', () => {
+  it('« combien je gagne / bénéfice / résultat » ne part pas en payout', () => {
+    for (const m of ['combien je gagne ?', 'je suis en bénéfice ?', 'mon résultat du mois', 'balance générale']) {
+      expect(detectIntent(m)).toBe('resultat');
+    }
+    expect(detectIntent('Combien je peux me verser ?')).toBe('payout');
+  });
+});

@@ -6,6 +6,7 @@ import {
   type FiscalDeadline,
   type VatPosition,
   type AgedBalance,
+  type TrialBalance,
 } from '@bob/core';
 
 /** Dépense fournisseur encore à payer (BOB-1 — ciblage de payer_depense par nom). */
@@ -155,6 +156,9 @@ export interface BobActions {
   getAgedBalance?(): Promise<Result<AgedBalance, AppError>>;
   /** Dépenses fournisseurs à payer — la cible de payer_depense (résolution par nom). */
   listUnpaidExpenses?(): Promise<Result<UnpaidExpense[], AppError>>;
+  /** Balance générale + résultat provisoire (deriveTrialBalance @bob/core, CLOTURE-1) —
+   * « combien je gagne ? » répond produits − charges du grand-livre réel. */
+  getTrialBalance?(): Promise<Result<TrialBalance, AppError>>;
   // —— Mutation ——
   registerPayment(input: {
     invoiceId: string;

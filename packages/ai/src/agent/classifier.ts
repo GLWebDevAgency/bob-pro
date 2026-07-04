@@ -116,6 +116,12 @@ export const LLM_TOOL_SPECS: LlmToolSpec[] = [
       'Régler une dépense fournisseur : passe la dépense en payée et écrit le décaissement au journal de banque (ex. « règle la dépense Leroy Merlin »).',
     parameters: { type: 'object', properties: {}, additionalProperties: false },
   },
+  {
+    name: 'resultat_provisoire',
+    description:
+      'Résultat provisoire de l’activité : produits moins charges au grand-livre réel (balance générale). Répond à « combien je gagne ? », « je suis en bénéfice ? ».',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+  },
 ];
 
 const TOOL_TO_INTENT: Record<string, BobIntent> = {
@@ -135,6 +141,7 @@ const TOOL_TO_INTENT: Record<string, BobIntent> = {
   position_tva: 'tva',
   balance_agee: 'balance',
   payer_depense: 'payer_depense',
+  resultat_provisoire: 'resultat',
 };
 
 /** Une étape résolue d'un plan (une intention + sa référence éventuelle). */

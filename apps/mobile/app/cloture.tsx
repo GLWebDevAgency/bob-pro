@@ -1,12 +1,13 @@
+import { useMemo } from 'react';
 import { ScrollView, View, Text, Pressable, Alert } from 'react-native';
 import { useRouter, type Href } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import * as Sharing from 'expo-sharing';
-import { writeAsStringAsync, cacheDirectory, EncodingType } from 'expo-file-system/legacy';
+import { deriveTrialBalance, formatEUR } from '@bob/core';
 import { useTheme } from '../src/theme';
-import { useInvoices, useQuotes, useSubscription, useExportFec, appErrorMessage } from '../src/data/hooks';
+import { useAccountingEntries, useInvoices, useQuotes, useSubscription, useExportFec, appErrorMessage } from '../src/data/hooks';
 import { useDocuments } from '../src/data/documents';
+import { shareFec } from '../src/lib/share-fec';
 import { Card, Badge, Button, SectionHeader, font } from '../src/components/ui';
 
 /** Un point de clôture : libellé, compte, où agir. count=0 => réglé. */
@@ -29,8 +30,13 @@ export default function Cloture() {
   const invoices = useInvoices();
   const quotes = useQuotes();
   const documents = useDocuments();
+  const entries = useAccountingEntries();
   const exportFec = useExportFec();
   const entitled = (sub?.features ?? []).includes('accounting_operations');
+
+  // CLOTURE-1 : balance générale + résultat provisoire (deriveTrialBalance @bob/core —
+  // LE document que l'expert associé ouvre en premier ; même dérivation pour Bob).
+  const balance = useMemo(() => deriveTrialBalance(entries.data ?? []), [entries.data]);
 
   const mois = moisCourant();
   const inv = invoices.data ?? [];
@@ -71,17 +77,11 @@ export default function Cloture() {
   const onExportFec = async (): Promise<void> => {
     try {
       const res = await exportFec.mutateAsync({ from: fecFrom, to: fecTo });
-      if (!cacheDirectory) {
-        Alert.alert('Export FEC', 'Stockage indisponible sur cet appareil.');
-        return;
-      }
-      const uri = `${cacheDirectory}${res.filename}`;
-      await writeAsStringAsync(uri, res.content, { encoding: EncodingType.UTF8 });
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(uri, { mimeType: res.mimeType || 'text/plain', dialogTitle: 'Export FEC' });
-      } else {
+      // E9/CLOTURE-1 : shareFec est LA source unique — octets ISO 8859-15 (arrêté du
+      // 29/07/2013), fini l'écriture UTF-8 legacy qui contredisait le mimeType.
+      const shared = await shareFec(res);
+      if (shared === 'unavailable')
         Alert.alert('Export FEC', `${res.filename} généré (${res.entryCount} écriture${res.entryCount > 1 ? 's' : ''}).`);
-      }
       if (res.warnings.length) Alert.alert('Avertissements FEC', res.warnings.join('\n'));
     } catch (e) {
       Alert.alert('Oups', appErrorMessage(e));
@@ -181,6 +181,79 @@ export default function Cloture() {
                 ))}
               </Card>
             </View>
+
+            {/* CLOTURE-1 : le dossier chiffré — résultat provisoire + balance générale. */}
+            {balance.rows.length > 0 ? (
+              <View>
+                <SectionHeader title="Balance générale" />
+                <Card>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <View style={{ flex: 1, paddingRight: 12 }}>
+                      <Text style={[font('meta'), { color: colors.slate400 }]}>Résultat provisoire</Text>
+                      <Text
+                        style={[
+                          font('screenH1'),
+                          {
+                            color: balance.resultCents >= 0 ? semantic.success : semantic.warning,
+                            fontVariant: ['tabular-nums'],
+                            marginTop: 2,
+                          },
+                        ]}
+                      >
+                        {balance.resultCents >= 0 ? '+' : '−'}{formatEUR(Math.abs(balance.resultCents))}
+                      </Text>
+                      <Text style={[font('meta'), { color: colors.slate400, marginTop: 2 }]}>
+                        Produits {formatEUR(balance.revenueCents)} − charges {formatEUR(balance.chargesCents)}
+                      </Text>
+                    </View>
+                    <Badge
+                      label={balance.balanced ? 'Équilibrée' : 'Déséquilibrée'}
+                      tone={balance.balanced ? 'success' : 'danger'}
+                    />
+                  </View>
+                  <View style={{ height: 1, backgroundColor: colors.lineSoft, marginVertical: 10 }} />
+                  {balance.rows.map((row) => (
+                    <View
+                      key={row.account}
+                      accessible
+                      accessibilityLabel={`Compte ${row.account}, solde ${formatEUR(row.balanceCents)}`}
+                      style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 6 }}
+                    >
+                      <Text style={[font('sub'), { color: colors.ink800, width: 62, fontVariant: ['tabular-nums'] }]}>
+                        {row.account}
+                      </Text>
+                      <Text style={[font('meta'), { color: colors.slate400, flex: 1, textAlign: 'right', fontVariant: ['tabular-nums'] }]}>
+                        D {formatEUR(row.debitCents)}
+                      </Text>
+                      <Text style={[font('meta'), { color: colors.slate400, flex: 1, textAlign: 'right', fontVariant: ['tabular-nums'] }]}>
+                        C {formatEUR(row.creditCents)}
+                      </Text>
+                      <Text
+                        style={[
+                          font('sub'),
+                          {
+                            color: row.balanceCents >= 0 ? colors.ink900 : colors.slate500,
+                            width: 92,
+                            textAlign: 'right',
+                            fontWeight: '700',
+                            fontVariant: ['tabular-nums'],
+                          },
+                        ]}
+                      >
+                        {formatEUR(row.balanceCents)}
+                      </Text>
+                    </View>
+                  ))}
+                  <View style={{ height: 1, backgroundColor: colors.lineSoft, marginVertical: 8 }} />
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                    <Text style={[font('meta'), { color: colors.slate400 }]}>Totaux</Text>
+                    <Text style={[font('meta'), { color: colors.slate500, fontVariant: ['tabular-nums'] }]}>
+                      D {formatEUR(balance.totalDebitCents)} · C {formatEUR(balance.totalCreditCents)}
+                    </Text>
+                  </View>
+                </Card>
+              </View>
+            ) : null}
 
             <View>
               <SectionHeader title="Export cabinet" />

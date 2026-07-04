@@ -45,6 +45,7 @@ import {
   deriveFiscalCalendar,
   deriveVatPosition,
   deriveAgedBalance,
+  deriveTrialBalance,
   resolveTradeConfig,
   buildDocumentStorageKey,
   buildInvoiceAccountingPreviewEntry,
@@ -1010,6 +1011,11 @@ export class LocalBobClient implements BobClient {
         if (!inv.ok) return inv;
         if (!cust.ok) return cust;
         return ok(deriveAgedBalance({ invoices: inv.value, customers: cust.value, today: this.clock.today() }));
+      },
+      getTrialBalance: async () => {
+        await this.ready;
+        const list = await this.accountingEntries.listByCompany(this.companyId);
+        return ok(deriveTrialBalance(list.map((e) => ({ lines: e.lines }))));
       },
       listUnpaidExpenses: async () => {
         await this.ready;

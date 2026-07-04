@@ -15,6 +15,7 @@ export type BobIntent =
   | 'tva' // position de TVA réelle (collectée/déductible/à provisionner) — lecture, BOB-1
   | 'balance' // balance âgée : qui me doit quoi, depuis quand — lecture, BOB-1
   | 'payer_depense' // régler une dépense fournisseur (écriture 401/512) — mutation, BOB-1/E4
+  | 'resultat' // résultat provisoire (produits − charges du grand-livre) — lecture, BOB-2
   | 'unknown';
 
 /** Détection d'intention déterministe (fallback hors-ligne / LLM indisponible / intention triviale). */
@@ -37,6 +38,9 @@ export function detectIntent(message: string): BobIntent {
   // Balance âgée (BOB-1) : AVANT relance (« en retard » y collisionne).
   if (/(qui me doit|balance [âa]g[ée]e|encours clients?|retards? clients?|me doivent|doit de l'argent)/.test(m))
     return 'balance';
+  // Résultat provisoire (BOB-2) : AVANT payout (« combien je gagne » ≠ « me verser »).
+  if (/(r[ée]sultat|b[ée]n[ée]fice|combien je gagne|je gagne combien|en perte|balance g[ée]n[ée]rale)/.test(m))
+    return 'resultat';
   if (/(scan|num[ée]ris|ticket|justificatif|note de frais|re[çc]u|photo.*(facture|ticket|d[ée]pense))/.test(m)) return 'scan';
   if (/(envoi|envoie|envoyer|transmets|exp[ée]die).*(devis)|devis.*(client|signature|envoi|envoyer|transmettre)/.test(m))
     return 'envoyer_devis';
