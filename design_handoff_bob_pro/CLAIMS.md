@@ -1049,15 +1049,27 @@ transcript workflow wf_fb597a24-2e3.
   PAS balance âgée / seuils / TVA encaissements (E5/E6/E2, session B) ; en retour E8
   (calendrier fiscal TVA) SORT du backlog B — couvert par C-EXP5 (session A, module
   application/fiscal/ vierge, zéro chevauchement).
+- [04:20] claude-code (session B) E7 MERGE (commit e61d51f) : FEC PROBANT — port dédié
+  FecAuxiliaryDataPort (ISP, aucun port existant touché ; colonnes vides sans données =
+  compat serveur). L'export dérive du VIVANT : lettrage EcritureLet/DateLet sur les
+  lignes 411 des factures SOLDÉES et de leurs encaissements (codes AA/AB reproductibles,
+  DateLet = dernier règlement, lettrage partiel INTERDIT — une facture ouverte n'est
+  jamais lettrée) · comptes auxiliaires CompAuxNum/Lib (411 → client de la pièce, 401 →
+  fournisseur de la dépense, identifiants déterministes accents normalisés — piège
+  \\u0300-\\u036f respecté) · libellé « Avoir A-… » sur les écritures d'avoir (fini
+  « Facture ») · descriptif FEC mis à jour. PREUVE DÉMO : 411 lettrés AA + DateLet
+  20260704, auxiliaires 411CUST-SEVRES/401POINT-P etc. +2 tests. Core 443 ✓
+  api-client 31 ✓ typecheck ✓.
 - BACKLOG B RESTANT :
   · E4 (M) PayExpense — transition to_pay→paid AVEC décaissement (builder E1 prêt) ;
-    attend une surface UI dépenses (aucun écran liste dépenses aujourd'hui) ;
-  · E7 (M) FEC probant — lettrage EcritureLet/DateLet (dérivable de Payment.invoiceId),
-    auxiliaires 411xxx/401xxx, ValidDate, libellé « Avoir » sur credit_note ;
-  · E9 (S) hygiène — FEC ISO 8859-15 (arrêté 29/07/2013), CashflowSnapshotPort.vatDue
-    optionnel, EcritureNum par journal.
+    attend une surface UI dépenses (aucun écran liste dépenses aujourd'hui — décision
+    produit) ;
+  · E9 (S) hygiène — FEC ISO 8859-15 (arrêté 29/07/2013 ; notre sortie UTF-8 est
+    documentée au descriptif — translittération à traiter en session dédiée),
+    CashflowSnapshotPort.vatDue optionnel, EcritureNum par journal.
   SUIVIS SERVEUR : apps/api recordExpense doit poster les écritures E1 · GET /payments ·
-  annualEncaissedCents dans le getDiagnostic serveur — WIP session A, non touché.
+  annualEncaissedCents dans le getDiagnostic serveur · port auxiliaire FEC dans
+  l'exportFec serveur — WIP session A, non touché.
 
 ---
 
