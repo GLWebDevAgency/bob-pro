@@ -87,6 +87,7 @@ export * from './application/onboarding/derive-trade-profile';
 export * from './application/catalogue/derive-catalogue';
 export * from './application/compte/derive-account-view';
 export * from './application/argent/build-ledger-view';
+export * from './application/argent/derive-vat-position';
 export * from './application/billing/build-piece-view';
 export * from './application/clients/derive-customer-standings';
 export * from './application/expenses/record-expense';

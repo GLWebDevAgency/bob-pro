@@ -27,6 +27,17 @@ function paymentEntry(amountCents: number, account: '512' | '530' = '512'): Ledg
   };
 }
 
+/** Écriture d'achat (cycle E1) : 606 + 44566 débit ; 401 crédit — la déductible vit au livre. */
+function purchaseEntry(htCents: number, vatCents: number): LedgerEntryData {
+  return {
+    lines: [
+      { account: '606', debitCents: htCents, creditCents: 0 },
+      { account: '44566', debitCents: vatCents, creditCents: 0 },
+      { account: '401', debitCents: 0, creditCents: htCents + vatCents },
+    ],
+  };
+}
+
 function invoice(overrides: Partial<LedgerInvoiceData> = {}): LedgerInvoiceData {
   return { kind: 'final', status: 'issued', totals: { netToPay: 120000 }, paid: 0, ...overrides };
 }
@@ -40,13 +51,14 @@ describe('buildLedgerView', () => {
     const view = buildLedgerView({
       invoices: [invoice({ totals: { netToPay: 570000 } })],
       expenses: [expense({ totalTtcCents: 290000, vatCents: 10000 })],
-      accountingEntries: [saleEntry(500000, 134000), paymentEntry(682000)],
+      // La déductible se lit AU GRAND-LIVRE (44566 posté par le cycle achats E1).
+      accountingEntries: [saleEntry(500000, 134000), paymentEntry(682000), purchaseEntry(50000, 10000)],
     });
 
     expect(view.bankCents).toBe(682000); // 512 débit − crédit
     expect(view.receivablesCents).toBe(570000); // + entre
     expect(view.chargesCents).toBe(-290000); // − sort
-    expect(view.vatCents).toBe(-124000); // − (134 000 collectée − 10 000 déductible)
+    expect(view.vatCents).toBe(-124000); // − (134 000 collectée − 10 000 déductible au 44566)
     expect(view.cotisationsCents).toBeNull(); // aucune source côté client
 
     // Cohérence du contrat C11 : total = lead + Σ rangées présentes.
@@ -82,8 +94,8 @@ describe('buildLedgerView', () => {
 
   it('TVA nette plancher 0 (déductible > collectée) et réserve = valeurs positives TVA + charges', () => {
     const view = buildLedgerView({
-      expenses: [expense({ totalTtcCents: 110000, vatCents: 200000 })],
-      accountingEntries: [saleEntry(100000, 20000), paymentEntry(15000, '530')],
+      expenses: [expense({ totalTtcCents: 110000 })],
+      accountingEntries: [saleEntry(100000, 20000), paymentEntry(15000, '530'), purchaseEntry(800000, 200000)],
     });
     expect(view.vatCents).toBe(0); // jamais une TVA « négative » (crédit) dans le grand-livre, ni un -0
     expect(view.bankCents).toBe(15000); // la caisse (530) compte comme trésorerie

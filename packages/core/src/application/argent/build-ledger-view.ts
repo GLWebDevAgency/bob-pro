@@ -138,7 +138,9 @@ export function buildLedgerView(input: BuildLedgerViewInput): LedgerView {
           ),
         );
 
-  // TVA nette : exige les DEUX sources (collectée ET déductible) — sinon on n'invente rien.
+  // TVA nette : les DEUX jambes se lisent au GRAND-LIVRE depuis le cycle achats E1
+  // (collectée 4457x au crédit, déductible 44566/44562 au débit) — une seule source de
+  // vérité, plus jamais la déductible relue sur les objets Expense (audit chantier 2).
   let vatCents: number | null = null;
   if (input.accountingEntries !== undefined && input.expenses !== undefined) {
     const collected = sumEntryLines(
@@ -146,7 +148,11 @@ export function buildLedgerView(input: BuildLedgerViewInput): LedgerView {
       (account) => account.startsWith(VAT_COLLECTED_PREFIX),
       'credit',
     );
-    const deductible = input.expenses.reduce((sum, expense) => sum + (expense.vatCents ?? 0), 0);
+    const deductible = sumEntryLines(
+      input.accountingEntries,
+      (account) => account.startsWith('44566') || account.startsWith('44562'),
+      'debit',
+    );
     vatCents = negate(Math.max(0, collected - deductible)); // plancher 0
   }
 

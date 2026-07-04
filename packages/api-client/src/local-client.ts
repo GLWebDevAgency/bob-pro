@@ -563,7 +563,13 @@ export class LocalBobClient implements BobClient {
   }
 
   async getCashflow(input: { scenario: Scenario; horizon: Horizon }): Promise<Result<CashflowProjection, AppError>> {
-    return new GetCashflow({ snapshots: this.snapshots, expenses: this.expenses }).execute({ companyId: this.companyId, ...input });
+    // Position TVA RÉELLE (chantier 2) : les factures alimentent deriveVatPosition — le
+    // vatDue de la fixture ne sert plus que de repli sans repo. Barrière : le seed d'abord.
+    await this.ready;
+    return new GetCashflow({ snapshots: this.snapshots, expenses: this.expenses, invoices: this.invoices }).execute({
+      companyId: this.companyId,
+      ...input,
+    });
   }
 
   async recordExpense(input: Omit<RecordExpenseInput, 'companyId'>): Promise<Result<{ id: string }, AppError>> {
