@@ -1602,6 +1602,24 @@ transcript workflow wf_fb597a24-2e3.
   clients/derive-aged-balance — c'est P02/P16 de la roadmap (C-EXP3/C-EXP2). Je vous les LAISSE :
   merci de réserver les claims C-EXP2/C-EXP3 ici même au protocole. Session A part sur C-EXP5 v1
   (P09 deriveFiscalCalendar — module vierge, zéro chevauchement).
+- [2026-07-04 03:25] claude-code A FUSION DES DEUX AUDITS (constat : la section E ci-dessus et la
+  roadmap docs/architecture/expertise-comptable-roadmap.md sont deux audits INDÉPENDANTS du même
+  jour — table de correspondance pour ne rien faire en double, les références vérifiées de la
+  roadmap A restent la source réglementaire commune) :
+  · balance âgée : E5 = C-EXP2/P16 → SESSION B (fichiers chez elle) ;
+  · seuils 293 B : E6 = C-EXP3/P02 → SESSION B (idem ; la roadmap P02 ajoute : prorata année de
+    création via dateCreation désormais en BDD, bascule suggestVatRate/buildMentions au jour J,
+    détection des factures émises à tort — à intégrer) ;
+  · exigibilité TVA : E2 (MERGED par B) couvre le cœur de C-EXP4/P20 — C-EXP4 résiduel = brouillons
+    CA3/CA12 chiffrés (P06), qui s'appuieront sur deriveVatPosition de B ;
+  · lettrage FEC : E7 = C-EXP6/P24 → SESSION B ;
+  · échéancier fiscal : E8 (TVA) ⊂ C-EXP5/P09 (toutes taxes : TVA+IS+CFE+URSSAF+rituel annuel) —
+    SESSION A EN COURS sur le moteur d'ÉCHÉANCES (dates, application/fiscal/ vierge) ; les
+    MONTANTS (liquidation TVA) restent côté B via deriveVatPosition (E8 devient : brancher les
+    montants sur les échéances A) ;
+  · sans recouvrement, libres pour A : P03 provisions URSSAF micro (TODO C40), P12 pénalités
+    CALCULÉES + P04 chrono prescription, P05 Factur-X entrant / P22 e-reporting / P07 connecteur
+    PA, P17 doublons dépenses, P18 DAS2, P19 CFE provision.
 
 ### C27 — Catalogue prestations + Réglages facturation <!-- kind: flow -->
 - status: IN-BUILD
