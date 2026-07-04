@@ -165,6 +165,9 @@ function intentForTool(tool: string): BobIntent {
   if (tool === 'factures_impayees') return 'factures';
   if (tool === 'tresorerie_versement') return 'payout';
   if (tool === 'echeances_fiscales') return 'echeances';
+  if (tool === 'position_tva') return 'tva';
+  if (tool === 'balance_agee') return 'balance';
+  if (tool === 'payer_depense') return 'payer_depense';
   return 'unknown';
 }
 
@@ -370,6 +373,141 @@ export class BobAgent {
         plan: ['Lire la fiche société', 'Dériver les échéances fiscales à venir'],
         card: { title: 'Tes échéances fiscales (90 jours)', body },
       });
+    }
+
+    if (intent === 'tva') {
+      // BOB-1 : position de TVA RÉELLE — LE même chiffre que le cashflow (deriveVatPosition).
+      const getPosition = this.deps.actions.getVatPosition?.bind(this.deps.actions);
+      if (!getPosition) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier la capacité de l’hôte'],
+          card: { title: 'Position de TVA', body: 'Je n’ai pas accès à la position de TVA sur cet appareil pour le moment.' },
+        });
+      }
+      const r = await getPosition();
+      if (!r.ok) return err(r.error);
+      const p = r.value;
+      const verdict =
+        p.netDueCents > 0
+          ? `→ À provisionner : ${formatEUR(p.netDueCents)} (déjà déduit de ta dispo).`
+          : p.creditCents > 0
+            ? `→ Crédit de TVA : ${formatEUR(p.creditCents)} — rien à payer, il se reporte.`
+            : '→ Position neutre : rien à provisionner.';
+      return ok({
+        kind: 'answer',
+        intent,
+        model,
+        plan: ['Lire la TVA exigible sur tes encaissements', 'Croiser la TVA déductible de tes achats'],
+        card: {
+          title: 'Ta position de TVA',
+          body: `Collectée sur tes encaissements : ${formatEUR(p.collectedCents)}\nDéductible sur tes achats : ${formatEUR(p.deductibleCents)}\n${verdict}`,
+        },
+      });
+    }
+
+    if (intent === 'balance') {
+      // BOB-1 : balance âgée — « qui me doit quoi, depuis quand » (deriveAgedBalance).
+      const getBalance = this.deps.actions.getAgedBalance?.bind(this.deps.actions);
+      if (!getBalance) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier la capacité de l’hôte'],
+          card: { title: 'Qui te doit quoi', body: 'Je n’ai pas accès à la balance clients sur cet appareil pour le moment.' },
+        });
+      }
+      const r = await getBalance();
+      if (!r.ok) return err(r.error);
+      const b = r.value;
+      if (b.totalCents === 0) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Dériver la balance âgée clients'],
+          card: { title: 'Qui te doit quoi', body: 'Personne ne te doit rien — poste clients à jour. 🎉' },
+        });
+      }
+      const top = b.byCustomer
+        .slice(0, 5)
+        .map((line) => `• ${line.customerName} — ${formatEUR(line.totalCents)}${line.maxDaysLate > 0 ? ` (retard max ${line.maxDaysLate} j)` : ''}`)
+        .join('\n');
+      const alert =
+        b.buckets.d90_plus > 0
+          ? `\n⚠ ${formatEUR(b.buckets.d90_plus)} à plus de 90 jours — risque d’irrécouvrable, on sécurise.`
+          : '';
+      return ok({
+        kind: 'answer',
+        intent,
+        model,
+        plan: ['Dériver la balance âgée clients (tranches de retard)'],
+        card: {
+          title: 'Qui te doit quoi',
+          body: `Total dû : ${formatEUR(b.totalCents)} · dont échu ${formatEUR(b.overdueCents)}\n${top}${alert}`,
+        },
+      });
+    }
+
+    if (intent === 'payer_depense') {
+      // BOB-1/E4 : régler un fournisseur — liste réelle → résolution par nom → PROPOSITION
+      // (palier accounting : le plancher confirme toujours une écriture comptable).
+      const listUnpaid = this.deps.actions.listUnpaidExpenses?.bind(this.deps.actions);
+      const tool = this.tool('payer_depense');
+      if (!listUnpaid || !tool) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier la capacité de l’hôte'],
+          card: { title: 'Régler une dépense', body: 'Je ne peux pas régler de dépense sur cet appareil pour le moment.' },
+        });
+      }
+      const r = await listUnpaid();
+      if (!r.ok) return err(r.error);
+      if (r.value.length === 0) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Lister les dépenses à payer'],
+          card: { title: 'Régler une dépense', body: 'Aucune dépense à payer — ton poste fournisseurs est à jour.' },
+        });
+      }
+      const normalized = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+      const target = r.value.find((e) => normalized(message).includes(normalized(e.supplierName)));
+      if (!target) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Lister les dépenses à payer'],
+          card: { title: 'Quelle dépense ?', body: 'Dis-moi quel fournisseur régler :' },
+          choices: r.value.map((e) => ({
+            label: `${e.supplierName} — ${formatEUR(e.totalTtcCents)}`,
+            value: `règle la dépense ${e.supplierName}`,
+          })),
+        });
+      }
+      const args = { expenseId: target.id };
+      const label = `Régler ${target.supplierName} (${formatEUR(target.totalTtcCents)}) — décaissement au journal de banque`;
+      if (requiresConfirmation(tool, autonomy)) {
+        return ok({
+          kind: 'proposed',
+          intent,
+          model,
+          plan: ['Trouver la dépense', 'Préparer le décaissement 401/512', 'Attendre ta confirmation'],
+          card: { title: 'Règlement à confirmer', body: `${label}\nJe l’enregistre ?` },
+          pending: { tool: tool.name, args, label },
+          spokenPrompt: buildSpokenConfirmation(label),
+        });
+      }
+      const run = await tool.run(args);
+      if (!run.ok) return err(run.error);
+      return ok({ kind: 'done', intent, model, plan: ['Régler la dépense'], card: { title: 'Dépense réglée ✓', body: `${label} — c’est fait.` } });
     }
 
     if (intent === 'envoyer_devis') {

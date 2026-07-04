@@ -98,6 +98,24 @@ export const LLM_TOOL_SPECS: LlmToolSpec[] = [
     description: 'Lister les échéances fiscales à venir (TVA, URSSAF, IS, CFE, comptes annuels) : quoi payer ou déclarer, et quand.',
     parameters: { type: 'object', properties: {}, additionalProperties: false },
   },
+  {
+    name: 'position_tva',
+    description:
+      'Position de TVA réelle : collectée sur les encaissements, déductible sur les achats, montant à provisionner ou crédit de TVA. Répond à « combien de TVA je dois ? ».',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'balance_agee',
+    description:
+      'Balance âgée clients : qui doit quoi, depuis combien de temps (tranches de retard, +90 jours = risque). Répond à « qui me doit de l’argent ? ».',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'payer_depense',
+    description:
+      'Régler une dépense fournisseur : passe la dépense en payée et écrit le décaissement au journal de banque (ex. « règle la dépense Leroy Merlin »).',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+  },
 ];
 
 const TOOL_TO_INTENT: Record<string, BobIntent> = {
@@ -114,6 +132,9 @@ const TOOL_TO_INTENT: Record<string, BobIntent> = {
   ouvrir_cloture: 'cloture',
   ouvrir_diagnostic: 'diagnostic',
   echeances_fiscales: 'echeances',
+  position_tva: 'tva',
+  balance_agee: 'balance',
+  payer_depense: 'payer_depense',
 };
 
 /** Une étape résolue d'un plan (une intention + sa référence éventuelle). */

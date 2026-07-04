@@ -1,4 +1,26 @@
-import { type Result, type AppError, type LineInput, type ExpenseCategory, type FiscalDeadline } from '@bob/core';
+import {
+  type Result,
+  type AppError,
+  type LineInput,
+  type ExpenseCategory,
+  type FiscalDeadline,
+  type VatPosition,
+  type AgedBalance,
+} from '@bob/core';
+
+/** Dépense fournisseur encore à payer (BOB-1 — ciblage de payer_depense par nom). */
+export interface UnpaidExpense {
+  id: string;
+  supplierName: string;
+  totalTtcCents: number;
+  documentDate: string;
+}
+
+/** Outil payer_depense (BOB-1) : règle une dépense — même use case PayExpense que l'écran
+ * Dépenses (transition to_pay→paid + décaissement 401/512 au journal de banque). */
+export interface PayExpenseActionInput {
+  expenseId: string;
+}
 
 export interface PayableInvoice {
   id: string;
@@ -125,6 +147,14 @@ export interface BobActions {
    * deriveFiscalCalendar (@bob/core) que GET /fiscal-calendar et l'écran : l'hôte délègue au
    * BobClient, AUCUNE logique fiscale côté ai/. Optionnelle : rétro-compatible hôtes existants. */
   listFiscalDeadlines?(): Promise<Result<FiscalDeadline[], AppError>>;
+  // —— Lecture, OPTIONNELLES (BOB-1 — l'expert-comptable de poche) ——
+  /** Position de TVA réelle (deriveVatPosition @bob/core : collectée sur ENCAISSEMENTS −
+   * déductible mentionnée) — « combien de TVA je dois ? » lit LE chiffre du cashflow. */
+  getVatPosition?(): Promise<Result<VatPosition, AppError>>;
+  /** Balance âgée clients (deriveAgedBalance @bob/core) — « qui me doit quoi ? ». */
+  getAgedBalance?(): Promise<Result<AgedBalance, AppError>>;
+  /** Dépenses fournisseurs à payer — la cible de payer_depense (résolution par nom). */
+  listUnpaidExpenses?(): Promise<Result<UnpaidExpense[], AppError>>;
   // —— Mutation ——
   registerPayment(input: {
     invoiceId: string;
@@ -144,4 +174,6 @@ export interface BobActions {
   /** Envoi réel de relance (C25 ②) — même endpoint que le bouton « Relancer » de l'écran
    * Notifications (client.sendRelance). Sortant : plancher de confirmation dans le registre. */
   sendRelance?(input: SendRelanceActionInput): Promise<Result<SendRelanceActionOutput, AppError>>;
+  /** Règlement d'une dépense fournisseur (BOB-1/E4) — écriture comptable : palier accounting. */
+  payExpense?(input: PayExpenseActionInput): Promise<Result<{ status: string }, AppError>>;
 }

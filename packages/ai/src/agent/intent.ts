@@ -12,11 +12,17 @@ export type BobIntent =
   | 'cloture' // préparer le mois pour le comptable (ouvre l'écran de clôture)
   | 'diagnostic' // « prêt pour 2026 ? » — ouvrir le diagnostic conformité (C40, TODO ⑦)
   | 'echeances' // échéances fiscales à venir (TVA/URSSAF/IS/CFE) — lecture, C-EXP5b
+  | 'tva' // position de TVA réelle (collectée/déductible/à provisionner) — lecture, BOB-1
+  | 'balance' // balance âgée : qui me doit quoi, depuis quand — lecture, BOB-1
+  | 'payer_depense' // régler une dépense fournisseur (écriture 401/512) — mutation, BOB-1/E4
   | 'unknown';
 
 /** Détection d'intention déterministe (fallback hors-ligne / LLM indisponible / intention triviale). */
 export function detectIntent(message: string): BobIntent {
   const m = message.toLowerCase();
+  // BOB-1 : régler une DÉPENSE/FOURNISSEUR — AVANT « encaisser » (« règle », « payé » collisionnent).
+  if (/(pa[iy]e[rz]?|r[èe]gle[rz]?|solde[rz]?).*(d[ée]pense|fournisseur)|(d[ée]pense|fournisseur).*(pay[ée]|r[ée]gl)/.test(m))
+    return 'payer_depense';
   // « payé(e/s) » = participe (paiement reçu) ; « payer/verser » = se verser (payout) — d'où la distinction.
   if (/(encaiss|paiement re[çc]u|re[çc]u le paiement|marque.*pay|r[ée]gl[ée]|\bpay[ée]e?s?\b)/.test(m)) return 'encaisser';
   if (/(cl[ôo]tur|pr[ée]pare?.*(le |mon )?mois|boucle.*mois|pour le comptable|bilan du mois)/.test(m)) return 'cloture';
@@ -25,6 +31,12 @@ export function detectIntent(message: string): BobIntent {
   // Échéances fiscales (C-EXP5b) : AVANT scan/documents (« déclaration », « impôts » ≠ pièces à classer).
   if (/([ée]ch[ée]anc|calendrier fiscal|urssaf|\bcfe\b|\bca3\b|\bca12\b|liasse|d[ée]clar.*(tva|urssaf|imp[ôo]t)|imp[ôo]ts? [àa] (venir|payer))/.test(m))
     return 'echeances';
+  // Position de TVA (BOB-1) : AVANT payout (« combien » y appartient aussi).
+  if (/(tva.*(dois|due|d[ûu]e|provision|position|net|combien)|combien.*tva|ma tva|position de tva|cr[ée]dit de tva)/.test(m))
+    return 'tva';
+  // Balance âgée (BOB-1) : AVANT relance (« en retard » y collisionne).
+  if (/(qui me doit|balance [âa]g[ée]e|encours clients?|retards? clients?|me doivent|doit de l'argent)/.test(m))
+    return 'balance';
   if (/(scan|num[ée]ris|ticket|justificatif|note de frais|re[çc]u|photo.*(facture|ticket|d[ée]pense))/.test(m)) return 'scan';
   if (/(envoi|envoie|envoyer|transmets|exp[ée]die).*(devis)|devis.*(client|signature|envoi|envoyer|transmettre)/.test(m))
     return 'envoyer_devis';

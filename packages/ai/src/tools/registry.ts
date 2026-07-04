@@ -21,6 +21,7 @@ import {
   type ExportFecActionInput,
   type FecExportSummary,
   type CreateCustomerActionInput,
+  type PayExpenseActionInput,
 } from '../agent/actions';
 
 function appValidation(field: string, message: string): AppError {
@@ -333,6 +334,30 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
       run: (input) => sendRelanceAction(input),
     };
     tools.push(envoyerRelance as AnyTool);
+  }
+
+  // —— Outil OPTIONNEL payer_depense (BOB-1/E4) : règle une dépense fournisseur — MÊME use case
+  // PayExpense que l'écran Dépenses (to_pay→paid + décaissement 401/512 au journal de banque).
+  // Écriture comptable → palier accounting : toujours proposé avant exécution.
+  const payExpenseAction = actions.payExpense?.bind(actions);
+  if (payExpenseAction) {
+    const payerDepense: Tool<PayExpenseActionInput, { status: string }> = {
+      name: 'payer_depense',
+      description:
+        'Règle une dépense fournisseur : la passe en payée et écrit le décaissement (401/512) au journal de banque. Utiliser l’id d’une dépense À PAYER (voir la liste des dépenses).',
+      mutating: true,
+      outbound: false,
+      compliance: 'high',
+      riskTier: 'accounting',
+      parse: (raw): Result<PayExpenseActionInput, AppError> => {
+        const r = raw as { expenseId?: unknown };
+        if (typeof r?.expenseId !== 'string' || r.expenseId.length === 0)
+          return err(appValidation('expenseId', 'Dépense manquante.'));
+        return ok({ expenseId: r.expenseId });
+      },
+      run: (input) => payExpenseAction(input),
+    };
+    tools.push(payerDepense as AnyTool);
   }
 
   // —— Outil OPTIONNEL echeances_fiscales (C-EXP5b) : lecture pure du calendrier fiscal dérivé

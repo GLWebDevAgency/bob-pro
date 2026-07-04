@@ -45,3 +45,33 @@ describe('detectIntent — diagnostic 2026 (C40 TODO ⑦)', () => {
     expect(detectIntent('Un devis pour 2026')).toBe('nouveau_devis');
   });
 });
+
+describe('detectIntent — BOB-1 (expert-comptable de poche)', () => {
+  it('position de TVA : « combien de TVA » ne part ni en payout ni en échéances', () => {
+    for (const m of [
+      'Combien de TVA je dois ?',
+      'ma tva ce mois',
+      'quelle est ma position de TVA',
+      'j’ai un crédit de TVA ?',
+    ]) {
+      expect(detectIntent(m)).toBe('tva');
+    }
+    // La DÉCLARATION reste une échéance (calendrier), pas une position.
+    expect(detectIntent('quand déclarer la tva ?')).toBe('echeances');
+  });
+
+  it('balance âgée : « qui me doit » ne part pas en relance', () => {
+    for (const m of ['Qui me doit de l’argent ?', 'balance âgée', 'mes encours clients', 'ils me doivent combien ?']) {
+      expect(detectIntent(m)).toBe('balance');
+    }
+    expect(detectIntent('relance Martin')).toBe('relance');
+  });
+
+  it('payer une dépense : « règle/paie le fournisseur » ne part pas en encaissement', () => {
+    for (const m of ['règle la dépense Leroy Merlin', 'paie le fournisseur Cedeo', 'ma dépense est payée ?']) {
+      expect(detectIntent(m)).toBe('payer_depense');
+    }
+    // L'encaissement client reste l'encaissement.
+    expect(detectIntent('encaisse la facture F-2026-0001')).toBe('encaisser');
+  });
+});

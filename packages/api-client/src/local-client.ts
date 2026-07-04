@@ -43,6 +43,8 @@ import {
   resolveAutonomyEntitlement,
   runDiagnostic,
   deriveFiscalCalendar,
+  deriveVatPosition,
+  deriveAgedBalance,
   resolveTradeConfig,
   buildDocumentStorageKey,
   buildInvoiceAccountingPreviewEntry,
@@ -987,6 +989,44 @@ export class LocalBobClient implements BobClient {
         const r = await this.getCashflow({ scenario: 'realiste', horizon: 30 });
         if (!r.ok) return r;
         return ok({ payoutCents: r.value.payout, availableCents: r.value.available });
+      },
+      // BOB-1 : l'expert-comptable de poche — MÊMES use cases purs que les écrans (parité).
+      getVatPosition: async () => {
+        await this.ready;
+        const [invoices, expenses] = await Promise.all([
+          this.invoices.listByCompany(this.companyId),
+          this.expenses.listByCompany(this.companyId),
+        ]);
+        return ok(
+          deriveVatPosition({
+            invoices: invoices.map((i) => ({ kind: i.kind, status: i.status, totals: i.totals(), paid: i.paid })),
+            expenses: expenses.map((e) => ({ vatCents: e.toProps().vatCents })),
+          }),
+        );
+      },
+      getAgedBalance: async () => {
+        await this.ready;
+        const [inv, cust] = await Promise.all([this.listInvoices(), this.listCustomers()]);
+        if (!inv.ok) return inv;
+        if (!cust.ok) return cust;
+        return ok(deriveAgedBalance({ invoices: inv.value, customers: cust.value, today: this.clock.today() }));
+      },
+      listUnpaidExpenses: async () => {
+        await this.ready;
+        const list = await this.expenses.listByCompany(this.companyId);
+        return ok(
+          list
+            .filter((e) => e.status === 'to_pay')
+            .map((e) => {
+              const p = e.toProps();
+              return { id: p.id, supplierName: p.supplierName, totalTtcCents: p.totalTtcCents, documentDate: p.documentDate };
+            }),
+        );
+      },
+      payExpense: async (input) => {
+        const r = await this.payExpense(input);
+        if (!r.ok) return r;
+        return ok({ status: r.value.status });
       },
       // C25 ① : brouillon CIBLABLE, dérivé du plan de relances réel (@bob/core — ton par
       // ancienneté, reste dû netToPay − paid). Fini le « plus gros encours, J+7 inventé ».
