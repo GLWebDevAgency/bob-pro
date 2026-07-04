@@ -161,6 +161,87 @@ describe('HttpBobClient', () => {
     if (!r.ok) expect(r.error).toEqual({ kind: 'not_found', entity: 'company', id: 'co-fantome' });
   });
 
+  it('PONT-SERVEUR v1 : getCompanyMe → GET /company/me (JWT + tenant), fiche société rendue telle quelle', async () => {
+    const company = {
+      id: 'company-mercier',
+      name: 'Mercier Plomberie',
+      legalForm: 'EI',
+      siren: '732829320',
+      siret: '73282932000074',
+      apeCode: '4322A',
+      trade: 'plombier',
+      vatRegime: 'reel_simpl',
+      rcsOrRm: 'RM 92',
+      address: { line1: '12 rue des Artisans', zip: '92000', city: 'Nanterre' },
+      dateCreation: '2019-03-01',
+    };
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      if (String(url) === 'https://api.bob.test/company/me' && init?.method === 'GET') {
+        const headers = init?.headers as Record<string, string>;
+        expect(headers['x-company-id']).toBe('company-mercier');
+        expect(headers.authorization).toBe('Bearer test-token');
+        return new Response(JSON.stringify(company), { headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ error: { kind: 'not_found', resource: 'route' } }), { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-mercier', getToken: async () => 'test-token' });
+
+    const r = await client.getCompanyMe();
+
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    // Le client ne réinterprète RIEN : la fiche société (identité connectée) vient de la BDD du tenant.
+    expect(r.value).toEqual(company);
+  });
+
+  it('PONT-SERVEUR v1 : getCompanyMe remonte l’AppError serveur telle quelle (tenant sans société)', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ error: { kind: 'not_found', entity: 'company', id: 'co-fantome' } }), {
+          status: 404,
+          headers: { 'content-type': 'application/json' },
+        }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'co-fantome' });
+
+    const r = await client.getCompanyMe();
+
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toEqual({ kind: 'not_found', entity: 'company', id: 'co-fantome' });
+  });
+
+  it('PONT-SERVEUR v1 : payExpense / listPayments / createCreditNote frappent EXACTEMENT les routes servies', async () => {
+    const payment = { id: 'pay-1', invoiceId: 'inv-1', amountCents: 48840, method: 'card', receivedAt: '2026-07-04T10:00:00.000Z' };
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      const u = String(url);
+      const method = init?.method ?? 'GET';
+      if (u === 'https://api.bob.test/expenses/exp-1/pay' && method === 'POST') {
+        return new Response(JSON.stringify({ status: 'paid', alreadyPaid: false }), { headers: { 'content-type': 'application/json' } });
+      }
+      if (u === 'https://api.bob.test/payments' && method === 'GET') {
+        return new Response(JSON.stringify([payment]), { headers: { 'content-type': 'application/json' } });
+      }
+      if (u === 'https://api.bob.test/invoices/inv-1/credit-note' && method === 'POST') {
+        return new Response(JSON.stringify({ creditNoteId: 'inv-2' }), { headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ error: { kind: 'not_found', resource: 'route' } }), { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-mercier' });
+
+    const paid = await client.payExpense({ expenseId: 'exp-1' });
+    expect(paid.ok && paid.value.status).toBe('paid');
+
+    const payments = await client.listPayments();
+    expect(payments.ok && payments.value).toEqual([payment]);
+
+    const creditNote = await client.createCreditNote({ invoiceId: 'inv-1' });
+    expect(creditNote.ok && creditNote.value).toEqual({ creditNoteId: 'inv-2' });
+  });
+
   it('loads expense defaults from the API memory endpoint', async () => {
     const defaults = {
       supplierName: 'Leroy Merlin',

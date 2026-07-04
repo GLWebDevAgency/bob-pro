@@ -322,6 +322,14 @@ export interface BobClient {
    * (hypothèse honnête à confirmer) ; amountHint toujours null en v1 (aucun montant inventé). */
   getFiscalCalendar(): Promise<Result<FiscalDeadline[], AppError>>;
   getProfile(): Promise<Result<TradeConfig, AppError>>;
+  /** GET /company/me (PONT-SERVEUR v1) : la fiche société RÉELLE du tenant (CompanyProps complet)
+   * — l'identité en mode connecté (useIdentity) lit ENFIN la raison sociale/ligne légale de la BDD
+   * au lieu de masquer la ligne (TODO tracé apps/mobile/src/data/identity.ts depuis C24).
+   * OPTIONNELLE le temps d'une session : LocalBobClient est en WIP session B — TODO(session B) :
+   * implémenter getCompanyMe() dans LocalBobClient (renvoyer la company du seed, `seedCompany().toProps()`),
+   * puis rendre la méthode obligatoire ici. Les écrans traitent l'absence comme « pas encore
+   * disponible », jamais un nom inventé. */
+  getCompanyMe?(): Promise<Result<CompanyProps, AppError>>;
   lookupCompany(siret: string): Promise<Result<CompanyLookupResult, AppError>>;
   /** POST /onboarding/company (C24b) : crée la société du compte (provisioning tenant à
    * l'inscription — id décidé PAR LE SERVEUR, jamais fourni par le client) ou met à jour

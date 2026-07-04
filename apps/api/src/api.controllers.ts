@@ -114,6 +114,13 @@ export class CompanyLookupController {
   async lookup(@Query('siret') siret: string) {
     return unwrap(await this.backend.lookupCompany(siret ?? ''));
   }
+  /** GET /company/me (PONT-SERVEUR v1) : la fiche société du tenant (CompanyProps complet) —
+   * JWT + tenant REQUIS (le guard ne blanchit que GET /company/lookup, chemin exact). Débloque
+   * l'identité en mode connecté (useIdentity lit ENFIN la raison sociale de la BDD). */
+  @Get('me')
+  async me() {
+    return unwrap(await this.backend.getCompanyMe());
+  }
 }
 
 @Controller('vat')
@@ -217,6 +224,12 @@ export class InvoicesController {
   @Post(':id/issue')
   async issue(@Param('id') id: string) {
     return unwrap(await this.backend.issueInvoice({ invoiceId: id }));
+  }
+  /** A6 (PONT-SERVEUR v1) : avoir TOTAL (brouillon) d'une facture émise — s'émet ensuite par
+   * POST /invoices/:id/issue (numéro A- sans trou, écriture comptable inverse). */
+  @Post(':id/credit-note')
+  async creditNote(@Param('id') id: string) {
+    return unwrap(await this.backend.createCreditNote({ invoiceId: id }));
   }
   @Post(':id/pay')
   async pay(
@@ -386,6 +399,23 @@ export class ExpensesController {
   @Post()
   async create(@Body() body: Omit<RecordExpenseInput, 'companyId'>) {
     return unwrap(await this.backend.recordExpense(body));
+  }
+  /** E4 (PONT-SERVEUR v1) : règle une dépense fournisseur — MÊME route que le HttpBobClient
+   * (payExpense), transition to_pay→paid + décaissement 401/512 (idempotent). */
+  @Post(':id/pay')
+  async pay(@Param('id') id: string) {
+    return unwrap(await this.backend.payExpense({ expenseId: id }));
+  }
+}
+
+/** Encaissements datés du tenant (E3 — PONT-SERVEUR v1) : socle du CA encaissé annuel (293 B),
+ * de la balance âgée et de la prescription. JWT + tenant requis (guard global, comme /invoices). */
+@Controller('payments')
+export class PaymentsController {
+  constructor(private readonly backend: BackendService) {}
+  @Get()
+  async list() {
+    return unwrap(await this.backend.listPayments());
   }
 }
 

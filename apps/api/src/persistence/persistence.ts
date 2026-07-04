@@ -6,6 +6,7 @@ import {
   type QuoteRepository,
   type InvoiceRepository,
   type DocumentRepository,
+  type Payment,
   type PaymentRepository,
   type PublicAccessTokenRepository,
   type ExpenseRepository,
@@ -39,6 +40,12 @@ import {
 
 export const PERSISTENCE = Symbol('PERSISTENCE');
 
+/** E3 (PONT-SERVEUR v1) : encaissements datés du tenant — extension des repos CONCRETS, le port
+ *  core reste inchangé (même précédent que le repo in-memory de l'api-client, WIP session B). */
+export interface ServerPaymentRepository extends PaymentRepository {
+  listByCompany(companyId: string): Promise<Payment[]>;
+}
+
 /** Bundle de persistance injecté dans BackendService. Deux implémentations : in-memory & Prisma. */
 export interface Persistence {
   companies: CompanyRepository;
@@ -49,7 +56,7 @@ export interface Persistence {
   documentArchiveJobs: DocumentArchiveJobRepository;
   notificationJobs: NotificationJobRepository;
   devices: DeviceRepository;
-  payments: PaymentRepository;
+  payments: ServerPaymentRepository;
   publicAccessTokens: PublicAccessTokenRepository;
   expenses: ExpenseRepository;
   accountingEntries: AccountingEntryRepository;

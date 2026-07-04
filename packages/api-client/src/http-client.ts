@@ -157,6 +157,10 @@ export class HttpBobClient implements BobClient {
   getProfile() {
     return this.req<TradeConfig>('GET', '/profile');
   }
+  /** PONT-SERVEUR v1 : la fiche société du tenant (CompanyProps complet) — l'identité connectée lit la BDD. */
+  getCompanyMe() {
+    return this.req<CompanyProps>('GET', '/company/me');
+  }
   lookupCompany(siret: string) {
     return this.req<CompanyLookupResult>('GET', `/company/lookup?siret=${encodeURIComponent(siret)}`);
   }

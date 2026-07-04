@@ -8,7 +8,10 @@ import {
   ExpireQuote,
   GenerateInvoiceFromQuote,
   IssueInvoice,
+  CreateCreditNote,
   RegisterPayment,
+  PayExpense,
+  RecordExpenseAccountingEntries,
   RecordIssuedInvoiceAccountingEntry,
   RecordPaymentAccountingEntry,
   ListAccountingEntries,
@@ -32,6 +35,8 @@ import {
   tierAtLeast,
   runDiagnostic,
   deriveFiscalCalendar,
+  deriveVatPosition,
+  deriveAgedBalance,
   resolveTradeConfig,
   facturXDataFromInvoice,
   buildFacturXBasicXml,
@@ -57,6 +62,7 @@ import {
   type PaymentMethod,
   type Quote,
   type Invoice,
+  type Expense,
   type ClockPort,
   type QuoteLine,
   type Totals,
@@ -151,6 +157,15 @@ export interface InvoiceView {
   lines: QuoteLine[];
   depositDeductionCents: number;
   depositInvoiceId: string | null;
+}
+
+/** Encaissement daté du tenant (E3 — PONT-SERVEUR v1) : miroir du PaymentView du client. */
+export interface PaymentView {
+  id: string;
+  invoiceId: string;
+  amountCents: number;
+  method: PaymentMethod;
+  receivedAt: string;
 }
 
 export interface AccountingPreviewLine {
@@ -549,6 +564,10 @@ export class BackendService {
     const i = await this.p.invoices.findById(id);
     return i && i.companyId === this.companyId() ? i : null;
   }
+  private async ownedExpense(id: string): Promise<Expense | null> {
+    const e = await this.p.expenses.findById(id);
+    return e && e.companyId === this.companyId() ? e : null;
+  }
 
   async getQuote(id: string): Promise<Result<QuoteView, AppError>> {
     const q = await this.ownedQuote(id);
@@ -617,6 +636,25 @@ export class BackendService {
   async listInvoices(): Promise<Result<InvoiceView[], AppError>> {
     const list = await this.p.invoices.listByCompany(this.companyId());
     return ok(list.map((i) => this.mapInvoice(i)));
+  }
+
+  /** A6 (PONT-SERVEUR v1) : avoir TOTAL (brouillon) d'une facture émise — MÊME use case
+   * CreateCreditNote (@bob/core) que la démo locale ; l'avoir s'émet ensuite par issueInvoice
+   * (numéro A- sans trou via CounterKey 'credit', écriture comptable inverse). */
+  async createCreditNote(input: { invoiceId: string }): Promise<Result<{ creditNoteId: string }, AppError>> {
+    if (!(await this.ownedInvoice(input.invoiceId))) return { ok: false as const, error: appNotFound('invoice', input.invoiceId) };
+    const r = await new CreateCreditNote({ invoices: this.p.invoices, ids: this.ids }).execute(input);
+    if (r.ok) this.logger.audit('invoice.credit_note_created', { invoiceId: input.invoiceId, creditNoteId: r.value.creditNoteId });
+    return r;
+  }
+
+  /** E3 (PONT-SERVEUR v1) : encaissements datés du tenant — socle du CA encaissé annuel (293 B),
+   * de la balance âgée et de la prescription. Même projection que le LocalBobClient. */
+  async listPayments(): Promise<Result<PaymentView[], AppError>> {
+    const list = await this.p.payments.listByCompany(this.companyId());
+    return ok(
+      list.map((p) => ({ id: p.id, invoiceId: p.invoiceId, amountCents: p.amount, method: p.method, receivedAt: p.receivedAt })),
+    );
   }
 
   listAccountingEntries() {
@@ -797,6 +835,56 @@ export class BackendService {
       },
       // C-EXP5b : lecture du calendrier fiscal — même use case que GET /fiscal-calendar (parité humain↔Bob).
       listFiscalDeadlines: async () => this.getFiscalCalendar(),
+      // BOB-1 (PONT-SERVEUR v1) : l'expert-comptable de poche — MÊMES use cases purs que les
+      // écrans et le LocalBobClient (deriveVatPosition / deriveAgedBalance @bob/core).
+      getVatPosition: async () => {
+        const [invoices, expenses] = await Promise.all([
+          this.p.invoices.listByCompany(this.companyId()),
+          this.p.expenses.listByCompany(this.companyId()),
+        ]);
+        return ok(
+          deriveVatPosition({
+            invoices: invoices.map((i) => ({ kind: i.kind, status: i.status, totals: i.totals(), paid: i.paid })),
+            expenses: expenses.map((e) => ({ vatCents: e.toProps().vatCents })),
+          }),
+        );
+      },
+      getAgedBalance: async () => {
+        const [invoices, cust] = await Promise.all([this.p.invoices.listByCompany(this.companyId()), this.listCustomers()]);
+        if (!cust.ok) return cust;
+        return ok(
+          deriveAgedBalance({
+            invoices: invoices.map((i) => ({
+              kind: i.kind,
+              status: i.status,
+              totals: i.totals(),
+              paid: i.paid,
+              dueAt: i.dueAt,
+              customerId: i.customerId,
+            })),
+            customers: cust.value,
+            today: this.clock.today(),
+          }),
+        );
+      },
+      listUnpaidExpenses: async () => {
+        const list = await this.p.expenses.listByCompany(this.companyId());
+        return ok(
+          list
+            .filter((e) => e.status === 'to_pay')
+            .map((e) => {
+              const p = e.toProps();
+              return { id: p.id, supplierName: p.supplierName, totalTtcCents: p.totalTtcCents, documentDate: p.documentDate };
+            }),
+        );
+      },
+      // BOB-1/E4 : payer_depense — mutation au palier accounting (le registre exige la confirmation,
+      // pattern dry-run/confirm), MÊME use case PayExpense que POST /expenses/:id/pay.
+      payExpense: async (input) => {
+        const r = await this.payExpense(input);
+        if (!r.ok) return r;
+        return ok({ status: r.value.status });
+      },
       registerPayment: async (input) =>
         this.registerPayment({
           invoiceId: input.invoiceId,
@@ -1024,16 +1112,35 @@ export class BackendService {
     if (!company) return { ok: false, error: appNotFound('company', this.companyId()) };
     const customers = await this.p.customers.listByCompany(this.companyId());
     const customerTypes = [...new Set(customers.map((c) => c.type))];
+    const today = this.clock.today();
+    // E6 (PONT-SERVEUR v1) : recettes ENCAISSÉES de l'année civile courante — la surveillance des
+    // seuils de franchise 293 B lit du RÉEL (paiements datés du tenant), jamais un statut
+    // décoratif. Même dérivation que le LocalBobClient (les avoirs ne génèrent pas de paiement).
+    const year = today.slice(0, 4);
+    const payments = await this.p.payments.listByCompany(this.companyId());
+    const annualEncaissedCents = payments
+      .filter((p) => p.receivedAt.slice(0, 4) === year)
+      .reduce((sum, p) => sum + p.amount, 0);
     return ok(
       runDiagnostic({
         country: 'FR',
         trade: company.trade,
         vatRegime: company.vatRegime,
         customerTypes,
-        hasDecennale: company.hasValidDecennale(this.clock.today()),
-        asOf: this.clock.today(),
+        hasDecennale: company.hasValidDecennale(today),
+        asOf: today,
+        annualEncaissedCents,
       }),
     );
+  }
+
+  /** GET /company/me (PONT-SERVEUR v1) : la fiche société RÉELLE du tenant (CompanyProps complet)
+   * — LE débloqueur de l'identité en mode connecté (useIdentity : raison sociale + ligne légale
+   * lues en BDD, jamais un nom inventé — TODO tracé apps/mobile/src/data/identity.ts). */
+  async getCompanyMe(): Promise<Result<CompanyProps, AppError>> {
+    const company = await this.p.companies.findById(this.companyId());
+    if (!company) return { ok: false, error: appNotFound('company', this.companyId()) };
+    return ok(company.toProps());
   }
 
   /** C-EXP5b : échéancier fiscal du tenant — MÊME use case pur (deriveFiscalCalendar @bob/core)
@@ -1447,10 +1554,36 @@ export class BackendService {
   }
 
   async recordExpense(input: Omit<RecordExpenseInput, 'companyId'>): Promise<Result<{ id: string }, AppError>> {
-    const r = await new RecordExpense({ expenses: this.p.expenses, ids: this.ids, clock: this.clock }).execute({
-      companyId: this.companyId(),
-      ...input,
-    });
+    // E1 (PONT-SERVEUR v1) : la dépense POSTE ses écritures du cycle achats (6xx/44566/401 au
+    // journal AC, + décaissement 401/512 si déjà payée) dans la MÊME transaction tenant — comme
+    // la facture poste la sienne à l'émission. Sans cela : FEC non exhaustif, TVA déductible
+    // injustifiée. Même use case idempotent que le LocalBobClient (RecordExpenseAccountingEntries).
+    let r: Result<{ id: string }, AppError>;
+    try {
+      r = await this.p.runInTransaction(async () => {
+        const recorded = await new RecordExpense({ expenses: this.p.expenses, ids: this.ids, clock: this.clock }).execute({
+          companyId: this.companyId(),
+          ...input,
+        });
+        if (!recorded.ok) return recorded;
+        const accounting = await new RecordExpenseAccountingEntries({
+          expenses: this.p.expenses,
+          entries: this.p.accountingEntries,
+          charts: this.p.chartOfAccounts,
+        }).execute({ expenseId: recorded.value.id });
+        if (!accounting.ok) throw new RollbackAppError(accounting.error);
+        this.logger.audit('accounting.expense_posted', {
+          expenseId: recorded.value.id,
+          purchaseEntryId: accounting.value.purchaseEntryId,
+          paymentEntryId: accounting.value.paymentEntryId,
+          created: accounting.value.created,
+        });
+        return recorded;
+      });
+    } catch (e) {
+      if (e instanceof RollbackAppError) return { ok: false as const, error: e.appError };
+      throw e;
+    }
     if (r.ok) {
       this.logger.audit('expense.recorded', { companyId: this.companyId(), id: r.value.id, ttc: input.totalTtcCents });
       try {
@@ -1480,6 +1613,32 @@ export class BackendService {
   async listExpenses(): Promise<Result<ExpenseProps[], AppError>> {
     const list = await this.p.expenses.listByCompany(this.companyId());
     return ok(list.map((e) => e.toProps()));
+  }
+
+  /** E4 (PONT-SERVEUR v1) : règle une dépense fournisseur — transition to_pay→paid + écriture de
+   * DÉCAISSEMENT 401/512 à la date du jour (PayExpense @bob/core, idempotent de bout en bout).
+   * MÊME use case que l'écran Dépenses de la démo locale et que l'outil agent payer_depense.
+   * Transaction tenant : la transition et l'écriture réussissent ou s'annulent ENSEMBLE. */
+  async payExpense(input: { expenseId: string }): Promise<Result<{ status: 'paid'; alreadyPaid: boolean }, AppError>> {
+    if (!(await this.ownedExpense(input.expenseId))) return { ok: false as const, error: appNotFound('expense', input.expenseId) };
+    let r: Result<{ status: 'paid'; alreadyPaid: boolean }, AppError>;
+    try {
+      r = await this.p.runInTransaction(async () => {
+        const paid = await new PayExpense({
+          expenses: this.p.expenses,
+          entries: this.p.accountingEntries,
+          clock: this.clock,
+          charts: this.p.chartOfAccounts,
+        }).execute(input);
+        if (!paid.ok) throw new RollbackAppError(paid.error);
+        return paid;
+      });
+    } catch (e) {
+      if (e instanceof RollbackAppError) return { ok: false as const, error: e.appError };
+      throw e;
+    }
+    if (r.ok) this.logger.audit('expense.paid', { expenseId: input.expenseId, alreadyPaid: r.value.alreadyPaid });
+    return r;
   }
 
   // ——— Onboarding / multi-tenant ———

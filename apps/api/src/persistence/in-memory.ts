@@ -351,6 +351,11 @@ export class InMemoryPaymentRepository implements PaymentRepository {
   async findByIdempotencyKey(companyId: string, key: string): Promise<Payment | null> {
     return this.list.find((p) => p.companyId === companyId && p.idempotencyKey === key) ?? null;
   }
+  /** E3 (PONT-SERVEUR v1) : encaissements datés du tenant — CA encaissé annuel (293 B), balance
+   *  âgée/prescription. Même extension concrète que le repo in-memory de l'api-client. */
+  async listByCompany(companyId: string): Promise<Payment[]> {
+    return this.list.filter((p) => p.companyId === companyId);
+  }
 }
 
 export class InMemoryPublicAccessTokenRepository implements PublicAccessTokenRepository {
@@ -482,7 +487,8 @@ export class InMemorySequenceCounter implements SequenceCounterPort {
     const key = `${input.companyId}:${input.counterKey}:${input.fiscalYear}`;
     const next = (this.counters.get(key) ?? 0) + 1;
     this.counters.set(key, next);
-    const prefix = input.counterKey === 'quote' ? 'D' : 'F';
+    // D = devis · F = facture · A = avoir (A6) — chaque famille tient SA séquence sans trou.
+    const prefix = input.counterKey === 'quote' ? 'D' : input.counterKey === 'credit' ? 'A' : 'F';
     return { sequence: next, formatted: DocNumber.format(prefix, input.fiscalYear, next) };
   }
   // Annulation in-memory (rollback symétrique à la transaction Prisma) : pas de trou si fn() lève.

@@ -998,6 +998,15 @@ export class PrismaPaymentRepository implements PaymentRepository {
       return payment ? [payment] : [];
     });
   }
+  /** E3 (PONT-SERVEUR v1) : encaissements datés du tenant — CA encaissé annuel (293 B), balance
+   *  âgée/prescription. Tri chronologique stable (findMany sans orderBy est non déterministe). */
+  async listByCompany(companyId: string): Promise<Payment[]> {
+    const rows = await this.prisma.client().payment.findMany({ where: { companyId }, orderBy: { receivedAt: 'asc' } });
+    return rows.flatMap((row) => {
+      const payment = this.rowToPayment(row);
+      return payment ? [payment] : [];
+    });
+  }
 }
 
 export class PrismaPublicAccessTokenRepository implements PublicAccessTokenRepository {
@@ -1205,7 +1214,9 @@ export class PrismaSequenceCounter implements SequenceCounterPort {
       DO UPDATE SET "nextValue" = document_counters."nextValue" + 1
       RETURNING "nextValue" AS next_value`;
     const seq = Number(rows[0]?.next_value ?? 1);
-    const prefix = input.counterKey === 'quote' ? 'D' : 'F';
+    // D = devis · F = facture · A = avoir (A6, CounterKey 'credit') — trois familles, trois séquences
+    // sans trou ; la table document_counters est générique (counterKey texte), aucune migration.
+    const prefix = input.counterKey === 'quote' ? 'D' : input.counterKey === 'credit' ? 'A' : 'F';
     return { sequence: seq, formatted: DocNumber.format(prefix, input.fiscalYear, seq) };
   }
 }
