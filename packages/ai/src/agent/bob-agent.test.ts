@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ok } from '@bob/core';
+import { ok, type FiscalDeadline } from '@bob/core';
 import { BobAgent } from './bob-agent';
 import { ModelRouter } from '../router/model-router';
 import { type BobActions } from './actions';
@@ -136,6 +136,50 @@ describe('BobAgent (démo)', () => {
     expect(r.ok && r.value.intent).toBe('documents');
     expect(r.ok && r.value.kind).toBe('answer');
     if (r.ok) expect(r.value.card.body).toContain('facture-F2026-001.pdf');
+  });
+
+  it('échéances fiscales (C-EXP5b) : lecture formatée sobre — date FR, libellé, « à confirmer » sur les hypothèses', async () => {
+    const deadlines: FiscalDeadline[] = [
+      {
+        id: 'cfe-acompte-2026',
+        date: '2026-06-15',
+        label: 'CFE : acompte (si CFE N-1 ≥ 3 000 €)',
+        kind: 'cfe',
+        amountHint: null,
+        legalRef: 'art. 1679 quinquies CGI',
+        confidence: 'assumed',
+        explain: "Un acompte de 50 % de CFE n'est dû à cette date que si ta CFE de l'an dernier a atteint 3 000 €.",
+      },
+      {
+        id: 'tva-ca12-2026',
+        date: '2026-05-05',
+        label: 'TVA : déclaration annuelle CA12',
+        kind: 'tva',
+        amountHint: null,
+        legalRef: 'art. 287, 3 CGI',
+        confidence: 'certain',
+        explain: 'Ta déclaration annuelle de TVA (CA12) se dépose le deuxième jour ouvré qui suit le 1er mai.',
+      },
+    ];
+    const withFiscal: BobActions = { ...actions, listFiscalDeadlines: async () => ok(deadlines) };
+    const agent = new BobAgent({ router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }), actions: withFiscal });
+
+    const r = await agent.ask('quelles sont mes prochaines échéances fiscales ?');
+    expect(r.ok && r.value.intent).toBe('echeances');
+    expect(r.ok && r.value.kind).toBe('answer');
+    if (!r.ok) return;
+    // Formatage sobre : date + libellé + explication ; « à confirmer » UNIQUEMENT sur les 'assumed'.
+    expect(r.value.card.body).toContain('• 15/06/2026 — CFE : acompte (si CFE N-1 ≥ 3 000 €) (à confirmer)');
+    expect(r.value.card.body).toContain("Un acompte de 50 % de CFE n'est dû à cette date");
+    expect(r.value.card.body).toContain('• 05/05/2026 — TVA : déclaration annuelle CA12\n');
+    expect(r.value.card.body).not.toContain('CA12 (à confirmer)');
+  });
+
+  it('échéances : hôte SANS la capacité → réponse honnête, jamais un calendrier inventé', async () => {
+    const r = await makeAgent().ask('mes échéances fiscales');
+    expect(r.ok && r.value.intent).toBe('echeances');
+    expect(r.ok && r.value.kind).toBe('answer');
+    if (r.ok) expect(r.value.card.body).toContain('pas accès au calendrier fiscal');
   });
 
   it('demande inconnue : aide sans rien inventer', async () => {

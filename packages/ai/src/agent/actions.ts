@@ -1,4 +1,4 @@
-import { type Result, type AppError, type LineInput, type ExpenseCategory } from '@bob/core';
+import { type Result, type AppError, type LineInput, type ExpenseCategory, type FiscalDeadline } from '@bob/core';
 
 export interface PayableInvoice {
   id: string;
@@ -120,6 +120,11 @@ export interface BobActions {
   listSendableQuotes(): Promise<Result<SendableQuote[], AppError>>;
   listIssuableInvoices(): Promise<Result<IssuableInvoice[], AppError>>;
   listDocuments(): Promise<Result<AgentDocument[], AppError>>;
+  // —— Lecture, OPTIONNELLE (C-EXP5b) ——
+  /** Échéances fiscales à venir (TVA/URSSAF/IS/CFE/comptes annuels) — MÊME use case
+   * deriveFiscalCalendar (@bob/core) que GET /fiscal-calendar et l'écran : l'hôte délègue au
+   * BobClient, AUCUNE logique fiscale côté ai/. Optionnelle : rétro-compatible hôtes existants. */
+  listFiscalDeadlines?(): Promise<Result<FiscalDeadline[], AppError>>;
   // —— Mutation ——
   registerPayment(input: {
     invoiceId: string;

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ok } from '@bob/core';
+import { ok, type FiscalDeadline } from '@bob/core';
 import { buildBobTools } from './registry';
 import { type BobActions } from '../agent/actions';
 import { isSafetyFloor, requiresConfirmation, riskTierOf } from '../agent/autonomy';
@@ -154,6 +154,50 @@ describe('relance_brouillon ciblable — C25 (TODO ① audit parité C15)', () =
     await t.run(byInvoice.value);
     await t.run(byCustomer.value);
     expect(calls).toEqual([{ invoiceId: 'inv-1' }, { customerId: 'cust-2' }]);
+  });
+});
+
+describe('echeances_fiscales — C-EXP5b (lecture du calendrier fiscal, capacité optionnelle)', () => {
+  const deadlines: FiscalDeadline[] = [
+    {
+      id: 'cfe-acompte-2026',
+      date: '2026-06-15',
+      label: 'CFE : acompte (si CFE N-1 ≥ 3 000 €)',
+      kind: 'cfe',
+      amountHint: null,
+      legalRef: 'art. 1679 quinquies CGI',
+      confidence: 'assumed',
+      explain: "Un acompte de 50 % de CFE n'est dû à cette date que si ta CFE de l'an dernier a atteint 3 000 €.",
+    },
+  ];
+
+  it("absent sans l'action hôte (pas de capacité fantôme — rétro-compat hôtes existants)", () => {
+    expect(buildBobTools(baseActions).map((t) => t.name)).not.toContain('echeances_fiscales');
+  });
+
+  it('lecture pure (read, non mutante, jamais de confirmation) qui DÉLÈGUE au use case de l’hôte', async () => {
+    let calls = 0;
+    const actions: BobActions = {
+      ...baseActions,
+      listFiscalDeadlines: async () => {
+        calls += 1;
+        return ok(deadlines);
+      },
+    };
+    const t = tool(actions, 'echeances_fiscales')!;
+    expect(t.mutating).toBe(false);
+    expect(t.outbound).toBe(false);
+    expect(riskTierOf(t)).toBe('read');
+    expect(isSafetyFloor(t)).toBe(false);
+    expect(requiresConfirmation(t, 'confirm_all')).toBe(false); // lecture : jamais de confirmation
+
+    const parsed = t.parse({});
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const run = await t.run(parsed.value);
+    // Les échéances passent TELLES QUELLES (aucune logique fiscale dans ai/ — parité humain↔Bob).
+    expect(run.ok && run.value).toEqual(deadlines);
+    expect(calls).toBe(1);
   });
 });
 

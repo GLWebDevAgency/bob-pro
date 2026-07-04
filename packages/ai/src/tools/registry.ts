@@ -6,6 +6,7 @@ import {
   type LineInput,
   type LineCategory,
   type ExpenseCategory,
+  type FiscalDeadline,
   isVatRate,
 } from '@bob/core';
 import { type AnyTool, type Tool } from './tool';
@@ -332,6 +333,25 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
       run: (input) => sendRelanceAction(input),
     };
     tools.push(envoyerRelance as AnyTool);
+  }
+
+  // —— Outil OPTIONNEL echeances_fiscales (C-EXP5b) : lecture pure du calendrier fiscal dérivé
+  // de la fiche société (deriveFiscalCalendar @bob/core, servi par GET /fiscal-calendar) — mêmes
+  // dates que l'humain, aucun montant inventé (amountHint null en v1), zéro logique fiscale ici.
+  const listFiscalDeadlinesAction = actions.listFiscalDeadlines?.bind(actions);
+  if (listFiscalDeadlinesAction) {
+    const echeancesFiscales: Tool<Record<string, never>, FiscalDeadline[]> = {
+      name: 'echeances_fiscales',
+      description:
+        'Liste les échéances fiscales à venir (TVA, URSSAF, IS, CFE, comptes annuels) dérivées de la fiche société — dates et explications, sans montant. Les échéances « assumed » sont des hypothèses à confirmer.',
+      mutating: false,
+      outbound: false,
+      compliance: 'medium',
+      parse: () => ok({}),
+      riskTier: 'read',
+      run: () => listFiscalDeadlinesAction(),
+    };
+    tools.push(echeancesFiscales as AnyTool);
   }
 
   const createCustomerAction = actions.createCustomer?.bind(actions);

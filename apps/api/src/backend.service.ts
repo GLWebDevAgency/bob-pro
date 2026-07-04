@@ -31,6 +31,7 @@ import {
   planCan,
   tierAtLeast,
   runDiagnostic,
+  deriveFiscalCalendar,
   resolveTradeConfig,
   facturXDataFromInvoice,
   buildFacturXBasicXml,
@@ -67,6 +68,7 @@ import {
   type CompanyProps,
   type CustomerProps,
   type DiagnosticResult,
+  type FiscalDeadline,
   type TradeConfig,
   type OcrExtractInput,
   type ChantierProps,
@@ -793,6 +795,8 @@ export class BackendService {
           })),
         );
       },
+      // C-EXP5b : lecture du calendrier fiscal — même use case que GET /fiscal-calendar (parité humain↔Bob).
+      listFiscalDeadlines: async () => this.getFiscalCalendar(),
       registerPayment: async (input) =>
         this.registerPayment({
           invoiceId: input.invoiceId,
@@ -1028,6 +1032,28 @@ export class BackendService {
         customerTypes,
         hasDecennale: company.hasValidDecennale(this.clock.today()),
         asOf: this.clock.today(),
+      }),
+    );
+  }
+
+  /** C-EXP5b : échéancier fiscal du tenant — MÊME use case pur (deriveFiscalCalendar @bob/core)
+   * que la démo locale et l'outil agent. fiscalYearEnd / urssafPeriodicity ne sont PAS encore
+   * capturés (un claim réglages les posera) : null → le use case émet ces échéances en 'assumed',
+   * honnête, avec un explain qui invite à confirmer. */
+  async getFiscalCalendar(): Promise<Result<FiscalDeadline[], AppError>> {
+    const company = await this.p.companies.findById(this.companyId());
+    if (!company) return { ok: false, error: appNotFound('company', this.companyId()) };
+    return ok(
+      deriveFiscalCalendar({
+        company: {
+          legalForm: company.legalForm,
+          vatRegime: company.vatRegime,
+          dateCreation: company.dateCreation ?? null,
+        },
+        asOf: this.clock.today(),
+        horizonDays: 90,
+        fiscalYearEnd: null,
+        urssafPeriodicity: null,
       }),
     );
   }

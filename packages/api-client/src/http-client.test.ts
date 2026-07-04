@@ -100,6 +100,67 @@ describe('HttpBobClient', () => {
     expect(r.value).toEqual(preview);
   });
 
+  it('C-EXP5b : getFiscalCalendar → GET /fiscal-calendar (JWT + tenant), échéances rendues telles quelles', async () => {
+    const deadlines = [
+      {
+        id: 'cfe-acompte-2026',
+        date: '2026-06-15',
+        label: 'CFE : acompte (si CFE N-1 ≥ 3 000 €)',
+        kind: 'cfe',
+        amountHint: null,
+        legalRef: 'art. 1679 quinquies CGI',
+        confidence: 'assumed',
+        explain: "Un acompte de 50 % de CFE n'est dû à cette date que si ta CFE de l'an dernier a atteint 3 000 €.",
+      },
+      {
+        id: 'tva-acompte-juillet-2026',
+        date: '2026-07-24',
+        label: 'TVA : acompte de juillet (55 %)',
+        kind: 'tva',
+        amountHint: null,
+        legalRef: 'art. 287, 3 CGI',
+        confidence: 'assumed',
+        explain: "Tu verses en juillet un acompte de 55 % de la TVA de l'an dernier (sauf si elle était sous 1 000 €) — la date exacte figure sur ton avis d'acompte.",
+      },
+    ];
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      if (String(url) === 'https://api.bob.test/fiscal-calendar' && init?.method === 'GET') {
+        const headers = init?.headers as Record<string, string>;
+        expect(headers['x-company-id']).toBe('company-mercier');
+        expect(headers.authorization).toBe('Bearer test-token');
+        return new Response(JSON.stringify(deadlines), { headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ error: { kind: 'not_found', resource: 'route' } }), { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-mercier', getToken: async () => 'test-token' });
+
+    const r = await client.getFiscalCalendar();
+
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    // Le client ne réinterprète RIEN : dates, confidence et explains viennent du use case serveur.
+    expect(r.value).toEqual(deadlines);
+  });
+
+  it('C-EXP5b : getFiscalCalendar remonte l’AppError serveur telle quelle (ex. tenant sans société)', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ error: { kind: 'not_found', entity: 'company', id: 'co-fantome' } }), {
+          status: 404,
+          headers: { 'content-type': 'application/json' },
+        }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'co-fantome' });
+
+    const r = await client.getFiscalCalendar();
+
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toEqual({ kind: 'not_found', entity: 'company', id: 'co-fantome' });
+  });
+
   it('loads expense defaults from the API memory endpoint', async () => {
     const defaults = {
       supplierName: 'Leroy Merlin',

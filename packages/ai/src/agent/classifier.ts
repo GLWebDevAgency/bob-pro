@@ -93,6 +93,11 @@ export const LLM_TOOL_SPECS: LlmToolSpec[] = [
     description: 'Ouvrir le diagnostic de conformité 2026 (facturation électronique) : « suis-je prêt pour 2026 ? ».',
     parameters: { type: 'object', properties: {}, additionalProperties: false },
   },
+  {
+    name: 'echeances_fiscales',
+    description: 'Lister les échéances fiscales à venir (TVA, URSSAF, IS, CFE, comptes annuels) : quoi payer ou déclarer, et quand.',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+  },
 ];
 
 const TOOL_TO_INTENT: Record<string, BobIntent> = {
@@ -108,6 +113,7 @@ const TOOL_TO_INTENT: Record<string, BobIntent> = {
   ouvrir_chantiers: 'voir_chantiers',
   ouvrir_cloture: 'cloture',
   ouvrir_diagnostic: 'diagnostic',
+  echeances_fiscales: 'echeances',
 };
 
 /** Une étape résolue d'un plan (une intention + sa référence éventuelle). */

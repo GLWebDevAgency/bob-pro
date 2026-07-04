@@ -90,6 +90,18 @@ export class ProfileController {
   }
 }
 
+/** Échéancier fiscal (C-EXP5b) : dates dérivées de la fiche société du tenant par
+ * deriveFiscalCalendar (@bob/core) — mêmes règles pour l'API, la démo locale et l'outil agent.
+ * JWT + tenant requis (guard global, comme /diagnostic — aucune liste blanche). */
+@Controller('fiscal-calendar')
+export class FiscalCalendarController {
+  constructor(private readonly backend: BackendService) {}
+  @Get()
+  async get() {
+    return unwrap(await this.backend.getFiscalCalendar());
+  }
+}
+
 @Controller('company')
 export class CompanyLookupController {
   constructor(private readonly backend: BackendService) {}

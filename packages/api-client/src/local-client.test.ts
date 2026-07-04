@@ -64,6 +64,31 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     expect(r.value.features).toContain('ai_assistant');
   });
 
+  it('C-EXP5b : getFiscalCalendar dérive l’échéancier de la société du seed (EI au réel simplifié)', async () => {
+    const r = await makeClient().getFiscalCalendar();
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    // Horloge fixe 2026-06-01, fenêtre 90 j → 2026-08-30 : acompte CFE du 15/6 (hypothèse
+    // CFE N-1 ≥ 3 000 €) puis acompte TVA de juillet posé au 24 — rien d'autre pour une EI au
+    // réel simplifié (pas d'URSSAF micro, pas d'IS, pas de rituel des comptes).
+    expect(r.value.map((d) => ({ id: d.id, date: d.date, kind: d.kind, confidence: d.confidence }))).toEqual([
+      { id: 'cfe-acompte-2026', date: '2026-06-15', kind: 'cfe', confidence: 'assumed' },
+      { id: 'tva-acompte-juillet-2026', date: '2026-07-24', kind: 'tva', confidence: 'assumed' },
+    ]);
+    // v1 honnête : aucun montant inventé — P03/P23 brancheront les provisions plus tard.
+    for (const d of r.value) expect(d.amountHint).toBeNull();
+  });
+
+  it('C-EXP5b : Bob local répond aux échéances fiscales via le MÊME use case (parité humain↔Bob)', async () => {
+    const r = await makeClient().askBob({ message: 'quelles sont mes prochaines échéances fiscales ?' });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.intent).toBe('echeances');
+    expect(r.value.kind).toBe('answer'); // lecture pure : jamais de confirmation
+    expect(r.value.card.body).toContain('15/06/2026 — CFE : acompte (si CFE N-1 ≥ 3 000 €) (à confirmer)');
+    expect(r.value.card.body).toContain('24/07/2026 — TVA : acompte de juillet (55 %) (à confirmer)');
+  });
+
   it('déroule le flux Devis -> facture -> paiement hors-ligne', async () => {
     const client = makeClient();
     const created = await client.createQuote({

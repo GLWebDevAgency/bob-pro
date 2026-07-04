@@ -1,4 +1,4 @@
-import { type Result, ok, err, type AppError, formatEUR } from '@bob/core';
+import { type Result, ok, err, type AppError, type FiscalDeadline, formatEUR } from '@bob/core';
 import { ModelRouter, type ModelChoice } from '../router/model-router';
 import { renderWithGuard } from '../guardrails/money-guard';
 import { type LlmPort } from '../llm/port';
@@ -148,6 +148,14 @@ function documentLine(d: AgentDocument): string {
   return `• ${d.filename} — ${d.kind}${link}`;
 }
 
+/** Ligne d'échéance fiscale, sobre (C-EXP5b) : date FR, libellé, « à confirmer » sur les
+ * hypothèses ('assumed'), puis l'explication du use case — jamais un montant (v1 n'en émet pas). */
+function fiscalDeadlineLine(d: FiscalDeadline): string {
+  const dateFr = `${d.date.slice(8, 10)}/${d.date.slice(5, 7)}/${d.date.slice(0, 4)}`;
+  const flag = d.confidence === 'assumed' ? ' (à confirmer)' : '';
+  return `• ${dateFr} — ${d.label}${flag}\n  ${d.explain}`;
+}
+
 function intentForTool(tool: string): BobIntent {
   if (tool === 'envoyer_devis') return 'envoyer_devis';
   if (tool === 'emettre_facture') return 'emettre_facture';
@@ -156,6 +164,7 @@ function intentForTool(tool: string): BobIntent {
   if (tool === 'relance_brouillon') return 'relance';
   if (tool === 'factures_impayees') return 'factures';
   if (tool === 'tresorerie_versement') return 'payout';
+  if (tool === 'echeances_fiscales') return 'echeances';
   return 'unknown';
 }
 
@@ -329,6 +338,38 @@ export class BobAgent {
       const docs = r.value.slice(0, 8);
       const body = docs.length ? docs.map(documentLine).join('\n') : 'Aucun document archivé pour le moment.';
       return ok({ kind: 'answer', intent, model, plan: ['Lister les documents archivés'], card: { title: 'Documents', body } });
+    }
+
+    if (intent === 'echeances') {
+      // C-EXP5b : lecture pure — même use case deriveFiscalCalendar que l'écran et GET /fiscal-calendar.
+      const list = this.deps.actions.listFiscalDeadlines?.bind(this.deps.actions);
+      if (!list) {
+        // Hôte sans la capacité : réponse honnête, jamais un calendrier inventé.
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier la capacité de l’hôte'],
+          card: {
+            title: 'Échéances fiscales',
+            body: 'Je n’ai pas accès au calendrier fiscal sur cet appareil pour le moment.',
+          },
+        });
+      }
+      const r = await list();
+      if (!r.ok) return err(r.error);
+      const items = r.value.slice(0, 8);
+      const rest = r.value.length - items.length;
+      const body = items.length
+        ? `${items.map(fiscalDeadlineLine).join('\n')}${rest > 0 ? `\n… et ${rest} autre${rest > 1 ? 's' : ''} dans la fenêtre.` : ''}`
+        : 'Aucune échéance fiscale dans les 90 prochains jours. 🎉';
+      return ok({
+        kind: 'answer',
+        intent,
+        model,
+        plan: ['Lire la fiche société', 'Dériver les échéances fiscales à venir'],
+        card: { title: 'Tes échéances fiscales (90 jours)', body },
+      });
     }
 
     if (intent === 'envoyer_devis') {
@@ -558,6 +599,9 @@ export class BobAgent {
         actions.push({ tool: 'factures_impayees', args: {}, label: 'Lister tes impayés' });
       } else if (step.intent === 'documents') {
         actions.push({ tool: 'documents_liste', args: {}, label: 'Lister les documents archivés' });
+      } else if (step.intent === 'echeances' && this.tool('echeances_fiscales')) {
+        // Gated sur la capacité de l'hôte (outil optionnel C-EXP5b) — sinon l'étape est écartée.
+        actions.push({ tool: 'echeances_fiscales', args: {}, label: 'Lister tes échéances fiscales' });
       }
     }
     if (actions.length === 0) return ok(this.unknownRun(model));
