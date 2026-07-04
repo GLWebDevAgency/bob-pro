@@ -1643,11 +1643,41 @@ transcript workflow wf_fb597a24-2e3.
 - Acceptance : endpoint testé (tenant réel, 403 sans) · client stub · outil agent testé ·
   typecheck 16/16.
 
+#### C-EXP-UI1 — les moteurs d'expertise à l'écran (échéancier + prescription + MED chiffrées)
+- status: IN-BUILD · owner: claude-code A · reviewer: gpt5pro (a posteriori)
+- Contrat : (1) ÉCHÉANCIER — hook useFiscalCalendar (client.getFiscalCalendar, C-EXP5b) → section
+  « À venir » sur l'écran Argent (liste datée : date, label, explain voix Bob, badge « à
+  confirmer » sur les assumed — jamais un montant, amountHint null en v1), état vide honnête ;
+  (2) RECOUVREMENT — l'écran qui rend le plan de relances affiche par facture échue le chrono de
+  prescription (palier d'urgence + « après le JJ/MM/AAAA, c'est perdu ») et les pénalités
+  courues (« +0,62 €/jour · 27,71 € à ce jour » B2B/B2G seulement) — données DÉJÀ exposées par
+  derive-relance-plan (C-EXP2 vA), zéro logique à l'écran ; (3) i18n section nouvelle argent.* /
+  relance.* additive ×3 humeurs. INTERDIT : packages/ai + api-client local-client (WIP session B).
+- Acceptance : captures écran Argent (échéancier) + relances (chrono/pénalités) · états vides ·
+  i18n tests · typecheck + token-lint.
+
+#### C-EXP5c — provisions URSSAF micro (P03) : le « dispo réel » enfin vrai
+- status: IN-BUILD · owner: claude-code A · reviewer: gpt5pro (a posteriori)
+- Contrat : table de taux micro-social VERSIONNÉE (D613-4 CSS, décret 2025-943 — 2026 : ventes
+  12,3 % · BIC prestations 21,2 % · BNC 25,6 %* [*23,2 % PLNR CIPAV — vérifier au build] + option
+  VFL art. 151-0 CGI 1/1,7/2,2 %) ; deriveUrssafProvision (CA ENCAISSÉ de la période courante ×
+  taux du profil micro — jamais sur le facturé) ; branchement build-ledger-view.ts:160
+  (cotisationsCents null → provision réelle quand la company est micro ET les encaissements datés
+  disponibles — entrées optionnelles pattern C-EXP2, pas de donnée = null honnête) ; le payout
+  « tu peux te verser » se teinte : micro → dispo − provision URSSAF − TVA due. DOCTRINE « Bob
+  FAIT » : sortie = déclaration pré-calculée (période, CA encaissé, taux, montant à déclarer) —
+  la ligne d'échéancier URSSAF (C-EXP5) reçoit son amountHint au passage si trivial.
+- Acceptance : taux 2026 sourcés + testés par profil (ventes/BIC/BNC, VFL) · provision testée
+  (périodes, avoirs) · ledger view : micro avec/sans données · typecheck.
+
 #### Signatures (C-EXP2 v1 volet A)
 - [x] agreed — claude-code A — 2026-07-04 (03:40) — régime humain, review gpt5pro a posteriori
 
 #### Signatures (C-EXP5b)
 - [x] agreed — claude-code A — 2026-07-04 (04:00) — régime humain, review gpt5pro a posteriori
+
+#### Signatures (C-EXP-UI1, C-EXP5c)
+- [x] agreed — claude-code A — 2026-07-04 (20:40) — régime humain, review gpt5pro a posteriori
 
 #### Log C-EXP (append-only, horodaté)
 - [2026-07-04 02:40] claude-code A AUDIT+CLAIM: audit 58 agents (4 cartographes, 6 experts,
