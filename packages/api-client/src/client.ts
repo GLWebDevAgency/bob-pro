@@ -33,6 +33,7 @@ import type {
   DocumentLinkedEntityType,
   DocumentView,
   DocumentDownloadUrl,
+  SubscriptionInfo,
 } from '@bob/core';
 
 export interface QuoteView {
@@ -255,10 +256,16 @@ export interface RegisterDeviceClientInput {
  * Deux implémentations : LocalBobClient (fixtures, hors-ligne — V1) et, plus tard, HttpBobClient (NestJS).
  * L'UI ne connaît que cette interface : brancher le backend = changer d'implémentation, sans toucher aux écrans.
  */
-export interface SubscriptionView {
-  tier: string;
-  status: string;
-  currentPeriodEnd: string | null;
+/**
+ * GET /subscription (C26b) — abonnement RÉEL du tenant. Étend SubscriptionInfo (@bob/core,
+ * défini par C26 dans derive-account-view — le type fait foi, pas de doublon) : tout
+ * SubscriptionView EST un SubscriptionInfo, l'écran Compte le passe tel quel à deriveAccountView.
+ */
+export interface SubscriptionView extends SubscriptionInfo {
+  /** Accès anticipé RÉEL : aucun billing n'existe — l'écran Compte affiche l'état early-access honnête. */
+  earlyAccess: boolean;
+  /** Prix réellement facturé au tenant (centimes/mois) — 0 pendant l'accès anticipé. */
+  priceCents: number;
   features: string[];
   ai?: { capability: string; defaultAutonomy: string; monthlyActions: number | null };
   autonomyEntitlement?: string;
@@ -288,6 +295,9 @@ export interface SubscriptionView {
 
 export interface BobClient {
   readonly companyId: string;
+  /** GET /subscription (C26b) : abonnement réel du tenant (SubscriptionView ⊂ SubscriptionInfo @bob/core).
+   * En early-access le serveur renvoie earlyAccess: true, priceCents: 0 — l'écran Compte en dérive
+   * l'état honnête. Local (démo) : early-access aligné sur le seed. */
   getSubscription(): Promise<Result<SubscriptionView, AppError>>;
   startCheckout(tier: PlanTier): Promise<Result<{ url: string }, AppError>>;
   billingPortal(): Promise<Result<{ url: string }, AppError>>;

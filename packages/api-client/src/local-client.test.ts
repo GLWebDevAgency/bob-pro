@@ -51,6 +51,19 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     expect(!bad.ok && bad.error.kind).toBe('domain');
   });
 
+  it('C26b : getSubscription = early-access HONNÊTE aligné sur le seed (business actif, 0 € facturé)', async () => {
+    const r = await makeClient().getSubscription();
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    // Même vérité que le serveur : aucun billing — l'écran Compte dérive l'état accès anticipé.
+    expect(r.value.earlyAccess).toBe(true);
+    expect(r.value.priceCents).toBe(0);
+    expect(r.value.tier).toBe('business');
+    expect(r.value.status).toBe('active');
+    expect(r.value.currentPeriodEnd).toBeNull();
+    expect(r.value.features).toContain('ai_assistant');
+  });
+
   it('déroule le flux Devis -> facture -> paiement hors-ligne', async () => {
     const client = makeClient();
     const created = await client.createQuote({

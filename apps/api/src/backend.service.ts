@@ -47,7 +47,6 @@ import {
   GetDocumentDownloadUrl,
   buildDocumentStorageKey,
   buildInvoiceAccountingPreviewEntry,
-  MERCIER_PROPS,
   CASH_SNAPSHOT,
   type Result,
   type AppError,
@@ -287,7 +286,6 @@ export class BackendService {
   private readonly stt = buildSttCloud();
   private readonly tts = buildTtsCloud();
   private readonly documentStorage = buildDocumentStorage();
-  private readonly subscription: Subscription;
 
   /**
    * Tenant courant : companyId du Principal posé par le guard (en démo : société de seed via
@@ -296,6 +294,22 @@ export class BackendService {
    */
   private companyId(): string {
     return requireTenant();
+  }
+
+  /**
+   * Abonnement du tenant — C26b : dérivation PAR TENANT (fini le singleton Mercier partagé
+   * par tous). EARLY-ACCESS RÉEL : aucune table de billing n'existe — même politique
+   * pour tous les tenants (business actif, 0 € facturé), mais l'objet porte le companyId DU
+   * TENANT. Le jour où la facturation ouvre, CETTE méthode est LE point unique qui lira la
+   * table de billing : les gatings (planCan/ai_assistant, TTS pro+, modules chantiers,
+   * paiement en ligne) suivront sans être touchés. Les chemins requête passent
+   * `this.companyId()` (Principal du guard) ; les chemins jobs/cron passent leur companyId
+   * explicite (ScheduledTenantDirectory — même règle que jobs/relance.service).
+   */
+  private subscriptionFor(companyId: string): Subscription {
+    const started = Subscription.start({ id: `sub-${companyId}`, companyId, tier: 'business', status: 'active' });
+    if (!started.ok) throw new Error(`abonnement early-access non constructible pour ${companyId}`);
+    return started.value;
   }
 
   constructor(
@@ -307,11 +321,7 @@ export class BackendService {
     private readonly notificationDelivery: NotificationDeliveryService,
     private readonly metrics: Metrics,
     private readonly logger: AppLogger,
-  ) {
-    const seed = Subscription.start({ id: 'sub-mercier', companyId: MERCIER_PROPS.id, tier: 'business', status: 'active' });
-    if (!seed.ok) throw new Error('abonnement de seed invalide');
-    this.subscription = seed.value;
-  }
+  ) {}
 
   private mapQuote(q: Quote): QuoteView {
     return {
@@ -820,9 +830,10 @@ export class BackendService {
 
   async askBob(message: string, autonomy?: AgentAutonomy): Promise<Result<AgentRun, AppError>> {
     // L'assistant agentique est réservé aux offres avec IA (Solo+). Sans lui, l'app reste 100 % manuelle.
-    if (!planCan(this.subscription.tier, 'ai_assistant'))
+    const subscription = this.subscriptionFor(this.companyId());
+    if (!planCan(subscription.tier, 'ai_assistant'))
       return { ok: false, error: appForbidden("L'assistant Bob est inclus à partir de l'offre Solo.") };
-    const effectiveAutonomy = clampAgentAutonomy(autonomy, this.subscription.autonomyEntitlement());
+    const effectiveAutonomy = clampAgentAutonomy(autonomy, subscription.autonomyEntitlement());
     const start = Date.now();
     const r = await this.bobAgent().ask(message, { autonomy: effectiveAutonomy });
     const ms = Date.now() - start;
@@ -837,7 +848,7 @@ export class BackendService {
   }
 
   async agentJournal(runId: string): Promise<Result<JournalEntry[], AppError>> {
-    if (!planCan(this.subscription.tier, 'ai_assistant'))
+    if (!planCan(this.subscriptionFor(this.companyId()).tier, 'ai_assistant'))
       return { ok: false, error: appForbidden("L'assistant Bob est inclus à partir de l'offre Solo.") };
     return ok(await this.p.agentJournal.load(this.companyId(), runId));
   }
@@ -847,11 +858,11 @@ export class BackendService {
   }
 
   voiceTtsCloudAvailable(): boolean {
-    return !!this.tts && tierAtLeast(this.subscription.tier, 'pro');
+    return !!this.tts && tierAtLeast(this.subscriptionFor(this.companyId()).tier, 'pro');
   }
 
   async transcribe(input: { audioBase64: string; mimeType: string }): Promise<Result<{ text: string }, AppError>> {
-    if (!planCan(this.subscription.tier, 'ai_assistant'))
+    if (!planCan(this.subscriptionFor(this.companyId()).tier, 'ai_assistant'))
       return { ok: false, error: appForbidden("La dictée vocale est incluse à partir de l'offre Solo.") };
     if (!this.stt)
       return { ok: false, error: appForbidden('Dictée cloud non configurée (clé OpenAI absente). Utilise la dictée native.') };
@@ -865,9 +876,10 @@ export class BackendService {
   }
 
   async synthesizeSpeech(input: { text: string }): Promise<Result<TtsResult, AppError>> {
-    if (!planCan(this.subscription.tier, 'ai_assistant'))
+    const subscription = this.subscriptionFor(this.companyId());
+    if (!planCan(subscription.tier, 'ai_assistant'))
       return { ok: false, error: appForbidden("La voix de Bob est incluse à partir de l'offre Solo.") };
-    if (!tierAtLeast(this.subscription.tier, 'pro'))
+    if (!tierAtLeast(subscription.tier, 'pro'))
       return { ok: false, error: appForbidden("La voix cloud premium est incluse à partir de l'offre Pro.") };
     if (!this.tts)
       return { ok: false, error: appForbidden('Synthèse vocale cloud non configurée (clé Mistral absente). Utilise la voix native.') };
@@ -885,11 +897,12 @@ export class BackendService {
   }
 
   async confirmBob(pending: PendingAction): Promise<Result<AgentRun, AppError>> {
-    if (!planCan(this.subscription.tier, 'ai_assistant'))
+    const subscription = this.subscriptionFor(this.companyId());
+    if (!planCan(subscription.tier, 'ai_assistant'))
       return { ok: false, error: appForbidden("L'assistant Bob est inclus à partir de l'offre Solo.") };
     try {
       const record = await this.bobAgent().runJournaled(pendingToInvocations(pending), {
-        autonomy: this.subscription.autonomyEntitlement(),
+        autonomy: subscription.autonomyEntitlement(),
       });
       const blocked = record.outcomes.find((o) => o.status === 'denied' || o.status === 'failed');
       this.logger.audit('ai.confirm', {
@@ -926,16 +939,22 @@ export class BackendService {
   }
 
   // ——— Monétisation ———
+  /** GET /subscription (C26b) — abonnement RÉEL du tenant courant (guard : JWT + tenant requis). */
   getSubscription() {
+    const subscription = this.subscriptionFor(this.companyId());
     return {
-      tier: this.subscription.tier,
-      status: this.subscription.status,
-      currentPeriodEnd: this.subscription.currentPeriodEnd,
-      features: [...planEntitlements(this.subscription.tier)],
-      ai: PLAN_CATALOG[this.subscription.tier].ai,
-      autonomyEntitlement: this.subscription.autonomyEntitlement(),
-      limits: PLAN_CATALOG[this.subscription.tier].limits,
-      addOns: [...this.subscription.addOns],
+      tier: subscription.tier,
+      status: subscription.status,
+      // EARLY-ACCESS RÉEL (C26b) : aucun billing — rien n'est facturé (0 €), pas de fin de
+      // période. Ces champs basculeront avec subscriptionFor le jour où la table de billing existera.
+      earlyAccess: true,
+      priceCents: 0,
+      currentPeriodEnd: subscription.currentPeriodEnd,
+      features: [...planEntitlements(subscription.tier)],
+      ai: PLAN_CATALOG[subscription.tier].ai,
+      autonomyEntitlement: subscription.autonomyEntitlement(),
+      limits: PLAN_CATALOG[subscription.tier].limits,
+      addOns: [...subscription.addOns],
       addOnCatalog: Object.values(ADDON_CATALOG),
       catalog: Object.values(PLAN_CATALOG),
     };
@@ -944,7 +963,8 @@ export class BackendService {
   async getProfile(): Promise<Result<TradeConfig, AppError>> {
     const company = await this.p.companies.findById(this.companyId());
     if (!company) return { ok: false, error: appNotFound('company', this.companyId()) };
-    return ok(resolveTradeConfig(company.trade, this.subscription.tier, this.subscription.addOns));
+    const subscription = this.subscriptionFor(this.companyId());
+    return ok(resolveTradeConfig(company.trade, subscription.tier, subscription.addOns));
   }
 
   async lookupCompany(siret: string): Promise<Result<CompanyLookupResult, AppError>> {
@@ -963,7 +983,8 @@ export class BackendService {
   private async chantiersAllowed(): Promise<boolean> {
     const company = await this.p.companies.findById(this.companyId());
     if (!company) return false;
-    return resolveTradeConfig(company.trade, this.subscription.tier, this.subscription.addOns).modules.some(
+    const subscription = this.subscriptionFor(this.companyId());
+    return resolveTradeConfig(company.trade, subscription.tier, subscription.addOns).modules.some(
       (m) => m.key === 'chantiers' && m.active,
     );
   }
@@ -1026,7 +1047,7 @@ export class BackendService {
 
   /** Lien de paiement en ligne d'une facture — gated par l'offre (Pro+). */
   async invoicePaymentLink(invoiceId: string): Promise<Result<{ url: string }, AppError>> {
-    if (!this.subscription.can('online_payment')) {
+    if (!this.subscriptionFor(this.companyId()).can('online_payment')) {
       return { ok: false, error: appForbidden("Le paiement en ligne nécessite l'offre Pro ou Business.") };
     }
     const inv = await this.ownedInvoice(invoiceId);
@@ -1330,9 +1351,10 @@ export class BackendService {
   async extractDocument(input: { contentBase64: string; mimeType: string }): Promise<Result<OcrExtraction, AppError>> {
     // A3-C14 : le prompt OCR est personnalisé par l'activité (TradeConfig) — données typées, pas de texte libre.
     const company = await this.p.companies.findById(this.companyId());
+    const subscription = this.subscriptionFor(this.companyId());
     const trade = company
       ? ((): NonNullable<OcrExtractInput['trade']> => {
-          const config = resolveTradeConfig(company.trade, this.subscription.tier, this.subscription.addOns);
+          const config = resolveTradeConfig(company.trade, subscription.tier, subscription.addOns);
           return {
             label: config.label,
             customerWord: config.vocabulary.customer,

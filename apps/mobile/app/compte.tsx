@@ -1,9 +1,9 @@
 /**
  * Mon compte — Profil / Abonnement (claim C26 v2, réf proto dc.html §COMPTE & ABONNEMENT).
  *
- * DOCTRINE HONNÊTETÉ (le cœur du claim) : il n'existe AUCUN backend d'abonnement (pas de Stripe
- * billing, pas de GET /subscription). Les « Pro · 39 € ACTIVE », factures payées et « Banque
- * connectée » du proto sont du REMPLISSAGE — ici l'écran dit la vérité :
+ * DOCTRINE HONNÊTETÉ (le cœur du claim) : il n'existe AUCUN billing (pas de Stripe). Depuis C26b,
+ * GET /subscription existe et dit cette vérité PAR TENANT (earlyAccess: true, 0 €) — les
+ * « Pro · 39 € ACTIVE », factures payées et « Banque connectée » du proto restent du REMPLISSAGE :
  * · offre courante = Accès anticipé · 0 €/mois · toutes les fonctions ouvertes ;
  * · grille Solo 19 / Pro 39 / Business 79 = PLAN_PRICING (constante produit @bob/core),
  *   CTA désactivés « disponible à l'ouverture de la facturation » — rien ne prétend souscrire ;
@@ -54,7 +54,7 @@ import {
 } from '@bob/ui';
 import { useIdentity } from '../src/data/identity';
 import { useAuth } from '../src/data/auth';
-import { useProfile } from '../src/data/hooks';
+import { useProfile, useSubscription } from '../src/data/hooks';
 import {
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -90,6 +90,7 @@ export default function Compte() {
   const identity = useIdentity();
   const { enabled: authEnabled, session, signOut } = useAuth();
   const profile = useProfile();
+  const subscription = useSubscription();
   // Onglet adressable (deep link : /compte?tab=abonnement — notifications d'abo, docs).
   // useEffect (pas seulement l'initialiseur) : un deep link doit basculer l'onglet même
   // quand l'écran est déjà monté (tap sur une notification, app au premier plan).
@@ -110,10 +111,13 @@ export default function Compte() {
         // Démo = la société du seed @bob/core ; connecté = null tant que GET /company/me n'existe pas.
         company: identity.isDemo ? MERCIER_PROPS : null,
         tradeConfig: profile.data ?? null,
-        // AUCUN GET /subscription aujourd'hui (C26b) → null = vérité produit : accès anticipé.
-        subscription: null,
+        // GET /subscription RÉEL (C26b) — SubscriptionView ⊂ SubscriptionInfo, passé tel quel.
+        // earlyAccess: true (aucun billing) → null pour la vue : deriveAccountView rend l'état
+        // accès anticipé honnête (rendu inchangé — garanti par ses tests). Erreur/chargement →
+        // null aussi : même état honnête, jamais un plan inventé.
+        subscription: subscription.data && !subscription.data.earlyAccess ? subscription.data : null,
       }),
-    [identity, profile.data],
+    [identity, profile.data, subscription.data],
   );
 
   const email = session?.user?.email ?? null;

@@ -370,5 +370,35 @@ describe('HttpBobClient — assistant Bob (C40 ⑧ : ask/confirm/journal serveur
 
     expect(r.ok && r.value).toEqual({ companyId: 'company-user-1' });
   });
+
+  it('C26b : getSubscription → GET /subscription, early-access RÉEL du tenant (SubscriptionInfo ⊂ payload)', async () => {
+    const payload = {
+      tier: 'business',
+      status: 'active',
+      earlyAccess: true,
+      priceCents: 0,
+      currentPeriodEnd: null,
+      features: ['ai_assistant', 'accounting_foundation'],
+      catalog: [],
+    };
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      if (String(url) === 'https://api.bob.test/subscription' && init?.method === 'GET') {
+        return new Response(JSON.stringify(payload), { headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ error: { kind: 'not_found', resource: 'route' } }), { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-mercier' });
+
+    const r = await client.getSubscription();
+
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(r.value).toEqual(payload);
+    // Le cœur C26b : la vérité early-access voyage jusqu'à l'écran (0 € facturé, pas de plan inventé).
+    expect(r.value.earlyAccess).toBe(true);
+    expect(r.value.priceCents).toBe(0);
+  });
 });
 

@@ -351,6 +351,9 @@ export class LocalBobClient implements BobClient {
     return ok({
       tier: 'business',
       status: 'active',
+      // C26b — early-access aligné sur le serveur : aucun billing, 0 € facturé (même vérité que le seed).
+      earlyAccess: true,
+      priceCents: 0,
       currentPeriodEnd: null,
       features: [...planEntitlements('business')],
       ai: PLAN_CATALOG.business.ai,
