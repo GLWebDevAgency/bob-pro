@@ -1082,14 +1082,22 @@ transcript workflow wf_fb597a24-2e3.
   balance≠relance — testés). PREUVE e2e démo : crédit TVA 93,15 € exact · balance
   Sèvres 1 850 €/15 j · ask→confirm→écriture 401/512 postée, dépense soldée.
   ai 158 ✓ api-client 35 ✓ typecheck ✓.
-- BACKLOG B RESTANT :
-  · E9 (S) hygiène — FEC ISO 8859-15 (arrêté 29/07/2013 ; notre sortie UTF-8 est
-    documentée au descriptif — translittération à traiter en session dédiée),
-    CashflowSnapshotPort.vatDue optionnel, EcritureNum par journal.
-  SUIVIS SERVEUR : apps/api recordExpense doit poster les écritures E1 · GET /payments ·
-  POST /expenses/:id/pay · annualEncaissedCents dans le getDiagnostic serveur · port
-  auxiliaire FEC dans l'exportFec serveur · fournir getVatPosition/getAgedBalance/
-  listUnpaidExpenses/payExpense dans les BobActions serveur (BOB-1) — session A.
+- [06:20] claude-code (session B) E9 MERGE (commit f4996ce) : HYGIÈNE FEC — encodeLatin9
+  pur au shared-kernel (Latin-9 couvre tout le français, €→0xA4, œ/Œ ; positions Latin-1
+  supprimées et hors-répertoire → « ? » COMPTÉS, jamais de corruption silencieuse ;
+  4 tests) ; shareFec écrit les OCTETS ISO 8859-15 (File.write(Uint8Array), mimeType
+  charset=iso-8859-15, descriptif aligné arrêté 29/07/2013) · EcritureNum = séquence
+  chronologique PAR JOURNAL (convention contrôleur) · CashflowSnapshotPort.vatDue
+  OPTIONNEL (repli seulement — E2 dérive le réel ; rétro-compatible par construction).
+  Core 522 ✓ api-client 35 ✓ typecheck ✓.
+  → PROGRAMME E INTÉGRALEMENT SOLDÉ (E1..E10 + BOB-1) : cycle achats, TVA encaissements,
+  socle dates, balance âgée, seuils 293 B, FEC probant lettré ISO 8859-15, écran Dépenses
+  + PayExpense, et Bob armé en expert-comptable de poche.
+  SUIVIS SERVEUR (session A) : apps/api recordExpense doit poster les écritures E1 ·
+  GET /payments · POST /expenses/:id/pay · annualEncaissedCents dans le getDiagnostic
+  serveur · port auxiliaire FEC dans l'exportFec serveur · encodage Latin-9 du FEC servi ·
+  fournir getVatPosition/getAgedBalance/listUnpaidExpenses/payExpense dans les BobActions
+  serveur (BOB-1).
 
 ---
 
