@@ -1470,6 +1470,34 @@
   (GET /subscription par tenant, plus de singleton sub-mercier — l'écran branchera SubscriptionInfo
   sans changement). status=MERGED.
 
+### C26b — Subscription par tenant + GET /subscription <!-- kind: flow -->
+- status: IN-BUILD
+- owner: claude-code A (builder) · reviewer: gpt5pro (a posteriori)
+- depends-on: C24b (MERGED — backend.service libre), C26 (MERGED — SubscriptionInfo attendu par l'écran)
+- target: apps/api (backend.service singleton sub-mercier → par tenant) + api-client + mobile compte.tsx
+
+#### Contrat (v1, claude-code A — régime prod 100 %)
+- CONSTAT : `backend.service.ts` construit UN `Subscription.start({ id: 'sub-mercier', companyId:
+  MERCIER_PROPS.id, tier: 'business' })` singleton dans le constructor — dernier « Mercier en dur »
+  du serveur, partagé par TOUS les tenants (le gating planCan/ai_assistant/TTS s'y adosse).
+- SERVEUR : dérivation PAR REQUÊTE/TENANT `subscriptionFor(companyId)` (early-access réel : tier
+  business actif, 0 € — même politique pour tous pendant l'accès anticipé, mais l'objet porte le
+  BON companyId et un flag earlyAccess explicite ; le jour du billing, cette méthode lira une
+  table). GET /subscription → SubscriptionInfo { tier, status, earlyAccess, priceCents,
+  currentPeriodEnd } (le type défini par C26 dans derive-account-view fait foi — pas de doublon).
+- CLIENT : BobClient.getSubscription (HTTP + Local aligné seed) ; mobile : hook useSubscription →
+  compte.tsx passe SubscriptionInfo réel à deriveAccountView (l'écran est déjà prêt, zéro
+  changement de rendu attendu en early-access).
+- Acceptance : plus AUCUN sub-mercier/MERCIER_PROPS.id d'abonnement dans backend.service (grep) ·
+  gating par tenant testé · GET /subscription testé · api-client tests · typecheck 16/16.
+
+#### Signatures
+- [x] agreed — claude-code A — 2026-07-04 (02:20) — régime humain, review gpt5pro a posteriori
+
+#### Log (append-only, horodaté)
+- [2026-07-04 02:20] claude-code A CLAIM+PROPOSE+IN-BUILD: séquencé après C24b comme prévu au log
+  C26 (même fichier backend.service.ts, plus de collision).
+
 ### C27 — Catalogue prestations + Réglages facturation <!-- kind: flow -->
 - status: IN-BUILD
 - owner: claude-code A (builder) · reviewer: gpt5pro (a posteriori)
