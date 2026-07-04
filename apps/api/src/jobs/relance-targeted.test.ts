@@ -29,8 +29,8 @@ function invoice(id: string, customerId: string, opts: { daysLate?: number; paid
   } as unknown as Invoice;
 }
 
-function customer(id: string, email: string | null): Customer {
-  return { id, companyId: 'co-1', name: `SARL ${id}`, toProps: () => ({ email }) } as unknown as Customer;
+function customer(id: string, email: string | null, type: 'b2c' | 'b2b' | 'b2g' = 'b2b'): Customer {
+  return { id, companyId: 'co-1', name: `SARL ${id}`, type, toProps: () => ({ email }) } as unknown as Customer;
 }
 
 async function makeService(setup: { invoices: Invoice[]; customers: Customer[] }) {
@@ -58,9 +58,24 @@ describe('sendRelanceForInvoice — envoi ciblé validé (C25 ②, POST /invoice
     expect(notifier.send).toHaveBeenCalledTimes(1);
     const sent = (notifier.send as ReturnType<typeof vi.fn>).mock.calls[0]![0] as { subject: string; body: string };
     expect(sent.subject).toContain('Mise en demeure');
-    expect(sent.body).toContain('L441-10'); // texte légal du domaine (buildRelance)
+    expect(sent.body).toContain('L441-10'); // texte légal du domaine (buildRelance, débiteur b2b)
     const feed = await persistence.notificationJobs.listRecent('co-1', 10);
     expect(feed[0]).toMatchObject({ kind: 'invoice-relance', status: 'done' });
+  });
+
+  it('mise en demeure B2C : le type du client traverse la projection — code civil, jamais L441-10 ni 40 € (P01)', async () => {
+    const { service, notifier } = await makeService({
+      invoices: [invoice('inv-med', 'cu-part', { daysLate: 45 })],
+      customers: [customer('cu-part', 'particulier@example.com', 'b2c')],
+    });
+
+    const r = await service.sendRelanceForInvoice('co-1', 'inv-med');
+
+    expect(r.ok).toBe(true);
+    const sent = (notifier.send as ReturnType<typeof vi.fn>).mock.calls[0]![0] as { body: string };
+    expect(sent.body).toContain('art. 1344 du code civil');
+    expect(sent.body).not.toContain('L441-10');
+    expect(sent.body).not.toContain('40 €');
   });
 
   it('refus honnête : facture pas encore échue / réglée → validation ; inconnue → not_found', async () => {

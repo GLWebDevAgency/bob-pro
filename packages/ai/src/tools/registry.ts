@@ -315,7 +315,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
     const envoyerRelance: Tool<SendRelanceActionInput, SendRelanceActionOutput> = {
       name: 'envoyer_relance',
       description:
-        'Envoie RÉELLEMENT la relance d’une facture en retard au client (email + notification) — ton choisi par le plan de relances (mise en demeure L441-10 incluse).',
+        'Envoie RÉELLEMENT la relance d’une facture en retard au client (email + notification) — ton choisi par le plan de relances, mise en demeure incluse au régime légal du type de client (pro L441-10, particulier code civil, public CCP).',
       mutating: true,
       outbound: true,
       compliance: 'medium',

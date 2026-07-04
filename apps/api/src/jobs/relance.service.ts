@@ -20,9 +20,10 @@ import { ScheduledTenantDirectory } from './tenant-directory';
  * Relances automatiques (C25). UNE SEULE politique fait foi : DEFAULT_RELANCE_POLICY de
  * @bob/core (deriveRelancePlan — J+3 cordial · J+10 neutre · J+20 ferme · J+30 mise en demeure),
  * le MÊME moteur que l'écran mobile et que l'agent (fini le toneForDaysLate local 15/30/45).
- * Le cron envoie cordial → ferme ; la MISE EN DEMEURE (L441-10 + indemnité 40 €) n'est JAMAIS
- * envoyée sans validation explicite (garde-fou proto/relance.medWarning) : elle attend le
- * déclenchement ciblé POST /invoices/:id/relance (sendRelanceForInvoice).
+ * Le cron envoie cordial → ferme ; la MISE EN DEMEURE (régime légal du type de client — P01 :
+ * b2b L441-10 + 40 €, b2c code civil sans 40 €, b2g CCP BCE+8 + 40 €) n'est JAMAIS envoyée sans
+ * validation explicite (garde-fou proto/relance.medWarning) : elle attend le déclenchement ciblé
+ * POST /invoices/:id/relance (sendRelanceForInvoice).
  * V1 : cron in-process (@nestjs/schedule). Prod : BullMQ/Redis (même port).
  */
 @Injectable()
@@ -61,7 +62,9 @@ export class RelanceService {
         dueAt: i.dueAt,
         paid: i.paid,
       })),
-      customers: customers.map((c: Customer) => ({ id: c.id, name: c.name })),
+      // Le type pilote le régime de la mise en demeure (P01 C-EXP1) : la projection {id,name}
+      // qui l'écrasait envoyait L441-10 + 40 € à des particuliers — non-conformité corrigée.
+      customers: customers.map((c: Customer) => ({ id: c.id, name: c.name, type: c.type })),
       today: this.clock.today(),
     });
     const emails = new Map(customers.map((c) => [c.id, c.toProps().email ?? null]));
@@ -118,7 +121,7 @@ export class RelanceService {
   /**
    * ENVOI CIBLÉ, validé par l'utilisateur (C25 ② — POST /invoices/:id/relance : le contrat
    * BobClient.sendRelance devient réel). Tous les tons sont permis ici : le geste EST la
-   * validation (y compris la mise en demeure L441-10). Refus honnête sinon.
+   * validation (y compris la mise en demeure, au régime du type de client). Refus honnête sinon.
    */
   /** Variante requête HTTP : tenant du Principal authentifié (même règle que BackendService —
    * C24b : tenant OBLIGATOIRE, le repli société de démo est supprimé). */

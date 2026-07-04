@@ -64,6 +64,9 @@ export class IssueInvoice {
           kind: 'invoice',
           asOf: this.deps.clock.today(),
           operationNature: operationNatureOf(invoice.lines),
+          // P11 : les taux des lignes déclenchent la mention certifiée taux réduits (10 %/5,5 %) —
+          // l'éligibilité a été actée à la création (suggestVatRate), non persistée : cf. buildMentions.
+          lineVatRates: invoice.lines.map((l) => l.vatRate),
         });
         const issued = invoice.issue({ mentions, terms: termsR.value, issuedAt: this.deps.clock.today(), at: this.deps.clock.now() });
         if (!issued.ok) throw new TxDomainError(issued.error);

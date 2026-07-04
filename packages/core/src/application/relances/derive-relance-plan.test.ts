@@ -4,8 +4,9 @@ import {
   deriveRelancePlan,
   deriveUpcomingDues,
   type DeriveRelancePlanInput,
+  type RelanceCustomerData,
 } from './derive-relance-plan';
-import { type TodayCustomerData, type TodayInvoiceData } from '../today/derive-today-priorities';
+import { type TodayInvoiceData } from '../today/derive-today-priorities';
 import { type Totals } from '../../domain/billing/shared/totals';
 
 // ── Fixtures unitaires ciblées (fonction pure : données en clair suffisent) ──
@@ -37,9 +38,10 @@ function dueDaysAgo(days: number): string {
   return d.toISOString().slice(0, 10);
 }
 
-const CUSTOMERS: TodayCustomerData[] = [
-  { id: 'cust-1', name: 'SARL Martin' },
-  { id: 'cust-2', name: 'Mme Durand' },
+const CUSTOMERS: RelanceCustomerData[] = [
+  { id: 'cust-1', name: 'SARL Martin', type: 'b2b' },
+  { id: 'cust-2', name: 'Mme Durand', type: 'b2c' },
+  { id: 'cust-3', name: 'Mairie de Nanterre', type: 'b2g' },
 ];
 
 function plan(partial: Partial<DeriveRelancePlanInput>) {
@@ -75,7 +77,7 @@ describe('deriveRelancePlan', () => {
     ]);
   });
 
-  it('mise en demeure : texte légal L441-10 + indemnité 40 € (copy du domaine, jamais dupliquée)', () => {
+  it('mise en demeure B2B : texte légal L441-10 + indemnité 40 € (copy du domaine, jamais dupliquée)', () => {
     const entries = plan({ invoices: [invoiceFixture({ id: 'inv-40j', dueAt: dueDaysAgo(40) })] });
     expect(entries).toHaveLength(1);
     const med = entries[0]!;
@@ -84,6 +86,40 @@ describe('deriveRelancePlan', () => {
     expect(med.message.subject).toContain('F-2026-0088');
     expect(med.message.body).toContain('L441-10');
     expect(med.message.body).toContain('indemnite forfaitaire de recouvrement de 40 €');
+  });
+
+  // —— P01 (C-EXP1) : le plan branche buildRelance sur customer.type — la bonne lettre, zéro config ——
+  it('mise en demeure B2C (particulier) : art. 1344 code civil + taux légal — jamais 40 € ni L441-10', () => {
+    const entries = plan({
+      invoices: [invoiceFixture({ id: 'inv-40j', customerId: 'cust-2', dueAt: dueDaysAgo(40) })],
+    });
+    const med = entries[0]!;
+    expect(med.tone).toBe('miseendemeure');
+    expect(med.message.body).toContain('art. 1344 du code civil');
+    expect(med.message.body).toContain('taux legal');
+    expect(med.message.body).not.toContain('L441-10');
+    expect(med.message.body).not.toContain('40 €');
+  });
+
+  it('mise en demeure B2G (acheteur public) : L2192-12/13 CCP, BCE + 8 points + 40 € de plein droit', () => {
+    const entries = plan({
+      invoices: [invoiceFixture({ id: 'inv-40j', customerId: 'cust-3', dueAt: dueDaysAgo(40) })],
+    });
+    const med = entries[0]!;
+    expect(med.message.body).toContain('code de la commande publique');
+    expect(med.message.body).toContain('BCE majore de 8 points');
+    expect(med.message.body).toContain('40 €');
+    expect(med.message.body).not.toContain('L441-10');
+  });
+
+  it('client absent de la projection : prudence b2c — on ne réclame jamais 40 € sans savoir le débiteur professionnel', () => {
+    const entries = plan({
+      invoices: [invoiceFixture({ id: 'inv-40j', customerId: 'cust-inconnu', dueAt: dueDaysAgo(40) })],
+    });
+    const med = entries[0]!;
+    expect(med.tone).toBe('miseendemeure');
+    expect(med.message.body).toContain('art. 1344 du code civil');
+    expect(med.message.body).not.toContain('40 €');
   });
 
   it('exclut payées, annulées, brouillons, avoirs et non échues — reste dû plafonné à netToPay', () => {

@@ -43,7 +43,8 @@ export interface DraftRelanceActionInput {
 
 /** Outil envoyer_relance (parité C15 TODO ② — C25) : envoi RÉEL de la relance d'une facture
  * échue (email au client + miroir push), ton choisi par le plan @bob/core côté hôte/serveur.
- * Sortant vers un tiers — TOUJOURS confirmé (plancher), mise en demeure L441-10 incluse. */
+ * Sortant vers un tiers — TOUJOURS confirmé (plancher), mise en demeure incluse (régime légal
+ * selon le type de client : pro L441-10, particulier code civil, acheteur public CCP — P01). */
 export interface SendRelanceActionInput {
   invoiceId: string;
 }

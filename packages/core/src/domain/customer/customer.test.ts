@@ -21,4 +21,14 @@ describe('Customer', () => {
     const r = Customer.of({ ...base, score: 62, avgDelayDays: 20, outstanding: 50000 });
     if (r.ok) expect(r.value.scoreBand()).toBe('red');
   });
+  it('isProfessional : b2b et b2g sont des débiteurs professionnels, b2c non (gate L441-10/CCP)', () => {
+    const of = (type: CustomerProps['type']) => {
+      const r = Customer.of({ ...base, type });
+      if (!r.ok) throw new Error('customer de test invalide');
+      return r.value;
+    };
+    expect(of('b2b').isProfessional()).toBe(true);
+    expect(of('b2g').isProfessional()).toBe(true);
+    expect(of('b2c').isProfessional()).toBe(false);
+  });
 });

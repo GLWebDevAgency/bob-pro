@@ -72,6 +72,11 @@ export class Customer {
   requiresSirenForEinvoice(): boolean {
     return this.p.type === 'b2b' || this.p.type === 'b2g';
   }
+  /** Débiteur professionnel (b2b/b2g) — gate des régimes L441-9/L441-10 et CCP (P01/P12/P14) :
+   *  ni indemnité 40 € ni pénalités BCE+10 pour un particulier (b2c). */
+  isProfessional(): boolean {
+    return this.p.type === 'b2b' || this.p.type === 'b2g';
+  }
   scoreBand(): ScoreBand {
     return this.scoreVo.band();
   }

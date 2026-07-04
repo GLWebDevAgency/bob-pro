@@ -1,5 +1,6 @@
 import { type DateOnly, addDays } from '../../shared-kernel/time';
 import { buildRelance, type RelanceMessage, type RelanceTone } from '../../domain/services/build-relance';
+import { type CustomerType } from '../../domain/customer/customer';
 import {
   deriveTodayPriorities,
   type TodayCustomerData,
@@ -11,7 +12,8 @@ import {
  * Entrée = factures/clients RÉELS (mêmes projections que deriveTodayPriorities, `paid` = cumul
  * des encaissements) + politique de délais typée ; sortie = une relance PRÊTE par facture échue :
  * ton escaladé selon l'ancienneté (cordial → neutre → ferme → mise en demeure), message généré
- * par le SEUL moteur du domaine (buildRelance — L441-10 + indemnité 40 € au dernier palier),
+ * par le SEUL moteur du domaine (buildRelance — mise en demeure au RÉGIME du type de client,
+ * P01 C-EXP1 : b2b = L441-10 + 40 €, b2c = code civil/taux légal sans 40 €, b2g = CCP BCE+8 + 40 €),
  * prochaine échéance d'escalade. Aucune I/O, aucun repli fixtures : zéro facture échue = plan vide.
  *
  * RÉUTILISATION (interdiction de dupliquer le moteur) : les candidates viennent de
@@ -28,7 +30,7 @@ export interface RelancePolicy {
   neutreAfterDays: number;
   /** J+n : relance ferme (dernier rappel avant procédure). */
   fermeAfterDays: number;
-  /** J+n : mise en demeure — L441-10 + indemnité 40 € ; jamais envoyée sans validation. */
+  /** J+n : mise en demeure — régime légal selon le type de client ; jamais envoyée sans validation. */
   miseEnDemeureAfterDays: number;
 }
 
@@ -42,9 +44,18 @@ export const DEFAULT_RELANCE_POLICY: RelancePolicy = {
 /** Personnalité de la copy (libellés @bob/i18n PERSONALITY_LABELS — buildRelance les attend ainsi). */
 export type RelancePersonality = 'Pote' | 'Pro' | 'Direct';
 
+/**
+ * Client du plan de relances : la projection « Aujourd'hui » (id, name) + le TYPE — il pilote le
+ * régime juridique de la mise en demeure (P01). CustomerListItem (api-client) le porte déjà :
+ * les appelants existants restent compatibles structurellement.
+ */
+export interface RelanceCustomerData extends TodayCustomerData {
+  type: CustomerType;
+}
+
 export interface DeriveRelancePlanInput {
   invoices: readonly TodayInvoiceData[];
-  customers: readonly TodayCustomerData[];
+  customers: readonly RelanceCustomerData[];
   today: DateOnly;
   /** Politique de délais — défaut DEFAULT_RELANCE_POLICY (J+3 / J+10 / J+20 / J+30). */
   policy?: RelancePolicy;
@@ -66,7 +77,7 @@ export interface RelancePlanEntry {
   tone: RelanceTone;
   /** true = le palier `tone` est dû (relance à envoyer maintenant) ; false = planifiée. */
   dueNow: boolean;
-  /** Message prêt à partir (buildRelance — texte légal L441-10 + 40 € au ton mise en demeure). */
+  /** Message prêt à partir (buildRelance — mise en demeure au régime légal du type de client). */
   message: RelanceMessage;
   /** Date du prochain palier d'escalade — null une fois la mise en demeure atteinte. */
   nextEscalationAt: DateOnly | null;
@@ -100,6 +111,7 @@ export function deriveRelancePlan(input: DeriveRelancePlanInput): RelancePlanEnt
   const policy = input.policy ?? DEFAULT_RELANCE_POLICY;
   const personality = input.personality ?? 'Pote';
   const steps = escalationSteps(policy);
+  const typeById = new Map(input.customers.map((c) => [c.id, c.type]));
 
   const candidates = deriveTodayPriorities({
     invoices: input.invoices,
@@ -130,6 +142,9 @@ export function deriveRelancePlan(input: DeriveRelancePlanInput): RelancePlanEnt
         daysLate: candidate.daysLate,
         tone,
         personality,
+        // Client absent de la projection → PRUDENCE b2c : on ne réclame JAMAIS 40 € ni L441-10
+        // sans savoir que le débiteur est un professionnel (P01 — le risque juridique est là).
+        customerType: typeById.get(candidate.customerId) ?? 'b2c',
       }),
       // Le prochain palier se compte depuis l'échéance : dans (palier − retard actuel) jours.
       nextEscalationAt: next ? addDays(input.today, next.afterDays - candidate.daysLate) : null,
