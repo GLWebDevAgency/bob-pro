@@ -7,6 +7,7 @@
  */
 import { File, Paths } from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
+import { encodeLatin9 } from '@bob/core';
 import type { ExportFecClientOutput } from '@bob/api-client';
 
 export type ShareFecResult = 'shared' | 'unavailable';
@@ -14,8 +15,14 @@ export type ShareFecResult = 'shared' | 'unavailable';
 export async function shareFec(fec: ExportFecClientOutput): Promise<ShareFecResult> {
   if (!(await Sharing.isAvailableAsync())) return 'unavailable';
   const file = new File(Paths.cache, fec.filename);
-  // Écrase un export précédent du même nom (le FEC est déterministe par période).
-  file.write(fec.content);
+  // E9 : le FEC remis au comptable s'encode en ISO 8859-15 (arrêté du 29/07/2013) —
+  // le répertoire Latin-9 couvre tout le français, les rares hors-champ deviennent « ? ».
+  if (fec.mimeType.includes('iso-8859-15')) {
+    file.write(encodeLatin9(fec.content).bytes);
+  } else {
+    // Écrase un export précédent du même nom (le FEC est déterministe par période).
+    file.write(fec.content);
+  }
   await Sharing.shareAsync(file.uri, {
     mimeType: fec.mimeType || 'text/plain',
     dialogTitle: fec.filename,

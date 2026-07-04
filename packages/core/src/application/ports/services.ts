@@ -31,5 +31,7 @@ export interface UnitOfWorkPort {
 }
 
 export interface CashflowSnapshotPort {
-  get(companyId: string): Promise<{ bankBalance: number; receivables: number; charges: number; vatDue: number }>;
+  /** E9 : vatDue est OPTIONNEL — la position de TVA réelle se dérive des factures (E2,
+   *  deriveVatPosition) ; le champ ne sert plus que de repli aux implémentations amont. */
+  get(companyId: string): Promise<{ bankBalance: number; receivables: number; charges: number; vatDue?: number }>;
 }

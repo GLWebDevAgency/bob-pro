@@ -137,7 +137,8 @@ describe('ExportFec', () => {
     expect(first[12]).toBe('0,00');
 
     const payment = lines[4]!.split('\t');
-    expect(payment.slice(0, 6)).toEqual(['BQ', 'Journal de banque', '000002', '20260607', '512', 'Banques']);
+    // E9 : EcritureNum PAR JOURNAL — la première écriture du journal BQ repart à 000001.
+    expect(payment.slice(0, 6)).toEqual(['BQ', 'Journal de banque', '000001', '20260607', '512', 'Banques']);
     expect(payment[11]).toBe('488,40');
   });
 

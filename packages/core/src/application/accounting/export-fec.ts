@@ -213,9 +213,14 @@ function toFecRows(
   enrichment: FecRowEnrichment | null,
 ): string[][] {
   const rows: string[][] = [];
-  for (const [entryIndex, entry] of entries.entries()) {
+  // E9 : EcritureNum est une séquence chronologique continue PAR JOURNAL (convention
+  // contrôleur) — les entries arrivent triées par date, chaque journal tient son compteur.
+  const seqByJournal = new Map<string, number>();
+  for (const entry of entries) {
     const journal = JOURNALS[entry.journal];
-    const ecritureNum = String(entryIndex + 1).padStart(6, '0');
+    const next = (seqByJournal.get(journal.code) ?? 0) + 1;
+    seqByJournal.set(journal.code, next);
+    const ecritureNum = String(next).padStart(6, '0');
     for (const line of entry.lines) {
       // E7 : lettrage et auxiliaire ne se posent que sur les lignes de TIERS concernées.
       const isCustomerLine = line.account.startsWith('411');
@@ -272,7 +277,7 @@ function buildDescription(input: {
     `Fichier: ${input.filename}`,
     '',
     'Format',
-    '- Fichier texte UTF-8.',
+    '- Fichier texte ISO 8859-15 (arrete du 29 juillet 2013).',
     '- Separateur de champs: tabulation.',
     '- Premiere ligne: noms des champs.',
     '- Dates: AAAAMMJJ.',
@@ -286,7 +291,7 @@ function buildDescription(input: {
     ...Object.entries(JOURNALS).map(([journal, meta]) => `- ${meta.code}: ${meta.label} (${journal})`),
     '',
     'Conventions Bob Pro',
-    '- EcritureNum est une sequence continue dans l export; toutes les lignes d une meme ecriture partagent le meme numero.',
+    '- EcritureNum est une sequence chronologique continue PAR JOURNAL; toutes les lignes d une meme ecriture partagent le meme numero.',
     '- PieceDate et ValidDate reprennent EcritureDate lorsque la date de piece ou de validation distincte n est pas stockee.',
     '- Lettrage (EcritureLet/DateLet): pose sur les lignes 411 des factures SOLDEES et de leurs encaissements; DateLet = date du dernier reglement. Une facture non soldee n est jamais lettree.',
     '- Comptes auxiliaires: CompAuxNum/CompAuxLib renseignes sur les lignes 411 (client de la piece) et 401 (fournisseur de la depense); identifiants deterministes derives du tiers.',
@@ -326,7 +331,9 @@ export class ExportFec {
 
     return ok({
       filename,
-      mimeType: 'text/plain; charset=utf-8',
+      // E9 : le FICHIER remis s'encode en ISO 8859-15 (encodeLatin9 côté écriture) —
+      // le champ content reste une string JS, l'encodage se joue à la matérialisation.
+      mimeType: 'text/plain; charset=iso-8859-15',
       content: serializeRows(rows),
       descriptionFilename,
       descriptionContent: buildDescription({

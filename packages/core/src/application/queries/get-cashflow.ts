@@ -55,7 +55,7 @@ export class GetCashflow {
       charges += expenseList.filter((e) => e.status === 'to_pay').reduce((sum, e) => sum + e.totalTtcCents, 0);
     }
 
-    let vatDue = snapshot.vatDue;
+    let vatDue = snapshot.vatDue ?? 0;
     if (this.deps.invoices) {
       // TVA à provisionner DÉRIVÉE (collectée sur ENCAISSEMENTS − déductible mentionnée) :
       // le même chiffre ampute la dispo, calibre la réserve du payout ET alimente le KPI.
