@@ -1,6 +1,8 @@
 import { type DateOnly, addDays } from '../../shared-kernel/time';
 import { buildRelance, type RelanceMessage, type RelanceTone } from '../../domain/services/build-relance';
 import { type CustomerType } from '../../domain/customer/customer';
+import { computeLatePenalties, type LatePenalties } from '../../domain/dunning/late-penalties';
+import { derivePrescription, type PrescriptionView } from '../../domain/dunning/prescription';
 import {
   deriveTodayPriorities,
   type TodayCustomerData,
@@ -19,6 +21,11 @@ import {
  * RÉUTILISATION (interdiction de dupliquer le moteur) : les candidates viennent de
  * deriveTodayPriorities (statuts encaissables, avoirs/brouillons exclus, reste dû plafonné à
  * netToPay − paid, tri retard puis montant) ; la copy vient de buildRelance (4 tons, 3 humeurs).
+ *
+ * C-EXP2 vA (champs ADDITIFS) : chaque facture échue porte ses pénalités de retard chiffrées
+ * (computeLatePenalties — P12) et son chrono de prescription (derivePrescription — P04) ; la
+ * mise en demeure B2B/B2G devient CHIFFRÉE. Données optionnelles manquantes (échéance, émission,
+ * paiements datés) → null / montants à 0, jamais d'invention.
  */
 
 // ── Politique de délais (config typée, défauts raisonnables) ──────────────────
@@ -53,8 +60,27 @@ export interface RelanceCustomerData extends TodayCustomerData {
   type: CustomerType;
 }
 
+/** Encaissement daté (socle E3 — PaymentView de l'api-client) : matière des reconnaissances P04. */
+export interface RelancePaymentData {
+  /** Date d'encaissement — DateOnly ou ISO complet, seul le jour compte. */
+  receivedAt: string;
+  amountCents: number;
+}
+
+/**
+ * Facture du plan de relances : la projection « Aujourd'hui » ÉTENDUE de façon OPTIONNELLE par
+ * les dates du socle E3 (C-EXP2 vA) — pas de donnée → pas de chiffre, jamais d'invention :
+ * · issuedAt (InvoiceView.issuedAt) ancre la prescription P04 ;
+ * · payments (listPayments datés) : un paiement partiel = reconnaissance art. 2240 → ré-ancre.
+ * Les appelants existants (TodayInvoiceData nu) restent compatibles structurellement.
+ */
+export interface RelanceInvoiceData extends TodayInvoiceData {
+  issuedAt?: DateOnly | null;
+  payments?: readonly RelancePaymentData[];
+}
+
 export interface DeriveRelancePlanInput {
-  invoices: readonly TodayInvoiceData[];
+  invoices: readonly RelanceInvoiceData[];
   customers: readonly RelanceCustomerData[];
   today: DateOnly;
   /** Politique de délais — défaut DEFAULT_RELANCE_POLICY (J+3 / J+10 / J+20 / J+30). */
@@ -81,6 +107,13 @@ export interface RelancePlanEntry {
   message: RelanceMessage;
   /** Date du prochain palier d'escalade — null une fois la mise en demeure atteinte. */
   nextEscalationAt: DateOnly | null;
+  /**
+   * Pénalités de retard chiffrées au jour du plan (P12, C-EXP2 vA) — null si l'échéance manque.
+   * b2c sans mise en demeure envoyée : montants à 0 (rien ne court de plein droit).
+   */
+  penalties: LatePenalties | null;
+  /** Chrono de prescription (P04) — null si aucune date d'ancrage (ni émission ni échéance). */
+  prescription: PrescriptionView | null;
 }
 
 // ── Règles métier ─────────────────────────────────────────────────────────────
@@ -112,6 +145,7 @@ export function deriveRelancePlan(input: DeriveRelancePlanInput): RelancePlanEnt
   const personality = input.personality ?? 'Pote';
   const steps = escalationSteps(policy);
   const typeById = new Map(input.customers.map((c) => [c.id, c.type]));
+  const invoiceById = new Map(input.invoices.map((i) => [i.id, i]));
 
   const candidates = deriveTodayPriorities({
     invoices: input.invoices,
@@ -126,6 +160,38 @@ export function deriveRelancePlan(input: DeriveRelancePlanInput): RelancePlanEnt
     const reached = [...steps].reverse().find((s) => s.afterDays <= candidate.daysLate);
     const next = steps.find((s) => s.afterDays > candidate.daysLate);
     const tone = reached?.tone ?? steps[0]?.tone ?? 'cordial';
+    // Client absent de la projection → PRUDENCE b2c : on ne réclame JAMAIS 40 € ni L441-10
+    // sans savoir que le débiteur est un professionnel (P01 — le risque juridique est là).
+    const customerType = typeById.get(candidate.customerId) ?? 'b2c';
+    const invoice = invoiceById.get(candidate.invoiceId);
+
+    // P12 — pénalités chiffrées sur le RESTE DÛ (netToPay − paid) : échéance manquante → null
+    // (jamais d'invention). b2c : aucune date de MED connue du plan → montants à 0 de plein droit.
+    const penalties =
+      invoice !== undefined && invoice.dueAt !== null
+        ? computeLatePenalties({
+            ttcCents: candidate.amountCents,
+            dueAt: invoice.dueAt,
+            asOf: input.today,
+            customerType,
+          })
+        : null;
+
+    // P04 — chrono de prescription : les paiements datés (socle E3) valent reconnaissance
+    // art. 2240 et ré-ancrent ; sans aucune date d'ancrage, derivePrescription rend null.
+    const prescription =
+      invoice !== undefined
+        ? derivePrescription({
+            issuedAt: invoice.issuedAt ?? null,
+            dueAt: invoice.dueAt,
+            customerType,
+            acknowledgments: (invoice.payments ?? [])
+              .filter((p) => p.amountCents > 0)
+              .map((p) => p.receivedAt.slice(0, 10)),
+            asOf: input.today,
+          })
+        : null;
+
     plan.push({
       invoiceId: candidate.invoiceId,
       customerId: candidate.customerId,
@@ -142,12 +208,21 @@ export function deriveRelancePlan(input: DeriveRelancePlanInput): RelancePlanEnt
         daysLate: candidate.daysLate,
         tone,
         personality,
-        // Client absent de la projection → PRUDENCE b2c : on ne réclame JAMAIS 40 € ni L441-10
-        // sans savoir que le débiteur est un professionnel (P01 — le risque juridique est là).
-        customerType: typeById.get(candidate.customerId) ?? 'b2c',
+        customerType,
+        // MED chiffrée (P12) : buildRelance n'énonce les montants que pour b2b/b2g.
+        ...(tone === 'miseendemeure' && penalties !== null
+          ? {
+              penalties: {
+                interestCents: penalties.interestCents,
+                fixedIndemnityCents: penalties.fixedIndemnityCents,
+              },
+            }
+          : {}),
       }),
       // Le prochain palier se compte depuis l'échéance : dans (palier − retard actuel) jours.
       nextEscalationAt: next ? addDays(input.today, next.afterDays - candidate.daysLate) : null,
+      penalties,
+      prescription,
     });
   }
   return plan;

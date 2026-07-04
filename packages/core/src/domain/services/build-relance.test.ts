@@ -51,6 +51,59 @@ describe('buildRelance', () => {
     }
   });
 
+  // —— P12 (C-EXP2 vA) : la MED B2B/B2G CHIFFRE les pénalités quand les montants sont fournis ——
+  it('mise en demeure B2B chiffrée : énonce intérêts + 40 € (D441-5) et le total réclamé', () => {
+    const m = buildRelance({
+      ...base,
+      amountCents: 185000,
+      tone: 'miseendemeure',
+      customerType: 'b2b',
+      penalties: { interestCents: 2771, fixedIndemnityCents: 4000 },
+    });
+    expect(m.body).toContain('a ce jour');
+    expect(m.body).toContain('27,71'); // intérêts courus
+    expect(m.body).toContain('40,00'); // indemnité forfaitaire chiffrée
+    expect(m.body).toContain('D441-5');
+    expect(m.body).toContain('soit un total de');
+    expect(m.body).toContain('917,71'); // 1 850 + 27,71 + 40 = 1 917,71 € (séparateur NBSP fine)
+  });
+
+  it('mise en demeure B2G chiffrée : intérêts moratoires BCE+8 + 40 €, total réclamé', () => {
+    const m = buildRelance({
+      ...base,
+      amountCents: 185000,
+      tone: 'miseendemeure',
+      customerType: 'b2g',
+      penalties: { interestCents: 2315, fixedIndemnityCents: 4000 },
+    });
+    expect(m.body).toContain("d'interets moratoires");
+    expect(m.body).toContain('23,15');
+    expect(m.body).toContain('soit un total de');
+    expect(m.body).toContain('913,15'); // 1 850 + 23,15 + 40 = 1 913,15 €
+  });
+
+  it('mise en demeure B2C : pénalités fournies IGNORÉES — la MED fait courir les intérêts, jamais 40 €', () => {
+    const withPenalties = buildRelance({
+      ...base,
+      tone: 'miseendemeure',
+      customerType: 'b2c',
+      penalties: { interestCents: 2771, fixedIndemnityCents: 4000 },
+    });
+    const without = buildRelance({ ...base, tone: 'miseendemeure', customerType: 'b2c' });
+    expect(withPenalties).toEqual(without);
+    expect(withPenalties.body).not.toContain('soit un total');
+    expect(withPenalties.body).not.toContain('40 €');
+  });
+
+  it('compat ascendante : sans montants fournis, les textes B2B/B2G restent exactement inchangés', () => {
+    for (const customerType of ['b2b', 'b2g'] as const) {
+      const m = buildRelance({ ...base, tone: 'miseendemeure', customerType });
+      expect(m.body).not.toContain('a ce jour');
+      expect(m.body).not.toContain('soit un total');
+      expect(m.body.endsWith('.')).toBe(true);
+    }
+  });
+
   it('ton cordial en personnalite Pote tutoie', () => {
     const m = buildRelance({
       customerName: 'Martin',

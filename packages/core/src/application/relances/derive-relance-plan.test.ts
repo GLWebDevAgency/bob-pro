@@ -168,6 +168,114 @@ describe('deriveRelancePlan', () => {
   });
 });
 
+// —— C-EXP2 vA : pénalités chiffrées (P12) + chrono de prescription (P04) dans le plan ——
+describe('deriveRelancePlan — pénalités chiffrées et prescription (C-EXP2 vA)', () => {
+  const TODAY_S1 = '2026-06-20'; // S1 2026 : semestre AU référentiel (stale false)
+
+  it('B2B échue 40 j : pénalités BCE+10 sur le reste dû, MED CHIFFRÉE (intérêts + 40 € + total)', () => {
+    const entries = deriveRelancePlan({
+      invoices: [{ ...invoiceFixture({ id: 'inv-40j', dueAt: '2026-05-11' }), issuedAt: '2026-04-11' }],
+      customers: CUSTOMERS,
+      today: TODAY_S1,
+    });
+    const med = entries[0]!;
+    expect(med.tone).toBe('miseendemeure');
+    expect(med.penalties).toEqual({
+      interestCents: 1651, // 1 240 € × 12,15 % × 40/365
+      fixedIndemnityCents: 4000,
+      dailyCents: 41,
+      days: 40,
+      rateAnnualPct: 12.15,
+      rateBasis: 'bce_plus_10',
+      stale: false,
+      flooredToLegalMinimum: false,
+    });
+    // La lettre énonce les montants (fini « l'argent dû de plein droit, abandonné »).
+    expect(med.message.body).toContain('16,51');
+    expect(med.message.body).toContain('D441-5');
+    expect(med.message.body).toContain('soit un total de');
+    expect(med.message.body).toContain('296,51'); // 1 240 + 16,51 + 40 = 1 296,51 €
+    // Prescription quinquennale ancrée sur l'exigibilité.
+    expect(med.prescription).toMatchObject({
+      anchor: '2026-05-11',
+      deadline: '2031-05-11',
+      urgency: 'lointaine',
+    });
+    expect(med.prescription!.legalRef).toContain('L110-4');
+  });
+
+  it('paiement partiel daté (socle E3) = reconnaissance art. 2240 → la prescription se RÉ-ANCRE', () => {
+    const entries = deriveRelancePlan({
+      invoices: [
+        {
+          ...invoiceFixture({ id: 'inv-40j', dueAt: '2026-05-11', status: 'partially_paid', paid: 20000 }),
+          issuedAt: '2026-04-11',
+          payments: [{ receivedAt: '2026-06-01T09:30:00.000Z', amountCents: 20000 }],
+        },
+      ],
+      customers: CUSTOMERS,
+      today: TODAY_S1,
+    });
+    expect(entries[0]!.prescription).toMatchObject({ anchor: '2026-06-01', deadline: '2031-06-01' });
+    // Et les pénalités portent sur le reste dû (netToPay − paid), pas le TTC d'origine.
+    expect(entries[0]!.amountCents).toBe(104000);
+  });
+
+  it('B2G échue 40 j : BCE+8, MED chiffrée en intérêts moratoires, déchéance quadriennale', () => {
+    const entries = deriveRelancePlan({
+      invoices: [
+        { ...invoiceFixture({ id: 'inv-40j', customerId: 'cust-3', dueAt: '2026-05-11' }), issuedAt: '2026-04-11' },
+      ],
+      customers: CUSTOMERS,
+      today: TODAY_S1,
+    });
+    const med = entries[0]!;
+    expect(med.penalties).toMatchObject({ rateAnnualPct: 10.15, rateBasis: 'bce_plus_8', interestCents: 1379 });
+    expect(med.message.body).toContain("d'interets moratoires");
+    expect(med.message.body).toContain('293,79'); // 1 240 + 13,79 + 40 = 1 293,79 €
+    expect(med.prescription).toMatchObject({ deadline: '2030-12-31' }); // 31/12 de (2026 + 4)
+    expect(med.prescription!.legalRef).toContain('68-1250');
+  });
+
+  it('B2C : aucune MED envoyée connue → pénalités à 0 (jamais 40 €), lettre SANS chiffres, biennale prudente', () => {
+    const entries = deriveRelancePlan({
+      invoices: [
+        { ...invoiceFixture({ id: 'inv-40j', customerId: 'cust-2', dueAt: '2026-05-11' }), issuedAt: '2026-04-11' },
+      ],
+      customers: CUSTOMERS,
+      today: TODAY_S1,
+    });
+    const med = entries[0]!;
+    expect(med.penalties).toMatchObject({
+      interestCents: 0,
+      fixedIndemnityCents: 0,
+      days: 0,
+      rateBasis: 'taux_legal',
+    });
+    expect(med.message.body).not.toContain('soit un total');
+    expect(med.message.body).not.toContain('40 €');
+    expect(med.message.body).not.toContain('indemnite');
+    expect(med.prescription).toMatchObject({ anchor: '2026-04-11', deadline: '2028-04-11' }); // min(émission, échéance)
+    expect(med.prescription!.legalRef).toContain('L218-2');
+  });
+
+  it('données manquantes → null, jamais d’invention : sans échéance ni émission, ni pénalités ni prescription', () => {
+    const entries = deriveRelancePlan({
+      invoices: [invoiceFixture({ id: 'inv-late-sans-date', status: 'late', dueAt: null })],
+      customers: CUSTOMERS,
+      today: TODAY_S1,
+    });
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.penalties).toBeNull();
+    expect(entries[0]!.prescription).toBeNull();
+  });
+
+  it('semestre hors référentiel (TODAY en S2 2026) → pénalités au dernier taux CONNU, stale signalé', () => {
+    const entries = plan({ invoices: [invoiceFixture({ id: 'inv-40j', dueAt: dueDaysAgo(40) })] });
+    expect(entries[0]!.penalties).toMatchObject({ stale: true, rateAnnualPct: 12.15 });
+  });
+});
+
 describe('deriveUpcomingDues', () => {
   it('fenêtre 7 j par défaut : échéances à venir triées, échues et payées exclues', () => {
     const upcoming = deriveUpcomingDues({
