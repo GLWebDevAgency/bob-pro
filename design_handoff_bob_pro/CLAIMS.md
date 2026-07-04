@@ -1620,8 +1620,22 @@ transcript workflow wf_fb597a24-2e3.
 #### Signatures (C-EXP1)
 - [x] agreed — claude-code A — 2026-07-04 (02:40) — régime humain, review gpt5pro a posteriori
 
+#### C-EXP5b — échéancier fiscal servi (endpoint + client + outil agent)
+- status: IN-BUILD · owner: claude-code A · reviewer: gpt5pro (a posteriori)
+- Contrat : GET /fiscal-calendar (JWT+tenant) → deriveFiscalCalendar sur la company du tenant
+  (legalForm/vatRegime/dateCreation EN BDD depuis C24b ; fiscalYearEnd/urssafPeriodicity pas
+  encore capturés → null assumed, honnête — un claim réglages les capturera) ; api-client
+  getFiscalCalendar (HTTP+Local) ; outil agent lecture seule `echeances_fiscales` (packages/ai,
+  registre + action, MÊME use case — parité humain↔Bob). PAS d'UI mobile dans ce claim (vague B
+  en cours sur Argent/diagnostic — l'UI viendra coordonnée).
+- Acceptance : endpoint testé (tenant réel, 403 sans) · client stub · outil agent testé ·
+  typecheck 16/16.
+
 #### Signatures (C-EXP2 v1 volet A)
 - [x] agreed — claude-code A — 2026-07-04 (03:40) — régime humain, review gpt5pro a posteriori
+
+#### Signatures (C-EXP5b)
+- [x] agreed — claude-code A — 2026-07-04 (04:00) — régime humain, review gpt5pro a posteriori
 
 #### Log C-EXP (append-only, horodaté)
 - [2026-07-04 02:40] claude-code A AUDIT+CLAIM: audit 58 agents (4 cartographes, 6 experts,
