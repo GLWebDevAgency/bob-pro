@@ -1126,6 +1126,24 @@ transcript workflow wf_fb597a24-2e3.
   (getIncomeStatement, repli BOB-2). Preuve e2e : résultat d'exploitation +668,92 € =
   résultat net (démo sans financier/exceptionnel). Core 546 ✓ ai 159 ✓ api-client 38 ✓.
   SUIVI SERVEUR (session A) : getIncomeStatement dans les BobActions serveur.
+- [02:00] claude-code (session B) BILAN-1+BOB-4 MERGE (commit 8071e62) : BILAN ACTIF/PASSIF
+  — le document que l'expert associé SIGNE (« le cercle » bouclé : balance + compte de
+  résultat + bilan = états de synthèse complets). deriveBalanceSheet (@bob/core, 6 tests),
+  classement compte PCG → poste CONÇU ET VÉRIFIÉ adversarialement (workflow wf_1c2a2fb3-1c3,
+  panel expert+prof → contrôleur fiscal — synthèse confirme l'implémentation trait pour
+  trait). DEUX RÉGIMES : (1) CÔTÉ FIXE par préfixe (classes 1/2/3) — classe 2 immobilisations
+  NETTES (28xx contra-actif via somme signée = VNC), classe 3 stocks, classe 1
+  capitaux/provisions(15)/emprunts(16) ; (2) PAR SIGNE COMPTE PAR COMPTE (classes 4/5
+  mixtes) — débiteur → actif, créditeur → passif ; JAMAIS netté sur l'agrégat parent
+  (sinon TVA déductible compenserait la collectée, créances absorberaient les avances).
+  Résultat net affecté aux capitaux propres (livre non clôturé) ; garde-fou : correct aussi
+  livre clôturé (clôture met 6/7 à 0 → pas de double compte avec 120/129). INVARIANT prouvé
+  et testé actif = passif ; cohérence inter-états testée (résultat bilan = compte de résultat
+  = balance). Écran Clôture : section « Bilan » 2 colonnes + badge équilibre. BOB-4 :
+  « mon bilan » (intent AVANT résultat, « bilan du mois » reste clôture — testé ;
+  getBalanceSheet). Preuve e2e : Actif 2 024,55 € = Passif 2 024,55 € équilibré.
+  Core 573 ✓ ai 160 ✓ api-client 38 ✓ typecheck ✓.
+  SUIVI SERVEUR (session A) : getBalanceSheet dans les BobActions serveur.
 
 ---
 
