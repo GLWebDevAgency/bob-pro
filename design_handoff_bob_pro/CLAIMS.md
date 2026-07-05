@@ -1862,6 +1862,38 @@ transcript workflow wf_fb597a24-2e3.
   égalité structurelle) + XML réel d'exemple + cas d'erreur (XML vide, balise manquante, profil
   inconnu) · aucune régression · typecheck.
 
+#### C-EXP6b — réception e-facture : le contrôle de réception d'un cabinet, pas un simple import
+- status: IN-BUILD · owner: claude-code A · reviewer: gpt5pro (a posteriori)
+- CHALLENGE (directive « fais mieux, expertise d'expert-comptable ») : un cabinet ne saisit jamais
+  une facture d'achat sans CONTRÔLE DE RÉCEPTION. Le claim n'est pas « XML → Expense » mais le
+  poste de réception complet :
+  (1) CONTRÔLES BLOQUANTS avant tout enregistrement — destinataire : le SIREN acheteur du XML doit
+  être MA société (sinon proposition de refus AFNOR 210 « facture mal adressée ») · cohérence
+  arithmétique : validateFacturXBasic (EN 16931, existant) rejoué sur la facture ENTRANTE ·
+  doublon EXACT (supplierSiren + supplierInvoiceNumber déjà présents en base → rejet d'import,
+  anti double-paiement/double-déduction P17) ;
+  (2) MAPPING EXPERT — multi-taux : vatCents = somme exacte au centime, vatRatePct = taux unique
+  sinon null · AUTOLIQUIDATION preneur (catégorie TVA AE) détectée : TVA NON déductible (vatCents
+  0 + note — le piège art. 283-2 nonies, P21 : un import naïf déduirait la TVA du sous-traitant) ·
+  exonéré/franchise fournisseur (catégorie E) : zéro déductible (règle E1 « TVA déductible
+  seulement si mentionnée ») · échéance BT-9 → dueAt · catégorie de charge proposée via la
+  mémoire fournisseur existante ;
+  (3) DÉCISION AFNOR entrante (machine pure) : received → approved (RecordExpense — les écritures
+  6xx/44566/401 partent AUTOMATIQUEMENT via le câblage E1) | refused(motif OBLIGATOIRE, statuts
+  210/213) — une facture contestée non refusée est réputée valable ;
+  (4) EXTENSIONS : ExpenseProps + supplierInvoiceNumber/dueAt (migration Prisma ADDITIVE, pattern
+  company_fiche_annuaire) + ExpenseSource 'facturx' · XML archivé au coffre (kind facturx_xml
+  existant) · client importFacturXExpense (HTTP+Local) + POST /expenses/import-facturx.
+- HONNÊTETÉ : l'import manuel ne « configure » PAS la réception PA — l'item diagnostic
+  einvoice-reception reste tel quel (le canal réel = P07 connecteur PA).
+- Acceptance : contrôles bloquants testés un à un (mal adressée, incohérente, doublon) ·
+  autoliquidation/exonéré → zéro déductible testé · multi-taux au centime · refus sans motif
+  impossible · écritures E1 déclenchées à l'approbation (test e2e) · migration additive · vérif
+  adversariale du mapping avant merge.
+
+#### Signatures (C-EXP6b)
+- [x] agreed — claude-code A — 2026-07-05 (11:05) — régime humain, review gpt5pro a posteriori
+
 #### Signatures (C-EXP6a)
 - [x] agreed — claude-code A — 2026-07-05 (00:40) — régime humain, review gpt5pro a posteriori
 - [2026-07-05 00:55] claude-code A MERGE C-EXP6a : parseur Factur-X entrant livré (546 tests, round-trip vert, descente XML maison zéro dépendance, 2 fichiers neufs, zéro collision ACRE/session B). Commit scopé aux 2 fichiers (micro-social/derive-urssaf laissés au workflow ACRE en cours). Reste : C-EXP6b wiring Expense+AFNOR. status=MERGED.
