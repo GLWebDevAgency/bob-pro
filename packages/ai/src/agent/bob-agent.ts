@@ -169,6 +169,7 @@ function intentForTool(tool: string): BobIntent {
   if (tool === 'balance_agee') return 'balance';
   if (tool === 'payer_depense') return 'payer_depense';
   if (tool === 'resultat_provisoire') return 'resultat';
+  if (tool === 'mon_bilan') return 'bilan';
   return 'unknown';
 }
 
@@ -463,6 +464,39 @@ export class BobAgent {
         card: {
           title: 'Ton résultat provisoire',
           body: `Produits : ${formatEUR(tb.revenueCents)}\nCharges : ${formatEUR(tb.chargesCents)}\n${verdict}${equilibre}`,
+        },
+      });
+    }
+
+    if (intent === 'bilan') {
+      // BOB-4/BILAN-1 : bilan simplifié actif/passif (deriveBalanceSheet).
+      const getBalanceSheet = this.deps.actions.getBalanceSheet?.bind(this.deps.actions);
+      if (!getBalanceSheet) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier la capacité de l’hôte'],
+          card: { title: 'Ton bilan', body: 'Je n’ai pas accès au bilan sur cet appareil pour le moment.' },
+        });
+      }
+      const r = await getBalanceSheet();
+      if (!r.ok) return err(r.error);
+      const b = r.value;
+      const equilibre = b.balanced
+        ? 'Actif = passif : ton bilan est équilibré ✓'
+        : `⚠ Écart de ${formatEUR(Math.abs(b.ecartCents))} — je vérifie le journal.`;
+      return ok({
+        kind: 'answer',
+        intent,
+        model,
+        plan: ['Dériver le bilan', 'Actif ↔ passif, résultat aux capitaux propres'],
+        card: {
+          title: 'Ton bilan',
+          body:
+            `Actif : ${formatEUR(b.actif.totalCents)} (dont trésorerie ${formatEUR(b.actif.disponibilitesCents)})\n` +
+            `Passif : ${formatEUR(b.passif.totalCents)} (dont capitaux propres ${formatEUR(b.passif.capitauxPropresCents + b.passif.resultatNetCents)}, dettes ${formatEUR(b.passif.dettesCents)})\n` +
+            equilibre,
         },
       });
     }

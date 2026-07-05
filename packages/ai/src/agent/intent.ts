@@ -16,6 +16,7 @@ export type BobIntent =
   | 'balance' // balance âgée : qui me doit quoi, depuis quand — lecture, BOB-1
   | 'payer_depense' // régler une dépense fournisseur (écriture 401/512) — mutation, BOB-1/E4
   | 'resultat' // résultat provisoire (produits − charges du grand-livre) — lecture, BOB-2
+  | 'bilan' // bilan simplifié actif/passif — lecture, BOB-4
   | 'unknown';
 
 /** Détection d'intention déterministe (fallback hors-ligne / LLM indisponible / intention triviale). */
@@ -38,6 +39,8 @@ export function detectIntent(message: string): BobIntent {
   // Balance âgée (BOB-1) : AVANT relance (« en retard » y collisionne).
   if (/(qui me doit|balance [âa]g[ée]e|encours clients?|retards? clients?|me doivent|doit de l'argent)/.test(m))
     return 'balance';
+  // Bilan actif/passif (BOB-4) : AVANT résultat ; « bilan du mois » déjà capté par clôture.
+  if (/(\bbilan\b|actif.{0,15}passif|capitaux propres|patrimoine de l'entreprise)/.test(m)) return 'bilan';
   // Résultat provisoire (BOB-2) : AVANT payout (« combien je gagne » ≠ « me verser »).
   if (/(r[ée]sultat|b[ée]n[ée]fice|combien je gagne|je gagne combien|en perte|balance g[ée]n[ée]rale)/.test(m))
     return 'resultat';

@@ -84,3 +84,15 @@ describe('detectIntent — BOB-2 (résultat provisoire)', () => {
     expect(detectIntent('Combien je peux me verser ?')).toBe('payout');
   });
 });
+
+describe('detectIntent — BOB-4 (bilan)', () => {
+  it('« mon bilan / actif passif / capitaux propres » → bilan, sans casser clôture ni résultat', () => {
+    for (const m of ['montre-moi mon bilan', 'mon actif et mon passif', 'mes capitaux propres']) {
+      expect(detectIntent(m)).toBe('bilan');
+    }
+    // « bilan du mois » reste la clôture (préparation du mois pour le comptable).
+    expect(detectIntent('fais le bilan du mois')).toBe('cloture');
+    // « combien je gagne » reste le résultat.
+    expect(detectIntent('combien je gagne ?')).toBe('resultat');
+  });
+});

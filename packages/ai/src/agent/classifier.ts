@@ -122,6 +122,12 @@ export const LLM_TOOL_SPECS: LlmToolSpec[] = [
       'Résultat provisoire de l’activité : produits moins charges au grand-livre réel (balance générale). Répond à « combien je gagne ? », « je suis en bénéfice ? ».',
     parameters: { type: 'object', properties: {}, additionalProperties: false },
   },
+  {
+    name: 'mon_bilan',
+    description:
+      'Bilan simplifié de l’entreprise : actif (immobilisations, créances, trésorerie) et passif (capitaux propres, résultat, dettes), équilibrés. Répond à « montre-moi mon bilan », « actif passif ».',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+  },
 ];
 
 const TOOL_TO_INTENT: Record<string, BobIntent> = {
@@ -142,6 +148,7 @@ const TOOL_TO_INTENT: Record<string, BobIntent> = {
   balance_agee: 'balance',
   payer_depense: 'payer_depense',
   resultat_provisoire: 'resultat',
+  mon_bilan: 'bilan',
 };
 
 /** Une étape résolue d'un plan (une intention + sa référence éventuelle). */

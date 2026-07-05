@@ -3,7 +3,7 @@ import { ScrollView, View, Text, Pressable, Alert } from 'react-native';
 import { useRouter, type Href } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { deriveTrialBalance, deriveIncomeStatement, formatEUR } from '@bob/core';
+import { deriveTrialBalance, deriveIncomeStatement, deriveBalanceSheet, formatEUR } from '@bob/core';
 import { useTheme } from '../src/theme';
 import { useAccountingEntries, useInvoices, useQuotes, useSubscription, useExportFec, appErrorMessage } from '../src/data/hooks';
 import { useDocuments } from '../src/data/documents';
@@ -40,6 +40,9 @@ export default function Cloture() {
   // CDR-1 : compte de résultat normé (cascade exploitation/financier/exceptionnel/net) —
   // mapping PCG vérifié adversarialement ; décompose le résultat sans jamais le changer.
   const income = useMemo(() => deriveIncomeStatement(entries.data ?? []), [entries.data]);
+  // BILAN-1 : bilan simplifié (actif/passif) — classement PCG vérifié, résultat affecté
+  // aux capitaux propres ; l'invariant actif = passif prouve la cohérence du dossier.
+  const bilan = useMemo(() => deriveBalanceSheet(entries.data ?? []), [entries.data]);
 
   const mois = moisCourant();
   const inv = invoices.data ?? [];
@@ -332,6 +335,97 @@ export default function Cloture() {
                       Après impôt sur les bénéfices de {formatEUR(income.impotBeneficesCents)}.
                     </Text>
                   ) : null}
+                </Card>
+              </View>
+            ) : null}
+
+            {/* BILAN-1 : le bilan que l'expert associé signe — actif / passif équilibrés. */}
+            {balance.rows.length > 0 ? (
+              <View>
+                <SectionHeader title="Bilan" />
+                <Card>
+                  <View style={{ flexDirection: 'row', gap: 14 }}>
+                    {(
+                      [
+                        {
+                          titre: 'Actif',
+                          total: bilan.actif.totalCents,
+                          postes: [
+                            { label: 'Immobilisations', cents: bilan.actif.immobilisationsNettesCents },
+                            { label: 'Stocks', cents: bilan.actif.stocksCents },
+                            { label: 'Créances', cents: bilan.actif.creancesCents },
+                            { label: 'Disponibilités', cents: bilan.actif.disponibilitesCents },
+                          ],
+                        },
+                        {
+                          titre: 'Passif',
+                          total: bilan.passif.totalCents,
+                          postes: [
+                            { label: 'Capitaux propres', cents: bilan.passif.capitauxPropresCents },
+                            { label: 'Résultat', cents: bilan.passif.resultatNetCents },
+                            { label: 'Provisions', cents: bilan.passif.provisionsCents },
+                            { label: 'Emprunts', cents: bilan.passif.empruntsCents },
+                            { label: 'Dettes', cents: bilan.passif.dettesCents },
+                            { label: 'Découvert', cents: bilan.passif.decouvertCents },
+                          ],
+                        },
+                      ] as { titre: string; total: number; postes: { label: string; cents: number }[] }[]
+                    ).map((col) => (
+                      <View key={col.titre} style={{ flex: 1 }}>
+                        <Text style={[font('meta'), { color: colors.slate400, marginBottom: 4 }]}>{col.titre}</Text>
+                        {col.postes
+                          .filter((p) => p.cents !== 0)
+                          .map((p) => (
+                            <View
+                              key={p.label}
+                              style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4, gap: 6 }}
+                            >
+                              <Text style={[font('meta'), { color: colors.slate500, flexShrink: 1 }]} numberOfLines={1}>
+                                {p.label}
+                              </Text>
+                              <Text
+                                style={[
+                                  font('meta'),
+                                  {
+                                    color: p.cents >= 0 ? colors.ink800 : semantic.warning,
+                                    fontVariant: ['tabular-nums'],
+                                  },
+                                ]}
+                              >
+                                {formatEUR(p.cents)}
+                              </Text>
+                            </View>
+                          ))}
+                        <View
+                          style={{
+                            flexDirection: 'row',
+                            justifyContent: 'space-between',
+                            marginTop: 6,
+                            paddingTop: 6,
+                            borderTopWidth: 1,
+                            borderTopColor: colors.lineSoft,
+                          }}
+                        >
+                          <Text style={[font('sub'), { color: colors.ink900, fontWeight: '700' }]}>Total</Text>
+                          <Text style={[font('sub'), { color: colors.ink900, fontWeight: '700', fontVariant: ['tabular-nums'] }]}>
+                            {formatEUR(col.total)}
+                          </Text>
+                        </View>
+                      </View>
+                    ))}
+                  </View>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12 }}>
+                    <Ionicons
+                      name={bilan.balanced ? 'checkmark-circle' : 'alert-circle'}
+                      size={18}
+                      color={bilan.balanced ? semantic.success : semantic.warning}
+                    />
+                    <Text style={[font('meta'), { color: bilan.balanced ? semantic.success : semantic.warning, flex: 1 }]}>
+                      {bilan.balanced
+                        ? 'Actif = passif : ton bilan est équilibré.'
+                        : `Écart de ${formatEUR(Math.abs(bilan.ecartCents))} — Bob vérifie le journal.`}
+                    </Text>
+                  </View>
                 </Card>
               </View>
             ) : null}

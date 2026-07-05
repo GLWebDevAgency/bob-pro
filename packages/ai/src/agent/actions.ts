@@ -8,6 +8,7 @@ import {
   type AgedBalance,
   type TrialBalance,
   type IncomeStatement,
+  type BalanceSheet,
 } from '@bob/core';
 
 /** Dépense fournisseur encore à payer (BOB-1 — ciblage de payer_depense par nom). */
@@ -163,6 +164,8 @@ export interface BobActions {
   /** Compte de résultat normé (deriveIncomeStatement @bob/core, CDR-1) — la cascade
    * exploitation/financier/exceptionnel/net enrichit la réponse « combien je gagne ? ». */
   getIncomeStatement?(): Promise<Result<IncomeStatement, AppError>>;
+  /** Bilan simplifié actif/passif (deriveBalanceSheet @bob/core, BILAN-1) — « mon bilan ». */
+  getBalanceSheet?(): Promise<Result<BalanceSheet, AppError>>;
   // —— Mutation ——
   registerPayment(input: {
     invoiceId: string;
