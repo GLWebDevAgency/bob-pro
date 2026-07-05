@@ -1755,7 +1755,7 @@ transcript workflow wf_fb597a24-2e3.
   régression · typecheck. Redeploy Railway au merge.
 
 #### C-EXP5d — ACRE : la provision URSSAF des créateurs enfin juste (question humaine 21:45)
-- status: IN-BUILD · owner: claude-code A · reviewer: gpt5pro (a posteriori)
+- status: MERGED · owner: claude-code A · reviewer: gpt5pro (a posteriori)
 - ORIGINE : question fondateur (« l'ACRE, l'ARCE et les autres aides ? ») — évaluée : l'ACRE
   divise ~par 2 les cotisations des 3 premiers trimestres civils suivant la création → notre
   provision au taux plein est ~doublée pour un CRÉATEUR (la cible d'acquisition). dateCreation
@@ -1775,6 +1775,7 @@ transcript workflow wf_fb597a24-2e3.
 
 #### Signatures (C-EXP5d)
 - [x] agreed — claude-code A — 2026-07-04 (21:50) — régime humain, review gpt5pro a posteriori
+- [2026-07-05 01:05] claude-code A MERGE C-EXP5d (workflow wf_34fc0129-e46, verdict adversarial CONFORME) : taux ACRE micro versionnés par date de début d'activité. DÉCOUVERTE de la vérif croisée (intuition fondateur juste) : le décret 2026-69 fait passer les créations ≥ 1/7/2026 de 50 % à 75 % du taux plein — codé sur les 2 marches. Fenêtre = fin du 3e trimestre civil suivant création (aucun à-cheval réel, prouvé). askAcre jamais deviné (< 12 mois). Exemple : plombier micro T3 + ACRE = 1 314,40 € (÷2). Correctif d'expert au passage : commentaire « 45 j » → « 60e jour » (délai réel des créations 2026, relevé par la passe adversariale). core 573 ✓. index.ts NON touché (modules déjà en export *). status=MERGED.
 
 #### C-EXP6a — parseur Factur-X/CII entrant (réception 2026, pur core)
 - status: MERGED · owner: claude-code A · reviewer: gpt5pro (a posteriori)
@@ -2145,6 +2146,8 @@ transcript workflow wf_fb597a24-2e3.
 | C-EXP2 vA | MERGED | claude-code A | gpt5pro | Pénalités CHIFFRÉES (12,15 % S1 2026, MED « 27,71 € + 40 € ») + chrono prescription (2/5 ans, déchéance quadriennale, ré-ancre art. 2240) — 07-04 20:22. |
 | C-EXP5b | MERGED | claude-code A | gpt5pro | GET /fiscal-calendar + client + outil agent echeances_fiscales (parité humain↔Bob) — 07-04 20:22. |
 | C-EXP5c | MERGED | claude-code A | gpt5pro | Provision URSSAF micro (D613-4 CSS 2026 vérifiés, déclaration pré-calculée « Bob FAIT », dispo prudent teinté) — 07-04 21:05. |
+| C-EXP5d | MERGED | claude-code A | gpt5pro | ACRE : taux réduits créateurs versionnés (50 %/75 % marche décret 2026-69), fenêtre 3 trimestres, askAcre jamais deviné — 07-05 01:05. |
+| C-EXP6a | MERGED | claude-code A | gpt5pro | Parseur Factur-X entrant (réception 2026, round-trip, pur core) — 07-05 00:55. |
 | C-EXP-UI1 | MERGED | claude-code A | gpt5pro | Échéancier écran Argent + pénalités/prescription sur les relances, captures réelles — 07-04 21:30. |
 | C-EXP-UI2 | OPEN | claude-code A | gpt5pro | Provision URSSAF visible (écran) + amountHint échéancier — attend fin WIP B packages/ai. |
 | PONT-SERVEUR | MERGED | claude-code A | gpt5pro | 7 points livrés (pay expense atomique, cycle achats posté, payments datés, /company/me → identité réelle branchée, 293 B prod, avoir A- [fix préfixe F trouvé], Bob serveur e2e) — 07-05 00:15. |
