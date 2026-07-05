@@ -54,11 +54,21 @@ function daysBetween(from: DateOnly, to: DateOnly): number {
   return Math.round((Date.parse(`${to}T00:00:00.000Z`) - Date.parse(`${from}T00:00:00.000Z`)) / MS_PER_DAY);
 }
 
-/** anchor + n années, en UTC (29/02 + n → 01/03, comportement Date natif, sens prudent). */
+/**
+ * anchor + n années, en UTC. Un délai en années expire « de quantième à quantième, à défaut le
+ * dernier jour du mois » (art. 641 al. 2 CPC) : le 29/02 + n années tombe, l'année cible n'étant
+ * pas bissextile, sur le 28/02 — PAS le 01/03. On borne donc le quantième au dernier jour du mois
+ * cible (sinon le débordement natif de Date donnerait un jour de plus, au détriment de l'alerte).
+ */
 function addYears(date: DateOnly, years: number): DateOnly {
-  const d = new Date(`${date}T00:00:00.000Z`);
-  d.setUTCFullYear(d.getUTCFullYear() + years);
-  return d.toISOString().slice(0, 10);
+  const y = Number(date.slice(0, 4));
+  const m = Number(date.slice(5, 7)); // 1..12
+  const day = Number(date.slice(8, 10));
+  const targetYear = y + years;
+  // Dernier jour du mois cible : jour 0 du mois suivant (Date.UTC gère le débordement de mois).
+  const lastDayOfTargetMonth = new Date(Date.UTC(targetYear, m, 0)).getUTCDate();
+  const clampedDay = Math.min(day, lastDayOfTargetMonth);
+  return new Date(Date.UTC(targetYear, m - 1, clampedDay)).toISOString().slice(0, 10);
 }
 
 function minDate(a: DateOnly | null, b: DateOnly | null): DateOnly | null {

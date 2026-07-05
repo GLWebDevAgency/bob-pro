@@ -89,6 +89,22 @@ describe('derivePrescription — b2c (L218-2 C. conso, 2 ans, ancre prudente)', 
     expect(p!.deadline).toBe('2025-05-01');
     expect(p!.urgency).toBe('prescrite');
   });
+
+  // NON-RÉGRESSION (audit adversarial 2026-07-05, bug majeur) : ancre un 29/02 (année bissextile).
+  // Un délai en années expire « à défaut de quantième, le dernier jour du mois » (art. 641 al. 2
+  // CPC) : 29/02/2024 + 2 ans = 28/02/2026, PAS 01/03/2026 (débordement natif de Date). Sinon la
+  // deadline est surestimée d'un jour et, au 01/03/2026, une créance PRESCRITE serait dite « urgente ».
+  it('ancre 29/02 bissextile : deadline bornée au 28/02 (art. 641 al. 2 CPC), pas 01/03', () => {
+    const p = derive({
+      customerType: 'b2c',
+      issuedAt: '2024-02-29',
+      dueAt: '2024-03-31',
+      asOf: '2026-03-01',
+    });
+    expect(p!.anchor).toBe('2024-02-29');
+    expect(p!.deadline).toBe('2026-02-28'); // clampé au dernier jour de février 2026 (non bissextile)
+    expect(p!.urgency).toBe('prescrite'); // au 01/03/2026, le délai est expiré (pas « urgente »)
+  });
 });
 
 describe('derivePrescription — b2g (loi 68-1250, déchéance quadriennale)', () => {

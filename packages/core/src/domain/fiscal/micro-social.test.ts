@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import {
-  MICRO_ACRE_RATES,
+  MICRO_ACRE_REDUCTION_STEPS,
   MICRO_SOCIAL_RATES,
   acreWindow,
   computeMicroSocialProvision,
   microCategoryFromTrade,
-  resolveAcreRates,
+  resolveAcreSocialPct,
   resolveMicroSocialRates,
   type MicroActivityCategory,
 } from './micro-social';
@@ -166,37 +166,41 @@ describe('computeMicroSocialProvision', () => {
   });
 });
 
-describe('MICRO_ACRE_RATES — taux ACRE versionnés par date de début d’activité (art. D.131-6-3 CSS)', () => {
-  it('marche AVANT le 1/7/2026 : 50 % du taux plein, sourcé barème URSSAF', () => {
-    const before = MICRO_ACRE_RATES.find((s) => s.effectiveFrom === '1970-01-01');
-    expect(before?.acreSocialPct).toEqual({
-      ventes: 6.2, // 12,3 × 0,5 = 6,15 → 6,2
-      bic_prestations: 10.6, // 21,2 × 0,5
-      bnc: 12.8, // 25,6 × 0,5
-      liberale_reglementee_cipav: 11.6, // 23,2 × 0,5
-    });
+describe('MICRO_ACRE_REDUCTION_STEPS — facteur de réduction par date de début d’activité (art. D.131-6-3 CSS)', () => {
+  it('marche AVANT le 1/7/2026 : 50 % du taux plein restant dû', () => {
+    const before = MICRO_ACRE_REDUCTION_STEPS.find((s) => s.effectiveFrom === '1970-01-01');
+    expect(before?.factor).toBe(0.5);
   });
 
   it('marche du 1/7/2026 (décret 2026-69) : 75 % du taux plein pour le micro', () => {
-    const from0107 = MICRO_ACRE_RATES.find((s) => s.effectiveFrom === '2026-07-01');
-    expect(from0107?.acreSocialPct).toEqual({
-      ventes: 9.2, // 12,3 × 0,75 = 9,225 → 9,2
-      bic_prestations: 15.9, // 21,2 × 0,75
-      bnc: 19.2, // 25,6 × 0,75
-      liberale_reglementee_cipav: 17.4, // 23,2 × 0,75
-    });
+    const from0107 = MICRO_ACRE_REDUCTION_STEPS.find((s) => s.effectiveFrom === '2026-07-01');
+    expect(from0107?.factor).toBe(0.75);
   });
 });
 
-describe('resolveAcreRates — marche du 1/7/2026 lue sur la DATE DE CRÉATION, pas l’année', () => {
-  it('création avant le 1/7/2026 → barème 50 %', () => {
-    expect(resolveAcreRates('2026-03-15').acreSocialPct.bic_prestations).toBe(10.6);
-    expect(resolveAcreRates('2026-06-30').acreSocialPct.bic_prestations).toBe(10.6); // veille de la marche
+describe('resolveAcreSocialPct — taux ACRE = plein de l’ANNÉE DÉCLARÉE × facteur (date de création)', () => {
+  it('marche du 1/7/2026 lue sur la DATE DE CRÉATION (déclaration 2026)', () => {
+    expect(resolveAcreSocialPct(2026, 'bic_prestations', '2026-03-15')).toBe(10.6); // 21,2 × 0,5
+    expect(resolveAcreSocialPct(2026, 'bic_prestations', '2026-06-30')).toBe(10.6); // veille de la marche
+    expect(resolveAcreSocialPct(2026, 'bic_prestations', '2026-07-01')).toBe(15.9); // 21,2 × 0,75, jour de la marche
+    expect(resolveAcreSocialPct(2026, 'bnc', '2026-09-03')).toBe(19.2); // 25,6 × 0,75
   });
 
-  it('création à compter du 1/7/2026 → barème 75 %', () => {
-    expect(resolveAcreRates('2026-07-01').acreSocialPct.bic_prestations).toBe(15.9); // jour de la marche
-    expect(resolveAcreRates('2026-09-03').acreSocialPct.bnc).toBe(19.2);
+  it('arrondi au 0,1 % reproduit le barème publié (12,3 × 0,5 = 6,15 → 6,2 ; × 0,75 = 9,2)', () => {
+    expect(resolveAcreSocialPct(2026, 'ventes', '2026-01-01')).toBe(6.2);
+    expect(resolveAcreSocialPct(2026, 'ventes', '2026-07-01')).toBe(9.2);
+    expect(resolveAcreSocialPct(2026, 'liberale_reglementee_cipav', '2026-07-01')).toBe(17.4);
+  });
+
+  // NON-RÉGRESSION (audit adversarial 2026-07-05, bug majeur) : le taux ACRE suit le taux PLEIN de
+  // l'année déclarée. Le BNC plein vaut 24,6 % en 2025 (vs 25,6 % en 2026) → ACRE BNC 2025 = 12,3 %,
+  // PAS 12,8 %. L'ancien modèle figeait 12,8 (calé 2026) et sur-provisionnait toute déclaration 2025.
+  it('BNC : ACRE suit l’année déclarée — 12,3 % en 2025 (plein 24,6), 12,8 % en 2026 (plein 25,6)', () => {
+    expect(resolveAcreSocialPct(2025, 'bnc', '2025-06-01')).toBe(12.3);
+    expect(resolveAcreSocialPct(2026, 'bnc', '2025-06-01')).toBe(12.8);
+    // Ventes/BIC/Cipav : plein identique 2025/2026 → ACRE stable.
+    expect(resolveAcreSocialPct(2025, 'bic_prestations', '2025-06-01')).toBe(10.6);
+    expect(resolveAcreSocialPct(2026, 'bic_prestations', '2025-06-01')).toBe(10.6);
   });
 });
 

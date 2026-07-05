@@ -202,66 +202,67 @@ export function computeMicroSocialProvision(input: ComputeMicroSocialProvisionIn
  * le versement libératoire de l'IR (art. 151-0 CGI) reste dû en plein — l'ACRE ne touche QUE le
  * social, VFL cumulable.
  *
- * VERSIONNÉ PAR DATE DE DÉBUT D'ACTIVITÉ (jamais par année civile) : le décret n° 2026-69 du
- * 6/2/2026 (JORF JORFTEXT000053449085, pris pour l'art. 23 de la LFSS 2026 — loi n° 2025-1403 du
- * 30/12/2025) réduit l'exonération de la moitié au quart des cotisations ; pour le micro-social
- * (art. D.131-6-3 CSS modifié) le taux minoré passe de 50 % à 75 % du taux plein. ENTRÉE EN
- * VIGUEUR ÉCHELONNÉE : 1/1/2026 pour le droit commun, mais 1/7/2026 SEULEMENT pour les
- * micro-entrepreneurs → la marche se lit sur la DATE DE CRÉATION, pas sur l'année déclarée.
+ * MODÈLE (corrigé C-EXP-FIX1) : le taux ACRE est une RÉDUCTION du taux plein de l'ANNÉE DÉCLARÉE,
+ * PAS une valeur absolue figée. Deux dimensions indépendantes :
+ *  · l'ANNÉE de déclaration fixe le taux plein de base (MICRO_SOCIAL_RATES — ex. BNC plein 24,6 %
+ *    en 2025 mais 25,6 % en 2026 : l'ACRE BNC vaut donc 12,3 % pour une déclaration 2025 et 12,8 %
+ *    pour 2026, à réduction identique) ;
+ *  · la DATE DE DÉBUT D'ACTIVITÉ fixe le FACTEUR de réduction (part du plein restant due) : 50 %
+ *    avant le 1/7/2026, 75 % pour les créations micro à compter du 1/7/2026 (décret n° 2026-69 du
+ *    6/2/2026, JORF JORFTEXT000053449085, art. D.131-6-3 CSS modifié — entrée en vigueur au
+ *    1/7/2026 pour le micro-social, échelonnée depuis le 1/1/2026 pour le droit commun).
  *
- * · Créations/reprises ANTÉRIEURES au 1/7/2026 → 50 % du taux plein (VÉRIFIÉ, réconcilié barème
- *   URSSAF) : ventes 6,2 % · BIC prestations 10,6 % · BNC 12,8 % · Cipav 11,6 %
- *   (12,3 × 0,5 = 6,15 → 6,2 ; 21,2 × 0,5 = 10,6 ; 25,6 × 0,5 = 12,8 ; 23,2 × 0,5 = 11,6).
- * · Créations micro à compter du 1/7/2026 → 75 % du taux plein (décret 2026-69, art. D.131-6-3
- *   CSS modifié — réconcilié valeurs indicatives URSSAF) : ventes 9,2 % · BIC prestations 15,9 %
- *   · BNC 19,2 % · Cipav 17,4 %
- *   (12,3 × 0,75 = 9,225 → 9,2 ; 21,2 × 0,75 = 15,9 ; 25,6 × 0,75 = 19,2 ; 23,2 × 0,75 = 17,4).
- *
- * Sources (vérifiées au build 2026-07-04) :
+ * Le taux publié est ARRONDI au dixième de point (0,1 %) : `round1(plein × facteur)` reproduit le
+ * barème URSSAF (12,3 × 0,5 = 6,15 → 6,2 ; 12,3 × 0,75 = 9,225 → 9,2 ; 25,6 × 0,5 = 12,8 ;
+ * 24,6 × 0,5 = 12,3). Sources vérifiées :
  * · https://www.legifrance.gouv.fr/jorf/id/JORFTEXT000053449085 (décret n° 2026-69 du 6/2/2026) ;
  * · https://www.urssaf.fr/accueil/exoneration-acre-createur.html (page officielle ACRE URSSAF) ;
- * · https://www.compta-online.com/regime-social-des-micro-entrepreneurs-ao8080 (barème réconcilié :
- *   ACRE ventes 6,2 % / BIC 10,6 % / BNC 12,8 % / Cipav 11,6 %) ;
- * · taux pleins 2026 = MICRO_SOCIAL_RATES ci-dessus (mêmes décrets 2025-943 / actualité BNC 25,6 %).
+ * · taux pleins par année = MICRO_SOCIAL_RATES ci-dessus (décrets 2025-943 / actualité BNC 25,6 %).
  */
-export interface AcreRateStep {
-  /** Première DATE DE DÉBUT D'ACTIVITÉ à laquelle ce barème s'applique (borne incluse). */
+export interface AcreReductionStep {
+  /** Première DATE DE DÉBUT D'ACTIVITÉ à laquelle ce facteur s'applique (borne incluse). */
   effectiveFrom: DateOnly;
-  /** Taux social ACRE minoré, en % du CA encaissé, par catégorie d'activité. */
-  acreSocialPct: Record<MicroActivityCategory, number>;
+  /** Part du taux PLEIN restant due pendant l'exonération (0,5 = moitié due ; 0,75 = trois quarts). */
+  factor: number;
 }
 
 /**
- * Une entrée par MARCHE de taux, ordonnée par date de début d'activité croissante — la marche du
- * 1/7/2026 (décret 2026-69) fait passer le micro de 50 % à 75 % du taux plein.
+ * Une entrée par MARCHE de réduction, ordonnée par date de début d'activité croissante — la marche
+ * du 1/7/2026 (décret 2026-69) fait passer le micro de 50 % à 75 % du taux plein restant dû.
  */
-export const MICRO_ACRE_RATES: readonly AcreRateStep[] = [
-  {
-    // Créations avant le 1/7/2026 : exonération à 50 % du taux plein (barème stable depuis 2020).
-    effectiveFrom: '1970-01-01',
-    acreSocialPct: { ventes: 6.2, bic_prestations: 10.6, bnc: 12.8, liberale_reglementee_cipav: 11.6 },
-  },
-  {
-    // Créations micro à compter du 1/7/2026 : exonération réduite à 75 % du taux plein (décret 2026-69).
-    effectiveFrom: '2026-07-01',
-    acreSocialPct: { ventes: 9.2, bic_prestations: 15.9, bnc: 19.2, liberale_reglementee_cipav: 17.4 },
-  },
+export const MICRO_ACRE_REDUCTION_STEPS: readonly AcreReductionStep[] = [
+  { effectiveFrom: '1970-01-01', factor: 0.5 }, // créations avant le 1/7/2026 : 50 % du plein
+  { effectiveFrom: '2026-07-01', factor: 0.75 }, // créations micro dès le 1/7/2026 : 75 % (décret 2026-69)
 ];
 
 /**
- * Barème ACRE applicable à une date de début d'activité : la MARCHE la plus récente dont
- * l'`effectiveFrom` est ≤ dateCreation (à défaut la plus ancienne connue). Même pattern de
- * résolution que resolveMicroSocialRates.
+ * Facteur de réduction ACRE applicable à une date de début d'activité : la MARCHE la plus récente
+ * dont l'`effectiveFrom` est ≤ dateCreation (à défaut la plus ancienne connue).
  */
-export function resolveAcreRates(dateCreation: DateOnly): AcreRateStep {
-  const ordered = [...MICRO_ACRE_RATES].sort((a, b) => a.effectiveFrom.localeCompare(b.effectiveFrom));
-  const applicable = [...ordered].reverse().find((s) => s.effectiveFrom <= dateCreation);
-  const fallback = applicable ?? ordered[0];
-  if (fallback === undefined) {
+export function resolveAcreReductionFactor(dateCreation: DateOnly): number {
+  const ordered = [...MICRO_ACRE_REDUCTION_STEPS].sort((a, b) => a.effectiveFrom.localeCompare(b.effectiveFrom));
+  const applicable = [...ordered].reverse().find((s) => s.effectiveFrom <= dateCreation) ?? ordered[0];
+  if (applicable === undefined) {
     // Constante non vide du module : inatteignable, mais typé honnêtement (comme MICRO_SOCIAL_RATES).
-    throw new Error('MICRO_ACRE_RATES est vide — référentiel ACRE corrompu');
+    throw new Error('MICRO_ACRE_REDUCTION_STEPS est vide — référentiel ACRE corrompu');
   }
-  return fallback;
+  return applicable.factor;
+}
+
+/**
+ * Taux social ACRE d'une catégorie = taux plein de l'ANNÉE DÉCLARÉE × facteur (date de création),
+ * arrondi au dixième de point comme le barème URSSAF publié. Corrige le bug d'un taux figé 2026
+ * appliqué à toute année (le BNC plein change entre 2025 et 2026).
+ */
+export function resolveAcreSocialPct(
+  year: number,
+  category: MicroActivityCategory,
+  dateCreation: DateOnly,
+): number {
+  const { rates } = resolveMicroSocialRates(year);
+  const factor = resolveAcreReductionFactor(dateCreation);
+  // Arrondi au 0,1 % : le barème publié est au dixième de point (6,15 → 6,2). Entiers en dixièmes.
+  return Math.round(rates.socialPct[category] * 10 * factor) / 10;
 }
 
 export interface AcreWindow {

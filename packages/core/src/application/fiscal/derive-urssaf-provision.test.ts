@@ -255,6 +255,24 @@ describe('deriveUrssafProvision — ACRE (C-EXP5d)', () => {
     expect(p.explain).toContain('ACRE est terminée');
   });
 
+  // NON-RÉGRESSION (audit adversarial 2026-07-05, bug majeur) : le taux ACRE suit le taux PLEIN de
+  // l'ANNÉE DÉCLARÉE. Un consultant BNC déclarant en 2025 doit l'ACRE 12,3 % (24,6 × 0,5), PAS
+  // 12,8 % (le plein BNC était 24,6 en 2025, monté à 25,6 en 2026). L'ancien taux figé 12,8
+  // sur-provisionnait de 50 € sur 10 000 € encaissés.
+  it('BNC déclarant en 2025 : ACRE 12,3 % (plein 2025 = 24,6), pas 12,8 % (calé 2026)', () => {
+    const p = deriveUrssafProvision({
+      payments: [pay('2025-08-10', 1_000_000)],
+      asOf: '2025-08-15',
+      periodicity: 'quarterly',
+      trade: 'consultant', // → BNC
+      dateCreation: '2025-06-01', // fenêtre T2 2025 + 3 trim. → 31/3/2026 : T3 2025 dedans
+      acre: true,
+    });
+    expect(p.acreApplied).toBe(true);
+    expect(p.ratePct).toBe(12.3); // 24,6 % (plein BNC 2025) × 0,5 — surtout PAS 12,8
+    expect(p.provisionCents).toBe(123_000); // 10 000 € × 12,3 % (vs 128 000 € avec le bug)
+  });
+
   it('classement par date d’encaissement : un paiement hors fenêtre est raté au taux plein', () => {
     // Création le 20/5/2026 (avant la marche du 1/7 → ACRE 10,6 %) : dans la MÊME période T2, un
     // encaissement daté avant l’ouverture de la fenêtre est au plein, celui après à l’ACRE

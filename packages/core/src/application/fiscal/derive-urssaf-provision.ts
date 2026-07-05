@@ -4,7 +4,7 @@ import {
   acreWindow,
   computeMicroSocialProvision,
   microCategoryFromTrade,
-  resolveAcreRates,
+  resolveAcreSocialPct,
   type MicroActivityCategory,
 } from '../../domain/fiscal/micro-social';
 import { formatEUR } from '../../format/money';
@@ -34,7 +34,7 @@ import { type FiscalConfidence, type UrssafPeriodicity } from './derive-fiscal-c
  *
  * ACRE (C-EXP5d) : entrées ADDITIVES `dateCreation` + `acre` (booléen explicite, JAMAIS deviné —
  * la demande se dépose au plus tard le 60e jour suivant le début d’activité pour les créations à compter du 1/1/2026). `acre: true` + période dans la fenêtre (acreWindow, dérivée de
- * dateCreation) → taux réduit ACRE (resolveAcreRates, versionné par date de début d'activité,
+ * dateCreation) → taux réduit ACRE (resolveAcreSocialPct : plein de l'année déclarée × facteur,
  * marche du 1/7/2026) à la place du taux plein social, VFL cumulable au taux plein ; `acre: true`
  * hors fenêtre → taux plein + explain « ACRE terminée » ; `acre` null/absent → taux plein +
  * `askAcre: true` si dateCreation < 12 mois avant asOf (l'UI posera la question) ; `acre: false`
@@ -219,9 +219,12 @@ export function deriveUrssafProvision(input: DeriveUrssafProvisionInput): Urssaf
   const periodOverlapsWindow =
     window != null && period.start <= window.end && period.end >= window.start;
   const acreApplied = acreRequested && periodOverlapsWindow;
+  // Taux ACRE = réduction du taux plein de l'ANNÉE DÉCLARÉE (la période est dans une seule année
+  // civile) × facteur lié à la date de création — jamais un taux figé (le BNC plein varie 2025/26).
+  const declarationYear = Number(period.start.slice(0, 4));
   const acreRatePct =
     acreRequested && input.dateCreation != null
-      ? resolveAcreRates(input.dateCreation).acreSocialPct[category]
+      ? resolveAcreSocialPct(declarationYear, category, input.dateCreation)
       : null;
 
   // CA encaissé de la période : seul le JOUR compte (receivedAt DateOnly ou ISO complet),
@@ -244,7 +247,7 @@ export function deriveUrssafProvision(input: DeriveUrssafProvisionInput): Urssaf
   const encaissedCents = Math.max(0, net);
 
   const vfl = input.vfl ?? false;
-  const year = Number(period.start.slice(0, 4)); // période toujours dans une seule année civile
+  const year = declarationYear; // période toujours dans une seule année civile (défini plus haut)
   // Deux lignes de calcul (ACRE + plein) : en l'absence d'« à cheval » réel, l'une est toujours à
   // base 0. VFL cumulable au taux plein dans les deux (l'ACRE ne minore QUE le social).
   const acrePart = computeMicroSocialProvision({
