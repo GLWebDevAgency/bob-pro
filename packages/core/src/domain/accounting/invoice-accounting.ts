@@ -99,7 +99,12 @@ function buildInvoiceAccountingEntry(input: {
 }): DomainResult<AccountingEntry> {
   const invoice = input.invoice;
   const totals = invoice.totals();
-  if (!Number.isSafeInteger(totals.netToPay) || totals.netToPay <= 0)
+  // Reprise d'avances : une finale deduit l'acompte deja facture (4191). Elle peut etre
+  // entierement couverte (acompte + situations = 100 %) : netToPay = 0 y est legitime —
+  // c'est precisement l'ecriture qui constate le CA (70x) et solde les avances.
+  const advanceRepriseCents =
+    invoice.kind === 'final' && invoice.depositDeductionCents > 0 ? invoice.depositDeductionCents : 0;
+  if (!Number.isSafeInteger(totals.netToPay) || totals.netToPay < 0 || (totals.netToPay === 0 && advanceRepriseCents === 0))
     return err(appValidation('invoice.netToPay', 'Net a payer invalide.'));
 
   const accounts = mergeAccounts(input.accounts);
@@ -139,6 +144,19 @@ function buildInvoiceAccountingEntry(input: {
     else addAmount(credit, component.account, amount);
   }
 
+  if (advanceRepriseCents > 0) {
+    // Finale apres acompte : le 411 ne porte que le solde (netToPay = ttc − acompte), le CA
+    // et la TVA sont credites PLEINS — sans reprise, l'ecriture serait desequilibree du
+    // montant de l'acompte et rejetee. Schema PCG : D 4191 (part HT des avances) +
+    // D 44571 (part TVA d'acompte) en MIROIR de l'ecriture d'acompte — memes composants
+    // [HT, TVA par taux] et meme allocateAmounts, donc solde 4191 = 0 au centime,
+    // multi-taux inclus, et la reprise reste lisible au journal (trace d'audit).
+    const vatAmounts = Object.values(totals.vatByRate);
+    const reprise = allocateAmounts([totals.ht, ...vatAmounts], advanceRepriseCents);
+    addAmount(debit, accounts.customerAdvances, reprise[0] ?? 0);
+    for (let i = 0; i < vatAmounts.length; i += 1) addAmount(debit, accounts.vatCollected, reprise[i + 1] ?? 0);
+  }
+
   const props: AccountingEntryProps = {
     id: input.entryId,
     companyId: invoice.companyId,
@@ -158,6 +176,9 @@ function buildInvoiceAccountingEntry(input: {
  *
  * - Facture finale/situation : 411 debit ; 70x + 44571 credit.
  * - Facture d'acompte : 411 debit ; 4191 avances clients + 44571 credit.
+ * - Finale APRES acompte : 411 debit (solde) + 4191/44571 debit (reprise des avances,
+ *   miroir de l'ecriture d'acompte) ; 70x + 44571 credit PLEINS — le CA se constate a la
+ *   finale, une seule fois, et le 4191 ressort a zero.
  * - Avoir : ecriture inverse.
  *
  * Pour les acomptes, l'ecriture porte seulement sur `netToPay` : HT/TVA sont alloues au prorata
