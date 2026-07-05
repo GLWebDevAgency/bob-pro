@@ -1,13 +1,14 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { ScrollView, View, Text, Pressable, Alert } from 'react-native';
 import { useRouter, type Href } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { deriveTrialBalance, deriveIncomeStatement, deriveBalanceSheet, formatEUR } from '@bob/core';
+import { deriveTrialBalance, deriveIncomeStatement, deriveBalanceSheet, buildClosingDossier, formatEUR } from '@bob/core';
 import { useTheme } from '../src/theme';
-import { useAccountingEntries, useInvoices, useQuotes, useSubscription, useExportFec, appErrorMessage } from '../src/data/hooks';
+import { useAccountingEntries, useCompany, useInvoices, useQuotes, useSubscription, useExportFec, appErrorMessage } from '../src/data/hooks';
 import { useDocuments } from '../src/data/documents';
 import { shareFec } from '../src/lib/share-fec';
+import { shareTextFile } from '../src/lib/share-text';
 import { Card, Badge, Button, SectionHeader, font } from '../src/components/ui';
 
 /** Un point de clôture : libellé, compte, où agir. count=0 => réglé. */
@@ -31,8 +32,10 @@ export default function Cloture() {
   const quotes = useQuotes();
   const documents = useDocuments();
   const entries = useAccountingEntries();
+  const company = useCompany();
   const exportFec = useExportFec();
   const entitled = (sub?.features ?? []).includes('accounting_operations');
+  const [sendingDossier, setSendingDossier] = useState(false);
 
   // CLOTURE-1 : balance générale + résultat provisoire (deriveTrialBalance @bob/core —
   // LE document que l'expert associé ouvre en premier ; même dérivation pour Bob).
@@ -91,6 +94,28 @@ export default function Cloture() {
       if (res.warnings.length) Alert.alert('Avertissements FEC', res.warnings.join('\n'));
     } catch (e) {
       Alert.alert('Oups', appErrorMessage(e));
+    }
+  };
+
+  // DOSSIER-1 : envoie la note de synthèse (compte de résultat + bilan + balance) au comptable.
+  const onSendDossier = async (): Promise<void> => {
+    setSendingDossier(true);
+    try {
+      const now = new Date();
+      const generatedOn = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+      const dossier = buildClosingDossier({
+        company: { name: company.data?.name ?? 'Mon entreprise', siren: company.data?.siren ?? '—' },
+        period: { from: fecFrom, to: fecTo },
+        generatedOn,
+        entries: (entries.data ?? []).map((e) => ({ lines: e.lines })),
+      });
+      const shared = await shareTextFile(dossier);
+      if (shared === 'unavailable')
+        Alert.alert('Dossier de clôture', `${dossier.filename} préparé. Partage indisponible sur cet appareil.`);
+    } catch (e) {
+      Alert.alert('Oups', appErrorMessage(e));
+    } finally {
+      setSendingDossier(false);
     }
   };
 
@@ -432,14 +457,24 @@ export default function Cloture() {
 
             <View>
               <SectionHeader title="Export cabinet" />
+              {/* DOSSIER-1 : le dossier complet (note de synthèse lisible) — le geste du « cercle ». */}
+              {balance.rows.length > 0 ? (
+                <Button
+                  title={sendingDossier ? 'Préparation du dossier…' : 'Envoyer le dossier au comptable'}
+                  variant="primary"
+                  disabled={sendingDossier}
+                  onPress={() => void onSendDossier()}
+                />
+              ) : null}
+              <View style={{ height: balance.rows.length > 0 ? 10 : 0 }} />
               <Button
-                title={exportFec.isPending ? 'Génération du FEC…' : 'Exporter pour le comptable (FEC)'}
+                title={exportFec.isPending ? 'Génération du FEC…' : 'Exporter le FEC seul'}
                 variant="secondary"
                 disabled={exportFec.isPending}
                 onPress={() => void onExportFec()}
               />
               <Text style={[font('meta'), { color: colors.slate400, marginTop: 8, textAlign: 'center' }]}>
-                Fichier des écritures conforme (FEC) — {mois.label}.
+                Dossier = compte de résultat, bilan et balance ; le FEC (fichier des écritures) l’accompagne.
               </Text>
             </View>
           </>

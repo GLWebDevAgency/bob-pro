@@ -179,6 +179,21 @@ export function useProfile() {
   });
 }
 
+/** Fiche société du tenant (nom, SIREN…) — GET /company/me. DOSSIER-1 : entête du dossier
+ *  de clôture. Optionnel côté client : désactivé si l'implémentation ne l'expose pas. */
+export function useCompany() {
+  const client = useBobClient();
+  return useQuery({
+    queryKey: ['company'],
+    enabled: typeof client.getCompanyMe === 'function',
+    queryFn: async () => {
+      const r = await client.getCompanyMe!();
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+  });
+}
+
 /** C-EXP-UI1 : échéancier fiscal 90 j (client.getFiscalCalendar — deriveFiscalCalendar serveur/démo).
  * Dates réelles dérivées de la fiche société ; amountHint null en v1 → l'écran n'affiche JAMAIS
  * de montant. Les échéances 'assumed' (périodicité/clôture inconnues) se badgent « à confirmer ». */

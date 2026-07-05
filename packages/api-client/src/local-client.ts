@@ -410,6 +410,11 @@ export class LocalBobClient implements BobClient {
     return ok(resolveTradeConfig(seedCompany().trade, 'business'));
   }
 
+  /** GET /company/me (PONT-SERVEUR ④) — en démo, la fiche société du seed (Mercier). */
+  async getCompanyMe(): Promise<Result<CompanyProps, AppError>> {
+    return ok(seedCompany().toProps());
+  }
+
   /** C-EXP5b (adaptateur démo) : MÊMES règles que le serveur — deriveFiscalCalendar sur la fiche
    * société du seed, fenêtre 90 j, fiscalYearEnd/périodicité URSSAF inconnus comme en prod
    * (le use case émet ces échéances en 'assumed', honnête). */
