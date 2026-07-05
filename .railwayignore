@@ -1,0 +1,25 @@
+# Upload Railway (railway up) — n'envoyer que ce qui sert au build Docker.
+# Le Dockerfile fait pnpm install + build : ni node_modules, ni dist, ni .git.
+.git
+.turbo
+.agent-sync
+node_modules
+**/node_modules
+**/dist
+**/.next
+**/.expo
+coverage
+*.log
+*.zip
+
+# Artefacts hors-build (lourds, inutiles au serveur) : design, docs, captures, scratch.
+design_handoff_bob_pro
+docs
+.playwright-mcp
+_design_extract
+
+# Secrets — jamais dans l'image (fournis par l'env Railway).
+.env
+**/.env
+**/.env.*
+!**/.env.example
