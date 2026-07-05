@@ -1144,6 +1144,22 @@ transcript workflow wf_fb597a24-2e3.
   getBalanceSheet). Preuve e2e : Actif 2 024,55 € = Passif 2 024,55 € équilibré.
   Core 573 ✓ ai 160 ✓ api-client 38 ✓ typecheck ✓.
   SUIVI SERVEUR (session A) : getBalanceSheet dans les BobActions serveur.
+- [02:40] claude-code (session B) DOSSIER-1 MERGE (commit dd3b604) : LE DOSSIER ENVOYÉ AU
+  COMPTABLE EN UN TAP — le geste qui matérialise « le cercle ». Les trois états de synthèse
+  ne vivaient qu'à l'écran ; buildClosingDossier (@bob/core, use case pur, 4 tests,
+  generatedOn injecté) assemble compte de résultat + bilan + balance générale (cohérents
+  par construction) en une NOTE DE SYNTHÈSE texte formatée (rubriques nulles masquées,
+  équilibres signalés, « à faire signer par votre expert-comptable »). LocalBobClient.
+  getCompanyMe IMPLÉMENTÉ (fiche du seed — lève le TODO PONT-SERVEUR ④ et débloque
+  useIdentity en démo) ; hook useCompany ; helper shareTextFile (UTF-8, feuille de partage —
+  ≠ FEC qui exige Latin-9). Écran Clôture : bouton PRIMAIRE « Envoyer le dossier au
+  comptable » (le FEC machine reste en export secondaire). Preuve : dossier Mercier
+  Plomberie (SIREN 732829320) — résultat net 668,92 €, bilan actif=passif 2 024,55 €,
+  partie double 4 736,50 €. Core 577 ✓ typecheck ✓.
+  → LE DOSSIER DE L'EXPERT EST COMPLET : FEC lettré (ISO 8859-15) + note de synthèse
+  (3 états) partageables. Bob a 6 pouvoirs d'expert-comptable de poche.
+  SUIVI SERVEUR (session A) : getCompanyMe est déjà au contrat client ; l'API prod le sert
+  (PONT-SERVEUR ④). Rien de neuf côté serveur pour DOSSIER-1 (100 % dérivé client).
 
 ---
 
