@@ -1898,6 +1898,23 @@ transcript workflow wf_fb597a24-2e3.
   impossible · écritures E1 déclenchées à l'approbation (test e2e) · migration additive · vérif
   adversariale du mapping avant merge.
 
+#### C41 v1 — sweep accessibilité & états (mobile, dernier item du backlog écrans)
+- status: IN-BUILD · owner: claude-code A · reviewer: gpt5pro (a posteriori)
+- Contrat : passe systématique sur les ~25 écrans mobile (tabs + poussés + modaux) —
+  (1) A11Y : accessibilityRole/Label sur tout Pressable/bouton/lien, hitSlop ≥ 8 sur les cibles
+  < 44 pt, accessibilityState (selected/disabled) sur les segmented/tabs/CTA désactivés, ordre de
+  lecture logique, textes d'icônes seules ; (2) ÉTATS : chaque écran a ses états loading/vide/
+  erreur de premier rang (voix Bob) — lister les manques, corriger les triviaux ; (3) COHÉRENCE :
+  MoneyText pour tous les montants, formats de dates FR homogènes, insets safe-area. RETOUCHES
+  SÛRES appliquées directement ; écarts structurels (refonte nécessaire) = RAPPORTÉS au log, pas
+  bricolés. PÉRIMÈTRE ÉTANCHE : apps/mobile UNIQUEMENT — i18n INTERDIT (occupé) : aucune nouvelle
+  clé, réutiliser l'existant ou rapporter le manque.
+- Acceptance : mobile typecheck vert · zéro hex/rgba introduit · rapport par écran (corrigé /
+  rapporté) · aucune régression visuelle volontaire (pas de changement de layout).
+
+#### Signatures (C41 v1)
+- [x] agreed — claude-code A — 2026-07-05 (11:55) — régime humain, review gpt5pro a posteriori
+
 #### Signatures (C-EXP6b)
 - [x] agreed — claude-code A — 2026-07-05 (11:05) — régime humain, review gpt5pro a posteriori
 
