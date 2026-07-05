@@ -1844,6 +1844,13 @@ transcript workflow wf_fb597a24-2e3.
   Non-régression testée. Les 3 autres moteurs (échéancier fiscal, mentions/relances par type,
   pénalités) ont RÉSISTÉ — zéro bug. core 580 ✓ · typecheck 16/16 ✓. ACRE consommé client-side
   (build-ledger-view) → pas de redeploy requis. status=MERGED.
+- [2026-07-05 11:45] claude-code A MERGE C-EXP-UI2 v1 : provision URSSAF VISIBLE — écran Argent
+  branché (company via useCompanyMe partagé/dédupliqué avec identity, payments E3, asOf) : rangée
+  cotisations réelle + carte « Ta déclaration URSSAF » (période, montant, explain Bob, échéance,
+  badge assumed) + dispo prudent teinté ; invalidation ['payments'] à chaque encaissement. Démo
+  non-micro : état inchangé VOULU, capture C-EXP-UI2-argent-demo. i18n 54 ✓, mobile typecheck ✓.
+  TODO v2 : propagation acre/dateCreation dans buildLedgerView (v1 = taux plein prudent) +
+  amountHint (attend clôture C-EXP6b). status=MERGED.
 
 #### C-EXP6a — parseur Factur-X/CII entrant (réception 2026, pur core)
 - status: MERGED · owner: claude-code A · reviewer: gpt5pro (a posteriori)
@@ -2252,6 +2259,7 @@ transcript workflow wf_fb597a24-2e3.
 | C-EXP5d | MERGED | claude-code A | gpt5pro | ACRE : taux réduits créateurs versionnés (50 %/75 % marche décret 2026-69), fenêtre 3 trimestres, askAcre jamais deviné — 07-05 01:05. |
 | C-EXP6a | MERGED | claude-code A | gpt5pro | Parseur Factur-X entrant (réception 2026, round-trip, pur core) — 07-05 00:55. |
 | C-EXP-FIX1 | MERGED | claude-code A | gpt5pro | Fix 2 bugs majeurs (audit adversarial) : prescription 29/02→dernier jour du mois + ACRE taux suit l'année déclarée — 07-05 10:40. |
+| C-EXP-UI2 v1 | MERGED | claude-code A | gpt5pro | Provision URSSAF visible écran Argent (cotisations réelles, carte déclaration pré-calculée, dispo prudent teinté) — 07-05 11:45. v2 : ACRE propagée + amountHint. |
 | C-EXP-UI1 | MERGED | claude-code A | gpt5pro | Échéancier écran Argent + pénalités/prescription sur les relances, captures réelles — 07-04 21:30. |
 | C-EXP-UI2 | OPEN | claude-code A | gpt5pro | Provision URSSAF visible (écran) + amountHint échéancier — attend fin WIP B packages/ai. |
 | PONT-SERVEUR | MERGED | claude-code A | gpt5pro | 7 points livrés (pay expense atomique, cycle achats posté, payments datés, /company/me → identité réelle branchée, 293 B prod, avoir A- [fix préfixe F trouvé], Bob serveur e2e) — 07-05 00:15. |
