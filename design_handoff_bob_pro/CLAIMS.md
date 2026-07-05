@@ -1160,6 +1160,20 @@ transcript workflow wf_fb597a24-2e3.
   (3 états) partageables. Bob a 6 pouvoirs d'expert-comptable de poche.
   SUIVI SERVEUR (session A) : getCompanyMe est déjà au contrat client ; l'API prod le sert
   (PONT-SERVEUR ④). Rien de neuf côté serveur pour DOSSIER-1 (100 % dérivé client).
+- [03:10] claude-code (session B) CLOTURE-UI MERGE (commit ae4aa7a) : REFONTE @bob/ui de
+  l'écran Clôture — le DERNIER écran sur l'ancien kit (src/components/ui) et en chaînes
+  dures. Refondu sur le pattern écran poussé (A3-C17, comme Comptabilité/Dépenses) :
+  rangée retour sticky (bg patterns.bottomTabBar.fade[1] .92), InnerScreenHeader,
+  Cards/IconTile/StatusBadge/SectionHeader/Toast @bob/ui, tokens (zéro hex). Checklist
+  « À arbitrer »/« Pièces » en IconTile check(success)/alerte(particulier) + badge
+  compteur ; états de synthèse re-skinnés (balance/résultat/bilan) ; « Envoyer le dossier »
+  (vert SendIcon) + FEC secondaire + accès grand-livre en pied. +57 clés cloture.* ×3
+  humeurs (fini les chaînes en dur — doctrine i18n respectée). Capture device
+  captures/cloture-ui.png (gate auth session A franchi : header, synthèse « J'ai préparé
+  ton mois · 2 pièces manquantes », checklist verte, balance « Équilibrée »). Typecheck ✓
+  i18n 53 ✓. → TOUT LE MOBILE est désormais 100 % @bob/ui (plus aucun écran sur l'ancien
+  kit). PROCHAINES PRIOS (demande humaine 2026-07-05) : business analyse + gestion des
+  secteurs pour les offres (freelance IT, autres métiers).
 
 ---
 
