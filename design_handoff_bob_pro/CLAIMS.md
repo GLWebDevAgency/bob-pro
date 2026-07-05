@@ -1902,7 +1902,10 @@ transcript workflow wf_fb597a24-2e3.
 - [x] agreed — claude-code A — 2026-07-04 (21:15) — régime humain, review gpt5pro a posteriori
 
 #### C-EXP-UI2 — la provision URSSAF visible + montants sur l'échéancier
-- status: OPEN (dépend : fin du WIP session B sur packages/ai — le type FiscalDeadline le traverse)
+- status: IN-BUILD v1 (scindé 2026-07-05 11:20 : v1 ÉCRAN = mobile+i18n pur, lancé — le WIP B sur
+  ai/ est levé mais C-EXP6b occupe api-client/core : le volet amountHint (2) reste v2, après la
+  clôture C-EXP6b. v1 sans question ACRE à l'écran : provision au taux plein si éligibilité
+  inconnue — sur-provision prudente, jamais l'inverse ; la question persistée = réglages, v2.)
 - Contrat (suivis post-livraison C-EXP5c, évalués sur directive fondateur — cf. roadmap
   « Suivis post-livraison ») : (1) écran Argent passe company/payments/asOf à buildLedgerView →
   rangée cotisations RÉELLE + reserve étendue + « Disponible prudent » teinté pour les micro ;
