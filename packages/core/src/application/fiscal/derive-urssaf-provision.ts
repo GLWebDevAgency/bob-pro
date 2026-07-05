@@ -1,8 +1,10 @@
 import { type DateOnly } from '../../shared-kernel/time';
 import { type Trade } from '../../domain/company/company';
 import {
+  acreWindow,
   computeMicroSocialProvision,
   microCategoryFromTrade,
+  resolveAcreRates,
   type MicroActivityCategory,
 } from '../../domain/fiscal/micro-social';
 import { formatEUR } from '../../format/money';
@@ -30,9 +32,19 @@ import { type FiscalConfidence, type UrssafPeriodicity } from './derive-fiscal-c
  * Catégorie : `category` explicite (profil) prime ('certain') ; sinon dérivée du métier
  * (microCategoryFromTrade — prudente, jamais silencieuse : 'assumed' propagé).
  *
+ * ACRE (C-EXP5d) : entrées ADDITIVES `dateCreation` + `acre` (booléen explicite, JAMAIS deviné —
+ * la demande se dépose au plus tard le 60e jour suivant le début d’activité pour les créations à compter du 1/1/2026). `acre: true` + période dans la fenêtre (acreWindow, dérivée de
+ * dateCreation) → taux réduit ACRE (resolveAcreRates, versionné par date de début d'activité,
+ * marche du 1/7/2026) à la place du taux plein social, VFL cumulable au taux plein ; `acre: true`
+ * hors fenêtre → taux plein + explain « ACRE terminée » ; `acre` null/absent → taux plein +
+ * `askAcre: true` si dateCreation < 12 mois avant asOf (l'UI posera la question) ; `acre: false`
+ * → taux plein, `askAcre: false`. À CHEVAL : chaque encaissement est raté selon SA date vs la
+ * fenêtre — mais la fin de fenêtre tombe TOUJOURS sur une borne de trimestre civil (30/6, 30/9,
+ * 31/12, 31/3) et les périodes de déclaration sont civiles (mois/trimestre), donc une période est
+ * en pratique TOUJOURS entièrement dans ou hors la fenêtre : le vrai « à cheval » ne survient pas.
+ *
  * Hors périmètre v1 (documenté) :
  * - décalage de la première déclaration (90 j après la création) — comme deriveFiscalCalendar ;
- * - taux réduits ACRE ;
  * - report d'un solde négatif (remboursements > encaissements) sur la période suivante : le CA
  *   déclaré est plancher 0, sans mécanique de report.
  */
@@ -58,6 +70,16 @@ export interface DeriveUrssafProvisionInput {
   category?: MicroActivityCategory;
   /** Option versement libératoire (art. 151-0 CGI) — défaut false (option inconnue = non prise). */
   vfl?: boolean;
+  /**
+   * Date de début d'activité déclarée à l'immatriculation (BDD C24b) — pilote la fenêtre ACRE et
+   * le flag askAcre. Absente/null = fenêtre non calculable (pas d'ACRE, pas de question posée).
+   */
+  dateCreation?: DateOnly | null;
+  /**
+   * Éligibilité ACRE, JAMAIS devinée (demande au plus tard le 60e jour d’activité — art. L.131-6-4 CSS) : true = bénéficiaire,
+   * false = non éligible/refusée, null/absent = inconnu (l'UI demandera si askAcre vaut true).
+   */
+  acre?: boolean | null;
 }
 
 // ── Sortie : la déclaration pré-calculée ──
@@ -88,6 +110,12 @@ export interface UrssafProvision {
   confidence: FiscalConfidence;
   /** true = taux de l'année hors référentiel : derniers connus appliqués (à avertir). */
   stale: boolean;
+  /** true = taux réduit ACRE appliqué (acre=true ET période dans la fenêtre d'exonération). */
+  acreApplied: boolean;
+  /** Fin de la fenêtre ACRE (dernier jour du 3e trimestre civil suivant la création) — null si non calculable. */
+  acreWindowEnd: DateOnly | null;
+  /** L'UI doit-elle demander l'éligibilité ACRE ? true si `acre` inconnu ET création < 12 mois avant asOf. */
+  askAcre: boolean;
   /** Une phrase, voix simple : la déclaration prête (« du X au Y … tu déclareras Z le D »). */
   explain: string;
 }
@@ -155,6 +183,14 @@ function periodOf(asOf: DateOnly, periodicity: UrssafPeriodicity): DeclarationPe
   };
 }
 
+/** Même jour, 12 mois plus tôt (année − 1), le jour ramené au dernier du mois si besoin (29/2). */
+function minus12Months(asOf: DateOnly): DateOnly {
+  const y = Number(asOf.slice(0, 4)) - 1;
+  const m = Number(asOf.slice(5, 7));
+  const d = Number(asOf.slice(8, 10));
+  return ymd(y, m, Math.min(d, lastDayOfMonth(y, m)));
+}
+
 /** '2026-07-01' → « 1er juillet » ; withYear → « 31 octobre 2026 ». */
 function frDate(date: DateOnly, withYear = false): string {
   const d = Number(date.slice(8, 10));
@@ -175,18 +211,75 @@ export function deriveUrssafProvision(input: DeriveUrssafProvisionInput): Urssaf
   const category = input.category ?? guess.category;
   const categoryAssumed = input.category === undefined && guess.confidence === 'assumed';
 
+  // ── ACRE : fenêtre dérivée de la date de début d'activité, éligibilité JAMAIS devinée ──
+  const window = input.dateCreation != null ? acreWindow(input.dateCreation) : null;
+  const acreRequested = input.acre === true && window != null && input.dateCreation != null;
+  // La période chevauche-t-elle la fenêtre ? Fenêtre et période sont toutes deux bornées par des
+  // trimestres/mois civils → en pratique la période est entièrement dedans ou dehors (cf. doc).
+  const periodOverlapsWindow =
+    window != null && period.start <= window.end && period.end >= window.start;
+  const acreApplied = acreRequested && periodOverlapsWindow;
+  const acreRatePct =
+    acreRequested && input.dateCreation != null
+      ? resolveAcreRates(input.dateCreation).acreSocialPct[category]
+      : null;
+
   // CA encaissé de la période : seul le JOUR compte (receivedAt DateOnly ou ISO complet),
-  // remboursements (négatifs) déduits, plancher 0 — on ne déclare pas un CA négatif.
+  // remboursements (négatifs) déduits, plancher 0 — on ne déclare pas un CA négatif. Sous ACRE,
+  // chaque encaissement est classé selon SA date vs la fenêtre (art. D.131-6-3 CSS) : dans la
+  // fenêtre → taux réduit, hors fenêtre → taux plein. Plancher 0 par bucket (prudent).
   let net = 0;
+  let acreNet = 0;
+  let fullNet = 0;
   for (const payment of input.payments) {
     const day = payment.receivedAt.slice(0, 10);
-    if (day >= period.start && day <= period.end) net += payment.amountCents;
+    if (day < period.start || day > period.end) continue;
+    net += payment.amountCents;
+    if (acreApplied && window != null && day >= window.start && day <= window.end) {
+      acreNet += payment.amountCents;
+    } else {
+      fullNet += payment.amountCents;
+    }
   }
   const encaissedCents = Math.max(0, net);
 
   const vfl = input.vfl ?? false;
   const year = Number(period.start.slice(0, 4)); // période toujours dans une seule année civile
-  const computed = computeMicroSocialProvision({ encaissedCents, category, vfl, year });
+  // Deux lignes de calcul (ACRE + plein) : en l'absence d'« à cheval » réel, l'une est toujours à
+  // base 0. VFL cumulable au taux plein dans les deux (l'ACRE ne minore QUE le social).
+  const acrePart = computeMicroSocialProvision({
+    encaissedCents: Math.max(0, acreNet),
+    category,
+    vfl,
+    year,
+    acreRatePct,
+  });
+  const fullPart = computeMicroSocialProvision({ encaissedCents: Math.max(0, fullNet), category, vfl, year });
+  const headline = acreApplied ? acrePart : fullPart; // rate fields représentatifs (voir doc à-cheval)
+  const computed = {
+    socialRatePct: headline.socialRatePct,
+    vflRatePct: headline.vflRatePct,
+    totalRatePct: headline.totalRatePct,
+    socialCents: acrePart.socialCents + fullPart.socialCents,
+    vflCents: acrePart.vflCents + fullPart.vflCents,
+    provisionCents: acrePart.provisionCents + fullPart.provisionCents,
+    stale: fullPart.stale, // même année → acrePart.stale identique
+  };
+
+  // askAcre : on ne DEMANDE que si l'éligibilité est inconnue (acre null/absent) et la création
+  // remonte à moins de 12 mois — sinon l'UI n'a rien à poser.
+  const askAcre =
+    input.acre == null &&
+    input.dateCreation != null &&
+    input.dateCreation > minus12Months(input.asOf) &&
+    input.dateCreation <= input.asOf;
+
+  const acreEndTxt = window != null ? frDate(window.end, true) : '';
+  const acreNote = acreApplied
+    ? ` Tu bénéficies de l'exonération ACRE : j'applique le taux réduit ACRE jusqu'au ${acreEndTxt}.`
+    : acreRequested && !periodOverlapsWindow
+      ? ` Ton exonération ACRE est terminée depuis le ${acreEndTxt} : je repasse au taux plein.`
+      : '';
 
   const declareByTxt = frDate(period.declareBy, true);
   const base =
@@ -218,6 +311,9 @@ export function deriveUrssafProvision(input: DeriveUrssafProvisionInput): Urssaf
     category,
     confidence: periodicityAssumed || categoryAssumed ? 'assumed' : 'certain',
     stale: computed.stale,
-    explain: base + caveats,
+    acreApplied,
+    acreWindowEnd: window != null ? window.end : null,
+    askAcre,
+    explain: base + acreNote + caveats,
   };
 }

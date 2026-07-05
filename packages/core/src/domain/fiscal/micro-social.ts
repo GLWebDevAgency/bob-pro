@@ -1,3 +1,4 @@
+import { type DateOnly } from '../../shared-kernel/time';
 import { type Trade } from '../company/company';
 
 /**
@@ -22,8 +23,10 @@ import { type Trade } from '../company/company';
  * · autres prestations (BNC, régime 102 ter CGI)       25,6 %  (le décret 2025-943 ABAISSE la
  *   marche 2026 : 26,1 % prévus par le décret 2024-484 → 25,6 %)
  * · professions libérales réglementées Cipav           23,2 %
- * Hors périmètre v1 (aucun métier Bob concerné, documenté) : location meublée de tourisme 6 % ;
- * taux réduits ACRE (décret 2026-69 du 6/2/2026) non modélisés.
+ * Hors périmètre v1 (aucun métier Bob concerné, documenté) : location meublée de tourisme 6 %.
+ * Taux réduits ACRE des créateurs (art. L.131-6-4/D.131-6-3 CSS, marche du décret 2026-69 du
+ * 6/2/2026) : voir la section ACRE en bas de fichier — MICRO_ACRE_RATES, resolveAcreRates,
+ * acreWindow (C-EXP5d).
  *
  * Versement libératoire (option, art. 151-0 CGI — s'AJOUTE au taux social) :
  * 1 % ventes · 1,7 % prestations BIC · 2,2 % BNC et professions libérales (Cipav comprise).
@@ -138,6 +141,13 @@ export interface ComputeMicroSocialProvisionInput {
   vfl: boolean;
   /** Année civile de la période de déclaration (pilote la version des taux). */
   year: number;
+  /**
+   * Taux social ACRE minoré (%) à appliquer À LA PLACE du taux plein (art. D.131-6-3 CSS) —
+   * résolu en amont par l'appelant (resolveAcreRates) selon la DATE DE DÉBUT D'ACTIVITÉ.
+   * null/absent = pas d'ACRE, taux plein. L'ACRE ne minore QUE le social : le versement
+   * libératoire (art. 151-0 CGI) reste dû au taux plein — VFL cumulable avec l'ACRE (C-EXP5d).
+   */
+  acreRatePct?: number | null;
 }
 
 export interface MicroSocialProvision {
@@ -166,7 +176,9 @@ export interface MicroSocialProvision {
 export function computeMicroSocialProvision(input: ComputeMicroSocialProvisionInput): MicroSocialProvision {
   const { rates, stale } = resolveMicroSocialRates(input.year);
   const base = Math.max(0, Math.round(input.encaissedCents));
-  const socialCentiPct = Math.round(rates.socialPct[input.category] * 100);
+  // ACRE : le taux minoré REMPLACE le taux plein social (art. D.131-6-3 CSS) ; sinon taux plein.
+  const effectiveSocialPct = input.acreRatePct ?? rates.socialPct[input.category];
+  const socialCentiPct = Math.round(effectiveSocialPct * 100);
   const vflCentiPct = input.vfl ? Math.round(rates.vflPct[input.category] * 100) : 0;
   const socialCents = Math.round((base * socialCentiPct) / 10_000);
   const vflCents = Math.round((base * vflCentiPct) / 10_000);
@@ -179,4 +191,104 @@ export function computeMicroSocialProvision(input: ComputeMicroSocialProvisionIn
     provisionCents: socialCents + vflCents,
     stale,
   };
+}
+
+// ── ACRE : exonération micro-social des créateurs (C-EXP5d — art. L.131-6-4, D.131-6-3 CSS) ──
+
+/**
+ * Taux ACRE = taux MINORÉ des cotisations sociales du créateur, à taux fixe UNIQUE (non dégressif
+ * depuis la suppression du dispositif triennal — derniers bénéficiaires : débuts avant le
+ * 1/4/2020). Il REMPLACE le taux plein social pendant la fenêtre d'exonération (cf. acreWindow) ;
+ * le versement libératoire de l'IR (art. 151-0 CGI) reste dû en plein — l'ACRE ne touche QUE le
+ * social, VFL cumulable.
+ *
+ * VERSIONNÉ PAR DATE DE DÉBUT D'ACTIVITÉ (jamais par année civile) : le décret n° 2026-69 du
+ * 6/2/2026 (JORF JORFTEXT000053449085, pris pour l'art. 23 de la LFSS 2026 — loi n° 2025-1403 du
+ * 30/12/2025) réduit l'exonération de la moitié au quart des cotisations ; pour le micro-social
+ * (art. D.131-6-3 CSS modifié) le taux minoré passe de 50 % à 75 % du taux plein. ENTRÉE EN
+ * VIGUEUR ÉCHELONNÉE : 1/1/2026 pour le droit commun, mais 1/7/2026 SEULEMENT pour les
+ * micro-entrepreneurs → la marche se lit sur la DATE DE CRÉATION, pas sur l'année déclarée.
+ *
+ * · Créations/reprises ANTÉRIEURES au 1/7/2026 → 50 % du taux plein (VÉRIFIÉ, réconcilié barème
+ *   URSSAF) : ventes 6,2 % · BIC prestations 10,6 % · BNC 12,8 % · Cipav 11,6 %
+ *   (12,3 × 0,5 = 6,15 → 6,2 ; 21,2 × 0,5 = 10,6 ; 25,6 × 0,5 = 12,8 ; 23,2 × 0,5 = 11,6).
+ * · Créations micro à compter du 1/7/2026 → 75 % du taux plein (décret 2026-69, art. D.131-6-3
+ *   CSS modifié — réconcilié valeurs indicatives URSSAF) : ventes 9,2 % · BIC prestations 15,9 %
+ *   · BNC 19,2 % · Cipav 17,4 %
+ *   (12,3 × 0,75 = 9,225 → 9,2 ; 21,2 × 0,75 = 15,9 ; 25,6 × 0,75 = 19,2 ; 23,2 × 0,75 = 17,4).
+ *
+ * Sources (vérifiées au build 2026-07-04) :
+ * · https://www.legifrance.gouv.fr/jorf/id/JORFTEXT000053449085 (décret n° 2026-69 du 6/2/2026) ;
+ * · https://www.urssaf.fr/accueil/exoneration-acre-createur.html (page officielle ACRE URSSAF) ;
+ * · https://www.compta-online.com/regime-social-des-micro-entrepreneurs-ao8080 (barème réconcilié :
+ *   ACRE ventes 6,2 % / BIC 10,6 % / BNC 12,8 % / Cipav 11,6 %) ;
+ * · taux pleins 2026 = MICRO_SOCIAL_RATES ci-dessus (mêmes décrets 2025-943 / actualité BNC 25,6 %).
+ */
+export interface AcreRateStep {
+  /** Première DATE DE DÉBUT D'ACTIVITÉ à laquelle ce barème s'applique (borne incluse). */
+  effectiveFrom: DateOnly;
+  /** Taux social ACRE minoré, en % du CA encaissé, par catégorie d'activité. */
+  acreSocialPct: Record<MicroActivityCategory, number>;
+}
+
+/**
+ * Une entrée par MARCHE de taux, ordonnée par date de début d'activité croissante — la marche du
+ * 1/7/2026 (décret 2026-69) fait passer le micro de 50 % à 75 % du taux plein.
+ */
+export const MICRO_ACRE_RATES: readonly AcreRateStep[] = [
+  {
+    // Créations avant le 1/7/2026 : exonération à 50 % du taux plein (barème stable depuis 2020).
+    effectiveFrom: '1970-01-01',
+    acreSocialPct: { ventes: 6.2, bic_prestations: 10.6, bnc: 12.8, liberale_reglementee_cipav: 11.6 },
+  },
+  {
+    // Créations micro à compter du 1/7/2026 : exonération réduite à 75 % du taux plein (décret 2026-69).
+    effectiveFrom: '2026-07-01',
+    acreSocialPct: { ventes: 9.2, bic_prestations: 15.9, bnc: 19.2, liberale_reglementee_cipav: 17.4 },
+  },
+];
+
+/**
+ * Barème ACRE applicable à une date de début d'activité : la MARCHE la plus récente dont
+ * l'`effectiveFrom` est ≤ dateCreation (à défaut la plus ancienne connue). Même pattern de
+ * résolution que resolveMicroSocialRates.
+ */
+export function resolveAcreRates(dateCreation: DateOnly): AcreRateStep {
+  const ordered = [...MICRO_ACRE_RATES].sort((a, b) => a.effectiveFrom.localeCompare(b.effectiveFrom));
+  const applicable = [...ordered].reverse().find((s) => s.effectiveFrom <= dateCreation);
+  const fallback = applicable ?? ordered[0];
+  if (fallback === undefined) {
+    // Constante non vide du module : inatteignable, mais typé honnêtement (comme MICRO_SOCIAL_RATES).
+    throw new Error('MICRO_ACRE_RATES est vide — référentiel ACRE corrompu');
+  }
+  return fallback;
+}
+
+export interface AcreWindow {
+  /** Point de départ EXACT de l'exonération = la date de début d'activité déclarée. */
+  start: DateOnly;
+  /** Dernier jour du 3e trimestre civil SUIVANT celui du début d'activité (borne incluse). */
+  end: DateOnly;
+}
+
+/**
+ * Fenêtre d'exonération ACRE (fonction PURE). L'exonération court de la date de début d'activité
+ * au DERNIER JOUR du 3e trimestre civil SUIVANT celui au cours duquel l'activité a débuté — soit
+ * le trimestre de création + 3 trimestres civils (≈ 10 à 12 mois selon la position dans le
+ * trimestre). Exemple officiel URSSAF/service-public : début le 3/9/2026 (T3 2026) → fin le
+ * 30/6/2027 (fin du T2 2027). Base légale : durée fixée à l'art. D.131-6-3 CSS (bénéficiaires
+ * art. L.131-6-4 CSS) ; le décret 2026-69 ne modifie NI la durée NI la règle de fenêtre.
+ */
+export function acreWindow(dateCreation: DateOnly): AcreWindow {
+  const y0 = Number(dateCreation.slice(0, 4));
+  const m0 = Number(dateCreation.slice(5, 7));
+  const quarter0 = Math.floor((m0 - 1) / 3); // 0..3 (trimestre civil de création)
+  const absoluteQuarter = y0 * 4 + quarter0 + 3; // + les 3 trimestres civils suivants
+  const endYear = Math.floor(absoluteQuarter / 4);
+  const endQuarter = absoluteQuarter % 4; // 0..3
+  const endMonth = endQuarter * 3 + 3; // 3, 6, 9 ou 12 (1-indexé)
+  const endDay = new Date(Date.UTC(endYear, endMonth, 0)).getUTCDate(); // dernier jour du mois (UTC)
+  const mm = String(endMonth).padStart(2, '0');
+  const dd = String(endDay).padStart(2, '0');
+  return { start: dateCreation, end: `${endYear}-${mm}-${dd}` };
 }

@@ -1,8 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import {
+  MICRO_ACRE_RATES,
   MICRO_SOCIAL_RATES,
+  acreWindow,
   computeMicroSocialProvision,
   microCategoryFromTrade,
+  resolveAcreRates,
   resolveMicroSocialRates,
   type MicroActivityCategory,
 } from './micro-social';
@@ -132,5 +135,93 @@ describe('computeMicroSocialProvision', () => {
     const p = computeMicroSocialProvision({ encaissedCents: 100_000, category: 'bnc', vfl: false, year: 2030 });
     expect(p.stale).toBe(true);
     expect(p.socialRatePct).toBe(25.6); // taux 2026, dernière année connue
+  });
+
+  it('acreRatePct : REMPLACE le taux social plein, VFL inchangé au taux plein (cumul)', () => {
+    // plombier BIC, 12 400 € encaissés, ACRE 10,6 % (moitié du plein 21,2 %) + VFL plein 1,7 %.
+    const p = computeMicroSocialProvision({
+      encaissedCents: 1_240_000,
+      category: 'bic_prestations',
+      vfl: true,
+      year: 2026,
+      acreRatePct: 10.6,
+    });
+    expect(p.socialRatePct).toBe(10.6); // taux réduit ACRE, PAS 21,2 %
+    expect(p.socialCents).toBe(131_440); // 12 400 € × 10,6 %
+    expect(p.vflRatePct).toBe(1.7); // VFL au taux plein, cumulable avec l'ACRE
+    expect(p.vflCents).toBe(21_080); // 12 400 € × 1,7 %
+    expect(p.provisionCents).toBe(152_520);
+  });
+
+  it('acreRatePct null/absent → taux plein (aucune régression sur le chemin sans ACRE)', () => {
+    const withNull = computeMicroSocialProvision({
+      encaissedCents: 1_240_000,
+      category: 'bic_prestations',
+      vfl: false,
+      year: 2026,
+      acreRatePct: null,
+    });
+    expect(withNull.socialRatePct).toBe(21.2);
+    expect(withNull.socialCents).toBe(262_880);
+  });
+});
+
+describe('MICRO_ACRE_RATES — taux ACRE versionnés par date de début d’activité (art. D.131-6-3 CSS)', () => {
+  it('marche AVANT le 1/7/2026 : 50 % du taux plein, sourcé barème URSSAF', () => {
+    const before = MICRO_ACRE_RATES.find((s) => s.effectiveFrom === '1970-01-01');
+    expect(before?.acreSocialPct).toEqual({
+      ventes: 6.2, // 12,3 × 0,5 = 6,15 → 6,2
+      bic_prestations: 10.6, // 21,2 × 0,5
+      bnc: 12.8, // 25,6 × 0,5
+      liberale_reglementee_cipav: 11.6, // 23,2 × 0,5
+    });
+  });
+
+  it('marche du 1/7/2026 (décret 2026-69) : 75 % du taux plein pour le micro', () => {
+    const from0107 = MICRO_ACRE_RATES.find((s) => s.effectiveFrom === '2026-07-01');
+    expect(from0107?.acreSocialPct).toEqual({
+      ventes: 9.2, // 12,3 × 0,75 = 9,225 → 9,2
+      bic_prestations: 15.9, // 21,2 × 0,75
+      bnc: 19.2, // 25,6 × 0,75
+      liberale_reglementee_cipav: 17.4, // 23,2 × 0,75
+    });
+  });
+});
+
+describe('resolveAcreRates — marche du 1/7/2026 lue sur la DATE DE CRÉATION, pas l’année', () => {
+  it('création avant le 1/7/2026 → barème 50 %', () => {
+    expect(resolveAcreRates('2026-03-15').acreSocialPct.bic_prestations).toBe(10.6);
+    expect(resolveAcreRates('2026-06-30').acreSocialPct.bic_prestations).toBe(10.6); // veille de la marche
+  });
+
+  it('création à compter du 1/7/2026 → barème 75 %', () => {
+    expect(resolveAcreRates('2026-07-01').acreSocialPct.bic_prestations).toBe(15.9); // jour de la marche
+    expect(resolveAcreRates('2026-09-03').acreSocialPct.bnc).toBe(19.2);
+  });
+});
+
+describe('acreWindow — début d’activité + 3 trimestres civils suivants (art. D.131-6-3 CSS)', () => {
+  it('exemple officiel URSSAF : début le 3/9/2026 (T3) → fin le 30/6/2027 (fin T2 2027)', () => {
+    expect(acreWindow('2026-09-03')).toEqual({ start: '2026-09-03', end: '2027-06-30' });
+  });
+
+  it('début en cours de T1 (15/3/2026) → fin le 31/12/2026 (fin T4 2026)', () => {
+    expect(acreWindow('2026-03-15')).toEqual({ start: '2026-03-15', end: '2026-12-31' });
+  });
+
+  it('début au 1er jour d’un trimestre (1/1/2026, T1) → fin le 31/12/2026 (fin T4)', () => {
+    expect(acreWindow('2026-01-01')).toEqual({ start: '2026-01-01', end: '2026-12-31' });
+  });
+
+  it('début au 1er jour de T2 (1/4/2026) → fin le 31/3/2027 (fin T1 2027)', () => {
+    expect(acreWindow('2026-04-01')).toEqual({ start: '2026-04-01', end: '2027-03-31' });
+  });
+
+  it('début en fin de T4 (31/12/2026) → fin le 30/9/2027 (fin T3 2027), passage d’année', () => {
+    expect(acreWindow('2026-12-31')).toEqual({ start: '2026-12-31', end: '2027-09-30' });
+  });
+
+  it('la borne start est TOUJOURS la date de début exacte (point de départ légal)', () => {
+    expect(acreWindow('2025-11-20').start).toBe('2025-11-20');
   });
 });
