@@ -9,10 +9,12 @@
  * DONNÉES RÉELLES (A1-C10 généralisé) : tout vient des queries du BobClient —
  * useCashflow(scenario, horizon) pour héros/prévision (série 4 horizons → cashflowBand @bob/core) ;
  * le grand-livre est dérivé dans @bob/core (buildLedgerView, use case pur testé) depuis
- * listInvoices + listExpenses + listAccountingEntries ; la réserve = buildLedgerView().reserve.
+ * listInvoices + listExpenses + listAccountingEntries + company/payments/asOf (C-EXP-UI2 :
+ * cotisations URSSAF réelles + carte « déclaration pré-calculée » pour une company MICRO —
+ * ledger.urssaf) ; la réserve = buildLedgerView().reserve.
  * AUCUN repli fixtures : loading → skeletons · erreur → voix de Bob (argent.dataError) sans
- * chiffre inventé · donnée absente → « — » par ligne (cotisations & abonnements : aucune source
- * côté client aujourd'hui → « — », TODO C40).
+ * chiffre inventé · donnée absente → « — » par ligne (cotisations hors micro : aucune source,
+ * P23/P34 · abonnements : TODO C40).
  *
  * PARITÉ D'ACTIONS humain ↔ Bob (directive 23:52) : écran en LECTURE SEULE — aucune action
  * mutante. Les navigations empruntent les mêmes points d'entrée que Bob :
@@ -29,6 +31,7 @@ import { Modal, Pressable, ScrollView, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Feather, Ionicons } from '@expo/vector-icons';
 import {
+  MERCIER_PROPS,
   buildLedgerView,
   cashflowBand,
   formatEUR,
@@ -59,11 +62,14 @@ import {
 import {
   useAccountingEntries,
   useCashflow,
+  useCompanyMe,
   useCustomers,
   useExpenses,
   useFiscalCalendar,
   useInvoices,
+  usePayments,
 } from '../../src/data/hooks';
+import { useIdentity } from '../../src/data/identity';
 import { useFirstTimeTip } from '../../src/data/tips';
 
 /** Clé SecureStore du coach-mark « première fois » de cet écran. */
@@ -191,6 +197,13 @@ const FR_MONTHS_SHORT = [
   'nov.',
   'déc.',
 ] as const;
+
+/** Date locale du jour (DateOnly) — même règle que hooks.ts : le calendrier fiscal comme
+ * l'échéance d'une facture se jugent en calendrier LOCAL, jamais UTC. */
+function localToday(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
 
 /** '2026-09-15' → '15 sept.' (+ année si différente de l'année en cours) — présentation pure. */
 function frShortDate(dateOnly: string): string {
@@ -383,6 +396,16 @@ export default function Argent() {
   const expenses = useExpenses();
   const entries = useAccountingEntries();
   const customers = useCustomers();
+  const today = localToday();
+
+  // C-EXP-UI2 : entrées ADDITIVES de buildLedgerView (C-EXP5c). Fiche société : démo = seed
+  // MERCIER_PROPS (EI au réel simplifié, PAS micro → le moteur ne s'applique pas, la rangée
+  // cotisations reste « — » — VOULU) ; connecté = GET /company/me (hook partagé avec useIdentity).
+  // Encaissements datés : listPayments (socle E3). Données absentes → null honnête, inchangé.
+  const identity = useIdentity();
+  const companyMe = useCompanyMe();
+  const payments = usePayments();
+  const ledgerCompany = identity.isDemo ? MERCIER_PROPS : companyMe.data;
 
   const ledger = useMemo(
     () =>
@@ -390,8 +413,16 @@ export default function Argent() {
         invoices: invoices.data,
         expenses: expenses.data,
         accountingEntries: entries.data,
+        // Company micro + paiements datés + date du jour → cotisationsCents RÉEL (négatif),
+        // « Disponible prudent » teinté d'autant, et ledger.urssaf = la déclaration pré-calculée.
+        // TODO C-EXP-UI2 v2 : buildLedgerView ne propage pas encore acre/dateCreation vers
+        // deriveUrssafProvision (LedgerCompanyData ne les porte pas) → provision au taux plein
+        // pour un bénéficiaire ACRE = sur-provision prudente, jamais l'inverse. À brancher core.
+        company: ledgerCompany,
+        payments: payments.data,
+        asOf: today,
       }),
-    [invoices.data, expenses.data, entries.data],
+    [invoices.data, expenses.data, entries.data, ledgerCompany, payments.data, today],
   );
   const ledgerLoading = invoices.isLoading || expenses.isLoading || entries.isLoading;
 
@@ -399,11 +430,10 @@ export default function Argent() {
   const fiscal = useFiscalCalendar();
 
   // E5 : balance âgée clients (deriveAgedBalance @bob/core — même vérité pour Bob).
-  const aged = useMemo(() => {
-    const d = new Date();
-    const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-    return deriveAgedBalance({ invoices: invoices.data ?? [], customers: customers.data ?? [], today });
-  }, [invoices.data, customers.data]);
+  const aged = useMemo(
+    () => deriveAgedBalance({ invoices: invoices.data ?? [], customers: customers.data ?? [], today }),
+    [invoices.data, customers.data, today],
+  );
 
   const series: CashflowSeriesPoint[] = [];
   if (cash7.data) series.push({ horizon: 7, projection: cash7.data });
@@ -545,7 +575,9 @@ export default function Argent() {
                 ) : (
                   <EmptyMoneyRow label={t('argent.rowVat', { personality })} />
                 )}
-                {/* Cotisations & abonnements : aucune source côté client → « — » (TODO C40). */}
+                {/* Cotisations : provision URSSAF RÉELLE pour une company micro (C-EXP-UI2,
+                    company+payments+asOf passés à buildLedgerView) ; autres formes (dont la
+                    démo Mercier, EI au réel) → « — » honnête (aucune source, P23/P34). */}
                 {ledger.cotisationsCents !== null ? (
                   <MoneyRow
                     label={t('argent.rowCotisations', { personality })}
@@ -571,6 +603,57 @@ export default function Argent() {
               </>
             )}
           </Card>
+
+          {/* ── Déclaration URSSAF pré-calculée (C-EXP-UI2 — doctrine « Bob FAIT ») ──
+              Visible seulement quand le moteur a parlé (company micro + paiements datés) :
+              période + montant + explain voix Bob (calculés dans @bob/core, jamais ici) +
+              échéance. État absent → RIEN (pas de carte vide) — la démo Mercier (EI au réel)
+              ne l'affiche pas, c'est voulu. */}
+          {ledger.urssaf !== null ? (
+            <Card radius={20} padding={16} elevation="e2" style={{ marginTop: 14 }}>
+              <View
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 8,
+                }}
+              >
+                <Text
+                  numberOfLines={1}
+                  style={[font('cardTitle'), { fontSize: 15.5, color: colors.ink800, flexShrink: 1 }]}
+                >
+                  {t('argent.urssafTitle', {
+                    personality,
+                    params: { period: ledger.urssaf.periodLabel },
+                  })}
+                </Text>
+                {/* Hypothèse posée (périodicité inconnue / catégorie dérivée) → même badge
+                    honnête que l'échéancier C-EXP-UI1. */}
+                {ledger.urssaf.confidence === 'assumed' ? (
+                  <StatusBadge
+                    label={t('argent.upcomingAssumed', { personality }).toUpperCase()}
+                    variant="particulier"
+                  />
+                ) : null}
+              </View>
+              <Text style={[font('meta'), { fontSize: 11.5, color: colors.slate400, marginTop: 10 }]}>
+                {t('argent.urssafSetAside', { personality })}
+              </Text>
+              <View style={{ marginTop: 2 }}>
+                <MoneyText cents={ledger.urssaf.provisionCents} variant="big" />
+              </View>
+              <Text style={[font('meta'), { color: colors.slate500, marginTop: 8, lineHeight: 17 }]}>
+                {ledger.urssaf.explain}
+              </Text>
+              <Text style={[font('label', 600), { fontSize: 12.5, color: colors.ink800, marginTop: 10 }]}>
+                {t('argent.urssafDeclareBy', {
+                  personality,
+                  params: { date: frShortDate(ledger.urssaf.declareBy) },
+                })}
+              </Text>
+            </Card>
+          ) : null}
 
           {/* ── Prévision de tréso (scénarios × horizons LIVE) ──────────────── */}
           <Card radius={22} padding={16} elevation="e2" style={{ marginTop: 14 }}>

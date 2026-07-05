@@ -1,9 +1,8 @@
 import { useMemo } from 'react';
-import { useQuery } from '@tanstack/react-query';
 import { MERCIER_PROPS, type CompanyProps } from '@bob/core';
 import { supabaseEnabled } from './supabase';
 import { useAuth } from './auth';
-import { useBobClient } from './client';
+import { useCompanyMe } from './hooks';
 
 /**
  * Identité affichée (prénom, initiales, société) — SOURCE UNIQUE.
@@ -42,21 +41,12 @@ function legalLineOf(c: Pick<CompanyProps, 'legalForm' | 'siret'> & { rcsOrRm?: 
 
 export function useIdentity(): Identity {
   const { session } = useAuth();
-  const client = useBobClient();
 
-  // Fiche société du tenant (connecté seulement). getCompanyMe est OPTIONNEL sur
-  // l'interface (le LocalBobClient ne l'a pas encore — TODO session B tracé) : son
-  // absence ou son échec laissent simplement companyName null (jamais un nom inventé).
-  const companyMe = useQuery({
-    queryKey: ['company-me'],
-    enabled: supabaseEnabled && !!session && typeof client.getCompanyMe === 'function',
-    staleTime: 24 * 60 * 60 * 1000, // la fiche société bouge rarement
-    queryFn: async () => {
-      const r = await client.getCompanyMe!();
-      if (!r.ok) throw r.error;
-      return r.value;
-    },
-  });
+  // Fiche société du tenant (connecté seulement) — hook PARTAGÉ useCompanyMe (hooks.ts,
+  // queryKey ['company-me'] : même cache que l'écran Argent, C-EXP-UI2). getCompanyMe est
+  // OPTIONNEL sur l'interface (le LocalBobClient ne l'a pas encore — TODO session B tracé) :
+  // son absence ou son échec laissent simplement companyName null (jamais un nom inventé).
+  const companyMe = useCompanyMe();
 
   return useMemo(() => {
     if (!supabaseEnabled) {

@@ -672,3 +672,26 @@ describe('i18n — C-EXP-UI1 argent.upcoming* + relance pénalités/prescription
     );
   });
 });
+
+describe('i18n — C-EXP-UI2 argent.urssaf*', () => {
+  it('carte déclaration URSSAF : titre {period}, libellé provision, échéance {date} sur les 3 humeurs', () => {
+    expect(t('argent.urssafTitle', { params: { period: 'T3 2026' } })).toBe(
+      'Ta déclaration URSSAF · T3 2026',
+    );
+    expect(t('argent.urssafTitle', { personality: 'pro', params: { period: 'T3 2026' } })).toBe(
+      'Déclaration URSSAF · T3 2026',
+    );
+    expect(t('argent.urssafTitle', { personality: 'direct', params: { period: 'juillet 2026' } })).toBe(
+      'URSSAF · juillet 2026',
+    );
+    expect(t('argent.urssafSetAside')).toBe('À mettre de côté');
+    expect(t('argent.urssafSetAside', { personality: 'pro' })).toBe('Montant à provisionner');
+    expect(t('argent.urssafSetAside', { personality: 'direct' })).toBe('À provisionner');
+    expect(t('argent.urssafDeclareBy', { params: { date: '31 oct.' } })).toBe(
+      'À déclarer au plus tard le 31 oct.',
+    );
+    expect(t('argent.urssafDeclareBy', { personality: 'direct', params: { date: '31 oct.' } })).toBe(
+      'Déclaration : 31 oct. max.',
+    );
+  });
+});

@@ -20,6 +20,8 @@ import type {
   UpcomingDueEntry,
 } from '@bob/core';
 import type { CreateCustomerClientInput, NotificationView, RegisterPaymentClientInput } from '@bob/api-client';
+import { supabaseEnabled } from './supabase';
+import { useAuth } from './auth';
 import { useBobClient } from './client';
 
 /** Ouvre une URL externe en remontant un échec à l'utilisateur (lien Stripe/paiement). */
@@ -173,6 +175,41 @@ export function useProfile() {
     queryKey: ['profile'],
     queryFn: async () => {
       const r = await client.getProfile();
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+  });
+}
+
+/** Fiche société RÉELLE du tenant en mode connecté — GET /company/me (PONT-SERVEUR ④).
+ *  Query PARTAGÉE ['company-me'] (une seule définition, un seul cache) : useIdentity
+ *  (identity.ts) et l'écran Argent (C-EXP-UI2 — ligne cotisations du grand-livre) la
+ *  consomment tous les deux. getCompanyMe est OPTIONNEL sur l'interface (LocalBobClient
+ *  pas encore — TODO session B tracé) : absence/échec → data undefined, jamais un nom
+ *  ou une provision inventés. */
+export function useCompanyMe() {
+  const { session } = useAuth();
+  const client = useBobClient();
+  return useQuery({
+    queryKey: ['company-me'],
+    enabled: supabaseEnabled && !!session && typeof client.getCompanyMe === 'function',
+    staleTime: 24 * 60 * 60 * 1000, // la fiche société bouge rarement
+    queryFn: async () => {
+      const r = await client.getCompanyMe!();
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+  });
+}
+
+/** Encaissements datés (listPayments, socle E3) — l'assiette du CA encaissé : la provision
+ *  URSSAF micro (C-EXP-UI2) se dérive de CES paiements dans @bob/core (buildLedgerView). */
+export function usePayments() {
+  const client = useBobClient();
+  return useQuery({
+    queryKey: ['payments'],
+    queryFn: async () => {
+      const r = await client.listPayments();
       if (!r.ok) throw r.error;
       return r.value;
     },
@@ -675,6 +712,8 @@ export function useRegisterPayment() {
       void qc.invalidateQueries({ queryKey: keys.customers });
       void qc.invalidateQueries({ queryKey: ['cashflow'] });
       void qc.invalidateQueries({ queryKey: ['accounting-entries'] });
+      // …et l'assiette URSSAF micro (C-EXP-UI2) : la provision suit chaque encaissement.
+      void qc.invalidateQueries({ queryKey: ['payments'] });
     },
   });
 }

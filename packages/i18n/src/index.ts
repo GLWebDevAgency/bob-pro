@@ -3722,6 +3722,27 @@ const fr = {
     pro: 'Créance prescrite depuis le {date} — aucun recours judiciaire possible.',
     direct: 'Prescrite depuis le {date}.',
   },
+
+  // ── C-EXP-UI2 — la provision URSSAF visible (écran Argent) ─────────────────
+  // Carte « déclaration pré-calculée » sous le grand-livre (doctrine « Bob FAIT ») :
+  // {period} = periodLabel du moteur (« T3 2026 » / « juillet 2026 »), le montant est
+  // formatEUR(provisionCents) et l'explain vient de deriveUrssafProvision (@bob/core)
+  // — voix Bob calculée au moteur, JAMAIS recomposée à l'écran.
+  'argent.urssafTitle': {
+    pote: 'Ta déclaration URSSAF · {period}',
+    pro: 'Déclaration URSSAF · {period}',
+    direct: 'URSSAF · {period}',
+  },
+  'argent.urssafSetAside': {
+    pote: 'À mettre de côté',
+    pro: 'Montant à provisionner',
+    direct: 'À provisionner',
+  },
+  'argent.urssafDeclareBy': {
+    pote: 'À déclarer au plus tard le {date}',
+    pro: 'À déclarer au plus tard le {date}',
+    direct: 'Déclaration : {date} max.',
+  },
 } as const satisfies Record<string, Copy>;
 
 export type I18nKey = keyof typeof fr;
