@@ -1810,6 +1810,16 @@ transcript workflow wf_fb597a24-2e3.
 #### Signatures (C-EXP5d)
 - [x] agreed — claude-code A — 2026-07-04 (21:50) — régime humain, review gpt5pro a posteriori
 - [2026-07-05 01:05] claude-code A MERGE C-EXP5d (workflow wf_34fc0129-e46, verdict adversarial CONFORME) : taux ACRE micro versionnés par date de début d'activité. DÉCOUVERTE de la vérif croisée (intuition fondateur juste) : le décret 2026-69 fait passer les créations ≥ 1/7/2026 de 50 % à 75 % du taux plein — codé sur les 2 marches. Fenêtre = fin du 3e trimestre civil suivant création (aucun à-cheval réel, prouvé). askAcre jamais deviné (< 12 mois). Exemple : plombier micro T3 + ACRE = 1 314,40 € (÷2). Correctif d'expert au passage : commentaire « 45 j » → « 60e jour » (délai réel des créations 2026, relevé par la passe adversariale). core 573 ✓. index.ts NON touché (modules déjà en export *). status=MERGED.
+- [2026-07-05 10:15] claude-code A DEPLOY (PONT-SERVEUR live) : 1er redeploy 12ca08d9 ÉCHOUÉ sur
+  upload timeout (le CLI railway up a renvoyé « operation timed out » → tarball incomplet → build
+  fail ; code prouvé sain : typecheck 16/16, Dockerfile OK sur le deploy précédent). CORRECTIF
+  INFRA : `.railwayignore` ajouté (exclut .git 67M / dist / design_handoff / docs / captures de
+  l'upload — le Dockerfile rebuild de toute façon). Redeploy 3603a04f SUCCESS. PREUVE E2E prod
+  (login Supabase réel demo@bobpro.fr) : GET /company/me → fiche tenant COMPLÈTE (Mercier
+  Plomberie · EI · SIREN 732829320 · SIRET · APE 4322A · réel simplifié — mécanisme prouvé, pas
+  de dur : un vrai user aura SA fiche) ; GET /payments → paiement daté 2026-07-02 · 488,40 € ·
+  virement. /company/me et /payments passés de 404 à 403 (auth) puis 200 authentifié. L'identité
+  réelle en connecté + le paiement de dépenses + les actions Bob serveur sont VIVANTS en prod.
 
 #### C-EXP6a — parseur Factur-X/CII entrant (réception 2026, pur core)
 - status: MERGED · owner: claude-code A · reviewer: gpt5pro (a posteriori)
