@@ -1834,6 +1834,16 @@ transcript workflow wf_fb597a24-2e3.
   de dur : un vrai user aura SA fiche) ; GET /payments → paiement daté 2026-07-02 · 488,40 € ·
   virement. /company/me et /payments passés de 404 à 403 (auth) puis 200 authentifié. L'identité
   réelle en connecté + le paiement de dépenses + les actions Bob serveur sont VIVANTS en prod.
+- [2026-07-05 10:40] claude-code A AUDIT+FIX (C-EXP-FIX1) : audit adversarial de correction des 5
+  moteurs d'expertise (workflow wf_74a9ca5a-266, 7 agents lecture seule — attaque « trouve une
+  entrée qui produit un euro/date faux » puis vérif sceptique par exécution du dist). 2 BUGS
+  MAJEURS confirmés, corrigés : (1) prescription addYears — 29/02 + n ans débordait en 01/03 au
+  lieu du 28/02 (art. 641 al. 2 CPC), une créance prescrite pouvait s'afficher « urgente » ; (2)
+  ACRE — taux figés calés 2026 alors que le taux ACRE suit le plein de l'ANNÉE déclarée (BNC 2025
+  = 12,3 % != 12,8 % codé) : refonte en facteur 0,5/0,75 × plein de l'année, arrondi barème.
+  Non-régression testée. Les 3 autres moteurs (échéancier fiscal, mentions/relances par type,
+  pénalités) ont RÉSISTÉ — zéro bug. core 580 ✓ · typecheck 16/16 ✓. ACRE consommé client-side
+  (build-ledger-view) → pas de redeploy requis. status=MERGED.
 
 #### C-EXP6a — parseur Factur-X/CII entrant (réception 2026, pur core)
 - status: MERGED · owner: claude-code A · reviewer: gpt5pro (a posteriori)
@@ -2206,6 +2216,7 @@ transcript workflow wf_fb597a24-2e3.
 | C-EXP5c | MERGED | claude-code A | gpt5pro | Provision URSSAF micro (D613-4 CSS 2026 vérifiés, déclaration pré-calculée « Bob FAIT », dispo prudent teinté) — 07-04 21:05. |
 | C-EXP5d | MERGED | claude-code A | gpt5pro | ACRE : taux réduits créateurs versionnés (50 %/75 % marche décret 2026-69), fenêtre 3 trimestres, askAcre jamais deviné — 07-05 01:05. |
 | C-EXP6a | MERGED | claude-code A | gpt5pro | Parseur Factur-X entrant (réception 2026, round-trip, pur core) — 07-05 00:55. |
+| C-EXP-FIX1 | MERGED | claude-code A | gpt5pro | Fix 2 bugs majeurs (audit adversarial) : prescription 29/02→dernier jour du mois + ACRE taux suit l'année déclarée — 07-05 10:40. |
 | C-EXP-UI1 | MERGED | claude-code A | gpt5pro | Échéancier écran Argent + pénalités/prescription sur les relances, captures réelles — 07-04 21:30. |
 | C-EXP-UI2 | OPEN | claude-code A | gpt5pro | Provision URSSAF visible (écran) + amountHint échéancier — attend fin WIP B packages/ai. |
 | PONT-SERVEUR | MERGED | claude-code A | gpt5pro | 7 points livrés (pay expense atomique, cycle achats posté, payments datés, /company/me → identité réelle branchée, 293 B prod, avoir A- [fix préfixe F trouvé], Bob serveur e2e) — 07-05 00:15. |
