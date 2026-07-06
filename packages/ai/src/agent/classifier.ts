@@ -128,6 +128,24 @@ export const LLM_TOOL_SPECS: LlmToolSpec[] = [
       'Bilan simplifié de l’entreprise : actif (immobilisations, créances, trésorerie) et passif (capitaux propres, résultat, dettes), équilibrés. Répond à « montre-moi mon bilan », « actif passif ».',
     parameters: { type: 'object', properties: {}, additionalProperties: false },
   },
+  {
+    name: 'revue_pilotage',
+    description:
+      'Revue de pilotage de l’activité : chiffre d’affaires facturé et encaissé du mois, tendance vs mois précédent, ratios (EBE, poids des achats). Répond à « comment va mon activité ? », « ça monte ou ça baisse ? », « mon CA ».',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'delai_paiement',
+    description:
+      'Délai moyen d’encaissement (DSO) : en combien de jours les clients paient, et combien d’euros sont immobilisés chez eux. Répond à « on me paie en combien de temps ? ».',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'top_clients',
+    description:
+      'Classement des plus gros clients sur 12 mois (facturé TTC) et alerte de dépendance au premier client. Répond à « mes plus gros clients ? », « je dépends de qui ? ».',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+  },
 ];
 
 const TOOL_TO_INTENT: Record<string, BobIntent> = {
@@ -149,6 +167,9 @@ const TOOL_TO_INTENT: Record<string, BobIntent> = {
   payer_depense: 'payer_depense',
   resultat_provisoire: 'resultat',
   mon_bilan: 'bilan',
+  revue_pilotage: 'pilotage',
+  delai_paiement: 'dso',
+  top_clients: 'top_clients',
 };
 
 /** Une étape résolue d'un plan (une intention + sa référence éventuelle). */

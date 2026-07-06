@@ -104,6 +104,7 @@ export default function RootLayout() {
                     <Stack.Screen name="ventes" />
                     <Stack.Screen name="comptabilite" />
                     <Stack.Screen name="cloture" />
+                    <Stack.Screen name="pilotage" />
                     <Stack.Screen name="gallery" />
                   </Stack>
                   </ConfirmProvider>

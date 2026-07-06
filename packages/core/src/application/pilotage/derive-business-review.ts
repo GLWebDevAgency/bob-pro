@@ -266,12 +266,17 @@ export function deriveBusinessReview(input: BusinessReviewInput): BusinessReview
   const firstMonth = movedMonths[0] ?? null;
 
   const series: MonthlyRevenuePoint[] = [];
-  for (let month = firstMonth; month !== null; month = month === currentMonth ? null : nextMonthOf(month)) {
-    series.push({
-      month,
-      invoicedHtCents: invoicedByMonth.get(month) ?? 0,
-      collectedTtcCents: collectedByMonth.get(month) ?? 0,
-    });
+  if (firstMonth !== null) {
+    let month = firstMonth;
+    for (;;) {
+      series.push({
+        month,
+        invoicedHtCents: invoicedByMonth.get(month) ?? 0,
+        collectedTtcCents: collectedByMonth.get(month) ?? 0,
+      });
+      if (month === currentMonth) break;
+      month = nextMonthOf(month);
+    }
   }
 
   const completeMonths = series.filter((point) => point.month < currentMonth).length;

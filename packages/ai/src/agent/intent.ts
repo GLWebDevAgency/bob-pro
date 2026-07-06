@@ -17,6 +17,9 @@ export type BobIntent =
   | 'payer_depense' // régler une dépense fournisseur (écriture 401/512) — mutation, BOB-1/E4
   | 'resultat' // résultat provisoire (produits − charges du grand-livre) — lecture, BOB-2
   | 'bilan' // bilan simplifié actif/passif — lecture, BOB-4
+  | 'pilotage' // revue de pilotage : CA facturé/encaissé, tendance, ratios — lecture, BA-3
+  | 'dso' // « on me paie en combien de temps ? » — DSO 90 j + € immobilisés, BA-3
+  | 'top_clients' // plus gros clients 12 mois + dépendance — lecture, BA-3
   | 'unknown';
 
 /** Détection d'intention déterministe (fallback hors-ligne / LLM indisponible / intention triviale). */
@@ -25,6 +28,9 @@ export function detectIntent(message: string): BobIntent {
   // BOB-1 : régler une DÉPENSE/FOURNISSEUR — AVANT « encaisser » (« règle », « payé » collisionnent).
   if (/(pa[iy]e[rz]?|r[èe]gle[rz]?|solde[rz]?).*(d[ée]pense|fournisseur)|(d[ée]pense|fournisseur).*(pay[ée]|r[ée]gl)/.test(m))
     return 'payer_depense';
+  // DSO (BA-3) : AVANT « encaisser » (« me paient », « temps pour encaisser » y collisionnent).
+  if (/(me paie(nt)?|me payent|d[ée]lai.*(paiement|encaissement|r[èe]glement)|jours? pour ([êe]tre )?pay|\bdso\b|temps.*(encaiss|pay[ée]))/.test(m))
+    return 'dso';
   // « payé(e/s) » = participe (paiement reçu) ; « payer/verser » = se verser (payout) — d'où la distinction.
   if (/(encaiss|paiement re[çc]u|re[çc]u le paiement|marque.*pay|r[ée]gl[ée]|\bpay[ée]e?s?\b)/.test(m)) return 'encaisser';
   if (/(cl[ôo]tur|pr[ée]pare?.*(le |mon )?mois|boucle.*mois|pour le comptable|bilan du mois)/.test(m)) return 'cloture';
@@ -39,6 +45,12 @@ export function detectIntent(message: string): BobIntent {
   // Balance âgée (BOB-1) : AVANT relance (« en retard » y collisionne).
   if (/(qui me doit|balance [âa]g[ée]e|encours clients?|retards? clients?|me doivent|doit de l'argent)/.test(m))
     return 'balance';
+  // Top clients (BA-3) : AVANT balance/relance (« clients » y collisionne).
+  if (/(top.{0,10}clients?|(plus gros|meilleurs?|principaux) clients?|classement.*clients?|clients?.*(rapportent|rapporte le plus)|d[ée]pend[a-z]*.{0,15}client)/.test(m))
+    return 'top_clients';
+  // Pilotage (BA-3) : AVANT résultat/payout (« ça monte ? », « mon CA » ≠ « combien je gagne »).
+  if (/(pilotage|comment va (mon|ma|l)|[çc]a (monte|baisse|progresse)|tendance|mon (ca|chiffre)\b|chiffre d'affaires|[ée]volution.*(ca|activit[ée]|ventes)|mes ratios|taux d'ebe|\bebe\b|valeur ajout[ée]e|factur[ée] vs encaiss[ée])/.test(m))
+    return 'pilotage';
   // Bilan actif/passif (BOB-4) : AVANT résultat ; « bilan du mois » déjà capté par clôture.
   if (/(\bbilan\b|actif.{0,15}passif|capitaux propres|patrimoine de l'entreprise)/.test(m)) return 'bilan';
   // Résultat provisoire (BOB-2) : AVANT payout (« combien je gagne » ≠ « me verser »).

@@ -50,6 +50,7 @@ import {
   Card,
   Fab,
   HeroMoneyCard,
+  IconTile,
   InnerScreenHeader,
   MoneyRow,
   MoneyText,
@@ -959,6 +960,29 @@ export default function Argent() {
               </Card>
             )}
           </View>
+
+          {/* ── Pilotage (BA-3) : CA facturé/encaissé, DSO, tops, SIG — l'activité en clair ── */}
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={t('pilotage.title', { personality })}
+            onPress={() => router.push('/pilotage')}
+            style={{ marginTop: 20 }}
+          >
+            <Card>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 11 }}>
+                <IconTile tone="b2b" size={34} radius={10}>
+                  <Feather name="trending-up" size={16} color={semantic.b2b} />
+                </IconTile>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={{ ...font('cardTitle'), color: colors.ink800 }}>{t('pilotage.title', { personality })}</Text>
+                  <Text style={[font('meta'), { color: colors.slate400, marginTop: 2 }]} numberOfLines={1}>
+                    {t('pilotage.entrySubtitle', { personality })}
+                  </Text>
+                </View>
+                <Feather name="chevron-right" size={16} color={colors.slate400} />
+              </View>
+            </Card>
+          </Pressable>
         </View>
       </ScrollView>
 

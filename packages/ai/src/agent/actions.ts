@@ -9,6 +9,7 @@ import {
   type TrialBalance,
   type IncomeStatement,
   type BalanceSheet,
+  type BusinessReview,
 } from '@bob/core';
 
 /** Dépense fournisseur encore à payer (BOB-1 — ciblage de payer_depense par nom). */
@@ -166,6 +167,10 @@ export interface BobActions {
   getIncomeStatement?(): Promise<Result<IncomeStatement, AppError>>;
   /** Bilan simplifié actif/passif (deriveBalanceSheet @bob/core, BILAN-1) — « mon bilan ». */
   getBalanceSheet?(): Promise<Result<BalanceSheet, AppError>>;
+  /** Revue de pilotage (deriveBusinessReview @bob/core, BA-3) — séries CA facturé/encaissé,
+   * comparatifs honnêtes, DSO, top clients, SIG et ratios : « comment va mon activité ? »,
+   * « on me paie en combien de temps ? », « mes plus gros clients ? » lisent LA même revue. */
+  getBusinessReview?(): Promise<Result<BusinessReview, AppError>>;
   // —— Mutation ——
   registerPayment(input: {
     invoiceId: string;

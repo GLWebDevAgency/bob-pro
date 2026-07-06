@@ -48,6 +48,7 @@ import {
   deriveTrialBalance,
   deriveIncomeStatement,
   deriveBalanceSheet,
+  deriveBusinessReview,
   resolveTradeConfig,
   buildDocumentStorageKey,
   buildInvoiceAccountingPreviewEntry,
@@ -1033,6 +1034,44 @@ export class LocalBobClient implements BobClient {
         await this.ready;
         const list = await this.accountingEntries.listByCompany(this.companyId);
         return ok(deriveBalanceSheet(list.map((e) => ({ lines: e.lines }))));
+      },
+      // BA-3 : revue de pilotage — MÊME deriveBusinessReview que l'écran Pilotage (parité).
+      getBusinessReview: async () => {
+        await this.ready;
+        const [entries, payments, invoices, customers, expenses] = await Promise.all([
+          this.accountingEntries.listByCompany(this.companyId),
+          this.payments.listByCompany(this.companyId),
+          this.invoices.listByCompany(this.companyId),
+          this.customers.listByCompany(this.companyId),
+          this.expenses.listByCompany(this.companyId),
+        ]);
+        return ok(
+          deriveBusinessReview({
+            entries: entries.map((e) => ({ entryDate: e.entryDate, sourceType: e.sourceType, lines: e.lines })),
+            payments: payments.map((p) => ({ amountCents: p.amount, receivedAt: p.receivedAt })),
+            invoices: invoices.map((i) => ({
+              kind: i.kind,
+              status: i.status,
+              totals: i.totals(),
+              paid: i.paid,
+              dueAt: i.dueAt,
+              customerId: i.customerId,
+            })),
+            customers: customers.map((c) => ({ id: c.id, name: c.name })),
+            expenses: expenses.map((e) => {
+              const p = e.toProps();
+              return {
+                category: p.category,
+                totalTtcCents: p.totalTtcCents,
+                vatCents: p.vatCents,
+                documentDate: p.documentDate,
+                status: p.status,
+              };
+            }),
+            vatRegime: seedCompany().vatRegime,
+            today: this.clock.today(),
+          }),
+        );
       },
       listUnpaidExpenses: async () => {
         await this.ready;

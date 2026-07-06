@@ -170,6 +170,9 @@ function intentForTool(tool: string): BobIntent {
   if (tool === 'payer_depense') return 'payer_depense';
   if (tool === 'resultat_provisoire') return 'resultat';
   if (tool === 'mon_bilan') return 'bilan';
+  if (tool === 'revue_pilotage') return 'pilotage';
+  if (tool === 'delai_paiement') return 'dso';
+  if (tool === 'top_clients') return 'top_clients';
   return 'unknown';
 }
 
@@ -498,6 +501,89 @@ export class BobAgent {
             `Passif : ${formatEUR(b.passif.totalCents)} (dont capitaux propres ${formatEUR(b.passif.capitauxPropresCents + b.passif.resultatNetCents)}, dettes ${formatEUR(b.passif.dettesCents)})\n` +
             equilibre,
         },
+      });
+    }
+
+    if (intent === 'pilotage' || intent === 'dso' || intent === 'top_clients') {
+      // BA-3 : revue de pilotage (deriveBusinessReview @bob/core) — trois questions, UNE revue.
+      const getReview = this.deps.actions.getBusinessReview?.bind(this.deps.actions);
+      if (!getReview) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier la capacité de l’hôte'],
+          card: { title: 'Ton pilotage', body: 'Je n’ai pas accès à la revue de pilotage sur cet appareil pour le moment.' },
+        });
+      }
+      const r = await getReview();
+      if (!r.ok) return err(r.error);
+      const review = r.value;
+      const pct = (bps: number | null): string | null => (bps === null ? null : `${bps >= 0 ? '+' : '−'}${(Math.abs(bps) / 100).toFixed(1).replace('.', ',')} %`);
+
+      if (intent === 'dso') {
+        const dsoBody =
+          review.dso.days === null
+            ? review.dso.reason === 'insufficient_history'
+              ? 'Il me faut 3 mois de facturation pour mesurer ton délai d’encaissement — on y est presque.'
+              : 'Pas assez de facturation récente pour mesurer un délai fiable.'
+            : review.dso.days === 0
+              ? 'Tout est encaissé — aucun euro ne dort chez tes clients ✓'
+              : `Tes clients te paient en ${review.dso.days} jours en moyenne.\nImmobilisé chez eux : ${formatEUR(review.dso.receivablesCents)}.`;
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Lire l’encours clients (balance âgée)', 'Rapporter au facturé TTC des 90 derniers jours'],
+          card: { title: 'Ton délai d’encaissement', body: dsoBody },
+        });
+      }
+
+      if (intent === 'top_clients') {
+        if (review.topClients.lines.length === 0) {
+          return ok({
+            kind: 'answer',
+            intent,
+            model,
+            plan: ['Classer le facturé 12 mois par client'],
+            card: { title: 'Tes plus gros clients', body: 'Pas encore de facturation sur les 12 derniers mois.' },
+          });
+        }
+        const rows = review.topClients.lines
+          .slice(0, 3)
+          .map((line, i) => `${i + 1}. ${line.customerName} — ${formatEUR(line.invoicedTtc12mCents)}${line.shareBps !== null ? ` (${(line.shareBps / 100).toFixed(0)} %)` : ''}`);
+        const alert = review.topClients.concentrationAlert
+          ? `\n⚠ ${review.topClients.lines[0]?.customerName} pèse ${((review.topClients.top1ShareBps ?? 0) / 100).toFixed(0)} % de ton activité — une dépendance à surveiller.`
+          : '';
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Classer le facturé TTC 12 mois par client', 'Mesurer la dépendance au premier'],
+          card: { title: 'Tes plus gros clients (12 mois)', body: rows.join('\n') + alert },
+        });
+      }
+
+      // pilotage : le mois en cours à isopérimètre + tendance mois clos + ratio headline.
+      const cur = review.currentMonth;
+      const iso = pct(cur.invoicedDeltaBps);
+      const trend = review.lastClosedComparison;
+      const trendLine = trend
+        ? `${trend.month} vs ${trend.previousMonth} : ${trend.deltaCents >= 0 ? '+' : '−'}${formatEUR(Math.abs(trend.deltaCents))}${pct(trend.deltaBps) ? ` (${pct(trend.deltaBps)})` : ''}`
+        : null;
+      const ebe = pct(review.ratios.ebeBps);
+      const body = [
+        `Facturé (hors TVA) au ${cur.atDay} du mois : ${formatEUR(cur.invoicedHtCents)}${iso ? ` (${iso} vs le mois dernier à date égale)` : ''}`,
+        `Encaissé (TVA comprise) : ${formatEUR(cur.collectedTtcCents)}`,
+        ...(trendLine ? [trendLine] : []),
+        ...(ebe ? [`Ton activité dégage ${ebe} du CA (taux d’EBE) — avant ta rémunération.`] : []),
+      ].join('\n');
+      return ok({
+        kind: 'answer',
+        intent,
+        model,
+        plan: ['Dériver la revue de pilotage', 'Facturé (écritures de vente) vs encaissé (paiements)', 'Comparer à isopérimètre de jours'],
+        card: { title: 'Ton activité', body },
       });
     }
 
