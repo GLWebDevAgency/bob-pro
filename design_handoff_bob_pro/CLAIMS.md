@@ -1174,6 +1174,41 @@ transcript workflow wf_fb597a24-2e3.
   i18n 53 ✓. → TOUT LE MOBILE est désormais 100 % @bob/ui (plus aucun écran sur l'ancien
   kit). PROCHAINES PRIOS (demande humaine 2026-07-05) : business analyse + gestion des
   secteurs pour les offres (freelance IT, autres métiers).
+- [23:20] claude-code (session B) FIX-ACOMPTE MERGE (commit 60e0be4) : BUG D'ÉQUILIBRE
+  CONFIRMÉ (audit + panel wf_02776c87 : 2 experts + contrôleur, verdicts convergents) —
+  la finale d'un chantier AVEC acompte a netToPay = ttc − acompte mais l'écriture
+  créditait CA + TVA PLEINS → déséquilibre → rejet AccountingEntry.create → facture émise
+  SANS écriture de vente (CA sous-évalué, FEC troué). Fix : reprise MIROIR D 4191 + D 44571
+  (mêmes composants + même allocateAmounts que l'écriture d'acompte → 4191 soldé au
+  centime, multi-taux). Finale 100 % couverte (netToPay = 0) désormais comptabilisable.
+  SUIVI (risques résiduels du panel) : ① issueInvoiceInternal émet PUIS comptabilise sans
+  transaction (local + serveur) — à rendre atomique ; ② avoir total sur finale-avec-acompte :
+  reprise 4191 inverse non spécifiée ; ③ buildRecordedExpenseAccountingEntry poste 44566
+  même en franchise (fausserait deriveVatPosition d'un micro).
+- [23:55] claude-code (session B) BA-1+BA-2 MERGE (commit 7a0ad68) : MOTEUR DE PILOTAGE
+  @bob/core, spec vérifiée adversarialement (wf_02776c87-fe3). deriveSig : cascade SIG
+  (marge matériaux GATED sur 607/6037/6087/6097 mouvementé, production, VA, EBE, REX),
+  mapping TOTAL sur préfixes PCG, partition EXACTE de l'exploitation du CR — INVARIANT
+  testé REX_SIG == deriveIncomeStatement().resultatExploitationCents sur écritures
+  adverses. deriveBusinessReview : séries CA facturé HT (écritures 70x — acompte 4191 ≠
+  CA, chantier compté UNE fois) vs encaissé TTC (paiements, assiette URSSAF micro) ;
+  comparatifs honnêtes (série dense depuis le 1er mouvement, isopérimètre de jours sur le
+  mois courant, JAMAIS de % plein-mois ni sous plancher de base, N-1 gated couverture) ;
+  DSO 90 j (balance âgée × 90 / 411 sourceType invoice, bords null assumés) ; top 5
+  clients (avoirs nets séparés, invariant totalisation, alerte dépendance 30 %) ; top
+  postes (charge comptabilisée TTC − TVA mentionnée / TTC en franchise) ; ratios bps
+  null-honnêtes. ÉCARTÉ par le panel (vanity) : run-rate annualisé, score composite,
+  count-back DSO, TVA recalculée grand livre (deriveVatPosition reste LA vérité).
+- [00:30] claude-code (session B) BA-3 MERGE (commit ba9f03d) : ÉCRAN PILOTAGE + PARITÉ
+  BOB. Écran poussé @bob/ui (mois en cours facturé/encaissé isopérimètre, tendance, barres
+  mensuelles, DSO, top clients/dépenses, cascade SIG avec % du CA), entrée depuis Argent,
+  paywall accounting_operations, +47 clés pilotage.* ×3 humeurs. Bob : 3 intentions
+  (revue_pilotage/delai_paiement/top_clients) sur UNE action getBusinessReview — même
+  use case que l'écran. Capture device captures/pilotage-ba3.png (tendance juin vs mai
+  « −1 541,67 € · — » : le % sous plancher est bien MASQUÉ, honnêteté vérifiée en vrai).
+  local-client : stage CHIRURGICAL — ma part (getBusinessReview, 39 lignes) commitée, le
+  WIP C-EXP6b session A (128 lignes Factur-X) laissé non commité, intact dans l'arbre.
+  Core 623 ✓ ai 160 ✓ api-client 42 ✓ i18n 54 ✓ typecheck mobile ✓.
 
 ---
 
