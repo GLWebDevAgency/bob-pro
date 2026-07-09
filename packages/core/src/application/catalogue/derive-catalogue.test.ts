@@ -59,6 +59,11 @@ describe('application/catalogue/deriveCatalogue (C27 — métier → prestations
     // TVA suggérée par les règles existantes : BTP 10 %, services 20 %.
     expect(deriveCatalogue({ trade: 'plombier' }).prestations[0]?.vatRate).toBe(10);
     expect(deriveCatalogue({ trade: 'consultant' }).prestations[0]?.vatRate).toBe(20);
+    // Freelance IT : catalogue propre (régie/TJM, forfait, TMA), distinct du consultant, TVA 20 %.
+    const it = deriveCatalogue({ trade: 'freelance_it' }).prestations.map((p) => p.label);
+    expect(it).toContain('Journée en régie (TJM)');
+    expect(it).toContain('Maintenance mensuelle (TMA)');
+    expect(deriveCatalogue({ trade: 'freelance_it' }).prestations[0]?.vatRate).toBe(20);
   });
 
   it("fusion « Bob garde tes prix » : la perso au même libellé ÉCLIPSE l'indicatif métier, la nouvelle s'ajoute", () => {

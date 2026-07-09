@@ -59,6 +59,7 @@ const PREVIEW: Record<Trade, readonly string[]> = {
   peintre: BTP_PREVIEW,
   paysagiste: BTP_PREVIEW,
   consultant: ['Missions', 'TJM', 'CRA', 'Frais refacturés', 'Acompte'],
+  freelance_it: ['Régie & TJM', 'CRA', 'Forfait projet', 'Maintenance (TMA)', 'Frais refacturés'],
   photographe: ['Prestations', 'Acompte', 'Cession de droits', 'Galeries'],
   coach: ['Séances', 'Forfaits', 'Abonnements', 'Acompte'],
   autre: ['Devis', 'Factures', 'Acomptes', 'Récurrent'],

@@ -133,6 +133,16 @@ const SUGGESTED: Record<Trade, readonly SuggestedEntry[]> = {
     { label: 'Restitution & rapport', category: 'labor', unit: 'forfait', unitPriceHT: 45000 },
     { label: 'Déplacement mission', category: 'travel', unitPriceHT: 9000 },
   ],
+  freelance_it: [
+    { label: 'Journée en régie (TJM)', category: 'labor', unit: '1 j', unitPriceHT: 60000 },
+    { label: 'Demi-journée en régie', category: 'labor', unit: '0,5 j', unitPriceHT: 35000 },
+    { label: 'Cadrage & chiffrage technique', category: 'labor', unit: 'forfait', unitPriceHT: 120000 },
+    { label: 'Développement au forfait', category: 'labor', unit: 'forfait', unitPriceHT: 250000 },
+    { label: 'Maintenance mensuelle (TMA)', category: 'labor', unit: 'mois', unitPriceHT: 45000 },
+    { label: 'Astreinte / support prioritaire', category: 'labor', unit: 'forfait', unitPriceHT: 30000 },
+    { label: 'Licence ou service refacturé', category: 'supply', unitPriceHT: 5000 },
+    { label: 'Déplacement mission', category: 'travel', unitPriceHT: 9000 },
+  ],
   photographe: [
     { label: 'Séance portrait', category: 'labor', unit: 'forfait', unitPriceHT: 25000 },
     { label: 'Reportage événement', category: 'labor', unit: '1 j', unitPriceHT: 120000 },

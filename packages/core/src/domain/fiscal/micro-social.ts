@@ -122,6 +122,7 @@ const TRADE_TO_MICRO_CATEGORY: Record<Trade, MicroCategoryGuess> = {
   peintre: { category: 'bic_prestations', confidence: 'certain' },
   paysagiste: { category: 'bic_prestations', confidence: 'certain' },
   consultant: { category: 'bnc', confidence: 'assumed' },
+  freelance_it: { category: 'bnc', confidence: 'assumed' }, // prestations informatiques = BNC (hors Cipav)
   photographe: { category: 'bnc', confidence: 'assumed' },
   coach: { category: 'bnc', confidence: 'assumed' },
   autre: { category: 'bnc', confidence: 'assumed' },

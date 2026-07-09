@@ -20,12 +20,16 @@ const NAF_TO_TRADE: Record<string, Trade> = {
   '43.31Z': 'peintre',
   // Paysagisme
   '81.30Z': 'paysagiste',
-  // Conseil / dev / gestion
+  // Conseil de gestion / relations publiques
   '70.22Z': 'consultant',
   '70.21Z': 'consultant',
-  '62.02A': 'consultant',
-  '62.02B': 'consultant',
-  '62.01Z': 'consultant',
+  // Informatique (dev, conseil SI, TMA, infogérance, autres) — verticale freelance IT dédiée,
+  // distincte du conseil de gestion : un développeur en régie ne facture pas comme un consultant.
+  '62.01Z': 'freelance_it', // programmation informatique
+  '62.02A': 'freelance_it', // conseil en systèmes et logiciels informatiques
+  '62.02B': 'freelance_it', // tierce maintenance de systèmes et d'applications (TMA)
+  '62.03Z': 'freelance_it', // gestion d'installations informatiques (infogérance)
+  '62.09Z': 'freelance_it', // autres activités informatiques
   // Photographie
   '74.20Z': 'photographe',
   // Coaching / sport / bien-être

@@ -55,6 +55,7 @@ const TRADE_EMOJI: Record<Trade, string> = {
   peintre: '🎨',
   paysagiste: '🌿',
   consultant: '💼',
+  freelance_it: '💻',
   photographe: '📷',
   coach: '🎯',
   autre: '➕',

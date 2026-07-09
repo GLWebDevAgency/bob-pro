@@ -41,6 +41,11 @@ describe('deriveTradeProfile — onboarding adaptatif (C22)', () => {
   it('métiers de services : previews proto EXACTS et repères propres (cession de droits, CRA)', () => {
     expect(deriveTradeProfile('consultant').preview).toEqual(['Missions', 'TJM', 'CRA', 'Frais refacturés', 'Acompte']);
     expect(deriveTradeProfile('consultant').highlights).toEqual(['cra']);
+    // Freelance IT : régie/CRA + forfait + TMA, vocabulaire « Mission », repère CRA (régie).
+    expect(deriveTradeProfile('freelance_it').preview).toEqual(['Régie & TJM', 'CRA', 'Forfait projet', 'Maintenance (TMA)', 'Frais refacturés']);
+    expect(deriveTradeProfile('freelance_it').highlights).toEqual(['cra']);
+    expect(deriveTradeProfile('freelance_it').vocabulary.project).toBe('Mission');
+    expect(deriveTradeProfile('freelance_it').defaultVatRate).toBe(20);
     expect(deriveTradeProfile('photographe').preview).toEqual(['Prestations', 'Acompte', 'Cession de droits', 'Galeries']);
     expect(deriveTradeProfile('photographe').highlights).toEqual(['cession_droits']);
     expect(deriveTradeProfile('coach').preview).toEqual(['Séances', 'Forfaits', 'Abonnements', 'Acompte']);
@@ -55,7 +60,7 @@ describe('deriveTradeProfile — onboarding adaptatif (C22)', () => {
     expect(r.highlights).toEqual([]);
   });
 
-  it('les 9 métiers : preview non vide, spaceLabel en minuscules, décennale ⇔ BTP du domaine', () => {
+  it('tous les métiers : preview non vide, spaceLabel en minuscules, décennale ⇔ BTP du domaine', () => {
     for (const trade of ALL_TRADES) {
       const r = deriveTradeProfile(trade);
       expect(r.preview.length).toBeGreaterThan(0);

@@ -12,6 +12,7 @@ export type Trade =
   | 'peintre'
   | 'paysagiste'
   | 'consultant'
+  | 'freelance_it'
   | 'photographe'
   | 'coach'
   | 'autre';

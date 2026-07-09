@@ -25,7 +25,7 @@ function isLegalForm(v: unknown): v is LegalForm {
 }
 
 const TRADES: ReadonlySet<string> = new Set<Trade>([
-  'plombier', 'electricien', 'macon', 'peintre', 'paysagiste', 'consultant', 'photographe', 'coach', 'autre',
+  'plombier', 'electricien', 'macon', 'peintre', 'paysagiste', 'consultant', 'freelance_it', 'photographe', 'coach', 'autre',
 ]);
 
 function isTrade(v: unknown): v is Trade {

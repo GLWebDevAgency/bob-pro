@@ -57,6 +57,16 @@ describe('nafToTrade', () => {
     expect(nafToTrade('53.10Z')).toBeNull();
     expect(nafToTrade(null)).toBeNull();
   });
+
+  it('route les NAF informatiques vers freelance_it, sans capturer le conseil de gestion', () => {
+    expect(nafToTrade('62.01Z')).toBe('freelance_it'); // programmation
+    expect(nafToTrade('62.02A')).toBe('freelance_it'); // conseil SI
+    expect(nafToTrade('62.02B')).toBe('freelance_it'); // TMA
+    expect(nafToTrade('62.03Z')).toBe('freelance_it'); // infogérance
+    expect(nafToTrade('62.09Z')).toBe('freelance_it'); // autres activités informatiques
+    // Le conseil de gestion (70.2x) reste consultant — un dev ≠ un consultant en stratégie.
+    expect(nafToTrade('70.22Z')).toBe('consultant');
+  });
 });
 
 describe('natureJuridiqueToLegalForm', () => {

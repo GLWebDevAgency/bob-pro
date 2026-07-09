@@ -108,6 +108,16 @@ export const TRADE_PROFILES: Record<Trade, TradeProfile> = {
     defaultVatRate: 20,
     vocabulary: { customer: 'Client', project: 'Mission' },
   },
+  freelance_it: {
+    trade: 'freelance_it',
+    // Freelance IT (dev, DevOps, data, conseil SI) : régie AU TEMPS (CRA/TJM) + projets au
+    // FORFAIT (avec acomptes) + MAINTENANCE récurrente (TMA/abonnement) + frais refacturés
+    // (licences, cloud, déplacements). Aucun module BTP — d'où l'absence de `chantiers`.
+    label: 'Freelance IT',
+    modules: ['devis_factures', 'cra', 'forfaits', 'acomptes', 'frais_refactures', 'abonnements'],
+    defaultVatRate: 20,
+    vocabulary: { customer: 'Client', project: 'Mission' },
+  },
   photographe: {
     trade: 'photographe',
     label: 'Photographe',
