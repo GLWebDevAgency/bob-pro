@@ -3235,6 +3235,28 @@ const fr = {
     pro: '{filename} généré.',
     direct: '{filename}.',
   },
+  // DOSSIER-2 — la revue de pré-signature (Bob exécute les diligences, l'EC signe)
+  'cloture.reviewSection': { pote: 'La revue de Bob', pro: 'Revue de pré-signature', direct: 'Revue' },
+  'cloture.reviewReady': {
+    pote: 'J’ai passé toutes mes vérifications : rien à signaler.',
+    pro: 'Diligences exécutées : aucun point bloquant, aucune réserve.',
+    direct: 'Tout est passé.',
+  },
+  'cloture.reviewReserves': {
+    pote: 'Rien de bloquant, mais {count} point(s) à justifier à ton comptable.',
+    pro: 'Aucun point bloquant ; {count} réserve(s) à l’appréciation de votre expert-comptable.',
+    direct: '{count} réserve(s).',
+  },
+  'cloture.reviewBlocked': {
+    pote: '{count} anomalie(s) à corriger avant d’envoyer — on regarde ensemble ?',
+    pro: '{count} anomalie(s) comptable(s) à corriger avant signature.',
+    direct: '{count} anomalie(s). À corriger.',
+  },
+  'cloture.reviewHint': {
+    pote: 'Les vérifications qu’un expert-comptable fait avant de signer — je les fais pour toi, il contrôle et signe.',
+    pro: 'Les diligences de révision sont exécutées par Bob ; votre expert-comptable contrôle et signe.',
+    direct: 'Bob révise. Ton comptable signe.',
+  },
 
   // ── BA-3 — écran « Pilotage » (revue business : CA, DSO, tops, SIG) ─────────
   'pilotage.back': { pote: 'Argent', pro: 'Argent', direct: 'Argent' },

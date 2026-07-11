@@ -15,6 +15,7 @@ import { Feather } from '@expo/vector-icons';
 import {
   buildClosingDossier,
   deriveBalanceSheet,
+  deriveClosingReview,
   deriveIncomeStatement,
   deriveTrialBalance,
   formatEUR,
@@ -136,6 +137,23 @@ export default function Cloture() {
   const [yy, mm] = mois.key.split('-').map(Number);
   const fecFrom = `${mois.key}-01`;
   const fecTo = `${mois.key}-${pad(new Date(yy ?? 2026, mm ?? 1, 0).getDate())}`;
+  // Période COMPTABLE des états et de la revue = l'exercice À DATE (le bilan est cumulatif —
+  // un bilan du seul mois serait faux) ; le mois reste la période du FEC et l'emballage.
+  const reviewFrom = `${yy}-01-01`;
+  const yearEnd = mm === 12;
+
+  // DOSSIER-2 : les diligences de l'EC exécutées par Bob — même use case que le dossier envoyé.
+  const engagedInvoices = inv.filter((i) => i.status !== 'draft' && i.status !== 'cancelled');
+  const review = useMemo(
+    () =>
+      deriveClosingReview({
+        entries: (entries.data ?? []).map((e) => ({ entryDate: e.entryDate, lines: e.lines })),
+        period: { from: reviewFrom, to: fecTo },
+        justificatifs: { expected: engagedInvoices.length, provided: engagedInvoices.length - missingPdf.length },
+        yearEnd,
+      }),
+    [entries.data, reviewFrom, fecTo, engagedInvoices.length, missingPdf.length, yearEnd],
+  );
 
   const onExportFec = async (): Promise<void> => {
     try {
@@ -154,9 +172,12 @@ export default function Cloture() {
       const now = new Date();
       const dossier = buildClosingDossier({
         company: { name: company.data?.name ?? 'Mon entreprise', siren: company.data?.siren ?? '—' },
-        period: { from: fecFrom, to: fecTo },
+        // Exercice à date : mêmes états et même revue que l'écran (le FEC, lui, reste au mois).
+        period: { from: reviewFrom, to: fecTo },
         generatedOn: `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`,
-        entries: (entries.data ?? []).map((e) => ({ lines: e.lines })),
+        entries: (entries.data ?? []).map((e) => ({ entryDate: e.entryDate, lines: e.lines })),
+        justificatifs: { expected: engagedInvoices.length, provided: engagedInvoices.length - missingPdf.length },
+        yearEnd,
       });
       const shared = await shareTextFile(dossier);
       if (shared === 'unavailable') setToast(t('cloture.dossierPrepared', { personality, params: { filename: dossier.filename } }));
@@ -316,6 +337,69 @@ export default function Cloture() {
                   </View>
                 </View>
               </Card>
+
+              {/* DOSSIER-2 — la revue de pré-signature : Bob exécute les diligences, l'EC signe */}
+              {section(
+                'cloture.reviewSection',
+                <Card>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingBottom: 10, borderBottomWidth: 1, borderBottomColor: colors.lineSoft }}>
+                    <Text style={[font('sub'), { color: colors.slate500, flex: 1 }]}>
+                      {t(
+                        !review.readyToSign
+                          ? 'cloture.reviewBlocked'
+                          : review.hasReserves
+                            ? 'cloture.reviewReserves'
+                            : 'cloture.reviewReady',
+                        {
+                          personality,
+                          params: { count: String(!review.readyToSign ? review.anomalieCount : review.attentionCount) },
+                        },
+                      )}
+                    </Text>
+                    <StatusBadge
+                      label={`${review.okCount}/${review.okCount + review.attentionCount + review.anomalieCount}`}
+                      variant={!review.readyToSign ? 'danger' : review.hasReserves ? 'particulier' : 'success'}
+                    />
+                  </View>
+                  {review.controls.map((ctrl, i) => (
+                    <View
+                      key={ctrl.id}
+                      accessible
+                      accessibilityLabel={`${ctrl.label} : ${ctrl.detail}`}
+                      style={{
+                        flexDirection: 'row',
+                        alignItems: 'flex-start',
+                        gap: 10,
+                        paddingVertical: 9,
+                        borderBottomWidth: i < review.controls.length - 1 ? 1 : 0,
+                        borderBottomColor: colors.lineSoft,
+                      }}
+                    >
+                      <Feather
+                        name={ctrl.status === 'ok' ? 'check-circle' : ctrl.status === 'info' ? 'info' : ctrl.status === 'attention' ? 'alert-triangle' : 'x-circle'}
+                        size={15}
+                        color={
+                          ctrl.status === 'ok'
+                            ? semantic.success
+                            : ctrl.status === 'info'
+                              ? semantic.b2b
+                              : ctrl.status === 'attention'
+                                ? semantic.particulier
+                                : semantic.danger
+                        }
+                        style={{ marginTop: 2 }}
+                      />
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <Text style={[font('sub'), { color: colors.ink800 }]}>{ctrl.label}</Text>
+                        <Text style={[font('meta'), { color: colors.slate400, marginTop: 1, lineHeight: 16 }]}>{ctrl.detail}</Text>
+                      </View>
+                    </View>
+                  ))}
+                  <Text style={[font('meta'), { color: colors.slate400, marginTop: 8, lineHeight: 16 }]}>
+                    {t('cloture.reviewHint', { personality })}
+                  </Text>
+                </Card>,
+              )}
 
               {section(
                 'cloture.sectionArbitrer',
