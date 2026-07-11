@@ -149,7 +149,72 @@ l'app mobile. Zéro upload : **tout le parsing et les calculs se font DANS le na
 - La racine du monorepo a des fichiers `.dc.html` volumineux : ne les importe jamais dans le
   bundle web.
 
-## 5. Où en est le produit (pour ta culture, et tes textes d'interface)
+## 5. La vision cabinet — retour terrain d'un expert-comptable (2026-07-09)
+
+Un expert-comptable (post LinkedIn transmis par le fondateur) décrit l'outil « licorne »
+qui manque aux cabinets : *« CRM + suivi d'onboarding + suivi de production. 1) Rentrer le
+prospect. 2) Le suivre dans la pipeline, le relancer automatiquement. 3) Client signé :
+workflow d'onboarding — lettre de mission, création du compte impots.gouv. 4) Créer le
+dossier dans un tableau de suivi de production : TVA, IS, liasse. Les CRM du marché ne sont
+pas adaptés aux EC ; on bricole sur Notion/Monday/Airtable et ce n'est pas efficace. »*
+
+Lecture stratégique (décidée côté produit — tu l'appliques, tu ne la rediscutes pas) :
+- Ce post décrit un **practice management de cabinet** — un DEUXIÈME produit (acheteur =
+  cabinet). On ne le construit PAS en entier : pas de CRM prospects, pas de pipeline, pas de
+  relances marketing, pas de multi-utilisateurs cabinet. Voir « À NE PAS CONSTRUIRE ».
+- MAIS deux briques du post recoupent EXACTEMENT notre force et ton périmètre web :
+  le **④ tableau de suivi de production** (TVA/IS/liasse par dossier — Bob sait déjà calculer
+  les échéances réelles via `deriveFiscalCalendar` de `@bob/core`, exporté) et le
+  **③ onboarding → lettre de mission** (un document généré : pur client-side).
+  Notre angle unique : chez nous, le tableau de production se remplit depuis la COMPTA RÉELLE
+  du client (dépôt FEC → états + échéances), pas à la main comme dans Monday.
+
+### Spécification v2 — « suivi de production » (APRÈS la v1, même périmètre apps/web)
+
+**P2.1 — Tableau de dossiers clients (le « tableau de production » du post), 100 % client-side :**
+- Chaque dépôt de FEC (v1) crée/met à jour un DOSSIER : nom (saisi ou SIREN du fichier),
+  période couverte, totaux clés (CA 70x, résultat), équilibres ✓/✗, date du dernier dépôt.
+- Vue liste `/cabinet` : une ligne par dossier — client · période · résultat · équilibres ·
+  échéances à venir · statut de revue (v1 : équilibres ; quand `deriveClosingReview` sera
+  commité par la session B : verdict « prêt à signer / sous réserves / anomalies »).
+- Échéances par dossier : formulaire minimal (régime TVA : franchise/réel simplifié/réel
+  normal ; clôture d'exercice ; IS ou IR) → `deriveFiscalCalendar(...)` de `@bob/core` →
+  colonnes TVA (CA3/CA12), IS, liasse avec dates RÉELLES. Lis la signature de
+  `DeriveFiscalCalendarInput` dans `packages/core/src/application/fiscal/derive-fiscal-calendar.ts`.
+- **Persistance : `localStorage` uniquement** (clé versionnée `bobcabinet.v1`), avec export/
+  import JSON (bouton « Sauvegarder mes dossiers »). AFFICHE l'honnêteté : « Vos dossiers
+  restent dans ce navigateur — rien n'est envoyé à un serveur. » Pas d'API, pas de compte.
+- Suppression d'un dossier possible, avec confirmation.
+
+**P2.2 — Générateur de lettre de mission (l'« onboarding » du post), pur client-side :**
+- Formulaire : identité cabinet (nom, EC inscrit à l'Ordre, adresse) · client (forme, SIREN,
+  activité) · missions cochées (tenue / révision / établissement des comptes annuels /
+  déclarations fiscales / social) · honoraires (forfait ou taux) · durée & renouvellement.
+- Génère une lettre structurée selon l'usage de la profession : objet et périmètre de la
+  mission, obligations réciproques (le client fournit les pièces, l'EC est tenu au secret
+  professionnel), honoraires et conditions de révision, durée/renouvellement/résiliation,
+  médiation & RGPD. Rendu imprimable (CSS print → PDF via le navigateur), champs signature.
+- **Disclaimer visible obligatoire** : « Modèle indicatif à adapter et faire valider —
+  ne constitue pas un conseil juridique. » Aucune prétention de conformité Ordre certifiée.
+- Aucune donnée envoyée nulle part ; pré-remplissage depuis un dossier existant si présent.
+
+**DoD v2 (en plus de la v1) :**
+- [ ] Dossiers persistants après reload (localStorage), export/import JSON fonctionnels.
+- [ ] Un dépôt de FEC pour un SIREN déjà connu MET À JOUR le dossier (pas de doublon).
+- [ ] Échéancier par dossier alimenté par `deriveFiscalCalendar` (jamais de dates codées en dur).
+- [ ] Lettre de mission : impression propre (une page ou pagination correcte), disclaimer visible.
+- [ ] Tout l'état applicatif survit sans réseau (mode 100 % local vérifié offline).
+- [ ] Captures `web-cabinet-production-*.png` et `web-cabinet-lettre-*.png` + entrée CLAIMS.
+
+### À NE PAS CONSTRUIRE (hors périmètre, décision produit ferme)
+- CRM prospects / pipeline / relances automatiques de prospection (le ①-② du post) : autre
+  produit, autre acheteur, exigerait un serveur multi-tenant — décision fondateur requise.
+- Comptes utilisateurs, synchronisation serveur, multi-postes, marque blanche.
+- Toute création automatique de compte impots.gouv ou démarche administrative automatisée.
+- Si tu juges une de ces briques indispensable : note-le en CLAIMS (« SUIVI produit : … »),
+  ne la code pas.
+
+## 6. Où en est le produit (pour ta culture, et tes textes d'interface)
 
 Livré côté mobile/core (commits récents) : états de synthèse complets (balance/CR/bilan),
 dossier de clôture partageable, FEC ISO 8859-15 lettré, TVA sur encaissements, provision
@@ -157,6 +222,7 @@ URSSAF micro (ACRE), balance âgée + relances L441, moteur de pilotage (séries
 encaissé, SIG, DSO, top clients), verticale freelance IT, agent IA avec parité d'action.
 Pricing : Découverte 0 € / Solo 19 € / Pro 39 € / Business 79 €/mois, sans engagement.
 
-Ton espace `/cabinet` est la **première brique** du canal expert-comptable : v2 probables
-(PAS dans ton périmètre v1) : compte cabinet multi-dossiers, annuaire, marque blanche.
+Ton espace `/cabinet` est la **première brique** du canal expert-comptable, et la v2
+ci-dessus en fait le début du « tableau de production » que la profession réclame — alimenté
+par la compta réelle, ce que ni Monday ni les CRM génériques ne savent faire.
 Écris-le petit, juste, et vrai — comme le reste du produit.
