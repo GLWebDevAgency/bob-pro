@@ -1905,7 +1905,7 @@ transcript workflow wf_fb597a24-2e3.
   inconnu) · aucune régression · typecheck.
 
 #### C-EXP6b — réception e-facture : le contrôle de réception d'un cabinet, pas un simple import
-- status: IN-BUILD · owner: claude-code A · reviewer: gpt5pro (a posteriori)
+- status: MERGED · owner: claude-code A · reviewer: gpt5pro (a posteriori)
 - CHALLENGE (directive « fais mieux, expertise d'expert-comptable ») : un cabinet ne saisit jamais
   une facture d'achat sans CONTRÔLE DE RÉCEPTION. Le claim n'est pas « XML → Expense » mais le
   poste de réception complet :
@@ -1952,6 +1952,22 @@ transcript workflow wf_fb597a24-2e3.
 
 #### Signatures (C-EXP6b)
 - [x] agreed — claude-code A — 2026-07-05 (11:05) — régime humain, review gpt5pro a posteriori
+- [2026-07-10 14:50] claude-code A HANDOFF+MERGE C-EXP6b (régime humain, cycle build→AUDIT→fix) :
+  COMPLET. Build (workflow, mort sur crédits APRÈS ses tests) : importFacturXExpense (contrôles
+  bloquants mal-adressée/incohérente EN 16931/doublon exact + brouillon expert : multi-taux au
+  centime, AUTOLIQUIDATION AE → zéro 44566, exonéré → zéro, BT-9 → dueAt, catégorie mémoire
+  fournisseur), machine InboundEinvoice (refus 210/213 motif obligatoire), Expense + source
+  facturx/supplierInvoiceNumber/dueAt, migration additive, 2 endpoints + client HTTP/Local, XML
+  archivé au coffre, écritures E1 automatiques à l'approbation. AUDIT ADVERSARIAL (2 lentilles +
+  confirmation sceptique) : 2 BUGS MAJEURS confirmés — (1) doublon TOCTOU (check applicatif hors
+  transaction, index non-unique : le double-tap créait 2 dépenses + TVA déduite ×2) ; (2) cycle de
+  vie fantôme (InboundEinvoice jamais persisté : une facture approuvée pouvait être « refusée »
+  ensuite, trail contradictoire). FIX : index UNIQUE PARTIEL base (WHERE supplierInvoiceNumber IS
+  NOT NULL) + P2002 → sentinelle métier + garde miroir in-memory ; refuse-après-approve rejeté
+  (l'Expense = source de vérité, conseil « contre-passez une écriture d'annulation ») ; registre
+  AFNOR persisté = TODO P07. Tests : core 624 ✓ · api 111 ✓ (8 e2e réception, suite relancée ×2
+  stable) · api-client 42 ✓ · typecheck 16/16 forcé ✓. RESTE : migration 20260705120000 à
+  appliquer en base réelle + redeploy Railway (endpoints import-facturx). status=MERGED.
 
 #### Signatures (C-EXP6a)
 - [x] agreed — claude-code A — 2026-07-05 (00:40) — régime humain, review gpt5pro a posteriori
@@ -2312,6 +2328,7 @@ transcript workflow wf_fb597a24-2e3.
 | C-EXP6a | MERGED | claude-code A | gpt5pro | Parseur Factur-X entrant (réception 2026, round-trip, pur core) — 07-05 00:55. |
 | C-EXP-FIX1 | MERGED | claude-code A | gpt5pro | Fix 2 bugs majeurs (audit adversarial) : prescription 29/02→dernier jour du mois + ACRE taux suit l'année déclarée — 07-05 10:40. |
 | C-EXP-UI2 v1 | MERGED | claude-code A | gpt5pro | Provision URSSAF visible écran Argent (cotisations réelles, carte déclaration pré-calculée, dispo prudent teinté) — 07-05 11:45. v2 : ACRE propagée + amountHint. |
+| C-EXP6b | MERGED | claude-code A | gpt5pro | Réception e-facture en contrôle de cabinet (autoliquidation AE zéro 44566, doublon UNIQUE base, refus motivé, écritures auto) — audité adversarialement, 2 bugs majeurs durcis — 07-10 14:50. |
 | C-EXP-UI1 | MERGED | claude-code A | gpt5pro | Échéancier écran Argent + pénalités/prescription sur les relances, captures réelles — 07-04 21:30. |
 | C-EXP-UI2 | OPEN | claude-code A | gpt5pro | Provision URSSAF visible (écran) + amountHint échéancier — attend fin WIP B packages/ai. |
 | PONT-SERVEUR | MERGED | claude-code A | gpt5pro | 7 points livrés (pay expense atomique, cycle achats posté, payments datés, /company/me → identité réelle branchée, 293 B prod, avoir A- [fix préfixe F trouvé], Bob serveur e2e) — 07-05 00:15. |
