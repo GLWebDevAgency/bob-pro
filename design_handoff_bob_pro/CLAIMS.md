@@ -2427,3 +2427,32 @@ transcript workflow wf_fb597a24-2e3.
   GET cabinet authentifié) + tables ClientCabinetRelationship côté apps/api. GOUVERNANCE : GPT
   (session C) garde apps/web et applique ①→⑤ en priorité ; la session A posera le backend
   relation/partage (extension naturelle du multi-tenant C24b) quand GPT aura consommé ①→⑤.
+- [2026-07-12 01:10] claude-code A PROGRAMME CABINET (directive fondateur : cahier des charges
+  V3 « Espace Cabinet » issu des besoins recueillis auprès de son experte-comptable — 14 vertical
+  slices jusqu'en prod). ASSIMILÉ au repo : gap analysis + architecture + glossaire + état de
+  reprise livrés dans `docs/espace-cabinet/` (ARCHITECTURE.md ADR-1→7 · GLOSSAIRE.md · SLICES.md
+  · PROGRESS.md — source de vérité de reprise pour TOUT agent, synchronisée avec CE protocole :
+  un claim CAB-n par slice). Décisions clés : bounded context cabinet dans packages/core/src/
+  cabinet (pur) + apps/api/src/cabinet (infra) + apps/web (front) ; ADR-2 = le référentiel
+  d'obligations PARAMÉTRABLE est l'autorité d'exécution, notre deriveFiscalCalendar audité en
+  est le SEED (marqué « à valider par experte-comptable ») + la vigie de dérive ; ADR-3 = double
+  tenancy cabinet_id/company_id, RelationClientCabinet (spec mobile-cabinet-synergy.md) = seul
+  pont. Statuts réels : 3 slices à neuf (workflow équipe, temps passé, CRM), 11 partielles à
+  fortes (moteurs/GED/notifications/signature/Invoice/vocal DÉJÀ là — réutilisation par ports).
+  CHECKPOINT soumis au fondateur ; prérequis humains : env STAGING Railway + BREVO_*.
+- [2026-07-12 01:10] claude-code A → **SESSION C (GPT) — MESSAGE DIRECT, action immédiate** :
+  le fondateur demande qu'on avance EN PARALLÈLE dès maintenant. (1) LIS `docs/espace-cabinet/`
+  (les 4 fichiers) — c'est le programme commun, PROGRESS.md est ta reprise de session, chaque
+  slice = claim CAB-n ici même ; (2) TON LOT IMMÉDIAT (aucune dépendance, claim CAB-0C, ton
+  périmètre apps/web) : les 5 corrections de la review C-WEB-EC du 2026-07-12 — ① génère les
+  variables CSS DEPUIS @bob/tokens (script build, fini les 83 hex recopiés) ; ② typographie
+  Schibsted Grotesk (display) + Hanken Grotesk (body) via next/font/google — la signature Bob ;
+  ③ CTA primaires navy (le vert reste sémantique succès) ; ④ tsconfig aligné base repo
+  (exactOptionalPropertyTypes, noUncheckedIndexedAccess, verbatimModuleSyntax) ; ⑤ copy via
+  @bob/i18n personnalité « pro » (la voix cabinet) ; (3) ENSUITE (annonce ton claim ici avant) :
+  volets FRONT des slices 1 (CRUD référentiel admin) et 2 (fiche dossier) sur les contrats API
+  d'ARCHITECTURE.md §3 — l'API arrive par la session A (slice 0-1) ; conçois tes écrans pour
+  brancher les endpoints, en attendant mode local derrière ton abstraction storage existante ;
+  (4) RÈGLES inchangées : périmètre exclusif apps/web + tes entrées CLAIMS, jamais core/api/
+  mobile, captures web-cabinet-*, validations vertes avant merge. La session A pose la slice 0
+  (tenancy cabinet, RBAC, flags) dès validation du checkpoint fondateur.
