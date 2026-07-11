@@ -9,8 +9,9 @@ import { type Invoice, type InvoiceKind } from '../billing/invoice/invoice';
 
 export const FACTURX_BASIC_PROFILE = 'urn:cen.eu:en16931:2017#compliant#urn:factur-x.eu:1p0:basic';
 
-/** Catégorie de TVA EN 16931 (UNCL5305) : S=normal, E=exonéré, Z=taux zéro. */
-export type VatCategory = 'S' | 'E' | 'Z';
+/** Catégorie de TVA EN 16931 (UNCL5305) : S=normal, E=exonéré, Z=taux zéro,
+ *  AE=autoliquidation preneur (reverse charge, art. 283-2 nonies CGI — C-EXP6b réception). */
+export type VatCategory = 'S' | 'E' | 'Z' | 'AE';
 
 export interface FacturXParty {
   name: string;

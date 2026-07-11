@@ -40,6 +40,9 @@ import type {
   RegisterDeviceClientInput,
   SuggestExpenseDefaultsInput,
   ExpenseDefaultsView,
+  FacturXImportReview,
+  FacturXImportDecision,
+  FacturXImportOutcome,
   ListDocumentsClientInput,
   UploadDocumentClientInput,
   VoiceConfig,
@@ -211,6 +214,15 @@ export class HttpBobClient implements BobClient {
   }
   recordExpense(input: Omit<RecordExpenseInput, 'companyId'>) {
     return this.req<{ id: string }>('POST', '/expenses', input);
+  }
+  /** C-EXP6b ① : contrôle de réception (destinataire, EN 16931, doublon) + brouillon expert. */
+  importFacturXExpense(input: { xml: string }) {
+    return this.req<FacturXImportReview>('POST', '/expenses/import-facturx', input);
+  }
+  /** C-EXP6b ② : décision AFNOR explicite — approve (Expense + écritures E1 + XML archivé)
+   * ou refuse (motif obligatoire, 210/213). Le XML est resoumis : serveur sans état. */
+  confirmFacturXExpense(input: { xml: string; decision: FacturXImportDecision }) {
+    return this.req<FacturXImportOutcome>('POST', '/expenses/import-facturx/confirm', input);
   }
   /** E4 — endpoint serveur à poser (suivi CLAIMS) : règlement d'une dépense fournisseur. */
   payExpense(input: { expenseId: string }) {

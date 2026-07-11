@@ -55,6 +55,12 @@ export function validateFacturXBasic(d: FacturXInvoiceData): FacturXValidationRe
       if (b.ratePct !== 0) fail('BR-E-05', 'Catégorie E : taux 0 requis.');
       if (b.vatCents !== 0) fail('BR-E-09', 'Catégorie E : montant de TVA 0 requis.');
       if (!b.exemptionReason) fail('BR-E-10', "Catégorie E : motif d'exonération requis.");
+    } else if (b.category === 'AE') {
+      // Autoliquidation preneur (reverse charge) : taux 0 et TVA 0 SUR LA PIÈCE — le preneur
+      // autoliquide (art. 283-2 nonies CGI) ; la mention est obligatoire (BR-AE-10).
+      if (b.ratePct !== 0) fail('BR-AE-05', 'Catégorie AE : taux 0 requis.');
+      if (b.vatCents !== 0) fail('BR-AE-09', 'Catégorie AE : montant de TVA 0 requis (autoliquidation preneur).');
+      if (!b.exemptionReason) fail('BR-AE-10', 'Catégorie AE : mention « Autoliquidation » requise.');
     } else {
       if (b.ratePct !== 0) fail('BR-Z-05', 'Catégorie Z : taux 0 requis.');
       if (b.vatCents !== 0) fail('BR-Z-09', 'Catégorie Z : montant de TVA 0 requis.');

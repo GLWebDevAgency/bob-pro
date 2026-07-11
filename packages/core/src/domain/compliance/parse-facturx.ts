@@ -13,9 +13,9 @@ import { ok, err, type DomainResult } from '../../shared-kernel/result';
  *
  * Lit un XML CII / Factur-X profil BASIC (EN 16931) et reconstruit la
  * `FacturXInvoiceData` telle que, repassée dans `buildFacturXBasicXml`, elle
- * redonne le même document. Module PUR (aucune dépendance infra, aucun wiring) :
- * il se teste en import relatif, il n'est pas ré-exporté par l'index tant qu'il
- * n'est pas consommé (branchement Expense + statuts AFNOR = C-EXP6b).
+ * redonne le même document. Module PUR (aucune dépendance infra) : exporté par
+ * l'index depuis C-EXP6b — il alimente le contrôle de réception e-facture
+ * (importFacturXExpense) et la décision AFNOR entrante (einvoice-inbound).
  *
  * STRATÉGIE DE PARSING — descente récursive maison (zéro dépendance).
  * @bob/core est un package de domaine pur, sans parseur XML embarqué
@@ -257,8 +257,8 @@ function toIsoDate(dateTimeParent: XmlNode, field: string): string {
 }
 
 function toVatCategory(raw: string, field: string): VatCategory {
-  if (raw === 'S' || raw === 'E' || raw === 'Z') return raw;
-  throw new FieldError(field, `catégorie de TVA non gérée : "${raw}" (attendu S/E/Z)`);
+  if (raw === 'S' || raw === 'E' || raw === 'Z' || raw === 'AE') return raw;
+  throw new FieldError(field, `catégorie de TVA non gérée : "${raw}" (attendu S/E/Z/AE)`);
 }
 
 // ——————————————————————————————————————————————————————————————

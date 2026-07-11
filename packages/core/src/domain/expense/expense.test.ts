@@ -57,4 +57,30 @@ describe('Expense.record', () => {
       expect(r.value.toProps().supplierSiren).toBe('732829320');
     }
   });
+
+  // C-EXP6b — extension ADDITIVE : n° de facture fournisseur (BT-1) + échéance (BT-9).
+  it('champs Factur-X optionnels : absents → null (rien ne casse), normalisés quand présents', () => {
+    const legacy = Expense.record(base); // sans les nouveaux champs — call-sites historiques intacts
+    expect(legacy.ok).toBe(true);
+    if (legacy.ok) {
+      expect(legacy.value.supplierInvoiceNumber).toBeNull();
+      expect(legacy.value.dueAt).toBeNull();
+    }
+    const full = Expense.record({
+      ...base,
+      source: 'facturx',
+      supplierInvoiceNumber: '  FC-2026-118  ',
+      dueAt: '2026-07-20',
+    });
+    expect(full.ok).toBe(true);
+    if (full.ok) {
+      expect(full.value.supplierInvoiceNumber).toBe('FC-2026-118');
+      expect(full.value.dueAt).toBe('2026-07-20');
+      expect(full.value.toProps().source).toBe('facturx');
+    }
+    const blankNumber = Expense.record({ ...base, supplierInvoiceNumber: '   ' });
+    expect(blankNumber.ok).toBe(true);
+    if (blankNumber.ok) expect(blankNumber.value.supplierInvoiceNumber).toBeNull(); // vide → null
+    expect(Expense.record({ ...base, dueAt: '2026-02-30' }).ok).toBe(false); // échéance impossible
+  });
 });

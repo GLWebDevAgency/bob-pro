@@ -48,6 +48,7 @@ import type {
 import type { DeviceRecord, DeviceRepository, RegisterDeviceInput } from '../devices';
 import type { AgentJournalRepository } from '../agent-journal';
 import { newAgentJournalEntryId } from '../agent-journal';
+import { DuplicateExpenseInvoiceError } from '../expense-duplicate-error';
 import type { SupplierMemoryProfile, SupplierMemoryRepository } from '../supplier-memory';
 import type { PrismaService } from './prisma.service';
 import {
@@ -1085,7 +1086,17 @@ export class PrismaExpenseRepository implements ExpenseRepository {
   constructor(private readonly prisma: PrismaService) {}
   async save(e: Expense): Promise<void> {
     const data = e.toProps();
-    await this.prisma.client().expense.upsert({ where: { id: data.id }, create: data, update: data });
+    try {
+      await this.prisma.client().expense.upsert({ where: { id: data.id }, create: data, update: data });
+    } catch (err) {
+      // C-EXP-FIX1 (Bug 1 — DOUBLON TOCTOU) : l'index UNIQUE PARTIEL uniq_expense_supplier_invoice
+      // rejette la 2e e-facture concurrente (P2002). On la traduit en sentinelle métier (jamais un
+      // 500) ; l'upsert par id ne peut violer QUE cet index (le conflit d'id, lui, fait un update).
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        throw new DuplicateExpenseInvoiceError(data.companyId, data.supplierSiren, data.supplierInvoiceNumber ?? null);
+      }
+      throw err;
+    }
   }
   async findById(id: string): Promise<Expense | null> {
     const row = await this.prisma.client().expense.findUnique({ where: { id } });
@@ -1111,6 +1122,8 @@ export class PrismaExpenseRepository implements ExpenseRepository {
     category: string;
     status: string;
     source: string;
+    supplierInvoiceNumber: string | null;
+    dueAt: string | null;
   }) {
     return {
       id: row.id,
@@ -1125,6 +1138,9 @@ export class PrismaExpenseRepository implements ExpenseRepository {
       category: row.category as ExpenseCategory,
       status: row.status as ExpenseStatus,
       source: row.source as ExpenseSource,
+      // C-EXP6b — champs Factur-X (additifs, null pour l'historique OCR/manuel).
+      supplierInvoiceNumber: row.supplierInvoiceNumber,
+      dueAt: row.dueAt,
     };
   }
 }

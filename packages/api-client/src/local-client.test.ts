@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { JournalEntry } from '@bob/ai';
+import { buildFacturXBasicXml, type FacturXInvoiceData } from '@bob/core';
 import { LocalBobClient } from './local-client';
 import { FixtureClock } from './in-memory/services';
 
@@ -571,5 +572,183 @@ describe('LocalBobClient — C25 relances réelles + fil de notifications (adapt
     const d1 = await client.registerDevice({ expoPushToken: 'ExponentPushToken[demo]', platform: 'ios' });
     const d2 = await client.registerDevice({ expoPushToken: 'ExponentPushToken[demo]' });
     expect(d1.ok && d2.ok && d1.value.id === (d2.ok ? d2.value.id : '')).toBe(true);
+  });
+});
+
+describe('C-EXP6b — réception e-facture (adaptateur démo, parité serveur)', () => {
+  const MY_SIREN = '732829320'; // Mercier (seed)
+  const SUPPLIER_SIREN = '552100554';
+
+  const facturxData = (): FacturXInvoiceData => ({
+    number: 'FC-2026-118',
+    typeCode: '380',
+    issueDate: '2026-06-20',
+    dueDate: '2026-07-20',
+    currency: 'EUR',
+    seller: {
+      name: 'Sanit Chauffe SAS',
+      legalId: SUPPLIER_SIREN,
+      address: { line1: '4 rue des Forges', postcode: '69007', city: 'Lyon', countryCode: 'FR' },
+    },
+    buyer: {
+      name: 'Mercier Plomberie',
+      legalId: MY_SIREN,
+      address: { line1: '12 rue des Artisans', postcode: '92000', city: 'Nanterre', countryCode: 'FR' },
+    },
+    lines: [
+      { id: '1', name: 'Chauffe-eau 200 L', qty: 1, unitCode: 'C62', unitPriceHTCents: 41000, netAmountCents: 41000, vatCategory: 'S', vatRatePct: 20 },
+      { id: '2', name: 'Abonnement entretien', qty: 1, unitCode: 'C62', unitPriceHTCents: 6000, netAmountCents: 6000, vatCategory: 'S', vatRatePct: 10 },
+    ],
+    vatBreakdown: [
+      { category: 'S', ratePct: 10, basisCents: 6000, vatCents: 600 },
+      { category: 'S', ratePct: 20, basisCents: 41000, vatCents: 8200 },
+    ],
+    lineTotalHTCents: 47000,
+    taxBasisTotalCents: 47000,
+    taxTotalCents: 8800,
+    grandTotalCents: 55800,
+    prepaidCents: 0,
+    duePayableCents: 55800,
+  });
+
+  const autoliquidationData = (): FacturXInvoiceData => ({
+    number: 'ST-2026-007',
+    typeCode: '380',
+    issueDate: '2026-06-25',
+    currency: 'EUR',
+    seller: {
+      name: 'Bâti Sous-Traitance SARL',
+      legalId: SUPPLIER_SIREN,
+      address: { line1: '9 rue Haute', postcode: '59000', city: 'Lille', countryCode: 'FR' },
+    },
+    buyer: {
+      name: 'Mercier Plomberie',
+      legalId: MY_SIREN,
+      address: { line1: '12 rue des Artisans', postcode: '92000', city: 'Nanterre', countryCode: 'FR' },
+    },
+    lines: [
+      { id: '1', name: 'Sous-traitance pose réseau cuivre', qty: 1, unitCode: 'C62', unitPriceHTCents: 100000, netAmountCents: 100000, vatCategory: 'AE', vatRatePct: 0 },
+    ],
+    vatBreakdown: [
+      { category: 'AE', ratePct: 0, basisCents: 100000, vatCents: 0, exemptionReason: 'Autoliquidation, art. 283-2 nonies CGI' },
+    ],
+    lineTotalHTCents: 100000,
+    taxBasisTotalCents: 100000,
+    taxTotalCents: 0,
+    grandTotalCents: 100000,
+    prepaidCents: 0,
+    duePayableCents: 100000,
+  });
+
+  it('import → brouillon (multi-taux au centime, BT-9 → dueAt) puis APPROVE → dépense + écritures E1 + XML archivé, réimport = doublon', async () => {
+    const client = new LocalBobClient({ clock: new FixtureClock('2026-07-01') });
+    const xml = buildFacturXBasicXml(facturxData());
+
+    const review = await client.importFacturXExpense({ xml });
+    expect(review.ok).toBe(true);
+    if (!review.ok) return;
+    expect(review.value.controls).toEqual(['destinataire', 'coherence_en16931', 'doublon']);
+    expect(review.value.draft).toMatchObject({
+      supplierSiren: SUPPLIER_SIREN,
+      supplierInvoiceNumber: 'FC-2026-118',
+      dueAt: '2026-07-20',
+      vatCents: 8800, // somme exacte 600 + 8200
+      vatRatePct: null,
+      vatNonDeductible: false,
+      source: 'facturx',
+    });
+
+    const outcome = await client.confirmFacturXExpense({ xml, decision: { action: 'approve', category: 'materiel' } });
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok || outcome.value.status !== 'approved') return;
+    const expenseId = outcome.value.expenseId;
+
+    const expenses = await client.listExpenses();
+    expect(expenses.ok).toBe(true);
+    if (!expenses.ok) return;
+    expect(expenses.value.find((e) => e.id === expenseId)).toMatchObject({
+      supplierInvoiceNumber: 'FC-2026-118',
+      dueAt: '2026-07-20',
+      category: 'materiel',
+      source: 'facturx',
+      totalTtcCents: 55800,
+      vatCents: 8800,
+    });
+
+    // Écritures du cycle achats parties AUTOMATIQUEMENT (E1) : 6xx / 44566 / 401.
+    const entries = await client.listAccountingEntries();
+    expect(entries.ok).toBe(true);
+    if (!entries.ok) return;
+    const purchase = entries.value.find((e) => e.id === `expense:${expenseId}:recorded`);
+    expect(purchase?.lines).toEqual([
+      expect.objectContaining({ account: '606', debitCents: 47000, creditCents: 0 }),
+      expect.objectContaining({ account: '44566', debitCents: 8800, creditCents: 0 }),
+      expect.objectContaining({ account: '401', debitCents: 0, creditCents: 55800 }),
+    ]);
+
+    // XML archivé au coffre local, lié à l'Expense (kind facturx_xml).
+    const docs = await client.listDocuments({ kind: 'facturx_xml', linkedEntityType: 'expense', linkedEntityId: expenseId });
+    expect(docs.ok).toBe(true);
+    if (!docs.ok) return;
+    expect(docs.value).toHaveLength(1);
+    expect(docs.value[0]?.id).toBe(outcome.value.xmlDocumentId);
+
+    // Réimporter LA MÊME facture = doublon (anti double-paiement) — contrôle bloquant.
+    const again = await client.importFacturXExpense({ xml });
+    expect(again.ok).toBe(false);
+    if (!again.ok && again.error.kind === 'validation') {
+      expect(again.error.issues[0]?.field).toBe('facturx.doublon');
+    }
+  });
+
+  it('AUTOLIQUIDATION approuvée → ZÉRO 44566 ; refus sans motif impossible ; mal adressée bloquée avec les 2 SIREN', async () => {
+    const client = new LocalBobClient({ clock: new FixtureClock('2026-07-01') });
+
+    // Autoliquidation : TVA non déductible, catégorie sous-traitance proposée, zéro 44566 posté.
+    const aeXml = buildFacturXBasicXml(autoliquidationData());
+    const aeReview = await client.importFacturXExpense({ xml: aeXml });
+    expect(aeReview.ok).toBe(true);
+    if (!aeReview.ok) return;
+    expect(aeReview.value.draft.vatNonDeductible).toBe(true);
+    expect(aeReview.value.draft.categoryGuess).toBe('sous_traitance');
+    const aeOutcome = await client.confirmFacturXExpense({ xml: aeXml, decision: { action: 'approve' } });
+    expect(aeOutcome.ok).toBe(true);
+    if (!aeOutcome.ok || aeOutcome.value.status !== 'approved') return;
+    const aeExpenseId = aeOutcome.value.expenseId;
+    const entries = await client.listAccountingEntries();
+    expect(entries.ok).toBe(true);
+    if (!entries.ok) return;
+    const purchase = entries.value.find((e) => e.id === `expense:${aeExpenseId}:recorded`);
+    expect(purchase).toBeDefined();
+    expect(purchase?.lines.some((l) => l.account === '44566')).toBe(false); // le piège P21 neutralisé
+
+    // Refus sans motif = IMPOSSIBLE (machine InboundEinvoice).
+    const sansMotif = await client.confirmFacturXExpense({
+      xml: aeXml,
+      decision: { action: 'refuse', afnorStatus: 210, reason: '  ' },
+    });
+    expect(sansMotif.ok).toBe(false);
+    if (!sansMotif.ok) expect(sansMotif.error.kind).toBe('domain');
+
+    // Mal adressée : import bloqué (les 2 SIREN dans le message), mais le REFUS 210 reste possible.
+    const wrong = facturxData();
+    wrong.buyer = { ...wrong.buyer, legalId: '900123456' };
+    const wrongXml = buildFacturXBasicXml(wrong);
+    const blocked = await client.importFacturXExpense({ xml: wrongXml });
+    expect(blocked.ok).toBe(false);
+    if (!blocked.ok && blocked.error.kind === 'validation') {
+      expect(blocked.error.issues[0]?.field).toBe('facturx.mal_adressee');
+      expect(blocked.error.issues[0]?.message).toContain('900123456');
+      expect(blocked.error.issues[0]?.message).toContain(MY_SIREN);
+    }
+    const refused = await client.confirmFacturXExpense({
+      xml: wrongXml,
+      decision: { action: 'refuse', afnorStatus: 210, reason: 'Facture mal adressée : SIREN acheteur ≠ ma société.' },
+    });
+    expect(refused.ok).toBe(true);
+    if (refused.ok && refused.value.status === 'refused') {
+      expect(refused.value.afnorStatus).toBe(210);
+      expect(refused.value.invoiceKey).toBe(`${SUPPLIER_SIREN}|FC-2026-118`);
+    }
   });
 });

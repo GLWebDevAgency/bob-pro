@@ -23,6 +23,8 @@ import type {
   ExpenseProps,
   ExpenseCategory,
   RecordExpenseInput,
+  FacturXExpenseDraft,
+  AfnorInboundRefusalStatus,
   TradeConfig,
   ChantierProps,
   CreateChantierInput,
@@ -201,6 +203,27 @@ export interface ExpenseDefaultsView {
   source: 'memory' | 'ocr';
 }
 
+// ——— Réception e-facture (C-EXP6b) — DTO serveur constaté (ExpensesController) ———
+
+/** Contrôles bloquants du poste de réception, dans l'ordre où ils ont été passés. */
+export type FacturXImportControl = 'destinataire' | 'coherence_en16931' | 'doublon';
+
+/** POST /expenses/import-facturx : contrôles + brouillon expert — RIEN n'est enregistré. */
+export interface FacturXImportReview {
+  draft: FacturXExpenseDraft;
+  controls: FacturXImportControl[];
+}
+
+/** La DÉCISION appartient à l'appelant (humain ou Bob — jamais implicite) : approbation
+ *  (catégorie confirmable) ou refus AFNOR 210/213 avec motif OBLIGATOIRE. */
+export type FacturXImportDecision =
+  | { action: 'approve'; category?: ExpenseCategory }
+  | { action: 'refuse'; afnorStatus: AfnorInboundRefusalStatus; reason: string };
+
+export type FacturXImportOutcome =
+  | { status: 'approved'; expenseId: string; xmlDocumentId: string | null }
+  | { status: 'refused'; afnorStatus: AfnorInboundRefusalStatus; reason: string; invoiceKey: string };
+
 export interface ExportFecClientOutput {
   filename: string;
   mimeType: string;
@@ -348,6 +371,19 @@ export interface BobClient {
   extractDocument(input: { contentBase64: string; mimeType: string }): Promise<Result<OcrExtraction, AppError>>;
   suggestExpenseDefaults(input: SuggestExpenseDefaultsInput): Promise<Result<ExpenseDefaultsView, AppError>>;
   recordExpense(input: Omit<RecordExpenseInput, 'companyId'>): Promise<Result<{ id: string }, AppError>>;
+  /** C-EXP6b ① — POST /expenses/import-facturx : CONTRÔLE DE RÉCEPTION d'une e-facture
+   * (destinataire = mon SIREN, cohérence EN 16931 rejouée, doublon exact) + brouillon expert
+   * (multi-taux au centime, autoliquidation NON déductible, BT-9 → dueAt, mémoire fournisseur).
+   * API en DEUX temps (review puis confirm) plutôt qu'une méthode unique : la DÉCISION reste
+   * un geste EXPLICITE de l'appelant après lecture des contrôles — jamais un import qui décide
+   * tout seul — et le serveur reste SANS ÉTAT (le XML est resoumis à la confirmation, les
+   * contrôles y sont rejoués : pas de brouillon caché, doublon re-vérifié au moment T). */
+  importFacturXExpense(input: { xml: string }): Promise<Result<FacturXImportReview, AppError>>;
+  /** C-EXP6b ② — POST /expenses/import-facturx/confirm : la décision AFNOR. `approve` →
+   * RecordExpense (écritures 6xx/44566/401 automatiques, zéro 44566 en autoliquidation) + XML
+   * archivé au coffre lié à l'Expense ; `refuse` → motif OBLIGATOIRE (210 refusée / 213 rejetée),
+   * accepté MÊME sur une pièce qui échoue aux contrôles (c'est précisément le geste attendu). */
+  confirmFacturXExpense(input: { xml: string; decision: FacturXImportDecision }): Promise<Result<FacturXImportOutcome, AppError>>;
   /** E4 : règle une dépense (to_pay→paid + décaissement 401/512) — même use case que Bob. */
   payExpense(input: { expenseId: string }): Promise<Result<{ status: string }, AppError>>;
   listExpenses(): Promise<Result<ExpenseProps[], AppError>>;

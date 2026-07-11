@@ -15,6 +15,10 @@ export interface RecordExpenseInput {
   vatRatePct?: number | null;
   category: ExpenseCategory;
   source?: ExpenseSource;
+  /** N° de facture fournisseur (Factur-X BT-1, C-EXP6b) — optionnel, additif. */
+  supplierInvoiceNumber?: string | null;
+  /** Échéance fournisseur (Factur-X BT-9, C-EXP6b) — optionnelle, additive. */
+  dueAt?: string | null;
 }
 
 export interface RecordExpenseDeps {
@@ -42,6 +46,8 @@ export class RecordExpense {
       category: input.category,
       status: 'to_pay',
       source: input.source ?? 'manual',
+      supplierInvoiceNumber: input.supplierInvoiceNumber ?? null,
+      dueAt: input.dueAt ?? null,
     }, { today: this.deps.clock.today() });
     if (!r.ok) return err(appDomain(r.error));
     await this.deps.expenses.save(r.value);

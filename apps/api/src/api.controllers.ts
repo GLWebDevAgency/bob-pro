@@ -26,7 +26,7 @@ import type {
 } from '@bob/core';
 import { type AgentAutonomy, type PendingAction } from '@bob/ai';
 import { Throttle } from '@nestjs/throttler';
-import { BackendService } from './backend.service';
+import { BackendService, type FacturXImportDecision } from './backend.service';
 import { RelanceService } from './jobs/relance.service';
 import { DocumentArchiveService } from './jobs/document-archive.service';
 import { NotificationsApiService } from './notifications/notifications-api.service';
@@ -399,6 +399,18 @@ export class ExpensesController {
   @Post()
   async create(@Body() body: Omit<RecordExpenseInput, 'companyId'>) {
     return unwrap(await this.backend.recordExpense(body));
+  }
+  /** C-EXP6b ① : CONTRÔLE DE RÉCEPTION d'une e-facture (destinataire, cohérence EN 16931,
+   * doublon) + brouillon expert — RIEN n'est enregistré, la décision revient à l'appelant. */
+  @Post('import-facturx')
+  async importFacturX(@Body() body: { xml: string }) {
+    return unwrap(await this.backend.importFacturXExpense({ xml: body.xml ?? '' }));
+  }
+  /** C-EXP6b ② : DÉCISION AFNOR explicite — approve (RecordExpense en transaction tenant,
+   * écritures E1, XML archivé au coffre) ou refuse (motif OBLIGATOIRE, statuts 210/213). */
+  @Post('import-facturx/confirm')
+  async confirmImportFacturX(@Body() body: { xml: string; decision: FacturXImportDecision }) {
+    return unwrap(await this.backend.confirmFacturXExpense({ xml: body.xml ?? '', decision: body.decision }));
   }
   /** E4 (PONT-SERVEUR v1) : règle une dépense fournisseur — MÊME route que le HttpBobClient
    * (payExpense), transition to_pay→paid + décaissement 401/512 (idempotent). */

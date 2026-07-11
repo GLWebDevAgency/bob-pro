@@ -40,6 +40,7 @@ import type {
   NotificationJobRepository,
 } from './notification-jobs';
 import type { DeviceRecord, DeviceRepository, RegisterDeviceInput } from './devices';
+import { DuplicateExpenseInvoiceError } from './expense-duplicate-error';
 
 /**
  * Adapters in-memory (stockent les objets de domaine directement — aucune réhydratation requise).
@@ -423,6 +424,23 @@ export class InMemoryPublicAccessTokenRepository implements PublicAccessTokenRep
 export class InMemoryExpenseRepository implements ExpenseRepository {
   private readonly map = new Map<string, Expense>();
   async save(e: Expense): Promise<void> {
+    const props = e.toProps();
+    // C-EXP-FIX1 (Bug 1 — DOUBLON TOCTOU) : miroir FIDÈLE de l'index UNIQUE PARTIEL Postgres
+    // (companyId, supplierSiren, supplierInvoiceNumber) WHERE supplierInvoiceNumber IS NOT NULL.
+    // Deux e-factures identiques (double-tap concurrent qui passe le read-then-write applicatif) NE
+    // peuvent PAS coexister. NULL distinct (SIREN ou n° absent) → non contraint, comme Postgres :
+    // les dépenses manuelles/OCR restent libres. Check + set SYNCHRONES (atomiques en JS mono-thread).
+    const siren = props.supplierSiren ?? null;
+    const invoiceNumber = props.supplierInvoiceNumber ?? null;
+    if (siren !== null && invoiceNumber !== null) {
+      for (const other of this.map.values()) {
+        if (other.id === props.id) continue;
+        const o = other.toProps();
+        if (o.companyId === props.companyId && o.supplierSiren === siren && o.supplierInvoiceNumber === invoiceNumber) {
+          throw new DuplicateExpenseInvoiceError(props.companyId, siren, invoiceNumber);
+        }
+      }
+    }
     this.map.set(e.id, e);
   }
   async findById(id: string): Promise<Expense | null> {

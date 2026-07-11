@@ -56,6 +56,12 @@ import {
   ExtractDocument,
   DemoOcrAdapter,
   RecordExpense,
+  importFacturXExpense as runFacturXReceptionControls,
+  withSupplierCategory,
+  facturXDraftToRecordExpenseInput,
+  expenseDuplicateKey,
+  parseFacturXBasic,
+  InboundEinvoice,
   CreateChantier,
   AutofillCompanyFromSiret,
   ValidateVatNumber,
@@ -129,6 +135,10 @@ import type {
   VoiceSynthesisResult,
   SuggestExpenseDefaultsInput,
   ExpenseDefaultsView,
+  FacturXImportReview,
+  FacturXImportControl,
+  FacturXImportDecision,
+  FacturXImportOutcome,
   InvoiceAccountingPreview,
   PaymentAccountingPreview,
   AccountingEntryView,
@@ -152,6 +162,16 @@ function base64ByteSize(contentBase64: string): number {
 
 function localSha256(seq: number): string {
   return seq.toString(16).padStart(64, '0').slice(-64);
+}
+
+/** Taille UTF-8 d'une chaîne sans Buffer/TextEncoder (portable RN/Hermes) — archive XML locale. */
+function utf8ByteLength(s: string): number {
+  let bytes = 0;
+  for (const ch of s) {
+    const cp = ch.codePointAt(0) ?? 0;
+    bytes += cp <= 0x7f ? 1 : cp <= 0x7ff ? 2 : cp <= 0xffff ? 3 : 4;
+  }
+  return bytes;
 }
 
 function normalizeSupplierNameLocal(name: string): string {
@@ -638,6 +658,114 @@ export class LocalBobClient implements BobClient {
     }).execute({ expenseId: recorded.value.id });
     if (!accounting.ok) return accounting;
     return recorded;
+  }
+
+  // ——— Réception e-facture (C-EXP6b, adaptateur démo) — MÊMES contrôles/décision que le serveur ———
+
+  /** Contrôles bloquants (use case PUR @bob/core) + mémoire fournisseur locale (dernière
+   * dépense validée du même fournisseur, parité suggestExpenseDefaults). */
+  private async facturXReviewLocal(xml: string): Promise<Result<FacturXImportReview, AppError>> {
+    const company = seedCompany();
+    const expenses = await this.expenses.listByCompany(this.companyId);
+    const existingInvoiceKeys = expenses
+      .map((e) => expenseDuplicateKey(e.toProps()))
+      .filter((k): k is string => k !== null);
+    const imported = runFacturXReceptionControls({ xml, mySiren: company.siren, existingInvoiceKeys });
+    if (!imported.ok) {
+      // Erreur de contrôle typée aplatie comme à la frontière HTTP : field = facturx.<code>.
+      return err({ kind: 'validation', issues: [{ field: `facturx.${imported.error.code}`, message: imported.error.message }] });
+    }
+    const supplierKey = normalizeSupplierNameLocal(imported.value.supplierName);
+    const known = expenses
+      .map((e) => e.toProps())
+      .filter((e) => normalizeSupplierNameLocal(e.supplierName) === supplierKey)
+      .at(-1);
+    const draft = withSupplierCategory(imported.value, known ? known.category : null);
+    const controls: FacturXImportControl[] = ['destinataire', 'coherence_en16931', 'doublon'];
+    return ok({ draft, controls });
+  }
+
+  /** C-EXP6b ① : contrôle de réception + brouillon — RIEN n'est enregistré (décision à l'appelant). */
+  async importFacturXExpense(input: { xml: string }): Promise<Result<FacturXImportReview, AppError>> {
+    await this.ready;
+    return this.facturXReviewLocal(input.xml);
+  }
+
+  /** C-EXP6b ② : décision AFNOR explicite. `approve` rejoue les contrôles puis passe par
+   * recordExpense (écritures E1 automatiques — autoliquidation : ZÉRO 44566) et archive le XML
+   * au coffre local (kind facturx_xml, lié à l'Expense). `refuse` exige un motif (machine
+   * InboundEinvoice) et reste possible sur une pièce qui échoue aux contrôles (geste attendu). */
+  async confirmFacturXExpense(input: {
+    xml: string;
+    decision: FacturXImportDecision;
+  }): Promise<Result<FacturXImportOutcome, AppError>> {
+    await this.ready;
+    if (input.decision.action === 'refuse') {
+      const parsed = parseFacturXBasic(input.xml);
+      const invoiceKey = parsed.ok
+        ? `${parsed.value.seller.legalId ?? parsed.value.seller.name}|${parsed.value.number}`
+        : 'facture-illisible';
+      const inbound = InboundEinvoice.receive(this.ids.newId(), invoiceKey);
+      if (!inbound.ok) return err(appDomain(inbound.error));
+      const refused = inbound.value.refuse(this.clock.now(), {
+        afnorStatus: input.decision.afnorStatus,
+        reason: input.decision.reason,
+      });
+      if (!refused.ok) return err(appDomain(refused.error));
+      const refusal = inbound.value.refusal;
+      if (!refusal) return err({ kind: 'dependency', port: 'einvoice-inbound', cause: 'refus sans trace' });
+      return ok({ status: 'refused', afnorStatus: refusal.afnorStatus, reason: refusal.reason, invoiceKey });
+    }
+    if (input.decision.action !== 'approve') {
+      return err({ kind: 'validation', issues: [{ field: 'decision.action', message: 'Décision inconnue (approve ou refuse).' }] });
+    }
+    const review = await this.facturXReviewLocal(input.xml);
+    if (!review.ok) return review;
+    const draft = review.value.draft;
+    const inbound = InboundEinvoice.receive(this.ids.newId(), draft.duplicateKey);
+    if (!inbound.ok) return err(appDomain(inbound.error));
+    const approved = inbound.value.approve(this.clock.now());
+    if (!approved.ok) return err(appDomain(approved.error));
+    // MÊME chemin que toute dépense : RecordExpense + écritures du cycle achats (E1).
+    const recorded = await this.recordExpense(
+      facturXDraftToRecordExpenseInput(draft, input.decision.category !== undefined ? { category: input.decision.category } : {}),
+    );
+    if (!recorded.ok) return recorded;
+    // Archive du XML APPROUVÉ au coffre local (kind facturx_xml), lié à l'Expense créée.
+    this.documentSeq += 1;
+    const id = `local-document-${this.documentSeq}`;
+    const sha256 = localSha256(this.documentSeq);
+    const filename = `facture-fournisseur-${draft.supplierInvoiceNumber.replace(/[^A-Za-z0-9._-]+/g, '-')}.xml`;
+    const view: DocumentView = {
+      id,
+      companyId: this.companyId,
+      kind: 'facturx_xml',
+      origin: 'uploaded',
+      status: 'active',
+      filename,
+      mimeType: 'application/xml',
+      byteSize: utf8ByteLength(input.xml),
+      sha256,
+      storageKey: buildDocumentStorageKey({
+        companyId: this.companyId,
+        documentId: id,
+        version: 1,
+        sha256,
+        filename,
+        mimeType: 'application/xml',
+      }),
+      version: 1,
+      linkedEntityType: 'expense',
+      linkedEntityId: recorded.value.id,
+      documentDate: draft.documentDate,
+      issuedAt: null,
+      createdAt: this.clock.now(),
+      createdBy: 'local',
+      retentionUntil: addYears(draft.documentDate, 10),
+      tags: [],
+    };
+    this.documents.unshift(view);
+    return ok({ status: 'approved', expenseId: recorded.value.id, xmlDocumentId: id });
   }
 
   /** E4 : règle la dépense — transition + écriture de décaissement à la date du jour. */

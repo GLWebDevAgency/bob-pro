@@ -544,3 +544,86 @@ describe('HttpBobClient — assistant Bob (C40 ⑧ : ask/confirm/journal serveur
   });
 });
 
+
+describe('HttpBobClient — C-EXP6b réception e-facture', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('importFacturXExpense → POST /expenses/import-facturx ; confirm → POST …/confirm avec la décision EXPLICITE', async () => {
+    const review = {
+      draft: {
+        supplierName: 'Sanit Chauffe SAS',
+        supplierSiren: '552100554',
+        supplierInvoiceNumber: 'FC-2026-118',
+        documentDate: '2026-06-20',
+        dueAt: '2026-07-20',
+        totalTtcCents: 55800,
+        totalHtCents: 47000,
+        vatCents: 8800,
+        vatRatePct: null,
+        vatNonDeductible: false,
+        vatNote: null,
+        categoryGuess: 'materiel',
+        categorySource: 'memory',
+        source: 'facturx',
+        duplicateKey: '552100554|FC-2026-118',
+      },
+      controls: ['destinataire', 'coherence_en16931', 'doublon'],
+    };
+    const outcome = { status: 'approved', expenseId: 'exp-9', xmlDocumentId: 'doc-3' };
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      const u = String(url);
+      if (u === 'https://api.bob.test/expenses/import-facturx' && init?.method === 'POST') {
+        return new Response(JSON.stringify(review), { headers: { 'content-type': 'application/json' } });
+      }
+      if (u === 'https://api.bob.test/expenses/import-facturx/confirm' && init?.method === 'POST') {
+        return new Response(JSON.stringify(outcome), { headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ error: { kind: 'not_found', resource: 'route' } }), {
+        status: 404,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-mercier' });
+
+    const r = await client.importFacturXExpense({ xml: '<rsm:CrossIndustryInvoice/>' });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value).toEqual(review);
+
+    const c = await client.confirmFacturXExpense({
+      xml: '<rsm:CrossIndustryInvoice/>',
+      decision: { action: 'approve', category: 'materiel' },
+    });
+    expect(c.ok).toBe(true);
+    if (c.ok) expect(c.value).toEqual(outcome);
+
+    // La décision voyage TELLE QUELLE (le serveur revalide) : xml resoumis + action explicite.
+    const confirmCall = fetchMock.mock.calls.find(([u]) => String(u).endsWith('/confirm'));
+    expect(confirmCall).toBeDefined();
+    const body = JSON.parse(String((confirmCall?.[1] as RequestInit).body));
+    expect(body).toEqual({ xml: '<rsm:CrossIndustryInvoice/>', decision: { action: 'approve', category: 'materiel' } });
+  });
+
+  it('un contrôle bloquant serveur (doublon) remonte comme AppError validation typée facturx.*', async () => {
+    const error = {
+      error: {
+        kind: 'validation',
+        issues: [{ field: 'facturx.doublon', message: 'Facture FC-2026-118 du fournisseur déjà enregistrée (clé 552100554|FC-2026-118) — import refusé (anti double-paiement).' }],
+      },
+    };
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify(error), { status: 400, headers: { 'content-type': 'application/json' } }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-mercier' });
+
+    const r = await client.importFacturXExpense({ xml: '<xml/>' });
+    expect(r.ok).toBe(false);
+    if (!r.ok && r.error.kind === 'validation') {
+      expect(r.error.issues[0]?.field).toBe('facturx.doublon');
+      expect(r.error.issues[0]?.message).toContain('552100554|FC-2026-118');
+    }
+  });
+});

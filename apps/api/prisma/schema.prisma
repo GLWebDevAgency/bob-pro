@@ -336,22 +336,31 @@ model PublicAccessToken {
 }
 
 model Expense {
-  id            String   @id
-  companyId     String
-  company       Company  @relation(fields: [companyId], references: [id])
-  supplierName  String
-  supplierSiren String?  @db.Char(9)
-  documentDate  String
-  totalTtcCents Int
-  totalHtCents  Int?
-  vatCents      Int?
-  vatRatePct    Float?
-  category      String
-  status        String   @default("to_pay")
-  source        String   @default("manual")
-  createdAt     DateTime @default(now())
+  id                    String   @id
+  companyId             String
+  company               Company  @relation(fields: [companyId], references: [id])
+  supplierName          String
+  supplierSiren         String?  @db.Char(9)
+  documentDate          String
+  totalTtcCents         Int
+  totalHtCents          Int?
+  vatCents              Int?
+  vatRatePct            Float?
+  category              String
+  status                String   @default("to_pay")
+  source                String   @default("manual")
+  /// C-EXP6b — n° de facture fournisseur (Factur-X BT-1) : clé anti-doublon avec le SIREN.
+  supplierInvoiceNumber String?
+  /// C-EXP6b — échéance fournisseur (Factur-X BT-9), même format DateOnly que documentDate.
+  dueAt                 String?
+  createdAt             DateTime @default(now())
 
   @@index([companyId])
+  // C-EXP-FIX1 (Bug 1 — DOUBLON TOCTOU) : index UNIQUE PARTIEL
+  // (companyId, supplierSiren, supplierInvoiceNumber) WHERE supplierInvoiceNumber IS NOT NULL —
+  // /// @unique partiel géré en SQL (Prisma ne l'exprime pas nativement), cf. migration
+  // 20260705120000_expense_facturx_reception. Garde concurrentielle anti double e-facture ;
+  // les dépenses manuelles/OCR (n° NULL) restent NON contraintes.
   @@map("expenses")
 }
 

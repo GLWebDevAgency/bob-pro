@@ -42,6 +42,13 @@ import {
   buildFacturXBasicXml,
   ExtractDocument,
   RecordExpense,
+  importFacturXExpense as runFacturXReceptionControls,
+  withSupplierCategory,
+  facturXDraftToRecordExpenseInput,
+  expenseDuplicateKey,
+  facturXInvoiceDuplicateKey,
+  parseFacturXBasic,
+  InboundEinvoice,
   CreateChantier,
   AutofillCompanyFromSiret,
   ValidateVatNumber,
@@ -90,6 +97,8 @@ import {
   type OcrPort,
   type RecordExpenseInput,
   type ExpenseProps,
+  type FacturXExpenseDraft,
+  type AfnorInboundRefusalStatus,
   type DocumentKind,
   type DocumentLinkedEntityType,
   type DocumentOrigin,
@@ -114,6 +123,7 @@ import { ViesVatAdapter } from './adapters/vies-vat.adapter';
 import { BanAddressAdapter } from './adapters/ban-address.adapter';
 import { PERSISTENCE, type Persistence } from './persistence/persistence';
 import { CompanyScopedJournalStore } from './persistence/agent-journal';
+import { DuplicateExpenseInvoiceError } from './persistence/expense-duplicate-error';
 import { Metrics } from './observability/metrics';
 import { AppLogger, getPrincipal, requireTenant } from './observability/logger';
 import { SUPABASE_ADMIN, type SupabaseAdminPort } from './auth/supabase-admin';
@@ -195,6 +205,27 @@ export interface ExpenseDefaultsView {
   vatRatePct: number | null;
   source: 'memory' | 'ocr';
 }
+
+// ——— Réception e-facture (C-EXP6b) — DTO miroir du BobClient (comme ExpenseDefaultsView) ———
+
+/** Contrôles bloquants du poste de réception, dans l'ordre où ils sont passés. */
+export type FacturXImportControl = 'destinataire' | 'coherence_en16931' | 'doublon';
+
+/** POST /expenses/import-facturx : contrôles + brouillon — RIEN n'est enregistré à ce stade. */
+export interface FacturXImportReview {
+  draft: FacturXExpenseDraft;
+  controls: FacturXImportControl[];
+}
+
+/** La DÉCISION reste à l'appelant (humain ou Bob) : approbation (catégorie confirmable)
+ *  ou refus AFNOR 210/213 avec motif OBLIGATOIRE (InboundEinvoice l'impose). */
+export type FacturXImportDecision =
+  | { action: 'approve'; category?: ExpenseCategory }
+  | { action: 'refuse'; afnorStatus: AfnorInboundRefusalStatus; reason: string };
+
+export type FacturXImportOutcome =
+  | { status: 'approved'; expenseId: string; xmlDocumentId: string | null }
+  | { status: 'refused'; afnorStatus: AfnorInboundRefusalStatus; reason: string; invoiceKey: string };
 
 /** Vue publique d'un devis pour la page de signature client à distance (lien tokenisé). */
 export interface SignatureView {
@@ -1582,6 +1613,14 @@ export class BackendService {
       });
     } catch (e) {
       if (e instanceof RollbackAppError) return { ok: false as const, error: e.appError };
+      // C-EXP-FIX1 (Bug 1 — DOUBLON TOCTOU) : le filet concurrentiel. Le contrôle applicatif
+      // read-then-write a laissé passer un double-tap ; la contrainte base (index UNIQUE PARTIEL,
+      // ou sa garde in-memory) bloque le 2e save et remonte cette sentinelle. On la traduit dans le
+      // MÊME canal que le refus de doublon applicatif (facturx.doublon) — jamais un 500, une seule
+      // Expense, un seul jeu d'écritures 6xx/44566/401 (la transaction du perdant est annulée).
+      if (e instanceof DuplicateExpenseInvoiceError) {
+        return { ok: false as const, error: { kind: 'validation', issues: [{ field: 'facturx.doublon', message: e.message }] } };
+      }
       throw e;
     }
     if (r.ok) {
@@ -1639,6 +1678,168 @@ export class BackendService {
     }
     if (r.ok) this.logger.audit('expense.paid', { expenseId: input.expenseId, alreadyPaid: r.value.alreadyPaid });
     return r;
+  }
+
+  // ——— Réception e-facture (C-EXP6b) : le CONTRÔLE DE RÉCEPTION d'un cabinet ———
+
+  /** Erreur de contrôle typée (@bob/core) aplatie à la frontière HTTP : field = `facturx.<code>`,
+   *  message riche (les 2 SIREN d'une mal-adressée, les violations EN 16931, la clé du doublon). */
+  private facturXControlError(e: { code: string; message: string }): AppError {
+    return { kind: 'validation', issues: [{ field: `facturx.${e.code}`, message: e.message }] };
+  }
+
+  /** Contrôles bloquants + brouillon : destinataire (SIREN acheteur = MA société), cohérence
+   *  EN 16931 rejouée, doublon exact (SIREN fournisseur + n°) — puis mémoire fournisseur. */
+  private async facturXReview(xml: string): Promise<Result<FacturXImportReview, AppError>> {
+    const companyId = this.companyId();
+    const company = await this.p.companies.findById(companyId);
+    if (!company) return { ok: false as const, error: appNotFound('company', companyId) };
+    const expenses = await this.p.expenses.listByCompany(companyId);
+    const existingInvoiceKeys = expenses
+      .map((e) => expenseDuplicateKey(e.toProps()))
+      .filter((k): k is string => k !== null);
+    const imported = runFacturXReceptionControls({ xml, mySiren: company.siren, existingInvoiceKeys });
+    if (!imported.ok) return { ok: false as const, error: this.facturXControlError(imported.error) };
+    // Catégorie de charge proposée via la MÉMOIRE FOURNISSEUR (habitude validée > défaut d'import).
+    const profile = await this.p.supplierMemory.supplierProfile(companyId, imported.value.supplierName);
+    const draft = withSupplierCategory(imported.value, profile ? profile.category : null);
+    return ok({ draft, controls: ['destinataire', 'coherence_en16931', 'doublon'] as FacturXImportControl[] });
+  }
+
+  /** POST /expenses/import-facturx — contrôles + brouillon. RIEN n'est enregistré : la décision
+   *  (approve/refuse AFNOR) appartient à l'appelant via confirmFacturXExpense. */
+  async importFacturXExpense(input: { xml: string }): Promise<Result<FacturXImportReview, AppError>> {
+    const review = await this.facturXReview(input.xml);
+    if (review.ok) {
+      this.logger.audit('facturx.import_reviewed', {
+        companyId: this.companyId(),
+        supplierSiren: review.value.draft.supplierSiren,
+        supplierInvoiceNumber: review.value.draft.supplierInvoiceNumber,
+        totalTtcCents: review.value.draft.totalTtcCents,
+        vatNonDeductible: review.value.draft.vatNonDeductible,
+      });
+    }
+    return review;
+  }
+
+  /**
+   * POST /expenses/import-facturx/confirm — la DÉCISION AFNOR entrante, explicite.
+   *
+   * APPROVE : contrôles REJOUÉS sur le XML soumis (serveur sans état — pas de brouillon caché,
+   * le doublon est re-vérifié au moment T), puis RecordExpense en TRANSACTION TENANT (écritures
+   * 6xx/44566/401 automatiques via E1 — l'autoliquidation arrive avec vatCents 0, donc ZÉRO
+   * 44566), puis XML archivé au coffre (kind facturx_xml) lié à l'Expense créée.
+   *
+   * REFUSE : PAS de contrôles rejoués — refuser une facture mal adressée/incohérente est
+   * précisément le geste attendu (proposition AFNOR 210/213). Motif OBLIGATOIRE : la machine
+   * InboundEinvoice rejette un refus sans motif (facture contestée non refusée = réputée valable).
+   */
+  async confirmFacturXExpense(input: {
+    xml: string;
+    decision: FacturXImportDecision;
+  }): Promise<Result<FacturXImportOutcome, AppError>> {
+    if (input.decision.action === 'refuse') {
+      // Clé métier de la pièce refusée : MÊME clé (SIREN dérivé BT-30/BT-31 + n° normalisé) que celle
+      // d'une dépense enregistrée — pour la confronter aux dépenses déjà comptabilisées ci-dessous.
+      const parsed = parseFacturXBasic(input.xml);
+      const invoiceKey = parsed.ok ? facturXInvoiceDuplicateKey(parsed.value) : 'facture-illisible';
+      // C-EXP-FIX1 (Bug 2 — CYCLE DE VIE FANTÔME) : l'InboundEinvoice n'étant pas persisté (v1),
+      // l'Expense EST le registre de l'état « approuvée ». Refuser une facture DÉJÀ comptabilisée
+      // (Expense + écritures posées) créerait une piste d'audit contradictoire (approuvée ET refusée,
+      // AFNOR 210 loggé) → on rejette le refus. Une facture REFUSÉE, elle, ne crée PAS d'Expense et
+      // reste ré-importable (un fournisseur peut corriger et renvoyer — c'est voulu).
+      // TODO v2 : registre InboundEinvoice PERSISTANT (table + statuts AFNOR 200/210/212/213) pour
+      // fermer le cycle de vie complet côté serveur — requis de toute façon pour P07 (connecteur
+      // plateforme agréée). Le fix v1 clôt l'incohérence approuvée↔refusée via l'Expense sans sur-ingénierie.
+      if (parsed.ok) {
+        const booked = await this.p.expenses.listByCompany(this.companyId());
+        if (booked.some((e) => expenseDuplicateKey(e.toProps()) === invoiceKey)) {
+          return {
+            ok: false as const,
+            error: {
+              kind: 'validation',
+              issues: [
+                {
+                  field: 'facturx.decision',
+                  message:
+                    'Facture déjà approuvée et comptabilisée (une dépense et ses écritures existent) : elle ne peut plus être refusée. Contre-passez une écriture d’annulation si nécessaire.',
+                },
+              ],
+            },
+          };
+        }
+      }
+      const inbound = InboundEinvoice.receive(this.ids.newId(), invoiceKey);
+      if (!inbound.ok) return { ok: false as const, error: appDomain(inbound.error) };
+      const refused = inbound.value.refuse(this.clock.now(), {
+        afnorStatus: input.decision.afnorStatus,
+        reason: input.decision.reason,
+      });
+      if (!refused.ok) return { ok: false as const, error: appDomain(refused.error) };
+      const refusal = inbound.value.refusal;
+      if (!refusal) return { ok: false as const, error: { kind: 'dependency', port: 'einvoice-inbound', cause: 'refus sans trace' } };
+      this.logger.audit('facturx.import_refused', {
+        companyId: this.companyId(),
+        invoiceKey,
+        afnorStatus: refusal.afnorStatus,
+      });
+      return ok({ status: 'refused', afnorStatus: refusal.afnorStatus, reason: refusal.reason, invoiceKey });
+    }
+    if (input.decision.action !== 'approve') {
+      return {
+        ok: false as const,
+        error: { kind: 'validation', issues: [{ field: 'decision.action', message: 'Décision inconnue (approve ou refuse).' }] },
+      };
+    }
+    if (input.decision.category !== undefined && !EXPENSE_CATEGORIES.has(input.decision.category)) {
+      return {
+        ok: false as const,
+        error: { kind: 'validation', issues: [{ field: 'decision.category', message: 'Catégorie inconnue.' }] },
+      };
+    }
+    const review = await this.facturXReview(input.xml);
+    if (!review.ok) return review;
+    const draft = review.value.draft;
+    const inbound = InboundEinvoice.receive(this.ids.newId(), draft.duplicateKey);
+    if (!inbound.ok) return { ok: false as const, error: appDomain(inbound.error) };
+    const approved = inbound.value.approve(this.clock.now());
+    if (!approved.ok) return { ok: false as const, error: appDomain(approved.error) };
+    // MÊME chemin que toute dépense (parité humain↔Bob) : RecordExpense + écritures E1 en
+    // transaction tenant + apprentissage mémoire fournisseur — rien de spécifique à dupliquer.
+    const recorded = await this.recordExpense(
+      facturXDraftToRecordExpenseInput(draft, input.decision.category !== undefined ? { category: input.decision.category } : {}),
+    );
+    if (!recorded.ok) return recorded;
+    // Archivage PROBANT du XML de la facture APPROUVÉE, lié à l'Expense créée (kind facturx_xml).
+    let xmlDocumentId: string | null = null;
+    const archived = await this.storeDocument({
+      kind: 'facturx_xml',
+      origin: 'uploaded',
+      filename: `facture-fournisseur-${draft.supplierInvoiceNumber.replace(/[^A-Za-z0-9._-]+/g, '-')}.xml`,
+      mimeType: 'application/xml',
+      bytes: Buffer.from(input.xml, 'utf-8'),
+      linkedEntityType: 'expense',
+      linkedEntityId: recorded.value.id,
+      documentDate: draft.documentDate,
+      reason: 'facturx-import-approved',
+    });
+    if (archived.ok) {
+      xmlDocumentId = archived.value.id;
+    } else {
+      // La dépense et ses écritures sont posées (transaction close) : on n'annule pas une
+      // comptabilité valide pour un souci de coffre — trace explicite, ré-archivage manuel possible.
+      this.logger.warn(`Archivage XML Factur-X impossible: ${appErrorSummary(archived.error)}`, 'documents');
+    }
+    this.logger.audit('facturx.import_approved', {
+      companyId: this.companyId(),
+      expenseId: recorded.value.id,
+      supplierSiren: draft.supplierSiren,
+      supplierInvoiceNumber: draft.supplierInvoiceNumber,
+      vatCents: draft.vatNonDeductible ? 0 : draft.vatCents,
+      vatNonDeductible: draft.vatNonDeductible,
+      xmlDocumentId,
+    });
+    return ok({ status: 'approved', expenseId: recorded.value.id, xmlDocumentId });
   }
 
   // ——— Onboarding / multi-tenant ———
