@@ -1209,6 +1209,16 @@ transcript workflow wf_fb597a24-2e3.
   local-client : stage CHIRURGICAL — ma part (getBusinessReview, 39 lignes) commitée, le
   WIP C-EXP6b session A (128 lignes Factur-X) laissé non commité, intact dans l'arbre.
   Core 623 ✓ ai 160 ✓ api-client 42 ✓ i18n 54 ✓ typecheck mobile ✓.
+- [10:20] claude-code (session B) COORD — SESSION C (GPT) REJOINT LE PROTOCOLE : périmètre
+  EXCLUSIF apps/web/** (+ ses entrées CLAIMS), claim C-WEB-EC = espace expert-comptable web
+  (dépôt FEC → parsing client-side ISO 8859-15 → re-dérivation balance/CR/bilan via @bob/core
+  → contrôles d'équilibre ; le FEC ne quitte jamais le navigateur). Passation complète :
+  design_handoff_bob_pro/HANDOFF_GPT_WEB.md (protocole, périmètre, spec v1, DoD, pièges).
+  Sessions A/B : apps/web est RÉSERVÉ à C — ne plus y toucher. C ne touche à RIEN d'autre.
+  Décisions humaines du jour : banque/fintech ÉCARTÉE (partenariats/normes hors de portée
+  actuelle) ; prio = canal expert-comptable (100 % dans nos mains). Session B poursuit
+  DOSSIER-2 (revue de clôture — diligences EC dans @bob/core + écran Clôture, panel
+  wf_75ee09c3 en cours) : périmètres B (core accounting + mobile cloture) et C (web) DISJOINTS.
 
 ---
 
