@@ -129,6 +129,12 @@ export const LLM_TOOL_SPECS: LlmToolSpec[] = [
     parameters: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
+    name: 'revue_cloture',
+    description:
+      'Verdict de la revue de clôture : le dossier est-il prêt pour l’expert-comptable ? Diligences passées, réserves à justifier, anomalies bloquantes. Répond à « mon dossier est-il prêt ? », « c’est bon pour le comptable ? ».',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
     name: 'revue_pilotage',
     description:
       'Revue de pilotage de l’activité : chiffre d’affaires facturé et encaissé du mois, tendance vs mois précédent, ratios (EBE, poids des achats). Répond à « comment va mon activité ? », « ça monte ou ça baisse ? », « mon CA ».',
@@ -167,6 +173,7 @@ const TOOL_TO_INTENT: Record<string, BobIntent> = {
   payer_depense: 'payer_depense',
   resultat_provisoire: 'resultat',
   mon_bilan: 'bilan',
+  revue_cloture: 'revue_cloture',
   revue_pilotage: 'pilotage',
   delai_paiement: 'dso',
   top_clients: 'top_clients',

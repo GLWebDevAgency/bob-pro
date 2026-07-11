@@ -10,6 +10,7 @@ import {
   type IncomeStatement,
   type BalanceSheet,
   type BusinessReview,
+  type ClosingReview,
 } from '@bob/core';
 
 /** Dépense fournisseur encore à payer (BOB-1 — ciblage de payer_depense par nom). */
@@ -171,6 +172,10 @@ export interface BobActions {
    * comparatifs honnêtes, DSO, top clients, SIG et ratios : « comment va mon activité ? »,
    * « on me paie en combien de temps ? », « mes plus gros clients ? » lisent LA même revue. */
   getBusinessReview?(): Promise<Result<BusinessReview, AppError>>;
+  /** Revue de clôture (deriveClosingReview @bob/core, DOSSIER-2) — les diligences de l'EC
+   * exécutées par Bob : « mon dossier est-il prêt pour le comptable ? » lit LE même verdict
+   * que l'écran Clôture et le dossier envoyé (readyToSign / réserves / anomalies). */
+  getClosingReview?(): Promise<Result<ClosingReview, AppError>>;
   // —— Mutation ——
   registerPayment(input: {
     invoiceId: string;

@@ -170,6 +170,7 @@ function intentForTool(tool: string): BobIntent {
   if (tool === 'payer_depense') return 'payer_depense';
   if (tool === 'resultat_provisoire') return 'resultat';
   if (tool === 'mon_bilan') return 'bilan';
+  if (tool === 'revue_cloture') return 'revue_cloture';
   if (tool === 'revue_pilotage') return 'pilotage';
   if (tool === 'delai_paiement') return 'dso';
   if (tool === 'top_clients') return 'top_clients';
@@ -501,6 +502,43 @@ export class BobAgent {
             `Passif : ${formatEUR(b.passif.totalCents)} (dont capitaux propres ${formatEUR(b.passif.capitauxPropresCents + b.passif.resultatNetCents)}, dettes ${formatEUR(b.passif.dettesCents)})\n` +
             equilibre,
         },
+      });
+    }
+
+    if (intent === 'revue_cloture') {
+      // DOSSIER-2 : le verdict de la revue de pré-signature — MÊME deriveClosingReview que
+      // l'écran Clôture et le dossier envoyé. Bob révise ; l'expert-comptable signe.
+      const getReview = this.deps.actions.getClosingReview?.bind(this.deps.actions);
+      if (!getReview) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier la capacité de l’hôte'],
+          card: { title: 'Ton dossier', body: 'Je n’ai pas accès à la revue de clôture sur cet appareil pour le moment.' },
+        });
+      }
+      const r = await getReview();
+      if (!r.ok) return err(r.error);
+      const review = r.value;
+      const anomalies = review.controls.filter((c) => c.status === 'anomalie');
+      const reserves = review.controls.filter((c) => c.status === 'attention');
+      const list = (items: typeof anomalies): string =>
+        items
+          .slice(0, 3)
+          .map((c) => `• ${c.label} — ${c.detail}`)
+          .join('\n') + (items.length > 3 ? `\n• +${items.length - 3} autre(s)` : '');
+      const body = !review.readyToSign
+        ? `Pas encore : ${review.anomalieCount} anomalie(s) à corriger avant signature.\n${list(anomalies)}`
+        : review.hasReserves
+          ? `Prêt sous réserves ✓ — ${review.attentionCount} point(s) à justifier à ton comptable :\n${list(reserves)}`
+          : `Prêt pour ton comptable ✓ — ${review.okCount} contrôles passés, aucune réserve.`;
+      return ok({
+        kind: 'answer',
+        intent,
+        model,
+        plan: ['Exécuter les diligences de révision', 'Équilibres, cohérence des états, comptes sensibles', 'Rendre le verdict de pré-signature'],
+        card: { title: 'Ton dossier pour le comptable', body },
       });
     }
 

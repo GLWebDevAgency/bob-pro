@@ -44,6 +44,16 @@ describe('detectIntent — diagnostic 2026 (C40 TODO ⑦)', () => {
     expect(detectIntent('Combien je peux me verser ?')).toBe('payout');
     expect(detectIntent('Un devis pour 2026')).toBe('nouveau_devis');
   });
+
+  it('revue de clôture (DOSSIER-2) : la QUESTION du verdict ≠ ouvrir l’écran', () => {
+    expect(detectIntent('Mon dossier est-il prêt pour le comptable ?')).toBe('revue_cloture');
+    expect(detectIntent('C’est prêt à signer ?')).toBe('revue_cloture');
+    expect(detectIntent('Des anomalies dans mon dossier ?')).toBe('revue_cloture');
+    expect(detectIntent('Passe en revue mes diligences')).toBe('revue_cloture');
+    // …mais la demande d'action ouvre toujours l'écran de clôture.
+    expect(detectIntent('Clôture le mois')).toBe('cloture');
+    expect(detectIntent('Prépare le mois pour le comptable')).toBe('cloture');
+  });
 });
 
 describe('detectIntent — BOB-1 (expert-comptable de poche)', () => {

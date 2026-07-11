@@ -49,6 +49,7 @@ import {
   deriveIncomeStatement,
   deriveBalanceSheet,
   deriveBusinessReview,
+  deriveClosingReview,
   resolveTradeConfig,
   buildDocumentStorageKey,
   buildInvoiceAccountingPreviewEntry,
@@ -1198,6 +1199,30 @@ export class LocalBobClient implements BobClient {
             }),
             vatRegime: seedCompany().vatRegime,
             today: this.clock.today(),
+          }),
+        );
+      },
+      // DOSSIER-2 : verdict de la revue de clôture — MÊME deriveClosingReview et MÊME
+      // composition que l'écran Clôture (période = exercice à date, yearEnd = décembre,
+      // justificatifs = factures engagées vs PDF liés au coffre).
+      getClosingReview: async () => {
+        await this.ready;
+        const [entries, invoices] = await Promise.all([
+          this.accountingEntries.listByCompany(this.companyId),
+          this.invoices.listByCompany(this.companyId),
+        ]);
+        const today = this.clock.today();
+        const engaged = invoices.filter((i) => i.status !== 'draft' && i.status !== 'cancelled');
+        const withPdf = new Set(
+          this.documents.filter((d) => d.kind === 'invoice_pdf' && d.linkedEntityId).map((d) => d.linkedEntityId),
+        );
+        const provided = engaged.filter((i) => withPdf.has(i.id)).length;
+        return ok(
+          deriveClosingReview({
+            entries: entries.map((e) => ({ entryDate: e.entryDate, lines: e.lines })),
+            period: { from: `${today.slice(0, 4)}-01-01`, to: today },
+            justificatifs: { expected: engaged.length, provided },
+            yearEnd: today.slice(5, 7) === '12',
           }),
         );
       },
