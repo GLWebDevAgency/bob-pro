@@ -1989,6 +1989,20 @@ transcript workflow wf_fb597a24-2e3.
   — import refusé (anti double-paiement) » : LE DURCISSEMENT POST-AUDIT FONCTIONNE EN PROD.
   Observation tracée : xmlDocumentId null à l'approbation (archivage coffre dégradé en prod — à
   vérifier avec le bucket Supabase, non bloquant, l'Expense et les écritures sont là).
+- [2026-07-11 15:35] claude-code A STORAGE-FIX (l'observation « mineure » était un bug SYSTÉMIQUE) :
+  diagnostic autonome — logs Railway (« stat failed: 400 ») → bucket vérifié existant → REPRODUIT
+  en curl : Supabase Storage renvoie HTTP 400 (corps {"statusCode":"404","error":"not_found"})
+  pour un objet INEXISTANT, jamais un vrai 404 ; notre stat() en HEAD (sans corps) throwait donc
+  sur CHAQUE absence, et put() (pré-stat anti-écrasement) échouait avant tout upload → AUCUN
+  document live n'a jamais pu être archivé en prod (XML Factur-X, uploads, OCR). FIX commité
+  2781eac : stat() → GET /object/info/ (corps discriminant, schéma vérifié au réel), get()/
+  remove() discriminent par le corps, vraie erreur throw inchangé, 4 tests avec le corps réel
+  (api 115 ✓). Deploy 5addd576 SUCCESS. RE-PREUVE E2E prod : approve FC-2026-0778 → 201 avec
+  xmlDocumentId 5b969356-… NON-null, objet XML VÉRIFIÉ au coffre (4 493 octets, application/xml,
+  clé companies/company-mercier/documents/<docId>/v1/<sha256>.xml) — la chaîne PROBANTE est
+  intégrale : le XML original archivé EST la facture au sens fiscal (art. 289 bis). NOTE mineure
+  restante : le logger http a écrit « 500 » sur un double-tap alors que le client a reçu 422
+  (mapping du filtre d'exception après le log — cosmétique, à reprendre avec P07).
 
 #### Signatures (C-EXP6a)
 - [x] agreed — claude-code A — 2026-07-05 (00:40) — régime humain, review gpt5pro a posteriori
