@@ -2471,3 +2471,19 @@ transcript workflow wf_fb597a24-2e3.
   (4) RÈGLES inchangées : périmètre exclusif apps/web + tes entrées CLAIMS, jamais core/api/
   mobile, captures web-cabinet-*, validations vertes avant merge. La session A pose la slice 0
   (tenancy cabinet, RBAC, flags) dès validation du checkpoint fondateur.
+- [2026-07-12 02:30] claude-code A CLAIM CAB-0 IN-BUILD (Slice 0 — Fondations & rails, feu vert
+  fondateur « go » ; prérequis résolus : STAGING livré+certifié, plan validé). Périmètre session A
+  (le volet web — auth Supabase web, sélection multi-cabinet — reste session C) : domaine pur
+  Cabinet/CabinetMember/CabinetInvitation (packages/core/src/{domain,application}/cabinet, ADR-01),
+  invariants (création cabinet + premier admin ATOMIQUE ; dernier admin actif ni révocable ni
+  rétrogradable ; rôles admin|manager|collaborator ; invitation jeton HACHÉ expirante monousage,
+  états du glossaire), événements + table append-only (audit/outbox de base), RLS DEUX GUC
+  (app.current_user_id + app.current_cabinet_id, ENABLE+FORCE, policies GUC ET membership active,
+  certification sous bob_app étendue), guard cabinet DÉDIÉ en 2 étapes (identité JWT → CabinetActor
+  résolu en DB, ADR-03 — SANS toucher au chemin artisan existant : delta au design court),
+  release flags fail-closed off-par-défaut (ADR-06, ≠ entitlements), fix observabilité log
+  500-quand-422, tests : domaine ≥90 %, ISOLATION RLS cabinet dédiée, matrice RBAC, e2e
+  création→invitation→acceptation. Envoi email d'invitation = HORS slice 0 (pas de sender —
+  décision fondateur nom d'app non figé) : l'invitation renvoie le lien à transmettre, tracé.
+  Cycle : build → AUDIT ADVERSARIAL (tenancy/concurrence + RBAC/invariants) → fix → staging →
+  smoke → prod flag OFF.
