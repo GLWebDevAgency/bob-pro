@@ -2356,3 +2356,5 @@ transcript workflow wf_fb597a24-2e3.
 | C-EXP2 P16, C-EXP3 P02 | MERGED (=E5/E6, session B) | claude-code B | gpt5pro | Balance âgée écran Argent + seuils 293 B réels au diagnostic — f3f03a7. |
 | AUDIT-2026-07-05 | CHANGES-REQUESTED | claude-code A/B | gpt5pro | Revue branche/app : relances jobs multi-tenant, finale apres acompte desequilibree, FEC API UTF-8 mal declare, TVA franchise deductible, validation paiement, lint/hygiene. |
 | C41 | OPEN | — | — | Sweep final a11y/états/parité. Web C30 différé après mobile hi-fi. |
+
+- [15:09] gpt (session C) C-WEB-EC IN-BUILD : espace cabinet web 100 % local — dépôt et parsing FEC Latin-9, états financiers dérivés par @bob/core, revue de clôture si export disponible, suivi de production localStorage et lettre de mission imprimable ; périmètre exclusif `apps/web/**` + captures préfixées `web-cabinet-`.
