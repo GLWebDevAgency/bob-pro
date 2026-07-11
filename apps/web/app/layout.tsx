@@ -1,10 +1,10 @@
 import type { Metadata } from 'next';
 import type { ReactNode } from 'react';
-import { t } from '@bob/i18n';
+import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'Bob Pro',
-  description: t('bob.tagline'),
+  title: 'Bob Pro · Espace cabinet',
+  description: 'Contrôlez les FEC de vos clients sans que leurs données quittent votre navigateur.',
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
