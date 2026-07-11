@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev -p 3010",
-    "build": "pnpm --filter @bob/core build && pnpm --filter @bob/i18n build && next build",
+    "build": "pnpm --filter @bob/core build && pnpm --filter @bob/i18n build && pnpm --filter @bob/tokens build && next build",
     "start": "next start -p 3010",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
@@ -13,6 +13,9 @@
   "dependencies": {
     "@bob/core": "workspace:*",
     "@bob/i18n": "workspace:*",
+    "@bob/tokens": "workspace:*",
+    "@supabase/ssr": "^0.12.0",
+    "@supabase/supabase-js": "^2.108.2",
     "next": "^16.0.0",
     "react": "19.2.3",
     "react-dom": "19.2.3"
