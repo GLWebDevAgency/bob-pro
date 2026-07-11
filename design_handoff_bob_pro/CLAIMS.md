@@ -1978,6 +1978,17 @@ transcript workflow wf_fb597a24-2e3.
   AFNOR persisté = TODO P07. Tests : core 624 ✓ · api 111 ✓ (8 e2e réception, suite relancée ×2
   stable) · api-client 42 ✓ · typecheck 16/16 forcé ✓. RESTE : migration 20260705120000 à
   appliquer en base réelle + redeploy Railway (endpoints import-facturx). status=MERGED.
+- [2026-07-10 15:10] claude-code A DEPLOY C-EXP6b + PREUVE E2E PROD : migration 20260705120000
+  appliquée en base réelle (index UNIQUE partiel anti-doublon) · deploy Railway 6a0ce990 SUCCESS.
+  Séquence réelle jouée en prod (login demo, e-facture générée par NOTRE générateur — Point P
+  Distribution → Mercier Plomberie, 180,00 € TTC dont 30,00 € TVA, échéance 07/08) :
+  ① POST /expenses/import-facturx → 201, brouillon exact (fournisseur, n° FC-2026-0777, TTC/TVA
+  au centime, dueAt), 3 contrôles passés [destinataire, coherence_en16931, doublon] ;
+  ② confirm approve → 201, Expense créée (écritures E1 automatiques) ;
+  ③ DOUBLE-TAP approve → 422 « Facture FC-2026-0777 déjà enregistrée (clé 552100554|FC-2026-0777)
+  — import refusé (anti double-paiement) » : LE DURCISSEMENT POST-AUDIT FONCTIONNE EN PROD.
+  Observation tracée : xmlDocumentId null à l'approbation (archivage coffre dégradé en prod — à
+  vérifier avec le bucket Supabase, non bloquant, l'Expense et les écritures sont là).
 
 #### Signatures (C-EXP6a)
 - [x] agreed — claude-code A — 2026-07-05 (00:40) — régime humain, review gpt5pro a posteriori
