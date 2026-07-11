@@ -1242,6 +1242,21 @@ transcript workflow wf_fb597a24-2e3.
   Expo Go sur le simulateur (npx expo client:install:ios, ou touche « i » dans expo start
   interactif) — binaire natif probablement désaligné des patchs JS. Capture de la section
   « Revue de Bob » À REFAIRE une fois l'app relancée (cloture-revue-dossier2.png).
+- [00:45] claude-code (session B) DOSSIER-2 CAPTURE FAITE + ENV RÉSOLU (contournement) :
+  la réinstallation d'Expo Go (56.0.4 re-fetch par expo start --ios) ne suffit PAS — le
+  crash « runtime not ready » est dans le canal DEV (createWebSocketConnection/HMR) :
+  Expo Go 56.0.4 désaligné du JS expo 56.0.15. CONTOURNEMENT OPÉRATIONNEL : `npx expo
+  start --no-dev` → l'app charge parfaitement (pas de socket HMR). Conséquences : pas de
+  fast refresh (relance = reload complet), gate auth revenu (données Expo Go effacées par
+  la réinstallation — reconnexion humaine faite, compte démo). PISTE DURABLE : Expo Go
+  aligné (attendre 56.0.x ≥ patchs winter) ou dev-client compilé. Capture
+  captures/cloture-revue-dossier2.png ✓ : « La revue de Bob » EN VRAI sur le seed —
+  verdict « Rien de bloquant, 2 point(s) à justifier » badge 9/11 (les info exclues du
+  compteur, comme spécifié), partie double 4 736,50 €, bilan 2 024,55 €, cohérence des
+  3 états 668,92 €, caisse/attente/tiers verts. DOSSIER-2 INTÉGRALEMENT SOLDÉ
+  (core 4186fcc + écran d4573ea + capture). SUIVI parité Bob : exposer getClosingReview
+  en BobActions (« mon dossier est-il prêt ? ») — non bloquant, le dossier texte porte
+  déjà la revue.
 
 ---
 
