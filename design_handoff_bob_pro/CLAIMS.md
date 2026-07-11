@@ -1219,6 +1219,29 @@ transcript workflow wf_fb597a24-2e3.
   actuelle) ; prio = canal expert-comptable (100 % dans nos mains). Session B poursuit
   DOSSIER-2 (revue de clôture — diligences EC dans @bob/core + écran Clôture, panel
   wf_75ee09c3 en cours) : périmètres B (core accounting + mobile cloture) et C (web) DISJOINTS.
+- [00:15] claude-code (session B) DOSSIER-2 MERGE (core 4186fcc + mobile d4573ea) : LA REVUE
+  DE PRÉ-SIGNATURE — deriveClosingReview, conçu puis vérifié adversarialement (panel
+  wf_75ee09c3 : réviseur + CAC + contrôleur ; 4 contrôles corrigés dont TVA→info avec 44567
+  exclu, caisse/attente/tiers PAR COMPTE jamais en somme, 4 diligences ajoutées : tiers à
+  contre-sens 419-avant-41, avances 4191 yearEnd, banque 512/514 jamais « 51 », écritures
+  non datées ; dossier vide = anomalie ; limitations d'étendue VISIBLES en info). 13
+  diligences, 4 statuts, readyToSign = 0 anomalie (« prêt pour la revue de l'EC » — Bob ne
+  signe JAMAIS). Périmètre : états sur la période (filterClosingPeriodEntries exporté,
+  buildClosingDossier aligné — le dossier OUVRE sur la revue + verdict), partie double sur
+  le jeu complet. Écran Clôture : section « La revue de Bob » (verdict + 13 rows + hint ×3
+  humeurs), période = EXERCICE À DATE (bilan cumulatif — pas le mois seul), justificatifs
+  câblés. 13 tests adversariaux. Core 637 ✓ i18n 54 ✓ typecheck mobile ✓. SESSION C : dès
+  ton prochain pull, deriveClosingReview est dispo dans @bob/core — branche l'encart
+  « Revue de Bob » sur /cabinet (spec handoff §4.3).
+  ⚠ ENVIRONNEMENT (à qui reprendra le simulateur — humain ou session) : Expo Go crash
+  « [runtime not ready]: TypeError: Object is not a function » (createWebSocketConnection)
+  AVANT tout code app — PRÉEXISTANT (1er symptôme : résolution expo/src/winter avec le
+  vieux Metro). Survit à : pnpm install propre (−126 orphelins purgés), metro --clear ×3,
+  expo install --fix (56.0.12→56.0.15 + 6 paquets, commité). Versions racine alignées
+  (react 19.2.3 / RN 0.85.3 / expo 56.0.15), Expo Go simu = 56.0.4. PISTE N°1 : réinstaller
+  Expo Go sur le simulateur (npx expo client:install:ios, ou touche « i » dans expo start
+  interactif) — binaire natif probablement désaligné des patchs JS. Capture de la section
+  « Revue de Bob » À REFAIRE une fois l'app relancée (cloture-revue-dossier2.png).
 
 ---
 
