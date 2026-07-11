@@ -2373,3 +2373,34 @@ transcript workflow wf_fb597a24-2e3.
 
 - [15:09] gpt (session C) C-WEB-EC IN-BUILD : espace cabinet web 100 % local — dépôt et parsing FEC Latin-9, états financiers dérivés par @bob/core, revue de clôture si export disponible, suivi de production localStorage et lettre de mission imprimable ; périmètre exclusif `apps/web/**` + captures préfixées `web-cabinet-`.
 - [16:32] gpt (session C) C-WEB-EC MERGE (commits `432befe`, `d185b81`, `f3ca6e3`, `1fd028f`, `dd389fe`) : `/cabinet` livré — FEC Latin-9 18 colonnes parsé localement et groupé par `(JournalCode, EcritureNum)` ; balance/CR/bilan + revue de clôture officielle `@bob/core` ; portefeuille versionné `bobcabinet.v1` avec upsert SIREN, échéancier core, sauvegarde/restauration JSON et suppression confirmée ; lettre de mission structurée, préremplie et imprimable avec avertissement juridique ; FEC brut jamais persisté ni envoyé. Validations : web 39/39, moteurs comptables/fiscaux ciblés 43/43, `pnpm test` workspace 14/14 tâches (1 test OCR live ignoré), `pnpm typecheck` 16/16, build Next production OK, lint web OK ; QA Chrome production : reload, upsert sans doublon, round-trip JSON, navigation offline, viewport 390 px sans débordement, action supprimer contenue, zéro requête externe/FEC et zéro erreur console/page. Captures `web-cabinet-*` + PDF archivés. SUIVI : le lint workspace reste rouge hors périmètre (`@bob/ui` règle react-hooks absente ; `@bob/ai` no-control-regex) ; l’IR détaillé dépend d’un futur moteur fiscal core ; comptes/RBAC, relation client↔cabinet, acceptation/refus, marketplace et marque blanche exigent le backend multi-tenant décrit dans `apps/web/design/mobile-cabinet-synergy.md` et ne sont volontairement pas simulés en local ; le modèle de lettre reste à faire valider juridiquement avant usage réel.
+- [2026-07-12 00:20] claude-code A REVIEW C-WEB-EC (audit demandé par l'humain : UI+UX+design+DDD/
+  Clean/SOLID+design system+monorepo expert ; limite de session sur les sous-agents → audit mené
+  inline par le coordinateur, rendu réel de /cabinet capturé). VERDICT : architecture et produit
+  de TRÈS BONNE FACTURE — à intégrer, pas à refaire. FORCES vérifiées sur pièces : monorepo
+  EXPERT (workspace deps @bob/core+@bob/i18n ; ZÉRO moteur comptable dupliqué : analyze-fec
+  rejoue deriveTrialBalance/IncomeStatement/BalanceSheet/ClosingReview du core, fiscal-calendar
+  = WRAPPER de deriveFiscalCalendar avec disclaimer + limitations typées, FEC_HEADERS réutilisé) ;
+  parseur FEC entrant ISO 8859-15 exact + BOM parasite (symétrique d'encodeLatin9/E9) ;
+  confidentialité by design (localStorage sans FEC brut, frontière documentée ET affichée) ;
+  erreurs typées, storage injecté, state versionné ; 39 tests verts, turbo câblé ; UX cabinet
+  réelle (portefeuille multi-dossiers, parcours import→contrôles auto→revue expert, état vide
+  premier rang) ; et mobile-cabinet-synergy.md ANTICIPE la directive fondateur du 2026-07-11
+  (ClientCabinetRelationship 5 états, consentement bilatéral, scopes par mission, 3 modèles de
+  distribution en configuration) — ce document devient la SPEC OFFICIELLE de la marketplace.
+  ÉCARTS à corriger (par gravité) : ① MAJEUR design : 83 hex en dur (19 globals.css + 64
+  cabinet.module.css), AUCUN import @bob/tokens — valeurs recopiées à la main (navy/success
+  exacts aujourd'hui = divergence garantie demain) → générer les CSS variables DEPUIS
+  @bob/tokens (petit script build, même esprit que la parité tokens↔handoff) ; ② MAJEUR
+  identité : typographie Avenir Next/Inter au lieu de Schibsted Grotesk (display) + Hanken
+  Grotesk (body) — LA signature Bob, dispo via next/font/google : le rendu capturé est générique
+  là où le mobile est reconnaissable ; ③ MINEUR grammaire : CTA primaire VERT plein (chez Bob le
+  vert est sémantique succès, les primaires sont navy) ; ④ MINEUR rigueur : tsconfig sans
+  exactOptionalPropertyTypes/noUncheckedIndexedAccess/verbatimModuleSyntax (standard du repo) ;
+  ⑤ À TRANCHER : copy en dur — la personnalité « pro » de @bob/i18n est la voix cabinet naturelle.
+  DIRECTIVE HUMAINE ACTÉE (2026-07-11) : synergie mobile↔web obligatoire (l'un sert l'autre) ;
+  marketplace = le client CHOISIT son cabinet, le cabinet ACCEPTE/REFUSE ses clients (relation
+  N-N, consentement bilatéral) — la v1 localStorage est un PONT assumé (mobile shareFec → import
+  cabinet), le régime cible = dossier partagé par l'API commune (POST dossier de clôture mobile →
+  GET cabinet authentifié) + tables ClientCabinetRelationship côté apps/api. GOUVERNANCE : GPT
+  (session C) garde apps/web et applique ①→⑤ en priorité ; la session A posera le backend
+  relation/partage (extension naturelle du multi-tenant C24b) quand GPT aura consommé ①→⑤.
