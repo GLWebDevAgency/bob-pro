@@ -95,6 +95,7 @@ export * from './application/billing/build-piece-view';
 export * from './application/clients/derive-customer-standings';
 export * from './application/clients/derive-aged-balance';
 export * from './application/accounting/derive-sig';
+export * from './application/accounting/derive-closing-review';
 export * from './application/pilotage/derive-business-review';
 export * from './application/expenses/record-expense';
 export * from './application/expenses/import-facturx-expense';

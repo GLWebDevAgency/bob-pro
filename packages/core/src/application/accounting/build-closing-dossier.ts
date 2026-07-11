@@ -3,13 +3,15 @@ import { type DateOnly } from '../../shared-kernel/time';
 import { deriveTrialBalance } from './derive-trial-balance';
 import { deriveIncomeStatement } from './derive-income-statement';
 import { deriveBalanceSheet } from './derive-balance-sheet';
+import { deriveClosingReview, filterClosingPeriodEntries, type ReviewStatus } from './derive-closing-review';
 
 /**
- * Dossier de clôture (DOSSIER-1) — la NOTE DE SYNTHÈSE lisible que l'artisan envoie à son
- * expert-comptable pour signature (vision « le cercle »). Assemble en un document texte les
- * TROIS états de synthèse déjà dérivés (compte de résultat, bilan, balance générale), tous
- * cohérents entre eux par construction. Le FEC (fichier machine) l'accompagne à part.
- * Use case PUR : ni I/O, ni date système (generatedOn injecté).
+ * Dossier de clôture (DOSSIER-1, enrichi DOSSIER-2) — la NOTE DE SYNTHÈSE lisible que
+ * l'artisan envoie à son expert-comptable pour signature (vision « le cercle »). Ouvre sur la
+ * REVUE DE PRÉ-SIGNATURE (les diligences exécutées par Bob : équilibres, cohérence des états,
+ * comptes d'attente, justificatifs — deriveClosingReview) puis assemble les TROIS états de
+ * synthèse dérivés (compte de résultat, bilan, balance générale), cohérents par construction.
+ * Le FEC (fichier machine) l'accompagne à part. Use case PUR : ni I/O, ni date système.
  */
 
 export interface ClosingDossierInput {
@@ -17,7 +19,12 @@ export interface ClosingDossierInput {
   period: { from: DateOnly; to: DateOnly };
   /** Date d'établissement du dossier (injectée — le domaine ne lit jamais l'horloge). */
   generatedOn: DateOnly;
-  entries: readonly { lines: readonly { account: string; debitCents: number; creditCents: number }[] }[];
+  /** entryDate optionnelle : quand elle est fournie, la revue contrôle « écritures dans la période ». */
+  entries: readonly { entryDate?: DateOnly; lines: readonly { account: string; debitCents: number; creditCents: number }[] }[];
+  /** Compteur de pièces justificatives (fourni par le caller) — active le contrôle dédié de la revue. */
+  justificatifs?: { expected: number; provided: number };
+  /** Clôture d'exercice (vs mensuelle) — durcit le contrôle des avances clients de la revue. */
+  yearEnd?: boolean;
 }
 
 export interface ClosingDossier {
@@ -38,16 +45,41 @@ function signed(cents: number): string {
   return `${cents >= 0 ? '+' : '−'}${formatEUR(Math.abs(cents))}`;
 }
 
+const STATUS_MARK: Record<ReviewStatus, string> = { ok: '✓', info: 'ℹ', attention: '!', anomalie: '✗' };
+
 export function buildClosingDossier(input: ClosingDossierInput): ClosingDossier {
-  const tb = deriveTrialBalance(input.entries);
-  const is = deriveIncomeStatement(input.entries);
-  const bs = deriveBalanceSheet(input.entries);
+  // MÊME périmètre que la revue : les états présentés et les contrôles signés portent sur
+  // les écritures de la période (les écritures datées hors période sont exclues ET signalées).
+  const scoped = filterClosingPeriodEntries(input.entries, input.period);
+  const tb = deriveTrialBalance(scoped);
+  const is = deriveIncomeStatement(scoped);
+  const bs = deriveBalanceSheet(scoped);
+  const review = deriveClosingReview({
+    entries: input.entries,
+    period: input.period,
+    ...(input.justificatifs ? { justificatifs: input.justificatifs } : {}),
+    ...(input.yearEnd !== undefined ? { yearEnd: input.yearEnd } : {}),
+  });
 
   const L: string[] = [];
   L.push('DOSSIER DE CLÔTURE');
   L.push(`${input.company.name} — SIREN ${input.company.siren}`);
   L.push(`Période du ${input.period.from} au ${input.period.to}`);
   L.push(`Établi le ${input.generatedOn} par Bob Pro`);
+  L.push('');
+
+  // La revue OUVRE le dossier : l'expert-comptable lit le verdict avant les chiffres.
+  L.push('═══ REVUE DE PRÉ-SIGNATURE ═══');
+  for (const control of review.controls) {
+    L.push(`${STATUS_MARK[control.status]} ${control.label} — ${control.detail}`);
+  }
+  L.push(
+    !review.readyToSign
+      ? `VERDICT : NON PRÊT — ${review.anomalieCount} anomalie(s) à corriger avant signature.`
+      : review.hasReserves
+        ? `VERDICT : prêt à signer SOUS RÉSERVES — ${review.attentionCount} point(s) à justifier.`
+        : 'VERDICT : prêt à signer — aucun point bloquant, aucune réserve.',
+  );
   L.push('');
 
   L.push('═══ COMPTE DE RÉSULTAT ═══');
