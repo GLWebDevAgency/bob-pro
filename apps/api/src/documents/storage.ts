@@ -96,6 +96,19 @@ export class SupabaseDocumentStorage implements DocumentStoragePort {
     };
   }
 
+  private infoUrl(key: string): string {
+    return `${this.config.url.replace(/\/$/, '')}/storage/v1/object/info/${this.bucket}/${encodePath(key)}`;
+  }
+
+  /**
+   * Supabase Storage ne renvoie PAS un 404 HTTP pour un objet inexistant : il répond 400 avec un
+   * corps `{"statusCode":"404","error":"not_found",...}` (constaté en prod le 2026-07-11 — le
+   * HEAD aveugle sur ce 400 faisait échouer stat, donc TOUT put/get). On discrimine par le corps.
+   */
+  private static isNotFound(status: number, bodyText: string): boolean {
+    return status === 404 || (status === 400 && /not_found|"statusCode"\s*:\s*"404"/.test(bodyText));
+  }
+
   async put(input: { companyId: string; key: string; bytes: Uint8Array; contentType: string }): Promise<StoredObject> {
     assertTenantStorageKey(input.companyId, input.key);
     if (await this.stat(input.companyId, input.key)) throw new Error('Document object already exists.');
@@ -111,8 +124,11 @@ export class SupabaseDocumentStorage implements DocumentStoragePort {
   async get(companyId: string, key: string): Promise<{ bytes: Uint8Array; contentType: string } | null> {
     assertTenantStorageKey(companyId, key);
     const response = await fetch(this.objectUrl(key), { method: 'GET', headers: this.headers() });
-    if (response.status === 404) return null;
-    if (!response.ok) throw new Error(`Supabase storage download failed: ${response.status} ${await response.text()}`);
+    if (!response.ok) {
+      const text = await response.text();
+      if (SupabaseDocumentStorage.isNotFound(response.status, text)) return null;
+      throw new Error(`Supabase storage download failed: ${response.status} ${text}`);
+    }
     return {
       bytes: new Uint8Array(await response.arrayBuffer()),
       contentType: response.headers.get('content-type') ?? 'application/octet-stream',
@@ -135,21 +151,29 @@ export class SupabaseDocumentStorage implements DocumentStoragePort {
 
   async stat(companyId: string, key: string): Promise<{ sizeBytes: number; contentType: string } | null> {
     assertTenantStorageKey(companyId, key);
-    const response = await fetch(this.objectUrl(key), { method: 'HEAD', headers: this.headers() });
-    if (response.status === 404) return null;
-    if (!response.ok) throw new Error(`Supabase storage stat failed: ${response.status} ${await response.text()}`);
-    const size = Number(response.headers.get('content-length') ?? '0');
+    // GET /object/info/ et non HEAD : un HEAD sans corps ne permet pas de distinguer le 400
+    // « not_found » de Supabase d'une vraie erreur (cause du xmlDocumentId null en prod).
+    const response = await fetch(this.infoUrl(key), { method: 'GET', headers: this.headers() });
+    if (!response.ok) {
+      const text = await response.text();
+      if (SupabaseDocumentStorage.isNotFound(response.status, text)) return null;
+      throw new Error(`Supabase storage stat failed: ${response.status} ${text}`);
+    }
+    const info = (await response.json()) as { size?: number; content_type?: string };
     return {
-      sizeBytes: Number.isSafeInteger(size) ? size : 0,
-      contentType: response.headers.get('content-type') ?? 'application/octet-stream',
+      sizeBytes: Number.isSafeInteger(info.size) ? (info.size as number) : 0,
+      contentType: info.content_type ?? 'application/octet-stream',
     };
   }
 
   async remove(companyId: string, key: string): Promise<void> {
     assertTenantStorageKey(companyId, key);
     const response = await fetch(this.objectUrl(key), { method: 'DELETE', headers: this.headers() });
-    if (response.status === 404) return;
-    if (!response.ok) throw new Error(`Supabase storage delete failed: ${response.status} ${await response.text()}`);
+    if (!response.ok) {
+      const text = await response.text();
+      if (SupabaseDocumentStorage.isNotFound(response.status, text)) return;
+      throw new Error(`Supabase storage delete failed: ${response.status} ${text}`);
+    }
   }
 }
 
