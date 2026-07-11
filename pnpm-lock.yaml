@@ -253,6 +253,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@bob/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@bob/i18n':
         specifier: workspace:*
         version: link:../../packages/i18n

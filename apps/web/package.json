@@ -4,11 +4,14 @@
   "private": true,
   "scripts": {
     "dev": "next dev -p 3010",
-    "build": "pnpm --filter @bob/i18n build && next build",
+    "build": "pnpm --filter @bob/core build && pnpm --filter @bob/i18n build && next build",
     "start": "next start -p 3010",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "eslint . --ext .ts,.tsx --env browser"
   },
   "dependencies": {
+    "@bob/core": "workspace:*",
     "@bob/i18n": "workspace:*",
     "next": "^16.0.0",
     "react": "19.2.3",
