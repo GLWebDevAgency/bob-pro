@@ -40,6 +40,11 @@ const ECHO_THRESHOLD = 0.6;
 /** En-deçà de ce nombre de mots pleins, une parole ne coupe pas Bob (bruit, borborygme). */
 const MIN_SPEECH_WORDS = 2;
 
+/** Nombre de mots pleins d'un énoncé — départage réponse humaine courte vs écho long. */
+export function speechWordCount(text: string): number {
+  return contentWords(text).length;
+}
+
 export function parseBargeIn(heard: string, spokenByBob: string): BargeInVerdict {
   const n = normalizeTranscript(heard);
   if (INTERRUPT_WORDS.some((w) => n.includes(` ${w} `))) return 'interrupt';

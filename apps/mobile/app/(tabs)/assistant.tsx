@@ -52,7 +52,9 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   buildActionDiff,
+  echoOverlap,
   parseBargeIn,
+  speechWordCount,
   parseVoiceChoice,
   parseVoiceConsent,
   speakableQuestion,
@@ -386,6 +388,20 @@ export default function Assistant() {
   liveStateRef.current = liveState;
   /** Ce que Bob est en train de dire — la référence de l'echo-guard (LIVE-3). */
   const speakingTextRef = useRef('');
+  /** Dernier énoncé TERMINÉ + horodatage : sur device réel (sans annulation d'écho
+   * matérielle), la reco capte la fin du TTS APRÈS la bascule en écoute — la fenêtre de
+   * grâce échoscanne TOUT transcript, quelle que soit la phase (fix boucle d'écho). */
+  const lastSpokenRef = useRef<{ text: string; endedAt: number }>({ text: '', endedAt: 0 });
+  const ECHO_GRACE_MS = 5000;
+  /** Disjoncteur : 3 échos ignorés d'affilée → repos (l'orbe se relance au tap). */
+  const echoStreakRef = useRef(0);
+
+  /** Référence d'écho active : l'énoncé en cours, ou le dernier fini s'il est récent. */
+  const echoReference = (): string => {
+    if (speakingTextRef.current) return speakingTextRef.current;
+    const { text, endedAt } = lastSpokenRef.current;
+    return Date.now() - endedAt < ECHO_GRACE_MS ? text : '';
+  };
   // Ce que l'oreille attend : une commande libre, une réponse à une question, un consentement.
   const expectationRef = useRef<
     | { kind: 'command' }
@@ -419,16 +435,21 @@ export default function Assistant() {
     if (!voiceRef.current.listening) void voiceRef.current.start();
   };
 
-  const say = async (text: string): Promise<void> => {
+  const say = async (text: string, opts: { bargeIn?: boolean } = {}): Promise<void> => {
     if (!liveRef.current) return;
     setLiveState('speaking');
     speakingTextRef.current = text;
-    // LIVE-3 : l'oreille reste ouverte PENDANT la lecture (natif seulement — en cloud,
-    // le tap du bandeau reste l'interruption). L'echo-guard filtre la voix de Bob.
-    if (speechRecognitionAvailable && !voiceRef.current.listening) void voiceRef.current.start();
+    // LIVE-3 : l'oreille reste ouverte PENDANT la lecture (natif seulement — en cloud, le
+    // tap du bandeau reste l'interruption). JAMAIS pendant une demande de CONFIRMATION :
+    // l'écho du prompt contient « je confirme »/« annule » — risque d'exécution fantôme.
+    if ((opts.bargeIn ?? true) && speechRecognitionAvailable && !voiceRef.current.listening) void voiceRef.current.start();
     await speakAndWait(text);
     speakingTextRef.current = '';
+    lastSpokenRef.current = { text, endedAt: Date.now() };
   };
+
+  /** Pause de purge : laisse l'audio résiduel du TTS sortir des buffers AVANT d'écouter. */
+  const settle = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
   /** Vocalise le résultat d'un tour d'agent, arme l'attente adaptée, ré-écoute. */
   const liveTurn = async (res: { run: AgentRun; item: ChatItem } | null): Promise<void> => {
@@ -444,36 +465,67 @@ export default function Assistant() {
     if (question) {
       expectationRef.current = { kind: 'choice', question, retried: false };
       await say(speakableQuestion(question));
+      await settle(500);
       listen();
       return;
     }
     if (run.kind === 'proposed' && item.pending) {
       expectationRef.current = { kind: 'consent', item, retried: false };
-      await say(run.spokenPrompt ?? run.card.body);
+      await say(run.spokenPrompt ?? run.card.body, { bargeIn: false });
+      await settle(800); // purge longue : aucune bribe du prompt ne doit entrer dans l'oreille
       listen();
       return;
     }
     expectationRef.current = { kind: 'command' };
     await say(run.naturalBody ?? run.card.body);
+    await settle(500);
     listen();
   };
 
   /** Route la parole entendue selon l'attente courante — fail-safe à chaque embranchement. */
+  /** Écho avéré : ignorer, compter (disjoncteur), ré-écouter — jamais de réponse à soi-même. */
+  const swallowEcho = (): void => {
+    echoStreakRef.current += 1;
+    if (echoStreakRef.current >= 3) {
+      // Trois échos d'affilée : l'environnement audio boucle — on se met au repos (tap = reprise).
+      echoStreakRef.current = 0;
+      setLiveState('idle');
+      return;
+    }
+    if (liveRef.current && !voiceRef.current.listening) void voiceRef.current.start();
+  };
+
   const onLiveTranscript = async (text: string): Promise<void> => {
     if (!liveRef.current) return;
+    const expected = expectationRef.current;
+    const reference = echoReference();
+
     if (liveStateRef.current === 'speaking') {
       // LIVE-3 : final entendu pendant que Bob parle — écho ignoré (ré-écoute), arrêt
       // explicite = silence + oreille libre, parole nouvelle = Bob se tait et traite.
       const verdict = parseBargeIn(text, speakingTextRef.current);
       if (verdict === 'echo') {
-        if (speechRecognitionAvailable && liveRef.current) void voiceRef.current.start();
+        swallowEcho();
         return;
       }
       stopSpeaking(); // speakAndWait résout → le tour en cours enchaînera listen()
       if (verdict === 'interrupt') return;
       // 'speech' : on traite la nouvelle demande ci-dessous.
+    } else if (reference) {
+      // Fenêtre de grâce post-lecture (fix boucle d'écho device) : une réponse STRUCTURÉE
+      // attendue et courte (choix, consentement) court-circuite l'échoscan — ses mots
+      // viennent forcément de la question que Bob vient de lire ; tout le reste est
+      // échoscanné contre le dernier énoncé.
+      const shortReply = speechWordCount(text) <= 4;
+      const structuredReply =
+        (expected.kind === 'choice' && shortReply && parseVoiceChoice(text, expected.question.options) !== null) ||
+        (expected.kind === 'consent' && shortReply && parseVoiceConsent(text) !== 'unclear');
+      if (!structuredReply && echoOverlap(text, reference) >= 0.5) {
+        swallowEcho();
+        return;
+      }
     }
-    const expected = expectationRef.current;
+    echoStreakRef.current = 0;
     setLiveState('thinking');
 
     if (expected.kind === 'choice') {
