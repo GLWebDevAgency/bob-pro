@@ -31,6 +31,14 @@ const actions: BobActions = {
         createdAt: '2026-07-01T10:00:00.000Z',
       },
     ]),
+  // ASK-2 : deux devis signés facturables — sign-1 prévoit un acompte NON facturé (la
+  // question acompte/solde doit se poser), sign-2 a déjà son acompte (finale = évidence).
+  listInvoiceableQuotes: async () =>
+    ok([
+      { id: 'sign-1', number: 'D2026-030', customerName: 'Boulangerie Lefèvre', totalTtcCents: 302500, depositPct: 40, depositInvoiced: false },
+      { id: 'sign-2', number: 'D2026-031', customerName: 'Camping Les Pins', totalTtcCents: 120000, depositPct: 30, depositInvoiced: true },
+    ]),
+  generateInvoice: async () => ok({ invoiceId: 'generated-1' }),
   registerPayment: async () => ok({ status: 'paid' }),
   sendQuote: async () => ok({ number: 'D2026-014' }),
   issueInvoice: async () => ok({ number: 'F2026-001' }),
@@ -137,6 +145,39 @@ describe('BobAgent (démo)', () => {
     const after = await agent.ask(followUp);
     expect(after.ok && after.value.intent).toBe('encaisser');
     expect(after.ok && after.value.kind).toBe('proposed');
+  });
+
+  it('ASK-2 : « fais la facture du devis » avec acompte prévu NON facturé → question acompte/solde, boucle fermée', async () => {
+    const agent = makeAgent();
+    const r = await agent.ask('Fais la facture du devis D2026-030');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    // La cible est résolue mais le MODE manque : Bob pose la question au lieu de choisir.
+    expect(r.value.intent).toBe('generer_facture');
+    expect(r.value.kind).toBe('answer');
+    const question = r.value.ask?.[0];
+    expect(question?.id).toBe('generer_facture.mode');
+    expect(question?.options.map((o) => o.value)).toEqual(['deposit', 'final']);
+    // Boucle fermée : le followUp « acompte » aboutit à la PROPOSITION (palier fiscal : toujours confirmée).
+    const deposit = await agent.ask(question!.options[0]!.followUp);
+    expect(deposit.ok && deposit.value.kind).toBe('proposed');
+    expect(deposit.ok && deposit.value.pending?.tool).toBe('generer_facture');
+    expect(deposit.ok && deposit.value.pending?.args).toMatchObject({ quoteId: 'sign-1', mode: 'deposit' });
+  });
+
+  it('ASK-2 : acompte DÉJÀ facturé → la finale est l’évidence, aucune question inutile', async () => {
+    const r = await makeAgent().ask('Fais la facture du devis D2026-031');
+    expect(r.ok && r.value.kind).toBe('proposed');
+    expect(r.ok && r.value.pending?.args).toMatchObject({ quoteId: 'sign-2', mode: 'final' });
+    expect(r.ok && (r.value.ask ?? []).length).toBe(0);
+  });
+
+  it('ASK-2 : sans cible → question « quel devis ? » avec l’acompte prévu dans la description', async () => {
+    const r = await makeAgent().ask('Génère la facture du devis');
+    expect(r.ok && r.value.intent).toBe('generer_facture');
+    const question = r.ok ? r.value.ask?.[0] : undefined;
+    expect(question?.id).toBe('generer_facture.cible');
+    expect(question?.options[0]?.description).toContain('acompte 40 % prévu');
   });
 
   it('envoyer un devis : sortant client -> propose toujours une confirmation', async () => {

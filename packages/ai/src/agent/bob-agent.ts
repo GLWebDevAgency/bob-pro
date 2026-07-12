@@ -175,7 +175,8 @@ export function resolveInvoice(
   return (opts.fallbackToSingle ?? true) && invoices.length === 1 ? invoices[0]! : null;
 }
 
-type BusinessDocumentTarget = SendableQuote | IssuableInvoice;
+/** Forme minimale d'une pièce ciblable par numéro/client — devis, factures, devis facturables. */
+type BusinessDocumentTarget = { id: string; number: string | null; customerName: string };
 
 function normalized(s: string): string {
   return s.toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '');
@@ -229,6 +230,7 @@ function intentForTool(tool: string): BobIntent {
   if (tool === 'payer_depense') return 'payer_depense';
   if (tool === 'resultat_provisoire') return 'resultat';
   if (tool === 'mon_bilan') return 'bilan';
+  if (tool === 'generer_facture' || tool === 'generer_facture_devis') return 'generer_facture';
   if (tool === 'revue_cloture') return 'revue_cloture';
   if (tool === 'revue_pilotage') return 'pilotage';
   if (tool === 'delai_paiement') return 'dso';
@@ -899,6 +901,127 @@ export class BobAgent {
       const run = await tool.run(args);
       if (!run.ok) return err(run.error);
       return ok({ kind: 'done', intent, model, plan: ['Émettre la facture'], card: { title: 'Facture émise ✓', body: `${label} — c’est émis.` } });
+    }
+
+    if (intent === 'generer_facture') {
+      // ASK-2 : générer la facture d'un devis SIGNÉ — le mode (acompte/solde) est une vraie
+      // décision de facturation : quand le devis prévoit un acompte non encore facturé et que
+      // le message ne tranche pas, Bob POSE LA QUESTION au lieu de choisir en silence.
+      const list = this.deps.actions.listInvoiceableQuotes?.bind(this.deps.actions);
+      const tool = this.tool('generer_facture');
+      if (!list || !tool) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier la capacité de l’hôte'],
+          card: { title: 'Facturer un devis', body: 'Je n’ai pas accès à la facturation des devis sur cet appareil — passe par l’écran Ventes.' },
+        });
+      }
+      const r = await list();
+      if (!r.ok) return err(r.error);
+      if (r.value.length === 0) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Chercher les devis signés facturables'],
+          card: { title: 'Facturer un devis', body: 'Aucun devis signé en attente de facturation.' },
+        });
+      }
+      const quote = resolveBusinessDocument(reference ?? message, r.value);
+      if (!quote) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Lever l’ambiguïté'],
+          card: { title: 'Quel devis ?', body: 'Précise le devis signé à facturer :' },
+          choices: r.value.map((q) => ({ label: `${displayRef(q)} — ${q.customerName} · ${formatEUR(q.totalTtcCents)}`, value: displayRef(q) })),
+          ask: [
+            askToPick({
+              id: 'generer_facture.cible',
+              question: 'Quel devis signé veux-tu facturer ?',
+              header: 'Devis',
+              items: r.value.map((q) => ({
+                value: displayRef(q),
+                label: displayRef(q),
+                description: `${q.customerName} · ${formatEUR(q.totalTtcCents)}${q.depositPct !== null && !q.depositInvoiced ? ` — acompte ${q.depositPct} % prévu` : ''}`,
+                followUp: `Fais la facture du devis ${displayRef(q)}`,
+              })),
+            }),
+          ],
+        });
+      }
+
+      const normalizedMessage = normalized(message);
+      const wantsDeposit = /acompte/.test(normalizedMessage);
+      const wantsFinal = /(finale?|solde|totalite)/.test(normalizedMessage);
+      let mode: 'deposit' | 'final' | null = wantsDeposit && !wantsFinal ? 'deposit' : wantsFinal ? 'final' : null;
+      if (mode === null) {
+        if (quote.depositPct !== null && !quote.depositInvoiced) {
+          // LA question de précision : deux voies légitimes, montants exacts au diff de
+          // confirmation (jamais recalculés ici — une seule vérité, le domaine).
+          const ref = displayRef(quote);
+          return ok({
+            kind: 'answer',
+            intent,
+            model,
+            plan: ['Identifier le devis signé', 'Demander la précision qui manque : acompte ou solde'],
+            card: {
+              title: 'Acompte ou facture finale ?',
+              body: `Le devis ${ref} (${quote.customerName}) prévoit un acompte de ${quote.depositPct} % — il n'a pas encore été facturé.`,
+            },
+            choices: [
+              { label: `Facture d'acompte (${quote.depositPct} %)`, value: `Fais la facture d'acompte du devis ${ref}` },
+              { label: 'Facture finale', value: `Fais la facture finale du devis ${ref}` },
+            ],
+            ask: [
+              {
+                id: 'generer_facture.mode',
+                question: `Acompte ou solde pour le devis ${ref} (${quote.customerName}) ?`,
+                header: 'Facturation',
+                options: [
+                  {
+                    value: 'deposit',
+                    label: `Facture d'acompte (${quote.depositPct} %)`,
+                    description: 'À encaisser maintenant, avant les travaux — le solde suivra en facture finale.',
+                    followUp: `Fais la facture d'acompte du devis ${ref}`,
+                  },
+                  {
+                    value: 'final',
+                    label: 'Facture finale',
+                    description: `Tout le chantier en une fois (${formatEUR(quote.totalTtcCents)} TTC) — sans passer par l'acompte.`,
+                    followUp: `Fais la facture finale du devis ${ref}`,
+                  },
+                ],
+              },
+            ],
+          });
+        }
+        // Pas d'acompte prévu, ou déjà facturé : la finale est l'évidence — aucune question inutile.
+        mode = 'final';
+      }
+
+      const args = { quoteId: quote.id, mode };
+      const label =
+        mode === 'deposit'
+          ? `Générer la facture d'ACOMPTE (${quote.depositPct ?? 0} %) du devis ${displayRef(quote)} — ${quote.customerName}`
+          : `Générer la facture FINALE du devis ${displayRef(quote)} — ${quote.customerName} (${formatEUR(quote.totalTtcCents)} TTC${quote.depositInvoiced ? ', acompte déjà facturé déduit' : ''})`;
+      if (requiresConfirmation(tool, autonomy)) {
+        return ok({
+          kind: 'proposed',
+          intent,
+          model,
+          plan: ['Identifier le devis signé', 'Préparer la facture (même use case que l’écran)', 'Attendre ta confirmation'],
+          card: { title: 'Facture à confirmer', body: `${label}\nJe la génère en brouillon ?` },
+          pending: { tool: tool.name, args, label },
+          spokenPrompt: buildSpokenConfirmation(label),
+        });
+      }
+      const run = await tool.run(args);
+      if (!run.ok) return err(run.error);
+      return ok({ kind: 'done', intent, model, plan: ['Générer la facture'], card: { title: 'Facture générée ✓', body: `${label} — brouillon créé, à émettre quand tu veux.` } });
     }
 
     if (intent === 'encaisser') {

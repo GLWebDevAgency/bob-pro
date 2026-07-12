@@ -1352,6 +1352,11 @@ const legacyFr = {
     pro: 'Encaisser la facture {ref}',
     direct: 'Encaisse la facture {ref}',
   },
+  'assistant.cmdInvoiceQuote': {
+    pote: 'Fais la facture du devis',
+    pro: 'Générer la facture du devis',
+    direct: 'Facture le devis.',
+  },
   'assistant.cmdCollectOpen': {
     pote: 'J’ai encaissé une facture',
     pro: 'J’ai encaissé une facture',

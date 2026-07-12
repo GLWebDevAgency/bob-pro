@@ -5,6 +5,7 @@ export type BobIntent =
   | 'factures'
   | 'envoyer_devis'
   | 'emettre_facture'
+  | 'generer_facture' // générer la facture d'un devis signé (acompte ou solde) — ASK-2
   | 'documents'
   | 'scan' // numériser un reçu/ticket/justificatif (ouvre l'OCR caméra)
   | 'nouveau_devis' // ouvrir l'écran de création de devis
@@ -66,6 +67,10 @@ export function detectIntent(message: string): BobIntent {
     return 'envoyer_devis';
   if (/([ée]met|emet|num[ée]rote|finalise|publie).*(facture)|facture.*([ée]mettre|emettre|d[ée]finitive|num[ée]ro)/.test(m))
     return 'emettre_facture';
+  // Générer la facture d'un devis signé (ASK-2) : AVANT nouveau_devis (« fais la facture du
+  // devis » y collisionnerait) et distinct d'emettre_facture (émettre = numéroter un brouillon).
+  if (/(g[ée]n[èe]re.{0,15}facture|facture?.{0,10}(du|le|ce) devis|fais.{0,12}facture.{0,15}devis|facture d.acompte|facture (finale|de solde)|facture[rz]? l.acompte)/.test(m))
+    return 'generer_facture';
   if (/(nouveau devis|fais.*devis|cr[ée]e?r?.*devis|faire un devis|un devis|chiffrer)/.test(m)) return 'nouveau_devis';
   if (/chantier/.test(m)) return 'voir_chantiers';
   if (/(document|pi[èe]ce|archive|pdf|factur-?x|justificatif|re[çc]u|ticket)/.test(m)) return 'documents';

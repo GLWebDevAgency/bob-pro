@@ -45,6 +45,16 @@ describe('detectIntent — diagnostic 2026 (C40 TODO ⑦)', () => {
     expect(detectIntent('Un devis pour 2026')).toBe('nouveau_devis');
   });
 
+  it('generer_facture (ASK-2) : facturer un devis signé ≠ créer un devis ≠ émettre un brouillon', () => {
+    expect(detectIntent('Fais la facture du devis D-2026-0005')).toBe('generer_facture');
+    expect(detectIntent('Génère la facture du devis')).toBe('generer_facture');
+    expect(detectIntent('Fais la facture d’acompte du devis D-2026-0005')).toBe('generer_facture');
+    expect(detectIntent('Fais la facture finale du devis D-2026-0005')).toBe('generer_facture');
+    // Anti-collision : les intentions voisines ne sont pas détournées.
+    expect(detectIntent('Fais un devis pour Martin')).toBe('nouveau_devis');
+    expect(detectIntent('Émets la facture 2026-014')).toBe('emettre_facture');
+  });
+
   it('revue de clôture (DOSSIER-2) : la QUESTION du verdict ≠ ouvrir l’écran', () => {
     expect(detectIntent('Mon dossier est-il prêt pour le comptable ?')).toBe('revue_cloture');
     expect(detectIntent('C’est prêt à signer ?')).toBe('revue_cloture');

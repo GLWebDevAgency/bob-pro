@@ -6,6 +6,7 @@ import {
   type BobActions,
   type PayableInvoice,
   type PendingAction,
+  type InvoiceableQuote,
   type SendableQuote,
   type IssuableInvoice,
   type AgentDocument,
@@ -131,6 +132,26 @@ export function makeBobAgent(client: BobClient): BobAssistant {
           status: x.status,
         }));
       return ok(invoices);
+    },
+    // ASK-2 : devis SIGNÉS facturables — mêmes listes client que l'UI ; un devis sort
+    // dès que sa finale existe ; l'acompte déjà émis rend la finale évidente (pas de question).
+    async listInvoiceableQuotes() {
+      const [q, inv, cust] = await Promise.all([client.listQuotes(), client.listInvoices(), client.listCustomers()]);
+      if (!q.ok) return q;
+      if (!inv.ok) return inv;
+      const names = new Map((cust.ok ? cust.value : []).map((c) => [c.id, c.name]));
+      const quotes: InvoiceableQuote[] = q.value
+        .filter((x) => x.status === 'signed')
+        .filter((x) => !inv.value.some((i) => i.parentQuoteId === x.id && i.kind === 'final' && i.status !== 'cancelled'))
+        .map((x) => ({
+          id: x.id,
+          number: x.number,
+          customerName: names.get(x.customerId) ?? 'Client',
+          totalTtcCents: x.totals.ttc,
+          depositPct: x.depositPct,
+          depositInvoiced: inv.value.some((i) => i.parentQuoteId === x.id && i.kind === 'deposit' && i.status !== 'cancelled'),
+        }));
+      return ok(quotes);
     },
     async listDocuments() {
       const r = await client.listDocuments();

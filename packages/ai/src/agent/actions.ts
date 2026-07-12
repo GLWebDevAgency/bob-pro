@@ -50,6 +50,19 @@ export interface IssuableInvoice {
   status: string;
 }
 
+/** Devis SIGNÉ facturable (ASK-2) — matière de generer_facture : le mode (acompte/solde)
+ * est une vraie décision de facturation, posée en question structurée quand elle manque. */
+export interface InvoiceableQuote {
+  id: string;
+  number: string | null;
+  customerName: string;
+  totalTtcCents: number;
+  /** Acompte prévu au devis (pourcentage) — null si aucun. */
+  depositPct: number | null;
+  /** L'acompte a déjà été facturé : la finale devient l'évidence (aucune question). */
+  depositInvoiced: boolean;
+}
+
 export interface AgentDocument {
   id: string;
   filename: string;
@@ -146,6 +159,9 @@ export interface BobActions {
   listPayableInvoices(): Promise<Result<PayableInvoice[], AppError>>;
   listSendableQuotes(): Promise<Result<SendableQuote[], AppError>>;
   listIssuableInvoices(): Promise<Result<IssuableInvoice[], AppError>>;
+  /** Devis signés facturables (ASK-2, optionnelle) — cible de generer_facture ; le handler
+   * pose la question acompte/solde quand le devis prévoit un acompte non encore facturé. */
+  listInvoiceableQuotes?(): Promise<Result<InvoiceableQuote[], AppError>>;
   listDocuments(): Promise<Result<AgentDocument[], AppError>>;
   // —— Lecture, OPTIONNELLE (C-EXP5b) ——
   /** Échéances fiscales à venir (TVA/URSSAF/IS/CFE/comptes annuels) — MÊME use case

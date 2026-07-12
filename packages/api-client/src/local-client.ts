@@ -11,6 +11,7 @@ import {
   type PayableInvoice,
   type SendableQuote,
   type IssuableInvoice,
+  type InvoiceableQuote,
   type AgentDocument,
 } from '@bob/ai';
 import {
@@ -357,6 +358,22 @@ export class LocalBobClient implements BobClient {
       lines: [{ label: 'Entretien annuel chaudières — bâtiments municipaux', category: 'labor', qty: 1, unitPriceHT: 62500, vatRate: 20 }],
     });
     if (sevresMaintenance.ok) await this.sendQuoteInternal(sevresMaintenance.value.quoteId);
+
+    // ── Devis SIGNÉ avec acompte prévu, PAS ENCORE FACTURÉ (ASK-2) : la vraie décision
+    // « acompte ou solde ? » devient exerçable en démo — Bob pose la question au lieu de
+    // trancher en silence. Boulangerie Lefèvre : rénovation du fournil, acompte 40 %.
+    const lefevre = await this.createQuoteInternal({
+      customerId: 'cust-lefevre',
+      depositPct: 40,
+      lines: [
+        { label: 'Rénovation plomberie du fournil', category: 'labor', qty: 1, unitPriceHT: 210000, vatRate: 10 },
+        { label: 'Fournitures cuivre et raccords', category: 'supply', qty: 1, unitPriceHT: 65000, vatRate: 10 },
+      ],
+    });
+    if (lefevre.ok) {
+      await this.sendQuoteInternal(lefevre.value.quoteId);
+      await this.signQuoteInternal({ quoteId: lefevre.value.quoteId, signerName: 'Boulangerie Lefèvre' });
+    }
   }
 
   private mapQuote(q: Quote): QuoteView {
@@ -1308,6 +1325,30 @@ export class LocalBobClient implements BobClient {
             status: x.status,
           }));
         return ok(quotes);
+      },
+      // ASK-2 : devis signés facturables — un devis sort de la liste dès que sa FINALE existe ;
+      // l'acompte déjà émis est signalé (depositInvoiced) pour que la finale devienne l'évidence.
+      listInvoiceableQuotes: async (): Promise<Result<InvoiceableQuote[], AppError>> => {
+        await this.ready;
+        const [quotes, invoices, customers] = await Promise.all([
+          this.quotes.listByCompany(this.companyId),
+          this.invoices.listByCompany(this.companyId),
+          this.customers.listByCompany(this.companyId),
+        ]);
+        const names = new Map(customers.map((c) => [c.id, c.name]));
+        return ok(
+          quotes
+            .filter((q) => q.status === 'signed')
+            .filter((q) => !invoices.some((i) => i.parentQuoteId === q.id && i.kind === 'final' && i.status !== 'cancelled'))
+            .map((q) => ({
+              id: q.id,
+              number: q.number,
+              customerName: names.get(q.customerId) ?? '',
+              totalTtcCents: q.totals().ttc,
+              depositPct: q.depositPct,
+              depositInvoiced: invoices.some((i) => i.parentQuoteId === q.id && i.kind === 'deposit' && i.status !== 'cancelled'),
+            })),
+        );
       },
       listIssuableInvoices: async () => {
         const [inv, cust] = await Promise.all([this.listInvoices(), this.listCustomers()]);

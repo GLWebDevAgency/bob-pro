@@ -129,6 +129,12 @@ export const LLM_TOOL_SPECS: LlmToolSpec[] = [
     parameters: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
+    name: 'generer_facture_devis',
+    description:
+      'Générer la facture d’un devis signé : facture d’acompte (deposit) ou facture finale (solde). Répond à « fais la facture du devis X », « facture l’acompte », « facture finale ».',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
     name: 'revue_cloture',
     description:
       'Verdict de la revue de clôture : le dossier est-il prêt pour l’expert-comptable ? Diligences passées, réserves à justifier, anomalies bloquantes. Répond à « mon dossier est-il prêt ? », « c’est bon pour le comptable ? ».',
@@ -173,6 +179,7 @@ const TOOL_TO_INTENT: Record<string, BobIntent> = {
   payer_depense: 'payer_depense',
   resultat_provisoire: 'resultat',
   mon_bilan: 'bilan',
+  generer_facture_devis: 'generer_facture',
   revue_cloture: 'revue_cloture',
   revue_pilotage: 'pilotage',
   delai_paiement: 'dso',

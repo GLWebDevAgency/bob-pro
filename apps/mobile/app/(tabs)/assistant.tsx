@@ -94,6 +94,8 @@ const ENTRY_PROMPTS: Readonly<Partial<Record<string, I18nKey>>> = {
   relance_devis: 'assistant.cmdRelanceQuote',
   // ASK-1 : entrée « encaisser » SANS référence — Bob pose la question structurée (laquelle ?).
   encaisser: 'assistant.cmdCollectOpen',
+  // ASK-2 : facturer un devis signé — Bob demande lequel, puis acompte ou solde.
+  facturer_devis: 'assistant.cmdInvoiceQuote',
 };
 
 /** Chips de désambiguïsation → commande de suivi par intent ({ref} = numéro de pièce). */
