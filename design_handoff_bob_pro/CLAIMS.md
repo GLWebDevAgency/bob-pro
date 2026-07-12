@@ -1257,6 +1257,22 @@ transcript workflow wf_fb597a24-2e3.
   (core 4186fcc + écran d4573ea + capture). SUIVI parité Bob : exposer getClosingReview
   en BobActions (« mon dossier est-il prêt ? ») — non bloquant, le dossier texte porte
   déjà la revue.
+- [02:20] claude-code (session B) PARITÉ + ASK-1 MERGE (b4f85a6 + 20f5a9e) : ① le 10e
+  pouvoir de Bob — getClosingReview en BobActions, intent revue_cloture AVANT cloture
+  (« mon dossier est-il prêt ? » RÉPOND, « clôture le mois » NAVIGUE — anti-collision
+  testée), handler verdict + points listés, SANS navigate (une question mérite une
+  réponse, pas une téléportation). ② ASK-1 — questions structurées à la « Claude Code »
+  (demande humaine 2026-07-12) : AgentRun.ask (AgentQuestion : header/question/options
+  avec DESCRIPTIONS/multiSelect), chaque option porte sa commande followUp FOURNIE PAR
+  L'AGENT (l'UI ne reconstruit plus de phrase — CMD_BY_INTENT devient le fallback legacy),
+  QuestionSheet @bob/ui (modale radio/checkbox + « Autre »), ouverture auto, 7 sites
+  d'ambiguïté migrés, choices conservé (rétro-compat serveur). Seed démo : +2 devis EN
+  ATTENTE (le « devis 1 480 € » du proto ENFIN matérialisé — Mme Durand — + entretien
+  Mairie 750 €) : la branche ambiguïté est exerçable en démo (doctrine C14). Preuve
+  device captures/assistant-ask1.png (modale réelle, 2 options descriptives). ai 162 ✓
+  api-client 42 ✓ (sonde journal élargie id-24 — le seed consomme plus d'ids) i18n 54 ✓.
+  SUIVI serveur (session A) : getClosingReview + ask/AgentQuestion à porter dans les
+  BobActions serveur (apps/api/src/ai) quand vous repasserez — champ additif, sans risque.
 
 ---
 
