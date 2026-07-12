@@ -1,11 +1,13 @@
-import { useMemo, useRef } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { ScrollView, View, Text, Pressable, ActivityIndicator } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { formatEUR } from '@bob/core';
-import { InMemoryCompanyMemory, suggestExpenseDefaults } from '@bob/ai';
+import { InMemoryCompanyMemory, suggestCategoryClarification, suggestExpenseDefaults } from '@bob/ai';
+import { QuestionSheet } from '@bob/ui';
+import type { ExpenseCategory } from '@bob/core';
 import { useTheme } from '../src/theme';
 import { useQueryClient } from '@tanstack/react-query';
 import { useExtractDocument, useRecordExpense, useExpenses } from '../src/data/hooks';
@@ -50,6 +52,14 @@ export default function ScanDocument() {
   // Défauts proposés : la mémoire fait primer TA catégorie habituelle sur la devinette OCR (sinon fallback OCR).
   const defaults = data ? suggestExpenseDefaults(memory, data) : null;
 
+  // ASK-3 : catégorie ambiguë (devinette OCR hésitante ou « autre », jamais sur une habitude
+  // fournisseur) — question structurée AVANT l'enregistrement ; le choix nourrit la mémoire.
+  const [chosenCategory, setChosenCategory] = useState<ExpenseCategory | null>(null);
+  const [categoryDismissed, setCategoryDismissed] = useState(false);
+  const clarification = data && defaults ? suggestCategoryClarification(defaults, data) : null;
+  const askCategory = clarification !== null && chosenCategory === null && !categoryDismissed;
+  const category: ExpenseCategory = chosenCategory ?? defaults?.category ?? (data?.categoryGuess ?? 'autre');
+
   async function capture(from: 'camera' | 'library'): Promise<void> {
     const perm =
       from === 'camera'
@@ -64,6 +74,8 @@ export default function ScanDocument() {
     if (!asset || !asset.base64) return;
     const mimeType = asset.uri.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
     photoRef.current = { contentBase64: asset.base64, mimeType };
+    setChosenCategory(null);
+    setCategoryDismissed(false);
     extract.mutate({ contentBase64: asset.base64, mimeType });
   }
 
@@ -121,15 +133,24 @@ export default function ScanDocument() {
                   <Row label="Taux TVA" value={`${defaults?.vatRatePct ?? data.vatRatePctApplied} %`} colors={colors} />
                 ) : null}
                 <View>
-                  <Row
-                    label="Catégorie"
-                    value={CATEGORY_LABEL[defaults?.category ?? data.categoryGuess] ?? data.categoryGuess}
-                    colors={colors}
-                  />
+                  <Row label="Catégorie" value={CATEGORY_LABEL[category] ?? category} colors={colors} />
                   {defaults?.source === 'memory' ? (
                     <Text style={[font('meta'), { color: semantic.ai, marginTop: 2, textAlign: 'right' }]}>
                       ✨ Proposé d’après ton historique
                     </Text>
+                  ) : clarification !== null ? (
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel="Préciser la catégorie"
+                      onPress={() => {
+                        setChosenCategory(null);
+                        setCategoryDismissed(false);
+                      }}
+                    >
+                      <Text style={[font('meta'), { color: chosenCategory ? semantic.ai : semantic.warning, marginTop: 2, textAlign: 'right' }]}>
+                        {chosenCategory ? '✓ Catégorie confirmée — modifier' : '? Devinette incertaine — préciser'}
+                      </Text>
+                    </Pressable>
                   ) : null}
                 </View>
                 {(defaults?.supplierSiren ?? data.supplierSiren) ? (
@@ -160,7 +181,7 @@ export default function ScanDocument() {
                     totalHtCents: data.totalHtCents,
                     vatCents: data.vatCents,
                     vatRatePct: defaults?.vatRatePct ?? data.vatRatePctApplied,
-                    category: defaults?.category ?? data.categoryGuess,
+                    category,
                     source: 'ocr',
                   },
                   {
@@ -191,6 +212,23 @@ export default function ScanDocument() {
           </>
         ) : null}
       </View>
+
+      {/* ASK-3 : la question de catégorie — mêmes modales que l'assistant (QuestionSheet). */}
+      <QuestionSheet
+        visible={askCategory}
+        header={clarification?.header ?? ''}
+        question={clarification?.question ?? ''}
+        options={clarification?.options ?? []}
+        confirmLabel="Valider"
+        otherLabel={`Garder « ${CATEGORY_LABEL[defaults?.category ?? 'autre']} »`}
+        onClose={() => setCategoryDismissed(true)}
+        onSelect={(values) => {
+          const picked = values[0] as ExpenseCategory | undefined;
+          if (picked) setChosenCategory(picked);
+          setCategoryDismissed(true);
+        }}
+        onOther={() => setCategoryDismissed(true)}
+      />
     </ScrollView>
   );
 }

@@ -3,6 +3,7 @@ import {
   normalizeSupplierName,
   InMemoryCompanyMemory,
   suggestExpenseDefaults,
+  suggestCategoryClarification,
   type OcrDefaultsInput,
 } from './company-memory';
 
@@ -69,3 +70,41 @@ describe('suggestExpenseDefaults', () => {
     expect(d.source).toBe('ocr');
   });
 });
+
+describe('suggestCategoryClarification (ASK-3) — la question seulement quand la décision est réelle', () => {
+  const defaults = (over: Partial<Parameters<typeof suggestCategoryClarification>[0]> = {}) => ({
+    supplierName: 'Nouveau Fournisseur',
+    supplierSiren: null,
+    category: 'fournitures' as const,
+    vatRatePct: 20,
+    source: 'ocr' as const,
+    ...over,
+  });
+
+  it('habitude fournisseur (source memory) : JAMAIS de question — ton historique prime', () => {
+    expect(suggestCategoryClarification(defaults({ source: 'memory' }), { confidence: 0.2 })).toBeNull();
+  });
+
+  it('OCR confiant et devinette ≠ « autre » : silence (pas de question inutile)', () => {
+    expect(suggestCategoryClarification(defaults(), { confidence: 0.9 })).toBeNull();
+  });
+
+  it('OCR hésitant : question — devinette en premier, « autre » joignable, 4 options max, descriptions comptables', () => {
+    const q = suggestCategoryClarification(defaults(), { confidence: 0.6 });
+    expect(q).not.toBeNull();
+    expect(q!.options[0]?.value).toBe('fournitures');
+    expect(q!.options.some((o) => o.value === 'autre')).toBe(true);
+    expect(q!.options.length).toBeLessThanOrEqual(4);
+    for (const o of q!.options) expect(o.description.length).toBeGreaterThan(0);
+    expect(q!.question).toContain('Nouveau Fournisseur');
+  });
+
+  it('devinette « autre » = ambiguïté DE FAIT : question même à confiance haute', () => {
+    const q = suggestCategoryClarification(defaults({ category: 'autre' }), { confidence: 0.9 });
+    expect(q).not.toBeNull();
+    // « autre » (la devinette) reste en tête, sans doublon.
+    expect(q!.options[0]?.value).toBe('autre');
+    expect(new Set(q!.options.map((o) => o.value)).size).toBe(q!.options.length);
+  });
+});
+

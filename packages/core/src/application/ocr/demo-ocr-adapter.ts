@@ -21,6 +21,10 @@ const SUPPLIERS: { name: string; siren: string | null; cat: ExpenseCategoryGuess
   { name: 'TotalEnergies Station', siren: null, cat: 'carburant' },
   { name: 'Brasserie du Coin', siren: null, cat: 'repas' },
   { name: 'SARL Dupont Plomberie', siren: '732829320', cat: 'sous_traitance' },
+  // Grossiste généraliste : on y achète de tout — la devinette « autre » est une ambiguïté
+  // DE FAIT (l'OCR avoue ne pas savoir) ; confiance plafonnée basse → la question de
+  // catégorie (ASK-3) est exerçable en démo, de façon déterministe par photo.
+  { name: 'Metro Cash & Carry', siren: null, cat: 'autre' },
 ];
 
 /**
@@ -49,7 +53,7 @@ export class DemoOcrAdapter implements OcrPort {
       vatRatePctApplied: vatRate,
       currency: 'EUR',
       categoryGuess: sup.cat,
-      confidence: 0.78 + (h % 20) / 100,
+      confidence: sup.cat === 'autre' ? 0.55 + (h % 15) / 100 : 0.78 + (h % 20) / 100,
       rawText: `${sup.name}\nTOTAL TTC ${(totalTtcCents / 100).toFixed(2)} EUR\nTVA ${vatRate}%`,
       suggestedTags: normalizeSuggestedTags([sup.cat, sup.name]),
       suggestedFilename: canonicalReceiptFilename({ documentDate, supplierName: sup.name, totalTtcCents }),
