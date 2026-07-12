@@ -1303,6 +1303,18 @@ transcript workflow wf_fb597a24-2e3.
   existe) → LIVE-1 synchro modales⇄voix (lire les AgentQuestion, répondre à la voix,
   parseVoiceChoice) → LIVE-2 génération LLM des réponses (money-guard) + mémoire de
   conversation → LIVE-3 full-duplex/barge-in (APIs realtime, exploratoire).
+- [03:50] claude-code (session B) LIVE-0/1 MERGE (4a78199) : LE MODE VOCAL MAINS-LIBRES,
+  SYNCHRONISÉ AVEC L'ÉCRAN — le différenciateur fondateur prend corps. Boucle semi-duplex
+  dans l'assistant (écoute fin-de-parole native → agent → réponse PARLÉE via speakAndWait
+  [le TTS notifie sa fin, natif+cloud] → ré-écoute), tout tracé à l'écrit. Questions
+  structurées LUES (speakableQuestion, labels courts) pendant que la modale s'affiche ;
+  réponse vocale résolue FAIL-SAFE (parseVoiceChoice : ordinaux FR, n° de pièce sans
+  l'année partagée, mots DISCRIMINANTS seulement — univoque ou null, 10 tests). Tap OU
+  voix = même résultat. Consentements : parseVoiceConsent inchangé (plancher), 1 relance
+  puis « choisis à l'écran ». UI : orbe pulse (toggle) + bandeau d'état (tap = interrompre
+  / relancer / clore en cloud push-to-talk — dégradé honnête sans module natif Expo Go).
+  ai 176 ✓ i18n 54 ✓ (+11 clés live.*) typecheck ✓. RESTE : LIVE-2 (génération LLM +
+  mémoire conversation), LIVE-3 (full-duplex), test device réel micro (dev build natif).
 
 ---
 
