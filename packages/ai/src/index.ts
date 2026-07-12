@@ -5,6 +5,7 @@ export * from './voice/demo-stt';
 export * from './voice/tts-port';
 export * from './voice/demo-tts';
 export * from './voice/voice-confirm';
+export * from './voice/voice-choice';
 export * from './router/model-router';
 export * from './prompt/prompt-pack';
 export * from './eval/ocr-golden';

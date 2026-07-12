@@ -1431,6 +1431,33 @@ const legacyFr = {
     pro: 'Envoyer',
     direct: 'Envoyer',
   },
+  // LIVE — le mode vocal mains-libres (« parler à un pote expert-comptable »)
+  'live.on': { pote: 'Mode vocal activé — je t’écoute.', pro: 'Mode vocal activé. Je vous écoute.', direct: 'Vocal on.' },
+  'live.listening': { pote: 'Je t’écoute…', pro: 'Je vous écoute…', direct: 'J’écoute…' },
+  'live.thinking': { pote: 'Je réfléchis…', pro: 'Je traite votre demande…', direct: 'Je traite…' },
+  'live.speaking': { pote: 'Je te réponds — touche pour m’interrompre', pro: 'Réponse en cours — touchez pour interrompre', direct: 'Je parle — touche pour couper' },
+  'live.idle': { pote: 'Touche l’onde pour me parler', pro: 'Touchez l’onde pour parler', direct: 'Touche pour parler' },
+  'live.tapWhenDone': { pote: 'Parle, puis touche quand tu as fini', pro: 'Parlez, puis touchez une fois terminé', direct: 'Parle, touche à la fin' },
+  'live.error': {
+    pote: 'Oups, j’ai buté — redis-moi ça ?',
+    pro: 'Une erreur est survenue. Pouvez-vous reformuler ?',
+    direct: 'Raté. Répète ?',
+  },
+  'live.unclearChoice': {
+    pote: 'J’ai pas bien saisi lequel — dis le numéro ou le nom ?',
+    pro: 'Je n’ai pas identifié votre choix — le numéro ou le nom ?',
+    direct: 'Pas compris. Numéro ou nom ?',
+  },
+  'live.unclearConsent': {
+    pote: 'Dis « je confirme » pour valider, ou « annule ».',
+    pro: 'Dites « je confirme » pour valider, ou « annule » pour abandonner.',
+    direct: '« Je confirme » ou « annule ».',
+  },
+  'live.useScreen': {
+    pote: 'Pas de souci — choisis à l’écran, je reste à l’écoute.',
+    pro: 'Vous pouvez choisir à l’écran ; je reste à l’écoute.',
+    direct: 'Choisis à l’écran. J’écoute.',
+  },
   // ASK-1 — questions structurées (modale de choix quand la demande est ambiguë)
   'assistant.askAnswer': { pote: 'Répondre', pro: 'Répondre', direct: 'Répondre' },
   'assistant.askConfirm': { pote: 'Valider', pro: 'Valider', direct: 'Valider' },

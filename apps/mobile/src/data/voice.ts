@@ -178,15 +178,24 @@ export function useSpeak() {
     }
   }, []);
 
-  const speakNative = useCallback((t: string) => {
+  const speakNative = useCallback((t: string, onFinished?: () => void) => {
     Speech.stop(); // ne pas superposer deux réponses
-    Speech.speak(t, { language: 'fr-FR', rate: 1.0 });
+    Speech.speak(t, {
+      language: 'fr-FR',
+      rate: 1.0,
+      ...(onFinished ? { onDone: onFinished, onStopped: onFinished, onError: onFinished } : {}),
+    });
   }, []);
 
-  const speak = useCallback(
-    async (text: string) => {
+  /** Cœur commun : parle, et signale la FIN de l'énoncé (onFinished) — la boucle live (LIVE-0)
+   *  enchaîne l'écoute à ce signal ; le fire-and-forget historique n'en a pas besoin. */
+  const speakCore = useCallback(
+    async (text: string, onFinished?: () => void) => {
       const t = text?.trim();
-      if (!t) return;
+      if (!t) {
+        onFinished?.();
+        return;
+      }
       // Couper toute sortie en cours (natif + cloud) avant d'en démarrer une nouvelle.
       Speech.stop();
       await cleanupCloud();
@@ -197,7 +206,7 @@ export function useSpeak() {
       } catch {
         /* réglage illisible -> natif */
       }
-      if (mode !== 'cloud') return speakNative(t);
+      if (mode !== 'cloud') return speakNative(t, onFinished);
 
       try {
         if (!ttsCloudReady.current) {
@@ -206,10 +215,10 @@ export function useSpeak() {
             .then((r) => (r.ok ? !!r.value.ttsCloudAvailable : false))
             .catch(() => false);
         }
-        if (!(await ttsCloudReady.current)) return speakNative(t);
+        if (!(await ttsCloudReady.current)) return speakNative(t, onFinished);
 
         const r = await client.synthesizeSpeech({ text: t });
-        if (!(r.ok && r.value.audioBase64 && cacheDirectory)) return speakNative(t);
+        if (!(r.ok && r.value.audioBase64 && cacheDirectory)) return speakNative(t, onFinished);
 
         const uri = `${cacheDirectory}bob-tts-${Date.now()}.${extForMime(r.value.mimeType)}`;
         await writeAsStringAsync(uri, r.value.audioBase64, { encoding: EncodingType.Base64 });
@@ -219,15 +228,36 @@ export function useSpeak() {
         const player = createAudioPlayer(uri);
         playerRef.current = player;
         player.addListener('playbackStatusUpdate', (s) => {
-          if (s.didJustFinish) void cleanupCloud();
+          if (s.didJustFinish) {
+            void cleanupCloud();
+            onFinished?.();
+          }
         });
         player.play();
       } catch {
         await cleanupCloud();
-        speakNative(t); // repli inconditionnel : la voix ne tombe jamais
+        speakNative(t, onFinished); // repli inconditionnel : la voix ne tombe jamais
       }
     },
     [client, cleanupCloud, speakNative],
+  );
+
+  const speak = useCallback(async (text: string) => speakCore(text), [speakCore]);
+
+  /** Parle et RÉSOUT à la fin de l'énoncé (fin naturelle, interruption ou erreur) — LIVE-0. */
+  const speakAndWait = useCallback(
+    (text: string): Promise<void> =>
+      new Promise((resolve) => {
+        let settled = false;
+        const done = (): void => {
+          if (!settled) {
+            settled = true;
+            resolve();
+          }
+        };
+        void speakCore(text, done).catch(done);
+      }),
+    [speakCore],
   );
 
   const stopSpeaking = useCallback(() => {
@@ -235,5 +265,5 @@ export function useSpeak() {
     void cleanupCloud();
   }, [cleanupCloud]);
 
-  return { speak, stopSpeaking };
+  return { speak, speakAndWait, stopSpeaking };
 }

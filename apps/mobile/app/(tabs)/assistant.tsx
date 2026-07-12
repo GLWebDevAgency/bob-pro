@@ -45,12 +45,16 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   buildActionDiff,
+  parseVoiceChoice,
+  parseVoiceConsent,
+  speakableQuestion,
   type AccountingLine,
   type ActionDiff,
   type AgentQuestion,
@@ -66,6 +70,7 @@ import { useBobClient } from '../../src/data/client';
 import { useInvoices, useQuotes, useSubscription } from '../../src/data/hooks';
 import { makeBobAgent } from '../../src/data/bob';
 import { getAutonomy } from '../../src/data/settings';
+import { speechRecognitionAvailable, useSpeak, useVoiceInput } from '../../src/data/voice';
 import { ActionDiffView } from '../../src/components/ActionDiffView';
 import { MicIcon, SendIcon, SparkIcon } from '../../src/components/icons';
 
@@ -290,10 +295,11 @@ export default function Assistant() {
     return null;
   };
 
-  const pushRun = (run: AgentRun): void => {
+  const pushRun = (run: AgentRun): ChatItem => {
     const id = nextId();
     const pending = run.kind === 'proposed' ? run.pending : undefined;
-    setItems((prev) => [...prev, { id, role: 'bob', text: run.card.body, run, ...(pending ? { pending } : {}) }]);
+    const item: ChatItem = { id, role: 'bob', text: run.card.body, run, ...(pending ? { pending } : {}) };
+    setItems((prev) => [...prev, item]);
     if (run.kind === 'done') refreshAfterAction();
     if (run.navigate) router.push(run.navigate as never); // commande « Jarvis » : Bob ouvre le bon écran
     if (run.ask?.length) setActiveAsk(run.ask[0] ?? null); // ASK-1 : la question s'ouvre d'elle-même
@@ -313,11 +319,12 @@ export default function Assistant() {
           /* aperçu comptable best-effort : silencieux si indisponible */
         });
     }
+    return item;
   };
 
-  const ask = async (raw: string): Promise<void> => {
+  const ask = async (raw: string): Promise<{ run: AgentRun; item: ChatItem } | null> => {
     const message = raw.trim();
-    if (!message || busy) return;
+    if (!message || busy) return null;
     setInput('');
     pushText('user', message);
     setBusy(true);
@@ -331,10 +338,10 @@ export default function Assistant() {
     setPhase(null);
     if (r.ok) {
       setReachable(true);
-      pushRun(r.value);
-    } else {
-      pushText('bob', failText(r.error, 'assistant.error'));
+      return { run: r.value, item: pushRun(r.value) };
     }
+    pushText('bob', failText(r.error, 'assistant.error'));
+    return null;
   };
   const askRef = useRef(ask);
   askRef.current = ask;
@@ -350,12 +357,166 @@ export default function Assistant() {
       return;
     }
     const picked = q.options.find((o) => o.value === values[0]);
-    if (picked) void ask(picked.followUp);
+    if (picked) {
+      // En mode live, la réponse (tap OU voix) relance la boucle : Bob vocalise la suite.
+      if (liveRef.current) void ask(picked.followUp).then((res) => liveTurn(res));
+      else void ask(picked.followUp);
+    }
   };
 
+  // ── LIVE-0/1 : boucle vocale mains-libres, synchronisée avec l'écran ─────────────────
+  // Semi-duplex : Bob écoute (fin de parole native) → réfléchit (agent) → parle (TTS) →
+  // ré-écoute. Les QUESTIONS structurées sont LUES (labels courts) et la réponse vocale
+  // (« le deuxième », « Lefèvre ») est résolue en fail-safe (parseVoiceChoice) — l'écran
+  // reste tappable à tout moment, même résultat. Les actions sensibles gardent leur
+  // plancher : consentement EXPLICITE (parseVoiceConsent), jamais d'exécution ambiguë.
+  const [live, setLive] = useState(false);
+  const [liveState, setLiveState] = useState<'idle' | 'listening' | 'thinking' | 'speaking'>('idle');
+  const liveRef = useRef(false);
+  liveRef.current = live;
+  // Ce que l'oreille attend : une commande libre, une réponse à une question, un consentement.
+  const expectationRef = useRef<
+    | { kind: 'command' }
+    | { kind: 'choice'; question: AgentQuestion; retried: boolean }
+    | { kind: 'consent'; item: ChatItem; retried: boolean }
+  >({ kind: 'command' });
+  const { speakAndWait, stopSpeaking } = useSpeak();
+
+  const voice = useVoiceInput(
+    (text) => {
+      if (liveRef.current) void onLiveTranscript(text);
+      else setInput(text);
+    },
+    { onIssue: () => setLiveState('idle') },
+  );
+  const voiceRef = useRef(voice);
+  voiceRef.current = voice;
+
+  /** L'oreille se rouvre — ou retombe en idle si le live a été coupé entre-temps. */
+  const listen = (): void => {
+    if (!liveRef.current) return;
+    setLiveState('listening');
+    void voiceRef.current.start();
+  };
+
+  const say = async (text: string): Promise<void> => {
+    if (!liveRef.current) return;
+    setLiveState('speaking');
+    await speakAndWait(text);
+  };
+
+  /** Vocalise le résultat d'un tour d'agent, arme l'attente adaptée, ré-écoute. */
+  const liveTurn = async (res: { run: AgentRun; item: ChatItem } | null): Promise<void> => {
+    if (!liveRef.current) return;
+    if (!res) {
+      await say(t('live.error', { personality }));
+      expectationRef.current = { kind: 'command' };
+      listen();
+      return;
+    }
+    const { run, item } = res;
+    const question = run.ask?.[0];
+    if (question) {
+      expectationRef.current = { kind: 'choice', question, retried: false };
+      await say(speakableQuestion(question));
+      listen();
+      return;
+    }
+    if (run.kind === 'proposed' && item.pending) {
+      expectationRef.current = { kind: 'consent', item, retried: false };
+      await say(run.spokenPrompt ?? run.card.body);
+      listen();
+      return;
+    }
+    expectationRef.current = { kind: 'command' };
+    await say(run.card.body);
+    listen();
+  };
+
+  /** Route la parole entendue selon l'attente courante — fail-safe à chaque embranchement. */
+  const onLiveTranscript = async (text: string): Promise<void> => {
+    if (!liveRef.current) return;
+    const expected = expectationRef.current;
+    setLiveState('thinking');
+
+    if (expected.kind === 'choice') {
+      const idx = parseVoiceChoice(text, expected.question.options);
+      if (idx !== null) {
+        const picked = expected.question.options[idx]!;
+        setActiveAsk(null); // la modale se referme : la voix a répondu
+        expectationRef.current = { kind: 'command' };
+        await liveTurn(await ask(picked.followUp));
+        return;
+      }
+      if (!expected.retried) {
+        expectationRef.current = { ...expected, retried: true };
+        await say(t('live.unclearChoice', { personality }));
+        listen();
+        return;
+      }
+      // Deux échecs : la modale reste ouverte, l'écran tranche — l'oreille redevient libre.
+      expectationRef.current = { kind: 'command' };
+      await say(t('live.useScreen', { personality }));
+      listen();
+      return;
+    }
+
+    if (expected.kind === 'consent') {
+      const consent = parseVoiceConsent(text);
+      if (consent === 'confirm') {
+        expectationRef.current = { kind: 'command' };
+        const done = await confirm(expected.item);
+        await say(done ? done.card.body : t('assistant.actionError', { personality }));
+        listen();
+        return;
+      }
+      if (consent === 'cancel') {
+        expectationRef.current = { kind: 'command' };
+        cancel(expected.item);
+        await say(t('assistant.canceled', { personality }));
+        listen();
+        return;
+      }
+      if (!expected.retried) {
+        expectationRef.current = { ...expected, retried: true };
+        await say(t('live.unclearConsent', { personality }));
+        listen();
+        return;
+      }
+      expectationRef.current = { kind: 'command' };
+      await say(t('live.useScreen', { personality }));
+      listen();
+      return;
+    }
+
+    await liveTurn(await ask(text));
+  };
+
+  const toggleLive = (): void => {
+    if (live) {
+      setLive(false);
+      liveRef.current = false;
+      stopSpeaking();
+      void voiceRef.current.stop();
+      setLiveState('idle');
+      expectationRef.current = { kind: 'command' };
+      return;
+    }
+    setLive(true);
+    liveRef.current = true;
+    expectationRef.current = { kind: 'command' };
+    setLiveState('listening');
+    void voiceRef.current.start();
+  };
+
+  // Fin d'écoute sans transcript (silence) : l'orbe retombe en « prêt » — un tap relance.
+  useEffect(() => {
+    if (live && !voice.listening && liveState === 'listening') setLiveState('idle');
+  }, [live, voice.listening, liveState]);
+
   /** Valider : exécute l'action proposée via agent.confirm — LE flux de confirmation existant. */
-  const confirm = async (item: ChatItem): Promise<void> => {
-    if (!item.pending || busy) return;
+  const confirm = async (item: ChatItem): Promise<AgentRun | null> => {
+    if (!item.pending || busy) return null;
     setBusy(true);
     const r = await agent.confirm(item.pending);
     setBusy(false);
@@ -364,9 +525,10 @@ export default function Assistant() {
     if (r.ok) {
       setReachable(true);
       pushRun(r.value);
-    } else {
-      pushText('bob', failText(r.error, 'assistant.actionError'));
+      return r.value;
     }
+    pushText('bob', failText(r.error, 'assistant.actionError'));
+    return null;
   };
 
   const cancel = (item: ChatItem): void => {
@@ -592,6 +754,72 @@ export default function Assistant() {
 
         {/* ── Chips suggestions + input (au-dessus de la tab bar flottante) ──── */}
         <View style={{ paddingBottom: tabClearance + 6 }}>
+          {live ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t(
+                liveState === 'listening'
+                  ? speechRecognitionAvailable
+                    ? 'live.listening'
+                    : 'live.tapWhenDone'
+                  : liveState === 'thinking'
+                    ? 'live.thinking'
+                    : liveState === 'speaking'
+                      ? 'live.speaking'
+                      : 'live.idle',
+                { personality },
+              )}
+              onPress={() => {
+                // Tap sur le bandeau : interrompt la lecture, clôt l'écoute cloud, ou relance l'oreille.
+                if (liveState === 'speaking') {
+                  stopSpeaking();
+                  listen();
+                } else if (liveState === 'listening' && !speechRecognitionAvailable) {
+                  void voiceRef.current.stop(); // cloud : fin de parole manuelle
+                } else if (liveState === 'idle') {
+                  listen();
+                }
+              }}
+              style={{
+                marginHorizontal: 16,
+                marginTop: 6,
+                borderRadius: 14,
+                paddingVertical: 10,
+                paddingHorizontal: 14,
+                backgroundColor: colors.surface,
+                borderWidth: 1,
+                borderColor: liveState === 'listening' ? semantic.ai : controls.cardBorder,
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 9,
+                ...shadowNative.e1,
+              }}
+            >
+              <View
+                style={{
+                  width: 10,
+                  height: 10,
+                  borderRadius: 5,
+                  backgroundColor:
+                    liveState === 'listening' ? semantic.ai : liveState === 'speaking' ? semantic.success : colors.slate300,
+                }}
+              />
+              <Text style={[font('sub', 600), { color: colors.ink800, flex: 1 }]}>
+                {t(
+                  liveState === 'listening'
+                    ? speechRecognitionAvailable
+                      ? 'live.listening'
+                      : 'live.tapWhenDone'
+                    : liveState === 'thinking'
+                      ? 'live.thinking'
+                      : liveState === 'speaking'
+                        ? 'live.speaking'
+                        : 'live.idle',
+                  { personality },
+                )}
+              </Text>
+            </Pressable>
+          ) : null}
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
@@ -628,6 +856,34 @@ export default function Assistant() {
               onSubmitEditing={() => void ask(input)}
               style={[font('body'), { flex: 1, padding: 0, color: colors.ink800 }]}
             />
+            {/* LIVE — le mode vocal mains-libres : Bob écoute, agit et répond en continu. */}
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ selected: live }}
+              accessibilityLabel={live ? t('live.speaking', { personality }) : t('live.idle', { personality })}
+              onPress={toggleLive}
+              style={{
+                width: 38,
+                height: 38,
+                minWidth: 44,
+                minHeight: 44,
+                borderRadius: 11,
+                overflow: 'hidden',
+                alignItems: 'center',
+                justifyContent: 'center',
+                backgroundColor: live ? undefined : controls.segmentedTrack,
+              }}
+            >
+              {live ? (
+                <LinearGradient
+                  colors={[semantic.ai, themes.indigo.d2]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
+                />
+              ) : null}
+              <Ionicons name="pulse" size={19} color={live ? colors.surface : colors.slate500} />
+            </Pressable>
             {/* Micro — entrée du flux « Facture à la voix » (C20). */}
             <Pressable
               accessibilityRole="button"
