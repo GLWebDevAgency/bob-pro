@@ -40,7 +40,7 @@ export type VoiceInputIssue = 'denied' | 'unavailable' | 'failed';
  */
 export function useVoiceInput(
   onTranscript: (text: string) => void,
-  opts: { onIssue?: (issue: VoiceInputIssue) => void } = {},
+  opts: { onIssue?: (issue: VoiceInputIssue) => void; onPartial?: (text: string) => void } = {},
 ) {
   const client = useBobClient();
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
@@ -48,6 +48,8 @@ export function useVoiceInput(
   const mode = useRef<'native' | 'cloud'>('native');
   const onIssueRef = useRef(opts.onIssue);
   onIssueRef.current = opts.onIssue;
+  const onPartialRef = useRef(opts.onPartial);
+  onPartialRef.current = opts.onPartial;
   const report = useCallback((issue: VoiceInputIssue, title: string, message: string): void => {
     if (onIssueRef.current) onIssueRef.current(issue);
     else Alert.alert(title, message);
@@ -60,6 +62,9 @@ export function useVoiceInput(
     if (e.isFinal && text) {
       setListening(false);
       onTranscript(text);
+    } else if (!e.isFinal && text) {
+      // Résultats PARTIELS (LIVE-3 barge-in) : détecter la parole pendant que Bob parle.
+      onPartialRef.current?.(text);
     }
   });
   useSpeechRecognitionEvent('end', () => {
@@ -83,7 +88,7 @@ export function useVoiceInput(
           return;
         }
         setListening(true);
-        ExpoSpeechRecognitionModule.start({ lang: 'fr-FR', interimResults: false, continuous: false });
+        ExpoSpeechRecognitionModule.start({ lang: 'fr-FR', interimResults: !!onPartialRef.current, continuous: false });
       } else {
         const perm = await AudioModule.requestRecordingPermissionsAsync();
         if (!perm.granted) {

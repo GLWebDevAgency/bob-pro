@@ -1435,7 +1435,7 @@ const legacyFr = {
   'live.on': { pote: 'Mode vocal activé — je t’écoute.', pro: 'Mode vocal activé. Je vous écoute.', direct: 'Vocal on.' },
   'live.listening': { pote: 'Je t’écoute…', pro: 'Je vous écoute…', direct: 'J’écoute…' },
   'live.thinking': { pote: 'Je réfléchis…', pro: 'Je traite votre demande…', direct: 'Je traite…' },
-  'live.speaking': { pote: 'Je te réponds — touche pour m’interrompre', pro: 'Réponse en cours — touchez pour interrompre', direct: 'Je parle — touche pour couper' },
+  'live.speaking': { pote: 'Je te réponds — parle ou touche pour m’interrompre', pro: 'Réponse en cours — parlez ou touchez pour interrompre', direct: 'Je parle — coupe-moi si besoin' },
   'live.idle': { pote: 'Touche l’onde pour me parler', pro: 'Touchez l’onde pour parler', direct: 'Touche pour parler' },
   'live.tapWhenDone': { pote: 'Parle, puis touche quand tu as fini', pro: 'Parlez, puis touchez une fois terminé', direct: 'Parle, touche à la fin' },
   'live.error': {

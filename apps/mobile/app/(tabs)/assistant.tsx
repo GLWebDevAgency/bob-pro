@@ -52,6 +52,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   buildActionDiff,
+  parseBargeIn,
   parseVoiceChoice,
   parseVoiceConsent,
   speakableQuestion,
@@ -381,6 +382,10 @@ export default function Assistant() {
   const [liveState, setLiveState] = useState<'idle' | 'listening' | 'thinking' | 'speaking'>('idle');
   const liveRef = useRef(false);
   liveRef.current = live;
+  const liveStateRef = useRef(liveState);
+  liveStateRef.current = liveState;
+  /** Ce que Bob est en train de dire — la référence de l'echo-guard (LIVE-3). */
+  const speakingTextRef = useRef('');
   // Ce que l'oreille attend : une commande libre, une réponse à une question, un consentement.
   const expectationRef = useRef<
     | { kind: 'command' }
@@ -394,7 +399,15 @@ export default function Assistant() {
       if (liveRef.current) void onLiveTranscript(text);
       else setInput(text);
     },
-    { onIssue: () => setLiveState('idle') },
+    {
+      onIssue: () => setLiveState('idle'),
+      // LIVE-3 : pendant que Bob PARLE, un partiel qui n'est ni son propre écho ni un
+      // borborygme le fait taire — la suite (final) est traitée par le flux normal.
+      onPartial: (partial) => {
+        if (!liveRef.current || liveStateRef.current !== 'speaking') return;
+        if (parseBargeIn(partial, speakingTextRef.current) !== 'echo') stopSpeaking();
+      },
+    },
   );
   const voiceRef = useRef(voice);
   voiceRef.current = voice;
@@ -403,13 +416,18 @@ export default function Assistant() {
   const listen = (): void => {
     if (!liveRef.current) return;
     setLiveState('listening');
-    void voiceRef.current.start();
+    if (!voiceRef.current.listening) void voiceRef.current.start();
   };
 
   const say = async (text: string): Promise<void> => {
     if (!liveRef.current) return;
     setLiveState('speaking');
+    speakingTextRef.current = text;
+    // LIVE-3 : l'oreille reste ouverte PENDANT la lecture (natif seulement — en cloud,
+    // le tap du bandeau reste l'interruption). L'echo-guard filtre la voix de Bob.
+    if (speechRecognitionAvailable && !voiceRef.current.listening) void voiceRef.current.start();
     await speakAndWait(text);
+    speakingTextRef.current = '';
   };
 
   /** Vocalise le résultat d'un tour d'agent, arme l'attente adaptée, ré-écoute. */
@@ -443,6 +461,18 @@ export default function Assistant() {
   /** Route la parole entendue selon l'attente courante — fail-safe à chaque embranchement. */
   const onLiveTranscript = async (text: string): Promise<void> => {
     if (!liveRef.current) return;
+    if (liveStateRef.current === 'speaking') {
+      // LIVE-3 : final entendu pendant que Bob parle — écho ignoré (ré-écoute), arrêt
+      // explicite = silence + oreille libre, parole nouvelle = Bob se tait et traite.
+      const verdict = parseBargeIn(text, speakingTextRef.current);
+      if (verdict === 'echo') {
+        if (speechRecognitionAvailable && liveRef.current) void voiceRef.current.start();
+        return;
+      }
+      stopSpeaking(); // speakAndWait résout → le tour en cours enchaînera listen()
+      if (verdict === 'interrupt') return;
+      // 'speech' : on traite la nouvelle demande ci-dessous.
+    }
     const expected = expectationRef.current;
     setLiveState('thinking');
 
