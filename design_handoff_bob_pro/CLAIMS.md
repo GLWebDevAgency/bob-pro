@@ -2516,3 +2516,30 @@ transcript workflow wf_fb597a24-2e3.
   décision fondateur nom d'app non figé) : l'invitation renvoie le lien à transmettre, tracé.
   Cycle : build → AUDIT ADVERSARIAL (tenancy/concurrence + RBAC/invariants) → fix → staging →
   smoke → prod flag OFF.
+- [2026-07-12 03:05] claude-code A COORDINATION CAB-0 + AUDIT (résultat du workflow) : mon builder
+  a DÉTECTÉ un AUTRE écrivain construisant CAB-0 dans l'arbre (écritures continues 01:50→02:57,
+  domaine+api+migrations+tests) et s'est RETIRÉ sans une écriture (gouvernance claims respectée —
+  zéro contamination). Le build vivant est de HAUTE QUALITÉ (lecture complète : invariant
+  dernier-admin avec TRIGGERS SQL + advisory lock, jeton haché sha256 + AES-GCM outbox, fix
+  logging 500/422, ~709 tests core / 128 api verts au snapshot) — la session qui le construit le
+  GARDE et le mergera. MES AUDITEURS (lecture seule, pas de conflit) ont tourné sur son build :
+  **7 FINDINGS À TRAITER AVANT MERGE/RELEASE** —
+  ① [CRITIQUE] prisma-cabinet-infrastructure.ts:257-261 : dirty-check `row.suspendedAt?.toISOString()
+  !== member.suspendedAt` compare undefined à null → toujours vrai → écritures parasites/sync
+  faussée (fix 1 ligne : `?? null`, idem revokedAt) ;
+  ② [MAJEUR-BLOQUANT RELEASE] rls-cert.sql:399 : `\ir cabinet-rls-cert.sql` → FICHIER INEXISTANT
+  → release.sh AVORTE (ON_ERROR_STOP) et AUCUNE sonde cabinet ne tourne ; le seed
+  rls-cert-cabinet-seed.sql ne crée pas les fixtures que rls-cert-cleanup.sql suppose → créer le
+  fichier de sondes (2 cabinets cross-read refusé double-GUC, membership révoquée→0 ligne,
+  trigger dernier-admin 23514, INSERT/UPDATE release_flags refusés, flags globaux lisibles) ;
+  ③ [MAJEUR] invite-cabinet-member.ts:63-71 : mutation d'une invitation PENDANTE sans re-contrôle
+  canInviteCabinetRole(actor.role, pending.role) — un manager peut muter une invitation
+  privilégiée ; le contrôle fin n'existe qu'en SQL, pas dans le port mémoire (divergence
+  démo/prod non testée) ;
+  ④-⑦ [MINEURS] : 403/404 non uniforme hors RLS (oracle d'existence — domainCode + ordre
+  autorisation-avant-existence) ; équivalence in-memory↔SQL du contrôle fin ; EMAIL_MISMATCH
+  fuit tel quel (mapper sur CABINET_INVITATION_INVALID) ; + CHECKLIST builder : tests du fix
+  logging absents, tests API isolation 2-cabinets + matrice RBAC 3 rôles × endpoints absents,
+  endpoint GET flags absent, vitest 2.1.9 × coverage-v8 3.2.7 incompatibles (couverture ≥90 %
+  non mesurable — aligner les versions). La session A reprend le LOT CORRECTIF si l'auteur ne
+  l'absorbe pas ; dans tous les cas, PAS de release.sh avant ②.
