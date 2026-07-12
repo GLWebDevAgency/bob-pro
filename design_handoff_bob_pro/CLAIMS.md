@@ -1273,6 +1273,19 @@ transcript workflow wf_fb597a24-2e3.
   api-client 42 ✓ (sonde journal élargie id-24 — le seed consomme plus d'ids) i18n 54 ✓.
   SUIVI serveur (session A) : getClosingReview + ask/AgentQuestion à porter dans les
   BobActions serveur (apps/api/src/ai) quand vous repasserez — champ additif, sans risque.
+- [02:50] claude-code (session B) ASK-2 MERGE (917c738) : LA PRÉCISION MANQUANTE —
+  « acompte ou facture finale ? ». Nouveau pouvoir generer_facture (l'outil C15 ⑤ existait
+  au registre mais aucun chemin déterministe n'y menait) : intent AVANT nouveau_devis
+  (anti-collision testée), lecture listInvoiceableQuotes (devis signés sans finale,
+  depositInvoiced signalé) câblée dans les DEUX hôtes (local-client + data/bob.ts mobile —
+  l'écran assistant construit ses propres actions, le 1er essai device a montré le repli).
+  Doctrine ASK complète : ambigu → « quel devis ? » (desc. « acompte X % prévu ») ; mode
+  absent + acompte non facturé → QUESTION acompte/solde ; acompte déjà facturé → finale
+  directe SANS question inutile ; mode dit → direct. Palier fiscal confirmé, montants au
+  diff seulement. Seed : devis Lefèvre signé 40 % non facturé (3 025 €) + entrée
+  ?prompt=facturer_devis. Boucles fermées testées (cible → mode → proposed). Capture
+  device assistant-ask2.png. ai 166 ✓ api-client 42 ✓ i18n 54 ✓. SUIVI serveur (A) :
+  listInvoiceableQuotes à porter dans les BobActions serveur avec ask (additif).
 
 ---
 
