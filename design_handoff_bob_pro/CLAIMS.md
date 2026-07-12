@@ -1352,6 +1352,23 @@ transcript workflow wf_fb597a24-2e3.
   bruit, latences — checklist du test humain : ① orbe on → parler librement ② question
   structurée → répondre « le deuxième » ③ couper Bob en parlant ④ « stop » ⑤ confirmation
   « je confirme » ⑥ tout vérifier retranscrit dans le fil.
+- [05:40] claude-code (session B) ACTIVATION RAILWAY + DEV BUILDS (mandat humain « autonome
+  sur Railway ») : ① Environnements RÉELS vérifiés = production + staging SEULEMENT (pas de
+  smoke/preprod) ; MISTRAL_API_KEY déjà présente sur les DEUX ✓ (rien à poser). ② Deploy du
+  code LIVE (HEAD 9997b47) via WORKTREE PROPRE (/tmp/bobpro-deploy — le WIP session A
+  api/CI n'embarque JAMAIS, doctrine release respectée). Premier essai staging FAILED :
+  ERR_PNPM_OUTDATED_LOCKFILE — le lock commité référençait @vitest/coverage-v8 pour core
+  sans son package.json (désync CI) → fix ba074ab (expo-dev-client + resync) puis 9997b47
+  (purge complète, --frozen-lockfile validé en local AVANT redeploy). ③ STAGING SUCCESS +
+  E2E RÉEL : POST /ai/ask « je peux me mettre combien dans la poche… » → intent payout,
+  mistral-small-latest, naturalBody GARDÉ « Tu peux te verser jusqu'à 4 860,00 € ce
+  mois-ci… » (montant exact du tenant démo). ④ PRODUCTION : deploy lancé (même worktree).
+  ⑤ DEV BUILDS EAS : Android development FINI (APK expo.dev, dev-client + modules voix
+  natifs) ; iOS development BLOQUÉ credentials Apple en non-interactif → 2 commandes
+  humaines : `eas device:create` puis `eas build --profile development --platform ios`.
+  NB : l'IPA iOS existant (2/07) est un build PRODUCTION antérieur — inutilisable pour le
+  live. SESSION A : votre WIP api/CI est intact ; le lock a été resynchronisé — pnpm
+  install avant de continuer, et re-committer coverage-v8 AVEC le package.json si voulu.
 
 ---
 
