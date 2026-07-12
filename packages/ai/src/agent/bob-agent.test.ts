@@ -117,6 +117,28 @@ describe('BobAgent (démo)', () => {
     expect(r.ok && r.value.intent).toBe('encaisser');
   });
 
+  it('ASK-1 : l’ambiguïté émet une question STRUCTURÉE dont le followUp re-résout l’intent', async () => {
+    const agent = makeAgent();
+    const r = await agent.ask('marque comme payé');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const question = r.value.ask?.[0];
+    expect(question).toBeDefined();
+    if (!question) return;
+    expect(question.header.length).toBeLessThanOrEqual(12);
+    expect(question.options.length).toBeGreaterThanOrEqual(2);
+    expect(question.options.length).toBeLessThanOrEqual(4);
+    // Chaque option porte sa COMMANDE de suivi — l'UI ne reconstruit jamais une phrase.
+    for (const option of question.options) expect(option.followUp.length).toBeGreaterThan(0);
+    // La rétro-compatibilité tient : choices reste rempli en parallèle.
+    expect(r.value.choices?.length).toBeGreaterThanOrEqual(2);
+    // Boucle fermée : répondre par le followUp de la 1re option aboutit à la proposition d'encaissement.
+    const followUp = question.options[0]!.followUp;
+    const after = await agent.ask(followUp);
+    expect(after.ok && after.value.intent).toBe('encaisser');
+    expect(after.ok && after.value.kind).toBe('proposed');
+  });
+
   it('envoyer un devis : sortant client -> propose toujours une confirmation', async () => {
     const r = await makeAgent().ask('envoie le devis 2026-014 au client', { autonomy: 'auto' });
     expect(r.ok && r.value.intent).toBe('envoyer_devis');

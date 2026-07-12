@@ -409,9 +409,10 @@ describe('assistant Bob local (C40 ⑧ — ask/confirm/journal on-device) + cré
     const paid = await client.getInvoice(gen.value.invoiceId);
     expect(paid.ok && paid.value.status).toBe('paid');
 
-    // journal : append-only, lisible via getRunJournal (ids déterministes -> on sonde les runs candidats).
+    // journal : append-only, lisible via getRunJournal (ids déterministes -> on sonde les runs
+    // candidats ; borne large — le seed consomme aussi des ids, dont les devis en attente ASK-1).
     const entries: JournalEntry[] = [];
-    for (let n = 1; n <= 12; n += 1) {
+    for (let n = 1; n <= 24; n += 1) {
       const r = await client.getRunJournal(`id-${n}`);
       if (r.ok) entries.push(...r.value);
     }

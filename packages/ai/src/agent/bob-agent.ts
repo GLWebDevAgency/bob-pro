@@ -53,6 +53,61 @@ export interface AgentChoice {
   value: string;
 }
 
+/** Option d'une question structurée (ASK-1) — l'agent fournit la COMMANDE de suivi complète :
+ * l'UI ne reconstruit jamais une phrase (le langage des intents appartient à l'agent). */
+export interface AgentQuestionOption {
+  /** Valeur machine stable (numéro de pièce, id, mode) — clé de sélection. */
+  value: string;
+  /** Libellé court (1-5 mots) affiché en tête d'option. */
+  label: string;
+  /** Contexte/conséquence du choix (client, montant, retard…) — la ligne secondaire. */
+  description?: string;
+  /** Commande envoyée à ask() si cette option est choisie (mono-sélection). */
+  followUp: string;
+}
+
+/** Question structurée à la « AskUserQuestion » (ASK-1) : posée quand la demande est ambiguë
+ * ou qu'il manque une précision — modale de choix unique (radio) ou multiple (checkbox). */
+export interface AgentQuestion {
+  /** Id stable de la question (télémétrie/tests). */
+  id: string;
+  /** La question complète, en français, orientée décision. */
+  question: string;
+  /** Étiquette très courte (chip, ≤ 12 caractères) — ex. « Facture », « Fournisseur ». */
+  header: string;
+  /** Plusieurs réponses possibles (checkboxes) — défaut false (choix unique). */
+  multiSelect?: boolean;
+  /** Commande de suivi pour le multi-select : `{values}` remplacé par les valeurs jointes
+   *  par « , » (ex. « Encaisse les factures {values} »). Requis si multiSelect. */
+  followUpTemplate?: string;
+  /** 2 à 4 options — au-delà, l'agent tronque aux plus pertinentes. */
+  options: AgentQuestionOption[];
+}
+
+/** Fabrique une question de désambiguïsation depuis une liste de cibles (plafond 4 options). */
+function askToPick(input: {
+  id: string;
+  question: string;
+  header: string;
+  multiSelect?: boolean;
+  followUpTemplate?: string;
+  items: readonly { value: string; label: string; description?: string; followUp: string }[];
+}): AgentQuestion {
+  return {
+    id: input.id,
+    question: input.question,
+    header: input.header,
+    ...(input.multiSelect !== undefined ? { multiSelect: input.multiSelect } : {}),
+    ...(input.followUpTemplate !== undefined ? { followUpTemplate: input.followUpTemplate } : {}),
+    options: input.items.slice(0, 4).map((item) => ({
+      value: item.value,
+      label: item.label,
+      ...(item.description !== undefined ? { description: item.description } : {}),
+      followUp: item.followUp,
+    })),
+  };
+}
+
 export interface AgentRun {
   kind: AgentRunKind;
   intent: BobIntent;
@@ -64,6 +119,10 @@ export interface AgentRun {
   pending?: PendingAction;
   /** Présent en cas d'ambiguïté : options à présenter à l'utilisateur (modale de choix). */
   choices?: AgentChoice[];
+  /** ASK-1 : question(s) structurée(s) — l'UI les rend en modale riche (descriptions,
+   * choix unique/multiple) et répond via followUp. `choices` reste rempli en parallèle
+   * (rétro-compatibilité des hôtes qui ne connaissent pas `ask`). */
+  ask?: AgentQuestion[];
   /** Présent pour une commande de navigation : route vers laquelle l'app doit rediriger (ex. /scan-document). */
   navigate?: string;
   /** Texte à vocaliser (TTS) : prompt de confirmation parlé (action proposée) ou message parlé (annulation/re-demande). */
@@ -707,6 +766,19 @@ export class BobAgent {
             label: `${e.supplierName} — ${formatEUR(e.totalTtcCents)}`,
             value: `règle la dépense ${e.supplierName}`,
           })),
+          ask: [
+            askToPick({
+              id: 'payer_depense.cible',
+              question: 'Quelle dépense veux-tu régler ?',
+              header: 'Fournisseur',
+              items: r.value.map((e) => ({
+                value: e.id,
+                label: e.supplierName,
+                description: `${formatEUR(e.totalTtcCents)} · du ${e.documentDate} — décaissement au journal de banque`,
+                followUp: `Règle la dépense ${e.supplierName}`,
+              })),
+            }),
+          ],
         });
       }
       const args = { expenseId: target.id };
@@ -740,6 +812,23 @@ export class BobAgent {
           plan: ['Chercher le devis'],
           card: { title: 'Quel devis ?', body },
           choices: r.value.map((q) => ({ label: `${displayRef(q)} — ${q.customerName} · ${formatEUR(q.totalTtcCents)}`, value: displayRef(q) })),
+          ...(r.value.length
+            ? {
+                ask: [
+                  askToPick({
+                    id: 'envoyer_devis.cible',
+                    question: 'Quel devis veux-tu envoyer en signature ?',
+                    header: 'Devis',
+                    items: r.value.map((q) => ({
+                      value: displayRef(q),
+                      label: displayRef(q),
+                      description: `${q.customerName} · ${formatEUR(q.totalTtcCents)}`,
+                      followUp: `Envoie le devis ${displayRef(q)}`,
+                    })),
+                  }),
+                ],
+              }
+            : {}),
         });
       }
       const tool = this.tool('envoyer_devis')!;
@@ -774,6 +863,23 @@ export class BobAgent {
           plan: ['Chercher la facture brouillon'],
           card: { title: 'Quelle facture ?', body },
           choices: r.value.map((i) => ({ label: `${displayRef(i)} — ${i.customerName} · ${formatEUR(i.totalTtcCents)}`, value: displayRef(i) })),
+          ...(r.value.length
+            ? {
+                ask: [
+                  askToPick({
+                    id: 'emettre_facture.cible',
+                    question: 'Quelle facture brouillon veux-tu émettre ?',
+                    header: 'Facture',
+                    items: r.value.map((i) => ({
+                      value: displayRef(i),
+                      label: displayRef(i),
+                      description: `${i.customerName} · ${formatEUR(i.totalTtcCents)} — numérotation définitive`,
+                      followUp: `Émets la facture ${displayRef(i)}`,
+                    })),
+                  }),
+                ],
+              }
+            : {}),
         });
       }
       const tool = this.tool('emettre_facture')!;
@@ -808,6 +914,23 @@ export class BobAgent {
           plan: ['Chercher la facture'],
           card: { title: 'Quelle facture ?', body },
           choices: r.value.map((i) => ({ label: `${i.number} — ${i.customerName} · ${formatEUR(i.remainingCents)}`, value: i.number })),
+          ...(r.value.length
+            ? {
+                ask: [
+                  askToPick({
+                    id: 'encaisser.cible',
+                    question: 'Quelle facture as-tu encaissée ?',
+                    header: 'Facture',
+                    items: r.value.map((i) => ({
+                      value: i.number,
+                      label: i.number,
+                      description: `${i.customerName} · reste ${formatEUR(i.remainingCents)}`,
+                      followUp: `Encaisse la facture ${i.number}`,
+                    })),
+                  }),
+                ],
+              }
+            : {}),
         });
       }
       const tool = this.tool('encaisser_facture')!;
@@ -886,6 +1009,23 @@ export class BobAgent {
             plan: ['Lever l’ambiguïté'],
             card: { title: 'Quelle facture ?', body },
             choices: payables.map((i) => ({ label: `${i.number} — ${i.customerName} · ${formatEUR(i.remainingCents)}`, value: i.number })),
+            ...(payables.length
+              ? {
+                  ask: [
+                    askToPick({
+                      id: 'plan.encaisser.cible',
+                      question: 'Quelle facture as-tu encaissée ?',
+                      header: 'Facture',
+                      items: payables.map((i) => ({
+                        value: i.number,
+                        label: i.number,
+                        description: `${i.customerName} · reste ${formatEUR(i.remainingCents)}`,
+                        followUp: `Encaisse la facture ${i.number}`,
+                      })),
+                    }),
+                  ],
+                }
+              : {}),
           });
         }
         payables = payables.filter((i) => i.id !== inv.id); // évite de ré-encaisser la même dans le lot
@@ -909,6 +1049,23 @@ export class BobAgent {
             plan: ['Lever l’ambiguïté'],
             card: { title: 'Quel devis ?', body },
             choices: sendableQuotes.map((q) => ({ label: `${displayRef(q)} — ${q.customerName} · ${formatEUR(q.totalTtcCents)}`, value: displayRef(q) })),
+            ...(sendableQuotes.length
+              ? {
+                  ask: [
+                    askToPick({
+                      id: 'plan.envoyer_devis.cible',
+                      question: 'Quel devis veux-tu envoyer en signature ?',
+                      header: 'Devis',
+                      items: sendableQuotes.map((q) => ({
+                        value: displayRef(q),
+                        label: displayRef(q),
+                        description: `${q.customerName} · ${formatEUR(q.totalTtcCents)}`,
+                        followUp: `Envoie le devis ${displayRef(q)}`,
+                      })),
+                    }),
+                  ],
+                }
+              : {}),
           });
         }
         sendableQuotes = sendableQuotes.filter((q) => q.id !== quote.id);
@@ -928,6 +1085,23 @@ export class BobAgent {
             plan: ['Lever l’ambiguïté'],
             card: { title: 'Quelle facture ?', body },
             choices: issuableInvoices.map((i) => ({ label: `${displayRef(i)} — ${i.customerName} · ${formatEUR(i.totalTtcCents)}`, value: displayRef(i) })),
+            ...(issuableInvoices.length
+              ? {
+                  ask: [
+                    askToPick({
+                      id: 'plan.emettre_facture.cible',
+                      question: 'Quelle facture brouillon veux-tu émettre ?',
+                      header: 'Facture',
+                      items: issuableInvoices.map((i) => ({
+                        value: displayRef(i),
+                        label: displayRef(i),
+                        description: `${i.customerName} · ${formatEUR(i.totalTtcCents)} — numérotation définitive`,
+                        followUp: `Émets la facture ${displayRef(i)}`,
+                      })),
+                    }),
+                  ],
+                }
+              : {}),
           });
         }
         issuableInvoices = issuableInvoices.filter((i) => i.id !== invoice.id);

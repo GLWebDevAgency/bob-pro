@@ -53,6 +53,7 @@ import {
   buildActionDiff,
   type AccountingLine,
   type ActionDiff,
+  type AgentQuestion,
   type AgentRun,
   type BobIntent,
   type PendingAction,
@@ -60,7 +61,7 @@ import {
 import type { AppError } from '@bob/core';
 import { conformityCard, patterns, shadowNative, themes } from '@bob/tokens';
 import { t, type I18nKey } from '@bob/i18n';
-import { Button, Chip, font, useTheme } from '@bob/ui';
+import { Button, Chip, QuestionSheet, font, useTheme } from '@bob/ui';
 import { useBobClient } from '../../src/data/client';
 import { useInvoices, useQuotes, useSubscription } from '../../src/data/hooks';
 import { makeBobAgent } from '../../src/data/bob';
@@ -91,6 +92,8 @@ const SUGGESTION_CHIPS: readonly I18nKey[] = [
 const ENTRY_PROMPTS: Readonly<Partial<Record<string, I18nKey>>> = {
   relance: 'assistant.chipRelance',
   relance_devis: 'assistant.cmdRelanceQuote',
+  // ASK-1 : entrée « encaisser » SANS référence — Bob pose la question structurée (laquelle ?).
+  encaisser: 'assistant.cmdCollectOpen',
 };
 
 /** Chips de désambiguïsation → commande de suivi par intent ({ref} = numéro de pièce). */
@@ -230,6 +233,9 @@ export default function Assistant() {
   const [busy, setBusy] = useState(false);
   const [phase, setPhase] = useState<string | null>(null);
   const [reachable, setReachable] = useState(true);
+  /** ASK-1 : question structurée active (modale) — ouverte automatiquement à l'arrivée du run. */
+  const [activeAsk, setActiveAsk] = useState<AgentQuestion | null>(null);
+  const inputRef = useRef<TextInput>(null);
   const scrollRef = useRef<ScrollView>(null);
   const counter = useRef(0);
   const nextId = (): string => {
@@ -288,6 +294,7 @@ export default function Assistant() {
     setItems((prev) => [...prev, { id, role: 'bob', text: run.card.body, run, ...(pending ? { pending } : {}) }]);
     if (run.kind === 'done') refreshAfterAction();
     if (run.navigate) router.push(run.navigate as never); // commande « Jarvis » : Bob ouvre le bon écran
+    if (run.ask?.length) setActiveAsk(run.ask[0] ?? null); // ASK-1 : la question s'ouvre d'elle-même
 
     // Émission : enrichit l'aperçu avec l'écriture comptable prévisionnelle RÉELLE (async, best-effort).
     const invId = pending?.tool === 'emettre_facture' && typeof pending.args.invoiceId === 'string' ? pending.args.invoiceId : null;
@@ -329,6 +336,20 @@ export default function Assistant() {
   };
   const askRef = useRef(ask);
   askRef.current = ask;
+
+  /** ASK-1 : réponse à la question structurée — l'agent a fourni la commande de suivi,
+   * l'UI ne reconstruit JAMAIS une phrase (multi : template {values} joint par « , »). */
+  const answerAsk = (values: string[]): void => {
+    const q = activeAsk;
+    setActiveAsk(null);
+    if (!q || values.length === 0) return;
+    if (q.multiSelect && q.followUpTemplate) {
+      void ask(q.followUpTemplate.replace('{values}', values.join(', ')));
+      return;
+    }
+    const picked = q.options.find((o) => o.value === values[0]);
+    if (picked) void ask(picked.followUp);
+  };
 
   /** Valider : exécute l'action proposée via agent.confirm — LE flux de confirmation existant. */
   const confirm = async (item: ChatItem): Promise<void> => {
@@ -534,8 +555,15 @@ export default function Assistant() {
                   </>
                 ) : null}
 
-                {/* Ambiguïté : choix proposés par l'agent → commande de suivi par intent. */}
-                {it.run?.choices?.length ? (
+                {/* ASK-1 : question structurée — bouton pour (r)ouvrir la modale de choix. */}
+                {it.run?.ask?.length ? (
+                  <View style={{ marginTop: 10, alignSelf: 'flex-start' }}>
+                    <Chip
+                      label={t('assistant.askAnswer', { personality })}
+                      onPress={() => setActiveAsk(it.run?.ask?.[0] ?? null)}
+                    />
+                  </View>
+                ) : it.run?.choices?.length ? (
                   <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
                     {it.run.choices.map((c) => (
                       <Chip
@@ -589,6 +617,7 @@ export default function Assistant() {
           >
             <TextInput
               value={input}
+              ref={inputRef}
               onChangeText={setInput}
               placeholder={t('assistant.placeholder', { personality })}
               placeholderTextColor={colors.slate300}
@@ -640,6 +669,23 @@ export default function Assistant() {
           </View>
         </View>
       </KeyboardAvoidingView>
+
+      {/* ASK-1 : la modale de question structurée (choix unique/multiple, descriptions). */}
+      <QuestionSheet
+        visible={activeAsk !== null}
+        header={activeAsk?.header ?? ''}
+        question={activeAsk?.question ?? ''}
+        options={activeAsk?.options ?? []}
+        multiSelect={activeAsk?.multiSelect ?? false}
+        confirmLabel={t('assistant.askConfirm', { personality })}
+        otherLabel={t('assistant.askOther', { personality })}
+        onClose={() => setActiveAsk(null)}
+        onSelect={answerAsk}
+        onOther={() => {
+          setActiveAsk(null);
+          inputRef.current?.focus();
+        }}
+      />
     </View>
   );
 }

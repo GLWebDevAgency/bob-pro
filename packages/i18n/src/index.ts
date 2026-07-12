@@ -4,6 +4,8 @@
  * (Pote par défaut, Pro, Direct). Les claims d'écran ajoutent leurs clés (C10+).
  */
 
+import { cabinetFr } from './catalogs/cabinet';
+
 export type Personality = 'pote' | 'pro' | 'direct';
 
 export const DEFAULT_PERSONALITY: Personality = 'pote';
@@ -28,7 +30,7 @@ export function normalizePersonality(value: unknown): Personality {
 
 type Copy = Readonly<Record<Personality, string>>;
 
-const fr = {
+const legacyFr = {
   'bob.greeting': {
     pote: 'Salut {name} 👋',
     pro: 'Bonjour {name}',
@@ -1350,6 +1352,11 @@ const fr = {
     pro: 'Encaisser la facture {ref}',
     direct: 'Encaisse la facture {ref}',
   },
+  'assistant.cmdCollectOpen': {
+    pote: 'J’ai encaissé une facture',
+    pro: 'J’ai encaissé une facture',
+    direct: 'Facture encaissée.',
+  },
   'assistant.placeholder': {
     pote: 'Demande-moi un truc…',
     pro: 'Demandez-moi une tâche…',
@@ -1418,6 +1425,14 @@ const fr = {
     pote: 'Envoyer',
     pro: 'Envoyer',
     direct: 'Envoyer',
+  },
+  // ASK-1 — questions structurées (modale de choix quand la demande est ambiguë)
+  'assistant.askAnswer': { pote: 'Répondre', pro: 'Répondre', direct: 'Répondre' },
+  'assistant.askConfirm': { pote: 'Valider', pro: 'Valider', direct: 'Valider' },
+  'assistant.askOther': {
+    pote: 'Autre — je précise moi-même',
+    pro: 'Autre réponse — préciser librement',
+    direct: 'Autre.',
   },
   // Garde d'abonnement (feature ai_assistant) — l'app reste 100 % utilisable à la main.
   'assistant.lockedTitle': {
@@ -3911,6 +3926,8 @@ const fr = {
     direct: 'Déclaration : {date} max.',
   },
 } as const satisfies Record<string, Copy>;
+
+const fr = { ...legacyFr, ...cabinetFr } as const satisfies Record<string, Copy>;
 
 export type I18nKey = keyof typeof fr;
 

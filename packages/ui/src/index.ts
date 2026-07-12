@@ -44,6 +44,7 @@ export * from './components/score';
 export * from './components/bottom-tab-bar';
 export * from './components/fab';
 export * from './components/sheet';
+export * from './components/question-sheet';
 export * from './components/toast';
 
 // Flux (réserve C03 — devis C21)

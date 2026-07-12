@@ -342,6 +342,21 @@ export class LocalBobClient implements BobClient {
     await this.issueInvoiceInternal({ invoiceId: generated.value.invoiceId });
     // L'acompte est encaissé — plafonné netToPay (488,40 €), comme la doctrine l'exige.
     await this.registerPaymentInternal({ invoiceId: generated.value.invoiceId, amount: 48840, method: 'card' });
+
+    // ── Devis EN ATTENTE de réponse : matérialise le « devis 1 480 € » du proto (hors
+    // total dû — les devis ne sont jamais du dû, doctrine standings) + un second envoyé.
+    // Deux cibles réelles pour la question structurée ASK-1 (« quel devis ? ») — le mode
+    // démo exerce TOUT le registre (doctrine C14), y compris l'ambiguïté.
+    const durandQuote = await this.createQuoteInternal({
+      customerId: 'cust-durand',
+      lines: [{ label: 'Rénovation salle de bain — phase 2', category: 'labor', qty: 1, unitPriceHT: 123333, vatRate: 20 }],
+    });
+    if (durandQuote.ok) await this.sendQuoteInternal(durandQuote.value.quoteId);
+    const sevresMaintenance = await this.createQuoteInternal({
+      customerId: 'cust-sevres',
+      lines: [{ label: 'Entretien annuel chaudières — bâtiments municipaux', category: 'labor', qty: 1, unitPriceHT: 62500, vatRate: 20 }],
+    });
+    if (sevresMaintenance.ok) await this.sendQuoteInternal(sevresMaintenance.value.quoteId);
   }
 
   private mapQuote(q: Quote): QuoteView {
