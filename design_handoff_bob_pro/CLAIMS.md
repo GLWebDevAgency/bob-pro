@@ -1286,6 +1286,23 @@ transcript workflow wf_fb597a24-2e3.
   ?prompt=facturer_devis. Boucles fermées testées (cible → mode → proposed). Capture
   device assistant-ask2.png. ai 166 ✓ api-client 42 ✓ i18n 54 ✓. SUIVI serveur (A) :
   listInvoiceableQuotes à porter dans les BobActions serveur avec ask (additif).
+- [03:20] claude-code (session B) ASK-3 MERGE (bc1e993) : LA CATÉGORIE AMBIGUË AU SCAN —
+  suggestCategoryClarification (@bob/ai) : question SEULEMENT si décision réelle (jamais
+  sur habitude fournisseur ; silence si OCR confiant ; question si confiance < 0,75 OU
+  devinette « autre » = ambiguïté de fait). Options avec IMPACT COMPTABLE (606/611/625),
+  choix → mémoire fournisseur (la question ne se repose pas). Écran scan : QuestionSheet
+  réutilisée, indice « ? Devinette incertaine — préciser » rouvrable. DemoOcrAdapter :
+  6e profil « Metro Cash & Carry » (autre, confiance basse) — exerçable en démo. ai 170 ✓.
+  Capture device : scan manuel requis (galerie) — en attente d'une main humaine.
+  DIRECTIVE PRODUIT GRAVÉE (humain, 2026-07-12) : LE DIFFÉRENCIATEUR = MODE VOCAL LIVE
+  (« parler à un pote expert-comptable » — l'artisan de 50 ans n'écrit pas). État des
+  lieux rendu : compréhension = LLM tool-calling en connecté (Claude Haiku/GLM/Mistral,
+  providers.ts) + regex = REPLI hors-ligne/démo uniquement ; voix = STT natif + Voxtral
+  Transcribe + Voxtral TTS (push-to-talk /voix C20) — PAS de boucle live. ROADMAP LIVE
+  proposée : LIVE-0 boucle vocale mains-libres semi-duplex (VAD→STT→agent→TTS, tout
+  existe) → LIVE-1 synchro modales⇄voix (lire les AgentQuestion, répondre à la voix,
+  parseVoiceChoice) → LIVE-2 génération LLM des réponses (money-guard) + mémoire de
+  conversation → LIVE-3 full-duplex/barge-in (APIs realtime, exploratoire).
 
 ---
 
