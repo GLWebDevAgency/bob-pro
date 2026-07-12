@@ -1328,6 +1328,18 @@ transcript workflow wf_fb597a24-2e3.
   SUIVI serveur (A) : porter history/tone au contrat askBob HTTP (additif). RESTE :
   LIVE-3 (full-duplex/barge-in), test micro réel (dev build), clés LLM prod à activer
   (ANTHROPIC_API_KEY/MISTRAL_URL déjà câblées providers.ts — humain).
+- [04:45] claude-code (session B) LIVE-2 PROUVÉ E2E AVEC MISTRAL RÉEL (clé apps/api/.env,
+  jamais exposée) : formulation 100 % LIBRE « je peux me mettre combien dans la poche ce
+  mois-ci sans faire de bêtise ? » (aucune regex ne matche) → Mistral tool-calling route
+  payout, le domaine calcule, naturalisation rendue : « Tu peux te verser 1 842,50 € ce
+  mois-ci sans problème, le reste il faut le garder pour la TVA et les charges. » —
+  montant EXACT (garde-fou passé), model mistral-small-latest. Anaphore avec history
+  (« et du coup c'est quoi le détail ? ») → payout résolu par le contexte. Le circuit
+  serveur est COMPLET (hasMistralKey → routeur [Mistral = provider UE privilégié] →
+  buildLlmForProvider → BobAgent). ACTIVATION APP RÉELLE : ① vérifier MISTRAL_API_KEY
+  sur Railway + redeploy avec @bob/ai LIVE-2 (session A, à son prochain cycle) ;
+  ② l'app connectée (EXPO_PUBLIC_API_URL renseigné) en héritera ; le mode démo local
+  reste déterministe (regex + gabarits) par design.
 
 ---
 
