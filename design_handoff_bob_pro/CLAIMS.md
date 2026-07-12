@@ -1379,6 +1379,16 @@ transcript workflow wf_fb597a24-2e3.
   ASK/DOSSIER/pilotage. Worktree de deploy supprimé. L'app CONNECTÉE hérite de tout ;
   reste au choix humain : EXPO_PUBLIC_API_URL dans apps/mobile/.env (prod ou staging)
   pour le test téléphone connecté.
+- [06:20] claude-code (session B) APP CONNECTÉE VÉRIFIÉE DEVICE (mandat humain « fais
+  toi-même ») : apps/mobile/.env → EXPO_PUBLIC_API_URL=staging (fichier gitignoré, modif
+  locale), Metro relancé --no-dev --clear. Capture assistant-connecte-mistral.png : la
+  bulle affiche le naturalBody MISTRAL DE STAGING — « Ah, tu me dis que t'as encaissé une
+  facture mais en fait, y'a rien en attente dans tes comptes. T'es sûr de toi ? » (ton
+  pote, faits exacts du tenant staging). CHAÎNE COMPLÈTE PROUVÉE : app → staging →
+  Mistral (classification + naturalisation gardée) → fil. PRIS ACTE statut session C :
+  CAB-0 bloqué sur provisioning EXTERNE (GitHub environments staging/production +
+  secrets Cabinet/Mailosaur/Vercel absents) — actions HUMAINES ou mandat explicite ;
+  Slice 1 en attente, aucun conflit avec les commits LIVE (préservés).
 
 ---
 
