@@ -1369,6 +1369,16 @@ transcript workflow wf_fb597a24-2e3.
   NB : l'IPA iOS existant (2/07) est un build PRODUCTION antérieur — inutilisable pour le
   live. SESSION A : votre WIP api/CI est intact ; le lock a été resynchronisé — pnpm
   install avant de continuer, et re-committer coverage-v8 AVEC le package.json si voulu.
+- [06:00] claude-code (session B) PRODUCTION SUCCESS + E2E — LE CERVEAU LIVE EST EN PROD :
+  deploy 2c45e050 (HEAD 9997b47, worktree propre) SUCCESS, /health mode live ✓. E2E réel :
+  « dis voir, il me reste quoi à me verser ce mois-ci ? » → payout · mistral-small-latest ·
+  naturalBody « Tu peux te verser 4249,88 € ce mois-ci sans problème, le reste est réservé
+  pour la TVA et les charges. » — montant exact du tenant prod, garde-fou passé (espaces
+  normalisés). STAGING idem (4 860,00 €). Les DEUX environnements servent désormais :
+  compréhension libre Mistral (tool-calling) + naturalisation gardée + tous les pouvoirs
+  ASK/DOSSIER/pilotage. Worktree de deploy supprimé. L'app CONNECTÉE hérite de tout ;
+  reste au choix humain : EXPO_PUBLIC_API_URL dans apps/mobile/.env (prod ou staging)
+  pour le test téléphone connecté.
 
 ---
 
