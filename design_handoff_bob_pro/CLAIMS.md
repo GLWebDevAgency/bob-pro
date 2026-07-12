@@ -1340,6 +1340,18 @@ transcript workflow wf_fb597a24-2e3.
   sur Railway + redeploy avec @bob/ai LIVE-2 (session A, à son prochain cycle) ;
   ② l'app connectée (EXPO_PUBLIC_API_URL renseigné) en héritera ; le mode démo local
   reste déterministe (regex + gabarits) par design.
+- [05:05] claude-code (session B) LIVE-3 MERGE (f24f388) : LE BARGE-IN — couper Bob à la
+  voix sans qu'il s'auto-interrompe. Oreille OUVERTE pendant la lecture (partiels natifs,
+  useVoiceInput étendu rétro-compatible) + ECHO-GUARD pur (@bob/ai, 5 tests adversariaux,
+  fail-safe) : « stop/attends » = interruption · recouvrement mots pleins ≥ 60 % avec ce
+  que Bob dit = ÉCHO ignoré · parole nouvelle ≥ 2 mots pleins = Bob se tait et traite ·
+  doute = écho (le tap reste roi, seule interruption en cloud). LA PILE LIVE EST
+  COMPLÈTE (0 : boucle mains-libres · 1 : modales⇄voix · 2 : réponses naturelles
+  gardées, prouvées E2E Mistral · 3 : barge-in). ai 190 ✓ i18n 54 ✓ typecheck ✓.
+  VALIDATION FINALE = DEVICE RÉEL (dev build natif, micro) : AEC iOS, faux positifs en
+  bruit, latences — checklist du test humain : ① orbe on → parler librement ② question
+  structurée → répondre « le deuxième » ③ couper Bob en parlant ④ « stop » ⑤ confirmation
+  « je confirme » ⑥ tout vérifier retranscrit dans le fil.
 
 ---
 
