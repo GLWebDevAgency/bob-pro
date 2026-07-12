@@ -1315,6 +1315,19 @@ transcript workflow wf_fb597a24-2e3.
   / relancer / clore en cloud push-to-talk — dégradé honnête sans module natif Expo Go).
   ai 176 ✓ i18n 54 ✓ (+11 clés live.*) typecheck ✓. RESTE : LIVE-2 (génération LLM +
   mémoire conversation), LIVE-3 (full-duplex), test device réel micro (dev build natif).
+- [04:20] claude-code (session B) LIVE-2 MERGE (0ddc09c) : BOB PARLE NATURELLEMENT, SANS
+  JAMAIS TOUCHER AUX CHIFFRES — naturalizeReply (@bob/ai guardrails) : le LLM met en mots
+  les faits du domaine (ton ×3 humeurs), GARDE-FOU FACTUEL naturalizationViolations
+  (montants/%/n° de pièces de la reformulation ⊂ gabarit source, espaces insécables
+  normalisés, omission tolérée, déformation jamais) → violation/débordement/erreur =
+  fallback silencieux au gabarit EXACT. Périmètre : answer/done SEULEMENT (proposed =
+  consentement verbatim, questions = speakableQuestion). AgentRun.naturalBody (additif),
+  fil + voix live le préfèrent. MÉMOIRE de conversation : AskOptions.history (6 échanges,
+  PII expurgé) → classifieur (anaphores) + reformulateur ; AskOptions.tone = personnalité.
+  Démo/hors-ligne : inchangé (gabarits). ai 185 ✓ api-client 42 ✓ typecheck ✓.
+  SUIVI serveur (A) : porter history/tone au contrat askBob HTTP (additif). RESTE :
+  LIVE-3 (full-duplex/barge-in), test micro réel (dev build), clés LLM prod à activer
+  (ANTHROPIC_API_KEY/MISTRAL_URL déjà câblées providers.ts — humain).
 
 ---
 
