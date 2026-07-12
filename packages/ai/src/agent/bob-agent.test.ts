@@ -267,6 +267,56 @@ describe('BobAgent (démo)', () => {
 describe('BobAgent — chemin LLM (tool-calling) + fallback', () => {
   const routerWithKey = new ModelRouter({ hasClaudeKey: false, hasGlmKey: true });
 
+  it('LIVE-2 : la réponse est NATURALISÉE par le LLM quand les faits sont respectés, gabarit sinon', async () => {
+    const mk = (reply: string): LlmPort => ({
+      id: 'fake',
+      async complete() {
+        return { text: null, toolCalls: [{ name: 'tresorerie_versement', arguments: {} }], model: 'glm' };
+      },
+      async generate() {
+        return { text: reply, model: 'glm' };
+      },
+      async health() {
+        return { healthy: true };
+      },
+    });
+    // Reformulation fidèle (le montant du domaine, repris exactement) → naturalBody.
+    const fidele = await new BobAgent({ router: routerWithKey, actions, llm: mk('Tranquille : tu peux te verser 1 800,00 € ce mois-ci, je garde le reste au chaud.') }).ask(
+      'je peux me payer combien ?',
+    );
+    expect(fidele.ok && fidele.value.naturalBody).toContain('1 800,00');
+    // Montant DÉFORMÉ → le garde rejette : pas de naturalBody, le gabarit exact reste.
+    const menteur = await new BobAgent({ router: routerWithKey, actions, llm: mk('Tu peux te verser 2 500,00 € sans souci !') }).ask(
+      'je peux me payer combien ?',
+    );
+    expect(menteur.ok && menteur.value.naturalBody).toBeUndefined();
+    expect(menteur.ok && menteur.value.card.body).toContain('800,00'); // gabarit exact (formatEUR, espace fine insécable)
+  });
+
+  it('LIVE-2 : l’historique de conversation est transmis au classifieur (anaphores)', async () => {
+    let seen: number | null = null;
+    const llm: LlmPort = {
+      id: 'fake',
+      async complete(messages) {
+        seen = messages.length;
+        return { text: null, toolCalls: [{ name: 'tresorerie_versement', arguments: {} }], model: 'glm' };
+      },
+      async generate() {
+        return { text: '', model: 'glm' };
+      },
+      async health() {
+        return { healthy: true };
+      },
+    };
+    await new BobAgent({ router: routerWithKey, actions, llm }).ask('et du coup ?', {
+      history: [
+        { role: 'user', text: 'je peux me payer combien ?' },
+        { role: 'bob', text: 'Tu peux te verser 1 800,00 €.' },
+      ],
+    });
+    expect(seen).toBe(3); // 2 tours d'historique + le message courant
+  });
+
   it('utilise le tool-call du LLM pour router + résoudre la facture', async () => {
     const llm: LlmPort = {
       id: 'fake',

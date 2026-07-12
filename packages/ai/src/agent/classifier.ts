@@ -207,10 +207,19 @@ const SYSTEM_PROMPT =
 
 /** Classifie via le LLM (tool-calling) : un plan = TOUS les appels d'outils (multi-étapes possible).
  * En cas d'échec amont, lève — l'appelant retombe sur la regex. */
-export async function classifyWithLlm(llm: LlmPort, message: string): Promise<ClassifiedPlan> {
+export async function classifyWithLlm(
+  llm: LlmPort,
+  message: string,
+  history?: readonly { role: 'user' | 'bob'; text: string }[],
+): Promise<ClassifiedPlan> {
   // Minimisation RGPD : on masque le PII incident (email/tél/IBAN/SIREN) AVANT l'envoi au LLM cloud.
   // Les références métier (n° de facture, nom client) sont préservées — elles sont nécessaires à la résolution.
-  const res = await llm.complete([{ role: 'user', content: redactPII(message) }], {
+  // L'historique court (LIVE-2) résout les anaphores : « et pour Martin ? » après « relance Lefèvre ».
+  const context = (history ?? []).slice(-6).map((turn) => ({
+    role: turn.role === 'user' ? ('user' as const) : ('assistant' as const),
+    content: redactPII(turn.text),
+  }));
+  const res = await llm.complete([...context, { role: 'user', content: redactPII(message) }], {
     system: SYSTEM_PROMPT,
     tools: LLM_TOOL_SPECS,
     toolChoice: 'auto',

@@ -1,6 +1,8 @@
 import { type Result, ok, err, type AppError, type FiscalDeadline, formatEUR } from '@bob/core';
 import { ModelRouter, type ModelChoice } from '../router/model-router';
 import { renderWithGuard } from '../guardrails/money-guard';
+import { naturalizeReply, type NaturalizeTone } from '../guardrails/naturalize';
+import { redactPII } from '../guardrails/pii-redaction';
 import { type LlmPort } from '../llm/port';
 import { type AgentDocument, type BobActions, type IssuableInvoice, type PayableInvoice, type SendableQuote } from './actions';
 import { buildBobTools } from '../tools/registry';
@@ -127,6 +129,10 @@ export interface AgentRun {
   navigate?: string;
   /** Texte à vocaliser (TTS) : prompt de confirmation parlé (action proposée) ou message parlé (annulation/re-demande). */
   spokenPrompt?: string;
+  /** LIVE-2 : reformulation NATURELLE des faits par le LLM (gardée par naturalizationViolations —
+   * chiffres et pièces strictement identiques au body, sinon absente). Le fil et la voix la
+   * préfèrent au gabarit ; les actions proposées n'en ont JAMAIS (consentement verbatim). */
+  naturalBody?: string;
 }
 
 /** Intents de navigation : Bob ouvre le bon écran (façon « Jarvis »). */
@@ -270,6 +276,11 @@ export interface AskOptions {
   autonomy?: AgentAutonomy;
   /** Callback optionnel appelé aux étapes clés (comprends -> agis) pour animer un indicateur de phase. */
   onPhase?: (phase: AgentPhase) => void;
+  /** Derniers échanges du fil (le plus ancien d'abord) — anaphores (« et pour Martin ? »)
+   * et liant conversationnel. Expurgé (PII) avant tout envoi cloud. */
+  history?: readonly { role: 'user' | 'bob'; text: string }[];
+  /** Humeur de la voix de Bob (LIVE-2) — aligne la reformulation sur la personnalité de l'app. */
+  tone?: 'pote' | 'pro' | 'direct';
 }
 
 /**
@@ -299,10 +310,10 @@ export class BobAgent {
   }
 
   /** Qualifie la demande : LLM tool-calling si disponible (avec repli déterministe), sinon regex. */
-  private async classify(message: string, routedModel: ModelChoice) {
+  private async classify(message: string, routedModel: ModelChoice, history?: AskOptions['history']) {
     if (this.deps.llm && routedModel !== 'demo') {
       try {
-        return await classifyWithLlm(this.deps.llm, message);
+        return await classifyWithLlm(this.deps.llm, message, history);
       } catch {
         // LLM indisponible : on retombe sur la détection déterministe (jamais bloquant).
       }
@@ -314,14 +325,33 @@ export class BobAgent {
     const autonomy = opts.autonomy ?? DEFAULT_AUTONOMY;
     opts.onPhase?.('comprends');
     const routed = this.deps.router.route('intent.detect');
-    const plan = await this.classify(message, routed.model);
+    const plan = await this.classify(message, routed.model, opts.history);
     const model = plan.model !== 'demo' ? plan.model : routed.model;
     const steps = plan.steps.filter((s) => s.intent !== 'unknown');
 
-    if (steps.length === 0) return ok(this.unknownRun(model));
-    opts.onPhase?.('agis');
-    if (steps.length > 1) return this.runMulti(steps, autonomy, model);
-    return this.runSingle(steps[0]!, autonomy, model, message);
+    let result: Result<AgentRun, AppError>;
+    if (steps.length === 0) result = ok(this.unknownRun(model));
+    else {
+      opts.onPhase?.('agis');
+      result = steps.length > 1 ? await this.runMulti(steps, autonomy, model) : await this.runSingle(steps[0]!, autonomy, model, message);
+    }
+    // LIVE-2 : mise en mots des FAITS par le LLM — réponses et résultats seulement, JAMAIS
+    // les actions proposées (le consentement reste verbatim) ni les questions structurées
+    // (leur formulation est lue par speakableQuestion). Fallback silencieux : le gabarit.
+    if (result.ok && this.deps.llm && model !== 'demo' && (result.value.kind === 'answer' || result.value.kind === 'done') && !result.value.ask?.length) {
+      const natural = await naturalizeReply(this.deps.llm, {
+        title: result.value.card.title,
+        body: result.value.card.body,
+        userMessage: redactPII(message),
+        tone: (opts.tone ?? 'pote') as NaturalizeTone,
+        history: (opts.history ?? []).slice(-6).map((turn) => ({
+          role: turn.role === 'user' ? ('user' as const) : ('assistant' as const),
+          content: redactPII(turn.text),
+        })),
+      });
+      if (natural) result = ok({ ...result.value, naturalBody: natural });
+    }
+    return result;
   }
 
   private unknownRun(model: string): AgentRun {

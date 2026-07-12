@@ -11,6 +11,7 @@ export * from './prompt/prompt-pack';
 export * from './eval/ocr-golden';
 export * from './eval/ocr-eval';
 export * from './guardrails/money-guard';
+export * from './guardrails/naturalize';
 export * from './guardrails/pii-redaction';
 export * from './tools/tool';
 export * from './tools/registry';

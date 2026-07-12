@@ -236,6 +236,8 @@ export default function Assistant() {
   const entitled = (sub?.features ?? []).includes('ai_assistant');
 
   const [items, setItems] = useState<ChatItem[]>([]);
+  const itemsRef = useRef<ChatItem[]>([]);
+  itemsRef.current = items;
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [phase, setPhase] = useState<string | null>(null);
@@ -298,7 +300,8 @@ export default function Assistant() {
   const pushRun = (run: AgentRun): ChatItem => {
     const id = nextId();
     const pending = run.kind === 'proposed' ? run.pending : undefined;
-    const item: ChatItem = { id, role: 'bob', text: run.card.body, run, ...(pending ? { pending } : {}) };
+    // LIVE-2 : la reformulation naturelle (gardée par les faits) prime sur le gabarit.
+    const item: ChatItem = { id, role: 'bob', text: run.naturalBody ?? run.card.body, run, ...(pending ? { pending } : {}) };
     setItems((prev) => [...prev, item]);
     if (run.kind === 'done') refreshAfterAction();
     if (run.navigate) router.push(run.navigate as never); // commande « Jarvis » : Bob ouvre le bon écran
@@ -329,8 +332,12 @@ export default function Assistant() {
     pushText('user', message);
     setBusy(true);
     const autonomy = await getAutonomy(); // politique de confirmation RÉELLE (runtime @bob/ai)
+    // LIVE-2 : mémoire de conversation courte (anaphores) + humeur — expurgées côté agent.
+    const history = itemsRef.current.slice(-6).map((it) => ({ role: it.role, text: it.text }));
     const r = await agent.ask(message, {
       autonomy,
+      history,
+      tone: personality,
       onPhase: (p) =>
         setPhase(t(p === 'comprends' ? 'assistant.phaseUnderstand' : 'assistant.phaseAct', { personality })),
     });
@@ -429,7 +436,7 @@ export default function Assistant() {
       return;
     }
     expectationRef.current = { kind: 'command' };
-    await say(run.card.body);
+    await say(run.naturalBody ?? run.card.body);
     listen();
   };
 
