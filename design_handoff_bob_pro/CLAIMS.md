@@ -1389,6 +1389,62 @@ transcript workflow wf_fb597a24-2e3.
   CAB-0 bloqué sur provisioning EXTERNE (GitHub environments staging/production +
   secrets Cabinet/Mailosaur/Vercel absents) — actions HUMAINES ou mandat explicite ;
   Slice 1 en attente, aucun conflit avec les commits LIVE (préservés).
+- [07:10] claude-code (session B) PROVISIONING GITHUB/VERCEL EXÉCUTÉ (mandat humain
+  « totale autonomie ») : ① GitHub Environments `staging` + `production` CRÉÉS (le blocage
+  n°1 de CAB-0 est levé). ② Projet Vercel `bob-pro-cabinet-web` CRÉÉ (rootDirectory
+  apps/web, framework nextjs), secret VERCEL_CABINET_WEB_PROJECT_ID posé au repo ;
+  protection de déploiement DÉSACTIVÉE (ssoProtection null) → les E2E passent SANS
+  VERCEL_AUTOMATION_BYPASS_SECRET (l'API refuse de le générer — si la protection est
+  réactivée un jour : 1 clic UI Vercel « Protection Bypass for Automation » puis gh secret
+  set). ③ RESTE HUMAIN (externe, payant) : compte MAILOSAUR → CABINET_E2E_MAILOSAUR_API_KEY
+  + CABINET_E2E_ADMIN_EMAIL + CABINET_E2E_COLLABORATOR_EMAIL (adresses @*.mailosaur.net du
+  compte). Session C : Slice 1 débloquée côté infra hors Mailosaur.
+- [07:15] claude-code (session B) FIX P0 ÉCHO MERGE (c5670d6) — verdict terrain fondateur
+  (device réel) : Bob s'entendait et se répondait en boucle. Cause : echo-guard limité à
+  la phase 'speaking', l'écho de fin de TTS passait en 'listening' ; risque identifié
+  d'EXÉCUTION FANTÔME (l'écho du prompt contient « je confirme »). Fix : fenêtre de grâce
+  5 s multi-phases (lastSpokenRef), réponses structurées courtes (≤ 4 mots pleins)
+  court-circuitent, CONFIRMATIONS sans barge-in + purge 800 ms (fantôme impossible par
+  construction), purge 500 ms post-énoncé, disjoncteur 3 échos → repos. À RE-TESTER
+  téléphone (JS via Metro, pas de rebuild natif).
+
+### AUDIT-VOCAL — claim SESSION C (GPT) : audit « Bob partout, context-aware »   <!-- kind: audit -->
+CLAIMED par session C (GPT) sur mandat fondateur [2026-07-13]. LECTURE SEULE sur
+apps/mobile + packages/ai + packages/api-client (AUCUNE écriture hors design_handoff_bob_pro).
+Livrable : `design_handoff_bob_pro/AUDIT_VOCAL_GPT.md` + entrée CLAIMS à la fin.
+
+PROMPT D'AUDIT (à exécuter tel quel par la session C) :
+« Tu es architecte mobile senior spécialiste des interfaces vocales agentiques (Siri/
+assistant embarqué) ET auditeur UX. VISION FONDATRICE : Bob doit être accessible depuis
+N'IMPORTE QUEL écran de l'app, en vocal mains-libres, et être CONSCIENT DU CONTEXTE
+(écran courant + entités affichées) — ex. sur l'écran d'un devis fraîchement dicté,
+l'utilisateur appuie sur le bouton vocal et dit “tu t'es trompé sur la ligne 2, c'est
+450 € pas 540 €, corrige” et Bob comprend de QUEL devis et de QUELLE ligne on parle,
+propose la correction, l'applique après confirmation. Le flux voix actuel (/voix, C20)
+ne gère QUE la création de facture — c'est un cul-de-sac à généraliser.
+AUDITE (lecture seule) : ① CARTOGRAPHIE tous les écrans (apps/mobile/app/**) : pour
+chacun — quelles entités sont affichées (ids disponibles dans les params/hooks), quelles
+actions un utilisateur voudrait y déclencher à la voix, quel est l'accès actuel à Bob
+(aucun / onglet assistant / bouton micro). ② ARCHITECTURE : conçois le contrat
+AgentContext { screen, entities: {type,id,label}[], capabilities } que chaque écran
+publierait (provider React au niveau layout + hook useAgentContext), la façon dont
+ask()/le mode live l'injecte à l'agent (@bob/ai : AskOptions.context), et comment les
+handlers/le LLM l'exploitent (résolution d'anaphores UI : “cette facture”, “la ligne 2”).
+③ ÉDITION VOCALE : spécifie les nouveaux pouvoirs BobActions nécessaires (updateQuoteLine,
+renameCustomer…, chacun = use case @bob/core existant ou à créer, TOUJOURS confirmé —
+palier fiscal), et le flux correction (diff avant/après réutilisant ActionDiffView).
+④ ACCÈS GLOBAL : où vit le bouton Bob global (FAB overlay ? tab bar ? geste ?), ses états
+(idle/live), sa cohabitation avec les FAB existants, et la migration du micro home
+(“que facture” → hub vocal générique). ⑤ PRIORISE en 3 slices implémentables (S1 contexte
+lecture seule “Bob sait où je suis”, S2 édition vocale devis/factures, S3 généralisation),
+avec pour chaque slice : fichiers touchés, risques, critères d'acceptation. CONTRAINTES :
+parité humain↔Bob (jamais un chemin parallèle aux use cases), fail-safe vocal (règles
+echo-guard/parseVoiceChoice existantes), i18n ×3 humeurs, zéro invention de montants.
+Rends le rapport en français dans AUDIT_VOCAL_GPT.md, dense, avec extraits de code réels. »
+
+SYNCHRO : au dépôt du rapport, session B (Claude) fait la contre-lecture, les deux
+sessions arbitrent le découpage S1/S2/S3 via CLAIMS, puis B implémente packages/ai +
+apps/mobile (C garde apps/web).
 
 ---
 
