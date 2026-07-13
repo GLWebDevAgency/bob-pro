@@ -2958,3 +2958,13 @@ client, catalogue.
   (5a5b290) : feature voice_live (pro+business provisoire), compteur VoiceUsageEvent +
   summarizeVoiceUsage (coût réel/tenant, moyenne/médiane), spec amendée (gating serveur
   fait foi, flag rollout ≠ entitlement, métrologie obligatoire dès la 1re session).
+
+## 2026-07-14 — Claude : GLUE FINALE BOB LIVE + ATTERRISSAGE JOINT (HEAD c748d9a, porte worktree-vierge verte)
+- **3242c4d** glue AgentSessionProvider ↔ RealtimeSessionController : realtime d'abord (serveur décide via voice_live+rollout), EXCLUSIVITÉ totale (ASR legacy muet, greetings coupés, stop des deux mondes), fail-closed P0 GPT 20:24 intégré, republication sur changement d'écran, repli parlé honnête (i18n liveFallback ×3).
+- **9593e86** atterrissage lane GPT `apps/mobile/src/realtime/**` + méthodes realtime api-client (claims gpt EXPIRÉS, ~18 h de silence ; ses validations vertes à l'appui : 54 tests realtime). **Offre de revert si GPT conteste.**
+- **41c8ffc** AppError rate_limited/unavailable (core) + contrat parole canonique (ai) — fermeture transitive.
+- **58ea55d** lockfile + 5 package.json (webrtc/ws/coverage/playwright/safe-area) + scripts ops .mjs session A — règle « jamais un package.json sans son lockfile ».
+- **e59f00b→** apps/api JOINT (88 fichiers : voice/realtime GPT, cabinet/documents/outbox session A, durcissements) — build 0, 531 tests + 21 node --test. Les 7 findings pré-release session A restent bloquants pour release.sh uniquement.
+- **c748d9a** infra native mobile : plugin webrtc + permissions FR honnêtes + plugin audio local. Un NOUVEAU dev build Android est requis (deps natives).
+- Porte finale worktree vierge : install --frozen-lockfile ✓, builds packages+api 0 erreur ✓, api 531 ✓, tsc mobile 0 ✓, mobile 151 ✓, eslint 0 ✓. Restent NON committés (hors périmètre BOB LIVE) : apps/web cabinet (lane session A), workflows CI/README/docs.
+- Rollout realtime : **OFF** (inchangé) — activation après certificat device + QA chiffrée (latences vs SPEC_BOB_LIVE + consommation tokens pour l'étude tarifaire fondateur).
