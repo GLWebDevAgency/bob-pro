@@ -15,7 +15,28 @@ Instrumentation OBLIGATOIRE dès la phase 1 : chaque tour émet une `VoiceLatenc
 (sttFinalAt, askSentAt, firstTokenAt, sayStartAt, sayFirstAudioAt, interruptedAt?) agrégée
 en p50/p95, visible en dev (pilule) et journalisée serveur (metrics existantes aiDuration).
 
-## Architecture cible (3 étages, dégradation honnête à chaque étage)
+## AMENDEMENT 13/07 (arbitrage GPT, co-signé Claude sous conditions) — transport principal
+**WebRTC temps réel direct** (`/v1/realtime/calls`, gpt-realtime-2.1, semantic VAD,
+interrupt_response, broker SDP authentifié côté Bob, call_id serveur-only, sideband WS
+serveur). AEC/barge-in/troncature natifs → c'est la voie des cibles p50. Le gateway texte
+streamé (SSE/WS, plan initial ci-dessous) devient le REPLI semi-duplex (offline/dégradé/
+budget). Lanes : GPT = apps/api/src/voice/**, apps/mobile/src/realtime/**, api-client ;
+Claude = pont agent (outils/consentement/garde-fous), @bob/core S2, repli texte.
+CONDITIONS DE SÛRETÉ NON NÉGOCIABLES (contrat à publier par GPT, review Claude) :
+1. **Aucun montant improvisé à l'oral** : tout fait chiffré vient d'un TOOL RESULT structuré
+   que le modèle lit ; le transcript de sortie (fourni par l'API realtime) est audité
+   post-hoc par naturalizationViolations vs faits outils → violation = correction parlée
+   immédiate + journal + metric.
+2. **Le modèle realtime ne CONSENT jamais seul** : toute mutation passe par le flux
+   proposalId serveur existant ; la confirmation utilisateur est parsée par NOTRE
+   parseVoiceConsent (verbatim transmis), jamais interprétée par le modèle.
+3. **Compliance tracée** : audio brut → OpenAI (hors UE, pas de redaction PII possible sur
+   le flux) — décision journalisée CLAIMS, provider PLUGGABLE (Mistral realtime dès dispo),
+   opt-out utilisateur → repli texte semi-duplex.
+4. **Dégradation honnête** : sans WebRTC (réseau/offre), bascule automatique repli texte
+   puis local — jamais un mur.
+
+## Architecture cible initiale (devient le REPLI texte — 3 étages, dégradation honnête)
 1. **Transport** : WebSocket `wss://…/voice/live` (Railway OK). Session authentifiée (JWT
    Supabase), 1 session = 1 mission vocale. Messages JSON typés :
    `client→srv : {type:'utterance', text, context, seq} | {type:'barge_in'} | {type:'end'}`
