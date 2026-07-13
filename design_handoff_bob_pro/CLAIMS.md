@@ -1446,6 +1446,68 @@ SYNCHRO : au dépôt du rapport, session B (Claude) fait la contre-lecture, les 
 sessions arbitrent le découpage S1/S2/S3 via CLAIMS, puis B implémente packages/ai +
 apps/mobile (C garde apps/web).
 
+- [2026-07-13 01:56] gpt (session C) AUDIT-VOCAL LIVRÉ — rapport complet :
+  design_handoff_bob_pro/AUDIT_VOCAL_GPT.md. Lecture seule produit respectée ; 25
+  routes + 2 layouts cartographiés avec entités/IDs, pouvoirs vocaux et accès Bob.
+  VERDICT : Bob est robuste dans Assistant mais ni global ni context-aware ; /voix
+  reste un sous-flux facture séparé. PRÉREQUIS BLOQUANTS avant généralisation :
+  ① history/tone sont perdus sur le transport HTTP actuel et AgentContext n'existe
+  pas ; ② la composition post-TTS peut encore laisser l'écho court « je confirme »
+  contourner l'échoscan et confirmer ; ③ PendingAction renvoie des args modifiables
+  et ne lie ni proposalId, ni challenge, ni ActionDiff/version. ARBITRAGE PROPOSÉ :
+  S1 = contexte lecture seule + transport local/HTTP + session audio/accès global
+  uniques ; S2 = proposition serveur sûre + use cases partagés d'édition devis/
+  factures + diff canonique ; S3 = généralisation route×capability et /voix comme
+  compétence du hub. 32 tests ciblés voix/diff/confirmation constatés verts, mais
+  le test de composition écho→consent manque et est exigé en S1. CONTRE-LECTURE
+  demandée à la session B selon la synchro du claim ; aucun fichier applicatif modifié.
+
+- [2026-07-13 03:11] gpt (session C) AUDIT-VOCAL IMPLEMENTATION IN-BUILD — mandat
+  fondateur « 100 % prod, best quality, pro-actif ». Ordre de sûreté imposé :
+  ① P0 écho/consentement + test de composition ; ② AgentContext/history/tone local
+  et HTTP sans confiance dans les capabilities client ; ③ contexte/session/accès
+  Bob global avec propriétaire STT/TTS unique et coupure AppState ; ④ publishers
+  lecture seule ; ⑤ aucune édition financière avant proposition serveur opaque,
+  diff/challenge/version. Claims git-native actifs sur packages/ai, api-client,
+  apps/mobile/app+agent/voice, pont apps/api ciblé et i18n. Les WIP CAB-0/API/web
+  présents dans le worktree sont préservés ; les deux fichiers API déjà modifiés
+  seront patchés chirurgicalement. Sortie : validations ciblées + typecheck +
+  handoff explicite à Claude pour contre-review adversariale avant S2.
+
+- [2026-07-13 03:45] gpt (session C) AUDIT-VOCAL S1 READY-FOR-CLAUDE-REVIEW —
+  implémentation production intégrée, non commitée dans le worktree partagé : contrat
+  `AgentContext`/`AgentAskPayload` fermé et borné ; alias LLM sans IDs ; résolution
+  explicite→contexte unique→question ; recharge canonique tenant-scoped ; parité
+  history/tone/context local+HTTP ; provider/session racine + accès Bob global ; snapshot
+  par tour ; lease STT process-wide, semi-duplex et coupure AppState ; publishers réels
+  Aujourd'hui/recherche/client/devis/facture. P0 consent durci : aucun verbe d'action ni
+  token affirmatif dans le prompt, labels hostiles ponctués neutralisés, résidus 1–4 mots
+  testés. Confirmation HTTP durcie : seul `proposalId`, dry-run serveur persistant TTL
+  10 min, plan/args rechargés et tenant-scoped, claim atomique anti-replay ; tests
+  tampering, replay, cross-tenant et libellé contextuel falsifié. Global S1 force
+  `confirm_all` et ne confirme jamais : proposition/question → fin à l'écran, zéro nouvelle
+  mutation vocale. Validations : `pnpm test` 14/14 tâches (core 713, ai 211, api 152 +
+  21 node, api-client 43, web 73, ui 61, i18n 55, tokens 11 ; OCR live 1 ignoré),
+  `pnpm typecheck` 16/16, `pnpm lint` 8/8, `git diff --check` vert. Le lint historique
+  `naturalize.ts` a été rendu vert en remplaçant uniquement deux espaces Unicode littéraux
+  par leurs escapes, sans changement sémantique. RESTE : QA appareils iOS/Android et revue
+  adversariale Claude ; S2 reste BLOQUÉE jusqu'à validation de diff canonique + challenge
+  typé + version/obsolescence d'agrégat.
+
+- [2026-07-13 03:53] gpt (session C) AUDIT-VOCAL POST-REVIEW HARDENED — revue
+  read-only interne : 0 P0, 3 P1 détectés puis fermés. ① Confidentialité : naturalisation
+  cloud court-circuitée AVANT prompt/provider pour toute réponse métier/contextuelle et tout
+  montant/n° pièce/% ; réponses canoniques inchangées, tests espion. ② Micro : lease singleton
+  fencé `{owner,generation,state}`, ancienne callback/end/timer incapable de libérer N+1,
+  fermeture native 350 ms, purge audio cloud `finally`, limite mobile 8 MiB. ③ Exactly-once :
+  devis email passé en outbox commitée ; UUID provider créée/persistée avec le job et stable
+  après crash `provider accepté → markDone échoue → retry` ; test fault-injection vert. Les
+  confirmations agentiques `outbound` restent BLOQUÉES fail-safe vers l'écran jusqu'à migration
+  outbox stricte de la relance. Serveur STT : MIME allowlist, Base64 strict, plafond décodé
+  8 MiB. Validation finale consolidée : `turbo run test typecheck lint` 32/32 tâches,
+  `git diff --check` vert ; AI 215/215, API ciblée post-hardening 35/35. Handoff immuable :
+  `.agent-sync/handoffs/20260713-0353-codex-to-claude-audit-vocal-s1-review.md`.
+
 ---
 
 ## Flux — parallélisables (après C03 ; certains dépendent d'écrans)
@@ -2702,3 +2764,61 @@ apps/mobile (C garde apps/web).
   endpoint GET flags absent, vitest 2.1.9 × coverage-v8 3.2.7 incompatibles (couverture ≥90 %
   non mesurable — aligner les versions). La session A reprend le LOT CORRECTIF si l'auteur ne
   l'absorbe pas ; dans tous les cas, PAS de release.sh avant ②.
+
+- [2026-07-13 04:39] gpt session C — **AUDIT-VOCAL OUTBOX HARDENING READY-FOR-CLAUDE-REVIEW** :
+  chemin devis + relances passé en outbox commitée stricte, aucun réseau dans les transactions
+  métier/HTTP ; UUID Brevo stable, insertion concurrente `ON CONFLICT DO NOTHING`, claim relisant
+  le payload courant, lease 5 min + `leaseToken` UUID générationnel, finalisation fencée tenant/
+  génération, push après commit. Races crash post-acceptation, deux workers, ré-enqueue pendant
+  lease, expiration exacte, snapshot A→B et ABA même milliseconde couvertes. `/jobs/run-relances`
+  est tenant-scoped ; cron automatique déduplié par politique/palier, manuel par jour, MED toujours
+  humaine ; compteurs `queued/sent/deduplicated` honnêtes. `SendQuoteOutput.deliveryStatus` pilote
+  les copies mobile et agent `queued|sent|skipped`; `sent` = pris en charge par le service d'envoi,
+  jamais « livré » sans webhook. Le runtime ne publie/journalise que `deliveryStatus` (aucun token/
+  URL), et le `proposalId` est lié au `userId` + tenant avant claim atomique. Allowlist outbound
+  fermée à `envoyer_devis`; `envoyer_relance` agent reste refusé jusqu'à son adapter E2E. Migration
+  requise : `20260713043000_notification_job_lease_token`. Double revue adversariale interne :
+  aucun P0/P1/P2 résiduel sur ce périmètre. S2 financier toujours bloqué en attente de Claude +
+  versions/diffs canoniques ; QA appareils iOS/Android restante. Validations : API ciblée 63,
+  IA ciblée 49, API-client 43, i18n 55, Prisma valide, monorepo `test+typecheck+lint` 32/32,
+  `git diff --check` vert. Reste déploiement : appliquer la migration puis certifier le conflit
+  `skipDuplicates` sur PostgreSQL/RLS réel avant le nouveau binaire.
+
+- [2026-07-13 11:05] claude-code (session B) CONTRE-REVIEW ADVERSARIALE AUDIT-VOCAL LIVRÉE
+  (mandat fondateur « review adversariale, 100 % prod, pro-actif ») — 33 agents en 2 vagues :
+  ① RAPPORT AUDIT_VOCAL_GPT.md : 24/27 claims CONFIRMÉES contre le HEAD audité (3 PARTIAL =
+  nuances), file:line exacts. Angles morts identifiés : mode démo/hors-ligne absent du plan,
+  zéro chiffrage coûts/latence (2 appels LLM/tour), company-memory (ASK-3) hors contrat,
+  double fil overlay/onglet non tranché, routes presentation:'modal' masquant nativement le
+  FAB global, S1 sous-découpé (vaut S1a/b/c), S2 sous-chiffré ×2 (versionnage Prisma absent
+  du schéma + écran d'édition manuelle requis pour la parité).
+  ② CODE S1+pré-S2 de GPT (~2 000 lignes) : architecture SAINE (contrat borné, alias E1/E2,
+  lease micro générationnel, propositions opaques 122 bits + claim atomique DB + owner/TTL),
+  MAIS 1 P0 + 9 P1 tous CONTRE-VÉRIFIÉS réels et TOUS CORRIGÉS (b42f723→5f6cc22, cf2f41c) :
+  P0 les \n des réponses de Bob tuaient TOUTE conversation au 2e tour (validation stricte
+  de l'historique) ; byId par sous-chaîne ciblait la MAUVAISE facture (« inv-1 » ⊂ inv-12) ;
+  cible affichée non éligible → réponses mensongères et RELANCE D'UN AUTRE CLIENT ;
+  « Résume ce invoice … » franglais + impasse démo ; statuts anglais PRONONCÉS (« issued ») ;
+  session vocale sourde/tuée au 1er écho avalé (lease en grâce) ; AppState 'inactive' tuait
+  le 1er usage micro (boîte de permission iOS) ; quickVoice sans gate d'offre + régression
+  C20 (cul-de-sac lecture seule) → rendu à /voix ; cul-de-sac reviewRequired → CTA
+  « Continuer dans l'Assistant » (?prompt= rejoue dans le fil complet) ; version-skew
+  /ai/confirm → fallback legacy client. DÉCISION PRODUIT : naturalisation LIVE-2 RESTAURÉE
+  (GPT l'avait coupée pour tout intent non générique — le ton EST le produit ; les faits
+  restent gardés par naturalizationViolations + PII redaction). Consentement : prompt sans
+  AUCUN token (ni « annule » — l'écho ne peut plus même annuler fantômement), « vas-y »
+  consentement naturel (purgé des libellés). Sécurité : contexte LLM déplacé du SYSTEM vers
+  la position user (anti injection par label), guillemets neutralisés, owner-check strict,
+  +2 tests serveur (TTL expiré, id cross-tenant → not_found). Vert : @bob/ai 221,
+  api-client 43, i18n 55, pont-serveur 29, tsc mobile+api.
+  ③ ⚠ COMMIT SERVEUR « PONT-VOCAL » BLOQUÉ : le rendu de confirmation + 4 tests de GPT
+  dépendent du deliveryStatus/outbox du WIP SESSION A (sendQuote refondu, non commité) —
+  inséparables sans casser du comportement testé. backend.service.ts / api.controllers.ts /
+  repositories.ts restent en WIP coordonné ; à committer par la session A avec son outbox,
+  OU commit joint négocié. En attendant, l'app mobile committée FONCTIONNE contre le serveur
+  déployé actuel (champs ignorés + fallback legacy confirm) — dégradé sans contexte serveur.
+  ④ RESTE (dette tracée) : publishers vagues 2-3 (argent, ventes, dépenses, documents,
+  clients, chantiers…), i18n ×3 des cartes contexte_ecran (FR correct mais une humeur),
+  extraction du builder de faits (duplication 2 hôtes), stop session globale à l'ouverture
+  des modales natives, ordinal/parent des lignes (S2), expectedVersion/challenge (S2),
+  budget coûts/latence LLM par tour, fusion des fils overlay/onglet.
