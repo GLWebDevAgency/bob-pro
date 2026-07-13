@@ -109,13 +109,15 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     expect(micOnIndex).toBeGreaterThan(publishIndex); // JAMAIS le micro avant le contexte
   });
 
-  it('handle indisponible (trou de contrat) : pas de publication, micro ouvert quand même — dégradé honnête', async () => {
+  it('handle indisponible → FAIL-CLOSED : pas de publication, JAMAIS de micro, stop + repli', async () => {
     const { controller, log, emit } = harness({ handle: null });
     await controller.start();
     emit({ type: 'transport', event: { type: 'state', state: readyState } });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(log.some((entry) => entry.startsWith('publish:'))).toBe(false);
-    expect(log).toContain('mic:true');
+    expect(log).not.toContain('mic:true');
+    expect(log).toContain('orchestrator:stop');
+    expect(log.some((entry) => entry.startsWith('fallback:'))).toBe(true);
   });
 
   const candidate = (turnId: string) => ({

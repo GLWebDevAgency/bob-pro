@@ -1576,6 +1576,11 @@ const legacyFr = {
     pro: 'La dictée a échoué. Veuillez réessayer.',
     direct: 'Dictée ratée. Réessaie.',
   },
+  'agent.global.liveFallback': {
+    pote: 'Le temps réel décroche — on continue en mode classique, rien n’est perdu.',
+    pro: 'Le mode temps réel est indisponible ; poursuite en mode classique.',
+    direct: 'Temps réel KO. Mode classique.',
+  },
   'agent.global.heardNothing': {
     pote: 'Je n’ai rien entendu — touche le bouton pour reprendre.',
     pro: 'Je n’ai rien entendu. Touchez le bouton pour reprendre.',

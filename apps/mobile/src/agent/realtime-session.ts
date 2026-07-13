@@ -202,21 +202,28 @@ export class RealtimeSessionController {
     }
   }
 
-  /** L'ORDRE du contrat : contexte publié d'abord, micro ouvert ENSUITE — jamais l'inverse. */
+  /** L'ORDRE du contrat, FAIL-CLOSED (P0 GPT 20:24) : micro ON UNIQUEMENT si handle présent
+   * ET PUT contexte confirmé — sinon stop + repli. Jamais une oreille sans contexte publié. */
   private async publishThenOpenMicrophone(): Promise<void> {
     const transport = this.lastTransport;
     if (!transport) return;
     const handle = transport.getSessionHandle();
-    if (handle !== null) {
-      this.publisher?.close();
-      this.publisher = new RealtimeContextPublisher(handle, this.deps.updateContext);
-      const fence = await this.publisher.publish(this.hooks.getContextSnapshot());
-      if (fence === null && this.activeFlag) {
-        // Publication initiale impossible : session SANS contexte interdite — repli honnête.
+    if (handle === null) {
+      if (this.activeFlag) {
         await this.stop('user');
         this.hooks.onFallback('provider_error');
-        return;
       }
+      return;
+    }
+    this.publisher?.close();
+    this.publisher = new RealtimeContextPublisher(handle, this.deps.updateContext);
+    const fence = await this.publisher.publish(this.hooks.getContextSnapshot());
+    if (fence === null) {
+      if (this.activeFlag) {
+        await this.stop('user');
+        this.hooks.onFallback('provider_error');
+      }
+      return;
     }
     if (this.activeFlag) transport.setMicrophoneEnabled(true);
   }

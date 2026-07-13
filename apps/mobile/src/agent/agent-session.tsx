@@ -18,6 +18,10 @@ import { useBobClient } from '../data/client';
 import { useSpeak, useVoiceInput, voicePermissionRequestInFlight, type VoiceInputIssue } from '../data/voice';
 import { snapshotAgentContext, useAgentContext, useAgentSurface, type AgentContext } from './agent-context';
 import { clearWizardHint, setWizardHint } from './wizard-hints';
+import { RealtimeControlAcknowledgementGate } from '../realtime/realtime-control-gate';
+import { RealtimeResilienceOrchestrator } from '../realtime/realtime-resilience-orchestrator';
+import { RealtimeWebRtcTransport } from '../realtime/webrtc-realtime-transport';
+import { RealtimeSessionController } from './realtime-session';
 
 export type AgentSessionPhase = 'idle' | 'listening' | 'thinking' | 'speaking' | 'error';
 
@@ -109,6 +113,76 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
   }, []);
 
   const transcriptHandlerRef = useRef<(text: string) => void>(() => undefined);
+
+  // ── BOB LIVE : contrôleur temps réel, EXCLUSIF du pilote legacy. Le serveur fait foi
+  // (entitlement voice_live + rollout dans realtimeVoiceConfig().available) — tant qu'il dit
+  // non, ce chemin est inerte et la session reste 100 % historique. ──
+  const realtimeRef = useRef<RealtimeSessionController | null>(null);
+  const realtimeActiveRef = useRef(false);
+  const getRealtimeController = (): RealtimeSessionController => {
+    if (realtimeRef.current) return realtimeRef.current;
+    realtimeRef.current = new RealtimeSessionController(
+      {
+        isAvailable: async () => {
+          const config = await client.realtimeVoiceConfig();
+          return config.ok && config.value.available;
+        },
+        updateContext: async (handle, update) => client.updateRealtimeVoiceContext(handle, update),
+        createOrchestrator: (legacyFallback, onPrimaryCreated) =>
+          new RealtimeResilienceOrchestrator({
+            createPrimary: () => {
+              const transport = new RealtimeWebRtcTransport(client);
+              onPrimaryCreated(transport);
+              return transport;
+            },
+            legacyFallback,
+          }),
+        createControlGate: (currentFence) =>
+          new RealtimeControlAcknowledgementGate(client, () => {
+            const fence = currentFence();
+            return fence === null ? null : fence;
+          }),
+      },
+      {
+        onPhase: (phase) => {
+          if (realtimeActiveRef.current) setSessionPhase(phase);
+        },
+        onUserTranscript: (text, final) => {
+          if (!realtimeActiveRef.current || !final) return;
+          setTranscript(text);
+          historyRef.current = [...historyRef.current, { role: 'user' as const, text }].slice(-12);
+        },
+        onBobTranscript: (text, final) => {
+          if (!realtimeActiveRef.current || !final) return;
+          setResponse(text);
+          historyRef.current = [...historyRef.current, { role: 'bob' as const, text }].slice(-12);
+        },
+        onReview: () => {
+          if (!realtimeActiveRef.current) return;
+          // Plancher : validation VISUELLE — le CTA « Continuer dans l'Assistant » existant.
+          setReviewRequired(true);
+        },
+        onNavigate: (route) => {
+          if (!realtimeActiveRef.current) return;
+          router.push(route as never);
+          // L'écran d'arrivée republie : séquence stricte micro-off→interrupt→PUT→micro-on.
+          void realtimeRef.current?.publishContext();
+        },
+        onFallback: () => {
+          // Primaire ENTIÈREMENT fermé (garantie orchestrateur) : texte honnête puis boucle
+          // historique — jamais deux cerveaux.
+          realtimeActiveRef.current = false;
+          if (!activeRef.current) return;
+          setResponse(t('agent.global.liveFallback', { personality }));
+          void (async () => {
+            await say(t('agent.global.liveFallback', { personality }), true);
+          })();
+        },
+        getContextSnapshot: () => snapshotAgentContext(contextRef.current),
+      },
+    );
+    return realtimeRef.current;
+  };
   const voice = useVoiceInput((text) => transcriptHandlerRef.current(text), {
     owner: 'global-agent-session',
     onIssue: (nextIssue) => {
@@ -147,6 +221,10 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
   }, [personality, setSessionPhase]);
 
   const stop = useCallback((): void => {
+    if (realtimeActiveRef.current) {
+      realtimeActiveRef.current = false;
+      void realtimeRef.current?.stop('user');
+    }
     clearWizardHint(); // un hint en vol meurt avec la session — jamais de pré-remplissage fantôme
     turnGenerationRef.current += 1;
     activeRef.current = false;
@@ -224,6 +302,7 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
     if (greetingKey === null) return;
     // Session inactive : on ne consomme RIEN — start() rejouera le guidage de l'écran courant.
     if (!activeRef.current) return;
+    if (realtimeActiveRef.current) return; // temps réel : le guidage vient du cerveau serveur
     if (spokenGreetingsRef.current.has(greetingKey)) return;
     if (phaseRefForGreeting.current === 'thinking' || phaseRefForGreeting.current === 'speaking') {
       pendingGreetingRef.current = greetingKey; // en FILE — pris en charge à la fin du tour
@@ -371,6 +450,7 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
     [agent, listen, personality, say, setSessionPhase, stop, flushPendingGreeting],
   );
   transcriptHandlerRef.current = (text) => {
+    if (realtimeActiveRef.current) return; // exclusivité : l'ASR legacy ne nourrit jamais le temps réel
     currentTraceRef.current = { sttFinalAt: Date.now() };
     void runTurn(text);
   };
@@ -378,6 +458,14 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
   // GUIDAGE À L'ARRIVÉE (S2-GUIDÉ) : quand l'écran/étape focalisé publie un guidage et que la
   // session est active, Bob le lit UNE fois (key stable) puis ré-écoute. Pendant un tour en
   // cours (thinking/speaking), la key est consommée sans relecture — l'affordance a déjà guidé.
+  // Temps réel : tout changement de contexte FOCALISÉ déclenche la séquence stricte
+  // (micro off → interrupt → PUT confirmé → micro on) — l'échec bascule en repli.
+  const liveContextInstance = liveContext.screen.instanceId;
+  useEffect(() => {
+    if (!realtimeActiveRef.current) return;
+    void realtimeRef.current?.publishContext();
+  }, [liveContextInstance]);
+
   const start = useCallback((): void => {
     if (activeRef.current) return;
     // Nouvelle session = nouvelle mission : guidages, historique et disjoncteur repartent à zéro.
@@ -392,13 +480,22 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
     setReviewRequired(false);
     setContextAtTurn(null);
     setHandoff(null);
-    const mountedGreeting = surfaceRef.current.greeting?.key ?? null;
-    if (mountedGreeting !== null) {
-      // Écran monté AVANT la session : son guidage se joue au démarrage (jamais perdu).
-      void speakGreeting(mountedGreeting);
-    } else {
-      void listen();
-    }
+    void (async () => {
+      // TEMPS RÉEL d'abord — le serveur décide (plan voice_live + rollout). Refusé/indispo :
+      // la boucle historique reprend exactement comme avant, greeting compris.
+      const outcome = await getRealtimeController().start();
+      if (outcome === 'realtime') {
+        realtimeActiveRef.current = true;
+        return; // EXCLUSIVITÉ : aucune oreille/bouche legacy tant que le temps réel vit.
+      }
+      const mountedGreeting = surfaceRef.current.greeting?.key ?? null;
+      if (mountedGreeting !== null) {
+        // Écran monté AVANT la session : son guidage se joue au démarrage (jamais perdu).
+        void speakGreeting(mountedGreeting);
+      } else {
+        void listen();
+      }
+    })();
   }, [listen, speakGreeting]);
 
   const dismissResponse = useCallback((): void => {
