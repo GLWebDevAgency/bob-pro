@@ -11,6 +11,10 @@ export interface SttResult {
  */
 export interface SttPort {
   readonly id: string;
-  transcribe(audioBase64: string, mimeType: string): Promise<SttResult>;
+  transcribe(
+    audioBase64: string,
+    mimeType: string,
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<SttResult>;
   health(): Promise<{ healthy: boolean }>;
 }

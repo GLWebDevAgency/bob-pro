@@ -66,6 +66,28 @@ describe('naturalizeReply — fallback inconditionnel', () => {
     };
     expect(await naturalizeReply(broken, SAFE_INPUT)).toBeNull();
   });
+
+  it('propage le signal et ne masque pas une interruption en fallback de style', async () => {
+    const controller = new AbortController();
+    let providerSignal: AbortSignal | undefined;
+    const llm: LlmPort = {
+      id: 'slow',
+      complete: async () => ({ text: null, toolCalls: [], model: 'slow' }),
+      generate: async (_messages, opts) => {
+        providerSignal = opts?.signal;
+        return new Promise((_resolve, reject) => {
+          opts?.signal?.addEventListener('abort', () => reject(opts.signal?.reason), { once: true });
+        });
+      },
+      health: async () => ({ healthy: true }),
+    };
+
+    const running = naturalizeReply(llm, { ...SAFE_INPUT, signal: controller.signal });
+    await vi.waitFor(() => expect(providerSignal).toBe(controller.signal));
+    controller.abort();
+
+    await expect(running).rejects.toMatchObject({ name: 'AbortError' });
+  });
 });
 
 describe('shouldNaturalize — frontière de confidentialité cloud', () => {

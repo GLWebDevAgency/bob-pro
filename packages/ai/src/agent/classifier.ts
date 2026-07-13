@@ -235,7 +235,9 @@ export async function classifyWithLlm(
   message: string,
   history?: readonly { role: 'user' | 'bob'; text: string }[],
   context?: AgentContext,
+  signal?: AbortSignal,
 ): Promise<ClassifiedPlan> {
+  signal?.throwIfAborted();
   // Minimisation RGPD : on masque le PII incident (email/tél/IBAN/SIREN) AVANT l'envoi au LLM cloud.
   // Les références métier (n° de facture, nom client) sont préservées — elles sont nécessaires à la résolution.
   // L'historique court (LIVE-2) résout les anaphores : « et pour Martin ? » après « relance Lefèvre ».
@@ -252,8 +254,10 @@ export async function classifyWithLlm(
       tools: LLM_TOOL_SPECS,
       toolChoice: 'auto',
       temperature: 0,
+      ...(signal === undefined ? {} : { signal }),
     },
   );
+  signal?.throwIfAborted();
   const steps: PlanStep[] = [];
   for (const call of res.toolCalls) {
     const intent = TOOL_TO_INTENT[call.name];

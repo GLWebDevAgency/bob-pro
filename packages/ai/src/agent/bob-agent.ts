@@ -507,6 +507,8 @@ export type AgentPhase = 'comprends' | 'agis';
 export interface AskOptions extends Omit<AgentAskPayload, 'message'> {
   /** Callback optionnel appelé aux étapes clés (comprends -> agis) pour animer un indicateur de phase. */
   onPhase?: (phase: AgentPhase) => void;
+  /** Annulation coopérative du tour (barge-in/supersession). */
+  signal?: AbortSignal;
 }
 
 /**
@@ -541,18 +543,24 @@ export class BobAgent {
     routedModel: ModelChoice,
     history?: AskOptions['history'],
     context?: AgentContext,
+    signal?: AbortSignal,
   ) {
+    signal?.throwIfAborted();
     if (this.deps.llm && routedModel !== 'demo') {
       try {
-        return await classifyWithLlm(this.deps.llm, message, history, context);
+        return await classifyWithLlm(this.deps.llm, message, history, context, signal);
       } catch {
+        // Un barge-in n'est jamais une indisponibilité LLM : ne surtout pas poursuivre par regex.
+        signal?.throwIfAborted();
         // LLM indisponible : on retombe sur la détection déterministe (jamais bloquant).
       }
     }
+    signal?.throwIfAborted();
     return classifyWithRegex(message);
   }
 
   async ask(message: string, opts: AskOptions = {}): Promise<Result<AgentRun, AppError>> {
+    opts.signal?.throwIfAborted();
     const payload = parseAgentAskPayload({
       message,
       ...(opts.autonomy !== undefined ? { autonomy: opts.autonomy } : {}),
@@ -567,7 +575,8 @@ export class BobAgent {
     const context = payload.value.context;
     opts.onPhase?.('comprends');
     const routed = this.deps.router.route('intent.detect');
-    const plan = await this.classify(userMessage, routed.model, history, context);
+    const plan = await this.classify(userMessage, routed.model, history, context, opts.signal);
+    opts.signal?.throwIfAborted();
     const model = plan.model !== 'demo' ? plan.model : routed.model;
     const steps = plan.steps.filter((s) => s.intent !== 'unknown');
     // La lecture contextuelle est une réponse, pas une action de lot : dans une demande
@@ -579,12 +588,15 @@ export class BobAgent {
     let result: Result<AgentRun, AppError>;
     if (effective.length === 0) result = ok(this.unknownRun(model));
     else {
+      opts.signal?.throwIfAborted();
       opts.onPhase?.('agis');
       result =
         effective.length > 1
           ? await this.runMulti(effective, autonomy, model, userMessage, context)
           : await this.runSingle(effective[0]!, autonomy, model, userMessage, context);
     }
+    // Les ports métier ne sont pas tous interruptibles, mais aucun résultat tardif ne franchit ce fence.
+    opts.signal?.throwIfAborted();
     // LIVE-2 : mise en mots des FAITS par le LLM — réponses et résultats seulement, JAMAIS
     // les actions proposées (le consentement reste verbatim) ni les questions structurées
     // (leur formulation est lue par speakableQuestion). Fallback silencieux : le gabarit.
@@ -598,7 +610,13 @@ export class BobAgent {
           role: turn.role === 'user' ? ('user' as const) : ('assistant' as const),
           content: redactPII(turn.text),
         })),
+        // Frontière confidentialité fail-closed : une réponse métier reste tenant-sensitive
+        // même sans chiffre détectable (« Aucun document archivé », statut, nom client…).
+        // Seule l'aide générique `unknown`, sans contexte d'écran, peut être stylisée en cloud.
+        sensitiveContext: context !== undefined || result.value.intent !== 'unknown',
+        ...(opts.signal === undefined ? {} : { signal: opts.signal }),
       });
+      opts.signal?.throwIfAborted();
       if (natural) result = ok({ ...result.value, naturalBody: natural });
     }
     return result;

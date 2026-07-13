@@ -58,6 +58,8 @@ export interface NaturalizeInput {
   sensitiveContext?: boolean;
   /** Derniers échanges (déjà expurgés par l'appelant si nécessaire) — le liant conversationnel. */
   history?: readonly LlmMessage[];
+  /** Coupe l'appel de style quand le tour vocal n'est plus courant. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -76,28 +78,35 @@ export function shouldNaturalize(input: NaturalizeInput): boolean {
  * l'appelant garde alors le gabarit source (fallback inconditionnel, jamais bloquant).
  */
 export async function naturalizeReply(llm: LlmPort, input: NaturalizeInput): Promise<string | null> {
+  input.signal?.throwIfAborted();
   // IMPORTANT : ce gate precede la construction des messages et tout appel fournisseur.
   if (!shouldNaturalize(input)) return null;
   try {
-    const r = await llm.generate([
-      {
-        role: 'system',
-        content:
-          `Tu es Bob, copilote comptable d'un indépendant français. Reformule les FAITS fournis en une réponse parlée naturelle (1 à 3 phrases courtes, pas de listes, pas de markdown, pas d'emoji). ${TONE_HINT[input.tone]} ` +
-          'INTERDICTION ABSOLUE de modifier, arrondir, ajouter ou inventer un montant, un pourcentage, une date ou un numéro de pièce : reprends-les EXACTEMENT tels quels, ou omets-les. ' +
-          'Réponds UNIQUEMENT avec la reformulation, rien d’autre.',
-      },
-      ...(input.history ?? []),
-      {
-        role: 'user',
-        content: `Demande de l'utilisateur : ${input.userMessage}\nFaits à transmettre (source de vérité) : ${input.title}. ${input.body}`,
-      },
-    ]);
+    const r = await llm.generate(
+      [
+        {
+          role: 'system',
+          content:
+            `Tu es Bob, copilote comptable d'un indépendant français. Reformule les FAITS fournis en une réponse parlée naturelle (1 à 3 phrases courtes, pas de listes, pas de markdown, pas d'emoji). ${TONE_HINT[input.tone]} ` +
+            'INTERDICTION ABSOLUE de modifier, arrondir, ajouter ou inventer un montant, un pourcentage, une date ou un numéro de pièce : reprends-les EXACTEMENT tels quels, ou omets-les. ' +
+            'Réponds UNIQUEMENT avec la reformulation, rien d’autre.',
+        },
+        ...(input.history ?? []),
+        {
+          role: 'user',
+          content: `Demande de l'utilisateur : ${input.userMessage}\nFaits à transmettre (source de vérité) : ${input.title}. ${input.body}`,
+        },
+      ],
+      input.signal === undefined ? undefined : { signal: input.signal },
+    );
+    input.signal?.throwIfAborted();
     const natural = r.text?.trim();
     if (!natural || natural.length > MAX_NATURAL_LENGTH) return null;
     if (naturalizationViolations(`${input.title} ${input.body}`, natural).length > 0) return null;
     return natural;
   } catch {
+    // Une annulation n'est pas une panne de style : elle doit remonter afin d'arrêter le tour.
+    input.signal?.throwIfAborted();
     return null; // le style n'est jamais bloquant — le gabarit reste
   }
 }

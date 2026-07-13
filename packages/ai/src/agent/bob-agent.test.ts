@@ -285,6 +285,54 @@ describe('BobAgent — chemin LLM (tool-calling) + fallback', () => {
     expect(generate).not.toHaveBeenCalled();
   });
 
+  it('confidentialité : une réponse métier sans aucun fait numérique n atteint jamais naturalize', async () => {
+    const generate = vi.fn(async () => ({ text: 'Ne doit jamais être appelée.', model: 'glm' }));
+    const llm: LlmPort = {
+      id: 'fake',
+      async complete() {
+        return { text: null, toolCalls: [{ name: 'documents_liste', arguments: {} }], model: 'glm' };
+      },
+      generate,
+      async health() {
+        return { healthy: true };
+      },
+    };
+    const noDocuments: BobActions = { ...actions, listDocuments: async () => ok([]) };
+
+    const result = await new BobAgent({ router: routerWithKey, actions: noDocuments, llm }).ask('montre mes documents');
+
+    expect(result.ok && result.value.intent).toBe('documents');
+    expect(result.ok && result.value.card.body).toBe('Aucun document archivé pour le moment.');
+    expect(result.ok && result.value.naturalBody).toBeUndefined();
+    expect(generate).not.toHaveBeenCalled();
+  });
+
+  it('confidentialité : un contexte tenant ferme aussi la naturalisation d une réponse unknown', async () => {
+    const generate = vi.fn(async () => ({ text: 'Ne doit jamais être appelée.', model: 'glm' }));
+    const llm: LlmPort = {
+      id: 'fake',
+      async complete() {
+        return { text: 'hors outil', toolCalls: [], model: 'glm' };
+      },
+      generate,
+      async health() {
+        return { healthy: true };
+      },
+    };
+
+    const result = await new BobAgent({ router: routerWithKey, actions, llm }).ask('Bonjour Bob', {
+      context: {
+        screen: { name: '/clients', instanceId: 'clients' },
+        entities: [{ type: 'customer', id: 'customer-1', label: 'Durand' }],
+        capabilities: ['customer.read'],
+      },
+    });
+
+    expect(result.ok && result.value.intent).toBe('unknown');
+    expect(result.ok && result.value.naturalBody).toBeUndefined();
+    expect(generate).not.toHaveBeenCalled();
+  });
+
   it('LIVE-2 : une carte générique non sensible peut encore être naturalisée', async () => {
     const llm: LlmPort = {
       id: 'fake',
@@ -427,6 +475,35 @@ describe('BobAgent — chemin LLM (tool-calling) + fallback', () => {
     const agent = new BobAgent({ router: routerWithKey, actions, llm });
     const r = await agent.ask('combien je peux me verser ?');
     expect(r.ok && r.value.intent).toBe('payout');
+  });
+
+  it('ne transforme jamais une annulation en fallback regex ni en appel métier tardif', async () => {
+    const controller = new AbortController();
+    const computePayout = vi.fn(actions.computePayout);
+    let providerSignal: AbortSignal | undefined;
+    const llm: LlmPort = {
+      id: 'slow',
+      complete: async (_messages, opts) => {
+        providerSignal = opts?.signal;
+        return new Promise((_resolve, reject) => {
+          opts?.signal?.addEventListener('abort', () => reject(opts.signal?.reason), { once: true });
+        });
+      },
+      generate: async () => ({ text: '', model: 'slow' }),
+      health: async () => ({ healthy: true }),
+    };
+    const agent = new BobAgent({
+      router: routerWithKey,
+      actions: { ...actions, computePayout },
+      llm,
+    });
+
+    const running = agent.ask('combien je peux me verser ?', { signal: controller.signal });
+    await vi.waitFor(() => expect(providerSignal).toBe(controller.signal));
+    controller.abort();
+
+    await expect(running).rejects.toMatchObject({ name: 'AbortError' });
+    expect(computePayout).not.toHaveBeenCalled();
   });
 });
 
