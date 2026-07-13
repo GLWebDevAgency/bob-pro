@@ -2859,3 +2859,64 @@ apps/mobile (C garde apps/web).
   RESTE VOCAL : catalogue/réglages/diagnostic/compte/scan (S3, entités non adressables ou
   écrans de formulaire) ; lectures serveur notification+accounting_entry à câbler avec
   PONT-VOCAL (toujours en attente du commit outbox session A — active à 12:5x) ; puis S2.
+
+- [2026-07-13 11:33] gpt (session C) **AUDIT-VOCAL FINAL READY-FOR-CLAUDE-REVIEW** —
+  l'addenda autoritatif de `AUDIT_VOCAL_GPT.md` remplace les snapshots devenus obsolètes.
+  État réel : accès Bob racine sur toute la zone authentifiée (22 routes avec l'orbe + Assistant
+  et `/voix` propriétaires de leur contrôle), 14 routes publient un contexte, navigation globale
+  non destructive, briefing agrégé borné. Handoff overlay→Assistant réparé sans URL ni second
+  `/ai/ask` : même `AgentRun`, `proposalId`, contexte et historique, TTL 2 min, consommation
+  focus/once, invalidation background/stop/nouveau tour. Lecteurs local + serveur maintenant
+  complets pour les 10 types publiables : ajout tenant-scoped Notifications, écritures comptables,
+  `quote_line` et `invoice_line`; labels forgés ignorés, capability par type fail-safe, Recherche
+  publie enfin `document.read`. Notifications publie aussi les factures réellement affichées :
+  « lis-moi les notifications » agrège le fil et « relance cette facture » cible le bon invoiceId
+  pour produire un brouillon, sans prétendre l'avoir envoyé. Journal technique email expurgé de
+  destinataire/objet/corps.
+  OUTBOX v2 : payload/fingerprint immuables, `providerAttemptedAt` et horloge DB, autorisation
+  pré-I/O fencée, quarantaine email à 25 min dans la TTL Brevo 30 min, expand/activate/deactivate
+  avec rollback N−1 fail-closed, relances auto immuables par palier. Certification PostgreSQL 17
+  jetable : 15 migrations + releases expand/active + RLS rôle non-superuser + concurrence 8 workers
+  + faute injectée + legacy + rollback/réactivation, 6/6 verts, migrate status courant.
+  VALIDATIONS : workspace test 14/14 (Core 713, AI 232, API 193 + 21 scripts, API-client 43,
+  i18n 55, UI 61, Web 73, Tokens 11), typecheck 16/16, lint 8/8, ESLint mobile ciblé, builds
+  API/AI, Prisma, shell, YAML et diff-check verts. NON DÉPLOYÉ : staging + QA téléphone restent
+  obligatoires. S2 reste explicitement non acquise (versions, diffs canoniques, challenges et use
+  cases d'édition). Passation immuable :
+  `.agent-sync/handoffs/20260713-1133-codex-to-claude-audit-vocal-final-review.md`.
+
+- [2026-07-13 12:16] gpt (session C) **AUDIT-VOCAL VAGUE 4 READY-FOR-CLAUDE-REVIEW** —
+  navigation contextuelle canonique livrée : rang relatif par type, routes rechargées à la source,
+  allowlist interne fail-closed dans l'overlay et l'Assistant. Clients devient le 15e publisher
+  métier (ordre filtré visible) ; fuite de chargement clients derrière le paywall Pilotage fermée.
+  Notifications avancées à parité : briefing non-lu basé sur `state.unread`, motif canonique,
+  ouverture de la pièce liée, CTA manuel + outil vocal `marquer_notifications_lues` sur le MÊME
+  preview/cutoff + read-through atomique. Bob force une proposition opaque même en autonomie auto ;
+  « marque tout comme lu » hors écran Notifications demande la portée ; cutoff futur, replay,
+  tenant adverse, pagination >50, concurrence premier `readAt` et notification post-cutoff sont
+  couverts. Résultat public limité à `updatedCount`, feed invalidé après confirm. Index partiel
+  migration `20260713121000_notification_unread_readthrough_index`. Validations : AI 248, API 200
+  + 21 scripts (ciblé 61), API-client 43, i18n 55, types AI/API/API-client/i18n/mobile, builds
+  AI/i18n, Prisma validate, ESLint ciblé et diff-check verts. BLOQUANTS DÉPLOIEMENT assumés :
+  certification PostgreSQL réelle des 7 tests non exécutée faute de base dédiée ; cutoff temporel
+  non strictement équivalent à un snapshot MVCC face à un insert non commité (snapshot opaque/IDs
+  figés requis pour une garantie mathématique). Addendum complet dans `AUDIT_VOCAL_GPT.md`.
+
+### S2-GUIDÉ — claim session B : pilotage vocal des wizards (spec fondateur 13/07 après-midi)   <!-- kind: feature -->
+SPEC (verbatim structuré) : Bob doit GUIDER les flux multi-étapes, conscient de l'écran de
+départ ET d'arrivée. Ex. « nouveau devis » → navigue → « tu ne m'as pas précisé de client :
+dis-le-moi ou choisis à l'écran » ; « pour Camping Les Pins » → sélectionne + étape suivante ;
+sur Prestations : « ajoute deux heures de main-d'œuvre » → remplit les champs (catégorie
+INFÉRÉE main-d'œuvre/fourniture/déplacement, TVA SUGGÉRÉE, libellé bien formaté en français),
+propose, valide à la voix OU au tap ; ACCROCHAGE CATALOGUE : si l'énoncé matche une prestation
+enregistrée → « trouvé dans ton catalogue, je valide ? » (petite modale + consentement vocal) ;
+session vocale CONTINUE jusqu'à « c'est bon / annule / retour home ». Idem facture, nouveau
+client, catalogue. PARITÉ VOIX↔MANUEL PARFAITE : tout faisable dans les deux modes, mêmes
+champs, mêmes validations. Plus tard : mode auto sur les diffs avant/après.
+ARCHITECTURE (session B) : « affordances d'écran » — chaque wizard publie, À CÔTÉ de son
+AgentContext (jamais sérialisé), des handlers vocaux locaux {match(utterance)→run()} + un
+voiceGreeting par étape ; la session globale route l'énoncé vers l'écran focalisé AVANT le
+cerveau générique ; parsing pur @bob/core (deriveVoiceInvoiceDraft réutilisé — catégorie/TVA/
+catalogue déjà codés). Aucune dépendance au PONT-VOCAL serveur (état local + validations
+visibles ; la création finale garde sa confirmation existante). V1 : devis/new. Puis facture,
+client, catalogue.
