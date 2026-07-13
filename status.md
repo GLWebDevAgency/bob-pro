@@ -1,5 +1,5 @@
 # claude status
-state: done
-heartbeat_epoch: 1782970587
-head: 5f2a33f
-note: CD COMPLETS: Railway release verte (gate+migrate+cert RLS+deploy), Vercel prod verte (PAT durable), EAS workflows preview+production commits, build Android prod en cours. Reste: one-shot iOS interactif + lien GitHub<->EAS (dashboard).
+state: active
+heartbeat_epoch: 1783941380
+head: 8a49c76
+note: Contre-review vague 4 (workflow) + build S2-GUIDÉ fondation affordances + devis/new v1. HEAD 8a49c76.
