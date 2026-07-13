@@ -159,6 +159,11 @@ export * from './application/cabinet/evaluate-release-flag';
 export * from './application/fixtures/index';
 
 // Monétisation
+export * from './domain/monetization/paywall';
+export * from './domain/monetization/trial';
+export * from './domain/engagement/value-ledger';
+export * from './domain/engagement/win-back';
+export * from './domain/engagement/analytics';
 export * from './domain/subscription/plan';
 export * from './domain/subscription/subscription';
 export * from './application/ports/payment';
