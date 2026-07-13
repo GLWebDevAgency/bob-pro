@@ -180,6 +180,27 @@ export function makeBobAgent(client: BobClient): BobAssistant {
         });
       }
 
+      if (input.type === 'accounting_entry') {
+        const entries = await client.listAccountingEntries();
+        if (!entries.ok) return entries;
+        const entry = entries.value.find((candidate) => candidate.id === input.id);
+        if (!entry) return notFound();
+        const debit = entry.lines.reduce((sum, line) => sum + line.debitCents, 0);
+        const credit = entry.lines.reduce((sum, line) => sum + line.creditCents, 0);
+        return ok({
+          type: input.type,
+          id: entry.id,
+          label: `${entry.reference} — ${entry.label}`,
+          facts: [
+            { label: 'Journal', value: entry.journal },
+            { label: 'Date', value: frDateLabel(entry.entryDate) },
+            { label: 'Débit', value: formatEUR(debit) },
+            { label: 'Crédit', value: formatEUR(credit) },
+            ...(debit !== credit ? [{ label: 'Alerte', value: 'écriture déséquilibrée' }] : []),
+          ],
+        });
+      }
+
       if (input.type === 'notification') {
         const notifications = await client.listNotifications();
         if (!notifications.ok) return notifications;

@@ -27,6 +27,7 @@ import {
   type StatusBadgeVariant,
 } from '@bob/ui';
 import { useExpenses, usePayExpense } from '../src/data/hooks';
+import { usePublishAgentContext, type AgentContext } from '../src/agent';
 import { useConfirm } from '../src/components/ConfirmSheet';
 import { CheckIcon, ChevronLeftIcon, WalletIcon } from '../src/components/icons';
 
@@ -67,7 +68,7 @@ function SkeletonBlock({ height }: { height: number }) {
 }
 
 export default function Depenses() {
-  const { personality, colors, semantic, controls } = useTheme();
+  const { personality, colors, semantic } = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const expenses = useExpenses();
@@ -86,6 +87,17 @@ export default function Depenses() {
         b.documentDate.localeCompare(a.documentDate),
     );
   }, [expenses.data]);
+
+  // Bob voit les dépenses AFFICHÉES : « résume cette dépense », « paie celle-ci » (S2).
+  const agentContext = useMemo<AgentContext>(
+    () => ({
+      screen: { name: 'depenses', instanceId: 'depenses' },
+      entities: sorted.slice(0, 12).map((e) => ({ type: 'expense' as const, id: e.id, label: e.supplierName })),
+      capabilities: ['screen.read', 'expense.read'],
+    }),
+    [sorted],
+  );
+  usePublishAgentContext(agentContext);
 
   const payExpense = (expense: ExpenseProps): void => {
     void (async () => {

@@ -43,6 +43,7 @@ import {
   appErrorMessage,
 } from '../src/data/hooks';
 import { useDocuments } from '../src/data/documents';
+import { usePublishAgentContext, type AgentContext } from '../src/agent';
 import { shareFec } from '../src/lib/share-fec';
 import { shareTextFile } from '../src/lib/share-text';
 import {
@@ -103,6 +104,14 @@ export default function Cloture() {
   const entitled = (sub?.features ?? []).includes('accounting_operations');
   const [sendingDossier, setSendingDossier] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+
+  // Bob sait que tu es sur la clôture — « lance la revue » (intent revue_cloture) fait le
+  // reste ; aucune entité publiée : les contrôles ne sont pas des pièces adressables (S3).
+  const agentContext = useMemo<AgentContext>(
+    () => ({ screen: { name: 'cloture', instanceId: 'cloture' }, entities: [], capabilities: ['screen.read'] }),
+    [],
+  );
+  usePublishAgentContext(agentContext);
 
   // États de synthèse dérivés @bob/core — cohérents par construction (résultat identique).
   const balance = useMemo(() => deriveTrialBalance(entries.data ?? []), [entries.data]);

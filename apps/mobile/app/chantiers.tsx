@@ -1,14 +1,15 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { ScrollView, View, Text, TextInput, Pressable, ActivityIndicator } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../src/theme';
 import { useChantiers, useCreateChantier, useProfile, useSearchAddress } from '../src/data/hooks';
+import { usePublishAgentContext, type AgentContext } from '../src/agent';
 import { Card, Button, Badge, SectionHeader, font } from '../src/components/ui';
 
 export default function Chantiers() {
-  const { colors, semantic } = useTheme();
+  const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { data: profile, isLoading: profileLoading } = useProfile();
@@ -18,6 +19,16 @@ export default function Chantiers() {
   const search = useSearchAddress();
   const [name, setName] = useState('');
   const [addr, setAddr] = useState('');
+
+  const agentContext = useMemo<AgentContext>(
+    () => ({
+      screen: { name: 'chantiers', instanceId: 'chantiers' },
+      entities: (chantiers ?? []).slice(0, 10).map((c) => ({ type: 'chantier' as const, id: c.id, label: c.name })),
+      capabilities: ['screen.read', 'chantier.read'],
+    }),
+    [chantiers],
+  );
+  usePublishAgentContext(agentContext);
 
   return (
     <ScrollView style={{ flex: 1, backgroundColor: colors.bg }} contentContainerStyle={{ paddingBottom: 40 }}>

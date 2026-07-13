@@ -43,6 +43,7 @@ import { useBobClient } from '../../src/data/client';
 import { shareFec } from '../../src/lib/share-fec';
 import { useChantiers, useCustomers, useExpenses, useExportFec, useInvoices } from '../../src/data/hooks';
 import { useDocuments } from '../../src/data/documents';
+import { usePublishAgentContext, type AgentContext } from '../../src/agent';
 import {
   ChartIcon,
   ChatIcon,
@@ -306,6 +307,21 @@ export default function Documents() {
     () => (chantiers.data ?? []).filter((c) => c.status === 'open'),
     [chantiers.data],
   );
+
+  // Bob voit les documents AFFICHÉS : « résume ce document », « classe celui-ci » (S2).
+  const agentContext = useMemo<AgentContext>(
+    () => ({
+      screen: { name: 'documents', instanceId: 'documents' },
+      entities: (documents.data ?? []).slice(0, 12).map((d) => ({
+        type: 'document' as const,
+        id: d.id,
+        label: d.filename,
+      })),
+      capabilities: ['screen.read', 'document.read'],
+    }),
+    [documents.data],
+  );
+  usePublishAgentContext(agentContext);
 
   // « Classer là » (A1-C14) + picker de cible (A8) : confirme le classement — même use
   // case que Bob (classifyDocument), la cible peut être la dépense proposée OU un chantier.

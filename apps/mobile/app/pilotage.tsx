@@ -29,6 +29,7 @@ import {
   usePayments,
   useSubscription,
 } from '../src/data/hooks';
+import { usePublishAgentContext, type AgentContext } from '../src/agent';
 import { ChevronLeftIcon } from '../src/components/icons';
 
 const MONTHS = [
@@ -120,6 +121,21 @@ export default function Pilotage() {
       today: todayLocal(),
     });
   }, [loading, entries.data, payments.data, invoices.data, customers.data, expenses.data, company.data]);
+
+  // Bob voit les top clients AFFICHÉS : « parle-moi de ce client », « résume l'écran ».
+  const agentContext = useMemo<AgentContext>(
+    () => ({
+      screen: { name: 'pilotage', instanceId: 'pilotage' },
+      entities: (review?.topClients.lines ?? []).slice(0, 5).map((line) => ({
+        type: 'customer' as const,
+        id: line.customerId,
+        label: line.customerName,
+      })),
+      capabilities: ['screen.read', 'customer.read'],
+    }),
+    [review],
+  );
+  usePublishAgentContext(agentContext);
 
   const section = (title: I18nKey, body: ReactNode, hint?: I18nKey): ReactNode => (
     <View>

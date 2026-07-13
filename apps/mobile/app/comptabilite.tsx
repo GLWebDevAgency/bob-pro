@@ -34,6 +34,7 @@ import {
   type StatusBadgeVariant,
 } from '@bob/ui';
 import { useAccountingEntries, useExportFec, useSubscription } from '../src/data/hooks';
+import { usePublishAgentContext, type AgentContext } from '../src/agent';
 import { shareFec } from '../src/lib/share-fec';
 import { AccountingLinesView } from '../src/components/AccountingLinesView';
 import {
@@ -110,6 +111,21 @@ export default function Comptabilite() {
     () => [...(entries.data ?? [])].sort((a, b) => b.entryDate.localeCompare(a.entryDate)),
     [entries.data],
   );
+  // Bob voit le journal AFFICHÉ : « explique cette écriture » — lecture seule.
+  const agentContext = useMemo<AgentContext>(
+    () => ({
+      screen: { name: 'comptabilite', instanceId: 'comptabilite' },
+      entities: sorted.slice(0, 10).map((entry) => ({
+        type: 'accounting_entry' as const,
+        id: entry.id,
+        label: `${entry.reference} — ${entry.label}`,
+      })),
+      capabilities: ['screen.read', 'accounting.read'],
+    }),
+    [sorted],
+  );
+  usePublishAgentContext(agentContext);
+
   const month = todayISO().slice(0, 7);
   // Résumé global (héros, chips) et résumé filtré (bandeau contextuel) — @bob/core.
   const summary = useMemo(() => summarizeAccountingEntries(sorted, { month }), [sorted, month]);

@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { ScrollView, View, Text, Pressable } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -6,6 +7,7 @@ import { formatEUR } from '@bob/core';
 import type { QuoteView, InvoiceView } from '@bob/api-client';
 import { useTheme } from '../src/theme';
 import { useCustomers, useQuotes, useInvoices } from '../src/data/hooks';
+import { usePublishAgentContext, type AgentContext } from '../src/agent';
 import { Card, Badge, Button, MoneyText, SectionHeader, font } from '../src/components/ui';
 import {
   QuoteActions,
@@ -33,6 +35,22 @@ export default function Ventes() {
   const invoices = useInvoices();
 
   const nameOf = (customerId: string) => (customers.data ?? []).find((c) => c.id === customerId)?.name ?? 'Client';
+
+  // Bob voit les pièces AFFICHÉES, dans l'ordre de l'écran : « résume ce devis »,
+  // « envoie le deuxième » — lecture seule, jamais plus que le rendu.
+  const agentContext = useMemo<AgentContext>(() => {
+    const qs = [...(quotes.data ?? [])].sort((a, b) => QUOTE_ORDER[a.status] - QUOTE_ORDER[b.status]).slice(0, 8);
+    const is = [...(invoices.data ?? [])].sort((a, b) => INVOICE_ORDER[a.status] - INVOICE_ORDER[b.status]).slice(0, 8);
+    return {
+      screen: { name: 'ventes', instanceId: 'ventes' },
+      entities: [
+        ...qs.map((q) => ({ type: 'quote' as const, id: q.id, label: q.number ? `Devis ${q.number}` : 'Devis brouillon' })),
+        ...is.map((i) => ({ type: 'invoice' as const, id: i.id, label: i.number ? `Facture ${i.number}` : 'Facture brouillon' })),
+      ],
+      capabilities: ['screen.read', 'quote.read', 'invoice.read'],
+    };
+  }, [quotes.data, invoices.data]);
+  usePublishAgentContext(agentContext);
 
   const loading = quotes.isLoading || invoices.isLoading;
   const errored = quotes.isError || invoices.isError;
