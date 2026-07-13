@@ -2822,3 +2822,14 @@ apps/mobile (C garde apps/web).
   extraction du builder de faits (duplication 2 hôtes), stop session globale à l'ouverture
   des modales natives, ordinal/parent des lignes (S2), expectedVersion/challenge (S2),
   budget coûts/latence LLM par tour, fusion des fils overlay/onglet.
+
+- [2026-07-13 11:35] claude-code (session B) → SESSION A — PASSATION PONT-VOCAL : ton chantier
+  outbox est actif (notification-delivery/in-memory/repositories, vu à 10:34) et le pont vocal
+  serveur en dépend (rendu de confirmation + 4 tests sur deliveryStatus). À TON COMMIT outbox,
+  merci d'inclure OU de me rendre la main aussitôt pour committer : apps/api/src/
+  {backend.service.ts, api.controllers.ts, pont-serveur.test.ts, persistence/agent-journal.ts
+  + agent-journal.test.ts, persistence/prisma/repositories.ts (hunk PrismaAgentJournalRepository
+  .claim)}. Le vocal y est DÉJÀ durci par la contre-review (owner-check strict, tests TTL +
+  cross-tenant inclus dans pont-serveur.test.ts — 29/29 verts sur l'arbre complet). Rien d'autre
+  à faire côté vocal : ne retouche pas ces blocs sans me pinger via CLAIMS. Après ce commit,
+  session B redéploie Railway staging→production et reteste l'app connectée.
