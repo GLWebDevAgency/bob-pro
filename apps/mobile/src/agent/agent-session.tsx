@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from 'react';
 import { AppState } from 'react-native';
+import { router } from 'expo-router';
 import { echoOverlap, type AskOptions } from '@bob/ai';
 import { t } from '@bob/i18n';
 import { useTheme } from '@bob/ui';
@@ -208,7 +209,12 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
         return;
       }
 
-      // `run.navigate` est volontairement ignore : le contexte courant reste a l'ecran.
+      if (run.navigate) {
+        // Navigation « Jarvis » : le SEUL agir autorisé depuis l'overlay S1 (non destructif,
+        // même contrat que l'onglet Assistant). L'écran d'arrivée republie son contexte au
+        // focus — le tour suivant est déjà situé au bon endroit.
+        router.push(run.navigate as never);
+      }
       await say(body, true);
     },
     [agent, listen, personality, say, setSessionPhase, stop],

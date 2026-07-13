@@ -31,7 +31,7 @@ export function detectIntent(message: string): BobIntent {
   // Contexte UI : AVANT les intents document/facture generiques. Lecture pure ; la cible vient
   // exclusivement d'AgentContext et reste a recharger/autoriser par l'hote.
   if (
-    /(o[uù] suis[- ]?je|qu['’ ]?est[- ]?ce que je (regarde|vois)|r[ée]sume (cet |cette |ce |la |le |l['’])?(facture|devis|client|d[ée]pense|document|chantier)|r[ée]sume (l['’]|cet )?[ée]cran|parle[- ]?moi de (cet|cette|ce) (facture|devis|client|d[ée]pense|document|chantier))/.test(
+    /(o[uù] suis[- ]?je|qu['’ ]?est[- ]?ce que je (regarde|vois)|r[ée]sume (cet |cette |ce |la |le |l['’])?(facture|devis|client|d[ée]pense|document|chantier)|r[ée]sume (l['’]|cet )?[ée]cran|(explique|montre|liste|r[ée]sume)[^.]{0,24}tout ce qu|parle[- ]?moi de (cet|cette|ce) (facture|devis|client|d[ée]pense|document|chantier))/.test(
       m,
     )
   )

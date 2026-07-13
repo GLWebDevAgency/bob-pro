@@ -180,6 +180,23 @@ export function makeBobAgent(client: BobClient): BobAssistant {
         });
       }
 
+      if (input.type === 'notification') {
+        const notifications = await client.listNotifications();
+        if (!notifications.ok) return notifications;
+        const notification = notifications.value.find((candidate) => candidate.id === input.id);
+        if (!notification) return notFound();
+        return ok({
+          type: input.type,
+          id: notification.id,
+          label: notification.title,
+          facts: [
+            { label: 'Statut', value: notification.readAt !== null ? 'Lue' : 'Non lue' },
+            { label: 'Reçue le', value: frDateLabel(notification.createdAt) },
+            ...(notification.body !== null ? [{ label: 'Contenu', value: notification.body }] : []),
+          ],
+        });
+      }
+
       if (input.type === 'chantier') {
         const chantiers = await client.listChantiers();
         if (!chantiers.ok) return chantiers;

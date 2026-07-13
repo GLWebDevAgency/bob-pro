@@ -604,6 +604,46 @@ export class BobAgent {
     const reference = step.reference;
 
     if (intent === 'contexte_ecran') {
+      const read = this.deps.actions.readContextEntity?.bind(this.deps.actions);
+      // RÉSUMÉ D'ÉCRAN AGRÉGÉ : « résume l'écran », « où suis-je ? », « explique-moi tout
+      // ce qui est en attente » — Bob lit PLUSIEURS éléments affichés (bornés, rechargés à
+      // la source) au lieu de demander d'en choisir un. Une question ciblée (« cette
+      // facture ») garde le flux mono-entité fail-safe ci-dessous.
+      const screenWide = /(ecran|ou suis[- ]?je|qu ?est[- ]?ce que je (vois|regarde)|tout ce qu)/.test(
+        normalized(message),
+      );
+      if (screenWide && context !== undefined && read && requestedContextTypes(message) === null) {
+        const readable = context.entities.filter(
+          (entity) =>
+            !entity.type.endsWith('_line') &&
+            context.capabilities.includes(READ_CAPABILITY_BY_TYPE[entity.type] ?? 'screen.read'),
+        );
+        if (readable.length > 1) {
+          const MAX_AGGREGATE = 5;
+          const lines: string[] = [];
+          for (const entity of readable.slice(0, MAX_AGGREGATE)) {
+            const loaded = await read({ type: entity.type, id: entity.id });
+            if (!loaded.ok) continue; // un élément illisible n'empêche pas le briefing des autres
+            const summary = sanitizeContextEntitySummary(loaded.value, { type: entity.type, id: entity.id });
+            if (!summary) continue;
+            const facts = summary.facts.slice(0, 2).map((fact) => `${fact.label} : ${fact.value}`).join(' · ');
+            lines.push(facts ? `• ${summary.label} — ${facts}` : `• ${summary.label}`);
+          }
+          if (lines.length > 0) {
+            const remaining = readable.length - Math.min(readable.length, MAX_AGGREGATE);
+            return ok({
+              kind: 'answer',
+              intent,
+              model,
+              plan: ['Lire les éléments affichés', 'Relire leurs informations à la source'],
+              card: {
+                title: 'Ce que tu regardes',
+                body: lines.join('\n') + (remaining > 0 ? `\n… et ${remaining} autre${remaining > 1 ? 's' : ''}.` : ''),
+              },
+            });
+          }
+        }
+      }
       const types = readableContextTypes(context, message);
       const resolution = resolveAgentEntity({
         ...(context !== undefined ? { context } : {}),
@@ -652,7 +692,6 @@ export class BobAgent {
           },
         });
       }
-      const read = this.deps.actions.readContextEntity?.bind(this.deps.actions);
       if (!read) {
         return ok({
           kind: 'answer',

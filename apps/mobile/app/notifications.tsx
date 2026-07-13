@@ -22,7 +22,7 @@
  * · l'écran cadence éditable du proto n'existe pas (pas de réglage serveur) — la mise en demeure
  *   n'est JAMAIS envoyée par le cron : elle attend le geste confirmé ici (relance.medWarning).
  */
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { Pressable, ScrollView, Text, View } from 'react-native';
 import { useRouter, type Href } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -49,6 +49,7 @@ import {
   type StatusBadgeVariant,
 } from '@bob/ui';
 import { useMarkNotificationRead, useNotificationsFeed, useSendRelance } from '../src/data/hooks';
+import { usePublishAgentContext, type AgentContext } from '../src/agent';
 import { useConfirm } from '../src/components/ConfirmSheet';
 import {
   CalendarIcon,
@@ -382,6 +383,22 @@ export default function Notifications() {
   const markRead = useMarkNotificationRead();
   const sendRelance = useSendRelance();
   const [toast, setToast] = useState<string | null>(null);
+
+  // Bob voit les notifications AFFICHÉES : « lis-moi la première », « résume cette
+  // notification » — lecture seule, ids réels du fil (jamais plus que ce qui est rendu).
+  const agentContext = useMemo<AgentContext>(
+    () => ({
+      screen: { name: 'notifications', instanceId: 'notifications' },
+      entities: feed.items.slice(0, 12).map((item) => ({
+        type: 'notification' as const,
+        id: item.id,
+        label: item.title,
+      })),
+      capabilities: ['screen.read', 'notification.read'],
+    }),
+    [feed.items],
+  );
+  usePublishAgentContext(agentContext);
 
   const ready = !feed.isLoading && !feed.isError;
   const planCount = feed.due.length + feed.scheduled.length;

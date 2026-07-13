@@ -123,6 +123,41 @@ describe('BobAgent — contexte UI lecture seule', () => {
     expect(read).not.toHaveBeenCalled();
   });
 
+  it('« ou suis-je » multi-entites : briefing AGREGE borne (lit chaque element, sans question inutile)', async () => {
+    const read = vi.fn<NonNullable<BobActions['readContextEntity']>>(async (input) =>
+      ok({
+        type: input.type,
+        id: input.id,
+        label: `Facture ${invoices.find((invoice) => invoice.id === input.id)?.number ?? input.id}`,
+        facts: [
+          { label: 'Statut', value: 'En retard' },
+          { label: 'Reste dû', value: '450,00 €' },
+          { label: 'Client', value: 'ignoré au-delà de 2 faits' },
+        ],
+      }),
+    );
+    const agent = new BobAgent({ router: router(), actions: baseActions(read) });
+    const result = await agent.ask('Ou suis-je ?', { context: invoiceContext(['inv-1', 'inv-2']) });
+    expect(result.ok && result.value.intent).toBe('contexte_ecran');
+    expect(read).toHaveBeenCalledTimes(2);
+    const body = result.ok ? result.value.card.body : '';
+    expect(body).toContain('• Facture 2026-014 — Statut : En retard · Reste dû : 450,00 €');
+    expect(body).toContain('• Facture 2026-021');
+    expect(result.ok && result.value.ask).toBeUndefined();
+  });
+
+  it('« explique-moi tout ce qui est en attente » declenche aussi le briefing agrege (regex demo)', async () => {
+    const read = vi.fn<NonNullable<BobActions['readContextEntity']>>(async (input) =>
+      ok({ type: input.type, id: input.id, label: `Facture ${input.id}`, facts: [] }),
+    );
+    const agent = new BobAgent({ router: router(), actions: baseActions(read) });
+    const result = await agent.ask('Explique-moi tout ce qui est en attente', {
+      context: invoiceContext(['inv-1', 'inv-2']),
+    });
+    expect(result.ok && result.value.intent).toBe('contexte_ecran');
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+
   it('capacite lisible mais action hote absente : reponse honnete', async () => {
     const agent = new BobAgent({ router: router(), actions: baseActions() });
     const result = await agent.ask('Resume cette facture', { context: invoiceContext(['inv-1']) });

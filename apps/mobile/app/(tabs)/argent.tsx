@@ -44,6 +44,7 @@ import {
 import { patterns, shadowNative } from '@bob/tokens';
 import { deriveAgedBalance, AGED_BUCKETS, type AgedBucketKey } from '@bob/core';
 import { t, type I18nKey, type Personality } from '@bob/i18n';
+import { usePublishAgentContext, type AgentContext } from '../../src/agent';
 import {
   Avatar,
   Button,
@@ -435,6 +436,21 @@ export default function Argent() {
     () => deriveAgedBalance({ invoices: invoices.data ?? [], customers: customers.data ?? [], today }),
     [invoices.data, customers.data, today],
   );
+
+  // Bob voit la liste « à surveiller » AFFICHÉE (mauvais payeurs réels) : « parle-moi de ce
+  // client », « résume l'écran » — lecture seule, mêmes données que l'écran.
+  const agentContext = useMemo<AgentContext>(() => {
+    const watchlist = (customers.data ?? [])
+      .filter((c) => c.scoreBand === 'red' && c.outstanding > 0)
+      .sort((a, b) => b.outstanding - a.outstanding)
+      .slice(0, 8);
+    return {
+      screen: { name: 'argent', instanceId: 'argent' },
+      entities: watchlist.map((c) => ({ type: 'customer' as const, id: c.id, label: c.name })),
+      capabilities: ['screen.read', 'cashflow.read', 'customer.read'],
+    };
+  }, [customers.data]);
+  usePublishAgentContext(agentContext);
 
   const series: CashflowSeriesPoint[] = [];
   if (cash7.data) series.push({ horizon: 7, projection: cash7.data });

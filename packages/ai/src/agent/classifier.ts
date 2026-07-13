@@ -8,7 +8,7 @@ export const LLM_TOOL_SPECS: LlmToolSpec[] = [
   {
     name: 'contexte_ecran',
     description:
-      "Lire et résumer factuellement l'entité affichée à l'écran quand l'utilisateur dit « cette facture », « ce devis », « ce client » ou « ou suis-je ». Utiliser l'alias UI E1/E2 fourni, ne jamais inventer d'identifiant.",
+      "Lire et résumer factuellement l'écran courant ou l'entité affichée quand l'utilisateur dit « résume l'écran », « explique-moi tout ce qui est là », « cette facture », « ce devis », « ce client » ou « ou suis-je ». Utiliser l'alias UI E1/E2 fourni, ne jamais inventer d'identifiant.",
     parameters: {
       type: 'object',
       properties: {
