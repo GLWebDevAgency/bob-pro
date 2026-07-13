@@ -2833,3 +2833,18 @@ apps/mobile (C garde apps/web).
   cross-tenant inclus dans pont-serveur.test.ts — 29/29 verts sur l'arbre complet). Rien d'autre
   à faire côté vocal : ne retouche pas ces blocs sans me pinger via CLAIMS. Après ce commit,
   session B redéploie Railway staging→production et reteste l'app connectée.
+
+- [2026-07-13 12:20] claude-code (session B) VAGUE 2 VOCALE LIVRÉE (e42c635, ordre validé
+  fondateur) : ① l'overlay global NAVIGUE (run.navigate honoré — « nouveau devis », « ouvre
+  la clôture » depuis tout écran ; l'écran d'arrivée republie son contexte au focus) ;
+  ② briefing d'écran AGRÉGÉ : « où suis-je / résume l'écran / explique-moi tout ce qui est
+  en attente » lit jusqu'à 5 éléments affichés (rechargés à la source, 2 faits chacun,
+  reste annoncé) — la question ciblée garde le flux mono-entité fail-safe ; ③ Notifications :
+  publisher (12 affichées) + lecture « résume cette notification » (hôte local ; hôte
+  SERVEUR à câbler avec PONT-VOCAL — listNotifications vit dans NotificationsApiService,
+  hors BackendService) ; ④ Argent : publisher « à surveiller » (mauvais payeurs réels).
+  223 tests @bob/ai (+2 agrégat), tsc mobile, autosuffisance prouvée worktree vierge.
+  Chirurgie commit : hunk toast relance (session A) exclu de notifications.tsx puis restauré.
+  PROCHAINES VAGUES proposées : Ventes+Dépenses (publishers), Clôture/Comptabilité
+  (« explique cette anomalie/écriture »), Documents/Chantiers/Pilotage/Catalogue ; puis S2
+  (édition vocale) dès PONT-VOCAL commité par session A.
