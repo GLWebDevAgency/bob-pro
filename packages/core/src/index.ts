@@ -65,6 +65,7 @@ export * from './domain/cabinet/release-flag';
 
 // Flows — machines à états UI-consommables (C20 voix, C21 devis)
 export * from './flows/devis';
+export * from './flows/devis-proposal';
 export * from './flows/voice-invoice';
 export * from './flows/voice-quote-line';
 
@@ -80,6 +81,7 @@ export * from './application/ports/document-repository';
 export * from './application/ports/document-storage';
 export * from './application/ports/document-folder-repository';
 export * from './application/ports/document-intelligence';
+export * from './application/ports/document-link-target';
 export * from './application/ports/accounting-entry-repository';
 export * from './application/ports/chart-of-accounts-repository';
 export * from './application/ports/cabinet-repository';
