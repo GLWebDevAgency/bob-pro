@@ -1,5 +1,5 @@
 # claude status
 state: active
-heartbeat_epoch: 1783968257
-head: c4bb4a3
-note: Plans+métrologie livrés (voice_live catalogue, usage-metering). En attente handoff transport GPT (gating+métrologie exigés dedans).
+heartbeat_epoch: 1783970280
+head: ba491ed
+note: Realtime driver livré (commit+handoff). Attente: review GPT + fix sessionHandle + confirmation gating/métrologie broker.
