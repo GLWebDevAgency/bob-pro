@@ -12,11 +12,13 @@ import type {
   RealtimeResilienceEvent,
 } from '../realtime/realtime-resilience-orchestrator';
 import type { RealtimeFallbackReason, RealtimeTransportEvent } from '../realtime/realtime-transport';
+import type { RealtimeAgentControlReference } from '../realtime/realtime-event-codecs';
 import {
   RealtimeContextPublisher,
   decideAgentControl,
   mapTransportPhase,
   type RealtimeContextUpdateFn,
+  type RealtimePublishedFence,
   type RealtimeSessionPhase,
 } from './realtime-driver';
 
@@ -40,9 +42,20 @@ export interface RealtimeOrchestratorLike {
   stop(reason?: 'user' | 'background' | 'unmount'): Promise<void>;
 }
 
-/** Transport tel que vu par la glue : micro pilotable + handle de session (voir note). */
+/** Transport tel que vu par la glue — le contrat officiel (addendum 20:34). */
 export interface RealtimeTransportLike {
   setMicrophoneEnabled(enabled: boolean): void;
+  interrupt(reason: 'user_speech' | 'tap' | 'navigation'): boolean;
+  getSessionHandle(): string | null;
+}
+
+/** Gate d'ACK one-shot (lane GPT) : échange une référence provider NON FIABLE contre le
+ * contrôle authentifié par NOTRE serveur, fencé sur le contexte réellement publié. */
+export interface RealtimeControlGateLike {
+  acknowledge(
+    reference: RealtimeAgentControlReference,
+  ): Promise<import('../realtime/realtime-event-codecs').RealtimeAgentControl | null>;
+  close?(): void;
 }
 
 export interface RealtimeSessionDeps {
@@ -54,12 +67,10 @@ export interface RealtimeSessionDeps {
     legacyFallback: LegacyVoiceFallbackPort,
     onPrimaryCreated: (transport: RealtimeTransportLike) => void,
   ) => RealtimeOrchestratorLike;
-  /**
-   * Lit le handle de session du transport prêt. CONTOURNEMENT temporaire : le champ est
-   * privé chez le transport (trou de contrat signalé, handoff 21:25) — accès runtime
-   * défensif, null = pas de publication de contexte (dégradé honnête, jamais un crash).
-   */
-  readonly readSessionHandle: (transport: RealtimeTransportLike) => string | null;
+  /** Fabrique le gate d'ACK, alimenté par NOTRE fence (publication confirmée serveur). */
+  readonly createControlGate: (
+    currentFence: () => RealtimePublishedFence | null,
+  ) => RealtimeControlGateLike;
 }
 
 export type RealtimeStartOutcome = 'realtime' | 'unavailable';
@@ -68,6 +79,7 @@ export class RealtimeSessionController {
   private orchestrator: RealtimeOrchestratorLike | null = null;
   private unsubscribe: (() => void) | null = null;
   private publisher: RealtimeContextPublisher | null = null;
+  private controlGate: RealtimeControlGateLike | null = null;
   private lastTransport: RealtimeTransportLike | null = null;
   private contextPublished = false;
   private activeFlag = false;
@@ -101,6 +113,7 @@ export class RealtimeSessionController {
       this.lastTransport = transport;
       this.contextPublished = false;
     });
+    this.controlGate = this.deps.createControlGate(() => this.publisher?.fence ?? null);
     this.unsubscribe = this.orchestrator.subscribe((event) => {
       void this.handleEvent(event);
     });
@@ -113,16 +126,31 @@ export class RealtimeSessionController {
     return 'realtime';
   }
 
-  /** Republie le contexte focalisé (changement d'écran) — fencé, inopérant hors session. */
-  publishContext(): void {
-    if (!this.activeFlag || this.publisher === null) return;
-    void this.publisher.publish(this.hooks.getContextSnapshot());
+  /** Changement d'écran (addendum 20:34) : micro OFF → interrupt(navigation) → PUT exact ;
+   * succès = micro rouvert sur le NOUVEAU contexte ; échec = stop/fallback (jamais un
+   * cerveau parlant sur un contexte périmé). Inopérant hors session. */
+  async publishContext(): Promise<void> {
+    if (!this.activeFlag || this.publisher === null || this.lastTransport === null) return;
+    const transport = this.lastTransport;
+    transport.setMicrophoneEnabled(false);
+    transport.interrupt('navigation');
+    const fence = await this.publisher.publish(this.hooks.getContextSnapshot());
+    if (!this.activeFlag) return;
+    if (fence === null) {
+      const reason: RealtimeFallbackReason = 'provider_error';
+      await this.stop('user');
+      this.hooks.onFallback(reason);
+      return;
+    }
+    transport.setMicrophoneEnabled(true);
   }
 
   async stop(reason: 'user' | 'background' | 'unmount' = 'user'): Promise<void> {
     this.activeFlag = false;
     this.publisher?.close();
     this.publisher = null;
+    this.controlGate?.close?.();
+    this.controlGate = null;
     this.unsubscribe?.();
     this.unsubscribe = null;
     const orchestrator = this.orchestrator;
@@ -152,7 +180,18 @@ export class RealtimeSessionController {
       case 'bob_transcript':
         this.hooks.onBobTranscript(event.text, event.final);
         return;
+      case 'agent_control_candidate': {
+        // Référence provider NON FIABLE → ACK one-shot par NOTRE serveur (gate, fencé sur la
+        // publication confirmée) → décision UNIQUEMENT sur le contrôle authentifié non-null.
+        const control = await this.controlGate?.acknowledge(event.reference);
+        if (!control || !this.activeFlag) return;
+        const decision = decideAgentControl(control);
+        if (decision.kind === 'navigate') this.hooks.onNavigate(decision.route);
+        else if (decision.kind === 'review') this.hooks.onReview(decision.proposalId);
+        return;
+      }
       case 'agent_control': {
+        // Déjà authentifié (émis par une glue post-ACK, jamais par WebRTC) — décision directe.
         const decision = decideAgentControl(event.control);
         if (decision.kind === 'navigate') this.hooks.onNavigate(decision.route);
         else if (decision.kind === 'review') this.hooks.onReview(decision.proposalId);
@@ -167,11 +206,17 @@ export class RealtimeSessionController {
   private async publishThenOpenMicrophone(): Promise<void> {
     const transport = this.lastTransport;
     if (!transport) return;
-    const handle = this.deps.readSessionHandle(transport);
+    const handle = transport.getSessionHandle();
     if (handle !== null) {
       this.publisher?.close();
       this.publisher = new RealtimeContextPublisher(handle, this.deps.updateContext);
-      await this.publisher.publish(this.hooks.getContextSnapshot());
+      const fence = await this.publisher.publish(this.hooks.getContextSnapshot());
+      if (fence === null && this.activeFlag) {
+        // Publication initiale impossible : session SANS contexte interdite — repli honnête.
+        await this.stop('user');
+        this.hooks.onFallback('provider_error');
+        return;
+      }
     }
     if (this.activeFlag) transport.setMicrophoneEnabled(true);
   }

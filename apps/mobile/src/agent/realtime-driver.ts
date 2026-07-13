@@ -29,10 +29,23 @@ export interface RealtimeVoiceContextUpdateInput {
   readonly context: AgentContext;
 }
 
+/** Réponse serveur du PUT : la révision CONFIRMÉE et le digest du contexte accepté —
+ * la paire qui lie tout contrôle ultérieur au contexte réellement publié. */
+export interface RealtimeContextAck {
+  readonly revision: number;
+  readonly contextDigest: string;
+}
+
 export type RealtimeContextUpdateFn = (
   sessionHandle: string,
   update: RealtimeVoiceContextUpdateInput,
-) => Promise<Result<unknown, AppError>>;
+) => Promise<Result<RealtimeContextAck, AppError>>;
+
+export interface RealtimePublishedFence {
+  readonly sessionHandle: string;
+  readonly contextRevision: number;
+  readonly contextDigest: string;
+}
 
 /**
  * Révisions MONOTONES + fence : une publication partie avant close/une révision plus
@@ -43,15 +56,16 @@ export class RealtimeContextPublisher {
   private revision = 0;
   private closed = false;
   private inFlight: AbortController | null = null;
+  private acknowledged: RealtimePublishedFence | null = null;
 
   constructor(
     private readonly sessionHandle: string,
     private readonly update: RealtimeContextUpdateFn,
   ) {}
 
-  /** Publie un instantané du contexte focalisé — l'appelant fournit un contexte DÉJÀ
-   * passé par snapshotAgentContext (le driver reste pur, sans dépendance React/expo). */
-  async publish(context: AgentContext): Promise<number | null> {
+  /** Publie un instantané du contexte focalisé (DÉJÀ passé par snapshotAgentContext).
+   * Retourne la FENCE confirmée par le serveur — null si fermé/doublé/échec. */
+  async publish(context: AgentContext): Promise<RealtimePublishedFence | null> {
     if (this.closed) return null;
     this.inFlight?.abort();
     const abort = new AbortController();
@@ -60,13 +74,27 @@ export class RealtimeContextPublisher {
     const revision = this.revision;
     const result = await this.update(this.sessionHandle, { version: 1, revision, context });
     if (abort.signal.aborted || this.closed) return null; // une course perdue ne compte pas
-    return result.ok ? revision : null;
+    if (!result.ok) return null;
+    // La fence = la RÉPONSE serveur (revision confirmée + digest) — jamais nos valeurs locales :
+    // c'est elle qui authentifie les contrôles one-shot liés à CE contexte.
+    this.acknowledged = {
+      sessionHandle: this.sessionHandle,
+      contextRevision: result.value.revision,
+      contextDigest: result.value.contextDigest,
+    };
+    return this.acknowledged;
+  }
+
+  /** Dernière publication CONFIRMÉE — la fence que le gate d'ACK consomme. */
+  get fence(): RealtimePublishedFence | null {
+    return this.closed ? null : this.acknowledged;
   }
 
   close(): void {
     this.closed = true;
     this.inFlight?.abort();
     this.inFlight = null;
+    this.acknowledged = null;
   }
 
   get currentRevision(): number {
