@@ -40,6 +40,8 @@ export * from './domain/accounting/invoice-accounting';
 export * from './domain/accounting/expense-accounting';
 export * from './domain/accounting/payment-accounting';
 export * from './domain/document/document';
+export * from './domain/document/document-folder';
+export * from './domain/document/document-analysis';
 export * from './domain/chantier/chantier';
 export * from './domain/dunning/relance-plan';
 export * from './domain/compliance/einvoice-transmission';
@@ -54,9 +56,17 @@ export * from './domain/company/naf-to-trade';
 export * from './domain/company/nature-juridique';
 export * from './domain/ocr/ocr-extraction';
 
+// Domaine Cabinet — tenant, memberships, invitations, RBAC et release flags
+export * from './domain/cabinet/cabinet-permissions';
+export * from './domain/cabinet/cabinet-member';
+export * from './domain/cabinet/cabinet';
+export * from './domain/cabinet/cabinet-invitation';
+export * from './domain/cabinet/release-flag';
+
 // Flows — machines à états UI-consommables (C20 voix, C21 devis)
 export * from './flows/devis';
 export * from './flows/voice-invoice';
+export * from './flows/voice-quote-line';
 
 // Couche Application — use cases, ports, fixtures
 export * from './application/result';
@@ -68,8 +78,15 @@ export * from './application/ports/address-autocomplete';
 export * from './application/ports/public-access-token';
 export * from './application/ports/document-repository';
 export * from './application/ports/document-storage';
+export * from './application/ports/document-folder-repository';
+export * from './application/ports/document-intelligence';
 export * from './application/ports/accounting-entry-repository';
 export * from './application/ports/chart-of-accounts-repository';
+export * from './application/ports/cabinet-repository';
+export * from './application/ports/cabinet-invitation-repository';
+export * from './application/ports/cabinet-invitation-token';
+export * from './application/ports/cabinet-invitation-dispatch';
+export * from './application/ports/release-flag-repository';
 export * from './application/billing/create-quote';
 export * from './application/billing/send-quote';
 export * from './application/billing/sign-quote';
@@ -106,6 +123,8 @@ export * from './application/company/autofill-company';
 export * from './application/company/validate-vat';
 export * from './application/company/search-address';
 export * from './application/documents/classify-document';
+export * from './application/documents/document-folders';
+export * from './application/documents/analyze-document';
 export * from './application/documents/derive-vault-view';
 export * from './application/documents/document-view';
 export * from './application/documents/get-document-download-url';
@@ -127,6 +146,14 @@ export * from './application/accounting/record-accounting-entry';
 export * from './application/accounting/record-expense-accounting-entries';
 export * from './application/accounting/record-issued-invoice-accounting-entry';
 export * from './application/accounting/record-payment-accounting-entry';
+export * from './application/cabinet/cabinet-view';
+export * from './application/cabinet/create-cabinet';
+export * from './application/cabinet/invite-cabinet-member';
+export * from './application/cabinet/accept-cabinet-invitation';
+export * from './application/cabinet/manage-cabinet-member';
+export * from './application/cabinet/revoke-cabinet-invitation';
+export * from './application/cabinet/query-cabinets';
+export * from './application/cabinet/evaluate-release-flag';
 export * from './application/fixtures/index';
 
 // Monétisation

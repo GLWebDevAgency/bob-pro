@@ -53,7 +53,7 @@ export interface VoiceInvoiceDerivation {
 }
 
 /** minuscules + sans accents (œ -> oe) + ponctuation -> espaces, encadré d'espaces (mots entiers). */
-function normalize(input: string): string {
+export function normalizeVoiceText(input: string): string {
   const flat = input
     .normalize('NFD')
     .replace(/\p{Diacritic}/gu, '')
@@ -72,12 +72,12 @@ const NAME_STOPWORDS = new Set([
 ]);
 
 /** Reconnaît le client dont un mot du nom (≥ 3 lettres, hors civilités) est énoncé. */
-function matchCustomer(normalized: string, customers: readonly VoiceCustomerRef[]): string | null {
+export function matchSpokenCustomer(normalized: string, customers: readonly VoiceCustomerRef[]): string | null {
   // La normalisation garde , € % pour les montants — ici on ne compare que des MOTS entiers.
   const words = ` ${normalized.replace(/[,€%]/g, ' ').replace(/\s+/g, ' ').trim()} `;
   let best: { id: string; len: number } | null = null;
   for (const customer of customers) {
-    const nameWords = normalize(customer.name)
+    const nameWords = normalizeVoiceText(customer.name)
       .split(' ')
       .filter((w) => w.length >= 3 && !NAME_STOPWORDS.has(w));
     for (const word of nameWords) {
@@ -120,7 +120,7 @@ function parseAmounts(normalized: string): SpokenAmount[] {
 }
 
 /** « TVA 10 » / « TVA à 5,5 % » énoncée -> taux légal, sinon null. */
-function parseVatRate(normalized: string): VatRate | null {
+export function parseSpokenVatRate(normalized: string): VatRate | null {
   const m = /tva (?:a |de )?(\d{1,2}(?:,\d)?) ?%?/.exec(normalized);
   if (!m || m[1] === undefined) return null;
   const rate = Number(m[1].replace(',', '.'));
@@ -134,7 +134,7 @@ function parsePaymentMethod(normalized: string): PaymentMethod {
 }
 
 /** Durée de main-d'œuvre énoncée (« 1h30 », « 2 heures ») — pour le libellé, jamais un prix. */
-function parseLaborDuration(normalized: string): string | null {
+export function parseSpokenLaborDuration(normalized: string): string | null {
   const m = /(\d{1,2}) ?h(?:eures?)? ?(\d{1,2})?/.exec(normalized);
   if (!m || m[1] === undefined) return null;
   return m[2] !== undefined ? `${m[1]}h${m[2].padStart(2, '0')}` : `${m[1]} h`;
@@ -150,14 +150,14 @@ const LABEL_STOPWORDS = new Set([
  * libellé (≥ 3 lettres, hors articles et nombres — « 200 L » n'est pas exigé à l'oral) doivent
  * être énoncés. Les indicatifs métier sont ignorés — seul le prix de l'artisan chiffre.
  */
-function matchPrestations(
+export function matchSpokenPrestations(
   normalized: string,
   prestations: readonly VoicePrestation[],
 ): VoicePrestation[] {
   const words = ` ${normalized.replace(/[,€%]/g, ' ').replace(/\s+/g, ' ').trim()} `;
   return prestations.filter((p) => {
     if (p.indicative === true) return false;
-    const labelWords = normalize(p.label)
+    const labelWords = normalizeVoiceText(p.label)
       .split(' ')
       .filter((w) => w.length >= 3 && !LABEL_STOPWORDS.has(w) && !/\d/.test(w));
     return labelWords.length > 0 && labelWords.every((w) => words.includes(` ${w} `));
@@ -173,11 +173,11 @@ const KIND_LINE: Partial<Record<AmountKind, { label: string; category: LineCateg
 
 export function deriveVoiceInvoiceDraft(input: DeriveVoiceInvoiceDraftInput): VoiceInvoiceDerivation {
   const transcript = input.transcript.trim();
-  const normalized = normalize(transcript);
-  const spokenRate = parseVatRate(normalized);
+  const normalized = normalizeVoiceText(transcript);
+  const spokenRate = parseSpokenVatRate(normalized);
   const vatRate: VatRate =
     spokenRate ?? (input.defaultVatRate !== undefined && isVatRate(input.defaultVatRate) ? input.defaultVatRate : 20);
-  const laborDuration = parseLaborDuration(normalized);
+  const laborDuration = parseSpokenLaborDuration(normalized);
   const laborLabel = laborDuration !== null ? `Main-d’œuvre · ${laborDuration}` : 'Main-d’œuvre';
 
   const amounts = parseAmounts(normalized);
@@ -203,7 +203,7 @@ export function deriveVoiceInvoiceDraft(input: DeriveVoiceInvoiceDraftInput): Vo
   // Catalogue (C27) : AUCUN montant exploitable mais une prestation PERSO nommée → son prix
   // enregistré chiffre la ligne (le centime vient de l'artisan, jamais d'un indicatif métier).
   if (lines.length === 0 && totalTtc === null && input.prestations !== undefined) {
-    for (const p of matchPrestations(normalized, input.prestations)) {
+    for (const p of matchSpokenPrestations(normalized, input.prestations)) {
       lines.push({
         label: p.label,
         category: p.category,
@@ -233,7 +233,7 @@ export function deriveVoiceInvoiceDraft(input: DeriveVoiceInvoiceDraftInput): Vo
   return {
     draft: {
       transcript: transcript.length > 0 ? transcript : null,
-      customerId: matchCustomer(normalized, input.customers),
+      customerId: matchSpokenCustomer(normalized, input.customers),
       lines,
     },
     paymentMethod: parsePaymentMethod(normalized),
