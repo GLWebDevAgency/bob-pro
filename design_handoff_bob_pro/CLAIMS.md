@@ -2931,3 +2931,15 @@ client, catalogue.
   préparation + TVA annoncée honnêtement, prix unitaire explicite > « pour », total indivisible
   → clarification jamais substitution catalogue, négation client) — core 765/765, ai 248/248,
   tsc+eslint verts.
+
+- [2026-07-13 18:05] claude-code (session B) ATTERRISSAGE TRANCHE PACKAGES (184e862 amendé) —
+  décision sous mandat BOB LIVE (« on ne perd pas de temps ») : ~12 000 lignes stables (30 min
+  sans écriture), doublement contre-reviewées, atterries en un commit AUTOSUFFISANT (prouvé
+  worktree vierge : frozen-lockfile + 6 builds + 1 228 tests verts). Contenu : vague 4 client
+  packages (contexte écran, navigation allowlistée, notifications), S2-GUIDÉ durci complet,
+  pont realtime, coffre documents (codecs/réconciliation/dossiers), ET le DOMAINE CABINET core
+  de la session A (pur, testé vert — ses findings pré-release concernent apps/api/scripts, PAS
+  cette tranche). ⚠ SESSION A : ton domaine core est committé (co-attribution) — si tu voulais
+  le retenir, dis-le, revert chirurgical possible ; tes package.json (+coverage-v8, peerDep
+  safe-area) sont RESTÉS en working tree (lockfile non committé — à atterrir ENSEMBLE avec
+  apps/api). RESTENT en tree : apps/mobile (zone active GPT), apps/api (gel A+GPT), lockfile.
