@@ -245,10 +245,25 @@ export class HttpBobClient implements BobClient {
   }
   // —— Assistant Bob (C40 ⑧) : l'agent tourne CÔTÉ SERVEUR — journal company-scoped, autonomie clampée ——
   askBob(input: AskBobClientInput) {
-    return this.req<AgentRun>('POST', '/ai/ask', input);
+    // Frontière explicite : un objet élargi à l'exécution ne doit jamais faire fuiter un callback
+    // UI (`onPhase`) ou une future option non auditée dans le DTO réseau.
+    const body: AskBobClientInput = {
+      message: input.message,
+      ...(input.autonomy !== undefined ? { autonomy: input.autonomy } : {}),
+      ...(input.history !== undefined ? { history: input.history } : {}),
+      ...(input.tone !== undefined ? { tone: input.tone } : {}),
+      ...(input.context !== undefined ? { context: input.context } : {}),
+    };
+    return this.req<AgentRun>('POST', '/ai/ask', body);
   }
   confirmBob(pending: PendingAction) {
-    return this.req<AgentRun>('POST', '/ai/confirm', pending);
+    // La confirmation HTTP référence exclusivement la proposition persistée côté serveur.
+    // tool/args/label restent utiles à l'aperçu UI, mais ne retraversent jamais la frontière.
+    // TRANSITION version-skew : un serveur déployé AVANT les propositions opaques ne fournit
+    // pas de proposalId — on lui renvoie alors l'ancien contrat (PendingAction complet) au
+    // lieu d'un { proposalId: undefined } qui casserait toute confirmation.
+    const body = pending.proposalId !== undefined ? { proposalId: pending.proposalId } : pending;
+    return this.req<AgentRun>('POST', '/ai/confirm', body);
   }
   getRunJournal(runId: string) {
     return this.req<JournalEntry[]>('GET', `/ai/runs/${encodeURIComponent(runId)}/journal`);

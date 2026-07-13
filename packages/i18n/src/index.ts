@@ -4,7 +4,6 @@
  * (Pote par défaut, Pro, Direct). Les claims d'écran ajoutent leurs clés (C10+).
  */
 
-import { cabinetFr } from './catalogs/cabinet';
 
 export type Personality = 'pote' | 'pro' | 'direct';
 
@@ -1448,15 +1447,78 @@ const legacyFr = {
     pro: 'Je n’ai pas identifié votre choix — le numéro ou le nom ?',
     direct: 'Pas compris. Numéro ou nom ?',
   },
+  // AUCUN token de consentement NI d'annulation dans ces textes : leur écho TTS ne doit
+  // jamais pouvoir annuler (ni a fortiori confirmer) la proposition — au pire « unclear ».
   'live.unclearConsent': {
-    pote: 'Dis « je confirme » pour valider, ou « annule ».',
-    pro: 'Dites « je confirme » pour valider, ou « annule » pour abandonner.',
-    direct: '« Je confirme » ou « annule ».',
+    pote: 'J’ai pas bien compris. Je le fais, ou je laisse ? Tu peux aussi trancher à l’écran.',
+    pro: 'Je n’ai pas bien compris. Dois-je exécuter cette action, ou la laisser de côté ? Vous pouvez aussi décider à l’écran.',
+    direct: 'Pas compris. Je le fais, ou pas ? L’écran marche aussi.',
   },
   'live.useScreen': {
     pote: 'Pas de souci — choisis à l’écran, je reste à l’écoute.',
     pro: 'Vous pouvez choisir à l’écran ; je reste à l’écoute.',
     direct: 'Choisis à l’écran. J’écoute.',
+  },
+  // AUDIT-VOCAL S1 — accès Bob global, même session et même contexte sur toutes les routes.
+  'agent.global.idle': {
+    pote: 'Parler à Bob',
+    pro: 'Parler à Bob',
+    direct: 'Bob',
+  },
+  'agent.global.listening': {
+    pote: 'Je t’écoute…',
+    pro: 'Je vous écoute…',
+    direct: 'J’écoute…',
+  },
+  'agent.global.thinking': {
+    pote: 'Je regarde ça…',
+    pro: 'J’analyse votre demande…',
+    direct: 'Analyse…',
+  },
+  'agent.global.speaking': {
+    pote: 'Je te réponds…',
+    pro: 'Réponse de Bob…',
+    direct: 'Je réponds…',
+  },
+  'agent.global.error': {
+    pote: 'Je n’ai pas réussi. Rien n’a été modifié.',
+    pro: 'La demande a échoué. Aucune donnée n’a été modifiée.',
+    direct: 'Échec. Rien modifié.',
+  },
+  'agent.global.unavailable': {
+    pote: 'Le micro n’est pas disponible ici. Tu peux écrire à Bob.',
+    pro: 'Le micro n’est pas disponible. Vous pouvez écrire votre demande.',
+    direct: 'Micro indisponible. Écris.',
+  },
+  'agent.global.context': {
+    pote: 'Je vois : {context}',
+    pro: 'Contexte actif : {context}',
+    direct: 'Sur {context}',
+  },
+  'agent.global.reviewRequired': {
+    pote: 'Cette action se termine dans l’Assistant — rien n’a été fait pour l’instant.',
+    pro: 'Cette action se finalise dans l’Assistant ; rien n’a été exécuté.',
+    direct: 'À finaliser dans l’Assistant. Rien de fait.',
+  },
+  'agent.global.continueInAssistant': {
+    pote: 'Continuer dans l’Assistant',
+    pro: 'Continuer dans l’Assistant',
+    direct: 'Ouvrir l’Assistant',
+  },
+  'agent.global.heardNothing': {
+    pote: 'Je n’ai rien entendu — touche le bouton pour reprendre.',
+    pro: 'Je n’ai rien entendu. Touchez le bouton pour reprendre.',
+    direct: 'Rien entendu. Retouche le bouton.',
+  },
+  'agent.global.stop': {
+    pote: 'Arrêter l’écoute',
+    pro: 'Arrêter l’écoute',
+    direct: 'Arrêter',
+  },
+  'agent.global.dismiss': {
+    pote: 'Fermer la réponse de Bob',
+    pro: 'Fermer la réponse de Bob',
+    direct: 'Fermer',
   },
   // ASK-1 — questions structurées (modale de choix quand la demande est ambiguë)
   'assistant.askAnswer': { pote: 'Répondre', pro: 'Répondre', direct: 'Répondre' },
@@ -3068,6 +3130,11 @@ const legacyFr = {
     pro: 'Relance envoyée à {name}.',
     direct: '{name} : relancé.',
   },
+  'relance.queuedToast': {
+    pote: 'Relance programmée pour {name} — Bob s’en charge.',
+    pro: 'Relance programmée pour {name}. L’envoi sera suivi dans l’activité.',
+    direct: '{name} : relance programmée.',
+  },
   'relance.sendError': {
     pote: 'L’envoi a raté — réessaie dans un instant.',
     pro: 'L’envoi de la relance a échoué. Veuillez réessayer.',
@@ -3959,7 +4026,7 @@ const legacyFr = {
   },
 } as const satisfies Record<string, Copy>;
 
-const fr = { ...legacyFr, ...cabinetFr } as const satisfies Record<string, Copy>;
+const fr = { ...legacyFr } as const satisfies Record<string, Copy>;
 
 export type I18nKey = keyof typeof fr;
 

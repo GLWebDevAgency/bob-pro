@@ -270,6 +270,25 @@ describe('i18n — C15 assistant.*', () => {
       'Encaisse la facture 2026-014',
     );
   });
+
+  it('accès vocal global : états et contexte existent dans les trois humeurs', () => {
+    expect(t('agent.global.idle')).toBe('Parler à Bob');
+    expect(t('agent.global.listening', { personality: 'pro' })).toBe('Je vous écoute…');
+    expect(t('agent.global.thinking', { personality: 'direct' })).toBe('Analyse…');
+    expect(t('agent.global.context', { personality: 'pro', params: { context: 'facture F-14' } })).toBe(
+      'Contexte actif : facture F-14',
+    );
+    expect(t('agent.global.reviewRequired', { personality: 'direct' })).toBe('À finaliser dans l’Assistant. Rien de fait.');
+    expect(t('agent.global.continueInAssistant', { personality: 'direct' })).toBe('Ouvrir l’Assistant');
+    expect(t('agent.global.heardNothing', { personality: 'pro' })).toBe('Je n’ai rien entendu. Touchez le bouton pour reprendre.');
+    expect(t('agent.global.dismiss', { personality: 'pro' })).toBe('Fermer la réponse de Bob');
+    // Plancher vocal : les textes de relance de consentement ne contiennent AUCUN token
+    // que parseVoiceConsent accepte (ni confirmation, ni annulation) — l'écho ne décide jamais.
+    for (const personality of ['pote', 'pro', 'direct'] as const) {
+      const retry = t('live.unclearConsent', { personality }).toLowerCase();
+      expect(retry).not.toMatch(/annul|je confirme|\bd.accord\b|\boui\b|\bok\b|vas[- ]?y|j.autorise/);
+    }
+  });
 });
 
 describe('i18n — C20 voix.*', () => {
@@ -412,6 +431,9 @@ describe('i18n — C25 notif.* + relance.*', () => {
     );
     expect(t('relance.confirmMedNote', { personality: 'pro' })).toContain('L441-10');
     expect(t('relance.sentToast', { params: { name: 'SARL Martin' } })).toBe('Relance envoyée à SARL Martin ✓');
+    expect(t('relance.queuedToast', { personality: 'pro', params: { name: 'SARL Martin' } })).toBe(
+      'Relance programmée pour SARL Martin. L’envoi sera suivi dans l’activité.',
+    );
     expect(t('relance.sendError', { personality: 'direct' })).toBe('Envoi KO. Réessaie.');
   });
 });

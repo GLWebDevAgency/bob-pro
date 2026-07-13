@@ -44,6 +44,8 @@ export interface PromptContext {
 /** Assainit une valeur de données avant insertion dans un prompt (longueur bornée, pas de balises). */
 export function sanitizePromptValue(value: string, maxLength = 80): string {
   return value
+    // La plage est volontaire : les caractères de contrôle ne doivent jamais atteindre le prompt.
+    // eslint-disable-next-line no-control-regex
     .replace(/[\u0000-\u001f\u007f]/g, ' ') // caractères de contrôle
     .replace(/[<>`{}[\]]/g, ' ') // balises / fences / gabarits
     .replace(/\s+/g, ' ')

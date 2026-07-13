@@ -15,11 +15,11 @@
 import { type LlmMessage, type LlmPort } from '../llm/port';
 
 // Mêmes familles de faits que money-guard, élargies aux pièces et pourcentages.
-const MONEY_RE = /\d[\d\s.,  ]*(?:€|EUR|euros?)/gi;
+const MONEY_RE = /\d[\d\s.,\u00a0\u202f]*(?:€|EUR|euros?)/gi;
 const PIECE_RE = /\b[DFA]-?\d{4}-\d{2,}\b/gi;
 const PERCENT_RE = /\d+(?:[.,]\d+)?\s*%/g;
 
-const stripWs = (s: string): string => s.replace(/[\s  ]/g, '').toLowerCase();
+const stripWs = (s: string): string => s.replace(/[\s\u00a0\u202f]/g, '').toLowerCase();
 
 /** Faits chiffrés d'un texte, normalisés pour comparaison stricte. */
 export function extractFacts(text: string): Set<string> {
@@ -53,8 +53,22 @@ export interface NaturalizeInput {
   /** La demande de l'utilisateur (contexte de formulation). */
   userMessage: string;
   tone: NaturalizeTone;
+  /** Vrai si la carte vient d'une entite/donnee tenant (nom client, resume contextuel,
+   * document...). Meme sans montant detectable, cette donnee ne doit pas partir au cloud. */
+  sensitiveContext?: boolean;
   /** Derniers échanges (déjà expurgés par l'appelant si nécessaire) — le liant conversationnel. */
   history?: readonly LlmMessage[];
+}
+
+/**
+ * Frontiere de confidentialite S1, volontairement conservative :
+ * - toute carte issue du contexte metier/tenant reste canonique ;
+ * - tout montant, numero de piece ou pourcentage reste canonique ;
+ * - seules les cartes generiques sans fait chiffre peuvent etre reformulees dans le cloud.
+ */
+export function shouldNaturalize(input: NaturalizeInput): boolean {
+  if (input.sensitiveContext === true) return false;
+  return extractFacts(`${input.title} ${input.body}`).size === 0;
 }
 
 /**
@@ -62,6 +76,8 @@ export interface NaturalizeInput {
  * l'appelant garde alors le gabarit source (fallback inconditionnel, jamais bloquant).
  */
 export async function naturalizeReply(llm: LlmPort, input: NaturalizeInput): Promise<string | null> {
+  // IMPORTANT : ce gate precede la construction des messages et tout appel fournisseur.
+  if (!shouldNaturalize(input)) return null;
   try {
     const r = await llm.generate([
       {

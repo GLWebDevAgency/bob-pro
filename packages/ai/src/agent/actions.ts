@@ -12,6 +12,10 @@ import {
   type BusinessReview,
   type ClosingReview,
 } from '@bob/core';
+import {
+  type ContextEntitySummary,
+  type ReadContextEntityInput,
+} from './context';
 
 /** Dépense fournisseur encore à payer (BOB-1 — ciblage de payer_depense par nom). */
 export interface UnpaidExpense {
@@ -151,6 +155,9 @@ export interface CreateCustomerActionInput {
  */
 export interface BobActions {
   // —— Lecture ——
+  /** Resume factuel de l'entite actuellement affichee. Le contexte UI n'est qu'un indice :
+   * l'hote recharge obligatoirement l'entite tenant-scoped avant de construire ce resume. */
+  readContextEntity?(input: ReadContextEntityInput): Promise<Result<ContextEntitySummary, AppError>>;
   computePayout(): Promise<Result<{ payoutCents: number; availableCents: number }, AppError>>;
   /** Brouillon de relance — CIBLABLE par facture/client (C25 ①). Défaut sans cible : la plus
    * urgente. Les hôtes historiques sans paramètre restent assignables (TODO Codex apps/api :
@@ -198,7 +205,12 @@ export interface BobActions {
     amountCents: number;
     idempotencyKey?: string | null;
   }): Promise<Result<{ status: string }, AppError>>;
-  sendQuote(input: { quoteId: string }): Promise<Result<{ number: string }, AppError>>;
+  sendQuote(input: { quoteId: string }): Promise<
+    Result<
+      { number: string; deliveryStatus?: 'queued' | 'sent' | 'skipped' },
+      AppError
+    >
+  >;
   issueInvoice(input: { invoiceId: string }): Promise<Result<{ number: string }, AppError>>;
   // —— Mutation, OPTIONNELLES (parité C15 TODO ③④⑤⑥, C20/C40) ——
   // Optionnelles pour rester rétro-compatibles avec les hôtes existants (apps/api) : le registre

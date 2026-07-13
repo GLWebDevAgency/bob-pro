@@ -9,7 +9,7 @@ import {
   type FiscalDeadline,
   isVatRate,
 } from '@bob/core';
-import { type AnyTool, type Tool } from './tool';
+import { type AnyTool, type Tool, type ToolPublicResult } from './tool';
 import {
   type BobActions,
   type DraftRelanceActionInput,
@@ -117,7 +117,10 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
     run: () => actions.listDocuments(),
   };
 
-  const sendQuote: Tool<{ quoteId: string }, { number: string }> = {
+  const sendQuote: Tool<
+    { quoteId: string },
+    { number: string; deliveryStatus?: 'queued' | 'sent' | 'skipped' }
+  > = {
     name: 'envoyer_devis',
     description: 'Envoie un devis au client et crée/renouvelle son lien de signature.',
     mutating: true,
@@ -129,6 +132,16 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
       return ok({ quoteId: r.quoteId });
     },
     riskTier: 'outbound',
+    projectPublicResult: (output): ToolPublicResult => {
+      if (
+        output.deliveryStatus === 'queued' ||
+        output.deliveryStatus === 'sent' ||
+        output.deliveryStatus === 'skipped'
+      ) {
+        return { deliveryStatus: output.deliveryStatus };
+      }
+      return {};
+    },
     run: (input) => actions.sendQuote(input),
   };
 

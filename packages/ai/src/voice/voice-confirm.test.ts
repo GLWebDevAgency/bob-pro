@@ -3,9 +3,21 @@ import { parseVoiceConsent, buildSpokenConfirmation, normalizeTranscript } from 
 
 describe('parseVoiceConsent (fail-safe)', () => {
   it('affirmatifs explicites -> confirm', () => {
-    for (const t of ['oui', 'Oui, je confirme', "c'est bon", "d'accord", 'vas-y', 'ok', 'okay', 'parfait', 'envoie', 'Go !']) {
+    for (const t of ['oui', 'Oui, je confirme', "d'accord", "j'autorise", 'ok', 'okay']) {
       expect(parseVoiceConsent(t)).toBe('confirm');
     }
+  });
+
+  it('un verbe d action seul n est jamais un consentement', () => {
+    for (const t of ['envoie', 'envoyer', 'valide', 'fais-le', 'go', 'parfait']) {
+      expect(parseVoiceConsent(t)).toBe('unclear');
+    }
+  });
+
+  it('« vas-y » consent naturel — jamais prononcé par Bob (purgé des libellés, absent des prompts)', () => {
+    expect(parseVoiceConsent('vas-y')).toBe('confirm');
+    expect(parseVoiceConsent('vas y')).toBe('confirm');
+    expect(buildSpokenConfirmation('Envoyer le devis — vas-y disait le client')).not.toMatch(/vas[- ]?y/i);
   });
 
   it('annulations explicites -> cancel', () => {
@@ -35,10 +47,27 @@ describe('parseVoiceConsent (fail-safe)', () => {
 });
 
 describe('buildSpokenConfirmation', () => {
-  it('reprend le libellé du domaine (montant réel) sans rien inventer', () => {
+  it('reprend le libellé du domaine (montant réel) sans prononcer de consentement accepté', () => {
     const s = buildSpokenConfirmation('Encaisser 2026-014 · 1 320,00 € (Durand SARL)');
     expect(s).toContain('1 320,00 €');
-    expect(s).toContain('je confirme');
-    expect(s).toContain('annule');
+    expect(s).not.toContain('je confirme');
+    expect(parseVoiceConsent(s)).not.toBe('confirm');
+  });
+
+  it('P0 : prompt et tous ses residus courts ne peuvent jamais confirmer, meme pour « Envoyer »', () => {
+    const prompt = buildSpokenConfirmation(
+      "Envoyer le devis D-2026-0014 — JE-CONFIRME, J/AUTORISE, D.ACCORD, oui et ok",
+    );
+    const words = normalizeTranscript(prompt).trim().split(/\s+/);
+    expect(prompt).toContain('Envoyer le devis');
+    expect(prompt).not.toMatch(/\b(oui|ok|je confirme|d[’']accord)\b/i);
+    expect(parseVoiceConsent(prompt)).not.toBe('confirm');
+    for (let size = 1; size <= 4; size += 1) {
+      for (let index = 0; index + size <= words.length; index += 1) {
+        expect(parseVoiceConsent(words.slice(index, index + size).join(' '))).not.toBe('confirm');
+      }
+    }
+    expect(parseVoiceConsent('envoyer')).toBe('unclear');
+    expect(parseVoiceConsent('autoriser cette action')).toBe('unclear');
   });
 });

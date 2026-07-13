@@ -1,4 +1,4 @@
-import type { AgentAutonomy, AgentRun, JournalEntry, PendingAction } from '@bob/ai';
+import type { AgentRun, AskOptions, JournalEntry, PendingAction } from '@bob/ai';
 import type {
   Result,
   AppError,
@@ -100,6 +100,8 @@ export interface SendQuoteOutput {
   number: string;
   signatureToken?: string;
   signatureTokenExpiresAt?: string;
+  /** État honnête du canal email au retour HTTP : le worker peut encore être en attente. */
+  deliveryStatus: 'queued' | 'sent' | 'skipped';
 }
 
 export interface ListDocumentsClientInput {
@@ -243,19 +245,20 @@ export interface ExportFecMetadata {
   warnings: string[];
 }
 
-/** POST /ai/ask — DTO serveur constaté (AiController) : { message, autonomy? } -> AgentRun. */
-export interface AskBobClientInput {
-  message: string;
-  /** Autonomie DEMANDÉE — le serveur la clampe par l'offre (autonomyEntitlement) ; le local aussi. */
-  autonomy?: AgentAutonomy;
-}
+/**
+ * POST /ai/ask — sous-ensemble sérialisable d'AskOptions.
+ * Le callback UI `onPhase` reste volontairement hors transport ; ajouter une option agentique
+ * ne l'expose donc pas implicitement sur le réseau.
+ */
+export type AskBobClientInput = Readonly<{ message: string }> &
+  Pick<AskOptions, 'autonomy' | 'history' | 'tone' | 'context'>;
 
 /** POST /customers — DTO serveur constaté (CustomersController) : CustomerProps sans id/companyId. */
 export type CreateCustomerClientInput = Omit<CustomerProps, 'id' | 'companyId'>;
 
 /** Envoi RÉEL d'une relance ciblée (C25 ② — endpoint POST /invoices/:id/relance, DTO serveur
  * constaté : { jobId, status, tone }). Le serveur choisit le ton via le plan @bob/core
- * (deriveRelancePlan, dédup quotidienne `invoice:{id}:relance:{today}`) et livre email + miroir
+ * (deriveRelancePlan ; automatique déduplié par palier, manuel par jour) et livre email + miroir
  * push. La mise en demeure passe par CE geste uniquement (le cron ne l'envoie jamais seul). */
 export interface SendRelanceClientOutput {
   jobId: string;

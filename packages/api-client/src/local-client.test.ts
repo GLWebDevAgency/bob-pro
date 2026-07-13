@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import type { JournalEntry } from '@bob/ai';
+import { describe, it, expect, vi } from 'vitest';
+import { BobAgent, type JournalEntry } from '@bob/ai';
 import { buildFacturXBasicXml, type FacturXInvoiceData } from '@bob/core';
 import { LocalBobClient } from './local-client';
 import { FixtureClock } from './in-memory/services';
@@ -90,6 +90,40 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     expect(r.value.card.body).toContain('24/07/2026 — TVA : acompte de juillet (55 %) (à confirmer)');
   });
 
+  it('askBob transmet au BobAgent local le même historique, ton et contexte que le transport HTTP', async () => {
+    const client = makeClient();
+    const history = [
+      { role: 'user', text: 'Montre-moi la facture Martin.' },
+      { role: 'bob', text: 'La facture F-2026-014 est affichée.' },
+    ] as const;
+    const context = {
+      screen: { name: '/facture/[id]', instanceId: 'invoice:inv-seed-late' },
+      entities: [{ type: 'invoice', id: 'inv-seed-late', label: 'Facture F-2026-0001' }],
+      capabilities: ['invoice.read', 'invoice.collect'],
+    } as const;
+    const ask = vi.spyOn(BobAgent.prototype, 'ask');
+
+    try {
+      const result = await client.askBob({
+        message: 'et celle-ci ?',
+        autonomy: 'confirm_all',
+        history,
+        tone: 'direct',
+        context,
+      });
+
+      expect(result.ok).toBe(true);
+      expect(ask).toHaveBeenCalledWith('et celle-ci ?', {
+        autonomy: 'confirm_all',
+        history,
+        tone: 'direct',
+        context,
+      });
+    } finally {
+      ask.mockRestore();
+    }
+  });
+
   it('déroule le flux Devis -> facture -> paiement hors-ligne', async () => {
     const client = makeClient();
     const created = await client.createQuote({
@@ -106,7 +140,9 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     const quoteId = created.value.quoteId;
     expect(created.value.totals.ttc).toBe(162800);
 
-    expect((await client.sendQuote(quoteId)).ok).toBe(true);
+    const sent = await client.sendQuote(quoteId);
+    expect(sent.ok).toBe(true);
+    expect(sent.ok && sent.value.deliveryStatus).toBe('skipped');
     expect((await client.signQuote({ quoteId, signerName: 'M. Martin' })).ok).toBe(true);
 
     const gen = await client.generateInvoice({ quoteId });

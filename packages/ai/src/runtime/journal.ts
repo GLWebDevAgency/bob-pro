@@ -35,6 +35,8 @@ export interface ActionOutcome {
   readonly label: string;
   readonly status: 'executed' | 'planned' | 'denied' | 'failed';
   readonly reason?: string;
+  /** Projection allowlistée par l'outil ; jamais le résultat métier brut. */
+  readonly result?: Readonly<Record<string, string | number | boolean | null>>;
 }
 
 export interface AgentRunRecord {

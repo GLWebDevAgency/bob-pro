@@ -292,10 +292,32 @@ describe('HttpBobClient — assistant Bob (C40 ⑧ : ask/confirm/journal serveur
       tool: 'encaisser_facture',
       args: { invoiceId: 'inv-1', amountCents: 132000 },
       label: 'Encaisser 2026-014 · 1 320,00 € (Durand)',
+      proposalId: 'proposal-server-1',
+      expiresAt: '2026-07-13T04:00:00.000Z',
     },
   };
 
-  it('askBob POSTe /ai/ask (message + autonomie demandée) et rend l’AgentRun du serveur tel quel', async () => {
+  it('askBob POSTe uniquement le DTO agent sérialisable complet et rend l’AgentRun du serveur tel quel', async () => {
+    const history = [
+      { role: 'user', text: 'Montre-moi la facture Martin.' },
+      { role: 'bob', text: 'La facture F-2026-014 est affichée.' },
+    ] as const;
+    const context = {
+      screen: { name: '/facture/[id]', instanceId: 'invoice:inv-1' },
+      entities: [{ type: 'invoice', id: 'inv-1', label: 'Facture F-2026-014' }],
+      capabilities: ['invoice.read', 'invoice.collect'],
+    } as const;
+    const onPhase = vi.fn();
+    // Objet volontairement élargi : la frontière HTTP doit retirer les champs locaux/inconnus.
+    const input = {
+      message: 'encaisse celle-ci',
+      autonomy: 'confirm_all',
+      history,
+      tone: 'pro',
+      context,
+      onPhase,
+      ignoredAtRuntime: 'secret-local-state',
+    } as const;
     const fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
       const url = String(input);
       if (url === 'https://api.bob.test/ai/ask') {
@@ -303,7 +325,13 @@ describe('HttpBobClient — assistant Bob (C40 ⑧ : ask/confirm/journal serveur
         const headers = init?.headers as Record<string, string>;
         expect(headers['x-company-id']).toBe('company-mercier');
         expect(headers.authorization).toBe('Bearer test-token');
-        expect(JSON.parse(String(init?.body))).toEqual({ message: 'encaisse la facture 2026-014', autonomy: 'confirm_all' });
+        expect(JSON.parse(String(init?.body))).toEqual({
+          message: 'encaisse celle-ci',
+          autonomy: 'confirm_all',
+          history,
+          tone: 'pro',
+          context,
+        });
         return new Response(JSON.stringify(proposedRun), { headers: { 'content-type': 'application/json' } });
       }
       return new Response(JSON.stringify({ error: { kind: 'not_found', resource: 'route' } }), { status: 404 });
@@ -311,16 +339,17 @@ describe('HttpBobClient — assistant Bob (C40 ⑧ : ask/confirm/journal serveur
     vi.stubGlobal('fetch', fetchMock);
 
     const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-mercier', getToken: async () => 'test-token' });
-    const r = await client.askBob({ message: 'encaisse la facture 2026-014', autonomy: 'confirm_all' });
+    const r = await client.askBob(input);
 
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(onPhase).not.toHaveBeenCalled();
     expect(r.value).toEqual(proposedRun);
     expect(r.value.pending?.tool).toBe('encaisser_facture'); // rejouable tel quel via confirmBob
   });
 
-  it('confirmBob POSTe la PendingAction telle quelle sur /ai/confirm et rend le run « done »', async () => {
+  it('confirmBob ne POSTe que le proposalId opaque sur /ai/confirm et rend le run « done »', async () => {
     const doneRun: AgentRun = {
       kind: 'done',
       intent: 'encaisser',
@@ -333,7 +362,9 @@ describe('HttpBobClient — assistant Bob (C40 ⑧ : ask/confirm/journal serveur
       const url = String(input);
       if (url === 'https://api.bob.test/ai/confirm') {
         expect(init?.method).toBe('POST');
-        expect(JSON.parse(String(init?.body))).toEqual(pending);
+        expect(JSON.parse(String(init?.body))).toEqual({ proposalId: 'proposal-server-1' });
+        expect(String(init?.body)).not.toContain('invoiceId');
+        expect(String(init?.body)).not.toContain('amountCents');
         return new Response(JSON.stringify(doneRun), { headers: { 'content-type': 'application/json' } });
       }
       return new Response(JSON.stringify({ error: { kind: 'not_found', resource: 'route' } }), { status: 404 });

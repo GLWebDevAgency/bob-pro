@@ -17,6 +17,8 @@ export * from './guardrails/pii-redaction';
 export * from './tools/tool';
 export * from './tools/registry';
 export * from './agent/actions';
+export * from './agent/context';
+export * from './agent/context-facts';
 export * from './agent/autonomy';
 export * from './agent/confirmation';
 export * from './agent/action-diff';

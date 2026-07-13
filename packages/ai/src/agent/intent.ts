@@ -1,4 +1,5 @@
 export type BobIntent =
+  | 'contexte_ecran' // lire l'entite affichee : « cette facture », « ou suis-je ? »
   | 'payout'
   | 'relance'
   | 'encaisser'
@@ -27,6 +28,14 @@ export type BobIntent =
 /** Détection d'intention déterministe (fallback hors-ligne / LLM indisponible / intention triviale). */
 export function detectIntent(message: string): BobIntent {
   const m = message.toLowerCase();
+  // Contexte UI : AVANT les intents document/facture generiques. Lecture pure ; la cible vient
+  // exclusivement d'AgentContext et reste a recharger/autoriser par l'hote.
+  if (
+    /(o[uù] suis[- ]?je|qu['’ ]?est[- ]?ce que je (regarde|vois)|r[ée]sume (cet |cette |ce |la |le |l['’])?(facture|devis|client|d[ée]pense|document|chantier)|r[ée]sume (l['’]|cet )?[ée]cran|parle[- ]?moi de (cet|cette|ce) (facture|devis|client|d[ée]pense|document|chantier))/.test(
+      m,
+    )
+  )
+    return 'contexte_ecran';
   // BOB-1 : régler une DÉPENSE/FOURNISSEUR — AVANT « encaisser » (« règle », « payé » collisionnent).
   if (/(pa[iy]e[rz]?|r[èe]gle[rz]?|solde[rz]?).*(d[ée]pense|fournisseur)|(d[ée]pense|fournisseur).*(pay[ée]|r[ée]gl)/.test(m))
     return 'payer_depense';

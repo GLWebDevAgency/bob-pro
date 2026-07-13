@@ -854,8 +854,15 @@ export class LocalBobClient implements BobClient {
     return this.sendQuoteInternal(quoteId);
   }
 
-  private sendQuoteInternal(quoteId: string, clock: ClockPort = this.clock): Promise<Result<SendQuoteOutput, AppError>> {
-    return new SendQuote({ quotes: this.quotes, counters: this.counters, uow: this.uow, clock }).execute({ quoteId });
+  private async sendQuoteInternal(
+    quoteId: string,
+    clock: ClockPort = this.clock,
+  ): Promise<Result<SendQuoteOutput, AppError>> {
+    const result = await new SendQuote({ quotes: this.quotes, counters: this.counters, uow: this.uow, clock }).execute({
+      quoteId,
+    });
+    // L'adapter local ne contacte aucun tiers : ne jamais afficher un faux « email envoyé ».
+    return result.ok ? { ok: true, value: { ...result.value, deliveryStatus: 'skipped' } } : result;
   }
 
   async signQuote(input: { quoteId: string; signerName: string }): Promise<Result<{ status: string }, AppError>> {
@@ -1455,7 +1462,12 @@ export class LocalBobClient implements BobClient {
   /** POST /ai/ask local : autonomie demandée clampée par l'offre, comme le serveur. */
   async askBob(input: AskBobClientInput): Promise<Result<AgentRun, AppError>> {
     const autonomy = clampAutonomy(input.autonomy, this.autonomyEntitlement());
-    return this.bobAgent().ask(input.message, { autonomy });
+    return this.bobAgent().ask(input.message, {
+      autonomy,
+      ...(input.history !== undefined ? { history: input.history } : {}),
+      ...(input.tone !== undefined ? { tone: input.tone } : {}),
+      ...(input.context !== undefined ? { context: input.context } : {}),
+    });
   }
 
   /** POST /ai/confirm local : exécution JOURNALISÉE (append-only) — mêmes sémantiques que le serveur. */

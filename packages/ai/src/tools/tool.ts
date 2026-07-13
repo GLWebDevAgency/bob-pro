@@ -12,6 +12,9 @@ import { type Result, type AppError } from '@bob/core';
  */
 export type RiskTier = 'read' | 'draft' | 'reversible' | 'accounting' | 'outbound' | 'fiscal';
 
+/** Projection explicitement publiable d'un résultat d'outil (jamais le payload métier brut). */
+export type ToolPublicResult = Readonly<Record<string, string | number | boolean | null>>;
+
 /**
  * Contrat d'outil de Bob. Invariant de parité IA/manuel : un outil DÉLÈGUE à un use case via `run`,
  * il n'a aucune logique métier propre. `parse` valide strictement les arguments (anti-hallucination d'arguments).
@@ -37,6 +40,11 @@ export interface Tool<In, Out> {
    * confirmation typée + l'aperçu ActionDiff.
    */
   readonly riskTier?: RiskTier;
+  /**
+   * Allowlist de sortie vers l'orchestrateur/UI. Absente = aucun résultat propagé.
+   * Elle empêche notamment les tokens et liens secrets d'entrer dans le journal ou la réponse agent.
+   */
+  readonly projectPublicResult?: (output: Out) => ToolPublicResult;
   parse(raw: unknown): Result<In, AppError>;
   run(input: In): Promise<Result<Out, AppError>>;
 }

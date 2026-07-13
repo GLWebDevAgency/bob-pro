@@ -21,6 +21,15 @@ import {
   type RuntimeIds,
 } from '../runtime';
 import { buildSpokenConfirmation, parseVoiceConsent } from '../voice/voice-confirm';
+import {
+  type AgentAskPayload,
+  type AgentCapability,
+  type AgentContext,
+  type ContextEntitySummary,
+  parseAgentAskPayload,
+  resolveAgentEntity,
+  sanitizeContextEntitySummary,
+} from './context';
 
 // Ré-export pour compatibilité (anciens imports depuis bob-agent).
 export { detectIntent };
@@ -44,6 +53,11 @@ export interface PendingAction {
   args: Record<string, unknown>;
   /** Libellé lisible de l'action proposée (affiché sur le bouton de confirmation). */
   label: string;
+  /** Identifiant opaque d'une proposition stockee cote serveur. En HTTP, confirm ne doit
+   * faire confiance qu'a cet identifiant ; absent pour le runtime local historique. */
+  proposalId?: string;
+  /** Expiration ISO de la proposition opaque. L'UI peut la rendre obsolete avant confirmation. */
+  expiresAt?: string;
   /** Pour un plan multi-étapes : la suite d'actions à exécuter en lot après confirmation. */
   batch?: BatchItem[];
 }
@@ -169,6 +183,12 @@ export function resolveInvoice(
   opts: { fallbackToSingle?: boolean } = {},
 ): PayableInvoice | null {
   if (invoices.length === 0) return null;
+  const normalizedMessage = normalized(message);
+  const byId = invoices.find((invoice) => {
+    const id = normalized(invoice.id);
+    return id.length >= 3 && (normalizedMessage === id || containsExactTokens(normalizedMessage, id));
+  });
+  if (byId) return byId;
   const numMatch = message.match(/\d{3,}(?:-\d+)?/);
   if (numMatch) {
     const ref = numMatch[0].replace(/\s/g, '');
@@ -188,9 +208,25 @@ function normalized(s: string): string {
   return s.toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '');
 }
 
-function resolveBusinessDocument<T extends BusinessDocumentTarget>(message: string, docs: T[]): T | null {
+/** Vrai si `needle` apparaît en TOKENS ENTIERS de `haystack` — « inv-1 » ne matche jamais
+ * « inv-12 » : un id préfixe d'un autre ciblerait la mauvaise pièce (le mauvais client). */
+function containsExactTokens(haystack: string, needle: string): boolean {
+  const tokens = (value: string): string => ` ${value.replace(/[^a-z0-9]+/g, ' ').trim()} `;
+  return tokens(haystack).includes(tokens(needle));
+}
+
+function resolveBusinessDocument<T extends BusinessDocumentTarget>(
+  message: string,
+  docs: T[],
+  opts: { fallbackToSingle?: boolean } = {},
+): T | null {
   if (docs.length === 0) return null;
   const lower = normalized(message);
+  const byId = docs.find((doc) => {
+    const id = normalized(doc.id);
+    return id.length >= 3 && (lower === id || containsExactTokens(lower, id));
+  });
+  if (byId) return byId;
   const numMatch = message.match(/\d{3,}(?:-\d+)?/);
   if (numMatch) {
     const ref = numMatch[0].replace(/\s/g, '');
@@ -202,11 +238,179 @@ function resolveBusinessDocument<T extends BusinessDocumentTarget>(message: stri
     return first.length >= 3 && lower.includes(first);
   });
   if (byCustomer) return byCustomer;
-  return docs.length === 1 ? docs[0]! : null;
+  return (opts.fallbackToSingle ?? true) && docs.length === 1 ? docs[0]! : null;
 }
 
 function displayRef(d: BusinessDocumentTarget): string {
   return d.number ?? d.id;
+}
+
+/** Corps de carte quand aucune cible n'est retenue : si l'écran désignait une pièce précise
+ * non éligible, la réponse le dit — jamais « aucune pièce » alors que l'utilisateur en regarde une. */
+function unresolvedTargetBody(input: {
+  readonly unactionableLabel?: string;
+  readonly hasOptions: boolean;
+  readonly ask: string;
+  readonly empty: string;
+}): string {
+  if (input.unactionableLabel) {
+    return input.hasOptions
+      ? `« ${input.unactionableLabel} » n’est pas éligible pour cette action. ${input.ask}`
+      : `« ${input.unactionableLabel} » n’est pas éligible pour cette action, et rien d’autre n’est en attente.`;
+  }
+  return input.hasOptions ? input.ask : input.empty;
+}
+
+interface TargetResolution<T> {
+  readonly target: T | null;
+  readonly choices: readonly T[];
+  readonly unactionableLabel?: string;
+}
+
+function contextTarget<T extends { id: string }>(input: {
+  readonly context?: AgentContext;
+  readonly compatibleTypes: readonly string[];
+  readonly requiredCapability: AgentCapability;
+  readonly explicitReference: string | null;
+  readonly values: readonly T[];
+}): {
+  readonly target: T | null;
+  readonly choices: readonly T[];
+  readonly preventsFallback: boolean;
+  /** L'écran désignait une pièce précise, mais elle n'est pas éligible à CETTE action :
+   * on le dira honnêtement au lieu d'un « aucune pièce » mensonger ou d'un repli silencieux. */
+  readonly unactionableLabel?: string;
+} {
+  const resolution = resolveAgentEntity({
+    ...(input.context !== undefined ? { context: input.context } : {}),
+    compatibleTypes: input.compatibleTypes,
+    requiredCapability: input.requiredCapability,
+    ...(input.explicitReference !== null ? { explicitReference: input.explicitReference } : {}),
+  });
+  if (resolution.kind === 'resolved') {
+    const target = input.values.find((value) => value.id === resolution.entity.id) ?? null;
+    if (!target) {
+      return { target: null, choices: input.values, preventsFallback: true, unactionableLabel: resolution.entity.label };
+    }
+    return { target, choices: [target], preventsFallback: true };
+  }
+  if (resolution.kind === 'ambiguous') {
+    const ids = new Set(resolution.candidates.map((candidate) => candidate.id));
+    return { target: null, choices: input.values.filter((value) => ids.has(value.id)), preventsFallback: true };
+  }
+  return { target: null, choices: input.values, preventsFallback: input.explicitReference !== null };
+}
+
+/** Reference explicite texte > contexte UI compatible unique > unicite metier historique. */
+function resolveInvoiceTarget(input: {
+  readonly message: string;
+  readonly reference: string | null;
+  readonly invoices: PayableInvoice[];
+  readonly context?: AgentContext;
+  readonly capability: AgentCapability;
+}): TargetResolution<PayableInvoice> {
+  const direct = resolveInvoice(input.reference ?? input.message, input.invoices, { fallbackToSingle: false });
+  if (direct) return { target: direct, choices: input.invoices };
+  const contextual = contextTarget({
+    ...(input.context !== undefined ? { context: input.context } : {}),
+    compatibleTypes: ['invoice'],
+    requiredCapability: input.capability,
+    explicitReference: input.reference,
+    values: input.invoices,
+  });
+  if (contextual.target) return { target: contextual.target, choices: contextual.choices };
+  if (!contextual.preventsFallback && input.invoices.length === 1)
+    return { target: input.invoices[0]!, choices: input.invoices };
+  return {
+    target: null,
+    choices: contextual.choices,
+    ...(contextual.unactionableLabel !== undefined ? { unactionableLabel: contextual.unactionableLabel } : {}),
+  };
+}
+
+function resolveDocumentTarget<T extends BusinessDocumentTarget>(input: {
+  readonly message: string;
+  readonly reference: string | null;
+  readonly documents: T[];
+  readonly context?: AgentContext;
+  readonly type: 'quote' | 'invoice';
+  readonly capability: AgentCapability;
+}): TargetResolution<T> {
+  const direct = resolveBusinessDocument(input.reference ?? input.message, input.documents, { fallbackToSingle: false });
+  if (direct) return { target: direct, choices: input.documents };
+  const contextual = contextTarget({
+    ...(input.context !== undefined ? { context: input.context } : {}),
+    compatibleTypes: [input.type],
+    requiredCapability: input.capability,
+    explicitReference: input.reference,
+    values: input.documents,
+  });
+  if (contextual.target) return { target: contextual.target, choices: contextual.choices };
+  if (!contextual.preventsFallback && input.documents.length === 1)
+    return { target: input.documents[0]!, choices: input.documents };
+  return {
+    target: null,
+    choices: contextual.choices,
+    ...(contextual.unactionableLabel !== undefined ? { unactionableLabel: contextual.unactionableLabel } : {}),
+  };
+}
+
+const READ_CAPABILITY_BY_TYPE: Readonly<Record<string, AgentCapability>> = {
+  customer: 'customer.read',
+  quote: 'quote.read',
+  quote_line: 'quote.read',
+  invoice: 'invoice.read',
+  invoice_line: 'invoice.read',
+};
+
+function requestedContextTypes(message: string): readonly string[] | null {
+  const n = normalized(message);
+  if (/\bligne\b/.test(n) && /\bfacture\b/.test(n)) return ['invoice_line'];
+  if (/\bligne\b/.test(n) && /\bdevis\b/.test(n)) return ['quote_line'];
+  if (/\bligne\b/.test(n)) return ['invoice_line', 'quote_line'];
+  if (/\bfacture\b/.test(n)) return ['invoice'];
+  if (/\bdevis\b/.test(n)) return ['quote'];
+  if (/\bclient\b/.test(n)) return ['customer'];
+  if (/\bdepense\b/.test(n)) return ['expense'];
+  if (/\bdocument\b/.test(n)) return ['document'];
+  if (/\bchantier\b/.test(n)) return ['chantier'];
+  return null;
+}
+
+function readableContextTypes(context: AgentContext | undefined, message: string): readonly string[] {
+  if (!context) return [];
+  const requested = requestedContextTypes(message);
+  const primaryId = context.screen.instanceId.includes(':')
+    ? context.screen.instanceId.slice(context.screen.instanceId.indexOf(':') + 1)
+    : null;
+  const primary = !requested && primaryId
+    ? context.entities.find((entity) => entity.id === primaryId)
+    : undefined;
+  // Sans type exprime (« ou suis-je ? »), une piece racine prime sur ses lignes affichees.
+  // Les lignes restent ciblables uniquement quand l'utilisateur dit explicitement « ligne ».
+  const eligible = requested
+    ? context.entities
+    : primary
+      ? [primary]
+    : context.entities.some((entity) => !entity.type.endsWith('_line'))
+      ? context.entities.filter((entity) => !entity.type.endsWith('_line'))
+      : context.entities;
+  return [
+    ...new Set(
+      eligible
+        .filter((entity) => {
+          if (requested && !requested.includes(entity.type)) return false;
+          const capability = READ_CAPABILITY_BY_TYPE[entity.type] ?? 'screen.read';
+          return context.capabilities.includes(capability);
+        })
+        .map((entity) => entity.type),
+    ),
+  ];
+}
+
+function summaryBody(summary: ContextEntitySummary): string {
+  if (summary.facts.length === 0) return `Tu regardes ${summary.label}.`;
+  return summary.facts.map((fact) => `• ${fact.label} : ${fact.value}`).join('\n');
 }
 
 function documentLine(d: AgentDocument): string {
@@ -223,6 +427,7 @@ function fiscalDeadlineLine(d: FiscalDeadline): string {
 }
 
 function intentForTool(tool: string): BobIntent {
+  if (tool === 'contexte_ecran') return 'contexte_ecran';
   if (tool === 'envoyer_devis') return 'envoyer_devis';
   if (tool === 'emettre_facture') return 'emettre_facture';
   if (tool === 'documents_liste') return 'documents';
@@ -272,15 +477,9 @@ export interface BobAgentDeps {
 /** Phase de traitement émise pendant ask() — pour un indicateur d'activité « temps réel » côté UI. */
 export type AgentPhase = 'comprends' | 'agis';
 
-export interface AskOptions {
-  autonomy?: AgentAutonomy;
+export interface AskOptions extends Omit<AgentAskPayload, 'message'> {
   /** Callback optionnel appelé aux étapes clés (comprends -> agis) pour animer un indicateur de phase. */
   onPhase?: (phase: AgentPhase) => void;
-  /** Derniers échanges du fil (le plus ancien d'abord) — anaphores (« et pour Martin ? »)
-   * et liant conversationnel. Expurgé (PII) avant tout envoi cloud. */
-  history?: readonly { role: 'user' | 'bob'; text: string }[];
-  /** Humeur de la voix de Bob (LIVE-2) — aligne la reformulation sur la personnalité de l'app. */
-  tone?: 'pote' | 'pro' | 'direct';
 }
 
 /**
@@ -310,10 +509,15 @@ export class BobAgent {
   }
 
   /** Qualifie la demande : LLM tool-calling si disponible (avec repli déterministe), sinon regex. */
-  private async classify(message: string, routedModel: ModelChoice, history?: AskOptions['history']) {
+  private async classify(
+    message: string,
+    routedModel: ModelChoice,
+    history?: AskOptions['history'],
+    context?: AgentContext,
+  ) {
     if (this.deps.llm && routedModel !== 'demo') {
       try {
-        return await classifyWithLlm(this.deps.llm, message, history);
+        return await classifyWithLlm(this.deps.llm, message, history, context);
       } catch {
         // LLM indisponible : on retombe sur la détection déterministe (jamais bloquant).
       }
@@ -322,18 +526,37 @@ export class BobAgent {
   }
 
   async ask(message: string, opts: AskOptions = {}): Promise<Result<AgentRun, AppError>> {
-    const autonomy = opts.autonomy ?? DEFAULT_AUTONOMY;
+    const payload = parseAgentAskPayload({
+      message,
+      ...(opts.autonomy !== undefined ? { autonomy: opts.autonomy } : {}),
+      ...(opts.history !== undefined ? { history: opts.history } : {}),
+      ...(opts.tone !== undefined ? { tone: opts.tone } : {}),
+      ...(opts.context !== undefined ? { context: opts.context } : {}),
+    });
+    if (!payload.ok) return err(payload.error);
+    const userMessage = payload.value.message;
+    const autonomy = payload.value.autonomy ?? DEFAULT_AUTONOMY;
+    const history = payload.value.history;
+    const context = payload.value.context;
     opts.onPhase?.('comprends');
     const routed = this.deps.router.route('intent.detect');
-    const plan = await this.classify(message, routed.model, opts.history);
+    const plan = await this.classify(userMessage, routed.model, history, context);
     const model = plan.model !== 'demo' ? plan.model : routed.model;
     const steps = plan.steps.filter((s) => s.intent !== 'unknown');
+    // La lecture contextuelle est une réponse, pas une action de lot : dans une demande
+    // multi-étapes, on la retire du lot (sinon elle serait perdue en silence) — seule, elle
+    // s'exécute normalement en runSingle.
+    const batchSteps = steps.length > 1 ? steps.filter((s) => s.intent !== 'contexte_ecran') : steps;
+    const effective = batchSteps.length > 0 ? batchSteps : steps.slice(0, 1);
 
     let result: Result<AgentRun, AppError>;
-    if (steps.length === 0) result = ok(this.unknownRun(model));
+    if (effective.length === 0) result = ok(this.unknownRun(model));
     else {
       opts.onPhase?.('agis');
-      result = steps.length > 1 ? await this.runMulti(steps, autonomy, model) : await this.runSingle(steps[0]!, autonomy, model, message);
+      result =
+        effective.length > 1
+          ? await this.runMulti(effective, autonomy, model, context)
+          : await this.runSingle(effective[0]!, autonomy, model, userMessage, context);
     }
     // LIVE-2 : mise en mots des FAITS par le LLM — réponses et résultats seulement, JAMAIS
     // les actions proposées (le consentement reste verbatim) ni les questions structurées
@@ -342,9 +565,9 @@ export class BobAgent {
       const natural = await naturalizeReply(this.deps.llm, {
         title: result.value.card.title,
         body: result.value.card.body,
-        userMessage: redactPII(message),
-        tone: (opts.tone ?? 'pote') as NaturalizeTone,
-        history: (opts.history ?? []).slice(-6).map((turn) => ({
+        userMessage: redactPII(userMessage),
+        tone: (payload.value.tone ?? 'pote') as NaturalizeTone,
+        history: (history ?? []).map((turn) => ({
           role: turn.role === 'user' ? ('user' as const) : ('assistant' as const),
           content: redactPII(turn.text),
         })),
@@ -375,9 +598,85 @@ export class BobAgent {
     autonomy: AgentAutonomy,
     model: string,
     message: string,
+    context?: AgentContext,
   ): Promise<Result<AgentRun, AppError>> {
     const intent = step.intent;
     const reference = step.reference;
+
+    if (intent === 'contexte_ecran') {
+      const types = readableContextTypes(context, message);
+      const resolution = resolveAgentEntity({
+        ...(context !== undefined ? { context } : {}),
+        compatibleTypes: types,
+        ...(reference !== null ? { explicitReference: reference } : {}),
+      });
+      if (resolution.kind === 'ambiguous') {
+        const feminine = requestedContextTypes(message)?.includes('invoice') ?? false;
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Lever l’ambiguïté du contexte écran'],
+          card: {
+            title: 'Que veux-tu résumer ?',
+            body: feminine
+              ? 'Plusieurs factures sont affichées. Laquelle veux-tu lire ?'
+              : 'Plusieurs éléments sont affichés. Lequel veux-tu lire ?',
+          },
+          choices: resolution.candidates.map((entity) => ({ label: entity.label, value: entity.id })),
+          ask: [
+            askToPick({
+              id: 'contexte_ecran.cible',
+              question: 'Quel élément affiché veux-tu que je résume ?',
+              header: 'Contexte',
+              items: resolution.candidates.map((entity) => ({
+                value: entity.id,
+                label: entity.label,
+                followUp: `Résume ${entity.label}`,
+              })),
+            }),
+          ],
+        });
+      }
+      if (resolution.kind === 'none') {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier le contexte écran'],
+          card: {
+            title: 'Contexte de l’écran',
+            body: types.length === 0
+              ? 'Je ne vois pas encore d’entité métier lisible sur cet écran.'
+              : 'Je ne peux pas identifier cet élément sans ambiguïté. Précise son numéro ou son nom.',
+          },
+        });
+      }
+      const read = this.deps.actions.readContextEntity?.bind(this.deps.actions);
+      if (!read) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier la capacité de l’hôte'],
+          card: {
+            title: resolution.entity.label,
+            body: 'Je sais quel élément tu regardes, mais je ne peux pas encore lire son résumé sur cet appareil.',
+          },
+        });
+      }
+      const loaded = await read({ type: resolution.entity.type, id: resolution.entity.id });
+      if (!loaded.ok) return err(loaded.error);
+      const summary = sanitizeContextEntitySummary(loaded.value, resolution.entity);
+      if (!summary) return err({ kind: 'dependency', port: 'agent-context', cause: 'résumé contextuel incohérent' });
+      return ok({
+        kind: 'answer',
+        intent,
+        model,
+        plan: ['Identifier l’entité affichée', 'Relire ses informations à la source'],
+        card: { title: summary.label, body: summaryBody(summary) },
+      });
+    }
 
     const nav = NAV_ROUTES[intent];
     if (nav) {
@@ -406,9 +705,32 @@ export class BobAgent {
       // facture parmi les encaissables — même résolution que l'encaissement. Sans cible : défaut
       // de l'hôte (la relance la plus urgente du plan @bob/core).
       const payable = await this.deps.actions.listPayableInvoices();
-      const target = payable.ok
-        ? resolveInvoice(reference ?? message, payable.value, { fallbackToSingle: false })
+      const resolved = payable.ok
+        ? resolveInvoiceTarget({
+            message,
+            reference,
+            invoices: payable.value,
+            ...(context !== undefined ? { context } : {}),
+            capability: 'invoice.read',
+          })
         : null;
+      const target = resolved?.target ?? null;
+      // Cible PRÉCISE visée (référence dite, ou pièce affichée à l'écran) mais introuvable
+      // parmi les relançables : on répond honnêtement — jamais la relance d'un AUTRE client.
+      if (!target && resolved && (resolved.unactionableLabel !== undefined || reference !== null)) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier la cible de la relance'],
+          card: {
+            title: 'Rien à relancer sur cette cible',
+            body: resolved.unactionableLabel
+              ? `« ${resolved.unactionableLabel} » n’a pas de reste dû : il n’y a rien à relancer dessus.`
+              : 'Je ne retrouve pas cette pièce parmi les factures à relancer. Précise le numéro ou le client.',
+          },
+        });
+      }
       const r = await this.deps.actions.draftRelance(target ? { invoiceId: target.id } : undefined);
       if (!r.ok) return err(r.error);
       return ok({
@@ -834,24 +1156,38 @@ export class BobAgent {
     if (intent === 'envoyer_devis') {
       const r = await this.deps.actions.listSendableQuotes();
       if (!r.ok) return err(r.error);
-      const quote = resolveBusinessDocument(reference ?? message, r.value);
+      const resolved = resolveDocumentTarget({
+        message,
+        reference,
+        documents: r.value,
+        ...(context !== undefined ? { context } : {}),
+        type: 'quote',
+        capability: 'quote.send',
+      });
+      const quote = resolved.target;
       if (!quote) {
-        const body = r.value.length ? 'Quel devis veux-tu envoyer ?' : 'Aucun devis prêt à envoyer.';
+        const options = [...resolved.choices];
+        const body = unresolvedTargetBody({
+          ...(resolved.unactionableLabel !== undefined ? { unactionableLabel: resolved.unactionableLabel } : {}),
+          hasOptions: options.length > 0,
+          ask: 'Quel devis veux-tu envoyer ?',
+          empty: 'Aucun devis prêt à envoyer.',
+        });
         return ok({
           kind: 'answer',
           intent,
           model,
           plan: ['Chercher le devis'],
           card: { title: 'Quel devis ?', body },
-          choices: r.value.map((q) => ({ label: `${displayRef(q)} — ${q.customerName} · ${formatEUR(q.totalTtcCents)}`, value: displayRef(q) })),
-          ...(r.value.length
+          choices: options.map((q) => ({ label: `${displayRef(q)} — ${q.customerName} · ${formatEUR(q.totalTtcCents)}`, value: displayRef(q) })),
+          ...(options.length
             ? {
                 ask: [
                   askToPick({
                     id: 'envoyer_devis.cible',
                     question: 'Quel devis veux-tu envoyer en signature ?',
                     header: 'Devis',
-                    items: r.value.map((q) => ({
+                    items: options.map((q) => ({
                       value: displayRef(q),
                       label: displayRef(q),
                       description: `${q.customerName} · ${formatEUR(q.totalTtcCents)}`,
@@ -885,24 +1221,38 @@ export class BobAgent {
     if (intent === 'emettre_facture') {
       const r = await this.deps.actions.listIssuableInvoices();
       if (!r.ok) return err(r.error);
-      const invoice = resolveBusinessDocument(reference ?? message, r.value);
+      const resolved = resolveDocumentTarget({
+        message,
+        reference,
+        documents: r.value,
+        ...(context !== undefined ? { context } : {}),
+        type: 'invoice',
+        capability: 'invoice.issue',
+      });
+      const invoice = resolved.target;
       if (!invoice) {
-        const body = r.value.length ? 'Quelle facture veux-tu émettre ?' : 'Aucune facture brouillon prête à émettre.';
+        const options = [...resolved.choices];
+        const body = unresolvedTargetBody({
+          ...(resolved.unactionableLabel !== undefined ? { unactionableLabel: resolved.unactionableLabel } : {}),
+          hasOptions: options.length > 0,
+          ask: 'Quelle facture veux-tu émettre ?',
+          empty: 'Aucune facture brouillon prête à émettre.',
+        });
         return ok({
           kind: 'answer',
           intent,
           model,
           plan: ['Chercher la facture brouillon'],
           card: { title: 'Quelle facture ?', body },
-          choices: r.value.map((i) => ({ label: `${displayRef(i)} — ${i.customerName} · ${formatEUR(i.totalTtcCents)}`, value: displayRef(i) })),
-          ...(r.value.length
+          choices: options.map((i) => ({ label: `${displayRef(i)} — ${i.customerName} · ${formatEUR(i.totalTtcCents)}`, value: displayRef(i) })),
+          ...(options.length
             ? {
                 ask: [
                   askToPick({
                     id: 'emettre_facture.cible',
                     question: 'Quelle facture brouillon veux-tu émettre ?',
                     header: 'Facture',
-                    items: r.value.map((i) => ({
+                    items: options.map((i) => ({
                       value: displayRef(i),
                       label: displayRef(i),
                       description: `${i.customerName} · ${formatEUR(i.totalTtcCents)} — numérotation définitive`,
@@ -959,21 +1309,38 @@ export class BobAgent {
           card: { title: 'Facturer un devis', body: 'Aucun devis signé en attente de facturation.' },
         });
       }
-      const quote = resolveBusinessDocument(reference ?? message, r.value);
+      const resolved = resolveDocumentTarget({
+        message,
+        reference,
+        documents: r.value,
+        ...(context !== undefined ? { context } : {}),
+        type: 'quote',
+        capability: 'quote.invoice.generate',
+      });
+      const quote = resolved.target;
       if (!quote) {
+        const options = [...resolved.choices];
         return ok({
           kind: 'answer',
           intent,
           model,
           plan: ['Lever l’ambiguïté'],
-          card: { title: 'Quel devis ?', body: 'Précise le devis signé à facturer :' },
-          choices: r.value.map((q) => ({ label: `${displayRef(q)} — ${q.customerName} · ${formatEUR(q.totalTtcCents)}`, value: displayRef(q) })),
+          card: {
+            title: 'Quel devis ?',
+            body: unresolvedTargetBody({
+              ...(resolved.unactionableLabel !== undefined ? { unactionableLabel: resolved.unactionableLabel } : {}),
+              hasOptions: options.length > 0,
+              ask: 'Précise le devis signé à facturer :',
+              empty: 'Aucun devis signé à facturer.',
+            }),
+          },
+          choices: options.map((q) => ({ label: `${displayRef(q)} — ${q.customerName} · ${formatEUR(q.totalTtcCents)}`, value: displayRef(q) })),
           ask: [
             askToPick({
               id: 'generer_facture.cible',
               question: 'Quel devis signé veux-tu facturer ?',
               header: 'Devis',
-              items: r.value.map((q) => ({
+              items: options.map((q) => ({
                 value: displayRef(q),
                 label: displayRef(q),
                 description: `${q.customerName} · ${formatEUR(q.totalTtcCents)}${q.depositPct !== null && !q.depositInvoiced ? ` — acompte ${q.depositPct} % prévu` : ''}`,
@@ -1057,24 +1424,37 @@ export class BobAgent {
     if (intent === 'encaisser') {
       const r = await this.deps.actions.listPayableInvoices();
       if (!r.ok) return err(r.error);
-      const invoice = resolveInvoice(reference ?? message, r.value);
+      const resolved = resolveInvoiceTarget({
+        message,
+        reference,
+        invoices: r.value,
+        ...(context !== undefined ? { context } : {}),
+        capability: 'invoice.collect',
+      });
+      const invoice = resolved.target;
       if (!invoice) {
-        const body = r.value.length ? 'Laquelle veux-tu encaisser ?' : 'Aucune facture en attente d’encaissement.';
+        const options = [...resolved.choices];
+        const body = unresolvedTargetBody({
+          ...(resolved.unactionableLabel !== undefined ? { unactionableLabel: resolved.unactionableLabel } : {}),
+          hasOptions: options.length > 0,
+          ask: 'Laquelle veux-tu encaisser ?',
+          empty: 'Aucune facture en attente d’encaissement.',
+        });
         return ok({
           kind: 'answer',
           intent,
           model,
           plan: ['Chercher la facture'],
           card: { title: 'Quelle facture ?', body },
-          choices: r.value.map((i) => ({ label: `${i.number} — ${i.customerName} · ${formatEUR(i.remainingCents)}`, value: i.number })),
-          ...(r.value.length
+          choices: options.map((i) => ({ label: `${i.number} — ${i.customerName} · ${formatEUR(i.remainingCents)}`, value: i.number })),
+          ...(options.length
             ? {
                 ask: [
                   askToPick({
                     id: 'encaisser.cible',
                     question: 'Quelle facture as-tu encaissée ?',
                     header: 'Facture',
-                    items: r.value.map((i) => ({
+                    items: options.map((i) => ({
                       value: i.number,
                       label: i.number,
                       description: `${i.customerName} · reste ${formatEUR(i.remainingCents)}`,
@@ -1128,6 +1508,7 @@ export class BobAgent {
     steps: { intent: BobIntent; reference: string | null }[],
     autonomy: AgentAutonomy,
     model: string,
+    context?: AgentContext,
   ): Promise<Result<AgentRun, AppError>> {
     const headIntent = steps[0]?.intent ?? 'unknown';
     let payables: PayableInvoice[] = [];
@@ -1152,24 +1533,37 @@ export class BobAgent {
     const actions: BatchItem[] = [];
     for (const step of steps) {
       if (step.intent === 'encaisser') {
-        const inv = resolveInvoice(step.reference ?? '', payables);
+        const resolved = resolveInvoiceTarget({
+          message: step.reference ?? '',
+          reference: step.reference,
+          invoices: payables,
+          ...(context !== undefined ? { context } : {}),
+          capability: 'invoice.collect',
+        });
+        const inv = resolved.target;
         if (!inv) {
-          const body = payables.length ? 'Précise la facture à encaisser :' : 'Aucune facture en attente d’encaissement.';
+          const options = [...resolved.choices];
+          const body = unresolvedTargetBody({
+          ...(resolved.unactionableLabel !== undefined ? { unactionableLabel: resolved.unactionableLabel } : {}),
+          hasOptions: options.length > 0,
+          ask: 'Précise la facture à encaisser :',
+          empty: 'Aucune facture en attente d’encaissement.',
+        });
           return ok({
             kind: 'answer',
             intent: 'encaisser',
             model,
             plan: ['Lever l’ambiguïté'],
             card: { title: 'Quelle facture ?', body },
-            choices: payables.map((i) => ({ label: `${i.number} — ${i.customerName} · ${formatEUR(i.remainingCents)}`, value: i.number })),
-            ...(payables.length
+            choices: options.map((i) => ({ label: `${i.number} — ${i.customerName} · ${formatEUR(i.remainingCents)}`, value: i.number })),
+            ...(options.length
               ? {
                   ask: [
                     askToPick({
                       id: 'plan.encaisser.cible',
                       question: 'Quelle facture as-tu encaissée ?',
                       header: 'Facture',
-                      items: payables.map((i) => ({
+                      items: options.map((i) => ({
                         value: i.number,
                         label: i.number,
                         description: `${i.customerName} · reste ${formatEUR(i.remainingCents)}`,
@@ -1192,24 +1586,38 @@ export class BobAgent {
           label: `Encaisser ${inv.number} · ${formatEUR(inv.remainingCents)} (${inv.customerName})`,
         });
       } else if (step.intent === 'envoyer_devis') {
-        const quote = resolveBusinessDocument(step.reference ?? '', sendableQuotes);
+        const resolved = resolveDocumentTarget({
+          message: step.reference ?? '',
+          reference: step.reference,
+          documents: sendableQuotes,
+          ...(context !== undefined ? { context } : {}),
+          type: 'quote',
+          capability: 'quote.send',
+        });
+        const quote = resolved.target;
         if (!quote) {
-          const body = sendableQuotes.length ? 'Précise le devis à envoyer :' : 'Aucun devis prêt à envoyer.';
+          const options = [...resolved.choices];
+          const body = unresolvedTargetBody({
+          ...(resolved.unactionableLabel !== undefined ? { unactionableLabel: resolved.unactionableLabel } : {}),
+          hasOptions: options.length > 0,
+          ask: 'Précise le devis à envoyer :',
+          empty: 'Aucun devis prêt à envoyer.',
+        });
           return ok({
             kind: 'answer',
             intent: 'envoyer_devis',
             model,
             plan: ['Lever l’ambiguïté'],
             card: { title: 'Quel devis ?', body },
-            choices: sendableQuotes.map((q) => ({ label: `${displayRef(q)} — ${q.customerName} · ${formatEUR(q.totalTtcCents)}`, value: displayRef(q) })),
-            ...(sendableQuotes.length
+            choices: options.map((q) => ({ label: `${displayRef(q)} — ${q.customerName} · ${formatEUR(q.totalTtcCents)}`, value: displayRef(q) })),
+            ...(options.length
               ? {
                   ask: [
                     askToPick({
                       id: 'plan.envoyer_devis.cible',
                       question: 'Quel devis veux-tu envoyer en signature ?',
                       header: 'Devis',
-                      items: sendableQuotes.map((q) => ({
+                      items: options.map((q) => ({
                         value: displayRef(q),
                         label: displayRef(q),
                         description: `${q.customerName} · ${formatEUR(q.totalTtcCents)}`,
@@ -1228,24 +1636,38 @@ export class BobAgent {
           label: `Envoyer le devis ${displayRef(quote)} à ${quote.customerName}`,
         });
       } else if (step.intent === 'emettre_facture') {
-        const invoice = resolveBusinessDocument(step.reference ?? '', issuableInvoices);
+        const resolved = resolveDocumentTarget({
+          message: step.reference ?? '',
+          reference: step.reference,
+          documents: issuableInvoices,
+          ...(context !== undefined ? { context } : {}),
+          type: 'invoice',
+          capability: 'invoice.issue',
+        });
+        const invoice = resolved.target;
         if (!invoice) {
-          const body = issuableInvoices.length ? 'Précise la facture à émettre :' : 'Aucune facture brouillon prête à émettre.';
+          const options = [...resolved.choices];
+          const body = unresolvedTargetBody({
+          ...(resolved.unactionableLabel !== undefined ? { unactionableLabel: resolved.unactionableLabel } : {}),
+          hasOptions: options.length > 0,
+          ask: 'Précise la facture à émettre :',
+          empty: 'Aucune facture brouillon prête à émettre.',
+        });
           return ok({
             kind: 'answer',
             intent: 'emettre_facture',
             model,
             plan: ['Lever l’ambiguïté'],
             card: { title: 'Quelle facture ?', body },
-            choices: issuableInvoices.map((i) => ({ label: `${displayRef(i)} — ${i.customerName} · ${formatEUR(i.totalTtcCents)}`, value: displayRef(i) })),
-            ...(issuableInvoices.length
+            choices: options.map((i) => ({ label: `${displayRef(i)} — ${i.customerName} · ${formatEUR(i.totalTtcCents)}`, value: displayRef(i) })),
+            ...(options.length
               ? {
                   ask: [
                     askToPick({
                       id: 'plan.emettre_facture.cible',
                       question: 'Quelle facture brouillon veux-tu émettre ?',
                       header: 'Facture',
-                      items: issuableInvoices.map((i) => ({
+                      items: options.map((i) => ({
                         value: displayRef(i),
                         label: displayRef(i),
                         description: `${i.customerName} · ${formatEUR(i.totalTtcCents)} — numérotation définitive`,
