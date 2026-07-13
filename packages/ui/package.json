@@ -23,6 +23,7 @@
     "expo-linear-gradient": "*",
     "react": ">=19",
     "react-native": ">=0.80",
+    "react-native-safe-area-context": ">=5",
     "react-native-svg": ">=15"
   },
   "dependencies": {
