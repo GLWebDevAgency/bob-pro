@@ -17,6 +17,13 @@ import { NotificationDeliveryService } from './notification-delivery.service';
 import { ScheduledTenantDirectory } from './tenant-directory';
 
 /**
+ * Version de la politique d'envoi automatique. Elle fait partie de la clé de déduplication :
+ * une facture ne reçoit qu'un message par palier, même si le cron tourne tous les jours.
+ * À incrémenter uniquement si la cadence ou la copy change assez pour justifier un nouvel envoi.
+ */
+const RELANCE_POLICY_VERSION = 'v1';
+
+/**
  * Relances automatiques (C25). UNE SEULE politique fait foi : DEFAULT_RELANCE_POLICY de
  * @bob/core (deriveRelancePlan — J+3 cordial · J+10 neutre · J+20 ferme · J+30 mise en demeure),
  * le MÊME moteur que l'écran mobile et que l'agent (fini le toneForDaysLate local 15/30/45).
@@ -71,29 +78,42 @@ export class RelanceService {
     return { plan, emails };
   }
 
-  /** Enfile la relance d'une entrée du plan puis tente la livraison immédiate (email + miroir push). */
+  /**
+   * Enfile la relance dans l'outbox transactionnelle. Aucun réseau tiers n'a lieu ici :
+   * le worker NotificationDelivery ne verra le job qu'après commit et le livrera avec
+   * l'idempotencyKey persistée. `done` signifie qu'un job dédupliqué a déjà été livré.
+   */
   private async dispatchEntry(
     companyId: string,
     entry: RelancePlanEntry,
     email: string,
+    source: 'automatic' | 'manual',
   ): Promise<{ jobId: string; status: 'done' | 'pending' | 'failed' }> {
     const today = this.clock.today();
+    const dedupeKey =
+      source === 'automatic'
+        ? `invoice:${entry.invoiceId}:relance:auto:${RELANCE_POLICY_VERSION}:${entry.tone}`
+        : `invoice:${entry.invoiceId}:relance:manual:${today}`;
+    const message = source === 'automatic' ? entry.automaticMessage : entry.message;
     const job = await this.notificationDelivery.enqueue({
       companyId,
       kind: 'invoice-relance',
-      dedupeKey: `invoice:${entry.invoiceId}:relance:${today}`,
-      notification: { channel: 'email', to: email, subject: entry.message.subject, body: entry.message.body },
+      dedupeKey,
+      notification: { channel: 'email', to: email, subject: message.subject, body: message.body },
     });
     if (job.status === 'done') return { jobId: job.id, status: 'done' }; // déjà relancée aujourd'hui (dédup)
     if (job.notification === null) return { jobId: job.id, status: job.status === 'failed' ? 'failed' : 'pending' };
-    const delivered = await this.notificationDelivery.tryDeliver(companyId, { ...job, notification: job.notification });
-    return { jobId: job.id, status: delivered ? 'done' : 'failed' };
+    return { jobId: job.id, status: 'pending' };
   }
 
-  async runRelancesForCompany(companyId: string): Promise<{ scanned: number; sent: number }> {
+  async runRelancesForCompany(
+    companyId: string,
+  ): Promise<{ scanned: number; queued: number; sent: number; deduplicated: number }> {
     return this.p.runWithTenant(companyId, async () => {
       const { plan, emails } = await this.planForCompany(companyId);
-      let sent = 0;
+      let queued = 0;
+      const sent = 0; // ce job ne livre jamais : seul NotificationDelivery incrémente les envois
+      let deduplicated = 0;
       for (const entry of plan) {
         if (!entry.dueNow) continue; // palier pas encore atteint : planifiée, pas due
         if (entry.tone === 'miseendemeure') {
@@ -110,11 +130,12 @@ export class RelanceService {
           this.logger.audit('relance.email_skipped', { invoiceId: entry.invoiceId, reason: 'customer_email_missing' });
           continue;
         }
-        const dispatched = await this.dispatchEntry(companyId, entry, email);
-        if (dispatched.status === 'done') sent += 1;
+        const dispatched = await this.dispatchEntry(companyId, entry, email, 'automatic');
+        if (dispatched.status === 'pending') queued += 1;
+        if (dispatched.status === 'done') deduplicated += 1;
       }
-      this.logger.audit('relances.run', { scanned: plan.length, sent });
-      return { scanned: plan.length, sent };
+      this.logger.audit('relances.run', { scanned: plan.length, queued, sent, deduplicated });
+      return { scanned: plan.length, queued, sent, deduplicated };
     });
   }
 
@@ -127,6 +148,17 @@ export class RelanceService {
    * C24b : tenant OBLIGATOIRE, le repli société de démo est supprimé). */
   sendRelance(invoiceId: string): Promise<Result<{ jobId: string; status: string; tone: string }, AppError>> {
     return this.sendRelanceForInvoice(requireTenant(), invoiceId);
+  }
+
+  /** Variante du job HTTP : strictement limitée au tenant du JWT courant. Le parcours global
+   * reste réservé au cron interne (`scheduled`), jamais à une requête utilisateur. */
+  runRelancesForCurrentTenant(): Promise<{
+    scanned: number;
+    queued: number;
+    sent: number;
+    deduplicated: number;
+  }> {
+    return this.runRelancesForCompany(requireTenant());
   }
 
   async sendRelanceForInvoice(
@@ -159,8 +191,8 @@ export class RelanceService {
           },
         };
       }
-      const dispatched = await this.dispatchEntry(companyId, entry, email);
-      this.logger.audit('relance.sent_manual', {
+      const dispatched = await this.dispatchEntry(companyId, entry, email, 'manual');
+      this.logger.audit('relance.queued_manual', {
         invoiceId,
         tone: entry.tone,
         jobId: dispatched.jobId,
@@ -170,16 +202,26 @@ export class RelanceService {
     });
   }
 
-  async runRelances(): Promise<{ companies: number; scanned: number; sent: number }> {
+  async runRelances(): Promise<{
+    companies: number;
+    scanned: number;
+    queued: number;
+    sent: number;
+    deduplicated: number;
+  }> {
     const companyIds = await this.tenants.listCompanyIds();
     let scanned = 0;
+    let queued = 0;
     let sent = 0;
+    let deduplicated = 0;
     for (const companyId of companyIds) {
       const result = await this.runRelancesForCompany(companyId);
       scanned += result.scanned;
+      queued += result.queued;
       sent += result.sent;
+      deduplicated += result.deduplicated;
     }
-    this.logger.audit('relances.run_all', { companies: companyIds.length, scanned, sent });
-    return { companies: companyIds.length, scanned, sent };
+    this.logger.audit('relances.run_all', { companies: companyIds.length, scanned, queued, sent, deduplicated });
+    return { companies: companyIds.length, scanned, queued, sent, deduplicated };
   }
 }

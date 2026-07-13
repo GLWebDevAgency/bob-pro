@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'node:crypto';
 import { ForbiddenException, Injectable, type CanActivate, type ExecutionContext } from '@nestjs/common';
 import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from 'jose';
 import { MERCIER_PROPS } from '@bob/core';
@@ -33,7 +34,29 @@ function isPublicSignupEndpoint(method: string, url: string): boolean {
  */
 function allowsMissingTenant(method: string, url: string): boolean {
   const path = url.split('?', 1)[0] ?? url;
-  return method === 'POST' && path === '/onboarding/company';
+  return (method === 'POST' && path === '/onboarding/company') || isCabinetEndpoint(url);
+}
+
+/** Le bounded context Cabinet possède son propre tenant ; app_metadata.company_id n'y fait pas autorité. */
+function isCabinetEndpoint(url: string): boolean {
+  const path = url.split('?', 1)[0] ?? url;
+  return path === '/cabinet/v1' || path.startsWith('/cabinet/v1/');
+}
+
+/** /metrics reste ergonomique en démo, mais devient fail-closed derrière un secret en live. */
+function hasValidMetricsCredential(headers: Record<string, string | undefined>): boolean {
+  if (isDemoMode()) return true;
+  const expected = process.env.METRICS_TOKEN;
+  if (!expected || expected.length < 32) return false;
+  const authorization = headers['authorization'];
+  const candidate =
+    typeof authorization === 'string' && authorization.startsWith('Bearer ')
+      ? authorization.slice('Bearer '.length)
+      : headers['x-metrics-token'];
+  if (typeof candidate !== 'string') return false;
+  const expectedBytes = Buffer.from(expected, 'utf8');
+  const candidateBytes = Buffer.from(candidate, 'utf8');
+  return expectedBytes.length === candidateBytes.length && timingSafeEqual(expectedBytes, candidateBytes);
 }
 
 /**
@@ -60,14 +83,27 @@ export class SupabaseAuthGuard implements CanActivate {
     const req = context.switchToHttp().getRequest<RequestLike>();
     // Infra + endpoints publics EXPLICITES (signature client à distance). Préfixe étroit volontaire :
     // tout nouvel endpoint public doit être ajouté ici sciemment (pas d'ouverture /public/* large).
-    if (req.url.startsWith('/health') || req.url.startsWith('/metrics') || req.url.startsWith('/public/sign/')) return true;
+    const path = req.url.split('?', 1)[0] ?? req.url;
+    if (path === '/health' || path.startsWith('/health/') || path.startsWith('/public/sign/')) return true;
+    if (path === '/metrics') return hasValidMetricsCredential(req.headers);
     // Inscription AVANT compte (C24b) : lookup annuaire public, AVANT toute lecture d'Authorization.
     if (isPublicSignupEndpoint(req.method ?? 'GET', req.url)) return true;
 
     if (isDemoMode()) {
       // Démo : tenant via header x-company-id (par défaut la société de seed). Comportement C24b inchangé.
       const tenant = req.headers['x-company-id'];
-      setPrincipal({ userId: 'demo', companyId: (typeof tenant === 'string' && tenant) || MERCIER_PROPS.id });
+      if (isCabinetEndpoint(req.url)) {
+        const userId = req.headers['x-demo-user-id'] || 'demo';
+        const email = (req.headers['x-demo-user-email'] || 'demo@bobpro.fr').trim().toLowerCase();
+        setPrincipal({
+          userId,
+          companyId: null,
+          email,
+          emailVerified: true,
+        });
+      } else {
+        setPrincipal({ userId: 'demo', companyId: (typeof tenant === 'string' && tenant) || MERCIER_PROPS.id });
+      }
       return true;
     }
 
@@ -81,13 +117,19 @@ export class SupabaseAuthGuard implements CanActivate {
       const { payload } = await jwtVerify(token, jwks, {
         audience: process.env.SUPABASE_JWT_AUD ?? 'authenticated',
       });
-      const meta = (payload as { app_metadata?: { company_id?: string } }).app_metadata;
+      const claims = payload as {
+        app_metadata?: { company_id?: string };
+        email?: unknown;
+        email_verified?: unknown;
+      };
+      const meta = claims.app_metadata;
       // Valide le format du company_id (issu du JWT) à la frontière : neutralise tout métacaractère
       // avant qu'il n'atteigne la couche persistance / le GUC RLS. Non conforme ou absent -> NULL
       // (compte non provisionné) — plus JAMAIS le tenant de démo.
       const raw = meta?.company_id;
       const companyId = typeof raw === 'string' && COMPANY_ID_PATTERN.test(raw) ? raw : null;
       const userId = String(payload.sub ?? '');
+      if (!userId) return false;
       if (companyId === null && !allowsMissingTenant(req.method ?? 'GET', req.url)) {
         // THROW (≠ return false) : le JWT est VALIDE — le client doit provisionner son tenant
         // (POST /onboarding/company), pas se ré-authentifier. Le corps porte un code stable.
@@ -96,7 +138,15 @@ export class SupabaseAuthGuard implements CanActivate {
           message: 'Compte sans espace de travail : appelle POST /onboarding/company pour le créer.',
         });
       }
-      setPrincipal({ userId, companyId });
+      const email = typeof claims.email === 'string' ? claims.email.trim().toLowerCase() : null;
+      // Ne jamais faire autorité sur user_metadata.email_verified : ces métadonnées sont
+      // modifiables par l'utilisateur. L'acceptation revalide l'email via GoTrue Admin en live.
+      const emailVerified = claims.email_verified === true;
+      setPrincipal({
+        userId,
+        companyId,
+        ...(email ? { email, emailVerified } : {}),
+      });
       return true;
     } catch (e) {
       if (e instanceof ForbiddenException) throw e;

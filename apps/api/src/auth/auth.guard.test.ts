@@ -55,6 +55,21 @@ describe('SupabaseAuthGuard — mode démo (inchangé C24b)', () => {
     expect(seeded.allowed).toBe(true);
     expect(seeded.principal).toEqual({ userId: 'demo', companyId: MERCIER_PROPS.id });
   });
+
+  it('isole le contexte Cabinet du tenant Company et fournit une identité démo vérifiée', async () => {
+    const result = await activate(new SupabaseAuthGuard(), {
+      url: '/cabinet/v1/cabinets',
+      method: 'GET',
+      headers: { 'x-company-id': 'ne-doit-pas-etre-utilise', 'x-demo-user-id': 'expert-1', 'x-demo-user-email': 'EXPERT@EXAMPLE.COM' },
+    });
+    expect(result.allowed).toBe(true);
+    expect(result.principal).toEqual({
+      userId: 'expert-1',
+      companyId: null,
+      email: 'expert@example.com',
+      emailVerified: true,
+    });
+  });
 });
 
 describe('SupabaseAuthGuard — prod (JWT Supabase, C24b provisioning)', () => {
@@ -138,6 +153,48 @@ describe('SupabaseAuthGuard — prod (JWT Supabase, C24b provisioning)', () => {
     expect(anonymous.allowed).toBe(false);
   });
 
+  it('routes Cabinet : JWT = identité seulement, company_id absent admis et claims cabinet/role ignorés', async () => {
+    jwtVerifyMock.mockResolvedValue({
+      payload: {
+        sub: 'expert-1',
+        email: 'EXPERT@EXAMPLE.COM',
+        email_verified: true,
+        app_metadata: { cabinet_id: 'cabinet-piege', role: 'admin' },
+      },
+    } as never);
+
+    const result = await activate(new SupabaseAuthGuard(), {
+      url: '/cabinet/v1/cabinets/cabinet-cible/members',
+      method: 'GET',
+      headers: BEARER,
+    });
+
+    expect(result.allowed).toBe(true);
+    expect(result.principal).toEqual({
+      userId: 'expert-1',
+      companyId: null,
+      email: 'expert@example.com',
+      emailVerified: true,
+    });
+  });
+
+  it('user_metadata.email_verified, contrôlable par le user, ne vaut jamais preuve de vérification', async () => {
+    jwtVerifyMock.mockResolvedValue({
+      payload: {
+        sub: 'expert-1',
+        email: 'expert@example.com',
+        user_metadata: { email_verified: true },
+      },
+    } as never);
+    const result = await activate(new SupabaseAuthGuard(), {
+      url: '/cabinet/v1/cabinets',
+      method: 'GET',
+      headers: BEARER,
+    });
+    expect(result.allowed).toBe(true);
+    expect(result.principal).toMatchObject({ email: 'expert@example.com', emailVerified: false });
+  });
+
   it('les listes blanches sont STRICTES : autre méthode ou autre chemin → refus/403', async () => {
     jwtVerifyMock.mockResolvedValue(payload() as never);
     const guard = new SupabaseAuthGuard();
@@ -165,12 +222,27 @@ describe('SupabaseAuthGuard — prod (JWT Supabase, C24b provisioning)', () => {
     expect(missing.allowed).toBe(false);
   });
 
-  it('infra toujours ouverte, sans principal : /health, /metrics, /public/sign/', async () => {
+  it('infra publique sans principal : /health et /public/sign/ seulement', async () => {
     const guard = new SupabaseAuthGuard();
-    for (const url of ['/health', '/health/ready', '/metrics', '/public/sign/tok-1']) {
+    for (const url of ['/health', '/health/ready', '/public/sign/tok-1']) {
       const r = await activate(guard, { url, method: 'GET', headers: {} });
       expect(r.allowed).toBe(true);
       expect(r.principal).toBeUndefined();
     }
+    expect((await activate(guard, { url: '/health-anything', method: 'GET', headers: {} })).allowed).toBe(false);
+  });
+
+  it('/metrics est fail-closed en live et accepte uniquement le secret dédié', async () => {
+    const token = 'm'.repeat(40);
+    vi.stubEnv('METRICS_TOKEN', token);
+    const guard = new SupabaseAuthGuard();
+
+    expect((await activate(guard, { url: '/metrics', method: 'GET', headers: {} })).allowed).toBe(false);
+    expect(
+      (await activate(guard, { url: '/metrics', method: 'GET', headers: { authorization: 'Bearer mauvais' } })).allowed,
+    ).toBe(false);
+    expect(
+      (await activate(guard, { url: '/metrics', method: 'GET', headers: { authorization: `Bearer ${token}` } })).allowed,
+    ).toBe(true);
   });
 });

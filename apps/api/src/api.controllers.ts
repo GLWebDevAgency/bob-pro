@@ -2,6 +2,8 @@ import {
   Controller,
   Get,
   Post,
+  Put,
+  Patch,
   Body,
   Headers,
   Param,
@@ -23,14 +25,378 @@ import type {
   DocumentKind,
   DocumentLinkedEntityType,
   ExpenseCategory,
+  DeleteDocumentFolderStrategy,
 } from '@bob/core';
-import { type AgentAutonomy, type PendingAction } from '@bob/ai';
+import { type AgentAskPayload } from '@bob/ai';
 import { Throttle } from '@nestjs/throttler';
-import { BackendService, type FacturXImportDecision } from './backend.service';
+import { BackendService, type FacturXImportDecision, type UploadDocumentInput } from './backend.service';
 import { RelanceService } from './jobs/relance.service';
 import { DocumentArchiveService } from './jobs/document-archive.service';
 import { NotificationsApiService } from './notifications/notifications-api.service';
 import { unwrap } from './http/result';
+import { readReleaseMetadata } from './release-metadata';
+import { WithoutTenantPersistenceTransaction } from './persistence/tenant-persistence.interceptor';
+
+function assertJsonObjectBody(value: unknown): asserts value is Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new HttpException(
+      { ok: false, error: { kind: 'validation', issues: [{ field: 'body', message: 'Corps JSON objet requis.' }] } },
+      HttpStatus.UNPROCESSABLE_ENTITY,
+    );
+  }
+}
+
+const RECORD_EXPENSE_FIELDS = new Set([
+  'idempotencyKey',
+  'supplierName',
+  'supplierSiren',
+  'documentDate',
+  'totalTtcCents',
+  'totalHtCents',
+  'vatCents',
+  'vatRatePct',
+  'category',
+  'source',
+  'supplierInvoiceNumber',
+  'dueAt',
+]);
+const DOCUMENT_EXPENSE_FIELDS = new Set(
+  [...RECORD_EXPENSE_FIELDS].filter((field) => field !== 'idempotencyKey' && field !== 'source'),
+);
+const DOCUMENT_EXPENSE_BODY_FIELDS = new Set(['expectedRevision', 'targetFolderId', 'expense']);
+const EXPENSE_CATEGORIES = new Set(['fournitures', 'materiel', 'carburant', 'repas', 'sous_traitance', 'autre']);
+const EXPENSE_SOURCES = new Set(['ocr', 'manual', 'facturx']);
+const DOCUMENT_UPLOAD_FIELDS = new Set([
+  'contentBase64',
+  'mimeType',
+  'filename',
+  'kind',
+  'linkedEntityType',
+  'linkedEntityId',
+  'documentDate',
+  'folderId',
+  'tags',
+]);
+const DOCUMENT_CLASSIFY_FIELDS = new Set(['linkedEntityType', 'linkedEntityId', 'expectedRevision']);
+const DOCUMENT_KINDS = new Set<DocumentKind>([
+  'invoice_pdf',
+  'quote_pdf',
+  'facturx_xml',
+  'expense_receipt',
+  'signed_quote',
+  'other',
+]);
+const DOCUMENT_LINK_TYPES = new Set<DocumentLinkedEntityType>(['invoice', 'quote', 'expense', 'chantier', 'company']);
+
+type ValidationIssue = { field: string; message: string };
+
+function throwValidationIssues(issues: ValidationIssue[]): never {
+  throw new HttpException(
+    { ok: false, error: { kind: 'validation', issues } },
+    HttpStatus.UNPROCESSABLE_ENTITY,
+  );
+}
+
+function hasControlCharacter(value: string): boolean {
+  return [...value].some((character) => {
+    const code = character.codePointAt(0) ?? 0;
+    return code <= 0x1f || code === 0x7f;
+  });
+}
+
+function requiredExpenseString(
+  body: Record<string, unknown>,
+  field: string,
+  maxLength: number,
+  issues: ValidationIssue[],
+): string {
+  const value = body[field];
+  if (
+    typeof value !== 'string'
+    || value.trim().length === 0
+    || value.length > maxLength
+    || hasControlCharacter(value)
+  ) {
+    issues.push({ field, message: `Texte requis (${maxLength} caractères maximum).` });
+    return '';
+  }
+  return value;
+}
+
+function optionalExpenseString(
+  body: Record<string, unknown>,
+  field: string,
+  maxLength: number,
+  issues: ValidationIssue[],
+): string | null | undefined {
+  if (!Object.hasOwn(body, field)) return undefined;
+  const value = body[field];
+  if (value === null) return null;
+  if (
+    typeof value !== 'string'
+    || value.length > maxLength
+    || hasControlCharacter(value)
+  ) {
+    issues.push({ field, message: `Texte attendu (${maxLength} caractères maximum).` });
+    return undefined;
+  }
+  return value;
+}
+
+function requiredExpenseInteger(
+  body: Record<string, unknown>,
+  field: string,
+  issues: ValidationIssue[],
+): number {
+  const value = body[field];
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    issues.push({ field, message: 'Entier positif ou nul attendu.' });
+    return 0;
+  }
+  return value as number;
+}
+
+function optionalExpenseInteger(
+  body: Record<string, unknown>,
+  field: string,
+  issues: ValidationIssue[],
+): number | null | undefined {
+  if (!Object.hasOwn(body, field)) return undefined;
+  const value = body[field];
+  if (value === null) return null;
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    issues.push({ field, message: 'Entier positif, nul ou null attendu.' });
+    return undefined;
+  }
+  return value as number;
+}
+
+/** Frontière HTTP stricte : aucun champ client ne peut atteindre le métier par simple cast/spread. */
+function parseRecordExpenseBody(
+  body: Record<string, unknown>,
+  allowedFields: ReadonlySet<string> = RECORD_EXPENSE_FIELDS,
+): Omit<RecordExpenseInput, 'companyId'> {
+  const issues: ValidationIssue[] = [];
+  if (Object.keys(body).some((field) => !allowedFields.has(field))) {
+    issues.push({ field: 'body', message: 'Le corps contient un champ non autorisé.' });
+  }
+
+  const supplierName = requiredExpenseString(body, 'supplierName', 240, issues);
+  const documentDate = requiredExpenseString(body, 'documentDate', 10, issues);
+  const totalTtcCents = requiredExpenseInteger(body, 'totalTtcCents', issues);
+  const supplierSiren = optionalExpenseString(body, 'supplierSiren', 32, issues);
+  const totalHtCents = optionalExpenseInteger(body, 'totalHtCents', issues);
+  const vatCents = optionalExpenseInteger(body, 'vatCents', issues);
+  const supplierInvoiceNumber = optionalExpenseString(body, 'supplierInvoiceNumber', 120, issues);
+  const dueAt = optionalExpenseString(body, 'dueAt', 10, issues);
+  const idempotencyKey = optionalExpenseString(body, 'idempotencyKey', 200, issues);
+
+  const category = body.category;
+  if (typeof category !== 'string' || !EXPENSE_CATEGORIES.has(category)) {
+    issues.push({ field: 'category', message: 'Catégorie de dépense inconnue.' });
+  }
+  const source = Object.hasOwn(body, 'source') ? body.source : undefined;
+  if (source !== undefined && (typeof source !== 'string' || !EXPENSE_SOURCES.has(source))) {
+    issues.push({ field: 'source', message: 'Source de dépense inconnue.' });
+  }
+  const vatRatePct = Object.hasOwn(body, 'vatRatePct') ? body.vatRatePct : undefined;
+  if (
+    vatRatePct !== undefined
+    && vatRatePct !== null
+    && (typeof vatRatePct !== 'number' || !Number.isFinite(vatRatePct) || vatRatePct < 0 || vatRatePct > 100)
+  ) {
+    issues.push({ field: 'vatRatePct', message: 'Taux de TVA attendu entre 0 et 100.' });
+  }
+
+  if (issues.length > 0) throwValidationIssues(issues);
+  return {
+    supplierName,
+    documentDate,
+    totalTtcCents,
+    category: category as RecordExpenseInput['category'],
+    ...(supplierSiren !== undefined ? { supplierSiren } : {}),
+    ...(totalHtCents !== undefined ? { totalHtCents } : {}),
+    ...(vatCents !== undefined ? { vatCents } : {}),
+    ...(vatRatePct !== undefined ? { vatRatePct: vatRatePct as number | null } : {}),
+    ...(source !== undefined ? { source: source as NonNullable<RecordExpenseInput['source']> } : {}),
+    ...(supplierInvoiceNumber !== undefined ? { supplierInvoiceNumber } : {}),
+    ...(dueAt !== undefined ? { dueAt } : {}),
+    ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
+  };
+}
+
+type RecordDocumentExpenseBody = {
+  expectedRevision: number;
+  targetFolderId: string;
+  expense: Omit<RecordExpenseInput, 'companyId' | 'idempotencyKey' | 'source'>;
+};
+
+function parseRecordDocumentExpenseBody(body: Record<string, unknown>): RecordDocumentExpenseBody {
+  const issues: ValidationIssue[] = [];
+  if (Object.keys(body).some((field) => !DOCUMENT_EXPENSE_BODY_FIELDS.has(field))) {
+    issues.push({ field: 'body', message: 'Le corps contient un champ non autorisé.' });
+  }
+
+  const expectedRevision = body.expectedRevision;
+  if (!Number.isSafeInteger(expectedRevision) || (expectedRevision as number) < 1) {
+    issues.push({ field: 'expectedRevision', message: 'Révision document positive attendue.' });
+  }
+  const targetFolderId = body.targetFolderId;
+  if (
+    typeof targetFolderId !== 'string'
+    || targetFolderId.length === 0
+    || targetFolderId.length > 200
+    || targetFolderId !== targetFolderId.trim()
+    || hasControlCharacter(targetFolderId)
+  ) {
+    issues.push({ field: 'targetFolderId', message: 'Identifiant de dossier canonique requis.' });
+  }
+  const expenseBody = body.expense;
+  if (expenseBody === null || typeof expenseBody !== 'object' || Array.isArray(expenseBody)) {
+    issues.push({ field: 'expense', message: 'Dépense objet requise.' });
+  }
+  if (issues.length > 0) throwValidationIssues(issues);
+
+  // Le parseur financier reste l'unique frontière de validation. Dans ce workflow, la source
+  // et la clé d'idempotence sont exclusivement décidées par le serveur à partir de l'original.
+  const expense = parseRecordExpenseBody(
+    expenseBody as Record<string, unknown>,
+    DOCUMENT_EXPENSE_FIELDS,
+  );
+  return {
+    expectedRevision: expectedRevision as number,
+    targetFolderId: targetFolderId as string,
+    expense,
+  };
+}
+
+function canonicalDocumentString(
+  value: unknown,
+  field: string,
+  maxLength: number,
+  issues: ValidationIssue[],
+): string {
+  if (
+    typeof value !== 'string'
+    || value.length === 0
+    || value.length > maxLength
+    || value !== value.trim()
+    || hasControlCharacter(value)
+  ) {
+    issues.push({ field, message: `Texte canonique requis (${maxLength} caractères maximum).` });
+    return '';
+  }
+  return value;
+}
+
+function parseUploadDocumentBody(body: Record<string, unknown>): UploadDocumentInput {
+  const issues: ValidationIssue[] = [];
+  if (Object.keys(body).some((field) => !DOCUMENT_UPLOAD_FIELDS.has(field))) {
+    issues.push({ field: 'body', message: 'Le corps contient un champ non autorisé.' });
+  }
+
+  const contentBase64 = body.contentBase64;
+  if (typeof contentBase64 !== 'string' || contentBase64.trim().length === 0 || contentBase64.length > 14_000_000) {
+    issues.push({ field: 'contentBase64', message: 'Document base64 requis (10 Mo maximum).' });
+  }
+  const mimeType = canonicalDocumentString(body.mimeType, 'mimeType', 120, issues);
+  const filename = canonicalDocumentString(body.filename, 'filename', 255, issues);
+
+  const kind = Object.hasOwn(body, 'kind') ? body.kind : undefined;
+  if (kind !== undefined && (typeof kind !== 'string' || !DOCUMENT_KINDS.has(kind as DocumentKind))) {
+    issues.push({ field: 'kind', message: 'Type de document inconnu.' });
+  }
+
+  const hasLinkedEntityType = Object.hasOwn(body, 'linkedEntityType');
+  const hasLinkedEntityId = Object.hasOwn(body, 'linkedEntityId');
+  const linkedEntityType = hasLinkedEntityType ? body.linkedEntityType : undefined;
+  const linkedEntityId = hasLinkedEntityId ? body.linkedEntityId : undefined;
+  if (hasLinkedEntityType !== hasLinkedEntityId) {
+    issues.push({ field: 'linkedEntity', message: 'Le type et l’identifiant de rattachement sont indissociables.' });
+  } else if (hasLinkedEntityType) {
+    const bothNull = linkedEntityType === null && linkedEntityId === null;
+    const bothNonNull = linkedEntityType !== null && linkedEntityId !== null;
+    if (!bothNull && !bothNonNull) {
+      issues.push({ field: 'linkedEntity', message: 'Le rattachement doit être null/null ou type/id.' });
+    } else if (bothNonNull) {
+      if (typeof linkedEntityType !== 'string' || !DOCUMENT_LINK_TYPES.has(linkedEntityType as DocumentLinkedEntityType)) {
+        issues.push({ field: 'linkedEntityType', message: 'Type de rattachement inconnu.' });
+      }
+      canonicalDocumentString(linkedEntityId, 'linkedEntityId', 200, issues);
+    }
+  }
+
+  const documentDate = Object.hasOwn(body, 'documentDate') ? body.documentDate : undefined;
+  if (documentDate !== undefined && documentDate !== null) {
+    canonicalDocumentString(documentDate, 'documentDate', 10, issues);
+  }
+  const folderId = Object.hasOwn(body, 'folderId') ? body.folderId : undefined;
+  if (folderId !== undefined && folderId !== null) {
+    canonicalDocumentString(folderId, 'folderId', 200, issues);
+  }
+
+  const tags = Object.hasOwn(body, 'tags') ? body.tags : undefined;
+  if (
+    tags !== undefined
+    && (
+      !Array.isArray(tags)
+      || tags.length > 16
+      || tags.some((tag) => (
+        typeof tag !== 'string'
+        || tag.trim().length < 2
+        || tag.trim().length > 32
+        || hasControlCharacter(tag)
+      ))
+    )
+  ) {
+    issues.push({ field: 'tags', message: 'Au plus 16 tags texte de 2 à 32 caractères sont attendus.' });
+  }
+
+  if (issues.length > 0) throwValidationIssues(issues);
+  return {
+    contentBase64: contentBase64 as string,
+    mimeType,
+    filename,
+    ...(kind !== undefined ? { kind: kind as DocumentKind } : {}),
+    ...(hasLinkedEntityType
+      ? {
+          linkedEntityType: linkedEntityType as DocumentLinkedEntityType | null,
+          linkedEntityId: linkedEntityId as string | null,
+        }
+      : {}),
+    ...(documentDate !== undefined ? { documentDate: documentDate as string | null } : {}),
+    ...(folderId !== undefined ? { folderId: folderId as string | null } : {}),
+    ...(tags !== undefined ? { tags: tags as string[] } : {}),
+  };
+}
+
+type ClassifyDocumentBody = {
+  linkedEntityType: DocumentLinkedEntityType;
+  linkedEntityId: string;
+  expectedRevision: number;
+};
+
+function parseClassifyDocumentBody(body: Record<string, unknown>): ClassifyDocumentBody {
+  const issues: ValidationIssue[] = [];
+  if (Object.keys(body).some((field) => !DOCUMENT_CLASSIFY_FIELDS.has(field))) {
+    issues.push({ field: 'body', message: 'Le corps contient un champ non autorisé.' });
+  }
+  const linkedEntityType = body.linkedEntityType;
+  if (typeof linkedEntityType !== 'string' || !DOCUMENT_LINK_TYPES.has(linkedEntityType as DocumentLinkedEntityType)) {
+    issues.push({ field: 'linkedEntityType', message: 'Type de rattachement inconnu.' });
+  }
+  const linkedEntityId = canonicalDocumentString(body.linkedEntityId, 'linkedEntityId', 200, issues);
+  const expectedRevision = body.expectedRevision;
+  if (!Number.isSafeInteger(expectedRevision) || (expectedRevision as number) < 1) {
+    issues.push({ field: 'expectedRevision', message: 'Révision document positive attendue.' });
+  }
+  if (issues.length > 0) throwValidationIssues(issues);
+  return {
+    linkedEntityType: linkedEntityType as DocumentLinkedEntityType,
+    linkedEntityId,
+    expectedRevision: expectedRevision as number,
+  };
+}
 
 @Controller('health')
 export class HealthController {
@@ -46,7 +412,7 @@ export class HealthController {
     // C24b : sonde SANS tenant (aucun Principal sur /health ; plus de repli société de démo).
     const r = await this.backend.readiness();
     if (!r.ok) throw new HttpException({ ready: false, error: r.error }, HttpStatus.SERVICE_UNAVAILABLE);
-    return { ready: true, customers: r.value.customers };
+    return { ready: true, customers: r.value.customers, release: readReleaseMetadata() };
   }
 }
 
@@ -312,6 +678,7 @@ export class DocumentsController {
     @Query('kind') kind?: DocumentKind,
     @Query('linkedEntityType') linkedEntityType?: DocumentLinkedEntityType,
     @Query('linkedEntityId') linkedEntityId?: string,
+    @Query('folderId') folderId?: string,
     @Query('includeDeleted') includeDeleted?: string,
   ) {
     return unwrap(
@@ -319,33 +686,153 @@ export class DocumentsController {
         ...(kind !== undefined ? { kind } : {}),
         ...(linkedEntityType !== undefined ? { linkedEntityType } : {}),
         ...(linkedEntityId !== undefined ? { linkedEntityId } : {}),
+        ...(folderId !== undefined ? { folderId: folderId === 'null' ? null : folderId } : {}),
         ...(includeDeleted !== undefined ? { includeDeleted: includeDeleted === 'true' } : {}),
       }),
     );
   }
   @Post('upload')
-  async upload(
+  @WithoutTenantPersistenceTransaction()
+  async upload(@Body() body: unknown) {
+    assertJsonObjectBody(body);
+    return unwrap(await this.backend.uploadDocument(parseUploadDocumentBody(body)));
+  }
+  @Post('intakes')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @WithoutTenantPersistenceTransaction()
+  async intake(
     @Body()
-    body: {
-      contentBase64: string;
-      mimeType: string;
-      filename: string;
-      kind?: DocumentKind;
-      linkedEntityType?: DocumentLinkedEntityType | null;
-      linkedEntityId?: string | null;
-      documentDate?: string | null;
-    },
+    body: { contentBase64: string; mimeType: string; filename: string; idempotencyKey: string },
   ) {
-    return unwrap(await this.backend.uploadDocument(body));
+    assertJsonObjectBody(body);
+    return unwrap(await this.backend.createDocumentIntake(body));
+  }
+  @Post(':id/classify')
+  async classify(
+    @Param('id') documentId: string,
+    @Body() body: unknown,
+  ) {
+    assertJsonObjectBody(body);
+    return unwrap(await this.backend.classifyDocument({ documentId, ...parseClassifyDocumentBody(body) }));
+  }
+  @Put(':id/expense')
+  @WithoutTenantPersistenceTransaction()
+  async recordExpenseFromDocument(
+    @Param('id') documentId: string,
+    @Body() body: unknown,
+  ) {
+    assertJsonObjectBody(body);
+    return unwrap(
+      await this.backend.recordDocumentExpense({
+        documentId,
+        ...parseRecordDocumentExpenseBody(body),
+      }),
+    );
+  }
+  @Post(':id/analysis')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @WithoutTenantPersistenceTransaction()
+  async analyze(@Param('id') documentId: string) {
+    return unwrap(await this.backend.analyzeStoredDocument(documentId));
+  }
+  @Put(':id/folder')
+  async moveToFolder(
+    @Param('id') documentId: string,
+    @Body() body: { folderId: string | null; expectedRevision: number },
+  ) {
+    assertJsonObjectBody(body);
+    return unwrap(await this.backend.moveDocumentToFolder({ documentId, ...body }));
   }
   @Get(':id/download-url')
+  @WithoutTenantPersistenceTransaction()
   async downloadUrl(@Param('id') id: string, @Query('ttl') ttl?: string) {
     return unwrap(await this.backend.documentDownloadUrl(id, ttl ? Number(ttl) : undefined));
   }
+  @Get(':id')
+  async getOne(@Param('id') id: string) {
+    return unwrap(await this.backend.getDocument(id));
+  }
   @Post('ocr')
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @WithoutTenantPersistenceTransaction()
   async ocr(@Body() body: { contentBase64: string; mimeType: string }) {
+    assertJsonObjectBody(body);
     return unwrap(await this.backend.extractDocument(body));
+  }
+}
+
+@Controller('document-folders')
+export class DocumentFoldersController {
+  constructor(private readonly backend: BackendService) {}
+
+  @Get()
+  async list(
+    @Query('parentId') parentId?: string,
+    @Query('limit') limit?: string,
+    @Query('cursor') cursor?: string,
+  ) {
+    return unwrap(
+      await this.backend.listDocumentFolders({
+        ...(parentId !== undefined ? { parentId: parentId === 'root' ? null : parentId } : {}),
+        ...(limit !== undefined ? { limit: Number(limit) } : {}),
+        ...(cursor !== undefined ? { cursor } : {}),
+      }),
+    );
+  }
+
+  @Post()
+  async create(@Body() body: { name: string; parentId?: string | null }) {
+    assertJsonObjectBody(body);
+    return unwrap(await this.backend.createDocumentFolder(body));
+  }
+
+  @Post(':id/deletion-plans')
+  async previewDeletion(@Param('id') folderId: string) {
+    return unwrap(await this.backend.previewDocumentFolderDeletion(folderId));
+  }
+
+  @Get(':id')
+  async get(@Param('id') folderId: string) {
+    return unwrap(await this.backend.getDocumentFolder(folderId));
+  }
+
+  @Patch(':id')
+  async update(
+    @Param('id') folderId: string,
+    @Body() body: { expectedRevision: number; name?: string; parentId?: string | null },
+  ) {
+    assertJsonObjectBody(body);
+    const changes = Number(body.name !== undefined) + Number(body.parentId !== undefined);
+    if (changes !== 1) {
+      throw new HttpException(
+        { ok: false, error: { kind: 'validation', issues: [{ field: 'body', message: 'Une seule modification à la fois.' }] } },
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+    }
+    return body.name !== undefined
+      ? unwrap(await this.backend.renameDocumentFolder({ folderId, name: body.name, expectedRevision: body.expectedRevision }))
+      : unwrap(
+          await this.backend.moveDocumentFolder({
+            folderId,
+            parentId: body.parentId ?? null,
+            expectedRevision: body.expectedRevision,
+          }),
+        );
+  }
+}
+
+@Controller('document-folder-deletion-plans')
+export class DocumentFolderDeletionPlansController {
+  constructor(private readonly backend: BackendService) {}
+
+  @Post(':planId/executions')
+  @WithoutTenantPersistenceTransaction()
+  async execute(
+    @Param('planId') planId: string,
+    @Body() body: { strategy: DeleteDocumentFolderStrategy },
+  ) {
+    assertJsonObjectBody(body);
+    return unwrap(await this.backend.executeDocumentFolderDeletion({ planId, strategy: body.strategy }));
   }
 }
 
@@ -396,9 +883,11 @@ export class ExpensesController {
   ) {
     return unwrap(await this.backend.suggestExpenseDefaults(body));
   }
+  @WithoutTenantPersistenceTransaction()
   @Post()
-  async create(@Body() body: Omit<RecordExpenseInput, 'companyId'>) {
-    return unwrap(await this.backend.recordExpense(body));
+  async create(@Body() body: unknown) {
+    assertJsonObjectBody(body);
+    return unwrap(await this.backend.recordExpense(parseRecordExpenseBody(body)));
   }
   /** C-EXP6b ① : CONTRÔLE DE RÉCEPTION d'une e-facture (destinataire, cohérence EN 16931,
    * doublon) + brouillon expert — RIEN n'est enregistré, la décision revient à l'appelant. */
@@ -408,6 +897,7 @@ export class ExpensesController {
   }
   /** C-EXP6b ② : DÉCISION AFNOR explicite — approve (RecordExpense en transaction tenant,
    * écritures E1, XML archivé au coffre) ou refuse (motif OBLIGATOIRE, statuts 210/213). */
+  @WithoutTenantPersistenceTransaction()
   @Post('import-facturx/confirm')
   async confirmImportFacturX(@Body() body: { xml: string; decision: FacturXImportDecision }) {
     return unwrap(await this.backend.confirmFacturXExpense({ xml: body.xml ?? '', decision: body.decision }));
@@ -439,6 +929,14 @@ export class NotificationsController {
   async list(@Query('limit') limit?: string) {
     return unwrap(await this.notifications.list(limit));
   }
+  @Get('unread-preview')
+  async unreadPreview() {
+    return unwrap(await this.notifications.unreadPreview());
+  }
+  @Post('read-through')
+  async markReadThrough(@Body() body: { throughCreatedAt?: unknown }) {
+    return unwrap(await this.notifications.markReadThrough(body));
+  }
   @Post(':id/read')
   async markRead(@Param('id') id: string) {
     return unwrap(await this.notifications.markRead(id));
@@ -463,16 +961,23 @@ export class JobsController {
     private readonly documentArchives: DocumentArchiveService,
   ) {}
   @Post('run-relances')
+  @Throttle({ default: { limit: 2, ttl: 60_000 } })
   run() {
-    return this.relances.runRelances();
+    return this.relances.runRelancesForCurrentTenant();
   }
   @Post('run-document-archives')
-  runDocumentArchives() {
-    return this.documentArchives.run();
+  @Throttle({ default: { limit: 2, ttl: 60_000 } })
+  @WithoutTenantPersistenceTransaction()
+  async runDocumentArchives() {
+    return unwrap(await this.documentArchives.run());
   }
   @Post('run-notifications')
-  runNotifications() {
-    return this.backend.runNotificationJobs({ limit: 25 });
+  @Throttle({ default: { limit: 2, ttl: 60_000 } })
+  // Le service réalise claim/commit -> Brevo -> finalize/commit. L'intercepteur global ne
+  // doit pas ré-englober ces étapes dans une transaction HTTP longue.
+  @WithoutTenantPersistenceTransaction()
+  async runNotifications() {
+    return unwrap(await this.backend.runNotificationJobs({ limit: 25 }));
   }
 }
 
@@ -498,12 +1003,12 @@ export class AiController {
   constructor(private readonly backend: BackendService) {}
   @Post('ask')
   @Throttle({ default: { limit: 5, ttl: 10_000 } })
-  async ask(@Body() body: { message: string; autonomy?: AgentAutonomy }) {
-    return unwrap(await this.backend.askBob(body.message, body.autonomy));
+  async ask(@Body() body: AgentAskPayload) {
+    return unwrap(await this.backend.askBob(body));
   }
   @Post('confirm')
   @Throttle({ default: { limit: 10, ttl: 10_000 } })
-  async confirm(@Body() body: PendingAction) {
+  async confirm(@Body() body: { proposalId?: unknown }) {
     return unwrap(await this.backend.confirmBob(body));
   }
   @Get('runs/:runId/journal')

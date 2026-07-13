@@ -4,6 +4,12 @@ import type { JournalEntry, JournalStore } from '@bob/ai';
 export interface AgentJournalRepository {
   append(companyId: string, entry: JournalEntry): Promise<void>;
   load(companyId: string, runId: string): Promise<JournalEntry[]>;
+  /**
+   * Réserve atomiquement une confirmation. true = ce caller possède le droit
+   * d'exécuter ; false = proposition déjà consommée. Contrairement à append(),
+   * un doublon n'est jamais absorbé silencieusement.
+   */
+  claim(companyId: string, entry: JournalEntry): Promise<boolean>;
 }
 
 export class CompanyScopedJournalStore implements JournalStore {
@@ -38,6 +44,16 @@ export class InMemoryAgentJournalRepository implements AgentJournalRepository {
       ...entry,
       args: { ...entry.args },
     }));
+  }
+
+  async claim(companyId: string, entry: JournalEntry): Promise<boolean> {
+    const key = `${companyId}:${entry.runId}`;
+    const list = this.byTenantRun.get(key) ?? [];
+    if (list.some((candidate) => candidate.seq === entry.seq)) return false;
+    list.push({ ...entry, args: { ...entry.args } });
+    list.sort((a, b) => a.seq - b.seq);
+    this.byTenantRun.set(key, list);
+    return true;
   }
 }
 

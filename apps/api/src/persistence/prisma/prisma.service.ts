@@ -4,6 +4,7 @@ import { PrismaClient, Prisma } from '@prisma/client';
 
 /** Transaction interactive courante (par requête) — les repos passant par client() y participent. */
 const txStorage = new AsyncLocalStorage<Prisma.TransactionClient>();
+const NOTIFICATION_OUTBOX_VERSION = '2';
 
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit {
@@ -40,16 +41,66 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
   withTenant<T>(companyId: string, fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
     if (this.inTransaction()) {
       const tx = this.client() as Prisma.TransactionClient;
-      return tx
-        .$executeRaw`SELECT set_config('app.current_company_id', ${companyId}, true)`
-        .then(() => fn(tx));
+      return this.setCompanyContext(tx, companyId).then(() => fn(tx));
     }
     return this.$transaction(async (tx) => {
       // set_config(name, value, is_local=true) : équivalent à SET LOCAL mais PARAMÉTRÉ (pas d'interpolation
       // de chaîne) -> élimine le vecteur d'injection dans le GUC tenant (vs $executeRawUnsafe).
-      await tx.$executeRaw`SELECT set_config('app.current_company_id', ${companyId}, true)`;
+      await this.setCompanyContext(tx, companyId);
       return txStorage.run(tx, () => fn(tx));
     });
+  }
+
+  private async setCompanyContext(tx: Prisma.TransactionClient, companyId: string): Promise<void> {
+    await tx.$executeRaw`SELECT set_config('app.current_company_id', ${companyId}, true)`;
+    // Fence de protocole, pas une autorisation : les policies vérifient toujours companyId.
+    // Son absence bloque une révision N-1 qui ignorerait les leases lors d'un rolling rollback.
+    await tx.$executeRaw`SELECT set_config('app.notification_outbox_version', ${NOTIFICATION_OUTBOX_VERSION}, true)`;
+  }
+
+  /** Pose uniquement l'identité authentifiée. Utile pour lister les memberships de l'utilisateur. */
+  withIdentity<T>(userId: string, fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+    if (this.inTransaction()) {
+      const tx = this.client() as Prisma.TransactionClient;
+      return tx.$executeRaw`SELECT set_config('app.current_user_id', ${userId}, true)`.then(() => fn(tx));
+    }
+    return this.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT set_config('app.current_user_id', ${userId}, true)`;
+      return txStorage.run(tx, () => fn(tx));
+    });
+  }
+
+  /** Contexte tenant Cabinet. Le GUC n'accorde rien : chaque policy revalide la membership en base. */
+  withCabinet<T>(
+    userId: string,
+    cabinetId: string,
+    fn: (tx: Prisma.TransactionClient) => Promise<T>,
+  ): Promise<T> {
+    return this.withIdentity(userId, async (tx) => {
+      await tx.$executeRaw`SELECT set_config('app.current_cabinet_id', ${cabinetId}, true)`;
+      return fn(tx);
+    });
+  }
+
+  /** Lookup d'une invitation par capacité exacte : hash + email JWT vérifié, jamais par id public. */
+  withCabinetInvitation<T>(
+    userId: string,
+    verifiedEmail: string,
+    tokenHash: string,
+    fn: (tx: Prisma.TransactionClient) => Promise<T>,
+  ): Promise<T> {
+    return this.withIdentity(userId, async (tx) => {
+      await tx.$executeRaw`SELECT set_config('app.current_user_email', ${verifiedEmail}, true)`;
+      await tx.$executeRaw`SELECT set_config('app.current_invitation_token_hash', ${tokenHash}, true)`;
+      return fn(tx);
+    });
+  }
+
+  /** À appeler uniquement dans une transaction d'invitation déjà authentifiée. */
+  async selectCabinetInCurrentTransaction(cabinetId: string): Promise<void> {
+    if (!this.inTransaction()) throw new Error('Cabinet selection requires an active transaction.');
+    const tx = this.client() as Prisma.TransactionClient;
+    await tx.$executeRaw`SELECT set_config('app.current_cabinet_id', ${cabinetId}, true)`;
   }
 
   /** Lookup publique limitée à UN hash de token, pour résoudre le tenant avant d'appliquer la RLS métier. */

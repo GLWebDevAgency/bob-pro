@@ -16,9 +16,9 @@ function addMinutesIso(instant: string, minutes: number): string {
   return d.toISOString();
 }
 
-function nextNotificationRetryAt(now: string, attempts: number): string {
+function nextNotificationRetryDelayMs(attempts: number): number {
   const delayMinutes = Math.min(120, Math.max(1, 2 ** attempts));
-  return addMinutesIso(now, delayMinutes);
+  return delayMinutes * 60_000;
 }
 
 /** Corps de push : l'email peut être long — on tronque proprement pour la bannière. */
@@ -26,6 +26,8 @@ function pushBody(body: string): string {
   const flat = body.replace(/\s+/g, ' ').trim();
   return flat.length <= 178 ? flat : `${flat.slice(0, 177)}…`;
 }
+
+type DeliveryAttemptOutcome = 'sent' | 'skipped' | 'failed';
 
 @Injectable()
 export class NotificationDeliveryService {
@@ -58,41 +60,147 @@ export class NotificationDeliveryService {
     notification: Notification;
   }): Promise<NotificationJob> {
     const now = this.clock.now();
+    const id = randomUUID();
+    // La clé provider est créée UNE fois avec l'entrée d'outbox et persiste sur tous les
+    // retries. Brevo déduplique 30 min ; au-delà, un lease orphelin est mis en quarantaine
+    // pour revue humaine plutôt que rejoué avec une promesse d'exactly-once impossible.
+    const notification: Notification = input.notification.channel === 'email'
+      ? { ...input.notification, idempotencyKey: id }
+      : { ...input.notification };
     return this.p.notificationJobs.enqueue({
-      id: randomUUID(),
+      id,
       companyId: input.companyId,
       kind: input.kind,
       dedupeKey: input.dedupeKey,
-      notification: input.notification,
+      notification,
       now,
     });
   }
 
-  async tryDeliver(companyId: string, job: DeliverableNotificationJob): Promise<boolean> {
-    return this.p.runWithTenant(companyId, async () => {
-      try {
-        await this.notifier.send(job.notification);
-        await this.p.notificationJobs.markDone(job.id, this.clock.now());
-        this.logger.audit('notification.job.done', {
+  async tryDeliver(companyId: string, job: DeliverableNotificationJob): Promise<DeliveryAttemptOutcome> {
+    const claimAt = this.clock.now();
+    const leaseUntil = addMinutesIso(claimAt, 5);
+    const leaseToken = randomUUID();
+    let claimedJob: DeliverableNotificationJob;
+    try {
+      const claim = await this.p.runWithTenant(companyId, () =>
+        this.p.notificationJobs.claimForDelivery(
+          job.id,
+          companyId,
+          job.updatedAt,
+          claimAt,
+          leaseUntil,
+          leaseToken,
+        ),
+      );
+      if (claim.outcome === 'quarantined') {
+        this.logger.warn(
+          `Notification en revue manuelle (${job.kind}): résultat provider incertain`,
+          'notifications',
+        );
+        this.logger.audit('notification.job.quarantined', {
           companyId,
           kind: job.kind,
           jobId: job.id,
-          channel: job.channel,
-          to: job.recipient,
-          subject: job.subject,
+          reason: claim.reason,
         });
-        // Push Expo (C25) : MIROIR de l'envoi RÉUSSI vers les appareils de l'artisan — jamais
-        // avant (on ne notifie pas « Bob a relancé X » si l'email a échoué). Best-effort loggé.
-        await this.pushMirror(companyId, job);
-        return true;
-      } catch (e) {
-        const failedAt = this.clock.now();
-        const cause = e instanceof Error ? e.message : String(e);
-        await this.p.notificationJobs.markFailed(job.id, failedAt, nextNotificationRetryAt(failedAt, job.attempts), cause);
-        this.logger.warn(`Notification en retry (${job.kind}): ${cause}`, 'notifications');
-        return false;
+        return 'failed';
       }
-    });
+      if (claim.outcome === 'skipped') {
+        this.logger.audit('notification.job.claim_skipped', {
+          companyId,
+          kind: job.kind,
+          jobId: job.id,
+        });
+        return 'skipped';
+      }
+      claimedJob = claim.job;
+    } catch (e) {
+      this.logger.warn(
+        `Lease notification impossible (${job.kind}): ${e instanceof Error ? e.message : String(e)}`,
+        'notifications',
+      );
+      return 'failed';
+    }
+
+    let authorized: boolean;
+    try {
+      authorized = await this.p.runWithTenant(companyId, () =>
+        this.p.notificationJobs.authorizeDeliveryAttempt(
+          claimedJob.id,
+          companyId,
+          leaseToken,
+          this.clock.now(),
+        ),
+      );
+    } catch (e) {
+      // Une indisponibilité DB au dernier fence ne doit ni déclencher l'I/O provider, ni
+      // interrompre tout le sweep. Le lease expirera et un prochain worker arbitrera avec
+      // l'horloge DB entre reprise encore sûre et quarantaine.
+      this.logger.warn(
+        `Autorisation notification impossible (${claimedJob.kind}): ${e instanceof Error ? e.message : String(e)}`,
+        'notifications',
+      );
+      return 'failed';
+    }
+    if (!authorized) {
+      this.logger.audit('notification.job.delivery_not_authorized', {
+        companyId,
+        kind: claimedJob.kind,
+        jobId: claimedJob.id,
+      });
+      return 'skipped';
+    }
+    try {
+      // Appel réseau hors transaction : le job/outbox est déjà commité et porte une clé
+      // provider stable. Aucun lock/GUC Postgres ne reste ouvert pendant Brevo.
+      await this.notifier.send(claimedJob.notification);
+      const wonDelivery = await this.p.runWithTenant(companyId, () =>
+        this.p.notificationJobs.markDone(claimedJob.id, companyId, leaseToken, this.clock.now()),
+      );
+      if (!wonDelivery) {
+        this.logger.audit('notification.job.finish_skipped', {
+          companyId,
+          kind: claimedJob.kind,
+          jobId: claimedJob.id,
+          reason: 'lease_lost',
+        });
+        return 'skipped';
+      }
+      this.logger.audit('notification.job.done', {
+        companyId,
+        kind: claimedJob.kind,
+        jobId: claimedJob.id,
+        channel: claimedJob.channel,
+      });
+      // Seul le worker qui a atomiquement transitionné le job vers done émet le push miroir.
+      // Les concurrents peuvent recevoir l'accusé Brevo dédupliqué, mais ne doublent pas le push.
+      if (wonDelivery) {
+        try {
+          await this.pushMirror(companyId, claimedJob);
+        } catch (pushError) {
+          this.logger.warn(
+            `Push miroir ignoré après email commité: ${pushError instanceof Error ? pushError.message : String(pushError)}`,
+            'notifications',
+          );
+        }
+      }
+      return 'sent';
+    } catch (e) {
+      const cause = e instanceof Error ? e.message : String(e);
+      await this.p.runWithTenant(companyId, async () => {
+        await this.p.notificationJobs.markFailed(
+          claimedJob.id,
+          companyId,
+          leaseToken,
+          this.clock.now(),
+          nextNotificationRetryDelayMs(claimedJob.attempts),
+          cause,
+        );
+      });
+      this.logger.warn(`Notification en retry (${claimedJob.kind}): ${cause}`, 'notifications');
+      return 'failed';
+    }
   }
 
   /** Notifie les devices du tenant (chunké côté ExpoPushService) — échecs par ticket loggés,
@@ -102,7 +210,7 @@ export class NotificationDeliveryService {
       this.logger.audit('notification.push.skipped', { companyId, jobId: job.id, reason: 'push_channel_absent' });
       return;
     }
-    const devices = await this.p.devices.listByCompany(companyId);
+    const devices = await this.p.runWithTenant(companyId, () => this.p.devices.listByCompany(companyId));
     if (devices.length === 0) {
       this.logger.audit('notification.push.skipped', { companyId, jobId: job.id, reason: 'no_device_registered' });
       return;
@@ -116,11 +224,14 @@ export class NotificationDeliveryService {
         ...(route !== null ? { data: { route } } : {}),
       })),
     );
-    for (const rejection of outcome.rejected) {
-      // Token expiré/désinstallé : purge — la table devices reste un reflet fidèle du parc.
-      if (rejection.error === 'DeviceNotRegistered') {
-        await this.p.devices.removeByToken(companyId, rejection.token);
-      }
+    const invalidTokens = outcome.rejected
+      .filter((rejection) => rejection.error === 'DeviceNotRegistered')
+      .map((rejection) => rejection.token);
+    if (invalidTokens.length > 0) {
+      // Token expiré/désinstallé : purge transactionnelle courte, après le réseau Expo.
+      await this.p.runWithTenant(companyId, async () => {
+        for (const token of invalidTokens) await this.p.devices.removeByToken(companyId, token);
+      });
     }
     this.logger.audit('notification.push.sent', {
       companyId,
@@ -133,16 +244,17 @@ export class NotificationDeliveryService {
 
   async runForCompany(companyId: string, limit = 25): Promise<{ scanned: number; sent: number; failed: number }> {
     const safeLimit = Math.max(1, Math.min(limit, 100));
-    return this.p.runWithTenant(companyId, async () => {
-      const jobs = await this.p.notificationJobs.listDue(companyId, this.clock.now(), safeLimit);
-      let sent = 0;
-      let failed = 0;
-      for (const job of jobs) {
-        if (await this.tryDeliver(companyId, job)) sent += 1;
-        else failed += 1;
-      }
-      return { scanned: jobs.length, sent, failed };
-    });
+    const jobs = await this.p.runWithTenant(companyId, () =>
+      this.p.notificationJobs.listDue(companyId, this.clock.now(), safeLimit),
+    );
+    let sent = 0;
+    let failed = 0;
+    for (const job of jobs) {
+      const outcome = await this.tryDeliver(companyId, job);
+      if (outcome === 'sent') sent += 1;
+      if (outcome === 'failed') failed += 1;
+    }
+    return { scanned: jobs.length, sent, failed };
   }
 
   async runAllCompanies(limitPerCompany = 25): Promise<{ companies: number; scanned: number; sent: number; failed: number }> {

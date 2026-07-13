@@ -1,4 +1,4 @@
-import { seedCompany, seedCustomers } from '@bob/core';
+import { DEFAULT_DOCUMENT_FOLDERS, normalizeDocumentFolderName, seedCompany, seedCustomers } from '@bob/core';
 import type { Persistence } from '../persistence';
 import { PrismaService } from './prisma.service';
 import {
@@ -7,6 +7,7 @@ import {
   PrismaQuoteRepository,
   PrismaInvoiceRepository,
   PrismaDocumentRepository,
+  PrismaDocumentFolderRepository,
   PrismaDocumentArchiveJobRepository,
   PrismaNotificationJobRepository,
   PrismaDeviceRepository,
@@ -20,6 +21,16 @@ import {
   PrismaSequenceCounter,
 } from './repositories';
 import { companyPropsToCreate, customerPropsToCreate } from './mappers';
+import { createPrismaCabinetInfrastructure } from '../../cabinet/prisma-cabinet-infrastructure';
+import type { CabinetInfrastructure } from '../../cabinet/cabinet-infrastructure';
+import { PrismaDocumentFolderDeletionPlanStore } from '../document-folder-deletion-plans';
+import { PrismaDocumentAnalysisStore } from '../document-analyses';
+import { PrismaExpenseCreationRequestStore } from '../expense-creation-requests';
+import type {
+  RealtimeAdmissionPolicy,
+  RealtimeAdmissionPort,
+} from '../../voice/realtime/realtime-admission';
+import { PrismaRealtimeAdmission } from '../../voice/realtime/realtime-admission.prisma';
 
 export class PrismaPersistence implements Persistence {
   readonly companies: PrismaCompanyRepository;
@@ -27,17 +38,26 @@ export class PrismaPersistence implements Persistence {
   readonly quotes: PrismaQuoteRepository;
   readonly invoices: PrismaInvoiceRepository;
   readonly documents: PrismaDocumentRepository;
+  readonly documentAnalyses: PrismaDocumentAnalysisStore;
+  readonly documentFolders: PrismaDocumentFolderRepository;
+  readonly documentFolderDeletionPlans: PrismaDocumentFolderDeletionPlanStore;
   readonly documentArchiveJobs: PrismaDocumentArchiveJobRepository;
   readonly notificationJobs: PrismaNotificationJobRepository;
   readonly devices: PrismaDeviceRepository;
   readonly payments: PrismaPaymentRepository;
   readonly publicAccessTokens: PrismaPublicAccessTokenRepository;
   readonly expenses: PrismaExpenseRepository;
+  readonly expenseCreationRequests: PrismaExpenseCreationRequestStore;
   readonly accountingEntries: PrismaAccountingEntryRepository;
   readonly chartOfAccounts: PrismaChartOfAccountsRepository;
   readonly agentJournal: PrismaAgentJournalRepository;
   readonly supplierMemory: PrismaSupplierMemoryRepository;
   readonly counters: PrismaSequenceCounter;
+  readonly cabinet: CabinetInfrastructure;
+
+  createRealtimeAdmission(policy: RealtimeAdmissionPolicy): RealtimeAdmissionPort {
+    return new PrismaRealtimeAdmission(this.prisma, policy);
+  }
 
   constructor(private readonly prisma: PrismaService) {
     this.companies = new PrismaCompanyRepository(prisma);
@@ -45,17 +65,22 @@ export class PrismaPersistence implements Persistence {
     this.quotes = new PrismaQuoteRepository(prisma);
     this.invoices = new PrismaInvoiceRepository(prisma);
     this.documents = new PrismaDocumentRepository(prisma);
+    this.documentAnalyses = new PrismaDocumentAnalysisStore(prisma);
+    this.documentFolders = new PrismaDocumentFolderRepository(prisma);
+    this.documentFolderDeletionPlans = new PrismaDocumentFolderDeletionPlanStore(prisma);
     this.documentArchiveJobs = new PrismaDocumentArchiveJobRepository(prisma);
     this.notificationJobs = new PrismaNotificationJobRepository(prisma);
     this.devices = new PrismaDeviceRepository(prisma);
     this.payments = new PrismaPaymentRepository(prisma);
     this.publicAccessTokens = new PrismaPublicAccessTokenRepository(prisma);
     this.expenses = new PrismaExpenseRepository(prisma);
+    this.expenseCreationRequests = new PrismaExpenseCreationRequestStore(prisma);
     this.accountingEntries = new PrismaAccountingEntryRepository(prisma);
     this.chartOfAccounts = new PrismaChartOfAccountsRepository(prisma);
     this.agentJournal = new PrismaAgentJournalRepository(prisma);
     this.supplierMemory = new PrismaSupplierMemoryRepository(prisma);
     this.counters = new PrismaSequenceCounter(prisma);
+    this.cabinet = createPrismaCabinetInfrastructure(prisma);
   }
 
   runInTransaction<T>(fn: () => Promise<T>): Promise<T> {
@@ -64,6 +89,23 @@ export class PrismaPersistence implements Persistence {
 
   runWithTenant<T>(companyId: string, fn: () => Promise<T>): Promise<T> {
     return this.prisma.withTenant(companyId, () => fn());
+  }
+
+  runWithIdentity<T>(userId: string, fn: () => Promise<T>): Promise<T> {
+    return this.prisma.withIdentity(userId, () => fn());
+  }
+
+  runWithCabinet<T>(userId: string, cabinetId: string, fn: () => Promise<T>): Promise<T> {
+    return this.prisma.withCabinet(userId, cabinetId, () => fn());
+  }
+
+  runWithCabinetInvitation<T>(
+    userId: string,
+    verifiedEmail: string,
+    tokenHash: string,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    return this.prisma.withCabinetInvitation(userId, verifiedEmail, tokenHash, () => fn());
   }
 
   async seed(): Promise<void> {
@@ -75,6 +117,22 @@ export class PrismaPersistence implements Persistence {
       await tx.company.upsert({ where: { id: company.id }, create: company, update: company });
       for (const customer of customers) {
         await tx.customer.upsert({ where: { id: customer.id }, create: customer, update: customer });
+      }
+      for (const folder of DEFAULT_DOCUMENT_FOLDERS) {
+        const id = `${company.id}:vault:${folder.systemKey}`;
+        const data = {
+          companyId: company.id,
+          parentId: null,
+          name: folder.name,
+          normalizedName: normalizeDocumentFolderName(folder.name),
+          systemKey: folder.systemKey,
+          status: 'active' as const,
+          revision: 1,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          deletedAt: null,
+        };
+        await tx.documentFolder.upsert({ where: { id }, create: { id, ...data }, update: data });
       }
     });
   }

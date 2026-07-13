@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { buildSttCloud, buildTtsCloud, MistralVoxtralSttAdapter, MistralVoxtralTtsAdapter } from './providers';
+import {
+  buildSttCloud,
+  buildTtsCloud,
+  buildRealtimeSpeechAuditStt,
+  MistralVoxtralSttAdapter,
+  MistralVoxtralTtsAdapter,
+  OpenAiCompatibleLlmAdapter,
+} from './providers';
 
 const ORIGINAL_ENV = { ...process.env };
 
@@ -53,6 +60,36 @@ describe('Mistral Voxtral providers', () => {
     });
   });
 
+  it('propage l’annulation du tour au TTS et au STT au lieu de laisser vivre les fetchs', async () => {
+    const seenSignals: AbortSignal[] = [];
+    const fetchMock = vi.fn((_url: string | URL | Request, init?: RequestInit) => {
+      const signal = init?.signal;
+      if (!(signal instanceof AbortSignal)) throw new Error('signal required');
+      seenSignals.push(signal);
+      return new Promise<Response>((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const tts = new MistralVoxtralTtsAdapter('mistral-key', 'tts', 'https://api.test/v1');
+    const stt = new MistralVoxtralSttAdapter('mistral-key', 'stt', 'https://api.test/v1');
+    const ttsAbort = new AbortController();
+    const sttAbort = new AbortController();
+
+    const ttsRun = tts.synthesize('Bonjour.', { signal: ttsAbort.signal });
+    const sttRun = stt.transcribe(Buffer.from([1]).toString('base64'), 'audio/wav', {
+      signal: sttAbort.signal,
+    });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    ttsAbort.abort();
+    sttAbort.abort();
+
+    await expect(ttsRun).rejects.toMatchObject({ name: 'AbortError' });
+    await expect(sttRun).rejects.toMatchObject({ name: 'AbortError' });
+    expect(seenSignals).toHaveLength(2);
+    expect(seenSignals.every((signal) => signal.aborted)).toBe(true);
+  });
+
   it('sélectionne Mistral STT en priorité puis fallback OpenAI si demandé', () => {
     process.env.MISTRAL_API_KEY = 'mistral-key';
     delete process.env.OPENAI_API_KEY;
@@ -70,5 +107,55 @@ describe('Mistral Voxtral providers', () => {
 
     process.env.MISTRAL_API_KEY = 'mistral-key';
     expect(buildTtsCloud()?.id).toBe('mistral-voxtral-tts');
+  });
+
+  it('force un ASR OpenAI indépendant du TTS pour l’audit acoustique Bob Live', () => {
+    process.env.MISTRAL_API_KEY = 'mistral-key';
+    delete process.env.OPENAI_API_KEY;
+    expect(buildRealtimeSpeechAuditStt()).toBeUndefined();
+
+    process.env.OPENAI_API_KEY = 'openai-key';
+    process.env.REALTIME_SPEECH_AUDIT_STT_MODEL = 'gpt-4o-transcribe-test';
+    expect(buildRealtimeSpeechAuditStt()?.id).toBe('whisper');
+  });
+
+  it('borne le flux audio TTS avant de l’accumuler en mémoire', async () => {
+    const adapter = new MistralVoxtralTtsAdapter('mistral-key', 'tts', 'https://api.test/v1');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new Uint8Array(1), {
+      status: 200,
+      headers: {
+        'content-type': 'audio/mpeg',
+        'content-length': String(4 * 1024 * 1024 + 1),
+      },
+    })));
+
+    await expect(adapter.synthesize('Bonjour.')).rejects.toThrow('voice_provider_response_too_large');
+  });
+});
+
+describe('LLM provider cancellation', () => {
+  it('interrompt physiquement le fetch fournisseur avec le signal du tour', async () => {
+    let providerSignal: AbortSignal | undefined;
+    const fetchMock = vi.fn((_url: string | URL | Request, init?: RequestInit) => {
+      providerSignal = init?.signal ?? undefined;
+      return new Promise<Response>((_resolve, reject) => {
+        providerSignal?.addEventListener('abort', () => reject(providerSignal?.reason), { once: true });
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const adapter = new OpenAiCompatibleLlmAdapter({
+      id: 'openai-test',
+      baseUrl: 'https://api.test/v1',
+      apiKey: 'secret',
+      model: 'test-model',
+    });
+    const controller = new AbortController();
+
+    const running = adapter.complete([{ role: 'user', content: 'Bonjour' }], { signal: controller.signal });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    controller.abort();
+
+    await expect(running).rejects.toMatchObject({ name: 'AbortError' });
+    expect(providerSignal?.aborted).toBe(true);
   });
 });

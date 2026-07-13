@@ -43,4 +43,16 @@ describe('Agent journal persistence', () => {
     expect(await store.load('run-1')).toHaveLength(1);
     expect((await store.load('run-1'))[0]!.label).toBe('Encaisser F-001');
   });
+
+  it('ne laisse qu’un seul caller réclamer une confirmation, avec isolation tenant', async () => {
+    const repo = new InMemoryAgentJournalRepository();
+    const claim = { ...entry(1, 'confirm:proposal-1'), tool: '__confirm_proposal__', args: { proposalId: 'proposal-1' } };
+
+    expect(await repo.claim('co-a', claim)).toBe(true);
+    expect(await repo.claim('co-a', claim)).toBe(false);
+    expect(await repo.claim('co-b', claim)).toBe(true);
+    expect(await repo.load('co-a', claim.runId)).toMatchObject([
+      { tool: '__confirm_proposal__', args: { proposalId: 'proposal-1' } },
+    ]);
+  });
 });

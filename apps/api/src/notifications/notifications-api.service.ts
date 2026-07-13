@@ -34,11 +34,29 @@ export interface RegisterDeviceDto {
   platform: string | null;
 }
 
+export interface NotificationUnreadPreviewDto {
+  unreadCount: number;
+  /** Cutoff serveur à rejouer tel quel dans POST /notifications/read-through. */
+  throughCreatedAt: string;
+}
+
+export interface NotificationReadThroughDto {
+  updatedCount: number;
+  readAt: string;
+}
+
 const MAX_FEED_LIMIT = 100;
 const DEFAULT_FEED_LIMIT = 50;
 /** Format des tokens Expo (ExponentPushToken[...] / ExpoPushToken[...]) — refusé sinon. */
 const EXPO_TOKEN_PATTERN = /^Expo(nent)?PushToken\[[A-Za-z0-9_-]{10,64}\]$/;
 const PLATFORMS = new Set(['ios', 'android', 'web']);
+
+function invalidCutoff(message: string): Result<never, AppError> {
+  return {
+    ok: false,
+    error: { kind: 'validation', issues: [{ field: 'throughCreatedAt', message }] },
+  };
+}
 
 function toItem(job: NotificationJob): NotificationItemDto {
   return {
@@ -76,6 +94,38 @@ export class NotificationsApiService {
     const job = await this.p.notificationJobs.markRead(id, this.companyId(), this.clock.now());
     if (!job) return { ok: false, error: appNotFound('notification', id) };
     return ok(toItem(job));
+  }
+
+  /**
+   * Aperçu temporel non paginé : le cutoff est émis par le serveur, puis borne la portée de la
+   * commande. Une notification créée après cet instant ne sera jamais absorbée par confirmation.
+   */
+  async unreadPreview(): Promise<Result<NotificationUnreadPreviewDto, AppError>> {
+    const preview = await this.p.notificationJobs.previewUnread(
+      this.companyId(),
+      this.clock.now(),
+    );
+    return ok(preview);
+  }
+
+  async markReadThrough(input: {
+    throughCreatedAt?: unknown;
+  }): Promise<Result<NotificationReadThroughDto, AppError>> {
+    const cutoff = input.throughCreatedAt;
+    if (typeof cutoff !== 'string') return invalidCutoff('Cutoff serveur manquant.');
+    const cutoffMs = Date.parse(cutoff);
+    if (!Number.isFinite(cutoffMs) || new Date(cutoffMs).toISOString() !== cutoff) {
+      return invalidCutoff('Cutoff serveur invalide. Demandez un nouvel aperçu.');
+    }
+    const result = await this.p.notificationJobs.markReadThrough(
+      this.companyId(),
+      cutoff,
+      this.clock.now(),
+    );
+    if (!result.cutoffAccepted) {
+      return invalidCutoff('Cutoff futur refusé. Demandez un nouvel aperçu.');
+    }
+    return ok({ updatedCount: result.updatedCount, readAt: result.readAt });
   }
 
   async registerDevice(input: { expoPushToken?: unknown; platform?: unknown }): Promise<Result<RegisterDeviceDto, AppError>> {

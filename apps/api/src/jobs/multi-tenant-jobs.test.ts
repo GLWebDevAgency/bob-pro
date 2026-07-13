@@ -5,7 +5,7 @@ import { RelanceService } from './relance.service';
 import { DocumentArchiveService } from './document-archive.service';
 import { ScheduledTenantDirectory } from './tenant-directory';
 import type { BackendService } from '../backend.service';
-import type { AppLogger } from '../observability/logger';
+import { requestContext, type AppLogger } from '../observability/logger';
 import { InMemoryPersistence } from '../persistence/persistence';
 
 const logger = {
@@ -107,15 +107,50 @@ describe('scheduled jobs multi-tenant', () => {
 
     const result = await service.runRelances();
 
-    expect(result).toEqual({ companies: 2, scanned: 2, sent: 2 });
+    expect(result).toEqual({ companies: 2, scanned: 2, queued: 2, sent: 0, deduplicated: 0 });
     expect(delivery.enqueue).toHaveBeenCalledTimes(2);
-    expect(delivery.tryDeliver).toHaveBeenCalledTimes(2);
+    expect(delivery.tryDeliver).not.toHaveBeenCalled();
     // Le ton vient de DEFAULT_RELANCE_POLICY (@bob/core) — plus de barème local 15/30/45.
     const subjects = (delivery.enqueue as ReturnType<typeof vi.fn>).mock.calls.map(
       (c) => (c[0] as { notification: { subject: string } }).notification.subject,
     );
     expect(subjects[0]).toContain('relance'); // neutre : « — relance »
     expect(subjects[1]).toContain('relance ferme');
+  });
+
+  it('le déclenchement HTTP reste strictement limité au tenant authentifié', async () => {
+    const persistence = new InMemoryPersistence();
+    persistence.companies.seed(fakeCompany('co-1'));
+    persistence.companies.seed(fakeCompany('co-2'));
+    persistence.customers.seed([
+      fakeCustomer('cu-1', 'co-1', 'a@example.com'),
+      fakeCustomer('cu-2', 'co-2', 'b@example.com'),
+    ]);
+    await persistence.invoices.save(overdueInvoice('inv-1', 'co-1', 'cu-1', 12));
+    await persistence.invoices.save(overdueInvoice('inv-2', 'co-2', 'cu-2', 12));
+    const notifier = { send: vi.fn<NotificationPort['send']>() } satisfies NotificationPort;
+    const delivery = new NotificationDeliveryService(
+      persistence,
+      notifier,
+      new ScheduledTenantDirectory(persistence, logger),
+      logger,
+    );
+    const service = new RelanceService(
+      persistence,
+      delivery,
+      new ScheduledTenantDirectory(persistence, logger),
+      logger,
+    );
+
+    const result = await requestContext.run(
+      { correlationId: 'tenant-a-job', principal: { userId: 'u-1', companyId: 'co-1' } },
+      () => service.runRelancesForCurrentTenant(),
+    );
+
+    expect(result).toEqual({ scanned: 1, queued: 1, sent: 0, deduplicated: 0 });
+    expect(await persistence.notificationJobs.listRecent('co-1', 10)).toHaveLength(1);
+    expect(await persistence.notificationJobs.listRecent('co-2', 10)).toHaveLength(0);
+    expect(notifier.send).not.toHaveBeenCalled();
   });
 
   it('mise en demeure : JAMAIS envoyée par le cron (validation humaine requise — endpoint ciblé)', async () => {
@@ -131,7 +166,7 @@ describe('scheduled jobs multi-tenant', () => {
 
     const result = await service.runRelancesForCompany('co-1');
 
-    expect(result).toEqual({ scanned: 1, sent: 0 });
+    expect(result).toEqual({ scanned: 1, queued: 0, sent: 0, deduplicated: 0 });
     expect(delivery.enqueue).not.toHaveBeenCalled();
     expect(logger.audit).toHaveBeenCalledWith('relance.med_awaiting_validation', expect.objectContaining({ invoiceId: 'inv-med' }));
   });

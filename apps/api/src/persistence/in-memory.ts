@@ -5,17 +5,23 @@ import {
   Quote,
   AccountingEntry,
   ChartOfAccounts,
+  Expense,
   type Company,
   type Customer,
-  type Document,
+  Document,
+  DocumentFolder,
+  type DocumentFolderProps,
   type Payment,
-  type Expense,
   type Chantier,
   type CompanyRepository,
   type CustomerRepository,
   type QuoteRepository,
   type InvoiceRepository,
   type DocumentRepository,
+  type DocumentFolderRepository,
+  type DocumentFolderMembership,
+  type DocumentFolderWriteResult,
+  type DocumentFolderMembershipWriteResult,
   type PaymentRepository,
   type PublicAccessGrant,
   type PublicAccessTokenRepository,
@@ -33,11 +39,16 @@ import type {
   DocumentArchiveJobRepository,
   EnqueueDocumentArchiveJobInput,
 } from './document-archive-jobs';
-import type {
-  DeliverableNotificationJob,
-  EnqueueNotificationJobInput,
-  NotificationJob,
-  NotificationJobRepository,
+import {
+  NotificationDedupeConflictError,
+  notificationPayloadFingerprint,
+  type DeliverableNotificationJob,
+  type EnqueueNotificationJobInput,
+  type NotificationDeliveryClaim,
+  type NotificationJob,
+  type NotificationJobRepository,
+  type NotificationReadThroughResult,
+  type NotificationUnreadPreview,
 } from './notification-jobs';
 import type { DeviceRecord, DeviceRepository, RegisterDeviceInput } from './devices';
 import { DuplicateExpenseInvoiceError } from './expense-duplicate-error';
@@ -120,8 +131,34 @@ export class InMemoryInvoiceRepository implements InvoiceRepository {
 
 export class InMemoryDocumentRepository implements DocumentRepository {
   private readonly map = new Map<string, Document>();
+  snapshot(): ReturnType<Document['toProps']>[] {
+    return [...this.map.values()].map((document) => document.toProps());
+  }
+  restore(snapshot: ReturnType<Document['toProps']>[]): void {
+    this.map.clear();
+    for (const props of snapshot) this.map.set(props.id, Document.rehydrate(props));
+  }
   async save(d: Document): Promise<void> {
     this.map.set(d.id, d);
+  }
+  async classify(input: {
+    companyId: string;
+    documentId: string;
+    linkedEntityType: Parameters<Document['classify']>[0]['linkedEntityType'];
+    linkedEntityId: string;
+    expectedRevision: number;
+  }): Promise<'saved' | 'revision_conflict' | 'not_found'> {
+    const current = this.map.get(input.documentId);
+    if (!current || current.companyId !== input.companyId || current.status !== 'active') return 'not_found';
+    if (current.revision !== input.expectedRevision) return 'revision_conflict';
+    const next = Document.rehydrate(current.toProps());
+    const classified = next.classify({
+      linkedEntityType: input.linkedEntityType,
+      linkedEntityId: input.linkedEntityId,
+    });
+    if (!classified.ok) return 'revision_conflict';
+    this.map.set(input.documentId, next);
+    return 'saved';
   }
   async findById(companyId: string, id: string): Promise<Document | null> {
     const d = this.map.get(id);
@@ -138,6 +175,157 @@ export class InMemoryDocumentRepository implements DocumentRepository {
   }
   async listExpired(now: string): Promise<Document[]> {
     return [...this.map.values()].filter((d) => d.status === 'active' && d.retentionUntil <= now);
+  }
+}
+
+export class InMemoryDocumentFolderRepository implements DocumentFolderRepository {
+  private readonly map = new Map<string, DocumentFolderProps>();
+
+  constructor(private readonly documents: InMemoryDocumentRepository) {}
+
+  snapshot(): DocumentFolderProps[] {
+    return [...this.map.values()].map((props) => ({ ...props }));
+  }
+
+  restore(snapshot: DocumentFolderProps[]): void {
+    this.map.clear();
+    for (const props of snapshot) this.map.set(props.id, { ...props });
+  }
+
+  seed(folder: DocumentFolder): void {
+    this.map.set(folder.id, folder.toProps());
+  }
+
+  async findById(companyId: string, folderId: string): Promise<DocumentFolder | null> {
+    const folder = this.map.get(folderId);
+    return folder?.companyId === companyId ? DocumentFolder.rehydrate(folder) : null;
+  }
+
+  async listActiveAncestors(companyId: string, folderId: string): Promise<DocumentFolder[]> {
+    const chain: DocumentFolder[] = [];
+    const seen = new Set<string>();
+    let current = await this.findById(companyId, folderId);
+    while (current && current.status === 'active' && !seen.has(current.id)) {
+      seen.add(current.id);
+      chain.unshift(current);
+      current = current.parentId ? await this.findById(companyId, current.parentId) : null;
+    }
+    return current === null ? chain : [];
+  }
+
+  async listActiveSubtree(companyId: string, folderId: string): Promise<DocumentFolder[]> {
+    const root = await this.findById(companyId, folderId);
+    if (!root || root.status !== 'active') return [];
+    const result: DocumentFolder[] = [];
+    const queue = [root];
+    while (queue.length > 0) {
+      const folder = queue.shift()!;
+      result.push(folder);
+      queue.push(
+        ...[...this.map.values()]
+          .filter(
+            (candidate) =>
+              candidate.companyId === companyId && candidate.status === 'active' && candidate.parentId === folder.id,
+          )
+          .map((candidate) => DocumentFolder.rehydrate(candidate)),
+      );
+    }
+    return result;
+  }
+
+  async listChildren(input: {
+    companyId: string;
+    parentId: string | null;
+    limit: number;
+    cursor?: string | null;
+  }): Promise<{ items: DocumentFolder[]; nextCursor: string | null }> {
+    const sorted = [...this.map.values()]
+      .filter(
+        (folder) =>
+          folder.companyId === input.companyId && folder.status === 'active' && folder.parentId === input.parentId,
+      )
+      .map((folder) => DocumentFolder.rehydrate(folder))
+      .sort((a, b) => {
+        const left = a.toProps();
+        const right = b.toProps();
+        return left.normalizedName.localeCompare(right.normalizedName) || left.id.localeCompare(right.id);
+      });
+    const start = input.cursor ? Math.max(0, sorted.findIndex((folder) => folder.id === input.cursor) + 1) : 0;
+    const page = sorted.slice(start, start + input.limit + 1);
+    const hasMore = page.length > input.limit;
+    const items = page.slice(0, input.limit);
+    return { items, nextCursor: hasMore ? items.at(-1)?.id ?? null : null };
+  }
+
+  async findActiveSiblingByNormalizedName(input: {
+    companyId: string;
+    parentId: string | null;
+    normalizedName: string;
+    excludeFolderId?: string;
+  }): Promise<DocumentFolder | null> {
+    const props = [...this.map.values()].find(
+      (candidate) =>
+        candidate.companyId === input.companyId &&
+        candidate.status === 'active' &&
+        candidate.parentId === input.parentId &&
+        candidate.normalizedName === input.normalizedName &&
+        candidate.id !== input.excludeFolderId,
+    );
+    return props ? DocumentFolder.rehydrate(props) : null;
+  }
+
+  async save(folder: DocumentFolder, expectedRevision: number | null): Promise<DocumentFolderWriteResult> {
+    const props = folder.toProps();
+    const duplicate = await this.findActiveSiblingByNormalizedName({
+      companyId: props.companyId,
+      parentId: props.parentId,
+      normalizedName: props.normalizedName,
+      excludeFolderId: props.id,
+    });
+    if (duplicate) return { status: 'name_conflict' };
+    const existing = this.map.get(props.id);
+    if (expectedRevision === null) {
+      if (existing) return { status: 'revision_conflict' };
+    } else if (!existing || existing.revision !== expectedRevision) {
+      return { status: 'revision_conflict' };
+    }
+    this.map.set(props.id, props);
+    return { status: 'saved' };
+  }
+
+  async findDocumentMembership(companyId: string, documentId: string): Promise<DocumentFolderMembership | null> {
+    const document = await this.documents.findById(companyId, documentId);
+    return document
+      ? { id: document.id, companyId: document.companyId, folderId: document.folderId, status: document.status, revision: document.revision }
+      : null;
+  }
+
+  async listDocumentMemberships(companyId: string, folderIds: readonly string[]): Promise<DocumentFolderMembership[]> {
+    const allowed = new Set(folderIds);
+    return (await this.documents.listByCompany(companyId))
+      .filter((document) => document.folderId !== null && allowed.has(document.folderId))
+      .map((document) => ({
+        id: document.id,
+        companyId: document.companyId,
+        folderId: document.folderId,
+        status: document.status,
+        revision: document.revision,
+      }));
+  }
+
+  async moveDocument(input: {
+    companyId: string;
+    documentId: string;
+    targetFolderId: string | null;
+    expectedRevision: number;
+  }): Promise<DocumentFolderMembershipWriteResult> {
+    const document = await this.documents.findById(input.companyId, input.documentId);
+    if (!document || document.status !== 'active') return { status: 'not_found' };
+    if (document.revision !== input.expectedRevision) return { status: 'revision_conflict' };
+    const moved = document.moveToFolder(input.targetFolderId);
+    if (!moved.ok) return { status: 'revision_conflict' };
+    await this.documents.save(document);
+    return { status: 'saved', revision: document.revision };
   }
 }
 
@@ -201,28 +389,36 @@ export class InMemoryDocumentArchiveJobRepository implements DocumentArchiveJobR
 export class InMemoryNotificationJobRepository implements NotificationJobRepository {
   private readonly map = new Map<string, NotificationJob>();
 
+  private clone(job: NotificationJob): NotificationJob {
+    return { ...job, notification: job.notification ? { ...job.notification } : null };
+  }
+
   async enqueue(input: EnqueueNotificationJobInput): Promise<NotificationJob> {
+    const payloadFingerprint = notificationPayloadFingerprint(input.notification);
     const existing = [...this.map.values()].find(
       (job) => job.companyId === input.companyId && job.kind === input.kind && job.dedupeKey === input.dedupeKey,
     );
     if (existing) {
+      if (existing.payloadFingerprint !== payloadFingerprint) {
+        throw new NotificationDedupeConflictError(input.dedupeKey);
+      }
       if (existing.status !== 'done') {
+        // Une clé provider identifie une requête IMMUABLE. Modifier to/subject/body sous la
+        // même UUID ferait croire que B a été livré si Brevo avait déjà accepté A.
+        // Un lease, même expiré, reste en place pour le chemin de récupération/quarantaine.
+        if (existing.nextAttemptAt > input.now || existing.leaseToken !== null) return this.clone(existing);
         const updated: NotificationJob = {
           ...existing,
-          notification: input.notification,
-          channel: input.notification.channel,
-          recipient: input.notification.to,
-          subject: input.notification.subject,
           status: 'pending',
           nextAttemptAt: input.now,
+          leaseToken: null,
           lastError: null,
-          readAt: null, // contenu ré-émis = non lu
           updatedAt: input.now,
         };
         this.map.set(existing.id, updated);
-        return { ...updated };
+        return this.clone(updated);
       }
-      return { ...existing };
+      return this.clone(existing);
     }
 
     const created: NotificationJob = {
@@ -233,17 +429,25 @@ export class InMemoryNotificationJobRepository implements NotificationJobReposit
       channel: input.notification.channel,
       recipient: input.notification.to,
       subject: input.notification.subject,
-      notification: input.notification,
+      notification: { ...input.notification },
+      payloadFingerprint,
       status: 'pending',
       attempts: 0,
       nextAttemptAt: input.now,
+      leaseToken: null,
+      providerAttemptedAt: null,
       lastError: null,
       readAt: null,
       createdAt: input.now,
       updatedAt: input.now,
     };
     this.map.set(created.id, created);
-    return { ...created };
+    return this.clone(created);
+  }
+
+  async findById(companyId: string, id: string): Promise<NotificationJob | null> {
+    const job = this.map.get(id);
+    return job?.companyId === companyId ? this.clone(job) : null;
   }
 
   async listDue(companyId: string, now: string, limit: number): Promise<DeliverableNotificationJob[]> {
@@ -257,23 +461,123 @@ export class InMemoryNotificationJobRepository implements NotificationJobReposit
       .map((job) => ({ ...job, notification: job.notification! }));
   }
 
-  async markDone(id: string, at: string): Promise<void> {
+  async claimForDelivery(
+    id: string,
+    companyId: string,
+    expectedUpdatedAt: string,
+    now: string,
+    leaseUntil: string,
+    leaseToken: string,
+  ): Promise<NotificationDeliveryClaim> {
     const job = this.map.get(id);
-    if (job) this.map.set(id, { ...job, notification: null, status: 'done', lastError: null, updatedAt: at });
+    if (
+      !job ||
+      job.companyId !== companyId ||
+      job.updatedAt !== expectedUpdatedAt ||
+      (job.status !== 'pending' && job.status !== 'failed') ||
+      job.notification === null ||
+      job.nextAttemptAt > now
+    ) {
+      return { outcome: 'skipped' };
+    }
+    const attemptedAtMs = job.providerAttemptedAt === null ? null : Date.parse(job.providerAttemptedAt);
+    const providerWindowExpired = attemptedAtMs !== null && Date.parse(now) >= attemptedAtMs + 25 * 60_000;
+    const channelCannotRetry = attemptedAtMs !== null && job.channel !== 'email';
+    if (providerWindowExpired || channelCannotRetry) {
+      this.map.set(id, {
+        ...job,
+        status: 'failed',
+        nextAttemptAt: '9999-12-31T23:59:59.999Z',
+        leaseToken: null,
+        lastError: '[manual-review:provider-outcome-uncertain] Rejeu automatique interdit.',
+        updatedAt: now,
+      });
+      return {
+        outcome: 'quarantined',
+        reason: channelCannotRetry ? 'channel-without-idempotency' : 'provider-window-expired',
+      };
+    }
+    const claimed: DeliverableNotificationJob = {
+      ...job,
+      notification: job.notification,
+      nextAttemptAt: leaseUntil,
+      leaseToken,
+      providerAttemptedAt: job.providerAttemptedAt ?? now,
+      updatedAt: now,
+    };
+    this.map.set(id, claimed);
+    return { outcome: 'claimed', job: { ...claimed, notification: { ...claimed.notification } } };
   }
 
-  async markFailed(id: string, at: string, nextAttemptAt: string, error: string): Promise<void> {
+  async authorizeDeliveryAttempt(
+    id: string,
+    companyId: string,
+    leaseToken: string,
+    observedAt: string,
+  ): Promise<boolean> {
     const job = this.map.get(id);
-    if (job) {
+    if (
+      !job ||
+      job.companyId !== companyId ||
+      job.leaseToken !== leaseToken ||
+      (job.status !== 'pending' && job.status !== 'failed') ||
+      job.nextAttemptAt <= observedAt ||
+      job.providerAttemptedAt === null
+    ) {
+      return false;
+    }
+    return job.channel !== 'email'
+      || Date.parse(observedAt) < Date.parse(job.providerAttemptedAt) + 25 * 60_000;
+  }
+
+  async markDone(id: string, companyId: string, leaseToken: string, at: string): Promise<boolean> {
+    const job = this.map.get(id);
+    if (
+      !job ||
+      job.companyId !== companyId ||
+      job.status === 'done' ||
+      job.leaseToken !== leaseToken
+    ) {
+      return false;
+    }
+    this.map.set(id, {
+      ...job,
+      notification: null,
+      status: 'done',
+      leaseToken: null,
+      lastError: null,
+      updatedAt: at,
+    });
+    return true;
+  }
+
+  async markFailed(
+    id: string,
+    companyId: string,
+    leaseToken: string,
+    observedAt: string,
+    retryDelayMs: number,
+    error: string,
+  ): Promise<boolean> {
+    const job = this.map.get(id);
+    if (
+      job &&
+      job.companyId === companyId &&
+      job.status !== 'done' &&
+      job.leaseToken === leaseToken
+    ) {
       this.map.set(id, {
         ...job,
         status: 'failed',
         attempts: job.attempts + 1,
-        nextAttemptAt,
+        nextAttemptAt: new Date(Date.parse(observedAt) + retryDelayMs).toISOString(),
+        leaseToken: null,
         lastError: error.slice(0, 2000),
-        updatedAt: at,
+        updatedAt: observedAt,
       });
+      return true;
     }
+    return false;
   }
 
   async listRecent(companyId: string, limit: number): Promise<NotificationJob[]> {
@@ -281,15 +585,47 @@ export class InMemoryNotificationJobRepository implements NotificationJobReposit
       .filter((job) => job.companyId === companyId)
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
       .slice(0, limit)
-      .map((job) => ({ ...job }));
+      .map((job) => this.clone(job));
+  }
+
+  async previewUnread(companyId: string, observedAt: string): Promise<NotificationUnreadPreview> {
+    const unreadCount = [...this.map.values()].filter(
+      (job) =>
+        job.companyId === companyId &&
+        job.readAt === null &&
+        job.createdAt < observedAt,
+    ).length;
+    return { unreadCount, throughCreatedAt: observedAt };
   }
 
   async markRead(id: string, companyId: string, at: string): Promise<NotificationJob | null> {
     const job = this.map.get(id);
     if (!job || job.companyId !== companyId) return null;
-    const read: NotificationJob = { ...job, readAt: job.readAt ?? at, updatedAt: at };
+    if (job.readAt !== null) return this.clone(job);
+    const read: NotificationJob = { ...job, readAt: at, updatedAt: at };
     this.map.set(id, read);
-    return { ...read };
+    return this.clone(read);
+  }
+
+  async markReadThrough(
+    companyId: string,
+    throughCreatedAt: string,
+    at: string,
+  ): Promise<NotificationReadThroughResult> {
+    if (throughCreatedAt > at) return { updatedCount: 0, readAt: at, cutoffAccepted: false };
+    let updatedCount = 0;
+    for (const [id, job] of this.map.entries()) {
+      if (
+        job.companyId !== companyId ||
+        job.readAt !== null ||
+        job.createdAt >= throughCreatedAt
+      ) {
+        continue;
+      }
+      this.map.set(id, { ...job, readAt: at, updatedAt: at });
+      updatedCount += 1;
+    }
+    return { updatedCount, readAt: at, cutoffAccepted: true };
   }
 }
 
@@ -422,7 +758,7 @@ export class InMemoryPublicAccessTokenRepository implements PublicAccessTokenRep
 }
 
 export class InMemoryExpenseRepository implements ExpenseRepository {
-  private readonly map = new Map<string, Expense>();
+  private map = new Map<string, Expense>();
   async save(e: Expense): Promise<void> {
     const props = e.toProps();
     // C-EXP-FIX1 (Bug 1 — DOUBLON TOCTOU) : miroir FIDÈLE de l'index UNIQUE PARTIEL Postgres
@@ -449,10 +785,18 @@ export class InMemoryExpenseRepository implements ExpenseRepository {
   async listByCompany(companyId: string): Promise<Expense[]> {
     return [...this.map.values()].filter((e) => e.companyId === companyId);
   }
+
+  snapshot(): Map<string, Expense> {
+    return new Map([...this.map].map(([id, expense]) => [id, Expense.rehydrate(expense.toProps())]));
+  }
+
+  restore(snapshot: Map<string, Expense>): void {
+    this.map = new Map([...snapshot].map(([id, expense]) => [id, Expense.rehydrate(expense.toProps())]));
+  }
 }
 
 export class InMemoryAccountingEntryRepository implements AccountingEntryRepository {
-  private readonly map = new Map<string, AccountingEntry>();
+  private map = new Map<string, AccountingEntry>();
 
   async save(entry: AccountingEntry): Promise<void> {
     this.map.set(entry.id, AccountingEntry.rehydrate(entry.toProps()));
@@ -467,6 +811,14 @@ export class InMemoryAccountingEntryRepository implements AccountingEntryReposit
     return [...this.map.values()]
       .filter((entry) => entry.companyId === companyId)
       .map((entry) => AccountingEntry.rehydrate(entry.toProps()));
+  }
+
+  snapshot(): Map<string, AccountingEntry> {
+    return new Map([...this.map].map(([id, entry]) => [id, AccountingEntry.rehydrate(entry.toProps())]));
+  }
+
+  restore(snapshot: Map<string, AccountingEntry>): void {
+    this.map = new Map([...snapshot].map(([id, entry]) => [id, AccountingEntry.rehydrate(entry.toProps())]));
   }
 }
 

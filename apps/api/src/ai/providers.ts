@@ -4,6 +4,7 @@ import {
   type LlmResult,
   type LlmCompletion,
   type LlmCompleteOptions,
+  type LlmGenerateOptions,
   type LlmToolCall,
   type Provider,
   type SttPort,
@@ -13,16 +14,88 @@ import {
 } from '@bob/ai';
 
 const TIMEOUT_MS = 12_000;
+const VOICE_PROVIDER_TIMEOUT_MS = 20_000;
+const MAX_STT_JSON_BYTES = 64 * 1024;
+const MAX_TTS_AUDIO_BYTES = 4 * 1024 * 1024;
+const MAX_TTS_JSON_BYTES = Math.ceil(MAX_TTS_AUDIO_BYTES * 4 / 3) + 64 * 1024;
 
-async function fetchJson(url: string, init: RequestInit): Promise<unknown> {
+function boundedProviderSignal(callerSignal?: AbortSignal): AbortSignal {
+  const timeout = AbortSignal.timeout(VOICE_PROVIDER_TIMEOUT_MS);
+  return callerSignal === undefined ? timeout : AbortSignal.any([callerSignal, timeout]);
+}
+
+async function readBoundedBytes(
+  response: Response,
+  maxBytes: number,
+  signal: AbortSignal,
+): Promise<Uint8Array> {
+  const announced = response.headers.get('content-length');
+  if (announced !== null) {
+    const length = Number(announced);
+    if (!Number.isSafeInteger(length) || length < 0 || length > maxBytes) {
+      await response.body?.cancel('voice-response-too-large').catch(() => undefined);
+      throw new Error('voice_provider_response_too_large');
+    }
+  }
+  if (!response.body) return new Uint8Array();
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  const onAbort = (): void => { void reader.cancel('voice-request-aborted').catch(() => undefined); };
+  signal.addEventListener('abort', onAbort, { once: true });
+  try {
+    signal.throwIfAborted();
+    let part = await reader.read();
+    while (!part.done) {
+      signal.throwIfAborted();
+      length += part.value.byteLength;
+      if (length > maxBytes) {
+        await reader.cancel('voice-response-too-large');
+        throw new Error('voice_provider_response_too_large');
+      }
+      chunks.push(part.value);
+      part = await reader.read();
+    }
+    signal.throwIfAborted();
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+    reader.releaseLock();
+  }
+  const output = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    output.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return output;
+}
+
+async function readBoundedJson(
+  response: Response,
+  maxBytes: number,
+  signal: AbortSignal,
+): Promise<unknown> {
+  const bytes = await readBoundedBytes(response, maxBytes, signal);
+  try {
+    return JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+  } catch {
+    throw new Error('voice_provider_invalid_json');
+  }
+}
+
+async function fetchJson(url: string, init: RequestInit, callerSignal?: AbortSignal): Promise<unknown> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const abortFromCaller = () => controller.abort(callerSignal?.reason);
+  if (callerSignal?.aborted) abortFromCaller();
+  else callerSignal?.addEventListener('abort', abortFromCaller, { once: true });
   try {
     const res = await fetch(url, { ...init, signal: controller.signal });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return await res.json();
   } finally {
     clearTimeout(timer);
+    callerSignal?.removeEventListener('abort', abortFromCaller);
   }
 }
 
@@ -73,11 +146,15 @@ export class OpenAiCompatibleLlmAdapter implements LlmPort {
       }));
       body.tool_choice = opts.toolChoice === 'required' ? 'required' : opts.toolChoice === 'none' ? 'none' : 'auto';
     }
-    const data = (await fetchJson(`${this.cfg.baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${this.cfg.apiKey}` },
-      body: JSON.stringify(body),
-    })) as OpenAiResponse;
+    const data = (await fetchJson(
+      `${this.cfg.baseUrl}/chat/completions`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${this.cfg.apiKey}` },
+        body: JSON.stringify(body),
+      },
+      opts.signal,
+    )) as OpenAiResponse;
     const msg = data.choices?.[0]?.message;
     const toolCalls: LlmToolCall[] = (msg?.tool_calls ?? [])
       .filter((c) => c.function?.name)
@@ -85,8 +162,8 @@ export class OpenAiCompatibleLlmAdapter implements LlmPort {
     return { text: msg?.content ?? null, toolCalls, model: data.model ?? this.cfg.model };
   }
 
-  async generate(messages: LlmMessage[]): Promise<LlmResult> {
-    const r = await this.complete(messages);
+  async generate(messages: LlmMessage[], opts: LlmGenerateOptions = {}): Promise<LlmResult> {
+    const r = await this.complete(messages, opts);
     return { text: r.text ?? '', model: r.model };
   }
 
@@ -117,15 +194,19 @@ export class AnthropicLlmAdapter implements LlmPort {
       if (opts.toolChoice === 'required') body.tool_choice = { type: 'any' };
       else if (opts.toolChoice !== 'none') body.tool_choice = { type: 'auto' };
     }
-    const data = (await fetchJson(`${this.baseUrl}/v1/messages`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-api-key': this.apiKey,
-        'anthropic-version': '2023-06-01',
+    const data = (await fetchJson(
+      `${this.baseUrl}/v1/messages`,
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-api-key': this.apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify(body),
       },
-      body: JSON.stringify(body),
-    })) as AnthropicResponse;
+      opts.signal,
+    )) as AnthropicResponse;
     const blocks = data.content ?? [];
     const toolCalls: LlmToolCall[] = blocks
       .filter((b) => b.type === 'tool_use' && b.name)
@@ -137,8 +218,8 @@ export class AnthropicLlmAdapter implements LlmPort {
     return { text, toolCalls, model: data.model ?? this.model };
   }
 
-  async generate(messages: LlmMessage[]): Promise<LlmResult> {
-    const r = await this.complete(messages);
+  async generate(messages: LlmMessage[], opts: LlmGenerateOptions = {}): Promise<LlmResult> {
+    const r = await this.complete(messages, opts);
     return { text: r.text ?? '', model: r.model };
   }
 
@@ -203,21 +284,26 @@ export class WhisperSttAdapter implements SttPort {
     private readonly baseUrl = process.env.OPENAI_URL ?? 'https://api.openai.com/v1',
   ) {}
 
-  async transcribe(audioBase64: string, mimeType: string): Promise<SttResult> {
+  async transcribe(
+    audioBase64: string,
+    mimeType: string,
+    options: { readonly signal?: AbortSignal } = {},
+  ): Promise<SttResult> {
     const bytes = Buffer.from(audioBase64, 'base64');
     const ext = audioExtension(mimeType);
     const form = new FormData();
     form.append('file', new Blob([bytes], { type: mimeType }), `audio.${ext}`);
     form.append('model', this.model);
     form.append('language', 'fr');
+    const signal = boundedProviderSignal(options.signal);
     const res = await fetch(`${this.baseUrl}/audio/transcriptions`, {
       method: 'POST',
       headers: { authorization: `Bearer ${this.apiKey}` },
       body: form,
-      signal: AbortSignal.timeout(20_000),
+      signal,
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = (await res.json()) as { text?: string };
+    const data = (await readBoundedJson(res, MAX_STT_JSON_BYTES, signal)) as { text?: string };
     return { text: (data.text ?? '').trim(), model: this.model };
   }
 
@@ -236,21 +322,26 @@ export class MistralVoxtralSttAdapter implements SttPort {
     private readonly contextBias = process.env.MISTRAL_STT_CONTEXT_BIAS ?? '',
   ) {}
 
-  async transcribe(audioBase64: string, mimeType: string): Promise<SttResult> {
+  async transcribe(
+    audioBase64: string,
+    mimeType: string,
+    options: { readonly signal?: AbortSignal } = {},
+  ): Promise<SttResult> {
     const bytes = Buffer.from(audioBase64, 'base64');
     const form = new FormData();
     form.append('file', new Blob([bytes], { type: mimeType }), `audio.${audioExtension(mimeType)}`);
     form.append('model', this.model);
     form.append('language', 'fr');
     if (this.contextBias.trim()) form.append('context_bias', this.contextBias.trim());
+    const signal = boundedProviderSignal(options.signal);
     const res = await fetch(`${this.baseUrl}/audio/transcriptions`, {
       method: 'POST',
       headers: { authorization: `Bearer ${this.apiKey}` },
       body: form,
-      signal: AbortSignal.timeout(20_000),
+      signal,
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = (await res.json()) as { text?: string };
+    const data = (await readBoundedJson(res, MAX_STT_JSON_BYTES, signal)) as { text?: string };
     return { text: (data.text ?? '').trim(), model: this.model };
   }
 
@@ -269,26 +360,30 @@ export class MistralVoxtralTtsAdapter implements TtsPort {
     private readonly responseFormat: 'mp3' | 'wav' | 'pcm' | 'flac' | 'opus' = 'mp3',
   ) {}
 
-  async synthesize(text: string): Promise<TtsResult> {
+  async synthesize(
+    text: string,
+    options: { readonly signal?: AbortSignal } = {},
+  ): Promise<TtsResult> {
     const body: Record<string, unknown> = {
       model: this.model,
       input: text,
       response_format: this.responseFormat,
     };
     if (this.voiceId) body.voice_id = this.voiceId;
+    const signal = boundedProviderSignal(options.signal);
     const res = await fetch(`${this.baseUrl}/audio/speech`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${this.apiKey}` },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(20_000),
+      signal,
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const contentType = res.headers.get('content-type') ?? '';
     if (contentType.includes('application/json')) {
-      const data = (await res.json()) as { audio_data?: string };
+      const data = (await readBoundedJson(res, MAX_TTS_JSON_BYTES, signal)) as { audio_data?: string };
       return { audioBase64: data.audio_data ?? '', mimeType: `audio/${this.responseFormat}`, model: this.model };
     }
-    const bytes = Buffer.from(await res.arrayBuffer());
+    const bytes = Buffer.from(await readBoundedBytes(res, MAX_TTS_AUDIO_BYTES, signal));
     return { audioBase64: bytes.toString('base64'), mimeType: contentType || `audio/${this.responseFormat}`, model: this.model };
   }
 
@@ -311,6 +406,19 @@ export function buildSttCloud(): SttPort | undefined {
 
 export function buildTtsCloud(): TtsPort | undefined {
   return process.env.MISTRAL_API_KEY ? new MistralVoxtralTtsAdapter(process.env.MISTRAL_API_KEY) : undefined;
+}
+
+/**
+ * Audit acoustique Bob Live : l'ASR doit être indépendant du moteur TTS Mistral. On force
+ * donc OpenAI ici, sans reprendre la préférence STT utilisateur potentiellement Mistral.
+ */
+export function buildRealtimeSpeechAuditStt(): SttPort | undefined {
+  return process.env.OPENAI_API_KEY
+    ? new WhisperSttAdapter(
+        process.env.OPENAI_API_KEY,
+        process.env.REALTIME_SPEECH_AUDIT_STT_MODEL ?? 'gpt-4o-mini-transcribe',
+      )
+    : undefined;
 }
 
 interface OpenAiResponse {

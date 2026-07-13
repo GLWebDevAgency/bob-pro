@@ -102,6 +102,11 @@ enum StoredDocumentStatus {
   deleted
 }
 
+enum DocumentFolderStatus {
+  active
+  deleted
+}
+
 enum StoredDocumentLinkedEntityType {
   invoice
   quote
@@ -164,42 +169,95 @@ enum AccountingSourceType {
   manual_adjustment
 }
 
+enum CabinetStatus {
+  active
+  suspended
+}
+
+enum CabinetRole {
+  admin
+  manager
+  collaborator
+}
+
+enum CabinetMemberStatus {
+  active
+  suspended
+  revoked
+}
+
+enum CabinetInvitationStatus {
+  pending
+  accepted
+  expired
+  revoked
+}
+
+enum CabinetInvitationDeliveryStatus {
+  pending
+  sending
+  done
+  failed
+  cancelled
+}
+
+enum ReleaseEnvironment {
+  development
+  staging
+  production
+}
+
+enum ReleaseFlagSubjectType {
+  user
+  cabinet
+}
+
 model Company {
-  id                  String               @id
-  name                String
-  legalForm           LegalForm
-  siren               String               @db.Char(9)
-  siret               String               @unique @db.Char(14)
-  apeCode             String?
-  trade               String
-  vatRegime           VatRegime
-  rcsOrRm             String?
-  addrLine1           String
-  addrZip             String
-  addrCity            String
-  tvaIntracom         String?
-  dateCreation        DateTime?            @db.Date
-  iban                String?
-  bic                 String?
-  insurerName         String?
-  policyNo            String?
-  coverage            String?
-  policyExpiresAt     DateTime?
-  customers           Customer[]
-  quotes              Quote[]
-  invoices            Invoice[]
-  payments            Payment[]
-  publicAccessTokens  PublicAccessToken[]
-  expenses            Expense[]
-  documents           StoredDocument[]
-  documentArchiveJobs DocumentArchiveJob[]
-  notificationJobs    NotificationJob[]
-  devices             Device[]
-  agentJournalEntries AgentJournalEntry[]
-  accountingAccounts  AccountingAccount[]
-  accountingEntries   AccountingEntry[]
-  supplierMemory       SupplierMemoryProfile[]
-  counters            DocumentCounter[]
+  id                      String                       @id
+  name                    String
+  legalForm               LegalForm
+  siren                   String                       @db.Char(9)
+  siret                   String                       @unique @db.Char(14)
+  apeCode                 String?
+  trade                   String
+  vatRegime               VatRegime
+  rcsOrRm                 String?
+  addrLine1               String
+  addrZip                 String
+  addrCity                String
+  tvaIntracom             String?
+  dateCreation            DateTime?                    @db.Date
+  iban                    String?
+  bic                     String?
+  insurerName             String?
+  policyNo                String?
+  coverage                String?
+  policyExpiresAt         DateTime?
+  customers               Customer[]
+  quotes                  Quote[]
+  invoices                Invoice[]
+  payments                Payment[]
+  publicAccessTokens      PublicAccessToken[]
+  expenses                Expense[]
+  expenseCreationRequests ExpenseCreationRequest[]
+  documents               StoredDocument[]
+  documentFolders         DocumentFolder[]
+  folderDeletionPlans     DocumentFolderDeletionPlan[]
+  documentArchiveJobs     DocumentArchiveJob[]
+  notificationJobs        NotificationJob[]
+  devices                 Device[]
+  agentJournalEntries     AgentJournalEntry[]
+  accountingAccounts      AccountingAccount[]
+  accountingEntries       AccountingEntry[]
+  supplierMemory          SupplierMemoryProfile[]
+  counters                DocumentCounter[]
+  realtimeAdmissionEvents RealtimeAdmissionEvent[]
+  realtimeSessionLeases   RealtimeSessionLease[]
+  realtimeSpeechArtifacts RealtimeSpeechArtifact[]
+  realtimeControlGrants   RealtimeControlGrant[]
+  realtimeControlUses     RealtimeControlConsumption[]
+  realtimeVoiceUsage      RealtimeVoiceUsageEvent[]
+  realtimeVoiceUsageDaily RealtimeVoiceUsageDaily[]
 
   @@map("companies")
 }
@@ -252,29 +310,29 @@ model Quote {
 }
 
 model Invoice {
-  id             String        @id
-  companyId      String
-  company        Company       @relation(fields: [companyId], references: [id])
-  customerId     String
-  kind           DocKind
-  status         InvoiceStatus @default(draft)
-  number         String?
-  issuedAt       DateTime?
-  dueAt          DateTime?
-  parentQuoteId  String?
-  depositPct     Int?
+  id                    String        @id
+  companyId             String
+  company               Company       @relation(fields: [companyId], references: [id])
+  customerId            String
+  kind                  DocKind
+  status                InvoiceStatus @default(draft)
+  number                String?
+  issuedAt              DateTime?
+  dueAt                 DateTime?
+  parentQuoteId         String?
+  depositPct            Int?
   // Acompte déjà facturé, déduit du net à payer d'une finale (A2-C16).
-  depositDeductionCents Int    @default(0)
+  depositDeductionCents Int           @default(0)
   depositInvoiceId      String?
-  paidCents      Int           @default(0)
-  totalsHt       Int           @default(0)
-  totalsVat      Int           @default(0)
-  totalsTtc      Int           @default(0)
-  totalsNetToPay Int           @default(0)
-  vatByRate      Json          @default("{}")
-  legalMentions  String[]      @default([])
-  lines          LineItem[]    @relation("InvoiceLines")
-  payments       Payment[]
+  paidCents             Int           @default(0)
+  totalsHt              Int           @default(0)
+  totalsVat             Int           @default(0)
+  totalsTtc             Int           @default(0)
+  totalsNetToPay        Int           @default(0)
+  vatByRate             Json          @default("{}")
+  legalMentions         String[]      @default([])
+  lines                 LineItem[]    @relation("InvoiceLines")
+  payments              Payment[]
 
   @@unique([companyId, number], name: "uniq_invoice_number")
   @@unique([companyId, parentQuoteId, kind], name: "uniq_invoice_parent_quote_kind")
@@ -336,25 +394,27 @@ model PublicAccessToken {
 }
 
 model Expense {
-  id                    String   @id
+  id                    String                   @id
   companyId             String
-  company               Company  @relation(fields: [companyId], references: [id])
+  company               Company                  @relation(fields: [companyId], references: [id])
   supplierName          String
-  supplierSiren         String?  @db.Char(9)
+  supplierSiren         String?                  @db.Char(9)
   documentDate          String
   totalTtcCents         Int
   totalHtCents          Int?
   vatCents              Int?
   vatRatePct            Float?
   category              String
-  status                String   @default("to_pay")
-  source                String   @default("manual")
+  status                String                   @default("to_pay")
+  source                String                   @default("manual")
   /// C-EXP6b — n° de facture fournisseur (Factur-X BT-1) : clé anti-doublon avec le SIREN.
   supplierInvoiceNumber String?
   /// C-EXP6b — échéance fournisseur (Factur-X BT-9), même format DateOnly que documentDate.
   dueAt                 String?
-  createdAt             DateTime @default(now())
+  createdAt             DateTime                 @default(now())
+  creationRequests      ExpenseCreationRequest[]
 
+  @@unique([id, companyId], name: "uniq_expense_id_company", map: "uniq_expense_id_company")
   @@index([companyId])
   // C-EXP-FIX1 (Bug 1 — DOUBLON TOCTOU) : index UNIQUE PARTIEL
   // (companyId, supplierSiren, supplierInvoiceNumber) WHERE supplierInvoiceNumber IS NOT NULL —
@@ -362,6 +422,23 @@ model Expense {
   // 20260705120000_expense_facturx_reception. Garde concurrentielle anti double e-facture ;
   // les dépenses manuelles/OCR (n° NULL) restent NON contraintes.
   @@map("expenses")
+}
+
+/// Registre d'idempotence des créations de dépenses. Le secret appelant n'est jamais stocké :
+/// keyHash est un SHA-256 tenant-salé, payloadHash l'empreinte de l'intention comptable canonique.
+/// Le rôle runtime n'a que SELECT/INSERT ; les lignes publiées sont immuables.
+model ExpenseCreationRequest {
+  companyId   String   @db.Text
+  company     Company  @relation(fields: [companyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  keyHash     String   @db.Char(64)
+  payloadHash String   @db.Char(64)
+  expenseId   String
+  expense     Expense  @relation(fields: [expenseId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Cascade)
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+
+  @@id([companyId, keyHash], name: "expense_creation_request_key")
+  @@index([expenseId, companyId])
+  @@map("expense_creation_requests")
 }
 
 model SupplierMemoryProfile {
@@ -395,6 +472,9 @@ model StoredDocument {
   byteSize         Int
   sha256           String                          @db.Char(64)
   storageKey       String                          @unique
+  folderId         String?
+  folder           DocumentFolder?                 @relation("StoredDocumentFolder", fields: [companyId, folderId], references: [companyId, id], onDelete: Restrict, onUpdate: Cascade)
+  revision         Int                             @default(1)
   linkedEntityType StoredDocumentLinkedEntityType?
   linkedEntityId   String?
   documentDate     String?
@@ -405,26 +485,93 @@ model StoredDocument {
   deletedAt        DateTime?
   tags             String[]                        @default([])
   versions         StoredDocumentVersion[]
+  analyses         DocumentAnalysisCache[]         @relation("StoredDocumentAnalyses")
 
+  @@unique([companyId, id], name: "uniq_stored_document_company_id", map: "uniq_stored_document_company_id")
   @@index([companyId, kind])
+  @@index([companyId, folderId, createdAt])
   @@index([companyId, linkedEntityType, linkedEntityId])
   @@index([companyId, retentionUntil])
   @@map("documents")
 }
 
+/**
+ * Cache append-only d'une analyse documentaire validée. La clé inclut le tenant,
+ * la version logique et l'empreinte de l'original : un résultat publié n'est jamais
+ * remplacé silencieusement par une nouvelle exécution d'analyseur.
+ */
+model DocumentAnalysisCache {
+  companyId             String
+  documentId            String
+  document              StoredDocument        @relation("StoredDocumentAnalyses", fields: [companyId, documentId], references: [companyId, id], onDelete: Cascade, onUpdate: Cascade)
+  documentVersion       Int
+  sourceSha256          String                @db.Char(64)
+  sourceVersion         StoredDocumentVersion @relation("StoredDocumentVersionAnalyses", fields: [documentId, documentVersion, sourceSha256], references: [documentId, version, sha256], onDelete: Cascade, onUpdate: Cascade)
+  analyzerVersion       String
+  analysisSchemaVersion Int                   @default(1)
+  analysis              Json
+  analyzedAt            DateTime              @db.Timestamptz(6)
+
+  @@id([companyId, documentId, documentVersion, sourceSha256], name: "document_analysis_cache_key", map: "document_analyses_pkey")
+  @@map("document_analyses")
+}
+
+model DocumentFolder {
+  id             String                       @id
+  companyId      String
+  company        Company                      @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  parentId       String?
+  parent         DocumentFolder?              @relation("DocumentFolderHierarchy", fields: [companyId, parentId], references: [companyId, id], onDelete: Restrict, onUpdate: Cascade)
+  children       DocumentFolder[]             @relation("DocumentFolderHierarchy")
+  documents      StoredDocument[]             @relation("StoredDocumentFolder")
+  deletionPlans  DocumentFolderDeletionPlan[]
+  name           String
+  normalizedName String
+  systemKey      String?
+  status         DocumentFolderStatus         @default(active)
+  revision       Int                          @default(1)
+  createdAt      DateTime
+  updatedAt      DateTime
+  deletedAt      DateTime?
+
+  @@unique([companyId, id], name: "uniq_document_folder_company_id")
+  @@unique([companyId, systemKey], name: "uniq_document_folder_system_key")
+  @@index([companyId, parentId, status])
+  @@map("document_folders")
+}
+
+model DocumentFolderDeletionPlan {
+  id               String         @id
+  companyId        String
+  company          Company        @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  folderId         String
+  folder           DocumentFolder @relation(fields: [companyId, folderId], references: [companyId, id], onDelete: Restrict, onUpdate: Cascade)
+  expectedRevision Int
+  expectedSnapshot Json
+  createdAt        DateTime
+  expiresAt        DateTime
+  consumedAt       DateTime?
+
+  @@index([companyId, expiresAt])
+  @@index([expiresAt])
+  @@map("document_folder_deletion_plans")
+}
+
 model StoredDocumentVersion {
-  id         String         @id
+  id         String                  @id
   documentId String
-  document   StoredDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  document   StoredDocument          @relation(fields: [documentId], references: [id], onDelete: Cascade)
   version    Int
-  storageKey String         @unique
-  sha256     String         @db.Char(64)
+  storageKey String                  @unique
+  sha256     String                  @db.Char(64)
+  analyses   DocumentAnalysisCache[] @relation("StoredDocumentVersionAnalyses")
   mimeType   String
   byteSize   Int
   createdAt  DateTime
   reason     String
 
   @@unique([documentId, version])
+  @@unique([documentId, version, sha256], name: "uniq_document_version_source", map: "uniq_document_version_source")
   @@index([documentId])
   @@map("document_versions")
 }
@@ -448,25 +595,31 @@ model DocumentArchiveJob {
 }
 
 model NotificationJob {
-  id            String                @id
-  companyId     String
-  company       Company               @relation(fields: [companyId], references: [id])
-  kind          String
-  dedupeKey     String
-  channel       String
-  recipient     String
-  subject       String
-  payload       Json?
-  status        NotificationJobStatus @default(pending)
-  attempts      Int                   @default(0)
-  nextAttemptAt DateTime
-  lastError     String?
-  readAt        DateTime?
-  createdAt     DateTime              @default(now())
-  updatedAt     DateTime              @updatedAt
+  id                  String                @id
+  companyId           String
+  company             Company               @relation(fields: [companyId], references: [id])
+  kind                String
+  dedupeKey           String
+  channel             String
+  recipient           String
+  subject             String
+  payload             Json?
+  payloadFingerprint  String?
+  status              NotificationJobStatus @default(pending)
+  attempts            Int                   @default(0)
+  nextAttemptAt       DateTime
+  leaseToken          String?
+  providerAttemptedAt DateTime?
+  lastError           String?
+  readAt              DateTime?
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime              @updatedAt
 
   @@unique([companyId, kind, dedupeKey], name: "uniq_notification_job")
   @@index([companyId, status, nextAttemptAt])
+  @@index([companyId, createdAt(sort: Desc)], map: "notification_jobs_recent_idx")
+  // Index partiel due+payload défini dans la migration leaseToken : Prisma 6 ne sait pas
+  // représenter son prédicat WHERE sans perdre la certification SQL PostgreSQL.
   @@map("notification_jobs")
 }
 
@@ -514,16 +667,16 @@ model AgentJournalEntry {
 
 model AccountingAccount {
   companyId      String
-  company        Company              @relation(fields: [companyId], references: [id])
+  company        Company               @relation(fields: [companyId], references: [id])
   code           String
   label          String
   kind           AccountingAccountKind
   normalSide     AccountingNormalSide
   parentCode     String?
-  active         Boolean              @default(true)
-  postingAllowed Boolean              @default(true)
-  createdAt      DateTime             @default(now())
-  updatedAt      DateTime             @updatedAt
+  active         Boolean               @default(true)
+  postingAllowed Boolean               @default(true)
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
 
   @@id([companyId, code])
   @@index([companyId, parentCode])
@@ -576,4 +729,421 @@ model DocumentCounter {
 
   @@id([companyId, counterKey, fiscalYear])
   @@map("document_counters")
+}
+
+/// Journal glissant des réservations Bob Live admises. Le subject utilisateur est un HMAC
+/// SHA-256 hex ; aucun userId brut ni jeton de bail ne doit entrer dans cette table.
+model RealtimeAdmissionEvent {
+  id          String   @id @default(uuid()) @db.Uuid
+  companyId   String   @db.Text
+  company     Company  @relation(fields: [companyId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  subjectHash String   @db.Char(64)
+  sessionId   String   @unique(map: "realtime_admission_events_session_id_key") @db.Uuid
+  admittedAt  DateTime @db.Timestamptz(6)
+
+  @@index([companyId, admittedAt], map: "realtime_admission_events_tenant_window_idx")
+  @@index([companyId, subjectHash, admittedAt], map: "realtime_admission_events_subject_window_idx")
+  @@map("realtime_admission_events")
+}
+
+/// Bail distribué unique par tenant + sujet. Le token 256 bits reste dans le processus qui l'a
+/// créé ; seule son empreinte SHA-256 permet les transitions CAS reserve/bind/activate/renew/release.
+model RealtimeSessionLease {
+  companyId                   String    @db.Text
+  company                     Company   @relation(fields: [companyId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  subjectHash                 String    @db.Char(64)
+  sessionId                   String    @unique(map: "realtime_session_leases_session_id_key") @db.Uuid
+  leaseTokenHash              String    @unique(map: "realtime_session_leases_token_hash_key") @db.Char(64)
+  state                       String    @db.Text
+  providerCallId              String?   @unique(map: "realtime_session_leases_provider_call_id_key") @db.Text
+  reaperTokenHash             String?   @unique(map: "realtime_session_leases_reaper_token_hash_key") @db.Char(64)
+  reservedAt                  DateTime  @db.Timestamptz(6)
+  leaseExpiresAt              DateTime  @db.Timestamptz(6)
+  hardExpiresAt               DateTime  @db.Timestamptz(6)
+  activatedAt                 DateTime? @db.Timestamptz(6)
+  // Snapshot écran éphémère, validé par @bob/ai. Il disparaît avec le bail et n'autorise rien.
+  contextSchemaVersion        Int?
+  contextRevision             Int?
+  contextPayload              Json?
+  contextDigest               String?   @db.Char(64)
+  contextUpdatedAt            DateTime? @db.Timestamptz(6)
+  // Le sideband est un bail distinct : seul son token hashé permet les renouvellements CAS.
+  sidebandOwnerInstanceHash   String?   @db.Char(64)
+  sidebandOwnerTokenHash      String?   @unique(map: "realtime_session_leases_sideband_owner_token_hash_key") @db.Char(64)
+  sidebandOwnerLeaseExpiresAt DateTime? @db.Timestamptz(6)
+  // ACK du contexte effectivement appliqué par le sideband propriétaire. Il peut retarder
+  // la révision publiée, mais doit la rejoindre avant toute publication audio ou action.
+  contextAppliedRevision      Int?
+  contextAppliedDigest        String?   @db.Char(64)
+  contextAppliedAt            DateTime? @db.Timestamptz(6)
+  sidebandProtocolVersion     Int       @default(2)
+  nextSpeechSequence          Int       @default(1)
+  updatedAt                   DateTime  @db.Timestamptz(6)
+  version                     Int       @default(1)
+
+  @@id([companyId, subjectHash], name: "realtime_session_lease_subject")
+  @@index([companyId, state, leaseExpiresAt], map: "realtime_session_leases_tenant_reaper_idx")
+  @@index([state, leaseExpiresAt], map: "realtime_session_leases_global_reaper_idx")
+  @@index([hardExpiresAt], map: "realtime_session_leases_hard_expiry_idx")
+  @@map("realtime_session_leases")
+}
+
+/// Segment audio Bob Live rendu hors du canal WebRTC descendant. La base ne conserve ni texte,
+/// ni transcription, ni audio : seulement des HMAC de preuve et la clé d'un objet privé éphémère.
+/// Les transitions et l'immuabilité des preuves sont imposées par triggers SQL.
+model RealtimeSpeechArtifact {
+  id                     String                @id @default(uuid()) @db.Uuid
+  companyId              String                @db.Text
+  company                Company               @relation(fields: [companyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  subjectHash            String                @db.Char(64)
+  sessionId              String                @db.Uuid
+  turnId                 String                @db.Uuid
+  sequence               Int                   @default(0)
+  segmentIndex           Int
+  renderTokenHash        String                @unique(map: "realtime_speech_artifacts_render_token_hash_key") @db.Char(64)
+  state                  String                @db.Text
+  classification         String                @db.Text
+  source                 String?               @db.Text
+  contextRevision        Int
+  contextDigest          String                @db.Char(64)
+  storageKey             String?               @db.Text
+  storageExpiresAt       DateTime?             @db.Timestamptz(6)
+  mimeType               String?               @db.Text
+  byteLength             Int?
+  durationMs             Int?
+  canonicalSpeechHmac    String                @db.Char(64)
+  auditTranscriptHmac    String?               @db.Char(64)
+  factsHmac              String                @db.Char(64)
+  evidenceHmac           String?               @db.Char(64)
+  audioSha256            String?               @db.Char(64)
+  proofKeyVersion        Int?
+  synthesisAdapterId     String?               @db.Text
+  synthesisTrustDomain   String?               @db.Text
+  auditAdapterId         String?               @db.Text
+  auditTrustDomain       String?               @db.Text
+  renderLeaseExpiresAt   DateTime?             @db.Timestamptz(6)
+  deliveryId             String?               @unique(map: "realtime_speech_artifacts_delivery_id_key") @db.Uuid
+  cancellationId         String?               @unique(map: "realtime_speech_artifacts_cancellation_id_key") @db.Uuid
+  cancellationReasonCode String?               @db.Text
+  failureReasonCode      String?               @db.Text
+  objectPurgedAt         DateTime?             @db.Timestamptz(6)
+  purgeTokenHash         String?               @unique(map: "realtime_speech_artifacts_purge_token_hash_key") @db.Char(64)
+  purgeLeaseExpiresAt    DateTime?             @db.Timestamptz(6)
+  createdAt              DateTime              @db.Timestamptz(6)
+  updatedAt              DateTime              @db.Timestamptz(6)
+  readyAt                DateTime?             @db.Timestamptz(6)
+  deliveredAt            DateTime?             @db.Timestamptz(6)
+  cancelledAt            DateTime?             @db.Timestamptz(6)
+  failedAt               DateTime?             @db.Timestamptz(6)
+  retentionExpiresAt     DateTime              @db.Timestamptz(6)
+  version                Int                   @default(1)
+  controlGrant           RealtimeControlGrant?
+
+  @@unique([companyId, sessionId, sequence], name: "realtime_speech_artifact_session_sequence")
+  @@unique([companyId, sessionId, turnId, segmentIndex], name: "realtime_speech_artifact_turn_segment")
+  @@unique([id, companyId, sessionId, turnId], name: "realtime_speech_artifact_tenant_binding")
+  @@unique([storageKey], name: "realtime_speech_artifact_storage_key")
+  @@index([companyId, sessionId, state, sequence], map: "realtime_speech_artifacts_session_state_idx")
+  @@index([state, renderLeaseExpiresAt], map: "realtime_speech_artifacts_render_reaper_idx")
+  @@index([companyId, retentionExpiresAt], map: "realtime_speech_artifacts_retention_idx")
+  @@map("realtime_speech_artifacts")
+}
+
+/// Action UI opaque, chiffrée et liée à un artefact effectivement livré. Les HMAC permettent
+/// de certifier le contenu sans stocker de payload lisible. Une grant ne peut jamais être modifiée.
+model RealtimeControlGrant {
+  id                   String                      @id @default(uuid()) @db.Uuid
+  companyId            String                      @db.Text
+  company              Company                     @relation(fields: [companyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  sessionId            String                      @db.Uuid
+  turnId               String                      @db.Uuid
+  artifactId           String                      @db.Uuid
+  artifact             RealtimeSpeechArtifact      @relation(fields: [artifactId, companyId, sessionId, turnId], references: [id, companyId, sessionId, turnId], onDelete: Restrict, onUpdate: Cascade)
+  contextRevision      Int
+  contextDigest        String                      @db.Char(64)
+  controlKind          String                      @db.Text
+  sealedControl        Bytes
+  controlNonce         Bytes
+  controlTag           Bytes
+  controlPayloadHmac   String                      @db.Char(64)
+  encryptionKeyVersion Int
+  proofKeyVersion      Int
+  issuedAt             DateTime                    @db.Timestamptz(6)
+  expiresAt            DateTime                    @db.Timestamptz(6)
+  retentionExpiresAt   DateTime                    @db.Timestamptz(6)
+  consumption          RealtimeControlConsumption?
+
+  @@unique([companyId, sessionId, turnId], name: "realtime_control_grant_turn")
+  @@unique([companyId, artifactId], name: "realtime_control_grant_artifact")
+  @@unique([artifactId, companyId, sessionId, turnId], name: "realtime_control_grant_artifact_binding")
+  @@unique([id, companyId, sessionId, turnId], name: "realtime_control_grant_tenant_binding")
+  @@index([companyId, sessionId, expiresAt], map: "realtime_control_grants_session_expiry_idx")
+  @@index([companyId, retentionExpiresAt], map: "realtime_control_grants_retention_idx")
+  @@map("realtime_control_grants")
+}
+
+/// Preuve one-shot d'une validation de contrôle. La PK rend la consommation unique par grant et
+/// acknowledgementId apporte l'idempotence des retries client sans jamais rouvrir la grant.
+model RealtimeControlConsumption {
+  companyId          String               @db.Text
+  company            Company              @relation(fields: [companyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  grantId            String               @db.Uuid
+  acknowledgementId  String               @db.Uuid
+  sessionId          String               @db.Uuid
+  turnId             String               @db.Uuid
+  grant              RealtimeControlGrant @relation(fields: [grantId, companyId, sessionId, turnId], references: [id, companyId, sessionId, turnId], onDelete: Restrict, onUpdate: Cascade)
+  consumedAt         DateTime             @db.Timestamptz(6)
+  retentionExpiresAt DateTime             @db.Timestamptz(6)
+
+  @@id([companyId, grantId], name: "realtime_control_consumption_grant")
+  @@unique([companyId, acknowledgementId], name: "realtime_control_consumption_ack")
+  @@unique([grantId, companyId, sessionId, turnId], name: "realtime_control_consumption_binding")
+  @@index([companyId, sessionId, consumedAt], map: "realtime_control_consumptions_session_idx")
+  @@index([companyId, retentionExpiresAt], map: "realtime_control_consumptions_retention_idx")
+  @@map("realtime_control_consumptions")
+}
+
+/// Mesure d'usage append-only et dédupliquée. Elle ne contient aucun contenu vocal, seulement
+/// des compteurs bornés et une clé d'idempotence HMAC versionnée.
+model RealtimeVoiceUsageEvent {
+  id                 String   @id @default(uuid()) @db.Uuid
+  companyId          String   @db.Text
+  company            Company  @relation(fields: [companyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  subjectHash        String   @db.Char(64)
+  subjectKeyVersion  Int
+  sessionId          String   @db.Uuid
+  turnId             String?  @db.Uuid
+  dedupeKeyHmac      String   @db.Char(64)
+  proofKeyVersion    Int
+  plan               String   @db.Text
+  kind               String   @db.Text
+  source             String   @db.Text
+  amount             Decimal  @db.Decimal(20, 6)
+  occurredAt         DateTime @db.Timestamptz(6)
+  recordedAt         DateTime @db.Timestamptz(6)
+  retentionExpiresAt DateTime @db.Timestamptz(6)
+
+  @@unique([companyId, dedupeKeyHmac], name: "realtime_voice_usage_event_dedupe")
+  @@index([companyId, occurredAt], map: "realtime_voice_usage_events_tenant_time_idx")
+  @@index([companyId, sessionId, occurredAt], map: "realtime_voice_usage_events_session_time_idx")
+  @@index([companyId, retentionExpiresAt], map: "realtime_voice_usage_events_retention_idx")
+  @@map("realtime_voice_usage_events")
+}
+
+/// Agrégat journalier monotone, alimenté exclusivement par le trigger d'insertion des événements.
+/// Les timestamps sont explicites : aucun @updatedAt implicite dans ce registre de facturation.
+model RealtimeVoiceUsageDaily {
+  companyId          String   @db.Text
+  company            Company  @relation(fields: [companyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  usageDate          DateTime @db.Date
+  subjectHash        String   @db.Char(64)
+  subjectKeyVersion  Int
+  plan               String   @db.Text
+  kind               String   @db.Text
+  source             String   @db.Text
+  amount             Decimal  @db.Decimal(26, 6)
+  eventCount         BigInt   @default(0)
+  firstEventAt       DateTime @db.Timestamptz(6)
+  lastEventAt        DateTime @db.Timestamptz(6)
+  aggregatedAt       DateTime @db.Timestamptz(6)
+  retentionExpiresAt DateTime @db.Timestamptz(6)
+  version            Int      @default(1)
+
+  @@id([companyId, usageDate, subjectHash, subjectKeyVersion, plan, kind, source], name: "realtime_voice_usage_daily_dimension")
+  @@index([companyId, retentionExpiresAt], map: "realtime_voice_usage_daily_retention_idx")
+  @@map("realtime_voice_usage_daily")
+}
+
+// Espace Cabinet V3 — tenant distinct de Company. Les identités sont des subject IDs Supabase ;
+// le JWT prouve l'identité, mais CabinetMember reste l'unique source d'autorisation.
+model Cabinet {
+  id                   String                      @id
+  name                 String
+  timeZone             String                      @default("Europe/Paris")
+  status               CabinetStatus               @default(active)
+  createdByUserId      String
+  bootstrapCompletedAt DateTime?
+  version              Int                         @default(1)
+  createdAt            DateTime                    @default(now())
+  updatedAt            DateTime                    @updatedAt
+  members              CabinetMember[]
+  adminGuard           CabinetAdminGuard?
+  invitations          CabinetInvitation[]
+  invitationDeliveries CabinetInvitationDelivery[]
+  auditEvents          CabinetAuditEvent[]
+
+  @@index([createdByUserId])
+  @@index([status])
+  @@map("cabinets")
+}
+
+model CabinetMember {
+  id                 String              @id
+  cabinetId          String
+  cabinet            Cabinet             @relation(fields: [cabinetId], references: [id], onDelete: Cascade)
+  userId             String
+  sourceInvitationId String?
+  // La FK réelle est DEFERRABLE/NO ACTION dans la migration : une suppression privilégiée du
+  // cabinet efface invitations + memberships dans la même transaction sans muter cette provenance.
+  sourceInvitation   CabinetInvitation?  @relation("MembershipSourceInvitation", fields: [sourceInvitationId, cabinetId], references: [id, cabinetId], onDelete: NoAction, onUpdate: NoAction)
+  role               CabinetRole
+  status             CabinetMemberStatus @default(active)
+  joinedAt           DateTime            @default(now())
+  suspendedAt        DateTime?
+  revokedAt          DateTime?
+  version            Int                 @default(1)
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  issuedInvitations  CabinetInvitation[] @relation("CabinetInvitationInviter")
+  revokedInvitations CabinetInvitation[] @relation("CabinetInvitationRevoker")
+
+  @@unique([id, cabinetId], name: "uniq_cabinet_member_id_cabinet")
+  // Unicité des memberships non révoquées gérée par index partiel SQL (Prisma ne l'exprime pas).
+  @@index([cabinetId, userId])
+  @@index([userId, status])
+  @@index([cabinetId, status, role])
+  @@map("cabinet_members")
+}
+
+// Compteur interne sérialisé par ligne. Aucun port applicatif ne l'expose ; les triggers
+// SECURITY DEFINER garantissent qu'un cabinet finalisé conserve toujours un admin actif.
+model CabinetAdminGuard {
+  cabinetId   String   @id
+  cabinet     Cabinet  @relation(fields: [cabinetId], references: [id], onDelete: Cascade)
+  activeCount Int
+  updatedAt   DateTime @updatedAt
+
+  @@map("cabinet_admin_guards")
+}
+
+model CabinetInvitation {
+  id                String                      @id
+  cabinetId         String
+  cabinet           Cabinet                     @relation(fields: [cabinetId], references: [id], onDelete: Cascade)
+  emailNormalized   String
+  role              CabinetRole
+  status            CabinetInvitationStatus     @default(pending)
+  tokenHash         String                      @unique @db.Char(64)
+  expiresAt         DateTime
+  invitedByMemberId String
+  invitedByMember   CabinetMember               @relation("CabinetInvitationInviter", fields: [invitedByMemberId, cabinetId], references: [id, cabinetId], onDelete: NoAction, onUpdate: NoAction)
+  acceptedByUserId  String?
+  acceptedAt        DateTime?
+  revokedAt         DateTime?
+  revokedByMemberId String?
+  revokedByMember   CabinetMember?              @relation("CabinetInvitationRevoker", fields: [revokedByMemberId, cabinetId], references: [id, cabinetId], onDelete: NoAction, onUpdate: NoAction)
+  version           Int                         @default(1)
+  createdAt         DateTime                    @default(now())
+  updatedAt         DateTime                    @updatedAt
+  deliveries        CabinetInvitationDelivery[]
+  joinedMembers     CabinetMember[]             @relation("MembershipSourceInvitation")
+
+  @@unique([id, cabinetId], name: "uniq_cabinet_invitation_id_cabinet")
+  @@index([cabinetId, status, expiresAt])
+  @@index([emailNormalized, status])
+  @@index([invitedByMemberId])
+  @@index([revokedByMemberId])
+  @@map("cabinet_invitations")
+}
+
+// Outbox durable. Le jeton est chiffré par AEAD puis les colonnes secrètes sont purgées après
+// livraison. La rotation de clé attend le drainage des jobs de la version précédente.
+model CabinetInvitationDelivery {
+  id              String                          @id
+  cabinetId       String
+  cabinet         Cabinet                         @relation(fields: [cabinetId], references: [id], onDelete: Cascade)
+  invitationId    String
+  invitation      CabinetInvitation               @relation(fields: [invitationId, cabinetId], references: [id, cabinetId], onDelete: Cascade, onUpdate: NoAction)
+  dedupeKey       String
+  tokenCiphertext String?
+  tokenIv         String?
+  tokenAuthTag    String?
+  tokenKeyVersion Int                             @default(1)
+  status          CabinetInvitationDeliveryStatus @default(pending)
+  attempts        Int                             @default(0)
+  nextAttemptAt   DateTime
+  lockedAt        DateTime?
+  leaseUntil      DateTime?
+  lastError       String?
+  sentAt          DateTime?
+  createdAt       DateTime                        @default(now())
+  updatedAt       DateTime                        @updatedAt
+
+  @@unique([cabinetId, dedupeKey], name: "uniq_cabinet_invitation_delivery")
+  @@index([cabinetId, status, nextAttemptAt])
+  @@index([invitationId])
+  @@map("cabinet_invitation_deliveries")
+}
+
+// Journal de sécurité append-only côté rôle runtime. Le payload ne contient jamais de jeton brut.
+model CabinetAuditEvent {
+  id            String   @id
+  cabinetId     String
+  cabinet       Cabinet  @relation(fields: [cabinetId], references: [id], onDelete: Cascade)
+  actorUserId   String
+  action        String
+  entityType    String
+  entityId      String
+  payload       Json     @default("{}")
+  correlationId String?
+  createdAt     DateTime @default(now())
+
+  @@index([cabinetId, createdAt])
+  @@index([cabinetId, entityType, entityId, createdAt])
+  @@index([actorUserId, createdAt])
+  @@map("cabinet_audit_events")
+}
+
+// Les release flags sont des rails de déploiement, distincts des entitlements tarifaires.
+// killSwitch domine toute valeur globale ou ciblée. Une absence/erreur d'évaluation vaut false.
+model ReleaseFlag {
+  id              String                  @id
+  key             String
+  environment     ReleaseEnvironment
+  enabled         Boolean                 @default(false)
+  killSwitch      Boolean                 @default(false)
+  version         Int                     @default(1)
+  updatedByUserId String
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
+  subjects        ReleaseFlagSubject[]
+  auditEvents     ReleaseFlagAuditEvent[]
+
+  @@unique([key, environment], name: "uniq_release_flag_key_environment")
+  @@index([environment, enabled, killSwitch])
+  @@map("release_flags")
+}
+
+// Journal ops global : aucune policy runtime. Seul le rôle privilégié/CI peut écrire/lire.
+model ReleaseFlagAuditEvent {
+  id          String      @id
+  flagId      String
+  flag        ReleaseFlag @relation(fields: [flagId], references: [id], onDelete: Restrict)
+  actor       String
+  reason      String
+  operation   String
+  beforeState Json
+  afterState  Json
+  createdAt   DateTime    @default(now())
+
+  @@index([flagId, createdAt])
+  @@index([actor, createdAt])
+  @@map("release_flag_audit_events")
+}
+
+model ReleaseFlagSubject {
+  id              String                 @id
+  flagId          String
+  flag            ReleaseFlag            @relation(fields: [flagId], references: [id], onDelete: Cascade)
+  subjectType     ReleaseFlagSubjectType
+  subjectId       String
+  enabled         Boolean
+  version         Int                    @default(1)
+  updatedByUserId String?
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+
+  @@unique([flagId, subjectType, subjectId], name: "uniq_release_flag_subject")
+  @@index([subjectType, subjectId])
+  @@map("release_flag_subjects")
 }

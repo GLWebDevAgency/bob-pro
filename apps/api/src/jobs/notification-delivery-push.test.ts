@@ -39,9 +39,10 @@ describe('NotificationDeliveryService — canal push Expo (C25)', () => {
     const service = new NotificationDeliveryService(persistence, notifier, new ScheduledTenantDirectory(persistence, logger), logger, push);
 
     const job = await service.enqueue(RELANCE_INPUT);
+    expect(job.notification?.idempotencyKey).toBe(job.id);
     const delivered = await service.tryDeliver('co-1', { ...job, notification: job.notification! });
 
-    expect(delivered).toBe(true);
+    expect(delivered).toBe('sent');
     expect(push.send).toHaveBeenCalledWith([
       expect.objectContaining({
         to: 'ExponentPushToken[a]',
@@ -55,6 +56,40 @@ describe('NotificationDeliveryService — canal push Expo (C25)', () => {
     );
   });
 
+  it('rejoue la même clé provider si le worker tombe après envoi mais avant markDone', async () => {
+    const persistence = new InMemoryPersistence();
+    const logger = makeLogger();
+    const seenKeys: (string | undefined)[] = [];
+    const notifier = {
+      send: vi.fn<NotificationPort['send']>(async (notification) => {
+        seenKeys.push(notification.idempotencyKey);
+      }),
+    } satisfies NotificationPort;
+    const service = new NotificationDeliveryService(
+      persistence,
+      notifier,
+      new ScheduledTenantDirectory(persistence, logger),
+      logger,
+    );
+    const job = await service.enqueue(RELANCE_INPUT);
+    const markDone = vi.spyOn(persistence.notificationJobs, 'markDone');
+    markDone.mockRejectedValueOnce(new Error('crash after provider acceptance'));
+
+    expect(await service.tryDeliver('co-1', { ...job, notification: job.notification! })).toBe('failed');
+    const reenqueued = await service.enqueue(RELANCE_INPUT);
+    expect(reenqueued.id).toBe(job.id);
+    expect(reenqueued.notification?.idempotencyKey).toBe(job.id);
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date(reenqueued.nextAttemptAt));
+      expect(await service.tryDeliver('co-1', { ...reenqueued, notification: reenqueued.notification! })).toBe('sent');
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(seenKeys).toEqual([job.id, job.id]);
+    expect(job.id).toMatch(/^[0-9a-f-]{36}$/i);
+  });
+
   it("email en ÉCHEC : le job passe failed, AUCUN push (on ne notifie pas « Bob a relancé » à tort)", async () => {
     const persistence = new InMemoryPersistence();
     const logger = makeLogger();
@@ -66,9 +101,34 @@ describe('NotificationDeliveryService — canal push Expo (C25)', () => {
     const job = await service.enqueue(RELANCE_INPUT);
     const delivered = await service.tryDeliver('co-1', { ...job, notification: job.notification! });
 
-    expect(delivered).toBe(false);
+    expect(delivered).toBe('failed');
     expect(push.send).not.toHaveBeenCalled();
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('brevo down'), 'notifications');
+  });
+
+  it("push en échec après commit : l'email reste done et n'est jamais remis en retry", async () => {
+    const persistence = new InMemoryPersistence();
+    const logger = makeLogger();
+    await registerDevice(persistence, 'ExponentPushToken[a]');
+    const notifier = {
+      send: vi.fn<NotificationPort['send']>().mockResolvedValue(undefined),
+    } satisfies NotificationPort;
+    const push = { send: vi.fn().mockRejectedValue(new Error('expo down')) } as unknown as ExpoPushService;
+    const service = new NotificationDeliveryService(
+      persistence,
+      notifier,
+      new ScheduledTenantDirectory(persistence, logger),
+      logger,
+      push,
+    );
+
+    const job = await service.enqueue(RELANCE_INPUT);
+    const delivered = await service.tryDeliver('co-1', { ...job, notification: job.notification! });
+
+    expect(delivered).toBe('sent');
+    expect(notifier.send).toHaveBeenCalledOnce();
+    expect((await persistence.notificationJobs.listRecent('co-1', 1))[0]).toMatchObject({ status: 'done' });
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('expo down'), 'notifications');
   });
 
   it('aucun device : envoi email OK, absence de push TRACÉE (jamais silencieuse)', async () => {
@@ -81,11 +141,213 @@ describe('NotificationDeliveryService — canal push Expo (C25)', () => {
     const job = await service.enqueue(RELANCE_INPUT);
     const delivered = await service.tryDeliver('co-1', { ...job, notification: job.notification! });
 
-    expect(delivered).toBe(true);
+    expect(delivered).toBe('sent');
     expect(push.send).not.toHaveBeenCalled();
     expect(logger.audit).toHaveBeenCalledWith(
       'notification.push.skipped',
       expect.objectContaining({ companyId: 'co-1', reason: 'no_device_registered' }),
+    );
+  });
+
+  it('deux workers sur le même job : un seul obtient le lease, un seul email et un seul push', async () => {
+    const persistence = new InMemoryPersistence();
+    const logger = makeLogger();
+    await registerDevice(persistence, 'ExponentPushToken[a]');
+    const notifier = {
+      send: vi.fn<NotificationPort['send']>().mockResolvedValue(undefined),
+    } satisfies NotificationPort;
+    const push = { send: vi.fn(async () => ({ accepted: 1, rejected: [] })) } as unknown as ExpoPushService;
+    const service = new NotificationDeliveryService(
+      persistence,
+      notifier,
+      new ScheduledTenantDirectory(persistence, logger),
+      logger,
+      push,
+    );
+    const job = await service.enqueue(RELANCE_INPUT);
+
+    expect(await service.tryDeliver('co-1', { ...job, notification: job.notification! })).toBe('sent');
+    expect(await service.tryDeliver('co-1', { ...job, notification: job.notification! })).toBe('skipped');
+    expect(notifier.send).toHaveBeenCalledTimes(1);
+    expect(push.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('snapshot A puis collision B : B est refusé et seule la requête A peut partir', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-07-13T10:00:00.000Z'));
+      const persistence = new InMemoryPersistence();
+      const logger = makeLogger();
+      const notifier = { send: vi.fn<NotificationPort['send']>().mockResolvedValue(undefined) } satisfies NotificationPort;
+      const service = new NotificationDeliveryService(
+        persistence,
+        notifier,
+        new ScheduledTenantDirectory(persistence, logger),
+        logger,
+      );
+      const first = await service.enqueue(RELANCE_INPUT);
+
+      vi.setSystemTime(new Date('2026-07-13T10:01:00.000Z'));
+      await expect(service.enqueue({
+        ...RELANCE_INPUT,
+        notification: { ...RELANCE_INPUT.notification, subject: 'Payload B' },
+      })).rejects.toThrow('désigne déjà un autre contenu');
+
+      expect(await service.tryDeliver('co-1', { ...first, notification: first.notification! })).toBe('sent');
+      expect(notifier.send).toHaveBeenCalledWith(expect.objectContaining({ subject: 'Relance F-1' }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('deux payloads dans la même milliseconde : la collision est refusée sans ambiguïté ABA', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-07-13T10:00:00.000Z'));
+      const persistence = new InMemoryPersistence();
+      const logger = makeLogger();
+      const notifier = { send: vi.fn<NotificationPort['send']>().mockResolvedValue(undefined) } satisfies NotificationPort;
+      const service = new NotificationDeliveryService(
+        persistence,
+        notifier,
+        new ScheduledTenantDirectory(persistence, logger),
+        logger,
+      );
+      const snapshotA = await service.enqueue(RELANCE_INPUT);
+      await expect(service.enqueue({
+        ...RELANCE_INPUT,
+        notification: { ...RELANCE_INPUT.notification, subject: 'Payload B même milliseconde' },
+      })).rejects.toThrow('désigne déjà un autre contenu');
+
+      expect(await service.tryDeliver('co-1', { ...snapshotA, notification: snapshotA.notification! })).toBe('sent');
+      expect(notifier.send).toHaveBeenCalledOnce();
+      expect(notifier.send).toHaveBeenCalledWith(
+        expect.objectContaining({ subject: 'Relance F-1' }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('lease orphelin hors TTL provider : quarantaine sans second email ni push', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-07-13T10:00:00.000Z'));
+      const persistence = new InMemoryPersistence();
+      const logger = makeLogger();
+      const notifier = { send: vi.fn<NotificationPort['send']>() } satisfies NotificationPort;
+      const push = { send: vi.fn() } as unknown as ExpoPushService;
+      const service = new NotificationDeliveryService(
+        persistence,
+        notifier,
+        new ScheduledTenantDirectory(persistence, logger),
+        logger,
+        push,
+      );
+      const job = await service.enqueue(RELANCE_INPUT);
+      const orphan = await persistence.notificationJobs.claimForDelivery(
+        job.id,
+        job.companyId,
+        job.updatedAt,
+        '2026-07-13T10:00:00.000Z',
+        '2026-07-13T10:05:00.000Z',
+        'orphan-generation',
+      );
+      expect(orphan).toMatchObject({ outcome: 'claimed' });
+      if (orphan.outcome !== 'claimed') throw new Error('fixture lease non claimée');
+
+      vi.setSystemTime(new Date('2026-07-13T10:26:00.000Z'));
+      expect(await service.tryDeliver(job.companyId, orphan.job)).toBe('failed');
+      expect(notifier.send).not.toHaveBeenCalled();
+      expect(push.send).not.toHaveBeenCalled();
+      expect((await persistence.notificationJobs.listRecent(job.companyId, 1))[0]).toMatchObject({
+        status: 'failed',
+        nextAttemptAt: '9999-12-31T23:59:59.999Z',
+        lastError: expect.stringContaining('manual-review:provider-outcome-uncertain'),
+      });
+      expect(logger.audit).toHaveBeenCalledWith(
+        'notification.job.quarantined',
+        expect.objectContaining({ jobId: job.id }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cinq timeouts puis reprise à T+31 : quarantaine, jamais de sixième email hors TTL', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-07-13T10:00:00.000Z'));
+      const persistence = new InMemoryPersistence();
+      const logger = makeLogger();
+      const notifier = {
+        send: vi.fn<NotificationPort['send']>().mockRejectedValue(new Error('timeout outcome unknown')),
+      } satisfies NotificationPort;
+      const service = new NotificationDeliveryService(
+        persistence,
+        notifier,
+        new ScheduledTenantDirectory(persistence, logger),
+        logger,
+      );
+      const initial = await service.enqueue(RELANCE_INPUT);
+      let current = { ...initial, notification: initial.notification! };
+
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        expect(await service.tryDeliver(initial.companyId, current)).toBe('failed');
+        const stored = (await persistence.notificationJobs.listRecent(initial.companyId, 1))[0]!;
+        vi.setSystemTime(new Date(stored.nextAttemptAt));
+        const due = await persistence.notificationJobs.listDue(initial.companyId, stored.nextAttemptAt, 1);
+        expect(due).toHaveLength(1);
+        current = due[0]!;
+      }
+
+      expect(await service.tryDeliver(initial.companyId, current)).toBe('failed');
+      expect(notifier.send).toHaveBeenCalledTimes(5);
+      expect((await persistence.notificationJobs.listRecent(initial.companyId, 1))[0]).toMatchObject({
+        nextAttemptAt: '9999-12-31T23:59:59.999Z',
+        lastError: expect.stringContaining('manual-review:provider-outcome-uncertain'),
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('refuse un job présenté sous le mauvais tenant avant tout appel fournisseur', async () => {
+    const persistence = new InMemoryPersistence();
+    const logger = makeLogger();
+    const notifier = { send: vi.fn<NotificationPort['send']>() } satisfies NotificationPort;
+    const service = new NotificationDeliveryService(
+      persistence,
+      notifier,
+      new ScheduledTenantDirectory(persistence, logger),
+      logger,
+    );
+    const job = await service.enqueue(RELANCE_INPUT);
+
+    expect(await service.tryDeliver('co-2', { ...job, notification: job.notification! })).toBe('skipped');
+    expect(notifier.send).not.toHaveBeenCalled();
+  });
+
+  it("fail-closed si le fence DB pré-provider est indisponible, sans interrompre par exception", async () => {
+    const persistence = new InMemoryPersistence();
+    const logger = makeLogger();
+    const notifier = { send: vi.fn<NotificationPort['send']>() } satisfies NotificationPort;
+    const service = new NotificationDeliveryService(
+      persistence,
+      notifier,
+      new ScheduledTenantDirectory(persistence, logger),
+      logger,
+    );
+    const job = await service.enqueue(RELANCE_INPUT);
+    vi.spyOn(persistence.notificationJobs, 'authorizeDeliveryAttempt')
+      .mockRejectedValueOnce(new Error('database unavailable'));
+
+    await expect(service.tryDeliver('co-1', { ...job, notification: job.notification! }))
+      .resolves.toBe('failed');
+    expect(notifier.send).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('Autorisation notification impossible'),
+      'notifications',
     );
   });
 
@@ -125,7 +387,7 @@ describe('mailer via env — clé absente = échec propre par job, jamais silenc
     const job = await service.enqueue(RELANCE_INPUT);
     const delivered = await service.tryDeliver('co-1', { ...job, notification: job.notification! });
 
-    expect(delivered).toBe(false);
+    expect(delivered).toBe('failed');
     const due = await persistence.notificationJobs.listRecent('co-1', 10);
     expect(due[0]).toMatchObject({ status: 'failed' });
     expect(due[0]!.lastError).toContain('BREVO_API_KEY');

@@ -10,6 +10,10 @@ export interface Principal {
    * du guard (lookup public, provisioning) sont joignables dans cet état.
    */
   companyId: string | null;
+  /** Email JWT normalisé, utilisé uniquement pour faire correspondre une invitation cabinet. */
+  email?: string | null;
+  /** Doit être explicitement vrai pour accepter une invitation ; jamais déduit d'un body client. */
+  emailVerified?: boolean;
 }
 
 interface RequestContext {

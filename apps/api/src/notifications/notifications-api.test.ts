@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { InMemoryPersistence } from '../persistence/persistence';
 import { requestContext } from '../observability/logger';
 import { NotificationsApiService } from './notifications-api.service';
@@ -52,6 +52,14 @@ describe('NotificationsApiService — fil company-scoped (C25)', () => {
     const p = new InMemoryPersistence();
     const service = new NotificationsApiService(p);
     await seedJob(p, 'job-1', 'invoice:inv-1:relance:2026-07-03', '2026-07-03T06:00:00.000Z');
+    await p.notificationJobs.enqueue({
+      id: 'job-other-tenant',
+      companyId: 'co-intrus',
+      kind: 'invoice-relance',
+      dedupeKey: 'invoice:inv-secret:relance:2026-07-03',
+      notification: { channel: 'email', to: 'secret@example.com', subject: 'Secret', body: 'Secret' },
+      now: '2026-07-03T06:00:00.000Z',
+    });
 
     const first = await asTenant(() => service.markRead('job-1'));
     expect(first.ok && first.value.readAt).not.toBeNull();
@@ -60,6 +68,67 @@ describe('NotificationsApiService — fil company-scoped (C25)', () => {
 
     const ghost = await asTenant(() => service.markRead('job-ghost'));
     expect(!ghost.ok && ghost.error.kind).toBe('not_found');
+    const otherTenant = await asTenant(() => service.markRead('job-other-tenant'));
+    expect(!otherTenant.ok && otherTenant.error.kind).toBe('not_found');
+    await expect(p.notificationJobs.findById('co-intrus', 'job-other-tenant')).resolves.toMatchObject({
+      readAt: null,
+    });
+  });
+
+  it('aperçu + read-through : portée figée, tenant seul, égalité/futur exclus et rejeu idempotent', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-07-13T10:00:00.000Z'));
+      const p = new InMemoryPersistence();
+      const service = new NotificationsApiService(p);
+      await seedJob(p, 'job-old-1', 'invoice:inv-old-1:relance:2026-07-13', '2026-07-13T09:59:59.000Z');
+      await seedJob(p, 'job-old-2', 'invoice:inv-old-2:relance:2026-07-13', '2026-07-13T09:59:59.999Z');
+      await p.notificationJobs.enqueue({
+        id: 'job-other-company',
+        companyId: 'co-intrus',
+        kind: 'invoice-relance',
+        dedupeKey: 'invoice:inv-other:relance:2026-07-13',
+        notification: { channel: 'email', to: 'other@example.com', subject: 'Autre', body: 'Autre' },
+        now: '2026-07-13T09:00:00.000Z',
+      });
+
+      const preview = await asTenant(() => service.unreadPreview());
+      expect(preview).toEqual({
+        ok: true,
+        value: { unreadCount: 2, throughCreatedAt: '2026-07-13T10:00:00.000Z' },
+      });
+      if (!preview.ok) return;
+
+      // Insertion concurrente à la même milliseconde puis après : toutes deux hors snapshot.
+      await seedJob(p, 'job-at-cutoff', 'invoice:inv-at:relance:2026-07-13', preview.value.throughCreatedAt);
+      await seedJob(p, 'job-after-cutoff', 'invoice:inv-after:relance:2026-07-13', '2026-07-13T10:00:00.001Z');
+
+      const forgedFuture = await asTenant(() =>
+        service.markReadThrough({ throughCreatedAt: '2026-07-13T10:00:00.001Z' }),
+      );
+      expect(!forgedFuture.ok && forgedFuture.error.kind).toBe('validation');
+      await expect(p.notificationJobs.findById(TENANT, 'job-old-1')).resolves.toMatchObject({ readAt: null });
+
+      const marked = await asTenant(() =>
+        service.markReadThrough({ throughCreatedAt: preview.value.throughCreatedAt }),
+      );
+      expect(marked).toEqual({
+        ok: true,
+        value: { updatedCount: 2, readAt: '2026-07-13T10:00:00.000Z' },
+      });
+      const replay = await asTenant(() =>
+        service.markReadThrough({ throughCreatedAt: preview.value.throughCreatedAt }),
+      );
+      expect(replay.ok && replay.value.updatedCount).toBe(0);
+      await expect(p.notificationJobs.findById(TENANT, 'job-at-cutoff')).resolves.toMatchObject({ readAt: null });
+      await expect(p.notificationJobs.findById(TENANT, 'job-after-cutoff')).resolves.toMatchObject({ readAt: null });
+      await expect(p.notificationJobs.findById('co-intrus', 'job-other-company')).resolves.toMatchObject({ readAt: null });
+
+      const malformed = await asTenant(() => service.markReadThrough({ throughCreatedAt: 'demain' }));
+      expect(!malformed.ok && malformed.error.kind).toBe('validation');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('POST /devices : token Expo validé strictement, enregistrement idempotent par (tenant, token)', async () => {

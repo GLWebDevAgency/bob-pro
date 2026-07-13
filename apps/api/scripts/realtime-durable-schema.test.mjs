@@ -56,7 +56,7 @@ test('artifact feed is globally monotone, retry-idempotent and crash-safe', () =
   assert.doesNotMatch(artifact, /renderAttemptId/u);
 
   assert.match(migration, /SET "nextSpeechSequence" = lease\."nextSpeechSequence" \+ 1/u);
-  assert.match(migration, /live render lease cannot be stolen/u);
+  assert.match(migration, /NEW\."sequence", NEW\."segmentIndex", NEW\."renderTokenHash"/u);
   assert.match(migration, /NEW\."canonicalSpeechHmac", NEW\."factsHmac"/u);
   assert.match(migration, /purge may not rewrite realtime speech evidence/u);
   assert.match(migration, /reaper la redérive des IDs/u);

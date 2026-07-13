@@ -14,6 +14,20 @@ interface BrevoOptions {
   baseUrl: string;
 }
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+async function isDuplicateAcknowledgement(response: Response): Promise<boolean> {
+  try {
+    const payload: unknown = await response.json();
+    return typeof payload === 'object'
+      && payload !== null
+      && 'code' in payload
+      && payload.code === 'duplicate_parameter';
+  } catch {
+    return false;
+  }
+}
+
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, '&amp;')
@@ -27,15 +41,14 @@ function textToHtml(s: string): string {
   return `<html><body><p>${escapeHtml(s).replace(/\n/g, '<br>')}</p></body></html>`;
 }
 
-/** Notifier de démo : trace l'envoi (audit). Adapters réels (SMTP/SMS) derrière le même port. */
+/** Notifier de démo : trace uniquement le résultat technique, jamais le contenu ou le destinataire. */
 @Injectable()
 export class DemoNotifier implements NotificationPort {
   constructor(private readonly logger: AppLogger) {}
   async send(notification: Notification): Promise<void> {
     this.logger.audit('notification.sent', {
+      provider: 'demo',
       channel: notification.channel,
-      to: notification.to,
-      subject: notification.subject,
     });
   }
 }
@@ -50,12 +63,18 @@ export class BrevoEmailNotifier implements NotificationPort {
 
   async send(notification: Notification): Promise<void> {
     if (notification.channel !== 'email') throw new Error(`Canal non supporté par Brevo : ${notification.channel}`);
+    if (notification.idempotencyKey && !UUID_PATTERN.test(notification.idempotencyKey)) {
+      throw new Error('La clé d’idempotence Brevo doit être un UUID.');
+    }
     const body = {
       sender: { name: this.opts.senderName, email: this.opts.senderEmail },
       to: [{ email: notification.to }],
       subject: notification.subject,
       textContent: notification.body,
       htmlContent: textToHtml(notification.body),
+      ...(notification.idempotencyKey
+        ? { headers: { idempotencyKey: notification.idempotencyKey } }
+        : {}),
     };
     const res = await this.fetchFn(`${this.opts.baseUrl.replace(/\/$/, '')}/smtp/email`, {
       method: 'POST',
@@ -67,12 +86,22 @@ export class BrevoEmailNotifier implements NotificationPort {
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(12_000),
     });
-    if (!res.ok) throw new Error(`Brevo HTTP ${res.status}`);
+    if (!res.ok) {
+      // Brevo répond duplicate_parameter lorsqu'une requête portant la même clé
+      // a déjà été acceptée dans sa fenêtre d'idempotence. C'est un accusé de
+      // réception, pas un échec à retenter : le job local peut donc passer done.
+      const duplicate = Boolean(notification.idempotencyKey)
+        && await isDuplicateAcknowledgement(res);
+      if (!duplicate) throw new Error(`Brevo HTTP ${res.status}`);
+      this.logger.audit('notification.deduplicated', {
+        provider: 'brevo',
+        channel: notification.channel,
+      });
+      return;
+    }
     this.logger.audit('notification.sent', {
       provider: 'brevo',
       channel: notification.channel,
-      to: notification.to,
-      subject: notification.subject,
     });
   }
 }

@@ -2,7 +2,17 @@
 set -eu
 
 # Validates production release variables without printing secret values.
-node <<'NODE'
+ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/../../.." && pwd)"
+cd "$ROOT_DIR"
+
+node --input-type=module <<'NODE'
+import { pathToFileURL } from 'node:url';
+import { resolve } from 'node:path';
+
+const { parsePilotBootstrapEnvironment } = await import(
+  pathToFileURL(resolve('apps/api/scripts/bootstrap-cabinet-pilots.mjs')).href
+);
+
 const required = [
   'NODE_ENV',
   'DEMO_MODE',
@@ -16,6 +26,18 @@ const required = [
   'SUPABASE_SERVICE_ROLE_KEY',
   'SUPABASE_STORAGE_BUCKET',
   'JOB_COMPANY_IDS',
+  'CABINET_RELEASE_ENV',
+  'CABINET_INVITATION_TOKEN_ENCRYPTION_KEY',
+  'CABINET_INVITATION_TOKEN_KEY_VERSION',
+  'CABINET_INVITATION_WEB_BASE_URL',
+  'METRICS_TOKEN',
+  'CABINET_INVITATION_WORKER_ENABLED',
+  'BREVO_API_KEY',
+  'BREVO_API_BASE_URL',
+  'BREVO_SENDER_EMAIL',
+  'ERROR_REPORTER_WEBHOOK_URL',
+  'RUN_RLS_CERT',
+  'RLS_CERT_CLEANUP',
 ];
 
 let failed = false;
@@ -50,14 +72,51 @@ if (process.env.NODE_ENV !== 'production') {
   fail("NODE_ENV must be 'production' for production release checks");
 }
 
+if (process.env.RUN_RLS_CERT !== 'true') {
+  fail("RUN_RLS_CERT must be 'true' for a live release");
+}
+if (process.env.RLS_CERT_CLEANUP !== 'true') {
+  fail("RLS_CERT_CLEANUP must be 'true' for a live release");
+}
+
 const databaseUrl = url('DATABASE_URL');
 const directUrl = url('DIRECT_URL');
 const supabaseUrl = url('SUPABASE_URL');
 const jwksUrl = url('SUPABASE_JWKS_URL');
 const signWebBaseUrl = url('SIGN_WEB_BASE_URL');
+const cabinetWebBaseUrl = url('CABINET_INVITATION_WEB_BASE_URL');
+const errorReporterUrl = url('ERROR_REPORTER_WEBHOOK_URL');
+const brevoBaseUrl = url('BREVO_API_BASE_URL');
 
 if (databaseUrl && directUrl && databaseUrl.toString() === directUrl.toString()) {
   fail('DATABASE_URL and DIRECT_URL must use distinct roles');
+}
+for (const [name, parsed] of [['DATABASE_URL', databaseUrl], ['DIRECT_URL', directUrl]]) {
+  if (parsed && !['postgres:', 'postgresql:'].includes(parsed.protocol)) fail(`${name} must use PostgreSQL`);
+  if (parsed && (parsed.password.includes('[') || parsed.password.includes(']'))) fail(`${name} contains a placeholder password`);
+}
+
+if (databaseUrl && directUrl) {
+  const runtimeUser = decodeURIComponent(databaseUrl.username);
+  const appRole = process.env.APP_DATABASE_ROLE ?? '';
+  const runtimeProject = appRole && runtimeUser.startsWith(`${appRole}.`)
+    ? runtimeUser.slice(appRole.length + 1)
+    : null;
+  const directProject = /^db\.([a-z0-9-]+)\.supabase\.co$/i.exec(directUrl.hostname)?.[1] ?? null;
+  const sameHost = databaseUrl.hostname.toLowerCase() === directUrl.hostname.toLowerCase();
+  const runtimePort = databaseUrl.port || (databaseUrl.protocol === 'postgresql:' ? '5432' : '');
+  const directPort = directUrl.port || (directUrl.protocol === 'postgresql:' ? '5432' : '');
+  if (databaseUrl.pathname !== directUrl.pathname) {
+    fail('DATABASE_URL and DIRECT_URL must target the same database name');
+  }
+  if ((databaseUrl.searchParams.get('schema') || 'public') !== (directUrl.searchParams.get('schema') || 'public')) {
+    fail('DATABASE_URL and DIRECT_URL must target the same schema');
+  }
+  if (sameHost) {
+    if (runtimePort !== directPort) fail('DATABASE_URL and DIRECT_URL must target the same database port');
+  } else if (!runtimeProject || !directProject || runtimeProject !== directProject) {
+    fail('DATABASE_URL and DIRECT_URL must target the same host/project');
+  }
 }
 
 if (databaseUrl) {
@@ -92,8 +151,71 @@ if (jwksUrl && jwksUrl.protocol !== 'https:') {
   fail('SUPABASE_JWKS_URL must be https');
 }
 
-if (signWebBaseUrl && signWebBaseUrl.hostname === 'localhost') {
-  fail('SIGN_WEB_BASE_URL must not be localhost in production');
+if (supabaseUrl && jwksUrl && supabaseUrl.hostname !== jwksUrl.hostname) {
+  fail('SUPABASE_URL and SUPABASE_JWKS_URL must target the same project host');
+}
+
+if (signWebBaseUrl && (signWebBaseUrl.protocol !== 'https:' || signWebBaseUrl.hostname === 'localhost')) {
+  fail('SIGN_WEB_BASE_URL must be a non-local HTTPS URL in production');
+}
+
+for (const [name, parsed] of [
+  ['CABINET_INVITATION_WEB_BASE_URL', cabinetWebBaseUrl],
+  ['ERROR_REPORTER_WEBHOOK_URL', errorReporterUrl],
+  ['BREVO_API_BASE_URL', brevoBaseUrl],
+]) {
+  if (parsed && parsed.protocol !== 'https:') fail(`${name} must be https in release environments`);
+  if (parsed && parsed.hostname === 'localhost') fail(`${name} must not be localhost in release environments`);
+}
+
+const expectedReleaseEnvironment = process.env.RELEASE_ENVIRONMENT || 'production';
+if (!['staging', 'production'].includes(expectedReleaseEnvironment)) {
+  fail('RELEASE_ENVIRONMENT must be staging or production');
+}
+if (process.env.CABINET_RELEASE_ENV !== expectedReleaseEnvironment) {
+  fail('CABINET_RELEASE_ENV must match RELEASE_ENVIRONMENT');
+}
+if ((process.env.CABINET_INVITATION_TOKEN_ENCRYPTION_KEY ?? '').length < 32) {
+  fail('CABINET_INVITATION_TOKEN_ENCRYPTION_KEY must contain at least 32 characters');
+}
+for (const name of ['CABINET_INVITATION_TOKEN_ENCRYPTION_KEY', 'METRICS_TOKEN']) {
+  const value = process.env[name] ?? '';
+  if (value.includes('[') || value.includes(']')) fail(`${name} must not be a placeholder`);
+}
+for (const name of ['BREVO_API_KEY', 'SUPABASE_SERVICE_ROLE_KEY']) {
+  const value = process.env[name] ?? '';
+  if (value.includes('[') || value.includes(']')) fail(`${name} must not be a placeholder`);
+}
+if (!/^\d+$/.test(process.env.CABINET_INVITATION_TOKEN_KEY_VERSION ?? '') || Number(process.env.CABINET_INVITATION_TOKEN_KEY_VERSION) < 1) {
+  fail('CABINET_INVITATION_TOKEN_KEY_VERSION must be a positive integer');
+}
+if ((process.env.METRICS_TOKEN ?? '').length < 32) fail('METRICS_TOKEN must contain at least 32 characters');
+const workerEnabled = process.env.CABINET_INVITATION_WORKER_ENABLED === 'true';
+if (!workerEnabled && process.env.CABINET_INVITATION_WORKER_ENABLED !== 'false') {
+  fail('CABINET_INVITATION_WORKER_ENABLED must be true or false');
+}
+const workerCabinetIds = (process.env.JOB_CABINET_IDS ?? '').split(',').map((value) => value.trim()).filter(Boolean);
+const distinctWorkerCabinetIds = new Set(workerCabinetIds);
+const workerUserId = (process.env.CABINET_INVITATION_WORKER_USER_ID ?? '').trim();
+if (workerEnabled && (!workerCabinetIds.length || !workerUserId)) {
+  fail('enabled Cabinet worker requires JOB_CABINET_IDS and CABINET_INVITATION_WORKER_USER_ID');
+}
+if (workerEnabled && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(workerUserId)) {
+  fail('CABINET_INVITATION_WORKER_USER_ID must be a UUID');
+}
+if (!workerEnabled && (workerCabinetIds.length || workerUserId)) {
+  fail('disabled Cabinet worker must not keep JOB_CABINET_IDS or CABINET_INVITATION_WORKER_USER_ID');
+}
+if (distinctWorkerCabinetIds.size > 100) fail('JOB_CABINET_IDS is limited to 100 distinct pilot cabinets');
+for (const id of workerCabinetIds) {
+  if (!/^[A-Za-z0-9-]{1,64}$/.test(id)) fail('JOB_CABINET_IDS contains an invalid id');
+}
+if (Object.prototype.hasOwnProperty.call(process.env, 'CABINET_PILOT_BOOTSTRAP_CONFIG')) {
+  try {
+    parsePilotBootstrapEnvironment(process.env);
+  } catch {
+    fail('CABINET_PILOT_BOOTSTRAP_CONFIG is invalid or inconsistent with the worker scope');
+  }
 }
 
 const corsOrigins = (process.env.CORS_ORIGINS ?? '').split(',').map((origin) => origin.trim()).filter(Boolean);
@@ -102,10 +224,17 @@ for (const origin of corsOrigins) {
   if (origin === '*') fail('CORS_ORIGINS must not contain wildcard *');
   try {
     const parsed = new URL(origin);
-    if (parsed.protocol !== 'https:') fail(`CORS origin must be https: ${origin}`);
+    if (parsed.protocol !== 'https:') fail('every CORS origin must use https');
   } catch {
-    fail(`Invalid CORS origin: ${origin}`);
+    fail('CORS_ORIGINS contains an invalid URL');
   }
+}
+
+if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(process.env.BREVO_SENDER_EMAIL ?? '')) {
+  fail('BREVO_SENDER_EMAIL must be a valid email address');
+}
+if (!/^[A-Za-z0-9._-]{1,100}$/.test(process.env.SUPABASE_STORAGE_BUCKET ?? '')) {
+  fail('SUPABASE_STORAGE_BUCKET has an invalid format');
 }
 
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? '';
