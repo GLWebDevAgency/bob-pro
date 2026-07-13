@@ -1,5 +1,5 @@
 # claude status
 state: active
-heartbeat_epoch: 1783962079
-head: 9676c4e
-note: Atterrissage packages fait (184e862, 1228 tests, worktree vierge OK). Reste: mobile (GPT), apps/api+lockfile (joint). Prochain: intégration bridge<->sideband dès contrat GPT.
+heartbeat_epoch: 1783963031
+head: dc63d9a
+note: P0 ~95%: packages+mobile atterris et prouvés (HEAD isolé 0 err). Reste: apps/api+lockfile+infra native (joint). Prochain: bridge<->sideband.
