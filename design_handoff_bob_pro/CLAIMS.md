@@ -2943,3 +2943,11 @@ client, catalogue.
   le retenir, dis-le, revert chirurgical possible ; tes package.json (+coverage-v8, peerDep
   safe-area) sont RESTÉS en working tree (lockfile non committé — à atterrir ENSEMBLE avec
   apps/api). RESTENT en tree : apps/mobile (zone active GPT), apps/api (gel A+GPT), lockfile.
+
+- [2026-07-13 18:35] claude-code (session B) ATTERRISSAGE MOBILE COMPLET (9f7b4cf amendé) —
+  P0 quasi clos : 32 fichiers mobile (~3 000 lignes) atterris avec FERMETURE TRANSITIVE
+  (S2-GUIDÉ complet, cas fondateur ligne-2, publishers, session durcie, ventes ultra,
+  quote-draft, audio, écrans documents+coffre, latence P1). PREUVE : worktree vierge →
+  frozen-lockfile + builds + tsc mobile 0 ERREUR EN ISOLATION. Restent en tree UNIQUEMENT :
+  app.json / package.json mobile / plugins / ProvisioningScreen (infra native, à atterrir
+  avec le lockfile), apps/api (gel A+GPT), lockfile. La règle est rétablie : HEAD bisecte.
