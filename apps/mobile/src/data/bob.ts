@@ -10,7 +10,7 @@ import {
   type SendableQuote,
   type IssuableInvoice,
   type AgentDocument,
-  chantierStatusLabel, customerTypeLabel, documentKindLabel, documentStatusLabel, expenseCategoryLabel, expenseStatusLabel, frDateLabel, invoiceKindLabel, invoiceStatusLabel, quoteStatusLabel,
+  accountingJournalLabel, chantierStatusLabel, customerTypeLabel, documentKindLabel, documentStatusLabel, expenseCategoryLabel, expenseStatusLabel, frDateLabel, invoiceKindLabel, invoiceStatusLabel, quoteStatusLabel,
 } from '@bob/ai';
 import { ok, deriveRelancePlan, formatEUR, type AppError, type Result } from '@bob/core';
 import { HttpBobClient, type BobClient } from '@bob/api-client';
@@ -126,6 +126,56 @@ export function makeBobAgent(client: BobClient): BobAssistant {
         });
       }
 
+      if (input.type === 'invoice_line') {
+        const invoices = await client.listInvoices();
+        if (!invoices.ok) return invoices;
+        const matches = invoices.value.flatMap((invoice) =>
+          invoice.lines
+            .filter((line) => line.id === input.id)
+            .map((line) => ({ invoice, line })),
+        );
+        if (matches.length !== 1) return notFound();
+        const { invoice, line } = matches[0]!;
+        const lineTotalHt = Math.round(line.qty * line.unitPriceHT);
+        return ok({
+          type: input.type,
+          id: line.id,
+          label: line.label,
+          facts: [
+            { label: 'Facture', value: invoice.number ?? 'Brouillon' },
+            { label: 'Quantité', value: `${line.qty}${line.unit ? ` ${line.unit}` : ''}` },
+            { label: 'Prix unitaire HT', value: formatEUR(line.unitPriceHT) },
+            { label: 'Total HT', value: formatEUR(lineTotalHt) },
+            { label: 'TVA', value: `${line.vatRate} %` },
+          ],
+        });
+      }
+
+      if (input.type === 'quote_line') {
+        const quotes = await client.listQuotes();
+        if (!quotes.ok) return quotes;
+        const matches = quotes.value.flatMap((quote) =>
+          quote.lines
+            .filter((line) => line.id === input.id)
+            .map((line) => ({ quote, line })),
+        );
+        if (matches.length !== 1) return notFound();
+        const { quote, line } = matches[0]!;
+        const lineTotalHt = Math.round(line.qty * line.unitPriceHT);
+        return ok({
+          type: input.type,
+          id: line.id,
+          label: line.label,
+          facts: [
+            { label: 'Devis', value: quote.number ?? 'Brouillon' },
+            { label: 'Quantité', value: `${line.qty}${line.unit ? ` ${line.unit}` : ''}` },
+            { label: 'Prix unitaire HT', value: formatEUR(line.unitPriceHT) },
+            { label: 'Total HT', value: formatEUR(lineTotalHt) },
+            { label: 'TVA', value: `${line.vatRate} %` },
+          ],
+        });
+      }
+
       if (input.type === 'customer') {
         const customers = await client.listCustomers();
         if (!customers.ok) return customers;
@@ -192,7 +242,7 @@ export function makeBobAgent(client: BobClient): BobAssistant {
           id: entry.id,
           label: `${entry.reference} — ${entry.label}`,
           facts: [
-            { label: 'Journal', value: entry.journal },
+            { label: 'Journal', value: accountingJournalLabel(entry.journal) },
             { label: 'Date', value: frDateLabel(entry.entryDate) },
             { label: 'Débit', value: formatEUR(debit) },
             { label: 'Crédit', value: formatEUR(credit) },

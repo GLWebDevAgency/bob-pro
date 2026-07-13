@@ -70,6 +70,13 @@ const CUSTOMER_TYPE: Readonly<Record<string, string>> = {
   b2g: 'Marché public',
 };
 
+const ACCOUNTING_JOURNAL: Readonly<Record<string, string>> = {
+  sales: 'Ventes',
+  purchases: 'Achats',
+  bank: 'Banque',
+  misc: 'Opérations diverses',
+};
+
 const label = (table: Readonly<Record<string, string>>) => (token: string): string => table[token] ?? token;
 
 export const invoiceStatusLabel = label(INVOICE_STATUS);
@@ -81,6 +88,7 @@ export const documentKindLabel = label(DOCUMENT_KIND);
 export const documentStatusLabel = label(DOCUMENT_STATUS);
 export const chantierStatusLabel = label(CHANTIER_STATUS);
 export const customerTypeLabel = label(CUSTOMER_TYPE);
+export const accountingJournalLabel = label(ACCOUNTING_JOURNAL);
 
 /** Date ISO (YYYY-MM-DD…) → JJ/MM/AAAA, lisible à l'écran ET à l'oral. Entrée inattendue : telle quelle. */
 export function frDateLabel(iso: string): string {
