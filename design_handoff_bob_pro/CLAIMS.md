@@ -2848,3 +2848,14 @@ apps/mobile (C garde apps/web).
   PROCHAINES VAGUES proposées : Ventes+Dépenses (publishers), Clôture/Comptabilité
   (« explique cette anomalie/écriture »), Documents/Chantiers/Pilotage/Catalogue ; puis S2
   (édition vocale) dès PONT-VOCAL commité par session A.
+
+- [2026-07-13 13:05] claude-code (session B) VAGUE 3 VOCALE LIVRÉE (b093d9d) : 7 écrans
+  contextuels de plus — Ventes (pièces dans l'ordre affiché), Dépenses (à-payer d'abord),
+  Documents (12 affichés), Comptabilité (écritures + LECTURE « explique cette écriture » :
+  journal/date/débit/crédit/alerte déséquilibre — hôte local), Clôture (présence d'écran,
+  la revue vocale passe déjà par revue_cloture), Chantiers, Pilotage (top clients réels).
+  Bob « sait où je suis » sur 14 routes ; publishers tous mémoïsés (règle useFocusEffect),
+  eslint+tsc verts, 226 tests @bob/ai, autosuffisance worktree vierge revalidée.
+  RESTE VOCAL : catalogue/réglages/diagnostic/compte/scan (S3, entités non adressables ou
+  écrans de formulaire) ; lectures serveur notification+accounting_entry à câbler avec
+  PONT-VOCAL (toujours en attente du commit outbox session A — active à 12:5x) ; puis S2.
