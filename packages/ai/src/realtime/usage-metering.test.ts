@@ -52,4 +52,27 @@ describe('summarizeVoiceUsage — l’étude tarifaire du fondateur (coût réel
     expect(study.averageCostCentsPerTenant).not.toBeNull();
     expect(study.medianCostCentsPerTenant).not.toBeNull();
   });
+
+  it('changement de plan en cours de période : coût attribué au plan RÉELLEMENT actif (une ligne par tenant×plan)', () => {
+    const solo: VoiceUsageEvent = { tenantId: 't1', plan: 'solo', kind: 'realtime_audio_out_seconds', amount: 10, at, sessionId: 's1' };
+    const pro: VoiceUsageEvent = { tenantId: 't1', plan: 'pro', kind: 'realtime_audio_out_seconds', amount: 100, at, sessionId: 's2' };
+    const study = summarizeVoiceUsage([solo, pro], PRICES);
+    const soloRow = study.tenants.find((t) => t.tenantId === 't1' && t.plan === 'solo')!;
+    const proRow = study.tenants.find((t) => t.tenantId === 't1' && t.plan === 'pro')!;
+    expect(soloRow.byKind.realtime_audio_out_seconds).toBe(10); // jamais 110 agrégés sous 'solo'
+    expect(proRow.byKind.realtime_audio_out_seconds).toBe(100);
+    // Moyenne/médiane par TENANT : t1 compte UNE fois (tous plans confondus), pas deux.
+    expect(study.averageCostCentsPerTenant).toBe(study.totalCostCents);
+  });
+
+  it('l’étude est INDÉPENDANTE DE L’ORDRE des événements (rejouable sur l’historique)', () => {
+    const events: VoiceUsageEvent[] = [
+      { tenantId: 't1', plan: 'pro', kind: 'realtime_audio_out_seconds', amount: 100, at },
+      { tenantId: 't1', plan: 'solo', kind: 'realtime_audio_out_seconds', amount: 10, at },
+      { tenantId: 't2', plan: 'solo', kind: 'realtime_audio_out_seconds', amount: 5, at },
+    ];
+    const forward = summarizeVoiceUsage(events, PRICES);
+    const backward = summarizeVoiceUsage([...events].reverse(), PRICES);
+    expect(backward).toEqual(forward); // même ensemble, ordre différent → même étude, au champ près
+  });
 });

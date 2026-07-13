@@ -20,8 +20,10 @@ describe('RealtimeContextPublisher — révision monotone, fence, jamais après 
       seen.push({ handle, revision: update.revision });
       return ok({ revision: update.revision, contextDigest: `d-${update.revision}` });
     });
-    expect((await publisher.publish(CONTEXT))?.contextRevision).toBe(1);
-    expect((await publisher.publish(CONTEXT))?.contextRevision).toBe(2);
+    const first = await publisher.publish(CONTEXT);
+    expect(first).toMatchObject({ status: 'confirmed', fence: { contextRevision: 1 } });
+    const second = await publisher.publish(CONTEXT);
+    expect(second).toMatchObject({ status: 'confirmed', fence: { contextRevision: 2 } });
     expect(publisher.fence).toMatchObject({ sessionHandle: 'h-1', contextRevision: 2, contextDigest: 'd-2' });
     expect(seen.map((s) => s.revision)).toEqual([1, 2]);
     expect(seen.every((s) => s.handle === 'h-1')).toBe(true);
@@ -34,11 +36,11 @@ describe('RealtimeContextPublisher — révision monotone, fence, jamais après 
       return ok({ revision: 1, contextDigest: 'd-1' });
     });
     publisher.close();
-    expect(await publisher.publish(CONTEXT)).toBeNull();
+    expect(await publisher.publish(CONTEXT)).toEqual({ status: 'superseded' });
     expect(calls).toBe(0);
   });
 
-  it('une publication doublée par une plus récente est neutralisée (fence)', async () => {
+  it('une publication doublée est SUPERSEDED (bénin) — jamais confondue avec un échec', async () => {
     const resolvers: Array<() => void> = [];
     let served = 0;
     const publisher = new RealtimeContextPublisher('h-1', async () => {
@@ -50,13 +52,13 @@ describe('RealtimeContextPublisher — révision monotone, fence, jamais après 
     const first = publisher.publish(CONTEXT);
     const second = publisher.publish(CONTEXT);
     resolvers[1]!();
-    expect((await second)?.contextRevision).toBe(2);
+    expect(await second).toMatchObject({ status: 'confirmed', fence: { contextRevision: 2 } });
     resolvers[0]!();
-    expect(await first).toBeNull(); // la révision 1, doublée, ne compte pas
+    expect(await first).toEqual({ status: 'superseded' }); // doublée ≠ échec : la session survit
     expect(publisher.fence?.contextRevision).toBe(2); // la fence reste celle de la plus récente
   });
 
-  it('un échec serveur rend null (l’appelant republiera) sans casser la monotonie', async () => {
+  it('un échec serveur rend FAILED (l’appelant dégrade) sans casser la monotonie', async () => {
     let attempt = 0;
     const publisher = new RealtimeContextPublisher('h-1', async () => {
       attempt += 1;
@@ -64,8 +66,8 @@ describe('RealtimeContextPublisher — révision monotone, fence, jamais après 
         ? err({ kind: 'dependency', port: 'realtime', cause: 'offline' })
         : ok({ revision: 2, contextDigest: 'd-2' });
     });
-    expect(await publisher.publish(CONTEXT)).toBeNull();
-    expect((await publisher.publish(CONTEXT))?.contextRevision).toBe(2);
+    expect(await publisher.publish(CONTEXT)).toEqual({ status: 'failed' });
+    expect(await publisher.publish(CONTEXT)).toMatchObject({ status: 'confirmed', fence: { contextRevision: 2 } });
   });
 });
 

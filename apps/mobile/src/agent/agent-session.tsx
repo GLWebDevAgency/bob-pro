@@ -164,9 +164,10 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
         },
         onNavigate: (route) => {
           if (!realtimeActiveRef.current) return;
+          // PAS de publication ici : contextRef porte encore l'ANCIEN écran. Le montage du
+          // nouvel écran change instanceId → l'effet [liveContextInstance] republie le BON
+          // contexte (publier les deux créait une course qui tuait la session — P1 14/07).
           router.push(route as never);
-          // L'écran d'arrivée republie : séquence stricte micro-off→interrupt→PUT→micro-on.
-          void realtimeRef.current?.publishContext();
         },
         onFallback: () => {
           // Primaire ENTIÈREMENT fermé (garantie orchestrateur) : texte honnête puis boucle
@@ -186,6 +187,12 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
   const voice = useVoiceInput((text) => transcriptHandlerRef.current(text), {
     owner: 'global-agent-session',
     onIssue: (nextIssue) => {
+      if (realtimeActiveRef.current) {
+        // Exclusivité : la voix legacy ne tourne pas pendant le temps réel — un onIssue reçu
+        // ici est un artefact (bail audio refusé) et ne doit pas peindre la session en erreur.
+        console.warn('[bob-voice] onIssue ignoré (temps réel actif):', nextIssue);
+        return;
+      }
       console.warn('[bob-voice] session onIssue:', nextIssue);
       setIssue(nextIssue);
       activeRef.current = false;
@@ -221,10 +228,11 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
   }, [personality, setSessionPhase]);
 
   const stop = useCallback((): void => {
-    if (realtimeActiveRef.current) {
-      realtimeActiveRef.current = false;
-      void realtimeRef.current?.stop('user');
-    }
+    // INCONDITIONNEL (P0 review 14/07) : un stop() pendant le bootstrap temps réel (avant que
+    // realtimeActiveRef ne passe à true) doit quand même invalider la génération du contrôleur
+    // — sinon le bootstrap aboutit et ouvre un micro fantôme sur une session affichée éteinte.
+    realtimeActiveRef.current = false;
+    void realtimeRef.current?.stop('user');
     clearWizardHint(); // un hint en vol meurt avec la session — jamais de pré-remplissage fantôme
     turnGenerationRef.current += 1;
     activeRef.current = false;
@@ -483,11 +491,19 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
     void (async () => {
       // TEMPS RÉEL d'abord — le serveur décide (plan voice_live + rollout). Refusé/indispo :
       // la boucle historique reprend exactement comme avant, greeting compris.
-      const outcome = await getRealtimeController().start();
+      const controller = getRealtimeController();
+      const outcome = await controller.start();
+      if (!activeRef.current) {
+        // stop() est passé pendant le bootstrap : le contrôleur est déjà invalidé par
+        // génération — ceinture ET bretelles, on ne laisse RIEN d'ouvert derrière soi.
+        void controller.stop('user');
+        return;
+      }
       if (outcome === 'realtime') {
         realtimeActiveRef.current = true;
         return; // EXCLUSIVITÉ : aucune oreille/bouche legacy tant que le temps réel vit.
       }
+      if (outcome === 'fallback') return; // onFallback a DÉJÀ relancé la boucle historique
       const mountedGreeting = surfaceRef.current.greeting?.key ?? null;
       if (mountedGreeting !== null) {
         // Écran monté AVANT la session : son guidage se joue au démarrage (jamais perdu).
@@ -540,6 +556,12 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
   const toggle = useCallback((): void => {
     if (!activeRef.current) {
       start();
+      return;
+    }
+    if (realtimeActiveRef.current) {
+      // Temps réel : le tap termine la session, point. Les nuances listening/idle sont de la
+      // machinerie LEGACY — la piloter ici laissait le micro WebRTC ouvert sous une UI éteinte.
+      stop();
       return;
     }
     if (phase === 'listening') {

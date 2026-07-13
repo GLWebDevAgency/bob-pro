@@ -73,7 +73,7 @@ export interface RealtimeSessionDeps {
   ) => RealtimeControlGateLike;
 }
 
-export type RealtimeStartOutcome = 'realtime' | 'unavailable';
+export type RealtimeStartOutcome = 'realtime' | 'unavailable' | 'fallback';
 
 export class RealtimeSessionController {
   private orchestrator: RealtimeOrchestratorLike | null = null;
@@ -83,6 +83,12 @@ export class RealtimeSessionController {
   private lastTransport: RealtimeTransportLike | null = null;
   private contextPublished = false;
   private activeFlag = false;
+  /** Fence start/stop : chaque stop (ou prise de main du repli) invalide les bootstraps en
+   * vol — un start() doublé ne peut JAMAIS rouvrir un micro après coup (P0 review 14/07). */
+  private generation = 0;
+  /** Le repli a pris la main via le port (onFallback DÉJÀ émis) — start() doit le dire à
+   * l'appelant pour qu'il ne relance pas une DEUXIÈME boucle legacy. */
+  private fallbackTaken = false;
 
   constructor(
     private readonly deps: RealtimeSessionDeps,
@@ -95,14 +101,26 @@ export class RealtimeSessionController {
 
   async start(): Promise<RealtimeStartOutcome> {
     if (this.activeFlag) return 'realtime';
+    const gen = ++this.generation;
+    this.fallbackTaken = false;
+    // Un orchestrateur zombie (repli mid-call scellé sans stop explicite) meurt ici :
+    // chaque start() repart d'un monde propre, jamais d'un transport mort.
+    if (this.orchestrator) await this.teardown('user');
     if (!(await this.deps.isAvailable())) return 'unavailable';
+    if (gen !== this.generation) return 'unavailable'; // stop() pendant le await — rien n'a démarré
     this.contextPublished = false;
     const fallbackPort: LegacyVoiceFallbackPort = {
       start: async (input) => {
-        // Le primaire est ENTIÈREMENT fermé (garantie orchestrateur) — la session peut
-        // relancer sa boucle historique sans double cerveau.
+        // Le primaire est ENTIÈREMENT fermé (garantie orchestrateur). La session temps réel
+        // est TERMINÉE : on se scelle (génération invalidée, événements tardifs ignorés,
+        // prochain start() propre) SANS stopper l'orchestrateur depuis son propre callback.
+        this.generation += 1;
+        this.activeFlag = false;
+        this.fallbackTaken = true;
         this.publisher?.close();
         this.publisher = null;
+        this.controlGate?.close?.();
+        this.controlGate = null;
         this.hooks.onFallback(input.reason);
         return { close: async () => undefined };
       },
@@ -119,7 +137,9 @@ export class RealtimeSessionController {
     });
     this.activeFlag = true;
     const state = await this.orchestrator.start();
-    if (state.phase === 'failed' || state.phase === 'stopped') {
+    if (this.fallbackTaken) return 'fallback'; // le repli a DÉJÀ relancé la boucle historique
+    if (gen !== this.generation) return 'unavailable'; // stop() pendant le bootstrap — déjà démonté
+    if (state.phase === 'failed' || state.phase === 'stopped' || state.phase === 'legacy') {
       await this.stop('user');
       return 'unavailable';
     }
@@ -134,9 +154,12 @@ export class RealtimeSessionController {
     const transport = this.lastTransport;
     transport.setMicrophoneEnabled(false);
     transport.interrupt('navigation');
-    const fence = await this.publisher.publish(this.hooks.getContextSnapshot());
+    const result = await this.publisher.publish(this.hooks.getContextSnapshot());
     if (!this.activeFlag) return;
-    if (fence === null) {
+    // Supersédée = une publication PLUS RÉCENTE est en vol : c'est ELLE qui rouvrira le
+    // micro sur le contexte frais. La traiter en échec tuait la session à chaque navigation.
+    if (result.status === 'superseded') return;
+    if (result.status === 'failed') {
       const reason: RealtimeFallbackReason = 'provider_error';
       await this.stop('user');
       this.hooks.onFallback(reason);
@@ -146,6 +169,11 @@ export class RealtimeSessionController {
   }
 
   async stop(reason: 'user' | 'background' | 'unmount' = 'user'): Promise<void> {
+    this.generation += 1; // invalide tout start() encore en vol — jamais de micro posthume
+    await this.teardown(reason);
+  }
+
+  private async teardown(reason: 'user' | 'background' | 'unmount'): Promise<void> {
     this.activeFlag = false;
     this.publisher?.close();
     this.publisher = null;
@@ -217,8 +245,9 @@ export class RealtimeSessionController {
     }
     this.publisher?.close();
     this.publisher = new RealtimeContextPublisher(handle, this.deps.updateContext);
-    const fence = await this.publisher.publish(this.hooks.getContextSnapshot());
-    if (fence === null) {
+    const result = await this.publisher.publish(this.hooks.getContextSnapshot());
+    if (result.status === 'superseded') return; // une publication plus récente rouvrira le micro
+    if (result.status === 'failed') {
       if (this.activeFlag) {
         await this.stop('user');
         this.hooks.onFallback('provider_error');

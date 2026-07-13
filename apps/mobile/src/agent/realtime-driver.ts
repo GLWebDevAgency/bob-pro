@@ -47,6 +47,16 @@ export interface RealtimePublishedFence {
   readonly contextDigest: string;
 }
 
+/** Issue d'une publication — l'appelant DOIT distinguer les trois cas :
+ * `confirmed` = fence serveur, le micro peut se rouvrir sur CE contexte ;
+ * `superseded` = doublée par une publication plus récente ou publieur fermé — BÉNIN,
+ *   la plus récente porte la vérité (ne jamais traiter comme un échec) ;
+ * `failed` = le serveur a réellement refusé/échoué — FATAL pour la session. */
+export type RealtimePublishResult =
+  | { readonly status: 'confirmed'; readonly fence: RealtimePublishedFence }
+  | { readonly status: 'superseded' }
+  | { readonly status: 'failed' };
+
 /**
  * Révisions MONOTONES + fence : une publication partie avant close/une révision plus
  * récente n'écrase jamais l'état côté serveur (le serveur rejette revision ≤ courante,
@@ -64,17 +74,17 @@ export class RealtimeContextPublisher {
   ) {}
 
   /** Publie un instantané du contexte focalisé (DÉJÀ passé par snapshotAgentContext).
-   * Retourne la FENCE confirmée par le serveur — null si fermé/doublé/échec. */
-  async publish(context: AgentContext): Promise<RealtimePublishedFence | null> {
-    if (this.closed) return null;
+   * `superseded` (fermé ou doublé par plus récent) est BÉNIN ; `failed` est un vrai échec. */
+  async publish(context: AgentContext): Promise<RealtimePublishResult> {
+    if (this.closed) return { status: 'superseded' };
     this.inFlight?.abort();
     const abort = new AbortController();
     this.inFlight = abort;
     this.revision += 1;
     const revision = this.revision;
     const result = await this.update(this.sessionHandle, { version: 1, revision, context });
-    if (abort.signal.aborted || this.closed) return null; // une course perdue ne compte pas
-    if (!result.ok) return null;
+    if (abort.signal.aborted || this.closed) return { status: 'superseded' }; // course perdue — la plus récente fait foi
+    if (!result.ok) return { status: 'failed' };
     // La fence = la RÉPONSE serveur (revision confirmée + digest) — jamais nos valeurs locales :
     // c'est elle qui authentifie les contrôles one-shot liés à CE contexte.
     this.acknowledged = {
@@ -82,7 +92,7 @@ export class RealtimeContextPublisher {
       contextRevision: result.value.revision,
       contextDigest: result.value.contextDigest,
     };
-    return this.acknowledged;
+    return { status: 'confirmed', fence: this.acknowledged };
   }
 
   /** Dernière publication CONFIRMÉE — la fence que le gate d'ACK consomme. */
