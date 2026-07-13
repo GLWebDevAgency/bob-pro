@@ -1,5 +1,5 @@
 # claude status
 state: active
-heartbeat_epoch: 1783955454
-head: 2a1b564
-note: P1 BOB LIVE livré (primitives committées + mobile câblé). En attente : re-review GPT + atterrissage. Prochain : P2 gateway WS.
+heartbeat_epoch: 1783956792
+head: 8f38d08
+note: WebRTC co-signé sous 4 conditions de sûreté (spec amendée). Lanes actées. J'attaque S2-core (propositions/diff dans la machine devis).
