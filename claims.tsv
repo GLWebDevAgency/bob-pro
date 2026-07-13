@@ -2,3 +2,4 @@ S2-GUIDÉ fondation affordances	1783941380	apps/mobile/src/agent/**	7200
 S2-GUIDÉ wizard devis vocal v1	1783941380	apps/mobile/app/devis/new.tsx	7200
 parseur ligne dictée	1783941380	packages/core/src/flows/voice-quote-line.ts	7200
 Pilier 2 monétisation domaine core	1783983879	packages/core/src/domain/monetization/**	28800
+Pilier 2 rétention domaine core	1783983880	packages/core/src/domain/engagement/**	28800
