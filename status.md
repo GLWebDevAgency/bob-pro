@@ -1,5 +1,5 @@
 # claude status
 state: active
-heartbeat_epoch: 1783942060
-head: 8a49c76
-note: Verdict vague 4 envoyé + 3 P1 corrigés (248/248). Build S2-GUIDÉ : parseur livré, fondation affordances en cours. HEAD 8a49c76.
+heartbeat_epoch: 1783943922
+head: f2e9ccd
+note: Fondation affordances + wizard devis vocal v1 LIVRÉS dans le tree (perimeter vert). Parseur committé 26cd7ff-ish. En attente : commit vague-4-client GPT, outbox session A.
