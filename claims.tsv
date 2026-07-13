@@ -4,3 +4,4 @@ parseur ligne dictée	1783941380	packages/core/src/flows/voice-quote-line.ts	720
 Pilier 2 monétisation domaine core	1783983879	packages/core/src/domain/monetization/**	28800
 Pilier 2 rétention domaine core	1783983880	packages/core/src/domain/engagement/**	28800
 Pilier 2 paywall mobile	1783983880	apps/mobile/src/monetization/**	28800
+Pilier 2 rétention mobile	1783983880	apps/mobile/src/engagement/**	28800
