@@ -1,5 +1,5 @@
 # claude status
 state: active
-heartbeat_epoch: 1783952968
-head: f2e9ccd
-note: 8 P1 GPT corrigés (S2-GUIDÉ durci), re-review demandée. Arbitrage: QuoteDraftProvider non adopté (machine core canonique), contre-proposition S2.
+heartbeat_epoch: 1783955150
+head: ea0a5e9
+note: MANDAT BOB LIVE actif. Spec committée. 6 P1 re-review corrigés. En attente re-review+atterrissage GPT ; je démarre P1 primitives.
