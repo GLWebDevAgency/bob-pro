@@ -55,6 +55,26 @@ let activeVoiceLease: VoiceLease | null = null;
 let nextVoiceLeaseGeneration = 0;
 
 const NATIVE_TERMINAL_GRACE_MS = 350;
+
+/**
+ * Demande de permission EN COURS : sur Android, la boîte système passe l'app en
+ * 'background' (pas 'inactive' comme iOS) — sans ce drapeau, le nettoyage AppState
+ * tuerait la session pendant que l'utilisateur accorde le micro (bulle disparue).
+ */
+let permissionRequestsInFlight = 0;
+
+export function voicePermissionRequestInFlight(): boolean {
+  return permissionRequestsInFlight > 0;
+}
+
+async function withPermissionRequest<T>(run: () => Promise<T>): Promise<T> {
+  permissionRequestsInFlight += 1;
+  try {
+    return await run();
+  } finally {
+    permissionRequestsInFlight -= 1;
+  }
+}
 const MAX_CLOUD_AUDIO_BYTES = 8 * 1024 * 1024;
 
 function acquireVoiceLease(owner: symbol): number | null {
@@ -120,6 +140,7 @@ export function useVoiceInput(
   const onPartialRef = useRef(opts.onPartial);
   onPartialRef.current = opts.onPartial;
   const report = useCallback((issue: VoiceInputIssue, title: string, message: string): void => {
+    console.warn('[bob-voice] issue:', issue, '—', message);
     if (onIssueRef.current) onIssueRef.current(issue);
     else Alert.alert(title, message);
   }, []);
@@ -180,7 +201,8 @@ export function useVoiceInput(
     // Certains moteurs livrent le resultat final juste APRES `end`.
     releaseNativeGenerationAfterGrace(session.generation);
   });
-  useSpeechRecognitionEvent('error', () => {
+  useSpeechRecognitionEvent('error', (e) => {
+    console.warn('[bob-voice] event error:', JSON.stringify(e));
     const session = sessionRef.current;
     if (session?.mode !== 'native' || !matchesVoiceLease(lease, session.generation)) {
       return;
@@ -209,7 +231,10 @@ export function useVoiceInput(
     deliveredNativeGenerationRef.current = null;
     try {
       const selectedMode = await getVoiceMode();
-      if (!matchesVoiceLease(lease, generation, 'active')) return false;
+      if (!matchesVoiceLease(lease, generation, 'active')) {
+        console.warn('[bob-voice] start annulé pendant getVoiceMode (lease invalidé)', String(lease));
+        return false;
+      }
       sessionRef.current = { generation, mode: selectedMode };
 
       if (selectedMode === 'native') {
@@ -218,8 +243,11 @@ export function useVoiceInput(
           report('unavailable', 'Dictée', "La dictée native n'est pas disponible ici.");
           return false;
         }
-        const perm = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
-        if (!matchesVoiceLease(lease, generation, 'active')) return false;
+        const perm = await withPermissionRequest(() => ExpoSpeechRecognitionModule.requestPermissionsAsync());
+        if (!matchesVoiceLease(lease, generation, 'active')) {
+          console.warn('[bob-voice] start annulé pendant la permission (lease invalidé)');
+          return false;
+        }
         if (!perm.granted) {
           releaseGeneration(generation);
           report('denied', 'Micro', 'Autorise le micro pour parler à Bob.');
@@ -232,7 +260,7 @@ export function useVoiceInput(
           continuous: false,
         });
       } else {
-        const perm = await AudioModule.requestRecordingPermissionsAsync();
+        const perm = await withPermissionRequest(() => AudioModule.requestRecordingPermissionsAsync());
         if (!matchesVoiceLease(lease, generation, 'active')) return false;
         if (!perm.granted) {
           report('denied', 'Micro', 'Autorise le micro pour la dictée cloud.');
@@ -391,7 +419,7 @@ export function useVoiceInput(
       // 'background' SEULEMENT : sur iOS, la boîte de permission micro, le Control Center ou
       // un bandeau d'appel passent l'app en 'inactive' — annuler là tuerait le PREMIER usage
       // du micro pendant que l'utilisateur accorde la permission.
-      if (state === 'background') void cancel();
+      if (state === 'background' && !voicePermissionRequestInFlight()) void cancel();
     });
     return () => {
       subscription.remove();

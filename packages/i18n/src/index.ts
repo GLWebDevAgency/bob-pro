@@ -4,6 +4,7 @@
  * (Pote par défaut, Pro, Direct). Les claims d'écran ajoutent leurs clés (C10+).
  */
 
+import { cabinetFr } from './catalogs/cabinet';
 
 export type Personality = 'pote' | 'pro' | 'direct';
 
@@ -1504,6 +1505,21 @@ const legacyFr = {
     pote: 'Continuer dans l’Assistant',
     pro: 'Continuer dans l’Assistant',
     direct: 'Ouvrir l’Assistant',
+  },
+  'agent.global.issueDenied': {
+    pote: 'Bob n’a pas l’autorisation micro — active-la dans les réglages du téléphone.',
+    pro: 'L’autorisation micro est refusée. Activez-la dans les réglages du téléphone.',
+    direct: 'Micro refusé. Réglages téléphone → autoriser.',
+  },
+  'agent.global.issueUnavailable': {
+    pote: 'Le micro n’est pas dispo (absent ou déjà occupé par un autre flux Bob).',
+    pro: 'Le micro n’est pas disponible : absent de cet appareil ou déjà utilisé.',
+    direct: 'Micro indispo (absent ou occupé).',
+  },
+  'agent.global.issueFailed': {
+    pote: 'La dictée a raté — réessaie.',
+    pro: 'La dictée a échoué. Veuillez réessayer.',
+    direct: 'Dictée ratée. Réessaie.',
   },
   'agent.global.heardNothing': {
     pote: 'Je n’ai rien entendu — touche le bouton pour reprendre.',
@@ -3053,6 +3069,53 @@ const legacyFr = {
   },
   'notif.retry': { pote: 'Réessayer', pro: 'Réessayer', direct: 'Réessayer' },
 
+  // ── Vague Bob partout — lot lu atomique, même commande en manuel et à la voix ─────
+  'notif.markAllAction': {
+    pote: 'Tout marquer lu',
+    pro: 'Tout marquer lu',
+    direct: 'Tout lire',
+  },
+  'notif.markAllActionA11y': {
+    pote: '{count} notifications non lues. Tout marquer comme lu.',
+    pro: '{count} notifications non lues. Tout marquer comme lu.',
+    direct: '{count} non lues. Tout lire.',
+  },
+  'notif.markAllConfirmTitle': {
+    pote: 'Tout marquer comme lu ?',
+    pro: 'Marquer toutes les notifications comme lues ?',
+    direct: 'Tout marquer lu ?',
+  },
+  'notif.markAllConfirmBody': {
+    pote: 'Je marque ces {count} notifications comme lues. Celles qui arrivent pendant ta confirmation resteront non lues.',
+    pro: 'Les {count} notifications actuellement non lues seront marquées comme lues. Toute nouvelle notification restera non lue.',
+    direct: '{count} notifications seront lues. Les nouvelles restent non lues.',
+  },
+  'notif.markAllConfirmBodyOne': {
+    pote: 'Je marque cette notification comme lue. Celles qui arrivent pendant ta confirmation resteront non lues.',
+    pro: 'La notification actuellement non lue sera marquée comme lue. Toute nouvelle notification restera non lue.',
+    direct: '1 notification sera lue. Les nouvelles restent non lues.',
+  },
+  'notif.markAllSuccess': {
+    pote: 'C’est bon, {count} notifications sont lues.',
+    pro: '{count} notifications ont été marquées comme lues.',
+    direct: '{count} notifications lues.',
+  },
+  'notif.markAllSuccessOne': {
+    pote: 'C’est bon, la notification est lue.',
+    pro: 'La notification a été marquée comme lue.',
+    direct: 'Notification lue.',
+  },
+  'notif.markAllNoop': {
+    pote: 'Tout est déjà lu.',
+    pro: 'Toutes les notifications sont déjà lues.',
+    direct: 'Déjà à jour.',
+  },
+  'notif.markAllError': {
+    pote: 'Je n’ai pas pu mettre le fil à jour. Réessaie.',
+    pro: 'Impossible de mettre les notifications à jour. Veuillez réessayer.',
+    direct: 'Mise à jour impossible. Réessaie.',
+  },
+
   // ── C25 v2 — fil serveur (GET /notifications) + envoi réel ─────────────────
   'notif.sectionFeed': {
     pote: 'Activité',
@@ -4026,7 +4089,7 @@ const legacyFr = {
   },
 } as const satisfies Record<string, Copy>;
 
-const fr = { ...legacyFr } as const satisfies Record<string, Copy>;
+const fr = { ...legacyFr, ...cabinetFr } as const satisfies Record<string, Copy>;
 
 export type I18nKey = keyof typeof fr;
 
