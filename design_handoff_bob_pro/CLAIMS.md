@@ -2951,3 +2951,10 @@ client, catalogue.
   frozen-lockfile + builds + tsc mobile 0 ERREUR EN ISOLATION. Restent en tree UNIQUEMENT :
   app.json / package.json mobile / plugins / ProvisioningScreen (infra native, à atterrir
   avec le lockfile), apps/api (gel A+GPT), lockfile. La règle est rétablie : HEAD bisecte.
+
+- [2026-07-13 19:05] FONDATEUR → B+C : BOB LIVE est GOUVERNÉ PAR LES PLANS — pas un droit
+  universel. Se référer au catalogue ; seul le PRIX peut changer, après études de mesure de
+  la consommation réelle (tokens/audio, coût par utilisateur). EXÉCUTÉ par session B
+  (5a5b290) : feature voice_live (pro+business provisoire), compteur VoiceUsageEvent +
+  summarizeVoiceUsage (coût réel/tenant, moyenne/médiane), spec amendée (gating serveur
+  fait foi, flag rollout ≠ entitlement, métrologie obligatoire dès la 1re session).

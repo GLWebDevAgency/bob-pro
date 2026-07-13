@@ -75,6 +75,20 @@ CONDITIONS DE SÛRETÉ NON NÉGOCIABLES (contrat à publier par GPT, review Clau
   QA device systématique.
 - Arbitrages croisés par contre-review adversariale (protocole actuel, qui marche).
 
+## PLANS & MÉTROLOGIE (directive fondateur 13/07 soir — CONTRAT)
+- **voice_live est une FEATURE DE PLAN** (catalogue @bob/core) : PRO + BUSINESS en mapping
+  provisoire ; Free/Solo = assistant texte seulement. Le périmètre par plan sera FIXÉ APRÈS
+  les études de mesure ; seul le PRIX des plans peut changer.
+- **Gating à TROIS niveaux, le serveur fait foi** : ① création de session realtime côté
+  serveur REFUSE sans entitlement voice_live (le flag rollout est un interrupteur technique,
+  JAMAIS un droit) ; ② client : UI Live invisible sans entitlement ; ③ dégradé honnête vers
+  l'assistant texte pour les plans sans Live.
+- **Métrologie OBLIGATOIRE dès la première session** : chaque session émet des
+  VoiceUsageEvent (audio in/out s, tokens realtime/LLM, STT/TTS) tenant+plan+session →
+  summarizeVoiceUsage (@bob/ai) produit coût réel/utilisateur, moyenne, médiane — la table
+  de prix providers est une ENTRÉE calibrable, jamais une constante. C'est la donnée qui
+  fixera prix et périmètres à la fin de la roadmap.
+
 ## Invariants NON NÉGOCIABLES (hérités, re-testés à chaque phase)
 Consentement zéro-token verbatim ; montants jamais inventés/déformés (guard par phrase) ;
 contexte = indice jamais autorisation ; navigation allowlistée ; parité voix↔manuel ;

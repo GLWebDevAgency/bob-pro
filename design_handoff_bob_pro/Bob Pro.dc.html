@@ -463,6 +463,12 @@
         <button onClick="{{ exportCompta }}" style="width:100%; margin-top:13px; display:flex; align-items:center; justify-content:center; gap:8px; background:#0E7C5A; color:#fff; border:none; border-radius:12px; padding:12px; font-size:14px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer;">Exporter (FEC / comptable)</button>
       </div>
 
+      <button onClick="{{ openCompta }}" style="width:100%; display:flex; align-items:center; gap:11px; background:#fff; border:1px solid #E7ECF2; border-radius:18px; padding:15px 16px; margin-bottom:12px; cursor:pointer; text-align:left; box-shadow:0 1px 2px rgba(13,38,68,.04), 0 5px 13px rgba(13,38,68,.05);">
+        <span style="width:34px; height:34px; border-radius:10px; background:#EAF2EC; display:flex; align-items:center; justify-content:center; flex-shrink:0;"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#0E7C5A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l3-3 3 3 5-6"/></svg></span>
+        <span style="flex:1; min-width:0;"><span style="display:block; font-size:14px; font-weight:700; color:#0F2235;">Comptabilité</span><span style="display:block; font-size:12.5px; color:#8A99A8; margin-top:1px;">Le grand-livre — écritures, équilibre, export.</span></span>
+        <svg width="8" height="14" viewBox="0 0 8 14" style="flex-shrink:0;"><path d="M1 1l6 6-6 6" stroke="#C4CDD8" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+
       <div style="background:#fff; border-radius:18px; padding:6px 16px; box-shadow:0 1px 2px rgba(13,38,68,.04), 0 5px 13px rgba(13,38,68,.05); margin-bottom:12px;">
         <div style="font-size:12px; font-weight:700; letter-spacing:.3px; text-transform:uppercase; color:#9AA7B4; padding:12px 0 4px;">Factures récentes</div>
         <button onClick="{{ openF118 }}" style="display:flex; width:100%; align-items:center; gap:11px; padding:12px 0; border-bottom:1px solid #F1F4F7; background:none; border-left:none; border-right:none; border-top:none; cursor:pointer; text-align:left;">
@@ -1456,7 +1462,7 @@
     <div style="padding:0 18px;">
       <div style="display:flex; align-items:center; gap:13px; margin-bottom:16px;">
         <span style="width:54px; height:54px; border-radius:17px; background:linear-gradient(135deg,#3B82F6,#4338CA); display:flex; align-items:center; justify-content:center; color:#fff; font-weight:700; font-size:19px; font-family:'Schibsted Grotesk';">JM</span>
-        <div><div style="font-weight:700; font-size:17px;">Julien Mercier</div><div style="font-size:13px; color:#8A99A8;">julien@mercier-plomberie.fr</div></div>
+        <div><div style="font-weight:700; font-size:17px;">Julien Mercier</div><div style="font-size:13px; color:#8A99A8;"><a href="/cdn-cgi/l/email-protection" class="__cf_email__" data-cfemail="93f9e6fffaf6fdd3fef6e1f0faf6e1bee3fffcfef1f6e1faf6bdf5e1">[email&#160;protected]</a></div></div>
       </div>
 
       <div style="font-size:12px; font-weight:700; color:#8A99A8; letter-spacing:.3px; text-transform:uppercase; margin:0 4px 8px;">Entreprise</div>
@@ -1588,7 +1594,7 @@
       <button onClick="{{ authBack }}" style="display:flex; align-items:center; gap:4px; background:none; border:none; cursor:pointer; color:rgba(255,255,255,.7); font-weight:600; font-size:14.5px; font-family:'Hanken Grotesk'; margin-bottom:8px;"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,.7)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>Retour</button>
       <div style="flex:1; display:flex; flex-direction:column; justify-content:center;">
         <h1 style="margin:0 0 8px; font-family:'Schibsted Grotesk'; font-weight:700; font-size:27px; color:#fff;">Ton mot de passe</h1>
-        <p style="margin:0 0 22px; color:rgba(255,255,255,.6); font-size:15px;">julien@mercier-plomberie.fr</p>
+        <p style="margin:0 0 22px; color:rgba(255,255,255,.6); font-size:15px;"><a href="/cdn-cgi/l/email-protection" class="__cf_email__" data-cfemail="4a203f26232f240a272f3829232f38673a262527282f38232f642c38">[email&#160;protected]</a></p>
         <input type="password" placeholder="••••••••" style="width:100%; background:rgba(255,255,255,.07); border:1px solid rgba(255,255,255,.16); border-radius:15px; padding:15px 16px; font-size:18px; letter-spacing:3px; color:#fff; font-family:'Hanken Grotesk'; outline:none; margin-bottom:10px;" />
         <button style="align-self:flex-end; background:none; border:none; color:rgba(255,255,255,.6); font-size:13px; font-weight:600; font-family:'Hanken Grotesk'; cursor:pointer; margin-bottom:20px;">Mot de passe oublié ?</button>
         <button onClick="{{ authNext }}" style="width:100%; background:#fff; color:#0C2340; border:none; border-radius:15px; padding:16px; font-size:16px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer; margin-bottom:12px;">Se connecter</button>
@@ -1642,7 +1648,7 @@
       <div style="font-size:12px; font-weight:700; color:#8A99A8; letter-spacing:.3px; text-transform:uppercase; margin:0 4px 8px;">Membres · 1 / 1</div>
       <div style="background:#fff; border-radius:16px; padding:14px 15px; margin-bottom:11px; box-shadow:0 1px 2px rgba(13,38,68,.04), 0 5px 13px rgba(13,38,68,.05); display:flex; align-items:center; gap:12px;">
         <span style="width:42px; height:42px; border-radius:13px; background:linear-gradient(135deg,#3B82F6,#4338CA); display:flex; align-items:center; justify-content:center; color:#fff; font-weight:700; font-size:15px; font-family:'Schibsted Grotesk';">JM</span>
-        <div style="flex:1;"><div style="font-weight:700; font-size:14.5px;">Julien Mercier <span style="font-size:12px; color:#A9B4C0; font-weight:500;">· toi</span></div><div style="font-size:12.5px; color:#8A99A8;">julien@mercier-plomberie.fr</div></div>
+        <div style="flex:1;"><div style="font-weight:700; font-size:14.5px;">Julien Mercier <span style="font-size:12px; color:#A9B4C0; font-weight:500;">· toi</span></div><div style="font-size:12.5px; color:#8A99A8;"><a href="/cdn-cgi/l/email-protection" class="__cf_email__" data-cfemail="b7ddc2dbded2d9f7dad2c5d4ded2c59ac7dbd8dad5d2c5ded299d1c5">[email&#160;protected]</a></div></div>
         <span style="background:#EAF2EC; color:#0E7C5A; font-size:11px; font-weight:700; padding:3px 9px; border-radius:7px;">Admin</span>
       </div>
       <button onClick="{{ openPaywall }}" style="width:100%; display:flex; align-items:center; justify-content:center; gap:9px; background:#fff; border:1.5px dashed #C9D2DD; border-radius:15px; padding:15px; margin-bottom:18px; cursor:pointer; color:#1B3A63; font-size:14.5px; font-weight:600; font-family:'Hanken Grotesk';"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#1B3A63" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M2 20a7 7 0 0 1 14 0"/><path d="M19 8v6M22 11h-6"/></svg>Inviter un membre</button>
@@ -1860,6 +1866,85 @@
   </div>
   </sc-if>
 
+  <!-- ===================== COMPTABILITÉ (grand-livre) ===================== -->
+  <sc-if value="{{ showCompta }}" hint-placeholder-val="{{ false }}">
+  <div class="noscroll" style="position:absolute; inset:0; z-index:74; background:#EFF2F7; overflow-y:auto; padding-bottom:40px; animation:cpFadeIn .25s both;">
+    <div style="position:sticky; top:0; z-index:3; padding:54px 16px 8px; background:rgba(239,242,247,.92); backdrop-filter:blur(10px);">
+      <button onClick="{{ closeCompta }}" style="display:flex; align-items:center; gap:4px; background:none; border:none; cursor:pointer; color:#1B3A63; font-weight:600; font-size:15px; font-family:'Hanken Grotesk';"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#1B3A63" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>Documents</button>
+    </div>
+
+    <div style="padding:2px 20px 4px;">
+      <div style="color:#8A99A8; font-size:12px; font-weight:700; letter-spacing:.4px; text-transform:uppercase;">Ta compta</div>
+      <h1 style="margin:2px 0 3px; font-family:'Schibsted Grotesk'; font-weight:700; font-size:30px; letter-spacing:-.5px;">Comptabilité</h1>
+      <p style="margin:0; color:#5B6B7B; font-size:14.5px;">Chaque pièce passe son écriture toute seule — vérifiable, exportable.</p>
+    </div>
+
+    <!-- HÉROS : prêt pour le comptable + l'équation de la partie double -->
+    <div style="margin:16px 18px 0; background:linear-gradient(180deg,#F0F7F3,#FBFEFC); border:1px solid #DCEDE3; border-radius:20px; padding:16px;">
+      <div style="display:flex; align-items:flex-start; gap:11px;">
+        <span style="width:34px; height:34px; border-radius:10px; background:#EAF2EC; display:flex; align-items:center; justify-content:center; flex-shrink:0;"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#0E7C5A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="9" y="2" width="6" height="4" rx="1"/><path d="M9 14l2 2 4-4"/></svg></span>
+        <div style="flex:1; min-width:0;">
+          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;"><span style="font-size:14px; font-weight:700; color:#0F2235;">Prêt pour le comptable</span><span style="font-size:11px; font-weight:700; padding:2px 8px; border-radius:6px; background:{{ comptaBadgeBg }}; color:{{ comptaBadgeColor }};">{{ comptaBadge }}</span></div>
+          <div style="font-size:12.5px; color:#5B6B7B; margin-top:2px;">{{ comptaMonthLabel }}</div>
+        </div>
+      </div>
+      <div style="display:flex; align-items:center; gap:10px; margin-top:16px;">
+        <div style="flex:1;"><div style="font-size:11px; font-weight:700; letter-spacing:.4px; text-transform:uppercase; color:#8A99A8;">Débit</div><div style="font-family:'Schibsted Grotesk'; font-weight:800; font-size:20px; color:#0C2340; font-variant-numeric:tabular-nums; margin-top:2px;">{{ comptaDebit }}</div></div>
+        <span style="font-family:'Schibsted Grotesk'; font-weight:800; font-size:23px; color:{{ comptaEqColor }};">{{ comptaEq }}</span>
+        <div style="flex:1; text-align:right;"><div style="font-size:11px; font-weight:700; letter-spacing:.4px; text-transform:uppercase; color:#8A99A8;">Crédit</div><div style="font-family:'Schibsted Grotesk'; font-weight:800; font-size:20px; color:#0C2340; font-variant-numeric:tabular-nums; margin-top:2px;">{{ comptaCredit }}</div></div>
+      </div>
+      <button onClick="{{ comptaExportFec }}" style="width:100%; margin-top:16px; background:#0E7C5A; color:#fff; border:none; border-radius:12px; padding:12px; font-size:14px; font-weight:700; font-family:'Hanken Grotesk'; cursor:pointer;">Exporter (FEC / comptable)</button>
+    </div>
+
+    <div style="display:flex; align-items:baseline; justify-content:space-between; padding:22px 20px 12px;">
+      <h3 style="margin:0; font-family:'Schibsted Grotesk'; font-weight:700; font-size:16px;">Le journal</h3>
+      <span style="font-size:12.5px; color:#8A99A8; font-weight:600;">{{ comptaCountLabel }}</span>
+    </div>
+
+    <div style="display:flex; flex-wrap:wrap; gap:8px; padding:0 18px 4px;">
+      <sc-for list="{{ comptaChips }}" as="ch" hint-placeholder-count="5">
+        <button onClick="{{ ch.set }}" style="{{ ch.style }}">{{ ch.label }}</button>
+      </sc-for>
+    </div>
+
+    <sc-if value="{{ comptaFilterActive }}" hint-placeholder-val="{{ false }}">
+    <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 20px 2px;"><span style="font-size:12px; color:#8A99A8;">{{ comptaFilteredCount }}</span><span style="font-size:12px; color:#5B6B7B; font-variant-numeric:tabular-nums;">{{ comptaFilteredLine }}</span></div>
+    </sc-if>
+
+    <div style="padding:10px 18px 0; display:flex; flex-direction:column; gap:11px;">
+      <sc-for list="{{ comptaEntries }}" as="e" hint-placeholder-count="4">
+        <div style="background:#fff; border-radius:18px; padding:15px; border:1px solid #EEF1F5; box-shadow:0 1px 2px rgba(13,38,68,.04), 0 5px 13px rgba(13,38,68,.05);">
+          <div style="display:flex; align-items:flex-start; gap:11px;">
+            <span style="width:34px; height:34px; border-radius:10px; background:{{ e.tintBg }}; display:flex; align-items:center; justify-content:center; flex-shrink:0;">
+              <sc-if value="{{ e.jSales }}" hint-placeholder-val="{{ true }}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="{{ e.tint }}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M9 13h6M9 17h4"/></svg></sc-if>
+              <sc-if value="{{ e.jPurch }}" hint-placeholder-val="{{ false }}"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="{{ e.tint }}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="6" width="19" height="13" rx="2.5"/><path d="M2.5 10.5h19"/></svg></sc-if>
+              <sc-if value="{{ e.jBank }}" hint-placeholder-val="{{ false }}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="{{ e.tint }}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M7 11l5 5 5-5"/><path d="M4 20h16"/></svg></sc-if>
+              <sc-if value="{{ e.jMisc }}" hint-placeholder-val="{{ false }}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="{{ e.tint }}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l3-3 3 3 5-6"/></svg></sc-if>
+            </span>
+            <div style="flex:1; min-width:0;"><div style="font-size:14.5px; font-weight:700; color:#0F2235; font-variant-numeric:tabular-nums;">{{ e.ref }}</div><div style="font-size:12px; color:#A9B4C0; margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{{ e.label }} · {{ e.date }}</div></div>
+            <span style="flex-shrink:0; font-size:11px; font-weight:700; padding:2px 8px; border-radius:6px; background:{{ e.tintBg }}; color:{{ e.tint }};">{{ e.journalLabel }}</span>
+          </div>
+          <div style="margin-top:12px; padding-top:10px; border-top:1px solid #F1F4F7; display:flex; flex-direction:column; gap:5px;">
+            <sc-for list="{{ e.lines }}" as="l" hint-placeholder-count="3">
+              <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;"><span style="flex:1; min-width:0; font-size:13.5px; color:#0F2235; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{{ l.account }} · {{ l.label }}</span><span style="flex-shrink:0; font-size:13.5px; font-weight:600; font-variant-numeric:tabular-nums; color:{{ l.amtColor }};">{{ l.amount }}</span></div>
+            </sc-for>
+          </div>
+        </div>
+      </sc-for>
+    </div>
+
+    <div style="padding:12px 18px 0;">
+      <button onClick="{{ comptaCloture }}" style="width:100%; display:flex; align-items:center; gap:11px; background:#fff; border:1px solid #EEF1F5; border-radius:18px; padding:15px; cursor:pointer; text-align:left; box-shadow:0 1px 2px rgba(13,38,68,.04), 0 5px 13px rgba(13,38,68,.05);">
+        <span style="width:34px; height:34px; border-radius:10px; background:#EDEAFE; display:flex; align-items:center; justify-content:center; flex-shrink:0;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#4338CA" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="11" rx="2.5"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></span>
+        <div style="flex:1; min-width:0;"><div style="font-size:14.5px; font-weight:700; color:#0F2235;">Clôturer le mois</div><div style="font-size:12px; color:#A9B4C0; margin-top:2px;">Verrouille les écritures et fige le mois — plus rien ne bouge.</div></div>
+        <svg width="8" height="14" viewBox="0 0 8 14" style="flex-shrink:0;"><path d="M1 1l6 6-6 6" stroke="#C4CDD8" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </div>
+
+    <p style="text-align:center; color:#A9B4C0; font-size:12.5px; font-weight:500; padding:22px 30px 8px;">Chaque écriture est passée toute seule — vérifiable ligne à ligne.</p>
+  </div>
+  </sc-if>
+
   <!-- ===================== DÉTAIL PIÈCE (devis / facture) ===================== -->
   <sc-if value="{{ showPiece }}" hint-placeholder-val="{{ false }}">
   <div class="noscroll" style="position:absolute; inset:0; z-index:76; background:#EFF2F7; overflow-y:auto; display:flex; flex-direction:column;">
@@ -2008,7 +2093,7 @@
 </x-import>
 </div>
 </x-dc>
-<script type="text/x-dc" data-dc-script data-props="{
+<script data-cfasync="false" src="/cdn-cgi/scripts/5c5dd728/cloudflare-static/email-decode.min.js"></script><script type="text/x-dc" data-dc-script data-props="{
   &quot;vibe&quot;: { &quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;Pote&quot;, &quot;Pro&quot;, &quot;Direct&quot;], &quot;default&quot;: &quot;Pote&quot;, &quot;tsType&quot;: &quot;string&quot;, &quot;section&quot;: &quot;Personnalité&quot;, &quot;label&quot;: &quot;Ton de l'app&quot; },
   &quot;focus&quot;: { &quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;Cockpit&quot;, &quot;Zen&quot;], &quot;default&quot;: &quot;Cockpit&quot;, &quot;tsType&quot;: &quot;string&quot;, &quot;section&quot;: &quot;Affichage&quot;, &quot;label&quot;: &quot;Densité de l'accueil&quot; },
   &quot;accent&quot;: { &quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;Marine&quot;, &quot;Forêt&quot;, &quot;Graphite&quot;, &quot;Indigo&quot;], &quot;default&quot;: &quot;Marine&quot;, &quot;tsType&quot;: &quot;string&quot;, &quot;section&quot;: &quot;Couleur&quot;, &quot;label&quot;: &quot;Couleur de marque&quot; }
@@ -2050,6 +2135,8 @@ class Component extends DCLogic {
     clientTab: 'activite',
     activeDoc: null,
     activeFolderId: null,
+    comptaOpen: false,
+    comptaFilter: null,
     addedClients: [],
     ncName: '', ncType: 'b2c', ncEmail: '', ncTel: '', ncSiren: '',
     scanStep: 0,
@@ -2204,6 +2291,71 @@ class Component extends DCLogic {
       return this.openPiece(doc.kind === 'quote' ? 'D-2026-014' : 'F-2026-118');
     this.setState({ activeDoc: doc });
   };
+  COMPTA_JOURNALS = {
+    sales:     { label:'Ventes', tint:'#1B3A63', tintBg:'#E6EDF6' },
+    purchases: { label:'Achats', tint:'#C77A12', tintBg:'#FBF0DF' },
+    bank:      { label:'Banque', tint:'#0E7C5A', tintBg:'#EAF2EC' },
+    misc:      { label:'OD',     tint:'#4338CA', tintBg:'#EDEAFE' },
+  };
+  COMPTA_ENTRIES = [
+    { id:'ve118', journal:'sales', ref:'F-2026-118', label:'SARL Martin Rénovation', date:'28/06/2026',
+      lines:[ {account:'411', label:'Clients', d:48840, c:0}, {account:'706', label:'Prestations de services', d:0, c:44400}, {account:'44571', label:'TVA collectée', d:0, c:4440} ] },
+    { id:'ve121', journal:'sales', ref:'F-2026-121', label:'Mme Durand · particulier', date:'26/06/2026',
+      lines:[ {account:'411', label:'Clients', d:22500, c:0}, {account:'706', label:'Prestations de services', d:0, c:20455}, {account:'44571', label:'TVA collectée', d:0, c:2045} ] },
+    { id:'ac619', journal:'purchases', ref:'ACH-0619', label:'Leroy Merlin · matériel', date:'19/06/2026',
+      lines:[ {account:'606', label:'Achats fournitures', d:15408, c:0}, {account:'44566', label:'TVA déductible', d:3082, c:0}, {account:'401', label:'Fournisseurs', d:0, c:18490} ] },
+    { id:'ac612', journal:'purchases', ref:'ACH-0612', label:'Point.P · plomberie', date:'12/06/2026',
+      lines:[ {account:'606', label:'Achats fournitures', d:26042, c:0}, {account:'44566', label:'TVA déductible', d:5208, c:0}, {account:'401', label:'Fournisseurs', d:0, c:31250} ] },
+    { id:'bq625', journal:'bank', ref:'BQ-0625', label:'Encaissement F-2026-118', date:'25/06/2026',
+      lines:[ {account:'512', label:'Banque', d:48840, c:0}, {account:'411', label:'Clients', d:0, c:48840} ] },
+    { id:'bq617', journal:'bank', ref:'BQ-0617', label:'Encaissement F-2026-116', date:'17/06/2026',
+      lines:[ {account:'512', label:'Banque', d:69000, c:0}, {account:'411', label:'Clients', d:0, c:69000} ] },
+    { id:'od630', journal:'misc', ref:'OD-0630', label:'Dotation amortissement outillage', date:'30/06/2026',
+      lines:[ {account:'6811', label:'Dotation amort.', d:7400, c:0}, {account:'28154', label:'Amort. matériel', d:0, c:7400} ] },
+  ];
+  eurCents(c) {
+    const parts = (c/100).toFixed(2).split('.');
+    return parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + ',' + parts[1] + ' €';
+  }
+  comptaView() {
+    const s = this.state;
+    if (!s.comptaOpen) return { showCompta:false };
+    const J = this.COMPTA_JOURNALS, eur = (c) => this.eurCents(c), all = this.COMPTA_ENTRIES;
+    let td = 0, tc = 0;
+    all.forEach(e => e.lines.forEach(l => { td += l.d; tc += l.c; }));
+    const order = [], counts = {};
+    all.forEach(e => { if (!(e.journal in counts)) { counts[e.journal] = 0; order.push(e.journal); } counts[e.journal]++; });
+    const chipStyle = (on) => on
+      ? 'background:#0C2340; color:#fff; border:1px solid #0C2340; border-radius:20px; padding:8px 15px; font-size:13px; font-weight:700; font-family:\'Hanken Grotesk\'; cursor:pointer;'
+      : 'background:#fff; color:#5B6B7B; border:1px solid #E3E8EF; border-radius:20px; padding:8px 15px; font-size:13px; font-weight:600; font-family:\'Hanken Grotesk\'; cursor:pointer;';
+    const chips = [{ key:'all', label:'Tous', style: chipStyle(s.comptaFilter === null), set: () => this.setState({ comptaFilter:null }) }]
+      .concat(order.map(j => ({ key:j, label:J[j].label, style: chipStyle(s.comptaFilter === j), set: () => this.setState({ comptaFilter:j }) })));
+    const filtered = s.comptaFilter ? all.filter(e => e.journal === s.comptaFilter) : all;
+    let ftd = 0, ftc = 0;
+    filtered.forEach(e => e.lines.forEach(l => { ftd += l.d; ftc += l.c; }));
+    const entries = filtered.map(e => {
+      const jm = J[e.journal];
+      return {
+        id:e.id, ref:e.ref, label:e.label, date:e.date, journalLabel:jm.label, tint:jm.tint, tintBg:jm.tintBg,
+        jSales:e.journal === 'sales', jPurch:e.journal === 'purchases', jBank:e.journal === 'bank', jMisc:e.journal === 'misc',
+        lines: e.lines.map(l => ({ account:l.account, label:l.label,
+          amount: l.d > 0 ? ('D ' + eur(l.d)) : ('C ' + eur(l.c)), amtColor: l.d > 0 ? '#0C2340' : '#5B6B7B' })),
+      };
+    });
+    const cnt = filtered.length, balanced = td === tc;
+    return {
+      showCompta:true, comptaEntries:entries,
+      comptaCountLabel: cnt === 1 ? '1 écriture' : (cnt + ' écritures'),
+      comptaMonthLabel: all.length + ' écritures ce mois-ci · passées toutes seules',
+      comptaDebit: eur(td), comptaCredit: eur(tc),
+      comptaEq: balanced ? '=' : '≠', comptaEqColor: balanced ? '#0E7C5A' : '#E5544B',
+      comptaBadge: balanced ? 'Équilibré ✓' : 'Déséquilibré !',
+      comptaBadgeColor: balanced ? '#0E7C5A' : '#C8463C', comptaBadgeBg: balanced ? '#EAF2EC' : '#FBEAE8',
+      comptaChips: chips, comptaFilterActive: s.comptaFilter !== null,
+      comptaFilteredCount: cnt === 1 ? '1 écriture' : (cnt + ' écritures'),
+      comptaFilteredLine: 'Débit ' + eur(ftd) + ' · Crédit ' + eur(ftc),
+    };
+  }
   pieceView() {
     const s = this.state, id = s.activePiece;
     if (!id) return { showPiece:false, showPdf:false, piece:null, pdf:null };
@@ -2840,6 +2992,11 @@ class Component extends DCLogic {
       ...this.pieceView(),
       openF118: () => this.openPiece('F-2026-118'), openF121: () => this.openPiece('F-2026-121'),
       exportCompta: () => this.showToast('Export de juin généré · FEC + PDF'),
+      ...this.comptaView(),
+      openCompta: () => this.setState({ comptaOpen:true, comptaFilter:null }),
+      closeCompta: () => this.setState({ comptaOpen:false }),
+      comptaExportFec: () => this.showToast('FEC généré · exercice 2026 · prêt à envoyer'),
+      comptaCloture: () => this.showToast('Clôture — écritures du mois verrouillées'),
       docComptable: () => { this.setState({ activeDoc:null }); this.showToast('Envoyé au comptable'); },
       docRename: () => this.showToast('Renommer le document…'),
       docDelete: () => { this.setState({ activeDoc:null }); this.showToast('Document supprimé'); },

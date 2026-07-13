@@ -488,3 +488,203 @@ Garanties désormais testées :
 La migration `20260713043000_notification_job_lease_token` doit être appliquée avant le déploiement de ce worker. S2 reste bloquée pour la revue Claude et pour les versions d'agrégats/diffs canoniques ; aucune édition vocale financière nouvelle n'a été activée. La QA physique iOS/Android STT/TTS, permissions, safe areas, clavier et AppState reste requise.
 
 Validations finales locales : 63 tests API ciblés outbox/agent, 49 tests IA ciblés, 43 tests API-client, 55 tests i18n, schéma Prisma valide, puis matrice monorepo `test + typecheck + lint` à 32/32 tâches et `git diff --check` vert. La concurrence `skipDuplicates` n'a pas été rejouée contre la base PostgreSQL/RLS de production afin de ne pas muter un environnement partagé depuis cette session ; elle reste une certification de déploiement explicite.
+
+## État certifié après les vagues 2–3 et le durcissement final
+
+Mise à jour autoritative du 13 juillet 2026, session C. Cette section **remplace les constats
+temporels devenus obsolètes** des deux addenda précédents : la certification PostgreSQL réelle a
+depuis été rejouée sur une base jetable, les lecteurs Notifications/Comptabilité/lignes ont été
+câblés au serveur et le passage overlay → Assistant ne rejoue plus la commande depuis zéro.
+
+### Verdict actuel
+
+- l'accès Bob est monté au niveau racine de toute la zone authentifiée ; il est visible sur 22 des
+  24 routes authentifiées ; `/assistant` utilise son propre composer et `/voix` garde son flux vocal
+  spécialisé, donc aucun deuxième micro n'y est affiché ; `/gallery` est publique et exclue ;
+- 14 routes publient explicitement leur contexte. Treize publient des entités métier ; Clôture
+  publie sa présence d'écran et délègue la revue au use case vocal `revue_cloture` déjà existant ;
+- Bob peut naviguer depuis l'overlay pour les routes statiques connues. Une navigation ne modifie
+  aucune donnée et l'écran d'arrivée republie son contexte au focus ;
+- « où suis-je ? », « résume l'écran » et « explique-moi tout ce qui est en attente » produisent un
+  briefing agrégé borné à cinq entités, deux faits canoniques par entité, avec le nombre restant ;
+- les dix types du contrat (`customer`, `quote`, `quote_line`, `invoice`, `invoice_line`, `expense`,
+  `document`, `chantier`, `notification`, `accounting_entry`) possèdent maintenant un lecteur local
+  **et** serveur. Le serveur recharge par ID dans le tenant courant ; le libellé fourni par le mobile
+  n'est jamais une source de vérité ;
+- la matrice de capabilities de lecture est exhaustive. Recherche publie désormais
+  `document.read` ; un type sans sa capability dédiée est exclu même si `screen.read` est présent ;
+- l'overlay global reste sans exécution destructive. Une proposition existante passe dans
+  l'Assistant par un handoff mémoire de deux minutes contenant le même `AgentRun`, son
+  `proposalId` opaque, le contexte figé et l'historique : aucune donnée métier dans l'URL et aucune
+  réinterprétation de « encaisse-la ». Le handoff est consommé une fois, seulement quand l'onglet
+  Assistant est focus, puis invalidé sur expiration, arrière-plan, arrêt ou nouveau tour ;
+- les actions métier restent soumises au plancher de confirmation. Cela n'est **pas encore la
+  parité totale S2** : plusieurs capabilities d'édition existent dans le contrat alors que leurs use
+  cases versionnés/diffs canoniques ne sont pas encore tous implémentés.
+
+### Cartographie écran par écran
+
+| Route | Contexte vocal actuel | Limite honnête |
+|---|---|---|
+| Aujourd'hui `/` | factures, devis et clients des priorités visibles ; briefing « tout ce qui est en attente » | les KPI trésorerie/encours agrégés ne sont pas encore une ressource d'écran rechargeable |
+| Argent | clients rouges réellement affichés ; les intents versement, TVA et balance restent disponibles | courbe 7/30/60/90 jours, réserve et explication causale non publiées comme snapshot |
+| Notifications | fil de notifications + factures du plan affiché, dans la limite globale de 20 entités | ouvrir dynamiquement la route liée, « tout marquer comme lu » et envoyer une relance par Bob restent à ajouter |
+| Recherche | clients, devis, factures et documents des résultats | la recherche vide ne publie volontairement aucune cible |
+| Fiche client | client, huit factures et huit devis maximum | documents et chantiers visibles sur la fiche restent omis pour respecter la borne de contexte |
+| Détail devis | devis, client et jusqu'à 18 lignes ; lecture de la pièce ou d'une ligne en local/serveur | édition de ligne/acompte et facturation exigent encore S2/version d'agrégat |
+| Détail facture | facture, client et jusqu'à 18 lignes ; lecture de la pièce ou d'une ligne en local/serveur | édition d'un brouillon et création d'avoir ne sont pas encore des pouvoirs Bob complets |
+| Ventes | huit devis et huit factures, dans l'ordre actionnable affiché | une demande anaphorique ambiguë déclenche un choix, jamais le premier résultat |
+| Dépenses | jusqu'à douze dépenses, à payer d'abord comme l'écran | paiement vocal contextuel complet à certifier dans le parcours S2, malgré le use case serveur existant |
+| Documents | douze documents affichés, avec type/statut/version/date rechargés | classification vocale complète à brancher sur la proposition opaque |
+| Comptabilité | dix écritures ; journal/date/débit/crédit/équilibre, en français, en local et connecté | pas encore d'explication pédagogique des lignes de comptes ni de correction vocale |
+| Clôture | présence d'écran + commande métier de revue de clôture existante | les anomalies visibles ne sont pas encore publiées individuellement |
+| Chantiers | dix chantiers affichés, état/date/adresse rechargés | créer/ouvrir un chantier précis à la voix reste partiel |
+| Pilotage | cinq principaux clients réellement dérivés | CA, DSO, SIG et ratios visibles ne sont pas encore un snapshot d'écran agrégé |
+| Assistant | fil complet, questions structurées, propositions, diff et confirmation | bouton global masqué volontairement ; reçoit maintenant le handoff exact |
+| `/voix` | flux facture dictée historique de bout en bout | reste spécialisé, distinct de l'agent général |
+| Clients, Catalogue, Nouveau devis, Scan, Diagnostic, Compte, Réglages facturation, Onboarding | accès global et commandes génériques/navigation | aucun publisher du formulaire ou des entités visibles à ce stade |
+
+Sur Notifications, les formulations fondatrices sont maintenant distinguées :
+
+- « lis-moi les notifications en attente » agrège uniquement les notifications rechargeables ;
+- « résume cette notification » recharge sujet, statut, date et contenu disponible ;
+- « relance cette facture » cible l'`invoiceId` publié et produit un brouillon de relance pour cette
+  facture, jamais celle d'un autre client ;
+- l'envoi effectif reste une action sortante confirmée à l'écran. Bob ne prétend donc pas avoir
+  envoyé ce qu'il a seulement préparé.
+
+### Outbox fournisseur et cutover certifiés
+
+Le protocole d'envoi ne dépend plus d'une simple date de retry glissante :
+
+- `providerAttemptedAt` est posé une fois avant l'I/O, avec horloge PostgreSQL ;
+- une autorisation tenant + `leaseToken` est relue immédiatement avant l'appel fournisseur ; tout
+  échec de cette lecture ferme le circuit avant l'I/O ;
+- le payload et son empreinte sont immuables pour une clé de déduplication ; une collision de
+  contenu échoue explicitement ;
+- `markDone` et `markFailed` sont fencés par tenant + génération ;
+- l'email passe en revue manuelle à 25 minutes, avec cinq minutes de marge dans la fenêtre
+  d'idempotence Brevo documentée à 30 minutes ([documentation Brevo](https://developers.brevo.com/docs/heterogenous-versions-batch-emails)) ;
+- les logs d'envoi ne contiennent plus destinataire, objet ou corps ; seulement fournisseur et
+  canal ;
+- la migration est transactionnelle et suit `expand → deploy/readiness → activate → certify` ; le
+  rollback `deactivate` met en quarantaine toute issue provider ambiguë, spoule les jobs non tentés
+  et accepte temporairement un writer N−1 avant une nouvelle activation ;
+- les relances automatiques ont un contenu immuable par palier (`cordial`, `neutre`, `ferme`) ; une
+  mise en demeure reste humaine.
+
+La certification PostgreSQL 17 jetable a appliqué les 15 migrations, exécuté deux fois le release
+RLS/cabinet (phase expand puis active), vérifié le rôle `bob_app` non-superuser/NOBYPASSRLS, les
+contraintes/index, huit transactions concurrentes, l'échec transactionnel injecté, la quarantaine
+legacy, le rollback N−1 puis la réactivation. Résultat : **6/6 tests PostgreSQL réels verts** et
+`prisma migrate status` à jour. Aucune base partagée ou de production n'a été mutée.
+
+### Validation finale
+
+- `pnpm test` : 14/14 tâches ; notamment Core 713, AI 232, API 193 + 21 tests de scripts,
+  API-client 43, i18n 55, UI 61, Web 73 et Tokens 11 ;
+- `pnpm typecheck` : 16/16 tâches ;
+- `pnpm lint` : 8/8 tâches, plus ESLint ciblé sur les fichiers mobiles modifiés ;
+- build API, build AI, schéma Prisma, scripts shell, YAML CI/Railway et `git diff --check` : verts ;
+- PostgreSQL/RLS/outbox réel : 6/6 tests dédiés verts, séparément des six tests volontairement
+  ignorés dans la matrice standard sans base éphémère.
+
+### Risques et prochain ordre recommandé
+
+Ce travail n'est pas encore déployé. Avant toute activation production : release sur staging,
+certification post-activation, test téléphone iOS/Android du handoff, STT/TTS, permissions,
+AppState, clavier, safe areas et navigation depuis une modale native.
+
+Ordre conseillé :
+
+1. Notifications avancées : route dynamique vers la pièce liée, batch lu/non-lu et proposition
+   confirmée d'envoi de relance ;
+2. snapshots agrégés tenant-scoped pour Argent, Clôture et Pilotage afin d'expliquer les chiffres
+   affichés, pas seulement les entités sous-jacentes ;
+3. publishers de formulaires sur Clients, Nouveau devis et Scan, sans publier de saisie sensible
+   inutile ;
+4. S2 devis/facture : `expectedVersion`, preview core, diff canonique, challenge typé, lineId stable
+   et use case manuel partagé avant chaque nouveau pouvoir vocal ;
+5. Catalogue seulement après en faire un domaine persistant ; Compte/Réglages/Onboarding après
+   définition de leurs commandes sûres.
+
+Dettes hors UX vocale mais liées au niveau « production » : appliquer le même protocole d'issue
+provider à l'outbox d'invitations cabinet, déplacer l'archivage document externe hors transaction,
+ajouter métriques/écran de quarantaine et webhook/messageId fournisseur. Elles ne sont pas masquées
+par les tests verts de l'outbox Notifications.
+
+## Vague 4 livrée — navigation contextuelle et Notifications manuel ↔ vocal
+
+Mise à jour autoritative du 13 juillet 2026, session C. Cette section remplace les limites
+Notifications et Clients de la cartographie précédente.
+
+### Navigation contextuelle canonique
+
+Bob ne se limite plus aux routes statiques. « Ouvre la deuxième notification », « ouvre le
+deuxième client » ou « amène-moi sur la troisième facture » résout le rang parmi les entités du
+type demandé, recharge la cible chez l'hôte tenant-scoped, puis n'accepte qu'une route interne
+allowlistée. Les lecteurs local et serveur publient désormais les routes canoniques des clients,
+devis, factures, lignes et notifications. Une URL externe, une query libre, un traversal ou une
+route incohérente avec le type est refusé. L'overlay global et l'Assistant appliquent tous deux la
+même allowlist fail-closed avant `router.push`.
+
+L'écran Clients est le quinzième publisher métier : il publie les clients filtrés réellement
+visibles, dans leur ordre d'affichage. Pilotage ne charge plus les clients derrière le paywall
+`accounting_operations` : le contexte vocal respecte maintenant la même entitlement fence que
+l'écran.
+
+### Notifications avancées, à parité
+
+Les demandes de lecture et de mutation sont séparées :
+
+- « lis-moi les notifications en attente » recharge uniquement les notifications dont l'état
+  canonique est `unread`, puis dit le motif/contenu disponible et le statut ;
+- « lis toutes les notifications » conserve aussi les lues ;
+- « ouvre la deuxième notification » recharge sa deep-link canonique et ouvre la facture ou le
+  devis lié ;
+- « marque toutes les notifications comme lues » devient l'intent mutatif
+  `marquer_notifications_lues` ;
+- « marque tout comme lu » n'est anaphorique que sur l'écran Notifications. Ailleurs, Bob demande
+  explicitement si l'utilisateur parle des notifications et ne prépare aucune mutation.
+
+La parité humain ↔ Bob est complète pour ce geste. Le CTA manuel « Tout marquer lu » et l'outil
+agent appellent le même contrat : preview non paginé, cutoff serveur, puis mutation atomique
+tenant-scoped. Le preview et la mise à jour ne dépendent pas des 50 éléments du feed. Les lignes
+créées à ou après le cutoff restent non lues, un rejeu met zéro ligne à jour, un cutoff futur est
+refusé et le premier `readAt` d'un item reste stable sous concurrence. Un ré-enqueue identique ne
+réouvre plus une notification déjà lue.
+
+Bob force une proposition confirmée même en autonomie `auto`. Le cutoff seul entre dans les args
+du dry-run ; le serveur lie la proposition opaque au tenant et à l'utilisateur, puis ignore tout
+outil/argument renvoyé par le mobile lors du confirm. Le résultat public est borné à
+`updatedCount`, utilisé dans la carte finale et dans les lots. L'Assistant invalide ensuite le feed
+et son preview. Depuis l'overlay lecture seule, la même proposition est transférée telle quelle
+vers l'Assistant pour consentement.
+
+Migration ajoutée :
+`20260713121000_notification_unread_readthrough_index`, index partiel
+`(companyId, createdAt) WHERE readAt IS NULL` pour garder preview et batch proportionnels aux
+notifications encore actives.
+
+### Validation et limites explicites
+
+- `@bob/ai` : 248/248 tests, build et typecheck verts ;
+- API : 200/200 tests standards + 21/21 tests de scripts ; intégration notifications ciblée
+  61/61 ; typecheck vert ;
+- API client : 43/43, typecheck vert ; i18n : 55/55, build/typecheck verts ;
+- mobile : typecheck et export bundle iOS (2 279 modules) verts ; ESLint ciblé et
+  `git diff --check` verts ;
+- schéma Prisma valide avec des URLs factices de validation (aucune connexion effectuée).
+
+Deux limites restent volontairement visibles. Premièrement, un cutoff temporel PostgreSQL n'est
+pas un snapshot MVCC mathématiquement exact : une insertion exécutée avant le preview mais encore
+non commitée peut devenir visible avant la confirmation avec un `createdAt` antérieur au cutoff.
+Une garantie stricte de l'ensemble consenti exigera un snapshot opaque persistant ou les IDs
+figés côté serveur. Deuxièmement, les sept tests PostgreSQL réels du nouveau read-through sont
+présents mais n'ont pas tourné dans cette session faute de base dédiée et de
+`RUN_POSTGRES_OUTBOX_CERT=true`. Le déploiement reste bloqué jusqu'à migration staging,
+certification PostgreSQL/RLS/concurrence et QA iOS/Android du parcours voix + confirmation.
+
+Prochain ordre : snapshots canoniques Argent puis Clôture/Pilotage ; publishers de formulaires
+Nouveau devis/Scan ; enfin S2 d'édition devis/facture avec `expectedVersion`, diff core et challenge
+typé. Catalogue attend toujours un domaine persistant tenant-scoped avant publication vocale.
