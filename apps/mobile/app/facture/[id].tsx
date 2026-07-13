@@ -13,13 +13,31 @@ import { buildPieceView, type PieceLinkedRef } from '@bob/core';
 import { t } from '@bob/i18n';
 import { Card, SectionHeader, font, useTheme } from '@bob/ui';
 import { Button } from '@bob/ui';
-import { useCustomers, useGenerateInvoice, useInvoice, useInvoiceAccountingPreview, useInvoices, useQuotes } from '../../src/data/hooks';
+import {
+  useCustomers,
+  useGenerateInvoice,
+  useInvoice,
+  useInvoiceAccountingPreview,
+  useInvoices,
+  useQuotes,
+} from '../../src/data/hooks';
 import { useDocuments } from '../../src/data/documents';
 import { useBobClient } from '../../src/data/client';
 import { shareDocument } from '../../src/lib/share-document';
-import { InvoiceActions, canCreateCreditNote, hasInvoiceActions } from '../../src/components/DocumentActions';
+import {
+  InvoiceActions,
+  canCreateCreditNote,
+  hasInvoiceActions,
+  isCollectible,
+} from '../../src/components/DocumentActions';
 import { AccountingLinesView } from '../../src/components/AccountingLinesView';
 import { PieceDetailView } from '../../src/components/PieceDetailView';
+import {
+  usePublishAgentContext,
+  type AgentCapability,
+  type AgentContext,
+  type AgentAccessLayout,
+} from '../../src/agent';
 
 export default function FactureDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -41,10 +59,14 @@ export default function FactureDetail() {
     const inv = invoice.data;
     if (!inv) return null;
     const customer = (customers.data ?? []).find((c) => c.id === inv.customerId) ?? null;
-    const parent = inv.parentQuoteId ? (quotes.data ?? []).find((q) => q.id === inv.parentQuoteId) : undefined;
+    const parent = inv.parentQuoteId
+      ? (quotes.data ?? []).find((q) => q.id === inv.parentQuoteId)
+      : undefined;
     // Pièces sœurs du même devis parent : avoir émis / situation liée (réel, sans ambiguïté).
     const siblings = inv.parentQuoteId
-      ? (invoices.data ?? []).filter((i) => i.parentQuoteId === inv.parentQuoteId && i.id !== inv.id)
+      ? (invoices.data ?? []).filter(
+          (i) => i.parentQuoteId === inv.parentQuoteId && i.id !== inv.id,
+        )
       : [];
     const credit = siblings.find((i) => i.kind === 'credit_note');
     const situation = siblings.find((i) => i.kind === 'situation');
@@ -55,18 +77,74 @@ export default function FactureDetail() {
       invoice: inv,
       customer,
       hasFinalInvoice,
-      ...(parent ? { parentQuote: { id: parent.id, number: parent.number, ttcCents: parent.totals.ttc } } : {}),
-      ...(credit ? { creditNote: { id: credit.id, number: credit.number, ttcCents: credit.totals.ttc } } : {}),
-      ...(situation ? { situation: { id: situation.id, number: situation.number, ttcCents: situation.totals.ttc } } : {}),
-      ...(deposit ? { depositInvoice: { id: deposit.id, number: deposit.number, ttcCents: deposit.totals.netToPay } } : {}),
+      ...(parent
+        ? { parentQuote: { id: parent.id, number: parent.number, ttcCents: parent.totals.ttc } }
+        : {}),
+      ...(credit
+        ? { creditNote: { id: credit.id, number: credit.number, ttcCents: credit.totals.ttc } }
+        : {}),
+      ...(situation
+        ? {
+            situation: {
+              id: situation.id,
+              number: situation.number,
+              ttcCents: situation.totals.ttc,
+            },
+          }
+        : {}),
+      ...(deposit
+        ? {
+            depositInvoice: {
+              id: deposit.id,
+              number: deposit.number,
+              ttcCents: deposit.totals.netToPay,
+            },
+          }
+        : {}),
     });
   }, [invoice.data, invoices.data, quotes.data, customers.data]);
+  const agentContext = useMemo<AgentContext>(() => {
+    const inv = invoice.data;
+    if (!inv) {
+      return {
+        screen: { name: '/facture/[id]', instanceId: `invoice:${id}` },
+        entities: [],
+        capabilities: ['screen.read'],
+      };
+    }
+    const customer = (customers.data ?? []).find((item) => item.id === inv.customerId);
+    const actionCapabilities: AgentCapability[] = [
+      ...(inv.status === 'draft' ? (['invoice.issue', 'invoice.draft_line.update'] as const) : []),
+      ...(isCollectible(inv) ? (['invoice.collect'] as const) : []),
+      ...(canCreateCreditNote(inv) ? (['invoice.credit_note.create'] as const) : []),
+    ];
+    return {
+      screen: { name: '/facture/[id]', instanceId: `invoice:${inv.id}` },
+      entities: [
+        {
+          type: 'invoice' as const,
+          id: inv.id,
+          label: inv.number ? `Facture ${inv.number}` : 'Facture brouillon',
+        },
+        ...(customer ? [{ type: 'customer' as const, id: customer.id, label: customer.name }] : []),
+        ...inv.lines.slice(0, 18).map((line, index) => ({
+          type: 'invoice_line' as const,
+          id: line.id,
+          label: `${index + 1} · ${line.label}`,
+        })),
+      ],
+      capabilities: ['screen.read', 'invoice.read', ...actionCapabilities],
+    };
+  }, [customers.data, id, invoice.data]);
+  const agentLayout = useMemo<AgentAccessLayout>(() => ({ bottomAvoidance: 86 }), []);
+  usePublishAgentContext(agentContext, agentLayout);
 
   // PDF archivé au coffre (document lié à la facture) — bouton absent sinon (pas de chemin fantôme).
   const pdfDoc = useMemo(
     () =>
       (documents.data ?? []).find(
-        (d) => d.linkedEntityType === 'invoice' && d.linkedEntityId === id && d.kind === 'invoice_pdf',
+        (d) =>
+          d.linkedEntityType === 'invoice' && d.linkedEntityId === id && d.kind === 'invoice_pdf',
       ) ?? null,
     [documents.data, id],
   );
@@ -84,15 +162,27 @@ export default function FactureDetail() {
           Alert.alert('Oups', t('piece.shareError', { personality }));
           return;
         }
-        const shared = await shareDocument({ url: r.value.url, filename: pdfDoc.filename, mimeType: pdfDoc.mimeType });
-        if (shared === 'unavailable') Alert.alert('Oups', t('piece.shareUnavailable', { personality }));
+        const shared = await shareDocument({
+          url: r.value.url,
+          filename: pdfDoc.filename,
+          mimeType: pdfDoc.mimeType,
+        });
+        if (shared === 'unavailable')
+          Alert.alert('Oups', t('piece.shareUnavailable', { personality }));
         else if (shared === 'error') Alert.alert('Oups', t('piece.shareError', { personality }));
       }
     : null;
 
   if (invoice.isLoading || customers.isLoading) {
     return (
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg }}>
+      <View
+        style={{
+          flex: 1,
+          alignItems: 'center',
+          justifyContent: 'center',
+          backgroundColor: colors.bg,
+        }}
+      >
         <ActivityIndicator color={colors.ink800} />
       </View>
     );

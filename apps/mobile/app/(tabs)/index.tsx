@@ -18,12 +18,12 @@
  * · relance          → /(tabs)/assistant (prompt assistant → runtime agent, use cases relance @bob/core) ;
  * · facture finale   → /ventes (écran ventes → generate-invoice-from-quote, le use case que Bob invoque) ;
  * · diagnostic       → /diagnostic (getDiagnostic — même query que Bob) ;
- * · « Vite fait »    : voix → /voix (C20 — flux facture à la voix) · devis → /devis/new ·
+ * · « Vite fait »    : voix → session Bob globale contextuelle · devis → /devis/new ·
  *                      scan → /scan-document · encaisser → /ventes (register-payment).
  *
  * Densité Zen : masque « En un coup d'œil » + « Vite fait ». Zéro hex/rgba : useTheme()/@bob/tokens.
  */
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { ScrollView, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -47,8 +47,20 @@ import {
   font,
   useTheme,
 } from '@bob/ui';
-import { useCashflow, useCustomers, useInvoices, useNotificationsFeed, useTodayPriorities } from '../../src/data/hooks';
+import {
+  useCashflow,
+  useCustomers,
+  useInvoices,
+  useNotificationsFeed,
+  useTodayPriorities,
+} from '../../src/data/hooks';
 import { CollectInvoiceButton } from '../../src/components/CollectInvoiceButton';
+import {
+  useAgentSession,
+  usePublishAgentContext,
+  type AgentContext,
+  type AgentEntityRef,
+} from '../../src/agent';
 import {
   CalendarIcon,
   ChevronRightIcon,
@@ -58,7 +70,6 @@ import {
   ShieldIcon,
   TrendUpIcon,
 } from '../../src/components/icons';
-
 
 /** Cap d'affichage du briefing (le tri est fait par @bob/core ; l'UI ne montre que le dessus de la pile). */
 const DISPLAY_CAP = 3;
@@ -92,9 +103,17 @@ function SkeletonTile() {
   const { colors } = useTheme();
   return (
     <Card style={KPI_TILE}>
-      <View style={{ height: 12, width: '55%', borderRadius: 6, backgroundColor: colors.lineSoft }} />
       <View
-        style={{ height: 21, width: '70%', borderRadius: 6, backgroundColor: colors.lineSoft, marginTop: 10 }}
+        style={{ height: 12, width: '55%', borderRadius: 6, backgroundColor: colors.lineSoft }}
+      />
+      <View
+        style={{
+          height: 21,
+          width: '70%',
+          borderRadius: 6,
+          backgroundColor: colors.lineSoft,
+          marginTop: 10,
+        }}
       />
     </Card>
   );
@@ -105,10 +124,36 @@ function SkeletonPriority() {
   const { colors } = useTheme();
   return (
     <Card>
-      <View style={{ height: 20, width: '38%', borderRadius: 10, backgroundColor: colors.lineSoft }} />
-      <View style={{ height: 15, width: '80%', borderRadius: 6, backgroundColor: colors.lineSoft, marginTop: 12 }} />
-      <View style={{ height: 15, width: '62%', borderRadius: 6, backgroundColor: colors.lineSoft, marginTop: 8 }} />
-      <View style={{ height: 34, width: '42%', borderRadius: 12, backgroundColor: colors.lineSoft, marginTop: 14 }} />
+      <View
+        style={{ height: 20, width: '38%', borderRadius: 10, backgroundColor: colors.lineSoft }}
+      />
+      <View
+        style={{
+          height: 15,
+          width: '80%',
+          borderRadius: 6,
+          backgroundColor: colors.lineSoft,
+          marginTop: 12,
+        }}
+      />
+      <View
+        style={{
+          height: 15,
+          width: '62%',
+          borderRadius: 6,
+          backgroundColor: colors.lineSoft,
+          marginTop: 8,
+        }}
+      />
+      <View
+        style={{
+          height: 34,
+          width: '42%',
+          borderRadius: 12,
+          backgroundColor: colors.lineSoft,
+          marginTop: 14,
+        }}
+      />
     </Card>
   );
 }
@@ -139,7 +184,15 @@ function HeroPlaceholder({ loading }: { loading: boolean }) {
         {t('today.balanceLabel', { personality })}
       </Text>
       {loading ? (
-        <View style={{ height: 31, width: '46%', borderRadius: 8, backgroundColor: colors.lineSoft, marginTop: 6 }} />
+        <View
+          style={{
+            height: 31,
+            width: '46%',
+            borderRadius: 8,
+            backgroundColor: colors.lineSoft,
+            marginTop: 6,
+          }}
+        />
       ) : (
         <Text
           style={{
@@ -185,13 +238,19 @@ function TodayPriorityCard({
         <PriorityCard
           status="retard"
           title={t('today.prioRelanceTitle', { personality, params: { name } })}
-          subtitle={`${reference}${formatEURWhole(priority.amountCents)} — ${t('today.prioLateHint', {
-            personality,
-            params: { days: priority.daysLate },
-          })}`}
+          subtitle={`${reference}${formatEURWhole(priority.amountCents)} — ${t(
+            'today.prioLateHint',
+            {
+              personality,
+              params: { days: priority.daysLate },
+            },
+          )}`}
           badge={
             <StatusBadge
-              label={t('today.prioLateBadge', { personality, params: { days: priority.daysLate } }).toUpperCase()}
+              label={t('today.prioLateBadge', {
+                personality,
+                params: { days: priority.daysLate },
+              }).toUpperCase()}
               variant="danger"
             />
           }
@@ -204,7 +263,9 @@ function TodayPriorityCard({
                 radius={11}
                 icon={<Feather name="send" size={15} color={colors.surface} />}
                 // ?prompt=relance : l'assistant pré-remplit ET soumet la demande (C15).
-                onPress={() => router.push({ pathname: '/(tabs)/assistant', params: { prompt: 'relance' } })}
+                onPress={() =>
+                  router.push({ pathname: '/(tabs)/assistant', params: { prompt: 'relance' } })
+                }
               />
               {/* A2-C10 : encaisser SANS quitter le briefing — mêmes invariants que InvoiceActions
                   (assiette netToPay, confirmation ACCOUNTING, idempotence). */}
@@ -232,7 +293,10 @@ function TodayPriorityCard({
             params: { amount: formatEURWhole(priority.amountCents) },
           })}
           badge={
-            <StatusBadge label={t('today.prioAcceptedBadge', { personality }).toUpperCase()} variant="b2b" />
+            <StatusBadge
+              label={t('today.prioAcceptedBadge', { personality }).toUpperCase()}
+              variant="b2b"
+            />
           }
           cta={
             <Button
@@ -258,7 +322,10 @@ function TodayPriorityCard({
           subtitle={t('today.prioConformiteHint', { personality })}
           leadingIcon={<ShieldIcon color={semantic.b2g} />}
           badge={
-            <StatusBadge label={t('today.prioConformiteBadge', { personality }).toUpperCase()} variant="b2g" />
+            <StatusBadge
+              label={t('today.prioConformiteBadge', { personality }).toUpperCase()}
+              variant="b2g"
+            />
           }
           cta={
             <Button
@@ -280,6 +347,7 @@ export default function Aujourdhui() {
   const identity = useIdentity();
   const { personality, density, colors, semantic } = useTheme();
   const router = useRouter();
+  const agentSession = useAgentSession();
   const insets = useSafeAreaInsets();
   const cashflow = useCashflow('realiste', 30);
   const customers = useCustomers();
@@ -298,10 +366,54 @@ export default function Aujourdhui() {
   const displayed = today.priorities.slice(0, DISPLAY_CAP);
   const remaining = displayed.filter((p) => !done[p.id]).length;
   const todayReady = !today.isLoading && !today.isError;
+  const agentContext = useMemo<AgentContext>(() => {
+    const entities: AgentEntityRef[] = [];
+    const seen = new Set<string>();
+    const add = (entity: AgentEntityRef): void => {
+      const key = `${entity.type}:${entity.id}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      entities.push(entity);
+    };
+    for (const priority of today.priorities.slice(0, DISPLAY_CAP)) {
+      if (priority.kind === 'relance') {
+        add({
+          type: 'invoice',
+          id: priority.invoiceId,
+          label: priority.docNumber ? `Facture ${priority.docNumber}` : 'Facture à relancer',
+        });
+        add({ type: 'customer', id: priority.customerId, label: priority.customerName });
+      } else if (priority.kind === 'facture_finale') {
+        add({
+          type: 'quote',
+          id: priority.quoteId,
+          label: priority.docNumber ? `Devis ${priority.docNumber}` : 'Devis signé',
+        });
+        add({ type: 'customer', id: priority.customerId, label: priority.customerName });
+      }
+    }
+    return {
+      screen: { name: '/(tabs)/index', instanceId: 'today' },
+      entities,
+      capabilities: [
+        'screen.read',
+        'today.read',
+        'cashflow.read',
+        'priorities.read',
+        'invoice.read',
+        'quote.read',
+        'customer.read',
+      ],
+    };
+  }, [today.priorities]);
+  usePublishAgentContext(agentContext);
 
   // KPI : uniquement des agrégats dérivés des queries réelles — sinon tuile vide « — ».
   const owedCents = customers.data?.reduce((sum, c) => sum + c.outstanding, 0);
-  const lateCents = customers.data?.reduce((sum, c) => sum + (c.scoreBand === 'red' ? c.outstanding : 0), 0);
+  const lateCents = customers.data?.reduce(
+    (sum, c) => sum + (c.scoreBand === 'red' ? c.outstanding : 0),
+    0,
+  );
   const eomCents = cashflow.data?.available; // horizon 30 j réaliste = fin de mois
   const glanceLoading = cashflow.isLoading || customers.isLoading;
   const hasError = cashflow.isError || customers.isError || today.isError;
@@ -378,36 +490,45 @@ export default function Aujourdhui() {
                   }
                 : {})}
             />
-            {today.isLoading ? (
-              <View style={{ gap: 11 }}>
-                <SkeletonPriority />
-                <SkeletonPriority />
-              </View>
-            ) : displayed.length > 0 ? (
-              <View style={{ gap: 11 }}>
-                {displayed.map((p) => (
-                  <TodayPriorityCard
-                    key={p.id}
-                    priority={p}
-                    done={!!done[p.id]}
-                    onToggle={toggle(p.id)}
-                    invoice={
-                      p.kind === 'relance' ? (invoices.data ?? []).find((i) => i.id === p.invoiceId) : undefined
-                    }
-                    onCollected={(cents) =>
-                      setToast(t('today.collectDone', { personality, params: { amount: formatEURWhole(cents) } }))
-                    }
-                  />
-                ))}
-              </View>
-            ) : todayReady ? (
-              // 0 priorité : état vide de premier rang — la voix de Bob, aucune carte fantôme.
-              <Card>
-                <Text style={[font('sub'), { color: colors.slate500 }]}>
-                  {t('today.subtitleNone', { personality })}
-                </Text>
-              </Card>
-            ) : null /* erreur : la carte today.dataError ci-dessus parle déjà */}
+            {
+              today.isLoading ? (
+                <View style={{ gap: 11 }}>
+                  <SkeletonPriority />
+                  <SkeletonPriority />
+                </View>
+              ) : displayed.length > 0 ? (
+                <View style={{ gap: 11 }}>
+                  {displayed.map((p) => (
+                    <TodayPriorityCard
+                      key={p.id}
+                      priority={p}
+                      done={!!done[p.id]}
+                      onToggle={toggle(p.id)}
+                      invoice={
+                        p.kind === 'relance'
+                          ? (invoices.data ?? []).find((i) => i.id === p.invoiceId)
+                          : undefined
+                      }
+                      onCollected={(cents) =>
+                        setToast(
+                          t('today.collectDone', {
+                            personality,
+                            params: { amount: formatEURWhole(cents) },
+                          }),
+                        )
+                      }
+                    />
+                  ))}
+                </View>
+              ) : todayReady ? (
+                // 0 priorité : état vide de premier rang — la voix de Bob, aucune carte fantôme.
+                <Card>
+                  <Text style={[font('sub'), { color: colors.slate500 }]}>
+                    {t('today.subtitleNone', { personality })}
+                  </Text>
+                </Card>
+              ) : null /* erreur : la carte today.dataError ci-dessus parle déjà */
+            }
           </View>
 
           {cockpit ? (
@@ -470,9 +591,12 @@ export default function Aujourdhui() {
                 <QuickAction
                   style={{ flex: 1 }}
                   label={t('today.quickVoice', { personality })}
-                  tone="success"
-                  icon={<Feather name="mic" size={18} color={semantic.success} />}
-                  onPress={() => router.push('/voix')} // C20 — flux facture à la voix
+                  tone="ai"
+                  icon={<Feather name="mic" size={18} color={semantic.ai} />}
+                  // C20 conservé : « À la voix » = flux complet de facture dictée. Le hub Bob
+                  // global (bouton flottant) reste lecture seule tant que S2 n'exécute pas de
+                  // proposition depuis l'overlay — sinon la dictée finirait en cul-de-sac.
+                  onPress={() => router.push('/voix')}
                 />
                 <QuickAction
                   style={{ flex: 1 }}

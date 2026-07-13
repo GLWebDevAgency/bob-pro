@@ -22,6 +22,8 @@ import { AuthProvider, useAuth } from '../src/data/auth';
 import { BobClientProvider } from '../src/data/client';
 import { PushNotificationsBridge } from '../src/data/push';
 import { ConfirmProvider } from '../src/components/ConfirmSheet';
+import { GlobalBobAccess } from '../src/components/GlobalBobAccess';
+import { AgentContextProvider, AgentSessionProvider } from '../src/agent';
 import { LoginScreen } from '../src/screens/LoginScreen';
 import { ProvisioningScreen } from '../src/screens/ProvisioningScreen';
 import { BiometricGate } from '../src/screens/BiometricGate';
@@ -36,11 +38,20 @@ function AuthGate({ children }: { children: ReactNode }) {
   // On teste aussi l'URL entrante : au boot par deep link, le Stack n'est pas encore monté
   // et pathname vaut encore '/', ce qui bloquerait la navigation vers la galerie.
   // Comparaison STRICTE du path parsé (jamais de substring sur l'URL brute : bypass d'auth).
-  const incomingPath = incomingUrl ? `/${(parseUrl(incomingUrl).path ?? '').replace(/^\/+/, '')}` : null;
+  const incomingPath = incomingUrl
+    ? `/${(parseUrl(incomingUrl).path ?? '').replace(/^\/+/, '')}`
+    : null;
   if (pathname === '/gallery' || incomingPath === '/gallery') return <>{children}</>;
   if (enabled && loading) {
     return (
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg }}>
+      <View
+        style={{
+          flex: 1,
+          alignItems: 'center',
+          justifyContent: 'center',
+          backgroundColor: colors.bg,
+        }}
+      >
         <ActivityIndicator color={colors.ink800} />
       </View>
     );
@@ -50,7 +61,10 @@ function AuthGate({ children }: { children: ReactNode }) {
   // provisionné) → l'app N'ENTRE PAS sur les tabs (tout endpoint tenant répondrait 403
   // PROVISIONING_REQUIRED). L'écran crée l'espace puis refreshSession : le JWT frais porte
   // company_id et ce même gate laisse passer naturellement.
-  const companyId = enabled && session ? (session.user.app_metadata as Record<string, unknown>)['company_id'] : null;
+  const companyId =
+    enabled && session
+      ? (session.user.app_metadata as Record<string, unknown>)['company_id']
+      : null;
   if (enabled && session && !(typeof companyId === 'string' && companyId.length > 0)) {
     return <ProvisioningScreen />;
   }
@@ -85,29 +99,34 @@ export default function RootLayout() {
                 <AuthGate>
                   {/* C25 : token push Expo au boot connecté + deep link au tap (dégradé honnête Expo Go). */}
                   <PushNotificationsBridge />
-                  <ConfirmProvider>
-                  <Stack screenOptions={{ headerShown: false }}>
-                    <Stack.Screen name="(tabs)" />
-                    <Stack.Screen name="devis/new" options={{ presentation: 'modal' }} />
-                    <Stack.Screen name="devis/[id]" />
-                    <Stack.Screen name="facture/[id]" />
-                    <Stack.Screen name="client/[id]" />
-                    <Stack.Screen name="compte" />
-                    <Stack.Screen name="catalogue" />
-                    <Stack.Screen name="reglages-facturation" />
-                    <Stack.Screen name="diagnostic" />
-                    <Stack.Screen name="notifications" />
-                    <Stack.Screen name="onboarding" />
-                    <Stack.Screen name="scan-document" options={{ presentation: 'modal' }} />
-                    <Stack.Screen name="voix" options={{ presentation: 'modal' }} />
-                    <Stack.Screen name="chantiers" />
-                    <Stack.Screen name="ventes" />
-                    <Stack.Screen name="comptabilite" />
-                    <Stack.Screen name="cloture" />
-                    <Stack.Screen name="pilotage" />
-                    <Stack.Screen name="gallery" />
-                  </Stack>
-                  </ConfirmProvider>
+                  <AgentContextProvider>
+                    <AgentSessionProvider>
+                      <ConfirmProvider>
+                        <Stack screenOptions={{ headerShown: false }}>
+                          <Stack.Screen name="(tabs)" />
+                          <Stack.Screen name="devis/new" options={{ presentation: 'modal' }} />
+                          <Stack.Screen name="devis/[id]" />
+                          <Stack.Screen name="facture/[id]" />
+                          <Stack.Screen name="client/[id]" />
+                          <Stack.Screen name="compte" />
+                          <Stack.Screen name="catalogue" />
+                          <Stack.Screen name="reglages-facturation" />
+                          <Stack.Screen name="diagnostic" />
+                          <Stack.Screen name="notifications" />
+                          <Stack.Screen name="onboarding" />
+                          <Stack.Screen name="scan-document" options={{ presentation: 'modal' }} />
+                          <Stack.Screen name="voix" options={{ presentation: 'modal' }} />
+                          <Stack.Screen name="chantiers" />
+                          <Stack.Screen name="ventes" />
+                          <Stack.Screen name="comptabilite" />
+                          <Stack.Screen name="cloture" />
+                          <Stack.Screen name="pilotage" />
+                          <Stack.Screen name="gallery" />
+                        </Stack>
+                        <GlobalBobAccess />
+                      </ConfirmProvider>
+                    </AgentSessionProvider>
+                  </AgentContextProvider>
                 </AuthGate>
               </BobClientProvider>
             </AuthProvider>

@@ -4,7 +4,8 @@
  * dégradé IA, pill statut, sous-titre assistant.subtitle) → fil de chat (bulle
  * d'accueil voix Bob, bulles user/Bob, indicateur de saisie 3 points animés, cartes
  * d'action avec aperçu avant/après + Valider/Annuler) → chips suggestions du proto →
- * input « Demande-moi un truc… » + micro (→ /voix, C20) + envoi.
+ * input « Demande-moi un truc… » + contrôle live générique + envoi ; le wizard spécialisé
+ * « Facture à la voix » reste une suggestion textuelle explicite, pas un second micro.
  *
  * BRANCHEMENT 100 % RÉEL (couche présentation refaite, transport conservé) : le fil
  * parle au VRAI agent — makeBobAgent(client) → BobAgent (@bob/ai : intents, autonomie,
@@ -23,8 +24,8 @@
  * RÉELLE de l'agent (onPhase comprends/agit) sur l'indicateur de saisie.
  *
  * Écarts assumés vs réf/ancien écran :
- * · mode vocal mains-libres (VoiceOrb + STT/TTS) retiré de CET écran — le micro ouvre le
- *   flux /voix (C20) ; confirmByVoice (@bob/ai) et data/voice restent intacts ;
+ * · le mode vocal mains-libres partage désormais le lease STT global ; au blur, l'owner local
+ *   libère l'oreille et l'accès Bob racine prend le relais sans double écoute ;
  * · badges « plan · modèle » de l'ancien écran non repris (le proto n'affiche pas de
  *   télémétrie — choix produit ThinkingIndicator conservé) ;
  * · dégradés via tokens (conformityCard.bgTop→bg · ai→indigo.d2), pas les hex du proto ;
@@ -33,7 +34,7 @@
  * Zéro hex/rgba. Zéro import de src/components/ui — ActionDiffView (composant d'action
  * métier, autorisé au contrat) rend l'aperçu avant/après partagé avec le flux manuel.
  */
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   Animated,
   Easing,
@@ -48,7 +49,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   buildActionDiff,
@@ -75,7 +76,8 @@ import { makeBobAgent } from '../../src/data/bob';
 import { getAutonomy } from '../../src/data/settings';
 import { speechRecognitionAvailable, useSpeak, useVoiceInput } from '../../src/data/voice';
 import { ActionDiffView } from '../../src/components/ActionDiffView';
-import { MicIcon, SendIcon, SparkIcon } from '../../src/components/icons';
+import { SendIcon, SparkIcon } from '../../src/components/icons';
+import { useAgentSession } from '../../src/agent';
 
 interface ChatItem {
   readonly id: string;
@@ -119,15 +121,29 @@ const TAB_PILL_HEIGHT = 62;
 /** Indicateur de saisie — 3 points qui ondulent (proto cpGlow) + phase RÉELLE de l'agent. */
 function TypingBubble({ phase }: { phase: string | null }) {
   const { colors, controls, personality } = useTheme();
-  const dots = useRef([new Animated.Value(0), new Animated.Value(0), new Animated.Value(0)]).current;
+  const dots = useRef([
+    new Animated.Value(0),
+    new Animated.Value(0),
+    new Animated.Value(0),
+  ]).current;
 
   useEffect(() => {
     const loops = dots.map((v, i) =>
       Animated.loop(
         Animated.sequence([
           Animated.delay(i * 180),
-          Animated.timing(v, { toValue: 1, duration: 360, easing: Easing.out(Easing.quad), useNativeDriver: true }),
-          Animated.timing(v, { toValue: 0, duration: 360, easing: Easing.in(Easing.quad), useNativeDriver: true }),
+          Animated.timing(v, {
+            toValue: 1,
+            duration: 360,
+            easing: Easing.out(Easing.quad),
+            useNativeDriver: true,
+          }),
+          Animated.timing(v, {
+            toValue: 0,
+            duration: 360,
+            easing: Easing.in(Easing.quad),
+            useNativeDriver: true,
+          }),
           Animated.delay((dots.length - 1 - i) * 180),
         ]),
       ),
@@ -167,7 +183,9 @@ function TypingBubble({ phase }: { phase: string | null }) {
               borderRadius: 4,
               backgroundColor: colors.slate300,
               opacity: v.interpolate({ inputRange: [0, 1], outputRange: [0.35, 1] }),
-              transform: [{ translateY: v.interpolate({ inputRange: [0, 1], outputRange: [0, -3] }) }],
+              transform: [
+                { translateY: v.interpolate({ inputRange: [0, 1], outputRange: [0, -3] }) },
+              ],
             }}
           />
         ))}
@@ -177,7 +195,15 @@ function TypingBubble({ phase }: { phase: string | null }) {
 }
 
 /** Chip suggestion du proto (blanc, bord lavande, texte indigo) — pas le Chip filtre @bob/ui. */
-function SuggestionChip({ label, onPress, disabled }: { label: string; onPress: () => void; disabled: boolean }) {
+function SuggestionChip({
+  label,
+  onPress,
+  disabled,
+}: {
+  label: string;
+  onPress: () => void;
+  disabled: boolean;
+}) {
   const { colors, semantic } = useTheme();
   return (
     <Pressable
@@ -232,6 +258,7 @@ export default function Assistant() {
   const qc = useQueryClient();
   const client = useBobClient();
   const agent = useMemo(() => makeBobAgent(client), [client]);
+  const globalSession = useAgentSession();
   const { data: sub } = useSubscription();
   const { data: invoices } = useInvoices();
   const { data: quotes } = useQuotes();
@@ -279,7 +306,10 @@ export default function Assistant() {
    * Aperçu avant/après de l'action proposée — la « preuve » avant Valider, calculée
    * depuis l'action + les pièces réelles (même buildActionDiff que la ConfirmSheet).
    */
-  const pendingDiff = (pending: PendingAction, accountingLines?: readonly AccountingLine[]): ActionDiff | null => {
+  const pendingDiff = (
+    pending: PendingAction,
+    accountingLines?: readonly AccountingLine[],
+  ): ActionDiff | null => {
     const { tool, args } = pending;
     const invId = typeof args.invoiceId === 'string' ? args.invoiceId : '';
     const quoteId = typeof args.quoteId === 'string' ? args.quoteId : '';
@@ -287,11 +317,19 @@ export default function Assistant() {
       const inv = (invoices ?? []).find((i) => i.id === invId);
       const remaining = inv ? Math.max(0, inv.totals.netToPay - inv.paid) : 0;
       const amountCents = typeof args.amountCents === 'number' ? args.amountCents : remaining;
-      return buildActionDiff('encaisser_facture', { amountCents }, { number: inv?.number ?? null, remainingCents: remaining });
+      return buildActionDiff(
+        'encaisser_facture',
+        { amountCents },
+        { number: inv?.number ?? null, remainingCents: remaining },
+      );
     }
     if (tool === 'emettre_facture') {
       const inv = (invoices ?? []).find((i) => i.id === invId);
-      return buildActionDiff('emettre_facture', {}, { number: inv?.number ?? null, ...(accountingLines ? { accountingLines } : {}) });
+      return buildActionDiff(
+        'emettre_facture',
+        {},
+        { number: inv?.number ?? null, ...(accountingLines ? { accountingLines } : {}) },
+      );
     }
     if (tool === 'envoyer_devis') {
       const q = (quotes ?? []).find((x) => x.id === quoteId);
@@ -304,21 +342,32 @@ export default function Assistant() {
     const id = nextId();
     const pending = run.kind === 'proposed' ? run.pending : undefined;
     // LIVE-2 : la reformulation naturelle (gardée par les faits) prime sur le gabarit.
-    const item: ChatItem = { id, role: 'bob', text: run.naturalBody ?? run.card.body, run, ...(pending ? { pending } : {}) };
+    const item: ChatItem = {
+      id,
+      role: 'bob',
+      text: run.naturalBody ?? run.card.body,
+      run,
+      ...(pending ? { pending } : {}),
+    };
     setItems((prev) => [...prev, item]);
     if (run.kind === 'done') refreshAfterAction();
     if (run.navigate) router.push(run.navigate as never); // commande « Jarvis » : Bob ouvre le bon écran
     if (run.ask?.length) setActiveAsk(run.ask[0] ?? null); // ASK-1 : la question s'ouvre d'elle-même
 
     // Émission : enrichit l'aperçu avec l'écriture comptable prévisionnelle RÉELLE (async, best-effort).
-    const invId = pending?.tool === 'emettre_facture' && typeof pending.args.invoiceId === 'string' ? pending.args.invoiceId : null;
+    const invId =
+      pending?.tool === 'emettre_facture' && typeof pending.args.invoiceId === 'string'
+        ? pending.args.invoiceId
+        : null;
     if (invId) {
       void client
         .invoiceAccountingPreview(invId)
         .then((r) => {
           if (r.ok && r.value.available && r.value.lines.length) {
             const lines = r.value.lines;
-            setItems((prev) => prev.map((it) => (it.id === id ? { ...it, accountingLines: lines } : it)));
+            setItems((prev) =>
+              prev.map((it) => (it.id === id ? { ...it, accountingLines: lines } : it)),
+            );
           }
         })
         .catch(() => {
@@ -342,7 +391,11 @@ export default function Assistant() {
       history,
       tone: personality,
       onPhase: (p) =>
-        setPhase(t(p === 'comprends' ? 'assistant.phaseUnderstand' : 'assistant.phaseAct', { personality })),
+        setPhase(
+          t(p === 'comprends' ? 'assistant.phaseUnderstand' : 'assistant.phaseAct', {
+            personality,
+          }),
+        ),
     });
     setBusy(false);
     setPhase(null);
@@ -381,7 +434,9 @@ export default function Assistant() {
   // reste tappable à tout moment, même résultat. Les actions sensibles gardent leur
   // plancher : consentement EXPLICITE (parseVoiceConsent), jamais d'exécution ambiguë.
   const [live, setLive] = useState(false);
-  const [liveState, setLiveState] = useState<'idle' | 'listening' | 'thinking' | 'speaking'>('idle');
+  const [liveState, setLiveState] = useState<'idle' | 'listening' | 'thinking' | 'speaking'>(
+    'idle',
+  );
   const liveRef = useRef(false);
   liveRef.current = live;
   const liveStateRef = useRef(liveState);
@@ -428,6 +483,23 @@ export default function Assistant() {
   const voiceRef = useRef(voice);
   voiceRef.current = voice;
 
+  // Un tab peut rester monte sous une route Stack. Au blur, l'owner local rend toujours le
+  // lease STT : jamais de micro cache ni de concurrence avec l'acces Bob global.
+  useFocusEffect(
+    useCallback(
+      () => () => {
+        if (!liveRef.current) return;
+        liveRef.current = false;
+        setLive(false);
+        stopSpeaking();
+        void voiceRef.current.cancel();
+        setLiveState('idle');
+        expectationRef.current = { kind: 'command' };
+      },
+      [stopSpeaking],
+    ),
+  );
+
   /** L'oreille se rouvre — ou retombe en idle si le live a été coupé entre-temps. */
   const listen = (): void => {
     if (!liveRef.current) return;
@@ -442,7 +514,8 @@ export default function Assistant() {
     // LIVE-3 : l'oreille reste ouverte PENDANT la lecture (natif seulement — en cloud, le
     // tap du bandeau reste l'interruption). JAMAIS pendant une demande de CONFIRMATION :
     // l'écho du prompt contient « je confirme »/« annule » — risque d'exécution fantôme.
-    if ((opts.bargeIn ?? true) && speechRecognitionAvailable && !voiceRef.current.listening) void voiceRef.current.start();
+    if ((opts.bargeIn ?? true) && speechRecognitionAvailable && !voiceRef.current.listening)
+      void voiceRef.current.start();
     await speakAndWait(text);
     speakingTextRef.current = '';
     lastSpokenRef.current = { text, endedAt: Date.now() };
@@ -518,7 +591,9 @@ export default function Assistant() {
       // échoscanné contre le dernier énoncé.
       const shortReply = speechWordCount(text) <= 4;
       const structuredReply =
-        (expected.kind === 'choice' && shortReply && parseVoiceChoice(text, expected.question.options) !== null) ||
+        (expected.kind === 'choice' &&
+          shortReply &&
+          parseVoiceChoice(text, expected.question.options) !== null) ||
         (expected.kind === 'consent' && shortReply && parseVoiceConsent(text) !== 'unclear');
       if (!structuredReply && echoOverlap(text, reference) >= 0.5) {
         swallowEcho();
@@ -582,6 +657,10 @@ export default function Assistant() {
   };
 
   const toggleLive = (): void => {
+    if (globalSession.active) {
+      globalSession.stop();
+      return;
+    }
     if (live) {
       setLive(false);
       liveRef.current = false;
@@ -595,7 +674,12 @@ export default function Assistant() {
     liveRef.current = true;
     expectationRef.current = { kind: 'command' };
     setLiveState('listening');
-    void voiceRef.current.start();
+    void voiceRef.current.start().then((started) => {
+      if (started) return;
+      liveRef.current = false;
+      setLive(false);
+      setLiveState('idle');
+    });
   };
 
   // Fin d'écoute sans transcript (silence) : l'orbe retombe en « prêt » — un tap relance.
@@ -639,13 +723,37 @@ export default function Assistant() {
   }, [prompt, entitled, personality, busy]);
 
   const tabClearance =
-    patterns.bottomTabBar.padding[0] + TAB_PILL_HEIGHT + Math.max(insets.bottom, patterns.bottomTabBar.padding[2]);
+    patterns.bottomTabBar.padding[0] +
+    TAB_PILL_HEIGHT +
+    Math.max(insets.bottom, patterns.bottomTabBar.padding[2]);
+  const displayedLive = globalSession.active || live;
+  const displayedLiveState = globalSession.active
+    ? globalSession.phase === 'error'
+      ? 'idle'
+      : globalSession.phase
+    : liveState;
 
   // ── Garde d'abonnement (feature ai_assistant) — honnête, l'app reste utilisable à la main ──
   if (sub !== undefined && !entitled) {
     return (
-      <View style={{ flex: 1, backgroundColor: colors.bg, padding: 20, paddingTop: insets.top + 40, gap: 14 }}>
-        <View style={{ width: 56, height: 56, borderRadius: 18, overflow: 'hidden', ...shadowNative.e2 }}>
+      <View
+        style={{
+          flex: 1,
+          backgroundColor: colors.bg,
+          padding: 20,
+          paddingTop: insets.top + 40,
+          gap: 14,
+        }}
+      >
+        <View
+          style={{
+            width: 56,
+            height: 56,
+            borderRadius: 18,
+            overflow: 'hidden',
+            ...shadowNative.e2,
+          }}
+        >
           <LinearGradient
             colors={[semantic.ai, themes.indigo.d2]}
             start={{ x: 0, y: 0 }}
@@ -655,11 +763,16 @@ export default function Assistant() {
             <SparkIcon color={colors.surface} size={26} strokeWidth={2} />
           </LinearGradient>
         </View>
-        <Text style={[font('pageTitle'), { color: colors.ink900 }]}>{t('assistant.lockedTitle', { personality })}</Text>
+        <Text style={[font('pageTitle'), { color: colors.ink900 }]}>
+          {t('assistant.lockedTitle', { personality })}
+        </Text>
         <Text style={[font('body'), { color: colors.slate500, lineHeight: 21 }]}>
           {t('assistant.lockedBody', { personality })}
         </Text>
-        <Button title={t('assistant.lockedCta', { personality })} onPress={() => router.push('/compte')} />
+        <Button
+          title={t('assistant.lockedCta', { personality })}
+          onPress={() => router.push('/compte')}
+        />
       </View>
     );
   }
@@ -676,7 +789,10 @@ export default function Assistant() {
         style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
       />
 
-      <KeyboardAvoidingView style={{ flex: 1 }} {...(Platform.OS === 'ios' ? { behavior: 'padding' as const } : {})}>
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        {...(Platform.OS === 'ios' ? { behavior: 'padding' as const } : {})}
+      >
         {/* ── Header « Bob · en ligne » ─────────────────────────────────────── */}
         <View
           style={{
@@ -690,7 +806,15 @@ export default function Assistant() {
             borderBottomColor: controls.cardBorder,
           }}
         >
-          <View style={{ width: 40, height: 40, borderRadius: 13, overflow: 'hidden', ...shadowNative.e2 }}>
+          <View
+            style={{
+              width: 40,
+              height: 40,
+              borderRadius: 13,
+              overflow: 'hidden',
+              ...shadowNative.e2,
+            }}
+          >
             <LinearGradient
               colors={[semantic.ai, themes.indigo.d2]}
               start={{ x: 0, y: 0 }}
@@ -745,7 +869,12 @@ export default function Assistant() {
         <ScrollView
           ref={scrollRef}
           style={{ flex: 1 }}
-          contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 18, paddingBottom: 8, gap: 12 }}
+          contentContainerStyle={{
+            paddingHorizontal: 16,
+            paddingTop: 18,
+            paddingBottom: 8,
+            gap: 12,
+          }}
           keyboardShouldPersistTaps="handled"
           onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
         >
@@ -769,22 +898,36 @@ export default function Assistant() {
                   paddingHorizontal: 14,
                 }}
               >
-                <Text style={[font('body'), { color: colors.surface, lineHeight: 21 }]}>{it.text}</Text>
+                <Text style={[font('body'), { color: colors.surface, lineHeight: 21 }]}>
+                  {it.text}
+                </Text>
               </View>
             ) : (
               <BobBubble key={it.id}>
                 {it.run ? (
-                  <Text style={[font('cardTitle'), { fontSize: 15, color: colors.ink900, marginBottom: 4 }]}>
+                  <Text
+                    style={[
+                      font('cardTitle'),
+                      { fontSize: 15, color: colors.ink900, marginBottom: 4 },
+                    ]}
+                  >
                     {it.run.card.title}
                   </Text>
                 ) : null}
-                <Text style={[font('body'), { color: colors.ink800, lineHeight: 21 }]}>{it.text}</Text>
+                <Text style={[font('body'), { color: colors.ink800, lineHeight: 21 }]}>
+                  {it.text}
+                </Text>
 
                 {/* Carte d'action : aperçu avant/après + garde-fou + Valider/Annuler (flux réel). */}
                 {it.pending ? (
                   <>
                     <ActionDiffView diff={pendingDiff(it.pending, it.accountingLines)} />
-                    <Text style={[font('meta'), { fontSize: 11.5, color: colors.slate400, marginTop: 10 }]}>
+                    <Text
+                      style={[
+                        font('meta'),
+                        { fontSize: 11.5, color: colors.slate400, marginTop: 10 },
+                      ]}
+                    >
                       {t('assistant.guardrail', { personality })}
                     </Text>
                     <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
@@ -824,10 +967,14 @@ export default function Assistant() {
                         label={c.label}
                         onPress={() =>
                           void ask(
-                            t(CMD_BY_INTENT[it.run?.intent ?? 'encaisser'] ?? 'assistant.cmdCollect', {
-                              personality,
-                              params: { ref: c.value },
-                            }),
+                            t(
+                              CMD_BY_INTENT[it.run?.intent ?? 'encaisser'] ??
+                                'assistant.cmdCollect',
+                              {
+                                personality,
+                                params: { ref: c.value },
+                              },
+                            ),
                           )
                         }
                       />
@@ -843,22 +990,27 @@ export default function Assistant() {
 
         {/* ── Chips suggestions + input (au-dessus de la tab bar flottante) ──── */}
         <View style={{ paddingBottom: tabClearance + 6 }}>
-          {live ? (
+          {displayedLive ? (
             <Pressable
               accessibilityRole="button"
+              accessibilityLiveRegion="polite"
               accessibilityLabel={t(
-                liveState === 'listening'
+                displayedLiveState === 'listening'
                   ? speechRecognitionAvailable
                     ? 'live.listening'
                     : 'live.tapWhenDone'
-                  : liveState === 'thinking'
+                  : displayedLiveState === 'thinking'
                     ? 'live.thinking'
-                    : liveState === 'speaking'
+                    : displayedLiveState === 'speaking'
                       ? 'live.speaking'
                       : 'live.idle',
                 { personality },
               )}
               onPress={() => {
+                if (globalSession.active) {
+                  globalSession.toggle();
+                  return;
+                }
                 // Tap sur le bandeau : interrompt la lecture, clôt l'écoute cloud, ou relance l'oreille.
                 if (liveState === 'speaking') {
                   stopSpeaking();
@@ -877,7 +1029,7 @@ export default function Assistant() {
                 paddingHorizontal: 14,
                 backgroundColor: colors.surface,
                 borderWidth: 1,
-                borderColor: liveState === 'listening' ? semantic.ai : controls.cardBorder,
+                borderColor: displayedLiveState === 'listening' ? semantic.ai : controls.cardBorder,
                 flexDirection: 'row',
                 alignItems: 'center',
                 gap: 9,
@@ -890,18 +1042,22 @@ export default function Assistant() {
                   height: 10,
                   borderRadius: 5,
                   backgroundColor:
-                    liveState === 'listening' ? semantic.ai : liveState === 'speaking' ? semantic.success : colors.slate300,
+                    displayedLiveState === 'listening'
+                      ? semantic.ai
+                      : displayedLiveState === 'speaking'
+                        ? semantic.success
+                        : colors.slate300,
                 }}
               />
               <Text style={[font('sub', 600), { color: colors.ink800, flex: 1 }]}>
                 {t(
-                  liveState === 'listening'
+                  displayedLiveState === 'listening'
                     ? speechRecognitionAvailable
                       ? 'live.listening'
                       : 'live.tapWhenDone'
-                    : liveState === 'thinking'
+                    : displayedLiveState === 'thinking'
                       ? 'live.thinking'
-                      : liveState === 'speaking'
+                      : displayedLiveState === 'speaking'
                         ? 'live.speaking'
                         : 'live.idle',
                   { personality },
@@ -913,11 +1069,28 @@ export default function Assistant() {
             horizontal
             showsHorizontalScrollIndicator={false}
             keyboardShouldPersistTaps="handled"
-            contentContainerStyle={{ gap: 8, paddingHorizontal: 16, paddingTop: 6, paddingBottom: 12 }}
+            contentContainerStyle={{
+              gap: 8,
+              paddingHorizontal: 16,
+              paddingTop: 6,
+              paddingBottom: 12,
+            }}
           >
+            <SuggestionChip
+              label={t('voix.title', { personality })}
+              disabled={busy}
+              onPress={() => router.push('/voix')}
+            />
             {SUGGESTION_CHIPS.map((key) => {
               const label = t(key, { personality });
-              return <SuggestionChip key={key} label={label} disabled={busy} onPress={() => void ask(label)} />;
+              return (
+                <SuggestionChip
+                  key={key}
+                  label={label}
+                  disabled={busy}
+                  onPress={() => void ask(label)}
+                />
+              );
             })}
           </ScrollView>
 
@@ -948,8 +1121,12 @@ export default function Assistant() {
             {/* LIVE — le mode vocal mains-libres : Bob écoute, agit et répond en continu. */}
             <Pressable
               accessibilityRole="button"
-              accessibilityState={{ selected: live }}
-              accessibilityLabel={live ? t('live.speaking', { personality }) : t('live.idle', { personality })}
+              accessibilityState={{ selected: displayedLive }}
+              accessibilityLabel={
+                displayedLive
+                  ? t('live.speaking', { personality })
+                  : t('live.idle', { personality })
+              }
               onPress={toggleLive}
               style={{
                 width: 38,
@@ -960,10 +1137,10 @@ export default function Assistant() {
                 overflow: 'hidden',
                 alignItems: 'center',
                 justifyContent: 'center',
-                backgroundColor: live ? undefined : controls.segmentedTrack,
+                backgroundColor: displayedLive ? undefined : controls.segmentedTrack,
               }}
             >
-              {live ? (
+              {displayedLive ? (
                 <LinearGradient
                   colors={[semantic.ai, themes.indigo.d2]}
                   start={{ x: 0, y: 0 }}
@@ -971,25 +1148,11 @@ export default function Assistant() {
                   style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
                 />
               ) : null}
-              <Ionicons name="pulse" size={19} color={live ? colors.surface : colors.slate500} />
-            </Pressable>
-            {/* Micro — entrée du flux « Facture à la voix » (C20). */}
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={t('voix.title', { personality })}
-              onPress={() => router.push('/voix')}
-              style={{
-                width: 38,
-                height: 38,
-                minWidth: 44,
-                minHeight: 44,
-                borderRadius: 11,
-                backgroundColor: controls.segmentedTrack,
-                alignItems: 'center',
-                justifyContent: 'center',
-              }}
-            >
-              <MicIcon color={colors.slate500} />
+              <Ionicons
+                name="pulse"
+                size={19}
+                color={displayedLive ? colors.surface : colors.slate500}
+              />
             </Pressable>
             <Pressable
               accessibilityRole="button"

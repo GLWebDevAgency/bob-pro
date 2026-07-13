@@ -16,6 +16,12 @@ import { useBobClient } from '../../src/data/client';
 import { shareDocument } from '../../src/lib/share-document';
 import { QuoteActions, hasQuoteActions } from '../../src/components/DocumentActions';
 import { PieceDetailView } from '../../src/components/PieceDetailView';
+import {
+  usePublishAgentContext,
+  type AgentCapability,
+  type AgentContext,
+  type AgentAccessLayout,
+} from '../../src/agent';
 
 export default function DevisDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -37,14 +43,53 @@ export default function DevisDetail() {
       source: 'quote',
       quote: q,
       customer,
-      ...(linked ? { finalInvoice: { id: linked.id, number: linked.number, ttcCents: linked.totals.ttc } } : {}),
+      ...(linked
+        ? { finalInvoice: { id: linked.id, number: linked.number, ttcCents: linked.totals.ttc } }
+        : {}),
     });
   }, [quote.data, customers.data, invoices.data]);
+  const agentContext = useMemo<AgentContext>(() => {
+    const q = quote.data;
+    if (!q) {
+      return {
+        screen: { name: '/devis/[id]', instanceId: `quote:${id}` },
+        entities: [],
+        capabilities: ['screen.read'],
+      };
+    }
+    const customer = (customers.data ?? []).find((item) => item.id === q.customerId);
+    const actionCapabilities: AgentCapability[] =
+      q.status === 'draft'
+        ? ['quote.send', 'quote.line.update', 'quote.deposit.update']
+        : q.status === 'sent' || q.status === 'viewed'
+          ? ['quote.send']
+          : q.status === 'signed'
+            ? ['quote.invoice.generate']
+            : [];
+    return {
+      screen: { name: '/devis/[id]', instanceId: `quote:${q.id}` },
+      entities: [
+        { type: 'quote' as const, id: q.id, label: q.number ? `Devis ${q.number}` : 'Devis brouillon' },
+        ...(customer ? [{ type: 'customer' as const, id: customer.id, label: customer.name }] : []),
+        ...q.lines.slice(0, 18).map((line, index) => ({
+          type: 'quote_line' as const,
+          id: line.id,
+          label: `${index + 1} · ${line.label}`,
+        })),
+      ],
+      capabilities: ['screen.read', 'quote.read', ...actionCapabilities],
+    };
+  }, [customers.data, id, quote.data]);
+  const agentLayout = useMemo<AgentAccessLayout>(() => ({ bottomAvoidance: 86 }), []);
+  usePublishAgentContext(agentContext, agentLayout);
 
   const pdfDoc = useMemo(
     () =>
       (documents.data ?? []).find(
-        (d) => d.linkedEntityType === 'quote' && d.linkedEntityId === id && (d.kind === 'quote_pdf' || d.kind === 'signed_quote'),
+        (d) =>
+          d.linkedEntityType === 'quote' &&
+          d.linkedEntityId === id &&
+          (d.kind === 'quote_pdf' || d.kind === 'signed_quote'),
       ) ?? null,
     [documents.data, id],
   );
@@ -62,15 +107,27 @@ export default function DevisDetail() {
           Alert.alert('Oups', t('piece.shareError', { personality }));
           return;
         }
-        const shared = await shareDocument({ url: r.value.url, filename: pdfDoc.filename, mimeType: pdfDoc.mimeType });
-        if (shared === 'unavailable') Alert.alert('Oups', t('piece.shareUnavailable', { personality }));
+        const shared = await shareDocument({
+          url: r.value.url,
+          filename: pdfDoc.filename,
+          mimeType: pdfDoc.mimeType,
+        });
+        if (shared === 'unavailable')
+          Alert.alert('Oups', t('piece.shareUnavailable', { personality }));
         else if (shared === 'error') Alert.alert('Oups', t('piece.shareError', { personality }));
       }
     : null;
 
   if (quote.isLoading || customers.isLoading) {
     return (
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg }}>
+      <View
+        style={{
+          flex: 1,
+          alignItems: 'center',
+          justifyContent: 'center',
+          backgroundColor: colors.bg,
+        }}
+      >
         <ActivityIndicator color={colors.ink800} />
       </View>
     );
@@ -95,7 +152,9 @@ export default function DevisDetail() {
       onOpenInvoice={(ref: PieceLinkedRef) => router.push(`/facture/${ref.id}`)}
       onOpenPdf={openPdf ? () => void openPdf() : undefined}
       onSharePdf={sharePdf ? () => void sharePdf() : undefined}
-      actions={hasQuoteActions(q) ? <QuoteActions quote={q} customerName={view.customerName} /> : null}
+      actions={
+        hasQuoteActions(q) ? <QuoteActions quote={q} customerName={view.customerName} /> : null
+      }
     />
   );
 }

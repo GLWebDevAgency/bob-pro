@@ -71,6 +71,7 @@ import {
 import { useChantiers, useCustomers, useInvoices, useQuotes } from '../../src/data/hooks';
 import { useDocuments } from '../../src/data/documents';
 import { useBobClient } from '../../src/data/client';
+import { usePublishAgentContext, type AgentContext, type AgentAccessLayout } from '../../src/agent';
 import {
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -266,7 +267,15 @@ function KpiCell({ label, value, color }: { label: string; value: string; color:
 }
 
 /** Rangée d'activité (pièce réelle) : pastille doc → titre + « date · note » → montant teinté. */
-function ActivityRow({ item, divider, onPress }: { item: ActivityItem; divider: boolean; onPress: () => void }) {
+function ActivityRow({
+  item,
+  divider,
+  onPress,
+}: {
+  item: ActivityItem;
+  divider: boolean;
+  onPress: () => void;
+}) {
   const { colors, controls } = useTheme();
   const palette = useStatusBadgePalette();
   const meta = item.date !== null ? `${dateLabel(item.date)} · ${item.note}` : item.note;
@@ -291,16 +300,14 @@ function ActivityRow({ item, divider, onPress }: { item: ActivityItem; divider: 
         <Text numberOfLines={1} style={[font('sub', 700), { color: colors.ink800 }]}>
           {item.title}
         </Text>
-        <Text numberOfLines={1} style={[font('meta'), { fontSize: 11.5, color: colors.slate400, marginTop: 1 }]}>
+        <Text
+          numberOfLines={1}
+          style={[font('meta'), { fontSize: 11.5, color: colors.slate400, marginTop: 1 }]}
+        >
           {meta}
         </Text>
       </View>
-      <Text
-        style={[
-          font('sub', 700),
-          { color: item.amountColor, fontVariant: ['tabular-nums'] },
-        ]}
-      >
+      <Text style={[font('sub', 700), { color: item.amountColor, fontVariant: ['tabular-nums'] }]}>
         {formatEURWhole(item.amountCents)}
       </Text>
       <ChevronRightIcon color={controls.chevron} size={14} strokeWidth={2} />
@@ -379,6 +386,32 @@ export default function ClientDetail() {
     () => (chantiers.data ?? []).filter((c) => c.customerId === id),
     [chantiers.data, id],
   );
+  const agentContext = useMemo<AgentContext>(
+    () => ({
+      screen: { name: '/client/[id]', instanceId: `customer:${id}` },
+      entities: customer
+        ? [
+            { type: 'customer' as const, id: customer.id, label: customer.name },
+            ...custInvoices.slice(0, 8).map((invoice) => ({
+              type: 'invoice' as const,
+              id: invoice.id,
+              label: invoice.number ? `Facture ${invoice.number}` : 'Facture brouillon',
+            })),
+            ...custQuotes.slice(0, 8).map((quote) => ({
+              type: 'quote' as const,
+              id: quote.id,
+              label: quote.number ? `Devis ${quote.number}` : 'Devis brouillon',
+            })),
+          ]
+        : [],
+      capabilities: customer
+        ? ['screen.read', 'customer.read', 'invoice.read', 'quote.read']
+        : ['screen.read'],
+    }),
+    [custInvoices, custQuotes, customer, id],
+  );
+  const agentLayout = useMemo<AgentAccessLayout>(() => ({ bottomAvoidance: 78 }), []);
+  usePublishAgentContext(agentContext, agentLayout);
 
   // Docs DU client = documents du coffre liés à SES pièces (factures, devis, chantiers).
   const custDocs = useMemo(() => {
@@ -435,7 +468,8 @@ export default function ClientDetail() {
       : standing.kind === 'en_attente'
         ? semantic.warning
         : semantic.success;
-  const revenue12m = invoices.data !== undefined ? revenueLast12MonthsCents(custInvoices, today) : null;
+  const revenue12m =
+    invoices.data !== undefined ? revenueLast12MonthsCents(custInvoices, today) : null;
 
   // Conformité e-invoicing : canal par type (règle @bob/core), copy dédiée par canal ;
   // b2b/b2g sans SIREN = état honnête « à compléter » (jamais un « tout est prêt » inventé).
@@ -552,13 +586,15 @@ export default function ClientDetail() {
                   params: { amount: formatEURWhole(standing.amountCents) },
                 }),
           // ?prompt=relance : l'assistant pré-remplit ET soumet la demande (C15).
-          onPress: () => router.push({ pathname: '/(tabs)/assistant', params: { prompt: 'relance' } }),
+          onPress: () =>
+            router.push({ pathname: '/(tabs)/assistant', params: { prompt: 'relance' } }),
         }
       : standing.kind === 'devis'
         ? {
             label: t('fiche.ctaRelanceQuote', { personality }),
             // relance de devis = renvoi au client (envoyer_devis) — même use case que Bob.
-            onPress: () => router.push({ pathname: '/(tabs)/assistant', params: { prompt: 'relance_devis' } }),
+            onPress: () =>
+              router.push({ pathname: '/(tabs)/assistant', params: { prompt: 'relance_devis' } }),
           }
         : {
             label: t('fiche.ctaNewQuote', { personality }),
@@ -645,7 +681,12 @@ export default function ClientDetail() {
             <>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 13 }}>
                 <View
-                  style={{ width: 54, height: 54, borderRadius: radius.squircle, backgroundColor: colors.lineSoft }}
+                  style={{
+                    width: 54,
+                    height: 54,
+                    borderRadius: radius.squircle,
+                    backgroundColor: colors.lineSoft,
+                  }}
                 />
                 <View style={{ flex: 1, gap: 8 }}>
                   <SkeletonBar width="62%" height={17} />
@@ -654,7 +695,12 @@ export default function ClientDetail() {
               </View>
               <View style={{ flexDirection: 'row', gap: 9 }}>
                 {TAB_KEYS.map((key) => (
-                  <Card key={key} radius={16} padding={13} style={{ flex: 1, alignItems: 'center' }}>
+                  <Card
+                    key={key}
+                    radius={16}
+                    padding={13}
+                    style={{ flex: 1, alignItems: 'center' }}
+                  >
                     <SkeletonBar width={18} height={18} />
                     <View style={{ marginTop: 7 }}>
                       <SkeletonBar width={34} height={10} />
@@ -711,18 +757,28 @@ export default function ClientDetail() {
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 13 }}>
                 <Avatar name={customer.name} size={54} tone={TONE_BY_TYPE[customer.type]} />
                 <View style={{ flex: 1 }}>
-                  <Text numberOfLines={1} style={[font('cardTitle'), { fontSize: 18, color: colors.ink900 }]}>
+                  <Text
+                    numberOfLines={1}
+                    style={[font('cardTitle'), { fontSize: 18, color: colors.ink900 }]}
+                  >
                     {customer.name}
                   </Text>
                   {customer.type !== 'b2c' ? (
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 5 }}>
+                    <View
+                      style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 5 }}
+                    >
                       <StatusBadge
-                        label={t(customer.type === 'b2b' ? 'fiche.badgeB2b' : 'fiche.badgeB2g', { personality })}
+                        label={t(customer.type === 'b2b' ? 'fiche.badgeB2b' : 'fiche.badgeB2g', {
+                          personality,
+                        })}
                         variant={TONE_BY_TYPE[customer.type]}
                       />
                       {siren !== null ? (
                         <Text style={[font('meta'), { fontSize: 11.5, color: colors.slate400 }]}>
-                          {t('fiche.sirenLabel', { personality, params: { siren: formatSiren(siren) } })}
+                          {t('fiche.sirenLabel', {
+                            personality,
+                            params: { siren: formatSiren(siren) },
+                          })}
                         </Text>
                       ) : null}
                     </View>
@@ -740,13 +796,19 @@ export default function ClientDetail() {
                 <ActionTile
                   label={t('fiche.actionRelance', { personality })}
                   icon={<SendIcon color={colors.ink600} size={19} />}
-                  onPress={() => router.push({ pathname: '/(tabs)/assistant', params: { prompt: 'relance' } })}
+                  onPress={() =>
+                    router.push({ pathname: '/(tabs)/assistant', params: { prompt: 'relance' } })
+                  }
                 />
                 <ActionTile
                   label={t('fiche.actionCall', { personality })}
                   icon={<PhoneIcon color={colors.ink600} size={19} />}
                   disabled={phone === null}
-                  onPress={phone !== null ? () => openLink(`tel:${phone.replace(/[^+\d]/g, '')}`) : undefined}
+                  onPress={
+                    phone !== null
+                      ? () => openLink(`tel:${phone.replace(/[^+\d]/g, '')}`)
+                      : undefined
+                  }
                 />
                 <ActionTile
                   label={t('fiche.actionEmail', { personality })}
@@ -805,7 +867,11 @@ export default function ClientDetail() {
                     <Text
                       style={[
                         font('bigNum'),
-                        { fontSize: 19, color: semantic[scoreToneOf(customer.score)], fontVariant: ['tabular-nums'] },
+                        {
+                          fontSize: 19,
+                          color: semantic[scoreToneOf(customer.score)],
+                          fontVariant: ['tabular-nums'],
+                        },
                       ]}
                     >
                       {customer.score}
@@ -817,7 +883,9 @@ export default function ClientDetail() {
                   score={customer.score}
                   accessibilityLabel={t('fiche.scoreTitle', { personality })}
                 />
-                <Text style={[font('meta'), { fontSize: 11.5, color: colors.slate400, marginTop: 9 }]}>
+                <Text
+                  style={[font('meta'), { fontSize: 11.5, color: colors.slate400, marginTop: 9 }]}
+                >
                   {scoreLegend(customer.score, avgDelayDays, personality)}
                 </Text>
               </Card>
@@ -833,7 +901,10 @@ export default function ClientDetail() {
                       {t(compliance.title, { personality })}
                     </Text>
                     <Text
-                      style={[font('meta'), { fontSize: 11.5, color: colors.slate400, lineHeight: 16, marginTop: 3 }]}
+                      style={[
+                        font('meta'),
+                        { fontSize: 11.5, color: colors.slate400, lineHeight: 16, marginTop: 3 },
+                      ]}
                     >
                       {t(compliance.body, { personality })}
                     </Text>
@@ -895,16 +966,26 @@ export default function ClientDetail() {
                           borderBottomColor: colors.lineSoft,
                         }}
                       >
-                        <IconTile tone={chantier.status === 'open' ? 'b2b' : 'success'} size={34} radius={10}>
+                        <IconTile
+                          tone={chantier.status === 'open' ? 'b2b' : 'success'}
+                          size={34}
+                          radius={10}
+                        >
                           <FolderSmallIcon
                             color={chantier.status === 'open' ? semantic.b2b : semantic.success}
                           />
                         </IconTile>
                         <View style={{ flex: 1, minWidth: 0 }}>
-                          <Text style={{ ...font('body', 700), fontSize: 14, color: colors.ink800 }} numberOfLines={1}>
+                          <Text
+                            style={{ ...font('body', 700), fontSize: 14, color: colors.ink800 }}
+                            numberOfLines={1}
+                          >
                             {chantier.name}
                           </Text>
-                          <Text style={[font('meta'), { color: colors.slate400, marginTop: 1 }]} numberOfLines={1}>
+                          <Text
+                            style={[font('meta'), { color: colors.slate400, marginTop: 1 }]}
+                            numberOfLines={1}
+                          >
                             {[
                               chantier.address,
                               t('fiche.chantierOpenedOn', {
@@ -917,9 +998,14 @@ export default function ClientDetail() {
                           </Text>
                         </View>
                         <StatusBadge
-                          label={t(chantier.status === 'open' ? 'fiche.chantierOpen' : 'fiche.chantierClosed', {
-                            personality,
-                          })}
+                          label={t(
+                            chantier.status === 'open'
+                              ? 'fiche.chantierOpen'
+                              : 'fiche.chantierClosed',
+                            {
+                              personality,
+                            },
+                          )}
                           variant={chantier.status === 'open' ? 'b2b' : 'success'}
                         />
                       </View>
@@ -958,7 +1044,10 @@ export default function ClientDetail() {
                           <FileIcon color={semantic.b2b} />
                         </IconTile>
                         <View style={{ flex: 1, minWidth: 0 }}>
-                          <Text style={{ ...font('body', 700), fontSize: 14, color: colors.ink800 }} numberOfLines={1}>
+                          <Text
+                            style={{ ...font('body', 700), fontSize: 14, color: colors.ink800 }}
+                            numberOfLines={1}
+                          >
                             {docItem.filename}
                           </Text>
                           <Text style={[font('meta'), { color: colors.slate400, marginTop: 1 }]}>
@@ -1031,7 +1120,9 @@ export default function ClientDetail() {
               pressed && { transform: [{ scale: 0.98 }] },
             ]}
           >
-            <Text style={[font('button'), { fontSize: 15, color: colors.surface }]}>{cta.label}</Text>
+            <Text style={[font('button'), { fontSize: 15, color: colors.surface }]}>
+              {cta.label}
+            </Text>
             <ChevronRightIcon color={colors.surface} size={14} strokeWidth={2.4} />
           </Pressable>
         </View>

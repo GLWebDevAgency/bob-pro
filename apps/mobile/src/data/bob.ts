@@ -10,8 +10,9 @@ import {
   type SendableQuote,
   type IssuableInvoice,
   type AgentDocument,
+  chantierStatusLabel, customerTypeLabel, documentKindLabel, documentStatusLabel, expenseCategoryLabel, expenseStatusLabel, frDateLabel, invoiceKindLabel, invoiceStatusLabel, quoteStatusLabel,
 } from '@bob/ai';
-import { ok, deriveRelancePlan, type AppError, type Result } from '@bob/core';
+import { ok, deriveRelancePlan, formatEUR, type AppError, type Result } from '@bob/core';
 import { HttpBobClient, type BobClient } from '@bob/api-client';
 
 const PAYABLE = new Set(['issued', 'partially_paid', 'late']);
@@ -42,7 +43,13 @@ function makeServerAssistant(client: BobClient): BobAssistant {
       // Le serveur traite ask() d'un bloc : on affiche honnêtement la phase « je comprends »
       // (pas de phase « j'agis » inventée — le flux de phases fines reste un atout du mode local).
       opts.onPhase?.('comprends');
-      return client.askBob({ message, ...(opts.autonomy !== undefined ? { autonomy: opts.autonomy } : {}) });
+      return client.askBob({
+        message,
+        ...(opts.autonomy !== undefined ? { autonomy: opts.autonomy } : {}),
+        ...(opts.history !== undefined ? { history: opts.history } : {}),
+        ...(opts.tone !== undefined ? { tone: opts.tone } : {}),
+        ...(opts.context !== undefined ? { context: opts.context } : {}),
+      });
     },
     async confirm(pending) {
       return client.confirmBob(pending);
@@ -60,6 +67,138 @@ function makeServerAssistant(client: BobClient): BobAssistant {
 export function makeBobAgent(client: BobClient): BobAssistant {
   if (client instanceof HttpBobClient) return makeServerAssistant(client);
   const actions: BobActions = {
+    async readContextEntity(input) {
+      const notFound = () =>
+        ({
+          ok: false,
+          error: { kind: 'not_found', entity: input.type, id: input.id },
+        }) as const;
+
+      if (input.type === 'invoice') {
+        const [invoices, customers] = await Promise.all([
+          client.listInvoices(),
+          client.listCustomers(),
+        ]);
+        if (!invoices.ok) return invoices;
+        if (!customers.ok) return customers;
+        const invoice = invoices.value.find((candidate) => candidate.id === input.id);
+        if (!invoice) return notFound();
+        const customer = customers.value.find((candidate) => candidate.id === invoice.customerId);
+        const remaining = Math.max(0, invoice.totals.netToPay - invoice.paid);
+        return ok({
+          type: input.type,
+          id: invoice.id,
+          label: invoice.number ? `Facture ${invoice.number}` : 'Facture brouillon',
+          facts: [
+            { label: 'Statut', value: invoiceStatusLabel(invoice.status) },
+            { label: 'Type', value: invoiceKindLabel(invoice.kind) },
+            ...(customer ? [{ label: 'Client', value: customer.name }] : []),
+            { label: 'Total TTC', value: formatEUR(invoice.totals.ttc) },
+            { label: 'Reste dû', value: formatEUR(remaining) },
+            ...(invoice.dueAt ? [{ label: 'Échéance', value: frDateLabel(invoice.dueAt) }] : []),
+          ],
+        });
+      }
+
+      if (input.type === 'quote') {
+        const [quotes, customers] = await Promise.all([
+          client.listQuotes(),
+          client.listCustomers(),
+        ]);
+        if (!quotes.ok) return quotes;
+        if (!customers.ok) return customers;
+        const quote = quotes.value.find((candidate) => candidate.id === input.id);
+        if (!quote) return notFound();
+        const customer = customers.value.find((candidate) => candidate.id === quote.customerId);
+        return ok({
+          type: input.type,
+          id: quote.id,
+          label: quote.number ? `Devis ${quote.number}` : 'Devis brouillon',
+          facts: [
+            { label: 'Statut', value: quoteStatusLabel(quote.status) },
+            ...(customer ? [{ label: 'Client', value: customer.name }] : []),
+            { label: 'Total TTC', value: formatEUR(quote.totals.ttc) },
+            { label: 'Lignes', value: String(quote.lines.length) },
+            ...(quote.depositPct !== null
+              ? [{ label: 'Acompte', value: `${quote.depositPct} %` }]
+              : []),
+          ],
+        });
+      }
+
+      if (input.type === 'customer') {
+        const customers = await client.listCustomers();
+        if (!customers.ok) return customers;
+        const customer = customers.value.find((candidate) => candidate.id === input.id);
+        if (!customer) return notFound();
+        return ok({
+          type: input.type,
+          id: customer.id,
+          label: customer.name,
+          facts: [
+            { label: 'Type', value: customerTypeLabel(customer.type) },
+            { label: 'Encours', value: formatEUR(customer.outstanding) },
+            { label: 'Délai moyen', value: `${customer.avgDelayDays} jours` },
+            { label: 'Score', value: `${customer.score}/100` },
+          ],
+        });
+      }
+
+      if (input.type === 'expense') {
+        const expenses = await client.listExpenses();
+        if (!expenses.ok) return expenses;
+        const expense = expenses.value.find((candidate) => candidate.id === input.id);
+        if (!expense) return notFound();
+        return ok({
+          type: input.type,
+          id: expense.id,
+          label: expense.supplierName,
+          facts: [
+            { label: 'Statut', value: expenseStatusLabel(expense.status) },
+            { label: 'Catégorie', value: expenseCategoryLabel(expense.category) },
+            { label: 'Total TTC', value: formatEUR(expense.totalTtcCents) },
+            { label: 'Date', value: frDateLabel(expense.documentDate) },
+          ],
+        });
+      }
+
+      if (input.type === 'document') {
+        const documents = await client.listDocuments();
+        if (!documents.ok) return documents;
+        const document = documents.value.find((candidate) => candidate.id === input.id);
+        if (!document) return notFound();
+        return ok({
+          type: input.type,
+          id: document.id,
+          label: document.filename,
+          facts: [
+            { label: 'Type', value: documentKindLabel(document.kind) },
+            { label: 'Statut', value: documentStatusLabel(document.status) },
+            { label: 'Version', value: String(document.version) },
+            ...(document.documentDate ? [{ label: 'Date', value: frDateLabel(document.documentDate) }] : []),
+          ],
+        });
+      }
+
+      if (input.type === 'chantier') {
+        const chantiers = await client.listChantiers();
+        if (!chantiers.ok) return chantiers;
+        const chantier = chantiers.value.find((candidate) => candidate.id === input.id);
+        if (!chantier) return notFound();
+        return ok({
+          type: input.type,
+          id: chantier.id,
+          label: chantier.name,
+          facts: [
+            { label: 'Statut', value: chantierStatusLabel(chantier.status) },
+            { label: 'Ouvert le', value: frDateLabel(chantier.openedAt) },
+            ...(chantier.address ? [{ label: 'Adresse', value: chantier.address }] : []),
+          ],
+        });
+      }
+
+      return notFound();
+    },
     async computePayout() {
       const r = await client.getCashflow({ scenario: 'realiste', horizon: 30 });
       if (!r.ok) return r;
@@ -73,7 +212,11 @@ export function makeBobAgent(client: BobClient): BobAssistant {
       const [inv, cust] = await Promise.all([client.listInvoices(), client.listCustomers()]);
       if (!inv.ok) return inv;
       if (!cust.ok) return cust;
-      const plan = deriveRelancePlan({ invoices: inv.value, customers: cust.value, today: localDateOnly() });
+      const plan = deriveRelancePlan({
+        invoices: inv.value,
+        customers: cust.value,
+        today: localDateOnly(),
+      });
       const entry = input?.invoiceId
         ? plan.find((e) => e.invoiceId === input.invoiceId)
         : input?.customerId
@@ -82,8 +225,14 @@ export function makeBobAgent(client: BobClient): BobAssistant {
       if (!entry) {
         return ok(
           input?.invoiceId || input?.customerId
-            ? { subject: 'Rien à relancer pour cette cible', body: 'Aucun retard sur cette cible — facture réglée ou pas encore échue. Je ne relance pas pour rien.' }
-            : { subject: 'Rien à relancer', body: 'Aucune facture en retard — tout est réglé ou dans les temps. 🎉' },
+            ? {
+                subject: 'Rien à relancer pour cette cible',
+                body: 'Aucun retard sur cette cible — facture réglée ou pas encore échue. Je ne relance pas pour rien.',
+              }
+            : {
+                subject: 'Rien à relancer',
+                body: 'Aucune facture en retard — tout est réglé ou dans les temps. 🎉',
+              },
         );
       }
       return ok({ subject: entry.message.subject, body: entry.message.body });
@@ -136,20 +285,31 @@ export function makeBobAgent(client: BobClient): BobAssistant {
     // ASK-2 : devis SIGNÉS facturables — mêmes listes client que l'UI ; un devis sort
     // dès que sa finale existe ; l'acompte déjà émis rend la finale évidente (pas de question).
     async listInvoiceableQuotes() {
-      const [q, inv, cust] = await Promise.all([client.listQuotes(), client.listInvoices(), client.listCustomers()]);
+      const [q, inv, cust] = await Promise.all([
+        client.listQuotes(),
+        client.listInvoices(),
+        client.listCustomers(),
+      ]);
       if (!q.ok) return q;
       if (!inv.ok) return inv;
       const names = new Map((cust.ok ? cust.value : []).map((c) => [c.id, c.name]));
       const quotes: InvoiceableQuote[] = q.value
         .filter((x) => x.status === 'signed')
-        .filter((x) => !inv.value.some((i) => i.parentQuoteId === x.id && i.kind === 'final' && i.status !== 'cancelled'))
+        .filter(
+          (x) =>
+            !inv.value.some(
+              (i) => i.parentQuoteId === x.id && i.kind === 'final' && i.status !== 'cancelled',
+            ),
+        )
         .map((x) => ({
           id: x.id,
           number: x.number,
           customerName: names.get(x.customerId) ?? 'Client',
           totalTtcCents: x.totals.ttc,
           depositPct: x.depositPct,
-          depositInvoiced: inv.value.some((i) => i.parentQuoteId === x.id && i.kind === 'deposit' && i.status !== 'cancelled'),
+          depositInvoiced: inv.value.some(
+            (i) => i.parentQuoteId === x.id && i.kind === 'deposit' && i.status !== 'cancelled',
+          ),
         }));
       return ok(quotes);
     },
@@ -171,7 +331,9 @@ export function makeBobAgent(client: BobClient): BobAssistant {
         invoiceId: input.invoiceId,
         amount: input.amountCents,
         method: 'transfer',
-        idempotencyKey: input.idempotencyKey ?? `mobile-bob:payment:${input.invoiceId}:${input.amountCents}:transfer`,
+        idempotencyKey:
+          input.idempotencyKey ??
+          `mobile-bob:payment:${input.invoiceId}:${input.amountCents}:transfer`,
       });
     },
     async sendQuote(input) {
@@ -204,7 +366,10 @@ export function makeBobAgent(client: BobClient): BobAssistant {
     },
     // —— Parité C15 TODO ⑤ (C40) : outil generer_facture — même use case GenerateInvoiceFromQuote ——
     async generateInvoice(input) {
-      return client.generateInvoice({ quoteId: input.quoteId, ...(input.mode !== undefined ? { mode: input.mode } : {}) });
+      return client.generateInvoice({
+        quoteId: input.quoteId,
+        ...(input.mode !== undefined ? { mode: input.mode } : {}),
+      });
     },
     // —— Parité C15 TODO ⑥ (C40) : outil export_fec — même use case ExportFec que l'écran compta
     // (l'agent reçoit le RÉSUMÉ ; le téléchargement/partage du fichier reste un geste d'écran) ——
@@ -236,8 +401,15 @@ export function makeBobAgent(client: BobClient): BobAssistant {
     async sendRelance(input) {
       const r = await client.sendRelance(input.invoiceId);
       if (!r.ok) return r;
-      return ok({ jobId: r.value.jobId, status: r.value.status, ...(r.value.tone !== undefined ? { tone: r.value.tone } : {}) });
+      return ok({
+        jobId: r.value.jobId,
+        status: r.value.status,
+        ...(r.value.tone !== undefined ? { tone: r.value.tone } : {}),
+      });
     },
   };
-  return new BobAgent({ router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }), actions });
+  return new BobAgent({
+    router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }),
+    actions,
+  });
 }

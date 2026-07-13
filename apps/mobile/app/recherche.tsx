@@ -18,6 +18,7 @@ import { Card, IconTile, SectionHeader, font, useTheme, type StatusBadgeVariant 
 import { useCustomers, useInvoices, useQuotes } from '../src/data/hooks';
 import { useDocuments } from '../src/data/documents';
 import { useBobClient } from '../src/data/client';
+import { usePublishAgentContext, type AgentContext } from '../src/agent';
 import {
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -71,7 +72,10 @@ function ResultRow({
     >
       {tile}
       <View style={{ flex: 1, minWidth: 0 }}>
-        <Text style={{ ...font('body', 700), fontSize: 14, color: colors.ink800 }} numberOfLines={1}>
+        <Text
+          style={{ ...font('body', 700), fontSize: 14, color: colors.ink800 }}
+          numberOfLines={1}
+        >
           {title}
         </Text>
         <Text style={[font('meta'), { color: colors.slate400, marginTop: 1 }]} numberOfLines={1}>
@@ -108,6 +112,33 @@ export default function Recherche() {
       }),
     [trimmed, customers.data, invoices.data, quotes.data, documents.data],
   );
+  const agentContext = useMemo<AgentContext>(
+    () => ({
+      screen: { name: '/recherche', instanceId: '/recherche' },
+      entities: trimmed
+        ? [
+            ...result.customers.slice(0, 6).map((customer) => ({
+              type: 'customer' as const,
+              id: customer.id,
+              label: customer.name,
+            })),
+            ...result.pieces.slice(0, 6).map((piece) => ({
+              type: piece.source as 'quote' | 'invoice',
+              id: piece.id,
+              label: piece.number ?? (piece.source === 'invoice' ? 'Facture brouillon' : 'Devis brouillon'),
+            })),
+            ...result.documents.slice(0, 4).map((document) => ({
+              type: 'document' as const,
+              id: document.id,
+              label: document.filename,
+            })),
+          ]
+        : [],
+      capabilities: ['screen.read', 'search.read', 'invoice.read', 'quote.read', 'customer.read'],
+    }),
+    [result, trimmed],
+  );
+  usePublishAgentContext(agentContext);
 
   const openDocument = async (id: string): Promise<void> => {
     const r = await client.documentDownloadUrl(id);
@@ -139,7 +170,13 @@ export default function Recherche() {
             accessibilityLabel={t('search.back', { personality })}
             onPress={() => router.back()}
             hitSlop={8}
-            style={{ flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'flex-start', minHeight: 34 }}
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 4,
+              alignSelf: 'flex-start',
+              minHeight: 34,
+            }}
           >
             <ChevronLeftIcon color={colors.ink800} size={18} strokeWidth={2.2} />
             <Text style={[font('label', 600), { fontSize: 15, color: colors.ink800 }]}>
@@ -149,8 +186,13 @@ export default function Recherche() {
         </View>
 
         <View style={{ paddingTop: 2, paddingHorizontal: 20, paddingBottom: 4 }}>
-          <Text style={[font('eyebrow'), { color: colors.slate400 }]}>{t('search.eyebrow', { personality })}</Text>
-          <Text style={[font('pageTitle'), { color: colors.ink800, marginTop: 2 }]} accessibilityRole="header">
+          <Text style={[font('eyebrow'), { color: colors.slate400 }]}>
+            {t('search.eyebrow', { personality })}
+          </Text>
+          <Text
+            style={[font('pageTitle'), { color: colors.ink800, marginTop: 2 }]}
+            accessibilityRole="header"
+          >
             {t('search.title', { personality })}
           </Text>
           <Text style={[font('body'), { color: colors.slate500, marginTop: 3 }]}>
@@ -210,7 +252,11 @@ export default function Recherche() {
               <View style={{ paddingHorizontal: 18, paddingTop: 18 }}>
                 <SectionHeader
                   title={t('search.sectionClients', { personality })}
-                  action={<Text style={[font('label'), { color: colors.slate400 }]}>{result.customers.length}</Text>}
+                  action={
+                    <Text style={[font('label'), { color: colors.slate400 }]}>
+                      {result.customers.length}
+                    </Text>
+                  }
                 />
                 <Card radius={18} padding={0} style={{ paddingHorizontal: 14 }}>
                   {result.customers.map((c, i) => (
@@ -220,7 +266,11 @@ export default function Recherche() {
                         <IconTile tone={TYPE_TONE[c.type]} size={34} radius={10}>
                           <PeopleIcon
                             color={
-                              c.type === 'b2b' ? semantic.b2b : c.type === 'b2g' ? semantic.b2g : semantic.particulier
+                              c.type === 'b2b'
+                                ? semantic.b2b
+                                : c.type === 'b2g'
+                                  ? semantic.b2g
+                                  : semantic.particulier
                             }
                             size={17}
                             strokeWidth={2}
@@ -229,7 +279,11 @@ export default function Recherche() {
                       }
                       title={c.name}
                       meta={t(
-                        c.type === 'b2b' ? 'piece.typeB2b' : c.type === 'b2g' ? 'piece.typeB2g' : 'piece.typeB2c',
+                        c.type === 'b2b'
+                          ? 'piece.typeB2b'
+                          : c.type === 'b2g'
+                            ? 'piece.typeB2g'
+                            : 'piece.typeB2c',
                         { personality },
                       )}
                       divider={i < result.customers.length - 1}
@@ -244,7 +298,11 @@ export default function Recherche() {
               <View style={{ paddingHorizontal: 18, paddingTop: 18 }}>
                 <SectionHeader
                   title={t('search.sectionPieces', { personality })}
-                  action={<Text style={[font('label'), { color: colors.slate400 }]}>{result.pieces.length}</Text>}
+                  action={
+                    <Text style={[font('label'), { color: colors.slate400 }]}>
+                      {result.pieces.length}
+                    </Text>
+                  }
                 />
                 <Card radius={18} padding={0} style={{ paddingHorizontal: 14 }}>
                   {result.pieces.map((p, i) => (
@@ -258,12 +316,20 @@ export default function Recherche() {
                       title={p.number ?? t('search.draftNumber', { personality })}
                       meta={p.customerName}
                       trailing={
-                        <Text style={{ ...font('sub', 700), color: colors.ink800, fontVariant: ['tabular-nums'] }}>
+                        <Text
+                          style={{
+                            ...font('sub', 700),
+                            color: colors.ink800,
+                            fontVariant: ['tabular-nums'],
+                          }}
+                        >
                           {formatEUR(p.amountCents)}
                         </Text>
                       }
                       divider={i < result.pieces.length - 1}
-                      onPress={() => router.push(p.source === 'invoice' ? `/facture/${p.id}` : `/devis/${p.id}`)}
+                      onPress={() =>
+                        router.push(p.source === 'invoice' ? `/facture/${p.id}` : `/devis/${p.id}`)
+                      }
                     />
                   ))}
                 </Card>
@@ -274,7 +340,11 @@ export default function Recherche() {
               <View style={{ paddingHorizontal: 18, paddingTop: 18 }}>
                 <SectionHeader
                   title={t('search.sectionDocs', { personality })}
-                  action={<Text style={[font('label'), { color: colors.slate400 }]}>{result.documents.length}</Text>}
+                  action={
+                    <Text style={[font('label'), { color: colors.slate400 }]}>
+                      {result.documents.length}
+                    </Text>
+                  }
                 />
                 <Card radius={18} padding={0} style={{ paddingHorizontal: 14 }}>
                   {result.documents.map((d, i) => (
@@ -294,7 +364,6 @@ export default function Recherche() {
                 </Card>
               </View>
             ) : null}
-
           </>
         )}
       </ScrollView>
