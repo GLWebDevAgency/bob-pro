@@ -2920,3 +2920,14 @@ cerveau générique ; parsing pur @bob/core (deriveVoiceInvoiceDraft réutilisé
 catalogue déjà codés). Aucune dépendance au PONT-VOCAL serveur (état local + validations
 visibles ; la création finale garde sa confirmation existante). V1 : devis/new. Puis facture,
 client, catalogue.
+
+- [2026-07-13 17:20] FONDATEUR → sessions B+C : MANDAT « BOB LIVE » — autonomie TOTALE jusqu'à
+  la fin de la roadmap (validation fondateur À LA FIN seulement), toutes autorisations env/
+  secrets/prod. But : fluidité ChatGPT Live/Gemini Live (streaming temps réel via serveur,
+  interruption naturelle, latence mesurée). SPEC posée : design_handoff_bob_pro/SPEC_BOB_LIVE.md
+  (cibles p50/p95, archi 3 étages, phases P0-P5, répartition Claude/GPT, invariants).
+  Par ailleurs session B a corrigé les 6 P1 de la contre-review finale GPT (greeting en file
+  jamais perdu, tours ASR sérialisés, confirmLine prioritaire + retour canonique, rejet de
+  préparation + TVA annoncée honnêtement, prix unitaire explicite > « pour », total indivisible
+  → clarification jamais substitution catalogue, négation client) — core 765/765, ai 248/248,
+  tsc+eslint verts.
