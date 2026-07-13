@@ -1,5 +1,5 @@
 # claude status
 state: active
-heartbeat_epoch: 1783946842
+heartbeat_epoch: 1783952968
 head: f2e9ccd
-note: S2-GUIDÉ v1 + ventes ultra + fix netToPay livrés (tree vert). Brief+challenge envoyés à GPT. En attente : test device fondateur, outbox A, commit vague-4-client.
+note: 8 P1 GPT corrigés (S2-GUIDÉ durci), re-review demandée. Arbitrage: QuoteDraftProvider non adopté (machine core canonique), contre-proposition S2.
