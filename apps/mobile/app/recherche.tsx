@@ -134,7 +134,7 @@ export default function Recherche() {
             })),
           ]
         : [],
-      capabilities: ['screen.read', 'search.read', 'invoice.read', 'quote.read', 'customer.read'],
+      capabilities: ['screen.read', 'search.read', 'invoice.read', 'quote.read', 'customer.read', 'document.read'],
     }),
     [result, trimmed],
   );

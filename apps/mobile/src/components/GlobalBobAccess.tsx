@@ -149,7 +149,7 @@ export function GlobalBobAccess() {
           <Text style={[font('sub'), { color: colors.ink800, lineHeight: 19 }]} numberOfLines={4}>
             {session.response ?? stateLabel}
           </Text>
-          {session.reviewRequired ? (
+          {session.reviewRequired && session.handoff !== null ? (
             <>
               <Text style={[font('meta'), { color: semantic.warning, marginTop: 6 }]}>
                 {t('agent.global.reviewRequired', { personality })}
@@ -159,16 +159,13 @@ export function GlobalBobAccess() {
                 accessibilityLabel={t('agent.global.continueInAssistant', { personality })}
                 hitSlop={8}
                 onPress={() => {
-                  // La demande est REJOUÉE dans le fil complet de l'Assistant (?prompt= la
-                  // soumet une fois) : boutons Valider/Annuler, diff et questions structurées
-                  // y existent — l'overlay S1 reste lecture seule.
-                  const message = session.transcript;
-                  session.dismissResponse();
-                  router.push(
-                    message
-                      ? { pathname: '/(tabs)/assistant', params: { prompt: message } }
-                      : '/(tabs)/assistant',
-                  );
+                  // Le run, sa proposition opaque, son contexte et son historique restent dans
+                  // le provider mémoire. Rien de sensible n'entre dans l'URL et la commande
+                  // anaphorique n'est jamais rejouée depuis zéro.
+                  const handoff = session.handoff;
+                  if (handoff === null) return;
+                  session.requestHandoff(handoff.id);
+                  router.push('/(tabs)/assistant');
                 }}
                 style={{ marginTop: 8, alignSelf: 'flex-start' }}
               >

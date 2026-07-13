@@ -20,7 +20,7 @@
  */
 import { useMemo, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { Linking, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
+import { KeyboardAvoidingView, Linking, Pressable, RefreshControl, ScrollView, Text, TextInput, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Feather } from '@expo/vector-icons';
@@ -30,11 +30,13 @@ import {
   formatEURWhole,
   searchVault,
   summarizeExpenses,
+  validateDocumentFolderName,
   type VaultDocumentData,
   type VaultFolderKey,
   type VaultPendingDoc,
   type VaultRecentInvoice,
   type VaultView,
+  type DocumentFolderView,
 } from '@bob/core';
 import { conformityCard, shadowComponentsNative, shadowNative, vault, vaultShadowNative } from '@bob/tokens';
 import { t, type Personality } from '@bob/i18n';
@@ -42,7 +44,7 @@ import { Button, Card, IconTile, InnerScreenHeader, Sheet, Toast, font, parseGra
 import { useBobClient } from '../../src/data/client';
 import { shareFec } from '../../src/lib/share-fec';
 import { useChantiers, useCustomers, useExpenses, useExportFec, useInvoices } from '../../src/data/hooks';
-import { useDocuments } from '../../src/data/documents';
+import { useCreateDocumentFolder, useDocumentFolders, useDocuments } from '../../src/data/documents';
 import { usePublishAgentContext, type AgentContext } from '../../src/agent';
 import {
   ChartIcon,
@@ -103,15 +105,6 @@ function useFolderTints(): Record<VaultFolderKey, { tint: string; bg: string }> 
     comptable: { tint: semantic.success, bg: semantic.successBg },
   };
 }
-
-const FOLDER_LABEL_KEY: Record<VaultFolderKey, 'docs.folderChantiers' | 'docs.folderAchats' | 'docs.folderAssurances' | 'docs.folderFiscal' | 'docs.folderBanque' | 'docs.folderComptable'> = {
-  chantiers: 'docs.folderChantiers',
-  achats: 'docs.folderAchats',
-  assurances: 'docs.folderAssurances',
-  fiscal: 'docs.folderFiscal',
-  banque: 'docs.folderBanque',
-  comptable: 'docs.folderComptable',
-};
 
 const KIND_LABEL_KEY = {
   deposit: 'docs.kindDeposit',
@@ -292,6 +285,8 @@ export default function Documents() {
   const router = useRouter();
   const client = useBobClient();
   const documents = useDocuments();
+  const documentFolders = useDocumentFolders(null);
+  const createRootFolder = useCreateDocumentFolder();
   const expenses = useExpenses();
   const invoices = useInvoices();
   const customers = useCustomers();
@@ -302,6 +297,9 @@ export default function Documents() {
   const [toast, setToast] = useState<string | null>(null);
   // A8 : doc en cours de classement manuel (Sheet des destinations réelles).
   const [pickerDoc, setPickerDoc] = useState<VaultPendingDoc | null>(null);
+  const [rootFolderEditorOpen, setRootFolderEditorOpen] = useState(false);
+  const [rootFolderName, setRootFolderName] = useState('');
+  const [rootFolderError, setRootFolderError] = useState<string | null>(null);
   const chantiers = useChantiers();
   const openChantiers = useMemo(
     () => (chantiers.data ?? []).filter((c) => c.status === 'open'),
@@ -332,10 +330,29 @@ export default function Documents() {
       linkedEntityId: string;
       toast: string;
     }) => {
+      const document = documents.data?.find((candidate) => candidate.id === input.documentId);
+      if (!document) throw new Error('Document indisponible.');
+      let expectedRevision = document.revision;
+      // Le lien métier et le rangement sont deux axes distincts. Pour qu'un « Classer là » ne
+      // fasse jamais disparaître un original encore sans dossier, on déplace d'abord vers le
+      // dossier système cohérent. Si le rattachement échoue ensuite, le document reste visible.
+      if (document.folderId === null) {
+        const systemKey = input.linkedEntityType === 'expense' ? 'purchases' : 'projects';
+        const target = documentFolders.data?.find((folder) => folder.systemKey === systemKey);
+        if (!target) throw new Error('Dossier de destination indisponible.');
+        const moved = await client.moveDocumentToFolder({
+          documentId: document.id,
+          folderId: target.id,
+          expectedRevision: document.revision,
+        });
+        if (!moved.ok) throw moved.error;
+        expectedRevision = moved.value.revision;
+      }
       const r = await client.classifyDocument({
         documentId: input.documentId,
         linkedEntityType: input.linkedEntityType,
         linkedEntityId: input.linkedEntityId,
+        expectedRevision,
       });
       if (!r.ok) throw r.error;
       return input;
@@ -349,21 +366,70 @@ export default function Documents() {
     onError: () => setToast(t('docs.classifyError', { personality })),
   });
 
-
   const cta = parseGradient(grad.cta);
   const folderTints = useFolderTints();
 
-  const isLoading = documents.isLoading || expenses.isLoading || invoices.isLoading || customers.isLoading;
-  const hasError = documents.isError || expenses.isError || invoices.isError || customers.isError;
+  const isLoading = documents.isLoading || documentFolders.isLoading;
+  const hasError = documents.isError || documentFolders.isError;
+  const secondaryError = expenses.isError || invoices.isError || customers.isError;
+  const refreshing = documents.isRefetching
+    || documentFolders.isRefetching
+    || expenses.isRefetching
+    || invoices.isRefetching
+    || customers.isRefetching
+    || chantiers.isRefetching;
+  const refreshAll = (): void => {
+    void Promise.all([
+      documents.refetch(),
+      documentFolders.refetch(),
+      expenses.refetch(),
+      invoices.refetch(),
+      customers.refetch(),
+      chantiers.refetch(),
+    ]);
+  };
+
+  const openRootFolderEditor = (): void => {
+    setRootFolderName('');
+    setRootFolderError(null);
+    setRootFolderEditorOpen(true);
+  };
+
+  const closeRootFolderEditor = (): void => {
+    if (createRootFolder.isPending) return;
+    setRootFolderEditorOpen(false);
+    setRootFolderError(null);
+  };
+
+  const submitRootFolder = (): void => {
+    if (createRootFolder.isPending) return;
+    const validated = validateDocumentFolderName(rootFolderName);
+    if (!validated.ok) {
+      setRootFolderError(t('docs.folderCreateInvalid', { personality }));
+      return;
+    }
+    setRootFolderError(null);
+    createRootFolder.mutate(
+      { name: validated.value.name, parentId: null },
+      {
+        onSuccess: (folder) => {
+          setRootFolderEditorOpen(false);
+          setRootFolderName('');
+          setToast(t('docs.folderCreateSuccess', { personality, params: { name: folder.name } }));
+        },
+        onError: () => setRootFolderError(t('docs.folderCreateError', { personality })),
+      },
+    );
+  };
 
   // Projections structurelles : DocumentView/ExpenseProps/InvoiceView/CustomerListItem ⊇ Vault*Data.
   const view: VaultView | null = useMemo(() => {
-    if (!documents.data || !expenses.data || !invoices.data || !customers.data) return null;
+    if (!documents.data) return null;
     return deriveVaultView({
       documents: documents.data,
-      expenses: expenses.data,
-      invoices: invoices.data,
-      customers: customers.data,
+      expenses: expenses.data ?? [],
+      invoices: invoices.data ?? [],
+      customers: customers.data ?? [],
       today: todayISO(),
     });
   }, [documents.data, expenses.data, invoices.data, customers.data]);
@@ -449,9 +515,32 @@ export default function Documents() {
   const searching = trimmedQuery.length > 0;
   const empty = view !== null && view.totalCount === 0 && view.toValidate.length === 0;
 
+  const rootFolders = documentFolders.data ?? [];
+  const folderCount = (folderId: string): number =>
+    (documents.data ?? []).filter((document) => document.status === 'active' && document.folderId === folderId).length;
+  const folderTint = (folder: DocumentFolderView): { tint: string; bg: string } => {
+    const legacyKey: VaultFolderKey =
+      folder.systemKey === 'projects'
+        ? 'chantiers'
+        : folder.systemKey === 'purchases'
+          ? 'achats'
+          : folder.systemKey === 'insurance'
+            ? 'assurances'
+            : folder.systemKey === 'tax_social'
+              ? 'fiscal'
+              : folder.systemKey === 'bank'
+                ? 'banque'
+                : 'comptable';
+    return folderTints[legacyKey];
+  };
+
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 140 }}>
+      <ScrollView
+        style={{ flex: 1 }}
+        contentContainerStyle={{ paddingBottom: 140 }}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refreshAll} tintColor={colors.ink800} />}
+      >
         <InnerScreenHeader
           eyebrow={t('docs.eyebrow', { personality })}
           title={t('docs.title', { personality })}
@@ -532,12 +621,22 @@ export default function Documents() {
           </LinearGradient>
         </Pressable>
 
+        {secondaryError && !hasError ? (
+          <View style={{ paddingHorizontal: 18, paddingTop: 14 }}>
+            <Card>
+              <Text accessibilityRole="alert" style={[font('sub'), { color: colors.slate500, lineHeight: 19 }]}>Le coffre reste disponible, mais certaines synthèses comptables n’ont pas pu être actualisées.</Text>
+              <Button title="Réessayer les synthèses" variant="secondary" onPress={refreshAll} />
+            </Card>
+          </View>
+        ) : null}
+
         {hasError ? (
           <View style={{ paddingHorizontal: 18, paddingTop: 20 }}>
             <Card>
               <Text style={[font('sub'), { color: colors.slate500 }]}>
                 {t('docs.dataError', { personality })}
               </Text>
+              <Button title="Réessayer" variant="secondary" onPress={refreshAll} />
             </Card>
           </View>
         ) : isLoading ? (
@@ -657,17 +756,48 @@ export default function Documents() {
                   </Text>
                 </Card>
               </View>
-            ) : (
-              /* Tes dossiers — 6 dossiers du proto, counts dérivés réels */
-              <View style={{ paddingHorizontal: 18, paddingTop: 20 }}>
-                <Text style={[font('cardTitle'), { color: colors.ink800, marginBottom: 12 }]} accessibilityRole="header">
+            ) : null}
+
+            {/* Dossiers persistés : navigation réelle, identité stable, sous-dossiers côté détail. */}
+            <View style={{ paddingHorizontal: 18, paddingTop: 20 }}>
+              <View style={{ minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 8 }}>
+                <Text style={[font('cardTitle'), { color: colors.ink800, flex: 1 }]} accessibilityRole="header">
                   {t('docs.sectionFolders', { personality })}
                 </Text>
-                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 11 }}>
-                  {view.folders.map((folder) => (
-                    <View
-                      key={folder.key}
-                      style={{
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={t('docs.folderCreateCta', { personality })}
+                  onPress={openRootFolderEditor}
+                  hitSlop={6}
+                  style={({ pressed }) => ({
+                    minHeight: 44,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 5,
+                    paddingHorizontal: 8,
+                    opacity: pressed ? 0.72 : 1,
+                  })}
+                >
+                  <Feather name="plus" size={16} color={semantic.b2b} />
+                  <Text style={{ ...font('meta', 700), color: semantic.b2b }}>
+                    {t('docs.folderCreateCta', { personality })}
+                  </Text>
+                </Pressable>
+              </View>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 11 }}>
+                {rootFolders.map((folder) => {
+                  const count = folderCount(folder.id);
+                  const tint = folderTint(folder);
+                  return (
+                    <Pressable
+                      key={folder.id}
+                      accessibilityRole="button"
+                      accessibilityLabel={`${folder.name}, ${count} document${count > 1 ? 's' : ''}`}
+                      accessibilityHint="Ouvre ce dossier. Un appui long affiche les options."
+                      onPress={() => router.push(`/documents/folder/${folder.id}`)}
+                      onLongPress={() => router.push({ pathname: '/documents/folder/[id]', params: { id: folder.id, manage: '1' } })}
+                      delayLongPress={450}
+                      style={({ pressed }) => ({
                         flexBasis: '47%',
                         flexGrow: 1,
                         backgroundColor: colors.surface,
@@ -675,37 +805,39 @@ export default function Documents() {
                         borderWidth: 1,
                         borderColor: controls.cardBorder,
                         padding: 14,
+                        opacity: pressed ? 0.82 : 1,
+                        transform: [{ scale: pressed ? 0.98 : 1 }],
                         ...shadowNative.e1,
-                      }}
+                      })}
                     >
                       <View
                         style={{
                           width: 36,
                           height: 36,
                           borderRadius: 11,
-                          backgroundColor: folderTints[folder.key].bg,
+                          backgroundColor: tint.bg,
                           alignItems: 'center',
                           justifyContent: 'center',
                           marginBottom: 10,
                         }}
                       >
-                        <FolderSmallIcon color={folderTints[folder.key].tint} />
+                        <FolderSmallIcon color={tint.tint} />
                       </View>
-                      <Text style={{ ...font('body', 600), fontSize: 14, color: colors.ink800 }}>
-                        {t(FOLDER_LABEL_KEY[folder.key], { personality })}
+                      <Text style={{ ...font('body', 600), fontSize: 14, color: colors.ink800 }} numberOfLines={1}>
+                        {folder.name}
                       </Text>
                       <Text style={{ ...font('meta', 500), color: colors.slate300, marginTop: 1 }}>
-                        {folder.count === 0
+                        {count === 0
                           ? t('docs.folderCountNone', { personality })
-                          : folder.count === 1
+                          : count === 1
                             ? t('docs.folderCountOne', { personality })
-                            : t('docs.folderCount', { personality, params: { count: folder.count } })}
+                            : t('docs.folderCount', { personality, params: { count } })}
                       </Text>
-                    </View>
-                  ))}
-                </View>
+                    </Pressable>
+                  );
+                })}
               </View>
-            )}
+            </View>
 
             {/* Compta & conformité */}
             <View style={{ paddingHorizontal: 18, paddingTop: 20 }}>
@@ -989,6 +1121,75 @@ export default function Documents() {
           </>
         ) : null}
       </ScrollView>
+
+      <Sheet visible={rootFolderEditorOpen} onClose={closeRootFolderEditor}>
+        <KeyboardAvoidingView {...(process.env.EXPO_OS === 'ios' ? { behavior: 'padding' as const } : {})}>
+          <Text style={[font('pageTitle'), { fontSize: 20, color: colors.ink900 }]} accessibilityRole="header">
+            {t('docs.folderCreateTitle', { personality })}
+          </Text>
+          <Text style={[font('sub'), { color: colors.slate500, lineHeight: 19, marginTop: 4 }]}>
+            {t('docs.folderCreateBody', { personality })}
+          </Text>
+          <Text style={[font('label', 700), { color: colors.slate400, fontSize: 12, marginTop: 16 }]}>
+            {t('docs.folderCreateName', { personality }).toUpperCase()}
+          </Text>
+          <TextInput
+            autoFocus
+            value={rootFolderName}
+            editable={!createRootFolder.isPending}
+            maxLength={80}
+            autoCapitalize="sentences"
+            autoCorrect
+            returnKeyType="done"
+            onSubmitEditing={submitRootFolder}
+            onChangeText={(name) => {
+              setRootFolderName(name);
+              setRootFolderError(null);
+            }}
+            accessibilityLabel={t('docs.folderCreateName', { personality })}
+            accessibilityHint={t('docs.folderCreateHint', { personality })}
+            placeholder={t('docs.folderCreatePlaceholder', { personality })}
+            placeholderTextColor={colors.slate300}
+            style={[
+              font('body'),
+              {
+                minHeight: 46,
+                marginTop: 7,
+                borderWidth: 1,
+                borderColor: rootFolderError ? semantic.danger : colors.lineSoft,
+                borderRadius: 12,
+                paddingVertical: 11,
+                paddingHorizontal: 13,
+                color: colors.ink800,
+              },
+            ]}
+          />
+          <Text style={[font('meta'), { color: colors.slate300, textAlign: 'right', marginTop: 4, fontVariant: ['tabular-nums'] }]}>
+            {rootFolderName.length}/80
+          </Text>
+          {rootFolderError ? (
+            <Text accessibilityRole="alert" style={[font('sub'), { color: semantic.danger, lineHeight: 19, marginTop: 8 }]}>
+              {rootFolderError}
+            </Text>
+          ) : null}
+          <View style={{ flexDirection: 'row', gap: 10, marginTop: 18 }}>
+            <Button
+              title={t('docs.folderCreateCancel', { personality })}
+              variant="secondary"
+              style={{ flex: 1 }}
+              disabled={createRootFolder.isPending}
+              onPress={closeRootFolderEditor}
+            />
+            <Button
+              title={t('docs.folderCreateSubmit', { personality })}
+              style={{ flex: 1 }}
+              loading={createRootFolder.isPending}
+              disabled={createRootFolder.isPending || rootFolderName.trim().length === 0}
+              onPress={submitRootFolder}
+            />
+          </View>
+        </KeyboardAvoidingView>
+      </Sheet>
 
       {/* A8 : Sheet des destinations RÉELLES — proposition IA en tête, puis chantiers ouverts. */}
       <Sheet visible={pickerDoc !== null} onClose={() => setPickerDoc(null)}>

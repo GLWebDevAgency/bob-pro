@@ -54,6 +54,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import {
   buildActionDiff,
   echoOverlap,
+  isAllowedAgentNavigationRoute,
   parseBargeIn,
   speechWordCount,
   parseVoiceChoice,
@@ -272,10 +273,17 @@ export default function Assistant() {
   const [busy, setBusy] = useState(false);
   const [phase, setPhase] = useState<string | null>(null);
   const [reachable, setReachable] = useState(true);
+  const [assistantFocused, setAssistantFocused] = useState(false);
   /** ASK-1 : question structurée active (modale) — ouverte automatiquement à l'arrivée du run. */
   const [activeAsk, setActiveAsk] = useState<AgentQuestion | null>(null);
   const inputRef = useRef<TextInput>(null);
   const scrollRef = useRef<ScrollView>(null);
+  const handoffContextRef = useRef<{
+    readonly context: NonNullable<typeof globalSession.handoff>['context'];
+    readonly expiresAt: number;
+  } | null>(null);
+  const consumedHandoffIdRef = useRef<string | null>(null);
+  const submittedPrompt = useRef<string | null>(null);
   const counter = useRef(0);
   const nextId = (): string => {
     counter.current += 1;
@@ -300,6 +308,7 @@ export default function Assistant() {
     void qc.invalidateQueries({ queryKey: ['quotes'] });
     void qc.invalidateQueries({ queryKey: ['customers'] });
     void qc.invalidateQueries({ queryKey: ['cashflow'] });
+    void qc.invalidateQueries({ queryKey: ['notifications'] });
   };
 
   /**
@@ -351,7 +360,8 @@ export default function Assistant() {
     };
     setItems((prev) => [...prev, item]);
     if (run.kind === 'done') refreshAfterAction();
-    if (run.navigate) router.push(run.navigate as never); // commande « Jarvis » : Bob ouvre le bon écran
+    // Même allowlist fail-closed que l'overlay : une réponse HTTP ne choisit jamais une URL libre.
+    if (isAllowedAgentNavigationRoute(run.navigate)) router.push(run.navigate as never);
     if (run.ask?.length) setActiveAsk(run.ask[0] ?? null); // ASK-1 : la question s'ouvre d'elle-même
 
     // Émission : enrichit l'aperçu avec l'écriture comptable prévisionnelle RÉELLE (async, best-effort).
@@ -376,6 +386,12 @@ export default function Assistant() {
     }
     return item;
   };
+  // Les effets de handoff appellent toujours les mutateurs de la dernière render sans les
+  // rendre dépendants de fonctions recréées à chaque render (et sans désactiver une règle lint).
+  const pushTextRef = useRef(pushText);
+  pushTextRef.current = pushText;
+  const pushRunRef = useRef(pushRun);
+  pushRunRef.current = pushRun;
 
   const ask = async (raw: string): Promise<{ run: AgentRun; item: ChatItem } | null> => {
     const message = raw.trim();
@@ -386,10 +402,17 @@ export default function Assistant() {
     const autonomy = await getAutonomy(); // politique de confirmation RÉELLE (runtime @bob/ai)
     // LIVE-2 : mémoire de conversation courte (anaphores) + humeur — expurgées côté agent.
     const history = itemsRef.current.slice(-6).map((it) => ({ role: it.role, text: it.text }));
+    const inheritedContext = handoffContextRef.current;
+    if (inheritedContext !== null && inheritedContext.expiresAt <= Date.now()) {
+      handoffContextRef.current = null;
+    }
     const r = await agent.ask(message, {
       autonomy,
       history,
       tone: personality,
+      ...(handoffContextRef.current !== null
+        ? { context: handoffContextRef.current.context }
+        : {}),
       onPhase: (p) =>
         setPhase(
           t(p === 'comprends' ? 'assistant.phaseUnderstand' : 'assistant.phaseAct', {
@@ -487,14 +510,21 @@ export default function Assistant() {
   // lease STT : jamais de micro cache ni de concurrence avec l'acces Bob global.
   useFocusEffect(
     useCallback(
-      () => () => {
-        if (!liveRef.current) return;
-        liveRef.current = false;
-        setLive(false);
-        stopSpeaking();
-        void voiceRef.current.cancel();
-        setLiveState('idle');
-        expectationRef.current = { kind: 'command' };
+      () => {
+        setAssistantFocused(true);
+        return () => {
+          setAssistantFocused(false);
+          // Le contexte hérité appartient au fil ouvert depuis l'overlay, pas aux futures
+          // visites de l'onglet Assistant après navigation ailleurs.
+          handoffContextRef.current = null;
+          if (!liveRef.current) return;
+          liveRef.current = false;
+          setLive(false);
+          stopSpeaking();
+          void voiceRef.current.cancel();
+          setLiveState('idle');
+          expectationRef.current = { kind: 'command' };
+        };
       },
       [stopSpeaking],
     ),
@@ -709,18 +739,44 @@ export default function Assistant() {
     pushText('bob', t('assistant.canceled', { personality }));
   };
 
+  // Passage overlay → fil complet : on consomme le run DÉJÀ produit, avec le même proposalId
+  // et le même snapshot contextuel. Le transcript n'est pas rejoué via /ai/ask et aucune donnée
+  // métier n'est sérialisée dans l'URL. Le provider invalide également ce passage au bout de 2 min.
+  useEffect(() => {
+    const handoff = globalSession.handoff;
+    if (
+      !assistantFocused ||
+      !handoff ||
+      handoff.requestedAt === null ||
+      !entitled ||
+      busy ||
+      consumedHandoffIdRef.current === handoff.id
+    ) return;
+    if (handoff.expiresAt <= Date.now()) {
+      globalSession.consumeHandoff(handoff.id);
+      return;
+    }
+    consumedHandoffIdRef.current = handoff.id;
+    // Une ancienne query de navigation ne doit pas être soumise en parallèle du passage.
+    const routePrompt = typeof prompt === 'string' ? prompt.trim() : '';
+    if (routePrompt) submittedPrompt.current = routePrompt;
+    handoffContextRef.current = { context: handoff.context, expiresAt: handoff.expiresAt };
+    for (const turn of handoff.history) pushTextRef.current(turn.role, turn.text);
+    pushTextRef.current('user', handoff.message);
+    pushRunRef.current(handoff.run);
+    globalSession.consumeHandoff(handoff.id);
+  }, [assistantFocused, busy, entitled, globalSession.consumeHandoff, globalSession.handoff, prompt]);
+
   // ?prompt=relance (edges C10/C11/C13) : pré-remplit puis soumet — une seule fois par valeur.
-  const submittedPrompt = useRef<string | null>(null);
   useEffect(() => {
     const raw = typeof prompt === 'string' ? prompt.trim() : '';
-    if (!raw || !entitled || busy || submittedPrompt.current === raw) return;
+    if (!assistantFocused || !raw || !entitled || busy || submittedPrompt.current === raw) return;
     submittedPrompt.current = raw;
     const key = ENTRY_PROMPTS[raw];
     const text = key !== undefined ? t(key, { personality }) : raw;
     setInput(text); // pré-remplit…
     void askRef.current(text); // …et soumet (contrat C15)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [prompt, entitled, personality, busy]);
+  }, [assistantFocused, prompt, entitled, personality, busy]);
 
   const tabClearance =
     patterns.bottomTabBar.padding[0] +

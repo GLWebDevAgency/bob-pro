@@ -42,7 +42,7 @@ import {
   type Scenario,
 } from '@bob/core';
 import { patterns, shadowNative } from '@bob/tokens';
-import { deriveAgedBalance, AGED_BUCKETS, type AgedBucketKey } from '@bob/core';
+import { deriveAgedBalance, type AgedBucketKey } from '@bob/core';
 import { t, type I18nKey, type Personality } from '@bob/i18n';
 import { usePublishAgentContext, type AgentContext } from '../../src/agent';
 import {

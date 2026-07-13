@@ -17,8 +17,8 @@
  * Écarts assumés vs proto (honnêteté avant pixel) :
  * · toggle « Relances automatiques » : aucun réglage serveur → carte informative (le cron EST
  *   actif : RelanceService 6 h, politique DEFAULT_RELANCE_POLICY du core), pas de switch fantôme ;
- * · « Tout marquer lu » : le lu se pose item par item (endpoint unitaire) — pas de bouton global
- *   tant que le serveur n'expose pas de batch ;
+ * · « Tout marquer lu » utilise un preview + cutoff serveur puis une commande atomique : les
+ *   notifications arrivées pendant la confirmation restent non lues ;
  * · l'écran cadence éditable du proto n'existe pas (pas de réglage serveur) — la mise en demeure
  *   n'est JAMAIS envoyée par le cron : elle attend le geste confirmé ici (relance.medWarning).
  */
@@ -48,7 +48,13 @@ import {
   useTheme,
   type StatusBadgeVariant,
 } from '@bob/ui';
-import { useMarkNotificationRead, useNotificationsFeed, useSendRelance } from '../src/data/hooks';
+import {
+  useMarkNotificationRead,
+  useMarkNotificationsReadThrough,
+  useNotificationsFeed,
+  useSendRelance,
+  useUnreadNotificationsPreview,
+} from '../src/data/hooks';
 import { usePublishAgentContext, type AgentContext } from '../src/agent';
 import { useConfirm } from '../src/components/ConfirmSheet';
 import {
@@ -381,23 +387,35 @@ export default function Notifications() {
   // La copy des messages du plan suit l'humeur de Bob (PERSONALITY_LABELS : ids i18n → domaine).
   const feed = useNotificationsFeed(PERSONALITY_LABELS[personality]);
   const markRead = useMarkNotificationRead();
+  const unreadPreview = useUnreadNotificationsPreview();
+  const markAllRead = useMarkNotificationsReadThrough();
   const sendRelance = useSendRelance();
   const [toast, setToast] = useState<string | null>(null);
 
-  // Bob voit les notifications AFFICHÉES : « lis-moi la première », « résume cette
-  // notification » — lecture seule, ids réels du fil (jamais plus que ce qui est rendu).
-  const agentContext = useMemo<AgentContext>(
-    () => ({
+  // Bob voit le fil ET les factures du plan réellement affiché. Il peut ainsi lire les
+  // notifications, puis cibler honnêtement « relance la facture F-… » sans repli silencieux.
+  const agentContext = useMemo<AgentContext>(() => {
+    const entities: AgentContext['entities'][number][] = feed.items.slice(0, 12).map((item) => ({
+      type: 'notification',
+      id: item.id,
+      label: item.title,
+    }));
+    const seenInvoices = new Set<string>();
+    for (const entry of [...feed.due, ...feed.scheduled]) {
+      if (entities.length >= 20 || seenInvoices.has(entry.invoiceId)) continue;
+      seenInvoices.add(entry.invoiceId);
+      entities.push({
+        type: 'invoice',
+        id: entry.invoiceId,
+        label: entry.docNumber ? `Facture ${entry.docNumber}` : `Facture de ${entry.customerName}`,
+      });
+    }
+    return {
       screen: { name: 'notifications', instanceId: 'notifications' },
-      entities: feed.items.slice(0, 12).map((item) => ({
-        type: 'notification' as const,
-        id: item.id,
-        label: item.title,
-      })),
-      capabilities: ['screen.read', 'notification.read'],
-    }),
-    [feed.items],
-  );
+      entities,
+      capabilities: ['screen.read', 'notification.read', 'invoice.read'],
+    };
+  }, [feed.due, feed.items, feed.scheduled]);
   usePublishAgentContext(agentContext);
 
   const ready = !feed.isLoading && !feed.isError;
@@ -410,6 +428,48 @@ export default function Notifications() {
   const openFeedItem = (item: NotificationView): void => {
     if (item.readAt === null) markRead.mutate(item.id);
     if (item.route !== null) router.push(item.route as Href);
+  };
+
+  /** Parité manuel ↔ Bob : preview serveur frais, consentement, puis même commande read-through. */
+  const markAllNotificationsRead = async (): Promise<void> => {
+    const refreshed = await unreadPreview.refetch();
+    const preview = refreshed.data;
+    if (refreshed.isError || preview === undefined) {
+      setToast(t('notif.markAllError', { personality }));
+      return;
+    }
+    if (preview.unreadCount === 0) {
+      setToast(t('notif.markAllNoop', { personality }));
+      return;
+    }
+    const confirmBodyKey: I18nKey =
+      preview.unreadCount === 1 ? 'notif.markAllConfirmBodyOne' : 'notif.markAllConfirmBody';
+    const accepted = await confirm({
+      title: t('notif.markAllConfirmTitle', { personality }),
+      message: t(confirmBodyKey, {
+        personality,
+        params: { count: preview.unreadCount },
+      }),
+      challenge: { kind: 'tap' },
+    });
+    if (!accepted) return;
+    markAllRead.mutate(preview.throughCreatedAt, {
+      onSuccess: (result) => {
+        const successKey: I18nKey =
+          result.updatedCount === 0
+            ? 'notif.markAllNoop'
+            : result.updatedCount === 1
+              ? 'notif.markAllSuccessOne'
+              : 'notif.markAllSuccess';
+        setToast(
+          t(successKey, {
+            personality,
+            params: { count: result.updatedCount },
+          }),
+        );
+      },
+      onError: () => setToast(t('notif.markAllError', { personality })),
+    });
   };
 
   /** ENVOI RÉEL confirmé (C25 ② — action sortante, mise en demeure jamais sans validation). */
@@ -429,7 +489,13 @@ export default function Notifications() {
     });
     if (!okToSend) return;
     sendRelance.mutate(entry.invoiceId, {
-      onSuccess: () => setToast(t('relance.sentToast', { personality, params: { name } })),
+      onSuccess: (result) =>
+        setToast(
+          t(result.status === 'done' ? 'relance.sentToast' : 'relance.queuedToast', {
+            personality,
+            params: { name },
+          }),
+        ),
       onError: () => setToast(t('relance.sendError', { personality })),
     });
   };
@@ -497,7 +563,25 @@ export default function Notifications() {
           <View style={{ gap: 20 }}>
             {feed.items.length > 0 ? (
               <View>
-                <SectionHeader title={t('notif.sectionFeed', { personality })} />
+                <SectionHeader
+                  title={t('notif.sectionFeed', { personality })}
+                  action={
+                    (unreadPreview.data?.unreadCount ?? 0) > 0 ? (
+                      <Button
+                        title={t('notif.markAllAction', { personality })}
+                        accessibilityLabel={t('notif.markAllActionA11y', {
+                          personality,
+                          params: { count: unreadPreview.data?.unreadCount ?? 0 },
+                        })}
+                        variant="secondary"
+                        size="compact"
+                        radius={11}
+                        loading={unreadPreview.isFetching || markAllRead.isPending}
+                        onPress={() => void markAllNotificationsRead()}
+                      />
+                    ) : undefined
+                  }
+                />
                 <View style={{ gap: 10 }}>
                   {feed.items.map((item) => (
                     <FeedItemCard key={item.id} item={item} personality={personality} onPress={openFeedItem} />

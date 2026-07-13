@@ -24,6 +24,7 @@ import { PushNotificationsBridge } from '../src/data/push';
 import { ConfirmProvider } from '../src/components/ConfirmSheet';
 import { GlobalBobAccess } from '../src/components/GlobalBobAccess';
 import { AgentContextProvider, AgentSessionProvider } from '../src/agent';
+import { QuoteDraftProvider } from '../src/quote-draft';
 import { LoginScreen } from '../src/screens/LoginScreen';
 import { ProvisioningScreen } from '../src/screens/ProvisioningScreen';
 import { BiometricGate } from '../src/screens/BiometricGate';
@@ -99,10 +100,11 @@ export default function RootLayout() {
                 <AuthGate>
                   {/* C25 : token push Expo au boot connecté + deep link au tap (dégradé honnête Expo Go). */}
                   <PushNotificationsBridge />
-                  <AgentContextProvider>
-                    <AgentSessionProvider>
-                      <ConfirmProvider>
-                        <Stack screenOptions={{ headerShown: false }}>
+                  <QuoteDraftProvider>
+                    <AgentContextProvider>
+                      <AgentSessionProvider>
+                        <ConfirmProvider>
+                          <Stack screenOptions={{ headerShown: false }}>
                           <Stack.Screen name="(tabs)" />
                           <Stack.Screen name="devis/new" options={{ presentation: 'modal' }} />
                           <Stack.Screen name="devis/[id]" />
@@ -115,6 +117,8 @@ export default function RootLayout() {
                           <Stack.Screen name="notifications" />
                           <Stack.Screen name="onboarding" />
                           <Stack.Screen name="scan-document" options={{ presentation: 'modal' }} />
+                          <Stack.Screen name="documents/[id]" />
+                          <Stack.Screen name="documents/folder/[id]" />
                           <Stack.Screen name="voix" options={{ presentation: 'modal' }} />
                           <Stack.Screen name="chantiers" />
                           <Stack.Screen name="ventes" />
@@ -122,11 +126,12 @@ export default function RootLayout() {
                           <Stack.Screen name="cloture" />
                           <Stack.Screen name="pilotage" />
                           <Stack.Screen name="gallery" />
-                        </Stack>
-                        <GlobalBobAccess />
-                      </ConfirmProvider>
-                    </AgentSessionProvider>
-                  </AgentContextProvider>
+                          </Stack>
+                          <GlobalBobAccess />
+                        </ConfirmProvider>
+                      </AgentSessionProvider>
+                    </AgentContextProvider>
+                  </QuoteDraftProvider>
                 </AuthGate>
               </BobClientProvider>
             </AuthProvider>

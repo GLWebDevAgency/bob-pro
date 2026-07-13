@@ -32,6 +32,10 @@ import {
   EncodingType,
 } from 'expo-file-system/legacy';
 import * as Speech from 'expo-speech';
+import {
+  processAudioSession,
+  type ProcessAudioLease,
+} from '../audio';
 import { getVoiceMode } from './settings';
 import { useBobClient } from './client';
 import { appErrorMessage } from './hooks';
@@ -44,6 +48,7 @@ type VoiceLeaseState = 'active' | 'closing';
 interface VoiceLease {
   readonly owner: symbol;
   readonly generation: number;
+  readonly audioLease: ProcessAudioLease;
   state: VoiceLeaseState;
 }
 
@@ -52,8 +57,6 @@ interface VoiceLease {
  * montes. La generation fence aussi les callbacks/timers tardifs d'une ancienne ecoute.
  */
 let activeVoiceLease: VoiceLease | null = null;
-let nextVoiceLeaseGeneration = 0;
-
 const NATIVE_TERMINAL_GRACE_MS = 350;
 
 /**
@@ -61,27 +64,30 @@ const NATIVE_TERMINAL_GRACE_MS = 350;
  * 'background' (pas 'inactive' comme iOS) — sans ce drapeau, le nettoyage AppState
  * tuerait la session pendant que l'utilisateur accorde le micro (bulle disparue).
  */
-let permissionRequestsInFlight = 0;
-
 export function voicePermissionRequestInFlight(): boolean {
-  return permissionRequestsInFlight > 0;
+  return processAudioSession.permissionRequestInFlight();
 }
 
 async function withPermissionRequest<T>(run: () => Promise<T>): Promise<T> {
-  permissionRequestsInFlight += 1;
-  try {
-    return await run();
-  } finally {
-    permissionRequestsInFlight -= 1;
-  }
+  return processAudioSession.withPermissionRequest(run);
 }
 const MAX_CLOUD_AUDIO_BYTES = 8 * 1024 * 1024;
 
-function acquireVoiceLease(owner: symbol): number | null {
+async function acquireVoiceLease(
+  owner: symbol,
+  ownerName: string,
+  onPreempt: () => void | Promise<void>,
+): Promise<number | null> {
   // Meme owner compris : un second start ne doit jamais reutiliser une session en cours.
   if (activeVoiceLease !== null) return null;
-  const generation = ++nextVoiceLeaseGeneration;
-  activeVoiceLease = { owner, generation, state: 'active' };
+  const acquired = await processAudioSession.acquire({
+    owner: ownerName,
+    mode: 'legacy_input',
+    onPreempt,
+  });
+  if (!acquired.ok) return null;
+  const generation = acquired.lease.generation;
+  activeVoiceLease = { owner, generation, audioLease: acquired.lease, state: 'active' };
   return generation;
 }
 
@@ -89,6 +95,7 @@ function matchesVoiceLease(owner: symbol, generation: number, state?: VoiceLease
   return (
     activeVoiceLease?.owner === owner &&
     activeVoiceLease.generation === generation &&
+    processAudioSession.isCurrent(activeVoiceLease.audioLease) &&
     (state === undefined || activeVoiceLease.state === state)
   );
 }
@@ -101,6 +108,7 @@ function closeVoiceLease(owner: symbol, generation: number): boolean {
 
 function releaseVoiceLease(owner: symbol, generation: number): boolean {
   if (!matchesVoiceLease(owner, generation)) return false;
+  processAudioSession.release(activeVoiceLease?.audioLease);
   activeVoiceLease = null;
   return true;
 }
@@ -123,7 +131,9 @@ export function useVoiceInput(
   const client = useBobClient();
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const [listening, setListening] = useState(false);
-  const lease = useRef(Symbol(opts.owner ?? 'bob-voice-input')).current;
+  const leaseOwnerName = useRef(opts.owner ?? 'bob-voice-input').current;
+  const lease = useRef(Symbol(leaseOwnerName)).current;
+  const preemptRef = useRef<() => Promise<void>>(async () => undefined);
   const sessionRef = useRef<{
     generation: number;
     mode: 'native' | 'cloud';
@@ -213,7 +223,15 @@ export function useVoiceInput(
   });
 
   const start = useCallback(async (): Promise<boolean> => {
-    let generation = acquireVoiceLease(lease);
+    const onPreempt = async (): Promise<void> => {
+      await preemptRef.current();
+      // La reconnaissance native conserve une courte grâce pour son résultat terminal.
+      // Realtime n'acquiert le micro qu'après la libération effective de cette génération.
+      if (activeVoiceLease?.owner === lease) {
+        await new Promise((resolve) => setTimeout(resolve, NATIVE_TERMINAL_GRACE_MS + 50));
+      }
+    };
+    let generation = await acquireVoiceLease(lease, leaseOwnerName, onPreempt);
     if (generation === null && activeVoiceLease?.owner === lease) {
       // AUTO-COLLISION du même flux — jamais une « erreur micro » : ① l'écoute est encore
       // ACTIVE → l'intention de l'appelant (être à l'écoute) est déjà satisfaite ; ② elle se
@@ -221,7 +239,7 @@ export function useVoiceInput(
       // libération puis on rouvre une génération fraîche (les timers N restent fencés).
       if (activeVoiceLease.state === 'active') return true;
       await new Promise((resolve) => setTimeout(resolve, NATIVE_TERMINAL_GRACE_MS + 50));
-      generation = acquireVoiceLease(lease);
+      generation = await acquireVoiceLease(lease, leaseOwnerName, onPreempt);
     }
     if (generation === null) {
       report('unavailable', 'Micro', 'Le micro est déjà utilisé par un autre flux Bob.');
@@ -290,7 +308,7 @@ export function useVoiceInput(
       }
       return false;
     }
-  }, [lease, recorder, releaseGeneration, report, setGenerationListening]);
+  }, [lease, leaseOwnerName, recorder, releaseGeneration, report, setGenerationListening]);
 
   const stop = useCallback(async () => {
     const session = sessionRef.current;
@@ -413,6 +431,7 @@ export function useVoiceInput(
     releaseNativeGenerationAfterGrace,
     setGenerationListening,
   ]);
+  preemptRef.current = cancel;
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (state) => {
@@ -463,6 +482,9 @@ export function useSpeak() {
   const client = useBobClient();
   const playerRef = useRef<AudioPlayer | null>(null);
   const fileRef = useRef<string | null>(null);
+  const outputLeaseRef = useRef<ProcessAudioLease | null>(null);
+  const outputOwner = useRef('bob-legacy-output').current;
+  const preemptOutputRef = useRef<() => Promise<void>>(async () => undefined);
   // Éligibilité TTS cloud : un seul appel /voice/config par session, mémoïsé (évite un round-trip par énoncé).
   const ttsCloudReady = useRef<Promise<boolean> | null>(null);
 
@@ -484,6 +506,20 @@ export function useSpeak() {
     }
   }, []);
 
+  const releaseOutputLease = useCallback((): void => {
+    const lease = outputLeaseRef.current;
+    outputLeaseRef.current = null;
+    processAudioSession.release(lease);
+  }, []);
+
+  const stopOutput = useCallback(async (): Promise<void> => {
+    Speech.stop();
+    await cleanupCloud();
+    releaseOutputLease();
+  }, [cleanupCloud, releaseOutputLease]);
+  preemptOutputRef.current = stopOutput;
+  useEffect(() => () => { void stopOutput(); }, [stopOutput]);
+
   const speakNative = useCallback((t: string, onFinished?: () => void) => {
     Speech.stop(); // ne pas superposer deux réponses
     Speech.speak(t, {
@@ -502,9 +538,26 @@ export function useSpeak() {
         onFinished?.();
         return;
       }
-      // Couper toute sortie en cours (natif + cloud) avant d'en démarrer une nouvelle.
-      Speech.stop();
-      await cleanupCloud();
+      // Couper toute sortie précédente de CE hook, puis obtenir l'unique lease audio process.
+      await stopOutput();
+      const acquired = await processAudioSession.acquire({
+        owner: outputOwner,
+        mode: 'legacy_output',
+        onPreempt: () => preemptOutputRef.current(),
+      });
+      if (!acquired.ok) {
+        // Bob Live possède déjà le pipeline : ne jamais superposer un TTS historique.
+        onFinished?.();
+        return;
+      }
+      outputLeaseRef.current = acquired.lease;
+      let finished = false;
+      const finish = (): void => {
+        if (finished) return;
+        finished = true;
+        if (outputLeaseRef.current?.token === acquired.lease.token) releaseOutputLease();
+        onFinished?.();
+      };
 
       let mode: 'native' | 'cloud' = 'native';
       try {
@@ -512,7 +565,7 @@ export function useSpeak() {
       } catch {
         /* réglage illisible -> natif */
       }
-      if (mode !== 'cloud') return speakNative(t, onFinished);
+      if (mode !== 'cloud') return speakNative(t, finish);
 
       try {
         if (!ttsCloudReady.current) {
@@ -521,10 +574,10 @@ export function useSpeak() {
             .then((r) => (r.ok ? !!r.value.ttsCloudAvailable : false))
             .catch(() => false);
         }
-        if (!(await ttsCloudReady.current)) return speakNative(t, onFinished);
+        if (!(await ttsCloudReady.current)) return speakNative(t, finish);
 
         const r = await client.synthesizeSpeech({ text: t });
-        if (!(r.ok && r.value.audioBase64 && cacheDirectory)) return speakNative(t, onFinished);
+        if (!(r.ok && r.value.audioBase64 && cacheDirectory)) return speakNative(t, finish);
 
         const uri = `${cacheDirectory}bob-tts-${Date.now()}.${extForMime(r.value.mimeType)}`;
         await writeAsStringAsync(uri, r.value.audioBase64, { encoding: EncodingType.Base64 });
@@ -536,16 +589,20 @@ export function useSpeak() {
         player.addListener('playbackStatusUpdate', (s) => {
           if (s.didJustFinish) {
             void cleanupCloud();
-            onFinished?.();
+            finish();
           }
         });
         player.play();
       } catch {
         await cleanupCloud();
-        speakNative(t, onFinished); // repli inconditionnel : la voix ne tombe jamais
+        if (processAudioSession.isCurrent(acquired.lease)) {
+          speakNative(t, finish); // repli inconditionnel tant que ce flux possède encore l'audio
+        } else {
+          finish();
+        }
       }
     },
-    [client, cleanupCloud, speakNative],
+    [client, cleanupCloud, outputOwner, releaseOutputLease, speakNative, stopOutput],
   );
 
   const speak = useCallback(async (text: string) => speakCore(text), [speakCore]);
@@ -566,10 +623,28 @@ export function useSpeak() {
     [speakCore],
   );
 
-  const stopSpeaking = useCallback(() => {
-    Speech.stop();
-    void cleanupCloud();
-  }, [cleanupCloud]);
+  /** Génération de file : stopSpeaking invalide la file en cours — coupure ≤ une phrase. */
+  const speakQueueGenerationRef = useRef(0);
 
-  return { speak, speakAndWait, stopSpeaking };
+  const stopSpeaking = useCallback(() => {
+    speakQueueGenerationRef.current += 1;
+    void stopOutput();
+  }, [stopOutput]);
+
+  /** BOB LIVE P1 : parle une FILE de phrases — interruptible ENTRE les phrases (tap/barge-in),
+   * et dès la première phrase l'utilisateur entend Bob (latence perçue ÷ n). */
+  const speakSentences = useCallback(
+    async (sentences: readonly string[]): Promise<{ interrupted: boolean }> => {
+      const generation = ++speakQueueGenerationRef.current;
+      for (const sentence of sentences) {
+        if (speakQueueGenerationRef.current !== generation) return { interrupted: true };
+        await speakAndWait(sentence);
+        if (speakQueueGenerationRef.current !== generation) return { interrupted: true };
+      }
+      return { interrupted: false };
+    },
+    [speakAndWait],
+  );
+
+  return { speak, speakAndWait, speakSentences, stopSpeaking };
 }

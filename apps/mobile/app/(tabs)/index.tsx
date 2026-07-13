@@ -28,7 +28,7 @@ import { ScrollView, Text, View, type StyleProp, type ViewStyle } from 'react-na
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
-import { MERCIER_PROPS, formatEURWhole, type TodayPriority } from '@bob/core';
+import { formatEURWhole, type TodayPriority } from '@bob/core';
 import { useIdentity } from '../../src/data/identity';
 import type { InvoiceView } from '@bob/api-client';
 import { patterns, shadowNative } from '@bob/tokens';
@@ -55,12 +55,7 @@ import {
   useTodayPriorities,
 } from '../../src/data/hooks';
 import { CollectInvoiceButton } from '../../src/components/CollectInvoiceButton';
-import {
-  useAgentSession,
-  usePublishAgentContext,
-  type AgentContext,
-  type AgentEntityRef,
-} from '../../src/agent';
+import { usePublishAgentContext, type AgentContext, type AgentEntityRef } from '../../src/agent';
 import {
   CalendarIcon,
   ChevronRightIcon,
@@ -347,7 +342,6 @@ export default function Aujourdhui() {
   const identity = useIdentity();
   const { personality, density, colors, semantic } = useTheme();
   const router = useRouter();
-  const agentSession = useAgentSession();
   const insets = useSafeAreaInsets();
   const cashflow = useCashflow('realiste', 30);
   const customers = useCustomers();

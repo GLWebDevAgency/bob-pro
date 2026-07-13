@@ -268,7 +268,6 @@ export default function Diagnostic() {
 
   const questions = derived?.questions ?? [];
   const totalSteps = questions.length + 1; // constats + questions
-  const isLoading = diagnostic.isLoading || customersQ.isLoading || invoicesQ.isLoading;
   const isError = diagnostic.isError || customersQ.isError || invoicesQ.isError;
 
   const retry = (): void => {

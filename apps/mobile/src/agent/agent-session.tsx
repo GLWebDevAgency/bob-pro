@@ -10,13 +10,14 @@ import {
 } from 'react';
 import { AppState } from 'react-native';
 import { router } from 'expo-router';
-import { echoOverlap, isAllowedAgentNavigationRoute, type AgentRun, type AskOptions } from '@bob/ai';
+import { echoOverlap, isAllowedAgentNavigationRoute, type AgentRun, type AskOptions , splitSpokenSentences, summarizeVoiceLatency, type VoiceLatencyTrace } from '@bob/ai';
 import { t } from '@bob/i18n';
 import { useTheme } from '@bob/ui';
 import { makeBobAgent } from '../data/bob';
 import { useBobClient } from '../data/client';
 import { useSpeak, useVoiceInput, voicePermissionRequestInFlight, type VoiceInputIssue } from '../data/voice';
-import { snapshotAgentContext, useAgentContext, type AgentContext } from './agent-context';
+import { snapshotAgentContext, useAgentContext, useAgentSurface, type AgentContext } from './agent-context';
+import { clearWizardHint, setWizardHint } from './wizard-hints';
 
 export type AgentSessionPhase = 'idle' | 'listening' | 'thinking' | 'speaking' | 'error';
 
@@ -74,10 +75,15 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
   const liveContext = useAgentContext();
   const contextRef = useRef(liveContext);
   contextRef.current = liveContext;
+  const liveSurface = useAgentSurface();
+  const surfaceRef = useRef(liveSurface);
+  surfaceRef.current = liveSurface;
 
   const [active, setActive] = useState(false);
   const activeRef = useRef(false);
   const [phase, setPhase] = useState<AgentSessionPhase>('idle');
+  const phaseRefForGreeting = useRef<AgentSessionPhase>('idle');
+  phaseRefForGreeting.current = phase;
   const [transcript, setTranscript] = useState<string | null>(null);
   const [response, setResponse] = useState<string | null>(null);
   const [issue, setIssue] = useState<VoiceInputIssue | null>(null);
@@ -93,7 +99,10 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
     endedAt: 0,
   });
   const echoStreakRef = useRef(0);
-  const { speakAndWait, stopSpeaking } = useSpeak();
+  const { speakSentences, stopSpeaking } = useSpeak();
+  /** BOB LIVE : trace de latence par tour (fin de parole → premier audio), p50/p95 en dev. */
+  const latencyTracesRef = useRef<VoiceLatencyTrace[]>([]);
+  const currentTraceRef = useRef<VoiceLatencyTrace | null>(null);
 
   const setSessionPhase = useCallback((next: AgentSessionPhase): void => {
     setPhase(next);
@@ -138,6 +147,7 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
   }, [personality, setSessionPhase]);
 
   const stop = useCallback((): void => {
+    clearWizardHint(); // un hint en vol meurt avec la session — jamais de pré-remplissage fantôme
     turnGenerationRef.current += 1;
     activeRef.current = false;
     setActive(false);
@@ -163,9 +173,20 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
         return;
       }
       setSessionPhase('speaking');
+      if (currentTraceRef.current && currentTraceRef.current.sayStartAt === undefined) {
+        currentTraceRef.current.sayStartAt = Date.now();
+        latencyTracesRef.current = [...latencyTracesRef.current.slice(-49), currentTraceRef.current];
+        if (__DEV__) {
+          const summary = summarizeVoiceLatency(latencyTracesRef.current);
+          console.log(
+            `[bob-latency] voix→voix p50=${summary.voiceToVoiceMsP50 ?? '—'}ms p95=${summary.voiceToVoiceMsP95 ?? '—'}ms (${summary.turns} tours)`,
+          );
+        }
+      }
       // Semi-duplex fail-safe : aucune oreille ouverte pendant le TTS. Le tap stoppe la
-      // session ; l'ecoute ne reprend qu'apres la purge, donc Bob ne peut pas se repondre.
-      await speakAndWait(clean);
+      // session ; l'écoute ne reprend qu'après la purge. BOB LIVE P1 : la réponse part en
+      // FILE DE PHRASES — Bob parle dès la première, le tap coupe entre deux phrases.
+      await speakSentences(splitSpokenSentences(clean));
       lastSpokenRef.current = { text: clean, endedAt: Date.now() };
       if (!continueListening || !activeRef.current) {
         setSessionPhase(terminalPhase);
@@ -174,15 +195,53 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
       await wait(500);
       await listen();
     },
-    [listen, setSessionPhase, speakAndWait],
+    [listen, setSessionPhase, speakSentences],
   );
 
+  const spokenGreetingsRef = useRef<Set<string>>(new Set());
+  const pendingGreetingRef = useRef<string | null>(null);
+  const greetingKey = liveSurface.greeting?.key ?? null;
+  const speakGreeting = useCallback(
+    async (key: string): Promise<void> => {
+      if (spokenGreetingsRef.current.has(key)) return;
+      const current = surfaceRef.current.greeting;
+      if (!current || current.key !== key) return;
+      spokenGreetingsRef.current.add(key); // consommé au moment où on le PREND EN CHARGE
+      pendingGreetingRef.current = null;
+      // Semi-duplex : jamais de TTS micro ouvert — l'oreille en cours est annulée d'abord.
+      await voiceRef.current.cancel();
+      await say(current.text, true);
+    },
+    [say],
+  );
+  /** Guidage mis en attente pendant un tour : joué à la FIN du tour — jamais perdu. */
+  const flushPendingGreeting = useCallback((): void => {
+    const pending = pendingGreetingRef.current;
+    if (pending === null || !activeRef.current) return;
+    void speakGreeting(pending);
+  }, [speakGreeting]);
+  useEffect(() => {
+    if (greetingKey === null) return;
+    // Session inactive : on ne consomme RIEN — start() rejouera le guidage de l'écran courant.
+    if (!activeRef.current) return;
+    if (spokenGreetingsRef.current.has(greetingKey)) return;
+    if (phaseRefForGreeting.current === 'thinking' || phaseRefForGreeting.current === 'speaking') {
+      pendingGreetingRef.current = greetingKey; // en FILE — pris en charge à la fin du tour
+      return;
+    }
+    void speakGreeting(greetingKey);
+  }, [greetingKey, speakGreeting]);
+
+  const turnInFlightRef = useRef(false);
   const runTurn = useCallback(
     async (raw: string): Promise<void> => {
       const message = raw.trim();
       if (!message || !activeRef.current) return;
+      if (turnInFlightRef.current) return; // sérialisation : un double final ASR ne mute JAMAIS deux fois
+      turnInFlightRef.current = true;
       turnGenerationRef.current += 1;
       const turnGeneration = turnGenerationRef.current;
+      try {
 
       const echoReference =
         Date.now() - lastSpokenRef.current.endedAt < ECHO_GRACE_MS
@@ -195,6 +254,42 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
         return;
       }
       echoStreakRef.current = 0;
+
+      // AFFORDANCES D'ÉCRAN (S2-GUIDÉ) : le wizard focalisé a la priorité sur le cerveau —
+      // « pour Camping Les Pins », « ajoute 2 h de main-d'œuvre à 55 € » agissent sur l'état
+      // LOCAL (visible, annulable, mêmes setters que le geste manuel). Pas de correspondance →
+      // flux générique inchangé.
+      for (const affordance of surfaceRef.current.affordances ?? []) {
+        let run: ReturnType<typeof affordance.match>;
+        try {
+          run = affordance.match(message);
+        } catch {
+          continue; // un matcher qui explose n'avale jamais l'énoncé — le cerveau global prend
+        }
+        if (!run) continue;
+        setTranscript(message);
+        setResponse(null);
+        setIssue(null);
+        setReviewRequired(false);
+        setSessionPhase('thinking');
+        try {
+          const outcome = await run();
+          if (!activeRef.current || turnGeneration !== turnGenerationRef.current) return;
+          historyRef.current = [
+            ...historyRef.current,
+            { role: 'user' as const, text: message },
+            { role: 'bob' as const, text: outcome.say },
+          ].slice(-12);
+          setResponse(outcome.say);
+          await say(outcome.say, true);
+        } catch {
+          if (!activeRef.current || turnGeneration !== turnGenerationRef.current) return;
+          const errorText = t('agent.global.error', { personality });
+          setResponse(errorText);
+          await say(errorText, true);
+        }
+        return;
+      }
 
       const frozenContext = snapshotAgentContext(contextRef.current);
       setContextAtTurn(frozenContext);
@@ -259,21 +354,36 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
       }
 
       if (isAllowedAgentNavigationRoute(run.navigate)) {
+        // « Nouveau devis pour X » : le nom entendu voyage HORS route (allowlist intacte),
+        // consommé une fois par le wizard à l'arrivée.
+        if (run.navigateHint) setWizardHint('devis-new', run.navigateHint);
         // Navigation « Jarvis » : le SEUL agir autorisé depuis l'overlay S1 (non destructif,
         // allowlistée même après transport HTTP. L'écran d'arrivée republie son contexte au
         // focus — le tour suivant est déjà situé au bon endroit.
         router.push(run.navigate as never);
       }
       await say(body, true);
+      } finally {
+        turnInFlightRef.current = false;
+        flushPendingGreeting();
+      }
     },
-    [agent, listen, personality, say, setSessionPhase, stop],
+    [agent, listen, personality, say, setSessionPhase, stop, flushPendingGreeting],
   );
   transcriptHandlerRef.current = (text) => {
+    currentTraceRef.current = { sttFinalAt: Date.now() };
     void runTurn(text);
   };
 
+  // GUIDAGE À L'ARRIVÉE (S2-GUIDÉ) : quand l'écran/étape focalisé publie un guidage et que la
+  // session est active, Bob le lit UNE fois (key stable) puis ré-écoute. Pendant un tour en
+  // cours (thinking/speaking), la key est consommée sans relecture — l'affordance a déjà guidé.
   const start = useCallback((): void => {
     if (activeRef.current) return;
+    // Nouvelle session = nouvelle mission : guidages, historique et disjoncteur repartent à zéro.
+    spokenGreetingsRef.current.clear();
+    historyRef.current = [];
+    echoStreakRef.current = 0;
     activeRef.current = true;
     setActive(true);
     setTranscript(null);
@@ -282,8 +392,14 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
     setReviewRequired(false);
     setContextAtTurn(null);
     setHandoff(null);
-    void listen();
-  }, [listen]);
+    const mountedGreeting = surfaceRef.current.greeting?.key ?? null;
+    if (mountedGreeting !== null) {
+      // Écran monté AVANT la session : son guidage se joue au démarrage (jamais perdu).
+      void speakGreeting(mountedGreeting);
+    } else {
+      void listen();
+    }
+  }, [listen, speakGreeting]);
 
   const dismissResponse = useCallback((): void => {
     setResponse(null);

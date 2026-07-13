@@ -34,6 +34,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -41,10 +42,11 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { challengeFor } from '@bob/ai';
+import { challengeFor, parseVoiceConsent } from '@bob/ai';
 import {
   computeTotals,
   devisBack,
@@ -63,6 +65,16 @@ import {
   type DomainError,
   type LineCategory,
   type VatRate,
+  matchSpokenCustomers,
+  normalizeVoiceText,
+  devisDiff,
+  frSpokenNumbersToDigits,
+  withLineRemoved,
+  withLineUpdated,
+  type DevisProposal,
+  type LineInput,
+  parseVoiceQuoteLine,
+  type VoicePrestation,
 } from '@bob/core';
 import { shadowNative, themes } from '@bob/tokens';
 import { t, type I18nKey } from '@bob/i18n';
@@ -92,6 +104,14 @@ import {
   useSignQuote,
 } from '../../src/data/hooks';
 import { useCatalogue } from '../../src/data/catalogue';
+import {
+  consumeWizardHint,
+  usePublishAgentContext,
+  useAgentSession,
+  type AgentAffordance,
+  type AgentContext,
+  type AgentSurface,
+} from '../../src/agent';
 import { useConfirm } from '../../src/components/ConfirmSheet';
 import { CheckIcon, ChevronLeftIcon, CloseIcon } from '../../src/components/icons';
 
@@ -207,6 +227,10 @@ export default function DevisNew() {
 
   // Saisie d'une ligne (étape 2) — état de formulaire local, la donnée vit dans la machine.
   const [lineLabel, setLineLabel] = useState('');
+  const [cataloguePickerOpen, setCataloguePickerOpen] = useState(false);
+  /** S2 : proposition core EN ATTENTE (« corrige la ligne 2 → 450 € ») — patch NON appliqué,
+   * diff visible, acceptée par la voix (consentement déterministe) OU par le tap (parité). */
+  const [lineProposal, setLineProposal] = useState<DevisProposal | null>(null);
   const [lineQty, setLineQty] = useState('1');
   const [linePrice, setLinePrice] = useState('');
   const [lineCat, setLineCat] = useState<LineCategory>('labor');
@@ -256,6 +280,341 @@ export default function DevisNew() {
     setFlow(back.value);
   };
 
+  // ── S2-GUIDÉ : pilotage VOCAL du wizard — parité stricte avec le geste manuel ──
+  // Les affordances agissent via les MÊMES transitions machine (devisEdit/devisNext/devisBack)
+  // que les boutons ; identité STABLE (refs) pour ne pas rebattre la publication à chaque rendu.
+  const flowRef = useRef(flow);
+  flowRef.current = flow;
+  // « Nouveau devis POUR Camping Les Pins » : le nom entendu (hint session) est résolu contre
+  // les clients RÉELS dès leur chargement — client présélectionné + saut direct aux
+  // prestations. Introuvable/ambigu → flux normal étape client (fail-safe, jamais de devinette).
+  const [wizardHint] = useState(() => consumeWizardHint('devis-new'));
+  const wizardHintRef = useRef(wizardHint);
+  useEffect(() => {
+    const hint = wizardHintRef.current;
+    const reference = hint?.customerReference;
+    if (!reference) return;
+    const list = customers.data;
+    if (!list || list.length === 0) return;
+    if (flowRef.current.step !== 'client' || flowRef.current.draft.customerId !== null) return;
+    wizardHintRef.current = null; // consommé — une seule tentative
+    // Ambiguïté (deux « Camping ») → PAS de saut : l'étape client tranche à l'écran/à la voix.
+    const candidates = matchSpokenCustomers(normalizeVoiceText(reference), list);
+    if (candidates.length !== 1) return;
+    const matchedId = candidates[0]!.id;
+    setFlow((f) => {
+      const edited = devisEdit(f, { customerId: matchedId });
+      const next = devisNext(edited);
+      return next.ok ? next.value : edited;
+    });
+  }, [customers.data]);
+  const customersRef = useRef(customers.data ?? []);
+  customersRef.current = customers.data ?? [];
+  const prestationsRef = useRef<readonly VoicePrestation[]>([]);
+  prestationsRef.current = catalogue.prestations
+    .filter((p) => p.indicative !== true)
+    .map((p) => ({
+      label: p.label,
+      category: p.category,
+      unitPriceHT: p.unitPriceHT,
+      vatRate: p.vatRate,
+    }));
+  const currentRateRef = useRef(currentRate);
+  currentRateRef.current = currentRate;
+  const personalityRef = useRef(personality);
+  personalityRef.current = personality;
+  /** Pont voix → formulaire (parité stricte) : la dictée PRÉPARE les champs visibles ;
+   * « valide la ligne » appuie sur le MÊME bouton Ajouter que le doigt. */
+  const lineFormRef = useRef<{
+    prepare: (line: { label: string; qty: number; unitPriceHT: number; category: LineCategory }) => void;
+    /** Soumet via le MÊME chemin que le bouton ; retourne la ligne EFFECTIVEMENT ajoutée. */
+    submit: () => LineInput | null;
+    reject: () => boolean;
+  }>({ prepare: () => undefined, submit: () => null, reject: () => false });
+
+  const voiceAffordances = useMemo<readonly AgentAffordance[]>(() => {
+    const tt = (key: Parameters<typeof t>[0], params?: Record<string, string | number>): string =>
+      t(key, { personality: personalityRef.current, ...(params ? { params } : {}) });
+
+    const advance = (): string => {
+      const current = flowRef.current;
+      // PLANCHER DE SÉCURITÉ : signature, acompte (génération) et facture ne se franchissent
+      // JAMAIS à la voix — ces étapes portent ConfirmSheet/runGeneration, l'écran fait foi.
+      if (current.step === 'signature' || current.step === 'acompte' || current.step === 'facture') {
+        return tt('devis.voice.screenOnlyStep');
+      }
+      // Résultat calculé sur l'état CANONIQUE avant de committer : Bob ne ment jamais.
+      const next = devisNext(current);
+      if (!next.ok) return t(guardKeyOf(next.error), { personality: personalityRef.current });
+      setFlow(next.value);
+      setGuardMsg(null);
+      return tt('devis.voice.stepDone');
+    };
+
+    return [
+      {
+        // PRIORITÉ ABSOLUE quand une proposition attend : « oui/je confirme » applique,
+        // « non/annule » rejette — parsé par NOTRE parseur déterministe, jamais par un LLM.
+        id: 'devis.proposalConsent',
+        match: (utterance) => {
+          if (lineProposalRef.current.pending() === null) return null;
+          const consent = parseVoiceConsent(utterance);
+          if (consent === 'unclear') return null; // un autre ordre passe aux affordances suivantes
+          return () => {
+            if (consent === 'cancel') {
+              lineProposalRef.current.reject();
+              return { say: tt('devis.voice.proposalRejected') };
+            }
+            const applied = lineProposalRef.current.apply();
+            const field = applied?.diff[0];
+            return {
+              say: field
+                ? tt('devis.voice.proposalApplied', { field: field.field, after: field.after })
+                : tt('devis.voice.proposalRejected'),
+            };
+          };
+        },
+      },
+      {
+        // « Corrige la ligne 2, c'est 450 pas 540 » / « passe la ligne 1 à 60 euros » —
+        // le CAS FONDATEUR : patch core NON appliqué + diff parlé et affiché, puis consentement.
+        id: 'devis.editLine',
+        match: (utterance) => {
+          if (flowRef.current.step !== 'lignes') return null;
+          const n = frSpokenNumbersToDigits(normalizeVoiceText(utterance));
+          const m = /(corrige|modifie|change|passe|mets?) (?:la |sur la )?ligne (\d{1,2})\b/.exec(n);
+          if (!m || m[2] === undefined) return null;
+          const ordinal = Number(m[2]);
+          const price = /(?:a|à) (\d[\d ]*(?:,\d{1,2})?) ?(?:€|euros?)(?! .{0,10}pas )/.exec(n) ?? /c est (\d[\d ]*(?:,\d{1,2})?) ?(?:€|euros?)? pas /.exec(n);
+          if (!price || price[1] === undefined) return null;
+          const int = Number(price[1].replace(/\s+/g, '').replace(',', '.'));
+          if (!Number.isFinite(int) || int <= 0) return null;
+          const unitPriceHT = Math.round(int * 100);
+          return () => {
+            const draft = flowRef.current.draft;
+            const patch = withLineUpdated(draft, ordinal, { unitPriceHT });
+            if (!patch.ok) return { say: tt('devis.voice.proposalUnknownLine') };
+            const diff = devisDiff(draft, { ...draft, ...patch.value });
+            const field = diff[0];
+            if (!field) return { say: tt('devis.voice.proposalUnknownLine') };
+            setLineProposal({ label: `Ligne ${ordinal} → ${formatEUR(unitPriceHT)}`, patch: patch.value, diff });
+            return {
+              say: tt('devis.voice.proposalReady', { field: field.field, before: field.before, after: field.after }),
+            };
+          };
+        },
+      },
+      {
+        // « Supprime la ligne 2 » — même mécanique : proposition + diff + consentement.
+        id: 'devis.removeLineByOrdinal',
+        match: (utterance) => {
+          if (flowRef.current.step !== 'lignes') return null;
+          const n = frSpokenNumbersToDigits(normalizeVoiceText(utterance));
+          const m = /(supprime|enleve|retire|efface) (?:la )?ligne (\d{1,2})\b/.exec(n);
+          if (!m || m[2] === undefined) return null;
+          const ordinal = Number(m[2]);
+          return () => {
+            const draft = flowRef.current.draft;
+            const patch = withLineRemoved(draft, ordinal);
+            if (!patch.ok) return { say: tt('devis.voice.proposalUnknownLine') };
+            const diff = devisDiff(draft, { ...draft, ...patch.value });
+            const field = diff[0];
+            if (!field) return { say: tt('devis.voice.proposalUnknownLine') };
+            setLineProposal({ label: `Supprimer la ligne ${ordinal}`, patch: patch.value, diff });
+            return {
+              say: tt('devis.voice.proposalReady', { field: field.field, before: field.before, after: field.after }),
+            };
+          };
+        },
+      },
+      {
+        id: 'devis.next',
+        match: (utterance) => {
+          const n = normalizeVoiceText(utterance);
+          if (/ pour la ligne /.test(n)) return null; // « c'est bon pour la ligne » = validation de LIGNE
+          if (!/( etape suivante | continue | suivant | c est bon | on continue )/.test(n)) return null;
+          return () => ({ say: advance() });
+        },
+      },
+      {
+        id: 'devis.back',
+        match: (utterance) => {
+          const n = normalizeVoiceText(utterance);
+          if (!/( etape precedente | reviens | retour en arriere )/.test(n)) return null;
+          return () => {
+            const back = devisBack(flowRef.current);
+            if (!back.ok) return { say: tt('devis.voice.screenOnlyStep') };
+            setFlow(back.value);
+            setGuardMsg(null);
+            return { say: tt('devis.voice.stepDone') };
+          };
+        },
+      },
+      {
+        id: 'devis.selectClient',
+        match: (utterance) => {
+          if (flowRef.current.step !== 'client') return null;
+          const n = normalizeVoiceText(utterance);
+          // Négation = jamais une sélection (« je ne veux pas Camping Les Pins »).
+          if (/( ne | n | pas | jamais | sans | sauf )/.test(n)) return null;
+          const candidates = matchSpokenCustomers(n, customersRef.current);
+          if (candidates.length === 0) return null;
+          if (candidates.length > 1) {
+            // Deux « Camping » ne se départagent JAMAIS en silence — question honnête.
+            return () => ({
+              say: tt('devis.voice.clientAmbiguous', {
+                options: candidates.map((c) => c.name).join(', '),
+              }),
+            });
+          }
+          const matched = candidates[0]!;
+          return () => {
+            setFlow((f) => {
+              const edited = devisEdit(f, { customerId: matched.id });
+              const next = devisNext(edited);
+              return next.ok ? next.value : edited;
+            });
+            setGuardMsg(null);
+            return { say: `${tt('devis.voice.clientSet', { name: matched.name })} ${tt('devis.voice.greetLines')}` };
+          };
+        },
+      },
+      {
+        id: 'devis.removeLastLine',
+        match: (utterance) => {
+          const n = normalizeVoiceText(utterance);
+          if (flowRef.current.step !== 'lignes') return null;
+          if (!/( (retire|enleve|supprime) (la )?(derniere|cette) (ligne)?| annule la ligne )/.test(n)) return null;
+          return () => {
+            const lines = flowRef.current.draft.lines;
+            const last = lines[lines.length - 1];
+            if (!last) return { say: tt('devis.voice.nothingToRemove') };
+            setFlow((f) => devisEdit(f, { lines: f.draft.lines.slice(0, -1) }));
+            return { say: tt('devis.voice.lineRemoved', { label: last.label }) };
+          };
+        },
+      },
+      {
+        // Dicter une LIGNE alors qu'on est encore au choix du CLIENT : Bob guide au lieu du
+        // refus générique hors-périmètre (UX niveau Claude Code : jamais de mur, un chemin).
+        id: 'devis.lineBeforeClient',
+        match: (utterance) => {
+          if (flowRef.current.step !== 'client') return null;
+          if (!/^\s*(ajoute[rz]?|rajoute[rz]?|mets?|met)\b/i.test(utterance)) return null;
+          return () => ({
+            say: `${tt('devis.voice.needClientFirst')} ${tt('devis.voice.greetClient')}`,
+          });
+        },
+      },
+      {
+        id: 'devis.confirmLine',
+        match: (utterance) => {
+          if (flowRef.current.step !== 'lignes') return null;
+          const n = normalizeVoiceText(utterance);
+          if (!/( (valide|ajoute|confirme) (la |cette )?ligne | c est bon pour la ligne )/.test(n)) return null;
+          return () => {
+            const added = lineFormRef.current.submit();
+            if (added === null) return { say: tt('devis.voice.lineInvalid') };
+            return {
+              say: tt('devis.voice.lineAdded', {
+                label: added.label,
+                qty: added.qty,
+                price: formatEUR(added.unitPriceHT),
+                rate: added.vatRate,
+              }),
+            };
+          };
+        },
+      },
+      {
+        id: 'devis.rejectLine',
+        match: (utterance) => {
+          if (flowRef.current.step !== 'lignes') return null;
+          const n = normalizeVoiceText(utterance);
+          if (!/( (annule|oublie|laisse tomber|efface) (la |cette )?(ligne|preparation) | non pas ca )/.test(n)) return null;
+          return () => ({
+            say: lineFormRef.current.reject() ? tt('devis.voice.lineRejected') : tt('devis.voice.nothingToRemove'),
+          });
+        },
+      },
+      {
+        id: 'devis.addLine',
+        match: (utterance) => {
+          if (flowRef.current.step !== 'lignes') return null;
+          // Déclencheur explicite : un verbe d'ajout — « où suis-je ? » reste au cerveau global.
+          if (!/^\s*(ajoute[rz]?|rajoute[rz]?|mets?|met|facture)\b/i.test(utterance)) return null;
+          return () => {
+            const parsed = parseVoiceQuoteLine(utterance, {
+              prestations: prestationsRef.current,
+              defaultVatRate: currentRateRef.current,
+            });
+            if (parsed.kind === 'ambiguous') {
+              return { say: tt('devis.voice.lineAmbiguous', { options: parsed.options.join(', ') }) };
+            }
+            if (parsed.kind === 'missing_price') {
+              return { say: tt('devis.voice.missingPrice', { label: parsed.label }) };
+            }
+            if (parsed.kind === 'none') {
+              return { say: tt('devis.voice.missingPrice', { label: '…' }) };
+            }
+            // PROPOSER → VALIDER (spec fondateur) : la dictée remplit les CHAMPS VISIBLES du
+            // formulaire — rien n'entre au brouillon sans « valide la ligne » (voix) ou le
+            // bouton Ajouter (doigt). Un seul canal d'écriture : le manuel.
+            const line = parsed.line;
+            lineFormRef.current.prepare({
+              label: line.label,
+              qty: line.qty,
+              unitPriceHT: line.unitPriceHT,
+              category: line.category,
+            });
+            // TVA : UNE par devis (étape TVA). Si la dictée/le catalogue en voulait une autre,
+            // on le DIT — jamais une perte silencieuse.
+            const vatNotice =
+              line.vatRate !== currentRateRef.current
+                ? ` ${tt('devis.voice.vatNotice', { rate: currentRateRef.current })}`
+                : '';
+            return {
+              say:
+                tt(line.source === 'catalogue' ? 'devis.voice.linePreparedCatalogue' : 'devis.voice.linePrepared', {
+                  label: line.label,
+                  qty: line.qty,
+                  price: formatEUR(line.unitPriceHT),
+                }) + vatNotice,
+            };
+          };
+        },
+      },
+    ];
+  }, []);
+
+  const GREET_BY_STEP: Partial<Record<DevisStep, I18nKey>> = {
+    client: 'devis.voice.greetClient',
+    lignes: 'devis.voice.greetLines',
+    tvaMentions: 'devis.voice.greetVat',
+    signature: 'devis.voice.greetSignature',
+    acompte: 'devis.voice.greetDeposit',
+  };
+  const greetKey = GREET_BY_STEP[flow.step];
+  const agentSurface = useMemo<AgentSurface>(
+    () => ({
+      ...(greetKey
+        ? { greeting: { key: `devis-new:${flow.step}`, text: t(greetKey, { personality }) } }
+        : {}),
+      affordances: voiceAffordances,
+    }),
+    [flow.step, greetKey, personality, voiceAffordances],
+  );
+  const wizardAgentContext = useMemo<AgentContext>(
+    () => ({
+      screen: { name: '/devis/new', instanceId: `devis-new:${flow.step}` },
+      entities: customer ? [{ type: 'customer' as const, id: customer.id, label: customer.name }] : [],
+      capabilities: ['screen.read', 'customer.read'],
+    }),
+    [customer, flow.step],
+  );
+  usePublishAgentContext(wizardAgentContext, { bottomAvoidance: 90 }, agentSurface);
+  const agentSession = useAgentSession();
+
   // Défaut métier (BTP ⇒ TVA 10 = logement > 2 ans, comme le proto) : semé UNE fois
   // dans le brouillon de la machine, tant que rien n'est saisi — jamais écrasé ensuite.
   const seeded = useRef(false);
@@ -278,7 +637,6 @@ export default function DevisNew() {
     if (flow.step !== 'signature') return;
     setSignature(null);
     if (signerName === '' && customer !== null) setSignerName(customer.name);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [flow.step]);
 
   // signerName n'est commité dans la machine QUE si le pad porte un tracé ET un nom
@@ -335,6 +693,56 @@ export default function DevisNew() {
 
   const removeLine = (index: number): void => {
     edit({ lines: draft.lines.filter((_, i) => i !== index) });
+  };
+
+  /** Applique/rejette la proposition en attente — UN SEUL chemin, voix ET tap. */
+  const applyLineProposal = (): DevisProposal | null => {
+    const proposal = lineProposal;
+    if (proposal === null) return null;
+    edit(proposal.patch);
+    setLineProposal(null);
+    return proposal;
+  };
+  const rejectLineProposal = (): boolean => {
+    if (lineProposal === null) return false;
+    setLineProposal(null);
+    return true;
+  };
+  const lineProposalRef = useRef<{ apply: () => DevisProposal | null; reject: () => boolean; pending: () => DevisProposal | null }>({
+    apply: () => null,
+    reject: () => false,
+    pending: () => null,
+  });
+  lineProposalRef.current = { apply: applyLineProposal, reject: rejectLineProposal, pending: () => lineProposal };
+
+  // Pont voix → formulaire : préparer = poser les champs VISIBLES ; soumettre = le MÊME
+  // addLine que le bouton (lineValid fait foi — jamais un second chemin d'écriture).
+  lineFormRef.current = {
+    prepare: (line) => {
+      setLineLabel(line.label);
+      setLineQty(String(line.qty));
+      setLinePrice((line.unitPriceHT / 100).toFixed(2).replace('.', ','));
+      setLineCat(line.category);
+    },
+    submit: () => {
+      if (!lineValid || lineQtyValue === null || linePriceValue === null) return null;
+      const added: LineInput = {
+        label: lineLabel.trim(),
+        category: lineCat,
+        qty: lineQtyValue,
+        unitPriceHT: Math.round(linePriceValue * 100),
+        vatRate: currentRate,
+      };
+      addLine();
+      return added; // la valeur canonique du formulaire à l'instant T — pas une relecture React
+    },
+    reject: () => {
+      const hadSomething = lineLabel.trim() !== '' || linePrice.trim() !== '';
+      setLineLabel('');
+      setLineQty('1');
+      setLinePrice('');
+      return hadSomething;
+    },
   };
 
   // ── Étape 3 : choix TVA = contexte + taux, appliqué à tout le devis ────────
@@ -645,6 +1053,108 @@ export default function DevisNew() {
           ) : null}
 
           {/* ── Étape 2 — lignes (saisie libre + totaux réels) ── */}
+          {/* Tag CLIENT sur l'étape prestations (spec fondateur) : sélectionné → chip + ✕
+              (désélection) ; aucun → scroll horizontal des clients, un tap sélectionne. */}
+          {flow.step === 'lignes' ? (
+            customer !== null ? (
+              <View style={{ flexDirection: 'row', marginBottom: 10 }}>
+                <View
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 8,
+                    borderWidth: 1,
+                    borderColor: controls.cardBorder,
+                    backgroundColor: colors.surface,
+                    borderRadius: 999,
+                    paddingLeft: 12,
+                    paddingRight: 6,
+                    paddingVertical: 6,
+                  }}
+                >
+                  <Text style={[font('meta', 700), { color: colors.ink900 }]} numberOfLines={1}>
+                    {customer.name}
+                  </Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={t('devis.clientTagRemove', { personality })}
+                    hitSlop={8}
+                    onPress={() => setFlow((f) => devisEdit(f, { customerId: null }))}
+                    style={{ width: 24, height: 24, borderRadius: 12, alignItems: 'center', justifyContent: 'center' }}
+                  >
+                    <Ionicons name="close" size={16} color={colors.slate500} />
+                  </Pressable>
+                </View>
+              </View>
+            ) : (
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={{ gap: 8, paddingVertical: 2 }}
+                style={{ marginBottom: 10 }}
+              >
+                {(customers.data ?? []).map((c) => (
+                  <Pressable
+                    key={c.id}
+                    accessibilityRole="button"
+                    accessibilityLabel={c.name}
+                    onPress={() => setFlow((f) => devisEdit(f, { customerId: c.id }))}
+                    style={{
+                      borderWidth: 1,
+                      borderColor: colors.line,
+                      borderRadius: 999,
+                      paddingHorizontal: 12,
+                      paddingVertical: 7,
+                    }}
+                  >
+                    <Text style={[font('meta', 600), { color: colors.ink800 }]} numberOfLines={1}>
+                      {c.name}
+                    </Text>
+                  </Pressable>
+                ))}
+              </ScrollView>
+            )
+          ) : null}
+          {flow.step === 'lignes' && lineProposal !== null ? (
+            <Card radius={16} padding={14} style={{ borderColor: semantic.ai, borderWidth: 1 }}>
+              <Text style={[font('label'), { fontSize: 11.5, color: semantic.aiInk }]}>
+                {lineProposal.label.toUpperCase()}
+              </Text>
+              {lineProposal.diff.map((field) => (
+                <Text key={field.field} style={[font('sub'), { color: colors.ink800, marginTop: 4 }]}>
+                  {field.field} : {field.before} → {field.after}
+                </Text>
+              ))}
+              <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
+                <View style={{ flex: 1 }}>
+                  <Button
+                    title={t('devis.proposalApply', { personality })}
+                    onPress={() => {
+                      applyLineProposal();
+                    }}
+                  />
+                </View>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={t('devis.proposalReject', { personality })}
+                  onPress={() => {
+                    rejectLineProposal();
+                  }}
+                  style={{
+                    paddingHorizontal: 16,
+                    justifyContent: 'center',
+                    borderRadius: 12,
+                    borderWidth: 1,
+                    borderColor: colors.line,
+                  }}
+                >
+                  <Text style={[font('body'), { color: colors.ink800 }]}>
+                    {t('devis.proposalReject', { personality })}
+                  </Text>
+                </Pressable>
+              </View>
+            </Card>
+          ) : null}
           {flow.step === 'lignes' ? (
             <>
               <Text style={[font('screenH1'), { fontSize: 24, color: titleColor }]}>
@@ -656,24 +1166,46 @@ export default function DevisNew() {
 
               {/* Saisie d'une ligne */}
               <Card radius={18} padding={16}>
-                <TextInput
-                  value={lineLabel}
-                  onChangeText={setLineLabel}
-                  placeholder={t('devis.lineLabelPlaceholder', { personality })}
-                  placeholderTextColor={colors.slate400}
-                  accessibilityLabel={t('devis.lineLabelPlaceholder', { personality })}
-                  style={[
-                    font('body'),
-                    {
-                      minHeight: 44,
-                      color: colors.ink900,
+                <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+                  <TextInput
+                    value={lineLabel}
+                    onChangeText={setLineLabel}
+                    placeholder={t('devis.lineLabelPlaceholder', { personality })}
+                    placeholderTextColor={colors.slate400}
+                    accessibilityLabel={t('devis.lineLabelPlaceholder', { personality })}
+                    style={[
+                      font('body'),
+                      {
+                        flex: 1,
+                        minHeight: 44,
+                        color: colors.ink900,
+                        borderWidth: 1,
+                        borderColor: colors.line,
+                        borderRadius: 12,
+                        paddingHorizontal: 12,
+                      },
+                    ]}
+                  />
+                  {/* Parité manuel↔vocal : le picker remplit via applySuggestion, EXACTEMENT
+                      comme la sélection vocale « catalogue d'abord ». */}
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={t('devis.cataloguePickOpen', { personality })}
+                    hitSlop={8}
+                    onPress={() => setCataloguePickerOpen(true)}
+                    style={{
+                      width: 44,
+                      height: 44,
+                      borderRadius: 12,
                       borderWidth: 1,
                       borderColor: colors.line,
-                      borderRadius: 12,
-                      paddingHorizontal: 12,
-                    },
-                  ]}
-                />
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                  >
+                    <Ionicons name="book-outline" size={20} color={semantic.ai} />
+                  </Pressable>
+                </View>
 
                 {/* Suggestions du catalogue (C27) — tap = pré-remplit, saisie libre intacte */}
                 {suggestions.length > 0 ? (
@@ -1073,6 +1605,122 @@ export default function DevisNew() {
         </ScrollView>
 
         {/* Garde bloquante (voix de Bob) + CTA d'avancement — chaque Suivant = devisNext */}
+        {/* Picker catalogue (parité manuelle du « catalogue d'abord » vocal) */}
+        <Modal
+          visible={cataloguePickerOpen}
+          animationType="slide"
+          transparent
+          onRequestClose={() => setCataloguePickerOpen(false)}
+        >
+          <Pressable
+            style={{ flex: 1, backgroundColor: 'rgba(10,15,30,0.45)' }}
+            accessibilityLabel={t('devis.cataloguePickTitle', { personality })}
+            onPress={() => setCataloguePickerOpen(false)}
+          />
+          <View
+            style={{
+              maxHeight: '65%',
+              backgroundColor: colors.surface,
+              borderTopLeftRadius: 22,
+              borderTopRightRadius: 22,
+              paddingTop: 14,
+              paddingBottom: insets.bottom + 12,
+            }}
+          >
+            <Text style={[font('section'), { color: colors.ink900, paddingHorizontal: 20, marginBottom: 8 }]}>
+              {t('devis.cataloguePickTitle', { personality })}
+            </Text>
+            <ScrollView contentContainerStyle={{ paddingHorizontal: 20, gap: 8, paddingBottom: 8 }}>
+              {catalogue.prestations.length === 0 ? (
+                <Text style={[font('sub'), { color: colors.slate500 }]}>
+                  {t('devis.cataloguePickEmpty', { personality })}
+                </Text>
+              ) : (
+                catalogue.prestations.map((p) => (
+                  <Pressable
+                    key={p.id}
+                    accessibilityRole="button"
+                    accessibilityLabel={p.label}
+                    onPress={() => {
+                      applySuggestion(p);
+                      setCataloguePickerOpen(false);
+                    }}
+                    style={{
+                      borderWidth: 1,
+                      borderColor: colors.line,
+                      borderRadius: 12,
+                      paddingHorizontal: 12,
+                      paddingVertical: 10,
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 10,
+                    }}
+                  >
+                    <View style={{ flex: 1 }}>
+                      <Text numberOfLines={1} style={[font('body', 600), { color: colors.ink900 }]}>
+                        {p.label}
+                      </Text>
+                      <Text style={[font('meta'), { color: colors.slate500 }]}>
+                        {t(LINE_CATEGORIES.find((c) => c.key === p.category)?.labelKey ?? 'voix.catLabor', { personality })}
+                        {p.unit ? ` · ${p.unit}` : ''}
+                        {p.indicative === true ? ` · ${t('catalogue.indicative', { personality })}` : ''}
+                      </Text>
+                    </View>
+                    <Text style={[font('body', 700), { color: colors.ink900 }]}>
+                      {formatEUR(p.unitPriceHT)}
+                    </Text>
+                  </Pressable>
+                ))
+              )}
+            </ScrollView>
+          </View>
+        </Modal>
+
+        {/* S2-GUIDÉ : la session vocale reste VISIBLE sur la modale (le bouton Bob global est
+            masqué par les modales natives) — état + dernière réponse, tap = stop. */}
+        {agentSession.active || agentSession.response !== null ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={t('agent.global.stop', { personality })}
+            accessibilityLiveRegion="polite"
+            onPress={agentSession.active ? agentSession.stop : agentSession.dismissResponse}
+            style={{
+              marginHorizontal: 20,
+              marginBottom: 8,
+              paddingHorizontal: 12,
+              paddingVertical: 8,
+              borderRadius: 12,
+              borderWidth: 1,
+              borderColor: controls.cardBorder,
+              backgroundColor: colors.surface,
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 8,
+            }}
+          >
+            <View
+              style={{
+                width: 8,
+                height: 8,
+                borderRadius: 4,
+                backgroundColor: agentSession.phase === 'listening' ? semantic.success : semantic.ai,
+              }}
+            />
+            <Text numberOfLines={2} style={[font('meta'), { color: colors.ink800, flex: 1 }]}>
+              {agentSession.response ??
+                t(
+                  agentSession.phase === 'listening'
+                    ? 'agent.global.listening'
+                    : agentSession.phase === 'thinking'
+                      ? 'agent.global.thinking'
+                      : agentSession.phase === 'speaking'
+                        ? 'agent.global.speaking'
+                        : 'agent.global.idle',
+                  { personality },
+                )}
+            </Text>
+          </Pressable>
+        ) : null}
         {flow.step !== 'facture' ? (
           <View style={{ paddingHorizontal: 18, paddingTop: 6, paddingBottom: insets.bottom + 16, gap: 10 }}>
             {guardMsg !== null ? (

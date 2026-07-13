@@ -37,15 +37,21 @@ export default function DevisDetail() {
     const q = quote.data;
     if (!q) return null;
     const customer = (customers.data ?? []).find((c) => c.id === q.customerId) ?? null;
-    // Factures issues de ce devis (lien durable parentQuoteId) — la première en nav croisée.
-    const linked = (invoices.data ?? []).find((i) => i.parentQuoteId === q.id);
+    // TOUTES les factures issues de ce devis (lien durable parentQuoteId), acompte d'abord
+    // puis par numéro — chacune porte CE QU'ELLE FACTURE (netToPay, règle acompte).
+    const linked = (invoices.data ?? [])
+      .filter((i) => i.parentQuoteId === q.id)
+      .sort(
+        (a, b) =>
+          (a.kind === 'deposit' ? 0 : 1) - (b.kind === 'deposit' ? 0 : 1) ||
+          (a.number ?? '').localeCompare(b.number ?? ''),
+      )
+      .map((i) => ({ id: i.id, number: i.number, ttcCents: i.totals.netToPay, kind: i.kind }));
     return buildPieceView({
       source: 'quote',
       quote: q,
       customer,
-      ...(linked
-        ? { finalInvoice: { id: linked.id, number: linked.number, ttcCents: linked.totals.ttc } }
-        : {}),
+      ...(linked.length > 0 ? { linkedInvoices: linked } : {}),
     });
   }, [quote.data, customers.data, invoices.data]);
   const agentContext = useMemo<AgentContext>(() => {

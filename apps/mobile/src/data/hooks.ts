@@ -11,7 +11,6 @@ import type {
   Scenario,
   Horizon,
   CreateQuoteInput,
-  PaymentMethod,
   RecordExpenseInput,
   PlanTier,
   TodayPriority,
@@ -56,6 +55,7 @@ const keys = {
   invoice: (id: string) => ['invoice', id] as const,
   quote: (id: string) => ['quote', id] as const,
   notifications: ['notifications'] as const,
+  notificationUnreadPreview: ['notifications', 'unread-preview'] as const,
 };
 
 export function useSubscription() {
@@ -509,6 +509,36 @@ export function useMarkNotificationRead() {
       return r.value;
     },
     onSuccess: () => void qc.invalidateQueries({ queryKey: keys.notifications }),
+  });
+}
+
+/** Portée serveur exacte d'un « tout marquer comme lu » ; indépendante de la pagination du fil. */
+export function useUnreadNotificationsPreview() {
+  const client = useBobClient();
+  return useQuery({
+    queryKey: keys.notificationUnreadPreview,
+    queryFn: async () => {
+      const r = await client.previewUnreadNotifications();
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+  });
+}
+
+/** Confirme la portée figée par useUnreadNotificationsPreview en une mutation atomique. */
+export function useMarkNotificationsReadThrough() {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (throughCreatedAt: string) => {
+      const r = await client.markNotificationsReadThrough({ throughCreatedAt });
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.notifications });
+      void qc.invalidateQueries({ queryKey: keys.notificationUnreadPreview });
+    },
   });
 }
 

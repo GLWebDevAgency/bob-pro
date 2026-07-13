@@ -218,13 +218,11 @@ export function ListRow({
   title,
   subtitle,
   amount,
-  amountColor,
   onPress,
 }: {
   title: string;
   subtitle?: string;
   amount?: ReactNode;
-  amountColor?: string;
   onPress?: () => void;
 }) {
   const { colors } = useTheme();

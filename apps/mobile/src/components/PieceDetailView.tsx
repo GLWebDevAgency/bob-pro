@@ -296,20 +296,29 @@ export function PieceDetailView({ view, onClose, onOpenQuote, onOpenInvoice, act
               {...(onOpenQuote ? { onPress: () => onOpenQuote(view.linkedQuote!) } : {})}
             />
           ) : null}
-          {view.linkedInvoice ? (
+          {view.linkedInvoices.map((linked) => (
             <LinkedCard
+              key={linked.id}
               gradient={[conformityCard.bgTop, conformityCard.bgBottom]}
               border={conformityCard.border}
               chipBg={semantic.b2gBg}
               icon={<ReturnArrowIcon color={semantic.b2g} />}
-              label={t('piece.linkedInvoice', { personality })}
+              label={
+                linked.kind === 'deposit'
+                  ? t('piece.kindAcompte', { personality })
+                  : linked.kind === 'credit_note'
+                    ? t('piece.kindAvoir', { personality })
+                    : linked.kind === 'situation'
+                      ? t('piece.kindSituation', { personality })
+                      : t('piece.linkedInvoice', { personality })
+              }
               labelColor={pieceDetail.linkedLabelInk}
-              value={view.linkedInvoice.number ?? ''}
+              value={`${linked.number ?? ''}${linked.ttcCents !== undefined ? ` · ${formatEUR(linked.ttcCents)}` : ''}`}
               valueColor={semantic.aiInk}
               chevronColor={semantic.b2g}
-              {...(onOpenInvoice ? { onPress: () => onOpenInvoice(view.linkedInvoice!) } : {})}
+              {...(onOpenInvoice ? { onPress: () => onOpenInvoice(linked) } : {})}
             />
-          ) : null}
+          ))}
           {view.depositDeduction?.invoiceRef ? (
             <LinkedCard
               gradient={[conformityCard.bgTop, conformityCard.bgBottom]}

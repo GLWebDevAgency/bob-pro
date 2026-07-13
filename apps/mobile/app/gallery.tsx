@@ -103,7 +103,6 @@ export default function GalleryScreen() {
     if (themeParam === 'marine' || themeParam === 'foret' || themeParam === 'graphite' || themeParam === 'indigo') {
       setThemeName(themeParam);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [themeParam]);
   const insets = useSafeAreaInsets();
 

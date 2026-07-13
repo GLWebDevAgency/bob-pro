@@ -58,6 +58,7 @@ import {
   type StatusBadgeVariant,
 } from '@bob/ui';
 import { useCreateCustomer, useCustomers, useInvoices, useQuotes } from '../../src/data/hooks';
+import { usePublishAgentContext, type AgentContext } from '../../src/agent';
 import { CheckIcon, ChevronRightIcon, PlusIcon, SearchIcon } from '../../src/components/icons';
 
 type TypeFilter = 'tous' | CustomerListItem['type'];
@@ -458,6 +459,26 @@ export default function Clients() {
   const hasError = customers.isError || invoices.isError || quotes.isError;
   const carnet = customers.data;
   const totalCents = pendingTotalCents(standings);
+
+  // Bob voit exactement le carnet filtré dans son ordre d'affichage. La recherche reste une
+  // donnée UI non fiable : seuls les ids sont transmis puis rechargés tenant-scoped.
+  const agentContext = useMemo<AgentContext>(
+    () => ({
+      screen: { name: 'clients', instanceId: 'clients' },
+      entities:
+        !booting && !hasError
+          ? list.slice(0, 20).map((customer) => ({
+              type: 'customer' as const,
+              id: customer.id,
+              label: customer.name,
+            }))
+          : [],
+      capabilities:
+        !booting && !hasError ? ['screen.read', 'customer.read'] : ['screen.read'],
+    }),
+    [booting, hasError, list],
+  );
+  usePublishAgentContext(agentContext);
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>

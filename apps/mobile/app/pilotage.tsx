@@ -123,17 +123,21 @@ export default function Pilotage() {
   }, [loading, entries.data, payments.data, invoices.data, customers.data, expenses.data, company.data]);
 
   // Bob voit les top clients AFFICHÉS : « parle-moi de ce client », « résume l'écran ».
+  // Le paywall est une frontière de visibilité : aucune entité ni capability client ne fuit
+  // tant que l'offre ne rend pas réellement le pilotage à l'écran.
   const agentContext = useMemo<AgentContext>(
     () => ({
       screen: { name: 'pilotage', instanceId: 'pilotage' },
-      entities: (review?.topClients.lines ?? []).slice(0, 5).map((line) => ({
-        type: 'customer' as const,
-        id: line.customerId,
-        label: line.customerName,
-      })),
-      capabilities: ['screen.read', 'customer.read'],
+      entities: entitled
+        ? (review?.topClients.lines ?? []).slice(0, 5).map((line) => ({
+            type: 'customer' as const,
+            id: line.customerId,
+            label: line.customerName,
+          }))
+        : [],
+      capabilities: entitled ? ['screen.read', 'customer.read'] : ['screen.read'],
     }),
-    [review],
+    [entitled, review],
   );
   usePublishAgentContext(agentContext);
 

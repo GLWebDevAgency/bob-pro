@@ -89,6 +89,7 @@ export function makeBobAgent(client: BobClient): BobAssistant {
           type: input.type,
           id: invoice.id,
           label: invoice.number ? `Facture ${invoice.number}` : 'Facture brouillon',
+          route: `/facture/${encodeURIComponent(invoice.id)}`,
           facts: [
             { label: 'Statut', value: invoiceStatusLabel(invoice.status) },
             { label: 'Type', value: invoiceKindLabel(invoice.kind) },
@@ -114,6 +115,7 @@ export function makeBobAgent(client: BobClient): BobAssistant {
           type: input.type,
           id: quote.id,
           label: quote.number ? `Devis ${quote.number}` : 'Devis brouillon',
+          route: `/devis/${encodeURIComponent(quote.id)}`,
           facts: [
             { label: 'Statut', value: quoteStatusLabel(quote.status) },
             ...(customer ? [{ label: 'Client', value: customer.name }] : []),
@@ -141,6 +143,7 @@ export function makeBobAgent(client: BobClient): BobAssistant {
           type: input.type,
           id: line.id,
           label: line.label,
+          route: `/facture/${encodeURIComponent(invoice.id)}`,
           facts: [
             { label: 'Facture', value: invoice.number ?? 'Brouillon' },
             { label: 'Quantité', value: `${line.qty}${line.unit ? ` ${line.unit}` : ''}` },
@@ -166,6 +169,7 @@ export function makeBobAgent(client: BobClient): BobAssistant {
           type: input.type,
           id: line.id,
           label: line.label,
+          route: `/devis/${encodeURIComponent(quote.id)}`,
           facts: [
             { label: 'Devis', value: quote.number ?? 'Brouillon' },
             { label: 'Quantité', value: `${line.qty}${line.unit ? ` ${line.unit}` : ''}` },
@@ -185,6 +189,7 @@ export function makeBobAgent(client: BobClient): BobAssistant {
           type: input.type,
           id: customer.id,
           label: customer.name,
+          route: `/client/${encodeURIComponent(customer.id)}`,
           facts: [
             { label: 'Type', value: customerTypeLabel(customer.type) },
             { label: 'Encours', value: formatEUR(customer.outstanding) },
@@ -221,6 +226,7 @@ export function makeBobAgent(client: BobClient): BobAssistant {
           type: input.type,
           id: document.id,
           label: document.filename,
+          route: `/documents/${encodeURIComponent(document.id)}`,
           facts: [
             { label: 'Type', value: documentKindLabel(document.kind) },
             { label: 'Statut', value: documentStatusLabel(document.status) },
@@ -260,6 +266,8 @@ export function makeBobAgent(client: BobClient): BobAssistant {
           type: input.type,
           id: notification.id,
           label: notification.title,
+          ...(notification.route !== null ? { route: notification.route } : {}),
+          state: { unread: notification.readAt === null },
           facts: [
             { label: 'Statut', value: notification.readAt !== null ? 'Lue' : 'Non lue' },
             { label: 'Reçue le', value: frDateLabel(notification.createdAt) },
@@ -413,6 +421,13 @@ export function makeBobAgent(client: BobClient): BobAssistant {
         createdAt: d.createdAt,
       }));
       return ok(docs);
+    },
+    // Même snapshot/cutoff serveur que le bouton manuel « Tout marquer comme lu ».
+    async previewUnreadNotifications() {
+      return client.previewUnreadNotifications();
+    },
+    async markNotificationsReadThrough(input) {
+      return client.markNotificationsReadThrough(input);
     },
     async registerPayment(input) {
       return client.registerPayment({

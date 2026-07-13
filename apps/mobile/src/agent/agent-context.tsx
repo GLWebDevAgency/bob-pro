@@ -25,20 +25,48 @@ export interface AgentAccessLayout {
   readonly hidden?: boolean;
 }
 
+/** Résultat d'une affordance : ce que Bob répond (parlé + bulle) après avoir agi sur l'écran. */
+export interface AffordanceOutcome {
+  readonly say: string;
+}
+
+/**
+ * AFFORDANCE D'ÉCRAN (S2-GUIDÉ) : un pouvoir vocal LOCAL du wizard focalisé — « pour Camping
+ * Les Pins » sélectionne le client, « ajoute deux heures de main-d'œuvre à 55 € » remplit la
+ * ligne. `match` interprète l'énoncé (null = pas pour moi → cerveau générique) ; `run` agit
+ * sur l'ÉTAT LOCAL de l'écran (toujours visible, annulable, parité stricte avec le geste
+ * manuel — mêmes setters). RIEN ici n'est sérialisé ni envoyé au serveur.
+ */
+export interface AgentAffordance {
+  readonly id: string;
+  readonly match: (utterance: string) => null | (() => Promise<AffordanceOutcome> | AffordanceOutcome);
+}
+
+/** Surface vocale d'un écran : guidage à l'arrivée + pouvoirs locaux. Jamais sérialisée. */
+export interface AgentSurface {
+  /** Guidage lu quand l'écran/étape prend le focus en session active — `key` STABLE par étape
+   * (une même key n'est jamais relue ; changer d'étape change la key → nouveau guidage). */
+  readonly greeting?: { readonly key: string; readonly text: string };
+  readonly affordances?: readonly AgentAffordance[];
+}
+
 interface AgentPublication {
   readonly context: AgentContext;
   readonly layout: AgentAccessLayout;
+  readonly surface: AgentSurface;
 }
 
 interface AgentContextValue {
   readonly context: AgentContext;
   readonly layout: AgentAccessLayout;
+  readonly surface: AgentSurface;
   readonly publish: (publication: AgentPublication) => () => void;
 }
 
 const EMPTY_ENTITIES: readonly AgentEntityRef[] = Object.freeze([]);
 const EMPTY_CAPABILITIES: readonly AgentCapability[] = Object.freeze([]);
 const EMPTY_LAYOUT: AgentAccessLayout = Object.freeze({});
+const EMPTY_SURFACE: AgentSurface = Object.freeze({});
 
 function normalizeScreen(pathname: string): string {
   if (!pathname) return '/';
@@ -74,6 +102,8 @@ export function AgentContextProvider({ children }: { readonly children: ReactNod
     registrations.current.set(id, {
       context: snapshotAgentContext(publication.context),
       layout: { ...publication.layout },
+      // La surface reste par RÉFÉRENCE : ses handlers pilotent l'état vivant de l'écran.
+      surface: publication.surface,
     });
     setVersion((current) => current + 1);
     return () => {
@@ -94,6 +124,7 @@ export function AgentContextProvider({ children }: { readonly children: ReactNod
     return {
       context: active?.context ?? fallback,
       layout: active?.layout ?? {},
+      surface: active?.surface ?? EMPTY_SURFACE,
       publish,
     };
     // version matérialise les mutations de la Map dans la valeur memoisee.
@@ -106,6 +137,13 @@ export function useAgentContext(): AgentContext {
   const value = useContext(AgentContextState);
   if (!value) throw new Error('useAgentContext must be used inside AgentContextProvider');
   return value.context;
+}
+
+/** Surface vocale de l'écran FOCALISÉ (guidage + affordances) — consommée par la session. */
+export function useAgentSurface(): AgentSurface {
+  const value = useContext(AgentContextState);
+  if (!value) throw new Error('useAgentSurface must be used inside AgentContextProvider');
+  return value.surface;
 }
 
 export function useAgentAccessLayout(): AgentAccessLayout {
@@ -121,9 +159,12 @@ export function useAgentAccessLayout(): AgentAccessLayout {
 export function usePublishAgentContext(
   context: AgentContext,
   layout: AgentAccessLayout = EMPTY_LAYOUT,
+  surface: AgentSurface = EMPTY_SURFACE,
 ): void {
   const value = useContext(AgentContextState);
   if (!value) throw new Error('usePublishAgentContext must be used inside AgentContextProvider');
   const { publish } = value;
-  useFocusEffect(useCallback(() => publish({ context, layout }), [context, layout, publish]));
+  useFocusEffect(
+    useCallback(() => publish({ context, layout, surface }), [context, layout, publish, surface]),
+  );
 }

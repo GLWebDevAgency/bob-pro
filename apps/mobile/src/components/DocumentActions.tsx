@@ -146,7 +146,24 @@ export function QuoteActions({
               diff: buildActionDiff('envoyer_devis', {}, { number: quote.number }),
               challenge: challengeFor(OUTBOUND, 'confirm_all'),
             });
-            if (ok) await run('send', () => send.mutateAsync(quote.id));
+            if (ok) {
+              await run('send', async () => {
+                const result = await send.mutateAsync(quote.id);
+                if (result.deliveryStatus === 'queued') {
+                  Alert.alert(
+                    'Envoi programmé',
+                    'L’e-mail partira en arrière-plan. Vous pouvez suivre sa livraison dans l’activité.',
+                  );
+                } else if (result.deliveryStatus === 'sent') {
+                  Alert.alert('Devis envoyé', 'L’e-mail a été pris en charge par le service d’envoi.');
+                } else {
+                  Alert.alert(
+                    'Devis préparé',
+                    'Le devis est passé au statut Envoyé, mais aucun e-mail n’a été programmé. Vérifiez l’adresse du client.',
+                  );
+                }
+              });
+            }
           })()
         }
       />
