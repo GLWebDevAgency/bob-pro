@@ -6,7 +6,12 @@ export type DomainError =
   | { code: 'INVALID_TRANSITION'; from: string; to: string }
   | { code: 'DOCUMENT_NUMBER_GAP'; expected: string; got: string }
   | { code: 'QUOTE_ALREADY_SIGNED'; quoteId: string }
-  | { code: 'MISSING_SIREN_FOR_EINVOICE'; customerId: string };
+  | { code: 'MISSING_SIREN_FOR_EINVOICE'; customerId: string }
+  | { code: 'CABINET_MEMBER_ALREADY_EXISTS'; cabinetId: string; userId: string }
+  | { code: 'CABINET_LAST_ADMIN_REQUIRED'; cabinetId: string }
+  | { code: 'CABINET_INVITATION_EXPIRED'; invitationId: string; expiresAt: string }
+  | { code: 'CABINET_INVITATION_ALREADY_USED'; invitationId: string }
+  | { code: 'CABINET_INVITATION_EMAIL_MISMATCH'; invitationId: string };
 
 export type DomainResult<T> = Result<T, DomainError>;
 

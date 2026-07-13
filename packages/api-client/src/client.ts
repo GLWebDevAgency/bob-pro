@@ -36,6 +36,9 @@ import type {
   DocumentLinkedEntityType,
   DocumentView,
   DocumentDownloadUrl,
+  DocumentFolderView,
+  DeleteDocumentFolderStrategy,
+  DocumentAnalysis,
   SubscriptionInfo,
 } from '@bob/core';
 
@@ -108,6 +111,7 @@ export interface ListDocumentsClientInput {
   kind?: DocumentKind;
   linkedEntityType?: DocumentLinkedEntityType;
   linkedEntityId?: string;
+  folderId?: string | null;
   includeDeleted?: boolean;
 }
 
@@ -119,14 +123,73 @@ export interface UploadDocumentClientInput {
   linkedEntityType?: DocumentLinkedEntityType | null;
   linkedEntityId?: string | null;
   documentDate?: string | null;
+  folderId?: string | null;
   /** Tags de classement/recherche (#11) — proposés par l'OCR, confirmés à l'enregistrement. */
   tags?: string[];
+}
+
+export interface CreateDocumentIntakeClientInput {
+  contentBase64: string;
+  mimeType: string;
+  filename: string;
+  idempotencyKey: string;
+}
+
+export interface ListDocumentFoldersClientInput {
+  parentId?: string | null;
+  limit?: number;
+  cursor?: string | null;
+}
+
+export interface DocumentFolderPageView {
+  items: DocumentFolderView[];
+  nextCursor: string | null;
+}
+
+export interface DocumentFolderDeletionPlanView {
+  planId: string;
+  expiresAt: string;
+  folder: Pick<DocumentFolderView, 'id' | 'parentId' | 'name' | 'systemKey'>;
+  directChildCount: number;
+  descendantFolderCount: number;
+  directDocumentCount: number;
+  documentCount: number;
+  canDeleteEmpty: boolean;
+}
+
+export interface DocumentFolderDeletionExecutionView {
+  folderId: string;
+  transferredDocuments: number;
+  transferredChildren: number;
 }
 
 export interface ClassifyDocumentClientInput {
   documentId: string;
   linkedEntityType: DocumentLinkedEntityType;
   linkedEntityId: string;
+  expectedRevision: number;
+}
+
+/**
+ * Données comptables confirmées par l'utilisateur après lecture de l'original.
+ * L'identité tenant, la source OCR et la clé d'idempotence restent exclusivement
+ * sous le contrôle du serveur.
+ */
+export type DocumentExpenseDraft = Omit<
+  RecordExpenseInput,
+  'companyId' | 'idempotencyKey' | 'source'
+>;
+
+export interface RecordDocumentExpenseClientInput {
+  documentId: string;
+  expectedRevision: number;
+  targetFolderId: string;
+  expense: DocumentExpenseDraft;
+}
+
+export interface RecordDocumentExpenseClientOutput {
+  expenseId: string;
+  document: DocumentView;
 }
 
 export interface VoiceConfig {
@@ -138,6 +201,25 @@ export interface VoiceSynthesisResult {
   audioBase64: string | null;
   mimeType: string | null;
   model: string;
+}
+
+export interface RealtimeVoiceConfig {
+  available: boolean;
+  transport: 'webrtc';
+  model: string;
+  voice: 'marin' | 'cedar';
+  configVersion: string;
+  requiresDevelopmentBuild: true;
+  maxSessionSeconds: number;
+}
+
+export interface RealtimeVoiceCall {
+  transport: 'webrtc';
+  answerSdp: string;
+  model: string;
+  voice: 'marin' | 'cedar';
+  configVersion: string;
+  maxSessionSeconds: number;
 }
 
 export interface AccountingPreviewLine {
@@ -284,6 +366,22 @@ export interface NotificationView {
   createdAt: string;
 }
 
+/** Aperçu serveur non paginé qui fige la portée d'un « tout marquer comme lu ». */
+export interface NotificationUnreadPreview {
+  unreadCount: number;
+  throughCreatedAt: string;
+}
+
+export interface NotificationReadThroughInput {
+  /** Valeur opaque temporelle renvoyée par previewUnreadNotifications, à rejouer sans la modifier. */
+  throughCreatedAt: string;
+}
+
+export interface NotificationReadThroughOutput {
+  updatedCount: number;
+  readAt: string;
+}
+
 /** POST /devices — enregistrement du token push Expo du device (idempotent par tenant/token). */
 export interface RegisterDeviceClientInput {
   expoPushToken: string;
@@ -366,11 +464,43 @@ export interface BobClient {
   transcribe(input: { audioBase64: string; mimeType: string }): Promise<Result<{ text: string }, AppError>>;
   synthesizeSpeech(input: { text: string }): Promise<Result<VoiceSynthesisResult, AppError>>;
   voiceConfig(): Promise<Result<VoiceConfig, AppError>>;
+  realtimeVoiceConfig(): Promise<Result<RealtimeVoiceConfig, AppError>>;
+  createRealtimeVoiceCall(input: { sdp: string }): Promise<Result<RealtimeVoiceCall, AppError>>;
   listDocuments(input?: ListDocumentsClientInput): Promise<Result<DocumentView[], AppError>>;
+  getDocument(documentId: string): Promise<Result<DocumentView, AppError>>;
   uploadDocument(input: UploadDocumentClientInput): Promise<Result<DocumentView, AppError>>;
+  /** Archive l'original avant toute analyse ; idempotent sur `idempotencyKey`. */
+  createDocumentIntake(input: CreateDocumentIntakeClientInput): Promise<Result<DocumentView, AppError>>;
+  listDocumentFolders(input?: ListDocumentFoldersClientInput): Promise<Result<DocumentFolderPageView, AppError>>;
+  getDocumentFolder(folderId: string): Promise<Result<DocumentFolderView, AppError>>;
+  createDocumentFolder(input: { name: string; parentId?: string | null }): Promise<Result<DocumentFolderView, AppError>>;
+  updateDocumentFolder(input: {
+    folderId: string;
+    expectedRevision: number;
+    name?: string;
+    parentId?: string | null;
+  }): Promise<Result<DocumentFolderView, AppError>>;
+  previewDocumentFolderDeletion(folderId: string): Promise<Result<DocumentFolderDeletionPlanView, AppError>>;
+  executeDocumentFolderDeletion(input: {
+    planId: string;
+    strategy: DeleteDocumentFolderStrategy;
+  }): Promise<Result<DocumentFolderDeletionExecutionView, AppError>>;
+  moveDocumentToFolder(input: {
+    documentId: string;
+    folderId: string | null;
+    expectedRevision: number;
+  }): Promise<Result<{ documentId: string; folderId: string | null; revision: number }, AppError>>;
+  analyzeDocument(documentId: string): Promise<Result<DocumentAnalysis, AppError>>;
   documentDownloadUrl(documentId: string, ttlSeconds?: number): Promise<Result<DocumentDownloadUrl, AppError>>;
   /** Confirme le classement proposé après OCR (A1-C14) — même use case pour l'UI et Bob. */
   classifyDocument(input: ClassifyDocumentClientInput): Promise<Result<DocumentView, AppError>>;
+  /**
+   * Confirme en une seule commande la dépense OCR, son écriture et le rattachement de l'original.
+   * Un retry après réponse perdue restitue le même état sans créer de doublon.
+   */
+  recordDocumentExpense(
+    input: RecordDocumentExpenseClientInput,
+  ): Promise<Result<RecordDocumentExpenseClientOutput, AppError>>;
   extractDocument(input: { contentBase64: string; mimeType: string }): Promise<Result<OcrExtraction, AppError>>;
   suggestExpenseDefaults(input: SuggestExpenseDefaultsInput): Promise<Result<ExpenseDefaultsView, AppError>>;
   recordExpense(input: Omit<RecordExpenseInput, 'companyId'>): Promise<Result<{ id: string }, AppError>>;
@@ -421,6 +551,12 @@ export interface BobClient {
   listNotifications(): Promise<Result<NotificationView[], AppError>>;
   /** POST /notifications/:id/read : marque lue (idempotent, persisté côté serveur). */
   markNotificationRead(id: string): Promise<Result<NotificationView, AppError>>;
+  /** GET /notifications/unread-preview : nombre non paginé + cutoff serveur. */
+  previewUnreadNotifications(): Promise<Result<NotificationUnreadPreview, AppError>>;
+  /** POST /notifications/read-through : marque atomiquement la portée figée par l'aperçu. */
+  markNotificationsReadThrough(
+    input: NotificationReadThroughInput,
+  ): Promise<Result<NotificationReadThroughOutput, AppError>>;
   /** POST /devices : enregistre le token push Expo du device (idempotent par tenant/token). */
   registerDevice(input: RegisterDeviceClientInput): Promise<Result<{ id: string }, AppError>>;
   registerPayment(input: RegisterPaymentClientInput): Promise<Result<RegisterPaymentClientOutput, AppError>>;

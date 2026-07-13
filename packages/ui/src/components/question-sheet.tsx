@@ -6,7 +6,7 @@
  * Composant PUR UI : textes fournis par l'appelant (i18n côté app), zéro hex (useTheme).
  */
 import { useEffect, useState } from 'react';
-import { Pressable, ScrollView, Text, View } from 'react-native';
+import { Pressable, Text, View } from 'react-native';
 import { useTheme, font } from '../theme';
 import { Sheet } from './sheet';
 import { Button } from './button';
@@ -58,6 +58,7 @@ export function QuestionSheet({
 
   const toggle = (value: string): void => {
     if (!multiSelect) {
+      setPicked(new Set([value]));
       onSelect([value]);
       return;
     }
@@ -70,7 +71,12 @@ export function QuestionSheet({
   };
 
   return (
-    <Sheet visible={visible} onClose={onClose}>
+    <Sheet
+      visible={visible}
+      onClose={onClose}
+      accessibilityLabel={`${header}. ${question}`}
+      closeAccessibilityLabel="Fermer la question"
+    >
       <View
         style={{
           alignSelf: 'flex-start',
@@ -85,16 +91,25 @@ export function QuestionSheet({
           {header}
         </Text>
       </View>
-      <Text style={[font('cardTitle'), { color: colors.ink900, marginBottom: 12, lineHeight: 22 }]}>{question}</Text>
+      <Text
+        accessibilityRole="header"
+        style={[font('cardTitle'), { color: colors.ink900, marginBottom: 12, lineHeight: 22 }]}
+      >
+        {question}
+      </Text>
 
-      <ScrollView style={{ maxHeight: 340 }} showsVerticalScrollIndicator={false}>
+      <View
+        accessible={false}
+        accessibilityRole={multiSelect ? 'list' : 'radiogroup'}
+        accessibilityLabel={question}
+      >
         {options.map((option) => {
           const selected = picked.has(option.value);
           return (
             <Pressable
               key={option.value}
               accessibilityRole={multiSelect ? 'checkbox' : 'radio'}
-              accessibilityState={{ selected }}
+              accessibilityState={{ checked: selected }}
               accessibilityLabel={option.description ? `${option.label} — ${option.description}` : option.label}
               onPress={() => toggle(option.value)}
               style={({ pressed }) => [
@@ -116,6 +131,9 @@ export function QuestionSheet({
             >
               {/* Puce radio / case à cocher — dessinée (pas d'icône : cohérence tokens) */}
               <View
+                accessible={false}
+                accessibilityElementsHidden
+                importantForAccessibility="no-hide-descendants"
                 style={{
                   width: 18,
                   height: 18,
@@ -143,7 +161,7 @@ export function QuestionSheet({
             </Pressable>
           );
         })}
-      </ScrollView>
+      </View>
 
       {multiSelect ? (
         <View style={{ marginTop: 4 }}>
@@ -161,9 +179,15 @@ export function QuestionSheet({
         accessibilityRole="button"
         accessibilityLabel={otherLabel}
         onPress={onOther}
-        style={{ alignSelf: 'center', minHeight: 40, justifyContent: 'center', marginTop: multiSelect ? 6 : 2 }}
+        style={{
+          alignSelf: 'center',
+          minHeight: 44,
+          justifyContent: 'center',
+          marginTop: multiSelect ? 6 : 2,
+          paddingHorizontal: 12,
+        }}
       >
-        <Text style={[font('sub', 600), { color: colors.slate500 }]}>{otherLabel}</Text>
+        <Text style={[font('sub', 600), { color: colors.slate500, textAlign: 'center' }]}>{otherLabel}</Text>
       </Pressable>
     </Sheet>
   );

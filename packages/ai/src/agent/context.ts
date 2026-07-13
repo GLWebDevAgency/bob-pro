@@ -88,12 +88,23 @@ export interface ContextEntityFact {
   readonly value: string;
 }
 
+/** État structuré strictement canonique utilisé pour filtrer sans parser une phrase d'affichage. */
+export interface ContextEntityState {
+  readonly unread?: boolean;
+}
+
 /** Resume factuel construit par l'hote depuis une entite tenant-scoped. */
 export interface ContextEntitySummary {
   readonly type: AgentEntityType;
   readonly id: string;
   readonly label: string;
   readonly facts: readonly ContextEntityFact[];
+  readonly state?: ContextEntityState;
+  /**
+   * Destination interne canonique, calculée par l'hôte après recharge tenant-scoped.
+   * Elle n'est jamais acceptée depuis AgentContext (donnée UI non fiable).
+   */
+  readonly route?: string;
 }
 
 export const AGENT_MESSAGE_MAX_CHARS = 4_000;
@@ -111,6 +122,7 @@ const ENTITY_LABEL_MAX_CHARS = 120;
 const CAPABILITY_MAX_CHARS = 64;
 const FACT_LABEL_MAX_CHARS = 80;
 const FACT_VALUE_MAX_CHARS = 220;
+const CONTEXT_ROUTE_MAX_CHARS = 240;
 
 const ENTITY_TYPE = /^[a-z][a-z0-9_.-]*$/;
 const CAPABILITY = /^[a-z][a-z0-9_.-]*$/;
@@ -118,6 +130,13 @@ const VALID_ENTITY_TYPES = new Set<string>(AGENT_ENTITY_TYPES);
 const VALID_CAPABILITIES = new Set<string>(AGENT_CAPABILITIES);
 const VALID_AUTONOMY: readonly AgentAutonomy[] = ['confirm_all', 'confirm_outbound', 'auto'];
 const VALID_TONES: readonly NonNullable<AgentAskPayload['tone']>[] = ['pote', 'pro', 'direct'];
+const STATIC_AGENT_ROUTES = new Set([
+  '/scan-document',
+  '/devis/new',
+  '/chantiers',
+  '/cloture',
+  '/diagnostic',
+]);
 
 function validation(field: string, message: string): AppError {
   return { kind: 'validation', issues: [{ field, message }] };
@@ -149,6 +168,54 @@ function boundedString(value: unknown, max: number): string | null {
   // eslint-disable-next-line no-control-regex
   if (/[\u0000-\u001f\u007f]/.test(value)) return null;
   return value;
+}
+
+function parseAgentDetailRoute(
+  value: unknown,
+): { readonly route: string; readonly prefix: 'facture' | 'devis' | 'client' | 'documents' } | null {
+  if (typeof value !== 'string' || value.length === 0 || value.length > CONTEXT_ROUTE_MAX_CHARS)
+    return null;
+  const match = /^\/(facture|devis|client|documents)\/([^/?#\\]+)$/.exec(value);
+  if (!match) return null;
+  const [, prefix, encodedSegment] = match;
+  if (!prefix || !encodedSegment || /%(?:2f|5c)/i.test(encodedSegment)) return null;
+  let segment: string;
+  try {
+    segment = decodeURIComponent(encodedSegment);
+  } catch {
+    return null;
+  }
+  // eslint-disable-next-line no-control-regex
+  if (!segment || segment === '.' || segment === '..' || /[\u0000-\u001f\u007f/?#\\]/.test(segment))
+    return null;
+  return { route: value, prefix: prefix as 'facture' | 'devis' | 'client' | 'documents' };
+}
+
+/** Garde mobile fail-closed pour tout AgentRun.navigate, y compris une réponse HTTP. */
+export function isAllowedAgentNavigationRoute(value: unknown): value is string {
+  return (typeof value === 'string' && STATIC_AGENT_ROUTES.has(value)) || parseAgentDetailRoute(value) !== null;
+}
+
+/**
+ * Navigation contextuelle strictement interne. Une route ne peut viser que l'écran détail
+ * compatible avec l'entité rechargée ; aucune URL, query, fragment ou traversée n'est admise.
+ */
+function sanitizeContextRoute(value: unknown, type: AgentEntityType): string | null {
+  const parsed = parseAgentDetailRoute(value);
+  if (!parsed) return null;
+  const allowedPrefixes: Readonly<Record<AgentEntityType, readonly string[]>> = {
+    customer: ['client'],
+    quote: ['devis'],
+    quote_line: ['devis'],
+    invoice: ['facture'],
+    invoice_line: ['facture'],
+    expense: [],
+    document: ['documents'],
+    chantier: [],
+    notification: ['facture', 'devis'],
+    accounting_entry: [],
+  };
+  return allowedPrefixes[type].includes(parsed.prefix) ? parsed.route : null;
 }
 
 /**
@@ -274,6 +341,32 @@ function normalizeForMatch(value: string): string {
     .trim();
 }
 
+const ORDINAL_BY_WORD: Readonly<Record<string, number>> = {
+  premier: 1,
+  premiere: 1,
+  second: 2,
+  seconde: 2,
+  deuxieme: 2,
+  troisieme: 3,
+  quatrieme: 4,
+  cinquieme: 5,
+  sixieme: 6,
+  septieme: 7,
+  huitieme: 8,
+  neuvieme: 9,
+  dixieme: 10,
+};
+
+/** Rang relatif au type demandé (« deuxième notification »), distinct des alias LLM globaux E1/E2. */
+function relativeOrdinal(reference: string): number | null {
+  const normalizedReference = normalizeForMatch(reference);
+  const encoded = /^ordinal (\d{1,2})$/.exec(normalizedReference);
+  if (encoded) return Number(encoded[1]);
+  const numeric = /^(\d{1,2})(?:er|ere|e|eme)$/.exec(normalizedReference.replace(/ /g, ''));
+  if (numeric) return Number(numeric[1]);
+  return ORDINAL_BY_WORD[normalizedReference] ?? null;
+}
+
 function matchesExplicitReference(reference: string, entity: AgentEntityRef, index: number): boolean {
   const ref = normalizeForMatch(reference);
   if (!ref) return false;
@@ -307,6 +400,11 @@ export function resolveAgentEntity(input: {
   const candidates = input.context.entities.filter((entity) => input.compatibleTypes.includes(entity.type));
   const reference = input.explicitReference?.trim();
   if (reference) {
+    const ordinal = relativeOrdinal(reference);
+    if (ordinal !== null) {
+      const entity = candidates[ordinal - 1];
+      return entity ? { kind: 'resolved', entity, source: 'explicit' } : { kind: 'none' };
+    }
     const matches = candidates.filter((entity) =>
       matchesExplicitReference(reference, entity, input.context!.entities.indexOf(entity)),
     );
@@ -348,5 +446,17 @@ export function sanitizeContextEntitySummary(
     const value = sanitizeAgentData(fact.value, FACT_VALUE_MAX_CHARS);
     return factLabel && value ? [{ label: factLabel, value }] : [];
   });
-  return { type: raw.type, id: raw.id, label, facts };
+  const route = sanitizeContextRoute(raw.route, raw.type);
+  const state =
+    isPlainRecord(raw.state) && typeof raw.state.unread === 'boolean'
+      ? { unread: raw.state.unread }
+      : null;
+  return {
+    type: raw.type,
+    id: raw.id,
+    label,
+    facts,
+    ...(state !== null ? { state } : {}),
+    ...(route !== null ? { route } : {}),
+  };
 }

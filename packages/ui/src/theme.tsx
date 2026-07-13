@@ -119,7 +119,6 @@ export function ThemeProvider({
       overlays,
       radius,
     }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [prefs],
   );
 

@@ -105,6 +105,13 @@ export interface RelancePlanEntry {
   dueNow: boolean;
   /** Message prêt à partir (buildRelance — mise en demeure au régime légal du type de client). */
   message: RelanceMessage;
+  /**
+   * Message automatique immuable pour ce palier. `daysLate` y est ancré au seuil de la
+   * politique (J+3/J+10/J+20), afin qu'un cron relancé le lendemain conserve exactement le
+   * même payload sous la même clé de déduplication. `message` garde, lui, le retard réel pour
+   * une relance manuelle explicitement validée.
+   */
+  automaticMessage: RelanceMessage;
   /** Date du prochain palier d'escalade — null une fois la mise en demeure atteinte. */
   nextEscalationAt: DateOnly | null;
   /**
@@ -192,6 +199,24 @@ export function deriveRelancePlan(input: DeriveRelancePlanInput): RelancePlanEnt
           })
         : null;
 
+    const messageInput = {
+      customerName: candidate.customerName || 'le client',
+      docNumber: candidate.docNumber ?? candidate.invoiceId,
+      amountCents: candidate.amountCents,
+      tone,
+      personality,
+      customerType,
+      // MED chiffrée (P12) : buildRelance n'énonce les montants que pour b2b/b2g.
+      ...(tone === 'miseendemeure' && penalties !== null
+        ? {
+            penalties: {
+              interestCents: penalties.interestCents,
+              fixedIndemnityCents: penalties.fixedIndemnityCents,
+            },
+          }
+        : {}),
+    };
+
     plan.push({
       invoiceId: candidate.invoiceId,
       customerId: candidate.customerId,
@@ -202,22 +227,12 @@ export function deriveRelancePlan(input: DeriveRelancePlanInput): RelancePlanEnt
       tone,
       dueNow: reached !== undefined,
       message: buildRelance({
-        customerName: candidate.customerName || 'le client',
-        docNumber: candidate.docNumber ?? candidate.invoiceId,
-        amountCents: candidate.amountCents,
+        ...messageInput,
         daysLate: candidate.daysLate,
-        tone,
-        personality,
-        customerType,
-        // MED chiffrée (P12) : buildRelance n'énonce les montants que pour b2b/b2g.
-        ...(tone === 'miseendemeure' && penalties !== null
-          ? {
-              penalties: {
-                interestCents: penalties.interestCents,
-                fixedIndemnityCents: penalties.fixedIndemnityCents,
-              },
-            }
-          : {}),
+      }),
+      automaticMessage: buildRelance({
+        ...messageInput,
+        daysLate: reached?.afterDays ?? candidate.daysLate,
       }),
       // Le prochain palier se compte depuis l'échéance : dans (palier − retard actuel) jours.
       nextEscalationAt: next ? addDays(input.today, next.afterDays - candidate.daysLate) : null,

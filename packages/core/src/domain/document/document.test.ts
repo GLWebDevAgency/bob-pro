@@ -64,6 +64,20 @@ describe('Document', () => {
     if (!r.ok) expect(r.error).toMatchObject({ code: 'VALIDATION', field: 'versions' });
   });
 
+  it('impose le couple de rattachement null/null ou type/id non vide et canonise l’id', () => {
+    const missingId = Document.record(props({ linkedEntityType: 'expense', linkedEntityId: null }));
+    const blankId = Document.record(props({ linkedEntityType: 'expense', linkedEntityId: '   ' }));
+    const missingType = Document.record(props({ linkedEntityType: null, linkedEntityId: 'exp-1' }));
+    const unlinked = Document.record(props({ linkedEntityType: null, linkedEntityId: null }));
+    const linked = Document.record(props({ linkedEntityId: '  exp-1  ' }));
+
+    expect(missingId.ok).toBe(false);
+    expect(blankId.ok).toBe(false);
+    expect(missingType.ok).toBe(false);
+    expect(unlinked.ok).toBe(true);
+    expect(linked.ok && linked.value.toProps().linkedEntityId).toBe('exp-1');
+  });
+
   it('ajoute une nouvelle version sans écraser l’historique', () => {
     const r = Document.record(props());
     expect(r.ok).toBe(true);

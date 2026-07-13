@@ -41,7 +41,10 @@ export function riskTierOf(tool: ToolRiskProfile): RiskTier {
  * (irréversible légal/fiscal, purge). Rend « vendre l'auto pas cher » sûr : l'auto n'accélère que l'interne réversible.
  */
 export function isSafetyFloor(tool: ToolRiskProfile): boolean {
-  return FLOOR_TIERS.includes(riskTierOf(tool));
+  // `safetyFloor` est un verrou explicite, indépendant du palier descriptif. Cela permet
+  // notamment à une mutation interne non comptable de conserver son palier descriptif tout en
+  // exigeant systématiquement un consentement lorsqu'elle n'a pas encore de commande d'annulation.
+  return tool.safetyFloor === true || FLOOR_TIERS.includes(riskTierOf(tool));
 }
 
 /** Décide si un outil doit être confirmé avant exécution, selon son profil et le mode d'autonomie. */

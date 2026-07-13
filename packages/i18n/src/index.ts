@@ -1086,6 +1086,61 @@ const legacyFr = {
     pro: 'Vos dossiers',
     direct: 'Dossiers',
   },
+  'docs.folderCreateCta': {
+    pote: 'Nouveau',
+    pro: 'Nouveau',
+    direct: 'Créer',
+  },
+  'docs.folderCreateTitle': {
+    pote: 'Nouveau dossier',
+    pro: 'Créer un dossier',
+    direct: 'Nouveau dossier',
+  },
+  'docs.folderCreateBody': {
+    pote: 'Crée un rangement à la racine du coffre. Tu pourras ensuite y ajouter des sous-dossiers.',
+    pro: 'Créez un dossier à la racine du coffre. Il pourra ensuite contenir des sous-dossiers.',
+    direct: 'Dossier racine, sous-dossiers possibles.',
+  },
+  'docs.folderCreateName': {
+    pote: 'Nom du dossier',
+    pro: 'Nom du dossier',
+    direct: 'Nom',
+  },
+  'docs.folderCreateHint': {
+    pote: '80 caractères maximum. Les barres obliques sont interdites.',
+    pro: '80 caractères maximum. Les barres obliques sont interdites.',
+    direct: '80 caractères maximum, sans barre oblique.',
+  },
+  'docs.folderCreatePlaceholder': {
+    pote: 'Ex. Contrats clients',
+    pro: 'Ex. Contrats clients',
+    direct: 'Contrats clients',
+  },
+  'docs.folderCreateCancel': {
+    pote: 'Annuler',
+    pro: 'Annuler',
+    direct: 'Annuler',
+  },
+  'docs.folderCreateSubmit': {
+    pote: 'Créer',
+    pro: 'Créer',
+    direct: 'Créer',
+  },
+  'docs.folderCreateInvalid': {
+    pote: 'Choisis un nom de 1 à 80 caractères, sans barre oblique.',
+    pro: 'Saisissez un nom de 1 à 80 caractères, sans barre oblique.',
+    direct: 'Nom invalide.',
+  },
+  'docs.folderCreateError': {
+    pote: 'Je n’ai pas pu créer ce dossier. Vérifie le nom ou réessaie.',
+    pro: 'Création impossible. Vérifiez le nom du dossier ou réessayez.',
+    direct: 'Création impossible.',
+  },
+  'docs.folderCreateSuccess': {
+    pote: 'Dossier « {name} » créé ✓',
+    pro: 'Dossier « {name} » créé.',
+    direct: '« {name} » créé.',
+  },
   'docs.folderChantiers': {
     pote: 'Chantiers',
     pro: 'Chantiers',
@@ -1535,6 +1590,190 @@ const legacyFr = {
     pote: 'Fermer la réponse de Bob',
     pro: 'Fermer la réponse de Bob',
     direct: 'Fermer',
+  },
+  // S2-GUIDÉ — pilotage vocal du wizard devis (guidage par étape + retours d'affordances)
+  'devis.voice.greetClient': {
+    pote: 'Nouveau devis ! Dis-moi pour quel client, ou choisis à l’écran.',
+    pro: 'Nouveau devis. Indiquez le client, ou choisissez à l’écran.',
+    direct: 'Client ? Dis-le ou touche.',
+  },
+  'devis.voice.greetLines': {
+    pote: 'On facture quoi ? Dis par exemple « ajoute deux heures de main-d’œuvre à 55 euros », puis « étape suivante ».',
+    pro: 'Décrivez les prestations — par exemple « ajoutez deux heures de main-d’œuvre à 55 euros », puis « étape suivante ».',
+    direct: 'Dicte les lignes (« ajoute 2 h de main-d’œuvre à 55 euros »). Puis « étape suivante ».',
+  },
+  'devis.voice.greetVat': {
+    pote: 'On vérifie la TVA et les mentions — dis « étape suivante » quand c’est bon.',
+    pro: 'Vérifiez la TVA et les mentions, puis dites « étape suivante ».',
+    direct: 'TVA/mentions. « Étape suivante » pour valider.',
+  },
+  'devis.voice.greetSignature': {
+    pote: 'La signature se fait à l’écran, avec le client. Je reste là si besoin.',
+    pro: 'La signature s’effectue à l’écran, avec le client.',
+    direct: 'Signature : à l’écran.',
+  },
+  'devis.voice.greetDeposit': {
+    pote: 'Dernier réglage : l’acompte. Cette étape se valide à l’écran — je reste là si besoin.',
+    pro: 'Dernière étape : l’acompte. La validation se fait à l’écran.',
+    direct: 'Acompte : à valider à l’écran.',
+  },
+  'devis.voice.clientSet': {
+    pote: 'C’est noté pour {name}.',
+    pro: 'Client sélectionné : {name}.',
+    direct: '{name}. OK.',
+  },
+  'devis.voice.clientUnknown': {
+    pote: 'Je ne trouve pas ce client — redis son nom, ou touche l’écran.',
+    pro: 'Client introuvable. Répétez le nom, ou choisissez à l’écran.',
+    direct: 'Client inconnu. Redis ou touche.',
+  },
+  'devis.voice.lineAdded': {
+    pote: 'Ajouté : {label} — {qty} × {price} HT, TVA {rate} %. Une autre ligne, ou « étape suivante » ?',
+    pro: 'Ligne ajoutée : {label} — {qty} × {price} HT, TVA {rate} %. Autre ligne, ou « étape suivante » ?',
+    direct: '{label} : {qty} × {price} HT, TVA {rate} %. Autre ? Ou « étape suivante ».',
+  },
+  'devis.voice.lineAddedCatalogue': {
+    pote: 'Trouvé dans ton catalogue : {label} — {qty} × {price} HT, TVA {rate} %. C’est ajouté. Une autre ?',
+    pro: 'Repris de votre catalogue : {label} — {qty} × {price} HT, TVA {rate} %. Ligne ajoutée.',
+    direct: 'Catalogue : {label}, {qty} × {price} HT, TVA {rate} %. Ajouté.',
+  },
+  'devis.voice.lineAmbiguous': {
+    pote: 'Dans ton catalogue, plusieurs collent : {options}. Laquelle ?',
+    pro: 'Plusieurs prestations du catalogue correspondent : {options}. Laquelle ?',
+    direct: 'Catalogue ambigu : {options}. Laquelle ?',
+  },
+  'devis.voice.missingPrice': {
+    pote: 'D’accord pour « {label} » — à quel prix HT ? Redis-la avec le prix.',
+    pro: 'Prestation « {label} » notée — indiquez le prix HT en la redisant avec le montant.',
+    direct: '« {label} » : prix HT ? Redis avec le montant.',
+  },
+  'devis.voice.lineRemoved': {
+    pote: 'Retiré : {label}.',
+    pro: 'Ligne retirée : {label}.',
+    direct: 'Retiré : {label}.',
+  },
+  'devis.voice.proposalReady': {
+    pote: '{field} : {before} → {after}. Je l’applique ?',
+    pro: '{field} : {before} → {after}. Faut-il l’appliquer ?',
+    direct: '{field} : {before} → {after}. J’applique ?',
+  },
+  'devis.voice.proposalApplied': {
+    pote: 'C’est corrigé : {field} passe à {after}.',
+    pro: 'Correction appliquée : {field} → {after}.',
+    direct: 'Corrigé : {field} → {after}.',
+  },
+  'devis.voice.proposalRejected': {
+    pote: 'OK, je ne touche à rien.',
+    pro: 'Très bien, aucune modification.',
+    direct: 'Rien touché.',
+  },
+  'devis.voice.proposalUnknownLine': {
+    pote: 'Je ne trouve pas cette ligne — dis son numéro, il est affiché à l’écran.',
+    pro: 'Ligne introuvable. Indiquez son numéro tel qu’affiché.',
+    direct: 'Ligne inconnue. Donne son numéro.',
+  },
+  'devis.proposalApply': { pote: 'Appliquer', pro: 'Appliquer', direct: 'Appliquer' },
+  'devis.proposalReject': { pote: 'Annuler', pro: 'Annuler', direct: 'Annuler' },
+  'devis.voice.lineRejected': {
+    pote: 'OK, j’oublie cette ligne — dis-m’en une autre.',
+    pro: 'Préparation annulée. Dictez une autre ligne.',
+    direct: 'Annulé. Une autre ?',
+  },
+  'devis.voice.vatNotice': {
+    pote: 'La TVA du devis est réglée à {rate} % — elle se change à l’étape TVA.',
+    pro: 'La TVA du devis est de {rate} % ; elle se modifie à l’étape TVA.',
+    direct: 'TVA du devis : {rate} % (étape TVA pour changer).',
+  },
+  'devis.voice.nothingToRemove': {
+    pote: 'Il n’y a pas encore de ligne à retirer.',
+    pro: 'Aucune ligne à retirer.',
+    direct: 'Rien à retirer.',
+  },
+  'devis.voice.needClientFirst': {
+    pote: 'On choisit d’abord le client, puis on dicte les lignes.',
+    pro: 'Sélectionnez d’abord le client ; les lignes viennent ensuite.',
+    direct: 'Client d’abord, lignes ensuite.',
+  },
+  'ventes.searchPlaceholder': {
+    pote: 'N°, client, prestation (« chauffe-eau »)…',
+    pro: 'Numéro, client ou prestation…',
+    direct: 'N°, client, presta…',
+  },
+  'ventes.filterAll': { pote: 'Tout', pro: 'Tout', direct: 'Tout' },
+  'ventes.filterQuotes': { pote: 'Devis', pro: 'Devis', direct: 'Devis' },
+  'ventes.filterInvoices': { pote: 'Factures', pro: 'Factures', direct: 'Factures' },
+  'ventes.noResults': {
+    pote: 'Rien ne colle à ta recherche — essaie un autre mot.',
+    pro: 'Aucun résultat pour cette recherche.',
+    direct: 'Aucun résultat.',
+  },
+  'ventes.validUntil': { pote: 'Valide jusqu’au {date}', pro: 'Valide jusqu’au {date}', direct: 'Valide → {date}' },
+  'ventes.issuedOn': { pote: 'Émise le {date}', pro: 'Émise le {date}', direct: 'Émise {date}' },
+  'ventes.dueOn': { pote: 'Échéance {date}', pro: 'Échéance au {date}', direct: 'Éch. {date}' },
+  'ventes.chipAcompte': { pote: 'Acompte {pct} %', pro: 'Acompte {pct} %', direct: 'Acompte {pct} %' },
+  'ventes.chipAcompteSimple': { pote: 'Acompte', pro: 'Acompte', direct: 'Acompte' },
+  'ventes.chipFinale': { pote: 'Facture finale', pro: 'Facture finale', direct: 'Finale' },
+  'ventes.chipAvoir': { pote: 'Avoir', pro: 'Avoir', direct: 'Avoir' },
+  'ventes.chipSituation': { pote: 'Situation', pro: 'Situation', direct: 'Situation' },
+  'ventes.voiceFiltered': {
+    pote: 'Je filtre sur « {query} » — {count} résultat(s) à l’écran.',
+    pro: 'Filtre appliqué sur « {query} » : {count} résultat(s).',
+    direct: '« {query} » : {count} résultat(s).',
+  },
+  'ventes.voiceFilterKind': {
+    pote: 'Voilà, je n’affiche plus que ça.',
+    pro: 'Filtre appliqué.',
+    direct: 'Filtré.',
+  },
+  'devis.clientTagRemove': {
+    pote: 'Changer de client',
+    pro: 'Changer de client',
+    direct: 'Changer',
+  },
+  'devis.cataloguePickOpen': {
+    pote: 'Choisir dans mon catalogue',
+    pro: 'Choisir dans le catalogue',
+    direct: 'Catalogue',
+  },
+  'devis.cataloguePickTitle': {
+    pote: 'Mon catalogue',
+    pro: 'Votre catalogue',
+    direct: 'Catalogue',
+  },
+  'devis.cataloguePickEmpty': {
+    pote: 'Ton catalogue est vide — remplis-le depuis l’écran Catalogue.',
+    pro: 'Votre catalogue est vide. Ajoutez des prestations depuis l’écran Catalogue.',
+    direct: 'Catalogue vide. Va le remplir.',
+  },
+  'devis.voice.screenOnlyStep': {
+    pote: 'Cette étape se valide à l’écran — c’est le garde-fou. Touche le bouton quand tu es prêt.',
+    pro: 'Cette étape se valide à l’écran (garde-fou). Utilisez le bouton.',
+    direct: 'Étape à valider à l’écran.',
+  },
+  'devis.voice.linePrepared': {
+    pote: 'C’est prêt : {label} — {qty} × {price} HT. Dis « valide la ligne », ou touche Ajouter.',
+    pro: 'Ligne préparée : {label} — {qty} × {price} HT. Dites « valide la ligne » ou touchez Ajouter.',
+    direct: '{label} : {qty} × {price} HT. « Valide la ligne » ou touche.',
+  },
+  'devis.voice.linePreparedCatalogue': {
+    pote: 'Trouvé dans ton catalogue : {label} — {qty} × {price} HT. Dis « valide la ligne », ou touche Ajouter.',
+    pro: 'Repris du catalogue : {label} — {qty} × {price} HT. Dites « valide la ligne » ou touchez Ajouter.',
+    direct: 'Catalogue : {label}, {qty} × {price} HT. « Valide la ligne » ?',
+  },
+  'devis.voice.lineInvalid': {
+    pote: 'Il manque un truc sur la ligne (libellé ou prix) — complète, puis « valide la ligne ».',
+    pro: 'La ligne est incomplète (libellé ou prix). Complétez puis validez.',
+    direct: 'Ligne incomplète. Complète puis valide.',
+  },
+  'devis.voice.clientAmbiguous': {
+    pote: 'J’en vois plusieurs qui collent : {options}. Lequel ?',
+    pro: 'Plusieurs clients correspondent : {options}. Lequel ?',
+    direct: 'Plusieurs candidats : {options}. Lequel ?',
+  },
+  'devis.voice.stepDone': {
+    pote: 'C’est parti pour la suite.',
+    pro: 'Étape suivante.',
+    direct: 'Suite.',
   },
   // ASK-1 — questions structurées (modale de choix quand la demande est ambiguë)
   'assistant.askAnswer': { pote: 'Répondre', pro: 'Répondre', direct: 'Répondre' },

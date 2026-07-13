@@ -141,6 +141,10 @@ export interface AgentRun {
   ask?: AgentQuestion[];
   /** Présent pour une commande de navigation : route vers laquelle l'app doit rediriger (ex. /scan-document). */
   navigate?: string;
+  /** Indice de PRÉ-REMPLISSAGE pour l'écran d'arrivée (« nouveau devis POUR Camping Les
+   * Pins » : le nom entendu, résolu par l'écran contre ses données réelles) — jamais une
+   * autorisation ni un identifiant, jamais dans la route (l'allowlist reste stricte). */
+  navigateHint?: { customerReference?: string };
   /** Texte à vocaliser (TTS) : prompt de confirmation parlé (action proposée) ou message parlé (annulation/re-demande). */
   spokenPrompt?: string;
   /** LIVE-2 : reformulation NATURELLE des faits par le LLM (gardée par naturalizationViolations —
@@ -361,6 +365,11 @@ const READ_CAPABILITY_BY_TYPE: Readonly<Record<string, AgentCapability>> = {
   quote_line: 'quote.read',
   invoice: 'invoice.read',
   invoice_line: 'invoice.read',
+  expense: 'expense.read',
+  document: 'document.read',
+  chantier: 'chantier.read',
+  notification: 'notification.read',
+  accounting_entry: 'accounting.read',
 };
 
 function requestedContextTypes(message: string): readonly string[] | null {
@@ -374,6 +383,8 @@ function requestedContextTypes(message: string): readonly string[] | null {
   if (/\bdepense\b/.test(n)) return ['expense'];
   if (/\bdocument\b/.test(n)) return ['document'];
   if (/\bchantier\b/.test(n)) return ['chantier'];
+  if (/\bnotifications?\b/.test(n)) return ['notification'];
+  if (/\b(ecritures?|operations? comptables?)\b/.test(n)) return ['accounting_entry'];
   return null;
 }
 
@@ -413,6 +424,21 @@ function summaryBody(summary: ContextEntitySummary): string {
   return summary.facts.map((fact) => `• ${fact.label} : ${fact.value}`).join('\n');
 }
 
+/** Le briefing notification privilégie le motif, pas seulement sa date technique. */
+function aggregateFacts(summary: ContextEntitySummary): readonly ContextEntitySummary['facts'][number][] {
+  if (summary.type !== 'notification') return summary.facts.slice(0, 2);
+  const content = summary.facts.find((fact) => fact.label === 'Contenu');
+  const status = summary.facts.find((fact) => fact.label === 'Statut');
+  const selected = [content, status].filter(
+    (fact): fact is ContextEntitySummary['facts'][number] => fact !== undefined,
+  );
+  return selected.length > 0 ? selected : summary.facts.slice(0, 2);
+}
+
+function wantsContextNavigation(message: string): boolean {
+  return /\b(ouvre|ouvrir|affiche|afficher|accede|acceder|emmene|amene|va)\b/.test(normalized(message));
+}
+
 function documentLine(d: AgentDocument): string {
   const link = d.linkedEntityType && d.linkedEntityId ? ` · ${d.linkedEntityType} ${d.linkedEntityId}` : '';
   return `• ${d.filename} — ${d.kind}${link}`;
@@ -428,6 +454,7 @@ function fiscalDeadlineLine(d: FiscalDeadline): string {
 
 function intentForTool(tool: string): BobIntent {
   if (tool === 'contexte_ecran') return 'contexte_ecran';
+  if (tool === 'marquer_notifications_lues') return 'marquer_notifications_lues';
   if (tool === 'envoyer_devis') return 'envoyer_devis';
   if (tool === 'emettre_facture') return 'emettre_facture';
   if (tool === 'documents_liste') return 'documents';
@@ -555,7 +582,7 @@ export class BobAgent {
       opts.onPhase?.('agis');
       result =
         effective.length > 1
-          ? await this.runMulti(effective, autonomy, model, context)
+          ? await this.runMulti(effective, autonomy, model, userMessage, context)
           : await this.runSingle(effective[0]!, autonomy, model, userMessage, context);
     }
     // LIVE-2 : mise en mots des FAITS par le LLM — réponses et résultats seulement, JAMAIS
@@ -609,28 +636,43 @@ export class BobAgent {
       // ce qui est en attente » — Bob lit PLUSIEURS éléments affichés (bornés, rechargés à
       // la source) au lieu de demander d'en choisir un. Une question ciblée (« cette
       // facture ») garde le flux mono-entité fail-safe ci-dessous.
-      const screenWide = /(ecran|ou suis[- ]?je|qu ?est[- ]?ce que je (vois|regarde)|tout ce qu)/.test(
-        normalized(message),
+      const normalizedMessage = normalized(message);
+      const navigationRequested = wantsContextNavigation(message);
+      const requestedTypes = requestedContextTypes(message);
+      const unreadNotificationsOnly =
+        requestedTypes?.includes('notification') === true &&
+        /\b(non lues?|a lire|en attente)\b/.test(normalizedMessage) &&
+        !/\b(en attente d envoi|a envoyer|livraison)\b/.test(normalizedMessage);
+      const screenWide = /(ecran|ou suis[- ]?je|qu ?est[- ]?ce que je (vois|regarde)|tout ce qu|\b(?:toutes?(?: les)?|les) (notifications?|ecritures?)\b)/.test(
+        normalizedMessage,
       );
-      if (screenWide && context !== undefined && read && requestedContextTypes(message) === null) {
+      if (screenWide && context !== undefined && read) {
         const readable = context.entities.filter(
           (entity) =>
             !entity.type.endsWith('_line') &&
+            (requestedTypes === null || requestedTypes.includes(entity.type)) &&
             context.capabilities.includes(READ_CAPABILITY_BY_TYPE[entity.type] ?? 'screen.read'),
         );
-        if (readable.length > 1) {
+        if (readable.length > 0) {
           const MAX_AGGREGATE = 5;
           const lines: string[] = [];
-          for (const entity of readable.slice(0, MAX_AGGREGATE)) {
+          let matchingCount = 0;
+          const candidates = unreadNotificationsOnly ? readable : readable.slice(0, MAX_AGGREGATE);
+          for (const entity of candidates) {
             const loaded = await read({ type: entity.type, id: entity.id });
             if (!loaded.ok) continue; // un élément illisible n'empêche pas le briefing des autres
             const summary = sanitizeContextEntitySummary(loaded.value, { type: entity.type, id: entity.id });
             if (!summary) continue;
-            const facts = summary.facts.slice(0, 2).map((fact) => `${fact.label} : ${fact.value}`).join(' · ');
+            if (unreadNotificationsOnly && summary.state?.unread !== true) continue;
+            matchingCount += 1;
+            if (lines.length >= MAX_AGGREGATE) continue;
+            const facts = aggregateFacts(summary).map((fact) => `${fact.label} : ${fact.value}`).join(' · ');
             lines.push(facts ? `• ${summary.label} — ${facts}` : `• ${summary.label}`);
           }
           if (lines.length > 0) {
-            const remaining = readable.length - Math.min(readable.length, MAX_AGGREGATE);
+            const remaining = unreadNotificationsOnly
+              ? matchingCount - lines.length
+              : readable.length - Math.min(readable.length, MAX_AGGREGATE);
             return ok({
               kind: 'answer',
               intent,
@@ -640,6 +682,15 @@ export class BobAgent {
                 title: 'Ce que tu regardes',
                 body: lines.join('\n') + (remaining > 0 ? `\n… et ${remaining} autre${remaining > 1 ? 's' : ''}.` : ''),
               },
+            });
+          }
+          if (unreadNotificationsOnly) {
+            return ok({
+              kind: 'answer',
+              intent,
+              model,
+              plan: ['Relire les notifications affichées à la source'],
+              card: { title: 'Notifications', body: 'Tu n’as aucune notification non lue dans ce fil.' },
             });
           }
         }
@@ -652,27 +703,28 @@ export class BobAgent {
       });
       if (resolution.kind === 'ambiguous') {
         const feminine = requestedContextTypes(message)?.includes('invoice') ?? false;
+        const verb = navigationRequested ? 'ouvrir' : 'résumer';
         return ok({
           kind: 'answer',
           intent,
           model,
           plan: ['Lever l’ambiguïté du contexte écran'],
           card: {
-            title: 'Que veux-tu résumer ?',
+            title: navigationRequested ? 'Que veux-tu ouvrir ?' : 'Que veux-tu résumer ?',
             body: feminine
-              ? 'Plusieurs factures sont affichées. Laquelle veux-tu lire ?'
-              : 'Plusieurs éléments sont affichés. Lequel veux-tu lire ?',
+              ? `Plusieurs factures sont affichées. Laquelle veux-tu ${verb} ?`
+              : `Plusieurs éléments sont affichés. Lequel veux-tu ${verb} ?`,
           },
           choices: resolution.candidates.map((entity) => ({ label: entity.label, value: entity.id })),
           ask: [
             askToPick({
               id: 'contexte_ecran.cible',
-              question: 'Quel élément affiché veux-tu que je résume ?',
+              question: `Quel élément affiché veux-tu que je ${verb} ?`,
               header: 'Contexte',
               items: resolution.candidates.map((entity) => ({
                 value: entity.id,
                 label: entity.label,
-                followUp: `Résume ${entity.label}`,
+                followUp: navigationRequested ? `Ouvre ${entity.label}` : `Résume ${entity.label}`,
               })),
             }),
           ],
@@ -708,6 +760,28 @@ export class BobAgent {
       if (!loaded.ok) return err(loaded.error);
       const summary = sanitizeContextEntitySummary(loaded.value, resolution.entity);
       if (!summary) return err({ kind: 'dependency', port: 'agent-context', cause: 'résumé contextuel incohérent' });
+      if (navigationRequested) {
+        if (!summary.route) {
+          return ok({
+            kind: 'answer',
+            intent,
+            model,
+            plan: ['Identifier l’entité affichée', 'Vérifier sa destination'],
+            card: {
+              title: summary.label,
+              body: 'Je l’ai bien identifiée, mais elle n’a pas encore d’écran détaillé que je puisse ouvrir.',
+            },
+          });
+        }
+        return ok({
+          kind: 'done',
+          intent,
+          model,
+          plan: ['Identifier l’entité affichée', 'Relire sa destination à la source', 'Ouvrir son écran'],
+          card: { title: `J’ouvre ${summary.label}`, body: `Je t’emmène vers ${summary.label}.` },
+          navigate: summary.route,
+        });
+      }
       return ok({
         kind: 'answer',
         intent,
@@ -719,7 +793,122 @@ export class BobAgent {
 
     const nav = NAV_ROUTES[intent];
     if (nav) {
-      return ok({ kind: 'done', intent, model, plan: [nav.title], card: { title: nav.title, body: nav.body }, navigate: nav.route });
+      const pourTail = intent === 'nouveau_devis' ? /\bpour\s+(.{2,60})$/i.exec(message)?.[1]?.trim() : undefined;
+      return ok({
+        kind: 'done',
+        intent,
+        model,
+        plan: [nav.title],
+        card: { title: nav.title, body: nav.body },
+        navigate: nav.route,
+        ...(pourTail !== undefined && pourTail !== '' ? { navigateHint: { customerReference: pourTail } } : {}),
+      });
+    }
+
+    if (intent === 'marquer_notifications_lues') {
+      const explicitlyTargetsNotifications = /\bnotifications?\b/.test(normalized(message));
+      const onNotificationsScreen =
+        context?.screen.instanceId === 'notifications' ||
+        context?.screen.name.replace(/^\/+/, '') === 'notifications';
+      if (!explicitlyTargetsNotifications && !onNotificationsScreen) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Lever l’ambiguïté de la commande'],
+          card: {
+            title: 'Tout marquer comme lu ?',
+            body: 'Tu parles bien de toutes tes notifications non lues ?',
+          },
+          choices: [
+            {
+              label: 'Oui, les notifications',
+              value: 'Marque toutes les notifications comme lues',
+            },
+          ],
+          // Doctrine ASK-1 : le followUp est fourni VERBATIM — l'UI ne reconstruit JAMAIS la
+          // commande (sans ask, l'Assistant gabarisait « Encaisse la facture … » : charabia,
+          // et en mode LLM le consentement pouvait dériver vers une proposition d'encaissement).
+          ask: [
+            askToPick({
+              id: 'marquer_notifications.portee',
+              question: 'Tu parles bien de toutes tes notifications non lues ?',
+              header: 'Notifs',
+              items: [
+                {
+                  value: 'toutes',
+                  label: 'Oui, toutes les non-lues',
+                  followUp: 'Marque toutes les notifications comme lues',
+                },
+              ],
+            }),
+          ],
+        });
+      }
+      const previewUnread = this.deps.actions.previewUnreadNotifications?.bind(this.deps.actions);
+      const tool = this.tool('marquer_notifications_lues');
+      if (!previewUnread || !tool) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier la capacité de l’hôte'],
+          card: {
+            title: 'Notifications',
+            body: 'Je ne peux pas encore modifier le fil de notifications sur cet appareil.',
+          },
+        });
+      }
+      const preview = await previewUnread();
+      if (!preview.ok) return err(preview.error);
+      if (!Number.isInteger(preview.value.unreadCount) || preview.value.unreadCount < 0) {
+        return err({
+          kind: 'dependency',
+          port: 'notifications',
+          cause: 'aperçu non lu incohérent',
+        });
+      }
+      if (preview.value.unreadCount === 0) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier les notifications non lues'],
+          card: { title: 'Notifications', body: 'Tout est déjà lu — rien à modifier.' },
+        });
+      }
+      const args = { throughCreatedAt: preview.value.throughCreatedAt };
+      const parsed = tool.parse(args);
+      if (!parsed.ok) return err(parsed.error);
+      const count = preview.value.unreadCount;
+      const label = `Marquer ${count} notification${count > 1 ? 's' : ''} comme lue${count > 1 ? 's' : ''}`;
+      if (requiresConfirmation(tool, autonomy)) {
+        return ok({
+          kind: 'proposed',
+          intent,
+          model,
+          plan: [
+            'Compter les notifications non lues à la source',
+            'Figer le lot avant la confirmation',
+            'Attendre ta confirmation',
+          ],
+          card: {
+            title: 'Notifications à confirmer',
+            body: `${label}. Les nouvelles notifications reçues entre-temps resteront non lues.`,
+          },
+          pending: { tool: tool.name, args, label },
+          spokenPrompt: buildSpokenConfirmation(label),
+        });
+      }
+      const run = await tool.run(parsed.value);
+      if (!run.ok) return err(run.error);
+      return ok({
+        kind: 'done',
+        intent,
+        model,
+        plan: ['Marquer le lot comme lu'],
+        card: { title: 'Notifications lues ✓', body: `${label} — c’est fait.` },
+      });
     }
 
     if (intent === 'payout') {
@@ -1547,9 +1736,48 @@ export class BobAgent {
     steps: { intent: BobIntent; reference: string | null }[],
     autonomy: AgentAutonomy,
     model: string,
+    message: string,
     context?: AgentContext,
   ): Promise<Result<AgentRun, AppError>> {
     const headIntent = steps[0]?.intent ?? 'unknown';
+    if (steps.some((step) => step.intent === 'marquer_notifications_lues')) {
+      const explicitlyTargetsNotifications = /\bnotifications?\b/.test(normalized(message));
+      const onNotificationsScreen =
+        context?.screen.instanceId === 'notifications' ||
+        context?.screen.name.replace(/^\/+/, '') === 'notifications';
+      if (!explicitlyTargetsNotifications && !onNotificationsScreen) {
+        return ok({
+          kind: 'answer',
+          intent: 'marquer_notifications_lues',
+          model,
+          plan: ['Lever l’ambiguïté avant de préparer le lot'],
+          card: {
+            title: 'Lot non préparé',
+            body: 'Tu parles bien de toutes tes notifications non lues ? Rien n’a été exécuté.',
+          },
+          choices: [
+            {
+              label: 'Oui, les notifications',
+              value: 'Marque toutes les notifications comme lues',
+            },
+          ],
+          ask: [
+            askToPick({
+              id: 'marquer_notifications.portee',
+              question: 'Tu parles bien de toutes tes notifications non lues ?',
+              header: 'Notifs',
+              items: [
+                {
+                  value: 'toutes',
+                  label: 'Oui, toutes les non-lues',
+                  followUp: 'Marque toutes les notifications comme lues',
+                },
+              ],
+            }),
+          ],
+        });
+      }
+    }
     let payables: PayableInvoice[] = [];
     // Chargées pour l'encaissement, et pour une relance CIBLÉE (C25 ① — « puis relance Martin »).
     if (steps.some((s) => s.intent === 'encaisser' || (s.intent === 'relance' && s.reference !== null))) {
@@ -1742,6 +1970,47 @@ export class BobAgent {
         actions.push({ tool: 'factures_impayees', args: {}, label: 'Lister tes impayés' });
       } else if (step.intent === 'documents') {
         actions.push({ tool: 'documents_liste', args: {}, label: 'Lister les documents archivés' });
+      } else if (step.intent === 'marquer_notifications_lues') {
+        const previewUnread = this.deps.actions.previewUnreadNotifications?.bind(this.deps.actions);
+        const tool = this.tool('marquer_notifications_lues');
+        if (!previewUnread || !tool) {
+          return ok({
+            kind: 'answer',
+            intent: step.intent,
+            model,
+            plan: ['Vérifier la capacité de l’hôte'],
+            card: {
+              title: 'Lot interrompu',
+              body: 'Je ne peux pas modifier le fil de notifications sur cet appareil. Rien n’a été exécuté.',
+            },
+          });
+        }
+        const preview = await previewUnread();
+        if (!preview.ok) return err(preview.error);
+        if (!Number.isInteger(preview.value.unreadCount) || preview.value.unreadCount < 0) {
+          return err({ kind: 'dependency', port: 'notifications', cause: 'aperçu non lu incohérent' });
+        }
+        if (preview.value.unreadCount === 0) {
+          return ok({
+            kind: 'answer',
+            intent: step.intent,
+            model,
+            plan: ['Vérifier les notifications non lues'],
+            card: {
+              title: 'Tout est déjà lu',
+              body: 'Je n’ai exécuté aucune action du lot. Reformule les autres actions si tu veux les lancer seules.',
+            },
+          });
+        }
+        const args = { throughCreatedAt: preview.value.throughCreatedAt };
+        const parsed = tool.parse(args);
+        if (!parsed.ok) return err(parsed.error);
+        const count = preview.value.unreadCount;
+        actions.push({
+          tool: tool.name,
+          args,
+          label: `Marquer ${count} notification${count > 1 ? 's' : ''} comme lue${count > 1 ? 's' : ''}`,
+        });
       } else if (step.intent === 'echeances' && this.tool('echeances_fiscales')) {
         // Gated sur la capacité de l'hôte (outil optionnel C-EXP5b) — sinon l'étape est écartée.
         actions.push({ tool: 'echeances_fiscales', args: {}, label: 'Lister tes échéances fiscales' });
@@ -1780,7 +2049,20 @@ export class BobAgent {
       if (!parsed.ok) return err(parsed.error);
       const run = await tool.run(parsed.value);
       if (!run.ok) return err(run.error);
-      lines.push(`✓ ${a.label}`);
+      if (a.tool === 'marquer_notifications_lues') {
+        const output = run.value as { updatedCount?: unknown };
+        const updatedCount =
+          typeof output.updatedCount === 'number' && Number.isInteger(output.updatedCount)
+            ? output.updatedCount
+            : 0;
+        lines.push(
+          updatedCount === 0
+            ? '✓ Notifications déjà à jour au moment de l’exécution'
+            : `✓ ${updatedCount} notification${updatedCount > 1 ? 's' : ''} marquée${updatedCount > 1 ? 's' : ''} comme lue${updatedCount > 1 ? 's' : ''}`,
+        );
+      } else {
+        lines.push(`✓ ${a.label}`);
+      }
     }
     return ok(lines.join('\n'));
   }
@@ -1805,6 +2087,26 @@ export class BobAgent {
     if (!parsed.ok) return err(parsed.error);
     const run = await tool.run(parsed.value);
     if (!run.ok) return err(run.error);
+    if (pending.tool === 'marquer_notifications_lues') {
+      const output = run.value as { updatedCount?: unknown };
+      const updatedCount =
+        typeof output.updatedCount === 'number' && Number.isInteger(output.updatedCount)
+          ? output.updatedCount
+          : 0;
+      return ok({
+        kind: 'done',
+        intent: 'marquer_notifications_lues',
+        model,
+        plan: ['Marquer le lot confirmé comme lu'],
+        card: {
+          title: 'Notifications à jour',
+          body:
+            updatedCount === 0
+              ? 'Aucune notification supplémentaire n’était encore non lue au moment de la confirmation.'
+              : `${updatedCount} notification${updatedCount > 1 ? 's ont' : ' a'} été marquée${updatedCount > 1 ? 's' : ''} comme lue${updatedCount > 1 ? 's' : ''}.`,
+        },
+      });
+    }
     return ok({
       kind: 'done',
       intent: intentForTool(pending.tool),

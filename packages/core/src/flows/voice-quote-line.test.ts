@@ -69,6 +69,38 @@ describe('parseVoiceQuoteLine — dictée fondateur (S2-GUIDÉ)', () => {
     expect(r.line).toMatchObject({ qty: 3, vatRate: 20, category: 'supply', unitPriceHT: 4_500 });
   });
 
+  it('nombres EN TOUTES LETTRES (dictée réelle) : « cinquante-cinq euros », « quatre-vingt-quinze », « cent vingt »', () => {
+    const r = parseVoiceQuoteLine('ajoute deux heures de main-d’œuvre à cinquante-cinq euros', { defaultVatRate: 10 });
+    expect(r.kind).toBe('line');
+    if (r.kind === 'line') expect(r.line).toMatchObject({ qty: 2, unitPriceHT: 5_500, category: 'labor' });
+    const r2 = parseVoiceQuoteLine('ajoute un déplacement à quatre-vingt-quinze euros', {});
+    expect(r2.kind === 'line' && r2.line.unitPriceHT).toBe(9_500);
+    expect(r2.kind === 'line' && r2.line.category).toBe('travel');
+    const r3 = parseVoiceQuoteLine('mets trois unités de robinet à cent vingt euros', {});
+    expect(r3.kind === 'line' && r3.line.unitPriceHT).toBe(12_000);
+    expect(r3.kind === 'line' && r3.line.qty).toBe(3);
+  });
+
+  it('« 2 heures pour 110 euros au total » → PU 55 € (division EXACTE), jamais 2 × 110', () => {
+    const r = parseVoiceQuoteLine('2 heures de dépannage pour 110 euros au total', {});
+    expect(r.kind).toBe('line');
+    if (r.kind === 'line') expect(r.line).toMatchObject({ qty: 2, unitPriceHT: 5_500 });
+  });
+
+  it('total NON divisible exactement → on redemande (jamais d’arrondi silencieux)', () => {
+    const r = parseVoiceQuoteLine('3 heures de pose pour 100 euros au total', {});
+    expect(r.kind).toBe('missing_price');
+  });
+
+  it('le libellé ne garde ni les nombres en lettres ni « euros »', () => {
+    const r = parseVoiceQuoteLine('ajoute un dépannage à cinquante-cinq euros', {});
+    expect(r.kind).toBe('line');
+    if (r.kind === 'line') {
+      expect(r.line.label.toLowerCase()).not.toMatch(/cinquante|euro/);
+      expect(r.line.unitPriceHT).toBe(5_500);
+    }
+  });
+
   it('énoncé vide ou inexploitable → none (fail-safe)', () => {
     expect(parseVoiceQuoteLine('   ', {}).kind).toBe('none');
     expect(parseVoiceQuoteLine('euh', {}).kind).toBe('missing_price');

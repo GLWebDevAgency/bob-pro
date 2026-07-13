@@ -53,6 +53,10 @@ import {
   deriveClosingReview,
   resolveTradeConfig,
   buildDocumentStorageKey,
+  DEFAULT_DOCUMENT_FOLDERS,
+  normalizeDocumentFolderName,
+  validateDocumentFolderName,
+  makeDocumentAnalysis,
   buildInvoiceAccountingPreviewEntry,
   createFrenchOperationalChartOfAccounts,
   ExtractDocument,
@@ -76,6 +80,7 @@ import {
   appNotFound,
   appForbidden,
   appDomain,
+  appConflict,
   type ClockPort,
   type IdGeneratorPort,
   type CreateQuoteInput,
@@ -105,6 +110,9 @@ import {
   type AddressSuggestion,
   type DocumentView,
   type DocumentDownloadUrl,
+  type DocumentFolderView,
+  type DeleteDocumentFolderStrategy,
+  type DocumentAnalysis,
 } from '@bob/core';
 import {
   InMemoryCompanyRepository,
@@ -130,11 +138,21 @@ import type {
   SendQuoteOutput,
   SendRelanceClientOutput,
   NotificationView,
+  NotificationUnreadPreview,
+  NotificationReadThroughInput,
+  NotificationReadThroughOutput,
   RegisterDeviceClientInput,
   ListDocumentsClientInput,
   UploadDocumentClientInput,
+  CreateDocumentIntakeClientInput,
+  ListDocumentFoldersClientInput,
+  DocumentFolderPageView,
+  DocumentFolderDeletionPlanView,
+  DocumentFolderDeletionExecutionView,
   VoiceConfig,
   VoiceSynthesisResult,
+  RealtimeVoiceConfig,
+  RealtimeVoiceCall,
   SuggestExpenseDefaultsInput,
   ExpenseDefaultsView,
   FacturXImportReview,
@@ -145,9 +163,12 @@ import type {
   PaymentAccountingPreview,
   AccountingEntryView,
   ClassifyDocumentClientInput,
+  RecordDocumentExpenseClientInput,
+  RecordDocumentExpenseClientOutput,
   AskBobClientInput,
   CreateCustomerClientInput,
 } from './client';
+import { localExpenseCreationFingerprint, portableSha256Bytes } from './expense-idempotency';
 
 export interface LocalBobClientOptions {
   clock?: ClockPort;
@@ -155,26 +176,139 @@ export interface LocalBobClientOptions {
   ids?: IdGeneratorPort;
 }
 
-function base64ByteSize(contentBase64: string): number {
+interface LocalDocumentFolderDeletionPlan {
+  id: string;
+  companyId: string;
+  folderId: string;
+  expectedRevision: number;
+  snapshot: {
+    folders: { id: string; parentId: string | null; revision: number }[];
+    documents: { id: string; folderId: string | null; revision: number }[];
+  };
+  expiresAt: string;
+  consumed: boolean;
+}
+
+const DOCUMENT_BINARY_MAX_BYTES = 10 * 1024 * 1024;
+const DOCUMENT_BASE64_MAX_CHARS = Math.ceil(DOCUMENT_BINARY_MAX_BYTES / 3) * 4;
+const BASE64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+const DOCUMENT_UPLOAD_MIME_TYPES = new Set([
+  'application/pdf',
+  'application/xml',
+  'text/xml',
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/heic',
+  'image/heif',
+]);
+
+type Base64DocumentDecode =
+  | { ok: true; bytes: Uint8Array; contentBase64: string }
+  | { ok: false; reason: 'invalid' | 'empty' | 'too_large' };
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let result = '';
+  for (let offset = 0; offset < bytes.length; offset += 3) {
+    const a = bytes[offset] ?? 0;
+    const hasB = offset + 1 < bytes.length;
+    const hasC = offset + 2 < bytes.length;
+    const b = bytes[offset + 1] ?? 0;
+    const c = bytes[offset + 2] ?? 0;
+    result += BASE64_ALPHABET[a >>> 2];
+    result += BASE64_ALPHABET[((a & 0x03) << 4) | (b >>> 4)];
+    result += hasB ? BASE64_ALPHABET[((b & 0x0f) << 2) | (c >>> 6)] : '=';
+    result += hasC ? BASE64_ALPHABET[c & 0x3f] : '=';
+  }
+  return result;
+}
+
+function decodeBase64Document(contentBase64: unknown): Base64DocumentDecode {
+  if (typeof contentBase64 !== 'string') return { ok: false, reason: 'invalid' };
   const raw = contentBase64.includes(',') ? contentBase64.slice(contentBase64.indexOf(',') + 1) : contentBase64;
   const normalized = raw.replace(/\s/g, '');
-  const padding = normalized.endsWith('==') ? 2 : normalized.endsWith('=') ? 1 : 0;
-  return Math.max(0, Math.floor((normalized.length * 3) / 4) - padding);
-}
-
-function localSha256(seq: number): string {
-  return seq.toString(16).padStart(64, '0').slice(-64);
-}
-
-/** Taille UTF-8 d'une chaîne sans Buffer/TextEncoder (portable RN/Hermes) — archive XML locale. */
-function utf8ByteLength(s: string): number {
-  let bytes = 0;
-  for (const ch of s) {
-    const cp = ch.codePointAt(0) ?? 0;
-    bytes += cp <= 0x7f ? 1 : cp <= 0x7ff ? 2 : cp <= 0xffff ? 3 : 4;
+  if (!normalized) return { ok: false, reason: 'empty' };
+  if (normalized.length > DOCUMENT_BASE64_MAX_CHARS + 2) return { ok: false, reason: 'too_large' };
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(normalized) || normalized.length % 4 === 1) {
+    return { ok: false, reason: 'invalid' };
   }
-  return bytes;
+  const firstPadding = normalized.indexOf('=');
+  if (firstPadding >= 0 && normalized.length % 4 !== 0) return { ok: false, reason: 'invalid' };
+  const unpadded = firstPadding >= 0 ? normalized.slice(0, firstPadding) : normalized;
+  const padded = `${unpadded}${'='.repeat((4 - (unpadded.length % 4)) % 4)}`;
+  const padding = padded.endsWith('==') ? 2 : padded.endsWith('=') ? 1 : 0;
+  const bytes = new Uint8Array((padded.length / 4) * 3 - padding);
+  let cursor = 0;
+  for (let offset = 0; offset < padded.length; offset += 4) {
+    const a = BASE64_ALPHABET.indexOf(padded[offset]!);
+    const b = BASE64_ALPHABET.indexOf(padded[offset + 1]!);
+    const c = padded[offset + 2] === '=' ? 0 : BASE64_ALPHABET.indexOf(padded[offset + 2]!);
+    const d = padded[offset + 3] === '=' ? 0 : BASE64_ALPHABET.indexOf(padded[offset + 3]!);
+    if (a < 0 || b < 0 || c < 0 || d < 0) return { ok: false, reason: 'invalid' };
+    const word = (a << 18) | (b << 12) | (c << 6) | d;
+    if (cursor < bytes.length) bytes[cursor++] = (word >>> 16) & 0xff;
+    if (cursor < bytes.length) bytes[cursor++] = (word >>> 8) & 0xff;
+    if (cursor < bytes.length) bytes[cursor++] = word & 0xff;
+  }
+  if (bytes.length === 0) return { ok: false, reason: 'empty' };
+  if (bytes.length > DOCUMENT_BINARY_MAX_BYTES) return { ok: false, reason: 'too_large' };
+  return { ok: true, bytes, contentBase64: bytesToBase64(bytes) };
 }
+
+function utf8BytesLocal(value: string): Uint8Array {
+  const encoded: number[] = [];
+  for (const character of value) {
+    const point = character.codePointAt(0) ?? 0xfffd;
+    if (point <= 0x7f) encoded.push(point);
+    else if (point <= 0x7ff) encoded.push(0xc0 | (point >>> 6), 0x80 | (point & 0x3f));
+    else if (point <= 0xffff) {
+      encoded.push(0xe0 | (point >>> 12), 0x80 | ((point >>> 6) & 0x3f), 0x80 | (point & 0x3f));
+    } else {
+      encoded.push(
+        0xf0 | (point >>> 18),
+        0x80 | ((point >>> 12) & 0x3f),
+        0x80 | ((point >>> 6) & 0x3f),
+        0x80 | (point & 0x3f),
+      );
+    }
+  }
+  return Uint8Array.from(encoded);
+}
+
+function asciiPrefix(bytes: Uint8Array, length: number, offset = 0): string {
+  let value = '';
+  for (let index = offset; index < Math.min(bytes.length, offset + length); index += 1) {
+    value += String.fromCharCode(bytes[index]!);
+  }
+  return value;
+}
+
+function documentSignatureMatches(mimeType: string, bytes: Uint8Array): boolean {
+  const isPdf = asciiPrefix(bytes, 5) === '%PDF-';
+  const isJpeg = bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  const isPng = bytes.length >= 8 && [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+    .every((value, index) => bytes[index] === value);
+  const isWebp = asciiPrefix(bytes, 4) === 'RIFF' && asciiPrefix(bytes, 4, 8) === 'WEBP';
+  const heifBrand = asciiPrefix(bytes, 4, 8);
+  const isHeif = asciiPrefix(bytes, 4, 4) === 'ftyp'
+    && new Set(['heic', 'heix', 'hevc', 'hevx', 'heim', 'heis', 'mif1', 'msf1']).has(heifBrand);
+  const xmlHead = asciiPrefix(bytes, Math.min(bytes.length, 512))
+    .replace(/^\u00ef\u00bb\u00bf/, '')
+    .trimStart();
+  return (mimeType === 'application/pdf' && isPdf)
+    || (mimeType === 'image/jpeg' && isJpeg)
+    || (mimeType === 'image/png' && isPng)
+    || (mimeType === 'image/webp' && isWebp)
+    || ((mimeType === 'image/heic' || mimeType === 'image/heif') && isHeif)
+    || ((mimeType === 'application/xml' || mimeType === 'text/xml') && xmlHead.startsWith('<'));
+}
+
+function cloneDocumentView(document: DocumentView): DocumentView {
+  return { ...document, tags: [...document.tags] };
+}
+
+const LOCAL_DEMO_JPEG_BASE64 = '/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXhpZgAATU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAAaADAAQAAAABAAAAAQAAAAD/7QA4UGhvdG9zaG9wIDMuMAA4QklNBAQAAAAAAAA4QklNBCUAAAAAABDUHYzZjwCyBOmACZjs+EJ+/8AAEQgAAQABAwEiAAIRAQMRAf/EAB8AAAEFAQEBAQEBAAAAAAAAAAABAgMEBQYHCAkKC//EALUQAAIBAwMCBAMFBQQEAAABfQECAwAEEQUSITFBBhNRYQcicRQygZGhCCNCscEVUtHwJDNicoIJChYXGBkaJSYnKCkqNDU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+v/EAB8BAAMBAQEBAQEBAQEAAAAAAAABAgMEBQYHCAkKC//EALURAAIBAgQEAwQHBQQEAAECdwABAgMRBAUhMQYSQVEHYXETIjKBCBRCkaGxwQkjM1LwFWJy0QoWJDThJfEXGBkaJicoKSo1Njc4OTpDREVGR0hJSlNUVVZXWFlaY2RlZmdoaWpzdHV2d3h5eoKDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uLj5OXm5+jp6vLz9PX29/j5+v/bAEMAAgICAgICAwICAwUDAwMFBgUFBQUGCAYGBgYGCAoICAgICAgKCgoKCgoKCgwMDAwMDA4ODg4ODw8PDw8PDw8PD//bAEMBAgICBAQEBwQEBxALCQsQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEP/dAAQAAf/aAAwDAQACEQMRAD8A/RSiiivcPPP/2Q==';
+const LOCAL_DEMO_PDF_BASE64 = 'JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCAyMDAgMjAwXSAvQ29udGVudHMgNCAwIFIgL1Jlc291cmNlcyA8PCA+PiA+PgplbmRvYmoKNCAwIG9iago8PCAvTGVuZ3RoIDAgPj4Kc3RyZWFtCgplbmRzdHJlYW0KZW5kb2JqCnhyZWYKMCA1CjAwMDAwMDAwMDAgNjU1MzUgZiAKMDAwMDAwMDAwOSAwMDAwMCBuIAowMDAwMDAwMDU4IDAwMDAwIG4gCjAwMDAwMDAxMTUgMDAwMDAgbiAKMDAwMDAwMDIxOSAwMDAwMCBuIAp0cmFpbGVyCjw8IC9TaXplIDUgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjI2OAolJUVPRgo=';
 
 function normalizeSupplierNameLocal(name: string): string {
   return name
@@ -225,10 +359,16 @@ export class LocalBobClient implements BobClient {
   private readonly ids: IdGeneratorPort;
   private readonly ocr: DemoOcrAdapter;
   private readonly expenses = new InMemoryExpenseRepository();
+  private readonly expenseCreationRequests = new Map<string, { payloadHash: string; expenseId: string }>();
+  private expenseCreationTail: Promise<void> = Promise.resolve();
   private readonly chantiers = new InMemoryChantierRepository();
   private readonly accountingEntries = new InMemoryAccountingEntryRepository();
   private readonly chartOfAccounts = new InMemoryChartOfAccountsRepository();
   private readonly documents: DocumentView[] = [];
+  private readonly documentContents = new Map<string, { contentBase64: string; mimeType: string }>();
+  private readonly documentIntakes = new Map<string, { documentId: string; sha256: string; mimeType: string }>();
+  private readonly documentFolders: DocumentFolderView[] = [];
+  private readonly documentFolderDeletionPlans = new Map<string, LocalDocumentFolderDeletionPlan>();
   private documentSeq = 0;
   // Fil de notifications local (C25, adaptateur démo) — alimenté par sendRelance, lu/non-lu en mémoire.
   private readonly notifications: NotificationView[] = [];
@@ -272,6 +412,49 @@ export class LocalBobClient implements BobClient {
     // → exerce le flux réel scan → proposition → « Classer là » → dossier Achats.
     for (const expense of seedExpenses(this.companyId, this.clock.today())) void this.expenses.save(expense);
     this.documents.push(...seedVaultDocuments(this.companyId, this.clock.now(), this.clock.today()));
+    for (const document of this.documents) {
+      const contentBase64 = document.mimeType === 'application/pdf' ? LOCAL_DEMO_PDF_BASE64 : LOCAL_DEMO_JPEG_BASE64;
+      const decoded = decodeBase64Document(contentBase64);
+      if (!decoded.ok) throw new Error(`Fixture document locale invalide: ${document.id}`);
+      document.byteSize = decoded.bytes.length;
+      document.sha256 = portableSha256Bytes(decoded.bytes);
+      document.storageKey = buildDocumentStorageKey({
+        companyId: document.companyId,
+        documentId: document.id,
+        version: document.version,
+        sha256: document.sha256,
+        filename: document.filename,
+        mimeType: document.mimeType,
+      });
+      this.documentContents.set(document.id, { contentBase64: decoded.contentBase64, mimeType: document.mimeType });
+    }
+    this.documentFolders.push(
+      ...DEFAULT_DOCUMENT_FOLDERS.map((folder) => ({
+        id: `local-folder-${folder.systemKey}`,
+        companyId: this.companyId,
+        parentId: null,
+        name: folder.name,
+        normalizedName: normalizeDocumentFolderName(folder.name),
+        systemKey: folder.systemKey,
+        status: 'active' as const,
+        revision: 1,
+        createdAt: this.clock.now(),
+        updatedAt: this.clock.now(),
+        deletedAt: null,
+      })),
+    );
+    for (const document of this.documents) {
+      if (document.origin === 'ocr' && document.linkedEntityType === null) continue;
+      const systemKey =
+        document.linkedEntityType === 'chantier'
+          ? 'projects'
+          : document.linkedEntityType === 'expense' || document.kind === 'expense_receipt'
+            ? 'purchases'
+            : ['invoice_pdf', 'quote_pdf', 'facturx_xml', 'signed_quote'].includes(document.kind)
+              ? 'accounting'
+              : null;
+      document.folderId = systemKey ? `local-folder-${systemKey}` : null;
+    }
     // Facturation de démo (C16) : mêmes FLOWS que l'utilisateur — devis signé avec acompte
     // (test d'or 488,40), facture d'acompte émise puis ENCAISSÉE → le briefing du jour
     // propose la facture finale (proto), la pièce montre suivi payé + frise + mentions figées.
@@ -284,6 +467,21 @@ export class LocalBobClient implements BobClient {
 
   /** Barrière du seed asynchrone : les lectures billing attendent la démo posée. */
   private ready: Promise<void> = Promise.resolve();
+
+  /** Sérialise les créations locales : même garantie mono-gagnant que l'index PostgreSQL. */
+  private async withExpenseCreationLock<T>(fn: () => Promise<T>): Promise<T> {
+    const predecessor = this.expenseCreationTail;
+    let release: () => void = () => undefined;
+    this.expenseCreationTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await predecessor;
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
+  }
 
   /** Écritures du cycle achats pour les dépenses seedées (même use case que recordExpense). */
   private async seedExpenseAccountingDemo(): Promise<void> {
@@ -523,29 +721,78 @@ export class LocalBobClient implements BobClient {
     return ok({ cloudAvailable: false, ttsCloudAvailable: false });
   }
 
+  async realtimeVoiceConfig(): Promise<Result<RealtimeVoiceConfig, AppError>> {
+    return ok({
+      available: false,
+      transport: 'webrtc',
+      model: 'gpt-realtime-2.1',
+      voice: 'marin',
+      configVersion: 'bob-live-webrtc-v1',
+      requiresDevelopmentBuild: true,
+      maxSessionSeconds: 900,
+    });
+  }
+
+  async createRealtimeVoiceCall(_input: { sdp: string }): Promise<Result<RealtimeVoiceCall, AppError>> {
+    return { ok: false, error: appForbidden('Bob Live nécessite le backend sécurisé.') };
+  }
+
   async listDocuments(input: ListDocumentsClientInput = {}): Promise<Result<DocumentView[], AppError>> {
     return ok(
       this.documents
         .filter((d) => input.includeDeleted === true || d.status === 'active')
         .filter((d) => (input.kind !== undefined ? d.kind === input.kind : true))
         .filter((d) => (input.linkedEntityType !== undefined ? d.linkedEntityType === input.linkedEntityType : true))
-        .filter((d) => (input.linkedEntityId !== undefined ? d.linkedEntityId === input.linkedEntityId : true)),
+        .filter((d) => (input.linkedEntityId !== undefined ? d.linkedEntityId === input.linkedEntityId : true))
+        .filter((d) => (input.folderId !== undefined ? d.folderId === input.folderId : true))
+        .map(cloneDocumentView),
     );
   }
 
+  async getDocument(documentId: string): Promise<Result<DocumentView, AppError>> {
+    const document = this.documents.find((candidate) => candidate.id === documentId && candidate.status === 'active');
+    return document ? ok(cloneDocumentView(document)) : err(appNotFound('document', documentId));
+  }
+
   async uploadDocument(input: UploadDocumentClientInput): Promise<Result<DocumentView, AppError>> {
-    const byteSize = base64ByteSize(input.contentBase64);
-    if (byteSize <= 0) return err({ kind: 'validation', issues: [{ field: 'contentBase64', message: 'Document vide.' }] });
+    const decoded = decodeBase64Document(input.contentBase64);
+    if (!decoded.ok) {
+      const message = decoded.reason === 'too_large'
+        ? 'Document trop volumineux (10 Mo maximum).'
+        : decoded.reason === 'empty'
+          ? 'Document vide.'
+          : 'Base64 invalide.';
+      return err({ kind: 'validation', issues: [{ field: 'contentBase64', message }] });
+    }
+    const filename = typeof input.filename === 'string' ? input.filename.replace(/\s+/g, ' ').trim() : '';
+    const mimeType = typeof input.mimeType === 'string' ? input.mimeType.split(';', 1)[0]!.trim().toLowerCase() : '';
+    const unsafeFilename = filename.includes('/')
+      || filename.includes('\\')
+      || [...filename].some((character) => {
+        const point = character.codePointAt(0) ?? 0;
+        return point <= 0x1f || point === 0x7f;
+      });
+    const issues: { field: string; message: string }[] = [];
+    if (!filename || filename.length > 180 || unsafeFilename) {
+      issues.push({ field: 'filename', message: 'Nom de fichier invalide (180 caractères maximum).' });
+    }
+    if (!DOCUMENT_UPLOAD_MIME_TYPES.has(mimeType)) {
+      issues.push({ field: 'mimeType', message: 'Format non pris en charge. Utilise PDF, XML, JPEG, PNG, WebP ou HEIC.' });
+    } else if (!documentSignatureMatches(mimeType, decoded.bytes)) {
+      issues.push({ field: 'mimeType', message: 'Le contenu du fichier ne correspond pas au format annoncé.' });
+    }
+    if (issues.length > 0) return err({ kind: 'validation', issues });
+    const byteSize = decoded.bytes.length;
     this.documentSeq += 1;
     const id = `local-document-${this.documentSeq}`;
-    const sha256 = localSha256(this.documentSeq);
+    const sha256 = portableSha256Bytes(decoded.bytes);
     const storageKey = buildDocumentStorageKey({
       companyId: this.companyId,
       documentId: id,
       version: 1,
       sha256,
-      filename: input.filename,
-      mimeType: input.mimeType,
+      filename,
+      mimeType,
     });
     const today = this.clock.today();
     const documentDate = input.documentDate ?? null;
@@ -555,11 +802,13 @@ export class LocalBobClient implements BobClient {
       kind: input.kind ?? 'other',
       origin: 'uploaded',
       status: 'active',
-      filename: input.filename.trim() || 'document.bin',
-      mimeType: input.mimeType,
+      filename,
+      mimeType,
       byteSize,
       sha256,
       storageKey,
+      folderId: input.folderId ?? null,
+      revision: 1,
       version: 1,
       linkedEntityType: input.linkedEntityType ?? null,
       linkedEntityId: input.linkedEntityId ?? null,
@@ -571,24 +820,486 @@ export class LocalBobClient implements BobClient {
       tags: [...new Set((input.tags ?? []).map((t) => t.trim().toLowerCase()).filter((t) => t.length >= 2 && t.length <= 32))].slice(0, 16),
     };
     this.documents.unshift(view);
-    return ok(view);
+    this.documentContents.set(id, { contentBase64: decoded.contentBase64, mimeType });
+    return ok(cloneDocumentView(view));
+  }
+
+  async createDocumentIntake(input: CreateDocumentIntakeClientInput): Promise<Result<DocumentView, AppError>> {
+    const key = input.idempotencyKey.trim();
+    if (key.length < 8 || key.length > 160) {
+      return err({ kind: 'validation', issues: [{ field: 'idempotencyKey', message: 'Clé d’idempotence invalide.' }] });
+    }
+    const decoded = decodeBase64Document(input.contentBase64);
+    if (!decoded.ok) {
+      const message = decoded.reason === 'too_large'
+        ? 'Document trop volumineux (10 Mo maximum).'
+        : decoded.reason === 'empty'
+          ? 'Document vide.'
+          : 'Base64 invalide.';
+      return err({ kind: 'validation', issues: [{ field: 'contentBase64', message }] });
+    }
+    const mimeType = typeof input.mimeType === 'string' ? input.mimeType.split(';', 1)[0]!.trim().toLowerCase() : '';
+    const sha256 = portableSha256Bytes(decoded.bytes);
+    const previous = this.documentIntakes.get(key);
+    if (previous) {
+      if (previous.sha256 !== sha256 || previous.mimeType !== mimeType) {
+        return err({ kind: 'conflict', entity: 'document_intake', reason: 'idempotency_key_reused' });
+      }
+      const existing = this.documents.find((document) => document.id === previous.documentId);
+      return existing ? ok(cloneDocumentView(existing)) : err(appNotFound('document', previous.documentId));
+    }
+    const archived = await this.uploadDocument({
+      contentBase64: input.contentBase64,
+      mimeType: input.mimeType,
+      filename: input.filename,
+      kind: 'other',
+      folderId: null,
+    });
+    if (!archived.ok) return archived;
+    const archivedIndex = this.documents.findIndex((document) => document.id === archived.value.id);
+    if (archivedIndex < 0) return err(appNotFound('document', archived.value.id));
+    const archivedDocument = this.documents[archivedIndex]!;
+    const intakeDocument: DocumentView = { ...archivedDocument, origin: 'ocr', tags: [...archivedDocument.tags] };
+    this.documents[archivedIndex] = intakeDocument;
+    this.documentIntakes.set(key, {
+      documentId: intakeDocument.id,
+      sha256,
+      mimeType,
+    });
+    return ok(cloneDocumentView(intakeDocument));
+  }
+
+  async listDocumentFolders(
+    input: ListDocumentFoldersClientInput = {},
+  ): Promise<Result<DocumentFolderPageView, AppError>> {
+    const parentId = input.parentId ?? null;
+    const limit = input.limit ?? 30;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      return err({ kind: 'validation', issues: [{ field: 'limit', message: 'Pagination invalide.' }] });
+    }
+    const sorted = this.documentFolders
+      .filter((folder) => folder.status === 'active' && folder.parentId === parentId)
+      .sort((a, b) => a.normalizedName.localeCompare(b.normalizedName) || a.id.localeCompare(b.id));
+    const start = input.cursor ? Math.max(0, sorted.findIndex((folder) => folder.id === input.cursor) + 1) : 0;
+    const page = sorted.slice(start, start + limit + 1);
+    const items = page.slice(0, limit).map((folder) => ({ ...folder }));
+    return ok({ items, nextCursor: page.length > limit ? items.at(-1)?.id ?? null : null });
+  }
+
+  async getDocumentFolder(folderId: string): Promise<Result<DocumentFolderView, AppError>> {
+    const folder = this.documentFolders.find((candidate) => candidate.id === folderId && candidate.status === 'active');
+    return folder ? ok({ ...folder }) : err(appNotFound('document_folder', folderId));
+  }
+
+  async createDocumentFolder(input: {
+    name: string;
+    parentId?: string | null;
+  }): Promise<Result<DocumentFolderView, AppError>> {
+    const validatedName = validateDocumentFolderName(input.name);
+    if (!validatedName.ok) {
+      return err({ kind: 'validation', issues: [{ field: 'name', message: 'Nom de dossier invalide.' }] });
+    }
+    const { name, normalizedName } = validatedName.value;
+    const parentId = input.parentId ?? null;
+    if (parentId && !this.documentFolders.some((folder) => folder.id === parentId && folder.status === 'active')) {
+      return err(appNotFound('document_folder', parentId));
+    }
+    if (
+      this.documentFolders.some(
+        (folder) =>
+          folder.status === 'active' && folder.parentId === parentId && folder.normalizedName === normalizedName,
+      )
+    ) {
+      return err(appConflict('document_folder', 'Un dossier de même nom existe déjà à cet emplacement.'));
+    }
+    const now = this.clock.now();
+    const folder: DocumentFolderView = {
+      id: this.ids.newId(),
+      companyId: this.companyId,
+      parentId,
+      name,
+      normalizedName,
+      systemKey: null,
+      status: 'active',
+      revision: 1,
+      createdAt: now,
+      updatedAt: now,
+      deletedAt: null,
+    };
+    this.documentFolders.push(folder);
+    return ok({ ...folder });
+  }
+
+  async updateDocumentFolder(input: {
+    folderId: string;
+    expectedRevision: number;
+    name?: string;
+    parentId?: string | null;
+  }): Promise<Result<DocumentFolderView, AppError>> {
+    const folder = this.documentFolders.find((candidate) => candidate.id === input.folderId && candidate.status === 'active');
+    if (!folder) return err(appNotFound('document_folder', input.folderId));
+    if (folder.revision !== input.expectedRevision) return err(appConflict('document_folder', 'Le dossier a été modifié.'));
+    const changes = Number(input.name !== undefined) + Number(input.parentId !== undefined);
+    if (changes !== 1) {
+      return err({ kind: 'validation', issues: [{ field: 'input', message: 'Une seule modification à la fois.' }] });
+    }
+    if (input.name !== undefined) {
+      const validatedName = validateDocumentFolderName(input.name);
+      if (!validatedName.ok) {
+        return err({ kind: 'validation', issues: [{ field: 'name', message: 'Nom de dossier invalide.' }] });
+      }
+      const { name, normalizedName } = validatedName.value;
+      const duplicate = this.documentFolders.some(
+        (candidate) =>
+          candidate.id !== folder.id &&
+          candidate.status === 'active' &&
+          candidate.parentId === folder.parentId &&
+          candidate.normalizedName === normalizedName,
+      );
+      if (duplicate) return err(appConflict('document_folder', 'Un dossier de même nom existe déjà.'));
+      folder.name = name;
+      folder.normalizedName = normalizedName;
+    } else {
+      const parentId = input.parentId ?? null;
+      if (parentId === folder.id) {
+        return err({ kind: 'validation', issues: [{ field: 'parentId', message: 'Cycle de dossiers interdit.' }] });
+      }
+      let cursor = parentId;
+      let depth = 1;
+      while (cursor) {
+        if (cursor === folder.id) {
+          return err({ kind: 'validation', issues: [{ field: 'parentId', message: 'Cycle de dossiers interdit.' }] });
+        }
+        const parent = this.documentFolders.find((candidate) => candidate.id === cursor && candidate.status === 'active');
+        if (!parent) return err(appNotFound('document_folder', cursor));
+        cursor = parent.parentId;
+        depth += 1;
+        if (depth > 8) {
+          return err({ kind: 'validation', issues: [{ field: 'parentId', message: 'Profondeur maximale atteinte.' }] });
+        }
+      }
+      folder.parentId = parentId;
+    }
+    folder.revision += 1;
+    folder.updatedAt = this.clock.now();
+    return ok({ ...folder });
+  }
+
+  async previewDocumentFolderDeletion(
+    folderId: string,
+  ): Promise<Result<DocumentFolderDeletionPlanView, AppError>> {
+    const folder = this.documentFolders.find((candidate) => candidate.id === folderId && candidate.status === 'active');
+    if (!folder) return err(appNotFound('document_folder', folderId));
+    if (folder.systemKey !== null) {
+      return err(appForbidden('Les dossiers système peuvent être renommés, mais pas supprimés.'));
+    }
+    const subtree: DocumentFolderView[] = [];
+    const pending = [folder.id];
+    while (pending.length > 0) {
+      const currentId = pending.shift()!;
+      const current = this.documentFolders.find((candidate) => candidate.id === currentId && candidate.status === 'active');
+      if (!current) continue;
+      subtree.push(current);
+      pending.push(...this.documentFolders
+        .filter((candidate) => candidate.status === 'active' && candidate.parentId === current.id)
+        .map((candidate) => candidate.id));
+    }
+    const folderIds = new Set(subtree.map((candidate) => candidate.id));
+    const documents = this.documents.filter(
+      (document) => document.status === 'active' && document.folderId !== null && folderIds.has(document.folderId),
+    );
+    const planId = `folder-delete-${this.ids.newId()}`;
+    const expiresAt = new Date(Date.parse(this.clock.now()) + 5 * 60_000).toISOString();
+    this.documentFolderDeletionPlans.set(planId, {
+      id: planId,
+      companyId: this.companyId,
+      folderId: folder.id,
+      expectedRevision: folder.revision,
+      snapshot: {
+        folders: subtree
+          .map((candidate) => ({ id: candidate.id, parentId: candidate.parentId, revision: candidate.revision }))
+          .sort((left, right) => left.id.localeCompare(right.id)),
+        documents: documents
+          .map((document) => ({ id: document.id, folderId: document.folderId, revision: document.revision }))
+          .sort((left, right) => left.id.localeCompare(right.id)),
+      },
+      expiresAt,
+      consumed: false,
+    });
+    const directChildren = subtree.filter((candidate) => candidate.parentId === folder.id);
+    const directDocuments = documents.filter((document) => document.folderId === folder.id);
+    return ok({
+      planId,
+      expiresAt,
+      folder: { id: folder.id, parentId: folder.parentId, name: folder.name, systemKey: folder.systemKey },
+      directChildCount: directChildren.length,
+      descendantFolderCount: Math.max(0, subtree.length - 1),
+      directDocumentCount: directDocuments.length,
+      documentCount: documents.length,
+      canDeleteEmpty: subtree.length === 1 && documents.length === 0,
+    });
+  }
+
+  async executeDocumentFolderDeletion(input: {
+    planId: string;
+    strategy: DeleteDocumentFolderStrategy;
+  }): Promise<Result<DocumentFolderDeletionExecutionView, AppError>> {
+    const plan = this.documentFolderDeletionPlans.get(input.planId);
+    if (
+      !plan
+      || plan.companyId !== this.companyId
+      || plan.consumed
+      || Date.parse(plan.expiresAt) <= Date.parse(this.clock.now())
+    ) {
+      return err(appConflict('document_folder_deletion_plan', 'Cette confirmation a expiré ou a déjà été utilisée.'));
+    }
+    plan.consumed = true;
+    const folder = this.documentFolders.find(
+      (candidate) => candidate.id === plan.folderId && candidate.status === 'active',
+    );
+    if (!folder || folder.systemKey !== null || folder.revision !== plan.expectedRevision) {
+      return err(appConflict('document_folder', 'Le dossier a changé. Recrée un aperçu.'));
+    }
+    const currentSubtree: DocumentFolderView[] = [];
+    const pendingFolderIds = [folder.id];
+    const visitedFolderIds = new Set<string>();
+    while (pendingFolderIds.length > 0) {
+      const currentId = pendingFolderIds.shift()!;
+      if (visitedFolderIds.has(currentId)) continue;
+      visitedFolderIds.add(currentId);
+      const current = this.documentFolders.find(
+        (candidate) => candidate.id === currentId && candidate.status === 'active',
+      );
+      if (!current) continue;
+      currentSubtree.push(current);
+      pendingFolderIds.push(
+        ...this.documentFolders
+          .filter((candidate) => candidate.status === 'active' && candidate.parentId === current.id)
+          .map((candidate) => candidate.id),
+      );
+    }
+    const currentFolderIds = new Set(currentSubtree.map((candidate) => candidate.id));
+    const snapshotNow = {
+      folders: currentSubtree
+        .map((candidate) => ({ id: candidate.id, parentId: candidate.parentId, revision: candidate.revision }))
+        .sort((left, right) => left.id.localeCompare(right.id)),
+      documents: this.documents
+        .filter(
+          (document) => document.status === 'active'
+            && document.folderId !== null
+            && currentFolderIds.has(document.folderId),
+        )
+        .map((document) => ({ id: document.id, folderId: document.folderId, revision: document.revision }))
+        .sort((left, right) => left.id.localeCompare(right.id)),
+    };
+    if (JSON.stringify(snapshotNow) !== JSON.stringify(plan.snapshot)) {
+      return err(appConflict('document_folder', 'Le contenu du dossier a changé. Recrée un aperçu.'));
+    }
+    const directChildren = this.documentFolders.filter(
+      (candidate) => candidate.status === 'active' && candidate.parentId === folder.id,
+    );
+    const directDocuments = this.documents.filter(
+      (document) => document.status === 'active' && document.folderId === folder.id,
+    );
+    if (input.strategy.kind === 'empty') {
+      if (directChildren.length > 0 || directDocuments.length > 0) {
+        return err(appConflict('document_folder', 'Le dossier n’est pas vide. Choisis un transfert.'));
+      }
+    } else {
+      const targetFolderId = input.strategy.targetFolderId;
+      const target = this.documentFolders.find(
+        (candidate) => candidate.id === targetFolderId && candidate.status === 'active',
+      );
+      if (!target) return err(appNotFound('document_folder', targetFolderId));
+      if (target.revision !== input.strategy.targetExpectedRevision) {
+        return err(appConflict('document_folder', 'Le dossier de destination a changé.'));
+      }
+      if (plan.snapshot.folders.some((candidate) => candidate.id === target.id)) {
+        return err({ kind: 'validation', issues: [{ field: 'targetFolderId', message: 'Destination invalide.' }] });
+      }
+      const targetChildNames = new Set(
+        this.documentFolders
+          .filter((candidate) => candidate.status === 'active' && candidate.parentId === target.id)
+          .map((candidate) => candidate.normalizedName),
+      );
+      if (directChildren.some((child) => targetChildNames.has(child.normalizedName))) {
+        return err(appConflict('document_folder', 'Un sous-dossier de même nom existe dans la destination.'));
+      }
+      for (const child of directChildren) {
+        child.parentId = target.id;
+        child.revision += 1;
+        child.updatedAt = this.clock.now();
+      }
+      for (const document of directDocuments) {
+        document.folderId = target.id;
+        document.revision += 1;
+      }
+    }
+    folder.status = 'deleted';
+    folder.deletedAt = this.clock.now();
+    folder.updatedAt = this.clock.now();
+    folder.revision += 1;
+    return ok({
+      folderId: folder.id,
+      transferredDocuments: input.strategy.kind === 'transfer' ? directDocuments.length : 0,
+      transferredChildren: input.strategy.kind === 'transfer' ? directChildren.length : 0,
+    });
+  }
+
+  async moveDocumentToFolder(input: {
+    documentId: string;
+    folderId: string | null;
+    expectedRevision: number;
+  }): Promise<Result<{ documentId: string; folderId: string | null; revision: number }, AppError>> {
+    const documentIndex = this.documents.findIndex(
+      (candidate) => candidate.id === input.documentId && candidate.status === 'active',
+    );
+    const document = this.documents[documentIndex];
+    if (!document) return err(appNotFound('document', input.documentId));
+    if (document.revision !== input.expectedRevision) return err(appConflict('document', 'Le document a été modifié.'));
+    if (
+      input.folderId !== null &&
+      !this.documentFolders.some((folder) => folder.id === input.folderId && folder.status === 'active')
+    ) {
+      return err(appNotFound('document_folder', input.folderId));
+    }
+    if (document.folderId !== input.folderId) {
+      const moved: DocumentView = {
+        ...document,
+        folderId: input.folderId,
+        revision: document.revision + 1,
+        tags: [...document.tags],
+      };
+      this.documents[documentIndex] = moved;
+      return ok({ documentId: moved.id, folderId: moved.folderId, revision: moved.revision });
+    }
+    return ok({ documentId: document.id, folderId: document.folderId, revision: document.revision });
+  }
+
+  async analyzeDocument(documentId: string): Promise<Result<DocumentAnalysis, AppError>> {
+    const document = this.documents.find((candidate) => candidate.id === documentId && candidate.status === 'active');
+    if (!document) return err(appNotFound('document', documentId));
+    const content = this.documentContents.get(documentId);
+    const lower = document.filename.toLowerCase();
+    const purchaseLike = /facture|ticket|recu|reçu/.test(lower);
+    let draft: Parameters<typeof makeDocumentAnalysis>[0];
+    if (purchaseLike && content) {
+      const extracted = await this.ocr.extractDocument({
+        contentBase64: content.contentBase64,
+        mimeType: content.mimeType,
+      });
+      if (extracted.ok) {
+        const evidence = [{ page: 1, excerpt: extracted.value.rawText.slice(0, 160), boundingBox: null }];
+        draft = {
+          type: /ticket|recu|reçu/.test(lower) ? 'receipt' : 'supplier_invoice',
+          typeConfidence: extracted.value.confidence,
+          summary: `Pièce d’achat de ${extracted.value.supplierName}, datée du ${extracted.value.documentDate}.`,
+          facts: [
+            {
+              key: 'supplier_name',
+              valueType: 'text',
+              value: extracted.value.supplierName,
+              confidence: extracted.value.confidence,
+              provenance: { source: 'document_text', evidence, derivedFrom: [], rule: null },
+            },
+            {
+              key: 'document_date',
+              valueType: 'date',
+              value: extracted.value.documentDate,
+              confidence: extracted.value.confidence,
+              provenance: { source: 'document_text', evidence, derivedFrom: [], rule: null },
+            },
+            {
+              key: 'total_ttc',
+              valueType: 'money',
+              value: { amountMinor: extracted.value.totalTtcCents, currency: extracted.value.currency },
+              confidence: extracted.value.confidence,
+              provenance: { source: 'document_text', evidence, derivedFrom: [], rule: null },
+            },
+            ...(extracted.value.vatCents !== null
+              ? [
+                  {
+                    key: 'vat_amount' as const,
+                    valueType: 'money' as const,
+                    value: { amountMinor: extracted.value.vatCents, currency: extracted.value.currency },
+                    confidence: extracted.value.confidence,
+                    provenance: { source: 'document_text' as const, evidence, derivedFrom: [], rule: null },
+                  },
+                ]
+              : []),
+          ],
+          suggestedTags: extracted.value.suggestedTags,
+          suggestedFilename: extracted.value.suggestedFilename,
+          warnings: extracted.value.confidence < 0.75 ? ['Certains champs doivent être confirmés.'] : [],
+        };
+      } else {
+        draft = {
+          type: 'other',
+          typeConfidence: 0.2,
+          summary: 'Bob a conservé le document, mais sa nature reste à confirmer.',
+          facts: [],
+          suggestedTags: ['a-classer'],
+          suggestedFilename: document.filename,
+          warnings: ['Analyse locale incomplète.'],
+        };
+      }
+    } else {
+      draft = {
+        type: 'other',
+        typeConfidence: 0.3,
+        summary: 'Bob a conservé le document. Confirme sa nature et son dossier de destination.',
+        facts: [],
+        suggestedTags: ['a-classer'],
+        suggestedFilename: document.filename,
+        warnings: ['Mode local : classification manuelle recommandée.'],
+      };
+    }
+    const analysis = makeDocumentAnalysis(draft, {
+      documentId,
+      documentVersion: document.version,
+      sourceSha256: document.sha256,
+      originalFilename: document.filename,
+      analyzerVersion: 'bob-document-intelligence-2026-07-13.1:local',
+      analyzedAt: this.clock.now(),
+    });
+    return analysis.ok ? ok(analysis.value) : err(appDomain(analysis.error));
   }
 
   async classifyDocument(input: ClassifyDocumentClientInput): Promise<Result<DocumentView, AppError>> {
-    const document = this.documents.find((d) => d.id === input.documentId && d.status === 'active');
+    const documentIndex = this.documents.findIndex((d) => d.id === input.documentId && d.status === 'active');
+    const document = this.documents[documentIndex];
     if (!document) return err(appNotFound('document', input.documentId));
-    if (!input.linkedEntityId.trim())
+    if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 1) {
+      return err({ kind: 'validation', issues: [{ field: 'expectedRevision', message: 'Révision document invalide.' }] });
+    }
+    if (document.revision !== input.expectedRevision) {
+      return err(appConflict('document', 'Le document a été modifié. Recharge avant de confirmer le rattachement.'));
+    }
+    if (typeof input.linkedEntityId !== 'string' || !input.linkedEntityId.trim())
       return err({ kind: 'validation', issues: [{ field: 'linkedEntityId', message: 'Rattachement métier incomplet.' }] });
-    document.linkedEntityType = input.linkedEntityType;
-    document.linkedEntityId = input.linkedEntityId;
-    return ok({ ...document });
+    const classified: DocumentView = {
+      ...document,
+      linkedEntityType: input.linkedEntityType,
+      linkedEntityId: input.linkedEntityId.trim(),
+      revision: document.revision + 1,
+      tags: [...document.tags],
+    };
+    this.documents[documentIndex] = classified;
+    return ok(cloneDocumentView(classified));
   }
 
   async documentDownloadUrl(documentId: string, ttlSeconds = 300): Promise<Result<DocumentDownloadUrl, AppError>> {
     const document = this.documents.find((d) => d.id === documentId && d.status === 'active');
     if (!document) return err(appNotFound('document', documentId));
+    if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds < 60 || ttlSeconds > 3_600) {
+      return err({ kind: 'validation', issues: [{ field: 'ttlSeconds', message: 'Durée du lien invalide.' }] });
+    }
+    const content = this.documentContents.get(documentId);
+    if (!content) {
+      return err({ kind: 'dependency', port: 'document-storage', cause: 'Original local absent.' });
+    }
     return ok({
-      url: `memory://local-documents/${encodeURIComponent(document.storageKey)}?ttl=${ttlSeconds}`,
+      url: `data:${content.mimeType};base64,${content.contentBase64}`,
       expiresInSeconds: ttlSeconds,
       filename: document.filename,
       mimeType: document.mimeType,
@@ -674,23 +1385,203 @@ export class LocalBobClient implements BobClient {
     });
   }
 
+  private async recordExpenseWithinLock(
+    input: Omit<RecordExpenseInput, 'companyId'>,
+  ): Promise<Result<{ id: string }, AppError>> {
+    const fingerprint = localExpenseCreationFingerprint(this.companyId, input);
+    if (fingerprint === 'invalid') {
+      return err({
+        kind: 'validation',
+        issues: [{ field: 'idempotencyKey', message: "Clé d'idempotence invalide (1 à 200 caractères imprimables)." }],
+      });
+    }
+
+    if (fingerprint) {
+      const published = this.expenseCreationRequests.get(fingerprint.keyHash);
+      if (published) {
+        if (published.payloadHash !== fingerprint.payloadHash) {
+          return err(appConflict(
+            'expense_creation',
+            "Cette clé d'idempotence a déjà été utilisée pour une autre dépense.",
+          ));
+        }
+        const expense = await this.expenses.findById(published.expenseId);
+        return expense && expense.companyId === this.companyId
+          ? ok({ id: expense.id })
+          : err({
+              kind: 'dependency',
+              port: 'expense-creation-idempotency',
+              cause: 'La création publiée ne référence plus une dépense lisible.',
+            });
+      }
+    }
+
+    const expenseSnapshot = this.expenses.snapshot();
+    const accountingSnapshot = this.accountingEntries.snapshot();
+    try {
+      const recorded = await new RecordExpense({ expenses: this.expenses, ids: this.ids, clock: this.clock }).execute({
+        ...input,
+        // L'identité de l'adaptateur local gagne aussi sur un objet runtime élargi.
+        companyId: this.companyId,
+      });
+      if (!recorded.ok) return recorded;
+      // Expense + journal AC forment une unité atomique locale. Un échec comptable restaure
+      // les deux snapshots avant de rendre l'erreur, comme le rollback PostgreSQL.
+      const accounting = await new RecordExpenseAccountingEntries({
+        expenses: this.expenses,
+        entries: this.accountingEntries,
+        charts: this.chartOfAccounts,
+      }).execute({ expenseId: recorded.value.id });
+      if (!accounting.ok) {
+        this.expenses.restore(expenseSnapshot);
+        this.accountingEntries.restore(accountingSnapshot);
+        return accounting;
+      }
+      if (fingerprint) {
+        this.expenseCreationRequests.set(fingerprint.keyHash, {
+          payloadHash: fingerprint.payloadHash,
+          expenseId: recorded.value.id,
+        });
+      }
+      return recorded;
+    } catch (cause) {
+      this.expenses.restore(expenseSnapshot);
+      this.accountingEntries.restore(accountingSnapshot);
+      throw cause;
+    }
+  }
+
   async recordExpense(input: Omit<RecordExpenseInput, 'companyId'>): Promise<Result<{ id: string }, AppError>> {
     await this.ready;
-    const recorded = await new RecordExpense({ expenses: this.expenses, ids: this.ids, clock: this.clock }).execute({
-      companyId: this.companyId,
-      ...input,
+    return this.withExpenseCreationLock(() => this.recordExpenseWithinLock(input));
+  }
+
+  async recordDocumentExpense(
+    input: RecordDocumentExpenseClientInput,
+  ): Promise<Result<RecordDocumentExpenseClientOutput, AppError>> {
+    await this.ready;
+    return this.withExpenseCreationLock(async () => {
+      const documentIndex = this.documents.findIndex(
+        (candidate) => candidate.id === input.documentId && candidate.status === 'active',
+      );
+      const document = this.documents[documentIndex];
+      if (!document) return err(appNotFound('document', input.documentId));
+      const targetFolder = this.documentFolders.find(
+        (folder) => folder.id === input.targetFolderId && folder.status === 'active',
+      );
+      if (!targetFolder) return err(appNotFound('document_folder', input.targetFolderId));
+
+      // DTO local volontairement reconstruit : des champs runtime surnuméraires ne peuvent
+      // jamais injecter companyId, source ou une clé d'idempotence choisie par l'appelant.
+      const expenseInput: Omit<RecordExpenseInput, 'companyId'> = {
+        supplierName: input.expense.supplierName,
+        documentDate: input.expense.documentDate,
+        totalTtcCents: input.expense.totalTtcCents,
+        category: input.expense.category,
+        idempotencyKey: `mobile:document-expense:v1:${document.sha256}`,
+        source: 'ocr',
+        ...(input.expense.supplierSiren !== undefined
+          ? { supplierSiren: input.expense.supplierSiren }
+          : {}),
+        ...(input.expense.totalHtCents !== undefined
+          ? { totalHtCents: input.expense.totalHtCents }
+          : {}),
+        ...(input.expense.vatCents !== undefined ? { vatCents: input.expense.vatCents } : {}),
+        ...(input.expense.vatRatePct !== undefined
+          ? { vatRatePct: input.expense.vatRatePct }
+          : {}),
+        ...(input.expense.supplierInvoiceNumber !== undefined
+          ? { supplierInvoiceNumber: input.expense.supplierInvoiceNumber }
+          : {}),
+        ...(input.expense.dueAt !== undefined ? { dueAt: input.expense.dueAt } : {}),
+      };
+      const fingerprint = localExpenseCreationFingerprint(this.companyId, expenseInput);
+      if (!fingerprint || fingerprint === 'invalid') {
+        return err({
+          kind: 'dependency',
+          port: 'document-expense-idempotency',
+          cause: "L'identité stable de l'original n'a pas pu être calculée.",
+        });
+      }
+
+      // Réponse perdue : l'état déjà lié gagne sur la révision devenue obsolète, mais uniquement
+      // si le registre, la dépense, le dossier et le payload prouvent qu'il s'agit du même geste.
+      if (document.linkedEntityType !== null || document.linkedEntityId !== null) {
+        if (
+          document.linkedEntityType !== 'expense'
+          || document.linkedEntityId === null
+          || document.folderId !== targetFolder.id
+        ) {
+          return err(appConflict('document', 'Ce document est déjà rattaché à une autre destination.'));
+        }
+        const published = this.expenseCreationRequests.get(fingerprint.keyHash);
+        if (
+          !published
+          || published.payloadHash !== fingerprint.payloadHash
+          || published.expenseId !== document.linkedEntityId
+        ) {
+          return err(appConflict('expense_creation', 'La reprise ne correspond pas à la dépense déjà liée.'));
+        }
+        const existingExpense = await this.expenses.findById(published.expenseId);
+        return existingExpense && existingExpense.companyId === this.companyId
+          ? ok({ expenseId: existingExpense.id, document: cloneDocumentView(document) })
+          : err({
+              kind: 'dependency',
+              port: 'document-expense-idempotency',
+              cause: 'Le document lié ne référence plus une dépense lisible.',
+            });
+      }
+
+      if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 1) {
+        return err({
+          kind: 'validation',
+          issues: [{ field: 'expectedRevision', message: 'Révision document invalide.' }],
+        });
+      }
+      if (document.revision !== input.expectedRevision) {
+        return err(appConflict('document', 'Le document a été modifié. Recharge avant de confirmer.'));
+      }
+
+      const expenseSnapshot = this.expenses.snapshot();
+      const accountingSnapshot = this.accountingEntries.snapshot();
+      const requestSnapshot = new Map(
+        [...this.expenseCreationRequests].map(([key, value]) => [key, { ...value }]),
+      );
+      const documentsSnapshot = this.documents.map(cloneDocumentView);
+      const restore = (): void => {
+        this.expenses.restore(expenseSnapshot);
+        this.accountingEntries.restore(accountingSnapshot);
+        this.expenseCreationRequests.clear();
+        for (const [key, value] of requestSnapshot) {
+          this.expenseCreationRequests.set(key, { ...value });
+        }
+        this.documents.splice(0, this.documents.length, ...documentsSnapshot.map(cloneDocumentView));
+      };
+
+      try {
+        const recorded = await this.recordExpenseWithinLock(expenseInput);
+        if (!recorded.ok) {
+          restore();
+          return recorded;
+        }
+        const movedRevision = document.folderId === targetFolder.id
+          ? document.revision
+          : document.revision + 1;
+        const linked: DocumentView = {
+          ...document,
+          folderId: targetFolder.id,
+          linkedEntityType: 'expense',
+          linkedEntityId: recorded.value.id,
+          revision: movedRevision + 1,
+          tags: [...document.tags],
+        };
+        this.documents[documentIndex] = linked;
+        return ok({ expenseId: recorded.value.id, document: cloneDocumentView(linked) });
+      } catch (cause) {
+        restore();
+        throw cause;
+      }
     });
-    if (!recorded.ok) return recorded;
-    // Cycle achats (audit expert-comptable, chantier 1) : la dépense POSTE son écriture
-    // 6xx/44566/401 au journal AC (+ décaissement 401/512 si payée) — comme la facture
-    // poste la sienne à l'émission. Sans cela : FEC non exhaustif, TVA déductible injustifiée.
-    const accounting = await new RecordExpenseAccountingEntries({
-      expenses: this.expenses,
-      entries: this.accountingEntries,
-      charts: this.chartOfAccounts,
-    }).execute({ expenseId: recorded.value.id });
-    if (!accounting.ok) return accounting;
-    return recorded;
   }
 
   // ——— Réception e-facture (C-EXP6b, adaptateur démo) — MÊMES contrôles/décision que le serveur ———
@@ -765,9 +1656,16 @@ export class LocalBobClient implements BobClient {
     );
     if (!recorded.ok) return recorded;
     // Archive du XML APPROUVÉ au coffre local (kind facturx_xml), lié à l'Expense créée.
+    const xmlBytes = utf8BytesLocal(input.xml);
+    if (xmlBytes.length === 0 || xmlBytes.length > DOCUMENT_BINARY_MAX_BYTES) {
+      return err({
+        kind: 'validation',
+        issues: [{ field: 'xml', message: xmlBytes.length === 0 ? 'Document XML vide.' : 'Document XML trop volumineux.' }],
+      });
+    }
     this.documentSeq += 1;
     const id = `local-document-${this.documentSeq}`;
-    const sha256 = localSha256(this.documentSeq);
+    const sha256 = portableSha256Bytes(xmlBytes);
     const filename = `facture-fournisseur-${draft.supplierInvoiceNumber.replace(/[^A-Za-z0-9._-]+/g, '-')}.xml`;
     const view: DocumentView = {
       id,
@@ -777,7 +1675,7 @@ export class LocalBobClient implements BobClient {
       status: 'active',
       filename,
       mimeType: 'application/xml',
-      byteSize: utf8ByteLength(input.xml),
+      byteSize: xmlBytes.length,
       sha256,
       storageKey: buildDocumentStorageKey({
         companyId: this.companyId,
@@ -787,6 +1685,8 @@ export class LocalBobClient implements BobClient {
         filename,
         mimeType: 'application/xml',
       }),
+      folderId: null,
+      revision: 1,
       version: 1,
       linkedEntityType: 'expense',
       linkedEntityId: recorded.value.id,
@@ -798,6 +1698,7 @@ export class LocalBobClient implements BobClient {
       tags: [],
     };
     this.documents.unshift(view);
+    this.documentContents.set(id, { contentBase64: bytesToBase64(xmlBytes), mimeType: 'application/xml' });
     return ok({ status: 'approved', expenseId: recorded.value.id, xmlDocumentId: id });
   }
 
@@ -975,6 +1876,41 @@ export class LocalBobClient implements BobClient {
     if (!item) return err(appNotFound('notification', id));
     item.readAt ??= this.clock.now(); // idempotent : première lecture conservée
     return ok({ ...item });
+  }
+
+  async previewUnreadNotifications(): Promise<Result<NotificationUnreadPreview, AppError>> {
+    // L'adaptateur local n'a pas d'horloge DB : +1 ms fournit une borne exclusive qui inclut
+    // les notifications créées au tick courant de l'horloge déterministe.
+    const observedAt = this.clock.now();
+    const throughCreatedAt = new Date(Date.parse(observedAt) + 1).toISOString();
+    const unreadCount = this.notifications.filter(
+      (item) => item.readAt === null && item.createdAt < throughCreatedAt,
+    ).length;
+    return ok({ unreadCount, throughCreatedAt });
+  }
+
+  async markNotificationsReadThrough(
+    input: NotificationReadThroughInput,
+  ): Promise<Result<NotificationReadThroughOutput, AppError>> {
+    const cutoffMs = Date.parse(input.throughCreatedAt);
+    const readAt = this.clock.now();
+    if (
+      !Number.isFinite(cutoffMs) ||
+      new Date(cutoffMs).toISOString() !== input.throughCreatedAt ||
+      cutoffMs > Date.parse(readAt) + 1
+    ) {
+      return err({
+        kind: 'validation',
+        issues: [{ field: 'throughCreatedAt', message: 'Cutoff serveur invalide. Demandez un nouvel aperçu.' }],
+      });
+    }
+    let updatedCount = 0;
+    for (const item of this.notifications) {
+      if (item.readAt !== null || item.createdAt >= input.throughCreatedAt) continue;
+      item.readAt = readAt;
+      updatedCount += 1;
+    }
+    return ok({ updatedCount, readAt });
   }
 
   async registerDevice(input: RegisterDeviceClientInput): Promise<Result<{ id: string }, AppError>> {

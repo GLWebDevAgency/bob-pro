@@ -8,7 +8,7 @@ export const LLM_TOOL_SPECS: LlmToolSpec[] = [
   {
     name: 'contexte_ecran',
     description:
-      "Lire et résumer factuellement l'écran courant ou l'entité affichée quand l'utilisateur dit « résume l'écran », « explique-moi tout ce qui est là », « cette facture », « ce devis », « ce client » ou « ou suis-je ». Utiliser l'alias UI E1/E2 fourni, ne jamais inventer d'identifiant.",
+      "Lire, résumer ou ouvrir l'entité affichée quand l'utilisateur dit « résume l'écran », « explique-moi tout ce qui est là », « ouvre la deuxième notification », « cette facture », « ce devis », « ce client » ou « où suis-je ». Utiliser l'alias UI E1/E2 fourni, ne jamais inventer d'identifiant.",
     parameters: {
       type: 'object',
       properties: {
@@ -17,6 +17,12 @@ export const LLM_TOOL_SPECS: LlmToolSpec[] = [
       required: [],
       additionalProperties: false,
     },
+  },
+  {
+    name: 'marquer_notifications_lues',
+    description:
+      'Marquer toutes les notifications actuellement non lues comme lues. Action mutative distincte de « lire/résumer les notifications » et toujours soumise à confirmation.',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
     name: 'tresorerie_versement',
@@ -176,6 +182,7 @@ export const LLM_TOOL_SPECS: LlmToolSpec[] = [
 
 const TOOL_TO_INTENT: Record<string, BobIntent> = {
   contexte_ecran: 'contexte_ecran',
+  marquer_notifications_lues: 'marquer_notifications_lues',
   tresorerie_versement: 'payout',
   relance_brouillon: 'relance',
   factures_impayees: 'factures',

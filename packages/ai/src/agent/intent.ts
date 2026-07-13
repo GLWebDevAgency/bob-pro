@@ -16,6 +16,7 @@ export type BobIntent =
   | 'echeances' // échéances fiscales à venir (TVA/URSSAF/IS/CFE) — lecture, C-EXP5b
   | 'tva' // position de TVA réelle (collectée/déductible/à provisionner) — lecture, BOB-1
   | 'balance' // balance âgée : qui me doit quoi, depuis quand — lecture, BOB-1
+  | 'marquer_notifications_lues' // batch atomique borné par cutoff serveur — mutation confirmée
   | 'payer_depense' // régler une dépense fournisseur (écriture 401/512) — mutation, BOB-1/E4
   | 'resultat' // résultat provisoire (produits − charges du grand-livre) — lecture, BOB-2
   | 'bilan' // bilan simplifié actif/passif — lecture, BOB-4
@@ -25,13 +26,42 @@ export type BobIntent =
   | 'top_clients' // plus gros clients 12 mois + dépendance — lecture, BA-3
   | 'unknown';
 
+function normalizeIntent(message: string): string {
+  return message
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase();
+}
+
 /** Détection d'intention déterministe (fallback hors-ligne / LLM indisponible / intention triviale). */
 export function detectIntent(message: string): BobIntent {
   const m = message.toLowerCase();
+  const normalizedMessage = normalizeIntent(message);
+  // Mutation du fil AVANT le contexte de lecture : « marque toutes les notifications comme lues »
+  // ne doit jamais être interprété comme un simple briefing. « tout » reste accepté pour le geste
+  // naturel depuis l'écran Notifications ; la portée réelle vient du preview serveur, pas du contexte UI.
+  if (
+    // Portée PLURIELLE EXPLICITE seulement : « cette notification » / « la deuxième notification »
+    // (singulier déterminé) ne doit JAMAIS escalader en tout-marquer-lu ; et une négation
+    // (« ne marque pas tout lu ») ne propose rien.
+    /\b(marque|marquer|passe|passer)\b.{0,40}\b(tout|toutes|les toutes|toutes? (les |mes )?notifications?|les notifications|mes notifications)\b.{0,30}\b(comme )?lu(?:e|es|s)?\b/.test(
+      normalizedMessage,
+    ) &&
+    !/\b(cette|cet|la (\d{1,2}e?|premiere|seconde|deuxieme|troisieme)|une) notification\b/.test(normalizedMessage) &&
+    !/\b(ne|n|pas|jamais|surtout pas)\b.{0,24}\b(marque|marquer|passe|passer)\b|\b(marque|marquer|passe|passer)\b.{0,30}\bpas\b/.test(normalizedMessage)
+  ) {
+    return 'marquer_notifications_lues';
+  }
+  const contextualNavigation =
+    /\b(ouvre|ouvrir|affiche|afficher|accede|acceder|emmene|amene|va)\b/.test(normalizedMessage) &&
+    /\b(facture|devis|client|depense|document|chantier|notification|ecriture|ligne|premier|premiere|second|seconde|deuxieme|troisieme|quatrieme|cinquieme|sixieme|septieme|huitieme|neuvieme|dixieme|e\d{1,2}|\d{1,2}(?:er|ere|e|eme))\b/.test(
+      normalizedMessage,
+    );
   // Contexte UI : AVANT les intents document/facture generiques. Lecture pure ; la cible vient
   // exclusivement d'AgentContext et reste a recharger/autoriser par l'hote.
   if (
-    /(o[uù] suis[- ]?je|qu['’ ]?est[- ]?ce que je (regarde|vois)|r[ée]sume (cet |cette |ce |la |le |l['’])?(facture|devis|client|d[ée]pense|document|chantier)|r[ée]sume (l['’]|cet )?[ée]cran|(explique|montre|liste|r[ée]sume)[^.]{0,24}tout ce qu|parle[- ]?moi de (cet|cette|ce) (facture|devis|client|d[ée]pense|document|chantier))/.test(
+    contextualNavigation ||
+    /(o[uù] suis[- ]?je|qu['’ ]?est[- ]?ce que je (regarde|vois)|r[ée]sume (cet |cette |ce |la |le |l['’])?(facture|devis|client|d[ée]pense|document|chantier|notification|[ée]criture|ligne)|r[ée]sume (l['’]|cet )?[ée]cran|(explique|montre) (cet|cette|ce|la) (facture|devis|client|d[ée]pense|document|chantier|notification|[ée]criture|ligne)|(explique|montre|liste|lis|r[ée]sume)[^.]{0,30}(tout ce qu|les notifications?|les [ée]critures?)|parle[- ]?moi de (cet|cette|ce|la) (facture|devis|client|d[ée]pense|document|chantier|notification|[ée]criture|ligne))/.test(
       m,
     )
   )
@@ -92,5 +122,44 @@ export function detectIntent(message: string): BobIntent {
 /** Extrait une référence de facture (numéro type 2026-014) du message, sinon null. */
 export function extractReference(message: string): string | null {
   const num = message.match(/\d{3,}(?:-\d+)?/);
-  return num ? num[0] : null;
+  if (num) return num[0];
+  const alias = /\bE(\d{1,2})\b/i.exec(message);
+  if (alias) return `E${Number(alias[1])}`;
+  const normalizedMessage = normalizeIntent(message);
+  // Un ordinal ne cible que s'il est ANAPHORIQUE : adjacent au type visé (« la deuxième
+  // facture ») ou quasi seul (« le deuxième »). « Encaisse la facture de Second Œuvre » ne
+  // doit JAMAIS devenir ordinal:2 — le nom prime (hijack vague 4, repro contre-review).
+  const TYPE_NOUN = '(facture|devis|client|notification|depense|document|chantier|ligne|ecriture|element|resultat)';
+  const ORDINAL_WORD = '(premier|premiere|second|seconde|deuxieme|troisieme|quatrieme|cinquieme|sixieme|septieme|huitieme|neuvieme|dixieme|\\d{1,2}(?:er|ere|e|eme))';
+  const ORDINAL_VALUE: Readonly<Record<string, number>> = {
+    premier: 1, premiere: 1, second: 2, seconde: 2, deuxieme: 2, troisieme: 3, quatrieme: 4,
+    cinquieme: 5, sixieme: 6, septieme: 7, huitieme: 8, neuvieme: 9, dixieme: 10,
+  };
+  const toOrdinal = (word: string): number => {
+    const numeric = /^(\d{1,2})/.exec(word);
+    return numeric?.[1] !== undefined ? Number(numeric[1]) : (ORDINAL_VALUE[word] ?? 0);
+  };
+  const typedOrdinal = new RegExp(`\\b(?:l[ae] |la |le )?${ORDINAL_WORD} ${TYPE_NOUN}\\b`).exec(normalizedMessage);
+  if (typedOrdinal?.[1] !== undefined) {
+    const n = toOrdinal(typedOrdinal[1]);
+    if (n > 0) return `ordinal:${n}`;
+  }
+  // Ordinal quasi seul (« ouvre le deuxième ») : aucun autre mot significatif qui pourrait
+  // être un NOM (client/pièce) — sinon le nom prime et l'ordinal est ignoré.
+  const bareOrdinal = new RegExp(`\\b${ORDINAL_WORD}\\b`).exec(normalizedMessage);
+  if (bareOrdinal?.[1] !== undefined) {
+    const stripped = normalizedMessage
+      .replace(new RegExp(`\\b${ORDINAL_WORD}\\b`, 'g'), ' ')
+      .replace(/\b(ouvre|montre|affiche|resume|encaisse|relance|envoie|emets?|lis|amene|va|vas|aller|passe|sur|vers|dans|page|ecran|numero|le|la|les|l|de|du|des|un|une|moi|s il te plait|resultat|element)\b/g, ' ')
+      .replace(new RegExp(`\\b${TYPE_NOUN}\\b`, 'g'), ' ')
+      .replace(/[^a-z]/g, ' ')
+      .split(/\s+/)
+      .filter((w) => w.length >= 3);
+    if (stripped.length === 0) {
+      const n = toOrdinal(bareOrdinal[1]);
+      if (n > 0) return `ordinal:${n}`;
+    }
+    return null;
+  }
+  return null;
 }

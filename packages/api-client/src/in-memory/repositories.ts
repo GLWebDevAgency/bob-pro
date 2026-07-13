@@ -1,9 +1,8 @@
-import { AccountingEntry, ChartOfAccounts, Invoice, Quote } from '@bob/core';
+import { AccountingEntry, ChartOfAccounts, Expense, Invoice, Quote } from '@bob/core';
 import type {
   Company,
   Customer,
   Payment,
-  Expense,
   Chantier,
   CompanyRepository,
   CustomerRepository,
@@ -175,7 +174,7 @@ export class InMemoryPublicAccessTokenRepository implements PublicAccessTokenRep
 }
 
 export class InMemoryExpenseRepository implements ExpenseRepository {
-  private readonly map = new Map<string, Expense>();
+  private map = new Map<string, Expense>();
   async save(e: Expense): Promise<void> {
     this.map.set(e.id, e);
   }
@@ -185,10 +184,18 @@ export class InMemoryExpenseRepository implements ExpenseRepository {
   async listByCompany(companyId: string): Promise<Expense[]> {
     return [...this.map.values()].filter((e) => e.companyId === companyId);
   }
+
+  snapshot(): Map<string, Expense> {
+    return new Map([...this.map].map(([id, expense]) => [id, Expense.rehydrate(expense.toProps())]));
+  }
+
+  restore(snapshot: Map<string, Expense>): void {
+    this.map = new Map([...snapshot].map(([id, expense]) => [id, Expense.rehydrate(expense.toProps())]));
+  }
 }
 
 export class InMemoryAccountingEntryRepository implements AccountingEntryRepository {
-  private readonly map = new Map<string, AccountingEntry>();
+  private map = new Map<string, AccountingEntry>();
 
   async save(entry: AccountingEntry): Promise<void> {
     this.map.set(entry.id, AccountingEntry.rehydrate(entry.toProps()));
@@ -203,6 +210,14 @@ export class InMemoryAccountingEntryRepository implements AccountingEntryReposit
     return [...this.map.values()]
       .filter((entry) => entry.companyId === companyId)
       .map((entry) => AccountingEntry.rehydrate(entry.toProps()));
+  }
+
+  snapshot(): Map<string, AccountingEntry> {
+    return new Map([...this.map].map(([id, entry]) => [id, AccountingEntry.rehydrate(entry.toProps())]));
+  }
+
+  restore(snapshot: Map<string, AccountingEntry>): void {
+    this.map = new Map([...snapshot].map(([id, entry]) => [id, AccountingEntry.rehydrate(entry.toProps())]));
   }
 }
 

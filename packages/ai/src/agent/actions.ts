@@ -31,6 +31,23 @@ export interface PayExpenseActionInput {
   expenseId: string;
 }
 
+/** Instantané serveur des notifications non lues. Le cutoff est capturé AVANT le consentement :
+ * une notification arrivée pendant la confirmation reste donc non lue. */
+export interface NotificationUnreadPreview {
+  unreadCount: number;
+  throughCreatedAt: string;
+}
+
+/** Marquage atomique de toutes les notifications qui existaient au moment du preview. */
+export interface NotificationReadThroughInput {
+  throughCreatedAt: string;
+}
+
+export interface NotificationReadThroughOutput {
+  updatedCount: number;
+  readAt: string;
+}
+
 export interface PayableInvoice {
   id: string;
   number: string;
@@ -183,6 +200,9 @@ export interface BobActions {
   getAgedBalance?(): Promise<Result<AgedBalance, AppError>>;
   /** Dépenses fournisseurs à payer — la cible de payer_depense (résolution par nom). */
   listUnpaidExpenses?(): Promise<Result<UnpaidExpense[], AppError>>;
+  /** Preview tenant-scoped du lot non lu. Le cutoff retourné doit être réutilisé tel quel lors
+   * de la mutation afin de ne pas absorber les notifications arrivées pendant le consentement. */
+  previewUnreadNotifications?(): Promise<Result<NotificationUnreadPreview, AppError>>;
   /** Balance générale + résultat provisoire (deriveTrialBalance @bob/core, CLOTURE-1) —
    * « combien je gagne ? » répond produits − charges du grand-livre réel. */
   getTrialBalance?(): Promise<Result<TrialBalance, AppError>>;
@@ -225,4 +245,8 @@ export interface BobActions {
   sendRelance?(input: SendRelanceActionInput): Promise<Result<SendRelanceActionOutput, AppError>>;
   /** Règlement d'une dépense fournisseur (BOB-1/E4) — écriture comptable : palier accounting. */
   payExpense?(input: PayExpenseActionInput): Promise<Result<{ status: string }, AppError>>;
+  /** Même commande atomique que « Tout marquer comme lu » dans l'écran Notifications. */
+  markNotificationsReadThrough?(
+    input: NotificationReadThroughInput,
+  ): Promise<Result<NotificationReadThroughOutput, AppError>>;
 }

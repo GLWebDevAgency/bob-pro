@@ -30,6 +30,11 @@ export interface Notification {
   to: string;
   subject: string;
   body: string;
+  /**
+   * UUID stable pour une même intention d'envoi. Les adapters qui le supportent
+   * l'utilisent pour rendre un retry idempotent après un accusé provider perdu.
+   */
+  idempotencyKey?: string;
 }
 
 export interface NotificationPort {

@@ -233,3 +233,37 @@ describe('envoyer_relance — C25 ② (envoi réel, capacité optionnelle)', () 
     expect(calls).toEqual([{ invoiceId: 'inv-1' }]);
   });
 });
+
+describe('marquer_notifications_lues — lot atomique figé avant consentement', () => {
+  it("reste absent si l'hôte ne fournit pas la commande", () => {
+    expect(buildBobTools(baseActions).map((t) => t.name)).not.toContain('marquer_notifications_lues');
+  });
+
+  it('valide un cutoff ISO strict, délègue sans le modifier et force la confirmation', async () => {
+    const calls: unknown[] = [];
+    const actions: BobActions = {
+      ...baseActions,
+      markNotificationsReadThrough: async (input) => {
+        calls.push(input);
+        return ok({ updatedCount: 3, readAt: '2026-07-13T10:01:00.000Z' });
+      },
+    };
+    const t = tool(actions, 'marquer_notifications_lues')!;
+    expect(t.mutating).toBe(true);
+    expect(t.outbound).toBe(false);
+    expect(riskTierOf(t)).toBe('reversible');
+    expect(isSafetyFloor(t)).toBe(true);
+    expect(requiresConfirmation(t, 'auto')).toBe(true);
+
+    expect(t.parse({ throughCreatedAt: '2026-07-13' }).ok).toBe(false);
+    expect(t.parse({ throughCreatedAt: '2026-07-13T10:00:00Z' }).ok).toBe(false);
+    const parsed = t.parse({ throughCreatedAt: '2026-07-13T10:00:00.000Z' });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const run = await t.run(parsed.value);
+    expect(run.ok && run.value).toMatchObject({ updatedCount: 3 });
+    expect(calls).toEqual([{ throughCreatedAt: '2026-07-13T10:00:00.000Z' }]);
+    expect(run.ok && t.projectPublicResult?.(run.value)).toEqual({ updatedCount: 3 });
+  });
+});

@@ -53,8 +53,11 @@ export interface PieceCustomerData {
 export interface PieceLinkedRef {
   id: string;
   number: string | null;
-  /** TTC en centimes — sert au % d'avancement d'une situation, au montant de l'avoir. */
+  /** TTC en centimes — sert au % d'avancement d'une situation, au montant de l'avoir.
+   * Pour une facture liée à un devis : ce que CETTE facture facture (netToPay), règle acompte. */
   ttcCents?: number;
+  /** Nature de la facture liée (chips de liaison devis ↔ factures). */
+  kind?: 'final' | 'deposit' | 'credit_note' | 'situation';
 }
 
 export type BuildPieceViewInput =
@@ -70,7 +73,7 @@ export type BuildPieceViewInput =
       /** Une facture FINALE existe déjà sur le même devis (le pont « créer la finale » se tait). */
       hasFinalInvoice?: boolean;
     }
-  | { source: 'quote'; quote: PieceQuoteData; customer: PieceCustomerData | null; finalInvoice?: PieceLinkedRef };
+  | { source: 'quote'; quote: PieceQuoteData; customer: PieceCustomerData | null; finalInvoice?: PieceLinkedRef; linkedInvoices?: PieceLinkedRef[] };
 
 // ── Sortie ──
 
@@ -137,6 +140,8 @@ export interface PieceView {
   /** Pièces liées à afficher en nav croisée. */
   linkedQuote: PieceLinkedRef | null;
   linkedInvoice: PieceLinkedRef | null;
+  /** TOUTES les factures liées au devis (acompte, finale, situations…), ordre de facturation. */
+  linkedInvoices: PieceLinkedRef[];
   creditNote: PieceLinkedRef | null;
   situation: PieceLinkedRef | null;
   primaryAction: PiecePrimaryAction;
@@ -271,7 +276,8 @@ export function buildPieceView(input: BuildPieceViewInput): PieceView {
       mentions: [],
       frozen: false,
       linkedQuote: null,
-      linkedInvoice: input.finalInvoice ?? null,
+      linkedInvoice: (input.linkedInvoices?.[0] ?? input.finalInvoice) ?? null,
+      linkedInvoices: input.linkedInvoices ?? (input.finalInvoice ? [input.finalInvoice] : []),
       creditNote: null,
       situation: null,
       primaryAction: quotePrimaryAction(q),
@@ -345,6 +351,7 @@ export function buildPieceView(input: BuildPieceViewInput): PieceView {
     frozen: emitted,
     linkedQuote: input.parentQuote ?? null,
     linkedInvoice: null,
+    linkedInvoices: [],
     creditNote: input.creditNote ?? null,
     situation: input.situation ?? null,
     primaryAction: invoicePrimaryAction(inv),

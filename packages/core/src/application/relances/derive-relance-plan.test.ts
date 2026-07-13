@@ -75,6 +75,10 @@ describe('deriveRelancePlan', () => {
       '2026-07-15', // cordial 5 j → neutre à J+10 : dans 5 j
       '2026-07-12', // pas encore due 1 j → cordial à J+3 : dans 2 j
     ]);
+    expect(entries.find((entry) => entry.invoiceId === 'inv-12j')?.message.body).toContain('(12 jours)');
+    expect(entries.find((entry) => entry.invoiceId === 'inv-12j')?.automaticMessage.body).toContain('(10 jours)');
+    expect(entries.find((entry) => entry.invoiceId === 'inv-25j')?.message.body).toContain('depuis 25 jours');
+    expect(entries.find((entry) => entry.invoiceId === 'inv-25j')?.automaticMessage.body).toContain('depuis 20 jours');
   });
 
   it('mise en demeure B2B : texte légal L441-10 + indemnité 40 € (copy du domaine, jamais dupliquée)', () => {

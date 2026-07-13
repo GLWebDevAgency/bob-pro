@@ -29,6 +29,10 @@ export interface DocumentProps {
   byteSize: number;
   sha256: string;
   storageKey: string;
+  /** Emplacement dans le coffre. Indépendant du rattachement métier/comptable. */
+  folderId?: string | null;
+  /** Révision optimiste des métadonnées (le blob/version reste immuable). */
+  revision?: number;
   linkedEntityType: DocumentLinkedEntityType | null;
   linkedEntityId: string | null;
   documentDate: DateOnly | null;
@@ -48,8 +52,8 @@ const STATUSES: readonly DocumentStatus[] = ['active', 'deleted'];
 const LINKED_ENTITY_TYPES: readonly DocumentLinkedEntityType[] = ['invoice', 'quote', 'expense', 'chantier', 'company'];
 const SHA256 = /^[a-f0-9]{64}$/;
 
-function nonEmpty(value: string): boolean {
-  return value.trim().length > 0;
+function nonEmpty(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
 }
 
 function validByteSize(value: number): boolean {
@@ -91,6 +95,9 @@ export class Document {
     if (!validByteSize(props.byteSize)) return err({ code: 'VALIDATION', field: 'byteSize', message: 'Taille invalide.' });
     if (!SHA256.test(props.sha256)) return err({ code: 'VALIDATION', field: 'sha256', message: 'SHA-256 invalide.' });
     if (!nonEmpty(props.storageKey)) return err({ code: 'VALIDATION', field: 'storageKey', message: 'Clé de stockage requise.' });
+    if (props.revision !== undefined && (!Number.isSafeInteger(props.revision) || props.revision < 1)) {
+      return err({ code: 'VALIDATION', field: 'revision', message: 'Révision document invalide.' });
+    }
     if (!props.storageKey.startsWith(`companies/${props.companyId}/documents/${props.id}/`)) {
       return err({ code: 'VALIDATION', field: 'storageKey', message: 'Clé de stockage hors périmètre tenant.' });
     }
@@ -99,6 +106,9 @@ export class Document {
     }
     if (props.linkedEntityType !== null && !LINKED_ENTITY_TYPES.includes(props.linkedEntityType)) {
       return err({ code: 'VALIDATION', field: 'linkedEntityType', message: 'Type de rattachement inconnu.' });
+    }
+    if (props.linkedEntityType !== null && !nonEmpty(props.linkedEntityId)) {
+      return err({ code: 'VALIDATION', field: 'linkedEntityId', message: 'Rattachement métier incomplet.' });
     }
     if (props.documentDate !== null && !isValidDateOnly(props.documentDate))
       return err({ code: 'VALIDATION', field: 'documentDate', message: 'Date document invalide.' });
@@ -128,7 +138,15 @@ export class Document {
 
     const tags = [...new Set(props.tags.map((t) => t.trim().toLowerCase()).filter((t) => t.length >= 2 && t.length <= 32))].slice(0, 16);
 
-    return ok(new Document({ ...props, filename, versions, tags }));
+    return ok(new Document({
+      ...props,
+      folderId: props.folderId ?? null,
+      revision: props.revision ?? 1,
+      filename,
+      linkedEntityId: props.linkedEntityId?.trim() ?? null,
+      versions,
+      tags,
+    }));
   }
 
   static rehydrate(props: DocumentProps): Document {
@@ -157,6 +175,14 @@ export class Document {
     return this.p.retentionUntil;
   }
 
+  get folderId(): string | null {
+    return this.p.folderId ?? null;
+  }
+
+  get revision(): number {
+    return this.p.revision ?? 1;
+  }
+
   addVersion(version: DocumentVersionProps): DomainResult<void> {
     if (this.p.status !== 'active') return err({ code: 'INVALID_TRANSITION', from: this.p.status, to: 'active' });
     const next = Math.max(...this.p.versions.map((v) => v.version)) + 1;
@@ -169,6 +195,7 @@ export class Document {
     this.p.sha256 = valid.value.sha256;
     this.p.mimeType = valid.value.mimeType;
     this.p.byteSize = valid.value.byteSize;
+    this.bumpRevision();
     return ok(undefined);
   }
 
@@ -182,8 +209,25 @@ export class Document {
       return err({ code: 'VALIDATION', field: 'linkedEntityType', message: 'Type de rattachement inconnu.' });
     if (!nonEmpty(link.linkedEntityId))
       return err({ code: 'VALIDATION', field: 'linkedEntityId', message: 'Rattachement métier incomplet.' });
-    this.p.linkedEntityType = link.linkedEntityType;
-    this.p.linkedEntityId = link.linkedEntityId;
+    const linkedEntityId = link.linkedEntityId.trim();
+    if (this.p.linkedEntityType !== link.linkedEntityType || this.p.linkedEntityId !== linkedEntityId) {
+      this.p.linkedEntityType = link.linkedEntityType;
+      this.p.linkedEntityId = linkedEntityId;
+      this.bumpRevision();
+    }
+    return ok(undefined);
+  }
+
+  /** Déplace uniquement l'original dans le coffre, sans modifier son lien métier. */
+  moveToFolder(folderId: string | null): DomainResult<void> {
+    if (this.p.status !== 'active') return err({ code: 'INVALID_TRANSITION', from: this.p.status, to: 'active' });
+    if (folderId !== null && !nonEmpty(folderId)) {
+      return err({ code: 'VALIDATION', field: 'folderId', message: 'Dossier de destination invalide.' });
+    }
+    if ((this.p.folderId ?? null) !== folderId) {
+      this.p.folderId = folderId;
+      this.bumpRevision();
+    }
     return ok(undefined);
   }
 
@@ -191,10 +235,20 @@ export class Document {
     if (this.p.status === 'deleted') return ok(undefined);
     this.p.status = 'deleted';
     this.p.deletedAt = at;
+    this.bumpRevision();
     return ok(undefined);
   }
 
   toProps(): DocumentProps {
-    return { ...this.p, versions: this.p.versions.map((v) => ({ ...v })) };
+    return {
+      ...this.p,
+      folderId: this.p.folderId ?? null,
+      revision: this.p.revision ?? 1,
+      versions: this.p.versions.map((v) => ({ ...v })),
+    };
+  }
+
+  private bumpRevision(): void {
+    this.p.revision = (this.p.revision ?? 1) + 1;
   }
 }

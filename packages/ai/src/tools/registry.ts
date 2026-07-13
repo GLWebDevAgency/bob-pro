@@ -22,6 +22,8 @@ import {
   type FecExportSummary,
   type CreateCustomerActionInput,
   type PayExpenseActionInput,
+  type NotificationReadThroughInput,
+  type NotificationReadThroughOutput,
 } from '../agent/actions';
 
 function appValidation(field: string, message: string): AppError {
@@ -33,6 +35,7 @@ const EXPENSE_CATEGORIES: readonly ExpenseCategory[] = ['fournitures', 'materiel
 const CUSTOMER_TYPES: readonly CreateCustomerActionInput['type'][] = ['b2c', 'b2b', 'b2g'];
 const INVOICE_MODES: readonly NonNullable<GenerateInvoiceActionInput['mode']>[] = ['deposit', 'final'];
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
 /** Valide strictement une ligne de devis dictée/planifiée par l'agent (anti-hallucination d'arguments). */
 function parseLine(raw: unknown, index: number): Result<LineInput, AppError> {
@@ -371,6 +374,38 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
       run: (input) => payExpenseAction(input),
     };
     tools.push(payerDepense as AnyTool);
+  }
+
+  // —— Outil OPTIONNEL marquer_notifications_lues : même commande atomique que l'écran.
+  // Le cutoff provient exclusivement du preview serveur et fige le lot avant le consentement :
+  // une notification reçue pendant la confirmation reste non lue.
+  const markNotificationsReadThroughAction = actions.markNotificationsReadThrough?.bind(actions);
+  if (markNotificationsReadThroughAction) {
+    const marquerNotificationsLues: Tool<NotificationReadThroughInput, NotificationReadThroughOutput> = {
+      name: 'marquer_notifications_lues',
+      description:
+        'Marque comme lues toutes les notifications qui existaient lors de l’aperçu serveur, sans inclure celles arrivées pendant la confirmation.',
+      mutating: true,
+      outbound: false,
+      compliance: 'low',
+      // Pas encore de commande « remettre en non lu » : consentement obligatoire même en auto.
+      safetyFloor: true,
+      riskTier: 'reversible',
+      parse: (raw): Result<NotificationReadThroughInput, AppError> => {
+        const r = raw as { throughCreatedAt?: unknown };
+        if (
+          typeof r?.throughCreatedAt !== 'string' ||
+          !ISO_INSTANT.test(r.throughCreatedAt) ||
+          Number.isNaN(Date.parse(r.throughCreatedAt))
+        ) {
+          return err(appValidation('throughCreatedAt', 'Aperçu des notifications invalide ou expiré.'));
+        }
+        return ok({ throughCreatedAt: r.throughCreatedAt });
+      },
+      projectPublicResult: (output): ToolPublicResult => ({ updatedCount: output.updatedCount }),
+      run: (input) => markNotificationsReadThroughAction(input),
+    };
+    tools.push(marquerNotificationsLues as AnyTool);
   }
 
   // —— Outil OPTIONNEL echeances_fiscales (C-EXP5b) : lecture pure du calendrier fiscal dérivé

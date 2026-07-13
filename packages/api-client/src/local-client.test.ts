@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import { BobAgent, type JournalEntry } from '@bob/ai';
 import { buildFacturXBasicXml, type FacturXInvoiceData } from '@bob/core';
 import { LocalBobClient } from './local-client';
@@ -316,6 +317,48 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     });
   });
 
+  it('rend recordExpense idempotent en concurrence et après une réponse perdue', async () => {
+    const client = makeClient();
+    const before = await client.listExpenses();
+    expect(before.ok).toBe(true);
+    if (!before.ok) return;
+    const request = {
+      supplierName: 'Cedeo',
+      documentDate: '2026-06-01',
+      totalTtcCents: 18_490,
+      vatCents: 3_082,
+      vatRatePct: 20,
+      category: 'fournitures' as const,
+      source: 'ocr' as const,
+      idempotencyKey: 'scan-expense-response-lost-1',
+    };
+
+    const [first, concurrent] = await Promise.all([
+      client.recordExpense(request),
+      client.recordExpense(request),
+    ]);
+    expect(first.ok).toBe(true);
+    expect(concurrent.ok).toBe(true);
+    if (!first.ok || !concurrent.ok) return;
+    expect(concurrent.value.id).toBe(first.value.id);
+
+    // Le premier commit a réussi mais sa réponse peut avoir été perdue : le retry recharge
+    // exactement la même Expense sans doubler ni la charge ni son écriture AC.
+    const retry = await client.recordExpense(request);
+    expect(retry).toEqual(first);
+    const expenses = await client.listExpenses();
+    expect(expenses.ok && expenses.value).toHaveLength(before.value.length + 1);
+    expect(expenses.ok && expenses.value.filter((expense) => expense.id === first.value.id)).toHaveLength(1);
+    const entries = await client.listAccountingEntries();
+    expect(entries.ok && entries.value.filter((entry) => entry.sourceId === first.value.id)).toHaveLength(1);
+
+    const conflict = await client.recordExpense({ ...request, totalTtcCents: 18_491 });
+    expect(conflict.ok).toBe(false);
+    if (!conflict.ok) expect(conflict.error.kind).toBe('conflict');
+    const afterConflict = await client.listExpenses();
+    expect(afterConflict.ok && afterConflict.value).toHaveLength(before.value.length + 1);
+  });
+
   it('refuse un devis envoye hors-ligne', async () => {
     const client = makeClient();
     const created = await client.createQuote({
@@ -354,7 +397,7 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
   it('stocke et liste les documents dans le client local', async () => {
     const client = makeClient();
     const uploaded = await client.uploadDocument({
-      contentBase64: 'AQID',
+      contentBase64: '/9j/2Q==',
       mimeType: 'image/jpeg',
       filename: 'ticket.jpg',
       kind: 'expense_receipt',
@@ -365,14 +408,220 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
 
     expect(uploaded.ok).toBe(true);
     if (!uploaded.ok) return;
-    expect(uploaded.value.byteSize).toBe(3);
+    expect(uploaded.value.byteSize).toBe(4);
+    expect(uploaded.value.sha256).toBe('32461d5bd1773012acef0ba15636752949bd7c2ce50f9172159d9f56cf0dd9af');
 
     const list = await client.listDocuments({ linkedEntityType: 'expense', linkedEntityId: 'exp-1' });
     expect(list.ok && list.value.map((d) => d.id)).toEqual([uploaded.value.id]);
 
     const url = await client.documentDownloadUrl(uploaded.value.id, 120);
     expect(url.ok).toBe(true);
-    if (url.ok) expect(url.value.url).toContain('ttl=120');
+    if (url.ok) {
+      expect(url.value.url).toBe('data:image/jpeg;base64,/9j/2Q==');
+      expect(url.value.expiresInSeconds).toBe(120);
+    }
+  });
+
+  it('rejette un contenu dont la signature ne correspond pas au MIME annoncé', async () => {
+    const uploaded = await makeClient().uploadDocument({
+      contentBase64: 'AQID',
+      mimeType: 'image/jpeg',
+      filename: 'faux-ticket.jpg',
+    });
+
+    expect(uploaded).toMatchObject({
+      ok: false,
+      error: { kind: 'validation', issues: [{ field: 'mimeType' }] },
+    });
+  });
+
+  it('sert chaque original de démonstration avec une empreinte calculée sur ses octets', async () => {
+    const client = makeClient();
+    const documents = await client.listDocuments();
+    expect(documents.ok).toBe(true);
+    if (!documents.ok) return;
+
+    for (const document of documents.value) {
+      const download = await client.documentDownloadUrl(document.id);
+      expect(download.ok).toBe(true);
+      if (!download.ok) continue;
+      const contentBase64 = download.value.url.split(',', 2)[1] ?? '';
+      const bytes = Buffer.from(contentBase64, 'base64');
+      expect(bytes.byteLength).toBe(document.byteSize);
+      expect(createHash('sha256').update(bytes).digest('hex')).toBe(document.sha256);
+    }
+  });
+
+  it('rend des snapshots documentaires immuables aux appelants', async () => {
+    const client = makeClient();
+    const listed = await client.listDocuments();
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) return;
+    const before = listed.value.find((document) => document.id === 'seed-doc-leroy');
+    expect(before).toBeDefined();
+    if (!before) return;
+    before.tags.push('injection-ui');
+
+    const classified = await client.classifyDocument({
+      documentId: before.id,
+      linkedEntityType: 'expense',
+      linkedEntityId: 'local-expense-leroy',
+      expectedRevision: before.revision,
+    });
+    expect(classified.ok).toBe(true);
+    expect(before.linkedEntityId).toBeNull();
+
+    const after = await client.getDocument(before.id);
+    expect(after.ok).toBe(true);
+    if (after.ok) {
+      expect(after.value.linkedEntityId).toBe('local-expense-leroy');
+      expect(after.value.tags).not.toContain('injection-ui');
+    }
+  });
+
+  it('crée la dépense, son écriture et le lien document en un geste local rejouable', async () => {
+    const client = makeClient();
+    const folders = await client.listDocumentFolders({ parentId: null, limit: 100 });
+    expect(folders.ok).toBe(true);
+    if (!folders.ok) return;
+    const purchases = folders.value.items.find((folder) => folder.systemKey === 'purchases');
+    expect(purchases).toBeDefined();
+    if (!purchases) return;
+    const uploaded = await client.uploadDocument({
+      contentBase64: '/9j/2Q==',
+      mimeType: 'image/jpeg',
+      filename: 'facture-atomique.jpg',
+      kind: 'expense_receipt',
+      documentDate: '2026-06-01',
+    });
+    expect(uploaded.ok).toBe(true);
+    if (!uploaded.ok) return;
+    const expensesBefore = await client.listExpenses();
+    const entriesBefore = await client.listAccountingEntries();
+    expect(expensesBefore.ok && entriesBefore.ok).toBe(true);
+    if (!expensesBefore.ok || !entriesBefore.ok) return;
+    const request = {
+      documentId: uploaded.value.id,
+      expectedRevision: uploaded.value.revision,
+      targetFolderId: purchases.id,
+      expense: {
+        supplierName: 'Quincaillerie Test',
+        documentDate: '2026-06-01',
+        totalTtcCents: 1_200,
+        totalHtCents: 1_000,
+        vatCents: 200,
+        vatRatePct: 20,
+        category: 'fournitures' as const,
+      },
+    };
+
+    const created = await client.recordDocumentExpense(request);
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    expect(created.value.document).toMatchObject({
+      id: uploaded.value.id,
+      folderId: purchases.id,
+      linkedEntityType: 'expense',
+      linkedEntityId: created.value.expenseId,
+      revision: uploaded.value.revision + 2,
+    });
+
+    // Simule une réponse HTTP perdue : la révision d'origine reste acceptée uniquement parce
+    // que le registre et le document prouvent que le même geste a déjà été commité.
+    const replay = await client.recordDocumentExpense(request);
+    expect(replay).toEqual(created);
+    const expensesAfter = await client.listExpenses();
+    const entriesAfter = await client.listAccountingEntries();
+    expect(expensesAfter.ok && expensesAfter.value).toHaveLength(expensesBefore.value.length + 1);
+    expect(entriesAfter.ok && entriesAfter.value).toHaveLength(entriesBefore.value.length + 1);
+
+    const conflictingPayload = await client.recordDocumentExpense({
+      ...request,
+      expense: { ...request.expense, totalTtcCents: 1_201 },
+    });
+    expect(conflictingPayload).toMatchObject({ ok: false, error: { kind: 'conflict' } });
+  });
+
+  it('transfère les originaux via un plan opaque avant de supprimer un dossier personnalisé', async () => {
+    const client = makeClient();
+    const source = await client.createDocumentFolder({ name: 'Archives temporaires' });
+    const target = await client.createDocumentFolder({ name: 'Archives définitives' });
+    expect(source.ok && target.ok).toBe(true);
+    if (!source.ok || !target.ok) return;
+    const uploaded = await client.uploadDocument({
+      contentBase64: '/9j/2Q==',
+      mimeType: 'image/jpeg',
+      filename: 'preuve.jpg',
+      folderId: source.value.id,
+    });
+    expect(uploaded.ok).toBe(true);
+
+    const preview = await client.previewDocumentFolderDeletion(source.value.id);
+    expect(preview.ok && preview.value).toMatchObject({ documentCount: 1, canDeleteEmpty: false });
+    if (!preview.ok) return;
+    expect(preview.value).not.toHaveProperty('snapshot');
+    const executed = await client.executeDocumentFolderDeletion({
+      planId: preview.value.planId,
+      strategy: {
+        kind: 'transfer',
+        targetFolderId: target.value.id,
+        targetExpectedRevision: target.value.revision,
+      },
+    });
+    expect(executed).toEqual({
+      ok: true,
+      value: { folderId: source.value.id, transferredDocuments: 1, transferredChildren: 0 },
+    });
+    const inTarget = await client.listDocuments({ folderId: target.value.id });
+    expect(inTarget.ok && inTarget.value.map((document) => document.filename)).toEqual(['preuve.jpg']);
+    const replay = await client.executeDocumentFolderDeletion({
+      planId: preview.value.planId,
+      strategy: { kind: 'empty' },
+    });
+    expect(replay.ok).toBe(false);
+  });
+
+  it('invalide le plan de suppression si un descendant apparaît après l’aperçu', async () => {
+    const client = makeClient();
+    const source = await client.createDocumentFolder({ name: 'Dossier source' });
+    const target = await client.createDocumentFolder({ name: 'Dossier cible' });
+    expect(source.ok && target.ok).toBe(true);
+    if (!source.ok || !target.ok) return;
+    const knownChild = await client.createDocumentFolder({ name: 'Connu', parentId: source.value.id });
+    expect(knownChild.ok).toBe(true);
+
+    const preview = await client.previewDocumentFolderDeletion(source.value.id);
+    expect(preview.ok).toBe(true);
+    if (!preview.ok) return;
+    const lateChild = await client.createDocumentFolder({
+      name: 'Ajout concurrent',
+      parentId: knownChild.ok ? knownChild.value.id : source.value.id,
+    });
+    expect(lateChild.ok).toBe(true);
+    if (!lateChild.ok) return;
+    const lateDocument = await client.uploadDocument({
+      contentBase64: '/9j/2Q==',
+      mimeType: 'image/jpeg',
+      filename: 'ajout-concurrent.jpg',
+      folderId: lateChild.value.id,
+    });
+    expect(lateDocument.ok).toBe(true);
+
+    const executed = await client.executeDocumentFolderDeletion({
+      planId: preview.value.planId,
+      strategy: {
+        kind: 'transfer',
+        targetFolderId: target.value.id,
+        targetExpectedRevision: target.value.revision,
+      },
+    });
+    expect(executed).toMatchObject({ ok: false, error: { kind: 'conflict' } });
+    expect((await client.getDocumentFolder(source.value.id)).ok).toBe(true);
+    expect((await client.getDocumentFolder(lateChild.value.id)).ok).toBe(true);
+    const unmoved = await client.listDocuments({ folderId: lateChild.value.id });
+    expect(unmoved.ok && unmoved.value.map((document) => document.id)).toEqual(
+      lateDocument.ok ? [lateDocument.value.id] : [],
+    );
   });
 });
 
@@ -494,6 +743,7 @@ describe('coffre de démo + classement (A1-C14)', () => {
       documentId: 'seed-doc-leroy',
       linkedEntityType: 'expense',
       linkedEntityId: 'local-expense-leroy',
+      expectedRevision: 1,
     });
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.value.linkedEntityId).toBe('local-expense-leroy');
@@ -503,9 +753,19 @@ describe('coffre de démo + classement (A1-C14)', () => {
 
   it('refuse un document inconnu ou un rattachement vide', async () => {
     const client = makeClient();
-    const missing = await client.classifyDocument({ documentId: 'nope', linkedEntityType: 'expense', linkedEntityId: 'x' });
+    const missing = await client.classifyDocument({
+      documentId: 'nope',
+      linkedEntityType: 'expense',
+      linkedEntityId: 'x',
+      expectedRevision: 1,
+    });
     expect(missing.ok).toBe(false);
-    const incomplete = await client.classifyDocument({ documentId: 'seed-doc-leroy', linkedEntityType: 'expense', linkedEntityId: '  ' });
+    const incomplete = await client.classifyDocument({
+      documentId: 'seed-doc-leroy',
+      linkedEntityType: 'expense',
+      linkedEntityId: '  ',
+      expectedRevision: 1,
+    });
     expect(incomplete.ok).toBe(false);
   });
 });
@@ -599,9 +859,27 @@ describe('LocalBobClient — C25 relances réelles + fil de notifications (adapt
       readAt: null,
     });
 
-    // Lu/non-lu persisté (idempotent), inconnu → not_found.
+    // L'aperçu fige une portée non paginée ; la commande atomique est idempotente.
+    const preview = await client.previewUnreadNotifications();
+    expect(preview.ok && preview.value).toEqual({
+      unreadCount: 1,
+      throughCreatedAt: '2026-07-13T09:00:00.001Z',
+    });
+    const allRead = await client.markNotificationsReadThrough({
+      throughCreatedAt: preview.ok ? preview.value.throughCreatedAt : '',
+    });
+    expect(allRead.ok && allRead.value).toEqual({
+      updatedCount: 1,
+      readAt: '2026-07-13T09:00:00.000Z',
+    });
+    const replay = await client.markNotificationsReadThrough({
+      throughCreatedAt: preview.ok ? preview.value.throughCreatedAt : '',
+    });
+    expect(replay.ok && replay.value.updatedCount).toBe(0);
+
+    // Lecture individuelle idempotente après le batch, inconnu → not_found.
     const read = await client.markNotificationRead(feed.value[0]!.id);
-    expect(read.ok && read.value.readAt).not.toBeNull();
+    expect(read.ok && read.value.readAt).toBe('2026-07-13T09:00:00.000Z');
     const ghost = await client.markNotificationRead('notif-ghost');
     expect(!ghost.ok && ghost.error.kind).toBe('not_found');
 

@@ -4,6 +4,7 @@ import {
   AGENT_HISTORY_MAX_TURNS,
   parseAgentAskPayload,
   parseAgentContext,
+  isAllowedAgentNavigationRoute,
   renderAgentContextForLlm,
   resolveAgentEntity,
   sanitizeContextEntitySummary,
@@ -107,6 +108,31 @@ describe('resolveAgentEntity — explicite > contexte unique > ambiguite', () =>
     expect(resolveAgentEntity({ context, compatibleTypes: ['invoice'] })).toMatchObject({ kind: 'ambiguous' });
     expect(resolveAgentEntity({ context, compatibleTypes: ['invoice'], explicitReference: 'Dupont' })).toEqual({ kind: 'none' });
   });
+
+  it('résout un ordinal relativement au type demandé, jamais à la position globale', () => {
+    const context: AgentContext = {
+      ...CONTEXT,
+      entities: [
+        { type: 'customer', id: 'cust-1', label: 'Client affiché avant le fil' },
+        { type: 'notification', id: 'notif-1', label: 'Première notification' },
+        { type: 'notification', id: 'notif-2', label: 'Deuxième notification' },
+      ],
+    };
+    expect(
+      resolveAgentEntity({
+        context,
+        compatibleTypes: ['notification'],
+        explicitReference: 'ordinal:2',
+      }),
+    ).toMatchObject({ kind: 'resolved', entity: { id: 'notif-2' }, source: 'explicit' });
+    expect(
+      resolveAgentEntity({
+        context,
+        compatibleTypes: ['notification'],
+        explicitReference: 'troisième',
+      }),
+    ).toEqual({ kind: 'none' });
+  });
 });
 
 describe('ContextEntitySummary', () => {
@@ -124,5 +150,76 @@ describe('ContextEntitySummary', () => {
         { type: 'invoice', id: 'inv-1' },
       ),
     ).toBeNull();
+  });
+
+  it('ne conserve qu’une route interne compatible avec l’entité canonique', () => {
+    const safe = sanitizeContextEntitySummary(
+      {
+        type: 'notification',
+        id: 'notif-1',
+        label: 'Relance',
+        facts: [],
+        route: '/facture/inv-42',
+        state: { unread: true },
+      },
+      { type: 'notification', id: 'notif-1' },
+    );
+    expect(safe?.route).toBe('/facture/inv-42');
+    expect(safe?.state).toEqual({ unread: true });
+
+    for (const route of [
+      'https://evil.example/facture/inv-42',
+      '//evil.example/facture/inv-42',
+      '/facture/../compte',
+      '/facture/inv-42?confirm=true',
+    ]) {
+      const summary = sanitizeContextEntitySummary(
+        { type: 'notification', id: 'notif-1', label: 'Relance', facts: [], route },
+        { type: 'notification', id: 'notif-1' },
+      );
+      expect(summary?.route).toBeUndefined();
+    }
+
+    const wrongType = sanitizeContextEntitySummary(
+      { type: 'customer', id: 'cust-1', label: 'Martin', facts: [], route: '/facture/inv-42' },
+      { type: 'customer', id: 'cust-1' },
+    );
+    expect(wrongType?.route).toBeUndefined();
+
+    const document = sanitizeContextEntitySummary(
+      { type: 'document', id: 'doc-1', label: 'Contrat', facts: [], route: '/documents/doc-1' },
+      { type: 'document', id: 'doc-1' },
+    );
+    expect(document?.route).toBe('/documents/doc-1');
+  });
+});
+
+describe('isAllowedAgentNavigationRoute', () => {
+  it('autorise seulement les écrans Bob connus et les détails internes bornés', () => {
+    for (const route of [
+      '/scan-document',
+      '/devis/new',
+      '/chantiers',
+      '/cloture',
+      '/diagnostic',
+      '/facture/inv-42',
+      '/devis/quote-42',
+      '/client/cust-42',
+      '/documents/doc-42',
+    ]) {
+      expect(isAllowedAgentNavigationRoute(route)).toBe(true);
+    }
+    for (const route of [
+      'https://evil.example',
+      '//evil.example/facture/inv-42',
+      '/facture/../compte',
+      '/facture/inv-42?confirm=true',
+      '/compte',
+      '/documents/doc-42?download=true',
+      '/documents/%2Fadmin',
+      '',
+    ]) {
+      expect(isAllowedAgentNavigationRoute(route)).toBe(false);
+    }
   });
 });

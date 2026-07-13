@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import { runDiagnostic, type DiagnosticInput } from '../../domain/compliance/diagnostic';
 import {
   deriveDiagnostic,
-  diagnosticQuestions,
   type DeriveDiagnosticInput,
   type DiagCustomerData,
   type DiagInvoiceData,

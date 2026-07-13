@@ -1,10 +1,12 @@
 import { type Result, ok, err } from '../../shared-kernel/result';
 import { type DateOnly } from '../../shared-kernel/time';
 import { Document, type DocumentKind, type DocumentLinkedEntityType, type DocumentOrigin } from '../../domain/document/document';
+import { type DocumentFolderRepository } from '../ports/document-folder-repository';
 import { type DocumentRepository } from '../ports/document-repository';
+import { type DocumentLinkTargetPort } from '../ports/document-link-target';
 import { type DocumentStoragePort } from '../ports/document-storage';
 import { type ClockPort } from '../ports/services';
-import { type AppError, appDomain } from '../result';
+import { type AppError, appDomain, appNotFound } from '../result';
 import { documentToView, type DocumentView } from './document-view';
 
 export interface StoreDocumentInput {
@@ -18,6 +20,7 @@ export interface StoreDocumentInput {
   bytes: Uint8Array;
   sha256: string;
   storageKey: string;
+  folderId?: string | null;
   linkedEntityType?: DocumentLinkedEntityType | null;
   linkedEntityId?: string | null;
   documentDate?: DateOnly | null;
@@ -30,7 +33,9 @@ export interface StoreDocumentInput {
 }
 
 export interface StoreDocumentDeps {
-  documents: DocumentRepository;
+  documents: Pick<DocumentRepository, 'save'>;
+  folders: Pick<DocumentFolderRepository, 'findById'>;
+  linkTargets: DocumentLinkTargetPort;
   storage: DocumentStoragePort;
   clock: ClockPort;
 }
@@ -76,6 +81,7 @@ export class StoreDocument {
       byteSize: input.bytes.byteLength,
       sha256: input.sha256,
       storageKey: input.storageKey,
+      folderId: input.folderId ?? null,
       linkedEntityType,
       linkedEntityId,
       documentDate: input.documentDate ?? null,
@@ -100,6 +106,26 @@ export class StoreDocument {
       ],
     });
     if (!document.ok) return err(appDomain(document.error));
+
+    const documentProps = document.value.toProps();
+    const folderId = document.value.folderId;
+    if (folderId !== null) {
+      const folder = await this.deps.folders.findById(input.companyId, folderId);
+      if (!folder || folder.status !== 'active') {
+        return err(appNotFound('document_folder', folderId));
+      }
+    }
+    if (
+      documentProps.linkedEntityType !== null
+      && documentProps.linkedEntityId !== null
+      && !(await this.deps.linkTargets.exists({
+        companyId: input.companyId,
+        linkedEntityType: documentProps.linkedEntityType,
+        linkedEntityId: documentProps.linkedEntityId,
+      }))
+    ) {
+      return err(appNotFound(documentProps.linkedEntityType, documentProps.linkedEntityId));
+    }
 
     let stored;
     try {

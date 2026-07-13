@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { computeTotals } from '../domain/services/compute-totals';
-import { deriveVoiceInvoiceDraft } from './voice-invoice-draft';
+import {
+  deriveVoiceInvoiceDraft,
+  matchSpokenCustomers,
+  normalizeVoiceText,
+} from './voice-invoice-draft';
 
 const CUSTOMERS = [
   { id: 'durand', name: 'Mme Durand' },
@@ -131,5 +135,23 @@ describe('flows/voice-invoice-draft (C20 — transcript -> brouillon pur)', () =
     });
     expect(r.draft.lines).toHaveLength(1);
     expect(r.draft.lines[0]).toMatchObject({ label: 'Chauffe-eau 200 L', unitPriceHT: 79000, vatRate: 5.5 });
+  });
+});
+describe('matchSpokenCustomers — l’ambiguïté est un état de premier rang', () => {
+  const CUSTOMERS = [
+    { id: 'c1', name: 'Camping Les Pins' },
+    { id: 'c2', name: 'Camping Soleil' },
+    { id: 'c3', name: 'Boulangerie Lefèvre' },
+  ];
+  it('« camping » seul → DEUX candidats, jamais un choix silencieux', () => {
+    const r = matchSpokenCustomers(normalizeVoiceText('un devis pour le camping'), CUSTOMERS);
+    expect(r.map((c) => c.id).sort()).toEqual(['c1', 'c2']);
+  });
+  it('« camping les pins » → départagé par le nom plus complet', () => {
+    const r = matchSpokenCustomers(normalizeVoiceText('pour camping les pins'), CUSTOMERS);
+    expect(r.map((c) => c.id)).toEqual(['c1']);
+  });
+  it('aucun mot de nom énoncé → vide', () => {
+    expect(matchSpokenCustomers(normalizeVoiceText('ajoute deux heures'), CUSTOMERS)).toEqual([]);
   });
 });

@@ -61,6 +61,18 @@ describe('classifyWithLlm (tool-calling -> plan)', () => {
     expect(r.steps[1]?.reference).toBe('Durand');
   });
 
+  it('mappe séparément le batch « notifications lues »', async () => {
+    const r = await classifyWithLlm(
+      fakeLlm({
+        text: null,
+        toolCalls: [{ name: 'marquer_notifications_lues', arguments: {} }],
+        model: 'glm',
+      }),
+      'marque toutes mes notifications comme lues',
+    );
+    expect(r.steps).toEqual([{ intent: 'marquer_notifications_lues', reference: null }]);
+  });
+
   it('réponse texte (aucun outil) -> plan vide (hors périmètre)', async () => {
     const r = await classifyWithLlm(fakeLlm({ text: 'Bonjour !', toolCalls: [], model: 'claude' }), 'salut');
     expect(r.steps).toHaveLength(0);
@@ -113,9 +125,16 @@ describe('classifyWithRegex (fallback déterministe)', () => {
     expect(classifyWithRegex('envoie le devis 2026-014').steps[0]?.intent).toBe('envoyer_devis');
     expect(classifyWithRegex('émets la facture Durand').steps[0]?.intent).toBe('emettre_facture');
     expect(classifyWithRegex('montre mes documents archivés').steps[0]?.intent).toBe('documents');
+    expect(classifyWithRegex('marque toutes les notifications comme lues').steps[0]?.intent).toBe(
+      'marquer_notifications_lues',
+    );
   });
   it('détecte la lecture de l’entité affichée', () => {
     expect(classifyWithRegex('Résume cette facture').steps[0]?.intent).toBe('contexte_ecran');
     expect(classifyWithRegex('Où suis-je ?').steps[0]?.intent).toBe('contexte_ecran');
+    expect(classifyWithRegex('Ouvre la deuxième notification').steps[0]).toEqual({
+      intent: 'contexte_ecran',
+      reference: 'ordinal:2',
+    });
   });
 });

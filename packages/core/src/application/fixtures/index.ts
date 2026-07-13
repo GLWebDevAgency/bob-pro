@@ -165,6 +165,8 @@ export function seedVaultDocuments(companyId: string, now: Instant, today: DateO
       filename: input.filename,
       mimeType: input.mimeType,
     }),
+    folderId: null,
+    revision: 1,
     version: 1,
     linkedEntityType: input.linkedEntityType,
     linkedEntityId: input.linkedEntityId,

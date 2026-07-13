@@ -71,6 +71,29 @@ const NAME_STOPWORDS = new Set([
   'sarl', 'sas', 'sasu', 'sci', 'eurl', 'ste', 'societe', 'entreprise', 'ets',
 ]);
 
+/** TOUS les clients dont un mot significatif du nom est énoncé — l'ambiguïté est un état
+ * de premier rang : deux « Camping » ne se départagent JAMAIS en silence. */
+export function matchSpokenCustomers(
+  normalized: string,
+  customers: readonly VoiceCustomerRef[],
+): VoiceCustomerRef[] {
+  const words = ` ${normalized.replace(/[,€%]/g, ' ').replace(/\s+/g, ' ').trim()} `;
+  const scored = customers
+    .map((customer) => {
+      const nameWords = normalizeVoiceText(customer.name)
+        .split(' ')
+        .filter((w) => w.length >= 3 && !NAME_STOPWORDS.has(w));
+      const hits = nameWords.filter((word) => words.includes(` ${word} `));
+      return { customer, score: hits.reduce((sum, w) => sum + w.length, 0), hits: hits.length };
+    })
+    .filter((entry) => entry.hits > 0);
+  if (scored.length === 0) return [];
+  const best = Math.max(...scored.map((entry) => entry.score));
+  // Un nom ÉNONCÉ plus complet (« camping les pins » vs « camping ») départage ; à score
+  // égal, tous les ex aequo remontent — la question structurée fera le reste.
+  return scored.filter((entry) => entry.score === best).map((entry) => entry.customer);
+}
+
 /** Reconnaît le client dont un mot du nom (≥ 3 lettres, hors civilités) est énoncé. */
 export function matchSpokenCustomer(normalized: string, customers: readonly VoiceCustomerRef[]): string | null {
   // La normalisation garde , € % pour les montants — ici on ne compare que des MOTS entiers.

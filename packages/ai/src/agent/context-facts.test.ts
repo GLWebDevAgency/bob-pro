@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  accountingJournalLabel,
   chantierStatusLabel,
   customerTypeLabel,
   documentKindLabel,
@@ -26,6 +27,7 @@ describe('context-facts — les faits contextuels parlent français (parité UI�
     expect(documentKindLabel('facturx_xml')).toBe('Factur-X');
     expect(chantierStatusLabel('open')).toBe('En cours');
     expect(customerTypeLabel('b2g')).toBe('Marché public');
+    expect(accountingJournalLabel('purchases')).toBe('Achats');
   });
 
   it('aucune valeur des tables ne contient de token technique (underscore/anglais)', () => {
@@ -38,6 +40,7 @@ describe('context-facts — les faits contextuels parlent français (parité UI�
       ...['active', 'deleted'].map(documentStatusLabel),
       ...['open', 'closed'].map(chantierStatusLabel),
       ...['b2c', 'b2b', 'b2g'].map(customerTypeLabel),
+      ...['sales', 'purchases', 'bank', 'misc'].map(accountingJournalLabel),
     ];
     for (const value of all) expect(value).not.toMatch(/_|^(issued|paid|late|sent|viewed|signed|open|closed|active)$/);
   });

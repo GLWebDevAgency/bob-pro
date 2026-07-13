@@ -12,6 +12,8 @@ export interface DocumentView {
   byteSize: number;
   sha256: string;
   storageKey: string;
+  folderId: string | null;
+  revision: number;
   version: number;
   linkedEntityType: DocumentLinkedEntityType | null;
   linkedEntityId: string | null;
@@ -37,6 +39,8 @@ export function documentToView(document: Document): DocumentView {
     byteSize: p.byteSize,
     sha256: p.sha256,
     storageKey: p.storageKey,
+    folderId: p.folderId ?? null,
+    revision: p.revision ?? 1,
     version: latest.version,
     linkedEntityType: p.linkedEntityType,
     linkedEntityId: p.linkedEntityId,

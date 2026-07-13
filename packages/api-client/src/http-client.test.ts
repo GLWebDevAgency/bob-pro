@@ -4,7 +4,321 @@ import { HttpBobClient } from './http-client';
 
 describe('HttpBobClient', () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
+  });
+
+  it('borne aussi une récupération de jeton bloquée avant les appels documentaires', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({
+      baseUrl: 'https://api.bob.test',
+      companyId: 'company-1',
+      getToken: () => new Promise<string | null>(() => undefined),
+    });
+
+    const pending = client.getDocument('document-1');
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    await expect(pending).resolves.toMatchObject({
+      ok: false,
+      error: {
+        kind: 'dependency',
+        port: 'api',
+        cause: 'Délai réseau dépassé après 20000 ms.',
+      },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('conserve le même budget jusqu’au décodage complet du corps HTTP', async () => {
+    vi.useFakeTimers();
+    let requestSignal: AbortSignal | null | undefined;
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init?: RequestInit) => {
+      requestSignal = init?.signal;
+      return {
+        ok: true,
+        status: 200,
+        json: () => new Promise<unknown>(() => undefined),
+      } as Response;
+    }));
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+
+    const pending = client.getDocument('document-1');
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    await expect(pending).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'dependency', port: 'api', cause: 'Délai réseau dépassé après 20000 ms.' },
+    });
+    expect(requestSignal?.aborted).toBe(true);
+  });
+
+  it('transmet uniquement le DTO autorisé et la clé opaque de recordExpense', async () => {
+    const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      expect(init?.method).toBe('POST');
+      expect(JSON.parse(String(init?.body))).toEqual({
+        supplierName: 'Cedeo',
+        documentDate: '2026-07-13',
+        totalTtcCents: 12_000,
+        category: 'fournitures',
+        idempotencyKey: 'scan-expense-opaque-1',
+      });
+      return new Response(JSON.stringify({ id: 'expense-1' }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'co-1' });
+    const runtimeExtendedInput = {
+      supplierName: 'Cedeo',
+      documentDate: '2026-07-13',
+      totalTtcCents: 12_000,
+      category: 'fournitures' as const,
+      idempotencyKey: 'scan-expense-opaque-1',
+      companyId: 'other-tenant',
+      internalSecret: 'must-not-cross-http',
+    };
+
+    await expect(client.recordExpense(runtimeExtendedInput))
+      .resolves.toEqual({ ok: true, value: { id: 'expense-1' } });
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.bob.test/expenses',
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
+  it('rejette une réponse 2xx recordExpense malformée comme rupture de contrat', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({}), {
+      headers: { 'content-type': 'application/json' },
+    })));
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'co-1' });
+
+    const result = await client.recordExpense({
+      supplierName: 'Cedeo',
+      documentDate: '2026-07-13',
+      totalTtcCents: 12_000,
+      category: 'fournitures',
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        kind: 'dependency',
+        port: 'api-contract',
+        cause: 'Réponse API invalide pour POST /expenses.',
+      },
+    });
+  });
+
+  it('envoie une commande document→dépense bornée et vérifie la réponse contextuelle', async () => {
+    const sha = 'b'.repeat(64);
+    const documentId = 'document/scan?1';
+    const response = {
+      expenseId: 'expense-1',
+      document: {
+        id: documentId,
+        companyId: 'company-1',
+        kind: 'expense_receipt',
+        origin: 'ocr',
+        status: 'active',
+        filename: 'ticket.jpg',
+        mimeType: 'image/jpeg',
+        byteSize: 123,
+        sha256: sha,
+        storageKey: `companies/company-1/documents/${documentId}/v1/${sha}.jpg`,
+        folderId: 'folder-1',
+        revision: 3,
+        version: 1,
+        linkedEntityType: 'expense',
+        linkedEntityId: 'expense-1',
+        documentDate: '2026-07-13',
+        issuedAt: null,
+        createdAt: '2026-07-13T12:00:00.000Z',
+        createdBy: 'user-1',
+        retentionUntil: '2036-07-13',
+        tags: ['ticket'],
+      },
+    };
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      expect(String(url)).toBe('https://api.bob.test/documents/document%2Fscan%3F1/expense');
+      expect(init?.method).toBe('PUT');
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      expect(JSON.parse(String(init?.body))).toEqual({
+        expectedRevision: 1,
+        targetFolderId: 'folder-1',
+        expense: {
+          supplierName: 'Cedeo',
+          documentDate: '2026-07-13',
+          totalTtcCents: 12_000,
+          category: 'fournitures',
+        },
+      });
+      return new Response(JSON.stringify(response), { headers: { 'content-type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+    const runtimeExtendedInput = {
+      documentId,
+      expectedRevision: 1,
+      targetFolderId: 'folder-1',
+      expense: {
+        supplierName: 'Cedeo',
+        documentDate: '2026-07-13',
+        totalTtcCents: 12_000,
+        category: 'fournitures' as const,
+        source: 'manual',
+        idempotencyKey: 'forged',
+        companyId: 'other-tenant',
+      },
+      linkedEntityId: 'forged',
+    };
+
+    await expect(client.recordDocumentExpense(runtimeExtendedInput)).resolves.toEqual({
+      ok: true,
+      value: response,
+    });
+  });
+
+  it('échoue fermé sur des DTO documentaires HTTP incomplets au lieu de les caster', async () => {
+    const fetchMock = vi.fn(async (input: unknown) => {
+      const url = String(input);
+      const payload = url.endsWith('/download-url')
+        ? { url: 'https://storage.example.test/document-1' }
+        : {};
+      return new Response(JSON.stringify(payload), { headers: { 'content-type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+
+    const document = await client.getDocument('document-1');
+    expect(document).toEqual({
+      ok: false,
+      error: {
+        kind: 'dependency',
+        port: 'api-contract',
+        cause: 'Réponse API invalide pour GET /documents/document-1.',
+      },
+    });
+    const download = await client.documentDownloadUrl('document-1');
+    expect(download.ok).toBe(false);
+    if (!download.ok) expect(download.error).toMatchObject({ kind: 'dependency', port: 'api-contract' });
+  });
+
+  it('encode les segments documentaires et lie la réponse au tenant et à l’id demandés', async () => {
+    const sha = 'a'.repeat(64);
+    const documentId = 'document/1?origin=voice';
+    const response = {
+      id: documentId,
+      companyId: 'company-1',
+      kind: 'expense_receipt',
+      origin: 'ocr',
+      status: 'active',
+      filename: 'ticket.jpg',
+      mimeType: 'image/jpeg',
+      byteSize: 123,
+      sha256: sha,
+      storageKey: `companies/company-1/documents/${documentId}/v1/${sha}.jpg`,
+      folderId: null,
+      revision: 1,
+      version: 1,
+      linkedEntityType: null,
+      linkedEntityId: null,
+      documentDate: '2026-07-13',
+      issuedAt: null,
+      createdAt: '2026-07-13T12:00:00.000Z',
+      createdBy: 'user-1',
+      retentionUntil: '2036-07-13',
+      tags: ['ticket'],
+    };
+    const fetchMock = vi.fn(async (url: unknown) => {
+      expect(String(url)).toBe('https://api.bob.test/documents/document%2F1%3Forigin%3Dvoice');
+      return new Response(JSON.stringify(response), { headers: { 'content-type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+
+    await expect(client.getDocument(documentId)).resolves.toEqual({ ok: true, value: response });
+
+    fetchMock.mockImplementationOnce(async () => new Response(JSON.stringify({
+      ...response,
+      companyId: 'company-2',
+      storageKey: `companies/company-2/documents/${documentId}/v1/${sha}.jpg`,
+    }), { headers: { 'content-type': 'application/json' } }));
+    const crossTenant = await client.getDocument(documentId);
+    expect(crossTenant.ok).toBe(false);
+    if (!crossTenant.ok) {
+      expect(crossTenant.error).toMatchObject({ kind: 'dependency', port: 'api-contract' });
+    }
+  });
+
+  it('encode chaque segment dynamique du coffre documentaire', async () => {
+    const urls: string[] = [];
+    const signals: Array<AbortSignal | null | undefined> = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: unknown, init?: RequestInit) => {
+      urls.push(String(url));
+      signals.push(init?.signal);
+      return new Response(JSON.stringify({}), { headers: { 'content-type': 'application/json' } });
+    }));
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+    const rawId = 'id/avec?query#fragment';
+    const encodedId = encodeURIComponent(rawId);
+
+    await client.getDocument(rawId);
+    await client.getDocumentFolder(rawId);
+    await client.updateDocumentFolder({ folderId: rawId, expectedRevision: 1, name: 'Archives' });
+    await client.previewDocumentFolderDeletion(rawId);
+    await client.executeDocumentFolderDeletion({ planId: rawId, strategy: { kind: 'empty' } });
+    await client.moveDocumentToFolder({ documentId: rawId, folderId: null, expectedRevision: 1 });
+    await client.analyzeDocument(rawId);
+    await client.classifyDocument({
+      documentId: rawId,
+      linkedEntityType: 'expense',
+      linkedEntityId: 'expense-1',
+      expectedRevision: 1,
+    });
+    await client.documentDownloadUrl(rawId);
+
+    expect(urls).toEqual([
+      `https://api.bob.test/documents/${encodedId}`,
+      `https://api.bob.test/document-folders/${encodedId}`,
+      `https://api.bob.test/document-folders/${encodedId}`,
+      `https://api.bob.test/document-folders/${encodedId}/deletion-plans`,
+      `https://api.bob.test/document-folder-deletion-plans/${encodedId}/executions`,
+      `https://api.bob.test/documents/${encodedId}/folder`,
+      `https://api.bob.test/documents/${encodedId}/analysis`,
+      `https://api.bob.test/documents/${encodedId}/classify`,
+      `https://api.bob.test/documents/${encodedId}/download-url`,
+    ]);
+    expect(signals).toHaveLength(urls.length);
+    expect(signals.every((signal) => signal instanceof AbortSignal)).toBe(true);
+  });
+
+  it('rend annulables l’intake, l’analyse OCR et les mutations de dossier', async () => {
+    const signals: Array<AbortSignal | null | undefined> = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init?: RequestInit) => {
+      signals.push(init?.signal);
+      return new Response(JSON.stringify({}), { headers: { 'content-type': 'application/json' } });
+    }));
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+
+    await client.createDocumentIntake({
+      contentBase64: '/9j/2Q==',
+      mimeType: 'image/jpeg',
+      filename: 'ticket.jpg',
+      idempotencyKey: 'intake-1',
+    });
+    await client.extractDocument({ contentBase64: '/9j/2Q==', mimeType: 'image/jpeg' });
+    await client.createDocumentFolder({ name: 'Achats' });
+    await client.moveDocumentToFolder({
+      documentId: 'document-1',
+      folderId: 'folder-1',
+      expectedRevision: 1,
+    });
+
+    expect(signals).toHaveLength(4);
+    expect(signals.every((signal) => signal instanceof AbortSignal)).toBe(true);
   });
 
   it('exports FEC files with authoritative metadata from the API', async () => {
@@ -275,6 +589,55 @@ describe('HttpBobClient', () => {
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.value).toEqual(defaults);
   });
+
+  it('utilise un plan opaque mono-usage pour supprimer un dossier sans renvoyer le snapshot', async () => {
+    const plan = {
+      planId: 'plan-opaque-00000001',
+      expiresAt: '2026-07-13T14:05:00.000Z',
+      folder: { id: 'folder-old', parentId: null, name: 'Archives', systemKey: null },
+      directChildCount: 1,
+      descendantFolderCount: 1,
+      directDocumentCount: 2,
+      documentCount: 2,
+      canDeleteEmpty: false,
+    };
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      const target = String(url);
+      if (target === 'https://api.bob.test/document-folders/folder-old/deletion-plans') {
+        expect(init?.method).toBe('POST');
+        expect(init?.body).toBeUndefined();
+        return new Response(JSON.stringify(plan), { headers: { 'content-type': 'application/json' } });
+      }
+      if (target === 'https://api.bob.test/document-folder-deletion-plans/plan-opaque-00000001/executions') {
+        expect(init?.method).toBe('POST');
+        const body = JSON.parse(String(init?.body));
+        expect(body).toEqual({
+          strategy: { kind: 'transfer', targetFolderId: 'folder-accounting', targetExpectedRevision: 3 },
+        });
+        expect(body).not.toHaveProperty('snapshot');
+        expect(body).not.toHaveProperty('expectedRevision');
+        return new Response(
+          JSON.stringify({ folderId: 'folder-old', transferredDocuments: 2, transferredChildren: 1 }),
+          { headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify({ error: { kind: 'not_found', entity: 'route', id: target } }), { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-mercier' });
+
+    const preview = await client.previewDocumentFolderDeletion('folder-old');
+    expect(preview.ok && preview.value).toEqual(plan);
+    const executed = await client.executeDocumentFolderDeletion({
+      planId: plan.planId,
+      strategy: { kind: 'transfer', targetFolderId: 'folder-accounting', targetExpectedRevision: 3 },
+    });
+    expect(executed.ok && executed.value).toEqual({
+      folderId: 'folder-old',
+      transferredDocuments: 2,
+      transferredChildren: 1,
+    });
+  });
 });
 
 describe('HttpBobClient — assistant Bob (C40 ⑧ : ask/confirm/journal serveur)', () => {
@@ -493,6 +856,21 @@ describe('HttpBobClient — assistant Bob (C40 ⑧ : ask/confirm/journal serveur
           headers: { 'content-type': 'application/json' },
         });
       }
+      if (u === 'https://api.bob.test/notifications/unread-preview' && method === 'GET') {
+        return new Response(
+          JSON.stringify({ unreadCount: 1, throughCreatedAt: '2026-07-03T08:00:00.000Z' }),
+          { headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (u === 'https://api.bob.test/notifications/read-through' && method === 'POST') {
+        expect(JSON.parse(String(init?.body))).toEqual({
+          throughCreatedAt: '2026-07-03T08:00:00.000Z',
+        });
+        return new Response(
+          JSON.stringify({ updatedCount: 1, readAt: '2026-07-03T08:00:01.000Z' }),
+          { headers: { 'content-type': 'application/json' } },
+        );
+      }
       if (u === 'https://api.bob.test/devices' && method === 'POST') {
         expect(JSON.parse(String(init?.body))).toEqual({ expoPushToken: 'ExponentPushToken[abc]', platform: 'ios' });
         return new Response(JSON.stringify({ id: 'dev-1' }), { headers: { 'content-type': 'application/json' } });
@@ -510,6 +888,19 @@ describe('HttpBobClient — assistant Bob (C40 ⑧ : ask/confirm/journal serveur
 
     const read = await client.markNotificationRead('job-1');
     expect(read.ok && read.value.readAt).toBe('2026-07-03T08:00:00.000Z');
+
+    const preview = await client.previewUnreadNotifications();
+    expect(preview.ok && preview.value).toEqual({
+      unreadCount: 1,
+      throughCreatedAt: '2026-07-03T08:00:00.000Z',
+    });
+    const readThrough = await client.markNotificationsReadThrough({
+      throughCreatedAt: '2026-07-03T08:00:00.000Z',
+    });
+    expect(readThrough.ok && readThrough.value).toEqual({
+      updatedCount: 1,
+      readAt: '2026-07-03T08:00:01.000Z',
+    });
 
     const device = await client.registerDevice({ expoPushToken: 'ExponentPushToken[abc]', platform: 'ios' });
     expect(device.ok && device.value).toEqual({ id: 'dev-1' });
@@ -656,5 +1047,73 @@ describe('HttpBobClient — C-EXP6b réception e-facture', () => {
       expect(r.error.issues[0]?.field).toBe('facturx.doublon');
       expect(r.error.issues[0]?.message).toContain('552100554|FC-2026-118');
     }
+  });
+});
+
+describe('HttpBobClient — Bob Live WebRTC', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('décode strictement la capacité et négocie le SDP via le backend authentifié', async () => {
+    const answerSdp = 'v=0\r\no=- 2 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n';
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      if (String(url).endsWith('/voice/realtime/config')) {
+        return new Response(JSON.stringify({
+          available: true,
+          transport: 'webrtc',
+          model: 'gpt-realtime-2.1',
+          voice: 'marin',
+          configVersion: 'bob-live-webrtc-v1',
+          requiresDevelopmentBuild: true,
+          maxSessionSeconds: 900,
+        }), { headers: { 'content-type': 'application/json' } });
+      }
+      expect(String(url)).toBe('https://api.bob.test/voice/realtime/calls');
+      expect(init?.method).toBe('POST');
+      expect(JSON.parse(String(init?.body))).toEqual({ sdp: 'v=0\r\nm=audio 9 RTP/AVP 0\r\n' });
+      return new Response(JSON.stringify({
+        transport: 'webrtc',
+        answerSdp,
+        model: 'gpt-realtime-2.1',
+        voice: 'marin',
+        configVersion: 'bob-live-webrtc-v1',
+        maxSessionSeconds: 900,
+      }), { headers: { 'content-type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({
+      baseUrl: 'https://api.bob.test',
+      companyId: 'company-1',
+      getToken: async () => 'supabase-jwt',
+    });
+
+    const config = await client.realtimeVoiceConfig();
+    const call = await client.createRealtimeVoiceCall({ sdp: 'v=0\r\nm=audio 9 RTP/AVP 0\r\n' });
+
+    expect(config).toMatchObject({ ok: true, value: { available: true, transport: 'webrtc' } });
+    expect(call).toMatchObject({ ok: true, value: { answerSdp } });
+    if (call.ok) expect(call.value).not.toHaveProperty('callId');
+    expect(fetchMock.mock.calls[1]?.[1]?.headers).toMatchObject({ authorization: 'Bearer supabase-jwt' });
+  });
+
+  it('refuse une réponse qui tente d’exposer un call_id fournisseur au mobile', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      transport: 'webrtc',
+      answerSdp: 'v=0\r\nm=audio 9 RTP/AVP 0\r\n',
+      callId: 'rtc_12345678',
+      model: 'gpt-realtime-2.1',
+      voice: 'marin',
+      configVersion: 'bob-live-webrtc-v1',
+      maxSessionSeconds: 900,
+    }), { headers: { 'content-type': 'application/json' } })));
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+
+    const result = await client.createRealtimeVoiceCall({ sdp: 'v=0\r\nm=audio 9 RTP/AVP 0\r\n' });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { kind: 'dependency', port: 'api-contract' },
+    });
   });
 });

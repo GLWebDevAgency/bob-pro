@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { detectIntent } from './intent';
+import { detectIntent, extractReference } from './intent';
 
 describe('detectIntent — clôture (préparer le mois)', () => {
   it('reconnaît les commandes de clôture / préparation du mois', () => {
@@ -21,6 +21,54 @@ describe('detectIntent — clôture (préparer le mois)', () => {
     expect(detectIntent('Fais-moi un devis')).toBe('nouveau_devis');
     expect(detectIntent('Ouvre mes chantiers')).toBe('voir_chantiers');
     expect(detectIntent('Quel temps fait-il ?')).toBe('unknown');
+  });
+});
+
+describe('detectIntent — contexte Notifications', () => {
+  it('reconnaît une demande ciblée avant les intents document/relance génériques', () => {
+    expect(detectIntent('Résume cette notification')).toBe('contexte_ecran');
+    expect(detectIntent('Parle-moi de cette notification')).toBe('contexte_ecran');
+    expect(detectIntent('Lis-moi les notifications en attente')).toBe('contexte_ecran');
+  });
+
+  it('distingue le batch mutatif « tout marquer comme lu » du briefing en lecture', () => {
+    for (const message of [
+      'Marque toutes les notifications comme lues',
+      'Passe mes notifications en lues',
+      'Marque-les toutes comme lues',
+      'Marquer tout comme lu',
+    ]) {
+      expect(detectIntent(message)).toBe('marquer_notifications_lues');
+    }
+    expect(detectIntent('Lis-moi toutes les notifications')).toBe('contexte_ecran');
+  });
+
+  it('reconnaît l’ouverture contextuelle et extrait un rang relatif', () => {
+    expect(detectIntent('Ouvre la deuxième notification')).toBe('contexte_ecran');
+    expect(detectIntent('Amène-moi sur la 3e')).toBe('contexte_ecran');
+    expect(extractReference('Ouvre la deuxième notification')).toBe('ordinal:2');
+    expect(extractReference('Amène-moi sur la 3e')).toBe('ordinal:3');
+    expect(extractReference('Ouvre E4')).toBe('E4');
+  });
+
+  it('préserve les navigations statiques qui ne ciblent aucune entité affichée', () => {
+    expect(detectIntent('Ouvre la clôture')).toBe('cloture');
+    expect(detectIntent('Ouvre mes chantiers')).toBe('voir_chantiers');
+    expect(detectIntent('Ouvre le diagnostic')).toBe('diagnostic');
+  });
+});
+
+describe('detectIntent — contexte Comptabilité', () => {
+  it('reconnaît les demandes sur les écritures affichées', () => {
+    expect(detectIntent('Explique cette écriture')).toBe('contexte_ecran');
+    expect(detectIntent('Liste les écritures affichées')).toBe('contexte_ecran');
+  });
+});
+
+describe('detectIntent — ligne de pièce affichée', () => {
+  it('reconnaît une demande de lecture de ligne sans la confondre avec la pièce', () => {
+    expect(detectIntent('Explique cette ligne')).toBe('contexte_ecran');
+    expect(detectIntent('Résume la ligne du devis')).toBe('contexte_ecran');
   });
 });
 

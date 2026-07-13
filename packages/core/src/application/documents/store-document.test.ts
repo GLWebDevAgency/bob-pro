@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { type Document } from '../../domain/document/document';
+import { DocumentFolder } from '../../domain/document/document-folder';
 import { type DocumentRepository } from '../ports/document-repository';
 import { type DocumentStoragePort, type StoredObject } from '../ports/document-storage';
 import { type ClockPort } from '../ports/services';
@@ -17,10 +18,47 @@ const clock: ClockPort = {
   today: () => '2026-06-01',
 };
 
+const existingLinkTargets = { exists: async () => true };
+const sameTenantFolder = DocumentFolder.create({
+  id: 'folder-same',
+  companyId: 'co-1',
+  name: 'Achats',
+  now: clock.now(),
+});
+const crossTenantFolder = DocumentFolder.create({
+  id: 'folder-cross',
+  companyId: 'co-2',
+  name: 'Privé',
+  now: clock.now(),
+});
+const inactiveFolder = DocumentFolder.create({
+  id: 'folder-inactive',
+  companyId: 'co-1',
+  name: 'Archivé',
+  now: clock.now(),
+});
+if (!sameTenantFolder.ok || !crossTenantFolder.ok || !inactiveFolder.ok) throw new Error('fixture dossier invalide');
+inactiveFolder.value.markDeleted('2026-06-01T11:00:00.000Z');
+const existingFolders = {
+  findById: async (companyId: string, folderId: string) => {
+    const folder = folderId === sameTenantFolder.value.id
+      ? sameTenantFolder.value
+      : folderId === crossTenantFolder.value.id
+        ? crossTenantFolder.value
+        : folderId === inactiveFolder.value.id
+          ? inactiveFolder.value
+        : null;
+    return folder?.companyId === companyId ? folder : null;
+  },
+};
+
 class MemoryDocuments implements DocumentRepository {
   readonly map = new Map<string, Document>();
   async save(d: Document): Promise<void> {
     this.map.set(d.id, d);
+  }
+  async classify(): Promise<'saved' | 'revision_conflict' | 'not_found'> {
+    return 'not_found';
   }
   async findById(companyId: string, id: string): Promise<Document | null> {
     const document = this.map.get(id);
@@ -95,7 +133,13 @@ describe('documents application use cases', () => {
   it('stocke les bytes, persiste les métadonnées et expose une URL signée', async () => {
     const documents = new MemoryDocuments();
     const storage = new MemoryStorage();
-    const stored = await new StoreDocument({ documents, storage, clock }).execute(input());
+    const stored = await new StoreDocument({
+      documents,
+      folders: existingFolders,
+      linkTargets: existingLinkTargets,
+      storage,
+      clock,
+    }).execute(input());
 
     expect(stored.ok).toBe(true);
     if (!stored.ok) return;
@@ -130,12 +174,67 @@ describe('documents application use cases', () => {
   it('compense le stockage objet si le sha retourné ne correspond pas', async () => {
     const documents = new MemoryDocuments();
     const storage = new MemoryStorage(OTHER_SHA);
-    const stored = await new StoreDocument({ documents, storage, clock }).execute(input());
+    const stored = await new StoreDocument({
+      documents,
+      folders: existingFolders,
+      linkTargets: existingLinkTargets,
+      storage,
+      clock,
+    }).execute(input());
 
     expect(stored.ok).toBe(false);
     if (!stored.ok) expect(stored.error.kind).toBe('dependency');
     expect(documents.map.size).toBe(0);
     expect(storage.objects.size).toBe(0);
     expect(storage.removed).toEqual([input().storageKey]);
+  });
+
+  it('refuse une cible métier absente avant toute écriture objet ou métadonnée', async () => {
+    const documents = new MemoryDocuments();
+    const storage = new MemoryStorage();
+    const stored = await new StoreDocument({
+      documents,
+      folders: existingFolders,
+      linkTargets: { exists: async () => false },
+      storage,
+      clock,
+    }).execute(input());
+
+    expect(stored).toEqual({ ok: false, error: { kind: 'not_found', entity: 'expense', id: 'exp-1' } });
+    expect(documents.map.size).toBe(0);
+    expect(storage.objects.size).toBe(0);
+  });
+
+  it('accepte uniquement un dossier actif du même tenant avant l’écriture objet', async () => {
+    const sameTenantStorage = new MemoryStorage();
+    const sameTenant = await new StoreDocument({
+      documents: new MemoryDocuments(),
+      folders: existingFolders,
+      linkTargets: existingLinkTargets,
+      storage: sameTenantStorage,
+      clock,
+    }).execute({ ...input(), folderId: sameTenantFolder.value.id });
+
+    expect(sameTenant.ok && sameTenant.value.folderId).toBe(sameTenantFolder.value.id);
+    expect(sameTenantStorage.objects.size).toBe(1);
+
+    for (const folderId of ['folder-missing', crossTenantFolder.value.id, inactiveFolder.value.id]) {
+      const documents = new MemoryDocuments();
+      const storage = new MemoryStorage();
+      const rejected = await new StoreDocument({
+        documents,
+        folders: existingFolders,
+        linkTargets: existingLinkTargets,
+        storage,
+        clock,
+      }).execute({ ...input(), folderId });
+
+      expect(rejected).toEqual({
+        ok: false,
+        error: { kind: 'not_found', entity: 'document_folder', id: folderId },
+      });
+      expect(documents.map.size).toBe(0);
+      expect(storage.objects.size).toBe(0);
+    }
   });
 });
