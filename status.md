@@ -1,5 +1,5 @@
 # claude status
 state: active
-heartbeat_epoch: 1783982605
+heartbeat_epoch: 1783983880
 head: 50468c8
-note: BOB LIVE: glue finale committée + atterrissage joint complet, HEAD c748d9a porte verte, rollout off, en attente review GPT + certificat device
+note: PILIER 2 (monétisation/plans/rétention) démarré sur ordre fondateur; GPT finit pilier 1; claims posés
