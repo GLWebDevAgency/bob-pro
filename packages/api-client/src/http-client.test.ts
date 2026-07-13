@@ -1057,6 +1057,9 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
 
   it('décode strictement la capacité et négocie le SDP via le backend authentifié', async () => {
     const answerSdp = 'v=0\r\no=- 2 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n';
+    const sessionHandle = '00000000-0000-4000-8000-000000000001';
+    const turnId = '00000000-0000-4000-8000-000000000002';
+    const contextDigest = 'a'.repeat(64);
     const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
       if (String(url).endsWith('/voice/realtime/config')) {
         return new Response(JSON.stringify({
@@ -1069,12 +1072,54 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
           maxSessionSeconds: 900,
         }), { headers: { 'content-type': 'application/json' } });
       }
+      if (init?.method === 'DELETE') {
+        expect(String(url)).toBe(`https://api.bob.test/voice/realtime/calls/${sessionHandle}`);
+        return new Response(JSON.stringify({ ended: true }), { headers: { 'content-type': 'application/json' } });
+      }
+      if (init?.method === 'PUT') {
+        expect(String(url)).toBe(`https://api.bob.test/voice/realtime/calls/${sessionHandle}/context`);
+        expect(JSON.parse(String(init.body))).toEqual({
+          version: 1,
+          revision: 7,
+          context: {
+            screen: { name: '/home', instanceId: 'home-1' },
+            entities: [],
+            capabilities: ['screen.read'],
+          },
+        });
+        return new Response(JSON.stringify({ revision: 7, contextDigest }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (String(url).endsWith('/control-acknowledgements')) {
+        expect(String(url)).toBe(
+          `https://api.bob.test/voice/realtime/calls/${sessionHandle}/control-acknowledgements`,
+        );
+        expect(init?.method).toBe('POST');
+        expect(JSON.parse(String(init?.body))).toEqual({
+          turnId,
+          contextRevision: 7,
+          contextDigest,
+        });
+        return new Response(JSON.stringify({
+          turnId,
+          kind: 'answer',
+          contextRevision: 7,
+          contextDigest,
+          navigate: '/cloture',
+        }), { headers: { 'content-type': 'application/json' } });
+      }
       expect(String(url)).toBe('https://api.bob.test/voice/realtime/calls');
       expect(init?.method).toBe('POST');
-      expect(JSON.parse(String(init?.body))).toEqual({ sdp: 'v=0\r\nm=audio 9 RTP/AVP 0\r\n' });
+      expect(JSON.parse(String(init?.body))).toEqual({
+        sdp: 'v=0\r\nm=audio 9 RTP/AVP 0\r\n',
+        sessionHandle,
+      });
       return new Response(JSON.stringify({
         transport: 'webrtc',
         answerSdp,
+        sessionHandle,
+        hardExpiresAt: '2026-07-13T20:00:00.000Z',
         model: 'gpt-realtime-2.1',
         voice: 'marin',
         configVersion: 'bob-live-webrtc-v1',
@@ -1089,10 +1134,34 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
     });
 
     const config = await client.realtimeVoiceConfig();
-    const call = await client.createRealtimeVoiceCall({ sdp: 'v=0\r\nm=audio 9 RTP/AVP 0\r\n' });
+    const call = await client.createRealtimeVoiceCall({
+      sdp: 'v=0\r\nm=audio 9 RTP/AVP 0\r\n',
+      sessionHandle,
+    });
+    const context = await client.updateRealtimeVoiceContext(sessionHandle, {
+      version: 1,
+      revision: 7,
+      context: {
+        screen: { name: '/home', instanceId: 'home-1' },
+        entities: [],
+        capabilities: ['screen.read'],
+      },
+    });
+    const control = await client.acknowledgeRealtimeVoiceControl(sessionHandle, {
+      turnId,
+      contextRevision: 7,
+      contextDigest,
+    });
+    const ended = await client.hangupRealtimeVoiceCall(sessionHandle);
 
     expect(config).toMatchObject({ ok: true, value: { available: true, transport: 'webrtc' } });
     expect(call).toMatchObject({ ok: true, value: { answerSdp } });
+    expect(context).toEqual({ ok: true, value: { revision: 7, contextDigest } });
+    expect(control).toEqual({
+      ok: true,
+      value: { turnId, kind: 'answer', contextRevision: 7, contextDigest, navigate: '/cloture' },
+    });
+    expect(ended).toEqual({ ok: true, value: { ended: true } });
     if (call.ok) expect(call.value).not.toHaveProperty('callId');
     expect(fetchMock.mock.calls[1]?.[1]?.headers).toMatchObject({ authorization: 'Bearer supabase-jwt' });
   });
@@ -1101,6 +1170,8 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
       transport: 'webrtc',
       answerSdp: 'v=0\r\nm=audio 9 RTP/AVP 0\r\n',
+      sessionHandle: '00000000-0000-4000-8000-000000000001',
+      hardExpiresAt: '2026-07-13T20:00:00.000Z',
       callId: 'rtc_12345678',
       model: 'gpt-realtime-2.1',
       voice: 'marin',
@@ -1115,5 +1186,46 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
       ok: false,
       error: { kind: 'dependency', port: 'api-contract' },
     });
+  });
+
+  it('refuse un acquittement qui expose nonce/provider id ou une navigation hors allowlist', async () => {
+    const sessionHandle = '00000000-0000-4000-8000-000000000001';
+    const turnId = '00000000-0000-4000-8000-000000000002';
+    const contextDigest = 'a'.repeat(64);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      turnId,
+      kind: 'answer',
+      contextRevision: 1,
+      contextDigest,
+      navigate: 'https://evil.invalid',
+      responseId: 'resp_private',
+      bob_response_nonce: 'provider-private',
+    }), { headers: { 'content-type': 'application/json' } })));
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+
+    await expect(client.acknowledgeRealtimeVoiceControl(sessionHandle, {
+      turnId,
+      contextRevision: 1,
+      contextDigest,
+    })).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'dependency', port: 'api-contract' },
+    });
+  });
+
+  it('propage une annulation externe au bootstrap avant tout fetch', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+    const controller = new AbortController();
+    controller.abort();
+
+    const result = await client.createRealtimeVoiceCall(
+      { sdp: 'v=0\r\nm=audio 9 RTP/AVP 0\r\n' },
+      controller.signal,
+    );
+
+    expect(result).toMatchObject({ ok: false, error: { kind: 'dependency', port: 'api' } });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

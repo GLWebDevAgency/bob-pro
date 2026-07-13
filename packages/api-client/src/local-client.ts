@@ -153,6 +153,14 @@ import type {
   VoiceSynthesisResult,
   RealtimeVoiceConfig,
   RealtimeVoiceCall,
+  RealtimeVoiceContextUpdate,
+  RealtimeVoiceControlAcknowledgement,
+  RealtimeVoiceControlReference,
+  RealtimeVoiceSpeechCancellationInput,
+  RealtimeVoiceSpeechDeliveryAcknowledgement,
+  RealtimeVoiceSpeechDeliveryInput,
+  RealtimeVoiceSpeechFeed,
+  RealtimeVoiceSpeechFeedInput,
   SuggestExpenseDefaultsInput,
   ExpenseDefaultsView,
   FacturXImportReview,
@@ -724,6 +732,7 @@ export class LocalBobClient implements BobClient {
   async realtimeVoiceConfig(): Promise<Result<RealtimeVoiceConfig, AppError>> {
     return ok({
       available: false,
+      availabilityReason: 'disabled',
       transport: 'webrtc',
       model: 'gpt-realtime-2.1',
       voice: 'marin',
@@ -733,8 +742,62 @@ export class LocalBobClient implements BobClient {
     });
   }
 
-  async createRealtimeVoiceCall(_input: { sdp: string }): Promise<Result<RealtimeVoiceCall, AppError>> {
+  async createRealtimeVoiceCall(
+    _input: { sdp: string; sessionHandle?: string },
+    _signal?: AbortSignal,
+  ): Promise<Result<RealtimeVoiceCall, AppError>> {
     return { ok: false, error: appForbidden('Bob Live nécessite le backend sécurisé.') };
+  }
+
+  async hangupRealtimeVoiceCall(
+    _sessionHandle: string,
+    _signal?: AbortSignal,
+  ): Promise<Result<{ ended: true }, AppError>> {
+    return ok({ ended: true });
+  }
+
+  async updateRealtimeVoiceContext(
+    _sessionHandle: string,
+    _input: RealtimeVoiceContextUpdate,
+    _signal?: AbortSignal,
+  ): Promise<Result<{ revision: number; contextDigest: string }, AppError>> {
+    return { ok: false, error: appForbidden('Bob Live nécessite le backend sécurisé.') };
+  }
+
+  async acknowledgeRealtimeVoiceControl(
+    _sessionHandle: string,
+    _input: RealtimeVoiceControlReference,
+    _signal?: AbortSignal,
+  ): Promise<Result<RealtimeVoiceControlAcknowledgement, AppError>> {
+    return { ok: false, error: appForbidden('Les contrôles Bob Live exigent l’autorité du backend.') };
+  }
+
+  async getNextRealtimeVoiceSpeech(
+    _sessionHandle: string,
+    _input: RealtimeVoiceSpeechFeedInput,
+    _signal?: AbortSignal,
+  ): Promise<Result<RealtimeVoiceSpeechFeed, AppError>> {
+    return { ok: false, error: appForbidden('La voix auditée Bob Live exige le backend sécurisé.') };
+  }
+
+  async acknowledgeRealtimeVoiceSpeechDelivery(
+    _sessionHandle: string,
+    _turnId: string,
+    _artifactId: string,
+    _input: RealtimeVoiceSpeechDeliveryInput,
+    _signal?: AbortSignal,
+  ): Promise<Result<RealtimeVoiceSpeechDeliveryAcknowledgement, AppError>> {
+    return { ok: false, error: appForbidden('La livraison vocale Bob Live exige le backend sécurisé.') };
+  }
+
+  async cancelRealtimeVoiceSpeech(
+    _sessionHandle: string,
+    _turnId: string,
+    _artifactId: string,
+    _input: RealtimeVoiceSpeechCancellationInput,
+    _signal?: AbortSignal,
+  ): Promise<Result<void, AppError>> {
+    return { ok: false, error: appForbidden('L’annulation vocale Bob Live exige le backend sécurisé.') };
   }
 
   async listDocuments(input: ListDocumentsClientInput = {}): Promise<Result<DocumentView[], AppError>> {

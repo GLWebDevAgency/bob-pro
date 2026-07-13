@@ -1,4 +1,4 @@
-import type { AgentRun, AskOptions, JournalEntry, PendingAction } from '@bob/ai';
+import type { AgentContext, AgentRun, AskOptions, JournalEntry, PendingAction } from '@bob/ai';
 import type {
   Result,
   AppError,
@@ -205,6 +205,7 @@ export interface VoiceSynthesisResult {
 
 export interface RealtimeVoiceConfig {
   available: boolean;
+  availabilityReason?: 'disabled' | 'not_entitled' | 'entitlement_unavailable';
   transport: 'webrtc';
   model: string;
   voice: 'marin' | 'cedar';
@@ -216,10 +217,95 @@ export interface RealtimeVoiceConfig {
 export interface RealtimeVoiceCall {
   transport: 'webrtc';
   answerSdp: string;
+  sessionHandle: string;
+  hardExpiresAt: string;
   model: string;
   voice: 'marin' | 'cedar';
   configVersion: string;
   maxSessionSeconds: number;
+}
+
+export interface RealtimeVoiceContextUpdate {
+  version: 1;
+  revision: number;
+  context: AgentContext;
+}
+
+export interface RealtimeVoiceControlReference {
+  turnId: string;
+  contextRevision: number;
+  contextDigest: string;
+}
+
+/** Contrôle approuvé une seule fois par le sideband serveur, sans nonce ni identifiant provider. */
+export interface RealtimeVoiceControlAcknowledgement extends RealtimeVoiceControlReference {
+  kind: 'answer' | 'proposed' | 'done';
+  navigate?: string;
+  proposalId?: string;
+  proposalExpiresAt?: string;
+}
+
+export type RealtimeVoiceSpeechMimeType =
+  | 'audio/mpeg'
+  | 'audio/wav'
+  | 'audio/ogg'
+  | 'audio/webm'
+  | 'audio/mp4'
+  | 'audio/aac'
+  | 'audio/flac';
+
+interface RealtimeVoiceSpeechBinding {
+  artifactId: string;
+  turnId: string;
+  sequence: number;
+  contextRevision: number;
+  contextDigest: string;
+}
+
+/** État monotone du feed acoustique autoritatif. Aucun de ces champs ne vient du datachannel. */
+export type RealtimeVoiceSpeechFeed =
+  | { status: 'none' }
+  | ({ status: 'rendering' } & RealtimeVoiceSpeechBinding)
+  | ({
+    status: 'ready';
+    audioUrl: string;
+    audioSha256: string;
+    mimeType: RealtimeVoiceSpeechMimeType;
+    byteSize: number;
+    durationMs: number;
+  } & RealtimeVoiceSpeechBinding)
+  | ({
+    status: 'terminal';
+    reason: 'cancelled' | 'failed' | 'expired';
+  } & RealtimeVoiceSpeechBinding);
+
+export interface RealtimeVoiceSpeechFeedInput {
+  /** `0` demande le premier segment ; les appels suivants réutilisent la dernière séquence vue. */
+  afterSequence: number;
+  /** Long-poll serveur borné. `0` force une lecture immédiate. */
+  waitMs?: number;
+}
+
+export interface RealtimeVoiceSpeechDeliveryInput {
+  deliveryId: string;
+  audioSha256: string;
+}
+
+export interface RealtimeVoiceSpeechDeliveryAcknowledgement {
+  controlReference?: RealtimeVoiceControlReference;
+}
+
+export type RealtimeVoiceSpeechCancellationReason =
+  | 'barge_in'
+  | 'user_cancel'
+  | 'context_changed'
+  | 'session_end'
+  | 'superseded'
+  | 'playback_error';
+
+export interface RealtimeVoiceSpeechCancellationInput {
+  cancellationId: string;
+  reason: RealtimeVoiceSpeechCancellationReason;
 }
 
 export interface AccountingPreviewLine {
@@ -465,7 +551,45 @@ export interface BobClient {
   synthesizeSpeech(input: { text: string }): Promise<Result<VoiceSynthesisResult, AppError>>;
   voiceConfig(): Promise<Result<VoiceConfig, AppError>>;
   realtimeVoiceConfig(): Promise<Result<RealtimeVoiceConfig, AppError>>;
-  createRealtimeVoiceCall(input: { sdp: string }): Promise<Result<RealtimeVoiceCall, AppError>>;
+  createRealtimeVoiceCall(
+    input: { sdp: string; sessionHandle?: string },
+    signal?: AbortSignal,
+  ): Promise<Result<RealtimeVoiceCall, AppError>>;
+  hangupRealtimeVoiceCall(
+    sessionHandle: string,
+    signal?: AbortSignal,
+  ): Promise<Result<{ ended: true }, AppError>>;
+  /** Publie un snapshot écran monotone, lié au handle opaque courant et revalidé côté serveur. */
+  updateRealtimeVoiceContext(
+    sessionHandle: string,
+    input: RealtimeVoiceContextUpdate,
+    signal?: AbortSignal,
+  ): Promise<Result<{ revision: number; contextDigest: string }, AppError>>;
+  acknowledgeRealtimeVoiceControl(
+    sessionHandle: string,
+    input: RealtimeVoiceControlReference,
+    signal?: AbortSignal,
+  ): Promise<Result<RealtimeVoiceControlAcknowledgement, AppError>>;
+  /** Feed acoustique durable ; les statuts HTTP 204/410 deviennent des états métier explicites. */
+  getNextRealtimeVoiceSpeech(
+    sessionHandle: string,
+    input: RealtimeVoiceSpeechFeedInput,
+    signal?: AbortSignal,
+  ): Promise<Result<RealtimeVoiceSpeechFeed, AppError>>;
+  acknowledgeRealtimeVoiceSpeechDelivery(
+    sessionHandle: string,
+    turnId: string,
+    artifactId: string,
+    input: RealtimeVoiceSpeechDeliveryInput,
+    signal?: AbortSignal,
+  ): Promise<Result<RealtimeVoiceSpeechDeliveryAcknowledgement, AppError>>;
+  cancelRealtimeVoiceSpeech(
+    sessionHandle: string,
+    turnId: string,
+    artifactId: string,
+    input: RealtimeVoiceSpeechCancellationInput,
+    signal?: AbortSignal,
+  ): Promise<Result<void, AppError>>;
   listDocuments(input?: ListDocumentsClientInput): Promise<Result<DocumentView[], AppError>>;
   getDocument(documentId: string): Promise<Result<DocumentView, AppError>>;
   uploadDocument(input: UploadDocumentClientInput): Promise<Result<DocumentView, AppError>>;

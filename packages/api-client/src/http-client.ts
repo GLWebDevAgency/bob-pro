@@ -1,4 +1,4 @@
-import type { AgentRun, JournalEntry, PendingAction } from '@bob/ai';
+import { isAllowedAgentNavigationRoute, type AgentRun, type JournalEntry, type PendingAction } from '@bob/ai';
 import type {
   Result,
   AppError,
@@ -55,6 +55,16 @@ import type {
   VoiceSynthesisResult,
   RealtimeVoiceConfig,
   RealtimeVoiceCall,
+  RealtimeVoiceContextUpdate,
+  RealtimeVoiceControlAcknowledgement,
+  RealtimeVoiceControlReference,
+  RealtimeVoiceSpeechCancellationInput,
+  RealtimeVoiceSpeechCancellationReason,
+  RealtimeVoiceSpeechDeliveryAcknowledgement,
+  RealtimeVoiceSpeechDeliveryInput,
+  RealtimeVoiceSpeechFeed,
+  RealtimeVoiceSpeechFeedInput,
+  RealtimeVoiceSpeechMimeType,
   InvoiceAccountingPreview,
   PaymentAccountingPreview,
   AccountingEntryView,
@@ -99,9 +109,325 @@ const DOCUMENT_ANALYSIS_TIMEOUT_MS = 75_000;
 const TEXT_EXPORT_TIMEOUT_MS = 45_000;
 // Supérieur au budget serveur maximal (8,5 s) avec marge réseau/décodage, sans attente infinie.
 const REALTIME_BOOTSTRAP_TIMEOUT_MS = 12_000;
+const REALTIME_CONTROL_ACK_TIMEOUT_MS = 4_000;
+const REALTIME_SPEECH_REQUEST_TIMEOUT_MS = 5_000;
+const REALTIME_SPEECH_RESPONSE_MAX_BYTES = 16 * 1024;
+const REALTIME_SPEECH_MAX_AUDIO_BYTES = 2 * 1024 * 1024;
+const REALTIME_SPEECH_MIN_AUDIO_BYTES = 256;
+const REALTIME_SPEECH_MIN_DURATION_MS = 100;
+const REALTIME_SPEECH_MAX_DURATION_MS = 45_000;
+const REALTIME_SPEECH_MAX_SEQUENCE = 2_147_483_647;
+const REALTIME_SPEECH_MAX_WAIT_MS = 2_500;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const SHA_256_PATTERN = /^[a-f0-9]{64}$/;
+const REALTIME_SPEECH_MIME_TYPES = new Set<RealtimeVoiceSpeechMimeType>([
+  'audio/mpeg',
+  'audio/wav',
+  'audio/ogg',
+  'audio/webm',
+  'audio/mp4',
+  'audio/aac',
+  'audio/flac',
+]);
+const REALTIME_SPEECH_CANCELLATION_REASONS = new Set<RealtimeVoiceSpeechCancellationReason>([
+  'barge_in',
+  'user_cancel',
+  'context_changed',
+  'session_end',
+  'superseded',
+  'playback_error',
+]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
+  const keys = Object.keys(value);
+  return keys.length === expected.length && keys.every((key) => expected.includes(key));
+}
+
+function isBoundedInteger(value: unknown, min: number, max: number): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= min && (value as number) <= max;
+}
+
+function isRealtimeSpeechAudioUrl(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 4_096) return false;
+  try {
+    const url = new URL(value);
+    if (url.username !== '' || url.password !== '' || url.hash !== '') return false;
+    if (url.protocol === 'https:') return true;
+    return url.protocol === 'http:'
+      && (url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]');
+  } catch {
+    return false;
+  }
+}
+
+function decodeRealtimeVoiceControlReference(value: unknown): RealtimeVoiceControlReference | null {
+  if (
+    !isRecord(value)
+    || !hasExactKeys(value, ['turnId', 'contextRevision', 'contextDigest'])
+    || typeof value.turnId !== 'string'
+    || !UUID_PATTERN.test(value.turnId)
+    || !isBoundedInteger(value.contextRevision, 1, 2_147_483_647)
+    || typeof value.contextDigest !== 'string'
+    || !SHA_256_PATTERN.test(value.contextDigest)
+  ) return null;
+  return {
+    turnId: value.turnId,
+    contextRevision: value.contextRevision,
+    contextDigest: value.contextDigest,
+  };
+}
+
+function decodeRealtimeVoiceSpeechBinding(value: Record<string, unknown>): {
+  artifactId: string;
+  turnId: string;
+  sequence: number;
+  contextRevision: number;
+  contextDigest: string;
+} | null {
+  if (
+    typeof value.artifactId !== 'string'
+    || !UUID_PATTERN.test(value.artifactId)
+    || typeof value.turnId !== 'string'
+    || !UUID_PATTERN.test(value.turnId)
+    || !isBoundedInteger(value.sequence, 1, REALTIME_SPEECH_MAX_SEQUENCE)
+    || !isBoundedInteger(value.contextRevision, 1, 2_147_483_647)
+    || typeof value.contextDigest !== 'string'
+    || !SHA_256_PATTERN.test(value.contextDigest)
+  ) return null;
+  return {
+    artifactId: value.artifactId,
+    turnId: value.turnId,
+    sequence: value.sequence,
+    contextRevision: value.contextRevision,
+    contextDigest: value.contextDigest,
+  };
+}
+
+function decodeRealtimeVoiceSpeechFeed(status: number, value: unknown): RealtimeVoiceSpeechFeed | null {
+  if (status === 204) return value === undefined ? { status: 'none' } : null;
+  if (!isRecord(value)) return null;
+  const binding = decodeRealtimeVoiceSpeechBinding(value);
+  if (!binding) return null;
+  if (
+    status === 202
+    && value.status === 'rendering'
+    && hasExactKeys(value, [
+      'status',
+      'artifactId',
+      'turnId',
+      'sequence',
+      'contextRevision',
+      'contextDigest',
+    ])
+  ) return { status: 'rendering', ...binding };
+  if (
+    status === 200
+    && hasExactKeys(value, [
+      'artifactId',
+      'turnId',
+      'audioUrl',
+      'audioSha256',
+      'mimeType',
+      'byteSize',
+      'durationMs',
+      'sequence',
+      'contextRevision',
+      'contextDigest',
+    ])
+    && isRealtimeSpeechAudioUrl(value.audioUrl)
+    && typeof value.audioSha256 === 'string'
+    && SHA_256_PATTERN.test(value.audioSha256)
+    && typeof value.mimeType === 'string'
+    && REALTIME_SPEECH_MIME_TYPES.has(value.mimeType as RealtimeVoiceSpeechMimeType)
+    && isBoundedInteger(value.byteSize, REALTIME_SPEECH_MIN_AUDIO_BYTES, REALTIME_SPEECH_MAX_AUDIO_BYTES)
+    && isBoundedInteger(value.durationMs, REALTIME_SPEECH_MIN_DURATION_MS, REALTIME_SPEECH_MAX_DURATION_MS)
+  ) {
+    return {
+      status: 'ready',
+      ...binding,
+      audioUrl: value.audioUrl,
+      audioSha256: value.audioSha256,
+      mimeType: value.mimeType as RealtimeVoiceSpeechMimeType,
+      byteSize: value.byteSize,
+      durationMs: value.durationMs,
+    };
+  }
+  if (
+    status === 410
+    && value.status === 'terminal'
+    && (value.reason === 'cancelled' || value.reason === 'failed' || value.reason === 'expired')
+    && hasExactKeys(value, [
+      'status',
+      'artifactId',
+      'turnId',
+      'sequence',
+      'reason',
+      'contextRevision',
+      'contextDigest',
+    ])
+  ) return { status: 'terminal', ...binding, reason: value.reason };
+  return null;
+}
+
+function decodeRealtimeVoiceSpeechDelivery(
+  status: number,
+  value: unknown,
+  expectedTurnId: string,
+): RealtimeVoiceSpeechDeliveryAcknowledgement | null {
+  if (status !== 200 && status !== 201 && status !== 204) return null;
+  if (value === undefined) return {};
+  if (!isRecord(value)) return null;
+  if (hasExactKeys(value, [])) return {};
+  if (!hasExactKeys(value, ['controlReference'])) return null;
+  const controlReference = decodeRealtimeVoiceControlReference(value.controlReference);
+  return controlReference?.turnId === expectedTurnId ? { controlReference } : null;
+}
+
+function isBoundedString(value: unknown, maxLength = 1_000): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= maxLength;
+}
+
+function decodeHttpAppError(value: unknown): AppError | null {
+  if (!isRecord(value) || !isRecord(value.error)) return null;
+  const error = value.error;
+  if (
+    error.kind === 'not_found'
+    && hasExactKeys(error, ['kind', 'entity', 'id'])
+    && isBoundedString(error.entity, 120)
+    && isBoundedString(error.id, 200)
+  ) return { kind: 'not_found', entity: error.entity, id: error.id };
+  if (
+    error.kind === 'conflict'
+    && hasExactKeys(error, ['kind', 'entity', 'reason'])
+    && isBoundedString(error.entity, 120)
+    && isBoundedString(error.reason)
+  ) return { kind: 'conflict', entity: error.entity, reason: error.reason };
+  if (
+    error.kind === 'forbidden'
+    && hasExactKeys(error, ['kind', 'reason'])
+    && isBoundedString(error.reason)
+  ) return { kind: 'forbidden', reason: error.reason };
+  if (
+    error.kind === 'rate_limited'
+    && hasExactKeys(error, ['kind', 'reason', 'retryAfterSeconds'])
+    && isBoundedString(error.reason)
+    && isBoundedInteger(error.retryAfterSeconds, 0, 86_400)
+  ) {
+    return { kind: 'rate_limited', reason: error.reason, retryAfterSeconds: error.retryAfterSeconds };
+  }
+  if (
+    error.kind === 'unavailable'
+    && (
+      hasExactKeys(error, ['kind', 'service'])
+      || hasExactKeys(error, ['kind', 'service', 'retryAfterSeconds'])
+    )
+    && isBoundedString(error.service, 120)
+    && (
+      error.retryAfterSeconds === undefined
+      || isBoundedInteger(error.retryAfterSeconds, 0, 86_400)
+    )
+  ) {
+    return {
+      kind: 'unavailable',
+      service: error.service,
+      ...(typeof error.retryAfterSeconds === 'number'
+        ? { retryAfterSeconds: error.retryAfterSeconds }
+        : {}),
+    };
+  }
+  if (
+    error.kind === 'dependency'
+    && hasExactKeys(error, ['kind', 'port', 'cause'])
+    && isBoundedString(error.port, 120)
+    && isBoundedString(error.cause)
+  ) return { kind: 'dependency', port: error.port, cause: error.cause };
+  if (
+    error.kind === 'validation'
+    && hasExactKeys(error, ['kind', 'issues'])
+    && Array.isArray(error.issues)
+    && error.issues.length > 0
+    && error.issues.length <= 20
+  ) {
+    const issues = error.issues.map((issue) => {
+      if (
+        !isRecord(issue)
+        || !hasExactKeys(issue, ['field', 'message'])
+        || !isBoundedString(issue.field, 160)
+        || !isBoundedString(issue.message)
+      ) return null;
+      return { field: issue.field, message: issue.message };
+    });
+    if (issues.every((issue): issue is { field: string; message: string } => issue !== null)) {
+      return { kind: 'validation', issues };
+    }
+  }
+  return null;
+}
+
+async function readBoundedJsonBody(response: Response, maxBytes: number): Promise<unknown> {
+  const contentLength = response.headers.get('content-length');
+  if (contentLength !== null) {
+    const declaredLength = Number(contentLength);
+    if (!Number.isSafeInteger(declaredLength) || declaredLength < 0 || declaredLength > maxBytes) {
+      await response.body?.cancel();
+      throw new Error('Corps HTTP Bob Live trop volumineux.');
+    }
+  }
+
+  let raw: string;
+  if (response.body) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder('utf-8', { fatal: true });
+    let byteLength = 0;
+    let text = '';
+    try {
+      let reading = true;
+      while (reading) {
+        const chunk = await reader.read();
+        if (chunk.done) {
+          reading = false;
+          continue;
+        }
+        byteLength += chunk.value.byteLength;
+        if (byteLength > maxBytes) {
+          await reader.cancel();
+          throw new Error('Corps HTTP Bob Live trop volumineux.');
+        }
+        text += decoder.decode(chunk.value, { stream: true });
+      }
+      raw = text + decoder.decode();
+    } finally {
+      reader.releaseLock();
+    }
+  } else {
+    raw = await response.text();
+    if (new TextEncoder().encode(raw).byteLength > maxBytes) {
+      throw new Error('Corps HTTP Bob Live trop volumineux.');
+    }
+  }
+
+  if (raw.length === 0) return undefined;
+  const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
+  const mediaType = contentType.split(';', 1)[0]?.trim();
+  if (mediaType !== 'application/json') {
+    throw new Error('Type de réponse HTTP Bob Live invalide.');
+  }
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    throw new Error('JSON Bob Live invalide.');
+  }
+}
+
+function invalidRealtimeSpeechInput<T>(field: string, message: string): Promise<Result<T, AppError>> {
+  return Promise.resolve({
+    ok: false,
+    error: { kind: 'validation', issues: [{ field, message }] },
+  });
 }
 
 function decodeRealtimeVoiceConfig(value: unknown): RealtimeVoiceConfig | null {
@@ -120,9 +446,23 @@ function decodeRealtimeVoiceConfig(value: unknown): RealtimeVoiceConfig | null {
     || !Number.isInteger(value.maxSessionSeconds)
     || value.maxSessionSeconds < 60
     || value.maxSessionSeconds > 900
+    || (
+      value.availabilityReason !== undefined
+      && value.availabilityReason !== 'disabled'
+      && value.availabilityReason !== 'not_entitled'
+      && value.availabilityReason !== 'entitlement_unavailable'
+    )
   ) return null;
+  const availabilityReason = value.availabilityReason === 'disabled'
+    || value.availabilityReason === 'not_entitled'
+    || value.availabilityReason === 'entitlement_unavailable'
+    ? value.availabilityReason
+    : null;
   return {
     available: value.available,
+    ...(availabilityReason === null
+      ? {}
+      : { availabilityReason }),
     transport: 'webrtc',
     model: value.model,
     voice: value.voice,
@@ -134,7 +474,16 @@ function decodeRealtimeVoiceConfig(value: unknown): RealtimeVoiceConfig | null {
 
 function decodeRealtimeVoiceCall(value: unknown): RealtimeVoiceCall | null {
   if (!isRecord(value)) return null;
-  const allowedKeys = new Set(['transport', 'answerSdp', 'model', 'voice', 'configVersion', 'maxSessionSeconds']);
+  const allowedKeys = new Set([
+    'transport',
+    'answerSdp',
+    'sessionHandle',
+    'hardExpiresAt',
+    'model',
+    'voice',
+    'configVersion',
+    'maxSessionSeconds',
+  ]);
   if (
     Object.keys(value).length !== allowedKeys.size
     || Object.keys(value).some((key) => !allowedKeys.has(key))
@@ -144,6 +493,10 @@ function decodeRealtimeVoiceCall(value: unknown): RealtimeVoiceCall | null {
     || value.answerSdp.length < 16
     || value.answerSdp.length > 256 * 1024
     || !value.answerSdp.startsWith('v=0')
+    || typeof value.sessionHandle !== 'string'
+    || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.sessionHandle)
+    || typeof value.hardExpiresAt !== 'string'
+    || !Number.isFinite(Date.parse(value.hardExpiresAt))
     || typeof value.model !== 'string'
     || value.model.length === 0
     || value.model.length > 100
@@ -158,10 +511,60 @@ function decodeRealtimeVoiceCall(value: unknown): RealtimeVoiceCall | null {
   return {
     transport: 'webrtc',
     answerSdp: value.answerSdp,
+    sessionHandle: value.sessionHandle,
+    hardExpiresAt: value.hardExpiresAt,
     model: value.model,
     voice: value.voice,
     configVersion: value.configVersion,
     maxSessionSeconds: value.maxSessionSeconds,
+  };
+}
+
+function decodeRealtimeVoiceControlAcknowledgement(
+  value: unknown,
+): RealtimeVoiceControlAcknowledgement | null {
+  if (!isRecord(value)) return null;
+  const allowed = new Set([
+    'turnId',
+    'kind',
+    'contextRevision',
+    'contextDigest',
+    'navigate',
+    'proposalId',
+    'proposalExpiresAt',
+  ]);
+  const required = ['turnId', 'kind', 'contextRevision', 'contextDigest'];
+  if (
+    required.some((key) => !(key in value))
+    || Object.keys(value).some((key) => !allowed.has(key))
+    || typeof value.turnId !== 'string'
+    || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.turnId)
+    || (value.kind !== 'answer' && value.kind !== 'proposed' && value.kind !== 'done')
+    || !Number.isSafeInteger(value.contextRevision)
+    || (value.contextRevision as number) < 1
+    || (value.contextRevision as number) > 2_147_483_647
+    || typeof value.contextDigest !== 'string'
+    || !/^[a-f0-9]{64}$/.test(value.contextDigest)
+    || (value.navigate !== undefined && !isAllowedAgentNavigationRoute(value.navigate))
+    || (value.proposalId !== undefined && (
+      typeof value.proposalId !== 'string'
+      || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.proposalId)
+    ))
+    || (value.proposalExpiresAt !== undefined && (
+      typeof value.proposalExpiresAt !== 'string'
+      || value.proposalExpiresAt.length > 40
+      || !Number.isFinite(Date.parse(value.proposalExpiresAt))
+      || value.proposalId === undefined
+    ))
+  ) return null;
+  return {
+    turnId: value.turnId,
+    kind: value.kind,
+    contextRevision: value.contextRevision as number,
+    contextDigest: value.contextDigest,
+    ...(typeof value.navigate === 'string' ? { navigate: value.navigate } : {}),
+    ...(typeof value.proposalId === 'string' ? { proposalId: value.proposalId } : {}),
+    ...(typeof value.proposalExpiresAt === 'string' ? { proposalExpiresAt: value.proposalExpiresAt } : {}),
   };
 }
 
@@ -183,10 +586,23 @@ export class HttpBobClient implements BobClient {
     headers?: Record<string, string>,
     decode?: (value: unknown) => T | null,
     timeoutMs?: number,
+    externalSignal?: AbortSignal,
   ): Promise<Result<T, AppError>> {
     let timeout: ReturnType<typeof setTimeout> | undefined;
+    let removeExternalAbort: (() => void) | undefined;
     try {
-      const controller = timeoutMs === undefined ? null : new AbortController();
+      if (externalSignal?.aborted) throw new Error('Requête annulée.');
+      const controller = timeoutMs === undefined && externalSignal === undefined ? null : new AbortController();
+      const externalDeadline = externalSignal === undefined
+        ? null
+        : new Promise<never>((_resolve, reject) => {
+            const abort = (): void => {
+              controller?.abort();
+              reject(new Error('Requête annulée.'));
+            };
+            externalSignal.addEventListener('abort', abort, { once: true });
+            removeExternalAbort = () => externalSignal.removeEventListener('abort', abort);
+          });
       const deadline = timeoutMs === undefined
         ? null
         : new Promise<never>((_resolve, reject) => {
@@ -195,13 +611,18 @@ export class HttpBobClient implements BobClient {
               reject(new Error(`Délai réseau dépassé après ${timeoutMs} ms.`));
             }, timeoutMs);
           });
-      const withinDeadline = <V>(operation: Promise<V>): Promise<V> =>
-        deadline ? Promise.race([operation, deadline]) : operation;
+      const withinDeadline = <V>(operation: Promise<V>): Promise<V> => {
+        const boundaries = [operation];
+        if (deadline) boundaries.push(deadline);
+        if (externalDeadline) boundaries.push(externalDeadline);
+        return boundaries.length === 1 ? operation : Promise.race(boundaries);
+      };
       // Le budget couvre aussi la récupération du jeton : une auth locale bloquée ne doit pas
       // laisser l'interface attendre indéfiniment avant même que `fetch` puisse être annulé.
-      const token = this.opts.getToken
-        ? await withinDeadline(this.opts.getToken())
-        : null;
+      const token = await withinDeadline(
+        this.opts.getToken ? this.opts.getToken() : Promise.resolve(null),
+      );
+      if (externalSignal?.aborted) throw new Error('Requête annulée.');
       const init: RequestInit = {
         method,
         ...(controller ? { signal: controller.signal } : {}),
@@ -241,6 +662,95 @@ export class HttpBobClient implements BobClient {
       return { ok: false, error: { kind: 'dependency', port: 'api', cause: e instanceof Error ? e.message : 'réseau' } };
     } finally {
       if (timeout !== undefined) clearTimeout(timeout);
+      removeExternalAbort?.();
+    }
+  }
+
+  /**
+   * Requête dédiée au feed acoustique : elle préserve les états HTTP 204/410, borne réellement
+   * le corps et propage l'annulation jusque dans la lecture du stream. Le helper générique `req`
+   * suppose à l'inverse un JSON 2xx et ne peut donc pas porter ce protocole.
+   */
+  private async reqRealtimeSpeech<T>(
+    method: 'GET' | 'POST',
+    path: string,
+    body: unknown,
+    decode: (status: number, value: unknown) => T | null,
+    signal?: AbortSignal,
+  ): Promise<Result<T, AppError>> {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    let removeExternalAbort: (() => void) | undefined;
+    try {
+      if (signal?.aborted) throw new Error('Requête annulée.');
+      const controller = new AbortController();
+      const externalDeadline = signal === undefined
+        ? null
+        : new Promise<never>((_resolve, reject) => {
+            const abort = (): void => {
+              controller.abort();
+              reject(new Error('Requête annulée.'));
+            };
+            signal.addEventListener('abort', abort, { once: true });
+            removeExternalAbort = () => signal.removeEventListener('abort', abort);
+          });
+      const deadline = new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => {
+          controller.abort();
+          reject(new Error(`Délai réseau dépassé après ${REALTIME_SPEECH_REQUEST_TIMEOUT_MS} ms.`));
+        }, REALTIME_SPEECH_REQUEST_TIMEOUT_MS);
+      });
+      const withinDeadline = <V>(operation: Promise<V>): Promise<V> => Promise.race([
+        operation,
+        deadline,
+        ...(externalDeadline ? [externalDeadline] : []),
+      ]);
+      const token = await withinDeadline(
+        this.opts.getToken ? this.opts.getToken() : Promise.resolve(null),
+      );
+      if (signal?.aborted) throw new Error('Requête annulée.');
+      const init: RequestInit = {
+        method,
+        signal: controller.signal,
+        headers: {
+          'content-type': 'application/json',
+          'x-company-id': this.companyId,
+          ...(token ? { authorization: `Bearer ${token}` } : {}),
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      };
+      const response = await withinDeadline(fetch(`${this.opts.baseUrl}${path}`, init));
+      const data = await withinDeadline(
+        readBoundedJsonBody(response, REALTIME_SPEECH_RESPONSE_MAX_BYTES),
+      );
+      const decoded = decode(response.status, data);
+      if (decoded !== null) return { ok: true, value: decoded };
+      if (!response.ok) {
+        return {
+          ok: false,
+          error: decodeHttpAppError(data)
+            ?? { kind: 'dependency', port: 'api', cause: `HTTP ${response.status}` },
+        };
+      }
+      return {
+        ok: false,
+        error: {
+          kind: 'dependency',
+          port: 'api-contract',
+          cause: `Réponse API invalide pour ${method} ${path}.`,
+        },
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        error: {
+          kind: 'dependency',
+          port: 'api',
+          cause: error instanceof Error ? error.message : 'réseau',
+        },
+      };
+    } finally {
+      if (timeout !== undefined) clearTimeout(timeout);
+      removeExternalAbort?.();
     }
   }
 
@@ -350,7 +860,7 @@ export class HttpBobClient implements BobClient {
       REALTIME_BOOTSTRAP_TIMEOUT_MS,
     );
   }
-  createRealtimeVoiceCall(input: { sdp: string }) {
+  createRealtimeVoiceCall(input: { sdp: string; sessionHandle?: string }, signal?: AbortSignal) {
     return this.req<RealtimeVoiceCall>(
       'POST',
       '/voice/realtime/calls',
@@ -358,7 +868,182 @@ export class HttpBobClient implements BobClient {
       undefined,
       decodeRealtimeVoiceCall,
       REALTIME_BOOTSTRAP_TIMEOUT_MS,
+      signal,
     );
+  }
+  hangupRealtimeVoiceCall(sessionHandle: string, signal?: AbortSignal) {
+    return this.req<{ ended: true }>(
+      'DELETE',
+      `/voice/realtime/calls/${encodeURIComponent(sessionHandle)}`,
+      undefined,
+      undefined,
+      (value) => isRecord(value) && value.ended === true ? { ended: true } : null,
+      REALTIME_BOOTSTRAP_TIMEOUT_MS,
+      signal,
+    );
+  }
+  updateRealtimeVoiceContext(
+    sessionHandle: string,
+    input: RealtimeVoiceContextUpdate,
+    signal?: AbortSignal,
+  ) {
+    return this.req<{ revision: number; contextDigest: string }>(
+      'PUT',
+      `/voice/realtime/calls/${encodeURIComponent(sessionHandle)}/context`,
+      input,
+      undefined,
+      (value) => isRecord(value)
+        && Number.isSafeInteger(value.revision)
+        && (value.revision as number) >= 1
+        && typeof value.contextDigest === 'string'
+        && /^[a-f0-9]{64}$/.test(value.contextDigest)
+        ? { revision: value.revision as number, contextDigest: value.contextDigest }
+        : null,
+      REALTIME_BOOTSTRAP_TIMEOUT_MS,
+      signal,
+    );
+  }
+  acknowledgeRealtimeVoiceControl(
+    sessionHandle: string,
+    input: RealtimeVoiceControlReference,
+    signal?: AbortSignal,
+  ) {
+    return this.req<RealtimeVoiceControlAcknowledgement>(
+      'POST',
+      `/voice/realtime/calls/${encodeURIComponent(sessionHandle)}/control-acknowledgements`,
+      input,
+      undefined,
+      decodeRealtimeVoiceControlAcknowledgement,
+      REALTIME_CONTROL_ACK_TIMEOUT_MS,
+      signal,
+    );
+  }
+  getNextRealtimeVoiceSpeech(
+    sessionHandle: string,
+    input: RealtimeVoiceSpeechFeedInput,
+    signal?: AbortSignal,
+  ) {
+    if (!UUID_PATTERN.test(sessionHandle)) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceSpeechFeed>(
+        'sessionHandle',
+        'Le handle de session Bob Live doit être un UUID.',
+      );
+    }
+    if (!isRecord(input) || !isBoundedInteger(input.afterSequence, 0, REALTIME_SPEECH_MAX_SEQUENCE)) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceSpeechFeed>(
+        'afterSequence',
+        'La séquence Bob Live doit être un entier compris entre 0 et 2147483647.',
+      );
+    }
+    const waitMs = input.waitMs ?? REALTIME_SPEECH_MAX_WAIT_MS;
+    if (!isBoundedInteger(waitMs, 0, REALTIME_SPEECH_MAX_WAIT_MS)) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceSpeechFeed>(
+        'waitMs',
+        'Le long-poll Bob Live doit être compris entre 0 et 2500 ms.',
+      );
+    }
+    const query = new URLSearchParams({
+      afterSequence: String(input.afterSequence),
+      waitMs: String(waitMs),
+    });
+    return this.reqRealtimeSpeech<RealtimeVoiceSpeechFeed>(
+      'GET',
+      `/voice/realtime/calls/${encodeURIComponent(sessionHandle)}/speech?${query.toString()}`,
+      undefined,
+      decodeRealtimeVoiceSpeechFeed,
+      signal,
+    );
+  }
+  acknowledgeRealtimeVoiceSpeechDelivery(
+    sessionHandle: string,
+    turnId: string,
+    artifactId: string,
+    input: RealtimeVoiceSpeechDeliveryInput,
+    signal?: AbortSignal,
+  ) {
+    if (!UUID_PATTERN.test(sessionHandle)) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceSpeechDeliveryAcknowledgement>(
+        'sessionHandle',
+        'Le handle de session Bob Live doit être un UUID.',
+      );
+    }
+    if (!UUID_PATTERN.test(turnId)) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceSpeechDeliveryAcknowledgement>(
+        'turnId',
+        'Le tour Bob Live doit être un UUID.',
+      );
+    }
+    if (!UUID_PATTERN.test(artifactId)) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceSpeechDeliveryAcknowledgement>(
+        'artifactId',
+        'L’artefact vocal Bob Live doit être un UUID.',
+      );
+    }
+    if (!isRecord(input) || typeof input.deliveryId !== 'string' || !UUID_PATTERN.test(input.deliveryId)) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceSpeechDeliveryAcknowledgement>(
+        'deliveryId',
+        'L’identifiant de livraison Bob Live doit être un UUID.',
+      );
+    }
+    if (typeof input.audioSha256 !== 'string' || !SHA_256_PATTERN.test(input.audioSha256)) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceSpeechDeliveryAcknowledgement>(
+        'audioSha256',
+        'L’empreinte audio Bob Live doit être un SHA-256 hexadécimal canonique.',
+      );
+    }
+    return this.reqRealtimeSpeech<RealtimeVoiceSpeechDeliveryAcknowledgement>(
+      'POST',
+      `/voice/realtime/calls/${encodeURIComponent(sessionHandle)}/turns/${encodeURIComponent(turnId)}/speech/${encodeURIComponent(artifactId)}/deliveries`,
+      { deliveryId: input.deliveryId, audioSha256: input.audioSha256 },
+      (status, value) => decodeRealtimeVoiceSpeechDelivery(status, value, turnId),
+      signal,
+    );
+  }
+  async cancelRealtimeVoiceSpeech(
+    sessionHandle: string,
+    turnId: string,
+    artifactId: string,
+    input: RealtimeVoiceSpeechCancellationInput,
+    signal?: AbortSignal,
+  ): Promise<Result<void, AppError>> {
+    if (!UUID_PATTERN.test(sessionHandle)) {
+      return invalidRealtimeSpeechInput<void>(
+        'sessionHandle',
+        'Le handle de session Bob Live doit être un UUID.',
+      );
+    }
+    if (!UUID_PATTERN.test(turnId)) {
+      return invalidRealtimeSpeechInput<void>('turnId', 'Le tour Bob Live doit être un UUID.');
+    }
+    if (!UUID_PATTERN.test(artifactId)) {
+      return invalidRealtimeSpeechInput<void>('artifactId', 'L’artefact vocal Bob Live doit être un UUID.');
+    }
+    if (!isRecord(input) || typeof input.cancellationId !== 'string' || !UUID_PATTERN.test(input.cancellationId)) {
+      return invalidRealtimeSpeechInput<void>(
+        'cancellationId',
+        'L’identifiant d’annulation Bob Live doit être un UUID.',
+      );
+    }
+    if (
+      typeof input.reason !== 'string'
+      || !REALTIME_SPEECH_CANCELLATION_REASONS.has(input.reason as RealtimeVoiceSpeechCancellationReason)
+    ) {
+      return invalidRealtimeSpeechInput<void>(
+        'reason',
+        'Le motif d’annulation Bob Live n’appartient pas à l’allowlist.',
+      );
+    }
+    const result = await this.reqRealtimeSpeech<true>(
+      'POST',
+      `/voice/realtime/calls/${encodeURIComponent(sessionHandle)}/turns/${encodeURIComponent(turnId)}/speech/${encodeURIComponent(artifactId)}/cancellations`,
+      { cancellationId: input.cancellationId, reason: input.reason },
+      (status, value) => (status === 200 || status === 201 || status === 204)
+        && (value === undefined || (isRecord(value) && hasExactKeys(value, [])))
+        ? true
+        : null,
+      signal,
+    );
+    return result.ok ? { ok: true, value: undefined } : result;
   }
   listDocuments(input: ListDocumentsClientInput = {}) {
     const params = new URLSearchParams();
