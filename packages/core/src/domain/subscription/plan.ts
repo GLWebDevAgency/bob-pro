@@ -3,6 +3,7 @@ export type PlanTier = 'free' | 'solo' | 'pro' | 'business';
 export type Feature =
   | 'ai_quota' // Bob en quota découverte (palier gratuit)
   | 'ai_assistant' // Bob agentique disponible
+  | 'voice_live' // BOB LIVE : conversation vocale temps réel (WebRTC) — coût audio réel par session
   | 'bob_essentials' // Bob réactif : aide, recherche, brouillons, diagnostics
   | 'bob_operations' // Bob proactif : relances, trésorerie, paiements, routines
   | 'bob_control' // Bob gouverné : équipe, supervision, audit avancé
@@ -87,6 +88,7 @@ export const PLAN_CATALOG: Record<PlanTier, Plan> = {
       'ai_assistant',
       'bob_essentials',
       'bob_operations',
+      'voice_live',
       'auto_dunning',
       'cashflow_forecast',
       'online_payment',
@@ -110,6 +112,7 @@ export const PLAN_CATALOG: Record<PlanTier, Plan> = {
       'bob_essentials',
       'bob_operations',
       'bob_control',
+      'voice_live',
       'auto_dunning',
       'cashflow_forecast',
       'online_payment',

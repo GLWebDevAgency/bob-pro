@@ -9,6 +9,7 @@ export * from './voice/voice-choice';
 export * from './voice/echo-guard';
 export * from './voice/streaming';
 export * from './realtime/agent-bridge';
+export * from './realtime/usage-metering';
 export * from './router/model-router';
 export * from './prompt/prompt-pack';
 export * from './eval/ocr-golden';
