@@ -1,5 +1,5 @@
 # claude status
 state: active
-heartbeat_epoch: 1783961601
-head: 0afae97
-note: Pont realtime publié (agent-bridge committé) + cas fondateur ligne-2 câblé wizard (tree). En attente re-review + atterrissage GPT.
+heartbeat_epoch: 1783962079
+head: 9676c4e
+note: Atterrissage packages fait (184e862, 1228 tests, worktree vierge OK). Reste: mobile (GPT), apps/api+lockfile (joint). Prochain: intégration bridge<->sideband dès contrat GPT.
