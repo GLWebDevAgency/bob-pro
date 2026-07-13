@@ -33,17 +33,27 @@
       [
         "expo-audio",
         {
-          "microphonePermission": "Bob utilise le micro pour la commande vocale et te répondre à voix haute."
+          "microphonePermission": "Bob utilise le micro pour la commande vocale et te répondre à voix haute.",
+          "enableBackgroundPlayback": false,
+          "enableBackgroundRecording": false
         }
       ],
-      "expo-sharing"
+      [
+        "@config-plugins/react-native-webrtc",
+        {
+          "cameraPermission": "Bob utilise l’appareil photo uniquement quand tu scannes un document.",
+          "microphonePermission": "Bob utilise le micro pendant une conversation vocale en temps réel."
+        }
+      ],
+      "expo-sharing",
+      "./plugins/with-bob-audio-permissions"
     ],
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "fr.bobpro.app",
       "infoPlist": {
-        "NSSpeechRecognitionUsageDescription": "Allow $(PRODUCT_NAME) to use speech recognition.",
-        "NSMicrophoneUsageDescription": "Allow $(PRODUCT_NAME) to use the microphone.",
+        "NSSpeechRecognitionUsageDescription": "Bob transcrit tes demandes vocales pour t’assister dans l’application.",
+        "NSMicrophoneUsageDescription": "Bob utilise le micro pendant tes conversations vocales et tes dictées.",
         "ITSAppUsesNonExemptEncryption": false
       }
     },
@@ -52,8 +62,12 @@
       "permissions": [
         "android.permission.RECORD_AUDIO",
         "android.permission.MODIFY_AUDIO_SETTINGS",
-        "android.permission.FOREGROUND_SERVICE",
-        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"
+        "android.permission.BLUETOOTH",
+        "android.permission.BLUETOOTH_ADMIN",
+        "android.permission.BLUETOOTH_CONNECT"
+      ],
+      "blockedPermissions": [
+        "android.permission.SYSTEM_ALERT_WINDOW"
       ],
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",

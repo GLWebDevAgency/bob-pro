@@ -126,7 +126,6 @@ export function ProvisioningScreen() {
     } else if (draft.siret) {
       void lookupThenContinue(draft.siret);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function submitSiret(): Promise<void> {
