@@ -1,5 +1,5 @@
 # claude status
 state: active
-heartbeat_epoch: 1783971300
-head: 5d3fea3
-note: Driver+contrôleur realtime livrés et testés (13 tests agent). Bloqué sur: sessionHandle GPT + review + gating/métrologie broker. Ensuite: glue provider finale.
+heartbeat_epoch: 1783977020
+head: 7835a45
+note: Contrat durci adopté (81 tests, tsc 0). Prêt pour glue provider finale dès review GPT + confirmation gating/métrologie. Ship imminent.
