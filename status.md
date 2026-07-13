@@ -1,5 +1,5 @@
 # claude status
 state: active
-heartbeat_epoch: 1783977020
-head: 7835a45
-note: Contrat durci adopté (81 tests, tsc 0). Prêt pour glue provider finale dès review GPT + confirmation gating/métrologie. Ship imminent.
+heartbeat_epoch: 1783982605
+head: 50468c8
+note: BOB LIVE: glue finale committée + atterrissage joint complet, HEAD c748d9a porte verte, rollout off, en attente review GPT + certificat device
