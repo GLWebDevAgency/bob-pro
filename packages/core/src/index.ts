@@ -160,6 +160,9 @@ export * from './application/fixtures/index';
 
 // Monétisation
 export * from './domain/monetization/paywall';
+export * from './domain/monetization/paywall-pressure';
+export * from './domain/monetization/plan-diff';
+export * from './domain/monetization/trial-report';
 export * from './domain/monetization/trial';
 export * from './domain/engagement/value-ledger';
 export * from './domain/engagement/win-back';
