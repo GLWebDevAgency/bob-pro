@@ -644,7 +644,7 @@ export default function DevisNew() {
 
   // signerName n'est commité dans la machine QUE si le pad porte un tracé ET un nom
   // valide (≥ 2 caractères — même plancher que SignQuote) : la garde devisNext reste
-  // l'unique juge du passage. Le dataURL (signature.dataUrl) attend l'API C40.
+  // l'unique juge du passage. Le dataURL (signature.dataUrl) part avec signQuote (preuve R4).
   useEffect(() => {
     const name = signerName.trim();
     const committed = signature !== null && !signature.isEmpty && name.length >= 2 ? name : null;
@@ -782,14 +782,24 @@ export default function DevisNew() {
         chain.current.sent = true;
       }
       if (!chain.current.signed) {
-        await signQuote.mutateAsync({ quoteId, signerName: d.signerName });
+        // R4 : le tracé du pad (étape 4) accompagne la signature — le serveur en calcule le
+        // hash de preuve (onsite_draw). La garde devisNext exige un tracé non vide pour
+        // franchir l'étape, donc `signature.dataUrl` existe ici ; on reste défensif (spread).
+        await signQuote.mutateAsync({
+          quoteId,
+          signerName: d.signerName,
+          ...(signature?.dataUrl ? { proofDataUrl: signature.dataUrl } : {}),
+        });
         chain.current.signed = true;
       }
       let invoiceId = chain.current.invoiceId;
       if (invoiceId === null) {
-        // Pas de mode explicite : le use case génère l'acompte si le devis porte un depositPct
-        // (GenerateInvoiceFromQuote, idempotent par parentQuoteId+kind), la finale sinon.
-        const generated = await generateInvoice.mutateAsync({ quoteId });
+        // Le mode fait partie de l'intention persistée : un retry réseau rejoue exactement la
+        // même pièce fiscale et ne peut pas passer implicitement de l'acompte à la finale.
+        const generated = await generateInvoice.mutateAsync({
+          quoteId,
+          mode: d.depositPct > 0 ? 'deposit' : 'final',
+        });
         invoiceId = generated.invoiceId;
         chain.current.invoiceId = invoiceId;
       }

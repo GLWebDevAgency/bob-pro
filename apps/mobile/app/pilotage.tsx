@@ -101,7 +101,7 @@ export default function Pilotage() {
 
   // P1 (audit 14/07) : failed se lit TOUJOURS avec loading — ne jamais confondre un échec
   // réseau avec une absence de données (le pilotage prendrait alors l'air d'un cabinet vide).
-  const queryState = combineQueryStates(entries, payments, invoices, customers, expenses);
+  const queryState = combineQueryStates(entries, payments, invoices, customers, expenses, company);
 
   // Une seule vérité : le MÊME use case pur que Bob (getBusinessReview) — parité garantie.
   const review: BusinessReview | null = useMemo(() => {
@@ -214,7 +214,12 @@ export default function Pilotage() {
         {window.map((point, index) => {
           const isCurrent = point.month === currentMonth;
           return (
-            <View key={point.month} style={{ marginTop: index === 0 ? 0 : 10 }}>
+            <View
+              key={point.month}
+              accessible
+              accessibilityLabel={`${monthLabel(point.month)}. ${t('pilotage.invoicedLabel', { personality })} ${formatEUR(point.invoicedHtCents)}. ${t('pilotage.collectedLabel', { personality })} ${formatEUR(point.collectedTtcCents)}.`}
+              style={{ marginTop: index === 0 ? 0 : 10 }}
+            >
               <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 }}>
                 <Text style={[isCurrent ? font('meta', 700) : font('meta'), { color: isCurrent ? colors.ink900 : colors.slate500 }]}>
                   {monthLabel(point.month)}
@@ -270,7 +275,8 @@ export default function Pilotage() {
   function shareRiskColor(shareBps: number | null): string {
     if (shareBps === null) return colors.slate400;
     if (shareBps >= 5000) return semantic.danger;
-    if (shareBps >= 3500) return semantic.warning;
+    // Même seuil que deriveBusinessReview (30 %) : l'alerte texte et la couleur ne divergent pas.
+    if (shareBps >= 3000) return semantic.warning;
     return colors.slate500;
   }
 
@@ -297,6 +303,8 @@ export default function Pilotage() {
   }) {
     return (
       <View
+        accessible
+        accessibilityLabel={`${label}. ${formatEUR(amountCents)}${meta ? `. ${meta}` : ''}`}
         style={{
           paddingVertical: 10,
           borderBottomWidth: divider ? 1 : 0,
@@ -619,12 +627,13 @@ export default function Pilotage() {
         />
 
         <View style={{ paddingHorizontal: 18, paddingTop: 14, gap: 14 }}>
-          {/* Abonnement en chargement → squelettes, JAMAIS le paywall (fail-open d'affichage) ;
+          {/* Abonnement ou données en chargement → squelettes, JAMAIS le paywall ;
+              l'échec données est prioritaire sur `review === null` pour garantir le retry ;
               verrouillé → carte contextuelle du domaine (même emplacement que le contenu) ;
               decision 'unavailable' (aucun catalogue ne vend la capacité) → PaywallCard rend
               null PAR CONSTRUCTION (paywall.tsx) : repli EmptyState pour ne jamais laisser
               l'écran vide (P2 audit 14/07). */}
-          {entitlement.loading || (entitled && (queryState.loading || review === null)) ? (
+          {entitlement.loading ? (
             // 6 Cards réelles (mois en cours, tendance, DSO, top clients, top dépenses,
             // cascade SIG) — hauteurs calées sur leur gabarit final (zéro saut de layout).
             // La série mensuelle (conditionnelle, ≥2 mois d'historique) n'est pas squelettée.
@@ -659,6 +668,17 @@ export default function Pilotage() {
             // données — vérifié AVANT le calcul/rendu de review (jamais un « rien à afficher »
             // qui masquerait le fait que le fetch a raté).
             <ErrorRetry message={t('today.dataError', { personality })} onRetry={queryState.refetchAll} />
+          ) : queryState.loading || review === null ? (
+            // L'échec est testé AVANT `review === null` : sinon un premier chargement en
+            // erreur laisse `review` nul et affiche un skeleton éternel au lieu du retry.
+            <>
+              <SkeletonCard height={150} contentLines={4} />
+              <SkeletonCard height={140} contentLines={4} />
+              <SkeletonCard height={104} contentLines={3} />
+              <SkeletonCard height={260} contentLines={5} />
+              <SkeletonCard height={220} contentLines={5} />
+              <SkeletonCard height={230} contentLines={5} />
+            </>
           ) : review !== null ? (
             body(review)
           ) : null}

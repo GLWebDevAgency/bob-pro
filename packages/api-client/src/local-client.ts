@@ -19,6 +19,8 @@ import { buildValueDigest,
   CreateQuote,
   SendQuote,
   SignQuote,
+  CreateQuoteSignatureLink,
+  sha256Hex,
   RefuseQuote,
   CreateCreditNote,
   GenerateInvoiceFromQuote,
@@ -142,6 +144,7 @@ import type {
   PaymentView,
   SubscriptionView,
   SendQuoteOutput,
+  CreateQuoteSignatureLinkOutput,
   SendRelanceClientOutput,
   NotificationView,
   NotificationUnreadPreview,
@@ -795,6 +798,7 @@ export class LocalBobClient implements BobClient {
       configVersion: 'bob-live-webrtc-v1',
       requiresDevelopmentBuild: true,
       maxSessionSeconds: 900,
+      speechDelivery: 'audited-signed-url-v1',
     });
   }
 
@@ -1928,16 +1932,48 @@ export class LocalBobClient implements BobClient {
     return result.ok ? { ok: true, value: { ...result.value, deliveryStatus: 'skipped' } } : result;
   }
 
-  async signQuote(input: { quoteId: string; signerName: string }): Promise<Result<{ status: string }, AppError>> {
+  /** P0 R4 — parité avec l'API : préparer le lien ne déclenche AUCUN sortant (l'adaptateur
+   * local n'a de toute façon aucun canal e-mail). Même use case core, même rotation de jeton.
+   * L'URL imite la construction serveur (base démo) : en mode local elle n'est résoluble par
+   * personne d'autre que ce device — c'est un adaptateur de démo, pas un vrai lien public. */
+  async createQuoteSignatureLink(quoteId: string): Promise<Result<CreateQuoteSignatureLinkOutput, AppError>> {
+    await this.ready;
+    const link = await new CreateQuoteSignatureLink({
+      quotes: this.quotes,
+      publicAccessTokens: this.publicAccessTokens,
+      clock: this.clock,
+    }).execute({ quoteId });
+    if (!link.ok) return link;
+    return {
+      ok: true,
+      value: {
+        signatureUrl: `https://demo.bobpro.fr/sign/${encodeURIComponent(link.value.token)}`,
+        expiresAt: link.value.expiresAt,
+      },
+    };
+  }
+
+  async signQuote(input: { quoteId: string; signerName: string; proofDataUrl?: string }): Promise<Result<{ status: string }, AppError>> {
     await this.ready;
     return this.signQuoteInternal(input);
   }
 
   private signQuoteInternal(
-    input: { quoteId: string; signerName: string },
+    input: { quoteId: string; signerName: string; proofDataUrl?: string },
     clock: ClockPort = this.clock,
   ): Promise<Result<{ status: string }, AppError>> {
-    return new SignQuote({ quotes: this.quotes, uow: this.uow, clock }).execute(input);
+    // R4 : même règle que l'API — le tracé est haché (sha256Hex, pur TS : tourne on-device),
+    // jamais stocké tel quel ; absent = preuve absente, jamais fabriquée.
+    return new SignQuote({
+      quotes: this.quotes,
+      publicAccessTokens: this.publicAccessTokens,
+      uow: this.uow,
+      clock,
+    }).execute({
+      quoteId: input.quoteId,
+      signerName: input.signerName,
+      ...(input.proofDataUrl ? { proofSha256: sha256Hex(input.proofDataUrl) } : {}),
+    });
   }
 
   async refuseQuote(quoteId: string): Promise<Result<{ status: string }, AppError>> {
@@ -1950,14 +1986,14 @@ export class LocalBobClient implements BobClient {
     }).execute({ quoteId });
   }
 
-  async generateInvoice(input: { quoteId: string; mode?: 'deposit' | 'final' }): Promise<Result<{ invoiceId: string }, AppError>> {
+  async generateInvoice(input: { quoteId: string; mode: 'deposit' | 'final' }): Promise<Result<{ invoiceId: string }, AppError>> {
     await this.ready;
     return this.generateInvoiceInternal(input);
   }
 
   private generateInvoiceInternal(input: {
     quoteId: string;
-    mode?: 'deposit' | 'final';
+    mode: 'deposit' | 'final';
   }): Promise<Result<{ invoiceId: string }, AppError>> {
     return new GenerateInvoiceFromQuote({ quotes: this.quotes, invoices: this.invoices, ids: this.ids }).execute(input);
   }
@@ -1965,13 +2001,13 @@ export class LocalBobClient implements BobClient {
   /** R6 : édition d'une ligne de devis BROUILLON — même use case core que l'API (parité d'actions). */
   async updateQuoteLine(input: UpdateQuoteLineInput): Promise<Result<{ status: string }, AppError>> {
     await this.ready;
-    return new UpdateQuoteLine({ quotes: this.quotes }).execute(input);
+    return new UpdateQuoteLine({ quotes: this.quotes, uow: this.uow }).execute(input);
   }
 
   /** R6 : suppression d'une ligne de devis BROUILLON — même use case core que l'API. */
   async removeQuoteLine(input: RemoveQuoteLineInput): Promise<Result<{ status: string }, AppError>> {
     await this.ready;
-    return new RemoveQuoteLine({ quotes: this.quotes }).execute(input);
+    return new RemoveQuoteLine({ quotes: this.quotes, uow: this.uow }).execute(input);
   }
 
   async issueInvoice(input: IssueInvoiceInput): Promise<Result<{ number: string }, AppError>> {
@@ -2532,7 +2568,7 @@ export class LocalBobClient implements BobClient {
           source: 'manual',
         }),
       generateInvoice: async (input) =>
-        this.generateInvoice({ quoteId: input.quoteId, ...(input.mode !== undefined ? { mode: input.mode } : {}) }),
+        this.generateInvoice({ quoteId: input.quoteId, mode: input.mode }),
       exportFec: async (input) => {
         const r = await this.exportFec(input);
         if (!r.ok) return r;

@@ -3,8 +3,8 @@
  *
  * RÈGLES (contrat C24, dégradé honnête) :
  * · opt-in explicite, persisté en SecureStore ('yes'/'no' — null = jamais proposé) ;
- * · si le matériel manque ou qu'aucune biométrie n'est enrôlée (simulateur, Expo Go
- *   sans enrollment), on NE BLOQUE JAMAIS : authenticate() rend { ok: true, degraded: true } ;
+ * · avant opt-in, le matériel absent ne déclenche aucune proposition ; après opt-in, une
+ *   indisponibilité ne devient JAMAIS un bypass : le mot de passe reste la sortie sûre ;
  * · la couche est PURE data (aucune UI) — l'écran (BiometricGate) porte la présentation.
  */
 import * as LocalAuthentication from 'expo-local-authentication';
@@ -33,41 +33,28 @@ export function biometricMethodLabel(method: BiometricMethod): string {
 }
 
 export async function getBiometricSupport(): Promise<BiometricSupport> {
-  try {
-    const hasHardware = await LocalAuthentication.hasHardwareAsync();
-    if (!hasHardware) return { available: false, method: 'generic' };
-    const enrolled = await LocalAuthentication.isEnrolledAsync();
-    const types = await LocalAuthentication.supportedAuthenticationTypesAsync();
-    const method: BiometricMethod = types.includes(
-      LocalAuthentication.AuthenticationType.FACIAL_RECOGNITION,
-    )
-      ? 'faceid'
-      : types.includes(LocalAuthentication.AuthenticationType.FINGERPRINT)
-        ? 'touchid'
-        : 'generic';
-    return { available: enrolled, method };
-  } catch {
-    // Module natif absent (build sans la lib) → dégradé honnête : pas de biométrie.
-    return { available: false, method: 'generic' };
-  }
+  const hasHardware = await LocalAuthentication.hasHardwareAsync();
+  if (!hasHardware) return { available: false, method: 'generic' };
+  const enrolled = await LocalAuthentication.isEnrolledAsync();
+  const types = await LocalAuthentication.supportedAuthenticationTypesAsync();
+  const method: BiometricMethod = types.includes(
+    LocalAuthentication.AuthenticationType.FACIAL_RECOGNITION,
+  )
+    ? 'faceid'
+    : types.includes(LocalAuthentication.AuthenticationType.FINGERPRINT)
+      ? 'touchid'
+      : 'generic';
+  return { available: enrolled, method };
 }
 
 /** null = l'utilisateur n'a jamais répondu à la proposition d'opt-in. */
 export async function readBiometricOptIn(): Promise<boolean | null> {
-  try {
-    const raw = await SecureStore.getItemAsync(OPT_IN_KEY);
-    return raw === 'yes' ? true : raw === 'no' ? false : null;
-  } catch {
-    return null;
-  }
+  const raw = await SecureStore.getItemAsync(OPT_IN_KEY);
+  return raw === 'yes' ? true : raw === 'no' ? false : null;
 }
 
 export async function writeBiometricOptIn(value: boolean): Promise<void> {
-  try {
-    await SecureStore.setItemAsync(OPT_IN_KEY, value ? 'yes' : 'no');
-  } catch {
-    // SecureStore indisponible : l'opt-in ne persiste pas — le boot suivant ne verrouille pas.
-  }
+  await SecureStore.setItemAsync(OPT_IN_KEY, value ? 'yes' : 'no');
 }
 
 export interface BiometricAuthResult {
@@ -77,14 +64,14 @@ export interface BiometricAuthResult {
 }
 
 export async function authenticateBiometric(promptMessage: string): Promise<BiometricAuthResult> {
-  const support = await getBiometricSupport();
-  if (!support.available) return { ok: true, degraded: true };
   try {
+    const support = await getBiometricSupport();
+    if (!support.available) return { ok: false, degraded: true };
     const result = await LocalAuthentication.authenticateAsync({ promptMessage });
     return { ok: result.success, degraded: false };
   } catch {
-    // Erreur runtime du module (Expo Go capricieux) — même règle : ne jamais bloquer l'accès.
-    return { ok: true, degraded: true };
+    // Après opt-in, une panne native ne vaut jamais preuve d'identité.
+    return { ok: false, degraded: true };
   }
 }
 

@@ -40,7 +40,22 @@ import {
 } from '@bob/core';
 import { conformityCard, shadowComponentsNative, shadowNative, vault, vaultShadowNative } from '@bob/tokens';
 import { t, type Personality } from '@bob/i18n';
-import { Button, Card, IconTile, InnerScreenHeader, Sheet, Toast, font, parseGradient, useTheme } from '@bob/ui';
+import {
+  Button,
+  Card,
+  EmptyState,
+  ErrorRetry,
+  IconTile,
+  InnerScreenHeader,
+  Sheet,
+  Skeleton,
+  SkeletonCard,
+  SkeletonRow,
+  Toast,
+  font,
+  parseGradient,
+  useTheme,
+} from '@bob/ui';
 import { useBobClient } from '../../src/data/client';
 import { shareFec } from '../../src/lib/share-fec';
 import { useChantiers, useCustomers, useExpenses, useExportFec, useInvoices } from '../../src/data/hooks';
@@ -112,12 +127,6 @@ const KIND_LABEL_KEY = {
   credit_note: 'docs.kindCreditNote',
   situation: 'docs.kindSituation',
 } as const;
-
-/** Skeleton d'un bloc de section pendant le chargement initial. */
-function SkeletonBlock({ height }: { height: number }) {
-  const { colors } = useTheme();
-  return <View style={{ height, borderRadius: 18, backgroundColor: colors.lineSoft }} />;
-}
 
 /** Vignette « papier » 46×58 de la carte à valider (dégradé 160° + barre basse). */
 function DocThumb() {
@@ -270,7 +279,7 @@ function PendingCard({
         accessibilityLabel={t('docs.pickOther', { personality })}
         onPress={onPickTarget}
         hitSlop={6}
-        style={{ alignSelf: 'flex-start', marginTop: 10 }}
+        style={{ alignSelf: 'flex-start', minHeight: 44, justifyContent: 'center', marginTop: 2 }}
       >
         <Text style={{ ...font('meta', 600), fontSize: 12.5, color: semantic.b2b }}>
           {t('docs.pickOther', { personality })}
@@ -369,8 +378,15 @@ export default function Documents() {
   const cta = parseGradient(grad.cta);
   const folderTints = useFolderTints();
 
-  const isLoading = documents.isLoading || documentFolders.isLoading;
-  const hasError = documents.isError || documentFolders.isError;
+  const isLoading = documents.isLoading
+    || documentFolders.isLoading
+    || expenses.isLoading
+    || invoices.isLoading
+    || customers.isLoading;
+  const hasError = (documents.isError && documents.data === undefined)
+    || (documentFolders.isError && documentFolders.data === undefined);
+  const staleVaultError = (documents.isError && documents.data !== undefined)
+    || (documentFolders.isError && documentFolders.data !== undefined);
   const secondaryError = expenses.isError || invoices.isError || customers.isError;
   const refreshing = documents.isRefetching
     || documentFolders.isRefetching
@@ -559,6 +575,7 @@ export default function Documents() {
             borderRadius: 14,
             borderWidth: 1,
             borderColor: controls.cardBorder,
+            minHeight: 44,
             paddingVertical: 11,
             paddingHorizontal: 14,
             ...shadowNative.e1,
@@ -624,26 +641,48 @@ export default function Documents() {
         {secondaryError && !hasError ? (
           <View style={{ paddingHorizontal: 18, paddingTop: 14 }}>
             <Card>
-              <Text accessibilityRole="alert" style={[font('sub'), { color: colors.slate500, lineHeight: 19 }]}>Le coffre reste disponible, mais certaines synthèses comptables n’ont pas pu être actualisées.</Text>
-              <Button title="Réessayer les synthèses" variant="secondary" onPress={refreshAll} />
+              <Text accessibilityRole="alert" accessibilityLiveRegion="polite" style={[font('sub'), { color: colors.slate500, lineHeight: 19 }]}>Le coffre reste disponible, mais certaines synthèses comptables n’ont pas pu être actualisées.</Text>
+              <View style={{ marginTop: 10 }}>
+                <Button title="Réessayer les synthèses" variant="secondary" onPress={refreshAll} />
+              </View>
             </Card>
+          </View>
+        ) : null}
+
+        {staleVaultError && !hasError ? (
+          <View style={{ paddingHorizontal: 18, paddingTop: 14 }}>
+            <ErrorRetry
+              message="Le coffre affiché est la dernière version disponible. Son actualisation n’a pas abouti."
+              onRetry={refreshAll}
+            />
           </View>
         ) : null}
 
         {hasError ? (
           <View style={{ paddingHorizontal: 18, paddingTop: 20 }}>
-            <Card>
-              <Text style={[font('sub'), { color: colors.slate500 }]}>
-                {t('docs.dataError', { personality })}
-              </Text>
-              <Button title="Réessayer" variant="secondary" onPress={refreshAll} />
-            </Card>
+            <ErrorRetry message={t('docs.dataError', { personality })} onRetry={refreshAll} />
           </View>
         ) : isLoading ? (
-          <View style={{ paddingHorizontal: 18, paddingTop: 20, gap: 12 }}>
-            <SkeletonBlock height={120} />
-            <SkeletonBlock height={180} />
-            <SkeletonBlock height={140} />
+          <View
+            accessibilityRole="progressbar"
+            accessibilityLiveRegion="polite"
+            accessibilityLabel="Chargement du coffre de documents"
+            style={{ paddingHorizontal: 18, paddingTop: 20, gap: 12 }}
+          >
+            <SkeletonCard height={264} contentLines={6} radius={20} />
+            <Skeleton width={132} height={18} radius={8} />
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 11 }}>
+              <Skeleton width="47%" height={112} radius={16} />
+              <Skeleton width="47%" height={112} radius={16} />
+              <Skeleton width="47%" height={112} radius={16} />
+              <Skeleton width="47%" height={112} radius={16} />
+            </View>
+            <Skeleton width={156} height={18} radius={8} style={{ marginTop: 8 }} />
+            <SkeletonCard height={158} contentLines={4} />
+            <Card>
+              <SkeletonRow avatar="square" trailing="text" />
+              <SkeletonRow avatar="square" trailing="text" />
+            </Card>
           </View>
         ) : searching ? (
           /* Résultats de recherche — rows réelles, ouverture du document */
@@ -666,9 +705,7 @@ export default function Documents() {
             </Pressable>
             {results.length === 0 ? (
               <Card>
-                <Text style={[font('sub'), { color: colors.slate500 }]}>
-                  {t('docs.noResults', { personality, params: { query: trimmedQuery } })}
-                </Text>
+                <EmptyState body={t('docs.noResults', { personality, params: { query: trimmedQuery } })} />
               </Card>
             ) : (
               results.map((docItem) => (
@@ -748,12 +785,10 @@ export default function Documents() {
             {empty ? (
               <View style={{ paddingHorizontal: 18, paddingTop: 20 }}>
                 <Card>
-                  <Text style={[font('cardTitle'), { color: colors.ink800 }]}>
-                    {t('docs.emptyTitle', { personality })}
-                  </Text>
-                  <Text style={[font('sub'), { color: colors.slate500, marginTop: 4, lineHeight: 19 }]}>
-                    {t('docs.emptyBody', { personality })}
-                  </Text>
+                  <EmptyState
+                    title={t('docs.emptyTitle', { personality })}
+                    body={t('docs.emptyBody', { personality })}
+                  />
                 </Card>
               </View>
             ) : null}
@@ -784,22 +819,39 @@ export default function Documents() {
                   </Text>
                 </Pressable>
               </View>
-              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 11 }}>
-                {rootFolders.map((folder) => {
-                  const count = folderCount(folder.id);
-                  const tint = folderTint(folder);
-                  return (
-                    <Pressable
+              {rootFolders.length === 0 ? (
+                <Card>
+                  <EmptyState body={t('docs.folderCreateBody', { personality })} />
+                </Card>
+              ) : (
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 11 }}>
+                  {rootFolders.map((folder) => {
+                    const count = folderCount(folder.id);
+                    const tint = folderTint(folder);
+                    return (
+                      <Pressable
                       key={folder.id}
                       accessibilityRole="button"
                       accessibilityLabel={`${folder.name}, ${count} document${count > 1 ? 's' : ''}`}
                       accessibilityHint="Ouvre ce dossier. Un appui long affiche les options."
+                      accessibilityActions={[
+                        { name: 'activate', label: 'Ouvrir le dossier' },
+                        { name: 'longpress', label: 'Gérer le dossier' },
+                      ]}
+                      onAccessibilityAction={(event) => {
+                        if (event.nativeEvent.actionName === 'longpress') {
+                          router.push({ pathname: '/documents/folder/[id]', params: { id: folder.id, manage: '1' } });
+                        } else if (event.nativeEvent.actionName === 'activate') {
+                          router.push(`/documents/folder/${folder.id}`);
+                        }
+                      }}
                       onPress={() => router.push(`/documents/folder/${folder.id}`)}
                       onLongPress={() => router.push({ pathname: '/documents/folder/[id]', params: { id: folder.id, manage: '1' } })}
                       delayLongPress={450}
                       style={({ pressed }) => ({
                         flexBasis: '47%',
                         flexGrow: 1,
+                        minHeight: 112,
                         backgroundColor: colors.surface,
                         borderRadius: 16,
                         borderWidth: 1,
@@ -833,10 +885,11 @@ export default function Documents() {
                             ? t('docs.folderCountOne', { personality })
                             : t('docs.folderCount', { personality, params: { count } })}
                       </Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              )}
             </View>
 
             {/* Compta & conformité */}
@@ -1213,6 +1266,7 @@ export default function Documents() {
               })
             }
             style={{
+              minHeight: 48,
               flexDirection: 'row',
               alignItems: 'center',
               gap: 11,
@@ -1235,46 +1289,63 @@ export default function Documents() {
             <ChevronRightIcon color={controls.chevron} size={14} strokeWidth={2} />
           </Pressable>
         ) : null}
-        {openChantiers.map((chantier, i) => (
-          <Pressable
-            key={chantier.id}
-            accessibilityRole="button"
-            accessibilityLabel={chantier.name}
-            disabled={classify.isPending}
-            onPress={() =>
-              pickerDoc
-                ? classify.mutate({
-                    documentId: pickerDoc.id,
-                    linkedEntityType: 'chantier',
-                    linkedEntityId: chantier.id,
-                    toast: t('docs.classifiedIntoToast', { personality, params: { name: chantier.name } }),
-                  })
-                : undefined
-            }
-            style={{
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: 11,
-              paddingVertical: 12,
-              borderBottomWidth: i < openChantiers.length - 1 ? 1 : 0,
-              borderBottomColor: colors.lineSoft,
-            }}
+        {chantiers.isLoading ? (
+          <View
+            accessibilityRole="progressbar"
+            accessibilityLiveRegion="polite"
+            accessibilityLabel="Chargement des chantiers"
           >
-            <IconTile tone="b2b" size={34} radius={10}>
-              <FolderSmallIcon color={semantic.b2b} />
-            </IconTile>
-            <View style={{ flex: 1, minWidth: 0 }}>
-              <Text style={{ ...font('body', 700), fontSize: 14, color: colors.ink800 }} numberOfLines={1}>
-                {chantier.name}
-              </Text>
-              <Text style={[font('meta'), { color: colors.slate400, marginTop: 1 }]}>
-                {t('docs.pickChantierMeta', { personality })}
-              </Text>
-            </View>
-            <ChevronRightIcon color={controls.chevron} size={14} strokeWidth={2} />
-          </Pressable>
-        ))}
-        {!pickerDoc?.matchedExpense && openChantiers.length === 0 ? (
+            <SkeletonRow avatar="square" trailing={false} />
+            <SkeletonRow avatar="square" trailing={false} />
+          </View>
+        ) : chantiers.isError ? (
+          <ErrorRetry
+            message={t('chantiers.dataError', { personality })}
+            onRetry={() => void chantiers.refetch()}
+          />
+        ) : (
+          openChantiers.map((chantier, i) => (
+            <Pressable
+              key={chantier.id}
+              accessibilityRole="button"
+              accessibilityLabel={chantier.name}
+              disabled={classify.isPending}
+              onPress={() =>
+                pickerDoc
+                  ? classify.mutate({
+                      documentId: pickerDoc.id,
+                      linkedEntityType: 'chantier',
+                      linkedEntityId: chantier.id,
+                      toast: t('docs.classifiedIntoToast', { personality, params: { name: chantier.name } }),
+                    })
+                  : undefined
+              }
+              style={{
+                minHeight: 48,
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 11,
+                paddingVertical: 12,
+                borderBottomWidth: i < openChantiers.length - 1 ? 1 : 0,
+                borderBottomColor: colors.lineSoft,
+              }}
+            >
+              <IconTile tone="b2b" size={34} radius={10}>
+                <FolderSmallIcon color={semantic.b2b} />
+              </IconTile>
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={{ ...font('body', 700), fontSize: 14, color: colors.ink800 }} numberOfLines={1}>
+                  {chantier.name}
+                </Text>
+                <Text style={[font('meta'), { color: colors.slate400, marginTop: 1 }]}>
+                  {t('docs.pickChantierMeta', { personality })}
+                </Text>
+              </View>
+              <ChevronRightIcon color={controls.chevron} size={14} strokeWidth={2} />
+            </Pressable>
+          ))
+        )}
+        {!chantiers.isLoading && !chantiers.isError && !pickerDoc?.matchedExpense && openChantiers.length === 0 ? (
           <Text style={[font('sub'), { color: colors.slate500, lineHeight: 19 }]}>
             {t('docs.pickEmpty', { personality })}
           </Text>

@@ -102,6 +102,7 @@ export * from './application/billing/delete-draft-invoice';
 export * from './application/billing/update-quote-line';
 export * from './application/billing/remove-quote-line';
 export * from './application/public-access/create-quote-signature-token';
+export * from './application/public-access/create-quote-signature-link';
 export * from './application/public-access/resolve-quote-signature-token';
 export * from './application/queries/list-customers';
 export * from './application/queries/get-cashflow';

@@ -13,6 +13,14 @@ import { assertTransition, type InvoiceStatus, INVOICE_TRANSITIONS } from '../sh
 import { type Quote } from '../quote/quote';
 
 export type InvoiceKind = 'final' | 'deposit' | 'credit_note' | 'situation';
+export type CreditedInvoiceKind = Exclude<InvoiceKind, 'credit_note'>;
+
+export interface CreditNoteSourceSnapshot {
+  invoiceId: string;
+  kind: CreditedInvoiceKind;
+  number: string;
+  issuedAt: DateOnly;
+}
 
 export interface IssueInvoiceArgs {
   mentions: string[];
@@ -45,6 +53,7 @@ export class Invoice extends AggregateRoot<string> {
     readonly kind: InvoiceKind,
     private readonly _depositPct: Percentage | null,
     readonly parentQuoteId: string | null,
+    private readonly _creditNoteSource: CreditNoteSourceSnapshot | null,
   ) {
     super(id);
   }
@@ -69,7 +78,7 @@ export class Invoice extends AggregateRoot<string> {
       dep = p.value;
     }
     const kind: InvoiceKind = mode === 'deposit' ? 'deposit' : 'final';
-    const inv = new Invoice(id, quote.companyId, quote.customerId, kind, dep, quote.id);
+    const inv = new Invoice(id, quote.companyId, quote.customerId, kind, dep, quote.id, null);
     for (const l of quote.lines) inv._lines.push({ ...l });
     if (mode === 'final' && opts?.depositDeduction) {
       const { amountCents, invoiceId } = opts.depositDeduction;
@@ -85,26 +94,51 @@ export class Invoice extends AggregateRoot<string> {
   }
 
   static composeStandalone(input: { id: string; companyId: string; customerId: string }): DomainResult<Invoice> {
-    return ok(new Invoice(input.id, input.companyId, input.customerId, 'final', null, null));
+    return ok(new Invoice(input.id, input.companyId, input.customerId, 'final', null, null, null));
   }
 
   /**
-   * Avoir TOTAL sur une facture émise (A6) : mêmes lignes, kind credit_note, même devis
-   * parent (la nav croisée retrouve l'avoir par parentQuoteId). L'avoir naît BROUILLON —
-   * l'émission (IssueInvoice) lui alloue son numéro A- et poste l'écriture INVERSE
-   * (buildIssuedInvoiceAccountingEntry gère isCreditNote).
+   * Avoir TOTAL sur une facture émise (A6) : mêmes lignes et mêmes totaux légaux que la
+   * pièce précise créditée. Le lien ne repose jamais sur le seul devis parent : l'identité,
+   * le type, le numéro et la date d'émission de la source sont figés dans l'avoir.
+   *
+   * L'avoir naît BROUILLON mais son contenu monétaire est déjà immuable : ce n'est pas une
+   * nouvelle facture éditable. Son émission lui alloue ensuite un numéro A- et poste le miroir
+   * comptable exact de la source (acompte et reprise d'acompte compris).
    */
   static creditNoteFor(source: Invoice, id: string): DomainResult<Invoice> {
     if (source.kind === 'credit_note')
       return err({ code: 'VALIDATION', field: 'invoice', message: 'Un avoir ne se crée pas sur un avoir.' });
-    if (source.status === 'draft' || source.status === 'cancelled')
+    if (!['issued', 'partially_paid', 'paid', 'late'].includes(source.status))
       return err({
         code: 'VALIDATION',
         field: 'invoice',
         message: 'Un avoir ne se crée que sur une facture émise (un brouillon se corrige ou s’annule).',
       });
-    const creditNote = new Invoice(id, source.companyId, source.customerId, 'credit_note', null, source.parentQuoteId);
+    if (source.number === null || source.issuedAt === null || source._frozenTotals === null)
+      return err({
+        code: 'VALIDATION',
+        field: 'invoice',
+        message: 'La facture source ne possède pas de trace légale complète (numéro, date et totaux figés).',
+      });
+    const creditNote = new Invoice(
+      id,
+      source.companyId,
+      source.customerId,
+      'credit_note',
+      source._depositPct,
+      source.parentQuoteId,
+      {
+        invoiceId: source.id,
+        kind: source.kind,
+        number: source.number,
+        issuedAt: source.issuedAt,
+      },
+    );
     for (const line of source.lines) creditNote._lines.push({ ...line });
+    creditNote._depositDeductionCents = source._depositDeductionCents;
+    creditNote._depositInvoiceId = source._depositInvoiceId;
+    creditNote._frozenTotals = cloneTotals(source._frozenTotals);
     return ok(creditNote);
   }
 
@@ -137,10 +171,20 @@ export class Invoice extends AggregateRoot<string> {
   get depositInvoiceId(): string | null {
     return this._depositInvoiceId;
   }
+  /** Identité légale immuable de la facture annulée par cet avoir total. */
+  get creditNoteSource(): CreditNoteSourceSnapshot | null {
+    return this._creditNoteSource ? { ...this._creditNoteSource } : null;
+  }
 
   addLine(line: QuoteLine): DomainResult<void> {
     if (this._status !== 'draft')
       return err({ code: 'INVALID_TRANSITION', from: this._status, to: 'draft' });
+    if (this.kind === 'credit_note')
+      return err({
+        code: 'VALIDATION',
+        field: 'lines',
+        message: 'Les lignes d’un avoir total sont figées depuis la facture source.',
+      });
     const q = Quantity.of(line.qty);
     if (!q.ok) return q;
     if (!isVatRate(line.vatRate))
@@ -238,6 +282,10 @@ export class Invoice extends AggregateRoot<string> {
       parentQuoteId: this.parentQuoteId,
       depositDeductionCents: this._depositDeductionCents,
       depositInvoiceId: this._depositInvoiceId,
+      sourceInvoiceId: this._creditNoteSource?.invoiceId ?? null,
+      sourceInvoiceKind: this._creditNoteSource?.kind ?? null,
+      sourceInvoiceNumber: this._creditNoteSource?.number ?? null,
+      sourceInvoiceIssuedAt: this._creditNoteSource?.issuedAt ?? null,
     };
   }
 
@@ -247,7 +295,16 @@ export class Invoice extends AggregateRoot<string> {
       const p = Percentage.of(s.depositPct);
       if (p.ok) dep = p.value;
     }
-    const inv = new Invoice(s.id, s.companyId, s.customerId, s.kind, dep, s.parentQuoteId);
+    const source =
+      s.sourceInvoiceId && s.sourceInvoiceKind && s.sourceInvoiceNumber && s.sourceInvoiceIssuedAt
+        ? {
+            invoiceId: s.sourceInvoiceId,
+            kind: s.sourceInvoiceKind,
+            number: s.sourceInvoiceNumber,
+            issuedAt: s.sourceInvoiceIssuedAt,
+          }
+        : null;
+    const inv = new Invoice(s.id, s.companyId, s.customerId, s.kind, dep, s.parentQuoteId, source);
     inv._status = s.status;
     inv._lines = s.lines.map((l) => ({ ...l }));
     if (s.number) {
@@ -283,4 +340,13 @@ export interface InvoiceSnapshot {
   /** Acompte déjà facturé déduit de la finale — optionnels : snapshots antérieurs compatibles. */
   depositDeductionCents?: number;
   depositInvoiceId?: string | null;
+  /** Trace légale de la facture exacte annulée. Optionnelle pour relire les snapshots legacy. */
+  sourceInvoiceId?: string | null;
+  sourceInvoiceKind?: CreditedInvoiceKind | null;
+  sourceInvoiceNumber?: string | null;
+  sourceInvoiceIssuedAt?: DateOnly | null;
+}
+
+function cloneTotals(totals: Totals): Totals {
+  return { ...totals, vatByRate: { ...totals.vatByRate } };
 }

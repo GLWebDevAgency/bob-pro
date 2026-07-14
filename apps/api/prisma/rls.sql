@@ -17,6 +17,7 @@ BEGIN
     'public_access_tokens',
     'expenses',
     'expense_creation_requests',
+    'quote_creation_requests',
     'documents',
     'document_analyses',
     'document_folders',
@@ -33,6 +34,7 @@ BEGIN
     'document_counters',
     'realtime_admission_events',
     'realtime_session_leases',
+    'realtime_mistral_ingress_tickets',
     'realtime_speech_artifacts',
     'realtime_control_grants',
     'realtime_control_consumptions',
@@ -93,6 +95,16 @@ CREATE POLICY tenant_expense_creation_request_insert ON expense_creation_request
   FOR INSERT
   WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
 
+DROP POLICY IF EXISTS tenant_isolation ON quote_creation_requests;
+DROP POLICY IF EXISTS tenant_quote_creation_request_select ON quote_creation_requests;
+DROP POLICY IF EXISTS tenant_quote_creation_request_insert ON quote_creation_requests;
+CREATE POLICY tenant_quote_creation_request_select ON quote_creation_requests
+  FOR SELECT
+  USING ("companyId" = current_setting('app.current_company_id', true));
+CREATE POLICY tenant_quote_creation_request_insert ON quote_creation_requests
+  FOR INSERT
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+
 DROP POLICY IF EXISTS tenant_isolation ON documents;
 CREATE POLICY tenant_isolation ON documents
   USING ("companyId" = current_setting('app.current_company_id', true))
@@ -138,6 +150,11 @@ CREATE POLICY tenant_isolation ON realtime_admission_events
 
 DROP POLICY IF EXISTS tenant_isolation ON realtime_session_leases;
 CREATE POLICY tenant_isolation ON realtime_session_leases
+  USING ("companyId" = current_setting('app.current_company_id', true))
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+
+DROP POLICY IF EXISTS tenant_isolation ON realtime_mistral_ingress_tickets;
+CREATE POLICY tenant_isolation ON realtime_mistral_ingress_tickets
   USING ("companyId" = current_setting('app.current_company_id', true))
   WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
 

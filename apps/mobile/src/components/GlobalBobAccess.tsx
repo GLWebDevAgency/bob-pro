@@ -1,29 +1,21 @@
 import { useEffect, useRef, useState } from 'react';
-import { AccessibilityInfo, Animated, Keyboard, Platform, Pressable, Text, View } from 'react-native';
+import { Animated, Keyboard, Platform, Pressable, Text, useWindowDimensions, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { usePathname, useRouter, useSegments } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { patterns, shadowNative, themes } from '@bob/tokens';
 import { t, type I18nKey } from '@bob/i18n';
-import { font, useTheme } from '@bob/ui';
+import { font, useReduceMotion, useTheme } from '@bob/ui';
 import { useAgentAccessLayout, useAgentContext, useAgentSession } from '../agent';
 import { useSubscription } from '../data/hooks';
 import { CloseIcon, MicIcon, SparkIcon } from './icons';
 
-const SIZE = 56;
-
-function useReduceMotion(): boolean {
-  const [reduced, setReduced] = useState(false);
-  useEffect(() => {
-    void AccessibilityInfo.isReduceMotionEnabled().then(setReduced);
-    const subscription = AccessibilityInfo.addEventListener('reduceMotionChanged', setReduced);
-    return () => subscription.remove();
-  }, []);
-  return reduced;
-}
+const SIZE = 50;
+const EDGE_DOCK_OFFSET = -6; // 44 dp restent visibles et tactiles, le contenu central reste libre.
 
 export function GlobalBobAccess() {
   const { colors, controls, semantic, personality } = useTheme();
+  const { width: windowWidth } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const segments = useSegments();
   const pathname = usePathname();
@@ -77,7 +69,15 @@ export function GlobalBobAccess() {
   }, [pathname, sessionActive, stopSession]);
 
   const entitled = subscription.data?.features.includes('ai_assistant') ?? false;
-  if (!entitled || layout.hidden || pathname === '/gallery' || ownsItsVoiceChrome) return null;
+  const entitlementUnavailable = subscription.isError && subscription.data === undefined;
+  if (
+    (!entitled && !entitlementUnavailable) ||
+    layout.hidden ||
+    pathname === '/gallery' ||
+    ownsItsVoiceChrome
+  ) {
+    return null;
+  }
 
   const inTabs = segments[0] === '(tabs)';
   const tabClearance =
@@ -87,6 +87,11 @@ export function GlobalBobAccess() {
     8;
   const bottom =
     (inTabs ? tabClearance : insets.bottom + 18) + (layout.bottomAvoidance ?? 0) + keyboardHeight;
+  // Les deux tabs avec FAB réservent l'angle droit. Ailleurs Bob se range à droite, puis se
+  // décale entièrement dans l'écran seulement pendant une conversation ou une réponse.
+  const dockLeft = pathname.endsWith('/clients') || pathname.endsWith('/documents');
+  const expanded = session.active || session.response !== null || entitlementUnavailable;
+  const horizontalOffset = expanded ? 18 : EDGE_DOCK_OFFSET;
   const stateKey: I18nKey =
     session.phase === 'listening'
       ? 'agent.global.listening'
@@ -102,15 +107,51 @@ export function GlobalBobAccess() {
   const contextLabel = context.entities[0]?.label ?? null;
   const scale = pulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.07] });
 
+  if (entitlementUnavailable) {
+    return (
+      <View
+        pointerEvents="box-none"
+        style={{
+          position: 'absolute',
+          ...(dockLeft ? { left: 18 } : { right: 18 }),
+          bottom,
+          zIndex: 50,
+        }}
+      >
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={t('agent.global.entitlementError', { personality })}
+          accessibilityHint={t('agent.global.entitlementRetry', { personality })}
+          accessibilityLiveRegion="polite"
+          onPress={() => void subscription.refetch()}
+          style={({ pressed }) => ({
+            width: SIZE,
+            height: SIZE,
+            borderRadius: 17,
+            backgroundColor: semantic.dangerBg,
+            borderWidth: 1,
+            borderColor: semantic.danger,
+            alignItems: 'center',
+            justifyContent: 'center',
+            transform: [{ scale: pressed ? 0.95 : 1 }],
+            ...shadowNative.e2,
+          })}
+        >
+          <SparkIcon color={semantic.danger} size={21} strokeWidth={2} />
+        </Pressable>
+      </View>
+    );
+  }
+
   return (
     <View
       pointerEvents="box-none"
       style={{
         position: 'absolute',
-        left: 18,
+        ...(dockLeft ? { left: horizontalOffset } : { right: horizontalOffset }),
         bottom,
         zIndex: 50,
-        alignItems: 'flex-start',
+        alignItems: dockLeft ? 'flex-start' : 'flex-end',
         gap: 8,
       }}
     >
@@ -118,8 +159,7 @@ export function GlobalBobAccess() {
         <View
           accessibilityLiveRegion={session.phase === 'error' ? 'assertive' : 'polite'}
           style={{
-            width: 290,
-            maxWidth: '86%',
+            width: Math.min(290, windowWidth - 36),
             borderRadius: 16,
             borderWidth: 1,
             borderColor: controls.cardBorder,
@@ -140,7 +180,7 @@ export function GlobalBobAccess() {
                 accessibilityLabel={t('agent.global.dismiss', { personality })}
                 hitSlop={8}
                 onPress={session.dismissResponse}
-                style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}
+                style={{ width: 44, height: 44, alignItems: 'center', justifyContent: 'center' }}
               >
                 <CloseIcon color={colors.slate500} size={14} />
               </Pressable>
@@ -167,7 +207,7 @@ export function GlobalBobAccess() {
                   session.requestHandoff(handoff.id);
                   router.push('/(tabs)/assistant');
                 }}
-                style={{ marginTop: 8, alignSelf: 'flex-start' }}
+                style={{ minHeight: 44, marginTop: 4, alignSelf: 'flex-start', justifyContent: 'center' }}
               >
                 <Text style={[font('meta', 700), { color: semantic.ai }]}>
                   {t('agent.global.continueInAssistant', { personality })} →
@@ -193,7 +233,7 @@ export function GlobalBobAccess() {
             height: SIZE,
             minWidth: 44,
             minHeight: 44,
-            borderRadius: 19,
+            borderRadius: 17,
             overflow: 'hidden',
             transform: [{ scale: pressed ? 0.95 : 1 }],
             ...shadowNative.e3,

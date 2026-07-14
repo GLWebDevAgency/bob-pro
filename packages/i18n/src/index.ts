@@ -2601,6 +2601,24 @@ const legacyFr = {
     pro: 'Maintenez appuyé 1,5 seconde pour reprendre la main — annule aussi la signature en cours.',
     direct: 'Appui long 1,5 s. Annule la signature.',
   },
+  // R4 durci, suite — alternative accessible à l'appui long quand un lecteur d'écran est détecté
+  // (VoiceOver/TalkBack) : l'activation standard « double-tap » ne peut pas mesurer un maintien
+  // chronométré, donc double-tap pour armer puis un second double-tap sous 5 s pour confirmer.
+  'devis.signOnsiteModeExitHintScreenReader': {
+    pote: 'Double-tapez pour préparer la sortie, puis une seconde fois sous 5 secondes pour confirmer — annule aussi la signature en cours.',
+    pro: 'Double-tapez pour préparer la sortie, puis une seconde fois sous 5 secondes pour confirmer — annule aussi la signature en cours.',
+    direct: 'Double-tap : prépare. Re-double-tap sous 5 s : confirme. Annule la signature.',
+  },
+  'devis.signOnsiteModeExitArmed': {
+    pote: 'Confirmer — reprendre mon téléphone',
+    pro: 'Confirmer — reprendre mon téléphone',
+    direct: 'Confirmer la sortie',
+  },
+  'devis.signOnsiteModeExitArmedHint': {
+    pote: 'Double-tapez à nouveau dans les 5 secondes pour confirmer et sortir.',
+    pro: 'Double-tapez à nouveau dans les 5 secondes pour confirmer et sortir.',
+    direct: 'Re-double-tap sous 5 s pour confirmer.',
+  },
   // Étape 5 — acompte (30 % défaut, éditable ; net réel calculé par le core).
   'devis.depositTitle': {
     pote: 'Un acompte pour lancer le chantier ?',

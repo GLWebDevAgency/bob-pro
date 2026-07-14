@@ -113,6 +113,17 @@ export interface SendQuoteOutput {
   signatureUrl?: string;
 }
 
+/**
+ * P0 R4 : « Envoyer le lien » ne doit RIEN envoyer — lien de signature préparé/roté SANS e-mail
+ * ni outbox (POST /quotes/:id/signature-link, commande distincte de sendQuote). Annuler le
+ * partage côté client = rien n'est parti ; l'ancien lien est révoqué par la rotation.
+ */
+export interface CreateQuoteSignatureLinkOutput {
+  /** URL publique sign-web prête à partager — construite CÔTÉ SERVEUR (source unique). */
+  signatureUrl: string;
+  expiresAt: string;
+}
+
 export interface ListDocumentsClientInput {
   kind?: DocumentKind;
   linkedEntityType?: DocumentLinkedEntityType;
@@ -218,6 +229,13 @@ export interface RealtimeVoiceConfig {
   configVersion: string;
   requiresDevelopmentBuild: true;
   maxSessionSeconds: number;
+  speechDelivery: 'audited-signed-url-v1';
+}
+
+export interface RealtimeVoiceSpeechSourcePolicy {
+  mode: 'signed-url-v1';
+  allowedOrigin: string;
+  allowedPathPrefix: string;
 }
 
 interface RealtimeVoiceCallCommon {
@@ -227,6 +245,7 @@ interface RealtimeVoiceCallCommon {
   voice: 'marin' | 'cedar';
   configVersion: string;
   maxSessionSeconds: number;
+  speechSourcePolicy: RealtimeVoiceSpeechSourcePolicy;
 }
 
 export interface RealtimeVoiceWebRtcCall extends RealtimeVoiceCallCommon {
@@ -696,7 +715,12 @@ export interface BobClient {
   getCashflow(input: { scenario: Scenario; horizon: Horizon }): Promise<Result<CashflowProjection, AppError>>;
   createQuote(input: Omit<CreateQuoteInput, 'companyId'>): Promise<Result<CreateQuoteOutput, AppError>>;
   sendQuote(quoteId: string): Promise<Result<SendQuoteOutput, AppError>>;
-  signQuote(input: { quoteId: string; signerName: string }): Promise<Result<{ status: string }, AppError>>;
+  /** P0 R4 : prépare/rotate le lien de signature SANS AUCUN effet sortant (jamais d'e-mail). */
+  createQuoteSignatureLink(quoteId: string): Promise<Result<CreateQuoteSignatureLinkOutput, AppError>>;
+  /** R4 : `proofDataUrl` = tracé du pad (dataURL) — le SERVEUR calcule le SHA-256 de preuve ;
+   * le dataURL n'est jamais persisté tel quel. Absent = signature sans capture (preuve absente,
+   * jamais fabriquée). */
+  signQuote(input: { quoteId: string; signerName: string; proofDataUrl?: string }): Promise<Result<{ status: string }, AppError>>;
   refuseQuote(quoteId: string): Promise<Result<{ status: string }, AppError>>;
   generateInvoice(input: { quoteId: string; mode: 'deposit' | 'final' }): Promise<Result<{ invoiceId: string }, AppError>>;
   /** R6 : édition d'une ligne de devis BROUILLON (PATCH /quotes/:id/lines/:lineId) — draft only,

@@ -27,7 +27,7 @@ function signedQuote(depositPct: number | null): Quote {
   q.value.setDeposit(depositPct);
   q.value.assignNumber(DocNumber.format('D', 2026, 1), AT);
   q.value.send(AT);
-  q.value.sign({ signerName: 'Durand', signedAt: AT, method: 'draw', accepted: true }, AT);
+  q.value.sign({ signerName: 'Durand', signedAt: AT, method: 'onsite_draw', accepted: true }, AT);
   return q.value;
 }
 
@@ -37,6 +37,14 @@ function issuedInvoice(mode: 'final' | 'deposit'): Invoice {
   inv.value.assignNumber(DocNumber.format('F', 2026, 1), AT);
   inv.value.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT });
   return inv.value;
+}
+
+function issuedCreditNote(source: Invoice, id: string, sequence: number): Invoice {
+  const credit = Invoice.creditNoteFor(source, id);
+  if (!credit.ok) throw new Error('credit note');
+  credit.value.assignNumber(DocNumber.format('A', 2026, sequence), AT);
+  credit.value.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT });
+  return credit.value;
 }
 
 describe('buildIssuedInvoiceAccountingEntry', () => {
@@ -77,6 +85,21 @@ describe('buildIssuedInvoiceAccountingEntry', () => {
     }
   });
 
+  it("l'avoir total d'un acompte inverse exactement le 411, le 4191 et la TVA de sa source", () => {
+    const source = issuedInvoice('deposit');
+    const credit = issuedCreditNote(source, 'credit-deposit', 1);
+    const r = buildIssuedInvoiceAccountingEntry({ entryId: 'ae-credit-deposit', invoice: credit });
+
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(credit.totals()).toEqual(source.totals());
+    expect(r.value.lines).toEqual([
+      { account: '4191', label: 'Avoir A-2026-0001', debitCents: 44400, creditCents: 0 },
+      { account: '44571', label: 'Avoir A-2026-0001', debitCents: 4440, creditCents: 0 },
+      { account: '411', label: 'Avoir A-2026-0001', debitCents: 0, creditCents: 48840 },
+    ]);
+  });
+
   // ── Finale après acompte (bug d'équilibre corrigé) ────────────────────────────
   // Sans reprise 4191, l'écriture créditait CA + TVA pleins contre un 411 au solde :
   // déséquilibre = acompte → rejet → facture émise SANS écriture de vente (CA perdu).
@@ -88,7 +111,7 @@ describe('buildIssuedInvoiceAccountingEntry', () => {
     q.value.setDeposit(30);
     q.value.assignNumber(DocNumber.format('D', 2026, 1), AT);
     q.value.send(AT);
-    q.value.sign({ signerName: 'Durand', signedAt: AT, method: 'draw', accepted: true }, AT);
+    q.value.sign({ signerName: 'Durand', signedAt: AT, method: 'onsite_draw', accepted: true }, AT);
     const inv = Invoice.fromSignedQuote(q.value, 'final', 'inv-2', {
       depositDeduction: { amountCents: depositCents, invoiceId: 'inv-1' },
     });
@@ -120,6 +143,34 @@ describe('buildIssuedInvoiceAccountingEntry', () => {
     }
   });
 
+  it("l'avoir total d'une finale après acompte annule aussi la reprise d'avance, au centime", () => {
+    const source = issuedFinalAfterDeposit(48840);
+    const credit = issuedCreditNote(source, 'credit-final', 2);
+    const sourceEntry = buildIssuedInvoiceAccountingEntry({ entryId: 'ae-source-final', invoice: source });
+    const creditEntry = buildIssuedInvoiceAccountingEntry({ entryId: 'ae-credit-final', invoice: credit });
+
+    expect(sourceEntry.ok).toBe(true);
+    expect(creditEntry.ok).toBe(true);
+    if (!sourceEntry.ok || !creditEntry.ok) return;
+    expect(credit.totals()).toEqual(source.totals());
+    expect(credit.depositDeductionCents).toBe(48840);
+
+    const balances = new Map<string, number>();
+    for (const line of [...sourceEntry.value.lines, ...creditEntry.value.lines]) {
+      balances.set(
+        line.account,
+        (balances.get(line.account) ?? 0) + line.debitCents - line.creditCents,
+      );
+    }
+    expect(Object.fromEntries(balances)).toEqual({
+      '411': 0,
+      '4191': 0,
+      '44571': 0,
+      '707': 0,
+      '706': 0,
+    });
+  });
+
   it('solde le 4191 au centime sur acompte + finale, multi-taux inclus', () => {
     const chart = createFrenchOperationalChartOfAccounts('co-1');
     expect(chart.ok).toBe(true);
@@ -136,7 +187,7 @@ describe('buildIssuedInvoiceAccountingEntry', () => {
     q.value.setDeposit(30);
     q.value.assignNumber(DocNumber.format('D', 2026, 1), AT);
     q.value.send(AT);
-    q.value.sign({ signerName: 'Durand', signedAt: AT, method: 'draw', accepted: true }, AT);
+    q.value.sign({ signerName: 'Durand', signedAt: AT, method: 'onsite_draw', accepted: true }, AT);
 
     const dep = Invoice.fromSignedQuote(q.value, 'deposit', 'inv-1');
     if (!dep.ok) throw new Error('deposit');

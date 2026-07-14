@@ -10,6 +10,7 @@ import {
 } from 'react';
 import { AppState } from 'react-native';
 import { router } from 'expo-router';
+import { randomUUID } from 'expo-crypto';
 import { echoOverlap, isAllowedAgentNavigationRoute, type AgentRun, type AskOptions , splitSpokenSentences, summarizeVoiceLatency, type VoiceLatencyTrace } from '@bob/ai';
 import { t } from '@bob/i18n';
 import { useTheme } from '@bob/ui';
@@ -19,8 +20,14 @@ import { useSpeak, useVoiceInput, voicePermissionRequestInFlight, type VoiceInpu
 import { snapshotAgentContext, useAgentContext, useAgentSurface, type AgentContext } from './agent-context';
 import { clearWizardHint, setWizardHint } from './wizard-hints';
 import { RealtimeControlAcknowledgementGate } from '../realtime/realtime-control-gate';
+import { RealtimeAuditedConversationTransport } from '../realtime/realtime-audited-conversation-transport';
+import { ExpoRealtimeAuditedSpeechPlayback } from '../realtime/expo-realtime-audited-speech-playback';
 import { RealtimeResilienceOrchestrator } from '../realtime/realtime-resilience-orchestrator';
-import { RealtimeWebRtcTransport } from '../realtime/webrtc-realtime-transport';
+import {
+  isRealtimeWebRtcNegotiation,
+  RealtimeWebRtcTransport,
+} from '../realtime/webrtc-realtime-transport';
+import { RealtimeTransportError } from '../realtime/realtime-transport';
 import { RealtimeSessionController } from './realtime-session';
 
 export type AgentSessionPhase = 'idle' | 'listening' | 'thinking' | 'speaking' | 'error';
@@ -123,15 +130,32 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
     if (realtimeRef.current) return realtimeRef.current;
     realtimeRef.current = new RealtimeSessionController(
       {
-        isAvailable: async () => {
+        negotiate: async () => {
           const config = await client.realtimeVoiceConfig();
-          return config.ok && config.value.available;
+          return config.ok ? config.value : null;
         },
         updateContext: async (handle, update) => client.updateRealtimeVoiceContext(handle, update),
-        createOrchestrator: (legacyFallback, onPrimaryCreated) =>
+        createOrchestrator: (negotiation, legacyFallback, currentFence, onPrimaryCreated) =>
           new RealtimeResilienceOrchestrator({
             createPrimary: () => {
-              const transport = new RealtimeWebRtcTransport(client);
+              // Le provider choisi par le serveur est autoritaire. Tant que le runtime PCM
+              // Mistral complet n'est pas raccordé ici, on replie honnêtement vers le flux
+              // historique au lieu d'ouvrir discrètement une session OpenAI concurrente.
+              if (!isRealtimeWebRtcNegotiation(negotiation)) {
+                throw new RealtimeTransportError('backend_disabled');
+              }
+              const uplink = new RealtimeWebRtcTransport(client, negotiation);
+              const transport = new RealtimeAuditedConversationTransport(uplink, {
+                client,
+                currentFence,
+                createIdentifier: randomUUID,
+                createPlayback: ({ audioLease, speechSourcePolicy }) => (
+                  new ExpoRealtimeAuditedSpeechPlayback({
+                    audioLease,
+                    speechSourcePolicy,
+                  })
+                ),
+              });
               onPrimaryCreated(transport);
               return transport;
             },

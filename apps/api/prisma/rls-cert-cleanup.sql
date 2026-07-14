@@ -27,6 +27,7 @@ DELETE FROM line_items WHERE id IN ('rls-line-a', 'rls-line-b');
 DELETE FROM payments WHERE id IN ('rls-payment-a', 'rls-payment-b');
 DELETE FROM public_access_tokens WHERE id IN ('rls-token-a', 'rls-token-b');
 DELETE FROM expense_creation_requests WHERE "expenseId" IN ('rls-expense-a', 'rls-expense-b', 'rls-expense-cross');
+DELETE FROM quote_creation_requests WHERE "quoteId" IN ('rls-quote-a', 'rls-quote-b');
 DELETE FROM expenses WHERE id IN ('rls-expense-a', 'rls-expense-b', 'rls-expense-cross');
 DELETE FROM supplier_memory_profiles WHERE id IN ('rls-supplier-a', 'rls-supplier-b', 'rls-supplier-cross');
 DELETE FROM document_folder_deletion_plans WHERE id IN ('rls-folder-plan-a', 'rls-folder-plan-b', 'rls-folder-plan-cross');

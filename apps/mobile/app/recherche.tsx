@@ -8,17 +8,28 @@
  * masquées si vides. Zéro hex, zéro fixture.
  */
 import { useMemo, useState } from 'react';
-import { Linking, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
+import { Pressable, RefreshControl, ScrollView, Text, TextInput, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { formatEUR, searchGlobal, type GlobalSearchResult } from '@bob/core';
 import { patterns, shadowNative } from '@bob/tokens';
 import { t } from '@bob/i18n';
-import { Card, IconTile, SectionHeader, font, useTheme, type StatusBadgeVariant } from '@bob/ui';
+import {
+  Card,
+  EmptyState,
+  ErrorRetry,
+  IconTile,
+  SectionHeader,
+  Skeleton,
+  SkeletonRow,
+  font,
+  useTheme,
+  type StatusBadgeVariant,
+} from '@bob/ui';
 import { useCustomers, useInvoices, useQuotes } from '../src/data/hooks';
 import { useDocuments } from '../src/data/documents';
-import { useBobClient } from '../src/data/client';
 import { usePublishAgentContext, type AgentContext } from '../src/agent';
+import { combineQueryStates } from '../src/data/query-state';
 import {
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -91,7 +102,6 @@ export default function Recherche() {
   const { personality, colors, semantic, controls } = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const client = useBobClient();
   const params = useLocalSearchParams<{ q?: string }>();
   const [query, setQuery] = useState(typeof params.q === 'string' ? params.q : '');
 
@@ -99,6 +109,9 @@ export default function Recherche() {
   const invoices = useInvoices();
   const quotes = useQuotes();
   const documents = useDocuments();
+  const queryState = combineQueryStates(customers, invoices, quotes, documents);
+  const refreshing =
+    customers.isRefetching || invoices.isRefetching || quotes.isRefetching || documents.isRefetching;
 
   const trimmed = query.trim();
   const result: GlobalSearchResult = useMemo(
@@ -115,7 +128,7 @@ export default function Recherche() {
   const agentContext = useMemo<AgentContext>(
     () => ({
       screen: { name: '/recherche', instanceId: '/recherche' },
-      entities: trimmed
+      entities: trimmed && !queryState.loading && !queryState.failed
         ? [
             ...result.customers.slice(0, 6).map((customer) => ({
               type: 'customer' as const,
@@ -134,16 +147,14 @@ export default function Recherche() {
             })),
           ]
         : [],
-      capabilities: ['screen.read', 'search.read', 'invoice.read', 'quote.read', 'customer.read', 'document.read'],
+      capabilities:
+        !queryState.loading && !queryState.failed
+          ? ['screen.read', 'search.read', 'invoice.read', 'quote.read', 'customer.read', 'document.read']
+          : ['screen.read'],
     }),
-    [result, trimmed],
+    [queryState.failed, queryState.loading, result, trimmed],
   );
   usePublishAgentContext(agentContext);
-
-  const openDocument = async (id: string): Promise<void> => {
-    const r = await client.documentDownloadUrl(id);
-    if (r.ok) await Linking.openURL(r.value.url);
-  };
 
   const searching = trimmed.length > 0;
 
@@ -155,6 +166,14 @@ export default function Recherche() {
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
         contentContainerStyle={{ paddingBottom: insets.bottom + 34 }}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={queryState.refetchAll}
+            tintColor={colors.ink800}
+            colors={[colors.ink800]}
+          />
+        }
       >
         {/* Rangée retour sticky (pattern A3-C17 : bg .92) */}
         <View
@@ -175,7 +194,7 @@ export default function Recherche() {
               alignItems: 'center',
               gap: 4,
               alignSelf: 'flex-start',
-              minHeight: 34,
+              minHeight: 44,
             }}
           >
             <ChevronLeftIcon color={colors.ink800} size={18} strokeWidth={2.2} />
@@ -230,20 +249,32 @@ export default function Recherche() {
           />
         </View>
 
-        {!searching ? (
+        {queryState.failed ? (
+          <View style={{ paddingHorizontal: 18, paddingTop: 16 }}>
+            <ErrorRetry
+              message={t('search.dataError', { personality })}
+              onRetry={queryState.refetchAll}
+            />
+          </View>
+        ) : searching && queryState.loading ? (
+          <View style={{ paddingHorizontal: 18, paddingTop: 18, gap: 10 }}>
+            <Skeleton height={17} width="34%" radius={8} />
+            <Card radius={18} padding={0} style={{ paddingHorizontal: 14 }}>
+              <SkeletonRow avatar="square" trailing="text" style={{ minHeight: 68 }} />
+              <SkeletonRow avatar="square" trailing="text" style={{ minHeight: 68 }} />
+              <SkeletonRow avatar="square" trailing="text" style={{ minHeight: 68 }} />
+            </Card>
+          </View>
+        ) : !searching ? (
           <View style={{ paddingHorizontal: 18, paddingTop: 16 }}>
             <Card>
-              <Text style={[font('sub'), { color: colors.slate500, lineHeight: 19 }]}>
-                {t('search.hint', { personality })}
-              </Text>
+              <EmptyState body={t('search.hint', { personality })} />
             </Card>
           </View>
         ) : result.totalCount === 0 ? (
           <View style={{ paddingHorizontal: 18, paddingTop: 16 }}>
             <Card>
-              <Text style={[font('sub'), { color: colors.slate500, lineHeight: 19 }]}>
-                {t('search.noResults', { personality, params: { query: trimmed } })}
-              </Text>
+              <EmptyState body={t('search.noResults', { personality, params: { query: trimmed } })} />
             </Card>
           </View>
         ) : (
@@ -358,7 +389,7 @@ export default function Recherche() {
                       title={d.filename}
                       meta={formatDate(d.documentDate ?? d.createdAt)}
                       divider={i < result.documents.length - 1}
-                      onPress={() => void openDocument(d.id)}
+                      onPress={() => router.push({ pathname: '/documents/[id]', params: { id: d.id } })}
                     />
                   ))}
                 </Card>

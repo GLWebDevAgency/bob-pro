@@ -48,6 +48,16 @@ SELECT pg_temp.assert_eq(
   'runtime role cannot delete expense creation requests'
 );
 SELECT pg_temp.assert_eq(
+  CASE WHEN has_table_privilege(current_user, 'public.quote_creation_requests', 'UPDATE') THEN 1 ELSE 0 END,
+  0,
+  'runtime role cannot update quote creation requests'
+);
+SELECT pg_temp.assert_eq(
+  CASE WHEN has_table_privilege(current_user, 'public.quote_creation_requests', 'DELETE') THEN 1 ELSE 0 END,
+  0,
+  'runtime role cannot delete quote creation requests'
+);
+SELECT pg_temp.assert_eq(
   CASE WHEN has_table_privilege(current_user, 'public.realtime_speech_artifacts', 'DELETE') THEN 1 ELSE 0 END,
   0,
   'runtime role cannot directly delete realtime speech artifacts'
@@ -675,7 +685,8 @@ SELECT pg_temp.assert_eq(
   (SELECT count(*) FROM information_schema.columns
     WHERE table_schema = 'public'
       AND table_name IN (
-        'realtime_admission_events', 'realtime_session_leases', 'realtime_speech_artifacts',
+        'realtime_admission_events', 'realtime_session_leases',
+        'realtime_mistral_ingress_tickets', 'realtime_speech_artifacts',
         'realtime_control_grants', 'realtime_control_consumptions',
         'realtime_voice_usage_events', 'realtime_voice_usage_daily'
       )
@@ -693,15 +704,34 @@ VALUES (
 );
 INSERT INTO realtime_session_leases (
   "companyId", "subjectHash", "sessionId", "leaseTokenHash", state,
-  "reservedAt", "leaseExpiresAt", "hardExpiresAt", "updatedAt", version
+  "reservedAt", "leaseExpiresAt", "hardExpiresAt",
+  "contextSchemaVersion", "contextRevision", "contextPayload", "contextDigest", "contextUpdatedAt",
+  "updatedAt", version
 )
 VALUES (
   'rls-co-a', repeat('a', 64), '00000000-0000-4000-8000-00000000b0a2', repeat('b', 64), 'reserved',
-  '2026-01-01T00:00:00Z', '2026-01-01T00:00:15Z', '2026-01-01T00:15:00Z',
-  '2026-01-01T00:00:00Z', 1
+  CURRENT_TIMESTAMP - INTERVAL '1 second', CURRENT_TIMESTAMP + INTERVAL '15 seconds',
+  CURRENT_TIMESTAMP + INTERVAL '15 minutes', 1, 1, '{"screen":{"name":"RLS","instanceId":"rls"},"entities":[],"capabilities":[]}'::jsonb,
+  repeat('e', 64), CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1
+);
+INSERT INTO realtime_mistral_ingress_tickets (
+  id, "companyId", "subjectHash", "subjectKeyVersion", "sessionId", "ticketHash", protocol,
+  state, plan, "contextSchemaVersion", "contextRevision", "contextDigest",
+  "userIdentityCiphertext", "userIdentityNonce", "userIdentityTag",
+  "identityEncryptionKeyVersion", "maxAudioBytes", "issuedAt", "ticketExpiresAt",
+  "hardExpiresAt", "retentionExpiresAt", version
+)
+VALUES (
+  '00000000-0000-4000-8000-00000000b0a3', 'rls-co-a', repeat('a', 64), 1,
+  '00000000-0000-4000-8000-00000000b0a2', repeat('c', 64), 'bob.mistral-pcm.v1',
+  'issued', 'pro', 1, 1, repeat('e', 64), decode('01', 'hex'), decode(repeat('02', 12), 'hex'),
+  decode(repeat('03', 16), 'hex'), 1, 32000, CURRENT_TIMESTAMP,
+  CURRENT_TIMESTAMP + INTERVAL '10 seconds', CURRENT_TIMESTAMP + INTERVAL '15 minutes',
+  CURRENT_TIMESTAMP + INTERVAL '1 day', 1
 );
 SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_admission_events), 1, 'realtime event tenant A visible');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_session_leases), 1, 'realtime lease tenant A visible');
+SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_mistral_ingress_tickets), 1, 'Mistral ticket tenant A visible');
 DO $$
 BEGIN
   BEGIN
@@ -733,6 +763,7 @@ $$;
 SET LOCAL app.current_company_id = 'rls-co-b';
 SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_admission_events), 0, 'tenant B cannot see tenant A realtime event');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_session_leases), 0, 'tenant B cannot see tenant A realtime lease');
+SELECT pg_temp.assert_eq((SELECT count(*) FROM realtime_mistral_ingress_tickets), 0, 'tenant B cannot see tenant A Mistral ticket');
 ROLLBACK;
 
 -- Bob Live durable : séquence globale DB, quatrième fence, preuve acoustique sans contenu,
@@ -745,31 +776,34 @@ VALUES (
   '00000000-0000-4000-8000-00000000c0a2', CURRENT_TIMESTAMP
 );
 INSERT INTO realtime_session_leases (
-  "companyId", "subjectHash", "sessionId", "leaseTokenHash", state, "providerCallId",
+  "companyId", "subjectHash", "sessionId", "leaseTokenHash", state, "providerId", "providerCallId",
   "reservedAt", "leaseExpiresAt", "hardExpiresAt", "activatedAt",
   "contextSchemaVersion", "contextRevision", "contextPayload", "contextDigest", "contextUpdatedAt",
   "sidebandOwnerInstanceHash", "sidebandOwnerTokenHash", "sidebandOwnerLeaseExpiresAt",
-  "contextAppliedRevision", "contextAppliedDigest", "contextAppliedAt", "sidebandProtocolVersion",
+  "sidebandOwnerEpoch", "contextAppliedRevision", "contextAppliedDigest", "contextAppliedAt",
+  "contextAppliedOwnerEpoch", "sidebandProtocolVersion",
   "updatedAt", version
 )
 VALUES (
   'rls-co-a', repeat('a', 64), '00000000-0000-4000-8000-00000000c0a2', repeat('f', 64),
-  'active', 'call_rls_durable_a', CURRENT_TIMESTAMP - INTERVAL '1 minute',
+  'active', 'openai', 'call_rls_durable_a', CURRENT_TIMESTAMP - INTERVAL '1 minute',
   CURRENT_TIMESTAMP + INTERVAL '10 minutes', CURRENT_TIMESTAMP + INTERVAL '15 minutes', CURRENT_TIMESTAMP,
   1, 1, '{"route":"/"}'::jsonb, repeat('4', 64), CURRENT_TIMESTAMP,
-  repeat('1', 64), repeat('2', 64), CURRENT_TIMESTAMP + INTERVAL '1 minute',
-  1, repeat('4', 64), CURRENT_TIMESTAMP, 2, CURRENT_TIMESTAMP, 1
+  repeat('1', 64), repeat('2', 64), CURRENT_TIMESTAMP + INTERVAL '1 minute', 1,
+  1, repeat('4', 64), CURRENT_TIMESTAMP, 1, 2, CURRENT_TIMESTAMP, 1
 );
 INSERT INTO realtime_speech_artifacts (
   id, "companyId", "subjectHash", "sessionId", "turnId", "segmentIndex", "renderTokenHash",
-  state, classification, "canonicalSpeechHmac", "factsHmac",
+  "sidebandOwnerEpoch", "sidebandOwnerTokenHash", state, classification,
+  "canonicalSpeechHmac", "factsHmac",
   "contextRevision", "contextDigest", "renderLeaseExpiresAt",
   "createdAt", "updatedAt", "retentionExpiresAt", version
 )
 VALUES (
   '00000000-0000-4000-8000-00000000c0a3', 'rls-co-a', repeat('a', 64),
   '00000000-0000-4000-8000-00000000c0a2', '00000000-0000-4000-8000-00000000c0a4',
-  0, repeat('3', 64), 'rendering', 'dynamic_sensitive', repeat('5', 64), repeat('7', 64),
+  0, repeat('3', 64), 1, repeat('2', 64),
+  'rendering', 'dynamic_sensitive', repeat('5', 64), repeat('7', 64),
   1, repeat('4', 64),
   CURRENT_TIMESTAMP + INTERVAL '30 seconds', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
   CURRENT_TIMESTAMP + INTERVAL '30 days', 1
@@ -792,11 +826,6 @@ UPDATE realtime_speech_artifacts
        "renderLeaseExpiresAt" = NULL, "readyAt" = CURRENT_TIMESTAMP,
        "updatedAt" = CURRENT_TIMESTAMP, version = 2
  WHERE id = '00000000-0000-4000-8000-00000000c0a3' AND version = 1;
-UPDATE realtime_speech_artifacts
-   SET state = 'delivered', "deliveryId" = '00000000-0000-4000-8000-00000000c0a5',
-       "storageExpiresAt" = CURRENT_TIMESTAMP + INTERVAL '1 minute',
-       "deliveredAt" = CURRENT_TIMESTAMP, "updatedAt" = CURRENT_TIMESTAMP, version = 3
- WHERE id = '00000000-0000-4000-8000-00000000c0a3' AND version = 2;
 INSERT INTO realtime_control_grants (
   id, "companyId", "sessionId", "turnId", "artifactId", "contextRevision", "contextDigest",
   "controlKind", "sealedControl", "controlNonce", "controlTag", "controlPayloadHmac",
@@ -807,15 +836,20 @@ VALUES (
   '00000000-0000-4000-8000-00000000c0a2', '00000000-0000-4000-8000-00000000c0a4',
   '00000000-0000-4000-8000-00000000c0a3', 1, repeat('4', 64), 'navigate',
   decode(repeat('aa', 32), 'hex'), decode(repeat('bb', 12), 'hex'), decode(repeat('cc', 16), 'hex'),
-  repeat('d', 64), 1, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP + INTERVAL '1 minute',
+  repeat('d', 64), 1, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP + INTERVAL '30 seconds',
   CURRENT_TIMESTAMP + INTERVAL '30 days'
 );
+UPDATE realtime_speech_artifacts
+   SET state = 'delivered', "deliveryId" = '00000000-0000-4000-8000-00000000c0a5',
+       "storageExpiresAt" = CURRENT_TIMESTAMP + INTERVAL '1 minute',
+       "deliveredAt" = CURRENT_TIMESTAMP, "updatedAt" = CURRENT_TIMESTAMP, version = 3
+ WHERE id = '00000000-0000-4000-8000-00000000c0a3' AND version = 2;
 INSERT INTO realtime_control_consumptions (
   "companyId", "grantId", "acknowledgementId", "sessionId", "turnId", "consumedAt", "retentionExpiresAt"
 )
 VALUES (
   'rls-co-a', '00000000-0000-4000-8000-00000000c0a6',
-  '00000000-0000-4000-8000-00000000c0a7', '00000000-0000-4000-8000-00000000c0a2',
+  '00000000-0000-4000-8000-00000000c0a5', '00000000-0000-4000-8000-00000000c0a2',
   '00000000-0000-4000-8000-00000000c0a4', CURRENT_TIMESTAMP,
   CURRENT_TIMESTAMP + INTERVAL '30 days'
 );
@@ -879,6 +913,64 @@ BEGIN
     INSERT INTO expense_creation_requests ("companyId", "keyHash", "payloadHash", "expenseId")
     VALUES ('rls-co-b', repeat('c', 64), repeat('d', 64), 'rls-expense-b');
     RAISE EXCEPTION 'RLS cert failed: cross-tenant expense idempotency insert succeeded';
+  EXCEPTION WHEN insufficient_privilege THEN
+    NULL;
+  END;
+END;
+$$;
+ROLLBACK;
+
+-- Registre d'idempotence Quote : tenant-scoped, insert-only, sans clé brute et réponse figée.
+BEGIN;
+SET LOCAL app.current_company_id = 'rls-co-a';
+INSERT INTO quote_creation_requests (
+  "companyId", "keyHash", "payloadHash", "quoteId",
+  "totalsHt", "totalsVat", "totalsTtc", "totalsNetToPay", "vatByRate", "createdAt"
+)
+VALUES (
+  'rls-co-a', repeat('e', 64), repeat('f', 64), 'rls-quote-a',
+  10000, 2000, 12000, 12000, '{"20":2000}'::jsonb, '2026-01-01T00:00:00Z'
+);
+SELECT pg_temp.assert_eq(
+  (SELECT count(*) FROM quote_creation_requests WHERE "quoteId" = 'rls-quote-a'),
+  1,
+  'quote creation request tenant A visible'
+);
+DO $$
+BEGIN
+  BEGIN
+    UPDATE quote_creation_requests SET "payloadHash" = repeat('0', 64)
+     WHERE "companyId" = 'rls-co-a' AND "keyHash" = repeat('e', 64);
+    RAISE EXCEPTION 'RLS cert failed: quote idempotency update was authorized';
+  EXCEPTION WHEN insufficient_privilege THEN
+    NULL;
+  END;
+  BEGIN
+    DELETE FROM quote_creation_requests
+     WHERE "companyId" = 'rls-co-a' AND "keyHash" = repeat('e', 64);
+    RAISE EXCEPTION 'RLS cert failed: quote idempotency delete was authorized';
+  EXCEPTION WHEN insufficient_privilege THEN
+    NULL;
+  END;
+END;
+$$;
+SET LOCAL app.current_company_id = 'rls-co-b';
+SELECT pg_temp.assert_eq(
+  (SELECT count(*) FROM quote_creation_requests WHERE "quoteId" = 'rls-quote-a'),
+  0,
+  'quote creation request tenant A hidden from tenant B'
+);
+DO $$
+BEGIN
+  BEGIN
+    INSERT INTO quote_creation_requests (
+      "companyId", "keyHash", "payloadHash", "quoteId",
+      "totalsHt", "totalsVat", "totalsTtc", "totalsNetToPay", "vatByRate"
+    ) VALUES (
+      'rls-co-a', repeat('1', 64), repeat('2', 64), 'rls-quote-a',
+      10000, 2000, 12000, 12000, '{"20":2000}'::jsonb
+    );
+    RAISE EXCEPTION 'RLS cert failed: cross-tenant quote idempotency insert succeeded';
   EXCEPTION WHEN insufficient_privilege THEN
     NULL;
   END;

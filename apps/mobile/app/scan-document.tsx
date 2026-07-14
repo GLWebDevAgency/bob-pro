@@ -29,7 +29,7 @@ import {
   type RecordDocumentExpenseClientOutput,
 } from '@bob/api-client';
 import { InMemoryCompanyMemory, suggestCategoryClarification, suggestExpenseDefaults } from '@bob/ai';
-import { QuestionSheet, Sheet } from '@bob/ui';
+import { ErrorRetry, QuestionSheet, Sheet, Skeleton } from '@bob/ui';
 import type { ExpenseCategory } from '@bob/core';
 import { useTheme } from '../src/theme';
 import { useQueryClient } from '@tanstack/react-query';
@@ -178,6 +178,7 @@ export default function ScanDocument() {
   const [folderEditorOpen, setFolderEditorOpen] = useState(false);
   const [folderName, setFolderName] = useState('');
   const [folderError, setFolderError] = useState<string | null>(null);
+  const [filingRecoveryPending, setFilingRecoveryPending] = useState(false);
   const [linkedExpenseId, setLinkedExpenseId] = useState<string | null>(null);
   const [recordTargetError, setRecordTargetError] = useState(false);
   const [reconcilePending, setReconcilePending] = useState(false);
@@ -271,9 +272,16 @@ export default function ScanDocument() {
   }, [rootFolders.data, suggestedFolder, suggestedNewFolderName]);
 
   useEffect(() => {
-    if (!analysis.data || filingDeferred || filingPromptDocumentId === analysis.data.documentId) return;
+    if (
+      !analysis.data
+      || filingDeferred
+      || rootFolders.isLoading
+      || rootFolders.isError
+      || filingRecoveryPending
+      || filingPromptDocumentId === analysis.data.documentId
+    ) return;
     setFilingPromptDocumentId(analysis.data.documentId);
-  }, [analysis.data, filingDeferred, filingPromptDocumentId]);
+  }, [analysis.data, filingDeferred, filingPromptDocumentId, filingRecoveryPending, rootFolders.isError, rootFolders.isLoading]);
 
   async function archiveAndAnalyze(input: CreateDocumentIntakeClientInput): Promise<void> {
     try {
@@ -295,6 +303,7 @@ export default function ScanDocument() {
     setFolderEditorOpen(false);
     setFolderName('');
     setFolderError(null);
+    setFilingRecoveryPending(false);
     setLinkedExpenseId(null);
     setRecordTargetError(false);
     setReconcilePending(false);
@@ -571,6 +580,24 @@ export default function ScanDocument() {
     );
   }
 
+  async function recoverFolderChoice(): Promise<void> {
+    if (!archivedDocument || filingRecoveryPending) return;
+    setFilingRecoveryPending(true);
+    try {
+      const [, freshDocument] = await Promise.all([
+        rootFolders.refetch(),
+        client.getDocument(archivedDocument.id),
+      ]);
+      if (!freshDocument.ok || !mountedRef.current) return;
+      setArchivedDocument(freshDocument.value);
+      moveDocument.reset();
+      setFilingDeferred(false);
+      setFilingPromptDocumentId(freshDocument.value.id);
+    } finally {
+      if (mountedRef.current) setFilingRecoveryPending(false);
+    }
+  }
+
   function openFolderEditor(): void {
     setFilingPromptDocumentId(null);
     setFolderName(suggestedNewFolderName ?? '');
@@ -611,6 +638,7 @@ export default function ScanDocument() {
     || analysis.isPending
     || extract.isPending
     || moveDocument.isPending
+    || filingRecoveryPending
     || createFolder.isPending
     || record.isPending
     || reconcilePending;
@@ -646,7 +674,7 @@ export default function ScanDocument() {
           accessibilityRole="button"
           accessibilityLabel={exitUnsafe ? 'Archivage en cours, fermeture temporairement indisponible' : 'Fermer'}
           accessibilityState={{ disabled: exitUnsafe }}
-          style={{ flexDirection: 'row', alignItems: 'center', gap: 4, opacity: exitUnsafe ? 0.55 : 1 }}
+          style={{ minHeight: 44, alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 4, opacity: exitUnsafe ? 0.55 : 1 }}
         >
           <Ionicons name="chevron-back" size={22} color={colors.ink800} />
           <Text style={[font('body'), { color: colors.ink800 }]}>{exitUnsafe ? 'Archivage en cours…' : 'Fermer'}</Text>
@@ -690,7 +718,7 @@ export default function ScanDocument() {
 
         {intake.isPending ? (
           <Card>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+            <View accessibilityRole="progressbar" accessibilityLiveRegion="polite" accessibilityLabel="Archivage sécurisé de l’original" style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
               <ActivityIndicator color={colors.ink800} />
               <Text style={[font('body'), { color: colors.ink800 }]}>Archivage sécurisé de l’original…</Text>
             </View>
@@ -715,7 +743,7 @@ export default function ScanDocument() {
 
         {archivedDocument ? (
           <Card>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+            <View accessibilityLiveRegion="polite" style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
               <Ionicons name="shield-checkmark" size={22} color={semantic.success} />
               <View style={{ flex: 1 }}>
                 <Text style={[font('cardTitle'), { color: colors.ink900 }]}>Original conservé</Text>
@@ -731,14 +759,27 @@ export default function ScanDocument() {
             <Text style={[font('sub'), { color: colors.slate500, marginTop: 4, lineHeight: 19 }]}>Bob conserve le HEIC/HEIF original sans le modifier. Aucun transcodage fiable n’est installé sur cet appareil, donc il ne lance pas une analyse vouée à l’échec. Pour une lecture assistée, importe une copie JPEG ou PDF.</Text>
             <View style={{ marginTop: 12, gap: 8 }}>
               {archivedDocument.folderId === null ? (
-                <Button
-                  title="Choisir un dossier sans analyse"
-                  variant="secondary"
-                  onPress={() => {
-                    setFilingDeferred(false);
-                    setFilingPromptDocumentId(archivedDocument.id);
-                  }}
-                />
+                rootFolders.isLoading ? (
+                  <View accessibilityRole="progressbar" accessibilityLiveRegion="polite" accessibilityLabel="Chargement des dossiers">
+                    <Skeleton height={52} radius={18} />
+                  </View>
+                ) : rootFolders.isError ? (
+                  <View>
+                    <Text accessibilityRole="alert" style={[font('sub'), { color: semantic.danger, lineHeight: 19 }]}>Les dossiers ne sont pas disponibles. L’original reste conservé dans « À classer ».</Text>
+                    <View style={{ marginTop: 10 }}>
+                      <Button title="Réessayer de charger les dossiers" variant="secondary" onPress={() => void rootFolders.refetch()} />
+                    </View>
+                  </View>
+                ) : (
+                  <Button
+                    title="Choisir un dossier sans analyse"
+                    variant="secondary"
+                    onPress={() => {
+                      setFilingDeferred(false);
+                      setFilingPromptDocumentId(archivedDocument.id);
+                    }}
+                  />
+                )
               ) : null}
               <Button
                 title="Voir l’original"
@@ -751,7 +792,7 @@ export default function ScanDocument() {
 
         {analysis.isPending ? (
           <Card>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+            <View accessibilityRole="progressbar" accessibilityLiveRegion="polite" accessibilityLabel="Bob lit le document et vérifie ses preuves" style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
               <ActivityIndicator color={semantic.ai} />
               <Text style={[font('body'), { color: colors.ink800, flex: 1 }]}>Bob lit le document et vérifie ses preuves…</Text>
             </View>
@@ -783,6 +824,17 @@ export default function ScanDocument() {
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
                     <Ionicons name="folder" size={17} color={semantic.success} />
                     <Text style={[font('sub'), { color: colors.ink800, flex: 1 }]}>Classé dans « {currentFolder.name} »</Text>
+                  </View>
+                ) : rootFolders.isLoading ? (
+                  <View accessibilityRole="progressbar" accessibilityLiveRegion="polite" accessibilityLabel="Chargement des dossiers">
+                    <Skeleton height={52} radius={18} />
+                  </View>
+                ) : rootFolders.isError ? (
+                  <View>
+                    <Text accessibilityRole="alert" style={[font('sub'), { color: semantic.danger, lineHeight: 19 }]}>Les dossiers ne sont pas disponibles. Bob ne proposera aucun rangement tant qu’ils ne sont pas rechargés.</Text>
+                    <View style={{ marginTop: 10 }}>
+                      <Button title="Réessayer de charger les dossiers" variant="secondary" onPress={() => void rootFolders.refetch()} />
+                    </View>
                   </View>
                 ) : (
                   <Button
@@ -818,17 +870,30 @@ export default function ScanDocument() {
 
         {moveDocument.isPending ? (
           <Card>
-            <Text style={[font('sub'), { color: colors.slate500 }]}>Classement de l’original…</Text>
+            <View accessibilityRole="progressbar" accessibilityLiveRegion="polite" accessibilityLabel="Classement de l’original">
+              <Skeleton height={16} width="62%" radius={7} />
+            </View>
           </Card>
         ) : null}
 
         {moveDocument.isError ? (
-          <Text accessibilityRole="alert" style={[font('sub'), { color: semantic.danger }]}>Le dossier a changé entre-temps. Bob a conservé l’original dans « À classer » : recharge puis réessaie.</Text>
+          filingRecoveryPending ? (
+            <Card>
+              <View accessibilityRole="progressbar" accessibilityLiveRegion="polite" accessibilityLabel="Actualisation du document et des dossiers">
+                <Skeleton height={16} width="76%" radius={7} />
+              </View>
+            </Card>
+          ) : (
+            <ErrorRetry
+              message="Le dossier ou le document a changé entre-temps. Bob a conservé l’original sans le reclasser."
+              onRetry={() => void recoverFolderChoice()}
+            />
+          )
         ) : null}
 
         {extract.isPending ? (
           <Card>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+            <View accessibilityRole="progressbar" accessibilityLiveRegion="polite" accessibilityLabel="Lecture comptable du document" style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
               <ActivityIndicator color={colors.ink800} />
               <Text style={[font('body'), { color: colors.ink800 }]}>Lecture du document…</Text>
             </View>
@@ -882,6 +947,7 @@ export default function ScanDocument() {
                         setChosenCategory(null);
                         setCategoryDismissed(false);
                       }}
+                      style={{ minHeight: 44, justifyContent: 'center' }}
                     >
                       <Text style={[font('meta'), { color: chosenCategory ? semantic.ai : semantic.warning, marginTop: 2, textAlign: 'right' }]}>
                         {chosenCategory ? '✓ Catégorie confirmée — modifier' : '? Devinette incertaine — préciser'}
@@ -999,6 +1065,9 @@ export default function ScanDocument() {
         visible={
           filingPromptDocumentId !== null
           && (analysis.data?.documentId ?? archivedDocument?.id) === filingPromptDocumentId
+          && !rootFolders.isLoading
+          && !rootFolders.isError
+          && !filingRecoveryPending
           && filingOptions.length > 0
           && !askCategory
         }

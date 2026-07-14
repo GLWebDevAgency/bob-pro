@@ -17,7 +17,7 @@ function signedQuote(depositPct: number | null = 30): Quote {
     signature: {
       signerName: 'Ada Lovelace',
       signedAt: '2026-06-01T09:00:00.000Z',
-      method: 'draw',
+      method: 'onsite_draw',
       accepted: true,
     },
     lines: [
@@ -50,6 +50,7 @@ function makeEnv(input: { quote?: Quote; failSaveWithConcurrentInvoice?: boolean
     lockById: async (id) => invoices.get(id) ?? null,
     findByParentQuoteId: async (companyId, parentQuoteId, kind) =>
       [...invoices.values()].find((i) => i.companyId === companyId && i.parentQuoteId === parentQuoteId && i.kind === kind) ?? null,
+    findCreditNoteBySourceInvoiceId: async () => null,
     listByCompany: async (companyId) => [...invoices.values()].filter((i) => i.companyId === companyId),
     save: async (invoice) => {
       saveCalls += 1;
@@ -141,7 +142,7 @@ describe('GenerateInvoiceFromQuote', () => {
       kind,
       status: 'issued',
       lines: [{ id: `${id}-l1`, label: 'Avancement', category: 'labor', qty: 1, unitPriceHT: ht, vatRate: 20 }],
-      number: `F-${id}`,
+      number: 'F-2026-0099',
       frozenTotals: { ht, vatByRate: { '20': vat }, vat, ttc: ht + vat, netToPay },
       mentions: [],
       issuedAt: '2026-06-10',
@@ -149,6 +150,19 @@ describe('GenerateInvoiceFromQuote', () => {
       paid: 0,
       depositPct: null,
       parentQuoteId: 'quote-1',
+    });
+  }
+
+  function creditFor(source: Invoice, id: string, status: 'draft' | 'issued'): Invoice {
+    const created = Invoice.creditNoteFor(source, id);
+    if (!created.ok) throw new Error(`credit note: ${JSON.stringify(created.error)}`);
+    if (status === 'draft') return created.value;
+    return Invoice.rehydrate({
+      ...created.value.toSnapshot(),
+      status: 'issued',
+      number: 'A-2026-0099',
+      issuedAt: '2026-06-11',
+      dueAt: '2026-06-11',
     });
   }
 
@@ -184,26 +198,51 @@ describe('GenerateInvoiceFromQuote', () => {
     expect(final?.toSnapshot().depositInvoiceId).toBe('dep');
   });
 
-  // ── R3 : mode INFÉRÉ sur un acompte déjà facturé doit avancer vers la finale, pas rejouer
-  //    silencieusement l'acompte (bug device : le CTA disait « générée » sans rien créer). ──
+  it('un avoir TOTAL émis sur un acompte annule sa déduction de la future facture finale', async () => {
+    const env = makeEnv();
+    const deposit = issuedSibling('dep', 'deposit', 30000, 36000);
+    await env.invoices.save(deposit);
+    await env.invoices.save(creditFor(deposit, 'credit-dep', 'issued'));
 
-  it('R3 ① mode inféré après un acompte déjà généré → CRÉE la facture FINALE (pas un rejeu de l’acompte)', async () => {
-    const env = makeEnv(); // devis avec depositPct=30 : l'inférence par défaut vise 'deposit'
+    const generated = await env.usecase.execute({ quoteId: env.quote.id, mode: 'final' });
+    expect(generated.ok).toBe(true);
+    if (!generated.ok) return;
+    const final = await env.invoices.findById(generated.value.invoiceId);
+    expect(final?.totals().netToPay).toBe(120000);
+    expect(final?.depositDeductionCents).toBe(0);
+  });
 
-    const deposit = await env.usecase.execute({ quoteId: env.quote.id }); // mode inféré → deposit
+  it("un brouillon d'avoir ne modifie jamais la déduction avant son émission", async () => {
+    const env = makeEnv();
+    const deposit = issuedSibling('dep', 'deposit', 30000, 36000);
+    await env.invoices.save(deposit);
+    await env.invoices.save(creditFor(deposit, 'credit-dep-draft', 'draft'));
+
+    const generated = await env.usecase.execute({ quoteId: env.quote.id, mode: 'final' });
+    expect(generated.ok).toBe(true);
+    if (!generated.ok) return;
+    const final = await env.invoices.findById(generated.value.invoiceId);
+    expect(final?.totals().netToPay).toBe(84000);
+    expect(final?.depositDeductionCents).toBe(36000);
+  });
+
+  // ── R3 : chaque intention porte un mode explicite. Un retry HTTP rejoue exactement le même
+  //    effet ; il ne peut jamais interpréter « prochain pas » et créer une autre pièce fiscale. ──
+
+  it('R3 ① un retry explicite de l’acompte reste un acompte, même si une finale est possible', async () => {
+    const env = makeEnv();
+
+    const deposit = await env.usecase.execute({ quoteId: env.quote.id, mode: 'deposit' });
     expect(deposit.ok).toBe(true);
     if (!deposit.ok) return;
 
-    const again = await env.usecase.execute({ quoteId: env.quote.id }); // mode toujours inféré
-    expect(again.ok).toBe(true);
-    if (!again.ok) return;
+    const retry = await env.usecase.execute({ quoteId: env.quote.id, mode: 'deposit' });
+    expect(retry.ok).toBe(true);
+    if (!retry.ok) return;
 
-    // Le "prochain pas" naturel : une facture FINALE, distincte de l'acompte déjà émis.
-    expect(again.value.invoiceId).not.toBe(deposit.value.invoiceId);
-    const kinds = (await env.invoices.listByCompany(env.quote.companyId)).map((i) => i.kind).sort();
-    expect(kinds).toEqual(['deposit', 'final']);
-    const createdFinal = await env.invoices.findById(again.value.invoiceId);
-    expect(createdFinal?.kind).toBe('final');
+    expect(retry.value.invoiceId).toBe(deposit.value.invoiceId);
+    expect((await env.invoices.listByCompany(env.quote.companyId)).map((invoice) => invoice.kind)).toEqual(['deposit']);
+    expect(env.counts()).toEqual({ saveCalls: 1 });
   });
 
   it('R3 ② mode:\'deposit\' EXPLICITE avec acompte déjà généré → renvoie l’EXISTANTE (idempotence intacte)', async () => {

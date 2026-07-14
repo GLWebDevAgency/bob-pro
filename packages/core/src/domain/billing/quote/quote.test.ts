@@ -6,7 +6,7 @@ import { type QuoteLine } from '../shared/line';
 import { type VatRate } from '../shared/vat-rate';
 
 const AT = '2026-06-01T10:00:00.000Z';
-const sig: Signature = { signerName: 'Martin', signedAt: AT, method: 'draw', accepted: true };
+const sig: Signature = { signerName: 'Martin', signedAt: AT, method: 'onsite_draw', accepted: true };
 const line = (id: string, vatRate: VatRate = 10, unitPriceHT = 80000): QuoteLine => ({
   id,
   label: 'X',

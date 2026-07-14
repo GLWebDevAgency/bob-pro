@@ -471,7 +471,7 @@ export function makeBobAgent(client: BobClient): BobAssistant {
     async generateInvoice(input) {
       return client.generateInvoice({
         quoteId: input.quoteId,
-        ...(input.mode !== undefined ? { mode: input.mode } : {}),
+        mode: input.mode,
       });
     },
     // —— Parité C15 TODO ⑥ (C40) : outil export_fec — même use case ExportFec que l'écran compta

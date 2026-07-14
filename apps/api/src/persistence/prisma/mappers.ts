@@ -10,10 +10,13 @@ import {
   type QuoteStatus,
   type InvoiceStatus,
   type InvoiceKind,
+  type CreditedInvoiceKind,
   type QuoteLine,
   type LineCategory,
   type VatRate,
   type Totals,
+  type Signature,
+  type SignatureMethod,
 } from '@bob/core';
 
 const toDateOnly = (d: Date | null): string | null => (d ? d.toISOString().slice(0, 10) : null);
@@ -176,7 +179,56 @@ export function customerPropsToCreate(p: CustomerProps) {
 interface QuoteRow {
   id: string; companyId: string; customerId: string; status: string; number: string | null;
   validUntil: Date | null; depositPct: number | null; signerName: string | null; signedAt: Date | null;
+  signatureProof: unknown;
   lines: LineRow[];
+}
+
+const SIGNATURE_PROOF_METHODS = new Set<SignatureMethod>(['onsite_draw', 'remote_link']);
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+
+/** Forme persistée de la colonne JSON `quotes.signatureProof` (R4) — voir la migration associée. */
+interface PersistedSignatureProof {
+  method: SignatureMethod;
+  sha256?: string;
+  capturedAt?: string;
+}
+
+function parsePersistedSignatureProof(value: unknown): PersistedSignatureProof | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  if (typeof row.method !== 'string' || !SIGNATURE_PROOF_METHODS.has(row.method as SignatureMethod)) return null;
+  const sha256 = typeof row.sha256 === 'string' && SHA256_HEX.test(row.sha256) ? row.sha256 : undefined;
+  const capturedAt = typeof row.capturedAt === 'string' ? row.capturedAt : undefined;
+  return { method: row.method as SignatureMethod, ...(sha256 ? { sha256 } : {}), ...(capturedAt ? { capturedAt } : {}) };
+}
+
+/**
+ * P0 R4 — l'ancien mapper réhydratait systématiquement `method: 'draw'` : une preuve déclarée
+ * par le serveur sans événement source. Désormais la méthode vient de la colonne persistée ;
+ * une ligne historique sans preuve redevient `legacy_declared` (méthode inconnue, jamais
+ * réinventée) et `proof` n'existe que si un hash de tracé a réellement été enregistré.
+ */
+function signatureFromQuoteRow(row: Pick<QuoteRow, 'signerName' | 'signedAt' | 'signatureProof'>): Signature | null {
+  if (!row.signerName || !row.signedAt) return null;
+  const base = { signerName: row.signerName, signedAt: row.signedAt.toISOString(), accepted: true as const };
+  const persisted = parsePersistedSignatureProof(row.signatureProof);
+  if (!persisted) return { ...base, method: 'legacy_declared' };
+  return {
+    ...base,
+    method: persisted.method,
+    ...(persisted.sha256 && persisted.capturedAt
+      ? { proof: { method: persisted.method, sha256: persisted.sha256, capturedAt: persisted.capturedAt } }
+      : {}),
+  };
+}
+
+/** Sérialisation write-side de la preuve (repositories.save) — null pour les signatures legacy. */
+export function signatureProofToPersistence(signature: Signature | null): PersistedSignatureProof | null {
+  if (!signature || signature.method === 'legacy_declared') return null;
+  return {
+    method: signature.method,
+    ...(signature.proof ? { sha256: signature.proof.sha256, capturedAt: signature.proof.capturedAt } : {}),
+  };
 }
 
 export function quoteRowToSnapshot(row: QuoteRow): QuoteSnapshot {
@@ -189,16 +241,15 @@ export function quoteRowToSnapshot(row: QuoteRow): QuoteSnapshot {
     number: row.number,
     depositPct: row.depositPct,
     validUntil: toDateOnly(row.validUntil),
-    signature:
-      row.signerName && row.signedAt
-        ? { signerName: row.signerName, signedAt: row.signedAt.toISOString(), method: 'draw', accepted: true }
-        : null,
+    signature: signatureFromQuoteRow(row),
   };
 }
 
 interface InvoiceRow {
   id: string; companyId: string; customerId: string; kind: string; status: string; number: string | null;
   issuedAt: Date | null; dueAt: Date | null; parentQuoteId: string | null; depositPct: number | null;
+  sourceInvoiceId: string | null; sourceInvoiceKind: string | null; sourceInvoiceNumber: string | null;
+  sourceInvoiceIssuedAt: Date | null;
   depositDeductionCents: number; depositInvoiceId: string | null;
   paidCents: number; totalsHt: number; totalsVat: number; totalsTtc: number; totalsNetToPay: number;
   vatByRate: unknown; legalMentions: string[]; lines: LineRow[];
@@ -206,8 +257,9 @@ interface InvoiceRow {
 
 export function invoiceRowToSnapshot(row: InvoiceRow): InvoiceSnapshot {
   const status = row.status as InvoiceStatus;
+  const kind = docKindToInvoiceKind(row.kind);
   const frozen: Totals | null =
-    status === 'draft'
+    status === 'draft' && kind !== 'credit_note'
       ? null
       : {
           ht: row.totalsHt,
@@ -220,7 +272,7 @@ export function invoiceRowToSnapshot(row: InvoiceRow): InvoiceSnapshot {
     id: row.id,
     companyId: row.companyId,
     customerId: row.customerId,
-    kind: docKindToInvoiceKind(row.kind),
+    kind,
     status,
     lines: row.lines.map(lineRowToQuoteLine),
     number: row.number,
@@ -233,5 +285,12 @@ export function invoiceRowToSnapshot(row: InvoiceRow): InvoiceSnapshot {
     parentQuoteId: row.parentQuoteId,
     depositDeductionCents: row.depositDeductionCents ?? 0,
     depositInvoiceId: row.depositInvoiceId ?? null,
+    sourceInvoiceId: row.sourceInvoiceId,
+    sourceInvoiceKind:
+      row.sourceInvoiceKind === null
+        ? null
+        : (docKindToInvoiceKind(row.sourceInvoiceKind) as CreditedInvoiceKind),
+    sourceInvoiceNumber: row.sourceInvoiceNumber,
+    sourceInvoiceIssuedAt: toDateOnly(row.sourceInvoiceIssuedAt),
   };
 }

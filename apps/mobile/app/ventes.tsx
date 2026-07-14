@@ -43,7 +43,7 @@ export default function Ventes() {
 
   // failed se lit TOUJOURS avec loading (combineQueryStates) — un échec réseau ne devient
   // jamais silencieusement « zéro devis/facture » (classe de bug P0 de l'audit états).
-  const queryState = combineQueryStates(quotes, invoices);
+  const queryState = combineQueryStates(quotes, invoices, customers);
 
   // ── Filtre + recherche PLEIN TEXTE (n°, client, LIGNES — « chauffe-eau » retrouve la
   //    facture même sans se souvenir du client). Accents/casse ignorés, données déjà locales. ──
@@ -73,9 +73,13 @@ export default function Ventes() {
   // existe » était trop grossier pour distinguer acompte-sans-finale (bouton solde) de finale (badge).
   const linkedInvoicesOfQuote = (quoteId: string): QuoteLinkedInvoices => {
     const linked = invoicesOfQuote(quoteId);
+    const deposit = linked.find((invoice) => invoice.kind === 'deposit') ?? null;
+    const final = linked.find((invoice) => invoice.kind === 'final') ?? null;
     return {
-      hasDepositInvoice: linked.some((i) => i.kind === 'deposit'),
-      hasFinalInvoice: linked.some((i) => i.kind === 'final'),
+      hasDepositInvoice: deposit !== null,
+      hasFinalInvoice: final !== null,
+      depositStatus: deposit?.status ?? null,
+      finalStatus: final?.status ?? null,
     };
   };
   const quoteOf = (inv: InvoiceView) => (quotes.data ?? []).find((q) => q.id === inv.parentQuoteId) ?? null;
@@ -335,7 +339,9 @@ export default function Ventes() {
                 <SkeletonRow lines={2} trailing="text" />
               </View>
             ) : queryState.failed ? (
-              <ErrorRetry message="Impossible de charger tes documents." onRetry={queryState.refetchAll} />
+              kindFilter === 'invoices' ? (
+                <ErrorRetry message="Impossible de charger tes documents." onRetry={queryState.refetchAll} />
+              ) : null
             ) : sortedInvoices.length === 0 ? (
               <Card>
                 <Text style={[font('body'), { color: colors.slate500 }]}>Aucune facture pour l&apos;instant.</Text>

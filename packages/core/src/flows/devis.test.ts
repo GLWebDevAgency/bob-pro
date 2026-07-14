@@ -73,7 +73,7 @@ describe('flows/devis (C21 — 6 étapes, projection des use-cases)', () => {
       }),
     );
     expectOk(
-      await new SignQuote({ quotes: env.quoteRepo, uow: env.uow, clock: env.clock }).execute({
+      await new SignQuote({ quotes: env.quoteRepo, publicAccessTokens: env.publicAccessTokens, uow: env.uow, clock: env.clock }).execute({
         quoteId: created.quoteId,
         signerName: s.draft.signerName!,
       }),
@@ -81,6 +81,7 @@ describe('flows/devis (C21 — 6 étapes, projection des use-cases)', () => {
     const gen = expectOk(
       await new GenerateInvoiceFromQuote({ quotes: env.quoteRepo, invoices: env.invoiceRepo, ids: env.ids }).execute({
         quoteId: created.quoteId,
+        mode: 'deposit',
       }),
     );
 

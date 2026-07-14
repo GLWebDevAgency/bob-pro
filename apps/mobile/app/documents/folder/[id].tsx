@@ -17,7 +17,19 @@ import {
   type DocumentFolderView,
   type DocumentView,
 } from '@bob/core';
-import { Button, Card, SectionHeader, Sheet, Toast, font, useTheme } from '@bob/ui';
+import {
+  Button,
+  Card,
+  EmptyState,
+  ErrorRetry,
+  SectionHeader,
+  Sheet,
+  Skeleton,
+  SkeletonCard,
+  Toast,
+  font,
+  useTheme,
+} from '@bob/ui';
 import { usePublishAgentContext, type AgentContext } from '../../../src/agent';
 import {
   useCreateDocumentFolder,
@@ -238,19 +250,67 @@ export default function DocumentFolderScreen() {
     );
   };
 
-  if (folder.isLoading || (children.isLoading && !children.data) || (documents.isLoading && !documents.data)) {
+  if (
+    folder.isLoading
+    || (folder.data !== undefined && children.isLoading && !children.data)
+    || (folder.data !== undefined && documents.isLoading && !documents.data)
+  ) {
     return (
-      <View
-        accessibilityLabel="Chargement du dossier"
-        style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg, gap: 12 }}
-      >
-        <ActivityIndicator color={theme.ink} />
-        <Text style={[font('sub'), { color: colors.slate500 }]}>Ouverture du coffre…</Text>
+      <View style={{ flex: 1, backgroundColor: colors.bg }}>
+        <ScrollView
+          accessibilityLiveRegion="polite"
+          accessibilityLabel="Chargement du dossier"
+          contentContainerStyle={{
+            paddingTop: insets.top + 10,
+            paddingHorizontal: 18,
+            paddingBottom: Math.max(insets.bottom, 24) + 92,
+            gap: 18,
+          }}
+        >
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Retour aux documents"
+              onPress={() => router.back()}
+              hitSlop={8}
+              style={{ width: 44, height: 44, alignItems: 'center', justifyContent: 'center' }}
+            >
+              <ChevronLeftIcon color={colors.ink800} size={22} />
+            </Pressable>
+            <View style={{ flex: 1, gap: 6 }}>
+              {folder.data ? (
+                <Text accessibilityRole="header" numberOfLines={1} style={[font('pageTitle'), { color: colors.ink900 }]}>
+                  {folder.data.name}
+                </Text>
+              ) : (
+                <Skeleton width="64%" height={22} radius={10} />
+              )}
+              <Skeleton width={126} height={11} radius={6} />
+            </View>
+            <Skeleton width={44} height={44} radius={22} />
+          </View>
+
+          <SkeletonCard height={104} contentLines={3} />
+          <View>
+            <SectionHeader title="Sous-dossiers" />
+            <View style={{ gap: 10 }}>
+              <Skeleton height={66} radius={17} />
+              <Skeleton height={66} radius={17} />
+            </View>
+          </View>
+          <View>
+            <SectionHeader title="Documents" />
+            <View style={{ gap: 10 }}>
+              <Skeleton height={86} radius={17} />
+              <Skeleton height={86} radius={17} />
+            </View>
+          </View>
+        </ScrollView>
       </View>
     );
   }
 
-  if (!folder.data || folder.isError) {
+  if (!folder.data) {
     return (
       <View
         style={{
@@ -270,11 +330,10 @@ export default function DocumentFolderScreen() {
         >
           <ChevronLeftIcon color={colors.ink800} size={22} />
         </Pressable>
-        <Card>
-          <Text accessibilityRole="alert" selectable style={[font('cardTitle'), { color: colors.ink900 }]}>Dossier indisponible</Text>
-          <Text selectable style={[font('sub'), { color: colors.slate500, lineHeight: 20, marginTop: 5 }]}>Ce dossier n’existe plus ou le coffre n’a pas pu être chargé.</Text>
-          <Button title="Réessayer" variant="secondary" style={{ marginTop: 14 }} onPress={() => void folder.refetch()} />
-        </Card>
+        <ErrorRetry
+          message="Ce dossier n’existe plus ou le coffre n’a pas pu être chargé."
+          onRetry={() => void folder.refetch()}
+        />
       </View>
     );
   }
@@ -338,6 +397,13 @@ export default function DocumentFolderScreen() {
           </Pressable>
         </View>
 
+        {folder.isError ? (
+          <ErrorRetry
+            message="Le dossier affiché est la dernière version disponible. Son actualisation n’a pas abouti."
+            onRetry={() => void folder.refetch()}
+          />
+        ) : null}
+
         <Card style={{ backgroundColor: semantic.successBg, borderColor: semantic.success }}>
           <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 12 }}>
             <View
@@ -378,10 +444,10 @@ export default function DocumentFolderScreen() {
                 }
               />
               {children.isError ? (
-                <InlineError label="Les sous-dossiers n’ont pas pu être chargés." onRetry={() => void children.refetch()} />
+                <ErrorRetry message="Les sous-dossiers n’ont pas pu être chargés." onRetry={() => void children.refetch()} />
               ) : childFolders.length === 0 ? (
                 <Card elevation="e1">
-                  <Text selectable style={[font('sub'), { color: colors.slate500, lineHeight: 20 }]}>Aucun sous-dossier ici. Tu peux en créer pour organiser ce coffre à ton rythme.</Text>
+                  <EmptyState body="Aucun sous-dossier ici. Tu peux en créer pour organiser ce coffre à ton rythme." />
                 </Card>
               ) : (
                 <View style={{ gap: 10 }}>
@@ -395,10 +461,10 @@ export default function DocumentFolderScreen() {
             <View>
               <SectionHeader title={`Documents (${storedDocuments.length})`} />
               {documents.isError ? (
-                <InlineError label="Les documents de ce dossier n’ont pas pu être chargés." onRetry={() => void documents.refetch()} />
+                <ErrorRetry message="Les documents de ce dossier n’ont pas pu être chargés." onRetry={() => void documents.refetch()} />
               ) : storedDocuments.length === 0 ? (
                 <Card elevation="e1">
-                  <Text selectable style={[font('sub'), { color: colors.slate500, lineHeight: 20 }]}>Aucun document directement dans ce dossier.</Text>
+                  <EmptyState body="Aucun document directement dans ce dossier." />
                 </Card>
               ) : (
                 <View style={{ gap: 10 }}>
@@ -412,22 +478,12 @@ export default function DocumentFolderScreen() {
         ) : null}
 
         {empty ? (
-          <Card style={{ alignItems: 'center', paddingVertical: 24 }}>
-            <View
-              style={{
-                width: 50,
-                height: 50,
-                borderRadius: 16,
-                backgroundColor: semantic.b2bBg,
-                alignItems: 'center',
-                justifyContent: 'center',
-              }}
-            >
-              <FolderSmallIcon color={semantic.b2b} size={24} />
-            </View>
-            <Text selectable style={[font('cardTitle'), { color: colors.ink900, marginTop: 12 }]}>Ce dossier est vide</Text>
-            <Text selectable style={[font('sub'), { color: colors.slate500, textAlign: 'center', lineHeight: 20, marginTop: 4 }]}>Crée un sous-dossier ou classe ici un original depuis l’analyse de Bob.</Text>
-            <Button title="Créer un sous-dossier" variant="secondary" style={{ alignSelf: 'stretch', marginTop: 14 }} onPress={openCreate} />
+          <Card style={{ paddingVertical: 24 }}>
+            <EmptyState
+              title="Ce dossier est vide"
+              body="Crée un sous-dossier ou classe ici un original depuis l’analyse de Bob."
+              cta={{ label: 'Créer un sous-dossier', onPress: openCreate }}
+            />
           </Card>
         ) : null}
       </ScrollView>
@@ -472,7 +528,12 @@ export default function DocumentFolderScreen() {
 
       <Sheet visible={deletionOpen} onClose={closeDeletion}>
         {previewDeletion.isPending ? (
-          <View accessibilityLabel="Calcul de l’aperçu de suppression" style={{ minHeight: 150, alignItems: 'center', justifyContent: 'center', gap: 12 }}>
+          <View
+            accessibilityRole="progressbar"
+            accessibilityLiveRegion="polite"
+            accessibilityLabel="Calcul de l’aperçu de suppression"
+            style={{ minHeight: 150, alignItems: 'center', justifyContent: 'center', gap: 12 }}
+          >
             <ActivityIndicator color={semantic.warning} />
             <Text style={[font('sub'), { color: colors.slate500 }]}>Bob vérifie chaque document et sous-dossier…</Text>
           </View>
@@ -501,41 +562,59 @@ export default function DocumentFolderScreen() {
               <View style={{ marginTop: 16 }}>
                 <Text style={[font('label', 700), { color: colors.slate400, fontSize: 12 }]}>TRANSFÉRER AVANT SUPPRESSION</Text>
                 <Text selectable style={[font('sub'), { color: colors.slate500, lineHeight: 19, marginTop: 4 }]}>Choisis le dossier qui recevra les documents directs et les sous-dossiers, avec tout leur contenu.</Text>
-                <ScrollView style={{ maxHeight: 230, marginTop: 10 }} nestedScrollEnabled>
-                  {transferTargets.map((target) => {
-                    const selected = transferTargetId === target.id;
-                    return (
-                      <Pressable
-                        key={target.id}
-                        accessibilityRole="radio"
-                        accessibilityState={{ selected }}
-                        accessibilityLabel={`Transférer vers ${target.name}`}
-                        onPress={() => setTransferTargetId(target.id)}
-                        style={({ pressed }) => ({
-                          minHeight: 48,
-                          flexDirection: 'row',
-                          alignItems: 'center',
-                          gap: 10,
-                          borderWidth: 1.5,
-                          borderColor: selected ? semantic.success : colors.lineSoft,
-                          borderRadius: 13,
-                          paddingHorizontal: 12,
-                          marginBottom: 8,
-                          opacity: pressed ? 0.78 : 1,
-                        })}
-                      >
-                        <View style={{ width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: selected ? semantic.success : colors.slate300, alignItems: 'center', justifyContent: 'center', backgroundColor: selected ? semantic.success : colors.surface }}>
-                          {selected ? <CheckIcon color={colors.surface} size={13} /> : null}
-                        </View>
-                        <FolderSmallIcon color={semantic.b2b} size={18} />
-                        <Text numberOfLines={1} style={[font('sub', 700), { color: colors.ink900, flex: 1 }]}>{target.name}</Text>
-                      </Pressable>
-                    );
-                  })}
-                </ScrollView>
-                {transferTargets.length === 0 ? (
+                {rootFolders.isLoading ? (
+                  <View
+                    accessibilityRole="progressbar"
+                    accessibilityLiveRegion="polite"
+                    accessibilityLabel="Chargement des destinations de transfert"
+                    style={{ marginTop: 10, gap: 8 }}
+                  >
+                    <Skeleton height={48} radius={13} />
+                    <Skeleton height={48} radius={13} />
+                  </View>
+                ) : rootFolders.isError ? (
+                  <View style={{ marginTop: 10 }}>
+                    <ErrorRetry
+                      message="Les destinations de transfert n’ont pas pu être chargées. Aucun dossier ne sera supprimé."
+                      onRetry={() => void rootFolders.refetch()}
+                    />
+                  </View>
+                ) : transferTargets.length === 0 ? (
                   <Text accessibilityRole="alert" style={[font('sub'), { color: semantic.danger, marginTop: 8 }]}>Crée d’abord un autre dossier : aucune destination sûre n’est disponible.</Text>
-                ) : null}
+                ) : (
+                  <ScrollView style={{ maxHeight: 230, marginTop: 10 }} nestedScrollEnabled>
+                    {transferTargets.map((target) => {
+                      const selected = transferTargetId === target.id;
+                      return (
+                        <Pressable
+                          key={target.id}
+                          accessibilityRole="radio"
+                          accessibilityState={{ selected }}
+                          accessibilityLabel={`Transférer vers ${target.name}`}
+                          onPress={() => setTransferTargetId(target.id)}
+                          style={({ pressed }) => ({
+                            minHeight: 48,
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            gap: 10,
+                            borderWidth: 1.5,
+                            borderColor: selected ? semantic.success : colors.lineSoft,
+                            borderRadius: 13,
+                            paddingHorizontal: 12,
+                            marginBottom: 8,
+                            opacity: pressed ? 0.78 : 1,
+                          })}
+                        >
+                          <View style={{ width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: selected ? semantic.success : colors.slate300, alignItems: 'center', justifyContent: 'center', backgroundColor: selected ? semantic.success : colors.surface }}>
+                            {selected ? <CheckIcon color={colors.surface} size={13} /> : null}
+                          </View>
+                          <FolderSmallIcon color={semantic.b2b} size={18} />
+                          <Text numberOfLines={1} style={[font('sub', 700), { color: colors.ink900, flex: 1 }]}>{target.name}</Text>
+                        </Pressable>
+                      );
+                    })}
+                  </ScrollView>
+                )}
               </View>
             ) : null}
 
@@ -654,6 +733,14 @@ export default function DocumentFolderScreen() {
         accessibilityRole="button"
         accessibilityLabel={`Sous-dossier ${child.name}`}
         accessibilityHint="Ouvre le sous-dossier. Un appui long affiche ses options."
+        accessibilityActions={[
+          { name: 'activate', label: 'Ouvrir le sous-dossier' },
+          { name: 'longpress', label: 'Gérer le sous-dossier' },
+        ]}
+        onAccessibilityAction={(event) => {
+          if (event.nativeEvent.actionName === 'longpress') manage();
+          else if (event.nativeEvent.actionName === 'activate') open();
+        }}
         onPress={open}
         onLongPress={manage}
         delayLongPress={450}
@@ -738,12 +825,4 @@ export default function DocumentFolderScreen() {
     );
   }
 
-  function InlineError({ label, onRetry }: { readonly label: string; readonly onRetry: () => void }) {
-    return (
-      <Card>
-        <Text accessibilityRole="alert" selectable style={[font('sub'), { color: semantic.danger, lineHeight: 19 }]}>{label}</Text>
-        <Button title="Réessayer" variant="secondary" size="compact" style={{ alignSelf: 'flex-start', marginTop: 10 }} onPress={onRetry} />
-      </Card>
-    );
-  }
 }

@@ -12,8 +12,8 @@ export interface CreateCreditNoteDeps {
 /**
  * Crée l'AVOIR TOTAL (brouillon) d'une facture émise (A6) — même use case pour l'UI et
  * pour Bob (parité d'actions). L'avoir s'émet ensuite par le circuit normal (IssueInvoice :
- * numéro A- sans trou, écriture comptable inverse). Anti-doublon : un avoir déjà présent
- * sur le même devis parent est retourné tel quel (idempotence de geste).
+ * numéro A- sans trou, écriture comptable inverse). Anti-doublon : l'idempotence porte sur
+ * l'identité de la facture source, jamais sur le devis parent qui peut avoir plusieurs pièces.
  */
 export class CreateCreditNote {
   constructor(private readonly deps: CreateCreditNoteDeps) {}
@@ -22,23 +22,18 @@ export class CreateCreditNote {
     const source = await this.deps.invoices.findById(input.invoiceId);
     if (!source) return err(appNotFound('invoice', input.invoiceId));
 
-    if (source.parentQuoteId) {
-      const existing = await this.deps.invoices.findByParentQuoteId(source.companyId, source.parentQuoteId, 'credit_note');
-      if (existing) return ok({ creditNoteId: existing.id });
-    }
+    const existing = await this.deps.invoices.findCreditNoteBySourceInvoiceId(source.companyId, source.id);
+    if (existing) return ok({ creditNoteId: existing.id });
 
     const created = Invoice.creditNoteFor(source, this.deps.ids.newId());
     if (!created.ok) return err(appDomain(created.error));
 
-    try {
-      await this.deps.invoices.save(created.value);
-    } catch (e) {
-      if (source.parentQuoteId) {
-        const raced = await this.deps.invoices.findByParentQuoteId(source.companyId, source.parentQuoteId, 'credit_note');
-        if (raced) return ok({ creditNoteId: raced.id });
-      }
-      throw e;
-    }
-    return ok({ creditNoteId: created.value.id });
+    // Le repository persistant publie l'avoir avec un upsert sur (tenant, sourceInvoiceId).
+    // On relit ensuite l'identité gagnante : deux requêtes concurrentes convergent sans devoir
+    // rattraper une unique violation dans une transaction PostgreSQL déjà avortée.
+    await this.deps.invoices.save(created.value);
+    const persisted = await this.deps.invoices.findCreditNoteBySourceInvoiceId(source.companyId, source.id);
+    if (!persisted) throw new Error('Credit note persistence invariant violated.');
+    return ok({ creditNoteId: persisted.id });
   }
 }

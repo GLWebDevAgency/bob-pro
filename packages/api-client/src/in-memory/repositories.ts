@@ -88,10 +88,20 @@ export class InMemoryInvoiceRepository implements InvoiceRepository {
   async findByParentQuoteId(companyId: string, parentQuoteId: string, kind: Invoice['kind']): Promise<Invoice | null> {
     return [...this.map.values()].find((i) => i.companyId === companyId && i.parentQuoteId === parentQuoteId && i.kind === kind) ?? null;
   }
+  async findCreditNoteBySourceInvoiceId(companyId: string, sourceInvoiceId: string): Promise<Invoice | null> {
+    return [...this.map.values()].find(
+      (invoice) => invoice.companyId === companyId && invoice.kind === 'credit_note' && invoice.creditNoteSource?.invoiceId === sourceInvoiceId,
+    ) ?? null;
+  }
   async listByCompany(companyId: string): Promise<Invoice[]> {
     return [...this.map.values()].filter((i) => i.companyId === companyId);
   }
   async save(i: Invoice): Promise<void> {
+    const sourceId = i.creditNoteSource?.invoiceId;
+    if (i.kind === 'credit_note' && sourceId) {
+      const existing = await this.findCreditNoteBySourceInvoiceId(i.companyId, sourceId);
+      if (existing && existing.id !== i.id) return;
+    }
     this.map.set(i.id, i);
   }
   async deleteById(id: string): Promise<void> {

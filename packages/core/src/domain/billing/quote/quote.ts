@@ -12,6 +12,9 @@ import { Quantity } from '../shared/quantity';
 import { computeTotals } from '../../services/compute-totals';
 import { assertTransition, type QuoteStatus, QUOTE_TRANSITIONS } from '../shared/state-machines';
 
+const MAX_QUOTE_QTY = 1_000_000;
+const MAX_QUOTE_HT_CENTS = 1_500_000_000;
+
 export interface ComposeQuoteInput {
   id: string;
   companyId: string;
@@ -103,17 +106,46 @@ export class Quote extends AggregateRoot<string> {
     const current = index === -1 ? undefined : this._lines[index];
     if (index === -1 || current === undefined)
       return err({ code: 'VALIDATION', field: 'lineId', message: 'Ligne introuvable.' });
+    const allowed = new Set(['label', 'qty', 'unitPriceHT', 'vatRate']);
+    if (Object.keys(patch).length === 0 || Object.keys(patch).some((key) => !allowed.has(key)))
+      return err({ code: 'VALIDATION', field: 'patch', message: 'Modification de ligne invalide.' });
     if (patch.qty !== undefined) {
       const q = Quantity.of(patch.qty);
       if (!q.ok) return q;
+      if (patch.qty > MAX_QUOTE_QTY)
+        return err({ code: 'VALIDATION', field: 'qty', message: 'Quantite hors limite.' });
     }
     if (patch.vatRate !== undefined && !isVatRate(patch.vatRate))
       return err({ code: 'VALIDATION', field: 'vatRate', message: 'Taux TVA non autorise.' });
-    if (patch.unitPriceHT !== undefined && (!Number.isSafeInteger(patch.unitPriceHT) || patch.unitPriceHT < 0))
+    if (
+      patch.unitPriceHT !== undefined
+      && (!Number.isSafeInteger(patch.unitPriceHT) || patch.unitPriceHT < 0 || patch.unitPriceHT > 1_500_000_000)
+    )
       return err({ code: 'VALIDATION', field: 'unitPriceHT', message: 'Prix unitaire invalide.' });
-    if (patch.label !== undefined && patch.label.trim().length === 0)
-      return err({ code: 'VALIDATION', field: 'label', message: 'Libelle requis.' });
-    this._lines[index] = { ...current, ...patch };
+    if (
+      patch.label !== undefined
+      && (
+        typeof patch.label !== 'string'
+        || patch.label.trim().length === 0
+        || patch.label.length > 500
+        || /[\u0000-\u001F\u007F]/.test(patch.label)
+      )
+    )
+      return err({ code: 'VALIDATION', field: 'label', message: 'Libelle invalide.' });
+    const candidate: QuoteLine = {
+      id: current.id,
+      label: patch.label !== undefined ? patch.label.trim() : current.label,
+      category: current.category,
+      qty: patch.qty !== undefined ? patch.qty : current.qty,
+      ...(current.unit !== undefined ? { unit: current.unit } : {}),
+      unitPriceHT: patch.unitPriceHT !== undefined ? patch.unitPriceHT : current.unitPriceHT,
+      vatRate: patch.vatRate !== undefined ? patch.vatRate : current.vatRate,
+    };
+    const nextLines = this._lines.map((line, lineIndex) => lineIndex === index ? candidate : line);
+    const totalHtCents = nextLines.reduce((total, line) => total + Math.round(line.qty * line.unitPriceHT), 0);
+    if (!Number.isSafeInteger(totalHtCents) || totalHtCents > MAX_QUOTE_HT_CENTS)
+      return err({ code: 'VALIDATION', field: 'lines', message: 'Montant total HT du devis hors limite.' });
+    this._lines[index] = candidate;
     return ok(undefined);
   }
 

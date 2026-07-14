@@ -124,7 +124,7 @@ export default function Cloture() {
   const docs = documents.data ?? [];
   // P0 (audit 14/07) : failed se lit TOUJOURS avec loading — un timeout réseau ne devient
   // jamais un allClear=true silencieux (socle combineQueryStates, cf. src/data/query-state.ts).
-  const queryState = combineQueryStates(invoices, quotes, documents, entries);
+  const queryState = combineQueryStates(invoices, quotes, documents, entries, company);
 
   const signedNotInvoiced = qs.filter((q) => q.status === 'signed' && !inv.some((i) => i.parentQuoteId === q.id));
   const invoicePdfIds = new Set(docs.filter((d) => d.kind === 'invoice_pdf' && d.linkedEntityId).map((d) => d.linkedEntityId));
@@ -178,11 +178,15 @@ export default function Cloture() {
   };
 
   const onSendDossier = async (): Promise<void> => {
+    if (!company.data) {
+      Alert.alert('Oups', "L'identité de l'entreprise n'est pas disponible. Réessaie avant de préparer le dossier.");
+      return;
+    }
     setSendingDossier(true);
     try {
       const now = new Date();
       const dossier = buildClosingDossier({
-        company: { name: company.data?.name ?? 'Mon entreprise', siren: company.data?.siren ?? '—' },
+        company: { name: company.data.name, siren: company.data.siren },
         // Exercice à date : mêmes états et même revue que l'écran (le FEC, lui, reste au mois).
         period: { from: reviewFrom, to: fecTo },
         generatedOn: `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`,

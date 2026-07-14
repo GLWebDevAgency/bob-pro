@@ -7,12 +7,14 @@
  * ne tourne pas — l'orchestrateur ne démarre le repli qu'après fermeture COMPLÈTE du primaire.
  */
 import type { AgentContext } from '@bob/ai';
+import type { RealtimeVoiceConfig } from '@bob/api-client';
 import type {
   LegacyVoiceFallbackPort,
   RealtimeResilienceEvent,
 } from '../realtime/realtime-resilience-orchestrator';
 import type { RealtimeFallbackReason, RealtimeTransportEvent } from '../realtime/realtime-transport';
 import type { RealtimeAgentControlReference } from '../realtime/realtime-event-codecs';
+import type { RealtimeVoiceControlReference } from '@bob/api-client';
 import {
   RealtimeContextPublisher,
   decideAgentControl,
@@ -53,18 +55,23 @@ export interface RealtimeTransportLike {
  * contrôle authentifié par NOTRE serveur, fencé sur le contexte réellement publié. */
 export interface RealtimeControlGateLike {
   acknowledge(
-    reference: RealtimeAgentControlReference,
+    reference: RealtimeAgentControlReference | RealtimeVoiceControlReference,
   ): Promise<import('../realtime/realtime-event-codecs').RealtimeAgentControl | null>;
   close?(): void;
 }
 
 export interface RealtimeSessionDeps {
-  /** Le serveur fait foi : entitlement voice_live + rollout intégrés dans `available`. */
-  readonly isAvailable: () => Promise<boolean>;
+  /**
+   * Une seule négociation par mission. Le snapshot exact est réutilisé par chaque tentative de
+   * reconnexion : aucun second GET ne peut faire basculer de provider au milieu d'une session.
+   */
+  readonly negotiate: () => Promise<RealtimeVoiceConfig | null>;
   readonly updateContext: RealtimeContextUpdateFn;
   /** Fabrique l'orchestrateur ; `onPrimaryCreated` capture chaque transport primaire frais. */
   readonly createOrchestrator: (
+    negotiation: RealtimeVoiceConfig,
     legacyFallback: LegacyVoiceFallbackPort,
+    currentFence: () => RealtimePublishedFence | null,
     onPrimaryCreated: (transport: RealtimeTransportLike) => void,
   ) => RealtimeOrchestratorLike;
   /** Fabrique le gate d'ACK, alimenté par NOTRE fence (publication confirmée serveur). */
@@ -106,7 +113,13 @@ export class RealtimeSessionController {
     // Un orchestrateur zombie (repli mid-call scellé sans stop explicite) meurt ici :
     // chaque start() repart d'un monde propre, jamais d'un transport mort.
     if (this.orchestrator) await this.teardown('user');
-    if (!(await this.deps.isAvailable())) return 'unavailable';
+    let negotiation: RealtimeVoiceConfig | null;
+    try {
+      negotiation = await this.deps.negotiate();
+    } catch {
+      return 'unavailable';
+    }
+    if (!negotiation?.available) return 'unavailable';
     if (gen !== this.generation) return 'unavailable'; // stop() pendant le await — rien n'a démarré
     this.contextPublished = false;
     const fallbackPort: LegacyVoiceFallbackPort = {
@@ -125,12 +138,17 @@ export class RealtimeSessionController {
         return { close: async () => undefined };
       },
     };
-    this.orchestrator = this.deps.createOrchestrator(fallbackPort, (transport) => {
+    this.orchestrator = this.deps.createOrchestrator(
+      negotiation,
+      fallbackPort,
+      () => this.publisher?.fence ?? null,
+      (transport) => {
       // Chaque primaire FRAIS naît micro fermé : le contexte part TOUJOURS avant la voix.
       transport.setMicrophoneEnabled(false);
       this.lastTransport = transport;
       this.contextPublished = false;
-    });
+      },
+    );
     this.controlGate = this.deps.createControlGate(() => this.publisher?.fence ?? null);
     this.unsubscribe = this.orchestrator.subscribe((event) => {
       void this.handleEvent(event);

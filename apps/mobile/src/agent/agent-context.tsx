@@ -113,17 +113,26 @@ export function AgentContextProvider({ children }: { readonly children: ReactNod
   }, []);
 
   const value = useMemo<AgentContextValue>(() => {
+    const entries = [...registrations.current.entries()];
     // Une publication focus-safe est toujours la plus recente. Les tabs sous-jacents peuvent
     // rester montes : leur cleanup de focus les retire avant que la route poussee ne parle.
-    const active = [...registrations.current.entries()].at(-1)?.[1];
+    const active = entries.at(-1)?.[1];
+    // Isolation (mode passage client, challenge GPT 20260714) : si UNE SEULE publication encore
+    // montée demande `hidden`, le bouton Bob reste masqué — pas seulement la DERNIÈRE. Un guard
+    // dédié (ex. OnsiteModeAgentGuard) reste monté tout le temps du mode isolé avec un contenu
+    // STABLE (jamais re-publié) ; sans ce OU, un écran sous-jacent qui republie son propre
+    // contexte pendant l'isolation (ex. refetch qui recrée `agentLayout`) redeviendrait « la
+    // dernière publication » et réafficherait le micro global — défense en profondeur du P0.
+    const hidden = entries.some(([, registration]) => registration.layout.hidden === true);
     const fallback: AgentContext = {
       screen: { name: normalizeScreen(pathname), instanceId: pathname || '/' },
       entities: EMPTY_ENTITIES,
       capabilities: EMPTY_CAPABILITIES,
     };
+    const resolvedLayout = active?.layout ?? {};
     return {
       context: active?.context ?? fallback,
-      layout: active?.layout ?? {},
+      layout: hidden ? { ...resolvedLayout, hidden: true } : resolvedLayout,
       surface: active?.surface ?? EMPTY_SURFACE,
       publish,
     };

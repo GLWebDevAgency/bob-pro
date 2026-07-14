@@ -112,16 +112,22 @@ export default function Comptabilite() {
   );
   // Bob voit le journal AFFICHÉ : « explique cette écriture » — lecture seule.
   const agentContext = useMemo<AgentContext>(
-    () => ({
-      screen: { name: 'comptabilite', instanceId: 'comptabilite' },
-      entities: sorted.slice(0, 10).map((entry) => ({
-        type: 'accounting_entry' as const,
-        id: entry.id,
-        label: `${entry.reference} — ${entry.label}`,
-      })),
-      capabilities: ['screen.read', 'accounting.read'],
-    }),
-    [sorted],
+    () => {
+      const canExposeAccounting =
+        entitlement.verified && entitled && !entries.isError && entries.data !== undefined;
+      return {
+        screen: { name: 'comptabilite', instanceId: 'comptabilite' },
+        entities: canExposeAccounting
+          ? sorted.slice(0, 10).map((entry) => ({
+              type: 'accounting_entry' as const,
+              id: entry.id,
+              label: `${entry.reference} — ${entry.label}`,
+            }))
+          : [],
+        capabilities: canExposeAccounting ? ['screen.read', 'accounting.read'] : ['screen.read'],
+      };
+    },
+    [entitlement.verified, entitled, entries.data, entries.isError, sorted],
   );
   usePublishAgentContext(agentContext);
 

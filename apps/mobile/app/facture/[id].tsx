@@ -173,7 +173,7 @@ export default function FactureDetail() {
       }
     : null;
 
-  if (invoice.isLoading || customers.isLoading) {
+  if (invoice.isLoading || invoices.isLoading || quotes.isLoading || customers.isLoading) {
     return (
       <View style={{ flex: 1, backgroundColor: colors.bg }}>
         <SkeletonHeader onClose={() => router.back()} />
@@ -187,12 +187,14 @@ export default function FactureDetail() {
   }
   // Un ÉCHEC réseau n'est JAMAIS un cul-de-sac : retry ET fermeture restent disponibles
   // (avant ce correctif l'utilisateur était piégé sans issue — bug P0 de l'audit états).
-  if (invoice.isError) {
+  if (invoice.isError || invoices.isError || quotes.isError || customers.isError) {
     return (
       <View style={{ flex: 1, justifyContent: 'center', backgroundColor: colors.bg, padding: 18 }}>
         <ErrorRetry
           message={t('piece.dataError', { personality })}
-          onRetry={() => void invoice.refetch()}
+          onRetry={() => {
+            void Promise.all([invoice.refetch(), invoices.refetch(), quotes.refetch(), customers.refetch()]);
+          }}
           secondaryLabel={t('piece.close', { personality })}
           onSecondaryAction={() => router.back()}
         />

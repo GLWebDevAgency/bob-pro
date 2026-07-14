@@ -14,29 +14,16 @@ export interface GenerateInvoiceDeps {
 export class GenerateInvoiceFromQuote {
   constructor(private readonly deps: GenerateInvoiceDeps) {}
 
-  async execute(input: { quoteId: string; mode?: 'deposit' | 'final' }): Promise<Result<{ invoiceId: string }, AppError>> {
+  async execute(input: { quoteId: string; mode: 'deposit' | 'final' }): Promise<Result<{ invoiceId: string }, AppError>> {
     const quote = await this.deps.quotes.findById(input.quoteId);
     if (!quote) return err(appNotFound('quote', input.quoteId));
 
-    const explicitMode = input.mode;
-    let mode: 'deposit' | 'final' = explicitMode ?? (quote.depositPct !== null ? 'deposit' : 'final');
-    let kind: 'deposit' | 'final' = mode === 'deposit' ? 'deposit' : 'final';
+    const mode = input.mode;
+    const kind: 'deposit' | 'final' = mode === 'deposit' ? 'deposit' : 'final';
     if (quote.status !== 'signed')
       return err(appDomain({ code: 'VALIDATION', field: 'quote', message: 'Le devis doit etre signe.' }));
 
-    let existing = await this.deps.invoices.findByParentQuoteId(quote.companyId, quote.id, kind);
-    // Mode INFÉRÉ (jamais fourni par l'appelant) sur un devis dont l'acompte est déjà facturé,
-    // sans finale : le "prochain pas" naturel est la finale, pas un rejeu silencieux de l'acompte
-    // (R3 : le bouton disait « générée » sans rien créer). Idempotence STRICTE préservée quand le
-    // mode est explicite (facture/[id].tsx envoie mode:'final' pour le solde d'un acompte).
-    if (existing && explicitMode === undefined && kind === 'deposit') {
-      const finalExisting = await this.deps.invoices.findByParentQuoteId(quote.companyId, quote.id, 'final');
-      if (!finalExisting) {
-        mode = 'final';
-        kind = 'final';
-        existing = null;
-      }
-    }
+    const existing = await this.deps.invoices.findByParentQuoteId(quote.companyId, quote.id, kind);
     if (existing) return ok({ invoiceId: existing.id });
 
     // Facture FINALE : TOUT ce qui a déjà été facturé sur ce devis (acompte ET situations
@@ -44,12 +31,27 @@ export class GenerateInvoiceFromQuote {
     // corrélé de bout en bout : devis → acompte → situations → solde exact.
     let depositDeduction: { amountCents: number; invoiceId: string | null } | undefined;
     if (mode === 'final') {
-      const alreadyInvoiced = (await this.deps.invoices.listByCompany(quote.companyId)).filter(
+      const companyInvoices = await this.deps.invoices.listByCompany(quote.companyId);
+      // Un avoir TOTAL n'annule la déduction qu'une fois émis. Un brouillon d'avoir n'a aucun
+      // effet fiscal ; l'identité source durable évite toute heuristique par devis ou montant.
+      const totallyCreditedSourceIds = new Set(
+        companyInvoices
+          .filter(
+            (invoice) =>
+              invoice.kind === 'credit_note' &&
+              invoice.status !== 'draft' &&
+              invoice.status !== 'cancelled' &&
+              invoice.creditNoteSource !== null,
+          )
+          .map((invoice) => invoice.creditNoteSource!.invoiceId),
+      );
+      const alreadyInvoiced = companyInvoices.filter(
         (i) =>
           i.parentQuoteId === quote.id &&
           (i.kind === 'deposit' || i.kind === 'situation') &&
           i.status !== 'draft' &&
-          i.status !== 'cancelled',
+          i.status !== 'cancelled' &&
+          !totallyCreditedSourceIds.has(i.id),
       );
       const amountCents = alreadyInvoiced.reduce((sum, i) => sum + i.totals().netToPay, 0);
       if (amountCents > 0) {

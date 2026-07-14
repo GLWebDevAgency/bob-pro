@@ -240,6 +240,7 @@ model Company {
   publicAccessTokens      PublicAccessToken[]
   expenses                Expense[]
   expenseCreationRequests ExpenseCreationRequest[]
+  quoteCreationRequests   QuoteCreationRequest[]
   documents               StoredDocument[]
   documentFolders         DocumentFolder[]
   folderDeletionPlans     DocumentFolderDeletionPlan[]
@@ -253,6 +254,7 @@ model Company {
   counters                DocumentCounter[]
   realtimeAdmissionEvents RealtimeAdmissionEvent[]
   realtimeSessionLeases   RealtimeSessionLease[]
+  realtimeMistralTickets  RealtimeMistralIngressTicket[]
   realtimeSpeechArtifacts RealtimeSpeechArtifact[]
   realtimeControlGrants   RealtimeControlGrant[]
   realtimeControlUses     RealtimeControlConsumption[]
@@ -297,14 +299,20 @@ model Quote {
   depositPct     Int?
   signerName     String?
   signedAt       DateTime?
+  // R4 : preuve de signature honnête — JSON { method: 'onsite_draw'|'remote_link', sha256?, capturedAt? }.
+  // NULL = ligne historique (méthode réelle inconnue, réhydratée 'legacy_declared', jamais réinventée).
+  // V1 : hash + méta uniquement ; l'archivage de l'image du tracé est l'évolution suivante.
+  signatureProof Json?
   totalsHt       Int         @default(0)
   totalsVat      Int         @default(0)
   totalsTtc      Int         @default(0)
   totalsNetToPay Int         @default(0)
   vatByRate      Json        @default("{}")
   lines          LineItem[]  @relation("QuoteLines")
+  creationRequests QuoteCreationRequest[]
 
   @@unique([companyId, number], name: "uniq_quote_number")
+  @@unique([id, companyId], name: "uniq_quote_id_company", map: "uniq_quote_id_company")
   @@index([companyId, status])
   @@map("quotes")
 }
@@ -320,6 +328,14 @@ model Invoice {
   issuedAt              DateTime?
   dueAt                 DateTime?
   parentQuoteId         String?
+  // Trace légale immuable de la facture exacte annulée par un avoir total.
+  // Les quatre champs sont tous NULL hors avoir et tous renseignés pour tout nouvel avoir.
+  sourceInvoiceId       String?
+  sourceInvoiceKind     DocKind?
+  sourceInvoiceNumber   String?
+  sourceInvoiceIssuedAt DateTime?
+  sourceInvoice         Invoice?      @relation("InvoiceCreditNotes", fields: [sourceInvoiceId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict)
+  creditNotes           Invoice[]     @relation("InvoiceCreditNotes")
   depositPct            Int?
   // Acompte déjà facturé, déduit du net à payer d'une finale (A2-C16).
   depositDeductionCents Int           @default(0)
@@ -335,7 +351,9 @@ model Invoice {
   payments              Payment[]
 
   @@unique([companyId, number], name: "uniq_invoice_number")
-  @@unique([companyId, parentQuoteId, kind], name: "uniq_invoice_parent_quote_kind")
+  @@unique([id, companyId], name: "uniq_invoice_id_company", map: "uniq_invoice_id_company")
+  @@unique([companyId, sourceInvoiceId], name: "uniq_credit_note_source_invoice", map: "uniq_credit_note_source_invoice")
+  @@index([companyId, parentQuoteId, kind], map: "invoices_parent_quote_kind_idx")
   @@index([companyId, status])
   @@index([dueAt])
   @@map("invoices")
@@ -346,7 +364,7 @@ model LineItem {
   quoteId     String?
   quote       Quote?       @relation("QuoteLines", fields: [quoteId], references: [id])
   invoiceId   String?
-  invoice     Invoice?     @relation("InvoiceLines", fields: [invoiceId], references: [id])
+  invoice     Invoice?     @relation("InvoiceLines", fields: [invoiceId], references: [id], onDelete: Restrict)
   position    Int
   label       String
   category    LineCategory
@@ -439,6 +457,28 @@ model ExpenseCreationRequest {
   @@id([companyId, keyHash], name: "expense_creation_request_key")
   @@index([expenseId, companyId])
   @@map("expense_creation_requests")
+}
+
+/// Registre d'idempotence des créations de devis. La clé brute n'est jamais stockée :
+/// keyHash est tenant-salé, payloadHash fige l'intention et les totaux figent la réponse originale.
+/// Le rôle runtime n'a que SELECT/INSERT ; les lignes publiées sont immuables.
+model QuoteCreationRequest {
+  companyId       String   @db.Text
+  company         Company  @relation(fields: [companyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  keyHash         String   @db.Char(64)
+  payloadHash     String   @db.Char(64)
+  quoteId         String
+  quote           Quote    @relation(fields: [quoteId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Cascade)
+  totalsHt        Int
+  totalsVat       Int
+  totalsTtc       Int
+  totalsNetToPay  Int
+  vatByRate       Json     @default("{}")
+  createdAt       DateTime @default(now()) @db.Timestamptz(6)
+
+  @@id([companyId, keyHash], name: "quote_creation_request_key")
+  @@index([quoteId, companyId])
+  @@map("quote_creation_requests")
 }
 
 model SupplierMemoryProfile {
@@ -755,7 +795,9 @@ model RealtimeSessionLease {
   sessionId                   String    @unique(map: "realtime_session_leases_session_id_key") @db.Uuid
   leaseTokenHash              String    @unique(map: "realtime_session_leases_token_hash_key") @db.Char(64)
   state                       String    @db.Text
-  providerCallId              String?   @unique(map: "realtime_session_leases_provider_call_id_key") @db.Text
+  // Identité du transport distante. Les deux champs restent NULL uniquement pendant `reserved`.
+  providerId                  String?   @db.Text
+  providerCallId              String?   @db.Text
   reaperTokenHash             String?   @unique(map: "realtime_session_leases_reaper_token_hash_key") @db.Char(64)
   reservedAt                  DateTime  @db.Timestamptz(6)
   leaseExpiresAt              DateTime  @db.Timestamptz(6)
@@ -771,21 +813,65 @@ model RealtimeSessionLease {
   sidebandOwnerInstanceHash   String?   @db.Char(64)
   sidebandOwnerTokenHash      String?   @unique(map: "realtime_session_leases_sideband_owner_token_hash_key") @db.Char(64)
   sidebandOwnerLeaseExpiresAt DateTime? @db.Timestamptz(6)
+  sidebandOwnerEpoch          Int       @default(0)
   // ACK du contexte effectivement appliqué par le sideband propriétaire. Il peut retarder
   // la révision publiée, mais doit la rejoindre avant toute publication audio ou action.
   contextAppliedRevision      Int?
   contextAppliedDigest        String?   @db.Char(64)
   contextAppliedAt            DateTime? @db.Timestamptz(6)
+  contextAppliedOwnerEpoch    Int?
   sidebandProtocolVersion     Int       @default(2)
   nextSpeechSequence          Int       @default(1)
   updatedAt                   DateTime  @db.Timestamptz(6)
   version                     Int       @default(1)
 
   @@id([companyId, subjectHash], name: "realtime_session_lease_subject")
+  @@unique([providerId, providerCallId], map: "realtime_session_leases_provider_call_identity_key")
   @@index([companyId, state, leaseExpiresAt], map: "realtime_session_leases_tenant_reaper_idx")
   @@index([state, leaseExpiresAt], map: "realtime_session_leases_global_reaper_idx")
   @@index([hardExpiresAt], map: "realtime_session_leases_hard_expiry_idx")
   @@map("realtime_session_leases")
+}
+
+/// Capacité one-shot du WSS PCM Mistral. Le ticket 256 bits et le userId restent absents de la
+/// base : seuls le SHA-256 du ticket et une identité AEAD liée au bail/contexte sont persistés.
+/// Les lignes terminales sont conservées un temps borné même après suppression du bail provider.
+model RealtimeMistralIngressTicket {
+  id                       String    @id @default(uuid()) @db.Uuid
+  companyId                String    @db.Text
+  company                  Company   @relation(fields: [companyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  subjectHash              String    @db.Char(64)
+  subjectKeyVersion        Int
+  sessionId                String    @db.Uuid
+  ticketHash               String    @unique(map: "realtime_mistral_ingress_tickets_ticket_hash_key") @db.Char(64)
+  protocol                 String    @db.Text
+  state                    String    @db.Text
+  plan                     String    @db.Text
+  contextSchemaVersion     Int
+  contextRevision          Int
+  contextDigest            String    @db.Char(64)
+  userIdentityCiphertext   Bytes
+  userIdentityNonce        Bytes
+  userIdentityTag          Bytes
+  identityEncryptionKeyVersion Int
+  maxAudioBytes            Int
+  providerSessionId        String?   @unique(map: "realtime_mistral_ingress_tickets_provider_session_key") @db.Text
+  providerTermination      String?   @db.Text
+  issuedAt                 DateTime  @db.Timestamptz(6)
+  ticketExpiresAt          DateTime  @db.Timestamptz(6)
+  bindingExpiresAt         DateTime? @db.Timestamptz(6)
+  hardExpiresAt            DateTime  @db.Timestamptz(6)
+  consumedAt               DateTime? @db.Timestamptz(6)
+  activatedAt              DateTime? @db.Timestamptz(6)
+  finishedAt               DateTime? @db.Timestamptz(6)
+  retentionExpiresAt       DateTime  @db.Timestamptz(6)
+  version                  Int       @default(1)
+
+  @@unique([companyId, sessionId], map: "realtime_mistral_ingress_tickets_session_key")
+  @@index([companyId, state, ticketExpiresAt], map: "realtime_mistral_ingress_tickets_tenant_state_idx")
+  @@index([companyId, issuedAt], map: "realtime_mistral_ingress_tickets_tenant_issued_idx")
+  @@index([companyId, retentionExpiresAt], map: "realtime_mistral_ingress_tickets_retention_idx")
+  @@map("realtime_mistral_ingress_tickets")
 }
 
 /// Segment audio Bob Live rendu hors du canal WebRTC descendant. La base ne conserve ni texte,
@@ -801,6 +887,8 @@ model RealtimeSpeechArtifact {
   sequence               Int                   @default(0)
   segmentIndex           Int
   renderTokenHash        String                @unique(map: "realtime_speech_artifacts_render_token_hash_key") @db.Char(64)
+  sidebandOwnerEpoch     Int
+  sidebandOwnerTokenHash String                @db.Char(64)
   state                  String                @db.Text
   classification         String                @db.Text
   source                 String?               @db.Text

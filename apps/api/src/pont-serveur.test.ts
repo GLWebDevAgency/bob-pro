@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ExecutionContext } from '@nestjs/common';
 import { jwtVerify } from 'jose';
@@ -1091,6 +1092,145 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
     });
   });
 
+  it('P0 R4 : createQuoteSignatureLink prépare/rotate le lien SANS AUCUN sortant', async () => {
+    const { service, notificationDelivery, p } = makeService();
+    await p.seed();
+    await asPrincipal(MERCIER, async () => {
+      const created = await service.createQuote({
+        customerId: 'cust-martin',
+        lines: [{ label: 'Lien sans sortant', category: 'labor', qty: 1, unitPriceHT: 10_000, vatRate: 20 }],
+      });
+      if (!created.ok) throw new Error('fixture: createQuote KO');
+      const sent = await service.sendQuote(created.value.quoteId);
+      if (!sent.ok || !sent.value.signatureToken) throw new Error('fixture: sendQuote KO');
+      const tokenFromEmailFlow = sent.value.signatureToken;
+      vi.mocked(notificationDelivery.enqueue).mockClear();
+
+      const link = await service.createQuoteSignatureLink(created.value.quoteId);
+      expect(link.ok).toBe(true);
+      if (!link.ok) return;
+      // AUCUN e-mail, AUCUN job d'outbox : c'était exactement le P0 (« envoyer le lien »
+      // mettait l'e-mail en outbox avant que le partage natif soit confirmé).
+      expect(notificationDelivery.enqueue).not.toHaveBeenCalled();
+      expect(link.value.signatureUrl.startsWith('https://demo.bobpro.fr/sign/')).toBe(true);
+
+      // Rotation réelle : l'ancien lien (celui du flux e-mail) est mort immédiatement…
+      const oldView = await service.publicQuoteForSignature(tokenFromEmailFlow);
+      expect(oldView.ok).toBe(false);
+      // …et le nouveau résout bien le devis.
+      const newToken = link.value.signatureUrl.split('/sign/')[1]!;
+      const newView = await service.publicQuoteForSignature(decodeURIComponent(newToken));
+      expect(newView.ok && newView.value.number).toBe(sent.value.number);
+    });
+  });
+
+  it('P0 R4 : une signature SUR PLACE révoque les liens publics actifs et persiste la preuve hachée', async () => {
+    const { service, p } = makeService();
+    await p.seed();
+    await asPrincipal(MERCIER, async () => {
+      const created = await service.createQuote({
+        customerId: 'cust-martin',
+        lines: [{ label: 'Signature onsite', category: 'labor', qty: 1, unitPriceHT: 10_000, vatRate: 20 }],
+      });
+      if (!created.ok) throw new Error('fixture: createQuote KO');
+      const sent = await service.sendQuote(created.value.quoteId);
+      if (!sent.ok || !sent.value.signatureToken) throw new Error('fixture: sendQuote KO');
+
+      const proofDataUrl = 'data:image/svg+xml;utf8,%3Csvg%20width%3D%22320%22%3E%3C/svg%3E';
+      const signed = await service.signQuote({
+        quoteId: created.value.quoteId,
+        signerName: 'M. Martin',
+        proofDataUrl,
+      });
+      expect(signed.ok && signed.value.status).toBe('signed');
+
+      // Le lien public encore actif ne doit PLUS rien exposer (nom du client, montants…)
+      // après une signature interne — révocation atomique dans la transaction de signature.
+      const view = await service.publicQuoteForSignature(sent.value.signatureToken);
+      expect(view.ok).toBe(false);
+
+      // Preuve persistée : méthode réelle + SHA-256 du dataURL — croisé avec node:crypto
+      // (sha256Hex core est pur TS : les deux implémentations doivent coïncider).
+      const quote = await p.quotes.findById(created.value.quoteId);
+      const expectedSha = createHash('sha256').update(proofDataUrl, 'utf8').digest('hex');
+      expect(quote?.signature?.method).toBe('onsite_draw');
+      expect(quote?.signature?.proof).toEqual({
+        method: 'onsite_draw',
+        sha256: expectedSha,
+        capturedAt: expect.any(String),
+      });
+      // Le dataURL lui-même n'est PAS retenu par la signature (hash + méta uniquement, V1).
+      expect(JSON.stringify(quote?.signature)).not.toContain('data:image/');
+    });
+  });
+
+  it('P0 R4 : course révocation → signature — le grant est REVALIDÉ dans la transaction, refus propre', async () => {
+    const { service, p } = makeService();
+    await p.seed();
+    const quoteId = await asPrincipal(MERCIER, async () => {
+      const created = await service.createQuote({
+        customerId: 'cust-martin',
+        lines: [{ label: 'Course de révocation', category: 'labor', qty: 1, unitPriceHT: 10_000, vatRate: 20 }],
+      });
+      if (!created.ok) throw new Error('fixture: createQuote KO');
+      const sent = await service.sendQuote(created.value.quoteId);
+      if (!sent.ok || !sent.value.signatureToken) throw new Error('fixture: sendQuote KO');
+      return { id: created.value.quoteId, token: sent.value.signatureToken };
+    });
+
+    // Simule la course exacte du challenge : la résolution initiale (hors transaction) voit
+    // encore le grant, puis une rotation/révocation concurrente aboutit AVANT l'écriture — la
+    // revalidation transactionnelle (2e findActive) ne le retrouve plus.
+    const realFindActive = p.publicAccessTokens.findActive.bind(p.publicAccessTokens);
+    let calls = 0;
+    const spy = vi.spyOn(p.publicAccessTokens, 'findActive').mockImplementation(async (token, at) => {
+      calls += 1;
+      if (calls >= 2) return null; // révoqué pendant la course
+      return realFindActive(token, at);
+    });
+    try {
+      const r = await service.publicSignQuote(quoteId.token, 'Client Distant');
+      expect(r.ok).toBe(false);
+      expect(spy.mock.calls.length).toBeGreaterThanOrEqual(2);
+    } finally {
+      spy.mockRestore();
+    }
+    // Refus PROPRE : rien n'a été écrit — le devis n'est pas signé.
+    await asPrincipal(MERCIER, async () => {
+      const view = await service.getQuote(quoteId.id);
+      expect(view.ok && view.value.status).toBe('sent');
+      const quote = await p.quotes.findById(quoteId.id);
+      expect(quote?.signature).toBeNull();
+    });
+  });
+
+  it('R4 : une signature à distance enregistre remote_link — jamais un tracé fabriqué', async () => {
+    const { service, p } = makeService();
+    await p.seed();
+    const fixture = await asPrincipal(MERCIER, async () => {
+      const created = await service.createQuote({
+        customerId: 'cust-martin',
+        lines: [{ label: 'Signature distante', category: 'labor', qty: 1, unitPriceHT: 10_000, vatRate: 20 }],
+      });
+      if (!created.ok) throw new Error('fixture: createQuote KO');
+      const sent = await service.sendQuote(created.value.quoteId);
+      if (!sent.ok || !sent.value.signatureToken) throw new Error('fixture: sendQuote KO');
+      return { id: created.value.quoteId, token: sent.value.signatureToken };
+    });
+
+    const signed = await service.publicSignQuote(fixture.token, 'Client Distant');
+    expect(signed.ok && signed.value.status).toBe('signed');
+
+    const quote = await p.quotes.findById(fixture.id);
+    expect(quote?.signature?.method).toBe('remote_link');
+    // Sans tracé transmis : AUCUNE preuve fabriquée (proof absent) — c'était le P0.
+    expect(quote?.signature?.proof).toBeUndefined();
+
+    // Le jeton utilisé est mort après signature (revalidation + révocation en transaction).
+    const replay = await service.publicSignQuote(fixture.token, 'Client Distant');
+    expect(replay.ok).toBe(false);
+  });
+
   it('refuse les formats et payloads audio invalides avant tout appel au provider STT', async () => {
     const { service } = makeService();
     await asPrincipal(MERCIER, async () => {
@@ -1897,6 +2037,32 @@ describe('enforcement des offres (pilier 2) — le serveur fait foi, jamais l\'U
     if (!started.ok) throw new Error('abonnement de test non constructible');
     return started.value;
   };
+
+  it('listAccountingEntries REFUSE sous Free (accounting_foundation)', async () => {
+    const { service } = makeService();
+    vi.spyOn(service as unknown as SubscriptionAuthority, 'subscriptionFor').mockReturnValue(
+      subscriptionOf('free') as never,
+    );
+
+    const result = await asPrincipal(MERCIER, () => service.listAccountingEntries());
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.kind).toBe('forbidden');
+      expect(JSON.stringify(result.error)).toContain('offre Solo');
+    }
+  });
+
+  it('listAccountingEntries PASSE à partir de Solo', async () => {
+    const { service } = makeService();
+    vi.spyOn(service as unknown as SubscriptionAuthority, 'subscriptionFor').mockReturnValue(
+      subscriptionOf('solo') as never,
+    );
+
+    const result = await asPrincipal(MERCIER, () => service.listAccountingEntries());
+
+    expect(result.ok).toBe(true);
+  });
 
   it('exportFec REFUSE sous Pro (accounting_operations) avec un message d\'upsell honnête', async () => {
     const { service } = makeService();

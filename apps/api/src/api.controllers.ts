@@ -9,6 +9,7 @@ import {
   Headers,
   Param,
   Query,
+  Header,
   HttpException,
   HttpStatus,
   StreamableFile,
@@ -74,6 +75,11 @@ const CREATE_QUOTE_FIELDS = new Set([
 ]);
 const CREATE_QUOTE_LINE_FIELDS = new Set(['label', 'category', 'qty', 'unit', 'unitPriceHT', 'vatRate']);
 const CREATE_QUOTE_CONTEXT_FIELDS = new Set(['housingOlderThan2y', 'energyRenovation']);
+const INVOICE_GENERATION_FIELDS = new Set(['mode']);
+const QUOTE_LINE_PATCH_FIELDS = new Set(['label', 'qty', 'unitPriceHT', 'vatRate']);
+const SIGN_QUOTE_FIELDS = new Set(['signerName', 'proofDataUrl']);
+// Tracé du pad : dataURL SVG/PNG de quelques Ko en pratique — borne large mais finie (anti-DoS).
+const SIGN_PROOF_MAX_CHARS = 512_000;
 const QUOTE_LINE_CATEGORIES = new Set(['labor', 'supply', 'travel', 'disbursement', 'subscription']);
 const QUOTE_VAT_RATES = new Set([0, 2.1, 5.5, 10, 20]);
 const MAX_QUOTE_LINES = 100;
@@ -120,6 +126,132 @@ function hasControlCharacter(value: string): boolean {
     const code = character.codePointAt(0) ?? 0;
     return code <= 0x1f || code === 0x7f;
   });
+}
+
+function hasForbiddenSignerCharacter(value: string): boolean {
+  if (hasControlCharacter(value)) return true;
+  return [...value].some((character) => {
+    const code = character.codePointAt(0) ?? 0;
+    return (
+      (code >= 0x80 && code <= 0x9f)
+      || (code >= 0x200b && code <= 0x200d)
+      || (code >= 0x202a && code <= 0x202e)
+      || (code >= 0x2066 && code <= 0x2069)
+      || code === 0xfeff
+    );
+  });
+}
+
+function parseInvoiceGenerationBody(body: Record<string, unknown>): { mode: 'deposit' | 'final' } {
+  const issues: ValidationIssue[] = [];
+  for (const field of Object.keys(body)) {
+    if (!INVOICE_GENERATION_FIELDS.has(field)) {
+      issues.push({ field: 'body', message: `Champ non autorisé : ${field}.` });
+    }
+  }
+  const mode = body['mode'];
+  if (mode !== 'deposit' && mode !== 'final') {
+    issues.push({ field: 'mode', message: 'Mode de facture requis (deposit | final).' });
+  }
+  if (issues.length > 0) throwValidationIssues(issues);
+  return { mode: mode as 'deposit' | 'final' };
+}
+
+function parseSignQuoteBody(body: Record<string, unknown>): { signerName: string; proofDataUrl?: string } {
+  const issues: ValidationIssue[] = [];
+  for (const field of Object.keys(body)) {
+    if (!SIGN_QUOTE_FIELDS.has(field)) {
+      issues.push({ field: 'body', message: `Champ non autorisé : ${field}.` });
+    }
+  }
+  const value = body['signerName'];
+  if (
+    typeof value !== 'string'
+    || value.trim().length < 2
+    || value.length > 120
+    || hasForbiddenSignerCharacter(value)
+  ) {
+    issues.push({ field: 'signerName', message: 'Nom du signataire invalide.' });
+  }
+  // R4 : tracé du pad (dataURL image), OPTIONNEL — jamais persisté tel quel, le serveur en
+  // calcule le SHA-256 (preuve d'intégrité). Absent = signature sans capture (preuve absente,
+  // jamais fabriquée).
+  const proof = body['proofDataUrl'];
+  if (proof !== undefined) {
+    if (
+      typeof proof !== 'string'
+      || !proof.startsWith('data:image/')
+      || proof.length > SIGN_PROOF_MAX_CHARS
+      || hasControlCharacter(proof)
+    ) {
+      issues.push({ field: 'proofDataUrl', message: 'Tracé de signature invalide.' });
+    }
+  }
+  if (issues.length > 0) throwValidationIssues(issues);
+  return {
+    signerName: (value as string).trim().replace(/\s+/g, ' '),
+    ...(proof !== undefined ? { proofDataUrl: proof as string } : {}),
+  };
+}
+
+function parseQuoteLinePatchBody(body: Record<string, unknown>): UpdateQuoteLineInput['patch'] {
+  const issues: ValidationIssue[] = [];
+  for (const field of Object.keys(body)) {
+    if (!QUOTE_LINE_PATCH_FIELDS.has(field)) {
+      issues.push({ field: 'body', message: `Champ non autorisé : ${field}.` });
+    }
+  }
+  if (![...QUOTE_LINE_PATCH_FIELDS].some((field) => Object.hasOwn(body, field))) {
+    issues.push({ field: 'body', message: 'Au moins un champ modifiable est requis.' });
+  }
+
+  const patch: UpdateQuoteLineInput['patch'] = {};
+  if (Object.hasOwn(body, 'label')) {
+    const value = body['label'];
+    if (
+      typeof value !== 'string'
+      || value.trim().length === 0
+      || value.length > 500
+      || hasControlCharacter(value)
+    ) {
+      issues.push({ field: 'label', message: 'Libellé requis (500 caractères maximum).' });
+    } else {
+      patch.label = value.trim();
+    }
+  }
+  if (Object.hasOwn(body, 'qty')) {
+    const value = body['qty'];
+    if (
+      typeof value !== 'number'
+      || !Number.isFinite(value)
+      || value <= 0
+      || value > 1_000_000
+      || Math.round(value * 1_000) !== value * 1_000
+    ) {
+      issues.push({ field: 'qty', message: 'Quantité positive avec 3 décimales maximum requise.' });
+    } else {
+      patch.qty = value;
+    }
+  }
+  if (Object.hasOwn(body, 'unitPriceHT')) {
+    const value = body['unitPriceHT'];
+    if (!Number.isSafeInteger(value) || (value as number) < 0 || (value as number) > MAX_QUOTE_HT_CENTS) {
+      issues.push({ field: 'unitPriceHT', message: 'Prix HT en centimes invalide.' });
+    } else {
+      patch.unitPriceHT = value as number;
+    }
+  }
+  if (Object.hasOwn(body, 'vatRate')) {
+    const value = body['vatRate'];
+    if (typeof value !== 'number' || !QUOTE_VAT_RATES.has(value)) {
+      issues.push({ field: 'vatRate', message: 'Taux de TVA invalide.' });
+    } else {
+      patch.vatRate = value as UpdateQuoteLineInput['patch']['vatRate'];
+    }
+  }
+
+  if (issues.length > 0) throwValidationIssues(issues);
+  return patch;
 }
 
 function requiredExpenseString(
@@ -748,26 +880,36 @@ export class QuotesController {
   async send(@Param('id') id: string) {
     return unwrap(await this.backend.sendQuote(id));
   }
+  /** P0 R4 : prépare/rotate le lien public de signature SANS AUCUN envoi (pas d'e-mail, pas
+   * d'outbox) — commande distincte de POST :id/send. Annuler le partage côté client = rien
+   * n'est parti. */
+  @Post(':id/signature-link')
+  async createSignatureLink(@Param('id') id: string) {
+    return unwrap(await this.backend.createQuoteSignatureLink(id));
+  }
   @Post(':id/sign')
-  async sign(@Param('id') id: string, @Body() body: { signerName: string }) {
-    return unwrap(await this.backend.signQuote({ quoteId: id, signerName: body.signerName }));
+  async sign(@Param('id') id: string, @Body() body: unknown) {
+    assertJsonObjectBody(body);
+    return unwrap(await this.backend.signQuote({ quoteId: id, ...parseSignQuoteBody(body) }));
   }
   @Post(':id/refuse')
   async refuse(@Param('id') id: string) {
     return unwrap(await this.backend.refuseQuote(id));
   }
   @Post(':id/invoice')
-  async invoice(@Param('id') id: string, @Body() body: { mode?: 'deposit' | 'final' }) {
-    return unwrap(await this.backend.generateInvoice({ quoteId: id, mode: body.mode }));
+  async invoice(@Param('id') id: string, @Body() body: unknown) {
+    assertJsonObjectBody(body);
+    return unwrap(await this.backend.generateInvoice({ quoteId: id, ...parseInvoiceGenerationBody(body) }));
   }
   /** R6 : édition d'une ligne de devis BROUILLON (le use case/l'agrégat gardent le statut). */
   @Patch(':id/lines/:lineId')
   async updateLine(
     @Param('id') id: string,
     @Param('lineId') lineId: string,
-    @Body() body: { label?: string; qty?: number; unitPriceHT?: number; vatRate?: number },
+    @Body() body: unknown,
   ) {
-    return unwrap(await this.backend.updateQuoteLine({ quoteId: id, lineId, patch: body as UpdateQuoteLineInput['patch'] }));
+    assertJsonObjectBody(body);
+    return unwrap(await this.backend.updateQuoteLine({ quoteId: id, lineId, patch: parseQuoteLinePatchBody(body) }));
   }
   /** R6 : suppression d'une ligne de devis BROUILLON. */
   @Delete(':id/lines/:lineId')
@@ -1070,13 +1212,21 @@ export class PublicSignatureController {
   constructor(private readonly backend: BackendService) {}
   @Get(':token')
   @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @Header('Cache-Control', 'no-store')
+  @Header('Referrer-Policy', 'no-referrer')
+  @Header('X-Robots-Tag', 'noindex, nofollow')
   async get(@Param('token') token: string) {
     return unwrap(await this.backend.publicQuoteForSignature(token));
   }
   @Post(':token')
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
-  async sign(@Param('token') token: string, @Body() body: { signerName: string }) {
-    return unwrap(await this.backend.publicSignQuote(token, body.signerName));
+  @Header('Cache-Control', 'no-store')
+  @Header('Referrer-Policy', 'no-referrer')
+  @Header('X-Robots-Tag', 'noindex, nofollow')
+  async sign(@Param('token') token: string, @Body() body: unknown) {
+    assertJsonObjectBody(body);
+    const parsed = parseSignQuoteBody(body);
+    return unwrap(await this.backend.publicSignQuote(token, parsed.signerName, parsed.proofDataUrl));
   }
 }
 

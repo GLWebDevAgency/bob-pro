@@ -41,6 +41,10 @@ class MemoryInvoices implements InvoiceRepository {
     return null;
   }
 
+  async findCreditNoteBySourceInvoiceId(): Promise<Invoice | null> {
+    return null;
+  }
+
   async listByCompany(companyId: string): Promise<Invoice[]> {
     return this.row?.companyId === companyId ? [Invoice.rehydrate(this.row.toSnapshot())] : [];
   }

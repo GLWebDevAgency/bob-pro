@@ -34,6 +34,7 @@ function makeDeps(invoice: Invoice | null, lockedInvoice: Invoice | null = invoi
     findById: async () => invoice,
     lockById: async () => lockedInvoice,
     findByParentQuoteId: async () => null,
+    findCreditNoteBySourceInvoiceId: async () => null,
     listByCompany: async () => [],
     save: async () => {},
     deleteById: async () => {

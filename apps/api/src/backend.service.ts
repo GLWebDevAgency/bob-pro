@@ -56,7 +56,9 @@ import {
   ValidateVatNumber,
   SearchAddress,
   CreateQuoteSignatureToken,
+  CreateQuoteSignatureLink,
   ResolveQuoteSignatureToken,
+  sha256Hex,
   StoreDocument,
   ListDocuments,
   ClassifyDocument,
@@ -754,9 +756,48 @@ export class BackendService {
     this.logger.audit('quote.email_queued', { quoteId: quote.id, number, to: email, jobId: job.id });
     return 'queued';
   }
-  async signQuote(input: { quoteId: string; signerName: string }) {
+  /**
+   * R4 — signature sur place (authentifiée). Le tracé du pad arrive en `proofDataUrl` : le
+   * serveur en calcule le SHA-256 (preuve d'intégrité) et NE STOCKE PAS le dataURL lui-même
+   * (V1 : hash + méta ; l'archivage de l'image est l'évolution suivante). SignQuote révoque
+   * aussi, dans la même transaction, tous les liens publics actifs du devis.
+   */
+  async signQuote(input: { quoteId: string; signerName: string; proofDataUrl?: string }) {
     if (!(await this.ownedQuote(input.quoteId))) return { ok: false as const, error: appNotFound('quote', input.quoteId) };
-    return new SignQuote({ quotes: this.p.quotes, uow: this.p, clock: this.clock }).execute(input);
+    const r = await new SignQuote({
+      quotes: this.p.quotes,
+      publicAccessTokens: this.p.publicAccessTokens,
+      uow: this.p,
+      clock: this.clock,
+    }).execute({
+      quoteId: input.quoteId,
+      signerName: input.signerName,
+      ...(input.proofDataUrl ? { proofSha256: sha256Hex(input.proofDataUrl) } : {}),
+    });
+    if (r.ok) {
+      // Jamais le nom du signataire ni le tracé dans les logs — corrélation technique seulement.
+      this.logger.audit('quote.signed_onsite', { quoteId: input.quoteId, withProof: Boolean(input.proofDataUrl) });
+    }
+    return r;
+  }
+
+  /**
+   * P0 R4 — « Envoyer le lien » ne doit RIEN envoyer : prépare/rotate le lien public de
+   * signature SANS e-mail ni outbox (commande distincte de sendQuote). Annuler le partage
+   * côté mobile = rien n'est parti ; l'ancien lien est révoqué par la rotation.
+   */
+  async createQuoteSignatureLink(
+    quoteId: string,
+  ): Promise<Result<{ signatureUrl: string; expiresAt: string }, AppError>> {
+    if (!(await this.ownedQuote(quoteId))) return { ok: false as const, error: appNotFound('quote', quoteId) };
+    const link = await new CreateQuoteSignatureLink({
+      quotes: this.p.quotes,
+      publicAccessTokens: this.p.publicAccessTokens,
+      clock: this.clock,
+    }).execute({ quoteId });
+    if (!link.ok) return link;
+    this.logger.audit('quote.signature_link_created', { quoteId, expiresAt: link.value.expiresAt });
+    return ok({ signatureUrl: publicSignatureUrl(link.value.token), expiresAt: link.value.expiresAt });
   }
   async refuseQuote(quoteId: string) {
     if (!(await this.ownedQuote(quoteId))) return { ok: false as const, error: appNotFound('quote', quoteId) };
@@ -979,6 +1020,12 @@ export class BackendService {
   }
 
   listAccountingEntries() {
+    if (!this.subscriptionFor(this.companyId()).can('accounting_foundation')) {
+      return Promise.resolve({
+        ok: false as const,
+        error: appForbidden("Le journal comptable est inclus à partir de l'offre Solo."),
+      });
+    }
     return new ListAccountingEntries({ entries: this.p.accountingEntries }).execute({ companyId: this.companyId() });
   }
 
@@ -1032,7 +1079,10 @@ export class BackendService {
     });
   }
 
-  async publicSignQuote(token: string, signerName: string): Promise<Result<{ status: string }, AppError>> {
+  async publicSignQuote(token: string, signerName: string, proofDataUrl?: string): Promise<Result<{ status: string }, AppError>> {
+    // Résolution initiale HORS transaction : elle ne sert qu'à connaître le tenant (runWithTenant)
+    // et à refuser tôt un jeton mort. L'autorisation qui compte est la REVALIDATION que SignQuote
+    // effectue DANS la transaction de signature (P0 — course révocation/rotation → signature).
     const grant = await this.resolveSignatureGrant(token);
     if (!grant.ok) return grant;
     return this.p.runWithTenant(grant.value.companyId, async () => {
@@ -1048,11 +1098,27 @@ export class BackendService {
         if (expired.ok) this.logger.audit('quote.expired', { quoteId: grant.value.quoteId, status: expired.value.status });
         return { ok: false, error: appForbidden('Devis expiré : signature impossible.') };
       }
-      const r = await new SignQuote({ quotes: this.p.quotes, uow: this.p, clock: this.clock }).execute({ quoteId: grant.value.quoteId, signerName });
+      // method = 'remote_link', TOUJOURS : le serveur ne fabrique jamais un tracé qu'il n'a pas
+      // reçu (P0). Si la page sign-web capture un jour un tracé, son hash devient la preuve —
+      // sans tracé, la signature reste honnêtement « lien distant, sans capture ».
+      const r = await new SignQuote({
+        quotes: this.p.quotes,
+        publicAccessTokens: this.p.publicAccessTokens,
+        uow: this.p,
+        clock: this.clock,
+      }).execute({
+        quoteId: grant.value.quoteId,
+        signerName,
+        remoteGrant: { token, grantId: grant.value.grantId },
+        ...(proofDataUrl ? { proofSha256: sha256Hex(proofDataUrl) } : {}),
+      });
       if (r.ok) {
-        await this.p.publicAccessTokens.markUsed(grant.value.grantId, this.clock.now());
-        await this.p.publicAccessTokens.revoke(grant.value.grantId, this.clock.now());
-        this.logger.audit('quote.public_signed', { quoteId: grant.value.quoteId, signerName });
+        // La révocation de TOUS les grants actifs du devis a eu lieu DANS la transaction de
+        // signature (SignQuote) — plus aucun effet token post-commit à rejouer ici.
+        // Le journal technique corrèle l'événement sans dupliquer le nom du signataire dans
+        // les logs. La future preuve probante appartiendra au stockage métier chiffré, pas à
+        // l'observabilité générale.
+        this.logger.audit('quote.public_signed', { quoteId: grant.value.quoteId });
       }
       return r;
     });

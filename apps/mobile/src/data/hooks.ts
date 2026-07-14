@@ -677,11 +677,29 @@ export function useSendQuote() {
   });
 }
 
+/**
+ * P0 R4 : « Envoyer le lien » ne doit RIEN envoyer — prépare/rotate le lien de signature SANS
+ * e-mail ni outbox (POST /quotes/:id/signature-link). Le partage (Share natif) reste côté
+ * appelant : l'annuler = rien n'est parti. Aucune invalidation : cette commande ne change ni
+ * le statut du devis ni ses montants.
+ */
+export function useCreateQuoteSignatureLink() {
+  const client = useBobClient();
+  return useMutation({
+    mutationFn: async (quoteId: string) => {
+      const r = await client.createQuoteSignatureLink(quoteId);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+  });
+}
+
 export function useSignQuote() {
   const client = useBobClient();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (input: { quoteId: string; signerName: string }) => {
+    /** R4 : `proofDataUrl` = tracé du pad — le serveur en calcule le hash de preuve. */
+    mutationFn: async (input: { quoteId: string; signerName: string; proofDataUrl?: string }) => {
       const r = await client.signQuote(input);
       if (!r.ok) throw r.error;
       return r.value;
@@ -713,7 +731,7 @@ export function useGenerateInvoice() {
   const client = useBobClient();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (input: { quoteId: string; mode?: 'deposit' | 'final' }) => {
+    mutationFn: async (input: { quoteId: string; mode: 'deposit' | 'final' }) => {
       const r = await client.generateInvoice(input);
       if (!r.ok) throw r.error;
       return r.value;

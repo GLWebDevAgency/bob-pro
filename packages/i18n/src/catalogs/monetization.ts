@@ -102,7 +102,9 @@ export const monetizationFr = {
     direct: '≈{minutes} min d’admin en moins.',
   },
   'digest.volume': same('{count} documents créés cette semaine.'),
+  'digest.volumeOne': same('1 document créé cette semaine.'),
   'digest.estimateNote': same('Le temps gagné est une estimation ; les montants sont tes chiffres réels.'),
+  'digest.openMoneyHint': same('Ouvre le détail dans Argent.'),
 
   // ── Win-back (valeur dormante) ──
   'winback.expiringQuote': {

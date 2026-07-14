@@ -31,7 +31,16 @@
  * Zéro hex/rgba : useTheme()/@bob/tokens. Zéro import de src/components/ui (ancien kit).
  */
 import { useMemo, useState } from 'react';
-import { KeyboardAvoidingView, Platform, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
+import {
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 import { useRouter } from 'expo-router';
 import {
   deriveCustomerStandings,
@@ -48,9 +57,12 @@ import {
   Button,
   Card,
   Chip,
+  EmptyState,
+  ErrorRetry,
   Fab,
   InnerScreenHeader,
   Sheet,
+  SkeletonRow as BaseSkeletonRow,
   StatusBadge,
   Toast,
   font,
@@ -58,6 +70,7 @@ import {
   type StatusBadgeVariant,
 } from '@bob/ui';
 import { useCreateCustomer, useCustomers, useInvoices, useQuotes } from '../../src/data/hooks';
+import { combineQueryStates } from '../../src/data/query-state';
 import { usePublishAgentContext, type AgentContext } from '../../src/agent';
 import { CheckIcon, ChevronRightIcon, PlusIcon, SearchIcon } from '../../src/components/icons';
 
@@ -213,18 +226,10 @@ function SearchField({ value, onChange }: { value: string; onChange: (next: stri
 }
 
 /** Skeleton d'une rangée client (même gabarit : avatar 44, deux lignes, montant). */
-function SkeletonRow() {
-  const { colors, radius } = useTheme();
+function ClientSkeletonRow() {
   return (
     <Card radius={16} padding={0} style={{ paddingHorizontal: 14 }}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 13 }}>
-        <View style={{ width: 44, height: 44, borderRadius: radius.squircle, backgroundColor: colors.lineSoft }} />
-        <View style={{ flex: 1, gap: 7 }}>
-          <View style={{ height: 15, width: '55%', borderRadius: 6, backgroundColor: colors.lineSoft }} />
-          <View style={{ height: 12, width: '40%', borderRadius: 6, backgroundColor: colors.lineSoft }} />
-        </View>
-        <View style={{ height: 14, width: 54, borderRadius: 6, backgroundColor: colors.lineSoft }} />
-      </View>
+      <BaseSkeletonRow avatar="square" avatarSize={44} trailing="text" style={{ paddingVertical: 13 }} />
     </Card>
   );
 }
@@ -455,8 +460,10 @@ export default function Clients() {
     );
   }, [sorted, filter, query]);
 
-  const booting = customers.isLoading || invoices.isLoading || quotes.isLoading;
-  const hasError = customers.isError || invoices.isError || quotes.isError;
+  const queryState = combineQueryStates(customers, invoices, quotes);
+  const booting = queryState.loading;
+  const hasError = queryState.failed;
+  const refreshing = customers.isRefetching || invoices.isRefetching || quotes.isRefetching;
   const carnet = customers.data;
   const totalCents = pendingTotalCents(standings);
 
@@ -486,6 +493,14 @@ export default function Clients() {
         style={{ flex: 1 }}
         contentContainerStyle={{ paddingBottom: 140 }}
         keyboardShouldPersistTaps="handled"
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={queryState.refetchAll}
+            tintColor={colors.ink800}
+            colors={[colors.ink800]}
+          />
+        }
       >
         <InnerScreenHeader
           eyebrow={t('clients.eyebrow', { personality })}
@@ -517,43 +532,31 @@ export default function Clients() {
 
         <View style={{ paddingHorizontal: 18, paddingTop: 8, gap: 10 }}>
           {hasError ? (
-            <Card>
-              <Text style={[font('sub'), { color: colors.slate500 }]}>
-                {t('clients.dataError', { personality })}
-              </Text>
-            </Card>
-          ) : null}
-
-          {booting ? (
+            <ErrorRetry
+              message={t('clients.dataError', { personality })}
+              onRetry={queryState.refetchAll}
+            />
+          ) : booting ? (
             <>
-              <SkeletonRow />
-              <SkeletonRow />
-              <SkeletonRow />
-              <SkeletonRow />
+              <ClientSkeletonRow />
+              <ClientSkeletonRow />
+              <ClientSkeletonRow />
+              <ClientSkeletonRow />
             </>
           ) : carnet === undefined ? null /* erreur : la carte clients.dataError ci-dessus parle déjà */ : carnet.length ===
             0 ? (
             // 0 client : invitation à créer — même point d'entrée que le « + » et le Fab.
             <Card radius={18} padding={18}>
-              <Text style={[font('cardTitle'), { color: colors.ink800 }]}>
-                {t('clients.emptyTitle', { personality })}
-              </Text>
-              <Text style={[font('sub'), { color: colors.slate500, lineHeight: 19, marginTop: 5 }]}>
-                {t('clients.emptyBody', { personality })}
-              </Text>
-              <Button
-                title={t('clients.emptyCta', { personality })}
-                variant="primary"
-                style={{ marginTop: 14 }}
-                onPress={openCreate}
+              <EmptyState
+                title={t('clients.emptyTitle', { personality })}
+                body={t('clients.emptyBody', { personality })}
+                cta={{ label: t('clients.emptyCta', { personality }), onPress: openCreate }}
               />
             </Card>
           ) : list.length === 0 ? (
             // 0 résultat (recherche/filtre) : état de premier rang, jamais une liste inventée.
             <Card>
-              <Text style={[font('sub'), { color: colors.slate500 }]}>
-                {t('clients.noResults', { personality })}
-              </Text>
+              <EmptyState body={t('clients.noResults', { personality })} />
             </Card>
           ) : (
             list.map((customer) => {

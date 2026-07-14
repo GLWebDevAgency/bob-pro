@@ -79,7 +79,7 @@ describe('deriveTodayPriorities', () => {
       clock: env.clock,
     });
     const send = new SendQuote({ quotes: env.quoteRepo, counters: env.counters, uow: env.uow, clock: env.clock });
-    const sign = new SignQuote({ quotes: env.quoteRepo, uow: env.uow, clock: env.clock });
+    const sign = new SignQuote({ quotes: env.quoteRepo, publicAccessTokens: env.publicAccessTokens, uow: env.uow, clock: env.clock });
     const generate = new GenerateInvoiceFromQuote({ quotes: env.quoteRepo, invoices: env.invoiceRepo, ids: env.ids });
     const issue = new IssueInvoice({
       invoices: env.invoiceRepo,

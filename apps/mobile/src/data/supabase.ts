@@ -1,6 +1,6 @@
 import 'react-native-url-polyfill/auto';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { createClient, processLock, type SupabaseClient } from '@supabase/supabase-js';
 
 const url = process.env.EXPO_PUBLIC_SUPABASE_URL;
 const anon = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
@@ -15,6 +15,11 @@ export const supabase: SupabaseClient | null = supabaseEnabled
         autoRefreshToken: true,
         persistSession: true,
         detectSessionInUrl: false,
+        // Le reset reçoit un code à usage unique plutôt que les jetons de session dans l'URL.
+        // Le parseur recovery conserve le support implicite pour les emails déjà émis.
+        flowType: 'pkce',
+        // Recommandation officielle RN : sérialise refresh, échange PKCE et updateUser.
+        lock: processLock,
       },
     })
   : null;

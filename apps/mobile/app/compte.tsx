@@ -27,10 +27,11 @@
  * de la structure C26. Zéro hex/rgba : useTheme()/@bob/tokens uniquement.
  */
 import { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, Text, View } from 'react-native';
+import { Pressable, RefreshControl, ScrollView, Text, View } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
+import { Feather } from '@expo/vector-icons';
 import {
   deriveAccountView,
   diffPlanChange,
@@ -51,10 +52,15 @@ import {
   Avatar,
   Button,
   Card,
+  EmptyState,
+  ErrorRetry,
   IconTile,
   InnerScreenHeader,
   SectionHeader,
   SegmentedControl,
+  Skeleton,
+  SkeletonCard,
+  SkeletonRow,
   StatusBadge,
   font,
   parseGradient,
@@ -90,6 +96,38 @@ const SERVICE_LABEL_KEYS: Record<AccountServiceKey, { title: I18nKey; sub: I18nK
   insurance: { title: 'account.serviceInsurance', sub: 'account.serviceInsuranceSub' },
   accountant: { title: 'account.serviceAccountant', sub: 'account.serviceAccountantSub' },
 };
+
+function ProfileSkeleton({ label }: { label: string }) {
+  return (
+    <View style={{ gap: 12 }} accessibilityRole="progressbar" accessibilityLabel={label}>
+      <Skeleton height={17} width="34%" radius={8} />
+      <Card padding={0} style={{ paddingHorizontal: 15 }}>
+        {Array.from({ length: 4 }, (_, index) => (
+          <View key={index} style={{ paddingVertical: 11 }}>
+            <Skeleton height={13} width={index % 2 === 0 ? '72%' : '58%'} radius={6} />
+          </View>
+        ))}
+      </Card>
+      <SkeletonCard height={72} contentLines={2} />
+      <SkeletonCard height={176} contentLines={4} />
+    </View>
+  );
+}
+
+function SubscriptionSkeleton({ label }: { label: string }) {
+  return (
+    <View style={{ gap: 12 }} accessibilityRole="progressbar" accessibilityLabel={label}>
+      <Skeleton height={126} radius={20} />
+      <Skeleton height={17} width="42%" radius={8} />
+      <SkeletonCard height={164} contentLines={4} />
+      <SkeletonCard height={164} contentLines={4} />
+      <Card padding={0} style={{ paddingHorizontal: 15 }}>
+        <SkeletonRow avatar="square" trailing="pill" style={{ minHeight: 76 }} />
+        <SkeletonRow avatar="square" trailing="pill" style={{ minHeight: 76 }} />
+      </Card>
+    </View>
+  );
+}
 
 export default function Compte() {
   const { colors, semantic, controls, overlays, radius, grad, personality } = useTheme();
@@ -149,7 +187,7 @@ export default function Compte() {
           accessibilityLabel={say('account.back')}
           onPress={() => router.back()}
           hitSlop={8}
-          style={{ flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'flex-start', minHeight: 34 }}
+          style={{ flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'flex-start', minHeight: 44 }}
         >
           <ChevronLeftIcon color={colors.ink800} size={18} strokeWidth={2.2} />
           <Text style={[font('label', 600), { fontSize: 15, color: colors.ink800 }]}>
@@ -180,20 +218,18 @@ export default function Compte() {
         style={{ flex: 1 }}
         contentContainerStyle={{ paddingHorizontal: 18, paddingTop: 16, paddingBottom: insets.bottom + 34 }}
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={tab === 'profil' ? profile.isRefetching : subscription.isRefetching}
+            onRefresh={() => {
+              if (tab === 'profil') void profile.refetch();
+              else void subscription.refetch();
+            }}
+            tintColor={colors.ink800}
+            colors={[colors.ink800]}
+          />
+        }
       >
-        {profile.isLoading ? (
-          <Card style={{ marginBottom: 16, alignItems: 'center' }}>
-            <ActivityIndicator color={colors.ink800} />
-          </Card>
-        ) : null}
-        {profile.isError ? (
-          <Card style={{ marginBottom: 16, borderColor: semantic.danger }}>
-            <Text accessibilityRole="alert" style={[font('sub'), { color: semantic.danger }]}>
-              {say('account.dataError')}
-            </Text>
-          </Card>
-        ) : null}
-
         {tab === 'profil' ? (
           <>
             {/* Identité — jamais en dur : useIdentity (seed en démo) + email de la session réelle */}
@@ -209,6 +245,12 @@ export default function Compte() {
               </View>
             </View>
 
+            {profile.isLoading ? (
+              <ProfileSkeleton label={say('account.profileLoading')} />
+            ) : profile.isError ? (
+              <ErrorRetry message={say('account.dataError')} onRetry={() => void profile.refetch()} />
+            ) : (
+              <>
             <SectionHeader title={say('account.sectionCompany')} />
             <Card padding={15} style={{ marginBottom: 16 }}>
               {view.profile.company ? (
@@ -322,7 +364,9 @@ export default function Compte() {
             {/* Parrainage — teaser honnête : aucun flux de parrainage n'existe encore */}
             <Card padding={15} style={{ marginBottom: 16, backgroundColor: semantic.aiBg, borderColor: semantic.aiBg }}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 13 }}>
-                <Text style={{ fontSize: 22 }}>🎁</Text>
+                <IconTile tone="b2g" size={34} radius={11}>
+                  <Feather name="gift" size={18} color={semantic.ai} />
+                </IconTile>
                 <View style={{ flex: 1 }}>
                   <Text style={[font('sub', 700), { fontSize: 14.5, color: semantic.ai }]}>
                     {say('account.referralTitle')}
@@ -354,6 +398,8 @@ export default function Compte() {
                 />
               </View>
             </Card>
+              </>
+            )}
 
             {authEnabled ? (
               <Button
@@ -365,6 +411,15 @@ export default function Compte() {
           </>
         ) : (
           <>
+            {subscription.isLoading ? (
+              <SubscriptionSkeleton label={say('account.subscriptionLoading')} />
+            ) : subscription.isError ? (
+              <ErrorRetry
+                message={say('account.subscriptionError')}
+                onRetry={() => void subscription.refetch()}
+              />
+            ) : (
+              <>
             {/* Offre courante — la VÉRITÉ produit (accès anticipé), jamais un plan « ACTIVE » inventé */}
             <View style={[{ borderRadius: 20, marginBottom: 18 }, shadowComponentsNative.heroMoney]}>
               <LinearGradient
@@ -524,7 +579,7 @@ export default function Compte() {
             </View>
             <Card padding={15} style={{ marginBottom: 18 }}>
               {view.subscription.invoices.length === 0 ? (
-                <Text style={[font('sub'), { color: colors.slate500 }]}>{say('account.invoicesEmpty')}</Text>
+                <EmptyState body={say('account.invoicesEmpty')} />
               ) : (
                 view.subscription.invoices.map((invoice, index) => (
                   <View
@@ -597,6 +652,8 @@ export default function Compte() {
                 </View>
               ))}
             </Card>
+              </>
+            )}
           </>
         )}
       </ScrollView>

@@ -627,10 +627,14 @@ describe('HttpBobClient', () => {
     expect(creditNote.ok && creditNote.value).toEqual({ creditNoteId: 'inv-2' });
   });
 
-  it('R6 : updateQuoteLine / removeQuoteLine / deleteDraftInvoice frappent EXACTEMENT les routes servies', async () => {
+  it('R3/R6 : génération explicite et mutations draft frappent EXACTEMENT les routes servies', async () => {
     const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
       const u = String(url);
       const method = init?.method ?? 'GET';
+      if (u === 'https://api.bob.test/quotes/quote-1/invoice' && method === 'POST') {
+        expect(JSON.parse(String(init?.body))).toEqual({ mode: 'final' });
+        return new Response(JSON.stringify({ invoiceId: 'inv-9' }), { headers: { 'content-type': 'application/json' } });
+      }
       if (u === 'https://api.bob.test/quotes/quote-1/lines/line-1' && method === 'PATCH') {
         expect(JSON.parse(String(init?.body))).toEqual({ qty: 3, unitPriceHT: 9000 });
         return new Response(JSON.stringify({ status: 'draft' }), { headers: { 'content-type': 'application/json' } });
@@ -646,6 +650,9 @@ describe('HttpBobClient', () => {
     vi.stubGlobal('fetch', fetchMock);
     const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-mercier' });
 
+    const generated = await client.generateInvoice({ quoteId: 'quote-1', mode: 'final' });
+    expect(generated.ok && generated.value).toEqual({ invoiceId: 'inv-9' });
+
     const updated = await client.updateQuoteLine({ quoteId: 'quote-1', lineId: 'line-1', patch: { qty: 3, unitPriceHT: 9000 } });
     expect(updated.ok && updated.value).toEqual({ status: 'draft' });
 
@@ -654,6 +661,47 @@ describe('HttpBobClient', () => {
 
     const deleted = await client.deleteDraftInvoice('inv-9');
     expect(deleted.ok && deleted.value).toEqual({ deleted: true });
+  });
+
+  it('P0 R4 : signature-link et sign frappent les routes exactes avec le corps exact', async () => {
+    const proofDataUrl = 'data:image/svg+xml;utf8,%3Csvg%3E%3C/svg%3E';
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      const u = String(url);
+      const method = init?.method ?? 'GET';
+      if (u === 'https://api.bob.test/quotes/quote-1/signature-link' && method === 'POST') {
+        // Préparer le lien n'envoie AUCUN corps métier : pas d'e-mail, pas de destinataire.
+        expect(init?.body ?? undefined).toBeUndefined();
+        return new Response(
+          JSON.stringify({ signatureUrl: 'https://demo.bobpro.fr/sign/pst_new', expiresAt: '2026-07-31T00:00:00.000Z' }),
+          { headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (u === 'https://api.bob.test/quotes/quote-1/sign' && method === 'POST') {
+        // Le tracé part en dataURL brut : le SERVEUR calcule le hash de preuve (jamais le client).
+        expect(JSON.parse(String(init?.body))).toEqual({ signerName: 'M. Martin', proofDataUrl });
+        return new Response(JSON.stringify({ status: 'signed' }), { headers: { 'content-type': 'application/json' } });
+      }
+      if (u === 'https://api.bob.test/quotes/quote-2/sign' && method === 'POST') {
+        // Sans tracé, la clé proofDataUrl est ABSENTE du corps (jamais null/undefined sérialisé).
+        expect(JSON.parse(String(init?.body))).toEqual({ signerName: 'M. Martin' });
+        return new Response(JSON.stringify({ status: 'signed' }), { headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ error: { kind: 'not_found', resource: 'route' } }), { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-mercier' });
+
+    const link = await client.createQuoteSignatureLink('quote-1');
+    expect(link.ok && link.value).toEqual({
+      signatureUrl: 'https://demo.bobpro.fr/sign/pst_new',
+      expiresAt: '2026-07-31T00:00:00.000Z',
+    });
+
+    const signedWithProof = await client.signQuote({ quoteId: 'quote-1', signerName: 'M. Martin', proofDataUrl });
+    expect(signedWithProof.ok && signedWithProof.value).toEqual({ status: 'signed' });
+
+    const signedWithout = await client.signQuote({ quoteId: 'quote-2', signerName: 'M. Martin' });
+    expect(signedWithout.ok && signedWithout.value).toEqual({ status: 'signed' });
   });
 
   it('loads expense defaults from the API memory endpoint', async () => {
@@ -1175,6 +1223,12 @@ describe('HttpBobClient — C-EXP6b réception e-facture', () => {
 });
 
 describe('HttpBobClient — Bob Live WebRTC', () => {
+  const speechSourcePolicy = (sessionHandle: string) => ({
+    mode: 'signed-url-v1' as const,
+    allowedOrigin: 'https://project.supabase.co',
+    allowedPathPrefix: `/storage/v1/object/sign/bob-live-audio/companies/company-1/bob-live/${sessionHandle}/`,
+  });
+
   afterEach(() => {
     vi.unstubAllGlobals();
   });
@@ -1195,6 +1249,7 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
           configVersion: 'bob-live-webrtc-v1',
           requiresDevelopmentBuild: true,
           maxSessionSeconds: 900,
+          speechDelivery: 'audited-signed-url-v1',
         }), { headers: { 'content-type': 'application/json' } });
       }
       if (init?.method === 'DELETE') {
@@ -1251,6 +1306,7 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
         voice: 'marin',
         configVersion: 'bob-live-webrtc-v1',
         maxSessionSeconds: 900,
+        speechSourcePolicy: speechSourcePolicy(sessionHandle),
       }), { headers: { 'content-type': 'application/json' } });
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -1335,6 +1391,7 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
         voice: 'marin',
         configVersion: 'bob-live-provider-neutral-v2',
         maxSessionSeconds: 900,
+        speechSourcePolicy: speechSourcePolicy(sessionHandle),
       }), { headers: { 'content-type': 'application/json' } });
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -1364,7 +1421,48 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
         voice: 'marin',
         configVersion: 'bob-live-provider-neutral-v2',
         maxSessionSeconds: 900,
+        speechSourcePolicy: speechSourcePolicy(sessionHandle),
       },
+    });
+  });
+
+  it.each([
+    ['origine avec credentials', {
+      ...speechSourcePolicy('00000000-0000-4000-8000-000000000021'),
+      allowedOrigin: 'https://user:secret@project.supabase.co',
+    }],
+    ['tenant', {
+      ...speechSourcePolicy('00000000-0000-4000-8000-000000000021'),
+      allowedPathPrefix: '/storage/v1/object/sign/bob-live-audio/companies/company-2/bob-live/00000000-0000-4000-8000-000000000021/',
+    }],
+    ['session', {
+      ...speechSourcePolicy('00000000-0000-4000-8000-000000000099'),
+    }],
+    ['encodage ambigu', {
+      ...speechSourcePolicy('00000000-0000-4000-8000-000000000021'),
+      allowedPathPrefix: '/storage/v1/object/sign/bob-live-audio/companies/company-1/bob-live/%30%30/',
+    }],
+  ])('rejette une policy de source audio hors binding (%s)', async (_label, speechSourcePolicyValue) => {
+    const sessionHandle = '00000000-0000-4000-8000-000000000021';
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      transport: 'webrtc',
+      answerSdp: 'v=0\r\nm=audio 9 RTP/AVP 0\r\n',
+      sessionHandle,
+      hardExpiresAt: '2026-07-14T12:15:00.000Z',
+      model: 'gpt-realtime-2.1',
+      voice: 'marin',
+      configVersion: 'bob-live-provider-neutral-v3',
+      maxSessionSeconds: 900,
+      speechSourcePolicy: speechSourcePolicyValue,
+    }), { headers: { 'content-type': 'application/json' } })));
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+
+    await expect(client.createRealtimeVoiceCall({
+      sdp: 'v=0\r\nm=audio 9 RTP/AVP 0\r\n',
+      sessionHandle,
+    })).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'dependency', port: 'api-contract' },
     });
   });
 

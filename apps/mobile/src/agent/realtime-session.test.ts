@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ok } from '@bob/core';
 import type { AgentContext } from '@bob/ai';
+import type { RealtimeVoiceConfig } from '@bob/api-client';
 import type { RealtimeResilienceEvent } from '../realtime/realtime-resilience-orchestrator';
 import {
   RealtimeSessionController,
@@ -13,6 +14,17 @@ const CONTEXT: AgentContext = {
   entities: [],
   capabilities: ['screen.read'],
 };
+
+const NEGOTIATION: RealtimeVoiceConfig = Object.freeze({
+  available: true,
+  transport: 'webrtc',
+  model: 'gpt-realtime-2.1',
+  voice: 'marin',
+  configVersion: 'bob-live-provider-neutral-v2',
+  requiresDevelopmentBuild: true,
+  maxSessionSeconds: 900,
+  speechDelivery: 'audited-signed-url-v1',
+});
 
 function harness(
   input: {
@@ -33,7 +45,14 @@ function harness(
   const external: {
     resolveStart: ((phase: string) => void) | null;
     fallback: import('../realtime/realtime-resilience-orchestrator').LegacyVoiceFallbackPort | null;
-  } = { resolveStart: null, fallback: null };
+    negotiations: number;
+    receivedNegotiation: RealtimeVoiceConfig | null;
+  } = {
+    resolveStart: null,
+    fallback: null,
+    negotiations: 0,
+    receivedNegotiation: null,
+  };
   const transport = {
     setMicrophoneEnabled: (enabled: boolean) => {
       log.push(`mic:${enabled}`);
@@ -73,7 +92,12 @@ function harness(
   };
   const controller = new RealtimeSessionController(
     {
-      isAvailable: async () => input.available ?? true,
+      negotiate: async () => {
+        external.negotiations += 1;
+        return input.available === false
+          ? { ...NEGOTIATION, available: false, availabilityReason: 'not_entitled' }
+          : NEGOTIATION;
+      },
       updateContext: async (handle, update) => {
         log.push(`publish:${handle}:r${update.revision}`);
         if (input.updateContextImpl) return input.updateContextImpl(handle, update.revision);
@@ -82,7 +106,8 @@ function harness(
         }
         return ok({ revision: update.revision, contextDigest: `digest-${update.revision}` });
       },
-      createOrchestrator: (fallback, onPrimaryCreated) => {
+      createOrchestrator: (negotiation, fallback, _currentFence, onPrimaryCreated) => {
+        external.receivedNegotiation = negotiation;
         onPrimaryCreated(transport);
         external.fallback = fallback; // capturé : les tests simulent la prise de main du repli
         return orchestrator;
@@ -117,6 +142,14 @@ const readyState = {
 } as const;
 
 describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
+  it('négocie une seule fois et remet le snapshot exact à toute la mission', async () => {
+    const { controller, external } = harness();
+
+    expect(await controller.start()).toBe('realtime');
+    expect(external.negotiations).toBe(1);
+    expect(external.receivedNegotiation).toBe(NEGOTIATION);
+  });
+
   it('serveur indisponible (entitlement/rollout) → unavailable, rien ne démarre', async () => {
     const { controller, log } = harness({ available: false });
     expect(await controller.start()).toBe('unavailable');

@@ -23,7 +23,7 @@
  *   n'est JAMAIS envoyée par le cron : elle attend le geste confirmé ici (relance.medWarning).
  */
 import { useState, useMemo } from 'react';
-import { Pressable, ScrollView, Text, View } from 'react-native';
+import { Pressable, RefreshControl, ScrollView, Text, View } from 'react-native';
 import { useRouter, type Href } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
@@ -39,9 +39,13 @@ import {
   Avatar,
   Button,
   Card,
+  EmptyState,
+  ErrorRetry,
   IconTile,
   InnerScreenHeader,
   SectionHeader,
+  Skeleton,
+  SkeletonRow,
   StatusBadge,
   Toast,
   font,
@@ -365,17 +369,31 @@ function ScheduledRelanceRow({ entry, personality }: { entry: RelancePlanEntry; 
 
 /** Skeleton d'une carte de notification (états du contrat — jamais un contenu inventé). */
 function SkeletonNotif() {
-  const { colors } = useTheme();
   return (
     <Card>
-      <View style={{ flexDirection: 'row', gap: 12, alignItems: 'center' }}>
-        <View style={{ width: 34, height: 34, borderRadius: 11, backgroundColor: colors.lineSoft }} />
-        <View style={{ flex: 1, gap: 7 }}>
-          <View style={{ height: 14, width: '52%', borderRadius: 6, backgroundColor: colors.lineSoft }} />
-          <View style={{ height: 11, width: '74%', borderRadius: 6, backgroundColor: colors.lineSoft }} />
-        </View>
+      <SkeletonRow avatar="square" avatarSize={34} trailing="pill" />
+      <View style={{ gap: 6, marginTop: 4 }}>
+        <Skeleton height={11} width="66%" radius={6} />
+        <Skeleton height={11} width="52%" radius={6} />
+      </View>
+      <View style={{ flexDirection: 'row', gap: 8, marginTop: 13 }}>
+        <Skeleton height={34} width={86} radius={11} />
+        <Skeleton height={34} width={96} radius={11} />
       </View>
     </Card>
+  );
+}
+
+function NotificationsSkeleton() {
+  return (
+    <View style={{ gap: 10 }}>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', minHeight: 28 }}>
+        <Skeleton height={17} width="38%" radius={8} />
+        <Skeleton height={28} width={92} radius={11} />
+      </View>
+      <SkeletonNotif />
+      <SkeletonNotif />
+    </View>
   );
 }
 
@@ -418,7 +436,6 @@ export default function Notifications() {
   }, [feed.due, feed.items, feed.scheduled]);
   usePublishAgentContext(agentContext);
 
-  const ready = !feed.isLoading && !feed.isError;
   const planCount = feed.due.length + feed.scheduled.length;
   /** « clients en file » (réf : « Actives · 2 clients en file ») — clients uniques du plan réel. */
   const queuedCustomers = new Set([...feed.due, ...feed.scheduled].map((e) => e.customerId)).size;
@@ -426,7 +443,11 @@ export default function Notifications() {
 
   /** Item du fil : lu persisté (serveur) + deep link vers la pièce si la notif en porte un. */
   const openFeedItem = (item: NotificationView): void => {
-    if (item.readAt === null) markRead.mutate(item.id);
+    if (item.readAt === null) {
+      markRead.mutate(item.id, {
+        onError: () => setToast(t('notif.markReadError', { personality })),
+      });
+    }
     if (item.route !== null) router.push(item.route as Href);
   };
 
@@ -508,7 +529,7 @@ export default function Notifications() {
           accessibilityLabel={t('notif.back', { personality })}
           onPress={() => router.back()}
           hitSlop={8}
-          style={{ flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'flex-start', minHeight: 34 }}
+          style={{ flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'flex-start', minHeight: 44 }}
         >
           <ChevronLeftIcon color={colors.ink800} size={18} strokeWidth={2.2} />
           <Text style={[font('label', 600), { fontSize: 15, color: colors.ink800 }]}>
@@ -527,37 +548,23 @@ export default function Notifications() {
         style={{ flex: 1 }}
         contentContainerStyle={{ paddingHorizontal: 18, paddingTop: 14, paddingBottom: insets.bottom + 34 }}
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={feed.isRefetching}
+            onRefresh={feed.refetch}
+            tintColor={colors.ink800}
+            colors={[colors.ink800]}
+          />
+        }
       >
         {feed.isLoading ? (
-          <View style={{ gap: 10 }}>
-            <SkeletonNotif />
-            <SkeletonNotif />
-            <SkeletonNotif />
-          </View>
+          <NotificationsSkeleton />
         ) : feed.isError ? (
-          <Card>
-            <Text
-              accessibilityRole="alert"
-              accessibilityLiveRegion="assertive"
-              style={[font('sub'), { color: colors.slate500 }]}
-            >
-              {t('notif.dataError', { personality })}
-            </Text>
-            <View style={{ marginTop: 12 }}>
-              <Button
-                title={t('notif.retry', { personality })}
-                variant="secondary"
-                size="compact"
-                radius={11}
-                onPress={feed.refetch}
-                style={{ alignSelf: 'flex-start' }}
-              />
-            </View>
-          </Card>
+          <ErrorRetry message={t('notif.dataError', { personality })} onRetry={feed.refetch} />
         ) : !hasNews ? (
           // 0 notification : état vide de premier rang — la voix de Bob, aucune carte fantôme.
           <Card>
-            <Text style={[font('sub'), { color: colors.slate500 }]}>{t('notif.empty', { personality })}</Text>
+            <EmptyState body={t('notif.empty', { personality })} />
           </Card>
         ) : (
           <View style={{ gap: 20 }}>
@@ -685,12 +692,6 @@ export default function Notifications() {
                   </View>
                 </View>
               </View>
-            ) : null}
-
-            {ready && feed.count === 0 ? (
-              <Text style={[font('meta', 500), { color: colors.slate300, textAlign: 'center', paddingTop: 4 }]}>
-                {t('notif.empty', { personality })}
-              </Text>
             ) : null}
           </View>
         )}

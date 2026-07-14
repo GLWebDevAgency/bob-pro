@@ -99,18 +99,23 @@ function buildInvoiceAccountingEntry(input: {
 }): DomainResult<AccountingEntry> {
   const invoice = input.invoice;
   const totals = invoice.totals();
+  const isCreditNote = invoice.kind === 'credit_note';
+  const creditedKind = isCreditNote ? (invoice.creditNoteSource?.kind ?? null) : null;
+  if (isCreditNote && creditedKind === null)
+    return err(appValidation('invoice.sourceInvoiceId', 'La facture source de l’avoir est requise.'));
+  const accountingKind = creditedKind ?? invoice.kind;
   // Reprise d'avances : une finale deduit l'acompte deja facture (4191). Elle peut etre
   // entierement couverte (acompte + situations = 100 %) : netToPay = 0 y est legitime —
   // c'est precisement l'ecriture qui constate le CA (70x) et solde les avances.
   const advanceRepriseCents =
-    invoice.kind === 'final' && invoice.depositDeductionCents > 0 ? invoice.depositDeductionCents : 0;
+    accountingKind === 'final' && invoice.depositDeductionCents > 0 ? invoice.depositDeductionCents : 0;
   if (!Number.isSafeInteger(totals.netToPay) || totals.netToPay < 0 || (totals.netToPay === 0 && advanceRepriseCents === 0))
     return err(appValidation('invoice.netToPay', 'Net a payer invalide.'));
 
   const accounts = mergeAccounts(input.accounts);
   const fullComponents: { account: string; amount: number; kind: 'base' | 'vat' }[] = [];
 
-  if (invoice.kind === 'deposit') {
+  if (accountingKind === 'deposit') {
     fullComponents.push({ account: accounts.customerAdvances, amount: totals.ht, kind: 'base' });
   } else {
     for (const line of invoice.lines) {
@@ -125,13 +130,12 @@ function buildInvoiceAccountingEntry(input: {
     fullComponents.push({ account: accounts.vatCollected, amount: vat, kind: 'vat' });
   }
 
-  const allocated = invoice.kind === 'deposit'
+  const allocated = accountingKind === 'deposit'
     ? allocateAmounts(fullComponents.map((component) => component.amount), totals.netToPay)
     : fullComponents.map((component) => component.amount);
 
   const debit = new Map<string, number>();
   const credit = new Map<string, number>();
-  const isCreditNote = invoice.kind === 'credit_note';
   // E7 : un avoir se lit « Avoir A-… » au journal — jamais « Facture » (libellé probant).
   const label = `${invoice.kind === 'credit_note' ? 'Avoir' : 'Facture'} ${input.reference}`;
 
@@ -153,8 +157,9 @@ function buildInvoiceAccountingEntry(input: {
     // multi-taux inclus, et la reprise reste lisible au journal (trace d'audit).
     const vatAmounts = Object.values(totals.vatByRate);
     const reprise = allocateAmounts([totals.ht, ...vatAmounts], advanceRepriseCents);
-    addAmount(debit, accounts.customerAdvances, reprise[0] ?? 0);
-    for (let i = 0; i < vatAmounts.length; i += 1) addAmount(debit, accounts.vatCollected, reprise[i + 1] ?? 0);
+    addAmount(isCreditNote ? credit : debit, accounts.customerAdvances, reprise[0] ?? 0);
+    for (let i = 0; i < vatAmounts.length; i += 1)
+      addAmount(isCreditNote ? credit : debit, accounts.vatCollected, reprise[i + 1] ?? 0);
   }
 
   const props: AccountingEntryProps = {

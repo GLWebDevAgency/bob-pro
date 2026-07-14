@@ -37,7 +37,7 @@
  * Zéro hex/rgba : useTheme()/@bob/tokens. Zéro import de src/components/ui (ancien kit).
  */
 import { useMemo, useState, type ReactNode } from 'react';
-import { Alert, Linking, Pressable, ScrollView, Text, View } from 'react-native';
+import { Alert, Linking, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
@@ -56,11 +56,14 @@ import { shadowNative } from '@bob/tokens';
 import { t, type I18nKey, type Personality } from '@bob/i18n';
 import {
   Avatar,
-  Button,
   Card,
+  EmptyState,
+  ErrorRetry,
   IconTile,
   ScoreBar,
   SegmentedControl,
+  Skeleton,
+  SkeletonRow,
   StatusBadge,
   font,
   statusBadgeColors,
@@ -190,12 +193,6 @@ interface ActivityItem {
   href: `/facture/${string}` | `/devis/${string}`;
 }
 
-/** Barre de skeleton (chargement) — même gabarit que la donnée qu'elle remplace. */
-function SkeletonBar({ width, height = 14 }: { width: `${number}%` | number; height?: number }) {
-  const { colors } = useTheme();
-  return <View style={{ height, width, borderRadius: 6, backgroundColor: colors.lineSoft }} />;
-}
-
 /** Tuile d'action rapide (réf : carte blanche, icône navy, label sombre) — composée @bob/ui. */
 function ActionTile({
   label,
@@ -312,6 +309,29 @@ function ActivityRow({
       </Text>
       <ChevronRightIcon color={controls.chevron} size={14} strokeWidth={2} />
     </Pressable>
+  );
+}
+
+/** Skeleton fidèle aux rangées Chantiers/Docs : tuile 34 + 2 lignes + statut. */
+function TabRowsSkeleton() {
+  const { colors } = useTheme();
+  return (
+    <Card radius={18} padding={0} style={{ paddingHorizontal: 14 }}>
+      {[0, 1].map((index) => (
+        <SkeletonRow
+          key={index}
+          avatar="square"
+          avatarSize={34}
+          lines={2}
+          trailing="pill"
+          style={{
+            minHeight: 58,
+            borderBottomWidth: index === 0 ? 1 : 0,
+            borderBottomColor: colors.lineSoft,
+          }}
+        />
+      ))}
+    </Card>
   );
 }
 
@@ -456,8 +476,33 @@ export default function ClientDetail() {
   }, [customer, siren, email, phone, avgDelayDays, personality]);
 
   const booting = customers.isLoading || invoices.isLoading || quotes.isLoading;
+  // Une liste en cache peut être vide au moment où son rafraîchissement échoue : ne jamais
+  // transformer cet échec en « client introuvable ». Si la fiche ciblée est en cache, on la
+  // conserve et on expose l'échec de rafraîchissement en ligne.
+  const customerUnavailable = customers.isError && customer === null;
+  const customerRefreshFailed = customers.isError && customer !== null;
   const docsUnavailable = invoices.data === undefined || quotes.data === undefined;
   const hasDocsError = invoices.isError || quotes.isError;
+  const refreshing =
+    customers.isRefetching ||
+    invoices.isRefetching ||
+    quotes.isRefetching ||
+    chantiers.isRefetching ||
+    documents.isRefetching;
+
+  const retryPieces = (): void => {
+    void Promise.all([invoices.refetch(), quotes.refetch()]);
+  };
+
+  const refreshAll = (): void => {
+    void Promise.all([
+      customers.refetch(),
+      invoices.refetch(),
+      quotes.refetch(),
+      chantiers.refetch(),
+      documents.refetch(),
+    ]);
+  };
 
   // KPI dérivés : encours = standing (retard/attente = dû réel) · CA 12 mois = @bob/core.
   const outstandingCents =
@@ -615,7 +660,19 @@ export default function ClientDetail() {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 150 }}>
+      <ScrollView
+        style={{ flex: 1 }}
+        contentContainerStyle={{ paddingBottom: 150 }}
+        accessibilityState={{ busy: refreshing }}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={refreshAll}
+            tintColor={colors.ink800}
+            colors={[colors.ink800]}
+          />
+        }
+      >
         {/* ── Barre retour + menu « … » ─────────────────────────────────────── */}
         <View
           style={{
@@ -645,8 +702,8 @@ export default function ClientDetail() {
             hitSlop={8}
             style={({ pressed }) => [
               {
-                width: 36,
-                height: 36,
+                width: 44,
+                height: 44,
                 borderRadius: radius.pill,
                 backgroundColor: colors.surface,
                 borderWidth: 1,
@@ -663,34 +720,28 @@ export default function ClientDetail() {
         </View>
 
         <View style={{ paddingHorizontal: 18, paddingTop: 16, gap: 14 }}>
-          {customers.isError ? (
-            // Le carnet ne répond pas : la voix de Bob + retour — jamais une fiche inventée.
-            <Card radius={18} padding={18}>
-              <Text style={[font('sub'), { color: colors.slate500, lineHeight: 19 }]}>
-                {t('fiche.dataError', { personality })}
-              </Text>
-              <Button
-                title={t('fiche.backToClients', { personality })}
-                variant="secondary"
-                style={{ marginTop: 14 }}
-                onPress={goBack}
-              />
-            </Card>
+          {customerUnavailable ? (
+            // Le carnet ne répond pas : relance sur place + sortie secondaire, sans perdre le contexte par défaut.
+            <ErrorRetry
+              message={t('fiche.dataError', { personality })}
+              onRetry={() => void customers.refetch()}
+              secondaryLabel={t('fiche.backToClients', { personality })}
+              onSecondaryAction={goBack}
+            />
           ) : booting ? (
             // Skeletons — même gabarit que la fiche chargée (états du contrat C13).
-            <>
+            <View
+              accessible
+              accessibilityLabel={t('clients.title', { personality })}
+              accessibilityLiveRegion="polite"
+              accessibilityState={{ busy: true }}
+              style={{ gap: 14 }}
+            >
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 13 }}>
-                <View
-                  style={{
-                    width: 54,
-                    height: 54,
-                    borderRadius: radius.squircle,
-                    backgroundColor: colors.lineSoft,
-                  }}
-                />
+                <Skeleton width={54} height={54} radius={radius.squircle} />
                 <View style={{ flex: 1, gap: 8 }}>
-                  <SkeletonBar width="62%" height={17} />
-                  <SkeletonBar width="44%" height={12} />
+                  <Skeleton width="62%" height={17} />
+                  <Skeleton width="44%" height={12} />
                 </View>
               </View>
               <View style={{ flexDirection: 'row', gap: 9 }}>
@@ -701,54 +752,52 @@ export default function ClientDetail() {
                     padding={13}
                     style={{ flex: 1, alignItems: 'center' }}
                   >
-                    <SkeletonBar width={18} height={18} />
+                    <Skeleton width={18} height={18} />
                     <View style={{ marginTop: 7 }}>
-                      <SkeletonBar width={34} height={10} />
+                      <Skeleton width={34} height={10} />
                     </View>
                   </Card>
                 ))}
               </View>
               <View style={{ flexDirection: 'row', gap: 9 }}>
                 <Card radius={16} padding={12} style={{ flex: 1 }}>
-                  <SkeletonBar width="70%" height={11} />
+                  <Skeleton width="70%" height={11} />
                   <View style={{ marginTop: 8 }}>
-                    <SkeletonBar width="55%" height={16} />
+                    <Skeleton width="55%" height={16} />
                   </View>
                 </Card>
                 <Card radius={16} padding={12} style={{ flex: 1 }}>
-                  <SkeletonBar width="70%" height={11} />
+                  <Skeleton width="70%" height={11} />
                   <View style={{ marginTop: 8 }}>
-                    <SkeletonBar width="55%" height={16} />
+                    <Skeleton width="55%" height={16} />
                   </View>
                 </Card>
                 <Card radius={16} padding={12} style={{ flex: 1 }}>
-                  <SkeletonBar width="70%" height={11} />
+                  <Skeleton width="70%" height={11} />
                   <View style={{ marginTop: 8 }}>
-                    <SkeletonBar width="55%" height={16} />
+                    <Skeleton width="55%" height={16} />
                   </View>
                 </Card>
               </View>
               <Card radius={18} padding={16}>
-                <SkeletonBar width="45%" height={15} />
+                <Skeleton width="45%" height={15} />
                 <View style={{ marginTop: 12 }}>
-                  <SkeletonBar width="100%" height={8} />
+                  <Skeleton width="100%" height={8} />
                 </View>
                 <View style={{ marginTop: 10 }}>
-                  <SkeletonBar width="58%" height={11} />
+                  <Skeleton width="58%" height={11} />
                 </View>
               </Card>
-            </>
+            </View>
           ) : customer === null ? (
             // Client introuvable (id inconnu / supprimé) : message + retour.
             <Card radius={18} padding={18}>
-              <Text style={[font('sub'), { color: colors.slate500, lineHeight: 19 }]}>
-                {t('fiche.notFound', { personality })}
-              </Text>
-              <Button
-                title={t('fiche.backToClients', { personality })}
-                variant="secondary"
-                style={{ marginTop: 14 }}
-                onPress={goBack}
+              <EmptyState
+                body={t('fiche.notFound', { personality })}
+                cta={{
+                  label: t('fiche.backToClients', { personality }),
+                  onPress: goBack,
+                }}
               />
             </Card>
           ) : (
@@ -818,13 +867,19 @@ export default function ClientDetail() {
                 />
               </View>
 
+              {customerRefreshFailed ? (
+                <ErrorRetry
+                  message={t('fiche.dataError', { personality })}
+                  onRetry={() => void customers.refetch()}
+                />
+              ) : null}
+
               {hasDocsError ? (
-                // Les pièces ne répondent pas : la fiche reste utile (repli standing), la voix de Bob prévient.
-                <Card>
-                  <Text style={[font('sub'), { color: colors.slate500 }]}>
-                    {t('fiche.dataError', { personality })}
-                  </Text>
-                </Card>
+                // Les pièces ne répondent pas : la fiche reste utile, mais l'échec n'est jamais présenté comme du vide.
+                <ErrorRetry
+                  message={t('fiche.dataError', { personality })}
+                  onRetry={retryPieces}
+                />
               ) : null}
 
               {/* ── 3 KPI : Encours teinté par statut · Délai moyen · CA 12 mois ── */}
@@ -925,9 +980,7 @@ export default function ClientDetail() {
                   0 ? (
                   // 0 pièce : état vide de premier rang — la voix de Bob, aucune rangée fantôme.
                   <Card>
-                    <Text style={[font('sub'), { color: colors.slate500, lineHeight: 19 }]}>
-                      {t('fiche.activityEmpty', { personality })}
-                    </Text>
+                    <EmptyState body={t('fiche.activityEmpty', { personality })} />
                   </Card>
                 ) : (
                   <Card radius={18} padding={0} style={{ paddingHorizontal: 14 }}>
@@ -943,20 +996,26 @@ export default function ClientDetail() {
                 )
               ) : tab === 'chantiers' ? (
                 chantiers.isLoading ? (
-                  <Card>
-                    <SkeletonBar width="62%" />
-                  </Card>
+                  <TabRowsSkeleton />
+                ) : chantiers.isError ? (
+                  <ErrorRetry
+                    message={t('fiche.dataError', { personality })}
+                    onRetry={() => void chantiers.refetch()}
+                  />
                 ) : custChantiers.length === 0 ? (
                   <Card>
-                    <Text style={[font('sub'), { color: colors.slate500, lineHeight: 19 }]}>
-                      {t(TAB_EMPTY.chantiers, { personality })}
-                    </Text>
+                    <EmptyState body={t(TAB_EMPTY.chantiers, { personality })} />
                   </Card>
                 ) : (
                   <Card radius={18} padding={0} style={{ paddingHorizontal: 14 }}>
                     {custChantiers.map((chantier, index) => (
                       <View
                         key={chantier.id}
+                        accessible
+                        accessibilityLabel={`${chantier.name}, ${t(
+                          chantier.status === 'open' ? 'fiche.chantierOpen' : 'fiche.chantierClosed',
+                          { personality },
+                        )}`}
                         style={{
                           flexDirection: 'row',
                           alignItems: 'center',
@@ -1014,14 +1073,15 @@ export default function ClientDetail() {
                 )
               ) : tab === 'docs' ? (
                 documents.isLoading ? (
-                  <Card>
-                    <SkeletonBar width="62%" />
-                  </Card>
+                  <TabRowsSkeleton />
+                ) : documents.isError ? (
+                  <ErrorRetry
+                    message={t('fiche.dataError', { personality })}
+                    onRetry={() => void documents.refetch()}
+                  />
                 ) : custDocs.length === 0 ? (
                   <Card>
-                    <Text style={[font('sub'), { color: colors.slate500, lineHeight: 19 }]}>
-                      {t(TAB_EMPTY.docs, { personality })}
-                    </Text>
+                    <EmptyState body={t(TAB_EMPTY.docs, { personality })} />
                   </Card>
                 ) : (
                   <Card radius={18} padding={0} style={{ paddingHorizontal: 14 }}>
@@ -1061,9 +1121,7 @@ export default function ClientDetail() {
                 )
               ) : infoRows.length === 0 ? (
                 <Card>
-                  <Text style={[font('sub'), { color: colors.slate500, lineHeight: 19 }]}>
-                    {t(TAB_EMPTY.infos, { personality })}
-                  </Text>
+                  <EmptyState body={t(TAB_EMPTY.infos, { personality })} />
                 </Card>
               ) : (
                 <Card radius={18} padding={0} style={{ paddingHorizontal: 14 }}>
@@ -1099,7 +1157,7 @@ export default function ClientDetail() {
       </ScrollView>
 
       {/* ── CTA sticky contextuelle par standing (aplat ink du thème, réf) ── */}
-      {!booting && !customers.isError && customer !== null ? (
+      {!booting && !customerUnavailable && customer !== null ? (
         <View style={{ position: 'absolute', left: 18, right: 18, bottom: insets.bottom + 14 }}>
           <Pressable
             accessibilityRole="button"

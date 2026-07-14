@@ -8,7 +8,7 @@ import { type QuoteLine } from '../shared/line';
 
 const AT = '2026-06-01T10:00:00.000Z';
 const ISSUED = '2026-06-01';
-const sig: Signature = { signerName: 'Martin', signedAt: AT, method: 'draw', accepted: true };
+const sig: Signature = { signerName: 'Martin', signedAt: AT, method: 'onsite_draw', accepted: true };
 const terms = (() => {
   const t = PaymentTerms.of({ days: 30, endOfMonth: false, label: 'Paiement a 30 jours' });
   if (!t.ok) throw new Error('terms');
@@ -85,4 +85,57 @@ describe('Invoice', () => {
     expect(inv.paid).toBe(0);
     expect(inv.status).toBe('issued');
   });
+
+  it('crée un avoir total traçable qui fige la source et le montant exact d’un acompte', () => {
+    const source = issuedInvoiceFromQuote('deposit', 'source-deposit');
+    const created = Invoice.creditNoteFor(source, 'credit-1');
+
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    expect(created.value.creditNoteSource).toEqual({
+      invoiceId: 'source-deposit',
+      kind: 'deposit',
+      number: 'F-2026-0001',
+      issuedAt: ISSUED,
+    });
+    expect(created.value.totals()).toEqual(source.totals());
+    expect(created.value.totals().netToPay).toBe(48840);
+    expect(created.value.addLine(lines[0]!)).toEqual({
+      ok: false,
+      error: {
+        code: 'VALIDATION',
+        field: 'lines',
+        message: 'Les lignes d’un avoir total sont figées depuis la facture source.',
+      },
+    });
+
+    const rehydrated = Invoice.rehydrate(created.value.toSnapshot());
+    expect(rehydrated.creditNoteSource).toEqual(created.value.creditNoteSource);
+    expect(rehydrated.totals()).toEqual(source.totals());
+  });
+
+  it('refuse une pseudo-source émise sans numéro, date ou totaux légaux figés', () => {
+    const corrupt = Invoice.rehydrate({
+      ...issuedInvoiceFromQuote('final', 'source-corrupt').toSnapshot(),
+      number: null,
+    });
+    expect(Invoice.creditNoteFor(corrupt, 'credit-corrupt')).toEqual({
+      ok: false,
+      error: {
+        code: 'VALIDATION',
+        field: 'invoice',
+        message: 'La facture source ne possède pas de trace légale complète (numéro, date et totaux figés).',
+      },
+    });
+  });
 });
+
+function issuedInvoiceFromQuote(mode: 'final' | 'deposit', id: string): Invoice {
+  const created = Invoice.fromSignedQuote(signedDepositQuote(), mode, id);
+  if (!created.ok) throw new Error('invoice');
+  const numbered = created.value.assignNumber(DocNumber.format('F', 2026, 1), AT);
+  if (!numbered.ok) throw new Error('number');
+  const issued = created.value.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT });
+  if (!issued.ok) throw new Error('issue');
+  return created.value;
+}

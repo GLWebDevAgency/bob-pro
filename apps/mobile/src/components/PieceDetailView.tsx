@@ -162,7 +162,17 @@ function LinkedCard({
   );
 }
 
-function LineRowContent({ line, personality, last }: { line: PieceLineView; personality: Personality; last: boolean }) {
+function LineRowContent({
+  line,
+  personality,
+  last,
+  action,
+}: {
+  line: PieceLineView;
+  personality: Personality;
+  last: boolean;
+  action?: ReactNode;
+}) {
   const { colors, controls } = useTheme();
   return (
     <View style={{ paddingVertical: 12, backgroundColor: colors.surface, borderBottomWidth: last ? 0 : 1, borderBottomColor: colors.lineSoft }}>
@@ -183,14 +193,27 @@ function LineRowContent({ line, personality, last }: { line: PieceLineView; pers
               {t(CAT_KEY[line.category], { personality })}
             </Text>
           </View>
+          <Text style={{ ...font('meta', 500), fontSize: 11.5, color: colors.slate500, marginTop: 5 }}>
+            {t('piece.lineQuantityPrice', {
+              personality,
+              params: {
+                qty: String(line.qty).replace('.', ','),
+                unit: line.unit ?? 'u.',
+                price: formatEUR(line.unitPriceHTCents),
+              },
+            })}
+          </Text>
         </View>
-        <View style={{ alignItems: 'flex-end' }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          <View style={{ alignItems: 'flex-end' }}>
           <Text style={{ ...font('body', 700), fontSize: 14, color: colors.ink800, fontVariant: ['tabular-nums'] }}>
             {formatEUR(line.totalHTCents)}
           </Text>
-          <Text style={{ ...font('meta', 500), fontSize: 11.5, color: colors.slate300 }}>
+          <Text style={{ ...font('meta', 500), fontSize: 11.5, color: colors.slate500 }}>
             {t('piece.vatPerLine', { personality, params: { rate: line.vatRatePct } })}
           </Text>
+          </View>
+          {action}
         </View>
       </View>
     </View>
@@ -257,7 +280,30 @@ function LineRow({
         </View>
       )}
     >
-      <LineRowContent line={line} personality={personality} last={last} />
+      <LineRowContent
+        line={line}
+        personality={personality}
+        last={last}
+        action={(
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={t('devis.lineSwipeEdit', { personality, params: { label: line.label } })}
+            accessibilityHint={t('devis.lineEditVisibleHint', { personality })}
+            hitSlop={4}
+            onPress={() => onEditLine?.(line.id)}
+            style={({ pressed }) => ({
+              width: 44,
+              height: 44,
+              borderRadius: 12,
+              alignItems: 'center',
+              justifyContent: 'center',
+              backgroundColor: pressed ? controls.segmentedTrack : colors.surface,
+            })}
+          >
+            <Feather name="edit-2" size={18} color={colors.ink600} />
+          </Pressable>
+        )}
+      />
     </Swipeable>
   );
 }

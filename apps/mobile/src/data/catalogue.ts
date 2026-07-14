@@ -1,14 +1,9 @@
 import { useMemo } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import {
-  deriveCatalogue,
-  isCatalogueCategory,
-  isVatRate,
-  type CataloguePrestation,
-  type CustomPrestation,
-} from '@bob/core';
+import { deriveCatalogue, type CataloguePrestation, type CustomPrestation } from '@bob/core';
 import { useProfile } from './hooks';
+import { readCustomPrestations } from './catalogue-storage';
 
 /**
  * Prestations PERSONNELLES de l'artisan (claim C27) — persistance LOCALE typée.
@@ -32,34 +27,8 @@ export function newPrestationId(): string {
   return `perso-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function isCustomPrestation(value: unknown): value is CustomPrestation {
-  if (typeof value !== 'object' || value === null) return false;
-  const p = value as Record<string, unknown>;
-  return (
-    typeof p['id'] === 'string' &&
-    p['id'].length > 0 &&
-    typeof p['label'] === 'string' &&
-    p['label'].trim().length > 0 &&
-    isCatalogueCategory(p['category']) &&
-    (p['unit'] === null || typeof p['unit'] === 'string') &&
-    typeof p['unitPriceHT'] === 'number' &&
-    Number.isInteger(p['unitPriceHT']) &&
-    p['unitPriceHT'] > 0 &&
-    typeof p['vatRate'] === 'number' &&
-    isVatRate(p['vatRate'])
-  );
-}
-
 export async function getCustomPrestations(): Promise<CustomPrestation[]> {
-  try {
-    const raw = await AsyncStorage.getItem(KEY);
-    if (raw === null) return [];
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(isCustomPrestation);
-  } catch {
-    return []; // stockage illisible → catalogue métier seul, jamais un crash
-  }
+  return readCustomPrestations(() => AsyncStorage.getItem(KEY));
 }
 
 async function saveCustomPrestations(list: readonly CustomPrestation[]): Promise<void> {
@@ -75,7 +44,9 @@ export interface CatalogueState {
   /** Catalogue fusionné (perso + suggestions métier) — @bob/core deriveCatalogue. */
   prestations: CataloguePrestation[];
   isLoading: boolean;
+  isRefetching: boolean;
   isError: boolean;
+  refetch: () => void;
 }
 
 /**
@@ -94,7 +65,12 @@ export function useCatalogue(): CatalogueState {
   return {
     prestations,
     isLoading: profile.isLoading || custom.isLoading,
+    isRefetching: profile.isRefetching || custom.isRefetching,
     isError: profile.isError || custom.isError,
+    refetch: () => {
+      void profile.refetch();
+      void custom.refetch();
+    },
   };
 }
 

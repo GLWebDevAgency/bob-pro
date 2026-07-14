@@ -19,10 +19,10 @@
  */
 import { useMemo, useState } from 'react';
 import {
-  ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
   Pressable,
+  RefreshControl,
   ScrollView,
   Text,
   TextInput,
@@ -44,10 +44,14 @@ import {
   Button,
   Card,
   Chip,
+  EmptyState,
+  ErrorRetry,
   InnerScreenHeader,
   MoneyText,
   SectionHeader,
   Sheet,
+  Skeleton,
+  SkeletonRow,
   Toast,
   font,
   useTheme,
@@ -184,7 +188,7 @@ export default function Catalogue() {
           accessibilityLabel={t('catalogue.back', { personality })}
           onPress={() => router.back()}
           hitSlop={8}
-          style={{ flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'flex-start', minHeight: 34 }}
+          style={{ flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'flex-start', minHeight: 44 }}
         >
           <ChevronLeftIcon color={colors.ink800} size={18} strokeWidth={2.2} />
           <Text style={[font('label', 600), { fontSize: 15, color: colors.ink800 }]}>
@@ -203,9 +207,9 @@ export default function Catalogue() {
             accessibilityLabel={t('catalogue.add', { personality })}
             onPress={openAdd}
             style={{
-              width: 40,
-              height: 40,
-              borderRadius: 20,
+              width: 44,
+              height: 44,
+              borderRadius: 22,
               backgroundColor: theme.ink,
               alignItems: 'center',
               justifyContent: 'center',
@@ -264,27 +268,36 @@ export default function Catalogue() {
         contentContainerStyle={{ paddingHorizontal: 18, paddingTop: 6, paddingBottom: insets.bottom + 34 }}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={catalogue.isRefetching}
+            onRefresh={catalogue.refetch}
+            tintColor={colors.ink800}
+            colors={[colors.ink800]}
+          />
+        }
       >
         {catalogue.isLoading ? (
-          <Card style={{ marginTop: 8 }}>
-            <ActivityIndicator color={colors.ink800} />
-          </Card>
+          <View style={{ marginTop: 8, gap: 9 }}>
+            <Skeleton height={17} width="42%" radius={8} style={{ marginBottom: 2 }} />
+            {Array.from({ length: 4 }, (_, index) => (
+              <Card key={index} radius={radius.card} padding={0} style={{ paddingHorizontal: 15 }}>
+                <SkeletonRow avatar={false} trailing="text" style={{ minHeight: 70 }} />
+              </Card>
+            ))}
+          </View>
         ) : catalogue.isError ? (
-          <Card style={{ marginTop: 8, borderColor: semantic.danger }}>
-            <Text accessibilityRole="alert" style={[font('sub'), { color: semantic.danger }]}>
-              {t('catalogue.dataError', { personality })}
-            </Text>
-          </Card>
+          <View style={{ marginTop: 8 }}>
+            <ErrorRetry
+              message={t('catalogue.dataError', { personality })}
+              onRetry={catalogue.refetch}
+            />
+          </View>
         ) : visible.length === 0 ? (
           <Card style={{ marginTop: 8 }}>
-            <Text style={[font('sub'), { color: colors.slate500, lineHeight: 20 }]}>
-              {t('catalogue.empty', { personality })}
-            </Text>
-            <Button
-              title={t('catalogue.add', { personality })}
-              variant="secondary"
-              style={{ marginTop: 12 }}
-              onPress={openAdd}
+            <EmptyState
+              body={t('catalogue.empty', { personality })}
+              cta={{ label: t('catalogue.add', { personality }), onPress: openAdd }}
             />
           </Card>
         ) : (

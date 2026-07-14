@@ -7,3 +7,4 @@ export * from './time';
 export * from './payment-terms';
 export * from './aggregate';
 export * from './latin9';
+export * from './sha256';

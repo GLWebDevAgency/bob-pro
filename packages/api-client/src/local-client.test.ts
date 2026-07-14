@@ -146,7 +146,7 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     expect(sent.ok && sent.value.deliveryStatus).toBe('skipped');
     expect((await client.signQuote({ quoteId, signerName: 'M. Martin' })).ok).toBe(true);
 
-    const gen = await client.generateInvoice({ quoteId });
+    const gen = await client.generateInvoice({ quoteId, mode: 'deposit' });
     expect(gen.ok).toBe(true);
     if (!gen.ok) return;
 
@@ -264,7 +264,7 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     if (!created.ok) return;
     expect((await client.sendQuote(created.value.quoteId)).ok).toBe(true);
     expect((await client.signQuote({ quoteId: created.value.quoteId, signerName: 'M. Martin' })).ok).toBe(true);
-    const gen = await client.generateInvoice({ quoteId: created.value.quoteId });
+    const gen = await client.generateInvoice({ quoteId: created.value.quoteId, mode: 'final' });
     expect(gen.ok).toBe(true);
     if (!gen.ok) return;
     expect((await client.issueInvoice({ invoiceId: gen.value.invoiceId })).ok).toBe(true);
@@ -430,6 +430,45 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     expect((await client.signQuote({ quoteId, signerName: 'M. Martin' })).ok).toBe(false);
   });
 
+  it('P0 R4 : createQuoteSignatureLink prépare/rotate le lien SANS sortant ; la signature le tue', async () => {
+    const client = makeClient();
+    const created = await client.createQuote({
+      customerId: 'cust-martin',
+      lines: [{ label: 'Recherche fuite', category: 'labor', qty: 1, unitPriceHT: 12000, vatRate: 10 }],
+      context: { housingOlderThan2y: true },
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const quoteId = created.value.quoteId;
+
+    // Un brouillon n'a pas de lien partageable (même règle core que l'API).
+    expect((await client.createQuoteSignatureLink(quoteId)).ok).toBe(false);
+
+    expect((await client.sendQuote(quoteId)).ok).toBe(true);
+    const first = await client.createQuoteSignatureLink(quoteId);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    expect(first.value.signatureUrl).toMatch(/^https:\/\/demo\.bobpro\.fr\/sign\//);
+    expect(first.value.expiresAt > '2026-06-01').toBe(true);
+
+    // Rotation : chaque préparation émet un jeton NEUF (l'ancien est révoqué par le use case).
+    const second = await client.createQuoteSignatureLink(quoteId);
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.value.signatureUrl).not.toBe(first.value.signatureUrl);
+
+    // R4 : le tracé du pad (dataURL) accompagne la signature — haché côté use case, jamais stocké.
+    const signed = await client.signQuote({
+      quoteId,
+      signerName: 'M. Martin',
+      proofDataUrl: 'data:image/svg+xml;utf8,%3Csvg%3E%3C/svg%3E',
+    });
+    expect(signed.ok && signed.value.status).toBe('signed');
+
+    // Devis signé : plus jamais de nouveau lien (le lien mort ne renaît pas).
+    expect((await client.createQuoteSignatureLink(quoteId)).ok).toBe(false);
+  });
+
   it('R6 : édite et supprime une ligne de devis BROUILLON (draft only, même use case core que l’API)', async () => {
     const client = makeClient();
     const created = await client.createQuote({
@@ -481,7 +520,7 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     const quoteId = created.value.quoteId;
     expect((await client.sendQuote(quoteId)).ok).toBe(true);
     expect((await client.signQuote({ quoteId, signerName: 'M. Martin' })).ok).toBe(true);
-    const gen = await client.generateInvoice({ quoteId });
+    const gen = await client.generateInvoice({ quoteId, mode: 'final' });
     expect(gen.ok).toBe(true);
     if (!gen.ok) return;
 
@@ -492,7 +531,7 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     if (!afterDelete.ok) expect(afterDelete.error.kind).toBe('not_found');
 
     // Regénère puis émet — une facture ÉMISE n'est plus supprimable (conflict).
-    const gen2 = await client.generateInvoice({ quoteId });
+    const gen2 = await client.generateInvoice({ quoteId, mode: 'final' });
     expect(gen2.ok).toBe(true);
     if (!gen2.ok) return;
     expect((await client.issueInvoice({ invoiceId: gen2.value.invoiceId })).ok).toBe(true);
@@ -794,7 +833,7 @@ describe('assistant Bob local (C40 ⑧ — ask/confirm/journal on-device) + cré
     if (!created.ok) return;
     expect((await client.sendQuote(created.value.quoteId)).ok).toBe(true);
     expect((await client.signQuote({ quoteId: created.value.quoteId, signerName: 'M. Martin' })).ok).toBe(true);
-    const gen = await client.generateInvoice({ quoteId: created.value.quoteId });
+    const gen = await client.generateInvoice({ quoteId: created.value.quoteId, mode: 'final' });
     expect(gen.ok).toBe(true);
     if (!gen.ok) return;
     expect((await client.issueInvoice({ invoiceId: gen.value.invoiceId })).ok).toBe(true);

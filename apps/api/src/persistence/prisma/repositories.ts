@@ -71,6 +71,7 @@ import {
   invoiceRowToSnapshot,
   quoteLineToCreate,
   invoiceKindToDocKind,
+  signatureProofToPersistence,
 } from './mappers';
 
 const LINES_INCLUDE = { lines: { orderBy: { position: 'asc' as const } } };
@@ -146,6 +147,9 @@ export class PrismaQuoteRepository implements QuoteRepository {
   async save(q: Quote): Promise<void> {
     const s = q.toSnapshot();
     const totals = q.totals();
+    // R4 : la preuve honnête (méthode réelle + hash de tracé éventuel) est persistée en JSON ;
+    // une signature `legacy_declared` reste NULL — on ne réinvente jamais une méthode.
+    const signatureProof = signatureProofToPersistence(s.signature);
     const base = {
       companyId: s.companyId,
       customerId: s.customerId,
@@ -155,6 +159,7 @@ export class PrismaQuoteRepository implements QuoteRepository {
       validUntil: s.validUntil ? new Date(s.validUntil) : null,
       signerName: s.signature?.signerName ?? null,
       signedAt: s.signature ? new Date(s.signature.signedAt) : null,
+      signatureProof: signatureProof === null ? Prisma.DbNull : (signatureProof as unknown as Prisma.InputJsonValue),
       totalsHt: totals.ht,
       totalsVat: totals.vat,
       totalsTtc: totals.ttc,
@@ -200,6 +205,13 @@ export class PrismaInvoiceRepository implements InvoiceRepository {
     });
     return row ? Invoice.rehydrate(invoiceRowToSnapshot(row)) : null;
   }
+  async findCreditNoteBySourceInvoiceId(companyId: string, sourceInvoiceId: string): Promise<Invoice | null> {
+    const row = await this.prisma.client().invoice.findFirst({
+      where: { companyId, sourceInvoiceId, kind: 'credit_note' },
+      include: LINES_INCLUDE,
+    });
+    return row ? Invoice.rehydrate(invoiceRowToSnapshot(row)) : null;
+  }
   async listByCompany(companyId: string): Promise<Invoice[]> {
     const rows = await this.prisma.client().invoice.findMany({ where: { companyId }, include: LINES_INCLUDE });
     return rows.map((row) => Invoice.rehydrate(invoiceRowToSnapshot(row)));
@@ -216,6 +228,10 @@ export class PrismaInvoiceRepository implements InvoiceRepository {
       issuedAt: s.issuedAt ? new Date(s.issuedAt) : null,
       dueAt: s.dueAt ? new Date(s.dueAt) : null,
       parentQuoteId: s.parentQuoteId,
+      sourceInvoiceId: s.sourceInvoiceId ?? null,
+      sourceInvoiceKind: s.sourceInvoiceKind ? invoiceKindToDocKind(s.sourceInvoiceKind) : null,
+      sourceInvoiceNumber: s.sourceInvoiceNumber ?? null,
+      sourceInvoiceIssuedAt: s.sourceInvoiceIssuedAt ? new Date(s.sourceInvoiceIssuedAt) : null,
       depositPct: s.depositPct,
       depositDeductionCents: s.depositDeductionCents ?? 0,
       depositInvoiceId: s.depositInvoiceId ?? null,
@@ -228,24 +244,46 @@ export class PrismaInvoiceRepository implements InvoiceRepository {
       legalMentions: s.mentions,
     };
     const lines = s.lines.map((l, idx) => quoteLineToCreate(l, { invoiceId: s.id }, idx));
-    if (this.prisma.inTransaction()) {
-      // Déjà dans la transaction d'émission/encaissement : on exécute en séquence sur le client tx.
+    const persist = async (): Promise<void> => {
       const tx = this.prisma.client();
-      await tx.invoice.upsert({ where: { id: s.id }, create: { id: s.id, ...base }, update: base });
-      await tx.lineItem.deleteMany({ where: { invoiceId: s.id } });
-      await tx.lineItem.createMany({ data: lines });
-    } else {
-      await this.prisma.$transaction([
-        this.prisma.invoice.upsert({ where: { id: s.id }, create: { id: s.id, ...base }, update: base }),
-        this.prisma.lineItem.deleteMany({ where: { invoiceId: s.id } }),
-        this.prisma.lineItem.createMany({ data: lines }),
-      ]);
-    }
+      const existing = await tx.invoice.findUnique({ where: { id: s.id }, select: { id: true, status: true } });
+      if (!existing) {
+        if (s.kind === 'credit_note') {
+          const sourceInvoiceId = s.sourceInvoiceId;
+          if (!sourceInvoiceId) throw new Error('Credit note source invoice id is required.');
+          // Native UPSERT sur l'identité légale de la source : deux créations concurrentes
+          // convergent sans unique_violation, donc sans empoisonner la transaction tenant.
+          const published = await tx.invoice.upsert({
+            where: { uniq_credit_note_source_invoice: { companyId: s.companyId, sourceInvoiceId } },
+            create: { id: s.id, ...base },
+            update: { sourceInvoiceId },
+            select: { id: true },
+          });
+          if (published.id === s.id && lines.length > 0) await tx.lineItem.createMany({ data: lines });
+          return;
+        }
+        await tx.invoice.create({ data: { id: s.id, ...base } });
+        if (lines.length > 0) await tx.lineItem.createMany({ data: lines });
+        return;
+      }
+
+      // Tant que la ligne parente est encore `draft`, on publie d'abord son contenu courant.
+      // C'est indispensable si l'appelant ajoute une ligne puis émet dans une même transaction :
+      // après le passage à `issued`, le trigger légal interdit toute réécriture des lignes.
+      // Un avoir total, lui, est figé depuis sa création même lorsqu'il est encore brouillon.
+      if (existing.status === 'draft' && s.kind !== 'credit_note') {
+        await tx.lineItem.deleteMany({ where: { invoiceId: s.id } });
+        if (lines.length > 0) await tx.lineItem.createMany({ data: lines });
+      }
+      await tx.invoice.update({ where: { id: s.id }, data: base });
+    };
+    if (this.prisma.inTransaction()) await persist();
+    else await this.prisma.runInTransaction(persist);
   }
   /**
    * R6 : suppression DÉFINITIVE d'une facture BROUILLON (le use case DeleteDraftInvoice garde le
    * statut avant appel). Les lignes n'ont PAS de cascade DB (FK optionnelle -> SET NULL par
-   * défaut) : on les supprime explicitement d'abord, comme `save` le fait déjà pour un remplacement.
+   * défaut) : on les supprime explicitement d'abord, comme `save` le fait pour un brouillon éditable.
    */
   async deleteById(id: string): Promise<void> {
     if (this.prisma.inTransaction()) {

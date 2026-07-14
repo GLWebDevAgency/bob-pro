@@ -22,6 +22,7 @@ function makeDeps(opts: { existingKey?: string | null; status?: string; existing
     findById: async () => invoice,
     lockById: async () => invoice,
     findByParentQuoteId: async () => null,
+    findCreditNoteBySourceInvoiceId: async () => null,
     listByCompany: async () => [],
     save: async () => {
       invoiceSaves++;

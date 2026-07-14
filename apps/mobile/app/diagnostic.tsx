@@ -23,12 +23,22 @@
  * · le « recevoir » en gras de l'intro est rendu en corps simple (copy i18n d'un seul tenant).
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Animated, Easing, Pressable, ScrollView, Text, View } from 'react-native';
+import {
+  AccessibilityInfo,
+  ActivityIndicator,
+  Animated,
+  Easing,
+  Pressable,
+  ScrollView,
+  Text,
+  View,
+} from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter, type Href } from 'expo-router';
 import {
   deriveDiagnostic,
+  type DeriveDiagnosticInput,
   type DeriveDiagnosticResult,
   type DiagActionItem,
   type DiagAnswerValue,
@@ -38,8 +48,10 @@ import {
 } from '@bob/core';
 import { themes, vault } from '@bob/tokens';
 import { t, type I18nKey, type Personality } from '@bob/i18n';
-import { ScoreBar, ScoreRing, font, useTheme } from '@bob/ui';
+import { ScoreBar, ScoreRing, font, useReduceMotion, useTheme } from '@bob/ui';
 import { useCustomers, useDiagnostic, useInvoices, useProfile } from '../src/data/hooks';
+import { combineQueryStates } from '../src/data/query-state';
+import { usePublishAgentContext, type AgentContext } from '../src/agent';
 import {
   CheckIcon,
   ChevronLeftIcon,
@@ -102,23 +114,35 @@ function frDate(dateOnly: string): string {
 // ── Barre de progression fine du proto (piste white10, remplissage dégradé indigo) ──
 function ProgressBar({ progress }: { progress: number }) {
   const { overlays } = useTheme();
+  const reduceMotion = useReduceMotion();
   const anim = useRef(new Animated.Value(progress)).current;
 
   useEffect(() => {
+    if (reduceMotion) {
+      anim.stopAnimation();
+      anim.setValue(progress);
+      return;
+    }
     Animated.timing(anim, {
       toValue: progress,
       duration: 400,
       easing: Easing.out(Easing.quad),
       useNativeDriver: false, // width en % = prop de layout
     }).start();
-  }, [progress, anim]);
+  }, [anim, progress, reduceMotion]);
 
   const width = anim.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] });
   return (
     <View
       accessibilityRole="progressbar"
       accessibilityValue={{ min: 0, max: 100, now: Math.round(progress * 100) }}
-      style={{ height: 4, borderRadius: 3, backgroundColor: overlays.white10, overflow: 'hidden', marginTop: 10 }}
+      style={{
+        height: 4,
+        borderRadius: 3,
+        backgroundColor: overlays.white10,
+        overflow: 'hidden',
+        marginTop: 10,
+      }}
     >
       <Animated.View style={{ height: '100%', width, borderRadius: 3, overflow: 'hidden' }}>
         <LinearGradient
@@ -134,8 +158,13 @@ function ProgressBar({ progress }: { progress: number }) {
 
 /** Count-up 0 → target (900 ms, ease-out) — l'anneau ScoreRing suit la valeur affichée. */
 function useCountUp(target: number): number {
+  const reduceMotion = useReduceMotion();
   const [value, setValue] = useState(0);
   useEffect(() => {
+    if (reduceMotion) {
+      setValue(target);
+      return;
+    }
     const start = Date.now();
     const DURATION = 900;
     let raf = 0;
@@ -147,12 +176,17 @@ function useCountUp(target: number): number {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [target]);
+  }, [reduceMotion, target]);
   return value;
 }
 
 /** Rangée du plan d'action / des constats — pastille d'état + libellé + échéance + route réelle. */
-function ItemRow({ item, last, personality, onPress }: {
+function ItemRow({
+  item,
+  last,
+  personality,
+  onPress,
+}: {
   item: DiagActionItem;
   last: boolean;
   personality: Personality;
@@ -219,6 +253,7 @@ function ItemRow({ item, last, personality, onPress }: {
 
 export default function Diagnostic() {
   const { colors, overlays, personality } = useTheme();
+  const reduceMotion = useReduceMotion();
   const insets = useSafeAreaInsets();
   const router = useRouter();
 
@@ -227,11 +262,14 @@ export default function Diagnostic() {
   const customersQ = useCustomers();
   const invoicesQ = useInvoices();
   const profileQ = useProfile();
+  const queryState = combineQueryStates(diagnostic, customersQ, invoicesQ, profileQ);
 
   const [phase, setPhase] = useState<'intro' | 'steps' | 'result'>('intro');
   // step 0 = constats de l'audit automatique, puis 1..n = questions adaptatives.
   const [step, setStep] = useState(0);
   const [picked, setPicked] = useState<Partial<Record<DiagQuestionId, number>>>({});
+  type DiagnosticBase = Omit<DeriveDiagnosticInput, 'answers'>;
+  const [sourceSnapshot, setSourceSnapshot] = useState<DiagnosticBase | null>(null);
 
   const answers = useMemo<DiagnosticAnswers>(() => {
     const out: DiagnosticAnswers = {};
@@ -243,11 +281,10 @@ export default function Diagnostic() {
     return out;
   }, [picked]);
 
-  /** Projection pure @bob/core — recalculée à chaque réponse (recalcul local, zéro I/O). */
-  const derived = useMemo<DeriveDiagnosticResult | null>(() => {
-    if (!diagnostic.data || !customersQ.data || !invoicesQ.data) return null;
+  const liveSource = useMemo<DiagnosticBase | null>(() => {
+    if (!diagnostic.data || !customersQ.data || !invoicesQ.data || !profileQ.data) return null;
     const invoices = invoicesQ.data;
-    return deriveDiagnostic({
+    return {
       facts: diagnostic.data,
       customers: customersQ.data.map((c) => ({ id: c.id, type: c.type, siren: c.siren })),
       invoices: invoices.map((i) => ({
@@ -259,22 +296,28 @@ export default function Diagnostic() {
         lineCategories: i.lines.map((l) => l.category),
       })),
       // Encaissements réels : cumul `paid` des factures (pas d'endpoint payments dédié).
-      payments: invoices.filter((i) => i.paid > 0).map((i) => ({ invoiceId: i.id, amountCents: i.paid })),
-      profile: { trade: profileQ.data?.trade ?? null },
-      answers,
+      payments: invoices
+        .filter((i) => i.paid > 0)
+        .map((i) => ({ invoiceId: i.id, amountCents: i.paid })),
+      profile: { trade: profileQ.data.trade },
       today: localToday(),
-    });
-  }, [diagnostic.data, customersQ.data, invoicesQ.data, profileQ.data, answers]);
+    };
+  }, [customersQ.data, diagnostic.data, invoicesQ.data, profileQ.data]);
+
+  /** Les données métier sont figées au démarrage ; seules les réponses font évoluer le score. */
+  const derived = useMemo<DeriveDiagnosticResult | null>(() => {
+    const source = sourceSnapshot ?? liveSource;
+    return source === null ? null : deriveDiagnostic({ ...source, answers });
+  }, [answers, liveSource, sourceSnapshot]);
 
   const questions = derived?.questions ?? [];
   const totalSteps = questions.length + 1; // constats + questions
-  const isError = diagnostic.isError || customersQ.isError || invoicesQ.isError;
+  const sourcesReady = liveSource !== null;
+  const blockingError = queryState.failed && !sourcesReady && sourceSnapshot === null;
+  const staleSourceError = queryState.failed && sourcesReady && sourceSnapshot === null;
 
   const retry = (): void => {
-    void diagnostic.refetch();
-    void customersQ.refetch();
-    void invoicesQ.refetch();
-    void profileQ.refetch();
+    queryState.refetchAll();
   };
 
   const goBack = (): void => {
@@ -284,7 +327,11 @@ export default function Diagnostic() {
       return;
     }
     if (step > 0) setStep(step - 1);
-    else setPhase('intro');
+    else {
+      setPhase('intro');
+      setSourceSnapshot(null);
+      setPicked({});
+    }
   };
 
   const answer = (id: DiagQuestionId, optionIndex: number): void => {
@@ -293,10 +340,43 @@ export default function Diagnostic() {
     else setStep(step + 1);
   };
 
+  const begin = (): void => {
+    if (liveSource === null) return;
+    setSourceSnapshot(liveSource);
+    setStep(0);
+    setPhase('steps');
+  };
+
+  const agentContext = useMemo<AgentContext>(
+    () => ({
+      screen: { name: 'diagnostic', instanceId: `diagnostic:${phase}:${step}` },
+      entities: [],
+      capabilities: ['screen.read'],
+    }),
+    [phase, step],
+  );
+  usePublishAgentContext(agentContext, { bottomAvoidance: 72 });
+
+  useEffect(() => {
+    if (phase === 'intro') return;
+    const questionId = questions[step - 1];
+    const announcement =
+      phase === 'result'
+        ? t('diag.planTitle', { personality })
+        : step === 0
+          ? t('diag.auditTitle', { personality })
+          : questionId !== undefined
+            ? t(QUESTIONS[questionId].title, { personality })
+            : t('diag.title', { personality });
+    AccessibilityInfo.announceForAccessibility(announcement);
+  }, [phase, personality, questions, step]);
+
   // ── Contenus de phase ───────────────────────────────────────────────────────
   const intro = (
     <>
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4 }}>
+      <View
+        style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4 }}
+      >
         <View
           style={{
             width: 84,
@@ -320,43 +400,89 @@ export default function Diagnostic() {
             <ShieldIcon color={colors.surface} size={40} strokeWidth={1.9} />
           </LinearGradient>
         </View>
-        <Text style={[font('screenH1'), { fontSize: 28, lineHeight: 32, color: colors.surface, textAlign: 'center', marginBottom: 12 }]}>
+        <Text
+          style={[
+            font('screenH1'),
+            {
+              fontSize: 28,
+              lineHeight: 32,
+              color: colors.surface,
+              textAlign: 'center',
+              marginBottom: 12,
+            },
+          ]}
+        >
           {t('diag.introTitle', { personality })}
         </Text>
         <Text
           style={[
             font('body'),
-            { fontSize: 15.5, lineHeight: 23, maxWidth: 300, textAlign: 'center', color: overlays.white66 },
+            {
+              fontSize: 15.5,
+              lineHeight: 23,
+              maxWidth: 300,
+              textAlign: 'center',
+              color: overlays.white66,
+            },
           ]}
         >
-          {t('diag.introBody', { personality, params: { count: totalSteps > 1 ? questions.length : 3 } })}
+          {t('diag.introBody', {
+            personality,
+            params: { count: totalSteps > 1 ? questions.length : 3 },
+          })}
         </Text>
+        {staleSourceError ? (
+          <Text
+            accessibilityRole="alert"
+            style={[font('sub'), { color: overlays.white70, textAlign: 'center', marginTop: 14 }]}
+          >
+            {t('diag.staleData', { personality })}
+          </Text>
+        ) : blockingError ? (
+          <Text
+            accessibilityRole="alert"
+            style={[font('sub'), { color: overlays.white70, textAlign: 'center', marginTop: 14 }]}
+          >
+            {t('diag.dataError', { personality })}
+          </Text>
+        ) : null}
       </View>
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={t('diag.introCta', { personality })}
-        onPress={() => {
-          setStep(0);
-          setPhase('steps');
-        }}
+        accessibilityLabel={t(blockingError ? 'diag.retry' : 'diag.introCta', { personality })}
+        accessibilityState={{ disabled: !sourcesReady && !blockingError, busy: queryState.loading }}
+        disabled={!sourcesReady && !blockingError}
+        onPress={blockingError ? retry : begin}
         style={({ pressed }) => ({
+          minHeight: 52,
           backgroundColor: colors.surface,
           borderRadius: 16,
           paddingVertical: 16,
+          justifyContent: 'center',
           alignItems: 'center',
-          transform: [{ scale: pressed ? 0.97 : 1 }],
+          opacity: sourcesReady || blockingError ? 1 : 0.65,
+          transform: [{ scale: pressed && !reduceMotion ? 0.97 : 1 }],
         })}
       >
-        <Text style={[font('button'), { color: themes.indigo.d1 }]}>{t('diag.introCta', { personality })}</Text>
+        <Text style={[font('button'), { color: themes.indigo.d1 }]}>
+          {t(blockingError ? 'diag.retry' : sourcesReady ? 'diag.introCta' : 'diag.dataLoading', {
+            personality,
+          })}
+        </Text>
       </Pressable>
     </>
   );
 
   const pending = (
     <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', gap: 18 }}>
-      {isError ? (
+      {blockingError ? (
         <>
-          <Text style={[font('body'), { fontSize: 15.5, textAlign: 'center', color: overlays.white66, maxWidth: 300 }]}>
+          <Text
+            style={[
+              font('body'),
+              { fontSize: 15.5, textAlign: 'center', color: overlays.white66, maxWidth: 300 },
+            ]}
+          >
             {t('diag.dataError', { personality })}
           </Text>
           <Pressable
@@ -378,7 +504,16 @@ export default function Diagnostic() {
           </Pressable>
         </>
       ) : (
-        <ActivityIndicator color={colors.surface} />
+        <View
+          accessibilityRole="progressbar"
+          accessibilityLabel={t('diag.dataLoading', { personality })}
+          style={{ alignItems: 'center', gap: 12 }}
+        >
+          <ActivityIndicator color={colors.surface} />
+          <Text style={[font('sub'), { color: overlays.white66 }]}>
+            {t('diag.dataLoading', { personality })}
+          </Text>
+        </View>
       )}
     </View>
   );
@@ -386,8 +521,14 @@ export default function Diagnostic() {
   /** Étape 0 — l'audit automatique du dossier : constats dérivés des données, AVANT toute question. */
   const audit = derived ? (
     <>
-      <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingVertical: 18 }} showsVerticalScrollIndicator={false}>
-        <Text style={[font('eyebrow'), { fontSize: 13, color: vault.scanChipIcon, marginBottom: 8 }]}>
+      <ScrollView
+        style={{ flex: 1 }}
+        contentContainerStyle={{ paddingVertical: 18 }}
+        showsVerticalScrollIndicator={false}
+      >
+        <Text
+          style={[font('eyebrow'), { fontSize: 13, color: vault.scanChipIcon, marginBottom: 8 }]}
+        >
           {t('diag.auditEyebrow', { personality })}
         </Text>
         <Text style={[font('screenH1'), { fontSize: 25, color: colors.surface, marginBottom: 8 }]}>
@@ -416,23 +557,35 @@ export default function Diagnostic() {
           {derived.items
             .filter((item) => item.source === 'dossier')
             .map((item, i, rows) => (
-              <ItemRow key={item.kind} item={item} last={i === rows.length - 1} personality={personality} onPress={undefined} />
+              <ItemRow
+                key={item.kind}
+                item={item}
+                last={i === rows.length - 1}
+                personality={personality}
+                onPress={undefined}
+              />
             ))}
         </View>
       </ScrollView>
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={t('diag.auditContinue', { personality })}
-        onPress={() => setStep(1)}
+        onPress={() => {
+          if (questions.length === 0) setPhase('result');
+          else setStep(1);
+        }}
         style={({ pressed }) => ({
+          minHeight: 52,
           backgroundColor: colors.surface,
           borderRadius: 16,
           paddingVertical: 16,
           alignItems: 'center',
-          transform: [{ scale: pressed ? 0.97 : 1 }],
+          transform: [{ scale: pressed && !reduceMotion ? 0.97 : 1 }],
         })}
       >
-        <Text style={[font('button'), { color: themes.indigo.d1 }]}>{t('diag.auditContinue', { personality })}</Text>
+        <Text style={[font('button'), { color: themes.indigo.d1 }]}>
+          {t('diag.auditContinue', { personality })}
+        </Text>
       </Pressable>
     </>
   ) : (
@@ -440,43 +593,52 @@ export default function Diagnostic() {
   );
 
   const questionId = questions[step - 1];
-  const question = questionId !== undefined ? (
-    <View style={{ flex: 1, justifyContent: 'center' }}>
-      <Text style={[font('eyebrow'), { fontSize: 13, color: vault.scanChipIcon, marginBottom: 8 }]}>
-        {t('diag.questionTag', { personality, params: { n: step, total: questions.length } })}
-      </Text>
-      <Text style={[font('screenH1'), { fontSize: 25, color: colors.surface, marginBottom: 22 }]}>
-        {t(QUESTIONS[questionId].title, { personality })}
-      </Text>
-      <View style={{ gap: 11 }}>
-        {QUESTIONS[questionId].options.map((option, index) => {
-          const selected = picked[questionId] === index;
-          return (
-            <Pressable
-              key={option.key}
-              accessibilityRole="button"
-              accessibilityLabel={t(option.key, { personality })}
-              accessibilityState={{ selected }}
-              onPress={() => answer(questionId, index)}
-              style={({ pressed }) => ({
-                backgroundColor: selected || pressed ? overlays.white16 : overlays.white07,
-                borderWidth: 1,
-                borderColor: selected ? vault.scanChipIcon : overlays.white14,
-                borderRadius: 15,
-                padding: 16,
-              })}
-            >
-              <Text style={[font('label', 600), { fontSize: 15.5, color: colors.surface }]}>
-                {t(option.key, { personality })}
-              </Text>
-            </Pressable>
-          );
-        })}
-      </View>
-    </View>
-  ) : (
-    pending
-  );
+  const question =
+    questionId !== undefined ? (
+      <ScrollView
+        style={{ flex: 1 }}
+        contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', paddingVertical: 18 }}
+        showsVerticalScrollIndicator={false}
+      >
+        <Text
+          style={[font('eyebrow'), { fontSize: 13, color: vault.scanChipIcon, marginBottom: 8 }]}
+        >
+          {t('diag.questionTag', { personality, params: { n: step, total: questions.length } })}
+        </Text>
+        <Text style={[font('screenH1'), { fontSize: 25, color: colors.surface, marginBottom: 22 }]}>
+          {t(QUESTIONS[questionId].title, { personality })}
+        </Text>
+        <View style={{ gap: 11 }}>
+          {QUESTIONS[questionId].options.map((option, index) => {
+            const selected = picked[questionId] === index;
+            return (
+              <Pressable
+                key={option.key}
+                accessibilityRole="button"
+                accessibilityLabel={t(option.key, { personality })}
+                accessibilityState={{ selected }}
+                onPress={() => answer(questionId, index)}
+                style={({ pressed }) => ({
+                  minHeight: 52,
+                  justifyContent: 'center',
+                  backgroundColor: selected || pressed ? overlays.white16 : overlays.white07,
+                  borderWidth: 1,
+                  borderColor: selected ? vault.scanChipIcon : overlays.white14,
+                  borderRadius: 15,
+                  padding: 16,
+                })}
+              >
+                <Text style={[font('label', 600), { fontSize: 15.5, color: colors.surface }]}>
+                  {t(option.key, { personality })}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      </ScrollView>
+    ) : (
+      pending
+    );
 
   const result = derived ? <Result derived={derived} onClose={() => router.back()} /> : pending;
 
@@ -490,17 +652,25 @@ export default function Diagnostic() {
         end={{ x: 0.55, y: 1 }}
         style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
       />
-      <View style={{ flex: 1, paddingTop: insets.top + 10, paddingHorizontal: 22, paddingBottom: insets.bottom + 16 }}>
+      <View
+        style={{
+          flex: 1,
+          paddingTop: insets.top + 10,
+          paddingHorizontal: 22,
+          paddingBottom: insets.bottom + 16,
+        }}
+      >
         {/* En-tête : retour (questionnaire/résultat) · bouclier + titre · fermeture × */}
-        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+        <View
+          style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}
+        >
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
             {phase !== 'intro' ? (
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel={t('diag.back', { personality })}
                 onPress={goBack}
-                hitSlop={8}
-                style={{ minWidth: 26, minHeight: 34, justifyContent: 'center' }}
+                style={{ width: 44, height: 44, alignItems: 'center', justifyContent: 'center' }}
               >
                 <ChevronLeftIcon color={overlays.white70} size={18} strokeWidth={2.2} />
               </Pressable>
@@ -514,11 +684,10 @@ export default function Diagnostic() {
             accessibilityRole="button"
             accessibilityLabel={t('diag.close', { personality })}
             onPress={() => router.back()}
-            hitSlop={6}
             style={{
-              width: 34,
-              height: 34,
-              borderRadius: 17,
+              width: 44,
+              height: 44,
+              borderRadius: 22,
               backgroundColor: overlays.white10,
               alignItems: 'center',
               justifyContent: 'center',
@@ -539,20 +708,33 @@ export default function Diagnostic() {
 // ── Résultat — score global (anneau), 3 axes, plan d'action daté, CTA routes réelles ──
 function Result({ derived, onClose }: { derived: DeriveDiagnosticResult; onClose: () => void }) {
   const { colors, overlays, personality } = useTheme();
+  const reduceMotion = useReduceMotion();
   const router = useRouter();
   const display = useCountUp(derived.score);
 
   const todos = derived.items.filter((item) => !item.done);
   // Mêmes tranches que la couleur de l'anneau (@bob/ui score.logic : >75 · 50–75 · <50).
   const titleKey: I18nKey =
-    derived.score > 75 ? 'diag.resultTitleHigh' : derived.score >= 50 ? 'diag.resultTitleMid' : 'diag.resultTitleLow';
+    derived.score > 75
+      ? 'diag.resultTitleHigh'
+      : derived.score >= 50
+        ? 'diag.resultTitleMid'
+        : 'diag.resultTitleLow';
   const bodyKey: I18nKey =
-    todos.length === 0 ? 'diag.resultBodyNone' : todos.length === 1 ? 'diag.resultBodyOne' : 'diag.resultBody';
+    todos.length === 0
+      ? 'diag.resultBodyNone'
+      : todos.length === 1
+        ? 'diag.resultBodyOne'
+        : 'diag.resultBody';
   // « Configurer dans l'app » → la route du premier item à faire (réception en tête de tri).
   const primaryRoute = todos.find((item) => item.route !== null)?.route ?? '/compte';
 
   return (
-    <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingTop: 16, paddingBottom: 8 }} showsVerticalScrollIndicator={false}>
+    <ScrollView
+      style={{ flex: 1 }}
+      contentContainerStyle={{ paddingTop: 16, paddingBottom: 8 }}
+      showsVerticalScrollIndicator={false}
+    >
       <View style={{ alignItems: 'center', marginBottom: 20 }}>
         {/* Médaillon surface : l'anneau @bob/ui garde piste claire + chiffre ink900 lisibles sur l'indigo. */}
         <View
@@ -566,12 +748,26 @@ function Result({ derived, onClose }: { derived: DeriveDiagnosticResult; onClose
             marginBottom: 14,
           }}
         >
-          <ScoreRing score={display} size={124} accessibilityLabel={t('diag.title', { personality })} />
+          <ScoreRing
+            score={display}
+            size={124}
+            accessibilityLabel={t('diag.title', { personality })}
+          />
         </View>
-        <Text style={[font('screenH1'), { fontSize: 24, color: colors.surface, marginBottom: 6, textAlign: 'center' }]}>
+        <Text
+          style={[
+            font('screenH1'),
+            { fontSize: 24, color: colors.surface, marginBottom: 6, textAlign: 'center' },
+          ]}
+        >
           {t(titleKey, { personality })}
         </Text>
-        <Text style={[font('sub'), { fontSize: 14.5, color: overlays.white66, textAlign: 'center', maxWidth: 290 }]}>
+        <Text
+          style={[
+            font('sub'),
+            { fontSize: 14.5, color: overlays.white66, textAlign: 'center', maxWidth: 290 },
+          ]}
+        >
           {t(bodyKey, { personality, params: { count: todos.length } })}
         </Text>
       </View>
@@ -590,15 +786,26 @@ function Result({ derived, onClose }: { derived: DeriveDiagnosticResult; onClose
       >
         {derived.axes.map((axis) => (
           <View key={axis.id} style={{ gap: 6 }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+              }}
+            >
               <Text style={[font('label', 600), { fontSize: 13, color: colors.surface }]}>
                 {t(AXIS_LABEL[axis.id], { personality })}
               </Text>
-              <Text style={[font('meta'), { color: overlays.white70, fontVariant: ['tabular-nums'] }]}>
+              <Text
+                style={[font('meta'), { color: overlays.white70, fontVariant: ['tabular-nums'] }]}
+              >
                 {axis.score}
               </Text>
             </View>
-            <ScoreBar score={axis.score} accessibilityLabel={t(AXIS_LABEL[axis.id], { personality })} />
+            <ScoreBar
+              score={axis.score}
+              accessibilityLabel={t(AXIS_LABEL[axis.id], { personality })}
+            />
           </View>
         ))}
       </View>
@@ -638,9 +845,10 @@ function Result({ derived, onClose }: { derived: DeriveDiagnosticResult; onClose
         accessibilityLabel={t('diag.resultCta', { personality })}
         onPress={() => router.push(primaryRoute as Href)}
         style={({ pressed }) => ({
+          minHeight: 52,
           borderRadius: 16,
           overflow: 'hidden',
-          transform: [{ scale: pressed ? 0.97 : 1 }],
+          transform: [{ scale: pressed && !reduceMotion ? 0.97 : 1 }],
           shadowColor: themes.indigo.ink2,
           shadowOpacity: 0.4,
           shadowRadius: 24,
@@ -653,16 +861,23 @@ function Result({ derived, onClose }: { derived: DeriveDiagnosticResult; onClose
           colors={[themes.indigo.ink2, themes.indigo.ink]}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
-          style={{ paddingVertical: 16, alignItems: 'center' }}
+          style={{
+            minHeight: 52,
+            paddingVertical: 16,
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
         >
-          <Text style={[font('button'), { color: colors.surface }]}>{t('diag.resultCta', { personality })}</Text>
+          <Text style={[font('button'), { color: colors.surface }]}>
+            {t('diag.resultCta', { personality })}
+          </Text>
         </LinearGradient>
       </Pressable>
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={t('diag.resultLater', { personality })}
         onPress={onClose}
-        style={{ paddingVertical: 8, alignItems: 'center' }}
+        style={{ minHeight: 44, justifyContent: 'center', alignItems: 'center' }}
       >
         <Text style={[font('label', 600), { fontSize: 14, color: overlays.white60 }]}>
           {t('diag.resultLater', { personality })}

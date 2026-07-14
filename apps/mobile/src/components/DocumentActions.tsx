@@ -9,6 +9,7 @@ import { QuestionSheet, useTheme } from '@bob/ui';
 import {
   useSendQuote,
   useSignQuote,
+  useCreateQuoteSignatureLink,
   useRefuseQuote,
   useCreateCreditNote,
   useGenerateInvoice,
@@ -157,6 +158,7 @@ export const QuoteActions = forwardRef<
   const { personality } = useTheme();
   const send = useSendQuote();
   const sign = useSignQuote();
+  const signatureLink = useCreateQuoteSignatureLink();
   const refuse = useRefuseQuote();
   const generate = useGenerateInvoice();
   const { busy, run } = useActionLock();
@@ -169,6 +171,10 @@ export const QuoteActions = forwardRef<
   // R4 : choix de signature (Sur place / Envoyer le lien) puis, si « Sur place », le pad lui-même.
   const [signChoiceOpen, setSignChoiceOpen] = useState(false);
   const [onsiteOpen, setOnsiteOpen] = useState(false);
+  // Mode passage client durci (challenge GPT 20260714, P1 reprise) : un échec réseau de
+  // `signQuote` ne doit jamais vider le pad — l'erreur vit ICI (pas dans SignOnsiteSheet) pour
+  // survivre à ses re-renders, et n'est réarmée qu'à une ouverture explicite du pad.
+  const [onsiteError, setOnsiteError] = useState<string | null>(null);
   const linked: QuoteLinkedInvoices = {
     hasDepositInvoice: linkedInvoices.hasDepositInvoice || localLinked.hasDepositInvoice,
     hasFinalInvoice: linkedInvoices.hasFinalInvoice || localLinked.hasFinalInvoice,
@@ -186,7 +192,10 @@ export const QuoteActions = forwardRef<
         if (quote.status === 'sent' || quote.status === 'viewed') setSignChoiceOpen(true);
       },
       openSignOnsite: () => {
-        if (quote.status === 'sent' || quote.status === 'viewed') setOnsiteOpen(true);
+        if (quote.status === 'sent' || quote.status === 'viewed') {
+          setOnsiteError(null);
+          setOnsiteOpen(true);
+        }
       },
     }),
     [linked.hasFinalInvoice, linked.hasDepositInvoice, quote.status],
@@ -206,32 +215,59 @@ export const QuoteActions = forwardRef<
       router.push(`/facture/${out.invoiceId}`);
     });
 
-  // R4 : « Envoyer le lien » — MÊME mutation que le bouton « Envoyer » initial (régénère le
-  // jeton de signature, révoque l'ancien : comportement existant de SendQuote/
-  // CreateQuoteSignatureToken, pas un nouvel endpoint). L'URL vient DÉJÀ du serveur
-  // (SendQuoteOutput.signatureUrl) — le mobile ne connaît jamais SIGN_WEB_BASE_URL et ne
-  // reconstruit jamais publicSignatureUrl lui-même (source unique côté API).
+  // P0 R4 (fermé) : « Envoyer le lien » n'appelle PLUS sendQuote — l'ancienne implémentation
+  // mettait l'e-mail en outbox AVANT d'ouvrir Share, donc annuler le partage n'annulait rien.
+  // Désormais : POST /quotes/:id/signature-link (CreateQuoteSignatureLink) prépare/rotate le
+  // lien SANS AUCUN sortant, puis Share s'ouvre. Annuler le Share = rien n'est parti (critère
+  // du P0) — seul un lien roté existe côté serveur, aucun destinataire ne l'a reçu. L'URL vient
+  // DU SERVEUR (source unique) : le mobile ne connaît jamais SIGN_WEB_BASE_URL.
   const handleSendLink = () =>
     run('sendLink', async () => {
-      const result = await send.mutateAsync(quote.id);
-      if (!result.signatureUrl) {
-        // Échec honnête (ex. jeton non généré côté serveur) : jamais un gel, jamais un faux succès.
-        Alert.alert('Oups', 'Lien de signature indisponible pour le moment. Réessaie dans un instant.');
-        return;
-      }
+      const result = await signatureLink.mutateAsync(quote.id);
       await Share.share({
         message: `Bonjour, voici le lien pour signer le devis${quote.number ? ` ${quote.number}` : ''} : ${result.signatureUrl}`,
       });
     });
 
-  // R4 : signature sur place — TODO(Arbitrage 4, SPEC_LOT_RETOURS_DEVICE_20260714.md) : le tracé
-  // (SignaturePadValue.strokes/dataUrl) n'est PAS envoyé ici — signQuote (API) n'accepte que
-  // `signerName`. Limitation domaine CONNUE et documentée (pas un oubli) : persister le tracé
-  // (preuve/valeur juridique) est une évolution proposée en suite de lot, challenge GPT invité.
-  const submitOnsiteSignature = (signerName: string) =>
+  // R4 : l'envoi PAR E-MAIL reste possible mais devient une option EXPLICITE et confirmée
+  // (sortant réel vers le client — même plancher OUTBOUND que l'envoi initial du devis).
+  // Sélectionner un mode dans le sheet n'est pas la confirmation d'un effet sortant.
+  const handleSendEmail = async () => {
+    const ok = await confirm({
+      title: 'Envoyer par e-mail',
+      message: `Le lien de signature part par e-mail chez ${customerName}.`,
+      diff: buildActionDiff('envoyer_devis', {}, { number: quote.number }),
+      challenge: challengeFor(OUTBOUND, 'confirm_all'),
+    });
+    if (!ok) return;
+    await run('sendEmail', async () => {
+      const result = await send.mutateAsync(quote.id);
+      if (result.deliveryStatus === 'queued') {
+        Alert.alert('Envoi programmé', 'L’e-mail partira en arrière-plan. Vous pouvez suivre sa livraison dans l’activité.');
+      } else if (result.deliveryStatus === 'sent') {
+        Alert.alert('E-mail envoyé', 'L’e-mail a été pris en charge par le service d’envoi.');
+      } else {
+        Alert.alert('Aucun e-mail programmé', 'Vérifiez l’adresse e-mail du client, puis réessayez.');
+      }
+    });
+  };
+
+  // R4 (P0 fermé) : signature sur place — le tracé du pad (dataURL) est TRANSMIS avec la
+  // signature ; le serveur en calcule le SHA-256 et persiste { method:'onsite_draw', sha256,
+  // capturedAt } (le dataURL lui-même n'est pas stocké en V1 — hash + méta ; archivage image =
+  // évolution suivante). Le pad signe désormais ce qu'il affiche.
+  // Reprise (challenge GPT 20260714, P1) : un échec (réseau…) reste DANS le pad — bandeau
+  // d'erreur + bouton « Réessayer », tracé et nom intacts — jamais le double Alert du `run()`
+  // partagé (l'erreur est avalée ICI, pas rethrow) ni un pad vidé qui ferait perdre le geste.
+  const submitOnsiteSignature = (signerName: string, proofDataUrl: string) =>
     run('sign', async () => {
-      await sign.mutateAsync({ quoteId: quote.id, signerName });
-      setOnsiteOpen(false);
+      setOnsiteError(null);
+      try {
+        await sign.mutateAsync({ quoteId: quote.id, signerName, proofDataUrl });
+        setOnsiteOpen(false);
+      } catch (e) {
+        setOnsiteError(appErrorMessage(e));
+      }
     });
 
   if (quote.status === 'draft') {
@@ -280,7 +316,7 @@ export const QuoteActions = forwardRef<
                 ConfirmSheet booléenne sans tracé était mensongère (« signature » sans preuve). */}
             <Button
               title="Faire signer"
-              loading={busy === 'sendLink'}
+              loading={busy === 'sendLink' || busy === 'sendEmail'}
               disabled={!!busy}
               onPress={() => setSignChoiceOpen(true)}
             />
@@ -311,7 +347,16 @@ export const QuoteActions = forwardRef<
           question="Comment le client signe-t-il ?"
           options={[
             { value: 'onsite', label: 'Sur place', description: 'Il signe du doigt, directement sur votre téléphone.' },
-            { value: 'link', label: 'Envoyer le lien', description: 'Il signe à distance, depuis son téléphone.' },
+            {
+              value: 'link',
+              label: 'Envoyer le lien',
+              description: 'Prépare le lien à partager toi-même — rien ne part tant que tu ne l’envoies pas.',
+            },
+            {
+              value: 'email',
+              label: 'Envoyer par e-mail',
+              description: 'Bob envoie le lien par e-mail au client (confirmation avant envoi).',
+            },
           ]}
           confirmLabel="Choisir"
           otherLabel="Annuler"
@@ -319,8 +364,17 @@ export const QuoteActions = forwardRef<
           onOther={() => setSignChoiceOpen(false)}
           onSelect={(values) => {
             setSignChoiceOpen(false);
-            if (values[0] === 'onsite') setOnsiteOpen(true);
-            else void handleSendLink();
+            if (values[0] === 'onsite') {
+              setOnsiteError(null);
+              setOnsiteOpen(true);
+            } else if (values[0] === 'email') {
+              // Sortant réel : confirmation OUTBOUND explicite AVANT tout e-mail (P0 R4).
+              void handleSendEmail();
+            } else {
+              // Préparation locale sans sortant : pas de confirmation nécessaire — le seul
+              // « envoi » possible est le geste de partage de l'utilisateur lui-même.
+              void handleSendLink();
+            }
           }}
         />
         <SignOnsiteSheet
@@ -328,8 +382,12 @@ export const QuoteActions = forwardRef<
           customerName={customerName}
           quoteNumber={quote.number}
           saving={busy === 'sign'}
-          onClose={() => setOnsiteOpen(false)}
-          onSubmit={(signerName) => void submitOnsiteSignature(signerName)}
+          error={onsiteError}
+          onClose={() => {
+            setOnsiteOpen(false);
+            setOnsiteError(null);
+          }}
+          onSubmit={(signerName, proofDataUrl) => void submitOnsiteSignature(signerName, proofDataUrl)}
         />
       </>
     );

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Image, Linking, Pressable, ScrollView, Text, View } from 'react-native';
+import { Image, Linking, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { formatEUR, type DocumentAnalysis, type DocumentFact, type DocumentFolderView, type DocumentView } from '@bob/core';
@@ -16,7 +16,7 @@ import {
 } from '../../src/data/documents';
 import { useTheme } from '../../src/theme';
 import { Badge, Button, Card, SectionHeader, font } from '../../src/components/ui';
-import { Sheet } from '@bob/ui';
+import { ErrorRetry, Sheet, Skeleton, SkeletonCard, SkeletonRow } from '@bob/ui';
 
 const TYPE_LABEL: Record<DocumentAnalysis['type'], string> = {
   supplier_invoice: 'Facture fournisseur',
@@ -129,6 +129,7 @@ export default function DocumentDetailScreen() {
   const [selectedFolder, setSelectedFolder] = useState<DocumentFolderView | null>(null);
   const [moveError, setMoveError] = useState<string | null>(null);
   const [moveNotice, setMoveNotice] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
   const requestedAnalysis = useRef<string | null>(null);
   const [original, setOriginal] = useState<{ url: string; expiresAt: number } | null>(null);
   const [originalError, setOriginalError] = useState(false);
@@ -234,12 +235,26 @@ export default function DocumentDetailScreen() {
           setMoveNotice(`Document déplacé dans « ${selectedFolder.name} ».`);
         },
         onError: () => {
+          setSelectedFolder(null);
           setMoveError('Le document ou le dossier a changé. Les données ont été actualisées : vérifie la destination puis réessaie.');
           void document.refetch();
           void moveFolders.refetch();
         },
       },
     );
+  };
+
+  const recoverMove = (): void => {
+    moveDocument.reset();
+    setSelectedFolder(null);
+    setMoveError(null);
+    void Promise.all([document.refetch(), moveFolders.refetch()]);
+  };
+
+  const refreshScreen = (): void => {
+    setRefreshing(true);
+    const folderRefresh = document.data?.folderId ? currentFolder.refetch() : Promise.resolve();
+    void Promise.all([document.refetch(), folderRefresh, refreshOriginal()]).finally(() => setRefreshing(false));
   };
 
   const agentContext = useMemo<AgentContext>(
@@ -254,17 +269,67 @@ export default function DocumentDetailScreen() {
 
   if (document.isLoading) {
     return (
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg }}>
-        <ActivityIndicator color={colors.ink800} />
+      <View style={{ flex: 1, backgroundColor: colors.bg }}>
+        <ScrollView
+          accessibilityLiveRegion="polite"
+          accessibilityLabel="Chargement du document"
+          contentContainerStyle={{ paddingTop: insets.top + 10, paddingHorizontal: 18, paddingBottom: 80 }}
+        >
+          <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 18 }}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Retour"
+              onPress={() => router.back()}
+              hitSlop={10}
+              style={{ width: 44, height: 44, alignItems: 'center', justifyContent: 'center' }}
+            >
+              <Ionicons name="chevron-back" size={25} color={colors.ink900} />
+            </Pressable>
+            <View style={{ flex: 1, gap: 6 }}>
+              <Skeleton width="66%" height={22} radius={10} />
+              <Skeleton width={112} height={11} radius={6} />
+            </View>
+          </View>
+          <Card>
+            <Skeleton height={320} radius={14} />
+            <Skeleton height={52} radius={18} style={{ marginTop: 12 }} />
+          </Card>
+          <View style={{ marginTop: 20 }}>
+            <SectionHeader title="Ce que Bob a compris" />
+          </View>
+          <SkeletonCard height={154} contentLines={4} radius={16} />
+          <View style={{ marginTop: 20 }}>
+            <SectionHeader title="Rangement" />
+          </View>
+          <SkeletonCard height={136} contentLines={3} radius={16} />
+          <View style={{ marginTop: 20 }}>
+            <SectionHeader title="Traçabilité" />
+          </View>
+          <SkeletonCard height={160} contentLines={5} radius={16} />
+        </ScrollView>
       </View>
     );
   }
 
-  if (!isDocumentView(document.data) || document.isError) {
+  if (!isDocumentView(document.data)) {
     return (
       <View style={{ flex: 1, paddingTop: insets.top + 16, paddingHorizontal: 20, backgroundColor: colors.bg }}>
-        <Button title="Retour" variant="secondary" onPress={() => router.back()} />
-        <Text style={[font('body'), { color: colors.slate500, marginTop: 24 }]}>Document indisponible.</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 18 }}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Retour"
+            onPress={() => router.back()}
+            hitSlop={10}
+            style={{ width: 44, height: 44, alignItems: 'center', justifyContent: 'center' }}
+          >
+            <Ionicons name="chevron-back" size={25} color={colors.ink900} />
+          </Pressable>
+          <Text accessibilityRole="header" style={[font('pageTitle'), { color: colors.ink900, flex: 1 }]}>Document</Text>
+        </View>
+        <ErrorRetry
+          message="Ce document n’est pas disponible. Il a peut-être été déplacé ou le coffre n’a pas pu être chargé."
+          onRetry={() => void document.refetch()}
+        />
       </View>
     );
   }
@@ -277,6 +342,7 @@ export default function DocumentDetailScreen() {
     <>
       <ScrollView
         style={{ flex: 1, backgroundColor: colors.bg }}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refreshScreen} tintColor={colors.ink800} />}
         contentContainerStyle={{ paddingTop: insets.top + 10, paddingHorizontal: 18, paddingBottom: 80 }}
       >
       <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 18 }}>
@@ -290,13 +356,24 @@ export default function DocumentDetailScreen() {
           <Ionicons name="chevron-back" size={25} color={colors.ink900} />
         </Pressable>
         <View style={{ flex: 1, minWidth: 0 }}>
-          <Text style={[font('pageTitle'), { color: colors.ink900 }]} numberOfLines={1}>{item.filename}</Text>
+          <Text accessibilityRole="header" style={[font('pageTitle'), { color: colors.ink900 }]} numberOfLines={1}>{item.filename}</Text>
           <Text style={[font('meta'), { color: colors.slate400, marginTop: 2 }]}>Original · version {item.version}</Text>
         </View>
       </View>
 
+      {document.isError ? (
+        <View style={{ marginBottom: 16 }}>
+          <ErrorRetry
+            message="Le document affiché est la dernière version disponible. Son actualisation n’a pas abouti."
+            onRetry={() => void document.refetch()}
+          />
+        </View>
+      ) : null}
+
       <Card>
-        {imageOriginal ? (
+        {item.mimeType.startsWith('image/') && originalLoading && original === null ? (
+          <Skeleton height={320} radius={14} />
+        ) : imageOriginal ? (
           <Image
             source={{ uri: original.url }}
             accessibilityLabel={`Aperçu original de ${item.filename}`}
@@ -304,7 +381,7 @@ export default function DocumentDetailScreen() {
             style={{ width: '100%', height: 320, borderRadius: 14, backgroundColor: colors.lineSoft }}
           />
         ) : (
-          <View style={{ height: 180, alignItems: 'center', justifyContent: 'center', gap: 10 }}>
+          <View style={{ height: item.mimeType.startsWith('image/') ? 320 : 180, alignItems: 'center', justifyContent: 'center', gap: 10 }}>
             <Ionicons name={item.mimeType === 'application/pdf' ? 'document-text-outline' : 'document-outline'} size={46} color={semantic.b2b} />
             <Text style={[font('sub'), { color: colors.slate500, textAlign: 'center' }]}>
               {item.mimeType === 'application/pdf' ? 'PDF original conservé' : 'Original conservé dans le coffre'}
@@ -323,19 +400,22 @@ export default function DocumentDetailScreen() {
         </View>
       </Card>
 
-      <SectionHeader title="Ce que Bob a compris" />
+      <View style={{ marginTop: 20 }}>
+        <SectionHeader title="Ce que Bob a compris" />
+      </View>
       {!analysisSupported ? (
         <Card>
           <Text accessibilityRole="alert" style={[font('cardTitle'), { color: semantic.warning }]}>Analyse non disponible pour cet original</Text>
           <Text style={[font('sub'), { color: colors.slate500, marginTop: 4, lineHeight: 19 }]}>Le HEIC/HEIF reste conservé sans aucune modification. Bob ne lance pas d’analyse vouée à l’échec : importe une copie JPEG ou PDF pour obtenir une lecture assistée.</Text>
         </Card>
       ) : analysis.isPending ? (
-        <Card>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-            <ActivityIndicator color={semantic.ai} />
-            <Text style={[font('body'), { color: colors.ink900, flex: 1 }]}>Bob lit l’original et vérifie ses preuves…</Text>
-          </View>
-        </Card>
+        <View
+          accessibilityRole="progressbar"
+          accessibilityLiveRegion="polite"
+          accessibilityLabel="Bob lit l’original et vérifie ses preuves"
+        >
+          <SkeletonCard height={154} contentLines={4} radius={16} />
+        </View>
       ) : analysis.data ? (
         <Card>
           <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
@@ -374,7 +454,9 @@ export default function DocumentDetailScreen() {
         </Card>
       )}
 
-      <SectionHeader title="Rangement" />
+      <View style={{ marginTop: 20 }}>
+        <SectionHeader title="Rangement" />
+      </View>
       <Card>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
           <View
@@ -391,17 +473,33 @@ export default function DocumentDetailScreen() {
           </View>
           <View style={{ flex: 1, minWidth: 0 }}>
             <Text style={[font('meta'), { color: colors.slate400 }]}>Dossier actuel</Text>
-            <Text style={[font('body'), { color: colors.ink900, fontWeight: '700', marginTop: 2 }]} numberOfLines={1}>
-              {item.folderId === null
-                ? 'À classer'
-                : currentFolder.isLoading
-                  ? 'Chargement…'
-                  : currentFolder.data?.name ?? 'Dossier indisponible'}
-            </Text>
+            {item.folderId !== null && currentFolder.isLoading ? (
+              <Skeleton width={116} height={16} radius={7} style={{ marginTop: 4 }} />
+            ) : (
+              <Text
+                accessibilityRole={currentFolder.isError ? 'alert' : undefined}
+                style={[
+                  font('body'),
+                  {
+                    color: currentFolder.isError ? semantic.danger : colors.ink900,
+                    fontWeight: '700',
+                    marginTop: 2,
+                  },
+                ]}
+                numberOfLines={1}
+              >
+                {item.folderId === null ? 'À classer' : currentFolder.data?.name ?? 'Dossier indisponible'}
+              </Text>
+            )}
           </View>
         </View>
+        {item.folderId !== null && currentFolder.isError ? (
+          <View style={{ marginTop: 10 }}>
+            <Button title="Réessayer de charger le dossier" variant="secondary" onPress={() => void currentFolder.refetch()} />
+          </View>
+        ) : null}
         {moveNotice ? (
-          <Text accessibilityRole="alert" style={[font('meta'), { color: semantic.success, marginTop: 10 }]}>
+          <Text accessibilityLiveRegion="polite" style={[font('meta'), { color: semantic.success, marginTop: 10 }]}>
             {moveNotice}
           </Text>
         ) : null}
@@ -410,7 +508,9 @@ export default function DocumentDetailScreen() {
         </View>
       </Card>
 
-      <SectionHeader title="Traçabilité" />
+      <View style={{ marginTop: 20 }}>
+        <SectionHeader title="Traçabilité" />
+      </View>
       <Card>
         <InfoRow label="Format" value={item.mimeType} colors={colors} />
         <InfoRow label="Taille" value={bytesLabel(item.byteSize)} colors={colors} />
@@ -447,9 +547,15 @@ export default function DocumentDetailScreen() {
 
         <ScrollView style={{ maxHeight: 320 }} nestedScrollEnabled keyboardShouldPersistTaps="handled">
           {moveFolders.isLoading ? (
-            <View style={{ minHeight: 100, alignItems: 'center', justifyContent: 'center', gap: 10 }}>
-              <ActivityIndicator color={semantic.b2b} />
-              <Text style={[font('sub'), { color: colors.slate500 }]}>Chargement des dossiers…</Text>
+            <View
+              accessibilityRole="progressbar"
+              accessibilityLiveRegion="polite"
+              accessibilityLabel="Chargement des dossiers"
+              style={{ minHeight: 156, justifyContent: 'center' }}
+            >
+              <SkeletonRow avatar="square" trailing={false} />
+              <SkeletonRow avatar="square" trailing={false} />
+              <SkeletonRow avatar="square" trailing={false} />
             </View>
           ) : moveFolders.isError ? (
             <View style={{ paddingVertical: 12 }}>
@@ -537,9 +643,14 @@ export default function DocumentDetailScreen() {
           </Text>
         ) : null}
         {moveError ? (
-          <Text accessibilityRole="alert" style={[font('sub'), { color: semantic.danger, lineHeight: 19, marginTop: 8 }]}>
-            {moveError}
-          </Text>
+          <View style={{ marginTop: 8 }}>
+            <Text accessibilityRole="alert" style={[font('sub'), { color: semantic.danger, lineHeight: 19 }]}>
+              {moveError}
+            </Text>
+            <View style={{ marginTop: 10 }}>
+              <Button title="Actualiser les destinations" variant="secondary" onPress={recoverMove} />
+            </View>
+          </View>
         ) : null}
         <View style={{ flexDirection: 'row', gap: 10, marginTop: 16 }}>
           <View style={{ flex: 1 }}>
@@ -574,9 +685,13 @@ function InfoRow({
   colors: ReturnType<typeof useTheme>['colors'];
 }) {
   return (
-    <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 12, paddingVertical: 5 }}>
-      <Text style={[font('sub'), { color: colors.slate400 }]}>{label}</Text>
-      <Text style={[font('sub'), { color: colors.ink900, flex: 1, fontWeight: '600', textAlign: 'right' }]} numberOfLines={1}>{value}</Text>
+    <View
+      accessible
+      accessibilityLabel={`${label} : ${value}`}
+      style={{ minHeight: 32, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingVertical: 5 }}
+    >
+      <Text accessible={false} style={[font('sub'), { color: colors.slate400 }]}>{label}</Text>
+      <Text accessible={false} style={[font('sub'), { color: colors.ink900, flex: 1, fontWeight: '600', textAlign: 'right' }]} numberOfLines={1}>{value}</Text>
     </View>
   );
 }

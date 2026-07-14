@@ -33,6 +33,8 @@ export interface InvoiceRepository {
    * Sérialise les opérations concurrentes (encaissement, émission) sur une même facture. */
   lockById(id: string): Promise<Invoice | null>;
   findByParentQuoteId(companyId: string, parentQuoteId: string, kind: InvoiceKind): Promise<Invoice | null>;
+  /** Retrouve l'avoir total de CETTE facture source, sans collision avec ses pièces sœurs du devis. */
+  findCreditNoteBySourceInvoiceId(companyId: string, sourceInvoiceId: string): Promise<Invoice | null>;
   listByCompany(companyId: string): Promise<Invoice[]>;
   save(i: Invoice): Promise<void>;
   /** R6 : supprime définitivement une facture BROUILLON (le use case garde le statut avant appel). */

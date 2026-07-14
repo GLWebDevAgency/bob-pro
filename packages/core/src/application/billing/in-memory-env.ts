@@ -10,6 +10,7 @@ import {
   type InvoiceRepository,
   type PaymentRepository,
 } from '../ports/repositories';
+import { type PublicAccessGrant, type PublicAccessTokenRepository } from '../ports/public-access-token';
 import {
   type SequenceCounterPort,
   type ClockPort,
@@ -58,8 +59,19 @@ export function makeEnv() {
       [...invoicesMap.values()].find(
         (i) => i.companyId === companyId && i.parentQuoteId === parentQuoteId && i.kind === kind,
       ) ?? null,
+    findCreditNoteBySourceInvoiceId: async (companyId, sourceInvoiceId) =>
+      [...invoicesMap.values()].find(
+        (i) => i.companyId === companyId && i.kind === 'credit_note' && i.creditNoteSource?.invoiceId === sourceInvoiceId,
+      ) ?? null,
     listByCompany: async (companyId) => [...invoicesMap.values()].filter((i) => i.companyId === companyId),
     save: async (i) => {
+      const sourceId = i.creditNoteSource?.invoiceId;
+      if (i.kind === 'credit_note' && sourceId) {
+        const existing = [...invoicesMap.values()].find(
+          (invoice) => invoice.companyId === i.companyId && invoice.kind === 'credit_note' && invoice.creditNoteSource?.invoiceId === sourceId,
+        );
+        if (existing && existing.id !== i.id) return;
+      }
       invoicesMap.set(i.id, i);
     },
     deleteById: async (id) => {
@@ -76,6 +88,45 @@ export function makeEnv() {
       paymentsArr.find((p) => p.companyId === companyId && p.idempotencyKey === key) ?? null,
   };
   const uow = { runInTransaction: <T>(fn: () => Promise<T>): Promise<T> => fn() };
+
+  // Jetons publics (liens de signature R4) — SignQuote exige ce port pour révoquer les grants
+  // actifs DANS la transaction de signature (P0 : lien encore lisible après signature interne).
+  const grants = new Map<string, PublicAccessGrant & { token: string }>();
+  let grantSeq = 0;
+  const publicAccessTokens: PublicAccessTokenRepository = {
+    create: async (input) => {
+      grantSeq += 1;
+      const id = `grant-${grantSeq}`;
+      const token = `pst_${grantSeq}`;
+      grants.set(id, { id, token, ...input, revokedAt: null });
+      return { id, token };
+    },
+    findActive: async (token, at) => {
+      const row = [...grants.values()].find((g) => g.token === token);
+      if (!row || row.revokedAt !== null || row.expiresAt <= at) return null;
+      const { token: _token, ...grant } = row;
+      return grant;
+    },
+    markUsed: async () => undefined,
+    revoke: async (id, at) => {
+      const row = grants.get(id);
+      if (row) grants.set(id, { ...row, revokedAt: at });
+    },
+    revokeActiveFor: async (input) => {
+      for (const [id, row] of grants) {
+        if (
+          row.companyId === input.companyId &&
+          row.resourceType === input.resourceType &&
+          row.resourceId === input.resourceId &&
+          row.scope === input.scope &&
+          row.revokedAt === null &&
+          row.expiresAt > input.at
+        ) {
+          grants.set(id, { ...row, revokedAt: input.at });
+        }
+      }
+    },
+  };
 
   let idCounter = 0;
   const ids: IdGeneratorPort = {
@@ -97,5 +148,5 @@ export function makeEnv() {
     },
   };
 
-  return { company, customer, companyRepo, customerRepo, quoteRepo, invoiceRepo, paymentRepo, uow, ids, clock, counters };
+  return { company, customer, companyRepo, customerRepo, quoteRepo, invoiceRepo, paymentRepo, publicAccessTokens, uow, ids, clock, counters };
 }

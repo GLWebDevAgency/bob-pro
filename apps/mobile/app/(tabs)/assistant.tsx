@@ -54,7 +54,6 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useQueryClient } from '@tanstack/react-query';
 import {
-  buildActionDiff,
   echoOverlap,
   isAllowedAgentNavigationRoute,
   parseBargeIn,
@@ -63,7 +62,6 @@ import {
   parseVoiceConsent,
   speakableQuestion,
   type AccountingLine,
-  type ActionDiff,
   type AgentQuestion,
   type AgentRun,
   type BobIntent,
@@ -72,7 +70,7 @@ import {
 import { PLAN_CATALOG, type AppError, type PaywallDecision } from '@bob/core';
 import { conformityCard, patterns, shadowNative, themes } from '@bob/tokens';
 import { t, type I18nKey } from '@bob/i18n';
-import { Button, Chip, QuestionSheet, font, useTheme } from '@bob/ui';
+import { Button, Chip, QuestionSheet, Skeleton, font, useReduceMotion, useTheme } from '@bob/ui';
 import { useBobClient } from '../../src/data/client';
 import { useInvoices, useQuotes } from '../../src/data/hooks';
 import { PaywallCard, isPaywallMuted, useEntitlement } from '../../src/monetization/paywall';
@@ -82,6 +80,10 @@ import { speechRecognitionAvailable, useSpeak, useVoiceInput } from '../../src/d
 import { ActionDiffView } from '../../src/components/ActionDiffView';
 import { SendIcon, SparkIcon } from '../../src/components/icons';
 import { useAgentSession } from '../../src/agent';
+import {
+  derivePendingPreview,
+  type PendingPreviewState,
+} from '../../src/assistant/pending-preview';
 
 interface ChatItem {
   readonly id: string;
@@ -125,6 +127,7 @@ const TAB_PILL_HEIGHT = 62;
 /** Indicateur de saisie — 3 points qui ondulent (proto cpGlow) + phase RÉELLE de l'agent. */
 function TypingBubble({ phase }: { phase: string | null }) {
   const { colors, controls, personality } = useTheme();
+  const reduceMotion = useReduceMotion();
   const dots = useRef([
     new Animated.Value(0),
     new Animated.Value(0),
@@ -132,6 +135,10 @@ function TypingBubble({ phase }: { phase: string | null }) {
   ]).current;
 
   useEffect(() => {
+    if (reduceMotion) {
+      dots.forEach((dot) => dot.setValue(0.55));
+      return;
+    }
     const loops = dots.map((v, i) =>
       Animated.loop(
         Animated.sequence([
@@ -154,7 +161,7 @@ function TypingBubble({ phase }: { phase: string | null }) {
     );
     loops.forEach((l) => l.start());
     return () => loops.forEach((l) => l.stop());
-  }, [dots]);
+  }, [dots, reduceMotion]);
 
   return (
     <View
@@ -222,6 +229,8 @@ function SuggestionChip({
         borderWidth: 1,
         borderColor: conformityCard.border,
         borderRadius: 20,
+        minHeight: 44,
+        justifyContent: 'center',
         paddingVertical: 9,
         paddingHorizontal: 14,
         opacity: disabled ? 0.55 : 1,
@@ -257,6 +266,7 @@ function BobBubble({ children }: { children: ReactNode }) {
 
 export default function Assistant() {
   const { colors, semantic, controls, theme, personality } = useTheme();
+  const reduceMotion = useReduceMotion();
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const qc = useQueryClient();
@@ -268,8 +278,8 @@ export default function Assistant() {
   // ici on décide seulement du TEASER quand le tap n'ouvre aucun droit).
   const assistantEntitlement = useEntitlement('ai_assistant');
   const liveEntitlement = useEntitlement('voice_live');
-  const { data: invoices } = useInvoices();
-  const { data: quotes } = useQuotes();
+  const invoicesQuery = useInvoices();
+  const quotesQuery = useQuotes();
   const { prompt } = useLocalSearchParams<{ prompt?: string }>();
   const entitled = assistantEntitlement.allowed;
 
@@ -324,36 +334,22 @@ export default function Assistant() {
    * Aperçu avant/après de l'action proposée — la « preuve » avant Valider, calculée
    * depuis l'action + les pièces réelles (même buildActionDiff que la ConfirmSheet).
    */
-  const pendingDiff = (
+  const pendingPreview = (
     pending: PendingAction,
     accountingLines?: readonly AccountingLine[],
-  ): ActionDiff | null => {
-    const { tool, args } = pending;
-    const invId = typeof args.invoiceId === 'string' ? args.invoiceId : '';
-    const quoteId = typeof args.quoteId === 'string' ? args.quoteId : '';
-    if (tool === 'encaisser_facture') {
-      const inv = (invoices ?? []).find((i) => i.id === invId);
-      const remaining = inv ? Math.max(0, inv.totals.netToPay - inv.paid) : 0;
-      const amountCents = typeof args.amountCents === 'number' ? args.amountCents : remaining;
-      return buildActionDiff(
-        'encaisser_facture',
-        { amountCents },
-        { number: inv?.number ?? null, remainingCents: remaining },
-      );
+  ): PendingPreviewState =>
+    derivePendingPreview({
+      pending,
+      invoices: invoicesQuery,
+      quotes: quotesQuery,
+      ...(accountingLines !== undefined ? { accountingLines } : {}),
+    });
+
+  const retryPendingPreview = (pending: PendingAction): void => {
+    if (pending.tool === 'envoyer_devis') void quotesQuery.refetch();
+    if (pending.tool === 'encaisser_facture' || pending.tool === 'emettre_facture') {
+      void invoicesQuery.refetch();
     }
-    if (tool === 'emettre_facture') {
-      const inv = (invoices ?? []).find((i) => i.id === invId);
-      return buildActionDiff(
-        'emettre_facture',
-        {},
-        { number: inv?.number ?? null, ...(accountingLines ? { accountingLines } : {}) },
-      );
-    }
-    if (tool === 'envoyer_devis') {
-      const q = (quotes ?? []).find((x) => x.id === quoteId);
-      return buildActionDiff('envoyer_devis', {}, { number: q?.number ?? null });
-    }
-    return null;
   };
 
   const pushRun = (run: AgentRun): ChatItem => {
@@ -419,9 +415,7 @@ export default function Assistant() {
       autonomy,
       history,
       tone: personality,
-      ...(handoffContextRef.current !== null
-        ? { context: handoffContextRef.current.context }
-        : {}),
+      ...(handoffContextRef.current !== null ? { context: handoffContextRef.current.context } : {}),
       onPhase: (p) =>
         setPhase(
           t(p === 'comprends' ? 'assistant.phaseUnderstand' : 'assistant.phaseAct', {
@@ -518,25 +512,22 @@ export default function Assistant() {
   // Un tab peut rester monte sous une route Stack. Au blur, l'owner local rend toujours le
   // lease STT : jamais de micro cache ni de concurrence avec l'acces Bob global.
   useFocusEffect(
-    useCallback(
-      () => {
-        setAssistantFocused(true);
-        return () => {
-          setAssistantFocused(false);
-          // Le contexte hérité appartient au fil ouvert depuis l'overlay, pas aux futures
-          // visites de l'onglet Assistant après navigation ailleurs.
-          handoffContextRef.current = null;
-          if (!liveRef.current) return;
-          liveRef.current = false;
-          setLive(false);
-          stopSpeaking();
-          void voiceRef.current.cancel();
-          setLiveState('idle');
-          expectationRef.current = { kind: 'command' };
-        };
-      },
-      [stopSpeaking],
-    ),
+    useCallback(() => {
+      setAssistantFocused(true);
+      return () => {
+        setAssistantFocused(false);
+        // Le contexte hérité appartient au fil ouvert depuis l'overlay, pas aux futures
+        // visites de l'onglet Assistant après navigation ailleurs.
+        handoffContextRef.current = null;
+        if (!liveRef.current) return;
+        liveRef.current = false;
+        setLive(false);
+        stopSpeaking();
+        void voiceRef.current.cancel();
+        setLiveState('idle');
+        expectationRef.current = { kind: 'command' };
+      };
+    }, [stopSpeaking]),
   );
 
   /** L'oreille se rouvre — ou retombe en idle si le live a été coupé entre-temps. */
@@ -742,6 +733,9 @@ export default function Assistant() {
   /** Valider : exécute l'action proposée via agent.confirm — LE flux de confirmation existant. */
   const confirm = async (item: ChatItem): Promise<AgentRun | null> => {
     if (!item.pending || busy) return null;
+    // Une action financière ne part jamais avec un aperçu fabriqué à partir de données
+    // absentes, obsolètes après erreur, ou d'une pièce introuvable.
+    if (pendingPreview(item.pending, item.accountingLines).kind !== 'ready') return null;
     setBusy(true);
     const r = await agent.confirm(item.pending);
     setBusy(false);
@@ -773,7 +767,8 @@ export default function Assistant() {
       !entitled ||
       busy ||
       consumedHandoffIdRef.current === handoff.id
-    ) return;
+    )
+      return;
     if (handoff.expiresAt <= Date.now()) {
       globalSession.consumeHandoff(handoff.id);
       return;
@@ -787,7 +782,14 @@ export default function Assistant() {
     pushTextRef.current('user', handoff.message);
     pushRunRef.current(handoff.run);
     globalSession.consumeHandoff(handoff.id);
-  }, [assistantFocused, busy, entitled, globalSession.consumeHandoff, globalSession.handoff, prompt]);
+  }, [
+    assistantFocused,
+    busy,
+    entitled,
+    globalSession.consumeHandoff,
+    globalSession.handoff,
+    prompt,
+  ]);
 
   // ?prompt=relance (edges C10/C11/C13) : pré-remplit puis soumet — une seule fois par valeur.
   useEffect(() => {
@@ -955,7 +957,7 @@ export default function Assistant() {
             gap: 12,
           }}
           keyboardShouldPersistTaps="handled"
-          onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
+          onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: !reduceMotion })}
         >
           {/* Bulle d'accueil — la promesse de Bob (historique vide = état de premier rang). */}
           <BobBubble>
@@ -964,8 +966,9 @@ export default function Assistant() {
             </Text>
           </BobBubble>
 
-          {items.map((it) =>
-            it.role === 'user' ? (
+          {items.map((it) => {
+            const preview = it.pending ? pendingPreview(it.pending, it.accountingLines) : null;
+            return it.role === 'user' ? (
               <View
                 key={it.id}
                 style={{
@@ -1000,7 +1003,38 @@ export default function Assistant() {
                 {/* Carte d'action : aperçu avant/après + garde-fou + Valider/Annuler (flux réel). */}
                 {it.pending ? (
                   <>
-                    <ActionDiffView diff={pendingDiff(it.pending, it.accountingLines)} />
+                    {preview?.kind === 'ready' ? (
+                      <ActionDiffView diff={preview.diff} />
+                    ) : preview?.kind === 'loading' ? (
+                      <View
+                        accessibilityLabel={t('assistant.proposalLoading', { personality })}
+                        style={{ gap: 8, marginTop: 12 }}
+                      >
+                        <Skeleton height={16} width="72%" radius={8} />
+                        <Skeleton height={44} width="100%" radius={12} />
+                      </View>
+                    ) : (
+                      <View style={{ gap: 10, marginTop: 12 }}>
+                        <Text
+                          accessibilityRole="alert"
+                          style={[font('sub'), { color: colors.ink900, lineHeight: 20 }]}
+                        >
+                          {t(
+                            preview?.kind === 'missing'
+                              ? 'assistant.proposalMissing'
+                              : 'assistant.proposalUnavailable',
+                            { personality },
+                          )}
+                        </Text>
+                        <View style={{ alignSelf: 'flex-start' }}>
+                          <Button
+                            title={t('assistant.retry', { personality })}
+                            variant="secondary"
+                            onPress={() => retryPendingPreview(it.pending!)}
+                          />
+                        </View>
+                      </View>
+                    )}
                     <Text
                       style={[
                         font('meta'),
@@ -1023,7 +1057,7 @@ export default function Assistant() {
                         variant="ai"
                         radius={12}
                         style={{ flex: 1 }}
-                        disabled={busy}
+                        disabled={busy || preview?.kind !== 'ready'}
                         onPress={() => void confirm(it)}
                       />
                     </View>
@@ -1061,8 +1095,8 @@ export default function Assistant() {
                   </View>
                 ) : null}
               </BobBubble>
-            ),
-          )}
+            );
+          })}
 
           {busy ? <TypingBubble phase={phase} /> : null}
         </ScrollView>

@@ -56,6 +56,7 @@ function makeDeps(invoice: Invoice) {
     findById: async (id) => (id === invoice.id ? invoice : null),
     lockById: async (id) => (id === invoice.id ? invoice : null),
     findByParentQuoteId: async () => null,
+    findCreditNoteBySourceInvoiceId: async () => null,
     listByCompany: async () => [invoice],
     save: async (i) => {
       saves += 1;
@@ -107,6 +108,7 @@ describe('IssueInvoice', () => {
       findById: async () => pre,
       lockById: async () => locked,
       findByParentQuoteId: async () => null,
+      findCreditNoteBySourceInvoiceId: async () => null,
       listByCompany: async () => [],
       save: async () => {
         saves += 1;

@@ -40,6 +40,7 @@ import type {
   RegisterPaymentClientInput,
   RegisterPaymentClientOutput,
   SendQuoteOutput,
+  CreateQuoteSignatureLinkOutput,
   SendRelanceClientOutput,
   NotificationView,
   NotificationUnreadPreview,
@@ -481,6 +482,7 @@ function decodeRealtimeVoiceConfig(value: unknown): RealtimeVoiceConfig | null {
     || !Number.isInteger(value.maxSessionSeconds)
     || value.maxSessionSeconds < 60
     || value.maxSessionSeconds > 900
+    || value.speechDelivery !== 'audited-signed-url-v1'
     || (
       value.availabilityReason !== undefined
       && value.availabilityReason !== 'disabled'
@@ -504,10 +506,73 @@ function decodeRealtimeVoiceConfig(value: unknown): RealtimeVoiceConfig | null {
     configVersion: value.configVersion,
     requiresDevelopmentBuild: true,
     maxSessionSeconds: value.maxSessionSeconds,
+    speechDelivery: 'audited-signed-url-v1',
   };
 }
 
-function decodeRealtimeVoiceCall(value: unknown): RealtimeVoiceCall | null {
+function decodeRealtimeSpeechSourcePolicy(
+  value: unknown,
+  expectedCompanyId: string,
+  expectedSessionHandle: string,
+): import('./client').RealtimeVoiceSpeechSourcePolicy | null {
+  if (!isRecord(value) || !hasExactKeys(value, ['mode', 'allowedOrigin', 'allowedPathPrefix'])) {
+    return null;
+  }
+  if (value.mode !== 'signed-url-v1'
+    || typeof value.allowedOrigin !== 'string'
+    || typeof value.allowedPathPrefix !== 'string'
+    || value.allowedOrigin.length > 2_048
+    || value.allowedPathPrefix.length > 2_048) return null;
+  let origin: URL;
+  let fullPrefix: URL;
+  try {
+    origin = new URL(value.allowedOrigin);
+    fullPrefix = new URL(value.allowedPathPrefix, value.allowedOrigin);
+  } catch {
+    return null;
+  }
+  const loopback = origin.protocol === 'http:'
+    && (origin.hostname === 'localhost' || origin.hostname === '127.0.0.1' || origin.hostname === '[::1]');
+  if ((origin.protocol !== 'https:' && !loopback)
+    || origin.origin !== value.allowedOrigin
+    || origin.pathname !== '/'
+    || origin.username !== ''
+    || origin.password !== ''
+    || origin.search !== ''
+    || origin.hash !== ''
+    || fullPrefix.origin !== value.allowedOrigin
+    || fullPrefix.pathname !== value.allowedPathPrefix
+    || fullPrefix.search !== ''
+    || fullPrefix.hash !== ''
+    || !value.allowedPathPrefix.startsWith('/')
+    || !value.allowedPathPrefix.endsWith('/')
+    || value.allowedPathPrefix.includes('%')) return null;
+  const segments = value.allowedPathPrefix.split('/');
+  if (segments[0] !== '' || segments.at(-1) !== '') return null;
+  const body = segments.slice(1, -1);
+  if (body.some((segment) => !/^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/u.test(segment))) return null;
+  const tail = body.slice(-9);
+  if (tail.length !== 9
+    || tail[0] !== 'storage'
+    || tail[1] !== 'v1'
+    || tail[2] !== 'object'
+    || tail[3] !== 'sign'
+    || !/^[a-z0-9](?:[a-z0-9._-]{0,61}[a-z0-9])?$/u.test(tail[4] ?? '')
+    || tail[5] !== 'companies'
+    || tail[6] !== expectedCompanyId
+    || tail[7] !== 'bob-live'
+    || tail[8] !== expectedSessionHandle) return null;
+  return {
+    mode: 'signed-url-v1',
+    allowedOrigin: value.allowedOrigin,
+    allowedPathPrefix: value.allowedPathPrefix,
+  };
+}
+
+function decodeRealtimeVoiceCall(
+  value: unknown,
+  expectedCompanyId: string,
+): RealtimeVoiceCall | null {
   if (!isRecord(value)) return null;
   const commonKeys = [
     'transport',
@@ -517,6 +582,7 @@ function decodeRealtimeVoiceCall(value: unknown): RealtimeVoiceCall | null {
     'voice',
     'configVersion',
     'maxSessionSeconds',
+    'speechSourcePolicy',
   ] as const;
   if (
     typeof value.sessionHandle !== 'string'
@@ -534,6 +600,13 @@ function decodeRealtimeVoiceCall(value: unknown): RealtimeVoiceCall | null {
     || value.maxSessionSeconds > 900
   ) return null;
 
+  const speechSourcePolicy = decodeRealtimeSpeechSourcePolicy(
+    value.speechSourcePolicy,
+    expectedCompanyId,
+    value.sessionHandle,
+  );
+  if (!speechSourcePolicy) return null;
+
   const common = {
     sessionHandle: value.sessionHandle,
     hardExpiresAt: value.hardExpiresAt,
@@ -541,6 +614,7 @@ function decodeRealtimeVoiceCall(value: unknown): RealtimeVoiceCall | null {
     voice: value.voice,
     configVersion: value.configVersion,
     maxSessionSeconds: value.maxSessionSeconds,
+    speechSourcePolicy,
   } as const;
 
   if (value.transport === 'webrtc') {
@@ -964,7 +1038,7 @@ export class HttpBobClient implements BobClient {
       '/voice/realtime/calls',
       body,
       undefined,
-      decodeRealtimeVoiceCall,
+      (value) => decodeRealtimeVoiceCall(value, this.companyId),
       REALTIME_BOOTSTRAP_TIMEOUT_MS,
       signal,
     );
@@ -1511,13 +1585,20 @@ export class HttpBobClient implements BobClient {
   sendQuote(quoteId: string) {
     return this.req<SendQuoteOutput>('POST', `/quotes/${quoteId}/send`);
   }
-  signQuote(input: { quoteId: string; signerName: string }) {
-    return this.req<{ status: string }>('POST', `/quotes/${input.quoteId}/sign`, { signerName: input.signerName });
+  /** P0 R4 : préparer le lien ≠ envoyer un e-mail — cette route ne déclenche AUCUN sortant. */
+  createQuoteSignatureLink(quoteId: string) {
+    return this.req<CreateQuoteSignatureLinkOutput>('POST', `/quotes/${encodeURIComponent(quoteId)}/signature-link`);
+  }
+  signQuote(input: { quoteId: string; signerName: string; proofDataUrl?: string }) {
+    return this.req<{ status: string }>('POST', `/quotes/${input.quoteId}/sign`, {
+      signerName: input.signerName,
+      ...(input.proofDataUrl !== undefined ? { proofDataUrl: input.proofDataUrl } : {}),
+    });
   }
   refuseQuote(quoteId: string) {
     return this.req<{ status: string }>('POST', `/quotes/${quoteId}/refuse`);
   }
-  generateInvoice(input: { quoteId: string; mode?: 'deposit' | 'final' }) {
+  generateInvoice(input: { quoteId: string; mode: 'deposit' | 'final' }) {
     return this.req<{ invoiceId: string }>('POST', `/quotes/${input.quoteId}/invoice`, { mode: input.mode });
   }
   updateQuoteLine(input: UpdateQuoteLineInput) {
