@@ -2974,3 +2974,9 @@ client, catalogue.
 - PILIER 2 (ordre fondateur : GPT finit pilier 1, Claude = monétisation/rétention) : conception arrêtée par panel jugé → **SPEC_PILIER2_MONETISATION.md** (décisions + tués + reste-à-faire précis avec références code).
 - Livré : domaines core monetization/engagement (decidePaywall, reverse trial, plan-diff, pression, trial-report, value-ledger, win-back, analytics — 55 tests neufs, 825 core), catalogue i18n ×3, fondation mobile (useEntitlement typé + PaywallCard + sourdine persistée). tsc/eslint/builds 0 partout.
 - Suivants : branchement écrans + carte digest + écran plans ; API (table subscriptions, job digest, writer analytics, enforcement manquants) — cf. SPEC §Reste.
+
+## 2026-07-14 (nuit) — Claude : PILIER 2 COMPLET + review adversariale corrigée (→ f6a7cee, porte verte)
+- Pilier 2 bout-en-bout : SPEC jugée, domaines core (827 t), i18n ×3, fondation mobile + 4 écrans + teaser Live, carte digest Aujourd'hui + diff « tu gagnes/tu perds » compte.tsx, job digest hebdo (attribution conservatrice bornée 30 j, flag off) + endpoint GET /engagement/digest/latest bout-en-bout (103 t api-client), enforcement serveur auto_dunning/accounting_operations via Subscription.can() (statut respecté), writer analytics ANALYTICS (opt-out RGPD, value_digest_sent).
+- Review adversariale (17 agents) : 9 findings corrigés le jour même — dont P0 « upsell à un impayé » (repli CTA), P0 « promesse de sourdine rompue » (désormais tenue PAR la carte), P1 perte fictive ai_quota (FEATURE_SUPERSEDED_BY), P1 statut ignoré par les gates.
+- Porte worktree-vierge HEAD verte (install gelé, builds 0, core 825→827, ai 287, api-client 103, api 540, mobile tsc 0). Les échecs de l'ARBRE (voice/realtime, ai/providers) = chantier GPT in-flight, jamais committé par moi.
+- Restes pilier 2 : table subscriptions (ATTEND schema.prisma libéré par GPT), bilan fin d'essai UI, refus vocal→30 j session, value_digest_opened. Pilier 3 ensuite.
