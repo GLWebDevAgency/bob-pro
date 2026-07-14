@@ -26,6 +26,7 @@ function makeDeps(opts: { existingKey?: string | null; status?: string; existing
     save: async () => {
       invoiceSaves++;
     },
+    deleteById: async () => {},
   };
   const payments: PaymentRepository = {
     save: async () => {

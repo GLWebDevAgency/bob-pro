@@ -35,6 +35,7 @@ function makeEnv(seed: InvoiceSnapshot[]) {
       ) ?? null,
     listByCompany: async (companyId) => [...invoices.values()].filter((i) => i.companyId === companyId),
     save: async (i) => void invoices.set(i.id, i),
+    deleteById: async (id) => void invoices.delete(id),
   };
   return { repo, usecase: new CreateCreditNote({ invoices: repo, ids: { newId: () => `cn-${++n}` } }) };
 }

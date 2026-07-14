@@ -5,6 +5,8 @@ import type { ValueDigest,
   CreateQuoteInput,
   CreateQuoteOutput,
   IssueInvoiceInput,
+  UpdateQuoteLineInput,
+  RemoveQuoteLineInput,
   CustomerListItem,
   CustomerProps,
   CashflowProjection,
@@ -206,7 +208,7 @@ export interface VoiceSynthesisResult {
 export interface RealtimeVoiceConfig {
   available: boolean;
   availabilityReason?: 'disabled' | 'not_entitled' | 'entitlement_unavailable';
-  transport: 'webrtc';
+  transport: 'webrtc' | 'mistral-pcm';
   model: string;
   voice: 'marin' | 'cedar';
   configVersion: string;
@@ -214,9 +216,7 @@ export interface RealtimeVoiceConfig {
   maxSessionSeconds: number;
 }
 
-export interface RealtimeVoiceCall {
-  transport: 'webrtc';
-  answerSdp: string;
+interface RealtimeVoiceCallCommon {
   sessionHandle: string;
   hardExpiresAt: string;
   model: string;
@@ -225,14 +225,39 @@ export interface RealtimeVoiceCall {
   maxSessionSeconds: number;
 }
 
+export interface RealtimeVoiceWebRtcCall extends RealtimeVoiceCallCommon {
+  transport: 'webrtc';
+  answerSdp: string;
+}
+
+export interface RealtimeVoiceMistralPcmCall extends RealtimeVoiceCallCommon {
+  transport: 'mistral-pcm';
+  websocketUrl: string;
+  companyId: string;
+  ticket: string;
+  protocol: 'bob.mistral-pcm.v1';
+  ticketExpiresAt: string;
+  maxAudioBytes: number;
+  contextRevision: number;
+  contextDigest: string;
+}
+
+export type RealtimeVoiceCall = RealtimeVoiceWebRtcCall | RealtimeVoiceMistralPcmCall;
+
 export interface RealtimeVoiceContextUpdate {
   version: 1;
   revision: number;
   context: AgentContext;
 }
 
+export type RealtimeVoiceCallInput =
+  | { transport?: 'webrtc'; sdp: string; sessionHandle?: string }
+  | { transport: 'mistral-pcm'; context: RealtimeVoiceContextUpdate; sessionHandle?: string };
+
 export interface RealtimeVoiceControlReference {
   turnId: string;
+  /** Preuve opaque de livraison audio, générée par le mobile et liée durablement à l’artefact. */
+  acknowledgementId: string;
   contextRevision: number;
   contextDigest: string;
 }
@@ -247,12 +272,7 @@ export interface RealtimeVoiceControlAcknowledgement extends RealtimeVoiceContro
 
 export type RealtimeVoiceSpeechMimeType =
   | 'audio/mpeg'
-  | 'audio/wav'
-  | 'audio/ogg'
-  | 'audio/webm'
-  | 'audio/mp4'
-  | 'audio/aac'
-  | 'audio/flac';
+  | 'audio/wav';
 
 interface RealtimeVoiceSpeechBinding {
   artifactId: string;
@@ -563,7 +583,7 @@ export interface BobClient {
   voiceConfig(): Promise<Result<VoiceConfig, AppError>>;
   realtimeVoiceConfig(): Promise<Result<RealtimeVoiceConfig, AppError>>;
   createRealtimeVoiceCall(
-    input: { sdp: string; sessionHandle?: string },
+    input: RealtimeVoiceCallInput,
     signal?: AbortSignal,
   ): Promise<Result<RealtimeVoiceCall, AppError>>;
   hangupRealtimeVoiceCall(
@@ -675,9 +695,17 @@ export interface BobClient {
   signQuote(input: { quoteId: string; signerName: string }): Promise<Result<{ status: string }, AppError>>;
   refuseQuote(quoteId: string): Promise<Result<{ status: string }, AppError>>;
   generateInvoice(input: { quoteId: string; mode?: 'deposit' | 'final' }): Promise<Result<{ invoiceId: string }, AppError>>;
+  /** R6 : édition d'une ligne de devis BROUILLON (PATCH /quotes/:id/lines/:lineId) — draft only,
+   * un devis signé est un contrat (l'agrégat garde assertDraft). */
+  updateQuoteLine(input: UpdateQuoteLineInput): Promise<Result<{ status: string }, AppError>>;
+  /** R6 : suppression d'une ligne de devis BROUILLON (DELETE /quotes/:id/lines/:lineId). */
+  removeQuoteLine(input: RemoveQuoteLineInput): Promise<Result<{ status: string }, AppError>>;
   /** A6 : avoir TOTAL (brouillon) d'une facture émise — même use case pour l'UI et Bob. */
   createCreditNote(input: { invoiceId: string }): Promise<Result<{ creditNoteId: string }, AppError>>;
   issueInvoice(input: IssueInvoiceInput): Promise<Result<{ number: string }, AppError>>;
+  /** R6 : suppression définitive d'une facture BROUILLON (DELETE /invoices/:id/draft) — erreur
+   * détectée après génération depuis un devis ; garde stricte status==='draft'. */
+  deleteDraftInvoice(invoiceId: string): Promise<Result<{ deleted: true }, AppError>>;
   /** C25 ② : envoi RÉEL d'une relance ciblée — POST /invoices/:id/relance (ton du plan @bob/core,
    * confirmation côté UI/agent avant l'appel : action sortante vers un tiers). */
   sendRelance(invoiceId: string): Promise<Result<SendRelanceClientOutput, AppError>>;

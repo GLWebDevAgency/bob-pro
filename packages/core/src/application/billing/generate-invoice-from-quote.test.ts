@@ -60,6 +60,9 @@ function makeEnv(input: { quote?: Quote; failSaveWithConcurrentInvoice?: boolean
       }
       invoices.set(invoice.id, invoice);
     },
+    deleteById: async (id) => {
+      invoices.delete(id);
+    },
   };
 
   return {

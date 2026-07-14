@@ -242,6 +242,23 @@ export class PrismaInvoiceRepository implements InvoiceRepository {
       ]);
     }
   }
+  /**
+   * R6 : suppression DÉFINITIVE d'une facture BROUILLON (le use case DeleteDraftInvoice garde le
+   * statut avant appel). Les lignes n'ont PAS de cascade DB (FK optionnelle -> SET NULL par
+   * défaut) : on les supprime explicitement d'abord, comme `save` le fait déjà pour un remplacement.
+   */
+  async deleteById(id: string): Promise<void> {
+    if (this.prisma.inTransaction()) {
+      const tx = this.prisma.client();
+      await tx.lineItem.deleteMany({ where: { invoiceId: id } });
+      await tx.invoice.delete({ where: { id } });
+    } else {
+      await this.prisma.$transaction([
+        this.prisma.lineItem.deleteMany({ where: { invoiceId: id } }),
+        this.prisma.invoice.delete({ where: { id } }),
+      ]);
+    }
+  }
 }
 
 interface DocumentVersionRow {

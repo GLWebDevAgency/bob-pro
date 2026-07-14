@@ -5,6 +5,8 @@ import type {
   CreateQuoteInput,
   CreateQuoteOutput,
   IssueInvoiceInput,
+  UpdateQuoteLineInput,
+  RemoveQuoteLineInput,
   CustomerListItem,
   CashflowProjection,
   Scenario,
@@ -55,6 +57,7 @@ import type {
   VoiceSynthesisResult,
   RealtimeVoiceConfig,
   RealtimeVoiceCall,
+  RealtimeVoiceCallInput,
   RealtimeVoiceContextUpdate,
   RealtimeVoiceControlAcknowledgement,
   RealtimeVoiceControlReference,
@@ -95,6 +98,7 @@ import {
   decodeDocumentViewsForCompany,
 } from './document-codecs';
 import { decodeExpenseCreation } from './expense-idempotency';
+import { decodeQuoteCreation } from './quote-idempotency';
 
 export interface HttpBobClientOptions {
   baseUrl: string;
@@ -107,6 +111,7 @@ const DOCUMENT_MUTATION_TIMEOUT_MS = 20_000;
 const DOCUMENT_UPLOAD_TIMEOUT_MS = 45_000;
 const DOCUMENT_ANALYSIS_TIMEOUT_MS = 75_000;
 const TEXT_EXPORT_TIMEOUT_MS = 45_000;
+const QUOTE_CREATION_TIMEOUT_MS = 20_000;
 // Supérieur au budget serveur maximal (8,5 s) avec marge réseau/décodage, sans attente infinie.
 const REALTIME_BOOTSTRAP_TIMEOUT_MS = 12_000;
 const REALTIME_CONTROL_ACK_TIMEOUT_MS = 4_000;
@@ -120,14 +125,11 @@ const REALTIME_SPEECH_MAX_SEQUENCE = 2_147_483_647;
 const REALTIME_SPEECH_MAX_WAIT_MS = 2_500;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA_256_PATTERN = /^[a-f0-9]{64}$/;
+const MISTRAL_REALTIME_TICKET_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+const COMPANY_ID_PATTERN = /^[A-Za-z0-9-]{1,64}$/;
 const REALTIME_SPEECH_MIME_TYPES = new Set<RealtimeVoiceSpeechMimeType>([
   'audio/mpeg',
   'audio/wav',
-  'audio/ogg',
-  'audio/webm',
-  'audio/mp4',
-  'audio/aac',
-  'audio/flac',
 ]);
 const REALTIME_SPEECH_CANCELLATION_REASONS = new Set<RealtimeVoiceSpeechCancellationReason>([
   'barge_in',
@@ -151,6 +153,31 @@ function isBoundedInteger(value: unknown, min: number, max: number): value is nu
   return Number.isSafeInteger(value) && (value as number) >= min && (value as number) <= max;
 }
 
+function isCanonicalIsoTimestamp(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value;
+}
+
+function isMistralRealtimeWebsocketUrl(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 2_048) return false;
+  try {
+    const url = new URL(value);
+    if (
+      url.username !== ''
+      || url.password !== ''
+      || url.search !== ''
+      || url.hash !== ''
+      || url.pathname !== '/v1/voice/realtime/mistral'
+    ) return false;
+    if (url.protocol === 'wss:') return true;
+    return url.protocol === 'ws:'
+      && (url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]');
+  } catch {
+    return false;
+  }
+}
+
 function isRealtimeSpeechAudioUrl(value: unknown): value is string {
   if (typeof value !== 'string' || value.length === 0 || value.length > 4_096) return false;
   try {
@@ -167,15 +194,18 @@ function isRealtimeSpeechAudioUrl(value: unknown): value is string {
 function decodeRealtimeVoiceControlReference(value: unknown): RealtimeVoiceControlReference | null {
   if (
     !isRecord(value)
-    || !hasExactKeys(value, ['turnId', 'contextRevision', 'contextDigest'])
+    || !hasExactKeys(value, ['turnId', 'acknowledgementId', 'contextRevision', 'contextDigest'])
     || typeof value.turnId !== 'string'
     || !UUID_PATTERN.test(value.turnId)
+    || typeof value.acknowledgementId !== 'string'
+    || !UUID_PATTERN.test(value.acknowledgementId)
     || !isBoundedInteger(value.contextRevision, 1, 2_147_483_647)
     || typeof value.contextDigest !== 'string'
     || !SHA_256_PATTERN.test(value.contextDigest)
   ) return null;
   return {
     turnId: value.turnId,
+    acknowledgementId: value.acknowledgementId,
     contextRevision: value.contextRevision,
     contextDigest: value.contextDigest,
   };
@@ -283,7 +313,7 @@ function decodeRealtimeVoiceSpeechDelivery(
   value: unknown,
   expectedTurnId: string,
 ): RealtimeVoiceSpeechDeliveryAcknowledgement | null {
-  if (status !== 200 && status !== 201 && status !== 204) return null;
+  if (status !== 200) return null;
   if (value === undefined) return {};
   if (!isRecord(value)) return null;
   if (hasExactKeys(value, [])) return {};
@@ -439,7 +469,7 @@ function decodeRealtimeVoiceConfig(value: unknown): RealtimeVoiceConfig | null {
   if (!isRecord(value)) return null;
   if (
     typeof value.available !== 'boolean'
-    || value.transport !== 'webrtc'
+    || (value.transport !== 'webrtc' && value.transport !== 'mistral-pcm')
     || typeof value.model !== 'string'
     || value.model.length === 0
     || value.model.length > 100
@@ -468,7 +498,7 @@ function decodeRealtimeVoiceConfig(value: unknown): RealtimeVoiceConfig | null {
     ...(availabilityReason === null
       ? {}
       : { availabilityReason }),
-    transport: 'webrtc',
+    transport: value.transport,
     model: value.model,
     voice: value.voice,
     configVersion: value.configVersion,
@@ -479,29 +509,19 @@ function decodeRealtimeVoiceConfig(value: unknown): RealtimeVoiceConfig | null {
 
 function decodeRealtimeVoiceCall(value: unknown): RealtimeVoiceCall | null {
   if (!isRecord(value)) return null;
-  const allowedKeys = new Set([
+  const commonKeys = [
     'transport',
-    'answerSdp',
     'sessionHandle',
     'hardExpiresAt',
     'model',
     'voice',
     'configVersion',
     'maxSessionSeconds',
-  ]);
+  ] as const;
   if (
-    Object.keys(value).length !== allowedKeys.size
-    || Object.keys(value).some((key) => !allowedKeys.has(key))
-    ||
-    value.transport !== 'webrtc'
-    || typeof value.answerSdp !== 'string'
-    || value.answerSdp.length < 16
-    || value.answerSdp.length > 256 * 1024
-    || !value.answerSdp.startsWith('v=0')
-    || typeof value.sessionHandle !== 'string'
+    typeof value.sessionHandle !== 'string'
     || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.sessionHandle)
-    || typeof value.hardExpiresAt !== 'string'
-    || !Number.isFinite(Date.parse(value.hardExpiresAt))
+    || !isCanonicalIsoTimestamp(value.hardExpiresAt)
     || typeof value.model !== 'string'
     || value.model.length === 0
     || value.model.length > 100
@@ -513,16 +533,68 @@ function decodeRealtimeVoiceCall(value: unknown): RealtimeVoiceCall | null {
     || value.maxSessionSeconds < 60
     || value.maxSessionSeconds > 900
   ) return null;
-  return {
-    transport: 'webrtc',
-    answerSdp: value.answerSdp,
+
+  const common = {
     sessionHandle: value.sessionHandle,
     hardExpiresAt: value.hardExpiresAt,
     model: value.model,
     voice: value.voice,
     configVersion: value.configVersion,
     maxSessionSeconds: value.maxSessionSeconds,
-  };
+  } as const;
+
+  if (value.transport === 'webrtc') {
+    if (
+      !hasExactKeys(value, [...commonKeys, 'answerSdp'])
+      || typeof value.answerSdp !== 'string'
+      || value.answerSdp.length < 16
+      || value.answerSdp.length > 256 * 1024
+      || !value.answerSdp.startsWith('v=0')
+    ) return null;
+    return { transport: 'webrtc', answerSdp: value.answerSdp, ...common };
+  }
+
+  if (value.transport === 'mistral-pcm') {
+    if (
+      !hasExactKeys(value, [
+        ...commonKeys,
+        'websocketUrl',
+        'companyId',
+        'ticket',
+        'protocol',
+        'ticketExpiresAt',
+        'maxAudioBytes',
+        'contextRevision',
+        'contextDigest',
+      ])
+      || !isMistralRealtimeWebsocketUrl(value.websocketUrl)
+      || typeof value.companyId !== 'string'
+      || !COMPANY_ID_PATTERN.test(value.companyId)
+      || typeof value.ticket !== 'string'
+      || !MISTRAL_REALTIME_TICKET_PATTERN.test(value.ticket)
+      || value.protocol !== 'bob.mistral-pcm.v1'
+      || !isCanonicalIsoTimestamp(value.ticketExpiresAt)
+      || Date.parse(value.ticketExpiresAt) > Date.parse(value.hardExpiresAt)
+      || !isBoundedInteger(value.maxAudioBytes, 32_000, 28_800_000)
+      || value.maxAudioBytes % 2 !== 0
+      || !isBoundedInteger(value.contextRevision, 1, 2_147_483_647)
+      || typeof value.contextDigest !== 'string'
+      || !SHA_256_PATTERN.test(value.contextDigest)
+    ) return null;
+    return {
+      transport: 'mistral-pcm',
+      websocketUrl: value.websocketUrl,
+      companyId: value.companyId,
+      ticket: value.ticket,
+      protocol: value.protocol,
+      ticketExpiresAt: value.ticketExpiresAt,
+      maxAudioBytes: value.maxAudioBytes,
+      contextRevision: value.contextRevision,
+      contextDigest: value.contextDigest,
+      ...common,
+    };
+  }
+  return null;
 }
 
 function decodeRealtimeVoiceControlAcknowledgement(
@@ -531,6 +603,7 @@ function decodeRealtimeVoiceControlAcknowledgement(
   if (!isRecord(value)) return null;
   const allowed = new Set([
     'turnId',
+    'acknowledgementId',
     'kind',
     'contextRevision',
     'contextDigest',
@@ -538,12 +611,14 @@ function decodeRealtimeVoiceControlAcknowledgement(
     'proposalId',
     'proposalExpiresAt',
   ]);
-  const required = ['turnId', 'kind', 'contextRevision', 'contextDigest'];
+  const required = ['turnId', 'acknowledgementId', 'kind', 'contextRevision', 'contextDigest'];
   if (
     required.some((key) => !(key in value))
     || Object.keys(value).some((key) => !allowed.has(key))
     || typeof value.turnId !== 'string'
     || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.turnId)
+    || typeof value.acknowledgementId !== 'string'
+    || !UUID_PATTERN.test(value.acknowledgementId)
     || (value.kind !== 'answer' && value.kind !== 'proposed' && value.kind !== 'done')
     || !Number.isSafeInteger(value.contextRevision)
     || (value.contextRevision as number) < 1
@@ -564,6 +639,7 @@ function decodeRealtimeVoiceControlAcknowledgement(
   ) return null;
   return {
     turnId: value.turnId,
+    acknowledgementId: value.acknowledgementId,
     kind: value.kind,
     contextRevision: value.contextRevision as number,
     contextDigest: value.contextDigest,
@@ -873,11 +949,20 @@ export class HttpBobClient implements BobClient {
       REALTIME_BOOTSTRAP_TIMEOUT_MS,
     );
   }
-  createRealtimeVoiceCall(input: { sdp: string; sessionHandle?: string }, signal?: AbortSignal) {
+  createRealtimeVoiceCall(input: RealtimeVoiceCallInput, signal?: AbortSignal) {
+    const body = input.transport === 'mistral-pcm'
+      ? {
+          context: input.context,
+          ...(input.sessionHandle === undefined ? {} : { sessionHandle: input.sessionHandle }),
+        }
+      : {
+          sdp: input.sdp,
+          ...(input.sessionHandle === undefined ? {} : { sessionHandle: input.sessionHandle }),
+        };
     return this.req<RealtimeVoiceCall>(
       'POST',
       '/voice/realtime/calls',
-      input,
+      body,
       undefined,
       decodeRealtimeVoiceCall,
       REALTIME_BOOTSTRAP_TIMEOUT_MS,
@@ -921,10 +1006,23 @@ export class HttpBobClient implements BobClient {
     input: RealtimeVoiceControlReference,
     signal?: AbortSignal,
   ) {
+    if (!UUID_PATTERN.test(sessionHandle)) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceControlAcknowledgement>(
+        'sessionHandle',
+        'Le handle de session Bob Live doit être un UUID.',
+      );
+    }
+    const reference = decodeRealtimeVoiceControlReference(input);
+    if (!reference) {
+      return invalidRealtimeSpeechInput<RealtimeVoiceControlAcknowledgement>(
+        'controlReference',
+        'La référence de contrôle Bob Live doit être liée à un acquittement audio valide.',
+      );
+    }
     return this.req<RealtimeVoiceControlAcknowledgement>(
       'POST',
       `/voice/realtime/calls/${encodeURIComponent(sessionHandle)}/control-acknowledgements`,
-      input,
+      reference,
       undefined,
       decodeRealtimeVoiceControlAcknowledgement,
       REALTIME_CONTROL_ACK_TIMEOUT_MS,
@@ -1050,10 +1148,7 @@ export class HttpBobClient implements BobClient {
       'POST',
       `/voice/realtime/calls/${encodeURIComponent(sessionHandle)}/turns/${encodeURIComponent(turnId)}/speech/${encodeURIComponent(artifactId)}/cancellations`,
       { cancellationId: input.cancellationId, reason: input.reason },
-      (status, value) => (status === 200 || status === 201 || status === 204)
-        && (value === undefined || (isRecord(value) && hasExactKeys(value, [])))
-        ? true
-        : null,
+      (status, value) => status === 204 && value === undefined ? true : null,
       signal,
     );
     return result.ok ? { ok: true, value: undefined } : result;
@@ -1378,7 +1473,40 @@ export class HttpBobClient implements BobClient {
     );
   }
   createQuote(input: Omit<CreateQuoteInput, 'companyId'>) {
-    return this.req<CreateQuoteOutput>('POST', '/quotes', input);
+    const body: Omit<CreateQuoteInput, 'companyId'> = {
+      customerId: input.customerId,
+      lines: input.lines.map((line) => ({
+        label: line.label,
+        category: line.category,
+        qty: line.qty,
+        ...(line.unit !== undefined ? { unit: line.unit } : {}),
+        unitPriceHT: line.unitPriceHT,
+        vatRate: line.vatRate,
+      })),
+      ...(input.idempotencyKey !== undefined ? { idempotencyKey: input.idempotencyKey } : {}),
+      ...(input.depositPct !== undefined ? { depositPct: input.depositPct } : {}),
+      ...(input.validUntil !== undefined ? { validUntil: input.validUntil } : {}),
+      ...(input.context !== undefined
+        ? {
+            context: {
+              ...(input.context.housingOlderThan2y !== undefined
+                ? { housingOlderThan2y: input.context.housingOlderThan2y }
+                : {}),
+              ...(input.context.energyRenovation !== undefined
+                ? { energyRenovation: input.context.energyRenovation }
+                : {}),
+            },
+          }
+        : {}),
+    };
+    return this.req<CreateQuoteOutput>(
+      'POST',
+      '/quotes',
+      body,
+      undefined,
+      decodeQuoteCreation,
+      QUOTE_CREATION_TIMEOUT_MS,
+    );
   }
   sendQuote(quoteId: string) {
     return this.req<SendQuoteOutput>('POST', `/quotes/${quoteId}/send`);
@@ -1392,6 +1520,19 @@ export class HttpBobClient implements BobClient {
   generateInvoice(input: { quoteId: string; mode?: 'deposit' | 'final' }) {
     return this.req<{ invoiceId: string }>('POST', `/quotes/${input.quoteId}/invoice`, { mode: input.mode });
   }
+  updateQuoteLine(input: UpdateQuoteLineInput) {
+    return this.req<{ status: string }>(
+      'PATCH',
+      `/quotes/${encodeURIComponent(input.quoteId)}/lines/${encodeURIComponent(input.lineId)}`,
+      input.patch,
+    );
+  }
+  removeQuoteLine(input: RemoveQuoteLineInput) {
+    return this.req<{ status: string }>(
+      'DELETE',
+      `/quotes/${encodeURIComponent(input.quoteId)}/lines/${encodeURIComponent(input.lineId)}`,
+    );
+  }
   /** A6 — endpoint serveur à poser (suivi CLAIMS, même précédent que classifyDocument). */
   createCreditNote(input: { invoiceId: string }) {
     return this.req<{ creditNoteId: string }>('POST', `/invoices/${input.invoiceId}/credit-note`);
@@ -1402,6 +1543,9 @@ export class HttpBobClient implements BobClient {
   }
   issueInvoice(input: IssueInvoiceInput) {
     return this.req<{ number: string }>('POST', `/invoices/${input.invoiceId}/issue`, input);
+  }
+  deleteDraftInvoice(invoiceId: string) {
+    return this.req<{ deleted: true }>('DELETE', `/invoices/${encodeURIComponent(invoiceId)}/draft`);
   }
   /** C25 ② : envoi RÉEL — le serveur choisit le ton (plan @bob/core) et livre email + miroir push. */
   sendRelance(invoiceId: string) {

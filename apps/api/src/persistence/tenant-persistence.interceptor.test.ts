@@ -3,7 +3,7 @@ import { Reflector } from '@nestjs/core';
 import { lastValueFrom, of } from 'rxjs';
 import { describe, expect, it, vi } from 'vitest';
 import { requestContext } from '../observability/logger';
-import { ExpensesController } from '../api.controllers';
+import { ExpensesController, QuotesController } from '../api.controllers';
 import type { Persistence } from './persistence';
 import {
   TenantPersistenceInterceptor,
@@ -89,6 +89,29 @@ describe('TenantPersistenceInterceptor — frontières transactionnelles', () =>
       },
       () => lastValueFrom(interceptor.intercept(
         contextFor(ExpensesController.prototype.create, '/expenses', ExpensesController),
+        next,
+      )),
+    );
+
+    expect(value).toBe('created');
+    expect(runWithTenant).not.toHaveBeenCalled();
+  });
+
+  it('laisse POST /quotes ouvrir la racine qui rollback le devis concurrent perdant', async () => {
+    const runWithTenant = vi.fn(async (_companyId: string, fn: () => Promise<unknown>) => fn());
+    const interceptor = new TenantPersistenceInterceptor(
+      { runWithTenant } as unknown as Persistence,
+      new Reflector(),
+    );
+    const next = { handle: vi.fn(() => of('created')) } satisfies CallHandler;
+
+    const value = await requestContext.run(
+      {
+        correlationId: 'quote-idempotency-boundary-test',
+        principal: { userId: 'user-1', companyId: 'co-1' },
+      },
+      () => lastValueFrom(interceptor.intercept(
+        contextFor(QuotesController.prototype.create, '/quotes', QuotesController),
         next,
       )),
     );

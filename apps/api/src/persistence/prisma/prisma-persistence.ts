@@ -26,11 +26,28 @@ import type { CabinetInfrastructure } from '../../cabinet/cabinet-infrastructure
 import { PrismaDocumentFolderDeletionPlanStore } from '../document-folder-deletion-plans';
 import { PrismaDocumentAnalysisStore } from '../document-analyses';
 import { PrismaExpenseCreationRequestStore } from '../expense-creation-requests';
+import { PrismaQuoteCreationRequestStore } from '../quote-creation-requests';
 import type {
   RealtimeAdmissionPolicy,
   RealtimeAdmissionPort,
 } from '../../voice/realtime/realtime-admission';
 import { PrismaRealtimeAdmission } from '../../voice/realtime/realtime-admission.prisma';
+import { PrismaRealtimeSpeechDeliveryRepository } from '../../voice/realtime/realtime-speech-delivery.prisma';
+import type { RealtimeSpeechDeliveryRepositoryPort } from '../../voice/realtime/realtime-speech-delivery.repository';
+import { PrismaRealtimeSidebandOwner } from '../../voice/realtime/realtime-sideband-owner.prisma';
+import type { RealtimeSidebandOwnerPort } from '../../voice/realtime/realtime-sideband-owner';
+import { PrismaRealtimeSpeechArtifactRepository } from '../../voice/realtime/realtime-speech.prisma';
+import type { RealtimeSpeechArtifactRepositoryPort } from '../../voice/realtime/realtime-speech-publisher';
+import { PrismaRealtimeVoiceUsageRepository } from '../../voice/realtime/realtime-voice-usage.prisma';
+import type { RealtimeVoiceUsageRepositoryPort } from '../../voice/realtime/realtime-voice-usage';
+import { PrismaMistralRealtimeIngressTicketAuthority } from '../../voice/realtime/realtime-mistral-ingress-ticket.prisma';
+import type {
+  MistralRealtimeIngressIdentityKeyRing,
+  MistralRealtimeIngressTicketAuthority,
+  MistralRealtimeIngressTicketPolicy,
+} from '../../voice/realtime/realtime-mistral-ingress-ticket';
+import { PrismaRealtimeControlRepository } from '../../voice/realtime/realtime-control.prisma';
+import type { RealtimeControlRepositoryPort } from '../../voice/realtime/realtime-control.repository';
 
 export class PrismaPersistence implements Persistence {
   readonly companies: PrismaCompanyRepository;
@@ -48,6 +65,7 @@ export class PrismaPersistence implements Persistence {
   readonly publicAccessTokens: PrismaPublicAccessTokenRepository;
   readonly expenses: PrismaExpenseRepository;
   readonly expenseCreationRequests: PrismaExpenseCreationRequestStore;
+  readonly quoteCreationRequests: PrismaQuoteCreationRequestStore;
   readonly accountingEntries: PrismaAccountingEntryRepository;
   readonly chartOfAccounts: PrismaChartOfAccountsRepository;
   readonly agentJournal: PrismaAgentJournalRepository;
@@ -57,6 +75,33 @@ export class PrismaPersistence implements Persistence {
 
   createRealtimeAdmission(policy: RealtimeAdmissionPolicy): RealtimeAdmissionPort {
     return new PrismaRealtimeAdmission(this.prisma, policy);
+  }
+
+  createRealtimeSpeechDeliveryRepository(): RealtimeSpeechDeliveryRepositoryPort {
+    return new PrismaRealtimeSpeechDeliveryRepository(this.prisma);
+  }
+
+  createRealtimeSidebandOwner(): RealtimeSidebandOwnerPort {
+    return new PrismaRealtimeSidebandOwner(this.prisma);
+  }
+
+  createRealtimeSpeechArtifactRepository(): RealtimeSpeechArtifactRepositoryPort {
+    return new PrismaRealtimeSpeechArtifactRepository(this.prisma);
+  }
+
+  createRealtimeVoiceUsageRepository(): RealtimeVoiceUsageRepositoryPort {
+    return new PrismaRealtimeVoiceUsageRepository(this.prisma);
+  }
+
+  createRealtimeControlRepository(): RealtimeControlRepositoryPort {
+    return new PrismaRealtimeControlRepository(this.prisma);
+  }
+
+  createMistralRealtimeIngressTicketAuthority(
+    policy: MistralRealtimeIngressTicketPolicy,
+    identityKeys: MistralRealtimeIngressIdentityKeyRing,
+  ): MistralRealtimeIngressTicketAuthority {
+    return new PrismaMistralRealtimeIngressTicketAuthority(this.prisma, policy, identityKeys);
   }
 
   constructor(private readonly prisma: PrismaService) {
@@ -75,6 +120,7 @@ export class PrismaPersistence implements Persistence {
     this.publicAccessTokens = new PrismaPublicAccessTokenRepository(prisma);
     this.expenses = new PrismaExpenseRepository(prisma);
     this.expenseCreationRequests = new PrismaExpenseCreationRequestStore(prisma);
+    this.quoteCreationRequests = new PrismaQuoteCreationRequestStore(prisma);
     this.accountingEntries = new PrismaAccountingEntryRepository(prisma);
     this.chartOfAccounts = new PrismaChartOfAccountsRepository(prisma);
     this.agentJournal = new PrismaAgentJournalRepository(prisma);

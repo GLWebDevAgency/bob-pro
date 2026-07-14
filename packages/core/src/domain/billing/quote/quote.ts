@@ -4,6 +4,7 @@ import { type Instant, type DateOnly } from '../../../shared-kernel/time';
 import { Percentage } from '../../../shared-kernel/percentage';
 import { DocNumber } from '../shared/doc-number';
 import { type QuoteLine } from '../shared/line';
+import { type LineInput } from '../shared/line-item';
 import { type Totals } from '../shared/totals';
 import { type Signature } from '../shared/signature';
 import { isVatRate } from '../shared/vat-rate';
@@ -84,7 +85,35 @@ export class Quote extends AggregateRoot<string> {
   removeLine(lineId: string): DomainResult<void> {
     const d = this.assertDraft();
     if (!d.ok) return d;
+    if (!this._lines.some((l) => l.id === lineId))
+      return err({ code: 'VALIDATION', field: 'lineId', message: 'Ligne introuvable.' });
     this._lines = this._lines.filter((l) => l.id !== lineId);
+    return ok(undefined);
+  }
+
+  /**
+   * R6 : édition d'une ligne EXISTANTE (label/qty/unitPriceHT/vatRate), draft uniquement — un
+   * devis signé est un contrat (assertDraft, même garde qu'addLine/removeLine). Patch partiel :
+   * seuls les champs fournis sont revalidés/remplacés, les autres restent inchangés.
+   */
+  updateLine(lineId: string, patch: Partial<Pick<LineInput, 'label' | 'qty' | 'unitPriceHT' | 'vatRate'>>): DomainResult<void> {
+    const d = this.assertDraft();
+    if (!d.ok) return d;
+    const index = this._lines.findIndex((l) => l.id === lineId);
+    const current = index === -1 ? undefined : this._lines[index];
+    if (index === -1 || current === undefined)
+      return err({ code: 'VALIDATION', field: 'lineId', message: 'Ligne introuvable.' });
+    if (patch.qty !== undefined) {
+      const q = Quantity.of(patch.qty);
+      if (!q.ok) return q;
+    }
+    if (patch.vatRate !== undefined && !isVatRate(patch.vatRate))
+      return err({ code: 'VALIDATION', field: 'vatRate', message: 'Taux TVA non autorise.' });
+    if (patch.unitPriceHT !== undefined && (!Number.isSafeInteger(patch.unitPriceHT) || patch.unitPriceHT < 0))
+      return err({ code: 'VALIDATION', field: 'unitPriceHT', message: 'Prix unitaire invalide.' });
+    if (patch.label !== undefined && patch.label.trim().length === 0)
+      return err({ code: 'VALIDATION', field: 'label', message: 'Libelle requis.' });
+    this._lines[index] = { ...current, ...patch };
     return ok(undefined);
   }
 

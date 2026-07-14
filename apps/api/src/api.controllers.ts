@@ -4,6 +4,7 @@ import {
   Post,
   Put,
   Patch,
+  Delete,
   Body,
   Headers,
   Param,
@@ -26,7 +27,9 @@ import type {
   DocumentLinkedEntityType,
   ExpenseCategory,
   DeleteDocumentFolderStrategy,
+  UpdateQuoteLineInput,
 } from '@bob/core';
+import { isValidDateOnly } from '@bob/core';
 import { type AgentAskPayload } from '@bob/ai';
 import { Throttle } from '@nestjs/throttler';
 import { BackendService, type FacturXImportDecision, type UploadDocumentInput } from './backend.service';
@@ -61,6 +64,20 @@ const RECORD_EXPENSE_FIELDS = new Set([
   'supplierInvoiceNumber',
   'dueAt',
 ]);
+const CREATE_QUOTE_FIELDS = new Set([
+  'idempotencyKey',
+  'customerId',
+  'lines',
+  'depositPct',
+  'validUntil',
+  'context',
+]);
+const CREATE_QUOTE_LINE_FIELDS = new Set(['label', 'category', 'qty', 'unit', 'unitPriceHT', 'vatRate']);
+const CREATE_QUOTE_CONTEXT_FIELDS = new Set(['housingOlderThan2y', 'energyRenovation']);
+const QUOTE_LINE_CATEGORIES = new Set(['labor', 'supply', 'travel', 'disbursement', 'subscription']);
+const QUOTE_VAT_RATES = new Set([0, 2.1, 5.5, 10, 20]);
+const MAX_QUOTE_LINES = 100;
+const MAX_QUOTE_HT_CENTS = 1_500_000_000;
 const DOCUMENT_EXPENSE_FIELDS = new Set(
   [...RECORD_EXPENSE_FIELDS].filter((field) => field !== 'idempotencyKey' && field !== 'source'),
 );
@@ -170,6 +187,196 @@ function optionalExpenseInteger(
     return undefined;
   }
   return value as number;
+}
+
+function parseCreateQuoteBody(body: Record<string, unknown>): Omit<CreateQuoteInput, 'companyId'> {
+  const issues: ValidationIssue[] = [];
+  for (const field of Object.keys(body)) {
+    if (!CREATE_QUOTE_FIELDS.has(field)) {
+      issues.push({ field: 'body', message: `Champ non autorisé : ${field}.` });
+    }
+  }
+
+  const customerId = body['customerId'];
+  if (
+    typeof customerId !== 'string'
+    || customerId.length === 0
+    || customerId.length > 240
+    || customerId !== customerId.trim()
+    || hasControlCharacter(customerId)
+  ) {
+    issues.push({ field: 'customerId', message: 'Identifiant client invalide.' });
+  }
+
+  const rawKey = body['idempotencyKey'];
+  if (
+    rawKey !== undefined
+    && rawKey !== null
+    && (
+      typeof rawKey !== 'string'
+      || rawKey.trim().length === 0
+      || rawKey.length > 200
+      || hasControlCharacter(rawKey)
+    )
+  ) {
+    issues.push({ field: 'idempotencyKey', message: "Clé d'idempotence invalide (1 à 200 caractères imprimables)." });
+  }
+
+  const rawLines = body['lines'];
+  const lines: CreateQuoteInput['lines'] = [];
+  let totalHtCents = 0;
+  if (!Array.isArray(rawLines) || rawLines.length > MAX_QUOTE_LINES) {
+    issues.push({ field: 'lines', message: `Tableau requis (${MAX_QUOTE_LINES} lignes maximum).` });
+  } else {
+    rawLines.forEach((rawLine, index) => {
+      const prefix = `lines.${index}`;
+      if (rawLine === null || typeof rawLine !== 'object' || Array.isArray(rawLine)) {
+        issues.push({ field: prefix, message: 'Ligne objet requise.' });
+        return;
+      }
+      const line = rawLine as Record<string, unknown>;
+      for (const field of Object.keys(line)) {
+        if (!CREATE_QUOTE_LINE_FIELDS.has(field)) {
+          issues.push({ field: prefix, message: `Champ non autorisé : ${field}.` });
+        }
+      }
+      const label = line['label'];
+      if (
+        typeof label !== 'string'
+        || label.trim().length === 0
+        || label.length > 500
+        || hasControlCharacter(label)
+      ) {
+        issues.push({ field: `${prefix}.label`, message: 'Libellé requis (500 caractères maximum).' });
+      }
+      const category = line['category'];
+      if (typeof category !== 'string' || !QUOTE_LINE_CATEGORIES.has(category)) {
+        issues.push({ field: `${prefix}.category`, message: 'Catégorie de ligne invalide.' });
+      }
+      const qty = line['qty'];
+      if (
+        typeof qty !== 'number'
+        || !Number.isFinite(qty)
+        || qty <= 0
+        || qty > 1_000_000
+        || Math.round(qty * 1_000) !== qty * 1_000
+      ) {
+        issues.push({ field: `${prefix}.qty`, message: 'Quantité positive avec 3 décimales maximum requise.' });
+      }
+      const unit = line['unit'];
+      if (
+        unit !== undefined
+        && (
+          typeof unit !== 'string'
+          || unit.trim().length === 0
+          || unit.length > 80
+          || hasControlCharacter(unit)
+        )
+      ) {
+        issues.push({ field: `${prefix}.unit`, message: 'Unité invalide (80 caractères maximum).' });
+      }
+      const unitPriceHT = line['unitPriceHT'];
+      if (!Number.isSafeInteger(unitPriceHT) || (unitPriceHT as number) < 0 || (unitPriceHT as number) > MAX_QUOTE_HT_CENTS) {
+        issues.push({ field: `${prefix}.unitPriceHT`, message: 'Prix HT en centimes invalide.' });
+      }
+      const vatRate = line['vatRate'];
+      if (typeof vatRate !== 'number' || !QUOTE_VAT_RATES.has(vatRate)) {
+        issues.push({ field: `${prefix}.vatRate`, message: 'Taux de TVA invalide.' });
+      }
+
+      if (
+        typeof qty === 'number'
+        && Number.isFinite(qty)
+        && Number.isSafeInteger(unitPriceHT)
+        && (unitPriceHT as number) >= 0
+      ) {
+        totalHtCents += Math.round(qty * (unitPriceHT as number));
+      }
+      if (
+        typeof label === 'string'
+        && typeof category === 'string'
+        && QUOTE_LINE_CATEGORIES.has(category)
+        && typeof qty === 'number'
+        && Number.isFinite(qty)
+        && Number.isSafeInteger(unitPriceHT)
+        && typeof vatRate === 'number'
+        && QUOTE_VAT_RATES.has(vatRate)
+      ) {
+        lines.push({
+          label,
+          category: category as CreateQuoteInput['lines'][number]['category'],
+          qty,
+          ...(typeof unit === 'string' ? { unit } : {}),
+          unitPriceHT: unitPriceHT as number,
+          vatRate: vatRate as CreateQuoteInput['lines'][number]['vatRate'],
+        });
+      }
+    });
+  }
+  if (totalHtCents > MAX_QUOTE_HT_CENTS) {
+    issues.push({ field: 'lines', message: 'Montant total HT du devis hors limite.' });
+  }
+
+  const depositPct = body['depositPct'];
+  if (
+    depositPct !== undefined
+    && (
+      typeof depositPct !== 'number'
+      || !Number.isFinite(depositPct)
+      || depositPct < 0
+      || depositPct > 100
+    )
+  ) {
+    issues.push({ field: 'depositPct', message: 'Pourcentage d\'acompte invalide.' });
+  }
+
+  const validUntil = body['validUntil'];
+  if (validUntil !== undefined && (typeof validUntil !== 'string' || !isValidDateOnly(validUntil))) {
+    issues.push({ field: 'validUntil', message: 'Date de validité invalide (AAAA-MM-JJ).' });
+  }
+
+  const rawContext = body['context'];
+  let context: CreateQuoteInput['context'];
+  if (rawContext !== undefined) {
+    if (rawContext === null || typeof rawContext !== 'object' || Array.isArray(rawContext)) {
+      issues.push({ field: 'context', message: 'Contexte objet requis.' });
+    } else {
+      const candidate = rawContext as Record<string, unknown>;
+      for (const field of Object.keys(candidate)) {
+        if (!CREATE_QUOTE_CONTEXT_FIELDS.has(field)) {
+          issues.push({ field: 'context', message: `Champ non autorisé : ${field}.` });
+        }
+      }
+      for (const field of CREATE_QUOTE_CONTEXT_FIELDS) {
+        if (candidate[field] !== undefined && typeof candidate[field] !== 'boolean') {
+          issues.push({ field: `context.${field}`, message: 'Booléen attendu.' });
+        }
+      }
+      if (
+        (candidate['housingOlderThan2y'] === undefined || typeof candidate['housingOlderThan2y'] === 'boolean')
+        && (candidate['energyRenovation'] === undefined || typeof candidate['energyRenovation'] === 'boolean')
+      ) {
+        context = {
+          ...(typeof candidate['housingOlderThan2y'] === 'boolean'
+            ? { housingOlderThan2y: candidate['housingOlderThan2y'] }
+            : {}),
+          ...(typeof candidate['energyRenovation'] === 'boolean'
+            ? { energyRenovation: candidate['energyRenovation'] }
+            : {}),
+        };
+      }
+    }
+  }
+
+  if (issues.length > 0) throwValidationIssues(issues);
+  return {
+    customerId: customerId as string,
+    lines,
+    ...(rawKey !== undefined ? { idempotencyKey: rawKey as string | null } : {}),
+    ...(typeof depositPct === 'number' ? { depositPct } : {}),
+    ...(typeof validUntil === 'string' ? { validUntil } : {}),
+    ...(context !== undefined ? { context } : {}),
+  };
 }
 
 /** Frontière HTTP stricte : aucun champ client ne peut atteindre le métier par simple cast/spread. */
@@ -532,8 +739,10 @@ export class QuotesController {
     return unwrap(await this.backend.getQuote(id));
   }
   @Post()
-  async create(@Body() body: Omit<CreateQuoteInput, 'companyId'>) {
-    return unwrap(await this.backend.createQuote(body));
+  @WithoutTenantPersistenceTransaction()
+  async create(@Body() body: unknown) {
+    assertJsonObjectBody(body);
+    return unwrap(await this.backend.createQuote(parseCreateQuoteBody(body)));
   }
   @Post(':id/send')
   async send(@Param('id') id: string) {
@@ -550,6 +759,20 @@ export class QuotesController {
   @Post(':id/invoice')
   async invoice(@Param('id') id: string, @Body() body: { mode?: 'deposit' | 'final' }) {
     return unwrap(await this.backend.generateInvoice({ quoteId: id, mode: body.mode }));
+  }
+  /** R6 : édition d'une ligne de devis BROUILLON (le use case/l'agrégat gardent le statut). */
+  @Patch(':id/lines/:lineId')
+  async updateLine(
+    @Param('id') id: string,
+    @Param('lineId') lineId: string,
+    @Body() body: { label?: string; qty?: number; unitPriceHT?: number; vatRate?: number },
+  ) {
+    return unwrap(await this.backend.updateQuoteLine({ quoteId: id, lineId, patch: body as UpdateQuoteLineInput['patch'] }));
+  }
+  /** R6 : suppression d'une ligne de devis BROUILLON. */
+  @Delete(':id/lines/:lineId')
+  async removeLine(@Param('id') id: string, @Param('lineId') lineId: string) {
+    return unwrap(await this.backend.removeQuoteLine({ quoteId: id, lineId }));
   }
 }
 
@@ -591,6 +814,11 @@ export class InvoicesController {
   @Post(':id/issue')
   async issue(@Param('id') id: string) {
     return unwrap(await this.backend.issueInvoice({ invoiceId: id }));
+  }
+  /** R6 : suppression définitive d'une facture BROUILLON (erreur détectée après génération). */
+  @Delete(':id/draft')
+  async deleteDraft(@Param('id') id: string) {
+    return unwrap(await this.backend.deleteDraftInvoice(id));
   }
   /** A6 (PONT-SERVEUR v1) : avoir TOTAL (brouillon) d'une facture émise — s'émet ensuite par
    * POST /invoices/:id/issue (numéro A- sans trou, écriture comptable inverse). */

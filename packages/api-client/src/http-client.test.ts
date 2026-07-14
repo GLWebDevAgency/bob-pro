@@ -55,6 +55,77 @@ describe('HttpBobClient', () => {
     expect(requestSignal?.aborted).toBe(true);
   });
 
+  it('transmet uniquement le DTO devis autorisé avec sa clé de rejeu opaque', async () => {
+    const output = {
+      quoteId: 'quote-1',
+      totals: { ht: 16_000, vat: 3_200, ttc: 19_200, netToPay: 19_200, vatByRate: { 20: 3_200 } },
+    };
+    const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      expect(JSON.parse(String(init?.body))).toEqual({
+        customerId: 'customer-1',
+        idempotencyKey: 'mobile-voice:quote:opaque-1',
+        lines: [
+          { label: 'Pose', category: 'labor', qty: 2, unitPriceHT: 8_000, vatRate: 20 },
+        ],
+        context: { housingOlderThan2y: true },
+      });
+      return new Response(JSON.stringify(output), { headers: { 'content-type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+    const runtimeExtendedInput = {
+      customerId: 'customer-1',
+      idempotencyKey: 'mobile-voice:quote:opaque-1',
+      lines: [{ label: 'Pose', category: 'labor' as const, qty: 2, unitPriceHT: 8_000, vatRate: 20 as const }],
+      context: { housingOlderThan2y: true },
+      companyId: 'forged-company',
+      internalSecret: 'must-not-cross-http',
+    };
+
+    await expect(client.createQuote(runtimeExtendedInput)).resolves.toEqual({ ok: true, value: output });
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.bob.test/quotes',
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
+  it('rejette une réponse 2xx createQuote malformée avant tout checkpoint local', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      quoteId: 'quote-1',
+      totals: { ht: 100, vat: 20, ttc: 999, netToPay: 120, vatByRate: { 20: 20 } },
+    }), { headers: { 'content-type': 'application/json' } })));
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+
+    await expect(client.createQuote({
+      customerId: 'customer-1',
+      lines: [{ label: 'Pose', category: 'labor', qty: 1, unitPriceHT: 100, vatRate: 20 }],
+    })).resolves.toEqual({
+      ok: false,
+      error: {
+        kind: 'dependency',
+        port: 'api-contract',
+        cause: 'Réponse API invalide pour POST /quotes.',
+      },
+    });
+  });
+
+  it('borne POST /quotes pour autoriser un rejeu avec la même clé après réponse perdue', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => undefined)));
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+    const pending = client.createQuote({
+      customerId: 'customer-1',
+      idempotencyKey: 'mobile-voice:quote:timeout-1',
+      lines: [{ label: 'Pose', category: 'labor', qty: 1, unitPriceHT: 100, vatRate: 20 }],
+    });
+
+    await vi.advanceTimersByTimeAsync(20_000);
+    await expect(pending).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'dependency', port: 'api', cause: 'Délai réseau dépassé après 20000 ms.' },
+    });
+  });
+
   it('transmet uniquement le DTO autorisé et la clé opaque de recordExpense', async () => {
     const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => {
       expect(init?.method).toBe('POST');
@@ -554,6 +625,35 @@ describe('HttpBobClient', () => {
 
     const creditNote = await client.createCreditNote({ invoiceId: 'inv-1' });
     expect(creditNote.ok && creditNote.value).toEqual({ creditNoteId: 'inv-2' });
+  });
+
+  it('R6 : updateQuoteLine / removeQuoteLine / deleteDraftInvoice frappent EXACTEMENT les routes servies', async () => {
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      const u = String(url);
+      const method = init?.method ?? 'GET';
+      if (u === 'https://api.bob.test/quotes/quote-1/lines/line-1' && method === 'PATCH') {
+        expect(JSON.parse(String(init?.body))).toEqual({ qty: 3, unitPriceHT: 9000 });
+        return new Response(JSON.stringify({ status: 'draft' }), { headers: { 'content-type': 'application/json' } });
+      }
+      if (u === 'https://api.bob.test/quotes/quote-1/lines/line-2' && method === 'DELETE') {
+        return new Response(JSON.stringify({ status: 'draft' }), { headers: { 'content-type': 'application/json' } });
+      }
+      if (u === 'https://api.bob.test/invoices/inv-9/draft' && method === 'DELETE') {
+        return new Response(JSON.stringify({ deleted: true }), { headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ error: { kind: 'not_found', resource: 'route' } }), { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-mercier' });
+
+    const updated = await client.updateQuoteLine({ quoteId: 'quote-1', lineId: 'line-1', patch: { qty: 3, unitPriceHT: 9000 } });
+    expect(updated.ok && updated.value).toEqual({ status: 'draft' });
+
+    const removed = await client.removeQuoteLine({ quoteId: 'quote-1', lineId: 'line-2' });
+    expect(removed.ok && removed.value).toEqual({ status: 'draft' });
+
+    const deleted = await client.deleteDraftInvoice('inv-9');
+    expect(deleted.ok && deleted.value).toEqual({ deleted: true });
   });
 
   it('loads expense defaults from the API memory endpoint', async () => {
@@ -1083,6 +1183,7 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
     const answerSdp = 'v=0\r\no=- 2 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n';
     const sessionHandle = '00000000-0000-4000-8000-000000000001';
     const turnId = '00000000-0000-4000-8000-000000000002';
+    const acknowledgementId = '00000000-0000-4000-8000-000000000003';
     const contextDigest = 'a'.repeat(64);
     const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
       if (String(url).endsWith('/voice/realtime/config')) {
@@ -1122,11 +1223,13 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
         expect(init?.method).toBe('POST');
         expect(JSON.parse(String(init?.body))).toEqual({
           turnId,
+          acknowledgementId,
           contextRevision: 7,
           contextDigest,
         });
         return new Response(JSON.stringify({
           turnId,
+          acknowledgementId,
           kind: 'answer',
           contextRevision: 7,
           contextDigest,
@@ -1168,11 +1271,12 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
       context: {
         screen: { name: '/home', instanceId: 'home-1' },
         entities: [],
-        capabilities: ['screen.read'],
+        capabilities: ['screen.read'] as const,
       },
     });
     const control = await client.acknowledgeRealtimeVoiceControl(sessionHandle, {
       turnId,
+      acknowledgementId,
       contextRevision: 7,
       contextDigest,
     });
@@ -1183,11 +1287,128 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
     expect(context).toEqual({ ok: true, value: { revision: 7, contextDigest } });
     expect(control).toEqual({
       ok: true,
-      value: { turnId, kind: 'answer', contextRevision: 7, contextDigest, navigate: '/cloture' },
+      value: {
+        turnId,
+        acknowledgementId,
+        kind: 'answer',
+        contextRevision: 7,
+        contextDigest,
+        navigate: '/cloture',
+      },
     });
     expect(ended).toEqual({ ok: true, value: { ended: true } });
     if (call.ok) expect(call.value).not.toHaveProperty('callId');
     expect(fetchMock.mock.calls[1]?.[1]?.headers).toMatchObject({ authorization: 'Bearer supabase-jwt' });
+  });
+
+  it('décode le bootstrap Mistral opaque sans mettre le ticket dans l’URL ni exposer le fournisseur', async () => {
+    const sessionHandle = '00000000-0000-4000-8000-000000000011';
+    const ticket = 'A'.repeat(43);
+    const contextDigest = 'b'.repeat(64);
+    const context = {
+      version: 1 as const,
+      revision: 3,
+      context: {
+        screen: { name: '/documents', instanceId: 'documents-1' },
+        entities: [],
+        capabilities: ['screen.read'] as const,
+      },
+    };
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      expect(String(url)).toBe('https://api.bob.test/voice/realtime/calls');
+      expect(String(url)).not.toContain(ticket);
+      expect(init?.method).toBe('POST');
+      expect(JSON.parse(String(init?.body))).toEqual({ context, sessionHandle });
+      return new Response(JSON.stringify({
+        transport: 'mistral-pcm',
+        websocketUrl: 'wss://api.bob.test/v1/voice/realtime/mistral',
+        companyId: 'company-1',
+        ticket,
+        protocol: 'bob.mistral-pcm.v1',
+        ticketExpiresAt: '2026-07-14T12:00:30.000Z',
+        maxAudioBytes: 28_800_000,
+        contextRevision: 3,
+        contextDigest,
+        sessionHandle,
+        hardExpiresAt: '2026-07-14T12:15:00.000Z',
+        model: 'voxtral-mini-transcribe-realtime-2602',
+        voice: 'marin',
+        configVersion: 'bob-live-provider-neutral-v2',
+        maxSessionSeconds: 900,
+      }), { headers: { 'content-type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+
+    const result = await client.createRealtimeVoiceCall({
+      transport: 'mistral-pcm',
+      context,
+      sessionHandle,
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      value: {
+        transport: 'mistral-pcm',
+        websocketUrl: 'wss://api.bob.test/v1/voice/realtime/mistral',
+        companyId: 'company-1',
+        ticket,
+        protocol: 'bob.mistral-pcm.v1',
+        ticketExpiresAt: '2026-07-14T12:00:30.000Z',
+        maxAudioBytes: 28_800_000,
+        contextRevision: 3,
+        contextDigest,
+        sessionHandle,
+        hardExpiresAt: '2026-07-14T12:15:00.000Z',
+        model: 'voxtral-mini-transcribe-realtime-2602',
+        voice: 'marin',
+        configVersion: 'bob-live-provider-neutral-v2',
+        maxSessionSeconds: 900,
+      },
+    });
+  });
+
+  it('refuse un bootstrap Mistral avec URL ambiguë ou champ privé fournisseur', async () => {
+    const response = {
+      transport: 'mistral-pcm',
+      websocketUrl: 'wss://api.bob.test/v1/voice/realtime/mistral?ticket=secret',
+      companyId: 'company-1',
+      ticket: 'A'.repeat(43),
+      protocol: 'bob.mistral-pcm.v1',
+      ticketExpiresAt: '2026-07-14T12:00:30.000Z',
+      maxAudioBytes: 32_000,
+      contextRevision: 1,
+      contextDigest: 'b'.repeat(64),
+      sessionHandle: '00000000-0000-4000-8000-000000000011',
+      hardExpiresAt: '2026-07-14T12:15:00.000Z',
+      model: 'voxtral-mini-transcribe-realtime-2602',
+      voice: 'marin',
+      configVersion: 'bob-live-provider-neutral-v2',
+      maxSessionSeconds: 900,
+      providerSessionId: 'private-provider-id',
+    };
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(response), {
+      headers: { 'content-type': 'application/json' },
+    })));
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+
+    const result = await client.createRealtimeVoiceCall({
+      transport: 'mistral-pcm',
+      context: {
+        version: 1,
+        revision: 1,
+        context: {
+          screen: { name: '/home', instanceId: 'home-1' },
+          entities: [],
+          capabilities: ['screen.read'],
+        },
+      },
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { kind: 'dependency', port: 'api-contract' },
+    });
   });
 
   it('refuse une réponse qui tente d’exposer un call_id fournisseur au mobile', async () => {
@@ -1215,6 +1436,7 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
   it('refuse un acquittement qui expose nonce/provider id ou une navigation hors allowlist', async () => {
     const sessionHandle = '00000000-0000-4000-8000-000000000001';
     const turnId = '00000000-0000-4000-8000-000000000002';
+    const acknowledgementId = '00000000-0000-4000-8000-000000000003';
     const contextDigest = 'a'.repeat(64);
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
       turnId,
@@ -1229,12 +1451,29 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
 
     await expect(client.acknowledgeRealtimeVoiceControl(sessionHandle, {
       turnId,
+      acknowledgementId,
       contextRevision: 1,
       contextDigest,
     })).resolves.toMatchObject({
       ok: false,
       error: { kind: 'dependency', port: 'api-contract' },
     });
+  });
+
+  it('refuse avant réseau un contrôle qui ne provient pas d’un ACK audio durable', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+
+    await expect(client.acknowledgeRealtimeVoiceControl(
+      '00000000-0000-4000-8000-000000000001',
+      {
+        turnId: '00000000-0000-4000-8000-000000000002',
+        contextRevision: 1,
+        contextDigest: 'a'.repeat(64),
+      } as never,
+    )).resolves.toMatchObject({ ok: false, error: { kind: 'validation' } });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('propage une annulation externe au bootstrap avant tout fetch', async () => {

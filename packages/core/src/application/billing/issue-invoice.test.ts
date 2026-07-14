@@ -61,6 +61,7 @@ function makeDeps(invoice: Invoice) {
       saves += 1;
       invoice = i;
     },
+    deleteById: async () => {},
   };
   const companies: CompanyRepository = {
     findById: async (id) => (id === company.id ? company : null),
@@ -110,6 +111,7 @@ describe('IssueInvoice', () => {
       save: async () => {
         saves += 1;
       },
+      deleteById: async () => {},
     };
     const companies: CompanyRepository = { findById: async () => company, list: async () => [company], save: async () => {} };
     const customerRepo: CustomerRepository = {

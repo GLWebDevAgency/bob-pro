@@ -359,6 +359,57 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     expect(afterConflict.ok && afterConflict.value).toHaveLength(before.value.length + 1);
   });
 
+  it('rend createQuote idempotent en concurrence et après une réponse perdue', async () => {
+    const client = makeClient();
+    const before = await client.listQuotes();
+    expect(before.ok).toBe(true);
+    if (!before.ok) return;
+    const request = {
+      customerId: 'cust-martin',
+      idempotencyKey: 'mobile-voice:quote:response-loss-local-1',
+      lines: [
+        { label: 'Pose ballon', category: 'labor' as const, qty: 2, unit: 'h', unitPriceHT: 8_000, vatRate: 10 as const },
+      ],
+      context: { housingOlderThan2y: true },
+    };
+
+    const [first, concurrent] = await Promise.all([
+      client.createQuote(request),
+      client.createQuote(request),
+    ]);
+    expect(first.ok).toBe(true);
+    expect(concurrent).toEqual(first);
+    const retry = await client.createQuote(request);
+    expect(retry).toEqual(first);
+    const after = await client.listQuotes();
+    expect(after.ok && after.value).toHaveLength(before.value.length + 1);
+
+    const conflict = await client.createQuote({
+      ...request,
+      lines: [{ ...request.lines[0]!, unitPriceHT: 8_001 }],
+    });
+    expect(conflict).toMatchObject({ ok: false, error: { kind: 'conflict', entity: 'quote_creation' } });
+    const afterConflict = await client.listQuotes();
+    expect(afterConflict.ok && afterConflict.value).toHaveLength(before.value.length + 1);
+  });
+
+  it('refuse une clé createQuote invalide avant toute création locale', async () => {
+    const client = makeClient();
+    const before = await client.listQuotes();
+    if (!before.ok) throw new Error('fixture quotes required');
+    const result = await client.createQuote({
+      customerId: 'cust-martin',
+      idempotencyKey: 'bad\nkey',
+      lines: [{ label: 'Pose', category: 'labor', qty: 1, unitPriceHT: 100, vatRate: 20 }],
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      error: { kind: 'validation', issues: [{ field: 'idempotencyKey' }] },
+    });
+    const after = await client.listQuotes();
+    expect(after.ok && after.value).toHaveLength(before.value.length);
+  });
+
   it('refuse un devis envoye hors-ligne', async () => {
     const client = makeClient();
     const created = await client.createQuote({
@@ -377,6 +428,77 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     const quote = await client.getQuote(quoteId);
     expect(quote.ok && quote.value.status).toBe('refused');
     expect((await client.signQuote({ quoteId, signerName: 'M. Martin' })).ok).toBe(false);
+  });
+
+  it('R6 : édite et supprime une ligne de devis BROUILLON (draft only, même use case core que l’API)', async () => {
+    const client = makeClient();
+    const created = await client.createQuote({
+      customerId: 'cust-martin',
+      lines: [
+        { label: 'Recherche fuite', category: 'labor', qty: 1, unitPriceHT: 12000, vatRate: 10 },
+        { label: 'Pièce', category: 'supply', qty: 1, unitPriceHT: 3000, vatRate: 10 },
+      ],
+      context: { housingOlderThan2y: true },
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const quoteId = created.value.quoteId;
+    const before = await client.getQuote(quoteId);
+    expect(before.ok).toBe(true);
+    if (!before.ok) return;
+    const [line1, line2] = before.value.lines;
+    expect(line1).toBeDefined();
+    expect(line2).toBeDefined();
+
+    const updated = await client.updateQuoteLine({ quoteId, lineId: line1!.id, patch: { qty: 2, unitPriceHT: 15000 } });
+    expect(updated.ok && updated.value.status).toBe('draft');
+    const afterUpdate = await client.getQuote(quoteId);
+    expect(afterUpdate.ok && afterUpdate.value.lines.find((l) => l.id === line1!.id)).toMatchObject({ qty: 2, unitPriceHT: 15000 });
+
+    const removed = await client.removeQuoteLine({ quoteId, lineId: line2!.id });
+    expect(removed.ok && removed.value.status).toBe('draft');
+    const afterRemove = await client.getQuote(quoteId);
+    expect(afterRemove.ok && afterRemove.value.lines.map((l) => l.id)).toEqual([line1!.id]);
+
+    // Un devis signé est un contrat : plus d'édition de lignes (assertDraft) — l'UI n'affiche
+    // pas ce que le domaine interdit, mais la couche data doit refuser explicitement aussi.
+    expect((await client.sendQuote(quoteId)).ok).toBe(true);
+    expect((await client.signQuote({ quoteId, signerName: 'M. Martin' })).ok).toBe(true);
+    const afterSign = await client.updateQuoteLine({ quoteId, lineId: line1!.id, patch: { qty: 5 } });
+    expect(afterSign.ok).toBe(false);
+    if (!afterSign.ok) expect(afterSign.error.kind).toBe('domain');
+  });
+
+  it('R6 : supprime une facture BROUILLON (erreur détectée après génération) ; refuse une facture émise', async () => {
+    const client = makeClient();
+    const created = await client.createQuote({
+      customerId: 'cust-martin',
+      lines: [{ label: 'Dépannage', category: 'labor', qty: 1, unitPriceHT: 20000, vatRate: 10 }],
+      context: { housingOlderThan2y: true },
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const quoteId = created.value.quoteId;
+    expect((await client.sendQuote(quoteId)).ok).toBe(true);
+    expect((await client.signQuote({ quoteId, signerName: 'M. Martin' })).ok).toBe(true);
+    const gen = await client.generateInvoice({ quoteId });
+    expect(gen.ok).toBe(true);
+    if (!gen.ok) return;
+
+    const deleted = await client.deleteDraftInvoice(gen.value.invoiceId);
+    expect(deleted.ok && deleted.value).toEqual({ deleted: true });
+    const afterDelete = await client.getInvoice(gen.value.invoiceId);
+    expect(afterDelete.ok).toBe(false);
+    if (!afterDelete.ok) expect(afterDelete.error.kind).toBe('not_found');
+
+    // Regénère puis émet — une facture ÉMISE n'est plus supprimable (conflict).
+    const gen2 = await client.generateInvoice({ quoteId });
+    expect(gen2.ok).toBe(true);
+    if (!gen2.ok) return;
+    expect((await client.issueInvoice({ invoiceId: gen2.value.invoiceId })).ok).toBe(true);
+    const conflict = await client.deleteDraftInvoice(gen2.value.invoiceId);
+    expect(conflict.ok).toBe(false);
+    if (!conflict.ok) expect(conflict.error).toEqual({ kind: 'conflict', entity: 'invoice', reason: 'Seule une facture brouillon peut être supprimée.' });
   });
 
   it('expose une projection de trésorerie', async () => {

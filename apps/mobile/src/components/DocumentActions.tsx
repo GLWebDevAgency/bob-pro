@@ -1,6 +1,7 @@
 import { forwardRef, useImperativeHandle, useRef, useState, type ReactNode } from 'react';
-import { View, Alert } from 'react-native';
+import { View, Alert, Pressable, ActivityIndicator } from 'react-native';
 import { router } from 'expo-router';
+import { Feather } from '@expo/vector-icons';
 import type { QuoteView, InvoiceView } from '@bob/api-client';
 import { challengeFor, buildActionDiff } from '@bob/ai';
 import { t } from '@bob/i18n';
@@ -14,6 +15,7 @@ import {
   useIssueInvoice,
   useRegisterPayment,
   useInvoicePaymentLink,
+  useDeleteDraftInvoice,
   appErrorMessage,
 } from '../data/hooks';
 import { Button, Badge } from './ui';
@@ -315,18 +317,24 @@ export const QuoteActions = forwardRef<
 export function InvoiceActions({
   invoice,
   withCreditNote = false,
+  onDraftDeleted,
 }: {
   invoice: InvoiceView;
   /** A6 : propose « Créer un avoir » (détail de pièce uniquement — action rare, pas en liste). */
   withCreditNote?: boolean;
+  /** R6 : après suppression du brouillon, l'écran de DÉTAIL quitte la pièce qui n'existe plus
+   * (la liste, elle, se contente du refetch — aucun callback à fournir). */
+  onDraftDeleted?: () => void;
 }): ReactNode {
   const issue = useIssueInvoice();
   const pay = useRegisterPayment();
   const link = useInvoicePaymentLink();
   const createCreditNote = useCreateCreditNote();
+  const deleteDraft = useDeleteDraftInvoice();
   const { busy, lock, run } = useActionLock();
   const confirm = useConfirm();
   const client = useBobClient();
+  const { semantic } = useTheme();
 
   // A6 : avoir TOTAL — confirmation FISCAL (l'avoir s'émettra avec son numéro A- et
   // l'écriture inverse), puis navigation vers le brouillon créé.
@@ -360,25 +368,67 @@ export function InvoiceActions({
 
   if (invoice.status === 'draft') {
     return (
-      <Button
-        title="Émettre"
-        loading={busy === 'issue'}
-        disabled={!!busy}
-        onPress={() =>
-          void (async () => {
-            // Aperçu comptable prévisionnel (le domaine sait prévisualiser un brouillon) — best-effort.
-            const preview = await client.invoiceAccountingPreview(invoice.id);
-            const accountingLines = preview.ok && preview.value.available ? preview.value.lines : undefined;
-            const ok = await confirm({
-              title: 'Émettre la facture',
-              message: 'Numéro légal attribué et transmission e-invoicing.',
-              diff: buildActionDiff('emettre_facture', {}, { number: invoice.number, accountingLines }),
-              challenge: challengeFor(FISCAL, 'confirm_all'),
-            });
-            if (ok) await run('issue', () => issue.mutateAsync(invoice.id));
-          })()
-        }
-      />
+      <View style={{ flexDirection: 'row', gap: 8 }}>
+        <View style={{ flex: 1 }}>
+          <Button
+            title="Émettre"
+            loading={busy === 'issue'}
+            disabled={!!busy}
+            onPress={() =>
+              void (async () => {
+                // Aperçu comptable prévisionnel (le domaine sait prévisualiser un brouillon) — best-effort.
+                const preview = await client.invoiceAccountingPreview(invoice.id);
+                const accountingLines = preview.ok && preview.value.available ? preview.value.lines : undefined;
+                const ok = await confirm({
+                  title: 'Émettre la facture',
+                  message: 'Numéro légal attribué et transmission e-invoicing.',
+                  diff: buildActionDiff('emettre_facture', {}, { number: invoice.number, accountingLines }),
+                  challenge: challengeFor(FISCAL, 'confirm_all'),
+                });
+                if (ok) await run('issue', () => issue.mutateAsync(invoice.id));
+              })()
+            }
+          />
+        </View>
+        {/* R6 : erreur détectée dans le devis source -> supprimer le brouillon (jamais une pièce émise). */}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Supprimer le brouillon"
+          disabled={!!busy}
+          hitSlop={4}
+          onPress={() =>
+            void (async () => {
+              const ok = await confirm({
+                title: 'Supprimer le brouillon',
+                message: `Cette facture brouillon${invoice.number ? ` ${invoice.number}` : ''} sera définitivement supprimée. Cette action est irréversible.`,
+                challenge: challengeFor(REVERSIBLE, 'confirm_all'),
+                destructive: true,
+              });
+              if (ok) {
+                await run('delete', async () => {
+                  await deleteDraft.mutateAsync(invoice.id);
+                  onDraftDeleted?.();
+                });
+              }
+            })()
+          }
+          style={{
+            width: 52,
+            height: 52,
+            borderRadius: 16,
+            alignItems: 'center',
+            justifyContent: 'center',
+            backgroundColor: semantic.dangerBg,
+            opacity: busy ? 0.5 : 1,
+          }}
+        >
+          {busy === 'delete' ? (
+            <ActivityIndicator color={semantic.danger} />
+          ) : (
+            <Feather name="trash-2" size={20} color={semantic.danger} />
+          )}
+        </Pressable>
+      </View>
     );
   }
   if (invoice.status === 'issued' || invoice.status === 'partially_paid' || invoice.status === 'late') {

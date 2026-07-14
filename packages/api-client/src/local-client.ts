@@ -22,6 +22,9 @@ import { buildValueDigest,
   RefuseQuote,
   CreateCreditNote,
   GenerateInvoiceFromQuote,
+  UpdateQuoteLine,
+  RemoveQuoteLine,
+  DeleteDraftInvoice,
   IssueInvoice,
   RegisterPayment,
   PayExpense,
@@ -86,6 +89,8 @@ import { buildValueDigest,
   type IdGeneratorPort,
   type CreateQuoteInput,
   type IssueInvoiceInput,
+  type UpdateQuoteLineInput,
+  type RemoveQuoteLineInput,
   type Quote,
   type Invoice,
   type Result,
@@ -154,6 +159,7 @@ import type {
   VoiceSynthesisResult,
   RealtimeVoiceConfig,
   RealtimeVoiceCall,
+  RealtimeVoiceCallInput,
   RealtimeVoiceContextUpdate,
   RealtimeVoiceControlAcknowledgement,
   RealtimeVoiceControlReference,
@@ -178,6 +184,10 @@ import type {
   CreateCustomerClientInput,
  ValueDigestView } from './client';
 import { localExpenseCreationFingerprint, portableSha256Bytes } from './expense-idempotency';
+import {
+  cloneQuoteCreation,
+  localQuoteCreationFingerprint,
+} from './quote-idempotency';
 
 export interface LocalBobClientOptions {
   clock?: ClockPort;
@@ -370,6 +380,11 @@ export class LocalBobClient implements BobClient {
   private readonly expenses = new InMemoryExpenseRepository();
   private readonly expenseCreationRequests = new Map<string, { payloadHash: string; expenseId: string }>();
   private expenseCreationTail: Promise<void> = Promise.resolve();
+  private readonly quoteCreationRequests = new Map<
+    string,
+    { payloadHash: string; output: CreateQuoteOutput }
+  >();
+  private quoteCreationTail: Promise<void> = Promise.resolve();
   private readonly chantiers = new InMemoryChantierRepository();
   private readonly accountingEntries = new InMemoryAccountingEntryRepository();
   private readonly chartOfAccounts = new InMemoryChartOfAccountsRepository();
@@ -482,6 +497,21 @@ export class LocalBobClient implements BobClient {
     const predecessor = this.expenseCreationTail;
     let release: () => void = () => undefined;
     this.expenseCreationTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await predecessor;
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
+  }
+
+  /** Même mono-gagnant local pour POST /quotes et pour un rejeu après réponse perdue. */
+  private async withQuoteCreationLock<T>(fn: () => Promise<T>): Promise<T> {
+    const predecessor = this.quoteCreationTail;
+    let release: () => void = () => undefined;
+    this.quoteCreationTail = new Promise<void>((resolve) => {
       release = resolve;
     });
     await predecessor;
@@ -769,7 +799,7 @@ export class LocalBobClient implements BobClient {
   }
 
   async createRealtimeVoiceCall(
-    _input: { sdp: string; sessionHandle?: string },
+    _input: RealtimeVoiceCallInput,
     _signal?: AbortSignal,
   ): Promise<Result<RealtimeVoiceCall, AppError>> {
     return { ok: false, error: appForbidden('Bob Live nécessite le backend sécurisé.') };
@@ -1823,7 +1853,50 @@ export class LocalBobClient implements BobClient {
 
   async createQuote(input: Omit<CreateQuoteInput, 'companyId'>): Promise<Result<CreateQuoteOutput, AppError>> {
     await this.ready;
-    return this.createQuoteInternal(input);
+    return this.withQuoteCreationLock(async () => {
+      const fingerprint = localQuoteCreationFingerprint(this.companyId, input);
+      if (fingerprint === 'invalid') {
+        return err({
+          kind: 'validation',
+          issues: [{ field: 'idempotencyKey', message: "Clé d'idempotence invalide (1 à 200 caractères imprimables)." }],
+        });
+      }
+      if (fingerprint) {
+        const published = this.quoteCreationRequests.get(fingerprint.keyHash);
+        if (published) {
+          if (published.payloadHash !== fingerprint.payloadHash) {
+            return err(appConflict(
+              'quote_creation',
+              "Cette clé d'idempotence a déjà été utilisée pour un autre devis.",
+            ));
+          }
+          const quote = await this.quotes.findById(published.output.quoteId);
+          return quote && quote.companyId === this.companyId
+            ? ok(cloneQuoteCreation(published.output))
+            : err({
+                kind: 'dependency',
+                port: 'quote-creation-idempotency',
+                cause: 'La création publiée ne référence plus un devis lisible.',
+              });
+        }
+      }
+
+      const quoteSnapshot = this.quotes.snapshot();
+      try {
+        const created = await this.createQuoteInternal(input);
+        if (!created.ok) return created;
+        if (fingerprint) {
+          this.quoteCreationRequests.set(fingerprint.keyHash, {
+            payloadHash: fingerprint.payloadHash,
+            output: cloneQuoteCreation(created.value),
+          });
+        }
+        return { ok: true, value: cloneQuoteCreation(created.value) };
+      } catch (cause) {
+        this.quotes.restore(quoteSnapshot);
+        throw cause;
+      }
+    });
   }
 
   private createQuoteInternal(
@@ -1836,7 +1909,7 @@ export class LocalBobClient implements BobClient {
       customers: this.customers,
       ids: this.ids,
       clock,
-    }).execute({ companyId: this.companyId, ...input });
+    }).execute({ ...input, companyId: this.companyId });
   }
 
   async sendQuote(quoteId: string): Promise<Result<SendQuoteOutput, AppError>> {
@@ -1889,9 +1962,27 @@ export class LocalBobClient implements BobClient {
     return new GenerateInvoiceFromQuote({ quotes: this.quotes, invoices: this.invoices, ids: this.ids }).execute(input);
   }
 
+  /** R6 : édition d'une ligne de devis BROUILLON — même use case core que l'API (parité d'actions). */
+  async updateQuoteLine(input: UpdateQuoteLineInput): Promise<Result<{ status: string }, AppError>> {
+    await this.ready;
+    return new UpdateQuoteLine({ quotes: this.quotes }).execute(input);
+  }
+
+  /** R6 : suppression d'une ligne de devis BROUILLON — même use case core que l'API. */
+  async removeQuoteLine(input: RemoveQuoteLineInput): Promise<Result<{ status: string }, AppError>> {
+    await this.ready;
+    return new RemoveQuoteLine({ quotes: this.quotes }).execute(input);
+  }
+
   async issueInvoice(input: IssueInvoiceInput): Promise<Result<{ number: string }, AppError>> {
     await this.ready;
     return this.issueInvoiceInternal(input);
+  }
+
+  /** R6 : suppression définitive d'une facture BROUILLON — même use case core que l'API. */
+  async deleteDraftInvoice(invoiceId: string): Promise<Result<{ deleted: true }, AppError>> {
+    await this.ready;
+    return new DeleteDraftInvoice({ invoices: this.invoices, uow: this.uow }).execute({ invoiceId });
   }
 
   /** A6 : avoir TOTAL (brouillon) — s'émet ensuite par issueInvoice (numéro A-, écriture inverse). */

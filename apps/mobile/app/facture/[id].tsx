@@ -223,7 +223,8 @@ export default function FactureDetail() {
       actions={
         hasInvoiceActions(inv) || canCreateCreditNote(inv) ? (
           // withCreditNote (A6) : « Créer un avoir » — détail uniquement, jamais en liste.
-          <InvoiceActions invoice={inv} withCreditNote />
+          // onDraftDeleted (R6) : le brouillon supprimé n'existe plus, l'écran de détail se ferme.
+          <InvoiceActions invoice={inv} withCreditNote onDraftDeleted={() => router.back()} />
         ) : null
       }
       nextStepAction={

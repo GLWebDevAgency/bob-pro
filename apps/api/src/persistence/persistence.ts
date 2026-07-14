@@ -33,11 +33,37 @@ import type { DocumentAnalysisStore } from './document-analyses';
 import { InMemoryDocumentAnalysisStore } from './document-analyses';
 import type { ExpenseCreationRequestStore } from './expense-creation-requests';
 import { InMemoryExpenseCreationRequestStore } from './expense-creation-requests';
+import type { QuoteCreationRequestStore } from './quote-creation-requests';
+import { InMemoryQuoteCreationRequestStore } from './quote-creation-requests';
 import {
   InMemoryRealtimeAdmission,
   type RealtimeAdmissionPolicy,
   type RealtimeAdmissionPort,
 } from '../voice/realtime/realtime-admission';
+import {
+  DisabledRealtimeSpeechDeliveryRepository,
+  type RealtimeSpeechDeliveryRepositoryPort,
+} from '../voice/realtime/realtime-speech-delivery.repository';
+import {
+  DisabledRealtimeSidebandOwner,
+  type RealtimeSidebandOwnerPort,
+} from '../voice/realtime/realtime-sideband-owner';
+import { DisabledRealtimeSpeechArtifactRepository } from '../voice/realtime/realtime-speech-artifact.repository';
+import type { RealtimeSpeechArtifactRepositoryPort } from '../voice/realtime/realtime-speech-publisher';
+import {
+  DisabledRealtimeVoiceUsageRepository,
+  type RealtimeVoiceUsageRepositoryPort,
+} from '../voice/realtime/realtime-voice-usage';
+import {
+  DisabledMistralRealtimeIngressTicketAuthority,
+  type MistralRealtimeIngressIdentityKeyRing,
+  type MistralRealtimeIngressTicketAuthority,
+  type MistralRealtimeIngressTicketPolicy,
+} from '../voice/realtime/realtime-mistral-ingress-ticket';
+import {
+  DisabledRealtimeControlRepository,
+  type RealtimeControlRepositoryPort,
+} from '../voice/realtime/realtime-control.repository';
 import {
   InMemoryCompanyRepository,
   InMemoryCustomerRepository,
@@ -81,6 +107,7 @@ export interface Persistence {
   publicAccessTokens: PublicAccessTokenRepository;
   expenses: ExpenseRepository;
   expenseCreationRequests: ExpenseCreationRequestStore;
+  quoteCreationRequests: QuoteCreationRequestStore;
   accountingEntries: AccountingEntryRepository;
   chartOfAccounts: ChartOfAccountsRepository;
   agentJournal: AgentJournalRepository;
@@ -89,6 +116,21 @@ export interface Persistence {
   cabinet: CabinetInfrastructure;
   /** Construit le singleton d'admission Bob Live avec le backend durable de cette persistance. */
   createRealtimeAdmission(policy: RealtimeAdmissionPolicy): RealtimeAdmissionPort;
+  /** Projection/mutations du feed audio audité. Le mode démo reste volontairement sans autorité. */
+  createRealtimeSpeechDeliveryRepository(): RealtimeSpeechDeliveryRepositoryPort;
+  /** Bail inter-répliques du sideband ; aucune autorité simulée en mémoire. */
+  createRealtimeSidebandOwner(): RealtimeSidebandOwnerPort;
+  /** Cycle de vie durable des artefacts audio audités ; aucune autorité simulée en mémoire. */
+  createRealtimeSpeechArtifactRepository(): RealtimeSpeechArtifactRepositoryPort;
+  /** Journal d'usage append-only ; aucune autorité de facturation simulée en mémoire. */
+  createRealtimeVoiceUsageRepository(): RealtimeVoiceUsageRepositoryPort;
+  /** Capacités UI vocales scellées et consommées one-shot ; jamais simulées en mémoire. */
+  createRealtimeControlRepository(): RealtimeControlRepositoryPort;
+  /** Autorité durable des tickets WSS Mistral ; le mode mémoire reste strictement fail-closed. */
+  createMistralRealtimeIngressTicketAuthority(
+    policy: MistralRealtimeIngressTicketPolicy,
+    identityKeys: MistralRealtimeIngressIdentityKeyRing,
+  ): MistralRealtimeIngressTicketAuthority;
   /** Unité de travail : exécute `fn` atomiquement (transaction DB en prod ; direct en mémoire). */
   runInTransaction<T>(fn: () => Promise<T>): Promise<T>;
   /** Défense tenant DB : no-op en mémoire, transaction RLS avec app.current_company_id côté Prisma. */
@@ -120,6 +162,7 @@ export class InMemoryPersistence implements Persistence {
   readonly publicAccessTokens = new InMemoryPublicAccessTokenRepository();
   readonly expenses = new InMemoryExpenseRepository();
   readonly expenseCreationRequests = new InMemoryExpenseCreationRequestStore();
+  readonly quoteCreationRequests = new InMemoryQuoteCreationRequestStore();
   readonly accountingEntries = new InMemoryAccountingEntryRepository();
   readonly chartOfAccounts = new InMemoryChartOfAccountsRepository();
   readonly agentJournal = new InMemoryAgentJournalRepository();
@@ -128,6 +171,27 @@ export class InMemoryPersistence implements Persistence {
   readonly cabinet = new MemoryCabinetInfrastructure();
   createRealtimeAdmission(policy: RealtimeAdmissionPolicy): RealtimeAdmissionPort {
     return new InMemoryRealtimeAdmission(policy);
+  }
+  createRealtimeSpeechDeliveryRepository(): RealtimeSpeechDeliveryRepositoryPort {
+    return new DisabledRealtimeSpeechDeliveryRepository();
+  }
+  createRealtimeSidebandOwner(): RealtimeSidebandOwnerPort {
+    return new DisabledRealtimeSidebandOwner();
+  }
+  createRealtimeSpeechArtifactRepository(): RealtimeSpeechArtifactRepositoryPort {
+    return new DisabledRealtimeSpeechArtifactRepository();
+  }
+  createRealtimeVoiceUsageRepository(): RealtimeVoiceUsageRepositoryPort {
+    return new DisabledRealtimeVoiceUsageRepository();
+  }
+  createRealtimeControlRepository(): RealtimeControlRepositoryPort {
+    return new DisabledRealtimeControlRepository();
+  }
+  createMistralRealtimeIngressTicketAuthority(
+    _policy: MistralRealtimeIngressTicketPolicy,
+    _identityKeys: MistralRealtimeIngressIdentityKeyRing,
+  ): MistralRealtimeIngressTicketAuthority {
+    return new DisabledMistralRealtimeIngressTicketAuthority();
   }
   // La file sérialise les transactions racines : sans elle, le rollback par snapshot d'une
   // transaction lente pourrait effacer les écritures déjà validées par une transaction concurrente.
@@ -148,9 +212,11 @@ export class InMemoryPersistence implements Persistence {
     const documentSnapshot = this.documents.snapshot();
     const documentAnalysisSnapshot = this.documentAnalyses.snapshot();
     const folderSnapshot = this.documentFolders.snapshot();
+    const quoteSnapshot = this.quotes.snapshot();
     const expenseSnapshot = this.expenses.snapshot();
     const accountingEntrySnapshot = this.accountingEntries.snapshot();
     const expenseCreationRequestSnapshot = this.expenseCreationRequests.snapshot();
+    const quoteCreationRequestSnapshot = this.quoteCreationRequests.snapshot();
     try {
       return await this.transactionContext.run(Symbol('in-memory-transaction'), fn);
     } catch (e) {
@@ -159,9 +225,11 @@ export class InMemoryPersistence implements Persistence {
       this.documents.restore(documentSnapshot);
       this.documentAnalyses.restore(documentAnalysisSnapshot);
       this.documentFolders.restore(folderSnapshot);
+      this.quotes.restore(quoteSnapshot);
       this.expenses.restore(expenseSnapshot);
       this.accountingEntries.restore(accountingEntrySnapshot);
       this.expenseCreationRequests.restore(expenseCreationRequestSnapshot);
+      this.quoteCreationRequests.restore(quoteCreationRequestSnapshot);
       throw e;
     } finally {
       release();

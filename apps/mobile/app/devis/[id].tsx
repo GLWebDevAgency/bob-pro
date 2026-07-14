@@ -4,13 +4,14 @@
  * ACTIONS = QuoteActions (source unique, confirmations typées, mêmes use cases que Bob).
  * Nav croisée réelle : première facture issue du devis (parentQuoteId).
  */
-import { useMemo, useRef } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { Alert, Linking, Text, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { buildPieceView, normalizeVoiceText, type PieceLinkedRef } from '@bob/core';
+import { buildPieceView, frSpokenNumbersToDigits, normalizeVoiceText, type PieceLineView, type PieceLinkedRef } from '@bob/core';
+import { challengeFor } from '@bob/ai';
 import { t } from '@bob/i18n';
 import { Card, ErrorRetry, SkeletonCard, SkeletonHeader, font, useTheme } from '@bob/ui';
-import { useCustomers, useInvoices, useQuote } from '../../src/data/hooks';
+import { useCustomers, useInvoices, useQuote, useRemoveQuoteLine, useUpdateQuoteLine } from '../../src/data/hooks';
 import { useDocuments } from '../../src/data/documents';
 import { useBobClient } from '../../src/data/client';
 import { shareDocument } from '../../src/lib/share-document';
@@ -21,6 +22,8 @@ import {
   type QuoteLinkedInvoices,
 } from '../../src/components/DocumentActions';
 import { PieceDetailView } from '../../src/components/PieceDetailView';
+import { QuoteLineEditSheet, type QuoteLineEditPatch, type QuoteLineEditSeed } from '../../src/components/QuoteLineEditSheet';
+import { useConfirm } from '../../src/components/ConfirmSheet';
 import {
   usePublishAgentContext,
   type AgentCapability,
@@ -28,6 +31,40 @@ import {
   type AgentAccessLayout,
   type AgentSurface,
 } from '../../src/agent';
+
+// R6 : mêmes paliers de risque que DocumentActions (l'édition/suppression de ligne reste
+// DRAFT-only, reversible tant que le devis n'est pas signé — jamais une action fiscale).
+const REVERSIBLE = { mutating: true, outbound: false, riskTier: 'reversible' } as const;
+
+const ORDINAL_WORDS: Readonly<Record<string, number>> = {
+  premiere: 1, premier: 1, deuxieme: 2, troisieme: 3, quatrieme: 4, cinquieme: 5,
+  sixieme: 6, septieme: 7, huitieme: 8, neuvieme: 9, dixieme: 10,
+};
+
+/** « ligne 2 » / « ligne deux » (déjà digitisé) OU « la deuxième ligne » (mot ordinal). */
+function resolveLineOrdinal(digits: string): number | null {
+  const afterLigne = /\bligne (\d{1,2})\b/.exec(digits);
+  if (afterLigne?.[1] !== undefined) return Number(afterLigne[1]);
+  const beforeLigne = /\b(premiere|premier|deuxieme|troisieme|quatrieme|cinquieme|sixieme|septieme|huitieme|neuvieme|dixieme) ligne\b/.exec(digits);
+  if (beforeLigne?.[1] !== undefined) return ORDINAL_WORDS[beforeLigne[1]] ?? null;
+  return null;
+}
+
+/** « mets 3 heures » / « mets 2 jours » — nouvelle quantité énoncée (préremplissage, R7). */
+function extractLineQtyPatch(digits: string): number | null {
+  const m = /\bmets? (\d{1,3}(?:[.,]\d{1,2})?) ?(heures?|h\b|jours?|unites?|pieces?)/.exec(digits);
+  if (!m || m[1] === undefined) return null;
+  const n = Number(m[1].replace(',', '.'));
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/** « à 60 euros » — nouveau prix unitaire énoncé (préremplissage, R7). */
+function extractLinePricePatch(digits: string): number | null {
+  const m = /\b(?:a|à) (\d[\d ]*(?:,\d{1,2})?) ?(?:€|euros?)/.exec(digits);
+  if (!m || m[1] === undefined) return null;
+  const n = Number(m[1].replace(/\s+/g, '').replace(',', '.'));
+  return Number.isFinite(n) && n > 0 ? Math.round(n * 100) : null;
+}
 
 export default function DevisDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -102,6 +139,50 @@ export default function DevisDetail() {
     };
   }, [customers.data, id, quote.data]);
   const agentLayout = useMemo<AgentAccessLayout>(() => ({ bottomAvoidance: 86 }), []);
+  const confirm = useConfirm();
+
+  // ── R6 : édition/suppression d'une ligne de devis BROUILLON (swipe, ou affordance vocale qui
+  //    ouvre les mêmes UI — le tap sur Enregistrer/Confirmer reste le SEUL point d'écriture). ──
+  const [editingLine, setEditingLine] = useState<PieceLineView | null>(null);
+  const [editingSeed, setEditingSeed] = useState<QuoteLineEditSeed | null>(null);
+  const updateLine = useUpdateQuoteLine();
+  const removeLine = useRemoveQuoteLine();
+  const linesRef = useRef<readonly PieceLineView[]>(view?.lines ?? []);
+  linesRef.current = view?.lines ?? [];
+
+  const handleEditLine = (lineId: string, seed: QuoteLineEditSeed | null = null): void => {
+    const line = linesRef.current.find((l) => l.id === lineId);
+    if (!line) return;
+    setEditingLine(line);
+    setEditingSeed(seed);
+  };
+  const handleDeleteLine = async (lineId: string): Promise<void> => {
+    const line = linesRef.current.find((l) => l.id === lineId);
+    const ok = await confirm({
+      title: 'Supprimer la ligne',
+      message: line ? `« ${line.label} » sera retirée du devis.` : 'Cette ligne sera retirée du devis.',
+      challenge: challengeFor(REVERSIBLE, 'confirm_all'),
+      destructive: true,
+    });
+    if (!ok) return;
+    await removeLine.mutateAsync({ quoteId: id, lineId });
+  };
+  const submitLineEdit = async (patch: QuoteLineEditPatch): Promise<void> => {
+    if (!editingLine) return;
+    await updateLine.mutateAsync({ quoteId: id, lineId: editingLine.id, patch });
+    setEditingLine(null);
+    setEditingSeed(null);
+  };
+  // R7 : pont voix → écran (parité stricte avec actionsRef.openChoiceSheet ci-dessous) — la voix
+  // ouvre la MÊME UI que le swipe, sans jamais appeler updateLine/removeLine elle-même.
+  const lineVoiceRef = useRef<{
+    openEdit: (lineId: string, seed?: QuoteLineEditSeed | null) => void;
+    openDelete: (lineId: string) => void;
+  }>({ openEdit: () => undefined, openDelete: () => undefined });
+  lineVoiceRef.current = {
+    openEdit: (lineId, seed) => handleEditLine(lineId, seed ?? null),
+    openDelete: (lineId) => void handleDeleteLine(lineId),
+  };
 
   // ── R7 (parité vocale) : « génère la facture finale »/« facture d'acompte »/« facture complète »
   //    sur un devis SIGNÉ. Plancher de sûreté : l'affordance dit (say) et, au mieux, OUVRE le Sheet
@@ -161,6 +242,52 @@ export default function DevisDetail() {
               if (linkedRef.current.hasDepositInvoice) return { say: t('devis.voice.invoiceFinalReady', { personality: p }) };
               actionsRef.current?.openChoiceSheet();
               return { say: t('devis.voice.invoiceChoiceOpenedFinal', { personality: p }) };
+            };
+          },
+        },
+        {
+          // R6/R7 : « modifie la deuxième ligne, mets 3 heures » — devis BROUILLON uniquement
+          // (un devis signé est un contrat, l'UI n'affiche déjà rien d'éditable hors draft).
+          // Plancher de sûreté : la voix OUVRE la Sheet préremplie — le tap sur Enregistrer
+          // reste le seul point d'écriture (jamais updateLine.mutateAsync depuis l'affordance).
+          id: 'devis.editLineByOrdinal',
+          match: (utterance) => {
+            if (statusRef.current !== 'draft') return null;
+            const digits = frSpokenNumbersToDigits(normalizeVoiceText(utterance));
+            if (!/\b(corrige|modifie|change|passe|edite|mets?)\b/.test(digits)) return null;
+            const ordinal = resolveLineOrdinal(digits);
+            if (ordinal === null) return null;
+            return () => {
+              const p = personalityRef.current;
+              const line = linesRef.current[ordinal - 1];
+              if (!line) return { say: t('devis.voice.lineUnknownOrdinal', { personality: p, params: { ordinal } }) };
+              const qtyPatch = extractLineQtyPatch(digits);
+              const pricePatch = extractLinePricePatch(digits);
+              const seed: QuoteLineEditSeed | null =
+                qtyPatch !== null || pricePatch !== null
+                  ? { ...(qtyPatch !== null ? { qty: qtyPatch } : {}), ...(pricePatch !== null ? { unitPriceHT: pricePatch } : {}) }
+                  : null;
+              lineVoiceRef.current.openEdit(line.id, seed);
+              return { say: t('devis.voice.lineEditOpened', { personality: p, params: { ordinal } }) };
+            };
+          },
+        },
+        {
+          // R6/R7 : « supprime la troisième ligne » — devis BROUILLON uniquement. La voix OUVRE
+          // la ConfirmSheet destructive (même feuille que le swipe) — seul le tap Confirmer supprime.
+          id: 'devis.removeLineByOrdinal',
+          match: (utterance) => {
+            if (statusRef.current !== 'draft') return null;
+            const digits = frSpokenNumbersToDigits(normalizeVoiceText(utterance));
+            if (!/\b(supprime|enleve|retire|efface)\b/.test(digits)) return null;
+            const ordinal = resolveLineOrdinal(digits);
+            if (ordinal === null) return null;
+            return () => {
+              const p = personalityRef.current;
+              const line = linesRef.current[ordinal - 1];
+              if (!line) return { say: t('devis.voice.lineUnknownOrdinal', { personality: p, params: { ordinal } }) };
+              lineVoiceRef.current.openDelete(line.id);
+              return { say: t('devis.voice.lineDeleteOpened', { personality: p, params: { ordinal } }) };
             };
           },
         },
@@ -245,22 +372,40 @@ export default function DevisDetail() {
   const q = quote.data;
 
   return (
-    <PieceDetailView
-      view={view}
-      onClose={() => router.back()}
-      onOpenInvoice={(ref: PieceLinkedRef) => router.push(`/facture/${ref.id}`)}
-      onOpenPdf={openPdf ? () => void openPdf() : undefined}
-      onSharePdf={sharePdf ? () => void sharePdf() : undefined}
-      actions={
-        hasQuoteActions(q) ? (
-          <QuoteActions
-            ref={actionsRef}
-            quote={q}
-            customerName={view.customerName}
-            linkedInvoices={quoteLinkedInvoices}
-          />
-        ) : null
-      }
-    />
+    <>
+      <PieceDetailView
+        view={view}
+        onClose={() => router.back()}
+        onOpenInvoice={(ref: PieceLinkedRef) => router.push(`/facture/${ref.id}`)}
+        onOpenPdf={openPdf ? () => void openPdf() : undefined}
+        onSharePdf={sharePdf ? () => void sharePdf() : undefined}
+        // R6 : swipe droite→gauche = Modifier/Supprimer — DRAFT uniquement (un devis signé est
+        // un contrat, l'UI n'affiche rien d'éditable hors draft).
+        editableLines={q.status === 'draft'}
+        onEditLine={(lineId) => handleEditLine(lineId)}
+        onDeleteLine={(lineId) => void handleDeleteLine(lineId)}
+        actions={
+          hasQuoteActions(q) ? (
+            <QuoteActions
+              ref={actionsRef}
+              quote={q}
+              customerName={view.customerName}
+              linkedInvoices={quoteLinkedInvoices}
+            />
+          ) : null
+        }
+      />
+      <QuoteLineEditSheet
+        visible={editingLine !== null}
+        line={editingLine}
+        seed={editingSeed}
+        saving={updateLine.isPending}
+        onClose={() => {
+          setEditingLine(null);
+          setEditingSeed(null);
+        }}
+        onSubmit={(patch) => void submitLineEdit(patch)}
+      />
+    </>
   );
 }

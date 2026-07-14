@@ -1,12 +1,14 @@
 import { createHash } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import {
-  CreateQuote,
   SendQuote,
   SignQuote,
   RefuseQuote,
   ExpireQuote,
   GenerateInvoiceFromQuote,
+  UpdateQuoteLine,
+  RemoveQuoteLine,
+  DeleteDraftInvoice,
   IssueInvoice,
   CreateCreditNote,
   RegisterPayment,
@@ -84,6 +86,7 @@ import {
   type Expense,
   type ClockPort,
   type QuoteLine,
+  type UpdateQuoteLineInput,
   type Totals,
   type TodayInvoiceData,
   type PlanTier,
@@ -166,6 +169,7 @@ import { notificationRoute } from './notifications/notification-route';
 import { remainingInvoiceBalanceCents } from './billing/invoice-balance';
 import { ExpenseCreationCoordinator } from './expenses/expense-creation-coordinator';
 import { RepositoryDocumentLinkTargets } from './documents/document-link-targets';
+import { QuoteCreationCoordinator } from './quotes/quote-creation-coordinator';
 
 export interface QuoteView {
   id: string;
@@ -551,7 +555,7 @@ export class BackendService {
   // Validation TVA (VIES) + autocomplétion d'adresse (BAN) — APIs publiques gratuites.
   private readonly vat: VatValidationPort = new ViesVatAdapter();
   private readonly addresses: AddressAutocompletePort = new BanAddressAdapter();
-  // STT cloud (Whisper) — actif seulement si une clé OpenAI est configurée ; sinon dictée native côté device.
+  // Les routes vocales historiques suivent le même profil mono-fournisseur que Bob Live.
   private readonly stt = buildSttCloud();
   private readonly tts = buildTtsCloud();
   private readonly documentStorage = buildDocumentStorage();
@@ -665,13 +669,11 @@ export class BackendService {
     });
   }
   createQuote(input: Omit<CreateQuoteInput, 'companyId'>) {
-    return new CreateQuote({
-      quotes: this.p.quotes,
-      companies: this.p.companies,
-      customers: this.p.customers,
+    return new QuoteCreationCoordinator({
+      persistence: this.p,
       ids: this.ids,
       clock: this.clock,
-    }).execute({ companyId: this.companyId(), ...input });
+    }).execute({ companyId: this.companyId(), quote: input });
   }
   async sendQuote(
     quoteId: string,
@@ -765,6 +767,27 @@ export class BackendService {
   async generateInvoice(input: { quoteId: string; mode?: 'deposit' | 'final' }) {
     if (!(await this.ownedQuote(input.quoteId))) return { ok: false as const, error: appNotFound('quote', input.quoteId) };
     return new GenerateInvoiceFromQuote({ quotes: this.p.quotes, invoices: this.p.invoices, ids: this.ids }).execute(input);
+  }
+  /** R6 : édition d'une ligne de devis BROUILLON (Quote.updateLine garde assertDraft). */
+  async updateQuoteLine(input: { quoteId: string; lineId: string; patch: UpdateQuoteLineInput['patch'] }) {
+    if (!(await this.ownedQuote(input.quoteId))) return { ok: false as const, error: appNotFound('quote', input.quoteId) };
+    const r = await new UpdateQuoteLine({ quotes: this.p.quotes }).execute(input);
+    if (r.ok) this.logger.audit('quote.line_updated', { quoteId: input.quoteId, lineId: input.lineId });
+    return r;
+  }
+  /** R6 : suppression d'une ligne de devis BROUILLON (Quote.removeLine garde assertDraft). */
+  async removeQuoteLine(input: { quoteId: string; lineId: string }) {
+    if (!(await this.ownedQuote(input.quoteId))) return { ok: false as const, error: appNotFound('quote', input.quoteId) };
+    const r = await new RemoveQuoteLine({ quotes: this.p.quotes }).execute(input);
+    if (r.ok) this.logger.audit('quote.line_removed', { quoteId: input.quoteId, lineId: input.lineId });
+    return r;
+  }
+  /** R6 : suppression définitive d'une facture BROUILLON (erreur détectée après génération). */
+  async deleteDraftInvoice(invoiceId: string) {
+    if (!(await this.ownedInvoice(invoiceId))) return { ok: false as const, error: appNotFound('invoice', invoiceId) };
+    const r = await new DeleteDraftInvoice({ invoices: this.p.invoices, uow: this.p }).execute({ invoiceId });
+    if (r.ok) this.logger.audit('invoice.draft_deleted', { invoiceId });
+    return r;
   }
   async issueInvoice(input: { invoiceId: string }) {
     if (!(await this.ownedInvoice(input.invoiceId))) return { ok: false as const, error: appNotFound('invoice', input.invoiceId) };
@@ -1724,13 +1747,13 @@ export class BackendService {
       };
     }
     if (!this.stt)
-      return { ok: false, error: appForbidden('Dictée cloud non configurée (clé OpenAI absente). Utilise la dictée native.') };
+      return { ok: false, error: appForbidden('Dictée cloud non configurée pour le fournisseur vocal actif. Utilise la dictée native.') };
     try {
       const r = await this.stt.transcribe(input.audioBase64, mimeType);
       this.logger.audit('voice.transcribe', { model: r.model, chars: r.text.length });
       return ok({ text: r.text });
     } catch (e) {
-      return { ok: false, error: { kind: 'dependency', port: 'whisper', cause: e instanceof Error ? e.message : 'stt' } };
+      return { ok: false, error: { kind: 'dependency', port: 'voice-stt', cause: e instanceof Error ? e.message : 'stt' } };
     }
   }
 
@@ -1741,7 +1764,7 @@ export class BackendService {
     if (!tierAtLeast(subscription.tier, 'pro'))
       return { ok: false, error: appForbidden("La voix cloud premium est incluse à partir de l'offre Pro.") };
     if (!this.tts)
-      return { ok: false, error: appForbidden('Synthèse vocale cloud non configurée (clé Mistral absente). Utilise la voix native.') };
+      return { ok: false, error: appForbidden('Synthèse cloud non configurée pour le fournisseur vocal actif. Utilise la voix native.') };
     const text = input.text.trim();
     if (!text) return { ok: false, error: { kind: 'validation', issues: [{ field: 'text', message: 'Texte requis.' }] } };
     if (text.length > 1200)
@@ -1751,7 +1774,7 @@ export class BackendService {
       this.logger.audit('voice.synthesize', { model: r.model, chars: text.length, cloudAudio: r.audioBase64 !== null });
       return ok(r);
     } catch (e) {
-      return { ok: false, error: { kind: 'dependency', port: 'mistral-tts', cause: e instanceof Error ? e.message : 'tts' } };
+      return { ok: false, error: { kind: 'dependency', port: 'voice-tts', cause: e instanceof Error ? e.message : 'tts' } };
     }
   }
 

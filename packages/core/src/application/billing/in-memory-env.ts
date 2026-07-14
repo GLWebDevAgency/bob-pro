@@ -62,6 +62,9 @@ export function makeEnv() {
     save: async (i) => {
       invoicesMap.set(i.id, i);
     },
+    deleteById: async (id) => {
+      invoicesMap.delete(id);
+    },
   };
   const paymentRepo: PaymentRepository = {
     save: async (p) => {

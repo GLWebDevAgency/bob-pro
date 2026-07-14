@@ -48,6 +48,10 @@ class MemoryInvoices implements InvoiceRepository {
   async save(_invoice: Invoice): Promise<void> {
     throw new Error('not used');
   }
+
+  async deleteById(_id: string): Promise<void> {
+    throw new Error('not used');
+  }
 }
 
 function useCase(invoice: Invoice | null) {

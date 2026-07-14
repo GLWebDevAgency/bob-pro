@@ -1978,6 +1978,24 @@ const legacyFr = {
     pro: 'Ce devis ne prévoit pas d’acompte. Dites « facture complète » pour la facture de 100 %.',
     direct: 'Pas d’acompte prévu. Dis « facture complète ».',
   },
+  // R6/R7 — édition/suppression d'une ligne de devis BROUILLON à la voix (devis/[id]) : la voix
+  // DIT ce qu'elle prépare et OUVRE la Sheet d'édition / la confirmation de suppression — jamais
+  // n'écrit elle-même (même plancher que le choix de facture ci-dessus : proposer → tap → valider).
+  'devis.voice.lineEditOpened': {
+    pote: 'Je prépare la ligne {ordinal} — vérifie et touche Enregistrer pour valider.',
+    pro: 'La ligne {ordinal} est prête à modifier — vérifiez puis touchez Enregistrer.',
+    direct: 'Ligne {ordinal} prête. Touche Enregistrer.',
+  },
+  'devis.voice.lineDeleteOpened': {
+    pote: 'Je prépare la suppression de la ligne {ordinal} — confirme à l’écran.',
+    pro: 'Suppression de la ligne {ordinal} préparée — confirmez à l’écran.',
+    direct: 'Suppression ligne {ordinal} préparée. Confirme.',
+  },
+  'devis.voice.lineUnknownOrdinal': {
+    pote: 'Je ne trouve pas de ligne {ordinal} sur ce devis.',
+    pro: 'Aucune ligne {ordinal} sur ce devis.',
+    direct: 'Pas de ligne {ordinal}.',
+  },
   // ASK-1 — questions structurées (modale de choix quand la demande est ambiguë)
   'assistant.askAnswer': { pote: 'Répondre', pro: 'Répondre', direct: 'Répondre' },
   'assistant.askConfirm': { pote: 'Valider', pro: 'Valider', direct: 'Valider' },
@@ -2076,6 +2094,46 @@ const legacyFr = {
     pote: 'Reprendre',
     pro: 'Reprendre',
     direct: 'Reprendre',
+  },
+  'voix.dataLoading': {
+    pote: 'Je prépare tes clients et tes tarifs.',
+    pro: 'Chargement des clients, du profil et des tarifs.',
+    direct: 'Chargement des données.',
+  },
+  'voix.dataError': {
+    pote: 'Je n’arrive pas à charger tes clients ou tes tarifs. Rien n’a été créé.',
+    pro: 'Les données nécessaires sont indisponibles. Aucune pièce n’a été créée.',
+    direct: 'Données indisponibles. Rien créé.',
+  },
+  'voix.resumeTitle': {
+    pote: 'Je reprends exactement où on s’est arrêté',
+    pro: 'Reprise sécurisée de la création',
+    direct: 'Reprise sécurisée',
+  },
+  'voix.resumeBody': {
+    pote: 'Chaque étape terminée est conservée. Je ne rejoue jamais une action au hasard.',
+    pro: 'Les étapes confirmées sont conservées et les actions incertaines restent bloquées.',
+    direct: 'Étapes conservées. Actions incertaines bloquées.',
+  },
+  'voix.resumeProgress': {
+    pote: 'Avancement',
+    pro: 'Avancement',
+    direct: 'Avancement',
+  },
+  'voix.resumeLocked': {
+    pote: 'Création verrouillée pendant la reprise',
+    pro: 'Création verrouillée pendant la reprise',
+    direct: 'Reprise verrouillée',
+  },
+  'voix.resumeError': {
+    pote: 'Je n’arrive pas à relire l’étape sécurisée. Rien ne sera rejoué sans vérification.',
+    pro: 'La reprise sécurisée est indisponible. Aucune action ne sera rejouée sans contrôle.',
+    direct: 'Reprise indisponible. Aucun rejeu.',
+  },
+  'voix.resumeAmbiguous': {
+    pote: 'Je ne peux pas confirmer si le devis a été créé. Je bloque ici pour éviter un doublon.',
+    pro: 'L’état de création du devis est incertain. La reprise est bloquée pour éviter un doublon.',
+    direct: 'État incertain. Reprise bloquée anti-doublon.',
   },
   'voix.pickCustomer': {
     pote: 'C’est pour qui ? Choisis le client :',
@@ -2315,6 +2373,27 @@ const legacyFr = {
     pote: 'Retirer {label}',
     pro: 'Retirer {label}',
     direct: 'Retirer {label}',
+  },
+  // R6 — édition/suppression d'une ligne de devis BROUILLON au swipe (draft only).
+  'devis.lineSwipeEdit': {
+    pote: 'Modifier {label}',
+    pro: 'Modifier {label}',
+    direct: 'Modifier {label}',
+  },
+  'devis.lineSwipeDelete': {
+    pote: 'Supprimer {label}',
+    pro: 'Supprimer {label}',
+    direct: 'Supprimer {label}',
+  },
+  'devis.lineEditTitle': {
+    pote: 'Modifier la ligne',
+    pro: 'Modifier la ligne',
+    direct: 'Modifier la ligne',
+  },
+  'devis.lineEditSave': {
+    pote: 'Enregistrer',
+    pro: 'Enregistrer',
+    direct: 'Enregistrer',
   },
   'devis.linesEmpty': {
     pote: 'Aucune ligne pour l’instant — ajoute ta première prestation juste au-dessus.',
@@ -2843,6 +2922,16 @@ const legacyFr = {
     pote: 'J’arrive pas à lire ton dossier, là. On réessaie ?',
     pro: 'Impossible de charger le diagnostic pour le moment.',
     direct: 'Chargement KO. Réessaie.',
+  },
+  'diag.dataLoading': {
+    pote: 'Je vérifie ton dossier…',
+    pro: 'Vérification du dossier…',
+    direct: 'Vérification…',
+  },
+  'diag.staleData': {
+    pote: 'Je n’ai pas pu actualiser le dossier. Le diagnostic utilisera la dernière version connue.',
+    pro: 'L’actualisation a échoué. Le diagnostic utilisera la dernière version disponible.',
+    direct: 'Actualisation impossible. Dernière version utilisée.',
   },
   'diag.retry': { pote: 'Réessayer', pro: 'Réessayer', direct: 'Réessayer' },
   // Items du plan d'action (labels + détails) — libellés proto exacts quand ils existent.
@@ -3439,6 +3528,21 @@ const legacyFr = {
     pote: 'Pas reconnu — réessaie ?',
     pro: 'Authentification non reconnue. Réessayez.',
     direct: 'Raté. Réessaie.',
+  },
+  'auth.bioUnavailable': {
+    pote: 'La biométrie n’est pas disponible. Utilise ton mot de passe pour rentrer en sécurité.',
+    pro: 'La biométrie est indisponible. Veuillez utiliser votre mot de passe.',
+    direct: 'Biométrie indisponible. Utilise le mot de passe.',
+  },
+  'auth.bioPreferenceError': {
+    pote: 'Je n’arrive pas à enregistrer ce choix. Réessaie avant de fermer.',
+    pro: 'Impossible d’enregistrer ce choix de sécurité. Veuillez réessayer.',
+    direct: 'Choix non enregistré. Réessaie.',
+  },
+  'auth.bioChecking': {
+    pote: 'Je vérifie la protection de ta session…',
+    pro: 'Vérification de la protection de la session…',
+    direct: 'Vérification de la session…',
   },
   'auth.lockTitle': {
     pote: 'Bob Pro est verrouillé',

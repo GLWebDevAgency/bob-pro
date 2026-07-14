@@ -7,10 +7,14 @@
  * (badge FIGÉ À L'ÉMISSION) → barre sticky (PDF + actions réelles injectées).
  * 100 % @bob/ui + tokens pieceDetail — zéro hex, zéro fixture (la vue reçoit du réel).
  */
-import type { ReactNode } from 'react';
+import { useRef, type ReactNode } from 'react';
 import { Pressable, ScrollView, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
+// R6 : Swipeable CLASSIQUE (pas ReanimatedSwipeable — reanimated est une dépendance fantôme,
+// non déclarée dans ce workspace mobile).
+import { Swipeable } from 'react-native-gesture-handler';
+import { Feather } from '@expo/vector-icons';
 import {
   formatEUR,
   type PieceLinkedRef,
@@ -158,10 +162,10 @@ function LinkedCard({
   );
 }
 
-function LineRow({ line, personality, last }: { line: PieceLineView; personality: Personality; last: boolean }) {
+function LineRowContent({ line, personality, last }: { line: PieceLineView; personality: Personality; last: boolean }) {
   const { colors, controls } = useTheme();
   return (
-    <View style={{ paddingVertical: 12, borderBottomWidth: last ? 0 : 1, borderBottomColor: colors.lineSoft }}>
+    <View style={{ paddingVertical: 12, backgroundColor: colors.surface, borderBottomWidth: last ? 0 : 1, borderBottomColor: colors.lineSoft }}>
       <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
         <View style={{ flex: 1, minWidth: 0 }}>
           <Text style={{ ...font('body', 600), fontSize: 14, color: colors.ink800, lineHeight: 19 }}>{line.label}</Text>
@@ -190,6 +194,71 @@ function LineRow({ line, personality, last }: { line: PieceLineView; personality
         </View>
       </View>
     </View>
+  );
+}
+
+/**
+ * R6 : ligne de devis BROUILLON éditable au swipe (droite→gauche révèle Modifier/Supprimer) —
+ * l'appelant ne passe `editable` que si `quote.status === 'draft'` (l'UI n'affiche jamais ce
+ * que le domaine interdit : Quote.updateLine/removeLine gardent assertDraft). Swipeable
+ * CLASSIQUE (react-native-gesture-handler) — PAS ReanimatedSwipeable, reanimated est une
+ * dépendance fantôme non déclarée dans ce workspace mobile.
+ */
+function LineRow({
+  line,
+  personality,
+  last,
+  editable,
+  onEditLine,
+  onDeleteLine,
+}: {
+  line: PieceLineView;
+  personality: Personality;
+  last: boolean;
+  editable?: boolean;
+  onEditLine?: (lineId: string) => void;
+  onDeleteLine?: (lineId: string) => void;
+}) {
+  const { colors, semantic, controls } = useTheme();
+  const swipeRef = useRef<Swipeable>(null);
+
+  if (!editable) return <LineRowContent line={line} personality={personality} last={last} />;
+
+  return (
+    <Swipeable
+      ref={swipeRef}
+      friction={2}
+      rightThreshold={40}
+      overshootRight={false}
+      renderRightActions={() => (
+        <View style={{ flexDirection: 'row', alignItems: 'stretch' }}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={t('devis.lineSwipeEdit', { personality, params: { label: line.label } })}
+            onPress={() => {
+              swipeRef.current?.close();
+              onEditLine?.(line.id);
+            }}
+            style={{ width: 64, alignItems: 'center', justifyContent: 'center', backgroundColor: controls.segmentedTrack }}
+          >
+            <Feather name="edit-2" size={18} color={colors.ink600} />
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={t('devis.lineSwipeDelete', { personality, params: { label: line.label } })}
+            onPress={() => {
+              swipeRef.current?.close();
+              onDeleteLine?.(line.id);
+            }}
+            style={{ width: 64, alignItems: 'center', justifyContent: 'center', backgroundColor: semantic.dangerBg }}
+          >
+            <Feather name="trash-2" size={18} color={semantic.danger} />
+          </Pressable>
+        </View>
+      )}
+    >
+      <LineRowContent line={line} personality={personality} last={last} />
+    </Swipeable>
   );
 }
 
@@ -229,9 +298,27 @@ export interface PieceDetailViewProps {
   onSharePdf?: (() => void) | undefined;
   /** Sections réelles supplémentaires (aperçu comptable…) rendues sous les mentions. */
   extra?: ReactNode;
+  /** R6 : lignes éditables au swipe — VRAI uniquement quand l'appelant sait que c'est un devis
+   * BROUILLON (quote.status === 'draft'). L'UI n'affiche jamais ce que le domaine interdit. */
+  editableLines?: boolean;
+  onEditLine?: (lineId: string) => void;
+  onDeleteLine?: (lineId: string) => void;
 }
 
-export function PieceDetailView({ view, onClose, onOpenQuote, onOpenInvoice, actions, onOpenPdf, onSharePdf, extra, nextStepAction }: PieceDetailViewProps) {
+export function PieceDetailView({
+  view,
+  onClose,
+  onOpenQuote,
+  onOpenInvoice,
+  actions,
+  onOpenPdf,
+  onSharePdf,
+  extra,
+  nextStepAction,
+  editableLines,
+  onEditLine,
+  onDeleteLine,
+}: PieceDetailViewProps) {
   const { personality, colors, semantic, controls } = useTheme();
   const identity = useIdentity();
   const insets = useSafeAreaInsets();
@@ -405,7 +492,15 @@ export function PieceDetailView({ view, onClose, onOpenQuote, onOpenInvoice, act
           <PieceCard padded={false}>
             <View style={{ paddingHorizontal: 16, paddingTop: 4, paddingBottom: 14 }}>
               {view.lines.map((line, i) => (
-                <LineRow key={line.id} line={line} personality={personality} last={i === view.lines.length - 1} />
+                <LineRow
+                  key={line.id}
+                  line={line}
+                  personality={personality}
+                  last={i === view.lines.length - 1}
+                  editable={editableLines}
+                  onEditLine={onEditLine}
+                  onDeleteLine={onDeleteLine}
+                />
               ))}
               <View style={{ paddingTop: 12, borderTopWidth: view.lines.length > 0 ? 1 : 0, borderTopColor: colors.lineSoft }}>
                 <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 3 }}>

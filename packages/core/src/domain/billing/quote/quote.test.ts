@@ -60,4 +60,60 @@ describe('Quote', () => {
   it('transition invalide (draft->signed direct)', () => {
     expect(freshQuote().sign(sig, AT).ok).toBe(false);
   });
+
+  describe('updateLine (R6)', () => {
+    it('modifie une ligne en draft (patch partiel)', () => {
+      const q = freshQuote();
+      q.addLine(line('l1', 10, 80000));
+      const r = q.updateLine('l1', { qty: 3, unitPriceHT: 90000 });
+      expect(r.ok).toBe(true);
+      expect(q.lines[0]).toMatchObject({ id: 'l1', qty: 3, unitPriceHT: 90000, vatRate: 10, label: 'X' });
+    });
+    it('ligne introuvable -> VALIDATION', () => {
+      const q = freshQuote();
+      q.addLine(line('l1'));
+      const r = q.updateLine('missing', { qty: 2 });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error).toEqual({ code: 'VALIDATION', field: 'lineId', message: 'Ligne introuvable.' });
+    });
+    it('taux TVA invalide rejeté', () => {
+      const q = freshQuote();
+      q.addLine(line('l1'));
+      const r = q.updateLine('l1', { vatRate: 7 as unknown as VatRate });
+      expect(r.ok).toBe(false);
+    });
+    it('quantite invalide rejetée', () => {
+      const q = freshQuote();
+      q.addLine(line('l1'));
+      const r = q.updateLine('l1', { qty: 0 });
+      expect(r.ok).toBe(false);
+    });
+    it('interdit hors draft', () => {
+      const q = freshQuote();
+      q.addLine(line('l1'));
+      q.assignNumber(DocNumber.format('D', 2026, 1), AT);
+      q.send(AT);
+      const r = q.updateLine('l1', { qty: 2 });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe('INVALID_TRANSITION');
+    });
+  });
+
+  describe('removeLine (R6)', () => {
+    it('supprime une ligne existante', () => {
+      const q = freshQuote();
+      q.addLine(line('l1'));
+      q.addLine(line('l2'));
+      const r = q.removeLine('l1');
+      expect(r.ok).toBe(true);
+      expect(q.lines.map((l) => l.id)).toEqual(['l2']);
+    });
+    it('ligne introuvable -> VALIDATION (plus de no-op silencieux)', () => {
+      const q = freshQuote();
+      q.addLine(line('l1'));
+      const r = q.removeLine('missing');
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error).toEqual({ code: 'VALIDATION', field: 'lineId', message: 'Ligne introuvable.' });
+    });
+  });
 });

@@ -91,7 +91,7 @@ export class InMemoryCustomerRepository implements CustomerRepository {
 }
 
 export class InMemoryQuoteRepository implements QuoteRepository {
-  private readonly map = new Map<string, Quote>();
+  private map = new Map<string, Quote>();
   async findById(id: string): Promise<Quote | null> {
     return this.map.get(id) ?? null;
   }
@@ -104,6 +104,14 @@ export class InMemoryQuoteRepository implements QuoteRepository {
   }
   async save(q: Quote): Promise<void> {
     this.map.set(q.id, q);
+  }
+
+  snapshot(): Map<string, Quote> {
+    return new Map([...this.map].map(([id, quote]) => [id, Quote.rehydrate(quote.toSnapshot())]));
+  }
+
+  restore(snapshot: Map<string, Quote>): void {
+    this.map = new Map([...snapshot].map(([id, quote]) => [id, Quote.rehydrate(quote.toSnapshot())]));
   }
 }
 
@@ -126,6 +134,9 @@ export class InMemoryInvoiceRepository implements InvoiceRepository {
   }
   async save(i: Invoice): Promise<void> {
     this.map.set(i.id, i);
+  }
+  async deleteById(id: string): Promise<void> {
+    this.map.delete(id);
   }
 }
 

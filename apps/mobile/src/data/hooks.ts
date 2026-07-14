@@ -17,6 +17,8 @@ import type {
   RelancePersonality,
   RelancePlanEntry,
   UpcomingDueEntry,
+  UpdateQuoteLineInput,
+  RemoveQuoteLineInput,
 } from '@bob/core';
 import type { CreateCustomerClientInput, NotificationView, RegisterPaymentClientInput } from '@bob/api-client';
 import { supabaseEnabled } from './supabase';
@@ -389,7 +391,15 @@ function localToday(): string {
  * — l'agrégat métier se calcule dans le core, jamais dans l'écran. Aucun repli fixtures :
  * pas de données → zéro priorité (l'état vide est un état de premier rang).
  */
-export function useTodayPriorities(): { priorities: TodayPriority[]; isLoading: boolean; isError: boolean } {
+export interface TodayPrioritiesQuery {
+  priorities: TodayPriority[];
+  isLoading: boolean;
+  isRefetching: boolean;
+  isError: boolean;
+  refetch: () => void;
+}
+
+export function useTodayPriorities(): TodayPrioritiesQuery {
   const invoices = useInvoices();
   const quotes = useQuotes();
   const customers = useCustomers();
@@ -411,7 +421,18 @@ export function useTodayPriorities(): { priorities: TodayPriority[]; isLoading: 
   return {
     priorities,
     isLoading: invoices.isLoading || quotes.isLoading || customers.isLoading || diagnostic.isLoading,
+    isRefetching:
+      invoices.isRefetching ||
+      quotes.isRefetching ||
+      customers.isRefetching ||
+      diagnostic.isRefetching,
     isError: invoices.isError || quotes.isError || customers.isError || diagnostic.isError,
+    refetch: () => {
+      void invoices.refetch();
+      void quotes.refetch();
+      void customers.refetch();
+      void diagnostic.refetch();
+    },
   };
 }
 
@@ -436,6 +457,7 @@ export interface NotificationsFeed {
   /** Items actionnables (dues + échéances + conformité) — états vides de l'écran. */
   count: number;
   isLoading: boolean;
+  isRefetching: boolean;
   isError: boolean;
   refetch: () => void;
 }
@@ -488,6 +510,11 @@ export function useNotificationsFeed(personality?: RelancePersonality): Notifica
     conformite,
     count: due.length + upcoming.length + (conformite ? 1 : 0),
     isLoading: invoices.isLoading || customers.isLoading || diagnostic.isLoading || feed.isLoading,
+    isRefetching:
+      invoices.isRefetching ||
+      customers.isRefetching ||
+      diagnostic.isRefetching ||
+      feed.isRefetching,
     isError: invoices.isError || customers.isError || diagnostic.isError || feed.isError,
     refetch: () => {
       void invoices.refetch();
@@ -692,6 +719,57 @@ export function useGenerateInvoice() {
       return r.value;
     },
     onSuccess: () => void qc.invalidateQueries({ queryKey: keys.invoices }),
+  });
+}
+
+/** R6 : édition d'une ligne de devis BROUILLON (swipe → Sheet, ou affordance vocale qui l'ouvre). */
+export function useUpdateQuoteLine() {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: UpdateQuoteLineInput) => {
+      const r = await client.updateQuoteLine(input);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: (_data, input) => {
+      void qc.invalidateQueries({ queryKey: keys.quotes });
+      void qc.invalidateQueries({ queryKey: keys.quote(input.quoteId) });
+    },
+  });
+}
+
+/** R6 : suppression d'une ligne de devis BROUILLON (swipe → ConfirmSheet destructive). */
+export function useRemoveQuoteLine() {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: RemoveQuoteLineInput) => {
+      const r = await client.removeQuoteLine(input);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: (_data, input) => {
+      void qc.invalidateQueries({ queryKey: keys.quotes });
+      void qc.invalidateQueries({ queryKey: keys.quote(input.quoteId) });
+    },
+  });
+}
+
+/** R6 : suppression définitive d'une facture BROUILLON (erreur détectée après génération). */
+export function useDeleteDraftInvoice() {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (invoiceId: string) => {
+      const r = await client.deleteDraftInvoice(invoiceId);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: (_data, invoiceId) => {
+      void qc.invalidateQueries({ queryKey: keys.invoices });
+      void qc.invalidateQueries({ queryKey: keys.invoice(invoiceId) });
+    },
   });
 }
 

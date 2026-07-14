@@ -35,6 +35,8 @@ export interface InvoiceRepository {
   findByParentQuoteId(companyId: string, parentQuoteId: string, kind: InvoiceKind): Promise<Invoice | null>;
   listByCompany(companyId: string): Promise<Invoice[]>;
   save(i: Invoice): Promise<void>;
+  /** R6 : supprime définitivement une facture BROUILLON (le use case garde le statut avant appel). */
+  deleteById(id: string): Promise<void>;
 }
 
 export interface PaymentRepository {
