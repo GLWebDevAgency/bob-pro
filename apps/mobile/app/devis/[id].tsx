@@ -11,7 +11,14 @@ import { buildPieceView, frSpokenNumbersToDigits, normalizeVoiceText, type Piece
 import { challengeFor } from '@bob/ai';
 import { t } from '@bob/i18n';
 import { Card, ErrorRetry, SkeletonCard, SkeletonHeader, font, useTheme } from '@bob/ui';
-import { useCustomers, useInvoices, useQuote, useRemoveQuoteLine, useUpdateQuoteLine } from '../../src/data/hooks';
+import {
+  appErrorMessage,
+  useCustomers,
+  useInvoices,
+  useQuote,
+  useRemoveQuoteLine,
+  useUpdateQuoteLine,
+} from '../../src/data/hooks';
 import { useDocuments } from '../../src/data/documents';
 import { useBobClient } from '../../src/data/client';
 import { shareDocument } from '../../src/lib/share-document';
@@ -100,11 +107,18 @@ export default function DevisDetail() {
   // R3/R5 : les 3 états RÉELS du CTA post-signature (QuoteActions) dérivés des MÊMES factures liées
   // que la vue ci-dessus (view.linkedInvoices) — une seule source, pas de recalcul divergent.
   const quoteLinkedInvoices = useMemo<QuoteLinkedInvoices>(
-    () => ({
-      hasDepositInvoice: (view?.linkedInvoices ?? []).some((i) => i.kind === 'deposit'),
-      hasFinalInvoice: (view?.linkedInvoices ?? []).some((i) => i.kind === 'final'),
-    }),
-    [view],
+    () => {
+      const linked = (invoices.data ?? []).filter((invoice) => invoice.parentQuoteId === id);
+      const deposit = linked.find((invoice) => invoice.kind === 'deposit') ?? null;
+      const final = linked.find((invoice) => invoice.kind === 'final') ?? null;
+      return {
+        hasDepositInvoice: deposit !== null,
+        hasFinalInvoice: final !== null,
+        depositStatus: deposit?.status ?? null,
+        finalStatus: final?.status ?? null,
+      };
+    },
+    [id, invoices.data],
   );
   const agentContext = useMemo<AgentContext>(() => {
     const q = quote.data;
@@ -121,7 +135,7 @@ export default function DevisDetail() {
         ? ['quote.send', 'quote.line.update', 'quote.deposit.update']
         : q.status === 'sent' || q.status === 'viewed'
           ? ['quote.send']
-          : q.status === 'signed'
+          : q.status === 'signed' && invoices.isSuccess
             ? ['quote.invoice.generate']
             : [];
     return {
@@ -137,7 +151,7 @@ export default function DevisDetail() {
       ],
       capabilities: ['screen.read', 'quote.read', ...actionCapabilities],
     };
-  }, [customers.data, id, quote.data]);
+  }, [customers.data, id, invoices.isSuccess, quote.data]);
   const agentLayout = useMemo<AgentAccessLayout>(() => ({ bottomAvoidance: 86 }), []);
   const confirm = useConfirm();
 
@@ -145,6 +159,7 @@ export default function DevisDetail() {
   //    ouvre les mêmes UI — le tap sur Enregistrer/Confirmer reste le SEUL point d'écriture). ──
   const [editingLine, setEditingLine] = useState<PieceLineView | null>(null);
   const [editingSeed, setEditingSeed] = useState<QuoteLineEditSeed | null>(null);
+  const [lineMutationError, setLineMutationError] = useState<string | null>(null);
   const updateLine = useUpdateQuoteLine();
   const removeLine = useRemoveQuoteLine();
   const linesRef = useRef<readonly PieceLineView[]>(view?.lines ?? []);
@@ -153,6 +168,7 @@ export default function DevisDetail() {
   const handleEditLine = (lineId: string, seed: QuoteLineEditSeed | null = null): void => {
     const line = linesRef.current.find((l) => l.id === lineId);
     if (!line) return;
+    setLineMutationError(null);
     setEditingLine(line);
     setEditingSeed(seed);
   };
@@ -165,13 +181,22 @@ export default function DevisDetail() {
       destructive: true,
     });
     if (!ok) return;
-    await removeLine.mutateAsync({ quoteId: id, lineId });
+    try {
+      await removeLine.mutateAsync({ quoteId: id, lineId });
+    } catch (error) {
+      Alert.alert(t('devis.lineMutationErrorTitle', { personality }), appErrorMessage(error));
+    }
   };
   const submitLineEdit = async (patch: QuoteLineEditPatch): Promise<void> => {
     if (!editingLine) return;
-    await updateLine.mutateAsync({ quoteId: id, lineId: editingLine.id, patch });
-    setEditingLine(null);
-    setEditingSeed(null);
+    setLineMutationError(null);
+    try {
+      await updateLine.mutateAsync({ quoteId: id, lineId: editingLine.id, patch });
+      setEditingLine(null);
+      setEditingSeed(null);
+    } catch (error) {
+      setLineMutationError(appErrorMessage(error));
+    }
   };
   // R7 : pont voix → écran (parité stricte avec actionsRef.openChoiceSheet ci-dessous) — la voix
   // ouvre la MÊME UI que le swipe, sans jamais appeler updateLine/removeLine elle-même.
@@ -208,6 +233,9 @@ export default function DevisDetail() {
             return () => {
               const p = personalityRef.current;
               if (linkedRef.current.hasFinalInvoice) return { say: t('devis.voice.invoiceAlreadyFinal', { personality: p }) };
+              if (linkedRef.current.depositStatus === 'draft') {
+                return { say: t('devis.voice.invoiceDepositDraft', { personality: p }) };
+              }
               if (linkedRef.current.hasDepositInvoice) return { say: t('devis.voice.invoiceFinalReady', { personality: p }) };
               actionsRef.current?.openChoiceSheet();
               return { say: t('devis.voice.invoiceChoiceOpenedFinal', { personality: p }) };
@@ -242,6 +270,50 @@ export default function DevisDetail() {
               if (linkedRef.current.hasDepositInvoice) return { say: t('devis.voice.invoiceFinalReady', { personality: p }) };
               actionsRef.current?.openChoiceSheet();
               return { say: t('devis.voice.invoiceChoiceOpenedFinal', { personality: p }) };
+            };
+          },
+        },
+        {
+          // R4/R7 : « fais signer sur place » — devis envoyé/vu uniquement. Ouvre DIRECTEMENT le
+          // pad (bypass le choix des 2 options) : la phrase nomme déjà l'option choisie. Doit être
+          // testée AVANT l'affordance générique « fais signer » ci-dessous (elle la contiendrait).
+          id: 'devis.signOnsite',
+          match: (utterance) => {
+            if (statusRef.current !== 'sent' && statusRef.current !== 'viewed') return null;
+            const n = normalizeVoiceText(utterance);
+            if (!/\bsigne/.test(n) || !/sur place/.test(n)) return null;
+            return () => {
+              actionsRef.current?.openSignOnsite();
+              return { say: t('devis.voice.signOnsiteOpened', { personality: personalityRef.current }) };
+            };
+          },
+        },
+        {
+          // R4/R7 : « envoie le lien de signature » — devis envoyé/vu uniquement. Ouvre le choix
+          // (le tap sur « Envoyer le lien » reste le seul déclencheur réel de l'envoi/partage).
+          id: 'devis.sendSignatureLink',
+          match: (utterance) => {
+            if (statusRef.current !== 'sent' && statusRef.current !== 'viewed') return null;
+            const n = normalizeVoiceText(utterance);
+            if (!/\blien\b/.test(n) || !/\bsignature\b/.test(n)) return null;
+            return () => {
+              actionsRef.current?.openSignSheet();
+              return { say: t('devis.voice.signLinkChoiceOpened', { personality: personalityRef.current }) };
+            };
+          },
+        },
+        {
+          // R4/R7 : « fais signer » (générique, sans qualificatif) — devis envoyé/vu uniquement.
+          // Ouvre le choix des 2 options ; les phrases plus spécifiques ci-dessus sont testées
+          // avant celle-ci dans le tableau (premier match gagne).
+          id: 'devis.signGeneric',
+          match: (utterance) => {
+            if (statusRef.current !== 'sent' && statusRef.current !== 'viewed') return null;
+            const n = normalizeVoiceText(utterance);
+            if (!/\bsigner?\b/.test(n) && !/\bsignature\b/.test(n)) return null;
+            return () => {
+              actionsRef.current?.openSignSheet();
+              return { say: t('devis.voice.signChoiceOpened', { personality: personalityRef.current }) };
             };
           },
         },
@@ -332,7 +404,7 @@ export default function DevisDetail() {
       }
     : null;
 
-  if (quote.isLoading || customers.isLoading) {
+  if (quote.isLoading || customers.isLoading || invoices.isLoading) {
     return (
       <View style={{ flex: 1, backgroundColor: colors.bg }}>
         <SkeletonHeader onClose={() => router.back()} />
@@ -346,12 +418,14 @@ export default function DevisDetail() {
   }
   // Un ÉCHEC réseau n'est JAMAIS un cul-de-sac : retry ET fermeture restent disponibles
   // (avant ce correctif l'utilisateur était piégé sans issue — bug P0 de l'audit états).
-  if (quote.isError) {
+  if (quote.isError || customers.isError || invoices.isError) {
     return (
       <View style={{ flex: 1, justifyContent: 'center', backgroundColor: colors.bg, padding: 18 }}>
         <ErrorRetry
           message={t('piece.dataError', { personality })}
-          onRetry={() => void quote.refetch()}
+          onRetry={() => {
+            void Promise.all([quote.refetch(), customers.refetch(), invoices.refetch()]);
+          }}
           secondaryLabel={t('piece.close', { personality })}
           onSecondaryAction={() => router.back()}
         />
@@ -400,10 +474,22 @@ export default function DevisDetail() {
         line={editingLine}
         seed={editingSeed}
         saving={updateLine.isPending}
+        error={lineMutationError}
         onClose={() => {
+          if (updateLine.isPending) return;
           setEditingLine(null);
           setEditingSeed(null);
+          setLineMutationError(null);
         }}
+        onDelete={() => {
+          const lineId = editingLine?.id;
+          if (!lineId || updateLine.isPending) return;
+          setEditingLine(null);
+          setEditingSeed(null);
+          setLineMutationError(null);
+          void handleDeleteLine(lineId);
+        }}
+        onInputChange={() => setLineMutationError(null)}
         onSubmit={(patch) => void submitLineEdit(patch)}
       />
     </>

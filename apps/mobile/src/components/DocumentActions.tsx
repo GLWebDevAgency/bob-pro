@@ -1,5 +1,5 @@
 import { forwardRef, useImperativeHandle, useRef, useState, type ReactNode } from 'react';
-import { View, Alert, Pressable, ActivityIndicator } from 'react-native';
+import { View, Alert, Pressable, ActivityIndicator, Share } from 'react-native';
 import { router } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
 import type { QuoteView, InvoiceView } from '@bob/api-client';
@@ -21,6 +21,8 @@ import {
 import { Button, Badge } from './ui';
 import { useConfirm } from './ConfirmSheet';
 import { useBobClient } from '../data/client';
+import { deriveQuoteInvoiceCtaState, type QuoteInvoiceLinksState } from './quote-invoice-actions.logic';
+import { SignOnsiteSheet } from './SignOnsiteSheet';
 
 // Profils de risque des actions manuelles (mêmes paliers que le registre d'outils de Bob -> confirmation typée).
 const OUTBOUND = { mutating: true, outbound: true, riskTier: 'outbound' } as const;
@@ -120,11 +122,13 @@ function useActionLock() {
  * 3 états RÉELS du CTA post-signature (R3/R5) : aucune → Sheet de choix ; acompte sans finale →
  * « Générer la facture finale » (mode EXPLICITE, le bug R3) ; finale déjà là → badge.
  */
-export interface QuoteLinkedInvoices {
-  readonly hasDepositInvoice: boolean;
-  readonly hasFinalInvoice: boolean;
-}
-const NO_LINKED_INVOICES: QuoteLinkedInvoices = { hasDepositInvoice: false, hasFinalInvoice: false };
+export type QuoteLinkedInvoices = QuoteInvoiceLinksState;
+const NO_LINKED_INVOICES: QuoteLinkedInvoices = {
+  hasDepositInvoice: false,
+  hasFinalInvoice: false,
+  depositStatus: null,
+  finalStatus: null,
+};
 
 /**
  * R7 (parité vocale) : pouvoir IMPÉRATIF exposé au parent pour ouvrir le Sheet de choix depuis une
@@ -133,6 +137,13 @@ const NO_LINKED_INVOICES: QuoteLinkedInvoices = { hasDepositInvoice: false, hasF
  */
 export interface QuoteActionsHandle {
   openChoiceSheet: () => void;
+  /** R4/R7 : ouvre le Sheet de choix de signature (Sur place / Envoyer le lien) — SANS rien
+   * exécuter. Couvre « fais signer » et « envoie le lien de signature » : dans les deux cas la
+   * voix dit et montre, seul le tap sur l'option choisie déclenche réellement sign/send. */
+  openSignSheet: () => void;
+  /** R4/R7 : ouvre DIRECTEMENT le pad de signature sur place (bypass le choix) — « fais signer
+   * sur place ». Le tap sur « Valider la signature » reste le seul point d'écriture. */
+  openSignOnsite: () => void;
 }
 
 export const QuoteActions = forwardRef<
@@ -155,9 +166,14 @@ export const QuoteActions = forwardRef<
   // idempotent par parentQuoteId+kind) ; `linkedInvoices` est la source DURABLE (survit au re-render).
   const [localLinked, setLocalLinked] = useState<QuoteLinkedInvoices>(NO_LINKED_INVOICES);
   const [choiceOpen, setChoiceOpen] = useState(false);
+  // R4 : choix de signature (Sur place / Envoyer le lien) puis, si « Sur place », le pad lui-même.
+  const [signChoiceOpen, setSignChoiceOpen] = useState(false);
+  const [onsiteOpen, setOnsiteOpen] = useState(false);
   const linked: QuoteLinkedInvoices = {
     hasDepositInvoice: linkedInvoices.hasDepositInvoice || localLinked.hasDepositInvoice,
     hasFinalInvoice: linkedInvoices.hasFinalInvoice || localLinked.hasFinalInvoice,
+    depositStatus: linkedInvoices.depositStatus ?? localLinked.depositStatus,
+    finalStatus: linkedInvoices.finalStatus ?? localLinked.finalStatus,
   };
   useImperativeHandle(
     ref,
@@ -166,8 +182,14 @@ export const QuoteActions = forwardRef<
         // N'ouvre que si l'état (a) s'applique (aucune facture liée) — sinon rien à choisir.
         if (!linked.hasFinalInvoice && !linked.hasDepositInvoice) setChoiceOpen(true);
       },
+      openSignSheet: () => {
+        if (quote.status === 'sent' || quote.status === 'viewed') setSignChoiceOpen(true);
+      },
+      openSignOnsite: () => {
+        if (quote.status === 'sent' || quote.status === 'viewed') setOnsiteOpen(true);
+      },
     }),
-    [linked.hasFinalInvoice, linked.hasDepositInvoice],
+    [linked.hasFinalInvoice, linked.hasDepositInvoice, quote.status],
   );
   // Un SEUL point d'écriture pour les deux boutons (a) et (b) : mode TOUJOURS explicite — c'est
   // précisément le correctif R3 (sans mode, l'inférence retombait sur 'deposit' déjà facturé et
@@ -177,9 +199,39 @@ export const QuoteActions = forwardRef<
       const out = await generate.mutateAsync({ quoteId: quote.id, mode });
       setLocalLinked((prev) => ({
         ...prev,
-        ...(mode === 'deposit' ? { hasDepositInvoice: true } : { hasFinalInvoice: true }),
+        ...(mode === 'deposit'
+          ? { hasDepositInvoice: true, depositStatus: 'draft' as const }
+          : { hasFinalInvoice: true, finalStatus: 'draft' as const }),
       }));
       router.push(`/facture/${out.invoiceId}`);
+    });
+
+  // R4 : « Envoyer le lien » — MÊME mutation que le bouton « Envoyer » initial (régénère le
+  // jeton de signature, révoque l'ancien : comportement existant de SendQuote/
+  // CreateQuoteSignatureToken, pas un nouvel endpoint). L'URL vient DÉJÀ du serveur
+  // (SendQuoteOutput.signatureUrl) — le mobile ne connaît jamais SIGN_WEB_BASE_URL et ne
+  // reconstruit jamais publicSignatureUrl lui-même (source unique côté API).
+  const handleSendLink = () =>
+    run('sendLink', async () => {
+      const result = await send.mutateAsync(quote.id);
+      if (!result.signatureUrl) {
+        // Échec honnête (ex. jeton non généré côté serveur) : jamais un gel, jamais un faux succès.
+        Alert.alert('Oups', 'Lien de signature indisponible pour le moment. Réessaie dans un instant.');
+        return;
+      }
+      await Share.share({
+        message: `Bonjour, voici le lien pour signer le devis${quote.number ? ` ${quote.number}` : ''} : ${result.signatureUrl}`,
+      });
+    });
+
+  // R4 : signature sur place — TODO(Arbitrage 4, SPEC_LOT_RETOURS_DEVICE_20260714.md) : le tracé
+  // (SignaturePadValue.strokes/dataUrl) n'est PAS envoyé ici — signQuote (API) n'accepte que
+  // `signerName`. Limitation domaine CONNUE et documentée (pas un oubli) : persister le tracé
+  // (preuve/valeur juridique) est une évolution proposée en suite de lot, challenge GPT invité.
+  const submitOnsiteSignature = (signerName: string) =>
+    run('sign', async () => {
+      await sign.mutateAsync({ quoteId: quote.id, signerName });
+      setOnsiteOpen(false);
     });
 
   if (quote.status === 'draft') {
@@ -221,53 +273,85 @@ export const QuoteActions = forwardRef<
   }
   if (quote.status === 'sent' || quote.status === 'viewed') {
     return (
-      <View style={{ flexDirection: 'row', gap: 8 }}>
-        <View style={{ flex: 1 }}>
-          <Button
-            title="Signer sur place"
-            loading={busy === 'sign'}
-            disabled={!!busy}
-            onPress={() =>
-              void (async () => {
-                const ok = await confirm({
-                  title: 'Signature sur place',
-                  message: 'Le client signe le devis maintenant.',
-                  challenge: challengeFor(REVERSIBLE, 'confirm_all'),
-                });
-                if (ok) await run('sign', () => sign.mutateAsync({ quoteId: quote.id, signerName: customerName }));
-              })()
-            }
-          />
+      <>
+        <View style={{ flexDirection: 'row', gap: 8 }}>
+          <View style={{ flex: 1 }}>
+            {/* R4 : « Faire signer » ouvre le VRAI choix (Sur place / Envoyer le lien) — l'ancienne
+                ConfirmSheet booléenne sans tracé était mensongère (« signature » sans preuve). */}
+            <Button
+              title="Faire signer"
+              loading={busy === 'sendLink'}
+              disabled={!!busy}
+              onPress={() => setSignChoiceOpen(true)}
+            />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Button
+              title="Refuser"
+              variant="danger"
+              loading={busy === 'refuse'}
+              disabled={!!busy}
+              onPress={() =>
+                void (async () => {
+                  const ok = await confirm({
+                    title: 'Refuser le devis',
+                    message: 'Marquer ce devis comme refusé par le client ?',
+                    challenge: challengeFor(REVERSIBLE, 'confirm_all'),
+                    destructive: true,
+                  });
+                  if (ok) await run('refuse', () => refuse.mutateAsync(quote.id));
+                })()
+              }
+            />
+          </View>
         </View>
-        <View style={{ flex: 1 }}>
-          <Button
-            title="Refuser"
-            variant="danger"
-            loading={busy === 'refuse'}
-            disabled={!!busy}
-            onPress={() =>
-              void (async () => {
-                const ok = await confirm({
-                  title: 'Refuser le devis',
-                  message: 'Marquer ce devis comme refusé par le client ?',
-                  challenge: challengeFor(REVERSIBLE, 'confirm_all'),
-                  destructive: true,
-                });
-                if (ok) await run('refuse', () => refuse.mutateAsync(quote.id));
-              })()
-            }
-          />
-        </View>
-      </View>
+        <QuestionSheet
+          visible={signChoiceOpen}
+          header="Signature"
+          question="Comment le client signe-t-il ?"
+          options={[
+            { value: 'onsite', label: 'Sur place', description: 'Il signe du doigt, directement sur votre téléphone.' },
+            { value: 'link', label: 'Envoyer le lien', description: 'Il signe à distance, depuis son téléphone.' },
+          ]}
+          confirmLabel="Choisir"
+          otherLabel="Annuler"
+          onClose={() => setSignChoiceOpen(false)}
+          onOther={() => setSignChoiceOpen(false)}
+          onSelect={(values) => {
+            setSignChoiceOpen(false);
+            if (values[0] === 'onsite') setOnsiteOpen(true);
+            else void handleSendLink();
+          }}
+        />
+        <SignOnsiteSheet
+          visible={onsiteOpen}
+          customerName={customerName}
+          quoteNumber={quote.number}
+          saving={busy === 'sign'}
+          onClose={() => setOnsiteOpen(false)}
+          onSubmit={(signerName) => void submitOnsiteSignature(signerName)}
+        />
+      </>
     );
   }
   if (quote.status === 'signed') {
+    const invoiceCtaState = deriveQuoteInvoiceCtaState(linked);
     // État (c) : la finale existe déjà — plus rien à générer.
-    if (linked.hasFinalInvoice) return <Badge label="Facture générée" tone="success" />;
+    if (invoiceCtaState === 'final_draft_pending' || invoiceCtaState === 'final_exists') {
+      return (
+        <Badge
+          label={invoiceCtaState === 'final_draft_pending' ? 'Facture brouillon prête' : 'Facture générée'}
+          tone={invoiceCtaState === 'final_draft_pending' ? 'warning' : 'success'}
+        />
+      );
+    }
 
     // État (b) : acompte lié SANS finale — LE bug R3 (mode:'final' explicite obligatoire, sinon
     // l'inférence retombe sur 'deposit' déjà facturé et renvoie l'existante sans rien créer).
-    if (linked.hasDepositInvoice) {
+    if (invoiceCtaState === 'deposit_draft_pending') {
+      return <Badge label="Acompte brouillon à vérifier" tone="warning" />;
+    }
+    if (invoiceCtaState === 'generate_final') {
       return (
         <Button
           title={t('piece.actionFacturerSolde', { personality })}

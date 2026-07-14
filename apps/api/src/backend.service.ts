@@ -683,6 +683,10 @@ export class BackendService {
         number: string;
         signatureToken?: string;
         signatureTokenExpiresAt?: string;
+        /** R4 : URL publique sign-web PRÊTE À PARTAGER (même construction que le lien envoyé par
+         *  e-mail, `publicSignatureUrl` ci-dessous) — le client mobile n'a jamais à connaître
+         *  SIGN_WEB_BASE_URL ni à reconstruire le chemin lui-même. */
+        signatureUrl?: string;
         deliveryStatus: 'queued' | 'sent' | 'skipped';
       },
       AppError
@@ -706,6 +710,7 @@ export class BackendService {
         ...sent.value,
         signatureToken: token.value.token,
         signatureTokenExpiresAt: token.value.expiresAt,
+        signatureUrl: publicSignatureUrl(token.value.token),
         deliveryStatus,
       });
     }
@@ -764,21 +769,21 @@ export class BackendService {
     if (r.ok) this.logger.audit('quote.refused', { quoteId, status: r.value.status });
     return r;
   }
-  async generateInvoice(input: { quoteId: string; mode?: 'deposit' | 'final' }) {
+  async generateInvoice(input: { quoteId: string; mode: 'deposit' | 'final' }) {
     if (!(await this.ownedQuote(input.quoteId))) return { ok: false as const, error: appNotFound('quote', input.quoteId) };
     return new GenerateInvoiceFromQuote({ quotes: this.p.quotes, invoices: this.p.invoices, ids: this.ids }).execute(input);
   }
   /** R6 : édition d'une ligne de devis BROUILLON (Quote.updateLine garde assertDraft). */
   async updateQuoteLine(input: { quoteId: string; lineId: string; patch: UpdateQuoteLineInput['patch'] }) {
     if (!(await this.ownedQuote(input.quoteId))) return { ok: false as const, error: appNotFound('quote', input.quoteId) };
-    const r = await new UpdateQuoteLine({ quotes: this.p.quotes }).execute(input);
+    const r = await new UpdateQuoteLine({ quotes: this.p.quotes, uow: this.p }).execute(input);
     if (r.ok) this.logger.audit('quote.line_updated', { quoteId: input.quoteId, lineId: input.lineId });
     return r;
   }
   /** R6 : suppression d'une ligne de devis BROUILLON (Quote.removeLine garde assertDraft). */
   async removeQuoteLine(input: { quoteId: string; lineId: string }) {
     if (!(await this.ownedQuote(input.quoteId))) return { ok: false as const, error: appNotFound('quote', input.quoteId) };
-    const r = await new RemoveQuoteLine({ quotes: this.p.quotes }).execute(input);
+    const r = await new RemoveQuoteLine({ quotes: this.p.quotes, uow: this.p }).execute(input);
     if (r.ok) this.logger.audit('quote.line_removed', { quoteId: input.quoteId, lineId: input.lineId });
     return r;
   }

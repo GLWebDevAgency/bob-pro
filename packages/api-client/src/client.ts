@@ -107,6 +107,10 @@ export interface SendQuoteOutput {
   signatureTokenExpiresAt?: string;
   /** État honnête du canal email au retour HTTP : le worker peut encore être en attente. */
   deliveryStatus: 'queued' | 'sent' | 'skipped';
+  /** R4 : URL publique sign-web prête à partager (même lien que celui envoyé par e-mail) —
+   * absente si la génération du jeton a échoué côté serveur (le devis reste envoyé/vu :
+   * ce n'est jamais bloquant, seul le partage manuel du lien devient indisponible). */
+  signatureUrl?: string;
 }
 
 export interface ListDocumentsClientInput {
@@ -694,7 +698,7 @@ export interface BobClient {
   sendQuote(quoteId: string): Promise<Result<SendQuoteOutput, AppError>>;
   signQuote(input: { quoteId: string; signerName: string }): Promise<Result<{ status: string }, AppError>>;
   refuseQuote(quoteId: string): Promise<Result<{ status: string }, AppError>>;
-  generateInvoice(input: { quoteId: string; mode?: 'deposit' | 'final' }): Promise<Result<{ invoiceId: string }, AppError>>;
+  generateInvoice(input: { quoteId: string; mode: 'deposit' | 'final' }): Promise<Result<{ invoiceId: string }, AppError>>;
   /** R6 : édition d'une ligne de devis BROUILLON (PATCH /quotes/:id/lines/:lineId) — draft only,
    * un devis signé est un contrat (l'agrégat garde assertDraft). */
   updateQuoteLine(input: UpdateQuoteLineInput): Promise<Result<{ status: string }, AppError>>;

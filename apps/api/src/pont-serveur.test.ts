@@ -1081,6 +1081,13 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
       expect(sent.ok && sent.value.deliveryStatus).toBe('queued');
       expect(notificationDelivery.enqueue).toHaveBeenCalledOnce();
       expect(notificationDelivery.tryDeliver).not.toHaveBeenCalled();
+      // R4 : le mobile Share le lien SANS jamais reconstruire publicSignatureUrl lui-même —
+      // le serveur doit donc renvoyer l'URL complète (même construction que l'e-mail), pas
+      // seulement le jeton opaque.
+      if (sent.ok) {
+        expect(sent.value.signatureToken).toBeTruthy();
+        expect(sent.value.signatureUrl).toBe(`https://demo.bobpro.fr/sign/${sent.value.signatureToken}`);
+      }
     });
   });
 

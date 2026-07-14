@@ -1978,6 +1978,11 @@ const legacyFr = {
     pro: 'Ce devis ne prévoit pas d’acompte. Dites « facture complète » pour la facture de 100 %.',
     direct: 'Pas d’acompte prévu. Dis « facture complète ».',
   },
+  'devis.voice.invoiceDepositDraft': {
+    pote: 'La facture d’acompte est encore en brouillon — vérifie-la et émets-la avant de créer la facture finale.',
+    pro: 'La facture d’acompte est encore en brouillon. Vérifiez-la et émettez-la avant de générer la facture finale.',
+    direct: 'Acompte encore en brouillon. Vérifie-le et émets-le d’abord.',
+  },
   // R6/R7 — édition/suppression d'une ligne de devis BROUILLON à la voix (devis/[id]) : la voix
   // DIT ce qu'elle prépare et OUVRE la Sheet d'édition / la confirmation de suppression — jamais
   // n'écrit elle-même (même plancher que le choix de facture ci-dessus : proposer → tap → valider).
@@ -1995,6 +2000,24 @@ const legacyFr = {
     pote: 'Je ne trouve pas de ligne {ordinal} sur ce devis.',
     pro: 'Aucune ligne {ordinal} sur ce devis.',
     direct: 'Pas de ligne {ordinal}.',
+  },
+  // R4/R7 — « faire signer » un devis envoyé/vu (devis/[id]) : la voix DIT et OUVRE le Sheet
+  // correspondant (choix des 2 options, pad sur place) — jamais n'exécute sign/send elle-même.
+  // Le plancher de sûreté reste le TAP : « Valider la signature » ou l'option du Sheet de choix.
+  'devis.voice.signChoiceOpened': {
+    pote: 'Je t’ouvre le choix — touche « Sur place » ou « Envoyer le lien ».',
+    pro: 'Le choix est ouvert — touchez « Sur place » ou « Envoyer le lien ».',
+    direct: 'Choix ouvert. Sur place ou lien.',
+  },
+  'devis.voice.signOnsiteOpened': {
+    pote: 'Signature sur place ouverte — fais tracer le trait à ton client, puis touche « Valider la signature ».',
+    pro: 'Signature sur place ouverte — faites tracer le trait à votre client, puis touchez « Valider la signature ».',
+    direct: 'Signature sur place ouverte. Trace puis valide.',
+  },
+  'devis.voice.signLinkChoiceOpened': {
+    pote: 'Je t’ouvre le choix — touche « Envoyer le lien » pour l’envoyer à ton client.',
+    pro: 'Le choix est ouvert — touchez « Envoyer le lien » pour l’envoyer à votre client.',
+    direct: 'Choix ouvert. Touche « Envoyer le lien ».',
   },
   // ASK-1 — questions structurées (modale de choix quand la demande est ambiguë)
   'assistant.askAnswer': { pote: 'Répondre', pro: 'Répondre', direct: 'Répondre' },
@@ -2395,6 +2418,51 @@ const legacyFr = {
     pro: 'Enregistrer',
     direct: 'Enregistrer',
   },
+  'devis.lineEditLabelHint': {
+    pote: 'Décris clairement ce que tu factures.',
+    pro: 'Décrivez précisément la prestation ou le produit facturé.',
+    direct: 'Décris la ligne facturée.',
+  },
+  'devis.lineEditLabelError': {
+    pote: 'Ajoute un libellé clair pour cette ligne.',
+    pro: 'Saisissez un libellé valide pour cette ligne.',
+    direct: 'Libellé requis.',
+  },
+  'devis.lineEditQtyHint': {
+    pote: 'Mets une quantité positive, avec jusqu’à trois décimales.',
+    pro: 'Saisissez une quantité positive, avec trois décimales au maximum.',
+    direct: 'Quantité positive, trois décimales maximum.',
+  },
+  'devis.lineEditQtyError': {
+    pote: 'La quantité doit être supérieure à zéro.',
+    pro: 'Saisissez une quantité valide supérieure à zéro.',
+    direct: 'Quantité invalide.',
+  },
+  'devis.lineEditPriceHint': {
+    pote: 'Indique le prix unitaire hors taxes, en euros.',
+    pro: 'Saisissez le prix unitaire hors taxes en euros, avec deux décimales au maximum.',
+    direct: 'Prix unitaire HT en euros.',
+  },
+  'devis.lineEditPriceError': {
+    pote: 'Indique un prix valide, avec deux décimales maximum.',
+    pro: 'Saisissez un prix hors taxes valide, avec deux décimales au maximum.',
+    direct: 'Prix HT invalide.',
+  },
+  'devis.lineEditDelete': {
+    pote: 'Supprimer cette ligne',
+    pro: 'Supprimer cette ligne',
+    direct: 'Supprimer la ligne',
+  },
+  'devis.lineEditVisibleHint': {
+    pote: 'Ouvre les détails pour modifier cette ligne.',
+    pro: 'Ouvre le formulaire de modification de cette ligne.',
+    direct: 'Ouvre la modification.',
+  },
+  'devis.lineMutationErrorTitle': {
+    pote: 'Je n’ai pas pu modifier la ligne',
+    pro: 'Modification de la ligne impossible',
+    direct: 'Modification impossible',
+  },
   'devis.linesEmpty': {
     pote: 'Aucune ligne pour l’instant — ajoute ta première prestation juste au-dessus.',
     pro: 'Aucune ligne pour le moment. Ajoutez votre première prestation ci-dessus.',
@@ -2491,6 +2559,13 @@ const legacyFr = {
     pote: 'Ex. M. Bernard',
     pro: 'Ex. M. Bernard',
     direct: 'Nom…',
+  },
+  // R4 — signature sur place depuis le détail d'un devis envoyé/vu (SignOnsiteSheet, même pad
+  // que l'étape 4 ci-dessus, réutilisée hors wizard).
+  'devis.signOnsiteSubmit': {
+    pote: 'Valider la signature',
+    pro: 'Valider la signature',
+    direct: 'Valider',
   },
   // Étape 5 — acompte (30 % défaut, éditable ; net réel calculé par le core).
   'devis.depositTitle': {
@@ -2664,6 +2739,11 @@ const legacyFr = {
   'piece.catTravel': { pote: 'Déplacement', pro: 'Déplacement', direct: 'Dépl.' },
   'piece.catDisbursement': { pote: 'Débours', pro: 'Débours', direct: 'Débours' },
   'piece.catSubscription': { pote: 'Abonnement', pro: 'Abonnement', direct: 'Abo' },
+  'piece.lineQuantityPrice': {
+    pote: '{qty} {unit} × {price} HT',
+    pro: '{qty} {unit} × {price} HT',
+    direct: '{qty} {unit} × {price} HT',
+  },
   'piece.vatPerLine': { pote: 'TVA {rate} %', pro: 'TVA {rate} %', direct: '{rate} %' },
   'piece.totalHt': { pote: 'Total HT', pro: 'Total HT', direct: 'HT' },
   'piece.totalVat': { pote: 'TVA', pro: 'TVA', direct: 'TVA' },
@@ -3497,6 +3577,133 @@ const legacyFr = {
     pote: 'Retour à la connexion',
     pro: 'Retour à la connexion',
     direct: 'Connexion',
+  },
+  'auth.verifyResend': {
+    pote: 'Je n’ai rien reçu — renvoyer',
+    pro: 'Renvoyer l’email de confirmation',
+    direct: 'Renvoyer l’email',
+  },
+  'auth.verifyResending': {
+    pote: 'Je te le renvoie…',
+    pro: 'Envoi en cours…',
+    direct: 'Envoi…',
+  },
+  'auth.verifyResendIn': {
+    pote: 'Tu pourras le renvoyer dans {seconds} s',
+    pro: 'Nouvel envoi disponible dans {seconds} s',
+    direct: 'Renvoyer dans {seconds} s',
+  },
+  'auth.verifyResent': {
+    pote: 'C’est reparti — vérifie aussi tes indésirables.',
+    pro: 'Email renvoyé. Pensez à vérifier vos courriers indésirables.',
+    direct: 'Email renvoyé. Vérifie les indésirables.',
+  },
+  'auth.recoveryCheckingTitle': {
+    pote: 'Je vérifie ton lien',
+    pro: 'Vérification du lien',
+    direct: 'Vérification…',
+  },
+  'auth.recoveryCheckingBody': {
+    pote: 'Une seconde — je sécurise ta session avant de changer quoi que ce soit.',
+    pro: 'Votre lien sécurisé est en cours de vérification.',
+    direct: 'Lien sécurisé en cours de vérification.',
+  },
+  'auth.recoveryTitle': {
+    pote: 'Choisis ton nouveau mot de passe',
+    pro: 'Définissez votre nouveau mot de passe',
+    direct: 'Nouveau mot de passe',
+  },
+  'auth.recoveryBody': {
+    pote: 'Prends-en un que tu n’utilises nulle part ailleurs. Je m’occupe du reste.',
+    pro: 'Utilisez un mot de passe unique, différent de vos autres comptes.',
+    direct: 'Utilise un mot de passe unique.',
+  },
+  'auth.recoveryNewPassword': {
+    pote: 'Nouveau mot de passe',
+    pro: 'Nouveau mot de passe',
+    direct: 'Nouveau mot de passe',
+  },
+  'auth.recoveryConfirmPassword': {
+    pote: 'Confirme le mot de passe',
+    pro: 'Confirmez le mot de passe',
+    direct: 'Confirmation',
+  },
+  'auth.recoveryShowPassword': {
+    pote: 'Afficher le mot de passe',
+    pro: 'Afficher le mot de passe',
+    direct: 'Afficher le mot de passe',
+  },
+  'auth.recoveryHidePassword': {
+    pote: 'Masquer le mot de passe',
+    pro: 'Masquer le mot de passe',
+    direct: 'Masquer le mot de passe',
+  },
+  'auth.recoveryShow': { pote: 'Afficher', pro: 'Afficher', direct: 'Voir' },
+  'auth.recoveryHide': { pote: 'Masquer', pro: 'Masquer', direct: 'Cacher' },
+  'auth.recoveryCta': {
+    pote: 'Enregistrer mon nouveau mot de passe',
+    pro: 'Enregistrer le nouveau mot de passe',
+    direct: 'Enregistrer',
+  },
+  'auth.recoveryRequired': {
+    pote: 'Remplis les deux champs pour que je puisse vérifier.',
+    pro: 'Les deux champs sont requis.',
+    direct: 'Deux champs requis.',
+  },
+  'auth.recoveryMismatch': {
+    pote: 'Les deux mots de passe ne sont pas identiques — vérifie-les.',
+    pro: 'Les deux mots de passe ne correspondent pas.',
+    direct: 'Mots de passe différents.',
+  },
+  'auth.recoveryTooLong': {
+    pote: 'Ce mot de passe est vraiment trop long — reste sous 256 caractères.',
+    pro: 'Le mot de passe ne peut pas dépasser 256 caractères.',
+    direct: '256 caractères maximum.',
+  },
+  'auth.recoveryInvalidTitle': {
+    pote: 'Ce lien ne fonctionne pas',
+    pro: 'Lien invalide',
+    direct: 'Lien invalide',
+  },
+  'auth.recoveryCheckFailedTitle': {
+    pote: 'Je n’arrive pas à vérifier le lien',
+    pro: 'Vérification impossible',
+    direct: 'Vérification impossible',
+  },
+  'auth.recoveryInvalidBody': {
+    pote: 'Il a peut-être déjà servi. Retourne à la connexion et demande-moi un nouveau lien.',
+    pro: 'Ce lien est invalide ou a déjà été utilisé. Demandez-en un nouveau depuis la connexion.',
+    direct: 'Lien invalide ou déjà utilisé. Demande-en un nouveau.',
+  },
+  'auth.recoveryExpiredTitle': {
+    pote: 'Ce lien a expiré',
+    pro: 'Lien expiré',
+    direct: 'Lien expiré',
+  },
+  'auth.recoveryExpiredBody': {
+    pote: 'Pas de souci : retourne à la connexion et je t’en envoie un tout neuf.',
+    pro: 'Demandez un nouveau lien de réinitialisation depuis la connexion.',
+    direct: 'Demande un nouveau lien depuis la connexion.',
+  },
+  'auth.recoveryBack': {
+    pote: 'Retour à la connexion',
+    pro: 'Retour à la connexion',
+    direct: 'Connexion',
+  },
+  'auth.recoverySuccessTitle': {
+    pote: 'C’est bon, ton mot de passe est changé',
+    pro: 'Mot de passe mis à jour',
+    direct: 'Mot de passe mis à jour',
+  },
+  'auth.recoverySuccessBody': {
+    pote: 'Tout est sécurisé. Tu peux reprendre là où tu en étais.',
+    pro: 'Votre nouveau mot de passe est actif. Vous pouvez continuer.',
+    direct: 'Nouveau mot de passe actif.',
+  },
+  'auth.recoverySuccessCta': {
+    pote: 'Continuer dans Bob Pro',
+    pro: 'Continuer dans Bob Pro',
+    direct: 'Continuer',
   },
   'auth.bioTitle': {
     pote: 'Déverrouille avec {method}',
