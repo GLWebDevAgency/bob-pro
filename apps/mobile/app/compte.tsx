@@ -7,6 +7,9 @@
  * · offre courante = Accès anticipé · 0 €/mois · toutes les fonctions ouvertes ;
  * · grille Solo 19 / Pro 39 / Business 79 = PLAN_PRICING (constante produit @bob/core),
  *   CTA désactivés « disponible à l'ouverture de la facturation » — rien ne prétend souscrire ;
+ * · toucher une offre ≠ la sienne affiche le diff honnête « tu gagnes / tu perds » sous la
+ *   grille (diffPlanChange @bob/core, SPEC pilier 2 décision 7) : gains ET pertes au même poids,
+ *   économie affichée si downgrade — comparaison factuelle, AUCUNE souscription déclenchée ;
  * · factures d'abonnement = état vide honnête · banque = « À connecter » (aucun bridge) ·
  *   services en plus = badge dérivé du réel (deriveServiceStatus, module TradeConfig) sinon
  *   « À venir ».
@@ -30,15 +33,20 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import {
   deriveAccountView,
+  diffPlanChange,
   formatEURWhole,
   MERCIER_PROPS,
   PLAN_CATALOG,
+  TIER_ORDER,
   type AccountConnectionView,
   type AccountServiceKey,
   type AccountView,
+  type PaidTier,
+  type PlanTier,
 } from '@bob/core';
 import { t, type I18nKey } from '@bob/i18n';
 import { shadowComponentsNative, shadowNative } from '@bob/tokens';
+import { featureLabel } from '../src/monetization/feature-labels';
 import {
   Avatar,
   Button,
@@ -99,6 +107,9 @@ export default function Compte() {
   useEffect(() => {
     if (params.tab === 'abonnement' || params.tab === 'profil') setTab(params.tab);
   }, [params.tab]);
+  // Diff « tu gagnes / tu perds » (SPEC pilier 2, décision 7) : offre touchée ≠ la sienne →
+  // comparaison factuelle sous la grille ; second tap = désélection. AUCUNE souscription.
+  const [comparedTier, setComparedTier] = useState<PaidTier | null>(null);
 
   const view: AccountView = useMemo(
     () =>
@@ -404,24 +415,108 @@ export default function Compte() {
             {/* Grille — PLAN_PRICING (constante produit), CTA honnêtes désactivés */}
             <SectionHeader title={say('account.sectionPlans')} />
             {view.subscription.plans.map((plan) => (
-              <Card key={plan.tier} padding={16} style={{ marginBottom: 11 }}>
-                <View style={{ flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 8 }}>
-                  <Text style={[font('section'), { color: colors.ink900 }]}>{plan.label}</Text>
-                  <Text style={[font('bigNum'), { fontSize: 20, color: colors.ink900 }]}>
-                    {formatEURWhole(plan.monthlyCents)}
-                    <Text style={[font('meta'), { color: colors.slate300 }]}>{say('account.offerPerMonth')}</Text>
+              <Pressable
+                key={plan.tier}
+                onPress={() => setComparedTier((current) => (current === plan.tier ? null : plan.tier))}
+                accessibilityRole="button"
+                accessibilityLabel={`${plan.label} — ${say('planDiff.gains')} / ${say('planDiff.losses')}`}
+              >
+                <Card
+                  padding={16}
+                  style={{
+                    marginBottom: 11,
+                    ...(comparedTier === plan.tier ? { borderWidth: 1.5, borderColor: colors.ink600 } : {}),
+                  }}
+                >
+                  <View style={{ flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 8 }}>
+                    <Text style={[font('section'), { color: colors.ink900 }]}>{plan.label}</Text>
+                    <Text style={[font('bigNum'), { fontSize: 20, color: colors.ink900 }]}>
+                      {formatEURWhole(plan.monthlyCents)}
+                      <Text style={[font('meta'), { color: colors.slate300 }]}>{say('account.offerPerMonth')}</Text>
+                    </Text>
+                  </View>
+                  <Text style={[font('label', 500), { color: colors.slate500, lineHeight: 21, marginBottom: 12 }]}>
+                    {plan.blurb}
                   </Text>
-                </View>
-                <Text style={[font('label', 500), { color: colors.slate500, lineHeight: 21, marginBottom: 12 }]}>
-                  {plan.blurb}
-                </Text>
-                <Button
-                  title={plan.cta === 'current' ? say('account.planCurrent') : say('account.planCtaUnavailable')}
-                  variant="secondary"
-                  disabled
-                />
-              </Card>
+                  <Button
+                    title={plan.cta === 'current' ? say('account.planCurrent') : say('account.planCtaUnavailable')}
+                    variant="secondary"
+                    disabled
+                  />
+                </Card>
+              </Pressable>
             ))}
+
+            {/* Diff HONNÊTE du changement d'offre — calculé depuis PLAN_CATALOG (diffPlanChange),
+                gains ET pertes au même poids, économie affichée si downgrade. Baseline = le plan
+                courant marqué par la vue, sinon free (accès anticipé : rien n'est payé, la
+                comparaison montre factuellement ce que l'offre touchée contient). */}
+            {(() => {
+              if (comparedTier === null) return null;
+              const currentTier: PlanTier =
+                view.subscription.plans.find((plan) => plan.cta === 'current')?.tier ?? 'free';
+              const diff = diffPlanChange(currentTier, comparedTier);
+              const isDowngrade = TIER_ORDER.indexOf(comparedTier) < TIER_ORDER.indexOf(currentTier);
+              return (
+                <Card padding={16} style={{ marginBottom: 11 }}>
+                  {diff.gained.length === 0 && diff.lost.length === 0 ? (
+                    <Text style={[font('label', 500), { color: colors.slate500, lineHeight: 21 }]}>
+                      {say('planDiff.noChange')}
+                    </Text>
+                  ) : (
+                    <>
+                      {diff.gained.length > 0 ? (
+                        <>
+                          <Text style={[font('section'), { fontSize: 14, color: colors.ink900, marginBottom: 6 }]}>
+                            {say('planDiff.gains')}
+                          </Text>
+                          {diff.gained.map((feature) => (
+                            <Text
+                              key={feature}
+                              style={[font('label', 500), { color: colors.slate500, lineHeight: 21 }]}
+                            >
+                              {'+ '}
+                              {featureLabel(feature)}
+                            </Text>
+                          ))}
+                        </>
+                      ) : null}
+                      {diff.lost.length > 0 ? (
+                        <>
+                          <Text
+                            style={[
+                              font('section'),
+                              { fontSize: 14, color: colors.ink900, marginTop: diff.gained.length > 0 ? 12 : 0, marginBottom: 6 },
+                            ]}
+                          >
+                            {say('planDiff.losses')}
+                          </Text>
+                          {diff.lost.map((feature) => (
+                            <Text
+                              key={feature}
+                              style={[font('label', 500), { color: colors.slate500, lineHeight: 21 }]}
+                            >
+                              {'− '}
+                              {featureLabel(feature)}
+                            </Text>
+                          ))}
+                        </>
+                      ) : null}
+                    </>
+                  )}
+                  {diff.monthlyDeltaCents < 0 ? (
+                    <Text style={[font('label', 500), { color: colors.ink900, marginTop: 12 }]}>
+                      {say('planDiff.savings', { amount: formatEURWhole(-diff.monthlyDeltaCents) })}
+                    </Text>
+                  ) : null}
+                  {isDowngrade ? (
+                    <Text style={[font('meta'), { fontSize: 11.5, color: colors.slate500, marginTop: 8, lineHeight: 17 }]}>
+                      {say('planDiff.downgradeEffective')}
+                    </Text>
+                  ) : null}
+                </Card>
+              );
+            })()}
 
             {/* Factures d'abonnement — état vide HONNÊTE (rien n'est facturé en accès anticipé) */}
             <View style={{ marginTop: 7 }}>

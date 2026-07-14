@@ -55,6 +55,7 @@ import {
   useTodayPriorities,
 } from '../../src/data/hooks';
 import { CollectInvoiceButton } from '../../src/components/CollectInvoiceButton';
+import { LatestValueDigestCard } from '../../src/engagement/ValueDigestCard';
 import { usePublishAgentContext, type AgentContext, type AgentEntityRef } from '../../src/agent';
 import {
   CalendarIcon,
@@ -468,6 +469,10 @@ export default function Aujourdhui() {
               </Text>
             </Card>
           ) : null}
+
+          {/* Digest « le lundi de Bob » (SPEC pilier 2) — la notification weekly-digest ramène
+              ICI ; invisible tant que useLatestValueDigest() rend null (serveur pas branché). */}
+          <LatestValueDigestCard />
 
           <View>
             <SectionHeader
