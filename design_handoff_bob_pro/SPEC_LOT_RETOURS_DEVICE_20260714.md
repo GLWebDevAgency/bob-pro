@@ -90,3 +90,26 @@ parité vocale de chaque nouveau flux.
 2. Édition de lignes (swipe) : devis DRAFT uniquement — l'UI n'affiche pas ce que le domaine interdit. Un devis signé à corriger = nouveau devis/révision (chantier ultérieur si souhaité).
 3. Suppression : facture BROUILLON uniquement (guard status='draft', tenant-scoped, full-stack à créer).
 4. Signature sur place : réutiliser SignaturePad ; conserver le tracé = évolution domaine (Signature ne porte pas d'image) — proposé en suite du lot, challenge GPT invité (preuve/valeur juridique).
+
+## R8 — CORRECTION GUIDÉE (précision fondateur 14/07) + PHILOSOPHIE DIRECTRICE
+Règle légale FR (art. 242 nonies A CGI, numérotation séquentielle inaltérable) :
+une facture ÉMISE est IMMUABLE — on ne la modifie ni ne la supprime JAMAIS. La correction
+légale = FACTURE D'AVOIR (référençant l'originale, propre numérotation), totale ou
+partielle, puis refacturation si besoin. Existant : CreateCreditNote (core, testé) +
+bouton « Créer un avoir » sur facture/[id] — les briques sont là, PAS le parcours.
+MATRICE DE CORRECTION (ce que l'app doit guider) :
+· Devis draft → édition libre (swipe R6) ; brouillons de facture → supprimables (R6).
+· Devis signé, factures seulement BROUILLON → supprimer les brouillons puis (chantier
+  révision ultérieur) nouveau devis ; le devis signé reste intact.
+· Facture ÉMISE (voire payée) → SUGGÉRER L'AVOIR : toute tentative de correction (swipe
+  refusé, suppression refusée) répond par une carte/sheet pédagogique « Cette facture est
+  émise — la loi interdit de la modifier. Je te propose un avoir qui l'annule (total ou
+  partiel), puis on refait la facture corrigée. » CTA → flow avoir existant.
+· PARITÉ VOCALE PRIORITAIRE : « je me suis trompé sur la facture de la boulangerie » →
+  Bob diagnostique l'état (brouillon/émise/payée) et PROPOSE le bon geste légal sans que
+  l'utilisateur connaisse le mot « avoir ». Proposer → montrer → valider au tap.
+PHILOSOPHIE DIRECTRICE (fondateur, gravée) : concevoir CHAQUE feature pour l'utilisateur
+type « mon père » — mal à l'aise au tactile, parfaitement capable À LA VOIX si Bob guide
+de la manière la plus simple possible. Le vocal n'est pas un raccourci de power-user :
+c'est LA rampe d'accès principale. Toute feature doit répondre à : « papa y arriverait-il
+en le disant à Bob ? »
