@@ -78,3 +78,15 @@ Points que je lui signale d'avance : la sûreté du pad de signature (preuve d'i
 horodatage, lien au devis — la signature sur place doit valoir ce que vaut celle du lien
 sign-web), l'immutabilité des documents émis (jamais d'édition d'une pièce émise), et la
 parité vocale de chaque nouveau flux.
+
+## Exploration 14/07 — faits décisifs (fichier:ligne dans le handoff w3dxfkh1s)
+- R3 racine : GenerateInvoiceFromQuote infère mode='deposit' si quote.depositPct≠null (même déjà facturé) et la garde d'idempotence renvoie la facture d'acompte EXISTANTE avec ok() → « générée » sans rien créer. Chaîne mode explicite déjà transportée bout-en-bout ; pattern correct sur facture/[id] (mode:'final'). Carte Home : quoteId déjà sur FactureFinalePriority → router.push(/devis/{id}).
+- R5 : DEPOSIT_PRESETS [0,10,20,30,40,50] vivent à la CRÉATION (devis/new). Domaine : depositPct figé au draft (setDeposit assertDraft) — il fait partie du CONTRAT signé.
+- R4 : SignaturePad @bob/ui existe (SVG+PanResponder, tracé jeté — signQuote n'accepte que signerName) ; « Signer sur place » actuel = ConfirmSheet booléenne SANS tracé ; sendQuote renvoie déjà signatureToken (lien sign-web) ; Share/expo-sharing dispo.
+- R6 : lignes modifiables UNIQUEMENT en draft (assertDraft ; signed = terminal) ; agrégat sans updateLine (add/remove only) ; AUCUN deleteInvoice dans la pile ; Swipeable classique dispo (reanimated = dép fantôme, NE PAS utiliser ReanimatedSwipeable) ; capacités agent quote.line.update DÉJÀ publiées mais non câblées.
+
+## ARBITRAGES (documentés pour fondateur + challenge GPT)
+1. Devis SIGNÉ = contrat : ni édition de lignes, ni changement du % d'acompte à la génération. Le choix R5 sur devis signé = {acompte signé X %, 100 %} ; sans acompte signé → 100 % direct. Les presets restent au moment de la CRÉATION. (Changer l'acompte après signature = altérer ce que le client a signé.)
+2. Édition de lignes (swipe) : devis DRAFT uniquement — l'UI n'affiche pas ce que le domaine interdit. Un devis signé à corriger = nouveau devis/révision (chantier ultérieur si souhaité).
+3. Suppression : facture BROUILLON uniquement (guard status='draft', tenant-scoped, full-stack à créer).
+4. Signature sur place : réutiliser SignaturePad ; conserver le tracé = évolution domaine (Signature ne porte pas d'image) — proposé en suite du lot, challenge GPT invité (preuve/valeur juridique).
