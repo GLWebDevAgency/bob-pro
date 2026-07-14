@@ -2968,3 +2968,9 @@ client, catalogue.
 - **c748d9a** infra native mobile : plugin webrtc + permissions FR honnêtes + plugin audio local. Un NOUVEAU dev build Android est requis (deps natives).
 - Porte finale worktree vierge : install --frozen-lockfile ✓, builds packages+api 0 erreur ✓, api 531 ✓, tsc mobile 0 ✓, mobile 151 ✓, eslint 0 ✓. Restent NON committés (hors périmètre BOB LIVE) : apps/web cabinet (lane session A), workflows CI/README/docs.
 - Rollout realtime : **OFF** (inchangé) — activation après certificat device + QA chiffrée (latences vs SPEC_BOB_LIVE + consommation tokens pour l'étude tarifaire fondateur).
+
+## 2026-07-14 (suite) — Claude : correctifs review BOB LIVE + PILIER 2 lancé (poussé → 4271a79)
+- Review adversariale atterrissage (21 agents, 13 findings) : **ma lane corrigée** (P0 micro fantôme → fence générationnelle ; P1 course publishContext → RealtimePublishResult ; P1 session sourde → outcome 'fallback' ; P1 zombie ; P1 toggle ; P2 summarizeVoiceUsage tenant×plan). **Lane GPT notifiée** : métrologie usage SANS writer (P0/P1), kinds incompatibles SQL, usage perdu hors response_done.
+- PILIER 2 (ordre fondateur : GPT finit pilier 1, Claude = monétisation/rétention) : conception arrêtée par panel jugé → **SPEC_PILIER2_MONETISATION.md** (décisions + tués + reste-à-faire précis avec références code).
+- Livré : domaines core monetization/engagement (decidePaywall, reverse trial, plan-diff, pression, trial-report, value-ledger, win-back, analytics — 55 tests neufs, 825 core), catalogue i18n ×3, fondation mobile (useEntitlement typé + PaywallCard + sourdine persistée). tsc/eslint/builds 0 partout.
+- Suivants : branchement écrans + carte digest + écran plans ; API (table subscriptions, job digest, writer analytics, enforcement manquants) — cf. SPEC §Reste.
