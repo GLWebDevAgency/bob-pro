@@ -6,3 +6,4 @@ Pilier 2 rétention domaine core	1783983880	packages/core/src/domain/engagement/
 Pilier 2 paywall mobile	1783983880	apps/mobile/src/monetization/**	28800
 Pilier 2 rétention mobile	1783983880	apps/mobile/src/engagement/**	28800
 Pilier 3 assets store (icon/splash)	1784022551	apps/mobile/assets/**	28800
+Pilier 2 gouvernance pression (refus vocal)	1784022551	apps/mobile/src/monetization/**	28800
