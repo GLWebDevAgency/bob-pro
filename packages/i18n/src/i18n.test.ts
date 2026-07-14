@@ -48,15 +48,15 @@ describe('i18n', () => {
     expect(t('today.subtitleNone', { personality: 'direct' })).toBe('RAS.');
   });
 
-  it('today.payoutHint interpole {amount} sur les 3 humeurs', () => {
+  it('today.payoutHint interpole {amount} sur les 3 humeurs (langage prudent — jamais « te verser »)', () => {
     expect(t('today.payoutHint', { params: { amount: '2 000,00 €' } })).toBe(
-      'Tu peux te verser ~2 000,00 € sans te mettre dans le rouge',
+      '~2 000,00 € de trésorerie mobilisable, réserves gardées. Ta rémunération : à préciser avec ton statut.',
     );
     expect(t('today.payoutHint', { personality: 'pro', params: { amount: '2 000,00 €' } })).toBe(
-      'Versement possible : 2 000,00 €, TVA et charges provisionnées.',
+      'Trésorerie mobilisable : 2 000,00 €, réserves provisionnées. Rémunération à préciser selon votre statut.',
     );
     expect(t('today.payoutHint', { personality: 'direct', params: { amount: '2 000,00 €' } })).toBe(
-      'Te verser : ~2 000,00 €.',
+      '~2 000,00 € mobilisables. Rémunération à préciser.',
     );
   });
 
@@ -68,7 +68,7 @@ describe('i18n', () => {
 
   it('argent.* : copy pote exacte du proto (C11 — « LE SOLDE MENT »)', () => {
     expect(t('argent.subtitle')).toBe('Le vrai état des comptes, sans te mentir.');
-    expect(t('argent.heroLabel')).toBe('Ce mois-ci, tu peux te verser');
+    expect(t('argent.heroLabel')).toBe('Trésorerie mobilisable ce mois-ci');
     expect(t('argent.heroPill')).toBe('sans risque');
     expect(t('argent.soldeMent').toUpperCase()).toBe('LE SOLDE MENT');
     expect(t('argent.tipTitle')).toBe('Ton vrai dispo, pas le solde');

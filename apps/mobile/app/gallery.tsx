@@ -280,9 +280,9 @@ export default function GalleryScreen() {
             onBellPress={noop}
           />
           <FloatingBalanceCard
-            label="Tu peux te verser"
+            label="Dispo réel aujourd’hui"
             amountCents={198000}
-            voiceLine="Sans te mettre dans le rouge, même après la TVA."
+            voiceLine="Trésorerie mobilisable, réserves gardées. Rémunération à préciser avec ton statut."
             chevronIcon={<Feather name="chevron-right" size={16} color={colors.slate500} />}
             voiceIcon={<Feather name="trending-up" size={15} color={semantic.success} />}
             onPress={noop}
@@ -420,10 +420,10 @@ export default function GalleryScreen() {
         {/* ── HeroMoneyCard ──────────────────────────────────────────────── */}
         <Section title="HeroMoneyCard">
           <HeroMoneyCard
-            label="Tu peux te verser"
+            label="Trésorerie mobilisable ce mois-ci"
             amountCents={214500}
             pill="sans risque"
-            caption="Après TVA, URSSAF et les dépenses prévues du mois."
+            caption="Après TVA, URSSAF et les dépenses prévues du mois. Rémunération exacte à préciser avec ton statut."
           />
         </Section>
 

@@ -64,10 +64,12 @@ const legacyFr = {
     pro: 'Vous êtes à jour pour aujourd’hui.',
     direct: 'Fini pour aujourd’hui.',
   },
+  // Langage prudent (SPEC_EXPERT_FISCAL §V2 pt. 8) : trésorerie mobilisable ≠ rémunération —
+  // celle-ci dépend du statut/régime, pas encore connu du produit. Jamais « te verser » ici.
   'today.payoutHint': {
-    pote: 'Tu peux te verser ~{amount} sans te mettre dans le rouge',
-    pro: 'Versement possible : {amount}, TVA et charges provisionnées.',
-    direct: 'Te verser : ~{amount}.',
+    pote: '~{amount} de trésorerie mobilisable, réserves gardées. Ta rémunération : à préciser avec ton statut.',
+    pro: 'Trésorerie mobilisable : {amount}, réserves provisionnées. Rémunération à préciser selon votre statut.',
+    direct: '~{amount} mobilisables. Rémunération à préciser.',
   },
   'today.balanceLabel': {
     pote: 'Dispo réel aujourd’hui',
@@ -224,26 +226,30 @@ const legacyFr = {
     pro: 'L’état réel de vos comptes, en toute transparence.',
     direct: 'Les comptes, sans mentir.',
   },
+  // Langage prudent (SPEC_EXPERT_FISCAL §V2 pt. 8, cas « profil incomplet ») : trésorerie
+  // mobilisable ≠ rémunération — jamais « te verser » tant que forme juridique/régime fiscal
+  // ne sont pas connus du produit. Le pill « sans risque » reste vrai (réserves non touchées).
   'argent.heroLabel': {
-    pote: 'Ce mois-ci, tu peux te verser',
-    pro: 'Ce mois-ci, vous pouvez vous verser',
-    direct: 'À te verser ce mois-ci',
+    pote: 'Trésorerie mobilisable ce mois-ci',
+    pro: 'Trésorerie mobilisable ce mois-ci',
+    direct: 'Mobilisable ce mois-ci',
   },
   'argent.heroPill': {
     pote: 'sans risque',
     pro: 'sans risque',
     direct: 'sans risque',
   },
-  // Phrase conditionnelle du héros : le « monter à » vient du scénario optimiste réel.
+  // Phrase conditionnelle du héros : le « monter à » vient du scénario optimiste réel — parle
+  // du plafond de trésorerie mobilisable, pas d'une rémunération (cf. heroLabel ci-dessus).
   'argent.heroUpside': {
     pote: 'Tu peux monter à {upTo} si {name} règle ses {amount}. Je te préviens dès qu’il paie.',
     pro: 'Vous pouvez atteindre {upTo} si {name} règle ses {amount}. Nous vous préviendrons dès réception.',
     direct: 'Jusqu’à {upTo} si {name} paie ses {amount}.',
   },
   'argent.heroCaption': {
-    pote: 'TVA et charges déjà mises de côté. Le reste est à toi.',
-    pro: 'TVA et charges provisionnées. Le solde est disponible.',
-    direct: 'TVA et charges déjà de côté.',
+    pote: 'TVA et charges déjà mises de côté. Ta rémunération exacte dépend de ton statut — on te la précise bientôt.',
+    pro: 'TVA et charges provisionnées. Votre rémunération exacte dépend de votre statut — nous vous la préciserons bientôt.',
+    direct: 'TVA et charges de côté. Rémunération : à préciser (statut).',
   },
   // Grand-livre « Argent disponible réel » — badge + labels des rangées.
   'argent.ledgerTitle': {
@@ -2566,6 +2572,34 @@ const legacyFr = {
     pote: 'Valider la signature',
     pro: 'Valider la signature',
     direct: 'Valider',
+  },
+  // R4 durci — mode passage client (SignOnsiteSheet plein écran isolé, challenge GPT 20260714) :
+  // en-tête client + devis, consigne courte affichée au client, sortie PROPRIÉTAIRE unique
+  // (appui long 1,5 s sur « Reprendre mon téléphone » — annule aussi la signature en cours).
+  'devis.signOnsiteModeHeader': {
+    pote: 'Signature de {customerName} — Devis {number}',
+    pro: 'Signature de {customerName} — Devis {number}',
+    direct: 'Signature — {customerName} · Devis {number}',
+  },
+  'devis.signOnsiteModeHeaderNoNumber': {
+    pote: 'Signature de {customerName}',
+    pro: 'Signature de {customerName}',
+    direct: 'Signature — {customerName}',
+  },
+  'devis.signOnsiteModeInstruction': {
+    pote: 'Relis vite fait, puis signe du doigt si t’es d’accord.',
+    pro: 'Relisez le devis, puis signez du doigt si vous êtes d’accord.',
+    direct: 'Relis. Signe si OK.',
+  },
+  'devis.signOnsiteModeExit': {
+    pote: 'Reprendre mon téléphone',
+    pro: 'Reprendre mon téléphone',
+    direct: 'Reprendre le tél.',
+  },
+  'devis.signOnsiteModeExitHint': {
+    pote: 'Maintenez appuyé 1,5 seconde pour reprendre la main — annule aussi la signature en cours.',
+    pro: 'Maintenez appuyé 1,5 seconde pour reprendre la main — annule aussi la signature en cours.',
+    direct: 'Appui long 1,5 s. Annule la signature.',
   },
   // Étape 5 — acompte (30 % défaut, éditable ; net réel calculé par le core).
   'devis.depositTitle': {

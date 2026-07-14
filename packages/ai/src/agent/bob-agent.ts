@@ -632,7 +632,7 @@ export class BobAgent {
         title: 'Bob',
         body:
           'Je ne traite que l’administratif et le financier de ton activité (je ne réponds pas aux questions hors de ce périmètre). ' +
-          'Je peux : encaisser une facture (« encaisse la facture 2026-014 »), lister tes impayés, préparer une relance, ou calculer ce que tu peux te verser.',
+          'Je peux : encaisser une facture (« encaisse la facture 2026-014 »), lister tes impayés, préparer une relance, ou calculer ta trésorerie mobilisable.',
       },
     };
   }
@@ -932,8 +932,10 @@ export class BobAgent {
     if (intent === 'payout') {
       const r = await this.deps.actions.computePayout();
       if (!r.ok) return err(r.error);
+      // Langage prudent (SPEC_EXPERT_FISCAL §V2 pt. 8) : trésorerie mobilisable ≠ rémunération —
+      // celle-ci dépend du statut/régime, pas encore connu du produit. Jamais « te verser » ici.
       const guard = renderWithGuard(
-        'Tu peux te verser {{payout}} sans risque. Je garde le reste pour la TVA et les charges.',
+        'Tu as {{payout}} de trésorerie mobilisable sans toucher tes réserves. Ta rémunération exacte dépend de ton statut, je te la précise bientôt.',
         [{ token: 'payout', cents: r.value.payoutCents }],
       );
       if (!guard.ok) return err({ kind: 'dependency', port: 'money-guard', cause: guard.violations.join(', ') });
@@ -941,8 +943,8 @@ export class BobAgent {
         kind: 'answer',
         intent,
         model,
-        plan: ['Lire la trésorerie réelle', 'Calculer le versement sans risque'],
-        card: { title: 'Combien tu peux te verser', body: guard.rendered },
+        plan: ['Lire la trésorerie réelle', 'Calculer la trésorerie mobilisable sans risque'],
+        card: { title: 'Ta trésorerie mobilisable', body: guard.rendered },
       });
     }
 
@@ -1971,7 +1973,7 @@ export class BobAgent {
           label: `Émettre la facture ${displayRef(invoice)} pour ${invoice.customerName}`,
         });
       } else if (step.intent === 'payout') {
-        actions.push({ tool: 'tresorerie_versement', args: {}, label: 'Calculer ton versement possible' });
+        actions.push({ tool: 'tresorerie_versement', args: {}, label: 'Calculer ta trésorerie mobilisable' });
       } else if (step.intent === 'relance') {
         // Cible explicite uniquement (numéro / nom) — sinon l'hôte prend la plus urgente du plan.
         const target = step.reference ? resolveInvoice(step.reference, payables, { fallbackToSingle: false }) : null;

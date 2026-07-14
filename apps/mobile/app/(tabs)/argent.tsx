@@ -1,6 +1,7 @@
 /**
  * Argent — le vrai état des comptes (claim C11, réfs claims/ref/C11-frame-p1/p2.png + astuce).
- * Composition 100 % @bob/ui : InnerScreenHeader → HeroMoneyCard (« te verser », pill sans risque)
+ * Composition 100 % @bob/ui : InnerScreenHeader → HeroMoneyCard (« trésorerie mobilisable »,
+ * pill sans risque — langage prudent SPEC_EXPERT_FISCAL §V2 pt. 8, jamais « te verser »)
  * → grand-livre « Argent disponible réel » badge LE SOLDE MENT (MoneyRow lead + rangées signées
  * + total) → « Prévision de tréso » (SegmentedControl 7/30/60/90 j × Optimiste/Réaliste/Prudent)
  * → « À surveiller » (mauvais payeurs réels) → « Mise de côté auto » (réserve TVA + charges)
@@ -389,7 +390,8 @@ export default function Argent() {
   const forecastByHorizon = { 7: cash7, 30: cash30, 60: cash60, 90: cash90 } as const;
   const forecast = forecastByHorizon[horizon];
 
-  // Héros « te verser » : payout prudent 30 j (= « sans risque ») ; le « monter à » = optimiste.
+  // Héros « trésorerie mobilisable » : payout prudent 30 j (= « sans risque ») ; le « monter
+  // à » = optimiste. Langage prudent (jamais « te verser ») — SPEC_EXPERT_FISCAL §V2 pt. 8.
   const heroSafe = useCashflow('prudent', 30);
   const heroUp = useCashflow('optimiste', 30);
 
@@ -510,7 +512,7 @@ export default function Argent() {
         />
 
         <View style={{ paddingHorizontal: 18 }}>
-          {/* ── Héros « te verser » ─────────────────────────────────────────── */}
+          {/* ── Héros « trésorerie mobilisable » ────────────────────────────── */}
           <View style={{ marginTop: 16 }}>
             {heroSafe.data ? (
               <HeroMoneyCard

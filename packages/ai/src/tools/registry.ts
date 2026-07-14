@@ -66,7 +66,9 @@ function parseLine(raw: unknown, index: number): Result<LineInput, AppError> {
 export function buildBobTools(actions: BobActions): AnyTool[] {
   const computePayout: Tool<Record<string, never>, { payoutCents: number; availableCents: number }> = {
     name: 'tresorerie_versement',
-    description: 'Calcule combien l’artisan peut se verser sans risque (trésorerie réelle).',
+    description:
+      'Calcule la trésorerie mobilisable sans risque (réserves déjà mises de côté) — ' +
+      'PAS une rémunération : celle-ci dépend du statut/régime fiscal, non modélisé ici.',
     mutating: false,
     outbound: false,
     compliance: 'low',
@@ -289,11 +291,11 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
       parse: (raw): Result<GenerateInvoiceActionInput, AppError> => {
         const r = raw as { quoteId?: unknown; mode?: unknown };
         if (typeof r?.quoteId !== 'string' || r.quoteId.length === 0) return err(appValidation('quoteId', 'Devis manquant.'));
-        if (r.mode !== undefined && !(typeof r.mode === 'string' && (INVOICE_MODES as readonly string[]).includes(r.mode)))
-          return err(appValidation('mode', 'Mode de facture invalide (deposit | final).'));
+        if (!(typeof r.mode === 'string' && (INVOICE_MODES as readonly string[]).includes(r.mode)))
+          return err(appValidation('mode', 'Mode de facture requis (deposit | final).'));
         return ok({
           quoteId: r.quoteId,
-          ...(typeof r.mode === 'string' ? { mode: r.mode as NonNullable<GenerateInvoiceActionInput['mode']> } : {}),
+          mode: r.mode as GenerateInvoiceActionInput['mode'],
         });
       },
       run: (input) => generateInvoiceAction(input),

@@ -128,7 +128,7 @@ export function ChevronRightIcon({ color, size = 15, strokeWidth = 2.4 }: IconPr
   );
 }
 
-/** « Tu peux te verser » — flèche déposée dans un bac (download-into-tray). */
+/** « Trésorerie mobilisable » — flèche déposée dans un bac (download-into-tray). */
 export function DepositIcon({ color, size = 16, strokeWidth = 2 }: IconProps) {
   return (
     <Svg width={size} height={size} viewBox="0 0 24 24" stroke={color} strokeWidth={strokeWidth} {...common}>

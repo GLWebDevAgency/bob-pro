@@ -26,7 +26,8 @@ export const LLM_TOOL_SPECS: LlmToolSpec[] = [
   },
   {
     name: 'tresorerie_versement',
-    description: "Calculer combien l'artisan peut se verser sans risque (trésorerie).",
+    description:
+      "Calculer la trésorerie mobilisable sans risque (réserves gardées) — pas une rémunération (dépend du statut).",
     parameters: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
