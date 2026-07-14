@@ -14,6 +14,7 @@ import { notifierProvider } from './notifications/notifier';
 import { expoPushProvider } from './notifications/expo-push';
 import { NotificationsApiService } from './notifications/notifications-api.service';
 import { RelanceService } from './jobs/relance.service';
+import { DigestService } from './jobs/digest.service';
 import { DocumentArchiveService } from './jobs/document-archive.service';
 import { NotificationDeliveryService } from './jobs/notification-delivery.service';
 import { ScheduledTenantDirectory } from './jobs/tenant-directory';
@@ -93,6 +94,7 @@ import {
   providers: [
     BackendService,
     RelanceService,
+    DigestService,
     DocumentArchiveService,
     NotificationDeliveryService,
     ScheduledTenantDirectory,

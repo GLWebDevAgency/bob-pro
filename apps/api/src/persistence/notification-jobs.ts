@@ -6,7 +6,7 @@ export type NotificationJobStatus = 'pending' | 'done' | 'failed';
 export interface NotificationJob {
   id: string;
   companyId: string;
-  kind: 'quote-signature' | 'invoice-relance';
+  kind: 'quote-signature' | 'invoice-relance' | 'weekly-digest';
   dedupeKey: string;
   channel: Notification['channel'];
   recipient: string;
