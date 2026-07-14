@@ -964,6 +964,30 @@ describe('HttpBobClient — assistant Bob (C40 ⑧ : ask/confirm/journal serveur
     expect(r.value.earlyAccess).toBe(true);
     expect(r.value.priceCents).toBe(0);
   });
+
+  it('pilier 2 : latestValueDigest → GET /engagement/digest/latest ; digest null (sans substance) voyage tel quel', async () => {
+    const payload = {
+      digest: null,
+      periodStart: '2026-07-06T22:00:00.000Z',
+      periodEnd: '2026-07-13T22:00:00.000Z',
+      isoWeek: '2026-W28',
+    };
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      if (String(url) === 'https://api.bob.test/engagement/digest/latest' && init?.method === 'GET') {
+        return new Response(JSON.stringify(payload), { headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ error: { kind: 'not_found', resource: 'route' } }), { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-mercier' });
+
+    const r = await client.latestValueDigest();
+
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    // null = semaine sans substance : la carte mobile ne se rend pas — jamais un digest inventé.
+    expect(r.value).toEqual(payload);
+  });
 });
 
 

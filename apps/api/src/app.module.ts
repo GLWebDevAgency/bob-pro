@@ -52,7 +52,7 @@ import {
   PublicSignatureController,
   NotificationsController,
   DevicesController,
-} from './api.controllers';
+ EngagementController } from './api.controllers';
 
 @Module({
   imports: [
@@ -72,6 +72,7 @@ import {
     AiController,
     VoiceController,
     SubscriptionController,
+    EngagementController,
     JobsController,
     OnboardingController,
     DiagnosticController,

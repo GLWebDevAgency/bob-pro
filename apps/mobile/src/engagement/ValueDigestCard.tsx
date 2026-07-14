@@ -17,6 +17,8 @@ import { Text } from 'react-native';
 import { formatEURWhole, type ValueDigest } from '@bob/core';
 import { t, type I18nKey } from '@bob/i18n';
 import { Card, font, useTheme } from '@bob/ui';
+import { useQuery } from '@tanstack/react-query';
+import { useBobClient } from '../data/client';
 
 /**
  * Dernier digest de valeur du tenant — null tant qu'aucun digest réel n'existe (jamais de bruit).
@@ -33,7 +35,18 @@ import { Card, font, useTheme } from '@bob/ui';
  * Tant que rien ne répond : null → la carte est invisible, zéro régression visuelle.
  */
 export function useLatestValueDigest(): ValueDigest | null {
-  return null;
+  const client = useBobClient();
+  const query = useQuery({
+    queryKey: ['value-digest'],
+    queryFn: async () => {
+      const result = await client.latestValueDigest();
+      if (!result.ok) throw result.error;
+      return result.value;
+    },
+    staleTime: 15 * 60 * 1000, // le digest hebdo ne bouge pas à la minute
+    retry: false, // pas de valeur = pas de carte — jamais un spinner de vente
+  });
+  return query.data?.digest ?? null;
 }
 
 /** Accroche unique → clé i18n + interpolations. `estimated` = du TEMPS est affiché (note requise). */

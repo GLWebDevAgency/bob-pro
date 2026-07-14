@@ -1,5 +1,5 @@
 import type { AgentContext, AgentRun, AskOptions, JournalEntry, PendingAction } from '@bob/ai';
-import type {
+import type { ValueDigest,
   Result,
   AppError,
   CreateQuoteInput,
@@ -276,7 +276,7 @@ export type RealtimeVoiceSpeechFeed =
   } & RealtimeVoiceSpeechBinding)
   | ({
     status: 'terminal';
-    reason: 'cancelled' | 'failed' | 'expired';
+    reason: 'cancelled' | 'failed' | 'expired' | 'delivered';
   } & RealtimeVoiceSpeechBinding);
 
 export interface RealtimeVoiceSpeechFeedInput {
@@ -484,6 +484,15 @@ export interface RegisterDeviceClientInput {
  * défini par C26 dans derive-account-view — le type fait foi, pas de doublon) : tout
  * SubscriptionView EST un SubscriptionInfo, l'écran Compte le passe tel quel à deriveAccountView.
  */
+
+/** Vue du digest de valeur hebdo — GET /engagement/digest/latest (pilier 2). */
+export interface ValueDigestView {
+  digest: ValueDigest | null;
+  periodStart: string;
+  periodEnd: string;
+  isoWeek: string;
+}
+
 export interface SubscriptionView extends SubscriptionInfo {
   /** Accès anticipé RÉEL : aucun billing n'existe — l'écran Compte affiche l'état early-access honnête. */
   earlyAccess: boolean;
@@ -522,6 +531,8 @@ export interface BobClient {
    * En early-access le serveur renvoie earlyAccess: true, priceCents: 0 — l'écran Compte en dérive
    * l'état honnête. Local (démo) : early-access aligné sur le seed. */
   getSubscription(): Promise<Result<SubscriptionView, AppError>>;
+  /** Digest de valeur de la semaine écoulée (pilier 2) — calculé SERVEUR, null = sans substance. */
+  latestValueDigest(): Promise<Result<ValueDigestView, AppError>>;
   startCheckout(tier: PlanTier): Promise<Result<{ url: string }, AppError>>;
   billingPortal(): Promise<Result<{ url: string }, AppError>>;
   invoicePaymentLink(invoiceId: string): Promise<Result<{ url: string }, AppError>>;

@@ -34,7 +34,7 @@ import type {
   QuoteView,
   InvoiceView,
   PaymentView,
-  SubscriptionView,
+  SubscriptionView, ValueDigestView,
   RegisterPaymentClientInput,
   RegisterPaymentClientOutput,
   SendQuoteOutput,
@@ -259,7 +259,12 @@ function decodeRealtimeVoiceSpeechFeed(status: number, value: unknown): Realtime
   if (
     status === 410
     && value.status === 'terminal'
-    && (value.reason === 'cancelled' || value.reason === 'failed' || value.reason === 'expired')
+    && (
+      value.reason === 'cancelled'
+      || value.reason === 'failed'
+      || value.reason === 'expired'
+      || value.reason === 'delivered'
+    )
     && hasExactKeys(value, [
       'status',
       'artifactId',
@@ -711,7 +716,12 @@ export class HttpBobClient implements BobClient {
       const init: RequestInit = {
         method,
         signal: controller.signal,
+        cache: 'no-store',
+        redirect: 'error',
+        referrerPolicy: 'no-referrer',
         headers: {
+          accept: 'application/json',
+          'cache-control': 'no-store',
           'content-type': 'application/json',
           'x-company-id': this.companyId,
           ...(token ? { authorization: `Bearer ${token}` } : {}),
@@ -804,6 +814,9 @@ export class HttpBobClient implements BobClient {
 
   getSubscription() {
     return this.req<SubscriptionView>('GET', '/subscription');
+  }
+  latestValueDigest() {
+    return this.req<ValueDigestView>('GET', '/engagement/digest/latest');
   }
   startCheckout(tier: PlanTier) {
     return this.req<{ url: string }>('POST', '/subscription/checkout', { tier });

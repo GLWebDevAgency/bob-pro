@@ -1,10 +1,10 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
-import { SystemClock, buildValueDigest, type ValueDigest, type ValueEvent } from '@bob/core';
+import { SystemClock, buildValueDigest, ok, type AppError, type Result, type ValueDigest, type ValueEvent } from '@bob/core';
 import { PERSISTENCE, type Persistence } from '../persistence/persistence';
 import { NotificationDedupeConflictError } from '../persistence/notification-jobs';
 import { SUPABASE_ADMIN, type SupabaseAdminPort } from '../auth/supabase-admin';
-import { AppLogger } from '../observability/logger';
+import { AppLogger, requireTenant } from '../observability/logger';
 import { NotificationDeliveryService } from './notification-delivery.service';
 import { ScheduledTenantDirectory } from './tenant-directory';
 
@@ -299,6 +299,25 @@ export class DigestService {
    *   ne porte AUCUNE date de création persistée (ni agrégat ni colonne) : exclu plutôt que daté
    *   arbitrairement. viaVoice n'est pas traçable côté serveur aujourd'hui : jamais revendiqué.
    */
+  /**
+   * Digest de la semaine ÉCOULÉE recalculé À LA VOLÉE pour le tenant COURANT (GET mobile) —
+   * mêmes projections que le cron (une seule vérité, jamais deux calculs qui divergent) ;
+   * digest null = semaine sans substance (la carte mobile ne se rend pas, zéro bruit).
+   */
+  async latestForCurrentTenant(): Promise<
+    Result<{ digest: ValueDigest | null; periodStart: string; periodEnd: string; isoWeek: string }, AppError>
+  > {
+    const companyId = requireTenant();
+    const window = weeklyDigestWindow(new Date(this.clock.now()));
+    const { events } = await this.collectValueEvents(
+      companyId,
+      window,
+      `digest:${companyId}:${window.isoWeek}:${DIGEST_POLICY_VERSION}`,
+    );
+    const digest = buildValueDigest({ periodStart: window.periodStart, periodEnd: window.periodEnd, events });
+    return ok({ digest, periodStart: window.periodStart, periodEnd: window.periodEnd, isoWeek: window.isoWeek });
+  }
+
   private async collectValueEvents(
     companyId: string,
     window: DigestWindow,

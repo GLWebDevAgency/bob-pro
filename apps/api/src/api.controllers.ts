@@ -33,6 +33,7 @@ import { BackendService, type FacturXImportDecision, type UploadDocumentInput } 
 import { RelanceService } from './jobs/relance.service';
 import { DocumentArchiveService } from './jobs/document-archive.service';
 import { NotificationsApiService } from './notifications/notifications-api.service';
+import { DigestService } from './jobs/digest.service';
 import { unwrap } from './http/result';
 import { readReleaseMetadata } from './release-metadata';
 import { WithoutTenantPersistenceTransaction } from './persistence/tenant-persistence.interceptor';
@@ -922,6 +923,16 @@ export class PaymentsController {
 }
 
 /** Fil de notifications (C25) — le mobile lit ce que les jobs produisent, company-scoped (Principal + RLS). */
+/** Digest de valeur (pilier 2) — le mobile lit le digest CALCULÉ SERVEUR (jamais un chiffre local). */
+@Controller('engagement')
+export class EngagementController {
+  constructor(private readonly digest: DigestService) {}
+  @Get('digest/latest')
+  async latestDigest() {
+    return unwrap(await this.digest.latestForCurrentTenant());
+  }
+}
+
 @Controller('notifications')
 export class NotificationsController {
   constructor(private readonly notifications: NotificationsApiService) {}

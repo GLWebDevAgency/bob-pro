@@ -1,3 +1,4 @@
+import type { ValueEvent } from '@bob/core';
 import {
   BobAgent,
   ModelRouter,
@@ -14,7 +15,7 @@ import {
   type InvoiceableQuote,
   type AgentDocument,
 } from '@bob/ai';
-import {
+import { buildValueDigest,
   CreateQuote,
   SendQuote,
   SignQuote,
@@ -175,7 +176,7 @@ import type {
   RecordDocumentExpenseClientOutput,
   AskBobClientInput,
   CreateCustomerClientInput,
-} from './client';
+ ValueDigestView } from './client';
 import { localExpenseCreationFingerprint, portableSha256Bytes } from './expense-idempotency';
 
 export interface LocalBobClientOptions {
@@ -615,6 +616,31 @@ export class LocalBobClient implements BobClient {
       issuedAt: i.issuedAt,
       paid: i.paid,
     };
+  }
+
+  /** Digest démo : calculé sur les DONNÉES LOCALES réelles (paiements/factures du seed et de la
+   *  session) via buildValueDigest — même moteur que le serveur. Fenêtre = 7 jours glissants
+   *  (la sémantique semaine-ISO-Paris vit côté serveur ; l'écart est assumé pour la démo).
+   *  Attribution conservatrice : AUCUN overdue_recovered en local (pas d'historique de relances
+   *  livré fiable — jamais un recouvrement inventé). */
+  async latestValueDigest(): Promise<Result<ValueDigestView, AppError>> {
+    const now = Date.now();
+    const periodStart = new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const periodEnd = new Date(now).toISOString();
+    const payments = await this.payments.listByCompany(this.companyId);
+    const invoices = await this.invoices.listByCompany(this.companyId);
+    const events: ValueEvent[] = [
+      ...payments.map((payment) => ({
+        kind: 'payment_collected' as const,
+        at: payment.receivedAt,
+        amountCents: payment.amount,
+      })),
+      ...invoices
+        .filter((invoice) => invoice.issuedAt !== null && invoice.status !== 'cancelled')
+        .map((invoice) => ({ kind: 'document_created' as const, at: invoice.issuedAt as string })),
+    ];
+    const digest = buildValueDigest({ periodStart, periodEnd, events });
+    return ok({ digest, periodStart, periodEnd, isoWeek: periodStart.slice(0, 10) });
   }
 
   async getSubscription(): Promise<Result<SubscriptionView, AppError>> {
