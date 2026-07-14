@@ -4,8 +4,9 @@
  * (tout prêt / points à arbitrer) → « À arbitrer » + « Pièces » (checklist actionnable, mêmes
  * points d'entrée que Bob) → ÉTATS DE SYNTHÈSE (balance générale + compte de résultat CDR-1 +
  * bilan BILAN-1, dérivés @bob/core, cohérents par construction) → « Envoyer au comptable »
- * (dossier DOSSIER-1 + FEC). Paywall accounting_operations conservé. Zéro hex, zéro fixture,
- * i18n cloture.* ×3 humeurs.
+ * (dossier DOSSIER-1 + FEC). Paywall accounting_operations conservé — via la fondation
+ * monetization (useEntitlement + PaywallCard contextuelle, jamais pendant le chargement).
+ * Zéro hex, zéro fixture, i18n cloture.* ×3 humeurs.
  */
 import { useMemo, useState, type ReactNode } from 'react';
 import { Alert, Pressable, ScrollView, Text, View } from 'react-native';
@@ -23,7 +24,6 @@ import {
 import { patterns } from '@bob/tokens';
 import { t, type I18nKey } from '@bob/i18n';
 import {
-  Button,
   Card,
   IconTile,
   InnerScreenHeader,
@@ -39,9 +39,9 @@ import {
   useExportFec,
   useInvoices,
   useQuotes,
-  useSubscription,
   appErrorMessage,
 } from '../src/data/hooks';
+import { PaywallCard, useEntitlement } from '../src/monetization/paywall';
 import { useDocuments } from '../src/data/documents';
 import { usePublishAgentContext, type AgentContext } from '../src/agent';
 import { shareFec } from '../src/lib/share-fec';
@@ -94,14 +94,15 @@ export default function Cloture() {
   const { personality, colors, semantic, controls } = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { data: sub } = useSubscription();
+  // Entitlement TYPÉ (fondation paywall) — même feature que le gating historique de l'écran.
+  const entitlement = useEntitlement('accounting_operations');
   const invoices = useInvoices();
   const quotes = useQuotes();
   const documents = useDocuments();
   const entries = useAccountingEntries();
   const company = useCompany();
   const exportFec = useExportFec();
-  const entitled = (sub?.features ?? []).includes('accounting_operations');
+  const entitled = entitlement.allowed;
   const [sendingDossier, setSendingDossier] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
@@ -297,16 +298,18 @@ export default function Cloture() {
         />
 
         <View style={{ paddingHorizontal: 18, paddingTop: 14, gap: 14 }}>
-          {!entitled ? (
-            <Card>
-              <Text style={[font('cardTitle'), { color: colors.ink900 }]}>{t('cloture.paywallTitle', { personality })}</Text>
-              <Text style={[font('sub'), { color: colors.slate500, marginTop: 6, lineHeight: 19 }]}>
-                {t('cloture.paywallBody', { personality })}
-              </Text>
-              <View style={{ height: 12 }} />
-              <Button title={t('cloture.paywallCta', { personality })} variant="secondary" onPress={() => router.push('/compte')} />
-            </Card>
-          ) : loading ? (
+          {/* Abonnement en chargement → squelettes, JAMAIS le paywall (fail-open d'affichage) ;
+              verrouillé → carte contextuelle du domaine (même emplacement que le contenu). */}
+          {!entitlement.loading && !entitled ? (
+            entitlement.decision !== null ? (
+              <PaywallCard
+                decision={entitlement.decision}
+                source="feature_screen"
+                personality={personality}
+                onDismissed={() => router.back()}
+              />
+            ) : null
+          ) : entitlement.loading || loading ? (
             <>
               <SkeletonBlock height={80} />
               <SkeletonBlock height={140} />

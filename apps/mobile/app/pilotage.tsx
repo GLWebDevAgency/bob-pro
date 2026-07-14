@@ -19,7 +19,7 @@ import {
 } from '@bob/core';
 import { patterns } from '@bob/tokens';
 import { t, type I18nKey } from '@bob/i18n';
-import { Button, Card, InnerScreenHeader, SectionHeader, StatusBadge, font, useTheme } from '@bob/ui';
+import { Card, InnerScreenHeader, SectionHeader, StatusBadge, font, useTheme } from '@bob/ui';
 import {
   useAccountingEntries,
   useCompany,
@@ -27,8 +27,8 @@ import {
   useExpenses,
   useInvoices,
   usePayments,
-  useSubscription,
 } from '../src/data/hooks';
+import { PaywallCard, useEntitlement } from '../src/monetization/paywall';
 import { usePublishAgentContext, type AgentContext } from '../src/agent';
 import { ChevronLeftIcon } from '../src/components/icons';
 
@@ -83,14 +83,15 @@ export default function Pilotage() {
   const { personality, colors, semantic } = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { data: sub } = useSubscription();
+  // Entitlement TYPÉ (fondation paywall) — même feature que le gating historique de l'écran.
+  const entitlement = useEntitlement('accounting_operations');
   const entries = useAccountingEntries();
   const payments = usePayments();
   const invoices = useInvoices();
   const customers = useCustomers();
   const expenses = useExpenses();
   const company = useCompany();
-  const entitled = (sub?.features ?? []).includes('accounting_operations');
+  const entitled = entitlement.allowed;
 
   const loading =
     entries.isLoading || payments.isLoading || invoices.isLoading || customers.isLoading || expenses.isLoading;
@@ -529,24 +530,26 @@ export default function Pilotage() {
         />
 
         <View style={{ paddingHorizontal: 18, paddingTop: 14, gap: 14 }}>
-          {!entitled ? (
-            <Card>
-              <Text style={[font('cardTitle'), { color: colors.ink900 }]}>{t('pilotage.paywallTitle', { personality })}</Text>
-              <Text style={[font('sub'), { color: colors.slate500, marginTop: 6, lineHeight: 19 }]}>
-                {t('pilotage.paywallBody', { personality })}
-              </Text>
-              <View style={{ height: 12 }} />
-              <Button title={t('pilotage.paywallCta', { personality })} variant="secondary" onPress={() => router.push('/compte')} />
-            </Card>
-          ) : loading || review === null ? (
+          {/* Abonnement en chargement → squelettes, JAMAIS le paywall (fail-open d'affichage) ;
+              verrouillé → carte contextuelle du domaine (même emplacement que le contenu). */}
+          {entitlement.loading || (entitled && (loading || review === null)) ? (
             <>
               <SkeletonBlock height={120} />
               <SkeletonBlock height={90} />
               <SkeletonBlock height={160} />
             </>
-          ) : (
+          ) : !entitled ? (
+            entitlement.decision !== null ? (
+              <PaywallCard
+                decision={entitlement.decision}
+                source="feature_screen"
+                personality={personality}
+                onDismissed={() => router.back()}
+              />
+            ) : null
+          ) : review !== null ? (
             body(review)
-          )}
+          ) : null}
         </View>
       </ScrollView>
     </View>

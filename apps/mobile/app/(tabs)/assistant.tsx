@@ -21,7 +21,9 @@
  * États : abonnement sans ai_assistant → garde honnête (l'app reste utilisable à la
  * main) · erreur → voix de Bob (assistant.error/actionError) · serveur injoignable
  * (kind dependency) → assistant.offline + pill « hors ligne » · réflexion → phase
- * RÉELLE de l'agent (onPhase comprends/agit) sur l'indicateur de saisie.
+ * RÉELLE de l'agent (onPhase comprends/agit) sur l'indicateur de saisie · tap Live sans
+ * droit voice_live → teaser contextuel PaywallCard (source voice_live_tap, sourdine
+ * respectée — fondation src/monetization/paywall, SPEC_PILIER2_MONETISATION).
  *
  * Écarts assumés vs réf/ancien écran :
  * · le mode vocal mains-libres partage désormais le lease STT global ; au blur, l'owner local
@@ -67,12 +69,13 @@ import {
   type BobIntent,
   type PendingAction,
 } from '@bob/ai';
-import type { AppError } from '@bob/core';
+import { PLAN_CATALOG, type AppError, type PaywallDecision } from '@bob/core';
 import { conformityCard, patterns, shadowNative, themes } from '@bob/tokens';
 import { t, type I18nKey } from '@bob/i18n';
 import { Button, Chip, QuestionSheet, font, useTheme } from '@bob/ui';
 import { useBobClient } from '../../src/data/client';
-import { useInvoices, useQuotes, useSubscription } from '../../src/data/hooks';
+import { useInvoices, useQuotes } from '../../src/data/hooks';
+import { PaywallCard, isPaywallMuted, useEntitlement } from '../../src/monetization/paywall';
 import { makeBobAgent } from '../../src/data/bob';
 import { getAutonomy } from '../../src/data/settings';
 import { speechRecognitionAvailable, useSpeak, useVoiceInput } from '../../src/data/voice';
@@ -260,11 +263,15 @@ export default function Assistant() {
   const client = useBobClient();
   const agent = useMemo(() => makeBobAgent(client), [client]);
   const globalSession = useAgentSession();
-  const { data: sub } = useSubscription();
+  // Entitlements TYPÉS (fondation paywall) : l'assistant lui-même (ai_assistant, gating
+  // historique de l'écran) et BOB LIVE (voice_live — le serveur reste l'arbitre du realtime,
+  // ici on décide seulement du TEASER quand le tap n'ouvre aucun droit).
+  const assistantEntitlement = useEntitlement('ai_assistant');
+  const liveEntitlement = useEntitlement('voice_live');
   const { data: invoices } = useInvoices();
   const { data: quotes } = useQuotes();
   const { prompt } = useLocalSearchParams<{ prompt?: string }>();
-  const entitled = (sub?.features ?? []).includes('ai_assistant');
+  const entitled = assistantEntitlement.allowed;
 
   const [items, setItems] = useState<ChatItem[]>([]);
   const itemsRef = useRef<ChatItem[]>([]);
@@ -276,6 +283,8 @@ export default function Assistant() {
   const [assistantFocused, setAssistantFocused] = useState(false);
   /** ASK-1 : question structurée active (modale) — ouverte automatiquement à l'arrivée du run. */
   const [activeAsk, setActiveAsk] = useState<AgentQuestion | null>(null);
+  /** TEASER BOB LIVE : décision de déblocage affichée après un tap Live sans droit voice_live. */
+  const [livePaywall, setLivePaywall] = useState<PaywallDecision | null>(null);
   const inputRef = useRef<TextInput>(null);
   const scrollRef = useRef<ScrollView>(null);
   const handoffContextRef = useRef<{
@@ -700,6 +709,18 @@ export default function Assistant() {
       expectationRef.current = { kind: 'command' };
       return;
     }
+    // TEASER BOB LIVE (pilier 2) : sans droit voice_live, le tap devient LE moment contextuel —
+    // jamais pendant le chargement (on ne vend pas sur un doute) et le « non » est tenu :
+    // sourdine (2 rejets même source < 14 j) → réponse discrète de Bob, zéro vente. La branche
+    // AYANT DROIT ci-dessous est strictement inchangée (le realtime vit dans la session).
+    if (!liveEntitlement.loading && !liveEntitlement.allowed) {
+      const decision = liveEntitlement.decision;
+      void isPaywallMuted('voice_live_tap').then((muted) => {
+        if (muted || decision === null) pushText('bob', t('live.useScreen', { personality }));
+        else setLivePaywall(decision);
+      });
+      return;
+    }
     setLive(true);
     liveRef.current = true;
     expectationRef.current = { kind: 'command' };
@@ -789,8 +810,9 @@ export default function Assistant() {
       : globalSession.phase
     : liveState;
 
-  // ── Garde d'abonnement (feature ai_assistant) — honnête, l'app reste utilisable à la main ──
-  if (sub !== undefined && !entitled) {
+  // ── Garde d'abonnement (feature ai_assistant) — honnête, l'app reste utilisable à la main ;
+  // pendant le chargement de l'abonnement on ne verrouille rien (fail-open d'affichage). ──
+  if (!assistantEntitlement.loading && !entitled) {
     return (
       <View
         style={{
@@ -1046,6 +1068,26 @@ export default function Assistant() {
 
         {/* ── Chips suggestions + input (au-dessus de la tab bar flottante) ──── */}
         <View style={{ paddingBottom: tabClearance + 6 }}>
+          {/* TEASER BOB LIVE — la carte contextuelle remplace le bandeau live tant que le droit
+              n'est pas ouvert : un CTA (le déblocage décidé par le domaine), le non tenu. */}
+          {livePaywall !== null && !liveEntitlement.allowed ? (
+            <View style={{ marginHorizontal: 16, marginTop: 6 }}>
+              <PaywallCard
+                decision={livePaywall}
+                source="voice_live_tap"
+                personality={personality}
+                {...(livePaywall.kind === 'upgrade'
+                  ? {
+                      teaser: t('paywall.liveTeaser', {
+                        personality,
+                        params: { tier: PLAN_CATALOG[livePaywall.requiredTier].label },
+                      }),
+                    }
+                  : {})}
+                onDismissed={() => setLivePaywall(null)}
+              />
+            </View>
+          ) : null}
           {displayedLive ? (
             <Pressable
               accessibilityRole="button"
