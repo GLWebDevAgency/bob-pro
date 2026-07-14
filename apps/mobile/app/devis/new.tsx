@@ -83,8 +83,11 @@ import {
   Button,
   Card,
   Chip,
+  EmptyState,
+  ErrorRetry,
   MoneyText,
   SignaturePad,
+  SkeletonRow,
   StatusBadge,
   Stepper,
   Toast,
@@ -995,20 +998,22 @@ export default function DevisNew() {
                 {t('devis.clientSub', { personality })}
               </Text>
               {customers.isLoading ? (
-                <Card>
-                  <ActivityIndicator color={colors.ink800} />
-                </Card>
+                <>
+                  <SkeletonRow avatar="circle" lines={2} trailing="pill" />
+                  <SkeletonRow avatar="circle" lines={2} trailing="pill" />
+                  <SkeletonRow avatar="circle" lines={2} trailing="pill" />
+                </>
               ) : customers.isError ? (
-                <Card style={{ borderColor: semantic.danger }}>
-                  <Text accessibilityRole="alert" style={[font('sub'), { color: semantic.danger }]}>
-                    {t('devis.dataError', { personality })}
-                  </Text>
-                </Card>
+                <ErrorRetry
+                  message={t('devis.dataError', { personality })}
+                  onRetry={() => void customers.refetch()}
+                />
               ) : (customers.data ?? []).length === 0 ? (
                 <Card>
-                  <Text style={[font('sub'), { color: colors.slate500 }]}>
-                    {t('devis.noCustomers', { personality })}
-                  </Text>
+                  {/* Pas de cta ici : la création client (C40) vit UNIQUEMENT dans une Sheet
+                      locale à (tabs)/clients.tsx (zone d'un autre agent, aucune route dédiée
+                      genre /client/new n'existe) — un cta y pointant serait un chemin fantôme. */}
+                  <EmptyState body={t('devis.noCustomers', { personality })} />
                 </Card>
               ) : (
                 (customers.data ?? []).map((c) => {

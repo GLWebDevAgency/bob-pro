@@ -10,7 +10,9 @@ import { useTheme } from '../src/theme';
 import { useCustomers, useQuotes, useInvoices } from '../src/data/hooks';
 import { usePublishAgentContext, type AgentContext, type AgentSurface } from '../src/agent';
 import { frDateLabel } from '@bob/ai';
-import { Card, Badge, Button, MoneyText, SectionHeader, font } from '../src/components/ui';
+import { Card, Badge, MoneyText, SectionHeader, font } from '../src/components/ui';
+import { ErrorRetry, SkeletonRow } from '@bob/ui';
+import { combineQueryStates } from '../src/data/query-state';
 import {
   QuoteActions,
   InvoiceActions,
@@ -38,8 +40,9 @@ export default function Ventes() {
 
   const nameOf = (customerId: string) => (customers.data ?? []).find((c) => c.id === customerId)?.name ?? 'Client';
 
-  const loading = quotes.isLoading || invoices.isLoading;
-  const errored = quotes.isError || invoices.isError;
+  // failed se lit TOUJOURS avec loading (combineQueryStates) — un échec réseau ne devient
+  // jamais silencieusement « zéro devis/facture » (classe de bug P0 de l'audit états).
+  const queryState = combineQueryStates(quotes, invoices);
 
   // ── Filtre + recherche PLEIN TEXTE (n°, client, LIGNES — « chauffe-eau » retrouve la
   //    facture même sans se souvenir du client). Accents/casse ignorés, données déjà locales. ──
@@ -162,102 +165,90 @@ export default function Ventes() {
       </View>
 
       <ScrollView contentContainerStyle={{ padding: 20, paddingTop: 8, gap: 20, paddingBottom: 40 }}>
-        {loading ? (
-          <Card>
-            <Text style={[font('body'), { color: colors.slate500 }]}>Chargement…</Text>
-          </Card>
-        ) : errored ? (
-          <Card style={{ borderColor: semantic.danger }}>
-            <Text
-              accessibilityRole="alert"
-              accessibilityLiveRegion="assertive"
-              style={[font('sub'), { color: semantic.danger }]}
-            >
-              Impossible de charger tes documents.
-            </Text>
-            <View style={{ height: 12 }} />
-            <Button
-              title="Réessayer"
-              variant="secondary"
-              onPress={() => {
-                void quotes.refetch();
-                void invoices.refetch();
-              }}
-            />
-          </Card>
-        ) : (
-          <>
-            {/* Filtres + recherche plein texte (n°, client, prestations) — parité vocale :
-                « retrouve les factures avec un chauffe-eau » pilote les mêmes états. */}
-            <View style={{ gap: 10 }}>
-              <View style={{ flexDirection: 'row', gap: 8 }}>
-                {(
-                  [
-                    ['all', 'ventes.filterAll'],
-                    ['quotes', 'ventes.filterQuotes'],
-                    ['invoices', 'ventes.filterInvoices'],
-                  ] as const
-                ).map(([key, labelKey]) => (
-                  <Pressable
-                    key={key}
-                    accessibilityRole="button"
-                    accessibilityState={{ selected: kindFilter === key }}
-                    onPress={() => setKindFilter(key)}
-                    style={{
-                      paddingHorizontal: 14,
-                      paddingVertical: 8,
-                      borderRadius: 999,
-                      borderWidth: 1,
-                      borderColor: kindFilter === key ? semantic.ai : colors.line,
-                      backgroundColor: kindFilter === key ? semantic.aiBg : colors.surface,
-                    }}
-                  >
-                    <Text
-                      style={[
-                        font('meta'),
-                        { fontWeight: kindFilter === key ? '700' : '600', color: kindFilter === key ? semantic.aiInk : colors.ink800 },
-                      ]}
-                    >
-                      {t(labelKey, { personality })}
-                    </Text>
-                  </Pressable>
-                ))}
-              </View>
-              <TextInput
-                value={query}
-                onChangeText={setQuery}
-                placeholder={t('ventes.searchPlaceholder', { personality })}
-                placeholderTextColor={colors.slate400}
-                accessibilityLabel={t('ventes.searchPlaceholder', { personality })}
-                autoCorrect={false}
-                style={[
-                  font('body'),
-                  {
-                    minHeight: 44,
-                    color: colors.ink900,
-                    borderWidth: 1,
-                    borderColor: colors.line,
-                    borderRadius: 12,
-                    paddingHorizontal: 12,
-                    backgroundColor: colors.surface,
-                  },
-                ]}
-              />
-              {normalizedQuery !== '' && sortedQuotes.length + sortedInvoices.length === 0 ? (
-                <Text style={[font('sub'), { color: colors.slate500 }]}>
-                  {t('ventes.noResults', { personality })}
+        {/* Filtres + recherche plein texte (n°, client, prestations) — TOUJOURS montés (parité
+            vocale : « retrouve les factures avec un chauffe-eau » pilote les mêmes états) ;
+            seul le CORPS des sections en dessous bascule skeleton → erreur → données. */}
+        <View style={{ gap: 10 }}>
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            {(
+              [
+                ['all', 'ventes.filterAll'],
+                ['quotes', 'ventes.filterQuotes'],
+                ['invoices', 'ventes.filterInvoices'],
+              ] as const
+            ).map(([key, labelKey]) => (
+              <Pressable
+                key={key}
+                accessibilityRole="button"
+                accessibilityState={{ selected: kindFilter === key }}
+                onPress={() => setKindFilter(key)}
+                style={{
+                  paddingHorizontal: 14,
+                  paddingVertical: 8,
+                  borderRadius: 999,
+                  borderWidth: 1,
+                  borderColor: kindFilter === key ? semantic.ai : colors.line,
+                  backgroundColor: kindFilter === key ? semantic.aiBg : colors.surface,
+                }}
+              >
+                <Text
+                  style={[
+                    font('meta'),
+                    { fontWeight: kindFilter === key ? '700' : '600', color: kindFilter === key ? semantic.aiInk : colors.ink800 },
+                  ]}
+                >
+                  {t(labelKey, { personality })}
                 </Text>
-              ) : null}
-            </View>
-            {kindFilter !== 'invoices' ? (
-            <View>
-              <SectionHeader title="Devis" />
-              {sortedQuotes.length === 0 ? (
-                <Card>
-                  <Text style={[font('body'), { color: colors.slate500 }]}>Aucun devis pour l&apos;instant.</Text>
-                </Card>
-              ) : (
-                <View style={{ gap: 10 }}>
+              </Pressable>
+            ))}
+          </View>
+          <TextInput
+            value={query}
+            onChangeText={setQuery}
+            placeholder={t('ventes.searchPlaceholder', { personality })}
+            placeholderTextColor={colors.slate400}
+            accessibilityLabel={t('ventes.searchPlaceholder', { personality })}
+            autoCorrect={false}
+            style={[
+              font('body'),
+              {
+                minHeight: 44,
+                color: colors.ink900,
+                borderWidth: 1,
+                borderColor: colors.line,
+                borderRadius: 12,
+                paddingHorizontal: 12,
+                backgroundColor: colors.surface,
+              },
+            ]}
+          />
+          {!queryState.loading &&
+          !queryState.failed &&
+          normalizedQuery !== '' &&
+          sortedQuotes.length + sortedInvoices.length === 0 ? (
+            <Text style={[font('sub'), { color: colors.slate500 }]}>
+              {t('ventes.noResults', { personality })}
+            </Text>
+          ) : null}
+        </View>
+
+        {kindFilter !== 'invoices' ? (
+          <View>
+            <SectionHeader title="Devis" />
+            {queryState.loading ? (
+              <View style={{ gap: 10 }}>
+                <SkeletonRow lines={2} trailing="text" />
+                <SkeletonRow lines={2} trailing="text" />
+                <SkeletonRow lines={2} trailing="text" />
+              </View>
+            ) : queryState.failed ? (
+              <ErrorRetry message="Impossible de charger tes documents." onRetry={queryState.refetchAll} />
+            ) : sortedQuotes.length === 0 ? (
+              <Card>
+                <Text style={[font('body'), { color: colors.slate500 }]}>Aucun devis pour l&apos;instant.</Text>
+              </Card>
+            ) : (
+              <View style={{ gap: 10 }}>
                   {sortedQuotes.map((q) => {
                     const badge = QUOTE_BADGE[q.status];
                     return (
@@ -320,18 +311,27 @@ export default function Ventes() {
                   })}
                 </View>
               )}
-            </View>
-            ) : null}
+          </View>
+        ) : null}
 
-            {kindFilter !== 'quotes' ? (
-            <View>
-              <SectionHeader title="Factures" />
-              {sortedInvoices.length === 0 ? (
-                <Card>
-                  <Text style={[font('body'), { color: colors.slate500 }]}>Aucune facture pour l&apos;instant.</Text>
-                </Card>
-              ) : (
-                <View style={{ gap: 10 }}>
+        {kindFilter !== 'quotes' ? (
+          <View>
+            <SectionHeader title="Factures" />
+            {queryState.loading ? (
+              <View style={{ gap: 10 }}>
+                <SkeletonRow lines={2} trailing="text" />
+                <SkeletonRow lines={2} trailing="text" />
+                <SkeletonRow lines={2} trailing="text" />
+                <SkeletonRow lines={2} trailing="text" />
+              </View>
+            ) : queryState.failed ? (
+              <ErrorRetry message="Impossible de charger tes documents." onRetry={queryState.refetchAll} />
+            ) : sortedInvoices.length === 0 ? (
+              <Card>
+                <Text style={[font('body'), { color: colors.slate500 }]}>Aucune facture pour l&apos;instant.</Text>
+              </Card>
+            ) : (
+              <View style={{ gap: 10 }}>
                   {sortedInvoices.map((inv) => {
                     const badge = INVOICE_BADGE[inv.status];
                     // Assiette = netToPay (acompte si depositPct) : montant réellement encaissable sur la facture.
@@ -412,10 +412,8 @@ export default function Ventes() {
                   })}
                 </View>
               )}
-            </View>
-            ) : null}
-          </>
-        )}
+          </View>
+        ) : null}
       </ScrollView>
     </View>
   );

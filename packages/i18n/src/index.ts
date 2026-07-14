@@ -2481,6 +2481,12 @@ const legacyFr = {
     pro: 'Impossible de charger cette pièce pour le moment. Veuillez réessayer.',
     direct: 'Pièce injoignable. Réessaie.',
   },
+  'piece.close': { pote: 'Fermer', pro: 'Fermer', direct: 'Fermer' },
+  'piece.accountingError': {
+    pote: 'Je n’ai pas réussi à charger l’écriture comptable. On réessaie ?',
+    pro: 'L’écriture comptable n’a pas pu être chargée. Veuillez réessayer.',
+    direct: 'Écriture comptable injoignable. Réessaie.',
+  },
 
   // ── C23 — flux « Diagnostic 2026 » (copy pote = exacte du proto §diag*) ───────
   'diag.title': { pote: 'Diagnostic 2026', pro: 'Diagnostic 2026', direct: 'Diagnostic 2026' },

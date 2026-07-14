@@ -20,6 +20,7 @@ import {
   Card,
   IconTile,
   SectionHeader,
+  Skeleton,
   StatusBadge,
   Toast,
   font,
@@ -60,11 +61,6 @@ function todayISO(d: Date = new Date()): string {
 function formatDate(iso: string): string {
   const [y, m, d] = iso.slice(0, 10).split('-');
   return d && m && y ? `${d}/${m}/${y}` : iso.slice(0, 10);
-}
-
-function SkeletonBlock({ height }: { height: number }) {
-  const { colors } = useTheme();
-  return <View style={{ height, borderRadius: 18, backgroundColor: colors.lineSoft }} />;
 }
 
 export default function Depenses() {
@@ -164,8 +160,10 @@ export default function Depenses() {
 
         {expenses.isLoading ? (
           <View style={{ paddingTop: 16, paddingHorizontal: 18, gap: 12 }}>
-            <SkeletonBlock height={150} />
-            <SkeletonBlock height={140} />
+            {/* Héros (Card radius={20} padding={16}) mesurée dans ce fichier : eyebrow + gros
+                montant + sous-titre + 2 mini-stats + CTA ≈ 228 de haut, zéro saut à l'arrivée. */}
+            <Skeleton height={228} radius={20} />
+            <Skeleton height={140} radius={18} />
           </View>
         ) : expenses.isError ? (
           <View style={{ paddingTop: 16, paddingHorizontal: 18 }}>

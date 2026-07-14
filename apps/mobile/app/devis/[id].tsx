@@ -5,11 +5,11 @@
  * Nav croisée réelle : première facture issue du devis (parentQuoteId).
  */
 import { useMemo } from 'react';
-import { ActivityIndicator, Alert, Linking, Text, View } from 'react-native';
+import { Alert, Linking, Text, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { buildPieceView, type PieceLinkedRef } from '@bob/core';
 import { t } from '@bob/i18n';
-import { Card, font, useTheme } from '@bob/ui';
+import { Card, ErrorRetry, SkeletonCard, SkeletonHeader, font, useTheme } from '@bob/ui';
 import { useCustomers, useInvoices, useQuote } from '../../src/data/hooks';
 import { useDocuments } from '../../src/data/documents';
 import { useBobClient } from '../../src/data/client';
@@ -126,24 +126,36 @@ export default function DevisDetail() {
 
   if (quote.isLoading || customers.isLoading) {
     return (
-      <View
-        style={{
-          flex: 1,
-          alignItems: 'center',
-          justifyContent: 'center',
-          backgroundColor: colors.bg,
-        }}
-      >
-        <ActivityIndicator color={colors.ink800} />
+      <View style={{ flex: 1, backgroundColor: colors.bg }}>
+        <SkeletonHeader onClose={() => router.back()} />
+        <View style={{ padding: 18, gap: 12 }}>
+          <SkeletonCard contentLines={4} />
+          <SkeletonCard contentLines={3} />
+          <SkeletonCard contentLines={2} />
+        </View>
       </View>
     );
   }
-  if (quote.isError || !view || !quote.data) {
+  // Un ÉCHEC réseau n'est JAMAIS un cul-de-sac : retry ET fermeture restent disponibles
+  // (avant ce correctif l'utilisateur était piégé sans issue — bug P0 de l'audit états).
+  if (quote.isError) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', backgroundColor: colors.bg, padding: 18 }}>
+        <ErrorRetry
+          message={t('piece.dataError', { personality })}
+          onRetry={() => void quote.refetch()}
+          secondaryLabel={t('piece.close', { personality })}
+          onSecondaryAction={() => router.back()}
+        />
+      </View>
+    );
+  }
+  if (!view || !quote.data) {
     return (
       <View style={{ flex: 1, justifyContent: 'center', backgroundColor: colors.bg, padding: 18 }}>
         <Card>
           <Text accessibilityRole="alert" style={[font('sub'), { color: colors.slate500 }]}>
-            {t(quote.isError ? 'piece.dataError' : 'piece.notFound', { personality })}
+            {t('piece.notFound', { personality })}
           </Text>
         </Card>
       </View>

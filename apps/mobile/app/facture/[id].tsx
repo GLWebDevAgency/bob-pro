@@ -7,11 +7,11 @@
  * L'aperçu comptable (fonctionnalité réelle antérieure) est conservé sous les mentions.
  */
 import { useMemo } from 'react';
-import { ActivityIndicator, Alert, Linking, Text, View } from 'react-native';
+import { Alert, Linking, Text, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { buildPieceView, type PieceLinkedRef } from '@bob/core';
 import { t } from '@bob/i18n';
-import { Card, SectionHeader, font, useTheme } from '@bob/ui';
+import { Card, ErrorRetry, SectionHeader, Skeleton, SkeletonCard, SkeletonHeader, font, useTheme } from '@bob/ui';
 import { Button } from '@bob/ui';
 import {
   useCustomers,
@@ -175,24 +175,36 @@ export default function FactureDetail() {
 
   if (invoice.isLoading || customers.isLoading) {
     return (
-      <View
-        style={{
-          flex: 1,
-          alignItems: 'center',
-          justifyContent: 'center',
-          backgroundColor: colors.bg,
-        }}
-      >
-        <ActivityIndicator color={colors.ink800} />
+      <View style={{ flex: 1, backgroundColor: colors.bg }}>
+        <SkeletonHeader onClose={() => router.back()} />
+        <View style={{ padding: 18, gap: 12 }}>
+          <SkeletonCard contentLines={4} />
+          <SkeletonCard contentLines={3} />
+          <SkeletonCard contentLines={2} />
+        </View>
       </View>
     );
   }
-  if (invoice.isError || !view || !invoice.data) {
+  // Un ÉCHEC réseau n'est JAMAIS un cul-de-sac : retry ET fermeture restent disponibles
+  // (avant ce correctif l'utilisateur était piégé sans issue — bug P0 de l'audit états).
+  if (invoice.isError) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', backgroundColor: colors.bg, padding: 18 }}>
+        <ErrorRetry
+          message={t('piece.dataError', { personality })}
+          onRetry={() => void invoice.refetch()}
+          secondaryLabel={t('piece.close', { personality })}
+          onSecondaryAction={() => router.back()}
+        />
+      </View>
+    );
+  }
+  if (!view || !invoice.data) {
     return (
       <View style={{ flex: 1, justifyContent: 'center', backgroundColor: colors.bg, padding: 18 }}>
         <Card>
           <Text accessibilityRole="alert" style={[font('sub'), { color: colors.slate500 }]}>
-            {t(invoice.isError ? 'piece.dataError' : 'piece.notFound', { personality })}
+            {t('piece.notFound', { personality })}
           </Text>
         </Card>
       </View>
@@ -233,7 +245,23 @@ export default function FactureDetail() {
         ) : null
       }
       extra={
-        ledger && ledger.lines.length > 0 ? (
+        // Un échec réseau de l'aperçu comptable ne doit JAMAIS ressembler à « pas
+        // d'écriture » (bug P2 de l'audit) : loading/erreur/absence sont distingués.
+        acct.isLoading ? (
+          <Card>
+            <SectionHeader title="Écriture comptable" />
+            <Skeleton width="55%" height={12} style={{ marginTop: 2, marginBottom: 8 }} />
+            <Skeleton width="85%" height={12} />
+          </Card>
+        ) : acct.isError ? (
+          <Card>
+            <SectionHeader title="Écriture comptable" />
+            <ErrorRetry
+              message={t('piece.accountingError', { personality })}
+              onRetry={() => void acct.refetch()}
+            />
+          </Card>
+        ) : ledger && ledger.lines.length > 0 ? (
           <Card>
             <SectionHeader title="Écriture comptable" />
             <AccountingLinesView
