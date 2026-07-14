@@ -31,9 +31,22 @@ export const viewport: Viewport = {
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
+  const jsonLd = {
+    '@context': 'https://schema.org',
+    '@type': 'SoftwareApplication',
+    name: 'Bob Pro',
+    applicationCategory: 'BusinessApplication',
+    operatingSystem: 'iOS, Android',
+    description:
+      'Copilote vocal des artisans : devis, factures conformes 2026, relances d’impayés et trésorerie à la voix.',
+    offers: [0, 19, 39, 79].map((price) => ({ '@type': 'Offer', price, priceCurrency: 'EUR' })),
+  };
   return (
     <html lang="fr" className={`${display.variable} ${body.variable}`}>
-      <body>{children}</body>
+      <body>
+        <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }} />
+        {children}
+      </body>
     </html>
   );
 }
