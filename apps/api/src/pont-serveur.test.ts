@@ -1882,3 +1882,42 @@ describe('PONT-SERVEUR — coffre documentaire original-first et suppression sû
     });
   });
 });
+
+describe('enforcement des offres (pilier 2) — le serveur fait foi, jamais l\'UI', () => {
+  type SubscriptionAuthority = { subscriptionFor(companyId: string): { tier: string } };
+
+  it('exportFec REFUSE sous Pro (accounting_operations) avec un message d\'upsell honnête', async () => {
+    const { service } = makeService();
+    vi.spyOn(service as unknown as SubscriptionAuthority, 'subscriptionFor').mockReturnValue({
+      tier: 'solo',
+    } as never);
+    const result = await asPrincipal(MERCIER, () =>
+      service.exportFec({ from: todayUtc(), to: todayUtc() }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.kind).toBe('forbidden');
+      expect(JSON.stringify(result.error)).toContain('offre Pro');
+    }
+  });
+
+  it('exportFec PASSE à partir de Pro (et en early-access : business pour tous)', async () => {
+    const { service } = makeService();
+    const result = await asPrincipal(MERCIER, () =>
+      service.exportFec({ from: todayUtc(), to: todayUtc() }),
+    );
+    // La frontière testée est l'ENFORCEMENT : à partir de Pro, jamais un refus d'offre —
+    // le use case peut échouer pour d'autres raisons (harness sans société seedée).
+    if (!result.ok) expect(result.error.kind).not.toBe('forbidden');
+  });
+
+  it('autoDunningEntitlement : solo → refus tracé avec le plan ; business → ouvert', () => {
+    const { service } = makeService();
+    const spy = vi.spyOn(service as unknown as SubscriptionAuthority, 'subscriptionFor');
+    spy.mockReturnValue({ tier: 'solo' } as never);
+    expect(service.autoDunningEntitlement('co-1')).toEqual({ allowed: false, plan: 'solo' });
+    spy.mockRestore();
+    // Early-access réel : subscriptionFor rend business/active pour tous — personne n'est refusé.
+    expect(service.autoDunningEntitlement('co-1')).toEqual({ allowed: true, plan: 'business' });
+  });
+});

@@ -13,6 +13,13 @@ import {
 } from '@bob/core';
 import { PERSISTENCE, type Persistence } from '../persistence/persistence';
 import { AppLogger, requireTenant } from '../observability/logger';
+import { BackendService } from '../backend.service';
+
+/** Port ÉTROIT de l'autorité d'abonnement vue par le cron — satisfait structurellement par
+ *  BackendService (token DI), stubable en une ligne dans les tests (jamais tout le backend). */
+export interface AutoDunningEntitlements {
+  autoDunningEntitlement(companyId: string): { allowed: boolean; plan: import('@bob/core').PlanTier };
+}
 import { NotificationDeliveryService } from './notification-delivery.service';
 import { ScheduledTenantDirectory } from './tenant-directory';
 
@@ -42,6 +49,9 @@ export class RelanceService {
     private readonly notificationDelivery: NotificationDeliveryService,
     private readonly tenants: ScheduledTenantDirectory,
     private readonly logger: AppLogger,
+    // Autorité d'abonnement (subscriptionFor est LE point unique, backend.service.ts) — token
+    // DI = la classe, type = le port étroit : le cron ne voit QUE l'entitlement.
+    @Inject(BackendService) private readonly backend: AutoDunningEntitlements,
   ) {}
 
   @Cron(CronExpression.EVERY_DAY_AT_6AM)
@@ -109,6 +119,19 @@ export class RelanceService {
   async runRelancesForCompany(
     companyId: string,
   ): Promise<{ scanned: number; queued: number; sent: number; deduplicated: number }> {
+    // Enforcement serveur `auto_dunning` (Pro+, PLAN_CATALOG) : le batch automatique SAUTE le
+    // tenant sans erreur — refus audité, comportement du cron inchangé pour les autres tenants.
+    // La relance MANUELLE (sendRelanceForInvoice) n'est pas gated : auto_dunning = relance AUTO.
+    // En early-access (business pour tous), ce garde ne refuse personne aujourd'hui.
+    const entitlement = this.backend.autoDunningEntitlement(companyId);
+    if (!entitlement.allowed) {
+      this.logger.audit('relances.skipped_plan', {
+        companyId,
+        plan: entitlement.plan,
+        feature: 'auto_dunning',
+      });
+      return { scanned: 0, queued: 0, sent: 0, deduplicated: 0 };
+    }
     return this.p.runWithTenant(companyId, async () => {
       const { plan, emails } = await this.planForCompany(companyId);
       let queued = 0;

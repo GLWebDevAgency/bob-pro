@@ -46,6 +46,7 @@ async function makeService(setup: { invoices: Invoice[]; customers: Customer[] }
       delivery,
       new ScheduledTenantDirectory(persistence, logger),
       logger,
+      { autoDunningEntitlement: () => ({ allowed: true as const, plan: 'business' as const }) },
     ),
     delivery,
     persistence,

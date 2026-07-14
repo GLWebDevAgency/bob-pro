@@ -103,7 +103,7 @@ describe('scheduled jobs multi-tenant', () => {
       })),
       tryDeliver: vi.fn(async () => true),
     } as unknown as NotificationDeliveryService;
-    const service = new RelanceService(persistence, delivery, new ScheduledTenantDirectory(persistence, logger), logger);
+    const service = new RelanceService(persistence, delivery, new ScheduledTenantDirectory(persistence, logger), logger, { autoDunningEntitlement: () => ({ allowed: true as const, plan: 'business' as const }) });
 
     const result = await service.runRelances();
 
@@ -116,6 +116,24 @@ describe('scheduled jobs multi-tenant', () => {
     );
     expect(subjects[0]).toContain('relance'); // neutre : « — relance »
     expect(subjects[1]).toContain('relance ferme');
+  });
+
+  it("auto_dunning non inclus au plan → le cron SAUTE le tenant sans erreur (relance manuelle non concernée)", async () => {
+    const persistence = new InMemoryPersistence();
+    persistence.companies.seed(fakeCompany('co-1'));
+    persistence.customers.seed([fakeCustomer('cu-1', 'co-1', 'a@example.com')]);
+    await persistence.invoices.save(overdueInvoice('inv-1', 'co-1', 'cu-1', 12));
+    const delivery = {
+      enqueue: vi.fn(),
+      tryDeliver: vi.fn(),
+    } as unknown as NotificationDeliveryService;
+    const service = new RelanceService(persistence, delivery, new ScheduledTenantDirectory(persistence, logger), logger, { autoDunningEntitlement: () => ({ allowed: false as const, plan: 'solo' as const }) });
+
+    const result = await service.runRelances();
+
+    // Refus AUDITÉ, zéro relance enfilée, zéro erreur : le batch continue pour les autres tenants.
+    expect(result).toEqual({ companies: 1, scanned: 0, queued: 0, sent: 0, deduplicated: 0 });
+    expect(delivery.enqueue).not.toHaveBeenCalled();
   });
 
   it('le déclenchement HTTP reste strictement limité au tenant authentifié', async () => {
@@ -140,6 +158,7 @@ describe('scheduled jobs multi-tenant', () => {
       delivery,
       new ScheduledTenantDirectory(persistence, logger),
       logger,
+      { autoDunningEntitlement: () => ({ allowed: true as const, plan: 'business' as const }) },
     );
 
     const result = await requestContext.run(
@@ -162,7 +181,7 @@ describe('scheduled jobs multi-tenant', () => {
       enqueue: vi.fn(),
       tryDeliver: vi.fn(),
     } as unknown as NotificationDeliveryService;
-    const service = new RelanceService(persistence, delivery, new ScheduledTenantDirectory(persistence, logger), logger);
+    const service = new RelanceService(persistence, delivery, new ScheduledTenantDirectory(persistence, logger), logger, { autoDunningEntitlement: () => ({ allowed: true as const, plan: 'business' as const }) });
 
     const result = await service.runRelancesForCompany('co-1');
 

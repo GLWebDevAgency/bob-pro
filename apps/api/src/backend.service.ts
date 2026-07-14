@@ -954,7 +954,16 @@ export class BackendService {
     return new ListAccountingEntries({ entries: this.p.accountingEntries }).execute({ companyId: this.companyId() });
   }
 
-  exportFec(input: { from: string; to: string }) {
+  /**
+   * Export FEC — pré-compta avancée (`accounting_operations`, Pro+), pattern ai_assistant.
+   * Doctrine pilier 2 : la conformité de BASE (émettre une facture, exporter ses documents)
+   * n'est JAMAIS bloquée ; seul le fichier probant FEC/clôture cabinet est gated. Les trois
+   * routes /accounting/fec, /fec-description et /fec-metadata passent ici : un seul point
+   * d'enforcement. En early-access (subscriptionFor = business pour tous), personne n'est refusé.
+   */
+  async exportFec(input: { from: string; to: string }) {
+    if (!planCan(this.subscriptionFor(this.companyId()).tier, 'accounting_operations'))
+      return { ok: false as const, error: appForbidden("L'export comptable FEC est inclus à partir de l'offre Pro.") };
     return new ExportFec({
       companies: this.p.companies,
       entries: this.p.accountingEntries,
@@ -1539,6 +1548,11 @@ export class BackendService {
     const subscription = this.subscriptionFor(this.companyId());
     if (!planCan(subscription.tier, 'ai_assistant'))
       return { ok: false, error: appForbidden("L'assistant Bob est inclus à partir de l'offre Solo.") };
+    // TODO(pilier2/monthlyActions) : LE point de branchement du quota IA — chantier compteur d'usage
+    // séparé (SPEC_PILIER2_MONETISATION §9 + §Reste pt 4). Lire PLAN_CATALOG[subscription.tier].ai
+    // .monthlyActions (null = fair use) et refuser AVANT d'appeler l'agent, avec les invariants
+    // arrêtés : alerte à 80 %, JAMAIS de coupure mid-action (was_mid_action=false), la conformité
+    // (facture légale, exports de documents) n'est jamais bloquée par un quota.
     const effectiveAutonomy = clampAgentAutonomy(input.autonomy, subscription.autonomyEntitlement());
     const start = Date.now();
     const agent = this.bobAgent();
@@ -1648,6 +1662,20 @@ export class BackendService {
     const subscription = this.subscriptionFor(this.companyId());
     return {
       allowed: planCan(subscription.tier, 'voice_live'),
+      plan: subscription.tier,
+    };
+  }
+
+  /**
+   * Autorité serveur du gating des relances AUTOMATIQUES (`auto_dunning`, Pro+). Chemin job/cron :
+   * companyId EXPLICITE (ScheduledTenantDirectory), même règle que subscriptionFor. Ne concerne
+   * que le cron/batch : la relance MANUELLE validée par l'utilisateur (POST /invoices/:id/relance)
+   * n'est pas une feature `auto_dunning` et reste ouverte à tous les paliers.
+   */
+  autoDunningEntitlement(companyId: string): { allowed: boolean; plan: PlanTier } {
+    const subscription = this.subscriptionFor(companyId);
+    return {
+      allowed: planCan(subscription.tier, 'auto_dunning'),
       plan: subscription.tier,
     };
   }
