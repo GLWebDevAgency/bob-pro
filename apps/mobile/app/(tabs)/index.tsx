@@ -16,7 +16,8 @@
  * PARITÉ D'ACTIONS humain ↔ Bob (directive 23:52) : chaque CTA emprunte le MÊME point
  * d'entrée que l'action équivalente de Bob — aucun chemin parallèle construit ici :
  * · relance          → /(tabs)/assistant (prompt assistant → runtime agent, use cases relance @bob/core) ;
- * · facture finale   → /ventes (écran ventes → generate-invoice-from-quote, le use case que Bob invoque) ;
+ * · facture finale   → /devis/[quoteId] (le devis concerné — QuoteActions y appelle generate-invoice-from-quote,
+ *                      le use case que Bob invoque) ;
  * · diagnostic       → /diagnostic (getDiagnostic — même query que Bob) ;
  * · « Vite fait »    : voix → session Bob globale contextuelle · devis → /devis/new ·
  *                      scan → /scan-document · encaisser → /ventes (register-payment).
@@ -24,7 +25,7 @@
  * Densité Zen : masque « En un coup d'œil » + « Vite fait ». Zéro hex/rgba : useTheme()/@bob/tokens.
  */
 import { useMemo, useState } from 'react';
-import { ScrollView, Text, View, type StyleProp, type ViewStyle } from 'react-native';
+import { RefreshControl, ScrollView, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
@@ -37,11 +38,14 @@ import {
   AppHeaderNavy,
   Button,
   Card,
+  EmptyState,
+  ErrorRetry,
   FloatingBalanceCard,
   KpiTile,
   PriorityCard,
   QuickAction,
   SectionHeader,
+  Skeleton,
   StatusBadge,
   Toast,
   font,
@@ -54,6 +58,7 @@ import {
   useNotificationsFeed,
   useTodayPriorities,
 } from '../../src/data/hooks';
+import { combineQueryStates } from '../../src/data/query-state';
 import { CollectInvoiceButton } from '../../src/components/CollectInvoiceButton';
 import { LatestValueDigestCard } from '../../src/engagement/ValueDigestCard';
 import { usePublishAgentContext, type AgentContext, type AgentEntityRef } from '../../src/agent';
@@ -96,60 +101,22 @@ const HERO = patterns.floatingBalanceCard;
 
 /** Skeleton d'une tuile KPI pendant le chargement initial (états du contrat C10). */
 function SkeletonTile() {
-  const { colors } = useTheme();
   return (
     <Card style={KPI_TILE}>
-      <View
-        style={{ height: 12, width: '55%', borderRadius: 6, backgroundColor: colors.lineSoft }}
-      />
-      <View
-        style={{
-          height: 21,
-          width: '70%',
-          borderRadius: 6,
-          backgroundColor: colors.lineSoft,
-          marginTop: 10,
-        }}
-      />
+      <Skeleton height={12} width="55%" radius={6} />
+      <Skeleton height={21} width="70%" radius={6} style={{ marginTop: 10 }} />
     </Card>
   );
 }
 
 /** Skeleton d'une carte priorité (même gabarit qu'une PriorityCard au repos). */
 function SkeletonPriority() {
-  const { colors } = useTheme();
   return (
     <Card>
-      <View
-        style={{ height: 20, width: '38%', borderRadius: 10, backgroundColor: colors.lineSoft }}
-      />
-      <View
-        style={{
-          height: 15,
-          width: '80%',
-          borderRadius: 6,
-          backgroundColor: colors.lineSoft,
-          marginTop: 12,
-        }}
-      />
-      <View
-        style={{
-          height: 15,
-          width: '62%',
-          borderRadius: 6,
-          backgroundColor: colors.lineSoft,
-          marginTop: 8,
-        }}
-      />
-      <View
-        style={{
-          height: 34,
-          width: '42%',
-          borderRadius: 12,
-          backgroundColor: colors.lineSoft,
-          marginTop: 14,
-        }}
-      />
+      <Skeleton height={20} width="38%" radius={10} />
+      <Skeleton height={15} width="80%" radius={6} style={{ marginTop: 12 }} />
+      <Skeleton height={15} width="62%" radius={6} style={{ marginTop: 8 }} />
+      <Skeleton height={34} width="42%" radius={12} style={{ marginTop: 14 }} />
     </Card>
   );
 }
@@ -180,15 +147,7 @@ function HeroPlaceholder({ loading }: { loading: boolean }) {
         {t('today.balanceLabel', { personality })}
       </Text>
       {loading ? (
-        <View
-          style={{
-            height: 31,
-            width: '46%',
-            borderRadius: 8,
-            backgroundColor: colors.lineSoft,
-            marginTop: 6,
-          }}
-        />
+        <Skeleton height={31} width="46%" radius={8} style={{ marginTop: 6 }} />
       ) : (
         <Text
           style={{
@@ -302,7 +261,7 @@ function TodayPriorityCard({
               radius={11}
               icon={<Feather name="file-plus" size={15} color={colors.surface} />}
               style={{ alignSelf: 'flex-start' }}
-              onPress={() => router.push('/ventes')}
+              onPress={() => router.push(`/devis/${priority.quoteId}`)}
             />
           }
           {...common}
@@ -411,13 +370,35 @@ export default function Aujourdhui() {
   );
   const eomCents = cashflow.data?.available; // horizon 30 j réaliste = fin de mois
   const glanceLoading = cashflow.isLoading || customers.isLoading;
-  const hasError = cashflow.isError || customers.isError || today.isError;
+  const primaryState = combineQueryStates(cashflow, customers, today);
+  const refreshing =
+    cashflow.isRefetching ||
+    customers.isRefetching ||
+    today.isRefetching ||
+    invoices.isRefetching ||
+    notifications.isRefetching;
+  const refreshAll = (): void => {
+    primaryState.refetchAll();
+    void invoices.refetch();
+    void notifications.refetch();
+  };
 
   const cockpit = density !== 'Zen';
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 140 }}>
+      <ScrollView
+        style={{ flex: 1 }}
+        contentContainerStyle={{ paddingBottom: 140 }}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={refreshAll}
+            tintColor={colors.ink800}
+            colors={[colors.ink800]}
+          />
+        }
+      >
         <AppHeaderNavy
           {...(insets.top > 0 ? { safeTop: insets.top } : {})}
           dateLabel={todayLabel()}
@@ -462,12 +443,11 @@ export default function Aujourdhui() {
         )}
 
         <View style={{ paddingHorizontal: 18, paddingTop: 22, gap: 20 }}>
-          {hasError ? (
-            <Card>
-              <Text style={[font('sub'), { color: colors.slate500 }]}>
-                {t('today.dataError', { personality })}
-              </Text>
-            </Card>
+          {primaryState.failed ? (
+            <ErrorRetry
+              message={t('today.dataError', { personality })}
+              onRetry={primaryState.refetchAll}
+            />
           ) : null}
 
           {/* Digest « le lundi de Bob » (SPEC pilier 2) — la notification weekly-digest ramène
@@ -522,9 +502,7 @@ export default function Aujourdhui() {
               ) : todayReady ? (
                 // 0 priorité : état vide de premier rang — la voix de Bob, aucune carte fantôme.
                 <Card>
-                  <Text style={[font('sub'), { color: colors.slate500 }]}>
-                    {t('today.subtitleNone', { personality })}
-                  </Text>
+                  <EmptyState body={t('today.subtitleNone', { personality })} />
                 </Card>
               ) : null /* erreur : la carte today.dataError ci-dessus parle déjà */
             }

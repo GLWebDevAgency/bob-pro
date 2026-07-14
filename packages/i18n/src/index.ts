@@ -425,7 +425,8 @@ const legacyFr = {
   'argent.tipBody': {
     pote: 'Le solde bancaire, lui, il ment. Ici tu vois ce qu’il te reste vraiment une fois les charges et la TVA mises de côté — glisse les scénarios et l’horizon 7 → 90 j.',
     pro: 'Le solde bancaire est trompeur. Ici, vous voyez ce qu’il vous reste réellement une fois les charges et la TVA provisionnées — parcourez les scénarios et l’horizon 7 → 90 j.',
-    direct: 'Le solde ment. Ici : le vrai reste après charges et TVA. Scénarios + horizon 7 → 90 j.',
+    direct:
+      'Le solde ment. Ici : le vrai reste après charges et TVA. Scénarios + horizon 7 → 90 j.',
   },
   'argent.tipCta': {
     pote: 'Compris, c’est parti',
@@ -650,6 +651,112 @@ const legacyFr = {
     pote: 'Je n’ai pas réussi à créer la fiche. On réessaie ?',
     pro: 'La création du client a échoué. Veuillez réessayer.',
     direct: 'Création impossible. Réessaie.',
+  },
+
+  // ── Chantiers — états honnêtes, création assistée et suivi terrain ───────────
+  'chantiers.back': { pote: 'Retour', pro: 'Retour', direct: 'Retour' },
+  'chantiers.eyebrow': { pote: 'SUIVI TERRAIN', pro: 'SUIVI TERRAIN', direct: 'TERRAIN' },
+  'chantiers.title': { pote: 'Chantiers', pro: 'Chantiers', direct: 'Chantiers' },
+  'chantiers.subtitle': {
+    pote: 'Tes interventions, leurs pièces et leur avancement au même endroit.',
+    pro: 'Suivi des interventions, des pièces associées et de leur avancement.',
+    direct: 'Interventions, pièces, avancement.',
+  },
+  'chantiers.add': {
+    pote: 'Nouveau chantier',
+    pro: 'Créer un chantier',
+    direct: 'Nouveau chantier',
+  },
+  'chantiers.created': {
+    pote: '{name} est prêt — tu peux y rattacher tes prochaines pièces.',
+    pro: 'Le chantier {name} a été créé.',
+    direct: '{name} créé.',
+  },
+  'chantiers.createError': {
+    pote: 'Je n’ai pas pu créer ce chantier. Rien n’a été perdu, réessaie.',
+    pro: 'La création du chantier a échoué. Aucune donnée n’a été perdue.',
+    direct: 'Création impossible. Réessaie.',
+  },
+  'chantiers.profileError': {
+    pote: 'Je n’arrive pas à vérifier si le module Chantiers est actif. Réessaie.',
+    pro: 'Impossible de vérifier l’activation du module Chantiers. Veuillez réessayer.',
+    direct: 'Activation non vérifiée. Réessaie.',
+  },
+  'chantiers.moduleTitle': {
+    pote: 'Module Chantiers',
+    pro: 'Module Chantiers',
+    direct: 'Module Chantiers',
+  },
+  'chantiers.moduleBody': {
+    pote: 'Active-le pour regrouper devis, factures et situations par intervention.',
+    pro: 'Activez ce module pour regrouper devis, factures et situations par chantier.',
+    direct: 'Regroupe devis, factures et situations.',
+  },
+  'chantiers.seePlans': {
+    pote: 'Voir les offres',
+    pro: 'Voir les offres',
+    direct: 'Voir les offres',
+  },
+  'chantiers.dataError': {
+    pote: 'Je n’arrive pas à charger tes chantiers. Réessaie, je garde le contexte.',
+    pro: 'Impossible de charger les chantiers. Veuillez réessayer.',
+    direct: 'Chargement impossible. Réessaie.',
+  },
+  'chantiers.emptyTitle': {
+    pote: 'Aucun chantier pour l’instant',
+    pro: 'Aucun chantier pour le moment',
+    direct: 'Aucun chantier',
+  },
+  'chantiers.emptyBody': {
+    pote: 'Crée le premier : Bob pourra ensuite y ranger les devis, factures et documents liés.',
+    pro: 'Créez un premier chantier afin d’y associer les devis, factures et documents concernés.',
+    direct: 'Crée un chantier pour y rattacher tes pièces.',
+  },
+  'chantiers.listTitle': { pote: 'Tes chantiers', pro: 'Vos chantiers', direct: 'Chantiers' },
+  'chantiers.openedOn': {
+    pote: 'Ouvert le {date}',
+    pro: 'Ouvert le {date}',
+    direct: 'Ouvert · {date}',
+  },
+  'chantiers.open': { pote: 'En cours', pro: 'En cours', direct: 'En cours' },
+  'chantiers.closed': { pote: 'Terminé', pro: 'Terminé', direct: 'Terminé' },
+  'chantiers.createTitle': {
+    pote: 'Nouveau chantier',
+    pro: 'Créer un chantier',
+    direct: 'Nouveau chantier',
+  },
+  'chantiers.createHint': {
+    pote: 'Donne-lui un nom clair. L’adresse est optionnelle et je peux t’aider à la retrouver.',
+    pro: 'Renseignez un nom explicite. L’adresse est facultative et peut être recherchée automatiquement.',
+    direct: 'Nom requis. Adresse facultative.',
+  },
+  'chantiers.nameLabel': { pote: 'Nom du chantier', pro: 'Nom du chantier', direct: 'Nom' },
+  'chantiers.namePlaceholder': {
+    pote: 'Villa Durand, rénovation cuisine…',
+    pro: 'Ex. Villa Durand',
+    direct: 'Ex. Villa Durand',
+  },
+  'chantiers.addressLabel': { pote: 'Adresse', pro: 'Adresse', direct: 'Adresse' },
+  'chantiers.addressPlaceholder': {
+    pote: 'Commence à taper une adresse',
+    pro: 'Adresse du chantier (facultatif)',
+    direct: 'Adresse facultative',
+  },
+  'chantiers.addressError': {
+    pote: 'La recherche d’adresse ne répond pas. Tu peux garder ta saisie ou réessayer.',
+    pro: 'La recherche d’adresse est indisponible. Conservez la saisie ou réessayez.',
+    direct: 'Recherche indisponible. Saisie conservée.',
+  },
+  'chantiers.addressNoResult': {
+    pote: 'Je n’ai pas trouvé de correspondance. Tu peux conserver cette adresse telle quelle.',
+    pro: 'Aucune correspondance trouvée. La saisie peut être conservée telle quelle.',
+    direct: 'Aucun résultat. Saisie conservée.',
+  },
+  'chantiers.retry': { pote: 'Réessayer', pro: 'Réessayer', direct: 'Réessayer' },
+  'chantiers.createSubmit': {
+    pote: 'Créer le chantier',
+    pro: 'Créer le chantier',
+    direct: 'Créer',
   },
 
   // ── C13 — écran « Fiche client » ─────────────────────────────────────────────
@@ -911,7 +1018,11 @@ const legacyFr = {
   'fiche.infoEmail': { pote: 'Email', pro: 'Email', direct: 'Email' },
   'fiche.infoPhone': { pote: 'Téléphone', pro: 'Téléphone', direct: 'Tél.' },
   'fiche.infoScore': { pote: 'Score de paiement', pro: 'Score de paiement', direct: 'Score' },
-  'fiche.infoDelay': { pote: 'Délai moyen constaté', pro: 'Délai moyen constaté', direct: 'Délai moyen' },
+  'fiche.infoDelay': {
+    pote: 'Délai moyen constaté',
+    pro: 'Délai moyen constaté',
+    direct: 'Délai moyen',
+  },
   'fiche.infoDelayDays': { pote: '{days} jours', pro: '{days} jours', direct: '{days} j' },
   // CTA sticky contextuelle par standing (deriveCustomerStandings + moteur relance C10).
   'fiche.ctaRelanceDoc': {
@@ -1066,7 +1177,11 @@ const legacyFr = {
     pro: 'Proposition de Bob — dépense rapprochée',
     direct: 'Proposition IA',
   },
-  'docs.pickChantierMeta': { pote: 'Chantier en cours', pro: 'Chantier en cours', direct: 'Chantier' },
+  'docs.pickChantierMeta': {
+    pote: 'Chantier en cours',
+    pro: 'Chantier en cours',
+    direct: 'Chantier',
+  },
   'docs.classifiedIntoToast': {
     pote: 'Classé dans « {name} » ✓',
     pro: 'Document classé dans « {name} ».',
@@ -1455,6 +1570,26 @@ const legacyFr = {
     pro: 'Aucune action n’est exécutée sans votre validation.',
     direct: 'Rien sans ton OK.',
   },
+  'assistant.proposalLoading': {
+    pote: 'Je vérifie les vrais chiffres avant de te laisser valider.',
+    pro: 'Vérification des données de la pièce avant validation.',
+    direct: 'Vérification des chiffres.',
+  },
+  'assistant.proposalUnavailable': {
+    pote: 'Je n’arrive pas à vérifier les chiffres. Je bloque la validation pour éviter une erreur.',
+    pro: 'Les données de contrôle sont indisponibles. La validation reste bloquée par sécurité.',
+    direct: 'Contrôle indisponible. Validation bloquée.',
+  },
+  'assistant.proposalMissing': {
+    pote: 'Je ne retrouve plus cette pièce. Actualise avant de décider.',
+    pro: 'La pièce concernée est introuvable. Veuillez actualiser avant de valider.',
+    direct: 'Pièce introuvable. Actualise.',
+  },
+  'assistant.retry': {
+    pote: 'Réessayer',
+    pro: 'Réessayer',
+    direct: 'Réessayer',
+  },
   'assistant.canceled': {
     pote: 'Ok, j’annule — rien n’a été fait.',
     pro: 'Action annulée — aucune modification effectuée.',
@@ -1488,12 +1623,28 @@ const legacyFr = {
     direct: 'Envoyer',
   },
   // LIVE — le mode vocal mains-libres (« parler à un pote expert-comptable »)
-  'live.on': { pote: 'Mode vocal activé — je t’écoute.', pro: 'Mode vocal activé. Je vous écoute.', direct: 'Vocal on.' },
+  'live.on': {
+    pote: 'Mode vocal activé — je t’écoute.',
+    pro: 'Mode vocal activé. Je vous écoute.',
+    direct: 'Vocal on.',
+  },
   'live.listening': { pote: 'Je t’écoute…', pro: 'Je vous écoute…', direct: 'J’écoute…' },
   'live.thinking': { pote: 'Je réfléchis…', pro: 'Je traite votre demande…', direct: 'Je traite…' },
-  'live.speaking': { pote: 'Je te réponds — parle ou touche pour m’interrompre', pro: 'Réponse en cours — parlez ou touchez pour interrompre', direct: 'Je parle — coupe-moi si besoin' },
-  'live.idle': { pote: 'Touche l’onde pour me parler', pro: 'Touchez l’onde pour parler', direct: 'Touche pour parler' },
-  'live.tapWhenDone': { pote: 'Parle, puis touche quand tu as fini', pro: 'Parlez, puis touchez une fois terminé', direct: 'Parle, touche à la fin' },
+  'live.speaking': {
+    pote: 'Je te réponds — parle ou touche pour m’interrompre',
+    pro: 'Réponse en cours — parlez ou touchez pour interrompre',
+    direct: 'Je parle — coupe-moi si besoin',
+  },
+  'live.idle': {
+    pote: 'Touche l’onde pour me parler',
+    pro: 'Touchez l’onde pour parler',
+    direct: 'Touche pour parler',
+  },
+  'live.tapWhenDone': {
+    pote: 'Parle, puis touche quand tu as fini',
+    pro: 'Parlez, puis touchez une fois terminé',
+    direct: 'Parle, touche à la fin',
+  },
   'live.error': {
     pote: 'Oups, j’ai buté — redis-moi ça ?',
     pro: 'Une erreur est survenue. Pouvez-vous reformuler ?',
@@ -1546,6 +1697,16 @@ const legacyFr = {
     pote: 'Le micro n’est pas disponible ici. Tu peux écrire à Bob.',
     pro: 'Le micro n’est pas disponible. Vous pouvez écrire votre demande.',
     direct: 'Micro indisponible. Écris.',
+  },
+  'agent.global.entitlementError': {
+    pote: 'Je n’arrive pas à vérifier l’accès à Bob. Touche pour réessayer.',
+    pro: 'Impossible de vérifier l’accès à Bob. Touchez pour réessayer.',
+    direct: 'Accès Bob non vérifié. Réessaie.',
+  },
+  'agent.global.entitlementRetry': {
+    pote: 'Relancer la vérification sans quitter cet écran.',
+    pro: 'Relancer la vérification sans quitter cet écran.',
+    direct: 'Relancer la vérification.',
   },
   'agent.global.context': {
     pote: 'Je vois : {context}',
@@ -1606,7 +1767,8 @@ const legacyFr = {
   'devis.voice.greetLines': {
     pote: 'On facture quoi ? Dis par exemple « ajoute deux heures de main-d’œuvre à 55 euros », puis « étape suivante ».',
     pro: 'Décrivez les prestations — par exemple « ajoutez deux heures de main-d’œuvre à 55 euros », puis « étape suivante ».',
-    direct: 'Dicte les lignes (« ajoute 2 h de main-d’œuvre à 55 euros »). Puis « étape suivante ».',
+    direct:
+      'Dicte les lignes (« ajoute 2 h de main-d’œuvre à 55 euros »). Puis « étape suivante ».',
   },
   'devis.voice.greetVat': {
     pote: 'On vérifie la TVA et les mentions — dis « étape suivante » quand c’est bon.',
@@ -1713,10 +1875,18 @@ const legacyFr = {
     pro: 'Aucun résultat pour cette recherche.',
     direct: 'Aucun résultat.',
   },
-  'ventes.validUntil': { pote: 'Valide jusqu’au {date}', pro: 'Valide jusqu’au {date}', direct: 'Valide → {date}' },
+  'ventes.validUntil': {
+    pote: 'Valide jusqu’au {date}',
+    pro: 'Valide jusqu’au {date}',
+    direct: 'Valide → {date}',
+  },
   'ventes.issuedOn': { pote: 'Émise le {date}', pro: 'Émise le {date}', direct: 'Émise {date}' },
   'ventes.dueOn': { pote: 'Échéance {date}', pro: 'Échéance au {date}', direct: 'Éch. {date}' },
-  'ventes.chipAcompte': { pote: 'Acompte {pct} %', pro: 'Acompte {pct} %', direct: 'Acompte {pct} %' },
+  'ventes.chipAcompte': {
+    pote: 'Acompte {pct} %',
+    pro: 'Acompte {pct} %',
+    direct: 'Acompte {pct} %',
+  },
   'ventes.chipAcompteSimple': { pote: 'Acompte', pro: 'Acompte', direct: 'Acompte' },
   'ventes.chipFinale': { pote: 'Facture finale', pro: 'Facture finale', direct: 'Finale' },
   'ventes.chipAvoir': { pote: 'Avoir', pro: 'Avoir', direct: 'Avoir' },
@@ -1780,6 +1950,33 @@ const legacyFr = {
     pote: 'C’est parti pour la suite.',
     pro: 'Étape suivante.',
     direct: 'Suite.',
+  },
+  // R3/R5/R7 — génération de facture depuis un devis SIGNÉ (devis/[id]) : la voix PROPOSE (dit,
+  // ouvre au mieux le Sheet de choix) — jamais n'exécute. Le tap reste le seul point de génération.
+  'devis.voice.invoiceAlreadyFinal': {
+    pote: 'La facture finale est déjà générée pour ce devis.',
+    pro: 'La facture finale est déjà générée pour ce devis.',
+    direct: 'Facture finale déjà générée.',
+  },
+  'devis.voice.invoiceFinalReady': {
+    pote: 'C’est prêt : touche « Générer la facture finale » pour confirmer.',
+    pro: 'Prêt à générer : touchez « Générer la facture finale » pour confirmer.',
+    direct: 'Prêt. Touche « Générer la facture finale ».',
+  },
+  'devis.voice.invoiceChoiceOpenedFinal': {
+    pote: 'Je t’ouvre le choix — touche « Facture de 100 % » pour confirmer.',
+    pro: 'Le choix est ouvert — touchez « Facture de 100 % » pour confirmer.',
+    direct: 'Choix ouvert. Touche « Facture de 100 % ».',
+  },
+  'devis.voice.invoiceChoiceOpenedDeposit': {
+    pote: 'Je t’ouvre le choix — touche « Facture d’acompte ({pct} %) » pour confirmer.',
+    pro: 'Le choix est ouvert — touchez « Facture d’acompte ({pct} %) » pour confirmer.',
+    direct: 'Choix ouvert. Touche « Facture d’acompte ({pct} %) ».',
+  },
+  'devis.voice.invoiceNoDeposit': {
+    pote: 'Ce devis n’a pas d’acompte prévu — dis « facture complète » pour la facture de 100 %.',
+    pro: 'Ce devis ne prévoit pas d’acompte. Dites « facture complète » pour la facture de 100 %.',
+    direct: 'Pas d’acompte prévu. Dis « facture complète ».',
   },
   // ASK-1 — questions structurées (modale de choix quand la demande est ambiguë)
   'assistant.askAnswer': { pote: 'Répondre', pro: 'Répondre', direct: 'Répondre' },
@@ -2336,7 +2533,11 @@ const legacyFr = {
   'piece.kindFacture': { pote: 'Facture', pro: 'Facture', direct: 'Facture' },
   'piece.kindAcompte': { pote: 'Facture d’acompte', pro: 'Facture d’acompte', direct: 'Acompte' },
   'piece.kindAvoir': { pote: 'Avoir', pro: 'Avoir', direct: 'Avoir' },
-  'piece.kindSituation': { pote: 'Situation de travaux', pro: 'Situation de travaux', direct: 'Situation' },
+  'piece.kindSituation': {
+    pote: 'Situation de travaux',
+    pro: 'Situation de travaux',
+    direct: 'Situation',
+  },
   'piece.draftNumber': {
     pote: 'Brouillon — numérotée à l’émission',
     pro: 'Brouillon — le numéro sera attribué à l’émission',
@@ -2345,7 +2546,11 @@ const legacyFr = {
   // Statuts (badge header)
   'piece.statusDraft': { pote: 'Brouillon', pro: 'Brouillon', direct: 'Brouillon' },
   'piece.statusIssued': { pote: 'Émise', pro: 'Émise', direct: 'Émise' },
-  'piece.statusPartiallyPaid': { pote: 'Encaissée en partie', pro: 'Partiellement payée', direct: 'Partielle' },
+  'piece.statusPartiallyPaid': {
+    pote: 'Encaissée en partie',
+    pro: 'Partiellement payée',
+    direct: 'Partielle',
+  },
   'piece.statusPaid': { pote: 'Payée ✓', pro: 'Payée', direct: 'Payée' },
   'piece.statusLate': { pote: 'En retard', pro: 'En retard', direct: 'Retard' },
   'piece.statusCancelled': { pote: 'Annulée', pro: 'Annulée', direct: 'Annulée' },
@@ -2362,7 +2567,11 @@ const legacyFr = {
     pro: 'Avoir émis sur cette facture',
     direct: 'Avoir émis',
   },
-  'piece.linkedSituation': { pote: 'Situation de travaux', pro: 'Situation de travaux', direct: 'Situation' },
+  'piece.linkedSituation': {
+    pote: 'Situation de travaux',
+    pro: 'Situation de travaux',
+    direct: 'Situation',
+  },
   'piece.progress': { pote: 'avancement {pct} %', pro: 'avancement {pct} %', direct: '{pct} %' },
   // Parties
   'piece.issuer': { pote: 'Émetteur', pro: 'Émetteur', direct: 'Émetteur' },
@@ -2431,14 +2640,26 @@ const legacyFr = {
     direct: 'Soldée.',
   },
   // e-facture
-  'piece.ereportingTitle': { pote: 'Vente à un particulier', pro: 'Vente à un particulier', direct: 'B2C' },
+  'piece.ereportingTitle': {
+    pote: 'Vente à un particulier',
+    pro: 'Vente à un particulier',
+    direct: 'B2C',
+  },
   'piece.ereportingBody': {
     pote: 'Pas de transmission PDP — la donnée part en e-reporting (déclaration à l’administration).',
     pro: 'Aucune transmission PDP requise : les données partent en e-reporting auprès de l’administration.',
     direct: 'Pas de PDP : e-reporting.',
   },
-  'piece.transmissionPa': { pote: 'Facture électronique · PDP', pro: 'Facture électronique · plateforme agréée', direct: 'e-facture · PDP' },
-  'piece.transmissionChorus': { pote: 'Facture électronique · Chorus Pro', pro: 'Facture électronique · Chorus Pro', direct: 'Chorus Pro' },
+  'piece.transmissionPa': {
+    pote: 'Facture électronique · PDP',
+    pro: 'Facture électronique · plateforme agréée',
+    direct: 'e-facture · PDP',
+  },
+  'piece.transmissionChorus': {
+    pote: 'Facture électronique · Chorus Pro',
+    pro: 'Facture électronique · Chorus Pro',
+    direct: 'Chorus Pro',
+  },
   'piece.stepEmise': { pote: 'Émise', pro: 'Émise', direct: 'Émise' },
   'piece.stepTransmise': { pote: 'Transmise', pro: 'Transmise', direct: 'Transmise' },
   'piece.stepRecue': { pote: 'Reçue', pro: 'Reçue', direct: 'Reçue' },
@@ -2468,7 +2689,11 @@ const legacyFr = {
   'piece.actionEncaisser': { pote: 'Encaisser', pro: 'Encaisser', direct: 'Encaisser' },
   'piece.actionEnvoyer': { pote: 'Envoyer au client', pro: 'Envoyer au client', direct: 'Envoyer' },
   'piece.actionRelancer': { pote: 'Relancer', pro: 'Relancer', direct: 'Relancer' },
-  'piece.actionFacturer': { pote: 'Créer la facture', pro: 'Générer la facture', direct: 'Facturer' },
+  'piece.actionFacturer': {
+    pote: 'Créer la facture',
+    pro: 'Générer la facture',
+    direct: 'Facturer',
+  },
   'piece.actionEmettre': { pote: 'Émettre', pro: 'Émettre la facture', direct: 'Émettre' },
   // États
   'piece.notFound': {
@@ -2545,20 +2770,40 @@ const legacyFr = {
     direct: 'Encaissements hors app ?',
   },
   'diag.qOffAppYes': { pote: 'Oui, ça arrive', pro: 'Oui, parfois', direct: 'Oui' },
-  'diag.qOffAppNo': { pote: 'Non, tout passe ici', pro: 'Non, tout passe par l’application', direct: 'Non' },
+  'diag.qOffAppNo': {
+    pote: 'Non, tout passe ici',
+    pro: 'Non, tout passe par l’application',
+    direct: 'Non',
+  },
   'diag.qOffAppUnknown': { pote: 'Je sais pas trop', pro: 'Je ne sais pas', direct: 'Sais pas' },
   'diag.qAccountant': {
     pote: 'T’es accompagné par un comptable ?',
     pro: 'Êtes-vous accompagné par un expert-comptable ?',
     direct: 'Un comptable t’accompagne ?',
   },
-  'diag.qAccountantYes': { pote: 'Oui, j’ai un comptable', pro: 'Oui, un expert-comptable', direct: 'Oui' },
-  'diag.qAccountantOga': { pote: 'Oui, un OGA / CGA', pro: 'Oui, un OGA / CGA', direct: 'OGA / CGA' },
+  'diag.qAccountantYes': {
+    pote: 'Oui, j’ai un comptable',
+    pro: 'Oui, un expert-comptable',
+    direct: 'Oui',
+  },
+  'diag.qAccountantOga': {
+    pote: 'Oui, un OGA / CGA',
+    pro: 'Oui, un OGA / CGA',
+    direct: 'OGA / CGA',
+  },
   'diag.qAccountantNo': { pote: 'Non, je gère seul', pro: 'Non, je gère seul', direct: 'Non' },
   // Résultat — titre par tranche de score (mêmes seuils que l'anneau : >75 · 50–75 · <50).
-  'diag.resultTitleHigh': { pote: 'Prêt pour 2026 🎉', pro: 'Vous êtes prêt pour 2026', direct: 'Prêt.' },
+  'diag.resultTitleHigh': {
+    pote: 'Prêt pour 2026 🎉',
+    pro: 'Vous êtes prêt pour 2026',
+    direct: 'Prêt.',
+  },
   'diag.resultTitleMid': { pote: 'Presque prêt 💪', pro: 'Presque prêt', direct: 'Presque.' },
-  'diag.resultTitleLow': { pote: 'Faut s’y mettre 🔧', pro: 'Des actions sont nécessaires', direct: 'Pas prêt.' },
+  'diag.resultTitleLow': {
+    pote: 'Faut s’y mettre 🔧',
+    pro: 'Des actions sont nécessaires',
+    direct: 'Pas prêt.',
+  },
   // {count} = points à régler — avec 2, la phrase pote = proto exact.
   'diag.resultBody': {
     pote: '{count} trucs à régler et tu seras tranquille pour septembre 2026.',
@@ -2577,10 +2822,22 @@ const legacyFr = {
   },
   'diag.axisReception': { pote: 'Réception 2026', pro: 'Réception 2026', direct: 'Réception' },
   'diag.axisEmission': { pote: 'Émission 2027', pro: 'Émission 2027', direct: 'Émission' },
-  'diag.axisDonnees': { pote: 'Qualité des données', pro: 'Qualité des données', direct: 'Données' },
-  'diag.planTitle': { pote: 'Ton plan d’action', pro: 'Votre plan d’action', direct: 'Plan d’action' },
+  'diag.axisDonnees': {
+    pote: 'Qualité des données',
+    pro: 'Qualité des données',
+    direct: 'Données',
+  },
+  'diag.planTitle': {
+    pote: 'Ton plan d’action',
+    pro: 'Votre plan d’action',
+    direct: 'Plan d’action',
+  },
   'diag.deadline': { pote: 'avant le {date}', pro: 'échéance {date}', direct: '{date}' },
-  'diag.resultCta': { pote: 'Configurer ma réception', pro: 'Configurer la réception', direct: 'Configurer' },
+  'diag.resultCta': {
+    pote: 'Configurer ma réception',
+    pro: 'Configurer la réception',
+    direct: 'Configurer',
+  },
   'diag.resultLater': { pote: 'Plus tard', pro: 'Plus tard', direct: 'Plus tard' },
   'diag.dataError': {
     pote: 'J’arrive pas à lire ton dossier, là. On réessaie ?',
@@ -2614,7 +2871,11 @@ const legacyFr = {
     pro: 'La franchise ne dispense pas de la facturation électronique',
     direct: 'Concerné quand même.',
   },
-  'diag.itemArchive': { pote: 'Archivage 10 ans', pro: 'Archivage 10 ans', direct: 'Archivage 10 ans' },
+  'diag.itemArchive': {
+    pote: 'Archivage 10 ans',
+    pro: 'Archivage 10 ans',
+    direct: 'Archivage 10 ans',
+  },
   'diag.itemArchiveDone': {
     pote: 'Coffre-fort automatique ✓',
     pro: 'Assuré par le coffre-fort ✓',
@@ -2844,7 +3105,11 @@ const legacyFr = {
     pro: 'Art. 293 B du CGI — facturation sans TVA, mention obligatoire.',
     direct: '293 B — sans TVA, mention obligatoire.',
   },
-  'onboard.vatReelSimpl': { pote: 'Réel simplifié', pro: 'Réel simplifié', direct: 'Réel simplifié' },
+  'onboard.vatReelSimpl': {
+    pote: 'Réel simplifié',
+    pro: 'Réel simplifié',
+    direct: 'Réel simplifié',
+  },
   'onboard.vatReelSimplSub': {
     pote: 'TVA déclarée une fois par an (CA12), avec des acomptes.',
     pro: 'Déclaration annuelle (CA12) avec acomptes semestriels.',
@@ -2859,7 +3124,8 @@ const legacyFr = {
   'onboard.vatFranchiseNote': {
     pote: 'Tu ne factures pas la TVA, mais la facture élec. te concerne quand même : dès septembre 2026, tu devras recevoir les factures de tes fournisseurs en électronique.',
     pro: 'Vous ne facturez pas la TVA, mais la facturation électronique vous concerne quand même : dès septembre 2026, la réception des factures électroniques s’impose à tous les assujettis.',
-    direct: 'Pas de TVA facturée, mais la facture élec. te concerne quand même : réception obligatoire dès septembre 2026.',
+    direct:
+      'Pas de TVA facturée, mais la facture élec. te concerne quand même : réception obligatoire dès septembre 2026.',
   },
   'onboard.vatReelNote': {
     pote: 'Je mets ta TVA de côté au fil des encaissements — zéro mauvaise surprise à la déclaration.',
@@ -3194,6 +3460,11 @@ const legacyFr = {
     pro: 'Utiliser mon mot de passe',
     direct: 'Mot de passe',
   },
+  'auth.bootstrapError': {
+    pote: 'Je n’arrive pas à vérifier ta session. Rien n’a été effacé : réessaie quand la connexion revient.',
+    pro: 'Impossible de vérifier votre session. Aucune donnée n’a été supprimée. Veuillez réessayer.',
+    direct: 'Session non vérifiée. Réessaie.',
+  },
   // C24b — fiche société complète (récap inscription) + provisioning tenant après confirmation.
   'auth.companyLegalFormLabel': {
     pote: 'Forme juridique',
@@ -3302,7 +3573,11 @@ const legacyFr = {
     pro: '{doc} · {amount} · échéance ce jour',
     direct: '{doc} · {amount} · aujourd’hui',
   },
-  'notif.conformiteTitle': { pote: 'Conformité 2026', pro: 'Conformité 2026', direct: 'Conformité 2026' },
+  'notif.conformiteTitle': {
+    pote: 'Conformité 2026',
+    pro: 'Conformité 2026',
+    direct: 'Conformité 2026',
+  },
   'notif.conformiteSub': {
     pote: 'Réception des e-factures à configurer avant le 1ᵉʳ sept. 2026.',
     pro: 'La réception des factures électroniques est à configurer avant le 1ᵉʳ septembre 2026.',
@@ -3365,6 +3640,11 @@ const legacyFr = {
     pote: 'Je n’ai pas pu mettre le fil à jour. Réessaie.',
     pro: 'Impossible de mettre les notifications à jour. Veuillez réessayer.',
     direct: 'Mise à jour impossible. Réessaie.',
+  },
+  'notif.markReadError': {
+    pote: 'Je n’ai pas pu marquer cette notification comme lue. Réessaie.',
+    pro: 'La notification n’a pas pu être marquée comme lue. Veuillez réessayer.',
+    direct: 'Lecture non enregistrée. Réessaie.',
   },
 
   // ── C25 v2 — fil serveur (GET /notifications) + envoi réel ─────────────────
@@ -3479,6 +3759,11 @@ const legacyFr = {
     pro: 'Aucun résultat pour « {query} ». Essayez un nom de client ou un numéro de pièce.',
     direct: 'Rien pour « {query} ».',
   },
+  'search.dataError': {
+    pote: 'Je n’ai pas accès à tout le coffre pour l’instant. Réessaie avant de conclure qu’un élément manque.',
+    pro: 'La recherche globale est indisponible. Veuillez réessayer avant de conclure qu’un élément est absent.',
+    direct: 'Recherche incomplète. Réessaie.',
+  },
   'search.sectionClients': { pote: 'Clients', pro: 'Clients', direct: 'Clients' },
   'search.sectionPieces': { pote: 'Devis & factures', pro: 'Devis et factures', direct: 'Pièces' },
   'search.sectionDocs': { pote: 'Documents', pro: 'Documents', direct: 'Docs' },
@@ -3507,15 +3792,27 @@ const legacyFr = {
     direct: 'Charges comptabilisées. Reste à payer suivi.',
   },
   'dep.toPay': { pote: 'À payer', pro: 'Reste à payer', direct: 'À payer' },
-  'dep.toPayCount': { pote: '{count} factures fournisseurs', pro: '{count} factures fournisseurs', direct: '{count}' },
+  'dep.toPayCount': {
+    pote: '{count} factures fournisseurs',
+    pro: '{count} factures fournisseurs',
+    direct: '{count}',
+  },
   'dep.toPayCountOne': { pote: '1 facture fournisseur', pro: '1 facture fournisseur', direct: '1' },
   'dep.paidMonth': { pote: 'Payé ce mois-ci', pro: 'Décaissé sur le mois', direct: 'Payé ce mois' },
-  'dep.vatMonth': { pote: 'TVA récupérable du mois', pro: 'TVA déductible du mois', direct: 'TVA du mois' },
+  'dep.vatMonth': {
+    pote: 'TVA récupérable du mois',
+    pro: 'TVA déductible du mois',
+    direct: 'TVA du mois',
+  },
   'dep.sectionList': { pote: 'Tes dépenses', pro: 'Vos dépenses', direct: 'Dépenses' },
   'dep.statusToPay': { pote: 'À payer', pro: 'À payer', direct: 'À payer' },
   'dep.statusPaid': { pote: 'Payée', pro: 'Payée', direct: 'Payée' },
   'dep.pay': { pote: 'Payer', pro: 'Marquer payée', direct: 'Payer' },
-  'dep.payConfirmTitle': { pote: 'Régler cette dépense ?', pro: 'Régler la dépense', direct: 'Régler ?' },
+  'dep.payConfirmTitle': {
+    pote: 'Régler cette dépense ?',
+    pro: 'Régler la dépense',
+    direct: 'Régler ?',
+  },
   'dep.payConfirmBody': {
     pote: 'Je passe {supplier} en payée et j’écris le décaissement au journal de banque ({amount}).',
     pro: 'La dépense {supplier} passe en payée ; le décaissement ({amount}) est écrit au journal de banque.',
@@ -3552,7 +3849,11 @@ const legacyFr = {
 
   // ── CLOTURE-UI — écran « Clôture » (refonte @bob/ui) ────────────────────────
   'cloture.back': { pote: 'Accueil', pro: 'Accueil', direct: 'Accueil' },
-  'cloture.eyebrow': { pote: 'Le mois pour ton comptable', pro: 'Le mois pour votre comptable', direct: 'Clôture' },
+  'cloture.eyebrow': {
+    pote: 'Le mois pour ton comptable',
+    pro: 'Le mois pour votre comptable',
+    direct: 'Clôture',
+  },
   'cloture.title': { pote: 'Clôture', pro: 'Clôture', direct: 'Clôture' },
   'cloture.subtitle': {
     pote: 'Je prépare {month} : anomalies, pièces, états de synthèse — prêt à envoyer.',
@@ -3585,19 +3886,63 @@ const legacyFr = {
     pro: 'Votre mois est préparé.',
     direct: 'Mois préparé.',
   },
-  'cloture.remainArbitrer': { pote: '{count} points à arbitrer', pro: '{count} points à arbitrer', direct: '{count} à arbitrer' },
-  'cloture.remainArbitrerOne': { pote: '1 point à arbitrer', pro: '1 point à arbitrer', direct: '1 à arbitrer' },
-  'cloture.remainPieces': { pote: '{count} pièces manquantes', pro: '{count} pièces manquantes', direct: '{count} pièces' },
-  'cloture.remainPiecesOne': { pote: '1 pièce manquante', pro: '1 pièce manquante', direct: '1 pièce' },
+  'cloture.remainArbitrer': {
+    pote: '{count} points à arbitrer',
+    pro: '{count} points à arbitrer',
+    direct: '{count} à arbitrer',
+  },
+  'cloture.remainArbitrerOne': {
+    pote: '1 point à arbitrer',
+    pro: '1 point à arbitrer',
+    direct: '1 à arbitrer',
+  },
+  'cloture.remainPieces': {
+    pote: '{count} pièces manquantes',
+    pro: '{count} pièces manquantes',
+    direct: '{count} pièces',
+  },
+  'cloture.remainPiecesOne': {
+    pote: '1 pièce manquante',
+    pro: '1 pièce manquante',
+    direct: '1 pièce',
+  },
   'cloture.sectionArbitrer': { pote: 'À arbitrer', pro: 'À arbitrer', direct: 'À arbitrer' },
   'cloture.sectionPieces': { pote: 'Pièces', pro: 'Pièces', direct: 'Pièces' },
-  'cloture.itemSignedNotInvoiced': { pote: 'Devis signés à facturer', pro: 'Devis signés à facturer', direct: 'Devis à facturer' },
-  'cloture.itemDrafts': { pote: 'Factures à émettre (brouillons)', pro: 'Factures à émettre', direct: 'Brouillons' },
-  'cloture.itemLate': { pote: 'Factures en retard', pro: 'Factures en retard', direct: 'En retard' },
-  'cloture.itemPartial': { pote: 'Factures partiellement payées', pro: 'Factures partiellement payées', direct: 'Partielles' },
-  'cloture.itemMissingPdf': { pote: 'Factures émises sans PDF archivé', pro: 'Factures émises sans PDF archivé', direct: 'PDF manquants' },
-  'cloture.sectionBalance': { pote: 'Balance générale', pro: 'Balance générale', direct: 'Balance' },
-  'cloture.resultProvisoire': { pote: 'Résultat provisoire', pro: 'Résultat provisoire', direct: 'Résultat' },
+  'cloture.itemSignedNotInvoiced': {
+    pote: 'Devis signés à facturer',
+    pro: 'Devis signés à facturer',
+    direct: 'Devis à facturer',
+  },
+  'cloture.itemDrafts': {
+    pote: 'Factures à émettre (brouillons)',
+    pro: 'Factures à émettre',
+    direct: 'Brouillons',
+  },
+  'cloture.itemLate': {
+    pote: 'Factures en retard',
+    pro: 'Factures en retard',
+    direct: 'En retard',
+  },
+  'cloture.itemPartial': {
+    pote: 'Factures partiellement payées',
+    pro: 'Factures partiellement payées',
+    direct: 'Partielles',
+  },
+  'cloture.itemMissingPdf': {
+    pote: 'Factures émises sans PDF archivé',
+    pro: 'Factures émises sans PDF archivé',
+    direct: 'PDF manquants',
+  },
+  'cloture.sectionBalance': {
+    pote: 'Balance générale',
+    pro: 'Balance générale',
+    direct: 'Balance',
+  },
+  'cloture.resultProvisoire': {
+    pote: 'Résultat provisoire',
+    pro: 'Résultat provisoire',
+    direct: 'Résultat',
+  },
   'cloture.balanced': { pote: 'Équilibrée', pro: 'Équilibrée', direct: 'Équilibrée' },
   'cloture.unbalanced': { pote: 'Déséquilibrée', pro: 'Déséquilibrée', direct: 'Déséquilibrée' },
   'cloture.produitsCharges': {
@@ -3605,14 +3950,38 @@ const legacyFr = {
     pro: 'Produits {produits} − charges {charges}',
     direct: 'P {produits} · C {charges}',
   },
-  'cloture.totaux': { pote: 'Débit {debit} · Crédit {credit}', pro: 'Débit {debit} · Crédit {credit}', direct: 'D {debit} · C {credit}' },
+  'cloture.totaux': {
+    pote: 'Débit {debit} · Crédit {credit}',
+    pro: 'Débit {debit} · Crédit {credit}',
+    direct: 'D {debit} · C {credit}',
+  },
   'cloture.totauxLabel': { pote: 'Totaux', pro: 'Totaux', direct: 'Totaux' },
-  'cloture.sectionResult': { pote: 'Compte de résultat', pro: 'Compte de résultat', direct: 'Résultat' },
-  'cloture.prodExpl': { pote: 'Produits d’exploitation', pro: 'Produits d’exploitation', direct: 'Produits expl.' },
-  'cloture.chargesExpl': { pote: 'Charges d’exploitation', pro: 'Charges d’exploitation', direct: 'Charges expl.' },
-  'cloture.resExpl': { pote: 'Résultat d’exploitation', pro: 'Résultat d’exploitation', direct: 'Rés. expl.' },
+  'cloture.sectionResult': {
+    pote: 'Compte de résultat',
+    pro: 'Compte de résultat',
+    direct: 'Résultat',
+  },
+  'cloture.prodExpl': {
+    pote: 'Produits d’exploitation',
+    pro: 'Produits d’exploitation',
+    direct: 'Produits expl.',
+  },
+  'cloture.chargesExpl': {
+    pote: 'Charges d’exploitation',
+    pro: 'Charges d’exploitation',
+    direct: 'Charges expl.',
+  },
+  'cloture.resExpl': {
+    pote: 'Résultat d’exploitation',
+    pro: 'Résultat d’exploitation',
+    direct: 'Rés. expl.',
+  },
   'cloture.resFin': { pote: 'Résultat financier', pro: 'Résultat financier', direct: 'Rés. fin.' },
-  'cloture.resExc': { pote: 'Résultat exceptionnel', pro: 'Résultat exceptionnel', direct: 'Rés. exc.' },
+  'cloture.resExc': {
+    pote: 'Résultat exceptionnel',
+    pro: 'Résultat exceptionnel',
+    direct: 'Rés. exc.',
+  },
   'cloture.resNet': { pote: 'Résultat net', pro: 'Résultat net', direct: 'Rés. net' },
   'cloture.apresImpot': {
     pote: 'Après impôt sur les bénéfices de {amount}.',
@@ -3643,11 +4012,31 @@ const legacyFr = {
     pro: 'Écart de {amount} — vérification du journal.',
     direct: 'Écart {amount}.',
   },
-  'cloture.sectionExport': { pote: 'Envoyer au comptable', pro: 'Envoyer au comptable', direct: 'Export cabinet' },
-  'cloture.sendDossier': { pote: 'Envoyer le dossier au comptable', pro: 'Envoyer le dossier au comptable', direct: 'Envoyer le dossier' },
-  'cloture.sendingDossier': { pote: 'Préparation du dossier…', pro: 'Préparation du dossier…', direct: 'Préparation…' },
-  'cloture.exportFec': { pote: 'Exporter le FEC seul', pro: 'Exporter le FEC seul', direct: 'FEC seul' },
-  'cloture.exportingFec': { pote: 'Génération du FEC…', pro: 'Génération du FEC…', direct: 'Génération…' },
+  'cloture.sectionExport': {
+    pote: 'Envoyer au comptable',
+    pro: 'Envoyer au comptable',
+    direct: 'Export cabinet',
+  },
+  'cloture.sendDossier': {
+    pote: 'Envoyer le dossier au comptable',
+    pro: 'Envoyer le dossier au comptable',
+    direct: 'Envoyer le dossier',
+  },
+  'cloture.sendingDossier': {
+    pote: 'Préparation du dossier…',
+    pro: 'Préparation du dossier…',
+    direct: 'Préparation…',
+  },
+  'cloture.exportFec': {
+    pote: 'Exporter le FEC seul',
+    pro: 'Exporter le FEC seul',
+    direct: 'FEC seul',
+  },
+  'cloture.exportingFec': {
+    pote: 'Génération du FEC…',
+    pro: 'Génération du FEC…',
+    direct: 'Génération…',
+  },
   'cloture.exportHelper': {
     pote: 'Le dossier = compte de résultat, bilan et balance. Le FEC (fichier des écritures) l’accompagne.',
     pro: 'Le dossier réunit compte de résultat, bilan et balance ; le FEC (fichier des écritures) l’accompagne.',
@@ -3664,7 +4053,11 @@ const legacyFr = {
     direct: '{filename}.',
   },
   // DOSSIER-2 — la revue de pré-signature (Bob exécute les diligences, l'EC signe)
-  'cloture.reviewSection': { pote: 'La revue de Bob', pro: 'Revue de pré-signature', direct: 'Revue' },
+  'cloture.reviewSection': {
+    pote: 'La revue de Bob',
+    pro: 'Revue de pré-signature',
+    direct: 'Revue',
+  },
   'cloture.reviewReady': {
     pote: 'J’ai passé toutes mes vérifications : rien à signaler.',
     pro: 'Diligences exécutées : aucun point bloquant, aucune réserve.',
@@ -3688,7 +4081,11 @@ const legacyFr = {
 
   // ── BA-3 — écran « Pilotage » (revue business : CA, DSO, tops, SIG) ─────────
   'pilotage.back': { pote: 'Argent', pro: 'Argent', direct: 'Argent' },
-  'pilotage.eyebrow': { pote: 'Ton activité en clair', pro: 'Votre activité en clair', direct: 'Pilotage' },
+  'pilotage.eyebrow': {
+    pote: 'Ton activité en clair',
+    pro: 'Votre activité en clair',
+    direct: 'Pilotage',
+  },
   'pilotage.title': { pote: 'Pilotage', pro: 'Pilotage', direct: 'Pilotage' },
   'pilotage.subtitle': {
     pote: 'Ce que tu factures, ce que tu encaisses, où ça part — et ce que ça dégage vraiment.',
@@ -3705,15 +4102,27 @@ const legacyFr = {
     pro: 'Aucun mouvement pour le moment. Le pilotage s’activera dès la première facture ou le premier encaissement.',
     direct: 'Aucun mouvement. Facture, et ça s’affiche.',
   },
-  'pilotage.sectionMonth': { pote: 'Ton mois en cours', pro: 'Le mois en cours', direct: 'Mois en cours' },
+  'pilotage.sectionMonth': {
+    pote: 'Ton mois en cours',
+    pro: 'Le mois en cours',
+    direct: 'Mois en cours',
+  },
   'pilotage.atDay': { pote: 'au {day} du mois', pro: 'au {day} du mois', direct: 'au {day}' },
-  'pilotage.invoicedLabel': { pote: 'Facturé (hors TVA)', pro: 'Facturé (hors TVA)', direct: 'Facturé HT' },
+  'pilotage.invoicedLabel': {
+    pote: 'Facturé (hors TVA)',
+    pro: 'Facturé (hors TVA)',
+    direct: 'Facturé HT',
+  },
   'pilotage.invoicedHint': {
     pote: 'Ton activité du mois — la base de ton résultat.',
     pro: 'L’activité du mois — la base de votre résultat.',
     direct: 'Base du résultat.',
   },
-  'pilotage.collectedLabel': { pote: 'Encaissé (TVA comprise)', pro: 'Encaissé (TVA comprise)', direct: 'Encaissé TTC' },
+  'pilotage.collectedLabel': {
+    pote: 'Encaissé (TVA comprise)',
+    pro: 'Encaissé (TVA comprise)',
+    direct: 'Encaissé TTC',
+  },
   'pilotage.collectedHint': {
     pote: 'Ce qui est vraiment arrivé sur ton compte.',
     pro: 'Ce qui est effectivement arrivé en banque.',
@@ -3725,20 +4134,36 @@ const legacyFr = {
     direct: 'vs M-1 à date égale',
   },
   'pilotage.sectionTrend': { pote: 'La tendance', pro: 'Tendance', direct: 'Tendance' },
-  'pilotage.trendMonths': { pote: '{month} vs {prev}', pro: '{month} vs {prev}', direct: '{month} vs {prev}' },
+  'pilotage.trendMonths': {
+    pote: '{month} vs {prev}',
+    pro: '{month} vs {prev}',
+    direct: '{month} vs {prev}',
+  },
   'pilotage.trendTooEarly': {
     pote: 'Encore un peu tôt : il me faut deux mois complets pour comparer honnêtement.',
     pro: 'Deux mois complets sont nécessaires pour une comparaison fiable.',
     direct: 'Trop tôt. Deux mois complets requis.',
   },
-  'pilotage.ytdLabel': { pote: 'Depuis le 1ᵉʳ janvier', pro: 'Cumul depuis le 1ᵉʳ janvier', direct: 'Cumul annuel' },
+  'pilotage.ytdLabel': {
+    pote: 'Depuis le 1ᵉʳ janvier',
+    pro: 'Cumul depuis le 1ᵉʳ janvier',
+    direct: 'Cumul annuel',
+  },
   'pilotage.ytdPrev': {
     pote: 'même période l’an dernier : {amount}',
     pro: 'même période l’an dernier : {amount}',
     direct: 'N-1 : {amount}',
   },
-  'pilotage.sectionSeries': { pote: 'Mois par mois', pro: 'Historique mensuel', direct: 'Par mois' },
-  'pilotage.sectionDso': { pote: 'On te paie en…', pro: 'Délai d’encaissement', direct: 'Délai de paiement' },
+  'pilotage.sectionSeries': {
+    pote: 'Mois par mois',
+    pro: 'Historique mensuel',
+    direct: 'Par mois',
+  },
+  'pilotage.sectionDso': {
+    pote: 'On te paie en…',
+    pro: 'Délai d’encaissement',
+    direct: 'Délai de paiement',
+  },
   'pilotage.dsoDays': { pote: '{days} jours', pro: '{days} jours', direct: '{days} j' },
   'pilotage.dsoHint': {
     pote: 'Le temps moyen entre ta facture et l’argent sur ton compte (90 derniers jours).',
@@ -3765,14 +4190,26 @@ const legacyFr = {
     pro: 'Facturation récente insuffisante pour une mesure fiable.',
     direct: 'Pas assez de facturation récente.',
   },
-  'pilotage.sectionTopClients': { pote: 'Tes plus gros clients (12 mois)', pro: 'Principaux clients (12 mois)', direct: 'Top clients (12 mois)' },
+  'pilotage.sectionTopClients': {
+    pote: 'Tes plus gros clients (12 mois)',
+    pro: 'Principaux clients (12 mois)',
+    direct: 'Top clients (12 mois)',
+  },
   'pilotage.topClientsHint': {
     pote: 'Facturé TTC — acompte et solde comptés une seule fois.',
     pro: 'Montants facturés TTC, sans double compte acompte/solde.',
     direct: 'Facturé TTC.',
   },
-  'pilotage.othersClients': { pote: 'Autres ({count})', pro: 'Autres ({count})', direct: 'Autres ({count})' },
-  'pilotage.creditNet': { pote: 'Avoirs nets ({count})', pro: 'Avoirs nets ({count})', direct: 'Avoirs nets ({count})' },
+  'pilotage.othersClients': {
+    pote: 'Autres ({count})',
+    pro: 'Autres ({count})',
+    direct: 'Autres ({count})',
+  },
+  'pilotage.creditNet': {
+    pote: 'Avoirs nets ({count})',
+    pro: 'Avoirs nets ({count})',
+    direct: 'Avoirs nets ({count})',
+  },
   'pilotage.concentration': {
     pote: '{name} pèse {share} % de ton activité — si ce client tousse, tu t’enrhumes.',
     pro: '{name} représente {share} % de l’activité : une dépendance à surveiller.',
@@ -3783,7 +4220,11 @@ const legacyFr = {
     pro: 'Aucune facturation sur les 12 derniers mois.',
     direct: 'Rien sur 12 mois.',
   },
-  'pilotage.sectionTopExpenses': { pote: 'Où part ton argent (12 mois)', pro: 'Principaux postes de dépense (12 mois)', direct: 'Top dépenses (12 mois)' },
+  'pilotage.sectionTopExpenses': {
+    pote: 'Où part ton argent (12 mois)',
+    pro: 'Principaux postes de dépense (12 mois)',
+    direct: 'Top dépenses (12 mois)',
+  },
   'pilotage.topExpensesHint': {
     pote: 'La charge comptabilisée, comme dans ton compte de résultat.',
     pro: 'Charge comptabilisée, cohérente avec le compte de résultat.',
@@ -3794,20 +4235,48 @@ const legacyFr = {
     pro: 'Aucune dépense enregistrée sur les 12 derniers mois.',
     direct: 'Aucune dépense sur 12 mois.',
   },
-  'pilotage.sectionSig': { pote: 'Ce que ton activité dégage', pro: 'Soldes intermédiaires de gestion', direct: 'Marges (SIG)' },
+  'pilotage.sectionSig': {
+    pote: 'Ce que ton activité dégage',
+    pro: 'Soldes intermédiaires de gestion',
+    direct: 'Marges (SIG)',
+  },
   'pilotage.sigCa': { pote: 'Chiffre d’affaires', pro: 'Chiffre d’affaires', direct: 'CA' },
-  'pilotage.sigMarge': { pote: 'Marge sur matériaux', pro: 'Marge commerciale', direct: 'Marge matériaux' },
-  'pilotage.sigConso': { pote: 'Achats & charges externes', pro: 'Consommations de tiers', direct: 'Achats & charges ext.' },
+  'pilotage.sigMarge': {
+    pote: 'Marge sur matériaux',
+    pro: 'Marge commerciale',
+    direct: 'Marge matériaux',
+  },
+  'pilotage.sigConso': {
+    pote: 'Achats & charges externes',
+    pro: 'Consommations de tiers',
+    direct: 'Achats & charges ext.',
+  },
   'pilotage.sigVa': { pote: 'Valeur ajoutée', pro: 'Valeur ajoutée', direct: 'VA' },
-  'pilotage.sigImpots': { pote: 'Impôts et taxes', pro: 'Impôts et taxes', direct: 'Impôts et taxes' },
-  'pilotage.sigPersonnel': { pote: 'Charges de personnel', pro: 'Charges de personnel', direct: 'Personnel' },
-  'pilotage.sigEbe': { pote: 'EBE — avant ta rémunération', pro: 'Excédent brut d’exploitation', direct: 'EBE' },
+  'pilotage.sigImpots': {
+    pote: 'Impôts et taxes',
+    pro: 'Impôts et taxes',
+    direct: 'Impôts et taxes',
+  },
+  'pilotage.sigPersonnel': {
+    pote: 'Charges de personnel',
+    pro: 'Charges de personnel',
+    direct: 'Personnel',
+  },
+  'pilotage.sigEbe': {
+    pote: 'EBE — avant ta rémunération',
+    pro: 'Excédent brut d’exploitation',
+    direct: 'EBE',
+  },
   'pilotage.sigEbeHint': {
     pote: 'Ce que ton activité dégage : de quoi te payer, investir, mettre de côté.',
     pro: 'Ce que l’exploitation dégage avant amortissements — et avant votre rémunération.',
     direct: 'Avant ta rémunération et l’URSSAF.',
   },
-  'pilotage.sigRex': { pote: 'Résultat d’exploitation', pro: 'Résultat d’exploitation', direct: 'Résultat d’exploitation' },
+  'pilotage.sigRex': {
+    pote: 'Résultat d’exploitation',
+    pro: 'Résultat d’exploitation',
+    direct: 'Résultat d’exploitation',
+  },
   'pilotage.sigPeriod': {
     pote: 'Exercice en cours — recolle au centime à ton compte de résultat.',
     pro: 'Exercice en cours à date — cohérent au centime avec le compte de résultat.',
@@ -3867,7 +4336,11 @@ const legacyFr = {
     direct: '1 écriture ce mois · auto',
   },
   'compta.balanced': { pote: 'Équilibré ✓', pro: 'Équilibré', direct: 'Équilibré' },
-  'compta.unbalanced': { pote: 'Déséquilibré !', pro: 'Déséquilibre détecté', direct: 'Déséquilibré' },
+  'compta.unbalanced': {
+    pote: 'Déséquilibré !',
+    pro: 'Déséquilibre détecté',
+    direct: 'Déséquilibré',
+  },
   'compta.totalsLine': {
     pote: 'Débit {debit} · Crédit {credit}',
     pro: 'Débit {debit} · Crédit {credit}',
@@ -4268,6 +4741,21 @@ const legacyFr = {
     pote: 'Je n’arrive pas à lire ton profil, là. On réessaie ?',
     pro: 'Impossible de charger le profil. Veuillez réessayer.',
     direct: 'Profil injoignable. Réessaie.',
+  },
+  'account.profileLoading': {
+    pote: 'Je charge ton profil.',
+    pro: 'Chargement du profil.',
+    direct: 'Chargement du profil.',
+  },
+  'account.subscriptionLoading': {
+    pote: 'Je vérifie ton abonnement.',
+    pro: 'Chargement de l’abonnement.',
+    direct: 'Chargement de l’abonnement.',
+  },
+  'account.subscriptionError': {
+    pote: 'Je n’arrive pas à vérifier ton abonnement. Je préfère ne rien inventer : réessaie.',
+    pro: 'Impossible de charger les informations d’abonnement. Veuillez réessayer.',
+    direct: 'Abonnement injoignable. Réessaie.',
   },
 
   // ── C-EXP-UI1 — les moteurs d'expertise à l'écran ──────────────────────────

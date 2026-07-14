@@ -18,12 +18,25 @@ export class GenerateInvoiceFromQuote {
     const quote = await this.deps.quotes.findById(input.quoteId);
     if (!quote) return err(appNotFound('quote', input.quoteId));
 
-    const mode = input.mode ?? (quote.depositPct !== null ? 'deposit' : 'final');
-    const kind = mode === 'deposit' ? 'deposit' : 'final';
+    const explicitMode = input.mode;
+    let mode: 'deposit' | 'final' = explicitMode ?? (quote.depositPct !== null ? 'deposit' : 'final');
+    let kind: 'deposit' | 'final' = mode === 'deposit' ? 'deposit' : 'final';
     if (quote.status !== 'signed')
       return err(appDomain({ code: 'VALIDATION', field: 'quote', message: 'Le devis doit etre signe.' }));
 
-    const existing = await this.deps.invoices.findByParentQuoteId(quote.companyId, quote.id, kind);
+    let existing = await this.deps.invoices.findByParentQuoteId(quote.companyId, quote.id, kind);
+    // Mode INFÉRÉ (jamais fourni par l'appelant) sur un devis dont l'acompte est déjà facturé,
+    // sans finale : le "prochain pas" naturel est la finale, pas un rejeu silencieux de l'acompte
+    // (R3 : le bouton disait « générée » sans rien créer). Idempotence STRICTE préservée quand le
+    // mode est explicite (facture/[id].tsx envoie mode:'final' pour le solde d'un acompte).
+    if (existing && explicitMode === undefined && kind === 'deposit') {
+      const finalExisting = await this.deps.invoices.findByParentQuoteId(quote.companyId, quote.id, 'final');
+      if (!finalExisting) {
+        mode = 'final';
+        kind = 'final';
+        existing = null;
+      }
+    }
     if (existing) return ok({ invoiceId: existing.id });
 
     // Facture FINALE : TOUT ce qui a déjà été facturé sur ce devis (acompte ET situations

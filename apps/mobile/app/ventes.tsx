@@ -20,6 +20,7 @@ import {
   hasInvoiceActions,
   QUOTE_BADGE,
   INVOICE_BADGE,
+  type QuoteLinkedInvoices,
 } from '../src/components/DocumentActions';
 
 type QuoteStatus = QuoteView['status'];
@@ -68,6 +69,15 @@ export default function Ventes() {
     (invoices.data ?? [])
       .filter((i) => i.parentQuoteId === quoteId)
       .sort((a, b) => (a.kind === 'deposit' ? 0 : 1) - (b.kind === 'deposit' ? 0 : 1));
+  // R3/R5 : les 3 états RÉELS du CTA post-signature (QuoteActions) — un booléen « une facture
+  // existe » était trop grossier pour distinguer acompte-sans-finale (bouton solde) de finale (badge).
+  const linkedInvoicesOfQuote = (quoteId: string): QuoteLinkedInvoices => {
+    const linked = invoicesOfQuote(quoteId);
+    return {
+      hasDepositInvoice: linked.some((i) => i.kind === 'deposit'),
+      hasFinalInvoice: linked.some((i) => i.kind === 'final'),
+    };
+  };
   const quoteOf = (inv: InvoiceView) => (quotes.data ?? []).find((q) => q.id === inv.parentQuoteId) ?? null;
   const kindChip = (inv: InvoiceView): string => {
     if (inv.kind === 'deposit') {
@@ -302,7 +312,7 @@ export default function Ventes() {
                             <QuoteActions
                               quote={q}
                               customerName={nameOf(q.customerId)}
-                              alreadyInvoiced={(invoices.data ?? []).some((i) => i.parentQuoteId === q.id)}
+                              linkedInvoices={linkedInvoicesOfQuote(q.id)}
                             />
                           </View>
                         ) : null}

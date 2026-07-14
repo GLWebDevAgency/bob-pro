@@ -4,23 +4,29 @@
  * ACTIONS = QuoteActions (source unique, confirmations typées, mêmes use cases que Bob).
  * Nav croisée réelle : première facture issue du devis (parentQuoteId).
  */
-import { useMemo } from 'react';
+import { useMemo, useRef } from 'react';
 import { Alert, Linking, Text, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { buildPieceView, type PieceLinkedRef } from '@bob/core';
+import { buildPieceView, normalizeVoiceText, type PieceLinkedRef } from '@bob/core';
 import { t } from '@bob/i18n';
 import { Card, ErrorRetry, SkeletonCard, SkeletonHeader, font, useTheme } from '@bob/ui';
 import { useCustomers, useInvoices, useQuote } from '../../src/data/hooks';
 import { useDocuments } from '../../src/data/documents';
 import { useBobClient } from '../../src/data/client';
 import { shareDocument } from '../../src/lib/share-document';
-import { QuoteActions, hasQuoteActions } from '../../src/components/DocumentActions';
+import {
+  QuoteActions,
+  hasQuoteActions,
+  type QuoteActionsHandle,
+  type QuoteLinkedInvoices,
+} from '../../src/components/DocumentActions';
 import { PieceDetailView } from '../../src/components/PieceDetailView';
 import {
   usePublishAgentContext,
   type AgentCapability,
   type AgentContext,
   type AgentAccessLayout,
+  type AgentSurface,
 } from '../../src/agent';
 
 export default function DevisDetail() {
@@ -54,6 +60,15 @@ export default function DevisDetail() {
       ...(linked.length > 0 ? { linkedInvoices: linked } : {}),
     });
   }, [quote.data, customers.data, invoices.data]);
+  // R3/R5 : les 3 états RÉELS du CTA post-signature (QuoteActions) dérivés des MÊMES factures liées
+  // que la vue ci-dessus (view.linkedInvoices) — une seule source, pas de recalcul divergent.
+  const quoteLinkedInvoices = useMemo<QuoteLinkedInvoices>(
+    () => ({
+      hasDepositInvoice: (view?.linkedInvoices ?? []).some((i) => i.kind === 'deposit'),
+      hasFinalInvoice: (view?.linkedInvoices ?? []).some((i) => i.kind === 'final'),
+    }),
+    [view],
+  );
   const agentContext = useMemo<AgentContext>(() => {
     const q = quote.data;
     if (!q) {
@@ -87,7 +102,73 @@ export default function DevisDetail() {
     };
   }, [customers.data, id, quote.data]);
   const agentLayout = useMemo<AgentAccessLayout>(() => ({ bottomAvoidance: 86 }), []);
-  usePublishAgentContext(agentContext, agentLayout);
+
+  // ── R7 (parité vocale) : « génère la facture finale »/« facture d'acompte »/« facture complète »
+  //    sur un devis SIGNÉ. Plancher de sûreté : l'affordance dit (say) et, au mieux, OUVRE le Sheet
+  //    de choix (QuoteActionsHandle) — JAMAIS n'appelle generate.mutateAsync elle-même. Seul le tap
+  //    sur le bouton visible (état b) ou dans le Sheet (état a) déclenche réellement la génération. ──
+  const actionsRef = useRef<QuoteActionsHandle>(null);
+  const statusRef = useRef(quote.data?.status);
+  statusRef.current = quote.data?.status;
+  const linkedRef = useRef(quoteLinkedInvoices);
+  linkedRef.current = quoteLinkedInvoices;
+  const depositPctRef = useRef<number | null>(quote.data?.depositPct ?? null);
+  depositPctRef.current = quote.data?.depositPct ?? null;
+  const personalityRef = useRef(personality);
+  personalityRef.current = personality;
+  const quoteVoiceSurface = useMemo<AgentSurface>(
+    () => ({
+      affordances: [
+        {
+          id: 'devis.generateFinalInvoice',
+          match: (utterance) => {
+            if (statusRef.current !== 'signed') return null;
+            if (!/facture finale/.test(normalizeVoiceText(utterance))) return null;
+            return () => {
+              const p = personalityRef.current;
+              if (linkedRef.current.hasFinalInvoice) return { say: t('devis.voice.invoiceAlreadyFinal', { personality: p }) };
+              if (linkedRef.current.hasDepositInvoice) return { say: t('devis.voice.invoiceFinalReady', { personality: p }) };
+              actionsRef.current?.openChoiceSheet();
+              return { say: t('devis.voice.invoiceChoiceOpenedFinal', { personality: p }) };
+            };
+          },
+        },
+        {
+          id: 'devis.generateDepositInvoice',
+          match: (utterance) => {
+            if (statusRef.current !== 'signed') return null;
+            if (!/facture (d )?acompte/.test(normalizeVoiceText(utterance))) return null;
+            return () => {
+              const p = personalityRef.current;
+              if (linkedRef.current.hasFinalInvoice) return { say: t('devis.voice.invoiceAlreadyFinal', { personality: p }) };
+              if (linkedRef.current.hasDepositInvoice) return { say: t('devis.voice.invoiceFinalReady', { personality: p }) };
+              const pct = depositPctRef.current;
+              if (pct === null) return { say: t('devis.voice.invoiceNoDeposit', { personality: p }) };
+              actionsRef.current?.openChoiceSheet();
+              return { say: t('devis.voice.invoiceChoiceOpenedDeposit', { personality: p, params: { pct } }) };
+            };
+          },
+        },
+        {
+          id: 'devis.generateFullInvoice',
+          match: (utterance) => {
+            if (statusRef.current !== 'signed') return null;
+            const n = normalizeVoiceText(utterance);
+            if (!/facture/.test(n) || !/(cent pour cent|100 ?%|100 ?pour ?cent|complete)/.test(n)) return null;
+            return () => {
+              const p = personalityRef.current;
+              if (linkedRef.current.hasFinalInvoice) return { say: t('devis.voice.invoiceAlreadyFinal', { personality: p }) };
+              if (linkedRef.current.hasDepositInvoice) return { say: t('devis.voice.invoiceFinalReady', { personality: p }) };
+              actionsRef.current?.openChoiceSheet();
+              return { say: t('devis.voice.invoiceChoiceOpenedFinal', { personality: p }) };
+            };
+          },
+        },
+      ],
+    }),
+    [],
+  );
+  usePublishAgentContext(agentContext, agentLayout, quoteVoiceSurface);
 
   const pdfDoc = useMemo(
     () =>
@@ -171,7 +252,14 @@ export default function DevisDetail() {
       onOpenPdf={openPdf ? () => void openPdf() : undefined}
       onSharePdf={sharePdf ? () => void sharePdf() : undefined}
       actions={
-        hasQuoteActions(q) ? <QuoteActions quote={q} customerName={view.customerName} /> : null
+        hasQuoteActions(q) ? (
+          <QuoteActions
+            ref={actionsRef}
+            quote={q}
+            customerName={view.customerName}
+            linkedInvoices={quoteLinkedInvoices}
+          />
+        ) : null
       }
     />
   );

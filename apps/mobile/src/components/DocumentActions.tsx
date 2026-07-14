@@ -1,8 +1,10 @@
-import { useRef, useState, type ReactNode } from 'react';
+import { forwardRef, useImperativeHandle, useRef, useState, type ReactNode } from 'react';
 import { View, Alert } from 'react-native';
 import { router } from 'expo-router';
 import type { QuoteView, InvoiceView } from '@bob/api-client';
 import { challengeFor, buildActionDiff } from '@bob/ai';
+import { t } from '@bob/i18n';
+import { QuestionSheet, useTheme } from '@bob/ui';
 import {
   useSendQuote,
   useSignQuote,
@@ -111,26 +113,72 @@ function useActionLock() {
   return { busy, lock, run };
 }
 
-export function QuoteActions({
-  quote,
-  customerName,
-  alreadyInvoiced = false,
-}: {
-  quote: QuoteView;
-  customerName: string;
-  /** Vrai si une facture liée existe déjà (dérivé de InvoiceView.parentQuoteId) — garde DURABLE anti-doublon UI. */
-  alreadyInvoiced?: boolean;
-}): ReactNode {
+/**
+ * Factures déjà liées à CE devis (dérivé de InvoiceView.parentQuoteId, côté appelant) — pilote les
+ * 3 états RÉELS du CTA post-signature (R3/R5) : aucune → Sheet de choix ; acompte sans finale →
+ * « Générer la facture finale » (mode EXPLICITE, le bug R3) ; finale déjà là → badge.
+ */
+export interface QuoteLinkedInvoices {
+  readonly hasDepositInvoice: boolean;
+  readonly hasFinalInvoice: boolean;
+}
+const NO_LINKED_INVOICES: QuoteLinkedInvoices = { hasDepositInvoice: false, hasFinalInvoice: false };
+
+/**
+ * R7 (parité vocale) : pouvoir IMPÉRATIF exposé au parent pour ouvrir le Sheet de choix depuis une
+ * affordance vocale — SANS exécuter. Plancher de sûreté : la voix dit et montre, seul le tap dans
+ * le Sheet (ou sur le bouton de l'état b) déclenche réellement generate.mutateAsync.
+ */
+export interface QuoteActionsHandle {
+  openChoiceSheet: () => void;
+}
+
+export const QuoteActions = forwardRef<
+  QuoteActionsHandle,
+  {
+    quote: QuoteView;
+    customerName: string;
+    linkedInvoices?: QuoteLinkedInvoices;
+  }
+>(function QuoteActions({ quote, customerName, linkedInvoices = NO_LINKED_INVOICES }, ref): ReactNode {
+  const { personality } = useTheme();
   const send = useSendQuote();
   const sign = useSignQuote();
   const refuse = useRefuseQuote();
   const generate = useGenerateInvoice();
   const { busy, run } = useActionLock();
   const confirm = useConfirm();
-  // Confort UX : masque l'action après un succès dans la session (fallback quand la liste des factures liées
-  // n'est pas disponible). La sûreté anti-doublon est garantie AU DOMAINE (GenerateInvoiceFromQuote idempotent
-  // par parentQuoteId+kind) ; `alreadyInvoiced` rend le masquage durable là où l'appelant connaît les liens.
-  const [invoiced, setInvoiced] = useState(false);
+  // Confort UX : bascule l'état affiché DANS LA SESSION dès le succès, sans attendre le refetch des
+  // factures liées côté appelant. La sûreté anti-doublon reste AU DOMAINE (GenerateInvoiceFromQuote,
+  // idempotent par parentQuoteId+kind) ; `linkedInvoices` est la source DURABLE (survit au re-render).
+  const [localLinked, setLocalLinked] = useState<QuoteLinkedInvoices>(NO_LINKED_INVOICES);
+  const [choiceOpen, setChoiceOpen] = useState(false);
+  const linked: QuoteLinkedInvoices = {
+    hasDepositInvoice: linkedInvoices.hasDepositInvoice || localLinked.hasDepositInvoice,
+    hasFinalInvoice: linkedInvoices.hasFinalInvoice || localLinked.hasFinalInvoice,
+  };
+  useImperativeHandle(
+    ref,
+    () => ({
+      openChoiceSheet: () => {
+        // N'ouvre que si l'état (a) s'applique (aucune facture liée) — sinon rien à choisir.
+        if (!linked.hasFinalInvoice && !linked.hasDepositInvoice) setChoiceOpen(true);
+      },
+    }),
+    [linked.hasFinalInvoice, linked.hasDepositInvoice],
+  );
+  // Un SEUL point d'écriture pour les deux boutons (a) et (b) : mode TOUJOURS explicite — c'est
+  // précisément le correctif R3 (sans mode, l'inférence retombait sur 'deposit' déjà facturé et
+  // l'idempotence renvoyait l'existante sans créer la finale).
+  const generateInvoice = (mode: 'deposit' | 'final') =>
+    run('gen', async () => {
+      const out = await generate.mutateAsync({ quoteId: quote.id, mode });
+      setLocalLinked((prev) => ({
+        ...prev,
+        ...(mode === 'deposit' ? { hasDepositInvoice: true } : { hasFinalInvoice: true }),
+      }));
+      router.push(`/facture/${out.invoiceId}`);
+    });
 
   if (quote.status === 'draft') {
     return (
@@ -212,23 +260,57 @@ export function QuoteActions({
     );
   }
   if (quote.status === 'signed') {
-    if (invoiced || alreadyInvoiced) return <Badge label="Facture générée" tone="success" />;
+    // État (c) : la finale existe déjà — plus rien à générer.
+    if (linked.hasFinalInvoice) return <Badge label="Facture générée" tone="success" />;
+
+    // État (b) : acompte lié SANS finale — LE bug R3 (mode:'final' explicite obligatoire, sinon
+    // l'inférence retombe sur 'deposit' déjà facturé et renvoie l'existante sans rien créer).
+    if (linked.hasDepositInvoice) {
+      return (
+        <Button
+          title={t('piece.actionFacturerSolde', { personality })}
+          loading={busy === 'gen'}
+          disabled={!!busy}
+          onPress={() => void generateInvoice('final')}
+        />
+      );
+    }
+
+    // État (a) : aucune facture liée — Sheet de choix. « 100 % » toujours ; « acompte » UNIQUEMENT
+    // si le devis SIGNÉ en porte un (arbitrage 1 : le % est celui du contrat signé, jamais un autre).
+    const choiceOptions = [
+      { value: 'final', label: 'Facture de 100 %' },
+      ...(quote.depositPct !== null
+        ? [{ value: 'deposit', label: `Facture d'acompte (${quote.depositPct} %)` }]
+        : []),
+    ];
     return (
-      <Button
-        title="Générer la facture"
-        loading={busy === 'gen'}
-        disabled={!!busy}
-        onPress={() =>
-          void run('gen', async () => {
-            await generate.mutateAsync({ quoteId: quote.id });
-            setInvoiced(true); // one-shot : plus de re-génération dans cette session
-          })
-        }
-      />
+      <>
+        <Button
+          title="Générer la facture"
+          loading={busy === 'gen'}
+          disabled={!!busy}
+          onPress={() => setChoiceOpen(true)}
+        />
+        <QuestionSheet
+          visible={choiceOpen}
+          header="Facture"
+          question="Quelle facture veux-tu générer ?"
+          options={choiceOptions}
+          confirmLabel="Générer"
+          otherLabel="Annuler"
+          onClose={() => setChoiceOpen(false)}
+          onOther={() => setChoiceOpen(false)}
+          onSelect={(values) => {
+            setChoiceOpen(false);
+            void generateInvoice(values[0] === 'deposit' ? 'deposit' : 'final');
+          }}
+        />
+      </>
     );
   }
   return null; // refused / expired : rien à faire
-}
+});
 
 export function InvoiceActions({
   invoice,

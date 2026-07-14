@@ -180,4 +180,58 @@ describe('GenerateInvoiceFromQuote', () => {
     expect(final?.totals().netToPay).toBe(84000); // 120 000 − 36 000
     expect(final?.toSnapshot().depositInvoiceId).toBe('dep');
   });
+
+  // ── R3 : mode INFÉRÉ sur un acompte déjà facturé doit avancer vers la finale, pas rejouer
+  //    silencieusement l'acompte (bug device : le CTA disait « générée » sans rien créer). ──
+
+  it('R3 ① mode inféré après un acompte déjà généré → CRÉE la facture FINALE (pas un rejeu de l’acompte)', async () => {
+    const env = makeEnv(); // devis avec depositPct=30 : l'inférence par défaut vise 'deposit'
+
+    const deposit = await env.usecase.execute({ quoteId: env.quote.id }); // mode inféré → deposit
+    expect(deposit.ok).toBe(true);
+    if (!deposit.ok) return;
+
+    const again = await env.usecase.execute({ quoteId: env.quote.id }); // mode toujours inféré
+    expect(again.ok).toBe(true);
+    if (!again.ok) return;
+
+    // Le "prochain pas" naturel : une facture FINALE, distincte de l'acompte déjà émis.
+    expect(again.value.invoiceId).not.toBe(deposit.value.invoiceId);
+    const kinds = (await env.invoices.listByCompany(env.quote.companyId)).map((i) => i.kind).sort();
+    expect(kinds).toEqual(['deposit', 'final']);
+    const createdFinal = await env.invoices.findById(again.value.invoiceId);
+    expect(createdFinal?.kind).toBe('final');
+  });
+
+  it('R3 ② mode:\'deposit\' EXPLICITE avec acompte déjà généré → renvoie l’EXISTANTE (idempotence intacte)', async () => {
+    const env = makeEnv();
+
+    const first = await env.usecase.execute({ quoteId: env.quote.id, mode: 'deposit' });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    const replay = await env.usecase.execute({ quoteId: env.quote.id, mode: 'deposit' });
+    expect(replay.ok).toBe(true);
+    if (!replay.ok) return;
+
+    expect(replay.value.invoiceId).toBe(first.value.invoiceId);
+    expect(await env.invoices.listByCompany(env.quote.companyId)).toHaveLength(1);
+    expect(env.counts()).toEqual({ saveCalls: 1 });
+  });
+
+  it('R3 ③ mode:\'final\' EXPLICITE crée la finale, puis la renvoie de façon idempotente', async () => {
+    const env = makeEnv();
+
+    const created = await env.usecase.execute({ quoteId: env.quote.id, mode: 'final' });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const finalInvoice = await env.invoices.findById(created.value.invoiceId);
+    expect(finalInvoice?.kind).toBe('final');
+
+    const replay = await env.usecase.execute({ quoteId: env.quote.id, mode: 'final' });
+    expect(replay.ok).toBe(true);
+    if (!replay.ok) return;
+    expect(replay.value.invoiceId).toBe(created.value.invoiceId);
+    expect(env.counts()).toEqual({ saveCalls: 1 });
+  });
 });
