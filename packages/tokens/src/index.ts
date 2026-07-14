@@ -137,6 +137,24 @@ export const shadow = {
 } as const;
 
 /** Équivalents RN (shadowColor #0D2644). */
+/**
+ * MOTION — les durées/easing du produit, NOMMÉES (chantier états/transitions 14/07).
+ * Ces valeurs ne sont pas inventées : elles FIGENT les constantes déjà dominantes dans le
+ * code (Toast 200, Sheet 220, transitions de contenu assistant/diagnostic 360, respirations
+ * voix/halo 1500+). Trois registres, une règle :
+ * · fast   — micro-feedback (toast, apparition/disparition d'un élément) ;
+ * · base   — transitions d'UI (sheet, bascule d'état d'un composant) ;
+ * · content — changement de CONTENU (étape de wizard, onglet, section) ;
+ * · ambient — respirations décoratives (halo, orbe) — TOUJOURS coupées en reduced-motion.
+ * Easing par défaut : Easing.inOut(Easing.ease) pour base/content, linéaire pour fast.
+ */
+export const motion = {
+  fast: 200,
+  base: 220,
+  content: 360,
+  ambient: 1500,
+} as const;
+
 export const shadowNative = {
   e1: {
     shadowColor: '#0D2644',
