@@ -1,10 +1,11 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
-import { SystemClock, buildValueDigest, ok, type AppError, type Result, type ValueDigest, type ValueEvent } from '@bob/core';
+import { SystemClock, buildValueDigest, ok, type AnalyticsPort, type AppError, type Result, type ValueDigest, type ValueEvent } from '@bob/core';
 import { PERSISTENCE, type Persistence } from '../persistence/persistence';
 import { NotificationDedupeConflictError } from '../persistence/notification-jobs';
 import { SUPABASE_ADMIN, type SupabaseAdminPort } from '../auth/supabase-admin';
 import { AppLogger, requireTenant } from '../observability/logger';
+import { ANALYTICS } from '../observability/analytics';
 import { NotificationDeliveryService } from './notification-delivery.service';
 import { ScheduledTenantDirectory } from './tenant-directory';
 
@@ -193,6 +194,8 @@ export class DigestService {
     private readonly tenants: ScheduledTenantDirectory,
     @Inject(SUPABASE_ADMIN) private readonly supabaseAdmin: SupabaseAdminPort,
     private readonly logger: AppLogger,
+    // Analytics produit (SPEC pilier 2 décision 11) — fire-and-forget, Noop sans endpoint.
+    @Inject(ANALYTICS) private readonly analytics: AnalyticsPort,
   ) {}
 
   @Cron(WEEKLY_DIGEST_CRON, { timeZone: PARIS_TZ })
@@ -272,6 +275,16 @@ export class DigestService {
           notification: { channel: 'email', to: email, subject: message.subject, body: message.body },
         }),
       );
+      const queuedNow = !(alreadyEnqueued || job.status === 'done');
+      if (queuedNow) {
+        // value_digest_sent : LE point de mesure de la boucle de rétention (ouverture mesurée
+        // côté mobile via value_digest_opened) — tenantId opaque, zéro contenu.
+        this.analytics.track({
+          tenantId: companyId,
+          at: new Date(this.clock.now()).toISOString(),
+          event: { name: 'value_digest_sent', highlightKind: digest.highlight.kind },
+        });
+      }
       const outcome: DigestCompanyOutcome =
         alreadyEnqueued || job.status === 'done' ? 'deduplicated' : 'queued';
       this.logger.audit('digest.queued', { companyId, isoWeek: window.isoWeek, jobId: job.id, outcome });

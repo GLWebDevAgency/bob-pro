@@ -62,8 +62,11 @@ function setup() {
     setUserCompanyId: vi.fn(async () => undefined),
     getUserIdentity: vi.fn(async (userId: string) => ({ email: `${userId}@artisan.example`, displayName: null })),
   };
-  const service = new DigestService(persistence, delivery, tenants, supabaseAdmin, logger);
-  return { persistence, window, service, supabaseAdmin, notifier };
+  const trackedEvents: import('@bob/core').TrackedEvent[] = [];
+  const service = new DigestService(persistence, delivery, tenants, supabaseAdmin, logger, {
+    track: (event) => trackedEvents.push(event),
+  });
+  return { persistence, window, service, supabaseAdmin, notifier, trackedEvents };
 }
 
 async function weeklyDigestJobs(persistence: InMemoryPersistence, companyId: string) {
@@ -72,7 +75,7 @@ async function weeklyDigestJobs(persistence: InMemoryPersistence, companyId: str
 
 describe('digest de valeur hebdo multi-tenant (pilier 2)', () => {
   it('enfile UN digest pour la société avec substance, RIEN pour celle sans substance', async () => {
-    const { persistence, window, service } = setup();
+    const { persistence, window, service, trackedEvents } = setup();
     persistence.companies.seed(fakeCompany('company-u1'));
     persistence.companies.seed(fakeCompany('company-u2'));
     // Substance company-u1 : relance DONE mardi, paiement 2 340 € TTC mercredi sur la MÊME facture
@@ -102,6 +105,12 @@ describe('digest de valeur hebdo multi-tenant (pilier 2)', () => {
     expect(jobs[0]!.subject).toContain('récupérés');
     expect(jobs[0]!.notification?.body).toContain('Relances envoyées : 1');
     expect(jobs[0]!.notification?.body).toContain('Documents créés : 1');
+    // Analytics produit : value_digest_sent émis UNE fois, tenant opaque, accroche du domaine.
+    expect(trackedEvents).toHaveLength(1);
+    expect(trackedEvents[0]).toMatchObject({
+      tenantId: 'company-u1',
+      event: { name: 'value_digest_sent', highlightKind: 'money' },
+    });
     expect(jobs[0]!.notification?.body).toContain('environ');
     await expect(weeklyDigestJobs(persistence, 'company-u2')).resolves.toHaveLength(0);
   });
