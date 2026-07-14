@@ -2980,3 +2980,8 @@ client, catalogue.
 - Review adversariale (17 agents) : 9 findings corrigés le jour même — dont P0 « upsell à un impayé » (repli CTA), P0 « promesse de sourdine rompue » (désormais tenue PAR la carte), P1 perte fictive ai_quota (FEATURE_SUPERSEDED_BY), P1 statut ignoré par les gates.
 - Porte worktree-vierge HEAD verte (install gelé, builds 0, core 825→827, ai 287, api-client 103, api 540, mobile tsc 0). Les échecs de l'ARBRE (voice/realtime, ai/providers) = chantier GPT in-flight, jamais committé par moi.
 - Restes pilier 2 : table subscriptions (ATTEND schema.prisma libéré par GPT), bilan fin d'essai UI, refus vocal→30 j session, value_digest_opened. Pilier 3 ensuite.
+
+## 2026-07-14 — Claude : PILIER 3 démarré — landing premium construite (apps/landing)
+- Conception par panel jugé (3 directions × juges DA/artisan) : base « démonstration authentique » + direction tokens produit + greffes. Signature : l'iPhone du hero JOUE la conversation Bob Live (CSS pur, reduced-motion respecté). Doctrine tenue : dossier démo unique Mercier légendé, calendrier relances RÉEL, 4 offres égales, zéro faux compteur/témoignage, CTA liste d'attente honnête (mailto).
+- Next 16, build statique vert, servie et vérifiée en local (HTTP 200, contenu clé présent). Découverte : eas.json + projectId EAS existent déjà.
+- Déploiement Vercel préversion PRÊT mais non exécuté : publication publique = autorisation explicite du fondateur requise (classifieur). Commande : cd apps/landing && npx vercel deploy --yes.
