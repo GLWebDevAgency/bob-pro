@@ -1,5 +1,6 @@
 import {
   ADDON_CATALOG,
+  FEATURE_SUPERSEDED_BY,
   PLAN_CATALOG,
   TIER_ORDER,
   addOnAvailableForTier,
@@ -84,6 +85,12 @@ export function decidePaywall(context: PaywallContext): PaywallDecision {
   if (status === 'past_due') return { kind: 'past_due' };
 
   if (planCanWithAddOns(paidTier, addOns, feature)) return { kind: 'allowed', viaTrial: false };
+  // Couvert par une capacité SUPÉRIEURE (ai_quota ⊂ ai_assistant) : accès — jamais une
+  // « upgrade » absurde vers un palier inférieur pour un client qui a déjà mieux.
+  const supersededBy = FEATURE_SUPERSEDED_BY[feature];
+  if (supersededBy !== undefined && planCanWithAddOns(paidTier, addOns, supersededBy)) {
+    return { kind: 'allowed', viaTrial: false };
+  }
 
   // L'essai prête un palier ENTIER (reverse trial) : s'il couvre, accès marqué viaTrial.
   const trialTier = context.trialTier ?? null;

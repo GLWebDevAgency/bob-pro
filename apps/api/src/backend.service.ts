@@ -962,7 +962,7 @@ export class BackendService {
    * d'enforcement. En early-access (subscriptionFor = business pour tous), personne n'est refusé.
    */
   async exportFec(input: { from: string; to: string }) {
-    if (!planCan(this.subscriptionFor(this.companyId()).tier, 'accounting_operations'))
+    if (!this.subscriptionFor(this.companyId()).can('accounting_operations'))
       return { ok: false as const, error: appForbidden("L'export comptable FEC est inclus à partir de l'offre Pro.") };
     return new ExportFec({
       companies: this.p.companies,
@@ -1675,7 +1675,9 @@ export class BackendService {
   autoDunningEntitlement(companyId: string): { allowed: boolean; plan: PlanTier } {
     const subscription = this.subscriptionFor(companyId);
     return {
-      allowed: planCan(subscription.tier, 'auto_dunning'),
+      // .can() = isActive() && planCanWithAddOns : un abonnement past_due/canceled ne déclenche
+      // JAMAIS de relances automatiques (P1 review 14/07) — early-access reste active/business.
+      allowed: subscription.can('auto_dunning'),
       plan: subscription.tier,
     };
   }

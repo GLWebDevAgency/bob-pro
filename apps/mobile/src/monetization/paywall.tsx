@@ -8,7 +8,7 @@
  * elle ne surgit pas) ; UN CTA (le déblocage le moins cher) ; le « non » est tenu
  * (2 rejets même source → 14 j de silence, promesse écrite sous le bouton).
  */
-import React, { useCallback, useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Text, View } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
@@ -51,14 +51,20 @@ export function useEntitlement(feature: Feature): Entitlement {
   const subscription = useSubscription();
   return useMemo(() => {
     const view = subscription.data;
-    if (view === undefined) return { allowed: false, decision: null, loading: true };
+    if (view === undefined) {
+      // Échec DURABLE de GET /subscription : fail-open d'AFFICHAGE (review 14/07, P2) — on ne
+      // verrouille jamais l'écran d'un client payant sur un aléa réseau ; le SERVEUR reste
+      // l'autorité de chaque action (gates appForbidden) et on ne vend rien sur un doute.
+      if (subscription.isError) return { allowed: true, decision: null, loading: false };
+      return { allowed: false, decision: null, loading: true };
+    }
     const tier = (view.tier as PlanTier | undefined) ?? 'free';
     const status = (view.status as SubscriptionStatus | undefined) ?? 'active';
     const addOns = (view.addOns ?? []) as AddOn[];
     if (view.features.includes(feature)) return { allowed: true, decision: null, loading: false };
     const decision = decidePaywall({ feature, tier, addOns, status });
     return { allowed: decision.kind === 'allowed', decision, loading: false };
-  }, [subscription.data, feature]);
+  }, [subscription.data, subscription.isError, feature]);
 }
 
 // ── Gouvernance de pression : mémoire LOCALE des rejets, par source ──
@@ -122,6 +128,19 @@ export function PaywallCard(props: {
   const { decision, source, personality } = props;
   const { colors } = useTheme();
   const router = useRouter();
+  // LE « non » est tenu PAR LA CARTE elle-même (P0 review 14/07) : la sourdine (2 rejets
+  // même source < 14 j) est consultée ici — aucun écran ne peut oublier la promesse.
+  // null = décision en cours (rien ne s'affiche, pas de flash de vente).
+  const [muted, setMuted] = useState<boolean | null>(null);
+  useEffect(() => {
+    let alive = true;
+    void isPaywallMuted(source).then((value) => {
+      if (alive) setMuted(value);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [source]);
 
   const dismiss = useCallback((): void => {
     void recordPaywallDismissal(source);
@@ -129,16 +148,31 @@ export function PaywallCard(props: {
   }, [props, source]);
 
   if (decision.kind === 'allowed' || decision.kind === 'unavailable') return null;
+  if (muted === null) return null;
+  if (muted && decision.kind !== 'past_due') {
+    // Sourdine : on EXPLIQUE l'écran verrouillé (une ligne factuelle) sans RIEN vendre —
+    // ni prix, ni bouton, ni promesse. past_due n'est pas une vente : il s'affiche toujours.
+    const requiredLabel =
+      decision.kind === 'upgrade' ? PLAN_CATALOG[decision.requiredTier].label : PLAN_CATALOG.pro.label;
+    return (
+      <Card>
+        <Text style={{ fontSize: 14, fontWeight: '600', color: colors.ink900 }}>
+          {t('paywall.title', { personality, params: { tier: requiredLabel } })}
+        </Text>
+      </Card>
+    );
+  }
 
   const tierLabel = (tier: PlanTier): string => PLAN_CATALOG[tier].label;
 
   let title: string;
   let body: string | null = null;
-  let cta: string | null = null;
+  let cta: string;
   if (decision.kind === 'past_due') {
     title = t('paywall.pastDueTitle', { personality });
     body = t('paywall.pastDueBody', { personality });
-    cta = null; // le portail de facturation vit sur /compte — CTA unique ci-dessous
+    // JAMAIS un upsell à un impayé (P0 review 14/07) : le CTA mène à la régularisation.
+    cta = t('paywall.pastDueCta', { personality });
   } else if (decision.kind === 'upgrade') {
     title =
       props.teaser ??
@@ -167,9 +201,9 @@ export function PaywallCard(props: {
       ) : null}
       <View style={{ height: 12 }} />
       <Button
-        title={cta ?? t('paywall.upgradeCta', { personality, params: { tier: 'Pro', price: euros(3900) } })}
+        title={cta}
         variant="primary"
-        onPress={() => router.push('/compte')}
+        onPress={() => router.push(decision.kind === 'past_due' ? '/compte?tab=abonnement' : '/compte')}
       />
       <View style={{ height: 8 }} />
       <Button title={t('paywall.dismiss', { personality })} variant="secondary" onPress={dismiss} />

@@ -1,3 +1,4 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { AppState } from 'react-native';
 import { useQueryClient } from '@tanstack/react-query';
@@ -159,6 +160,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return { error: mapAuthError(error) };
       },
       signOut: async () => {
+        // La gouvernance de pression est PAR COMPTE : les compteurs de sourdine ne suivent
+        // jamais un autre utilisateur sur le même appareil (review 14/07, P2).
+        try {
+          const keys = await AsyncStorage.getAllKeys();
+          const pressure = keys.filter((key) => key.startsWith('bob.paywall.pressure.'));
+          if (pressure.length > 0) await AsyncStorage.multiRemove(pressure);
+        } catch {
+          // la purge ne bloque jamais une déconnexion
+        }
         await supabase?.auth.signOut();
       },
       getToken: getAccessToken,

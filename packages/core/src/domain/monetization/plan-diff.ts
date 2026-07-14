@@ -1,4 +1,4 @@
-import { PLAN_CATALOG, planCan, type Feature, type PlanTier } from '../subscription/plan';
+import { FEATURE_SUPERSEDED_BY, PLAN_CATALOG, planCan, type Feature, type PlanTier } from '../subscription/plan';
 
 /**
  * DIFF DE CHANGEMENT D'OFFRE (pilier 2) — « ce que tu gagnes / ce que tu perds », calculé
@@ -24,7 +24,13 @@ export interface PlanChangeDiff {
 
 export function diffPlanChange(from: PlanTier, to: PlanTier): PlanChangeDiff {
   const gained = PLAN_CATALOG[to].features.filter((feature) => !planCan(from, feature));
-  const lost = PLAN_CATALOG[from].features.filter((feature) => !planCan(to, feature));
+  // Une capacité remplacée par MIEUX dans l'offre cible n'est pas une perte : afficher
+  // « tu perds Bob découverte » sur un upgrade serait une perte FICTIVE (review 14/07, P1).
+  const lost = PLAN_CATALOG[from].features.filter((feature) => {
+    if (planCan(to, feature)) return false;
+    const supersededBy = FEATURE_SUPERSEDED_BY[feature];
+    return supersededBy === undefined || !planCan(to, supersededBy);
+  });
   return {
     from,
     to,

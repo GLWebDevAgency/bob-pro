@@ -713,7 +713,8 @@ export default function Assistant() {
     // jamais pendant le chargement (on ne vend pas sur un doute) et le « non » est tenu :
     // sourdine (2 rejets même source < 14 j) → réponse discrète de Bob, zéro vente. La branche
     // AYANT DROIT ci-dessous est strictement inchangée (le realtime vit dans la session).
-    if (!liveEntitlement.loading && !liveEntitlement.allowed) {
+    if (liveEntitlement.loading) return; // abonnement pas encore su : ni vente, ni départ à l'aveugle
+    if (!liveEntitlement.allowed) {
       const decision = liveEntitlement.decision;
       void isPaywallMuted('voice_live_tap').then((muted) => {
         if (muted || decision === null) pushText('bob', t('live.useScreen', { personality }));

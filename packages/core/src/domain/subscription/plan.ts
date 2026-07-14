@@ -132,6 +132,16 @@ export function planCan(tier: PlanTier, feature: Feature): boolean {
   return PLAN_CATALOG[tier].features.includes(feature);
 }
 
+/**
+ * Relation de SUPERSESSION : une capacité d'un palier inférieur remplacée par une capacité
+ * SUPÉRIEURE aux paliers payants (le catalogue n'est pas strictement cumulatif). Sert aux
+ * surfaces de monétisation : un diff honnête n'affiche jamais la perte d'une capacité
+ * remplacée par mieux, et un paywall ne « vend » jamais une capacité déjà couverte par mieux.
+ */
+export const FEATURE_SUPERSEDED_BY: Readonly<Partial<Record<Feature, Feature>>> = {
+  ai_quota: 'ai_assistant', // le quota découverte est absorbé par Bob assistant complet
+};
+
 /** Ordre croissant des paliers — sert à savoir si un palier en couvre un autre. */
 export const TIER_ORDER: readonly PlanTier[] = ['free', 'solo', 'pro', 'business'];
 

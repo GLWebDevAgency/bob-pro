@@ -42,6 +42,11 @@ export const monetizationFr = {
     pro: 'Un paiement n’a pas abouti',
     direct: 'Paiement en échec',
   },
+  'paywall.pastDueCta': {
+    pote: 'Régler ça dans mon compte',
+    pro: 'Régulariser mon paiement',
+    direct: 'Régulariser',
+  },
   'paywall.pastDueBody': same(
     'Ton dernier règlement n’est pas passé. Régularise quand tu peux — tes données et tes documents restent intacts, et rien ne t’est facturé en double.',
   ),

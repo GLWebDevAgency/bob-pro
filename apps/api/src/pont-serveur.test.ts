@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ExecutionContext } from '@nestjs/common';
 import { jwtVerify } from 'jose';
-import { Company, Customer, DocumentFolder, Expense, MERCIER_PROPS, deriveVatPosition } from '@bob/core';
+import { Company, Customer, DocumentFolder, Expense, MERCIER_PROPS, Subscription, deriveVatPosition } from '@bob/core';
 import type { DocumentIntelligencePort, OcrPort, PaymentGatewayPort, PdfRendererPort } from '@bob/core';
 import { BackendService } from './backend.service';
 import { InMemoryPersistence } from './persistence/persistence';
@@ -1884,13 +1884,18 @@ describe('PONT-SERVEUR — coffre documentaire original-first et suppression sû
 });
 
 describe('enforcement des offres (pilier 2) — le serveur fait foi, jamais l\'UI', () => {
-  type SubscriptionAuthority = { subscriptionFor(companyId: string): { tier: string } };
+  type SubscriptionAuthority = { subscriptionFor(companyId: string): unknown };
+  const subscriptionOf = (tier: 'free' | 'solo' | 'pro' | 'business', status: 'active' | 'past_due' = 'active') => {
+    const started = Subscription.start({ id: 'sub-test', companyId: 'co-test', tier, status });
+    if (!started.ok) throw new Error('abonnement de test non constructible');
+    return started.value;
+  };
 
   it('exportFec REFUSE sous Pro (accounting_operations) avec un message d\'upsell honnête', async () => {
     const { service } = makeService();
-    vi.spyOn(service as unknown as SubscriptionAuthority, 'subscriptionFor').mockReturnValue({
-      tier: 'solo',
-    } as never);
+    vi.spyOn(service as unknown as SubscriptionAuthority, 'subscriptionFor').mockReturnValue(
+      subscriptionOf('solo') as never,
+    );
     const result = await asPrincipal(MERCIER, () =>
       service.exportFec({ from: todayUtc(), to: todayUtc() }),
     );
@@ -1911,10 +1916,18 @@ describe('enforcement des offres (pilier 2) — le serveur fait foi, jamais l\'U
     if (!result.ok) expect(result.error.kind).not.toBe('forbidden');
   });
 
+  it('P1 review : un abonnement past_due ne déclenche JAMAIS de relances automatiques, même en Pro', () => {
+    const { service } = makeService();
+    vi.spyOn(service as unknown as SubscriptionAuthority, 'subscriptionFor').mockReturnValue(
+      subscriptionOf('pro', 'past_due') as never,
+    );
+    expect(service.autoDunningEntitlement('co-1')).toEqual({ allowed: false, plan: 'pro' });
+  });
+
   it('autoDunningEntitlement : solo → refus tracé avec le plan ; business → ouvert', () => {
     const { service } = makeService();
     const spy = vi.spyOn(service as unknown as SubscriptionAuthority, 'subscriptionFor');
-    spy.mockReturnValue({ tier: 'solo' } as never);
+    spy.mockReturnValue(subscriptionOf('solo') as never);
     expect(service.autoDunningEntitlement('co-1')).toEqual({ allowed: false, plan: 'solo' });
     spy.mockRestore();
     // Early-access réel : subscriptionFor rend business/active pour tous — personne n'est refusé.

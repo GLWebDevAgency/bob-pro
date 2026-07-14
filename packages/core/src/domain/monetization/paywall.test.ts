@@ -36,6 +36,13 @@ describe('decidePaywall — honnêteté tarifaire au moment du besoin', () => {
     expect(decision).toMatchObject({ kind: 'upgrade', requiredTier: 'pro', monthlyDeltaCents: 2000 });
   });
 
+  it('client payant + capacité couverte par MIEUX (ai_quota ⊂ ai_assistant) → allowed, jamais une upgrade vers free', () => {
+    expect(decidePaywall({ feature: 'ai_quota', tier: 'solo', addOns: [], status: 'active' })).toEqual({
+      kind: 'allowed',
+      viaTrial: false,
+    });
+  });
+
   it('past_due → régularisation, JAMAIS un upsell à un impayé', () => {
     expect(decidePaywall({ feature: 'voice_live', tier: 'solo', addOns: [], status: 'past_due' })).toEqual({
       kind: 'past_due',

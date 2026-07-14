@@ -15,6 +15,8 @@ import { ScheduledTenantDirectory } from './tenant-directory';
  * ou la copy change assez pour justifier un nouvel envoi de la même semaine.
  */
 const DIGEST_POLICY_VERSION = 'v1';
+/** Fenêtre max relance→paiement pour revendiquer un recouvrement (lien causal plausible). */
+const RECOVERY_ATTRIBUTION_MAX_DAYS = 30;
 
 /** Lundi 7 h 30 Europe/Paris — « le lundi de Bob », avant le départ au chantier (SPEC pilier 2 §5). */
 const WEEKLY_DIGEST_CRON = '30 7 * * 1';
@@ -358,7 +360,13 @@ export class DigestService {
       const atMs = Date.parse(payment.receivedAt);
       if (Number.isNaN(atMs) || atMs < startMs || atMs >= endMs) continue;
       const relanceAt = firstRelanceAtByInvoice.get(payment.invoiceId);
-      const recovered = relanceAt !== undefined && Date.parse(relanceAt) <= atMs;
+      // Attribution CONSERVATRICE bornée : la relance doit précéder le paiement DE MOINS DE
+      // 30 jours — au-delà, le lien causal n'est plus plausible et « récupéré » serait un
+      // mensonge flatteur (review 14/07, P2). Un doute = payment_collected, jamais l'inverse.
+      const recovered =
+        relanceAt !== undefined &&
+        Date.parse(relanceAt) <= atMs &&
+        atMs - Date.parse(relanceAt) <= RECOVERY_ATTRIBUTION_MAX_DAYS * 24 * 60 * 60 * 1000;
       events.push({
         kind: recovered ? 'overdue_recovered' : 'payment_collected',
         at: payment.receivedAt,

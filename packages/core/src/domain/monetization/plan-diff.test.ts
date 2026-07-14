@@ -26,6 +26,16 @@ describe('diffPlanChange — « tu gagnes / tu perds » depuis le catalogue, jam
     expect(diff.monthlyDeltaCents).toBe(-2000); // une économie est un chiffre, pas une honte
   });
 
+  it('free → payant : JAMAIS une perte fictive (ai_quota est remplacée par ai_assistant, pas perdue)', () => {
+    for (const to of ['solo', 'pro', 'business'] as const) {
+      const diff = diffPlanChange('free', to);
+      expect(diff.lost).toEqual([]);
+      expect(diff.gained).toContain('ai_assistant');
+    }
+    // Le downgrade vers free, lui, reste honnête : ai_assistant est bien une perte.
+    expect(diffPlanChange('solo', 'free').lost).toContain('ai_assistant');
+  });
+
   it('business → business : diff neutre (aucun mensonge par omission)', () => {
     const diff = diffPlanChange('business', 'business');
     expect(diff.gained).toEqual([]);
