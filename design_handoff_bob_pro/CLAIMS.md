@@ -2985,3 +2985,9 @@ client, catalogue.
 - Conception par panel jugé (3 directions × juges DA/artisan) : base « démonstration authentique » + direction tokens produit + greffes. Signature : l'iPhone du hero JOUE la conversation Bob Live (CSS pur, reduced-motion respecté). Doctrine tenue : dossier démo unique Mercier légendé, calendrier relances RÉEL, 4 offres égales, zéro faux compteur/témoignage, CTA liste d'attente honnête (mailto).
 - Next 16, build statique vert, servie et vérifiée en local (HTTP 200, contenu clé présent). Découverte : eas.json + projectId EAS existent déjà.
 - Déploiement Vercel préversion PRÊT mais non exécuté : publication publique = autorisation explicite du fondateur requise (classifieur). Commande : cd apps/landing && npx vercel deploy --yes.
+
+## 2026-07-14 — Claude : CHANTIER ÉTATS/SKELETONS/TRANSITIONS — audit + socle + mes écrans corrigés
+- Audit workflow (doctrine extraite du code réel + 40 findings). Classe P0 dominante : échec réseau confondu avec absence de données (clôture affichait allClear sur timeout). Handoff croisé déposé pour GPT (.agent-sync/handoffs/20260714-claude-to-gpt-audit-ui-states.json) + split : GPT corrige index/assistant/notifications/clients/catalogue/documents/compte avec MON socle.
+- Socle @bob/ui committé : Skeleton/SkeletonRow/SkeletonCard/SkeletonHeader (doctrine : STATIQUE lineSoft, fidélité géométrique, fermeture fonctionnelle en chargement), EmptyState/ErrorRetry, useReduceMotion unique, tokens motion{200,220,360,1500}, combineQueryStates.
+- Mes 9 écrans corrigés (2 tranches) : P0 utilisateur-piégé (devis/facture [id]), P0 allClear-sur-timeout (clôture), skeletons fidèles partout, replis 'unavailable', SkeletonBlock locaux éradiqués. Validations : tsc 0 hors lane realtime GPT (in-flight), eslint 0, 169 tests mobile, 55 i18n.
+- Reste (fin de chantier) : migration Sheet/GlobalBobAccess sur useReduceMotion (après le passage GPT pour éviter les croisements), croisement avec SON audit à sa livraison.
