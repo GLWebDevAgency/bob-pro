@@ -73,29 +73,44 @@ const PRESSURE_KEY = (source: string) => `bob.paywall.pressure.${source}`;
 interface StoredPressure {
   dismissals: number;
   lastDismissedAt: string | null;
+  /** Refus VOCAL explicite (« non » dit à Bob) — le plus fort des signaux : 30 j de silence. */
+  lastVoiceRefusalAt?: string | null;
 }
+
+const EMPTY_PRESSURE: StoredPressure = { dismissals: 0, lastDismissedAt: null, lastVoiceRefusalAt: null };
 
 async function readPressure(source: string): Promise<StoredPressure> {
   try {
     const raw = await AsyncStorage.getItem(PRESSURE_KEY(source));
-    if (raw === null) return { dismissals: 0, lastDismissedAt: null };
-    return JSON.parse(raw) as StoredPressure;
+    if (raw === null) return EMPTY_PRESSURE;
+    return { ...EMPTY_PRESSURE, ...(JSON.parse(raw) as StoredPressure) };
   } catch {
-    return { dismissals: 0, lastDismissedAt: null };
+    return EMPTY_PRESSURE;
   }
 }
 
-export async function recordPaywallDismissal(source: PaywallSurfaceSource): Promise<void> {
-  const current = await readPressure(source);
-  const next: StoredPressure = {
-    dismissals: current.dismissals + 1,
-    lastDismissedAt: new Date().toISOString(),
-  };
+async function writePressure(source: string, next: StoredPressure): Promise<void> {
   try {
     await AsyncStorage.setItem(PRESSURE_KEY(source), JSON.stringify(next));
   } catch {
     // La gouvernance de pression ne casse jamais l'app — au pire on remontre.
   }
+}
+
+export async function recordPaywallDismissal(source: PaywallSurfaceSource): Promise<void> {
+  const current = await readPressure(source);
+  await writePressure(source, {
+    ...current,
+    dismissals: current.dismissals + 1,
+    lastDismissedAt: new Date().toISOString(),
+  });
+}
+
+/** Refus VOCAL (« non » dit à Bob sur ce sujet) → 30 j de silence, tous canaux (domaine).
+ *  À brancher par la session agent le jour où Bob PARLE le paywall — l'API est prête. */
+export async function recordVoiceRefusal(source: PaywallSurfaceSource): Promise<void> {
+  const current = await readPressure(source);
+  await writePressure(source, { ...current, lastVoiceRefusalAt: new Date().toISOString() });
 }
 
 /** Vrai si la sourdine s'applique (2 rejets même source < 14 j) — décision DOMAINE. */
@@ -104,7 +119,7 @@ export async function isPaywallMuted(source: PaywallSurfaceSource): Promise<bool
   const history: PaywallPressureHistory = {
     dismissalsForSource: stored.dismissals,
     lastDismissedAt: stored.lastDismissedAt,
-    lastVoiceRefusalAt: null, // le refus vocal vit côté session agent (segment suivant)
+    lastVoiceRefusalAt: stored.lastVoiceRefusalAt ?? null,
     lastProactiveUpsellAt: null,
   };
   return decideReactivePaywallPressure(history, new Date().toISOString()).kind === 'muted';
