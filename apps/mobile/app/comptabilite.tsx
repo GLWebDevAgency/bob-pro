@@ -26,8 +26,10 @@ import {
   Button,
   Card,
   Chip,
+  EmptyState,
   IconTile,
   SectionHeader,
+  SkeletonCard,
   StatusBadge,
   Toast,
   font,
@@ -73,12 +75,6 @@ function todayISO(d: Date = new Date()): string {
 function formatDate(iso: string): string {
   const [y, m, d] = iso.slice(0, 10).split('-');
   return d && m && y ? `${d}/${m}/${y}` : iso.slice(0, 10);
-}
-
-/** Skeleton d'un bloc pendant le chargement initial (même recette que Documents). */
-function SkeletonBlock({ height }: { height: number }) {
-  const { colors } = useTheme();
-  return <View style={{ height, borderRadius: 18, backgroundColor: colors.lineSoft }} />;
 }
 
 /** Colonne de l'équation partie double : label eyebrow + montant tabular (réf : 20px/800). */
@@ -218,23 +214,35 @@ export default function Comptabilite() {
         </View>
 
         {/* Abonnement en chargement → squelettes, JAMAIS le paywall (fail-open d'affichage) ;
-            verrouillé → carte contextuelle du domaine (même emplacement que le contenu). */}
+            verrouillé → carte contextuelle du domaine (même emplacement que le contenu) ;
+            decision 'unavailable' (aucun catalogue ne vend la capacité) → PaywallCard rend
+            null PAR CONSTRUCTION (paywall.tsx) : repli EmptyState pour ne jamais laisser
+            l'écran vide (P2 audit 14/07). */}
         {!entitlement.loading && !entitled ? (
           entitlement.decision !== null ? (
             <View style={{ paddingTop: 16, paddingHorizontal: 18 }}>
-              <PaywallCard
-                decision={entitlement.decision}
-                source="feature_screen"
-                personality={personality}
-                onDismissed={() => router.back()}
-              />
+              {entitlement.decision.kind === 'unavailable' ? (
+                <Card>
+                  <EmptyState
+                    title={t('compta.paywallTitle', { personality })}
+                    body={t('compta.paywallBody', { personality })}
+                  />
+                </Card>
+              ) : (
+                <PaywallCard
+                  decision={entitlement.decision}
+                  source="feature_screen"
+                  personality={personality}
+                  onDismissed={() => router.back()}
+                />
+              )}
             </View>
           ) : null
         ) : entitlement.loading || entries.isLoading ? (
           <View style={{ paddingTop: 16, paddingHorizontal: 18, gap: 12 }}>
-            <SkeletonBlock height={190} />
-            <SkeletonBlock height={150} />
-            <SkeletonBlock height={150} />
+            <SkeletonCard height={190} contentLines={4} />
+            <SkeletonCard height={150} contentLines={3} />
+            <SkeletonCard height={150} contentLines={3} />
           </View>
         ) : entries.isError ? (
           <View style={{ paddingTop: 16, paddingHorizontal: 18 }}>

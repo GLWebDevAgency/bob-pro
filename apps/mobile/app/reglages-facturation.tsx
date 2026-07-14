@@ -19,12 +19,12 @@
  * Zéro hex/rgba — tokens only.
  */
 import { useMemo } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, Text, View } from 'react-native';
+import { Pressable, ScrollView, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { shadowNative } from '@bob/tokens';
 import { t } from '@bob/i18n';
-import { Card, InnerScreenHeader, SectionHeader, font, useTheme } from '@bob/ui';
+import { Card, ErrorRetry, InnerScreenHeader, SectionHeader, SkeletonCard, font, useTheme } from '@bob/ui';
 import type { InvoiceView } from '@bob/api-client';
 import { useInvoices, useProfile } from '../src/data/hooks';
 import { ChevronLeftIcon, ChevronRightIcon, FileTextIcon } from '../src/components/icons';
@@ -60,7 +60,7 @@ function SoonPill() {
 }
 
 export default function ReglagesFacturation() {
-  const { colors, semantic, radius, personality } = useTheme();
+  const { colors, radius, personality } = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const profile = useProfile();
@@ -99,15 +99,23 @@ export default function ReglagesFacturation() {
         showsVerticalScrollIndicator={false}
       >
         {loading ? (
-          <Card>
-            <ActivityIndicator color={colors.ink800} />
-          </Card>
+          // 5 blocs réels (catalogue, TVA & mentions, aperçu mentions, numérotation, logo/RIB) —
+          // hauteurs calées sur leur gabarit final (zéro saut de layout).
+          <View style={{ gap: 14 }}>
+            <SkeletonCard height={70} contentLines={2} />
+            <SkeletonCard height={110} contentLines={3} />
+            <SkeletonCard height={150} contentLines={4} />
+            <SkeletonCard height={120} contentLines={3} />
+            <SkeletonCard height={210} contentLines={3} />
+          </View>
         ) : failed ? (
-          <Card style={{ borderColor: semantic.danger }}>
-            <Text accessibilityRole="alert" style={[font('sub'), { color: semantic.danger }]}>
-              {t('reglages.dataError', { personality })}
-            </Text>
-          </Card>
+          <ErrorRetry
+            message={t('reglages.dataError', { personality })}
+            onRetry={() => {
+              void profile.refetch();
+              void invoices.refetch();
+            }}
+          />
         ) : (
           <>
             {/* Entrée catalogue — les prestations et les prix vivent sur leur écran (C27) */}

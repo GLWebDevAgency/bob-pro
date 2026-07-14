@@ -19,7 +19,17 @@ import {
 } from '@bob/core';
 import { patterns } from '@bob/tokens';
 import { t, type I18nKey } from '@bob/i18n';
-import { Card, InnerScreenHeader, SectionHeader, StatusBadge, font, useTheme } from '@bob/ui';
+import {
+  Card,
+  EmptyState,
+  ErrorRetry,
+  InnerScreenHeader,
+  SectionHeader,
+  SkeletonCard,
+  StatusBadge,
+  font,
+  useTheme,
+} from '@bob/ui';
 import {
   useAccountingEntries,
   useCompany,
@@ -29,6 +39,7 @@ import {
   usePayments,
 } from '../src/data/hooks';
 import { PaywallCard, useEntitlement } from '../src/monetization/paywall';
+import { combineQueryStates } from '../src/data/query-state';
 import { usePublishAgentContext, type AgentContext } from '../src/agent';
 import { ChevronLeftIcon } from '../src/components/icons';
 
@@ -74,11 +85,6 @@ function pctFromBps(bps: number): string {
   return `${bps >= 0 ? '+' : '−'}${abs}`;
 }
 
-function SkeletonBlock({ height }: { height: number }) {
-  const { colors } = useTheme();
-  return <View style={{ height, borderRadius: 18, backgroundColor: colors.lineSoft }} />;
-}
-
 export default function Pilotage() {
   const { personality, colors, semantic } = useTheme();
   const insets = useSafeAreaInsets();
@@ -93,12 +99,13 @@ export default function Pilotage() {
   const company = useCompany();
   const entitled = entitlement.allowed;
 
-  const loading =
-    entries.isLoading || payments.isLoading || invoices.isLoading || customers.isLoading || expenses.isLoading;
+  // P1 (audit 14/07) : failed se lit TOUJOURS avec loading — ne jamais confondre un échec
+  // réseau avec une absence de données (le pilotage prendrait alors l'air d'un cabinet vide).
+  const queryState = combineQueryStates(entries, payments, invoices, customers, expenses);
 
   // Une seule vérité : le MÊME use case pur que Bob (getBusinessReview) — parité garantie.
   const review: BusinessReview | null = useMemo(() => {
-    if (loading) return null;
+    if (queryState.loading) return null;
     return deriveBusinessReview({
       entries: (entries.data ?? []).map((e) => ({ entryDate: e.entryDate, sourceType: e.sourceType, lines: e.lines })),
       payments: (payments.data ?? []).map((p) => ({ amountCents: p.amountCents, receivedAt: p.receivedAt })),
@@ -121,7 +128,7 @@ export default function Pilotage() {
       vatRegime: company.data?.vatRegime ?? null,
       today: todayLocal(),
     });
-  }, [loading, entries.data, payments.data, invoices.data, customers.data, expenses.data, company.data]);
+  }, [queryState.loading, entries.data, payments.data, invoices.data, customers.data, expenses.data, company.data]);
 
   // Bob voit les top clients AFFICHÉS : « parle-moi de ce client », « résume l'écran ».
   // Le paywall est une frontière de visibilité : aucune entité ni capability client ne fuit
@@ -531,22 +538,45 @@ export default function Pilotage() {
 
         <View style={{ paddingHorizontal: 18, paddingTop: 14, gap: 14 }}>
           {/* Abonnement en chargement → squelettes, JAMAIS le paywall (fail-open d'affichage) ;
-              verrouillé → carte contextuelle du domaine (même emplacement que le contenu). */}
-          {entitlement.loading || (entitled && (loading || review === null)) ? (
+              verrouillé → carte contextuelle du domaine (même emplacement que le contenu) ;
+              decision 'unavailable' (aucun catalogue ne vend la capacité) → PaywallCard rend
+              null PAR CONSTRUCTION (paywall.tsx) : repli EmptyState pour ne jamais laisser
+              l'écran vide (P2 audit 14/07). */}
+          {entitlement.loading || (entitled && (queryState.loading || review === null)) ? (
+            // 6 Cards réelles (mois en cours, tendance, DSO, top clients, top dépenses,
+            // cascade SIG) — hauteurs calées sur leur gabarit final (zéro saut de layout).
+            // La série mensuelle (conditionnelle, ≥2 mois d'historique) n'est pas squelettée.
             <>
-              <SkeletonBlock height={120} />
-              <SkeletonBlock height={90} />
-              <SkeletonBlock height={160} />
+              <SkeletonCard height={150} contentLines={4} />
+              <SkeletonCard height={140} contentLines={4} />
+              <SkeletonCard height={104} contentLines={3} />
+              <SkeletonCard height={260} contentLines={5} />
+              <SkeletonCard height={220} contentLines={5} />
+              <SkeletonCard height={230} contentLines={5} />
             </>
           ) : !entitled ? (
             entitlement.decision !== null ? (
-              <PaywallCard
-                decision={entitlement.decision}
-                source="feature_screen"
-                personality={personality}
-                onDismissed={() => router.back()}
-              />
+              entitlement.decision.kind === 'unavailable' ? (
+                <Card>
+                  <EmptyState
+                    title={t('pilotage.paywallTitle', { personality })}
+                    body={t('pilotage.paywallBody', { personality })}
+                  />
+                </Card>
+              ) : (
+                <PaywallCard
+                  decision={entitlement.decision}
+                  source="feature_screen"
+                  personality={personality}
+                  onDismissed={() => router.back()}
+                />
+              )
             ) : null
+          ) : queryState.failed ? (
+            // P1 (audit 14/07) : un échec réseau n'est JAMAIS confondu avec une absence de
+            // données — vérifié AVANT le calcul/rendu de review (jamais un « rien à afficher »
+            // qui masquerait le fait que le fetch a raté).
+            <ErrorRetry message={t('today.dataError', { personality })} onRetry={queryState.refetchAll} />
           ) : review !== null ? (
             body(review)
           ) : null}

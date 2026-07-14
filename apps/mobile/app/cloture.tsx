@@ -25,9 +25,12 @@ import { patterns } from '@bob/tokens';
 import { t, type I18nKey } from '@bob/i18n';
 import {
   Card,
+  EmptyState,
+  ErrorRetry,
   IconTile,
   InnerScreenHeader,
   SectionHeader,
+  SkeletonCard,
   StatusBadge,
   Toast,
   font,
@@ -43,6 +46,7 @@ import {
 } from '../src/data/hooks';
 import { PaywallCard, useEntitlement } from '../src/monetization/paywall';
 import { useDocuments } from '../src/data/documents';
+import { combineQueryStates } from '../src/data/query-state';
 import { usePublishAgentContext, type AgentContext } from '../src/agent';
 import { shareFec } from '../src/lib/share-fec';
 import { shareTextFile } from '../src/lib/share-text';
@@ -85,11 +89,6 @@ interface CheckItem {
   route: Href;
 }
 
-function SkeletonBlock({ height }: { height: number }) {
-  const { colors } = useTheme();
-  return <View style={{ height, borderRadius: 18, backgroundColor: colors.lineSoft }} />;
-}
-
 export default function Cloture() {
   const { personality, colors, semantic, controls } = useTheme();
   const insets = useSafeAreaInsets();
@@ -123,7 +122,9 @@ export default function Cloture() {
   const inv = invoices.data ?? [];
   const qs = quotes.data ?? [];
   const docs = documents.data ?? [];
-  const loading = invoices.isLoading || quotes.isLoading || documents.isLoading || entries.isLoading;
+  // P0 (audit 14/07) : failed se lit TOUJOURS avec loading — un timeout réseau ne devient
+  // jamais un allClear=true silencieux (socle combineQueryStates, cf. src/data/query-state.ts).
+  const queryState = combineQueryStates(invoices, quotes, documents, entries);
 
   const signedNotInvoiced = qs.filter((q) => q.status === 'signed' && !inv.some((i) => i.parentQuoteId === q.id));
   const invoicePdfIds = new Set(docs.filter((d) => d.kind === 'invoice_pdf' && d.linkedEntityId).map((d) => d.linkedEntityId));
@@ -299,22 +300,45 @@ export default function Cloture() {
 
         <View style={{ paddingHorizontal: 18, paddingTop: 14, gap: 14 }}>
           {/* Abonnement en chargement → squelettes, JAMAIS le paywall (fail-open d'affichage) ;
-              verrouillé → carte contextuelle du domaine (même emplacement que le contenu). */}
+              verrouillé → carte contextuelle du domaine (même emplacement que le contenu) ;
+              decision 'unavailable' (aucun catalogue ne vend la capacité) → PaywallCard rend
+              null PAR CONSTRUCTION (paywall.tsx) : repli EmptyState pour ne jamais laisser
+              l'écran vide (P2 audit 14/07). */}
           {!entitlement.loading && !entitled ? (
             entitlement.decision !== null ? (
-              <PaywallCard
-                decision={entitlement.decision}
-                source="feature_screen"
-                personality={personality}
-                onDismissed={() => router.back()}
-              />
+              entitlement.decision.kind === 'unavailable' ? (
+                <Card>
+                  <EmptyState
+                    title={t('cloture.paywallTitle', { personality })}
+                    body={t('cloture.paywallBody', { personality })}
+                  />
+                </Card>
+              ) : (
+                <PaywallCard
+                  decision={entitlement.decision}
+                  source="feature_screen"
+                  personality={personality}
+                  onDismissed={() => router.back()}
+                />
+              )
             ) : null
-          ) : entitlement.loading || loading ? (
+          ) : entitlement.loading || queryState.loading ? (
+            // 8 Cards réelles (synthèse, revue, arbitrer, pièces, balance, résultat, bilan,
+            // grand-livre) — hauteurs calées sur leur gabarit final (zéro saut de layout).
             <>
-              <SkeletonBlock height={80} />
-              <SkeletonBlock height={140} />
-              <SkeletonBlock height={160} />
+              <SkeletonCard height={92} contentLines={2} />
+              <SkeletonCard height={320} contentLines={6} />
+              <SkeletonCard height={240} contentLines={4} />
+              <SkeletonCard height={84} contentLines={1} />
+              <SkeletonCard height={280} contentLines={6} />
+              <SkeletonCard height={200} contentLines={5} />
+              <SkeletonCard height={230} contentLines={5} />
+              <SkeletonCard height={66} contentLines={1} />
             </>
+          ) : queryState.failed ? (
+            // P0 (audit 14/07) : un échec réseau n'est JAMAIS présenté comme « tout est prêt
+            // pour le comptable » — remplace toute la synthèse À LA PLACE du contenu.
+            <ErrorRetry message={t('today.dataError', { personality })} onRetry={queryState.refetchAll} />
           ) : (
             <>
               {/* Synthèse — tout prêt ou points restants */}
@@ -633,7 +657,17 @@ export default function Cloture() {
                     </Card>,
                   )}
                 </>
-              ) : null}
+              ) : (
+                // P1 (audit 14/07) : onboarding sans écriture — les états de synthèse et le
+                // CTA « Envoyer au comptable » ne disparaissent plus en silence, un EmptyState
+                // explique pourquoi (même vide honnête que le grand-livre, cloture/compta.empty).
+                section(
+                  'cloture.sectionBalance',
+                  <Card>
+                    <EmptyState body={t('compta.empty', { personality })} />
+                  </Card>,
+                )
+              )}
 
               {/* Envoyer au comptable — dossier (primaire) + FEC (secondaire) */}
               {section(
