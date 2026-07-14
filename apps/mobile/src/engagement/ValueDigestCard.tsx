@@ -13,7 +13,8 @@
  * l'app (briefing, KPI) : jamais de centimes sur ces surfaces.
  */
 import React from 'react';
-import { Text } from 'react-native';
+import { Pressable, Text, View } from 'react-native';
+import { useRouter } from 'expo-router';
 import { formatEURWhole, type ValueDigest } from '@bob/core';
 import { t, type I18nKey } from '@bob/i18n';
 import { Card, font, useTheme } from '@bob/ui';
@@ -70,25 +71,68 @@ function highlightCopy(digest: ValueDigest): {
   }
 }
 
-/** Carte digest — présentation pure : le digest arrive en prop (non-null par contrat de type). */
+/** Le CHIFFRE héros de la semaine — l'argent en Schibsted success, le temps en minutes,
+ *  le volume en documents. C'est LE résultat que Bob apporte : il se voit en premier. */
+function heroFigure(digest: ValueDigest): string {
+  const h = digest.highlight;
+  if (h.kind === 'money') return `+ ${formatEURWhole(h.amountCents)}`;
+  if (h.kind === 'time') return `≈ ${h.minutes} min`;
+  return `${h.documents} docs`;
+}
+
+/**
+ * Carte digest — COMPACTE et célébrante (retour device R2) : une rangée, le gain en héros
+ * couleur succès, la phrase de fierté en dessous, chevron → Argent (le détail vit là-bas).
+ * Le Home respire, le résultat de Bob se voit — jamais un chiffre inventé (digest réel).
+ */
 export function ValueDigestCard({ digest }: { readonly digest: ValueDigest }): React.JSX.Element {
-  const { personality, colors } = useTheme();
+  const { personality, colors, semantic } = useTheme();
+  const router = useRouter();
   const highlight = highlightCopy(digest);
-  const title = t('digest.title', { personality });
   const line = t(highlight.key, { personality, params: highlight.params });
+  const note = highlight.estimated ? ` ${t('digest.estimateNote', { personality })}` : '';
 
   return (
-    <Card>
-      <Text style={[font('eyebrow'), { color: colors.slate400 }]}>{title}</Text>
-      <Text style={[font('sub', 700), { fontSize: 15.5, lineHeight: 22, color: colors.ink900, marginTop: 6 }]}>
-        {line}
-      </Text>
-      {highlight.estimated ? (
-        <Text style={[font('meta'), { color: colors.slate400, marginTop: 8 }]}>
-          {t('digest.estimateNote', { personality })}
-        </Text>
-      ) : null}
-    </Card>
+    <Pressable
+      onPress={() => router.push('/(tabs)/argent')}
+      accessibilityRole="button"
+      accessibilityLabel={`${t('digest.title', { personality })} — ${line}`}
+    >
+      <Card padding={14}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+          <View
+            style={{
+              width: 40,
+              height: 40,
+              borderRadius: 12,
+              backgroundColor: semantic.successBg,
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <Text style={{ color: semantic.success, fontSize: 18, fontWeight: '800' }}>✓</Text>
+          </View>
+          <View style={{ flex: 1 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 8 }}>
+              <Text style={[font('bigNum'), { fontSize: 22, color: semantic.success }]}>
+                {heroFigure(digest)}
+              </Text>
+              <Text style={[font('eyebrow'), { fontSize: 10, color: colors.slate400 }]}>
+                {t('digest.title', { personality })}
+              </Text>
+            </View>
+            <Text
+              style={[font('sub'), { fontSize: 12.5, lineHeight: 17, color: colors.slate500, marginTop: 2 }]}
+              numberOfLines={2}
+            >
+              {line}
+              {note}
+            </Text>
+          </View>
+          <Text style={{ color: colors.slate300, fontSize: 22, fontWeight: '600' }}>›</Text>
+        </View>
+      </Card>
+    </Pressable>
   );
 }
 
