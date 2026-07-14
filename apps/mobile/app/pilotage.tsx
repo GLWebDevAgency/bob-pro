@@ -178,7 +178,18 @@ export default function Pilotage() {
           <Text
             style={[
               strong ? font('cardTitle') : font('sub'),
-              { color: cents >= 0 ? colors.ink900 : semantic.warning, fontVariant: ['tabular-nums'] },
+              {
+                // Agrégats clés (CA/VA/EBE/Résultat) : succès/danger — les autres lignes
+                // (charges, impôts…) restent en ton neutre/warning discret.
+                color: strong
+                  ? cents >= 0
+                    ? semantic.success
+                    : semantic.danger
+                  : cents >= 0
+                    ? colors.ink900
+                    : semantic.warning,
+                fontVariant: ['tabular-nums'],
+              },
             ]}
           >
             {cents < 0 ? '−' : ''}
@@ -195,48 +206,54 @@ export default function Pilotage() {
   }
 
   /** Barres mensuelles (facturé/encaissé) — View pures, normalisées au max de la fenêtre. */
-  function SeriesBars({ data }: { data: BusinessReview['series'] }) {
+  function SeriesBars({ data, currentMonth }: { data: BusinessReview['series']; currentMonth: string }) {
     const window = data.slice(-6);
     const max = Math.max(1, ...window.map((p) => Math.max(p.invoicedHtCents, p.collectedTtcCents)));
     return (
       <Card>
-        {window.map((point, index) => (
-          <View key={point.month} style={{ marginTop: index === 0 ? 0 : 10 }}>
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 }}>
-              <Text style={[font('meta'), { color: colors.slate500 }]}>{monthLabel(point.month)}</Text>
-              <Text style={{ ...font('meta'), color: colors.slate400, fontVariant: ['tabular-nums'] }}>
-                {formatEUR(point.invoicedHtCents)} · {formatEUR(point.collectedTtcCents)}
-              </Text>
-            </View>
-            <View style={{ gap: 3 }}>
-              <View style={{ height: 7, borderRadius: 4, backgroundColor: colors.lineSoft, overflow: 'hidden' }}>
-                <View
-                  style={{
-                    height: '100%',
-                    width: `${Math.round((Math.max(0, point.invoicedHtCents) / max) * 100)}%`,
-                    borderRadius: 4,
-                    backgroundColor: colors.ink900,
-                  }}
-                />
+        {window.map((point, index) => {
+          const isCurrent = point.month === currentMonth;
+          return (
+            <View key={point.month} style={{ marginTop: index === 0 ? 0 : 10 }}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 }}>
+                <Text style={[isCurrent ? font('meta', 700) : font('meta'), { color: isCurrent ? colors.ink900 : colors.slate500 }]}>
+                  {monthLabel(point.month)}
+                </Text>
+                <Text style={{ ...font('meta'), color: colors.slate400, fontVariant: ['tabular-nums'] }}>
+                  {formatEUR(point.invoicedHtCents)} · {formatEUR(point.collectedTtcCents)}
+                </Text>
               </View>
-              <View style={{ height: 7, borderRadius: 4, backgroundColor: colors.lineSoft, overflow: 'hidden' }}>
-                <View
-                  style={{
-                    height: '100%',
-                    width: `${Math.round((Math.max(0, point.collectedTtcCents) / max) * 100)}%`,
-                    borderRadius: 4,
-                    backgroundColor: semantic.b2b,
-                  }}
-                />
+              <View style={{ gap: 3 }}>
+                {/* Facturé (ink600) / encaissé (success) — contraste net, plus deux bleus proches. */}
+                <View style={{ height: 7, borderRadius: 4, backgroundColor: colors.lineSoft, overflow: 'hidden' }}>
+                  <View
+                    style={{
+                      height: '100%',
+                      width: `${Math.round((Math.max(0, point.invoicedHtCents) / max) * 100)}%`,
+                      borderRadius: 4,
+                      backgroundColor: colors.ink600,
+                    }}
+                  />
+                </View>
+                <View style={{ height: 7, borderRadius: 4, backgroundColor: colors.lineSoft, overflow: 'hidden' }}>
+                  <View
+                    style={{
+                      height: '100%',
+                      width: `${Math.round((Math.max(0, point.collectedTtcCents) / max) * 100)}%`,
+                      borderRadius: 4,
+                      backgroundColor: semantic.success,
+                    }}
+                  />
+                </View>
               </View>
             </View>
-          </View>
-        ))}
+          );
+        })}
         <View style={{ flexDirection: 'row', gap: 14, marginTop: 12 }}>
           {(
             [
-              { color: colors.ink900, label: t('pilotage.invoicedLabel', { personality }) },
-              { color: semantic.b2b, label: t('pilotage.collectedLabel', { personality }) },
+              { color: colors.ink600, label: t('pilotage.invoicedLabel', { personality }) },
+              { color: semantic.success, label: t('pilotage.collectedLabel', { personality }) },
             ] as const
           ).map((legend) => (
             <View key={legend.label} style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
@@ -249,33 +266,73 @@ export default function Pilotage() {
     );
   }
 
-  /** Rangée de classement (top clients / top dépenses). */
-  function RankRow({ label, amountCents, meta, divider, warn }: { label: string; amountCents: number; meta?: string | null; divider: boolean; warn?: boolean }) {
+  /** Part client colorée selon le risque de concentration — cohérent avec l'alerte existante. */
+  function shareRiskColor(shareBps: number | null): string {
+    if (shareBps === null) return colors.slate400;
+    if (shareBps >= 5000) return semantic.danger;
+    if (shareBps >= 3500) return semantic.warning;
+    return colors.slate500;
+  }
+
+  /** Rangée de classement (top clients / top dépenses). progressPct/progressColor : barre de
+   * proportion optionnelle (utilisée pour la part des top clients, cohérente avec metaColor). */
+  function RankRow({
+    label,
+    amountCents,
+    meta,
+    metaColor,
+    divider,
+    warn,
+    progressPct,
+    progressColor,
+  }: {
+    label: string;
+    amountCents: number;
+    meta?: string | null;
+    metaColor?: string;
+    divider: boolean;
+    warn?: boolean;
+    progressPct?: number | null;
+    progressColor?: string;
+  }) {
     return (
       <View
         style={{
-          flexDirection: 'row',
-          alignItems: 'center',
-          gap: 10,
           paddingVertical: 10,
           borderBottomWidth: divider ? 1 : 0,
           borderBottomColor: colors.lineSoft,
         }}
       >
-        <Text style={[font('sub'), { color: warn ? semantic.warning : colors.ink800, flex: 1 }]} numberOfLines={1}>
-          {label}
-        </Text>
-        {meta ? <Text style={[font('meta'), { color: colors.slate400 }]}>{meta}</Text> : null}
-        <Text
-          style={{
-            ...font('sub', 700),
-            color: amountCents >= 0 ? colors.ink900 : semantic.warning,
-            fontVariant: ['tabular-nums'],
-          }}
-        >
-          {amountCents < 0 ? '−' : ''}
-          {formatEUR(Math.abs(amountCents))}
-        </Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+          <Text style={[font('sub'), { color: warn ? semantic.warning : colors.ink800, flex: 1 }]} numberOfLines={1}>
+            {label}
+          </Text>
+          {meta ? (
+            <Text style={[metaColor ? font('meta', 700) : font('meta'), { color: metaColor ?? colors.slate400 }]}>{meta}</Text>
+          ) : null}
+          <Text
+            style={{
+              ...font('sub', 700),
+              color: amountCents >= 0 ? colors.ink900 : semantic.warning,
+              fontVariant: ['tabular-nums'],
+            }}
+          >
+            {amountCents < 0 ? '−' : ''}
+            {formatEUR(Math.abs(amountCents))}
+          </Text>
+        </View>
+        {progressPct !== null && progressPct !== undefined ? (
+          <View style={{ height: 4, borderRadius: 2, backgroundColor: colors.lineSoft, overflow: 'hidden', marginTop: 6 }}>
+            <View
+              style={{
+                height: '100%',
+                width: `${Math.min(100, Math.max(0, progressPct))}%`,
+                borderRadius: 2,
+                backgroundColor: progressColor ?? colors.slate400,
+              }}
+            />
+          </View>
+        ) : null}
       </View>
     );
   }
@@ -298,9 +355,13 @@ export default function Pilotage() {
           <Card>
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
               <View style={{ flex: 1, minWidth: 0 }}>
-                <Text style={[font('meta'), { color: colors.slate400 }]}>
-                  {t('pilotage.invoicedLabel', { personality })} · {t('pilotage.atDay', { personality, params: { day: String(cur.atDay) } })}
-                </Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: colors.ink600 }} />
+                  <Text style={[font('meta'), { color: colors.slate400 }]}>
+                    {t('pilotage.invoicedLabel', { personality })} · {t('pilotage.atDay', { personality, params: { day: String(cur.atDay) } })}
+                  </Text>
+                </View>
+                {/* Facturé : montant neutre (ink900) — la bonne nouvelle du mois, c'est l'encaissé. */}
                 <Text style={{ ...font('bigNum'), fontSize: 26, color: colors.ink900, marginTop: 2, fontVariant: ['tabular-nums'] }}>
                   {formatEUR(cur.invoicedHtCents)}
                 </Text>
@@ -316,12 +377,18 @@ export default function Pilotage() {
             <View style={{ height: 1, backgroundColor: colors.lineSoft, marginVertical: 10 }} />
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline' }}>
               <View style={{ flex: 1, minWidth: 0 }}>
-                <Text style={[font('meta'), { color: colors.slate400 }]}>{t('pilotage.collectedLabel', { personality })}</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: semantic.success }} />
+                  <Text style={[font('meta'), { color: colors.slate400 }]}>{t('pilotage.collectedLabel', { personality })}</Text>
+                </View>
                 <Text style={[font('meta'), { color: colors.slate400, marginTop: 2 }]}>{t('pilotage.collectedHint', { personality })}</Text>
               </View>
-              <Text style={{ ...font('cardTitle'), fontSize: 18, color: colors.ink900, fontVariant: ['tabular-nums'] }}>
-                {formatEUR(cur.collectedTtcCents)}
-              </Text>
+              {/* Encaissé : la bonne nouvelle du mois — success + pastille de fond discrète. */}
+              <View style={{ backgroundColor: semantic.successBg, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 3 }}>
+                <Text style={{ ...font('cardTitle'), fontSize: 18, color: semantic.success, fontVariant: ['tabular-nums'] }}>
+                  {formatEUR(cur.collectedTtcCents)}
+                </Text>
+              </View>
             </View>
           </Card>,
         )}
@@ -339,10 +406,22 @@ export default function Pilotage() {
                       params: { month: monthLabel(trend.month), prev: monthLabel(trend.previousMonth) },
                     })}
                   </Text>
-                  <Text style={{ ...font('cardTitle'), color: trend.deltaCents >= 0 ? semantic.success : semantic.warning, marginTop: 2, fontVariant: ['tabular-nums'] }}>
-                    {trend.deltaCents >= 0 ? '+' : '−'}
-                    {formatEUR(Math.abs(trend.deltaCents))}
-                  </Text>
+                  {/* Fond très léger selon le signe (successBg/warningBg) + flèche préfixe. */}
+                  <View
+                    style={{
+                      alignSelf: 'flex-start',
+                      marginTop: 2,
+                      backgroundColor: trend.deltaCents >= 0 ? semantic.successBg : semantic.warningBg,
+                      borderRadius: 8,
+                      paddingHorizontal: 8,
+                      paddingVertical: 3,
+                    }}
+                  >
+                    <Text style={{ ...font('cardTitle'), color: trend.deltaCents >= 0 ? semantic.success : semantic.warning, fontVariant: ['tabular-nums'] }}>
+                      {trend.deltaCents >= 0 ? '▲ +' : '▼ −'}
+                      {formatEUR(Math.abs(trend.deltaCents))}
+                    </Text>
+                  </View>
                 </View>
                 {trend.deltaBps !== null ? (
                   <StatusBadge label={`${pctFromBps(trend.deltaBps)} %`} variant={trend.deltaBps >= 0 ? 'success' : 'danger'} />
@@ -376,7 +455,7 @@ export default function Pilotage() {
         )}
 
         {/* Série mensuelle */}
-        {r.series.length >= 2 ? section('pilotage.sectionSeries', <SeriesBars data={r.series} />) : null}
+        {r.series.length >= 2 ? section('pilotage.sectionSeries', <SeriesBars data={r.series} currentMonth={r.currentMonth.month} />) : null}
 
         {/* DSO */}
         {section(
@@ -416,6 +495,9 @@ export default function Pilotage() {
                     label={`${index + 1}. ${line.customerName}`}
                     amountCents={line.invoicedTtc12mCents}
                     meta={line.shareBps !== null ? `${Math.round(line.shareBps / 100)} %` : null}
+                    metaColor={shareRiskColor(line.shareBps)}
+                    progressPct={line.shareBps !== null ? line.shareBps / 100 : null}
+                    progressColor={shareRiskColor(line.shareBps)}
                     divider={index < r.topClients.lines.length - 1 || r.topClients.othersCount > 0 || r.topClients.creditNetCount > 0}
                   />
                 ))}
