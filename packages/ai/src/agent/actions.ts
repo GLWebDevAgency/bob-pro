@@ -12,6 +12,7 @@ import {
   type BusinessReview,
   type ClosingReview,
   type SubscriptionStatusView,
+  type OwnerPayGuidance,
 } from '@bob/core';
 import {
   type ContextEntitySummary,
@@ -177,6 +178,12 @@ export interface BobActions {
    * l'hote recharge obligatoirement l'entite tenant-scoped avant de construire ce resume. */
   readContextEntity?(input: ReadContextEntityInput): Promise<Result<ContextEntitySummary, AppError>>;
   computePayout(): Promise<Result<{ payoutCents: number; availableCents: number }, AppError>>;
+  /** Phase 1C (SPEC_EXPERT_FISCAL §V2 pt. 1+6) : langage/montant du prélèvement adapté au profil
+   * fiscal CONFIRMÉ — MÊME use case pur `deriveOwnerPayGuidance` (@bob/core) que les écrans Argent/
+   * Aujourd'hui, pour que la réponse parlée de « combien je peux me verser ? » utilise les mêmes
+   * kinds/montants qu'à l'écran (parité). Optionnelle : rétro-compatible — un hôte qui ne
+   * l'implémente pas retombe sur `computePayout()` (le langage prudent historique, inchangé). */
+  getOwnerPayGuidance?(): Promise<Result<{ guidance: OwnerPayGuidance; payoutCents: number }, AppError>>;
   /** Brouillon de relance — CIBLABLE par facture/client (C25 ①). Défaut sans cible : la plus
    * urgente. Les hôtes historiques sans paramètre restent assignables (TODO Codex apps/api :
    * porter la cible côté serveur — voir rapport C25). */

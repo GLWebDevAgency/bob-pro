@@ -202,3 +202,6 @@ export * from './domain/fiscal/referentiel';
 export * from './application/ports/fiscal-profile-repository';
 export * from './application/fiscal/get-fiscal-profile';
 export * from './application/fiscal/update-fiscal-profile-field';
+
+// Langage & montant du prélèvement selon le profil confirmé (Phase 1C — SPEC_EXPERT_FISCAL §V2 pt. 1+6)
+export * from './application/fiscal/derive-owner-pay-guidance';

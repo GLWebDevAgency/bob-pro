@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { ok, type FiscalDeadline } from '@bob/core';
+import { ok, err, appNotFound, formatEUR, type FiscalDeadline, type OwnerPayGuidance } from '@bob/core';
 import { BobAgent } from './bob-agent';
 import { ModelRouter } from '../router/model-router';
 import { type BobActions } from './actions';
@@ -54,6 +54,111 @@ describe('BobAgent (démo)', () => {
       expect(r.value.kind).toBe('answer');
       expect(r.value.card.body).toContain('1');
     }
+  });
+
+  it('payout : hôte SANS getOwnerPayGuidance (rétro-compat) → langage prudent historique, computePayout seul appelé', async () => {
+    const r = await makeAgent().ask('Combien je peux me verser ?');
+    expect(r.ok).toBe(true);
+    if (r.ok && r.value.kind === 'answer') {
+      expect(r.value.card.body).toContain('trésorerie mobilisable');
+      expect(r.value.card.body).toContain('Ta rémunération exacte dépend de ton statut');
+    }
+  });
+
+  describe('payout — Phase 1C : parité voix ↔ écrans (getOwnerPayGuidance)', () => {
+    const withGuidance = (guidance: OwnerPayGuidance, payoutCents = 500000) =>
+      new BobAgent({
+        router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }),
+        actions: { ...actions, getOwnerPayGuidance: async () => ok({ guidance, payoutCents }) },
+      });
+
+    it('kind prudent (via guidance) : MÊME phrase que le repli historique', async () => {
+      const agent = withGuidance(
+        { kind: 'prudent', headlineKey: 'argent.heroLabel', captionKey: 'argent.heroCaption', params: { amount: formatEUR(180000) } },
+        180000,
+      );
+      const r = await agent.ask('Combien je peux me verser ?');
+      expect(r.ok).toBe(true);
+      if (r.ok && r.value.kind === 'answer') {
+        expect(r.value.card.body).toBe(
+          `Tu as ${formatEUR(180000)} de trésorerie mobilisable sans toucher tes réserves. Ta rémunération exacte dépend de ton statut, je te la précise bientôt.`,
+        );
+      }
+    });
+
+    it('kind micro_retrait_prudent : montant du RETRAIT (amountCents), taux et note ACRE dans le texte', async () => {
+      const agent = withGuidance(
+        {
+          kind: 'micro_retrait_prudent',
+          amountCents: 288000,
+          headlineKey: 'fiscal.guidance.microRetraitPrudent.headline',
+          captionKey: 'fiscal.guidance.microRetraitPrudent.caption',
+          params: { amount: formatEUR(288000), ratePct: '21,2', acreNote: ' Note ACRE.' },
+        },
+        500000,
+      );
+      const r = await agent.ask('Combien je peux me verser ?');
+      expect(r.ok).toBe(true);
+      if (r.ok && r.value.kind === 'answer') {
+        expect(r.value.card.body).toContain('Tu peux te prendre');
+        expect(r.value.card.body).toContain(formatEUR(288000));
+        expect(r.value.card.body).toContain('21,2 %');
+        expect(r.value.card.body).toContain('Note ACRE.');
+        expect(r.value.card.body).not.toContain(formatEUR(500000)); // jamais le payout brut : le retrait prime
+      }
+    });
+
+    it('kind salaire_a_simuler : montant = payoutCents (INCHANGÉ), jamais un net inventé', async () => {
+      const agent = withGuidance(
+        {
+          kind: 'salaire_a_simuler',
+          headlineKey: 'fiscal.guidance.salaireASimuler.headline',
+          captionKey: 'fiscal.guidance.salaireASimuler.caption',
+          params: { amount: formatEUR(500000) },
+        },
+        500000,
+      );
+      const r = await agent.ask('Combien je peux me verser ?');
+      expect(r.ok).toBe(true);
+      if (r.ok && r.value.kind === 'answer') {
+        expect(r.value.card.body).toContain('budget employeur mobilisable');
+        expect(r.value.card.body).toContain(formatEUR(500000));
+        expect(r.value.card.body).toContain('se simule avec ton profil');
+      }
+    });
+
+    it('kind prelevement_apres_provisions : montant = payoutCents, mention honnête des provisions TNS', async () => {
+      const agent = withGuidance(
+        {
+          kind: 'prelevement_apres_provisions',
+          headlineKey: 'fiscal.guidance.prelevementApresProvisions.headline',
+          captionKey: 'fiscal.guidance.prelevementApresProvisions.caption',
+          params: { amount: formatEUR(500000) },
+        },
+        500000,
+      );
+      const r = await agent.ask('Combien je peux me verser ?');
+      expect(r.ok).toBe(true);
+      if (r.ok && r.value.kind === 'answer') {
+        expect(r.value.card.body).toContain(formatEUR(500000));
+        expect(r.value.card.body).toContain('provisions personnelles');
+      }
+    });
+
+    it('getOwnerPayGuidance en erreur → repli sur computePayout (jamais un échec de l’intent)', async () => {
+      const agent = new BobAgent({
+        router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }),
+        actions: {
+          ...actions,
+          getOwnerPayGuidance: async () => err(appNotFound('fiscal-profile', 'x')),
+        },
+      });
+      const r = await agent.ask('Combien je peux me verser ?');
+      expect(r.ok).toBe(true);
+      if (r.ok && r.value.kind === 'answer') {
+        expect(r.value.card.body).toContain('Ta rémunération exacte dépend de ton statut');
+      }
+    });
   });
 
   it('relance : brouillon (lecture)', async () => {

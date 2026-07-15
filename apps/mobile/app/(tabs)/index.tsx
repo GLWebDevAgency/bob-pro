@@ -33,7 +33,7 @@ import { formatEURWhole, type TodayPriority } from '@bob/core';
 import { useIdentity } from '../../src/data/identity';
 import type { InvoiceView } from '@bob/api-client';
 import { patterns, shadowNative } from '@bob/tokens';
-import { t } from '@bob/i18n';
+import { t, type I18nKey } from '@bob/i18n';
 import {
   AppHeaderNavy,
   Button,
@@ -64,6 +64,7 @@ import { LatestValueDigestCard } from '../../src/engagement/ValueDigestCard';
 import { LatestTrialReportCard } from '../../src/monetization/TrialReportCard';
 import { usePublishAgentContext, type AgentContext, type AgentEntityRef } from '../../src/agent';
 import { useFiscalProfileFlow } from '../../src/fiscal/use-fiscal-profile-flow';
+import { useOwnerPayGuidance } from '../../src/fiscal/use-owner-pay-guidance';
 import {
   CalendarIcon,
   ChevronRightIcon,
@@ -316,6 +317,11 @@ export default function Aujourdhui() {
   // SPEC_EXPERT_FISCAL amendement 2 : Home = simple badge de fiabilité sur le montant, PAS de
   // 2ᵉ carte — le badge et la voix ouvrent le MÊME mini-flow que la carte d'Argent.
   const fiscalFlow = useFiscalProfileFlow();
+  // Phase 1C : today.payoutHint s'adapte au profil fiscal CONFIRMÉ (même moteur que le héros
+  // Argent, porte sur LE MÊME cashflow réaliste/30j que celui affiché ici) — la pastille de
+  // fiabilité 1B (fiscalFlow.hasPending, badge ci-dessous) reste inchangée.
+  const payGuidance = useOwnerPayGuidance(cashflow.data);
+  const guidance = payGuidance.guidance;
 
   // « Fait » togglable local — le moteur de tâches arrive avec C25 (relances).
   const [done, setDone] = useState<Record<string, boolean>>({});
@@ -435,10 +441,17 @@ export default function Aujourdhui() {
           <FloatingBalanceCard
             label={t('today.balanceLabel', { personality })}
             amountCents={cashflow.data.available}
-            voiceLine={t('today.payoutHint', {
-              personality,
-              params: { amount: formatEURWhole(cashflow.data.payout) },
-            })}
+            // Phase 1C : kind 'prudent' (profil non confirmé) garde LA MÊME clé qu'avant cette
+            // phase (zéro régression) ; un profil confirmé bascule sur la phrase adaptée à sa
+            // situation (guidance.captionKey, mêmes params que le héros Argent — parité).
+            voiceLine={
+              guidance && guidance.kind !== 'prudent'
+                ? t(guidance.captionKey as I18nKey, { personality, params: guidance.params })
+                : t('today.payoutHint', {
+                    personality,
+                    params: { amount: formatEURWhole(cashflow.data.payout) },
+                  })
+            }
             chevronIcon={<ChevronRightIcon color={colors.slate400} size={15} strokeWidth={2.4} />}
             voiceIcon={<DepositIcon color={semantic.success} size={16} />}
             onPress={() => router.push('/(tabs)/argent')}

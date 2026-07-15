@@ -12,7 +12,7 @@ import {
   type AgentDocument,
   accountingJournalLabel, chantierStatusLabel, customerTypeLabel, documentKindLabel, documentStatusLabel, expenseCategoryLabel, expenseStatusLabel, frDateLabel, invoiceKindLabel, invoiceStatusLabel, quoteStatusLabel,
 } from '@bob/ai';
-import { ok, deriveRelancePlan, formatEUR, type AppError, type Result } from '@bob/core';
+import { ok, deriveRelancePlan, deriveOwnerPayGuidance, formatEUR, type AppError, type Result } from '@bob/core';
 import { HttpBobClient, type BobClient } from '@bob/api-client';
 
 const PAYABLE = new Set(['issued', 'partially_paid', 'late']);
@@ -299,6 +299,36 @@ export function makeBobAgent(client: BobClient): BobAssistant {
       const r = await client.getCashflow({ scenario: 'realiste', horizon: 30 });
       if (!r.ok) return r;
       return ok({ payoutCents: r.value.payout, availableCents: r.value.available });
+    },
+    // Phase 1C : parité voix ↔ écrans — même moteur pur (deriveOwnerPayGuidance @bob/core) et
+    // même scénario/horizon (réaliste/30j) que computePayout ci-dessus, pour que le montant parlé
+    // reste le même chiffre que l'écran quand la guidance ne le recalcule pas (salaire_a_simuler /
+    // prelevement_apres_provisions / prudent). periodeCA = CA encaissé du mois civil en cours
+    // (même simplification 1C que useOwnerPayGuidance côté écran) — paiements en erreur → pas de
+    // periodeCA, deriveOwnerPayGuidance retombe honnêtement sur 'prudent'.
+    async getOwnerPayGuidance() {
+      const [profileResult, cashflowResult] = await Promise.all([
+        client.getFiscalProfile(),
+        client.getCashflow({ scenario: 'realiste', horizon: 30 }),
+      ]);
+      if (!profileResult.ok) return profileResult;
+      if (!cashflowResult.ok) return cashflowResult;
+      const paymentsResult = await client.listPayments();
+      const today = localDateOnly();
+      const month = today.slice(0, 7);
+      const periodeCA = paymentsResult.ok
+        ? {
+            encaissedCents: Math.max(
+              0,
+              paymentsResult.value
+                .filter((p) => p.receivedAt.slice(0, 7) === month)
+                .reduce((sum, p) => sum + p.amountCents, 0),
+            ),
+            year: Number(today.slice(0, 4)),
+          }
+        : undefined;
+      const guidance = deriveOwnerPayGuidance(profileResult.value, cashflowResult.value, periodeCA);
+      return ok({ guidance, payoutCents: cashflowResult.value.payout });
     },
     // C25 ① : brouillon CIBLABLE (invoiceId/customerId), dérivé du plan de relances réel
     // (@bob/core deriveRelancePlan — ton escaladé par ancienneté, reste dû netToPay − paid).

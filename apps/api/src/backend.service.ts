@@ -43,6 +43,7 @@ import {
   UpdateFiscalProfileField,
   parseFiscalProfileFieldPatch,
   type FiscalProfileView,
+  deriveOwnerPayGuidance,
   runDiagnostic,
   deriveFiscalCalendar,
   deriveVatPosition,
@@ -1411,6 +1412,27 @@ export class BackendService {
         const r = await this.getCashflow('realiste', 30);
         if (!r.ok) return r;
         return ok({ payoutCents: r.value.payout, availableCents: r.value.available });
+      },
+      // Phase 1C (SPEC_EXPERT_FISCAL §V2 pt. 1+6) : parité voix ↔ écrans — même moteur pur
+      // (deriveOwnerPayGuidance @bob/core), même scénario/horizon (réaliste/30j) que computePayout
+      // ci-dessus. periodeCA = CA encaissé du mois civil en cours (même simplification 1C que le
+      // hook mobile useOwnerPayGuidance — pas la période URSSAF exacte, qui reste la carte Argent).
+      getOwnerPayGuidance: async () => {
+        const [profileResult, cashflowResult] = await Promise.all([this.getFiscalProfile(), this.getCashflow('realiste', 30)]);
+        if (!profileResult.ok) return profileResult;
+        if (!cashflowResult.ok) return cashflowResult;
+        const today = this.clock.today();
+        const month = today.slice(0, 7);
+        const payments = await this.p.payments.listByCompany(this.companyId());
+        const periodeCA = {
+          encaissedCents: Math.max(
+            0,
+            payments.filter((p) => p.receivedAt.slice(0, 7) === month).reduce((sum, p) => sum + p.amount, 0),
+          ),
+          year: Number(today.slice(0, 4)),
+        };
+        const guidance = deriveOwnerPayGuidance(profileResult.value, cashflowResult.value, periodeCA);
+        return ok({ guidance, payoutCents: cashflowResult.value.payout });
       },
       // C25 ① : brouillon CIBLABLE (invoiceId/customerId), dérivé du plan de relances réel
       // (@bob/core deriveRelancePlan) — même moteur que le cron, le mobile et le LocalBobClient.

@@ -959,6 +959,57 @@ export class BobAgent {
     }
 
     if (intent === 'payout') {
+      // Phase 1C (SPEC_EXPERT_FISCAL §V2 pt. 1+6) : quand l'hôte expose getOwnerPayGuidance, la
+      // réponse PARLÉE utilise le MÊME moteur pur (deriveOwnerPayGuidance @bob/core) et les MÊMES
+      // kinds que les écrans Argent/Aujourd'hui — parité stricte. Hôte pas encore branché, ou
+      // erreur → repli sur computePayout() (le langage prudent historique, INCHANGÉ).
+      const guidanceResult = await this.deps.actions.getOwnerPayGuidance?.();
+      if (guidanceResult?.ok) {
+        const { guidance, payoutCents } = guidanceResult.value;
+        const spoken = ((): { template: string; values: { token: string; cents: number }[] } => {
+          switch (guidance.kind) {
+            case 'micro_retrait_prudent': {
+              const acreNote = typeof guidance.params.acreNote === 'string' ? guidance.params.acreNote : '';
+              const ratePct = guidance.params.ratePct;
+              return {
+                template: `Tu peux te prendre {{amount}} ce mois-ci — tes cotisations URSSAF (~${ratePct} %) sont déjà mises de côté.${acreNote}`,
+                values: [{ token: 'amount', cents: guidance.amountCents ?? payoutCents }],
+              };
+            }
+            case 'salaire_a_simuler':
+              return {
+                template:
+                  'Ta boîte te paie en salaire : budget employeur mobilisable {{amount}}. Le net exact se simule avec ton profil, bientôt.',
+                values: [{ token: 'amount', cents: payoutCents }],
+              };
+            case 'prelevement_apres_provisions':
+              return {
+                template:
+                  '{{amount}} de trésorerie mobilisable, avant tes provisions personnelles (retraite, maladie) à prévoir — je te les précise bientôt.',
+                values: [{ token: 'amount', cents: payoutCents }],
+              };
+            case 'prudent':
+            default:
+              // Langage prudent (SPEC_EXPERT_FISCAL §V2 pt. 8) : trésorerie mobilisable ≠
+              // rémunération — celle-ci dépend du statut/régime. Jamais « te verser » ici.
+              return {
+                template:
+                  'Tu as {{payout}} de trésorerie mobilisable sans toucher tes réserves. Ta rémunération exacte dépend de ton statut, je te la précise bientôt.',
+                values: [{ token: 'payout', cents: payoutCents }],
+              };
+          }
+        })();
+        const guard = renderWithGuard(spoken.template, spoken.values);
+        if (!guard.ok) return err({ kind: 'dependency', port: 'money-guard', cause: guard.violations.join(', ') });
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Lire le profil fiscal confirmé', 'Lire la trésorerie réelle', 'Adapter le langage à la situation'],
+          card: { title: 'Ta trésorerie mobilisable', body: guard.rendered },
+        });
+      }
+
       const r = await this.deps.actions.computePayout();
       if (!r.ok) return err(r.error);
       // Langage prudent (SPEC_EXPERT_FISCAL §V2 pt. 8) : trésorerie mobilisable ≠ rémunération —

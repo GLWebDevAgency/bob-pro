@@ -466,4 +466,40 @@ export const fiscalFr = {
     pro: 'L’enregistrement a échoué. Veuillez réessayer.',
     direct: 'Échec de l’enregistrement. Réessaie.',
   },
+
+  // ── Langage du prélèvement selon le profil CONFIRMÉ (Phase 1C, deriveOwnerPayGuidance) ──
+  // Un seul kind calcule un montant NOUVEAU (micro_retrait_prudent) — les deux autres réutilisent
+  // la trésorerie mobilisable inchangée, reformulée honnêtement (jamais un net/salaire inventé).
+  // Interpolations : {amount} (toujours fourni), {ratePct}/{acreNote} (micro uniquement, ignorés
+  // ailleurs — un paramètre absent du template visé est simplement ignoré par t()).
+  'fiscal.guidance.microRetraitPrudent.headline': {
+    pote: 'Retrait personnel prudent ce mois-ci',
+    pro: 'Retrait personnel prudent envisageable ce mois-ci',
+    direct: 'Retrait prudent ce mois-ci',
+  },
+  'fiscal.guidance.microRetraitPrudent.caption': {
+    pote: 'Tu peux te prendre ~{amount} ce mois-ci — tes cotisations (~{ratePct} %) sont déjà mises de côté.{acreNote}',
+    pro: 'Vous pouvez vous verser ~{amount} ce mois-ci — vos cotisations (~{ratePct} %) sont déjà provisionnées.{acreNote}',
+    direct: '~{amount} dispo ce mois-ci — cotisations (~{ratePct} %) déjà de côté.{acreNote}',
+  },
+  'fiscal.guidance.salaireASimuler.headline': {
+    pote: 'Ta boîte te paie en salaire',
+    pro: 'Votre société vous rémunère en salaire',
+    direct: 'Rémunération en salaire',
+  },
+  'fiscal.guidance.salaireASimuler.caption': {
+    pote: 'Budget employeur mobilisable : ~{amount} — le net exact se simule avec ton profil, bientôt.',
+    pro: 'Budget employeur mobilisable : ~{amount} — le net exact se simulera avec votre profil, bientôt.',
+    direct: 'Budget employeur : ~{amount}. Net exact à simuler, bientôt.',
+  },
+  'fiscal.guidance.prelevementApresProvisions.headline': {
+    pote: 'Prélèvement possible après provisions',
+    pro: 'Prélèvement possible après provisions',
+    direct: 'Prélèvement après provisions',
+  },
+  'fiscal.guidance.prelevementApresProvisions.caption': {
+    pote: '~{amount} mobilisable avant tes provisions personnelles (retraite, maladie) — on affine ça bientôt.',
+    pro: '~{amount} mobilisable avant vos provisions personnelles (retraite, maladie) — nous affinerons cela bientôt.',
+    direct: '~{amount} dispo, hors provisions personnelles à venir.',
+  },
 } as const satisfies Record<string, Copy>;

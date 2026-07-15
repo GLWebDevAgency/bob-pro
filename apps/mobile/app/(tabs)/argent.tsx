@@ -76,6 +76,7 @@ import {
 import { useIdentity } from '../../src/data/identity';
 import { useFirstTimeTip } from '../../src/data/tips';
 import { useFiscalProfileFlow } from '../../src/fiscal/use-fiscal-profile-flow';
+import { useOwnerPayGuidance } from '../../src/fiscal/use-owner-pay-guidance';
 
 /** Clé SecureStore du coach-mark « première fois » de cet écran. */
 const TIP_KEY = 'bob.tips.argent.v1';
@@ -406,6 +407,11 @@ export default function Argent() {
   // à » = optimiste. Langage prudent (jamais « te verser ») — SPEC_EXPERT_FISCAL §V2 pt. 8.
   const heroSafe = useCashflow('prudent', 30);
   const heroUp = useCashflow('optimiste', 30);
+  // Phase 1C : le langage (et, pour le micro confirmé, le montant) du héros s'adapte au profil
+  // fiscal CONFIRMÉ — porte sur LE MÊME cashflow que celui affiché (prudent/30j), jamais un
+  // scénario parallèle. Profil non confirmé → kind 'prudent' → mêmes clés qu'avant (zéro régression).
+  const payGuidance = useOwnerPayGuidance(heroSafe.data);
+  const guidance = payGuidance.guidance;
 
   // Grand-livre : les agrégats réels du client, dérivés en use case pur @bob/core.
   const invoices = useInvoices();
@@ -492,9 +498,16 @@ export default function Argent() {
     entries.isError ||
     customers.isError;
 
-  // Phrase conditionnelle du héros : upside réel (optimiste > prudent) + le retardataire réel.
+  // Phrase conditionnelle du héros : upside réel (optimiste > prudent) + le retardataire réel —
+  // RÉSERVÉE au profil non confirmé ('prudent', mêmes clés qu'avant cette phase). Un profil
+  // CONFIRMÉ (micro/salarié/TNS) affiche le langage adapté à sa situation à la place (Phase 1C) :
+  // mélanger « upside optimiste » et « cotisations mises de côté » diluerait le message honnête.
   const heroCaption =
-    heroSafe.data && heroUp.data && topRisk && heroUp.data.payout > heroSafe.data.payout
+    (!guidance || guidance.kind === 'prudent') &&
+    heroSafe.data &&
+    heroUp.data &&
+    topRisk &&
+    heroUp.data.payout > heroSafe.data.payout
       ? t('argent.heroUpside', {
           personality,
           params: {
@@ -503,7 +516,9 @@ export default function Argent() {
             amount: formatEUR(topRisk.outstanding),
           },
         })
-      : t('argent.heroCaption', { personality });
+      : guidance
+        ? t(guidance.captionKey as I18nKey, { personality, params: guidance.params })
+        : t('argent.heroCaption', { personality });
 
   const horizonOptions = HORIZON_KEYS.map((key) => ({
     key,
@@ -528,8 +543,12 @@ export default function Argent() {
           <View style={{ marginTop: 16 }}>
             {heroSafe.data ? (
               <HeroMoneyCard
-                label={t('argent.heroLabel', { personality })}
-                amountCents={heroSafe.data.payout}
+                label={
+                  guidance
+                    ? t(guidance.headlineKey as I18nKey, { personality, params: guidance.params })
+                    : t('argent.heroLabel', { personality })
+                }
+                amountCents={guidance?.amountCents ?? heroSafe.data.payout}
                 pill={t('argent.heroPill', { personality })}
                 caption={heroCaption}
               />
