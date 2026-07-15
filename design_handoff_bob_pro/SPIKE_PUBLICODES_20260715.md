@@ -69,3 +69,12 @@ Point d'attention : `traversedVariables` a été supprimé de `evaluate()` dans 
 Fichiers de test produits (scratch, hors repo) : `/private/tmp/claude-501/.../scratchpad/publicodes-test/{test-micro.mjs, test-sasu.mjs, bench.mjs, mem.mjs, test-explain.mjs}` — reproductibles si besoin de re-vérifier.
 
 Sources principales citées : [npmjs.com/package/publicodes](https://www.npmjs.com/package/publicodes), [npmjs.com/package/modele-social](https://www.npmjs.com/package/modele-social), [github.com/publicodes/publicodes](https://github.com/publicodes/publicodes), [github.com/betagouv/mon-entreprise](https://github.com/betagouv/mon-entreprise), [CHANGELOG modele-social](https://github.com/betagouv/mon-entreprise/blob/master/modele-social/CHANGELOG.md), [Discussion npm vs API #2865](https://github.com/betagouv/mon-entreprise/discussions/2865), [Comparateur de statut juridique](https://mon-entreprise.urssaf.fr/simulateurs/comparaison-r%C3%A9gimes-sociaux), articles presse PFU 31,4% (dougs.fr, meilleurtaux.com) et ACRE juillet 2026 (service-public.gouv.fr, CCI Portes de Normandie).
+
+## ERRATUM POST-IMPLÉMENTATION (15/07, service livré) — les goldens §4 étaient FAUX
+Le scratch omettait `entreprise . catégorie juridique = 'EI'` : le CA micro était routé
+dans le bucket Cipav par accident. Valeurs corrigées (service, CA 30 000 €/an) :
+cotisations 533,50 €/mois (12,3 % vente < 21,2 % service < 23,2 % Cipav < 25,6 % VL
+différenciés), net 23 598 €/an. Réconciliation au centime avec computeMicroSocialProvision
+du core (530 € ; +3,50 € = TFC+CFP documentés). SASU confirmé exact. Autre bug appris :
+evaluate(string) top-level peut ignorer setSituation — toujours evaluate(getRule(name)).
+Leçon : un golden sans réconciliation croisée n'est pas un golden.
