@@ -1309,6 +1309,16 @@ export class EngagementController {
   async latestDigest() {
     return unwrap(await this.digest.latestForCurrentTenant());
   }
+  /** Bilan de fin d'essai (pilier 2) : les MÊMES agrégats que le digest, cumulés sur l'essai. */
+  @Get('trial-report')
+  async trialReport() {
+    return unwrap(await this.digest.trialReportForCurrentTenant());
+  }
+  /** value_digest_opened : l'utilisateur a OUVERT le détail du digest (tap carte, pas rendu). */
+  @Post('digest/opened')
+  async digestOpened(@Body() body: { highlightKind?: unknown }) {
+    return unwrap(await this.digest.recordDigestOpened({ highlightKind: body?.highlightKind }));
+  }
 }
 
 @Controller('notifications')
@@ -1394,6 +1404,11 @@ export class AiController {
   @Throttle({ default: { limit: 5, ttl: 10_000 } })
   async ask(@Body() body: AgentAskPayload) {
     return unwrap(await this.backend.askBob(body));
+  }
+  @Get('proposals/:proposalId')
+  @Throttle({ default: { limit: 20, ttl: 10_000 } })
+  async proposal(@Param('proposalId') proposalId: string) {
+    return unwrap(await this.backend.previewBobProposal({ proposalId }));
   }
   @Post('confirm')
   @Throttle({ default: { limit: 10, ttl: 10_000 } })

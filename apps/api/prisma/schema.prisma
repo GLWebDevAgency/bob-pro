@@ -212,6 +212,31 @@ enum ReleaseFlagSubjectType {
   cabinet
 }
 
+// Pilier 2 (monétisation) — palier GRANTÉ maintenant : pendant l'essai inversé (status
+// trialing) c'est le palier prêté (Pro par défaut) ; atterri, c'est le palier réellement payé.
+enum SubscriptionPlan {
+  free
+  solo
+  pro
+  business
+}
+
+// Alignée sur l'agrégat core Subscription (domain/subscription/subscription.ts) — ne PAS
+// ajouter 'expired' : l'échéance d'essai (trialEndsAt) dérive une phase 'expired' calculée
+// (GetSubscriptionStatus @bob/core), jamais un statut persisté séparé.
+enum SubscriptionStatus {
+  trialing
+  active
+  past_due
+  canceled
+}
+
+enum SubscriptionStore {
+  apple
+  google
+  none
+}
+
 model Company {
   id                      String                       @id
   name                    String
@@ -260,6 +285,7 @@ model Company {
   realtimeControlUses     RealtimeControlConsumption[]
   realtimeVoiceUsage      RealtimeVoiceUsageEvent[]
   realtimeVoiceUsageDaily RealtimeVoiceUsageDaily[]
+  subscription            Subscription?
 
   @@map("companies")
 }
@@ -1234,4 +1260,25 @@ model ReleaseFlagSubject {
   @@unique([flagId, subjectType, subjectId], name: "uniq_release_flag_subject")
   @@index([subjectType, subjectId])
   @@map("release_flag_subjects")
+}
+
+// Pilier 2 (monétisation) — état d'abonnement PERSISTÉ par tenant, source de vérité derrière
+// GetSubscriptionStatus (@bob/core). Une ligne par company (essai inversé démarré au
+// provisioning, cf. backend.service.registerCompany) ; `plan` porte le palier grante MAINTENANT
+// (cf. commentaire de l'enum SubscriptionPlan). Additif : le gating interne existant continue
+// de lire le stub early-access (subscriptionFor) tant que la facturation réelle n'est pas ouverte.
+model Subscription {
+  id               String              @id
+  companyId        String              @unique
+  company          Company             @relation(fields: [companyId], references: [id])
+  plan             SubscriptionPlan
+  status           SubscriptionStatus  @default(trialing)
+  trialEndsAt      DateTime?
+  currentPeriodEnd DateTime?
+  store            SubscriptionStore?
+  storeRef         String?
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+
+  @@map("subscriptions")
 }

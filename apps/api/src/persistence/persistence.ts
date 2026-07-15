@@ -17,6 +17,7 @@ import {
   type AccountingEntryRepository,
   type ChartOfAccountsRepository,
   type SequenceCounterPort,
+  type SubscriptionRepository,
 } from '@bob/core';
 import type { DocumentArchiveJobRepository } from './document-archive-jobs';
 import type { NotificationJobRepository } from './notification-jobs';
@@ -25,6 +26,7 @@ import type { AgentJournalRepository } from './agent-journal';
 import { InMemoryAgentJournalRepository } from './agent-journal';
 import type { SupplierMemoryRepository } from './supplier-memory';
 import { InMemorySupplierMemoryRepository } from './supplier-memory';
+import { InMemorySubscriptionRepository } from './subscriptions';
 import type { CabinetInfrastructure } from '../cabinet/cabinet-infrastructure';
 import type { DocumentFolderDeletionPlanStore } from '../documents/document-folder-deletion-plan';
 import { MemoryCabinetInfrastructure } from '../cabinet/memory-cabinet-infrastructure';
@@ -112,6 +114,8 @@ export interface Persistence {
   chartOfAccounts: ChartOfAccountsRepository;
   agentJournal: AgentJournalRepository;
   supplierMemory: SupplierMemoryRepository;
+  /** Abonnement persisté par tenant (pilier 2) — lu par GetSubscriptionStatus (@bob/core). */
+  subscriptions: SubscriptionRepository;
   counters: SequenceCounterPort;
   cabinet: CabinetInfrastructure;
   /** Construit le singleton d'admission Bob Live avec le backend durable de cette persistance. */
@@ -167,6 +171,7 @@ export class InMemoryPersistence implements Persistence {
   readonly chartOfAccounts = new InMemoryChartOfAccountsRepository();
   readonly agentJournal = new InMemoryAgentJournalRepository();
   readonly supplierMemory = new InMemorySupplierMemoryRepository();
+  readonly subscriptions = new InMemorySubscriptionRepository();
   readonly counters = new InMemorySequenceCounter();
   readonly cabinet = new MemoryCabinetInfrastructure();
   createRealtimeAdmission(policy: RealtimeAdmissionPolicy): RealtimeAdmissionPort {

@@ -76,6 +76,7 @@ describe('decideAgentControl — navigation allowlistée, validation VISUELLE se
     expect(decideAgentControl({ turnId: 't', kind: 'proposed', proposalId: 'p-1', contextRevision: 1, contextDigest: 'd-1' })).toEqual({
       kind: 'review',
       proposalId: 'p-1',
+      proposalExpiresAt: null,
     });
   });
 

@@ -1,6 +1,21 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
-import { SystemClock, buildValueDigest, ok, type AnalyticsPort, type AppError, type Result, type ValueDigest, type ValueEvent } from '@bob/core';
+import {
+  SystemClock,
+  buildValueDigest,
+  ok,
+  appDomain,
+  trialDaysLeft,
+  trialPhase,
+  type AnalyticsPort,
+  type AppError,
+  type PlanTier,
+  type Result,
+  type ReverseTrialState,
+  type TrialPhase,
+  type ValueDigest,
+  type ValueEvent,
+} from '@bob/core';
 import { PERSISTENCE, type Persistence } from '../persistence/persistence';
 import { NotificationDedupeConflictError } from '../persistence/notification-jobs';
 import { SUPABASE_ADMIN, type SupabaseAdminPort } from '../auth/supabase-admin';
@@ -44,6 +59,19 @@ export interface DigestWindow {
 }
 
 export type DigestCompanyOutcome = 'queued' | 'deduplicated' | 'no_substance' | 'no_account_email';
+
+/** Bilan de fin d'essai (pilier 2) — GET /engagement/trial-report. trial null = pas d'essai. */
+export interface TrialReportPayload {
+  readonly digest: ValueDigest | null;
+  readonly periodStart: string | null;
+  readonly periodEnd: string | null;
+  readonly trial: {
+    readonly plan: PlanTier;
+    readonly endsAt: string;
+    readonly phase: TrialPhase;
+    readonly daysLeft: number;
+  } | null;
+}
 
 export interface DigestRunSummary {
   companies: number;
@@ -331,6 +359,64 @@ export class DigestService {
     );
     const digest = buildValueDigest({ periodStart: window.periodStart, periodEnd: window.periodEnd, events });
     return ok({ digest, periodStart: window.periodStart, periodEnd: window.periodEnd, isoWeek: window.isoWeek });
+  }
+
+  /**
+   * BILAN DE FIN D'ESSAI (pilier 2, SPEC décision 2) — ce que Bob a RÉELLEMENT fait pendant
+   * l'essai : MÊMES projections que le digest hebdo (une seule vérité), CUMULÉES sur la
+   * période d'essai [début, min(now, échéance)). Tenant sans ligne d'essai (pré-migration,
+   * early-access) → trial: null, digest: null — la carte mobile ne se rend pas, zéro bruit.
+   */
+  async trialReportForCurrentTenant(): Promise<Result<TrialReportPayload, AppError>> {
+    const companyId = requireTenant();
+    const record = await this.p.subscriptions.findByCompanyId(companyId);
+    if (record === null || record.trialEndsAt === null || record.status !== 'trialing') {
+      return ok({ digest: null, periodStart: null, periodEnd: null, trial: null });
+    }
+    const now = this.clock.now();
+    const trial: ReverseTrialState = { tier: record.plan, startedAt: record.createdAt, endsAt: record.trialEndsAt };
+    const periodStart = record.createdAt;
+    const periodEnd = Date.parse(now) < Date.parse(record.trialEndsAt) ? now : record.trialEndsAt;
+    const startDate = parisDateOnly(new Date(periodStart));
+    // Borne date-only EXCLUSIVE : lendemain du dernier jour couvert — les factures (datées en
+    // DateOnly) du dernier jour d'essai comptent, granularité jour assumée.
+    const endDate = addDaysDateOnly(parisDateOnly(new Date(periodEnd)), 1);
+    const window: DigestWindow = { periodStart, periodEnd, startDate, endDate, isoWeek: isoWeekLabel(startDate) };
+    const { events } = await this.collectValueEvents(companyId, window, `trial-report:${companyId}`);
+    const digest = buildValueDigest({ periodStart, periodEnd, events });
+    return ok({
+      digest,
+      periodStart,
+      periodEnd,
+      trial: {
+        plan: record.plan,
+        endsAt: record.trialEndsAt,
+        phase: trialPhase(trial, now),
+        daysLeft: trialDaysLeft(trial, now),
+      },
+    });
+  }
+
+  /**
+   * value_digest_opened (pilier 2, analytics décision 11) — l'OUVERTURE réelle du digest par
+   * l'utilisateur (tap sur la carte, pas son rendu). Fire-and-forget via l'AnalyticsPort
+   * (Noop sans endpoint, opt-out RGPD structurel) : n'échoue jamais côté client.
+   */
+  async recordDigestOpened(input: { highlightKind?: unknown }): Promise<Result<{ recorded: boolean }, AppError>> {
+    const companyId = requireTenant();
+    const kind = input.highlightKind;
+    if (kind !== 'money' && kind !== 'time' && kind !== 'volume') {
+      return {
+        ok: false,
+        error: appDomain({ code: 'VALIDATION', field: 'highlightKind', message: 'Accroche de digest inconnue.' }),
+      };
+    }
+    this.analytics.track({
+      tenantId: companyId,
+      at: new Date(this.clock.now()).toISOString(),
+      event: { name: 'value_digest_opened', highlightKind: kind },
+    });
+    return ok({ recorded: true });
   }
 
   private async collectValueEvents(

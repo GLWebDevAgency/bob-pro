@@ -889,6 +889,26 @@ describe('HttpBobClient — assistant Bob (C40 ⑧ : ask/confirm/journal serveur
     if (r.ok) expect(r.value).toEqual(doneRun);
   });
 
+  it('previewBobProposal recharge le diff opaque par GET sans envoyer aucun args', async () => {
+    const pending = proposedRun.pending!;
+    const fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
+      expect(String(input)).toBe('https://api.bob.test/ai/proposals/proposal-server-1');
+      expect(init?.method).toBe('GET');
+      expect(init?.body).toBeUndefined();
+      return new Response(JSON.stringify(pending), {
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-mercier' });
+    await expect(client.previewBobProposal('proposal-server-1')).resolves.toEqual({
+      ok: true,
+      value: pending,
+    });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
   it('confirmBob remonte l’AppError du serveur (garde-fou/paywall) sans la maquiller', async () => {
     const fetchMock = vi.fn(
       async () =>
@@ -1135,6 +1155,46 @@ describe('HttpBobClient — assistant Bob (C40 ⑧ : ask/confirm/journal serveur
     if (!r.ok) return;
     // null = semaine sans substance : la carte mobile ne se rend pas — jamais un digest inventé.
     expect(r.value).toEqual(payload);
+  });
+
+  it('pilier 2 : trialReport → GET /engagement/trial-report ; trial null (pas d’essai) voyage tel quel', async () => {
+    const payload = {
+      digest: null,
+      periodStart: null,
+      periodEnd: null,
+      trial: { plan: 'pro', endsAt: '2026-07-28T09:00:00.000Z', phase: 'ending_soon', daysLeft: 2 },
+    };
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      if (String(url) === 'https://api.bob.test/engagement/trial-report' && init?.method === 'GET') {
+        return new Response(JSON.stringify(payload), { headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ error: { kind: 'not_found', resource: 'route' } }), { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-mercier' });
+
+    const r = await client.trialReport();
+
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value).toEqual(payload);
+  });
+
+  it('pilier 2 : recordValueDigestOpened → POST /engagement/digest/opened avec l’accroche du domaine', async () => {
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      if (String(url) === 'https://api.bob.test/engagement/digest/opened' && init?.method === 'POST') {
+        expect(JSON.parse(String(init?.body))).toEqual({ highlightKind: 'money' });
+        return new Response(JSON.stringify({ recorded: true }), { headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ error: { kind: 'not_found', resource: 'route' } }), { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-mercier' });
+
+    const r = await client.recordValueDigestOpened('money');
+
+    expect(r.ok && r.value).toEqual({ recorded: true });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -1423,6 +1483,88 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
         maxSessionSeconds: 900,
         speechSourcePolicy: speechSourcePolicy(sessionHandle),
       },
+    });
+  });
+
+  it('rejette un localisateur Mistral dont le companyId dérive du tenant authentifié', async () => {
+    const sessionHandle = '00000000-0000-4000-8000-000000000012';
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      transport: 'mistral-pcm',
+      websocketUrl: 'wss://api.bob.test/v1/voice/realtime/mistral',
+      companyId: 'company-2',
+      ticket: 'A'.repeat(43),
+      protocol: 'bob.mistral-pcm.v1',
+      ticketExpiresAt: '2026-07-14T12:00:30.000Z',
+      maxAudioBytes: 32_000,
+      contextRevision: 1,
+      contextDigest: 'b'.repeat(64),
+      sessionHandle,
+      hardExpiresAt: '2026-07-14T12:15:00.000Z',
+      model: 'voxtral-mini-transcribe-realtime-2602',
+      voice: 'marin',
+      configVersion: 'bob-live-provider-neutral-v2',
+      maxSessionSeconds: 900,
+      // La policy reste correctement liée à company-1 : le champ localisateur doit lui aussi
+      // être exact, sinon le mobile transmettrait un tenant ambigu dans l'auth WebSocket.
+      speechSourcePolicy: speechSourcePolicy(sessionHandle),
+    }), { headers: { 'content-type': 'application/json' } })));
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+
+    await expect(client.createRealtimeVoiceCall({
+      transport: 'mistral-pcm',
+      context: {
+        version: 1,
+        revision: 1,
+        context: {
+          screen: { name: '/home', instanceId: 'home-1' },
+          entities: [],
+          capabilities: ['screen.read'],
+        },
+      },
+      sessionHandle,
+    })).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'dependency', port: 'api-contract' },
+    });
+  });
+
+  it('rejette un endpoint PCM Mistral qui dérive de l’autorité API authentifiée', async () => {
+    const sessionHandle = '00000000-0000-4000-8000-000000000013';
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      transport: 'mistral-pcm',
+      websocketUrl: 'wss://microphone-collector.attacker.test/v1/voice/realtime/mistral',
+      companyId: 'company-1',
+      ticket: 'A'.repeat(43),
+      protocol: 'bob.mistral-pcm.v1',
+      ticketExpiresAt: '2026-07-14T12:00:30.000Z',
+      maxAudioBytes: 32_000,
+      contextRevision: 1,
+      contextDigest: 'b'.repeat(64),
+      sessionHandle,
+      hardExpiresAt: '2026-07-14T12:15:00.000Z',
+      model: 'voxtral-mini-transcribe-realtime-2602',
+      voice: 'marin',
+      configVersion: 'bob-live-provider-neutral-v2',
+      maxSessionSeconds: 900,
+      speechSourcePolicy: speechSourcePolicy(sessionHandle),
+    }), { headers: { 'content-type': 'application/json' } })));
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+
+    await expect(client.createRealtimeVoiceCall({
+      transport: 'mistral-pcm',
+      context: {
+        version: 1,
+        revision: 1,
+        context: {
+          screen: { name: '/home', instanceId: 'home-1' },
+          entities: [],
+          capabilities: ['screen.read'],
+        },
+      },
+      sessionHandle,
+    })).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'dependency', port: 'api-contract' },
     });
   });
 

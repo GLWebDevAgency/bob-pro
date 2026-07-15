@@ -7,6 +7,7 @@ import {
   type LineCategory,
   type ExpenseCategory,
   type FiscalDeadline,
+  type SubscriptionStatusView,
   isVatRate,
 } from '@bob/core';
 import { type AnyTool, type Tool, type ToolPublicResult } from './tool';
@@ -427,6 +428,25 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
       run: () => listFiscalDeadlinesAction(),
     };
     tools.push(echeancesFiscales as AnyTool);
+  }
+
+  // —— Outil OPTIONNEL etat_abonnement (pilier 2) : lecture SEULE de l'abonnement/essai du
+  // tenant (GetSubscriptionStatus @bob/core — la même vérité que l'écran Compte). Jamais un
+  // acte d'achat vocal (SPEC décision 10) : l'outil informe, l'engagement se confirme au tap.
+  const getSubscriptionStatusAction = actions.getSubscriptionStatus?.bind(actions);
+  if (getSubscriptionStatusAction) {
+    const etatAbonnement: Tool<Record<string, never>, SubscriptionStatusView> = {
+      name: 'etat_abonnement',
+      description:
+        'Lit l’état d’abonnement du compte : offre en cours, essai (jours restants, échéance), statut de paiement. Lecture seule — aucun achat ni changement d’offre par la voix.',
+      mutating: false,
+      outbound: false,
+      compliance: 'low',
+      parse: () => ok({}),
+      riskTier: 'read',
+      run: () => getSubscriptionStatusAction(),
+    };
+    tools.push(etatAbonnement as AnyTool);
   }
 
   const createCustomerAction = actions.createCustomer?.bind(actions);

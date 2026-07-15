@@ -116,7 +116,11 @@ export class RealtimeContextPublisher {
 
 export type AgentControlDecision =
   | { readonly kind: 'navigate'; readonly route: string }
-  | { readonly kind: 'review'; readonly proposalId: string | null }
+  | {
+      readonly kind: 'review';
+      readonly proposalId: string | null;
+      readonly proposalExpiresAt: string | null;
+    }
   | { readonly kind: 'none' };
 
 /**
@@ -127,7 +131,11 @@ export type AgentControlDecision =
  */
 export function decideAgentControl(control: RealtimeAgentControl): AgentControlDecision {
   if (control.kind === 'proposed') {
-    return { kind: 'review', proposalId: control.proposalId ?? null };
+    return {
+      kind: 'review',
+      proposalId: control.proposalId ?? null,
+      proposalExpiresAt: control.proposalExpiresAt ?? null,
+    };
   }
   if (control.navigate !== undefined && isAllowedAgentNavigationRoute(control.navigate)) {
     return { kind: 'navigate', route: control.navigate };

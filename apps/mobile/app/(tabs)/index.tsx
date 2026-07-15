@@ -61,6 +61,7 @@ import {
 import { combineQueryStates } from '../../src/data/query-state';
 import { CollectInvoiceButton } from '../../src/components/CollectInvoiceButton';
 import { LatestValueDigestCard } from '../../src/engagement/ValueDigestCard';
+import { LatestTrialReportCard } from '../../src/monetization/TrialReportCard';
 import { usePublishAgentContext, type AgentContext, type AgentEntityRef } from '../../src/agent';
 import {
   CalendarIcon,
@@ -449,6 +450,10 @@ export default function Aujourdhui() {
               onRetry={primaryState.refetchAll}
             />
           ) : null}
+
+          {/* Bilan de fin d'essai (SPEC pilier 2, décision 2) — n'existe qu'au TERME de l'essai
+              (ending_soon/expired) : chiffres réels du tenant + UN CTA vers l'écran Compte. */}
+          <LatestTrialReportCard />
 
           {/* Digest « le lundi de Bob » (SPEC pilier 2) — la notification weekly-digest ramène
               ICI ; invisible tant que useLatestValueDigest() rend null (serveur pas branché). */}

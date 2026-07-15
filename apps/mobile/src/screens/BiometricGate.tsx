@@ -9,18 +9,18 @@
  * · boot avec session persistée + opt-in accepté + biométrie dispo → écran verrouillé
  *   navy, authentification lancée d'office, réessai possible, repli « Utiliser mon
  *   mot de passe » (signOut → LoginScreen) ;
- * · matériel absent / rien d'enrôlé (simulateur, Expo Go) → on n'affiche RIEN et on
- *   ne bloque RIEN (authenticateBiometric rend ok+degraded) — dégradé honnête.
+ * · après opt-in, matériel absent / rien d'enrôlé / panne native → aucun bypass : la
+ *   session reste verrouillée et le repli sûr demande une nouvelle connexion par mot de passe.
  * L'opt-in refusé est persisté (pas de nag au boot). TODO(C24→réglages) : bascule
  * d'activation dans /compte pour revenir sur ce choix.
  */
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
-import { Pressable, Text, View } from 'react-native';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { ActivityIndicator, AppState, Pressable, Text, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { themes } from '@bob/tokens';
 import { t } from '@bob/i18n';
-import { Button, Sheet, Toast, font, useTheme } from '@bob/ui';
+import { Button, Sheet, Toast, font, useReduceMotion, useTheme } from '@bob/ui';
 import { useAuth } from '../data/auth';
 import {
   authenticateBiometric,
@@ -32,20 +32,39 @@ import {
   type BiometricSupport,
 } from '../data/biometric';
 import { CheckIcon, LockIcon } from '../components/icons';
+import {
+  decideBiometricGate,
+  isBiometricDecisionCurrent,
+  shouldRelockBiometricSession,
+} from '../data/biometric-policy';
+import { loadAuthBootstrapWithTimeout } from '../data/auth-bootstrap';
 
 type Phase = 'checking' | 'locked' | 'open';
+const BIOMETRIC_PROBE_TIMEOUT_MS = 8_000;
+const BIOMETRIC_PROMPT_TIMEOUT_MS = 60_000;
+const BIOMETRIC_RELOCK_GRACE_MS = 30_000;
 
 export function BiometricGate({ children }: { children: ReactNode }) {
   const { colors, overlays, semantic, personality } = useTheme();
+  const reduceMotion = useReduceMotion();
   const insets = useSafeAreaInsets();
   const { enabled, session, signOut } = useAuth();
 
   const [phase, setPhase] = useState<Phase>('checking');
+  const [resolvedUserId, setResolvedUserId] = useState<string | null>(null);
   const [support, setSupport] = useState<BiometricSupport | null>(null);
   const [proposalVisible, setProposalVisible] = useState(false);
   const [sheetError, setSheetError] = useState<string | null>(null);
   const [lockError, setLockError] = useState<string | null>(null);
   const [toastVisible, setToastVisible] = useState(false);
+  const [unlocking, setUnlocking] = useState(false);
+  const unlockingRef = useRef(false);
+  const [protectionEnabled, setProtectionEnabled] = useState(false);
+  const phaseRef = useRef(phase);
+  phaseRef.current = phase;
+  const protectionEnabledRef = useRef(protectionEnabled);
+  protectionEnabledRef.current = protectionEnabled;
+  const backgroundedAtRef = useRef<number | null>(null);
 
   // Dépendre de l'UTILISATEUR (pas de l'objet session : le refresh de jeton change
   // l'identité de l'objet et re-verrouillerait l'app en pleine utilisation).
@@ -61,36 +80,93 @@ export function BiometricGate({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!enabled || userId === null) {
       setPhase('open');
+      setResolvedUserId(null);
+      setProtectionEnabled(false);
+      backgroundedAtRef.current = null;
       setProposalVisible(false);
       return;
     }
+    setPhase('checking');
+    setResolvedUserId(null);
+    setProposalVisible(false);
+    setLockError(null);
+    const freshPasswordLogin = consumeFreshLogin();
     let active = true;
     void (async () => {
-      const [sup, optIn] = await Promise.all([getBiometricSupport(), readBiometricOptIn()]);
-      if (!active) return;
-      setSupport(sup);
-      if (consumeFreshLogin()) {
-        // Vient de se connecter au mot de passe : jamais de re-verrouillage ; proposition
-        // d'opt-in uniquement si jamais répondu ET biométrie réellement disponible.
-        setPhase('open');
-        if (optIn === null && sup.available) setProposalVisible(true);
-        return;
+      try {
+        const [sup, optIn] = await loadAuthBootstrapWithTimeout(
+          () => Promise.all([getBiometricSupport(), readBiometricOptIn()]),
+          BIOMETRIC_PROBE_TIMEOUT_MS,
+        );
+        if (!active) return;
+        setSupport(sup);
+        const decision = decideBiometricGate({
+          freshPasswordLogin,
+          optIn,
+          supportAvailable: sup.available,
+        });
+        setProtectionEnabled(optIn === true);
+        setPhase(decision === 'locked' ? 'locked' : 'open');
+        setProposalVisible(decision === 'offer');
+        setResolvedUserId(userId);
+      } catch {
+        if (!active) return;
+        setSupport({ available: false, method: 'generic' });
+        // Le mot de passe vient d'être vérifié : il reste une preuve valide. Au boot d'une
+        // session persistée, l'état SecureStore inconnu reste verrouillé (fail-closed).
+        if (freshPasswordLogin) setPhase('open');
+        else {
+          setLockError(say('auth.bioUnavailable'));
+          setPhase('locked');
+        }
+        setResolvedUserId(userId);
       }
-      setPhase(optIn === true && sup.available ? 'locked' : 'open');
     })();
     return () => {
       active = false;
     };
-  }, [enabled, userId]);
+  }, [enabled, say, userId]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'background' || nextState === 'inactive') {
+        backgroundedAtRef.current ??= Date.now();
+        return;
+      }
+      if (nextState !== 'active') return;
+      const shouldLock = shouldRelockBiometricSession({
+        protectionEnabled: protectionEnabledRef.current,
+        backgroundedAtMs: backgroundedAtRef.current,
+        resumedAtMs: Date.now(),
+        thresholdMs: BIOMETRIC_RELOCK_GRACE_MS,
+      });
+      backgroundedAtRef.current = null;
+      if (shouldLock && phaseRef.current === 'open') setPhase('locked');
+    });
+    return () => subscription.remove();
+  }, []);
 
   const unlock = useCallback(async (): Promise<void> => {
+    if (unlockingRef.current) return;
+    unlockingRef.current = true;
+    setUnlocking(true);
     setLockError(null);
-    const res = await authenticateBiometric(say('auth.bioPrompt'));
-    if (res.ok) {
-      setPhase('open');
-      return;
+    try {
+      const res = await loadAuthBootstrapWithTimeout(
+        () => authenticateBiometric(say('auth.bioPrompt')),
+        BIOMETRIC_PROMPT_TIMEOUT_MS,
+      );
+      if (res.ok) {
+        setPhase('open');
+        return;
+      }
+      setLockError(say(res.degraded ? 'auth.bioUnavailable' : 'auth.bioFailed'));
+    } catch {
+      setLockError(say('auth.bioUnavailable'));
+    } finally {
+      unlockingRef.current = false;
+      setUnlocking(false);
     }
-    setLockError(say('auth.bioFailed'));
   }, [say]);
 
   // Verrouillé → on lance l'authentification d'office (le proto ouvre Face ID direct).
@@ -100,24 +176,65 @@ export function BiometricGate({ children }: { children: ReactNode }) {
 
   async function acceptOptIn(): Promise<void> {
     setSheetError(null);
-    const res = await authenticateBiometric(say('auth.bioPrompt'));
-    if (!res.ok) {
-      setSheetError(say('auth.bioFailed'));
-      return;
+    try {
+      const res = await loadAuthBootstrapWithTimeout(
+        () => authenticateBiometric(say('auth.bioPrompt')),
+        BIOMETRIC_PROMPT_TIMEOUT_MS,
+      );
+      if (!res.ok) {
+        setSheetError(say(res.degraded ? 'auth.bioUnavailable' : 'auth.bioFailed'));
+        return;
+      }
+      await loadAuthBootstrapWithTimeout(
+        () => writeBiometricOptIn(true),
+        BIOMETRIC_PROBE_TIMEOUT_MS,
+      );
+      setProtectionEnabled(true);
+      setProposalVisible(false);
+      setToastVisible(true);
+    } catch {
+      setSheetError(say('auth.bioPreferenceError'));
     }
-    await writeBiometricOptIn(true);
-    setProposalVisible(false);
-    setToastVisible(true);
   }
 
   async function declineOptIn(): Promise<void> {
-    await writeBiometricOptIn(false);
-    setProposalVisible(false);
+    try {
+      await loadAuthBootstrapWithTimeout(
+        () => writeBiometricOptIn(false),
+        BIOMETRIC_PROBE_TIMEOUT_MS,
+      );
+      setProtectionEnabled(false);
+      setProposalVisible(false);
+    } catch {
+      setSheetError(say('auth.bioPreferenceError'));
+    }
   }
 
-  if (phase === 'checking') {
-    // Décision en cours (lecture SecureStore + matériel) : fond navy muet, sans données.
-    return <View style={{ flex: 1, backgroundColor: themes.marine.d1 }} />;
+  // Une identité de session différente ne doit jamais hériter, même pendant une frame, de
+  // la décision « open » prise pour l'utilisateur précédent.
+  const decisionCurrent = isBiometricDecisionCurrent({
+    authEnabled: enabled,
+    userId,
+    resolvedUserId,
+  });
+  if (phase === 'checking' || !decisionCurrent) {
+    return (
+      <View
+        accessibilityRole="progressbar"
+        accessibilityLabel={say('auth.bioChecking')}
+        style={{
+          flex: 1,
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 14,
+          backgroundColor: themes.marine.d1,
+        }}
+      >
+        <LockIcon color={colors.surface} size={32} strokeWidth={1.9} />
+        <ActivityIndicator color={colors.surface} />
+        <Text style={[font('sub'), { color: overlays.white66 }]}>{say('auth.bioChecking')}</Text>
+      </View>
+    );
   }
 
   if (phase === 'locked') {
@@ -152,13 +269,24 @@ export function BiometricGate({ children }: { children: ReactNode }) {
             >
               <LockIcon color={colors.ink900} size={34} strokeWidth={1.9} />
             </View>
-            <Text style={[font('screenH1'), { fontSize: 26, color: colors.surface, textAlign: 'center' }]}>
+            <Text
+              style={[
+                font('screenH1'),
+                { fontSize: 26, color: colors.surface, textAlign: 'center' },
+              ]}
+            >
               {say('auth.lockTitle')}
             </Text>
             <Text
               style={[
                 font('body'),
-                { fontSize: 15, lineHeight: 22, maxWidth: 280, textAlign: 'center', color: overlays.white66 },
+                {
+                  fontSize: 15,
+                  lineHeight: 22,
+                  maxWidth: 280,
+                  textAlign: 'center',
+                  color: overlays.white66,
+                },
               ]}
             >
               {say('auth.lockBody', { method })}
@@ -176,13 +304,18 @@ export function BiometricGate({ children }: { children: ReactNode }) {
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={say('auth.lockCta')}
+            accessibilityState={{ disabled: unlocking, busy: unlocking }}
+            disabled={unlocking}
             onPress={() => void unlock()}
             style={({ pressed }) => ({
+              minHeight: 52,
               backgroundColor: colors.surface,
               borderRadius: 15,
               paddingVertical: 16,
+              justifyContent: 'center',
               alignItems: 'center',
-              transform: [{ scale: pressed ? 0.97 : 1 }],
+              opacity: unlocking ? 0.7 : 1,
+              transform: [{ scale: pressed && !reduceMotion ? 0.97 : 1 }],
             })}
           >
             <Text style={[font('button'), { color: colors.ink900 }]}>{say('auth.lockCta')}</Text>
@@ -191,7 +324,7 @@ export function BiometricGate({ children }: { children: ReactNode }) {
             accessibilityRole="button"
             accessibilityLabel={say('auth.lockFallback')}
             onPress={() => void signOut()}
-            style={{ paddingVertical: 12, alignItems: 'center' }}
+            style={{ minHeight: 44, justifyContent: 'center', alignItems: 'center' }}
           >
             <Text style={[font('label', 600), { fontSize: 14.5, color: overlays.white60 }]}>
               {say('auth.lockFallback')}
@@ -225,7 +358,11 @@ export function BiometricGate({ children }: { children: ReactNode }) {
           ) : null}
           <View style={{ gap: 8, marginTop: 8 }}>
             <Button title={say('auth.bioAccept', { method })} onPress={() => void acceptOptIn()} />
-            <Button title={say('auth.bioLater')} variant="secondary" onPress={() => void declineOptIn()} />
+            <Button
+              title={say('auth.bioLater')}
+              variant="secondary"
+              onPress={() => void declineOptIn()}
+            />
           </View>
         </View>
       </Sheet>

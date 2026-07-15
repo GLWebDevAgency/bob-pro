@@ -16,8 +16,14 @@ import { t } from '@bob/i18n';
 import { useTheme } from '@bob/ui';
 import { makeBobAgent } from '../data/bob';
 import { useBobClient } from '../data/client';
-import { useSpeak, useVoiceInput, voicePermissionRequestInFlight, type VoiceInputIssue } from '../data/voice';
+import { useSpeak, useVoiceInput, type VoiceInputIssue } from '../data/voice';
 import { snapshotAgentContext, useAgentContext, useAgentSurface, type AgentContext } from './agent-context';
+import {
+  agentContextSemanticKey,
+  realtimeOwnsAgentSession,
+  shouldStopAgentSessionForAppState,
+  type AgentSessionDriver,
+} from './agent-session-runtime';
 import { clearWizardHint, setWizardHint } from './wizard-hints';
 import { RealtimeControlAcknowledgementGate } from '../realtime/realtime-control-gate';
 import { RealtimeAuditedConversationTransport } from '../realtime/realtime-audited-conversation-transport';
@@ -27,6 +33,10 @@ import {
   isRealtimeWebRtcNegotiation,
   RealtimeWebRtcTransport,
 } from '../realtime/webrtc-realtime-transport';
+import {
+  isRealtimeMistralPcmNegotiation,
+  MistralRealtimeTransport,
+} from '../realtime/mistral-realtime-transport';
 import { RealtimeTransportError } from '../realtime/realtime-transport';
 import { RealtimeSessionController } from './realtime-session';
 
@@ -42,15 +52,23 @@ export interface AgentConversationTurn {
  * proposalId opaque éventuel), le snapshot de contexte et l'historique utile. Rien n'entre dans
  * l'URL ou le stockage persistant ; la valeur expire et ne peut être consommée qu'une fois.
  */
-export interface AgentSessionHandoff {
+interface AgentSessionHandoffBase {
   readonly id: string;
   readonly message: string;
-  readonly run: AgentRun;
   readonly context: AgentContext;
   readonly history: readonly AgentConversationTurn[];
   readonly expiresAt: number;
   readonly requestedAt: number | null;
 }
+
+export type AgentSessionHandoff = AgentSessionHandoffBase & (
+  | { readonly kind: 'run'; readonly run: AgentRun }
+  | {
+      readonly kind: 'proposal';
+      readonly proposalId: string;
+      readonly responseText: string;
+    }
+);
 
 export interface AgentSessionValue {
   readonly active: boolean;
@@ -126,6 +144,9 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
   // non, ce chemin est inerte et la session reste 100 % historique. ──
   const realtimeRef = useRef<RealtimeSessionController | null>(null);
   const realtimeActiveRef = useRef(false);
+  const driverRef = useRef<AgentSessionDriver>('idle');
+  const sessionGenerationRef = useRef(0);
+  const appStateRef = useRef(AppState.currentState);
   const getRealtimeController = (): RealtimeSessionController => {
     if (realtimeRef.current) return realtimeRef.current;
     realtimeRef.current = new RealtimeSessionController(
@@ -138,13 +159,17 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
         createOrchestrator: (negotiation, legacyFallback, currentFence, onPrimaryCreated) =>
           new RealtimeResilienceOrchestrator({
             createPrimary: () => {
-              // Le provider choisi par le serveur est autoritaire. Tant que le runtime PCM
-              // Mistral complet n'est pas raccordé ici, on replie honnêtement vers le flux
-              // historique au lieu d'ouvrir discrètement une session OpenAI concurrente.
-              if (!isRealtimeWebRtcNegotiation(negotiation)) {
-                throw new RealtimeTransportError('backend_disabled');
-              }
-              const uplink = new RealtimeWebRtcTransport(client, negotiation);
+              // Le provider choisi par le serveur est autoritaire : une mission n'essaie jamais
+              // une seconde clé en parallèle. OpenAI reste WebRTC ; Mistral utilise son PCM natif
+              // one-shot et annonce honnêtement fullDuplex=false jusqu'à certification v2.
+              const uplink = isRealtimeWebRtcNegotiation(negotiation)
+                ? new RealtimeWebRtcTransport(client, negotiation)
+                : isRealtimeMistralPcmNegotiation(negotiation)
+                  ? new MistralRealtimeTransport(client, negotiation, {
+                      getInitialContext: () => snapshotAgentContext(contextRef.current),
+                    })
+                  : null;
+              if (uplink === null) throw new RealtimeTransportError('backend_disabled');
               const transport = new RealtimeAuditedConversationTransport(uplink, {
                 client,
                 currentFence,
@@ -181,10 +206,49 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
           setResponse(text);
           historyRef.current = [...historyRef.current, { role: 'bob' as const, text }].slice(-12);
         },
-        onReview: () => {
+        onReview: (proposalId, proposalExpiresAt) => {
           if (!realtimeActiveRef.current) return;
-          // Plancher : validation VISUELLE — le CTA « Continuer dans l'Assistant » existant.
+          // Le controle ACKe ne contient qu'une capacite opaque. L'Assistant rechargera son
+          // apercu owner-bound avant d'afficher Valider ; aucun args provider n'est accepte.
+          if (!proposalId) {
+            setResponse(t('assistant.proposalUnavailable', { personality }));
+            setReviewRequired(false);
+            setHandoff(null);
+            return;
+          }
+          const now = Date.now();
+          const advertisedExpiry = proposalExpiresAt === null
+            ? Number.NaN
+            : Date.parse(proposalExpiresAt);
+          const expiresAt = Number.isFinite(advertisedExpiry)
+            ? Math.min(advertisedExpiry, now + HANDOFF_TTL_MS)
+            : now + HANDOFF_TTL_MS;
+          if (expiresAt <= now) {
+            setResponse(t('assistant.proposalUnavailable', { personality }));
+            setReviewRequired(false);
+            setHandoff(null);
+            return;
+          }
+          const conversation = historyRef.current.slice(-12);
+          const userIndex = conversation.findLastIndex((turn) => turn.role === 'user');
+          const message = (userIndex >= 0 ? conversation[userIndex]?.text : null)
+            ?? t('agent.global.reviewRequired', { personality });
+          const history = userIndex >= 0 ? conversation.slice(0, userIndex) : conversation;
+          const reviewText = t('agent.global.reviewRequired', { personality });
+          setResponse(reviewText);
           setReviewRequired(true);
+          setContextAtTurn(snapshotAgentContext(contextRef.current));
+          setHandoff(Object.freeze({
+            kind: 'proposal',
+            id: `handoff-realtime-${proposalId}-${expiresAt}`,
+            proposalId,
+            responseText: reviewText,
+            message,
+            context: snapshotAgentContext(contextRef.current),
+            history: Object.freeze(history.map((turn) => Object.freeze({ ...turn }))),
+            expiresAt,
+            requestedAt: null,
+          }));
         },
         onNavigate: (route) => {
           if (!realtimeActiveRef.current) return;
@@ -197,11 +261,19 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
           // Primaire ENTIÈREMENT fermé (garantie orchestrateur) : texte honnête puis boucle
           // historique — jamais deux cerveaux.
           realtimeActiveRef.current = false;
+          driverRef.current = 'legacy';
           if (!activeRef.current) return;
           setResponse(t('agent.global.liveFallback', { personality }));
           void (async () => {
             await say(t('agent.global.liveFallback', { personality }), true);
           })();
+        },
+        onCompleted: () => {
+          realtimeActiveRef.current = false;
+          driverRef.current = 'idle';
+          activeRef.current = false;
+          setActive(false);
+          setSessionPhase('idle');
         },
         getContextSnapshot: () => snapshotAgentContext(contextRef.current),
       },
@@ -236,11 +308,25 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
   voiceRef.current = voice;
 
   const listen = useCallback(async (): Promise<void> => {
-    if (!activeRef.current) return;
+    if (
+      !activeRef.current
+      || driverRef.current !== 'legacy'
+      || appStateRef.current !== 'active'
+    ) return;
+    const generation = sessionGenerationRef.current;
     setSessionPhase('listening');
     // Pas de garde sur l'état React `listening` (stale d'un tick après un écho avalé) :
     // start() est idempotent — une écoute déjà active du même flux répond true sans rien casser.
     const started = await voiceRef.current.start();
+    if (
+      !activeRef.current
+      || generation !== sessionGenerationRef.current
+      || driverRef.current !== 'legacy'
+      || appStateRef.current !== 'active'
+    ) {
+      if (started) await voiceRef.current.cancel();
+      return;
+    }
     if (!started && activeRef.current) {
       console.warn('[bob-voice] session: start() a échoué — session désactivée');
       activeRef.current = false;
@@ -251,12 +337,14 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
     }
   }, [personality, setSessionPhase]);
 
-  const stop = useCallback((): void => {
+  const stopWithReason = useCallback((reason: 'user' | 'background' | 'unmount'): void => {
     // INCONDITIONNEL (P0 review 14/07) : un stop() pendant le bootstrap temps réel (avant que
     // realtimeActiveRef ne passe à true) doit quand même invalider la génération du contrôleur
     // — sinon le bootstrap aboutit et ouvre un micro fantôme sur une session affichée éteinte.
     realtimeActiveRef.current = false;
-    void realtimeRef.current?.stop('user');
+    driverRef.current = 'idle';
+    sessionGenerationRef.current += 1;
+    void realtimeRef.current?.stop(reason);
     clearWizardHint(); // un hint en vol meurt avec la session — jamais de pré-remplissage fantôme
     turnGenerationRef.current += 1;
     activeRef.current = false;
@@ -269,6 +357,8 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
     setReviewRequired(false);
     setSessionPhase('idle');
   }, [setSessionPhase, stopSpeaking]);
+
+  const stop = useCallback((): void => stopWithReason('user'), [stopWithReason]);
 
   const say = useCallback(
     async (
@@ -448,6 +538,7 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
         const expiresAt = Date.now() + HANDOFF_TTL_MS;
         setHandoff(
           Object.freeze({
+            kind: 'run',
             id: `handoff-${turnGeneration}-${expiresAt}`,
             message,
             run,
@@ -492,11 +583,11 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
   // cours (thinking/speaking), la key est consommée sans relecture — l'affordance a déjà guidé.
   // Temps réel : tout changement de contexte FOCALISÉ déclenche la séquence stricte
   // (micro off → interrupt → PUT confirmé → micro on) — l'échec bascule en repli.
-  const liveContextInstance = liveContext.screen.instanceId;
+  const liveContextKey = agentContextSemanticKey(liveContext);
   useEffect(() => {
-    if (!realtimeActiveRef.current) return;
+    if (!realtimeActiveRef.current || realtimeRef.current?.active !== true) return;
     void realtimeRef.current?.publishContext();
-  }, [liveContextInstance]);
+  }, [liveContextKey]);
 
   const start = useCallback((): void => {
     if (activeRef.current) return;
@@ -504,6 +595,12 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
     spokenGreetingsRef.current.clear();
     historyRef.current = [];
     echoStreakRef.current = 0;
+    const sessionGeneration = sessionGenerationRef.current + 1;
+    sessionGenerationRef.current = sessionGeneration;
+    driverRef.current = 'live_bootstrap';
+    // Le bootstrap possede deja la session : un second tap doit l'annuler, jamais lancer
+    // l'ancien ASR pendant que WebRTC/PCM demande sa permission et son bail audio.
+    realtimeActiveRef.current = true;
     activeRef.current = true;
     setActive(true);
     setTranscript(null);
@@ -512,22 +609,31 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
     setReviewRequired(false);
     setContextAtTurn(null);
     setHandoff(null);
+    setSessionPhase('thinking');
     void (async () => {
       // TEMPS RÉEL d'abord — le serveur décide (plan voice_live + rollout). Refusé/indispo :
       // la boucle historique reprend exactement comme avant, greeting compris.
       const controller = getRealtimeController();
       const outcome = await controller.start();
-      if (!activeRef.current) {
+      if (
+        !activeRef.current
+        || sessionGeneration !== sessionGenerationRef.current
+        || !realtimeOwnsAgentSession(driverRef.current)
+        || appStateRef.current !== 'active'
+      ) {
         // stop() est passé pendant le bootstrap : le contrôleur est déjà invalidé par
         // génération — ceinture ET bretelles, on ne laisse RIEN d'ouvert derrière soi.
         void controller.stop('user');
         return;
       }
       if (outcome === 'realtime') {
+        driverRef.current = 'live';
         realtimeActiveRef.current = true;
         return; // EXCLUSIVITÉ : aucune oreille/bouche legacy tant que le temps réel vit.
       }
       if (outcome === 'fallback') return; // onFallback a DÉJÀ relancé la boucle historique
+      driverRef.current = 'legacy';
+      realtimeActiveRef.current = false;
       const mountedGreeting = surfaceRef.current.greeting?.key ?? null;
       if (mountedGreeting !== null) {
         // Écran monté AVANT la session : son guidage se joue au démarrage (jamais perdu).
@@ -583,9 +689,15 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
       return;
     }
     if (realtimeActiveRef.current) {
-      // Temps réel : le tap termine la session, point. Les nuances listening/idle sont de la
-      // machinerie LEGACY — la piloter ici laissait le micro WebRTC ouvert sous une UI éteinte.
-      stop();
+      // Le transport Mistral semi-duplex commit l'utterance et conserve la réponse auditée.
+      // Un transport à VAD continu (OpenAI) répond false : son geste historique reste stop.
+      if (phase === 'listening') {
+        void realtimeRef.current?.finishUserInput().then((accepted) => {
+          if (!accepted && realtimeActiveRef.current) stop();
+        });
+      } else {
+        stop();
+      }
       return;
     }
     if (phase === 'listening') {
@@ -601,15 +713,16 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (state) => {
+      appStateRef.current = state;
       // 'background' seulement — 'inactive' (boîte de permission iOS, Control Center,
       // bandeau d'appel) ne doit pas tuer la session au premier usage du micro.
-      if (state === 'background' && !voicePermissionRequestInFlight()) stop();
+      if (shouldStopAgentSessionForAppState(state)) stopWithReason('background');
     });
     return () => {
       subscription.remove();
-      stop();
+      stopWithReason('unmount');
     };
-  }, [stop]);
+  }, [stopWithReason]);
 
   useEffect(() => {
     if (!handoff) return undefined;

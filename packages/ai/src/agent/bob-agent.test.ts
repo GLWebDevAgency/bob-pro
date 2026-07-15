@@ -245,6 +245,40 @@ describe('BobAgent (démo)', () => {
     if (r.ok) expect(r.value.card.body).toContain('pas accès au calendrier fiscal');
   });
 
+  it('abonnement (pilier 2) : essai en cours → réponse factuelle (jours restants, échéance), lecture SEULE', async () => {
+    const withSubscription: BobActions = {
+      ...actions,
+      getSubscriptionStatus: async () =>
+        ok({
+          plan: 'pro' as const,
+          status: 'trialing' as const,
+          trialEndsAt: '2026-07-28T09:00:00.000Z',
+          trialPhase: 'ending_soon' as const,
+          trialDaysLeft: 2,
+          currentPeriodEnd: null,
+          store: null,
+          storeRef: null,
+          source: 'db' as const,
+        }),
+    };
+    const agent = new BobAgent({ router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }), actions: withSubscription });
+
+    const r = await agent.ask('où en est mon essai ?');
+    expect(r.ok && r.value.intent).toBe('abonnement');
+    expect(r.ok && r.value.kind).toBe('answer'); // JAMAIS une proposition d'achat vocal (SPEC décision 10)
+    if (!r.ok) return;
+    expect(r.value.card.body).toContain('Essai Pro en cours');
+    expect(r.value.card.body).toContain('2 jours');
+    expect(r.value.card.body).toContain('28/07/2026');
+  });
+
+  it('abonnement : hôte SANS la capacité → réponse honnête, jamais un état inventé', async () => {
+    const r = await makeAgent().ask('où en est mon abonnement ?');
+    expect(r.ok && r.value.intent).toBe('abonnement');
+    expect(r.ok && r.value.kind).toBe('answer');
+    if (r.ok) expect(r.value.card.body).toContain('pas accès à l’état de ton abonnement');
+  });
+
   it('demande inconnue : aide sans rien inventer', async () => {
     const r = await makeAgent().ask('Bonjour Bob');
     expect(r.ok && r.value.intent).toBe('unknown');

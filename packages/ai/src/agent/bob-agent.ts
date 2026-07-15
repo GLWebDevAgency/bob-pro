@@ -1,4 +1,4 @@
-import { type Result, ok, err, type AppError, type FiscalDeadline, formatEUR } from '@bob/core';
+import { type Result, ok, err, type AppError, type FiscalDeadline, formatEUR, PLAN_CATALOG, type SubscriptionStatusView } from '@bob/core';
 import { ModelRouter, type ModelChoice } from '../router/model-router';
 import { renderWithGuard } from '../guardrails/money-guard';
 import { naturalizeReply, type NaturalizeTone } from '../guardrails/naturalize';
@@ -452,6 +452,34 @@ function fiscalDeadlineLine(d: FiscalDeadline): string {
   return `• ${dateFr} — ${d.label}${flag}\n  ${d.explain}`;
 }
 
+/**
+ * Réponse « où en est mon abonnement / mon essai » (pilier 2) — FACTUELLE et lecture seule :
+ * l'état vient de GetSubscriptionStatus (la même vérité que l'écran Compte). Jamais un CTA
+ * d'achat vocal (SPEC décision 10) : tout engagement payant se confirme au TAP, dans Compte.
+ */
+function subscriptionStatusBody(s: SubscriptionStatusView): string {
+  const label = PLAN_CATALOG[s.plan].label;
+  const dateFr = (iso: string): string => `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}`;
+  if (s.source === 'early_access_fallback') {
+    return 'Tu es en accès anticipé : toutes les fonctions sont ouvertes et rien ne t’est facturé.';
+  }
+  if (s.status === 'trialing' && s.trialEndsAt !== null) {
+    if (s.trialPhase === 'expired') {
+      return `Ton essai ${label} s’est terminé le ${dateFr(s.trialEndsAt)}. Tu es en Découverte (gratuit) : tes documents et ta facturation conforme restent disponibles. Pour continuer avec ${label}, passe par l’écran Compte.`;
+    }
+    const days = s.trialDaysLeft ?? 0;
+    return `Essai ${label} en cours : encore ${days} jour${days > 1 ? 's' : ''} (jusqu’au ${dateFr(s.trialEndsAt)}), sans carte ni engagement. Quoi que tu décides, tes documents restent à toi.`;
+  }
+  if (s.status === 'past_due') {
+    return `Ton offre ${label} a un paiement en échec. Régularise depuis l’écran Compte — tes données restent intactes.`;
+  }
+  if (s.status === 'canceled') {
+    return `Ton abonnement ${label} est résilié. Tes documents et ta facturation conforme restent disponibles en Découverte.`;
+  }
+  const period = s.currentPeriodEnd !== null ? ` (période en cours jusqu’au ${dateFr(s.currentPeriodEnd)})` : '';
+  return `Offre ${label} active${period}.`;
+}
+
 function intentForTool(tool: string): BobIntent {
   if (tool === 'contexte_ecran') return 'contexte_ecran';
   if (tool === 'marquer_notifications_lues') return 'marquer_notifications_lues';
@@ -463,6 +491,7 @@ function intentForTool(tool: string): BobIntent {
   if (tool === 'factures_impayees') return 'factures';
   if (tool === 'tresorerie_versement') return 'payout';
   if (tool === 'echeances_fiscales') return 'echeances';
+  if (tool === 'etat_abonnement') return 'abonnement';
   if (tool === 'position_tva') return 'tva';
   if (tool === 'balance_agee') return 'balance';
   if (tool === 'payer_depense') return 'payer_depense';
@@ -1039,6 +1068,33 @@ export class BobAgent {
         model,
         plan: ['Lire la fiche société', 'Dériver les échéances fiscales à venir'],
         card: { title: 'Tes échéances fiscales (90 jours)', body },
+      });
+    }
+
+    if (intent === 'abonnement') {
+      // Pilier 2 : lecture SEULE de l'abonnement/essai — GetSubscriptionStatus, la même vérité
+      // que l'écran Compte. Jamais d'achat vocal : Bob informe, l'engagement se confirme au tap.
+      const getStatus = this.deps.actions.getSubscriptionStatus?.bind(this.deps.actions);
+      if (!getStatus) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier la capacité de l’hôte'],
+          card: {
+            title: 'Ton abonnement',
+            body: 'Je n’ai pas accès à l’état de ton abonnement sur cet appareil pour le moment.',
+          },
+        });
+      }
+      const r = await getStatus();
+      if (!r.ok) return err(r.error);
+      return ok({
+        kind: 'answer',
+        intent,
+        model,
+        plan: ['Lire l’état d’abonnement du compte'],
+        card: { title: 'Ton abonnement', body: subscriptionStatusBody(r.value) },
       });
     }
 

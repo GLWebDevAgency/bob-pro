@@ -164,3 +164,20 @@ describe('detectIntent — BOB-4 (bilan)', () => {
     expect(detectIntent('combien je gagne ?')).toBe('resultat');
   });
 });
+
+describe('detectIntent — pilier 2 (abonnement/essai, lecture seule)', () => {
+  it('« où en est mon abonnement / mon essai » → abonnement, sans casser pilotage ni payout', () => {
+    for (const m of [
+      'où en est mon abonnement ?',
+      'il me reste combien de jours d’essai ?',
+      'mon essai se termine quand ?',
+      'quelle est mon offre actuelle ?',
+      'comment va mon essai ?',
+    ]) {
+      expect(detectIntent(m)).toBe('abonnement');
+    }
+    // Les voisins ne sont pas cannibalisés : pilotage et payout restent eux-mêmes.
+    expect(detectIntent('comment va mon activité ?')).toBe('pilotage');
+    expect(detectIntent('Combien je peux me verser ?')).toBe('payout');
+  });
+});

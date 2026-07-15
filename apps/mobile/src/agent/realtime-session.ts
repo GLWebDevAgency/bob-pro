@@ -20,6 +20,7 @@ import {
   decideAgentControl,
   mapTransportPhase,
   type RealtimeContextUpdateFn,
+  type AgentControlDecision,
   type RealtimePublishedFence,
   type RealtimeSessionPhase,
 } from './realtime-driver';
@@ -29,11 +30,13 @@ export interface RealtimeSessionHooks {
   readonly onUserTranscript: (text: string, final: boolean) => void;
   readonly onBobTranscript: (text: string, final: boolean) => void;
   /** Proposition serveur : validation VISUELLE uniquement (CTA existant de la session). */
-  readonly onReview: (proposalId: string | null) => void;
+  readonly onReview: (proposalId: string | null, proposalExpiresAt: string | null) => void;
   /** Route DÉJÀ allowlistée par decideAgentControl. */
   readonly onNavigate: (route: string) => void;
   /** Le repli legacy a pris la main (transport fermé) — texte honnête + boucle historique. */
   readonly onFallback: (reason: RealtimeFallbackReason) => void;
+  /** Tour one-shot livré et acquitté : fermeture normale, jamais un fallback. */
+  readonly onCompleted?: () => void;
   readonly getContextSnapshot: () => AgentContext;
 }
 
@@ -46,7 +49,9 @@ export interface RealtimeOrchestratorLike {
 
 /** Transport tel que vu par la glue — le contrat officiel (addendum 20:34). */
 export interface RealtimeTransportLike {
+  readonly completionMode: 'continuous' | 'one-shot';
   setMicrophoneEnabled(enabled: boolean): void;
+  finishUserInput?(): Promise<boolean>;
   interrupt(reason: 'user_speech' | 'tap' | 'navigation'): boolean;
   getSessionHandle(): string | null;
 }
@@ -96,6 +101,10 @@ export class RealtimeSessionController {
   /** Le repli a pris la main via le port (onFallback DÉJÀ émis) — start() doit le dire à
    * l'appelant pour qu'il ne relance pas une DEUXIÈME boucle legacy. */
   private fallbackTaken = false;
+  /** Les contrôles acoustiques déjà émis doivent finir leur ACK avant une clôture one-shot. */
+  private readonly pendingControlAcks = new Set<Promise<void>>();
+  /** Effet terminal authentifie, retenu jusqu'a la fermeture COMPLETE du transport one-shot. */
+  private pendingTerminalDecision: AgentControlDecision | null = null;
 
   constructor(
     private readonly deps: RealtimeSessionDeps,
@@ -110,6 +119,7 @@ export class RealtimeSessionController {
     if (this.activeFlag) return 'realtime';
     const gen = ++this.generation;
     this.fallbackTaken = false;
+    this.pendingTerminalDecision = null;
     // Un orchestrateur zombie (repli mid-call scellé sans stop explicite) meurt ici :
     // chaque start() repart d'un monde propre, jamais d'un transport mort.
     if (this.orchestrator) await this.teardown('user');
@@ -186,6 +196,24 @@ export class RealtimeSessionController {
     transport.setMicrophoneEnabled(true);
   }
 
+  /** Commit semi-duplex : conserve socket, feed audité et contrôle jusqu'à la réponse. */
+  async finishUserInput(): Promise<boolean> {
+    const transport = this.lastTransport;
+    if (!this.activeFlag || transport === null) return false;
+    const finishUserInput = transport.finishUserInput;
+    if (finishUserInput === undefined) return false;
+    let accepted = false;
+    try {
+      accepted = await finishUserInput.call(transport);
+    } catch {
+      accepted = false;
+    }
+    if (accepted && this.activeFlag && this.lastTransport === transport) {
+      this.hooks.onPhase('thinking');
+    }
+    return accepted;
+  }
+
   async stop(reason: 'user' | 'background' | 'unmount' = 'user'): Promise<void> {
     this.generation += 1; // invalide tout start() encore en vol — jamais de micro posthume
     await this.teardown(reason);
@@ -193,6 +221,8 @@ export class RealtimeSessionController {
 
   private async teardown(reason: 'user' | 'background' | 'unmount'): Promise<void> {
     this.activeFlag = false;
+    this.pendingControlAcks.clear();
+    this.pendingTerminalDecision = null;
     this.publisher?.close();
     this.publisher = null;
     this.controlGate?.close?.();
@@ -229,22 +259,62 @@ export class RealtimeSessionController {
       case 'agent_control_candidate': {
         // Référence provider NON FIABLE → ACK one-shot par NOTRE serveur (gate, fencé sur la
         // publication confirmée) → décision UNIQUEMENT sur le contrôle authentifié non-null.
-        const control = await this.controlGate?.acknowledge(event.reference);
-        if (!control || !this.activeFlag) return;
-        const decision = decideAgentControl(control);
-        if (decision.kind === 'navigate') this.hooks.onNavigate(decision.route);
-        else if (decision.kind === 'review') this.hooks.onReview(decision.proposalId);
+        const eventGeneration = this.generation;
+        const task = (async (): Promise<void> => {
+          const control = await this.controlGate?.acknowledge(event.reference);
+          if (!control || !this.activeFlag || eventGeneration !== this.generation) return;
+          const decision = decideAgentControl(control);
+          this.applyOrDeferDecision(decision);
+        })();
+        this.pendingControlAcks.add(task);
+        try {
+          await task;
+        } finally {
+          this.pendingControlAcks.delete(task);
+        }
         return;
       }
       case 'agent_control': {
         // Déjà authentifié (émis par une glue post-ACK, jamais par WebRTC) — décision directe.
         const decision = decideAgentControl(event.control);
-        if (decision.kind === 'navigate') this.hooks.onNavigate(decision.route);
-        else if (decision.kind === 'review') this.hooks.onReview(decision.proposalId);
+        this.applyOrDeferDecision(decision);
+        return;
+      }
+      case 'conversation_completed': {
+        // Le candidat de contrôle est émis dans la même pile juste avant cette microtâche.
+        // Attendre son échange one-shot évite de fermer le gate et de perdre une navigation.
+        const completionGeneration = this.generation;
+        await Promise.allSettled([...this.pendingControlAcks]);
+        if (!this.activeFlag || completionGeneration !== this.generation) return;
+        const decision = this.pendingTerminalDecision;
+        this.pendingTerminalDecision = null;
+        await this.teardown('user');
+        // Le controleur est deja inactif avant l'effet UI. Le composant peut donc naviguer sans
+        // republier sur ce ticket, puis rendre son etat visuel idle via onCompleted.
+        if (decision !== null) this.applyDecision(decision);
+        this.hooks.onCompleted?.();
         return;
       }
       default:
         return;
+    }
+  }
+
+  private applyOrDeferDecision(decision: AgentControlDecision): void {
+    if (decision.kind === 'none') return;
+    if (this.lastTransport?.completionMode === 'one-shot') {
+      // Le gate est one-shot. Un second effet sur le meme ticket est une derive : le premier
+      // controle autoritatif gagne, les suivants restent sans effet.
+      this.pendingTerminalDecision ??= decision;
+      return;
+    }
+    this.applyDecision(decision);
+  }
+
+  private applyDecision(decision: AgentControlDecision): void {
+    if (decision.kind === 'navigate') this.hooks.onNavigate(decision.route);
+    else if (decision.kind === 'review') {
+      this.hooks.onReview(decision.proposalId, decision.proposalExpiresAt);
     }
   }
 

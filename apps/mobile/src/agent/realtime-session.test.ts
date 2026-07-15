@@ -34,6 +34,8 @@ function harness(
     gateRejects?: boolean;
     gateKind?: 'answer' | 'proposed' | 'done';
     gateNavigate?: string;
+    gateDelay?: Promise<void>;
+    completionMode?: 'continuous' | 'one-shot';
     /** Diffère la résolution de orchestrator.start() — simule un bootstrap réseau lent. */
     deferStart?: boolean;
     /** Remplace le PUT contexte — pour orchestrer des courses de publication. */
@@ -54,11 +56,16 @@ function harness(
     receivedNegotiation: null,
   };
   const transport = {
+    completionMode: input.completionMode ?? 'continuous',
     setMicrophoneEnabled: (enabled: boolean) => {
       log.push(`mic:${enabled}`);
     },
     interrupt: (reason: string) => {
       log.push(`interrupt:${reason}`);
+      return true;
+    },
+    finishUserInput: async () => {
+      log.push('finish-input');
       return true;
     },
     getSessionHandle: () => (input.handle !== undefined ? input.handle : 'h-42'),
@@ -85,9 +92,12 @@ function harness(
     onPhase: (phase) => log.push(`phase:${phase}`),
     onUserTranscript: (text, final) => log.push(`user:${text}:${final}`),
     onBobTranscript: (text) => log.push(`bob:${text}`),
-    onReview: (proposalId) => log.push(`review:${proposalId}`),
+    onReview: (proposalId, proposalExpiresAt) => {
+      log.push(`review:${proposalId}:${proposalExpiresAt ?? 'none'}`);
+    },
     onNavigate: (route) => log.push(`nav:${route}`),
     onFallback: (reason) => log.push(`fallback:${reason}`),
+    onCompleted: () => log.push('completed'),
     getContextSnapshot: () => CONTEXT,
   };
   const controller = new RealtimeSessionController(
@@ -114,6 +124,7 @@ function harness(
       },
       createControlGate: (currentFence) => ({
         acknowledge: async (reference) => {
+          await input.gateDelay;
           const fence = currentFence();
           log.push(`ack:${reference.turnId}:fence-r${fence?.contextRevision ?? 'none'}`);
           if (!fence || input.gateRejects === true) return null;
@@ -195,7 +206,7 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     emit(candidate('t'));
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(log).toContain('ack:t:fence-r1');
-    expect(log).toContain('review:p-9');
+    expect(log).toContain('review:p-9:none');
   });
 
   it('gate rejette (fence périmée/serveur non) → AUCUN effet ; route hostile ACKée → ignorée', async () => {
@@ -234,6 +245,104 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     expect(failing.log).toContain('orchestrator:stop');
     expect(failing.log.some((entry) => entry.startsWith('fallback:'))).toBe(true);
     expect(failing.log).not.toContain('mic:true');
+  });
+
+  it('commit semi-duplex : finalise l’utterance sans stopper puis passe en traitement', async () => {
+    const h = harness();
+    await h.controller.start();
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    h.log.length = 0;
+
+    await expect(h.controller.finishUserInput()).resolves.toBe(true);
+
+    expect(h.log).toEqual(['finish-input', 'phase:thinking']);
+    expect(h.log).not.toContain('orchestrator:stop');
+  });
+
+  it('fin one-shot : ferme avant la proposition et ne republie jamais sur le ticket terminal', async () => {
+    const h = harness({ completionMode: 'one-shot' });
+    await h.controller.start();
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    h.log.length = 0;
+
+    h.emit(candidate('terminal-turn'));
+    h.emit({ type: 'transport', event: { type: 'conversation_completed' } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const ackIndex = h.log.indexOf('ack:terminal-turn:fence-r1');
+    const closeIndex = h.log.indexOf('gate:close');
+    const stopIndex = h.log.indexOf('orchestrator:stop');
+    const completedIndex = h.log.indexOf('completed');
+    const reviewIndex = h.log.indexOf('review:p-9:none');
+    expect(ackIndex).toBeGreaterThanOrEqual(0);
+    expect(closeIndex).toBeGreaterThan(ackIndex);
+    expect(stopIndex).toBeGreaterThan(closeIndex);
+    expect(reviewIndex).toBeGreaterThan(stopIndex);
+    expect(completedIndex).toBeGreaterThan(reviewIndex);
+    expect(h.log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
+  });
+
+  it('controle continu : applique la navigation immediatement sans attendre une completion', async () => {
+    const h = harness({ gateKind: 'answer', gateNavigate: '/cloture', completionMode: 'continuous' });
+    await h.controller.start();
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    h.log.length = 0;
+
+    h.emit(candidate('continuous-turn'));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(h.log).toContain('nav:/cloture');
+    expect(h.log).not.toContain('orchestrator:stop');
+    expect(h.log).not.toContain('completed');
+  });
+
+  it('stop pendant ACK one-shot efface la decision terminale sans aucun effet UI tardif', async () => {
+    let releaseGate!: () => void;
+    const gateDelay = new Promise<void>((resolve) => { releaseGate = resolve; });
+    const h = harness({ gateDelay, completionMode: 'one-shot' });
+    await h.controller.start();
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    h.log.length = 0;
+
+    h.emit(candidate('terminal-old'));
+    h.emit({ type: 'transport', event: { type: 'conversation_completed' } });
+    await Promise.resolve();
+    await h.controller.stop('user');
+    releaseGate();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(h.log.some((entry) => entry.startsWith('review:') || entry.startsWith('nav:'))).toBe(false);
+    expect(h.log).not.toContain('completed');
+  });
+
+  it('fence un ACK tardif d’une ancienne mission même si une nouvelle session est active', async () => {
+    let releaseGate!: () => void;
+    const gateDelay = new Promise<void>((resolve) => { releaseGate = resolve; });
+    const h = harness({ gateDelay });
+    await h.controller.start();
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    h.emit(candidate('old-turn'));
+    h.emit({ type: 'transport', event: { type: 'conversation_completed' } });
+    await Promise.resolve();
+    await h.controller.stop();
+    await h.controller.start();
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    h.log.length = 0;
+
+    releaseGate();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(h.log.some((entry) => entry.startsWith('review:') || entry.startsWith('nav:'))).toBe(false);
+    expect(h.log).not.toContain('completed');
+    expect(h.log).not.toContain('orchestrator:stop');
+    expect(h.controller.active).toBe(true);
   });
 
   it('stop() ferme le publieur puis l’orchestrateur ; les événements tardifs sont ignorés', async () => {

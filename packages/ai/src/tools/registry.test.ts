@@ -74,11 +74,11 @@ describe('registre par capacités — C40 TODO ⑤⑥ + creer_client', () => {
     expect(calls.generateInvoice).toEqual([{ quoteId: 'q-1', mode: 'deposit' }]);
   });
 
-  it('generer_facture : le mode est optionnel (défaut du use case, jamais inventé ici)', () => {
+  it('generer_facture : le mode est obligatoire pour garantir un rejeu déterministe', () => {
     const t = tool(fullActions({}), 'generer_facture')!;
     const parsed = t.parse({ quoteId: 'q-1' });
-    expect(parsed.ok).toBe(true);
-    if (parsed.ok) expect(parsed.value).toEqual({ quoteId: 'q-1' });
+    expect(parsed.ok).toBe(false);
+    if (!parsed.ok && parsed.error.kind === 'validation') expect(parsed.error.issues[0]?.field).toBe('mode');
   });
 
   it('export_fec : lecture réglementée (accounting, non mutante), période stricte YYYY-MM-DD ordonnée', async () => {

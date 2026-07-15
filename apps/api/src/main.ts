@@ -1,5 +1,6 @@
 import 'reflect-metadata';
 import type { IncomingMessage } from 'node:http';
+import type { Server as HttpServer } from 'node:http';
 import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import helmet from 'helmet';
@@ -7,6 +8,8 @@ import { AppModule } from './app.module';
 import { buildCorsOptions } from './config/cors';
 import { loadEnv } from './config/env';
 import { AppLogger } from './observability/logger';
+import type { MistralRealtimeIngressRuntime } from './voice/realtime/mistral-realtime-runtime';
+import { MISTRAL_REALTIME_INGRESS_RUNTIME } from './voice/realtime/realtime.tokens';
 
 export const DEFAULT_JSON_BODY_LIMIT = '256kb';
 export const LARGE_JSON_BODY_LIMIT = '16mb';
@@ -58,7 +61,16 @@ async function bootstrap(): Promise<void> {
   // Déclenche onApplicationShutdown sur SIGTERM/SIGINT : les appels Realtime sont alors fermés
   // ou confiés explicitement au reaper au lieu d'être abandonnés pendant un redéploiement.
   app.enableShutdownHooks();
-  await app.listen(env.PORT);
+  const realtimeIngress = app.get<MistralRealtimeIngressRuntime>(MISTRAL_REALTIME_INGRESS_RUNTIME);
+  try {
+    realtimeIngress.attach(app.getHttpServer() as HttpServer);
+    await app.listen(env.PORT);
+  } catch (error) {
+    // L'upgrade WSS ne doit jamais survivre à un échec de bind HTTP ou à une composition invalide.
+    await realtimeIngress.shutdown().catch(() => undefined);
+    await app.close().catch(() => undefined);
+    throw error;
+  }
   app
     .get(AppLogger)
     .log(

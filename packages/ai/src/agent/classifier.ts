@@ -179,6 +179,12 @@ export const LLM_TOOL_SPECS: LlmToolSpec[] = [
       'Classement des plus gros clients sur 12 mois (facturé TTC) et alerte de dépendance au premier client. Répond à « mes plus gros clients ? », « je dépends de qui ? ».',
     parameters: { type: 'object', properties: {}, additionalProperties: false },
   },
+  {
+    name: 'etat_abonnement',
+    description:
+      'État de l’abonnement du compte : offre en cours, essai (jours restants, échéance), statut de paiement. Lecture seule — aucun achat par la voix. Répond à « où en est mon abonnement ? », « il me reste combien de jours d’essai ? ».',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+  },
 ];
 
 const TOOL_TO_INTENT: Record<string, BobIntent> = {
@@ -207,6 +213,7 @@ const TOOL_TO_INTENT: Record<string, BobIntent> = {
   revue_pilotage: 'pilotage',
   delai_paiement: 'dso',
   top_clients: 'top_clients',
+  etat_abonnement: 'abonnement',
 };
 
 /** Une étape résolue d'un plan (une intention + sa référence éventuelle). */

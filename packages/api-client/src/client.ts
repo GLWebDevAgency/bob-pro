@@ -536,11 +536,32 @@ export interface ValueDigestView {
   isoWeek: string;
 }
 
+/**
+ * Bilan de fin d'essai — GET /engagement/trial-report (pilier 2). Les MÊMES agrégats que le
+ * digest hebdo (buildValueDigest serveur), CUMULÉS sur la période d'essai. trial null = le
+ * tenant n'a pas d'essai (early-access, pré-migration) — la carte mobile ne se rend pas.
+ */
+export interface TrialReportView {
+  digest: ValueDigest | null;
+  periodStart: string | null;
+  periodEnd: string | null;
+  trial: {
+    plan: PlanTier;
+    endsAt: string;
+    phase: 'active' | 'ending_soon' | 'expired';
+    daysLeft: number;
+  } | null;
+}
+
 export interface SubscriptionView extends SubscriptionInfo {
   /** Accès anticipé RÉEL : aucun billing n'existe — l'écran Compte affiche l'état early-access honnête. */
   earlyAccess: boolean;
   /** Prix réellement facturé au tenant (centimes/mois) — 0 pendant l'accès anticipé. */
   priceCents: number;
+  /** Essai inversé (pilier 2) — présents quand le serveur est DB-backed ; absents = pas d'essai. */
+  trialEndsAt?: string | null;
+  trialPhase?: 'active' | 'ending_soon' | 'expired' | null;
+  trialDaysLeft?: number | null;
   features: string[];
   ai?: { capability: string; defaultAutonomy: string; monthlyActions: number | null };
   autonomyEntitlement?: string;
@@ -576,6 +597,14 @@ export interface BobClient {
   getSubscription(): Promise<Result<SubscriptionView, AppError>>;
   /** Digest de valeur de la semaine écoulée (pilier 2) — calculé SERVEUR, null = sans substance. */
   latestValueDigest(): Promise<Result<ValueDigestView, AppError>>;
+  /** Bilan de fin d'essai (pilier 2) : agrégats du digest CUMULÉS sur l'essai — trial null = pas d'essai.
+   * OPTIONNELLE (précédent getCompanyMe) : les fakes/transports existants restent assignables. */
+  trialReport?(): Promise<Result<TrialReportView, AppError>>;
+  /** value_digest_opened (pilier 2) : l'utilisateur a OUVERT le détail du digest (tap carte).
+   * Fire-and-forget côté écran — une analytics perdue ne casse jamais un geste. OPTIONNELLE. */
+  recordValueDigestOpened?(
+    highlightKind: 'money' | 'time' | 'volume',
+  ): Promise<Result<{ recorded: boolean }, AppError>>;
   startCheckout(tier: PlanTier): Promise<Result<{ url: string }, AppError>>;
   billingPortal(): Promise<Result<{ url: string }, AppError>>;
   invoicePaymentLink(invoiceId: string): Promise<Result<{ url: string }, AppError>>;
@@ -707,6 +736,9 @@ export interface BobClient {
   /** POST /ai/ask : en HTTP l'agent tourne CÔTÉ SERVEUR (autonomie clampée par l'offre, journal
    * append-only company-scoped) ; l'adaptateur local exécute l'agent @bob/ai on-device (mode dev). */
   askBob(input: AskBobClientInput): Promise<Result<AgentRun, AppError>>;
+  /** Recharge une proposition opaque pour afficher son diff. Le serveur vérifie tenant,
+   * propriétaire et expiration ; le payload reste non autoritatif pour la confirmation. */
+  previewBobProposal(proposalId: string): Promise<Result<PendingAction, AppError>>;
   /** POST /ai/confirm : exécute l'action proposée (PendingAction) via le runtime JOURNALISÉ. */
   confirmBob(pending: PendingAction): Promise<Result<AgentRun, AppError>>;
   /** GET /ai/runs/:runId/journal : entrées d'audit append-only d'un run (company-scoped côté serveur).

@@ -121,6 +121,7 @@ import { buildValueDigest,
   type DocumentFolderView,
   type DeleteDocumentFolderStrategy,
   type DocumentAnalysis,
+  type SubscriptionStatusView,
 } from '@bob/core';
 import {
   InMemoryCompanyRepository,
@@ -185,7 +186,8 @@ import type {
   RecordDocumentExpenseClientOutput,
   AskBobClientInput,
   CreateCustomerClientInput,
- ValueDigestView } from './client';
+ ValueDigestView,
+  TrialReportView } from './client';
 import { localExpenseCreationFingerprint, portableSha256Bytes } from './expense-idempotency';
 import {
   cloneQuoteCreation,
@@ -674,6 +676,17 @@ export class LocalBobClient implements BobClient {
     ];
     const digest = buildValueDigest({ periodStart, periodEnd, events });
     return ok({ digest, periodStart, periodEnd, isoWeek: periodStart.slice(0, 10) });
+  }
+
+  /** Démo hors-ligne : AUCUN essai (early-access, aligné getSubscription) — trial null, la
+   *  carte bilan ne se rend pas. Jamais un essai fantôme inventé pour la démo. */
+  async trialReport(): Promise<Result<TrialReportView, AppError>> {
+    return ok({ digest: null, periodStart: null, periodEnd: null, trial: null });
+  }
+
+  /** Démo hors-ligne : aucune analytics locale (adapter Noop structurel) — ack immédiat. */
+  async recordValueDigestOpened(): Promise<Result<{ recorded: boolean }, AppError>> {
+    return ok({ recorded: true });
   }
 
   async getSubscription(): Promise<Result<SubscriptionView, AppError>> {
@@ -2539,6 +2552,20 @@ export class LocalBobClient implements BobClient {
       },
       // C-EXP5b : lecture du calendrier fiscal — même use case que getFiscalCalendar (parité humain↔Bob).
       listFiscalDeadlines: async () => this.getFiscalCalendar(),
+      // Pilier 2 : « où en est mon abonnement » — la MÊME vérité que getSubscription (démo :
+      // early-access honnête, aucun essai fantôme). Lecture seule, jamais d'achat vocal.
+      getSubscriptionStatus: async () =>
+        ok({
+          plan: 'business',
+          status: 'active',
+          trialEndsAt: null,
+          trialPhase: null,
+          trialDaysLeft: null,
+          currentPeriodEnd: null,
+          store: null,
+          storeRef: null,
+          source: 'early_access_fallback',
+        } satisfies SubscriptionStatusView),
       registerPayment: async (input) =>
         this.registerPayment({
           invoiceId: input.invoiceId,
@@ -2619,6 +2646,25 @@ export class LocalBobClient implements BobClient {
       ...(input.history !== undefined ? { history: input.history } : {}),
       ...(input.tone !== undefined ? { tone: input.tone } : {}),
       ...(input.context !== undefined ? { context: input.context } : {}),
+    });
+  }
+
+  /** Aperçu local depuis le journal dry-run. Le mode démo n'a pas de multi-utilisateur, mais
+   * conserve le même contrat opaque et ne reconstruit jamais les args depuis le langage. */
+  async previewBobProposal(proposalId: string): Promise<Result<PendingAction, AppError>> {
+    const entries = await this.journal.load(proposalId);
+    const planned = entries.filter((entry) => entry.phase === 'planned');
+    if (planned.length === 0) return err(appNotFound('agent_proposal', 'redacted'));
+    const items = planned.map((entry) => ({
+      tool: entry.tool,
+      args: { ...entry.args },
+      label: entry.label,
+    }));
+    const first = items[0]!;
+    return ok({
+      ...first,
+      proposalId,
+      ...(items.length > 1 ? { batch: items } : {}),
     });
   }
 

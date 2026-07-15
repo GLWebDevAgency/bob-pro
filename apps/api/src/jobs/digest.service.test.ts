@@ -5,7 +5,7 @@ import { NotificationDeliveryService } from './notification-delivery.service';
 import { ScheduledTenantDirectory } from './tenant-directory';
 import { InMemoryPersistence } from '../persistence/persistence';
 import type { SupabaseAdminPort } from '../auth/supabase-admin';
-import type { AppLogger } from '../observability/logger';
+import { requestContext, type AppLogger } from '../observability/logger';
 
 const logger = {
   audit: vi.fn(),
@@ -174,5 +174,105 @@ describe('digest de valeur hebdo multi-tenant (pilier 2)', () => {
     expect(jobs[0]!.subject).toContain('encaissés');
     expect(jobs[0]!.subject).not.toContain('récupérés');
     expect(jobs[0]!.notification?.body).not.toContain('après relance');
+  });
+});
+
+/** Exécute fn dans le contexte tenant (comme le guard en requête réelle). */
+function asTenant<T>(companyId: string, fn: () => T): T {
+  return requestContext.run({ correlationId: 'test', principal: { userId: 'u-test', companyId } }, fn);
+}
+
+describe('bilan de fin d’essai (pilier 2) — agrégats du digest CUMULÉS sur la période d’essai', () => {
+  const DAY = 86_400_000;
+
+  it('essai en cours : digest cumulé depuis le DÉBUT de l’essai + phase/jours restants réels', async () => {
+    const { persistence, service } = setup();
+    persistence.companies.seed(fakeCompany('company-u1'));
+    const startedAt = new Date(Date.now() - 10 * DAY).toISOString();
+    const endsAt = new Date(Date.now() + 4 * DAY).toISOString();
+    await persistence.subscriptions.startTrial({
+      id: 'sub-company-u1',
+      companyId: 'company-u1',
+      plan: 'pro',
+      trialEndsAt: endsAt,
+      now: startedAt,
+    });
+    // Fait PENDANT l'essai (compté) et fait AVANT l'essai (jamais compté — période exacte).
+    await persistence.payments.save(
+      fakePayment('pay-in', 'company-u1', 'inv-1', 234_000, new Date(Date.now() - 3 * DAY).toISOString()),
+    );
+    await persistence.payments.save(
+      fakePayment('pay-before', 'company-u1', 'inv-0', 999_999, new Date(Date.now() - 20 * DAY).toISOString()),
+    );
+
+    const r = await asTenant('company-u1', () => service.trialReportForCurrentTenant());
+
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.trial).toMatchObject({ plan: 'pro', endsAt, phase: 'active', daysLeft: 4 });
+    expect(r.value.periodStart).toBe(startedAt);
+    expect(r.value.digest?.collectedCents).toBe(234_000); // le paiement pré-essai n'est JAMAIS compté
+    expect(r.value.digest?.highlight).toMatchObject({ kind: 'money', amountCents: 234_000 });
+  });
+
+  it('tenant SANS ligne d’essai (early-access, pré-migration) : trial null, digest null — zéro bruit', async () => {
+    const { persistence, service } = setup();
+    persistence.companies.seed(fakeCompany('co-legacy'));
+
+    const r = await asTenant('co-legacy', () => service.trialReportForCurrentTenant());
+
+    expect(r.ok && r.value).toEqual({ digest: null, periodStart: null, periodEnd: null, trial: null });
+  });
+
+  it('essai EXPIRÉ : la période est bornée à l’échéance — un fait postérieur à l’essai ne gonfle jamais le bilan', async () => {
+    const { persistence, service } = setup();
+    persistence.companies.seed(fakeCompany('company-u1'));
+    const startedAt = new Date(Date.now() - 20 * DAY).toISOString();
+    const endsAt = new Date(Date.now() - 6 * DAY).toISOString();
+    await persistence.subscriptions.startTrial({
+      id: 'sub-company-u1',
+      companyId: 'company-u1',
+      plan: 'pro',
+      trialEndsAt: endsAt,
+      now: startedAt,
+    });
+    await persistence.payments.save(
+      fakePayment('pay-in', 'company-u1', 'inv-1', 50_000, new Date(Date.now() - 10 * DAY).toISOString()),
+    );
+    await persistence.payments.save(
+      fakePayment('pay-after', 'company-u1', 'inv-2', 70_000, new Date(Date.now() - 1 * DAY).toISOString()),
+    );
+
+    const r = await asTenant('company-u1', () => service.trialReportForCurrentTenant());
+
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.trial).toMatchObject({ phase: 'expired', daysLeft: 0 });
+    expect(r.value.periodEnd).toBe(endsAt);
+    expect(r.value.digest?.collectedCents).toBe(50_000); // le paiement post-essai n'appartient pas au bilan
+  });
+});
+
+describe('value_digest_opened (pilier 2) — l’OUVERTURE réelle du digest, jamais son rendu', () => {
+  it('accroche valide → événement tracké UNE fois, tenant opaque', async () => {
+    const { service, trackedEvents } = setup();
+
+    const r = await asTenant('company-u1', () => service.recordDigestOpened({ highlightKind: 'money' }));
+
+    expect(r.ok && r.value).toEqual({ recorded: true });
+    expect(trackedEvents).toHaveLength(1);
+    expect(trackedEvents[0]).toMatchObject({
+      tenantId: 'company-u1',
+      event: { name: 'value_digest_opened', highlightKind: 'money' },
+    });
+  });
+
+  it('accroche inconnue → validation refusée, AUCUN événement (schéma typé sans PII)', async () => {
+    const { service, trackedEvents } = setup();
+
+    const r = await asTenant('company-u1', () => service.recordDigestOpened({ highlightKind: 'weird' }));
+
+    expect(r.ok).toBe(false);
+    expect(trackedEvents).toHaveLength(0);
   });
 });

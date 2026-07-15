@@ -20,20 +20,13 @@ import { t, type I18nKey } from '@bob/i18n';
 import { Card, font, useTheme } from '@bob/ui';
 import { useQuery } from '@tanstack/react-query';
 import { useBobClient } from '../data/client';
+import { CheckIcon, ChevronRightIcon } from '../components/icons';
 
 /**
  * Dernier digest de valeur du tenant — null tant qu'aucun digest réel n'existe (jamais de bruit).
- *
- * TODO(serveur — SPEC pilier 2, « Reste à implémenter » §3) : le digest est déjà CALCULÉ côté
- * API (apps/api/src/jobs/digest.service.ts — buildValueDigest sur les données réelles, outbox
- * kind 'weekly-digest', dedupeKey `digest:{companyId}:{isoWeek}:{POLICY_VERSION}`), mais seul
- * le TEXTE part en notification : le ValueDigest STRUCTURÉ n'est pas encore exposé au mobile.
- * Brancher ici, au choix (décision serveur à venir) :
- * · un endpoint GET /engagement/digest/latest (ValueDigest + isoWeek) consommé en useQuery
- *   (clé ['value-digest'], pattern src/data/hooks.ts) ;
- * · ou le payload structuré joint au job 'weekly-digest' quand GET /notifications le portera
- *   (la notification route déjà vers Aujourd'hui — notification-route.ts).
- * Tant que rien ne répond : null → la carte est invisible, zéro régression visuelle.
+ * Servi par GET /engagement/digest/latest (DigestService.latestForCurrentTenant — les MÊMES
+ * projections que le cron « lundi de Bob », jamais deux calculs qui divergent). Sans substance
+ * ou sans réseau : null → la carte est invisible, zéro régression visuelle.
  */
 export function useLatestValueDigest(): ValueDigest | null {
   const client = useBobClient();
@@ -67,7 +60,11 @@ function highlightCopy(digest: ValueDigest): {
     case 'time':
       return { key: 'digest.timeSaved', params: { minutes: h.minutes }, estimated: true };
     case 'volume':
-      return { key: 'digest.volume', params: { count: h.documents }, estimated: false };
+      return {
+        key: h.documents === 1 ? 'digest.volumeOne' : 'digest.volume',
+        params: { count: h.documents },
+        estimated: false,
+      };
   }
 }
 
@@ -77,7 +74,7 @@ function heroFigure(digest: ValueDigest): string {
   const h = digest.highlight;
   if (h.kind === 'money') return `+ ${formatEURWhole(h.amountCents)}`;
   if (h.kind === 'time') return `≈ ${h.minutes} min`;
-  return `${h.documents} docs`;
+  return h.documents === 1 ? '1 document' : `${h.documents} documents`;
 }
 
 /**
@@ -88,15 +85,27 @@ function heroFigure(digest: ValueDigest): string {
 export function ValueDigestCard({ digest }: { readonly digest: ValueDigest }): React.JSX.Element {
   const { personality, colors, semantic } = useTheme();
   const router = useRouter();
+  const client = useBobClient();
   const highlight = highlightCopy(digest);
   const line = t(highlight.key, { personality, params: highlight.params });
-  const note = highlight.estimated ? ` ${t('digest.estimateNote', { personality })}` : '';
+  const note = highlight.estimated ? t('digest.estimateNote', { personality }) : null;
 
   return (
     <Pressable
-      onPress={() => router.push('/(tabs)/argent')}
+      onPress={() => {
+        // value_digest_opened (pilier 2, analytics décision 11) : l'OUVERTURE réelle du digest —
+        // le TAP vers le détail, jamais le rendu de la carte. Fire-and-forget : une analytics
+        // perdue (offline, opt-out serveur) ne retarde ni ne casse JAMAIS la navigation.
+        void client.recordValueDigestOpened?.(digest.highlight.kind).catch(() => undefined);
+        router.push('/(tabs)/argent');
+      }}
       accessibilityRole="button"
-      accessibilityLabel={`${t('digest.title', { personality })} — ${line}`}
+      accessibilityLabel={`${t('digest.title', { personality })} — ${line}${note ? ` ${note}` : ''}`}
+      accessibilityHint={t('digest.openMoneyHint', { personality })}
+      style={({ pressed }) => ({
+        opacity: pressed ? 0.86 : 1,
+        transform: [{ scale: pressed ? 0.985 : 1 }],
+      })}
     >
       <Card padding={14}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
@@ -110,7 +119,7 @@ export function ValueDigestCard({ digest }: { readonly digest: ValueDigest }): R
               justifyContent: 'center',
             }}
           >
-            <Text style={{ color: semantic.success, fontSize: 18, fontWeight: '800' }}>✓</Text>
+            <CheckIcon color={semantic.success} size={20} />
           </View>
           <View style={{ flex: 1 }}>
             <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 8 }}>
@@ -121,15 +130,14 @@ export function ValueDigestCard({ digest }: { readonly digest: ValueDigest }): R
                 {t('digest.title', { personality })}
               </Text>
             </View>
-            <Text
-              style={[font('sub'), { fontSize: 12.5, lineHeight: 17, color: colors.slate500, marginTop: 2 }]}
-              numberOfLines={2}
-            >
+            <Text style={[font('sub'), { fontSize: 12.5, lineHeight: 17, color: colors.slate500, marginTop: 2 }]} numberOfLines={2}>
               {line}
-              {note}
             </Text>
+            {note ? (
+              <Text style={[font('meta'), { color: colors.slate500, lineHeight: 15, marginTop: 3 }]}>{note}</Text>
+            ) : null}
           </View>
-          <Text style={{ color: colors.slate300, fontSize: 22, fontWeight: '600' }}>›</Text>
+          <ChevronRightIcon color={colors.slate500} size={18} />
         </View>
       </Card>
     </Pressable>

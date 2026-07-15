@@ -24,6 +24,7 @@ export type BobIntent =
   | 'pilotage' // revue de pilotage : CA facturé/encaissé, tendance, ratios — lecture, BA-3
   | 'dso' // « on me paie en combien de temps ? » — DSO 90 j + € immobilisés, BA-3
   | 'top_clients' // plus gros clients 12 mois + dépendance — lecture, BA-3
+  | 'abonnement' // « où en est mon abonnement / mon essai ? » — lecture seule, pilier 2 (jamais d'achat vocal)
   | 'unknown';
 
 function normalizeIntent(message: string): string {
@@ -93,6 +94,10 @@ export function detectIntent(message: string): BobIntent {
   // Top clients (BA-3) : AVANT balance/relance (« clients » y collisionne).
   if (/(top.{0,10}clients?|(plus gros|meilleurs?|principaux) clients?|classement.*clients?|clients?.*(rapportent|rapporte le plus)|d[ée]pend[a-z]*.{0,15}client)/.test(m))
     return 'top_clients';
+  // Abonnement/essai (pilier 2) : AVANT pilotage (« comment va mon essai » y collisionne) et
+  // AVANT payout (« combien de jours d'essai » y collisionne). Lecture seule — jamais d'achat vocal.
+  if (/abonnement|mon essai|p[ée]riode d.essai|jours? d.essai|essai (gratuit|pro|se termine)|fin de (mon |l.)essai|mon offre actuelle|quelle (est mon|offre)|mon plan\b|suis[- ]je (en essai|abonn[ée])/.test(m))
+    return 'abonnement';
   // Pilotage (BA-3) : AVANT résultat/payout (« ça monte ? », « mon CA » ≠ « combien je gagne »).
   if (/(pilotage|comment va (mon|ma|l)|[çc]a (monte|baisse|progresse)|tendance|mon (ca|chiffre)\b|chiffre d'affaires|[ée]volution.*(ca|activit[ée]|ventes)|mes ratios|taux d'ebe|\bebe\b|valeur ajout[ée]e|factur[ée] vs encaiss[ée])/.test(m))
     return 'pilotage';

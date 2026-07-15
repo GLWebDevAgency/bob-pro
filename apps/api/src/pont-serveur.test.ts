@@ -786,6 +786,14 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
       expect(proposed.value.pending?.proposalId).toMatch(/^[A-Za-z0-9_-]{8,160}$/);
       expect(Date.parse(proposed.value.pending?.expiresAt ?? '')).toBeGreaterThan(Date.parse(todayUtc()));
 
+      const preview = await service.previewBobProposal({
+        proposalId: proposed.value.pending?.proposalId,
+      });
+      expect(preview.ok).toBe(true);
+      if (!preview.ok) return;
+      expect(preview.value).toEqual(proposed.value.pending);
+      expect(JSON.stringify(preview.value)).not.toContain('__proposal_owner__');
+
       // ② Confirmation : le serveur ignore les args renvoyés par le client et recharge le dry-run
       // opaque. Une altération du DTO ne peut donc ni changer de cible ni injecter un montant.
       const tamperedPending = {
@@ -922,6 +930,14 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
     expect(proposed.ok && proposed.value.pending?.proposalId).toBeTruthy();
     if (!proposed.ok || !proposed.value.pending) return;
 
+    const intrusionPreview = await asPrincipal(INTRUS, () =>
+      service.previewBobProposal({ proposalId: proposed.value.pending?.proposalId }),
+    );
+    expect(intrusionPreview).toEqual({
+      ok: false,
+      error: { kind: 'not_found', entity: 'agent_proposal', id: 'redacted' },
+    });
+
     const intrusion = await asPrincipal(INTRUS, () =>
       service.confirmBob({ proposalId: proposed.value.pending?.proposalId }),
     );
@@ -954,7 +970,7 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
     if (!proposed.ok || !proposed.value.pending) return;
 
     const colleague = await asPrincipal(COLLEAGUE, () =>
-      service.confirmBob({ proposalId: proposed.value.pending?.proposalId }),
+      service.previewBobProposal({ proposalId: proposed.value.pending?.proposalId }),
     );
     expect(colleague).toEqual({ ok: false, error: { kind: 'not_found', entity: 'agent_proposal', id: 'redacted' } });
 
@@ -1333,6 +1349,11 @@ describe('PONT-SERVEUR — proposition opaque : garde temporelle TTL (audit voca
       expect(confirmed.ok).toBe(false);
       if (!confirmed.ok) {
         expect(confirmed.error).toMatchObject({ kind: 'validation', issues: [{ field: 'proposalId' }] });
+      }
+      const preview = await service.previewBobProposal({ proposalId: proposed.value.pending.proposalId });
+      expect(preview.ok).toBe(false);
+      if (!preview.ok) {
+        expect(preview.error).toMatchObject({ kind: 'validation', issues: [{ field: 'proposalId' }] });
       }
       const expenses = await service.listExpenses();
       expect(expenses.ok && expenses.value.find((e) => e.id === recorded.value.id)?.status).toBe('to_pay');

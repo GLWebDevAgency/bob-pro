@@ -46,10 +46,10 @@ function ctx(req: { url: string; method?: string; headers: Record<string, string
 }
 
 describe('C26b — subscription dérivée PAR TENANT (plus de singleton Mercier)', () => {
-  it('GET /subscription avec tenant : payload early-access RÉEL (business actif, 0 € facturé, période nulle)', () => {
+  it('GET /subscription SANS ligne DB (tenant pré-migration) : fallback early-access HONNÊTE (business actif, 0 €, aucun essai fantôme)', async () => {
     const { service } = makeService();
 
-    const payload = asPrincipal({ userId: 'u-a', companyId: 'co-artisan-a' }, () => service.getSubscription());
+    const payload = await asPrincipal({ userId: 'u-a', companyId: 'co-artisan-a' }, () => service.getSubscription());
 
     expect(payload).toMatchObject({
       tier: 'business',
@@ -57,10 +57,52 @@ describe('C26b — subscription dérivée PAR TENANT (plus de singleton Mercier)
       earlyAccess: true,
       priceCents: 0,
       currentPeriodEnd: null,
+      trialEndsAt: null,
+      trialPhase: null,
+      trialDaysLeft: null,
     });
     // Aucun gating existant cassé : les droits business restent ouverts pendant l'accès anticipé.
     expect(payload.features).toContain('ai_assistant');
     expect(payload.catalog.length).toBeGreaterThan(0);
+  });
+
+  it('GET /subscription AVEC ligne d’essai (pilier 2) : DB-backed — Pro prêté, trialing, jours restants réels', async () => {
+    const { service, p } = makeService();
+    const now = new Date().toISOString();
+    const endsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
+    await p.subscriptions.startTrial({ id: 'sub-co-artisan-a', companyId: 'co-artisan-a', plan: 'pro', trialEndsAt: endsAt, now });
+
+    const payload = await asPrincipal({ userId: 'u-a', companyId: 'co-artisan-a' }, () => service.getSubscription());
+
+    expect(payload).toMatchObject({
+      tier: 'pro',
+      status: 'trialing',
+      earlyAccess: false,
+      priceCents: 0, // un essai ne facture RIEN — seul un abonnement actif porte le prix catalogue
+      trialEndsAt: endsAt,
+      trialPhase: 'active',
+      trialDaysLeft: 14,
+    });
+    expect(payload.features).toContain('voice_live'); // le Pro complet est prêté pendant l'essai
+    expect(payload.features).not.toContain('team'); // jamais plus que le palier prêté
+  });
+
+  it('essai EXPIRÉ : atterrissage doux sur Découverte (free) — conformité jamais bloquée, aucun palier fantôme', async () => {
+    const { service, p } = makeService();
+    const past = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+    await p.subscriptions.startTrial({
+      id: 'sub-co-artisan-a',
+      companyId: 'co-artisan-a',
+      plan: 'pro',
+      trialEndsAt: past,
+      now: new Date(Date.now() - 16 * 24 * 60 * 60 * 1000).toISOString(),
+    });
+
+    const payload = await asPrincipal({ userId: 'u-a', companyId: 'co-artisan-a' }, () => service.getSubscription());
+
+    expect(payload).toMatchObject({ tier: 'free', trialPhase: 'expired', trialDaysLeft: 0, priceCents: 0 });
+    expect(payload.features).toContain('ai_quota'); // Découverte reste ouverte (facturation conforme)
+    expect(payload.features).not.toContain('voice_live');
   });
 
   it('deux tenants → deux abonnements DISTINCTS, chacun portant SON companyId (sub-<companyId>)', () => {
@@ -80,10 +122,10 @@ describe('C26b — subscription dérivée PAR TENANT (plus de singleton Mercier)
     expect(a.isActive()).toBe(true);
   });
 
-  it('sans tenant : échec EXPLICITE côté service — le guard doit avoir répondu 403 en amont, zéro repli', () => {
+  it('sans tenant : échec EXPLICITE côté service — le guard doit avoir répondu 403 en amont, zéro repli', async () => {
     const { service } = makeService();
-    // getSubscription lit requireTenant() SYNCHRONEMENT : plus jamais un abonnement Mercier par défaut.
-    expect(() => asPrincipal(null, () => service.getSubscription())).toThrow(/PROVISIONING_REQUIRED/);
+    // getSubscription lit requireTenant() avant toute I/O : plus jamais un abonnement Mercier par défaut.
+    await expect(asPrincipal(null, () => service.getSubscription())).rejects.toThrow(/PROVISIONING_REQUIRED/);
   });
 });
 
@@ -114,7 +156,7 @@ describe('C26b — GET /subscription au guard : JWT + tenant REQUIS (comme tout 
       expect(allowed).toBe(true);
       expect(getPrincipal()).toEqual({ userId: 'u-1', companyId: 'co-artisan-a' });
       // Même contexte ALS que la requête réelle : le service dérive l'abonnement DU tenant du JWT.
-      expect(service.getSubscription()).toMatchObject({ earlyAccess: true, priceCents: 0, tier: 'business' });
+      expect(await service.getSubscription()).toMatchObject({ earlyAccess: true, priceCents: 0, tier: 'business' });
       expect(service['subscriptionFor']('co-artisan-a').companyId).toBe('co-artisan-a');
     });
   });

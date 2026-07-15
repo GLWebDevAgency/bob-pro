@@ -11,6 +11,7 @@ import {
   type BalanceSheet,
   type BusinessReview,
   type ClosingReview,
+  type SubscriptionStatusView,
 } from '@bob/core';
 import {
   type ContextEntitySummary,
@@ -138,8 +139,8 @@ export interface RecordExpenseActionInput {
 /** Outil generer_facture (parité C15 TODO ⑤) — même use case GenerateInvoiceFromQuote que l'UI. */
 export interface GenerateInvoiceActionInput {
   quoteId: string;
-  /** deposit = facture d'acompte (proportionnelle), final = solde. Absent : mode par défaut du use case. */
-  mode?: 'deposit' | 'final';
+  /** Choix explicite obligatoire : une relance réseau ne doit jamais changer le type de facture. */
+  mode: 'deposit' | 'final';
 }
 
 /** Outil export_fec (parité C15 TODO ⑥) — mêmes entrées que ExportFec ; l'agent reçoit le RÉSUMÉ,
@@ -192,6 +193,10 @@ export interface BobActions {
    * deriveFiscalCalendar (@bob/core) que GET /fiscal-calendar et l'écran : l'hôte délègue au
    * BobClient, AUCUNE logique fiscale côté ai/. Optionnelle : rétro-compatible hôtes existants. */
   listFiscalDeadlines?(): Promise<Result<FiscalDeadline[], AppError>>;
+  /** État d'abonnement/essai du tenant (pilier 2) — LECTURE SEULE : « où en est mon essai ? »
+   * répond depuis GetSubscriptionStatus (@bob/core), la même vérité que l'écran Compte.
+   * JAMAIS un acte d'achat vocal (SPEC décision 10) : tout engagement payant se confirme au TAP. */
+  getSubscriptionStatus?(): Promise<Result<SubscriptionStatusView, AppError>>;
   // —— Lecture, OPTIONNELLES (BOB-1 — l'expert-comptable de poche) ——
   /** Position de TVA réelle (deriveVatPosition @bob/core : collectée sur ENCAISSEMENTS −
    * déductible mentionnée) — « combien de TVA je dois ? » lit LE chiffre du cashflow. */

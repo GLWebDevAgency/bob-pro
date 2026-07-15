@@ -44,6 +44,10 @@ export interface Entitlement {
   /** Chargement en cours : les écrans affichent leur squelette, JAMAIS le paywall
    *  (politique fail-open d'affichage : on ne vend pas sur un écran pas encore sûr). */
   readonly loading: boolean;
+  /** Vrai uniquement après lecture réussie de l'abonnement serveur. Un affichage peut
+   * rester fail-open sur erreur, mais aucune donnée payante ne doit être publiée à Bob
+   * tant que cette autorité n'est pas vérifiée. */
+  readonly verified: boolean;
 }
 
 /** LE hook d'entitlement typé — remplace les `(sub?.features ?? []).includes('x')` épars. */
@@ -55,15 +59,15 @@ export function useEntitlement(feature: Feature): Entitlement {
       // Échec DURABLE de GET /subscription : fail-open d'AFFICHAGE (review 14/07, P2) — on ne
       // verrouille jamais l'écran d'un client payant sur un aléa réseau ; le SERVEUR reste
       // l'autorité de chaque action (gates appForbidden) et on ne vend rien sur un doute.
-      if (subscription.isError) return { allowed: true, decision: null, loading: false };
-      return { allowed: false, decision: null, loading: true };
+      if (subscription.isError) return { allowed: true, decision: null, loading: false, verified: false };
+      return { allowed: false, decision: null, loading: true, verified: false };
     }
     const tier = (view.tier as PlanTier | undefined) ?? 'free';
     const status = (view.status as SubscriptionStatus | undefined) ?? 'active';
     const addOns = (view.addOns ?? []) as AddOn[];
-    if (view.features.includes(feature)) return { allowed: true, decision: null, loading: false };
+    if (view.features.includes(feature)) return { allowed: true, decision: null, loading: false, verified: true };
     const decision = decidePaywall({ feature, tier, addOns, status });
-    return { allowed: decision.kind === 'allowed', decision, loading: false };
+    return { allowed: decision.kind === 'allowed', decision, loading: false, verified: true };
   }, [subscription.data, subscription.isError, feature]);
 }
 

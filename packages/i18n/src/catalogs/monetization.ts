@@ -83,6 +83,35 @@ export const monetizationFr = {
     direct: 'Recommandation d’après ton usage : {tier}.',
   },
   'trial.reportStayFree': same('Rester en Découverte (gratuit) — tes documents et ta facturation conforme restent disponibles.'),
+  // ── Bilan de fin d'essai — FAITS réels du tenant, jamais un chiffre inventé ──
+  'trial.reportEndingSubtitle': {
+    pote: 'Ton essai se termine dans {days} j. Voilà ce qu’on a fait ensemble — les chiffres, pas du blabla.',
+    pro: 'Ton essai se termine dans {days} jours. Voici le bilan factuel de la période.',
+    direct: 'Fin d’essai dans {days} j. Le bilan :',
+  },
+  'trial.reportEndedSubtitle': {
+    pote: 'Ton essai est terminé. Voilà ce qu’on a fait ensemble — et tout reste à toi.',
+    pro: 'Ton essai est terminé. Voici le bilan factuel de la période — tes données restent accessibles.',
+    direct: 'Essai terminé. Le bilan :',
+  },
+  'trial.reportCollected': same('{amount} encaissés'),
+  'trial.reportRecovered': same('dont {amount} récupérés après relance'),
+  'trial.reportDocuments': same('{count} documents créés'),
+  'trial.reportDocumentsOne': same('1 document créé'),
+  'trial.reportDocumentsVoice': same('dont {count} à la voix'),
+  'trial.reportRelances': same('{count} relances envoyées'),
+  'trial.reportRelancesOne': same('1 relance envoyée'),
+  'trial.reportTimeSaved': same('environ {minutes} min d’admin en moins (estimation)'),
+  'trial.reportEmpty': {
+    pote: 'Pas encore de chiffres à te montrer sur la période — dès que tu factures ou encaisses, ça se voit ici.',
+    pro: 'Aucun fait mesurable sur la période d’essai pour le moment.',
+    direct: 'Aucun fait mesurable sur la période.',
+  },
+  'trial.reportCta': {
+    pote: 'Continuer avec Bob — choisir mon offre',
+    pro: 'Choisir mon offre',
+    direct: 'Choisir une offre',
+  },
 
   // ── Digest de valeur (« le lundi de Bob ») ──
   'digest.title': same('Ta semaine avec Bob'),

@@ -36,7 +36,7 @@ import type {
   QuoteView,
   InvoiceView,
   PaymentView,
-  SubscriptionView, ValueDigestView,
+  SubscriptionView, ValueDigestView, TrialReportView,
   RegisterPaymentClientInput,
   RegisterPaymentClientOutput,
   SendQuoteOutput,
@@ -160,10 +160,14 @@ function isCanonicalIsoTimestamp(value: unknown): value is string {
   return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value;
 }
 
-function isMistralRealtimeWebsocketUrl(value: unknown): value is string {
+function isMistralRealtimeWebsocketUrl(
+  value: unknown,
+  expectedApiBaseUrl: string,
+): value is string {
   if (typeof value !== 'string' || value.length === 0 || value.length > 2_048) return false;
   try {
     const url = new URL(value);
+    const api = new URL(expectedApiBaseUrl);
     if (
       url.username !== ''
       || url.password !== ''
@@ -171,9 +175,12 @@ function isMistralRealtimeWebsocketUrl(value: unknown): value is string {
       || url.hash !== ''
       || url.pathname !== '/v1/voice/realtime/mistral'
     ) return false;
-    if (url.protocol === 'wss:') return true;
-    return url.protocol === 'ws:'
-      && (url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]');
+    const sameAuthority = url.hostname === api.hostname && url.port === api.port;
+    if (!sameAuthority) return false;
+    if (api.protocol === 'https:') return url.protocol === 'wss:';
+    const loopback = api.protocol === 'http:'
+      && (api.hostname === 'localhost' || api.hostname === '127.0.0.1' || api.hostname === '[::1]');
+    return loopback && url.protocol === 'ws:';
   } catch {
     return false;
   }
@@ -572,6 +579,7 @@ function decodeRealtimeSpeechSourcePolicy(
 function decodeRealtimeVoiceCall(
   value: unknown,
   expectedCompanyId: string,
+  expectedApiBaseUrl: string,
 ): RealtimeVoiceCall | null {
   if (!isRecord(value)) return null;
   const commonKeys = [
@@ -641,9 +649,10 @@ function decodeRealtimeVoiceCall(
         'contextRevision',
         'contextDigest',
       ])
-      || !isMistralRealtimeWebsocketUrl(value.websocketUrl)
+      || !isMistralRealtimeWebsocketUrl(value.websocketUrl, expectedApiBaseUrl)
       || typeof value.companyId !== 'string'
       || !COMPANY_ID_PATTERN.test(value.companyId)
+      || value.companyId !== expectedCompanyId
       || typeof value.ticket !== 'string'
       || !MISTRAL_REALTIME_TICKET_PATTERN.test(value.ticket)
       || value.protocol !== 'bob.mistral-pcm.v1'
@@ -968,6 +977,14 @@ export class HttpBobClient implements BobClient {
   latestValueDigest() {
     return this.req<ValueDigestView>('GET', '/engagement/digest/latest');
   }
+  /** Pilier 2 : bilan de fin d'essai — agrégats du digest CUMULÉS sur la période d'essai. */
+  trialReport() {
+    return this.req<TrialReportView>('GET', '/engagement/trial-report');
+  }
+  /** Pilier 2 : value_digest_opened — l'utilisateur a OUVERT le détail du digest (tap carte). */
+  recordValueDigestOpened(highlightKind: 'money' | 'time' | 'volume') {
+    return this.req<{ recorded: boolean }>('POST', '/engagement/digest/opened', { highlightKind });
+  }
   startCheckout(tier: PlanTier) {
     return this.req<{ url: string }>('POST', '/subscription/checkout', { tier });
   }
@@ -1038,7 +1055,7 @@ export class HttpBobClient implements BobClient {
       '/voice/realtime/calls',
       body,
       undefined,
-      (value) => decodeRealtimeVoiceCall(value, this.companyId),
+      (value) => decodeRealtimeVoiceCall(value, this.companyId, this.opts.baseUrl),
       REALTIME_BOOTSTRAP_TIMEOUT_MS,
       signal,
     );
@@ -1527,6 +1544,12 @@ export class HttpBobClient implements BobClient {
       ...(input.context !== undefined ? { context: input.context } : {}),
     };
     return this.req<AgentRun>('POST', '/ai/ask', body);
+  }
+  previewBobProposal(proposalId: string) {
+    return this.req<PendingAction>(
+      'GET',
+      `/ai/proposals/${encodeURIComponent(proposalId)}`,
+    );
   }
   confirmBob(pending: PendingAction) {
     // La confirmation HTTP référence exclusivement la proposition persistée côté serveur.

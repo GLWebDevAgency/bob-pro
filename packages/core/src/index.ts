@@ -89,6 +89,8 @@ export * from './application/ports/cabinet-invitation-repository';
 export * from './application/ports/cabinet-invitation-token';
 export * from './application/ports/cabinet-invitation-dispatch';
 export * from './application/ports/release-flag-repository';
+export * from './application/ports/subscription-repository';
+export * from './application/subscription/get-subscription-status';
 export * from './application/billing/create-quote';
 export * from './application/billing/send-quote';
 export * from './application/billing/sign-quote';

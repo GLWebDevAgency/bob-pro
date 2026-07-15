@@ -35,6 +35,10 @@ import {
   planEntitlements,
   planCan,
   tierAtLeast,
+  startReverseTrial,
+  GetSubscriptionStatus,
+  resolveAutonomyEntitlement,
+  type SubscriptionStatusView,
   runDiagnostic,
   deriveFiscalCalendar,
   deriveVatPosition,
@@ -136,6 +140,7 @@ import {
   type AgentAskPayload,
   type AgentRun,
   type AgentAutonomy,
+  type PendingAction,
   type JournalEntry,
   type ContextEntitySummary,
   type ReadContextEntityInput,
@@ -494,6 +499,12 @@ function documentAnalysisFactValue(fact: DocumentAnalysis['facts'][number]): str
 const AGENT_PROPOSAL_TTL_MS = 10 * 60 * 1_000;
 const AGENT_PROPOSAL_ID = /^[A-Za-z0-9_-]{8,160}$/;
 const AGENT_PROPOSAL_OWNER_TOOL = '__proposal_owner__';
+
+interface OwnedAgentProposal {
+  readonly proposalId: string;
+  readonly planned: readonly JournalEntry[];
+  readonly expiresAt: string;
+}
 // Fermé par défaut : n'ajouter un outil qu'après câblage serveur ET test agent → outbox.
 // La relance manuelle est outbox-safe, mais l'adapter agent serveur n'est pas encore câblé.
 const AGENT_OUTBOX_SAFE_TOOLS = new Set(['envoyer_devis']);
@@ -1496,6 +1507,9 @@ export class BackendService {
       },
       // C-EXP5b : lecture du calendrier fiscal — même use case que GET /fiscal-calendar (parité humain↔Bob).
       listFiscalDeadlines: async () => this.getFiscalCalendar(),
+      // Pilier 2 : « où en est mon abonnement / mon essai » — MÊME lecture GetSubscriptionStatus
+      // que GET /subscription (parité humain↔Bob). Lecture seule : jamais d'achat vocal.
+      getSubscriptionStatus: async () => ok(await this.subscriptionStatus(this.companyId())),
       // BOB-1 (PONT-SERVEUR v1) : l'expert-comptable de poche — MÊMES use cases purs que les
       // écrans et le LocalBobClient (deriveVatPosition / deriveAgedBalance @bob/core).
       getVatPosition: async () => {
@@ -1849,11 +1863,8 @@ export class BackendService {
     }
   }
 
-  async confirmBob(input: { proposalId?: unknown }): Promise<Result<AgentRun, AppError>> {
-    const subscription = this.subscriptionFor(this.companyId());
-    if (!planCan(subscription.tier, 'ai_assistant'))
-      return { ok: false, error: appForbidden("L'assistant Bob est inclus à partir de l'offre Solo.") };
-    const proposalId = typeof input.proposalId === 'string' ? input.proposalId : '';
+  private async loadOwnedAgentProposal(proposalIdInput: unknown): Promise<Result<OwnedAgentProposal, AppError>> {
+    const proposalId = typeof proposalIdInput === 'string' ? proposalIdInput : '';
     if (!AGENT_PROPOSAL_ID.test(proposalId)) {
       return {
         ok: false,
@@ -1863,32 +1874,29 @@ export class BackendService {
         },
       };
     }
-
     try {
-      const companyId = this.companyId();
-      const proposalEntries = await this.p.agentJournal.load(companyId, proposalId);
+      const proposalEntries = await this.p.agentJournal.load(this.companyId(), proposalId);
       const planned = proposalEntries.filter((entry) => entry.phase === 'planned');
       const owner = proposalEntries.find((entry) => entry.tool === AGENT_PROPOSAL_OWNER_TOOL);
       const principalUserId = getPrincipal()?.userId;
       if (
-        planned.length === 0 ||
-        !owner ||
-        typeof owner.args.userId !== 'string' ||
-        typeof principalUserId !== 'string' ||
-        owner.args.userId !== principalUserId
+        planned.length === 0
+        || !owner
+        || typeof owner.args.userId !== 'string'
+        || typeof principalUserId !== 'string'
+        || owner.args.userId !== principalUserId
       ) {
-        // Comparaison STRICTE des deux côtés : un double-undefined (principal machine futur,
-        // proposition orpheline) ne doit jamais passer pour une égalité de propriétaire.
+        // Le même 404 opaque couvre absence, autre tenant et autre utilisateur.
         return { ok: false, error: appNotFound('agent_proposal', 'redacted') };
       }
       const proposedAt = Date.parse(planned[0]!.at);
       const now = Date.parse(this.clock.now());
       const proposalAge = now - proposedAt;
       if (
-        !Number.isFinite(proposedAt) ||
-        !Number.isFinite(now) ||
-        proposalAge < 0 ||
-        proposalAge > AGENT_PROPOSAL_TTL_MS
+        !Number.isFinite(proposedAt)
+        || !Number.isFinite(now)
+        || proposalAge < 0
+        || proposalAge > AGENT_PROPOSAL_TTL_MS
       ) {
         return {
           ok: false,
@@ -1898,6 +1906,57 @@ export class BackendService {
           },
         };
       }
+      return ok({
+        proposalId,
+        planned,
+        expiresAt: new Date(proposedAt + AGENT_PROPOSAL_TTL_MS).toISOString(),
+      });
+    } catch (error) {
+      return {
+        ok: false,
+        error: {
+          kind: 'dependency',
+          port: 'agent-journal',
+          cause: error instanceof Error ? error.message : 'proposal load failed',
+        },
+      };
+    }
+  }
+
+  /** Aperçu owner-bound d'une proposition vocale/HTTP. Les args servent uniquement au diff ;
+   * `/ai/confirm` les ignore toujours et recharge ce même journal opaque. */
+  async previewBobProposal(input: { proposalId?: unknown }): Promise<Result<PendingAction, AppError>> {
+    const subscription = this.subscriptionFor(this.companyId());
+    if (!planCan(subscription.tier, 'ai_assistant')) {
+      return { ok: false, error: appForbidden("L'assistant Bob est inclus à partir de l'offre Solo.") };
+    }
+    const loaded = await this.loadOwnedAgentProposal(input.proposalId);
+    if (!loaded.ok) return loaded;
+    const items = loaded.value.planned.map((entry) => ({
+      tool: entry.tool,
+      args: { ...entry.args },
+      label: entry.label,
+    }));
+    const first = items[0]!;
+    this.logger.audit('ai.proposal.preview', { outcome: 'ok', actions: items.length });
+    return ok({
+      ...first,
+      proposalId: loaded.value.proposalId,
+      expiresAt: loaded.value.expiresAt,
+      ...(items.length > 1 ? { batch: items } : {}),
+    });
+  }
+
+  async confirmBob(input: { proposalId?: unknown }): Promise<Result<AgentRun, AppError>> {
+    const subscription = this.subscriptionFor(this.companyId());
+    if (!planCan(subscription.tier, 'ai_assistant'))
+      return { ok: false, error: appForbidden("L'assistant Bob est inclus à partir de l'offre Solo.") };
+    const proposalIdForAudit = typeof input.proposalId === 'string' ? input.proposalId : 'invalid';
+    try {
+      const companyId = this.companyId();
+      const loaded = await this.loadOwnedAgentProposal(input.proposalId);
+      if (!loaded.ok) return loaded;
+      const { proposalId, planned } = loaded.value;
 
       // Autorisation fermée : un outil sortant n'est exécutable que si son adapter a été audité
       // outbox commitée + worker idempotent. Toute future capability outbound est bloquée par
@@ -2066,7 +2125,7 @@ export class BackendService {
         },
       });
     } catch (e) {
-      this.logger.audit('ai.confirm', { proposalId, outcome: 'error', journal: 'failed' });
+      this.logger.audit('ai.confirm', { proposalId: proposalIdForAudit, outcome: 'error', journal: 'failed' });
       return {
         ok: false,
         error: { kind: 'dependency', port: 'agent-journal', cause: e instanceof Error ? e.message : 'journal append failed' },
@@ -2075,22 +2134,48 @@ export class BackendService {
   }
 
   // ——— Monétisation ———
-  /** GET /subscription (C26b) — abonnement RÉEL du tenant courant (guard : JWT + tenant requis). */
-  getSubscription() {
-    const subscription = this.subscriptionFor(this.companyId());
+  /**
+   * Lecture d'autorité de l'abonnement du tenant — GetSubscriptionStatus (@bob/core) sur la
+   * table `subscriptions` (pilier 2). Fallback HONNÊTE early-access (business actif, 0 €) pour
+   * les tenants provisionnés AVANT la table — jamais un essai fantôme. Partagée par
+   * GET /subscription, le bilan de fin d'essai et l'affordance vocale « où en est mon essai ».
+   */
+  private async subscriptionStatus(companyId: string): Promise<SubscriptionStatusView> {
+    const status = await new GetSubscriptionStatus({ subscriptions: this.p.subscriptions }).execute({
+      companyId,
+      now: this.clock.now(),
+    });
+    if (!status.ok) throw new Error('lecture d’abonnement impossible — use case pur sans échec attendu');
+    return status.value;
+  }
+
+  /**
+   * GET /subscription (C26b → pilier 2) — abonnement RÉEL du tenant courant, DB-backed
+   * (guard : JWT + tenant requis). Palier EFFECTIF de l'essai inversé : pendant l'essai le
+   * palier prêté (Pro), expiré → atterrissage doux sur Découverte (free, données conservées),
+   * fallback sans ligne → early-access historique (zéro régression pour l'existant).
+   */
+  async getSubscription() {
+    const s = await this.subscriptionStatus(this.companyId());
+    const effectiveTier: PlanTier = s.trialPhase === 'expired' ? 'free' : s.plan;
+    const earlyAccess = s.source === 'early_access_fallback';
     return {
-      tier: subscription.tier,
-      status: subscription.status,
-      // EARLY-ACCESS RÉEL (C26b) : aucun billing — rien n'est facturé (0 €), pas de fin de
-      // période. Ces champs basculeront avec subscriptionFor le jour où la table de billing existera.
-      earlyAccess: true,
-      priceCents: 0,
-      currentPeriodEnd: subscription.currentPeriodEnd,
-      features: [...planEntitlements(subscription.tier)],
-      ai: PLAN_CATALOG[subscription.tier].ai,
-      autonomyEntitlement: subscription.autonomyEntitlement(),
-      limits: PLAN_CATALOG[subscription.tier].limits,
-      addOns: [...subscription.addOns],
+      tier: effectiveTier,
+      status: s.status,
+      earlyAccess,
+      // Rien n'est facturé pendant l'accès anticipé ni pendant un essai : seul un abonnement
+      // ACTIF persisté porte le prix catalogue (source unique PLAN_CATALOG).
+      priceCents: !earlyAccess && s.status === 'active' ? PLAN_CATALOG[effectiveTier].priceCents : 0,
+      currentPeriodEnd: s.currentPeriodEnd,
+      trialEndsAt: s.trialEndsAt,
+      trialPhase: s.trialPhase,
+      trialDaysLeft: s.trialDaysLeft,
+      features: [...planEntitlements(effectiveTier)],
+      ai: PLAN_CATALOG[effectiveTier].ai,
+      // Add-ons pas encore persistés (aucune vente ouverte) : autonomie par défaut du palier.
+      autonomyEntitlement: resolveAutonomyEntitlement(effectiveTier, []),
+      limits: PLAN_CATALOG[effectiveTier].limits,
+      addOns: [] as string[],
       addOnCatalog: Object.values(ADDON_CATALOG),
       catalog: Object.values(PLAN_CATALOG),
     };
@@ -3448,6 +3533,18 @@ export class BackendService {
     // on pose ici le GUC RLS sur l'id provisionné pour que la politique WITH CHECK passe.
     const provisioned = await this.p.runWithTenant(companyId, async () => {
       await this.p.companies.save(r.value);
+      // Reverse trial 14 j (pilier 2, SPEC décision 1) : le compte NEUF démarre avec Pro
+      // complet, sans carte. startTrial est IDEMPOTENT : le retry de provisioning (cf. bloc
+      // supabaseAdmin ci-dessous) ne réinitialise JAMAIS une échéance d'essai déjà posée.
+      const now = this.clock.now();
+      const trial = startReverseTrial(now);
+      await this.p.subscriptions.startTrial({
+        id: `sub-${companyId}`,
+        companyId,
+        plan: trial.tier,
+        trialEndsAt: trial.endsAt,
+        now,
+      });
       return this.provisionDefaultDocumentFolders(companyId);
     });
     if (!provisioned.ok) return provisioned;

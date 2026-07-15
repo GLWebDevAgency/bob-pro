@@ -23,7 +23,7 @@
  * · l'écran succès (auth3) est omis : la session réelle bascule l'app immédiatement.
  * · fond 172° navy→nuit : même rampe tokens que l'onboarding C22 (marine.d1 → graphite.d1).
  */
-import { useState, type ComponentProps } from 'react';
+import { useEffect, useState, type ComponentProps } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
@@ -113,7 +113,15 @@ function NavyField({
 }
 
 /** CTA blanc plein du proto (Se connecter / Continuer / Créer mon compte). */
-function PrimaryCta({ label, busy, onPress }: { label: string; busy?: boolean; onPress: () => void }) {
+function PrimaryCta({
+  label,
+  busy,
+  onPress,
+}: {
+  label: string;
+  busy?: boolean;
+  onPress: () => void;
+}) {
   const { colors } = useTheme();
   return (
     <Pressable
@@ -125,7 +133,8 @@ function PrimaryCta({ label, busy, onPress }: { label: string; busy?: boolean; o
       style={({ pressed }) => ({
         backgroundColor: colors.surface,
         borderRadius: 15,
-        paddingVertical: 16,
+        minHeight: 52,
+        justifyContent: 'center',
         alignItems: 'center',
         opacity: busy ? 0.7 : 1,
         transform: [{ scale: pressed && !busy ? 0.97 : 1 }],
@@ -137,15 +146,31 @@ function PrimaryCta({ label, busy, onPress }: { label: string; busy?: boolean; o
 }
 
 /** Lien texte discret sur navy (mdp oublié, bascule login/inscription, passer l'étape). */
-function GhostLink({ label, onPress, align }: { label: string; onPress: () => void; align?: 'center' | 'right' }) {
+function GhostLink({
+  label,
+  onPress,
+  align,
+  disabled = false,
+}: {
+  label: string;
+  onPress: () => void;
+  align?: 'center' | 'right';
+  disabled?: boolean;
+}) {
   const { overlays } = useTheme();
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={label}
+      accessibilityState={{ disabled }}
+      disabled={disabled}
       onPress={onPress}
-      hitSlop={8}
-      style={{ alignSelf: align === 'right' ? 'flex-end' : 'center', paddingVertical: 6 }}
+      style={{
+        alignSelf: align === 'right' ? 'flex-end' : 'center',
+        minHeight: 44,
+        justifyContent: 'center',
+        opacity: disabled ? 0.55 : 1,
+      }}
     >
       <Text style={[font('label', 600), { fontSize: 13.5, color: overlays.white70 }]}>{label}</Text>
     </Pressable>
@@ -170,7 +195,7 @@ function ErrorLine({ message }: { message: string | null }) {
 export function LoginScreen() {
   const { colors, overlays, semantic, personality } = useTheme();
   const insets = useSafeAreaInsets();
-  const { signIn, signUp, resetPassword } = useAuth();
+  const { signIn, signUp, resetPassword, resendSignupConfirmation } = useAuth();
   const lookup = useLookupCompany();
 
   const [step, setStep] = useState<Step>('login');
@@ -182,6 +207,13 @@ export function LoginScreen() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null); // confirmations (reset envoyé)
   const [busy, setBusy] = useState(false);
+  const [resendBusy, setResendBusy] = useState(false);
+  const [resendAvailableAt, setResendAvailableAt] = useState(0);
+  const [resendRemainingSeconds, setResendRemainingSeconds] = useState(0);
+  const resendCooldownSeconds = Math.max(
+    resendRemainingSeconds,
+    Math.max(0, Math.ceil((resendAvailableAt - Date.now()) / 1_000)),
+  );
 
   const say = (key: I18nKey, params?: Readonly<Record<string, string | number>>): string =>
     t(key, params ? { personality, params } : { personality });
@@ -191,6 +223,23 @@ export function LoginScreen() {
     setNotice(null);
     setStep(next);
   };
+
+  useEffect(() => {
+    if (step !== 'verify' || resendAvailableAt === 0) {
+      setResendRemainingSeconds(0);
+      return;
+    }
+    const initialRemaining = Math.max(0, Math.ceil((resendAvailableAt - Date.now()) / 1_000));
+    setResendRemainingSeconds(initialRemaining);
+    if (initialRemaining === 0) return;
+    const update = (): void => {
+      const remaining = Math.max(0, Math.ceil((resendAvailableAt - Date.now()) / 1_000));
+      setResendRemainingSeconds(remaining);
+      if (remaining === 0) clearInterval(timer);
+    };
+    const timer = setInterval(update, 1_000);
+    return () => clearInterval(timer);
+  }, [resendAvailableAt, step]);
 
   // ── LOGIN — signIn réel, erreurs typées, reset honnête ────────────────────
   async function submitLogin(): Promise<void> {
@@ -290,10 +339,34 @@ export function LoginScreen() {
       return;
     }
     if (res.needsConfirmation) {
+      // L'email initial vient de partir : même garde que Supabase pour éviter les doubles taps
+      // et donner un retour temporel explicite à l'utilisateur.
+      setResendAvailableAt(Date.now() + 60_000);
       goTo('verify');
       return;
     }
     // Confirmation email désactivée côté projet : session immédiate → l'app bascule.
+  }
+
+  async function submitVerificationResend(): Promise<void> {
+    // Le timestamp ferme aussi la très courte fenêtre avant le premier tick du compteur React.
+    if (resendBusy || resendAvailableAt > Date.now()) return;
+    const cleanEmail = email.trim();
+    if (!cleanEmail) {
+      setError(say('auth.resetNeedEmail'));
+      return;
+    }
+    setResendBusy(true);
+    setError(null);
+    setNotice(null);
+    const res = await resendSignupConfirmation(cleanEmail);
+    setResendBusy(false);
+    if (res.error) {
+      setError(say(AUTH_ERR_KEY[res.error]));
+      return;
+    }
+    setResendAvailableAt(Date.now() + 60_000);
+    setNotice(say('auth.verifyResent'));
   }
 
   const backTarget: Partial<Record<Step, Step>> = {
@@ -385,7 +458,11 @@ export function LoginScreen() {
         error={error !== null}
       />
       <ErrorLine message={error} />
-      <PrimaryCta label={say('auth.siretCta')} busy={lookup.isPending} onPress={() => void submitSiret()} />
+      <PrimaryCta
+        label={say('auth.siretCta')}
+        busy={lookup.isPending}
+        onPress={() => void submitSiret()}
+      />
       <GhostLink
         label={say('auth.siretSkip')}
         onPress={() => {
@@ -480,13 +557,21 @@ export function LoginScreen() {
       >
         <MailIcon color={colors.ink900} size={40} strokeWidth={1.9} />
       </View>
-      <Text style={[font('screenH1'), { fontSize: 26, color: colors.surface, textAlign: 'center' }]}>
+      <Text
+        style={[font('screenH1'), { fontSize: 26, color: colors.surface, textAlign: 'center' }]}
+      >
         {say('auth.verifyTitle')}
       </Text>
       <Text
         style={[
           font('body'),
-          { fontSize: 15, lineHeight: 23, maxWidth: 300, textAlign: 'center', color: overlays.white66 },
+          {
+            fontSize: 15,
+            lineHeight: 23,
+            maxWidth: 300,
+            textAlign: 'center',
+            color: overlays.white66,
+          },
         ]}
       >
         {say('auth.verifyBody', { email: email.trim() })}
@@ -500,6 +585,29 @@ export function LoginScreen() {
           }}
         />
       </View>
+      <ErrorLine message={error} />
+      {notice ? (
+        <Text
+          accessibilityLiveRegion="polite"
+          style={[
+            font('sub'),
+            { fontSize: 13.5, color: semantic.successOnDark, textAlign: 'center' },
+          ]}
+        >
+          {notice}
+        </Text>
+      ) : null}
+      <GhostLink
+        label={
+          resendCooldownSeconds > 0
+            ? say('auth.verifyResendIn', { seconds: resendCooldownSeconds })
+            : resendBusy
+              ? say('auth.verifyResending')
+              : say('auth.verifyResend')
+        }
+        disabled={resendBusy || resendCooldownSeconds > 0}
+        onPress={() => void submitVerificationResend()}
+      />
     </View>
   );
 

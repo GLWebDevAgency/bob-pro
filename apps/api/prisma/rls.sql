@@ -31,6 +31,7 @@ BEGIN
     'accounting_entries',
     'accounting_entry_lines',
     'supplier_memory_profiles',
+    'subscriptions',
     'document_counters',
     'realtime_admission_events',
     'realtime_session_leases',
@@ -282,6 +283,12 @@ CREATE POLICY tenant_isolation ON accounting_entry_lines
 
 DROP POLICY IF EXISTS tenant_isolation ON supplier_memory_profiles;
 CREATE POLICY tenant_isolation ON supplier_memory_profiles
+  USING ("companyId" = current_setting('app.current_company_id', true))
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+
+-- subscriptions (pilier 2) : état d'abonnement par tenant — isolation companyId standard.
+DROP POLICY IF EXISTS tenant_isolation ON subscriptions;
+CREATE POLICY tenant_isolation ON subscriptions
   USING ("companyId" = current_setting('app.current_company_id', true))
   WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
 

@@ -39,6 +39,8 @@ import {
   type ExpenseSource,
   type SequenceCounterPort,
   type CounterKey,
+  type SubscriptionRecord,
+  type SubscriptionRepository,
 } from '@bob/core';
 import type {
   DocumentArchiveJob,
@@ -1808,6 +1810,91 @@ export class PrismaSupplierMemoryRepository implements SupplierMemoryRepository 
       lastSeenAt: row.lastSeenAt.toISOString(),
     };
   }
+}
+
+/**
+ * Abonnements (pilier 2) — une ligne par tenant (unique companyId), lue par
+ * GetSubscriptionStatus (@bob/core). startTrial IDEMPOTENT via createMany(skipDuplicates)
+ * (INSERT ... ON CONFLICT DO NOTHING : n'invalide pas la transaction tenant courante,
+ * même précédent que l'outbox) puis relecture — un retry de provisioning ne réinitialise
+ * jamais une échéance d'essai.
+ */
+export class PrismaSubscriptionRepository implements SubscriptionRepository {
+  constructor(private readonly prisma: PrismaService) {}
+
+  async findByCompanyId(companyId: string): Promise<SubscriptionRecord | null> {
+    const row = await this.prisma.client().subscription.findUnique({ where: { companyId } });
+    return row ? subscriptionRowToRecord(row) : null;
+  }
+
+  async startTrial(input: {
+    id: string;
+    companyId: string;
+    plan: SubscriptionRecord['plan'];
+    trialEndsAt: string;
+    now: string;
+  }): Promise<SubscriptionRecord> {
+    await this.prisma.client().subscription.createMany({
+      data: [
+        {
+          id: input.id,
+          companyId: input.companyId,
+          plan: input.plan,
+          status: 'trialing',
+          trialEndsAt: new Date(input.trialEndsAt),
+          createdAt: new Date(input.now),
+          updatedAt: new Date(input.now),
+        },
+      ],
+      skipDuplicates: true,
+    });
+    const row = await this.prisma.client().subscription.findUnique({ where: { companyId: input.companyId } });
+    if (!row) throw new Error(`Abonnement introuvable après startTrial pour ${input.companyId}.`);
+    return subscriptionRowToRecord(row);
+  }
+
+  async save(record: SubscriptionRecord): Promise<SubscriptionRecord> {
+    const data = {
+      plan: record.plan,
+      status: record.status,
+      trialEndsAt: record.trialEndsAt === null ? null : new Date(record.trialEndsAt),
+      currentPeriodEnd: record.currentPeriodEnd === null ? null : new Date(record.currentPeriodEnd),
+      store: record.store,
+      storeRef: record.storeRef,
+    };
+    const row = await this.prisma.client().subscription.upsert({
+      where: { companyId: record.companyId },
+      create: { id: record.id, companyId: record.companyId, createdAt: new Date(record.createdAt), ...data },
+      update: data,
+    });
+    return subscriptionRowToRecord(row);
+  }
+}
+
+function subscriptionRowToRecord(row: {
+  id: string;
+  companyId: string;
+  plan: string;
+  status: string;
+  trialEndsAt: Date | null;
+  currentPeriodEnd: Date | null;
+  store: string | null;
+  storeRef: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}): SubscriptionRecord {
+  return {
+    id: row.id,
+    companyId: row.companyId,
+    plan: row.plan as SubscriptionRecord['plan'],
+    status: row.status as SubscriptionRecord['status'],
+    trialEndsAt: row.trialEndsAt?.toISOString() ?? null,
+    currentPeriodEnd: row.currentPeriodEnd?.toISOString() ?? null,
+    store: (row.store as SubscriptionRecord['store']) ?? null,
+    storeRef: row.storeRef,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
 }
 
 export class PrismaSequenceCounter implements SequenceCounterPort {
