@@ -139,6 +139,7 @@ describe('HttpBobClient — feed vocal audité Bob Live', () => {
     ['fragment URL', readyBody({ audioUrl: 'https://storage.bob.test/speech.mp3#fragment' })],
     ['hash non canonique', readyBody({ audioSha256: AUDIO_SHA256.toUpperCase() })],
     ['mime alias non canonique', readyBody({ mimeType: 'audio/mp3' })],
+    ['MIME non persistable', readyBody({ mimeType: 'audio/ogg' })],
     ['audio trop volumineux', readyBody({ byteSize: 2 * 1024 * 1024 + 1 })],
     ['audio trop long', readyBody({ durationMs: 45_001 })],
     ['séquence serveur sentinelle', readyBody({ sequence: 0 })],
@@ -191,6 +192,7 @@ describe('HttpBobClient — feed vocal audité Bob Live', () => {
       return jsonResponse({
         controlReference: {
           turnId: TURN_ID,
+          acknowledgementId: DELIVERY_ID,
           contextRevision: 7,
           contextDigest: CONTEXT_DIGEST,
         },
@@ -213,6 +215,7 @@ describe('HttpBobClient — feed vocal audité Bob Live', () => {
       value: {
         controlReference: {
           turnId: TURN_ID,
+          acknowledgementId: DELIVERY_ID,
           contextRevision: 7,
           contextDigest: CONTEXT_DIGEST,
         },
@@ -226,6 +229,7 @@ describe('HttpBobClient — feed vocal audité Bob Live', () => {
       .mockResolvedValueOnce(jsonResponse({
         controlReference: {
           turnId: '00000000-0000-4000-8000-000000000099',
+          acknowledgementId: DELIVERY_ID,
           contextRevision: 7,
           contextDigest: CONTEXT_DIGEST,
         },
@@ -233,6 +237,7 @@ describe('HttpBobClient — feed vocal audité Bob Live', () => {
       .mockResolvedValueOnce(jsonResponse({
         controlReference: {
           turnId: TURN_ID,
+          acknowledgementId: DELIVERY_ID,
           contextRevision: 7,
           contextDigest: CONTEXT_DIGEST,
           navigate: '/cloture',
@@ -246,6 +251,43 @@ describe('HttpBobClient — feed vocal audité Bob Live', () => {
       .resolves.toMatchObject({ ok: false, error: { kind: 'dependency', port: 'api-contract' } });
     await expect(bob.acknowledgeRealtimeVoiceSpeechDelivery(SESSION_ID, TURN_ID, ARTIFACT_ID, input))
       .resolves.toMatchObject({ ok: false, error: { kind: 'dependency', port: 'api-contract' } });
+  });
+
+  it('refuse une référence de contrôle sans preuve d’acquittement audio', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({
+      controlReference: {
+        turnId: TURN_ID,
+        contextRevision: 7,
+        contextDigest: CONTEXT_DIGEST,
+      },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(client().acknowledgeRealtimeVoiceSpeechDelivery(
+      SESSION_ID,
+      TURN_ID,
+      ARTIFACT_ID,
+      { deliveryId: DELIVERY_ID, audioSha256: AUDIO_SHA256 },
+    )).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'dependency', port: 'api-contract' },
+    });
+  });
+
+  it.each([201, 204])('refuse un ACK de livraison au statut HTTP alternatif %i', async (status) => {
+    vi.stubGlobal('fetch', vi.fn(async () => status === 204
+      ? new Response(null, { status })
+      : jsonResponse({}, status)));
+
+    await expect(client().acknowledgeRealtimeVoiceSpeechDelivery(
+      SESSION_ID,
+      TURN_ID,
+      ARTIFACT_ID,
+      { deliveryId: DELIVERY_ID, audioSha256: AUDIO_SHA256 },
+    )).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'dependency', port: 'api-contract' },
+    });
   });
 
   it('annule l’artefact avec une raison allowlistée et une réponse sans contenu', async () => {
@@ -267,6 +309,20 @@ describe('HttpBobClient — feed vocal audité Bob Live', () => {
       ARTIFACT_ID,
       { cancellationId: CANCELLATION_ID, reason: 'barge_in' },
     )).resolves.toEqual({ ok: true, value: undefined });
+  });
+
+  it.each([200, 201])('refuse une annulation au statut HTTP alternatif %i', async (status) => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({}, status)));
+
+    await expect(client().cancelRealtimeVoiceSpeech(
+      SESSION_ID,
+      TURN_ID,
+      ARTIFACT_ID,
+      { cancellationId: CANCELLATION_ID, reason: 'barge_in' },
+    )).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'dependency', port: 'api-contract' },
+    });
   });
 
   it('refuse une raison libre et un identifiant d’idempotence invalide avant le réseau', async () => {

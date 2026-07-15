@@ -1133,6 +1133,67 @@ describe('HttpBobClient — assistant Bob (C40 ⑧ : ask/confirm/journal serveur
     expect(r.value.priceCents).toBe(0);
   });
 
+  it('BOB EXPERT FISCAL (Phase 1A) : getFiscalProfile → GET /fiscal-profile', async () => {
+    const payload = {
+      companyId: 'company-mercier',
+      legalForm: { status: 'source_fiable', value: 'EI', updatedAt: '2026-07-15T10:00:00.000Z', source: 'insee_siret' },
+      taxRegime: { status: 'hypothese', value: 'reel_ir', updatedAt: '2026-07-15T10:00:00.000Z', source: 'derived_legal_form' },
+      socialStatus: { status: 'hypothese', value: 'tns', updatedAt: '2026-07-15T10:00:00.000Z', source: 'derived_legal_form' },
+      activityNature: { status: 'manquant' },
+      vatRegime: { status: 'manquant' },
+      acre: { status: 'manquant' },
+      versementLiberatoire: { status: 'manquant' },
+      fiscalYearEnd: { status: 'hypothese', value: null, updatedAt: '2026-07-15T10:00:00.000Z', source: 'derived_legal_form' },
+    };
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      if (String(url) === 'https://api.bob.test/fiscal-profile' && init?.method === 'GET') {
+        return new Response(JSON.stringify(payload), { headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ error: { kind: 'not_found', resource: 'route' } }), { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-mercier' });
+
+    const r = await client.getFiscalProfile();
+
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(r.value).toEqual(payload);
+  });
+
+  it('BOB EXPERT FISCAL (Phase 1A) : updateFiscalProfileField → PATCH /fiscal-profile/:field, { value } dans le corps', async () => {
+    const payload = {
+      companyId: 'company-mercier',
+      legalForm: { status: 'source_fiable', value: 'EI', updatedAt: '2026-07-15T10:00:00.000Z', source: 'insee_siret' },
+      taxRegime: { status: 'confirme_utilisateur', value: 'is', updatedAt: '2026-07-15T10:00:00.000Z', source: 'user_form' },
+      socialStatus: { status: 'manquant' },
+      activityNature: { status: 'manquant' },
+      vatRegime: { status: 'manquant' },
+      acre: { status: 'manquant' },
+      versementLiberatoire: { status: 'manquant' },
+      fiscalYearEnd: { status: 'manquant' },
+    };
+    let capturedBody: unknown = null;
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      if (String(url) === 'https://api.bob.test/fiscal-profile/taxRegime' && init?.method === 'PATCH') {
+        capturedBody = init?.body ? JSON.parse(String(init.body)) : null;
+        return new Response(JSON.stringify(payload), { headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ error: { kind: 'not_found', resource: 'route' } }), { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-mercier' });
+
+    const r = await client.updateFiscalProfileField('taxRegime', 'is');
+
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(capturedBody).toEqual({ value: 'is' });
+    expect(r.value).toEqual(payload);
+  });
+
   it('pilier 2 : latestValueDigest → GET /engagement/digest/latest ; digest null (sans substance) voyage tel quel', async () => {
     const payload = {
       digest: null,

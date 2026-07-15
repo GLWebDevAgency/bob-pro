@@ -18,6 +18,7 @@ import {
   type ChartOfAccountsRepository,
   type SequenceCounterPort,
   type SubscriptionRepository,
+  type FiscalProfileRepository,
 } from '@bob/core';
 import type { DocumentArchiveJobRepository } from './document-archive-jobs';
 import type { NotificationJobRepository } from './notification-jobs';
@@ -27,6 +28,7 @@ import { InMemoryAgentJournalRepository } from './agent-journal';
 import type { SupplierMemoryRepository } from './supplier-memory';
 import { InMemorySupplierMemoryRepository } from './supplier-memory';
 import { InMemorySubscriptionRepository } from './subscriptions';
+import { InMemoryFiscalProfileRepository } from './fiscal-profiles';
 import type { CabinetInfrastructure } from '../cabinet/cabinet-infrastructure';
 import type { DocumentFolderDeletionPlanStore } from '../documents/document-folder-deletion-plan';
 import { MemoryCabinetInfrastructure } from '../cabinet/memory-cabinet-infrastructure';
@@ -116,6 +118,8 @@ export interface Persistence {
   supplierMemory: SupplierMemoryRepository;
   /** Abonnement persisté par tenant (pilier 2) — lu par GetSubscriptionStatus (@bob/core). */
   subscriptions: SubscriptionRepository;
+  /** Profil fiscal persisté par tenant (BOB EXPERT FISCAL, Phase 1A) — @bob/core. */
+  fiscalProfiles: FiscalProfileRepository;
   counters: SequenceCounterPort;
   cabinet: CabinetInfrastructure;
   /** Construit le singleton d'admission Bob Live avec le backend durable de cette persistance. */
@@ -172,6 +176,7 @@ export class InMemoryPersistence implements Persistence {
   readonly agentJournal = new InMemoryAgentJournalRepository();
   readonly supplierMemory = new InMemorySupplierMemoryRepository();
   readonly subscriptions = new InMemorySubscriptionRepository();
+  readonly fiscalProfiles = new InMemoryFiscalProfileRepository();
   readonly counters = new InMemorySequenceCounter();
   readonly cabinet = new MemoryCabinetInfrastructure();
   createRealtimeAdmission(policy: RealtimeAdmissionPolicy): RealtimeAdmissionPort {

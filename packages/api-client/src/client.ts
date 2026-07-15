@@ -42,6 +42,7 @@ import type { ValueDigest,
   DeleteDocumentFolderStrategy,
   DocumentAnalysis,
   SubscriptionInfo,
+  FiscalProfileView,
 } from '@bob/core';
 
 export interface QuoteView {
@@ -595,6 +596,13 @@ export interface BobClient {
    * En early-access le serveur renvoie earlyAccess: true, priceCents: 0 — l'écran Compte en dérive
    * l'état honnête. Local (démo) : early-access aligné sur le seed. */
   getSubscription(): Promise<Result<SubscriptionView, AppError>>;
+  /** GET /fiscal-profile (BOB EXPERT FISCAL, Phase 1A) : profil fiscal du tenant — dérivé par
+   *  hypothèses depuis la forme juridique si absent, chaque champ portant son statut
+   *  (source_fiable/confirme_utilisateur/hypothese/manquant, @bob/core FiscalDatum). */
+  getFiscalProfile(): Promise<Result<FiscalProfileView, AppError>>;
+  /** PATCH /fiscal-profile/:field : confirme UN champ (statut → confirme_utilisateur). Rejette
+   *  (AppError 'domain'/FISCAL_PROFILE_INCONSISTENT) si la mise à jour rend le profil incohérent. */
+  updateFiscalProfileField(field: string, value: unknown): Promise<Result<FiscalProfileView, AppError>>;
   /** Digest de valeur de la semaine écoulée (pilier 2) — calculé SERVEUR, null = sans substance. */
   latestValueDigest(): Promise<Result<ValueDigestView, AppError>>;
   /** Bilan de fin d'essai (pilier 2) : agrégats du digest CUMULÉS sur l'essai — trial null = pas d'essai.

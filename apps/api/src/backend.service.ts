@@ -39,6 +39,10 @@ import {
   GetSubscriptionStatus,
   resolveAutonomyEntitlement,
   type SubscriptionStatusView,
+  GetFiscalProfile,
+  UpdateFiscalProfileField,
+  parseFiscalProfileFieldPatch,
+  type FiscalProfileView,
   runDiagnostic,
   deriveFiscalCalendar,
   deriveVatPosition,
@@ -2186,6 +2190,40 @@ export class BackendService {
     if (!company) return { ok: false, error: appNotFound('company', this.companyId()) };
     const subscription = this.subscriptionFor(this.companyId());
     return ok(resolveTradeConfig(company.trade, subscription.tier, subscription.addOns));
+  }
+
+  // ——— Profil fiscal (BOB EXPERT FISCAL, Phase 1A — SPEC_EXPERT_FISCAL.md §V2) ———
+  /**
+   * GET /fiscal-profile — profil fiscal du tenant courant. Absent en base : dérivé par
+   * hypothèses depuis la forme juridique (GetFiscalProfile @bob/core), persisté au passage.
+   */
+  async getFiscalProfile(): Promise<Result<FiscalProfileView, AppError>> {
+    const companyId = this.companyId();
+    const company = await this.p.companies.findById(companyId);
+    if (!company) return { ok: false, error: appNotFound('company', companyId) };
+    return new GetFiscalProfile({ fiscalProfiles: this.p.fiscalProfiles }).execute({
+      company: { id: company.id, legalForm: company.legalForm, trade: company.trade },
+      now: this.clock.now(),
+    });
+  }
+
+  /**
+   * PATCH /fiscal-profile/:field — un champ à la fois, statut forcé 'confirme_utilisateur',
+   * invariants revalidés (UpdateFiscalProfileField @bob/core) — rejette avec l'erreur domaine
+   * (422) si la mise à jour rend le profil incohérent ; rien n'est modifié dans ce cas.
+   */
+  async updateFiscalProfileField(field: string, value: unknown): Promise<Result<FiscalProfileView, AppError>> {
+    const parsed = parseFiscalProfileFieldPatch(field, value);
+    if (!parsed.ok) return parsed;
+    const companyId = this.companyId();
+    const company = await this.p.companies.findById(companyId);
+    if (!company) return { ok: false, error: appNotFound('company', companyId) };
+    return new UpdateFiscalProfileField({ fiscalProfiles: this.p.fiscalProfiles }).execute({
+      company: { id: company.id, legalForm: company.legalForm, trade: company.trade },
+      patch: parsed.value,
+      now: this.clock.now(),
+      source: 'user_form',
+    });
   }
 
   async lookupCompany(siret: string): Promise<Result<CompanyLookupResult, AppError>> {

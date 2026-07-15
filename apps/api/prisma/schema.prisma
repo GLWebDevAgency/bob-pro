@@ -286,6 +286,7 @@ model Company {
   realtimeVoiceUsage      RealtimeVoiceUsageEvent[]
   realtimeVoiceUsageDaily RealtimeVoiceUsageDaily[]
   subscription            Subscription?
+  fiscalProfile           FiscalProfile?
 
   @@map("companies")
 }
@@ -1281,4 +1282,42 @@ model Subscription {
   updatedAt        DateTime            @updatedAt
 
   @@map("subscriptions")
+}
+
+// Profil fiscal (BOB EXPERT FISCAL, Phase 1A — SPEC_EXPERT_FISCAL.md §V2 point 2). Une ligne par
+// company (companyId unique), créée par GetFiscalProfile (@bob/core) à la première lecture via
+// dérivation d'hypothèses depuis la forme juridique.
+//
+// SHAPE CHOISIE : un colonne JSON PAR CHAMP FiscalDatum<T> (legalForm, taxRegime, socialStatus,
+// activityNature, vatRegime, acre, versementLiberatoire, fiscalYearEnd), chacune portant le
+// STATUT + valeur + horodatage + source sérialisés tels quels (ex. {"status":"hypothese",
+// "value":"micro","updatedAt":"...","source":"derived_legal_form"} ou {"status":"manquant"}).
+// Justification (vs colonnes typées + 4 colonnes de méta par champ = ~32 colonnes) :
+// · l'union discriminée FiscalDatum (statut 'manquant' SANS `value`) mappe directement en JSON,
+//   alors que des colonnes typées forceraient soit des colonnes nullable dupliquées par champ
+//   (valeur/statut/updatedAt/source), soit une table de lignes séparée bien plus lourde pour un
+//   agrégat aussi plat ;
+// · évite de créer 5 nouveaux enums Postgres (taxRegime/socialStatus/activityNature/vatRegime +
+//   AcreInfo/FiscalYearEnd en sous-objets) pour une donnée encore en évolution rapide (V1→V2→V3
+//   de la spec) — le domaine (@bob/core) reste la SEULE source de vérité des valeurs autorisées ;
+// · chaque champ reste individuellement adressable (PATCH /fiscal-profile/:field = UPDATE d'UNE
+//   colonne), donc pas de perte de granularité vs des colonnes typées.
+// Précédent dans ce schéma : `signatureProof Json?` (Quote), `vatByRate Json` — JSON déjà utilisé
+// pour des sous-structures polymorphes/évolutives plutôt que d'exploser les colonnes.
+model FiscalProfile {
+  id                   String   @id
+  companyId            String   @unique
+  company              Company  @relation(fields: [companyId], references: [id])
+  legalForm            Json
+  taxRegime            Json
+  socialStatus         Json
+  activityNature       Json
+  vatRegime            Json
+  acre                 Json
+  versementLiberatoire Json
+  fiscalYearEnd        Json
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@map("fiscal_profiles")
 }

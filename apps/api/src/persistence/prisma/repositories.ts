@@ -41,6 +41,9 @@ import {
   type CounterKey,
   type SubscriptionRecord,
   type SubscriptionRepository,
+  FiscalProfile,
+  type FiscalProfileProps,
+  type FiscalProfileRepository,
 } from '@bob/core';
 import type {
   DocumentArchiveJob,
@@ -1894,6 +1897,68 @@ function subscriptionRowToRecord(row: {
     storeRef: row.storeRef,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+/**
+ * Profil fiscal (BOB EXPERT FISCAL, Phase 1A) — une ligne par tenant (companyId unique), lue par
+ * GetFiscalProfile/UpdateFiscalProfileField (@bob/core). Chaque colonne JSON porte un
+ * FiscalDatum<T> sérialisé tel quel (cf. commentaire du modèle Prisma FiscalProfile — shape
+ * choisie pour ne pas dupliquer 4 colonnes de méta par champ ni créer 5 enums Postgres). L'id de
+ * la ligne (`fiscal-<companyId>`) suit le même pattern que `sub-<companyId>` (subscriptions) —
+ * dérivé, jamais exposé sur l'agrégat domaine (identité = companyId, unique par tenant).
+ */
+export class PrismaFiscalProfileRepository implements FiscalProfileRepository {
+  constructor(private readonly prisma: PrismaService) {}
+
+  async findByCompanyId(companyId: string): Promise<FiscalProfile | null> {
+    const row = await this.prisma.client().fiscalProfile.findUnique({ where: { companyId } });
+    if (!row) return null;
+    const r = FiscalProfile.of(fiscalProfileRowToProps(row));
+    return r.ok ? r.value : null;
+  }
+
+  async save(profile: FiscalProfile): Promise<void> {
+    const props = profile.toProps();
+    const data = {
+      legalForm: props.legalForm as unknown as Prisma.InputJsonValue,
+      taxRegime: props.taxRegime as unknown as Prisma.InputJsonValue,
+      socialStatus: props.socialStatus as unknown as Prisma.InputJsonValue,
+      activityNature: props.activityNature as unknown as Prisma.InputJsonValue,
+      vatRegime: props.vatRegime as unknown as Prisma.InputJsonValue,
+      acre: props.acre as unknown as Prisma.InputJsonValue,
+      versementLiberatoire: props.versementLiberatoire as unknown as Prisma.InputJsonValue,
+      fiscalYearEnd: props.fiscalYearEnd as unknown as Prisma.InputJsonValue,
+    };
+    await this.prisma.client().fiscalProfile.upsert({
+      where: { companyId: props.companyId },
+      create: { id: `fiscal-${props.companyId}`, companyId: props.companyId, ...data },
+      update: data,
+    });
+  }
+}
+
+function fiscalProfileRowToProps(row: {
+  companyId: string;
+  legalForm: Prisma.JsonValue;
+  taxRegime: Prisma.JsonValue;
+  socialStatus: Prisma.JsonValue;
+  activityNature: Prisma.JsonValue;
+  vatRegime: Prisma.JsonValue;
+  acre: Prisma.JsonValue;
+  versementLiberatoire: Prisma.JsonValue;
+  fiscalYearEnd: Prisma.JsonValue;
+}): FiscalProfileProps {
+  return {
+    companyId: row.companyId,
+    legalForm: row.legalForm as unknown as FiscalProfileProps['legalForm'],
+    taxRegime: row.taxRegime as unknown as FiscalProfileProps['taxRegime'],
+    socialStatus: row.socialStatus as unknown as FiscalProfileProps['socialStatus'],
+    activityNature: row.activityNature as unknown as FiscalProfileProps['activityNature'],
+    vatRegime: row.vatRegime as unknown as FiscalProfileProps['vatRegime'],
+    acre: row.acre as unknown as FiscalProfileProps['acre'],
+    versementLiberatoire: row.versementLiberatoire as unknown as FiscalProfileProps['versementLiberatoire'],
+    fiscalYearEnd: row.fiscalYearEnd as unknown as FiscalProfileProps['fiscalYearEnd'],
   };
 }
 

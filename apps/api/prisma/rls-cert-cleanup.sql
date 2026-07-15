@@ -31,6 +31,7 @@ DELETE FROM quote_creation_requests WHERE "quoteId" IN ('rls-quote-a', 'rls-quot
 DELETE FROM expenses WHERE id IN ('rls-expense-a', 'rls-expense-b', 'rls-expense-cross');
 DELETE FROM supplier_memory_profiles WHERE id IN ('rls-supplier-a', 'rls-supplier-b', 'rls-supplier-cross');
 DELETE FROM subscriptions WHERE id IN ('rls-subscription-a', 'rls-subscription-b', 'rls-subscription-cross');
+DELETE FROM fiscal_profiles WHERE id IN ('rls-fiscal-profile-a', 'rls-fiscal-profile-b', 'rls-fiscal-profile-cross');
 DELETE FROM document_folder_deletion_plans WHERE id IN ('rls-folder-plan-a', 'rls-folder-plan-b', 'rls-folder-plan-cross');
 DELETE FROM document_analyses WHERE "documentId" IN ('rls-doc-a', 'rls-doc-b', 'rls-doc-cross');
 DELETE FROM document_versions WHERE id IN ('rls-docver-a', 'rls-docver-b');

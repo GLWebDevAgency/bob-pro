@@ -101,6 +101,7 @@ DELETE FROM public_access_tokens WHERE id IN ('rls-token-a', 'rls-token-b');
 DELETE FROM expenses WHERE id IN ('rls-expense-a', 'rls-expense-b', 'rls-expense-cross');
 DELETE FROM supplier_memory_profiles WHERE id IN ('rls-supplier-a', 'rls-supplier-b', 'rls-supplier-cross');
 DELETE FROM subscriptions WHERE id IN ('rls-subscription-a', 'rls-subscription-b', 'rls-subscription-cross');
+DELETE FROM fiscal_profiles WHERE id IN ('rls-fiscal-profile-a', 'rls-fiscal-profile-b', 'rls-fiscal-profile-cross');
 DELETE FROM document_versions WHERE id IN ('rls-docver-a', 'rls-docver-b', 'rls-docver-a-validation');
 DELETE FROM documents WHERE id IN ('rls-doc-a', 'rls-doc-b', 'rls-doc-cross');
 DELETE FROM document_folders WHERE id IN ('rls-folder-a', 'rls-folder-b', 'rls-folder-cross');
@@ -126,6 +127,7 @@ DELETE FROM public_access_tokens WHERE id IN ('rls-token-a', 'rls-token-b');
 DELETE FROM expenses WHERE id IN ('rls-expense-a', 'rls-expense-b', 'rls-expense-cross');
 DELETE FROM supplier_memory_profiles WHERE id IN ('rls-supplier-a', 'rls-supplier-b', 'rls-supplier-cross');
 DELETE FROM subscriptions WHERE id IN ('rls-subscription-a', 'rls-subscription-b', 'rls-subscription-cross');
+DELETE FROM fiscal_profiles WHERE id IN ('rls-fiscal-profile-a', 'rls-fiscal-profile-b', 'rls-fiscal-profile-cross');
 DELETE FROM document_versions WHERE id IN ('rls-docver-a', 'rls-docver-b', 'rls-docver-a-validation');
 DELETE FROM documents WHERE id IN ('rls-doc-a', 'rls-doc-b', 'rls-doc-cross');
 DELETE FROM document_folders WHERE id IN ('rls-folder-a', 'rls-folder-b', 'rls-folder-cross');
@@ -180,6 +182,16 @@ VALUES (
 );
 INSERT INTO subscriptions (id, "companyId", plan, status, "trialEndsAt", "createdAt", "updatedAt")
 VALUES ('rls-subscription-a', 'rls-co-a', 'pro', 'trialing', '2026-01-15T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+INSERT INTO fiscal_profiles (
+  id, "companyId", "legalForm", "taxRegime", "socialStatus", "activityNature", "vatRegime", "acre",
+  "versementLiberatoire", "fiscalYearEnd", "createdAt", "updatedAt"
+)
+VALUES (
+  'rls-fiscal-profile-a', 'rls-co-a', '{"status":"manquant"}'::jsonb, '{"status":"manquant"}'::jsonb,
+  '{"status":"manquant"}'::jsonb, '{"status":"manquant"}'::jsonb, '{"status":"manquant"}'::jsonb,
+  '{"status":"manquant"}'::jsonb, '{"status":"manquant"}'::jsonb, '{"status":"manquant"}'::jsonb,
+  '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'
+);
 INSERT INTO documents (
   id, "companyId", kind, origin, status, filename, "mimeType", "byteSize", sha256, "storageKey",
   "linkedEntityType", "linkedEntityId", "documentDate", "issuedAt", "createdAt", "createdBy", "retentionUntil", "deletedAt"
@@ -331,6 +343,16 @@ VALUES (
 );
 INSERT INTO subscriptions (id, "companyId", plan, status, "trialEndsAt", "createdAt", "updatedAt")
 VALUES ('rls-subscription-b', 'rls-co-b', 'solo', 'active', NULL, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+INSERT INTO fiscal_profiles (
+  id, "companyId", "legalForm", "taxRegime", "socialStatus", "activityNature", "vatRegime", "acre",
+  "versementLiberatoire", "fiscalYearEnd", "createdAt", "updatedAt"
+)
+VALUES (
+  'rls-fiscal-profile-b', 'rls-co-b', '{"status":"manquant"}'::jsonb, '{"status":"manquant"}'::jsonb,
+  '{"status":"manquant"}'::jsonb, '{"status":"manquant"}'::jsonb, '{"status":"manquant"}'::jsonb,
+  '{"status":"manquant"}'::jsonb, '{"status":"manquant"}'::jsonb, '{"status":"manquant"}'::jsonb,
+  '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'
+);
 INSERT INTO documents (
   id, "companyId", kind, origin, status, filename, "mimeType", "byteSize", sha256, "storageKey",
   "linkedEntityType", "linkedEntityId", "documentDate", "issuedAt", "createdAt", "createdBy", "retentionUntil", "deletedAt"
@@ -415,6 +437,7 @@ SELECT pg_temp.assert_eq((SELECT count(*) FROM public_access_tokens), 1, 'public
 SELECT pg_temp.assert_eq((SELECT count(*) FROM expenses), 1, 'expenses tenant A');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM supplier_memory_profiles), 1, 'supplier_memory_profiles tenant A');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM subscriptions), 1, 'subscriptions tenant A');
+SELECT pg_temp.assert_eq((SELECT count(*) FROM fiscal_profiles), 1, 'fiscal_profiles tenant A');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM documents), 1, 'documents tenant A');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM document_analyses), 1, 'document_analyses tenant A');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM document_folders), 1, 'document_folders tenant A');
@@ -437,6 +460,7 @@ SELECT pg_temp.assert_eq((SELECT count(*) FROM agent_journal_entries WHERE id = 
 SELECT pg_temp.assert_eq((SELECT count(*) FROM accounting_entries WHERE id = 'rls-accentry-b'), 0, 'tenant A cannot read tenant B accounting entry');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM supplier_memory_profiles WHERE id = 'rls-supplier-b'), 0, 'tenant A cannot read tenant B supplier memory');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM subscriptions WHERE id = 'rls-subscription-b'), 0, 'tenant A cannot read tenant B subscription');
+SELECT pg_temp.assert_eq((SELECT count(*) FROM fiscal_profiles WHERE id = 'rls-fiscal-profile-b'), 0, 'tenant A cannot read tenant B fiscal profile');
 
 -- Claim/fence sous le rôle runtime : le tenant A peut poser son lease, jamais celui de B,
 -- et une génération obsolète ne peut pas finaliser le job.
@@ -577,6 +601,21 @@ BEGIN
     INSERT INTO subscriptions (id, "companyId", plan, status, "createdAt", "updatedAt")
     VALUES ('rls-subscription-cross', 'rls-co-b', 'business', 'active', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
     RAISE EXCEPTION 'RLS cert failed: cross-tenant subscription insert succeeded';
+  EXCEPTION WHEN insufficient_privilege THEN
+    NULL;
+  END;
+  BEGIN
+    INSERT INTO fiscal_profiles (
+      id, "companyId", "legalForm", "taxRegime", "socialStatus", "activityNature", "vatRegime", "acre",
+      "versementLiberatoire", "fiscalYearEnd", "createdAt", "updatedAt"
+    )
+    VALUES (
+      'rls-fiscal-profile-cross', 'rls-co-b', '{"status":"manquant"}'::jsonb, '{"status":"manquant"}'::jsonb,
+      '{"status":"manquant"}'::jsonb, '{"status":"manquant"}'::jsonb, '{"status":"manquant"}'::jsonb,
+      '{"status":"manquant"}'::jsonb, '{"status":"manquant"}'::jsonb, '{"status":"manquant"}'::jsonb,
+      '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'
+    );
+    RAISE EXCEPTION 'RLS cert failed: cross-tenant fiscal profile insert succeeded';
   EXCEPTION WHEN insufficient_privilege THEN
     NULL;
   END;
@@ -1014,6 +1053,7 @@ SELECT pg_temp.assert_eq((SELECT count(*) FROM public_access_tokens), 1, 'public
 SELECT pg_temp.assert_eq((SELECT count(*) FROM expenses), 1, 'expenses tenant B');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM supplier_memory_profiles), 1, 'supplier_memory_profiles tenant B');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM subscriptions), 1, 'subscriptions tenant B');
+SELECT pg_temp.assert_eq((SELECT count(*) FROM fiscal_profiles), 1, 'fiscal_profiles tenant B');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM documents), 1, 'documents tenant B');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM document_analyses), 1, 'document_analyses tenant B');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM document_folders), 1, 'document_folders tenant B');
@@ -1036,6 +1076,7 @@ SELECT pg_temp.assert_eq((SELECT count(*) FROM agent_journal_entries WHERE id = 
 SELECT pg_temp.assert_eq((SELECT count(*) FROM accounting_entries WHERE id = 'rls-accentry-a'), 0, 'tenant B cannot read tenant A accounting entry');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM supplier_memory_profiles WHERE id = 'rls-supplier-a'), 0, 'tenant B cannot read tenant A supplier memory');
 SELECT pg_temp.assert_eq((SELECT count(*) FROM subscriptions WHERE id = 'rls-subscription-a'), 0, 'tenant B cannot read tenant A subscription');
+SELECT pg_temp.assert_eq((SELECT count(*) FROM fiscal_profiles WHERE id = 'rls-fiscal-profile-a'), 0, 'tenant B cannot read tenant A fiscal profile');
 COMMIT;
 
 -- Pendant expand, N-1 peut encore écrire mais le trigger spool empêche toute livraison. Après

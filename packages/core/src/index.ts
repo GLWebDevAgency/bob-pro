@@ -195,3 +195,10 @@ export * from './domain/dunning/prescription';
 // Provision URSSAF micro (C-EXP5c — P03 : taux D613-4 CSS versionnés + déclaration pré-calculée)
 export * from './domain/fiscal/micro-social';
 export * from './application/fiscal/derive-urssaf-provision';
+
+// Profil fiscal & référentiel temporel (BOB EXPERT FISCAL, Phase 1A — SPEC_EXPERT_FISCAL.md §V2)
+export * from './domain/fiscal/fiscal-profile';
+export * from './domain/fiscal/referentiel';
+export * from './application/ports/fiscal-profile-repository';
+export * from './application/fiscal/get-fiscal-profile';
+export * from './application/fiscal/update-fiscal-profile-field';

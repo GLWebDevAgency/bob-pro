@@ -32,6 +32,7 @@ BEGIN
     'accounting_entry_lines',
     'supplier_memory_profiles',
     'subscriptions',
+    'fiscal_profiles',
     'document_counters',
     'realtime_admission_events',
     'realtime_session_leases',
@@ -289,6 +290,12 @@ CREATE POLICY tenant_isolation ON supplier_memory_profiles
 -- subscriptions (pilier 2) : état d'abonnement par tenant — isolation companyId standard.
 DROP POLICY IF EXISTS tenant_isolation ON subscriptions;
 CREATE POLICY tenant_isolation ON subscriptions
+  USING ("companyId" = current_setting('app.current_company_id', true))
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+
+-- fiscal_profiles (BOB EXPERT FISCAL, Phase 1A) : profil fiscal par tenant — isolation companyId standard.
+DROP POLICY IF EXISTS tenant_isolation ON fiscal_profiles;
+CREATE POLICY tenant_isolation ON fiscal_profiles
   USING ("companyId" = current_setting('app.current_company_id', true))
   WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
 

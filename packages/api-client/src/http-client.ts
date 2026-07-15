@@ -30,6 +30,7 @@ import type {
   DocumentFolderView,
   DeleteDocumentFolderStrategy,
   DocumentAnalysis,
+  FiscalProfileView,
 } from '@bob/core';
 import type {
   BobClient,
@@ -973,6 +974,12 @@ export class HttpBobClient implements BobClient {
 
   getSubscription() {
     return this.req<SubscriptionView>('GET', '/subscription');
+  }
+  getFiscalProfile() {
+    return this.req<FiscalProfileView>('GET', '/fiscal-profile');
+  }
+  updateFiscalProfileField(field: string, value: unknown) {
+    return this.req<FiscalProfileView>('PATCH', `/fiscal-profile/${encodeURIComponent(field)}`, { value });
   }
   latestValueDigest() {
     return this.req<ValueDigestView>('GET', '/engagement/digest/latest');

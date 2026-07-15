@@ -77,6 +77,12 @@ import { buildValueDigest,
   CreateChantier,
   AutofillCompanyFromSiret,
   ValidateVatNumber,
+  GetFiscalProfile,
+  UpdateFiscalProfileField,
+  parseFiscalProfileFieldPatch,
+  type FiscalProfile,
+  type FiscalProfileRepository,
+  type FiscalProfileView,
   SearchAddress,
   Company,
   Customer,
@@ -420,6 +426,14 @@ export class LocalBobClient implements BobClient {
   private readonly vat = new DemoVatAdapter();
   private readonly addresses = new DemoAddressAdapter();
   private readonly counters = new InMemorySequenceCounter();
+  // BOB EXPERT FISCAL (Phase 1A) : mêmes use cases @bob/core que le serveur, adaptateur en mémoire.
+  private readonly fiscalProfiles = new Map<string, FiscalProfile>();
+  private readonly fiscalProfileRepository: FiscalProfileRepository = {
+    findByCompanyId: async (companyId) => this.fiscalProfiles.get(companyId) ?? null,
+    save: async (profile) => {
+      this.fiscalProfiles.set(profile.companyId, profile);
+    },
+  };
   private readonly clock: ClockPort;
   private readonly snapshots: FixtureCashflowSnapshot;
   // Assistant local (C40 ⑧) : journal append-only en mémoire + agent @bob/ai instancié à la demande.
@@ -740,6 +754,29 @@ export class LocalBobClient implements BobClient {
 
   async getProfile(): Promise<Result<TradeConfig, AppError>> {
     return ok(resolveTradeConfig(seedCompany().trade, 'business'));
+  }
+
+  /** GET /fiscal-profile (BOB EXPERT FISCAL, Phase 1A) — MÊME use case @bob/core que le serveur :
+   *  dérivé par hypothèses depuis la fiche société du seed si absent, puis persisté en mémoire. */
+  async getFiscalProfile(): Promise<Result<FiscalProfileView, AppError>> {
+    const company = seedCompany();
+    return new GetFiscalProfile({ fiscalProfiles: this.fiscalProfileRepository }).execute({
+      company: { id: this.companyId, legalForm: company.legalForm, trade: company.trade },
+      now: this.clock.now(),
+    });
+  }
+
+  /** PATCH /fiscal-profile/:field (démo) — mêmes règles de validation/invariants que le serveur. */
+  async updateFiscalProfileField(field: string, value: unknown): Promise<Result<FiscalProfileView, AppError>> {
+    const parsed = parseFiscalProfileFieldPatch(field, value);
+    if (!parsed.ok) return parsed;
+    const company = seedCompany();
+    return new UpdateFiscalProfileField({ fiscalProfiles: this.fiscalProfileRepository }).execute({
+      company: { id: this.companyId, legalForm: company.legalForm, trade: company.trade },
+      patch: parsed.value,
+      now: this.clock.now(),
+      source: 'user_form',
+    });
   }
 
   /** GET /company/me (PONT-SERVEUR ④) — en démo, la fiche société du seed (Mercier). */

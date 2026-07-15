@@ -1397,6 +1397,22 @@ export class SubscriptionController {
   }
 }
 
+// BOB EXPERT FISCAL (Phase 1A — SPEC_EXPERT_FISCAL.md §V2) : profil fiscal du tenant.
+@Controller('fiscal-profile')
+export class FiscalProfileController {
+  constructor(private readonly backend: BackendService) {}
+  @Get()
+  async get() {
+    return unwrap(await this.backend.getFiscalProfile());
+  }
+  /** Un champ à la fois — { value } peut légitimement être null (fiscalYearEnd) ou false. */
+  @Patch(':field')
+  async update(@Param('field') field: string, @Body() body: { value?: unknown }) {
+    assertJsonObjectBody(body);
+    return unwrap(await this.backend.updateFiscalProfileField(field, body.value));
+  }
+}
+
 @Controller('ai')
 export class AiController {
   constructor(private readonly backend: BackendService) {}

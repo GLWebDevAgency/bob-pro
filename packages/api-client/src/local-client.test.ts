@@ -66,6 +66,41 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     expect(r.value.features).toContain('ai_assistant');
   });
 
+  it('BOB EXPERT FISCAL (Phase 1A) : getFiscalProfile dérive par hypothèses (EI/plombier → réel IR/TNS)', async () => {
+    const client = makeClient();
+    const r = await client.getFiscalProfile();
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.companyId).toBe(client.companyId);
+    expect(r.value.legalForm).toMatchObject({ status: 'source_fiable', value: 'EI', source: 'insee_siret' });
+    expect(r.value.taxRegime).toMatchObject({ status: 'hypothese', value: 'reel_ir' });
+    expect(r.value.socialStatus).toMatchObject({ status: 'hypothese', value: 'tns' });
+
+    // Une deuxième lecture relit la MÊME ligne persistée en mémoire, ne re-dérive pas.
+    const second = await client.getFiscalProfile();
+    expect(second.ok && second.value).toEqual(r.value);
+  });
+
+  it('BOB EXPERT FISCAL (Phase 1A) : updateFiscalProfileField confirme un champ, rejette une incohérence', async () => {
+    const client = makeClient();
+
+    const confirmed = await client.updateFiscalProfileField('vatRegime', 'reel_normal');
+    expect(confirmed.ok).toBe(true);
+    if (confirmed.ok) {
+      expect(confirmed.value.vatRegime).toMatchObject({ status: 'confirme_utilisateur', value: 'reel_normal', source: 'user_form' });
+    }
+
+    // EI (seed) impose TNS : forcer assimilé salarié viole l'invariant — erreur domaine, rien n'est modifié.
+    const rejected = await client.updateFiscalProfileField('socialStatus', 'assimile_salarie');
+    expect(rejected.ok).toBe(false);
+    if (!rejected.ok) {
+      expect(rejected.error).toMatchObject({
+        kind: 'domain',
+        error: { code: 'FISCAL_PROFILE_INCONSISTENT', rule: 'tns_requires_ei_micro_eurl' },
+      });
+    }
+  });
+
   it('C-EXP5b : getFiscalCalendar dérive l’échéancier de la société du seed (EI au réel simplifié)', async () => {
     const r = await makeClient().getFiscalCalendar();
     expect(r.ok).toBe(true);

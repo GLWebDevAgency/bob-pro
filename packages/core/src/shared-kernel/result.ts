@@ -11,7 +11,17 @@ export type DomainError =
   | { code: 'CABINET_LAST_ADMIN_REQUIRED'; cabinetId: string }
   | { code: 'CABINET_INVITATION_EXPIRED'; invitationId: string; expiresAt: string }
   | { code: 'CABINET_INVITATION_ALREADY_USED'; invitationId: string }
-  | { code: 'CABINET_INVITATION_EMAIL_MISMATCH'; invitationId: string };
+  | { code: 'CABINET_INVITATION_EMAIL_MISMATCH'; invitationId: string }
+  | {
+      code: 'FISCAL_PROFILE_INCONSISTENT';
+      rule:
+        | 'micro_tax_regime_requires_tns'
+        | 'assimile_requires_sasu_or_sas'
+        | 'tns_requires_ei_micro_eurl'
+        | 'versement_liberatoire_requires_micro'
+        | 'micro_legal_form_requires_micro_tax_regime';
+      message: string;
+    };
 
 export type DomainResult<T> = Result<T, DomainError>;
 
