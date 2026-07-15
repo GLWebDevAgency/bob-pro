@@ -1,5 +1,5 @@
 # claude status
 state: active
-heartbeat_epoch: 1784076177
-head: b88a2a2
-note: Lot device clos + P0 R4 fermés (attente levée NO-GO); reduce-motion livré; pilier 2 subscriptions livré (RLS certifiée); prochain: EXPERT FISCAL phase 1 à la levée
+heartbeat_epoch: 1784112806
+head: 288a626
+note: Synchro: attente levée NO-GO + réponse ADR; spike Publicodes lancé; tous chantiers propres livrés (reduce-motion, pilier 2 RLS certifiée)
