@@ -1,4 +1,4 @@
-import { type CallHandler, type ExecutionContext } from '@nestjs/common';
+import { ForbiddenException, type CallHandler, type ExecutionContext } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { lastValueFrom, of } from 'rxjs';
 import { describe, expect, it, vi } from 'vitest';
@@ -28,8 +28,9 @@ function contextFor(handler: (...args: never[]) => unknown, url: string, control
 describe('TenantPersistenceInterceptor — frontières transactionnelles', () => {
   it('enveloppe une route tenant ordinaire dans la transaction RLS', async () => {
     const runWithTenant = vi.fn(async (_companyId: string, fn: () => Promise<unknown>) => fn());
+    const companies = { findById: async () => null };
     const interceptor = new TenantPersistenceInterceptor(
-      { runWithTenant } as unknown as Persistence,
+      { runWithTenant, companies } as unknown as Persistence,
       new Reflector(),
     );
     const next = { handle: vi.fn(() => of('ok')) } satisfies CallHandler;
@@ -50,10 +51,44 @@ describe('TenantPersistenceInterceptor — frontières transactionnelles', () =>
     expect(runWithTenant).toHaveBeenCalledWith('co-1', expect.any(Function));
   });
 
+  it('refuse une route tenant ordinaire sur une company clôturée (403 ACCOUNT_CLOSED)', async () => {
+    const runWithTenant = vi.fn(async (_companyId: string, fn: () => Promise<unknown>) => fn());
+    const companies = { findById: async () => ({ isClosed: () => true }) };
+    const interceptor = new TenantPersistenceInterceptor(
+      { runWithTenant, companies } as unknown as Persistence,
+      new Reflector(),
+    );
+    const next = { handle: vi.fn(() => of('ok')) } satisfies CallHandler;
+
+    let thrown: unknown = null;
+    await requestContext.run(
+      {
+        correlationId: 'tenant-interceptor-closed-test',
+        principal: { userId: 'user-1', companyId: 'co-closed' },
+      },
+      async () => {
+        try {
+          await lastValueFrom(interceptor.intercept(
+            contextFor(TestController.prototype.regular, '/customers'),
+            next,
+          ));
+        } catch (e) {
+          thrown = e;
+        }
+      },
+    );
+
+    expect(thrown).toBeInstanceOf(ForbiddenException);
+    expect((thrown as ForbiddenException).getResponse()).toMatchObject({ code: 'ACCOUNT_CLOSED' });
+    // Le handler ne doit JAMAIS s'exécuter sur un tenant clôturé.
+    expect(next.handle).not.toHaveBeenCalled();
+  });
+
   it('laisse un worker décoré gérer ses claims courts hors transaction HTTP', async () => {
     const runWithTenant = vi.fn(async (_companyId: string, fn: () => Promise<unknown>) => fn());
+    const companies = { findById: async () => null };
     const interceptor = new TenantPersistenceInterceptor(
-      { runWithTenant } as unknown as Persistence,
+      { runWithTenant, companies } as unknown as Persistence,
       new Reflector(),
     );
     const next = { handle: vi.fn(() => of('accepted')) } satisfies CallHandler;
@@ -76,8 +111,9 @@ describe('TenantPersistenceInterceptor — frontières transactionnelles', () =>
 
   it('laisse POST /expenses ouvrir sa transaction atomique autour du claim idempotent', async () => {
     const runWithTenant = vi.fn(async (_companyId: string, fn: () => Promise<unknown>) => fn());
+    const companies = { findById: async () => null };
     const interceptor = new TenantPersistenceInterceptor(
-      { runWithTenant } as unknown as Persistence,
+      { runWithTenant, companies } as unknown as Persistence,
       new Reflector(),
     );
     const next = { handle: vi.fn(() => of('created')) } satisfies CallHandler;
@@ -99,8 +135,9 @@ describe('TenantPersistenceInterceptor — frontières transactionnelles', () =>
 
   it('laisse POST /quotes ouvrir la racine qui rollback le devis concurrent perdant', async () => {
     const runWithTenant = vi.fn(async (_companyId: string, fn: () => Promise<unknown>) => fn());
+    const companies = { findById: async () => null };
     const interceptor = new TenantPersistenceInterceptor(
-      { runWithTenant } as unknown as Persistence,
+      { runWithTenant, companies } as unknown as Persistence,
       new Reflector(),
     );
     const next = { handle: vi.fn(() => of('created')) } satisfies CallHandler;
@@ -122,8 +159,9 @@ describe('TenantPersistenceInterceptor — frontières transactionnelles', () =>
 
   it('laisse aussi la confirmation Factur-X donner la racine au coordinator de dépense', async () => {
     const runWithTenant = vi.fn(async (_companyId: string, fn: () => Promise<unknown>) => fn());
+    const companies = { findById: async () => null };
     const interceptor = new TenantPersistenceInterceptor(
-      { runWithTenant } as unknown as Persistence,
+      { runWithTenant, companies } as unknown as Persistence,
       new Reflector(),
     );
     const next = { handle: vi.fn(() => of('approved')) } satisfies CallHandler;

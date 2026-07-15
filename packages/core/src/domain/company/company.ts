@@ -1,7 +1,7 @@
 import { type DomainResult, ok, err } from '../../shared-kernel/result';
 import { type Address } from '../../shared-kernel/contact';
 import { Siren, Siret } from '../../shared-kernel/identifiers';
-import { type DateOnly } from '../../shared-kernel/time';
+import { type DateOnly, type Instant } from '../../shared-kernel/time';
 
 export type LegalForm = 'EI' | 'EURL' | 'SASU' | 'SARL' | 'SAS' | 'micro';
 export type VatRegime = 'franchise' | 'reel_simpl' | 'reel_normal';
@@ -50,6 +50,21 @@ export interface CompanyProps {
   iban?: string;
   bic?: string;
   decennale?: InsurancePolicy;
+  /**
+   * Clôture de compte (Apple 5.1.1(v), CloseAccount @bob/core) — marqueur additif, JAMAIS un
+   * cascade delete : présent = la company est clôturée, le tenant n'est plus accessible (guard
+   * API), mais TOUT le reste de cet objet (name, siret, address, iban…) reste INTACT. C'est le
+   * point : ces champs sont la source live lue à chaque régénération d'une pièce comptable déjà
+   * émise (ex. renderInvoicePdf relit company.name/address/rcsOrRm), donc les MODIFIER après coup
+   * falsifierait rétroactivement des factures/devis déjà émis — l'exact inverse de la rétention
+   * légale de 10 ans (Code de commerce). L'anonymisation du compte porte donc UNIQUEMENT sur
+   * l'identité personnelle de l'utilisateur (prénom, email, téléphone) : elle vit entièrement
+   * dans Supabase Auth (user_metadata), jamais ici — supprimée via l'admin API Supabase, en
+   * dehors de cet agrégat.
+   */
+  closedAt?: Instant;
+  /** Motif optionnel saisi par l'utilisateur à la clôture — jamais requis, jamais affiché ailleurs. */
+  closureReason?: string;
 }
 
 export class Company {
@@ -100,6 +115,17 @@ export class Company {
   }
   get decennale(): InsurancePolicy | undefined {
     return this.p.decennale;
+  }
+  get closedAt(): Instant | undefined {
+    return this.p.closedAt;
+  }
+  get closureReason(): string | undefined {
+    return this.p.closureReason;
+  }
+
+  /** Compte clôturé (CloseAccount) — le guard tenant API doit refuser toute requête au-delà. */
+  isClosed(): boolean {
+    return this.p.closedAt !== undefined;
   }
 
   isBtp(): boolean {

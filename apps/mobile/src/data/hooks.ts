@@ -100,6 +100,24 @@ export function useBillingPortal() {
   });
 }
 
+/**
+ * DELETE /account (Apple 5.1.1(v)) — clôture DÉFINITIVE du compte courant. Aucun onSuccess ici :
+ * la composition (signOut() + retour login automatique via le gate de session) vit dans l'appelant
+ * (CloseAccountSheet), pour rester séquencée avec la confirmation locale AVANT toute navigation.
+ * Aucun alertError générique non plus : l'écran affiche l'erreur inline (texte de confirmation
+ * erroné = le cas courant, pas une panne réseau à faire disparaître dans une alerte système).
+ */
+export function useCloseAccount() {
+  const client = useBobClient();
+  return useMutation({
+    mutationFn: async (input: { confirmationText: string; reason?: string }) => {
+      const r = await client.closeAccount(input);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+  });
+}
+
 export function useInvoicePaymentLink() {
   const client = useBobClient();
   return useMutation({

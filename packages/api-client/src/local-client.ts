@@ -84,6 +84,9 @@ import { buildValueDigest,
   type FiscalProfileRepository,
   type FiscalProfileView,
   SearchAddress,
+  CloseAccount,
+  type SubscriptionRepository,
+  type SubscriptionRecord,
   Company,
   Customer,
   deriveRelancePlan,
@@ -158,6 +161,8 @@ import type {
   NotificationReadThroughInput,
   NotificationReadThroughOutput,
   RegisterDeviceClientInput,
+  RevokeDeviceBindingClientInput,
+  UnregisterDeviceClientInput,
   ListDocumentsClientInput,
   UploadDocumentClientInput,
   CreateDocumentIntakeClientInput,
@@ -409,7 +414,17 @@ export class LocalBobClient implements BobClient {
   private readonly notifications: NotificationView[] = [];
   private readonly relanceDedupe = new Map<string, string>();
   private notificationSeq = 0;
-  private readonly pushDevices = new Map<string, string>();
+  private readonly pushDevices = new Map<string, {
+    installationId: string;
+    bindingId: string;
+    bindingGeneration: number;
+  }>();
+  private readonly pushInstallations = new Map<string, {
+    bindingId: string | null;
+    maxGeneration: number;
+    revocationSecret: string;
+    expoPushToken: string | null;
+  }>();
   private readonly companyLookup = new DemoCompanyLookupAdapter();
   // Unité de travail in-memory : annule l'allocation du compteur si fn lève (pas de trou) — parité backend.
   private readonly uow = {
@@ -432,6 +447,35 @@ export class LocalBobClient implements BobClient {
     findByCompanyId: async (companyId) => this.fiscalProfiles.get(companyId) ?? null,
     save: async (profile) => {
       this.fiscalProfiles.set(profile.companyId, profile);
+    },
+  };
+  // Démo hors-ligne : AUCUNE ligne d'abonnement n'existe jamais (getSubscription renvoie
+  // toujours l'early-access statique — cf. plus bas). Ce repo n'existe que pour satisfaire le
+  // port CloseAccount ; findByCompanyId reste vide, il n'y a donc jamais rien à annuler ici.
+  private readonly subscriptions = new Map<string, SubscriptionRecord>();
+  private readonly subscriptionRepository: SubscriptionRepository = {
+    findByCompanyId: async (companyId) => this.subscriptions.get(companyId) ?? null,
+    startTrial: async (input) => {
+      const existing = this.subscriptions.get(input.companyId);
+      if (existing) return existing;
+      const record: SubscriptionRecord = {
+        id: input.id,
+        companyId: input.companyId,
+        plan: input.plan,
+        status: 'trialing',
+        trialEndsAt: input.trialEndsAt,
+        currentPeriodEnd: null,
+        store: null,
+        storeRef: null,
+        createdAt: input.now,
+        updatedAt: input.now,
+      };
+      this.subscriptions.set(input.companyId, record);
+      return record;
+    },
+    save: async (record) => {
+      this.subscriptions.set(record.companyId, record);
+      return record;
     },
   };
   private readonly clock: ClockPort;
@@ -746,6 +790,26 @@ export class LocalBobClient implements BobClient {
 
   async billingPortal(): Promise<Result<{ url: string }, AppError>> {
     return ok({ url: 'https://demo.bobpro.fr/portail' });
+  }
+
+  /**
+   * DELETE /account (démo hors-ligne, Apple 5.1.1(v)) — MÊME use case @bob/core que le serveur
+   * (CloseAccount) : closedAt posé, liens de signature publics révoqués. Aucune identité
+   * Supabase à supprimer en local (pas de session réelle) — le signOut() mobile fait le reste.
+   */
+  async closeAccount(input: { confirmationText: string; reason?: string }): Promise<Result<{ closedAt: string }, AppError>> {
+    const r = await new CloseAccount({
+      companies: this.companies,
+      subscriptions: this.subscriptionRepository,
+      publicAccessTokens: this.publicAccessTokens,
+    }).execute({
+      companyId: this.companyId,
+      confirmationText: input.confirmationText,
+      reason: input.reason?.trim() || null,
+      now: this.clock.now(),
+    });
+    if (!r.ok) return r;
+    return ok({ closedAt: r.value.closedAt });
   }
 
   async invoicePaymentLink(invoiceId: string): Promise<Result<{ url: string }, AppError>> {
@@ -2179,13 +2243,105 @@ export class LocalBobClient implements BobClient {
     return ok({ updatedCount, readAt });
   }
 
-  async registerDevice(input: RegisterDeviceClientInput): Promise<Result<{ id: string }, AppError>> {
-    // Démo : aucun push sortant — on mémorise le token (même contrat, idempotent par token).
-    const existing = this.pushDevices.get(input.expoPushToken);
-    if (existing) return ok({ id: existing });
-    const id = `device-${this.pushDevices.size + 1}`;
-    this.pushDevices.set(input.expoPushToken, id);
-    return ok({ id });
+  async registerDevice(
+    input: RegisterDeviceClientInput,
+  ): Promise<Result<{ status: 'bound' | 'superseded' }, AppError>> {
+    const fence = this.pushInstallations.get(input.installationId);
+    const idempotent = fence?.maxGeneration === input.bindingGeneration
+      && fence.bindingId === input.bindingId
+      && fence.revocationSecret === input.revocationSecret
+      && fence.expoPushToken === input.expoPushToken;
+    if (
+      fence
+      && (
+        fence.revocationSecret !== input.revocationSecret
+        ||
+        input.bindingGeneration < fence.maxGeneration
+        || (input.bindingGeneration === fence.maxGeneration && !idempotent)
+      )
+    ) return ok({ status: 'superseded' });
+    this.pushInstallations.set(input.installationId, {
+      bindingId: input.bindingId,
+      maxGeneration: input.bindingGeneration,
+      revocationSecret: input.revocationSecret,
+      expoPushToken: input.expoPushToken,
+    });
+    for (const [token, device] of this.pushDevices) {
+      if (device.installationId === input.installationId || token === input.expoPushToken) {
+        if (token === input.expoPushToken && device.installationId !== input.installationId) {
+          const displaced = this.pushInstallations.get(device.installationId);
+          if (displaced?.bindingId === device.bindingId) {
+            this.pushInstallations.set(device.installationId, {
+              ...displaced,
+              bindingId: null,
+              expoPushToken: null,
+            });
+          }
+        }
+        this.pushDevices.delete(token);
+      }
+    }
+    this.pushDevices.set(input.expoPushToken, {
+      installationId: input.installationId,
+      bindingId: input.bindingId,
+      bindingGeneration: input.bindingGeneration,
+    });
+    return ok({ status: 'bound' });
+  }
+
+  async unregisterDevice(
+    _input: UnregisterDeviceClientInput,
+  ): Promise<Result<{ unregistered: true }, AppError>> {
+    // Endpoint legacy : les bindings v2 ne sont jamais supprimés par token seul.
+    return ok({ unregistered: true });
+  }
+
+  async revokeDeviceBinding(
+    input: RevokeDeviceBindingClientInput,
+  ): Promise<Result<{ accepted: true }, AppError>> {
+    return this.revokeLocalPushBinding(input, true);
+  }
+
+  async replayPushRevocation(
+    input: RevokeDeviceBindingClientInput,
+  ): Promise<Result<{ accepted: true }, AppError>> {
+    return this.revokeLocalPushBinding(input, false);
+  }
+
+  private revokeLocalPushBinding(
+    input: RevokeDeviceBindingClientInput,
+    canCreateFence: boolean,
+  ): Result<{ accepted: true }, AppError> {
+    const fence = this.pushInstallations.get(input.installationId);
+    if (!fence) {
+      if (canCreateFence) {
+        this.pushInstallations.set(input.installationId, {
+          bindingId: null,
+          maxGeneration: input.throughGeneration,
+          revocationSecret: input.revocationSecret,
+          expoPushToken: null,
+        });
+      }
+      return ok({ accepted: true });
+    }
+    if (fence.revocationSecret !== input.revocationSecret) return ok({ accepted: true });
+    if (fence.maxGeneration <= input.throughGeneration) {
+      this.pushInstallations.set(input.installationId, {
+        ...fence,
+        bindingId: null,
+        maxGeneration: input.throughGeneration,
+        expoPushToken: null,
+      });
+    }
+    // Parité PostgreSQL : une ancienne ligne orpheline <= N reste révocable même si le parent
+    // a déjà avancé au-delà de N.
+    for (const [token, device] of this.pushDevices) {
+      if (
+        device.installationId === input.installationId
+        && device.bindingGeneration <= input.throughGeneration
+      ) this.pushDevices.delete(token);
+    }
+    return ok({ accepted: true });
   }
 
   async registerPayment(input: {

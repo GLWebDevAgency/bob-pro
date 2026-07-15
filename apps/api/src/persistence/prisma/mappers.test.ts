@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { quoteRowToSnapshot, signatureProofToPersistence } from './mappers';
+import { companyPropsToCreate, companyRowToProps, quoteRowToSnapshot, signatureProofToPersistence } from './mappers';
+import { MERCIER_PROPS } from '@bob/core';
 
 /**
  * P0 R4 — le mapper ne fabrique plus JAMAIS une méthode de signature :
@@ -119,5 +120,64 @@ describe('signatureProofToPersistence — write-side symétrique', () => {
       }),
     ).toBeNull();
     expect(signatureProofToPersistence(null)).toBeNull();
+  });
+});
+
+describe('companyRowToProps / companyPropsToCreate — clôture de compte (closedAt/closureReason)', () => {
+  const closeAccountRow = {
+    id: MERCIER_PROPS.id,
+    name: MERCIER_PROPS.name,
+    legalForm: MERCIER_PROPS.legalForm,
+    siren: MERCIER_PROPS.siren,
+    siret: MERCIER_PROPS.siret,
+    apeCode: MERCIER_PROPS.apeCode ?? null,
+    trade: MERCIER_PROPS.trade,
+    vatRegime: MERCIER_PROPS.vatRegime,
+    rcsOrRm: MERCIER_PROPS.rcsOrRm ?? null,
+    addrLine1: MERCIER_PROPS.address.line1,
+    addrZip: MERCIER_PROPS.address.zip,
+    addrCity: MERCIER_PROPS.address.city,
+    tvaIntracom: null,
+    dateCreation: null,
+    iban: MERCIER_PROPS.iban ?? null,
+    bic: MERCIER_PROPS.bic ?? null,
+    insurerName: MERCIER_PROPS.decennale?.insurer ?? null,
+    policyNo: MERCIER_PROPS.decennale?.policyNo ?? null,
+    coverage: MERCIER_PROPS.decennale?.coverage ?? null,
+    policyExpiresAt: MERCIER_PROPS.decennale ? new Date(MERCIER_PROPS.decennale.expiresAt) : null,
+    closedAt: null as Date | null,
+    closureReason: null as string | null,
+  };
+
+  it('row ouverte (closedAt NULL) → props SANS closedAt/closureReason (jamais un champ fantôme)', () => {
+    const props = companyRowToProps(closeAccountRow);
+    expect(props.closedAt).toBeUndefined();
+    expect(props.closureReason).toBeUndefined();
+  });
+
+  it('row clôturée → closedAt ISO + closureReason repris tels quels', () => {
+    const props = companyRowToProps({
+      ...closeAccountRow,
+      closedAt: new Date('2026-07-16T09:00:00.000Z'),
+      closureReason: 'je change de métier',
+    });
+    expect(props.closedAt).toBe('2026-07-16T09:00:00.000Z');
+    expect(props.closureReason).toBe('je change de métier');
+  });
+
+  it('companyPropsToCreate : closedAt/closureReason absents → NULL en base (jamais une valeur inventée)', () => {
+    const data = companyPropsToCreate(MERCIER_PROPS);
+    expect(data.closedAt).toBeNull();
+    expect(data.closureReason).toBeNull();
+  });
+
+  it('companyPropsToCreate : le reste de la fiche légale (name/siret/adresse/iban/décennale) est écrit tel quel', () => {
+    const data = companyPropsToCreate({ ...MERCIER_PROPS, closedAt: '2026-07-16T09:00:00.000Z' });
+    expect(data.name).toBe(MERCIER_PROPS.name);
+    expect(data.siret).toBe(MERCIER_PROPS.siret);
+    expect(data.addrLine1).toBe(MERCIER_PROPS.address.line1);
+    expect(data.iban).toBe(MERCIER_PROPS.iban);
+    expect(data.insurerName).toBe(MERCIER_PROPS.decennale?.insurer);
+    expect(data.closedAt).toEqual(new Date('2026-07-16T09:00:00.000Z'));
   });
 });

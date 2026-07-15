@@ -74,6 +74,7 @@ interface CompanyRow {
   tvaIntracom: string | null; dateCreation: Date | null;
   iban: string | null; bic: string | null; insurerName: string | null; policyNo: string | null;
   coverage: string | null; policyExpiresAt: Date | null;
+  closedAt: Date | null; closureReason: string | null;
 }
 
 export function companyRowToProps(row: CompanyRow): CompanyProps {
@@ -101,6 +102,8 @@ export function companyRowToProps(row: CompanyRow): CompanyProps {
       expiresAt: row.policyExpiresAt.toISOString().slice(0, 10),
     };
   }
+  if (row.closedAt) props.closedAt = row.closedAt.toISOString();
+  if (row.closureReason) props.closureReason = row.closureReason;
   return props;
 }
 
@@ -126,6 +129,8 @@ export function companyPropsToCreate(p: CompanyProps) {
     policyNo: p.decennale?.policyNo ?? null,
     coverage: p.decennale?.coverage ?? null,
     policyExpiresAt: p.decennale ? new Date(p.decennale.expiresAt) : null,
+    closedAt: p.closedAt ? new Date(p.closedAt) : null,
+    closureReason: p.closureReason ?? null,
   };
 }
 

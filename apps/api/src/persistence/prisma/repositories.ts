@@ -61,7 +61,15 @@ import {
   type NotificationReadThroughResult,
   type NotificationUnreadPreview,
 } from '../notification-jobs';
-import type { DeviceRecord, DeviceRepository, RegisterDeviceInput } from '../devices';
+import type {
+  DeviceRecord,
+  DeviceRegistrationResult,
+  DeviceRepository,
+  InvalidPushDeliveryTarget,
+  PushDeliveryTarget,
+  RegisterDeviceInput,
+  RevokeDeviceThroughInput,
+} from '../devices';
 import type { AgentJournalRepository } from '../agent-journal';
 import { newAgentJournalEntryId } from '../agent-journal';
 import { DuplicateExpenseInvoiceError } from '../expense-duplicate-error';
@@ -1224,52 +1232,576 @@ export class PrismaNotificationJobRepository implements NotificationJobRepositor
  * les policies `device_token_rebind_*` ne rendent visible/mutable que cette ligne pendant le
  * statement, puis le GUC est effacé avant de rendre la main au reste de la requête.
  */
+async function assertPushRegistryReadCommitted(prisma: PrismaService): Promise<void> {
+  const [row] = await prisma.client().$queryRaw<Array<{ isolation: string }>>`
+    SELECT current_setting('transaction_isolation') AS isolation
+  `;
+  if (row?.isolation !== 'read committed') {
+    throw new Error('Push registry requires PostgreSQL READ COMMITTED isolation.');
+  }
+}
+
 export class PrismaDeviceRepository implements DeviceRepository {
   constructor(private readonly prisma: PrismaService) {}
 
-  async register(input: RegisterDeviceInput): Promise<DeviceRecord> {
-    const client = this.prisma.client();
+  async register(input: RegisterDeviceInput): Promise<DeviceRegistrationResult> {
     const at = new Date(input.now);
-    const rows = await client.$queryRaw<Array<{
-      id: string;
-      companyId: string;
-      userId: string | null;
-      expoPushToken: string;
-      platform: string | null;
-      createdAt: Date;
-      updatedAt: Date;
-    }>>(Prisma.sql`
-      WITH rebind_capability AS MATERIALIZED (
-        SELECT set_config('app.current_device_push_token', ${input.expoPushToken}, true)
-      )
-      INSERT INTO "devices" (
-        "id", "companyId", "userId", "expoPushToken", "platform", "createdAt", "updatedAt"
-      )
-      SELECT
-        ${input.id}, ${input.companyId}, ${input.userId}, ${input.expoPushToken}, ${input.platform}, ${at}, ${at}
-      FROM rebind_capability
-      ON CONFLICT ("expoPushToken") DO UPDATE SET
-        "companyId" = EXCLUDED."companyId",
-        "userId" = EXCLUDED."userId",
-        "platform" = EXCLUDED."platform",
-        "updatedAt" = EXCLUDED."updatedAt"
-      RETURNING "id", "companyId", "userId", "expoPushToken", "platform", "createdAt", "updatedAt"
-    `);
-    // Défense en profondeur : la capacité ne doit pas élargir une lecture ultérieure dans la même
-    // transaction request-scoped. Hors transaction explicite, le GUC local est déjà expiré.
-    await client.$executeRaw`SELECT set_config('app.current_device_push_token', '', true)`;
-    const row = rows[0];
-    if (!row) throw new Error('Device registration did not return a row.');
-    return deviceRowToRecord(row);
+    return this.prisma.runInTransaction(async () => {
+      const client = this.prisma.client();
+      await assertPushRegistryReadCommitted(this.prisma);
+
+      // IMPORTANT : le verrou est un statement distinct. En READ COMMITTED, le statement suivant
+      // prend ainsi un snapshot post-commit si cette requête a attendu un concurrent. Mettre lock +
+      // DML dans un même CTE conserverait un snapshot antérieur et pourrait perdre un logout.
+      await client.$executeRaw`
+        SELECT pg_advisory_xact_lock(hashtextextended('bob-device-registry-v2', 0))
+      `;
+      await client.$executeRaw`
+        SELECT
+          set_config('app.current_device_push_token', ${input.expoPushToken}, true),
+          set_config('app.current_device_installation_id', ${input.installationId}, true),
+          set_config('app.current_device_binding_id', ${input.bindingId}, true),
+          set_config('app.current_device_binding_generation', ${String(input.bindingGeneration)}, true),
+          set_config('app.current_device_revocation_hash', ${input.revocationSecretHash}, true),
+          set_config('app.current_device_user_id', ${input.userId ?? ''}, true),
+          set_config('app.current_device_operation', 'register', true)
+      `;
+
+      let failed = false;
+      try {
+        // Le guard HTTP peut avoir vu la société ouverte avant d'attendre le verrou. Cette relire
+        // sous snapshot frais ferme la course close-account→register.
+        const openCompany = await client.$queryRaw<Array<{ id: string }>>`
+          SELECT "id"
+          FROM "companies"
+          WHERE "id" = ${input.companyId}
+            AND "closedAt" IS NULL
+          LIMIT 1
+        `;
+        if (openCompany.length === 0) return { status: 'superseded' };
+
+        const installationRows = await client.$queryRaw<Array<{
+          id: string;
+          revocationSecretHash: string;
+          maxGeneration: number;
+          currentBindingId: string | null;
+          currentCompanyId: string | null;
+          currentUserId: string | null;
+        }>>`
+          SELECT "id", "revocationSecretHash", "maxGeneration", "currentBindingId",
+                 "currentCompanyId", "currentUserId"
+          FROM "push_installations"
+          WHERE "id" = ${input.installationId}::uuid
+            AND "revocationSecretHash" = ${input.revocationSecretHash}
+          LIMIT 1
+        `;
+        const installation = installationRows[0];
+
+        const byTokenRows = await client.$queryRaw<Array<{
+          id: string;
+          installationId: string | null;
+          bindingId: string | null;
+          bindingGeneration: number | null;
+        }>>`
+          SELECT "id", "installationId", "bindingId", "bindingGeneration"
+          FROM "devices"
+          WHERE "expoPushToken" = ${input.expoPushToken}
+          LIMIT 1
+        `;
+        const byToken = byTokenRows[0];
+
+        const byInstallationRows = await client.$queryRaw<Array<{
+          id: string;
+          expoPushToken: string;
+          bindingId: string | null;
+          bindingGeneration: number | null;
+        }>>`
+          SELECT "id", "expoPushToken", "bindingId", "bindingGeneration"
+          FROM "devices"
+          WHERE "installationId" = ${input.installationId}::uuid
+            AND "revocationSecretHash" = ${input.revocationSecretHash}
+          LIMIT 1
+        `;
+        const byInstallation = byInstallationRows[0];
+
+        const bindingCollision = await client.$queryRaw<Array<{ id: string }>>`
+          SELECT "id"
+          FROM "devices"
+          WHERE "bindingId" = ${input.bindingId}::uuid
+            AND "installationId" IS DISTINCT FROM ${input.installationId}::uuid
+          LIMIT 1
+        `;
+        const installationBindingCollision = await client.$queryRaw<Array<{ id: string }>>`
+          SELECT "id"
+          FROM "push_installations"
+          WHERE "currentBindingId" = ${input.bindingId}::uuid
+            AND "id" <> ${input.installationId}::uuid
+          LIMIT 1
+        `;
+        if (bindingCollision.length > 0 || installationBindingCollision.length > 0) {
+          return { status: 'superseded' };
+        }
+
+        if (installation) {
+          const idempotent =
+            input.bindingGeneration === installation.maxGeneration
+            && installation.currentBindingId === input.bindingId
+            && installation.currentCompanyId === input.companyId
+            && installation.currentUserId === input.userId
+            // Un token Expo peut tourner. Un retry à génération égale ne peut confirmer que le
+            // token déjà lié ; tout changement de token exige une génération strictement neuve.
+            && byInstallation?.expoPushToken === input.expoPushToken
+            && byInstallation.bindingId === input.bindingId
+            && byInstallation.bindingGeneration === input.bindingGeneration;
+          if (input.bindingGeneration < installation.maxGeneration || (
+            input.bindingGeneration === installation.maxGeneration && !idempotent
+          )) {
+            return { status: 'superseded' };
+          }
+
+          const updated = await client.$executeRaw`
+            UPDATE "push_installations"
+            SET "maxGeneration" = ${input.bindingGeneration},
+                "currentBindingId" = ${input.bindingId}::uuid,
+                "currentCompanyId" = ${input.companyId},
+                "currentUserId" = ${input.userId},
+                "lastConfirmedAt" = ${at},
+                "updatedAt" = ${at}
+            WHERE "id" = ${input.installationId}::uuid
+              AND "revocationSecretHash" = ${input.revocationSecretHash}
+          `;
+          if (updated !== 1) return { status: 'superseded' };
+        } else {
+          const inserted = await client.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+            INSERT INTO "push_installations" (
+              "id", "revocationSecretHash", "maxGeneration", "currentBindingId",
+              "currentCompanyId", "currentUserId", "lastConfirmedAt", "createdAt", "updatedAt"
+            ) VALUES (
+              ${input.installationId}::uuid, ${input.revocationSecretHash},
+              ${input.bindingGeneration}, ${input.bindingId}::uuid,
+              ${input.companyId}, ${input.userId}, ${at}, ${at}, ${at}
+            )
+            ON CONFLICT ("id") DO NOTHING
+            RETURNING "id"
+          `);
+          if (inserted.length !== 1) return { status: 'superseded' };
+        }
+
+        if (byToken?.installationId && byToken.installationId !== input.installationId) {
+          await client.$executeRaw`
+            UPDATE "push_installations"
+            SET "currentBindingId" = NULL,
+                "currentCompanyId" = NULL,
+                "currentUserId" = NULL,
+                "updatedAt" = ${at}
+            WHERE "id" = ${byToken.installationId}::uuid
+              AND "currentBindingId" IS NOT DISTINCT FROM ${byToken.bindingId}::uuid
+              AND "maxGeneration" IS NOT DISTINCT FROM ${byToken.bindingGeneration}
+          `;
+        }
+
+        if (byToken && byToken.installationId !== input.installationId) {
+          await client.$executeRaw`
+            DELETE FROM "devices"
+            WHERE "id" = ${byToken.id}
+              AND "expoPushToken" = ${input.expoPushToken}
+          `;
+        }
+        if (byInstallation && byInstallation.expoPushToken !== input.expoPushToken) {
+          await client.$executeRaw`
+            DELETE FROM "devices"
+            WHERE "id" = ${byInstallation.id}
+              AND "installationId" = ${input.installationId}::uuid
+              AND "revocationSecretHash" = ${input.revocationSecretHash}
+          `;
+        }
+
+        const rows = await client.$queryRaw<Array<{
+          id: string;
+          companyId: string;
+          userId: string | null;
+          expoPushToken: string;
+          platform: string | null;
+          installationId: string | null;
+          bindingId: string | null;
+          bindingGeneration: number | null;
+          revocationSecretHash: string | null;
+          createdAt: Date;
+          updatedAt: Date;
+        }>>(Prisma.sql`
+          INSERT INTO "devices" (
+            "id", "companyId", "userId", "expoPushToken", "platform",
+            "installationId", "bindingId", "bindingGeneration", "revocationSecretHash",
+            "createdAt", "updatedAt"
+          ) VALUES (
+            ${input.id}, ${input.companyId}, ${input.userId}, ${input.expoPushToken}, ${input.platform},
+            ${input.installationId}::uuid, ${input.bindingId}::uuid, ${input.bindingGeneration},
+            ${input.revocationSecretHash}, ${at}, ${at}
+          )
+          ON CONFLICT ("expoPushToken") DO UPDATE SET
+            "companyId" = EXCLUDED."companyId",
+            "userId" = EXCLUDED."userId",
+            "platform" = EXCLUDED."platform",
+            "installationId" = EXCLUDED."installationId",
+            "bindingId" = EXCLUDED."bindingId",
+            "bindingGeneration" = EXCLUDED."bindingGeneration",
+            "revocationSecretHash" = EXCLUDED."revocationSecretHash",
+            "updatedAt" = EXCLUDED."updatedAt"
+          RETURNING "id", "companyId", "userId", "expoPushToken", "platform",
+                    "installationId", "bindingId", "bindingGeneration", "revocationSecretHash",
+                    "createdAt", "updatedAt"
+        `);
+        const row = rows[0];
+        return row
+          ? { status: 'bound', device: deviceRowToRecord(row) }
+          : { status: 'superseded' };
+      } catch (error: unknown) {
+        failed = true;
+        throw error;
+      } finally {
+        // Ne laisse jamais une capacité élargir une lecture ultérieure de la transaction requête.
+        if (!failed) {
+          await client.$executeRaw`
+            SELECT
+              set_config('app.current_device_push_token', '', true),
+              set_config('app.current_device_installation_id', '', true),
+              set_config('app.current_device_binding_id', '', true),
+              set_config('app.current_device_binding_generation', '', true),
+              set_config('app.current_device_revocation_hash', '', true),
+              set_config('app.current_device_user_id', '', true),
+              set_config('app.current_device_operation', '', true)
+          `;
+        }
+      }
+    });
   }
 
-  async listByCompany(companyId: string): Promise<DeviceRecord[]> {
-    const rows = await this.prisma.client().device.findMany({ where: { companyId }, orderBy: { createdAt: 'asc' } });
-    return rows.map(deviceRowToRecord);
+  async listDeliveryTargetsByCompany(
+    companyId: string,
+    confirmedAfter: string,
+  ): Promise<PushDeliveryTarget[]> {
+    return this.prisma.runInTransaction(async () => {
+      const client = this.prisma.client();
+      await client.$executeRaw`
+        SELECT set_config('app.current_device_operation', 'deliver', true)
+      `;
+      let failed = false;
+      try {
+        // Le fence durable est l'autorité. Une ligne Device orpheline ou partiellement purgée ne
+        // doit jamais redevenir livrable, même si elle est encore visible dans le tenant.
+        const rows = await client.$queryRaw<Array<{
+          expoPushToken: string;
+          platform: string | null;
+          bindingId: string;
+          bindingGeneration: number;
+          updatedAt: Date;
+        }>>(Prisma.sql`
+          SELECT device."expoPushToken", device."platform", device."bindingId",
+                 device."bindingGeneration", installation."lastConfirmedAt" AS "updatedAt"
+          FROM "devices" AS device
+          INNER JOIN "push_installations" AS installation
+            ON installation."id" = device."installationId"
+           AND installation."revocationSecretHash" = device."revocationSecretHash"
+           AND installation."currentBindingId" = device."bindingId"
+           AND installation."maxGeneration" = device."bindingGeneration"
+           AND installation."currentCompanyId" = device."companyId"
+           AND installation."currentUserId" IS NOT DISTINCT FROM device."userId"
+          INNER JOIN "companies" AS company
+            ON company."id" = device."companyId"
+           AND company."closedAt" IS NULL
+          WHERE device."companyId" = ${companyId}
+            AND device."installationId" IS NOT NULL
+            AND device."bindingId" IS NOT NULL
+            AND device."bindingGeneration" IS NOT NULL
+            AND device."revocationSecretHash" IS NOT NULL
+            AND device."updatedAt" >= ${new Date(confirmedAfter)}
+            AND installation."lastConfirmedAt" >= ${new Date(confirmedAfter)}
+          ORDER BY device."createdAt" ASC
+        `);
+        return rows.map((row) => ({
+          expoPushToken: row.expoPushToken,
+          platform: row.platform,
+          bindingId: row.bindingId,
+          bindingGeneration: row.bindingGeneration,
+          updatedAt: row.updatedAt.toISOString(),
+        }));
+      } catch (error: unknown) {
+        failed = true;
+        throw error;
+      } finally {
+        if (!failed) {
+          await client.$executeRaw`
+            SELECT set_config('app.current_device_operation', '', true)
+          `;
+        }
+      }
+    });
   }
 
-  async removeByToken(companyId: string, expoPushToken: string): Promise<void> {
-    await this.prisma.client().device.deleteMany({ where: { companyId, expoPushToken } });
+  async revokeLegacyOwnerToken(
+    companyId: string,
+    userId: string | null,
+    expoPushToken: string,
+  ): Promise<void> {
+    await this.prisma.runInTransaction(async () => {
+      const client = this.prisma.client();
+      await client.$executeRaw`
+        SELECT
+          set_config('app.current_device_operation', 'legacy-owner-revoke', true),
+          set_config('app.current_device_user_id', ${userId ?? ''}, true)
+      `;
+      let failed = false;
+      try {
+        await client.$executeRaw`
+          DELETE FROM "devices" AS device
+          WHERE device."companyId" = ${companyId}
+            AND device."userId" IS NOT DISTINCT FROM ${userId}
+            AND device."expoPushToken" = ${expoPushToken}
+            AND device."installationId" IS NULL
+            AND device."bindingId" IS NULL
+            AND device."bindingGeneration" IS NULL
+            AND device."revocationSecretHash" IS NULL
+        `;
+      } catch (error: unknown) {
+        failed = true;
+        throw error;
+      } finally {
+        if (!failed) {
+          await client.$executeRaw`
+            SELECT
+              set_config('app.current_device_operation', '', true),
+              set_config('app.current_device_user_id', '', true)
+          `;
+        }
+      }
+    });
+  }
+
+  async removeInvalidDeliveryTarget(input: InvalidPushDeliveryTarget): Promise<void> {
+    const device = await this.prisma.runInTransaction(async () => {
+      const client = this.prisma.client();
+      await client.$executeRaw`
+        SELECT
+          set_config('app.current_device_operation', 'provider-revoke-lookup', true),
+          set_config('app.current_device_push_token', ${input.expoPushToken}, true),
+          set_config('app.current_device_binding_id', ${input.bindingId}, true),
+          set_config('app.current_device_binding_generation', ${String(input.bindingGeneration)}, true)
+      `;
+      let failed = false;
+      try {
+        return await client.device.findFirst({
+          where: {
+            companyId: input.companyId,
+            expoPushToken: input.expoPushToken,
+            bindingId: input.bindingId,
+            bindingGeneration: input.bindingGeneration,
+          },
+          select: {
+            installationId: true,
+            bindingId: true,
+            bindingGeneration: true,
+            revocationSecretHash: true,
+            userId: true,
+          },
+        });
+      } catch (error: unknown) {
+        failed = true;
+        throw error;
+      } finally {
+        if (!failed) {
+          await client.$executeRaw`
+            SELECT
+              set_config('app.current_device_operation', '', true),
+              set_config('app.current_device_push_token', '', true),
+              set_config('app.current_device_binding_id', '', true),
+              set_config('app.current_device_binding_generation', '', true)
+          `;
+        }
+      }
+    });
+    if (
+      !device?.installationId
+      || !device.bindingId
+      || device.bindingGeneration === null
+      || !device.revocationSecretHash
+    ) return;
+    await this.revokeThroughGeneration({
+      installationId: device.installationId,
+      throughGeneration: device.bindingGeneration,
+      revocationSecretHash: device.revocationSecretHash,
+      scope: { kind: 'authenticated', companyId: input.companyId, userId: device.userId },
+    });
+  }
+
+  async revokeThroughGeneration(input: RevokeDeviceThroughInput): Promise<void> {
+    const authenticated = input.scope.kind === 'authenticated';
+    const userId = input.scope.kind === 'authenticated' ? input.scope.userId : null;
+    const operation = authenticated ? 'revoke-auth' : 'revoke-public';
+    await this.prisma.runInTransaction(async () => {
+      const client = this.prisma.client();
+      await assertPushRegistryReadCommitted(this.prisma);
+      await client.$executeRaw`
+        SELECT
+          set_config('app.current_device_installation_id', ${input.installationId}, true),
+          set_config('app.current_device_binding_generation', ${String(input.throughGeneration)}, true),
+          set_config('app.current_device_revocation_hash', ${input.revocationSecretHash}, true),
+          set_config('app.current_device_user_id', ${userId ?? ''}, true),
+          set_config('app.current_device_operation', ${operation}, true)
+      `;
+      let failed = false;
+      try {
+        if (!authenticated) {
+          // Un appel public absent ou au mauvais secret n'acquiert jamais le verrou global : il
+          // reste one-way et ne peut pas provoquer de head-of-line blocking sans la capacité.
+          const preflight = await client.$queryRaw<Array<{ present: number }>>`
+            SELECT 1::integer AS present
+            FROM "push_installations"
+            WHERE "id" = ${input.installationId}::uuid
+              AND "revocationSecretHash" = ${input.revocationSecretHash}
+            LIMIT 1
+          `;
+          if (preflight.length === 0) return;
+        }
+
+        // Même ordre global que register, dans un statement séparé. Le SELECT/DML suivant prend
+        // un snapshot frais après l'attente grâce à READ COMMITTED certifié ci-dessus.
+        await client.$executeRaw`
+          SELECT pg_advisory_xact_lock(hashtextextended('bob-device-registry-v2', 0))
+        `;
+        const installation = (await client.$queryRaw<Array<{
+          id: string;
+          maxGeneration: number;
+        }>>`
+          SELECT "id", "maxGeneration"
+          FROM "push_installations"
+          WHERE "id" = ${input.installationId}::uuid
+            AND "revocationSecretHash" = ${input.revocationSecretHash}
+          LIMIT 1
+        `)[0];
+
+        if (installation && installation.maxGeneration <= input.throughGeneration) {
+          await client.$executeRaw`
+            UPDATE "push_installations"
+            SET "maxGeneration" = ${input.throughGeneration},
+                "currentBindingId" = NULL,
+                "currentCompanyId" = NULL,
+                "currentUserId" = NULL,
+                "updatedAt" = CURRENT_TIMESTAMP
+            WHERE "id" = ${input.installationId}::uuid
+              AND "revocationSecretHash" = ${input.revocationSecretHash}
+              AND "maxGeneration" <= ${input.throughGeneration}
+          `;
+        } else if (!installation && authenticated) {
+          // Authentifié : une révocation peut précéder le POST d'inscription. Le fence empêche ce
+          // POST retardé de ressusciter la session. Le chemin public ne crée jamais d'oracle/ligne.
+          await client.$executeRaw`
+            INSERT INTO "push_installations" (
+              "id", "revocationSecretHash", "maxGeneration", "currentBindingId",
+              "currentCompanyId", "currentUserId", "lastConfirmedAt", "createdAt", "updatedAt"
+            ) VALUES (
+              ${input.installationId}::uuid, ${input.revocationSecretHash},
+              ${input.throughGeneration}, NULL, NULL, NULL, NULL,
+              CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+            )
+            ON CONFLICT ("id") DO NOTHING
+          `;
+        }
+
+        // Toujours purger les restes <= high-water : le parent peut déjà être plus récent alors
+        // qu'une ancienne ligne Device orpheline existe après une panne partielle historique.
+        await client.$executeRaw`
+          DELETE FROM "devices"
+          WHERE "installationId" = ${input.installationId}::uuid
+            AND "revocationSecretHash" = ${input.revocationSecretHash}
+            AND "bindingGeneration" <= ${input.throughGeneration}
+        `;
+      } catch (error: unknown) {
+        failed = true;
+        throw error;
+      } finally {
+        if (!failed) {
+          await client.$executeRaw`
+            SELECT
+              set_config('app.current_device_installation_id', '', true),
+              set_config('app.current_device_binding_id', '', true),
+              set_config('app.current_device_binding_generation', '', true),
+              set_config('app.current_device_revocation_hash', '', true),
+              set_config('app.current_device_user_id', '', true),
+              set_config('app.current_device_operation', '', true)
+          `;
+        }
+      }
+    });
+  }
+
+  /**
+   * Clôture de compte (CloseAccount) : purge atomique de TOUT push pour ce tenant. Volontairement
+   * PAS le protocole revokeThroughGeneration (capacité CLIENT-initiée résistante au vol de JWT,
+   * exige le secret de révocation détenu par l'appareil) : ici c'est le tenant lui-même qui se
+   * clôture. Les fences restent comme high-water tombstones mais sont neutralisés avant la purge
+   * des Device, sous le même verrou global que register/revoke.
+   */
+  async deleteAllForCompany(companyId: string): Promise<void> {
+    await this.prisma.runInTransaction(async () => {
+      const client = this.prisma.client();
+      await assertPushRegistryReadCommitted(this.prisma);
+      await client.$executeRaw`
+        SELECT pg_advisory_xact_lock(hashtextextended('bob-device-registry-v2', 0))
+      `;
+      await client.$executeRaw`
+        SELECT set_config('app.current_device_operation', 'close-account', true)
+      `;
+      let failed = false;
+      try {
+        const installations = await client.$queryRaw<Array<{
+          installationId: string;
+          revocationSecretHash: string;
+        }>>`
+          SELECT "installationId", "revocationSecretHash"
+          FROM "devices"
+          WHERE "companyId" = ${companyId}
+            AND "installationId" IS NOT NULL
+            AND "revocationSecretHash" IS NOT NULL
+        `;
+        // Une capacité exacte par installation garde la nouvelle ligne neutralisée visible à
+        // l'UPDATE RLS sans exposer les tombstones d'autres tenants.
+        for (const installation of installations) {
+          await client.$executeRaw`
+            SELECT
+              set_config('app.current_device_installation_id', ${installation.installationId}, true),
+              set_config('app.current_device_revocation_hash', ${installation.revocationSecretHash}, true)
+          `;
+          await client.$executeRaw`
+            UPDATE "push_installations"
+            SET "currentBindingId" = NULL,
+                "currentCompanyId" = NULL,
+                "currentUserId" = NULL,
+                "updatedAt" = CURRENT_TIMESTAMP
+            WHERE "id" = ${installation.installationId}::uuid
+              AND "revocationSecretHash" = ${installation.revocationSecretHash}
+              AND "currentCompanyId" = ${companyId}
+          `;
+        }
+        await client.$executeRaw`
+          DELETE FROM "devices"
+          WHERE "companyId" = ${companyId}
+        `;
+      } catch (error: unknown) {
+        failed = true;
+        throw error;
+      } finally {
+        // Une erreur SQL avorte déjà la transaction et ses SET LOCAL. Ne pas masquer la cause
+        // primaire par un second statement 25P02 dans le finally.
+        if (!failed) {
+          await client.$executeRaw`
+            SELECT
+              set_config('app.current_device_installation_id', '', true),
+              set_config('app.current_device_revocation_hash', '', true),
+              set_config('app.current_device_operation', '', true)
+          `;
+        }
+      }
+    });
   }
 }
 
@@ -1279,6 +1811,10 @@ function deviceRowToRecord(row: {
   userId: string | null;
   expoPushToken: string;
   platform: string | null;
+  installationId: string | null;
+  bindingId: string | null;
+  bindingGeneration: number | null;
+  revocationSecretHash: string | null;
   createdAt: Date;
   updatedAt: Date;
 }): DeviceRecord {
@@ -1288,6 +1824,10 @@ function deviceRowToRecord(row: {
     userId: row.userId,
     expoPushToken: row.expoPushToken,
     platform: row.platform,
+    installationId: row.installationId,
+    bindingId: row.bindingId,
+    bindingGeneration: row.bindingGeneration,
+    revocationSecretHash: row.revocationSecretHash,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -1703,6 +2243,14 @@ export class PrismaPublicAccessTokenRepository implements PublicAccessTokenRepos
         revokedAt: null,
         expiresAt: { gt: new Date(input.at) },
       },
+      data: { revokedAt: new Date(input.at) },
+    });
+  }
+
+  /** Clôture de compte : coupe TOUS les liens publics actifs du tenant, tous types confondus. */
+  async revokeAllForCompany(input: { companyId: string; at: string }): Promise<void> {
+    await this.prisma.client().publicAccessToken.updateMany({
+      where: { companyId: input.companyId, revokedAt: null },
       data: { revokedAt: new Date(input.at) },
     });
   }

@@ -10,6 +10,37 @@ const asPrincipal = <T>(companyId: string, userId: string, fn: () => Promise<T>)
 const asTenant = <T>(fn: () => Promise<T>): Promise<T> =>
   asPrincipal(TENANT, 'user-test', fn);
 
+const INSTALLATION_A = '11111111-1111-4111-8111-111111111111';
+const INSTALLATION_B = '22222222-2222-4222-8222-222222222222';
+const BINDING_A1 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1';
+const BINDING_A2 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2';
+const BINDING_B1 = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1';
+const SECRET_A = 'ab'.repeat(32);
+const SECRET_B = 'cd'.repeat(32);
+
+function registration(overrides: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
+  return {
+    expoPushToken: 'ExponentPushToken[abcdef123456]',
+    platform: 'ios',
+    installationId: INSTALLATION_A,
+    bindingId: BINDING_A1,
+    bindingGeneration: 1,
+    revocationSecret: SECRET_A,
+    ...overrides,
+  };
+}
+
+function revocation(overrides: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
+  return {
+    installationId: INSTALLATION_A,
+    throughGeneration: 1,
+    revocationSecret: SECRET_A,
+    ...overrides,
+  };
+}
+
+const ALL_ACTIVE = '1970-01-01T00:00:00.000Z';
+
 async function seedJob(p: InMemoryPersistence, id: string, dedupeKey: string, at: string): Promise<void> {
   await p.notificationJobs.enqueue({
     id,
@@ -133,62 +164,196 @@ describe('NotificationsApiService — fil company-scoped (C25)', () => {
     }
   });
 
-  it('POST /devices : token validé, idempotent et jamais ré-émis dans la réponse', async () => {
+  it('POST /devices v2 : contrat exact, idempotent et aucune capacité ré-émise', async () => {
     const p = new InMemoryPersistence();
     const service = new NotificationsApiService(p);
 
-    const bad = await asTenant(() => service.registerDevice({ expoPushToken: 'pas-un-token' }));
+    const bad = await asTenant(() => service.registerDevice(registration({ expoPushToken: 'pas-un-token' })));
     expect(!bad.ok && bad.error.kind).toBe('validation');
 
-    const ok1 = await asTenant(() => service.registerDevice({ expoPushToken: 'ExponentPushToken[abcdef123456]', platform: 'ios' }));
-    const ok2 = await asTenant(() => service.registerDevice({ expoPushToken: 'ExponentPushToken[abcdef123456]', platform: 'ios' }));
-    expect(ok1.ok && ok2.ok).toBe(true);
-    if (!ok1.ok || !ok2.ok) return;
-    expect(ok2.value.id).toBe(ok1.value.id); // upsert, pas de doublon
-    expect(ok1.value).not.toHaveProperty('expoPushToken');
-    expect(await p.devices.listByCompany(TENANT)).toHaveLength(1);
+    await expect(asTenant(() => service.registerDevice(registration())))
+      .resolves.toEqual({ ok: true, value: { status: 'bound' } });
+    await expect(asTenant(() => service.registerDevice(registration())))
+      .resolves.toEqual({ ok: true, value: { status: 'bound' } });
+    const targets = await p.devices.listDeliveryTargetsByCompany(TENANT, ALL_ACTIVE);
+    expect(targets).toHaveLength(1);
+    expect(targets[0]).toMatchObject({
+      expoPushToken: 'ExponentPushToken[abcdef123456]',
+      bindingId: BINDING_A1,
+      bindingGeneration: 1,
+    });
+    expect(targets[0]).not.toHaveProperty('revocationSecretHash');
   });
 
-  it('transfère un token global vers le dernier tenant sans laisser de destinataire fantôme', async () => {
+  it('refuse qu’un ancien token remplace le token actif à génération égale', async () => {
+    const p = new InMemoryPersistence();
+    const service = new NotificationsApiService(p);
+    const tokenA = 'ExponentPushToken[tokenrotation111]';
+    const tokenB = 'ExponentPushToken[tokenrotation222]';
+
+    await expect(asTenant(() => service.registerDevice(registration({ expoPushToken: tokenA }))))
+      .resolves.toEqual({ ok: true, value: { status: 'bound' } });
+    await expect(asTenant(() => service.registerDevice(registration({ expoPushToken: tokenB }))))
+      .resolves.toEqual({ ok: true, value: { status: 'superseded' } });
+    await expect(p.devices.listDeliveryTargetsByCompany(TENANT, ALL_ACTIVE)).resolves.toMatchObject([
+      { expoPushToken: tokenA, bindingId: BINDING_A1, bindingGeneration: 1 },
+    ]);
+
+    await expect(asTenant(() => service.registerDevice(registration({
+      expoPushToken: tokenB,
+      bindingId: BINDING_A2,
+      bindingGeneration: 2,
+    }))))
+      .resolves.toEqual({ ok: true, value: { status: 'bound' } });
+    await expect(p.devices.listDeliveryTargetsByCompany(TENANT, ALL_ACTIVE)).resolves.toMatchObject([
+      { expoPushToken: tokenB, bindingId: BINDING_A2, bindingGeneration: 2 },
+    ]);
+  });
+
+  it('exclut fail-closed un Device orphelin dès que son fence actif diverge', async () => {
+    const p = new InMemoryPersistence();
+    const service = new NotificationsApiService(p);
+    await asTenant(() => service.registerDevice(registration()));
+
+    const internals = p.devices as unknown as {
+      installations: Map<string, {
+        revocationSecretHash: string;
+        maxGeneration: number;
+        currentBindingId: string | null;
+        currentCompanyId: string | null;
+        currentUserId: string | null;
+        lastConfirmedAt: string | null;
+      }>;
+    };
+    const fence = internals.installations.get(INSTALLATION_A);
+    expect(fence).toBeDefined();
+    internals.installations.set(INSTALLATION_A, { ...fence!, currentBindingId: null });
+
+    await expect(p.devices.listDeliveryTargetsByCompany(TENANT, ALL_ACTIVE)).resolves.toEqual([]);
+  });
+
+  it.each([
+    null,
+    [],
+    registration({ companyId: 'forged' }),
+    registration({ platform: 'windows' }),
+    registration({ bindingGeneration: 1.5 }),
+    registration({ revocationSecret: SECRET_A.toUpperCase() }),
+  ])('rejette un body push v2 ambigu, enrichi ou malformé (%j)', async (body) => {
+    const service = new NotificationsApiService(new InMemoryPersistence());
+    const result = await asTenant(() => service.registerDevice(body));
+    expect(!result.ok && result.error.kind).toBe('validation');
+  });
+
+  it('transfère un token global, neutralise A et refuse son retry retardé', async () => {
     const p = new InMemoryPersistence();
     const service = new NotificationsApiService(p);
     const token = 'ExponentPushToken[tenantrebind123]';
 
-    const first = await asPrincipal('co-a', 'user-a', () =>
-      service.registerDevice({ expoPushToken: token, platform: 'ios' }),
-    );
-    const rebound = await asPrincipal('co-b', 'user-b', () =>
-      service.registerDevice({ expoPushToken: token, platform: 'android' }),
-    );
+    await expect(asPrincipal('co-a', 'user-a', () => service.registerDevice(registration({ expoPushToken: token }))))
+      .resolves.toEqual({ ok: true, value: { status: 'bound' } });
+    await expect(asPrincipal('co-b', 'user-b', () => service.registerDevice(registration({
+      expoPushToken: token,
+      platform: 'android',
+      installationId: INSTALLATION_B,
+      bindingId: BINDING_B1,
+      revocationSecret: SECRET_B,
+    }))))
+      .resolves.toEqual({ ok: true, value: { status: 'bound' } });
+    await expect(asPrincipal('co-a', 'user-a', () => service.registerDevice(registration({ expoPushToken: token }))))
+      .resolves.toEqual({ ok: true, value: { status: 'superseded' } });
 
-    expect(first.ok && rebound.ok && first.value.id === (rebound.ok ? rebound.value.id : '')).toBe(true);
-    await expect(p.devices.listByCompany('co-a')).resolves.toEqual([]);
-    await expect(p.devices.listByCompany('co-b')).resolves.toMatchObject([
-      { companyId: 'co-b', userId: 'user-b', expoPushToken: token, platform: 'android' },
+    await expect(p.devices.listDeliveryTargetsByCompany('co-a', ALL_ACTIVE)).resolves.toEqual([]);
+    await expect(p.devices.listDeliveryTargetsByCompany('co-b', ALL_ACTIVE)).resolves.toMatchObject([
+      { expoPushToken: token, bindingId: BINDING_B1, bindingGeneration: 1 },
     ]);
   });
 
-  it('DELETE /devices est idempotent et ne retire jamais le binding d’un autre tenant', async () => {
+  it('la révocation authentifiée écrit le fence avant le premier POST et interdit la résurrection', async () => {
     const p = new InMemoryPersistence();
     const service = new NotificationsApiService(p);
-    const token = 'ExponentPushToken[logoutrevoke123]';
-    await asPrincipal('co-a', 'user-a', () => service.registerDevice({ expoPushToken: token }));
-    await asPrincipal('co-b', 'user-b', () => service.registerDevice({ expoPushToken: token }));
+    await expect(asTenant(() => service.revokeDeviceBinding(revocation(), 'authenticated')))
+      .resolves.toEqual({ ok: true, value: { accepted: true } });
+    await expect(asTenant(() => service.registerDevice(registration())))
+      .resolves.toEqual({ ok: true, value: { status: 'superseded' } });
+    await expect(p.devices.listDeliveryTargetsByCompany(TENANT, ALL_ACTIVE)).resolves.toEqual([]);
+  });
 
-    await expect(
-      asPrincipal('co-a', 'user-a', () => service.unregisterDevice({ expoPushToken: token })),
-    ).resolves.toEqual({ ok: true, value: { unregistered: true } });
-    await expect(p.devices.listByCompany('co-b')).resolves.toHaveLength(1);
+  it('la révocation publique reste sans oracle et ne retire que la capacité exacte', async () => {
+    const p = new InMemoryPersistence();
+    const service = new NotificationsApiService(p);
+    await asTenant(() => service.registerDevice(registration()));
 
-    await expect(
-      asPrincipal('co-b', 'user-b', () => service.unregisterDevice({ expoPushToken: token })),
-    ).resolves.toEqual({ ok: true, value: { unregistered: true } });
-    await expect(p.devices.listByCompany('co-b')).resolves.toEqual([]);
-    await expect(
-      asPrincipal('co-b', 'user-b', () => service.unregisterDevice({ expoPushToken: token })),
-    ).resolves.toEqual({ ok: true, value: { unregistered: true } });
+    await expect(service.revokeDeviceBinding(revocation({ revocationSecret: SECRET_B }), 'public'))
+      .resolves.toEqual({ ok: true, value: { accepted: true } });
+    await expect(p.devices.listDeliveryTargetsByCompany(TENANT, ALL_ACTIVE)).resolves.toHaveLength(1);
 
-    const invalid = await asTenant(() => service.unregisterDevice({ expoPushToken: 'token-en-clair' }));
-    expect(!invalid.ok && invalid.error.kind).toBe('validation');
+    await expect(service.revokeDeviceBinding(revocation(), 'public'))
+      .resolves.toEqual({ ok: true, value: { accepted: true } });
+    await expect(p.devices.listDeliveryTargetsByCompany(TENANT, ALL_ACTIVE)).resolves.toEqual([]);
+  });
+
+  it('compacte les révocations offline jusqu’à N sans toucher une session serveur N+1', async () => {
+    const p = new InMemoryPersistence();
+    const service = new NotificationsApiService(p);
+    await asTenant(() => service.registerDevice(registration()));
+
+    await service.revokeDeviceBinding(revocation({ throughGeneration: 3 }), 'public');
+    await expect(p.devices.listDeliveryTargetsByCompany(TENANT, ALL_ACTIVE)).resolves.toEqual([]);
+    await expect(asTenant(() => service.registerDevice(registration({
+      bindingId: BINDING_A2,
+      bindingGeneration: 3,
+    })))).resolves.toEqual({ ok: true, value: { status: 'superseded' } });
+    await expect(asTenant(() => service.registerDevice(registration({
+      bindingId: BINDING_A2,
+      bindingGeneration: 4,
+    })))).resolves.toEqual({ ok: true, value: { status: 'bound' } });
+
+    await service.revokeDeviceBinding(revocation({ throughGeneration: 3 }), 'public');
+    await expect(p.devices.listDeliveryTargetsByCompany(TENANT, ALL_ACTIVE)).resolves.toMatchObject([
+      { bindingId: BINDING_A2, bindingGeneration: 4 },
+    ]);
+  });
+
+  it('rejoue un tombstone public après un POST retardé matérialisé plus tard', async () => {
+    const p = new InMemoryPersistence();
+    const service = new NotificationsApiService(p);
+    const throughThree = revocation({ throughGeneration: 3 });
+
+    await service.revokeDeviceBinding(throughThree, 'public'); // absent : réponse one-way, pas de fence
+    await asTenant(() => service.registerDevice(registration({
+      bindingId: BINDING_A2,
+      bindingGeneration: 2,
+    })));
+    await expect(p.devices.listDeliveryTargetsByCompany(TENANT, ALL_ACTIVE)).resolves.toHaveLength(1);
+
+    await service.revokeDeviceBinding(throughThree, 'public');
+    await expect(p.devices.listDeliveryTargetsByCompany(TENANT, ALL_ACTIVE)).resolves.toEqual([]);
+  });
+
+  it('une nouvelle génération du même propriétaire révoque aussi le binding actif précédent', async () => {
+    const p = new InMemoryPersistence();
+    const service = new NotificationsApiService(p);
+    await asTenant(() => service.registerDevice(registration()));
+    await asTenant(() => service.revokeDeviceBinding(revocation({
+      throughGeneration: 2,
+    }), 'authenticated'));
+
+    await expect(p.devices.listDeliveryTargetsByCompany(TENANT, ALL_ACTIVE)).resolves.toEqual([]);
+    await expect(asTenant(() => service.registerDevice(registration({
+      bindingId: BINDING_A2,
+      bindingGeneration: 2,
+    }))))
+      .resolves.toEqual({ ok: true, value: { status: 'superseded' } });
+  });
+
+  it('DELETE legacy ne peut pas supprimer un binding v2, même avec son token exact', async () => {
+    const p = new InMemoryPersistence();
+    const service = new NotificationsApiService(p);
+    await asTenant(() => service.registerDevice(registration()));
+    await expect(asTenant(() => service.unregisterDevice({
+      expoPushToken: 'ExponentPushToken[abcdef123456]',
+    }))).resolves.toEqual({ ok: true, value: { unregistered: true } });
+    await expect(p.devices.listDeliveryTargetsByCompany(TENANT, ALL_ACTIVE)).resolves.toHaveLength(1);
   });
 });

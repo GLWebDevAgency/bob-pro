@@ -37,6 +37,7 @@ function makeDeps(q: Quote | null) {
     revokeActiveFor: async () => {
       events.push('revokeActiveFor');
     },
+    revokeAllForCompany: async () => undefined,
   };
   const deps: CreateQuoteSignatureLinkDeps = { quotes, publicAccessTokens, clock };
   return { deps, counts: () => ({ tokenCreates }), events };

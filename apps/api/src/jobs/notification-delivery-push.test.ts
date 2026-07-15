@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import type { NotificationPort } from '@bob/core';
 import { NotificationDeliveryService } from './notification-delivery.service';
@@ -19,37 +20,68 @@ const RELANCE_INPUT = {
 };
 
 async function registerDevice(persistence: InMemoryPersistence, token: string): Promise<void> {
+  const installationId = randomUUID();
   await persistence.devices.register({
     id: `dev-${token}`,
     companyId: 'co-1',
     userId: 'demo',
     expoPushToken: token,
     platform: 'ios',
+    installationId,
+    bindingId: randomUUID(),
+    bindingGeneration: 1,
+    revocationSecretHash: 'a'.repeat(64),
     now: '2026-07-03T10:00:00.000Z',
   });
 }
 
 describe('NotificationDeliveryService — canal push Expo (C25)', () => {
-  it("MIROIR de l'envoi réussi : push vers les devices du tenant avec le deep link de la pièce", async () => {
+  it("MIROIR de l'envoi réussi : payload générique vers l'inbox, sans contenu ni identifiant métier", async () => {
     const persistence = new InMemoryPersistence();
     const logger = makeLogger();
     await registerDevice(persistence, 'ExponentPushToken[a]');
     const notifier = { send: vi.fn<NotificationPort['send']>().mockResolvedValue(undefined) } satisfies NotificationPort;
-    const push = { send: vi.fn(async () => ({ accepted: 1, rejected: [] })) } as unknown as ExpoPushService;
+    const sendPush = vi.fn(async (_messages: readonly unknown[]) => ({ accepted: 1, rejected: [] }));
+    const push = { send: sendPush } as unknown as ExpoPushService;
     const service = new NotificationDeliveryService(persistence, notifier, new ScheduledTenantDirectory(persistence, logger), logger, push);
 
-    const job = await service.enqueue(RELANCE_INPUT);
+    const confidentialInvoiceId = 'inv-confidential-4711';
+    const confidentialClientId = 'client-confidential-8128';
+    const confidentialSubject = `Relance facture ${confidentialInvoiceId}`;
+    const confidentialBody = `Le client ${confidentialClientId} doit régler 1 240 €.`;
+    const job = await service.enqueue({
+      ...RELANCE_INPUT,
+      dedupeKey: `invoice:${confidentialInvoiceId}:relance:2026-07-03`,
+      notification: {
+        ...RELANCE_INPUT.notification,
+        subject: confidentialSubject,
+        body: confidentialBody,
+      },
+    });
     expect(job.notification?.idempotencyKey).toBe(job.id);
     const delivered = await service.tryDeliver('co-1', { ...job, notification: job.notification! });
 
     expect(delivered).toBe('sent');
-    expect(push.send).toHaveBeenCalledWith([
-      expect.objectContaining({
+    expect(sendPush.mock.calls[0]?.[0]).toEqual([
+      {
         to: 'ExponentPushToken[a]',
-        title: 'Relance F-1',
-        data: { route: '/facture/inv-1' },
-      }),
+        title: 'Nouvelle notification',
+        body: 'Ouvrez l’application pour consulter le détail.',
+        data: {
+          pushContract: '2',
+          route: '/notifications',
+          recipientBindingId: expect.any(String),
+          recipientBindingGeneration: '1',
+        },
+      },
     ]);
+    const serializedPush = JSON.stringify(sendPush.mock.calls[0]?.[0]);
+    expect(serializedPush).not.toContain(confidentialInvoiceId);
+    expect(serializedPush).not.toContain(confidentialClientId);
+    expect(serializedPush).not.toContain(confidentialSubject);
+    expect(serializedPush).not.toContain(confidentialBody);
+    expect(serializedPush).not.toContain('/facture');
+    expect(serializedPush).not.toContain('1 240');
     expect(logger.audit).toHaveBeenCalledWith(
       'notification.push.sent',
       expect.objectContaining({ companyId: 'co-1', devices: 1, accepted: 1, rejected: 0 }),
@@ -368,8 +400,41 @@ describe('NotificationDeliveryService — canal push Expo (C25)', () => {
     const job = await service.enqueue(RELANCE_INPUT);
     await service.tryDeliver('co-1', { ...job, notification: job.notification! });
 
-    const remaining = await persistence.devices.listByCompany('co-1');
+    const remaining = await persistence.devices.listDeliveryTargetsByCompany(
+      'co-1',
+      '1970-01-01T00:00:00.000Z',
+    );
     expect(remaining.map((d) => d.expoPushToken)).toEqual(['ExponentPushToken[alive]']);
+  });
+
+  it('exclut fail-closed un binding v2 non réconcilié depuis plus de 30 jours', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-08-03T10:00:00.001Z'));
+      const persistence = new InMemoryPersistence();
+      const logger = makeLogger();
+      await registerDevice(persistence, 'ExponentPushToken[stale]');
+      const notifier = { send: vi.fn<NotificationPort['send']>().mockResolvedValue(undefined) } satisfies NotificationPort;
+      const push = { send: vi.fn() } as unknown as ExpoPushService;
+      const service = new NotificationDeliveryService(
+        persistence,
+        notifier,
+        new ScheduledTenantDirectory(persistence, logger),
+        logger,
+        push,
+      );
+
+      const job = await service.enqueue(RELANCE_INPUT);
+      await service.tryDeliver('co-1', { ...job, notification: job.notification! });
+
+      expect(push.send).not.toHaveBeenCalled();
+      expect(logger.audit).toHaveBeenCalledWith(
+        'notification.push.skipped',
+        expect.objectContaining({ reason: 'no_device_registered' }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

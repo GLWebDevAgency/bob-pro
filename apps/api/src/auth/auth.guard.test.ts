@@ -140,6 +140,33 @@ describe('SupabaseAuthGuard — prod (JWT Supabase, C24b provisioning)', () => {
     expect(jwtVerifyMock).not.toHaveBeenCalled();
   });
 
+  it('PUBLIC push : seul POST /public/push-revocations passe sans JWT', async () => {
+    const guard = new SupabaseAuthGuard();
+    const exact = await activate(guard, {
+      url: '/public/push-revocations',
+      method: 'POST',
+      headers: {},
+    });
+    expect(exact.allowed).toBe(true);
+    expect(exact.principal).toBeUndefined();
+
+    await expect(activate(guard, {
+      url: '/public/push-revocations/extra',
+      method: 'POST',
+      headers: {},
+    })).resolves.toMatchObject({ allowed: false });
+    await expect(activate(guard, {
+      url: '/public/push-revocations',
+      method: 'GET',
+      headers: {},
+    })).resolves.toMatchObject({ allowed: false });
+    await expect(activate(guard, {
+      url: '/public/push-revocations?revocationSecret=interdit',
+      method: 'POST',
+      headers: {},
+    })).resolves.toMatchObject({ allowed: false });
+  });
+
   it('liste blanche tenant-optionnel : POST /onboarding/company exige un JWT VALIDE, companyId null admis', async () => {
     jwtVerifyMock.mockResolvedValue(payload() as never);
     const guard = new SupabaseAuthGuard();

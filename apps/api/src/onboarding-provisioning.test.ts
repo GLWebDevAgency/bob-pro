@@ -20,7 +20,10 @@ const INPUT: Omit<CompanyProps, 'id'> = {
 
 function makeService() {
   const p = new InMemoryPersistence();
-  const admin: SupabaseAdminPort = { setUserCompanyId: vi.fn(async () => undefined) };
+  const admin: SupabaseAdminPort = {
+    setUserCompanyId: vi.fn(async () => undefined),
+    deleteUser: vi.fn(async () => undefined),
+  };
   const logger = { audit: vi.fn(), error: vi.fn(), warn: vi.fn(), log: vi.fn() } as unknown as AppLogger;
   const service = new BackendService(
     p,

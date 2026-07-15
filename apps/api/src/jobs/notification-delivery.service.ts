@@ -6,7 +6,6 @@ import { PERSISTENCE, type Persistence } from '../persistence/persistence';
 import { type DeliverableNotificationJob, type NotificationJob } from '../persistence/notification-jobs';
 import { NOTIFIER } from '../notifications/notifier';
 import { EXPO_PUSH, type ExpoPushService } from '../notifications/expo-push';
-import { notificationRoute } from '../notifications/notification-route';
 import { AppLogger } from '../observability/logger';
 import { ScheduledTenantDirectory } from './tenant-directory';
 
@@ -21,10 +20,14 @@ function nextNotificationRetryDelayMs(attempts: number): number {
   return delayMinutes * 60_000;
 }
 
-/** Corps de push : l'email peut être long — on tronque proprement pour la bannière. */
-function pushBody(body: string): string {
-  const flat = body.replace(/\s+/g, ' ').trim();
-  return flat.length <= 178 ? flat : `${flat.slice(0, 177)}…`;
+/** Un device non réconcilié depuis 30 jours sort du canal, même sans tombstone mobile. */
+const PUSH_BINDING_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
+const PRIVATE_PUSH_TITLE = 'Nouvelle notification';
+const PRIVATE_PUSH_BODY = 'Ouvrez l’application pour consulter le détail.';
+const PRIVATE_PUSH_ROUTE = '/notifications';
+
+function activeBindingCutoff(now: string): string {
+  return new Date(Date.parse(now) - PUSH_BINDING_TTL_MS).toISOString();
 }
 
 type DeliveryAttemptOutcome = 'sent' | 'skipped' | 'failed';
@@ -210,27 +213,46 @@ export class NotificationDeliveryService {
       this.logger.audit('notification.push.skipped', { companyId, jobId: job.id, reason: 'push_channel_absent' });
       return;
     }
-    const devices = await this.p.runWithTenant(companyId, () => this.p.devices.listByCompany(companyId));
+    const devices = await this.p.runWithTenant(companyId, () =>
+      this.p.devices.listDeliveryTargetsByCompany(
+        companyId,
+        activeBindingCutoff(this.clock.now()),
+      ),
+    );
     if (devices.length === 0) {
       this.logger.audit('notification.push.skipped', { companyId, jobId: job.id, reason: 'no_device_registered' });
       return;
     }
-    const route = notificationRoute(job);
     const outcome = await this.push.send(
       devices.map((d) => ({
         to: d.expoPushToken,
-        title: job.subject,
-        body: pushBody(job.notification.body),
-        ...(route !== null ? { data: { route } } : {}),
+        // Confidentialité lock-screen/provider : aucun type/identifiant métier n'est envoyé
+        // à Expo/APNs. Le détail est résolu dans l'inbox après authentification.
+        title: PRIVATE_PUSH_TITLE,
+        body: PRIVATE_PUSH_BODY,
+        data: {
+          pushContract: '2',
+          route: PRIVATE_PUSH_ROUTE,
+          recipientBindingId: d.bindingId,
+          recipientBindingGeneration: String(d.bindingGeneration),
+        },
       })),
     );
-    const invalidTokens = outcome.rejected
+    const invalidTokens = new Set(outcome.rejected
       .filter((rejection) => rejection.error === 'DeviceNotRegistered')
-      .map((rejection) => rejection.token);
-    if (invalidTokens.length > 0) {
+      .map((rejection) => rejection.token));
+    if (invalidTokens.size > 0) {
       // Token expiré/désinstallé : purge transactionnelle courte, après le réseau Expo.
       await this.p.runWithTenant(companyId, async () => {
-        for (const token of invalidTokens) await this.p.devices.removeByToken(companyId, token);
+        for (const target of devices) {
+          if (!invalidTokens.has(target.expoPushToken)) continue;
+          await this.p.devices.removeInvalidDeliveryTarget({
+            companyId,
+            expoPushToken: target.expoPushToken,
+            bindingId: target.bindingId,
+            bindingGeneration: target.bindingGeneration,
+          });
+        }
       });
     }
     this.logger.audit('notification.push.sent', {

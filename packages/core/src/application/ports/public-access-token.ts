@@ -31,4 +31,7 @@ export interface PublicAccessTokenRepository {
     scope: PublicAccessScope;
     at: Instant;
   }): Promise<void>;
+  /** Clôture de compte (CloseAccount) : coupe TOUS les liens publics actifs du tenant (tous
+   *  types/scopes confondus), idempotent — appeler deux fois ne fait rien de plus la 2e fois. */
+  revokeAllForCompany(input: { companyId: string; at: Instant }): Promise<void>;
 }

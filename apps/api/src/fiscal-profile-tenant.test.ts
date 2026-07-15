@@ -10,7 +10,10 @@ import type { Metrics } from './observability/metrics';
 
 function makeService() {
   const p = new InMemoryPersistence();
-  const admin: SupabaseAdminPort = { setUserCompanyId: async () => undefined } as SupabaseAdminPort;
+  const admin: SupabaseAdminPort = {
+    setUserCompanyId: async () => undefined,
+    deleteUser: async () => undefined,
+  } as SupabaseAdminPort;
   const logger = { audit: () => undefined, error: () => undefined, warn: () => undefined, log: () => undefined } as unknown as AppLogger;
   const service = new BackendService(
     p,

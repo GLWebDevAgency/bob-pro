@@ -192,6 +192,14 @@ export class InMemoryPublicAccessTokenRepository implements PublicAccessTokenRep
       }
     }
   }
+
+  async revokeAllForCompany(input: { companyId: string; at: string }): Promise<void> {
+    for (const [id, row] of this.rows) {
+      if (row.companyId === input.companyId && row.revokedAt === null) {
+        this.rows.set(id, { ...row, revokedAt: input.at });
+      }
+    }
+  }
 }
 
 export class InMemoryExpenseRepository implements ExpenseRepository {

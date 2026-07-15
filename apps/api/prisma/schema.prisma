@@ -258,6 +258,14 @@ model Company {
   policyNo                String?
   coverage                String?
   policyExpiresAt         DateTime?
+  // Clôture de compte (Apple 5.1.1(v), CloseAccount @bob/core) — additif, JAMAIS un cascade
+  // delete : présent = tenant clôturé (guard API : 403 « compte clôturé »). TOUS les autres
+  // champs de ce modèle restent INTACTS après clôture — ce sont la source live relue à chaque
+  // régénération d'une pièce déjà émise (factures/devis), la rétention légale de 10 ans (Code de
+  // commerce) l'exige. L'identité PERSONNELLE de l'utilisateur (prénom, email, téléphone) ne vit
+  // jamais ici : elle est entièrement dans Supabase Auth, supprimée via l'admin API en parallèle.
+  closedAt                DateTime?
+  closureReason           String?
   customers               Customer[]
   quotes                  Quote[]
   invoices                Invoice[]
@@ -692,15 +700,40 @@ model NotificationJob {
 
 // Appareils enregistrés pour le push Expo (C25) — un token appartient à une seule session
 // applicative à la fois, tous tenants confondus. Le repository effectue un rebind atomique sous RLS.
+model PushInstallation {
+  id                   String   @id @db.Uuid
+  revocationSecretHash String   @db.Char(64)
+  // High-water mark conservé même après révocation du device actif : un ancien POST ne peut
+  // jamais ressusciter le binding précédent après logout ou reconnexion.
+  maxGeneration        Int
+  currentBindingId     String?  @unique(map: "push_installations_current_binding_id_key") @db.Uuid
+  currentCompanyId     String?
+  currentUserId        String?
+  lastConfirmedAt      DateTime?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  device               Device?
+
+  @@map("push_installations")
+}
+
 model Device {
-  id            String   @id
-  companyId     String
-  company       Company  @relation(fields: [companyId], references: [id])
-  userId        String?
-  expoPushToken String   @unique(map: "devices_expo_push_token_key")
-  platform      String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id                     String   @id
+  companyId              String
+  company                Company  @relation(fields: [companyId], references: [id])
+  userId                 String?
+  expoPushToken          String   @unique(map: "devices_expo_push_token_key")
+  platform               String?
+  // Phase expand : nullable pour les lignes N-1. Toute inscription N porte ensuite une
+  // installation stable et un binding one-shot, afin qu'une révocation tardive ne supprime
+  // jamais le binding du compte suivant sur le même téléphone.
+  installationId         String?  @unique(map: "devices_installation_id_key") @db.Uuid
+  installation           PushInstallation? @relation(fields: [installationId], references: [id], onDelete: Restrict)
+  bindingId              String?  @unique(map: "devices_binding_id_key") @db.Uuid
+  bindingGeneration      Int?
+  revocationSecretHash   String?  @db.Char(64)
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
 
   // Compatibilité rolling N-1 : l'ancien binaire cible encore cette clé composée. La contrainte
   // globale ci-dessus fait foi ; cette clé redondante sera retirée dans une phase contract ultérieure.

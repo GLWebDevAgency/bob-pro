@@ -155,6 +155,8 @@ DIRECT_URL="$DIRECT_URL" sh apps/api/scripts/certify-release-flag-ops.sh
 psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 -f apps/api/prisma/rls-cert-cabinet-seed.sql
 psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -f apps/api/prisma/rls-cert.sql
 psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 -f apps/api/prisma/cabinet-rls-cert-privileged.sql
+RUN_POSTGRES_DEVICE_REBIND_CERT=true \
+  pnpm --filter @bob/api exec vitest run src/persistence/prisma/devices.postgres.test.ts
 cleanup_rls_cert
 trap - EXIT INT TERM
 

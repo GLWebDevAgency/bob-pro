@@ -16,6 +16,13 @@ export interface SupabaseAdminPort {
   getVerifiedEmail?(userId: string): Promise<string | null>;
   /** Enrichissement d'affichage uniquement ; ne participe jamais au RBAC. */
   getUserIdentity?(userId: string): Promise<{ email: string | null; displayName: string | null }>;
+  /**
+   * Clôture de compte (CloseAccount, Apple 5.1.1(v)) — supprime le user GoTrue : c'est LE point
+   * où l'identité personnelle (email, téléphone, user_metadata.first_name…) disparaît réellement,
+   * puisque Postgres ne stocke jamais ces données (cf. Company.closedAt). Idempotent côté appelant
+   * (BackendService.closeAccount) : un 404 GoTrue (déjà supprimé) est traité comme un succès.
+   */
+  deleteUser(userId: string): Promise<void>;
 }
 
 interface SupabaseAdminOptions {
@@ -72,6 +79,23 @@ export class HttpSupabaseAdmin implements SupabaseAdminPort {
     };
   }
 
+  /** DELETE /auth/v1/admin/users/{id} — best-effort côté appelant : un 404 (déjà supprimé, retry
+   *  de provisioning idempotent) n'est PAS une erreur, tout le reste (401/403/5xx…) en est une. */
+  async deleteUser(userId: string): Promise<void> {
+    const base = this.opts.url.replace(/\/$/, '');
+    const res = await this.fetchFn(`${base}/auth/v1/admin/users/${encodeURIComponent(userId)}`, {
+      method: 'DELETE',
+      headers: {
+        apikey: this.opts.serviceRoleKey,
+        authorization: `Bearer ${this.opts.serviceRoleKey}`,
+        'content-type': 'application/json',
+      },
+      signal: AbortSignal.timeout(12_000),
+    });
+    if (!res.ok && res.status !== 404) throw new Error(`Supabase admin HTTP ${res.status} (DELETE user)`);
+    this.logger.audit('auth.user_deleted', { userId, alreadyGone: res.status === 404 });
+  }
+
   private async getAdminUser(userId: string): Promise<{
     email?: unknown;
     email_confirmed_at?: unknown;
@@ -107,6 +131,9 @@ export class MisconfiguredSupabaseAdmin implements SupabaseAdminPort {
   }
   async getUserIdentity(): Promise<{ email: string | null; displayName: string | null }> {
     throw new Error('Supabase Admin non configuré — annuaire des identités indisponible.');
+  }
+  async deleteUser(): Promise<void> {
+    throw new Error('SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY manquants — suppression du user impossible.');
   }
 }
 

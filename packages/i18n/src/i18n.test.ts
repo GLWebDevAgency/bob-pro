@@ -327,6 +327,18 @@ describe('i18n — C20 voix.*', () => {
 });
 
 describe('i18n — C21 devis.*', () => {
+  it('protège la sortie du brouillon et explicite signature, proposition Bob et génération', () => {
+    expect(t('devis.draftExit.title')).toBe('Que veux-tu faire de ce devis ?');
+    expect(t('devis.draftExit.body', { personality: 'pro' })).toContain('reprendre ici plus tard');
+    expect(t('devis.draftExit.signatureBody')).toContain('devra être refaite');
+    expect(t('devis.draftExit.proposalBody', { personality: 'direct' })).toContain('non appliquée');
+    expect(t('devis.draftExit.generationBody', { personality: 'pro' })).toContain('éviter un doublon');
+    expect(t('devis.draftExit.persistenceError', { personality: 'pro' })).toContain('reste ouvert');
+    expect(t('devis.draftExit.continue')).toBe('Continuer le devis');
+    expect(t('devis.draftExit.save', { personality: 'direct' })).toBe('Garder et fermer');
+    expect(t('devis.draftExit.discard')).toBe('Supprimer le brouillon');
+  });
+
   it('titres des 6 étapes de la machine + gardes à la voix de Bob (3 humeurs)', () => {
     expect(t('devis.stepClient')).toBe('Le client');
     expect(t('devis.stepVat')).toBe('TVA & mentions');
@@ -402,6 +414,19 @@ describe('i18n — C25 notif.* + relance.*', () => {
     expect(t('notif.empty')).toBe('Rien à signaler — tout roule.');
     expect(t('notif.empty', { personality: 'direct' })).toBe('RAS.');
     expect(t('notif.dataError', { personality: 'pro' }).length).toBeGreaterThan(0);
+  });
+
+  it('consentement push : explique la valeur, laisse un vrai refus et distingue les états OS', () => {
+    expect(t('notif.pushPrimerTitle')).toBe('Bob te prévient au bon moment');
+    expect(t('notif.pushPrimerBody', { personality: 'pro' })).toContain('Vous pouvez continuer sans les activer.');
+    expect(t('notif.pushPrimerLater')).toBe('Pas maintenant');
+    expect(t('notif.pushDismissedBody', { personality: 'direct' })).toContain('Le fil reste ici.');
+    expect(t('notif.pushDeniedBody')).toContain('Ton fil reste disponible ici.');
+    expect(t('notif.pushSettingsAction', { personality: 'pro' })).toBe('Ouvrir les réglages');
+    expect(t('notif.pushProvisionalTitle')).toBe('Alertes discrètes actives');
+    expect(t('notif.pushProvisionalAction', { personality: 'direct' })).toBe('Tout autoriser');
+    expect(t('notif.pushUnavailableBody', { personality: 'pro' })).toContain('Votre fil reste disponible ici.');
+    expect(t('notif.pushEnabledToast')).toContain('Bob pourra te prévenir');
   });
 
   it('relance.* : 4 tons du proto, file interpolée {count}, garde-fou L441-10 sur les 3 humeurs', () => {

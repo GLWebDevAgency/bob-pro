@@ -13,7 +13,7 @@ export interface ExpoPushMessage {
   to: string;
   title: string;
   body: string;
-  /** Payload de deep link (ex. { route: '/facture/inv-1' }) — lu par le mobile au tap. */
+  /** Payload de navigation non sensible — lu par le mobile au tap. */
   data?: Record<string, string>;
 }
 
@@ -44,6 +44,19 @@ function chunk<T>(items: readonly T[], size: number): T[][] {
   const out: T[][] = [];
   for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
   return out;
+}
+
+/**
+ * Les erreurs réseau/provider ne sont pas une frontière de confiance : certains messages
+ * peuvent réfléchir un token. On conserve l'erreur brute dans l'outcome (purge interne),
+ * mais jamais dans les logs avant avoir retiré tout token du lot et toute forme Expo usuelle.
+ */
+function redactPushTokensForLog(error: string, batch: readonly ExpoPushMessage[]): string {
+  let redacted = error;
+  for (const message of batch) {
+    if (message.to.length > 0) redacted = redacted.replaceAll(message.to, '[push-token-redacted]');
+  }
+  return redacted.replace(/(?:Exponent|Expo)PushToken(?:\[[^\]\s]*\]?)/giu, '[push-token-redacted]');
 }
 
 export class ExpoPushService {
@@ -80,12 +93,19 @@ export class ExpoPushService {
           }
           const error = ticket?.details?.error ?? ticket?.message ?? 'ticket manquant';
           outcome.rejected.push({ token: message.to, error });
-          this.logger.warn(`Push Expo en erreur (${message.to.slice(0, 24)}…) : ${error}`, 'notifications');
+          // Le token Expo est une capacité/pseudonyme : aucun préfixe ni hash corrélable en logs.
+          this.logger.warn(
+            `Push Expo en erreur (ticket ${i + 1}/${batch.length}) : ${redactPushTokensForLog(error, batch)}`,
+            'notifications',
+          );
         });
       } catch (e) {
         const error = e instanceof Error ? e.message : String(e);
         for (const m of batch) outcome.rejected.push({ token: m.to, error });
-        this.logger.warn(`Push Expo injoignable (lot de ${batch.length}) : ${error}`, 'notifications');
+        this.logger.warn(
+          `Push Expo injoignable (lot de ${batch.length}) : ${redactPushTokensForLog(error, batch)}`,
+          'notifications',
+        );
       }
     }
     return outcome;

@@ -38,6 +38,7 @@ import {
   SubscriptionController,
   JobsController,
   OnboardingController,
+  AccountController,
   DiagnosticController,
   FiscalCalendarController,
   FiscalProfileController,
@@ -54,6 +55,7 @@ import {
   PublicSignatureController,
   NotificationsController,
   DevicesController,
+  PublicPushRevocationsController,
  EngagementController } from './api.controllers';
 
 @Module({
@@ -78,6 +80,7 @@ import {
     EngagementController,
     JobsController,
     OnboardingController,
+    AccountController,
     DiagnosticController,
     FiscalCalendarController,
     FiscalProfileController,
@@ -94,6 +97,7 @@ import {
     PublicSignatureController,
     NotificationsController,
     DevicesController,
+    PublicPushRevocationsController,
     CabinetController,
   ],
   providers: [

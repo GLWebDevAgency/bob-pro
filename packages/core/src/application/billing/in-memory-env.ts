@@ -126,6 +126,13 @@ export function makeEnv() {
         }
       }
     },
+    revokeAllForCompany: async (input) => {
+      for (const [id, row] of grants) {
+        if (row.companyId === input.companyId && row.revokedAt === null) {
+          grants.set(id, { ...row, revokedAt: input.at });
+        }
+      }
+    },
   };
 
   let idCounter = 0;

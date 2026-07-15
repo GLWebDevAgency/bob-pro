@@ -61,6 +61,7 @@ function setup() {
   const supabaseAdmin: SupabaseAdminPort = {
     setUserCompanyId: vi.fn(async () => undefined),
     getUserIdentity: vi.fn(async (userId: string) => ({ email: `${userId}@artisan.example`, displayName: null })),
+    deleteUser: vi.fn(async () => undefined),
   };
   const trackedEvents: import('@bob/core').TrackedEvent[] = [];
   const service = new DigestService(persistence, delivery, tenants, supabaseAdmin, logger, {

@@ -27,10 +27,11 @@
  * de la structure C26. Zéro hex/rgba : useTheme()/@bob/tokens uniquement.
  */
 import { useEffect, useMemo, useState } from 'react';
-import { Pressable, RefreshControl, ScrollView, Text, View } from 'react-native';
+import { Alert, Linking, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
+import Constants from 'expo-constants';
 import { Feather } from '@expo/vector-icons';
 import {
   deriveAccountView,
@@ -70,11 +71,14 @@ import { useIdentity } from '../src/data/identity';
 import { useAuth } from '../src/data/auth';
 import { useProfile, useSubscription } from '../src/data/hooks';
 import { useFiscalProfileFlow } from '../src/fiscal/use-fiscal-profile-flow';
+import { LEGAL_URLS, SUPPORT_EMAIL, SUPPORT_MAILTO } from '../src/config/legal';
+import { CloseAccountSheet } from '../src/components/account/close-account-sheet';
 import {
   ChevronLeftIcon,
   ChevronRightIcon,
   CurrencyIcon,
   FileTextIcon,
+  MailIcon,
   PeopleIcon,
   ShieldIcon,
   TrendUpIcon,
@@ -179,6 +183,13 @@ export default function Compte() {
   const subline = email ?? identity.companyName;
   const say = (key: I18nKey, params?: Record<string, string | number>) =>
     t(key, params ? { personality, params } : { personality });
+
+  // Audit stores 20260716 (bloquants #1 et #4) : suppression de compte + footer légal.
+  const [deleteSheetOpen, setDeleteSheetOpen] = useState(false);
+  const appVersion = Constants.expoConfig?.version ?? '—';
+  const openExternalUrl = (url: string): void => {
+    void Linking.openURL(url).catch(() => Alert.alert(say('account.linkUnavailable')));
+  };
 
   const heroGradient = parseGradient(grad.hero);
   const offer = view.subscription.offer;
@@ -455,6 +466,100 @@ export default function Compte() {
                 variant="danger"
                 onPress={() => void signOut()}
               />
+            ) : null}
+
+            {/* Section légale (audit stores 20260716, bloquant #4) — version, CGU, confidentialité, contact */}
+            <View style={{ marginTop: 24, marginBottom: 8 }}>
+              <SectionHeader title={say('account.sectionLegal')} />
+            </View>
+            <Card padding={0} style={{ marginBottom: 6, paddingHorizontal: 15 }}>
+              {(
+                [
+                  { key: 'terms', label: say('account.legalTerms'), sub: null, onPress: () => openExternalUrl(LEGAL_URLS.terms), icon: <FileTextIcon color={colors.ink600} size={17} strokeWidth={2} /> },
+                  { key: 'privacy', label: say('account.legalPrivacy'), sub: null, onPress: () => openExternalUrl(LEGAL_URLS.privacy), icon: <ShieldIcon color={colors.ink600} size={17} strokeWidth={2} /> },
+                  { key: 'contact', label: say('account.contactSupport'), sub: SUPPORT_EMAIL, onPress: () => openExternalUrl(SUPPORT_MAILTO), icon: <MailIcon color={colors.ink600} size={17} strokeWidth={2} /> },
+                ] as const
+              ).map((row, index, rows) => (
+                <Pressable
+                  key={row.key}
+                  accessibilityRole="link"
+                  accessibilityLabel={row.sub ? `${row.label}. ${row.sub}` : row.label}
+                  onPress={row.onPress}
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 11,
+                    paddingVertical: 13,
+                    minHeight: 44,
+                    borderBottomWidth: index === rows.length - 1 ? 0 : 1,
+                    borderBottomColor: colors.lineSoft,
+                  }}
+                >
+                  {row.icon}
+                  <View style={{ flex: 1 }}>
+                    <Text style={[font('sub', 600), { fontSize: 14, color: colors.ink800 }]}>{row.label}</Text>
+                    {row.sub ? (
+                      <Text style={[font('meta'), { color: colors.slate400, marginTop: 1 }]}>{row.sub}</Text>
+                    ) : null}
+                  </View>
+                  <ChevronRightIcon color={colors.slate300} size={16} />
+                </Pressable>
+              ))}
+            </Card>
+            <Text style={[font('meta'), { color: colors.slate300, marginBottom: 20 }]}>
+              {say('account.appVersion', { version: appVersion })}
+            </Text>
+
+            {/* Zone dangereuse — suppression de compte (Apple 5.1.1(v)), AUCUNE parité vocale
+                (choix délibéré, cf. CloseAccountSheet) : uniquement pour un compte réel authentifié. */}
+            {authEnabled ? (
+              <>
+                <SectionHeader title={say('account.dangerZoneTitle')} />
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`${say('account.deleteAccountRow')}. ${say('account.deleteAccountRowSub')}`}
+                  disabled={!identity.companyName}
+                  onPress={() => setDeleteSheetOpen(true)}
+                  style={[
+                    {
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 11,
+                      backgroundColor: colors.surface,
+                      borderRadius: radius.cardLg,
+                      borderWidth: 1,
+                      borderColor: semantic.dangerBg,
+                      padding: 15,
+                      marginTop: 10,
+                    },
+                    !identity.companyName ? { opacity: 0.5 } : null,
+                  ]}
+                >
+                  <IconTile tone="danger" size={34} radius={11}>
+                    <Feather name="trash-2" size={17} color={semantic.danger} />
+                  </IconTile>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[font('sub', 600), { fontSize: 14.5, color: semantic.danger }]}>
+                      {say('account.deleteAccountRow')}
+                    </Text>
+                    <Text style={[font('meta'), { color: colors.slate400, marginTop: 1 }]}>
+                      {say('account.deleteAccountRowSub')}
+                    </Text>
+                  </View>
+                  <ChevronRightIcon color={colors.slate300} size={17} />
+                </Pressable>
+                <Text style={[font('meta'), { color: colors.slate400, marginTop: 10, lineHeight: 17 }]}>
+                  {say('account.gdprNote', { email: SUPPORT_EMAIL })}
+                </Text>
+                {identity.companyName ? (
+                  <CloseAccountSheet
+                    visible={deleteSheetOpen}
+                    companyName={identity.companyName}
+                    personality={personality}
+                    onClose={() => setDeleteSheetOpen(false)}
+                  />
+                ) : null}
+              </>
             ) : null}
           </>
         ) : (

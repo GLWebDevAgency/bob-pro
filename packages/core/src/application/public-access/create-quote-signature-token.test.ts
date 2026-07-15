@@ -36,6 +36,7 @@ function makeDeps(q: Quote | null) {
     revokeActiveFor: async () => {
       revokeActiveCalls++;
     },
+    revokeAllForCompany: async () => undefined,
   };
   return { deps: { quotes, publicAccessTokens, clock }, counts: () => ({ tokenCreates, revokeActiveCalls }) };
 }

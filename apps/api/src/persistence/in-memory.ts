@@ -50,7 +50,15 @@ import {
   type NotificationReadThroughResult,
   type NotificationUnreadPreview,
 } from './notification-jobs';
-import type { DeviceRecord, DeviceRepository, RegisterDeviceInput } from './devices';
+import type {
+  DeviceRecord,
+  DeviceRegistrationResult,
+  DeviceRepository,
+  InvalidPushDeliveryTarget,
+  PushDeliveryTarget,
+  RegisterDeviceInput,
+  RevokeDeviceThroughInput,
+} from './devices';
 import { DuplicateExpenseInvoiceError } from './expense-duplicate-error';
 
 /**
@@ -653,19 +661,94 @@ export class InMemoryNotificationJobRepository implements NotificationJobReposit
 /** Appareils push Expo (C25) — un token global, rebind atomique vers le dernier principal. */
 export class InMemoryDeviceRepository implements DeviceRepository {
   private readonly map = new Map<string, DeviceRecord>();
+  private readonly installations = new Map<string, {
+    revocationSecretHash: string;
+    maxGeneration: number;
+    currentBindingId: string | null;
+    currentCompanyId: string | null;
+    currentUserId: string | null;
+    lastConfirmedAt: string | null;
+  }>();
 
-  async register(input: RegisterDeviceInput): Promise<DeviceRecord> {
-    const existing = [...this.map.values()].find((d) => d.expoPushToken === input.expoPushToken);
+  async register(input: RegisterDeviceInput): Promise<DeviceRegistrationResult> {
+    const rows = [...this.map.values()];
+    const byToken = rows.find((device) => device.expoPushToken === input.expoPushToken);
+    const byInstallation = rows.find((device) => device.installationId === input.installationId);
+    const installation = this.installations.get(input.installationId);
+    if (installation) {
+      if (installation.revocationSecretHash !== input.revocationSecretHash) {
+        return { status: 'superseded' };
+      }
+      const idempotent =
+        input.bindingGeneration === installation.maxGeneration
+        && installation.currentBindingId === input.bindingId
+        && installation.currentCompanyId === input.companyId
+        && installation.currentUserId === input.userId
+        && byInstallation?.expoPushToken === input.expoPushToken
+        && byInstallation.bindingId === input.bindingId
+        && byInstallation.bindingGeneration === input.bindingGeneration;
+      if (input.bindingGeneration < installation.maxGeneration || (
+        input.bindingGeneration === installation.maxGeneration && !idempotent
+      )) {
+        return { status: 'superseded' };
+      }
+    }
+
+    const bindingCollision = rows.find(
+      (device) =>
+        device.bindingId === input.bindingId
+        && device.id !== byToken?.id
+        && device.id !== byInstallation?.id,
+    );
+    if (bindingCollision) return { status: 'superseded' };
+
+    // Toute validation est terminée avant mutation : l'adapter en mémoire reste atomique comme
+    // la transaction PostgreSQL et ne laisse jamais un high-water mark partiellement avancé.
+    this.installations.set(input.installationId, {
+      revocationSecretHash: input.revocationSecretHash,
+      maxGeneration: input.bindingGeneration,
+      currentBindingId: input.bindingId,
+      currentCompanyId: input.companyId,
+      currentUserId: input.userId,
+      lastConfirmedAt: input.now,
+    });
+
+    // Un token Expo est global. Quand B le reprend, l'installation A est neutralisée avant que
+    // sa réponse POST retardée puisse tenter de le récupérer avec la même génération.
+    if (byToken?.installationId && byToken.installationId !== input.installationId) {
+      const previous = this.installations.get(byToken.installationId);
+      if (
+        previous
+        && previous.currentBindingId === byToken.bindingId
+        && previous.maxGeneration === byToken.bindingGeneration
+      ) {
+        this.installations.set(byToken.installationId, {
+          ...previous,
+          currentBindingId: null,
+          currentCompanyId: null,
+          currentUserId: null,
+        });
+      }
+    }
+    if (byToken && byInstallation && byToken.id !== byInstallation.id) {
+      this.map.delete(byInstallation.id);
+    }
+    const existing = byToken ?? byInstallation;
     if (existing) {
       const updated: DeviceRecord = {
         ...existing,
         companyId: input.companyId,
         userId: input.userId,
+        expoPushToken: input.expoPushToken,
         platform: input.platform,
+        installationId: input.installationId,
+        bindingId: input.bindingId,
+        bindingGeneration: input.bindingGeneration,
+        revocationSecretHash: input.revocationSecretHash,
         updatedAt: input.now,
       };
       this.map.set(existing.id, updated);
-      return { ...updated };
+      return { status: 'bound', device: { ...updated } };
     }
     const created: DeviceRecord = {
       id: input.id,
@@ -673,23 +756,148 @@ export class InMemoryDeviceRepository implements DeviceRepository {
       userId: input.userId,
       expoPushToken: input.expoPushToken,
       platform: input.platform,
+      installationId: input.installationId,
+      bindingId: input.bindingId,
+      bindingGeneration: input.bindingGeneration,
+      revocationSecretHash: input.revocationSecretHash,
       createdAt: input.now,
       updatedAt: input.now,
     };
     this.map.set(created.id, created);
-    return { ...created };
+    return { status: 'bound', device: { ...created } };
   }
 
-  async listByCompany(companyId: string): Promise<DeviceRecord[]> {
+  async listDeliveryTargetsByCompany(
+    companyId: string,
+    confirmedAfter: string,
+  ): Promise<PushDeliveryTarget[]> {
     return [...this.map.values()]
-      .filter((d) => d.companyId === companyId)
+      .filter((d) => {
+        if (
+          d.companyId !== companyId
+          || d.installationId === null
+          || d.bindingId === null
+          || d.bindingGeneration === null
+          || d.revocationSecretHash === null
+          || d.updatedAt < confirmedAfter
+        ) return false;
+        const installation = this.installations.get(d.installationId);
+        return installation !== undefined
+          && installation.revocationSecretHash === d.revocationSecretHash
+          && installation.currentBindingId === d.bindingId
+          && installation.maxGeneration === d.bindingGeneration
+          && installation.currentCompanyId === d.companyId
+          && installation.currentUserId === d.userId
+          && installation.lastConfirmedAt !== null
+          && installation.lastConfirmedAt >= confirmedAfter;
+      })
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-      .map((d) => ({ ...d }));
+      .map((d) => ({
+        expoPushToken: d.expoPushToken,
+        platform: d.platform,
+        bindingId: d.bindingId!,
+        bindingGeneration: d.bindingGeneration!,
+        updatedAt: d.updatedAt,
+      }));
   }
 
-  async removeByToken(companyId: string, expoPushToken: string): Promise<void> {
+  async revokeLegacyOwnerToken(
+    companyId: string,
+    userId: string | null,
+    expoPushToken: string,
+  ): Promise<void> {
     for (const [id, d] of this.map) {
-      if (d.companyId === companyId && d.expoPushToken === expoPushToken) this.map.delete(id);
+      if (
+        d.companyId === companyId
+        && d.userId === userId
+        && d.expoPushToken === expoPushToken
+        && d.installationId === null
+        && d.bindingId === null
+        && d.bindingGeneration === null
+        && d.revocationSecretHash === null
+      ) {
+        this.map.delete(id);
+      }
+    }
+  }
+
+  async removeInvalidDeliveryTarget(input: InvalidPushDeliveryTarget): Promise<void> {
+    const device = [...this.map.values()].find((candidate) =>
+      candidate.companyId === input.companyId
+      && candidate.expoPushToken === input.expoPushToken
+      && candidate.bindingId === input.bindingId
+      && candidate.bindingGeneration === input.bindingGeneration,
+    );
+    if (
+      !device?.installationId
+      || !device.bindingId
+      || device.bindingGeneration === null
+      || !device.revocationSecretHash
+    ) return;
+    await this.revokeThroughGeneration({
+      installationId: device.installationId,
+      throughGeneration: device.bindingGeneration,
+      revocationSecretHash: device.revocationSecretHash,
+      scope: { kind: 'authenticated', companyId: input.companyId, userId: device.userId },
+    });
+  }
+
+  async revokeThroughGeneration(input: RevokeDeviceThroughInput): Promise<void> {
+    const installation = this.installations.get(input.installationId);
+    if (!installation) {
+      if (input.scope.kind === 'public') return;
+      this.installations.set(input.installationId, {
+        revocationSecretHash: input.revocationSecretHash,
+        maxGeneration: input.throughGeneration,
+        currentBindingId: null,
+        currentCompanyId: null,
+        currentUserId: null,
+        lastConfirmedAt: null,
+      });
+      return;
+    }
+    if (installation.revocationSecretHash !== input.revocationSecretHash) return;
+    const accepted = installation.maxGeneration <= input.throughGeneration;
+    if (accepted) {
+      this.installations.set(input.installationId, {
+        ...installation,
+        maxGeneration: input.throughGeneration,
+        currentBindingId: null,
+        currentCompanyId: null,
+        currentUserId: null,
+      });
+    }
+    // Parité PostgreSQL : même si le parent est déjà à un high-water supérieur, une ancienne
+    // ligne Device orpheline <= N doit être purgée avec la capacité exacte.
+    for (const [id, device] of this.map) {
+      if (
+        device.installationId === input.installationId
+        && device.revocationSecretHash === input.revocationSecretHash
+        && device.bindingGeneration !== null
+        && device.bindingGeneration <= input.throughGeneration
+      ) this.map.delete(id);
+    }
+  }
+
+  async deleteAllForCompany(companyId: string): Promise<void> {
+    for (const [id, device] of this.map) {
+      if (device.companyId !== companyId) continue;
+      if (device.installationId !== null) {
+        const installation = this.installations.get(device.installationId);
+        if (
+          installation
+          && installation.currentCompanyId === companyId
+          && installation.currentBindingId === device.bindingId
+        ) {
+          this.installations.set(device.installationId, {
+            ...installation,
+            currentBindingId: null,
+            currentCompanyId: null,
+            currentUserId: null,
+          });
+        }
+      }
+      this.map.delete(id);
     }
   }
 }
@@ -771,6 +979,14 @@ export class InMemoryPublicAccessTokenRepository implements PublicAccessTokenRep
         row.revokedAt === null &&
         row.expiresAt > input.at
       ) {
+        this.rows.set(id, { ...row, revokedAt: input.at });
+      }
+    }
+  }
+
+  async revokeAllForCompany(input: { companyId: string; at: string }): Promise<void> {
+    for (const [id, row] of this.rows) {
+      if (row.companyId === input.companyId && row.revokedAt === null) {
         this.rows.set(id, { ...row, revokedAt: input.at });
       }
     }

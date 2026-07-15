@@ -1,8 +1,9 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppLogger } from '../observability/logger';
 import { ExpoPushService, type ExpoPushMessage } from './expo-push';
 
-const logger = { audit: vi.fn(), warn: vi.fn() } as unknown as AppLogger;
+const warn = vi.fn();
+const logger = { audit: vi.fn(), warn } as unknown as AppLogger;
 
 function okTickets(count: number): Response {
   return new Response(JSON.stringify({ data: Array.from({ length: count }, () => ({ status: 'ok' })) }), {
@@ -16,6 +17,10 @@ function message(i: number): ExpoPushMessage {
 }
 
 describe('ExpoPushService', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it('chunke par 100 (limite API Expo) et compte les tickets acceptés', async () => {
     const calls: unknown[][] = [];
     const fetchFn = vi.fn(async (_url: string, init: RequestInit) => {
@@ -55,6 +60,36 @@ describe('ExpoPushService', () => {
     expect(outcome.accepted).toBe(1);
     expect(outcome.rejected).toEqual([{ token: 'ExponentPushToken[tok-2]', error: 'DeviceNotRegistered' }]);
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('DeviceNotRegistered'), 'notifications');
+  });
+
+  it('ne transmet jamais aux logs un token Expo, son préfixe, même réfléchi par le provider ou le transport', async () => {
+    const token = 'ExponentPushToken[ultra-secret-installation-42]';
+    const reflectedTicketError = `invalid recipient ${token}`;
+    const ticketFailure = new ExpoPushService(
+      logger,
+      vi.fn(async () => new Response(JSON.stringify({
+        data: [{ status: 'error', message: reflectedTicketError }],
+      }), { status: 200 })),
+    );
+
+    expect(await ticketFailure.send([{ ...message(1), to: token }])).toEqual({
+      accepted: 0,
+      rejected: [{ token, error: reflectedTicketError }],
+    });
+
+    const reflectedPrefix = token.slice(0, 31);
+    const transportFailure = new ExpoPushService(
+      logger,
+      vi.fn(async () => Promise.reject(new Error(`timeout for ${reflectedPrefix}…`))),
+    );
+    await transportFailure.send([{ ...message(2), to: token }]);
+
+    const serializedLogs = JSON.stringify(warn.mock.calls);
+    expect(serializedLogs).toContain('[push-token-redacted]');
+    expect(serializedLogs).not.toContain(token);
+    expect(serializedLogs).not.toContain(reflectedPrefix);
+    expect(serializedLogs).not.toContain('ExponentPushToken');
+    expect(serializedLogs).not.toContain('ultra-secret-installation');
   });
 
   it('API injoignable ou HTTP non-2xx : tout le lot est rejeté proprement, sans lever', async () => {

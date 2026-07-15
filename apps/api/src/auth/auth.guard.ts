@@ -27,6 +27,12 @@ function isPublicSignupEndpoint(method: string, url: string): boolean {
   return method === 'GET' && path === '/company/lookup';
 }
 
+/** Replay one-way d'une tombstone push après destruction du JWT. Aucun autre verbe/chemin public. */
+function isPublicPushRevocationEndpoint(method: string, url: string): boolean {
+  // Interdit même une query ignorée : un secret/capability dans l'URL finirait dans proxy/APM.
+  return method === 'POST' && url === '/public/push-revocations';
+}
+
 /**
  * Niveau 2 — JWT VALIDE requis mais tenant OPTIONNEL (C24b) : le provisioning exige d'être
  * authentifié (le JWT fournit le userId pour l'id déterministe company-<userId> et l'écriture
@@ -88,6 +94,7 @@ export class SupabaseAuthGuard implements CanActivate {
     if (path === '/metrics') return hasValidMetricsCredential(req.headers);
     // Inscription AVANT compte (C24b) : lookup annuaire public, AVANT toute lecture d'Authorization.
     if (isPublicSignupEndpoint(req.method ?? 'GET', req.url)) return true;
+    if (isPublicPushRevocationEndpoint(req.method ?? 'GET', req.url)) return true;
 
     if (isDemoMode()) {
       // Démo : tenant via header x-company-id (par défaut la société de seed). Comportement C24b inchangé.

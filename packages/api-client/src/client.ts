@@ -512,10 +512,27 @@ export interface NotificationReadThroughOutput {
   readAt: string;
 }
 
-/** POST /devices — enregistrement du token push Expo du device (idempotent par tenant/token). */
+/** POST /devices — lie atomiquement ce token au tenant/utilisateur courant. */
 export interface RegisterDeviceClientInput {
   expoPushToken: string;
-  platform?: 'ios' | 'android' | 'web';
+  platform?: 'ios' | 'android';
+  installationId: string;
+  bindingId: string;
+  bindingGeneration: number;
+  /** Secret 256-bit SecureStore transmis uniquement en body TLS ; le serveur seul le hash. */
+  revocationSecret: string;
+}
+
+export interface RevokeDeviceBindingClientInput {
+  installationId: string;
+  /** Révoque de façon compacte toute génération serveur <= ce high-water mark. */
+  throughGeneration: number;
+  revocationSecret: string;
+}
+
+/** DELETE /devices — révocation idempotente avant déconnexion, sans token dans l'URL. */
+export interface UnregisterDeviceClientInput {
+  expoPushToken: string;
 }
 
 /**
@@ -615,6 +632,16 @@ export interface BobClient {
   ): Promise<Result<{ recorded: boolean }, AppError>>;
   startCheckout(tier: PlanTier): Promise<Result<{ url: string }, AppError>>;
   billingPortal(): Promise<Result<{ url: string }, AppError>>;
+  /**
+   * DELETE /account (Apple 5.1.1(v)) — clôture DÉFINITIVE du compte courant. JAMAIS un cascade
+   * delete : marque la company clôturée (accès révoqué), annule l'abonnement, révoque les liens
+   * de signature publics + les push tokens, PUIS supprime le user Supabase Auth (identité
+   * personnelle — email/téléphone/prénom, jamais stockée en Postgres). `confirmationText` DOIT
+   * égaler exactement le nom de l'entreprise (anti-tap accidentel, revalidé serveur) — un texte
+   * erroné renvoie une AppError 'validation', la company reste ouverte. AUCUNE parité vocale :
+   * la destruction de compte ne s'invoque jamais par la voix.
+   */
+  closeAccount(input: { confirmationText: string; reason?: string }): Promise<Result<{ closedAt: string }, AppError>>;
   invoicePaymentLink(invoiceId: string): Promise<Result<{ url: string }, AppError>>;
   getDiagnostic(): Promise<Result<DiagnosticResult, AppError>>;
   /** GET /fiscal-calendar (C-EXP5b) : échéances fiscales à venir (fenêtre 90 j) dérivées de la
@@ -788,8 +815,14 @@ export interface BobClient {
   markNotificationsReadThrough(
     input: NotificationReadThroughInput,
   ): Promise<Result<NotificationReadThroughOutput, AppError>>;
-  /** POST /devices : enregistre le token push Expo du device (idempotent par tenant/token). */
-  registerDevice(input: RegisterDeviceClientInput): Promise<Result<{ id: string }, AppError>>;
+  /** POST /devices : rebind global atomique vers le principal courant. */
+  registerDevice(input: RegisterDeviceClientInput): Promise<Result<{ status: 'bound' | 'superseded' }, AppError>>;
+  /** DELETE /devices : retire le binding du tenant courant avant la fin de session. */
+  unregisterDevice(input: UnregisterDeviceClientInput): Promise<Result<{ unregistered: true }, AppError>>;
+  /** Fence authentifiée écrite avant signOut, même si le POST d'inscription est encore en vol. */
+  revokeDeviceBinding(input: RevokeDeviceBindingClientInput): Promise<Result<{ accepted: true }, AppError>>;
+  /** Replay public one-way d'une tombstone après destruction du JWT. */
+  replayPushRevocation(input: RevokeDeviceBindingClientInput): Promise<Result<{ accepted: true }, AppError>>;
   registerPayment(input: RegisterPaymentClientInput): Promise<Result<RegisterPaymentClientOutput, AppError>>;
   /** E3 : encaissements datés du tenant — CA encaissé annuel (seuils 293 B), lettrage futur. */
   listPayments(): Promise<Result<PaymentView[], AppError>>;

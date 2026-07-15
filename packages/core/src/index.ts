@@ -114,6 +114,7 @@ export * from './application/diagnostic/derive-diagnostic';
 export * from './application/onboarding/derive-trade-profile';
 export * from './application/catalogue/derive-catalogue';
 export * from './application/compte/derive-account-view';
+export * from './application/account/close-account';
 export * from './application/argent/build-ledger-view';
 export * from './application/argent/derive-vat-position';
 export * from './application/billing/build-piece-view';

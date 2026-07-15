@@ -22,7 +22,10 @@ const jwtVerifyMock = vi.mocked(jwtVerify);
 
 function makeService(options?: { documentIntelligence?: DocumentIntelligencePort }) {
   const p = new InMemoryPersistence();
-  const admin: SupabaseAdminPort = { setUserCompanyId: vi.fn(async () => undefined) };
+  const admin: SupabaseAdminPort = {
+    setUserCompanyId: vi.fn(async () => undefined),
+    deleteUser: vi.fn(async () => undefined),
+  };
   const logger = { audit: vi.fn(), error: vi.fn(), warn: vi.fn(), log: vi.fn() } as unknown as AppLogger;
   // Outbox stubée « pending » : sendQuote enfile mais n'atteint jamais un tiers dans la transaction test.
   const notificationDelivery = {

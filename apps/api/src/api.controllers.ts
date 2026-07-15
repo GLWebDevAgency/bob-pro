@@ -12,6 +12,7 @@ import {
   Header,
   HttpException,
   HttpStatus,
+  HttpCode,
   StreamableFile,
 } from '@nestjs/common';
 import type {
@@ -778,6 +779,29 @@ export class OnboardingController {
   }
 }
 
+/**
+ * DELETE /account (Apple 5.1.1(v)) — clôture DÉFINITIVE et IRRÉVERSIBLE du compte courant.
+ * Controller MINCE : validation de forme + délégation (cf. BackendService.closeAccount pour
+ * l'orchestration complète). `@WithoutTenantPersistenceTransaction` : la transaction tenant HTTP
+ * automatique n'est PAS ouverte ici — closeAccount gère elle-même son runWithTenant COURT (DB
+ * only) puis appelle Supabase Admin (I/O externe) APRÈS commit, hors transaction (même posture
+ * que l'upload/intake documents).
+ */
+@Controller('account')
+export class AccountController {
+  constructor(private readonly backend: BackendService) {}
+  @Delete()
+  @WithoutTenantPersistenceTransaction()
+  async close(@Body() body: { confirmationText?: string; reason?: string }) {
+    return unwrap(
+      await this.backend.closeAccount({
+        confirmationText: typeof body?.confirmationText === 'string' ? body.confirmationText : '',
+        reason: typeof body?.reason === 'string' && body.reason.trim() ? body.reason.trim() : null,
+      }),
+    );
+  }
+}
+
 @Controller('diagnostic')
 export class DiagnosticController {
   constructor(private readonly backend: BackendService) {}
@@ -1347,12 +1371,39 @@ export class NotificationsController {
 export class DevicesController {
   constructor(private readonly notifications: NotificationsApiService) {}
   @Post()
-  async register(@Body() body: { expoPushToken?: string; platform?: string }) {
+  async register(@Body() body: unknown) {
     return unwrap(await this.notifications.registerDevice(body));
   }
+  @Post('revocations')
+  @HttpCode(HttpStatus.ACCEPTED)
+  @Throttle({ default: { limit: 12, ttl: 60_000 } })
+  @Header('Cache-Control', 'no-store, private, max-age=0')
+  async revokeBinding(@Body() body: unknown) {
+    return unwrap(await this.notifications.revokeDeviceBinding(body, 'authenticated'));
+  }
   @Delete()
-  async unregister(@Body() body: { expoPushToken?: string }) {
+  async unregister(@Body() body: unknown) {
     return unwrap(await this.notifications.unregisterDevice(body));
+  }
+}
+
+/**
+ * Replay de tombstone après destruction du JWT. Route publique étroite, one-way et sans oracle :
+ * elle ne sait que révoquer un binding exact déjà matérialisé, jamais lister ni enregistrer.
+ */
+@Controller('public/push-revocations')
+export class PublicPushRevocationsController {
+  constructor(private readonly notifications: NotificationsApiService) {}
+
+  @Post()
+  @HttpCode(HttpStatus.ACCEPTED)
+  @Throttle({ default: { limit: 8, ttl: 60_000 } })
+  @WithoutTenantPersistenceTransaction()
+  @Header('Cache-Control', 'no-store, private, max-age=0')
+  @Header('Pragma', 'no-cache')
+  @Header('Referrer-Policy', 'no-referrer')
+  async revoke(@Body() body: unknown) {
+    return unwrap(await this.notifications.revokeDeviceBinding(body, 'public'));
   }
 }
 

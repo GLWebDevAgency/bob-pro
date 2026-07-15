@@ -1,4 +1,5 @@
 import {
+  ForbiddenException,
   Inject,
   Injectable,
   SetMetadata,
@@ -48,6 +49,21 @@ export class TenantPersistenceInterceptor implements NestInterceptor {
     // RLS — seuls les endpoints de la liste blanche du guard arrivent ici dans cet état (lookup
     // public, provisioning), et registerCompany ouvre lui-même runWithTenant sur l'id provisionné.
     if (!principal || principal.companyId === null) return next.handle();
-    return from(this.persistence.runWithTenant(principal.companyId, () => lastValueFrom(next.handle())));
+    const companyId = principal.companyId;
+    return from(
+      this.persistence.runWithTenant(companyId, async () => {
+        // Clôture de compte (CloseAccount, Apple 5.1.1(v)) : DANS la transaction tenant (donc
+        // après pose du GUC RLS) pour que ce lookup voie le même row que la politique appliquera
+        // — un findById hors transaction serait fail-closed sous FORCE RLS en prod (rôle
+        // non-superuser) et laisserait ce garde silencieusement inopérant. La route DELETE
+        // /account elle-même désactive cette transaction automatique (@WithoutTenantPersistenceTransaction)
+        // et gère son propre runWithTenant : elle n'est donc jamais bloquée par son propre effet.
+        const company = await this.persistence.companies.findById(companyId);
+        if (company?.isClosed()) {
+          throw new ForbiddenException({ code: 'ACCOUNT_CLOSED', message: 'Compte clôturé.' });
+        }
+        return lastValueFrom(next.handle());
+      }),
+    );
   }
 }

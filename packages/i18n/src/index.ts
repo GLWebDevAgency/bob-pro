@@ -2311,6 +2311,56 @@ const legacyFr = {
     pro: 'Fermer',
     direct: 'Fermer',
   },
+  'devis.draftExit.title': {
+    pote: 'Que veux-tu faire de ce devis ?',
+    pro: 'Que souhaitez-vous faire de ce devis ?',
+    direct: 'Que faire du devis ?',
+  },
+  'devis.draftExit.body': {
+    pote: 'Tes modifications ne sont pas encore enregistrées. Tu peux les garder pour reprendre ici plus tard.',
+    pro: 'Vos modifications ne sont pas encore enregistrées. Vous pouvez les conserver pour reprendre ici plus tard.',
+    direct: 'Modifications non enregistrées. Garde-les pour reprendre plus tard.',
+  },
+  'devis.draftExit.signatureBody': {
+    pote: 'La signature au doigt protège le client : elle devra être refaite à la reprise.',
+    pro: 'La signature manuscrite protège le client : elle devra être recueillie à nouveau à la reprise.',
+    direct: 'La signature devra être refaite à la reprise.',
+  },
+  'devis.draftExit.proposalBody': {
+    pote: 'La proposition de Bob n’est pas appliquée tant que tu ne l’as pas confirmée.',
+    pro: 'La proposition de Bob ne sera pas appliquée sans votre confirmation.',
+    direct: 'Proposition Bob non appliquée sans confirmation.',
+  },
+  'devis.draftExit.generationBody': {
+    pote: 'La création de la pièce est déjà engagée. Attends son résultat ou réessaie ici pour éviter un doublon.',
+    pro: 'La création de la pièce est déjà engagée. Attendez son résultat ou réessayez ici afin d’éviter un doublon.',
+    direct: 'Création en cours. Attends ici pour éviter un doublon.',
+  },
+  'devis.draftExit.persistenceError': {
+    pote: 'Je n’ai pas pu sécuriser le brouillon. Il reste ouvert : réessaie avant de partir.',
+    pro: 'L’enregistrement sécurisé a échoué. Votre devis reste ouvert : veuillez réessayer.',
+    direct: 'Enregistrement sécurisé impossible. Le devis reste ouvert : réessaie.',
+  },
+  'devis.draftExit.continue': {
+    pote: 'Continuer le devis',
+    pro: 'Continuer le devis',
+    direct: 'Continuer',
+  },
+  'devis.draftExit.save': {
+    pote: 'Enregistrer et fermer',
+    pro: 'Enregistrer et fermer',
+    direct: 'Garder et fermer',
+  },
+  'devis.draftExit.discard': {
+    pote: 'Supprimer le brouillon',
+    pro: 'Supprimer le brouillon',
+    direct: 'Supprimer',
+  },
+  'devis.draftExit.close': {
+    pote: 'Fermer les options',
+    pro: 'Fermer les options',
+    direct: 'Fermer',
+  },
   'devis.back': {
     pote: 'Retour',
     pro: 'Retour',
@@ -3890,6 +3940,101 @@ const legacyFr = {
     pro: 'L’essentiel de votre activité, au bon moment.',
     direct: 'L’essentiel. Rien d’autre.',
   },
+  'notif.pushPrimerEyebrow': {
+    pote: 'Alertes utiles',
+    pro: 'Alertes utiles',
+    direct: 'Alertes utiles',
+  },
+  'notif.pushPrimerTitle': {
+    pote: 'Bob te prévient au bon moment',
+    pro: 'Recevez les alertes utiles au bon moment',
+    direct: 'Les alertes utiles, au bon moment',
+  },
+  'notif.pushPrimerBody': {
+    pote: 'Échéance proche, relance terminée ou document à vérifier : reçois seulement les alertes utiles. Tu peux continuer sans les activer.',
+    pro: 'Échéance proche, relance terminée ou document à vérifier : recevez uniquement les alertes utiles. Vous pouvez continuer sans les activer.',
+    direct: 'Échéances, relances, documents : seulement l’utile. L’app fonctionne sans.',
+  },
+  'notif.pushPrimerAction': {
+    pote: 'Activer les alertes',
+    pro: 'Activer les alertes',
+    direct: 'Activer',
+  },
+  'notif.pushPrimerLater': {
+    pote: 'Pas maintenant',
+    pro: 'Plus tard',
+    direct: 'Plus tard',
+  },
+  'notif.pushDismissedTitle': {
+    pote: 'Alertes non activées',
+    pro: 'Alertes non activées',
+    direct: 'Alertes inactives',
+  },
+  'notif.pushDismissedBody': {
+    pote: 'Ton fil reste disponible ici. Tu peux activer les alertes quand tu veux.',
+    pro: 'Votre fil reste disponible ici. Vous pouvez activer les alertes à tout moment.',
+    direct: 'Le fil reste ici. Active-les quand tu veux.',
+  },
+  'notif.pushDeniedTitle': {
+    pote: 'Alertes désactivées',
+    pro: 'Alertes désactivées',
+    direct: 'Alertes désactivées',
+  },
+  'notif.pushDeniedBody': {
+    pote: 'Bob ne peut pas te prévenir hors de l’app. Ton fil reste disponible ici.',
+    pro: 'Bob ne peut pas vous prévenir hors de l’application. Votre fil reste disponible ici.',
+    direct: 'Pas d’alerte hors app. Le fil reste ici.',
+  },
+  'notif.pushProvisionalTitle': {
+    pote: 'Alertes discrètes actives',
+    pro: 'Alertes discrètes actives',
+    direct: 'Alertes discrètes actives',
+  },
+  'notif.pushProvisionalBody': {
+    pote: 'Elles arrivent sans t’interrompre. Tu peux autoriser les alertes complètes dans les réglages.',
+    pro: 'Elles arrivent sans vous interrompre. Vous pouvez autoriser les alertes complètes dans les réglages.',
+    direct: 'Elles arrivent discrètement. Les réglages permettent de tout autoriser.',
+  },
+  'notif.pushProvisionalAction': {
+    pote: 'Autoriser les alertes complètes',
+    pro: 'Autoriser les alertes complètes',
+    direct: 'Tout autoriser',
+  },
+  'notif.pushSettingsAction': {
+    pote: 'Ouvrir les réglages',
+    pro: 'Ouvrir les réglages',
+    direct: 'Réglages',
+  },
+  'notif.pushUnavailableTitle': {
+    pote: 'Alertes indisponibles pour le moment',
+    pro: 'Alertes temporairement indisponibles',
+    direct: 'Alertes indisponibles',
+  },
+  'notif.pushUnavailableBody': {
+    pote: 'Cet appareil n’a pas pu être enregistré. Ton fil reste disponible ici.',
+    pro: 'Cet appareil n’a pas pu être enregistré. Votre fil reste disponible ici.',
+    direct: 'Appareil non enregistré. Le fil reste ici.',
+  },
+  'notif.pushRetryAction': {
+    pote: 'Réessayer',
+    pro: 'Réessayer',
+    direct: 'Réessayer',
+  },
+  'notif.pushEnabledToast': {
+    pote: 'C’est fait, Bob pourra te prévenir.',
+    pro: 'Les alertes sont activées.',
+    direct: 'Alertes activées.',
+  },
+  'notif.pushDeniedToast': {
+    pote: 'Pas de souci, ton fil reste disponible ici.',
+    pro: 'Votre fil reste disponible ici.',
+    direct: 'Le fil reste ici.',
+  },
+  'notif.pushErrorToast': {
+    pote: 'Impossible d’activer les alertes pour le moment.',
+    pro: 'Impossible d’activer les alertes pour le moment.',
+    direct: 'Activation impossible.',
+  },
   'notif.sectionDue': {
     pote: 'À relancer maintenant',
     pro: 'Relances à traiter',
@@ -5120,6 +5265,107 @@ const legacyFr = {
     pote: 'Je n’arrive pas à vérifier ton abonnement. Je préfère ne rien inventer : réessaie.',
     pro: 'Impossible de charger les informations d’abonnement. Veuillez réessayer.',
     direct: 'Abonnement injoignable. Réessaie.',
+  },
+
+  // ── Audit stores 20260716 — footer légal + suppression de compte (Apple 5.1.1(v)) ─────────
+  'account.sectionLegal': { pote: 'Infos légales', pro: 'Informations légales', direct: 'Légal' },
+  'account.appVersion': { pote: 'Version {version}', pro: 'Version {version}', direct: 'v{version}' },
+  'account.legalTerms': {
+    pote: 'Conditions d’utilisation',
+    pro: 'Conditions d’utilisation',
+    direct: 'CGU',
+  },
+  'account.legalPrivacy': {
+    pote: 'Politique de confidentialité',
+    pro: 'Politique de confidentialité',
+    direct: 'Confidentialité',
+  },
+  'account.contactSupport': {
+    pote: 'Une question ? Écris-nous',
+    pro: 'Nous contacter',
+    direct: 'Contact',
+  },
+  'account.linkUnavailable': {
+    pote: 'Je n’arrive pas à ouvrir ce lien, là.',
+    pro: 'Impossible d’ouvrir ce lien pour le moment.',
+    direct: 'Lien indisponible.',
+  },
+  'account.dangerZoneTitle': {
+    pote: 'Zone dangereuse',
+    pro: 'Zone sensible',
+    direct: 'Zone dangereuse',
+  },
+  'account.deleteAccountRow': {
+    pote: 'Supprimer mon compte',
+    pro: 'Supprimer mon compte',
+    direct: 'Supprimer le compte',
+  },
+  'account.deleteAccountRowSub': {
+    pote: 'Fermeture définitive de ton accès',
+    pro: 'Fermeture définitive de votre accès',
+    direct: 'Fermeture définitive',
+  },
+  'account.gdprNote': {
+    pote: 'Tu peux aussi demander l’export de tes données — écris-nous à {email}.',
+    pro: 'Vous pouvez aussi demander l’export de vos données — contactez-nous à {email}.',
+    direct: 'Export de données : {email}.',
+  },
+  'account.deleteSheetTitle': {
+    pote: 'Supprimer ton compte ?',
+    pro: 'Supprimer votre compte ?',
+    direct: 'Supprimer le compte ?',
+  },
+  'account.deleteSheetIntro': {
+    pote: 'C’est une action définitive, à froid — pas à la voix. Voici exactement ce qui se passe.',
+    pro: 'Cette action est définitive. Voici précisément ce qu’elle implique.',
+    direct: 'Action définitive et irréversible.',
+  },
+  'account.deleteSheetGoesTitle': { pote: 'Ce qui disparaît', pro: 'Ce qui disparaît', direct: 'Supprimé' },
+  'account.deleteSheetGoesBody': {
+    pote: 'Ton accès à l’appli et tes informations personnelles (nom, contact) sont supprimés.',
+    pro: 'Votre accès à l’application et vos informations personnelles (nom, contact) sont supprimés.',
+    direct: 'Accès + infos personnelles supprimés.',
+  },
+  'account.deleteSheetStaysTitle': {
+    pote: 'Ce qui reste — obligation légale',
+    pro: 'Ce qui reste — obligation légale',
+    direct: 'Conservé — obligation légale',
+  },
+  'account.deleteSheetStaysBody': {
+    pote: 'Tes factures et devis déjà émis restent conservés 10 ans, comme l’exige la loi — même après la suppression de ton compte. Personne n’y touche.',
+    pro: 'Vos factures et devis déjà émis restent conservés 10 ans, comme l’exige la loi, même après la suppression de votre compte.',
+    direct: 'Factures/devis déjà émis conservés 10 ans (loi).',
+  },
+  'account.deleteSheetConfirmLabel': {
+    pote: 'Pour confirmer, écris le nom de ton entreprise :',
+    pro: 'Pour confirmer, saisissez le nom de votre entreprise :',
+    direct: 'Confirme en écrivant le nom de l’entreprise :',
+  },
+  'account.deleteSheetConfirmPlaceholder': {
+    pote: 'Nom de l’entreprise',
+    pro: 'Nom de l’entreprise',
+    direct: 'Nom de l’entreprise',
+  },
+  'account.deleteSheetConfirmMismatch': {
+    pote: 'Ça ne correspond pas encore au nom de ton entreprise.',
+    pro: 'Le texte saisi ne correspond pas au nom de votre entreprise.',
+    direct: 'Ne correspond pas.',
+  },
+  'account.deleteSheetReasonLabel': {
+    pote: 'Pourquoi tu pars ? (facultatif)',
+    pro: 'Pourquoi partez-vous ? (facultatif)',
+    direct: 'Motif (facultatif)',
+  },
+  'account.deleteSheetSubmit': {
+    pote: 'Supprimer définitivement mon compte',
+    pro: 'Supprimer définitivement mon compte',
+    direct: 'Supprimer définitivement',
+  },
+  'account.deleteSheetCancel': { pote: 'Annuler', pro: 'Annuler', direct: 'Annuler' },
+  'account.deleteSheetError': {
+    pote: 'Je n’arrive pas à supprimer ton compte, là. Réessaie.',
+    pro: 'Impossible de supprimer votre compte pour le moment. Veuillez réessayer.',
+    direct: 'Suppression impossible. Réessaie.',
   },
 
   // ── C-EXP-UI1 — les moteurs d'expertise à l'écran ──────────────────────────

@@ -2,10 +2,201 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgentRun, JournalEntry, PendingAction } from '@bob/ai';
 import { HttpBobClient } from './http-client';
 
+const pushBindingInput = () => ({
+  installationId: '11111111-1111-4111-8111-111111111111',
+  throughGeneration: 1,
+  revocationSecret: 'a'.repeat(64),
+});
+
+const pushRegistrationInput = () => ({
+  installationId: '11111111-1111-4111-8111-111111111111',
+  bindingId: '22222222-2222-4222-8222-222222222222',
+  bindingGeneration: 1,
+  revocationSecret: 'a'.repeat(64),
+  expoPushToken: 'ExponentPushToken[abc]',
+  platform: 'ios' as const,
+});
+
 describe('HttpBobClient', () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
+  });
+
+  it('refuse toute API HTTP distante avant de transporter token ou secret push', () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    expect(() => new HttpBobClient({
+      baseUrl: 'http://api.example.test',
+      companyId: 'company-1',
+    })).toThrow('HTTPS requis');
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(() => new HttpBobClient({
+      baseUrl: 'http://localhost:3000',
+      companyId: 'company-1',
+    })).not.toThrow();
+  });
+
+  it('closeAccount : DELETE /account avec le confirmationText en body, décode closedAt', async () => {
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      expect(url).toBe('https://api.bob.test/account');
+      expect(init?.method).toBe('DELETE');
+      expect(JSON.parse(String(init?.body))).toEqual({ confirmationText: 'Mercier Plomberie', reason: 'je change de métier' });
+      return new Response(JSON.stringify({ closedAt: '2026-07-16T09:00:00.000Z' }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+
+    await expect(
+      client.closeAccount({ confirmationText: 'Mercier Plomberie', reason: 'je change de métier' }),
+    ).resolves.toEqual({ ok: true, value: { closedAt: '2026-07-16T09:00:00.000Z' } });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it('closeAccount : confirmationText erroné (422 serveur) → AppError validation, jamais un succès', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      JSON.stringify({ ok: false, error: { kind: 'validation', issues: [{ field: 'confirmationText', message: 'ne correspond pas' }] } }),
+      { status: 422, headers: { 'content-type': 'application/json' } },
+    )));
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+
+    await expect(client.closeAccount({ confirmationText: 'faux nom' })).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'validation' },
+    });
+  });
+
+  it('interdit les redirects et refuse une réponse cross-origin avant décodage', async () => {
+    const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      expect(init?.redirect).toBe('error');
+      const response = new Response(JSON.stringify({ accepted: true }), {
+        status: 202,
+        headers: { 'content-type': 'application/json' },
+      });
+      Object.defineProperty(response, 'url', { value: 'https://evil.example/push' });
+      return response;
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+    await expect(client.replayPushRevocation(pushBindingInput())).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'dependency', port: 'api', cause: 'Redirection API cross-origin refusée.' },
+    });
+  });
+
+  it.each(['bound', 'superseded'] as const)(
+    'décode strictement la réponse push register %s',
+    async (status) => {
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ status }), {
+        headers: { 'content-type': 'application/json' },
+      })));
+      const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+
+      await expect(client.registerDevice(pushRegistrationInput())).resolves.toEqual({
+        ok: true,
+        value: { status },
+      });
+    },
+  );
+
+  it.each([
+    null,
+    [],
+    { status: 'BOUND' },
+    { status: 'bound', accepted: true },
+  ])('rejette une réponse push register malformée %#', async (payload) => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(payload), {
+      headers: { 'content-type': 'application/json' },
+    })));
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+
+    await expect(client.registerDevice(pushRegistrationInput())).resolves.toEqual({
+      ok: false,
+      error: {
+        kind: 'dependency',
+        port: 'api-contract',
+        cause: 'Réponse API invalide pour POST /devices.',
+      },
+    });
+  });
+
+  it('rejette une réponse register enrichie par un proxy au lieu de faire confiance à un cast', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      status: 'bound',
+      proxyRequestId: 'req-1',
+    }), { headers: { 'content-type': 'application/json' } })));
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+
+    await expect(client.registerDevice(pushRegistrationInput())).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'dependency', port: 'api-contract' },
+    });
+  });
+
+  it.each([
+    ['revoke authentifié', '/devices/revocations', false],
+    ['replay public', '/public/push-revocations', true],
+  ] as const)('décode strictement la réponse push %s', async (_label, expectedPath, publicReplay) => {
+    const fetchMock = vi.fn(async (url: unknown) => {
+      expect(String(url)).toBe(`https://api.bob.test${expectedPath}`);
+      return new Response(JSON.stringify({ accepted: true }), {
+        status: 202,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+
+    const result = publicReplay
+      ? client.replayPushRevocation(pushBindingInput())
+      : client.revokeDeviceBinding(pushBindingInput());
+    await expect(result).resolves.toEqual({ ok: true, value: { accepted: true } });
+  });
+
+  it.each([
+    ['revoke authentifié', false, null],
+    ['revoke authentifié', false, []],
+    ['revoke authentifié', false, { accepted: false }],
+    ['replay public', true, { accepted: 'true' }],
+    ['replay public via proxy', true, { accepted: true, proxyRequestId: 'req-1' }],
+  ] as const)('rejette une réponse push %s malformée', async (_label, publicReplay, payload) => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(payload), {
+      status: 202,
+      headers: { 'content-type': 'application/json' },
+    })));
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+
+    const result = publicReplay
+      ? client.replayPushRevocation(pushBindingInput())
+      : client.revokeDeviceBinding(pushBindingInput());
+    await expect(result).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'dependency', port: 'api-contract' },
+    });
+  });
+
+  it.each([
+    ['register', 12_000, (client: HttpBobClient) => client.registerDevice(pushRegistrationInput())],
+    ['revoke authentifié', 10_000, (client: HttpBobClient) => client.revokeDeviceBinding(pushBindingInput())],
+    ['replay public', 10_000, (client: HttpBobClient) => client.replayPushRevocation(pushBindingInput())],
+  ] as const)('conserve le timeout push %s à %i ms', async (_label, timeoutMs, invoke) => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => undefined)));
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+
+    const pending = invoke(client);
+    await vi.advanceTimersByTimeAsync(timeoutMs);
+
+    await expect(pending).resolves.toMatchObject({
+      ok: false,
+      error: {
+        kind: 'dependency',
+        port: 'api',
+        cause: `Délai réseau dépassé après ${timeoutMs} ms.`,
+      },
+    });
   });
 
   it('borne aussi une récupération de jeton bloquée avant les appels documentaires', async () => {
@@ -1040,8 +1231,23 @@ describe('HttpBobClient — assistant Bob (C40 ⑧ : ask/confirm/journal serveur
         );
       }
       if (u === 'https://api.bob.test/devices' && method === 'POST') {
-        expect(JSON.parse(String(init?.body))).toEqual({ expoPushToken: 'ExponentPushToken[abc]', platform: 'ios' });
-        return new Response(JSON.stringify({ id: 'dev-1' }), { headers: { 'content-type': 'application/json' } });
+        expect(JSON.parse(String(init?.body))).toEqual({
+          expoPushToken: 'ExponentPushToken[abc]',
+          platform: 'ios',
+          installationId: '11111111-1111-4111-8111-111111111111',
+          bindingId: '22222222-2222-4222-8222-222222222222',
+          bindingGeneration: 1,
+          revocationSecret: 'a'.repeat(64),
+        });
+        return new Response(JSON.stringify({ status: 'bound' }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (u === 'https://api.bob.test/devices' && method === 'DELETE') {
+        expect(JSON.parse(String(init?.body))).toEqual({ expoPushToken: 'ExponentPushToken[abc]' });
+        return new Response(JSON.stringify({ unregistered: true }), {
+          headers: { 'content-type': 'application/json' },
+        });
       }
       return new Response(JSON.stringify({ error: { kind: 'not_found', resource: 'route' } }), { status: 404 });
     });
@@ -1070,8 +1276,17 @@ describe('HttpBobClient — assistant Bob (C40 ⑧ : ask/confirm/journal serveur
       readAt: '2026-07-03T08:00:01.000Z',
     });
 
-    const device = await client.registerDevice({ expoPushToken: 'ExponentPushToken[abc]', platform: 'ios' });
-    expect(device.ok && device.value).toEqual({ id: 'dev-1' });
+    const device = await client.registerDevice({
+      expoPushToken: 'ExponentPushToken[abc]',
+      platform: 'ios',
+      installationId: '11111111-1111-4111-8111-111111111111',
+      bindingId: '22222222-2222-4222-8222-222222222222',
+      bindingGeneration: 1,
+      revocationSecret: 'a'.repeat(64),
+    });
+    expect(device.ok && device.value).toEqual({ status: 'bound' });
+    const revoked = await client.unregisterDevice({ expoPushToken: 'ExponentPushToken[abc]' });
+    expect(revoked).toEqual({ ok: true, value: { unregistered: true } });
   });
 
   it('C24b : registerCompany → POST /onboarding/company, id décidé par le serveur (jamais envoyé)', async () => {

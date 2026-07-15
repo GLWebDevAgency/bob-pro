@@ -53,6 +53,7 @@ describe('CabinetApiService — vertical Slice 0 in-memory', () => {
     const supabaseAdmin = {
       setUserCompanyId: vi.fn(async () => undefined),
       getVerifiedEmail: vi.fn(async () => null),
+      deleteUser: vi.fn(async () => undefined),
     };
     const metrics = new Metrics();
     const service = new CabinetApiService(persistence, notifier, supabaseAdmin, metrics, logger());

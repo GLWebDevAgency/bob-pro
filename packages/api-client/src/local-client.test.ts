@@ -53,6 +53,20 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     expect(!bad.ok && bad.error.kind).toBe('domain');
   });
 
+  it('DELETE /account (démo) : confirmationText EXACT (nom de la société seedée) → clôture, mêmes règles que le serveur', async () => {
+    const client = makeClient();
+    const r = await client.closeAccount({ confirmationText: 'Mercier Plomberie' });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(typeof r.value.closedAt).toBe('string');
+  });
+
+  it('DELETE /account (démo) : confirmationText erroné → AppError validation, jamais de clôture', async () => {
+    const client = makeClient();
+    const r = await client.closeAccount({ confirmationText: 'pas le bon nom' });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.kind).toBe('validation');
+  });
+
   it('C26b : getSubscription = early-access HONNÊTE aligné sur le seed (business actif, 0 € facturé)', async () => {
     const r = await makeClient().getSubscription();
     expect(r.ok).toBe(true);
@@ -1079,10 +1093,69 @@ describe('LocalBobClient — C25 relances réelles + fil de notifications (adapt
     const ghost = await client.markNotificationRead('notif-ghost');
     expect(!ghost.ok && ghost.error.kind).toBe('not_found');
 
-    // Device push : enregistrement idempotent par token (aucun push sortant en démo).
-    const d1 = await client.registerDevice({ expoPushToken: 'ExponentPushToken[demo]', platform: 'ios' });
-    const d2 = await client.registerDevice({ expoPushToken: 'ExponentPushToken[demo]' });
-    expect(d1.ok && d2.ok && d1.value.id === (d2.ok ? d2.value.id : '')).toBe(true);
+    // Device push v2 : binding idempotent et fence monotone, sans push sortant en démo.
+    const bindingV1 = {
+      installationId: '11111111-1111-4111-8111-111111111111',
+      bindingId: '22222222-2222-4222-8222-222222222222',
+      bindingGeneration: 1,
+      revocationSecret: 'a'.repeat(64),
+    };
+    const registrationV1 = {
+      ...bindingV1,
+      expoPushToken: 'ExponentPushToken[demo]',
+      platform: 'ios' as const,
+    };
+    const d1 = await client.registerDevice(registrationV1);
+    const d2 = await client.registerDevice(registrationV1);
+    expect(d1).toEqual({ ok: true, value: { status: 'bound' } });
+    expect(d2).toEqual({ ok: true, value: { status: 'bound' } });
+    await expect(client.registerDevice({
+      ...registrationV1,
+      expoPushToken: 'ExponentPushToken[stale-equal-generation]',
+    })).resolves.toEqual({ ok: true, value: { status: 'superseded' } });
+    await expect(client.revokeDeviceBinding({
+      installationId: bindingV1.installationId,
+      throughGeneration: bindingV1.bindingGeneration,
+      revocationSecret: bindingV1.revocationSecret,
+    })).resolves.toEqual({
+      ok: true,
+      value: { accepted: true },
+    });
+    await expect(client.registerDevice(registrationV1)).resolves.toEqual({
+      ok: true,
+      value: { status: 'superseded' },
+    });
+    const bindingV2 = {
+      ...bindingV1,
+      bindingId: '33333333-3333-4333-8333-333333333333',
+      bindingGeneration: 2,
+    };
+    await expect(client.registerDevice({
+      ...bindingV2,
+      expoPushToken: 'ExponentPushToken[demo]',
+    })).resolves.toEqual({ ok: true, value: { status: 'bound' } });
+    await expect(client.replayPushRevocation({
+      installationId: bindingV2.installationId,
+      throughGeneration: bindingV2.bindingGeneration,
+      revocationSecret: bindingV2.revocationSecret,
+    })).resolves.toEqual({
+      ok: true,
+      value: { accepted: true },
+    });
+    await expect(
+      client.unregisterDevice({ expoPushToken: 'ExponentPushToken[demo]' }),
+    ).resolves.toEqual({ ok: true, value: { unregistered: true } });
+    // Révocation et ré-enregistrement restent idempotents dans l'adaptateur local.
+    await expect(
+      client.unregisterDevice({ expoPushToken: 'ExponentPushToken[demo]' }),
+    ).resolves.toEqual({ ok: true, value: { unregistered: true } });
+    const d3 = await client.registerDevice({
+      ...bindingV2,
+      bindingId: '44444444-4444-4444-8444-444444444444',
+      bindingGeneration: 3,
+      expoPushToken: 'ExponentPushToken[demo]',
+    });
+    expect(d3).toEqual({ ok: true, value: { status: 'bound' } });
   });
 });
 

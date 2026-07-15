@@ -39,6 +39,7 @@ import {
   GetSubscriptionStatus,
   resolveAutonomyEntitlement,
   type SubscriptionStatusView,
+  CloseAccount,
   GetFiscalProfile,
   UpdateFiscalProfileField,
   parseFiscalProfileFieldPatch,
@@ -3622,6 +3623,70 @@ export class BackendService {
     }
     this.logger.audit('company.provisioned', { companyId, userId: principal.userId, name: input.name });
     return ok({ companyId });
+  }
+
+  /**
+   * DELETE /account (Apple 5.1.1(v)) — clôture DÉFINITIVE du compte courant. JAMAIS un cascade
+   * delete : cf. CloseAccount (@bob/core) pour l'architecture (closedAt additif, pièces
+   * comptables INTACTES — rétention légale 10 ans, Code de commerce). Orchestration en DEUX temps
+   * volontairement SÉPARÉS de la transaction HTTP auto-ouverte par TenantPersistenceInterceptor
+   * (le controller porte `@WithoutTenantPersistenceTransaction`, comme l'upload/intake documents) :
+   *  1) DANS runWithTenant, tout-ou-rien Postgres : le use case core (closedAt, abonnement
+   *     canceled, liens de signature publics révoqués) PUIS la purge des push tokens (Device,
+   *     hors @bob/core — le port core ne connaît pas cette table).
+   *  2) APRÈS COMMIT, hors transaction : suppression du user Supabase Auth. C'est LE point où
+   *     l'identité PERSONNELLE (prénom, email, téléphone — user_metadata) disparaît réellement :
+   *     Postgres n'en a jamais stocké la moindre trace (cf. commentaire CompanyProps.closedAt).
+   *     Best-effort et loggé, jamais bloquant : un échec Supabase (réseau, 5xx transitoire) laisse
+   *     le compte DÉJÀ clôturé côté Bob Pro (closedAt posé, tenant inaccessible derrière le guard) —
+   *     la reprise est un retry de CET appel Supabase seul (deleteUser sur un user déjà supprimé
+   *     répond 404, traité comme un succès idempotent), jamais un nouveau tour du use case.
+   */
+  async closeAccount(input: { confirmationText: string; reason?: string | null }): Promise<Result<{ closedAt: string }, AppError>> {
+    const principal = getPrincipal();
+    if (!principal) {
+      // Bug d'ordonnancement : le guard pose TOUJOURS un principal AVEC tenant sur cette route.
+      throw new Error('closeAccount sans Principal — le guard doit authentifier avant ce point.');
+    }
+    const companyId = this.companyId();
+    const now = this.clock.now();
+
+    const closed = await this.p.runWithTenant(companyId, async () => {
+      const useCase = new CloseAccount({
+        companies: this.p.companies,
+        subscriptions: this.p.subscriptions,
+        publicAccessTokens: this.p.publicAccessTokens,
+      });
+      const r = await useCase.execute({
+        companyId,
+        confirmationText: input.confirmationText,
+        reason: input.reason ?? null,
+        now,
+      });
+      if (!r.ok) return r;
+      await this.p.devices.deleteAllForCompany(companyId);
+      return r;
+    });
+    if (!closed.ok) return closed;
+
+    this.logger.audit('account.closed', {
+      companyId,
+      userId: principal.userId,
+      alreadyClosed: closed.value.alreadyClosed,
+    });
+
+    try {
+      await this.supabaseAdmin.deleteUser(principal.userId);
+    } catch (e) {
+      const cause = e instanceof Error ? e.message : 'supabase-admin';
+      this.logger.error(
+        `clôture ${companyId} : suppression du user Supabase Auth échouée (${cause}) — compte DÉJÀ clôturé côté Bob Pro, retry manuel possible côté auth seul`,
+        undefined,
+        'BackendService',
+      );
+    }
+
+    return ok({ closedAt: closed.value.closedAt });
   }
 
   async createCustomer(input: Omit<CustomerProps, 'id' | 'companyId'>): Promise<Result<{ id: string }, AppError>> {

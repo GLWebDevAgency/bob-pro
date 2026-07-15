@@ -19,7 +19,7 @@ function sentQuote(): Quote {
 
 function makeDeps(quote: Quote | null, options: { activeGrant?: PublicAccessGrant | null } = {}) {
   let saves = 0;
-  let revokeActiveCalls: { companyId: string; resourceId: string }[] = [];
+  const revokeActiveCalls: { companyId: string; resourceId: string }[] = [];
   let findActiveCalls = 0;
   const uow = { runInTransaction: <T>(fn: () => Promise<T>): Promise<T> => fn() };
   const quotes: QuoteRepository = {
@@ -41,6 +41,7 @@ function makeDeps(quote: Quote | null, options: { activeGrant?: PublicAccessGran
     revokeActiveFor: async (input) => {
       revokeActiveCalls.push({ companyId: input.companyId, resourceId: input.resourceId });
     },
+    revokeAllForCompany: async () => undefined,
   };
   return {
     deps: { quotes, publicAccessTokens, uow, clock },

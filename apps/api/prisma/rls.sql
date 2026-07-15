@@ -26,6 +26,7 @@ BEGIN
     'document_archive_jobs',
     'notification_jobs',
     'devices',
+    'push_installations',
     'agent_journal_entries',
     'accounting_accounts',
     'accounting_entries',
@@ -264,29 +265,314 @@ $$;
 DROP POLICY IF EXISTS tenant_isolation ON devices;
 DROP POLICY IF EXISTS device_tenant_select ON devices;
 DROP POLICY IF EXISTS device_token_rebind_select ON devices;
+DROP POLICY IF EXISTS device_legacy_token_rebind_select ON devices;
+DROP POLICY IF EXISTS device_provider_revoke_lookup_select ON devices;
+DROP POLICY IF EXISTS device_installation_capability_select ON devices;
+DROP POLICY IF EXISTS device_binding_capability_select ON devices;
 DROP POLICY IF EXISTS device_tenant_insert ON devices;
+DROP POLICY IF EXISTS device_v2_register_insert ON devices;
 DROP POLICY IF EXISTS device_tenant_update ON devices;
 DROP POLICY IF EXISTS device_token_rebind_update ON devices;
+DROP POLICY IF EXISTS device_legacy_token_rebind_update ON devices;
 DROP POLICY IF EXISTS device_tenant_delete ON devices;
+DROP POLICY IF EXISTS device_installation_rebind_delete ON devices;
+DROP POLICY IF EXISTS device_binding_revoke_delete ON devices;
+DROP POLICY IF EXISTS device_token_transfer_delete ON devices;
+DROP POLICY IF EXISTS device_close_account_delete ON devices;
 
 CREATE POLICY device_tenant_select ON devices FOR SELECT
-  USING ("companyId" = current_setting('app.current_company_id', true));
+  USING (
+    "companyId" = current_setting('app.current_company_id', true)
+    AND current_setting('app.current_device_operation', true) IN (
+      'deliver', 'close-account', 'legacy-owner-revoke'
+    )
+  );
+CREATE POLICY device_provider_revoke_lookup_select ON devices FOR SELECT
+  USING (
+    current_setting('app.current_device_operation', true) = 'provider-revoke-lookup'
+    AND "companyId" = current_setting('app.current_company_id', true)
+    AND "expoPushToken" = nullif(current_setting('app.current_device_push_token', true), '')
+    AND "bindingId" = nullif(current_setting('app.current_device_binding_id', true), '')::uuid
+    AND "bindingGeneration" = nullif(current_setting('app.current_device_binding_generation', true), '')::integer
+    AND "installationId" IS NOT NULL
+    AND "revocationSecretHash" IS NOT NULL
+  );
 CREATE POLICY device_token_rebind_select ON devices FOR SELECT
   USING (
+    current_setting('app.current_device_operation', true) = 'register'
+    AND
     "expoPushToken" = nullif(current_setting('app.current_device_push_token', true), '')
   );
+-- Fenêtre de cutover N-1 : l'ancien serveur pose uniquement le token capability. Il peut encore
+-- déplacer une ligne LEGACY, mais son worker listByCompany (sans token GUC) voit zéro ligne et ne
+-- peut donc jamais envoyer un push sans fence v2.
+CREATE POLICY device_legacy_token_rebind_select ON devices FOR SELECT
+  USING (
+    coalesce(current_setting('app.current_device_operation', true), '') = ''
+    AND "expoPushToken" = nullif(current_setting('app.current_device_push_token', true), '')
+    AND "installationId" IS NULL
+    AND "bindingId" IS NULL
+    AND "bindingGeneration" IS NULL
+    AND "revocationSecretHash" IS NULL
+  );
+-- UPDATE/DELETE sous FORCE RLS nécessitent aussi une visibilité SELECT de la ligne ciblée.
+-- Ces capacités sont opaques, exactes et transaction-locales ; elles n'élargissent jamais une
+-- liste tenant générique.
+CREATE POLICY device_installation_capability_select ON devices FOR SELECT
+  USING (
+    current_setting('app.current_device_operation', true) IN ('register', 'revoke-auth', 'revoke-public')
+    AND "installationId" = nullif(current_setting('app.current_device_installation_id', true), '')::uuid
+    AND "revocationSecretHash" = nullif(current_setting('app.current_device_revocation_hash', true), '')
+  );
+CREATE POLICY device_binding_capability_select ON devices FOR SELECT
+  USING (
+    current_setting('app.current_device_operation', true) = 'register'
+    AND "bindingId" = nullif(current_setting('app.current_device_binding_id', true), '')::uuid
+  );
 CREATE POLICY device_tenant_insert ON devices FOR INSERT
-  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+  WITH CHECK (
+    coalesce(current_setting('app.current_device_operation', true), '') = ''
+    AND "companyId" = current_setting('app.current_company_id', true)
+    AND "installationId" IS NULL
+    AND "bindingId" IS NULL
+    AND "bindingGeneration" IS NULL
+    AND "revocationSecretHash" IS NULL
+  );
+CREATE POLICY device_v2_register_insert ON devices FOR INSERT
+  WITH CHECK (
+    current_setting('app.current_device_operation', true) = 'register'
+    AND "companyId" = current_setting('app.current_company_id', true)
+    AND "userId" IS NOT DISTINCT FROM nullif(current_setting('app.current_device_user_id', true), '')
+    AND "expoPushToken" = nullif(current_setting('app.current_device_push_token', true), '')
+    AND "installationId" = nullif(current_setting('app.current_device_installation_id', true), '')::uuid
+    AND "bindingId" = nullif(current_setting('app.current_device_binding_id', true), '')::uuid
+    AND "bindingGeneration" = nullif(current_setting('app.current_device_binding_generation', true), '')::integer
+    AND "bindingGeneration" > 0
+    AND "revocationSecretHash" = nullif(current_setting('app.current_device_revocation_hash', true), '')
+  );
 CREATE POLICY device_tenant_update ON devices FOR UPDATE
-  USING ("companyId" = current_setting('app.current_company_id', true))
-  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+  USING (
+    coalesce(current_setting('app.current_device_operation', true), '') = ''
+    AND "companyId" = current_setting('app.current_company_id', true)
+    AND "installationId" IS NULL
+    AND "bindingId" IS NULL
+    AND "bindingGeneration" IS NULL
+    AND "revocationSecretHash" IS NULL
+  )
+  WITH CHECK (
+    coalesce(current_setting('app.current_device_operation', true), '') = ''
+    AND "companyId" = current_setting('app.current_company_id', true)
+    AND "installationId" IS NULL
+    AND "bindingId" IS NULL
+    AND "bindingGeneration" IS NULL
+    AND "revocationSecretHash" IS NULL
+  );
 CREATE POLICY device_token_rebind_update ON devices FOR UPDATE
   USING (
+    current_setting('app.current_device_operation', true) = 'register'
+    AND
     "expoPushToken" = nullif(current_setting('app.current_device_push_token', true), '')
   )
-  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+  WITH CHECK (
+    current_setting('app.current_device_operation', true) = 'register'
+    AND "companyId" = current_setting('app.current_company_id', true)
+    AND "userId" IS NOT DISTINCT FROM nullif(current_setting('app.current_device_user_id', true), '')
+    AND "expoPushToken" = nullif(current_setting('app.current_device_push_token', true), '')
+    AND "installationId" = nullif(current_setting('app.current_device_installation_id', true), '')::uuid
+    AND "bindingId" = nullif(current_setting('app.current_device_binding_id', true), '')::uuid
+    AND "bindingGeneration" = nullif(current_setting('app.current_device_binding_generation', true), '')::integer
+    AND "bindingGeneration" > 0
+    AND "revocationSecretHash" = nullif(current_setting('app.current_device_revocation_hash', true), '')
+  );
+CREATE POLICY device_legacy_token_rebind_update ON devices FOR UPDATE
+  USING (
+    coalesce(current_setting('app.current_device_operation', true), '') = ''
+    AND "expoPushToken" = nullif(current_setting('app.current_device_push_token', true), '')
+    AND "installationId" IS NULL
+    AND "bindingId" IS NULL
+    AND "bindingGeneration" IS NULL
+    AND "revocationSecretHash" IS NULL
+  )
+  WITH CHECK (
+    coalesce(current_setting('app.current_device_operation', true), '') = ''
+    AND "companyId" = current_setting('app.current_company_id', true)
+    AND "expoPushToken" = nullif(current_setting('app.current_device_push_token', true), '')
+    AND "installationId" IS NULL
+    AND "bindingId" IS NULL
+    AND "bindingGeneration" IS NULL
+    AND "revocationSecretHash" IS NULL
+  );
 CREATE POLICY device_tenant_delete ON devices FOR DELETE
-  USING ("companyId" = current_setting('app.current_company_id', true));
+  USING (
+    current_setting('app.current_device_operation', true) = 'legacy-owner-revoke'
+    AND
+    "companyId" = current_setting('app.current_company_id', true)
+    AND "userId" IS NOT DISTINCT FROM nullif(current_setting('app.current_device_user_id', true), '')
+    AND "installationId" IS NULL
+    AND "bindingId" IS NULL
+    AND "bindingGeneration" IS NULL
+    AND "revocationSecretHash" IS NULL
+  );
+CREATE POLICY device_installation_rebind_delete ON devices FOR DELETE
+  USING (
+    current_setting('app.current_device_operation', true) = 'register'
+    AND "installationId" = nullif(current_setting('app.current_device_installation_id', true), '')::uuid
+    AND "revocationSecretHash" = nullif(current_setting('app.current_device_revocation_hash', true), '')
+  );
+CREATE POLICY device_binding_revoke_delete ON devices FOR DELETE
+  USING (
+    current_setting('app.current_device_operation', true) IN ('revoke-auth', 'revoke-public')
+    AND
+    "installationId" = nullif(current_setting('app.current_device_installation_id', true), '')::uuid
+    AND "revocationSecretHash" = nullif(current_setting('app.current_device_revocation_hash', true), '')
+    AND "bindingGeneration" <= nullif(current_setting('app.current_device_binding_generation', true), '')::integer
+  );
+CREATE POLICY device_token_transfer_delete ON devices FOR DELETE
+  USING (
+    current_setting('app.current_device_operation', true) = 'register'
+    AND "expoPushToken" = nullif(current_setting('app.current_device_push_token', true), '')
+  );
+CREATE POLICY device_close_account_delete ON devices FOR DELETE
+  USING (
+    current_setting('app.current_device_operation', true) = 'close-account'
+    AND "companyId" = current_setting('app.current_company_id', true)
+  );
+
+-- Registre global sans donnée métier : il conserve uniquement le high-water mark d'une
+-- installation. Le secret 256-bit (hashé) + le mode explicite bornent chaque opération ; aucune
+-- policy tenant générique ne doit être ajoutée à cette table.
+DROP POLICY IF EXISTS push_installation_capability_select ON push_installations;
+DROP POLICY IF EXISTS push_installation_token_transfer_select ON push_installations;
+DROP POLICY IF EXISTS push_installation_binding_capability_select ON push_installations;
+DROP POLICY IF EXISTS push_installation_delivery_select ON push_installations;
+DROP POLICY IF EXISTS push_installation_register_insert ON push_installations;
+DROP POLICY IF EXISTS push_installation_register_update ON push_installations;
+DROP POLICY IF EXISTS push_installation_revoke_update ON push_installations;
+DROP POLICY IF EXISTS push_installation_token_transfer_update ON push_installations;
+DROP POLICY IF EXISTS push_installation_close_account_select ON push_installations;
+DROP POLICY IF EXISTS push_installation_close_account_update ON push_installations;
+
+CREATE POLICY push_installation_capability_select ON push_installations FOR SELECT
+  USING (
+    current_setting('app.current_device_operation', true) IN ('register', 'revoke-auth', 'revoke-public', 'close-account')
+    AND "id" = nullif(current_setting('app.current_device_installation_id', true), '')::uuid
+    AND "revocationSecretHash" = nullif(current_setting('app.current_device_revocation_hash', true), '')
+  );
+CREATE POLICY push_installation_token_transfer_select ON push_installations FOR SELECT
+  USING (
+    current_setting('app.current_device_operation', true) = 'register'
+    AND EXISTS (
+      SELECT 1
+      FROM devices AS bound_device
+      WHERE bound_device."installationId" = push_installations."id"
+        AND bound_device."expoPushToken" = nullif(current_setting('app.current_device_push_token', true), '')
+    )
+  );
+CREATE POLICY push_installation_binding_capability_select ON push_installations FOR SELECT
+  USING (
+    current_setting('app.current_device_operation', true) = 'register'
+    AND "currentBindingId" = nullif(current_setting('app.current_device_binding_id', true), '')::uuid
+  );
+CREATE POLICY push_installation_delivery_select ON push_installations FOR SELECT
+  USING (
+    current_setting('app.current_device_operation', true) = 'deliver'
+    AND "currentCompanyId" = current_setting('app.current_company_id', true)
+  );
+CREATE POLICY push_installation_register_insert ON push_installations FOR INSERT
+  WITH CHECK (
+    current_setting('app.current_device_operation', true) IN ('register', 'revoke-auth')
+    AND "id" = nullif(current_setting('app.current_device_installation_id', true), '')::uuid
+    AND "revocationSecretHash" = nullif(current_setting('app.current_device_revocation_hash', true), '')
+    AND (
+      (
+        current_setting('app.current_device_operation', true) = 'register'
+        AND "currentCompanyId" = current_setting('app.current_company_id', true)
+        AND "currentUserId" IS NOT DISTINCT FROM nullif(current_setting('app.current_device_user_id', true), '')
+        AND "currentBindingId" = nullif(current_setting('app.current_device_binding_id', true), '')::uuid
+        AND "maxGeneration" = nullif(current_setting('app.current_device_binding_generation', true), '')::integer
+        AND "maxGeneration" > 0
+      )
+      OR (
+        current_setting('app.current_device_operation', true) = 'revoke-auth'
+        AND "maxGeneration" = nullif(current_setting('app.current_device_binding_generation', true), '')::integer
+        AND "maxGeneration" > 0
+        AND "currentCompanyId" IS NULL
+        AND "currentUserId" IS NULL
+        AND "currentBindingId" IS NULL
+        AND "lastConfirmedAt" IS NULL
+      )
+    )
+  );
+CREATE POLICY push_installation_register_update ON push_installations FOR UPDATE
+  USING (
+    current_setting('app.current_device_operation', true) = 'register'
+    AND "id" = nullif(current_setting('app.current_device_installation_id', true), '')::uuid
+    AND "revocationSecretHash" = nullif(current_setting('app.current_device_revocation_hash', true), '')
+  )
+  WITH CHECK (
+    current_setting('app.current_device_operation', true) = 'register'
+    AND "id" = nullif(current_setting('app.current_device_installation_id', true), '')::uuid
+    AND "revocationSecretHash" = nullif(current_setting('app.current_device_revocation_hash', true), '')
+    AND "currentCompanyId" = current_setting('app.current_company_id', true)
+    AND "currentUserId" IS NOT DISTINCT FROM nullif(current_setting('app.current_device_user_id', true), '')
+    AND "currentBindingId" = nullif(current_setting('app.current_device_binding_id', true), '')::uuid
+    AND "maxGeneration" = nullif(current_setting('app.current_device_binding_generation', true), '')::integer
+    AND "maxGeneration" > 0
+  );
+CREATE POLICY push_installation_revoke_update ON push_installations FOR UPDATE
+  USING (
+    current_setting('app.current_device_operation', true) IN ('revoke-auth', 'revoke-public')
+    AND "id" = nullif(current_setting('app.current_device_installation_id', true), '')::uuid
+    AND "revocationSecretHash" = nullif(current_setting('app.current_device_revocation_hash', true), '')
+    AND "maxGeneration" <= nullif(current_setting('app.current_device_binding_generation', true), '')::integer
+  )
+  WITH CHECK (
+    current_setting('app.current_device_operation', true) IN ('revoke-auth', 'revoke-public')
+    AND "id" = nullif(current_setting('app.current_device_installation_id', true), '')::uuid
+    AND "revocationSecretHash" = nullif(current_setting('app.current_device_revocation_hash', true), '')
+    AND "currentCompanyId" IS NULL
+    AND "currentUserId" IS NULL
+    AND "currentBindingId" IS NULL
+    AND "maxGeneration" = nullif(current_setting('app.current_device_binding_generation', true), '')::integer
+    AND "maxGeneration" > 0
+  );
+CREATE POLICY push_installation_token_transfer_update ON push_installations FOR UPDATE
+  USING (
+    current_setting('app.current_device_operation', true) = 'register'
+    AND EXISTS (
+      SELECT 1
+      FROM devices AS bound_device
+      WHERE bound_device."installationId" = push_installations."id"
+        AND bound_device."expoPushToken" = nullif(current_setting('app.current_device_push_token', true), '')
+    )
+  )
+  WITH CHECK (
+    current_setting('app.current_device_operation', true) = 'register'
+    AND EXISTS (
+      SELECT 1
+      FROM devices AS bound_device
+      WHERE bound_device."installationId" = push_installations."id"
+        AND bound_device."expoPushToken" = nullif(current_setting('app.current_device_push_token', true), '')
+    )
+    AND "currentCompanyId" IS NULL
+    AND "currentUserId" IS NULL
+    AND "currentBindingId" IS NULL
+  );
+CREATE POLICY push_installation_close_account_update ON push_installations FOR UPDATE
+  USING (
+    current_setting('app.current_device_operation', true) = 'close-account'
+    AND "id" = nullif(current_setting('app.current_device_installation_id', true), '')::uuid
+    AND "revocationSecretHash" = nullif(current_setting('app.current_device_revocation_hash', true), '')
+    AND "currentCompanyId" = current_setting('app.current_company_id', true)
+  )
+  WITH CHECK (
+    current_setting('app.current_device_operation', true) = 'close-account'
+    AND "id" = nullif(current_setting('app.current_device_installation_id', true), '')::uuid
+    AND "revocationSecretHash" = nullif(current_setting('app.current_device_revocation_hash', true), '')
+    AND "currentCompanyId" IS NULL
+    AND "currentUserId" IS NULL
+    AND "currentBindingId" IS NULL
+  );
 
 DROP POLICY IF EXISTS tenant_isolation ON agent_journal_entries;
 CREATE POLICY tenant_isolation ON agent_journal_entries

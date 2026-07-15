@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import { SystemClock, appNotFound, ok, type AppError, type Result } from '@bob/core';
 import { PERSISTENCE, type Persistence } from '../persistence/persistence';
@@ -29,12 +29,16 @@ export interface NotificationItemDto {
 }
 
 export interface RegisterDeviceDto {
-  id: string;
-  platform: string | null;
+  status: 'bound' | 'superseded';
 }
 
 export interface UnregisterDeviceDto {
   unregistered: true;
+}
+
+export interface RevokeDeviceBindingDto {
+  /** Réponse volontairement indistinguable : ne révèle jamais l'existence d'une installation. */
+  accepted: true;
 }
 
 export interface NotificationUnreadPreviewDto {
@@ -52,7 +56,28 @@ const MAX_FEED_LIMIT = 100;
 const DEFAULT_FEED_LIMIT = 50;
 /** Format des tokens Expo (ExponentPushToken[...] / ExpoPushToken[...]) — refusé sinon. */
 const EXPO_TOKEN_PATTERN = /^Expo(nent)?PushToken\[[A-Za-z0-9_-]{10,64}\]$/;
-const PLATFORMS = new Set(['ios', 'android', 'web']);
+const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const INSTALLATION_SECRET_PATTERN = /^[0-9a-f]{64}$/;
+const MAX_BINDING_GENERATION = 2_147_483_647;
+const PLATFORMS = new Set(['ios', 'android']);
+
+function exactJsonObject(
+  input: unknown,
+  required: readonly string[],
+  optional: readonly string[] = [],
+): Result<Record<string, unknown>, AppError> {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) {
+    return invalidDeviceField('body', 'Objet JSON attendu.');
+  }
+  const body = input as Record<string, unknown>;
+  const allowed = new Set([...required, ...optional]);
+  const keys = Object.keys(body);
+  const unknown = keys.find((key) => !allowed.has(key));
+  if (unknown !== undefined) return invalidDeviceField(unknown, 'Champ non autorisé.');
+  const missing = required.find((key) => !Object.hasOwn(body, key));
+  if (missing !== undefined) return invalidDeviceField(missing, 'Champ requis.');
+  return ok(body);
+}
 
 function invalidCutoff(message: string): Result<never, AppError> {
   return {
@@ -70,6 +95,34 @@ function validateExpoPushToken(token: unknown): Result<string, AppError> {
       issues: [{ field: 'expoPushToken', message: 'Token Expo Push invalide (attendu ExponentPushToken[…]).' }],
     },
   };
+}
+
+function invalidDeviceField(field: string, message: string): Result<never, AppError> {
+  return { ok: false, error: { kind: 'validation', issues: [{ field, message }] } };
+}
+
+function validateUuidV4(field: string, value: unknown): Result<string, AppError> {
+  if (typeof value === 'string' && UUID_V4_PATTERN.test(value)) return ok(value.toLowerCase());
+  return invalidDeviceField(field, 'Identifiant UUID v4 invalide.');
+}
+
+function validateBindingGeneration(
+  value: unknown,
+  field = 'bindingGeneration',
+): Result<number, AppError> {
+  if (Number.isSafeInteger(value) && Number(value) >= 1 && Number(value) <= MAX_BINDING_GENERATION) {
+    return ok(Number(value));
+  }
+  return invalidDeviceField(field, 'Génération de binding invalide.');
+}
+
+function validateInstallationSecret(value: unknown): Result<string, AppError> {
+  if (typeof value === 'string' && INSTALLATION_SECRET_PATTERN.test(value)) return ok(value);
+  return invalidDeviceField('revocationSecret', 'Capacité de révocation invalide.');
+}
+
+function hashInstallationSecret(secret: string): string {
+  return createHash('sha256').update(secret, 'utf8').digest('hex');
 }
 
 function toItem(job: NotificationJob): NotificationItemDto {
@@ -142,31 +195,86 @@ export class NotificationsApiService {
     return ok({ updatedCount: result.updatedCount, readAt: result.readAt });
   }
 
-  async registerDevice(input: { expoPushToken?: unknown; platform?: unknown }): Promise<Result<RegisterDeviceDto, AppError>> {
-    const tokenResult = validateExpoPushToken(input.expoPushToken);
+  async registerDevice(input: unknown): Promise<Result<RegisterDeviceDto, AppError>> {
+    const decoded = exactJsonObject(
+      input,
+      ['expoPushToken', 'installationId', 'bindingId', 'bindingGeneration', 'revocationSecret'],
+      ['platform'],
+    );
+    if (!decoded.ok) return decoded;
+    const tokenResult = validateExpoPushToken(decoded.value.expoPushToken);
     if (!tokenResult.ok) return tokenResult;
+    const installationId = validateUuidV4('installationId', decoded.value.installationId);
+    if (!installationId.ok) return installationId;
+    const bindingId = validateUuidV4('bindingId', decoded.value.bindingId);
+    if (!bindingId.ok) return bindingId;
+    const bindingGeneration = validateBindingGeneration(decoded.value.bindingGeneration);
+    if (!bindingGeneration.ok) return bindingGeneration;
+    const revocationSecret = validateInstallationSecret(decoded.value.revocationSecret);
+    if (!revocationSecret.ok) return revocationSecret;
     const token = tokenResult.value;
-    const platform = typeof input.platform === 'string' && PLATFORMS.has(input.platform) ? input.platform : null;
+    const platformRaw = decoded.value.platform;
+    if (platformRaw !== undefined && (typeof platformRaw !== 'string' || !PLATFORMS.has(platformRaw))) {
+      return invalidDeviceField('platform', 'Plateforme invalide (ios ou android attendue).');
+    }
+    const platform = typeof platformRaw === 'string' ? platformRaw : null;
     const device = await this.p.devices.register({
       id: randomUUID(),
       companyId: this.companyId(),
       userId: getPrincipal()?.userId ?? null,
       expoPushToken: token,
       platform,
+      installationId: installationId.value,
+      bindingId: bindingId.value,
+      bindingGeneration: bindingGeneration.value,
+      revocationSecretHash: hashInstallationSecret(revocationSecret.value),
       now: this.clock.now(),
     });
-    // Le token est une capacité : il n'est jamais ré-émis dans la réponse HTTP.
-    return ok({ id: device.id, platform: device.platform });
+    // Ni token, ni installation, ni owner ne sont ré-émis dans la réponse HTTP.
+    return ok({ status: device.status });
+  }
+
+  async revokeDeviceBinding(
+    input: unknown,
+    scope: 'authenticated' | 'public',
+  ): Promise<Result<RevokeDeviceBindingDto, AppError>> {
+    const decoded = exactJsonObject(
+      input,
+      ['installationId', 'throughGeneration', 'revocationSecret'],
+    );
+    if (!decoded.ok) return decoded;
+    const installationId = validateUuidV4('installationId', decoded.value.installationId);
+    if (!installationId.ok) return installationId;
+    const throughGeneration = validateBindingGeneration(decoded.value.throughGeneration, 'throughGeneration');
+    if (!throughGeneration.ok) return throughGeneration;
+    const secret = validateInstallationSecret(decoded.value.revocationSecret);
+    if (!secret.ok) return secret;
+    const principal = scope === 'authenticated' ? getPrincipal() : undefined;
+    await this.p.devices.revokeThroughGeneration({
+      installationId: installationId.value,
+      throughGeneration: throughGeneration.value,
+      revocationSecretHash: hashInstallationSecret(secret.value),
+      scope: scope === 'authenticated'
+        ? { kind: 'authenticated', companyId: this.companyId(), userId: principal?.userId ?? null }
+        : { kind: 'public' },
+    });
+    return ok({ accepted: true });
   }
 
   /**
    * Révocation best-effort avant déconnexion. Idempotente et strictement tenant-scopée : si le
    * token a déjà été transféré vers un autre compte, cet ancien principal ne peut pas le retirer.
    */
-  async unregisterDevice(input: { expoPushToken?: unknown }): Promise<Result<UnregisterDeviceDto, AppError>> {
-    const tokenResult = validateExpoPushToken(input.expoPushToken);
+  async unregisterDevice(input: unknown): Promise<Result<UnregisterDeviceDto, AppError>> {
+    const decoded = exactJsonObject(input, ['expoPushToken']);
+    if (!decoded.ok) return decoded;
+    const tokenResult = validateExpoPushToken(decoded.value.expoPushToken);
     if (!tokenResult.ok) return tokenResult;
-    await this.p.devices.removeByToken(this.companyId(), tokenResult.value);
+    await this.p.devices.revokeLegacyOwnerToken(
+      this.companyId(),
+      getPrincipal()?.userId ?? null,
+      tokenResult.value,
+    );
     return ok({ unregistered: true });
   }
 }

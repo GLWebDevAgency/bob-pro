@@ -48,6 +48,8 @@ import type {
   NotificationReadThroughInput,
   NotificationReadThroughOutput,
   RegisterDeviceClientInput,
+  RevokeDeviceBindingClientInput,
+  UnregisterDeviceClientInput,
   SuggestExpenseDefaultsInput,
   ExpenseDefaultsView,
   FacturXImportReview,
@@ -146,9 +148,47 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+function assertSecureApiBaseUrl(value: string): void {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error('API base URL invalide.');
+  }
+  const loopback = url.protocol === 'http:'
+    && (url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]');
+  if (
+    (url.protocol !== 'https:' && !loopback)
+    || url.username !== ''
+    || url.password !== ''
+    || url.search !== ''
+    || url.hash !== ''
+  ) throw new Error('API base URL non sûre : HTTPS requis hors développement local.');
+}
+
 function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
   const keys = Object.keys(value);
   return keys.length === expected.length && keys.every((key) => expected.includes(key));
+}
+
+function decodePushRegistrationResponse(
+  value: unknown,
+): { status: 'bound' | 'superseded' } | null {
+  if (
+    !isRecord(value)
+    || !hasExactKeys(value, ['status'])
+    || (value.status !== 'bound' && value.status !== 'superseded')
+  ) return null;
+  return { status: value.status };
+}
+
+function decodePushRevocationResponse(value: unknown): { accepted: true } | null {
+  if (
+    !isRecord(value)
+    || !hasExactKeys(value, ['accepted'])
+    || value.accepted !== true
+  ) return null;
+  return { accepted: true };
 }
 
 function isBoundedInteger(value: unknown, min: number, max: number): value is number {
@@ -741,6 +781,7 @@ export class HttpBobClient implements BobClient {
   readonly companyId: string;
 
   constructor(private readonly opts: HttpBobClientOptions) {
+    assertSecureApiBaseUrl(opts.baseUrl);
     this.companyId = opts.companyId;
   }
 
@@ -790,6 +831,8 @@ export class HttpBobClient implements BobClient {
       if (externalSignal?.aborted) throw new Error('Requête annulée.');
       const init: RequestInit = {
         method,
+        // Un 307/308 ne doit jamais rejouer token/secret de binding vers une autre origine.
+        redirect: 'error',
         ...(controller ? { signal: controller.signal } : {}),
         headers: {
           'content-type': 'application/json',
@@ -799,7 +842,15 @@ export class HttpBobClient implements BobClient {
         },
       };
       if (body !== undefined) init.body = JSON.stringify(body);
-      const res = await withinDeadline(fetch(`${this.opts.baseUrl}${path}`, init));
+      const requestUrl = `${this.opts.baseUrl}${path}`;
+      const res = await withinDeadline(fetch(requestUrl, init));
+      if (
+        typeof res.url === 'string'
+        && res.url !== ''
+        && new URL(res.url).origin !== new URL(requestUrl).origin
+      ) {
+        throw new Error('Redirection API cross-origin refusée.');
+      }
       const data: unknown = await withinDeadline(res.json());
       if (!res.ok) {
         const error: AppError =
@@ -997,6 +1048,9 @@ export class HttpBobClient implements BobClient {
   }
   billingPortal() {
     return this.req<{ url: string }>('POST', '/subscription/portal');
+  }
+  closeAccount(input: { confirmationText: string; reason?: string }) {
+    return this.req<{ closedAt: string }>('DELETE', '/account', input);
   }
   invoicePaymentLink(invoiceId: string) {
     return this.req<{ url: string }>('POST', `/invoices/${invoiceId}/payment-link`);
@@ -1675,7 +1729,37 @@ export class HttpBobClient implements BobClient {
     return this.req<NotificationReadThroughOutput>('POST', '/notifications/read-through', input);
   }
   registerDevice(input: RegisterDeviceClientInput) {
-    return this.req<{ id: string }>('POST', '/devices', input);
+    return this.req<{ status: 'bound' | 'superseded' }>(
+      'POST',
+      '/devices',
+      input,
+      undefined,
+      decodePushRegistrationResponse,
+      12_000,
+    );
+  }
+  unregisterDevice(input: UnregisterDeviceClientInput) {
+    return this.req<{ unregistered: true }>('DELETE', '/devices', input, undefined, undefined, 10_000);
+  }
+  revokeDeviceBinding(input: RevokeDeviceBindingClientInput) {
+    return this.req<{ accepted: true }>(
+      'POST',
+      '/devices/revocations',
+      input,
+      undefined,
+      decodePushRevocationResponse,
+      10_000,
+    );
+  }
+  replayPushRevocation(input: RevokeDeviceBindingClientInput) {
+    return this.req<{ accepted: true }>(
+      'POST',
+      '/public/push-revocations',
+      input,
+      undefined,
+      decodePushRevocationResponse,
+      10_000,
+    );
   }
   registerPayment(input: RegisterPaymentClientInput) {
     const body = { amount: input.amount, method: input.method, idempotencyKey: input.idempotencyKey ?? undefined };
