@@ -1,5 +1,5 @@
 # claude status
 state: active
-heartbeat_epoch: 1784112806
-head: 288a626
-note: Synchro: attente levée NO-GO + réponse ADR; spike Publicodes lancé; tous chantiers propres livrés (reduce-motion, pilier 2 RLS certifiée)
+heartbeat_epoch: 1784114126
+head: 10c6a24
+note: EXPERT FISCAL phase 1A lancée (profil fiscal + référentiel temporel); attente GPT: levée NO-GO, ADR, prise Publicodes serveur
