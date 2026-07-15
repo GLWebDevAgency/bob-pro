@@ -89,3 +89,15 @@ D1 candidat CLOS : comptes développeur Apple + Google déjà créés. EAS logg�
   entièrement opéré par Claude.
 · Google Play submit : il faudra un service-account JSON (je guiderai) — pour l'instant
   l'APK direct suffit au test des proches.
+
+## DÉCISION NAMING FONDATEUR — 16/07/2026 : **NICO** ✓
+Choisi sur dossier v3 (DOSSIER_NAMING_V3_COURTS_20260716.md) : 1-2 syllabes, international,
+invocable (« Hé Nico »), zéro conflit sectoriel détecté, 4/4 domaines composés .fr LIBRES
+(re-vérifiés RDAP à la décision : heynico.fr, monnico.fr, nicoapp.fr, nico-gestion.fr).
+ACTIONS DÉCLENCHÉES : ①réservation domaines PAR LE FONDATEUR immédiatement (alerte
+sniping) ; ②recherche INPI manuelle classes 9/35/36/42 sur « NICO » avant dépôt de marque
+(dernier verrou) ; ③GPT : logo/wordmark redémarre sur NICO, identité personnage à décliner
+(phrase d'accueil, signature) ; ④chantier de renommage technique À PROGRAMMER dans le gel
+V1 : app.json (name/slug), bundle id AVANT 1re soumission (fr.nicoapp.* à arbitrer),
+toutes les occurrences UI/i18n « Bob » → « Nico » (catalogues ×3 humeurs, personnage,
+prompts IA, docs stores) — le nom de code interne du repo (bob-pro) peut rester.
