@@ -3,6 +3,7 @@ import { Modal, View, Text, Pressable } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { formatEUR } from '@bob/core';
 import type { ActionDiff, ConfirmationChallenge } from '@bob/ai';
+import { useReduceMotion } from '@bob/ui';
 import { useTheme } from '../theme';
 import { Card, Button, font } from './ui';
 import { ActionDiffView } from './ActionDiffView';
@@ -92,6 +93,7 @@ function Checkbox({ checked, label, onToggle, color }: { checked: boolean; label
 
 function ConfirmSheet({ req, onResolve }: { req: ConfirmRequest | null; onResolve: (ok: boolean) => void }) {
   const { colors, semantic } = useTheme();
+  const reduceMotion = useReduceMotion();
   const [checked, setChecked] = useState(false);
 
   // Réinitialise la case à chaque nouvelle demande (un défi n'hérite jamais d'un consentement précédent).
@@ -106,7 +108,12 @@ function ConfirmSheet({ req, onResolve }: { req: ConfirmRequest | null; onResolv
   const accent = danger ? semantic.danger : semantic.ai;
 
   return (
-    <Modal visible={req !== null} transparent animationType="slide" onRequestClose={() => onResolve(false)}>
+    <Modal
+      visible={req !== null}
+      transparent
+      animationType={reduceMotion ? 'none' : 'slide'}
+      onRequestClose={() => onResolve(false)}
+    >
       <Pressable
         onPress={() => onResolve(false)}
         accessibilityLabel="Fermer"

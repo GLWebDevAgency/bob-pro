@@ -7,6 +7,7 @@
 import { useEffect, useRef } from 'react';
 import { Animated, StyleSheet, Text, View } from 'react-native';
 import Svg, { Circle } from 'react-native-svg';
+import { useReduceMotion } from '../hooks/use-reduce-motion';
 import { font, useTheme } from '../theme';
 import { clampScore, scoreBand, scoreFillPercent } from './score.logic';
 
@@ -54,16 +55,22 @@ export interface ScoreRingProps {
 
 export function ScoreRing({ score, size = RING_VIEWBOX, accessibilityLabel }: ScoreRingProps) {
   const { colors, semantic, controls } = useTheme();
+  const reduceMotion = useReduceMotion();
   const clamped = clampScore(score);
   const progress = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
+    if (reduceMotion) {
+      progress.stopAnimation();
+      progress.setValue(clamped);
+      return;
+    }
     Animated.timing(progress, {
       toValue: clamped,
       duration: 900,
       useNativeDriver: false, // strokeDashoffset (prop SVG) non supporté par le driver natif
     }).start();
-  }, [clamped, progress]);
+  }, [clamped, progress, reduceMotion]);
 
   const dashOffset = progress.interpolate({
     inputRange: [0, 100],

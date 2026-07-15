@@ -17,6 +17,7 @@ import {
   useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useReduceMotion } from '../hooks/use-reduce-motion';
 import { useTheme } from '../theme';
 import { resolveSheetGeometry } from './sheet.logic';
 
@@ -47,7 +48,12 @@ export function Sheet({
   const [mounted, setMounted] = useState(visible);
   const progress = useRef(new Animated.Value(visible ? 1 : 0)).current;
   const headingRef = useRef<View>(null);
-  const reduceMotionRef = useRef(false);
+  // Ref (pas le state directement) : lu dans l'effet [visible, progress] SANS le redéclencher
+  // si la préférence système change en cours d'animation — le hook partagé reste la SEULE
+  // source de vérité, cette ref n'est qu'un pont vers l'API impérative Animated.
+  const reduceMotion = useReduceMotion();
+  const reduceMotionRef = useRef(reduceMotion);
+  reduceMotionRef.current = reduceMotion;
   const modalShownRef = useRef(false);
   const openingCompleteRef = useRef(false);
   const focusFrameRef = useRef<ReturnType<typeof requestAnimationFrame> | null>(null);
@@ -55,20 +61,6 @@ export function Sheet({
   visibleRef.current = visible;
 
   const geometry = resolveSheetGeometry(windowHeight, insets);
-
-  useEffect(() => {
-    let active = true;
-    void AccessibilityInfo.isReduceMotionEnabled().then((enabled) => {
-      if (active) reduceMotionRef.current = enabled;
-    });
-    const subscription = AccessibilityInfo.addEventListener('reduceMotionChanged', (enabled) => {
-      reduceMotionRef.current = enabled;
-    });
-    return () => {
-      active = false;
-      subscription.remove();
-    };
-  }, []);
 
   useEffect(() => {
     if (visible) {

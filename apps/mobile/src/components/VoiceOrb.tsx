@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { View, Text, Animated, Easing } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
+import { useReduceMotion } from '@bob/ui';
 import { useTheme, parseGradient } from '../theme';
 
 export type OrbState = 'idle' | 'listening' | 'thinking' | 'speaking';
@@ -11,11 +12,17 @@ export type OrbState = 'idle' | 'listening' | 'thinking' | 'speaking';
  */
 export function VoiceOrb({ state, size = 176 }: { state: OrbState; size?: number }) {
   const { grad, semantic } = useTheme();
+  const reduceMotion = useReduceMotion();
   const active = state === 'listening' || state === 'speaking';
   const breathe = useRef(new Animated.Value(0)).current;
   const rings = useRef([new Animated.Value(0), new Animated.Value(0)]).current;
 
   useEffect(() => {
+    if (reduceMotion) {
+      breathe.stopAnimation();
+      breathe.setValue(0);
+      return;
+    }
     const b = Animated.loop(
       Animated.sequence([
         Animated.timing(breathe, { toValue: 1, duration: 1600, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
@@ -24,10 +31,10 @@ export function VoiceOrb({ state, size = 176 }: { state: OrbState; size?: number
     );
     b.start();
     return () => b.stop();
-  }, [breathe]);
+  }, [breathe, reduceMotion]);
 
   useEffect(() => {
-    if (!active) {
+    if (!active || reduceMotion) {
       rings.forEach((r) => r.setValue(0));
       return;
     }
@@ -41,14 +48,16 @@ export function VoiceOrb({ state, size = 176 }: { state: OrbState; size?: number
     );
     loops.forEach((l) => l.start());
     return () => loops.forEach((l) => l.stop());
-  }, [active, rings]);
+  }, [active, rings, reduceMotion]);
 
-  const scale = breathe.interpolate({ inputRange: [0, 1], outputRange: active ? [1, 1.08] : [0.97, 1.02] });
+  const scale = reduceMotion
+    ? 1
+    : breathe.interpolate({ inputRange: [0, 1], outputRange: active ? [1, 1.08] : [0.97, 1.02] });
   const g = parseGradient(grad.hero);
 
   return (
     <View style={{ width: size * 2, height: size * 2, alignItems: 'center', justifyContent: 'center' }}>
-      {active
+      {active && !reduceMotion
         ? rings.map((r, i) => (
             <Animated.View
               key={i}

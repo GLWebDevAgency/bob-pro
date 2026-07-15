@@ -70,7 +70,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Circle } from 'react-native-svg';
-import { Button, SignaturePad, font, useTheme, type SignaturePadValue } from '@bob/ui';
+import { Button, SignaturePad, font, useReduceMotion, useTheme, type SignaturePadValue } from '@bob/ui';
 import { t } from '@bob/i18n';
 import {
   usePublishAgentContext,
@@ -145,6 +145,7 @@ export function SignOnsiteSheet({
   onSubmit,
 }: SignOnsiteSheetProps) {
   const { personality, colors, controls, semantic } = useTheme();
+  const reduceMotion = useReduceMotion();
   const insets = useSafeAreaInsets();
   const session = useAgentSession();
   const [signerName, setSignerName] = useState(customerName);
@@ -272,7 +273,7 @@ export function SignOnsiteSheet({
       {visible ? <OnsiteModeAgentGuard /> : null}
       <Modal
         visible={visible}
-        animationType="slide"
+        animationType={reduceMotion ? 'none' : 'slide'}
         presentationStyle="fullScreen"
         statusBarTranslucent
         navigationBarTranslucent

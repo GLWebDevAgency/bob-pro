@@ -11,6 +11,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import Svg, { Circle, Defs, RadialGradient, Stop } from 'react-native-svg';
 import { avatarGradient, frame } from '@bob/tokens';
 import { rgbaStop } from './halo-stops';
+import { useReduceMotion } from '../hooks/use-reduce-motion';
 import { font, parseGradient, useTheme } from '../theme';
 
 export interface AppHeaderNavyProps {
@@ -63,10 +64,16 @@ function Halo({
   );
 }
 
-/** Pulse lent du glow indigo — opacité 0.55↔0.9 sur 6 s (cpGlow du proto), thread natif. */
-function usePulse(): Animated.Value {
+/** Pulse lent du glow indigo — opacité 0.55↔0.9 sur 6 s (cpGlow du proto), thread natif.
+ *  Purement DÉCORATIF : coupé (opacité fixe, valeur de repos) en reduce-motion. */
+function usePulse(reduceMotion: boolean): Animated.Value {
   const pulse = useRef(new Animated.Value(0.55)).current;
   useEffect(() => {
+    if (reduceMotion) {
+      pulse.stopAnimation();
+      pulse.setValue(0.55);
+      return;
+    }
     const loop = Animated.loop(
       Animated.sequence([
         Animated.timing(pulse, { toValue: 0.9, duration: 3000, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
@@ -75,7 +82,7 @@ function usePulse(): Animated.Value {
     );
     loop.start();
     return () => loop.stop();
-  }, [pulse]);
+  }, [pulse, reduceMotion]);
   return pulse;
 }
 
@@ -92,9 +99,10 @@ export function AppHeaderNavy({
   hasUnread = false,
 }: AppHeaderNavyProps) {
   const { grad, theme, colors, overlays } = useTheme();
+  const reduceMotion = useReduceMotion();
   const header = parseGradient(grad.header);
   const avatar = parseGradient(avatarGradient);
-  const pulse = usePulse();
+  const pulse = usePulse(reduceMotion);
 
   return (
     <LinearGradient

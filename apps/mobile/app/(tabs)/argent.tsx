@@ -60,6 +60,7 @@ import {
   SegmentedControl,
   StatusBadge,
   font,
+  useReduceMotion,
   useTheme,
 } from '@bob/ui';
 import {
@@ -298,9 +299,16 @@ function SkeletonMoneyRow({ divider = true }: { divider?: boolean }) {
  */
 function FirstTimeTip({ visible, onDismiss }: { visible: boolean; onDismiss: () => void }) {
   const { personality, colors, semantic, overlays } = useTheme();
+  const reduceMotion = useReduceMotion();
   if (!visible) return null;
   return (
-    <Modal transparent visible animationType="fade" statusBarTranslucent onRequestClose={onDismiss}>
+    <Modal
+      transparent
+      visible
+      animationType={reduceMotion ? 'none' : 'fade'}
+      statusBarTranslucent
+      onRequestClose={onDismiss}
+    >
       <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 26 }}>
         <Pressable
           accessibilityRole="button"

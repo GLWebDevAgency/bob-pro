@@ -6,6 +6,7 @@
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Animated, Text, View } from 'react-native';
+import { useReduceMotion } from '../hooks/use-reduce-motion';
 import { font, useTheme } from '../theme';
 
 const ENTER_MS = 200;
@@ -23,6 +24,7 @@ export interface ToastProps {
 
 export function Toast({ message, visible, onHide, icon }: ToastProps) {
   const { theme, colors } = useTheme();
+  const reduceMotion = useReduceMotion();
   const [mounted, setMounted] = useState(visible);
   const progress = useRef(new Animated.Value(0)).current;
   const onHideRef = useRef(onHide);
@@ -32,7 +34,7 @@ export function Toast({ message, visible, onHide, icon }: ToastProps) {
     if (!visible) {
       Animated.timing(progress, {
         toValue: 0,
-        duration: EXIT_MS,
+        duration: reduceMotion ? 0 : EXIT_MS,
         useNativeDriver: true,
       }).start(({ finished }) => {
         if (finished) setMounted(false);
@@ -42,13 +44,13 @@ export function Toast({ message, visible, onHide, icon }: ToastProps) {
     setMounted(true);
     Animated.timing(progress, {
       toValue: 1,
-      duration: ENTER_MS,
+      duration: reduceMotion ? 0 : ENTER_MS,
       useNativeDriver: true,
     }).start();
     const timer = setTimeout(() => {
       Animated.timing(progress, {
         toValue: 0,
-        duration: EXIT_MS,
+        duration: reduceMotion ? 0 : EXIT_MS,
         useNativeDriver: true,
       }).start(({ finished }) => {
         if (finished) {
@@ -58,7 +60,7 @@ export function Toast({ message, visible, onHide, icon }: ToastProps) {
       });
     }, AUTO_DISMISS_MS);
     return () => clearTimeout(timer);
-  }, [visible, progress]);
+  }, [visible, progress, reduceMotion]);
 
   if (!mounted) return null;
 

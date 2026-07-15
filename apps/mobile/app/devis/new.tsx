@@ -92,6 +92,7 @@ import {
   Stepper,
   Toast,
   font,
+  useReduceMotion,
   useTheme,
   type SignaturePadValue,
   type StatusBadgeVariant,
@@ -208,6 +209,7 @@ const parsePositive = (value: string): number | null => {
 
 export default function DevisNew() {
   const { colors, semantic, controls, overlays, theme, radius, personality } = useTheme();
+  const reduceMotion = useReduceMotion();
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const confirm = useConfirm();
@@ -1623,7 +1625,7 @@ export default function DevisNew() {
         {/* Picker catalogue (parité manuelle du « catalogue d'abord » vocal) */}
         <Modal
           visible={cataloguePickerOpen}
-          animationType="slide"
+          animationType={reduceMotion ? 'none' : 'slide'}
           transparent
           onRequestClose={() => setCataloguePickerOpen(false)}
         >
