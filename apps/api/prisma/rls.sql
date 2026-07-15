@@ -257,10 +257,36 @@ BEGIN
 END;
 $$;
 
+-- Le token push est une capacité à forte entropie remise par l'OS. Pendant le seul statement
+-- d'enregistrement, elle permet de voir puis transférer SON ancienne ligne cross-tenant. La
+-- contrainte UNIQUE globale sérialise deux rebinds concurrents. Toutes les autres opérations
+-- restent strictement company-scoped ; le repository efface le GUC juste après le statement.
 DROP POLICY IF EXISTS tenant_isolation ON devices;
-CREATE POLICY tenant_isolation ON devices
+DROP POLICY IF EXISTS device_tenant_select ON devices;
+DROP POLICY IF EXISTS device_token_rebind_select ON devices;
+DROP POLICY IF EXISTS device_tenant_insert ON devices;
+DROP POLICY IF EXISTS device_tenant_update ON devices;
+DROP POLICY IF EXISTS device_token_rebind_update ON devices;
+DROP POLICY IF EXISTS device_tenant_delete ON devices;
+
+CREATE POLICY device_tenant_select ON devices FOR SELECT
+  USING ("companyId" = current_setting('app.current_company_id', true));
+CREATE POLICY device_token_rebind_select ON devices FOR SELECT
+  USING (
+    "expoPushToken" = nullif(current_setting('app.current_device_push_token', true), '')
+  );
+CREATE POLICY device_tenant_insert ON devices FOR INSERT
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+CREATE POLICY device_tenant_update ON devices FOR UPDATE
   USING ("companyId" = current_setting('app.current_company_id', true))
   WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+CREATE POLICY device_token_rebind_update ON devices FOR UPDATE
+  USING (
+    "expoPushToken" = nullif(current_setting('app.current_device_push_token', true), '')
+  )
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+CREATE POLICY device_tenant_delete ON devices FOR DELETE
+  USING ("companyId" = current_setting('app.current_company_id', true));
 
 DROP POLICY IF EXISTS tenant_isolation ON agent_journal_entries;
 CREATE POLICY tenant_isolation ON agent_journal_entries

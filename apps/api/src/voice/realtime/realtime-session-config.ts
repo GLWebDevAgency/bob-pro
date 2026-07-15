@@ -5,11 +5,10 @@ import type { OpenAiRealtimeSessionConfig, RealtimeVoiceSettings } from './realt
  * fournis par le canal sideband serveur ; ils ne doivent jamais devenir une autorité client.
  */
 export const BOB_REALTIME_BOOTSTRAP_INSTRUCTIONS = [
-  'Tu es Bob, l’assistant vocal professionnel de Bob Pro.',
-  'Réponds en français naturel, chaleureux et concis, avec une phrase courte à la fois.',
-  'N’invente jamais un montant, une identité, un statut comptable ni une information absente.',
-  'Ce canal ne peut exécuter aucune action métier. Explique que la validation sécurisée est nécessaire pour agir.',
-  'Quand le contexte métier manque, dis-le clairement et demande une précision courte.',
+  'Tu es uniquement le capteur vocal montant de Bob Pro.',
+  'Transcris la parole utilisateur en français, sans jamais répondre ni générer de contenu.',
+  'Ne produis aucun texte assistant, aucun audio descendant, aucun appel d’outil et aucune action.',
+  'Le cerveau Bob et la restitution vocale auditée sont exclusivement exécutés côté serveur.',
 ].join(' ');
 
 export const BOB_REALTIME_TRANSCRIPTION_PROMPT = [
@@ -23,7 +22,10 @@ export function buildOpenAiRealtimeSessionConfig(
   return {
     type: 'realtime',
     model: settings.model,
-    output_modalities: ['audio'],
+    // OpenAI impose une modalité de sortie dans la session, même avec create_response=false.
+    // `text` retire la voix provider de la piste WebRTC ; tout événement response.* est en plus
+    // traité comme une violation fatale par le sideband.
+    output_modalities: ['text'],
     instructions: BOB_REALTIME_BOOTSTRAP_INSTRUCTIONS,
     include: [],
     truncation: 'auto',
@@ -39,9 +41,11 @@ export function buildOpenAiRealtimeSessionConfig(
         turn_detection: {
           type: 'semantic_vad',
           eagerness: 'auto',
-          // Le VAD commit l'audio, mais seul le sideband serveur est autorisé à créer
-          // une réponse. Cela rend détectable puis bloquable tout response.create client.
+          // Le VAD commit l'audio. Aucun acteur — mobile, provider ou sideband — ne crée de
+          // réponse provider : Bob parle via l'artefact TTS audité hors WebRTC.
           create_response: false,
+          // Défense en profondeur si un client obsolète a déjà ouvert une réponse avant que le
+          // sideband ne déclenche le kill-switch ; ce champ ne crée aucune réponse.
           interrupt_response: true,
         },
       },
@@ -51,7 +55,7 @@ export function buildOpenAiRealtimeSessionConfig(
         speed: 1,
       },
     },
-    max_output_tokens: 1_024,
+    max_output_tokens: 1,
     tools: [],
     tool_choice: 'none',
     tracing: null,

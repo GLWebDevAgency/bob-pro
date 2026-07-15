@@ -5,7 +5,7 @@ import type {
   RealtimeAdmissionPort,
   RealtimeLeaseCredential,
 } from './realtime-admission';
-import type { OpenAiRealtimeCallProvider } from './realtime.types';
+import type { RealtimeProviderTerminationAdapter } from './realtime-provider-registry';
 
 export type RealtimeCallTerminationReason =
   | 'user'
@@ -24,7 +24,8 @@ type LifecycleLogger = Pick<AppLogger, 'audit' | 'warn'>;
 
 export interface RealtimeCallLifecycleOptions {
   admission: RealtimeAdmissionPort;
-  provider: OpenAiRealtimeCallProvider;
+  /** Adapter exact qui a créé cet appel local ; le lifecycle n'a pas besoin du port de création. */
+  provider: Pick<RealtimeProviderTerminationAdapter, 'hangupCall'>;
   lease: RealtimeLeaseCredential;
   providerCallId: string;
   hardExpiresAt: string;
@@ -50,7 +51,7 @@ function mutationReason(reason: string | null): string {
  */
 export class RealtimeCallLifecycle {
   private readonly admission: RealtimeAdmissionPort;
-  private readonly provider: OpenAiRealtimeCallProvider;
+  private readonly provider: Pick<RealtimeProviderTerminationAdapter, 'hangupCall'>;
   private readonly lease: RealtimeLeaseCredential;
   private readonly providerCallId: string;
   private readonly hardExpiresAt: string;

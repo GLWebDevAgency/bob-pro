@@ -650,17 +650,16 @@ export class InMemoryNotificationJobRepository implements NotificationJobReposit
   }
 }
 
-/** Appareils push Expo (C25) — idempotent sur (companyId, token). */
+/** Appareils push Expo (C25) — un token global, rebind atomique vers le dernier principal. */
 export class InMemoryDeviceRepository implements DeviceRepository {
   private readonly map = new Map<string, DeviceRecord>();
 
   async register(input: RegisterDeviceInput): Promise<DeviceRecord> {
-    const existing = [...this.map.values()].find(
-      (d) => d.companyId === input.companyId && d.expoPushToken === input.expoPushToken,
-    );
+    const existing = [...this.map.values()].find((d) => d.expoPushToken === input.expoPushToken);
     if (existing) {
       const updated: DeviceRecord = {
         ...existing,
+        companyId: input.companyId,
         userId: input.userId,
         platform: input.platform,
         updatedAt: input.now,

@@ -78,6 +78,36 @@ describe('Bob Live private speech storage key', () => {
   });
 });
 
+describe('Bob Live signed speech source policy', () => {
+  it('dérive origin et préfixe tenant/session depuis la même configuration que le signataire', () => {
+    const storage = new SupabaseRealtimeSpeechStorage({
+      url: 'https://project.supabase.co',
+      serviceRoleKey: 'service-role-secret',
+      bucket: 'bob-live-private',
+    }, vi.fn());
+
+    expect(storage.policyForSession(COMPANY_ID, SESSION_ID)).toEqual({
+      mode: 'signed-url-v1',
+      allowedOrigin: 'https://project.supabase.co',
+      allowedPathPrefix: `/storage/v1/object/sign/bob-live-private/companies/${COMPANY_ID}/bob-live/${SESSION_ID}/`,
+    });
+  });
+
+  it.each([
+    ['../tenant', SESSION_ID],
+    [COMPANY_ID, 'session/other'],
+    [COMPANY_ID, ''],
+  ])('rejette une policy traversable avant tout accès réseau (%s, %s)', (companyId, sessionId) => {
+    const fetchImpl = vi.fn<RealtimeSpeechStorageFetch>();
+    const storage = makeStorage(fetchImpl);
+
+    expect(() => storage.policyForSession(companyId, sessionId)).toThrowError(
+      expect.objectContaining({ code: 'INVALID_INPUT' }),
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
 describe('SupabaseRealtimeSpeechStorage upload create-only', () => {
   it('envoie une copie privée, x-upsert=false, no-store et retourne le sha256 réel', async () => {
     let capturedUrl = '';

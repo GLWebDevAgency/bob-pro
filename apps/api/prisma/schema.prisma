@@ -690,18 +690,21 @@ model NotificationJob {
   @@map("notification_jobs")
 }
 
-// Appareils enregistrés pour le push Expo (C25) — un token par device, company-scoped (RLS).
+// Appareils enregistrés pour le push Expo (C25) — un token appartient à une seule session
+// applicative à la fois, tous tenants confondus. Le repository effectue un rebind atomique sous RLS.
 model Device {
   id            String   @id
   companyId     String
   company       Company  @relation(fields: [companyId], references: [id])
   userId        String?
-  expoPushToken String
+  expoPushToken String   @unique(map: "devices_expo_push_token_key")
   platform      String?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
-  @@unique([companyId, expoPushToken], name: "uniq_device_token")
+  // Compatibilité rolling N-1 : l'ancien binaire cible encore cette clé composée. La contrainte
+  // globale ci-dessus fait foi ; cette clé redondante sera retirée dans une phase contract ultérieure.
+  @@unique([companyId, expoPushToken], name: "uniq_device_token", map: "devices_companyId_expoPushToken_key")
   @@index([companyId])
   @@map("devices")
 }

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  DisabledOpenAiRealtimeCallProvider,
   OpenAiRealtimeCallAdapter,
   RealtimeProviderCallCompensatedError,
   RealtimeProviderCleanupError,
@@ -48,6 +49,13 @@ function providerResponse(callId: string, onFirstRead: () => void = () => undefi
 }
 
 describe('OpenAiRealtimeCallAdapter', () => {
+  it('reste totalement inerte quand le profil OpenAI est désactivé', async () => {
+    const adapter = new DisabledOpenAiRealtimeCallProvider();
+
+    await expect(adapter.createCall(callInput())).rejects.toThrow('openai_realtime_provider_disabled');
+    await expect(adapter.hangupCall('rtc_never_sent')).rejects.toThrow('openai_realtime_provider_disabled');
+  });
+
   it('envoie SDP, configuration verrouillée et safety identifier puis extrait le call_id', async () => {
     const fetchMock = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => new Response(ANSWER_SDP, {
       status: 200,

@@ -1,5 +1,5 @@
 import { createHmac } from 'node:crypto';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { isAllowedAgentNavigationRoute } from '@bob/ai';
 import {
   appConflict,
@@ -33,8 +33,12 @@ import {
   REALTIME_ADMISSION,
   REALTIME_AGENT_TURN,
   REALTIME_ENTITLEMENT,
+  REALTIME_DURABLE_CONTROLS,
+  REALTIME_PROVIDER_TERMINATION_REGISTRY,
+  MISTRAL_REALTIME_INGRESS_TICKETS,
   REALTIME_SIDEBAND,
   REALTIME_VOICE_SETTINGS,
+  REALTIME_SPEECH_SOURCE_POLICY,
 } from './realtime.tokens';
 import {
   realtimeAgentContextVersion,
@@ -48,11 +52,27 @@ import {
   type RealtimeVoicePublicConfig,
   type RealtimeVoiceSettings,
 } from './realtime.types';
+import {
+  RealtimeProviderTerminationRegistry,
+  realtimeProviderTerminationAdapter,
+} from './realtime-provider-registry';
 import type {
   RealtimeApprovedAgentControl,
   RealtimeSidebandControl,
 } from './realtime-sideband';
 import type { RealtimeEntitlementPort } from './realtime-entitlement';
+import {
+  DisabledRealtimeDurableControlAuthority,
+  type RealtimeDurableControlPort,
+} from './realtime-control';
+import {
+  DisabledMistralRealtimeIngressTicketAuthority,
+  type MistralRealtimeIngressTicketAuthority,
+} from './realtime-mistral-ingress-ticket';
+import type {
+  RealtimeSpeechSourcePolicy,
+  RealtimeSpeechSourcePolicyPort,
+} from './realtime-speech-storage';
 
 const MAX_OFFER_SDP_CHARS = 64 * 1024;
 const REALTIME_CONTROL_CONTEXT_TIMEOUT_MS = 1_000;
@@ -100,6 +120,37 @@ export function parseRealtimeCallBody(
   return ok({ sdp, ...(sessionHandle === undefined ? {} : { sessionHandle }) });
 }
 
+export function parseMistralRealtimeCallBody(
+  body: unknown,
+): Result<{
+  sessionHandle?: string;
+  context: { version: 1; revision: number; context: unknown };
+}, AppError> {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+    return { ok: false, error: { kind: 'validation', issues: [{ field: 'body', message: 'Corps JSON objet requis.' }] } };
+  }
+  const record = body as Record<string, unknown>;
+  if (
+    Object.keys(record).some((key) => key !== 'sessionHandle' && key !== 'context')
+    || !Object.hasOwn(record, 'context')
+  ) {
+    return { ok: false, error: { kind: 'validation', issues: [{ field: 'body', message: 'Champ non autorisé ou contexte absent.' }] } };
+  }
+  const context = parseRealtimeContextBody(record.context);
+  if (!context.ok) return context;
+  const sessionHandle = record.sessionHandle;
+  if (sessionHandle !== undefined && (typeof sessionHandle !== 'string' || !isRealtimeSessionId(sessionHandle))) {
+    return {
+      ok: false,
+      error: { kind: 'validation', issues: [{ field: 'sessionHandle', message: 'Identifiant de session invalide.' }] },
+    };
+  }
+  return ok({
+    context: context.value,
+    ...(sessionHandle === undefined ? {} : { sessionHandle }),
+  });
+}
+
 export function parseRealtimeContextBody(
   body: unknown,
 ): Result<{ version: 1; revision: number; context: unknown }, AppError> {
@@ -125,17 +176,28 @@ export function parseRealtimeContextBody(
 
 export function parseRealtimeControlAcknowledgementBody(
   body: unknown,
-): Result<{ turnId: string; contextRevision: number; contextDigest: string }, AppError> {
+): Result<{
+  turnId: string;
+  acknowledgementId: string;
+  contextRevision: number;
+  contextDigest: string;
+}, AppError> {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) {
     return { ok: false, error: { kind: 'validation', issues: [{ field: 'body', message: 'Demande d’acquittement objet requise.' }] } };
   }
   const record = body as Record<string, unknown>;
-  const allowed = new Set(['turnId', 'contextRevision', 'contextDigest']);
+  const allowed = new Set(['turnId', 'acknowledgementId', 'contextRevision', 'contextDigest']);
   if (Object.keys(record).length !== allowed.size || Object.keys(record).some((key) => !allowed.has(key))) {
     return { ok: false, error: { kind: 'validation', issues: [{ field: 'body', message: 'Champs d’acquittement invalides.' }] } };
   }
   if (typeof record.turnId !== 'string' || !REALTIME_TURN_ID.test(record.turnId)) {
     return { ok: false, error: { kind: 'validation', issues: [{ field: 'turnId', message: 'Identifiant de tour invalide.' }] } };
+  }
+  if (
+    typeof record.acknowledgementId !== 'string'
+    || !REALTIME_TURN_ID.test(record.acknowledgementId)
+  ) {
+    return { ok: false, error: { kind: 'validation', issues: [{ field: 'acknowledgementId', message: 'Identifiant d’acquittement audio invalide.' }] } };
   }
   if (
     !Number.isSafeInteger(record.contextRevision)
@@ -149,6 +211,7 @@ export function parseRealtimeControlAcknowledgementBody(
   }
   return ok({
     turnId: record.turnId,
+    acknowledgementId: record.acknowledgementId,
     contextRevision: record.contextRevision as number,
     contextDigest: record.contextDigest,
   });
@@ -273,6 +336,8 @@ function providerErrorClass(error: unknown): string {
 
 @Injectable()
 export class RealtimeVoiceService {
+  private readonly providerTerminations: RealtimeProviderTerminationRegistry;
+
   constructor(
     @Inject(REALTIME_VOICE_SETTINGS) private readonly settings: RealtimeVoiceSettings,
     @Inject(OPENAI_REALTIME_CALL_PROVIDER) private readonly provider: OpenAiRealtimeCallProvider,
@@ -289,7 +354,30 @@ export class RealtimeVoiceService {
     @Inject(REALTIME_ENTITLEMENT) private readonly entitlements: RealtimeEntitlementPort = {
       check: async () => { throw new Error('realtime_entitlement_missing'); },
     },
-  ) {}
+    @Inject(MISTRAL_REALTIME_INGRESS_TICKETS)
+    private readonly mistralTickets: MistralRealtimeIngressTicketAuthority =
+      new DisabledMistralRealtimeIngressTicketAuthority(),
+    @Optional()
+    @Inject(REALTIME_PROVIDER_TERMINATION_REGISTRY)
+    providerTerminations?: RealtimeProviderTerminationRegistry,
+    @Optional()
+    @Inject(REALTIME_DURABLE_CONTROLS)
+    private readonly controls: RealtimeDurableControlPort =
+      new DisabledRealtimeDurableControlAuthority(),
+    @Optional()
+    @Inject(REALTIME_SPEECH_SOURCE_POLICY)
+    private readonly speechSourcePolicy: RealtimeSpeechSourcePolicyPort | null = null,
+  ) {
+    // Les tests unitaires et les compositions historiques construisent encore le service
+    // directement. Le fallback doit capturer le paramètre `provider` déjà initialisé : une
+    // valeur par défaut de paramètre ne peut pas dépendre fiablement d'une parameter-property.
+    this.providerTerminations = providerTerminations
+      ?? new RealtimeProviderTerminationRegistry(
+        settings.provider === 'openai'
+          ? [realtimeProviderTerminationAdapter('openai', provider)]
+          : [],
+      );
+  }
 
   async publicConfig(): Promise<RealtimeVoicePublicConfig> {
     const technicallyAvailable = this.settings.enabled
@@ -319,18 +407,22 @@ export class RealtimeVoiceService {
     return {
       available,
       ...(availabilityReason === undefined ? {} : { availabilityReason }),
-      transport: 'webrtc',
+      transport: this.settings.provider === 'mistral' ? 'mistral-pcm' : 'webrtc',
       model: this.settings.model,
       voice: this.settings.voice,
       configVersion: BOB_REALTIME_CONFIG_VERSION,
       requiresDevelopmentBuild: true,
       maxSessionSeconds: this.settings.maxSessionSeconds,
+      speechDelivery: 'audited-signed-url-v1',
     };
   }
 
   async createCall(body: unknown, signal?: AbortSignal): Promise<Result<RealtimeCallBootstrap, AppError>> {
     const startedAt = performance.now();
     if (!this.settings.enabled) return this.finishError('disabled', startedAt, appForbidden('Bob Live est désactivé.'));
+    if (this.settings.provider === 'mistral') {
+      return this.createMistralCall(body, startedAt, signal);
+    }
     const parsed = parseRealtimeCallBody(body);
     if (!parsed.ok) return this.finishError('validation', startedAt, parsed.error);
 
@@ -384,6 +476,21 @@ export class RealtimeVoiceService {
     }
 
     const lease = admission.lease;
+    let speechSourcePolicy: RealtimeSpeechSourcePolicy;
+    try {
+      if (!this.speechSourcePolicy) throw new Error('speech_source_policy_missing');
+      speechSourcePolicy = this.speechSourcePolicy.policyForSession(
+        principal.companyId,
+        lease.sessionId,
+      );
+    } catch {
+      await this.admission.release({ ...lease, providerTermination: 'not_created' }).catch(() => undefined);
+      return this.finishError(
+        'speech_unavailable',
+        startedAt,
+        appUnavailable('bob-live-speech', 5),
+      );
+    }
     let created: Awaited<ReturnType<OpenAiRealtimeCallProvider['createCall']>> | null = null;
     let registeredProviderCallId: string | null = null;
     let lifecycle: RealtimeCallLifecycle | null = null;
@@ -403,6 +510,7 @@ export class RealtimeVoiceService {
           if (signal?.aborted) throw new Error('bootstrap_aborted');
           const bound = await this.admission.bindProvider({
             ...lease,
+            providerId: this.settings.provider,
             providerCallId: callId,
           });
           if (!bound.ok) {
@@ -498,6 +606,7 @@ export class RealtimeVoiceService {
         voice: this.settings.voice,
         configVersion: BOB_REALTIME_CONFIG_VERSION,
         maxSessionSeconds: this.settings.maxSessionSeconds,
+        speechSourcePolicy,
       });
     } catch (error) {
       const providerTermination = error instanceof RealtimeProviderCallCompensatedError
@@ -566,7 +675,14 @@ export class RealtimeVoiceService {
     }
 
     try {
-      await this.provider.hangupCall(termination.claim.providerCallId);
+      await this.providerTerminations.hangupCall({
+        companyId: termination.claim.companyId,
+        subjectHash: termination.claim.subjectHash,
+        sessionId: termination.claim.sessionId,
+        providerId: termination.claim.providerId,
+        providerCallId: termination.claim.providerCallId,
+        hardExpiryProof: termination.claim.hardExpiryProof,
+      });
     } catch {
       this.metrics.bobLiveProviderErrors.inc({ class: 'explicit_hangup_pending_reaper' });
       return { ok: false, error: appUnavailable('bob-live-hangup', 10) };
@@ -639,7 +755,7 @@ export class RealtimeVoiceService {
     sessionHandle: string,
     body: unknown,
     signal?: AbortSignal,
-  ): Promise<Result<RealtimeApprovedAgentControl, AppError>> {
+  ): Promise<Result<RealtimeApprovedAgentControl & { readonly acknowledgementId: string }, AppError>> {
     const principal = getPrincipal();
     if (!principal?.userId || !principal.companyId || !this.settings.safetySecret) {
       return { ok: false, error: appForbidden('Session utilisateur et espace de travail requis.') };
@@ -652,14 +768,20 @@ export class RealtimeVoiceService {
     }
     const parsed = parseRealtimeControlAcknowledgementBody(body);
     if (!parsed.ok) return parsed;
-    let consumed: Awaited<ReturnType<RealtimeSidebandControl['consumeAgentControl']>>;
+    let consumed: Awaited<ReturnType<RealtimeDurableControlPort['consume']>>;
     try {
-      consumed = await this.sideband.consumeAgentControl({
-        userId: principal.userId,
+      consumed = await this.controls.consume({
         companyId: principal.companyId,
-        sessionHandle,
-        ...parsed.value,
-        ...(signal === undefined ? {} : { signal }),
+        subjectHash: admissionSubjectHash(
+          this.settings.safetySecret,
+          principal.companyId,
+          principal.userId,
+        ),
+        sessionId: sessionHandle,
+        turnId: parsed.value.turnId,
+        acknowledgementId: parsed.value.acknowledgementId,
+        contextRevision: parsed.value.contextRevision,
+        contextDigest: parsed.value.contextDigest,
       });
     } catch {
       return { ok: false, error: appUnavailable('bob-live-control', 1) };
@@ -667,7 +789,7 @@ export class RealtimeVoiceService {
     if (consumed.status === 'unavailable') {
       return { ok: false, error: appUnavailable('bob-live-control', 1) };
     }
-    if (consumed.status === 'not_found') {
+    if (consumed.status !== 'approved') {
       return { ok: false, error: appNotFound('realtime_control', 'redacted') };
     }
     const control = safeApprovedControl(consumed.control, parsed.value);
@@ -686,7 +808,7 @@ export class RealtimeVoiceService {
       signal,
     );
     return stillCurrent
-      ? ok(control)
+      ? ok({ ...control, acknowledgementId: parsed.value.acknowledgementId })
       : { ok: false, error: appNotFound('realtime_control', 'redacted') };
   }
 
@@ -722,7 +844,14 @@ export class RealtimeVoiceService {
     const first = await this.admission.reserve(input);
     if (first.allowed || !first.reapingClaim) return first;
     try {
-      await this.provider.hangupCall(first.reapingClaim.providerCallId);
+      await this.providerTerminations.hangupCall({
+        companyId: first.reapingClaim.companyId,
+        subjectHash: first.reapingClaim.subjectHash,
+        sessionId: first.reapingClaim.sessionId,
+        providerId: first.reapingClaim.providerId,
+        providerCallId: first.reapingClaim.providerCallId,
+        hardExpiryProof: first.reapingClaim.hardExpiryProof,
+      });
     } catch {
       return first;
     }
@@ -735,6 +864,138 @@ export class RealtimeVoiceService {
     return completed.ok
       ? this.admission.reserve(input)
       : { allowed: false, denial: 'unavailable', retryAt: null };
+  }
+
+  private async createMistralCall(
+    body: unknown,
+    startedAt: number,
+    signal?: AbortSignal,
+  ): Promise<Result<RealtimeCallBootstrap, AppError>> {
+    const parsed = parseMistralRealtimeCallBody(body);
+    if (!parsed.ok) return this.finishError('validation', startedAt, parsed.error);
+    const principal = getPrincipal();
+    if (!principal?.userId || !principal.companyId) {
+      return this.finishError('identity_missing', startedAt, appForbidden('Session utilisateur et espace de travail requis.'));
+    }
+    if (!this.settings.safetySecret || !this.settings.apiKey) {
+      return this.finishError('misconfigured', startedAt, {
+        kind: 'dependency',
+        port: 'mistral-realtime',
+        cause: 'configuration_missing',
+      });
+    }
+
+    let entitlement: Awaited<ReturnType<RealtimeEntitlementPort['check']>>;
+    try {
+      entitlement = await this.entitlements.check({
+        userId: principal.userId,
+        companyId: principal.companyId,
+      });
+    } catch {
+      this.metrics.bobLiveEntitlementChecks.inc({ outcome: 'error', plan: 'unknown' });
+      return this.finishError(
+        'entitlement_unavailable',
+        startedAt,
+        appUnavailable('bob-live-entitlement', 60),
+      );
+    }
+    if (!entitlement.allowed) {
+      this.metrics.bobLiveEntitlementChecks.inc({ outcome: 'denied', plan: entitlement.plan });
+      return this.finishError(
+        'entitlement_denied',
+        startedAt,
+        appForbidden('Bob Live nécessite un abonnement compatible.'),
+      );
+    }
+    this.metrics.bobLiveEntitlementChecks.inc({ outcome: 'allowed', plan: entitlement.plan });
+
+    const reserveInput: RealtimeAdmissionReserveInput = {
+      companyId: principal.companyId,
+      subjectHash: admissionSubjectHash(
+        this.settings.safetySecret,
+        principal.companyId,
+        principal.userId,
+      ),
+      maxSessionSeconds: this.settings.maxSessionSeconds,
+      ...(parsed.value.sessionHandle === undefined ? {} : { sessionId: parsed.value.sessionHandle }),
+    };
+    const admission = await this.reserveAfterCleanup(reserveInput);
+    if (!admission.allowed) {
+      this.metrics.bobLiveRateLimited.inc({ scope: admission.denial ?? 'unknown' });
+      const error = admissionDenial(admission);
+      return this.finishError(error.kind, startedAt, error);
+    }
+    const lease = admission.lease;
+    let speechSourcePolicy: RealtimeSpeechSourcePolicy;
+    try {
+      if (!this.speechSourcePolicy) throw new Error('speech_source_policy_missing');
+      speechSourcePolicy = this.speechSourcePolicy.policyForSession(
+        principal.companyId,
+        lease.sessionId,
+      );
+    } catch {
+      await this.admission.release({ ...lease, providerTermination: 'not_created' }).catch(() => undefined);
+      return this.finishError(
+        'speech_unavailable',
+        startedAt,
+        appUnavailable('bob-live-speech', 5),
+      );
+    }
+    if (signal?.aborted) {
+      await this.admission.release({ ...lease, providerTermination: 'not_created' }).catch(() => undefined);
+      return this.finishError('aborted', startedAt, appUnavailable('bob-live-bootstrap', 1));
+    }
+
+    let issued: Awaited<ReturnType<MistralRealtimeIngressTicketAuthority['issue']>>;
+    try {
+      issued = await this.mistralTickets.issue({
+        ...lease,
+        userId: principal.userId,
+        subjectKeyVersion: this.settings.subjectKeyVersion,
+        plan: entitlement.plan,
+        contextSchemaVersion: parsed.value.context.version,
+        contextRevision: parsed.value.context.revision,
+        context: parsed.value.context.context,
+      });
+    } catch {
+      issued = { ok: false, reason: 'unavailable' };
+    }
+    if (!issued.ok || signal?.aborted) {
+      await this.admission.release({ ...lease, providerTermination: 'not_created' }).catch(() => undefined);
+      const error = issued.ok
+        ? appUnavailable('bob-live-bootstrap', 1)
+        : issued.reason === 'quota'
+          ? appRateLimited('Trop de connexions Bob Live.', 60)
+          : appUnavailable('mistral-realtime-ingress', 5);
+      return this.finishError(error.kind, startedAt, error);
+    }
+
+    const elapsedSeconds = (performance.now() - startedAt) / 1_000;
+    this.metrics.bobLiveBootstrapRequests.inc({ model: this.settings.model, outcome: 'ok' });
+    this.metrics.bobLiveBootstrapDuration.observe({ model: this.settings.model, outcome: 'ok' }, elapsedSeconds);
+    this.logger.audit('bob.live.bootstrap.succeeded', {
+      model: this.settings.model,
+      transport: 'mistral-pcm',
+      ms: Math.round(elapsedSeconds * 1_000),
+    });
+    return ok({
+      transport: 'mistral-pcm',
+      websocketUrl: this.settings.mistralWebsocketUrl,
+      companyId: issued.bootstrap.companyId,
+      ticket: issued.bootstrap.ticket,
+      protocol: issued.bootstrap.protocol,
+      ticketExpiresAt: issued.bootstrap.ticketExpiresAt,
+      maxAudioBytes: issued.bootstrap.maxAudioBytes,
+      contextRevision: issued.bootstrap.contextRevision,
+      contextDigest: issued.bootstrap.contextDigest,
+      sessionHandle: issued.bootstrap.sessionId,
+      hardExpiresAt: issued.bootstrap.hardExpiresAt,
+      model: this.settings.model,
+      voice: this.settings.voice,
+      configVersion: BOB_REALTIME_CONFIG_VERSION,
+      maxSessionSeconds: this.settings.maxSessionSeconds,
+      speechSourcePolicy,
+    });
   }
 
   private async cleanupFailedBootstrap(

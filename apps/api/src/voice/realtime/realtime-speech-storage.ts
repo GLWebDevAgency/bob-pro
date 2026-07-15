@@ -67,6 +67,20 @@ export interface RealtimeSpeechSignedDownload {
   readonly expiresInSeconds: number;
 }
 
+/**
+ * Politique publique minimale remise uniquement après admission d'un appel. Elle ne contient
+ * aucun secret et borne le lecteur mobile à un tenant ET une session précis.
+ */
+export interface RealtimeSpeechSourcePolicy {
+  readonly mode: 'signed-url-v1';
+  readonly allowedOrigin: string;
+  readonly allowedPathPrefix: string;
+}
+
+export interface RealtimeSpeechSourcePolicyPort {
+  policyForSession(companyId: string, sessionId: string): RealtimeSpeechSourcePolicy;
+}
+
 export interface RealtimeSpeechStoragePort {
   /**
    * Écrit un artefact une seule fois. Une clé déjà présente n'est jamais remplacée.
@@ -292,7 +306,7 @@ function isLoopbackHostname(hostname: string): boolean {
  * Adaptateur REST service-role. Le bucket doit rester privé : aucune opération de lecture publique
  * n'est exposée, et chaque URL de téléchargement est éphémère et liée à une clé tenant stricte.
  */
-export class SupabaseRealtimeSpeechStorage implements RealtimeSpeechStoragePort {
+export class SupabaseRealtimeSpeechStorage implements RealtimeSpeechStoragePort, RealtimeSpeechSourcePolicyPort {
   private readonly baseUrl: string;
   private readonly baseOrigin: string;
   private readonly serviceRoleKey: string;
@@ -344,6 +358,22 @@ export class SupabaseRealtimeSpeechStorage implements RealtimeSpeechStoragePort 
     this.serviceRoleKey = serviceRoleKey;
     this.bucket = bucket;
     this.requestTimeoutMs = requestTimeoutMs;
+  }
+
+  policyForSession(companyId: string, sessionId: string): RealtimeSpeechSourcePolicy {
+    if (!isSafeSegment(companyId) || !isSafeSegment(sessionId)) storageError('INVALID_INPUT');
+    const prefixKey = `companies/${companyId}/bob-live/${sessionId}/`;
+    const prefixUrl = new URL(
+      `${this.baseUrl}/storage/v1/object/sign/${encodeURIComponent(this.bucket)}/${encodeStoragePath(prefixKey)}`,
+    );
+    if (prefixUrl.origin !== this.baseOrigin || !prefixUrl.pathname.endsWith('/')) {
+      storageError('INVALID_INPUT');
+    }
+    return Object.freeze({
+      mode: 'signed-url-v1',
+      allowedOrigin: this.baseOrigin,
+      allowedPathPrefix: prefixUrl.pathname,
+    });
   }
 
   async upload(input: {

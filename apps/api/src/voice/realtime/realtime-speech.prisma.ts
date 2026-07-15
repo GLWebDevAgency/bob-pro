@@ -44,6 +44,8 @@ interface ArtifactIdentityRow {
   sequence: number;
   segmentIndex: number;
   renderTokenHash: string;
+  sidebandOwnerEpoch: number;
+  sidebandOwnerTokenHash: string;
   state: string;
   classification: string;
   source: string | null;
@@ -79,6 +81,7 @@ interface ClaimedArtifactRow {
 
 interface FenceRow {
   ok: number;
+  sidebandOwnerEpoch: number;
 }
 
 function trimmed(value: string | null): string | null {
@@ -100,6 +103,7 @@ function validClaim(input: RealtimeSpeechArtifactClaimInput): boolean {
     && input.segmentIndex <= MAX_SEGMENT_INDEX
     && validPositivePostgresInt(input.contextRevision)
     && SHA256_HEX.test(input.contextDigest)
+    && SHA256_HEX.test(input.sidebandOwnerTokenHash)
     && (input.classification === 'fixed_safe' || input.classification === 'dynamic_sensitive')
     && SHA256_HEX.test(input.canonicalSpeechHmac)
     && SHA256_HEX.test(input.factsHmac)
@@ -114,6 +118,7 @@ function validReady(input: RealtimeSpeechArtifactReadyInput): boolean {
     || !UUID.test(input.artifactId)
     || !validPositivePostgresInt(input.sequence)
     || !SHA256_HEX.test(input.renderTokenHash)
+    || !SHA256_HEX.test(input.sidebandOwnerTokenHash)
     || !validPositivePostgresInt(input.contextRevision)
     || !SHA256_HEX.test(input.contextDigest)
     || (input.classification !== 'fixed_safe' && input.classification !== 'dynamic_sensitive')
@@ -174,6 +179,7 @@ function bindingMatchesClaim(
     && row.segmentIndex === input.segmentIndex
     && row.contextRevision === input.contextRevision
     && trimmed(row.contextDigest) === input.contextDigest
+    && trimmed(row.sidebandOwnerTokenHash) === input.sidebandOwnerTokenHash
     && row.classification === input.classification
     && trimmed(row.canonicalSpeechHmac) === input.canonicalSpeechHmac
     && trimmed(row.factsHmac) === input.factsHmac;
@@ -190,6 +196,7 @@ function bindingMatchesReady(
     && row.sequence === input.sequence
     && row.contextRevision === input.contextRevision
     && trimmed(row.contextDigest) === input.contextDigest
+    && trimmed(row.sidebandOwnerTokenHash) === input.sidebandOwnerTokenHash
     && row.classification === input.classification
     && trimmed(row.canonicalSpeechHmac) === input.canonicalSpeechHmac
     && trimmed(row.factsHmac) === input.factsHmac;
@@ -222,6 +229,7 @@ function validFailureInput(input: Parameters<RealtimeSpeechArtifactRepositoryPor
     && UUID.test(input.turnId)
     && UUID.test(input.artifactId)
     && SHA256_HEX.test(input.renderTokenHash)
+    && SHA256_HEX.test(input.sidebandOwnerTokenHash)
     && FAILURE_REASON.test(input.reasonCode);
 }
 
@@ -231,6 +239,7 @@ function validCancellationInput(input: Parameters<RealtimeSpeechArtifactReposito
     && UUID.test(input.turnId)
     && UUID.test(input.artifactId)
     && UUID.test(input.cancellationId)
+    && SHA256_HEX.test(input.sidebandOwnerTokenHash)
     && CANCELLATION_REASONS.has(input.reason);
 }
 
@@ -253,7 +262,7 @@ export class PrismaRealtimeSpeechArtifactRepository implements RealtimeSpeechArt
         await tx.$queryRaw`
           SELECT pg_advisory_xact_lock(
             hashtextextended(${`bob-live:speech:${input.companyId}:${input.sessionId}:${input.turnId}:${input.segmentIndex}`}, 0)
-          )
+          )::text AS locked
         `;
         const [clock] = await tx.$queryRaw<ClockRow[]>`
           SELECT clock_timestamp() AS now
@@ -267,14 +276,16 @@ export class PrismaRealtimeSpeechArtifactRepository implements RealtimeSpeechArt
         // Le BEFORE INSERT alloue la séquence en mettant à jour ce même bail. Un verrou exclusif
         // évite le TOCTOU assert -> allocation et sérialise les claims de segments différents sans
         // le deadlock qu'engendrerait une promotion simultanée de plusieurs FOR SHARE.
-        if (!(await this.hasExactContextFenceForSequence(tx, input))) {
+        const sidebandOwnerEpoch = await this.exactContextFenceEpochForSequence(tx, input);
+        if (sidebandOwnerEpoch === null) {
           return { status: 'terminal' as const };
         }
 
         const [inserted] = await tx.$queryRaw<ClaimedArtifactRow[]>`
           INSERT INTO realtime_speech_artifacts (
             id, "companyId", "subjectHash", "sessionId", "turnId", "segmentIndex",
-            "renderTokenHash", state, classification, "contextRevision", "contextDigest",
+            "renderTokenHash", "sidebandOwnerEpoch", "sidebandOwnerTokenHash",
+            state, classification, "contextRevision", "contextDigest",
             "canonicalSpeechHmac", "factsHmac", "renderLeaseExpiresAt",
             "createdAt", "updatedAt", "retentionExpiresAt", version
           ) VALUES (
@@ -285,6 +296,8 @@ export class PrismaRealtimeSpeechArtifactRepository implements RealtimeSpeechArt
             ${input.turnId}::uuid,
             ${input.segmentIndex},
             ${input.renderTokenHash},
+            ${sidebandOwnerEpoch},
+            ${input.sidebandOwnerTokenHash},
             'rendering',
             ${input.classification},
             ${input.contextRevision},
@@ -297,7 +310,6 @@ export class PrismaRealtimeSpeechArtifactRepository implements RealtimeSpeechArt
             ${now} + make_interval(secs => ${RETENTION_SECONDS}),
             1
           )
-          ON CONFLICT ("companyId", "sessionId", "turnId", "segmentIndex") DO NOTHING
           RETURNING id, sequence
         `;
         if (inserted) {
@@ -354,12 +366,18 @@ export class PrismaRealtimeSpeechArtifactRepository implements RealtimeSpeechArt
             : { status: 'lost_claim' as const };
         }
         if (row.retentionExpiresAt.getTime() <= now.getTime()) return { status: 'lost_claim' as const };
+        if (!(row.renderLeaseExpiresAt instanceof Date)
+          || row.renderLeaseExpiresAt.getTime() <= now.getTime()) {
+          return { status: 'lost_claim' as const };
+        }
         if (!(await this.hasExactContextFence(tx, {
           companyId: input.companyId,
           subjectHash: input.subjectHash,
           sessionId: input.sessionId,
           contextRevision: input.contextRevision,
           contextDigest: input.contextDigest,
+          sidebandOwnerEpoch: row.sidebandOwnerEpoch,
+          sidebandOwnerTokenHash: input.sidebandOwnerTokenHash,
         }))) {
           return { status: 'stale_context' as const };
         }
@@ -391,6 +409,9 @@ export class PrismaRealtimeSpeechArtifactRepository implements RealtimeSpeechArt
              AND "turnId" = ${input.turnId}::uuid
              AND state = 'rendering'
              AND "renderTokenHash" = ${input.renderTokenHash}
+             AND "sidebandOwnerEpoch" = ${row.sidebandOwnerEpoch}
+             AND "sidebandOwnerTokenHash" = ${input.sidebandOwnerTokenHash}
+             AND "renderLeaseExpiresAt" > ${now}
              AND version = ${row.version}
           RETURNING id
         `;
@@ -420,6 +441,7 @@ export class PrismaRealtimeSpeechArtifactRepository implements RealtimeSpeechArt
            AND "turnId" = ${input.turnId}::uuid
            AND state = 'rendering'
            AND "renderTokenHash" = ${input.renderTokenHash}
+           AND "sidebandOwnerTokenHash" = ${input.sidebandOwnerTokenHash}
         RETURNING id
       `;
     });
@@ -446,6 +468,7 @@ export class PrismaRealtimeSpeechArtifactRepository implements RealtimeSpeechArt
            AND "sessionId" = ${input.sessionId}::uuid
            AND "turnId" = ${input.turnId}::uuid
            AND state IN ('rendering', 'ready')
+           AND "sidebandOwnerTokenHash" = ${input.sidebandOwnerTokenHash}
         RETURNING id
       `;
     });
@@ -499,6 +522,8 @@ export class PrismaRealtimeSpeechArtifactRepository implements RealtimeSpeechArt
       sessionId: string;
       contextRevision: number;
       contextDigest: string;
+      sidebandOwnerEpoch: number;
+      sidebandOwnerTokenHash: string;
     },
   ): Promise<boolean> {
     const [fence] = await tx.$queryRaw<FenceRow[]>`
@@ -514,7 +539,9 @@ export class PrismaRealtimeSpeechArtifactRepository implements RealtimeSpeechArt
          AND "contextDigest" = ${input.contextDigest}
          AND "contextAppliedRevision" = ${input.contextRevision}
          AND "contextAppliedDigest" = ${input.contextDigest}
-         AND "sidebandOwnerTokenHash" IS NOT NULL
+         AND "contextAppliedOwnerEpoch" = ${input.sidebandOwnerEpoch}
+         AND "sidebandOwnerEpoch" = ${input.sidebandOwnerEpoch}
+         AND "sidebandOwnerTokenHash" = ${input.sidebandOwnerTokenHash}
          AND "sidebandOwnerLeaseExpiresAt" > clock_timestamp()
          AND "sidebandProtocolVersion" = 2
        FOR SHARE
@@ -522,7 +549,7 @@ export class PrismaRealtimeSpeechArtifactRepository implements RealtimeSpeechArt
     return fence?.ok === 1;
   }
 
-  private async hasExactContextFenceForSequence(
+  private async exactContextFenceEpochForSequence(
     tx: Prisma.TransactionClient,
     input: {
       companyId: string;
@@ -530,10 +557,11 @@ export class PrismaRealtimeSpeechArtifactRepository implements RealtimeSpeechArt
       sessionId: string;
       contextRevision: number;
       contextDigest: string;
+      sidebandOwnerTokenHash: string;
     },
-  ): Promise<boolean> {
+  ): Promise<number | null> {
     const [fence] = await tx.$queryRaw<FenceRow[]>`
-      SELECT 1 AS ok
+      SELECT 1 AS ok, "sidebandOwnerEpoch"
         FROM realtime_session_leases
        WHERE "companyId" = ${input.companyId}
          AND "subjectHash" = ${input.subjectHash}
@@ -545,19 +573,24 @@ export class PrismaRealtimeSpeechArtifactRepository implements RealtimeSpeechArt
          AND "contextDigest" = ${input.contextDigest}
          AND "contextAppliedRevision" = ${input.contextRevision}
          AND "contextAppliedDigest" = ${input.contextDigest}
-         AND "sidebandOwnerTokenHash" IS NOT NULL
+         AND "contextAppliedOwnerEpoch" = "sidebandOwnerEpoch"
+         AND "sidebandOwnerEpoch" > 0
+         AND "sidebandOwnerTokenHash" = ${input.sidebandOwnerTokenHash}
          AND "sidebandOwnerLeaseExpiresAt" > clock_timestamp()
          AND "sidebandProtocolVersion" = 2
        FOR UPDATE
     `;
-    return fence?.ok === 1;
+    return fence?.ok === 1 && validPositivePostgresInt(fence.sidebandOwnerEpoch)
+      ? fence.sidebandOwnerEpoch
+      : null;
   }
 
   private artifactColumns(): Prisma.Sql {
     // Liste explicite : ni contextPayload, ni texte, ni audio ne peuvent fuir par cet adaptateur.
     return Prisma.sql`
       id, "companyId", "subjectHash", "sessionId", "turnId", sequence, "segmentIndex",
-      "renderTokenHash", state, classification, source, "contextRevision", "contextDigest",
+      "renderTokenHash", "sidebandOwnerEpoch", "sidebandOwnerTokenHash",
+      state, classification, source, "contextRevision", "contextDigest",
       "storageKey", "storageExpiresAt", "mimeType", "byteLength", "durationMs",
       "canonicalSpeechHmac", "auditTranscriptHmac", "factsHmac", "evidenceHmac",
       "audioSha256", "proofKeyVersion", "synthesisAdapterId", "synthesisTrustDomain",

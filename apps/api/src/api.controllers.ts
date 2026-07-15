@@ -1342,13 +1342,17 @@ export class NotificationsController {
   }
 }
 
-/** Appareils push Expo (C25) — enregistrement idempotent par tenant/user. */
+/** Appareils push Expo (C25) — binding global atomique + révocation tenant-scopée. */
 @Controller('devices')
 export class DevicesController {
   constructor(private readonly notifications: NotificationsApiService) {}
   @Post()
   async register(@Body() body: { expoPushToken?: string; platform?: string }) {
     return unwrap(await this.notifications.registerDevice(body));
+  }
+  @Delete()
+  async unregister(@Body() body: { expoPushToken?: string }) {
+    return unwrap(await this.notifications.unregisterDevice(body));
   }
 }
 

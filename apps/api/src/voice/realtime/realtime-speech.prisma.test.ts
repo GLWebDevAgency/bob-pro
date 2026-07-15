@@ -18,6 +18,7 @@ const CONTEXT = '2'.repeat(64);
 const CANONICAL = '3'.repeat(64);
 const FACTS = '4'.repeat(64);
 const TOKEN = '5'.repeat(64);
+const SIDEBAND_OWNER = 'a'.repeat(64);
 const OTHER_TOKEN = '6'.repeat(64);
 const EVIDENCE = '7'.repeat(64);
 const AUDIO = '8'.repeat(64);
@@ -36,6 +37,7 @@ function claimInput(
     candidateArtifactId: ARTIFACT,
     contextRevision: 7,
     contextDigest: CONTEXT,
+    sidebandOwnerTokenHash: SIDEBAND_OWNER,
     classification: 'fixed_safe',
     canonicalSpeechHmac: CANONICAL,
     factsHmac: FACTS,
@@ -57,6 +59,7 @@ function readyInput(
     renderTokenHash: TOKEN,
     contextRevision: 7,
     contextDigest: CONTEXT,
+    sidebandOwnerTokenHash: SIDEBAND_OWNER,
     classification: 'fixed_safe',
     source: 'preapproved_static',
     storageKey: `companies/${COMPANY}/bob-live/${SESSION}/${TURN}/${ARTIFACT}`,
@@ -89,6 +92,8 @@ function artifactRow(
     sequence: 12,
     segmentIndex: 0,
     renderTokenHash: TOKEN,
+    sidebandOwnerEpoch: 1,
+    sidebandOwnerTokenHash: SIDEBAND_OWNER,
     state: 'rendering',
     classification: 'fixed_safe',
     source: null,
@@ -186,7 +191,7 @@ class SerializedClaimPrisma {
       if (sql.includes('pg_advisory_xact_lock')) return [];
       if (sql.includes('SELECT clock_timestamp() AS now')) return [{ now: NOW }];
       if (sql.includes('FROM realtime_speech_artifacts')) return this.row ? [{ ...this.row }] : [];
-      if (sql.includes('FROM realtime_session_leases')) return [{ ok: 1 }];
+      if (sql.includes('FROM realtime_session_leases')) return [{ ok: 1, sidebandOwnerEpoch: 1 }];
       if (sql.includes('INSERT INTO realtime_speech_artifacts')) {
         if (this.row) return [];
         this.sequenceAllocations += 1;
@@ -198,11 +203,13 @@ class SerializedClaimPrisma {
           turnId: values[4],
           segmentIndex: values[5],
           renderTokenHash: values[6],
-          classification: values[7],
-          contextRevision: values[8],
-          contextDigest: values[9],
-          canonicalSpeechHmac: values[10],
-          factsHmac: values[11],
+          sidebandOwnerEpoch: values[7],
+          sidebandOwnerTokenHash: values[8],
+          classification: values[9],
+          contextRevision: values[10],
+          contextDigest: values[11],
+          canonicalSpeechHmac: values[12],
+          factsHmac: values[13],
           sequence: 1,
         });
         return [{ id: values[0], sequence: 1 }];
@@ -247,7 +254,7 @@ describe('Bob Live — repository acoustique Prisma durable', () => {
       [],
       [{ now: NOW }],
       [],
-      [{ ok: 1 }],
+      [{ ok: 1, sidebandOwnerEpoch: 1 }],
       [{ id: ARTIFACT, sequence: 12 }],
     ]);
     await expect(claimed.repository.claimRender(claimInput())).resolves.toEqual({
@@ -340,8 +347,16 @@ describe('Bob Live — repository acoustique Prisma durable', () => {
     expect(sqlAt(harness.queryRaw, 0)).toMatch(/FROM realtime_speech_artifacts.*FOR UPDATE/u);
     expect(sqlAt(harness.queryRaw, 2)).toMatch(/contextDigest.*contextAppliedDigest.*FOR SHARE/u);
     expect(sqlAt(harness.queryRaw, 3)).toMatch(
-      /state = 'rendering'.*"renderTokenHash" = \?.*version = \?.*RETURNING id/u,
+      /state = 'rendering'.*"renderTokenHash" = \?.*"renderLeaseExpiresAt" > \?.*version = \?.*RETURNING id/u,
     );
+
+    const expiredRenderer = scriptedRepository([
+      [artifactRow({ renderLeaseExpiresAt: new Date(NOW.getTime() - 1) })],
+      [{ now: NOW }],
+    ]);
+    await expect(expiredRenderer.repository.finalizeReady(readyInput()))
+      .resolves.toEqual({ status: 'lost_claim' });
+    expect(expiredRenderer.queryRaw).toHaveBeenCalledTimes(2);
   });
 
   it('accepte une synthèse dynamique uniquement avec un audit indépendant complet', async () => {
@@ -404,7 +419,7 @@ describe('Bob Live — repository acoustique Prisma durable', () => {
 
   it('rejette avant SQL les formats non certifiés, les clés forgées et les trust domains confondus', async () => {
     const unsupported = scriptedRepository([]);
-    await expect(unsupported.repository.finalizeReady(readyInput({ mimeType: 'audio/webm' })))
+    await expect(unsupported.repository.finalizeReady(readyInput({ mimeType: 'audio/webm' as never })))
       .resolves.toEqual({ status: 'lost_claim' });
     expect(unsupported.withTenant).not.toHaveBeenCalled();
 
@@ -434,6 +449,7 @@ describe('Bob Live — repository acoustique Prisma durable', () => {
       turnId: TURN,
       artifactId: ARTIFACT,
       renderTokenHash: TOKEN,
+      sidebandOwnerTokenHash: SIDEBAND_OWNER,
       reasonCode: 'RENDER_FAILED',
     });
     expect(invalidFailure.withTenant).not.toHaveBeenCalled();
@@ -445,6 +461,7 @@ describe('Bob Live — repository acoustique Prisma durable', () => {
       turnId: TURN,
       artifactId: ARTIFACT,
       renderTokenHash: TOKEN,
+      sidebandOwnerTokenHash: SIDEBAND_OWNER,
       reasonCode: 'render_failed',
     } as const;
     await failure.repository.failRender(failureInput);
@@ -458,6 +475,7 @@ describe('Bob Live — repository acoustique Prisma durable', () => {
       turnId: TURN,
       artifactId: ARTIFACT,
       cancellationId: CANCELLATION,
+      sidebandOwnerTokenHash: SIDEBAND_OWNER,
       reason: 'barge_in',
     } as const;
     await cancellation.repository.cancel(cancellationInput);

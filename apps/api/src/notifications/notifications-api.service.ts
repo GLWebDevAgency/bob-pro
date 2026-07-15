@@ -30,8 +30,11 @@ export interface NotificationItemDto {
 
 export interface RegisterDeviceDto {
   id: string;
-  expoPushToken: string;
   platform: string | null;
+}
+
+export interface UnregisterDeviceDto {
+  unregistered: true;
 }
 
 export interface NotificationUnreadPreviewDto {
@@ -55,6 +58,17 @@ function invalidCutoff(message: string): Result<never, AppError> {
   return {
     ok: false,
     error: { kind: 'validation', issues: [{ field: 'throughCreatedAt', message }] },
+  };
+}
+
+function validateExpoPushToken(token: unknown): Result<string, AppError> {
+  if (typeof token === 'string' && EXPO_TOKEN_PATTERN.test(token)) return ok(token);
+  return {
+    ok: false,
+    error: {
+      kind: 'validation',
+      issues: [{ field: 'expoPushToken', message: 'Token Expo Push invalide (attendu ExponentPushToken[…]).' }],
+    },
   };
 }
 
@@ -129,16 +143,9 @@ export class NotificationsApiService {
   }
 
   async registerDevice(input: { expoPushToken?: unknown; platform?: unknown }): Promise<Result<RegisterDeviceDto, AppError>> {
-    const token = input.expoPushToken;
-    if (typeof token !== 'string' || !EXPO_TOKEN_PATTERN.test(token)) {
-      return {
-        ok: false,
-        error: {
-          kind: 'validation',
-          issues: [{ field: 'expoPushToken', message: 'Token Expo Push invalide (attendu ExponentPushToken[…]).' }],
-        },
-      };
-    }
+    const tokenResult = validateExpoPushToken(input.expoPushToken);
+    if (!tokenResult.ok) return tokenResult;
+    const token = tokenResult.value;
     const platform = typeof input.platform === 'string' && PLATFORMS.has(input.platform) ? input.platform : null;
     const device = await this.p.devices.register({
       id: randomUUID(),
@@ -148,6 +155,18 @@ export class NotificationsApiService {
       platform,
       now: this.clock.now(),
     });
-    return ok({ id: device.id, expoPushToken: device.expoPushToken, platform: device.platform });
+    // Le token est une capacité : il n'est jamais ré-émis dans la réponse HTTP.
+    return ok({ id: device.id, platform: device.platform });
+  }
+
+  /**
+   * Révocation best-effort avant déconnexion. Idempotente et strictement tenant-scopée : si le
+   * token a déjà été transféré vers un autre compte, cet ancien principal ne peut pas le retirer.
+   */
+  async unregisterDevice(input: { expoPushToken?: unknown }): Promise<Result<UnregisterDeviceDto, AppError>> {
+    const tokenResult = validateExpoPushToken(input.expoPushToken);
+    if (!tokenResult.ok) return tokenResult;
+    await this.p.devices.removeByToken(this.companyId(), tokenResult.value);
+    return ok({ unregistered: true });
   }
 }

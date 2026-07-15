@@ -29,7 +29,11 @@ GRANT USAGE ON SCHEMA public TO :"app_role";
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO :"app_role";
 -- Ces registres sont append-only pour le role runtime. Les policies RLS seules ne
 -- suffisent pas : un futur changement de policy ne doit pas reactiver leur mutation.
-REVOKE UPDATE, DELETE ON TABLE public.document_analyses, public.expense_creation_requests FROM :"app_role";
+REVOKE UPDATE, DELETE ON TABLE
+  public.document_analyses,
+  public.expense_creation_requests,
+  public.quote_creation_requests
+FROM :"app_role";
 REVOKE DELETE ON TABLE public.realtime_speech_artifacts FROM :"app_role";
 REVOKE UPDATE, DELETE ON TABLE
   public.realtime_control_grants,

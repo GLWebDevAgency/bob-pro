@@ -104,11 +104,17 @@ function parsedDurationMs(mimeType: RealtimeSpeechMimeType, bytes: Uint8Array): 
 
 export class BobAiRealtimeSpeechSynthesisAdapter implements RealtimeSpeechSynthesisPort {
   readonly id: string;
-  readonly trustDomain = 'mistral.ai';
+  readonly trustDomain: 'openai.com' | 'mistral.ai';
 
   constructor(private readonly tts: TtsPort) {
-    if (tts.id !== 'mistral-voxtral-tts') {
-      throw new Error('Bob Live requires the qualified Mistral TTS adapter.');
+    const declaredTrustDomain = (tts as TtsPort & { readonly synthesisTrustDomain?: unknown })
+      .synthesisTrustDomain;
+    if (tts.id === 'openai-realtime-tts' && declaredTrustDomain === 'openai.com') {
+      this.trustDomain = 'openai.com';
+    } else if (tts.id === 'mistral-voxtral-tts' && declaredTrustDomain === 'mistral.ai') {
+      this.trustDomain = 'mistral.ai';
+    } else {
+      throw new Error('Bob Live requires a qualified realtime TTS adapter.');
     }
     this.id = tts.id;
   }
@@ -130,11 +136,16 @@ export class BobAiRealtimeSpeechSynthesisAdapter implements RealtimeSpeechSynthe
 
 export class BobAiRealtimeSpeechAuditAdapter implements RealtimeSpeechAuditPort {
   readonly id: string;
-  readonly trustDomain = 'openai.com';
+  readonly trustDomain: 'openai.com' | 'bob.local-whisper';
 
   constructor(private readonly stt: SttPort) {
-    if (stt.id !== 'whisper') {
-      throw new Error('Bob Live requires the qualified OpenAI audit STT adapter.');
+    const declaredTrustDomain = (stt as SttPort & { readonly auditTrustDomain?: unknown }).auditTrustDomain;
+    if (stt.id === 'openai-realtime-audit-whisper' && declaredTrustDomain === 'openai.com') {
+      this.trustDomain = 'openai.com';
+    } else if (stt.id === 'local-whisper' && declaredTrustDomain === 'bob.local-whisper') {
+      this.trustDomain = 'bob.local-whisper';
+    } else {
+      throw new Error('Bob Live requires a qualified independent audit STT adapter.');
     }
     this.id = stt.id;
   }

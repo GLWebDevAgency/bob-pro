@@ -1,11 +1,12 @@
 import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { parseAgentContext, type AgentContext } from '@bob/ai';
-import type { Env } from '../../config/env';
+import { resolveBobLiveEnv, type Env } from '../../config/env';
 
 const SUBJECT_HASH_PATTERN = /^[a-f0-9]{64}$/;
 const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TENANT_ID_PATTERN = /^[A-Za-z0-9-]{1,64}$/;
 const PROVIDER_CALL_ID_PATTERN = /^[A-Za-z0-9._:-]{1,200}$/;
+const REALTIME_PROVIDER_IDS = ['openai', 'mistral'] as const;
 
 export const REALTIME_CONTEXT_SCHEMA_VERSION = 1 as const;
 const REALTIME_CONTEXT_MAX_BYTES = 16_384;
@@ -21,6 +22,24 @@ export type RealtimeAdmissionDenial =
   | 'unavailable';
 
 export type RealtimeLeaseState = 'reserved' | 'bound' | 'active' | 'reaping';
+export type RealtimeProviderId = (typeof REALTIME_PROVIDER_IDS)[number];
+
+/**
+ * Preuve serveur qu'un bail a dépassé son hard cap selon l'horloge PostgreSQL autoritative.
+ * Elle est liée à toute l'identité distante et ne peut jamais être remplacée par un booléen issu
+ * d'un controller ou par l'horloge d'un pod.
+ */
+export interface RealtimeDatabaseHardExpiryProof {
+  readonly source: 'database_hard_expiry';
+  readonly companyId: string;
+  readonly subjectHash: string;
+  readonly sessionId: string;
+  readonly providerId: RealtimeProviderId;
+  readonly providerCallId: string;
+  readonly hardExpiresAt: string;
+  readonly databaseObservedAt: string;
+  readonly leaseVersion: number;
+}
 
 export interface RealtimeAdmissionPolicy {
   userLimitPerMinute: number;
@@ -34,15 +53,16 @@ export interface RealtimeAdmissionPolicy {
 }
 
 export function realtimeAdmissionPolicyFromEnv(env: Env): RealtimeAdmissionPolicy {
+  const live = resolveBobLiveEnv(env);
   return {
-    userLimitPerMinute: env.OPENAI_REALTIME_MAX_CALLS_PER_MINUTE,
-    userLimitPerHour: env.OPENAI_REALTIME_MAX_CALLS_PER_HOUR,
-    tenantLimitPerMinute: env.OPENAI_REALTIME_MAX_TENANT_CALLS_PER_MINUTE,
-    tenantLimitPerHour: env.OPENAI_REALTIME_MAX_TENANT_CALLS_PER_HOUR,
-    reservationTtlSeconds: env.OPENAI_REALTIME_RESERVATION_TTL_SECONDS,
-    activeLeaseSeconds: env.OPENAI_REALTIME_ACTIVE_LEASE_SECONDS,
-    heartbeatSeconds: env.OPENAI_REALTIME_HEARTBEAT_SECONDS,
-    reaperLeaseSeconds: env.OPENAI_REALTIME_REAPER_LEASE_SECONDS,
+    userLimitPerMinute: live.maxCallsPerMinute,
+    userLimitPerHour: live.maxCallsPerHour,
+    tenantLimitPerMinute: live.maxTenantCallsPerMinute,
+    tenantLimitPerHour: live.maxTenantCallsPerHour,
+    reservationTtlSeconds: live.reservationTtlSeconds,
+    activeLeaseSeconds: live.activeLeaseSeconds,
+    heartbeatSeconds: live.heartbeatSeconds,
+    reaperLeaseSeconds: live.reaperLeaseSeconds,
   };
 }
 
@@ -82,9 +102,12 @@ export interface RealtimeReapingClaim {
   companyId: string;
   subjectHash: string;
   sessionId: string;
+  providerId: RealtimeProviderId;
   providerCallId: string;
   reaperToken: string;
   reaperLeaseExpiresAt: string;
+  /** Null avant le hard cap, y compris lorsque le lease heartbeat a expiré. */
+  hardExpiryProof: RealtimeDatabaseHardExpiryProof | null;
 }
 
 export type RealtimeReapingBatchResult =
@@ -156,7 +179,10 @@ export type RealtimeContextReadResult =
 
 export interface RealtimeAdmissionPort {
   reserve(input: RealtimeAdmissionReserveInput): Promise<RealtimeAdmissionResult>;
-  bindProvider(input: RealtimeLeaseCredential & { providerCallId: string }): Promise<RealtimeAdmissionMutationResult>;
+  bindProvider(input: RealtimeLeaseCredential & {
+    providerId: RealtimeProviderId;
+    providerCallId: string;
+  }): Promise<RealtimeAdmissionMutationResult>;
   activate(input: RealtimeLeaseCredential): Promise<RealtimeAdmissionMutationResult>;
   renew(input: RealtimeLeaseCredential): Promise<RealtimeAdmissionMutationResult>;
   release(input: RealtimeReleaseInput): Promise<RealtimeAdmissionMutationResult>;
@@ -167,7 +193,10 @@ export interface RealtimeAdmissionPort {
     subjectHash: string;
     sessionId: string;
   }): Promise<RealtimeTerminationClaimResult>;
-  completeReaping(input: Omit<RealtimeReapingClaim, 'providerCallId' | 'reaperLeaseExpiresAt'>): Promise<RealtimeAdmissionMutationResult>;
+  completeReaping(input: Omit<
+  RealtimeReapingClaim,
+    'providerId' | 'providerCallId' | 'reaperLeaseExpiresAt' | 'hardExpiryProof'
+  >): Promise<RealtimeAdmissionMutationResult>;
   /** Publie le dernier écran sur un bail vivant déjà lié au provider. */
   updateContext(input: RealtimeContextUpdateInput): Promise<RealtimeContextUpdateResult>;
   /** Le cerveau ne lit le contexte qu'après activation complète de la session. */
@@ -192,6 +221,7 @@ interface MemoryLease {
   sessionId: string;
   leaseTokenHash: string;
   state: RealtimeLeaseState;
+  providerId: RealtimeProviderId | null;
   providerCallId: string | null;
   reaperTokenHash: string | null;
   leaseExpiresAt: number;
@@ -231,6 +261,43 @@ export function isRealtimeSessionId(value: string): boolean {
 
 export function isRealtimeProviderCallId(value: string): boolean {
   return PROVIDER_CALL_ID_PATTERN.test(value);
+}
+
+export function isRealtimeProviderId(value: string): value is RealtimeProviderId {
+  return (REALTIME_PROVIDER_IDS as readonly string[]).includes(value);
+}
+
+export function isRealtimeDatabaseHardExpiryProof(
+  value: unknown,
+): value is RealtimeDatabaseHardExpiryProof {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const proof = value as Record<string, unknown>;
+  if (
+    Object.keys(proof).length !== 9
+    || proof.source !== 'database_hard_expiry'
+    || typeof proof.companyId !== 'string'
+    || !isRealtimeCompanyId(proof.companyId)
+    || typeof proof.subjectHash !== 'string'
+    || !isRealtimeSubjectHash(proof.subjectHash)
+    || typeof proof.sessionId !== 'string'
+    || !isRealtimeSessionId(proof.sessionId)
+    || typeof proof.providerId !== 'string'
+    || !isRealtimeProviderId(proof.providerId)
+    || typeof proof.providerCallId !== 'string'
+    || !isRealtimeProviderCallId(proof.providerCallId)
+    || typeof proof.hardExpiresAt !== 'string'
+    || typeof proof.databaseObservedAt !== 'string'
+    || !Number.isSafeInteger(proof.leaseVersion)
+    || (proof.leaseVersion as number) < 1
+    || (proof.leaseVersion as number) > POSTGRES_INTEGER_MAX
+  ) return false;
+  const hardExpiresAt = Date.parse(proof.hardExpiresAt);
+  const databaseObservedAt = Date.parse(proof.databaseObservedAt);
+  return Number.isFinite(hardExpiresAt)
+    && Number.isFinite(databaseObservedAt)
+    && new Date(hardExpiresAt).toISOString() === proof.hardExpiresAt
+    && new Date(databaseObservedAt).toISOString() === proof.databaseObservedAt
+    && databaseObservedAt >= hardExpiresAt;
 }
 
 export function isRealtimeLeaseCredential(input: RealtimeLeaseCredential): boolean {
@@ -353,9 +420,12 @@ export class InMemoryRealtimeAdmission implements RealtimeAdmissionPort {
           retryAt: iso(existing.leaseExpiresAt),
         };
       }
-      if (existing.providerCallId === null) {
+      if (existing.providerId === null && existing.providerCallId === null) {
         this.leases.delete(key);
       } else {
+        if (existing.providerId === null || existing.providerCallId === null) {
+          return { allowed: false, denial: 'unavailable', retryAt: null };
+        }
         const claim = this.claimLeaseForReaping(existing, now);
         return {
           allowed: false,
@@ -396,6 +466,7 @@ export class InMemoryRealtimeAdmission implements RealtimeAdmissionPort {
       sessionId,
       leaseTokenHash: hashRealtimeLeaseToken(leaseToken),
       state: 'reserved',
+      providerId: null,
       providerCallId: null,
       reaperTokenHash: null,
       leaseExpiresAt,
@@ -427,23 +498,34 @@ export class InMemoryRealtimeAdmission implements RealtimeAdmissionPort {
   }
 
   async bindProvider(
-    input: RealtimeLeaseCredential & { providerCallId: string },
+    input: RealtimeLeaseCredential & { providerId: RealtimeProviderId; providerCallId: string },
   ): Promise<RealtimeAdmissionMutationResult> {
-    if (!validCredential(input) || !PROVIDER_CALL_ID_PATTERN.test(input.providerCallId)) return this.rejected();
+    if (
+      !validCredential(input)
+      || !isRealtimeProviderId(input.providerId)
+      || !PROVIDER_CALL_ID_PATTERN.test(input.providerCallId)
+    ) return this.rejected();
     const now = this.now();
     const lease = this.authorizedLease(input);
     if (!lease) return this.rejected();
     if (lease.leaseExpiresAt <= now || lease.hardExpiresAt <= now) return this.expired();
     if (
       (lease.state === 'bound' || lease.state === 'active')
+      && lease.providerId === input.providerId
       && lease.providerCallId === input.providerCallId
     ) {
       return { ok: true, reason: null, leaseExpiresAt: iso(lease.leaseExpiresAt) };
     }
-    if (lease.state !== 'reserved' || lease.providerCallId !== null) return this.rejected();
-    if ([...this.leases.values()].some((candidate) => candidate.providerCallId === input.providerCallId)) {
+    if (lease.state !== 'reserved' || lease.providerId !== null || lease.providerCallId !== null) {
       return this.rejected();
     }
+    if ([...this.leases.values()].some((candidate) => (
+      candidate.providerId === input.providerId
+      && candidate.providerCallId === input.providerCallId
+    ))) {
+      return this.rejected();
+    }
+    lease.providerId = input.providerId;
     lease.providerCallId = input.providerCallId;
     lease.state = 'bound';
     lease.version += 1;
@@ -456,10 +538,12 @@ export class InMemoryRealtimeAdmission implements RealtimeAdmissionPort {
     const lease = this.authorizedLease(input);
     if (!lease) return this.rejected();
     if (lease.leaseExpiresAt <= now || lease.hardExpiresAt <= now) return this.expired();
-    if (lease.state === 'active' && lease.providerCallId !== null) {
+    if (lease.state === 'active' && lease.providerId !== null && lease.providerCallId !== null) {
       return { ok: true, reason: null, leaseExpiresAt: iso(lease.leaseExpiresAt) };
     }
-    if (lease.state !== 'bound' || lease.providerCallId === null) return this.rejected();
+    if (lease.state !== 'bound' || lease.providerId === null || lease.providerCallId === null) {
+      return this.rejected();
+    }
     lease.state = 'active';
     lease.activatedAt = now;
     lease.leaseExpiresAt = Math.min(addSeconds(now, this.policy.activeLeaseSeconds), lease.hardExpiresAt);
@@ -471,7 +555,12 @@ export class InMemoryRealtimeAdmission implements RealtimeAdmissionPort {
     if (!validCredential(input)) return this.rejected();
     const now = this.now();
     const lease = this.authorizedLease(input);
-    if (!lease || lease.state !== 'active' || lease.providerCallId === null) return this.rejected();
+    if (
+      !lease
+      || lease.state !== 'active'
+      || lease.providerId === null
+      || lease.providerCallId === null
+    ) return this.rejected();
     if (lease.leaseExpiresAt <= now || lease.hardExpiresAt <= now) return this.expired();
     lease.leaseExpiresAt = Math.min(addSeconds(now, this.policy.activeLeaseSeconds), lease.hardExpiresAt);
     lease.version += 1;
@@ -483,7 +572,10 @@ export class InMemoryRealtimeAdmission implements RealtimeAdmissionPort {
     const key = this.key(input.companyId, input.subjectHash);
     const lease = this.authorizedLease(input);
     if (!lease) return this.rejected();
-    if (input.providerTermination === 'not_created' && lease.providerCallId !== null) return this.rejected();
+    if (
+      input.providerTermination === 'not_created'
+      && (lease.providerId !== null || lease.providerCallId !== null)
+    ) return this.rejected();
     this.leases.delete(key);
     return { ok: true, reason: null };
   }
@@ -496,10 +588,11 @@ export class InMemoryRealtimeAdmission implements RealtimeAdmissionPort {
     for (const [key, lease] of this.leases) {
       if (claims.length >= limit) break;
       if (lease.companyId !== input.companyId || lease.leaseExpiresAt > now) continue;
-      if (lease.providerCallId === null) {
+      if (lease.providerId === null && lease.providerCallId === null) {
         this.leases.delete(key);
         continue;
       }
+      if (lease.providerId === null || lease.providerCallId === null) continue;
       const claim = this.claimLeaseForReaping(lease, now);
       if (claim) claims.push(claim);
     }
@@ -519,16 +612,22 @@ export class InMemoryRealtimeAdmission implements RealtimeAdmissionPort {
     if (!lease || lease.sessionId !== input.sessionId) {
       return { ok: true, claim: null, pending: false };
     }
-    if (lease.providerCallId === null) {
+    if (lease.providerId === null && lease.providerCallId === null) {
       this.leases.delete(key);
       return { ok: true, claim: null, pending: false };
+    }
+    if (lease.providerId === null || lease.providerCallId === null) {
+      return { ok: false, reason: 'unavailable' };
     }
     const claim = this.claimLeaseForReaping(lease, this.now());
     return { ok: true, claim, pending: claim === null };
   }
 
   async completeReaping(
-    input: Omit<RealtimeReapingClaim, 'providerCallId' | 'reaperLeaseExpiresAt'>,
+    input: Omit<
+    RealtimeReapingClaim,
+      'providerId' | 'providerCallId' | 'reaperLeaseExpiresAt' | 'hardExpiryProof'
+    >,
   ): Promise<RealtimeAdmissionMutationResult> {
     if (!validIdentity(input) || !SESSION_ID_PATTERN.test(input.sessionId) || input.reaperToken.length < 32) {
       return this.rejected();
@@ -635,6 +734,7 @@ export class InMemoryRealtimeAdmission implements RealtimeAdmissionPort {
   }
 
   private claimLeaseForReaping(lease: MemoryLease, now: number): RealtimeReapingClaim | null {
+    if (lease.providerId === null || lease.providerCallId === null) return null;
     if (lease.state === 'reaping' && lease.leaseExpiresAt > now) {
       return null;
     }
@@ -643,13 +743,28 @@ export class InMemoryRealtimeAdmission implements RealtimeAdmissionPort {
     lease.reaperTokenHash = hashRealtimeLeaseToken(reaperToken);
     lease.leaseExpiresAt = addSeconds(now, this.policy.reaperLeaseSeconds);
     lease.version += 1;
+    const hardExpiryProof: RealtimeDatabaseHardExpiryProof | null = now >= lease.hardExpiresAt
+      ? {
+          source: 'database_hard_expiry',
+          companyId: lease.companyId,
+          subjectHash: lease.subjectHash,
+          sessionId: lease.sessionId,
+          providerId: lease.providerId,
+          providerCallId: lease.providerCallId,
+          hardExpiresAt: iso(lease.hardExpiresAt),
+          databaseObservedAt: iso(now),
+          leaseVersion: lease.version,
+        }
+      : null;
     return {
       companyId: lease.companyId,
       subjectHash: lease.subjectHash,
       sessionId: lease.sessionId,
-      providerCallId: lease.providerCallId!,
+      providerId: lease.providerId,
+      providerCallId: lease.providerCallId,
       reaperToken,
       reaperLeaseExpiresAt: iso(lease.leaseExpiresAt),
+      hardExpiryProof,
     };
   }
 

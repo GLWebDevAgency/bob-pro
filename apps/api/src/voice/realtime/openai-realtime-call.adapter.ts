@@ -22,6 +22,21 @@ const SAFE_CALLBACK_ERROR_CLASSES = new Set([
 export type RealtimeFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
 /**
+ * Port fermé injecté lorsque le profil actif n'est pas OpenAI. Il évite surtout de construire
+ * accidentellement l'adapter OpenAI avec la clé et l'URL Mistral présentes dans les settings
+ * provider-neutral.
+ */
+export class DisabledOpenAiRealtimeCallProvider implements OpenAiRealtimeCallProvider {
+  async createCall(_input: OpenAiRealtimeCallInput): Promise<OpenAiRealtimeCallOutput> {
+    throw new Error('openai_realtime_provider_disabled');
+  }
+
+  async hangupCall(_callId: string): Promise<void> {
+    throw new Error('openai_realtime_provider_disabled');
+  }
+}
+
+/**
  * L'appel provider existe déjà, mais son bind durable ou son SDP n'a pas pu être accepté et le
  * hangup compensatoire a lui-même échoué. Les deux classes sont bornées et ne transportent ni
  * SDP, ni call_id, ni secret.

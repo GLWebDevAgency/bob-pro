@@ -1,7 +1,10 @@
 /**
- * Appareils enregistrés pour le push Expo (C25) — un token par device, company-scoped (RLS).
- * L'enregistrement est idempotent sur (companyId, expoPushToken) : ré-enregistrer met à jour
- * la plateforme/le user et rafraîchit updatedAt (le token Expo peut être partagé entre boots).
+ * Appareils enregistrés pour le push Expo (C25).
+ *
+ * Invariant de confidentialité : un token Expo ne peut appartenir qu'à un seul tenant/utilisateur
+ * à la fois. `register` transfère atomiquement ce token vers le principal courant ; il n'ajoute
+ * jamais une deuxième ligne cross-tenant. `removeByToken` reste tenant-scopé pour qu'une
+ * déconnexion ne puisse révoquer que le binding qu'elle possède encore.
  */
 
 export interface DeviceRecord {
@@ -26,6 +29,7 @@ export interface RegisterDeviceInput {
 }
 
 export interface DeviceRepository {
+  /** Idempotent dans un tenant, rebind atomique si le token appartenait à un autre tenant. */
   register(input: RegisterDeviceInput): Promise<DeviceRecord>;
   listByCompany(companyId: string): Promise<DeviceRecord[]>;
   /** Retire un token invalidé (ticket Expo DeviceNotRegistered). Idempotent. */

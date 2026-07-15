@@ -1217,22 +1217,49 @@ export class PrismaNotificationJobRepository implements NotificationJobRepositor
   }
 }
 
-/** Appareils push Expo (C25) — idempotent sur (companyId, expoPushToken). */
+/**
+ * Appareils push Expo (C25) — un token global, transféré atomiquement vers le principal courant.
+ *
+ * La capacité RLS est l'exact token remis par l'OS. Elle n'est ni loggée ni persistée ailleurs :
+ * les policies `device_token_rebind_*` ne rendent visible/mutable que cette ligne pendant le
+ * statement, puis le GUC est effacé avant de rendre la main au reste de la requête.
+ */
 export class PrismaDeviceRepository implements DeviceRepository {
   constructor(private readonly prisma: PrismaService) {}
 
   async register(input: RegisterDeviceInput): Promise<DeviceRecord> {
-    const row = await this.prisma.client().device.upsert({
-      where: { uniq_device_token: { companyId: input.companyId, expoPushToken: input.expoPushToken } },
-      create: {
-        id: input.id,
-        companyId: input.companyId,
-        userId: input.userId,
-        expoPushToken: input.expoPushToken,
-        platform: input.platform,
-      },
-      update: { userId: input.userId, platform: input.platform },
-    });
+    const client = this.prisma.client();
+    const at = new Date(input.now);
+    const rows = await client.$queryRaw<Array<{
+      id: string;
+      companyId: string;
+      userId: string | null;
+      expoPushToken: string;
+      platform: string | null;
+      createdAt: Date;
+      updatedAt: Date;
+    }>>(Prisma.sql`
+      WITH rebind_capability AS MATERIALIZED (
+        SELECT set_config('app.current_device_push_token', ${input.expoPushToken}, true)
+      )
+      INSERT INTO "devices" (
+        "id", "companyId", "userId", "expoPushToken", "platform", "createdAt", "updatedAt"
+      )
+      SELECT
+        ${input.id}, ${input.companyId}, ${input.userId}, ${input.expoPushToken}, ${input.platform}, ${at}, ${at}
+      FROM rebind_capability
+      ON CONFLICT ("expoPushToken") DO UPDATE SET
+        "companyId" = EXCLUDED."companyId",
+        "userId" = EXCLUDED."userId",
+        "platform" = EXCLUDED."platform",
+        "updatedAt" = EXCLUDED."updatedAt"
+      RETURNING "id", "companyId", "userId", "expoPushToken", "platform", "createdAt", "updatedAt"
+    `);
+    // Défense en profondeur : la capacité ne doit pas élargir une lecture ultérieure dans la même
+    // transaction request-scoped. Hors transaction explicite, le GUC local est déjà expiré.
+    await client.$executeRaw`SELECT set_config('app.current_device_push_token', '', true)`;
+    const row = rows[0];
+    if (!row) throw new Error('Device registration did not return a row.');
     return deviceRowToRecord(row);
   }
 

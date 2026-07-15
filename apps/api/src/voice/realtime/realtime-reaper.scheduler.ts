@@ -7,10 +7,14 @@ import {
   type RealtimeReapingClaim,
 } from './realtime-admission';
 import {
-  OPENAI_REALTIME_CALL_PROVIDER,
   REALTIME_ADMISSION,
+  REALTIME_PROVIDER_TERMINATION_REGISTRY,
   REALTIME_VOICE_SETTINGS,
 } from './realtime.tokens';
+import {
+  RealtimeProviderTerminationRegistry,
+  realtimeProviderTerminationAdapter,
+} from './realtime-provider-registry';
 import type { OpenAiRealtimeCallProvider, RealtimeVoiceSettings } from './realtime.types';
 
 export const REALTIME_REAPER_TENANT_DIRECTORY = Symbol('REALTIME_REAPER_TENANT_DIRECTORY');
@@ -80,24 +84,37 @@ class AsyncLimiter {
 }
 
 /**
- * Reaper multi-réplique. Le claim/fence se termine avant l'I/O OpenAI ; un échec de hangup laisse
+ * Reaper multi-réplique. Le claim/fence se termine avant l'I/O provider ; un échec de hangup laisse
  * donc le bail `reaping` en base. Une autre réplique ne pourra le reprendre qu'après expiration du
  * reaper token, et `completeReaping` n'est jamais appelé sans terminaison provider confirmée.
  */
 @Injectable()
 export class RealtimeAdmissionReaperScheduler {
   private readonly options: RealtimeReaperOptions;
+  private readonly providers: RealtimeProviderTerminationRegistry;
   private running = false;
 
   constructor(
     @Inject(REALTIME_ADMISSION) private readonly admission: RealtimeAdmissionPort,
-    @Inject(OPENAI_REALTIME_CALL_PROVIDER) private readonly provider: OpenAiRealtimeCallProvider,
+    @Inject(REALTIME_PROVIDER_TERMINATION_REGISTRY)
+    provider: OpenAiRealtimeCallProvider | RealtimeProviderTerminationRegistry,
     @Inject(REALTIME_REAPER_TENANT_DIRECTORY) private readonly tenants: RealtimeReaperTenantDirectory,
     @Inject(REALTIME_VOICE_SETTINGS) private readonly settings: RealtimeVoiceSettings,
     private readonly logger: AppLogger,
     @Optional() @Inject(REALTIME_REAPER_OPTIONS) options?: Partial<RealtimeReaperOptions>,
   ) {
     this.options = normalizedOptions(options);
+    // Compatibilité du module OpenAI existant. En configuration Mistral, l'adapter historique a
+    // été construit avec une autre base URL : ne surtout pas le présenter comme adapter OpenAI.
+    // Le registre complet injecté par la tranche transport remplacera ce fallback sans modifier
+    // le protocole du reaper.
+    this.providers = provider instanceof RealtimeProviderTerminationRegistry
+      ? provider
+      : new RealtimeProviderTerminationRegistry(
+          settings.provider === 'openai'
+            ? [realtimeProviderTerminationAdapter('openai', provider)]
+            : [],
+        );
   }
 
   @Interval('bob-live-admission-reaper', 10_000)
@@ -152,7 +169,14 @@ export class RealtimeAdmissionReaperScheduler {
   ): Promise<void> {
     try {
       // I/O externe hors transaction : claimExpired a déjà rendu le contrôle et libéré ses locks.
-      await this.provider.hangupCall(claim.providerCallId);
+      await this.providers.hangupCall({
+        companyId: claim.companyId,
+        subjectHash: claim.subjectHash,
+        sessionId: claim.sessionId,
+        providerId: claim.providerId,
+        providerCallId: claim.providerCallId,
+        hardExpiryProof: claim.hardExpiryProof,
+      });
     } catch {
       summary.failures += 1;
       this.logger.warn('bob.live.reaper.provider_hangup_failed', 'BobLiveReaper');

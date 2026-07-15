@@ -102,7 +102,10 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Bob Live admission — certification Postgr
       subjectIndex: boolean;
       tenantIndex: boolean;
       sessionHandleUnique: boolean;
-      migrationApplied: boolean;
+      providerIdentityUnique: boolean;
+      legacyProviderUniqueAbsent: boolean;
+      admissionMigrationApplied: boolean;
+      providerMigrationApplied: boolean;
     }>>`
       SELECT
         to_regclass('public.realtime_admission_events_subject_window_idx') IS NOT NULL AS "subjectIndex",
@@ -114,16 +117,35 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Bob Live admission — certification Postgr
              AND contype = 'u'
         ) AS "sessionHandleUnique",
         EXISTS (
+          SELECT 1 FROM pg_constraint
+           WHERE conrelid = 'realtime_session_leases'::regclass
+             AND conname = 'realtime_session_leases_provider_call_identity_key'
+             AND contype = 'u'
+        ) AS "providerIdentityUnique",
+        NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+           WHERE conrelid = 'realtime_session_leases'::regclass
+             AND conname = 'realtime_session_leases_provider_call_id_key'
+        ) AS "legacyProviderUniqueAbsent",
+        EXISTS (
           SELECT 1 FROM _prisma_migrations
            WHERE migration_name = '20260713220000_realtime_admission_leases'
              AND finished_at IS NOT NULL AND rolled_back_at IS NULL
-        ) AS "migrationApplied"
+        ) AS "admissionMigrationApplied",
+        EXISTS (
+          SELECT 1 FROM _prisma_migrations
+           WHERE migration_name = '20260714020000_realtime_provider_identity'
+             AND finished_at IS NOT NULL AND rolled_back_at IS NULL
+        ) AS "providerMigrationApplied"
     `;
     expect(indexes).toEqual({
       subjectIndex: true,
       tenantIndex: true,
       sessionHandleUnique: true,
-      migrationApplied: true,
+      providerIdentityUnique: true,
+      legacyProviderUniqueAbsent: true,
+      admissionMigrationApplied: true,
+      providerMigrationApplied: true,
     });
   });
 
@@ -161,11 +183,12 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Bob Live admission — certification Postgr
     const result = await admissions[0]!.reserve({ companyId, subjectHash, maxSessionSeconds: 60 });
     if (!result.allowed) throw new Error(`Unexpected denial ${result.denial}`);
     const forged = { ...result.lease, leaseToken: `${result.lease.leaseToken}-forged` };
-    expect(await admissions[0]!.bindProvider({ ...forged, providerCallId: 'rtc_cert_1' })).toEqual({ ok: false, reason: 'rejected' });
-    const bound = await admissions[0]!.bindProvider({ ...result.lease, providerCallId: 'rtc_cert_1' });
+    expect(await admissions[0]!.bindProvider({ ...forged, providerId: 'openai', providerCallId: 'rtc_cert_1' })).toEqual({ ok: false, reason: 'rejected' });
+    const bound = await admissions[0]!.bindProvider({ ...result.lease, providerId: 'openai', providerCallId: 'rtc_cert_1' });
     expect(bound.ok).toBe(true);
-    expect(await admissions[1]!.bindProvider({ ...result.lease, providerCallId: 'rtc_cert_1' })).toEqual(bound);
-    expect(await admissions[0]!.bindProvider({ ...result.lease, providerCallId: 'rtc_other' })).toEqual({ ok: false, reason: 'rejected' });
+    expect(await admissions[1]!.bindProvider({ ...result.lease, providerId: 'openai', providerCallId: 'rtc_cert_1' })).toEqual(bound);
+    expect(await admissions[0]!.bindProvider({ ...result.lease, providerId: 'mistral', providerCallId: 'rtc_cert_1' })).toEqual({ ok: false, reason: 'rejected' });
+    expect(await admissions[0]!.bindProvider({ ...result.lease, providerId: 'openai', providerCallId: 'rtc_other' })).toEqual({ ok: false, reason: 'rejected' });
     expect(await admissions[0]!.release({ ...result.lease, providerTermination: 'not_created' })).toEqual({ ok: false, reason: 'rejected' });
     const activated = await admissions[1]!.activate(result.lease);
     expect(activated.ok).toBe(true);
@@ -174,19 +197,69 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Bob Live admission — certification Postgr
     expect(await admissions[1]!.release({ ...result.lease, providerTermination: 'confirmed' })).toEqual({ ok: true, reason: null });
   });
 
+  it('compose provider + session distante, et rend cette identité immuable après bind', async () => {
+    const remoteSessionId = `shared_${randomUUID()}`;
+    const openai = await admissions[0]!.reserve({
+      companyId,
+      subjectHash: '9'.repeat(64),
+      maxSessionSeconds: 60,
+    });
+    const mistral = await admissions[1]!.reserve({
+      companyId,
+      subjectHash: 'a'.repeat(64),
+      maxSessionSeconds: 60,
+    });
+    if (!openai.allowed || !mistral.allowed) throw new Error('Provider identity leases missing.');
+    expect(await admissions[0]!.bindProvider({
+      ...openai.lease,
+      providerId: 'openai',
+      providerCallId: remoteSessionId,
+    })).toMatchObject({ ok: true });
+    expect(await admissions[1]!.bindProvider({
+      ...mistral.lease,
+      providerId: 'mistral',
+      providerCallId: remoteSessionId,
+    })).toMatchObject({ ok: true });
+
+    const duplicate = await admissions[0]!.reserve({
+      companyId,
+      subjectHash: 'b'.repeat(64),
+      maxSessionSeconds: 60,
+    });
+    if (!duplicate.allowed) throw new Error('Duplicate identity test lease missing.');
+    expect(await admissions[0]!.bindProvider({
+      ...duplicate.lease,
+      providerId: 'openai',
+      providerCallId: remoteSessionId,
+    })).toEqual({ ok: false, reason: 'rejected' });
+
+    await expect(admin.$executeRaw`
+      UPDATE realtime_session_leases
+         SET "providerCallId" = ${`${remoteSessionId}_mutated`}
+       WHERE "companyId" = ${companyId}
+         AND "subjectHash" = ${'9'.repeat(64)}
+    `).rejects.toThrow(/bound provider identity is immutable/u);
+
+    await admissions[0]!.release({ ...openai.lease, providerTermination: 'confirmed' });
+    await admissions[1]!.release({ ...mistral.lease, providerTermination: 'confirmed' });
+    await admissions[0]!.release({ ...duplicate.lease, providerTermination: 'not_created' });
+  });
+
   it('fence le reaper et isole strictement les deux tenants', async () => {
     const subjectHash = '4'.repeat(64);
     const result = await admissions[0]!.reserve({ companyId, subjectHash, maxSessionSeconds: 60 });
     if (!result.allowed) throw new Error(`Unexpected denial ${result.denial}`);
-    await admissions[0]!.bindProvider({ ...result.lease, providerCallId: 'rtc_cert_stale' });
+    await admissions[0]!.bindProvider({ ...result.lease, providerId: 'mistral', providerCallId: 'rtc_cert_stale' });
     await admin.$executeRaw`
       UPDATE realtime_session_leases
-         SET "leaseExpiresAt" = clock_timestamp() - interval '1 second'
+         SET "leaseExpiresAt" = "reservedAt" + interval '1 microsecond'
        WHERE "companyId" = ${companyId} AND "subjectHash" = ${subjectHash}
     `;
     const blocked = await admissions[1]!.reserve({ companyId, subjectHash, maxSessionSeconds: 60 });
     expect(blocked).toMatchObject({ allowed: false, denial: 'session_reaping' });
     if (blocked.allowed || !blocked.reapingClaim) throw new Error('Reaping claim missing.');
+    expect(blocked.reapingClaim.providerId).toBe('mistral');
+    expect(blocked.reapingClaim.hardExpiryProof).toBeNull();
     expect(await admissions[0]!.completeReaping({
       companyId,
       subjectHash,
@@ -209,11 +282,50 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Bob Live admission — certification Postgr
     })).toEqual({ ok: true, reason: null });
   });
 
+  it('émet la preuve hard-expired depuis clock_timestamp et la lie à l’identité complète', async () => {
+    const subjectHash = '6'.repeat(64);
+    const result = await admissions[0]!.reserve({ companyId, subjectHash, maxSessionSeconds: 60 });
+    if (!result.allowed) throw new Error(`Unexpected denial ${result.denial}`);
+    await admissions[0]!.bindProvider({
+      ...result.lease,
+      providerId: 'mistral',
+      providerCallId: 'rtc_cert_hard_expired',
+    });
+    await admin.$executeRaw`
+      UPDATE realtime_session_leases
+         SET "leaseExpiresAt" = "reservedAt" + interval '1 microsecond',
+             "hardExpiresAt" = "reservedAt" + interval '1 microsecond'
+       WHERE "companyId" = ${companyId} AND "subjectHash" = ${subjectHash}
+    `;
+
+    const batch = await admissions[1]!.claimExpired({ companyId, limit: 10 });
+    expect(batch.ok).toBe(true);
+    if (!batch.ok) throw new Error('Hard-expired reaping batch missing.');
+    const claim = batch.claims.find((candidate) => candidate.sessionId === result.lease.sessionId);
+    expect(claim?.hardExpiryProof).toEqual(expect.objectContaining({
+      source: 'database_hard_expiry',
+      companyId,
+      subjectHash,
+      sessionId: result.lease.sessionId,
+      providerId: 'mistral',
+      providerCallId: 'rtc_cert_hard_expired',
+    }));
+    const proof = claim?.hardExpiryProof;
+    if (!claim || !proof) throw new Error('Database hard-expiry proof missing.');
+    expect(Date.parse(proof.databaseObservedAt)).toBeGreaterThanOrEqual(Date.parse(proof.hardExpiresAt));
+    expect(await admissions[0]!.completeReaping({
+      companyId,
+      subjectHash,
+      sessionId: result.lease.sessionId,
+      reaperToken: claim.reaperToken,
+    })).toEqual({ ok: true, reason: null });
+  });
+
   it('réclame une terminaison explicite depuis une autre réplique sans exposer le callId au client', async () => {
     const subjectHash = '5'.repeat(64);
     const result = await admissions[0]!.reserve({ companyId, subjectHash, maxSessionSeconds: 60 });
     if (!result.allowed) throw new Error(`Unexpected denial ${result.denial}`);
-    await admissions[0]!.bindProvider({ ...result.lease, providerCallId: 'rtc_cross_replica' });
+    await admissions[0]!.bindProvider({ ...result.lease, providerId: 'mistral', providerCallId: 'rtc_cross_replica' });
     await admissions[0]!.activate(result.lease);
 
     expect(await admissions[1]!.claimTermination({
@@ -228,6 +340,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Bob Live admission — certification Postgr
     });
     expect(termination.ok).toBe(true);
     if (!termination.ok || !termination.claim) throw new Error('Cross-replica termination claim missing.');
+    expect(termination.claim.providerId).toBe('mistral');
     expect(termination.claim.providerCallId).toBe('rtc_cross_replica');
     expect(await admissions[0]!.completeReaping({
       companyId,
@@ -241,7 +354,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Bob Live admission — certification Postgr
     const subjectHash = '8'.repeat(64);
     const result = await admissions[0]!.reserve({ companyId, subjectHash, maxSessionSeconds: 60 });
     if (!result.allowed) throw new Error(`Unexpected denial ${result.denial}`);
-    await admissions[0]!.bindProvider({ ...result.lease, providerCallId: 'rtc_context_replica' });
+    await admissions[0]!.bindProvider({ ...result.lease, providerId: 'openai', providerCallId: 'rtc_context_replica' });
     const identity = { companyId, subjectHash, sessionId: result.lease.sessionId };
     const context = {
       screen: { name: 'Détail facture', instanceId: 'invoice:cert-42' },

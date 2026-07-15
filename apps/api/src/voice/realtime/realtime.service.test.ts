@@ -9,6 +9,7 @@ import {
 import {
   admissionSubjectHash,
   RealtimeVoiceService,
+  parseMistralRealtimeCallBody,
   parseRealtimeCallBody,
   parseRealtimeControlAcknowledgementBody,
   parseRealtimeContextBody,
@@ -16,22 +17,43 @@ import {
 } from './realtime.service';
 import { RealtimeProviderCallCompensatedError } from './openai-realtime-call.adapter';
 import type { RealtimeSidebandControl } from './realtime-sideband';
+import type { RealtimeDurableControlPort } from './realtime-control';
 import type { RealtimeAgentTurnPort } from './realtime-agent-turn';
 import type { OpenAiRealtimeCallProvider, RealtimeVoiceSettings } from './realtime.types';
+import type { MistralRealtimeIngressTicketAuthority } from './realtime-mistral-ingress-ticket';
+import { RealtimeProviderTerminationRegistry } from './realtime-provider-registry';
+import { MistralRealtimeTerminationAuthority } from './mistral-realtime-termination';
 
 const OFFER_SDP = 'v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n';
 const SETTINGS: RealtimeVoiceSettings = {
   enabled: true,
+  provider: 'openai',
   model: 'gpt-realtime-2.1',
   voice: 'marin',
   baseUrl: 'https://api.openai.com/v1',
   apiKey: 'server-only-key',
   safetySecret: 'safety-secret-at-least-thirty-two-characters',
+  subjectKeyVersion: 1,
   providerTimeoutMs: 4_000,
   sidebandTimeoutMs: 3_000,
   maxSessionSeconds: 900,
   heartbeatSeconds: 10,
   maxCallsPerMinute: 3,
+  auditProvider: 'openai',
+  localAuditBaseUrl: null,
+  localAuditToken: null,
+  mistralTargetDelayMs: 240,
+  mistralWebsocketUrl: 'ws://127.0.0.1:3000/v1/voice/realtime/mistral',
+};
+
+const MISTRAL_SETTINGS: RealtimeVoiceSettings = {
+  ...SETTINGS,
+  provider: 'mistral',
+  model: 'voxtral-mini-transcribe-realtime-2602',
+  baseUrl: 'wss://api.mistral.ai',
+  apiKey: 'mistral-server-only-key',
+  subjectKeyVersion: 7,
+  mistralWebsocketUrl: 'wss://api.bob.example/v1/voice/realtime/mistral',
 };
 
 const ADMISSION_POLICY: RealtimeAdmissionPolicy = {
@@ -56,6 +78,14 @@ function loggerStub(): AppLogger {
 function entitled() {
   return { check: vi.fn(async () => ({ allowed: true, plan: 'business' as const })) };
 }
+
+const TEST_SPEECH_SOURCE_POLICY = {
+  policyForSession: (companyId: string, sessionId: string) => ({
+    mode: 'signed-url-v1' as const,
+    allowedOrigin: 'https://project.supabase.co',
+    allowedPathPrefix: `/storage/v1/object/sign/bob-live-audio/companies/${companyId}/bob-live/${sessionId}/`,
+  }),
+};
 
 function sidebandStub(options: { terminateAfterAttach?: boolean } = {}): RealtimeSidebandControl {
   const sessions = new Map<string, NonNullable<Parameters<RealtimeSidebandControl['attach']>[0]['lifecycle']>>();
@@ -119,6 +149,238 @@ function successfulProviderCreate(callId: string) {
 }
 
 describe('RealtimeVoiceService', () => {
+  it('ferme une connexion Mistral locale lors du hangup explicite', async () => {
+    const now = Date.parse('2026-07-14T10:00:00.000Z');
+    const durable = admission(3, () => now);
+    const subjectHash = admissionSubjectHash(SETTINGS.safetySecret!, 'company-1', 'user-1');
+    const reserved = await durable.reserve({
+      companyId: 'company-1',
+      subjectHash,
+      sessionId: '00000000-0000-4000-8000-000000000040',
+      maxSessionSeconds: 60,
+    });
+    if (!reserved.allowed) throw new Error('Mistral reservation expected.');
+    const providerSessionId = 'mistral_explicit_local';
+    await durable.bindProvider({
+      ...reserved.lease,
+      providerId: 'mistral',
+      providerCallId: providerSessionId,
+    });
+    await durable.activate(reserved.lease);
+    const close = vi.fn(async () => undefined);
+    const terminations = new MistralRealtimeTerminationAuthority(() => now);
+    terminations.register({
+      connection: { providerSessionId, close },
+      hardExpiresAt: reserved.lease.hardExpiresAt,
+    });
+    const registry = new RealtimeProviderTerminationRegistry([terminations]);
+    const service = new RealtimeVoiceService(
+      MISTRAL_SETTINGS,
+      { createCall: vi.fn(), hangupCall: vi.fn(async () => undefined) },
+      durable,
+      sidebandStub(),
+      new Metrics(),
+      loggerStub(),
+      undefined,
+      undefined,
+      undefined,
+      registry,
+    );
+
+    await expect(runAsPrincipal(() => service.hangup(reserved.lease.sessionId))).resolves.toEqual({
+      ok: true,
+      value: { ended: true },
+    });
+    expect(close).toHaveBeenCalledOnce();
+    expect(durable.snapshot().leases).toHaveLength(0);
+  });
+
+  it('reprend une réservation Mistral inter-réplique sans egress après le hard cap DB', async () => {
+    let now = Date.parse('2026-07-14T10:00:00.000Z');
+    const durable = admission(3, () => now);
+    const subjectHash = admissionSubjectHash(SETTINGS.safetySecret!, 'company-1', 'user-1');
+    const stale = await durable.reserve({
+      companyId: 'company-1',
+      subjectHash,
+      sessionId: '00000000-0000-4000-8000-000000000041',
+      maxSessionSeconds: 60,
+    });
+    if (!stale.allowed) throw new Error('Stale Mistral reservation expected.');
+    await durable.bindProvider({
+      ...stale.lease,
+      providerId: 'mistral',
+      providerCallId: 'mistral_remote_replica',
+    });
+    now = Date.parse(stale.lease.hardExpiresAt);
+
+    const terminations = new MistralRealtimeTerminationAuthority(() => now);
+    const registry = new RealtimeProviderTerminationRegistry([terminations]);
+    const issue = vi.fn<MistralRealtimeIngressTicketAuthority['issue']>(async (input) => ({
+      ok: true,
+      bootstrap: {
+        companyId: input.companyId,
+        sessionId: input.sessionId,
+        ticket: 'R'.repeat(43),
+        protocol: 'bob.mistral-pcm.v1',
+        ticketExpiresAt: new Date(now + 15_000).toISOString(),
+        hardExpiresAt: new Date(now + MISTRAL_SETTINGS.maxSessionSeconds * 1_000).toISOString(),
+        maxAudioBytes: 1_920_000,
+        contextRevision: input.contextRevision,
+        contextDigest: 'f'.repeat(64),
+      },
+    }));
+    const service = new RealtimeVoiceService(
+      MISTRAL_SETTINGS,
+      { createCall: vi.fn(), hangupCall: vi.fn(async () => undefined) },
+      durable,
+      sidebandStub(),
+      new Metrics(),
+      loggerStub(),
+      undefined,
+      entitled(),
+      { issue } as unknown as MistralRealtimeIngressTicketAuthority,
+      registry,
+      undefined,
+      TEST_SPEECH_SOURCE_POLICY,
+    );
+
+    const result = await runAsPrincipal(() => service.createCall({
+      sessionHandle: '00000000-0000-4000-8000-000000000042',
+      context: {
+        version: 1,
+        revision: 1,
+        context: {
+          screen: { name: '/today', instanceId: 'today-1' },
+          entities: [],
+          capabilities: ['screen.read'],
+        },
+      },
+    }));
+
+    expect(result).toMatchObject({ ok: true, value: { transport: 'mistral-pcm' } });
+    expect(issue).toHaveBeenCalledOnce();
+    expect(terminations.state()).toEqual({ activeConnections: 0, terminalProofs: 1 });
+    expect(durable.snapshot().leases).toEqual([
+      expect.objectContaining({ sessionId: '00000000-0000-4000-8000-000000000042' }),
+    ]);
+  });
+
+  it('émet un bootstrap PCM Mistral one-shot sans appeler OpenAI ni exposer de secret', async () => {
+    const provider: OpenAiRealtimeCallProvider = {
+      createCall: vi.fn(),
+      hangupCall: vi.fn(async () => undefined),
+    };
+    const sideband = sidebandStub();
+    const issue = vi.fn<MistralRealtimeIngressTicketAuthority['issue']>(async (input) => ({
+      ok: true,
+      bootstrap: {
+        companyId: input.companyId,
+        sessionId: input.sessionId,
+        ticket: 'T'.repeat(43),
+        protocol: 'bob.mistral-pcm.v1',
+        ticketExpiresAt: '2026-07-14T10:00:15.000Z',
+        hardExpiresAt: '2026-07-14T10:15:00.000Z',
+        maxAudioBytes: 28_800_000,
+        contextRevision: input.contextRevision,
+        contextDigest: 'd'.repeat(64),
+      },
+    }));
+    const tickets = { issue } as unknown as MistralRealtimeIngressTicketAuthority;
+    const service = new RealtimeVoiceService(
+      MISTRAL_SETTINGS,
+      provider,
+      admission(),
+      sideband,
+      new Metrics(),
+      loggerStub(),
+      undefined,
+      entitled(),
+      tickets,
+      undefined,
+      undefined,
+      TEST_SPEECH_SOURCE_POLICY,
+    );
+    const context = {
+      version: 1,
+      revision: 3,
+      context: {
+        screen: { name: '/devis/new', instanceId: 'quote-new-1' },
+        entities: [],
+        capabilities: ['screen.read'],
+      },
+    };
+
+    const config = await runAsPrincipal(() => service.publicConfig());
+    const result = await runAsPrincipal(() => service.createCall({
+      sessionHandle: '00000000-0000-4000-8000-000000000031',
+      context,
+    }));
+
+    expect(config).toMatchObject({ available: true, transport: 'mistral-pcm' });
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        transport: 'mistral-pcm',
+        websocketUrl: MISTRAL_SETTINGS.mistralWebsocketUrl,
+        companyId: 'company-1',
+        ticket: 'T'.repeat(43),
+        protocol: 'bob.mistral-pcm.v1',
+        contextRevision: 3,
+        contextDigest: 'd'.repeat(64),
+        speechSourcePolicy: TEST_SPEECH_SOURCE_POLICY.policyForSession(
+          'company-1',
+          '00000000-0000-4000-8000-000000000031',
+        ),
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain(String(MISTRAL_SETTINGS.apiKey));
+    expect(issue).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 'user-1',
+      companyId: 'company-1',
+      subjectKeyVersion: 7,
+      plan: 'business',
+      contextSchemaVersion: 1,
+      contextRevision: 3,
+      context: context.context,
+    }));
+    expect(provider.createCall).not.toHaveBeenCalled();
+    expect(sideband.attach).not.toHaveBeenCalled();
+  });
+
+  it('rejette un bootstrap Mistral sans contexte exact et libère le bail si le ticket échoue', async () => {
+    expect(parseMistralRealtimeCallBody({ sdp: OFFER_SDP, context: {} }))
+      .toMatchObject({ ok: false, error: { kind: 'validation' } });
+    expect(parseMistralRealtimeCallBody({ context: { version: 1, revision: 1, context: {} }, model: 'evil' }))
+      .toMatchObject({ ok: false, error: { kind: 'validation' } });
+
+    const durable = admission();
+    const release = vi.spyOn(durable, 'release');
+    const service = new RealtimeVoiceService(
+      MISTRAL_SETTINGS,
+      { createCall: vi.fn(), hangupCall: vi.fn(async () => undefined) },
+      durable,
+      sidebandStub(),
+      new Metrics(),
+      loggerStub(),
+      undefined,
+      entitled(),
+      {
+        issue: vi.fn(async () => ({ ok: false as const, reason: 'unavailable' as const })),
+      } as unknown as MistralRealtimeIngressTicketAuthority,
+      undefined,
+      undefined,
+      TEST_SPEECH_SOURCE_POLICY,
+    );
+    await expect(runAsPrincipal(() => service.createCall({
+      sessionHandle: '00000000-0000-4000-8000-000000000032',
+      context: { version: 1, revision: 1, context: {} },
+    }))).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'unavailable', service: 'mistral-realtime-ingress' },
+    });
+    expect(release).toHaveBeenCalledOnce();
+  });
+
   it('produit un bootstrap WebRTC sans clé durable et avec outils désactivés', async () => {
     const provider: OpenAiRealtimeCallProvider = {
       createCall: successfulProviderCreate('rtc_12345678'),
@@ -133,6 +395,10 @@ describe('RealtimeVoiceService', () => {
       loggerStub(),
       undefined,
       entitled(),
+      undefined,
+      undefined,
+      undefined,
+      TEST_SPEECH_SOURCE_POLICY,
     );
 
     const result = await runAsPrincipal(() => service.createCall({
@@ -147,6 +413,10 @@ describe('RealtimeVoiceService', () => {
       model: 'gpt-realtime-2.1',
       voice: 'marin',
       sessionHandle: '00000000-0000-4000-8000-000000000001',
+      speechSourcePolicy: TEST_SPEECH_SOURCE_POLICY.policyForSession(
+        'company-1',
+        '00000000-0000-4000-8000-000000000001',
+      ),
     });
     expect(result.value).not.toHaveProperty('callId');
     expect(result.value).not.toHaveProperty('apiKey');
@@ -174,6 +444,36 @@ describe('RealtimeVoiceService', () => {
     });
   });
 
+  it('libère le bail et interdit tout egress fournisseur si la policy audio manque', async () => {
+    const durable = admission();
+    const release = vi.spyOn(durable, 'release');
+    const provider: OpenAiRealtimeCallProvider = {
+      createCall: successfulProviderCreate('rtc_must_not_exist'),
+      hangupCall: vi.fn(async () => undefined),
+    };
+    const service = new RealtimeVoiceService(
+      SETTINGS,
+      provider,
+      durable,
+      sidebandStub(),
+      new Metrics(),
+      loggerStub(),
+      undefined,
+      entitled(),
+      undefined,
+      undefined,
+      undefined,
+      { policyForSession: () => { throw new Error('storage unavailable'); } },
+    );
+
+    await expect(runAsPrincipal(() => service.createCall({ sdp: OFFER_SDP }))).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'unavailable', service: 'bob-live-speech' },
+    });
+    expect(provider.createCall).not.toHaveBeenCalled();
+    expect(release).toHaveBeenCalledOnce();
+  });
+
   it('refuse avant tout appel fournisseur lorsque Bob Live est désactivé', async () => {
     const provider: OpenAiRealtimeCallProvider = { createCall: vi.fn(), hangupCall: vi.fn(async () => undefined) };
     const service = new RealtimeVoiceService(
@@ -185,6 +485,10 @@ describe('RealtimeVoiceService', () => {
       loggerStub(),
       undefined,
       entitled(),
+      undefined,
+      undefined,
+      undefined,
+      TEST_SPEECH_SOURCE_POLICY,
     );
 
     const config = await runAsPrincipal(() => service.publicConfig());
@@ -313,6 +617,10 @@ describe('RealtimeVoiceService', () => {
       loggerStub(),
       undefined,
       entitled(),
+      undefined,
+      undefined,
+      undefined,
+      TEST_SPEECH_SOURCE_POLICY,
     );
 
     const first = await runAsPrincipal(() => service.createCall({ sdp: OFFER_SDP }));
@@ -339,6 +647,10 @@ describe('RealtimeVoiceService', () => {
       loggerStub(),
       undefined,
       entitled(),
+      undefined,
+      undefined,
+      undefined,
+      TEST_SPEECH_SOURCE_POLICY,
     );
 
     const result = await runAsPrincipal(() => service.createCall({ sdp: OFFER_SDP }));
@@ -374,6 +686,10 @@ describe('RealtimeVoiceService', () => {
       loggerStub(),
       undefined,
       entitled(),
+      undefined,
+      undefined,
+      undefined,
+      TEST_SPEECH_SOURCE_POLICY,
     );
 
     const result = await runAsPrincipal(() => service.createCall({ sdp: OFFER_SDP }));
@@ -477,6 +793,7 @@ describe('RealtimeVoiceService', () => {
     };
     const service = new RealtimeVoiceService(
       SETTINGS, provider, durable, sideband, new Metrics(), loggerStub(), undefined, entitled(),
+      undefined, undefined, undefined, TEST_SPEECH_SOURCE_POLICY,
     );
 
     const result = await runAsPrincipal(() => service.createCall({ sdp: OFFER_SDP }));
@@ -503,6 +820,7 @@ describe('RealtimeVoiceService', () => {
     const sideband = sidebandStub();
     const service = new RealtimeVoiceService(
       SETTINGS, provider, durable, sideband, new Metrics(), loggerStub(), undefined, entitled(),
+      undefined, undefined, undefined, TEST_SPEECH_SOURCE_POLICY,
     );
 
     const result = await runAsPrincipal(() => service.createCall({ sdp: OFFER_SDP }));
@@ -535,6 +853,10 @@ describe('RealtimeVoiceService', () => {
       loggerStub(),
       undefined,
       entitled(),
+      undefined,
+      undefined,
+      undefined,
+      TEST_SPEECH_SOURCE_POLICY,
     );
 
     await expect(runAsPrincipal(() => service.createCall({
@@ -568,6 +890,7 @@ describe('RealtimeVoiceService', () => {
     };
     const service = new RealtimeVoiceService(
       SETTINGS, provider, durable, sidebandStub(), new Metrics(), loggerStub(), undefined, entitled(),
+      undefined, undefined, undefined, TEST_SPEECH_SOURCE_POLICY,
     );
     const controller = new AbortController();
     const running = runAsPrincipal(() => service.createCall({ sdp: OFFER_SDP, sessionHandle: handle }, controller.signal));
@@ -595,7 +918,11 @@ describe('RealtimeVoiceService', () => {
       maxSessionSeconds: SETTINGS.maxSessionSeconds,
     });
     if (!reserved.allowed) throw new Error('réservation attendue');
-    await durable.bindProvider({ ...reserved.lease, providerCallId: 'rtc_remote_replica' });
+    await durable.bindProvider({
+      ...reserved.lease,
+      providerId: 'openai',
+      providerCallId: 'rtc_remote_replica',
+    });
     await durable.activate(reserved.lease);
     const provider: OpenAiRealtimeCallProvider = {
       createCall: vi.fn(),
@@ -647,6 +974,10 @@ describe('RealtimeVoiceService', () => {
       loggerStub(),
       { run: runTurn },
       entitled(),
+      undefined,
+      undefined,
+      undefined,
+      TEST_SPEECH_SOURCE_POLICY,
     );
     const created = await runAsPrincipal(() => service.createCall({ sdp: OFFER_SDP, sessionHandle: handle }));
     expect(created.ok).toBe(true);
@@ -715,6 +1046,7 @@ describe('RealtimeVoiceService', () => {
   it('acquitte un contrôle allowlisté une fois puis revalide durablement sujet, session et contexte', async () => {
     const handle = '00000000-0000-4000-8000-000000000090';
     const turnId = '00000000-0000-4000-8000-000000000091';
+    const acknowledgementId = '00000000-0000-4000-8000-000000000092';
     const durable = admission();
     const provider: OpenAiRealtimeCallProvider = {
       createCall: successfulProviderCreate('rtc_control_service'),
@@ -722,8 +1054,9 @@ describe('RealtimeVoiceService', () => {
     };
     let contextDigest = '';
     const baseSideband = sidebandStub();
-    const consumeAgentControl = vi.fn<RealtimeSidebandControl['consumeAgentControl']>(async () => ({
+    const consumeControl = vi.fn<RealtimeDurableControlPort['consume']>(async () => ({
       status: 'approved',
+      idempotent: false,
       control: {
         turnId,
         kind: 'answer',
@@ -735,7 +1068,6 @@ describe('RealtimeVoiceService', () => {
     const sideband: RealtimeSidebandControl = {
       ...baseSideband,
       contextChanged: vi.fn((input) => { contextDigest = input.digest; }),
-      consumeAgentControl,
     };
     const service = new RealtimeVoiceService(
       SETTINGS,
@@ -746,6 +1078,10 @@ describe('RealtimeVoiceService', () => {
       loggerStub(),
       undefined,
       entitled(),
+      undefined,
+      undefined,
+      { issue: vi.fn(), consume: consumeControl } as unknown as RealtimeDurableControlPort,
+      TEST_SPEECH_SOURCE_POLICY,
     );
     const created = await runAsPrincipal(() => service.createCall({ sdp: OFFER_SDP, sessionHandle: handle }));
     expect(created.ok).toBe(true);
@@ -762,23 +1098,26 @@ describe('RealtimeVoiceService', () => {
       ok: true,
       value: { revision: 1, contextDigest: expect.stringMatching(/^[a-f0-9]{64}$/) },
     });
-    const candidate = { turnId, contextRevision: 1, contextDigest };
+    const candidate = { turnId, acknowledgementId, contextRevision: 1, contextDigest };
 
     await expect(runAsPrincipal(() => service.acknowledgeControl(handle, candidate))).resolves.toEqual({
       ok: true,
       value: { ...candidate, kind: 'answer', navigate: '/cloture' },
     });
-    expect(consumeAgentControl).toHaveBeenCalledWith(expect.objectContaining({
-      userId: 'user-1',
+    expect(consumeControl).toHaveBeenCalledWith(expect.objectContaining({
       companyId: 'company-1',
-      sessionHandle: handle,
+      subjectHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      sessionId: handle,
       ...candidate,
     }));
 
-    consumeAgentControl.mockResolvedValueOnce({
+    consumeControl.mockResolvedValueOnce({
       status: 'approved',
+      idempotent: false,
       control: {
-        ...candidate,
+        turnId,
+        contextRevision: 1,
+        contextDigest,
         kind: 'answer',
         navigate: '/cloture',
         providerResponseId: 'resp_must_never_cross_the_boundary',

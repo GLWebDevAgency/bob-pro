@@ -115,11 +115,12 @@ describe('Bob Live — admission durable de parité mémoire', () => {
     const admission = new InMemoryRealtimeAdmission(policy, () => now, entropy());
     const lease = allowed(await admission.reserve({ companyId: COMPANY_A, subjectHash: SUBJECT_A, maxSessionSeconds: 60 }));
     const bad = { ...lease, leaseToken: `${lease.leaseToken}-forged` };
-    expect(await admission.bindProvider({ ...bad, providerCallId: 'call_123' })).toEqual({ ok: false, reason: 'rejected' });
-    const bound = await admission.bindProvider({ ...lease, providerCallId: 'call_123' });
+    expect(await admission.bindProvider({ ...bad, providerId: 'openai', providerCallId: 'call_123' })).toEqual({ ok: false, reason: 'rejected' });
+    const bound = await admission.bindProvider({ ...lease, providerId: 'openai', providerCallId: 'call_123' });
     expect(bound.ok).toBe(true);
-    expect(await admission.bindProvider({ ...lease, providerCallId: 'call_123' })).toEqual(bound);
-    expect(await admission.bindProvider({ ...lease, providerCallId: 'call_other' })).toEqual({ ok: false, reason: 'rejected' });
+    expect(await admission.bindProvider({ ...lease, providerId: 'openai', providerCallId: 'call_123' })).toEqual(bound);
+    expect(await admission.bindProvider({ ...lease, providerId: 'mistral', providerCallId: 'call_123' })).toEqual({ ok: false, reason: 'rejected' });
+    expect(await admission.bindProvider({ ...lease, providerId: 'openai', providerCallId: 'call_other' })).toEqual({ ok: false, reason: 'rejected' });
     expect(await admission.release({ ...lease, providerTermination: 'not_created' })).toEqual({ ok: false, reason: 'rejected' });
     const activated = await admission.activate(lease);
     expect(activated.ok).toBe(true);
@@ -131,6 +132,46 @@ describe('Bob Live — admission durable de parité mémoire', () => {
     expect(Date.parse(renewed.leaseExpiresAt!)).toBeGreaterThan(firstExpiry);
     expect(Date.parse(renewed.leaseExpiresAt!)).toBeLessThanOrEqual(Date.parse(lease.hardExpiresAt));
     expect(await admission.release({ ...lease, providerTermination: 'confirmed' })).toEqual({ ok: true, reason: null });
+  });
+
+  it('isole les identités de session par provider sans collision inter-provider', async () => {
+    const admission = new InMemoryRealtimeAdmission(policy, Date.now, entropy());
+    const openaiLease = allowed(await admission.reserve({
+      companyId: COMPANY_A,
+      subjectHash: SUBJECT_A,
+      maxSessionSeconds: 60,
+    }));
+    const mistralLease = allowed(await admission.reserve({
+      companyId: COMPANY_A,
+      subjectHash: SUBJECT_B,
+      maxSessionSeconds: 60,
+    }));
+    expect(await admission.bindProvider({
+      ...openaiLease,
+      providerId: 'openai',
+      providerCallId: 'shared_remote_session',
+    })).toMatchObject({ ok: true });
+    expect(await admission.bindProvider({
+      ...mistralLease,
+      providerId: 'mistral',
+      providerCallId: 'shared_remote_session',
+    })).toMatchObject({ ok: true });
+
+    const thirdLease = allowed(await admission.reserve({
+      companyId: COMPANY_A,
+      subjectHash: 'c'.repeat(64),
+      maxSessionSeconds: 60,
+    }));
+    expect(await admission.bindProvider({
+      ...thirdLease,
+      providerId: 'openai',
+      providerCallId: 'shared_remote_session',
+    })).toEqual({ ok: false, reason: 'rejected' });
+    expect(await admission.bindProvider({
+      ...thirdLease,
+      providerId: 'invalid' as 'openai',
+      providerCallId: 'another_remote_session',
+    })).toEqual({ ok: false, reason: 'rejected' });
   });
 
   it('lie le contexte assaini au tenant, au sujet et à la session active', async () => {
@@ -150,7 +191,7 @@ describe('Bob Live — admission durable de parité mémoire', () => {
       revision: 1,
       context,
     })).toEqual({ ok: false, reason: 'rejected' });
-    await admission.bindProvider({ ...lease, providerCallId: 'call_context' });
+    await admission.bindProvider({ ...lease, providerId: 'openai', providerCallId: 'call_context' });
     expect(await admission.updateContext({
       companyId: COMPANY_A,
       subjectHash: SUBJECT_A,
@@ -201,7 +242,7 @@ describe('Bob Live — admission durable de parité mémoire', () => {
       subjectHash: SUBJECT_A,
       maxSessionSeconds: 60,
     }));
-    await admission.bindProvider({ ...lease, providerCallId: 'call_context_revision' });
+    await admission.bindProvider({ ...lease, providerId: 'openai', providerCallId: 'call_context_revision' });
     await admission.activate(lease);
     const identity = {
       companyId: COMPANY_A,
@@ -267,7 +308,7 @@ describe('Bob Live — admission durable de parité mémoire', () => {
       subjectHash: SUBJECT_A,
       maxSessionSeconds: 60,
     }));
-    await admission.bindProvider({ ...lease, providerCallId: 'call_context_expired' });
+    await admission.bindProvider({ ...lease, providerId: 'openai', providerCallId: 'call_context_expired' });
     await admission.activate(lease);
     const identity = {
       companyId: COMPANY_A,
@@ -322,13 +363,15 @@ describe('Bob Live — admission durable de parité mémoire', () => {
     let now = Date.parse('2026-07-13T12:00:00.000Z');
     const admission = new InMemoryRealtimeAdmission(policy, () => now, entropy());
     const lease = allowed(await admission.reserve({ companyId: COMPANY_A, subjectHash: SUBJECT_A, maxSessionSeconds: 60 }));
-    await admission.bindProvider({ ...lease, providerCallId: 'call_stale' });
+    await admission.bindProvider({ ...lease, providerId: 'mistral', providerCallId: 'call_stale' });
     now += 16_000;
 
     const blocked = await admission.reserve({ companyId: COMPANY_A, subjectHash: SUBJECT_A, maxSessionSeconds: 60 });
     expect(blocked).toMatchObject({ allowed: false, denial: 'session_reaping' });
     if (blocked.allowed || !blocked.reapingClaim) throw new Error('Expected fenced reaping claim.');
+    expect(blocked.reapingClaim.providerId).toBe('mistral');
     expect(blocked.reapingClaim.providerCallId).toBe('call_stale');
+    expect(blocked.reapingClaim.hardExpiryProof).toBeNull();
 
     const stillBlocked = await admission.reserve({ companyId: COMPANY_A, subjectHash: SUBJECT_A, maxSessionSeconds: 60 });
     expect(stillBlocked).toMatchObject({ allowed: false, denial: 'session_reaping' });
@@ -356,7 +399,7 @@ describe('Bob Live — admission durable de parité mémoire', () => {
     expect(admission.snapshot().leases).toHaveLength(0);
 
     const active = allowed(await admission.reserve({ companyId: COMPANY_A, subjectHash: SUBJECT_B, maxSessionSeconds: 60 }));
-    await admission.bindProvider({ ...active, providerCallId: 'call_hard_cap' });
+    await admission.bindProvider({ ...active, providerId: 'openai', providerCallId: 'call_hard_cap' });
     await admission.activate(active);
     now = Date.parse(active.hardExpiresAt);
     expect(await admission.renew(active)).toEqual({ ok: false, reason: 'expired' });
@@ -364,14 +407,26 @@ describe('Bob Live — admission durable de parité mémoire', () => {
     expect(reaping.ok).toBe(true);
     if (!reaping.ok) throw new Error('Expected reaping batch.');
     expect(reaping.claims).toHaveLength(1);
+    expect(reaping.claims[0]?.providerId).toBe('openai');
     expect(reaping.claims[0]?.providerCallId).toBe('call_hard_cap');
+    expect(reaping.claims[0]?.hardExpiryProof).toEqual(expect.objectContaining({
+      source: 'database_hard_expiry',
+      companyId: COMPANY_A,
+      subjectHash: SUBJECT_B,
+      sessionId: active.sessionId,
+      providerId: 'openai',
+      providerCallId: 'call_hard_cap',
+      hardExpiresAt: active.hardExpiresAt,
+    }));
+    expect(Date.parse(reaping.claims[0]!.hardExpiryProof!.databaseObservedAt))
+      .toBeGreaterThanOrEqual(Date.parse(active.hardExpiresAt));
     expect(orphan.leaseToken).not.toBe(active.leaseToken);
   });
 
   it('réclame une terminaison explicite inter-répliques avec un fence sessionId', async () => {
     const admission = new InMemoryRealtimeAdmission(policy, Date.now, entropy());
     const lease = allowed(await admission.reserve({ companyId: COMPANY_A, subjectHash: SUBJECT_A, maxSessionSeconds: 60 }));
-    await admission.bindProvider({ ...lease, providerCallId: 'call_cross_replica' });
+    await admission.bindProvider({ ...lease, providerId: 'mistral', providerCallId: 'call_cross_replica' });
     await admission.activate(lease);
 
     expect(await admission.claimTermination({
@@ -386,7 +441,9 @@ describe('Bob Live — admission durable de parité mémoire', () => {
     });
     expect(claimed.ok).toBe(true);
     if (!claimed.ok || !claimed.claim) throw new Error('Expected explicit termination claim.');
+    expect(claimed.claim.providerId).toBe('mistral');
     expect(claimed.claim.providerCallId).toBe('call_cross_replica');
+    expect(claimed.claim.hardExpiryProof).toBeNull();
     expect(await admission.claimTermination({
       companyId: COMPANY_A,
       subjectHash: SUBJECT_A,

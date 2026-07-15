@@ -24,6 +24,7 @@ const MAX_SEGMENT_INDEX = 127;
 const POSTGRES_INT_MAX = 2_147_483_647;
 const FOURTH_FENCE_TIMEOUT_MS = 2_000;
 const CLEANUP_TIMEOUT_MS = 5_000;
+const FINALIZE_RECONCILIATION_DELAYS_MS = [0, 25, 100] as const;
 
 export type RealtimeSpeechCancellationReason =
   | 'barge_in'
@@ -42,6 +43,8 @@ export interface RealtimeSpeechArtifactClaimInput {
   readonly candidateArtifactId: string;
   readonly contextRevision: number;
   readonly contextDigest: string;
+  /** Hash du token du sideband qui demande ce claim ; lie toute la vie de l'artefact à son epoch. */
+  readonly sidebandOwnerTokenHash: string;
   readonly classification: RealtimeSpeechArtifactMetadata['classification'];
   readonly canonicalSpeechHmac: string;
   readonly factsHmac: string;
@@ -65,6 +68,7 @@ export interface RealtimeSpeechArtifactReadyInput {
   readonly renderTokenHash: string;
   readonly contextRevision: number;
   readonly contextDigest: string;
+  readonly sidebandOwnerTokenHash: string;
   readonly classification: RealtimeSpeechArtifactMetadata['classification'];
   readonly source: RealtimeSpeechArtifactMetadata['source'];
   readonly storageKey: string;
@@ -98,6 +102,7 @@ export interface RealtimeSpeechArtifactRepositoryPort {
     readonly turnId: string;
     readonly artifactId: string;
     readonly renderTokenHash: string;
+    readonly sidebandOwnerTokenHash: string;
     readonly reasonCode: string;
   }): Promise<void>;
   cancel(input: {
@@ -106,6 +111,7 @@ export interface RealtimeSpeechArtifactRepositoryPort {
     readonly turnId: string;
     readonly artifactId: string;
     readonly cancellationId: string;
+    readonly sidebandOwnerTokenHash: string;
     readonly reason: RealtimeSpeechCancellationReason;
   }): Promise<void>;
 }
@@ -119,6 +125,7 @@ export interface RealtimeSpeechPublisherInput {
   readonly canonicalSpeech: string;
   readonly contextRevision: number;
   readonly contextDigest: string;
+  readonly sidebandOwnerTokenHash: string;
   readonly signal: AbortSignal;
   readonly abortReason?: RealtimeSpeechCancellationReason;
   readonly revalidateContext: (signal: AbortSignal) => Promise<RealtimeSpeechContextVersion>;
@@ -143,6 +150,8 @@ export interface RealtimeSpeechPublisherDependencies {
     token(): string;
     cancellationId(): string;
   };
+  /** Injecté uniquement dans les tests ; la production conserve le backoff borné. */
+  readonly reconciliationPause?: (milliseconds: number) => Promise<void>;
 }
 
 const secureEntropy = Object.freeze({
@@ -170,6 +179,7 @@ function validInput(input: RealtimeSpeechPublisherInput): boolean {
     && input.contextRevision >= 1
     && input.contextRevision <= POSTGRES_INT_MAX
     && SHA256_HEX.test(input.contextDigest)
+    && SHA256_HEX.test(input.sidebandOwnerTokenHash)
     && input.signal instanceof AbortSignal
     && typeof input.revalidateContext === 'function';
 }
@@ -213,6 +223,7 @@ async function boundedContextFence(
 
 export class RealtimeSpeechPublisher {
   private readonly entropy: NonNullable<RealtimeSpeechPublisherDependencies['entropy']>;
+  private readonly reconciliationPause: (milliseconds: number) => Promise<void>;
 
   constructor(private readonly dependencies: RealtimeSpeechPublisherDependencies) {
     if (Buffer.byteLength(dependencies.proofSecret, 'utf8') < 32
@@ -222,6 +233,8 @@ export class RealtimeSpeechPublisher {
       throw new Error('Invalid realtime speech publisher proof configuration.');
     }
     this.entropy = dependencies.entropy ?? secureEntropy;
+    this.reconciliationPause = dependencies.reconciliationPause
+      ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
   }
 
   async publish(input: RealtimeSpeechPublisherInput): Promise<RealtimeSpeechPublishOutcome> {
@@ -260,6 +273,7 @@ export class RealtimeSpeechPublisher {
         candidateArtifactId,
         contextRevision: input.contextRevision,
         contextDigest: input.contextDigest,
+        sidebandOwnerTokenHash: input.sidebandOwnerTokenHash,
         classification: envelope.classification,
         canonicalSpeechHmac: contentProof.canonicalSpeechHmac,
         factsHmac: contentProof.factsHmac,
@@ -369,40 +383,42 @@ export class RealtimeSpeechPublisher {
       return { status: 'rejected', code: 'PERSISTENCE_REJECTED' };
     }
 
-    let finalized: RealtimeSpeechArtifactFinalizeResult;
-    try {
-      const metadata = rendered.artifact.metadata;
-      finalized = await this.dependencies.repository.finalizeReady({
-        companyId: input.companyId,
-        subjectHash: input.subjectHash,
-        sessionId: input.sessionId,
-        turnId: input.turnId,
-        artifactId: claim.artifactId,
-        sequence: claim.sequence,
-        renderTokenHash,
-        contextRevision: input.contextRevision,
-        contextDigest: input.contextDigest,
-        classification: metadata.classification,
-        source: metadata.source,
-        storageKey,
-        mimeType: metadata.mimeType,
-        byteLength: metadata.byteLength,
-        durationMs: metadata.estimatedDurationMs,
-        canonicalSpeechHmac: proof.canonicalSpeechHmac,
-        factsHmac: proof.factsHmac,
-        auditTranscriptHmac: proof.auditTranscriptHmac,
-        evidenceHmac: proof.evidenceHmac,
-        audioSha256: metadata.audioSha256,
-        proofKeyVersion: proof.proofKeyVersion,
-        synthesisAdapterId: metadata.synthesisAdapterId,
-        synthesisTrustDomain: metadata.synthesisTrustDomain,
-        auditAdapterId: metadata.auditAdapterId,
-        auditTrustDomain: metadata.auditTrustDomain,
-      });
-    } catch {
-      finalized = { status: 'unavailable' };
-    }
+    const metadata = rendered.artifact.metadata;
+    const readyInput: RealtimeSpeechArtifactReadyInput = {
+      companyId: input.companyId,
+      subjectHash: input.subjectHash,
+      sessionId: input.sessionId,
+      turnId: input.turnId,
+      artifactId: claim.artifactId,
+      sequence: claim.sequence,
+      renderTokenHash,
+      sidebandOwnerTokenHash: input.sidebandOwnerTokenHash,
+      contextRevision: input.contextRevision,
+      contextDigest: input.contextDigest,
+      classification: metadata.classification,
+      source: metadata.source,
+      storageKey,
+      mimeType: metadata.mimeType,
+      byteLength: metadata.byteLength,
+      durationMs: metadata.estimatedDurationMs,
+      canonicalSpeechHmac: proof.canonicalSpeechHmac,
+      factsHmac: proof.factsHmac,
+      auditTranscriptHmac: proof.auditTranscriptHmac,
+      evidenceHmac: proof.evidenceHmac,
+      audioSha256: metadata.audioSha256,
+      proofKeyVersion: proof.proofKeyVersion,
+      synthesisAdapterId: metadata.synthesisAdapterId,
+      synthesisTrustDomain: metadata.synthesisTrustDomain,
+      auditAdapterId: metadata.auditAdapterId,
+      auditTrustDomain: metadata.auditTrustDomain,
+    };
+    const finalized = await this.finalizeWithReconciliation(readyInput);
     if (finalized.status !== 'ready') {
+      // Un timeout peut survenir APRES le COMMIT. Détruire ici l'objet créerait une ligne ready
+      // pointant vers du vide. L'objet reste donc intact jusqu'à preuve DB négative ou au reaper.
+      if (finalized.status === 'unavailable') {
+        return { status: 'unavailable', stage: 'finalize' };
+      }
       await this.cleanupStorage(input.companyId, storageKey);
       if (finalized.status === 'stale_context' || finalized.status === 'cancelled') {
         await this.cancelClaim(input, claim.artifactId);
@@ -411,6 +427,21 @@ export class RealtimeSpeechPublisher {
       return { status: 'unavailable', stage: 'finalize' };
     }
     return { status: 'ready', artifactId: claim.artifactId, sequence: claim.sequence };
+  }
+
+  private async finalizeWithReconciliation(
+    input: RealtimeSpeechArtifactReadyInput,
+  ): Promise<RealtimeSpeechArtifactFinalizeResult> {
+    for (const delayMs of FINALIZE_RECONCILIATION_DELAYS_MS) {
+      if (delayMs > 0) await this.reconciliationPause(delayMs);
+      try {
+        const result = await this.dependencies.repository.finalizeReady(input);
+        if (result.status !== 'unavailable') return result;
+      } catch {
+        // Même résultat qu'un ACK perdu : relire par le même CAS idempotent exact.
+      }
+    }
+    return { status: 'unavailable' };
   }
 
   private async failClaim(
@@ -425,6 +456,7 @@ export class RealtimeSpeechPublisher {
       turnId: input.turnId,
       artifactId,
       renderTokenHash,
+      sidebandOwnerTokenHash: input.sidebandOwnerTokenHash,
       reasonCode: reasonCode
         .toLowerCase()
         .replace(/[^a-z0-9_]/gu, '')
@@ -441,6 +473,7 @@ export class RealtimeSpeechPublisher {
       turnId: input.turnId,
       artifactId,
       cancellationId,
+      sidebandOwnerTokenHash: input.sidebandOwnerTokenHash,
       reason: input.abortReason ?? 'superseded',
     }).catch(() => undefined);
   }

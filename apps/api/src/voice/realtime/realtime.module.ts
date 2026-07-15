@@ -1,13 +1,18 @@
 import { Module, type Provider } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
+import { buildRealtimeSpeechAuditStt, buildRealtimeSpeechTts } from '../../ai/providers';
 import { BackendService } from '../../backend.service';
-import { loadEnv } from '../../config/env';
+import { loadEnv, resolveBobLiveEnv, type Env } from '../../config/env';
+import { allowedCorsOrigins } from '../../config/cors';
 import { AppLogger } from '../../observability/logger';
 import { Metrics } from '../../observability/metrics';
 import { ScheduledTenantDirectory } from '../../jobs/tenant-directory';
 import { PersistenceModule } from '../../persistence/persistence.module';
 import { PERSISTENCE, type Persistence } from '../../persistence/persistence';
-import { OpenAiRealtimeCallAdapter } from './openai-realtime-call.adapter';
+import {
+  DisabledOpenAiRealtimeCallProvider,
+  OpenAiRealtimeCallAdapter,
+} from './openai-realtime-call.adapter';
 import { realtimeAdmissionPolicyFromEnv } from './realtime-admission';
 import { RealtimeVoiceController } from './realtime.controller';
 import {
@@ -18,19 +23,158 @@ import { RealtimeSidebandManager } from './realtime-sideband';
 import { RealtimeVoiceService } from './realtime.service';
 import { RealtimeBobAgentTurnAdapter } from './realtime-agent-turn';
 import { RealtimeBackendEntitlementAdapter } from './realtime-entitlement';
+import { RealtimeSpeechDeliveryService } from './realtime-speech-delivery';
+import type { RealtimeSpeechDeliveryRepositoryPort } from './realtime-speech-delivery.repository';
 import {
+  BobAiRealtimeSpeechAuditAdapter,
+  BobAiRealtimeSpeechSynthesisAdapter,
+} from './realtime-speech-provider-adapters';
+import { RealtimeSpeechPublisher } from './realtime-speech-publisher';
+import { RealtimeSpeechRenderer } from './realtime-speech-renderer';
+import {
+  SupabaseRealtimeSpeechStorage,
+  type RealtimeSpeechStoragePort,
+  type RealtimeSpeechSourcePolicyPort,
+} from './realtime-speech-storage';
+import type { RealtimeSidebandOwnerPort } from './realtime-sideband-owner';
+import { RealtimeVoiceUsageWriter } from './realtime-voice-usage';
+import {
+  DisabledRealtimeDurableControlAuthority,
+  RealtimeDurableControlAuthority,
+} from './realtime-control';
+import {
+  DEFAULT_MISTRAL_REALTIME_INGRESS_TICKET_POLICY,
+  DisabledMistralRealtimeIngressTicketAuthority,
+  type MistralRealtimeIngressTicketAuthority,
+} from './realtime-mistral-ingress-ticket';
+import { MistralRealtimeAgentSink } from './mistral-realtime-agent-sink';
+import { MistralRealtimeGatewayProviderAdapter } from './mistral-realtime-gateway-provider';
+import { MistralRealtimeTerminationAuthority } from './mistral-realtime-termination';
+import {
+  RealtimeProviderTerminationRegistry,
+  realtimeProviderTerminationAdapter,
+} from './realtime-provider-registry';
+import {
+  createMistralRealtimeUpgradeAdapter,
+  isSecureMistralRequestBehindTrustedProxy,
+} from './mistral-realtime-upgrade';
+import {
+  ActiveMistralRealtimeIngressRuntime,
+  DisabledMistralRealtimeIngressRuntime,
+} from './mistral-realtime-runtime';
+import {
+  MISTRAL_REALTIME_INGRESS_TICKETS,
+  MISTRAL_REALTIME_INGRESS_RUNTIME,
+  MISTRAL_REALTIME_TERMINATION_AUTHORITY,
   OPENAI_REALTIME_CALL_PROVIDER,
   REALTIME_ADMISSION,
   REALTIME_AGENT_TURN,
   REALTIME_ENTITLEMENT,
+  REALTIME_DURABLE_CONTROLS,
+  REALTIME_PROVIDER_TERMINATION_REGISTRY,
   REALTIME_SIDEBAND,
   REALTIME_VOICE_SETTINGS,
+  REALTIME_SPEECH_SOURCE_POLICY,
 } from './realtime.tokens';
 import {
   realtimeVoiceSettingsFromEnv,
   type OpenAiRealtimeCallProvider,
   type RealtimeVoiceSettings,
 } from './realtime.types';
+
+const REALTIME_SPEECH_RUNTIME = Symbol('REALTIME_SPEECH_RUNTIME');
+
+interface RealtimeSpeechRuntime {
+  readonly storage: RealtimeSpeechStoragePort;
+  readonly sourcePolicy: RealtimeSpeechSourcePolicyPort;
+  readonly publisher: RealtimeSpeechPublisher;
+  readonly owner: RealtimeSidebandOwnerPort;
+  readonly deliveryRepository: RealtimeSpeechDeliveryRepositoryPort;
+  readonly usage: RealtimeVoiceUsageWriter;
+  readonly controls: RealtimeDurableControlAuthority;
+}
+
+/**
+ * Composition root de la sortie Bob Live : le fournisseur ne devient jamais une dépendance du
+ * service métier. Une session activée sans stockage privé, TTS qualifié ou audit indépendant fait
+ * échouer le démarrage au lieu de retomber silencieusement sur une sortie audio non auditée.
+ */
+export function buildRealtimeSpeechRuntime(
+  persistence: Persistence,
+  env: Env = loadEnv(),
+): RealtimeSpeechRuntime | null {
+  const live = resolveBobLiveEnv(env);
+  if (!live.enabled) return null;
+  if (
+    !live.proofSecret
+    || !live.controlEncryptionSecret
+    || !live.usageHmacSecret
+    || !env.SUPABASE_URL
+    || !env.SUPABASE_SERVICE_ROLE_KEY
+  ) {
+    throw new Error('Bob Live audited speech runtime is incompletely configured.');
+  }
+
+  // La composition consomme la configuration déjà validée, jamais un fallback implicite basé
+  // sur la présence fortuite de la clé concurrente dans `process.env`.
+  const tts = buildRealtimeSpeechTts(live.provider);
+  const auditStt = buildRealtimeSpeechAuditStt(live.auditProvider);
+  if (!tts || !auditStt) {
+    throw new Error('Bob Live audited speech providers are unavailable.');
+  }
+
+  const storage = new SupabaseRealtimeSpeechStorage({
+    url: env.SUPABASE_URL,
+    serviceRoleKey: env.SUPABASE_SERVICE_ROLE_KEY,
+    bucket: env.SUPABASE_REALTIME_AUDIO_BUCKET,
+    requestTimeoutMs: 2_000,
+  });
+  const deliveryRepository = persistence.createRealtimeSpeechDeliveryRepository();
+  const renderer = new RealtimeSpeechRenderer({
+    synthesizer: new BobAiRealtimeSpeechSynthesisAdapter(tts),
+    auditor: new BobAiRealtimeSpeechAuditAdapter(auditStt),
+  });
+
+  return Object.freeze({
+    storage,
+    sourcePolicy: storage,
+    deliveryRepository,
+    owner: persistence.createRealtimeSidebandOwner(),
+    usage: new RealtimeVoiceUsageWriter(
+      persistence.createRealtimeVoiceUsageRepository(),
+      {
+        proofSecret: live.usageHmacSecret,
+        proofKeyVersion: live.usageKeyVersion,
+      },
+    ),
+    controls: new RealtimeDurableControlAuthority(
+      persistence.createRealtimeControlRepository(),
+      {
+        sealKeys: {
+          encryptionSecret: live.controlEncryptionSecret,
+          encryptionKeyVersion: live.controlEncryptionKeyVersion,
+          proofSecret: live.proofSecret,
+          proofKeyVersion: live.proofKeyVersion,
+        },
+        keyRing: {
+          encryptionSecret: (version) => (
+            version === live.controlEncryptionKeyVersion ? live.controlEncryptionSecret : null
+          ),
+          proofSecret: (version) => (
+            version === live.proofKeyVersion ? live.proofSecret : null
+          ),
+        },
+      },
+    ),
+    publisher: new RealtimeSpeechPublisher({
+      renderer,
+      repository: persistence.createRealtimeSpeechArtifactRepository(),
+      storage,
+      proofSecret: live.proofSecret,
+      proofKeyVersion: live.proofKeyVersion,
+    }),
+  });
+}
 
 const settingsProvider: Provider = {
   provide: REALTIME_VOICE_SETTINGS,
@@ -40,7 +184,46 @@ const settingsProvider: Provider = {
 const openAiProvider: Provider = {
   provide: OPENAI_REALTIME_CALL_PROVIDER,
   inject: [REALTIME_VOICE_SETTINGS],
-  useFactory: (settings: RealtimeVoiceSettings) => new OpenAiRealtimeCallAdapter(settings),
+  useFactory: (settings: RealtimeVoiceSettings) => (
+    settings.provider === 'openai'
+      ? new OpenAiRealtimeCallAdapter(settings)
+      : new DisabledOpenAiRealtimeCallProvider()
+  ),
+};
+
+const mistralRealtimeTerminationAuthorityProvider: Provider = {
+  provide: MISTRAL_REALTIME_TERMINATION_AUTHORITY,
+  inject: [REALTIME_VOICE_SETTINGS],
+  useFactory: (settings: RealtimeVoiceSettings) => (
+    settings.enabled && settings.provider === 'mistral'
+      ? new MistralRealtimeTerminationAuthority()
+      : null
+  ),
+};
+
+const providerTerminationRegistryProvider: Provider = {
+  provide: REALTIME_PROVIDER_TERMINATION_REGISTRY,
+  inject: [
+    REALTIME_VOICE_SETTINGS,
+    OPENAI_REALTIME_CALL_PROVIDER,
+    MISTRAL_REALTIME_TERMINATION_AUTHORITY,
+  ],
+  useFactory: (
+    settings: RealtimeVoiceSettings,
+    openAi: OpenAiRealtimeCallProvider,
+    mistral: MistralRealtimeTerminationAuthority | null,
+  ) => {
+    // Une seule route est enregistrée, celle du profil actif. Le gateway reçoit ci-dessous la
+    // même instance Mistral ; aucune réplique ne peut donc simuler un hangup vers l'autre provider.
+    const adapters = !settings.enabled
+      ? []
+      : settings.provider === 'openai'
+        ? [realtimeProviderTerminationAdapter('openai', openAi)]
+        : mistral
+          ? [mistral]
+          : [];
+    return new RealtimeProviderTerminationRegistry(adapters);
+  },
 };
 
 const admissionProvider: Provider = {
@@ -51,15 +234,133 @@ const admissionProvider: Provider = {
   ),
 };
 
+const mistralIngressTicketProvider: Provider = {
+  provide: MISTRAL_REALTIME_INGRESS_TICKETS,
+  inject: [PERSISTENCE],
+  useFactory: (persistence: Persistence) => {
+    const env = loadEnv();
+    const live = resolveBobLiveEnv(env);
+    if (!live.enabled || live.provider !== 'mistral') {
+      return new DisabledMistralRealtimeIngressTicketAuthority();
+    }
+    if (!live.controlEncryptionSecret) {
+      throw new Error('Bob Live Mistral ingress identity encryption is unavailable.');
+    }
+    const currentVersion = live.controlEncryptionKeyVersion;
+    const currentSecret = live.controlEncryptionSecret;
+    return persistence.createMistralRealtimeIngressTicketAuthority(
+      {
+        ...DEFAULT_MISTRAL_REALTIME_INGRESS_TICKET_POLICY,
+        ticketTtlSeconds: Math.min(
+          DEFAULT_MISTRAL_REALTIME_INGRESS_TICKET_POLICY.ticketTtlSeconds,
+          live.reservationTtlSeconds,
+        ),
+        activationTtlSeconds: Math.min(
+          DEFAULT_MISTRAL_REALTIME_INGRESS_TICKET_POLICY.activationTtlSeconds,
+          live.reservationTtlSeconds,
+        ),
+        maxAudioBytes: live.maxSessionSeconds * 16_000 * 2,
+      },
+      {
+        currentVersion,
+        secret: (version) => (version === currentVersion ? currentSecret : null),
+      },
+    );
+  },
+};
+
+const realtimeSpeechRuntimeProvider: Provider = {
+  provide: REALTIME_SPEECH_RUNTIME,
+  inject: [PERSISTENCE],
+  useFactory: (persistence: Persistence) => buildRealtimeSpeechRuntime(persistence),
+};
+
+const realtimeDurableControlProvider: Provider = {
+  provide: REALTIME_DURABLE_CONTROLS,
+  inject: [REALTIME_SPEECH_RUNTIME],
+  useFactory: (speech: RealtimeSpeechRuntime | null) => (
+    speech?.controls ?? new DisabledRealtimeDurableControlAuthority()
+  ),
+};
+
+const mistralRealtimeIngressRuntimeProvider: Provider = {
+  provide: MISTRAL_REALTIME_INGRESS_RUNTIME,
+  inject: [
+    REALTIME_VOICE_SETTINGS,
+    MISTRAL_REALTIME_INGRESS_TICKETS,
+    REALTIME_ADMISSION,
+    REALTIME_AGENT_TURN,
+    REALTIME_SPEECH_RUNTIME,
+    MISTRAL_REALTIME_TERMINATION_AUTHORITY,
+  ],
+  useFactory: (
+    settings: RealtimeVoiceSettings,
+    tickets: MistralRealtimeIngressTicketAuthority,
+    admission: ReturnType<Persistence['createRealtimeAdmission']>,
+    agentTurns: RealtimeBobAgentTurnAdapter,
+    speech: RealtimeSpeechRuntime | null,
+    terminations: MistralRealtimeTerminationAuthority | null,
+  ) => {
+    if (!settings.enabled || settings.provider !== 'mistral') {
+      return new DisabledMistralRealtimeIngressRuntime();
+    }
+    if (!speech || !terminations) throw new Error('Bob Live Mistral audited runtime is unavailable.');
+    const env = loadEnv();
+    const live = resolveBobLiveEnv(env);
+    const provider = new MistralRealtimeGatewayProviderAdapter(settings);
+    const sink = new MistralRealtimeAgentSink({
+      admission,
+      owners: speech.owner,
+      agentTurns,
+      speech: speech.publisher,
+      usage: speech.usage,
+      controls: speech.controls,
+      cancellation: speech.deliveryRepository,
+    });
+    const adapter = createMistralRealtimeUpgradeAdapter({
+      allowedBrowserOrigins: allowedCorsOrigins(env),
+      maxConnections: live.gatewayMaxConnections,
+      shutdownGraceMs: live.gatewayShutdownGraceMs,
+    }, {
+      createGatewayDependencies: () => ({ tickets, provider, terminations, sink }),
+      ...(live.gatewayTlsMode === 'trusted-proxy'
+        ? { isSecureRequest: isSecureMistralRequestBehindTrustedProxy }
+        : {}),
+    });
+    return new ActiveMistralRealtimeIngressRuntime(adapter);
+  },
+};
+
 const sidebandProvider: Provider = {
   provide: REALTIME_SIDEBAND,
-  inject: [REALTIME_VOICE_SETTINGS, OPENAI_REALTIME_CALL_PROVIDER, Metrics, AppLogger],
+  inject: [
+    REALTIME_VOICE_SETTINGS,
+    OPENAI_REALTIME_CALL_PROVIDER,
+    Metrics,
+    AppLogger,
+    REALTIME_SPEECH_RUNTIME,
+  ],
   useFactory: (
     settings: RealtimeVoiceSettings,
     callProvider: OpenAiRealtimeCallProvider,
     metrics: Metrics,
     logger: AppLogger,
-  ) => new RealtimeSidebandManager(settings, callProvider, metrics, logger),
+    speech: RealtimeSpeechRuntime | null,
+  ) => new RealtimeSidebandManager(
+    settings,
+    callProvider,
+    metrics,
+    logger,
+    undefined,
+    speech
+      ? {
+          owner: speech.owner,
+          publisher: speech.publisher,
+          cancellation: speech.deliveryRepository,
+          controls: speech.controls,
+        }
+      : undefined,
+  ),
 };
 
 const realtimeAgentTurnProvider: Provider = {
@@ -88,19 +389,60 @@ const reaperTenantDirectoryProvider: Provider = {
   useFactory: (persistence: Persistence, logger: AppLogger) => new ScheduledTenantDirectory(persistence, logger),
 };
 
+const realtimeSpeechDeliveryProvider: Provider = {
+  provide: RealtimeSpeechDeliveryService,
+  inject: [PERSISTENCE, AppLogger, REALTIME_SPEECH_RUNTIME],
+  useFactory: (
+    persistence: Persistence,
+    logger: AppLogger,
+    speech: RealtimeSpeechRuntime | null,
+  ) => {
+    const env = loadEnv();
+    const live = resolveBobLiveEnv(env);
+    return new RealtimeSpeechDeliveryService(
+      speech?.deliveryRepository ?? persistence.createRealtimeSpeechDeliveryRepository(),
+      speech?.storage ?? null,
+      {
+        enabled: live.enabled,
+        subjectHmacSecret: live.subjectHmacSecret,
+        proofSecret: live.proofSecret,
+        proofKeyVersion: live.proofKeyVersion,
+      },
+      logger,
+    );
+  },
+};
+
+const realtimeSpeechSourcePolicyProvider: Provider = {
+  provide: REALTIME_SPEECH_SOURCE_POLICY,
+  inject: [REALTIME_SPEECH_RUNTIME],
+  useFactory: (speech: RealtimeSpeechRuntime | null): RealtimeSpeechSourcePolicyPort | null => (
+    speech?.sourcePolicy ?? null
+  ),
+};
+
 @Module({
   imports: [PersistenceModule],
   controllers: [RealtimeVoiceController],
   providers: [
     settingsProvider,
     openAiProvider,
+    mistralRealtimeTerminationAuthorityProvider,
+    providerTerminationRegistryProvider,
     admissionProvider,
+    mistralIngressTicketProvider,
+    realtimeSpeechRuntimeProvider,
+    realtimeDurableControlProvider,
     realtimeAgentTurnProvider,
     realtimeEntitlementProvider,
     sidebandProvider,
     reaperTenantDirectoryProvider,
+    realtimeSpeechDeliveryProvider,
+    realtimeSpeechSourcePolicyProvider,
+    mistralRealtimeIngressRuntimeProvider,
     RealtimeAdmissionReaperScheduler,
     RealtimeVoiceService,
   ],
+  exports: [MISTRAL_REALTIME_INGRESS_RUNTIME],
 })
 export class RealtimeVoiceModule {}

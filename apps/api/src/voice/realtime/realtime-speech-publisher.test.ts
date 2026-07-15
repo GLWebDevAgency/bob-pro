@@ -15,6 +15,7 @@ const TURN_ID = '22222222-2222-4222-8222-222222222222';
 const ARTIFACT_ID = '33333333-3333-4333-8333-333333333333';
 const CANCELLATION_ID = '44444444-4444-4444-8444-444444444444';
 const CONTEXT = { contextRevision: 7, contextDigest: '2'.repeat(64) } as const;
+const SIDEBAND_OWNER = 'a'.repeat(64);
 const TEXT = 'Le reste dû est de 1 320 €.';
 
 function mp3(): RealtimeRenderedAudio {
@@ -60,6 +61,7 @@ function input(overrides: Partial<RealtimeSpeechPublisherInput> = {}): RealtimeS
     canonicalSpeech: TEXT,
     contextRevision: CONTEXT.contextRevision,
     contextDigest: CONTEXT.contextDigest,
+    sidebandOwnerTokenHash: SIDEBAND_OWNER,
     signal: new AbortController().signal,
     revalidateContext: async () => CONTEXT,
     ...overrides,
@@ -100,6 +102,7 @@ function harness(overrides: {
         token: () => 'render-token-that-is-long-enough-0001',
         cancellationId: () => CANCELLATION_ID,
       },
+      reconciliationPause: async () => undefined,
     }),
   };
 }
@@ -194,6 +197,32 @@ describe('RealtimeSpeechPublisher', () => {
       .resolves.toEqual({ status: 'terminal' });
     expect(h.storage.delete).toHaveBeenCalledOnce();
     expect(repo.cancel).toHaveBeenCalledWith(expect.objectContaining({ reason: 'barge_in' }));
+  });
+
+  it('réconcilie un COMMIT final ambigu avant toute décision de cleanup', async () => {
+    const repo = repository();
+    vi.mocked(repo.finalizeReady)
+      .mockRejectedValueOnce(new Error('ack lost after commit'))
+      .mockResolvedValueOnce({ status: 'ready' });
+    const h = harness({ repository: repo });
+
+    await expect(h.publisher.publish(input())).resolves.toEqual({
+      status: 'ready', artifactId: ARTIFACT_ID, sequence: 1,
+    });
+    expect(repo.finalizeReady).toHaveBeenCalledTimes(2);
+    expect(h.storage.delete).not.toHaveBeenCalled();
+  });
+
+  it('ne supprime jamais un objet quand le verdict de COMMIT reste indisponible', async () => {
+    const repo = repository();
+    vi.mocked(repo.finalizeReady).mockResolvedValue({ status: 'unavailable' });
+    const h = harness({ repository: repo });
+
+    await expect(h.publisher.publish(input())).resolves.toEqual({
+      status: 'unavailable', stage: 'finalize',
+    });
+    expect(repo.finalizeReady).toHaveBeenCalledTimes(3);
+    expect(h.storage.delete).not.toHaveBeenCalled();
   });
 
   it('un rejet acoustique ne touche jamais le stockage et persiste un code borné', async () => {

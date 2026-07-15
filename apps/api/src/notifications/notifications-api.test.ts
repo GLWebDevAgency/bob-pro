@@ -5,8 +5,10 @@ import { NotificationsApiService } from './notifications-api.service';
 
 const TENANT = 'co-test';
 // C24b : plus AUCUN repli tenant — les tests posent un Principal explicite (comme le guard en requête).
+const asPrincipal = <T>(companyId: string, userId: string, fn: () => Promise<T>): Promise<T> =>
+  requestContext.run({ correlationId: 'test', principal: { userId, companyId } }, fn);
 const asTenant = <T>(fn: () => Promise<T>): Promise<T> =>
-  requestContext.run({ correlationId: 'test', principal: { userId: 'user-test', companyId: TENANT } }, fn);
+  asPrincipal(TENANT, 'user-test', fn);
 
 async function seedJob(p: InMemoryPersistence, id: string, dedupeKey: string, at: string): Promise<void> {
   await p.notificationJobs.enqueue({
@@ -131,7 +133,7 @@ describe('NotificationsApiService — fil company-scoped (C25)', () => {
     }
   });
 
-  it('POST /devices : token Expo validé strictement, enregistrement idempotent par (tenant, token)', async () => {
+  it('POST /devices : token validé, idempotent et jamais ré-émis dans la réponse', async () => {
     const p = new InMemoryPersistence();
     const service = new NotificationsApiService(p);
 
@@ -143,6 +145,50 @@ describe('NotificationsApiService — fil company-scoped (C25)', () => {
     expect(ok1.ok && ok2.ok).toBe(true);
     if (!ok1.ok || !ok2.ok) return;
     expect(ok2.value.id).toBe(ok1.value.id); // upsert, pas de doublon
+    expect(ok1.value).not.toHaveProperty('expoPushToken');
     expect(await p.devices.listByCompany(TENANT)).toHaveLength(1);
+  });
+
+  it('transfère un token global vers le dernier tenant sans laisser de destinataire fantôme', async () => {
+    const p = new InMemoryPersistence();
+    const service = new NotificationsApiService(p);
+    const token = 'ExponentPushToken[tenantrebind123]';
+
+    const first = await asPrincipal('co-a', 'user-a', () =>
+      service.registerDevice({ expoPushToken: token, platform: 'ios' }),
+    );
+    const rebound = await asPrincipal('co-b', 'user-b', () =>
+      service.registerDevice({ expoPushToken: token, platform: 'android' }),
+    );
+
+    expect(first.ok && rebound.ok && first.value.id === (rebound.ok ? rebound.value.id : '')).toBe(true);
+    await expect(p.devices.listByCompany('co-a')).resolves.toEqual([]);
+    await expect(p.devices.listByCompany('co-b')).resolves.toMatchObject([
+      { companyId: 'co-b', userId: 'user-b', expoPushToken: token, platform: 'android' },
+    ]);
+  });
+
+  it('DELETE /devices est idempotent et ne retire jamais le binding d’un autre tenant', async () => {
+    const p = new InMemoryPersistence();
+    const service = new NotificationsApiService(p);
+    const token = 'ExponentPushToken[logoutrevoke123]';
+    await asPrincipal('co-a', 'user-a', () => service.registerDevice({ expoPushToken: token }));
+    await asPrincipal('co-b', 'user-b', () => service.registerDevice({ expoPushToken: token }));
+
+    await expect(
+      asPrincipal('co-a', 'user-a', () => service.unregisterDevice({ expoPushToken: token })),
+    ).resolves.toEqual({ ok: true, value: { unregistered: true } });
+    await expect(p.devices.listByCompany('co-b')).resolves.toHaveLength(1);
+
+    await expect(
+      asPrincipal('co-b', 'user-b', () => service.unregisterDevice({ expoPushToken: token })),
+    ).resolves.toEqual({ ok: true, value: { unregistered: true } });
+    await expect(p.devices.listByCompany('co-b')).resolves.toEqual([]);
+    await expect(
+      asPrincipal('co-b', 'user-b', () => service.unregisterDevice({ expoPushToken: token })),
+    ).resolves.toEqual({ ok: true, value: { unregistered: true } });
+
+    const invalid = await asTenant(() => service.unregisterDevice({ expoPushToken: 'token-en-clair' }));
+    expect(!invalid.ok && invalid.error.kind).toBe('validation');
   });
 });
