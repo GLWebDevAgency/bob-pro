@@ -1,5 +1,5 @@
 # claude status
 state: active
-heartbeat_epoch: 1784065158
-head: 6b38da1
-note: Fermeture des 4 P0 R4 du challenge GPT en cours (2 agents: serveur preuve/atomicité/lien, mobile passage client)
+heartbeat_epoch: 1784076177
+head: b88a2a2
+note: Lot device clos + P0 R4 fermés (attente levée NO-GO); reduce-motion livré; pilier 2 subscriptions livré (RLS certifiée); prochain: EXPERT FISCAL phase 1 à la levée
