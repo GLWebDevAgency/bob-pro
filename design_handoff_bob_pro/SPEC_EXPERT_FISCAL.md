@@ -95,3 +95,31 @@ GPT a challengé la v1 : verdict Claude = il a largement raison, j'adopte. Les c
    incomplet) → ① profil fiscal + référentiel temporel → ② spike puis intégration
    Publicodes (micro, EI, EURL, SASU) → ③ séparation des 4 sommes dans l'UI/voix →
    ④ scénarios + explications → ⑤ dossier cabinet → ⑥ arbitrages proactifs en dernier.
+
+## UX FLOW — PROPOSITION CLAUDE À CO-CHALLENGER AVEC GPT AVANT LA 1B (ordre fondateur 15/07)
+Principes : papa-vocal (jamais un formulaire administratif), progressive disclosure (ne
+jamais demander ce qui se déduit), confirmation CONTEXTUELLE (au moment où le profil
+devient utile), jamais bloquant.
+1. ENTRÉE PRINCIPALE — CONTEXTUELLE sur Argent : là où vit « trésorerie mobilisable »
+   (quick-win ⓪), une carte douce « Ta rémunération exacte dépend de ton statut — 3
+   questions et Bob te la précise » → MINI-FLOW conversationnel (pattern onboarding
+   fintech : UNE question par écran, pré-remplie par l'hypothèse SIRET, confirmée d'un
+   tap) : micro ? → ACRE ? → versement libératoire ? → (TVA si utile). Chaque réponse :
+   le statut passe visuellement en confirmé (vert succès). SKIPPABLE à tout moment —
+   profil partiel = langage prudent conservé sur ce qui manque.
+2. RÉSIDENCE — Compte (« Mon statut fiscal ») : les champs avec leur statut visible
+   (confirmé ✓ vert / hypothèse à confirmer orange doux / manquant neutre invitant),
+   modification champ par champ. La résidence n'est PAS l'entrée principale.
+3. VOIX — deux sens : « Bob, j'ai l'ACRE » à tout moment → proposition + tap ; et si
+   l'utilisateur demande « combien je peux me verser ? » avec profil incomplet, Bob POSE
+   les questions (« Pour te répondre juste : t'es en micro ? ») — le flow EST la
+   conversation. Parité stricte avec le mini-flow tactile.
+4. LES 4 SOMMES — RÉSIDENCES : Argent = trésorerie mobilisable (héros existant) + section
+   « Ta rémunération » (budget supportable + net estimé) quand le profil le permet ;
+   Home = un seul montant-clé (inchangé) ; Pilotage = l'angle activité/SIG ; dividendes
+   = clôture uniquement (Pilotage/rapport), JAMAIS une somme mensuelle.
+5. INTERDITS : onboarding bloquant au premier lancement ; écran-formulaire à 8 champs ;
+   notification pushy ; toute somme affichée sans son statut de fiabilité.
+À CHALLENGER PAR GPT : position d'entrée (Argent seul ? rappel Home ?), nombre/ordre des
+questions, résidence Compte vs écran dédié, où vivent les RÉSULTATS Publicodes (sa lane),
+conformité accessibilité/normes du mini-flow.
