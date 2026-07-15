@@ -78,3 +78,14 @@ D4 PLAN DE TEST PROCHES : Android = IMMÉDIAT (APK preview EAS, installation dir
 compte Google — profil déjà configuré) ; iOS = TestFlight dès le compte Apple (D1).
 Matrice réelle = fondateur + proches, chacun son device : exactement la QA multi-devices
 qu'il nous fallait.
+
+## MAJ 15/07 soir — COMPTES STORES : ILS EXISTENT DÉJÀ (fondateur)
+D1 candidat CLOS : comptes développeur Apple + Google déjà créés. EAS loggé sur la machine
+(gl.dev / projet lié c45313b8). CONSÉQUENCES :
+· BUILD APK ANDROID preview LANCÉ (build 6b2a9d03 — lien expo.dev/accounts/gl.dev) →
+  installation directe par les proches dès la fin du build.
+· iOS : il reste UNE session interactive de ~5 min avec le fondateur (login Apple ID +
+  2FA dans `eas credentials`) pour qu'EAS génère les certificats — ensuite TestFlight
+  entièrement opéré par Claude.
+· Google Play submit : il faudra un service-account JSON (je guiderai) — pour l'instant
+  l'APK direct suffit au test des proches.
