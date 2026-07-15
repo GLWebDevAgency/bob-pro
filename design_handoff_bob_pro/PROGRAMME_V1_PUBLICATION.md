@@ -53,3 +53,28 @@ Zéro P0 ouvert · suites vertes (hors flags OFF) · parcours à froid complet s
 sur les 2 OS · RGPD/légal en place · crash reporting actif · matrice de flags figée ·
 CLAIMS à jour · certification device voix (périmètre C1) · double signature Claude+GPT
 dans ce fichier.
+
+## RÉPONSES FONDATEUR 15/07 (soir) — mises à jour actées
+D1 COMPTES STORES : le fondateur délègue (« tu as tous les accès »). Répartition honnête :
+l'incompressible IDENTITÉ reste à lui (~20 min chacun : Apple ID+2FA+pièce d'identité+CB
+99 $/an ; Google CB 25 $ — vérifications d'identité impossibles à déléguer légalement).
+CLAUDE fait 100 % du reste : dossier d'inscription prêt-à-cliquer (individu vs société —
+à trancher selon la structure d'édition), puis certificats/EAS/TestFlight/fiches stores
+dès les comptes créés. Config déjà en place : bundle fr.bobpro.app, eas.json (dev/preview
+avec APK Android + env Railway/Supabase).
+D2 NAMING : À FIGER AVANT toute soumission (bundle id immuable une fois publié). Nom
+actuel « Bob Pro » (app.json). CLAUDE prépare le dossier : disponibilité App Store/Play,
+recherche INPI marques, domaine bobpro.fr — décision FONDATEUR sur dossier. Le logo
+(audit GPT) découle du nom figé.
+C1 VOIX V1 RÉVISÉ (clé Mistral disponible, PAS de clé OpenAI) : le système est
+provider-neutre (BOB_LIVE_PROVIDER openai|mistral). Précision importante : « Mistral
+OFF » ne visait QUE le nouveau protocole full-duplex v2 (gateway GPT, gates ouverts) —
+PAS Mistral comme fournisseur. AVEC la seule clé Mistral, la voix V1 = chemin Voxtral
+STT/TTS EXISTANT et déjà mesuré en QA métrologie (tour-par-tour éprouvé). Le full-duplex
+(OpenAI Realtime certifié OU Mistral v2) reste OFF en V1 et s'activera en V1.x quand la
+clé OpenAI arrivera OU quand les gates Mistral v2 fermeront. La voix RESTE au cœur de la
+V1 (philosophie papa) — accord GPT requis sur ce périmètre.
+D4 PLAN DE TEST PROCHES : Android = IMMÉDIAT (APK preview EAS, installation directe sans
+compte Google — profil déjà configuré) ; iOS = TestFlight dès le compte Apple (D1).
+Matrice réelle = fondateur + proches, chacun son device : exactement la QA multi-devices
+qu'il nous fallait.
