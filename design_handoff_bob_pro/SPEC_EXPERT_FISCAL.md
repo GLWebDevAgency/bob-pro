@@ -123,3 +123,18 @@ devient utile), jamais bloquant.
 À CHALLENGER PAR GPT : position d'entrée (Argent seul ? rappel Home ?), nombre/ordre des
 questions, résidence Compte vs écran dédié, où vivent les RÉSULTATS Publicodes (sa lane),
 conformité accessibilité/normes du mini-flow.
+
+## UX FLOW — VERDICT GPT 11:30 : GO AVEC 10 AMENDEMENTS (ADOPTÉS, la 1B les applique tous)
+1. Jamais « rémunération exacte / 3 questions » → « affiner ton estimation / quelques infos ».
+2. Argent = entrée primaire ; Home = simple BADGE de fiabilité sur le montant (pas de 2e carte/nag) ; voix et clôture ouvrent le MÊME flow.
+3. Flow DYNAMIQUE par forme/régime (pas de séquence fixe) : d'abord couple forme+régime (micro n'est pas une forme), puis activité (vente/service/BNC/mixte) AVANT ACRE, date début/éligibilité ACRE, VL ; TVA seulement si inconnue et utile ; branches SASU/EURL distinctes ; capital/primes/CCA uniquement au scénario dividendes.
+4. Une décision par écran ; bottom sheet pour 1-2 données ; progression honnête « encore N infos » CALCULÉE ; « Plus tard » annonce la conséquence (« Bob restera prudent ») et n'accepte jamais une hypothèse.
+5. Résidence : carte Compte → écran dédié « Mon profil fiscal » (INPUTS seulement) ; les RÉSULTATS Publicodes vivent sur un écran Simulation accessible depuis Argent (scénarios + trace) ; Argent = snapshot résumé ; Home = un montant ; la voix résume et ouvre.
+6. Chaque donnée : source + date + statut en TEXTE (Confirmé/À confirmer/Manquant — jamais couleur/coche seules, a11y) ; priorité des sources cabinet/officiel à spécifier ; correction utilisateur AUDITÉE. Chaque résultat : certified|estimated|unsupported + date effective + ruleset + hypothèses + stale.
+7. La voix ne mute JAMAIS directement : proposition opaque + diff + confirmation (tap/voix), parité manuelle exacte.
+8. A11y : cibles 44 pt, Dynamic Type, focus VoiceOver par question, progression annoncée, contrastes, reduce-motion, clavier, erreurs inline + résumé, AUCUNE interaction temporisée ; states offline/error/retry/stale.
+9. Foyer/revenus : optionnels avec FINALITÉ affichée + suppression possible (RGPD) ; net après IR = fourchette/indisponible si incomplet.
+10. Rappels soumis au pressure ledger existant.
+
+## PUBLICODES — CONTRE-REVUE GPT 11:27 (fait foi, amende le spike) : GO paquet serveur-only DERRIÈRE FLAG SHADOW, exposition prod NO-GO en l'état.
+Bloqueurs intégrés au service en construction : date d'évaluation INJECTÉE explicitement (le paquet embarque 01/06/2026 par défaut — ACRE/replays faux sinon) ; missingVariables/warnings EXPOSÉS + couverture certified|estimated|unsupported (les cas du spike rendaient des nombres avec 11-16 missing) ; wrapper evaluateRule typé + manifest allowlisté + getRule au boot + goldens ; CalculationTraceV1 normalisé (jamais l'AST brut, hors semver) + artefact rejouable (versions, date, inputs, hypothèses, warnings, résidu inversion) ; bench réel : SASU/inversion ~76 ms → concurrence bornée ; réconciliation avec le moteur micro core existant (test comparatif documenté) ; aucun dottedName côté LLM/client ; upgrade = shadow + diff + revue + rollback.
