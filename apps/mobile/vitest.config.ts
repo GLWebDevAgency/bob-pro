@@ -3,6 +3,15 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     environment: 'node',
-    include: ['src/realtime/**/*.test.ts', 'src/agent/**/*.test.ts', 'src/audio/**/*.test.ts'],
+    include: [
+      'src/realtime/**/*.test.ts',
+      'src/agent/**/*.test.ts',
+      'src/audio/**/*.test.ts',
+      'src/auth-recovery/**/*.test.ts',
+      'src/data/**/*.test.ts',
+      'src/assistant/**/*.test.ts',
+      'src/voice-flow/**/*.test.ts',
+      'src/fiscal/**/*.test.ts',
+    ],
   },
 });

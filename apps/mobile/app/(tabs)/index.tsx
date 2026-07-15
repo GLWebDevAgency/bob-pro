@@ -63,6 +63,7 @@ import { CollectInvoiceButton } from '../../src/components/CollectInvoiceButton'
 import { LatestValueDigestCard } from '../../src/engagement/ValueDigestCard';
 import { LatestTrialReportCard } from '../../src/monetization/TrialReportCard';
 import { usePublishAgentContext, type AgentContext, type AgentEntityRef } from '../../src/agent';
+import { useFiscalProfileFlow } from '../../src/fiscal/use-fiscal-profile-flow';
 import {
   CalendarIcon,
   ChevronRightIcon,
@@ -312,6 +313,9 @@ export default function Aujourdhui() {
   const invoices = useInvoices();
   // C25 : fil de notifications réel (queries partagées avec /notifications — coût nul en plus).
   const notifications = useNotificationsFeed();
+  // SPEC_EXPERT_FISCAL amendement 2 : Home = simple badge de fiabilité sur le montant, PAS de
+  // 2ᵉ carte — le badge et la voix ouvrent le MÊME mini-flow que la carte d'Argent.
+  const fiscalFlow = useFiscalProfileFlow();
 
   // « Fait » togglable local — le moteur de tâches arrive avec C25 (relances).
   const [done, setDone] = useState<Record<string, boolean>>({});
@@ -361,7 +365,7 @@ export default function Aujourdhui() {
       ],
     };
   }, [today.priorities]);
-  usePublishAgentContext(agentContext);
+  usePublishAgentContext(agentContext, {}, { affordances: fiscalFlow.voiceAffordances });
 
   // KPI : uniquement des agrégats dérivés des queries réelles — sinon tuile vide « — ».
   const owedCents = customers.data?.reduce((sum, c) => sum + c.outstanding, 0);
@@ -438,6 +442,15 @@ export default function Aujourdhui() {
             chevronIcon={<ChevronRightIcon color={colors.slate400} size={15} strokeWidth={2.4} />}
             voiceIcon={<DepositIcon color={semantic.success} size={16} />}
             onPress={() => router.push('/(tabs)/argent')}
+            {...(fiscalFlow.hasPending
+              ? {
+                  badge: {
+                    label: t('fiscal.badge.label', { personality }),
+                    accessibilityHint: t('fiscal.badge.accessibilityHint', { personality }),
+                    onPress: fiscalFlow.openFlow,
+                  },
+                }
+              : {})}
           />
         ) : (
           <HeroPlaceholder loading={cashflow.isLoading} />
@@ -622,6 +635,7 @@ export default function Aujourdhui() {
         onHide={() => setToast(null)}
         icon={<Feather name="check" size={16} color={colors.surface} />}
       />
+      {fiscalFlow.sheets}
     </View>
   );
 }

@@ -157,6 +157,7 @@ export default function RootLayout() {
                               <Stack.Screen name="facture/[id]" />
                               <Stack.Screen name="client/[id]" />
                               <Stack.Screen name="compte" />
+                              <Stack.Screen name="profil-fiscal" />
                               <Stack.Screen name="catalogue" />
                               <Stack.Screen name="reglages-facturation" />
                               <Stack.Screen name="diagnostic" />

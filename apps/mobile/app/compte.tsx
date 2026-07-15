@@ -69,6 +69,7 @@ import {
 import { useIdentity } from '../src/data/identity';
 import { useAuth } from '../src/data/auth';
 import { useProfile, useSubscription } from '../src/data/hooks';
+import { useFiscalProfileFlow } from '../src/fiscal/use-fiscal-profile-flow';
 import {
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -137,6 +138,9 @@ export default function Compte() {
   const { enabled: authEnabled, session, signOut } = useAuth();
   const profile = useProfile();
   const subscription = useSubscription();
+  // SPEC_EXPERT_FISCAL §UX FLOW amendement 5 : résidence du profil fiscal = carte Compte →
+  // écran dédié /profil-fiscal (query PARTAGÉE — coût nul, déjà chaude si Argent/Home l'ont lue).
+  const fiscalFlow = useFiscalProfileFlow();
   // Onglet adressable (deep link : /compte?tab=abonnement — notifications d'abo, docs).
   // useEffect (pas seulement l'initialiseur) : un deep link doit basculer l'onglet même
   // quand l'écran est déjà monté (tap sur une notification, app au premier plan).
@@ -320,6 +324,50 @@ export default function Compte() {
                 </Text>
                 <Text style={[font('meta'), { color: colors.slate400, marginTop: 1 }]}>
                   {say('account.billingRowSub')}
+                </Text>
+              </View>
+              <ChevronRightIcon color={colors.slate300} size={17} />
+            </Pressable>
+
+            {/* Mon profil fiscal → écran dédié (SPEC_EXPERT_FISCAL §UX FLOW amendement 5) */}
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`${say('fiscal.account.row')}. ${
+                fiscalFlow.hasPending
+                  ? say(
+                      fiscalFlow.remainingCount === 1 ? 'fiscal.account.rowSubPendingOne' : 'fiscal.account.rowSubPending',
+                      { count: fiscalFlow.remainingCount },
+                    )
+                  : say('fiscal.account.rowSubComplete')
+              }`}
+              onPress={() => router.push('/profil-fiscal')}
+              style={[
+                {
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 11,
+                  backgroundColor: colors.surface,
+                  borderRadius: radius.cardLg,
+                  borderWidth: 1,
+                  borderColor: controls.cardBorder,
+                  padding: 15,
+                  marginBottom: 16,
+                },
+                shadowNative.e1,
+              ]}
+            >
+              <IconTile tone="b2g" size={34} radius={11}>
+                <CurrencyIcon color={semantic.b2g} size={18} />
+              </IconTile>
+              <View style={{ flex: 1 }}>
+                <Text style={[font('sub', 600), { fontSize: 14.5, color: colors.ink800 }]}>{say('fiscal.account.row')}</Text>
+                <Text style={[font('meta'), { color: colors.slate400, marginTop: 1 }]}>
+                  {fiscalFlow.hasPending
+                    ? say(
+                        fiscalFlow.remainingCount === 1 ? 'fiscal.account.rowSubPendingOne' : 'fiscal.account.rowSubPending',
+                        { count: fiscalFlow.remainingCount },
+                      )
+                    : say('fiscal.account.rowSubComplete')}
                 </Text>
               </View>
               <ChevronRightIcon color={colors.slate300} size={17} />

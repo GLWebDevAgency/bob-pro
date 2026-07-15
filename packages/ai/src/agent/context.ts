@@ -51,6 +51,11 @@ export const AGENT_CAPABILITIES = [
   'customer.rename',
   'document.classify',
   'expense.pay',
+  /** BOB EXPERT FISCAL Phase 1B (SPEC_EXPERT_FISCAL.md §UX FLOW) : lecture du profil fiscal du
+   * tenant, et « propose » = la voix construit une PROPOSITION (jamais une écriture directe,
+   * amendement 7) — l'affordance ouvre une confirmation, ne mute jamais elle-même. */
+  'fiscal_profile.read',
+  'fiscal_profile.propose',
 ] as const;
 
 export type AgentCapability = (typeof AGENT_CAPABILITIES)[number];

@@ -21,6 +21,7 @@ import type {
   RemoveQuoteLineInput,
 } from '@bob/core';
 import type { CreateCustomerClientInput, NotificationView, RegisterPaymentClientInput } from '@bob/api-client';
+import type { FiscalProfileFieldPatch, FiscalProfileView } from '@bob/core';
 import { supabaseEnabled } from './supabase';
 import { useAuth } from './auth';
 import { useBobClient } from './client';
@@ -58,6 +59,7 @@ const keys = {
   quote: (id: string) => ['quote', id] as const,
   notifications: ['notifications'] as const,
   notificationUnreadPreview: ['notifications', 'unread-preview'] as const,
+  fiscalProfile: ['fiscal-profile'] as const,
 };
 
 export function useSubscription() {
@@ -244,6 +246,41 @@ export function useFiscalCalendar() {
       const r = await client.getFiscalCalendar();
       if (!r.ok) throw r.error;
       return r.value;
+    },
+  });
+}
+
+/** BOB EXPERT FISCAL Phase 1B (SPEC_EXPERT_FISCAL.md §UX FLOW) : GET /fiscal-profile — chaque
+ * champ porte son statut (source_fiable/confirme_utilisateur/hypothese/manquant, @bob/core
+ * FiscalDatum). Consommée par la carte Argent, le badge Home, l'écran « Mon profil fiscal » et
+ * le mini-flow — UNE seule query partagée (même clé), jamais un profil recalculé par écran. */
+export function useFiscalProfile() {
+  const client = useBobClient();
+  return useQuery({
+    queryKey: keys.fiscalProfile,
+    queryFn: async () => {
+      const r = await client.getFiscalProfile();
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+  });
+}
+
+/** PATCH /fiscal-profile/:field — confirme/corrige UN champ (statut → confirme_utilisateur).
+ * La réponse est le profil COMPLET à jour : on l'écrit directement dans le cache (setQueryData)
+ * plutôt que d'invalider — le serveur fait déjà autorité, pas besoin d'un aller-retour de plus
+ * (mini-flow enchaîne plusieurs patches d'affilée, chaque écran doit voir l'état imMédiat). */
+export function useUpdateFiscalProfileField() {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (patch: FiscalProfileFieldPatch) => {
+      const r = await client.updateFiscalProfileField(patch.field, patch.value);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: (profile: FiscalProfileView) => {
+      qc.setQueryData(keys.fiscalProfile, profile);
     },
   });
 }

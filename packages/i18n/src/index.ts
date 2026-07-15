@@ -6,6 +6,7 @@
 
 import { cabinetFr } from './catalogs/cabinet';
 import { monetizationFr } from './catalogs/monetization';
+import { fiscalFr } from './catalogs/fiscal';
 
 export type Personality = 'pote' | 'pro' | 'direct';
 
@@ -5191,7 +5192,7 @@ const legacyFr = {
   },
 } as const satisfies Record<string, Copy>;
 
-const fr = { ...legacyFr, ...cabinetFr, ...monetizationFr } as const satisfies Record<string, Copy>;
+const fr = { ...legacyFr, ...cabinetFr, ...monetizationFr, ...fiscalFr } as const satisfies Record<string, Copy>;
 
 export type I18nKey = keyof typeof fr;
 

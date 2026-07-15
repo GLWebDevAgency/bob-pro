@@ -75,6 +75,7 @@ import {
 } from '../../src/data/hooks';
 import { useIdentity } from '../../src/data/identity';
 import { useFirstTimeTip } from '../../src/data/tips';
+import { useFiscalProfileFlow } from '../../src/fiscal/use-fiscal-profile-flow';
 
 /** Clé SecureStore du coach-mark « première fois » de cet écran. */
 const TIP_KEY = 'bob.tips.argent.v1';
@@ -384,6 +385,9 @@ export default function Argent() {
   const { personality, colors, semantic } = useTheme();
   const router = useRouter();
   const tip = useFirstTimeTip(TIP_KEY);
+  // SPEC_EXPERT_FISCAL §UX FLOW amendement 1/2 : Argent = entrée PRIMAIRE du mini-flow (carte
+  // douce sous le héros, visible seulement si ≥1 champ non confirmé) — voix parité stricte.
+  const fiscalFlow = useFiscalProfileFlow();
 
   const [scenario, setScenario] = useState<Scenario>('realiste');
   const [horizonKey, setHorizonKey] = useState<HorizonKey>('30');
@@ -460,7 +464,7 @@ export default function Argent() {
       capabilities: ['screen.read', 'cashflow.read', 'customer.read'],
     };
   }, [customers.data]);
-  usePublishAgentContext(agentContext);
+  usePublishAgentContext(agentContext, {}, { affordances: fiscalFlow.voiceAffordances });
 
   const series: CashflowSeriesPoint[] = [];
   if (cash7.data) series.push({ horizon: 7, projection: cash7.data });
@@ -540,6 +544,34 @@ export default function Argent() {
                 {t('argent.dataError', { personality })}
               </Text>
             </Card>
+          ) : null}
+
+          {/* ── Entrée mini-flow profil fiscal (amendement 1/2 : carte douce, jamais
+              « exacte »/« 3 questions », visible seulement si ≥1 champ non confirmé) ──── */}
+          {fiscalFlow.hasPending ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`${t('fiscal.entry.title', { personality })}. ${t('fiscal.entry.body', { personality })}`}
+              onPress={fiscalFlow.openFlow}
+              style={{ marginTop: 14 }}
+            >
+              <Card radius={18} padding={15}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 11 }}>
+                  <IconTile tone="b2g" size={34} radius={11}>
+                    <Ionicons name="sparkles" size={16} color={semantic.b2g} />
+                  </IconTile>
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text style={{ ...font('cardTitle'), fontSize: 14.5, color: colors.ink800 }}>
+                      {t('fiscal.entry.title', { personality })}
+                    </Text>
+                    <Text style={[font('meta'), { color: colors.slate400, marginTop: 2, lineHeight: 16 }]}>
+                      {t('fiscal.entry.body', { personality })}
+                    </Text>
+                  </View>
+                  <Feather name="chevron-right" size={16} color={colors.slate400} />
+                </View>
+              </Card>
+            </Pressable>
           ) : null}
 
           {/* ── Grand-livre « LE SOLDE MENT » ───────────────────────────────── */}
@@ -1015,6 +1047,7 @@ export default function Argent() {
       <Fab onPress={() => router.push('/devis/new')} accessibilityLabel="Nouveau devis" />
 
       <FirstTimeTip visible={tip.visible} onDismiss={tip.dismiss} />
+      {fiscalFlow.sheets}
     </View>
   );
 }
