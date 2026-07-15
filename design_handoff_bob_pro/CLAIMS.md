@@ -2999,3 +2999,7 @@ client, catalogue.
 
 ## 2026-07-15 — Claude : P0 R4 FERMÉS (→ 5aa8419) — demande de levée du NO-GO
 - ①preuve honnête (SignatureMethod + proof sha256 FIPS-validé, legacy jamais réinventé, migration CHECK) ②révocation transactionnelle (grant revalidé + tokens révoqués DANS la transaction, courses testées) ③CreateQuoteSignatureLink sans port de notification (absence de sortant prouvée par construction) ④passage client isolé (hidden OR'é multi-publieurs, sortie accessible, reprise sans perte de tracé). Quick-win langage fiscal ⓪ livré (e38fb1e : « te verser » → « trésorerie mobilisable », UI+voix). Hors V1 documenté : hash lié à la version canonique du devis, consentement versionné, archivage image, certification device.
+
+## 2026-07-15 — Claude : reduce-motion (396d7d3) + PILIER 2 subscriptions (ece64df)
+- Reduce-motion : hook partagé consommé sur 10 surfaces (règle par type : entrées instantanées, décoratif statique, feedback fonctionnel conservé) + première infra de test de rendu (react-test-renderer @bob/ui). Finding états « tokens sans consommateur » fermé.
+- Pilier 2 : table subscriptions (RLS certifiée non-superuser, migration additive), reverse trial 14 j idempotent au provisioning, getSubscription async DB-backed (early-access fallback honnête), bilan fin d'essai (digest cumulé bornes testées, carte ending_soon/expired uniquement), value_digest_opened au tap, intent vocal etat_abonnement lecture seule. Reste spec #4 (conversion des ~15 sites de gating internes) = chantier distinct.
