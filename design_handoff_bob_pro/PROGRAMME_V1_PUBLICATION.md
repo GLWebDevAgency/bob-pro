@@ -101,3 +101,9 @@ sniping) ; ②recherche INPI manuelle classes 9/35/36/42 sur « NICO » avant d�
 V1 : app.json (name/slug), bundle id AVANT 1re soumission (fr.nicoapp.* à arbitrer),
 toutes les occurrences UI/i18n « Bob » → « Nico » (catalogues ×3 humeurs, personnage,
 prompts IA, docs stores) — le nom de code interne du repo (bob-pro) peut rester.
+
+## Dette technique release actée 16/07 (à solder avant signature publiable)
+- ERROR_REPORTER_WEBHOOK_URL sur Railway = placeholder (/health) — poser un vrai webhook
+  d'alerting (Slack/Discord/mail) avant la V1. S'inscrit dans B4 (observabilité).
+- Railway STAGING reste sur l'ancienne révision — à aligner ou décommissionner (une seule
+  vérité d'environnement de démo).
