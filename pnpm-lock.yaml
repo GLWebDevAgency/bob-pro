@@ -73,6 +73,9 @@ importers:
       jose:
         specifier: ^5.9.6
         version: 5.10.0
+      modele-social:
+        specifier: 11.0.0
+        version: 11.0.0(publicodes@1.10.1)
       pdf-lib:
         specifier: ^1.17.1
         version: 1.17.1
@@ -82,6 +85,9 @@ importers:
       prom-client:
         specifier: ^15.1.3
         version: 15.1.3
+      publicodes:
+        specifier: 1.10.1
+        version: 1.10.1
       reflect-metadata:
         specifier: ^0.2.2
         version: 0.2.2
@@ -4249,6 +4255,11 @@ packages:
   mlly@1.8.2:
     resolution: {integrity: sha512-d+ObxMQFmbt10sretNDytwt85VrbkhhUA/JBGm1MPaWJ65Cl4wOgLaB1NYvJSZ0Ef03MMEU/0xpPMXUIQ29UfA==}
 
+  modele-social@11.0.0:
+    resolution: {integrity: sha512-HiahjsuCmOwnAD3Dq7tfzRDtvxKFsRVcmeFLFO9pTBb3//gZOs6Gcw4W8nyEndN7i7Mtg2Rby50XH4Q8eXtYCg==}
+    peerDependencies:
+      publicodes: ^1.0.4
+
   motion-dom@12.42.2:
     resolution: {integrity: sha512-5gIMWLp/PycBtJRJWRgjxke5n8dlvkSn2DrYW+tr3XcqAZY1xZh6BJyooJXCM8wdfM7wfMjkBJNLge1CKPUIRA==}
 
@@ -4617,6 +4628,9 @@ packages:
   proxy-addr@2.0.7:
     resolution: {integrity: sha512-llQsMLSUDUPT44jdrU/O37qlnifitDP+ZwrmmZcoSKyLKvtZxpyV0n2/bD/N4tBAAZ/gJEdZU7KMraoK1+XYAg==}
     engines: {node: '>= 0.10'}
+
+  publicodes@1.10.1:
+    resolution: {integrity: sha512-NCEZgB5YfNyw5km71mYtpNdedeyt0EmB73X1h2k7bewwTLAlM/C6dsgRbw2R/si/nuob3Oh1wTswjM3A8Qjfrw==}
 
   punycode@2.3.1:
     resolution: {integrity: sha512-vYt7UD1U9Wg6138shLtLOvdAu+8DsC/ilFtEVHcH+wydcSpNE20AfSOduf6MkRFahL5FY7X1oU7nKVZFtfq8Fg==}
@@ -10002,6 +10016,10 @@ snapshots:
       pkg-types: 1.3.1
       ufo: 1.6.4
 
+  modele-social@11.0.0(publicodes@1.10.1):
+    dependencies:
+      publicodes: 1.10.1
+
   motion-dom@12.42.2:
     dependencies:
       motion-utils: 12.39.0
@@ -10354,6 +10372,8 @@ snapshots:
     dependencies:
       forwarded: 0.2.0
       ipaddr.js: 1.9.1
+
+  publicodes@1.10.1: {}
 
   punycode@2.3.1: {}
 

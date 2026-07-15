@@ -96,6 +96,18 @@ const schema = z.object({
   JOB_CABINET_IDS: z.string().optional(),
   CABINET_INVITATION_WORKER_USER_ID: z.string().uuid().optional(),
   ERROR_REPORTER_WEBHOOK_URL: z.string().url().optional(),
+  // BOB EXPERT FISCAL — service d'évaluation Publicodes serveur (SPIKE_PUBLICODES_20260715.md).
+  // Shadow par défaut ('false') : le moteur Publicodes/modele-social embarque des trous de
+  // couverture documentés (activités mixtes, PLR réglementées, non-résidents) et le format de
+  // réponse (§V2 co-challenge GPT) attend encore le cadrage UX — pas d'exposition prod tant que
+  // ce flag n'est pas explicitement activé.
+  FISCAL_PUBLICODES_SIMULATIONS_ENABLED: z.enum(['true', 'false']).default('false'),
+  // Borne le nombre d'évaluations Publicodes exécutées "en vol" simultanément (chaque évaluation
+  // est synchrone/mono-thread : ~5 ms pour le cas micro, ~40 ms mesurés pour l'inversion
+  // numérique SASU — cf. publicodes-evaluation.service.ts). Ne parallélise rien (Node reste
+  // mono-thread) : évite qu'une rafale de requêtes ne monopolise la boucle d'événements en continu
+  // (dont /voice/realtime, sur le même process).
+  FISCAL_PUBLICODES_MAX_CONCURRENCY: z.coerce.number().int().min(1).max(32).default(4),
 });
 
 export type Env = z.infer<typeof schema>;
@@ -368,6 +380,12 @@ export const hasDeepseekKey = (): boolean => !!process.env.DEEPSEEK_API_KEY;
 export const hasMistralKey = (): boolean => !!process.env.MISTRAL_API_KEY;
 export const hasOpenaiKey = (): boolean => !!process.env.OPENAI_API_KEY;
 export const isDemoMode = (): boolean => process.env.DEMO_MODE !== 'false';
+export const isFiscalPublicodesSimulationsEnabled = (): boolean =>
+  process.env.FISCAL_PUBLICODES_SIMULATIONS_ENABLED === 'true';
+export const fiscalPublicodesMaxConcurrency = (): number => {
+  const raw = Number(process.env.FISCAL_PUBLICODES_MAX_CONCURRENCY);
+  return Number.isInteger(raw) && raw >= 1 && raw <= 32 ? raw : 4;
+};
 
 export function jobCompanyIds(): string[] {
   const raw = process.env.JOB_COMPANY_IDS;

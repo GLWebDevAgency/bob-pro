@@ -25,6 +25,7 @@ import { CabinetController } from './cabinet/cabinet.controller';
 import { CabinetApiService } from './cabinet/cabinet-api.service';
 import { CabinetInvitationDeliveryScheduler } from './cabinet/cabinet-invitation-delivery.scheduler';
 import { RealtimeVoiceModule } from './voice/realtime/realtime.module';
+import { FiscalModule } from './fiscal/fiscal.module';
 import {
   HealthController,
   CustomersController,
@@ -62,6 +63,7 @@ import {
     ObservabilityModule,
     PersistenceModule,
     RealtimeVoiceModule,
+    FiscalModule,
   ],
   controllers: [
     HealthController,
