@@ -105,7 +105,8 @@ export function waitForVoicePermissionLifecycleStabilization(): Promise<void> {
   });
 }
 
-async function voiceMayOpenMicrophoneAfterPermission(): Promise<boolean> {
+/** Porte commune legacy/Realtime : aucun moteur ne passe ON hors état applicatif actif. */
+export async function voiceMayActivateMicrophone(): Promise<boolean> {
   await waitForVoicePermissionLifecycleStabilization();
   return AppState.currentState === 'active';
 }
@@ -313,7 +314,7 @@ export function useVoiceInput(
           report('denied', 'Micro', 'Autorise le micro pour parler à Bob.');
           return false;
         }
-        if (!(await voiceMayOpenMicrophoneAfterPermission())) {
+        if (!(await voiceMayActivateMicrophone())) {
           if (matchesVoiceLease(lease, generation)) releaseGeneration(generation);
           return false;
         }
@@ -332,7 +333,7 @@ export function useVoiceInput(
           releaseGeneration(generation);
           return false;
         }
-        if (!(await voiceMayOpenMicrophoneAfterPermission())) {
+        if (!(await voiceMayActivateMicrophone())) {
           if (matchesVoiceLease(lease, generation)) releaseGeneration(generation);
           return false;
         }

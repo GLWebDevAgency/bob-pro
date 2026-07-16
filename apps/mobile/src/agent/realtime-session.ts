@@ -86,6 +86,11 @@ export interface RealtimeSessionDeps {
   readonly createControlGate: (
     currentFence: () => RealtimePublishedFence | null,
   ) => RealtimeControlGateLike;
+  /**
+   * Porte lifecycle applicative, évaluée juste avant CHAQUE ouverture du micro.
+   * `false` ferme la mission en background, sans lancer un fallback audio invisible.
+   */
+  readonly allowMicrophoneActivation: () => Promise<boolean>;
 }
 
 export type RealtimeStartOutcome = 'realtime' | 'unavailable' | 'fallback';
@@ -203,7 +208,11 @@ export class RealtimeSessionController {
       );
       return;
     }
-    transport.setMicrophoneEnabled(true);
+    await this.openMicrophoneIfActive(
+      controllerGeneration,
+      primaryGeneration,
+      transport,
+    );
   }
 
   /** Commit semi-duplex : conserve socket, feed audité et contrôle jusqu'à la réponse. */
@@ -399,6 +408,28 @@ export class RealtimeSessionController {
     }
   }
 
+  private async openMicrophoneIfActive(
+    controllerGeneration: number,
+    primaryGeneration: number,
+    transport: RealtimeTransportLike,
+  ): Promise<boolean> {
+    let allowed = false;
+    try {
+      allowed = await this.deps.allowMicrophoneActivation();
+    } catch {
+      allowed = false;
+    }
+    if (!this.isCurrentPrimary(controllerGeneration, primaryGeneration, transport)) return false;
+    if (!allowed) {
+      // L'application n'est plus visible : aucun repli legacy ne doit démarrer en arrière-plan.
+      await this.stop('background');
+      return false;
+    }
+    if (!this.isCurrentPrimary(controllerGeneration, primaryGeneration, transport)) return false;
+    transport.setMicrophoneEnabled(true);
+    return true;
+  }
+
   /** L'ORDRE du contrat, FAIL-CLOSED (P0 GPT 20:24) : micro ON UNIQUEMENT si handle présent
    * ET PUT contexte confirmé — sinon stop + repli. Jamais une oreille sans contexte publié. */
   private async publishThenOpenMicrophone(): Promise<void> {
@@ -435,6 +466,10 @@ export class RealtimeSessionController {
       );
       return;
     }
-    transport.setMicrophoneEnabled(true);
+    await this.openMicrophoneIfActive(
+      controllerGeneration,
+      primaryGeneration,
+      transport,
+    );
   }
 }

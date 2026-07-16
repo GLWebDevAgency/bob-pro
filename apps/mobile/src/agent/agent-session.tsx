@@ -19,6 +19,7 @@ import { useBobClient } from '../data/client';
 import {
   useSpeak,
   useVoiceInput,
+  voiceMayActivateMicrophone,
   voicePermissionRequestInFlight,
   waitForVoicePermissionLifecycleStabilization,
   waitForVoicePermissionRequests,
@@ -199,6 +200,7 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
             const fence = currentFence();
             return fence === null ? null : fence;
           }),
+        allowMicrophoneActivation: voiceMayActivateMicrophone,
       },
       {
         onPhase: (phase) => {

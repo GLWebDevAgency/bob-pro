@@ -47,6 +47,7 @@ function harness(
       | ReturnType<typeof ok<{ revision: number; contextDigest: string }>>
       | { ok: false; error: { kind: 'dependency'; port: string; cause: string } }
     >;
+    allowMicrophoneActivation?: () => Promise<boolean>;
   } = {},
 ) {
   const log: string[] = [];
@@ -164,6 +165,8 @@ function harness(
         },
         close: () => log.push('gate:close'),
       }),
+      allowMicrophoneActivation: input.allowMicrophoneActivation
+        ?? (async () => true),
     },
     hooks,
   );
@@ -202,6 +205,37 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     const micOnIndex = log.indexOf('mic:true');
     expect(publishIndex).toBeGreaterThan(-1);
     expect(micOnIndex).toBeGreaterThan(publishIndex); // JAMAIS le micro avant le contexte
+  });
+
+  it('attend le vrai foreground avant le micro Realtime', async () => {
+    let allow!: (value: boolean) => void;
+    const permissionLifecycle = new Promise<boolean>((resolve) => { allow = resolve; });
+    const { controller, log, emit } = harness({
+      allowMicrophoneActivation: () => permissionLifecycle,
+    });
+    await controller.start();
+    emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await Promise.resolve();
+    expect(log).toContain('publish:h-42:r1');
+    expect(log).not.toContain('mic:true');
+
+    allow(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(log).toContain('mic:true');
+  });
+
+  it('ferme sans fallback audio si l’app reste en background après la permission', async () => {
+    const { controller, log, emit } = harness({
+      allowMicrophoneActivation: async () => false,
+    });
+    await controller.start();
+    emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(log).not.toContain('mic:true');
+    expect(log).toContain('orchestrator:stop');
+    expect(log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
+    expect(controller.active).toBe(false);
   });
 
   it('handle indisponible → FAIL-CLOSED : pas de publication, JAMAIS de micro, stop + repli', async () => {
