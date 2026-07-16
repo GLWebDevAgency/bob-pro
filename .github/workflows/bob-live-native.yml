@@ -1,0 +1,101 @@
+name: Bob Live Native Contracts
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/bob-live-native.yml
+      - apps/mobile/app.json
+      - apps/mobile/package.json
+      - apps/mobile/modules/bob-live-audio/**
+      - apps/mobile/src/agent/**
+      - apps/mobile/src/audio/**
+      - apps/mobile/src/realtime/**
+      - packages/ai/src/realtime/**
+      - pnpm-lock.yaml
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/bob-live-native.yml
+      - apps/mobile/app.json
+      - apps/mobile/package.json
+      - apps/mobile/modules/bob-live-audio/**
+      - apps/mobile/src/agent/**
+      - apps/mobile/src/audio/**
+      - apps/mobile/src/realtime/**
+      - packages/ai/src/realtime/**
+      - pnpm-lock.yaml
+
+concurrency:
+  group: bob-live-native-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android-contract:
+    name: Android module + wire contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      CI: "true"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 9.12.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.18.0
+          cache: pnpm
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4.8.0
+        with:
+          distribution: temurin
+          java-version: "17"
+      - run: pnpm install --frozen-lockfile
+      - name: Typecheck the mobile and native TypeScript boundaries
+        run: |
+          pnpm --filter @bob/mobile typecheck
+          pnpm --dir apps/mobile exec tsc --noEmit -p modules/bob-live-audio/tsconfig.json
+      - name: Run the native wire-contract suite
+        run: pnpm --dir apps/mobile exec vitest run --config modules/bob-live-audio/vitest.config.ts
+      - name: Verify Expo autolinking on both platforms
+        run: |
+          pnpm --dir apps/mobile exec expo-modules-autolinking verify --platform android
+          pnpm --dir apps/mobile exec expo-modules-autolinking verify --platform apple
+      - name: Generate the ephemeral Android project
+        run: pnpm --filter @bob/mobile exec expo prebuild --platform android --no-install
+      - name: Compile the Android bridge and run its deterministic VAD tests
+        working-directory: apps/mobile/android
+        env:
+          GRADLE_USER_HOME: ${{ runner.temp }}/bob-live-gradle
+        run: ./gradlew :bob-live-audio:testDebugUnitTest --no-daemon --stacktrace
+
+  swift-contract:
+    name: Swift bridge + VAD contract
+    runs-on: macos-14
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Parse the Expo Swift bridge
+        working-directory: apps/mobile/modules/bob-live-audio
+        run: swiftc -parse ios/BobLiveAudioModule.swift
+      - name: Certify the capture watchdog fence
+        working-directory: apps/mobile/modules/bob-live-audio
+        run: |
+          swiftc -module-cache-path "${RUNNER_TEMP}/bob-live-watchdog-cache" \
+            ios/BobLiveAudioWatchdogFence.swift tests/swift/main.swift \
+            -o "${RUNNER_TEMP}/bob-live-watchdog-tests"
+          "${RUNNER_TEMP}/bob-live-watchdog-tests"
+      - name: Run the deterministic Swift VAD contract
+        working-directory: apps/mobile/modules/bob-live-audio
+        run: |
+          swiftc -module-cache-path "${RUNNER_TEMP}/bob-live-vad-cache" \
+            ios/BobLiveVad.swift tests/swift/vad-main.swift \
+            -o "${RUNNER_TEMP}/bob-live-vad-tests"
+          "${RUNNER_TEMP}/bob-live-vad-tests"
