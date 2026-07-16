@@ -13,6 +13,7 @@ import {
   HttpException,
   HttpStatus,
   HttpCode,
+  Req,
   StreamableFile,
 } from '@nestjs/common';
 import type {
@@ -38,10 +39,18 @@ import { BackendService, type FacturXImportDecision, type UploadDocumentInput } 
 import { RelanceService } from './jobs/relance.service';
 import { DocumentArchiveService } from './jobs/document-archive.service';
 import { NotificationsApiService } from './notifications/notifications-api.service';
+import {
+  PUBLIC_PUSH_CAPABILITY_LIMIT,
+  PUBLIC_PUSH_CAPABILITY_THROTTLER,
+  PUBLIC_PUSH_IP_LIMIT,
+  PUBLIC_PUSH_THROTTLE_TTL_MS,
+  PublicPushCapabilityThrottle,
+} from './notifications/push-revocation-throttle';
 import { DigestService } from './jobs/digest.service';
 import { unwrap } from './http/result';
 import { readReleaseMetadata } from './release-metadata';
 import { WithoutTenantPersistenceTransaction } from './persistence/tenant-persistence.interceptor';
+import { clientIpSourceForRequest } from './config/client-ip';
 
 function assertJsonObjectBody(value: unknown): asserts value is Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -749,11 +758,16 @@ export class HealthController {
   }
 
   @Get('ready')
-  async ready() {
+  async ready(@Req() request: Record<string, unknown>) {
     // C24b : sonde SANS tenant (aucun Principal sur /health ; plus de repli société de démo).
     const r = await this.backend.readiness();
     if (!r.ok) throw new HttpException({ ready: false, error: r.error }, HttpStatus.SERVICE_UNAVAILABLE);
-    return { ready: true, customers: r.value.customers, release: readReleaseMetadata() };
+    return {
+      ready: true,
+      customers: r.value.customers,
+      release: readReleaseMetadata(),
+      network: { clientIpSource: clientIpSourceForRequest(request) },
+    };
   }
 }
 
@@ -1397,7 +1411,14 @@ export class PublicPushRevocationsController {
 
   @Post()
   @HttpCode(HttpStatus.ACCEPTED)
-  @Throttle({ default: { limit: 8, ttl: 60_000 } })
+  @PublicPushCapabilityThrottle()
+  @Throttle({
+    default: { limit: PUBLIC_PUSH_IP_LIMIT, ttl: PUBLIC_PUSH_THROTTLE_TTL_MS },
+    [PUBLIC_PUSH_CAPABILITY_THROTTLER]: {
+      limit: PUBLIC_PUSH_CAPABILITY_LIMIT,
+      ttl: PUBLIC_PUSH_THROTTLE_TTL_MS,
+    },
+  })
   @WithoutTenantPersistenceTransaction()
   @Header('Cache-Control', 'no-store, private, max-age=0')
   @Header('Pragma', 'no-cache')

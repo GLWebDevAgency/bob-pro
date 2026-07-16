@@ -582,6 +582,24 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Push binding v2 — certification PostgreSQ
       SELECT "bindingId" FROM "devices"
     `);
     expect(wrongGeneration).toEqual([]);
+    const wrongToken = await withDeviceContext(0, companyA, {
+      operation: 'provider-revoke-lookup',
+      token: aSibling.token,
+      bindingId: a.bindingId,
+      generation: a.generation,
+    }, () => workers[0]!.client().$queryRaw<Array<{ bindingId: string }>>`
+      SELECT "bindingId" FROM "devices"
+    `);
+    expect(wrongToken).toEqual([]);
+    const wrongBinding = await withDeviceContext(0, companyA, {
+      operation: 'provider-revoke-lookup',
+      token: a.token,
+      bindingId: aSibling.bindingId,
+      generation: a.generation,
+    }, () => workers[0]!.client().$queryRaw<Array<{ bindingId: string }>>`
+      SELECT "bindingId" FROM "devices"
+    `);
+    expect(wrongBinding).toEqual([]);
     const wrongTenant = await withDeviceContext(0, companyB, {
       operation: 'provider-revoke-lookup',
       token: a.token,
@@ -605,6 +623,9 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Push binding v2 — certification PostgreSQ
   it('policies UPDATE exactes : aucune OR permissive ne contourne opération, high-water ou trigger', async () => {
     const value = fixture(companyA, 'user-a', `ExponentPushToken[${randomUUID().replaceAll('-', '')}]`);
     await bind(0, value);
+    const beforeMutationAttempts = await admin.pushInstallation.findUniqueOrThrow({
+      where: { id: value.installationId },
+    });
 
     await expect(withDeviceContext(0, companyA, {
       operation: 'revoke-public',
@@ -631,6 +652,20 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Push binding v2 — certification PostgreSQ
       SET "maxGeneration" = 2, "updatedAt" = CURRENT_TIMESTAMP
       WHERE "id" = ${value.installationId}::uuid
     `)).rejects.toThrow();
+
+    await expect(withDeviceContext(0, companyA, {
+      operation: 'revoke-auth',
+      installationId: value.installationId,
+      secretHash: value.secretHash,
+      generation: value.generation,
+      userId: value.userId,
+    }, () => workers[0]!.client().$executeRaw`
+      UPDATE "push_installations"
+      SET "currentBindingId" = NULL, "currentCompanyId" = NULL, "currentUserId" = NULL,
+          "lastConfirmedAt" = COALESCE("lastConfirmedAt", CURRENT_TIMESTAMP) + INTERVAL '1 second',
+          "updatedAt" = CURRENT_TIMESTAMP
+      WHERE "id" = ${value.installationId}::uuid
+    `)).rejects.toThrow('revocation cannot rewrite confirmation time');
 
     await expect(withDeviceContext(0, companyA, {
       operation: 'close-account',
@@ -682,7 +717,11 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Push binding v2 — certification PostgreSQ
     `);
     expect(deliverMutationCount).toBe(0);
     await expect(admin.pushInstallation.findUnique({ where: { id: value.installationId } }))
-      .resolves.toMatchObject({ maxGeneration: 1, currentBindingId: value.bindingId });
+      .resolves.toMatchObject({
+        maxGeneration: 1,
+        currentBindingId: value.bindingId,
+        lastConfirmedAt: beforeMutationAttempts.lastConfirmedAt,
+      });
   });
 
   it('certifie schéma, FORCE RLS, policies v2 et absence de capacité GUC résiduelle', async () => {

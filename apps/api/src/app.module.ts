@@ -13,6 +13,7 @@ import { documentIntelligenceProvider } from './documents/document-intelligence'
 import { notifierProvider } from './notifications/notifier';
 import { expoPushProvider } from './notifications/expo-push';
 import { NotificationsApiService } from './notifications/notifications-api.service';
+import { createApiThrottlerOptions } from './notifications/push-revocation-throttle';
 import { RelanceService } from './jobs/relance.service';
 import { DigestService } from './jobs/digest.service';
 import { DocumentArchiveService } from './jobs/document-archive.service';
@@ -61,7 +62,7 @@ import {
 @Module({
   imports: [
     ScheduleModule.forRoot(),
-    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 100 }]),
+    ThrottlerModule.forRoot(createApiThrottlerOptions()),
     ObservabilityModule,
     PersistenceModule,
     RealtimeVoiceModule,

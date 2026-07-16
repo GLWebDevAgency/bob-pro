@@ -52,6 +52,8 @@ async function bootstrap(): Promise<void> {
   const env = loadEnv();
   const app = await NestFactory.create<NestExpressApplication>(AppModule, { bufferLogs: true });
   app.useLogger(app.get(AppLogger));
+  // Ne jamais activer `trust proxy` globalement : Railway expose l'IP canonique via X-Real-IP,
+  // consommé et validé uniquement par le throttler. X-Forwarded-For reste donc sans effet.
   // Les documents/audio base64 ont besoin d'une enveloppe plus grande. Toutes les autres routes
   // restent volontairement petites pour rejeter un corps abusif avant guards, throttlers et métier.
   app.useBodyParser('json', { limit: LARGE_JSON_BODY_LIMIT, type: usesLargeJsonBodyParser });

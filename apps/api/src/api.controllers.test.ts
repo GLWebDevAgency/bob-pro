@@ -3,10 +3,46 @@ import { HttpException } from '@nestjs/common';
 import {
   DocumentsController,
   ExpensesController,
+  HealthController,
   PublicSignatureController,
   QuotesController,
 } from './api.controllers';
 import type { BackendService } from './backend.service';
+
+describe('HealthController readiness contract', () => {
+  it('publie la source IP Railway certifiée sans exposer l’adresse cliente', async () => {
+    const railwayId = '01999999-9999-4999-8999-999999999999';
+    for (const key of [
+      'RAILWAY_PROJECT_ID',
+      'RAILWAY_ENVIRONMENT_ID',
+      'RAILWAY_SERVICE_ID',
+      'RAILWAY_DEPLOYMENT_ID',
+      'RAILWAY_REPLICA_ID',
+    ]) {
+      vi.stubEnv(key, railwayId);
+    }
+    const backend = {
+      readiness: vi.fn(async () => ({ ok: true as const, value: { customers: 4 } })),
+    };
+    const controller = new HealthController(backend as unknown as BackendService);
+
+    try {
+      const response = await controller.ready({
+        rawHeaders: ['X-Real-IP', '198.51.100.42'],
+        socket: { remoteAddress: '10.0.0.4' },
+      });
+
+      expect(response).toMatchObject({
+        ready: true,
+        customers: 4,
+        network: { clientIpSource: 'railway-x-real-ip' },
+      });
+      expect(response).not.toHaveProperty('network.clientIp');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});
 
 describe('QuotesController runtime boundary', () => {
   const validBody = {
