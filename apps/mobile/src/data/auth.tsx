@@ -18,6 +18,7 @@ import type { CompanyLookupResult } from '@bob/core';
 import { supabase, supabaseEnabled, getAccessToken } from './supabase';
 import { loadAuthBootstrapWithTimeout } from './auth-bootstrap';
 import { AuthRequestTimeoutError, runAuthRequestWithTimeout } from '../auth-recovery/auth-request';
+import { runBeforeSignOutCleanups } from './session-cleanup';
 import {
   initialPasswordRecoveryState,
   parsePasswordRecoveryUrl,
@@ -440,6 +441,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       updateRecoveredPassword,
       finishPasswordRecovery,
       signOut: async () => {
+        // Les adapters qui ont besoin du JWT courant (notamment la révocation push) passent avant
+        // Supabase signOut. Best-effort et borné : un réseau en panne ne bloque jamais la sortie.
+        await runBeforeSignOutCleanups();
         // La gouvernance de pression est PAR COMPTE : les compteurs de sourdine ne suivent
         // jamais un autre utilisateur sur le même appareil (review 14/07, P2).
         try {

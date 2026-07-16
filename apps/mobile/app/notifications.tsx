@@ -22,9 +22,9 @@
  * · l'écran cadence éditable du proto n'existe pas (pas de réglage serveur) — la mise en demeure
  *   n'est JAMAIS envoyée par le cron : elle attend le geste confirmé ici (relance.medWarning).
  */
-import { useState, useMemo } from 'react';
-import { Pressable, RefreshControl, ScrollView, Text, View } from 'react-native';
-import { useRouter, type Href } from 'expo-router';
+import { useCallback, useState, useMemo } from 'react';
+import { AccessibilityInfo, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native';
+import { useFocusEffect, useRouter, type Href } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   formatEUR,
@@ -59,6 +59,8 @@ import {
   useSendRelance,
   useUnreadNotificationsPreview,
 } from '../src/data/hooks';
+import { usePushPermissionConsent, type PushPermissionConsent } from '../src/data/push';
+import { parseAllowlistedPushRoute } from '../src/data/push-permission-events';
 import { usePublishAgentContext, type AgentContext } from '../src/agent';
 import { useConfirm } from '../src/components/ConfirmSheet';
 import {
@@ -397,6 +399,128 @@ function NotificationsSkeleton() {
   );
 }
 
+/**
+ * Pré-permission contextuelle : explique la valeur avant le prompt natif, sans modal ni
+ * interruption. Après un refus, la carte devient compacte et l'écran reste intégralement
+ * utilisable. Un refus définitif ne mène aux réglages qu'après un nouveau tap explicite.
+ */
+function PushConsentCard({
+  consent,
+  personality,
+  onToast,
+}: {
+  consent: PushPermissionConsent;
+  personality: Personality;
+  onToast: (message: string) => void;
+}) {
+  const { colors, semantic } = useTheme();
+  const { surface, state } = consent;
+  if (surface === 'hidden') return null;
+
+  const copy: {
+    title: I18nKey;
+    body: I18nKey;
+    action: I18nKey;
+  } =
+    surface === 'primer'
+      ? { title: 'notif.pushPrimerTitle', body: 'notif.pushPrimerBody', action: 'notif.pushPrimerAction' }
+      : surface === 'dismissed'
+        ? { title: 'notif.pushDismissedTitle', body: 'notif.pushDismissedBody', action: 'notif.pushPrimerAction' }
+        : surface === 'provisional'
+          ? {
+              title: 'notif.pushProvisionalTitle',
+              body: 'notif.pushProvisionalBody',
+              action: state.canAskAgain === false ? 'notif.pushSettingsAction' : 'notif.pushProvisionalAction',
+            }
+          : surface === 'recovery'
+            ? {
+                title: 'notif.pushUnavailableTitle',
+                body: 'notif.pushUnavailableBody',
+                action: state.authorization === 'blocked' ? 'notif.pushSettingsAction' : 'notif.pushRetryAction',
+              }
+            : {
+                title: 'notif.pushDeniedTitle',
+                body: 'notif.pushDeniedBody',
+                action: surface === 'settings' ? 'notif.pushSettingsAction' : 'notif.pushPrimerAction',
+              };
+
+  const busy = state.operation !== 'idle';
+  const primary = async (): Promise<void> => {
+    const outcome =
+      surface === 'settings' ||
+      (surface === 'provisional' && state.canAskAgain === false) ||
+      (surface === 'recovery' && state.authorization === 'blocked')
+        ? await consent.openSettingsFromUser()
+        : surface === 'recovery'
+          ? await consent.retryFromUser()
+          : await consent.requestFromUser();
+
+    if (outcome === 'registered' || outcome === 'granted') {
+      onToast(t('notif.pushEnabledToast', { personality }));
+    } else if (outcome === 'denied' || outcome === 'blocked') {
+      onToast(t('notif.pushDeniedToast', { personality }));
+    } else if (outcome === 'unavailable') {
+      onToast(t('notif.pushErrorToast', { personality }));
+    } else if (outcome === 'refreshed') {
+      AccessibilityInfo.announceForAccessibility(
+        `${t('notif.pushPrimerTitle', { personality })}. ${t('notif.pushPrimerBody', { personality })}`,
+      );
+    }
+  };
+
+  const later = async (): Promise<void> => {
+    await consent.dismissPrimer();
+    onToast(t('notif.pushDeniedToast', { personality }));
+  };
+
+  return (
+    <Card
+      elevation={surface === 'primer' ? 'e2' : 'e1'}
+      padding={surface === 'primer' ? 16 : 13}
+      style={surface === 'primer' ? { borderColor: semantic.b2g } : undefined}
+    >
+      <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 12 }}>
+        <IconTile tone={surface === 'recovery' ? 'particulier' : 'b2g'} size={34} radius={11}>
+          <SendIcon color={surface === 'recovery' ? semantic.particulier : semantic.b2g} size={16} />
+        </IconTile>
+        <View style={{ flex: 1, gap: 3 }}>
+          {surface === 'primer' ? (
+            <Text style={[font('eyebrow'), { color: semantic.b2g }]}>
+              {t('notif.pushPrimerEyebrow', { personality })}
+            </Text>
+          ) : null}
+          <Text accessibilityLiveRegion="polite" style={[font('label', 700), { color: colors.ink800, fontSize: 15 }]}>
+            {t(copy.title, { personality })}
+          </Text>
+          <Text selectable accessibilityLiveRegion="polite" style={[font('sub'), { color: colors.slate500, lineHeight: 20 }]}>
+            {t(copy.body, { personality })}
+          </Text>
+        </View>
+      </View>
+
+      <View style={{ gap: 8, marginTop: 14 }}>
+        <Button
+          title={t(copy.action, { personality })}
+          variant={surface === 'primer' ? 'primary' : 'secondary'}
+          size={surface === 'primer' ? 'regular' : 'compact'}
+          style={surface === 'primer' ? undefined : { alignSelf: 'flex-start' }}
+          loading={busy}
+          disabled={busy}
+          onPress={() => void primary()}
+        />
+        {surface === 'primer' ? (
+          <Button
+            title={t('notif.pushPrimerLater', { personality })}
+            variant="secondary"
+            disabled={busy}
+            onPress={() => void later()}
+          />
+        ) : null}
+      </View>
+    </Card>
+  );
+}
+
 export default function Notifications() {
   const { colors, semantic, personality } = useTheme();
   const insets = useSafeAreaInsets();
@@ -408,7 +532,15 @@ export default function Notifications() {
   const unreadPreview = useUnreadNotificationsPreview();
   const markAllRead = useMarkNotificationsReadThrough();
   const sendRelance = useSendRelance();
+  const pushConsent = usePushPermissionConsent();
   const [toast, setToast] = useState<string | null>(null);
+
+  // Retour depuis les réglages iOS/Android : relire le statut, sans jamais rouvrir le prompt.
+  useFocusEffect(
+    useCallback(() => {
+      void pushConsent.refreshSilently();
+    }, [pushConsent.refreshSilently]),
+  );
 
   // Bob voit le fil ET les factures du plan réellement affiché. Il peut ainsi lire les
   // notifications, puis cibler honnêtement « relance la facture F-… » sans repli silencieux.
@@ -448,7 +580,8 @@ export default function Notifications() {
         onError: () => setToast(t('notif.markReadError', { personality })),
       });
     }
-    if (item.route !== null) router.push(item.route as Href);
+    const route = parseAllowlistedPushRoute(item.route);
+    if (route !== null) router.push(route as Href);
   };
 
   /** Parité manuel ↔ Bob : preview serveur frais, consentement, puis même commande read-through. */
@@ -546,7 +679,12 @@ export default function Notifications() {
 
       <ScrollView
         style={{ flex: 1 }}
-        contentContainerStyle={{ paddingHorizontal: 18, paddingTop: 14, paddingBottom: insets.bottom + 34 }}
+        contentContainerStyle={{
+          paddingHorizontal: 18,
+          paddingTop: 14,
+          paddingBottom: insets.bottom + 34,
+          gap: 14,
+        }}
         showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl
@@ -557,6 +695,9 @@ export default function Notifications() {
           />
         }
       >
+        {pushConsent.surface === 'primer' ? (
+          <PushConsentCard consent={pushConsent} personality={personality} onToast={setToast} />
+        ) : null}
         {feed.isLoading ? (
           <NotificationsSkeleton />
         ) : feed.isError ? (
@@ -695,6 +836,11 @@ export default function Notifications() {
             ) : null}
           </View>
         )}
+        {/* Après un refus ou « plus tard », l'affordance reste récupérable mais quitte le haut
+            de page : aucun nag répété, seulement un réglage passif en fin de fil. */}
+        {pushConsent.surface !== 'hidden' && pushConsent.surface !== 'primer' ? (
+          <PushConsentCard consent={pushConsent} personality={personality} onToast={setToast} />
+        ) : null}
       </ScrollView>
 
       <Toast

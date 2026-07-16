@@ -142,9 +142,10 @@ export default function RootLayout() {
                   (lookup SIRET public) en a besoin AVANT toute session. */}
               <BobClientProvider>
                 <AppReadyGate fontsReady={fontsReady}>
+                  {/* Racine durable : reste montée sur login/logout pour rejouer les tombstones
+                      publics et invalider l'ancien owner avant tout nouveau tenant. */}
+                  <PushNotificationsBridge />
                   <AuthGate>
-                    {/* C25 : token push Expo au boot connecté + deep link au tap (dégradé honnête Expo Go). */}
-                    <PushNotificationsBridge />
                     <QuoteDraftProvider>
                       <AgentContextProvider>
                         <AgentSessionProvider>
