@@ -24,7 +24,14 @@ export function agentContextSemanticKey(context: AgentContext): string {
   ]);
 }
 
-/** `inactive` est transitoire sur iOS ; seul le vrai background ferme la mission. */
-export function shouldStopAgentSessionForAppState(state: string): boolean {
-  return state === 'background';
+/**
+ * `inactive` est transitoire sur iOS. Android peut, lui, publier `background` pendant la boîte
+ * système de permission micro : cette transition ne doit jamais tuer la session que l'utilisateur
+ * vient précisément d'ouvrir. Le vrai background hors permission reste autoritaire.
+ */
+export function shouldStopAgentSessionForAppState(
+  state: string,
+  permissionRequestInFlight = false,
+): boolean {
+  return state === 'background' && !permissionRequestInFlight;
 }

@@ -3,7 +3,7 @@
  * réf design_handoff_bob_pro/Bob Pro.dc.html). Composition 100 % @bob/ui :
  * AppHeaderNavy (halos radiaux) → FloatingBalanceCard (geste signature) →
  * « À régler aujourd'hui » (PriorityCard ; conformité = carte info lavande, sans checkbox) →
- * « En un coup d'œil » (KpiTile ×4 iconées) → « Vite fait » (QuickAction ×4) → footer.
+ * « En un coup d'œil » (KpiTile ×4 iconées) → « Vite fait » (QuickAction ×3) → footer.
  * PAS de FAB sur cet écran : les réglages s'ouvrent via l'avatar (JM) → profil.
  *
  * DONNÉES RÉELLES (amendement A1-C10) : tout vient des queries du BobClient
@@ -19,8 +19,8 @@
  * · facture finale   → /devis/[quoteId] (le devis concerné — QuoteActions y appelle generate-invoice-from-quote,
  *                      le use case que Bob invoque) ;
  * · diagnostic       → /diagnostic (getDiagnostic — même query que Bob) ;
- * · « Vite fait »    : voix → session Bob globale contextuelle · devis → /devis/new ·
- *                      scan → /scan-document · encaisser → /ventes (register-payment).
+ * · « Vite fait »    : devis → /devis/new · scan → /scan-document · encaisser → /ventes.
+ *                      La voix possède une seule entrée universelle : l'orbe Bob globale.
  *
  * Densité Zen : masque « En un coup d'œil » + « Vite fait ». Zéro hex/rgba : useTheme()/@bob/tokens.
  */
@@ -60,6 +60,7 @@ import {
 } from '../../src/data/hooks';
 import { combineQueryStates } from '../../src/data/query-state';
 import { CollectInvoiceButton } from '../../src/components/CollectInvoiceButton';
+import { TODAY_QUICK_ACTIONS } from '../../src/components/today-quick-actions';
 import { LatestValueDigestCard } from '../../src/engagement/ValueDigestCard';
 import { LatestTrialReportCard } from '../../src/monetization/TrialReportCard';
 import { usePublishAgentContext, type AgentContext, type AgentEntityRef } from '../../src/agent';
@@ -596,37 +597,22 @@ export default function Aujourdhui() {
             <View>
               <SectionHeader title={t('today.sectionQuick', { personality })} />
               <View style={{ flexDirection: 'row', gap: 10 }}>
-                <QuickAction
-                  style={{ flex: 1 }}
-                  label={t('today.quickVoice', { personality })}
-                  tone="ai"
-                  icon={<Feather name="mic" size={18} color={semantic.ai} />}
-                  // C20 conservé : « À la voix » = flux complet de facture dictée. Le hub Bob
-                  // global (bouton flottant) reste lecture seule tant que S2 n'exécute pas de
-                  // proposition depuis l'overlay — sinon la dictée finirait en cul-de-sac.
-                  onPress={() => router.push('/voix')}
-                />
-                <QuickAction
-                  style={{ flex: 1 }}
-                  label={t('today.quickQuote', { personality })}
-                  tone="b2b"
-                  icon={<Feather name="file" size={18} color={semantic.b2b} />}
-                  onPress={() => router.push('/devis/new')}
-                />
-                <QuickAction
-                  style={{ flex: 1 }}
-                  label={t('today.quickScan', { personality })}
-                  tone="ai"
-                  icon={<Feather name="camera" size={18} color={semantic.ai} />}
-                  onPress={() => router.push('/scan-document')}
-                />
-                <QuickAction
-                  style={{ flex: 1 }}
-                  label={t('today.quickCollect', { personality })}
-                  tone="warning"
-                  icon={<Feather name="credit-card" size={18} color={semantic.warning} />}
-                  onPress={() => router.push('/ventes')}
-                />
+                {TODAY_QUICK_ACTIONS.map((action) => (
+                  <QuickAction
+                    key={action.id}
+                    style={{ flex: 1 }}
+                    label={t(action.labelKey, { personality })}
+                    tone={action.tone}
+                    icon={(
+                      <Feather
+                        name={action.icon}
+                        size={18}
+                        color={semantic[action.tone]}
+                      />
+                    )}
+                    onPress={() => router.push(action.route)}
+                  />
+                ))}
               </View>
             </View>
           ) : null}

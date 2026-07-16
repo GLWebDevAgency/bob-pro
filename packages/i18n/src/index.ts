@@ -122,11 +122,6 @@ const legacyFr = {
     pro: 'Solde fin de mois',
     direct: 'Fin de mois',
   },
-  'today.quickVoice': {
-    pote: 'À la voix',
-    pro: 'À la voix',
-    direct: 'Voix',
-  },
   'today.quickQuote': {
     pote: 'Devis',
     pro: 'Devis',

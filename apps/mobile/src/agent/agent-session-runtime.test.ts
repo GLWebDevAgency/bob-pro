@@ -40,5 +40,6 @@ describe('agent session runtime fences', () => {
     expect(shouldStopAgentSessionForAppState('inactive')).toBe(false);
     expect(shouldStopAgentSessionForAppState('active')).toBe(false);
     expect(shouldStopAgentSessionForAppState('background')).toBe(true);
+    expect(shouldStopAgentSessionForAppState('background', true)).toBe(false);
   });
 });

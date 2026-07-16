@@ -9,9 +9,9 @@ import { font, useReduceMotion, useTheme } from '@bob/ui';
 import { useAgentAccessLayout, useAgentContext, useAgentSession } from '../agent';
 import { useSubscription } from '../data/hooks';
 import { CloseIcon, MicIcon, SparkIcon } from './icons';
+import { deriveGlobalBobAccessHorizontalLayout } from './global-bob-access-layout';
 
 const SIZE = 50;
-const EDGE_DOCK_OFFSET = -6; // 44 dp restent visibles et tactiles, le contenu central reste libre.
 
 export function GlobalBobAccess() {
   const { colors, controls, semantic, personality } = useTheme();
@@ -87,11 +87,13 @@ export function GlobalBobAccess() {
     8;
   const bottom =
     (inTabs ? tabClearance : insets.bottom + 18) + (layout.bottomAvoidance ?? 0) + keyboardHeight;
-  // Les deux tabs avec FAB réservent l'angle droit. Ailleurs Bob se range à droite, puis se
-  // décale entièrement dans l'écran seulement pendant une conversation ou une réponse.
-  const dockLeft = pathname.endsWith('/clients') || pathname.endsWith('/documents');
-  const expanded = session.active || session.response !== null || entitlementUnavailable;
-  const horizontalOffset = expanded ? 18 : EDGE_DOCK_OFFSET;
+  // Bob possède un ancrage spatial stable : toujours à gauche, après la safe-area. Une session
+  // qui démarre ne déplace donc plus l'orbe d'un bord à l'autre et la carte s'ouvre sur le même axe.
+  const horizontal = deriveGlobalBobAccessHorizontalLayout({
+    windowWidth,
+    safeAreaLeft: insets.left,
+    safeAreaRight: insets.right,
+  });
   const stateKey: I18nKey =
     session.phase === 'listening'
       ? 'agent.global.listening'
@@ -113,7 +115,7 @@ export function GlobalBobAccess() {
         pointerEvents="box-none"
         style={{
           position: 'absolute',
-          ...(dockLeft ? { left: 18 } : { right: 18 }),
+          left: horizontal.left,
           bottom,
           zIndex: 50,
         }}
@@ -148,10 +150,10 @@ export function GlobalBobAccess() {
       pointerEvents="box-none"
       style={{
         position: 'absolute',
-        ...(dockLeft ? { left: horizontalOffset } : { right: horizontalOffset }),
+        left: horizontal.left,
         bottom,
         zIndex: 50,
-        alignItems: dockLeft ? 'flex-start' : 'flex-end',
+        alignItems: 'flex-start',
         gap: 8,
       }}
     >
@@ -159,7 +161,7 @@ export function GlobalBobAccess() {
         <View
           accessibilityLiveRegion={session.phase === 'error' ? 'assertive' : 'polite'}
           style={{
-            width: Math.min(290, windowWidth - 36),
+            width: horizontal.maxCardWidth,
             borderRadius: 16,
             borderWidth: 1,
             borderColor: controls.cardBorder,

@@ -16,7 +16,12 @@ import { t } from '@bob/i18n';
 import { useTheme } from '@bob/ui';
 import { makeBobAgent } from '../data/bob';
 import { useBobClient } from '../data/client';
-import { useSpeak, useVoiceInput, type VoiceInputIssue } from '../data/voice';
+import {
+  useSpeak,
+  useVoiceInput,
+  voicePermissionRequestInFlight,
+  type VoiceInputIssue,
+} from '../data/voice';
 import { snapshotAgentContext, useAgentContext, useAgentSurface, type AgentContext } from './agent-context';
 import {
   agentContextSemanticKey,
@@ -716,7 +721,9 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
       appStateRef.current = state;
       // 'background' seulement — 'inactive' (boîte de permission iOS, Control Center,
       // bandeau d'appel) ne doit pas tuer la session au premier usage du micro.
-      if (shouldStopAgentSessionForAppState(state)) stopWithReason('background');
+      if (shouldStopAgentSessionForAppState(state, voicePermissionRequestInFlight())) {
+        stopWithReason('background');
+      }
     });
     return () => {
       subscription.remove();
