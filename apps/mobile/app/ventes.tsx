@@ -1,8 +1,9 @@
 import { useMemo, useRef, useState } from 'react';
-import { ScrollView, TextInput, View, Text, Pressable } from 'react-native';
+import { ActivityIndicator, ScrollView, TextInput, View, Text, Pressable } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { challengeFor } from '@bob/ai';
 import { formatEUR, normalizeVoiceText } from '@bob/core';
 import { t } from '@bob/i18n';
 import type { QuoteView, InvoiceView } from '@bob/api-client';
@@ -23,6 +24,12 @@ import {
   type QuoteLinkedInvoices,
 } from '../src/components/DocumentActions';
 import { useBobAwareScrollInsets } from '../src/components/use-bob-aware-scroll-insets';
+import { useConfirm } from '../src/components/ConfirmSheet';
+import { hasMeaningfulQuoteDraft, useQuoteDraft } from '../src/quote-draft';
+
+// Suppression d'un brouillon = geste réversible-fort (même palier que le trash « brouillon »
+// des factures, InvoiceActions) — TOUJOURS derrière une ConfirmSheet, jamais un tap unique.
+const DRAFT_DELETE_RISK = { mutating: true, outbound: false, riskTier: 'reversible' } as const;
 
 type QuoteStatus = QuoteView['status'];
 type InvoiceStatus = InvoiceView['status'];
@@ -40,8 +47,41 @@ export default function Ventes() {
   const customers = useCustomers();
   const quotes = useQuotes();
   const invoices = useInvoices();
+  const quoteDraft = useQuoteDraft();
+  const confirm = useConfirm();
+  const [draftDeleteBusy, setDraftDeleteBusy] = useState(false);
 
   const nameOf = (customerId: string) => (customers.data ?? []).find((c) => c.id === customerId)?.name ?? 'Client';
+
+  // Brouillon local de devis (C21 redécoupe 2026-07-17) — jamais côté serveur, jamais dans
+  // `quotes`. Composé ICI depuis apps/mobile/src/quote-draft (slot unique : au plus une carte) ;
+  // `pendingResume` prime (wizard soft-reseté cette session) sinon l'état live s'il est déjà
+  // un brouillon enregistré (démarrage à froid direct sur cet écran).
+  const localDraft =
+    quoteDraft.pendingResume ??
+    (hasMeaningfulQuoteDraft(quoteDraft.state) && quoteDraft.state.saved !== null
+      ? quoteDraft.state
+      : null);
+  const localDraftName = localDraft?.customer?.name ?? null;
+  const deleteLocalDraft = async (): Promise<void> => {
+    if (draftDeleteBusy) return;
+    const ok = await confirm({
+      title: t('ventes.draftCard.deleteConfirmTitle', { personality }),
+      message: t('ventes.draftCard.deleteConfirmBody', {
+        personality,
+        params: { name: localDraftName ?? t('ventes.draftCard.noCustomer', { personality }) },
+      }),
+      challenge: challengeFor(DRAFT_DELETE_RISK, 'confirm_all'),
+      destructive: true,
+    });
+    if (!ok) return;
+    setDraftDeleteBusy(true);
+    try {
+      await quoteDraft.discard();
+    } finally {
+      setDraftDeleteBusy(false);
+    }
+  };
 
   // failed se lit TOUJOURS avec loading (combineQueryStates) — un échec réseau ne devient
   // jamais silencieusement « zéro devis/facture » (classe de bug P0 de l'audit états).
@@ -104,9 +144,44 @@ export default function Ventes() {
   dataRef.current = { quotes: quotes.data ?? [], invoices: invoices.data ?? [], nameOf };
   const personalityRef = useRef(personality);
   personalityRef.current = personality;
+  // ── Parité vocale du brouillon local (« continue mon brouillon » / « supprime le brouillon »)
+  // — la suppression reste TOUJOURS derrière la ConfirmSheet, jamais un tap voix unique
+  // (verrouillage fondateur : aucune suppression en un seul geste, nulle part).
+  const localDraftNameRef = useRef(localDraftName);
+  localDraftNameRef.current = localDraftName;
+  const hasLocalDraftRef = useRef(localDraft !== null);
+  hasLocalDraftRef.current = localDraft !== null;
+  const routerRef = useRef(router);
+  routerRef.current = router;
+  const deleteLocalDraftRef = useRef(deleteLocalDraft);
+  deleteLocalDraftRef.current = deleteLocalDraft;
   const ventesSurface = useMemo<AgentSurface>(
     () => ({
       affordances: [
+        {
+          id: 'ventes.resumeDraft',
+          match: (utterance) => {
+            if (!hasLocalDraftRef.current) return null;
+            const n = normalizeVoiceText(utterance);
+            if (!/(continue|reprend\w*).{0,15}(devis|brouillon)/.test(n)) return null;
+            return () => {
+              routerRef.current.push('/devis/new?resume=1');
+              return { say: t('ventes.voiceDraftResume', { personality: personalityRef.current }) };
+            };
+          },
+        },
+        {
+          id: 'ventes.deleteDraft',
+          match: (utterance) => {
+            if (!hasLocalDraftRef.current) return null;
+            const n = normalizeVoiceText(utterance);
+            if (!/(supprime|efface)\w*.{0,15}(devis|brouillon)/.test(n)) return null;
+            return () => {
+              void deleteLocalDraftRef.current();
+              return { say: t('ventes.voiceDraftDeleteOpened', { personality: personalityRef.current }) };
+            };
+          },
+        },
         {
           id: 'ventes.filterKind',
           match: (utterance) => {
@@ -261,6 +336,63 @@ export default function Ventes() {
         {kindFilter !== 'invoices' ? (
           <View>
             <SectionHeader title="Devis" />
+            {/* Brouillon LOCAL (jamais côté serveur) — toujours visible en tête, indépendant du
+                chargement/de la recherche serveur (un seul brouillon possible, slot unique). */}
+            {localDraft !== null ? (
+              <Card style={{ marginBottom: 10, borderColor: semantic.warning }}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                  <View style={{ flex: 1, paddingRight: 12 }}>
+                    <Text style={[font('cardTitle'), { color: colors.ink900 }]}>
+                      {localDraftName ?? t('ventes.draftCard.noCustomer', { personality })}
+                    </Text>
+                    <Text style={[font('meta'), { color: colors.slate400, marginTop: 2 }]}>
+                      {t('ventes.draftCard.subtitle', { personality })}
+                    </Text>
+                  </View>
+                  <Badge label={t('ventes.draftCard.badge', { personality }).toUpperCase()} tone="warning" />
+                </View>
+                <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={t('ventes.draftCard.resume', { personality })}
+                    onPress={() => router.push('/devis/new?resume=1')}
+                    style={{
+                      flex: 1,
+                      minHeight: 44,
+                      borderRadius: 12,
+                      backgroundColor: colors.ink900,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                  >
+                    <Text style={[font('button'), { color: colors.surface }]}>
+                      {t('ventes.draftCard.resume', { personality })}
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={t('ventes.draftCard.delete', { personality })}
+                    disabled={draftDeleteBusy}
+                    onPress={() => void deleteLocalDraft()}
+                    style={{
+                      width: 44,
+                      height: 44,
+                      borderRadius: 12,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      backgroundColor: semantic.dangerBg,
+                      opacity: draftDeleteBusy ? 0.5 : 1,
+                    }}
+                  >
+                    {draftDeleteBusy ? (
+                      <ActivityIndicator size="small" color={semantic.danger} />
+                    ) : (
+                      <Ionicons name="trash-outline" size={18} color={semantic.danger} />
+                    )}
+                  </Pressable>
+                </View>
+              </Card>
+            ) : null}
             {queryState.loading ? (
               <View style={{ gap: 10 }}>
                 <SkeletonRow lines={2} trailing="text" />

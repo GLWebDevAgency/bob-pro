@@ -2,11 +2,14 @@
  * PriorityCard — carte « À régler » de l'accueil (COMPONENT_SPECS.md §4).
  * Barre d'accent gauche colorée par statut, badge/CTA injectés (ReactNode).
  *
- * Deux identités (réf dc.html) :
+ * Trois identités (réf dc.html + C21 redécoupe 2026-07-17) :
  * · tâche actionnable (retard / marine) — checkbox ronde 26, fond surface ;
  * · carte INFO « conformite » — jamais de checkbox : puce bouclier 26 radius 8 (b2gBg),
- *   fond dégradé lavande 180° (conformityCard), bordure lavande, ombre douce indigo.
- * État « fait » (tâches seulement) : fond successBg, titre success (priority-card.logic).
+ *   fond dégradé lavande 180° (conformityCard), bordure lavande, ombre douce indigo ;
+ * · carte RAPPEL « brouillon » — jamais de checkbox non plus (rien à cocher, le devis n'est
+ *   pas une tâche binaire) : puce 26 radius 8 (warningBg), fond surface normal + accent warning
+ *   (même langage que les pastilles « Brouillon » de facture — pas le lavande de conformite).
+ * État « fait » (tâches actionnables seulement) : fond successBg, titre success (priority-card.logic).
  */
 import type { ReactNode } from 'react';
 import { Pressable, Text, View } from 'react-native';
@@ -47,12 +50,16 @@ export function PriorityCard({
   leadingIcon,
 }: PriorityCardProps) {
   const { colors, semantic, controls } = useTheme();
-  const info = status === 'conformite';
-  const c = resolvePriorityCardColors(status, !info && done, {
+  // 'conformite' ET 'brouillon' n'ont pas de checkbox (rien à cocher) ; seul 'conformite'
+  // porte le fond dégradé lavande — 'brouillon' reste un fond surface normal, accent warning.
+  const noCheckbox = status === 'conformite' || status === 'brouillon';
+  const lavender = status === 'conformite';
+  const c = resolvePriorityCardColors(status, !noCheckbox && done, {
     accents: {
       dangerVivid: semantic.dangerVivid,
       ink600: colors.ink600,
       b2g: semantic.b2g,
+      warning: semantic.warning,
     },
     surface: colors.surface,
     cardBorder: controls.cardBorder,
@@ -87,13 +94,13 @@ export function PriorityCard({
       />
 
       <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
-        {info ? (
+        {noCheckbox ? (
           <View
             style={{
               width: 26,
               height: 26,
               borderRadius: 8,
-              backgroundColor: semantic.b2gBg,
+              backgroundColor: lavender ? semantic.b2gBg : semantic.warningBg,
               alignItems: 'center',
               justifyContent: 'center',
               marginRight: 13,
@@ -140,7 +147,7 @@ export function PriorityCard({
     </>
   );
 
-  if (info) {
+  if (lavender) {
     return (
       <LinearGradient
         colors={[conformityCard.bgTop, conformityCard.bgBottom]}

@@ -37,9 +37,11 @@ function value(result: ReturnType<typeof selectCustomer>): QuoteDraftState {
   return result.value;
 }
 
+/** Avance jusqu'à l'étape signature (client → lignes → tvaMentions → acompte → signature) —
+ * l'acompte est désormais une clause CONFIGURÉE AVANT la signature (redécoupe C21). */
 function populatedDraft(): QuoteDraftState {
   let state = value(selectCustomer(createQuoteDraft('session-1'), CUSTOMER));
-  state = value(applyQuoteDraftCommand(state, { type: 'next_step' }));
+  state = value(applyQuoteDraftCommand(state, { type: 'next_step' })); // client -> lignes
   state = value(
     addLine(state, {
       lineId: 'line-1',
@@ -47,8 +49,9 @@ function populatedDraft(): QuoteDraftState {
       interaction: 'manual',
     }),
   );
-  state = value(applyQuoteDraftCommand(state, { type: 'next_step' }));
-  state = value(applyQuoteDraftCommand(state, { type: 'next_step' }));
+  state = value(applyQuoteDraftCommand(state, { type: 'next_step' })); // lignes -> tvaMentions
+  state = value(applyQuoteDraftCommand(state, { type: 'next_step' })); // tvaMentions -> acompte
+  state = value(applyQuoteDraftCommand(state, { type: 'next_step' })); // acompte -> signature
   return state;
 }
 
@@ -68,10 +71,11 @@ describe('quote draft strict snapshot codec', () => {
       newSessionId: 'session-2',
     }).state;
     let state = value(selectCustomer(completed, CUSTOMER));
-    state = value(applyQuoteDraftCommand(state, { type: 'next_step' }));
+    state = value(applyQuoteDraftCommand(state, { type: 'next_step' })); // client -> lignes
     state = value(addLine(state, { lineId: 'line-2', line: LINE, interaction: 'voice' }));
-    state = value(applyQuoteDraftCommand(state, { type: 'next_step' }));
-    state = value(applyQuoteDraftCommand(state, { type: 'next_step' }));
+    state = value(applyQuoteDraftCommand(state, { type: 'next_step' })); // lignes -> tvaMentions
+    state = value(applyQuoteDraftCommand(state, { type: 'next_step' })); // tvaMentions -> acompte
+    state = value(applyQuoteDraftCommand(state, { type: 'next_step' })); // acompte -> signature
     state = value(
       applyQuoteDraftCommand(state, { type: 'set_signer_name', signerName: 'Jean Dupont' }),
     );
@@ -115,26 +119,35 @@ describe('quote draft strict snapshot codec', () => {
     });
   });
 
-  it('recule acompte vers signature pour exiger une nouvelle preuve graphique', () => {
-    let state = populatedDraft();
+  it('l’acompte (avant signature) est désormais résumable tel quel — pas de recul', () => {
+    // Redécoupe C21 : l'acompte précède la signature, ce n'est qu'une clause chiffrée, jamais
+    // une preuve à protéger — un redémarrage peut la retrouver à l'identique.
+    let state = value(selectCustomer(createQuoteDraft('session-1'), CUSTOMER));
+    state = value(applyQuoteDraftCommand(state, { type: 'next_step' })); // client -> lignes
+    state = value(addLine(state, { lineId: 'line-1', line: LINE, interaction: 'manual' }));
+    state = value(applyQuoteDraftCommand(state, { type: 'next_step' })); // lignes -> tvaMentions
+    state = value(applyQuoteDraftCommand(state, { type: 'next_step' })); // tvaMentions -> acompte
     state = value(
-      applyQuoteDraftCommand(state, { type: 'set_signer_name', signerName: 'Jean Dupont' }),
+      applyQuoteDraftCommand(state, { type: 'set_deposit_pct', depositPct: 40 }),
     );
-    state = value(applyQuoteDraftCommand(state, { type: 'next_step' }));
     expect(state.flow.step).toBe('acompte');
 
     const encoded = encodeQuoteDraftSnapshot(state, IDENTITY, 200);
-    expect(encoded.state.flow.step).toBe('signature');
-    expect(decodeQuoteDraftSnapshot(encoded.serialized, IDENTITY).flow.step).toBe('signature');
+    expect(encoded.state.flow.step).toBe('acompte');
+    const restored = decodeQuoteDraftSnapshot(encoded.serialized, IDENTITY);
+    expect(restored.flow.step).toBe('acompte');
+    expect(restored.flow.draft.depositPct).toBe(40);
   });
 
   it('refuse génération entamée, identité différente et version inconnue', () => {
     let state = populatedDraft();
     state = value(
+      applyQuoteDraftCommand(state, { type: 'set_sign_mode', signMode: 'onsite' }),
+    );
+    state = value(
       applyQuoteDraftCommand(state, { type: 'set_signer_name', signerName: 'Jean Dupont' }),
     );
-    state = value(applyQuoteDraftCommand(state, { type: 'next_step' }));
-    state = value(applyQuoteDraftCommand(state, { type: 'next_step' }));
+    state = value(applyQuoteDraftCommand(state, { type: 'next_step' })); // signature -> recap
     expect(() => encodeQuoteDraftSnapshot(state, IDENTITY, 200)).toThrowError(
       expect.objectContaining({ code: 'unsafe_state' }),
     );

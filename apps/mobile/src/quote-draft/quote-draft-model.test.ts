@@ -501,7 +501,7 @@ describe('quote draft shared model', () => {
     expect(changedCustomer.lineMetadata).toHaveLength(1);
 
     let state = value(addLine(onLines(), { lineId: 'line-1', line: LABOR, interaction: 'manual' }));
-    state = value(applyQuoteDraftCommand(state, { type: 'next_step' }));
+    state = value(applyQuoteDraftCommand(state, { type: 'next_step' })); // lignes -> tvaMentions
     state = value(
       applyQuoteDraftCommand(state, {
         type: 'set_vat',
@@ -510,14 +510,19 @@ describe('quote draft shared model', () => {
       }),
     );
     expect(state.flow.draft.lines[0]?.vatRate).toBe(5.5);
-    state = value(applyQuoteDraftCommand(state, { type: 'next_step' }));
+    state = value(applyQuoteDraftCommand(state, { type: 'next_step' })); // tvaMentions -> acompte
+    state = value(applyQuoteDraftCommand(state, { type: 'set_deposit_pct', depositPct: 20 }));
+    expect(state.flow.draft.depositPct).toBe(20);
+    state = value(applyQuoteDraftCommand(state, { type: 'next_step' })); // acompte -> signature
+    state = value(
+      applyQuoteDraftCommand(state, { type: 'set_sign_mode', signMode: 'onsite' }),
+    );
     state = value(
       applyQuoteDraftCommand(state, { type: 'set_signer_name', signerName: '  Jean   Dupont ' }),
     );
     expect(state.flow.draft.signerName).toBe('Jean Dupont');
-    state = value(applyQuoteDraftCommand(state, { type: 'next_step' }));
-    state = value(applyQuoteDraftCommand(state, { type: 'set_deposit_pct', depositPct: 20 }));
-    expect(state.flow.draft.depositPct).toBe(20);
+    state = value(applyQuoteDraftCommand(state, { type: 'next_step' })); // signature -> recap
+    expect(state.flow.step).toBe('recap');
   });
 
   it('refuse le second geste calculé sur une révision déjà consommée', () => {

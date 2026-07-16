@@ -3,7 +3,6 @@ import { startDevis, devisEdit, devisNext, devisBack, DEVIS_STEPS, type DevisFlo
 import { CreateQuote } from '../application/billing/create-quote';
 import { SendQuote } from '../application/billing/send-quote';
 import { SignQuote } from '../application/billing/sign-quote';
-import { GenerateInvoiceFromQuote } from '../application/billing/generate-invoice-from-quote';
 import { makeEnv } from '../application/billing/in-memory-env';
 
 function expectOk<T>(r: { ok: true; value: T } | { ok: false; error: unknown }): T {
@@ -12,8 +11,8 @@ function expectOk<T>(r: { ok: true; value: T } | { ok: false; error: unknown }):
   return r.value;
 }
 
-describe('flows/devis (C21 — 6 étapes, projection des use-cases)', () => {
-  it('déroule les 6 étapes avec gardes, puis la facture porte parentQuoteId et acompte net 488,40', async () => {
+describe('flows/devis (C21 redécoupe — le wizard s’ARRÊTE au devis, jamais de facture enchaînée)', () => {
+  it('déroule client → lignes → TVA → acompte(config) → signature(sur place) → recap, puis le devis signé porte le net d’acompte 488,40 — AUCUNE facture n’est créée par ce flow', async () => {
     const env = makeEnv();
     let s: DevisFlowState = startDevis();
     expect(s.step).toBe('client');
@@ -37,21 +36,26 @@ describe('flows/devis (C21 — 6 étapes, projection des use-cases)', () => {
     s = expectOk(devisNext(s));
     expect(s.step).toBe('tvaMentions');
 
-    // Étape 3 — TVA/mentions (décidées par les use-cases) puis étape 4 — signature.
-    s = expectOk(devisNext(s));
-    expect(s.step).toBe('signature');
-    expect(devisNext(s).ok).toBe(false); // pas de signature, pas d'avance
-    s = devisEdit(s, { signerName: 'M. Bernard' });
+    // Étape 3 — TVA/mentions, puis étape 4 — ACOMPTE : le % contractuel, décidé AVANT la
+    // signature (une clause du devis, pas une facture).
     s = expectOk(devisNext(s));
     expect(s.step).toBe('acompte');
+    s = expectOk(devisNext(s)); // 30 % par défaut, aucune saisie requise
+    expect(s.step).toBe('signature');
 
-    // Étape 5 → 6 : acompte 30 % (défaut proto) → facture.
+    // Étape 5 — signature : sans mode choisi, pas d'avance ; « sur place » exige aussi le nom.
+    expect(devisNext(s).ok).toBe(false);
+    s = devisEdit(s, { signMode: 'onsite' });
+    expect(devisNext(s).ok).toBe(false); // signerName manquant
+    s = devisEdit(s, { signerName: 'M. Bernard' });
     s = expectOk(devisNext(s));
-    expect(s.step).toBe('facture');
+    expect(s.step).toBe('recap');
     expect(devisNext(s).ok).toBe(false); // terminal
-    expect(devisBack(s).ok).toBe(false); // la facture générée ne se « dé-génère » pas
+    expect(devisBack(s).ok).toBe(false); // le devis envoyé/signé ne se « dé-crée » pas
 
-    // Exécution réelle — le flow n'a RIEN calculé : les use-cases font foi.
+    // Exécution réelle — le flow n'a RIEN calculé : les use-cases font foi. La chaîne
+    // s'ARRÊTE à SignQuote : aucun GenerateInvoiceFromQuote/IssueInvoice n'est appelé ici,
+    // c'est précisément le redécoupe (la facture vit sur son chemin officiel post-signature).
     const created = expectOk(
       await new CreateQuote({
         quotes: env.quoteRepo,
@@ -78,17 +82,25 @@ describe('flows/devis (C21 — 6 étapes, projection des use-cases)', () => {
         signerName: s.draft.signerName!,
       }),
     );
-    const gen = expectOk(
-      await new GenerateInvoiceFromQuote({ quotes: env.quoteRepo, invoices: env.invoiceRepo, ids: env.ids }).execute({
-        quoteId: created.quoteId,
-        mode: 'deposit',
-      }),
-    );
 
-    const invoice = await env.invoiceRepo.findById(gen.invoiceId);
-    expect(invoice?.kind).toBe('deposit');
-    expect(invoice?.parentQuoteId).toBe(created.quoteId); // nav croisée devis ↔ facture
-    expect(invoice?.totals().netToPay).toBe(48840); // acompte 30 % de 1 628,00 € TTC = 488,40 €
+    const quote = await env.quoteRepo.findById(created.quoteId);
+    expect(quote?.status).toBe('signed');
+    expect(quote?.depositPct).toBe(30);
+    expect(quote?.totals().netToPay).toBe(48840); // acompte 30 % de 1 628,00 € TTC = 488,40 €
+    expect(await env.invoiceRepo.listByCompany(env.company.id)).toHaveLength(0); // aucune facture, jamais
+  });
+
+  it('signature à distance : « envoyer » n’exige ni pad ni nom — le devis reste à signer, jamais proposé à la facturation par ce flow', () => {
+    let s = startDevis();
+    s = devisEdit(s, { customerId: 'c1', lines: [{ label: 'X', category: 'labor', qty: 1, unitPriceHT: 10000, vatRate: 20 }] });
+    s = expectOk(devisNext(s)); // client -> lignes
+    s = expectOk(devisNext(s)); // lignes -> tvaMentions
+    s = expectOk(devisNext(s)); // tvaMentions -> acompte
+    s = expectOk(devisNext(s)); // acompte -> signature
+    s = devisEdit(s, { signMode: 'remote' });
+    s = expectOk(devisNext(s)); // signature -> recap, sans signerName
+    expect(s.step).toBe('recap');
+    expect(s.draft.signerName).toBeNull();
   });
 
   it('permet la correction en arrière mais jamais de sauter une étape', () => {
@@ -97,6 +109,7 @@ describe('flows/devis (C21 — 6 étapes, projection des use-cases)', () => {
     s = expectOk(devisNext(s)); // lignes
     const back = expectOk(devisBack(s));
     expect(back.step).toBe('client');
-    expect(DEVIS_STEPS.indexOf('facture')).toBe(DEVIS_STEPS.length - 1);
+    expect(DEVIS_STEPS.indexOf('recap')).toBe(DEVIS_STEPS.length - 1);
+    expect(DEVIS_STEPS.indexOf('acompte')).toBeLessThan(DEVIS_STEPS.indexOf('signature')); // acompte AVANT signature
   });
 });

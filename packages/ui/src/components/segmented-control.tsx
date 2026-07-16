@@ -1,11 +1,12 @@
 /**
  * SegmentedControl — §11 (7/30/60/90 j · scénarios).
  * Piste controls.segmentedTrack radius 12 padding 4, segments flex:1 radius 9.
- * Actif : surface + ombre e1 + ink900 ; inactif : transparent slate400.
+ * Actif : surface + ombre e1 + text.primary ; inactif : text.muted sur la piste.
+ * Les deux rôles sont certifiés AA ; slate400 reste réservé au non-contenu.
  * Hit-target ≥ 44 garanti par hitSlop vertical.
  */
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { shadowNative } from '@bob/tokens';
+import { resolveColorRole, shadowNative } from '@bob/tokens';
 import { font, useTheme } from '../theme';
 import { isSegmentActive, type SegmentOption } from './segmented-control.logic';
 
@@ -50,7 +51,7 @@ export function SegmentedControl<K extends string>({
               style={[
                 font('label'),
                 styles.segmentText,
-                { color: active ? colors.ink900 : colors.slate400 },
+                { color: resolveColorRole(active ? 'text.primary' : 'text.muted') },
               ]}
               numberOfLines={1}
             >

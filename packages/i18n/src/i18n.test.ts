@@ -339,43 +339,49 @@ describe('i18n — C21 devis.*', () => {
     expect(t('devis.draftExit.discard')).toBe('Supprimer le brouillon');
   });
 
-  it('titres des 6 étapes de la machine + gardes à la voix de Bob (3 humeurs)', () => {
+  it('titres des 6 étapes de la machine (client → lignes → TVA → acompte → signature → recap) + gardes à la voix de Bob (3 humeurs)', () => {
     expect(t('devis.stepClient')).toBe('Le client');
     expect(t('devis.stepVat')).toBe('TVA & mentions');
-    expect(t('devis.stepInvoice', { personality: 'direct' })).toBe('Facture');
-    expect(t('devis.signTitle')).toBe('Fais signer ton client ici');
-    expect(t('devis.signTitle', { personality: 'pro' })).toBe('Faites signer votre client ici');
+    expect(t('devis.stepRecap', { personality: 'direct' })).toBe('Récap');
+    expect(t('devis.signTitle')).toBe('Comment il signe ?');
+    expect(t('devis.signTitle', { personality: 'pro' })).toBe('Comment le client signe-t-il ?');
     expect(t('devis.guardClient', { personality: 'pro' })).toBe('Sélectionnez un client avant de continuer.');
     expect(t('devis.guardLines', { personality: 'direct' })).toBe('Une ligne minimum.');
+    expect(t('devis.guardSignMode', { personality: 'direct' })).toBe('Sur place ou envoyer ?');
     expect(t('devis.guardSignature').length).toBeGreaterThan(0);
     expect(t('devis.guardDeposit', { personality: 'direct' })).toBe('Acompte : 0 à 100 %.');
   });
 
-  it('interpole {pct}/{amount}/{number}/{rate} (acompte, succès, toast, TVA suggérée)', () => {
+  it('interpole {pct}/{amount}/{number}/{rate} (acompte, recap, toast, TVA suggérée)', () => {
     expect(t('devis.depositSummary', { params: { pct: 30, amount: '488,40 €' } })).toBe(
       'Acompte 30 % — net à encaisser 488,40 €.',
     );
     expect(
-      t('devis.successBody', {
+      t('devis.recapSignedBody', {
         personality: 'pro',
         params: { number: 'F-2026-118', name: 'M. Bernard', amount: '488,40 €' },
       }),
-    ).toBe('La facture F-2026-118 de M. Bernard est émise — net à encaisser : 488,40 €. Suivi et relances automatiques.');
-    expect(t('devis.toastDone', { params: { number: 'F-2026-118' } })).toBe('Facture F-2026-118 émise ✓');
+    ).toBe('M. Bernard a signé le devis F-2026-118 — 488,40 € TTC.');
+    expect(t('devis.toastSigned', { params: { number: 'F-2026-118' } })).toBe('Devis F-2026-118 signé ✓');
+    expect(t('devis.toastSent', { params: { number: 'F-2026-118' } })).toBe('Devis F-2026-118 envoyé ✓');
     expect(t('devis.vatSuggested', { params: { rate: 10 } })).toBe('TVA suggérée : 10 %');
     expect(t('devis.vatHint', { personality: 'direct', params: { rate: 5.5 } })).toBe(
       'Tout à 5.5 %. Revérifié à la génération.',
     );
   });
 
-  it('copy de flux : contexte TVA, signature, génération (3 humeurs)', () => {
+  it('copy de flux : contexte TVA, signature (sur place/envoyer), recap — jamais de facture enchaînée (3 humeurs)', () => {
     expect(t('devis.vatHousing')).toBe('Logement de plus de 2 ans — 10 %');
     expect(t('devis.vatEnergy', { personality: 'direct' })).toBe('Réno énergétique — 5,5 %');
     expect(t('devis.signClear')).toBe('Effacer');
-    expect(t('devis.generateCta', { personality: 'direct' })).toBe('Facturer');
+    expect(t('devis.signOnsiteCta', { personality: 'direct' })).toBe('Valider');
+    expect(t('devis.sendCta', { personality: 'direct' })).toBe('Envoyer');
     expect(
-      t('devis.confirmBody', { params: { name: 'M. Bernard', amount: '488,40 €' } }),
-    ).toBe('J’envoie le devis, j’enregistre la signature de M. Bernard et j’émets la facture (488,40 €) avec son numéro légal.');
+      t('devis.confirmSendBody', { params: { name: 'M. Bernard', amount: '488,40 €' } }),
+    ).toBe('Le devis part chez M. Bernard par e-mail, avec le lien pour signer — 488,40 € TTC.');
+    expect(
+      t('devis.confirmSignBody', { params: { name: 'M. Bernard', amount: '488,40 €' } }),
+    ).toBe('J’envoie le devis à M. Bernard et j’enregistre sa signature sur ton téléphone — 488,40 € TTC.');
     expect(t('devis.errAction', { personality: 'pro' }).length).toBeGreaterThan(0);
   });
 });

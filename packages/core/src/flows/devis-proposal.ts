@@ -69,7 +69,7 @@ export function devisPropose(
   patch: Partial<DevisDraft>,
   label: string,
 ): DomainResult<DevisFlowStateWithProposal> {
-  if (state.step === 'facture') {
+  if (state.step === 'recap') {
     return err({ code: 'VALIDATION', field: 'step', message: 'Le flow est terminé' });
   }
   const after: DevisDraft = { ...state.draft, ...patch };

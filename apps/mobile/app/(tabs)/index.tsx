@@ -24,12 +24,13 @@
  *
  * Densité Zen : masque « En un coup d'œil » + « Vite fait ». Zéro hex/rgba : useTheme()/@bob/tokens.
  */
-import { useMemo, useState } from 'react';
-import { RefreshControl, ScrollView, Text, View, type StyleProp, type ViewStyle } from 'react-native';
+import { useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, Pressable, RefreshControl, ScrollView, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
-import { formatEURWhole, type TodayPriority } from '@bob/core';
+import { challengeFor } from '@bob/ai';
+import { formatEURWhole, normalizeVoiceText, type TodayPriority } from '@bob/core';
 import { useIdentity } from '../../src/data/identity';
 import type { InvoiceView } from '@bob/api-client';
 import { patterns, shadowNative } from '@bob/tokens';
@@ -58,13 +59,21 @@ import {
   useNotificationsFeed,
   useTodayPriorities,
 } from '../../src/data/hooks';
+import { Badge } from '../../src/components/ui';
+import { useConfirm } from '../../src/components/ConfirmSheet';
+import { hasMeaningfulQuoteDraft, useQuoteDraft } from '../../src/quote-draft';
 import { combineQueryStates } from '../../src/data/query-state';
 import { CollectInvoiceButton } from '../../src/components/CollectInvoiceButton';
 import { TODAY_QUICK_ACTIONS } from '../../src/components/today-quick-actions';
 import { useBobAwareScrollInsets } from '../../src/components/use-bob-aware-scroll-insets';
 import { LatestValueDigestCard } from '../../src/engagement/ValueDigestCard';
 import { LatestTrialReportCard } from '../../src/monetization/TrialReportCard';
-import { usePublishAgentContext, type AgentContext, type AgentEntityRef } from '../../src/agent';
+import {
+  usePublishAgentContext,
+  type AgentAffordance,
+  type AgentContext,
+  type AgentEntityRef,
+} from '../../src/agent';
 import { useFiscalProfileFlow } from '../../src/fiscal/use-fiscal-profile-flow';
 import { useOwnerPayGuidance } from '../../src/fiscal/use-owner-pay-guidance';
 import {
@@ -79,6 +88,32 @@ import {
 
 /** Cap d'affichage du briefing (le tri est fait par @bob/core ; l'UI ne montre que le dessus de la pile). */
 const DISPLAY_CAP = 3;
+
+/**
+ * Rappel de brouillon de devis (C21 redécoupe 2026-07-17) — CLIENT-SIDE UNIQUEMENT : le
+ * brouillon vit en local (SecureStore, voir apps/mobile/src/quote-draft), jamais côté serveur.
+ * Il n'entre donc PAS dans @bob/core TodayPriority (dérivé de données serveur) — cette carte
+ * est composée ICI, dans le rendu du Home, en fusionnant `today.priorities` (serveur) avec cet
+ * unique rappel local (le stockage est un slot UNIQUE : au plus un brouillon à la fois).
+ */
+interface DraftQuotePriority {
+  readonly kind: 'devis_brouillon';
+  readonly id: string;
+  readonly customerName: string | null;
+}
+type DisplayPriority = TodayPriority | DraftQuotePriority;
+
+/** Sobriété (fondateur 2026-07-17) : jamais pendant que la personne travaille dessus — un
+ * brouillon tout juste enregistré ne remonte qu'après ~1 h, ou dès la réouverture de l'app. */
+const DRAFT_REMINDER_MIN_AGE_MS = 60 * 60 * 1000;
+
+// Suppression d'un brouillon = geste réversible-fort (même palier que le trash « brouillon »
+// des factures, InvoiceActions) — TOUJOURS derrière une ConfirmSheet, jamais un tap unique.
+const DRAFT_DELETE_RISK = { mutating: true, outbound: false, riskTier: 'reversible' } as const;
+
+/** Vrai UNE SEULE fois par processus JS (cold start) — approxime « l'app vient d'être rouverte »
+ * sans dépendre d'AppState : un changement d'onglet ne relance jamais le module. */
+let appSessionFresh = true;
 
 const DAYS = ['Dimanche', 'Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi'] as const;
 const MONTHS = [
@@ -170,7 +205,8 @@ function HeroPlaceholder({ loading }: { loading: boolean }) {
   );
 }
 
-/** Carte d'une priorité dérivée (@bob/core TodayPriority) — copy @bob/i18n, CTA = parité d'actions Bob. */
+/** Carte d'une priorité dérivée (@bob/core TodayPriority, + rappel local de brouillon
+ * DisplayPriority) — copy @bob/i18n, CTA = parité d'actions Bob. */
 function TodayPriorityCard({
   priority,
   done,
@@ -178,7 +214,7 @@ function TodayPriorityCard({
   invoice,
   onCollected,
 }: {
-  priority: TodayPriority;
+  priority: DisplayPriority;
   done: boolean;
   onToggle: () => void;
   /** Facture réelle de la relance (A2-C10) — active « Encaisser » directement sur la carte. */
@@ -187,6 +223,9 @@ function TodayPriorityCard({
 }) {
   const { personality, colors, semantic } = useTheme();
   const router = useRouter();
+  const quoteDraft = useQuoteDraft();
+  const confirm = useConfirm();
+  const [draftDeleteBusy, setDraftDeleteBusy] = useState(false);
   const checkIcon = <Feather name="check" size={14} color={semantic.success} />;
   const common = { done, onToggle, checkIcon } as const;
 
@@ -300,6 +339,71 @@ function TodayPriorityCard({
           }
         />
       );
+    case 'devis_brouillon': {
+      // Rappel local (jamais côté serveur) : jamais de checkbox — puce warning, CTA Continuer +
+      // corbeille. Suppression TOUJOURS derrière une ConfirmSheet, même depuis cette carte
+      // (verrouillage fondateur : aucune suppression en un seul tap, nulle part).
+      const name = priority.customerName ?? t('today.prioDraftNoCustomer', { personality });
+      return (
+        <PriorityCard
+          status="brouillon"
+          title={t('today.prioDraftTitle', { personality, params: { name } })}
+          subtitle={t('today.prioDraftHint', { personality })}
+          leadingIcon={<Feather name="file-text" size={13} color={semantic.warning} />}
+          badge={<Badge label={t('today.prioDraftBadge', { personality }).toUpperCase()} tone="warning" />}
+          cta={
+            <View style={{ flexDirection: 'row', gap: 8, alignSelf: 'flex-start', alignItems: 'center' }}>
+              <Button
+                title={t('today.ctaDraftResume', { personality })}
+                variant="primary"
+                size="compact"
+                radius={11}
+                icon={<Feather name="edit-3" size={15} color={colors.surface} />}
+                onPress={() => router.push('/devis/new?resume=1')}
+              />
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={t('today.ctaDraftDelete', { personality })}
+                disabled={draftDeleteBusy}
+                hitSlop={4}
+                onPress={() =>
+                  void (async () => {
+                    const ok = await confirm({
+                      title: t('today.draftDeleteConfirmTitle', { personality }),
+                      message: t('today.draftDeleteConfirmBody', { personality, params: { name } }),
+                      challenge: challengeFor(DRAFT_DELETE_RISK, 'confirm_all'),
+                      destructive: true,
+                    });
+                    if (!ok) return;
+                    setDraftDeleteBusy(true);
+                    try {
+                      await quoteDraft.discard();
+                    } finally {
+                      setDraftDeleteBusy(false);
+                    }
+                  })()
+                }
+                style={{
+                  width: 40,
+                  height: 40,
+                  borderRadius: 12,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  backgroundColor: semantic.dangerBg,
+                  opacity: draftDeleteBusy ? 0.5 : 1,
+                }}
+              >
+                {draftDeleteBusy ? (
+                  <ActivityIndicator size="small" color={semantic.danger} />
+                ) : (
+                  <Feather name="trash-2" size={16} color={semantic.danger} />
+                )}
+              </Pressable>
+            </View>
+          }
+        />
+      );
+    }
   }
 }
 
@@ -311,6 +415,7 @@ export default function Aujourdhui() {
   const cashflow = useCashflow('realiste', 30);
   const customers = useCustomers();
   const today = useTodayPriorities();
+  const quoteDraft = useQuoteDraft();
   // A2-C10 : mêmes queries que useTodayPriorities (cache partagé, coût nul) — la carte
   // relance a besoin de la facture RÉELLE pour encaisser avec les invariants du domaine.
   const invoices = useInvoices();
@@ -330,8 +435,37 @@ export default function Aujourdhui() {
   const [done, setDone] = useState<Record<string, boolean>>({});
   const toggle = (id: string) => () => setDone((d) => ({ ...d, [id]: !d[id] }));
   const [toast, setToast] = useState<string | null>(null);
+  // Cold start (voir `appSessionFresh` ci-dessus) — capturé UNE fois, avant que ce composant
+  // (ou tout autre écran monté avant lui) ne consomme le flag pour ce processus JS.
+  const [isFreshAppSession] = useState(() => {
+    const fresh = appSessionFresh;
+    appSessionFresh = false;
+    return fresh;
+  });
 
-  const displayed = today.priorities.slice(0, DISPLAY_CAP);
+  // Rappel de brouillon (C21 redécoupe) : composé CÔTÉ MOBILE, jamais remonté au serveur — le
+  // stockage local est un slot UNIQUE (voir apps/mobile/src/quote-draft), donc au plus UNE carte.
+  // `pendingResume` (soft-reset côté wizard) prime sur l'état live ; sinon, un brouillon jamais
+  // rouvert cette session (démarrage à froid direct sur le Home) reste visible via `state`.
+  const localDraft =
+    quoteDraft.pendingResume ??
+    (hasMeaningfulQuoteDraft(quoteDraft.state) && quoteDraft.state.saved !== null
+      ? quoteDraft.state
+      : null);
+  const draftAgeMs = localDraft?.saved != null ? Date.now() - localDraft.saved.at : null;
+  const showDraftReminder =
+    localDraft !== null &&
+    (isFreshAppSession || (draftAgeMs !== null && draftAgeMs > DRAFT_REMINDER_MIN_AGE_MS));
+  const draftPriority: DraftQuotePriority | null = showDraftReminder
+    ? { kind: 'devis_brouillon', id: 'devis-brouillon-local', customerName: localDraft.customer?.name ?? null }
+    : null;
+  // Priorité basse (fin de liste) : un rappel de brouillon n'a jamais à évincer une vraie
+  // urgence (relance en retard, facture finale à émettre).
+  const allPriorities: DisplayPriority[] = draftPriority
+    ? [...today.priorities, draftPriority]
+    : today.priorities;
+
+  const displayed = allPriorities.slice(0, DISPLAY_CAP);
   const remaining = displayed.filter((p) => !done[p.id]).length;
   const todayReady = !today.isLoading && !today.isError;
   const agentContext = useMemo<AgentContext>(() => {
@@ -374,7 +508,67 @@ export default function Aujourdhui() {
       ],
     };
   }, [today.priorities]);
-  usePublishAgentContext(agentContext, {}, { affordances: fiscalFlow.voiceAffordances });
+
+  // ── Parité vocale du rappel de brouillon (« continue mon devis en cours » / « supprime le
+  // brouillon ») — refs pour une identité STABLE de l'affordance (même convention que
+  // ventes.tsx) ; la suppression reste TOUJOURS derrière la ConfirmSheet, jamais un tap voix
+  // unique (verrouillage fondateur — aucune suppression en un seul geste, nulle part).
+  const localDraftRef = useRef(localDraft);
+  localDraftRef.current = localDraft;
+  const routerRef = useRef(router);
+  routerRef.current = router;
+  const confirm = useConfirm();
+  const confirmRef = useRef(confirm);
+  confirmRef.current = confirm;
+  const quoteDraftRef = useRef(quoteDraft);
+  quoteDraftRef.current = quoteDraft;
+  const homePersonalityRef = useRef(personality);
+  homePersonalityRef.current = personality;
+  const draftVoiceAffordances = useMemo<readonly AgentAffordance[]>(
+    () => [
+      {
+        id: 'today.resumeDraft',
+        match: (utterance) => {
+          if (localDraftRef.current === null) return null;
+          const n = normalizeVoiceText(utterance);
+          if (!/(continue|reprend\w*).{0,15}(devis|brouillon)/.test(n)) return null;
+          return () => {
+            routerRef.current.push('/devis/new?resume=1');
+            return { say: t('today.voiceDraftResume', { personality: homePersonalityRef.current }) };
+          };
+        },
+      },
+      {
+        id: 'today.deleteDraft',
+        match: (utterance) => {
+          const draft = localDraftRef.current;
+          if (draft === null) return null;
+          const n = normalizeVoiceText(utterance);
+          if (!/(supprime|efface)\w*.{0,15}(devis|brouillon)/.test(n)) return null;
+          return () => {
+            const name = draft.customer?.name ?? t('today.prioDraftNoCustomer', { personality: homePersonalityRef.current });
+            void (async () => {
+              const ok = await confirmRef.current({
+                title: t('today.draftDeleteConfirmTitle', { personality: homePersonalityRef.current }),
+                message: t('today.draftDeleteConfirmBody', {
+                  personality: homePersonalityRef.current,
+                  params: { name },
+                }),
+                challenge: challengeFor(DRAFT_DELETE_RISK, 'confirm_all'),
+                destructive: true,
+              });
+              if (ok) await quoteDraftRef.current.discard();
+            })();
+            return { say: t('today.voiceDraftDeleteOpened', { personality: homePersonalityRef.current }) };
+          };
+        },
+      },
+    ],
+    [],
+  );
+  usePublishAgentContext(agentContext, {}, {
+    affordances: [...fiscalFlow.voiceAffordances, ...draftVoiceAffordances],
+  });
 
   // KPI : uniquement des agrégats dérivés des queries réelles — sinon tuile vide « — ».
   const owedCents = customers.data?.reduce((sum, c) => sum + c.outstanding, 0);

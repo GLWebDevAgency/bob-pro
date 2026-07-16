@@ -1,8 +1,9 @@
 /**
  * BottomTabBar — barre d'onglets pill flottante (COMPONENT_SPECS.md §14).
  * Pill surface radius 22, ombre e2 + bordure carte (Android), 5 items colonne
- * (icône 23 stroke 1.9 + label 10/600). Actif = ink900 (assistant = semantic.ai),
- * inactif = controls.tabInactive — voir bottom-tab-bar.logic.
+ * (icône 23 stroke 1.9 + label 10/600). Actif = rôle navigation.active
+ * (assistant = navigation.assistantActive), inactif = navigation.inactive — les
+ * trois paires sont certifiées AA sur surface ; voir bottom-tab-bar.logic.
  *
  * `floating` : conteneur absolu bas + fondu bg (patterns.bottomTabBar.fade) pour que
  * le contenu défile dessous en s'estompant — le pill ne colle jamais aux bords.

@@ -12,6 +12,16 @@ import { font, useTheme } from '../theme';
 
 const P = patterns.floatingBalanceCard;
 
+/** Pastille discrète de fiabilité SUR le montant (ex. « estimation prudente », SPEC_EXPERT_FISCAL
+ * amendement 2 : « Home = simple badge de fiabilité — pas de 2ᵉ carte/nag »). Cible tactile propre
+ * (hitSlop) : ne concurrence PAS le tap sur la carte entière (onPress dédié, arrêt de propagation
+ * natif de Pressable imbriqué). */
+export interface FloatingBalanceCardBadge {
+  readonly label: string;
+  readonly onPress: () => void;
+  readonly accessibilityHint?: string;
+}
+
 export interface FloatingBalanceCardProps {
   /** Eyebrow au-dessus du montant (ex. « Tu peux te verser »). */
   label: string;
@@ -24,6 +34,8 @@ export interface FloatingBalanceCardProps {
   chevronIcon?: ReactNode;
   /** Icône de la pastille verte (injectée). */
   voiceIcon?: ReactNode;
+  /** Badge de fiabilité optionnel, ADDITIF (défaut absent = géométrie inchangée). */
+  badge?: FloatingBalanceCardBadge;
 }
 
 export function FloatingBalanceCard({
@@ -33,8 +45,9 @@ export function FloatingBalanceCard({
   onPress,
   chevronIcon,
   voiceIcon,
+  badge,
 }: FloatingBalanceCardProps) {
-  const { colors, semantic, controls } = useTheme();
+  const { colors, semantic, controls, radius } = useTheme();
   const amount = formatEURWhole(amountCents);
 
   return (
@@ -71,6 +84,27 @@ export function FloatingBalanceCard({
           >
             {amount}
           </Text>
+          {badge ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={badge.label}
+              {...(badge.accessibilityHint ? { accessibilityHint: badge.accessibilityHint } : {})}
+              onPress={badge.onPress}
+              hitSlop={10}
+              style={{
+                alignSelf: 'flex-start',
+                marginTop: 7,
+                minHeight: 26,
+                justifyContent: 'center',
+                backgroundColor: controls.segmentedTrack,
+                borderRadius: radius.pill,
+                paddingHorizontal: 9,
+                paddingVertical: 3,
+              }}
+            >
+              <Text style={[font('meta', 600), { fontSize: 11.5, color: colors.slate500 }]}>{badge.label}</Text>
+            </Pressable>
+          ) : null}
         </View>
         <View
           style={{

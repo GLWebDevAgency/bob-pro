@@ -1,6 +1,7 @@
 import {
   isVatRate,
   type DevisFlowState,
+  type DevisSignMode,
   type DevisTvaContext,
   type LineCategory,
   type LineInput,
@@ -284,17 +285,30 @@ function parseLineForm(value: unknown): QuoteDraftLineFormState | null {
   return { label, quantity, unitPrice, category: category as LineCategory };
 }
 
+function parseSignMode(value: unknown): DevisSignMode | null | undefined {
+  if (value === null) return null;
+  if (value === 'onsite' || value === 'remote') return value;
+  return undefined;
+}
+
 function parseFlow(value: unknown): DevisFlowState | null {
   if (!isRecord(value) || !hasExactKeys(value, ['step', 'draft'])) return null;
   const step = value['step'];
-  // Une génération entamée et une signature locale ne sont jamais résumables sans leur preuve.
-  if (step !== 'client' && step !== 'lignes' && step !== 'tvaMentions' && step !== 'signature') {
+  // Le recap suit un devis déjà créé/envoyé/signé pour de vrai côté serveur : jamais résumable
+  // depuis un brouillon local (l'identifiant réel de la pièce n'est pas persisté ici).
+  if (
+    step !== 'client' &&
+    step !== 'lignes' &&
+    step !== 'tvaMentions' &&
+    step !== 'acompte' &&
+    step !== 'signature'
+  ) {
     return null;
   }
   const draft = value['draft'];
   if (
     !isRecord(draft) ||
-    !hasExactKeys(draft, ['customerId', 'lines', 'tvaContext', 'depositPct', 'signerName'])
+    !hasExactKeys(draft, ['customerId', 'lines', 'tvaContext', 'depositPct', 'signMode', 'signerName'])
   )
     return null;
   const customerId = draft['customerId'];
@@ -314,10 +328,13 @@ function parseFlow(value: unknown): DevisFlowState | null {
   ) {
     return null;
   }
+  const signMode = parseSignMode(draft['signMode']);
+  if (signMode === undefined) return null;
   // Le nom seul n'est pas une preuve : le codec refuse même un snapshot fabriqué qui le contient.
   if (draft['signerName'] !== null) return null;
   if (step !== 'client' && customerId === null) return null;
-  if ((step === 'tvaMentions' || step === 'signature') && lines.length === 0) return null;
+  if ((step === 'tvaMentions' || step === 'acompte' || step === 'signature') && lines.length === 0)
+    return null;
   return {
     step,
     draft: {
@@ -325,27 +342,29 @@ function parseFlow(value: unknown): DevisFlowState | null {
       lines: lines as LineInput[],
       tvaContext,
       depositPct,
+      signMode,
       signerName: null,
     },
   };
 }
 
 /**
- * Prépare le seul état autorisé sur disque. L'étape acompte recule à signature et le nom est
- * supprimé : le tracé graphique devra être refait, donc son dérivé textuel ne doit pas survivre.
+ * Prépare le seul état autorisé sur disque. Le recap suit une chaîne déjà exécutée pour de vrai
+ * (devis créé, envoyé, parfois signé côté serveur) : jamais persistable. Le nom du signataire est
+ * toujours supprimé, quelle que soit l'étape : le tracé graphique devra être refait, donc son
+ * dérivé textuel ne doit pas survivre à une reprise.
  */
 export function prepareQuoteDraftForPersistence(
   state: QuoteDraftState,
   savedAt: number,
 ): QuoteDraftState {
-  if (!Number.isFinite(savedAt) || savedAt < 0 || state.flow.step === 'facture') {
+  if (!Number.isFinite(savedAt) || savedAt < 0 || state.flow.step === 'recap') {
     throw new QuoteDraftSnapshotCodecError('unsafe_state');
   }
-  const safeStep = state.flow.step === 'acompte' ? 'signature' : state.flow.step;
   const safeState: QuoteDraftState = {
     ...state,
     flow: {
-      step: safeStep,
+      step: state.flow.step,
       draft: {
         ...state.flow.draft,
         lines: state.flow.draft.lines.map(cloneLine),

@@ -10,6 +10,7 @@ import {
   type CataloguePrestation,
   type DevisTvaContext,
   type DevisFlowState,
+  type DevisSignMode,
   type DomainError,
   type LineCategory,
   type LineInput,
@@ -107,6 +108,7 @@ export type QuoteDraftCommand =
     }
   | { readonly type: 'set_signer_name'; readonly signerName: string | null }
   | { readonly type: 'set_deposit_pct'; readonly depositPct: number }
+  | { readonly type: 'set_sign_mode'; readonly signMode: DevisSignMode | null }
   | { readonly type: 'next_step' }
   | { readonly type: 'previous_step' };
 
@@ -363,6 +365,7 @@ export function hasMeaningfulQuoteDraft(state: QuoteDraftState): boolean {
     draft.customerId !== null ||
     draft.lines.length > 0 ||
     draft.signerName !== null ||
+    draft.signMode !== null ||
     draft.depositPct !== 30 ||
     hasStagedQuoteDraftLine(state)
   );
@@ -590,7 +593,7 @@ function applyRawCommand(
   }
 
   if (command.type === 'set_signer_name') {
-    const step = requireStep(state, ['signature', 'acompte'], 'La signature');
+    const step = requireStep(state, ['signature'], 'La signature');
     if (!step.ok) return step;
     const signerName = command.signerName === null ? null : normalizeSingleLine(command.signerName);
     if (signerName !== null && signerName.length < 2) {
@@ -601,6 +604,17 @@ function applyRawCommand(
       });
     }
     return ok({ ...state, flow: devisEdit(cloneFlow(state.flow), { signerName }) });
+  }
+
+  if (command.type === 'set_sign_mode') {
+    const step = requireStep(state, ['signature'], 'Le choix du mode de signature');
+    if (!step.ok) return step;
+    // Changer de mode invalide le nom déjà saisi (le passage « sur place » ↔ « envoyer »
+    // ne doit jamais laisser un signataire fantôme attaché au mauvais mode).
+    return ok({
+      ...state,
+      flow: devisEdit(cloneFlow(state.flow), { signMode: command.signMode, signerName: null }),
+    });
   }
 
   if (command.type === 'set_deposit_pct') {
@@ -896,6 +910,7 @@ function defaultProposalTitle(commands: readonly QuoteDraftCommand[]): string {
   if (command.type === 'set_vat') return 'Modifier la TVA';
   if (command.type === 'set_signer_name') return 'Modifier le signataire';
   if (command.type === 'set_deposit_pct') return 'Modifier l’acompte';
+  if (command.type === 'set_sign_mode') return 'Modifier le mode de signature';
   return command.type === 'next_step' ? 'Continuer' : 'Revenir à l’étape précédente';
 }
 
@@ -996,7 +1011,8 @@ function cloneCommand(command: QuoteDraftCommand): QuoteDraftCommand {
   if (
     command.type === 'remove_line' ||
     command.type === 'set_deposit_pct' ||
-    command.type === 'set_signer_name'
+    command.type === 'set_signer_name' ||
+    command.type === 'set_sign_mode'
   ) {
     return { ...command };
   }

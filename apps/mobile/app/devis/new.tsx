@@ -1,5 +1,5 @@
 /**
- * Devis → signature → facture — flux modal 6 étapes (claim C21, réfs proto §showDevis).
+ * Devis (C21, REDÉCOUPE 2026-07-16) — flux modal 6 étapes qui s'ARRÊTE AU DEVIS.
  * PILOTÉ par la machine RÉELLE @bob/core flows/devis (C02) : startDevis → devisEdit
  * (saisie, jamais un changement d'étape) → devisNext (garde par étape → message i18n
  * à la voix de Bob si bloqué) → devisBack (correction, brouillon conservé). L'état des
@@ -10,25 +10,34 @@
  * la saisie du libellé — searchCatalogue @bob/core sur useCatalogue : tap = pré-remplit
  * libellé/PU/catégorie, la TVA reste pilotée par l'étape 3 qui s'applique à TOUT le devis ;
  * la saisie libre reste INTACTE, la suggestion est optionnelle) · 3 TVA/mentions (contexte
- * logement → taux appliqué à
- * tout le devis ; le taux est REVALIDÉ par le use case CreateQuote via suggestVatRate
- * — franchise/autoliquidation remontent en erreur réelle à la génération ; l'aperçu
- * buildMentions n'est pas exposé côté client → carte informative honnête) ·
- * 4 signature au doigt (SignaturePad @bob/ui → signerName commité dans la machine ;
- * le dataURL SVG est capturé mais l'API signQuote n'accepte que signerName — TODO C40) ·
- * 5 acompte (30 % défaut proto, éditable, net RÉEL computeTotals — cas d'or 488,40 €) ·
- * 6 génération : confirmation typée (challengeFor fiscal, même feuille que DocumentActions
- * /C20) puis LA chaîne EXACTE de l'app (devis/new historique + voix.tsx) : createQuote →
- * sendQuote → signQuote → generateInvoice (acompte si depositPct — parentQuoteId posé par
- * le domaine) → issueInvoice (numéro légal). Chaîne RÉSUMABLE (checkpoints par ref) : un
- * échec au milieu ne rejoue pas les use cases déjà passés. Succès → numéro réel + CTA
- * « Voir la facture » → /facture/[id] (pont C16) + Toast.
+ * logement → taux appliqué à tout le devis ; le taux est REVALIDÉ par le use case
+ * CreateQuote via suggestVatRate — franchise/autoliquidation remontent en erreur réelle à
+ * la création ; l'aperçu buildMentions n'est pas exposé côté client → carte informative
+ * honnête) · 4 ACOMPTE (30 % défaut proto, éditable, net RÉEL computeTotals — cas d'or
+ * 488,40 €) : le % est une clause CONTRACTUELLE du devis, décidée AVANT la signature — ce
+ * n'est PAS une facture · 5 signature : choix sur place (pad @bob/ui, signerName + preuve)
+ * ou envoi (l'artisan est devant le client, ce choix reste légitime au wizard) ·
+ * 6 recap : confirmation typée OUTBOUND (même feuille que DocumentActions/C20) puis
+ * createQuote → sendQuote (numéro légal, email avec le lien de signature) → signQuote
+ * SEULEMENT si « sur place » (pad, preuve). Chaîne RÉSUMABLE (checkpoints par ref) : un
+ * échec au milieu ne rejoue pas les use cases déjà passés.
+ *
+ * LA FACTURE N'EST PLUS CRÉÉE ICI. Elle avait déjà son chemin officiel post-signature
+ * (QuoteActions sur /devis/[id], 3 états réels : aucune/acompte/finale) — l'enchaîner ici
+ * doublait ce chemin et créait une pièce que personne n'avait explicitement décidée
+ * (constat fondateur 2026-07-16 : « quand je fais un devis, je fais un devis »). Le recap
+ * final propose la suite SANS jamais la déclencher : devis signé sur place → « facture
+ * quand tu veux » (CTA vers /devis/[id], JAMAIS auto) ; devis envoyé à distance → aucune
+ * proposition tant qu'il n'est pas signé (la carte Home « devis accepté » relaiera à la
+ * signature). Facturation différée post-BC (grands comptes) : hors périmètre de cette
+ * tranche — voir le rapport de la mission pour ce qui manque (purchaseOrderRef).
  *
  * Écarts assumés vs proto : le proto pré-remplit des lignes de démo (ici : données
  * réelles saisies, régime A1-C10 sans fixtures) ; ses 6 états (composer/envoyé/signature/
  * signé/facture/encaissé) sont re-séquencés par la machine core (client/lignes/TVA/
- * signature/acompte/facture) — l'encaissement vit sur l'écran facture (C16, parité
- * InvoiceActions). Zéro hex/rgba — tout vient de useTheme()/@bob/tokens.
+ * acompte/signature/recap) — la facture (génération ET encaissement) vit entièrement sur
+ * l'écran /devis/[id] puis /facture/[id] (C16, parité InvoiceActions). Zéro hex/rgba —
+ * tout vient de useTheme()/@bob/tokens.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -38,13 +47,14 @@ import {
   Platform,
   Pressable,
   ScrollView,
+  Share,
   Text,
   TextInput,
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useNavigation, useRouter } from 'expo-router';
+import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { challengeFor, parseVoiceConsent } from '@bob/ai';
 import {
@@ -55,6 +65,7 @@ import {
   type CataloguePrestation,
   type CustomerListItem,
   type DevisDraft,
+  type DevisSignMode,
   type DevisStep,
   type DevisTvaContext,
   type LineCategory,
@@ -93,9 +104,8 @@ import {
 import {
   appErrorMessage,
   useCreateQuote,
+  useCreateQuoteSignatureLink,
   useCustomers,
-  useGenerateInvoice,
-  useIssueInvoice,
   useProfile,
   useSendQuote,
   useSignQuote,
@@ -118,23 +128,26 @@ import {
   type QuoteDraftProposal,
 } from '../../src/quote-draft';
 
-/** Profil de risque de la génération (émission = acte fiscal) — même palier que DocumentActions/C20. */
-const FISCAL = { mutating: true, outbound: false, riskTier: 'fiscal' } as const;
+/** Profil de risque du recap (envoi du devis, éventuellement signature) — même palier
+ * OUTBOUND que le bouton « Envoyer » de DocumentActions/C20. Ce n'est plus un acte fiscal :
+ * aucune facture ne se crée plus dans ce flow. */
+const OUTBOUND = { mutating: true, outbound: true, riskTier: 'outbound' } as const;
 
 /** Titres des 6 étapes de la machine (Stepper + en-têtes). */
 const STEP_KEYS: Record<DevisStep, I18nKey> = {
   client: 'devis.stepClient',
   lignes: 'devis.stepLines',
   tvaMentions: 'devis.stepVat',
-  signature: 'devis.stepSignature',
   acompte: 'devis.stepDeposit',
-  facture: 'devis.stepInvoice',
+  signature: 'devis.stepSignature',
+  recap: 'devis.stepRecap',
 };
 
 /** Gardes de la machine → voix de Bob (champ de l'erreur VALIDATION → clé i18n). */
 const GUARD_COPY: Readonly<Record<string, I18nKey>> = {
   customerId: 'devis.guardClient',
   lines: 'devis.guardLines',
+  signMode: 'devis.guardSignMode',
   signerName: 'devis.guardSignature',
   depositPct: 'devis.guardDeposit',
 };
@@ -196,6 +209,13 @@ function vatChoiceOf(context: DevisTvaContext | null): VatChoice {
 /** Presets d'acompte (30 % = défaut proto, 0 = facture unique). */
 const DEPOSIT_PRESETS: readonly number[] = [0, 10, 20, 30, 40, 50];
 
+/** Choix de l'étape signature — parité avec le sheet officiel de QuoteActions (R4), réduit
+ * aux deux options légitimes AU WIZARD (l'artisan est devant le client). */
+const SIGN_MODE_CHOICES: readonly { key: DevisSignMode; labelKey: I18nKey; hintKey: I18nKey }[] = [
+  { key: 'onsite', labelKey: 'devis.signModeOnsite', hintKey: 'devis.signModeOnsiteHint' },
+  { key: 'remote', labelKey: 'devis.signModeRemote', hintKey: 'devis.signModeRemoteHint' },
+];
+
 /** Taux affiché à la française (5.5 → « 5,5 »). */
 const fmtRate = (rate: number): string => String(rate).replace('.', ',');
 
@@ -218,23 +238,29 @@ export default function DevisNew() {
   const createQuote = useCreateQuote();
   const sendQuote = useSendQuote();
   const signQuote = useSignQuote();
-  const generateInvoice = useGenerateInvoice();
-  const issueInvoice = useIssueInvoice();
+  const signatureLink = useCreateQuoteSignatureLink();
 
   // ── Machine RÉELLE @bob/core (C02), portée par le provider racine : une seule vérité ──
   const flow = quoteDraft.state.flow;
   const [guardMsg, setGuardMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [invoice, setInvoice] = useState<{
+  /** Résultat du DEVIS créé (jamais une facture) — statut réel : signé sur place, ou envoyé
+   * et en attente de signature. */
+  const [quoteResult, setQuoteResult] = useState<{
     id: string;
     number: string;
     customerName: string;
     amount: string;
+    status: 'signed' | 'sent';
+    depositPct: number;
+    depositAmount: string;
+    emailSkipped: boolean;
   } | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [exitSheetOpen, setExitSheetOpen] = useState(false);
   const [exitActionBusy, setExitActionBusy] = useState(false);
+  const [shareLinkBusy, setShareLinkBusy] = useState(false);
 
   // Saisie non validée : hors contenu financier, mais conservée par le provider pour la reprise.
   const lineLabel = quoteDraft.state.lineForm.label;
@@ -253,12 +279,20 @@ export default function DevisNew() {
   const [signature, setSignature] = useState<SignaturePadValue | null>(null);
   const [signerName, setSignerName] = useState('');
 
-  // Checkpoints de la chaîne de génération (résumable après erreur — jamais de double use case).
-  const chain = useRef<{ quoteId: string | null; sent: boolean; signed: boolean; invoiceId: string | null }>({
+  // Checkpoints de la chaîne (résumable après erreur — jamais de double use case). `number` et
+  // `emailSkipped` sont capturés au SEUL appel réussi de sendQuote (un retry ne le rappelle pas).
+  const chain = useRef<{
+    quoteId: string | null;
+    number: string | null;
+    emailSkipped: boolean;
+    sent: boolean;
+    signed: boolean;
+  }>({
     quoteId: null,
+    number: null,
+    emailSkipped: false,
     sent: false,
     signed: false,
-    invoiceId: null,
   });
   const generationInFlight = useRef(false);
   const generationIntentInFlight = useRef(false);
@@ -275,7 +309,9 @@ export default function DevisNew() {
   const vatChoice = vatChoiceOf(draft.tvaContext);
   const currentRate = VAT_CHOICES.find((c) => c.key === vatChoice)?.rate ?? 20;
   const totals = computeTotals([...draft.lines], { depositPct: draft.depositPct });
-  const dark = flow.step === 'signature'; // vue signature sur navy (réf proto « vue client »)
+  // Vue « client » sur navy UNIQUEMENT quand le pad est effectivement montré (mode sur place
+  // choisi) — le choix du mode et l'envoi à distance restent sur le thème clair habituel.
+  const dark = flow.step === 'signature' && draft.signMode === 'onsite';
 
   // ── Transitions : écran et voix commandent le MÊME provider sérialisé ──────
   const goNext = (): void => {
@@ -291,7 +327,7 @@ export default function DevisNew() {
   const goBack = (): void => {
     const result = quoteDraft.applyAtRevision({ type: 'previous_step' }, quoteDraft.state.revision);
     if (!result.ok && result.error.code === 'revision_conflict') return;
-    if (!result.ok) return; // 'client' est le début, 'facture' est terminal — la table fait foi
+    if (!result.ok) return; // 'client' est le début, 'recap' est terminal — la table fait foi
     setGuardMsg(null);
   };
 
@@ -302,12 +338,43 @@ export default function DevisNew() {
   flowRef.current = flow;
   const quoteStateRef = useRef(quoteDraft.state);
   quoteStateRef.current = quoteDraft.state;
+
+  // ── Entrée du wizard : TOUJOURS vierge, sauf reprise EXPLICITE (bug fondateur 2026-07-17 —
+  // « Devis » ne doit plus jamais reprendre en silence ce qui traînait, l'utilisateur croyant
+  // créer un nouveau devis retombait sur l'ancien). `?resume=1` — posé par la carte « brouillon »
+  // de ventes.tsx — ramène le brouillon PARKÉ ; toute autre entrée (Vite fait, Fab, fiche
+  // client…) démarre une session vierge et parque l'éventuel brouillon enregistré dans
+  // `quoteDraft.pendingResume`, proposé PLUS BAS par une bannière discrète — jamais imposé.
+  const { resume } = useLocalSearchParams<{ resume?: string }>();
+  const resumeRequested = resume === '1';
+  const freshnessApplied = useRef(false);
+  const [freshnessReady, setFreshnessReady] = useState(false);
+  useEffect(() => {
+    if (freshnessApplied.current) return;
+    freshnessApplied.current = true;
+    if (resumeRequested) {
+      // Rien à faire si la session déjà chargée EST le brouillon visé (ex. démarrage à froid,
+      // jamais soft-resetée) — sinon, on ramène celui parké par une visite précédente.
+      if (quoteStateRef.current.saved === null && quoteDraft.pendingResume !== null) {
+        quoteDraft.resumePending();
+      }
+    } else {
+      quoteDraft.startFresh();
+    }
+    setFreshnessReady(true);
+    // Mount uniquement — une seule décision par ouverture d'écran (resumeRequested/quoteDraft
+    // sont lus via refs/valeurs figées à l'ouverture ; les redemander ne doit rien redéclencher).
+  }, []);
+  const [resumeBannerDismissed, setResumeBannerDismissed] = useState(false);
+
   // « Nouveau devis POUR Camping Les Pins » : le nom entendu (hint session) est résolu contre
   // les clients RÉELS dès leur chargement — client présélectionné + saut direct aux
   // prestations. Introuvable/ambigu → flux normal étape client (fail-safe, jamais de devinette).
+  // Attend la décision fraîcheur ci-dessus : sinon `flowRef` porterait encore l'ancien brouillon.
   const [wizardHint] = useState(() => consumeWizardHint('devis-new'));
   const wizardHintRef = useRef(wizardHint);
   useEffect(() => {
+    if (!freshnessReady) return;
     const hint = wizardHintRef.current;
     const reference = hint?.customerReference;
     if (!reference) return;
@@ -323,7 +390,7 @@ export default function DevisNew() {
       { type: 'select_customer', customer: { id: matched.id, name: matched.name } },
       { type: 'next_step' },
     ]);
-  }, [customers.data]);
+  }, [customers.data, freshnessReady]);
   const customersRef = useRef(customers.data ?? []);
   customersRef.current = customers.data ?? [];
   const prestationsRef = useRef<readonly VoicePrestation[]>([]);
@@ -359,9 +426,10 @@ export default function DevisNew() {
 
     const advance = (): string => {
       const current = flowRef.current;
-      // PLANCHER DE SÉCURITÉ : signature, acompte (génération) et facture ne se franchissent
-      // JAMAIS à la voix — ces étapes portent ConfirmSheet/runGeneration, l'écran fait foi.
-      if (current.step === 'signature' || current.step === 'acompte' || current.step === 'facture') {
+      // PLANCHER DE SÉCURITÉ : signature (choix du mode + pad/preuve) et recap (ConfirmSheet +
+      // chaîne createQuote/sendQuote/signQuote) ne se franchissent JAMAIS à la voix — l'écran
+      // fait foi. L'acompte, lui, n'est plus qu'une clause chiffrée : voix-avançable comme TVA.
+      if (current.step === 'signature' || current.step === 'recap') {
         return tt('devis.voice.screenOnlyStep');
       }
       const result = quoteDraft.applyAtRevision({ type: 'next_step' }, quoteStateRef.current.revision);
@@ -674,8 +742,8 @@ export default function DevisNew() {
     client: 'devis.voice.greetClient',
     lignes: 'devis.voice.greetLines',
     tvaMentions: 'devis.voice.greetVat',
-    signature: 'devis.voice.greetSignature',
     acompte: 'devis.voice.greetDeposit',
+    signature: 'devis.voice.greetSignature',
   };
   const greetKey = GREET_BY_STEP[flow.step];
   const agentSurface = useMemo<AgentSurface>(
@@ -866,11 +934,19 @@ export default function DevisNew() {
     );
   };
 
-  // ── Étape 6 : LA chaîne réelle, résumable — mêmes use cases que Bob (parité) ──
-  const runGeneration = async (d: DevisDraft): Promise<void> => {
+  // ── Étape 5 : signature — sur place (pad) ou envoi (email avec le lien) ───
+  const selectSignMode = (mode: DevisSignMode): void => {
+    if (draft.signMode === mode) return;
+    setSignature(null); // changer de mode invalide un tracé en cours (le domaine annule le nom)
+    quoteDraft.applyAtRevision({ type: 'set_sign_mode', signMode: mode }, quoteDraft.state.revision);
+  };
+
+  // ── Étape 6 : recap — createQuote → sendQuote → signQuote SI sur place. Résumable
+  // (checkpoints par ref) — mêmes use cases que Bob (parité), JAMAIS de facture ici. ──
+  const runQuoteCreation = async (d: DevisDraft): Promise<void> => {
     // Ref synchrone : deux taps dans le même frame ne voient jamais deux `busy=false`.
     if (generationInFlight.current) return;
-    if (d.customerId === null || d.signerName === null) {
+    if (d.customerId === null || d.signMode === null || (d.signMode === 'onsite' && d.signerName === null)) {
       setError(t('devis.errAction', { personality }));
       return;
     }
@@ -890,47 +966,58 @@ export default function DevisNew() {
         chain.current.quoteId = quoteId;
       }
       if (!chain.current.sent) {
-        await sendQuote.mutateAsync(quoteId);
+        // sendQuote alloue le numéro légal ET envoie l'e-mail avec le lien de signature (si le
+        // client a une adresse) — c'est LÀ que « envoyer » se produit, pas une étape à part.
+        const sent = await sendQuote.mutateAsync(quoteId);
         chain.current.sent = true;
+        chain.current.number = sent.number;
+        chain.current.emailSkipped = sent.deliveryStatus === 'skipped';
       }
-      if (!chain.current.signed) {
-        // R4 : le tracé du pad (étape 4) accompagne la signature — le serveur en calcule le
-        // hash de preuve (onsite_draw). La garde devisNext exige un tracé non vide pour
-        // franchir l'étape, donc `signature.dataUrl` existe ici ; on reste défensif (spread).
+      if (d.signMode === 'onsite' && !chain.current.signed) {
+        // R4 : le tracé du pad (étape signature) accompagne la signature — le serveur en
+        // calcule le hash de preuve (onsite_draw). La garde devisNext exige un tracé non vide
+        // pour franchir l'étape en mode « sur place », donc `signature.dataUrl` existe ici ;
+        // on reste défensif (spread).
         await signQuote.mutateAsync({
           quoteId,
-          signerName: d.signerName,
+          signerName: d.signerName!,
           ...(signature?.dataUrl ? { proofDataUrl: signature.dataUrl } : {}),
         });
         chain.current.signed = true;
       }
-      let invoiceId = chain.current.invoiceId;
-      if (invoiceId === null) {
-        // Le mode fait partie de l'intention persistée : un retry réseau rejoue exactement la
-        // même pièce fiscale et ne peut pas passer implicitement de l'acompte à la finale.
-        const generated = await generateInvoice.mutateAsync({
-          quoteId,
-          mode: d.depositPct > 0 ? 'deposit' : 'final',
-        });
-        invoiceId = generated.invoiceId;
-        chain.current.invoiceId = invoiceId;
+      const number = chain.current.number;
+      if (number === null) {
+        // Défensif : sendQuote a nécessairement réussi ci-dessus (ou lors d'un essai
+        // précédent) pour atteindre ce point — un numéro manquant serait une incohérence.
+        setError(t('devis.errAction', { personality }));
+        return;
       }
-      const issued = await issueInvoice.mutateAsync(invoiceId);
-      // La pièce est créée, mais l'ancien brouillon ne doit jamais ressusciter au prochain boot.
-      // On attend donc la purge SecureStore avant d'afficher le succès. Un échec reste retryable :
-      // les checkpoints de cette chaîne gardent les ids réels et empêchent toute double création.
-      const draftCleared = await quoteDraft.complete(invoiceId);
+      // Le devis est créé/envoyé (et peut-être signé), mais l'ancien brouillon ne doit jamais
+      // ressusciter au prochain boot. On attend donc la purge SecureStore avant d'afficher le
+      // recap. Un échec reste retryable : les checkpoints de cette chaîne gardent les ids réels
+      // et empêchent toute double création — JAMAIS de facture, quel que soit l'état atteint.
+      const draftCleared = await quoteDraft.complete(quoteId);
       if (!draftCleared) {
         setError(t('devis.errAction', { personality }));
         return;
       }
-      setInvoice({
-        id: invoiceId,
-        number: issued.number,
+      const finalTotals = computeTotals([...d.lines], { depositPct: d.depositPct });
+      setQuoteResult({
+        id: quoteId,
+        number,
         customerName,
-        amount: formatEUR(computeTotals([...d.lines], { depositPct: d.depositPct }).netToPay),
+        amount: formatEUR(finalTotals.ttc),
+        status: d.signMode === 'onsite' ? 'signed' : 'sent',
+        depositPct: d.depositPct,
+        depositAmount: formatEUR(finalTotals.netToPay),
+        emailSkipped: chain.current.emailSkipped,
       });
-      setToast(t('devis.toastDone', { personality, params: { number: issued.number } }));
+      setToast(
+        t(d.signMode === 'onsite' ? 'devis.toastSigned' : 'devis.toastSent', {
+          personality,
+          params: { number },
+        }),
+      );
     } catch (e) {
       setError(appErrorMessage(e));
     } finally {
@@ -939,16 +1026,21 @@ export default function DevisNew() {
     }
   };
 
-  const onGenerate = async (): Promise<void> => {
+  const onFinalize = async (): Promise<void> => {
     if (generationIntentInFlight.current || generationInFlight.current) return;
+    const mode = draft.signMode;
+    if (mode === null) return; // bouton désactivé tant que le mode n'est pas choisi
     generationIntentInFlight.current = true;
     try {
       const confirmedRevision = quoteDraft.state.revision;
-      const amount = formatEUR(totals.netToPay);
+      const amount = formatEUR(totals.ttc);
       const ok = await confirm({
-        title: t('devis.confirmTitle', { personality }),
-        message: t('devis.confirmBody', { personality, params: { name: customerName, amount } }),
-        challenge: challengeFor(FISCAL, 'confirm_all'),
+        title: t(mode === 'onsite' ? 'devis.confirmSignTitle' : 'devis.confirmSendTitle', { personality }),
+        message: t(mode === 'onsite' ? 'devis.confirmSignBody' : 'devis.confirmSendBody', {
+          personality,
+          params: { name: customerName, amount },
+        }),
+        challenge: challengeFor(OUTBOUND, 'confirm_all'),
       });
       if (!ok) return;
       const next = quoteDraft.applyAtRevision({ type: 'next_step' }, confirmedRevision);
@@ -957,23 +1049,41 @@ export default function DevisNew() {
         return;
       }
       setGuardMsg(null);
-      await runGeneration(next.value.flow.draft);
+      await runQuoteCreation(next.value.flow.draft);
     } finally {
       generationIntentInFlight.current = false;
     }
   };
 
+  /** Recap, statut « envoyé » : si l'e-mail a été sauté (client sans adresse), permet quand
+   * même de délivrer le lien de signature (partage natif) — parité avec « Envoyer le lien »
+   * de QuoteActions/R4. Aucun sortant caché : Share reste un geste explicite de l'artisan. */
+  const shareSignatureLink = async (): Promise<void> => {
+    if (quoteResult === null || shareLinkBusy) return;
+    setShareLinkBusy(true);
+    try {
+      const result = await signatureLink.mutateAsync(quoteResult.id);
+      await Share.share({
+        message: `Bonjour, voici le lien pour signer le devis${quoteResult.number ? ` ${quoteResult.number}` : ''} : ${result.signatureUrl}`,
+      });
+    } catch (e) {
+      setError(appErrorMessage(e));
+    } finally {
+      setShareLinkBusy(false);
+    }
+  };
+
   // ── Sortie sûre : bouton, back Android et swipe iOS passent par la même décision ──
   const hasUnpersistedSignature = signature !== null && !signature.isEmpty;
-  const needsExitDecision = invoice === null
+  const needsExitDecision = quoteResult === null
     && (
       hasUnsavedQuoteDraftChanges(quoteDraft.state)
       || hasUnpersistedSignature
       || lineProposal !== null
     );
-  // Une chaîne fiscale partiellement exécutée ne se transforme pas en « brouillon local » :
-  // quitter ferait perdre les checkpoints et pourrait provoquer une seconde pièce au retry.
-  const generationExitLocked = invoice === null && flow.step === 'facture';
+  // Une chaîne partiellement exécutée ne se transforme pas en « brouillon local » : quitter
+  // ferait perdre les checkpoints et pourrait provoquer un double envoi/signature au retry.
+  const generationExitLocked = quoteResult === null && flow.step === 'recap';
 
   useEffect(() => navigation.addListener('beforeRemove', (event) => {
     if (allowNextRemoval.current) {
@@ -1046,17 +1156,21 @@ export default function DevisNew() {
     setExitActionBusy(false);
   };
 
-  // ════════ SUCCÈS (machine: 'facture', numéro légal réel) ═══════════════════
-  if (invoice !== null) {
+  // ════════ RECAP (machine: 'recap', devis réel créé — JAMAIS de facture) ═════
+  if (quoteResult !== null) {
+    const signed = quoteResult.status === 'signed';
+    const tint = signed ? semantic.success : semantic.warning;
     return (
-      <View style={{ flex: 1, backgroundColor: semantic.success }}>
-        <LinearGradient
-          pointerEvents="none"
-          colors={[semantic.success, themes.foret.d1]}
-          start={{ x: 0.45, y: 0 }}
-          end={{ x: 0.55, y: 1 }}
-          style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
-        />
+      <View style={{ flex: 1, backgroundColor: tint }}>
+        {signed ? (
+          <LinearGradient
+            pointerEvents="none"
+            colors={[semantic.success, themes.foret.d1]}
+            start={{ x: 0.45, y: 0 }}
+            end={{ x: 0.55, y: 1 }}
+            style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
+          />
+        ) : null}
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 30 }}>
           <View
             style={{
@@ -1070,10 +1184,14 @@ export default function DevisNew() {
               ...shadowNative.e3,
             }}
           >
-            <CheckIcon color={semantic.success} size={48} strokeWidth={2.6} />
+            {signed ? (
+              <CheckIcon color={semantic.success} size={48} strokeWidth={2.6} />
+            ) : (
+              <Ionicons name="paper-plane-outline" size={44} color={semantic.warning} />
+            )}
           </View>
           <Text style={[font('screenH1'), { color: colors.surface, textAlign: 'center', marginBottom: 8 }]}>
-            {t('devis.successTitle', { personality })}
+            {t(signed ? 'devis.recapSignedTitle' : 'devis.recapSentTitle', { personality })}
           </Text>
           <Text
             style={[
@@ -1084,23 +1202,72 @@ export default function DevisNew() {
                 maxWidth: 300,
                 textAlign: 'center',
                 color: overlays.white70,
-                marginBottom: 30,
+                marginBottom: signed && quoteResult.depositPct >= 0 ? 18 : 30,
               },
             ]}
           >
-            {t('devis.successBody', {
+            {t(signed ? 'devis.recapSignedBody' : 'devis.recapSentBody', {
               personality,
               params: {
-                number: invoice.number,
-                name: invoice.customerName,
-                amount: invoice.amount,
+                number: quoteResult.number,
+                name: quoteResult.customerName,
+                amount: quoteResult.amount,
               },
             })}
           </Text>
+          {/* Parcours ① (signature sur place) SEULEMENT : la facture reste une PROPOSITION,
+              jamais déclenchée d'ici — le CTA route vers le chemin officiel (/devis/[id],
+              QuoteActions R5). Parcours ② (envoi à distance) : AUCUNE proposition tant que
+              le client n'a pas signé — la carte Home « devis accepté » prendra le relais. */}
+          {signed ? (
+            <View
+              style={{
+                alignSelf: 'stretch',
+                maxWidth: 320,
+                backgroundColor: overlays.white10,
+                borderRadius: 16,
+                padding: 14,
+                marginBottom: 18,
+              }}
+            >
+              <Text style={[font('label', 700), { fontSize: 11.5, color: colors.surface, marginBottom: 4 }]}>
+                {t('devis.recapProposalTitle', { personality }).toUpperCase()}
+              </Text>
+              <Text style={[font('sub'), { color: overlays.white70, lineHeight: 19 }]}>
+                {t(
+                  quoteResult.depositPct > 0 ? 'devis.recapProposalBodyDeposit' : 'devis.recapProposalBodyFull',
+                  { personality, params: { pct: quoteResult.depositPct, amount: quoteResult.depositAmount } },
+                )}
+              </Text>
+            </View>
+          ) : null}
+          {!signed && quoteResult.emailSkipped ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t('devis.shareLink', { personality })}
+              disabled={shareLinkBusy}
+              onPress={() => void shareSignatureLink()}
+              style={{
+                alignSelf: 'stretch',
+                maxWidth: 320,
+                borderWidth: 1,
+                borderColor: overlays.white14,
+                borderRadius: 14,
+                paddingVertical: 12,
+                alignItems: 'center',
+                marginBottom: 14,
+                opacity: shareLinkBusy ? 0.6 : 1,
+              }}
+            >
+              <Text style={[font('label', 600), { color: colors.surface }]}>
+                {shareLinkBusy ? t('devis.generating', { personality }) : t('devis.shareLink', { personality })}
+              </Text>
+            </Pressable>
+          ) : null}
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel={t('devis.seeInvoice', { personality })}
-            onPress={() => router.replace(`/facture/${invoice.id}`)}
+            accessibilityLabel={t('devis.seeQuote', { personality })}
+            onPress={() => router.replace(`/devis/${quoteResult.id}`)}
             style={({ pressed }) => ({
               alignSelf: 'stretch',
               maxWidth: 320,
@@ -1111,8 +1278,8 @@ export default function DevisNew() {
               transform: [{ scale: pressed ? 0.97 : 1 }],
             })}
           >
-            <Text style={[font('button'), { color: semantic.success }]}>
-              {t('devis.seeInvoice', { personality })}
+            <Text style={[font('button'), { color: tint }]}>
+              {t('devis.seeQuote', { personality })}
             </Text>
           </Pressable>
           <Pressable
@@ -1136,7 +1303,7 @@ export default function DevisNew() {
     );
   }
 
-  // ════════ FLUX (machine: client → … → facture en cours) ════════════════════
+  // ════════ FLUX (machine: client → … → recap en cours) ═══════════════════════
   const titleColor = dark ? colors.surface : colors.ink900;
   const subColor = dark ? overlays.white60 : colors.slate500;
 
@@ -1162,7 +1329,7 @@ export default function DevisNew() {
             justifyContent: 'space-between',
           }}
         >
-          {stepIndex > 0 && flow.step !== 'facture' ? (
+          {stepIndex > 0 && flow.step !== 'recap' ? (
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={t('devis.back', { personality })}
@@ -1207,6 +1374,50 @@ export default function DevisNew() {
             accessibilityLabel={t('devis.title', { personality })}
           />
         </View>
+
+        {/* Bannière discrète de reprise (bug fondateur 2026-07-17) : jamais de résurrection
+            silencieuse — le wizard démarre vierge, mais un brouillon enregistré parké reste
+            proposé, pas imposé. Visible seulement à l'étape client (juste après l'ouverture) et
+            tant que rien n'a été saisi dans CETTE session. */}
+        {quoteDraft.pendingResume !== null && !resumeBannerDismissed && flow.step === 'client' && draft.customerId === null ? (
+          <View style={{ paddingHorizontal: 18, paddingBottom: 4 }}>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => quoteDraft.resumePending()}
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 10,
+                borderRadius: 14,
+                borderWidth: 1,
+                borderColor: semantic.warning,
+                backgroundColor: semantic.warningBg,
+                paddingVertical: 10,
+                paddingHorizontal: 12,
+              }}
+            >
+              <Ionicons name="document-text-outline" size={18} color={semantic.warning} />
+              <Text style={[font('sub'), { flex: 1, color: colors.ink800, lineHeight: 18 }]}>
+                {t(
+                  quoteDraft.pendingResume.customer !== null ? 'devis.resumeBanner.prompt' : 'devis.resumeBanner.promptNoName',
+                  { personality, params: { name: quoteDraft.pendingResume.customer?.name ?? '' } },
+                )}
+              </Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={t('devis.resumeBanner.dismiss', { personality })}
+                hitSlop={8}
+                onPress={(e) => {
+                  e.stopPropagation();
+                  setResumeBannerDismissed(true);
+                }}
+                style={{ width: 28, height: 28, alignItems: 'center', justifyContent: 'center' }}
+              >
+                <CloseIcon color={colors.slate500} size={13} strokeWidth={2.4} />
+              </Pressable>
+            </Pressable>
+          </View>
+        ) : null}
 
         <ScrollView
           style={{ flex: 1 }}
@@ -1725,60 +1936,8 @@ export default function DevisNew() {
             </>
           ) : null}
 
-          {/* ── Étape 4 — signature au doigt (vue client, navy) ── */}
-          {flow.step === 'signature' ? (
-            <>
-              <Text style={[font('screenH1'), { fontSize: 24, color: titleColor }]}>
-                {t('devis.signTitle', { personality })}
-              </Text>
-              <Text style={[font('sub'), { color: subColor, marginBottom: 4 }]}>
-                {t('devis.signSub', { personality })}
-              </Text>
-              <Card radius={18} padding={16}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <View style={{ flex: 1, paddingRight: 12 }}>
-                    <Text style={[font('cardTitle'), { fontSize: 15.5, color: colors.ink900 }]}>{customerName}</Text>
-                    <Text style={[font('meta'), { fontSize: 12.5, color: colors.slate400, marginTop: 1 }]}>
-                      {t('devis.totalTtc', { personality })}
-                    </Text>
-                  </View>
-                  <MoneyText cents={totals.ttc} variant="big" />
-                </View>
-              </Card>
-              <SignaturePad
-                clearLabel={t('devis.signClear', { personality })}
-                placeholder={t('devis.signPlaceholder', { personality })}
-                accessibilityLabel={t('devis.signTitle', { personality })}
-                onChange={setSignature}
-              />
-              <View>
-                <Text style={[font('label', 600), { fontSize: 12.5, color: overlays.white60, marginBottom: 8 }]}>
-                  {t('devis.signerLabel', { personality })}
-                </Text>
-                <TextInput
-                  value={signerName}
-                  onChangeText={setSignerName}
-                  placeholder={t('devis.signerPlaceholder', { personality })}
-                  placeholderTextColor={overlays.white50}
-                  accessibilityLabel={t('devis.signerLabel', { personality })}
-                  style={[
-                    font('body'),
-                    {
-                      minHeight: 46,
-                      color: colors.surface,
-                      backgroundColor: overlays.white10,
-                      borderWidth: 1,
-                      borderColor: overlays.white14,
-                      borderRadius: 14,
-                      paddingHorizontal: 14,
-                    },
-                  ]}
-                />
-              </View>
-            </>
-          ) : null}
-
-          {/* ── Étape 5 — acompte (30 % défaut, net réel du core) ── */}
+          {/* ── Étape 4 — acompte : le % CONTRACTUEL, décidé AVANT la signature (pas une
+              facture) — 30 % défaut, net réel du core. ── */}
           {flow.step === 'acompte' ? (
             <>
               <Text style={[font('screenH1'), { fontSize: 24, color: titleColor }]}>
@@ -1823,8 +1982,113 @@ export default function DevisNew() {
             </>
           ) : null}
 
-          {/* ── Étape 6 — génération en cours / erreur (le succès a son écran) ── */}
-          {flow.step === 'facture' && invoice === null ? (
+          {/* ── Étape 5 — signature : sur place (pad, vue client navy) ou envoi (email +
+              lien de signature, l'artisan reste devant son propre écran). ── */}
+          {flow.step === 'signature' ? (
+            <>
+              <Text style={[font('screenH1'), { fontSize: 24, color: titleColor }]}>
+                {t('devis.signTitle', { personality })}
+              </Text>
+              <Text style={[font('sub'), { color: subColor, marginBottom: 4 }]}>
+                {t('devis.signSub', { personality })}
+              </Text>
+              <View style={{ flexDirection: 'row', gap: 10 }}>
+                {SIGN_MODE_CHOICES.map((choice) => {
+                  const selected = draft.signMode === choice.key;
+                  return (
+                    <Pressable
+                      key={choice.key}
+                      onPress={() => selectSignMode(choice.key)}
+                      accessibilityRole="radio"
+                      accessibilityLabel={t(choice.labelKey, { personality })}
+                      accessibilityState={{ selected }}
+                      style={{
+                        flex: 1,
+                        gap: 4,
+                        borderRadius: radius.card,
+                        borderWidth: selected ? 2 : 1,
+                        borderColor: selected
+                          ? (dark ? colors.surface : theme.ink)
+                          : (dark ? overlays.white14 : controls.cardBorder),
+                        backgroundColor: dark ? (selected ? overlays.white14 : overlays.white10) : colors.surface,
+                        padding: 14,
+                      }}
+                    >
+                      <Text style={[font('label', 700), { fontSize: 14, color: dark ? colors.surface : colors.ink900 }]}>
+                        {t(choice.labelKey, { personality })}
+                      </Text>
+                      <Text
+                        style={[
+                          font('meta'),
+                          { fontSize: 11.5, lineHeight: 15, color: dark ? overlays.white60 : colors.slate400 },
+                        ]}
+                      >
+                        {t(choice.hintKey, { personality })}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+              {draft.signMode === 'onsite' ? (
+                <>
+                  <Card radius={18} padding={16}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <View style={{ flex: 1, paddingRight: 12 }}>
+                        <Text style={[font('cardTitle'), { fontSize: 15.5, color: colors.ink900 }]}>{customerName}</Text>
+                        <Text style={[font('meta'), { fontSize: 12.5, color: colors.slate400, marginTop: 1 }]}>
+                          {t('devis.totalTtc', { personality })}
+                        </Text>
+                      </View>
+                      <MoneyText cents={totals.ttc} variant="big" />
+                    </View>
+                  </Card>
+                  <SignaturePad
+                    clearLabel={t('devis.signClear', { personality })}
+                    placeholder={t('devis.signPlaceholder', { personality })}
+                    accessibilityLabel={t('devis.signTitle', { personality })}
+                    onChange={setSignature}
+                  />
+                  <View>
+                    <Text style={[font('label', 600), { fontSize: 12.5, color: overlays.white60, marginBottom: 8 }]}>
+                      {t('devis.signerLabel', { personality })}
+                    </Text>
+                    <TextInput
+                      value={signerName}
+                      onChangeText={setSignerName}
+                      placeholder={t('devis.signerPlaceholder', { personality })}
+                      placeholderTextColor={overlays.white50}
+                      accessibilityLabel={t('devis.signerLabel', { personality })}
+                      style={[
+                        font('body'),
+                        {
+                          minHeight: 46,
+                          color: colors.surface,
+                          backgroundColor: overlays.white10,
+                          borderWidth: 1,
+                          borderColor: overlays.white14,
+                          borderRadius: 14,
+                          paddingHorizontal: 14,
+                        },
+                      ]}
+                    />
+                  </View>
+                </>
+              ) : null}
+              {draft.signMode === 'remote' ? (
+                <Card radius={18} padding={16}>
+                  <Text style={[font('cardTitle'), { fontSize: 15.5, color: colors.ink900, marginBottom: 6 }]}>
+                    {t('devis.signModeRemoteSummaryTitle', { personality })}
+                  </Text>
+                  <Text style={[font('sub'), { color: colors.slate500, lineHeight: 20 }]}>
+                    {t('devis.signModeRemoteSummaryBody', { personality, params: { name: customerName } })}
+                  </Text>
+                </Card>
+              ) : null}
+            </>
+          ) : null}
+
+          {/* ── Étape 6 — recap : envoi/signature en cours ou erreur (le résultat a son écran) ── */}
+          {flow.step === 'recap' && quoteResult === null ? (
             <View style={{ alignItems: 'center', paddingTop: 60, gap: 16 }}>
               {busy ? (
                 <>
@@ -1843,7 +2107,7 @@ export default function DevisNew() {
                   <View style={{ alignSelf: 'stretch' }}>
                     <Button
                       title={t('devis.retry', { personality })}
-                      onPress={() => void runGeneration(flow.draft)}
+                      onPress={() => void runQuoteCreation(flow.draft)}
                     />
                   </View>
                 </>
@@ -2024,7 +2288,7 @@ export default function DevisNew() {
             </Text>
           </Pressable>
         ) : null}
-        {flow.step !== 'facture' ? (
+        {flow.step !== 'recap' ? (
           <View style={{ paddingHorizontal: 18, paddingTop: 6, paddingBottom: insets.bottom + 16, gap: 10 }}>
             {guardMsg !== null ? (
               <Text
@@ -2034,23 +2298,22 @@ export default function DevisNew() {
                 {guardMsg}
               </Text>
             ) : null}
-            {flow.step === 'acompte' ? (
-              <Button title={t('devis.generateCta', { personality })} onPress={() => void onGenerate()} />
-            ) : dark ? (
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={t('devis.next', { personality })}
-                onPress={goNext}
-                style={({ pressed }) => ({
-                  backgroundColor: colors.surface,
-                  borderRadius: 16,
-                  paddingVertical: 15,
-                  alignItems: 'center',
-                  transform: [{ scale: pressed ? 0.97 : 1 }],
-                })}
-              >
-                <Text style={[font('button'), { color: colors.ink900 }]}>{t('devis.next', { personality })}</Text>
-              </Pressable>
+            {flow.step === 'signature' ? (
+              // `dark` (navy, pad visible) n'est vrai QUE sur cette étape (signMode === 'onsite') :
+              // le CTA dédié couvre donc aussi le cas où la vue est passée en navy — jamais le
+              // bouton clair générique ci-dessous, qui serait illisible sur fond sombre.
+              <Button
+                title={t(
+                  draft.signMode === 'remote'
+                    ? 'devis.sendCta'
+                    : draft.signMode === 'onsite'
+                      ? 'devis.signOnsiteCta'
+                      : 'devis.next',
+                  { personality },
+                )}
+                disabled={draft.signMode === null}
+                onPress={() => void onFinalize()}
+              />
             ) : (
               <Button title={t('devis.next', { personality })} onPress={goNext} />
             )}

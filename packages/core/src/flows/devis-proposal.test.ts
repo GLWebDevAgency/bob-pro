@@ -21,6 +21,7 @@ const base = (): DevisFlowStateWithProposal => ({
     ],
     tvaContext: null,
     depositPct: 30,
+    signMode: null,
     signerName: null,
   },
   proposal: null,
@@ -61,7 +62,7 @@ describe('devisPropose / accept / reject — la voix PROPOSE, l’humain DÉCIDE
     const state = base();
     expect(devisPropose(state, {}, 'rien').ok).toBe(false);
     expect(devisAcceptProposal(state).ok).toBe(false);
-    expect(devisPropose({ ...state, step: 'facture' }, { depositPct: 40 }, 'x').ok).toBe(false);
+    expect(devisPropose({ ...state, step: 'recap' }, { depositPct: 40 }, 'x').ok).toBe(false);
   });
 
   it('withLineUpdated/Removed : ordinal HUMAIN 1-based, hors-borne = erreur honnête', () => {

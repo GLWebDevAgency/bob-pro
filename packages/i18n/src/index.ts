@@ -199,6 +199,59 @@ const legacyFr = {
     pro: 'Lancer le diagnostic',
     direct: 'Diagnostic',
   },
+  // Rappel de brouillon de devis (C21 redécoupe 2026-07-17) — CLIENT-SIDE, jamais remonté au
+  // serveur : composé dans le rendu du Home à partir du brouillon local (voir quote-draft).
+  // Sobriété : n'apparaît qu'après ~1 h, ou à la réouverture de l'app — jamais pendant l'édition.
+  'today.prioDraftTitle': {
+    pote: 'Devis en cours — {name}',
+    pro: 'Devis en préparation — {name}',
+    direct: 'Devis en cours — {name}',
+  },
+  'today.prioDraftNoCustomer': {
+    pote: 'un client',
+    pro: 'un client',
+    direct: 'un client',
+  },
+  'today.prioDraftHint': {
+    pote: 'Un brouillon t’attend, jamais envoyé — reprends-le ou laisse-le filer.',
+    pro: 'Un brouillon local n’a pas encore été envoyé.',
+    direct: 'Brouillon local, pas envoyé.',
+  },
+  'today.prioDraftBadge': {
+    pote: 'Brouillon',
+    pro: 'Brouillon',
+    direct: 'Brouillon',
+  },
+  'today.ctaDraftResume': {
+    pote: 'Continuer',
+    pro: 'Continuer',
+    direct: 'Continuer',
+  },
+  'today.ctaDraftDelete': {
+    pote: 'Supprimer le brouillon',
+    pro: 'Supprimer le brouillon',
+    direct: 'Supprimer',
+  },
+  'today.draftDeleteConfirmTitle': {
+    pote: 'Supprimer ce brouillon ?',
+    pro: 'Supprimer ce brouillon ?',
+    direct: 'Supprimer le brouillon ?',
+  },
+  'today.draftDeleteConfirmBody': {
+    pote: 'Le brouillon de devis pour {name} sera définitivement supprimé. Cette action est irréversible.',
+    pro: 'Le brouillon de devis pour {name} sera définitivement supprimé. Cette action est irréversible.',
+    direct: 'Brouillon {name} supprimé pour de bon. Irréversible.',
+  },
+  'today.voiceDraftResume': {
+    pote: 'Je rouvre ton devis en cours.',
+    pro: 'Le devis en cours se rouvre.',
+    direct: 'Devis en cours rouvert.',
+  },
+  'today.voiceDraftDeleteOpened': {
+    pote: 'Confirme à l’écran pour supprimer le brouillon.',
+    pro: 'Confirmez à l’écran pour supprimer le brouillon.',
+    direct: 'Confirme à l’écran.',
+  },
   // Erreur de chargement — la voix de Bob, jamais un code d'erreur ni un chiffre inventé (A1-C10).
   'today.dataError': {
     pote: 'Je n’arrive pas à joindre le serveur. On réessaie dans un instant ?',
@@ -1916,6 +1969,54 @@ const legacyFr = {
     pro: 'Filtre appliqué.',
     direct: 'Filtré.',
   },
+  // Brouillon local de devis (C21 redécoupe 2026-07-17) — carte visible en tête de la liste
+  // Devis, jamais confondu avec un devis brouillon SERVEUR (QUOTE_BADGE.draft) : celui-ci n'a
+  // encore jamais touché le backend.
+  'ventes.draftCard.badge': {
+    pote: 'Brouillon',
+    pro: 'Brouillon',
+    direct: 'Brouillon',
+  },
+  'ventes.draftCard.noCustomer': {
+    pote: 'Client non choisi',
+    pro: 'Client non choisi',
+    direct: 'Client non choisi',
+  },
+  'ventes.draftCard.subtitle': {
+    pote: 'Brouillon local · jamais envoyé',
+    pro: 'Brouillon local · jamais envoyé',
+    direct: 'Local · jamais envoyé',
+  },
+  'ventes.draftCard.resume': {
+    pote: 'Continuer le devis',
+    pro: 'Continuer le devis',
+    direct: 'Continuer',
+  },
+  'ventes.draftCard.delete': {
+    pote: 'Supprimer le brouillon',
+    pro: 'Supprimer le brouillon',
+    direct: 'Supprimer',
+  },
+  'ventes.draftCard.deleteConfirmTitle': {
+    pote: 'Supprimer ce brouillon ?',
+    pro: 'Supprimer ce brouillon ?',
+    direct: 'Supprimer le brouillon ?',
+  },
+  'ventes.draftCard.deleteConfirmBody': {
+    pote: 'Le brouillon de devis pour {name} sera définitivement supprimé. Cette action est irréversible.',
+    pro: 'Le brouillon de devis pour {name} sera définitivement supprimé. Cette action est irréversible.',
+    direct: 'Brouillon {name} supprimé pour de bon. Irréversible.',
+  },
+  'ventes.voiceDraftResume': {
+    pote: 'Je rouvre ton brouillon.',
+    pro: 'Le brouillon se rouvre.',
+    direct: 'Brouillon rouvert.',
+  },
+  'ventes.voiceDraftDeleteOpened': {
+    pote: 'Confirme à l’écran pour supprimer le brouillon.',
+    pro: 'Confirmez à l’écran pour supprimer le brouillon.',
+    direct: 'Confirme à l’écran.',
+  },
   'devis.clientTagRemove': {
     pote: 'Changer de client',
     pro: 'Changer de client',
@@ -2314,6 +2415,23 @@ const legacyFr = {
     pro: 'Nouveau devis',
     direct: 'Nouveau devis',
   },
+  // Bannière de reprise (bug fondateur 2026-07-17) : « Devis » démarre TOUJOURS vierge — un
+  // brouillon enregistré n'est jamais repris en silence, seulement PROPOSÉ ici.
+  'devis.resumeBanner.prompt': {
+    pote: 'Tu as un brouillon en cours ({name}) — le reprendre ?',
+    pro: 'Un brouillon est en cours pour {name} — le reprendre ?',
+    direct: 'Brouillon en cours ({name}). Reprendre ?',
+  },
+  'devis.resumeBanner.promptNoName': {
+    pote: 'Tu as un brouillon de devis en cours — le reprendre ?',
+    pro: 'Un brouillon de devis est en cours — le reprendre ?',
+    direct: 'Brouillon en cours. Reprendre ?',
+  },
+  'devis.resumeBanner.dismiss': {
+    pote: 'Ignorer, démarrer à neuf',
+    pro: 'Ignorer, démarrer à neuf',
+    direct: 'Ignorer',
+  },
   'devis.close': {
     pote: 'Fermer',
     pro: 'Fermer',
@@ -2379,7 +2497,8 @@ const legacyFr = {
     pro: 'Continuer',
     direct: 'Suite',
   },
-  // Titres des 6 étapes de la machine (client → lignes → TVA/mentions → signature → acompte → facture).
+  // Titres des 6 étapes de la machine (client → lignes → TVA/mentions → acompte → signature →
+  // recap — redécoupe C21 : le wizard s'arrête au devis, jamais de facture enchaînée).
   'devis.stepClient': {
     pote: 'Le client',
     pro: 'Le client',
@@ -2395,20 +2514,20 @@ const legacyFr = {
     pro: 'TVA & mentions',
     direct: 'TVA & mentions',
   },
-  'devis.stepSignature': {
-    pote: 'Signature',
-    pro: 'Signature',
-    direct: 'Signature',
-  },
   'devis.stepDeposit': {
     pote: 'Acompte',
     pro: 'Acompte',
     direct: 'Acompte',
   },
-  'devis.stepInvoice': {
-    pote: 'La facture',
-    pro: 'La facture',
-    direct: 'Facture',
+  'devis.stepSignature': {
+    pote: 'Signature',
+    pro: 'Signature',
+    direct: 'Signature',
+  },
+  'devis.stepRecap': {
+    pote: 'Le récap',
+    pro: 'Le récapitulatif',
+    direct: 'Récap',
   },
   // Étape 1 — client (liste réelle, sélection).
   'devis.clientTitle': {
@@ -2594,16 +2713,46 @@ const legacyFr = {
     pro: 'Devis gratuit · validité · pénalités de retard (art. L441-10) · assurance décennale le cas échéant · bon pour accord. Ajoutées automatiquement à la génération.',
     direct: 'Gratuit · validité · L441-10 · décennale · bon pour accord. Ajoutées auto.',
   },
-  // Étape 4 — signature au doigt (SignaturePad) + nom du signataire.
+  // Étape 5 — signature : choix sur place (SignaturePad + nom) ou envoi (email + lien).
   'devis.signTitle': {
-    pote: 'Fais signer ton client ici',
-    pro: 'Faites signer votre client ici',
-    direct: 'Signature client.',
+    pote: 'Comment il signe ?',
+    pro: 'Comment le client signe-t-il ?',
+    direct: 'Signature ?',
   },
   'devis.signSub': {
-    pote: 'Bon pour accord — il signe du doigt, direct sur ton téléphone.',
-    pro: 'Bon pour accord — signature au doigt, directement sur votre téléphone.',
-    direct: 'Bon pour accord. Au doigt.',
+    pote: 'Bon pour accord — sur place, du doigt, ou envoyé pour signer plus tard.',
+    pro: 'Bon pour accord — sur place, ou envoyé pour une signature différée.',
+    direct: 'Sur place ou envoyé.',
+  },
+  'devis.signModeOnsite': {
+    pote: 'Sur place',
+    pro: 'Sur place',
+    direct: 'Sur place',
+  },
+  'devis.signModeOnsiteHint': {
+    pote: 'Il signe du doigt, là, sur ton téléphone.',
+    pro: 'Il signe du doigt, directement sur votre téléphone.',
+    direct: 'Signature au doigt, ici.',
+  },
+  'devis.signModeRemote': {
+    pote: 'Envoyer',
+    pro: 'Envoyer',
+    direct: 'Envoyer',
+  },
+  'devis.signModeRemoteHint': {
+    pote: 'Le lien de signature part par e-mail — il signe quand il veut.',
+    pro: 'Le lien de signature part par e-mail — signature à distance.',
+    direct: 'Lien par e-mail.',
+  },
+  'devis.signModeRemoteSummaryTitle': {
+    pote: 'Prêt à partir',
+    pro: 'Devis prêt à envoyer',
+    direct: 'Prêt à envoyer',
+  },
+  'devis.signModeRemoteSummaryBody': {
+    pote: '{name} va recevoir le devis par e-mail, avec un lien pour le consulter et le signer en ligne.',
+    pro: '{name} recevra le devis par e-mail, avec un lien pour le consulter et le signer en ligne.',
+    direct: '{name} : devis + lien de signature par e-mail.',
   },
   'devis.signPlaceholder': {
     pote: 'Signe ici du doigt',
@@ -2714,46 +2863,97 @@ const legacyFr = {
     pro: 'Facture unique — net à payer',
     direct: 'Facture unique — net',
   },
-  // Étape 6 — génération (chaîne réelle createQuote → sendQuote → signQuote → generateInvoice → issueInvoice).
-  'devis.generateCta': {
-    pote: 'Générer la facture',
-    pro: 'Générer la facture',
-    direct: 'Facturer',
+  // Étape 6 — recap (chaîne réelle createQuote → sendQuote → signQuote SI sur place — JAMAIS
+  // de facture ici, elle vit sur son chemin officiel post-signature, /devis/[id]).
+  'devis.signOnsiteCta': {
+    pote: 'Valider la signature',
+    pro: 'Valider la signature',
+    direct: 'Valider',
   },
-  'devis.confirmTitle': {
-    pote: 'Facture à générer',
-    pro: 'Facture à générer',
-    direct: 'Facture à générer',
+  'devis.sendCta': {
+    pote: 'Envoyer le devis',
+    pro: 'Envoyer le devis',
+    direct: 'Envoyer',
   },
-  'devis.confirmBody': {
-    pote: 'J’envoie le devis, j’enregistre la signature de {name} et j’émets la facture ({amount}) avec son numéro légal.',
-    pro: 'Le devis est envoyé, la signature de {name} est enregistrée, puis la facture ({amount}) est émise avec son numéro légal.',
-    direct: 'Envoi + signature {name} + émission {amount}.',
+  'devis.confirmSignTitle': {
+    pote: 'Devis à signer',
+    pro: 'Devis à signer',
+    direct: 'Devis à signer',
+  },
+  'devis.confirmSignBody': {
+    pote: 'J’envoie le devis à {name} et j’enregistre sa signature sur ton téléphone — {amount} TTC.',
+    pro: 'Le devis est envoyé à {name} et sa signature est enregistrée — {amount} TTC.',
+    direct: 'Envoi + signature {name} — {amount} TTC.',
+  },
+  'devis.confirmSendTitle': {
+    pote: 'Devis à envoyer',
+    pro: 'Devis à envoyer',
+    direct: 'Devis à envoyer',
+  },
+  'devis.confirmSendBody': {
+    pote: 'Le devis part chez {name} par e-mail, avec le lien pour signer — {amount} TTC.',
+    pro: 'Le devis est envoyé à {name} par e-mail, avec le lien de signature — {amount} TTC.',
+    direct: 'Envoi {name} — {amount} TTC.',
   },
   'devis.generating': {
-    pote: 'Je génère ta facture…',
-    pro: 'Génération de la facture…',
-    direct: 'Génération…',
+    pote: 'Je m’en occupe…',
+    pro: 'Traitement en cours…',
+    direct: 'En cours…',
   },
-  'devis.successTitle': {
-    pote: 'Facture générée !',
-    pro: 'Facture générée',
-    direct: 'Générée.',
+  'devis.recapSignedTitle': {
+    pote: 'Devis signé !',
+    pro: 'Devis signé',
+    direct: 'Signé.',
   },
-  'devis.successBody': {
-    pote: 'La facture {number} de {name} est émise — net à encaisser {amount}. Je surveille et je relance si besoin.',
-    pro: 'La facture {number} de {name} est émise — net à encaisser : {amount}. Suivi et relances automatiques.',
-    direct: '{number} émise pour {name}. Net {amount}.',
+  'devis.recapSignedBody': {
+    pote: '{name} a signé le devis {number} — {amount} TTC. La suite, c’est toi qui décides.',
+    pro: '{name} a signé le devis {number} — {amount} TTC.',
+    direct: '{number} signé par {name}. {amount} TTC.',
   },
-  'devis.seeInvoice': {
-    pote: 'Voir la facture',
-    pro: 'Voir la facture',
-    direct: 'Voir la facture',
+  'devis.recapSentTitle': {
+    pote: 'Devis envoyé !',
+    pro: 'Devis envoyé',
+    direct: 'Envoyé.',
   },
-  'devis.toastDone': {
-    pote: 'Facture {number} émise ✓',
-    pro: 'Facture {number} émise ✓',
-    direct: '{number} émise ✓',
+  'devis.recapSentBody': {
+    pote: '{name} a reçu le devis {number} par e-mail, avec le lien pour signer — en attente de sa signature.',
+    pro: '{name} a reçu le devis {number} par e-mail — en attente de sa signature.',
+    direct: '{number} envoyé à {name}. En attente de signature.',
+  },
+  'devis.recapProposalTitle': {
+    pote: 'La suite, quand tu veux',
+    pro: 'La suite, à votre rythme',
+    direct: 'La suite',
+  },
+  'devis.recapProposalBodyDeposit': {
+    pote: 'Tu peux générer la facture d’acompte de {pct} % ({amount}) quand tu veux — rien ne part sans toi.',
+    pro: 'Vous pouvez générer la facture d’acompte de {pct} % ({amount}) quand vous le souhaitez.',
+    direct: 'Acompte {pct} % ({amount}) — quand tu veux.',
+  },
+  'devis.recapProposalBodyFull': {
+    pote: 'Tu peux générer la facture quand tu veux — rien ne part sans toi.',
+    pro: 'Vous pouvez générer la facture quand vous le souhaitez.',
+    direct: 'Facture — quand tu veux.',
+  },
+  'devis.shareLink': {
+    pote: 'Partager le lien de signature',
+    pro: 'Partager le lien de signature',
+    direct: 'Partager le lien',
+  },
+  'devis.seeQuote': {
+    pote: 'Voir le devis',
+    pro: 'Voir le devis',
+    direct: 'Voir le devis',
+  },
+  'devis.toastSigned': {
+    pote: 'Devis {number} signé ✓',
+    pro: 'Devis {number} signé ✓',
+    direct: '{number} signé ✓',
+  },
+  'devis.toastSent': {
+    pote: 'Devis {number} envoyé ✓',
+    pro: 'Devis {number} envoyé ✓',
+    direct: '{number} envoyé ✓',
   },
   'devis.retry': {
     pote: 'Réessayer',
@@ -2770,6 +2970,11 @@ const legacyFr = {
     pote: 'Ajoute au moins une prestation avant de continuer.',
     pro: 'Ajoutez au moins une prestation avant de continuer.',
     direct: 'Une ligne minimum.',
+  },
+  'devis.guardSignMode': {
+    pote: 'Choisis comment il signe : sur place, ou envoyer.',
+    pro: 'Choisissez le mode de signature : sur place, ou envoyer.',
+    direct: 'Sur place ou envoyer ?',
   },
   'devis.guardSignature': {
     pote: 'Il me faut la signature et le nom du client pour continuer.',

@@ -28,6 +28,7 @@ import {
   deriveQuoteDraftGuidance,
   discardQuoteDraft,
   expireQuoteDraftProposal,
+  hasMeaningfulQuoteDraft,
   proposeQuoteDraft,
   rejectQuoteDraftProposal,
   requireQuoteDraftRevision,
@@ -67,6 +68,10 @@ const DEFAULT_RUNTIME: QuoteDraftProviderRuntime = {
 
 export interface QuoteDraftContextValue {
   readonly state: QuoteDraftState;
+  /** Brouillon enregistré PARKÉ par `startFresh` — jamais touché tant qu'il n'est pas repris
+   * explicitement. Source unique pour la carte « brouillon » de ventes.tsx (bug fondateur
+   * 2026-07-17 : « Devis » ne doit plus reprendre en silence ce qui traînait). */
+  readonly pendingResume: QuoteDraftState | null;
   readonly guidance: QuoteDraftGuidance | null;
   readonly persistence: {
     readonly ready: boolean;
@@ -121,6 +126,14 @@ export interface QuoteDraftContextValue {
   /** Fence pièce + purge durable ; un échec laisse le brouillon récupérable pour retry. */
   readonly complete: (artifactId: string) => Promise<boolean>;
   readonly reset: () => Promise<boolean>;
+  /** Ouvre une session VIERGE en mémoire, SANS toucher le disque : un brouillon déjà enregistré
+   * et significatif est parké dans `pendingResume` (jamais silencieusement écrasé ni repris).
+   * Idempotent : rappeler sans avoir rien saisi ne re-parque rien (la session courante est
+   * déjà vierge). Toute entrée « créer un devis » doit appeler ceci — jamais reprendre en
+   * silence ce qui traînait (bug fondateur 2026-07-17). */
+  readonly startFresh: () => void;
+  /** Ramène le brouillon parké en session active — le SEUL chemin de reprise explicite. */
+  readonly resumePending: () => void;
 }
 
 const QuoteDraftContext = createContext<QuoteDraftContextValue | null>(null);
@@ -216,6 +229,9 @@ function QuoteDraftSessionProvider({
   const [state, setState] = useState<QuoteDraftState>(
     () => initialState ?? createQuoteDraft(runtime.newId('session')),
   );
+  /** Brouillon enregistré parké par `startFresh` — jamais écrasé tant qu'il n'est pas repris ou
+   * qu'une nouvelle sauvegarde/suppression ne le rend caduc (le disque est un slot UNIQUE). */
+  const [pendingResume, setPendingResume] = useState<QuoteDraftState | null>(null);
   const [persistenceState, setPersistenceState] = useState<QuoteDraftContextValue['persistence']>(
     () =>
       initialState === undefined
@@ -442,6 +458,9 @@ function QuoteDraftSessionProvider({
         const saved = await persistence.save(identity, stateRef.current, runtime.now());
         if (epoch !== mutationEpoch.current) continue;
         assign(saved, false);
+        // Le slot disque unique porte désormais CETTE session : un ancien brouillon parké
+        // (jamais re-sauvegardé depuis) n'existe plus nulle part — le proposer resterait fantôme.
+        setPendingResume(null);
         setPersistenceState({ ready: true, status: 'ready', error: null });
         return true;
       }
@@ -462,6 +481,8 @@ function QuoteDraftSessionProvider({
     try {
       await persistence.clear(identity);
       assign(discardQuoteDraft(stateRef.current, runtime.newId('session')));
+      // Le slot disque unique est vidé : un brouillon parké n'y survit pas non plus.
+      setPendingResume(null);
       setPersistenceState({ ready: true, status: 'ready', error: null });
       return true;
     } catch {
@@ -485,6 +506,7 @@ function QuoteDraftSessionProvider({
       try {
         await persistence.clear(identity);
         assign(result.state);
+        setPendingResume(null);
         setPersistenceState({ ready: true, status: 'ready', error: null });
         return true;
       } catch {
@@ -499,9 +521,26 @@ function QuoteDraftSessionProvider({
 
   const reset = discard;
 
+  const startFresh = useCallback(() => {
+    const current = stateRef.current;
+    // Ne parque que si le brouillon courant est réellement enregistré (résiste à un redémarrage)
+    // ET significatif — une session déjà vierge n'a rien à proposer, ce serait un faux positif.
+    if (current.saved !== null && hasMeaningfulQuoteDraft(current)) {
+      setPendingResume(current);
+    }
+    assign(createQuoteDraft(runtime.newId('session')));
+  }, [assign, runtime]);
+
+  const resumePending = useCallback(() => {
+    if (pendingResume === null) return;
+    assign(pendingResume);
+    setPendingResume(null);
+  }, [assign, pendingResume]);
+
   const value = useMemo<QuoteDraftContextValue>(
     () => ({
       state,
+      pendingResume,
       guidance: deriveQuoteDraftGuidance(state),
       persistence: persistenceState,
       apply,
@@ -524,6 +563,8 @@ function QuoteDraftSessionProvider({
       discard,
       complete,
       reset,
+      startFresh,
+      resumePending,
     }),
     [
       acceptProposal,
@@ -535,6 +576,9 @@ function QuoteDraftSessionProvider({
       clearLineFormAction,
       complete,
       completeMission,
+      pendingResume,
+      resumePending,
+      startFresh,
       discard,
       expireProposal,
       persistenceState,

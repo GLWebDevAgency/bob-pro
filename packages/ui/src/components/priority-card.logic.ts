@@ -4,16 +4,19 @@
  * Zéro littéral de couleur : les valeurs arrivent via la palette (useTheme côté composant).
  */
 
-/** Statut d'une tâche « À régler » (COMPONENT_SPECS.md §4). */
-export type PriorityStatus = 'retard' | 'marine' | 'conformite';
+/** Statut d'une tâche « À régler » (COMPONENT_SPECS.md §4). `brouillon` (C21 redécoupe
+ * 2026-07-17) : rappel non-actionnable via checkbox — même langage visuel que les pastilles
+ * « Brouillon » de facture (warning/warningBg), jamais le lavande réservé à `conformite`. */
+export type PriorityStatus = 'retard' | 'marine' | 'conformite' | 'brouillon';
 
 /** Nom du token de couleur d'accent associé à chaque statut. */
-export type PriorityAccentToken = 'dangerVivid' | 'ink600' | 'b2g';
+export type PriorityAccentToken = 'dangerVivid' | 'ink600' | 'b2g' | 'warning';
 
 const ACCENT_BY_STATUS: Record<PriorityStatus, PriorityAccentToken> = {
   retard: 'dangerVivid',
   marine: 'ink600',
   conformite: 'b2g',
+  brouillon: 'warning',
 };
 
 /** Barre d'accent gauche : 'retard' → dangerVivid · 'marine' → ink600 · 'conformite' → b2g. */

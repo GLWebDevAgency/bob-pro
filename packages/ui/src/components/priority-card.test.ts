@@ -20,6 +20,7 @@ const palette: PriorityCardPalette = {
     dangerVivid: hex(229, 84, 75), // semantic.dangerVivid
     ink600: hex(27, 58, 99), // neutrals.ink600
     b2g: hex(67, 56, 202), // semantic.b2g
+    warning: hex(199, 122, 18), // semantic.warning
   },
   surface: hex(255, 255, 255),
   cardBorder: hex(234, 238, 243),
@@ -37,6 +38,9 @@ describe('priorityAccentToken', () => {
   });
   it('mappe conformite → b2g', () => {
     expect(priorityAccentToken('conformite')).toBe('b2g');
+  });
+  it('mappe brouillon → warning (même langage que les pastilles facture brouillon)', () => {
+    expect(priorityAccentToken('brouillon')).toBe('warning');
   });
 });
 
@@ -76,6 +80,9 @@ describe('resolvePriorityCardColors', () => {
     );
     expect(resolvePriorityCardColors('conformite', false, palette).accent).toBe(
       palette.accents.b2g,
+    );
+    expect(resolvePriorityCardColors('brouillon', false, palette).accent).toBe(
+      palette.accents.warning,
     );
   });
 
