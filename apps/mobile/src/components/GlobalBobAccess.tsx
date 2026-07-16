@@ -1,9 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import {
   Animated,
   AccessibilityInfo,
-  Dimensions,
-  Keyboard,
   Platform,
   Pressable,
   Text,
@@ -11,9 +9,9 @@ import {
   View,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { usePathname, useRouter, useSegments } from 'expo-router';
+import { usePathname, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { patterns, shadowNative, themes } from '@bob/tokens';
+import { shadowNative, themes } from '@bob/tokens';
 import { t, type I18nKey } from '@bob/i18n';
 import { font, useReduceMotion, useTheme } from '@bob/ui';
 import { useAgentAccessLayout, useAgentContext, useAgentSession } from '../agent';
@@ -22,9 +20,9 @@ import { CloseIcon, MicIcon, SparkIcon } from './icons';
 import { deriveGlobalBobAccessibilityAnnouncement } from './global-bob-access-a11y';
 import {
   deriveGlobalBobAccessHorizontalLayout,
-  deriveGlobalBobAccessVerticalLayout,
   GLOBAL_BOB_ACCESS_SIZE,
 } from './global-bob-access-layout';
+import { useBobOverlayMetrics } from './use-bob-aware-scroll-insets';
 
 const SIZE = GLOBAL_BOB_ACCESS_SIZE;
 
@@ -32,7 +30,6 @@ export function GlobalBobAccess() {
   const { colors, controls, semantic, personality } = useTheme();
   const { width: windowWidth } = useWindowDimensions();
   const insets = useSafeAreaInsets();
-  const segments = useSegments();
   const pathname = usePathname();
   const context = useAgentContext();
   const layout = useAgentAccessLayout();
@@ -40,7 +37,7 @@ export function GlobalBobAccess() {
   const router = useRouter();
   const subscription = useSubscription();
   const reduceMotion = useReduceMotion();
-  const [keyboardOverlap, setKeyboardOverlap] = useState(0);
+  const { bottom } = useBobOverlayMetrics();
   const pulse = useRef(new Animated.Value(0)).current;
   const lastIosAnnouncement = useRef<string | null>(null);
 
@@ -61,27 +58,6 @@ export function GlobalBobAccess() {
     animation.start();
     return () => animation.stop();
   }, [activeMotion, pulse, reduceMotion]);
-
-  useEffect(() => {
-    // Android est explicitement en adjustResize : sa fenêtre remonte déjà, ajouter la hauteur du
-    // clavier une seconde fois ferait sortir Bob du viewport. iOS recouvre la fenêtre : screenY
-    // donne le chevauchement réel, y compris avec les variations de safe-area.
-    if (Platform.OS !== 'ios') return undefined;
-    const shown = Keyboard.addListener('keyboardWillShow', (event) => {
-      const screenHeight = Dimensions.get('screen').height;
-      const screenY = event.endCoordinates.screenY;
-      setKeyboardOverlap(
-        Number.isFinite(screenHeight) && Number.isFinite(screenY)
-          ? Math.max(0, screenHeight - screenY)
-          : 0,
-      );
-    });
-    const hidden = Keyboard.addListener('keyboardWillHide', () => setKeyboardOverlap(0));
-    return () => {
-      shown.remove();
-      hidden.remove();
-    };
-  }, []);
 
   // Le wizard facture possede sa propre oreille. L'Assistant rend le meme etat global
   // directement dans son composer : aucun bouton superpose, aucun deuxieme listener.
@@ -135,15 +111,6 @@ export function GlobalBobAccess() {
 
   if (!visible) return null;
 
-  const inTabs = segments[0] === '(tabs)';
-  const bottom = deriveGlobalBobAccessVerticalLayout({
-    inTabs,
-    safeAreaBottom: insets.bottom,
-    tabPaddingTop: patterns.bottomTabBar.padding[0],
-    tabMinimumBottom: patterns.bottomTabBar.padding[2],
-    bottomAvoidance: layout.bottomAvoidance ?? 0,
-    keyboardOverlap,
-  }).bottom;
   // Bob possède un ancrage spatial stable : toujours à gauche, après la safe-area. Une session
   // qui démarre ne déplace donc plus l'orbe d'un bord à l'autre et la carte s'ouvre sur le même axe.
   const horizontal = deriveGlobalBobAccessHorizontalLayout({
