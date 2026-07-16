@@ -115,3 +115,11 @@ purchaseOrderRef sur Invoice (domaine+migration additive) + saisie à la créati
 de facture (+ voix « ajoute le bon de commande 4527 ») + rendu PDF/mentions + i18n ×3.
 Court (S-M). Les 3 parcours post-devis (sur place / à distance-attente / différé-BC)
 sont intégrés à la découpe du wizard en cours.
+
+## AJOUT B9 (17/07, décision fondateur directe) : RECHERCHE INTELLIGENTE DEVIS & FACTURES
+Bimodale et full-stack : ①VOCAL « retrouve les devis de Mairie de Sèvres du mois dernier »
+→ navigation + filtres client/dates appliqués automatiquement ; ②MANUEL en parité :
+filtres de dates (chips + personnalisé), AUTOCOMPLÉTION sur l'input de recherche,
+bouton de recherche avancée (modale : client/numéro/prestation/dates) ; ③DB optimisée
+recherche ultra-rapide (indexes trigram/composites tenant-scoped). Standards des
+meilleures apps mondiales du genre.
