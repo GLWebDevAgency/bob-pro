@@ -50,3 +50,32 @@ Transition : garder le parseur local flows/devis comme FAST-PATH offline/latence
    MISTRAL_STT_CONTEXT_BIAS déjà en env !) ? autre étape manquante ?
 RÉPONSE ATTENDUE : verdict + amendements → on fige et j'implémente (le fix tactique du
 bug immédiat part indépendamment — agent en cours).
+
+## EXIGENCE FONDATEUR ÉLARGIE (16/07 soir) : LA FLUIDITÉ « CLAUDE CODE »
+Le fondateur veut la fluidité des agents type Claude Code/Codex : capter l'intention,
+ENCHAÎNER les étapes une à une sans s'arrêter, valider aux bons moments, aller chercher
+l'information manquante de lui-même. Explication versée au dossier (architecture réelle
+de ces agents) :
+1. AUCUN classifieur d'intents — le modèle reçoit TOUT (system prompt riche, historique,
+   état, OUTILS typés) et répond par texte OU par appels d'outils.
+2. LA BOUCLE AGENTIQUE : chaque résultat d'outil revient au modèle qui décide de la
+   suite — l'enchaînement multi-étapes ÉMERGE du raisonnement, il n'est pas programmé
+   dans une machine d'états externe.
+3. VALIDATIONS : double couche — instructions (« destructif → confirmer ») + HARNESS
+   externe qui bloque indépendamment (notre équivalent EXISTE : autonomy confirm_all +
+   propositions opaques → c'est notre force, on la garde telle quelle).
+4. CHERCHER L'INFO : le modèle décide seul de lire/explorer quand il lui manque du
+   contexte — parce que la boucle le permet.
+5. POURQUOI C'EST FLUIDE : UN SEUL cerveau voit tout à chaque tour. Notre pipeline
+   fragmenté (classifieur → matcher → handler) perd de l'information à chaque étage —
+   c'est le défaut structurel, pas le modèle.
+CONSÉQUENCE SUR LA PROPOSITION : le tool calling (§précédent) devient l'ÉTAPE 1 d'une
+cible « boucle agentique vocale » : modèle avec outils typés + system prompt métier +
+état de dossier, qui BOUCLE sur les résultats (multi-étapes sans re-prompt utilisateur),
+sous le plancher confirm_all inchangé. CONTRAINTE VOCALE spécifique (vs Claude Code qui
+peut réfléchir 30 s) : latence conversationnelle < 2 s → architecture HYBRIDE : fast-path
+local (parseur devis, commandes fréquentes) + boucle agentique pour le multi-étapes,
++ feedback vocal de progression (« je crée le devis… j'ajoute les lignes… »).
+QUESTION 6 POUR GPT : dimensionnement modèle de la boucle (mistral-small tool-calling
+suffit-il en boucle ? large aux tours complexes ? routage par complexité ?) et budget
+latence/coût par tour multi-étapes vs la métrologie existante.
