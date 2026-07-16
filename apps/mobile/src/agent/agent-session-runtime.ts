@@ -35,3 +35,30 @@ export function shouldStopAgentSessionForAppState(
 ): boolean {
   return state === 'background' && !permissionRequestInFlight;
 }
+
+export interface AgentSessionBackgroundRevalidation {
+  readonly waitForPermissionRequests: () => Promise<void>;
+  readonly currentAppState: () => string;
+  readonly isMounted: () => boolean;
+  readonly stop: () => void;
+}
+
+/**
+ * Diffère la décision pendant la boîte Android, puis la reprend sans angle mort de confidentialité.
+ * Aucun timer n'atteste quoi que ce soit : seule la fermeture effective des demandes de permission
+ * autorise la relecture de l'état AppState. Un échec inattendu du waiter reste fail-closed si Bob
+ * est encore réellement en arrière-plan.
+ */
+export async function revalidateAgentSessionBackgroundAfterPermission(
+  input: AgentSessionBackgroundRevalidation,
+): Promise<boolean> {
+  try {
+    await input.waitForPermissionRequests();
+  } catch {
+    // Le coordinateur local ne rejette pas aujourd'hui. Si son contrat dérive, la revalidation
+    // AppState ci-dessous reste plus sûre que de laisser le micro actif sans propriétaire visible.
+  }
+  if (!input.isMounted() || input.currentAppState() !== 'background') return false;
+  input.stop();
+  return true;
+}

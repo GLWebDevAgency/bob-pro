@@ -20,11 +20,13 @@ import {
   useSpeak,
   useVoiceInput,
   voicePermissionRequestInFlight,
+  waitForVoicePermissionRequests,
   type VoiceInputIssue,
 } from '../data/voice';
 import { snapshotAgentContext, useAgentContext, useAgentSurface, type AgentContext } from './agent-context';
 import {
   agentContextSemanticKey,
+  revalidateAgentSessionBackgroundAfterPermission,
   realtimeOwnsAgentSession,
   shouldStopAgentSessionForAppState,
   type AgentSessionDriver,
@@ -717,15 +719,31 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
   }, [finishListening, listen, phase, start, stop]);
 
   useEffect(() => {
+    let mounted = true;
+    let permissionRevalidationPending = false;
     const subscription = AppState.addEventListener('change', (state) => {
       appStateRef.current = state;
       // 'background' seulement — 'inactive' (boîte de permission iOS, Control Center,
       // bandeau d'appel) ne doit pas tuer la session au premier usage du micro.
-      if (shouldStopAgentSessionForAppState(state, voicePermissionRequestInFlight())) {
+      const permissionInFlight = voicePermissionRequestInFlight();
+      if (shouldStopAgentSessionForAppState(state, permissionInFlight)) {
         stopWithReason('background');
+        return;
       }
+      if (state !== 'background' || !permissionInFlight || permissionRevalidationPending) return;
+
+      permissionRevalidationPending = true;
+      void revalidateAgentSessionBackgroundAfterPermission({
+        waitForPermissionRequests: waitForVoicePermissionRequests,
+        currentAppState: () => appStateRef.current,
+        isMounted: () => mounted,
+        stop: () => stopWithReason('background'),
+      }).finally(() => {
+        permissionRevalidationPending = false;
+      });
     });
     return () => {
+      mounted = false;
       subscription.remove();
       stopWithReason('unmount');
     };

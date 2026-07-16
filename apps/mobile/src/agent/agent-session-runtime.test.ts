@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { AgentContext } from '@bob/ai';
 import {
   agentContextSemanticKey,
+  revalidateAgentSessionBackgroundAfterPermission,
   realtimeOwnsAgentSession,
   shouldStopAgentSessionForAppState,
 } from './agent-session-runtime';
@@ -41,5 +42,55 @@ describe('agent session runtime fences', () => {
     expect(shouldStopAgentSessionForAppState('active')).toBe(false);
     expect(shouldStopAgentSessionForAppState('background')).toBe(true);
     expect(shouldStopAgentSessionForAppState('background', true)).toBe(false);
+  });
+
+  it('revalide le vrai background après la boîte de permission Android', async () => {
+    let resolvePermission!: () => void;
+    const permissionSettled = new Promise<void>((resolve) => {
+      resolvePermission = resolve;
+    });
+    let appState = 'background';
+    let mounted = true;
+    let stops = 0;
+    const revalidation = revalidateAgentSessionBackgroundAfterPermission({
+      waitForPermissionRequests: () => permissionSettled,
+      currentAppState: () => appState,
+      isMounted: () => mounted,
+      stop: () => { stops += 1; },
+    });
+
+    appState = 'active';
+    resolvePermission();
+    await expect(revalidation).resolves.toBe(false);
+    expect(stops).toBe(0);
+
+    appState = 'background';
+    await expect(revalidateAgentSessionBackgroundAfterPermission({
+      waitForPermissionRequests: async () => undefined,
+      currentAppState: () => appState,
+      isMounted: () => mounted,
+      stop: () => { stops += 1; },
+    })).resolves.toBe(true);
+    expect(stops).toBe(1);
+
+    mounted = false;
+    await expect(revalidateAgentSessionBackgroundAfterPermission({
+      waitForPermissionRequests: async () => undefined,
+      currentAppState: () => appState,
+      isMounted: () => mounted,
+      stop: () => { stops += 1; },
+    })).resolves.toBe(false);
+    expect(stops).toBe(1);
+  });
+
+  it('reste fail-closed si le waiter permission dérive et que l’app est en background', async () => {
+    let stopped = false;
+    await expect(revalidateAgentSessionBackgroundAfterPermission({
+      waitForPermissionRequests: async () => { throw new Error('waiter failed'); },
+      currentAppState: () => 'background',
+      isMounted: () => true,
+      stop: () => { stopped = true; },
+    })).resolves.toBe(true);
+    expect(stopped).toBe(true);
   });
 });

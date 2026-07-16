@@ -68,6 +68,15 @@ export function voicePermissionRequestInFlight(): boolean {
   return processAudioSession.permissionRequestInFlight();
 }
 
+/**
+ * Résout uniquement lorsque toutes les boîtes de permission audio du processus sont refermées.
+ * Les consommateurs AppState doivent ensuite relire l'état réel : Android peut avoir publié un
+ * faux `background` pendant la boîte, mais l'utilisateur peut aussi avoir réellement quitté Bob.
+ */
+export function waitForVoicePermissionRequests(): Promise<void> {
+  return processAudioSession.waitForPermissionRequests();
+}
+
 async function withPermissionRequest<T>(run: () => Promise<T>): Promise<T> {
   return processAudioSession.withPermissionRequest(run);
 }
