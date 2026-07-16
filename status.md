@@ -1,5 +1,5 @@
 # claude status
 state: active
-heartbeat_epoch: 1784124256
-head: f28ca98
-note: PROGRAMME V1 publication rédigé et soumis au co-accord GPT; feature freeze après l'en-cours; attente: son challenge du programme + verdict R4 + re-reviews
+heartbeat_epoch: 1784198893
+head: a3acbea
+note: V1: suppression compte + légal livrés, iOS réparé (TestFlight attend décision bundle id), APK en test fondateur; attente verdicts GPT ×5
