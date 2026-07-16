@@ -53,6 +53,10 @@ import { useCustomers, useDiagnostic, useInvoices, useProfile } from '../src/dat
 import { combineQueryStates } from '../src/data/query-state';
 import { usePublishAgentContext, type AgentContext } from '../src/agent';
 import {
+  useBobAwareScrollInsets,
+  type BobAwareScrollInsets,
+} from '../src/components/use-bob-aware-scroll-insets';
+import {
   CheckIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -356,6 +360,10 @@ export default function Diagnostic() {
     [phase, step],
   );
   usePublishAgentContext(agentContext, { bottomAvoidance: 72 });
+  const bobScrollInsets = useBobAwareScrollInsets({
+    minimumBottom: 18,
+    viewportBottomInset: insets.bottom + 16,
+  });
 
   useEffect(() => {
     if (phase === 'intro') return;
@@ -523,7 +531,9 @@ export default function Diagnostic() {
     <>
       <ScrollView
         style={{ flex: 1 }}
-        contentContainerStyle={{ paddingVertical: 18 }}
+        contentContainerStyle={{ paddingTop: 18, paddingBottom: bobScrollInsets.paddingBottom }}
+        automaticallyAdjustKeyboardInsets={bobScrollInsets.automaticallyAdjustKeyboardInsets}
+        scrollIndicatorInsets={{ bottom: bobScrollInsets.scrollIndicatorBottom }}
         showsVerticalScrollIndicator={false}
       >
         <Text
@@ -597,7 +607,14 @@ export default function Diagnostic() {
     questionId !== undefined ? (
       <ScrollView
         style={{ flex: 1 }}
-        contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', paddingVertical: 18 }}
+        contentContainerStyle={{
+          flexGrow: 1,
+          justifyContent: 'center',
+          paddingTop: 18,
+          paddingBottom: bobScrollInsets.paddingBottom,
+        }}
+        automaticallyAdjustKeyboardInsets={bobScrollInsets.automaticallyAdjustKeyboardInsets}
+        scrollIndicatorInsets={{ bottom: bobScrollInsets.scrollIndicatorBottom }}
         showsVerticalScrollIndicator={false}
       >
         <Text
@@ -640,7 +657,9 @@ export default function Diagnostic() {
       pending
     );
 
-  const result = derived ? <Result derived={derived} onClose={() => router.back()} /> : pending;
+  const result = derived ? (
+    <Result derived={derived} onClose={() => router.back()} bobScrollInsets={bobScrollInsets} />
+  ) : pending;
 
   return (
     <View style={{ flex: 1, backgroundColor: themes.indigo.d1 }}>
@@ -706,7 +725,15 @@ export default function Diagnostic() {
 }
 
 // ── Résultat — score global (anneau), 3 axes, plan d'action daté, CTA routes réelles ──
-function Result({ derived, onClose }: { derived: DeriveDiagnosticResult; onClose: () => void }) {
+function Result({
+  derived,
+  onClose,
+  bobScrollInsets,
+}: {
+  derived: DeriveDiagnosticResult;
+  onClose: () => void;
+  bobScrollInsets: BobAwareScrollInsets;
+}) {
   const { colors, overlays, personality } = useTheme();
   const reduceMotion = useReduceMotion();
   const router = useRouter();
@@ -732,7 +759,9 @@ function Result({ derived, onClose }: { derived: DeriveDiagnosticResult; onClose
   return (
     <ScrollView
       style={{ flex: 1 }}
-      contentContainerStyle={{ paddingTop: 16, paddingBottom: 8 }}
+      contentContainerStyle={{ paddingTop: 16, paddingBottom: bobScrollInsets.paddingBottom }}
+      automaticallyAdjustKeyboardInsets={bobScrollInsets.automaticallyAdjustKeyboardInsets}
+      scrollIndicatorInsets={{ bottom: bobScrollInsets.scrollIndicatorBottom }}
       showsVerticalScrollIndicator={false}
     >
       <View style={{ alignItems: 'center', marginBottom: 20 }}>

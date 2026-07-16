@@ -46,6 +46,7 @@ import {
 import { useBobClient } from '../src/data/client';
 import { usePublishAgentContext, type AgentContext } from '../src/agent';
 import { Card, Button, Badge, SectionHeader, font } from '../src/components/ui';
+import { useBobAwareScrollInsets } from '../src/components/use-bob-aware-scroll-insets';
 
 const DOCUMENT_MAX_BYTES = 10 * 1024 * 1024;
 const LOCAL_FILE_READ_TIMEOUT_MS = 20_000;
@@ -211,6 +212,10 @@ export default function ScanDocument() {
     [archivedDocument],
   );
   usePublishAgentContext(agentContext, { bottomAvoidance: 24 });
+  const bobScrollInsets = useBobAwareScrollInsets({
+    minimumBottom: 40,
+    keyboardMode: 'parent',
+  });
 
   const suggestedFolderName = useMemo(() => {
     const result = analysis.data;
@@ -667,7 +672,12 @@ export default function ScanDocument() {
   };
 
   return (
-    <ScrollView style={{ flex: 1, backgroundColor: colors.bg }} contentContainerStyle={{ paddingBottom: 40 }}>
+    <ScrollView
+      style={{ flex: 1, backgroundColor: colors.bg }}
+      contentContainerStyle={{ paddingBottom: bobScrollInsets.paddingBottom }}
+      automaticallyAdjustKeyboardInsets={bobScrollInsets.automaticallyAdjustKeyboardInsets}
+      scrollIndicatorInsets={{ bottom: bobScrollInsets.scrollIndicatorBottom }}
+    >
       <View style={{ paddingTop: insets.top + 8, paddingHorizontal: 20, paddingBottom: 8 }}>
         <Pressable
           onPress={closeScreen}

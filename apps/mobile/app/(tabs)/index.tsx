@@ -61,6 +61,7 @@ import {
 import { combineQueryStates } from '../../src/data/query-state';
 import { CollectInvoiceButton } from '../../src/components/CollectInvoiceButton';
 import { TODAY_QUICK_ACTIONS } from '../../src/components/today-quick-actions';
+import { useBobAwareScrollInsets } from '../../src/components/use-bob-aware-scroll-insets';
 import { LatestValueDigestCard } from '../../src/engagement/ValueDigestCard';
 import { LatestTrialReportCard } from '../../src/monetization/TrialReportCard';
 import { usePublishAgentContext, type AgentContext, type AgentEntityRef } from '../../src/agent';
@@ -323,6 +324,7 @@ export default function Aujourdhui() {
   // fiabilité 1B (fiscalFlow.hasPending, badge ci-dessous) reste inchangée.
   const payGuidance = useOwnerPayGuidance(cashflow.data);
   const guidance = payGuidance.guidance;
+  const bobScrollInsets = useBobAwareScrollInsets({ minimumBottom: 140 });
 
   // « Fait » togglable local — le moteur de tâches arrive avec C25 (relances).
   const [done, setDone] = useState<Record<string, boolean>>({});
@@ -401,7 +403,9 @@ export default function Aujourdhui() {
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <ScrollView
         style={{ flex: 1 }}
-        contentContainerStyle={{ paddingBottom: 140 }}
+        contentContainerStyle={{ paddingBottom: bobScrollInsets.paddingBottom }}
+        scrollIndicatorInsets={{ bottom: bobScrollInsets.scrollIndicatorBottom }}
+        automaticallyAdjustKeyboardInsets={bobScrollInsets.automaticallyAdjustKeyboardInsets}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}

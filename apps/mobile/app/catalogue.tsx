@@ -63,6 +63,7 @@ import {
   useUpsertPrestation,
 } from '../src/data/catalogue';
 import { CheckIcon, ChevronLeftIcon, PlusIcon, SearchIcon } from '../src/components/icons';
+import { useBobAwareScrollInsets } from '../src/components/use-bob-aware-scroll-insets';
 
 /** Libellés de catégorie partagés avec la revue voix (C20) et l'étape lignes du devis (C21). */
 const CATEGORY_KEY: Record<CatalogueCategory, I18nKey> = {
@@ -97,6 +98,7 @@ interface SheetDraft {
 export default function Catalogue() {
   const { colors, semantic, theme, radius, personality } = useTheme();
   const insets = useSafeAreaInsets();
+  const bobScrollInsets = useBobAwareScrollInsets({ minimumBottom: insets.bottom + 34 });
   const router = useRouter();
   const catalogue = useCatalogue();
   const upsert = useUpsertPrestation();
@@ -265,8 +267,14 @@ export default function Catalogue() {
 
       <ScrollView
         style={{ flex: 1 }}
-        contentContainerStyle={{ paddingHorizontal: 18, paddingTop: 6, paddingBottom: insets.bottom + 34 }}
+        contentContainerStyle={{
+          paddingHorizontal: 18,
+          paddingTop: 6,
+          paddingBottom: bobScrollInsets.paddingBottom,
+        }}
         keyboardShouldPersistTaps="handled"
+        automaticallyAdjustKeyboardInsets={bobScrollInsets.automaticallyAdjustKeyboardInsets}
+        scrollIndicatorInsets={{ bottom: bobScrollInsets.scrollIndicatorBottom }}
         showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl

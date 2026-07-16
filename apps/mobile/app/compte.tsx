@@ -73,6 +73,7 @@ import { useProfile, useSubscription } from '../src/data/hooks';
 import { useFiscalProfileFlow } from '../src/fiscal/use-fiscal-profile-flow';
 import { LEGAL_URLS, SUPPORT_EMAIL, SUPPORT_MAILTO } from '../src/config/legal';
 import { CloseAccountSheet } from '../src/components/account/close-account-sheet';
+import { useBobAwareScrollInsets } from '../src/components/use-bob-aware-scroll-insets';
 import {
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -137,6 +138,7 @@ function SubscriptionSkeleton({ label }: { label: string }) {
 export default function Compte() {
   const { colors, semantic, controls, overlays, radius, grad, personality } = useTheme();
   const insets = useSafeAreaInsets();
+  const bobScrollInsets = useBobAwareScrollInsets({ minimumBottom: insets.bottom + 34 });
   const router = useRouter();
   const identity = useIdentity();
   const { enabled: authEnabled, session, signOut } = useAuth();
@@ -231,7 +233,13 @@ export default function Compte() {
 
       <ScrollView
         style={{ flex: 1 }}
-        contentContainerStyle={{ paddingHorizontal: 18, paddingTop: 16, paddingBottom: insets.bottom + 34 }}
+        contentContainerStyle={{
+          paddingHorizontal: 18,
+          paddingTop: 16,
+          paddingBottom: bobScrollInsets.paddingBottom,
+        }}
+        automaticallyAdjustKeyboardInsets={bobScrollInsets.automaticallyAdjustKeyboardInsets}
+        scrollIndicatorInsets={{ bottom: bobScrollInsets.scrollIndicatorBottom }}
         showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl

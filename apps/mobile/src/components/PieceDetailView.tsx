@@ -37,6 +37,7 @@ import {
   RotateIcon,
   SendIcon,
 } from './icons';
+import { useBobAwareScrollInsets } from './use-bob-aware-scroll-insets';
 
 const KIND_KEY = {
   devis: 'piece.kindDevis',
@@ -369,10 +370,17 @@ export function PieceDetailView({
   const identity = useIdentity();
   const insets = useSafeAreaInsets();
   const kindLabel = t(KIND_KEY[view.kind], { personality });
+  const bobScrollInsets = useBobAwareScrollInsets({ minimumBottom: 120 });
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 120 }} stickyHeaderIndices={[0]}>
+      <ScrollView
+        style={{ flex: 1 }}
+        contentContainerStyle={{ paddingBottom: bobScrollInsets.paddingBottom }}
+        automaticallyAdjustKeyboardInsets={bobScrollInsets.automaticallyAdjustKeyboardInsets}
+        scrollIndicatorInsets={{ bottom: bobScrollInsets.scrollIndicatorBottom }}
+        stickyHeaderIndices={[0]}
+      >
         {/* Header sticky : croix · kind + n° · badge statut */}
         <View
           style={{

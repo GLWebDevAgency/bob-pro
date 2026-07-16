@@ -73,6 +73,7 @@ import { useCreateCustomer, useCustomers, useInvoices, useQuotes } from '../../s
 import { combineQueryStates } from '../../src/data/query-state';
 import { usePublishAgentContext, type AgentContext } from '../../src/agent';
 import { CheckIcon, ChevronRightIcon, PlusIcon, SearchIcon } from '../../src/components/icons';
+import { useBobAwareScrollInsets } from '../../src/components/use-bob-aware-scroll-insets';
 
 type TypeFilter = 'tous' | CustomerListItem['type'];
 
@@ -421,6 +422,7 @@ export default function Clients() {
   const customers = useCustomers();
   const invoices = useInvoices();
   const quotes = useQuotes();
+  const bobScrollInsets = useBobAwareScrollInsets({ minimumBottom: 140 });
 
   const [filter, setFilter] = useState<TypeFilter>('tous');
   const [query, setQuery] = useState('');
@@ -491,7 +493,9 @@ export default function Clients() {
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <ScrollView
         style={{ flex: 1 }}
-        contentContainerStyle={{ paddingBottom: 140 }}
+        contentContainerStyle={{ paddingBottom: bobScrollInsets.paddingBottom }}
+        scrollIndicatorInsets={{ bottom: bobScrollInsets.scrollIndicatorBottom }}
+        automaticallyAdjustKeyboardInsets={bobScrollInsets.automaticallyAdjustKeyboardInsets}
         keyboardShouldPersistTaps="handled"
         refreshControl={
           <RefreshControl

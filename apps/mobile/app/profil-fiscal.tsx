@@ -21,6 +21,7 @@ import { fieldSourceCaption, fieldValueDisplay } from '../src/fiscal/fiscal-valu
 import { FiscalStatusPill } from '../src/components/fiscal/FiscalStatusPill';
 import { FiscalFieldEditSheet, type FiscalEditableField } from '../src/components/fiscal/FiscalFieldEditSheet';
 import { ChevronLeftIcon, ChevronRightIcon } from '../src/components/icons';
+import { useBobAwareScrollInsets } from '../src/components/use-bob-aware-scroll-insets';
 
 function FiscalFieldRow({
   field,
@@ -78,6 +79,7 @@ function FiscalFieldRow({
 export default function ProfilFiscal() {
   const { colors, personality } = useTheme();
   const insets = useSafeAreaInsets();
+  const bobScrollInsets = useBobAwareScrollInsets({ minimumBottom: insets.bottom + 34 });
   const router = useRouter();
   const flow = useFiscalProfileFlow();
   const profile = flow.profile;
@@ -118,7 +120,13 @@ export default function ProfilFiscal() {
 
       <ScrollView
         style={{ flex: 1 }}
-        contentContainerStyle={{ paddingHorizontal: 18, paddingTop: 14, paddingBottom: insets.bottom + 34 }}
+        contentContainerStyle={{
+          paddingHorizontal: 18,
+          paddingTop: 14,
+          paddingBottom: bobScrollInsets.paddingBottom,
+        }}
+        automaticallyAdjustKeyboardInsets={bobScrollInsets.automaticallyAdjustKeyboardInsets}
+        scrollIndicatorInsets={{ bottom: bobScrollInsets.scrollIndicatorBottom }}
         showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl

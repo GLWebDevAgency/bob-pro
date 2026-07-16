@@ -30,6 +30,7 @@ import { useCustomers, useInvoices, useQuotes } from '../src/data/hooks';
 import { useDocuments } from '../src/data/documents';
 import { usePublishAgentContext, type AgentContext } from '../src/agent';
 import { combineQueryStates } from '../src/data/query-state';
+import { useBobAwareScrollInsets } from '../src/components/use-bob-aware-scroll-insets';
 import {
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -101,6 +102,7 @@ function ResultRow({
 export default function Recherche() {
   const { personality, colors, semantic, controls } = useTheme();
   const insets = useSafeAreaInsets();
+  const bobScrollInsets = useBobAwareScrollInsets({ minimumBottom: insets.bottom + 34 });
   const router = useRouter();
   const params = useLocalSearchParams<{ q?: string }>();
   const [query, setQuery] = useState(typeof params.q === 'string' ? params.q : '');
@@ -165,7 +167,9 @@ export default function Recherche() {
         stickyHeaderIndices={[0]}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
-        contentContainerStyle={{ paddingBottom: insets.bottom + 34 }}
+        contentContainerStyle={{ paddingBottom: bobScrollInsets.paddingBottom }}
+        automaticallyAdjustKeyboardInsets={bobScrollInsets.automaticallyAdjustKeyboardInsets}
+        scrollIndicatorInsets={{ bottom: bobScrollInsets.scrollIndicatorBottom }}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}

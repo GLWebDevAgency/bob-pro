@@ -63,6 +63,7 @@ import { usePushPermissionConsent, type PushPermissionConsent } from '../src/dat
 import { parseAllowlistedPushRoute } from '../src/data/push-permission-events';
 import { usePublishAgentContext, type AgentContext } from '../src/agent';
 import { useConfirm } from '../src/components/ConfirmSheet';
+import { useBobAwareScrollInsets } from '../src/components/use-bob-aware-scroll-insets';
 import {
   CalendarIcon,
   CheckIcon,
@@ -524,6 +525,7 @@ function PushConsentCard({
 export default function Notifications() {
   const { colors, semantic, personality } = useTheme();
   const insets = useSafeAreaInsets();
+  const bobScrollInsets = useBobAwareScrollInsets({ minimumBottom: insets.bottom + 34 });
   const router = useRouter();
   const confirm = useConfirm();
   // La copy des messages du plan suit l'humeur de Bob (PERSONALITY_LABELS : ids i18n → domaine).
@@ -682,9 +684,11 @@ export default function Notifications() {
         contentContainerStyle={{
           paddingHorizontal: 18,
           paddingTop: 14,
-          paddingBottom: insets.bottom + 34,
+          paddingBottom: bobScrollInsets.paddingBottom,
           gap: 14,
         }}
+        automaticallyAdjustKeyboardInsets={bobScrollInsets.automaticallyAdjustKeyboardInsets}
+        scrollIndicatorInsets={{ bottom: bobScrollInsets.scrollIndicatorBottom }}
         showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl

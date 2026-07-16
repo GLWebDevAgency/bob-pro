@@ -87,6 +87,7 @@ import {
   SendIcon,
   ShieldIcon,
 } from '../../src/components/icons';
+import { useBobAwareScrollInsets } from '../../src/components/use-bob-aware-scroll-insets';
 
 // TODO C25/C40 — menu « … » de la fiche (renommer, archiver…) : aucun use case côté
 // BobClient aujourd'hui. No-op accessible ; brancher ici les actions que Bob invoquera.
@@ -432,6 +433,7 @@ export default function ClientDetail() {
   );
   const agentLayout = useMemo<AgentAccessLayout>(() => ({ bottomAvoidance: 78 }), []);
   usePublishAgentContext(agentContext, agentLayout);
+  const bobScrollInsets = useBobAwareScrollInsets({ minimumBottom: 150 });
 
   // Docs DU client = documents du coffre liés à SES pièces (factures, devis, chantiers).
   const custDocs = useMemo(() => {
@@ -662,7 +664,9 @@ export default function ClientDetail() {
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <ScrollView
         style={{ flex: 1 }}
-        contentContainerStyle={{ paddingBottom: 150 }}
+        contentContainerStyle={{ paddingBottom: bobScrollInsets.paddingBottom }}
+        automaticallyAdjustKeyboardInsets={bobScrollInsets.automaticallyAdjustKeyboardInsets}
+        scrollIndicatorInsets={{ bottom: bobScrollInsets.scrollIndicatorBottom }}
         accessibilityState={{ busy: refreshing }}
         refreshControl={
           <RefreshControl

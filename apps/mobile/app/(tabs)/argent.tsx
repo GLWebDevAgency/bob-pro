@@ -77,6 +77,7 @@ import { useIdentity } from '../../src/data/identity';
 import { useFirstTimeTip } from '../../src/data/tips';
 import { useFiscalProfileFlow } from '../../src/fiscal/use-fiscal-profile-flow';
 import { useOwnerPayGuidance } from '../../src/fiscal/use-owner-pay-guidance';
+import { useBobAwareScrollInsets } from '../../src/components/use-bob-aware-scroll-insets';
 
 /** Clé SecureStore du coach-mark « première fois » de cet écran. */
 const TIP_KEY = 'bob.tips.argent.v1';
@@ -384,6 +385,7 @@ function FirstTimeTip({ visible, onDismiss }: { visible: boolean; onDismiss: () 
 
 export default function Argent() {
   const { personality, colors, semantic } = useTheme();
+  const bobScrollInsets = useBobAwareScrollInsets({ minimumBottom: 140 });
   const router = useRouter();
   const tip = useFirstTimeTip(TIP_KEY);
   // SPEC_EXPERT_FISCAL §UX FLOW amendement 1/2 : Argent = entrée PRIMAIRE du mini-flow (carte
@@ -531,7 +533,12 @@ export default function Argent() {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 140 }}>
+      <ScrollView
+        style={{ flex: 1 }}
+        contentContainerStyle={{ paddingBottom: bobScrollInsets.paddingBottom }}
+        scrollIndicatorInsets={{ bottom: bobScrollInsets.scrollIndicatorBottom }}
+        automaticallyAdjustKeyboardInsets={bobScrollInsets.automaticallyAdjustKeyboardInsets}
+      >
         <InnerScreenHeader
           eyebrow={t('argent.eyebrow', { personality })}
           title={t('argent.title', { personality })}

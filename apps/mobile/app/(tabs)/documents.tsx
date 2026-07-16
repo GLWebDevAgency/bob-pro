@@ -61,6 +61,7 @@ import { shareFec } from '../../src/lib/share-fec';
 import { useChantiers, useCustomers, useExpenses, useExportFec, useInvoices } from '../../src/data/hooks';
 import { useCreateDocumentFolder, useDocumentFolders, useDocuments } from '../../src/data/documents';
 import { usePublishAgentContext, type AgentContext } from '../../src/agent';
+import { useBobAwareScrollInsets } from '../../src/components/use-bob-aware-scroll-insets';
 import {
   ChartIcon,
   ChatIcon,
@@ -292,6 +293,7 @@ function PendingCard({
 export default function Documents() {
   const { personality, colors, semantic, controls, overlays, grad } = useTheme();
   const router = useRouter();
+  const bobScrollInsets = useBobAwareScrollInsets({ minimumBottom: 140 });
   const client = useBobClient();
   const documents = useDocuments();
   const documentFolders = useDocumentFolders(null);
@@ -554,7 +556,9 @@ export default function Documents() {
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <ScrollView
         style={{ flex: 1 }}
-        contentContainerStyle={{ paddingBottom: 140 }}
+        contentContainerStyle={{ paddingBottom: bobScrollInsets.paddingBottom }}
+        scrollIndicatorInsets={{ bottom: bobScrollInsets.scrollIndicatorBottom }}
+        automaticallyAdjustKeyboardInsets={bobScrollInsets.automaticallyAdjustKeyboardInsets}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refreshAll} tintColor={colors.ink800} />}
       >
         <InnerScreenHeader

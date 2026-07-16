@@ -22,6 +22,7 @@ import {
   INVOICE_BADGE,
   type QuoteLinkedInvoices,
 } from '../src/components/DocumentActions';
+import { useBobAwareScrollInsets } from '../src/components/use-bob-aware-scroll-insets';
 
 type QuoteStatus = QuoteView['status'];
 type InvoiceStatus = InvoiceView['status'];
@@ -34,6 +35,7 @@ export default function Ventes() {
   const { colors, semantic, personality } = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const bobScrollInsets = useBobAwareScrollInsets({ minimumBottom: 40 });
 
   const customers = useCustomers();
   const quotes = useQuotes();
@@ -178,7 +180,17 @@ export default function Ventes() {
         <Text style={[font('screenH1'), { color: colors.ink900, marginTop: 6 }]}>Devis &amp; Factures</Text>
       </View>
 
-      <ScrollView contentContainerStyle={{ padding: 20, paddingTop: 8, gap: 20, paddingBottom: 40 }}>
+      <ScrollView
+        contentContainerStyle={{
+          padding: 20,
+          paddingTop: 8,
+          gap: 20,
+          paddingBottom: bobScrollInsets.paddingBottom,
+        }}
+        scrollIndicatorInsets={{ bottom: bobScrollInsets.scrollIndicatorBottom }}
+        automaticallyAdjustKeyboardInsets={bobScrollInsets.automaticallyAdjustKeyboardInsets}
+        keyboardShouldPersistTaps="handled"
+      >
         {/* Filtres + recherche plein texte (n°, client, prestations) — TOUJOURS montés (parité
             vocale : « retrouve les factures avec un chauffe-eau » pilote les mêmes états) ;
             seul le CORPS des sections en dessous bascule skeleton → erreur → données. */}
