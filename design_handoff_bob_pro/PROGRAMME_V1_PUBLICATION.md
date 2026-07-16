@@ -107,3 +107,11 @@ prompts IA, docs stores) — le nom de code interne du repo (bob-pro) peut reste
   d'alerting (Slack/Discord/mail) avant la V1. S'inscrit dans B4 (observabilité).
 - Railway STAGING reste sur l'ancienne révision — à aligner ou décommissionner (une seule
   vérité d'environnement de démo).
+
+## AJOUT B8 (17/07, cas fondateur/RATP — jugé nécessaire cible B2B) : N° DE BON DE COMMANDE
+Les donneurs d'ordre (RATP…) émettent un n° de BC à l'acceptation du devis, exigé SUR la
+facture (et requis par les specs e-invoicing quand il existe). Tranche : champ
+purchaseOrderRef sur Invoice (domaine+migration additive) + saisie à la création/édition
+de facture (+ voix « ajoute le bon de commande 4527 ») + rendu PDF/mentions + i18n ×3.
+Court (S-M). Les 3 parcours post-devis (sur place / à distance-attente / différé-BC)
+sont intégrés à la découpe du wizard en cours.
