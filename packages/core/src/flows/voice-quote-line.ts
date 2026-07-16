@@ -30,7 +30,10 @@ export interface ParsedQuoteLine {
 export type ParseQuoteLineResult =
   | { readonly kind: 'line'; readonly line: ParsedQuoteLine }
   | { readonly kind: 'ambiguous'; readonly options: readonly string[] }
-  | { readonly kind: 'missing_price'; readonly label: string; readonly qty: number }
+  /** Tout est extrait SAUF le prix (jamais inventé) — qty/label/catégorie sont déjà sûrs,
+   * le « papa vocal » ne redemande donc QUE le prix (cf. `completePendingQuoteLinePrice`),
+   * jamais l'énoncé complet. */
+  | { readonly kind: 'missing_price'; readonly label: string; readonly qty: number; readonly category: LineCategory }
   | { readonly kind: 'none' };
 
 /**
@@ -178,6 +181,20 @@ function cleanLabel(utterance: string): string {
   return stripped.charAt(0).toUpperCase() + stripped.slice(1);
 }
 
+/**
+ * Verbe d'AJOUT explicite en tête d'énoncé (« ajoute… », « rajoute… », « mets… »,
+ * « facture… ») — le SEUL déclencheur qui bascule un énoncé vers le pouvoir local d'ajout de
+ * ligne du wizard devis, QUELLE QUE SOIT l'étape courante (cf. devis/new.tsx : `devis.addLine`
+ * traite l'ajout sur l'étape lignes ; les autres étapes guident vers elle plutôt que de
+ * laisser l'énoncé tomber en silence sur le hors-périmètre générique du cerveau serveur —
+ * bug fondateur 2026-07-16, « ajoute deux heures de main-d'œuvre » → « je ne m'occupe que
+ * d'administratif »). Centralisé ici : un seul endroit à faire évoluer si la dictée réelle
+ * révèle d'autres formulations.
+ */
+export function isVoiceAddLineUtterance(utterance: string): boolean {
+  return /^\s*(ajoute[rz]?|rajoute[rz]?|mets?|met|facture)\b/i.test(utterance);
+}
+
 export interface ParseVoiceQuoteLineOptions {
   readonly prestations?: readonly VoicePrestation[];
   /** Taux métier (TradeConfig) si rien d'énoncé — sinon 20. */
@@ -212,8 +229,10 @@ export function parseVoiceQuoteLine(
   if (indivisibleTotal) {
     // Un total ÉNONCÉ qui ne se divise pas exactement : on clarifie — le prix du catalogue
     // ne remplace JAMAIS un montant dit par l'artisan.
-    const label = matches.length === 1 ? matches[0]!.label : cleanLabel(utterance);
-    return { kind: 'missing_price', label: label || 'cette prestation', qty };
+    const matched = matches.length === 1 ? matches[0] : undefined;
+    const label = matched ? matched.label : cleanLabel(utterance);
+    const category = matched ? matched.category : inferCategory(normalized, unit);
+    return { kind: 'missing_price', label: label || 'cette prestation', qty, category };
   }
   if (matches.length > 1) return { kind: 'ambiguous', options: matches.map((p) => p.label) };
   const fromCatalogue = matches[0];
@@ -239,7 +258,7 @@ export function parseVoiceQuoteLine(
     label = duration !== null ? `Main-d’œuvre ${duration}` : 'Main-d’œuvre';
   }
   if (label === '') return { kind: 'none' };
-  if (spokenPrice === null) return { kind: 'missing_price', label, qty };
+  if (spokenPrice === null) return { kind: 'missing_price', label, qty, category };
 
   return {
     kind: 'line',
@@ -252,4 +271,20 @@ export function parseVoiceQuoteLine(
       source: 'dictee',
     },
   };
+}
+
+/**
+ * COMPLÈTE une ligne EN ATTENTE (`kind: 'missing_price'` — qty/label/catégorie déjà sûrs)
+ * avec un énoncé de SUIVI qui ne contient QUE le prix (« 55 euros », « à 55 € de l'heure »,
+ * « 110 euros au total ») — papa vocal : Bob ne redemande JAMAIS un champ déjà connu, la
+ * quantité connue sert à interpréter un TOTAL exactement comme dans `parseVoiceQuoteLine`
+ * (division EXACTE ou question, jamais un arrondi silencieux). `null` = l'énoncé de suivi
+ * ne contient aucun prix exploitable (laisser une autre affordance/le cerveau global tenter).
+ */
+export function completePendingQuoteLinePrice(utterance: string, pendingQty: number): number | null {
+  const digits = frSpokenNumbersToDigits(normalizeVoiceText(utterance));
+  const priceSpoken = parseSpokenPrice(digits);
+  if (priceSpoken === null) return null;
+  if (priceSpoken.scope === 'unit' || pendingQty <= 1) return priceSpoken.cents;
+  return priceSpoken.cents % pendingQty === 0 ? priceSpoken.cents / pendingQty : null;
 }

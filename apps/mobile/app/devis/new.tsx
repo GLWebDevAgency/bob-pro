@@ -44,36 +44,28 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useRouter } from 'expo-router';
+import { useNavigation, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { challengeFor, parseVoiceConsent } from '@bob/ai';
 import {
   computeTotals,
-  devisBack,
-  devisEdit,
-  devisNext,
   formatEUR,
   searchCatalogue,
-  startDevis,
   DEVIS_STEPS,
   type CataloguePrestation,
   type CustomerListItem,
   type DevisDraft,
-  type DevisFlowState,
   type DevisStep,
   type DevisTvaContext,
-  type DomainError,
   type LineCategory,
   type VatRate,
   matchSpokenCustomers,
   normalizeVoiceText,
-  devisDiff,
   frSpokenNumbersToDigits,
-  withLineRemoved,
-  withLineUpdated,
-  type DevisProposal,
   type LineInput,
   parseVoiceQuoteLine,
+  completePendingQuoteLinePrice,
+  isVoiceAddLineUtterance,
   type VoicePrestation,
 } from '@bob/core';
 import { shadowNative, themes } from '@bob/tokens';
@@ -88,6 +80,7 @@ import {
   MoneyText,
   SignaturePad,
   SkeletonRow,
+  Sheet,
   StatusBadge,
   Stepper,
   Toast,
@@ -118,6 +111,12 @@ import {
 } from '../../src/agent';
 import { useConfirm } from '../../src/components/ConfirmSheet';
 import { CheckIcon, ChevronLeftIcon, CloseIcon } from '../../src/components/icons';
+import {
+  hasUnsavedQuoteDraftChanges,
+  useQuoteDraft,
+  type QuoteDraftError,
+  type QuoteDraftProposal,
+} from '../../src/quote-draft';
 
 /** Profil de risque de la génération (émission = acte fiscal) — même palier que DocumentActions/C20. */
 const FISCAL = { mutating: true, outbound: false, riskTier: 'fiscal' } as const;
@@ -140,11 +139,9 @@ const GUARD_COPY: Readonly<Record<string, I18nKey>> = {
   depositPct: 'devis.guardDeposit',
 };
 
-function guardKeyOf(error: DomainError): I18nKey {
-  if (error.code === 'VALIDATION') {
-    const key = GUARD_COPY[error.field];
-    if (key !== undefined) return key;
-  }
+function guardKeyOf(error: Pick<QuoteDraftError, 'field'>): I18nKey {
+  const key = error.field === undefined ? undefined : GUARD_COPY[error.field];
+  if (key !== undefined) return key;
   return 'devis.errAction';
 }
 
@@ -212,7 +209,9 @@ export default function DevisNew() {
   const reduceMotion = useReduceMotion();
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const navigation = useNavigation();
   const confirm = useConfirm();
+  const quoteDraft = useQuoteDraft();
   const customers = useCustomers();
   const { data: profile } = useProfile();
   const catalogue = useCatalogue();
@@ -222,23 +221,33 @@ export default function DevisNew() {
   const generateInvoice = useGenerateInvoice();
   const issueInvoice = useIssueInvoice();
 
-  // ── Machine RÉELLE @bob/core (C02) : seule source de vérité des 6 étapes ──
-  const [flow, setFlow] = useState<DevisFlowState>(() => startDevis());
+  // ── Machine RÉELLE @bob/core (C02), portée par le provider racine : une seule vérité ──
+  const flow = quoteDraft.state.flow;
   const [guardMsg, setGuardMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [invoice, setInvoice] = useState<{ id: string; number: string } | null>(null);
+  const [invoice, setInvoice] = useState<{
+    id: string;
+    number: string;
+    customerName: string;
+    amount: string;
+  } | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [exitSheetOpen, setExitSheetOpen] = useState(false);
+  const [exitActionBusy, setExitActionBusy] = useState(false);
 
-  // Saisie d'une ligne (étape 2) — état de formulaire local, la donnée vit dans la machine.
-  const [lineLabel, setLineLabel] = useState('');
+  // Saisie non validée : hors contenu financier, mais conservée par le provider pour la reprise.
+  const lineLabel = quoteDraft.state.lineForm.label;
+  const lineQty = quoteDraft.state.lineForm.quantity;
+  const linePrice = quoteDraft.state.lineForm.unitPrice;
+  const lineCat = quoteDraft.state.lineForm.category;
+  const setLineLabel = (label: string): void => quoteDraft.updateLineForm({ label });
+  const setLineQty = (quantity: string): void => quoteDraft.updateLineForm({ quantity });
+  const setLinePrice = (unitPrice: string): void => quoteDraft.updateLineForm({ unitPrice });
+  const setLineCat = (category: LineCategory): void => quoteDraft.updateLineForm({ category });
   const [cataloguePickerOpen, setCataloguePickerOpen] = useState(false);
-  /** S2 : proposition core EN ATTENTE (« corrige la ligne 2 → 450 € ») — patch NON appliqué,
-   * diff visible, acceptée par la voix (consentement déterministe) OU par le tap (parité). */
-  const [lineProposal, setLineProposal] = useState<DevisProposal | null>(null);
-  const [lineQty, setLineQty] = useState('1');
-  const [linePrice, setLinePrice] = useState('');
-  const [lineCat, setLineCat] = useState<LineCategory>('labor');
+  /** Proposition Bob EN ATTENTE : son diff est dans le modèle, jamais dans le devis avant accord. */
+  const lineProposal = quoteDraft.state.proposal;
 
   // Signature (étape 4) — le tracé est présentation ; seul signerName entre dans la machine.
   const [signature, setSignature] = useState<SignaturePadValue | null>(null);
@@ -251,10 +260,16 @@ export default function DevisNew() {
     signed: false,
     invoiceId: null,
   });
+  const generationInFlight = useRef(false);
+  const generationIntentInFlight = useRef(false);
+  const exitActionInFlight = useRef(false);
+  const allowNextRemoval = useRef(false);
+  const pendingExit = useRef<null | (() => void)>(null);
 
   const draft = flow.draft;
   const customer = (customers.data ?? []).find((c) => c.id === draft.customerId) ?? null;
-  const customerName = customer?.name ?? 'le client';
+  const customerName = customer?.name ?? quoteDraft.state.customer?.name ?? 'le client';
+  const contextCustomer = customer ?? quoteDraft.state.customer;
   const stepIndex = DEVIS_STEPS.indexOf(flow.step);
   const stepLabels = DEVIS_STEPS.map((s) => t(STEP_KEYS[s], { personality }));
   const vatChoice = vatChoiceOf(draft.tvaContext);
@@ -262,27 +277,22 @@ export default function DevisNew() {
   const totals = computeTotals([...draft.lines], { depositPct: draft.depositPct });
   const dark = flow.step === 'signature'; // vue signature sur navy (réf proto « vue client »)
 
-  // ── Transitions : TOUT passe par la machine ────────────────────────────────
-  const edit = (patch: Partial<DevisDraft>): void => {
-    setGuardMsg(null);
-    setFlow((f) => devisEdit(f, patch));
-  };
-
+  // ── Transitions : écran et voix commandent le MÊME provider sérialisé ──────
   const goNext = (): void => {
-    const next = devisNext(flow);
-    if (!next.ok) {
-      setGuardMsg(t(guardKeyOf(next.error), { personality }));
+    const result = quoteDraft.applyAtRevision({ type: 'next_step' }, quoteDraft.state.revision);
+    if (!result.ok) {
+      if (result.error.code === 'revision_conflict') return;
+      setGuardMsg(t(guardKeyOf(result.error), { personality }));
       return;
     }
     setGuardMsg(null);
-    setFlow(next.value);
   };
 
   const goBack = (): void => {
-    const back = devisBack(flow);
-    if (!back.ok) return; // 'client' est le début, 'facture' est terminal — la table fait foi
+    const result = quoteDraft.applyAtRevision({ type: 'previous_step' }, quoteDraft.state.revision);
+    if (!result.ok && result.error.code === 'revision_conflict') return;
+    if (!result.ok) return; // 'client' est le début, 'facture' est terminal — la table fait foi
     setGuardMsg(null);
-    setFlow(back.value);
   };
 
   // ── S2-GUIDÉ : pilotage VOCAL du wizard — parité stricte avec le geste manuel ──
@@ -290,6 +300,8 @@ export default function DevisNew() {
   // que les boutons ; identité STABLE (refs) pour ne pas rebattre la publication à chaque rendu.
   const flowRef = useRef(flow);
   flowRef.current = flow;
+  const quoteStateRef = useRef(quoteDraft.state);
+  quoteStateRef.current = quoteDraft.state;
   // « Nouveau devis POUR Camping Les Pins » : le nom entendu (hint session) est résolu contre
   // les clients RÉELS dès leur chargement — client présélectionné + saut direct aux
   // prestations. Introuvable/ambigu → flux normal étape client (fail-safe, jamais de devinette).
@@ -306,12 +318,11 @@ export default function DevisNew() {
     // Ambiguïté (deux « Camping ») → PAS de saut : l'étape client tranche à l'écran/à la voix.
     const candidates = matchSpokenCustomers(normalizeVoiceText(reference), list);
     if (candidates.length !== 1) return;
-    const matchedId = candidates[0]!.id;
-    setFlow((f) => {
-      const edited = devisEdit(f, { customerId: matchedId });
-      const next = devisNext(edited);
-      return next.ok ? next.value : edited;
-    });
+    const matched = candidates[0]!;
+    quoteDraft.applyAll([
+      { type: 'select_customer', customer: { id: matched.id, name: matched.name } },
+      { type: 'next_step' },
+    ]);
   }, [customers.data]);
   const customersRef = useRef(customers.data ?? []);
   customersRef.current = customers.data ?? [];
@@ -336,6 +347,11 @@ export default function DevisNew() {
     submit: () => LineInput | null;
     reject: () => boolean;
   }>({ prepare: () => undefined, submit: () => null, reject: () => false });
+  /** Ligne EN ATTENTE de prix (qty/label/catégorie déjà extraits par la dictée, cf.
+   * `missing_price`) — papa vocal : un simple suivi « 55 euros » la complète SANS repasser
+   * par tout l'énoncé. Effacée dès qu'elle est complétée, rejetée, ou remplacée par un
+   * nouvel ajout (jamais un état fantôme qui capture un énoncé sans rapport). */
+  const pendingLineRef = useRef<{ label: string; qty: number; category: LineCategory } | null>(null);
 
   const voiceAffordances = useMemo<readonly AgentAffordance[]>(() => {
     const tt = (key: Parameters<typeof t>[0], params?: Record<string, string | number>): string =>
@@ -348,10 +364,8 @@ export default function DevisNew() {
       if (current.step === 'signature' || current.step === 'acompte' || current.step === 'facture') {
         return tt('devis.voice.screenOnlyStep');
       }
-      // Résultat calculé sur l'état CANONIQUE avant de committer : Bob ne ment jamais.
-      const next = devisNext(current);
-      if (!next.ok) return t(guardKeyOf(next.error), { personality: personalityRef.current });
-      setFlow(next.value);
+      const result = quoteDraft.applyAtRevision({ type: 'next_step' }, quoteStateRef.current.revision);
+      if (!result.ok) return t(guardKeyOf(result.error), { personality: personalityRef.current });
       setGuardMsg(null);
       return tt('devis.voice.stepDone');
     };
@@ -374,7 +388,7 @@ export default function DevisNew() {
             const field = applied?.diff[0];
             return {
               say: field
-                ? tt('devis.voice.proposalApplied', { field: field.field, after: field.after })
+                ? tt('devis.voice.proposalApplied', { field: field.label, after: field.after })
                 : tt('devis.voice.proposalRejected'),
             };
           };
@@ -396,15 +410,17 @@ export default function DevisNew() {
           if (!Number.isFinite(int) || int <= 0) return null;
           const unitPriceHT = Math.round(int * 100);
           return () => {
-            const draft = flowRef.current.draft;
-            const patch = withLineUpdated(draft, ordinal, { unitPriceHT });
-            if (!patch.ok) return { say: tt('devis.voice.proposalUnknownLine') };
-            const diff = devisDiff(draft, { ...draft, ...patch.value });
-            const field = diff[0];
-            if (!field) return { say: tt('devis.voice.proposalUnknownLine') };
-            setLineProposal({ label: `Ligne ${ordinal} → ${formatEUR(unitPriceHT)}`, patch: patch.value, diff });
+            const metadata = quoteStateRef.current.lineMetadata[ordinal - 1];
+            if (metadata === undefined) return { say: tt('devis.voice.proposalUnknownLine') };
+            const proposed = quoteDraft.propose({
+              source: 'bob_voice',
+              title: `Ligne ${ordinal} → ${formatEUR(unitPriceHT)}`,
+              commands: [{ type: 'update_line', lineId: metadata.id, patch: { unitPriceHT } }],
+            });
+            const field = proposed.ok ? proposed.value.proposal?.diff[0] : undefined;
+            if (field === undefined) return { say: tt('devis.voice.proposalUnknownLine') };
             return {
-              say: tt('devis.voice.proposalReady', { field: field.field, before: field.before, after: field.after }),
+              say: tt('devis.voice.proposalReady', { field: field.label, before: field.before, after: field.after }),
             };
           };
         },
@@ -419,15 +435,17 @@ export default function DevisNew() {
           if (!m || m[2] === undefined) return null;
           const ordinal = Number(m[2]);
           return () => {
-            const draft = flowRef.current.draft;
-            const patch = withLineRemoved(draft, ordinal);
-            if (!patch.ok) return { say: tt('devis.voice.proposalUnknownLine') };
-            const diff = devisDiff(draft, { ...draft, ...patch.value });
-            const field = diff[0];
-            if (!field) return { say: tt('devis.voice.proposalUnknownLine') };
-            setLineProposal({ label: `Supprimer la ligne ${ordinal}`, patch: patch.value, diff });
+            const metadata = quoteStateRef.current.lineMetadata[ordinal - 1];
+            if (metadata === undefined) return { say: tt('devis.voice.proposalUnknownLine') };
+            const proposed = quoteDraft.propose({
+              source: 'bob_voice',
+              title: `Supprimer la ligne ${ordinal}`,
+              commands: [{ type: 'remove_line', lineId: metadata.id }],
+            });
+            const field = proposed.ok ? proposed.value.proposal?.diff[0] : undefined;
+            if (field === undefined) return { say: tt('devis.voice.proposalUnknownLine') };
             return {
-              say: tt('devis.voice.proposalReady', { field: field.field, before: field.before, after: field.after }),
+              say: tt('devis.voice.proposalReady', { field: field.label, before: field.before, after: field.after }),
             };
           };
         },
@@ -447,9 +465,11 @@ export default function DevisNew() {
           const n = normalizeVoiceText(utterance);
           if (!/( etape precedente | reviens | retour en arriere )/.test(n)) return null;
           return () => {
-            const back = devisBack(flowRef.current);
+            const back = quoteDraft.applyAtRevision(
+              { type: 'previous_step' },
+              quoteStateRef.current.revision,
+            );
             if (!back.ok) return { say: tt('devis.voice.screenOnlyStep') };
-            setFlow(back.value);
             setGuardMsg(null);
             return { say: tt('devis.voice.stepDone') };
           };
@@ -474,11 +494,11 @@ export default function DevisNew() {
           }
           const matched = candidates[0]!;
           return () => {
-            setFlow((f) => {
-              const edited = devisEdit(f, { customerId: matched.id });
-              const next = devisNext(edited);
-              return next.ok ? next.value : edited;
-            });
+            const selected = quoteDraft.applyAll([
+              { type: 'select_customer', customer: { id: matched.id, name: matched.name } },
+              { type: 'next_step' },
+            ]);
+            if (!selected.ok) return { say: tt('devis.voice.screenOnlyStep') };
             setGuardMsg(null);
             return { say: `${tt('devis.voice.clientSet', { name: matched.name })} ${tt('devis.voice.greetLines')}` };
           };
@@ -494,20 +514,34 @@ export default function DevisNew() {
             const lines = flowRef.current.draft.lines;
             const last = lines[lines.length - 1];
             if (!last) return { say: tt('devis.voice.nothingToRemove') };
-            setFlow((f) => devisEdit(f, { lines: f.draft.lines.slice(0, -1) }));
+            const metadata = quoteStateRef.current.lineMetadata.at(-1);
+            if (metadata === undefined) return { say: tt('devis.voice.nothingToRemove') };
+            const removed = quoteDraft.applyAtRevision(
+              { type: 'remove_line', lineId: metadata.id },
+              quoteStateRef.current.revision,
+            );
+            if (!removed.ok) return { say: tt('devis.voice.nothingToRemove') };
             return { say: tt('devis.voice.lineRemoved', { label: last.label }) };
           };
         },
       },
       {
-        // Dicter une LIGNE alors qu'on est encore au choix du CLIENT : Bob guide au lieu du
-        // refus générique hors-périmètre (UX niveau Claude Code : jamais de mur, un chemin).
-        id: 'devis.lineBeforeClient',
+        // Dicter une LIGNE hors de l'étape lignes — client pas encore choisi, OU déjà avancé
+        // à TVA/signature/acompte/facture : Bob GUIDE au lieu de tomber en silence sur le
+        // hors-périmètre générique du cerveau serveur (bug fondateur 2026-07-16 : « ajoute
+        // deux heures de main-d'œuvre » répondait « je ne m'occupe que d'administratif »,
+        // faute d'affordance couvrant les étapes APRÈS lignes — le brouillon est 100 % local,
+        // le classifieur serveur ne peut PHYSIQUEMENT pas ajouter une ligne à un devis qui
+        // n'existe pas encore côté serveur). `devis.addLine` reste seul maître sur 'lignes'.
+        id: 'devis.addLineOffLinesStep',
         match: (utterance) => {
-          if (flowRef.current.step !== 'client') return null;
-          if (!/^\s*(ajoute[rz]?|rajoute[rz]?|mets?|met)\b/i.test(utterance)) return null;
+          const step = flowRef.current.step;
+          if (step === 'lignes') return null;
+          if (!isVoiceAddLineUtterance(utterance)) return null;
           return () => ({
-            say: `${tt('devis.voice.needClientFirst')} ${tt('devis.voice.greetClient')}`,
+            say: step === 'client'
+              ? `${tt('devis.voice.needClientFirst')} ${tt('devis.voice.greetClient')}`
+              : tt('devis.voice.needLinesStep'),
           });
         },
       },
@@ -518,6 +552,7 @@ export default function DevisNew() {
           const n = normalizeVoiceText(utterance);
           if (!/( (valide|ajoute|confirme) (la |cette )?ligne | c est bon pour la ligne )/.test(n)) return null;
           return () => {
+            pendingLineRef.current = null; // un tour de soumission clôt toute attente de prix
             const added = lineFormRef.current.submit();
             if (added === null) return { say: tt('devis.voice.lineInvalid') };
             return {
@@ -537,9 +572,38 @@ export default function DevisNew() {
           if (flowRef.current.step !== 'lignes') return null;
           const n = normalizeVoiceText(utterance);
           if (!/( (annule|oublie|laisse tomber|efface) (la |cette )?(ligne|preparation) | non pas ca )/.test(n)) return null;
-          return () => ({
-            say: lineFormRef.current.reject() ? tt('devis.voice.lineRejected') : tt('devis.voice.nothingToRemove'),
-          });
+          return () => {
+            pendingLineRef.current = null;
+            return {
+              say: lineFormRef.current.reject() ? tt('devis.voice.lineRejected') : tt('devis.voice.nothingToRemove'),
+            };
+          };
+        },
+      },
+      {
+        // Ligne EN ATTENTE de prix (« ajoute deux heures de main-d'œuvre » sans montant) :
+        // papa vocal — un simple suivi « 55 euros » / « à 55 € de l'heure » COMPLÈTE la ligne
+        // déjà pré-remplie (qty/label/catégorie) SANS repasser par tout l'énoncé. Priorité
+        // avant `devis.addLine` : ce suivi ne porte jamais de verbe d'ajout.
+        id: 'devis.completePendingLinePrice',
+        match: (utterance) => {
+          if (flowRef.current.step !== 'lignes') return null;
+          const pending = pendingLineRef.current;
+          if (pending === null) return null;
+          const price = completePendingQuoteLinePrice(utterance, pending.qty);
+          if (price === null) return null; // pas un prix exploitable — laisse tenter les autres affordances
+          return () => {
+            pendingLineRef.current = null;
+            lineFormRef.current.prepare({
+              label: pending.label,
+              qty: pending.qty,
+              unitPriceHT: price,
+              category: pending.category,
+            });
+            return {
+              say: tt('devis.voice.linePrepared', { label: pending.label, qty: pending.qty, price: formatEUR(price) }),
+            };
+          };
         },
       },
       {
@@ -547,21 +611,35 @@ export default function DevisNew() {
         match: (utterance) => {
           if (flowRef.current.step !== 'lignes') return null;
           // Déclencheur explicite : un verbe d'ajout — « où suis-je ? » reste au cerveau global.
-          if (!/^\s*(ajoute[rz]?|rajoute[rz]?|mets?|met|facture)\b/i.test(utterance)) return null;
+          if (!isVoiceAddLineUtterance(utterance)) return null;
           return () => {
             const parsed = parseVoiceQuoteLine(utterance, {
               prestations: prestationsRef.current,
               defaultVatRate: currentRateRef.current,
             });
             if (parsed.kind === 'ambiguous') {
+              pendingLineRef.current = null;
               return { say: tt('devis.voice.lineAmbiguous', { options: parsed.options.join(', ') }) };
             }
             if (parsed.kind === 'missing_price') {
-              return { say: tt('devis.voice.missingPrice', { label: parsed.label }) };
+              // Papa vocal (spec fondateur 2026-07-16) : qty/label/catégorie sont DÉJÀ sûrs —
+              // Bob les redit, pré-remplit le formulaire visible et ne redemande QUE le prix
+              // (« 55 euros » en suivi complète via `devis.completePendingLinePrice`, jamais
+              // besoin de tout redicter).
+              pendingLineRef.current = { label: parsed.label, qty: parsed.qty, category: parsed.category };
+              lineFormRef.current.prepare({
+                label: parsed.label,
+                qty: parsed.qty,
+                unitPriceHT: 0,
+                category: parsed.category,
+              });
+              return { say: tt('devis.voice.missingPriceReady', { label: parsed.label, qty: parsed.qty }) };
             }
             if (parsed.kind === 'none') {
+              pendingLineRef.current = null;
               return { say: tt('devis.voice.missingPrice', { label: '…' }) };
             }
+            pendingLineRef.current = null;
             // PROPOSER → VALIDER (spec fondateur) : la dictée remplit les CHAMPS VISIBLES du
             // formulaire — rien n'entre au brouillon sans « valide la ligne » (voix) ou le
             // bouton Ajouter (doigt). Un seul canal d'écriture : le manuel.
@@ -603,22 +681,44 @@ export default function DevisNew() {
   const agentSurface = useMemo<AgentSurface>(
     () => ({
       ...(greetKey
-        ? { greeting: { key: `devis-new:${flow.step}`, text: t(greetKey, { personality }) } }
+        ? {
+            greeting: {
+              key: `devis-new:${quoteDraft.state.sessionId}:${flow.step}`,
+              text: t(greetKey, { personality }),
+            },
+          }
         : {}),
       affordances: voiceAffordances,
     }),
-    [flow.step, greetKey, personality, voiceAffordances],
+    [flow.step, greetKey, personality, quoteDraft.state.sessionId, voiceAffordances],
   );
   const wizardAgentContext = useMemo<AgentContext>(
     () => ({
-      screen: { name: '/devis/new', instanceId: `devis-new:${flow.step}` },
-      entities: customer ? [{ type: 'customer' as const, id: customer.id, label: customer.name }] : [],
+      screen: {
+        name: '/devis/new',
+        instanceId: `devis-new:${quoteDraft.state.sessionId}:${quoteDraft.state.revision}:${flow.step}`,
+      },
+      entities: contextCustomer
+        ? [{ type: 'customer' as const, id: contextCustomer.id, label: contextCustomer.name }]
+        : [],
       capabilities: ['screen.read', 'customer.read'],
     }),
-    [customer, flow.step],
+    [contextCustomer, flow.step, quoteDraft.state.revision, quoteDraft.state.sessionId],
   );
   usePublishAgentContext(wizardAgentContext, { bottomAvoidance: 90 }, agentSurface);
   const agentSession = useAgentSession();
+
+  // Une reprise de route obtient une nouvelle mission vocale, mais le même sessionId de brouillon.
+  // Une proposition expirée reste un diff refusé, jamais une mutation différée.
+  useEffect(() => {
+    quoteDraft.expireProposal();
+    if (quoteStateRef.current.mission.status !== 'active') {
+      quoteDraft.startMission({ mode: 'guided_voice', startedFrom: '/devis/new' });
+    }
+    return () => {
+      quoteDraft.stopMission('user');
+    };
+  }, [quoteDraft.expireProposal, quoteDraft.startMission, quoteDraft.stopMission]);
 
   // Défaut métier (BTP ⇒ TVA 10 = logement > 2 ans, comme le proto) : semé UNE fois
   // dans le brouillon de la machine, tant que rien n'est saisi — jamais écrasé ensuite.
@@ -627,11 +727,14 @@ export default function DevisNew() {
     if (seeded.current || profile === undefined) return;
     seeded.current = true;
     if (profile.defaultVatRate === 10) {
-      setFlow((f) =>
-        f.draft.tvaContext === null && f.draft.lines.length === 0
-          ? devisEdit(f, { tvaContext: { housingOlderThan2y: true } })
-          : f,
-      );
+      const current = quoteStateRef.current.flow.draft;
+      if (current.tvaContext === null && current.lines.length === 0) {
+        quoteDraft.apply({
+          type: 'set_vat',
+          context: { housingOlderThan2y: true },
+          vatRate: 10,
+        });
+      }
     }
   }, [profile]);
 
@@ -648,9 +751,12 @@ export default function DevisNew() {
   // valide (≥ 2 caractères — même plancher que SignQuote) : la garde devisNext reste
   // l'unique juge du passage. Le dataURL (signature.dataUrl) part avec signQuote (preuve R4).
   useEffect(() => {
+    if (exitActionInFlight.current) return;
     const name = signerName.trim();
     const committed = signature !== null && !signature.isEmpty && name.length >= 2 ? name : null;
-    setFlow((f) => (f.draft.signerName === committed ? f : devisEdit(f, { signerName: committed })));
+    if (quoteStateRef.current.flow.draft.signerName !== committed) {
+      quoteDraft.apply({ type: 'set_signer_name', signerName: committed });
+    }
   }, [signature, signerName]);
 
   // ── Étape 2 : lignes ───────────────────────────────────────────────────────
@@ -677,43 +783,55 @@ export default function DevisNew() {
     setLineCat(p.category);
   };
 
-  const addLine = (): void => {
-    if (!lineValid || lineQtyValue === null || linePriceValue === null) return;
-    edit({
-      lines: [
-        ...draft.lines,
-        {
-          label: lineLabel.trim(),
-          category: lineCat,
-          qty: lineQtyValue,
-          unitPriceHT: Math.round(linePriceValue * 100),
-          vatRate: currentRate,
-        },
-      ],
+  const addLine = (): LineInput | null => {
+    if (!lineValid || lineQtyValue === null || linePriceValue === null) return null;
+    const line: LineInput = {
+      label: lineLabel.trim(),
+      category: lineCat,
+      qty: lineQtyValue,
+      unitPriceHT: Math.round(linePriceValue * 100),
+      vatRate: currentRate,
+    };
+    const added = quoteDraft.addLine({
+      interaction: 'manual',
+      expectedRevision: quoteDraft.state.revision,
+      line,
     });
-    setLineLabel('');
-    setLineQty('1');
-    setLinePrice('');
+    if (!added.ok) {
+      if (added.error.code === 'revision_conflict') return null;
+      setGuardMsg(t(guardKeyOf(added.error), { personality }));
+      return null;
+    }
+    quoteDraft.clearLineForm();
+    return line;
   };
 
   const removeLine = (index: number): void => {
-    edit({ lines: draft.lines.filter((_, i) => i !== index) });
+    const metadata = quoteDraft.state.lineMetadata[index];
+    if (metadata === undefined) return;
+    quoteDraft.applyAtRevision(
+      { type: 'remove_line', lineId: metadata.id },
+      quoteDraft.state.revision,
+    );
   };
 
   /** Applique/rejette la proposition en attente — UN SEUL chemin, voix ET tap. */
-  const applyLineProposal = (): DevisProposal | null => {
+  const applyLineProposal = (): QuoteDraftProposal | null => {
     const proposal = lineProposal;
     if (proposal === null) return null;
-    edit(proposal.patch);
-    setLineProposal(null);
-    return proposal;
+    const accepted = quoteDraft.acceptProposal(proposal.id);
+    if (!accepted.ok && accepted.error.code === 'proposal_expired') quoteDraft.expireProposal();
+    return accepted.ok ? proposal : null;
   };
   const rejectLineProposal = (): boolean => {
     if (lineProposal === null) return false;
-    setLineProposal(null);
-    return true;
+    return quoteDraft.rejectProposal(lineProposal.id).ok;
   };
-  const lineProposalRef = useRef<{ apply: () => DevisProposal | null; reject: () => boolean; pending: () => DevisProposal | null }>({
+  const lineProposalRef = useRef<{
+    apply: () => QuoteDraftProposal | null;
+    reject: () => boolean;
+    pending: () => QuoteDraftProposal | null;
+  }>({
     apply: () => null,
     reject: () => false,
     pending: () => null,
@@ -730,41 +848,33 @@ export default function DevisNew() {
       setLineCat(line.category);
     },
     submit: () => {
-      if (!lineValid || lineQtyValue === null || linePriceValue === null) return null;
-      const added: LineInput = {
-        label: lineLabel.trim(),
-        category: lineCat,
-        qty: lineQtyValue,
-        unitPriceHT: Math.round(linePriceValue * 100),
-        vatRate: currentRate,
-      };
-      addLine();
-      return added; // la valeur canonique du formulaire à l'instant T — pas une relecture React
+      // La fence de révision dans `addLine` rend un double consentement idempotent.
+      return addLine();
     },
     reject: () => {
       const hadSomething = lineLabel.trim() !== '' || linePrice.trim() !== '';
-      setLineLabel('');
-      setLineQty('1');
-      setLinePrice('');
+      quoteDraft.clearLineForm();
       return hadSomething;
     },
   };
 
   // ── Étape 3 : choix TVA = contexte + taux, appliqué à tout le devis ────────
   const selectVat = (choice: (typeof VAT_CHOICES)[number]): void => {
-    edit({
-      tvaContext: choice.context,
-      lines: draft.lines.map((l) => ({ ...l, vatRate: choice.rate })),
-    });
+    quoteDraft.applyAtRevision(
+      { type: 'set_vat', context: choice.context, vatRate: choice.rate },
+      quoteDraft.state.revision,
+    );
   };
 
   // ── Étape 6 : LA chaîne réelle, résumable — mêmes use cases que Bob (parité) ──
   const runGeneration = async (d: DevisDraft): Promise<void> => {
-    if (busy) return;
+    // Ref synchrone : deux taps dans le même frame ne voient jamais deux `busy=false`.
+    if (generationInFlight.current) return;
     if (d.customerId === null || d.signerName === null) {
       setError(t('devis.errAction', { personality }));
       return;
     }
+    generationInFlight.current = true;
     setBusy(true);
     setError(null);
     try {
@@ -806,35 +916,138 @@ export default function DevisNew() {
         chain.current.invoiceId = invoiceId;
       }
       const issued = await issueInvoice.mutateAsync(invoiceId);
-      setInvoice({ id: invoiceId, number: issued.number });
+      // La pièce est créée, mais l'ancien brouillon ne doit jamais ressusciter au prochain boot.
+      // On attend donc la purge SecureStore avant d'afficher le succès. Un échec reste retryable :
+      // les checkpoints de cette chaîne gardent les ids réels et empêchent toute double création.
+      const draftCleared = await quoteDraft.complete(invoiceId);
+      if (!draftCleared) {
+        setError(t('devis.errAction', { personality }));
+        return;
+      }
+      setInvoice({
+        id: invoiceId,
+        number: issued.number,
+        customerName,
+        amount: formatEUR(computeTotals([...d.lines], { depositPct: d.depositPct }).netToPay),
+      });
       setToast(t('devis.toastDone', { personality, params: { number: issued.number } }));
     } catch (e) {
       setError(appErrorMessage(e));
     } finally {
+      generationInFlight.current = false;
       setBusy(false);
     }
   };
 
   const onGenerate = async (): Promise<void> => {
-    const next = devisNext(flow); // garde acompte (0–100) — la machine juge
-    if (!next.ok) {
-      setGuardMsg(t(guardKeyOf(next.error), { personality }));
+    if (generationIntentInFlight.current || generationInFlight.current) return;
+    generationIntentInFlight.current = true;
+    try {
+      const confirmedRevision = quoteDraft.state.revision;
+      const amount = formatEUR(totals.netToPay);
+      const ok = await confirm({
+        title: t('devis.confirmTitle', { personality }),
+        message: t('devis.confirmBody', { personality, params: { name: customerName, amount } }),
+        challenge: challengeFor(FISCAL, 'confirm_all'),
+      });
+      if (!ok) return;
+      const next = quoteDraft.applyAtRevision({ type: 'next_step' }, confirmedRevision);
+      if (!next.ok) {
+        setGuardMsg(t(guardKeyOf(next.error), { personality }));
+        return;
+      }
+      setGuardMsg(null);
+      await runGeneration(next.value.flow.draft);
+    } finally {
+      generationIntentInFlight.current = false;
+    }
+  };
+
+  // ── Sortie sûre : bouton, back Android et swipe iOS passent par la même décision ──
+  const hasUnpersistedSignature = signature !== null && !signature.isEmpty;
+  const needsExitDecision = invoice === null
+    && (
+      hasUnsavedQuoteDraftChanges(quoteDraft.state)
+      || hasUnpersistedSignature
+      || lineProposal !== null
+    );
+  // Une chaîne fiscale partiellement exécutée ne se transforme pas en « brouillon local » :
+  // quitter ferait perdre les checkpoints et pourrait provoquer une seconde pièce au retry.
+  const generationExitLocked = invoice === null && flow.step === 'facture';
+
+  useEffect(() => navigation.addListener('beforeRemove', (event) => {
+    if (allowNextRemoval.current) {
+      allowNextRemoval.current = false;
       return;
     }
-    const amount = formatEUR(totals.netToPay);
-    const ok = await confirm({
-      title: t('devis.confirmTitle', { personality }),
-      message: t('devis.confirmBody', { personality, params: { name: customerName, amount } }),
-      challenge: challengeFor(FISCAL, 'confirm_all'),
-    });
-    if (!ok) return; // transition non commitée : l'utilisateur reste à l'étape acompte
-    setGuardMsg(null);
-    setFlow(next.value);
-    void runGeneration(flow.draft);
+    if (!needsExitDecision && !generationExitLocked) return;
+    event.preventDefault();
+    pendingExit.current = () => navigation.dispatch(event.data.action);
+    setExitSheetOpen(true);
+  }), [generationExitLocked, navigation, needsExitDecision]);
+
+  useEffect(() => {
+    navigation.setOptions({ gestureEnabled: !needsExitDecision && !generationExitLocked });
+  }, [generationExitLocked, navigation, needsExitDecision]);
+
+  const leave = (action: () => void): void => {
+    allowNextRemoval.current = true;
+    setExitSheetOpen(false);
+    pendingExit.current = null;
+    action();
+  };
+
+  const requestClose = (): void => {
+    const action = () => router.back();
+    if (!needsExitDecision && !generationExitLocked) {
+      leave(action);
+      return;
+    }
+    pendingExit.current = action;
+    setExitSheetOpen(true);
+  };
+
+  const continueEditing = (): void => {
+    if (exitActionInFlight.current) return;
+    pendingExit.current = null;
+    setExitSheetOpen(false);
+  };
+
+  const saveAndExit = async (): Promise<void> => {
+    if (generationExitLocked || exitActionInFlight.current) return;
+    exitActionInFlight.current = true;
+    setExitActionBusy(true);
+    const action = pendingExit.current ?? (() => router.back());
+
+    // La sanitisation (signature, proposition, mission) se fait dans le codec et ne remplace
+    // l'état mémoire qu'APRÈS le commit du pointeur. Si SecureStore échoue, rien de ce que la
+    // personne voit — tracé, proposition ou guidage — n'est détruit avant son retry.
+    const persisted = await quoteDraft.save();
+    if (persisted) {
+      leave(action);
+      return;
+    }
+    // Le sheet reste ouvert : la personne peut réessayer ou continuer à éditer, sans faux succès.
+    exitActionInFlight.current = false;
+    setExitActionBusy(false);
+  };
+
+  const discardAndExit = async (): Promise<void> => {
+    if (generationExitLocked || exitActionInFlight.current) return;
+    exitActionInFlight.current = true;
+    setExitActionBusy(true);
+    const action = pendingExit.current ?? (() => router.back());
+    const discarded = await quoteDraft.discard();
+    if (discarded) {
+      leave(action);
+      return;
+    }
+    exitActionInFlight.current = false;
+    setExitActionBusy(false);
   };
 
   // ════════ SUCCÈS (machine: 'facture', numéro légal réel) ═══════════════════
-  if (flow.step === 'facture' && invoice !== null) {
+  if (invoice !== null) {
     return (
       <View style={{ flex: 1, backgroundColor: semantic.success }}>
         <LinearGradient
@@ -879,8 +1092,8 @@ export default function DevisNew() {
               personality,
               params: {
                 number: invoice.number,
-                name: customerName,
-                amount: formatEUR(totals.netToPay),
+                name: invoice.customerName,
+                amount: invoice.amount,
               },
             })}
           </Text>
@@ -905,7 +1118,7 @@ export default function DevisNew() {
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={t('devis.close', { personality })}
-            onPress={() => router.back()}
+            onPress={requestClose}
             style={{ marginTop: 14, minHeight: 44, justifyContent: 'center' }}
           >
             <Text style={[font('label', 600), { color: overlays.white70 }]}>
@@ -970,7 +1183,7 @@ export default function DevisNew() {
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={t('devis.close', { personality })}
-            onPress={() => router.back()}
+            onPress={requestClose}
             hitSlop={6}
             style={{
               width: 34,
@@ -1033,7 +1246,13 @@ export default function DevisNew() {
                   return (
                     <Pressable
                       key={c.id}
-                      onPress={() => edit({ customerId: c.id })}
+                      onPress={() => {
+                        quoteDraft.applyAtRevision(
+                          { type: 'select_customer', customer: { id: c.id, name: c.name } },
+                          quoteDraft.state.revision,
+                        );
+                        setGuardMsg(null);
+                      }}
                       accessibilityRole="radio"
                       accessibilityLabel={c.name}
                       accessibilityState={{ selected }}
@@ -1073,7 +1292,7 @@ export default function DevisNew() {
           {/* Tag CLIENT sur l'étape prestations (spec fondateur) : sélectionné → chip + ✕
               (désélection) ; aucun → scroll horizontal des clients, un tap sélectionne. */}
           {flow.step === 'lignes' ? (
-            customer !== null ? (
+            contextCustomer !== null ? (
               <View style={{ flexDirection: 'row', marginBottom: 10 }}>
                 <View
                   style={{
@@ -1090,13 +1309,16 @@ export default function DevisNew() {
                   }}
                 >
                   <Text style={[font('meta', 700), { color: colors.ink900 }]} numberOfLines={1}>
-                    {customer.name}
+                    {contextCustomer.name}
                   </Text>
                   <Pressable
                     accessibilityRole="button"
                     accessibilityLabel={t('devis.clientTagRemove', { personality })}
                     hitSlop={8}
-                    onPress={() => setFlow((f) => devisEdit(f, { customerId: null }))}
+                    onPress={() => quoteDraft.applyAtRevision(
+                      { type: 'clear_customer' },
+                      quoteDraft.state.revision,
+                    )}
                     style={{ width: 24, height: 24, borderRadius: 12, alignItems: 'center', justifyContent: 'center' }}
                   >
                     <Ionicons name="close" size={16} color={colors.slate500} />
@@ -1115,7 +1337,10 @@ export default function DevisNew() {
                     key={c.id}
                     accessibilityRole="button"
                     accessibilityLabel={c.name}
-                    onPress={() => setFlow((f) => devisEdit(f, { customerId: c.id }))}
+                    onPress={() => quoteDraft.applyAtRevision(
+                      { type: 'select_customer', customer: { id: c.id, name: c.name } },
+                      quoteDraft.state.revision,
+                    )}
                     style={{
                       borderWidth: 1,
                       borderColor: colors.line,
@@ -1135,11 +1360,11 @@ export default function DevisNew() {
           {flow.step === 'lignes' && lineProposal !== null ? (
             <Card radius={16} padding={14} style={{ borderColor: semantic.ai, borderWidth: 1 }}>
               <Text style={[font('label'), { fontSize: 11.5, color: semantic.aiInk }]}>
-                {lineProposal.label.toUpperCase()}
+                {lineProposal.title.toUpperCase()}
               </Text>
               {lineProposal.diff.map((field) => (
-                <Text key={field.field} style={[font('sub'), { color: colors.ink800, marginTop: 4 }]}>
-                  {field.field} : {field.before} → {field.after}
+                <Text key={field.key} style={[font('sub'), { color: colors.ink800, marginTop: 4 }]}>
+                  {field.label} : {field.before} → {field.after}
                 </Text>
               ))}
               <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
@@ -1187,6 +1412,7 @@ export default function DevisNew() {
                   <TextInput
                     value={lineLabel}
                     onChangeText={setLineLabel}
+                    maxLength={500}
                     placeholder={t('devis.lineLabelPlaceholder', { personality })}
                     placeholderTextColor={colors.slate400}
                     accessibilityLabel={t('devis.lineLabelPlaceholder', { personality })}
@@ -1279,6 +1505,7 @@ export default function DevisNew() {
                     <TextInput
                       value={lineQty}
                       onChangeText={setLineQty}
+                      maxLength={64}
                       keyboardType="decimal-pad"
                       accessibilityLabel={t('devis.qtyLabel', { personality })}
                       style={[
@@ -1301,6 +1528,7 @@ export default function DevisNew() {
                     <TextInput
                       value={linePrice}
                       onChangeText={setLinePrice}
+                      maxLength={64}
                       keyboardType="decimal-pad"
                       placeholder="0,00"
                       placeholderTextColor={colors.slate400}
@@ -1569,7 +1797,10 @@ export default function DevisNew() {
                         : t('devis.depositPct', { personality, params: { pct } })
                     }
                     active={draft.depositPct === pct}
-                    onPress={() => edit({ depositPct: pct })}
+                    onPress={() => quoteDraft.applyAtRevision(
+                      { type: 'set_deposit_pct', depositPct: pct },
+                      quoteDraft.state.revision,
+                    )}
                   />
                 ))}
               </View>
@@ -1622,6 +1853,61 @@ export default function DevisNew() {
         </ScrollView>
 
         {/* Garde bloquante (voix de Bob) + CTA d'avancement — chaque Suivant = devisNext */}
+        <Sheet
+          visible={exitSheetOpen}
+          onClose={continueEditing}
+          accessibilityLabel={t('devis.draftExit.title', { personality })}
+          closeAccessibilityLabel={t('devis.draftExit.close', { personality })}
+        >
+          <View style={{ gap: 12 }}>
+            <Text style={[font('section'), { color: colors.ink900 }]}>
+              {t('devis.draftExit.title', { personality })}
+            </Text>
+            <Text style={[font('body'), { color: colors.slate500, lineHeight: 22 }]}>
+              {t(
+                generationExitLocked ? 'devis.draftExit.generationBody' : 'devis.draftExit.body',
+                { personality },
+              )}
+            </Text>
+            {hasUnpersistedSignature && !generationExitLocked ? (
+              <Text style={[font('meta'), { color: semantic.warning, lineHeight: 18 }]}>
+                {t('devis.draftExit.signatureBody', { personality })}
+              </Text>
+            ) : null}
+            {lineProposal !== null && !generationExitLocked ? (
+              <Text style={[font('meta'), { color: semantic.aiInk, lineHeight: 18 }]}>
+                {t('devis.draftExit.proposalBody', { personality })}
+              </Text>
+            ) : null}
+            {quoteDraft.persistence.error !== null ? (
+              <Card style={{ borderColor: semantic.danger }}>
+                <Text accessibilityRole="alert" style={[font('sub'), { color: semantic.danger }]}>
+                  {t('devis.draftExit.persistenceError', { personality })}
+                </Text>
+              </Card>
+            ) : null}
+            <Button
+              title={t('devis.draftExit.continue', { personality })}
+              onPress={continueEditing}
+              disabled={exitActionBusy}
+            />
+            <Button
+              title={t('devis.draftExit.save', { personality })}
+              variant="secondary"
+              onPress={() => { void saveAndExit(); }}
+              loading={exitActionBusy && quoteDraft.persistence.status === 'saving'}
+              disabled={exitActionBusy || generationExitLocked}
+            />
+            <Button
+              title={t('devis.draftExit.discard', { personality })}
+              variant="danger"
+              onPress={() => { void discardAndExit(); }}
+              loading={exitActionBusy && quoteDraft.persistence.status === 'clearing'}
+              disabled={exitActionBusy || generationExitLocked}
+            />
+          </View>
+        </Sheet>
+
         {/* Picker catalogue (parité manuelle du « catalogue d'abord » vocal) */}
         <Modal
           visible={cataloguePickerOpen}

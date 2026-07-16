@@ -17,7 +17,10 @@ import { font, useReduceMotion, useTheme } from '@bob/ui';
 import { useAgentAccessLayout, useAgentContext, useAgentSession } from '../agent';
 import { useSubscription } from '../data/hooks';
 import { CloseIcon, MicIcon, SparkIcon } from './icons';
-import { deriveGlobalBobAccessibilityAnnouncement } from './global-bob-access-a11y';
+import {
+  deriveGlobalBobAccessibilityAnnouncement,
+  deriveGlobalBobAccessibilityLiveRegion,
+} from './global-bob-access-a11y';
 import {
   deriveGlobalBobAccessHorizontalLayout,
   GLOBAL_BOB_ACCESS_SIZE,
@@ -86,7 +89,7 @@ export function GlobalBobAccess() {
     pathname === '/gallery' ||
     ownsItsVoiceChrome
   );
-  const iosAnnouncement = deriveGlobalBobAccessibilityAnnouncement({
+  const accessibilityAnnouncementInput = {
     visible,
     announceActiveState: session.active
       && (session.phase === 'listening' || session.phase === 'thinking'),
@@ -96,7 +99,13 @@ export function GlobalBobAccess() {
       : session.phase === 'error'
         ? stateLabel
         : null,
-  });
+  } as const;
+  const iosAnnouncement = deriveGlobalBobAccessibilityAnnouncement(
+    accessibilityAnnouncementInput,
+  );
+  const androidLiveRegion = deriveGlobalBobAccessibilityLiveRegion(
+    accessibilityAnnouncementInput,
+  );
   useEffect(() => {
     if (Platform.OS !== 'ios') return undefined;
     if (iosAnnouncement === null) {
@@ -172,7 +181,7 @@ export function GlobalBobAccess() {
     >
       {session.response !== null || session.active ? (
         <View
-          accessibilityLiveRegion={session.phase === 'error' ? 'assertive' : 'polite'}
+          accessibilityLiveRegion={androidLiveRegion}
           style={{
             width: horizontal.maxCardWidth,
             borderRadius: 16,

@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { parseVoiceQuoteLine } from './voice-quote-line';
+import {
+  completePendingQuoteLinePrice,
+  isVoiceAddLineUtterance,
+  parseVoiceQuoteLine,
+} from './voice-quote-line';
 import { type VoicePrestation } from './voice-invoice-draft';
 
 const CATALOGUE: readonly VoicePrestation[] = [
@@ -109,5 +113,90 @@ describe('parseVoiceQuoteLine — dictée fondateur (S2-GUIDÉ)', () => {
   it('une prestation INDICATIVE du catalogue ne chiffre jamais une ligne', () => {
     const r = parseVoiceQuoteLine('prestation indicative', { prestations: CATALOGUE });
     expect(r.kind).not.toBe('line');
+  });
+});
+
+/**
+ * BUG FONDATEUR 2026-07-16 (device réel, wizard devis) : « ajoute deux heures de
+ * main-d'œuvre » répondait « je ne m'occupe que d'administratif » — la chaîne complète
+ * ÉCHOUAIT AVANT LE FIX en dehors de l'étape lignes (aucune affordance ne couvrait un ajout
+ * de ligne sur tvaMentions/signature/acompte/facture, l'énoncé tombait donc en silence vers
+ * le classifieur serveur, qui n'a — et ne peut PHYSIQUEMENT pas avoir — d'intent pour muter
+ * un brouillon de devis 100 % local). Ces tests couvrent la reconnaissance ET l'extraction
+ * de slots attendue côté « papa vocal » : jamais redemander un champ déjà connu.
+ */
+describe('isVoiceAddLineUtterance — déclencheur unique du pouvoir local d’ajout de ligne', () => {
+  it('reconnaît la phrase exacte du fondateur et ses variantes de verbe', () => {
+    expect(isVoiceAddLineUtterance('ajoute deux heures de main-d’œuvre')).toBe(true);
+    expect(isVoiceAddLineUtterance('Ajoute deux heures de main-d’œuvre')).toBe(true);
+    expect(isVoiceAddLineUtterance('ajoutez deux heures de main-d’œuvre')).toBe(true);
+    expect(isVoiceAddLineUtterance('rajoute deux heures de main-d’œuvre')).toBe(true);
+    expect(isVoiceAddLineUtterance('mets deux heures de main-d’œuvre')).toBe(true);
+  });
+
+  it('ne capture PAS un énoncé sans rapport (jamais un faux positif qui vole le tour)', () => {
+    expect(isVoiceAddLineUtterance('étape suivante')).toBe(false);
+    expect(isVoiceAddLineUtterance('corrige la ligne 2 à 55 euros')).toBe(false);
+    expect(isVoiceAddLineUtterance('55 euros')).toBe(false);
+  });
+});
+
+describe('parseVoiceQuoteLine — « ajoute deux heures de main-d’œuvre » (bug fondateur 2026-07-16)', () => {
+  it('SANS prix énoncé → missing_price avec qty/catégorie DÉJÀ extraits (jamais perdus)', () => {
+    const r = parseVoiceQuoteLine('ajoute deux heures de main-d’œuvre', {});
+    expect(r.kind).toBe('missing_price');
+    if (r.kind !== 'missing_price') return;
+    expect(r.qty).toBe(2);
+    expect(r.category).toBe('labor');
+    expect(r.label.toLowerCase()).toContain('main');
+  });
+
+  it('variante STT « main d oeuvre » (sans ponctuation) → même extraction', () => {
+    const r = parseVoiceQuoteLine('ajoute deux heures de main d oeuvre', {});
+    expect(r.kind).toBe('missing_price');
+    if (r.kind !== 'missing_price') return;
+    expect(r.qty).toBe(2);
+    expect(r.category).toBe('labor');
+  });
+
+  it('variante STT « manoeuvre » (confusion phonétique main-d’œuvre) → catégorie labor via l’unité « heures »', () => {
+    const r = parseVoiceQuoteLine('ajoute deux heures de manoeuvre', {});
+    expect(r.kind).toBe('missing_price');
+    if (r.kind !== 'missing_price') return;
+    expect(r.qty).toBe(2);
+    expect(r.category).toBe('labor');
+  });
+
+  it('AVEC prix énoncé (« ajoute 3 heures de plomberie à 45 euros ») → ligne COMPLÈTE, aucune question', () => {
+    const r = parseVoiceQuoteLine('ajoute 3 heures de plomberie à 45 euros', {});
+    expect(r.kind).toBe('line');
+    if (r.kind !== 'line') return;
+    expect(r.line).toMatchObject({ qty: 3, category: 'labor', unitPriceHT: 4_500 });
+  });
+});
+
+describe('completePendingQuoteLinePrice — le suivi « 55 euros » complète SANS tout redire', () => {
+  it('un prix unitaire nu complète directement (« 55 euros » = 55 €/heure)', () => {
+    expect(completePendingQuoteLinePrice('55 euros', 2)).toBe(5_500);
+  });
+
+  it('« à 55 euros de l’heure » (marqueur unitaire explicite) complète directement', () => {
+    expect(completePendingQuoteLinePrice('à 55 euros de l’heure', 2)).toBe(5_500);
+  });
+
+  it('un TOTAL divisible exactement se répartit sur la quantité connue', () => {
+    expect(completePendingQuoteLinePrice('110 euros au total', 2)).toBe(5_500);
+  });
+
+  it('un TOTAL non divisible exactement redemande (jamais un arrondi silencieux)', () => {
+    expect(completePendingQuoteLinePrice('100 euros au total', 3)).toBeNull();
+  });
+
+  it('un suivi sans aucun prix exploitable ne complète rien (laisse tenter d’autres affordances)', () => {
+    expect(completePendingQuoteLinePrice('non annule', 2)).toBeNull();
+  });
+
+  it('nombres en toutes lettres (dictée réelle)', () => {
+    expect(completePendingQuoteLinePrice('cinquante-cinq euros', 2)).toBe(5_500);
   });
 });

@@ -7,6 +7,8 @@ export interface GlobalBobAccessibilityAnnouncementInput {
   readonly silentAlert: string | null;
 }
 
+export type GlobalBobAccessibilityLiveRegion = 'none' | 'polite' | 'assertive';
+
 /**
  * Contenu dédupliquable annoncé explicitement à VoiceOver (`liveRegion` est Android-only).
  * Une réponse Bob n'entre volontairement jamais ici : elle possède déjà son canal TTS/audité.
@@ -19,4 +21,18 @@ export function deriveGlobalBobAccessibilityAnnouncement(
   if (alert !== '') return alert;
   const state = input.stateLabel.trim();
   return input.announceActiveState && state !== '' ? state : null;
+}
+
+/**
+ * `accessibilityLiveRegion` pilote TalkBack. Les réponses et la phase `speaking` restent à
+ * `none` : la sortie audio de Bob les prononce déjà et une seconde lecture TalkBack rendrait la
+ * conversation incompréhensible. Seuls les états silencieux et les erreurs non vocalisées sont
+ * annoncés par le lecteur d’écran.
+ */
+export function deriveGlobalBobAccessibilityLiveRegion(
+  input: GlobalBobAccessibilityAnnouncementInput,
+): GlobalBobAccessibilityLiveRegion {
+  if (!input.visible) return 'none';
+  if ((input.silentAlert?.trim() ?? '') !== '') return 'assertive';
+  return input.announceActiveState && input.stateLabel.trim() !== '' ? 'polite' : 'none';
 }

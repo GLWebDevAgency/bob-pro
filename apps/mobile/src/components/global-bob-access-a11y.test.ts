@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { deriveGlobalBobAccessibilityAnnouncement } from './global-bob-access-a11y';
+import {
+  deriveGlobalBobAccessibilityAnnouncement,
+  deriveGlobalBobAccessibilityLiveRegion,
+} from './global-bob-access-a11y';
 
-describe('GlobalBobAccess — annonce VoiceOver', () => {
+describe('GlobalBobAccess — annonces des lecteurs d’écran', () => {
   it('reste silencieux lorsque Bob est masqué ou au repos', () => {
     expect(deriveGlobalBobAccessibilityAnnouncement({
       visible: false,
@@ -39,5 +42,32 @@ describe('GlobalBobAccess — annonce VoiceOver', () => {
       stateLabel: 'Bob parle',
       silentAlert: null,
     })).toBeNull();
+  });
+
+  it('n’active TalkBack que pour les états silencieux ou une erreur', () => {
+    expect(deriveGlobalBobAccessibilityLiveRegion({
+      visible: true,
+      announceActiveState: true,
+      stateLabel: "J'écoute",
+      silentAlert: null,
+    })).toBe('polite');
+    expect(deriveGlobalBobAccessibilityLiveRegion({
+      visible: true,
+      announceActiveState: false,
+      stateLabel: 'Bob parle',
+      silentAlert: null,
+    })).toBe('none');
+    expect(deriveGlobalBobAccessibilityLiveRegion({
+      visible: true,
+      announceActiveState: false,
+      stateLabel: 'Erreur',
+      silentAlert: 'Micro indisponible',
+    })).toBe('assertive');
+    expect(deriveGlobalBobAccessibilityLiveRegion({
+      visible: false,
+      announceActiveState: true,
+      stateLabel: "J'écoute",
+      silentAlert: null,
+    })).toBe('none');
   });
 });

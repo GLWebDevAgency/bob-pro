@@ -1817,6 +1817,14 @@ const legacyFr = {
     pro: 'Prestation « {label} » notée — indiquez le prix HT en la redisant avec le montant.',
     direct: '« {label} » : prix HT ? Redis avec le montant.',
   },
+  /** Papa vocal — qty/label déjà extraits (missing_price) : Bob les redit et ne demande QUE
+   * le prix ; un simple « 55 euros » en suivi complète la ligne (completePendingQuoteLinePrice),
+   * jamais besoin de tout redire. */
+  'devis.voice.missingPriceReady': {
+    pote: '{qty} × {label}, c’est noté — à quel prix HT ?',
+    pro: '{qty} × {label} noté. Quel est le prix HT ?',
+    direct: '{qty} × {label} : prix HT ?',
+  },
   'devis.voice.lineRemoved': {
     pote: 'Retiré : {label}.',
     pro: 'Ligne retirée : {label}.',
@@ -1863,6 +1871,11 @@ const legacyFr = {
     pote: 'On choisit d’abord le client, puis on dicte les lignes.',
     pro: 'Sélectionnez d’abord le client ; les lignes viennent ensuite.',
     direct: 'Client d’abord, lignes ensuite.',
+  },
+  'devis.voice.needLinesStep': {
+    pote: 'On a dépassé l’étape des lignes — reviens en arrière (à l’écran, ou dis « étape précédente ») pour ajouter ça.',
+    pro: 'L’étape des lignes est passée. Revenez en arrière (à l’écran, ou dites « étape précédente ») pour ajouter cette ligne.',
+    direct: 'Retour à l’étape lignes pour ajouter.',
   },
   'ventes.searchPlaceholder': {
     pote: 'N°, client, prestation (« chauffe-eau »)…',
