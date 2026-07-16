@@ -8,10 +8,12 @@ import {
   isVatRate,
   startDevis,
   type CataloguePrestation,
+  type DevisTvaContext,
   type DevisFlowState,
   type DomainError,
   type LineCategory,
   type LineInput,
+  type VatRate,
 } from '@bob/core';
 
 /**
@@ -25,6 +27,27 @@ import {
 
 export type QuoteDraftInteraction = 'manual' | 'voice';
 export type QuoteDraftStage = 'client' | 'lignes' | 'revue';
+
+/**
+ * Saisie encore non validée dans le formulaire de ligne.
+ *
+ * Elle reste distincte du contenu financier : Bob peut la préparer, mais elle n'entre dans le
+ * devis qu'après le même geste de validation que la saisie manuelle. Elle vit néanmoins dans le
+ * provider racine afin qu'un aller-retour de route ne détruise pas silencieusement le travail.
+ */
+export interface QuoteDraftLineFormState {
+  readonly label: string;
+  readonly quantity: string;
+  readonly unitPrice: string;
+  readonly category: LineCategory;
+}
+
+export const EMPTY_QUOTE_DRAFT_LINE_FORM: QuoteDraftLineFormState = Object.freeze({
+  label: '',
+  quantity: '1',
+  unitPrice: '',
+  category: 'labor',
+});
 
 export interface QuoteDraftCustomer {
   readonly id: string;
@@ -67,6 +90,7 @@ export type QuoteDraftMission =
 
 export type QuoteDraftCommand =
   | { readonly type: 'select_customer'; readonly customer: QuoteDraftCustomer }
+  | { readonly type: 'clear_customer' }
   | {
       readonly type: 'add_line';
       readonly lineId: string;
@@ -76,6 +100,13 @@ export type QuoteDraftCommand =
     }
   | { readonly type: 'update_line'; readonly lineId: string; readonly patch: Partial<LineInput> }
   | { readonly type: 'remove_line'; readonly lineId: string }
+  | {
+      readonly type: 'set_vat';
+      readonly context: DevisTvaContext | null;
+      readonly vatRate: VatRate;
+    }
+  | { readonly type: 'set_signer_name'; readonly signerName: string | null }
+  | { readonly type: 'set_deposit_pct'; readonly depositPct: number }
   | { readonly type: 'next_step' }
   | { readonly type: 'previous_step' };
 
@@ -115,6 +146,16 @@ export interface QuoteDraftState {
   readonly customer: QuoteDraftCustomer | null;
   /** Même ordre que `flow.draft.lines`. */
   readonly lineMetadata: readonly QuoteDraftLineMetadata[];
+  readonly lineForm: QuoteDraftLineFormState;
+  /** Révision de la saisie non validée, indépendante des diffs financiers de Bob. */
+  readonly stagingRevision: number;
+  readonly saved: {
+    readonly contentRevision: number;
+    readonly stagingRevision: number;
+    readonly at: number;
+  } | null;
+  /** Fence de session : un ACK de création rejoué ne peut pas effacer le brouillon suivant. */
+  readonly completedArtifactIds: readonly string[];
   readonly proposal: QuoteDraftProposal | null;
   readonly lastProposalDecision: QuoteDraftProposalDecision | null;
   readonly mission: QuoteDraftMission;
@@ -127,7 +168,8 @@ export type QuoteDraftErrorCode =
   | 'proposal_missing'
   | 'proposal_mismatch'
   | 'proposal_stale'
-  | 'proposal_expired';
+  | 'proposal_expired'
+  | 'revision_conflict';
 
 export interface QuoteDraftError {
   readonly code: QuoteDraftErrorCode;
@@ -187,8 +229,10 @@ function normalizeSingleLine(value: string): string {
 function validateCustomer(customer: QuoteDraftCustomer): QuoteDraftResult<QuoteDraftCustomer> {
   const id = customer.id.trim();
   const name = normalizeSingleLine(customer.name);
-  if (id === '') return fail({ code: 'validation', field: 'customerId', message: 'Client invalide.' });
-  if (name === '') return fail({ code: 'validation', field: 'customerName', message: 'Nom du client requis.' });
+  if (id === '')
+    return fail({ code: 'validation', field: 'customerId', message: 'Client invalide.' });
+  if (name === '')
+    return fail({ code: 'validation', field: 'customerName', message: 'Nom du client requis.' });
   return ok({ id, name });
 }
 
@@ -196,7 +240,11 @@ export function validateQuoteDraftLine(line: LineInput): QuoteDraftResult<LineIn
   const label = normalizeSingleLine(line.label);
   if (label === '') return fail({ code: 'validation', field: 'label', message: 'Libellé requis.' });
   if (label.length > 500) {
-    return fail({ code: 'validation', field: 'label', message: 'Libellé trop long (500 caractères maximum).' });
+    return fail({
+      code: 'validation',
+      field: 'label',
+      message: 'Libellé trop long (500 caractères maximum).',
+    });
   }
   if (!(LINE_CATEGORIES as readonly unknown[]).includes(line.category)) {
     return fail({ code: 'validation', field: 'category', message: 'Catégorie de ligne invalide.' });
@@ -215,7 +263,11 @@ export function validateQuoteDraftLine(line: LineInput): QuoteDraftResult<LineIn
   }
   const unit = line.unit === undefined ? null : normalizeSingleLine(line.unit);
   if (unit !== null && unit.length > 40) {
-    return fail({ code: 'validation', field: 'unit', message: 'Unité trop longue (40 caractères maximum).' });
+    return fail({
+      code: 'validation',
+      field: 'unit',
+      message: 'Unité trop longue (40 caractères maximum).',
+    });
   }
   return ok({
     label,
@@ -249,7 +301,9 @@ function ensureMetadataInvariant(state: QuoteDraftState): QuoteDraftResult<void>
       message: 'Le brouillon et ses identifiants de lignes sont désynchronisés.',
     });
   }
-  if (new Set(state.lineMetadata.map((metadata) => metadata.id)).size !== state.lineMetadata.length) {
+  if (
+    new Set(state.lineMetadata.map((metadata) => metadata.id)).size !== state.lineMetadata.length
+  ) {
     return fail({ code: 'validation', field: 'lineId', message: 'Identifiant de ligne dupliqué.' });
   }
   return ok(undefined);
@@ -277,9 +331,132 @@ export function createQuoteDraft(sessionId: string): QuoteDraftState {
     flow: startDevis(),
     customer: null,
     lineMetadata: [],
+    lineForm: EMPTY_QUOTE_DRAFT_LINE_FORM,
+    stagingRevision: 0,
+    saved: null,
+    completedArtifactIds: Object.freeze([]),
     proposal: null,
     lastProposalDecision: null,
     mission: { status: 'idle' },
+  };
+}
+
+function lineFormEquals(left: QuoteDraftLineFormState, right: QuoteDraftLineFormState): boolean {
+  return (
+    left.label === right.label &&
+    left.quantity === right.quantity &&
+    left.unitPrice === right.unitPrice &&
+    left.category === right.category
+  );
+}
+
+export function hasStagedQuoteDraftLine(state: QuoteDraftState): boolean {
+  const form = state.lineForm;
+  return form.label.trim() !== '' || form.unitPrice.trim() !== '' || form.quantity.trim() !== '1';
+}
+
+/** Un défaut TVA semé par le profil ne suffit pas, à lui seul, à créer un faux brouillon. */
+export function hasMeaningfulQuoteDraft(state: QuoteDraftState): boolean {
+  const draft = state.flow.draft;
+  return (
+    state.flow.step !== 'client' ||
+    draft.customerId !== null ||
+    draft.lines.length > 0 ||
+    draft.signerName !== null ||
+    draft.depositPct !== 30 ||
+    hasStagedQuoteDraftLine(state)
+  );
+}
+
+export function hasUnsavedQuoteDraftChanges(state: QuoteDraftState): boolean {
+  if (!hasMeaningfulQuoteDraft(state)) return false;
+  return (
+    state.saved === null ||
+    state.saved.contentRevision !== state.revision ||
+    state.saved.stagingRevision !== state.stagingRevision
+  );
+}
+
+/** Fence optimiste commune aux gestes UI : un événement rejoué sur une ancienne vue est refusé. */
+export function requireQuoteDraftRevision(
+  state: QuoteDraftState,
+  expectedRevision: number,
+): QuoteDraftResult<QuoteDraftState> {
+  if (state.revision === expectedRevision) return ok(state);
+  return fail({
+    code: 'revision_conflict',
+    field: 'revision',
+    message: 'Le devis a changé. Repars de sa version affichée.',
+  });
+}
+
+export function updateQuoteDraftLineForm(
+  state: QuoteDraftState,
+  patch: Partial<QuoteDraftLineFormState>,
+): QuoteDraftState {
+  const next: QuoteDraftLineFormState = {
+    label: patch.label ?? state.lineForm.label,
+    quantity: patch.quantity ?? state.lineForm.quantity,
+    unitPrice: patch.unitPrice ?? state.lineForm.unitPrice,
+    category: patch.category ?? state.lineForm.category,
+  };
+  if (lineFormEquals(state.lineForm, next)) return state;
+  return { ...state, lineForm: next, stagingRevision: state.stagingRevision + 1 };
+}
+
+export function clearQuoteDraftLineForm(state: QuoteDraftState): QuoteDraftState {
+  const cleared = { ...EMPTY_QUOTE_DRAFT_LINE_FORM, category: state.lineForm.category };
+  if (lineFormEquals(state.lineForm, cleared)) return state;
+  return {
+    ...state,
+    // Comme le formulaire historique, la catégorie choisie reste le défaut de la ligne suivante.
+    lineForm: cleared,
+    stagingRevision: state.stagingRevision + 1,
+  };
+}
+
+export function markQuoteDraftSaved(state: QuoteDraftState, at: number): QuoteDraftState {
+  return {
+    ...state,
+    saved: { contentRevision: state.revision, stagingRevision: state.stagingRevision, at },
+  };
+}
+
+function newEmptyDraft(
+  state: QuoteDraftState,
+  sessionId: string,
+  completedArtifactIds = state.completedArtifactIds,
+): QuoteDraftState {
+  return {
+    ...createQuoteDraft(sessionId),
+    completedArtifactIds: Object.freeze([...completedArtifactIds]),
+  };
+}
+
+export function discardQuoteDraft(state: QuoteDraftState, newSessionId: string): QuoteDraftState {
+  return newEmptyDraft(state, newSessionId);
+}
+
+export interface CompleteQuoteDraftResult {
+  readonly state: QuoteDraftState;
+  readonly didReset: boolean;
+}
+
+/**
+ * Reset idempotent après création réelle. L'identifiant de la pièce est la fence : un callback
+ * tardif ou un double tap portant le même résultat ne peut jamais effacer le brouillon suivant.
+ */
+export function completeQuoteDraft(
+  state: QuoteDraftState,
+  input: { readonly artifactId: string; readonly newSessionId: string },
+): CompleteQuoteDraftResult {
+  const artifactId = input.artifactId.trim();
+  if (artifactId === '') throw new Error('completeQuoteDraft: artifactId requis');
+  if (state.completedArtifactIds.includes(artifactId)) return { state, didReset: false };
+  const history = [...state.completedArtifactIds, artifactId];
+  return {
+    state: newEmptyDraft(state, input.newSessionId, history),
+    didReset: true,
   };
 }
 
@@ -289,7 +466,10 @@ export function quoteDraftStage(state: QuoteDraftState): QuoteDraftStage {
   return 'revue';
 }
 
-function applyRawCommand(state: QuoteDraftState, command: QuoteDraftCommand): QuoteDraftResult<QuoteDraftState> {
+function applyRawCommand(
+  state: QuoteDraftState,
+  command: QuoteDraftCommand,
+): QuoteDraftResult<QuoteDraftState> {
   const invariant = ensureMetadataInvariant(state);
   if (!invariant.ok) return invariant;
 
@@ -305,11 +485,30 @@ function applyRawCommand(state: QuoteDraftState, command: QuoteDraftCommand): Qu
     });
   }
 
+  if (command.type === 'clear_customer') {
+    const step = requireStep(state, ['client', 'lignes'], 'Le changement de client');
+    if (!step.ok) return step;
+    const cleared = devisEdit(cloneFlow(state.flow), { customerId: null });
+    let clearedFlow = cleared;
+    if (state.flow.step === 'lignes') {
+      const rewound = devisBack(cleared);
+      if (!rewound.ok) return fail(fromDomainError(rewound.error));
+      clearedFlow = rewound.value;
+    }
+    return ok({
+      ...state,
+      // Changer le client passe par la transition core et remet au choix explicite.
+      flow: clearedFlow,
+      customer: null,
+    });
+  }
+
   if (command.type === 'add_line') {
     const step = requireStep(state, ['lignes'], 'L’ajout d’une ligne');
     if (!step.ok) return step;
     const lineId = command.lineId.trim();
-    if (lineId === '') return fail({ code: 'validation', field: 'lineId', message: 'Identifiant de ligne requis.' });
+    if (lineId === '')
+      return fail({ code: 'validation', field: 'lineId', message: 'Identifiant de ligne requis.' });
     if (state.lineMetadata.some((metadata) => metadata.id === lineId)) {
       return fail({ code: 'validation', field: 'lineId', message: 'Cette ligne existe déjà.' });
     }
@@ -317,7 +516,9 @@ function applyRawCommand(state: QuoteDraftState, command: QuoteDraftCommand): Qu
     if (!line.ok) return line;
     return ok({
       ...state,
-      flow: devisEdit(cloneFlow(state.flow), { lines: [...state.flow.draft.lines.map(cloneLine), line.value] }),
+      flow: devisEdit(cloneFlow(state.flow), {
+        lines: [...state.flow.draft.lines.map(cloneLine), line.value],
+      }),
       lineMetadata: [
         ...state.lineMetadata,
         {
@@ -338,7 +539,11 @@ function applyRawCommand(state: QuoteDraftState, command: QuoteDraftCommand): Qu
     }
     const current = state.flow.draft.lines[index];
     if (current === undefined) {
-      return fail({ code: 'validation', field: 'lineMetadata', message: 'Ligne de devis désynchronisée.' });
+      return fail({
+        code: 'validation',
+        field: 'lineMetadata',
+        message: 'Ligne de devis désynchronisée.',
+      });
     }
     const line = validateQuoteDraftLine({ ...cloneLine(current), ...command.patch });
     if (!line.ok) return line;
@@ -358,9 +563,63 @@ function applyRawCommand(state: QuoteDraftState, command: QuoteDraftCommand): Qu
     return ok({
       ...state,
       flow: devisEdit(cloneFlow(state.flow), {
-        lines: state.flow.draft.lines.filter((_, candidateIndex) => candidateIndex !== index).map(cloneLine),
+        lines: state.flow.draft.lines
+          .filter((_, candidateIndex) => candidateIndex !== index)
+          .map(cloneLine),
       }),
       lineMetadata: state.lineMetadata.filter((_, candidateIndex) => candidateIndex !== index),
+    });
+  }
+
+  if (command.type === 'set_vat') {
+    const step = requireStep(state, ['client', 'lignes', 'tvaMentions'], 'Le choix de TVA');
+    if (!step.ok) return step;
+    if (!isVatRate(command.vatRate)) {
+      return fail({ code: 'validation', field: 'vatRate', message: 'Taux de TVA non autorisé.' });
+    }
+    return ok({
+      ...state,
+      flow: devisEdit(cloneFlow(state.flow), {
+        tvaContext: command.context === null ? null : { ...command.context },
+        lines: state.flow.draft.lines.map((line) => ({
+          ...cloneLine(line),
+          vatRate: command.vatRate,
+        })),
+      }),
+    });
+  }
+
+  if (command.type === 'set_signer_name') {
+    const step = requireStep(state, ['signature', 'acompte'], 'La signature');
+    if (!step.ok) return step;
+    const signerName = command.signerName === null ? null : normalizeSingleLine(command.signerName);
+    if (signerName !== null && signerName.length < 2) {
+      return fail({
+        code: 'validation',
+        field: 'signerName',
+        message: 'Nom du signataire trop court.',
+      });
+    }
+    return ok({ ...state, flow: devisEdit(cloneFlow(state.flow), { signerName }) });
+  }
+
+  if (command.type === 'set_deposit_pct') {
+    const step = requireStep(state, ['acompte'], 'Le choix de l’acompte');
+    if (!step.ok) return step;
+    if (
+      !Number.isFinite(command.depositPct) ||
+      command.depositPct < 0 ||
+      command.depositPct > 100
+    ) {
+      return fail({
+        code: 'validation',
+        field: 'depositPct',
+        message: 'Acompte entre 0 et 100 %.',
+      });
+    }
+    return ok({
+      ...state,
+      flow: devisEdit(cloneFlow(state.flow), { depositPct: command.depositPct }),
     });
   }
 
@@ -370,7 +629,9 @@ function applyRawCommand(state: QuoteDraftState, command: QuoteDraftCommand): Qu
   }
 
   const previous = devisBack(cloneFlow(state.flow));
-  return previous.ok ? ok({ ...state, flow: previous.value }) : fail(fromDomainError(previous.error));
+  return previous.ok
+    ? ok({ ...state, flow: previous.value })
+    : fail(fromDomainError(previous.error));
 }
 
 function supersededDecision(state: QuoteDraftState, at: number): QuoteDraftProposalDecision | null {
@@ -402,7 +663,11 @@ export function applyQuoteDraftCommands(
   at = 0,
 ): QuoteDraftResult<QuoteDraftState> {
   if (commands.length === 0) {
-    return fail({ code: 'validation', field: 'commands', message: 'Au moins une commande est requise.' });
+    return fail({
+      code: 'validation',
+      field: 'commands',
+      message: 'Au moins une commande est requise.',
+    });
   }
   let working = state;
   for (const command of commands) {
@@ -499,7 +764,10 @@ function lineSummary(line: LineInput): string {
 
 function buildDiff(before: QuoteDraftState, after: QuoteDraftState): QuoteDraftDiffField[] {
   const fields: QuoteDraftDiffField[] = [];
-  if (before.customer?.id !== after.customer?.id || before.customer?.name !== after.customer?.name) {
+  if (
+    before.customer?.id !== after.customer?.id ||
+    before.customer?.name !== after.customer?.name
+  ) {
     fields.push({
       key: 'customer',
       label: 'Client',
@@ -510,10 +778,14 @@ function buildDiff(before: QuoteDraftState, after: QuoteDraftState): QuoteDraftD
   }
 
   const beforeById = new Map(
-    before.lineMetadata.map((metadata, index) => [metadata.id, before.flow.draft.lines[index]] as const),
+    before.lineMetadata.map(
+      (metadata, index) => [metadata.id, before.flow.draft.lines[index]] as const,
+    ),
   );
   const afterById = new Map(
-    after.lineMetadata.map((metadata, index) => [metadata.id, after.flow.draft.lines[index]] as const),
+    after.lineMetadata.map(
+      (metadata, index) => [metadata.id, after.flow.draft.lines[index]] as const,
+    ),
   );
   for (const metadata of after.lineMetadata) {
     const current = afterById.get(metadata.id);
@@ -535,10 +807,22 @@ function buildDiff(before: QuoteDraftState, after: QuoteDraftState): QuoteDraftD
       readonly format: (value: LineInput[keyof LineInput]) => string;
     }[] = [
       { key: 'label', label: 'Libellé', format: String },
-      { key: 'category', label: 'Catégorie', format: (value) => CATEGORY_LABEL[value as LineCategory] },
+      {
+        key: 'category',
+        label: 'Catégorie',
+        format: (value) => CATEGORY_LABEL[value as LineCategory],
+      },
       { key: 'qty', label: 'Quantité', format: String },
-      { key: 'unit', label: 'Unité', format: (value) => (value === undefined ? '—' : String(value)) },
-      { key: 'unitPriceHT', label: 'Prix unitaire HT', format: (value) => formatEUR(value as number) },
+      {
+        key: 'unit',
+        label: 'Unité',
+        format: (value) => (value === undefined ? '—' : String(value)),
+      },
+      {
+        key: 'unitPriceHT',
+        label: 'Prix unitaire HT',
+        format: (value) => formatEUR(value as number),
+      },
       { key: 'vatRate', label: 'TVA', format: (value) => `${String(value).replace('.', ',')} %` },
     ];
     for (const attribute of attributes) {
@@ -605,9 +889,13 @@ function defaultProposalTitle(commands: readonly QuoteDraftCommand[]): string {
   const command = commands[0];
   if (command === undefined) return 'Mettre à jour le devis';
   if (command.type === 'select_customer') return `Sélectionner ${command.customer.name}`;
+  if (command.type === 'clear_customer') return 'Changer de client';
   if (command.type === 'add_line') return `Ajouter ${normalizeSingleLine(command.line.label)}`;
   if (command.type === 'update_line') return 'Modifier la ligne';
   if (command.type === 'remove_line') return 'Supprimer la ligne';
+  if (command.type === 'set_vat') return 'Modifier la TVA';
+  if (command.type === 'set_signer_name') return 'Modifier le signataire';
+  if (command.type === 'set_deposit_pct') return 'Modifier l’acompte';
   return command.type === 'next_step' ? 'Continuer' : 'Revenir à l’étape précédente';
 }
 
@@ -627,26 +915,51 @@ export function proposeQuoteDraft(
   input: ProposeQuoteDraftInput,
 ): QuoteDraftResult<QuoteDraftState> {
   const id = input.id.trim();
-  if (id === '') return fail({ code: 'validation', field: 'proposalId', message: 'Identifiant de proposition requis.' });
-  if (!Number.isFinite(input.createdAt) || !Number.isFinite(input.expiresAt) || input.expiresAt <= input.createdAt) {
-    return fail({ code: 'validation', field: 'expiresAt', message: 'Expiration de proposition invalide.' });
+  if (id === '')
+    return fail({
+      code: 'validation',
+      field: 'proposalId',
+      message: 'Identifiant de proposition requis.',
+    });
+  if (
+    !Number.isFinite(input.createdAt) ||
+    !Number.isFinite(input.expiresAt) ||
+    input.expiresAt <= input.createdAt
+  ) {
+    return fail({
+      code: 'validation',
+      field: 'expiresAt',
+      message: 'Expiration de proposition invalide.',
+    });
   }
-  const preview = applyQuoteDraftCommands({ ...state, proposal: null }, input.commands, input.createdAt);
+  const preview = applyQuoteDraftCommands(
+    { ...state, proposal: null },
+    input.commands,
+    input.createdAt,
+  );
   if (!preview.ok) return preview;
   const diff = buildDiff(state, preview.value);
   if (diff.length === 0) {
-    return fail({ code: 'validation', field: 'commands', message: 'La proposition ne change pas le brouillon.' });
+    return fail({
+      code: 'validation',
+      field: 'commands',
+      message: 'La proposition ne change pas le brouillon.',
+    });
   }
-  const title = normalizeSingleLine(input.title ?? defaultProposalTitle(input.commands)).slice(0, 160);
+  const title = normalizeSingleLine(input.title ?? defaultProposalTitle(input.commands)).slice(
+    0,
+    160,
+  );
   const commands = Object.freeze(input.commands.map(freezeCommand));
   const immutableDiff = Object.freeze(diff.map((field) => Object.freeze({ ...field })));
   const proposal: QuoteDraftProposal = Object.freeze({
     id,
     source: input.source,
     title,
-    explanation: input.explanation === undefined || input.explanation === null
-      ? null
-      : normalizeSingleLine(input.explanation).slice(0, 500),
+    explanation:
+      input.explanation === undefined || input.explanation === null
+        ? null
+        : normalizeSingleLine(input.explanation).slice(0, 500),
     commands,
     baseRevision: state.revision,
     createdAt: input.createdAt,
@@ -657,9 +970,10 @@ export function proposeQuoteDraft(
   return ok({
     ...state,
     proposal,
-    lastProposalDecision: state.proposal === null
-      ? state.lastProposalDecision
-      : { proposalId: state.proposal.id, decision: 'superseded', at: input.createdAt },
+    lastProposalDecision:
+      state.proposal === null
+        ? state.lastProposalDecision
+        : { proposalId: state.proposal.id, decision: 'superseded', at: input.createdAt },
   });
 }
 
@@ -679,7 +993,16 @@ function cloneCommand(command: QuoteDraftCommand): QuoteDraftCommand {
   if (command.type === 'update_line') {
     return { type: command.type, lineId: command.lineId, patch: { ...command.patch } };
   }
-  if (command.type === 'remove_line') return { ...command };
+  if (
+    command.type === 'remove_line' ||
+    command.type === 'set_deposit_pct' ||
+    command.type === 'set_signer_name'
+  ) {
+    return { ...command };
+  }
+  if (command.type === 'set_vat') {
+    return { ...command, context: command.context === null ? null : { ...command.context } };
+  }
   return { type: command.type };
 }
 
@@ -692,6 +1015,8 @@ function freezeCommand(command: QuoteDraftCommand): QuoteDraftCommand {
     if (clone.catalogue !== undefined) Object.freeze(clone.catalogue);
   } else if (clone.type === 'update_line') {
     Object.freeze(clone.patch);
+  } else if (clone.type === 'set_vat' && clone.context !== null) {
+    Object.freeze(clone.context);
   }
   return Object.freeze(clone);
 }
@@ -703,13 +1028,25 @@ export function acceptQuoteDraftProposal(
 ): QuoteDraftResult<QuoteDraftState> {
   const proposal = state.proposal;
   if (proposal === null) {
-    return fail({ code: 'proposal_missing', field: 'proposalId', message: 'Aucune proposition à confirmer.' });
+    return fail({
+      code: 'proposal_missing',
+      field: 'proposalId',
+      message: 'Aucune proposition à confirmer.',
+    });
   }
   if (proposal.id !== proposalId) {
-    return fail({ code: 'proposal_mismatch', field: 'proposalId', message: 'Cette proposition n’est plus active.' });
+    return fail({
+      code: 'proposal_mismatch',
+      field: 'proposalId',
+      message: 'Cette proposition n’est plus active.',
+    });
   }
   if (at >= proposal.expiresAt) {
-    return fail({ code: 'proposal_expired', field: 'proposalId', message: 'La proposition a expiré.' });
+    return fail({
+      code: 'proposal_expired',
+      field: 'proposalId',
+      message: 'La proposition a expiré.',
+    });
   }
   if (state.revision !== proposal.baseRevision) {
     return fail({
@@ -733,10 +1070,18 @@ export function rejectQuoteDraftProposal(
   at: number,
 ): QuoteDraftResult<QuoteDraftState> {
   if (state.proposal === null) {
-    return fail({ code: 'proposal_missing', field: 'proposalId', message: 'Aucune proposition à refuser.' });
+    return fail({
+      code: 'proposal_missing',
+      field: 'proposalId',
+      message: 'Aucune proposition à refuser.',
+    });
   }
   if (state.proposal.id !== proposalId) {
-    return fail({ code: 'proposal_mismatch', field: 'proposalId', message: 'Cette proposition n’est plus active.' });
+    return fail({
+      code: 'proposal_mismatch',
+      field: 'proposalId',
+      message: 'Cette proposition n’est plus active.',
+    });
   }
   return ok({
     ...state,
@@ -764,7 +1109,12 @@ export function startQuoteDraftMission(
   },
 ): QuoteDraftResult<QuoteDraftState> {
   const id = input.id.trim();
-  if (id === '') return fail({ code: 'validation', field: 'missionId', message: 'Identifiant de mission requis.' });
+  if (id === '')
+    return fail({
+      code: 'validation',
+      field: 'missionId',
+      message: 'Identifiant de mission requis.',
+    });
   return ok({
     ...state,
     mission: {
@@ -786,9 +1136,10 @@ export function stopQuoteDraftMission(
   return {
     ...state,
     proposal: null,
-    lastProposalDecision: state.proposal === null
-      ? state.lastProposalDecision
-      : { proposalId: state.proposal.id, decision: 'superseded', at: input.stoppedAt },
+    lastProposalDecision:
+      state.proposal === null
+        ? state.lastProposalDecision
+        : { proposalId: state.proposal.id, decision: 'superseded', at: input.stoppedAt },
     mission: {
       status: 'stopped',
       id: state.mission.id,
@@ -798,24 +1149,24 @@ export function stopQuoteDraftMission(
   };
 }
 
-export function completeQuoteDraftMission(state: QuoteDraftState, completedAt: number): QuoteDraftState {
+export function completeQuoteDraftMission(
+  state: QuoteDraftState,
+  completedAt: number,
+): QuoteDraftState {
   if (state.mission.status !== 'active') return state;
   return {
     ...state,
     proposal: null,
-    lastProposalDecision: state.proposal === null
-      ? state.lastProposalDecision
-      : { proposalId: state.proposal.id, decision: 'superseded', at: completedAt },
+    lastProposalDecision:
+      state.proposal === null
+        ? state.lastProposalDecision
+        : { proposalId: state.proposal.id, decision: 'superseded', at: completedAt },
     mission: { status: 'completed', id: state.mission.id, completedAt },
   };
 }
 
 export type QuoteDraftGuidanceExpectation =
-  | 'customer'
-  | 'advance'
-  | 'line'
-  | 'proposal_confirmation'
-  | 'review_decision';
+  'customer' | 'advance' | 'line' | 'proposal_confirmation' | 'review_decision';
 
 export interface QuoteDraftGuidance {
   readonly stage: QuoteDraftStage;
@@ -844,7 +1195,8 @@ export function deriveQuoteDraftGuidance(state: QuoteDraftState): QuoteDraftGuid
         stage,
         expectation: 'customer',
         title: 'Choisir le client',
-        spokenPrompt: 'Pour quel client prépares-tu ce devis ? Tu peux me le dire ou le choisir à l’écran.',
+        spokenPrompt:
+          'Pour quel client prépares-tu ce devis ? Tu peux me le dire ou le choisir à l’écran.',
         suggestions: ['Dire le nom du client', 'Choisir à l’écran'],
       };
     }
@@ -861,10 +1213,12 @@ export function deriveQuoteDraftGuidance(state: QuoteDraftState): QuoteDraftGuid
     return {
       stage,
       expectation: 'line',
-      title: count === 0 ? 'Ajouter une prestation' : `${count} ligne${count > 1 ? 's' : ''} au devis`,
-      spokenPrompt: count === 0
-        ? 'Dis-moi ce que tu factures, avec la quantité et le prix. Je préparerai la ligne avant validation.'
-        : `Le devis contient ${count} ligne${count > 1 ? 's' : ''}. Tu peux en ajouter, en modifier une, ou dire « continue ».`,
+      title:
+        count === 0 ? 'Ajouter une prestation' : `${count} ligne${count > 1 ? 's' : ''} au devis`,
+      spokenPrompt:
+        count === 0
+          ? 'Dis-moi ce que tu factures, avec la quantité et le prix. Je préparerai la ligne avant validation.'
+          : `Le devis contient ${count} ligne${count > 1 ? 's' : ''}. Tu peux en ajouter, en modifier une, ou dire « continue ».`,
       suggestions: ['Ajouter une ligne', 'Modifier une ligne', 'Continuer'],
     };
   }
@@ -872,7 +1226,8 @@ export function deriveQuoteDraftGuidance(state: QuoteDraftState): QuoteDraftGuid
     stage,
     expectation: 'review_decision',
     title: 'Relire le devis',
-    spokenPrompt: 'Relis le devis à l’écran. Tu peux me demander une modification ou continuer vers la validation.',
+    spokenPrompt:
+      'Relis le devis à l’écran. Tu peux me demander une modification ou continuer vers la validation.',
     suggestions: ['Résumer le devis', 'Modifier', 'Continuer'],
   };
 }
