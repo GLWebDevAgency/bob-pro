@@ -20,6 +20,7 @@ import {
   useSpeak,
   useVoiceInput,
   voicePermissionRequestInFlight,
+  waitForVoicePermissionLifecycleStabilization,
   waitForVoicePermissionRequests,
   type VoiceInputIssue,
 } from '../data/voice';
@@ -735,6 +736,7 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
       permissionRevalidationPending = true;
       void revalidateAgentSessionBackgroundAfterPermission({
         waitForPermissionRequests: waitForVoicePermissionRequests,
+        waitForLifecycleStabilization: waitForVoicePermissionLifecycleStabilization,
         currentAppState: () => appStateRef.current,
         isMounted: () => mounted,
         stop: () => stopWithReason('background'),

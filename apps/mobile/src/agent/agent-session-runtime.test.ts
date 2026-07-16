@@ -54,6 +54,7 @@ describe('agent session runtime fences', () => {
     let stops = 0;
     const revalidation = revalidateAgentSessionBackgroundAfterPermission({
       waitForPermissionRequests: () => permissionSettled,
+      waitForLifecycleStabilization: async () => undefined,
       currentAppState: () => appState,
       isMounted: () => mounted,
       stop: () => { stops += 1; },
@@ -67,6 +68,7 @@ describe('agent session runtime fences', () => {
     appState = 'background';
     await expect(revalidateAgentSessionBackgroundAfterPermission({
       waitForPermissionRequests: async () => undefined,
+      waitForLifecycleStabilization: async () => undefined,
       currentAppState: () => appState,
       isMounted: () => mounted,
       stop: () => { stops += 1; },
@@ -76,6 +78,7 @@ describe('agent session runtime fences', () => {
     mounted = false;
     await expect(revalidateAgentSessionBackgroundAfterPermission({
       waitForPermissionRequests: async () => undefined,
+      waitForLifecycleStabilization: async () => undefined,
       currentAppState: () => appState,
       isMounted: () => mounted,
       stop: () => { stops += 1; },
@@ -83,10 +86,35 @@ describe('agent session runtime fences', () => {
     expect(stops).toBe(1);
   });
 
+  it('accepte l’ordre Android permissionSettled puis onResume sans fermer Bob', async () => {
+    let resolvePermission!: () => void;
+    let resolveLifecycle!: () => void;
+    const permissionSettled = new Promise<void>((resolve) => { resolvePermission = resolve; });
+    const lifecycleSettled = new Promise<void>((resolve) => { resolveLifecycle = resolve; });
+    let appState = 'background';
+    let stopped = false;
+    const revalidation = revalidateAgentSessionBackgroundAfterPermission({
+      waitForPermissionRequests: () => permissionSettled,
+      waitForLifecycleStabilization: () => lifecycleSettled,
+      currentAppState: () => appState,
+      isMounted: () => true,
+      stop: () => { stopped = true; },
+    });
+
+    resolvePermission();
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+    appState = 'active';
+    resolveLifecycle();
+    await expect(revalidation).resolves.toBe(false);
+    expect(stopped).toBe(false);
+  });
+
   it('reste fail-closed si le waiter permission dérive et que l’app est en background', async () => {
     let stopped = false;
     await expect(revalidateAgentSessionBackgroundAfterPermission({
       waitForPermissionRequests: async () => { throw new Error('waiter failed'); },
+      waitForLifecycleStabilization: async () => undefined,
       currentAppState: () => 'background',
       isMounted: () => true,
       stop: () => { stopped = true; },

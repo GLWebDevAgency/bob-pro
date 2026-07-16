@@ -38,6 +38,7 @@ export function shouldStopAgentSessionForAppState(
 
 export interface AgentSessionBackgroundRevalidation {
   readonly waitForPermissionRequests: () => Promise<void>;
+  readonly waitForLifecycleStabilization: () => Promise<void>;
   readonly currentAppState: () => string;
   readonly isMounted: () => boolean;
   readonly stop: () => void;
@@ -58,6 +59,8 @@ export async function revalidateAgentSessionBackgroundAfterPermission(
     // Le coordinateur local ne rejette pas aujourd'hui. Si son contrat dérive, la revalidation
     // AppState ci-dessous reste plus sûre que de laisser le micro actif sans propriétaire visible.
   }
+  if (!input.isMounted()) return false;
+  await input.waitForLifecycleStabilization();
   if (!input.isMounted() || input.currentAppState() !== 'background') return false;
   input.stop();
   return true;

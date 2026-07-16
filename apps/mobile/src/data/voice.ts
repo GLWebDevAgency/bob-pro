@@ -58,6 +58,7 @@ interface VoiceLease {
  */
 let activeVoiceLease: VoiceLease | null = null;
 const NATIVE_TERMINAL_GRACE_MS = 350;
+const PERMISSION_LIFECYCLE_STABILIZATION_MS = 1_000;
 
 /**
  * Demande de permission EN COURS : sur Android, la boîte système passe l'app en
@@ -75,6 +76,38 @@ export function voicePermissionRequestInFlight(): boolean {
  */
 export function waitForVoicePermissionRequests(): Promise<void> {
   return processAudioSession.waitForPermissionRequests();
+}
+
+/**
+ * Android livre parfois `onRequestPermissionsResult` juste avant `onResume`. On attend donc le
+ * vrai signal `active`, avec une borne courte si l'utilisateur a réellement quitté l'app. Cette
+ * attente ne possède pas le micro et nettoie toujours son listener.
+ */
+export function waitForVoicePermissionLifecycleStabilization(): Promise<void> {
+  if (AppState.currentState === 'active') return Promise.resolve();
+  return new Promise((resolve) => {
+    let settled = false;
+    let subscription: { remove(): void } | null = null;
+    const settle = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      subscription?.remove();
+      resolve();
+    };
+    const timer = setTimeout(settle, PERMISSION_LIFECYCLE_STABILIZATION_MS);
+    subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') settle();
+    });
+    if (settled) subscription.remove();
+    // Ferme la course « active entre le premier test et l'installation du listener ».
+    if (AppState.currentState === 'active') settle();
+  });
+}
+
+async function voiceMayOpenMicrophoneAfterPermission(): Promise<boolean> {
+  await waitForVoicePermissionLifecycleStabilization();
+  return AppState.currentState === 'active';
 }
 
 async function withPermissionRequest<T>(run: () => Promise<T>): Promise<T> {
@@ -280,6 +313,11 @@ export function useVoiceInput(
           report('denied', 'Micro', 'Autorise le micro pour parler à Bob.');
           return false;
         }
+        if (!(await voiceMayOpenMicrophoneAfterPermission())) {
+          if (matchesVoiceLease(lease, generation)) releaseGeneration(generation);
+          return false;
+        }
+        if (!matchesVoiceLease(lease, generation, 'active')) return false;
         setGenerationListening(generation, true);
         ExpoSpeechRecognitionModule.start({
           lang: 'fr-FR',
@@ -294,6 +332,11 @@ export function useVoiceInput(
           releaseGeneration(generation);
           return false;
         }
+        if (!(await voiceMayOpenMicrophoneAfterPermission())) {
+          if (matchesVoiceLease(lease, generation)) releaseGeneration(generation);
+          return false;
+        }
+        if (!matchesVoiceLease(lease, generation, 'active')) return false;
         await recorder.prepareToRecordAsync();
         if (!matchesVoiceLease(lease, generation, 'active')) {
           try {
