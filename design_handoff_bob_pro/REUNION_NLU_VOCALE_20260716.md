@@ -99,3 +99,22 @@ Si l'architecture retenue fait passer CE scénario avec fluidité < 2 s par tour
 la bonne. À intégrer au verdict GPT (questions 1-6) : ce cas devient le test
 d'acceptation n°1 du chantier + un corpus d'évals construit autour (variantes STT,
 catalogues réels, ambiguïtés).
+
+## EXIGENCE FONDATEUR (17/07) — BOUCLES COMPLÈTES DE BOUT EN BOUT, PAS DES MICRO-COMMANDES
+La boucle = de l'étape 1 à l'étape FINALE d'une action métier, dictée d'une traite :
+« Fais un devis pour la boulangerie Lefèvre, rénovation du fournil, 2 100 € de
+main-d'œuvre, 650 € de fournitures cuivre, TVA 10 %, acompte 40 % » → Bob ENCHAÎNE tout
+(client → lignes → TVA → acompte → récap) et n'INTERROMPT que pour : ①compléter un
+manquant ; ②les validations du plancher (émission/signature = jamais autonomes).
+Même exigence pour : facture (création→émission), ajout client, encaissement, relance.
+IMPLICATIONS ARCHITECTURE (à dimensionner au verdict) :
+1. Une utterance riche peut remplir PLUSIEURS étapes/outils — le modèle déroule le plan
+   et exécute séquentiellement avec l'état du flow visible à chaque tour.
+2. INVENTAIRE DES BOUCLES à dresser (chantier) : chaque flow métier avec ses étapes, ses
+   points d'interruption légitimes (manquants + validations plancher) et sa FAISABILITÉ
+   actuelle (le wizard devis S2 sait déjà le step-by-step vocal ; le mode « d'une
+   traite » est la couche au-dessus).
+3. Le feedback de progression vocal devient central (« je crée le devis… j'ajoute les
+   deux lignes… TVA 10 % appliquée… il me manque juste l'adresse du client »).
+4. Critère d'acceptation n°2 (avec le cas catalogue n°1) : le devis complet dicté d'une
+   traite aboutit au récap prêt à envoyer avec AU PLUS les interruptions légitimes.
