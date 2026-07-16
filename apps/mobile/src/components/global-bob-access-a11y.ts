@@ -1,23 +1,22 @@
 export interface GlobalBobAccessibilityAnnouncementInput {
   readonly visible: boolean;
-  readonly active: boolean;
+  /** États silencieux uniquement (écoute/réflexion), jamais pendant la sortie vocale de Bob. */
+  readonly announceActiveState: boolean;
   readonly stateLabel: string;
-  readonly response: string | null;
-  readonly reviewRequiredLabel: string | null;
+  /** Erreur ou indisponibilité qui ne possède aucun canal TTS fiable. */
+  readonly silentAlert: string | null;
 }
 
-/** Contenu dédupliquable annoncé explicitement à VoiceOver (liveRegion est Android-only). */
+/**
+ * Contenu dédupliquable annoncé explicitement à VoiceOver (`liveRegion` est Android-only).
+ * Une réponse Bob n'entre volontairement jamais ici : elle possède déjà son canal TTS/audité.
+ */
 export function deriveGlobalBobAccessibilityAnnouncement(
   input: GlobalBobAccessibilityAnnouncementInput,
 ): string | null {
   if (!input.visible) return null;
-  const response = input.response?.trim() ?? '';
-  const review = input.reviewRequiredLabel?.trim() ?? '';
-  if (response !== '') {
-    if (review === '') return response;
-    const separator = /[.!?…]$/u.test(response) ? ' ' : '. ';
-    return `${response}${separator}${review}`;
-  }
+  const alert = input.silentAlert?.trim() ?? '';
+  if (alert !== '') return alert;
   const state = input.stateLabel.trim();
-  return input.active && state !== '' ? state : null;
+  return input.announceActiveState && state !== '' ? state : null;
 }

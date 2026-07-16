@@ -112,14 +112,14 @@ export function GlobalBobAccess() {
   );
   const iosAnnouncement = deriveGlobalBobAccessibilityAnnouncement({
     visible,
-    active: session.active || entitlementUnavailable,
-    stateLabel: entitlementUnavailable
+    announceActiveState: session.active
+      && (session.phase === 'listening' || session.phase === 'thinking'),
+    stateLabel,
+    silentAlert: entitlementUnavailable
       ? t('agent.global.entitlementError', { personality })
-      : stateLabel,
-    response: entitlementUnavailable ? null : session.response,
-    reviewRequiredLabel: session.reviewRequired
-      ? t('agent.global.reviewRequired', { personality })
-      : null,
+      : session.phase === 'error'
+        ? stateLabel
+        : null,
   });
   useEffect(() => {
     if (Platform.OS !== 'ios') return undefined;

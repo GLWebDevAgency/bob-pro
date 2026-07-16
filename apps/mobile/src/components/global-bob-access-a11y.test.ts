@@ -5,34 +5,39 @@ describe('GlobalBobAccess — annonce VoiceOver', () => {
   it('reste silencieux lorsque Bob est masqué ou au repos', () => {
     expect(deriveGlobalBobAccessibilityAnnouncement({
       visible: false,
-      active: true,
+      announceActiveState: true,
       stateLabel: "J'écoute",
-      response: null,
-      reviewRequiredLabel: null,
+      silentAlert: null,
     })).toBeNull();
     expect(deriveGlobalBobAccessibilityAnnouncement({
       visible: true,
-      active: false,
+      announceActiveState: false,
       stateLabel: 'Prêt',
-      response: null,
-      reviewRequiredLabel: null,
+      silentAlert: null,
     })).toBeNull();
   });
 
-  it('annonce les phases actives et privilégie la réponse utile', () => {
+  it('annonce les phases silencieuses et privilégie une alerte non vocalisée', () => {
     expect(deriveGlobalBobAccessibilityAnnouncement({
       visible: true,
-      active: true,
+      announceActiveState: true,
       stateLabel: "J'écoute",
-      response: null,
-      reviewRequiredLabel: null,
+      silentAlert: null,
     })).toBe("J'écoute");
     expect(deriveGlobalBobAccessibilityAnnouncement({
       visible: true,
-      active: false,
-      stateLabel: 'Prêt',
-      response: '  Ton devis est prêt.  ',
-      reviewRequiredLabel: 'Validation requise',
-    })).toBe('Ton devis est prêt. Validation requise');
+      announceActiveState: true,
+      stateLabel: 'Bob parle',
+      silentAlert: '  Assistant indisponible.  ',
+    })).toBe('Assistant indisponible.');
+  });
+
+  it('ne reçoit jamais le texte déjà prononcé par Bob', () => {
+    expect(deriveGlobalBobAccessibilityAnnouncement({
+      visible: true,
+      announceActiveState: false,
+      stateLabel: 'Bob parle',
+      silentAlert: null,
+    })).toBeNull();
   });
 });
