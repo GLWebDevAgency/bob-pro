@@ -42,6 +42,7 @@ import { PaywallCard, useEntitlement } from '../src/monetization/paywall';
 import { combineQueryStates } from '../src/data/query-state';
 import { usePublishAgentContext, type AgentContext } from '../src/agent';
 import { ChevronLeftIcon } from '../src/components/icons';
+import { useBobAwareScrollInsets } from '../src/components/use-bob-aware-scroll-insets';
 
 const MONTHS = [
   'janvier',
@@ -88,6 +89,7 @@ function pctFromBps(bps: number): string {
 export default function Pilotage() {
   const { personality, colors, semantic } = useTheme();
   const insets = useSafeAreaInsets();
+  const bobScrollInsets = useBobAwareScrollInsets({ minimumBottom: insets.bottom + 34 });
   const router = useRouter();
   // Entitlement TYPÉ (fondation paywall) — même feature que le gating historique de l'écran.
   const entitlement = useEntitlement('accounting_operations');
@@ -598,7 +600,9 @@ export default function Pilotage() {
         style={{ flex: 1 }}
         stickyHeaderIndices={[0]}
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingBottom: insets.bottom + 34 }}
+        contentContainerStyle={{ paddingBottom: bobScrollInsets.paddingBottom }}
+        automaticallyAdjustKeyboardInsets={bobScrollInsets.automaticallyAdjustKeyboardInsets}
+        scrollIndicatorInsets={{ bottom: bobScrollInsets.scrollIndicatorBottom }}
       >
         <View
           style={{

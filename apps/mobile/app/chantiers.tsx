@@ -31,6 +31,7 @@ import {
 import { useChantiers, useCreateChantier, useProfile, useSearchAddress } from '../src/data/hooks';
 import { usePublishAgentContext, type AgentContext } from '../src/agent';
 import { CheckIcon, ChevronLeftIcon, PlusIcon } from '../src/components/icons';
+import { useBobAwareScrollInsets } from '../src/components/use-bob-aware-scroll-insets';
 
 const SEARCH_DEBOUNCE_MS = 350;
 
@@ -42,6 +43,7 @@ function frDate(dateOnly: string): string {
 export default function Chantiers() {
   const { colors, semantic, theme, personality } = useTheme();
   const insets = useSafeAreaInsets();
+  const bobScrollInsets = useBobAwareScrollInsets({ minimumBottom: insets.bottom + 40 });
   const router = useRouter();
   const profile = useProfile();
   const moduleActive = (profile.data?.modules ?? []).some(
@@ -180,7 +182,9 @@ export default function Chantiers() {
 
       <ScrollView
         style={{ flex: 1 }}
-        contentContainerStyle={{ paddingHorizontal: 18, paddingTop: 14, paddingBottom: insets.bottom + 40 }}
+        contentContainerStyle={{ paddingHorizontal: 18, paddingTop: 14, paddingBottom: bobScrollInsets.paddingBottom }}
+        automaticallyAdjustKeyboardInsets={bobScrollInsets.automaticallyAdjustKeyboardInsets}
+        scrollIndicatorInsets={{ bottom: bobScrollInsets.scrollIndicatorBottom }}
         refreshControl={
           <RefreshControl
             refreshing={profile.isRefetching || (moduleActive && chantiers.isRefetching)}

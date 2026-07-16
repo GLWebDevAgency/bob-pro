@@ -17,6 +17,7 @@ import {
 import { useTheme } from '../../src/theme';
 import { Badge, Button, Card, SectionHeader, font } from '../../src/components/ui';
 import { ErrorRetry, Sheet, Skeleton, SkeletonCard, SkeletonRow } from '@bob/ui';
+import { useBobAwareScrollInsets } from '../../src/components/use-bob-aware-scroll-insets';
 
 const TYPE_LABEL: Record<DocumentAnalysis['type'], string> = {
   supplier_invoice: 'Facture fournisseur',
@@ -116,6 +117,7 @@ export default function DocumentDetailScreen() {
   const documentId = typeof id === 'string' ? id : '';
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const bobScrollInsets = useBobAwareScrollInsets({ minimumBottom: 80 });
   const { colors, semantic } = useTheme();
   const client = useBobClient();
   const document = useDocument(documentId);
@@ -273,7 +275,9 @@ export default function DocumentDetailScreen() {
         <ScrollView
           accessibilityLiveRegion="polite"
           accessibilityLabel="Chargement du document"
-          contentContainerStyle={{ paddingTop: insets.top + 10, paddingHorizontal: 18, paddingBottom: 80 }}
+          contentContainerStyle={{ paddingTop: insets.top + 10, paddingHorizontal: 18, paddingBottom: bobScrollInsets.paddingBottom }}
+          automaticallyAdjustKeyboardInsets={bobScrollInsets.automaticallyAdjustKeyboardInsets}
+          scrollIndicatorInsets={{ bottom: bobScrollInsets.scrollIndicatorBottom }}
         >
           <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 18 }}>
             <Pressable
@@ -343,7 +347,9 @@ export default function DocumentDetailScreen() {
       <ScrollView
         style={{ flex: 1, backgroundColor: colors.bg }}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refreshScreen} tintColor={colors.ink800} />}
-        contentContainerStyle={{ paddingTop: insets.top + 10, paddingHorizontal: 18, paddingBottom: 80 }}
+        contentContainerStyle={{ paddingTop: insets.top + 10, paddingHorizontal: 18, paddingBottom: bobScrollInsets.paddingBottom }}
+        automaticallyAdjustKeyboardInsets={bobScrollInsets.automaticallyAdjustKeyboardInsets}
+        scrollIndicatorInsets={{ bottom: bobScrollInsets.scrollIndicatorBottom }}
       >
       <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 18 }}>
         <Pressable

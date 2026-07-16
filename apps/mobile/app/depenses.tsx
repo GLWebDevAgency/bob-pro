@@ -31,6 +31,7 @@ import { useExpenses, usePayExpense } from '../src/data/hooks';
 import { usePublishAgentContext, type AgentContext } from '../src/agent';
 import { useConfirm } from '../src/components/ConfirmSheet';
 import { CheckIcon, ChevronLeftIcon, WalletIcon } from '../src/components/icons';
+import { useBobAwareScrollInsets } from '../src/components/use-bob-aware-scroll-insets';
 
 const CAT_KEY: Record<ExpenseCategory, I18nKey> = {
   fournitures: 'dep.catFournitures',
@@ -66,6 +67,7 @@ function formatDate(iso: string): string {
 export default function Depenses() {
   const { personality, colors, semantic } = useTheme();
   const insets = useSafeAreaInsets();
+  const bobScrollInsets = useBobAwareScrollInsets({ minimumBottom: insets.bottom + 34 });
   const router = useRouter();
   const expenses = useExpenses();
   const pay = usePayExpense();
@@ -123,7 +125,9 @@ export default function Depenses() {
         style={{ flex: 1 }}
         stickyHeaderIndices={[0]}
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingBottom: insets.bottom + 34 }}
+        contentContainerStyle={{ paddingBottom: bobScrollInsets.paddingBottom }}
+        automaticallyAdjustKeyboardInsets={bobScrollInsets.automaticallyAdjustKeyboardInsets}
+        scrollIndicatorInsets={{ bottom: bobScrollInsets.scrollIndicatorBottom }}
       >
         {/* Rangée retour sticky (pattern A3-C17). */}
         <View

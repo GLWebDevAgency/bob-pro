@@ -50,6 +50,7 @@ import { combineQueryStates } from '../src/data/query-state';
 import { usePublishAgentContext, type AgentContext } from '../src/agent';
 import { shareFec } from '../src/lib/share-fec';
 import { shareTextFile } from '../src/lib/share-text';
+import { useBobAwareScrollInsets } from '../src/components/use-bob-aware-scroll-insets';
 import {
   ChartIcon,
   CheckIcon,
@@ -92,6 +93,7 @@ interface CheckItem {
 export default function Cloture() {
   const { personality, colors, semantic, controls } = useTheme();
   const insets = useSafeAreaInsets();
+  const bobScrollInsets = useBobAwareScrollInsets({ minimumBottom: insets.bottom + 34 });
   const router = useRouter();
   // Entitlement TYPÉ (fondation paywall) — même feature que le gating historique de l'écran.
   const entitlement = useEntitlement('accounting_operations');
@@ -274,7 +276,9 @@ export default function Cloture() {
         style={{ flex: 1 }}
         stickyHeaderIndices={[0]}
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingBottom: insets.bottom + 34 }}
+        contentContainerStyle={{ paddingBottom: bobScrollInsets.paddingBottom }}
+        automaticallyAdjustKeyboardInsets={bobScrollInsets.automaticallyAdjustKeyboardInsets}
+        scrollIndicatorInsets={{ bottom: bobScrollInsets.scrollIndicatorBottom }}
       >
         <View
           style={{

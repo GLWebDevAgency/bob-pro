@@ -41,6 +41,7 @@ import { PaywallCard, useEntitlement } from '../src/monetization/paywall';
 import { usePublishAgentContext, type AgentContext } from '../src/agent';
 import { shareFec } from '../src/lib/share-fec';
 import { AccountingLinesView } from '../src/components/AccountingLinesView';
+import { useBobAwareScrollInsets } from '../src/components/use-bob-aware-scroll-insets';
 import {
   ChartIcon,
   CheckIcon,
@@ -97,6 +98,7 @@ function EquationSide({ label, cents, align }: { label: string; cents: number; a
 export default function Comptabilite() {
   const { personality, colors, semantic, controls } = useTheme();
   const insets = useSafeAreaInsets();
+  const bobScrollInsets = useBobAwareScrollInsets({ minimumBottom: insets.bottom + 34 });
   const router = useRouter();
   // Entitlement TYPÉ (fondation paywall) — même feature que le gating historique de l'écran.
   const entitlement = useEntitlement('accounting_foundation');
@@ -182,7 +184,9 @@ export default function Comptabilite() {
         style={{ flex: 1 }}
         stickyHeaderIndices={[0]}
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingBottom: insets.bottom + 34 }}
+        contentContainerStyle={{ paddingBottom: bobScrollInsets.paddingBottom }}
+        automaticallyAdjustKeyboardInsets={bobScrollInsets.automaticallyAdjustKeyboardInsets}
+        scrollIndicatorInsets={{ bottom: bobScrollInsets.scrollIndicatorBottom }}
       >
         {/* [0] Rangée retour — SEUL élément sticky (réf : bg .92, « ‹ Documents » b2b).
             Divergence deep-link assumée : ouvert depuis le briefing, back() y retourne. */}

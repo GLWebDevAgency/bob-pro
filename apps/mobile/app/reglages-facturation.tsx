@@ -28,6 +28,7 @@ import { Card, ErrorRetry, InnerScreenHeader, SectionHeader, SkeletonCard, font,
 import type { InvoiceView } from '@bob/api-client';
 import { useInvoices, useProfile } from '../src/data/hooks';
 import { ChevronLeftIcon, ChevronRightIcon, FileTextIcon } from '../src/components/icons';
+import { useBobAwareScrollInsets } from '../src/components/use-bob-aware-scroll-insets';
 
 /** Taux affiché à la française (5.5 → « 5,5 ») — même règle que devis/new. */
 const fmtRate = (rate: number): string => String(rate).replace('.', ',');
@@ -62,6 +63,7 @@ function SoonPill() {
 export default function ReglagesFacturation() {
   const { colors, radius, personality } = useTheme();
   const insets = useSafeAreaInsets();
+  const bobScrollInsets = useBobAwareScrollInsets({ minimumBottom: insets.bottom + 34 });
   const router = useRouter();
   const profile = useProfile();
   const invoices = useInvoices();
@@ -95,7 +97,9 @@ export default function ReglagesFacturation() {
 
       <ScrollView
         style={{ flex: 1 }}
-        contentContainerStyle={{ paddingHorizontal: 18, paddingTop: 14, paddingBottom: insets.bottom + 34 }}
+        contentContainerStyle={{ paddingHorizontal: 18, paddingTop: 14, paddingBottom: bobScrollInsets.paddingBottom }}
+        automaticallyAdjustKeyboardInsets={bobScrollInsets.automaticallyAdjustKeyboardInsets}
+        scrollIndicatorInsets={{ bottom: bobScrollInsets.scrollIndicatorBottom }}
         showsVerticalScrollIndicator={false}
       >
         {loading ? (
