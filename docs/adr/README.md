@@ -3,8 +3,9 @@
 Les ADR figent les décisions structurantes de Bob Pro. Un ADR accepté n'est pas réécrit : une
 nouvelle décision le remplace explicitement.
 
-| ADR | Décision | Statut | Date |
-| --- | --- | --- | --- |
-| [0001](0001-bob-live-mistral-conversation-v2.md) | Bob Live Mistral : session Bob persistante et sous-session Voxtral par tour | Proposed | 2026-07-15 |
+| ADR                                                  | Décision                                                                    | Statut   | Date       |
+| ---------------------------------------------------- | --------------------------------------------------------------------------- | -------- | ---------- |
+| [0001](0001-bob-live-mistral-conversation-v2.md)     | Bob Live Mistral : session Bob persistante et sous-session Voxtral par tour | Proposed | 2026-07-15 |
+| [0002](0002-boucle-agentique-vocale-outils-types.md) | Bob : missions bout-en-bout, outils typés et interactions voix/tap          | Proposed | 2026-07-17 |
 
 Statuts : `Proposed`, `Accepted`, `Rejected`, `Deprecated`, `Superseded`.
