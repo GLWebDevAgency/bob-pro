@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   Animated,
+  AccessibilityInfo,
   Dimensions,
   Keyboard,
   Platform,
@@ -18,6 +19,7 @@ import { font, useReduceMotion, useTheme } from '@bob/ui';
 import { useAgentAccessLayout, useAgentContext, useAgentSession } from '../agent';
 import { useSubscription } from '../data/hooks';
 import { CloseIcon, MicIcon, SparkIcon } from './icons';
+import { deriveGlobalBobAccessibilityAnnouncement } from './global-bob-access-a11y';
 import {
   deriveGlobalBobAccessHorizontalLayout,
   deriveGlobalBobAccessVerticalLayout,
@@ -40,6 +42,7 @@ export function GlobalBobAccess() {
   const reduceMotion = useReduceMotion();
   const [keyboardOverlap, setKeyboardOverlap] = useState(0);
   const pulse = useRef(new Animated.Value(0)).current;
+  const lastIosAnnouncement = useRef<string | null>(null);
 
   const activeMotion =
     session.active && (session.phase === 'listening' || session.phase === 'speaking');
@@ -90,14 +93,47 @@ export function GlobalBobAccess() {
 
   const entitled = subscription.data?.features.includes('ai_assistant') ?? false;
   const entitlementUnavailable = subscription.isError && subscription.data === undefined;
-  if (
+  const stateKey: I18nKey =
+    session.phase === 'listening'
+      ? 'agent.global.listening'
+      : session.phase === 'thinking'
+        ? 'agent.global.thinking'
+        : session.phase === 'speaking'
+          ? 'agent.global.speaking'
+          : session.phase === 'error'
+            ? 'agent.global.error'
+            : 'agent.global.idle';
+  const stateLabel = t(stateKey, { personality });
+  const visible = !(
     (!entitled && !entitlementUnavailable) ||
     layout.hidden ||
     pathname === '/gallery' ||
     ownsItsVoiceChrome
-  ) {
-    return null;
-  }
+  );
+  const iosAnnouncement = deriveGlobalBobAccessibilityAnnouncement({
+    visible,
+    active: session.active || entitlementUnavailable,
+    stateLabel: entitlementUnavailable
+      ? t('agent.global.entitlementError', { personality })
+      : stateLabel,
+    response: entitlementUnavailable ? null : session.response,
+    reviewRequiredLabel: session.reviewRequired
+      ? t('agent.global.reviewRequired', { personality })
+      : null,
+  });
+  useEffect(() => {
+    if (Platform.OS !== 'ios') return undefined;
+    if (iosAnnouncement === null) {
+      lastIosAnnouncement.current = null;
+      return undefined;
+    }
+    if (lastIosAnnouncement.current === iosAnnouncement) return undefined;
+    lastIosAnnouncement.current = iosAnnouncement;
+    const timer = setTimeout(() => AccessibilityInfo.announceForAccessibility(iosAnnouncement), 0);
+    return () => clearTimeout(timer);
+  }, [iosAnnouncement]);
+
+  if (!visible) return null;
 
   const inTabs = segments[0] === '(tabs)';
   const bottom = deriveGlobalBobAccessVerticalLayout({
@@ -115,17 +151,6 @@ export function GlobalBobAccess() {
     safeAreaLeft: insets.left,
     safeAreaRight: insets.right,
   });
-  const stateKey: I18nKey =
-    session.phase === 'listening'
-      ? 'agent.global.listening'
-      : session.phase === 'thinking'
-        ? 'agent.global.thinking'
-        : session.phase === 'speaking'
-          ? 'agent.global.speaking'
-          : session.phase === 'error'
-            ? 'agent.global.error'
-            : 'agent.global.idle';
-  const stateLabel = t(stateKey, { personality });
   // Seule une ENTITÉ identifiée mérite « Je vois : … » — le slug d'écran est technique.
   const contextLabel = context.entities[0]?.label ?? null;
   const scale = pulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.07] });
