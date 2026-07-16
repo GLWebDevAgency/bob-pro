@@ -16,6 +16,7 @@ out
 coverage
 *.tsbuildinfo
 .env*.local
+.gradle/
 
 # Expo — régénéré par expo-cli à chaque dev/typecheck (log C00 14:16)
 expo-env.d.ts

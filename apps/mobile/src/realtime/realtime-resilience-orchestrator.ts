@@ -334,8 +334,8 @@ export class RealtimeResilienceOrchestrator {
     let transport: VoiceConversationTransport;
     try {
       transport = this.options.createPrimary();
-    } catch {
-      return { kind: 'failed', reason: 'bootstrap_failed' };
+    } catch (error) {
+      return { kind: 'failed', reason: failureReason(error) };
     }
 
     const attempt: PrimaryAttempt = {

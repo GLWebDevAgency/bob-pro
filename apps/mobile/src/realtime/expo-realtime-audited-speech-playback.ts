@@ -1,7 +1,9 @@
-import type { RealtimeVoiceSpeechMimeType } from '@bob/api-client';
+import type {
+  RealtimeVoiceSpeechMimeType,
+  RealtimeVoiceSpeechSourcePolicy,
+} from '@bob/api-client';
 import {
   createAudioPlayer,
-  setAudioModeAsync,
   type AudioPlayer,
   type AudioStatus,
 } from 'expo-audio';
@@ -25,7 +27,8 @@ const MAX_DOWNLOAD_TIMEOUT_MS = 30_000;
 const MAX_PLAYBACK_TIMEOUT_MS = 120_000;
 const MAX_SOURCE_URL_CHARS = 4 * 1024;
 const MAX_STREAM_CHUNKS = 8_192;
-const SIGNATURE_PREFIX_BYTES = 16;
+const PRIVATE_FILE_PREFIX = 'bob-live-audited-';
+const MAX_STALE_FILES_TO_PURGE = 128;
 const SHA_256_PATTERN = /^[a-f0-9]{64}$/u;
 const SAFE_STORAGE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9_-]{0,159}$/u;
 const SAFE_BUCKET = /^[a-z0-9](?:[a-z0-9._-]{0,61}[a-z0-9])?$/u;
@@ -33,11 +36,6 @@ const SAFE_SIGNED_QUERY = /^\?token=[A-Za-z0-9._~-]+$/u;
 const ALLOWED_MIME_TYPES = new Set<RealtimeVoiceSpeechMimeType>([
   'audio/mpeg',
   'audio/wav',
-  'audio/ogg',
-  'audio/webm',
-  'audio/mp4',
-  'audio/aac',
-  'audio/flac',
 ]);
 
 export const EXPO_REALTIME_AUDITED_SPEECH_LIMITS = Object.freeze({
@@ -60,6 +58,7 @@ export type ExpoRealtimeAuditedSpeechErrorCode =
   | 'AUDIO_INTEGRITY_FAILED'
   | 'PLAYBACK_TIMEOUT'
   | 'PLAYBACK_FAILED'
+  | 'PLAYBACK_STOP_FAILED'
   | 'INVALID_HANDLE'
   | 'CLEANUP_FAILED';
 
@@ -75,11 +74,8 @@ export class ExpoRealtimeAuditedSpeechError extends Error {
 }
 
 export interface ExpoRealtimeAuditedSpeechPlaybackConfig {
-  /** Origine Supabase de confiance, sans chemin ni query (ex. https://project.supabase.co). */
-  readonly supabaseUrl: string;
-  readonly bucket: string;
-  /** Le chemin signé est obligatoirement lié à ce tenant. */
-  readonly companyId: string;
+  /** Policy issue du bootstrap admis, déjà bornée au tenant et au handle de session. */
+  readonly speechSourcePolicy: RealtimeVoiceSpeechSourcePolicy;
   /** Lease déjà acquis par le transport WebRTC. Le player ne crée jamais un second owner audio. */
   readonly audioLease: ProcessAudioLease;
   readonly downloadTimeoutMs?: number;
@@ -149,7 +145,7 @@ export interface ExpoRealtimeAuditedSpeechRuntime {
   ): Promise<NativeFetchResponse>;
   createPrivateFile(extension: string): ExpoRealtimeAuditedSpeechPrivateFile;
   sha256(bytes: Uint8Array): Promise<string>;
-  preparePlayback(): Promise<void>;
+  purgeStalePrivateFiles(): void;
   createPlayer(localUri: string): ExpoRealtimeAuditedSpeechNativePlayer;
   ownsAudioLease(lease: ProcessAudioLease): boolean;
 }
@@ -172,6 +168,8 @@ interface ActivePlayback {
   readonly timeout: ReturnType<typeof setTimeout>;
   settled: boolean;
 }
+
+type NativeStopResult = 'stopped_and_removed' | 'stopped_cleanup_pending' | 'stop_failed';
 
 function fail(code: ExpoRealtimeAuditedSpeechErrorCode): never {
   throw new ExpoRealtimeAuditedSpeechError(code);
@@ -202,11 +200,7 @@ function extensionForMime(mimeType: RealtimeVoiceSpeechMimeType): string {
   switch (mimeType) {
     case 'audio/mpeg': return 'mp3';
     case 'audio/wav': return 'wav';
-    case 'audio/ogg': return 'ogg';
-    case 'audio/webm': return 'webm';
-    case 'audio/mp4': return 'm4a';
-    case 'audio/aac': return 'aac';
-    case 'audio/flac': return 'flac';
+    default: return fail('INVALID_REQUEST');
   }
 }
 
@@ -215,6 +209,14 @@ function normalizedMime(value: string | null): string | null {
   const [mime, ...parameters] = value.split(';');
   if (parameters.length > 0) return null;
   return mime?.trim().toLowerCase() || null;
+}
+
+function isSecureOrLoopbackOrigin(value: URL): boolean {
+  return value.protocol === 'https:'
+    || (value.protocol === 'http:'
+      && (value.hostname === 'localhost'
+        || value.hostname === '127.0.0.1'
+        || value.hostname === '[::1]'));
 }
 
 function exactHeaderInteger(value: string | null): number | null {
@@ -230,34 +232,83 @@ function bytesEqualPrefix(bytes: Uint8Array, expected: readonly number[], offset
   return expected.every((value, index) => bytes[offset + index] === value);
 }
 
-/** Vérifie le conteneur/codec, indépendamment du header HTTP contrôlé par le stockage. */
+function synchsafeInteger(bytes: Uint8Array, offset: number): number | null {
+  const values = [bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3]];
+  if (values.some((value) => value === undefined || (value & 0x80) !== 0)) return null;
+  return ((values[0]! << 21) | (values[1]! << 14) | (values[2]! << 7) | values[3]!) >>> 0;
+}
+
+function hasMp3Frame(bytes: Uint8Array): boolean {
+  let payloadStart = 0;
+  if (bytesEqualPrefix(bytes, [0x49, 0x44, 0x33])) {
+    if (bytes.byteLength < 10) return false;
+    const tagSize = synchsafeInteger(bytes, 6);
+    if (tagSize === null || tagSize > bytes.byteLength - 10) return false;
+    payloadStart = 10 + tagSize;
+  }
+  const searchEnd = Math.min(bytes.byteLength - 4, payloadStart + 64 * 1024);
+  for (let index = payloadStart; index <= searchEnd; index += 1) {
+    if (bytes[index] !== 0xff || (bytes[index + 1]! & 0xe0) !== 0xe0) continue;
+    const version = (bytes[index + 1]! >>> 3) & 0b11;
+    const layer = (bytes[index + 1]! >>> 1) & 0b11;
+    const bitrateIndex = (bytes[index + 2]! >>> 4) & 0b1111;
+    const sampleRateIndex = (bytes[index + 2]! >>> 2) & 0b11;
+    if (version !== 0b01
+      && layer === 0b01
+      && bitrateIndex !== 0
+      && bitrateIndex !== 0b1111
+      && sampleRateIndex !== 0b11) return true;
+  }
+  return false;
+}
+
+function hasPcmWavContainer(bytes: Uint8Array): boolean {
+  if (bytes.byteLength < 44
+    || !bytesEqualPrefix(bytes, [0x52, 0x49, 0x46, 0x46])
+    || !bytesEqualPrefix(bytes, [0x57, 0x41, 0x56, 0x45], 8)) return false;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const riffBytes = view.getUint32(4, true) + 8;
+  if (riffBytes > bytes.byteLength || riffBytes < 44) return false;
+  let offset = 12;
+  let validFormat = false;
+  let nonEmptyData = false;
+  while (offset + 8 <= riffBytes) {
+    const chunkSize = view.getUint32(offset + 4, true);
+    const contentStart = offset + 8;
+    if (chunkSize > riffBytes - contentStart) return false;
+    if (bytesEqualPrefix(bytes, [0x66, 0x6d, 0x74, 0x20], offset) && chunkSize >= 16) {
+      const audioFormat = view.getUint16(contentStart, true);
+      const channels = view.getUint16(contentStart + 2, true);
+      const sampleRate = view.getUint32(contentStart + 4, true);
+      const byteRate = view.getUint32(contentStart + 8, true);
+      const blockAlign = view.getUint16(contentStart + 12, true);
+      const bitsPerSample = view.getUint16(contentStart + 14, true);
+      validFormat = (audioFormat === 1 || audioFormat === 3)
+        && channels >= 1 && channels <= 2
+        && sampleRate >= 8_000 && sampleRate <= 96_000
+        && bitsPerSample >= 8 && bitsPerSample <= 32
+        && blockAlign > 0 && byteRate > 0;
+    }
+    if (bytesEqualPrefix(bytes, [0x64, 0x61, 0x74, 0x61], offset) && chunkSize > 0) {
+      nonEmptyData = true;
+    }
+    offset = contentStart + chunkSize + (chunkSize % 2);
+  }
+  return validFormat && nonEmptyData;
+}
+
+/** Vérifie le conteneur/codec complet, indépendamment du header HTTP du stockage. */
 export function hasRealtimeSpeechAudioSignature(
   mimeType: RealtimeVoiceSpeechMimeType,
-  prefix: Uint8Array,
+  bytes: Uint8Array,
 ): boolean {
   switch (mimeType) {
     case 'audio/mpeg':
-      return bytesEqualPrefix(prefix, [0x49, 0x44, 0x33])
-        || (prefix.byteLength >= 2
-          && prefix[0] === 0xff
-          && (prefix[1]! & 0xe0) === 0xe0
-          && (prefix[1]! & 0x06) !== 0);
+      return hasMp3Frame(bytes);
     case 'audio/wav':
-      return bytesEqualPrefix(prefix, [0x52, 0x49, 0x46, 0x46])
-        && bytesEqualPrefix(prefix, [0x57, 0x41, 0x56, 0x45], 8);
-    case 'audio/ogg':
-      return bytesEqualPrefix(prefix, [0x4f, 0x67, 0x67, 0x53]);
-    case 'audio/webm':
-      return bytesEqualPrefix(prefix, [0x1a, 0x45, 0xdf, 0xa3]);
-    case 'audio/mp4':
-      return bytesEqualPrefix(prefix, [0x66, 0x74, 0x79, 0x70], 4);
-    case 'audio/aac':
-      return bytesEqualPrefix(prefix, [0x41, 0x44, 0x49, 0x46])
-        || (prefix.byteLength >= 2
-          && prefix[0] === 0xff
-          && (prefix[1]! & 0xf6) === 0xf0);
-    case 'audio/flac':
-      return bytesEqualPrefix(prefix, [0x66, 0x4c, 0x61, 0x43]);
+      return hasPcmWavContainer(bytes);
+    default:
+      return false;
   }
 }
 
@@ -355,7 +406,7 @@ class ExpoNativePlayer implements ExpoRealtimeAuditedSpeechNativePlayer {
 const expoRealtimeAuditedSpeechRuntime: ExpoRealtimeAuditedSpeechRuntime = {
   fetch: (url, init) => expoFetch(url, init) as unknown as Promise<NativeFetchResponse>,
   createPrivateFile: (extension) => new ExpoPrivateFile(
-    new File(Paths.cache, `bob-live-audited-${randomUUID()}.${extension}`),
+    new File(Paths.cache, `${PRIVATE_FILE_PREFIX}${randomUUID()}.${extension}`),
   ),
   sha256: async (bytes) => {
     const ownedBytes = new Uint8Array(new ArrayBuffer(bytes.byteLength));
@@ -367,13 +418,17 @@ const expoRealtimeAuditedSpeechRuntime: ExpoRealtimeAuditedSpeechRuntime = {
       ownedBytes.fill(0);
     }
   },
-  preparePlayback: () => setAudioModeAsync({
-    allowsRecording: true,
-    interruptionMode: 'doNotMix',
-    playsInSilentMode: true,
-    shouldPlayInBackground: false,
-    shouldRouteThroughEarpiece: false,
-  }),
+  purgeStalePrivateFiles: () => {
+    let inspected = 0;
+    for (const entry of Paths.cache.list()) {
+      if (inspected >= MAX_STALE_FILES_TO_PURGE) break;
+      inspected += 1;
+      if (entry instanceof File && entry.name.startsWith(PRIVATE_FILE_PREFIX)) {
+        entry.delete();
+        if (entry.exists) fail('CLEANUP_FAILED');
+      }
+    }
+  },
   createPlayer: (localUri) => new ExpoNativePlayer(createAudioPlayer(
     { uri: localUri },
     {
@@ -409,32 +464,60 @@ export class ExpoRealtimeAuditedSpeechPlayback implements RealtimeAuditedSpeechP
   private readonly downloadTimeoutMs: number;
   private readonly playbackTimeoutMs: number;
   private readonly handles = new WeakMap<object, VerifiedHandleState>();
+  private readonly pendingNativeCleanup = new Map<
+    ExpoRealtimeAuditedSpeechNativePlayer,
+    VerifiedHandleState
+  >();
   private activePlayback: ActivePlayback | null = null;
 
   constructor(
     config: ExpoRealtimeAuditedSpeechPlaybackConfig,
     private readonly runtime: ExpoRealtimeAuditedSpeechRuntime = expoRealtimeAuditedSpeechRuntime,
   ) {
-    let base: URL;
+    let origin: URL;
+    let fullPrefix: URL;
+    const policy = config?.speechSourcePolicy;
     try {
-      base = new URL(config?.supabaseUrl);
+      origin = new URL(policy?.allowedOrigin);
+      fullPrefix = new URL(policy?.allowedPathPrefix, policy?.allowedOrigin);
     } catch {
       fail('INVALID_CONFIG');
     }
-    if (base.protocol !== 'https:'
-      || base.username !== ''
-      || base.password !== ''
-      || base.pathname !== '/'
-      || base.search !== ''
-      || base.hash !== ''
-      || !SAFE_BUCKET.test(config.bucket)
-      || !SAFE_STORAGE_SEGMENT.test(config.companyId)
+    const prefixSegments = policy.allowedPathPrefix.split('/');
+    const prefixBody = prefixSegments.slice(1, -1);
+    const prefixTail = prefixBody.slice(-9);
+    if (policy.mode !== 'signed-url-v1'
+      || !isSecureOrLoopbackOrigin(origin)
+      || origin.origin !== policy.allowedOrigin
+      || origin.username !== ''
+      || origin.password !== ''
+      || origin.pathname !== '/'
+      || origin.search !== ''
+      || origin.hash !== ''
+      || fullPrefix.origin !== policy.allowedOrigin
+      || fullPrefix.pathname !== policy.allowedPathPrefix
+      || fullPrefix.search !== ''
+      || fullPrefix.hash !== ''
+      || !policy.allowedPathPrefix.startsWith('/')
+      || !policy.allowedPathPrefix.endsWith('/')
+      || policy.allowedPathPrefix.includes('%')
+      || prefixSegments[0] !== ''
+      || prefixSegments.at(-1) !== ''
+      || prefixBody.some((segment) => !SAFE_STORAGE_SEGMENT.test(segment))
+      || prefixTail.length !== 9
+      || prefixTail[0] !== 'storage'
+      || prefixTail[1] !== 'v1'
+      || prefixTail[2] !== 'object'
+      || prefixTail[3] !== 'sign'
+      || !SAFE_BUCKET.test(prefixTail[4] ?? '')
+      || prefixTail[5] !== 'companies'
+      || prefixTail[7] !== 'bob-live'
       || !config.audioLease
       || config.audioLease.mode !== 'realtime') {
       fail('INVALID_CONFIG');
     }
-    this.allowedOrigin = base.origin;
-    this.signedPathPrefix = `/storage/v1/object/sign/${config.bucket}/companies/${config.companyId}/bob-live/`;
+    this.allowedOrigin = policy.allowedOrigin;
+    this.signedPathPrefix = policy.allowedPathPrefix;
     this.audioLease = config.audioLease;
     this.downloadTimeoutMs = boundedInteger(
       config.downloadTimeoutMs,
@@ -448,6 +531,12 @@ export class ExpoRealtimeAuditedSpeechPlayback implements RealtimeAuditedSpeechP
       1_000,
       MAX_PLAYBACK_TIMEOUT_MS,
     );
+    try {
+      this.runtime.purgeStalePrivateFiles();
+    } catch (error) {
+      if (error instanceof ExpoRealtimeAuditedSpeechError) throw error;
+      fail('CLEANUP_FAILED');
+    }
   }
 
   async downloadVerified(
@@ -456,7 +545,7 @@ export class ExpoRealtimeAuditedSpeechPlayback implements RealtimeAuditedSpeechP
   ): Promise<RealtimeVerifiedSpeechAudio> {
     this.assertRequest(request, signal);
     this.assertAudioOwnership();
-    const sourceUrl = this.assertAllowedSource(request.sourceUrl);
+    const sourceUrl = this.assertAllowedSource(request.sourceUrl, request);
     const internalAbort = new AbortController();
     const abortFromCaller = (): void => internalAbort.abort();
     signal.addEventListener('abort', abortFromCaller, { once: true });
@@ -496,7 +585,7 @@ export class ExpoRealtimeAuditedSpeechPlayback implements RealtimeAuditedSpeechP
         return fail('DOWNLOAD_FAILED');
       }
 
-      const prefix = await this.streamToFile(
+      await this.streamToFile(
         response.body,
         file,
         request.maximumBytes,
@@ -507,21 +596,33 @@ export class ExpoRealtimeAuditedSpeechPlayback implements RealtimeAuditedSpeechP
       );
       this.throwIfAborted(signal, internalAbort.signal, timedOut);
       this.assertAudioOwnership();
-      if (file.size !== request.expectedByteSize
-        || !hasRealtimeSpeechAudioSignature(request.expectedMimeType, prefix)) {
+      if (file.size !== request.expectedByteSize) {
         return fail('AUDIO_INTEGRITY_FAILED');
       }
 
       let bytes: Uint8Array;
       try {
-        bytes = await file.bytes();
+        bytes = await awaitWithAbort(file.bytes(), internalAbort.signal);
       } catch {
+        this.throwIfAborted(signal, internalAbort.signal, timedOut);
         return fail('DOWNLOAD_FAILED');
       }
       try {
-        if (bytes.byteLength !== request.expectedByteSize) return fail('AUDIO_INTEGRITY_FAILED');
+        if (bytes.byteLength !== request.expectedByteSize
+          || !hasRealtimeSpeechAudioSignature(request.expectedMimeType, bytes)) {
+          return fail('AUDIO_INTEGRITY_FAILED');
+        }
         this.throwIfAborted(signal, internalAbort.signal, timedOut);
-        const actualSha256 = (await this.runtime.sha256(bytes)).toLowerCase();
+        let actualSha256: string;
+        try {
+          actualSha256 = (await awaitWithAbort(
+            this.runtime.sha256(bytes),
+            internalAbort.signal,
+          )).toLowerCase();
+        } catch {
+          this.throwIfAborted(signal, internalAbort.signal, timedOut);
+          return fail('DOWNLOAD_FAILED');
+        }
         this.throwIfAborted(signal, internalAbort.signal, timedOut);
         this.assertAudioOwnership();
         if (!SHA_256_PATTERN.test(actualSha256)
@@ -565,14 +666,6 @@ export class ExpoRealtimeAuditedSpeechPlayback implements RealtimeAuditedSpeechP
     const state = this.resolveHandle(audio);
     if (this.activePlayback) return fail('PLAYBACK_FAILED');
 
-    try {
-      await this.runtime.preparePlayback();
-    } catch {
-      return fail('PLAYBACK_FAILED');
-    }
-    if (signal.aborted) return fail('ABORTED');
-    this.assertAudioOwnership();
-
     let player: ExpoRealtimeAuditedSpeechNativePlayer;
     try {
       player = this.runtime.createPlayer(state.file.uri);
@@ -588,13 +681,18 @@ export class ExpoRealtimeAuditedSpeechPlayback implements RealtimeAuditedSpeechP
         const active = this.activePlayback;
         if (!active || active.player !== player || active.settled) return;
         active.settled = true;
-        this.activePlayback = null;
         clearTimeout(active.timeout);
         active.abortSignal.removeEventListener('abort', active.abortListener);
-        try { active.subscription.remove(); } catch { /* ressource native déjà libérée */ }
-        try { player.pause(); } catch { /* remove reste autoritaire */ }
-        try { player.remove(); } catch { /* l'erreur reste opaque */ }
-        if (error) reject(error);
+        let subscriptionCleanupFailed = false;
+        try { active.subscription.remove(); } catch { subscriptionCleanupFailed = true; }
+        const stopResult = this.stopNativePlayer(player, state);
+        this.activePlayback = null;
+        const terminalError = stopResult === 'stop_failed'
+          ? new ExpoRealtimeAuditedSpeechError('PLAYBACK_STOP_FAILED')
+          : stopResult === 'stopped_cleanup_pending' || subscriptionCleanupFailed
+            ? new ExpoRealtimeAuditedSpeechError('PLAYBACK_FAILED')
+            : error;
+        if (terminalError) reject(terminalError);
         else resolve();
       };
       const onAbort = (): void => settle(new ExpoRealtimeAuditedSpeechError('ABORTED'));
@@ -653,13 +751,20 @@ export class ExpoRealtimeAuditedSpeechPlayback implements RealtimeAuditedSpeechP
   /** Aucun await : pause puis destruction du player natif sur la même pile JS. */
   stopImmediately(): void {
     const active = this.activePlayback;
-    if (!active || active.settled) return;
-    active.reject(new ExpoRealtimeAuditedSpeechError('ABORTED'));
+    if (active && !active.settled) {
+      active.reject(new ExpoRealtimeAuditedSpeechError('ABORTED'));
+    }
+    this.retryPendingNativeCleanup();
+    if (this.pendingNativeCleanup.size > 0) fail('PLAYBACK_STOP_FAILED');
   }
 
   release(audio: RealtimeVerifiedSpeechAudio): void {
     const state = this.resolveHandle(audio);
     if (this.activePlayback?.state === state) this.stopImmediately();
+    this.retryPendingNativeCleanup(state);
+    if ([...this.pendingNativeCleanup.values()].some((pending) => pending === state)) {
+      fail('PLAYBACK_STOP_FAILED');
+    }
     safeDelete(state.file);
     state.released = true;
     if (typeof audio.opaqueHandle === 'object' && audio.opaqueHandle !== null) {
@@ -681,28 +786,30 @@ export class ExpoRealtimeAuditedSpeechPlayback implements RealtimeAuditedSpeechP
       || !Number.isSafeInteger(request.maximumBytes)
       || request.maximumBytes <= 0
       || request.maximumBytes > HARD_MAX_AUDIO_BYTES
-      || request.expectedByteSize > request.maximumBytes) {
+      || request.expectedByteSize > request.maximumBytes
+      || !SAFE_STORAGE_SEGMENT.test(request.expectedTurnId)
+      || !SAFE_STORAGE_SEGMENT.test(request.expectedArtifactId)) {
       fail(signal?.aborted ? 'ABORTED' : 'INVALID_REQUEST');
     }
   }
 
-  private assertAllowedSource(value: string): string {
+  private assertAllowedSource(
+    value: string,
+    request: Pick<RealtimeSpeechDownloadRequest, 'expectedTurnId' | 'expectedArtifactId'>,
+  ): string {
     let parsed: URL;
     try {
       parsed = new URL(value);
     } catch {
       return fail('SOURCE_NOT_ALLOWED');
     }
-    const suffix = parsed.pathname.slice(this.signedPathPrefix.length);
-    const segments = suffix.split('/');
-    if (parsed.protocol !== 'https:'
+    const expectedPath = `${this.signedPathPrefix}${request.expectedTurnId}/${request.expectedArtifactId}`;
+    if (!isSecureOrLoopbackOrigin(parsed)
       || parsed.origin !== this.allowedOrigin
       || parsed.username !== ''
       || parsed.password !== ''
       || parsed.hash !== ''
-      || !parsed.pathname.startsWith(this.signedPathPrefix)
-      || segments.length !== 3
-      || segments.some((segment) => !SAFE_STORAGE_SEGMENT.test(segment))
+      || parsed.pathname !== expectedPath
       || !SAFE_SIGNED_QUERY.test(parsed.search)
       || parsed.searchParams.getAll('token').length !== 1
       || [...parsed.searchParams.keys()].some((key) => key !== 'token')
@@ -725,7 +832,7 @@ export class ExpoRealtimeAuditedSpeechPlayback implements RealtimeAuditedSpeechP
       void response?.body?.cancel('bob-live-response-rejected').catch(() => undefined);
       fail('INVALID_RESPONSE');
     }
-    this.assertAllowedSource(response.url);
+    this.assertAllowedSource(response.url, request);
     const contentEncoding = response.headers.get('content-encoding');
     if (contentEncoding !== null && contentEncoding.trim().toLowerCase() !== 'identity') {
       void response.body?.cancel('bob-live-content-encoding-rejected').catch(() => undefined);
@@ -735,7 +842,13 @@ export class ExpoRealtimeAuditedSpeechPlayback implements RealtimeAuditedSpeechP
       void response.body?.cancel('bob-live-content-type-rejected').catch(() => undefined);
       fail('INVALID_RESPONSE');
     }
-    const announcedSize = exactHeaderInteger(response.headers.get('content-length'));
+    let announcedSize: number | null;
+    try {
+      announcedSize = exactHeaderInteger(response.headers.get('content-length'));
+    } catch {
+      void response.body?.cancel('bob-live-content-length-invalid').catch(() => undefined);
+      throw new ExpoRealtimeAuditedSpeechError('INVALID_RESPONSE');
+    }
     if (announcedSize !== null && announcedSize !== request.expectedByteSize) {
       void response.body?.cancel('bob-live-content-length-rejected').catch(() => undefined);
       fail(announcedSize > request.maximumBytes ? 'AUDIO_TOO_LARGE' : 'INVALID_RESPONSE');
@@ -750,7 +863,7 @@ export class ExpoRealtimeAuditedSpeechPlayback implements RealtimeAuditedSpeechP
     callerSignal: AbortSignal,
     internalSignal: AbortSignal,
     timedOut: () => boolean,
-  ): Promise<Uint8Array> {
+  ): Promise<void> {
     const reader = body.getReader();
     const cancelReader = (): void => {
       void reader.cancel('bob-live-download-aborted').catch(() => undefined);
@@ -759,8 +872,7 @@ export class ExpoRealtimeAuditedSpeechPlayback implements RealtimeAuditedSpeechP
     let writer: NativeWritableFileHandle | null = null;
     let totalBytes = 0;
     let chunks = 0;
-    const prefix = new Uint8Array(Math.min(SIGNATURE_PREFIX_BYTES, expectedBytes));
-    let prefixLength = 0;
+    let reachedEnd = false;
 
     try {
       writer = file.openForWrite();
@@ -771,6 +883,7 @@ export class ExpoRealtimeAuditedSpeechPlayback implements RealtimeAuditedSpeechP
         this.throwIfAborted(callerSignal, internalSignal, timedOut());
         if (item.done) {
           complete = true;
+          reachedEnd = true;
           continue;
         }
         if (!(item.value instanceof Uint8Array)) return fail('INVALID_RESPONSE');
@@ -785,24 +898,48 @@ export class ExpoRealtimeAuditedSpeechPlayback implements RealtimeAuditedSpeechP
           void reader.cancel('bob-live-audio-too-large').catch(() => undefined);
           return fail('AUDIO_TOO_LARGE');
         }
-        if (prefixLength < prefix.byteLength) {
-          const length = Math.min(item.value.byteLength, prefix.byteLength - prefixLength);
-          prefix.set(item.value.subarray(0, length), prefixLength);
-          prefixLength += length;
-        }
         this.assertAudioOwnership();
         writer.writeBytes(item.value);
       }
       if (totalBytes !== expectedBytes) return fail('AUDIO_INTEGRITY_FAILED');
-      return prefix;
     } catch (error) {
       this.throwIfAborted(callerSignal, internalSignal, timedOut());
       if (error instanceof ExpoRealtimeAuditedSpeechError) throw error;
       return fail('DOWNLOAD_FAILED');
     } finally {
       internalSignal.removeEventListener('abort', cancelReader);
+      if (!reachedEnd) void reader.cancel('bob-live-download-failed').catch(() => undefined);
       try { writer?.close(); } catch { /* le cleanup du fichier reste obligatoire */ }
       try { reader.releaseLock(); } catch { /* flux déjà annulé */ }
+    }
+  }
+
+  private stopNativePlayer(
+    player: ExpoRealtimeAuditedSpeechNativePlayer,
+    state: VerifiedHandleState,
+  ): NativeStopResult {
+    let paused = false;
+    let removed = false;
+    try {
+      player.pause();
+      paused = true;
+    } catch { /* remove peut encore arrêter autoritairement la sortie */ }
+    try {
+      player.remove();
+      removed = true;
+    } catch { /* conservé pour une nouvelle tentative synchrone */ }
+    if (removed) {
+      this.pendingNativeCleanup.delete(player);
+      return 'stopped_and_removed';
+    }
+    this.pendingNativeCleanup.set(player, state);
+    return paused ? 'stopped_cleanup_pending' : 'stop_failed';
+  }
+
+  private retryPendingNativeCleanup(onlyState?: VerifiedHandleState): void {
+    for (const [player, state] of this.pendingNativeCleanup) {
+      if (onlyState && state !== onlyState) continue;
+      this.stopNativePlayer(player, state);
     }
   }
 

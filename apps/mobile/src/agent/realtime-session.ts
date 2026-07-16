@@ -12,7 +12,10 @@ import type {
   LegacyVoiceFallbackPort,
   RealtimeResilienceEvent,
 } from '../realtime/realtime-resilience-orchestrator';
-import type { RealtimeFallbackReason, RealtimeTransportEvent } from '../realtime/realtime-transport';
+import type {
+  RealtimeFallbackReason,
+  RealtimeTransportEvent,
+} from '../realtime/realtime-transport';
 import type { RealtimeAgentControlReference } from '../realtime/realtime-event-codecs';
 import type { RealtimeVoiceControlReference } from '@bob/api-client';
 import {
@@ -98,6 +101,9 @@ export class RealtimeSessionController {
   /** Fence start/stop : chaque stop (ou prise de main du repli) invalide les bootstraps en
    * vol — un start() doublé ne peut JAMAIS rouvrir un micro après coup (P0 review 14/07). */
   private generation = 0;
+  /** Une reconnexion conserve la mission et donc `generation`. Cette seconde génération
+   * invalide pourtant toute continuation (PUT/ACK/completion) appartenant à l'ancien peer. */
+  private primaryGeneration = 0;
   /** Le repli a pris la main via le port (onFallback DÉJÀ émis) — start() doit le dire à
    * l'appelant pour qu'il ne relance pas une DEUXIÈME boucle legacy. */
   private fallbackTaken = false;
@@ -152,14 +158,8 @@ export class RealtimeSessionController {
       negotiation,
       fallbackPort,
       () => this.publisher?.fence ?? null,
-      (transport) => {
-      // Chaque primaire FRAIS naît micro fermé : le contexte part TOUJOURS avant la voix.
-      transport.setMicrophoneEnabled(false);
-      this.lastTransport = transport;
-      this.contextPublished = false;
-      },
+      (transport) => this.adoptPrimary(transport),
     );
-    this.controlGate = this.deps.createControlGate(() => this.publisher?.fence ?? null);
     this.unsubscribe = this.orchestrator.subscribe((event) => {
       void this.handleEvent(event);
     });
@@ -179,18 +179,28 @@ export class RealtimeSessionController {
    * cerveau parlant sur un contexte périmé). Inopérant hors session. */
   async publishContext(): Promise<void> {
     if (!this.activeFlag || this.publisher === null || this.lastTransport === null) return;
+    const controllerGeneration = this.generation;
+    const primaryGeneration = this.primaryGeneration;
     const transport = this.lastTransport;
+    const publisher = this.publisher;
     transport.setMicrophoneEnabled(false);
     transport.interrupt('navigation');
-    const result = await this.publisher.publish(this.hooks.getContextSnapshot());
-    if (!this.activeFlag) return;
+    const result = await publisher.publish(this.hooks.getContextSnapshot());
+    if (
+      !this.isCurrentPrimary(controllerGeneration, primaryGeneration, transport) ||
+      this.publisher !== publisher
+    )
+      return;
     // Supersédée = une publication PLUS RÉCENTE est en vol : c'est ELLE qui rouvrira le
     // micro sur le contexte frais. La traiter en échec tuait la session à chaque navigation.
     if (result.status === 'superseded') return;
     if (result.status === 'failed') {
-      const reason: RealtimeFallbackReason = 'provider_error';
-      await this.stop('user');
-      this.hooks.onFallback(reason);
+      await this.stopCurrentPrimaryWithFallback(
+        controllerGeneration,
+        primaryGeneration,
+        transport,
+        'provider_error',
+      );
       return;
     }
     transport.setMicrophoneEnabled(true);
@@ -259,10 +269,21 @@ export class RealtimeSessionController {
       case 'agent_control_candidate': {
         // Référence provider NON FIABLE → ACK one-shot par NOTRE serveur (gate, fencé sur la
         // publication confirmée) → décision UNIQUEMENT sur le contrôle authentifié non-null.
-        const eventGeneration = this.generation;
+        const controllerGeneration = this.generation;
+        const primaryGeneration = this.primaryGeneration;
+        const transport = this.lastTransport;
+        const publisher = this.publisher;
+        const gate = this.controlGate;
+        if (transport === null || publisher === null || gate === null) return;
         const task = (async (): Promise<void> => {
-          const control = await this.controlGate?.acknowledge(event.reference);
-          if (!control || !this.activeFlag || eventGeneration !== this.generation) return;
+          const control = await gate.acknowledge(event.reference);
+          if (
+            !control ||
+            !this.isCurrentPrimary(controllerGeneration, primaryGeneration, transport) ||
+            this.publisher !== publisher ||
+            this.controlGate !== gate
+          )
+            return;
           const decision = decideAgentControl(control);
           this.applyOrDeferDecision(decision);
         })();
@@ -283,12 +304,23 @@ export class RealtimeSessionController {
       case 'conversation_completed': {
         // Le candidat de contrôle est émis dans la même pile juste avant cette microtâche.
         // Attendre son échange one-shot évite de fermer le gate et de perdre une navigation.
-        const completionGeneration = this.generation;
+        const controllerGeneration = this.generation;
+        const primaryGeneration = this.primaryGeneration;
+        const transport = this.lastTransport;
+        const publisher = this.publisher;
+        if (transport === null || publisher === null) return;
         await Promise.allSettled([...this.pendingControlAcks]);
-        if (!this.activeFlag || completionGeneration !== this.generation) return;
+        if (
+          !this.isCurrentPrimary(controllerGeneration, primaryGeneration, transport) ||
+          this.publisher !== publisher
+        )
+          return;
         const decision = this.pendingTerminalDecision;
         this.pendingTerminalDecision = null;
-        await this.teardown('user');
+        const stoppedGeneration = this.generation + 1;
+        await this.stop('user');
+        // Une mission fraîche peut démarrer pendant la fermeture réseau de l'ancienne.
+        if (this.generation !== stoppedGeneration || this.activeFlag) return;
         // Le controleur est deja inactif avant l'effet UI. Le composant peut donc naviguer sans
         // republier sur ce ticket, puis rendre son etat visuel idle via onCompleted.
         if (decision !== null) this.applyDecision(decision);
@@ -318,30 +350,91 @@ export class RealtimeSessionController {
     }
   }
 
+  /** Une reconnexion ne change pas la génération de mission. Elle doit néanmoins rendre
+   * immédiatement inertes le publieur, le gate et les décisions du peer remplacé. */
+  private adoptPrimary(transport: RealtimeTransportLike): void {
+    // Chaque primaire FRAIS naît micro fermé : le contexte part TOUJOURS avant la voix.
+    transport.setMicrophoneEnabled(false);
+    this.primaryGeneration += 1;
+    const previousTransport = this.lastTransport;
+    if (previousTransport !== null && previousTransport !== transport) {
+      previousTransport.setMicrophoneEnabled(false);
+    }
+    this.publisher?.close();
+    this.publisher = null;
+    this.controlGate?.close?.();
+    this.controlGate = null;
+    this.pendingControlAcks.clear();
+    this.pendingTerminalDecision = null;
+    this.lastTransport = transport;
+    this.contextPublished = false;
+    this.controlGate = this.deps.createControlGate(() => this.publisher?.fence ?? null);
+  }
+
+  private isCurrentPrimary(
+    controllerGeneration: number,
+    primaryGeneration: number,
+    transport: RealtimeTransportLike,
+  ): boolean {
+    return (
+      this.activeFlag &&
+      this.generation === controllerGeneration &&
+      this.primaryGeneration === primaryGeneration &&
+      this.lastTransport === transport
+    );
+  }
+
+  private async stopCurrentPrimaryWithFallback(
+    controllerGeneration: number,
+    primaryGeneration: number,
+    transport: RealtimeTransportLike,
+    reason: RealtimeFallbackReason,
+  ): Promise<void> {
+    if (!this.isCurrentPrimary(controllerGeneration, primaryGeneration, transport)) return;
+    const stoppedGeneration = this.generation + 1;
+    await this.stop('user');
+    // Le stop de l'ancien orchestrateur peut finir après le start d'une nouvelle mission.
+    if (this.generation === stoppedGeneration && !this.activeFlag) {
+      this.hooks.onFallback(reason);
+    }
+  }
+
   /** L'ORDRE du contrat, FAIL-CLOSED (P0 GPT 20:24) : micro ON UNIQUEMENT si handle présent
    * ET PUT contexte confirmé — sinon stop + repli. Jamais une oreille sans contexte publié. */
   private async publishThenOpenMicrophone(): Promise<void> {
+    const controllerGeneration = this.generation;
+    const primaryGeneration = this.primaryGeneration;
     const transport = this.lastTransport;
     if (!transport) return;
     const handle = transport.getSessionHandle();
     if (handle === null) {
-      if (this.activeFlag) {
-        await this.stop('user');
-        this.hooks.onFallback('provider_error');
-      }
+      await this.stopCurrentPrimaryWithFallback(
+        controllerGeneration,
+        primaryGeneration,
+        transport,
+        'provider_error',
+      );
       return;
     }
     this.publisher?.close();
-    this.publisher = new RealtimeContextPublisher(handle, this.deps.updateContext);
-    const result = await this.publisher.publish(this.hooks.getContextSnapshot());
+    const publisher = new RealtimeContextPublisher(handle, this.deps.updateContext);
+    this.publisher = publisher;
+    const result = await publisher.publish(this.hooks.getContextSnapshot());
+    if (
+      !this.isCurrentPrimary(controllerGeneration, primaryGeneration, transport) ||
+      this.publisher !== publisher
+    )
+      return;
     if (result.status === 'superseded') return; // une publication plus récente rouvrira le micro
     if (result.status === 'failed') {
-      if (this.activeFlag) {
-        await this.stop('user');
-        this.hooks.onFallback('provider_error');
-      }
+      await this.stopCurrentPrimaryWithFallback(
+        controllerGeneration,
+        primaryGeneration,
+        transport,
+        'provider_error',
+      );
       return;
     }
-    if (this.activeFlag) transport.setMicrophoneEnabled(true);
+    transport.setMicrophoneEnabled(true);
   }
 }

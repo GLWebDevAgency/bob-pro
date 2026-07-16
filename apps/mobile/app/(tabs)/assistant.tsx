@@ -4,8 +4,8 @@
  * dégradé IA, pill statut, sous-titre assistant.subtitle) → fil de chat (bulle
  * d'accueil voix Bob, bulles user/Bob, indicateur de saisie 3 points animés, cartes
  * d'action avec aperçu avant/après + Valider/Annuler) → chips suggestions du proto →
- * input « Demande-moi un truc… » + contrôle live générique + envoi ; le wizard spécialisé
- * « Facture à la voix » reste une suggestion textuelle explicite, pas un second micro.
+ * input « Demande-moi un truc… » + contrôle live générique + envoi. L'ancien wizard spécialisé
+ * « Facture à la voix » n'est plus exposé : Bob est l'unique conversation universelle.
  *
  * BRANCHEMENT 100 % RÉEL (couche présentation refaite, transport conservé) : le fil
  * parle au VRAI agent — makeBobAgent(client) → BobAgent (@bob/ai : intents, autonomie,
@@ -301,6 +301,8 @@ export default function Assistant() {
     readonly context: NonNullable<typeof globalSession.handoff>['context'];
     readonly expiresAt: number;
   } | null>(null);
+  const globalHandoffRef = useRef(globalSession.handoff);
+  globalHandoffRef.current = globalSession.handoff;
   const consumedHandoffIdRef = useRef<string | null>(null);
   const submittedPrompt = useRef<string | null>(null);
   const counter = useRef(0);
@@ -391,12 +393,37 @@ export default function Assistant() {
     }
     return item;
   };
+
+  /** Handoff Realtime : le serveur rend uniquement le PendingAction owner-bound. On l'insère
+   * dans la même carte et le même flux confirm/cancel que toute proposition manuelle. */
+  const pushProposalPreview = (pending: PendingAction, text: string): ChatItem => {
+    const id = nextId();
+    const item: ChatItem = { id, role: 'bob', text, pending };
+    setItems((prev) => [...prev, item]);
+    const invoiceId =
+      pending.tool === 'emettre_facture' && typeof pending.args.invoiceId === 'string'
+        ? pending.args.invoiceId
+        : null;
+    if (invoiceId) {
+      void client.invoiceAccountingPreview(invoiceId).then((result) => {
+        if (!result.ok || !result.value.available || result.value.lines.length === 0) return;
+        setItems((prev) => prev.map((candidate) => (
+          candidate.id === id
+            ? { ...candidate, accountingLines: result.value.lines }
+            : candidate
+        )));
+      }).catch(() => undefined);
+    }
+    return item;
+  };
   // Les effets de handoff appellent toujours les mutateurs de la dernière render sans les
   // rendre dépendants de fonctions recréées à chaque render (et sans désactiver une règle lint).
   const pushTextRef = useRef(pushText);
   pushTextRef.current = pushText;
   const pushRunRef = useRef(pushRun);
   pushRunRef.current = pushRun;
+  const pushProposalPreviewRef = useRef(pushProposalPreview);
+  pushProposalPreviewRef.current = pushProposalPreview;
 
   const ask = async (raw: string): Promise<{ run: AgentRun; item: ChatItem } | null> => {
     const message = raw.trim();
@@ -780,14 +807,44 @@ export default function Assistant() {
     handoffContextRef.current = { context: handoff.context, expiresAt: handoff.expiresAt };
     for (const turn of handoff.history) pushTextRef.current(turn.role, turn.text);
     pushTextRef.current('user', handoff.message);
-    pushRunRef.current(handoff.run);
-    globalSession.consumeHandoff(handoff.id);
+    if (handoff.kind === 'run') {
+      pushRunRef.current(handoff.run);
+      globalSession.consumeHandoff(handoff.id);
+      return;
+    }
+
+    // La voix ne transporte jamais tool/args. L'identifiant opaque est recharge par un endpoint
+    // qui reverifie tenant, utilisateur et TTL ; un mismatch reste bloque sans bouton Valider.
+    setBusy(true);
+    void client.previewBobProposal(handoff.proposalId).then((preview) => {
+      const stillCurrent = globalHandoffRef.current?.id === handoff.id;
+      if (!stillCurrent) return;
+      if (
+        !preview.ok
+        || preview.value.proposalId !== handoff.proposalId
+        || typeof preview.value.expiresAt !== 'string'
+        || Date.parse(preview.value.expiresAt) <= Date.now()
+      ) {
+        pushTextRef.current('bob', t('assistant.proposalUnavailable', { personality }));
+        return;
+      }
+      pushProposalPreviewRef.current(preview.value, handoff.responseText);
+    }).catch(() => {
+      if (globalHandoffRef.current?.id === handoff.id) {
+        pushTextRef.current('bob', t('assistant.proposalUnavailable', { personality }));
+      }
+    }).finally(() => {
+      setBusy(false);
+      globalSession.consumeHandoff(handoff.id);
+    });
   }, [
     assistantFocused,
     busy,
     entitled,
     globalSession.consumeHandoff,
     globalSession.handoff,
+    client,
+    personality,
     prompt,
   ]);
 
@@ -1209,11 +1266,6 @@ export default function Assistant() {
               paddingBottom: 12,
             }}
           >
-            <SuggestionChip
-              label={t('voix.title', { personality })}
-              disabled={busy}
-              onPress={() => router.push('/voix')}
-            />
             {SUGGESTION_CHIPS.map((key) => {
               const label = t(key, { personality });
               return (

@@ -170,9 +170,28 @@ function harness(overrides: {
 }
 
 describe('RealtimeAuditedSpeechPlayerController', () => {
+  it('refuse de fermer tant que le player natif ne confirme pas son arrêt', async () => {
+    const value = harness();
+    value.playback.stopImmediately.mockImplementationOnce(() => {
+      throw new Error('native output still active');
+    });
+
+    await expect(value.controller.close()).rejects.toMatchObject({
+      code: 'playback_stop_unconfirmed',
+    });
+    expect(value.events).toContainEqual(expect.objectContaining({
+      type: 'error',
+      code: 'playback_contract_violation',
+    }));
+
+    await expect(value.controller.close()).resolves.toBeUndefined();
+    expect(value.playback.stopImmediately).toHaveBeenCalledTimes(2);
+  });
+
   it('lit une seule fois, ACK avant le contrôle, puis reprend au curseur suivant sans fuite audio', async () => {
     const control: RealtimeVoiceControlReference = {
       turnId: TURN,
+      acknowledgementId: DELIVERY,
       contextRevision: 7,
       contextDigest: DIGEST,
     };
@@ -195,6 +214,8 @@ describe('RealtimeAuditedSpeechPlayerController', () => {
       expectedMimeType: 'audio/mpeg',
       expectedByteSize: 1_024,
       maximumBytes: 1_024,
+      expectedTurnId: TURN,
+      expectedArtifactId: ARTIFACT,
     }, expect.any(AbortSignal));
     expect(value.playback.play).toHaveBeenCalledTimes(1);
     expect(value.client.acknowledgeRealtimeVoiceSpeechDelivery).toHaveBeenCalledWith(
@@ -336,7 +357,7 @@ describe('RealtimeAuditedSpeechPlayerController', () => {
 
     const interruption = value.controller.interrupt('barge_in');
     pendingDelivery.resolve(ok({
-      controlReference: { turnId: TURN, contextRevision: 7, contextDigest: DIGEST },
+      controlReference: { turnId: TURN, acknowledgementId: DELIVERY, contextRevision: 7, contextDigest: DIGEST },
     }));
     await interruption;
     await waitFor(() => value.playback.release.mock.calls.length === 1);
@@ -502,7 +523,30 @@ describe('RealtimeAuditedSpeechPlayerController', () => {
     const value = harness({
       getNext: vi.fn().mockResolvedValueOnce(ok(READY)),
       deliver: async () => ok({
-        controlReference: { turnId: TURN, contextRevision: 7, contextDigest: 'f'.repeat(64) },
+        controlReference: { turnId: TURN, acknowledgementId: DELIVERY, contextRevision: 7, contextDigest: 'f'.repeat(64) },
+      }),
+    });
+
+    await value.controller.start();
+
+    expect(value.events.some((event) => event.type === 'control_candidate')).toBe(false);
+    expect(value.events).toContainEqual(expect.objectContaining({
+      type: 'error',
+      code: 'control_reference_invalid',
+    }));
+    expect(value.controller.metricsSnapshot().cursor).toBe(1);
+  });
+
+  it('rejette un contrôle lié à un autre deliveryId malgré un tour et un contexte exacts', async () => {
+    const value = harness({
+      getNext: vi.fn().mockResolvedValueOnce(ok(READY)),
+      deliver: async () => ok({
+        controlReference: {
+          turnId: TURN,
+          acknowledgementId: '00000000-0000-4000-8000-000000000099',
+          contextRevision: 7,
+          contextDigest: DIGEST,
+        },
       }),
     });
 
@@ -587,7 +631,7 @@ describe('RealtimeAuditedSpeechPlayerController', () => {
     await waitFor(() => value.client.acknowledgeRealtimeVoiceSpeechDelivery.mock.calls.length === 1);
     value.setFence({ sessionHandle: SESSION, contextRevision: 8, contextDigest: 'c'.repeat(64) });
     delivery.resolve(ok({
-      controlReference: { turnId: TURN, contextRevision: 7, contextDigest: DIGEST },
+      controlReference: { turnId: TURN, acknowledgementId: DELIVERY, contextRevision: 7, contextDigest: DIGEST },
     }));
     await waitFor(() => value.controller.metricsSnapshot().cursor === 1);
 

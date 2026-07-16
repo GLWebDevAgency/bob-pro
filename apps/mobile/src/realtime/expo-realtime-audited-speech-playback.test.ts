@@ -4,7 +4,6 @@ import { describe, expect, it, vi } from 'vitest';
 vi.mock('expo/fetch', () => ({ fetch: vi.fn() }));
 vi.mock('expo-audio', () => ({
   createAudioPlayer: vi.fn(),
-  setAudioModeAsync: vi.fn(),
 }));
 vi.mock('expo-crypto', () => ({
   CryptoDigestAlgorithm: { SHA256: 'SHA-256' },
@@ -33,10 +32,18 @@ const LEASE: ProcessAudioLease = Object.freeze({
   owner: 'bob-live-webrtc',
   token: Symbol('test-audio-lease'),
 });
-const URL = 'https://project.supabase.co/storage/v1/object/sign/bob-live-audio/companies/company-1/bob-live/session/turn/artifact?token=opaque.token';
+const SESSION_ID = '00000000-0000-4000-8000-000000000001';
+const TURN_ID = '00000000-0000-4000-8000-000000000002';
+const ARTIFACT_ID = '00000000-0000-4000-8000-000000000003';
+const POLICY = Object.freeze({
+  mode: 'signed-url-v1' as const,
+  allowedOrigin: 'https://project.supabase.co',
+  allowedPathPrefix: `/storage/v1/object/sign/bob-live-audio/companies/company-1/bob-live/${SESSION_ID}/`,
+});
+const URL = `${POLICY.allowedOrigin}${POLICY.allowedPathPrefix}${TURN_ID}/${ARTIFACT_ID}?token=opaque.token`;
 const MP3 = Uint8Array.from([
   0x49, 0x44, 0x33, 0x04, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x06, 0x54, 0x49, 0x54, 0x32, 0x00, 0x00,
+  0x00, 0x00, 0xff, 0xfb, 0x90, 0x64, 0x00, 0x00,
 ]);
 const SHA = createHash('sha256').update(MP3).digest('hex');
 
@@ -168,6 +175,7 @@ function harness(overrides: {
   sha256?: (bytes: Uint8Array) => Promise<string>;
   file?: MemoryPrivateFile;
   player?: FakePlayer;
+  purgeStalePrivateFiles?: () => void;
   downloadTimeoutMs?: number;
   playbackTimeoutMs?: number;
 } = {}) {
@@ -177,15 +185,15 @@ function harness(overrides: {
   const runtime: ExpoRealtimeAuditedSpeechRuntime = {
     fetch,
     createPrivateFile: vi.fn(() => file),
-    sha256: overrides.sha256 ?? (async (bytes) => createHash('sha256').update(bytes).digest('hex')),
-    preparePlayback: vi.fn(async () => undefined),
+    sha256: vi.fn(
+      overrides.sha256 ?? (async (bytes) => createHash('sha256').update(bytes).digest('hex')),
+    ),
+    purgeStalePrivateFiles: vi.fn(overrides.purgeStalePrivateFiles ?? (() => undefined)),
     createPlayer: vi.fn(() => player),
     ownsAudioLease: vi.fn(overrides.owns ?? (() => true)),
   };
   const playback = new ExpoRealtimeAuditedSpeechPlayback({
-    supabaseUrl: 'https://project.supabase.co',
-    bucket: 'bob-live-audio',
-    companyId: 'company-1',
+    speechSourcePolicy: POLICY,
     audioLease: LEASE,
     downloadTimeoutMs: overrides.downloadTimeoutMs,
     playbackTimeoutMs: overrides.playbackTimeoutMs,
@@ -200,6 +208,8 @@ function request(overrides: Partial<Parameters<ExpoRealtimeAuditedSpeechPlayback
     expectedMimeType: 'audio/mpeg' as const,
     expectedByteSize: MP3.byteLength,
     maximumBytes: MP3.byteLength,
+    expectedTurnId: TURN_ID,
+    expectedArtifactId: ARTIFACT_ID,
     ...overrides,
   };
 }
@@ -208,25 +218,37 @@ async function expectCode(promise: Promise<unknown>, code: string): Promise<void
   await expect(promise).rejects.toMatchObject({ code });
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((onResolve) => { resolve = onResolve; });
+  return { promise, resolve };
+}
+
 describe('ExpoRealtimeAuditedSpeechPlayback config', () => {
   it.each([
-    ['origine HTTP', { supabaseUrl: 'http://project.supabase.co' }],
-    ['origine avec chemin', { supabaseUrl: 'https://project.supabase.co/storage' }],
-    ['origine avec query', { supabaseUrl: 'https://project.supabase.co?token=leak' }],
-    ['bucket invalide', { bucket: '../public' }],
-    ['tenant invalide', { companyId: 'company/other' }],
+    ['origine HTTP', { speechSourcePolicy: { ...POLICY, allowedOrigin: 'http://project.supabase.co' } }],
+    ['origine avec chemin', { speechSourcePolicy: { ...POLICY, allowedOrigin: 'https://project.supabase.co/storage' } }],
+    ['origine avec query', { speechSourcePolicy: { ...POLICY, allowedOrigin: 'https://project.supabase.co?token=leak' } }],
+    ['bucket invalide', { speechSourcePolicy: { ...POLICY, allowedPathPrefix: POLICY.allowedPathPrefix.replace('bob-live-audio', '../public') } }],
+    ['tenant invalide', { speechSourcePolicy: { ...POLICY, allowedPathPrefix: POLICY.allowedPathPrefix.replace('company-1', 'company/other') } }],
     ['timeout réseau non borné', { downloadTimeoutMs: 31_000 }],
     ['timeout player non borné', { playbackTimeoutMs: 121_000 }],
     ['lease non realtime', { audioLease: { ...LEASE, mode: 'legacy_output' as const } }],
   ])('rejette la configuration non sûre (%s)', (_label, override) => {
     const runtime = harness().runtime;
     expect(() => new ExpoRealtimeAuditedSpeechPlayback({
-      supabaseUrl: 'https://project.supabase.co',
-      bucket: 'bob-live-audio',
-      companyId: 'company-1',
+      speechSourcePolicy: POLICY,
       audioLease: LEASE,
       ...override,
     }, runtime)).toThrow(expect.objectContaining({ code: 'INVALID_CONFIG' }));
+  });
+
+  it('purge les reliquats privés au démarrage et échoue fermé si la purge est impossible', () => {
+    const clean = harness();
+    expect(clean.runtime.purgeStalePrivateFiles).toHaveBeenCalledTimes(1);
+    expect(() => harness({
+      purgeStalePrivateFiles: () => { throw new Error('private cache path'); },
+    })).toThrow(expect.objectContaining({ code: 'CLEANUP_FAILED' }));
   });
 });
 
@@ -259,12 +281,40 @@ describe('ExpoRealtimeAuditedSpeechPlayback download', () => {
     expect(value.file.exists).toBe(false);
   });
 
+  it('honore en développement une policy HTTP strictement loopback', async () => {
+    const localPolicy = Object.freeze({
+      ...POLICY,
+      allowedOrigin: 'http://127.0.0.1:54321',
+    });
+    const localUrl = `${localPolicy.allowedOrigin}${localPolicy.allowedPathPrefix}${TURN_ID}/${ARTIFACT_ID}?token=opaque.token`;
+    const base = harness();
+    const runtime: ExpoRealtimeAuditedSpeechRuntime = {
+      ...base.runtime,
+      fetch: vi.fn(async () => response({ url: localUrl }).value),
+    };
+    const playback = new ExpoRealtimeAuditedSpeechPlayback({
+      speechSourcePolicy: localPolicy,
+      audioLease: LEASE,
+    }, runtime);
+
+    const verified = await playback.downloadVerified(
+      request({ sourceUrl: localUrl }),
+      new AbortController().signal,
+    );
+
+    expect(runtime.fetch).toHaveBeenCalledWith(localUrl, expect.any(Object));
+    playback.release(verified);
+  });
+
   it.each([
     ['HTTP', URL.replace('https:', 'http:')],
     ['origine', URL.replace('project.supabase.co', 'evil.example')],
     ['tenant', URL.replace('companies/company-1/', 'companies/company-2/')],
     ['bucket', URL.replace('bob-live-audio', 'public-documents')],
-    ['path', URL.replace('/bob-live/session/turn/artifact', '/documents/session/turn/artifact')],
+    ['session', URL.replace(SESSION_ID, '00000000-0000-4000-8000-000000000099')],
+    ['turn', URL.replace(TURN_ID, '00000000-0000-4000-8000-000000000098')],
+    ['artefact', URL.replace(ARTIFACT_ID, '00000000-0000-4000-8000-000000000097')],
+    ['path', URL.replace('/bob-live/', '/documents/')],
     ['query supplémentaire', `${URL}&download=true`],
     ['query dupliquée', `${URL}&token=second`],
     ['token encodé', URL.replace('opaque.token', 'opaque%2Etoken')],
@@ -279,9 +329,29 @@ describe('ExpoRealtimeAuditedSpeechPlayback download', () => {
     expect(value.fetch).not.toHaveBeenCalled();
   });
 
+  it.each(['audio/ogg', 'audio/webm', 'audio/mp4', 'audio/aac', 'audio/flac'] as const)(
+    'refuse le codec non certifié %s avant réseau',
+    async (expectedMimeType) => {
+      const value = harness();
+      // Fixture hostile injecté à la frontière runtime : ces MIME ne font volontairement plus
+      // partie du contrat TypeScript de production.
+      const malformedRequest = request({
+        expectedMimeType: expectedMimeType as unknown as 'audio/mpeg',
+      });
+      await expectCode(
+        value.playback.downloadVerified(
+          malformedRequest,
+          new AbortController().signal,
+        ),
+        'INVALID_REQUEST',
+      );
+      expect(value.fetch).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([
     ['redirection marquée', response({ redirected: true }).value],
-    ['URL finale différente', response({ url: URL.replace('artifact', 'other') }).value],
+    ['URL finale différente', response({ url: URL.replace(ARTIFACT_ID, 'other') }).value],
     ['redirection HTTP', response({ status: 302 }).value],
     ['MIME divergent', response({ mimeType: 'application/octet-stream' }).value],
     ['MIME paramétré', response({ mimeType: 'audio/mpeg; charset=binary' }).value],
@@ -395,13 +465,52 @@ describe('ExpoRealtimeAuditedSpeechPlayback download', () => {
   });
 
   it('fence la perte du lease audio au milieu du flux', async () => {
+    const onCancel = vi.fn();
+    const streamed = response({ onCancel });
     let checks = 0;
-    const value = harness({ owns: () => ++checks < 4 });
+    const value = harness({
+      fetch: async () => streamed.value,
+      owns: () => ++checks < 2,
+    });
     await expectCode(
       value.playback.downloadVerified(request(), new AbortController().signal),
       'AUDIO_NOT_OWNED',
     );
+    expect(onCancel).toHaveBeenCalled();
     expect(value.file.exists).toBe(false);
+  });
+
+  it('borne et annule aussi la relecture native et le SHA après le download', async () => {
+    const bytesPending = deferred<Uint8Array>();
+    const bytesValue = harness();
+    vi.spyOn(bytesValue.file, 'bytes').mockReturnValue(bytesPending.promise);
+    const bytesAbort = new AbortController();
+    const pendingBytes = bytesValue.playback.downloadVerified(request(), bytesAbort.signal);
+    await vi.waitFor(() => expect(bytesValue.file.exists).toBe(true));
+    bytesAbort.abort();
+    await expectCode(pendingBytes, 'ABORTED');
+    expect(bytesValue.file.exists).toBe(false);
+
+    const hashPending = deferred<string>();
+    const hashValue = harness({ sha256: () => hashPending.promise });
+    const hashAbort = new AbortController();
+    const pendingHash = hashValue.playback.downloadVerified(request(), hashAbort.signal);
+    await vi.waitFor(() => expect(hashValue.runtime.sha256).toHaveBeenCalledTimes(1));
+    hashAbort.abort();
+    await expectCode(pendingHash, 'ABORTED');
+    expect(hashValue.file.exists).toBe(false);
+  });
+
+  it('annule le body si Content-Length est malformé', async () => {
+    const onCancel = vi.fn();
+    const malformed = response({ contentLength: '+16', onCancel });
+    const value = harness({ fetch: async () => malformed.value });
+
+    await expectCode(
+      value.playback.downloadVerified(request(), new AbortController().signal),
+      'INVALID_RESPONSE',
+    );
+    expect(onCancel).toHaveBeenCalled();
   });
 
   it('ne fuit jamais URL, token, octets ou erreur native dans son erreur publique', async () => {
@@ -444,12 +553,60 @@ describe('ExpoRealtimeAuditedSpeechPlayback playback', () => {
     const playing = value.playback.play(verified, new AbortController().signal);
     await Promise.resolve();
 
-    value.playback.stopImmediately();
+    expect(() => value.playback.stopImmediately()).not.toThrow();
 
     expect(value.player.pause).toHaveBeenCalledTimes(1);
     expect(value.player.remove).toHaveBeenCalledTimes(1);
     await expectCode(playing, 'ABORTED');
     value.playback.release(verified);
+  });
+
+  it('rend deux appels play atomiques : aucun player ne peut devenir orphelin', async () => {
+    const value = harness();
+    const verified = await value.playback.downloadVerified(request(), new AbortController().signal);
+    const first = value.playback.play(verified, new AbortController().signal);
+    const second = value.playback.play(verified, new AbortController().signal);
+
+    await expectCode(second, 'PLAYBACK_FAILED');
+    expect(value.runtime.createPlayer).toHaveBeenCalledTimes(1);
+    expect(value.player.play).toHaveBeenCalledTimes(1);
+    value.player.finish();
+    await expect(first).resolves.toBeUndefined();
+    value.playback.release(verified);
+  });
+
+  it('remonte un arrêt natif impossible et conserve une voie de retry', async () => {
+    const value = harness();
+    value.player.pause.mockImplementation(() => { throw new Error('pause'); });
+    value.player.remove.mockImplementation(() => { throw new Error('remove'); });
+    const verified = await value.playback.downloadVerified(request(), new AbortController().signal);
+    const playing = value.playback.play(verified, new AbortController().signal);
+
+    expect(() => value.playback.stopImmediately()).toThrow(expect.objectContaining({
+      code: 'PLAYBACK_STOP_FAILED',
+    }));
+
+    await expectCode(playing, 'PLAYBACK_STOP_FAILED');
+    expect(() => value.playback.release(verified)).toThrow(expect.objectContaining({
+      code: 'PLAYBACK_STOP_FAILED',
+    }));
+    value.player.pause.mockReset();
+    value.player.remove.mockReset();
+    expect(() => value.playback.release(verified)).not.toThrow();
+    expect(value.file.exists).toBe(false);
+  });
+
+  it('ne valide pas une lecture dont le player est arrêté mais non libéré', async () => {
+    const value = harness();
+    value.player.remove.mockImplementation(() => { throw new Error('remove'); });
+    const verified = await value.playback.downloadVerified(request(), new AbortController().signal);
+    const playing = value.playback.play(verified, new AbortController().signal);
+
+    value.player.finish();
+
+    await expectCode(playing, 'PLAYBACK_FAILED');
+    value.player.remove.mockReset();
+    expect(() => value.playback.release(verified)).not.toThrow();
   });
 
   it('l’abort pendant lecture coupe physiquement le player', async () => {
@@ -547,16 +704,29 @@ describe('ExpoRealtimeAuditedSpeechPlayback playback', () => {
 });
 
 describe('hasRealtimeSpeechAudioSignature', () => {
+  const wav = Uint8Array.from([
+    0x52, 0x49, 0x46, 0x46, 38, 0, 0, 0, 0x57, 0x41, 0x56, 0x45,
+    0x66, 0x6d, 0x74, 0x20, 16, 0, 0, 0, 1, 0, 1, 0,
+    0x80, 0x3e, 0, 0, 0x00, 0x7d, 0, 0, 2, 0, 16, 0,
+    0x64, 0x61, 0x74, 0x61, 2, 0, 0, 0, 0, 0,
+  ]);
+
   it.each([
-    ['audio/mpeg', Uint8Array.from([0x49, 0x44, 0x33])],
-    ['audio/wav', Uint8Array.from([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x41, 0x56, 0x45])],
-    ['audio/ogg', Uint8Array.from([0x4f, 0x67, 0x67, 0x53])],
-    ['audio/webm', Uint8Array.from([0x1a, 0x45, 0xdf, 0xa3])],
-    ['audio/mp4', Uint8Array.from([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70])],
-    ['audio/aac', Uint8Array.from([0xff, 0xf1])],
-    ['audio/flac', Uint8Array.from([0x66, 0x4c, 0x61, 0x43])],
+    ['audio/mpeg', Uint8Array.from([0xff, 0xfb, 0x90, 0x64])],
+    ['audio/wav', wav],
   ] as const)('reconnaît la signature %s', (mimeType, prefix) => {
     expect(hasRealtimeSpeechAudioSignature(mimeType, prefix)).toBe(true);
+  });
+
+  it('rejette un simple tag ID3 ou RIFF sans trame/conteneur audio valide', () => {
+    expect(hasRealtimeSpeechAudioSignature(
+      'audio/mpeg',
+      Uint8Array.from([0x49, 0x44, 0x33, 4, 0, 0, 0, 0, 0, 0]),
+    )).toBe(false);
+    expect(hasRealtimeSpeechAudioSignature(
+      'audio/wav',
+      Uint8Array.from([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x41, 0x56, 0x45]),
+    )).toBe(false);
   });
 
   it('ne confond pas un payload arbitraire avec de l’audio', () => {

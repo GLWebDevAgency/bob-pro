@@ -18,6 +18,7 @@ function sameReference(
   right: RealtimeVoiceControlReference,
 ): boolean {
   return left.turnId === right.turnId
+    && left.acknowledgementId === right.acknowledgementId
     && left.contextRevision === right.contextRevision
     && left.contextDigest === right.contextDigest;
 }
@@ -51,9 +52,13 @@ export class RealtimeControlAcknowledgementGate {
   ) {}
 
   async acknowledge(
-    reference: RealtimeAgentControlReference,
+    reference: RealtimeAgentControlReference | RealtimeVoiceControlReference,
   ): Promise<RealtimeAgentControl | null> {
     if (this.closed) return null;
+    // Une metadata provider ne prouve pas que l'audio correspondant a réellement été
+    // délivré. Seule la référence retournée après l'ACK acoustique durable porte cet ID.
+    // WebRTC direct reste donc lecture/parole seule tant qu'il n'offre pas ce reçu.
+    if (!('acknowledgementId' in reference)) return null;
     const fence = this.currentFence();
     if (!fence || !fenceMatches(fence, fence.sessionHandle, reference)) return null;
 

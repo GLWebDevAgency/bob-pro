@@ -1,0 +1,9 @@
+{
+  "platforms": ["apple", "android"],
+  "apple": {
+    "modules": ["BobLiveAudioModule"]
+  },
+  "android": {
+    "modules": ["expo.modules.bobliveaudio.BobLiveAudioModule"]
+  }
+}

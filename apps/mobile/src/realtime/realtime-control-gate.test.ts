@@ -7,8 +7,15 @@ import {
 
 const TURN = '00000000-0000-4000-8000-000000000010';
 const HANDLE = '00000000-0000-4000-8000-000000000011';
+const ACKNOWLEDGEMENT = '00000000-0000-4000-8000-000000000012';
 const DIGEST = 'a'.repeat(64);
-const REFERENCE = { turnId: TURN, contextRevision: 4, contextDigest: DIGEST } as const;
+const REFERENCE = {
+  turnId: TURN,
+  acknowledgementId: ACKNOWLEDGEMENT,
+  contextRevision: 4,
+  contextDigest: DIGEST,
+} as const;
+const PROVIDER_REFERENCE = { turnId: TURN, contextRevision: 4, contextDigest: DIGEST } as const;
 
 function approved(
   override: Partial<RealtimeVoiceControlAcknowledgement> = {},
@@ -28,6 +35,17 @@ function deferred<T>() {
 }
 
 describe('RealtimeControlAcknowledgementGate', () => {
+  it('rejette sans réseau une metadata provider dépourvue de preuve de livraison audio', async () => {
+    const acknowledge = vi.fn();
+    const gate = new RealtimeControlAcknowledgementGate(
+      { acknowledgeRealtimeVoiceControl: acknowledge } as unknown as Pick<BobClient, 'acknowledgeRealtimeVoiceControl'>,
+      () => ({ sessionHandle: HANDLE, contextRevision: 4, contextDigest: DIGEST }),
+    );
+
+    await expect(gate.acknowledge(PROVIDER_REFERENCE)).resolves.toBeNull();
+    expect(acknowledge).not.toHaveBeenCalled();
+  });
+
   it('ne libère que le contrôle exact approuvé par notre API sur le contexte encore courant', async () => {
     let fence: RealtimePublishedContextFence | null = {
       sessionHandle: HANDLE,
@@ -40,7 +58,13 @@ describe('RealtimeControlAcknowledgementGate', () => {
       () => fence,
     );
 
-    await expect(gate.acknowledge(REFERENCE)).resolves.toEqual(approved());
+    await expect(gate.acknowledge(REFERENCE)).resolves.toEqual({
+      turnId: TURN,
+      kind: 'answer',
+      navigate: '/cloture',
+      contextRevision: 4,
+      contextDigest: DIGEST,
+    });
     expect(acknowledge).toHaveBeenCalledWith(HANDLE, REFERENCE, expect.any(AbortSignal));
 
     fence = null;
@@ -105,6 +129,20 @@ describe('RealtimeControlAcknowledgementGate', () => {
         acknowledgeRealtimeVoiceControl: vi.fn(async () => ({
           ok: true as const,
           value: approved({ turnId: '00000000-0000-4000-8000-000000000099' }),
+        })),
+      } as unknown as Pick<BobClient, 'acknowledgeRealtimeVoiceControl'>,
+      () => ({ sessionHandle: HANDLE, contextRevision: 4, contextDigest: DIGEST }),
+    );
+
+    await expect(gate.acknowledge(REFERENCE)).resolves.toBeNull();
+  });
+
+  it('rejette une réponse liée à un autre acquittement audio', async () => {
+    const gate = new RealtimeControlAcknowledgementGate(
+      {
+        acknowledgeRealtimeVoiceControl: vi.fn(async () => ({
+          ok: true as const,
+          value: approved({ acknowledgementId: '00000000-0000-4000-8000-000000000099' }),
         })),
       } as unknown as Pick<BobClient, 'acknowledgeRealtimeVoiceControl'>,
       () => ({ sessionHandle: HANDLE, contextRevision: 4, contextDigest: DIGEST }),

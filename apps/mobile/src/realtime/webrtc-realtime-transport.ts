@@ -1,4 +1,8 @@
-import type { BobClient } from '@bob/api-client';
+import type {
+  BobClient,
+  RealtimeVoiceConfig,
+  RealtimeVoiceSpeechSourcePolicy,
+} from '@bob/api-client';
 import { randomUUID } from 'expo-crypto';
 import type { MediaStream, MediaStreamTrack } from 'react-native-webrtc';
 import type RTCDataChannel from 'react-native-webrtc/lib/typescript/RTCDataChannel';
@@ -28,6 +32,80 @@ const RTP_PROBE_INTERVAL_MS = 100;
 const RTP_PROBE_BUDGET_MS = 2_500;
 const MAX_USER_TEXT_CHARS = 2_000;
 
+type SdpDirection = 'sendrecv' | 'sendonly' | 'recvonly' | 'inactive';
+
+interface SdpMediaSection {
+  readonly kind: string;
+  readonly port: number;
+  readonly directions: SdpDirection[];
+}
+
+const SDP_DIRECTIONS = new Set<SdpDirection>([
+  'sendrecv',
+  'sendonly',
+  'recvonly',
+  'inactive',
+]);
+
+/**
+ * Retourne la direction effective de l'unique m-line audio active.
+ *
+ * L'absence de direction vaut `sendrecv` en SDP. Les directions dupliquées ou les
+ * topologies audio multiples sont refusées : cette connexion n'a qu'un micro et le
+ * flux vocal descendant passe exclusivement par le lecteur local audité.
+ */
+function activeAudioDirection(sdp: string): SdpDirection | null {
+  const sessionDirections: SdpDirection[] = [];
+  const mediaSections: SdpMediaSection[] = [];
+  let currentSection: SdpMediaSection | null = null;
+
+  for (const rawLine of sdp.split(/\r?\n/u)) {
+    const line = rawLine.trim();
+    if (line.startsWith('m=')) {
+      const parts = line.slice(2).split(/\s+/u);
+      const portToken = parts[1];
+      if (parts.length < 3 || !portToken || !/^\d+(?:\/\d+)?$/u.test(portToken)) {
+        return null;
+      }
+      currentSection = {
+        kind: parts[0]?.toLowerCase() ?? '',
+        port: Number(portToken.split('/')[0]),
+        directions: [],
+      };
+      mediaSections.push(currentSection);
+      continue;
+    }
+    if (!line.startsWith('a=')) continue;
+    const attribute = line.slice(2).toLowerCase();
+    if (!SDP_DIRECTIONS.has(attribute as SdpDirection)) continue;
+    const direction = attribute as SdpDirection;
+    if (currentSection) currentSection.directions.push(direction);
+    else sessionDirections.push(direction);
+  }
+
+  const activeAudioSections = mediaSections.filter(
+    (section) => section.kind === 'audio' && section.port !== 0,
+  );
+  if (activeAudioSections.length !== 1 || sessionDirections.length > 1) return null;
+  const [audio] = activeAudioSections;
+  if (!audio || audio.directions.length > 1) return null;
+  return audio.directions[0] ?? sessionDirections[0] ?? 'sendrecv';
+}
+
+function assertMicrophoneOnlyOffer(sdp: string): void {
+  if (activeAudioDirection(sdp) !== 'sendonly') {
+    throw new RealtimeTransportError('bootstrap_failed');
+  }
+}
+
+function assertProviderReceiveOnlyAnswer(sdp: string): void {
+  // Dans une answer, `recvonly` est exprimé du point de vue du provider : le mobile
+  // envoie le micro, mais ne reçoit aucune piste acoustique WebRTC.
+  if (activeAudioDirection(sdp) !== 'recvonly') {
+    throw new RealtimeTransportError('provider_error');
+  }
+}
+
 function finiteNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
@@ -46,6 +124,14 @@ export interface RealtimeWebRtcTransportOptions {
   loadRuntime?: () => WebRtcRuntime | null;
 }
 
+export type RealtimeWebRtcNegotiation = RealtimeVoiceConfig & { readonly transport: 'webrtc' };
+
+export function isRealtimeWebRtcNegotiation(
+  value: RealtimeVoiceConfig,
+): value is RealtimeWebRtcNegotiation {
+  return value.transport === 'webrtc';
+}
+
 interface AttemptResources {
   audioLease: ProcessAudioLease | null;
   stream: MediaStream | null;
@@ -56,7 +142,8 @@ interface AttemptResources {
 }
 
 export class RealtimeWebRtcTransport implements VoiceConversationTransport {
-  readonly capabilities = { fullDuplex: true, bargeIn: true, remoteAudio: true } as const;
+  /** WebRTC n'est ici que l'oreille/VAD : la bouche est le canal acoustique audité composé. */
+  readonly capabilities = { fullDuplex: true, bargeIn: true, remoteAudio: false } as const;
   private currentState: RealtimeTransportState = INITIAL_REALTIME_STATE;
   private readonly listeners = new Set<(event: RealtimeTransportEvent) => void>();
   private readonly metrics = new RealtimeMetricsTracker();
@@ -92,6 +179,8 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
   private remoteAudioActive = false;
   private bootstrapAbort: AbortController | null = null;
   private sessionHandle: string | null = null;
+  private speechSourcePolicy: RealtimeVoiceSpeechSourcePolicy | null = null;
+  private readonly hangupTasks = new Map<string, Promise<void>>();
   private closingPromise: Promise<void> | null = null;
   private pendingConnectAbort: AbortController | null = null;
   private connectivityState: 'connected' | 'disconnected' | null = null;
@@ -99,6 +188,7 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
 
   constructor(
     private readonly client: BobClient,
+    private readonly negotiation: RealtimeWebRtcNegotiation,
     private readonly options: RealtimeWebRtcTransportOptions = {},
   ) {}
 
@@ -108,6 +198,15 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
 
   getSessionHandle(): string | null {
     return this.sessionHandle;
+  }
+
+  /** Capacités internes de la composition auditée ; les jetons ne quittent jamais le processus. */
+  getProcessAudioLease(): ProcessAudioLease | null {
+    return this.audioLease;
+  }
+
+  getSpeechSourcePolicy(): RealtimeVoiceSpeechSourcePolicy | null {
+    return this.speechSourcePolicy;
   }
 
   subscribe(listener: (event: RealtimeTransportEvent) => void): () => void {
@@ -143,6 +242,7 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
     this.pendingAgentControlReference = null;
     this.remoteAudioActive = false;
     this.connectivityState = null;
+    this.speechSourcePolicy = null;
     this.lastInboundPackets = 0;
     this.rtpProbeBaselinePackets = 0;
     this.rtpProbeBaselineReady = false;
@@ -162,13 +262,11 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
       const runtime = (this.options.loadRuntime ?? loadWebRtcRuntime)();
       if (!runtime) throw new RealtimeTransportError('native_module_unavailable');
 
-      const config = await this.client.realtimeVoiceConfig();
-      this.assertGeneration(generation);
-      if (!config.ok) throw new RealtimeTransportError('bootstrap_failed');
-      if (!config.value.available) {
-        const reason = config.value.availabilityReason === 'not_entitled'
+      const config = this.negotiation;
+      if (!config.available) {
+        const reason = config.availabilityReason === 'not_entitled'
           ? 'not_entitled'
-          : config.value.availabilityReason === 'entitlement_unavailable'
+          : config.availabilityReason === 'entitlement_unavailable'
             ? 'entitlement_unavailable'
             : 'backend_disabled';
         throw new RealtimeTransportError(reason);
@@ -213,15 +311,28 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
       const channel = peer.createDataChannel('oai-events', { ordered: true });
       resources.channel = channel;
       this.channel = channel;
-      peer.addTrack(this.microphoneTrack, stream);
+      // RN-WebRTC 124 expose addTransceiver de façon synchrone. Cette API est préférée à
+      // addTrack, qui crée par défaut un transceiver sendrecv et autoriserait donc un
+      // downlink provider avant que le lecteur signé/audité ait validé l'audio.
+      const microphoneTransceiver = peer.addTransceiver(this.microphoneTrack, {
+        direction: 'sendonly',
+        streams: [stream],
+      });
+      if (microphoneTransceiver.direction !== 'sendonly') {
+        throw new RealtimeTransportError('bootstrap_failed');
+      }
       this.attachPeerEvents(peer, generation);
       this.attachDataChannelEvents(channel, generation);
-      const offer = await peer.createOffer();
+      const offer = await peer.createOffer({
+        offerToReceiveAudio: false,
+        offerToReceiveVideo: false,
+      });
       this.assertGeneration(generation);
       await peer.setLocalDescription(offer);
       this.assertGeneration(generation);
       const offerSdp = peer.localDescription?.sdp ?? offer?.sdp;
       if (typeof offerSdp !== 'string') throw new RealtimeTransportError('bootstrap_failed');
+      assertMicrophoneOnlyOffer(offerSdp);
       this.metrics.markOfferSent();
 
       const requestedSessionHandle = randomUUID();
@@ -234,17 +345,25 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
       this.assertGeneration(generation);
       if (!bootstrap.ok) throw new RealtimeTransportError('bootstrap_failed');
       if (
-        bootstrap.value.sessionHandle !== requestedSessionHandle
-        || bootstrap.value.configVersion !== config.value.configVersion
-        || bootstrap.value.model !== config.value.model
-        || bootstrap.value.voice !== config.value.voice
-        || bootstrap.value.maxSessionSeconds !== config.value.maxSessionSeconds
+        bootstrap.value.transport !== 'webrtc'
+        || bootstrap.value.sessionHandle !== requestedSessionHandle
+        || bootstrap.value.configVersion !== config.configVersion
+        || bootstrap.value.model !== config.model
+        || bootstrap.value.voice !== config.voice
+        || bootstrap.value.maxSessionSeconds !== config.maxSessionSeconds
       ) {
         throw new RealtimeTransportError('bootstrap_failed');
       }
+      this.speechSourcePolicy = bootstrap.value.speechSourcePolicy;
       const hardExpiryDelayMs = Date.parse(bootstrap.value.hardExpiresAt) - Date.now();
       if (!Number.isFinite(hardExpiryDelayMs) || hardExpiryDelayMs <= 0) {
         throw new RealtimeTransportError('bootstrap_failed');
+      }
+      try {
+        assertProviderReceiveOnlyAnswer(bootstrap.value.answerSdp);
+      } catch (error) {
+        this.emit({ type: 'error', code: 'provider_downlink_rejected' });
+        throw error;
       }
       this.metrics.markAnswerReceived();
       await peer.setRemoteDescription(new runtime.RTCSessionDescription({
@@ -252,6 +371,7 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
         sdp: bootstrap.value.answerSdp,
       }));
       this.assertGeneration(generation);
+      this.assertNoReceivingTransceiver(peer);
       await this.waitForDataChannel(channel, generation);
       this.assertGeneration(generation);
       this.metrics.markDataChannelOpened();
@@ -267,7 +387,9 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
       this.assertGeneration(generation);
     } catch (error) {
       if (generation !== this.generation) {
-        this.disposeAttemptResources(resources);
+        const nativeDisposed = this.disposeAttemptResources(resources);
+        await this.hangupSession(resources.sessionHandle);
+        if (!nativeDisposed) throw new RealtimeTransportError('provider_error');
         throw new RealtimeTransportError('aborted');
       }
       const reason = error instanceof RealtimeTransportError ? error.reason : 'bootstrap_failed';
@@ -321,7 +443,7 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
       this.pendingConnectAbort?.abort();
       return this.closingPromise;
     }
-    if (this.currentState.phase === 'closed' || this.currentState.phase === 'closing') return Promise.resolve();
+    if (this.currentState.phase === 'closed') return Promise.resolve();
     ++this.generation;
     this.transition({ type: 'CLOSE' });
     this.bootstrapAbort?.abort();
@@ -348,12 +470,6 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
       bootstrapAbort: null,
       sessionHandle: this.sessionHandle,
     };
-    this.channel = null;
-    this.peer = null;
-    this.localStream = null;
-    this.microphoneTrack = null;
-    this.audioLease = null;
-    this.sessionHandle = null;
     this.responseActive = false;
     this.responseGenerationDone = false;
     this.responseStatus = null;
@@ -361,22 +477,36 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
     this.pendingAgentControlReference = null;
     this.remoteAudioActive = false;
     this.connectivityState = null;
-    this.disposeAttemptResources(resources);
-    const closing = resources.sessionHandle === null
-      ? Promise.resolve()
-      : Promise.resolve().then(() => this.client.hangupRealtimeVoiceCall(resources.sessionHandle!)).then((result) => {
-          if (!result.ok) this.emit({ type: 'error', code: 'server_hangup_pending' });
-        }).catch(() => {
-          this.emit({ type: 'error', code: 'server_hangup_pending' });
-        });
+    const closing = Promise.resolve().then(async (): Promise<void> => {
+      // Le hangup est armé avant CLOSED, mais ne retarde pas la preuve de fermeture native.
+      // Un connect réentrant verra `closingPromise` et attendra quand même sa résolution.
+      const hangup = this.hangupSession(resources.sessionHandle);
+      const nativeDisposed = this.disposeAttemptResources(resources);
+      if (!nativeDisposed) {
+        await hangup;
+        this.emit({ type: 'error', code: 'native_audio_stop_unconfirmed' });
+        throw new RealtimeTransportError('provider_error');
+      }
+      if (this.channel === resources.channel) this.channel = null;
+      if (this.peer === resources.peer) this.peer = null;
+      if (this.localStream === resources.stream) {
+        this.localStream = null;
+        this.microphoneTrack = null;
+      }
+      if (this.audioLease?.token === resources.audioLease?.token) this.audioLease = null;
+      if (this.sessionHandle === resources.sessionHandle) this.sessionHandle = null;
+      if (this.sessionHandle === null) this.speechSourcePolicy = null;
+      this.transition({ type: 'CLOSED' });
+      this.emit({ type: 'metrics', metrics: this.metrics.snapshot() });
+      await hangup;
+    });
     const tracked = closing.finally(() => {
       if (this.closingPromise === tracked) this.closingPromise = null;
     });
     this.closingPromise = tracked;
     // Le gate est visible AVANT CLOSED : un observateur réentrant ne peut pas démarrer un nouveau
-    // peer avant que le hangup opaque précédent soit au moins réglé ou explicitement annulé.
-    this.transition({ type: 'CLOSED' });
-    this.emit({ type: 'metrics', metrics: this.metrics.snapshot() });
+    // peer avant la preuve de fermeture native. Une erreur conserve les références et le lease
+    // pour permettre une relance explicite, tout en interdisant tout fallback concurrent.
     return tracked;
   }
 
@@ -422,6 +552,9 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
   }
 
   private attachPeerEvents(peer: RTCPeerConnection, generation: number): void {
+    runtimeEvents(peer).addEventListener('track', (event: unknown) => {
+      this.rejectUnauthorizedRemoteTrack(event, generation);
+    });
     runtimeEvents(peer).addEventListener('connectionstatechange', () => {
       if (generation !== this.generation) return;
       this.handlePeerConnectivity(peer, generation);
@@ -430,6 +563,56 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
       if (generation !== this.generation) return;
       this.handlePeerConnectivity(peer, generation);
     });
+  }
+
+  private rejectUnauthorizedRemoteTrack(event: unknown, generation: number): void {
+    const value = event && typeof event === 'object'
+      ? event as {
+          track?: MediaStreamTrack | null;
+          receiver?: { track?: MediaStreamTrack | null } | null;
+          transceiver?: { receiver?: { track?: MediaStreamTrack | null }; stop?: () => void } | null;
+          streams?: MediaStream[];
+        }
+      : {};
+    const tracks = new Set<MediaStreamTrack>();
+    if (value.track) tracks.add(value.track);
+    if (value.receiver?.track) tracks.add(value.receiver.track);
+    if (value.transceiver?.receiver?.track) tracks.add(value.transceiver.receiver.track);
+    for (const stream of value.streams ?? []) {
+      for (const track of stream.getTracks()) tracks.add(track);
+    }
+    for (const track of tracks) {
+      try { track.stop(); } catch { /* piste provider déjà arrêtée */ }
+    }
+    try { value.transceiver?.stop?.(); } catch { /* transceiver provider déjà arrêté */ }
+    // Une piste d'une génération déjà fencée doit être neutralisée, mais elle ne peut plus
+    // dégrader ni fermer le nouveau peer devenu autoritaire.
+    if (generation !== this.generation) return;
+    this.failClosedUnauthorizedDownlink(generation);
+  }
+
+  private assertNoReceivingTransceiver(peer: RTCPeerConnection): void {
+    for (const transceiver of peer.getTransceivers()) {
+      if (
+        transceiver.direction === 'recvonly'
+        || transceiver.direction === 'sendrecv'
+        || transceiver.currentDirection === 'recvonly'
+        || transceiver.currentDirection === 'sendrecv'
+      ) {
+        try { transceiver.receiver.track?.stop(); } catch { /* piste provider déjà arrêtée */ }
+        try { transceiver.stop(); } catch { /* transceiver provider déjà arrêté */ }
+        this.emit({ type: 'error', code: 'provider_downlink_rejected' });
+        throw new RealtimeTransportError('provider_error');
+      }
+    }
+  }
+
+  private failClosedUnauthorizedDownlink(generation: number): void {
+    if (generation !== this.generation) return;
+    this.emit({ type: 'error', code: 'provider_downlink_rejected' });
+    // `degradeAndClose` transitionne et dispose le peer de façon synchrone avant son
+    // premier await : aucun échantillon distant ne peut atteindre la sortie acoustique.
+    void this.degradeAndClose('provider_error', generation);
   }
 
   private handlePeerConnectivity(peer: RTCPeerConnection, generation: number): void {
@@ -688,6 +871,13 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
           if (received !== null) inboundPackets += Math.max(0, received);
         }
       }
+      if (inboundPackets > 0) {
+        // Défense en profondeur : certains runtimes natifs peuvent exposer les paquets dans
+        // getStats avant de livrer l'événement `track`. Le moindre paquet audio entrant viole
+        // le contrat : seul le lecteur de blobs signés/audités a le droit de parler.
+        this.failClosedUnauthorizedDownlink(generation);
+        return;
+      }
       const hadFirstInboundRtp = this.metrics.snapshot().speechStoppedToFirstInboundRtpMs !== null;
       let baselinePrimed = false;
       if (
@@ -765,25 +955,54 @@ export class RealtimeWebRtcTransport implements VoiceConversationTransport {
     await this.close(reason === 'aborted' ? 'aborted' : 'fallback');
   }
 
-  private disposeAttemptResources(resources: AttemptResources): void {
+  private disposeAttemptResources(resources: AttemptResources): boolean {
     resources.bootstrapAbort?.abort();
-    this.disposeNativeOnce(resources.channel, (channel) => channel.close());
-    this.disposeNativeOnce(resources.peer, (peer) => peer.close());
+    const channelClosed = this.disposeNativeOnce(resources.channel, (channel) => channel.close());
+    const peerClosed = this.disposeNativeOnce(resources.peer, (peer) => peer.close());
     // RN-WebRTC 124: track.stop() ne libere pas l'AudioSource natif. release(true)
     // retire puis release chaque piste avant de detruire le MediaStream.
-    this.disposeNativeOnce(resources.stream, (stream) => {
+    const streamReleased = this.disposeNativeOnce(resources.stream, (stream) => {
+      let trackStopFailed = false;
       for (const track of stream.getTracks()) {
-        try { track.stop(); } catch { /* piste deja arretee */ }
+        try { track.stop(); } catch { trackStopFailed = true; }
       }
       stream.release(true);
+      if (trackStopFailed) throw new Error('native_track_stop_unconfirmed');
     });
-    processAudioSession.release(resources.audioLease);
+    const closed = channelClosed && peerClosed && streamReleased;
+    if (closed) processAudioSession.release(resources.audioLease);
+    return closed;
   }
 
-  private disposeNativeOnce<T extends object>(resource: T | null, dispose: (value: T) => void): void {
-    if (!resource || this.disposedNativeResources.has(resource)) return;
-    this.disposedNativeResources.add(resource);
-    try { dispose(resource); } catch { /* ressource native deja fermee */ }
+  private disposeNativeOnce<T extends object>(
+    resource: T | null,
+    dispose: (value: T) => void,
+  ): boolean {
+    if (!resource || this.disposedNativeResources.has(resource)) return true;
+    try {
+      dispose(resource);
+      this.disposedNativeResources.add(resource);
+      return true;
+    } catch {
+      // L'absence de preuve de fermeture conserve la ressource et le lease pour un retry.
+      return false;
+    }
+  }
+
+  private async hangupSession(sessionHandle: string | null): Promise<void> {
+    if (sessionHandle === null) return;
+    const existing = this.hangupTasks.get(sessionHandle);
+    if (existing) return existing;
+    const task = Promise.resolve()
+      .then(() => this.client.hangupRealtimeVoiceCall(sessionHandle))
+      .then((result) => {
+        if (!result.ok) this.emit({ type: 'error', code: 'server_hangup_pending' });
+      })
+      .catch(() => {
+        this.emit({ type: 'error', code: 'server_hangup_pending' });
+      });
+    this.hangupTasks.set(sessionHandle, task);
+    return task;
   }
 
   private transition(event: RealtimeMachineEvent): void {

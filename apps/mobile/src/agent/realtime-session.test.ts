@@ -7,6 +7,7 @@ import {
   RealtimeSessionController,
   type RealtimeOrchestratorLike,
   type RealtimeSessionHooks,
+  type RealtimeTransportLike,
 } from './realtime-session';
 
 const CONTEXT: AgentContext = {
@@ -39,7 +40,13 @@ function harness(
     /** Diffère la résolution de orchestrator.start() — simule un bootstrap réseau lent. */
     deferStart?: boolean;
     /** Remplace le PUT contexte — pour orchestrer des courses de publication. */
-    updateContextImpl?: (handle: string, revision: number) => Promise<ReturnType<typeof ok<{ revision: number; contextDigest: string }>> | { ok: false; error: { kind: 'dependency'; port: string; cause: string } }>;
+    updateContextImpl?: (
+      handle: string,
+      revision: number,
+    ) => Promise<
+      | ReturnType<typeof ok<{ revision: number; contextDigest: string }>>
+      | { ok: false; error: { kind: 'dependency'; port: string; cause: string } }
+    >;
   } = {},
 ) {
   const log: string[] = [];
@@ -49,27 +56,35 @@ function harness(
     fallback: import('../realtime/realtime-resilience-orchestrator').LegacyVoiceFallbackPort | null;
     negotiations: number;
     receivedNegotiation: RealtimeVoiceConfig | null;
+    reconnect: ((label: string, handle?: string | null) => RealtimeTransportLike) | null;
   } = {
     resolveStart: null,
     fallback: null,
     negotiations: 0,
     receivedNegotiation: null,
+    reconnect: null,
   };
-  const transport = {
-    completionMode: input.completionMode ?? 'continuous',
-    setMicrophoneEnabled: (enabled: boolean) => {
-      log.push(`mic:${enabled}`);
-    },
-    interrupt: (reason: string) => {
-      log.push(`interrupt:${reason}`);
-      return true;
-    },
-    finishUserInput: async () => {
-      log.push('finish-input');
-      return true;
-    },
-    getSessionHandle: () => (input.handle !== undefined ? input.handle : 'h-42'),
+  const createTransport = (label: string | null, handle: string | null): RealtimeTransportLike => {
+    const trace = (entry: string): void => {
+      log.push(label === null ? entry : `${label}:${entry}`);
+    };
+    return {
+      completionMode: input.completionMode ?? 'continuous',
+      setMicrophoneEnabled: (enabled: boolean) => {
+        trace(`mic:${enabled}`);
+      },
+      interrupt: (reason) => {
+        trace(`interrupt:${reason}`);
+        return true;
+      },
+      finishUserInput: async () => {
+        trace('finish-input');
+        return true;
+      },
+      getSessionHandle: () => handle,
+    };
   };
+  const transport = createTransport(null, input.handle !== undefined ? input.handle : 'h-42');
   const orchestrator: RealtimeOrchestratorLike = {
     subscribe: (listener) => {
       emit = listener;
@@ -112,13 +127,21 @@ function harness(
         log.push(`publish:${handle}:r${update.revision}`);
         if (input.updateContextImpl) return input.updateContextImpl(handle, update.revision);
         if (input.putFails === true) {
-          return { ok: false as const, error: { kind: 'dependency' as const, port: 'realtime', cause: 'offline' } };
+          return {
+            ok: false as const,
+            error: { kind: 'dependency' as const, port: 'realtime', cause: 'offline' },
+          };
         }
         return ok({ revision: update.revision, contextDigest: `digest-${update.revision}` });
       },
       createOrchestrator: (negotiation, fallback, _currentFence, onPrimaryCreated) => {
         external.receivedNegotiation = negotiation;
         onPrimaryCreated(transport);
+        external.reconnect = (label, handle = `h-${label}`) => {
+          const fresh = createTransport(label, handle);
+          onPrimaryCreated(fresh);
+          return fresh;
+        };
         external.fallback = fallback; // capturé : les tests simulent la prise de main du repli
         return orchestrator;
       },
@@ -134,7 +157,9 @@ function harness(
             contextRevision: fence.contextRevision,
             contextDigest: fence.contextDigest,
             ...(input.gateNavigate !== undefined ? { navigate: input.gateNavigate } : {}),
-            ...(input.gateKind === 'proposed' || input.gateKind === undefined ? { proposalId: 'p-9' } : {}),
+            ...(input.gateKind === 'proposed' || input.gateKind === undefined
+              ? { proposalId: 'p-9' }
+              : {}),
           };
         },
         close: () => log.push('gate:close'),
@@ -216,7 +241,9 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     rejected.emit(candidate('t'));
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(rejected.log.some((entry) => entry.startsWith('review:') || entry.startsWith('nav:'))).toBe(false);
+    expect(
+      rejected.log.some((entry) => entry.startsWith('review:') || entry.startsWith('nav:')),
+    ).toBe(false);
 
     const hostile = harness({ gateKind: 'answer', gateNavigate: 'https://evil' });
     await hostile.controller.start();
@@ -234,7 +261,11 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     okCase.log.length = 0;
     await okCase.controller.publishContext();
-    expect(okCase.log.slice(0, 3)).toEqual(['mic:false', 'interrupt:navigation', 'publish:h-42:r2']);
+    expect(okCase.log.slice(0, 3)).toEqual([
+      'mic:false',
+      'interrupt:navigation',
+      'publish:h-42:r2',
+    ]);
     expect(okCase.log).toContain('mic:true');
 
     const failing = harness({ putFails: true });
@@ -285,7 +316,11 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
   });
 
   it('controle continu : applique la navigation immediatement sans attendre une completion', async () => {
-    const h = harness({ gateKind: 'answer', gateNavigate: '/cloture', completionMode: 'continuous' });
+    const h = harness({
+      gateKind: 'answer',
+      gateNavigate: '/cloture',
+      completionMode: 'continuous',
+    });
     await h.controller.start();
     h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -301,7 +336,9 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
 
   it('stop pendant ACK one-shot efface la decision terminale sans aucun effet UI tardif', async () => {
     let releaseGate!: () => void;
-    const gateDelay = new Promise<void>((resolve) => { releaseGate = resolve; });
+    const gateDelay = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
     const h = harness({ gateDelay, completionMode: 'one-shot' });
     await h.controller.start();
     h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
@@ -315,13 +352,17 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     releaseGate();
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(h.log.some((entry) => entry.startsWith('review:') || entry.startsWith('nav:'))).toBe(false);
+    expect(h.log.some((entry) => entry.startsWith('review:') || entry.startsWith('nav:'))).toBe(
+      false,
+    );
     expect(h.log).not.toContain('completed');
   });
 
   it('fence un ACK tardif d’une ancienne mission même si une nouvelle session est active', async () => {
     let releaseGate!: () => void;
-    const gateDelay = new Promise<void>((resolve) => { releaseGate = resolve; });
+    const gateDelay = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
     const h = harness({ gateDelay });
     await h.controller.start();
     h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
@@ -339,7 +380,9 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     releaseGate();
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(h.log.some((entry) => entry.startsWith('review:') || entry.startsWith('nav:'))).toBe(false);
+    expect(h.log.some((entry) => entry.startsWith('review:') || entry.startsWith('nav:'))).toBe(
+      false,
+    );
     expect(h.log).not.toContain('completed');
     expect(h.log).not.toContain('orchestrator:stop');
     expect(h.controller.active).toBe(true);
@@ -370,13 +413,17 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
 
   it('publication SUPERSEDED (navigation doublée) : la session survit, pas de repli', async () => {
     let call = 0;
-    let deferredA: ((v: { ok: true; value: { revision: number; contextDigest: string } }) => void) | null = null;
+    let deferredA:
+      ((v: { ok: true; value: { revision: number; contextDigest: string } }) => void) | null = null;
     const h = harness({
       updateContextImpl: (_handle, revision) => {
         call += 1;
         if (call === 1) {
           // Publication de BOOTSTRAP (r1) : immédiate — le micro s'ouvre normalement.
-          return Promise.resolve({ ok: true as const, value: { revision, contextDigest: `d-${revision}` } });
+          return Promise.resolve({
+            ok: true as const,
+            value: { revision, contextDigest: `d-${revision}` },
+          });
         }
         if (call === 2) {
           // Navigation A (r2) : PUT lent, sera doublé par B.
@@ -385,8 +432,14 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
           });
         }
         // Navigation B (r3) : résout D'ABORD, puis on relâche A (course réelle du terrain).
-        setTimeout(() => deferredA?.({ ok: true, value: { revision: 2, contextDigest: 'd-2' } }), 0);
-        return Promise.resolve({ ok: true as const, value: { revision, contextDigest: `d-${revision}` } });
+        setTimeout(
+          () => deferredA?.({ ok: true, value: { revision: 2, contextDigest: 'd-2' } }),
+          0,
+        );
+        return Promise.resolve({
+          ok: true as const,
+          value: { revision, contextDigest: `d-${revision}` },
+        });
       },
     });
     await h.controller.start();
@@ -400,6 +453,106 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     expect(h.log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
     // Le micro finit OUVERT via la publication fraîche (B) — la doublée n'a rien cassé.
     expect(h.log.lastIndexOf('mic:true')).toBeGreaterThan(h.log.lastIndexOf('mic:false'));
+  });
+
+  it('reconnexion pendant le PUT initial : le succès ancien ne rouvre jamais l’ancien micro', async () => {
+    let releaseInitial!: () => void;
+    let calls = 0;
+    const h = harness({
+      updateContextImpl: (_handle, revision) => {
+        calls += 1;
+        if (calls === 1) {
+          return new Promise((resolve) => {
+            releaseInitial = () => resolve(ok({ revision, contextDigest: `d-${revision}` }));
+          });
+        }
+        return Promise.resolve(ok({ revision, contextDigest: `d-${revision}` }));
+      },
+    });
+    await h.controller.start();
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await Promise.resolve();
+
+    h.external.reconnect?.('fresh', 'h-fresh');
+    releaseInitial();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(h.log).not.toContain('mic:true');
+    expect(h.log).not.toContain('orchestrator:stop');
+    expect(h.controller.active).toBe(true);
+
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(h.log).toContain('publish:h-fresh:r1');
+    expect(h.log).toContain('fresh:mic:true');
+  });
+
+  it('reconnexion pendant une navigation : l’échec ancien ne stoppe pas le nouveau transport', async () => {
+    let rejectNavigation!: () => void;
+    let calls = 0;
+    const h = harness({
+      updateContextImpl: (_handle, revision) => {
+        calls += 1;
+        if (calls === 2) {
+          return new Promise((resolve) => {
+            rejectNavigation = () =>
+              resolve({
+                ok: false as const,
+                error: { kind: 'dependency' as const, port: 'realtime', cause: 'old-offline' },
+              });
+          });
+        }
+        return Promise.resolve(ok({ revision, contextDigest: `d-${revision}` }));
+      },
+    });
+    await h.controller.start();
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    h.log.length = 0;
+
+    const oldNavigation = h.controller.publishContext();
+    await Promise.resolve();
+    h.external.reconnect?.('fresh', 'h-fresh');
+    rejectNavigation();
+    await oldNavigation;
+
+    expect(h.log).not.toContain('orchestrator:stop');
+    expect(h.log.some((entry) => entry.startsWith('fallback:'))).toBe(false);
+    expect(h.controller.active).toBe(true);
+
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(h.log).toContain('fresh:mic:true');
+  });
+
+  it('ACK et completion d’un ancien primaire restent sans effet après reconnexion', async () => {
+    let releaseGate!: () => void;
+    const gateDelay = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    const h = harness({ gateDelay, completionMode: 'one-shot' });
+    await h.controller.start();
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    h.log.length = 0;
+
+    h.emit(candidate('old-primary-turn'));
+    h.emit({ type: 'transport', event: { type: 'conversation_completed' } });
+    await Promise.resolve();
+    h.external.reconnect?.('fresh', 'h-fresh');
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    releaseGate();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(h.log).toContain('fresh:mic:true');
+    expect(h.log.some((entry) => entry.startsWith('review:') || entry.startsWith('nav:'))).toBe(
+      false,
+    );
+    expect(h.log).not.toContain('completed');
+    expect(h.log).not.toContain('orchestrator:stop');
+    expect(h.controller.active).toBe(true);
   });
 
   it('repli pendant le bootstrap (orchestrateur → legacy) : outcome=fallback, pas de double boucle', async () => {

@@ -857,6 +857,27 @@ describe('Bob Mistral conversation v2 — machine de mission', () => {
     expect(state).toMatchObject({ phase: 'ready', missionConnectionEpoch: 2, routeMode: 'full_duplex' });
   });
 
+  it('impose exactement +1 à l’epoch de connexion lors d’une récupération', () => {
+    const recovering = reduceMistralConversationMissionState(readyMission(), {
+      type: 'ROUTE_RECOVERY_STARTED',
+      cancellation: null,
+    });
+    for (const missionConnectionEpoch of [1, 3]) {
+      expectProtocolError(() => reduceMistralConversationMissionState(recovering, {
+        type: 'ROUTE_RECOVERED',
+        missionConnectionEpoch,
+        routeMode: 'push_to_talk',
+        fullDuplexCertified: false,
+      }), 'invalid_state_transition');
+    }
+    expect(reduceMistralConversationMissionState(recovering, {
+      type: 'ROUTE_RECOVERED',
+      missionConnectionEpoch: 2,
+      routeMode: 'push_to_talk',
+      fullDuplexCertified: false,
+    }).missionConnectionEpoch).toBe(2);
+  });
+
   it('draine avec annulation, ferme sans raccourci et interdit toute résurrection', () => {
     const active = activeMission();
     let state = reduceMistralConversationMissionState(active, {

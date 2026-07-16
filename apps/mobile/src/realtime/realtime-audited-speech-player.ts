@@ -18,11 +18,6 @@ const SHA_256_PATTERN = /^[a-f0-9]{64}$/;
 const AUDIO_MIME_TYPES = new Set<RealtimeVoiceSpeechMimeType>([
   'audio/mpeg',
   'audio/wav',
-  'audio/ogg',
-  'audio/webm',
-  'audio/mp4',
-  'audio/aac',
-  'audio/flac',
 ]);
 
 type SpeechClient = Pick<
@@ -51,6 +46,9 @@ export interface RealtimeSpeechDownloadRequest {
   readonly expectedByteSize: number;
   /** L'adaptateur doit interrompre le flux avant de dépasser cette limite. */
   readonly maximumBytes: number;
+  /** Liaison exacte avec le feed durable : l'URL ne choisit jamais elle-même son artefact. */
+  readonly expectedTurnId: string;
+  readonly expectedArtifactId: string;
 }
 
 /**
@@ -69,6 +67,15 @@ export interface RealtimeAuditedSpeechPlaybackPort {
   play(audio: RealtimeVerifiedSpeechAudio, signal: AbortSignal): Promise<void>;
   stopImmediately(): void;
   release(audio: RealtimeVerifiedSpeechAudio): void;
+}
+
+export class RealtimeAuditedSpeechStopError extends Error {
+  readonly code = 'playback_stop_unconfirmed' as const;
+
+  constructor() {
+    super('playback_stop_unconfirmed');
+    this.name = 'RealtimeAuditedSpeechStopError';
+  }
 }
 
 export type RealtimeAuditedSpeechErrorCode =
@@ -220,8 +227,11 @@ function verifiedAudioMatches(
 function controlMatches(
   value: RealtimeVoiceControlReference,
   artifact: ArtifactBinding,
+  deliveryId: string,
 ): boolean {
   return UUID_PATTERN.test(value.turnId)
+    && UUID_PATTERN.test(value.acknowledgementId)
+    && value.acknowledgementId === deliveryId
     && value.turnId === artifact.turnId
     && value.contextRevision === artifact.contextRevision
     && value.contextDigest === artifact.contextDigest
@@ -314,22 +324,27 @@ export class RealtimeAuditedSpeechPlayerController {
    * Coupe le haut-parleur dans la pile synchrone appelante, puis annule l'artefact une seule fois.
    */
   interrupt(reason: RealtimeAuditedSpeechInterruptReason): Promise<void> {
-    this.stopLocally();
-    if (this.closed || this.halted) return Promise.resolve();
+    const stopped = this.stopLocally();
+    if (this.closed || this.halted) return this.requireLocalStop(stopped, Promise.resolve());
     this.metrics = { ...this.metrics, lastInterruptedAtMs: this.now() };
     this.operationGeneration += 1;
     this.operationAbort?.abort();
     this.operationAbort = null;
     const active = this.active;
-    if (!active) return Promise.resolve();
+    if (!active) return this.requireLocalStop(stopped, Promise.resolve());
     active.cancelled = true;
-    return this.requestCancellation(active, reason);
+    return this.requireLocalStop(stopped, this.requestCancellation(active, reason));
   }
 
   /** Fermeture irréversible ; les callbacks tardifs ne peuvent ni rejouer ni émettre. */
   close(): Promise<void> {
-    this.stopLocally();
-    if (this.closed) return this.active?.cancellationPromise ?? Promise.resolve();
+    const stopped = this.stopLocally();
+    if (this.closed) {
+      return this.requireLocalStop(
+        stopped,
+        this.active?.cancellationPromise ?? Promise.resolve(),
+      );
+    }
     this.closed = true;
     this.runGeneration += 1;
     this.operationGeneration += 1;
@@ -340,9 +355,9 @@ export class RealtimeAuditedSpeechPlayerController {
     this.operationAbort?.abort();
     this.operationAbort = null;
     const active = this.active;
-    if (!active) return Promise.resolve();
+    if (!active) return this.requireLocalStop(stopped, Promise.resolve());
     active.cancelled = true;
-    return this.requestCancellation(active, 'session_end');
+    return this.requireLocalStop(stopped, this.requestCancellation(active, 'session_end'));
   }
 
   /** Le passage en arrière-plan suit exactement la clôture irréversible. */
@@ -479,6 +494,8 @@ export class RealtimeAuditedSpeechPlayerController {
             expectedMimeType: ready.mimeType,
             expectedByteSize: ready.byteSize,
             maximumBytes: Math.min(ready.byteSize, MAX_AUDIO_BYTES),
+            expectedTurnId: active.turnId,
+            expectedArtifactId: active.artifactId,
           },
           abort.signal,
         );
@@ -557,7 +574,10 @@ export class RealtimeAuditedSpeechPlayerController {
         this.reportError('context_stale');
         return;
       }
-      if (delivery.controlReference && !controlMatches(delivery.controlReference, active)) {
+      if (
+        delivery.controlReference
+        && !controlMatches(delivery.controlReference, active, deliveryId)
+      ) {
         this.halt('control_reference_invalid');
         return;
       }
@@ -755,12 +775,22 @@ export class RealtimeAuditedSpeechPlayerController {
     this.reportError(code);
   }
 
-  private stopLocally(): void {
+  private stopLocally(): boolean {
     try {
       this.dependencies.playback.stopImmediately();
+      return true;
     } catch {
       if (!this.closed && !this.halted) this.reportError('playback_contract_violation');
+      return false;
     }
+  }
+
+  private requireLocalStop(stopped: boolean, completion: Promise<void>): Promise<void> {
+    if (stopped) return completion;
+    return completion.then(
+      () => Promise.reject(new RealtimeAuditedSpeechStopError()),
+      () => Promise.reject(new RealtimeAuditedSpeechStopError()),
+    );
   }
 
   private reportError(code: RealtimeAuditedSpeechErrorCode): void {

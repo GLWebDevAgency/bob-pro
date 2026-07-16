@@ -1315,7 +1315,7 @@ export function reduceMistralConversationMissionState(
       if (state.phase !== 'recovering_route') fail('invalid_state_transition');
       if (
         !isIntegerBetween(event.missionConnectionEpoch, 1, INT32_MAX)
-        || event.missionConnectionEpoch < state.missionConnectionEpoch
+        || event.missionConnectionEpoch !== state.missionConnectionEpoch + 1
         || !isRouteCertificationConsistent(event.routeMode, event.fullDuplexCertified)
       ) fail('invalid_state_transition');
       return {
