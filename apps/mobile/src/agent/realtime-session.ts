@@ -12,6 +12,10 @@ import type {
   LegacyVoiceFallbackPort,
   RealtimeResilienceEvent,
 } from '../realtime/realtime-resilience-orchestrator';
+import {
+  legacyFallbackChannelFor,
+  type LegacyFallbackChannel,
+} from '../realtime/realtime-recovery-policy';
 import type {
   RealtimeFallbackReason,
   RealtimeTransportEvent,
@@ -37,7 +41,10 @@ export interface RealtimeSessionHooks {
   /** Route DÉJÀ allowlistée par decideAgentControl. */
   readonly onNavigate: (route: string) => void;
   /** Le repli legacy a pris la main (transport fermé) — texte honnête + boucle historique. */
-  readonly onFallback: (reason: RealtimeFallbackReason) => void;
+  readonly onFallback: (
+    reason: RealtimeFallbackReason,
+    channel: LegacyFallbackChannel,
+  ) => void;
   /** Tour one-shot livré et acquitté : fermeture normale, jamais un fallback. */
   readonly onCompleted?: () => void;
   readonly getContextSnapshot: () => AgentContext;
@@ -155,7 +162,7 @@ export class RealtimeSessionController {
         this.publisher = null;
         this.controlGate?.close?.();
         this.controlGate = null;
-        this.hooks.onFallback(input.reason);
+        this.hooks.onFallback(input.reason, input.channel);
         return { close: async () => undefined };
       },
     };
@@ -404,7 +411,8 @@ export class RealtimeSessionController {
     await this.stop('user');
     // Le stop de l'ancien orchestrateur peut finir après le start d'une nouvelle mission.
     if (this.generation === stoppedGeneration && !this.activeFlag) {
-      this.hooks.onFallback(reason);
+      const channel = legacyFallbackChannelFor(reason);
+      if (channel !== null) this.hooks.onFallback(reason, channel);
     }
   }
 

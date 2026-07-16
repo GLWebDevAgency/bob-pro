@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef } from 'react';
 import {
   Animated,
   AccessibilityInfo,
@@ -25,6 +25,10 @@ import {
   deriveGlobalBobAccessHorizontalLayout,
   GLOBAL_BOB_ACCESS_SIZE,
 } from './global-bob-access-layout';
+import {
+  advanceGlobalBobSessionStopFence,
+  deriveGlobalBobSessionStopReason,
+} from './global-bob-access-session-policy';
 import { useBobOverlayMetrics } from './use-bob-aware-scroll-insets';
 
 const SIZE = GLOBAL_BOB_ACCESS_SIZE;
@@ -43,6 +47,7 @@ export function GlobalBobAccess() {
   const { bottom } = useBobOverlayMetrics();
   const pulse = useRef(new Animated.Value(0)).current;
   const lastIosAnnouncement = useRef<string | null>(null);
+  const sessionStopLatched = useRef(false);
 
   const activeMotion =
     session.active && (session.phase === 'listening' || session.phase === 'speaking');
@@ -66,12 +71,23 @@ export function GlobalBobAccess() {
   // directement dans son composer : aucun bouton superpose, aucun deuxieme listener.
   const ownsItsVoiceChrome = pathname === '/assistant' || pathname === '/voix';
   const { active: sessionActive, stop: stopSession } = session;
-  useEffect(() => {
-    if (pathname === '/voix' && sessionActive) stopSession();
-  }, [pathname, sessionActive, stopSession]);
 
   const entitled = subscription.data?.features.includes('ai_assistant') ?? false;
   const entitlementUnavailable = subscription.isError && subscription.data === undefined;
+  const sessionStopReason = deriveGlobalBobSessionStopReason({
+    subscriptionResolved: subscription.data !== undefined,
+    entitled,
+    pathname,
+  });
+  useLayoutEffect(() => {
+    const transition = advanceGlobalBobSessionStopFence({
+      latched: sessionStopLatched.current,
+      sessionActive,
+      stopReason: sessionStopReason,
+    });
+    sessionStopLatched.current = transition.latched;
+    if (transition.shouldStop) stopSession();
+  }, [sessionActive, sessionStopReason, stopSession]);
   const stateKey: I18nKey =
     session.phase === 'listening'
       ? 'agent.global.listening'
@@ -129,6 +145,12 @@ export function GlobalBobAccess() {
   });
   // Seule une ENTITÉ identifiée mérite « Je vois : … » — le slug d'écran est technique.
   const contextLabel = context.entities[0]?.label ?? null;
+  const cardHeaderLabel = contextLabel !== null
+    ? t('agent.global.context', { personality, params: { context: contextLabel } })
+    : stateLabel;
+  const accessibleCardHeaderLabel = cardHeaderLabel === stateLabel
+    ? stateLabel
+    : `${cardHeaderLabel}. ${stateLabel}`;
   const scale = pulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.07] });
 
   if (entitlementUnavailable) {
@@ -181,7 +203,7 @@ export function GlobalBobAccess() {
     >
       {session.response !== null || session.active ? (
         <View
-          accessibilityLiveRegion={androidLiveRegion}
+          accessibilityLiveRegion="none"
           style={{
             width: horizontal.maxCardWidth,
             borderRadius: 16,
@@ -193,10 +215,13 @@ export function GlobalBobAccess() {
           }}
         >
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-            <Text style={[font('meta', 700), { color: semantic.ai, flex: 1 }]} numberOfLines={1}>
-              {contextLabel !== null
-                ? t('agent.global.context', { personality, params: { context: contextLabel } })
-                : stateLabel}
+            <Text
+              accessibilityLabel={accessibleCardHeaderLabel}
+              accessibilityLiveRegion={androidLiveRegion}
+              style={[font('meta', 700), { color: semantic.ai, flex: 1 }]}
+              numberOfLines={1}
+            >
+              {cardHeaderLabel}
             </Text>
             {session.response !== null && !session.active ? (
               <Pressable

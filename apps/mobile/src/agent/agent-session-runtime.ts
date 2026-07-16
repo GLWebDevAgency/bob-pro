@@ -1,7 +1,32 @@
 import type { AgentContext } from '@bob/ai';
+import type { RealtimeFallbackReason } from '../realtime/realtime-transport';
+import type { LegacyFallbackChannel } from '../realtime/realtime-recovery-policy';
 
 /** Le pilote qui possede l'oreille et la bouche a un instant donne. */
 export type AgentSessionDriver = 'idle' | 'live_bootstrap' | 'live' | 'legacy';
+
+export type AgentSessionFallbackPlan =
+  | { readonly driver: 'legacy'; readonly continueVoice: true; readonly issue: null }
+  | {
+      readonly driver: 'idle';
+      readonly continueVoice: false;
+      readonly issue: 'denied' | 'unavailable';
+    };
+
+/** Le canal décidé par la policy est autoritaire : `text_only` ne retente jamais un micro. */
+export function planAgentSessionFallback(
+  reason: RealtimeFallbackReason,
+  channel: LegacyFallbackChannel,
+): AgentSessionFallbackPlan {
+  if (channel === 'voice') {
+    return Object.freeze({ driver: 'legacy', continueVoice: true, issue: null });
+  }
+  return Object.freeze({
+    driver: 'idle',
+    continueVoice: false,
+    issue: reason === 'microphone_denied' ? 'denied' : 'unavailable',
+  });
+}
 
 export function realtimeOwnsAgentSession(driver: AgentSessionDriver): boolean {
   return driver === 'live_bootstrap' || driver === 'live';

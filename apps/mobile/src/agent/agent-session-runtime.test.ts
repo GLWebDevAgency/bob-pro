@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { AgentContext } from '@bob/ai';
 import {
   agentContextSemanticKey,
+  planAgentSessionFallback,
   revalidateAgentSessionBackgroundAfterPermission,
   realtimeOwnsAgentSession,
   shouldStopAgentSessionForAppState,
@@ -42,6 +43,24 @@ describe('agent session runtime fences', () => {
     expect(shouldStopAgentSessionForAppState('active')).toBe(false);
     expect(shouldStopAgentSessionForAppState('background')).toBe(true);
     expect(shouldStopAgentSessionForAppState('background', true)).toBe(false);
+  });
+
+  it('respecte le repli texte sans jamais réarmer un micro legacy', () => {
+    expect(planAgentSessionFallback('microphone_denied', 'text_only')).toEqual({
+      driver: 'idle',
+      continueVoice: false,
+      issue: 'denied',
+    });
+    expect(planAgentSessionFallback('audio_busy', 'text_only')).toEqual({
+      driver: 'idle',
+      continueVoice: false,
+      issue: 'unavailable',
+    });
+    expect(planAgentSessionFallback('provider_error', 'voice')).toEqual({
+      driver: 'legacy',
+      continueVoice: true,
+      issue: null,
+    });
   });
 
   it('revalide le vrai background après la boîte de permission Android', async () => {

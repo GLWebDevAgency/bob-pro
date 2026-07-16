@@ -112,7 +112,7 @@ function harness(
       log.push(`review:${proposalId}:${proposalExpiresAt ?? 'none'}`);
     },
     onNavigate: (route) => log.push(`nav:${route}`),
-    onFallback: (reason) => log.push(`fallback:${reason}`),
+    onFallback: (reason, channel) => log.push(`fallback:${reason}:${channel}`),
     onCompleted: () => log.push('completed'),
     getContextSnapshot: () => CONTEXT,
   };
@@ -597,7 +597,20 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     await external.fallback?.start({ reason: 'bootstrap_failed', channel: 'voice' });
     external.resolveStart?.('legacy');
     expect(await pending).toBe('fallback'); // l'appelant SAIT que onFallback a déjà relancé legacy
-    expect(log.some((entry) => entry.startsWith('fallback:bootstrap_failed'))).toBe(true);
+    expect(log).toContain('fallback:bootstrap_failed:voice');
+    expect(log).not.toContain('mic:true');
+  });
+
+  it('transmet le canal text_only après refus micro, sans le transformer en repli vocal', async () => {
+    const { controller, log, external } = harness({ deferStart: true });
+    const pending = controller.start();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    await external.fallback?.start({ reason: 'microphone_denied', channel: 'text_only' });
+    external.resolveStart?.('legacy');
+
+    expect(await pending).toBe('fallback');
+    expect(log).toContain('fallback:microphone_denied:text_only');
     expect(log).not.toContain('mic:true');
   });
 

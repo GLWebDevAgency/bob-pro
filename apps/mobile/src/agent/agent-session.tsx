@@ -28,6 +28,7 @@ import {
 import { snapshotAgentContext, useAgentContext, useAgentSurface, type AgentContext } from './agent-context';
 import {
   agentContextSemanticKey,
+  planAgentSessionFallback,
   revalidateAgentSessionBackgroundAfterPermission,
   realtimeOwnsAgentSession,
   shouldStopAgentSessionForAppState,
@@ -267,12 +268,24 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
           // contexte (publier les deux créait une course qui tuait la session — P1 14/07).
           router.push(route as never);
         },
-        onFallback: () => {
+        onFallback: (reason, channel) => {
           // Primaire ENTIÈREMENT fermé (garantie orchestrateur) : texte honnête puis boucle
           // historique — jamais deux cerveaux.
+          const plan = planAgentSessionFallback(reason, channel);
           realtimeActiveRef.current = false;
-          driverRef.current = 'legacy';
+          driverRef.current = plan.driver;
           if (!activeRef.current) return;
+          if (!plan.continueVoice) {
+            activeRef.current = false;
+            setActive(false);
+            setIssue(plan.issue);
+            setSessionPhase('error');
+            const key = plan.issue === 'denied'
+              ? ('agent.global.issueDenied' as const)
+              : ('agent.global.issueUnavailable' as const);
+            setResponse(t(key, { personality }));
+            return;
+          }
           setResponse(t('agent.global.liveFallback', { personality }));
           void (async () => {
             await say(t('agent.global.liveFallback', { personality }), true);

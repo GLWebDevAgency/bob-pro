@@ -141,14 +141,80 @@ describe('GlobalBobAccess — clavier iOS', () => {
     expect(deriveIosKeyboardViewportOverlap({
       windowWidth: 390,
       windowHeight: 844,
+      frameScreenX: 0,
+      frameScreenY: 553,
       frameWidth: 390,
       frameHeight: 291,
+      bobLeft: 18,
+      bobBottom: 52,
+      bobSize: 50,
+      bobClearance: 8,
     })).toBe(291);
     expect(deriveIosKeyboardViewportOverlap({
       windowWidth: 1024,
       windowHeight: 768,
+      frameScreenX: 600,
+      frameScreenY: 420,
       frameWidth: 360,
       frameHeight: 260,
+      bobLeft: 18,
+      bobBottom: 52,
+      bobSize: 50,
+      bobClearance: 8,
+    })).toBe(0);
+  });
+
+  it('déplace Bob seulement si un clavier iPad désancré coupe réellement son enveloppe', () => {
+    expect(deriveIosKeyboardViewportOverlap({
+      windowWidth: 1024,
+      windowHeight: 768,
+      frameScreenX: 22,
+      frameScreenY: 250,
+      frameWidth: 980,
+      frameHeight: 300,
+      bobLeft: 18,
+      bobBottom: 52,
+      bobSize: 50,
+      bobClearance: 8,
+    })).toBe(0);
+    expect(deriveIosKeyboardViewportOverlap({
+      windowWidth: 1024,
+      windowHeight: 768,
+      frameScreenX: 22,
+      frameScreenY: 380,
+      frameWidth: 980,
+      frameHeight: 300,
+      bobLeft: 18,
+      bobBottom: 52,
+      bobSize: 50,
+      bobClearance: 8,
+    })).toBe(388);
+  });
+
+  it('déplace Bob pour un clavier flottant posé en bas à gauche, pas à droite', () => {
+    expect(deriveIosKeyboardViewportOverlap({
+      windowWidth: 1024,
+      windowHeight: 768,
+      frameScreenX: 0,
+      frameScreenY: 560,
+      frameWidth: 360,
+      frameHeight: 200,
+      bobLeft: 18,
+      bobBottom: 52,
+      bobSize: 50,
+      bobClearance: 8,
+    })).toBe(208);
+    expect(deriveIosKeyboardViewportOverlap({
+      windowWidth: 1024,
+      windowHeight: 768,
+      frameScreenX: 600,
+      frameScreenY: 560,
+      frameWidth: 360,
+      frameHeight: 200,
+      bobLeft: 18,
+      bobBottom: 52,
+      bobSize: 50,
+      bobClearance: 8,
     })).toBe(0);
   });
 
@@ -156,8 +222,14 @@ describe('GlobalBobAccess — clavier iOS', () => {
     expect(deriveIosKeyboardViewportOverlap({
       windowWidth: 390,
       windowHeight: 500,
+      frameScreenX: 0,
+      frameScreenY: -400,
       frameWidth: 390,
       frameHeight: 900,
+      bobLeft: 18,
+      bobBottom: 52,
+      bobSize: 50,
+      bobClearance: 8,
     })).toBe(500);
   });
 });

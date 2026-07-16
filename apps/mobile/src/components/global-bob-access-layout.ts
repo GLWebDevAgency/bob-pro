@@ -71,18 +71,44 @@ export function deriveGlobalBobAccessVerticalLayout(input: {
 export function deriveIosKeyboardViewportOverlap(input: {
   readonly windowWidth: number;
   readonly windowHeight: number;
+  readonly frameScreenX: number;
+  readonly frameScreenY: number;
   readonly frameWidth: number;
   readonly frameHeight: number;
+  readonly bobLeft: number;
+  readonly bobBottom: number;
+  readonly bobSize: number;
+  readonly bobClearance: number;
 }): number {
   const windowWidth = safeInset(input.windowWidth);
   const windowHeight = safeInset(input.windowHeight);
+  const frameScreenX = Number.isFinite(input.frameScreenX) ? input.frameScreenX : 0;
+  const frameScreenY = Number.isFinite(input.frameScreenY) ? input.frameScreenY : windowHeight;
   const frameWidth = safeInset(input.frameWidth);
   const frameHeight = safeInset(input.frameHeight);
+  const bobLeft = safeInset(input.bobLeft);
+  const bobBottom = safeInset(input.bobBottom);
+  const bobSize = safeInset(input.bobSize);
+  const bobClearance = safeInset(input.bobClearance);
   if (windowWidth === 0 || windowHeight === 0 || frameHeight === 0) return 0;
-  // Un clavier flottant/split ne barre pas toute la largeur : déplacer globalement Bob serait
-  // plus gênant que le laisser dans son ancrage. Le seuil tolère les arrondis Stage Manager.
-  if (frameWidth < windowWidth * 0.85) return 0;
-  return Math.min(windowHeight, frameHeight);
+  const bobRect = {
+    left: bobLeft - bobClearance,
+    right: bobLeft + bobSize + bobClearance,
+    top: windowHeight - bobBottom - bobSize - bobClearance,
+    bottom: windowHeight - bobBottom + bobClearance,
+  };
+  const keyboardRect = {
+    left: frameScreenX,
+    right: frameScreenX + frameWidth,
+    top: frameScreenY,
+    bottom: frameScreenY + frameHeight,
+  };
+  const intersectsHorizontally = keyboardRect.left < bobRect.right
+    && bobRect.left < keyboardRect.right;
+  const intersectsVertically = keyboardRect.top < bobRect.bottom
+    && bobRect.top < keyboardRect.bottom;
+  if (!intersectsHorizontally || !intersectsVertically) return 0;
+  return Math.min(windowHeight, Math.max(0, windowHeight - frameScreenY));
 }
 
 /** Réserve de scroll nécessaire pour rendre le dernier contrôle activable au-dessus de l'orbe. */
