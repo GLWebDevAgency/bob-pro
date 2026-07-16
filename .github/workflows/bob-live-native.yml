@@ -17,7 +17,6 @@ on:
       - packages/ai/src/realtime/**
       - pnpm-lock.yaml
   push:
-    branches: [main]
     paths:
       - .github/workflows/bob-live-native.yml
       - apps/mobile/app.json
