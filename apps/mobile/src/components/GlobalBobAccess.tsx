@@ -1,5 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
-import { Animated, Keyboard, Platform, Pressable, Text, useWindowDimensions, View } from 'react-native';
+import {
+  Animated,
+  Dimensions,
+  Keyboard,
+  Platform,
+  Pressable,
+  Text,
+  useWindowDimensions,
+  View,
+} from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { usePathname, useRouter, useSegments } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -9,9 +18,13 @@ import { font, useReduceMotion, useTheme } from '@bob/ui';
 import { useAgentAccessLayout, useAgentContext, useAgentSession } from '../agent';
 import { useSubscription } from '../data/hooks';
 import { CloseIcon, MicIcon, SparkIcon } from './icons';
-import { deriveGlobalBobAccessHorizontalLayout } from './global-bob-access-layout';
+import {
+  deriveGlobalBobAccessHorizontalLayout,
+  deriveGlobalBobAccessVerticalLayout,
+  GLOBAL_BOB_ACCESS_SIZE,
+} from './global-bob-access-layout';
 
-const SIZE = 50;
+const SIZE = GLOBAL_BOB_ACCESS_SIZE;
 
 export function GlobalBobAccess() {
   const { colors, controls, semantic, personality } = useTheme();
@@ -25,7 +38,7 @@ export function GlobalBobAccess() {
   const router = useRouter();
   const subscription = useSubscription();
   const reduceMotion = useReduceMotion();
-  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const [keyboardOverlap, setKeyboardOverlap] = useState(0);
   const pulse = useRef(new Animated.Value(0)).current;
 
   const activeMotion =
@@ -47,13 +60,20 @@ export function GlobalBobAccess() {
   }, [activeMotion, pulse, reduceMotion]);
 
   useEffect(() => {
-    // iOS anime le clavier : Will* évite que le bouton saute APRÈS coup ; Android n'émet que Did*.
-    const shown = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow', (event) =>
-      setKeyboardHeight(event.endCoordinates.height),
-    );
-    const hidden = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide', () =>
-      setKeyboardHeight(0),
-    );
+    // Android est explicitement en adjustResize : sa fenêtre remonte déjà, ajouter la hauteur du
+    // clavier une seconde fois ferait sortir Bob du viewport. iOS recouvre la fenêtre : screenY
+    // donne le chevauchement réel, y compris avec les variations de safe-area.
+    if (Platform.OS !== 'ios') return undefined;
+    const shown = Keyboard.addListener('keyboardWillShow', (event) => {
+      const screenHeight = Dimensions.get('screen').height;
+      const screenY = event.endCoordinates.screenY;
+      setKeyboardOverlap(
+        Number.isFinite(screenHeight) && Number.isFinite(screenY)
+          ? Math.max(0, screenHeight - screenY)
+          : 0,
+      );
+    });
+    const hidden = Keyboard.addListener('keyboardWillHide', () => setKeyboardOverlap(0));
     return () => {
       shown.remove();
       hidden.remove();
@@ -80,13 +100,14 @@ export function GlobalBobAccess() {
   }
 
   const inTabs = segments[0] === '(tabs)';
-  const tabClearance =
-    patterns.bottomTabBar.padding[0] +
-    62 +
-    Math.max(insets.bottom, patterns.bottomTabBar.padding[2]) +
-    8;
-  const bottom =
-    (inTabs ? tabClearance : insets.bottom + 18) + (layout.bottomAvoidance ?? 0) + keyboardHeight;
+  const bottom = deriveGlobalBobAccessVerticalLayout({
+    inTabs,
+    safeAreaBottom: insets.bottom,
+    tabPaddingTop: patterns.bottomTabBar.padding[0],
+    tabMinimumBottom: patterns.bottomTabBar.padding[2],
+    bottomAvoidance: layout.bottomAvoidance ?? 0,
+    keyboardOverlap,
+  }).bottom;
   // Bob possède un ancrage spatial stable : toujours à gauche, après la safe-area. Une session
   // qui démarre ne déplace donc plus l'orbe d'un bord à l'autre et la carte s'ouvre sur le même axe.
   const horizontal = deriveGlobalBobAccessHorizontalLayout({

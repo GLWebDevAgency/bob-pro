@@ -72,6 +72,7 @@
     },
     "android": {
       "package": "fr.bobpro.app",
+      "softwareKeyboardLayoutMode": "resize",
       "permissions": [
         "android.permission.RECORD_AUDIO",
         "android.permission.MODIFY_AUDIO_SETTINGS",
