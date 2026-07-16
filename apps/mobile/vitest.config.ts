@@ -12,6 +12,8 @@ export default defineConfig({
       'src/assistant/**/*.test.ts',
       'src/voice-flow/**/*.test.ts',
       'src/fiscal/**/*.test.ts',
+      'src/quote-draft/**/*.test.ts',
+      'src/components/**/*.test.ts?(x)',
     ],
   },
 });
