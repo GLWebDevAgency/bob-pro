@@ -1,0 +1,172 @@
+name: Espace Cabinet Promotion
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cabinet-promotion-${{ github.ref }}
+  cancel-in-progress: false
+
+on:
+  workflow_dispatch:
+    inputs:
+      railway_service:
+        description: Railway API service name or id
+        required: true
+        default: bob-pro-api
+      promote_to_production:
+        description: Request production after the mandatory Cabinet staging E2E gate
+        required: true
+        default: false
+        type: boolean
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Validate production promotion source
+        if: ${{ inputs.promote_to_production }}
+        env:
+          RELEASE_REF: ${{ github.ref }}
+        run: '[ "$RELEASE_REF" = refs/heads/main ] || { echo "Production promotion requires refs/heads/main" >&2; exit 1; }'
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 9.12.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.18.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm --filter @bob/core test:cabinet:coverage
+      - run: pnpm build
+      - run: pnpm lint
+
+  api-staging:
+    needs: verify
+    uses: ./.github/workflows/railway-api.yml
+    with:
+      environment: staging
+      service: ${{ inputs.railway_service }}
+
+  web-staging:
+    needs: verify
+    uses: ./.github/workflows/vercel-cabinet-web.yml
+    with:
+      environment: preview
+    secrets:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_CABINET_WEB_PROJECT_ID: ${{ secrets.VERCEL_CABINET_WEB_PROJECT_ID }}
+      VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+
+  cabinet-staging-e2e:
+    needs:
+      - api-staging
+      - web-staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: staging
+    env:
+      API_BASE_URL: ${{ needs.api-staging.outputs.api_base_url }}
+      CABINET_WEB_BASE_URL: ${{ needs.web-staging.outputs.web_base_url }}
+      EXPECTED_RELEASE_SHA: ${{ github.sha }}
+      CABINET_E2E_SUPABASE_URL: ${{ vars.CABINET_E2E_SUPABASE_URL }}
+      CABINET_E2E_PRIMARY_CABINET_ID: ${{ vars.CABINET_E2E_PRIMARY_CABINET_ID }}
+      CABINET_E2E_FOREIGN_CABINET_ID: ${{ vars.CABINET_E2E_FOREIGN_CABINET_ID }}
+      CABINET_E2E_FOUNDER_USER_ID: ${{ vars.CABINET_E2E_FOUNDER_USER_ID }}
+      CABINET_E2E_ADMIN_USER_ID: ${{ vars.CABINET_E2E_ADMIN_USER_ID }}
+      CABINET_E2E_COLLABORATOR_USER_ID: ${{ vars.CABINET_E2E_COLLABORATOR_USER_ID }}
+      CABINET_E2E_MAILOSAUR_SERVER_ID: ${{ vars.CABINET_E2E_MAILOSAUR_SERVER_ID }}
+      CABINET_E2E_ADMIN_EMAIL: ${{ secrets.CABINET_E2E_ADMIN_EMAIL }}
+      CABINET_E2E_COLLABORATOR_EMAIL: ${{ secrets.CABINET_E2E_COLLABORATOR_EMAIL }}
+      CABINET_E2E_MAILOSAUR_API_KEY: ${{ secrets.CABINET_E2E_MAILOSAUR_API_KEY }}
+      VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Verify deployment outputs are the revision under promotion
+        env:
+          API_RELEASE_ENVIRONMENT: ${{ needs.api-staging.outputs.release_environment }}
+          API_RELEASE_SHA: ${{ needs.api-staging.outputs.release_sha }}
+        run: |
+          [ "$API_RELEASE_ENVIRONMENT" = staging ] || { echo "The API output is not staging" >&2; exit 1; }
+          [ "$API_RELEASE_SHA" = "$EXPECTED_RELEASE_SHA" ] || { echo "The API output is not the requested revision" >&2; exit 1; }
+          node <<'NODE'
+          for (const name of ['API_BASE_URL', 'CABINET_WEB_BASE_URL', 'CABINET_E2E_SUPABASE_URL']) {
+            const parsed = new URL(process.env[name] ?? '');
+            if (parsed.protocol !== 'https:' || parsed.pathname !== '/' || parsed.search || parsed.hash) {
+              throw new Error(`${name} must be an HTTPS origin`);
+            }
+          }
+          NODE
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 9.12.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.18.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Install the single E2E browser
+        run: pnpm --filter @bob/web exec playwright install --with-deps chromium
+      - name: Install Railway CLI for the bounded staging reset
+        run: sh apps/api/scripts/install-railway-cli.sh
+      - name: Reset the bounded staging fixture before the journey
+        id: pre_reset
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_SERVICE: ${{ inputs.railway_service }}
+        run: |
+          railway run --service "$RAILWAY_SERVICE" --environment staging \
+            node apps/api/scripts/reset-cabinet-e2e-staging.mjs \
+            --confirm RESET-CABINET-E2E-STAGING \
+            --cabinet-id "$CABINET_E2E_PRIMARY_CABINET_ID" \
+            --founder-user-id "$CABINET_E2E_FOUNDER_USER_ID" \
+            --admin-user-id "$CABINET_E2E_ADMIN_USER_ID" \
+            --collaborator-user-id "$CABINET_E2E_COLLABORATOR_USER_ID" \
+            --collaborator-email "$CABINET_E2E_COLLABORATOR_EMAIL"
+      - name: Run the real Cabinet staging journey
+        run: pnpm --filter @bob/web test:e2e:staging
+      - name: Reset the bounded staging fixture after the journey
+        if: ${{ always() && steps.pre_reset.outcome == 'success' }}
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_SERVICE: ${{ inputs.railway_service }}
+        run: |
+          railway run --service "$RAILWAY_SERVICE" --environment staging \
+            node apps/api/scripts/reset-cabinet-e2e-staging.mjs \
+            --confirm RESET-CABINET-E2E-STAGING \
+            --cabinet-id "$CABINET_E2E_PRIMARY_CABINET_ID" \
+            --founder-user-id "$CABINET_E2E_FOUNDER_USER_ID" \
+            --admin-user-id "$CABINET_E2E_ADMIN_USER_ID" \
+            --collaborator-user-id "$CABINET_E2E_COLLABORATOR_USER_ID" \
+            --collaborator-email "$CABINET_E2E_COLLABORATOR_EMAIL"
+
+  api-production:
+    if: ${{ inputs.promote_to_production }}
+    needs:
+      - cabinet-staging-e2e
+    uses: ./.github/workflows/railway-api.yml
+    with:
+      environment: production
+      service: ${{ inputs.railway_service }}
+
+  web-production:
+    if: ${{ inputs.promote_to_production }}
+    needs:
+      - api-production
+    uses: ./.github/workflows/vercel-cabinet-web.yml
+    with:
+      environment: production
+    secrets:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_CABINET_WEB_PROJECT_ID: ${{ secrets.VERCEL_CABINET_WEB_PROJECT_ID }}
+      VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}

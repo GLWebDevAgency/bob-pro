@@ -1,5 +1,8 @@
 name: CI
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main]
@@ -8,6 +11,7 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 35
     env:
       DATABASE_URL: postgresql://postgres@localhost:5432/bobpro
     steps:
@@ -22,11 +26,13 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm test
+      - run: pnpm --filter @bob/core test:cabinet:coverage
       - run: pnpm build
       - run: pnpm lint
 
   rls-certification:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     services:
       postgres:
         image: postgres:16
@@ -41,9 +47,13 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bobpro
+      DATABASE_URL: postgresql://bob_app:bob_app@localhost:5432/bobpro
       DIRECT_URL: postgresql://postgres:postgres@localhost:5432/bobpro
-      APP_DATABASE_URL: postgresql://bob_app:bob_app@localhost:5432/bobpro
+      APP_DATABASE_ROLE: bob_app
+      CABINET_RELEASE_ENV: development
+      CABINET_INVITATION_WORKER_ENABLED: "false"
+      RUN_RLS_CERT: "true"
+      RLS_CERT_CLEANUP: "true"
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -55,10 +65,9 @@ jobs:
           cache: pnpm
       - run: sudo apt-get update && sudo apt-get install -y postgresql-client
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @bob/api migrate
       - name: Create non-superuser app role
         run: |
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+          psql "$DIRECT_URL" -v ON_ERROR_STOP=1 <<'SQL'
           DO $$
           BEGIN
             IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'bob_app') THEN
@@ -67,17 +76,33 @@ jobs:
               ALTER ROLE bob_app WITH LOGIN PASSWORD 'bob_app' NOSUPERUSER NOBYPASSRLS;
             END IF;
           END $$;
-          GRANT USAGE ON SCHEMA public TO bob_app;
-          GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO bob_app;
-          GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO bob_app;
           SQL
-      - name: Apply RLS policies
-        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f apps/api/prisma/rls.sql
-      - name: Certify tenant isolation as app role
-        run: psql "$APP_DATABASE_URL" -v ON_ERROR_STOP=1 -f apps/api/prisma/rls-cert.sql
+      - name: Expand schema, spool outbox and certify the mixed-version phase
+        run: sh apps/api/scripts/release.sh
+      - name: Activate outbox v2 and certify the post-deploy contract
+        run: |
+          sh apps/api/scripts/activate-notification-outbox-v2.sh
+          sh apps/api/scripts/release.sh
+      - name: Certify notification outbox concurrency and fencing on PostgreSQL
+        env:
+          RUN_POSTGRES_OUTBOX_CERT: "true"
+        run: pnpm --filter @bob/api exec vitest run src/persistence/prisma/notification-jobs.postgres.test.ts
+      - name: Certify expense creation idempotency on PostgreSQL
+        env:
+          RUN_POSTGRES_EXPENSE_IDEMPOTENCY_CERT: "true"
+        run: pnpm --filter @bob/api exec vitest run src/persistence/prisma/expense-creation-requests.postgres.test.ts
+      - name: Certify quote creation idempotency on PostgreSQL
+        env:
+          RUN_POSTGRES_QUOTE_IDEMPOTENCY_CERT: "true"
+        run: pnpm --filter @bob/api exec vitest run src/persistence/prisma/quote-creation-requests.postgres.test.ts
+      - name: Certify global push-token rebind and revocation under FORCE RLS
+        env:
+          RUN_POSTGRES_DEVICE_REBIND_CERT: "true"
+        run: pnpm --filter @bob/api exec vitest run src/persistence/prisma/devices.postgres.test.ts
 
   facturx-conformance:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       DATABASE_URL: postgresql://postgres@localhost:5432/bobpro
       # Validateur Factur-X officiel (Schematron EN 16931 + PDF/A via veraPDF embarqué).

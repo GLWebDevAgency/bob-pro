@@ -74,13 +74,23 @@ jobs:
         run: ./gradlew :bob-live-audio:testDebugUnitTest --no-daemon --stacktrace
 
   swift-contract:
-    name: Swift bridge + VAD contract
+    name: Swift bridge + Expo iOS build + VAD contract
     runs-on: macos-14
-    timeout-minutes: 12
+    timeout-minutes: 35
+    env:
+      CI: "true"
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 9.12.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.18.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
       - name: Parse the Expo Swift bridge
         working-directory: apps/mobile/modules/bob-live-audio
         run: swiftc -parse ios/BobLiveAudioModule.swift
@@ -91,6 +101,13 @@ jobs:
             ios/BobLiveAudioWatchdogFence.swift tests/swift/main.swift \
             -o "${RUNNER_TEMP}/bob-live-watchdog-tests"
           "${RUNNER_TEMP}/bob-live-watchdog-tests"
+      - name: Certify the out-of-band cancellation fence
+        working-directory: apps/mobile/modules/bob-live-audio
+        run: |
+          swiftc -module-cache-path "${RUNNER_TEMP}/bob-live-cancellation-cache" \
+            ios/BobLiveAudioCancellationFence.swift tests/swift/cancellation-main.swift \
+            -o "${RUNNER_TEMP}/bob-live-cancellation-tests"
+          "${RUNNER_TEMP}/bob-live-cancellation-tests"
       - name: Run the deterministic Swift VAD contract
         working-directory: apps/mobile/modules/bob-live-audio
         run: |
@@ -98,3 +115,21 @@ jobs:
             ios/BobLiveVad.swift tests/swift/vad-main.swift \
             -o "${RUNNER_TEMP}/bob-live-vad-tests"
           "${RUNNER_TEMP}/bob-live-vad-tests"
+      - name: Generate the ephemeral iOS project
+        run: pnpm --filter @bob/mobile exec expo prebuild --platform ios --no-install
+      - name: Resolve the generated CocoaPods workspace
+        working-directory: apps/mobile/ios
+        run: pod install
+      - name: Compile the real Expo iOS application and BobLiveAudio pod
+        working-directory: apps/mobile/ios
+        run: |
+          xcodebuild \
+            -workspace BobPro.xcworkspace \
+            -scheme BobPro \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "${RUNNER_TEMP}/bob-live-derived-data" \
+            CODE_SIGNING_ALLOWED=NO \
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            build

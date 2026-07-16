@@ -1,0 +1,189 @@
+name: Vercel Cabinet Web Release
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Vercel target
+        required: true
+        default: preview
+        type: choice
+        options:
+          - preview
+          - production
+  workflow_call:
+    inputs:
+      environment:
+        description: Vercel target
+        required: true
+        type: string
+    outputs:
+      deployment_url:
+        description: Immutable Vercel deployment URL produced by this run
+        value: ${{ jobs.verify-and-release-cabinet-web.outputs.deployment_url }}
+      web_base_url:
+        description: Stable HTTPS origin remapped to the deployment and then smoked
+        value: ${{ jobs.verify-and-release-cabinet-web.outputs.web_base_url }}
+    secrets:
+      VERCEL_TOKEN:
+        required: true
+      VERCEL_ORG_ID:
+        required: true
+      VERCEL_CABINET_WEB_PROJECT_ID:
+        required: true
+      VERCEL_AUTOMATION_BYPASS_SECRET:
+        required: false
+
+jobs:
+  verify-and-release-cabinet-web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    environment: ${{ inputs.environment == 'production' && 'production' || 'staging' }}
+    concurrency:
+      group: vercel-cabinet-web-${{ inputs.environment }}
+      cancel-in-progress: false
+    outputs:
+      deployment_url: ${{ steps.deploy.outputs.url }}
+      web_base_url: ${{ steps.stable.outputs.web_base_url }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Validate release target
+        env:
+          VERCEL_TARGET: ${{ inputs.environment }}
+          CALLER_WORKFLOW_REF: ${{ github.workflow_ref }}
+          EXPECTED_PROMOTION_WORKFLOW_REF: ${{ format('{0}/.github/workflows/cabinet-release.yml@refs/heads/main', github.repository) }}
+          RELEASE_REF: ${{ github.ref }}
+        run: |
+          case "$VERCEL_TARGET" in
+            preview|production) ;;
+            *) echo "Unsupported Vercel target" >&2; exit 1 ;;
+          esac
+          if [ "$VERCEL_TARGET" = production ]; then
+            [ "$CALLER_WORKFLOW_REF" = "$EXPECTED_PROMOTION_WORKFLOW_REF" ] || { echo "Production is only callable through cabinet-release.yml on main" >&2; exit 1; }
+            [ "$RELEASE_REF" = refs/heads/main ] || { echo "Production requires refs/heads/main" >&2; exit 1; }
+          fi
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 9.12.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.18.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @bob/web typecheck
+      - run: pnpm --filter @bob/web test
+      - run: pnpm --filter @bob/web lint
+      - run: pnpm --filter @bob/i18n typecheck && pnpm --filter @bob/i18n test && pnpm --filter @bob/i18n lint
+      - run: pnpm --filter @bob/tokens typecheck && pnpm --filter @bob/tokens test && pnpm --filter @bob/tokens lint
+      - name: Install Vercel CLI
+        run: npm install -g vercel@50.4.5
+      - name: Pull Vercel project settings
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_CABINET_WEB_PROJECT_ID }}
+          VERCEL_TARGET: ${{ inputs.environment }}
+        run: vercel pull --yes --environment="$VERCEL_TARGET" --token "$VERCEL_TOKEN"
+      - name: Validate public browser configuration
+        env:
+          VERCEL_ENV_FILE: .vercel/.env.${{ inputs.environment }}.local
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = process.env.VERCEL_ENV_FILE;
+          const content = fs.readFileSync(path, 'utf8');
+          const requiredUrls = ['NEXT_PUBLIC_API_URL', 'NEXT_PUBLIC_SUPABASE_URL'];
+          const required = [...requiredUrls, 'NEXT_PUBLIC_SUPABASE_ANON_KEY'];
+          for (const name of required) {
+            const match = content.match(new RegExp(`^${name}=(?:"([^"]*)"|'([^']*)'|([^\\r\\n]*))$`, 'm'));
+            const value = match?.[1] ?? match?.[2] ?? match?.[3] ?? '';
+            if (!value.trim()) throw new Error(`${name} is required in Vercel ${process.env.VERCEL_ENV_FILE}`);
+            if (requiredUrls.includes(name)) {
+              const parsed = new URL(value);
+              if (parsed.protocol !== 'https:') throw new Error(`${name} must use https`);
+            }
+          }
+          NODE
+      - name: Build immutable Vercel output
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_BUILD_FLAG: ${{ inputs.environment == 'production' && '--prod' || '--target=preview' }}
+        run: vercel build "$VERCEL_BUILD_FLAG" --token "$VERCEL_TOKEN"
+      - name: Deploy prebuilt output
+        id: deploy
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_DEPLOY_FLAG: ${{ inputs.environment == 'production' && '--prod' || '--target=preview' }}
+        run: |
+          url="$(vercel deploy --prebuilt "$VERCEL_DEPLOY_FLAG" --token "$VERCEL_TOKEN")"
+          case "$url" in
+            https://*) ;;
+            *) echo "Unexpected Vercel deployment URL" >&2; exit 1 ;;
+          esac
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+      - name: Remap the stable Cabinet origin to this deployment
+        id: stable
+        env:
+          CABINET_WEB_BASE_URL: ${{ vars.CABINET_WEB_BASE_URL }}
+          DEPLOYMENT_URL: ${{ steps.deploy.outputs.url }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          stable_origin="$(node <<'NODE'
+          const parsed = new URL(process.env.CABINET_WEB_BASE_URL ?? '');
+          if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash) {
+            throw new Error('GitHub environment variable CABINET_WEB_BASE_URL must be an HTTPS origin');
+          }
+          process.stdout.write(parsed.origin);
+          NODE
+          )"
+          stable_host="${stable_origin#https://}"
+          vercel alias set "$DEPLOYMENT_URL" "$stable_host" --token "$VERCEL_TOKEN"
+          echo "web_base_url=$stable_origin" >> "$GITHUB_OUTPUT"
+      - name: Smoke cabinet web
+        env:
+          DEPLOYMENT_URL: ${{ steps.stable.outputs.web_base_url }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+        run: |
+          headers="$(mktemp)"
+          body="$(mktemp)"
+          trap 'rm -f "$headers" "$body"' EXIT
+          if [ -n "$VERCEL_AUTOMATION_BYPASS_SECRET" ]; then
+            curl --fail --silent --show-error --location --retry 3 \
+              --header "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" \
+              --dump-header "$headers" --output "$body" "$DEPLOYMENT_URL/cabinet"
+          else
+            curl --fail --silent --show-error --location --retry 3 \
+              --dump-header "$headers" --output "$body" "$DEPLOYMENT_URL/cabinet"
+          fi
+          grep -qi '^x-content-type-options: *nosniff' "$headers"
+          if grep -qi '^x-powered-by:' "$headers"; then
+            echo "x-powered-by must stay disabled" >&2
+            exit 1
+          fi
+          HEADERS_FILE="$headers" BODY_FILE="$body" node <<'NODE'
+          const fs = require('node:fs');
+          const headers = fs.readFileSync(process.env.HEADERS_FILE, 'utf8');
+          const body = fs.readFileSync(process.env.BODY_FILE, 'utf8');
+          const csp = headers
+            .split(/\r?\n/)
+            .filter((line) => /^content-security-policy:/i.test(line))
+            .at(-1) ?? '';
+          const nonce = csp.match(/'nonce-([^']+)'/)?.[1];
+          if (!nonce) throw new Error('The final response is missing its CSP nonce');
+          const escapedNonce = nonce.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const nonceAttribute = new RegExp(`\\bnonce=["']${escapedNonce}["']`);
+          const scripts = [...body.matchAll(/<script\b([^>]*)>/gi)];
+          if (scripts.length === 0) throw new Error('The cabinet page contains no bootstrap scripts');
+          const missing = scripts.filter(([, attributes]) => !nonceAttribute.test(attributes));
+          if (missing.length > 0) {
+            throw new Error(`${missing.length}/${scripts.length} script tags lack the response CSP nonce`);
+          }
+          if (!body.includes('Espace cabinet sécurisé')) {
+            throw new Error('The authenticated cabinet shell was not rendered');
+          }
+          NODE
