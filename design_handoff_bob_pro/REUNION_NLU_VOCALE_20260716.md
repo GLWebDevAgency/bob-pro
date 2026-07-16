@@ -79,3 +79,23 @@ local (parseur devis, commandes fréquentes) + boucle agentique pour le multi-é
 QUESTION 6 POUR GPT : dimensionnement modèle de la boucle (mistral-small tool-calling
 suffit-il en boucle ? large aux tours complexes ? routage par complexité ?) et budget
 latence/coût par tour multi-étapes vs la métrologie existante.
+
+## CAS CANONIQUE FONDATEUR (17/07) — LE test d'acceptation de la boucle agentique vocale
+« Ajoute deux heures de main-d'œuvre » doit déclencher CETTE séquence :
+1. RECHERCHE CATALOGUE d'abord (outil searchCatalog sur le catalogue articles existant —
+   le picker manuel existe déjà dans le wizard) : correspondances proches ?
+2. UNE correspondance forte → « Dans ton catalogue tu as "Heure de main-d'œuvre
+   plomberie" à 55 €/h — je l'utilise ? » ; PLUSIEURS → « J'ai trouvé 3 entrées proches :
+   [liste] — l'une des trois, ou on crée une nouvelle ? » ; AUCUNE → flux actuel
+   (extraction + demande du prix seul — fix tactique déjà livré 2c91381).
+3. RÉPONSE BIMODALE FLUIDE : à la voix (« le premier », « non, nouveau ») OU AU DOIGT —
+   la pop-up conversationnelle GRANDIT et affiche les options sélectionnables (cartes
+   tapables). La parité manuel↔vocal vit DANS la conversation elle-même.
+4. Confirmation → la ligne s'ajoute (plancher confirm_all inchangé).
+POURQUOI C'EST LE CAS CANONIQUE : il exige la boucle (chercher → voir les résultats →
+proposer → compléter), les outils typés (searchCatalog, addLine), le slot-filling, ET
+l'UI conversationnelle riche (options tapables dans la bulle — pas seulement du texte).
+Si l'architecture retenue fait passer CE scénario avec fluidité < 2 s par tour, elle est
+la bonne. À intégrer au verdict GPT (questions 1-6) : ce cas devient le test
+d'acceptation n°1 du chantier + un corpus d'évals construit autour (variantes STT,
+catalogues réels, ambiguïtés).
