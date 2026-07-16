@@ -11,6 +11,7 @@ export type BobIntent =
   | 'scan' // numériser un reçu/ticket/justificatif (ouvre l'OCR caméra)
   | 'nouveau_devis' // ouvrir l'écran de création de devis
   | 'voir_chantiers' // ouvrir les chantiers
+  | 'voir_catalogue' // ouvrir le catalogue de prestations (C27) — libellés, prix, TVA
   | 'cloture' // préparer le mois pour le comptable (ouvre l'écran de clôture)
   | 'diagnostic' // « prêt pour 2026 ? » — ouvrir le diagnostic conformité (C40, TODO ⑦)
   | 'echeances' // échéances fiscales à venir (TVA/URSSAF/IS/CFE) — lecture, C-EXP5b
@@ -117,6 +118,9 @@ export function detectIntent(message: string): BobIntent {
     return 'generer_facture';
   if (/(nouveau devis|fais.*devis|cr[ée]e?r?.*devis|faire un devis|un devis|chiffrer)/.test(m)) return 'nouveau_devis';
   if (/chantier/.test(m)) return 'voir_chantiers';
+  // Catalogue de prestations (C27) : AVANT documents (« mes prestations » ne doit jamais
+  // retomber sur la liste de pièces archivées).
+  if (/(catalogue|mes prestations)/.test(m)) return 'voir_catalogue';
   if (/(document|pi[èe]ce|archive|pdf|factur-?x|justificatif|re[çc]u|ticket)/.test(m)) return 'documents';
   if (/(liste|mes factures|factures impay|reste (à|a) encaisser|à encaisser)/.test(m)) return 'factures';
   if (/(relanc|rappel|en retard|impay)/.test(m)) return 'relance';

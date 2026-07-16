@@ -141,6 +141,7 @@ const STATIC_AGENT_ROUTES = new Set([
   '/chantiers',
   '/cloture',
   '/diagnostic',
+  '/catalogue',
 ]);
 
 function validation(field: string, message: string): AppError {

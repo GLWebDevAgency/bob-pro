@@ -2,11 +2,11 @@ import type { I18nKey } from '@bob/i18n';
 import type { QuickActionTone } from '@bob/ui';
 
 export type TodayQuickAction = Readonly<{
-  id: 'quote' | 'scan' | 'collect';
+  id: 'quote' | 'scan' | 'collect' | 'catalogue';
   labelKey: I18nKey;
-  route: '/devis/new' | '/scan-document' | '/ventes';
-  icon: 'file' | 'camera' | 'credit-card';
-  tone: Extract<QuickActionTone, 'b2b' | 'ai' | 'warning'>;
+  route: '/devis/new' | '/scan-document' | '/ventes' | '/catalogue';
+  icon: 'file' | 'camera' | 'credit-card' | 'book';
+  tone: Extract<QuickActionTone, 'b2b' | 'ai' | 'warning' | 'success'>;
 }>;
 
 /**
@@ -35,5 +35,12 @@ export const TODAY_QUICK_ACTIONS: readonly TodayQuickAction[] = Object.freeze([
     route: '/ventes',
     icon: 'credit-card',
     tone: 'warning',
+  }),
+  Object.freeze({
+    id: 'catalogue',
+    labelKey: 'today.quickCatalogue',
+    route: '/catalogue',
+    icon: 'book',
+    tone: 'success',
   }),
 ]);

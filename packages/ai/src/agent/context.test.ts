@@ -202,6 +202,7 @@ describe('isAllowedAgentNavigationRoute', () => {
       '/chantiers',
       '/cloture',
       '/diagnostic',
+      '/catalogue',
       '/facture/inv-42',
       '/devis/quote-42',
       '/client/cust-42',

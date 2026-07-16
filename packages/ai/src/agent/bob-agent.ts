@@ -158,6 +158,11 @@ const NAV_ROUTES: Partial<Record<BobIntent, { route: string; title: string; body
   scan: { route: '/scan-document', title: 'J’ouvre le scan', body: 'Prends le reçu / ticket en photo — je lis et je classe.' },
   nouveau_devis: { route: '/devis/new', title: 'Nouveau devis', body: 'Je t’ouvre l’écran de création de devis.' },
   voir_chantiers: { route: '/chantiers', title: 'Tes chantiers', body: 'J’ouvre tes chantiers.' },
+  voir_catalogue: {
+    route: '/catalogue',
+    title: 'Ton catalogue',
+    body: 'Je t’ouvre ton catalogue de prestations : libellés, prix et TVA.',
+  },
   cloture: { route: '/cloture', title: 'Clôture du mois', body: 'Je prépare ton mois : anomalies et pièces manquantes.' },
   diagnostic: {
     route: '/diagnostic',

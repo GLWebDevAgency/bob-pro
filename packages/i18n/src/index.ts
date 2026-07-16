@@ -137,6 +137,11 @@ const legacyFr = {
     pro: 'Encaisser',
     direct: 'Encaisser',
   },
+  'today.quickCatalogue': {
+    pote: 'Catalogue',
+    pro: 'Catalogue',
+    direct: 'Catalogue',
+  },
   // Voix des priorités du briefing (titres + badges + sous-titres + CTA — VOICE_AND_TONE § Retard).
   // Les priorités sont DÉRIVÉES des données réelles (@bob/core deriveTodayPriorities, A1-C10).
   'today.prioRelanceTitle': {
@@ -5193,6 +5198,51 @@ const legacyFr = {
     pote: 'Je n’arrive pas à ouvrir ton catalogue, là. On réessaie ?',
     pro: 'Impossible de charger le catalogue. Veuillez réessayer.',
     direct: 'Catalogue injoignable. Réessaie.',
+  },
+  'catalogue.legacyProtectedTitle': {
+    pote: 'Anciennes données mises à l’abri',
+    pro: 'Anciennes données protégées',
+    direct: 'Anciennes données protégées',
+  },
+  'catalogue.legacyProtectedBody': {
+    pote: 'J’ai trouvé un ancien catalogue local. Je le garde chiffré sur cet appareil, mais je ne l’utilise pas : impossible de vérifier à quel compte il appartenait. Il reste ici jusqu’à ce que tu le supprimes.',
+    pro: 'Un ancien catalogue local est conservé chiffré sur cet appareil, sans être utilisé : son compte d’origine ne peut pas être vérifié. Il sera conservé jusqu’à sa suppression explicite.',
+    direct: 'Ancien catalogue chiffré, non utilisé : compte d’origine invérifiable. Conservé jusqu’à suppression.',
+  },
+  'catalogue.legacyDeleteCta': {
+    pote: 'Supprimer ces anciennes données',
+    pro: 'Supprimer ces anciennes données',
+    direct: 'Supprimer définitivement',
+  },
+  'catalogue.legacyDeleteTitle': {
+    pote: 'Supprimer ces anciennes données ?',
+    pro: 'Supprimer définitivement ces données ?',
+    direct: 'Suppression définitive ?',
+  },
+  'catalogue.legacyDeleteBody': {
+    pote: 'Elles seront effacées définitivement de cet appareil. Comme leur compte d’origine est inconnu, Bob ne pourra pas les récupérer.',
+    pro: 'Ces données seront définitivement effacées de cet appareil. Leur compte d’origine étant inconnu, aucune récupération ne sera possible.',
+    direct: 'Effacement irréversible de cet appareil. Aucune récupération possible.',
+  },
+  'catalogue.legacyDeletedToast': {
+    pote: 'Anciennes données supprimées.',
+    pro: 'Anciennes données supprimées.',
+    direct: 'Données supprimées.',
+  },
+  'catalogue.legacyProtectionError': {
+    pote: 'Je n’ai pas fini de protéger les anciennes données',
+    pro: 'Protection des anciennes données incomplète',
+    direct: 'Protection incomplète',
+  },
+  'catalogue.legacyProtectionErrorBody': {
+    pote: 'Je ne les utilise pas et je ne les montre pas. Réessaie pour terminer leur mise à l’abri.',
+    pro: 'Ces données ne sont ni utilisées ni affichées. Réessayez pour terminer leur mise en sécurité.',
+    direct: 'Données non utilisées. Relance la protection.',
+  },
+  'catalogue.legacyProtectionRetry': {
+    pote: 'Réessayer maintenant',
+    pro: 'Réessayer la protection',
+    direct: 'Réessayer',
   },
   'catalogue.suggestTitle': {
     pote: 'Depuis ton catalogue',

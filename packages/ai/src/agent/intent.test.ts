@@ -55,6 +55,20 @@ describe('detectIntent — contexte Notifications', () => {
     expect(detectIntent('Ouvre la clôture')).toBe('cloture');
     expect(detectIntent('Ouvre mes chantiers')).toBe('voir_chantiers');
     expect(detectIntent('Ouvre le diagnostic')).toBe('diagnostic');
+    expect(detectIntent('Ouvre mon catalogue')).toBe('voir_catalogue');
+  });
+});
+
+describe('detectIntent — catalogue de prestations (C27)', () => {
+  it('reconnaît « ouvre mon catalogue » et ses variantes', () => {
+    expect(detectIntent('Ouvre mon catalogue')).toBe('voir_catalogue');
+    expect(detectIntent('Affiche le catalogue')).toBe('voir_catalogue');
+    expect(detectIntent('Montre-moi mes prestations')).toBe('voir_catalogue');
+  });
+
+  it('ne capte pas les intentions voisines (documents/pièces) par erreur', () => {
+    expect(detectIntent('Liste mes documents')).toBe('documents');
+    expect(detectIntent('Scanne ce reçu')).toBe('scan');
   });
 });
 

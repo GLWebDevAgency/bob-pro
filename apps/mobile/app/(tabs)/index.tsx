@@ -3,7 +3,8 @@
  * réf design_handoff_bob_pro/Bob Pro.dc.html). Composition 100 % @bob/ui :
  * AppHeaderNavy (halos radiaux) → FloatingBalanceCard (geste signature) →
  * « À régler aujourd'hui » (PriorityCard ; conformité = carte info lavande, sans checkbox) →
- * « En un coup d'œil » (KpiTile ×4 iconées) → « Vite fait » (QuickAction ×3) → footer.
+ * « En un coup d'œil » (KpiTile ×4 iconées) → « Vite fait » (QuickAction ×4, dont Catalogue
+ * C27 — TODAY_QUICK_ACTIONS) → footer.
  * PAS de FAB sur cet écran : les réglages s'ouvrent via l'avatar (JM) → profil.
  *
  * DONNÉES RÉELLES (amendement A1-C10) : tout vient des queries du BobClient

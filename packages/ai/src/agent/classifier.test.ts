@@ -28,6 +28,15 @@ describe('classifyWithLlm (tool-calling -> plan)', () => {
     expect(r.model).toBe('glm');
   });
 
+  it('mappe un appel d’outil ouvrir_catalogue (C27)', async () => {
+    const r = await classifyWithLlm(
+      fakeLlm({ text: null, toolCalls: [{ name: 'ouvrir_catalogue', arguments: {} }], model: 'glm' }),
+      'ouvre mon catalogue',
+    );
+    expect(r.steps).toHaveLength(1);
+    expect(r.steps[0]?.intent).toBe('voir_catalogue');
+  });
+
   it('plan multi-étapes : plusieurs appels d’outils', async () => {
     const r = await classifyWithLlm(
       fakeLlm({

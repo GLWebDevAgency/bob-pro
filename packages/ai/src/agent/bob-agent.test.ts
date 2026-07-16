@@ -665,6 +665,13 @@ describe('BobAgent — navigation (Jarvis : ouvrir le bon écran)', () => {
     expect(r.ok && r.value.navigate).toBe('/chantiers');
   });
 
+  it('« ouvre mon catalogue » -> ouvre le catalogue de prestations (C27)', async () => {
+    const r = await agent().ask('ouvre mon catalogue');
+    expect(r.ok && r.value.intent).toBe('voir_catalogue');
+    expect(r.ok && r.value.kind).toBe('done');
+    expect(r.ok && r.value.navigate).toBe('/catalogue');
+  });
+
   it('« Prêt pour 2026 ? » (chip C15) -> ouvre le diagnostic conformité (C40 ⑦)', async () => {
     const r = await agent().ask('Prêt pour 2026 ?');
     expect(r.ok && r.value.intent).toBe('diagnostic');

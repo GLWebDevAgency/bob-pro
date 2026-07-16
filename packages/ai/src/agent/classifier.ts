@@ -105,6 +105,12 @@ export const LLM_TOOL_SPECS: LlmToolSpec[] = [
     parameters: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
+    name: 'ouvrir_catalogue',
+    description:
+      'Ouvrir le catalogue de prestations (libellés, prix HT, TVA) pour le consulter, y ajouter ou y modifier une entrée.',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
     name: 'ouvrir_cloture',
     description: 'Préparer le mois pour le comptable : anomalies, pièces manquantes, clôture.',
     parameters: { type: 'object', properties: {}, additionalProperties: false },
@@ -200,6 +206,7 @@ const TOOL_TO_INTENT: Record<string, BobIntent> = {
   ouvrir_scan_recu: 'scan',
   nouveau_devis: 'nouveau_devis',
   ouvrir_chantiers: 'voir_chantiers',
+  ouvrir_catalogue: 'voir_catalogue',
   ouvrir_cloture: 'cloture',
   ouvrir_diagnostic: 'diagnostic',
   echeances_fiscales: 'echeances',
