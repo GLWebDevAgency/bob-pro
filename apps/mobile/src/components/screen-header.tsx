@@ -37,7 +37,15 @@ export function ScreenHeader({ backLabel, onBack, eyebrow, title, subtitle, acti
           accessibilityLabel={backLabel}
           onPress={onBack}
           hitSlop={8}
-          style={{ flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'flex-start', minHeight: 44 }}
+          style={({ pressed }) => ({
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 4,
+            alignSelf: 'flex-start',
+            minHeight: 44,
+            // Press feedback standard (passe feel 18/07) — un retour qui répond au doigt.
+            opacity: pressed ? 0.6 : 1,
+          })}
         >
           <ChevronLeftIcon color={colors.ink800} size={18} strokeWidth={2.2} />
           <Text style={[font('label', 600), { fontSize: 15, color: colors.ink800 }]}>{backLabel}</Text>

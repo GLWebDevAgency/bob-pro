@@ -84,7 +84,7 @@ export function Chip({ label, active = false, onPress }: ChipProps) {
       accessibilityLabel={label}
       accessibilityState={{ selected: active }}
       hitSlop={{ top: CHIP_HIT_SLOP, bottom: CHIP_HIT_SLOP }}
-      style={{
+      style={({ pressed }) => ({
         height: CHIP_HEIGHT,
         minWidth: 44,
         paddingHorizontal: 14,
@@ -94,7 +94,10 @@ export function Chip({ label, active = false, onPress }: ChipProps) {
         backgroundColor: c.bg,
         borderWidth: 1,
         borderColor: c.border,
-      }}
+        // Press feedback standard (passe feel 18/07) — même langage que PressableScale.
+        opacity: pressed ? 0.8 : 1,
+        transform: [{ scale: pressed ? 0.97 : 1 }],
+      })}
     >
       <Text style={[font('label'), { color: c.fg }]}>{label}</Text>
     </Pressable>

@@ -73,14 +73,15 @@ function ResultRow({
       accessibilityRole="button"
       accessibilityLabel={title}
       onPress={onPress}
-      style={{
+      style={({ pressed }) => ({
         flexDirection: 'row',
         alignItems: 'center',
         gap: 11,
         paddingVertical: 12,
         borderBottomWidth: divider ? 1 : 0,
         borderBottomColor: colors.lineSoft,
-      }}
+        opacity: pressed ? 0.65 : 1,
+      })}
     >
       {tile}
       <View style={{ flex: 1, minWidth: 0 }}>
@@ -199,13 +200,14 @@ export default function Recherche() {
             accessibilityLabel={t('search.back', { personality })}
             onPress={() => router.back()}
             hitSlop={8}
-            style={{
+            style={({ pressed }) => ({
               flexDirection: 'row',
               alignItems: 'center',
               gap: 4,
               alignSelf: 'flex-start',
               minHeight: 44,
-            }}
+              opacity: pressed ? 0.6 : 1,
+            })}
           >
             <ChevronLeftIcon color={colors.ink800} size={18} strokeWidth={2.2} />
             <Text style={[font('label', 600), { fontSize: 15, color: colors.ink800 }]}>

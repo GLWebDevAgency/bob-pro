@@ -285,7 +285,12 @@ function FeedItemCard({
         accessibilityLabel={item.title}
         accessibilityState={{ selected: item.readAt === null }}
         onPress={() => onPress(item)}
-        style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}
+        style={({ pressed }) => ({
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 12,
+          opacity: pressed ? 0.65 : 1,
+        })}
       >
         <IconTile tone={item.status === 'failed' ? 'danger' : 'b2g'} size={34} radius={11}>
           <SendIcon color={item.status === 'failed' ? semantic.danger : semantic.b2g} size={16} />
@@ -324,7 +329,12 @@ function UpcomingDueCard({ entry, personality }: { entry: UpcomingDueEntry; pers
         accessibilityRole="button"
         accessibilityLabel={t('notif.itemDueTitle', { personality, params: { name } })}
         onPress={() => router.push(`/facture/${entry.invoiceId}`)}
-        style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}
+        style={({ pressed }) => ({
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 12,
+          opacity: pressed ? 0.65 : 1,
+        })}
       >
         <IconTile tone="particulier" size={34} radius={11}>
           <CalendarIcon color={semantic.particulier} size={16} />
@@ -697,7 +707,14 @@ export default function Notifications() {
           accessibilityLabel={t('notif.back', { personality })}
           onPress={() => router.back()}
           hitSlop={8}
-          style={{ flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'flex-start', minHeight: 44 }}
+          style={({ pressed }) => ({
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 4,
+            alignSelf: 'flex-start',
+            minHeight: 44,
+            opacity: pressed ? 0.6 : 1,
+          })}
         >
           <ChevronLeftIcon color={colors.ink800} size={18} strokeWidth={2.2} />
           <Text style={[font('label', 600), { fontSize: 15, color: colors.ink800 }]}>

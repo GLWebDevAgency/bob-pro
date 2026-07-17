@@ -152,13 +152,14 @@ export default function Chantiers() {
           accessibilityRole="button"
           accessibilityLabel={t('chantiers.back', { personality })}
           hitSlop={8}
-          style={{
+          style={({ pressed }) => ({
             minHeight: 44,
             flexDirection: 'row',
             alignItems: 'center',
             gap: 4,
             alignSelf: 'flex-start',
-          }}
+            opacity: pressed ? 0.6 : 1,
+          })}
         >
           <ChevronLeftIcon color={colors.ink800} size={18} strokeWidth={2.2} />
           <Text style={[font('label', 600), { fontSize: 15, color: colors.ink800 }]}>
@@ -177,15 +178,17 @@ export default function Chantiers() {
               accessibilityRole="button"
               accessibilityLabel={t('chantiers.add', { personality, params: worksiteParams })}
               onPress={() => setCreateOpen(true)}
-              style={{
+              style={({ pressed }) => ({
                 width: 44,
                 height: 44,
                 borderRadius: 22,
                 backgroundColor: theme.ink,
                 alignItems: 'center',
                 justifyContent: 'center',
+                opacity: pressed ? 0.85 : 1,
+                transform: [{ scale: pressed ? 0.94 : 1 }],
                 ...shadowNative.e1,
-              }}
+              })}
             >
               <PlusIcon color={colors.surface} size={20} />
             </Pressable>
