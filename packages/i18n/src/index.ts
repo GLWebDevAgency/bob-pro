@@ -1974,6 +1974,131 @@ const legacyFr = {
     pro: 'Filtre appliqué.',
     direct: 'Filtré.',
   },
+
+  // ── B9 — recherche intelligente devis & factures (autocomplétion, chips de dates, filtres avancés) ──
+  'ventes.searchAdvancedButton': {
+    pote: 'Recherche avancée',
+    pro: 'Recherche avancée',
+    direct: 'Filtres',
+  },
+  'ventes.suggest.sectionCustomers': { pote: 'Clients', pro: 'Clients', direct: 'Clients' },
+  'ventes.suggest.sectionNumbers': { pote: 'Numéros', pro: 'Numéros', direct: 'Numéros' },
+  'ventes.suggest.sectionLabels': { pote: 'Prestations', pro: 'Prestations', direct: 'Prestations' },
+  'ventes.suggest.sectionRecent': {
+    pote: 'Recherches récentes',
+    pro: 'Recherches récentes',
+    direct: 'Récentes',
+  },
+  'ventes.suggest.count': {
+    pote: '{count} pièce(s)',
+    pro: '{count} pièce(s)',
+    direct: '{count}',
+  },
+  'ventes.dateChip.thisMonth': { pote: 'Ce mois-ci', pro: 'Ce mois-ci', direct: 'Ce mois' },
+  'ventes.dateChip.lastMonth': { pote: 'Mois dernier', pro: 'Mois dernier', direct: 'M-1' },
+  'ventes.dateChip.last2Months': {
+    pote: '2 derniers mois',
+    pro: '2 derniers mois',
+    direct: '2 mois',
+  },
+  'ventes.dateChip.custom': { pote: 'Personnalisé', pro: 'Personnalisé', direct: 'Perso.' },
+  'ventes.dateChip.customRange': {
+    pote: 'Du {from} au {to}',
+    pro: 'Du {from} au {to}',
+    direct: '{from} → {to}',
+  },
+  'ventes.activeFilter.customer': {
+    pote: 'Client : {name}',
+    pro: 'Client : {name}',
+    direct: '{name}',
+  },
+  'ventes.activeFilter.remove': {
+    pote: 'Retirer ce filtre',
+    pro: 'Retirer ce filtre',
+    direct: 'Retirer',
+  },
+  'ventes.advancedSearch.title': {
+    pote: 'Recherche avancée',
+    pro: 'Recherche avancée',
+    direct: 'Filtres',
+  },
+  'ventes.advancedSearch.subtitle': {
+    pote: 'Combine client, numéro, prestation et dates — j’applique tout d’un coup.',
+    pro: 'Combinez client, numéro, prestation et dates ; tous les filtres s’appliquent ensemble.',
+    direct: 'Combine les filtres, applique.',
+  },
+  'ventes.advancedSearch.fieldCustomer': { pote: 'Client', pro: 'Client', direct: 'Client' },
+  'ventes.advancedSearch.customerPlaceholder': {
+    pote: 'Chercher un client…',
+    pro: 'Rechercher un client…',
+    direct: 'Client…',
+  },
+  'ventes.advancedSearch.fieldNumber': { pote: 'Numéro', pro: 'Numéro de pièce', direct: 'N°' },
+  'ventes.advancedSearch.numberPlaceholder': { pote: 'Ex. F-2026-0012', pro: 'Ex. F-2026-0012', direct: 'F-2026-0012' },
+  'ventes.advancedSearch.fieldLabel': {
+    pote: 'Prestation',
+    pro: 'Libellé de ligne',
+    direct: 'Prestation',
+  },
+  'ventes.advancedSearch.labelPlaceholder': {
+    pote: 'Ex. chauffe-eau',
+    pro: 'Ex. chauffe-eau',
+    direct: 'Chauffe-eau…',
+  },
+  'ventes.advancedSearch.fieldDates': { pote: 'Période', pro: 'Période', direct: 'Dates' },
+  'ventes.advancedSearch.fieldStatus': { pote: 'Statut', pro: 'Statut', direct: 'Statut' },
+  'ventes.advancedSearch.statusAny': { pote: 'Tous statuts', pro: 'Tous statuts', direct: 'Tous' },
+  'ventes.advancedSearch.dateFrom': { pote: 'Du', pro: 'Du', direct: 'Du' },
+  'ventes.advancedSearch.dateTo': { pote: 'Au', pro: 'Au', direct: 'Au' },
+  'ventes.advancedSearch.submit': {
+    pote: 'Rechercher',
+    pro: 'Rechercher',
+    direct: 'Rechercher',
+  },
+  'ventes.advancedSearch.reset': {
+    pote: 'Tout effacer',
+    pro: 'Réinitialiser',
+    direct: 'Effacer',
+  },
+  'ventes.advancedSearch.cancel': { pote: 'Annuler', pro: 'Annuler', direct: 'Annuler' },
+  'ventes.voiceSearchResultWithCustomerAndPeriod': {
+    pote: 'Voilà les {kind} de {customer} {period} — j’en ai trouvé {count}.',
+    pro: 'Voici les {kind} de {customer} {period} : {count} résultat(s).',
+    direct: '{kind} {customer} {period} : {count}.',
+  },
+  'ventes.voiceSearchResultWithCustomer': {
+    pote: 'Voilà les {kind} de {customer} — j’en ai trouvé {count}.',
+    pro: 'Voici les {kind} de {customer} : {count} résultat(s).',
+    direct: '{kind} {customer} : {count}.',
+  },
+  'ventes.voiceSearchResultWithPeriod': {
+    pote: 'Voilà les {kind} {period} — j’en ai trouvé {count}.',
+    pro: 'Voici les {kind} {period} : {count} résultat(s).',
+    direct: '{kind} {period} : {count}.',
+  },
+  'ventes.voiceSearchNoResults': {
+    pote: 'Je ne trouve aucun résultat pour ça.',
+    pro: 'Aucun résultat pour cette recherche.',
+    direct: 'Aucun résultat.',
+  },
+  'ventes.voiceSearchKindQuotes': { pote: 'devis', pro: 'devis', direct: 'devis' },
+  'ventes.voiceSearchKindInvoices': { pote: 'factures', pro: 'factures', direct: 'factures' },
+  'ventes.voiceSearchKindAll': { pote: 'devis et factures', pro: 'devis et factures', direct: 'pièces' },
+  // Fragments composés par le code (jamais affichés seuls) pour bâtir le {period} des clés
+  // voiceSearchResult* ci-dessus — une SEULE source de vérité entre les chips et la voix
+  // (packages/core parseFrenchPeriod pose le label, ces clés le traduisent en phrase).
+  'ventes.period.thisMonth': { pote: 'de ce mois-ci', pro: 'de ce mois-ci', direct: 'ce mois-ci' },
+  'ventes.period.lastMonth': { pote: 'du mois dernier', pro: 'du mois dernier', direct: 'mois dernier' },
+  'ventes.period.thisWeek': { pote: 'de cette semaine', pro: 'de cette semaine', direct: 'cette semaine' },
+  'ventes.period.today': { pote: 'du jour', pro: 'du jour', direct: 'aujourd’hui' },
+  'ventes.period.thisYear': { pote: 'de cette année', pro: 'de cette année', direct: 'cette année' },
+  'ventes.period.lastNMonths': {
+    pote: 'des {n} derniers mois',
+    pro: 'des {n} derniers mois',
+    direct: '{n} derniers mois',
+  },
+  'ventes.period.since': { pote: 'depuis {month}', pro: 'depuis {month}', direct: 'depuis {month}' },
+
   // Brouillon local de devis (C21 redécoupe 2026-07-17) — carte visible en tête de la liste
   // Devis, jamais confondu avec un devis brouillon SERVEUR (QUOTE_BADGE.draft) : celui-ci n'a
   // encore jamais touché le backend.
@@ -5250,6 +5375,49 @@ const legacyFr = {
     direct: 'Catalogue',
   },
   'catalogue.back': { pote: 'Retour', pro: 'Retour', direct: 'Retour' },
+  // Corbeille unifiée (DeleteIconButton) : sheet d'édition + swipe des cartes perso — jamais
+  // une suppression directe, toujours cette ConfirmSheet (destructive, tap simple).
+  'catalogue.deleteConfirmTitle': {
+    pote: 'Supprimer « {label} » de ton catalogue ?',
+    pro: 'Supprimer « {label} » de votre catalogue ?',
+    direct: 'Supprimer « {label} » ?',
+  },
+  'catalogue.deleteConfirmBody': {
+    pote: 'Cette prestation disparaît de ton catalogue. Tu pourras la recréer si besoin.',
+    pro: 'Cette prestation sera retirée de votre catalogue. Vous pourrez la recréer si besoin.',
+    direct: 'Retirée du catalogue. Recréable si besoin.',
+  },
+  // R6/R7 — swipe des cartes (accessibilité des actions révélées) : même libellé « Supprimer
+  // {label} » que l'icône de la sheet, pour une seule paire de clés dans les deux surfaces.
+  'catalogue.cardSwipeEdit': {
+    pote: 'Modifier {label}',
+    pro: 'Modifier {label}',
+    direct: 'Modifier {label}',
+  },
+  'catalogue.cardSwipeDelete': {
+    pote: 'Supprimer {label}',
+    pro: 'Supprimer {label}',
+    direct: 'Supprimer {label}',
+  },
+  // R7 (parité vocale) — « supprime {prestation} » : Bob DIT ce qu'il a compris et OUVRE la
+  // ConfirmSheet ci-dessus — jamais de suppression vocale directe (plancher de sûreté établi
+  // par les lignes de devis, R6/R7). Seules les prestations PERSO sont ciblées : une
+  // suggestion métier indicative n'a pas de corbeille, elle n'est donc jamais « trouvée » ici.
+  'catalogue.voice.deleteOpened': {
+    pote: 'Je prépare la suppression de {label} — confirme à l’écran.',
+    pro: 'Suppression de {label} préparée — confirmez à l’écran.',
+    direct: 'Suppression {label} préparée. Confirme.',
+  },
+  'catalogue.voice.deleteNotFound': {
+    pote: 'Je ne trouve pas cette prestation dans ton catalogue — redis son nom, ou touche l’écran.',
+    pro: 'Prestation introuvable dans votre catalogue. Répétez le nom, ou choisissez à l’écran.',
+    direct: 'Prestation introuvable. Redis ou touche.',
+  },
+  'catalogue.voice.deleteAmbiguous': {
+    pote: 'Dans ton catalogue, plusieurs collent : {options}. Laquelle ?',
+    pro: 'Plusieurs prestations de votre catalogue correspondent : {options}. Laquelle ?',
+    direct: 'Catalogue ambigu : {options}. Laquelle ?',
+  },
 
   // ── C27 — réglages facturation (Facturation & modèles) ─────────────────────
   'reglages.eyebrow': { pote: 'Tes réglages', pro: 'Vos réglages', direct: 'Réglages' },

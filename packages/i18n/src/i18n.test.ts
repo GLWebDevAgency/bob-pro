@@ -747,4 +747,30 @@ describe('i18n — C-EXP-UI2 argent.urssaf*', () => {
       'Déclaration : 31 oct. max.',
     );
   });
+
+  it('B9 — recherche intelligente devis & factures : chips de dates, filtres actifs, confirmation vocale composée', () => {
+    expect(t('ventes.dateChip.lastMonth')).toBe('Mois dernier');
+    expect(t('ventes.dateChip.customRange', { params: { from: '01/06', to: '30/06' } })).toBe(
+      'Du 01/06 au 30/06',
+    );
+    expect(t('ventes.activeFilter.customer', { params: { name: 'Mairie de Sèvres' } })).toBe(
+      'Client : Mairie de Sèvres',
+    );
+    // Le {period} interpolé est déjà composé côté appelant (ex. via ventes.period.lastMonth) —
+    // ce test fige le contrat de forme des 3 variantes de confirmation vocale.
+    expect(
+      t('ventes.voiceSearchResultWithCustomerAndPeriod', {
+        params: { kind: 'devis', customer: 'Mairie de Sèvres', period: 'du mois dernier', count: 3 },
+      }),
+    ).toBe('Voilà les devis de Mairie de Sèvres du mois dernier — j’en ai trouvé 3.');
+    expect(
+      t('ventes.voiceSearchResultWithCustomerAndPeriod', {
+        personality: 'pro',
+        params: { kind: 'factures', customer: 'SARL Martin', period: 'de ce mois-ci', count: 1 },
+      }),
+    ).toBe('Voici les factures de SARL Martin de ce mois-ci : 1 résultat(s).');
+    expect(t('ventes.voiceSearchNoResults', { personality: 'direct' })).toBe('Aucun résultat.');
+    expect(t('ventes.period.lastNMonths', { params: { n: 2 } })).toBe('des 2 derniers mois');
+    expect(t('ventes.period.since', { params: { month: 'janvier' } })).toBe('depuis janvier');
+  });
 });

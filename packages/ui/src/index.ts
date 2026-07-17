@@ -24,6 +24,7 @@ export * from './components/skeleton';
 export * from './components/ui-states';
 export * from './hooks/use-reduce-motion';
 export * from './components/icon-tile';
+export * from './components/delete-icon-button';
 export * from './components/eyebrow';
 export * from './components/section-header';
 export * from './components/money-text';

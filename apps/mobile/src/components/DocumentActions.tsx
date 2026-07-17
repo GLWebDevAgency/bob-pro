@@ -1,11 +1,11 @@
 import { forwardRef, useImperativeHandle, useRef, useState, type ReactNode } from 'react';
-import { View, Alert, Pressable, ActivityIndicator, Share } from 'react-native';
+import { View, Alert, Share } from 'react-native';
 import { router } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
 import type { QuoteView, InvoiceView } from '@bob/api-client';
 import { challengeFor, buildActionDiff } from '@bob/ai';
 import { t } from '@bob/i18n';
-import { QuestionSheet, useTheme } from '@bob/ui';
+import { DeleteIconButton, QuestionSheet, useTheme } from '@bob/ui';
 import {
   useSendQuote,
   useSignQuote,
@@ -532,12 +532,15 @@ export function InvoiceActions({
             }
           />
         </View>
-        {/* R6 : erreur détectée dans le devis source -> supprimer le brouillon (jamais une pièce émise). */}
-        <Pressable
-          accessibilityRole="button"
+        {/* R6 : erreur détectée dans le devis source -> supprimer le brouillon (jamais une pièce émise).
+            Corbeille canonique @bob/ui (DeleteIconButton) — même composant que catalogue.tsx C27. */}
+        <DeleteIconButton
+          icon={<Feather name="trash-2" size={20} color={semantic.danger} />}
           accessibilityLabel="Supprimer le brouillon"
+          size={52}
+          radius={16}
+          loading={busy === 'delete'}
           disabled={!!busy}
-          hitSlop={4}
           onPress={() =>
             void (async () => {
               const ok = await confirm({
@@ -554,22 +557,7 @@ export function InvoiceActions({
               }
             })()
           }
-          style={{
-            width: 52,
-            height: 52,
-            borderRadius: 16,
-            alignItems: 'center',
-            justifyContent: 'center',
-            backgroundColor: semantic.dangerBg,
-            opacity: busy ? 0.5 : 1,
-          }}
-        >
-          {busy === 'delete' ? (
-            <ActivityIndicator color={semantic.danger} />
-          ) : (
-            <Feather name="trash-2" size={20} color={semantic.danger} />
-          )}
-        </Pressable>
+        />
       </View>
     );
   }
