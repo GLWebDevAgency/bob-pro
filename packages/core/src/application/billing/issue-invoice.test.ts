@@ -15,6 +15,7 @@ const clock: ClockPort = {
   now: () => '2026-06-30T10:00:00.000Z',
   today: () => '2026-06-30',
 };
+const terms = { days: 30, endOfMonth: false, label: 'Paiement à 30 jours' } as const;
 
 function draftInvoice(id = 'inv-1'): Invoice {
   const company = seedCompany();
@@ -42,7 +43,12 @@ function issuedInvoice(id = 'inv-1', number = 'F-2026-0007'): Invoice {
   if (!parsedNumber.ok) throw new Error('number');
   const assigned = invoice.assignNumber(parsedNumber.value, clock.now());
   if (!assigned.ok) throw new Error('number');
-  const issued = invoice.issue({ mentions: ['Mention'], terms: terms.value, issuedAt: clock.today(), at: clock.now() });
+  const issued = invoice.issue({
+    mentions: ['Mention'],
+    terms: terms.value,
+    issuedAt: clock.today(),
+    at: clock.now(),
+  });
   if (!issued.ok) throw new Error('issue');
   return invoice;
 }
@@ -81,7 +87,14 @@ function makeDeps(invoice: Invoice) {
     },
   };
   const uow: UnitOfWorkPort = { runInTransaction: (fn) => fn() };
-  const usecase = new IssueInvoice({ invoices, companies, customers: customerRepo, counters, uow, clock });
+  const usecase = new IssueInvoice({
+    invoices,
+    companies,
+    customers: customerRepo,
+    counters,
+    uow,
+    clock,
+  });
   return { usecase, counts: () => ({ allocations, saves }) };
 }
 
@@ -89,8 +102,8 @@ describe('IssueInvoice', () => {
   it('renvoie le numéro existant quand l’émission est rejouée', async () => {
     const env = makeDeps(draftInvoice());
 
-    const first = await env.usecase.execute({ invoiceId: 'inv-1' });
-    const replay = await env.usecase.execute({ invoiceId: 'inv-1' });
+    const first = await env.usecase.execute({ invoiceId: 'inv-1', terms });
+    const replay = await env.usecase.execute({ invoiceId: 'inv-1', terms });
 
     expect(first.ok && first.value.number).toBe('F-2026-0001');
     expect(replay.ok && replay.value.number).toBe('F-2026-0001');
@@ -115,7 +128,11 @@ describe('IssueInvoice', () => {
       },
       deleteById: async () => {},
     };
-    const companies: CompanyRepository = { findById: async () => company, list: async () => [company], save: async () => {} };
+    const companies: CompanyRepository = {
+      findById: async () => company,
+      list: async () => [company],
+      save: async () => {},
+    };
     const customerRepo: CustomerRepository = {
       findById: async (id) => customers.find((c) => c.id === id) ?? null,
       listByCompany: async () => customers,
@@ -135,9 +152,29 @@ describe('IssueInvoice', () => {
       counters,
       uow: { runInTransaction: (fn) => fn() },
       clock,
-    }).execute({ invoiceId: 'inv-1' });
+    }).execute({ invoiceId: 'inv-1', terms });
 
     expect(r.ok && r.value.number).toBe('F-2026-0042');
     expect({ allocations, saves }).toEqual({ allocations: 0, saves: 0 });
+  });
+
+  it('refuse un brouillon sans conditions explicites avant toute allocation légale', async () => {
+    const env = makeDeps(draftInvoice());
+
+    const result = await env.usecase.execute({ invoiceId: 'inv-1' });
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        kind: 'validation',
+        issues: [
+          {
+            field: 'paymentTerms',
+            message: 'Conditions de paiement explicites requises avant émission.',
+          },
+        ],
+      },
+    });
+    expect(env.counts()).toEqual({ allocations: 0, saves: 0 });
   });
 });

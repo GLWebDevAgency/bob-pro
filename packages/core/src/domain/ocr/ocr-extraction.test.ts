@@ -26,26 +26,46 @@ describe('makeOcrExtraction — validation/normalisation', () => {
   });
 
   it('laisse tomber un SIREN invalide (Luhn) sans échouer', () => {
-    const r = makeOcrExtraction({ supplierName: 'X', supplierSiren: '562024944', documentDate: '2026-01-01', totalTtcCents: 100 });
+    const r = makeOcrExtraction({
+      supplierName: 'X',
+      supplierSiren: '562024944',
+      documentDate: '2026-01-01',
+      totalTtcCents: 100,
+      currency: 'EUR',
+    });
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.value.supplierSiren).toBeNull();
   });
 
   it('catégorie inconnue -> autre', () => {
-    const r = makeOcrExtraction({ supplierName: 'X', documentDate: '2026-01-01', totalTtcCents: 100, categoryGuess: 'zzz' });
+    const r = makeOcrExtraction({
+      supplierName: 'X',
+      documentDate: '2026-01-01',
+      totalTtcCents: 100,
+      currency: 'EUR',
+      categoryGuess: 'zzz',
+    });
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.value.categoryGuess).toBe('autre');
   });
 
   it('échoue si nom, date ou TTC manquant/invalide', () => {
     expect(makeOcrExtraction({ documentDate: '2026-01-01', totalTtcCents: 100 }).ok).toBe(false);
-    expect(makeOcrExtraction({ supplierName: 'X', documentDate: 'nope', totalTtcCents: 100 }).ok).toBe(false);
-    expect(makeOcrExtraction({ supplierName: 'X', documentDate: '2026-01-01', totalTtcCents: 1.5 }).ok).toBe(false);
+    expect(
+      makeOcrExtraction({ supplierName: 'X', documentDate: 'nope', totalTtcCents: 100 }).ok,
+    ).toBe(false);
+    expect(
+      makeOcrExtraction({ supplierName: 'X', documentDate: '2026-01-01', totalTtcCents: 1.5 }).ok,
+    ).toBe(false);
   });
 
   it('rejette une date calendaire impossible (2026-02-30)', () => {
-    expect(makeOcrExtraction({ supplierName: 'X', documentDate: '2026-02-30', totalTtcCents: 100 }).ok).toBe(false);
-    expect(makeOcrExtraction({ supplierName: 'X', documentDate: '2026-04-31', totalTtcCents: 100 }).ok).toBe(false);
+    expect(
+      makeOcrExtraction({ supplierName: 'X', documentDate: '2026-02-30', totalTtcCents: 100 }).ok,
+    ).toBe(false);
+    expect(
+      makeOcrExtraction({ supplierName: 'X', documentDate: '2026-04-31', totalTtcCents: 100 }).ok,
+    ).toBe(false);
   });
 });
 
@@ -59,13 +79,18 @@ describe('makeOcrExtraction — garde-fous LLM (A2-C14)', () => {
     vatRatePctApplied: 20,
     categoryGuess: 'fournitures',
     confidence: 0.95,
+    currency: 'EUR',
   };
 
   it('rejette une date future (au-delà de demain) et une date invraisemblable', () => {
-    expect(makeOcrExtraction({ ...base, documentDate: '2026-07-20' }, { today: '2026-07-03' }).ok).toBe(false);
+    expect(
+      makeOcrExtraction({ ...base, documentDate: '2026-07-20' }, { today: '2026-07-03' }).ok,
+    ).toBe(false);
     expect(makeOcrExtraction({ ...base, documentDate: '1999-12-31' }).ok).toBe(false);
     // demain passe (tolérance fuseaux)
-    expect(makeOcrExtraction({ ...base, documentDate: '2026-07-04' }, { today: '2026-07-03' }).ok).toBe(true);
+    expect(
+      makeOcrExtraction({ ...base, documentDate: '2026-07-04' }, { today: '2026-07-03' }).ok,
+    ).toBe(true);
   });
 
   it('rejette un montant invraisemblable (> 1 M€)', () => {
@@ -90,17 +115,25 @@ describe('makeOcrExtraction — garde-fous LLM (A2-C14)', () => {
   });
 
   it('normalise les tags (kebab, dédup, ≤ 8) et n’en rend jamais zéro', () => {
-    const r = makeOcrExtraction({ ...base, suggestedTags: ['Chantier Durand', 'chantier-durand', 'TVA 20%', 'x', 42] });
+    const r = makeOcrExtraction({
+      ...base,
+      suggestedTags: ['Chantier Durand', 'chantier-durand', 'TVA 20%', 'x', 42],
+    });
     expect(r.ok && r.value.suggestedTags).toEqual(['chantier-durand', 'tva-20']);
     const none = makeOcrExtraction({ ...base });
     expect(none.ok && none.value.suggestedTags).toEqual(['fournitures', 'leroy-merlin']);
   });
 
   it('assainit le nom de fichier proposé, sinon construit le nom canonique expert-comptable', () => {
-    const custom = makeOcrExtraction({ ...base, suggestedFilename: 'Facture Leroy Merlin — juillet.pdf' });
+    const custom = makeOcrExtraction({
+      ...base,
+      suggestedFilename: 'Facture Leroy Merlin — juillet.pdf',
+    });
     expect(custom.ok && custom.value.suggestedFilename).toBe('facture-leroy-merlin-juillet');
     const fallback = makeOcrExtraction(base);
-    expect(fallback.ok && fallback.value.suggestedFilename).toBe('2026-07-01_leroy-merlin_184.90eur');
+    expect(fallback.ok && fallback.value.suggestedFilename).toBe(
+      '2026-07-01_leroy-merlin_184.90eur',
+    );
   });
 });
 
@@ -114,11 +147,25 @@ describe('makeOcrExtraction — excellence #2/#3/#5/#10 (provenance, confiance d
     vatRatePctApplied: 20,
     categoryGuess: 'fournitures',
     confidence: 0.95,
+    currency: 'EUR',
   };
 
   it('#5 refuse une devise non EUR (jamais un montant faux en aval)', () => {
     const r = makeOcrExtraction({ ...base, currency: 'USD' });
     expect(r.ok).toBe(false);
+  });
+
+  it('#5 refuse une devise absente au lieu de supposer EUR', () => {
+    const { currency: _currency, ...withoutCurrency } = base;
+    const result = makeOcrExtraction(withoutCurrency);
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        code: 'VALIDATION',
+        field: 'currency',
+        message: 'Devise introuvable : confirmation requise avant enregistrement.',
+      },
+    });
   });
 
   it('#2 preuve complète : montant + date + fournisseur retrouvés → confiance conservée', () => {
@@ -139,7 +186,7 @@ describe('makeOcrExtraction — excellence #2/#3/#5/#10 (provenance, confiance d
     if (r.ok) expect(r.value.confidence).toBeLessThanOrEqual(0.45);
   });
 
-  it("#3 la confiance du modèle est un PLAFOND, jamais rehaussée par les preuves", () => {
+  it('#3 la confiance du modèle est un PLAFOND, jamais rehaussée par les preuves', () => {
     const r = makeOcrExtraction({
       ...base,
       confidence: 0.3,

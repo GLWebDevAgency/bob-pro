@@ -353,6 +353,8 @@ model CompanyBillingSettings {
   pdfAccentColor           InvoicePdfAccentColor @default(navy)
   defaultQuoteValidityDays Int                   @default(30)
   defaultDepositPercent    Int                   @default(30)
+  /// Null jusqu'au choix explicite du propriétaire : l'émission ne suppose jamais 30 jours.
+  defaultInvoicePaymentTermsDays Int?
   revision                 Int                   @default(1)
   createdAt                DateTime              @default(now()) @db.Timestamptz(6)
   updatedAt                DateTime              @updatedAt @db.Timestamptz(6)

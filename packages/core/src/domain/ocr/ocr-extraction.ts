@@ -4,12 +4,7 @@ import { Siren } from '../../shared-kernel/identifiers';
 
 /** Catégorie de dépense devinée par l'OCR (mappable plus tard sur une dépense comptable). */
 export type ExpenseCategoryGuess =
-  | 'fournitures'
-  | 'materiel'
-  | 'carburant'
-  | 'repas'
-  | 'sous_traitance'
-  | 'autre';
+  'fournitures' | 'materiel' | 'carburant' | 'repas' | 'sous_traitance' | 'autre';
 
 const CATEGORIES: readonly ExpenseCategoryGuess[] = [
   'fournitures',
@@ -121,7 +116,20 @@ function amountVariants(cents: number): string[] {
   return variants;
 }
 
-const FR_MONTHS = ['janvier','fevrier','mars','avril','mai','juin','juillet','aout','septembre','octobre','novembre','decembre'];
+const FR_MONTHS = [
+  'janvier',
+  'fevrier',
+  'mars',
+  'avril',
+  'mai',
+  'juin',
+  'juillet',
+  'aout',
+  'septembre',
+  'octobre',
+  'novembre',
+  'decembre',
+];
 
 /** Variantes plausibles d'une date AAAA-MM-JJ : 03/07/2026 · 3/7/2026 · 2026-07-03 · 3juillet2026. */
 function dateVariants(dateOnly: DateOnly): string[] {
@@ -156,11 +164,15 @@ export function assessOcrEvidence(
   rawText: string,
 ): OcrEvidence {
   const haystack = evidenceHaystack(rawText);
-  if (haystack.length === 0) return { amountFound: false, dateFound: false, supplierFound: false, score: 0.35 };
+  if (haystack.length === 0)
+    return { amountFound: false, dateFound: false, supplierFound: false, score: 0.35 };
   const amountFound = amountVariants(extraction.totalTtcCents).some((v) => haystack.includes(v));
-  const dateFound = dateVariants(extraction.documentDate).some((v) => haystack.includes(evidenceHaystack(v)));
+  const dateFound = dateVariants(extraction.documentDate).some((v) =>
+    haystack.includes(evidenceHaystack(v)),
+  );
   const supplierFound = haystack.includes(evidenceHaystack(extraction.supplierName));
-  const score = 0.35 + (amountFound ? 0.35 : 0) + (dateFound ? 0.15 : 0) + (supplierFound ? 0.15 : 0);
+  const score =
+    0.35 + (amountFound ? 0.35 : 0) + (dateFound ? 0.15 : 0) + (supplierFound ? 0.15 : 0);
   return { amountFound, dateFound, supplierFound, score: Math.min(1, score) };
 }
 
@@ -176,27 +188,51 @@ export function makeOcrExtraction(
 ): DomainResult<OcrExtraction> {
   const supplierName = (draft.supplierName ?? '').trim();
   if (!supplierName)
-    return err({ code: 'VALIDATION', field: 'supplierName', message: 'Nom du fournisseur introuvable.' });
+    return err({
+      code: 'VALIDATION',
+      field: 'supplierName',
+      message: 'Nom du fournisseur introuvable.',
+    });
 
   const dateRaw = (draft.documentDate ?? '').trim();
   if (!isValidDateOnly(dateRaw))
-    return err({ code: 'VALIDATION', field: 'documentDate', message: 'Date du document introuvable ou invalide.' });
+    return err({
+      code: 'VALIDATION',
+      field: 'documentDate',
+      message: 'Date du document introuvable ou invalide.',
+    });
 
   if (dateRaw < '2000-01-01')
-    return err({ code: 'VALIDATION', field: 'documentDate', message: 'Date du document invraisemblable.' });
+    return err({
+      code: 'VALIDATION',
+      field: 'documentDate',
+      message: 'Date du document invraisemblable.',
+    });
   if (opts?.today !== undefined) {
     // Tolérance d'un jour (fuseaux) — une pièce datée après demain est une hallucination.
     const tomorrow = new Date(Date.parse(`${opts.today}T00:00:00.000Z`) + 86_400_000)
       .toISOString()
       .slice(0, 10);
     if (dateRaw > tomorrow)
-      return err({ code: 'VALIDATION', field: 'documentDate', message: 'Date du document dans le futur.' });
+      return err({
+        code: 'VALIDATION',
+        field: 'documentDate',
+        message: 'Date du document dans le futur.',
+      });
   }
 
   if (!isInt(draft.totalTtcCents) || (draft.totalTtcCents as number) < 0)
-    return err({ code: 'VALIDATION', field: 'totalTtcCents', message: 'Montant TTC introuvable (centimes entiers requis).' });
+    return err({
+      code: 'VALIDATION',
+      field: 'totalTtcCents',
+      message: 'Montant TTC introuvable (centimes entiers requis).',
+    });
   if ((draft.totalTtcCents as number) > MAX_TTC_CENTS)
-    return err({ code: 'VALIDATION', field: 'totalTtcCents', message: 'Montant TTC invraisemblable.' });
+    return err({
+      code: 'VALIDATION',
+      field: 'totalTtcCents',
+      message: 'Montant TTC invraisemblable.',
+    });
 
   // SIREN : on garde s'il est valide (Luhn), sinon on le laisse tomber sans échouer l'extraction.
   let supplierSiren: string | null = null;
@@ -206,9 +242,15 @@ export function makeOcrExtraction(
   }
 
   const totalTtcCents = draft.totalTtcCents as number;
-  let totalHtCents = isInt(draft.totalHtCents) && (draft.totalHtCents as number) >= 0 ? (draft.totalHtCents as number) : null;
-  let vatCents = isInt(draft.vatCents) && (draft.vatCents as number) >= 0 ? (draft.vatCents as number) : null;
-  let vatRatePctApplied = isFiniteNum(draft.vatRatePctApplied) ? (draft.vatRatePctApplied as number) : null;
+  let totalHtCents =
+    isInt(draft.totalHtCents) && (draft.totalHtCents as number) >= 0
+      ? (draft.totalHtCents as number)
+      : null;
+  let vatCents =
+    isInt(draft.vatCents) && (draft.vatCents as number) >= 0 ? (draft.vatCents as number) : null;
+  let vatRatePctApplied = isFiniteNum(draft.vatRatePctApplied)
+    ? (draft.vatRatePctApplied as number)
+    : null;
   let confidence = isFiniteNum(draft.confidence) ? clamp01(draft.confidence as number) : 0.5;
 
   // Garde-fous LLM (A2-C14) — on dégrade proprement plutôt que de faire confiance :
@@ -229,16 +271,32 @@ export function makeOcrExtraction(
     confidence = Math.min(confidence, 0.6);
   }
   // Taux hors barème français → écarté (le montant de TVA, lui, reste s'il est cohérent).
-  if (vatRatePctApplied !== null && !PLAUSIBLE_VAT_RATES.some((rate) => rate === vatRatePctApplied)) {
+  if (
+    vatRatePctApplied !== null &&
+    !PLAUSIBLE_VAT_RATES.some((rate) => rate === vatRatePctApplied)
+  ) {
     vatRatePctApplied = null;
   }
 
-  const currency = (draft.currency ?? 'EUR').trim().toUpperCase() || 'EUR';
+  const currency = draft.currency?.trim().toUpperCase() ?? '';
+  if (!currency) {
+    return err({
+      code: 'VALIDATION',
+      field: 'currency',
+      message: 'Devise introuvable : confirmation requise avant enregistrement.',
+    });
+  }
   // #5 (excellence) : tout l'aval (Expense, formatEUR, compta) suppose l'euro — on refuse
   // clairement plutôt que d'enregistrer un montant faux. Conversion multi-devises : plus tard.
   if (currency !== 'EUR')
-    return err({ code: 'VALIDATION', field: 'currency', message: `Devise non gérée pour l'instant : ${currency} (EUR uniquement).` });
-  const categoryGuess: ExpenseCategoryGuess = CATEGORIES.includes(draft.categoryGuess as ExpenseCategoryGuess)
+    return err({
+      code: 'VALIDATION',
+      field: 'currency',
+      message: `Devise non gérée pour l'instant : ${currency} (EUR uniquement).`,
+    });
+  const categoryGuess: ExpenseCategoryGuess = CATEGORIES.includes(
+    draft.categoryGuess as ExpenseCategoryGuess,
+  )
     ? (draft.categoryGuess as ExpenseCategoryGuess)
     : 'autre';
 

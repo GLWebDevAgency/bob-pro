@@ -2,7 +2,11 @@ import { type Result, ok, err } from '../../shared-kernel/result';
 import { type AppError, appDomain, appNotFound } from '../result';
 import { PaymentTerms } from '../../shared-kernel/payment-terms';
 import { buildMentions, operationNatureOf } from '../../domain/services/build-mentions';
-import { type InvoiceRepository, type CompanyRepository, type CustomerRepository } from '../ports/repositories';
+import {
+  type InvoiceRepository,
+  type CompanyRepository,
+  type CustomerRepository,
+} from '../ports/repositories';
 import { type SequenceCounterPort, type ClockPort, type UnitOfWorkPort } from '../ports/services';
 import { TxDomainError } from './tx-error';
 
@@ -39,14 +43,30 @@ export class IssueInvoice {
     const customer = await this.deps.customers.findById(pre.customerId);
     if (!customer) return err(appNotFound('customer', pre.customerId));
 
-    const termsR = PaymentTerms.of(input.terms ?? { days: 30, endOfMonth: false, label: 'Paiement a 30 jours' });
+    if (input.terms === undefined) {
+      return err({
+        kind: 'validation',
+        issues: [
+          {
+            field: 'paymentTerms',
+            message: 'Conditions de paiement explicites requises avant émission.',
+          },
+        ],
+      });
+    }
+    const termsR = PaymentTerms.of(input.terms);
     if (!termsR.ok) return err(appDomain(termsR.error));
     const fiscalYear = Number(this.deps.clock.today().slice(0, 4));
 
     try {
       const number = await this.deps.uow.runInTransaction(async () => {
         const invoice = await this.deps.invoices.lockById(input.invoiceId);
-        if (!invoice) throw new TxDomainError({ code: 'VALIDATION', field: 'invoice', message: 'Facture introuvable.' });
+        if (!invoice)
+          throw new TxDomainError({
+            code: 'VALIDATION',
+            field: 'invoice',
+            message: 'Facture introuvable.',
+          });
         // Déjà numérotée (retry réseau ou course gagnée par une autre émission) -> réponse idempotente.
         if (invoice.number) return invoice.number;
 
@@ -68,11 +88,21 @@ export class IssueInvoice {
           // l'éligibilité a été actée à la création (suggestVatRate), non persistée : cf. buildMentions.
           lineVatRates: invoice.lines.map((l) => l.vatRate),
         });
-        const issued = invoice.issue({ mentions, terms: termsR.value, issuedAt: this.deps.clock.today(), at: this.deps.clock.now() });
+        const issued = invoice.issue({
+          mentions,
+          terms: termsR.value,
+          issuedAt: this.deps.clock.today(),
+          at: this.deps.clock.now(),
+        });
         if (!issued.ok) throw new TxDomainError(issued.error);
         await this.deps.invoices.save(invoice);
         const n = invoice.number;
-        if (!n) throw new TxDomainError({ code: 'VALIDATION', field: 'number', message: 'Numero manquant.' });
+        if (!n)
+          throw new TxDomainError({
+            code: 'VALIDATION',
+            field: 'number',
+            message: 'Numero manquant.',
+          });
         return n;
       });
       return ok({ number });

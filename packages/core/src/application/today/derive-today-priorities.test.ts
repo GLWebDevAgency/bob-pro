@@ -36,7 +36,13 @@ function invoiceData(i: Invoice): TodayInvoiceData {
 }
 
 function quoteData(q: Quote): TodayQuoteData {
-  return { id: q.id, customerId: q.customerId, status: q.status, number: q.number, totals: q.totals() };
+  return {
+    id: q.id,
+    customerId: q.customerId,
+    status: q.status,
+    number: q.number,
+    totals: q.totals(),
+  };
 }
 
 // ── Fixtures unitaires ciblées (fonction pure : données en clair suffisent) ──
@@ -45,7 +51,9 @@ function totalsOf(ttc: number, netToPay: number = ttc): Totals {
   return { ht: ttc, vatByRate: {}, vat: 0, ttc, netToPay };
 }
 
-function invoiceFixture(overrides: Partial<TodayInvoiceData> & Pick<TodayInvoiceData, 'id'>): TodayInvoiceData {
+function invoiceFixture(
+  overrides: Partial<TodayInvoiceData> & Pick<TodayInvoiceData, 'id'>,
+): TodayInvoiceData {
   return {
     customerId: 'cust-1',
     kind: 'final',
@@ -65,7 +73,13 @@ const CUSTOMERS: TodayCustomerData[] = [
 ];
 
 function derive(partial: Partial<DeriveTodayPrioritiesInput>) {
-  return deriveTodayPriorities({ invoices: [], quotes: [], customers: CUSTOMERS, today: '2026-07-10', ...partial });
+  return deriveTodayPriorities({
+    invoices: [],
+    quotes: [],
+    customers: CUSTOMERS,
+    today: '2026-07-10',
+    ...partial,
+  });
 }
 
 describe('deriveTodayPriorities', () => {
@@ -78,9 +92,23 @@ describe('deriveTodayPriorities', () => {
       ids: env.ids,
       clock: env.clock,
     });
-    const send = new SendQuote({ quotes: env.quoteRepo, counters: env.counters, uow: env.uow, clock: env.clock });
-    const sign = new SignQuote({ quotes: env.quoteRepo, publicAccessTokens: env.publicAccessTokens, uow: env.uow, clock: env.clock });
-    const generate = new GenerateInvoiceFromQuote({ quotes: env.quoteRepo, invoices: env.invoiceRepo, ids: env.ids });
+    const send = new SendQuote({
+      quotes: env.quoteRepo,
+      counters: env.counters,
+      uow: env.uow,
+      clock: env.clock,
+    });
+    const sign = new SignQuote({
+      quotes: env.quoteRepo,
+      publicAccessTokens: env.publicAccessTokens,
+      uow: env.uow,
+      clock: env.clock,
+    });
+    const generate = new GenerateInvoiceFromQuote({
+      quotes: env.quoteRepo,
+      invoices: env.invoiceRepo,
+      ids: env.ids,
+    });
     const issue = new IssueInvoice({
       invoices: env.invoiceRepo,
       companies: env.companyRepo,
@@ -104,11 +132,20 @@ describe('deriveTodayPriorities', () => {
     expect(quoteA.ok).toBe(true);
     if (!quoteA.ok) return;
     expect((await send.execute({ quoteId: quoteA.value.quoteId })).ok).toBe(true);
-    expect((await sign.execute({ quoteId: quoteA.value.quoteId, signerName: 'Mme Durand' })).ok).toBe(true);
+    expect(
+      (await sign.execute({ quoteId: quoteA.value.quoteId, signerName: 'Mme Durand' })).ok,
+    ).toBe(true);
     const depositA = await generate.execute({ quoteId: quoteA.value.quoteId, mode: 'deposit' });
     expect(depositA.ok).toBe(true);
     if (!depositA.ok) return;
-    expect((await issue.execute({ invoiceId: depositA.value.invoiceId })).ok).toBe(true);
+    const paymentTerms = {
+      days: 30,
+      endOfMonth: false,
+      label: 'Paiement à 30 jours',
+    } as const;
+    expect(
+      (await issue.execute({ invoiceId: depositA.value.invoiceId, terms: paymentTerms })).ok,
+    ).toBe(true);
     const paidA = await new RegisterPayment({
       invoices: env.invoiceRepo,
       payments: env.paymentRepo,
@@ -122,20 +159,29 @@ describe('deriveTodayPriorities', () => {
     const quoteB = await create.execute({
       companyId: env.company.id,
       customerId: env.customer.id,
-      lines: [{ label: 'Intervention', category: 'labor', qty: 1, unitPriceHT: 50000, vatRate: 20 }],
+      lines: [
+        { label: 'Intervention', category: 'labor', qty: 1, unitPriceHT: 50000, vatRate: 20 },
+      ],
     });
     expect(quoteB.ok).toBe(true);
     if (!quoteB.ok) return;
     expect((await send.execute({ quoteId: quoteB.value.quoteId })).ok).toBe(true);
-    expect((await sign.execute({ quoteId: quoteB.value.quoteId, signerName: 'M. Bernard' })).ok).toBe(true);
+    expect(
+      (await sign.execute({ quoteId: quoteB.value.quoteId, signerName: 'M. Bernard' })).ok,
+    ).toBe(true);
     const finalB = await generate.execute({ quoteId: quoteB.value.quoteId, mode: 'final' });
     expect(finalB.ok).toBe(true);
     if (!finalB.ok) return;
-    expect((await issue.execute({ invoiceId: finalB.value.invoiceId })).ok).toBe(true);
+    expect(
+      (await issue.execute({ invoiceId: finalB.value.invoiceId, terms: paymentTerms })).ok,
+    ).toBe(true);
 
     const invoices = (await env.invoiceRepo.listByCompany(env.company.id)).map(invoiceData);
     const quotes = (await env.quoteRepo.listByCompany(env.company.id)).map(quoteData);
-    const customers = (await env.customerRepo.listByCompany(env.company.id)).map((c) => ({ id: c.id, name: c.name }));
+    const customers = (await env.customerRepo.listByCompany(env.company.id)).map((c) => ({
+      id: c.id,
+      name: c.name,
+    }));
     const company = todayCompanyFromDiagnostic(
       runDiagnostic({
         country: 'FR',
@@ -147,7 +193,13 @@ describe('deriveTodayPriorities', () => {
       }),
     );
 
-    const priorities = deriveTodayPriorities({ invoices, quotes, customers, company, today: '2026-07-10' });
+    const priorities = deriveTodayPriorities({
+      invoices,
+      quotes,
+      customers,
+      company,
+      today: '2026-07-10',
+    });
 
     expect(priorities.map((p) => p.kind)).toEqual(['relance', 'facture_finale', 'conformite']);
     expect(priorities[0]).toMatchObject({
@@ -247,9 +299,24 @@ describe('deriveTodayPriorities', () => {
         invoiceFixture({ id: 'inv-small-9j', totals: totalsOf(1000) }),
         invoiceFixture({ id: 'inv-big-9j', totals: totalsOf(2000) }),
         invoiceFixture({ id: 'inv-20j', dueAt: '2026-06-20', totals: totalsOf(500) }),
-        invoiceFixture({ id: 'inv-deposit-paid', kind: 'deposit', status: 'paid', parentQuoteId: 'quote-1', totals: totalsOf(30000, 30000), paid: 30000 }),
+        invoiceFixture({
+          id: 'inv-deposit-paid',
+          kind: 'deposit',
+          status: 'paid',
+          parentQuoteId: 'quote-1',
+          totals: totalsOf(30000, 30000),
+          paid: 30000,
+        }),
       ],
-      quotes: [{ id: 'quote-1', customerId: 'cust-2', status: 'signed', number: 'D-2026-0001', totals: totalsOf(100000, 30000) }],
+      quotes: [
+        {
+          id: 'quote-1',
+          customerId: 'cust-2',
+          status: 'signed',
+          number: 'D-2026-0001',
+          totals: totalsOf(100000, 30000),
+        },
+      ],
     });
     expect(priorities.map((p) => p.id)).toEqual([
       'relance-inv-20j', // 20 j de retard d'abord
@@ -257,7 +324,11 @@ describe('deriveTodayPriorities', () => {
       'relance-inv-small-9j',
       'facture-finale-quote-1', // les relances passent toujours devant
     ]);
-    expect(priorities[3]).toMatchObject({ kind: 'facture_finale', amountCents: 70000, customerName: 'Durand SARL' });
+    expect(priorities[3]).toMatchObject({
+      kind: 'facture_finale',
+      amountCents: 70000,
+      customerName: 'Durand SARL',
+    });
   });
 
   it("n'émet pas de facture finale si l'acompte n'est pas payé ou si une finale existe déjà (même brouillon)", () => {
@@ -279,11 +350,23 @@ describe('deriveTodayPriorities', () => {
     // Acompte émis mais pas encaissé → rien.
     expect(derive({ invoices: [depositIssued], quotes: [signedQuote] })).toEqual([]);
     // Acompte payé mais finale déjà en brouillon → action déjà engagée, rien.
-    const depositPaid = { ...depositIssued, id: 'inv-deposit-paid', status: 'paid' as const, paid: 30000 };
-    const finalDraft = invoiceFixture({ id: 'inv-final-draft', status: 'draft', parentQuoteId: 'quote-1', dueAt: null });
+    const depositPaid = {
+      ...depositIssued,
+      id: 'inv-deposit-paid',
+      status: 'paid' as const,
+      paid: 30000,
+    };
+    const finalDraft = invoiceFixture({
+      id: 'inv-final-draft',
+      status: 'draft',
+      parentQuoteId: 'quote-1',
+      dueAt: null,
+    });
     expect(derive({ invoices: [depositPaid, finalDraft], quotes: [signedQuote] })).toEqual([]);
     // Devis non signé → rien, même avec acompte payé.
-    expect(derive({ invoices: [depositPaid], quotes: [{ ...signedQuote, status: 'sent' }] })).toEqual([]);
+    expect(
+      derive({ invoices: [depositPaid], quotes: [{ ...signedQuote, status: 'sent' }] }),
+    ).toEqual([]);
   });
 
   it('conformité : uniquement sur signal réel non configuré, une seule fois', () => {
@@ -295,13 +378,19 @@ describe('deriveTodayPriorities', () => {
   });
 
   it('todayCompanyFromDiagnostic projette l’item einvoice-reception du diagnostic réel', () => {
-    expect(todayCompanyFromDiagnostic({ items: [{ id: 'einvoice-reception', status: 'todo' }] })).toEqual({
+    expect(
+      todayCompanyFromDiagnostic({ items: [{ id: 'einvoice-reception', status: 'todo' }] }),
+    ).toEqual({
       einvoiceReceptionConfigured: false,
     });
-    expect(todayCompanyFromDiagnostic({ items: [{ id: 'einvoice-reception', status: 'ok' }] })).toEqual({
+    expect(
+      todayCompanyFromDiagnostic({ items: [{ id: 'einvoice-reception', status: 'ok' }] }),
+    ).toEqual({
       einvoiceReceptionConfigured: true,
     });
     // Pays non couvert : pas d'item réception → rien à préparer, pas de priorité inventée.
-    expect(todayCompanyFromDiagnostic({ items: [] })).toEqual({ einvoiceReceptionConfigured: true });
+    expect(todayCompanyFromDiagnostic({ items: [] })).toEqual({
+      einvoiceReceptionConfigured: true,
+    });
   });
 });

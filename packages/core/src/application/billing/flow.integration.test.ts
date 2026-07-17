@@ -32,14 +32,28 @@ describe('Flux Devis -> signature -> facture -> paiement (intégration)', () => 
     expect(created.value.totals.ttc).toBe(162800);
     const quoteId = created.value.quoteId;
 
-    const sent = await new SendQuote({ quotes: env.quoteRepo, counters: env.counters, uow: env.uow, clock: env.clock }).execute({ quoteId });
+    const sent = await new SendQuote({
+      quotes: env.quoteRepo,
+      counters: env.counters,
+      uow: env.uow,
+      clock: env.clock,
+    }).execute({ quoteId });
     expect(sent.ok).toBe(true);
     if (sent.ok) expect(sent.value.number).toBe('D-2026-0001');
 
-    const signed = await new SignQuote({ quotes: env.quoteRepo, publicAccessTokens: env.publicAccessTokens, uow: env.uow, clock: env.clock }).execute({ quoteId, signerName: 'M. Bernard' });
+    const signed = await new SignQuote({
+      quotes: env.quoteRepo,
+      publicAccessTokens: env.publicAccessTokens,
+      uow: env.uow,
+      clock: env.clock,
+    }).execute({ quoteId, signerName: 'M. Bernard' });
     expect(signed.ok).toBe(true);
 
-    const gen = await new GenerateInvoiceFromQuote({ quotes: env.quoteRepo, invoices: env.invoiceRepo, ids: env.ids }).execute({ quoteId, mode: 'deposit' });
+    const gen = await new GenerateInvoiceFromQuote({
+      quotes: env.quoteRepo,
+      invoices: env.invoiceRepo,
+      ids: env.ids,
+    }).execute({ quoteId, mode: 'deposit' });
     expect(gen.ok).toBe(true);
     if (!gen.ok) return;
     const invoiceId = gen.value.invoiceId;
@@ -51,7 +65,10 @@ describe('Flux Devis -> signature -> facture -> paiement (intégration)', () => 
       counters: env.counters,
       uow: env.uow,
       clock: env.clock,
-    }).execute({ invoiceId });
+    }).execute({
+      invoiceId,
+      terms: { days: 30, endOfMonth: false, label: 'Paiement à 30 jours' },
+    });
     expect(issued.ok).toBe(true);
     if (issued.ok) expect(issued.value.number).toBe('F-2026-0001');
 
@@ -72,7 +89,7 @@ describe('Flux Devis -> signature -> facture -> paiement (intégration)', () => 
     expect(invoice?.status).toBe('paid');
     expect(invoice?.number).toBe('F-2026-0001');
     expect(invoice?.dueAt).toBe('2026-07-01');
-    expect((invoice?.mentions.length ?? 0)).toBeGreaterThan(0);
+    expect(invoice?.mentions.length ?? 0).toBeGreaterThan(0);
   });
 
   it('numérotation séquentielle sans trou sur deux devis', async () => {
@@ -84,11 +101,30 @@ describe('Flux Devis -> signature -> facture -> paiement (intégration)', () => 
       ids: env.ids,
       clock: env.clock,
     });
-    const send = new SendQuote({ quotes: env.quoteRepo, counters: env.counters, uow: env.uow, clock: env.clock });
-    const line = { label: 'Intervention', category: 'labor' as const, qty: 1, unitPriceHT: 50000, vatRate: 20 as const };
+    const send = new SendQuote({
+      quotes: env.quoteRepo,
+      counters: env.counters,
+      uow: env.uow,
+      clock: env.clock,
+    });
+    const line = {
+      label: 'Intervention',
+      category: 'labor' as const,
+      qty: 1,
+      unitPriceHT: 50000,
+      vatRate: 20 as const,
+    };
 
-    const q1 = await create.execute({ companyId: env.company.id, customerId: env.customer.id, lines: [line] });
-    const q2 = await create.execute({ companyId: env.company.id, customerId: env.customer.id, lines: [line] });
+    const q1 = await create.execute({
+      companyId: env.company.id,
+      customerId: env.customer.id,
+      lines: [line],
+    });
+    const q2 = await create.execute({
+      companyId: env.company.id,
+      customerId: env.customer.id,
+      lines: [line],
+    });
     expect(q1.ok && q2.ok).toBe(true);
     if (!q1.ok || !q2.ok) return;
 

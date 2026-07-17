@@ -15,6 +15,8 @@ export interface CompanyBillingSettings {
   readonly pdfAccentColor: InvoicePdfAccentColor;
   readonly defaultQuoteValidityDays: number;
   readonly defaultDepositPercent: number;
+  /** Null tant que le propriétaire n'a pas choisi ses conditions : aucune échéance implicite. */
+  readonly defaultInvoicePaymentTermsDays: number | null;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -25,6 +27,8 @@ export interface CompanyBillingSettingsPatch {
   readonly pdfAccentColor?: InvoicePdfAccentColor;
   readonly defaultQuoteValidityDays?: number;
   readonly defaultDepositPercent?: number;
+  /** `null` efface le choix ; l'émission redevient alors volontairement impossible. */
+  readonly defaultInvoicePaymentTermsDays?: number | null;
 }
 
 export type CompanyBillingSettingsWriteResult =
@@ -54,10 +58,7 @@ export function validateCompanyBillingSettingsPatch(
       message: 'Au moins un réglage de facturation est requis.',
     });
   }
-  if (
-    patch.pdfAccentColor !== undefined
-    && !ACCENTS.includes(patch.pdfAccentColor)
-  ) {
+  if (patch.pdfAccentColor !== undefined && !ACCENTS.includes(patch.pdfAccentColor)) {
     return err({
       code: 'VALIDATION',
       field: 'pdfAccentColor',
@@ -65,12 +66,10 @@ export function validateCompanyBillingSettingsPatch(
     });
   }
   if (
-    patch.defaultQuoteValidityDays !== undefined
-    && (
-      !Number.isSafeInteger(patch.defaultQuoteValidityDays)
-      || patch.defaultQuoteValidityDays < 1
-      || patch.defaultQuoteValidityDays > 365
-    )
+    patch.defaultQuoteValidityDays !== undefined &&
+    (!Number.isSafeInteger(patch.defaultQuoteValidityDays) ||
+      patch.defaultQuoteValidityDays < 1 ||
+      patch.defaultQuoteValidityDays > 365)
   ) {
     return err({
       code: 'VALIDATION',
@@ -79,17 +78,28 @@ export function validateCompanyBillingSettingsPatch(
     });
   }
   if (
-    patch.defaultDepositPercent !== undefined
-    && (
-      !Number.isSafeInteger(patch.defaultDepositPercent)
-      || patch.defaultDepositPercent < 0
-      || patch.defaultDepositPercent > 100
-    )
+    patch.defaultDepositPercent !== undefined &&
+    (!Number.isSafeInteger(patch.defaultDepositPercent) ||
+      patch.defaultDepositPercent < 0 ||
+      patch.defaultDepositPercent > 100)
   ) {
     return err({
       code: 'VALIDATION',
       field: 'defaultDepositPercent',
       message: "L'acompte doit être compris entre 0 et 100 %.",
+    });
+  }
+  if (
+    patch.defaultInvoicePaymentTermsDays !== undefined &&
+    patch.defaultInvoicePaymentTermsDays !== null &&
+    (!Number.isSafeInteger(patch.defaultInvoicePaymentTermsDays) ||
+      patch.defaultInvoicePaymentTermsDays < 1 ||
+      patch.defaultInvoicePaymentTermsDays > 60)
+  ) {
+    return err({
+      code: 'VALIDATION',
+      field: 'defaultInvoicePaymentTermsDays',
+      message: 'Le délai de paiement doit être compris entre 1 et 60 jours.',
     });
   }
   return ok({ ...patch });
@@ -105,6 +115,7 @@ export function assertCompanyBillingSettings(settings: CompanyBillingSettings): 
     pdfAccentColor: settings.pdfAccentColor,
     defaultQuoteValidityDays: settings.defaultQuoteValidityDays,
     defaultDepositPercent: settings.defaultDepositPercent,
+    defaultInvoicePaymentTermsDays: settings.defaultInvoicePaymentTermsDays,
   });
   if (!validated.ok) {
     const field = 'field' in validated.error ? validated.error.field : 'unknown';
