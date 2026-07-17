@@ -49,3 +49,25 @@ re-review flag).
    STT Voxtral pour la transcription, compréhension par le modèle fort.
 5. PHOTOS → migration Cloudflare R2 (bucket dédié, coût faible) derrière le port
    WorksiteMediaStorage posé en V1 ; accès wrangler à rétablir (login fondateur).
+
+## P7 — POSITIONNEMENT vs NÉOBANQUES (Shine/Qonto/Revolut) — doctrine « judo » (17-18/07)
+PRINCIPE : ne jamais affronter leur cœur (compte+carte = licences bancaires, années,
+capital) ; les INTÉGRER et vendre le cerveau au-dessus. Slogan interne : « Nico marche
+AVEC ta banque, pas à sa place. »
+1. OPEN BANKING (P1 déjà spécifié) = le judo ultime : le client GARDE Shine/Qonto/
+   Revolut/sa banque — Nico s'y branche en lecture (DSP2) : solde auto + rapprochement
+   virement↔facture. Argument comparatif direct ET co-marketing (« compatible avec ta
+   banque »). Leur facturation = utilitaire froid ; la nôtre = copilote vocal métier.
+2. LIENS DE PAIEMENT (V1.1) : Stripe payment links par facture DÉJÀ câblés (gelés
+   early-access) — activer d'abord ; puis connecteurs marchands candidats selon demande
+   réelle : Revolut Merchant API, SumUp, Lydia Pro (interface PaymentLinkProvider
+   abstraite). Le VIREMENT reste roi en B2B artisan : le RIB sur facture (livré) est
+   déjà l'essentiel.
+3. CE QU'ILS NE COPIERONT PAS STRUCTURELLEMENT (leur cible est trop large) : le vocal
+   métier profond (devis en 40 s dans le fourgon, terminologie chantier, catalogue
+   prestations), l'expert fiscal outillé (Publicodes/URSSAF officiel), la conformité
+   artisan FR fine (décennale, autoliquidation, e-invoicing), les relances gouvernées.
+   LA DÉMO VOCALE DE 30 SECONDES = l'arme marketing différenciante n°1.
+4. SURF MARKETING : pages comparatives SEO (« Nico vs Shine pour les devis d'artisan »),
+   badge « compatible toutes banques » dès l'open banking, ciblage des artisans DÉJÀ
+   clients de néobanques (ils ont prouvé qu'ils paient pour du logiciel).
