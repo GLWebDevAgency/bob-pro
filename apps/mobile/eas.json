@@ -17,8 +17,8 @@
         "EXPO_PUBLIC_API_URL": "https://bob-pro-api-production.up.railway.app",
         "EXPO_PUBLIC_SUPABASE_URL": "https://cvdkqjczgqoeshputacl.supabase.co",
         "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImN2ZGtxamN6Z3FvZXNocHV0YWNsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI3NjAzOTEsImV4cCI6MjA5ODMzNjM5MX0.i03zXrzj7lLMBsXo1F380oDq0CTrlKg7e1RbLpFV2_I",
-        "EXPO_PUBLIC_TERMS_URL": "https://demo.bobpro.fr/legal/conditions-utilisation",
-        "EXPO_PUBLIC_PRIVACY_URL": "https://demo.bobpro.fr/legal/confidentialite",
+        "EXPO_PUBLIC_TERMS_URL": "https://bob-pro-sign-web.vercel.app/legal/conditions-utilisation",
+        "EXPO_PUBLIC_PRIVACY_URL": "https://bob-pro-sign-web.vercel.app/legal/confidentialite",
         "EXPO_PUBLIC_SUPPORT_EMAIL": "ghassenelimame@gmail.com"
       }
     },
@@ -28,8 +28,8 @@
         "EXPO_PUBLIC_API_URL": "https://bob-pro-api-production.up.railway.app",
         "EXPO_PUBLIC_SUPABASE_URL": "https://cvdkqjczgqoeshputacl.supabase.co",
         "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImN2ZGtxamN6Z3FvZXNocHV0YWNsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI3NjAzOTEsImV4cCI6MjA5ODMzNjM5MX0.i03zXrzj7lLMBsXo1F380oDq0CTrlKg7e1RbLpFV2_I",
-        "EXPO_PUBLIC_TERMS_URL": "https://demo.bobpro.fr/legal/conditions-utilisation",
-        "EXPO_PUBLIC_PRIVACY_URL": "https://demo.bobpro.fr/legal/confidentialite",
+        "EXPO_PUBLIC_TERMS_URL": "https://bob-pro-sign-web.vercel.app/legal/conditions-utilisation",
+        "EXPO_PUBLIC_PRIVACY_URL": "https://bob-pro-sign-web.vercel.app/legal/confidentialite",
         "EXPO_PUBLIC_SUPPORT_EMAIL": "ghassenelimame@gmail.com"
       }
     }
