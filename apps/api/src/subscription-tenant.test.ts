@@ -49,12 +49,26 @@ function ctx(req: { url: string; method?: string; headers: Record<string, string
 }
 
 describe('C26b — subscription dérivée PAR TENANT (plus de singleton Mercier)', () => {
-  it('GET /subscription SANS ligne DB : indisponible, jamais Business implicite', async () => {
+  it('GET /subscription SANS ligne DB : accès anticipé HONNÊTE (200) — plein accès, 0 €, aucun essai fantôme', async () => {
+    // Décision produit early-access (SPEC pilier 2, rappelée fondateur 17/07) : un tenant
+    // provisionné AVANT la table subscriptions (compte de test du fondateur) reçoit l'accès
+    // complet — plus jamais un 503 en prod démo pour un compte légitime.
     const { service } = makeService();
 
     const result = await asPrincipal({ userId: 'u-a', companyId: 'co-artisan-a' }, () => service.getSubscription());
 
-    expect(result).toEqual({ ok: false, error: { kind: 'unavailable', service: 'subscription' } });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value).toMatchObject({
+      tier: 'business',
+      status: 'active',
+      earlyAccess: true,
+      priceCents: 0, // accès anticipé : rien n'est facturé, jamais le prix catalogue Business
+      trialEndsAt: null,
+      trialPhase: null, // AUCUN essai fantôme : pas d'échéance inventée
+      trialDaysLeft: null,
+    });
+    expect(result.value.features).toContain('ai_assistant'); // l'assistant Bob reste ouvert (cause du bouton rouge)
   });
 
   it('GET /subscription AVEC ligne d’essai (pilier 2) : DB-backed — Pro prêté, trialing, jours restants réels', async () => {

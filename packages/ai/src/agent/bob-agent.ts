@@ -476,6 +476,9 @@ function fiscalDeadlineLine(d: FiscalDeadline): string {
 function subscriptionStatusBody(s: SubscriptionStatusView): string {
   const label = PLAN_CATALOG[s.plan].label;
   const dateFr = (iso: string): string => `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}`;
+  if (s.source === 'early_access') {
+    return 'Tu es en accès anticipé : toutes les fonctions sont ouvertes et rien ne t’est facturé.';
+  }
   if (s.status === 'trialing' && s.trialEndsAt !== null) {
     if (s.trialPhase === 'expired') {
       return `Ton essai ${label} s’est terminé le ${dateFr(s.trialEndsAt)}. Tu es en Découverte (gratuit) : tes documents et ta facturation conforme restent disponibles. Pour continuer avec ${label}, passe par l’écran Compte.`;

@@ -25,10 +25,9 @@ describe('HttpBobClient — preuve bancaire persistée', () => {
     const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
       expect(String(url)).toBe('https://api.bob.test/bank-balance');
       expect(init?.method).toBe('GET');
-      expect(init?.headers).toMatchObject({
-        authorization: 'Bearer owner-token',
-        'x-company-id': 'company-owner',
-      });
+      const headers = new Headers(init?.headers);
+      expect(headers.get('authorization')).toBe('Bearer owner-token');
+      expect(headers.has('x-company-id')).toBe(false);
       return new Response(JSON.stringify(SNAPSHOT), {
         headers: { 'content-type': 'application/json' },
       });
@@ -52,10 +51,9 @@ describe('HttpBobClient — preuve bancaire persistée', () => {
         amountCents: -12_345,
         observedAt: '2026-07-17T10:00:00.000Z',
       });
-      expect(init?.headers).toMatchObject({
-        authorization: 'Bearer owner-token',
-        'x-company-id': 'company-owner',
-      });
+      const headers = new Headers(init?.headers);
+      expect(headers.get('authorization')).toBe('Bearer owner-token');
+      expect(headers.has('x-company-id')).toBe(false);
       return new Response(JSON.stringify({ ...SNAPSHOT, amountCents: -12_345 }), {
         headers: { 'content-type': 'application/json' },
       });

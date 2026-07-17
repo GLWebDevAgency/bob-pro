@@ -2,7 +2,26 @@ import { describe, it, expect } from 'vitest';
 import { buildFacturXBasicXml, facturXDataFromInvoice, frenchVatNumber, type FacturXInvoiceData } from './facturx';
 import { Invoice } from '../billing/invoice/invoice';
 import { Company } from '../company/company';
+import { DocNumber } from '../billing/shared/doc-number';
+import { PaymentTerms } from '../../shared-kernel/payment-terms';
 import { seedCompany, MERCIER_PROPS } from '../../application/fixtures/index';
+
+function issueForFacturX(invoice: Invoice, sequence: number): void {
+  const assigned = invoice.assignNumber(
+    DocNumber.format('F', 2026, sequence),
+    '2026-06-29T10:00:00Z',
+  );
+  if (!assigned.ok) throw new Error('Facture de test non numérotée.');
+  const terms = PaymentTerms.of({ days: 30, endOfMonth: false, label: '30 jours' });
+  if (!terms.ok) throw new Error('Conditions de paiement de test invalides.');
+  const issued = invoice.issue({
+    mentions: [],
+    terms: terms.value,
+    issuedAt: '2026-06-29',
+    at: '2026-06-29T10:00:00Z',
+  });
+  if (!issued.ok) throw new Error('Facture de test non émise.');
+}
 
 const baseData = (): FacturXInvoiceData => ({
   number: 'F-2026-0001',
@@ -91,6 +110,7 @@ describe('facturXDataFromInvoice — mapping depuis l’agrégat', () => {
     const inv = (Invoice.composeStandalone({ id: 'inv1', companyId: company.id, customerId: 'cust1' }) as { ok: true; value: Invoice }).value;
     inv.addLine({ id: 'l1', label: 'Pose chaudière', category: 'labor', qty: 2, unitPriceHT: 10000, vatRate: 20 });
     inv.addLine({ id: 'l2', label: 'Joint', category: 'supply', qty: 1, unitPriceHT: 5000, vatRate: 10 });
+    issueForFacturX(inv, 1);
 
     const data = facturXDataFromInvoice(inv, company, { name: 'Client Test', address: { line1: '1 av', zip: '75001', city: 'Paris' } });
 
@@ -115,6 +135,7 @@ describe('facturXDataFromInvoice — mapping depuis l’agrégat', () => {
     const company = (Company.of({ ...MERCIER_PROPS, vatRegime: 'franchise' }) as { ok: true; value: Company }).value;
     const inv = (Invoice.composeStandalone({ id: 'inv2', companyId: company.id, customerId: 'c' }) as { ok: true; value: Invoice }).value;
     inv.addLine({ id: 'l1', label: 'Prestation', category: 'labor', qty: 1, unitPriceHT: 10000, vatRate: 20 });
+    issueForFacturX(inv, 2);
 
     const data = facturXDataFromInvoice(inv, company, { name: 'Client', address: { line1: 'x', zip: '75001', city: 'Paris' } });
 
@@ -127,5 +148,21 @@ describe('facturXDataFromInvoice — mapping depuis l’agrégat', () => {
     expect(b0.exemptionReason).toContain('293 B');
     expect(data.seller.vatId).toBeUndefined();
     expect(data.lines[0]!).toMatchObject({ vatCategory: 'E', vatRatePct: 0 });
+  });
+
+  it('refuse une facture brouillon au lieu de fabriquer un numéro et une date', () => {
+    const company = seedCompany();
+    const inv = (Invoice.composeStandalone({ id: 'draft', companyId: company.id, customerId: 'c' }) as {
+      ok: true;
+      value: Invoice;
+    }).value;
+    inv.addLine({ id: 'l1', label: 'Prestation', category: 'labor', qty: 1, unitPriceHT: 10000, vatRate: 20 });
+
+    expect(() =>
+      facturXDataFromInvoice(inv, company, {
+        name: 'Client',
+        address: { line1: 'x', zip: '75001', city: 'Paris' },
+      }),
+    ).toThrowError('FACTURX_ISSUED_INVOICE_REQUIRED');
   });
 });

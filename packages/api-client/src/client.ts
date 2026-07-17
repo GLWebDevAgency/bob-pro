@@ -409,31 +409,41 @@ export interface AccountingPreviewLine {
   creditCents: number;
 }
 
-export interface InvoiceAccountingPreview {
-  invoiceId: string;
-  available: boolean;
-  reason: string | null;
-  entryId: string | null;
-  reference: string | null;
-  entryDate: string | null;
-  label: string | null;
-  totalDebitCents: number;
-  totalCreditCents: number;
-  lines: AccountingPreviewLine[];
-}
+export type InvoiceAccountingPreview =
+  | {
+      invoiceId: string;
+      available: false;
+      reason: string;
+    }
+  | {
+      invoiceId: string;
+      available: true;
+      entryId: string;
+      reference: string;
+      entryDate: string;
+      label: string;
+      totalDebitCents: number;
+      totalCreditCents: number;
+      lines: AccountingPreviewLine[];
+    };
 
-export interface PaymentAccountingPreview {
-  invoiceId: string;
-  available: boolean;
-  reason: string | null;
-  reference: string | null;
-  amountCents: number;
-  remainingCents: number;
-  method: PaymentMethod;
-  totalDebitCents: number;
-  totalCreditCents: number;
-  lines: AccountingPreviewLine[];
-}
+export type PaymentAccountingPreview =
+  | {
+      invoiceId: string;
+      available: false;
+      reason: string;
+    }
+  | {
+      invoiceId: string;
+      available: true;
+      reference: string;
+      amountCents: number;
+      remainingCents: number;
+      method: PaymentMethod;
+      totalDebitCents: number;
+      totalCreditCents: number;
+      lines: AccountingPreviewLine[];
+    };
 
 export interface AccountingEntryView {
   id: string;

@@ -100,12 +100,55 @@ describe('solde bancaire runtime — vérité tenant et absence de fallback', ()
     });
   });
 
-  it('reste indisponible sans observation au lieu de produire un faux zéro', async () => {
+  it('tenant VIERGE (aucune observation, aucun document) : état vide PROPRE marqué bankingSource none — 200, jamais une 503', async () => {
+    // Incident fondateur 17/07 : un compte qui vient d'ouvrir recevait « unhandled
+    // HttpException » (503 cashflow-banking-source) sur chaque écran Argent. Décision : un
+    // tenant sans AUCUNE donnée financière reçoit une projection vide EXPLICITEMENT marquée —
+    // jamais un solde inventé (le marqueur distingue ce zéro d'un vrai solde observé à 0 €).
     const { service } = harness();
+
+    const projection = await asPrincipal(OWNER, () => service.getCashflow('realiste', 30));
+
+    expect(projection).toMatchObject({
+      ok: true,
+      value: {
+        available: 0,
+        payout: 0,
+        risk: false,
+        vatDue: 0,
+        bankingSource: 'none',
+      },
+    });
+  });
+
+  it('reste indisponible sans observation dès qu’un document financier existe — jamais une projection d’argent réel posée sur un zéro inventé', async () => {
+    const { service } = harness();
+    await asPrincipal(OWNER, () =>
+      service.recordExpense({
+        supplierName: 'Cedeo',
+        documentDate: '2026-07-01',
+        totalTtcCents: 18_490,
+        category: 'fournitures',
+      }),
+    );
 
     await expect(asPrincipal(OWNER, () => service.getCashflow('realiste', 30))).resolves.toEqual({
       ok: false,
       error: { kind: 'unavailable', service: 'cashflow-banking-source' },
+    });
+  });
+
+  it('avec observation confirmée : la projection est marquée qualified_snapshot', async () => {
+    const { service } = harness();
+    await asPrincipal(OWNER, () =>
+      service.recordManualBankBalance({ amountCents: 250_000, observedAt: new Date().toISOString() }),
+    );
+
+    const projection = await asPrincipal(OWNER, () => service.getCashflow('realiste', 30));
+
+    expect(projection).toMatchObject({
+      ok: true,
+      value: { available: 250_000, bankingSource: 'qualified_snapshot' },
     });
   });
 });

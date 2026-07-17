@@ -377,6 +377,33 @@ describe('BobAgent (démo)', () => {
     expect(r.value.card.body).toContain('28/07/2026');
   });
 
+  it('abonnement : tenant early-access (sans ligne) → accès anticipé honnête, jamais un essai ni un prix inventés', async () => {
+    const withSubscription: BobActions = {
+      ...actions,
+      getSubscriptionStatus: async () =>
+        ok({
+          plan: 'business' as const,
+          status: 'active' as const,
+          trialEndsAt: null,
+          trialPhase: null,
+          trialDaysLeft: null,
+          currentPeriodEnd: null,
+          store: null,
+          storeRef: null,
+          source: 'early_access' as const,
+        }),
+    };
+    const agent = new BobAgent({ router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }), actions: withSubscription });
+
+    const r = await agent.ask('où en est mon abonnement ?');
+    expect(r.ok && r.value.intent).toBe('abonnement');
+    expect(r.ok && r.value.kind).toBe('answer');
+    if (!r.ok) return;
+    expect(r.value.card.body).toContain('accès anticipé');
+    expect(r.value.card.body).toContain('rien ne t’est facturé');
+    expect(r.value.card.body).not.toContain('essai');
+  });
+
   it('abonnement : hôte SANS la capacité → réponse honnête, jamais un état inventé', async () => {
     const r = await makeAgent().ask('où en est mon abonnement ?');
     expect(r.ok && r.value.intent).toBe('abonnement');

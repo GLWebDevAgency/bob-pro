@@ -122,12 +122,16 @@ function deriveRelances(input: DeriveTodayPrioritiesInput, names: ReadonlyMap<st
   for (const invoice of input.invoices) {
     const remaining = overdueRemainingCents(invoice, input.today);
     if (remaining === null) continue;
+    const customerName = names.get(invoice.customerId);
+    // Une pièce orpheline est une incohérence de référentiel, pas un client sans nom. Elle ne
+    // devient jamais une priorité actionnable tant que la relation autoritative n'est pas réparée.
+    if (customerName === undefined) continue;
     relances.push({
       kind: 'relance',
       id: `relance-${invoice.id}`,
       invoiceId: invoice.id,
       customerId: invoice.customerId,
-      customerName: names.get(invoice.customerId) ?? '',
+      customerName,
       docNumber: invoice.number,
       amountCents: remaining,
       daysLate: invoice.dueAt !== null ? Math.max(0, daysBetween(invoice.dueAt, input.today)) : 0,
@@ -152,6 +156,8 @@ function deriveFacturesFinales(
   const finales: FactureFinalePriority[] = [];
   for (const quote of input.quotes) {
     if (quote.status !== 'signed') continue;
+    const customerName = names.get(quote.customerId);
+    if (customerName === undefined) continue;
     const children = childrenByQuote.get(quote.id) ?? [];
     // Il faut un acompte ENCAISSÉ (payé), et aucune facture finale déjà engagée (même en brouillon).
     const depositPaid = children.find((i) => i.kind === 'deposit' && i.status === 'paid');
@@ -165,7 +171,7 @@ function deriveFacturesFinales(
       id: `facture-finale-${quote.id}`,
       quoteId: quote.id,
       customerId: quote.customerId,
-      customerName: names.get(quote.customerId) ?? '',
+      customerName,
       docNumber: quote.number,
       amountCents: remaining,
     });

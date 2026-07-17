@@ -288,18 +288,23 @@ export interface AccountingPreviewLine {
   creditCents: number;
 }
 
-export interface InvoiceAccountingPreview {
-  invoiceId: string;
-  available: boolean;
-  reason: string | null;
-  entryId: string | null;
-  reference: string | null;
-  entryDate: string | null;
-  label: string | null;
-  totalDebitCents: number;
-  totalCreditCents: number;
-  lines: AccountingPreviewLine[];
-}
+export type InvoiceAccountingPreview =
+  | {
+      invoiceId: string;
+      available: false;
+      reason: string;
+    }
+  | {
+      invoiceId: string;
+      available: true;
+      entryId: string;
+      reference: string;
+      entryDate: string;
+      label: string;
+      totalDebitCents: number;
+      totalCreditCents: number;
+      lines: AccountingPreviewLine[];
+    };
 
 export interface ExpenseDefaultsView {
   supplierName: string;
@@ -804,14 +809,26 @@ export class BackendService {
   }
 
   /**
-   * Autorité unique des capacités payantes. La ligne `subscriptions` du tenant est obligatoire :
-   * son absence est une indisponibilité de provisioning, jamais un abonnement Business implicite.
+   * Autorité unique des capacités payantes, alignée sur GetSubscriptionStatus (@bob/core) :
+   * une ligne `subscriptions` fait foi ; SANS ligne (tenant provisionné avant la table),
+   * DÉCISION PRODUIT early-access (SPEC pilier 2, rappelée fondateur 2026-07-17) : accès plein
+   * business/actif, 0 € facturé, aucun essai fantôme — jamais un 503 en cascade (assistant,
+   * profil, FEC…) pour un compte légitime pré-migration.
    * Un essai expiré est ramené au palier gratuit pour l'enforcement, sans modifier silencieusement
    * la ligne (l'atterrissage persistant reste la responsabilité du workflow d'abonnement).
    */
   private async subscriptionFor(companyId: string): Promise<Result<Subscription, AppError>> {
     const record = await this.p.subscriptions.findByCompanyId(companyId);
-    if (record === null) return err(appUnavailable('subscription'));
+    if (record === null) {
+      const earlyAccess = Subscription.start({
+        id: `sub-${companyId}`,
+        companyId,
+        tier: 'business',
+        status: 'active',
+      });
+      if (!earlyAccess.ok) return err(appDomain(earlyAccess.error));
+      return ok(earlyAccess.value);
+    }
 
     const trialExpired =
       record.status === 'trialing' &&
@@ -950,12 +967,30 @@ export class BackendService {
       clock: this.clock,
       freshnessPolicy: BANK_BALANCE_FRESHNESS_POLICY_V1,
     }).execute({ companyId });
-    if (!balance.ok) {
-      if (balance.error.kind === 'not_found') return err(appUnavailable('cashflow-banking-source'));
+
+    const invoices = await this.p.invoices.listByCompany(companyId);
+    let bankBalanceCents: number;
+    let bankingSource: NonNullable<CashflowProjection['bankingSource']>;
+    if (balance.ok) {
+      bankBalanceCents = balance.value.amountCents;
+      bankingSource = 'qualified_snapshot';
+    } else if (balance.error.kind === 'not_found') {
+      // Tenant VIERGE (aucune observation bancaire ET aucun document financier) : état vide
+      // PROPRE — 200 à zéro, marqué `bankingSource: 'none'` — jamais une 503 « unhandled
+      // exception » dans les logs pour un compte qui vient d'ouvrir (incident fondateur
+      // 17/07). Dès qu'un document financier existe, l'absence d'observation redevient
+      // bloquante : aucune projection d'argent RÉEL n'est posée sur un zéro inventé.
+      const expenses = await this.p.expenses.listByCompany(companyId);
+      if (invoices.length > 0 || expenses.length > 0)
+        return err(appUnavailable('cashflow-banking-source'));
+      bankBalanceCents = 0;
+      bankingSource = 'none';
+    } else {
+      // Observation périmée/qualification : fail-closed inchangé (bank-balance-stale & co) —
+      // une vieille vérité n'est pas une vérité, le mobile déclenche la confirmation du solde.
       return balance;
     }
 
-    const invoices = await this.p.invoices.listByCompany(companyId);
     const receivables = deriveKnownReceivables({
       companyId,
       invoices: invoices.map((invoice) => ({
@@ -973,19 +1008,21 @@ export class BackendService {
       get: async (requestedCompanyId: string) => {
         if (requestedCompanyId !== companyId) throw new Error('CASHFLOW_TENANT_SCOPE_MISMATCH');
         return {
-          bankBalance: balance.value.amountCents,
+          bankBalance: bankBalanceCents,
           receivables: receivables.value.receivablesCents,
           // Un excédent d'avoirs est une dette connue envers les clients, pas un encours négatif.
           charges: receivables.value.customerCreditCents,
         };
       },
     };
-    return new GetCashflow({
+    const projected = await new GetCashflow({
       snapshots,
       expenses: this.p.expenses,
       invoices: this.p.invoices,
       clock: this.clock,
     }).execute({ companyId, scenario, horizon });
+    if (!projected.ok) return projected;
+    return ok({ ...projected.value, bankingSource });
   }
   createQuote(input: Omit<CreateQuoteInput, 'companyId'>) {
     return new QuoteCreationCoordinator({
@@ -1376,27 +1413,20 @@ export class BackendService {
       ...(chart ? { chart } : {}),
     });
     if (!entry.ok) {
+      const detail =
+        'message' in entry.error && typeof entry.error.message === 'string'
+          ? entry.error.message.trim()
+          : '';
       return ok({
         invoiceId,
         available: false,
-        reason:
-          'message' in entry.error && typeof entry.error.message === 'string'
-            ? entry.error.message
-            : 'Aperçu comptable indisponible.',
-        entryId: null,
-        reference: invoice.number,
-        entryDate: invoice.issuedAt,
-        label: null,
-        totalDebitCents: 0,
-        totalCreditCents: 0,
-        lines: [],
+        reason: detail || 'Aperçu comptable indisponible.',
       });
     }
     const props = entry.value.toProps();
     return ok({
       invoiceId,
       available: true,
-      reason: null,
       entryId: props.id,
       reference: props.reference,
       entryDate: props.entryDate,
@@ -1412,7 +1442,10 @@ export class BackendService {
     amountCents: number;
     method: PaymentMethod;
   }) {
-    return new PreviewPaymentAccountingEntry({ invoices: this.p.invoices }).execute({
+    return new PreviewPaymentAccountingEntry({
+      invoices: this.p.invoices,
+      clock: this.clock,
+    }).execute({
       companyId: this.companyId(),
       invoiceId: input.invoiceId,
       amountCents: input.amountCents,
@@ -1985,6 +2018,10 @@ export class BackendService {
       computePayout: async () => {
         const r = await this.getCashflow('realiste', 30);
         if (!r.ok) return r;
+        // Vocal : sans AUCUNE observation bancaire (tenant vierge), Bob refuse d'annoncer un
+        // montant — « 0 € mobilisable » serait un chiffre inventé tant que le solde n'est pas
+        // confirmé (l'écran Argent, lui, montre l'état vide + la confirmation de solde).
+        if (r.value.bankingSource === 'none') return err(appUnavailable('cashflow-banking-source'));
         return ok({ payoutCents: r.value.payout, availableCents: r.value.available });
       },
       // Phase 1C (SPEC_EXPERT_FISCAL §V2 pt. 1+6) : parité voix ↔ écrans — même moteur pur
@@ -1998,6 +2035,9 @@ export class BackendService {
         ]);
         if (!profileResult.ok) return profileResult;
         if (!cashflowResult.ok) return cashflowResult;
+        // Même refus vocal que computePayout : jamais un conseil de versement sans solde observé.
+        if (cashflowResult.value.bankingSource === 'none')
+          return err(appUnavailable('cashflow-banking-source'));
         const today = this.clock.today();
         const month = today.slice(0, 7);
         const payments = await this.p.payments.listByCompany(this.companyId());
@@ -3014,8 +3054,9 @@ export class BackendService {
   // ——— Monétisation ———
   /**
    * Lecture d'autorité de l'abonnement du tenant — GetSubscriptionStatus (@bob/core) sur la
-   * table `subscriptions` (pilier 2). Une ligne absente est remontée `unavailable` : aucun
-   * palier n'est inventé. Partagée par
+   * table `subscriptions` (pilier 2). Une ligne absente = accès anticipé HONNÊTE
+   * (source 'early_access' : business actif, 0 €, aucun essai fantôme — décision produit
+   * SPEC pilier 2, rappelée fondateur 2026-07-17). Partagée par
    * GET /subscription, le bilan de fin d'essai et l'affordance vocale « où en est mon essai ».
    */
   private subscriptionStatus(companyId: string): Promise<Result<SubscriptionStatusView, AppError>> {
@@ -3035,13 +3076,16 @@ export class BackendService {
     if (!status.ok) return status;
     const s = status.value;
     const effectiveTier: PlanTier = s.trialPhase === 'expired' ? 'free' : s.plan;
+    const earlyAccess = s.source === 'early_access';
     return ok({
       tier: effectiveTier,
       status: s.status,
-      earlyAccess: false,
-      // Rien n'est facturé pendant un essai : seul un abonnement
+      // Tenant sans ligne (pré-migration) : accès anticipé assumé côté client — l'écran
+      // Compte dérive l'état « accès anticipé, 0 € », jamais un plan payant inventé.
+      earlyAccess,
+      // Rien n'est facturé pendant un essai NI en accès anticipé : seul un abonnement
       // ACTIF persisté porte le prix catalogue (source unique PLAN_CATALOG).
-      priceCents: s.status === 'active' ? PLAN_CATALOG[effectiveTier].priceCents : 0,
+      priceCents: !earlyAccess && s.status === 'active' ? PLAN_CATALOG[effectiveTier].priceCents : 0,
       currentPeriodEnd: s.currentPeriodEnd,
       trialEndsAt: s.trialEndsAt,
       trialPhase: s.trialPhase,

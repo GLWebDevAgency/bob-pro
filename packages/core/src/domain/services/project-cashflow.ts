@@ -10,6 +10,11 @@ export interface CashflowProjection {
   vatDue: number;
   /** Hypothèses auditables : l'UI peut distinguer une projection datée d'un agrégat legacy. */
   basis: CashflowProjectionBasis;
+  /** Provenance du solde bancaire de la projection (posée par l'adapter serveur) :
+   *  'qualified_snapshot' = observation fraîche du tenant ; 'none' = tenant VIERGE (aucune
+   *  observation ET aucun document financier) — état vide honnête à zéro, jamais un solde
+   *  inventé présenté comme une vérité. Absent sur les implémentations qui ne la posent pas. */
+  bankingSource?: 'qualified_snapshot' | 'none';
 }
 
 export interface DatedCashflowBasisInput {

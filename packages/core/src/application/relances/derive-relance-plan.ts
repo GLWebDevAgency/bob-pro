@@ -167,9 +167,10 @@ export function deriveRelancePlan(input: DeriveRelancePlanInput): RelancePlanEnt
     const reached = [...steps].reverse().find((s) => s.afterDays <= candidate.daysLate);
     const next = steps.find((s) => s.afterDays > candidate.daysLate);
     const tone = reached?.tone ?? steps[0]?.tone ?? 'cordial';
-    // Client absent de la projection → PRUDENCE b2c : on ne réclame JAMAIS 40 € ni L441-10
-    // sans savoir que le débiteur est un professionnel (P01 — le risque juridique est là).
-    const customerType = typeById.get(candidate.customerId) ?? 'b2c';
+    // Sans client autoritatif, aucune qualification juridique ni relance ne peut être produite.
+    // Supposer B2C serait prudent sur les pénalités, mais fabriquerait tout de même une donnée.
+    const customerType = typeById.get(candidate.customerId);
+    if (customerType === undefined) continue;
     const invoice = invoiceById.get(candidate.invoiceId);
 
     // P12 — pénalités chiffrées sur le RESTE DÛ (netToPay − paid) : échéance manquante → null
@@ -200,7 +201,7 @@ export function deriveRelancePlan(input: DeriveRelancePlanInput): RelancePlanEnt
         : null;
 
     const messageInput = {
-      customerName: candidate.customerName || 'le client',
+      customerName: candidate.customerName,
       docNumber: candidate.docNumber ?? candidate.invoiceId,
       amountCents: candidate.amountCents,
       tone,
@@ -291,12 +292,14 @@ export function deriveUpcomingDues(input: DeriveUpcomingDuesInput): UpcomingDueE
     if (invoice.status === 'late' || invoice.dueAt < input.today) continue;
     const remaining = invoice.totals.netToPay - invoice.paid;
     if (remaining <= 0) continue;
+    const customerName = names.get(invoice.customerId);
+    if (customerName === undefined) continue;
     const inDays = daysBetween(input.today, invoice.dueAt);
     if (inDays > windowDays) continue;
     upcoming.push({
       invoiceId: invoice.id,
       customerId: invoice.customerId,
-      customerName: names.get(invoice.customerId) ?? '',
+      customerName,
       docNumber: invoice.number,
       amountCents: remaining,
       dueAt: invoice.dueAt,

@@ -146,7 +146,16 @@ describe('GET /chantiers — compteurs notes/photos (agrégat bulk, tenant-scope
     const { service, p } = makeService();
     const company = seedCompany();
     await p.companies.save(company);
-    // Aucun abonnement enregistré → subscriptionFor() échoue → chantiersAllowed() = false.
+    // Essai EXPIRÉ → palier free : le module Chantiers (Solo minimum) reste verrouillé.
+    // (Une ligne ABSENTE n'est plus un verrou : early-access = accès plein, décision produit
+    // SPEC pilier 2 rappelée fondateur 17/07 — le verrou se teste avec un état persisté réel.)
+    await p.subscriptions.startTrial({
+      id: `sub-${company.id}`,
+      companyId: company.id,
+      plan: 'pro',
+      trialEndsAt: '2026-01-15T00:00:00.000Z',
+      now: '2026-01-01T00:00:00.000Z',
+    });
 
     const r = await asPrincipal({ userId: 'u-a', companyId: company.id }, () => service.listChantiers());
 

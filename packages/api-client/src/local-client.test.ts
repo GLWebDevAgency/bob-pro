@@ -201,7 +201,7 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
 
     const draftPreview = await client.invoiceAccountingPreview(gen.value.invoiceId);
     expect(draftPreview.ok && draftPreview.value.available).toBe(true);
-    if (!draftPreview.ok) return;
+    if (!draftPreview.ok || !draftPreview.value.available) return;
     expect(draftPreview.value.reference).toBe('a-emettre');
     expect(draftPreview.value.lines.map((line) => line.account)).toEqual(['411', '4191', '44571']);
 
@@ -212,7 +212,7 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
 
     const preview = await client.invoiceAccountingPreview(gen.value.invoiceId);
     expect(preview.ok).toBe(true);
-    if (!preview.ok) return;
+    if (!preview.ok || !preview.value.available) return;
     expect(preview.value.available).toBe(true);
     expect(preview.value.totalDebitCents).toBe(48840);
     expect(preview.value.totalCreditCents).toBe(48840);
@@ -325,7 +325,7 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     });
 
     expect(preview.ok).toBe(true);
-    if (!preview.ok) return;
+    if (!preview.ok || !preview.value.available) return;
     expect(preview.value.available).toBe(true);
     expect(preview.value.remainingCents).toBe(13200);
     expect(preview.value.totalDebitCents).toBe(13200);

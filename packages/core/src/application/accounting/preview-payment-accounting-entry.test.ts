@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { Invoice } from '../../domain/billing/invoice/invoice';
 import { type QuoteLine } from '../../domain/billing/shared/line';
 import { DocNumber } from '../../domain/billing/shared/doc-number';
@@ -58,18 +58,26 @@ class MemoryInvoices implements InvoiceRepository {
   }
 }
 
-function useCase(invoice: Invoice | null) {
-  return new PreviewPaymentAccountingEntry({ invoices: new MemoryInvoices(invoice) });
+function useCase(
+  invoice: Invoice | null,
+  now: () => '2026-06-02T09:30:00.000Z' = () => '2026-06-02T09:30:00.000Z',
+) {
+  return new PreviewPaymentAccountingEntry({
+    invoices: new MemoryInvoices(invoice),
+    clock: { now, today: () => '2026-06-02' },
+  });
 }
 
 describe('PreviewPaymentAccountingEntry', () => {
   it("preview les lignes d'encaissement par virement sans effet de bord", async () => {
     const invoice = issuedInvoice({ paid: 2000 });
-    const r = await useCase(invoice).execute({ companyId: 'co-1', invoiceId: 'inv-1', amountCents: 10000, method: 'transfer' });
+    const now = vi.fn(() => '2026-06-02T09:30:00.000Z' as const);
+    const r = await useCase(invoice, now).execute({ companyId: 'co-1', invoiceId: 'inv-1', amountCents: 10000, method: 'transfer' });
 
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.value.available).toBe(true);
+    if (!r.value.available) return;
     expect(r.value.remainingCents).toBe(10000);
     expect(r.value.totalDebitCents).toBe(10000);
     expect(r.value.totalCreditCents).toBe(10000);
@@ -77,14 +85,17 @@ describe('PreviewPaymentAccountingEntry', () => {
       { account: '512', label: 'Encaissement F-2026-0001', debitCents: 10000, creditCents: 0 },
       { account: '411', label: 'Encaissement F-2026-0001', debitCents: 0, creditCents: 10000 },
     ]);
+    expect(r.value).not.toHaveProperty('reason');
     expect(invoice.paid).toBe(2000);
+    expect(now).toHaveBeenCalledOnce();
   });
 
   it("preview les especes sur le compte de caisse", async () => {
     const r = await useCase(issuedInvoice()).execute({ companyId: 'co-1', invoiceId: 'inv-1', amountCents: 12000, method: 'cash' });
 
     expect(r.ok).toBe(true);
-    if (r.ok) expect(r.value.lines.map((line) => line.account)).toEqual(['530', '411']);
+    if (r.ok && r.value.available)
+      expect(r.value.lines.map((line) => line.account)).toEqual(['530', '411']);
   });
 
   it('signale un surpaiement sans produire de lignes', async () => {
@@ -93,9 +104,40 @@ describe('PreviewPaymentAccountingEntry', () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.value.available).toBe(false);
-    expect(r.value.remainingCents).toBe(12000);
-    expect(r.value.lines).toEqual([]);
+    if (r.value.available) return;
     expect(r.value.reason).toContain('Paiement supérieur au reste dû');
+    expect(r.value).toEqual({
+      invoiceId: 'inv-1',
+      available: false,
+      reason: r.value.reason,
+    });
+    expect(r.value).not.toHaveProperty('amountCents');
+    expect(r.value).not.toHaveProperty('remainingCents');
+    expect(r.value).not.toHaveProperty('lines');
+    expect(r.value).not.toHaveProperty('totalDebitCents');
+    expect(r.value).not.toHaveProperty('totalCreditCents');
+  });
+
+  it('refuse un montant nul au lieu de produire un faux aperçu indisponible', async () => {
+    const r = await useCase(issuedInvoice()).execute({
+      companyId: 'co-1',
+      invoiceId: 'inv-1',
+      amountCents: 0,
+      method: 'transfer',
+    });
+
+    expect(r).toEqual({
+      ok: false,
+      error: {
+        kind: 'validation',
+        issues: [
+          {
+            field: 'amountCents',
+            message: 'Montant strictement positif requis en centimes entiers.',
+          },
+        ],
+      },
+    });
   });
 
   it('refuse une methode de paiement inconnue', async () => {

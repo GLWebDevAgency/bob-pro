@@ -24,10 +24,9 @@ describe('HttpBobClient — profil société persistant', () => {
         vatRegime: 'reel_simpl',
         customerPortfolio: 'b2g',
       });
-      expect(init?.headers).toMatchObject({
-        authorization: 'Bearer owner-token',
-        'x-company-id': 'company-owner',
-      });
+      const headers = new Headers(init?.headers);
+      expect(headers.get('authorization')).toBe('Bearer owner-token');
+      expect(headers.has('x-company-id')).toBe(false);
       return new Response(JSON.stringify(company), {
         headers: { 'content-type': 'application/json' },
       });

@@ -174,6 +174,23 @@ describe('deriveVaultView — factures récentes & canal e-facture', () => {
     expect(v.recentInvoices[0]).toMatchObject({ customerName: 'Mme Durand', channel: 'ereporting' });
     expect(v.recentInvoices[1]).toMatchObject({ customerName: 'SARL Martin Rénovation', channel: 'pa' });
   });
+
+  it('signale une relation client absente sans fabriquer un profil B2C', () => {
+    const v = deriveVaultView({
+      ...EMPTY,
+      invoices: [invoice({ id: 'orphan', customerId: 'missing-customer' })],
+      customers: [],
+    });
+
+    expect(v.recentInvoices).toEqual([
+      expect.objectContaining({
+        id: 'orphan',
+        customerName: null,
+        customerType: null,
+        channel: null,
+      }),
+    ]);
+  });
 });
 
 describe('deriveVaultView — mémoire fournisseurs', () => {

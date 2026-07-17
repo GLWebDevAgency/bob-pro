@@ -591,8 +591,11 @@ describe('HttpBobClient', () => {
       rowCount: 19,
       warnings: ['Compte 411 absent du plan comptable.'],
     };
-    const fetchMock = vi.fn(async (input: unknown) => {
+    const fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
       const url = String(input);
+      const headers = new Headers(init?.headers);
+      expect(headers.has('x-company-id')).toBe(false);
+      expect(headers.get('authorization')).toBe('Bearer test-token');
       if (url.includes('/accounting/fec-metadata?')) {
         return new Response(JSON.stringify(metadata), { headers: { 'content-type': 'application/json' } });
       }
@@ -639,11 +642,97 @@ describe('HttpBobClient', () => {
     expect(r.value.descriptionContent).toContain('Descriptif FEC');
   });
 
+  it('charge un aperçu comptable de facture strictement disponible', async () => {
+    const preview = {
+      invoiceId: 'inv-1',
+      available: true,
+      entryId: 'preview-invoice-inv-1',
+      reference: 'F-2026-0001',
+      entryDate: '2026-06-01',
+      label: 'Facture F-2026-0001',
+      totalDebitCents: 12000,
+      totalCreditCents: 12000,
+      lines: [
+        { account: '411', label: 'Facture F-2026-0001', debitCents: 12000, creditCents: 0 },
+        { account: '706', label: 'Facture F-2026-0001', debitCents: 0, creditCents: 12000 },
+      ],
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(JSON.stringify(preview), { headers: { 'content-type': 'application/json' } }),
+      ),
+    );
+    const client = new HttpBobClient({
+      baseUrl: 'https://api.bob.test',
+      companyId: 'company-mercier',
+    });
+
+    const result = await client.invoiceAccountingPreview('inv-1');
+
+    expect(result).toEqual({ ok: true, value: preview });
+  });
+
+  it('accepte une indisponibilité de facture sans sentinelle comptable', async () => {
+    const preview = {
+      invoiceId: 'inv-1',
+      available: false,
+      reason: 'La facture ne comporte aucune ligne comptabilisable.',
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(JSON.stringify(preview), { headers: { 'content-type': 'application/json' } }),
+      ),
+    );
+    const client = new HttpBobClient({
+      baseUrl: 'https://api.bob.test',
+      companyId: 'company-mercier',
+    });
+
+    const result = await client.invoiceAccountingPreview('inv-1');
+
+    expect(result).toEqual({ ok: true, value: preview });
+  });
+
+  it('rejette un ancien aperçu indisponible qui encode 0 et [] comme écriture', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            invoiceId: 'inv-1',
+            available: false,
+            reason: 'Aperçu indisponible.',
+            totalDebitCents: 0,
+            totalCreditCents: 0,
+            lines: [],
+          }),
+          { headers: { 'content-type': 'application/json' } },
+        ),
+      ),
+    );
+    const client = new HttpBobClient({
+      baseUrl: 'https://api.bob.test',
+      companyId: 'company-mercier',
+    });
+
+    const result = await client.invoiceAccountingPreview('inv-1');
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        kind: 'dependency',
+        port: 'api-contract',
+        cause: 'Réponse API invalide pour GET /invoices/inv-1/accounting-preview.',
+      },
+    });
+  });
+
   it("loads a payment accounting preview for an invoice", async () => {
     const preview = {
       invoiceId: 'inv-1',
       available: true,
-      reason: null,
       reference: 'F-2026-0001',
       amountCents: 12000,
       remainingCents: 12000,
@@ -676,7 +765,72 @@ describe('HttpBobClient', () => {
     expect(r.value).toEqual(preview);
   });
 
-  it('C-EXP5b : getFiscalCalendar → GET /fiscal-calendar (JWT + tenant), échéances rendues telles quelles', async () => {
+  it("conserve l'indisponibilité d'un aperçu d'encaissement sans inventer de totaux", async () => {
+    const preview = {
+      invoiceId: 'inv-1',
+      available: false,
+      reason: 'Paiement supérieur au reste dû.',
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(JSON.stringify(preview), { headers: { 'content-type': 'application/json' } }),
+      ),
+    );
+    const client = new HttpBobClient({
+      baseUrl: 'https://api.bob.test',
+      companyId: 'company-mercier',
+    });
+
+    const result = await client.paymentAccountingPreview({
+      invoiceId: 'inv-1',
+      amountCents: 12001,
+      method: 'transfer',
+    });
+
+    expect(result).toEqual({ ok: true, value: preview });
+    if (result.ok && !result.value.available) {
+      expect(result.value).not.toHaveProperty('lines');
+      expect(result.value).not.toHaveProperty('totalDebitCents');
+      expect(result.value).not.toHaveProperty('totalCreditCents');
+    }
+  });
+
+  it("rejette un aperçu d'encaissement indisponible avec sentinelles numériques", async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            invoiceId: 'inv-1',
+            available: false,
+            reason: 'Paiement supérieur au reste dû.',
+            totalDebitCents: 0,
+            totalCreditCents: 0,
+            lines: [],
+          }),
+          { headers: { 'content-type': 'application/json' } },
+        ),
+      ),
+    );
+    const client = new HttpBobClient({
+      baseUrl: 'https://api.bob.test',
+      companyId: 'company-mercier',
+    });
+
+    const result = await client.paymentAccountingPreview({
+      invoiceId: 'inv-1',
+      amountCents: 12001,
+      method: 'transfer',
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { kind: 'dependency', port: 'api-contract' },
+    });
+  });
+
+  it('C-EXP5b : getFiscalCalendar → GET /fiscal-calendar (JWT seul), échéances rendues telles quelles', async () => {
     const deadlines = [
       {
         id: 'cfe-acompte-2026',
@@ -701,9 +855,9 @@ describe('HttpBobClient', () => {
     ];
     const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
       if (String(url) === 'https://api.bob.test/fiscal-calendar' && init?.method === 'GET') {
-        const headers = init?.headers as Record<string, string>;
-        expect(headers['x-company-id']).toBe('company-mercier');
-        expect(headers.authorization).toBe('Bearer test-token');
+        const headers = new Headers(init?.headers);
+        expect(headers.has('x-company-id')).toBe(false);
+        expect(headers.get('authorization')).toBe('Bearer test-token');
         return new Response(JSON.stringify(deadlines), { headers: { 'content-type': 'application/json' } });
       }
       return new Response(JSON.stringify({ error: { kind: 'not_found', resource: 'route' } }), { status: 404 });
@@ -737,7 +891,7 @@ describe('HttpBobClient', () => {
     if (!r.ok) expect(r.error).toEqual({ kind: 'not_found', entity: 'company', id: 'co-fantome' });
   });
 
-  it('PONT-SERVEUR v1 : getCompanyMe → GET /company/me (JWT + tenant), fiche société rendue telle quelle', async () => {
+  it('PONT-SERVEUR v1 : getCompanyMe → GET /company/me (JWT seul), fiche société rendue telle quelle', async () => {
     const company = {
       id: 'company-mercier',
       name: 'Mercier Plomberie',
@@ -753,9 +907,9 @@ describe('HttpBobClient', () => {
     };
     const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
       if (String(url) === 'https://api.bob.test/company/me' && init?.method === 'GET') {
-        const headers = init?.headers as Record<string, string>;
-        expect(headers['x-company-id']).toBe('company-mercier');
-        expect(headers.authorization).toBe('Bearer test-token');
+        const headers = new Headers(init?.headers);
+        expect(headers.has('x-company-id')).toBe(false);
+        expect(headers.get('authorization')).toBe('Bearer test-token');
         return new Response(JSON.stringify(company), { headers: { 'content-type': 'application/json' } });
       }
       return new Response(JSON.stringify({ error: { kind: 'not_found', resource: 'route' } }), { status: 404 });
@@ -1038,9 +1192,9 @@ describe('HttpBobClient — assistant Bob (C40 ⑧ : ask/confirm/journal serveur
       const url = String(input);
       if (url === 'https://api.bob.test/ai/ask') {
         expect(init?.method).toBe('POST');
-        const headers = init?.headers as Record<string, string>;
-        expect(headers['x-company-id']).toBe('company-mercier');
-        expect(headers.authorization).toBe('Bearer test-token');
+        const headers = new Headers(init?.headers);
+        expect(headers.has('x-company-id')).toBe(false);
+        expect(headers.get('authorization')).toBe('Bearer test-token');
         expect(JSON.parse(String(init?.body))).toEqual({
           message: 'encaisse celle-ci',
           autonomy: 'confirm_all',

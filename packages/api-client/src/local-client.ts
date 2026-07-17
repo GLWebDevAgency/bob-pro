@@ -3273,27 +3273,20 @@ export class LocalBobClient implements BobClient {
       ...(chart.ok ? { chart: chart.value } : {}),
     });
     if (!entry.ok) {
+      const detail =
+        'message' in entry.error && typeof entry.error.message === 'string'
+          ? entry.error.message.trim()
+          : '';
       return ok({
         invoiceId,
         available: false,
-        reason:
-          'message' in entry.error && typeof entry.error.message === 'string'
-            ? entry.error.message
-            : 'Aperçu comptable indisponible.',
-        entryId: null,
-        reference: invoice.number,
-        entryDate: invoice.issuedAt,
-        label: null,
-        totalDebitCents: 0,
-        totalCreditCents: 0,
-        lines: [],
+        reason: detail || 'Aperçu comptable indisponible.',
       });
     }
     const props = entry.value.toProps();
     return ok({
       invoiceId,
       available: true,
-      reason: null,
       entryId: props.id,
       reference: props.reference,
       entryDate: props.entryDate,
@@ -3309,7 +3302,10 @@ export class LocalBobClient implements BobClient {
     amountCents: number;
     method: PaymentMethod;
   }): Promise<Result<PaymentAccountingPreview, AppError>> {
-    return new PreviewPaymentAccountingEntry({ invoices: this.invoices }).execute({
+    return new PreviewPaymentAccountingEntry({
+      invoices: this.invoices,
+      clock: this.clock,
+    }).execute({
       companyId: this.companyId,
       invoiceId: input.invoiceId,
       amountCents: input.amountCents,

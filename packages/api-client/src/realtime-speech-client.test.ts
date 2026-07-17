@@ -54,10 +54,9 @@ describe('HttpBobClient — feed vocal audité Bob Live', () => {
       expect(init).toMatchObject({ method: 'GET' });
       expect(init?.body).toBeUndefined();
       expect(init?.signal).toBeInstanceOf(AbortSignal);
-      expect(init?.headers).toMatchObject({
-        authorization: 'Bearer supabase-token',
-        'x-company-id': 'company-1',
-      });
+      const headers = new Headers(init?.headers);
+      expect(headers.get('authorization')).toBe('Bearer supabase-token');
+      expect(headers.has('x-company-id')).toBe(false);
       return jsonResponse(readyBody());
     }));
 

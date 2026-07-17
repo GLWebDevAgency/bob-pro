@@ -51,16 +51,18 @@ function authoritativeBobLists(service: BackendService) {
 describe('frontières runtime live — aucune fixture silencieuse', () => {
   afterEach(() => vi.unstubAllEnvs());
 
-  it('getCashflow retourne unavailable en live même si le service a vu une fixture au démarrage', async () => {
+  it('getCashflow en live sans AUCUNE donnée : état vide marqué bankingSource none — jamais une fixture vue au démarrage', async () => {
     vi.stubEnv('DEMO_MODE', 'true');
     const { service } = harness();
     vi.stubEnv('DEMO_MODE', 'false');
 
     const result = await asPrincipal(() => service.getCashflow('realiste', 30));
 
-    expect(result).toEqual({
-      ok: false,
-      error: { kind: 'unavailable', service: 'cashflow-banking-source' },
+    // Tenant vierge : 200 avec un ZÉRO explicitement marqué 'none' (décision fondateur 17/07) —
+    // aucun montant fixture ne fuit, aucun solde n'est inventé.
+    expect(result).toMatchObject({
+      ok: true,
+      value: { available: 0, payout: 0, vatDue: 0, bankingSource: 'none' },
     });
   });
 
@@ -71,9 +73,11 @@ describe('frontières runtime live — aucune fixture silencieuse', () => {
 
     const result = await asPrincipal(() => service.getCashflow('realiste', 30));
 
-    expect(result).toEqual({
-      ok: false,
-      error: { kind: 'unavailable', service: 'cashflow-banking-source' },
+    // Le seed démo ne porte AUCUN document financier ni solde : la projection reste l'état
+    // vide marqué — jamais des montants synthétiques réactivés par DEMO_MODE.
+    expect(result).toMatchObject({
+      ok: true,
+      value: { available: 0, payout: 0, vatDue: 0, bankingSource: 'none' },
     });
   });
 

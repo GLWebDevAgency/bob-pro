@@ -8,6 +8,7 @@
     "release": "sh scripts/release.sh",
     "release-flag:ops": "node scripts/release-flag-ops.mjs",
     "cabinet-pilot:bootstrap": "node scripts/bootstrap-cabinet-pilot.mjs",
+    "seed:demo-tenant": "node scripts/seed-demo-tenant.mjs",
     "cabinet-e2e:reset-staging": "node scripts/reset-cabinet-e2e-staging.mjs",
     "test:release-flags": "node --test scripts/release-flag-ops.test.mjs scripts/bootstrap-cabinet-pilot.test.mjs scripts/bootstrap-cabinet-pilots.test.mjs scripts/reset-cabinet-e2e-staging.test.mjs scripts/certify-railway-single-replica.test.mjs",
     "db:push": "prisma db push",

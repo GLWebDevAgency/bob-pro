@@ -79,6 +79,35 @@ describe('configuration live — capacités obligatoires sans fallback demo', ()
     expect(() => loadEnv()).toThrow(/PAYMENT_RETURN_BASE_URL.*non démo/u);
   });
 
+  it('refuse une configuration paiement live entamée mais incomplète', () => {
+    validLiveEnv();
+    // Une seule variable Stripe posée sur les 7 : configuration partielle, jamais tolérée.
+    vi.stubEnv('STRIPE_PRICE_SOLO', undefined);
+    vi.stubEnv('STRIPE_PRICE_PRO', undefined);
+    vi.stubEnv('STRIPE_PRICE_BUSINESS', undefined);
+    vi.stubEnv('STRIPE_WEBHOOK_SECRET', undefined);
+    vi.stubEnv('STRIPE_LIVEMODE', undefined);
+    vi.stubEnv('PAYMENT_RETURN_BASE_URL', undefined);
+
+    expect(() => loadEnv()).toThrow(
+      /Configuration paiement live incomplète.*STRIPE_PRICE_SOLO.*STRIPE_PRICE_PRO.*STRIPE_PRICE_BUSINESS.*STRIPE_WEBHOOK_SECRET.*STRIPE_LIVEMODE.*PAYMENT_RETURN_BASE_URL/u,
+    );
+  });
+
+  it('démarre en accès anticipé quand les 7 variables Stripe sont TOUTES absentes (aucun CTA d’achat actif)', () => {
+    validLiveEnv();
+    vi.stubEnv('STRIPE_SECRET_KEY', undefined);
+    vi.stubEnv('STRIPE_PRICE_SOLO', undefined);
+    vi.stubEnv('STRIPE_PRICE_PRO', undefined);
+    vi.stubEnv('STRIPE_PRICE_BUSINESS', undefined);
+    vi.stubEnv('STRIPE_WEBHOOK_SECRET', undefined);
+    vi.stubEnv('STRIPE_LIVEMODE', undefined);
+    vi.stubEnv('PAYMENT_RETURN_BASE_URL', undefined);
+
+    expect(() => loadEnv()).not.toThrow();
+    expect(loadEnv().DEMO_MODE).toBe('false');
+  });
+
   it('refuse les surfaces web de démonstration dans une composition live', () => {
     validLiveEnv();
     vi.stubEnv('SIGN_WEB_BASE_URL', 'https://demo.bobpro.fr');

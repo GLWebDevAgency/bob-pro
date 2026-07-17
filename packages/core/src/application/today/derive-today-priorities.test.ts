@@ -173,6 +173,35 @@ describe('deriveTodayPriorities', () => {
     expect(derive({ company: { einvoiceReceptionConfigured: true } })).toEqual([]);
   });
 
+  it('ne fabrique aucun client pour une facture ou un devis orphelin', () => {
+    const depositPaid = invoiceFixture({
+      id: 'deposit-orphan',
+      customerId: 'missing-customer',
+      kind: 'deposit',
+      status: 'paid',
+      parentQuoteId: 'quote-orphan',
+      paid: 30000,
+      totals: totalsOf(30000),
+    });
+    expect(
+      derive({
+        invoices: [
+          invoiceFixture({ id: 'late-orphan', customerId: 'missing-customer' }),
+          depositPaid,
+        ],
+        quotes: [
+          {
+            id: 'quote-orphan',
+            customerId: 'missing-customer',
+            status: 'signed',
+            number: 'D-2026-0099',
+            totals: totalsOf(100000),
+          },
+        ],
+      }),
+    ).toEqual([]);
+  });
+
   it('exclut les factures payées, annulées, non échues — et les avoirs', () => {
     const priorities = derive({
       invoices: [

@@ -98,6 +98,7 @@ import type {
   RealtimeVoiceSpeechFeed,
   RealtimeVoiceSpeechFeedInput,
   RealtimeVoiceSpeechMimeType,
+  AccountingPreviewLine,
   InvoiceAccountingPreview,
   PaymentAccountingPreview,
   AccountingEntryView,
@@ -404,6 +405,189 @@ function decodeCatalogueDeletion(value: unknown): CatalogueDeletionView | null {
   )
     return null;
   return { id: value.id, deleted: true };
+}
+
+const ACCOUNTING_PREVIEW_LINE_FIELDS = [
+  'account',
+  'label',
+  'debitCents',
+  'creditCents',
+] as const;
+
+function decodeAccountingPreviewLine(value: unknown): AccountingPreviewLine | null {
+  if (
+    !isRecord(value)
+    || !hasExactKeys(value, ACCOUNTING_PREVIEW_LINE_FIELDS)
+    || typeof value.account !== 'string'
+    || value.account.trim() !== value.account
+    || value.account.length === 0
+    || typeof value.label !== 'string'
+    || value.label.trim() !== value.label
+    || value.label.length === 0
+    || !isBoundedInteger(value.debitCents, 0, Number.MAX_SAFE_INTEGER)
+    || !isBoundedInteger(value.creditCents, 0, Number.MAX_SAFE_INTEGER)
+    || ((value.debitCents > 0) === (value.creditCents > 0))
+  )
+    return null;
+  return {
+    account: value.account,
+    label: value.label,
+    debitCents: value.debitCents,
+    creditCents: value.creditCents,
+  };
+}
+
+function decodeAccountingPreviewLines(value: unknown): AccountingPreviewLine[] | null {
+  if (!Array.isArray(value) || value.length < 2) return null;
+  const lines: AccountingPreviewLine[] = [];
+  for (const candidate of value) {
+    const line = decodeAccountingPreviewLine(candidate);
+    if (line === null) return null;
+    lines.push(line);
+  }
+  return lines;
+}
+
+function sumAccountingSide(
+  lines: readonly AccountingPreviewLine[],
+  side: 'debitCents' | 'creditCents',
+): number | null {
+  let total = 0;
+  for (const line of lines) {
+    if (total > Number.MAX_SAFE_INTEGER - line[side]) return null;
+    total += line[side];
+  }
+  return total;
+}
+
+function isCanonicalDateOnly(value: unknown): value is string {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/u.test(value)) return false;
+  const instant = Date.parse(`${value}T00:00:00.000Z`);
+  return Number.isFinite(instant) && new Date(instant).toISOString().slice(0, 10) === value;
+}
+
+function isNonEmptyCanonicalString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.trim() === value;
+}
+
+function decodeInvoiceAccountingPreview(
+  value: unknown,
+  expectedInvoiceId: string,
+): InvoiceAccountingPreview | null {
+  if (!isRecord(value) || value.invoiceId !== expectedInvoiceId) return null;
+  if (value.available === false) {
+    if (
+      !hasExactKeys(value, ['invoiceId', 'available', 'reason'])
+      || !isNonEmptyCanonicalString(value.reason)
+    )
+      return null;
+    return { invoiceId: expectedInvoiceId, available: false, reason: value.reason };
+  }
+  if (
+    value.available !== true
+    || !hasExactKeys(value, [
+      'invoiceId',
+      'available',
+      'entryId',
+      'reference',
+      'entryDate',
+      'label',
+      'totalDebitCents',
+      'totalCreditCents',
+      'lines',
+    ])
+    || !isNonEmptyCanonicalString(value.entryId)
+    || !isNonEmptyCanonicalString(value.reference)
+    || !isCanonicalDateOnly(value.entryDate)
+    || !isNonEmptyCanonicalString(value.label)
+    || !isBoundedInteger(value.totalDebitCents, 1, Number.MAX_SAFE_INTEGER)
+    || !isBoundedInteger(value.totalCreditCents, 1, Number.MAX_SAFE_INTEGER)
+  )
+    return null;
+  const lines = decodeAccountingPreviewLines(value.lines);
+  if (lines === null) return null;
+  const totalDebitCents = sumAccountingSide(lines, 'debitCents');
+  const totalCreditCents = sumAccountingSide(lines, 'creditCents');
+  if (
+    totalDebitCents === null
+    || totalCreditCents === null
+    || totalDebitCents !== value.totalDebitCents
+    || totalCreditCents !== value.totalCreditCents
+    || totalDebitCents !== totalCreditCents
+  )
+    return null;
+  return {
+    invoiceId: expectedInvoiceId,
+    available: true,
+    entryId: value.entryId,
+    reference: value.reference,
+    entryDate: value.entryDate,
+    label: value.label,
+    totalDebitCents,
+    totalCreditCents,
+    lines,
+  };
+}
+
+function decodePaymentAccountingPreview(
+  value: unknown,
+  expected: { invoiceId: string; amountCents: number; method: PaymentMethod },
+): PaymentAccountingPreview | null {
+  if (!isRecord(value) || value.invoiceId !== expected.invoiceId) return null;
+  if (value.available === false) {
+    if (
+      !hasExactKeys(value, ['invoiceId', 'available', 'reason'])
+      || !isNonEmptyCanonicalString(value.reason)
+    )
+      return null;
+    return { invoiceId: expected.invoiceId, available: false, reason: value.reason };
+  }
+  if (
+    value.available !== true
+    || !hasExactKeys(value, [
+      'invoiceId',
+      'available',
+      'reference',
+      'amountCents',
+      'remainingCents',
+      'method',
+      'totalDebitCents',
+      'totalCreditCents',
+      'lines',
+    ])
+    || value.amountCents !== expected.amountCents
+    || value.method !== expected.method
+    || !isNonEmptyCanonicalString(value.reference)
+    || !isBoundedInteger(value.amountCents, 1, Number.MAX_SAFE_INTEGER)
+    || !isBoundedInteger(value.remainingCents, 0, Number.MAX_SAFE_INTEGER)
+    || !isBoundedInteger(value.totalDebitCents, 1, Number.MAX_SAFE_INTEGER)
+    || !isBoundedInteger(value.totalCreditCents, 1, Number.MAX_SAFE_INTEGER)
+  )
+    return null;
+  const lines = decodeAccountingPreviewLines(value.lines);
+  if (lines === null) return null;
+  const totalDebitCents = sumAccountingSide(lines, 'debitCents');
+  const totalCreditCents = sumAccountingSide(lines, 'creditCents');
+  if (
+    totalDebitCents === null
+    || totalCreditCents === null
+    || totalDebitCents !== value.totalDebitCents
+    || totalCreditCents !== value.totalCreditCents
+    || totalDebitCents !== totalCreditCents
+    || totalDebitCents !== expected.amountCents
+  )
+    return null;
+  return {
+    invoiceId: expected.invoiceId,
+    available: true,
+    reference: value.reference,
+    amountCents: value.amountCents,
+    remainingCents: value.remainingCents,
+    method: expected.method,
+    totalDebitCents,
+    totalCreditCents,
+    lines,
+  };
 }
 
 function isMistralRealtimeWebsocketUrl(
@@ -1088,7 +1272,6 @@ export class HttpBobClient implements BobClient {
         ...(controller ? { signal: controller.signal } : {}),
         headers: {
           'content-type': 'application/json',
-          'x-company-id': this.companyId,
           ...headers,
           ...(token ? { authorization: `Bearer ${token}` } : {}),
         },
@@ -1191,7 +1374,6 @@ export class HttpBobClient implements BobClient {
           accept: 'application/json',
           'cache-control': 'no-store',
           'content-type': 'application/json',
-          'x-company-id': this.companyId,
           ...(token ? { authorization: `Bearer ${token}` } : {}),
         },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -1256,7 +1438,6 @@ export class HttpBobClient implements BobClient {
           method: 'GET',
           signal: controller.signal,
           headers: {
-            'x-company-id': this.companyId,
             ...(token ? { authorization: `Bearer ${token}` } : {}),
           },
         }),
@@ -2250,7 +2431,13 @@ export class HttpBobClient implements BobClient {
     return this.req<InvoiceView>('GET', `/invoices/${id}`);
   }
   invoiceAccountingPreview(invoiceId: string) {
-    return this.req<InvoiceAccountingPreview>('GET', `/invoices/${invoiceId}/accounting-preview`);
+    return this.req<InvoiceAccountingPreview>(
+      'GET',
+      `/invoices/${invoiceId}/accounting-preview`,
+      undefined,
+      undefined,
+      (value) => decodeInvoiceAccountingPreview(value, invoiceId),
+    );
   }
   paymentAccountingPreview(input: {
     invoiceId: string;
@@ -2264,6 +2451,9 @@ export class HttpBobClient implements BobClient {
     return this.req<PaymentAccountingPreview>(
       'GET',
       `/invoices/${input.invoiceId}/payment-accounting-preview?${qs}`,
+      undefined,
+      undefined,
+      (value) => decodePaymentAccountingPreview(value, input),
     );
   }
   listInvoices() {

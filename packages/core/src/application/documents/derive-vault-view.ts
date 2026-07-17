@@ -114,11 +114,13 @@ export interface VaultMonthSummary {
 export interface VaultRecentInvoice {
   id: string;
   number: string;
-  customerName: string;
-  customerType: VaultCustomerData['type'];
+  /** `null` = relation client absente de la photographie autoritative. La vue doit alors
+   *  signaler l'indisponibilité, jamais inventer un particulier ou un nom vide. */
+  customerName: string | null;
+  customerType: VaultCustomerData['type'] | null;
   kind: InvoiceKind;
   /** Canal e-facture — source unique : einvoiceChannelFor (domain/services, zéro duplication). */
-  channel: EinvoiceChannel;
+  channel: EinvoiceChannel | null;
   ttcCents: number;
 }
 
@@ -270,10 +272,10 @@ function deriveRecentInvoices(
       return {
         id: i.id,
         number: i.number,
-        customerName: customer?.name ?? '',
-        customerType: customer?.type ?? 'b2c',
+        customerName: customer?.name ?? null,
+        customerType: customer?.type ?? null,
         kind: i.kind,
-        channel: einvoiceChannelFor(customer?.type ?? 'b2c'),
+        channel: customer ? einvoiceChannelFor(customer.type) : null,
         ttcCents: i.totals.netToPay,
       };
     });

@@ -228,6 +228,15 @@ export interface FacturXBuyer {
  * Arithmétique alignée au centime sur computeTotals (BR-CO-10/13/15/16 d'EN 16931).
  */
 export function facturXDataFromInvoice(invoice: Invoice, company: Company, buyer: FacturXBuyer): FacturXInvoiceData {
+  // Une facture électronique est une pièce fiscale émise. Ne jamais compléter une facture
+  // brouillon avec un numéro ou une date sentinelle : ces valeurs finiraient dans le XML comme
+  // si elles provenaient de la comptabilité du tenant. Les appelants API contrôlent déjà cet
+  // invariant ; cette seconde barrière protège aussi les futurs adapters et scripts.
+  if (invoice.number === null || invoice.issuedAt === null) {
+    throw new Error('FACTURX_ISSUED_INVOICE_REQUIRED');
+  }
+  const number = invoice.number;
+  const issueDate = invoice.issuedAt;
   const totals = invoice.totals();
   const franchise = company.isVatFranchise();
 
@@ -288,9 +297,9 @@ export function facturXDataFromInvoice(invoice: Invoice, company: Company, buyer
   };
 
   return {
-    number: invoice.number ?? 'BROUILLON',
+    number,
     typeCode: KIND_TO_TYPECODE[invoice.kind],
-    issueDate: invoice.issuedAt ?? '1970-01-01',
+    issueDate,
     ...(invoice.dueAt ? { dueDate: invoice.dueAt } : {}),
     currency: 'EUR',
     seller,

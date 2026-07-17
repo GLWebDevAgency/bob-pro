@@ -46,8 +46,9 @@ describe('HttpBobClient — QuoteDraft BDD owner-scoped', () => {
       expect(String(url)).toBe('https://api.bob.test/quote-drafts/current');
       expect(init?.method).toBe('GET');
       expect(init?.body).toBeUndefined();
-      expect(new Headers(init?.headers).get('x-company-id')).toBe('company-a');
-      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer jwt-a');
+      const headers = new Headers(init?.headers);
+      expect(headers.has('x-company-id')).toBe(false);
+      expect(headers.get('authorization')).toBe('Bearer jwt-a');
       return new Response(JSON.stringify({ slot: slot(1, 'draft-a') }), {
         headers: { 'content-type': 'application/json' },
       });

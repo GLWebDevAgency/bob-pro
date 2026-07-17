@@ -116,14 +116,11 @@ describe('deriveRelancePlan', () => {
     expect(med.message.body).not.toContain('L441-10');
   });
 
-  it('client absent de la projection : prudence b2c — on ne réclame jamais 40 € sans savoir le débiteur professionnel', () => {
+  it('client absent de la projection : aucune relance ni qualification juridique inventée', () => {
     const entries = plan({
       invoices: [invoiceFixture({ id: 'inv-40j', customerId: 'cust-inconnu', dueAt: dueDaysAgo(40) })],
     });
-    const med = entries[0]!;
-    expect(med.tone).toBe('miseendemeure');
-    expect(med.message.body).toContain('art. 1344 du code civil');
-    expect(med.message.body).not.toContain('40 €');
+    expect(entries).toEqual([]);
   });
 
   it('exclut payées, annulées, brouillons, avoirs et non échues — reste dû plafonné à netToPay', () => {
@@ -290,6 +287,7 @@ describe('deriveUpcomingDues', () => {
         invoiceFixture({ id: 'inv-late-flag', status: 'late', dueAt: '2026-07-12' }), // statut backend → plan
         invoiceFixture({ id: 'inv-today', dueAt: TODAY }), // échue aujourd'hui : pas encore en retard
         invoiceFixture({ id: 'inv-in-3j', customerId: 'cust-2', dueAt: '2026-07-13', totals: totalsOf(50000) }),
+        invoiceFixture({ id: 'inv-orphan', customerId: 'cust-inconnu', dueAt: '2026-07-13' }),
         invoiceFixture({ id: 'inv-in-9j', dueAt: '2026-07-19' }), // hors fenêtre
         invoiceFixture({ id: 'inv-paid', status: 'paid', dueAt: '2026-07-13', paid: 124000 }),
         invoiceFixture({ id: 'inv-credit', kind: 'credit_note', dueAt: '2026-07-13', totals: totalsOf(-1000, -1000) }),
