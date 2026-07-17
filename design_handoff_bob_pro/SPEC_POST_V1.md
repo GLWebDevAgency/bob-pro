@@ -33,3 +33,19 @@ devis signé (nouveau devis lié) · multi-brouillons devis · endpoint serveur 
 migration corbeilles restantes vers DeleteIconButton · webhook alerting réel ·
 staging Railway aligné · Expert fiscal V2/V3 (simulation UI + dossier cabinet, post
 re-review flag).
+
+## P6 — CHANTIERS/PROJETS INTELLIGENTS (vision fondateur 17/07 — V1 = notes+photos seulement)
+1. AVANCEMENT lié au devis : à la création du chantier, PROPOSER d'importer les lignes du
+   devis signé comme tâches cochables (import optionnel, jamais forcé) + tâches libres
+   ajoutables (manuel/vocal). L'avancement % dérive des tâches cochées.
+2. RAPPEL Home sympa (« À régler aujourd'hui ») : chantier en cours sans mise à jour
+   depuis N jours → « Tu as avancé sur le chantier Lefèvre ? » — gouvernance de pression,
+   réponse vocale possible (« oui, pose du ballon finie » → coche/note proposée).
+3. CRA VOCAL (métiers IT/conseil — vécu fondateur) : compte-rendu quotidien de mission
+   (temps passé, fait/à faire) dicté ; export mensuel (client/facturation au temps).
+4. IA DE FORMATAGE DE NOTES : modèle PREMIUM (le plus intelligent dispo du provider
+   retenu) AVEC OUTILS — décide seul : checklist/to-dos, résumé, structuration — c'est
+   une application directe de la boucle agentique NLU (mêmes patterns, mêmes planchers).
+   STT Voxtral pour la transcription, compréhension par le modèle fort.
+5. PHOTOS → migration Cloudflare R2 (bucket dédié, coût faible) derrière le port
+   WorksiteMediaStorage posé en V1 ; accès wrangler à rétablir (login fondateur).
