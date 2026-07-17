@@ -29,6 +29,7 @@ COPY --from=build /repo /repo
 WORKDIR /repo/apps/api
 # Railway/Cloud injecte PORT ; l'API l'utilise via env.PORT. 3000 par défaut.
 EXPOSE 3000
-# tsc émet en arborescence imbriquée (les alias `paths` pointent vers la source des packages @bob/*,
-# ce qui remonte le rootDir à la racine du workspace) : le point d'entrée réel est dist/apps/api/src/main.js.
-CMD ["node", "dist/apps/api/src/main.js"]
+# Depuis le passage aux entrées dist des packages @bob/* (clean-build-output +
+# assert-production-artifact), tsc émet À PLAT sous apps/api/dist : le point d'entrée
+# réel est dist/main.js (vérifié par boot local avec l'env de production).
+CMD ["node", "dist/main.js"]
