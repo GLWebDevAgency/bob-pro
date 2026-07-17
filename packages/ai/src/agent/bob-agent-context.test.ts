@@ -402,6 +402,32 @@ describe('BobAgent — contexte UI pour intents existants', () => {
     expect(result.ok && result.value.pending).toBeUndefined();
   });
 
+  it('échoue fermé si la mutation notifications ne fournit pas un compteur réel', async () => {
+    const agent = new BobAgent({
+      router: router(),
+      actions: {
+        ...baseActions(),
+        markNotificationsReadThrough: async () =>
+          ok({ updatedCount: Number.NaN, readAt: '2026-07-13T10:01:00.000Z' }),
+      },
+    });
+
+    const result = await agent.confirm({
+      tool: 'marquer_notifications_lues',
+      args: { throughCreatedAt: '2026-07-13T10:00:00.000Z' },
+      label: 'Marquer le lot confirmé comme lu',
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        kind: 'dependency',
+        port: 'notifications',
+        cause: 'Résultat de mutation invalide.',
+      },
+    });
+  });
+
   it('demande la portée pour « marque tout comme lu » hors de l’écran Notifications', async () => {
     const previewUnreadNotifications = vi.fn<NonNullable<BobActions['previewUnreadNotifications']>>(
       async () => ok({ unreadCount: 2, throughCreatedAt: '2026-07-13T10:00:00.000Z' }),

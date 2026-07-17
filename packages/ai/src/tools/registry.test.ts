@@ -119,6 +119,58 @@ describe('registre par capacités — C40 TODO ⑤⑥ + creer_client', () => {
   });
 });
 
+describe('enregistrer_reglement_depense — preuve explicite, jamais un rail bancaire', () => {
+  it('n’expose pas l’ancien payExpense incomplet et exige date + moyen + DTO exact', async () => {
+    const calls: unknown[] = [];
+    const actions: BobActions = {
+      ...baseActions,
+      // Même si un hôte ancien la conserve, cette capacité dangereuse n'est plus enregistrée.
+      payExpense: async () => ok({ status: 'paid' }),
+      recordExpensePayment: async (input) => {
+        calls.push(input);
+        return ok({ status: 'paid', alreadyRecorded: false, paymentEntryId: 'expense:exp-1:paid' });
+      },
+    };
+    const names = buildBobTools(actions).map((candidate) => candidate.name);
+    expect(names).not.toContain('payer_depense');
+    expect(names).toContain('enregistrer_reglement_depense');
+    const t = tool(actions, 'enregistrer_reglement_depense')!;
+    expect(isSafetyFloor(t)).toBe(true);
+    expect(requiresConfirmation(t, 'auto')).toBe(true);
+    expect(t.parse({ expenseId: 'exp-1' }).ok).toBe(false);
+    expect(t.parse({ expenseId: 'exp-1', paidOn: '2026-02-30', method: 'card' }).ok).toBe(false);
+    expect(t.parse({ expenseId: 'exp-1', paidOn: '2026-07-03', method: 'cheque' }).ok).toBe(false);
+    expect(t.parse({ expenseId: 'exp-1', paidOn: '2026-07-03', method: 'cash', surprise: true }).ok).toBe(false);
+    expect(t.parse({
+      expenseId: 'exp-1',
+      paidOn: '2026-07-03',
+      method: 'transfer',
+      reference: 'x'.repeat(141),
+    }).ok).toBe(false);
+
+    const parsed = t.parse({
+      expenseId: 'exp-1',
+      paidOn: '2026-07-03',
+      method: 'cash',
+      reference: '  ESP-42  ',
+      proofDocumentId: 'document-1',
+    });
+    expect(parsed).toEqual({
+      ok: true,
+      value: {
+        expenseId: 'exp-1',
+        paidOn: '2026-07-03',
+        method: 'cash',
+        reference: 'ESP-42',
+        proofDocumentId: 'document-1',
+      },
+    });
+    if (!parsed.ok) return;
+    await t.run(parsed.value);
+    expect(calls).toEqual([parsed.value]);
+  });
+});
+
 describe('relance_brouillon ciblable — C25 (TODO ① audit parité C15)', () => {
   function relanceTool(calls: unknown[]) {
     const actions: BobActions = {

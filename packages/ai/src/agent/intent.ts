@@ -18,7 +18,7 @@ export type BobIntent =
   | 'tva' // position de TVA réelle (collectée/déductible/à provisionner) — lecture, BOB-1
   | 'balance' // balance âgée : qui me doit quoi, depuis quand — lecture, BOB-1
   | 'marquer_notifications_lues' // batch atomique borné par cutoff serveur — mutation confirmée
-  | 'payer_depense' // régler une dépense fournisseur (écriture 401/512) — mutation, BOB-1/E4
+  | 'payer_depense' // enregistrer un règlement fournisseur déjà effectué — mutation comptable
   | 'resultat' // résultat provisoire (produits − charges du grand-livre) — lecture, BOB-2
   | 'bilan' // bilan simplifié actif/passif — lecture, BOB-4
   | 'revue_cloture' // « mon dossier est-il prêt pour le comptable ? » — verdict de revue, DOSSIER-2
@@ -69,7 +69,7 @@ export function detectIntent(message: string): BobIntent {
   )
     return 'contexte_ecran';
   // BOB-1 : régler une DÉPENSE/FOURNISSEUR — AVANT « encaisser » (« règle », « payé » collisionnent).
-  if (/(pa[iy]e[rz]?|r[èe]gle[rz]?|solde[rz]?).*(d[ée]pense|fournisseur)|(d[ée]pense|fournisseur).*(pay[ée]|r[ée]gl)/.test(m))
+  if (/(pai|pay|regl|sold).*(depense|fournisseur)|(depense|fournisseur).*(pai|pay|regl|sold)/.test(normalizedMessage))
     return 'payer_depense';
   // DSO (BA-3) : AVANT « encaisser » (« me paient », « temps pour encaisser » y collisionnent).
   if (/(me paie(nt)?|me payent|d[ée]lai.*(paiement|encaissement|r[èe]glement)|jours? pour ([êe]tre )?pay|\bdso\b|temps.*(encaiss|pay[ée]))/.test(m))

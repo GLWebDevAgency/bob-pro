@@ -140,7 +140,7 @@ export const LLM_TOOL_SPECS: LlmToolSpec[] = [
   {
     name: 'payer_depense',
     description:
-      'Régler une dépense fournisseur : passe la dépense en payée et écrit le décaissement au journal de banque (ex. « règle la dépense Leroy Merlin »).',
+      'Enregistrer un règlement fournisseur déjà effectué : demande la date et le moyen réels, puis propose l’écriture comptable. Ne déclenche aucun virement (ex. « j’ai payé Leroy Merlin hier par carte »).',
     parameters: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
@@ -235,6 +235,9 @@ export interface ClassifiedPlan {
   model: string;
 }
 
+/** Identité explicite du classifieur local : ce n'est ni un fournisseur ni une donnée simulée. */
+export const DETERMINISTIC_CLASSIFIER_MODEL = 'deterministic' as const;
+
 const SYSTEM_PROMPT =
   "Tu es Bob, copilote STRICTEMENT administratif et financier d'un artisan/indépendant français. " +
   "Ton périmètre se limite à : devis, factures, encaissements, trésorerie, relances, dépenses, conformité. " +
@@ -285,5 +288,8 @@ export async function classifyWithLlm(
 
 /** Classifie de façon déterministe (sans LLM) : toujours une seule étape. */
 export function classifyWithRegex(message: string): ClassifiedPlan {
-  return { steps: [{ intent: detectIntent(message), reference: extractReference(message) }], model: 'demo' };
+  return {
+    steps: [{ intent: detectIntent(message), reference: extractReference(message) }],
+    model: DETERMINISTIC_CLASSIFIER_MODEL,
+  };
 }

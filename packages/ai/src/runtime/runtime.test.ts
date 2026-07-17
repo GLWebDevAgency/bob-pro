@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { ok, err } from '@bob/core';
 import { AgentRuntime, type RuntimeInvocation } from './runtime';
 import { ActionPolicy } from './permissions';
-import { InMemoryJournalStore, type ComplianceLevel } from './journal';
+import { type ComplianceLevel } from './journal';
+import { InMemoryJournalStore } from './journal.testing';
 import { type AnyTool } from '../tools/tool';
 
 const clock = { now: () => '2026-07-01T00:00:00.000Z' };

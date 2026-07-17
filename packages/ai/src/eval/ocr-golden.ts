@@ -9,7 +9,6 @@ export interface OcrGoldenTrade {
   label: string;
   customerWord: string;
   projectWord: string;
-  defaultVatRatePct?: number;
 }
 
 export interface OcrGoldenExpected {
@@ -34,14 +33,12 @@ const PLOMBIER: OcrGoldenTrade = {
   label: 'Plombier chauffagiste',
   customerWord: 'client',
   projectWord: 'chantier',
-  defaultVatRatePct: 10,
 };
 
 const DEV: OcrGoldenTrade = {
   label: 'Développeur / consultant',
   customerWord: 'client',
   projectWord: 'mission',
-  defaultVatRatePct: 20,
 };
 
 export const OCR_GOLDEN_CASES: readonly OcrGoldenCase[] = [

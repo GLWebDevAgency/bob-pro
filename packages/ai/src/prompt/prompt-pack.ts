@@ -28,8 +28,6 @@ export interface TradePromptContext {
   customerWord: string;
   /** vocabulary.project — « chantier », « mission », « dossier »… */
   projectWord: string;
-  /** Taux de TVA par défaut du métier (ex. 10 pour la rénovation, 20 pour le conseil). */
-  defaultVatRatePct?: number;
 }
 
 export interface PromptContext {
@@ -128,8 +126,6 @@ function contextBlock(task: PromptTask, ctx: PromptContext): string {
     if (label) lines.push(`Activité : ${label}.`);
     if (projectWord && customerWord)
       lines.push(`Il parle de « ${projectWord} » (projets) et de « ${customerWord} » (clients).`);
-    if (ctx.trade.defaultVatRatePct !== undefined && Number.isFinite(ctx.trade.defaultVatRatePct))
-      lines.push(`TVA habituelle du métier : ${ctx.trade.defaultVatRatePct} %.`);
   }
   if (ctx.companyName) {
     const name = sanitizePromptValue(ctx.companyName, 60);

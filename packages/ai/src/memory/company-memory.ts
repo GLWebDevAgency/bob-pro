@@ -47,39 +47,6 @@ export interface CompanyMemoryPort {
   knownSupplierNames(): string[];
 }
 
-/** Implémentation en mémoire, déterministe — V1 démo, remplaçable par un adapter persistant. */
-export class InMemoryCompanyMemory implements CompanyMemoryPort {
-  private readonly suppliers = new Map<string, SupplierProfile>();
-
-  constructor(seed: readonly RememberSupplierInput[] = []) {
-    for (const s of seed) this.rememberSupplier(s);
-  }
-
-  supplierProfile(name: string): SupplierProfile | null {
-    const key = normalizeSupplierName(name);
-    return key ? this.suppliers.get(key) ?? null : null;
-  }
-
-  rememberSupplier(input: RememberSupplierInput): SupplierProfile {
-    const key = normalizeSupplierName(input.name);
-    const prev = this.suppliers.get(key);
-    const profile: SupplierProfile = {
-      key,
-      displayName: input.name.trim() || prev?.displayName || input.name,
-      siren: input.siren ?? prev?.siren ?? null,
-      category: input.category,
-      vatRatePct: input.vatRatePct ?? prev?.vatRatePct ?? null,
-      seen: (prev?.seen ?? 0) + 1,
-    };
-    this.suppliers.set(key, profile);
-    return profile;
-  }
-
-  knownSupplierNames(): string[] {
-    return [...this.suppliers.values()].map((s) => s.displayName);
-  }
-}
-
 /** Défauts proposés pour une dépense (toujours confirmables ; jamais postés automatiquement). */
 export interface ExpenseDefaults {
   readonly supplierName: string;
@@ -184,4 +151,3 @@ export function suggestCategoryClarification(
     options: ordered.map((c) => ({ value: c, label: CATEGORY_INFO[c].label, description: CATEGORY_INFO[c].description })),
   };
 }
-

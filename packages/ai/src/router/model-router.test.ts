@@ -16,7 +16,7 @@ describe('ModelRouter', () => {
     expect(new ModelRouter({ hasClaudeKey: true, hasGlmKey: false }).route('relance.draft').model).toBe('claude');
     expect(new ModelRouter({ hasClaudeKey: false, hasGlmKey: true }).route('agent.plan').model).toBe('glm');
   });
-  it('mode démo si aucune clé', () => {
-    expect(new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }).route('agent.plan').model).toBe('demo');
+  it('déclare la capacité indisponible si aucune clé réelle n’est configurée', () => {
+    expect(new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }).route('agent.plan').model).toBe('unavailable');
   });
 });

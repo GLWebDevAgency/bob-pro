@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import {
   normalizeSupplierName,
-  InMemoryCompanyMemory,
   suggestExpenseDefaults,
   suggestCategoryClarification,
   type OcrDefaultsInput,
 } from './company-memory';
+import { InMemoryCompanyMemory } from './company-memory.testing';
 
 const ocr = (over: Partial<OcrDefaultsInput> = {}): OcrDefaultsInput => ({
   supplierName: 'Leroy Merlin',
@@ -107,4 +107,3 @@ describe('suggestCategoryClarification (ASK-3) — la question seulement quand l
     expect(new Set(q!.options.map((o) => o.value)).size).toBe(q!.options.length);
   });
 });
-

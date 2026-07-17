@@ -13,6 +13,7 @@ import {
   type ClosingReview,
   type SubscriptionStatusView,
   type OwnerPayGuidance,
+  type PaymentMethod,
 } from '@bob/core';
 import {
   type ContextEntitySummary,
@@ -27,10 +28,16 @@ export interface UnpaidExpense {
   documentDate: string;
 }
 
-/** Outil payer_depense (BOB-1) : règle une dépense — même use case PayExpense que l'écran
- * Dépenses (transition to_pay→paid + décaissement 401/512 au journal de banque). */
-export interface PayExpenseActionInput {
+/**
+ * Enregistre un règlement fournisseur DEJA effectué. Bob ne déclenche aucun transfert bancaire.
+ * Date et moyen sont obligatoires ; la référence et le justificatif restent des preuves optionnelles.
+ */
+export interface RecordExpensePaymentActionInput {
   expenseId: string;
+  paidOn: string;
+  method: PaymentMethod;
+  reference?: string | null;
+  proofDocumentId?: string | null;
 }
 
 /** Instantané serveur des notifications non lues. Le cutoff est capturé AVANT le consentement :
@@ -255,8 +262,15 @@ export interface BobActions {
   /** Envoi réel de relance (C25 ②) — même endpoint que le bouton « Relancer » de l'écran
    * Notifications (client.sendRelance). Sortant : plancher de confirmation dans le registre. */
   sendRelance?(input: SendRelanceActionInput): Promise<Result<SendRelanceActionOutput, AppError>>;
-  /** Règlement d'une dépense fournisseur (BOB-1/E4) — écriture comptable : palier accounting. */
-  payExpense?(input: PayExpenseActionInput): Promise<Result<{ status: string }, AppError>>;
+  /** Preuve d'un règlement fournisseur déjà exécuté — écriture comptable : palier accounting. */
+  recordExpensePayment?(input: RecordExpensePaymentActionInput): Promise<
+    Result<{ status: string; alreadyRecorded: boolean; paymentEntryId: string }, AppError>
+  >;
+  /**
+   * Compatibilité de compilation pendant la migration des hôtes. Le registre ne l'expose plus :
+   * cette action sans date/moyen ne doit jamais être appelée.
+   */
+  payExpense?(input: { expenseId: string }): Promise<Result<{ status: string }, AppError>>;
   /** Même commande atomique que « Tout marquer comme lu » dans l'écran Notifications. */
   markNotificationsReadThrough?(
     input: NotificationReadThroughInput,

@@ -679,3 +679,104 @@ describe('BobAgent — navigation (Jarvis : ouvrir le bon écran)', () => {
     expect(r.ok && r.value.navigate).toBe('/diagnostic');
   });
 });
+
+describe('BobAgent — enregistrement vocal d’un règlement fournisseur', () => {
+  function paymentAgent(calls: unknown[] = [], now = '2026-07-04T10:00:00.000Z') {
+    const paymentActions: BobActions = {
+      ...actions,
+      listUnpaidExpenses: async () => ok([
+        { id: 'expense-cedeo', supplierName: 'Cedeo', totalTtcCents: 34200, documentDate: '2026-07-01' },
+      ]),
+      recordExpensePayment: async (input) => {
+        calls.push(input);
+        return ok({ status: 'paid', alreadyRecorded: false, paymentEntryId: 'expense:expense-cedeo:paid' });
+      },
+    };
+    return new BobAgent({
+      router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }),
+      actions: paymentActions,
+      runtime: {
+        clock: { now: () => now },
+        ids: { newId: () => 'run-payment-1' },
+      },
+    });
+  }
+
+  it('ne propose rien tant que date et moyen réels manquent', async () => {
+    const calls: unknown[] = [];
+    const agent = paymentAgent(calls);
+    const date = await agent.ask('J’ai payé la dépense Cedeo');
+    expect(date.ok && date.value.kind).toBe('answer');
+    expect(date.ok && date.value.card.title).toContain('date');
+    expect(date.ok && date.value.ask?.[0]?.id).toBe('payer_depense.date');
+    expect(calls).toHaveLength(0);
+
+    const method = await agent.ask('J’ai payé la dépense expense-cedeo hier');
+    expect(method.ok && method.value.kind).toBe('answer');
+    expect(method.ok && method.value.ask?.[0]?.id).toBe('payer_depense.methode');
+    expect(calls).toHaveLength(0);
+  });
+
+  it('une phrase complète produit une proposition comptable, jamais un faux virement', async () => {
+    const calls: unknown[] = [];
+    const agent = paymentAgent(calls);
+    const result = await agent.ask(
+      'J’ai payé la dépense Cedeo le 03/07/2026 par virement référence VIR-0042',
+      { autonomy: 'auto' },
+    );
+    expect(result.ok && result.value.kind).toBe('proposed');
+    if (!result.ok || result.value.kind !== 'proposed') return;
+    expect(result.value.pending?.tool).toBe('enregistrer_reglement_depense');
+    expect(result.value.pending?.args).toEqual({
+      expenseId: 'expense-cedeo',
+      paidOn: '2026-07-03',
+      method: 'transfer',
+      reference: 'VIR-0042',
+    });
+    expect(result.value.card.body).toContain('n’initie aucun virement');
+    expect(calls).toHaveLength(0);
+    if (!result.value.pending) return;
+    await agent.confirm(result.value.pending);
+    expect(calls).toEqual([result.value.pending.args]);
+  });
+
+  it('enchaîne naturellement « hier » puis « par carte » grâce au contexte récent', async () => {
+    const agent = paymentAgent();
+    const afterDate = await agent.ask('hier', {
+      history: [
+        { role: 'user', text: 'J’ai payé la dépense Cedeo' },
+        { role: 'bob', text: 'Quelle date de règlement ?' },
+      ],
+    });
+    expect(afterDate.ok && afterDate.value.ask?.[0]?.id).toBe('payer_depense.methode');
+
+    const afterMethod = await agent.ask('par carte', {
+      history: [
+        { role: 'user', text: 'J’ai payé la dépense Cedeo' },
+        { role: 'bob', text: 'Quelle date de règlement ?' },
+        { role: 'user', text: 'hier' },
+        { role: 'bob', text: 'Quel moyen de règlement ?' },
+      ],
+    });
+    expect(afterMethod.ok && afterMethod.value.kind).toBe('proposed');
+    expect(afterMethod.ok && afterMethod.value.pending?.args).toMatchObject({
+      expenseId: 'expense-cedeo',
+      paidOn: '2026-07-03',
+      method: 'card',
+    });
+  });
+
+  it('une date future est expliquée et ne produit aucune proposition', async () => {
+    const result = await paymentAgent().ask('J’ai payé la dépense Cedeo le 05/07/2026 par carte');
+    expect(result.ok && result.value.kind).toBe('answer');
+    expect(result.ok && result.value.card.title).toContain('future');
+    expect(result.ok && result.value.pending).toBeUndefined();
+  });
+
+  it('« aujourd’hui » suit le jour métier Paris, pas le jour UTC du serveur', async () => {
+    const result = await paymentAgent([], '2026-07-03T22:30:00.000Z').ask(
+      'J’ai payé la dépense Cedeo aujourd’hui par carte',
+    );
+    expect(result.ok && result.value.pending?.args).toMatchObject({ paidOn: '2026-07-04' });
+  });
+});

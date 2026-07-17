@@ -1,5 +1,6 @@
 export type Provider = 'claude' | 'glm' | 'deepseek' | 'openai' | 'mistral';
-export type ModelChoice = Provider | 'demo';
+/** Aucun fournisseur réel n'est remplacé par un adaptateur synthétique en production. */
+export type ModelChoice = Provider | 'unavailable';
 
 /** Fournisseurs hébergés dans l'UE (souveraineté des données). Mistral = IA française/européenne. */
 export const EU_PROVIDERS: ReadonlySet<Provider> = new Set<Provider>(['mistral']);
@@ -69,9 +70,9 @@ export function modelFor(
 export interface RoutingDecision {
   model: ModelChoice;
   reason: string;
-  /** Palier de capacité requis par la tâche (absent en mode démo). */
+  /** Palier de capacité requis par la tâche (absent si la capacité est indisponible). */
   tier?: CapabilityTier;
-  /** Modèle précis retenu chez le fournisseur (absent en mode démo). */
+  /** Modèle précis retenu chez le fournisseur (absent si la capacité est indisponible). */
   modelId?: string;
 }
 
@@ -79,7 +80,8 @@ export interface RoutingDecision {
  * Politique de routage par CAPACITÉ et coût, avec chaîne de fallback ordonnée par tâche :
  * - tâches rapides/volume (intention, relance, narration) -> modèles économiques d'abord (GLM, DeepSeek).
  * - tâches critiques (planification, conformité, mentions légales) -> raisonneurs forts d'abord (Claude, OpenAI).
- * Le premier fournisseur disponible (clé présente) gagne ; sinon démo déterministe.
+ * Le premier fournisseur disponible (clé présente) gagne. Sans fournisseur réel, la capacité est
+ * déclarée indisponible et l'hôte doit refuser l'appel explicitement.
  */
 const CHAINS: Record<TaskType, Provider[]> = {
   'intent.detect': ['glm', 'deepseek', 'mistral', 'claude', 'openai'],
@@ -130,8 +132,10 @@ export class ModelRouter {
       }
     }
     return {
-      model: 'demo',
-      reason: this.ctx.euOnly ? 'mode UE : aucune clé Mistral — démo' : 'aucune clé configurée — mode démo déterministe',
+      model: 'unavailable',
+      reason: this.ctx.euOnly
+        ? 'mode UE : aucune clé Mistral configurée'
+        : 'aucune clé de fournisseur configurée',
     };
   }
 

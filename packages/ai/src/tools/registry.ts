@@ -8,6 +8,9 @@ import {
   type ExpenseCategory,
   type FiscalDeadline,
   type SubscriptionStatusView,
+  EXPENSE_PAYMENT_PROOF_DOCUMENT_ID_MAX_LENGTH,
+  EXPENSE_PAYMENT_REFERENCE_MAX_LENGTH,
+  isValidDateOnly,
   isVatRate,
 } from '@bob/core';
 import { type AnyTool, type Tool, type ToolPublicResult } from './tool';
@@ -22,7 +25,7 @@ import {
   type ExportFecActionInput,
   type FecExportSummary,
   type CreateCustomerActionInput,
-  type PayExpenseActionInput,
+  type RecordExpensePaymentActionInput,
   type NotificationReadThroughInput,
   type NotificationReadThroughOutput,
 } from '../agent/actions';
@@ -355,28 +358,63 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
     tools.push(envoyerRelance as AnyTool);
   }
 
-  // —— Outil OPTIONNEL payer_depense (BOB-1/E4) : règle une dépense fournisseur — MÊME use case
-  // PayExpense que l'écran Dépenses (to_pay→paid + décaissement 401/512 au journal de banque).
-  // Écriture comptable → palier accounting : toujours proposé avant exécution.
-  const payExpenseAction = actions.payExpense?.bind(actions);
-  if (payExpenseAction) {
-    const payerDepense: Tool<PayExpenseActionInput, { status: string }> = {
-      name: 'payer_depense',
+  // —— Enregistrement d'un règlement fournisseur déjà effectué : ce tool ne déclenche JAMAIS
+  // de transfert. Date et moyen explicites sont requis avant la proposition comptable.
+  const recordExpensePaymentAction = actions.recordExpensePayment?.bind(actions);
+  if (recordExpensePaymentAction) {
+    const enregistrerReglement: Tool<
+      RecordExpensePaymentActionInput,
+      { status: string; alreadyRecorded: boolean; paymentEntryId: string }
+    > = {
+      name: 'enregistrer_reglement_depense',
       description:
-        'Règle une dépense fournisseur : la passe en payée et écrit le décaissement (401/512) au journal de banque. Utiliser l’id d’une dépense À PAYER (voir la liste des dépenses).',
+        'Enregistre la preuve d’un règlement fournisseur déjà effectué hors de Bob, puis écrit 401/512 ou 401/530 selon le moyen. N’initie aucun virement. Date et moyen obligatoires.',
       mutating: true,
       outbound: false,
       compliance: 'high',
       riskTier: 'accounting',
-      parse: (raw): Result<PayExpenseActionInput, AppError> => {
-        const r = raw as { expenseId?: unknown };
-        if (typeof r?.expenseId !== 'string' || r.expenseId.length === 0)
+      parse: (raw): Result<RecordExpensePaymentActionInput, AppError> => {
+        if (typeof raw !== 'object' || raw === null || Array.isArray(raw))
+          return err(appValidation('payment', 'Preuve de règlement invalide.'));
+        const r = raw as Record<string, unknown>;
+        const allowed = new Set(['expenseId', 'paidOn', 'method', 'reference', 'proofDocumentId']);
+        if (Object.keys(r).some((key) => !allowed.has(key)))
+          return err(appValidation('payment', 'Champ de règlement inconnu.'));
+        if (typeof r.expenseId !== 'string' || r.expenseId.length === 0 || r.expenseId.length > 200)
           return err(appValidation('expenseId', 'Dépense manquante.'));
-        return ok({ expenseId: r.expenseId });
+        if (typeof r.paidOn !== 'string' || !isValidDateOnly(r.paidOn))
+          return err(appValidation('paidOn', 'Date réelle du règlement requise.'));
+        if (r.method !== 'card' && r.method !== 'transfer' && r.method !== 'cash')
+          return err(appValidation('method', 'Moyen de règlement requis.'));
+        const optionalBounded = (
+          value: unknown,
+          field: string,
+          max: number,
+        ): Result<string | null, AppError> => {
+          if (value === undefined || value === null) return ok(null);
+          if (typeof value !== 'string' || !value.trim() || value.length > max || /[\u0000-\u001f\u007f]/.test(value))
+            return err(appValidation(field, `Valeur invalide (${max} caractères maximum).`));
+          return ok(value.trim());
+        };
+        const reference = optionalBounded(r.reference, 'reference', EXPENSE_PAYMENT_REFERENCE_MAX_LENGTH);
+        if (!reference.ok) return reference;
+        const proof = optionalBounded(
+          r.proofDocumentId,
+          'proofDocumentId',
+          EXPENSE_PAYMENT_PROOF_DOCUMENT_ID_MAX_LENGTH,
+        );
+        if (!proof.ok) return proof;
+        return ok({
+          expenseId: r.expenseId,
+          paidOn: r.paidOn,
+          method: r.method,
+          ...(reference.value !== null ? { reference: reference.value } : {}),
+          ...(proof.value !== null ? { proofDocumentId: proof.value } : {}),
+        });
       },
-      run: (input) => payExpenseAction(input),
+      run: (input) => recordExpensePaymentAction(input),
     };
-    tools.push(payerDepense as AnyTool);
+    tools.push(enregistrerReglement as AnyTool);
   }
 
   // —— Outil OPTIONNEL marquer_notifications_lues : même commande atomique que l'écran.
