@@ -10,6 +10,7 @@ BEGIN
   FOR t IN SELECT unnest(ARRAY[
     'companies',
     'company_billing_settings',
+    'company_diagnostic_assessments',
     'customers',
     'quotes',
     'invoices',
@@ -82,6 +83,20 @@ CREATE POLICY company_billing_settings_select ON company_billing_settings FOR SE
 CREATE POLICY company_billing_settings_insert ON company_billing_settings FOR INSERT
   WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
 CREATE POLICY company_billing_settings_update ON company_billing_settings FOR UPDATE
+  USING ("companyId" = current_setting('app.current_company_id', true))
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+
+-- Un seul résultat terminé par société. Pas de DELETE runtime : l'historique courant est mis à
+-- jour uniquement par CAS et reste conservé lors de la clôture du compte.
+DROP POLICY IF EXISTS tenant_isolation ON company_diagnostic_assessments;
+DROP POLICY IF EXISTS company_diagnostic_assessment_select ON company_diagnostic_assessments;
+DROP POLICY IF EXISTS company_diagnostic_assessment_insert ON company_diagnostic_assessments;
+DROP POLICY IF EXISTS company_diagnostic_assessment_update ON company_diagnostic_assessments;
+CREATE POLICY company_diagnostic_assessment_select ON company_diagnostic_assessments FOR SELECT
+  USING ("companyId" = current_setting('app.current_company_id', true));
+CREATE POLICY company_diagnostic_assessment_insert ON company_diagnostic_assessments FOR INSERT
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+CREATE POLICY company_diagnostic_assessment_update ON company_diagnostic_assessments FOR UPDATE
   USING ("companyId" = current_setting('app.current_company_id', true))
   WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
 

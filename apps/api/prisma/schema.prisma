@@ -90,10 +90,12 @@ enum PaymentMethod {
 
 enum PublicAccessScope {
   quote_signature
+  document_view
 }
 
 enum PublicAccessResourceType {
   quote
+  invoice
 }
 
 enum StoredDocumentKind {
@@ -335,6 +337,7 @@ model Company {
   subscription            Subscription?
   fiscalProfile           FiscalProfile?
   billingSettings         CompanyBillingSettings?
+  diagnosticAssessment    CompanyDiagnosticAssessment?
 
   @@map("companies")
 }
@@ -355,6 +358,29 @@ model CompanyBillingSettings {
   updatedAt                DateTime              @updatedAt @db.Timestamptz(6)
 
   @@map("company_billing_settings")
+}
+
+/// Dernier diagnostic explicitement terminé par le propriétaire. L'absence de ligne signifie
+/// « jamais réalisé » — aucun seed ni défaut n'est créé au provisioning. Score et axes sont des
+/// résultats serveur figés avec l'empreinte des sources BDD ; `revision` porte le CAS multi-device.
+/// La clôture de compte est additive (`Company.closedAt`) : la ligne reste conservée mais devient
+/// inaccessible avec le tenant, comme les autres preuves métier soumises à rétention.
+model CompanyDiagnosticAssessment {
+  companyId         String   @id
+  company           Company  @relation(fields: [companyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  answers           Json
+  score             Int
+  receptionScore    Int
+  emissionScore     Int
+  dataQualityScore  Int
+  sourceFingerprint String   @db.Char(64)
+  rulesetVersion    Int
+  sourceAsOf        DateTime @db.Date
+  revision          Int      @default(1)
+  createdAt         DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime @updatedAt @db.Timestamptz(6)
+
+  @@map("company_diagnostic_assessments")
 }
 
 /// Preuve append-only d'un solde réellement observé. Aucune ligne n'est créée par défaut :
@@ -447,20 +473,20 @@ model CataloguePrestation {
 /// Dossier chantier durable. Le lien client est composite afin qu'une ligne ne puisse jamais
 /// référencer un client d'un autre tenant, y compris en cas de défaut applicatif.
 model Chantier {
-  id         String         @id
-  companyId  String
-  company    Company        @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  name       String
-  customerId String?
-  customer   Customer?      @relation(fields: [customerId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Cascade)
-  address    String?
-  notes      String?
-  status     ChantierStatus @default(open)
-  openedAt   DateTime       @db.Date
-  createdAt  DateTime       @default(now()) @db.Timestamptz(6)
-  updatedAt  DateTime       @updatedAt @db.Timestamptz(6)
-  chantierNotes  ChantierNote[]
-  photos         ChantierPhoto[]
+  id            String          @id
+  companyId     String
+  company       Company         @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  name          String
+  customerId    String?
+  customer      Customer?       @relation(fields: [customerId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Cascade)
+  address       String?
+  notes         String?
+  status        ChantierStatus  @default(open)
+  openedAt      DateTime        @db.Date
+  createdAt     DateTime        @default(now()) @db.Timestamptz(6)
+  updatedAt     DateTime        @updatedAt @db.Timestamptz(6)
+  chantierNotes ChantierNote[]
+  photos        ChantierPhoto[]
 
   @@unique([id, companyId], name: "uniq_chantier_id_company", map: "uniq_chantier_id_company")
   @@index([companyId, status, openedAt(sort: Desc)], map: "chantiers_company_status_opened_idx")
@@ -647,33 +673,33 @@ model PublicAccessToken {
 }
 
 model Expense {
-  id                    String                   @id
-  companyId             String
-  company               Company                  @relation(fields: [companyId], references: [id])
-  supplierName          String
-  supplierSiren         String?                  @db.Char(9)
-  documentDate          String
-  totalTtcCents         Int
-  totalHtCents          Int?
-  vatCents              Int?
-  vatRatePct            Float?
-  category              String
-  status                String                   @default("to_pay")
+  id                              String                   @id
+  companyId                       String
+  company                         Company                  @relation(fields: [companyId], references: [id])
+  supplierName                    String
+  supplierSiren                   String?                  @db.Char(9)
+  documentDate                    String
+  totalTtcCents                   Int
+  totalHtCents                    Int?
+  vatCents                        Int?
+  vatRatePct                      Float?
+  category                        String
+  status                          String                   @default("to_pay")
   /// Preuve explicite du règlement déclaré par le propriétaire. Jamais préremplie ni déduite.
-  paymentPaidOn         DateTime?                @db.Date
-  paymentMethod         PaymentMethod?
-  paymentReference      String?                  @db.VarChar(140)
-  paymentProofDocumentId String?                 @db.VarChar(200)
-  paymentProofDocument  StoredDocument?          @relation("ExpensePaymentProof", fields: [companyId, paymentProofDocumentId], references: [companyId, id], onDelete: Restrict, onUpdate: Cascade)
+  paymentPaidOn                   DateTime?                @db.Date
+  paymentMethod                   PaymentMethod?
+  paymentReference                String?                  @db.VarChar(140)
+  paymentProofDocumentId          String?                  @db.VarChar(200)
+  paymentProofDocument            StoredDocument?          @relation("ExpensePaymentProof", fields: [companyId, paymentProofDocumentId], references: [companyId, id], onDelete: Restrict, onUpdate: Cascade)
   /// TRUE uniquement pour une ligne historique déjà `paid` avant l'introduction de la preuve structurée.
-  paymentEvidenceLegacyUnverified Boolean        @default(false)
-  source                String                   @default("manual")
+  paymentEvidenceLegacyUnverified Boolean                  @default(false)
+  source                          String                   @default("manual")
   /// C-EXP6b — n° de facture fournisseur (Factur-X BT-1) : clé anti-doublon avec le SIREN.
-  supplierInvoiceNumber String?
+  supplierInvoiceNumber           String?
   /// C-EXP6b — échéance fournisseur (Factur-X BT-9), même format DateOnly que documentDate.
-  dueAt                 String?
-  createdAt             DateTime                 @default(now())
-  creationRequests      ExpenseCreationRequest[]
+  dueAt                           String?
+  createdAt                       DateTime                 @default(now())
+  creationRequests                ExpenseCreationRequest[]
 
   @@unique([id, companyId], name: "uniq_expense_id_company", map: "uniq_expense_id_company")
   @@index([companyId])
@@ -745,32 +771,32 @@ model SupplierMemoryProfile {
 }
 
 model StoredDocument {
-  id               String                          @id
-  companyId        String
-  company          Company                         @relation(fields: [companyId], references: [id])
-  kind             StoredDocumentKind
-  origin           StoredDocumentOrigin
-  status           StoredDocumentStatus            @default(active)
-  filename         String
-  mimeType         String
-  byteSize         Int
-  sha256           String                          @db.Char(64)
-  storageKey       String                          @unique
-  folderId         String?
-  folder           DocumentFolder?                 @relation("StoredDocumentFolder", fields: [companyId, folderId], references: [companyId, id], onDelete: Restrict, onUpdate: Cascade)
-  revision         Int                             @default(1)
-  linkedEntityType StoredDocumentLinkedEntityType?
-  linkedEntityId   String?
-  documentDate     String?
-  issuedAt         String?
-  createdAt        DateTime
-  createdBy        String?
-  retentionUntil   String
-  deletedAt        DateTime?
-  tags             String[]                        @default([])
-  versions         StoredDocumentVersion[]
-  analyses         DocumentAnalysisCache[]         @relation("StoredDocumentAnalyses")
-  expensePaymentProofs Expense[]                    @relation("ExpensePaymentProof")
+  id                   String                          @id
+  companyId            String
+  company              Company                         @relation(fields: [companyId], references: [id])
+  kind                 StoredDocumentKind
+  origin               StoredDocumentOrigin
+  status               StoredDocumentStatus            @default(active)
+  filename             String
+  mimeType             String
+  byteSize             Int
+  sha256               String                          @db.Char(64)
+  storageKey           String                          @unique
+  folderId             String?
+  folder               DocumentFolder?                 @relation("StoredDocumentFolder", fields: [companyId, folderId], references: [companyId, id], onDelete: Restrict, onUpdate: Cascade)
+  revision             Int                             @default(1)
+  linkedEntityType     StoredDocumentLinkedEntityType?
+  linkedEntityId       String?
+  documentDate         String?
+  issuedAt             String?
+  createdAt            DateTime
+  createdBy            String?
+  retentionUntil       String
+  deletedAt            DateTime?
+  tags                 String[]                        @default([])
+  versions             StoredDocumentVersion[]
+  analyses             DocumentAnalysisCache[]         @relation("StoredDocumentAnalyses")
+  expensePaymentProofs Expense[]                       @relation("ExpensePaymentProof")
 
   @@unique([companyId, id], name: "uniq_stored_document_company_id", map: "uniq_stored_document_company_id")
   @@index([companyId, kind])

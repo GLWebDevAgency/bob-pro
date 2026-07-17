@@ -8,6 +8,8 @@ import { requestContext, type AppLogger, type Principal } from './observability/
 import type { SupabaseAdminPort } from './auth/supabase-admin';
 import type { NotificationDeliveryService } from './jobs/notification-delivery.service';
 import type { Metrics } from './observability/metrics';
+import { UnavailableDocumentIntelligence } from './documents/document-intelligence';
+import { InMemoryDocumentStorage } from './documents/storage.testing';
 
 // jose mocké (politique commune aux tests backend) : on teste le POSTE DE RÉCEPTION, pas la crypto.
 vi.mock('jose', () => ({
@@ -40,6 +42,8 @@ function makeService() {
     notificationDelivery,
     metrics,
     logger,
+    new UnavailableDocumentIntelligence(),
+    new InMemoryDocumentStorage(),
   );
   return { service, p };
 }

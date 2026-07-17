@@ -154,7 +154,61 @@ export default function FactureDetail() {
     };
   }, [customers.data, id, invoice.data, invoices.data, quotes.data, screenDataReady]);
   const agentLayout = useMemo<AgentAccessLayout>(() => ({ bottomAvoidance: 86 }), []);
-  usePublishAgentContext(agentContext, agentLayout);
+
+  // R7 : « partage le lien de la facture » — dit + ouvre le Share (pattern établi), SANS
+  // Sheet intermédiaire (aucun choix à faire, un seul geste). Refs : la surface est mémoïsée
+  // une fois ([] deps) et doit lire l'état COURANT sans se recréer à chaque render.
+  const invoiceNumberRef = useRef<string | null>(invoice.data?.number ?? null);
+  invoiceNumberRef.current = invoice.data?.number ?? null;
+  const canShareLinkRef = useRef(invoice.data?.number !== null && invoice.data?.number !== undefined);
+  canShareLinkRef.current = invoice.data?.number !== null && invoice.data?.number !== undefined;
+  const viewLinkRef = useRef(viewLink);
+  viewLinkRef.current = viewLink;
+  const personalityRef = useRef(personality);
+  personalityRef.current = personality;
+  const invoiceVoiceSurface = useMemo<AgentSurface>(
+    () => ({
+      affordances: [
+        {
+          id: 'facture.shareViewLink',
+          match: (utterance) => {
+            if (!canShareLinkRef.current) return null;
+            const n = normalizeVoiceText(utterance);
+            if (!/\b(partage|partager|envoie|envoyer)\b/.test(n) || !/\blien\b/.test(n)) return null;
+            return async () => {
+              const p = personalityRef.current;
+              try {
+                const result = await viewLinkRef.current.mutateAsync(id);
+                await Share.share({
+                  message: `Bonjour, voici le lien pour consulter la facture${invoiceNumberRef.current ? ` ${invoiceNumberRef.current}` : ''} : ${result.viewUrl}`,
+                });
+                return { say: t('facture.voice.shareLinkOpened', { personality: p }) };
+              } catch {
+                return { say: t('piece.shareLinkError', { personality: p }) };
+              }
+            };
+          },
+        },
+      ],
+    }),
+    [],
+  );
+  usePublishAgentContext(agentContext, agentLayout, invoiceVoiceSurface);
+
+  // Lien public de VISUALISATION (canal universel, sans e-mail) — facture ÉMISE uniquement
+  // (jamais un brouillon). SANS AUCUN sortant tant que le Share natif n'est pas complété.
+  const shareViewLink = invoice.data && invoice.data.number !== null
+    ? async (): Promise<void> => {
+        try {
+          const result = await viewLink.mutateAsync(id);
+          await Share.share({
+            message: `Bonjour, voici le lien pour consulter la facture${invoice.data?.number ? ` ${invoice.data.number}` : ''} : ${result.viewUrl}`,
+          });
+        } catch {
+          Alert.alert('Oups', t('piece.shareLinkError', { personality }));
+        }
+      }
+    : null;
 
   // PDF archivé au coffre (document lié à la facture) — bouton absent sinon (pas de chemin fantôme).
   const pdfDoc = useMemo(
@@ -257,6 +311,7 @@ export default function FactureDetail() {
       onOpenInvoice={(ref: PieceLinkedRef) => router.push(`/facture/${ref.id}`)}
       onOpenPdf={openPdf ? () => void openPdf() : undefined}
       onSharePdf={sharePdf ? () => void sharePdf() : undefined}
+      onShareLink={shareViewLink ? () => void shareViewLink() : undefined}
       actions={
         hasInvoiceActions(inv) || canCreateCreditNote(inv) ? (
           // withCreditNote (A6) : « Créer un avoir » — détail uniquement, jamais en liste.

@@ -6,6 +6,8 @@ import { type SubscriptionRecord, type SubscriptionRepository } from '../ports/s
 import {
   type PublicAccessGrant,
   type PublicAccessTokenRepository,
+  type PublicAccessResourceType,
+  type PublicAccessScope,
 } from '../ports/public-access-token';
 import { MERCIER_PROPS } from '../fixtures';
 
@@ -71,9 +73,9 @@ class FakePublicAccessTokenRepository implements PublicAccessTokenRepository {
   }
   async create(input: {
     companyId: string;
-    resourceType: 'quote';
+    resourceType: PublicAccessResourceType;
     resourceId: string;
-    scope: 'quote_signature';
+    scope: PublicAccessScope;
     expiresAt: string;
   }): Promise<{ id: string; token: string }> {
     this.seq += 1;
@@ -235,6 +237,44 @@ describe('CloseAccount — clôture de compte (Apple 5.1.1(v)), jamais un cascad
       expiresAt: '2026-08-01T00:00:00.000Z',
     });
     expect(deps.publicAccessTokens.activeCountFor(company.id)).toBe(2);
+    const useCase = new CloseAccount(deps);
+
+    await useCase.execute({ companyId: company.id, confirmationText: MERCIER_PROPS.name, reason: null, now: T0 });
+
+    expect(deps.publicAccessTokens.activeCountFor(company.id)).toBe(0);
+  });
+
+  /**
+   * Liens de VISUALISATION (document_view, devis OU facture) : revokeAllForCompany ne filtre
+   * JAMAIS par scope/resourceType — la clôture doit couper TOUS les canaux publics du tenant,
+   * pas seulement la signature. Ce test le prouve avec un mélange des deux scopes/types.
+   */
+  it('révoque aussi les liens de VISUALISATION (document_view, devis ET facture) — tous scopes confondus', async () => {
+    const deps = buildDeps();
+    const company = seededCompany();
+    deps.companies.seed(company);
+    await deps.publicAccessTokens.create({
+      companyId: company.id,
+      resourceType: 'quote',
+      resourceId: 'quote-1',
+      scope: 'quote_signature',
+      expiresAt: '2026-08-01T00:00:00.000Z',
+    });
+    await deps.publicAccessTokens.create({
+      companyId: company.id,
+      resourceType: 'quote',
+      resourceId: 'quote-2',
+      scope: 'document_view',
+      expiresAt: '2026-08-30T00:00:00.000Z',
+    });
+    await deps.publicAccessTokens.create({
+      companyId: company.id,
+      resourceType: 'invoice',
+      resourceId: 'invoice-1',
+      scope: 'document_view',
+      expiresAt: '2026-08-30T00:00:00.000Z',
+    });
+    expect(deps.publicAccessTokens.activeCountFor(company.id)).toBe(3);
     const useCase = new CloseAccount(deps);
 
     await useCase.execute({ companyId: company.id, confirmationText: MERCIER_PROPS.name, reason: null, now: T0 });

@@ -18,6 +18,12 @@ interface SignatureView {
 
 const eur = (cents: number): string => `${(cents / 100).toFixed(2).replace('.', ',')} €`;
 
+function frDate(value: string): string {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return new Intl.DateTimeFormat('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' }).format(parsed);
+}
+
 const card: React.CSSProperties = {
   maxWidth: 560,
   margin: '32px auto',
@@ -48,7 +54,10 @@ export default function SignPage({ params }: { params: Promise<{ token: string }
 
   useEffect(() => {
     let active = true;
-    fetch(`${API}/public/sign/${encodeURIComponent(token)}`)
+    fetch(`${API}/public/sign/${encodeURIComponent(token)}`, {
+      cache: 'no-store',
+      referrerPolicy: 'no-referrer',
+    })
       .then(async (r) => {
         if (!r.ok) throw new Error('Devis introuvable ou lien expiré.');
         const data = (await r.json()) as SignatureView;
@@ -67,6 +76,8 @@ export default function SignPage({ params }: { params: Promise<{ token: string }
     try {
       const r = await fetch(`${API}/public/sign/${encodeURIComponent(token)}`, {
         method: 'POST',
+        cache: 'no-store',
+        referrerPolicy: 'no-referrer',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ signerName: name.trim() }),
       });
@@ -120,16 +131,16 @@ export default function SignPage({ params }: { params: Promise<{ token: string }
         <span>{eur(quote.totals.ttc)}</span>
       </div>
       {quote.validUntil ? (
-        <p style={{ color: '#8A97A6', fontSize: 13 }}>Valable jusqu&apos;au {quote.validUntil}</p>
+        <p style={{ color: '#8A97A6', fontSize: 13 }}>Valable jusqu&apos;au {frDate(quote.validUntil)}</p>
       ) : null}
 
       {alreadySigned ? (
         <p style={{ marginTop: 20, padding: 14, background: '#E8F6EE', color: '#1E7E47', borderRadius: 12, fontWeight: 600 }}>
-          ✓ Devis signé — merci ! L&apos;artisan en est informé.
+          Devis signé — merci. Vous pouvez fermer cette page.
         </p>
       ) : quote.expired ? (
         <p style={{ marginTop: 20, padding: 14, background: '#FDEEE6', color: '#B9531B', borderRadius: 12, fontWeight: 600 }}>
-          Ce devis a expiré{quote.validUntil ? ` le ${quote.validUntil}` : ''} et ne peut plus être signé. Contactez l&apos;artisan.
+          Ce devis a expiré{quote.validUntil ? ` le ${frDate(quote.validUntil)}` : ''} et ne peut plus être signé. Contactez l&apos;artisan.
         </p>
       ) : (
         <div style={{ marginTop: 20 }}>

@@ -6,11 +6,11 @@ import {
   Invoice,
   DocNumber,
   PaymentTerms,
-  seedCompany,
   facturXDataFromInvoice,
   buildFacturXBasicXml,
   validateFacturXBasic,
 } from '@bob/core';
+import { seedCompany } from '@bob/core/testing';
 import { PdfRenderer } from '../dist/apps/api/src/documents/pdf-renderer.js';
 
 const unwrap = (r, label) => {

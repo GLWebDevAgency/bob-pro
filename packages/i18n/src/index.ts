@@ -2721,6 +2721,12 @@ const legacyFr = {
     pro: 'Le partage du lien est ouvert.',
     direct: 'Partage ouvert.',
   },
+  // R7 : même pattern côté facture (facture/[id].tsx) — dit + Share natif déjà ouvert.
+  'facture.voice.shareLinkOpened': {
+    pote: 'C’est parti, je t’ouvre le partage du lien.',
+    pro: 'Le partage du lien est ouvert.',
+    direct: 'Partage ouvert.',
+  },
   // ASK-1 — questions structurées (modale de choix quand la demande est ambiguë)
   'assistant.askAnswer': { pote: 'Répondre', pro: 'Répondre', direct: 'Répondre' },
   'assistant.askConfirm': { pote: 'Valider', pro: 'Valider', direct: 'Valider' },

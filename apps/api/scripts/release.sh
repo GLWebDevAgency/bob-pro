@@ -32,7 +32,8 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO :"app_rol
 REVOKE UPDATE, DELETE ON TABLE
   public.document_analyses,
   public.expense_creation_requests,
-  public.quote_creation_requests
+  public.quote_creation_requests,
+  public.bank_balance_snapshots
 FROM :"app_role";
 REVOKE DELETE ON TABLE public.realtime_speech_artifacts FROM :"app_role";
 REVOKE UPDATE, DELETE ON TABLE
@@ -157,6 +158,14 @@ psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -f apps/api/prisma/rls-cert.sql
 psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 -f apps/api/prisma/cabinet-rls-cert-privileged.sql
 RUN_POSTGRES_DEVICE_REBIND_CERT=true \
   pnpm --filter @bob/api exec vitest run src/persistence/prisma/devices.postgres.test.ts
+RUN_POSTGRES_CATALOGUE_CERT=true \
+  pnpm --filter @bob/api exec vitest run src/persistence/prisma/catalogue-chantiers.postgres.test.ts
+RUN_POSTGRES_QUOTE_DRAFT_CERT=true \
+  pnpm --filter @bob/api exec vitest run src/persistence/prisma/quote-draft-slots.postgres.test.ts
+RUN_POSTGRES_EXPENSE_PAYMENT_CERT=true \
+  pnpm --filter @bob/api exec vitest run src/persistence/prisma/expense-payment-evidence.postgres.test.ts
+RUN_POSTGRES_BILLING_SETTINGS_CERT=true \
+  pnpm --filter @bob/api exec vitest run src/persistence/prisma/company-billing-settings.postgres.test.ts
 cleanup_rls_cert
 trap - EXIT INT TERM
 

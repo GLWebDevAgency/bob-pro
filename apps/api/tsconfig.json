@@ -13,7 +13,9 @@
     "baseUrl": ".",
     "paths": {
       "@bob/core": ["../../packages/core/src/index.ts"],
-      "@bob/ai": ["../../packages/ai/src/index.ts"]
+      "@bob/core/testing": ["../../packages/core/src/testing.ts"],
+      "@bob/ai": ["../../packages/ai/src/index.ts"],
+      "@bob/ai/testing": ["../../packages/ai/src/testing.ts"]
     },
     "outDir": "dist",
     "declaration": false,

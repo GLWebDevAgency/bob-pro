@@ -36,6 +36,13 @@ const required = [
   'BREVO_API_BASE_URL',
   'BREVO_SENDER_EMAIL',
   'ERROR_REPORTER_WEBHOOK_URL',
+  'STRIPE_SECRET_KEY',
+  'STRIPE_PRICE_SOLO',
+  'STRIPE_PRICE_PRO',
+  'STRIPE_PRICE_BUSINESS',
+  'STRIPE_WEBHOOK_SECRET',
+  'STRIPE_LIVEMODE',
+  'PAYMENT_RETURN_BASE_URL',
   'RUN_RLS_CERT',
   'RLS_CERT_CLEANUP',
 ];
@@ -71,6 +78,26 @@ if (process.env.DEMO_MODE !== 'false') {
 if (process.env.NODE_ENV !== 'production') {
   fail("NODE_ENV must be 'production' for production release checks");
 }
+if (process.env.STRIPE_LIVEMODE !== 'true') {
+  fail("STRIPE_LIVEMODE must be 'true' for a production release");
+}
+if (!/^whsec_[A-Za-z0-9_\-]{16,}$/.test(process.env.STRIPE_WEBHOOK_SECRET ?? '')) {
+  fail('STRIPE_WEBHOOK_SECRET must be a non-placeholder Workbench endpoint secret');
+}
+
+const llmKeys = [
+  'ANTHROPIC_API_KEY',
+  'GLM_API_KEY',
+  'DEEPSEEK_API_KEY',
+  'MISTRAL_API_KEY',
+  'OPENAI_API_KEY',
+];
+if (!llmKeys.some((name) => (process.env[name] ?? '').trim())) {
+  fail('at least one live LLM provider key is required');
+}
+if (!(process.env.MISTRAL_API_KEY ?? '').trim() && !(process.env.ANTHROPIC_API_KEY ?? '').trim()) {
+  fail('MISTRAL_API_KEY or ANTHROPIC_API_KEY is required for live OCR');
+}
 
 if (process.env.RUN_RLS_CERT !== 'true') {
   fail("RUN_RLS_CERT must be 'true' for a live release");
@@ -87,6 +114,7 @@ const signWebBaseUrl = url('SIGN_WEB_BASE_URL');
 const cabinetWebBaseUrl = url('CABINET_INVITATION_WEB_BASE_URL');
 const errorReporterUrl = url('ERROR_REPORTER_WEBHOOK_URL');
 const brevoBaseUrl = url('BREVO_API_BASE_URL');
+const paymentReturnBaseUrl = url('PAYMENT_RETURN_BASE_URL');
 
 if (databaseUrl && directUrl && databaseUrl.toString() === directUrl.toString()) {
   fail('DATABASE_URL and DIRECT_URL must use distinct roles');
@@ -155,8 +183,27 @@ if (supabaseUrl && jwksUrl && supabaseUrl.hostname !== jwksUrl.hostname) {
   fail('SUPABASE_URL and SUPABASE_JWKS_URL must target the same project host');
 }
 
-if (signWebBaseUrl && (signWebBaseUrl.protocol !== 'https:' || signWebBaseUrl.hostname === 'localhost')) {
+if (
+  signWebBaseUrl
+  && (
+    signWebBaseUrl.protocol !== 'https:'
+    || ['localhost', '127.0.0.1', 'demo.bobpro.fr'].includes(signWebBaseUrl.hostname)
+  )
+) {
   fail('SIGN_WEB_BASE_URL must be a non-local HTTPS URL in production');
+}
+if (
+  paymentReturnBaseUrl
+  && (
+    paymentReturnBaseUrl.protocol !== 'https:'
+    || ['localhost', '127.0.0.1', 'demo.bobpro.fr'].includes(paymentReturnBaseUrl.hostname)
+    || paymentReturnBaseUrl.username
+    || paymentReturnBaseUrl.password
+    || paymentReturnBaseUrl.search
+    || paymentReturnBaseUrl.hash
+  )
+) {
+  fail('PAYMENT_RETURN_BASE_URL must be a canonical non-demo HTTPS URL');
 }
 
 for (const [name, parsed] of [
@@ -166,6 +213,7 @@ for (const [name, parsed] of [
 ]) {
   if (parsed && parsed.protocol !== 'https:') fail(`${name} must be https in release environments`);
   if (parsed && parsed.hostname === 'localhost') fail(`${name} must not be localhost in release environments`);
+  if (parsed && parsed.hostname === 'demo.bobpro.fr') fail(`${name} must not target demo.bobpro.fr`);
 }
 
 const expectedReleaseEnvironment = process.env.RELEASE_ENVIRONMENT || 'production';
@@ -182,7 +230,13 @@ for (const name of ['CABINET_INVITATION_TOKEN_ENCRYPTION_KEY', 'METRICS_TOKEN'])
   const value = process.env[name] ?? '';
   if (value.includes('[') || value.includes(']')) fail(`${name} must not be a placeholder`);
 }
-for (const name of ['BREVO_API_KEY', 'SUPABASE_SERVICE_ROLE_KEY']) {
+for (const name of [
+  'BREVO_API_KEY',
+  'SUPABASE_SERVICE_ROLE_KEY',
+  'STRIPE_SECRET_KEY',
+  'STRIPE_WEBHOOK_SECRET',
+  ...llmKeys.filter((key) => (process.env[key] ?? '').trim()),
+]) {
   const value = process.env[name] ?? '';
   if (value.includes('[') || value.includes(']')) fail(`${name} must not be a placeholder`);
 }
