@@ -10,7 +10,7 @@ export function deriveGlobalBobSessionStopReason(input: {
 }): GlobalBobSessionStopReason | null {
   if (!input.subscriptionResolved) return 'entitlement_unconfirmed';
   if (!input.entitled) return 'entitlement_revoked';
-  if (input.pathname === '/gallery' || input.pathname === '/voix') return 'incompatible_route';
+  if (input.pathname === '/voix') return 'incompatible_route';
   return null;
 }
 

@@ -77,6 +77,7 @@ import {
 } from '../../src/agent';
 import { useFiscalProfileFlow } from '../../src/fiscal/use-fiscal-profile-flow';
 import { useOwnerPayGuidance } from '../../src/fiscal/use-owner-pay-guidance';
+import { useSalesDocumentVoiceAffordance } from '../../src/documents-voice-search';
 import {
   CalendarIcon,
   ChevronRightIcon,
@@ -567,8 +568,12 @@ export default function Aujourdhui() {
     ],
     [],
   );
+  // B9 — même affordance globale que ventes.tsx (« retrouve les devis de Mairie de Sèvres du
+  // mois dernier ») : Accueil est la seconde porte d'entrée voulue par le fondateur, la logique
+  // vit une seule fois dans apps/mobile/src/documents-voice-search.ts.
+  const salesDocumentVoiceAffordance = useSalesDocumentVoiceAffordance(personality);
   usePublishAgentContext(agentContext, {}, {
-    affordances: [...fiscalFlow.voiceAffordances, ...draftVoiceAffordances],
+    affordances: [salesDocumentVoiceAffordance, ...fiscalFlow.voiceAffordances, ...draftVoiceAffordances],
   });
 
   // KPI : uniquement des agrégats dérivés des queries réelles — sinon tuile vide « — ».

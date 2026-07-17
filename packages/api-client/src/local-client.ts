@@ -131,6 +131,12 @@ import { buildValueDigest,
   type DeleteDocumentFolderStrategy,
   type DocumentAnalysis,
   type SubscriptionStatusView,
+  searchSalesDocumentsInMemory,
+  suggestSalesDocumentsInMemory,
+  type SalesDocumentSearchPiece,
+  type SearchSalesDocumentsResult,
+  type SuggestSalesDocumentsResult,
+  type Totals,
 } from '@bob/core';
 import {
   InMemoryCompanyRepository,
@@ -197,6 +203,7 @@ import type {
   RecordDocumentExpenseClientOutput,
   AskBobClientInput,
   CreateCustomerClientInput,
+  SearchSalesDocumentsClientInput,
  ValueDigestView,
   TrialReportView } from './client';
 import { localExpenseCreationFingerprint, portableSha256Bytes } from './expense-idempotency';
@@ -2474,6 +2481,48 @@ export class LocalBobClient implements BobClient {
     await this.ready;
     const list = await this.invoices.listByCompany(this.companyId);
     return ok(list.map((i) => this.mapInvoice(i)));
+  }
+
+  /** B9 — pendant local (démo/offline) de GET /documents/search : même fonction pure core que le
+   * mode démo serveur (InMemorySalesDocumentSearchRepository, apps/api) — un devis n'a pas de
+   * date métier en mémoire (contrairement à Invoice.issuedAt), donc `date: null`, exclu de toute
+   * plage de dates active plutôt que deviné (voir search-sales-documents.ts). */
+  async searchSalesDocuments(input: SearchSalesDocumentsClientInput): Promise<Result<SearchSalesDocumentsResult, AppError>> {
+    await this.ready;
+    const [quotes, invoices, customers] = await Promise.all([
+      this.quotes.listByCompany(this.companyId),
+      this.invoices.listByCompany(this.companyId),
+      this.customers.listByCompany(this.companyId),
+    ]);
+    const toPiece = (totals: Totals, extra: { id: string; number: string | null; customerId: string; status: string; date: string | null; lines: readonly { label: string }[] }): SalesDocumentSearchPiece => ({ ...extra, totals });
+    const quotePieces = quotes.map((q) => toPiece(q.totals(), { id: q.id, number: q.number, customerId: q.customerId, status: q.status, date: null, lines: q.lines.map((l) => ({ label: l.label })) }));
+    const invoicePieces = invoices.map((i) => toPiece(i.totals(), { id: i.id, number: i.number, customerId: i.customerId, status: i.status, date: i.issuedAt, lines: i.lines.map((l) => ({ label: l.label })) }));
+    return ok(
+      searchSalesDocumentsInMemory({
+        ...input,
+        scope: input.scope ?? 'all',
+        customers: customers.map((c) => ({ id: c.id, name: c.name })),
+        quotes: quotePieces,
+        invoices: invoicePieces,
+      }),
+    );
+  }
+
+  async suggestSalesDocuments(query: string): Promise<Result<SuggestSalesDocumentsResult, AppError>> {
+    await this.ready;
+    const [quotes, invoices, customers] = await Promise.all([
+      this.quotes.listByCompany(this.companyId),
+      this.invoices.listByCompany(this.companyId),
+      this.customers.listByCompany(this.companyId),
+    ]);
+    return ok(
+      suggestSalesDocumentsInMemory({
+        query,
+        customers: customers.map((c) => ({ id: c.id, name: c.name })),
+        quotes: quotes.map((q) => ({ id: q.id, number: q.number, customerId: q.customerId, status: q.status, date: null, totals: q.totals(), lines: q.lines.map((l) => ({ label: l.label })) })),
+        invoices: invoices.map((i) => ({ id: i.id, number: i.number, customerId: i.customerId, status: i.status, date: i.issuedAt, totals: i.totals(), lines: i.lines.map((l) => ({ label: l.label })) })),
+      }),
+    );
   }
 
   async listAccountingEntries(): Promise<Result<AccountingEntryView[], AppError>> {

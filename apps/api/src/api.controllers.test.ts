@@ -526,3 +526,73 @@ describe('DocumentsController polymorphic document links runtime boundary', () =
     expect(backend.classifyDocument).toHaveBeenCalledWith({ documentId: 'document-1', ...body });
   });
 });
+
+describe('DocumentsController B9 — GET /documents/search & /documents/suggest', () => {
+  it('q/from/to/customerId/status/cursor absents -> query vide + scope "all", aucun champ optionnel forgé', async () => {
+    const backend = { searchSalesDocuments: vi.fn(async () => ({ ok: true as const, value: { hits: [], totalCount: 0, nextCursor: null } })) };
+    const controller = new DocumentsController(backend as unknown as BackendService);
+
+    await controller.search();
+
+    expect(backend.searchSalesDocuments).toHaveBeenCalledWith({ query: '', scope: 'all' });
+  });
+
+  it('type=quote/invoice est transmis tel quel ; toute autre valeur (y compris absente/forgée) retombe sur "all"', async () => {
+    const backend = { searchSalesDocuments: vi.fn(async () => ({ ok: true as const, value: { hits: [], totalCount: 0, nextCursor: null } })) };
+    const controller = new DocumentsController(backend as unknown as BackendService);
+
+    await controller.search(undefined, 'quote');
+    expect(backend.searchSalesDocuments).toHaveBeenLastCalledWith({ query: '', scope: 'quote' });
+    await controller.search(undefined, 'invoice');
+    expect(backend.searchSalesDocuments).toHaveBeenLastCalledWith({ query: '', scope: 'invoice' });
+    await controller.search(undefined, 'not-a-real-scope');
+    expect(backend.searchSalesDocuments).toHaveBeenLastCalledWith({ query: '', scope: 'all' });
+  });
+
+  it('transmet q/from/to/customerId/status/cursor fournis et convertit limit en nombre', async () => {
+    const backend = { searchSalesDocuments: vi.fn(async () => ({ ok: true as const, value: { hits: [], totalCount: 0, nextCursor: null } })) };
+    const controller = new DocumentsController(backend as unknown as BackendService);
+
+    await controller.search('sevres', 'all', '2026-06-01', '2026-06-30', 'cust-1', 'signed', '20', '10');
+
+    expect(backend.searchSalesDocuments).toHaveBeenCalledWith({
+      query: 'sevres',
+      scope: 'all',
+      from: '2026-06-01',
+      to: '2026-06-30',
+      customerId: 'cust-1',
+      status: 'signed',
+      cursor: '20',
+      limit: 10,
+    });
+  });
+
+  it('déballe le Result via unwrap (succès comme échec de validation)', async () => {
+    const backend = {
+      searchSalesDocuments: vi.fn(async () => ({
+        ok: false as const,
+        error: { kind: 'validation' as const, issues: [{ field: 'to', message: 'invalide' }] },
+      })),
+    };
+    const controller = new DocumentsController(backend as unknown as BackendService);
+
+    let thrown: unknown;
+    try {
+      await controller.search(undefined, 'all', '2026-08-01', '2026-07-01');
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(HttpException);
+    expect((thrown as HttpException).getStatus()).toBe(422);
+  });
+
+  it('suggest : q absent -> query vide, transmis tel quel sinon', async () => {
+    const backend = { suggestSalesDocuments: vi.fn(async () => ({ ok: true as const, value: { suggestions: [] } })) };
+    const controller = new DocumentsController(backend as unknown as BackendService);
+
+    await controller.suggest();
+    expect(backend.suggestSalesDocuments).toHaveBeenCalledWith({ query: '' });
+    await controller.suggest('mart');
+    expect(backend.suggestSalesDocuments).toHaveBeenCalledWith({ query: 'mart' });
+  });
+});

@@ -4,7 +4,11 @@ import { type Instant, type DateOnly } from '../../../shared-kernel/time';
 import { Percentage } from '../../../shared-kernel/percentage';
 import { DocNumber } from '../shared/doc-number';
 import { type QuoteLine } from '../shared/line';
-import { type LineInput } from '../shared/line-item';
+import {
+  hasBillingControlCharacter,
+  MAX_BILLING_AMOUNT_CENTS,
+  type LineInput,
+} from '../shared/line-item';
 import { type Totals } from '../shared/totals';
 import { type Signature } from '../shared/signature';
 import { isVatRate } from '../shared/vat-rate';
@@ -13,7 +17,6 @@ import { computeTotals } from '../../services/compute-totals';
 import { assertTransition, type QuoteStatus, QUOTE_TRANSITIONS } from '../shared/state-machines';
 
 const MAX_QUOTE_QTY = 1_000_000;
-const MAX_QUOTE_HT_CENTS = 1_500_000_000;
 
 export interface ComposeQuoteInput {
   id: string;
@@ -70,7 +73,8 @@ export class Quote extends AggregateRoot<string> {
   }
 
   private assertDraft(): DomainResult<void> {
-    if (this._status !== 'draft') return err({ code: 'INVALID_TRANSITION', from: this._status, to: 'draft' });
+    if (this._status !== 'draft')
+      return err({ code: 'INVALID_TRANSITION', from: this._status, to: 'draft' });
     return ok(undefined);
   }
 
@@ -99,7 +103,10 @@ export class Quote extends AggregateRoot<string> {
    * devis signé est un contrat (assertDraft, même garde qu'addLine/removeLine). Patch partiel :
    * seuls les champs fournis sont revalidés/remplacés, les autres restent inchangés.
    */
-  updateLine(lineId: string, patch: Partial<Pick<LineInput, 'label' | 'qty' | 'unitPriceHT' | 'vatRate'>>): DomainResult<void> {
+  updateLine(
+    lineId: string,
+    patch: Partial<Pick<LineInput, 'label' | 'qty' | 'unitPriceHT' | 'vatRate'>>,
+  ): DomainResult<void> {
     const d = this.assertDraft();
     if (!d.ok) return d;
     const index = this._lines.findIndex((l) => l.id === lineId);
@@ -108,7 +115,11 @@ export class Quote extends AggregateRoot<string> {
       return err({ code: 'VALIDATION', field: 'lineId', message: 'Ligne introuvable.' });
     const allowed = new Set(['label', 'qty', 'unitPriceHT', 'vatRate']);
     if (Object.keys(patch).length === 0 || Object.keys(patch).some((key) => !allowed.has(key)))
-      return err({ code: 'VALIDATION', field: 'patch', message: 'Modification de ligne invalide.' });
+      return err({
+        code: 'VALIDATION',
+        field: 'patch',
+        message: 'Modification de ligne invalide.',
+      });
     if (patch.qty !== undefined) {
       const q = Quantity.of(patch.qty);
       if (!q.ok) return q;
@@ -118,18 +129,18 @@ export class Quote extends AggregateRoot<string> {
     if (patch.vatRate !== undefined && !isVatRate(patch.vatRate))
       return err({ code: 'VALIDATION', field: 'vatRate', message: 'Taux TVA non autorise.' });
     if (
-      patch.unitPriceHT !== undefined
-      && (!Number.isSafeInteger(patch.unitPriceHT) || patch.unitPriceHT < 0 || patch.unitPriceHT > 1_500_000_000)
+      patch.unitPriceHT !== undefined &&
+      (!Number.isSafeInteger(patch.unitPriceHT) ||
+        patch.unitPriceHT < 0 ||
+        patch.unitPriceHT > MAX_BILLING_AMOUNT_CENTS)
     )
       return err({ code: 'VALIDATION', field: 'unitPriceHT', message: 'Prix unitaire invalide.' });
     if (
-      patch.label !== undefined
-      && (
-        typeof patch.label !== 'string'
-        || patch.label.trim().length === 0
-        || patch.label.length > 500
-        || /[\u0000-\u001F\u007F]/.test(patch.label)
-      )
+      patch.label !== undefined &&
+      (typeof patch.label !== 'string' ||
+        patch.label.trim().length === 0 ||
+        patch.label.length > 500 ||
+        hasBillingControlCharacter(patch.label))
     )
       return err({ code: 'VALIDATION', field: 'label', message: 'Libelle invalide.' });
     const candidate: QuoteLine = {
@@ -141,10 +152,19 @@ export class Quote extends AggregateRoot<string> {
       unitPriceHT: patch.unitPriceHT !== undefined ? patch.unitPriceHT : current.unitPriceHT,
       vatRate: patch.vatRate !== undefined ? patch.vatRate : current.vatRate,
     };
-    const nextLines = this._lines.map((line, lineIndex) => lineIndex === index ? candidate : line);
-    const totalHtCents = nextLines.reduce((total, line) => total + Math.round(line.qty * line.unitPriceHT), 0);
-    if (!Number.isSafeInteger(totalHtCents) || totalHtCents > MAX_QUOTE_HT_CENTS)
-      return err({ code: 'VALIDATION', field: 'lines', message: 'Montant total HT du devis hors limite.' });
+    const nextLines = this._lines.map((line, lineIndex) =>
+      lineIndex === index ? candidate : line,
+    );
+    const totalHtCents = nextLines.reduce(
+      (total, line) => total + Math.round(line.qty * line.unitPriceHT),
+      0,
+    );
+    if (!Number.isSafeInteger(totalHtCents) || totalHtCents > MAX_BILLING_AMOUNT_CENTS)
+      return err({
+        code: 'VALIDATION',
+        field: 'lines',
+        message: 'Montant total HT du devis hors limite.',
+      });
     this._lines[index] = candidate;
     return ok(undefined);
   }
@@ -163,12 +183,16 @@ export class Quote extends AggregateRoot<string> {
   }
 
   totals(): Totals {
-    return computeTotals([...this._lines], this._depositPct ? { depositPct: this._depositPct.value } : undefined);
+    return computeTotals(
+      [...this._lines],
+      this._depositPct ? { depositPct: this._depositPct.value } : undefined,
+    );
   }
 
   /** Pure : valide et fige le numéro alloué par le use case (no-gap garanti côté infra). */
   assignNumber(n: DocNumber, at: Instant): DomainResult<void> {
-    if (this._number) return err({ code: 'VALIDATION', field: 'number', message: 'Numero deja attribue.' });
+    if (this._number)
+      return err({ code: 'VALIDATION', field: 'number', message: 'Numero deja attribue.' });
     this._number = n;
     this.record({ type: 'DocumentNumbered', occurredAt: at, version: 1 });
     return ok(undefined);
@@ -177,7 +201,8 @@ export class Quote extends AggregateRoot<string> {
   send(at: Instant): DomainResult<void> {
     const t = assertTransition(QUOTE_TRANSITIONS, this._status, 'sent');
     if (!t.ok) return t;
-    if (!this._number) return err({ code: 'VALIDATION', field: 'number', message: 'Numero requis avant envoi.' });
+    if (!this._number)
+      return err({ code: 'VALIDATION', field: 'number', message: 'Numero requis avant envoi.' });
     if (this._lines.length === 0)
       return err({ code: 'VALIDATION', field: 'lines', message: 'Au moins une ligne requise.' });
     this._status = 'sent';

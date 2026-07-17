@@ -2007,4 +2007,85 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
     expect(result).toMatchObject({ ok: false, error: { kind: 'dependency', port: 'api' } });
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  describe('B9 — searchSalesDocuments / suggestSalesDocuments', () => {
+    it('searchSalesDocuments : GET /documents/search, scope "all" par défaut, aucun paramètre optionnel forgé', async () => {
+      const fetchMock = vi.fn(async (url: unknown) => {
+        expect(String(url)).toBe('https://api.bob.test/documents/search?type=all');
+        return new Response(JSON.stringify({ hits: [], totalCount: 0, nextCursor: null }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+
+      await expect(client.searchSalesDocuments({ query: '', scope: 'all' })).resolves.toEqual({
+        ok: true,
+        value: { hits: [], totalCount: 0, nextCursor: null },
+      });
+    });
+
+    it('searchSalesDocuments : q/from/to/customerId/status/cursor/limit fournis sont tous portés dans la query string', async () => {
+      const fetchMock = vi.fn(async (url: unknown) => {
+        const parsed = new URL(String(url));
+        expect(parsed.pathname).toBe('/documents/search');
+        expect(Object.fromEntries(parsed.searchParams.entries())).toEqual({
+          q: 'sevres',
+          type: 'quote',
+          from: '2026-06-01',
+          to: '2026-06-30',
+          customerId: 'cust-1',
+          status: 'signed',
+          cursor: '20',
+          limit: '10',
+        });
+        return new Response(JSON.stringify({ hits: [], totalCount: 0, nextCursor: null }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+
+      await client.searchSalesDocuments({
+        query: 'sevres',
+        scope: 'quote',
+        from: '2026-06-01',
+        to: '2026-06-30',
+        customerId: 'cust-1',
+        status: 'signed',
+        cursor: '20',
+        limit: 10,
+      });
+      expect(fetchMock).toHaveBeenCalledOnce();
+    });
+
+    it('searchSalesDocuments : une erreur de validation serveur (dates incohérentes) ne devient jamais un succès', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(
+        JSON.stringify({ ok: false, error: { kind: 'validation', issues: [{ field: 'to', message: 'invalide' }] } }),
+        { status: 422, headers: { 'content-type': 'application/json' } },
+      )));
+      const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+
+      await expect(
+        client.searchSalesDocuments({ query: '', scope: 'all', from: '2026-08-01', to: '2026-07-01' }),
+      ).resolves.toMatchObject({ ok: false, error: { kind: 'validation' } });
+    });
+
+    it('suggestSalesDocuments : GET /documents/suggest?q=..., décode les suggestions typées', async () => {
+      const fetchMock = vi.fn(async (url: unknown) => {
+        expect(String(url)).toBe('https://api.bob.test/documents/suggest?q=mart');
+        return new Response(
+          JSON.stringify({ suggestions: [{ kind: 'customer', value: 'SARL Martin Rénovation', count: 3 }] }),
+          { headers: { 'content-type': 'application/json' } },
+        );
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+
+      await expect(client.suggestSalesDocuments('mart')).resolves.toEqual({
+        ok: true,
+        value: { suggestions: [{ kind: 'customer', value: 'SARL Martin Rénovation', count: 3 }] },
+      });
+    });
+  });
 });

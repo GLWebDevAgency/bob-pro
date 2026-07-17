@@ -1336,3 +1336,75 @@ describe('C-EXP6b — réception e-facture (adaptateur démo, parité serveur)',
     }
   });
 });
+
+describe('LocalBobClient B9 — searchSalesDocuments / suggestSalesDocuments (pendant hors-ligne du port core)', () => {
+  it('« sevres » sans accent retrouve le devis du client de seed « Mairie de Sèvres »', async () => {
+    const client = makeClient();
+    const created = await client.createQuote({
+      customerId: 'cust-sevres',
+      lines: [{ label: 'Réfection toiture mairie', category: 'labor', qty: 1, unitPriceHT: 500000, vatRate: 20 }],
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const result = await client.searchSalesDocuments({ query: 'sevres', scope: 'all' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.hits.map((h) => h.id)).toContain(created.value.quoteId);
+    expect(result.value.hits.find((h) => h.id === created.value.quoteId)?.customerName).toBe('Mairie de Sèvres');
+  });
+
+  it('scope="invoice" exclut les devis (le seed démo porte déjà une facture Sèvres, mais jamais le devis créé ici)', async () => {
+    const client = makeClient();
+    const created = await client.createQuote({
+      customerId: 'cust-sevres',
+      lines: [{ label: 'Réfection toiture mairie', category: 'labor', qty: 1, unitPriceHT: 500000, vatRate: 20 }],
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const result = await client.searchSalesDocuments({ query: 'sevres', scope: 'invoice' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.hits.every((h) => h.source === 'invoice')).toBe(true);
+    expect(result.value.hits.map((h) => h.id)).not.toContain(created.value.quoteId);
+  });
+
+  it('scope par défaut ("all" si omis) : un devis matche même sans préciser scope', async () => {
+    const client = makeClient();
+    const created = await client.createQuote({
+      customerId: 'cust-martin',
+      lines: [{ label: 'Peinture façade', category: 'labor', qty: 1, unitPriceHT: 100000, vatRate: 20 }],
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const result = await client.searchSalesDocuments({ query: 'martin' });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.hits.map((h) => h.id)).toContain(created.value.quoteId);
+  });
+
+  it('suggestSalesDocuments : suggestion typée "customer" pour un client de seed, count = nb de pièces (incrémenté par un nouveau devis)', async () => {
+    const client = makeClient();
+    const before = await client.suggestSalesDocuments('sevres');
+    expect(before.ok).toBe(true);
+    if (!before.ok) return;
+    const countBefore = before.value.suggestions.find((s) => s.kind === 'customer')?.count ?? 0;
+
+    const created = await client.createQuote({
+      customerId: 'cust-sevres',
+      lines: [{ label: 'Réfection toiture mairie', category: 'labor', qty: 1, unitPriceHT: 500000, vatRate: 20 }],
+    });
+    expect(created.ok).toBe(true);
+
+    const after = await client.suggestSalesDocuments('sevres');
+    expect(after.ok).toBe(true);
+    if (!after.ok) return;
+    expect(after.value.suggestions).toContainEqual({ kind: 'customer', value: 'Mairie de Sèvres', count: countBefore + 1 });
+  });
+
+  it('suggestSalesDocuments : requête vide -> aucune suggestion (les récentes restent un concern écran)', async () => {
+    const result = await makeClient().suggestSalesDocuments('');
+    expect(result).toEqual({ ok: true, value: { suggestions: [] } });
+  });
+});

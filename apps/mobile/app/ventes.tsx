@@ -1,14 +1,14 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, ScrollView, TextInput, View, Text, Pressable } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { challengeFor } from '@bob/ai';
-import { formatEUR, normalizeVoiceText } from '@bob/core';
+import { formatEUR, normalizeVoiceText, type SalesDocumentSearchScope } from '@bob/core';
 import { t } from '@bob/i18n';
-import type { QuoteView, InvoiceView } from '@bob/api-client';
+import type { QuoteView, InvoiceView, SearchSalesDocumentsClientInput } from '@bob/api-client';
 import { useTheme } from '../src/theme';
-import { useCustomers, useQuotes, useInvoices } from '../src/data/hooks';
+import { useCustomers, useQuotes, useInvoices, useSalesDocumentSearch, useSalesDocumentSuggestions } from '../src/data/hooks';
 import { usePublishAgentContext, type AgentContext, type AgentSurface } from '../src/agent';
 import { frDateLabel } from '@bob/ai';
 import { Card, Badge, MoneyText, SectionHeader, font } from '../src/components/ui';
@@ -26,6 +26,17 @@ import {
 import { useBobAwareScrollInsets } from '../src/components/use-bob-aware-scroll-insets';
 import { useConfirm } from '../src/components/ConfirmSheet';
 import { hasMeaningfulQuoteDraft, useQuoteDraft } from '../src/quote-draft';
+import { useSalesDocumentVoiceAffordance } from '../src/documents-voice-search';
+import { parseSalesDocumentRouteParams } from '../src/data/documents-search-route-params';
+import { DateRangeChips, type DateRangeValue } from '../src/components/DateRangeChips';
+import { DocumentSearchAutocomplete, useRecentSalesSearches } from '../src/components/DocumentSearchAutocomplete';
+import {
+  DocumentSearchFiltersModal,
+  EMPTY_ADVANCED_FILTERS,
+  type AdvancedSearchFilters,
+} from '../src/components/DocumentSearchFiltersModal';
+
+const SEARCH_DEBOUNCE_MS = 250;
 
 // Suppression d'un brouillon = geste réversible-fort (même palier que le trash « brouillon »
 // des factures, InvoiceActions) — TOUJOURS derrière une ConfirmSheet, jamais un tap unique.
@@ -37,6 +48,40 @@ type InvoiceStatus = InvoiceView['status'];
 // Actionnable en premier : les brouillons/à traiter remontent, le terminé descend.
 const QUOTE_ORDER: Record<QuoteStatus, number> = { draft: 0, sent: 1, viewed: 1, signed: 2, refused: 4, expired: 4 };
 const INVOICE_ORDER: Record<InvoiceStatus, number> = { draft: 0, late: 1, issued: 2, partially_paid: 2, paid: 4, cancelled: 4 };
+
+/** B9 — chip de filtre actif, supprimable (croix) — état visible au-dessus des résultats. */
+function ActiveFilterChip({ label, onRemove }: { label: string; onRemove: () => void }) {
+  const { semantic, personality } = useTheme();
+  return (
+    <View
+      style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        borderWidth: 1,
+        borderColor: semantic.ai,
+        backgroundColor: semantic.aiBg,
+        borderRadius: 999,
+        paddingLeft: 10,
+        paddingRight: 6,
+        height: 30,
+      }}
+    >
+      <Text style={[font('meta'), { fontWeight: '600', color: semantic.aiInk }]} numberOfLines={1}>
+        {label}
+      </Text>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`${t('ventes.activeFilter.remove', { personality })} — ${label}`}
+        onPress={onRemove}
+        hitSlop={8}
+        style={{ width: 18, height: 18, alignItems: 'center', justifyContent: 'center' }}
+      >
+        <Ionicons name="close" size={14} color={semantic.aiInk} />
+      </Pressable>
+    </View>
+  );
+}
 
 export default function Ventes() {
   const { colors, semantic, personality } = useTheme();
@@ -92,19 +137,92 @@ export default function Ventes() {
   const [kindFilter, setKindFilter] = useState<'all' | 'quotes' | 'invoices'>('all');
   const [query, setQuery] = useState('');
   const normalizedQuery = normalizeVoiceText(query).trim();
-  const matches = (number: string | null, customerId: string, lines: readonly { label: string }[]): boolean => {
+  const localMatches = (number: string | null, customerId: string, lines: readonly { label: string }[]): boolean => {
     if (normalizedQuery === '') return true;
     const haystack = normalizeVoiceText(
       `${number ?? ''} ${nameOf(customerId)} ${lines.map((l) => l.label).join(' ')}`,
     );
     return normalizedQuery.split(' ').every((word) => haystack.includes(word));
   };
+
+  // ── B9 — recherche intelligente serveur (pg_trgm) : chips de dates, filtre client/statut
+  //    avancés, autocomplétion, parité vocale par route params. Le texte tapé + les filtres
+  //    avancés/chips restent TOUJOURS combinables avec kindFilter (toggle devis/factures déjà
+  //    existant) — un seul jeu de résultats, jamais deux systèmes de filtre qui divergent. ──
+  const routeParams = useLocalSearchParams<{ type?: string; from?: string; to?: string; customerId?: string }>();
+  const [debouncedQuery, setDebouncedQuery] = useState('');
+  const [dateRange, setDateRange] = useState<DateRangeValue | null>(null);
+  const [advancedCustomerId, setAdvancedCustomerId] = useState<string | null>(null);
+  const [advancedStatus, setAdvancedStatus] = useState<string | null>(null);
+  const [filtersModalOpen, setFiltersModalOpen] = useState(false);
+  const [suggestOpen, setSuggestOpen] = useState(false);
+  const { recent: recentSearches, push: pushRecentSearch } = useRecentSalesSearches();
+
+  // Deep link vocal (« retrouve les devis de Mairie de Sèvres du mois dernier ») : LA clé de la
+  // parité — Bob navigue ici avec des paramètres de route, cet effet les traduit en filtres via
+  // parseSalesDocumentRouteParams (pure, testée isolément dans documents-search-route-params.test.ts).
+  useEffect(() => {
+    const parsed = parseSalesDocumentRouteParams(routeParams);
+    if (parsed.kindFilter !== null) setKindFilter(parsed.kindFilter);
+    if (parsed.dateRange !== null) setDateRange(parsed.dateRange);
+    if (parsed.customerId !== null) setAdvancedCustomerId(parsed.customerId);
+  }, [routeParams.type, routeParams.from, routeParams.to, routeParams.customerId]);
+
+  useEffect(() => {
+    const timeout = setTimeout(() => setDebouncedQuery(query.trim()), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timeout);
+  }, [query]);
+
+  const searchScope: SalesDocumentSearchScope = kindFilter === 'quotes' ? 'quote' : kindFilter === 'invoices' ? 'invoice' : 'all';
+  const hasServerFilters = debouncedQuery.length >= 2 || advancedCustomerId !== null || dateRange !== null || advancedStatus !== null;
+  const searchInput: SearchSalesDocumentsClientInput = {
+    query: debouncedQuery,
+    scope: searchScope,
+    limit: 50,
+    ...(advancedCustomerId !== null ? { customerId: advancedCustomerId } : {}),
+    ...(advancedStatus !== null ? { status: advancedStatus } : {}),
+    ...(dateRange !== null ? { from: dateRange.from, to: dateRange.to } : {}),
+  };
+  const serverSearch = useSalesDocumentSearch(searchInput, hasServerFilters);
+  const matchedIds = hasServerFilters && serverSearch.data ? new Set(serverSearch.data.hits.map((h) => h.id)) : null;
+
+  const suggestQuery = debouncedQuery;
+  const suggest = useSalesDocumentSuggestions(suggestQuery, suggestOpen && suggestQuery.length > 0);
+
+  const matches = (id: string, number: string | null, customerId: string, lines: readonly { label: string }[]): boolean => {
+    const local = localMatches(number, customerId, lines);
+    if (!hasServerFilters) return local;
+    return matchedIds !== null ? matchedIds.has(id) : local;
+  };
   const sortedQuotes = [...(quotes.data ?? [])]
-    .filter((q) => kindFilter !== 'invoices' && matches(q.number, q.customerId, q.lines))
+    .filter((q) => kindFilter !== 'invoices' && matches(q.id, q.number, q.customerId, q.lines))
     .sort((a, b) => QUOTE_ORDER[a.status] - QUOTE_ORDER[b.status]);
   const sortedInvoices = [...(invoices.data ?? [])]
-    .filter((i) => kindFilter !== 'quotes' && matches(i.number, i.customerId, i.lines))
+    .filter((i) => kindFilter !== 'quotes' && matches(i.id, i.number, i.customerId, i.lines))
     .sort((a, b) => INVOICE_ORDER[a.status] - INVOICE_ORDER[b.status]);
+
+  const activeAdvancedCustomerName = advancedCustomerId !== null ? nameOf(advancedCustomerId) : null;
+  const statusOptions = kindFilter === 'quotes'
+    ? Object.entries(QUOTE_BADGE).map(([value, { label }]) => ({ value, label }))
+    : kindFilter === 'invoices'
+      ? Object.entries(INVOICE_BADGE).map(([value, { label }]) => ({ value, label }))
+      : [];
+  const statusLabel = advancedStatus !== null ? statusOptions.find((s) => s.value === advancedStatus)?.label ?? advancedStatus : null;
+  const advancedInitial: AdvancedSearchFilters = {
+    ...EMPTY_ADVANCED_FILTERS,
+    customerId: advancedCustomerId,
+    customerName: activeAdvancedCustomerName,
+    dateRange,
+    status: advancedStatus,
+  };
+  const applyAdvancedFilters = (filters: AdvancedSearchFilters): void => {
+    setAdvancedCustomerId(filters.customerId);
+    setAdvancedStatus(filters.status);
+    setDateRange(filters.dateRange);
+    const composedQuery = [filters.number, filters.label].filter((s) => s.trim().length > 0).join(' ');
+    if (composedQuery.length > 0) setQuery(composedQuery);
+  };
+  const hasActiveFilterChips = advancedCustomerId !== null || dateRange !== null || advancedStatus !== null || debouncedQuery.length > 0;
 
   // Liaison devis ↔ factures : chips discrètes automatiques sur chaque pièce.
   const invoicesOfQuote = (quoteId: string) =>
@@ -155,9 +273,14 @@ export default function Ventes() {
   routerRef.current = router;
   const deleteLocalDraftRef = useRef(deleteLocalDraft);
   deleteLocalDraftRef.current = deleteLocalDraft;
+  const salesDocumentVoiceAffordance = useSalesDocumentVoiceAffordance(personality);
   const ventesSurface = useMemo<AgentSurface>(
     () => ({
       affordances: [
+        // B9 — priorité au deep link période/client (« retrouve les devis de Mairie de Sèvres
+        // du mois dernier ») : ne matche que si période ET/OU client sont reconnus, sinon rend
+        // la main à ventes.search (filtre texte local) juste en dessous.
+        salesDocumentVoiceAffordance,
         {
           id: 'ventes.resumeDraft',
           match: (utterance) => {
@@ -224,7 +347,7 @@ export default function Ventes() {
         },
       ],
     }),
-    [],
+    [salesDocumentVoiceAffordance],
   );
   const ventesAgentContext = useMemo<AgentContext>(() => {
     const qs = [...(quotes.data ?? [])].sort((a, b) => QUOTE_ORDER[a.status] - QUOTE_ORDER[b.status]).slice(0, 8);
@@ -303,35 +426,125 @@ export default function Ventes() {
               </Pressable>
             ))}
           </View>
-          <TextInput
-            value={query}
-            onChangeText={setQuery}
-            placeholder={t('ventes.searchPlaceholder', { personality })}
-            placeholderTextColor={colors.slate400}
-            accessibilityLabel={t('ventes.searchPlaceholder', { personality })}
-            autoCorrect={false}
-            style={[
-              font('body'),
-              {
-                minHeight: 44,
-                color: colors.ink900,
-                borderWidth: 1,
-                borderColor: colors.line,
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <TextInput
+              value={query}
+              onChangeText={setQuery}
+              onFocus={() => setSuggestOpen(true)}
+              onBlur={() => setSuggestOpen(false)}
+              placeholder={t('ventes.searchPlaceholder', { personality })}
+              placeholderTextColor={colors.slate400}
+              accessibilityLabel={t('ventes.searchPlaceholder', { personality })}
+              autoCorrect={false}
+              style={[
+                font('body'),
+                {
+                  flex: 1,
+                  minHeight: 44,
+                  color: colors.ink900,
+                  borderWidth: 1,
+                  borderColor: colors.line,
+                  borderRadius: 12,
+                  paddingHorizontal: 12,
+                  backgroundColor: colors.surface,
+                },
+              ]}
+            />
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t('ventes.searchAdvancedButton', { personality })}
+              onPress={() => setFiltersModalOpen(true)}
+              style={{
+                width: 44,
+                height: 44,
                 borderRadius: 12,
-                paddingHorizontal: 12,
-                backgroundColor: colors.surface,
-              },
-            ]}
-          />
+                borderWidth: 1,
+                borderColor: hasActiveFilterChips ? semantic.ai : colors.line,
+                backgroundColor: hasActiveFilterChips ? semantic.aiBg : colors.surface,
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <Ionicons name="options-outline" size={20} color={hasActiveFilterChips ? semantic.aiInk : colors.ink800} />
+            </Pressable>
+          </View>
+          {suggestOpen ? (
+            <DocumentSearchAutocomplete
+              query={query}
+              suggestions={suggest.data?.suggestions}
+              loading={suggest.isLoading && query.trim().length > 0}
+              recentQueries={recentSearches}
+              onSelectSuggestion={(suggestion) => {
+                if (suggestion.kind === 'customer') {
+                  const found = (customers.data ?? []).find((c) => c.name === suggestion.value);
+                  if (found) setAdvancedCustomerId(found.id);
+                  setQuery('');
+                } else {
+                  setQuery(suggestion.value);
+                  pushRecentSearch(suggestion.value);
+                }
+                setSuggestOpen(false);
+              }}
+              onSelectRecent={(recentQuery) => {
+                setQuery(recentQuery);
+                setSuggestOpen(false);
+              }}
+            />
+          ) : null}
+          <DateRangeChips value={dateRange} onChange={setDateRange} today={new Date().toISOString().slice(0, 10)} />
+          {hasActiveFilterChips ? (
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+              {debouncedQuery.length > 0 ? (
+                <ActiveFilterChip label={debouncedQuery} onRemove={() => setQuery('')} />
+              ) : null}
+              {activeAdvancedCustomerName !== null ? (
+                <ActiveFilterChip
+                  label={t('ventes.activeFilter.customer', { personality, params: { name: activeAdvancedCustomerName } })}
+                  onRemove={() => setAdvancedCustomerId(null)}
+                />
+              ) : null}
+              {dateRange !== null ? (
+                <ActiveFilterChip
+                  label={
+                    dateRange.preset === 'thisMonth'
+                      ? t('ventes.dateChip.thisMonth', { personality })
+                      : dateRange.preset === 'lastMonth'
+                        ? t('ventes.dateChip.lastMonth', { personality })
+                        : dateRange.preset === 'last2Months'
+                          ? t('ventes.dateChip.last2Months', { personality })
+                          : t('ventes.dateChip.customRange', {
+                              personality,
+                              params: { from: frDateLabel(dateRange.from), to: frDateLabel(dateRange.to) },
+                            })
+                  }
+                  onRemove={() => setDateRange(null)}
+                />
+              ) : null}
+              {statusLabel !== null ? (
+                <ActiveFilterChip label={statusLabel} onRemove={() => setAdvancedStatus(null)} />
+              ) : null}
+            </View>
+          ) : null}
           {!queryState.loading &&
           !queryState.failed &&
-          normalizedQuery !== '' &&
+          (hasServerFilters ? !serverSearch.isLoading : normalizedQuery !== '') &&
           sortedQuotes.length + sortedInvoices.length === 0 ? (
             <Text style={[font('sub'), { color: colors.slate500 }]}>
               {t('ventes.noResults', { personality })}
             </Text>
           ) : null}
         </View>
+
+        <DocumentSearchFiltersModal
+          key={`${advancedInitial.customerId ?? ''}|${advancedInitial.dateRange?.from ?? ''}|${advancedInitial.dateRange?.to ?? ''}|${advancedInitial.status ?? ''}`}
+          visible={filtersModalOpen}
+          onClose={() => setFiltersModalOpen(false)}
+          onApply={applyAdvancedFilters}
+          initial={advancedInitial}
+          customers={customers.data ?? []}
+          statusOptions={statusOptions}
+          today={new Date().toISOString().slice(0, 10)}
+        />
 
         {kindFilter !== 'invoices' ? (
           <View>

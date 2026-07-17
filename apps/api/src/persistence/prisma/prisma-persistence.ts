@@ -28,6 +28,7 @@ import type { CabinetInfrastructure } from '../../cabinet/cabinet-infrastructure
 import { PrismaDocumentFolderDeletionPlanStore } from '../document-folder-deletion-plans';
 import { PrismaDocumentAnalysisStore } from '../document-analyses';
 import { PrismaExpenseCreationRequestStore } from '../expense-creation-requests';
+import { PrismaSalesDocumentSearchRepository } from './sales-document-search.repository';
 import { PrismaQuoteCreationRequestStore } from '../quote-creation-requests';
 import type {
   RealtimeAdmissionPolicy,
@@ -50,6 +51,7 @@ import type {
 } from '../../voice/realtime/realtime-mistral-ingress-ticket';
 import { PrismaRealtimeControlRepository } from '../../voice/realtime/realtime-control.prisma';
 import type { RealtimeControlRepositoryPort } from '../../voice/realtime/realtime-control.repository';
+import { isDemoMode } from '../../config/env';
 
 export class PrismaPersistence implements Persistence {
   readonly companies: PrismaCompanyRepository;
@@ -74,6 +76,7 @@ export class PrismaPersistence implements Persistence {
   readonly supplierMemory: PrismaSupplierMemoryRepository;
   readonly subscriptions: PrismaSubscriptionRepository;
   readonly fiscalProfiles: PrismaFiscalProfileRepository;
+  readonly salesDocumentSearch: PrismaSalesDocumentSearchRepository;
   readonly counters: PrismaSequenceCounter;
   readonly cabinet: CabinetInfrastructure;
 
@@ -131,6 +134,7 @@ export class PrismaPersistence implements Persistence {
     this.supplierMemory = new PrismaSupplierMemoryRepository(prisma);
     this.subscriptions = new PrismaSubscriptionRepository(prisma);
     this.fiscalProfiles = new PrismaFiscalProfileRepository(prisma);
+    this.salesDocumentSearch = new PrismaSalesDocumentSearchRepository(prisma);
     this.counters = new PrismaSequenceCounter(prisma);
     this.cabinet = createPrismaCabinetInfrastructure(prisma);
   }
@@ -161,6 +165,9 @@ export class PrismaPersistence implements Persistence {
   }
 
   async seed(): Promise<void> {
+    // Les identités Mercier et ses clients sont des fixtures de démonstration. Une valeur absente,
+    // invalide ou `false` ne doit JAMAIS écrire ces lignes dans la base d'un compte réel.
+    if (!isDemoMode()) return;
     const company = companyPropsToCreate(seedCompany().toProps());
     const customers = seedCustomers().map((c) => customerPropsToCreate(c.toProps()));
     // FORCE RLS s'applique aussi au bootstrap : sous le rôle applicatif non-superuser, les upserts

@@ -43,6 +43,10 @@ import type { ValueDigest,
   DocumentAnalysis,
   SubscriptionInfo,
   FiscalProfileView,
+  SearchSalesDocumentsInput,
+  SearchSalesDocumentsResult,
+  SuggestSalesDocumentsInput,
+  SuggestSalesDocumentsResult,
 } from '@bob/core';
 
 export interface QuoteView {
@@ -838,4 +842,17 @@ export interface BobClient {
   listInvoices(): Promise<Result<InvoiceView[], AppError>>;
   listAccountingEntries(): Promise<Result<AccountingEntryView[], AppError>>;
   exportFec(input: ExportFecClientInput): Promise<Result<ExportFecClientOutput, AppError>>;
+  /** B9 — GET /documents/search : « retrouve les devis de Mairie de Sèvres du mois dernier ».
+   * Nommé "SalesDocuments" (et non "Documents") pour ne jamais se confondre avec le coffre GED
+   * (listDocuments/DocumentView, un domaine différent malgré le même préfixe d'URL /documents). */
+  searchSalesDocuments(input: SearchSalesDocumentsClientInput): Promise<Result<SearchSalesDocumentsResult, AppError>>;
+  /** B9 — GET /documents/suggest : autocomplétion typée {kind, value, count}, LIMIT 8. */
+  suggestSalesDocuments(query: string): Promise<Result<SuggestSalesDocumentsResult, AppError>>;
 }
+
+/** Entrée client de searchSalesDocuments : identique au contrat core, `scope` par défaut "all"
+ * si omis (les appelants mobile n'ont pas toujours un toggle devis/factures actif). */
+export type SearchSalesDocumentsClientInput = Omit<SearchSalesDocumentsInput, 'scope'> & {
+  scope?: SearchSalesDocumentsInput['scope'];
+};
+export type { SearchSalesDocumentsInput, SearchSalesDocumentsResult, SuggestSalesDocumentsInput, SuggestSalesDocumentsResult };

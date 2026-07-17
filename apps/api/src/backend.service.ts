@@ -23,9 +23,11 @@ import {
   SystemClock,
   deriveRelancePlan,
   ok,
+  err,
   appConflict,
   appNotFound,
   appForbidden,
+  appUnavailable,
   appDomain,
   Company,
   Customer,
@@ -137,6 +139,11 @@ import {
   type DocumentAnalysis,
   type DocumentIntelligencePort,
   type DocumentLinkTargetPort,
+  isValidDateOnly,
+  type SearchSalesDocumentsInput,
+  type SearchSalesDocumentsResult,
+  type SuggestSalesDocumentsInput,
+  type SuggestSalesDocumentsResult,
 } from '@bob/core';
 import {
   BobAgent,
@@ -544,6 +551,19 @@ function publicSignatureUrl(token: string): string {
   return `${base}/sign/${encodeURIComponent(token)}`;
 }
 
+function paymentReturnUrl(path: string): string {
+  const explicitDemo = process.env.DEMO_MODE === 'true';
+  const configured = process.env.PAYMENT_RETURN_BASE_URL?.trim();
+  const raw = configured || (explicitDemo ? 'https://demo.bobpro.fr' : '');
+  if (!raw) throw new Error('PAYMENT_RETURN_BASE_URL est requis pour le paiement live.');
+  const base = raw.endsWith('/') ? raw : `${raw}/`;
+  const url = new URL(path.replace(/^\//u, ''), base);
+  if (!explicitDemo && (url.protocol !== 'https:' || url.hostname === 'demo.bobpro.fr')) {
+    throw new Error('PAYMENT_RETURN_BASE_URL doit cibler une origine HTTPS live.');
+  }
+  return url.toString();
+}
+
 function notificationDedupeHash(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
 }
@@ -566,7 +586,9 @@ export interface AgentExecutionOptions {
 export class BackendService {
   private readonly ids = new UuidGenerator();
   private readonly clock: ClockPort = new SystemClock();
-  private readonly snapshots = new FixtureCashflowSnapshot(CASH_SNAPSHOT);
+  private readonly demoCashflowSnapshots = process.env.DEMO_MODE === 'true'
+    ? new FixtureCashflowSnapshot(CASH_SNAPSHOT)
+    : null;
   // Module Chantiers (BTP) en mémoire pour l'instant — persistance Prisma = incrément suivant.
   private readonly chantiers = new InMemoryChantierRepository();
   // Recherche d'entreprise par SIRET (API publique gratuite) — autofill onboarding/client.
@@ -681,7 +703,16 @@ export class BackendService {
     return ok({ customers: list.length });
   }
   getCashflow(scenario: Scenario, horizon: Horizon) {
-    return new GetCashflow({ snapshots: this.snapshots, expenses: this.p.expenses }).execute({
+    // Aucune source bancaire qualifiée n'est encore persistée en live : servir CASH_SNAPSHOT
+    // inventerait le disponible du propriétaire. Le contrat reste explicitement indisponible.
+    if (process.env.DEMO_MODE !== 'true' || this.demoCashflowSnapshots === null) {
+      return Promise.resolve(err(appUnavailable('cashflow-banking-source')));
+    }
+    return new GetCashflow({
+      snapshots: this.demoCashflowSnapshots,
+      expenses: this.p.expenses,
+      invoices: this.p.invoices,
+    }).execute({
       companyId: this.companyId(),
       scenario,
       horizon,
@@ -1015,6 +1046,27 @@ export class BackendService {
   async listInvoices(): Promise<Result<InvoiceView[], AppError>> {
     const list = await this.p.invoices.listByCompany(this.companyId());
     return ok(list.map((i) => this.mapInvoice(i)));
+  }
+
+  /** B9 — GET /documents/search : « retrouve les devis de Mairie de Sèvres du mois dernier ».
+   * Validation de FORME uniquement (dates/scope) — le tri/filtre/ranking métier vit dans le port
+   * (pertinence pg_trgm côté Postgres, cf. sales-document-search.repository.ts). */
+  async searchSalesDocuments(input: SearchSalesDocumentsInput): Promise<Result<SearchSalesDocumentsResult, AppError>> {
+    const issues: { field: string; message: string }[] = [];
+    if (input.from !== undefined && !isValidDateOnly(input.from)) issues.push({ field: 'from', message: 'Date de début invalide.' });
+    if (input.to !== undefined && !isValidDateOnly(input.to)) issues.push({ field: 'to', message: 'Date de fin invalide.' });
+    if (input.from !== undefined && input.to !== undefined && input.from > input.to) {
+      issues.push({ field: 'to', message: 'La date de fin doit suivre la date de début.' });
+    }
+    if (issues.length > 0) return { ok: false, error: { kind: 'validation', issues } };
+    const result = await this.p.salesDocumentSearch.search({ ...input, companyId: this.companyId() });
+    return ok(result);
+  }
+
+  /** B9 — GET /documents/suggest : autocomplétion typée (client/numéro/libellé), LIMIT 8. */
+  async suggestSalesDocuments(input: SuggestSalesDocumentsInput): Promise<Result<SuggestSalesDocumentsResult, AppError>> {
+    const result = await this.p.salesDocumentSearch.suggest({ ...input, companyId: this.companyId() });
+    return ok(result);
   }
 
   /** A6 (PONT-SERVEUR v1) : avoir TOTAL (brouillon) d'une facture émise — MÊME use case
@@ -1625,7 +1677,7 @@ export class BackendService {
     };
   }
 
-  private bobAgent(): BobAgent {
+  private bobAgent() {
     const router = new ModelRouter({
       hasClaudeKey: hasClaudeKey(),
       hasGlmKey: hasGlmKey(),
@@ -1636,16 +1688,19 @@ export class BackendService {
     // Le fournisseur qui qualifie la demande (tool-calling) est choisi par le routeur ; sinon regex.
     const provider = router.route('intent.detect').model;
     const llm = provider !== 'demo' ? buildLlmForProvider(provider) : undefined;
-    return new BobAgent({
-      router,
-      actions: this.buildBobActions(),
-      llm,
-      runtime: {
-        clock: this.clock,
-        ids: this.ids,
-        store: new CompanyScopedJournalStore(this.p.agentJournal, this.companyId()),
-      },
-    });
+    return {
+      provider,
+      agent: new BobAgent({
+        router,
+        actions: this.buildBobActions(),
+        llm,
+        runtime: {
+          clock: this.clock,
+          ids: this.ids,
+          store: new CompanyScopedJournalStore(this.p.agentJournal, this.companyId()),
+        },
+      }),
+    };
   }
 
   async askBob(input: AgentAskPayload, execution?: AgentExecutionOptions): Promise<Result<AgentRun, AppError>>;
@@ -1690,7 +1745,11 @@ export class BackendService {
     // (facture légale, exports de documents) n'est jamais bloquée par un quota.
     const effectiveAutonomy = clampAgentAutonomy(input.autonomy, subscription.autonomyEntitlement());
     const start = Date.now();
-    const agent = this.bobAgent();
+    const bobRuntime = this.bobAgent();
+    if (bobRuntime.provider === 'demo' && process.env.DEMO_MODE !== 'true') {
+      return err(appUnavailable('bob-llm'));
+    }
+    const agent = bobRuntime.agent;
     let r = await agent.ask(input.message, {
       autonomy: effectiveAutonomy,
       ...(input.history !== undefined ? { history: input.history } : {}),
@@ -2028,7 +2087,7 @@ export class BackendService {
         args: entry.args,
         label: entry.label,
       }));
-      const record = await this.bobAgent().runJournaled(invocations, {
+      const record = await this.bobAgent().agent.runJournaled(invocations, {
         autonomy: subscription.autonomyEntitlement(),
         runId: `execute:${proposalId}`,
       });
@@ -2359,13 +2418,16 @@ export class BackendService {
     return this.gateway.createSubscriptionCheckout({
       companyId: this.companyId(),
       tier,
-      successUrl: 'https://demo.bobpro.fr/abo/ok',
-      cancelUrl: 'https://demo.bobpro.fr/abo/cancel',
+      successUrl: paymentReturnUrl('/abonnement/succes'),
+      cancelUrl: paymentReturnUrl('/abonnement/annule'),
     });
   }
 
   billingPortal() {
-    return this.gateway.createBillingPortal({ companyId: this.companyId(), returnUrl: 'https://demo.bobpro.fr/compte' });
+    return this.gateway.createBillingPortal({
+      companyId: this.companyId(),
+      returnUrl: paymentReturnUrl('/compte'),
+    });
   }
 
   /** Lien de paiement en ligne d'une facture — gated par l'offre (Pro+). */

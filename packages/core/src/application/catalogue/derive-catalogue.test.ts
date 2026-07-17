@@ -1,97 +1,231 @@
-import { describe, it, expect } from 'vitest';
-import { TRADE_PROFILES } from '../../domain/company/trade-profile';
+import { describe, expect, it } from 'vitest';
+import { type Trade } from '../../domain/company/company';
 import {
   CATALOGUE_CATEGORIES,
   deriveCatalogue,
   isCatalogueCategory,
+  parseCustomPrestation,
   searchCatalogue,
   type CustomPrestation,
 } from './derive-catalogue';
-import { type Trade } from '../../domain/company/company';
 
-const TRADES = Object.keys(TRADE_PROFILES) as Trade[];
+const TRADE_COVERAGE = {
+  plombier: true,
+  electricien: true,
+  macon: true,
+  peintre: true,
+  paysagiste: true,
+  consultant: true,
+  freelance_it: true,
+  photographe: true,
+  coach: true,
+  autre: true,
+} as const satisfies Record<Trade, true>;
 
-const persoChauffeEau: CustomPrestation = {
-  id: 'perso-1',
+const TRADES = Object.keys(TRADE_COVERAGE) as Trade[];
+
+const ownerChauffeEau: CustomPrestation = {
+  id: 'owner-1',
   label: 'Chauffe-eau 200 L',
   category: 'supply',
   unit: null,
-  unitPriceHT: 79000, // le prix DE L'ARTISAN, différent de l'indicatif métier (89 000)
+  unitPriceHT: 79_000,
   vatRate: 10,
 };
 
-const persoRamonage: CustomPrestation = {
-  id: 'perso-2',
+const ownerRamonage: CustomPrestation = {
+  id: 'owner-2',
   label: 'Ramonage conduit',
   category: 'labor',
   unit: 'forfait',
-  unitPriceHT: 9000,
+  unitPriceHT: 9_000,
   vatRate: 10,
 };
 
-describe('application/catalogue/deriveCatalogue (C27 — métier → prestations suggérées + perso)', () => {
-  it('chaque métier produit des suggestions cohérentes : indicatives, catégories fermées, TVA du métier, prix > 0, ids uniques', () => {
-    for (const trade of TRADES) {
-      const view = deriveCatalogue({ trade });
-      expect(view.prestations.length).toBeGreaterThan(0);
-      for (const p of view.prestations) {
-        expect(p.source).toBe('metier');
-        expect(p.indicative).toBe(true); // un indicatif n'est JAMAIS présenté comme le prix de l'artisan
-        expect(isCatalogueCategory(p.category)).toBe(true);
-        expect(p.vatRate).toBe(TRADE_PROFILES[trade].defaultVatRate); // 10 travaux · 20 services (C22)
-        expect(Number.isInteger(p.unitPriceHT)).toBe(true);
-        expect(p.unitPriceHT).toBeGreaterThan(0);
-      }
-      const ids = view.prestations.map((p) => p.id);
-      expect(new Set(ids).size).toBe(ids.length);
-    }
-    expect(CATALOGUE_CATEGORIES).toEqual(['labor', 'supply', 'travel']);
-  });
+function custom(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: 'owner-1',
+    label: 'Main-d\u2019\u0153uvre plomberie',
+    category: 'labor',
+    unit: '1 h',
+    unitPriceHT: 5_500,
+    vatRate: 10,
+    ...overrides,
+  };
+}
 
-  it('vocabulaire métier : plombier → chauffe-eau/débouchage/recherche de fuite ; électricien → tableau + Consuel', () => {
-    const plombier = deriveCatalogue({ trade: 'plombier' }).prestations.map((p) => p.label);
-    expect(plombier).toContain('Chauffe-eau 200 L');
-    expect(plombier).toContain('Débouchage canalisation');
-    expect(plombier).toContain('Recherche de fuite');
-    const electricien = deriveCatalogue({ trade: 'electricien' }).prestations.map((p) => p.label);
-    expect(electricien).toContain('Remplacement tableau électrique');
-    expect(electricien).toContain('Mise en conformité Consuel');
-    // TVA suggérée par les règles existantes : BTP 10 %, services 20 %.
-    expect(deriveCatalogue({ trade: 'plombier' }).prestations[0]?.vatRate).toBe(10);
-    expect(deriveCatalogue({ trade: 'consultant' }).prestations[0]?.vatRate).toBe(20);
-    // Freelance IT : catalogue propre (régie/TJM, forfait, TMA), distinct du consultant, TVA 20 %.
-    const it = deriveCatalogue({ trade: 'freelance_it' }).prestations.map((p) => p.label);
-    expect(it).toContain('Journée en régie (TJM)');
-    expect(it).toContain('Maintenance mensuelle (TMA)');
-    expect(deriveCatalogue({ trade: 'freelance_it' }).prestations[0]?.vatRate).toBe(20);
-  });
-
-  it("fusion « Bob garde tes prix » : la perso au même libellé ÉCLIPSE l'indicatif métier, la nouvelle s'ajoute", () => {
-    const view = deriveCatalogue({ trade: 'plombier', custom: [persoChauffeEau, persoRamonage] });
-    const chauffeEaux = view.prestations.filter((p) => p.label === 'Chauffe-eau 200 L');
-    expect(chauffeEaux).toHaveLength(1); // l'indicatif a disparu — le prix de l'artisan fait foi
-    expect(chauffeEaux[0]).toMatchObject({
-      source: 'perso',
-      indicative: false,
-      unitPriceHT: 79000,
-      id: 'perso-1',
+describe('parseCustomPrestation', () => {
+  it('produit une valeur canonique en trimant le libellé et l\u2019unité', () => {
+    expect(
+      parseCustomPrestation(custom({ label: '  Pose chauffe-eau  ', unit: '  forfait  ' })),
+    ).toEqual({
+      id: 'owner-1',
+      label: 'Pose chauffe-eau',
+      category: 'labor',
+      unit: 'forfait',
+      unitPriceHT: 5_500,
+      vatRate: 10,
     });
-    expect(view.prestations.filter((p) => p.label === 'Ramonage conduit')).toHaveLength(1);
-    // Ordre : catégorie labor → supply → travel, perso avant métier dans chaque catégorie.
-    const labor = view.prestations.filter((p) => p.category === 'labor');
-    expect(labor[0]?.id).toBe('perso-2');
-    const rank = { labor: 0, supply: 1, travel: 2 } as const;
-    const ranks = view.prestations.map((p) => rank[p.category]);
-    expect(ranks).toEqual([...ranks].sort((a, b) => a - b)); // jamais de catégorie entremêlée
+    expect(parseCustomPrestation(custom({ unit: null }))).toMatchObject({ unit: null });
   });
 
-  it('searchCatalogue : insensible casse/accents, requête vide = tout, aucun résultat = liste vide', () => {
-    const view = deriveCatalogue({ trade: 'plombier', custom: [persoRamonage] });
-    expect(searchCatalogue(view.prestations, '')).toHaveLength(view.prestations.length);
-    const chauffe = searchCatalogue(view.prestations, 'CHAUFFE');
-    expect(chauffe.some((p) => p.label === 'Chauffe-eau 200 L')).toBe(true);
-    // « débouchage » sans accents ni majuscules retrouve « Débouchage canalisation ».
-    expect(searchCatalogue(view.prestations, 'debouchage')).toHaveLength(1);
-    expect(searchCatalogue(view.prestations, 'zzz-introuvable')).toHaveLength(0);
+  it('accepte exactement les bornes de prix et rejette tout prix hors domaine', () => {
+    expect(parseCustomPrestation(custom({ unitPriceHT: 1 }))).not.toBeNull();
+    expect(parseCustomPrestation(custom({ unitPriceHT: 1_500_000_000 }))).not.toBeNull();
+
+    for (const unitPriceHT of [
+      0,
+      -1,
+      1.5,
+      1_500_000_001,
+      Number.MAX_SAFE_INTEGER + 1,
+      Number.NaN,
+    ]) {
+      expect(parseCustomPrestation(custom({ unitPriceHT }))).toBeNull();
+    }
+  });
+
+  it('applique les bornes et l\u2019hygiène texte du devis', () => {
+    expect(parseCustomPrestation(custom({ label: 'a'.repeat(500) }))).not.toBeNull();
+    expect(parseCustomPrestation(custom({ unit: 'u'.repeat(80) }))).not.toBeNull();
+
+    for (const label of ['', '   ', 'a'.repeat(501), 'Pose\ninterdite', 'Pose\u0085interdite']) {
+      expect(parseCustomPrestation(custom({ label }))).toBeNull();
+    }
+    for (const unit of ['', '   ', 'u'.repeat(81), 'h\tforfait']) {
+      expect(parseCustomPrestation(custom({ unit }))).toBeNull();
+    }
+  });
+
+  it('exige un id canonique, une catégorie/TVA fermées et aucune clé étrangère', () => {
+    expect(parseCustomPrestation(custom({ id: 'A-1' }))).not.toBeNull();
+    expect(parseCustomPrestation(custom({ id: 'a'.repeat(128) }))).not.toBeNull();
+
+    for (const id of ['', ' owner-1', 'owner_1', 'a'.repeat(129)]) {
+      expect(parseCustomPrestation(custom({ id }))).toBeNull();
+    }
+    expect(parseCustomPrestation(custom({ category: 'subscription' }))).toBeNull();
+    expect(parseCustomPrestation(custom({ vatRate: 7 }))).toBeNull();
+    expect(parseCustomPrestation({ ...custom(), extra: true })).toBeNull();
+    expect(parseCustomPrestation(null)).toBeNull();
+    expect(parseCustomPrestation([])).toBeNull();
+  });
+});
+
+describe('application/catalogue/deriveCatalogue — données propriétaire uniquement', () => {
+  it('reste vide pour chaque métier sans prestation propriétaire', () => {
+    for (const trade of TRADES) {
+      expect(deriveCatalogue({ trade })).toEqual({ trade, prestations: [] });
+    }
+  });
+
+  it('retourne seulement les prestations propriétaire validées, sans indicatif', () => {
+    const view = deriveCatalogue({
+      trade: 'plombier',
+      custom: [ownerChauffeEau, ownerRamonage],
+    });
+
+    expect(view.prestations).toEqual([
+      { ...ownerRamonage, source: 'perso', indicative: false },
+      { ...ownerChauffeEau, source: 'perso', indicative: false },
+    ]);
+    expect(view.prestations).toHaveLength(2);
+    expect(view.prestations.every((prestation) => prestation.source === 'perso')).toBe(true);
+    expect(view.prestations.every((prestation) => prestation.indicative === false)).toBe(true);
+  });
+
+  it('ne change ni les prestations ni les prix propriétaire selon le métier', () => {
+    const plombier = deriveCatalogue({ trade: 'plombier', custom: [ownerChauffeEau] });
+    const consultant = deriveCatalogue({ trade: 'consultant', custom: [ownerChauffeEau] });
+
+    expect(plombier.prestations).toEqual(consultant.prestations);
+    expect(plombier.prestations).toEqual([
+      { ...ownerChauffeEau, source: 'perso', indicative: false },
+    ]);
+  });
+
+  it('écarte chaque entrée invalide sans fabriquer de valeur de remplacement', () => {
+    const invalidEntries = [
+      custom({ id: 'invalid-price', unitPriceHT: 0 }),
+      custom({ id: 'invalid-category', category: 'subscription' }),
+      { ...custom({ id: 'invalid-shape' }), tenantId: 'foreign-tenant' },
+    ] as unknown as CustomPrestation[];
+
+    const view = deriveCatalogue({
+      trade: 'plombier',
+      custom: [ownerRamonage, ...invalidEntries],
+    });
+
+    expect(view.prestations).toEqual([
+      { ...ownerRamonage, source: 'perso', indicative: false },
+    ]);
+  });
+
+  it('trie par catégorie puis par libellé français sans altérer les entrées', () => {
+    const entries: CustomPrestation[] = [
+      { ...ownerChauffeEau, id: 'travel-alpha', label: 'Alpha', category: 'travel' },
+      { ...ownerChauffeEau, id: 'labor-zulu', label: 'Zulu', category: 'labor' },
+      { ...ownerChauffeEau, id: 'supply-alpha', label: 'Alpha', category: 'supply' },
+      { ...ownerChauffeEau, id: 'labor-alpha', label: 'Alpha', category: 'labor' },
+    ];
+
+    const view = deriveCatalogue({ trade: 'autre', custom: entries });
+
+    expect(view.prestations.map((prestation) => prestation.id)).toEqual([
+      'labor-alpha',
+      'labor-zulu',
+      'supply-alpha',
+      'travel-alpha',
+    ]);
+    expect(entries.map((prestation) => prestation.id)).toEqual([
+      'travel-alpha',
+      'labor-zulu',
+      'supply-alpha',
+      'labor-alpha',
+    ]);
+  });
+
+  it('expose uniquement les catégories facturables fermées', () => {
+    expect(CATALOGUE_CATEGORIES).toEqual(['labor', 'supply', 'travel']);
+    for (const category of CATALOGUE_CATEGORIES) {
+      expect(isCatalogueCategory(category)).toBe(true);
+    }
+    expect(isCatalogueCategory('subscription')).toBe(false);
+    expect(isCatalogueCategory(null)).toBe(false);
+  });
+});
+
+describe('application/catalogue/searchCatalogue', () => {
+  const prestations = deriveCatalogue({
+    trade: 'plombier',
+    custom: [
+      ownerChauffeEau,
+      ownerRamonage,
+      {
+        id: 'owner-3',
+        label: 'Main-d\u2019\u0153uvre électricité',
+        category: 'labor',
+        unit: '1 h',
+        unitPriceHT: 6_200,
+        vatRate: 20,
+      },
+    ],
+  }).prestations;
+
+  it('retrouve les seuls éléments propriétaire sans tenir compte des accents, casse ou ligatures', () => {
+    expect(searchCatalogue(prestations, 'CHAUFFE EAU').map((item) => item.id)).toEqual([
+      'owner-1',
+    ]);
+    expect(searchCatalogue(prestations, 'oeuvre electricite').map((item) => item.id)).toEqual([
+      'owner-3',
+    ]);
+  });
+
+  it('retourne une copie complète pour une requête vide et une liste vide sans correspondance', () => {
+    const all = searchCatalogue(prestations, '   ');
+
+    expect(all).toEqual(prestations);
+    expect(all).not.toBe(prestations);
+    expect(searchCatalogue(prestations, 'zzz-introuvable')).toEqual([]);
   });
 });

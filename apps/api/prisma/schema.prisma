@@ -238,11 +238,11 @@ enum SubscriptionStore {
 }
 
 model Company {
-  id                      String                       @id
+  id                      String                         @id
   name                    String
   legalForm               LegalForm
-  siren                   String                       @db.Char(9)
-  siret                   String                       @unique @db.Char(14)
+  siren                   String                         @db.Char(9)
+  siret                   String                         @unique @db.Char(14)
   apeCode                 String?
   trade                   String
   vatRegime               VatRegime
@@ -251,7 +251,7 @@ model Company {
   addrZip                 String
   addrCity                String
   tvaIntracom             String?
-  dateCreation            DateTime?                    @db.Date
+  dateCreation            DateTime?                      @db.Date
   iban                    String?
   bic                     String?
   insurerName             String?
@@ -320,35 +320,54 @@ model Customer {
 
   @@index([companyId])
   @@index([companyId, type])
+  // B9 — recherche floue « retrouve les devis de Mairie de Sèvres » (GET /documents/search,
+  // /documents/suggest) : index GIN trigram customers_name_trgm_idx sur
+  // immutable_unaccent(lower(name)) — le nom client n'est jamais dénormalisé sur quotes/invoices,
+  // un seul index ici sert le join + l'autocomplétion. VOLONTAIREMENT ABSENT du DSL Prisma :
+  // c'est un index D'EXPRESSION (accents/casse pliés), que `@@index` ne sait pas représenter —
+  // il vit uniquement dans la migration b9_documents_search_indexes. NE JAMAIS le "nettoyer"
+  // en pensant combler un drift : `prisma migrate diff` l'ignore silencieusement (type non
+  // modélisable), il n'est ni recréé ni supprimé par erreur.
   @@map("customers")
 }
 
 model Quote {
-  id             String      @id
-  companyId      String
-  company        Company     @relation(fields: [companyId], references: [id])
-  customerId     String
-  status         QuoteStatus @default(draft)
-  number         String?
-  validUntil     DateTime?
-  depositPct     Int?
-  signerName     String?
-  signedAt       DateTime?
+  id               String                 @id
+  companyId        String
+  company          Company                @relation(fields: [companyId], references: [id])
+  customerId       String
+  status           QuoteStatus            @default(draft)
+  number           String?
+  // B9 — un devis n'a pas de date métier propre (contrairement à Invoice.issuedAt) : createdAt
+  // tient lieu de date de référence pour la recherche/le tri par période ("le mois dernier").
+  // Lecture seule côté domaine (non threadé dans l'agrégat Quote, hors invariants métier).
+  createdAt        DateTime               @default(now())
+  validUntil       DateTime?
+  depositPct       Int?
+  signerName       String?
+  signedAt         DateTime?
   // R4 : preuve de signature honnête — JSON { method: 'onsite_draw'|'remote_link', sha256?, capturedAt? }.
   // NULL = ligne historique (méthode réelle inconnue, réhydratée 'legacy_declared', jamais réinventée).
   // V1 : hash + méta uniquement ; l'archivage de l'image du tracé est l'évolution suivante.
-  signatureProof Json?
-  totalsHt       Int         @default(0)
-  totalsVat      Int         @default(0)
-  totalsTtc      Int         @default(0)
-  totalsNetToPay Int         @default(0)
-  vatByRate      Json        @default("{}")
-  lines          LineItem[]  @relation("QuoteLines")
+  signatureProof   Json?
+  totalsHt         Int                    @default(0)
+  totalsVat        Int                    @default(0)
+  totalsTtc        Int                    @default(0)
+  totalsNetToPay   Int                    @default(0)
+  vatByRate        Json                   @default("{}")
+  lines            LineItem[]             @relation("QuoteLines")
   creationRequests QuoteCreationRequest[]
 
   @@unique([companyId, number], name: "uniq_quote_number")
   @@unique([id, companyId], name: "uniq_quote_id_company", map: "uniq_quote_id_company")
   @@index([companyId, status])
+  // B9 — chips de dates ("ce mois-ci"/"mois dernier") : tenant + tri/plage sur une seule
+  // descente d'index, sans tri en mémoire côté Postgres.
+  @@index([companyId, createdAt(sort: Desc)], map: "quotes_company_created_idx")
+  // B9 — recherche "contient" sur le numéro (ex. taper "014" doit retrouver "DEV-2026-014") : le
+  // B-Tree unique (companyId, number) ne sert que l'égalité/préfixe. index GIN trigram
+  // quotes_number_trgm_idx (migration b9_documents_search_indexes) — même remarque "absent du
+  // DSL" que customers_name_trgm_idx ci-dessus (index d'expression).
   @@map("quotes")
 }
 
@@ -391,6 +410,12 @@ model Invoice {
   @@index([companyId, parentQuoteId, kind], map: "invoices_parent_quote_kind_idx")
   @@index([companyId, status])
   @@index([dueAt])
+  // B9 — chips de dates ("ce mois-ci"/"mois dernier") : tenant + tri/plage sur une seule
+  // descente d'index. issuedAt est NULL en brouillon — hors périmètre "recherche par période"
+  // par construction (une pièce non émise n'a pas encore de date métier).
+  @@index([companyId, issuedAt(sort: Desc)], map: "invoices_company_issued_idx")
+  // B9 — recherche "contient" sur le numéro, même besoin que quotes_number_trgm_idx : index GIN
+  // trigram invoices_number_trgm_idx (migration b9_documents_search_indexes, absent du DSL).
   @@map("invoices")
 }
 
@@ -410,6 +435,9 @@ model LineItem {
 
   @@index([quoteId])
   @@index([invoiceId])
+  // B9 — retrouver une pièce par le contenu d'une ligne ("peinture façade") sans scanner toute
+  // line_items ("libellés de lignes" du cahier des charges) : index GIN trigram
+  // line_items_label_trgm_idx (migration b9_documents_search_indexes, absent du DSL).
   @@map("line_items")
 }
 
@@ -498,18 +526,18 @@ model ExpenseCreationRequest {
 /// keyHash est tenant-salé, payloadHash fige l'intention et les totaux figent la réponse originale.
 /// Le rôle runtime n'a que SELECT/INSERT ; les lignes publiées sont immuables.
 model QuoteCreationRequest {
-  companyId       String   @db.Text
-  company         Company  @relation(fields: [companyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  keyHash         String   @db.Char(64)
-  payloadHash     String   @db.Char(64)
-  quoteId         String
-  quote           Quote    @relation(fields: [quoteId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Cascade)
-  totalsHt        Int
-  totalsVat       Int
-  totalsTtc       Int
-  totalsNetToPay  Int
-  vatByRate       Json     @default("{}")
-  createdAt       DateTime @default(now()) @db.Timestamptz(6)
+  companyId      String   @db.Text
+  company        Company  @relation(fields: [companyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  keyHash        String   @db.Char(64)
+  payloadHash    String   @db.Char(64)
+  quoteId        String
+  quote          Quote    @relation(fields: [quoteId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Cascade)
+  totalsHt       Int
+  totalsVat      Int
+  totalsTtc      Int
+  totalsNetToPay Int
+  vatByRate      Json     @default("{}")
+  createdAt      DateTime @default(now()) @db.Timestamptz(6)
 
   @@id([companyId, keyHash], name: "quote_creation_request_key")
   @@index([quoteId, companyId])
@@ -701,39 +729,39 @@ model NotificationJob {
 // Appareils enregistrés pour le push Expo (C25) — un token appartient à une seule session
 // applicative à la fois, tous tenants confondus. Le repository effectue un rebind atomique sous RLS.
 model PushInstallation {
-  id                   String   @id @db.Uuid
-  revocationSecretHash String   @db.Char(64)
+  id                   String    @id @db.Uuid
+  revocationSecretHash String    @db.Char(64)
   // High-water mark conservé même après révocation du device actif : un ancien POST ne peut
   // jamais ressusciter le binding précédent après logout ou reconnexion.
   maxGeneration        Int
-  currentBindingId     String?  @unique(map: "push_installations_current_binding_id_key") @db.Uuid
+  currentBindingId     String?   @unique(map: "push_installations_current_binding_id_key") @db.Uuid
   currentCompanyId     String?
   currentUserId        String?
   lastConfirmedAt      DateTime?
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
   device               Device?
 
   @@map("push_installations")
 }
 
 model Device {
-  id                     String   @id
-  companyId              String
-  company                Company  @relation(fields: [companyId], references: [id])
-  userId                 String?
-  expoPushToken          String   @unique(map: "devices_expo_push_token_key")
-  platform               String?
+  id                   String            @id
+  companyId            String
+  company              Company           @relation(fields: [companyId], references: [id])
+  userId               String?
+  expoPushToken        String            @unique(map: "devices_expo_push_token_key")
+  platform             String?
   // Phase expand : nullable pour les lignes N-1. Toute inscription N porte ensuite une
   // installation stable et un binding one-shot, afin qu'une révocation tardive ne supprime
   // jamais le binding du compte suivant sur le même téléphone.
-  installationId         String?  @unique(map: "devices_installation_id_key") @db.Uuid
-  installation           PushInstallation? @relation(fields: [installationId], references: [id], onDelete: Restrict)
-  bindingId              String?  @unique(map: "devices_binding_id_key") @db.Uuid
-  bindingGeneration      Int?
-  revocationSecretHash   String?  @db.Char(64)
-  createdAt              DateTime @default(now())
-  updatedAt              DateTime @updatedAt
+  installationId       String?           @unique(map: "devices_installation_id_key") @db.Uuid
+  installation         PushInstallation? @relation(fields: [installationId], references: [id], onDelete: Restrict)
+  bindingId            String?           @unique(map: "devices_binding_id_key") @db.Uuid
+  bindingGeneration    Int?
+  revocationSecretHash String?           @db.Char(64)
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
 
   // Compatibilité rolling N-1 : l'ancien binaire cible encore cette clé composée. La contrainte
   // globale ci-dessus fait foi ; cette clé redondante sera retirée dans une phase contract ultérieure.
@@ -900,35 +928,35 @@ model RealtimeSessionLease {
 /// base : seuls le SHA-256 du ticket et une identité AEAD liée au bail/contexte sont persistés.
 /// Les lignes terminales sont conservées un temps borné même après suppression du bail provider.
 model RealtimeMistralIngressTicket {
-  id                       String    @id @default(uuid()) @db.Uuid
-  companyId                String    @db.Text
-  company                  Company   @relation(fields: [companyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  subjectHash              String    @db.Char(64)
-  subjectKeyVersion        Int
-  sessionId                String    @db.Uuid
-  ticketHash               String    @unique(map: "realtime_mistral_ingress_tickets_ticket_hash_key") @db.Char(64)
-  protocol                 String    @db.Text
-  state                    String    @db.Text
-  plan                     String    @db.Text
-  contextSchemaVersion     Int
-  contextRevision          Int
-  contextDigest            String    @db.Char(64)
-  userIdentityCiphertext   Bytes
-  userIdentityNonce        Bytes
-  userIdentityTag          Bytes
+  id                           String    @id @default(uuid()) @db.Uuid
+  companyId                    String    @db.Text
+  company                      Company   @relation(fields: [companyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  subjectHash                  String    @db.Char(64)
+  subjectKeyVersion            Int
+  sessionId                    String    @db.Uuid
+  ticketHash                   String    @unique(map: "realtime_mistral_ingress_tickets_ticket_hash_key") @db.Char(64)
+  protocol                     String    @db.Text
+  state                        String    @db.Text
+  plan                         String    @db.Text
+  contextSchemaVersion         Int
+  contextRevision              Int
+  contextDigest                String    @db.Char(64)
+  userIdentityCiphertext       Bytes
+  userIdentityNonce            Bytes
+  userIdentityTag              Bytes
   identityEncryptionKeyVersion Int
-  maxAudioBytes            Int
-  providerSessionId        String?   @unique(map: "realtime_mistral_ingress_tickets_provider_session_key") @db.Text
-  providerTermination      String?   @db.Text
-  issuedAt                 DateTime  @db.Timestamptz(6)
-  ticketExpiresAt          DateTime  @db.Timestamptz(6)
-  bindingExpiresAt         DateTime? @db.Timestamptz(6)
-  hardExpiresAt            DateTime  @db.Timestamptz(6)
-  consumedAt               DateTime? @db.Timestamptz(6)
-  activatedAt              DateTime? @db.Timestamptz(6)
-  finishedAt               DateTime? @db.Timestamptz(6)
-  retentionExpiresAt       DateTime  @db.Timestamptz(6)
-  version                  Int       @default(1)
+  maxAudioBytes                Int
+  providerSessionId            String?   @unique(map: "realtime_mistral_ingress_tickets_provider_session_key") @db.Text
+  providerTermination          String?   @db.Text
+  issuedAt                     DateTime  @db.Timestamptz(6)
+  ticketExpiresAt              DateTime  @db.Timestamptz(6)
+  bindingExpiresAt             DateTime? @db.Timestamptz(6)
+  hardExpiresAt                DateTime  @db.Timestamptz(6)
+  consumedAt                   DateTime? @db.Timestamptz(6)
+  activatedAt                  DateTime? @db.Timestamptz(6)
+  finishedAt                   DateTime? @db.Timestamptz(6)
+  retentionExpiresAt           DateTime  @db.Timestamptz(6)
+  version                      Int       @default(1)
 
   @@unique([companyId, sessionId], map: "realtime_mistral_ingress_tickets_session_key")
   @@index([companyId, state, ticketExpiresAt], map: "realtime_mistral_ingress_tickets_tenant_state_idx")
@@ -1305,17 +1333,17 @@ model ReleaseFlagSubject {
 // (cf. commentaire de l'enum SubscriptionPlan). Additif : le gating interne existant continue
 // de lire le stub early-access (subscriptionFor) tant que la facturation réelle n'est pas ouverte.
 model Subscription {
-  id               String              @id
-  companyId        String              @unique
-  company          Company             @relation(fields: [companyId], references: [id])
+  id               String             @id
+  companyId        String             @unique
+  company          Company            @relation(fields: [companyId], references: [id])
   plan             SubscriptionPlan
-  status           SubscriptionStatus  @default(trialing)
+  status           SubscriptionStatus @default(trialing)
   trialEndsAt      DateTime?
   currentPeriodEnd DateTime?
   store            SubscriptionStore?
   storeRef         String?
-  createdAt        DateTime            @default(now())
-  updatedAt        DateTime            @updatedAt
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
 
   @@map("subscriptions")
 }

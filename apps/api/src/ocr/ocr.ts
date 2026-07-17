@@ -3,6 +3,7 @@ import {
   ok,
   err,
   appDomain,
+  appUnavailable,
   DemoOcrAdapter,
   SystemClock,
   type OcrPort,
@@ -97,9 +98,15 @@ const SCHEMA_HINT =
 
 function guardInput(input: OcrExtractInput): AppError | null {
   if (!ACCEPTED_MIME.includes(input.mimeType))
-    return { kind: 'validation', issues: [{ field: 'mimeType', message: `Type non supporté : ${input.mimeType}` }] };
+    return {
+      kind: 'validation',
+      issues: [{ field: 'mimeType', message: `Type non supporté : ${input.mimeType}` }],
+    };
   if (input.contentBase64.length > MAX_BASE64_LENGTH)
-    return { kind: 'validation', issues: [{ field: 'contentBase64', message: 'Document trop volumineux (10 Mo max).' }] };
+    return {
+      kind: 'validation',
+      issues: [{ field: 'contentBase64', message: 'Document trop volumineux (10 Mo max).' }],
+    };
   return null;
 }
 
@@ -131,7 +138,10 @@ async function fetchWithRetry(url: string, init: RequestInit): Promise<Response>
 
 /** Extrait le premier objet JSON d'une réponse de modèle (tolère les fences markdown). */
 function parseModelJson(raw: string): OcrExtractionDraft | null {
-  const cleaned = raw.replace(/```json/gi, '').replace(/```/g, '').trim();
+  const cleaned = raw
+    .replace(/```json/gi, '')
+    .replace(/```/g, '')
+    .trim();
   const start = cleaned.indexOf('{');
   const end = cleaned.lastIndexOf('}');
   if (start < 0 || end <= start) return null;
@@ -172,24 +182,41 @@ export class MistralOcrAdapter implements OcrPort {
         headers: { authorization: `Bearer ${this.apiKey}`, 'content-type': 'application/json' },
         body: JSON.stringify({ model: this.ocrModel, document, include_image_base64: false }),
       });
-      if (!ocrRes.ok) return err({ kind: 'dependency', port: 'ocr', cause: `mistral-ocr HTTP ${ocrRes.status}` });
+      if (!ocrRes.ok)
+        return err({ kind: 'dependency', port: 'ocr', cause: `mistral-ocr HTTP ${ocrRes.status}` });
       const ocrData = (await ocrRes.json()) as { pages?: { markdown?: string }[] };
       const pages = (ocrData.pages ?? []).map((p) => p.markdown ?? '');
       const markdown = pages.join('\n\n').trim();
-      if (!markdown) return err({ kind: 'dependency', port: 'ocr', cause: 'mistral-ocr : document illisible (aucun texte).' });
+      if (!markdown)
+        return err({
+          kind: 'dependency',
+          port: 'ocr',
+          cause: 'mistral-ocr : document illisible (aucun texte).',
+        });
 
       // #4 (excellence) : plusieurs pièces dans un même document → extraction fausse garantie.
       // Heuristique prudente : ≥ 2 pages portant chacune un EN-TÊTE de pièce distinct.
-      const pieceHeaders = pages.filter((page) => /facture\s*(n°|no|num|#)|ticket\s+de\s+caisse|re[çc]u\s*(n°|no|#)/i.test(page)).length;
+      const pieceHeaders = pages.filter((page) =>
+        /facture\s*(n°|no|num|#)|ticket\s+de\s+caisse|re[çc]u\s*(n°|no|#)/i.test(page),
+      ).length;
       if (pages.length > 1 && pieceHeaders >= 2)
         return err({
           kind: 'validation',
-          issues: [{ field: 'contentBase64', message: 'Plusieurs pièces détectées dans le document — scanne-les une par une.' }],
+          issues: [
+            {
+              field: 'contentBase64',
+              message: 'Plusieurs pièces détectées dans le document — scanne-les une par une.',
+            },
+          ],
         });
 
       return this.extractFromMarkdown(markdown, input);
     } catch (e) {
-      return err({ kind: 'dependency', port: 'ocr', cause: e instanceof Error ? e.message : 'ocr' });
+      return err({
+        kind: 'dependency',
+        port: 'ocr',
+        cause: e instanceof Error ? e.message : 'ocr',
+      });
     }
   }
 
@@ -198,7 +225,10 @@ export class MistralOcrAdapter implements OcrPort {
    * d'évaluation (#13) : on évalue le prompt/modèle sur un jeu de pièces annotées sans
    * refaire l'étape OCR image.
    */
-  async extractFromMarkdown(markdown: string, input: OcrExtractInput): Promise<Result<OcrExtraction, AppError>> {
+  async extractFromMarkdown(
+    markdown: string,
+    input: OcrExtractInput,
+  ): Promise<Result<OcrExtraction, AppError>> {
     try {
       const body = (format: unknown): string =>
         JSON.stringify({
@@ -207,14 +237,20 @@ export class MistralOcrAdapter implements OcrPort {
           response_format: format,
           messages: [
             { role: 'system', content: ocrSystemPrompt(input, this.clock.today()) },
-            { role: 'user', content: `Pièce fournisseur (OCR markdown) :\n\n${markdown.slice(0, 24_000)}` },
+            {
+              role: 'user',
+              content: `Pièce fournisseur (OCR markdown) :\n\n${markdown.slice(0, 24_000)}`,
+            },
           ],
         });
       // #1 : schéma IMPOSÉ (json_schema strict) ; si l'API le refuse (400), repli json_object.
       let chatRes = await fetchWithRetry('https://api.mistral.ai/v1/chat/completions', {
         method: 'POST',
         headers: { authorization: `Bearer ${this.apiKey}`, 'content-type': 'application/json' },
-        body: body({ type: 'json_schema', json_schema: { name: 'ocr_extraction', strict: true, schema: OCR_JSON_SCHEMA } }),
+        body: body({
+          type: 'json_schema',
+          json_schema: { name: 'ocr_extraction', strict: true, schema: OCR_JSON_SCHEMA },
+        }),
       });
       if (chatRes.status === 400) {
         chatRes = await fetchWithRetry('https://api.mistral.ai/v1/chat/completions', {
@@ -223,17 +259,34 @@ export class MistralOcrAdapter implements OcrPort {
           body: body({ type: 'json_object' }),
         });
       }
-      if (!chatRes.ok) return err({ kind: 'dependency', port: 'ocr', cause: `mistral-extract HTTP ${chatRes.status}` });
+      if (!chatRes.ok)
+        return err({
+          kind: 'dependency',
+          port: 'ocr',
+          cause: `mistral-extract HTTP ${chatRes.status}`,
+        });
       const chatData = (await chatRes.json()) as { choices?: { message?: { content?: string } }[] };
       const draft = parseModelJson(chatData.choices?.[0]?.message?.content ?? '');
-      if (!draft) return err({ kind: 'dependency', port: 'ocr', cause: 'mistral-extract : réponse non-JSON.' });
+      if (!draft)
+        return err({
+          kind: 'dependency',
+          port: 'ocr',
+          cause: 'mistral-extract : réponse non-JSON.',
+        });
       // Le rawText de référence = le markdown OCR (fidèle), pas la paraphrase du modèle —
       // c'est lui qui alimente la vérification de provenance (#2) côté domaine.
-      const norm = makeOcrExtraction({ ...draft, rawText: markdown }, { today: this.clock.today() });
+      const norm = makeOcrExtraction(
+        { ...draft, rawText: markdown },
+        { today: this.clock.today() },
+      );
       if (!norm.ok) return err(appDomain(norm.error));
       return ok(norm.value);
     } catch (e) {
-      return err({ kind: 'dependency', port: 'ocr', cause: e instanceof Error ? e.message : 'ocr' });
+      return err({
+        kind: 'dependency',
+        port: 'ocr',
+        cause: e instanceof Error ? e.message : 'ocr',
+      });
     }
   }
 
@@ -255,12 +308,22 @@ export class ClaudeVisionOcrAdapter implements OcrPort {
     if (invalid) return err(invalid);
     const block =
       input.mimeType === 'application/pdf'
-        ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: input.contentBase64 } }
-        : { type: 'image', source: { type: 'base64', media_type: input.mimeType, data: input.contentBase64 } };
+        ? {
+            type: 'document',
+            source: { type: 'base64', media_type: 'application/pdf', data: input.contentBase64 },
+          }
+        : {
+            type: 'image',
+            source: { type: 'base64', media_type: input.mimeType, data: input.contentBase64 },
+          };
     try {
       const res = await fetchWithRetry('https://api.anthropic.com/v1/messages', {
         method: 'POST',
-        headers: { 'x-api-key': this.apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+        headers: {
+          'x-api-key': this.apiKey,
+          'anthropic-version': '2023-06-01',
+          'content-type': 'application/json',
+        },
         body: JSON.stringify({
           model: this.model,
           max_tokens: 4096,
@@ -269,30 +332,50 @@ export class ClaudeVisionOcrAdapter implements OcrPort {
           tools: [
             {
               name: 'ocr_extraction',
-              description: "Restitue les champs extraits de la pièce fournisseur.",
+              description: 'Restitue les champs extraits de la pièce fournisseur.',
               input_schema: OCR_JSON_SCHEMA,
             },
           ],
           tool_choice: { type: 'tool', name: 'ocr_extraction' },
-          messages: [{ role: 'user', content: [block, { type: 'text', text: 'Extrais les champs du document.' }] }],
+          messages: [
+            {
+              role: 'user',
+              content: [block, { type: 'text', text: 'Extrais les champs du document.' }],
+            },
+          ],
         }),
       });
-      if (!res.ok) return err({ kind: 'dependency', port: 'ocr', cause: `claude-vision HTTP ${res.status}` });
+      if (!res.ok)
+        return err({ kind: 'dependency', port: 'ocr', cause: `claude-vision HTTP ${res.status}` });
       const data = (await res.json()) as {
         content?: { type?: string; text?: string; name?: string; input?: unknown }[];
         stop_reason?: string;
       };
       if (data.stop_reason === 'max_tokens')
-        return err({ kind: 'dependency', port: 'ocr', cause: 'Réponse OCR tronquée (max_tokens).' });
-      const toolBlock = data.content?.find((c) => c.type === 'tool_use' && c.name === 'ocr_extraction');
+        return err({
+          kind: 'dependency',
+          port: 'ocr',
+          cause: 'Réponse OCR tronquée (max_tokens).',
+        });
+      const toolBlock = data.content?.find(
+        (c) => c.type === 'tool_use' && c.name === 'ocr_extraction',
+      );
       const draft = (toolBlock?.input ?? null) as OcrExtractionDraft | null;
       if (!draft || typeof draft !== 'object')
-        return err({ kind: 'dependency', port: 'ocr', cause: 'claude-vision : réponse hors contrat (tool_use absent).' });
+        return err({
+          kind: 'dependency',
+          port: 'ocr',
+          cause: 'claude-vision : réponse hors contrat (tool_use absent).',
+        });
       const norm = makeOcrExtraction(draft, { today: this.clock.today() });
       if (!norm.ok) return err(appDomain(norm.error));
       return ok(norm.value);
     } catch (e) {
-      return err({ kind: 'dependency', port: 'ocr', cause: e instanceof Error ? e.message : 'ocr' });
+      return err({
+        kind: 'dependency',
+        port: 'ocr',
+        cause: e instanceof Error ? e.message : 'ocr',
+      });
     }
   }
 
@@ -363,7 +446,11 @@ export class FallbackOcrChain implements OcrPort {
   }
 
   async extractDocument(input: OcrExtractInput): Promise<Result<OcrExtraction, AppError>> {
-    let lastError: AppError = { kind: 'dependency', port: 'ocr', cause: 'Aucun moteur OCR disponible.' };
+    let lastError: AppError = {
+      kind: 'dependency',
+      port: 'ocr',
+      cause: 'Aucun moteur OCR disponible.',
+    };
     for (let i = 0; i < this.engines.length; i++) {
       const { name, port } = this.engines[i]!;
       const breaker = this.breakers[i]!;
@@ -385,7 +472,12 @@ export class FallbackOcrChain implements OcrPort {
         return r;
       }
       breaker.record(false);
-      this.observer?.({ engine: name, ok: false, ms, error: 'cause' in r.error ? String(r.error.cause) : r.error.kind });
+      this.observer?.({
+        engine: name,
+        ok: false,
+        ms,
+        error: 'cause' in r.error ? String(r.error.cause) : r.error.kind,
+      });
       lastError = r.error;
     }
     return err(lastError);
@@ -400,22 +492,43 @@ export class FallbackOcrChain implements OcrPort {
   }
 }
 
+/** Frontière live explicite : l'absence de moteur OCR est une capacité indisponible, jamais
+ * une permission d'inventer les champs d'une pièce via l'adapter de démonstration. */
+export class UnavailableOcrAdapter implements OcrPort {
+  extractDocument(): Promise<Result<OcrExtraction, AppError>> {
+    return Promise.resolve(err(appUnavailable('ocr')));
+  }
+
+  health(): Promise<{ healthy: boolean }> {
+    return Promise.resolve({ healthy: false });
+  }
+}
+
 /**
- * Bascule : démo déterministe en DEMO_MODE ; sinon chaîne LLM réelle, MISTRAL EN PRIORITÉ
- * (clé présente — directive humaine 2026-07-03), Claude Vision en repli ; sans aucune clé,
- * la démo garde l'app fonctionnelle (parité hors-ligne).
+ * Bascule : démo déterministe uniquement en DEMO_MODE=true ; sinon chaîne LLM réelle,
+ * Mistral en priorité et Claude Vision en repli. Sans clé live, la capacité est indisponible.
  */
+export function buildOcrAdapter(): OcrPort {
+  if (isDemoMode()) return new DemoOcrAdapter(new SystemClock());
+  const engines: NamedOcrEngine[] = [];
+  if (hasMistralKey())
+    engines.push({
+      name: 'mistral-ocr',
+      port: new MistralOcrAdapter(process.env.MISTRAL_API_KEY as string),
+    });
+  if (hasClaudeKey())
+    engines.push({
+      name: 'claude-vision',
+      port: new ClaudeVisionOcrAdapter(process.env.ANTHROPIC_API_KEY as string),
+    });
+  if (engines.length === 0) return new UnavailableOcrAdapter();
+  // #8 : chaque tentative moteur part en log structuré (moteur, latence, issue).
+  return new FallbackOcrChain(engines, (event) =>
+    console.info(JSON.stringify({ evt: 'ocr.engine', ...event })),
+  );
+}
+
 export const ocrProvider = {
   provide: OCR_PORT,
-  useFactory: (): OcrPort => {
-    if (isDemoMode()) return new DemoOcrAdapter(new SystemClock());
-    const engines: NamedOcrEngine[] = [];
-    if (hasMistralKey())
-      engines.push({ name: 'mistral-ocr', port: new MistralOcrAdapter(process.env.MISTRAL_API_KEY as string) });
-    if (hasClaudeKey())
-      engines.push({ name: 'claude-vision', port: new ClaudeVisionOcrAdapter(process.env.ANTHROPIC_API_KEY as string) });
-    if (engines.length === 0) return new DemoOcrAdapter(new SystemClock());
-    // #8 : chaque tentative moteur part en log structuré (moteur, latence, issue).
-    return new FallbackOcrChain(engines, (event) => console.info(JSON.stringify({ evt: 'ocr.engine', ...event })));
-  },
+  useFactory: buildOcrAdapter,
 };

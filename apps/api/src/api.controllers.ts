@@ -31,6 +31,7 @@ import type {
   ExpenseCategory,
   DeleteDocumentFolderStrategy,
   UpdateQuoteLineInput,
+  SalesDocumentSearchScope,
 } from '@bob/core';
 import { isValidDateOnly } from '@bob/core';
 import { type AgentAskPayload } from '@bob/ai';
@@ -1099,6 +1100,40 @@ export class DocumentsController {
         ...(includeDeleted !== undefined ? { includeDeleted: includeDeleted === 'true' } : {}),
       }),
     );
+  }
+  /** B9 — recherche unifiée devis/factures (« retrouve les devis de Mairie de Sèvres du mois
+   * dernier ») : pertinence pg_trgm puis date, tenant-scopée, paginée. DOIT rester déclarée avant
+   * @Get(':id') plus bas — sinon "/documents/search" matcherait la route par id. */
+  @Get('search')
+  async search(
+    @Query('q') q?: string,
+    @Query('type') type?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('customerId') customerId?: string,
+    @Query('status') status?: string,
+    @Query('cursor') cursor?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const scope: SalesDocumentSearchScope = type === 'quote' || type === 'invoice' ? type : 'all';
+    return unwrap(
+      await this.backend.searchSalesDocuments({
+        query: q ?? '',
+        scope,
+        ...(from !== undefined ? { from } : {}),
+        ...(to !== undefined ? { to } : {}),
+        ...(customerId !== undefined ? { customerId } : {}),
+        ...(status !== undefined ? { status } : {}),
+        ...(cursor !== undefined ? { cursor } : {}),
+        ...(limit !== undefined ? { limit: Number(limit) } : {}),
+      }),
+    );
+  }
+  /** B9 — autocomplétion typée {kind, value, count} au fil de la frappe. Même contrainte d'ordre
+   * que @Get('search') vis-à-vis de @Get(':id'). */
+  @Get('suggest')
+  async suggest(@Query('q') q?: string) {
+    return unwrap(await this.backend.suggestSalesDocuments({ query: q ?? '' }));
   }
   @Post('upload')
   @WithoutTenantPersistenceTransaction()

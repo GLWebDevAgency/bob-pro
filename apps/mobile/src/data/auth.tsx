@@ -20,6 +20,10 @@ import { loadAuthBootstrapWithTimeout } from './auth-bootstrap';
 import { AuthRequestTimeoutError, runAuthRequestWithTimeout } from '../auth-recovery/auth-request';
 import { runBeforeSignOutCleanups } from './session-cleanup';
 import {
+  publishAuthSessionWithCacheFence,
+  type AuthSessionCacheIdentity,
+} from './auth-session-cache-policy';
+import {
   initialPasswordRecoveryState,
   parsePasswordRecoveryUrl,
   passwordRecoveryReducer,
@@ -186,6 +190,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const passwordRecoveryAuthorized = useRef(false);
   const passwordRecoveryExchangeExpected = useRef(false);
   const queryClient = useQueryClient();
+  const publishedCacheIdentity = useRef<AuthSessionCacheIdentity | null>(null);
+  const publishSession = useCallback(
+    (nextSession: Session | null): void => {
+      publishedCacheIdentity.current = publishAuthSessionWithCacheFence({
+        previousIdentity: publishedCacheIdentity.current,
+        nextSession,
+        clearCache: () => queryClient.clear(),
+        publishSession: setSession,
+      });
+    },
+    [queryClient],
+  );
   const retryInitialization = useCallback(() => setBootstrapAttempt((attempt) => attempt + 1), []);
 
   const beginPasswordRecovery = useCallback(async (url: string): Promise<void> => {
@@ -230,7 +246,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         });
         return;
       }
-      setSession(data.session);
+      publishSession(data.session);
       passwordRecoveryAuthorized.current = true;
       dispatchPasswordRecovery({ type: 'session_ready' });
     } catch (error: unknown) {
@@ -241,7 +257,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         error: mapThrownPasswordRecoveryError(error),
       });
     }
-  }, []);
+  }, [publishSession]);
 
   const updateRecoveredPassword = useCallback(
     async (password: string): Promise<{ error: PasswordRecoveryErrorCode | null }> => {
@@ -303,7 +319,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (error) {
           setInitializationError(true);
         } else {
-          setSession(data.session);
+          publishSession(data.session);
         }
         setLoading(false);
       })
@@ -315,14 +331,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => {
       active = false;
     };
-  }, [bootstrapAttempt]);
+  }, [bootstrapAttempt, publishSession]);
 
   useEffect(() => {
     if (!supabase) return;
     const sb = supabase;
     const { data: sub } = sb.auth.onAuthStateChange((event, s) => {
       authRevision.current += 1;
-      setSession(s);
+      publishSession(s);
       setInitializationError(false);
       setLoading(false);
       if (event === 'PASSWORD_RECOVERY' && s && passwordRecoveryExchangeExpected.current) {
@@ -333,7 +349,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (event === 'SIGNED_OUT') {
         passwordRecoveryAuthorized.current = false;
         passwordRecoveryExchangeExpected.current = false;
-        queryClient.clear();
         dispatchPasswordRecovery({ type: 'reset' });
       }
     });
@@ -347,7 +362,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       sub.subscription.unsubscribe();
       appSub.remove();
     };
-  }, [queryClient]);
+  }, [publishSession]);
 
   const value = useMemo<AuthValue>(
     () => ({

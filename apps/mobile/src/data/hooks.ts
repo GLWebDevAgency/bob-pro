@@ -20,7 +20,12 @@ import type {
   UpdateQuoteLineInput,
   RemoveQuoteLineInput,
 } from '@bob/core';
-import type { CreateCustomerClientInput, NotificationView, RegisterPaymentClientInput } from '@bob/api-client';
+import type {
+  CreateCustomerClientInput,
+  NotificationView,
+  RegisterPaymentClientInput,
+  SearchSalesDocumentsClientInput,
+} from '@bob/api-client';
 import type { FiscalProfileFieldPatch, FiscalProfileView } from '@bob/core';
 import { supabaseEnabled } from './supabase';
 import { useAuth } from './auth';
@@ -60,6 +65,8 @@ const keys = {
   notifications: ['notifications'] as const,
   notificationUnreadPreview: ['notifications', 'unread-preview'] as const,
   fiscalProfile: ['fiscal-profile'] as const,
+  salesDocumentSearch: (input: SearchSalesDocumentsClientInput) => ['sales-document-search', input] as const,
+  salesDocumentSuggest: (query: string) => ['sales-document-suggest', query] as const,
 };
 
 export function useSubscription() {
@@ -431,6 +438,37 @@ export function useInvoices() {
       if (!r.ok) throw r.error;
       return r.value;
     },
+  });
+}
+
+/** B9 — GET /documents/search : source de vérité serveur des résultats FILTRÉS (recherche
+ * ultra-rapide pg_trgm). `enabled` piloté par l'appelant (ventes.tsx n'interroge le serveur QUE
+ * quand au moins un filtre est actif — sinon la liste complète déjà en cache local suffit). */
+export function useSalesDocumentSearch(input: SearchSalesDocumentsClientInput, enabled: boolean) {
+  const client = useBobClient();
+  return useQuery({
+    queryKey: keys.salesDocumentSearch(input),
+    queryFn: async () => {
+      const r = await client.searchSalesDocuments(input);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    enabled,
+  });
+}
+
+/** B9 — GET /documents/suggest : autocomplétion typée, appelée par l'appelant déjà DEBOUNCED
+ * (~250 ms) — cette couche ne fait qu'exposer l'état de chargement/erreur react-query. */
+export function useSalesDocumentSuggestions(query: string, enabled: boolean) {
+  const client = useBobClient();
+  return useQuery({
+    queryKey: keys.salesDocumentSuggest(query),
+    queryFn: async () => {
+      const r = await client.suggestSalesDocuments(query);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    enabled,
   });
 }
 

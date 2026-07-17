@@ -102,7 +102,6 @@ export function GlobalBobAccess() {
   const visible = !(
     (!entitled && !entitlementUnavailable) ||
     layout.hidden ||
-    pathname === '/gallery' ||
     ownsItsVoiceChrome
   );
   const accessibilityAnnouncementInput = {

@@ -27,11 +27,6 @@ describe('GlobalBobAccess — session masquée fail-closed', () => {
     expect(deriveGlobalBobSessionStopReason({
       subscriptionResolved: true,
       entitled: true,
-      pathname: '/gallery',
-    })).toBe('incompatible_route');
-    expect(deriveGlobalBobSessionStopReason({
-      subscriptionResolved: true,
-      entitled: true,
       pathname: '/voix',
     })).toBe('incompatible_route');
     expect(deriveGlobalBobSessionStopReason({

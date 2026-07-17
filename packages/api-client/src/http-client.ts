@@ -31,6 +31,8 @@ import type {
   DeleteDocumentFolderStrategy,
   DocumentAnalysis,
   FiscalProfileView,
+  SearchSalesDocumentsResult,
+  SuggestSalesDocumentsResult,
 } from '@bob/core';
 import type {
   BobClient,
@@ -88,6 +90,7 @@ import type {
   RecordDocumentExpenseClientOutput,
   AskBobClientInput,
   CreateCustomerClientInput,
+  SearchSalesDocumentsClientInput,
 } from './client';
 import {
   decodeDocumentAnalysisForDocument,
@@ -1784,6 +1787,22 @@ export class HttpBobClient implements BobClient {
   }
   listInvoices() {
     return this.req<InvoiceView[]>('GET', '/invoices');
+  }
+  searchSalesDocuments(input: SearchSalesDocumentsClientInput) {
+    const params = new URLSearchParams();
+    if (input.query) params.set('q', input.query);
+    params.set('type', input.scope ?? 'all');
+    if (input.from !== undefined) params.set('from', input.from);
+    if (input.to !== undefined) params.set('to', input.to);
+    if (input.customerId !== undefined) params.set('customerId', input.customerId);
+    if (input.status !== undefined) params.set('status', input.status);
+    if (input.cursor !== undefined) params.set('cursor', input.cursor);
+    if (input.limit !== undefined) params.set('limit', String(input.limit));
+    return this.req<SearchSalesDocumentsResult>('GET', `/documents/search?${params.toString()}`);
+  }
+  suggestSalesDocuments(query: string) {
+    const qs = new URLSearchParams({ q: query }).toString();
+    return this.req<SuggestSalesDocumentsResult>('GET', `/documents/suggest?${qs}`);
   }
   listAccountingEntries() {
     return this.req<AccountingEntryView[]>('GET', '/accounting/entries');

@@ -19,7 +19,9 @@ import {
   type SequenceCounterPort,
   type SubscriptionRepository,
   type FiscalProfileRepository,
+  type SalesDocumentSearchPort,
 } from '@bob/core';
+import { InMemorySalesDocumentSearchRepository } from './sales-document-search.in-memory';
 import type { DocumentArchiveJobRepository } from './document-archive-jobs';
 import type { NotificationJobRepository } from './notification-jobs';
 import type { DeviceRepository } from './devices';
@@ -120,6 +122,8 @@ export interface Persistence {
   subscriptions: SubscriptionRepository;
   /** Profil fiscal persisté par tenant (BOB EXPERT FISCAL, Phase 1A) — @bob/core. */
   fiscalProfiles: FiscalProfileRepository;
+  /** B9 — GET /documents/search & /documents/suggest (pertinence pg_trgm côté Postgres). */
+  salesDocumentSearch: SalesDocumentSearchPort;
   counters: SequenceCounterPort;
   cabinet: CabinetInfrastructure;
   /** Construit le singleton d'admission Bob Live avec le backend durable de cette persistance. */
@@ -177,6 +181,7 @@ export class InMemoryPersistence implements Persistence {
   readonly supplierMemory = new InMemorySupplierMemoryRepository();
   readonly subscriptions = new InMemorySubscriptionRepository();
   readonly fiscalProfiles = new InMemoryFiscalProfileRepository();
+  readonly salesDocumentSearch = new InMemorySalesDocumentSearchRepository(this.quotes, this.invoices, this.customers);
   readonly counters = new InMemorySequenceCounter();
   readonly cabinet = new MemoryCabinetInfrastructure();
   createRealtimeAdmission(policy: RealtimeAdmissionPolicy): RealtimeAdmissionPort {

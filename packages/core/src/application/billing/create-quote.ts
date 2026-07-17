@@ -1,23 +1,22 @@
 import { type Result, ok, err } from '../../shared-kernel/result';
 import { type AppError, appDomain, appNotFound } from '../result';
-import { type LineInput } from '../../domain/billing/shared/line-item';
+import {
+  hasBillingControlCharacter,
+  MAX_BILLING_AMOUNT_CENTS,
+  type LineInput,
+} from '../../domain/billing/shared/line-item';
 import { type Totals } from '../../domain/billing/shared/totals';
 import { Quote } from '../../domain/billing/quote/quote';
 import { suggestVatRate } from '../../domain/services/suggest-vat-rate';
-import { type QuoteRepository, type CompanyRepository, type CustomerRepository } from '../ports/repositories';
+import {
+  type QuoteRepository,
+  type CompanyRepository,
+  type CustomerRepository,
+} from '../ports/repositories';
 import { type IdGeneratorPort, type ClockPort } from '../ports/services';
 import { isValidDateOnly } from '../../shared-kernel/time';
 
 const MAX_QUOTE_LINES = 100;
-const MAX_QUOTE_HT_CENTS = 1_500_000_000;
-
-function hasControlCharacter(value: string): boolean {
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    if (code <= 0x1f || code === 0x7f) return true;
-  }
-  return false;
-}
 
 export interface CreateQuoteInput {
   companyId: string;
@@ -80,48 +79,75 @@ export class CreateQuote {
 
   async execute(input: CreateQuoteInput): Promise<Result<CreateQuoteOutput, AppError>> {
     if (input.validUntil !== undefined && !isValidDateOnly(input.validUntil)) {
-      return err(appDomain({ code: 'VALIDATION', field: 'validUntil', message: 'Date de validité invalide.' }));
+      return err(
+        appDomain({
+          code: 'VALIDATION',
+          field: 'validUntil',
+          message: 'Date de validité invalide.',
+        }),
+      );
     }
     if (!Array.isArray(input.lines) || input.lines.length > MAX_QUOTE_LINES) {
-      return err(appDomain({ code: 'VALIDATION', field: 'lines', message: 'Nombre de lignes invalide.' }));
+      return err(
+        appDomain({ code: 'VALIDATION', field: 'lines', message: 'Nombre de lignes invalide.' }),
+      );
     }
     let totalHtCents = 0;
     for (const line of input.lines) {
       if (
-        typeof line.label !== 'string'
-        || line.label.trim().length === 0
-        || line.label.length > 500
-        || hasControlCharacter(line.label)
+        typeof line.label !== 'string' ||
+        line.label.trim().length === 0 ||
+        line.label.length > 500 ||
+        hasBillingControlCharacter(line.label)
       ) {
-        return err(appDomain({ code: 'VALIDATION', field: 'label', message: 'Libellé de ligne invalide.' }));
+        return err(
+          appDomain({ code: 'VALIDATION', field: 'label', message: 'Libellé de ligne invalide.' }),
+        );
       }
       if (
-        line.unit !== undefined
-        && (
-          typeof line.unit !== 'string'
-          || line.unit.trim().length === 0
-          || line.unit.length > 80
-          || hasControlCharacter(line.unit)
-        )
+        line.unit !== undefined &&
+        (typeof line.unit !== 'string' ||
+          line.unit.trim().length === 0 ||
+          line.unit.length > 80 ||
+          hasBillingControlCharacter(line.unit))
       ) {
-        return err(appDomain({ code: 'VALIDATION', field: 'unit', message: 'Unité de ligne invalide.' }));
+        return err(
+          appDomain({ code: 'VALIDATION', field: 'unit', message: 'Unité de ligne invalide.' }),
+        );
       }
-      if (!Number.isSafeInteger(line.unitPriceHT) || line.unitPriceHT < 0 || line.unitPriceHT > MAX_QUOTE_HT_CENTS) {
-        return err(appDomain({ code: 'VALIDATION', field: 'unitPriceHT', message: 'Prix HT invalide.' }));
+      if (
+        !Number.isSafeInteger(line.unitPriceHT) ||
+        line.unitPriceHT < 0 ||
+        line.unitPriceHT > MAX_BILLING_AMOUNT_CENTS
+      ) {
+        return err(
+          appDomain({ code: 'VALIDATION', field: 'unitPriceHT', message: 'Prix HT invalide.' }),
+        );
       }
-      if (!Number.isFinite(line.qty) || line.qty <= 0 || Math.round(line.qty * 1_000) !== line.qty * 1_000) {
+      if (
+        !Number.isFinite(line.qty) ||
+        line.qty <= 0 ||
+        Math.round(line.qty * 1_000) !== line.qty * 1_000
+      ) {
         return err(appDomain({ code: 'VALIDATION', field: 'qty', message: 'Quantité invalide.' }));
       }
       totalHtCents += Math.round(line.qty * line.unitPriceHT);
-      if (!Number.isSafeInteger(totalHtCents) || totalHtCents > MAX_QUOTE_HT_CENTS) {
-        return err(appDomain({ code: 'VALIDATION', field: 'lines', message: 'Montant total HT hors limite.' }));
+      if (!Number.isSafeInteger(totalHtCents) || totalHtCents > MAX_BILLING_AMOUNT_CENTS) {
+        return err(
+          appDomain({
+            code: 'VALIDATION',
+            field: 'lines',
+            message: 'Montant total HT hors limite.',
+          }),
+        );
       }
     }
     const company = await this.deps.companies.findById(input.companyId);
     if (!company) return err(appNotFound('company', input.companyId));
     const customer = await this.deps.customers.findById(input.customerId);
     // Intégrité référentielle / anti-IDOR : le client doit appartenir au tenant (cf. CreateChantier).
-    if (!customer || customer.companyId !== input.companyId) return err(appNotFound('customer', input.customerId));
+    if (!customer || customer.companyId !== input.companyId)
+      return err(appNotFound('customer', input.customerId));
 
     const composed = Quote.compose({
       id: this.deps.ids.newId(),
