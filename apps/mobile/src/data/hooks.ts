@@ -19,6 +19,8 @@ import type {
   UpcomingDueEntry,
   UpdateQuoteLineInput,
   RemoveQuoteLineInput,
+  Trade,
+  VatRegime,
 } from '@bob/core';
 import type {
   CreateCustomerClientInput,
@@ -37,7 +39,9 @@ function openUrl(url: string): void {
     Alert.alert('Lien indisponible', 'Aucun lien fourni. Réessaie plus tard.');
     return;
   }
-  void Linking.openURL(url).catch(() => Alert.alert('Lien indisponible', "Impossible d'ouvrir le lien."));
+  void Linking.openURL(url).catch(() =>
+    Alert.alert('Lien indisponible', "Impossible d'ouvrir le lien."),
+  );
 }
 
 /** Traduit une AppError en message utilisateur lisible (paywall, dépendance amont, introuvable, …). */
@@ -45,7 +49,8 @@ export function appErrorMessage(e: unknown): string {
   if (e && typeof e === 'object' && 'kind' in e) {
     const err = e as { kind: string; reason?: string };
     if (err.kind === 'forbidden') return err.reason ?? 'Action non autorisée pour ton offre.';
-    if (err.kind === 'dependency') return 'Service indisponible pour le moment. Réessaie ou saisis les infos à la main.';
+    if (err.kind === 'dependency')
+      return 'Service indisponible pour le moment. Réessaie ou saisis les infos à la main.';
     if (err.kind === 'not_found') return 'Introuvable.';
   }
   return 'Action impossible. Réessaie.';
@@ -58,6 +63,7 @@ function alertError(e: unknown): void {
 const keys = {
   customers: ['customers'] as const,
   cashflow: (s: Scenario, h: Horizon) => ['cashflow', s, h] as const,
+  bankBalance: ['bank-balance'] as const,
   quotes: ['quotes'] as const,
   invoices: ['invoices'] as const,
   invoice: (id: string) => ['invoice', id] as const,
@@ -65,7 +71,8 @@ const keys = {
   notifications: ['notifications'] as const,
   notificationUnreadPreview: ['notifications', 'unread-preview'] as const,
   fiscalProfile: ['fiscal-profile'] as const,
-  salesDocumentSearch: (input: SearchSalesDocumentsClientInput) => ['sales-document-search', input] as const,
+  salesDocumentSearch: (input: SearchSalesDocumentsClientInput) =>
+    ['sales-document-search', input] as const,
   salesDocumentSuggest: (query: string) => ['sales-document-suggest', query] as const,
 };
 
@@ -155,7 +162,11 @@ export function useCreateChantier() {
   const client = useBobClient();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (input: { name: string; customerId?: string | null; address?: string | null }) => {
+    mutationFn: async (input: {
+      name: string;
+      customerId?: string | null;
+      address?: string | null;
+    }) => {
       const r = await client.createChantier(input);
       if (!r.ok) throw r.error;
       return r.value;
@@ -227,6 +238,40 @@ export function useCompanyMe() {
       const r = await client.getCompanyMe!();
       if (!r.ok) throw r.error;
       return r.value;
+    },
+  });
+}
+
+export function useUpdateCompanyProfile() {
+  const client = useBobClient();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { trade: Trade; vatRegime: VatRegime }) => {
+      const result = await client.updateCompanyProfile(input);
+      if (!result.ok) throw result.error;
+      return result.value;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['company-me'] });
+      void queryClient.invalidateQueries({ queryKey: ['profile'] });
+      void queryClient.invalidateQueries({ queryKey: ['fiscal-calendar'] });
+      void queryClient.invalidateQueries({ queryKey: ['diagnostic'] });
+    },
+  });
+}
+
+/** Réglages facturation §Coordonnées bancaires — écrit iban/bic (PATCH /company/billing). */
+export function useUpdateCompanyBilling() {
+  const client = useBobClient();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { iban?: string | null; bic?: string | null }) => {
+      const result = await client.updateCompanyBilling(input);
+      if (!result.ok) throw result.error;
+      return result.value;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['company-me'] });
     },
   });
 }
@@ -356,6 +401,10 @@ export function useRecordExpense() {
     },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['expenses'] });
+      // La création poste AUSSI l'écriture comptable de la dépense dans la même transaction
+      // (RecordExpenseAccountingEntries, cf. expense-creation-coordinator.ts) : Pilotage (SIG)
+      // et le grand-livre Argent seraient périmés sans cette invalidation (audit correction 1).
+      void qc.invalidateQueries({ queryKey: ['accounting-entries'] });
       void qc.invalidateQueries({ queryKey: ['cashflow'] });
     },
   });
@@ -413,6 +462,34 @@ export function useCashflow(scenario: Scenario, horizon: Horizon) {
       const r = await client.getCashflow({ scenario, horizon });
       if (!r.ok) throw r.error;
       return r.value;
+    },
+  });
+}
+
+export function useLatestBankBalance() {
+  const client = useBobClient();
+  return useQuery({
+    queryKey: keys.bankBalance,
+    queryFn: async () => {
+      const r = await client.getLatestBankBalance();
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+  });
+}
+
+export function useRecordManualBankBalance() {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { amountCents: number; observedAt: string }) => {
+      const r = await client.recordManualBankBalance(input);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.bankBalance });
+      void qc.invalidateQueries({ queryKey: ['cashflow'] });
     },
   });
 }
@@ -513,7 +590,8 @@ export function useTodayPriorities(): TodayPrioritiesQuery {
 
   return {
     priorities,
-    isLoading: invoices.isLoading || quotes.isLoading || customers.isLoading || diagnostic.isLoading,
+    isLoading:
+      invoices.isLoading || quotes.isLoading || customers.isLoading || diagnostic.isLoading,
     isRefetching:
       invoices.isRefetching ||
       quotes.isRefetching ||
@@ -531,14 +609,15 @@ export function useTodayPriorities(): TodayPrioritiesQuery {
 
 /** Fil de notifications réelles (C25) — la cloche C10 et l'écran /notifications partagent CETTE
  * dérivation (une seule vérité). Deux sources honnêtes (C25 v2) :
- * · items = GET /notifications — le SERVEUR est la source de vérité (lu/non-lu persistés) ; le
- *   LocalBobClient dérive localement en démo. La pastille de la cloche = NON-LUS de ce fil ;
+ * · items = GET /notifications — le SERVEUR est la source de vérité (lu/non-lu persistés).
+ *   La pastille de la cloche = NON-LUS de ce fil ;
  * · plan/échéances/conformité = agrégats @bob/core sur les queries partagées (actionnable). */
 export interface NotificationsFeed {
   /** Fil serveur (relances envoyées/en retry, liens de signature) — récents d'abord. */
   items: NotificationView[];
   /** Non-lus du fil serveur = pastille de la cloche C10 (directive C25 v2). */
-  unreadCount: number;
+  /** null tant que le fil n'a pas répondu ou s'il est en erreur — jamais ramené à zéro. */
+  unreadCount: number | null;
   /** Relances dues maintenant (palier atteint), tri du plan : retard puis montant. */
   due: RelancePlanEntry[];
   /** Relances planifiées (facture échue, premier palier pas encore atteint). */
@@ -596,7 +675,7 @@ export function useNotificationsFeed(personality?: RelancePersonality): Notifica
 
   return {
     items,
-    unreadCount: items.filter((n) => n.readAt === null).length,
+    unreadCount: feed.data === undefined ? null : items.filter((n) => n.readAt === null).length,
     due,
     scheduled,
     upcoming,
@@ -829,7 +908,16 @@ export function useGenerateInvoice() {
       if (!r.ok) throw r.error;
       return r.value;
     },
-    onSuccess: () => void qc.invalidateQueries({ queryKey: keys.invoices }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.invoices });
+      // Filet défensif (audit correction 1) : la facture générée reste BROUILLON (aucune
+      // écriture comptable avant issueInvoice), donc cashflow/journal ne changent pas encore
+      // en pratique — mais on s'aligne sur la même invalidation que les autres écritures de
+      // vente pour ne jamais dépendre de cet invariant si le flow évolue (ex. génération
+      // auto-émise). Coût nul : re-fetch d'une donnée inchangée.
+      void qc.invalidateQueries({ queryKey: ['cashflow'] });
+      void qc.invalidateQueries({ queryKey: ['accounting-entries'] });
+    },
   });
 }
 
@@ -910,6 +998,13 @@ export function useIssueInvoice() {
     onSuccess: (_data, invoiceId) => {
       void qc.invalidateQueries({ queryKey: keys.invoices });
       void qc.invalidateQueries({ queryKey: keys.invoice(invoiceId) });
+      // L'émission poste l'écriture comptable (RecordIssuedInvoiceAccountingEntry,
+      // backend.service.ts::issueInvoice) ET fait passer la facture en 'issued' — donc entre
+      // AUSSI dans les créances de GetCashflow (statuts issued/partially_paid/late). Sans ces
+      // deux invalidations, Pilotage (SIG) et Argent (grand-livre/trésorerie) restaient périmés
+      // jusqu'à 30 s (audit correction 1).
+      void qc.invalidateQueries({ queryKey: ['accounting-entries'] });
+      void qc.invalidateQueries({ queryKey: ['cashflow'] });
     },
   });
 }

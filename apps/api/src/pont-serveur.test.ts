@@ -2,10 +2,11 @@ import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ExecutionContext } from '@nestjs/common';
 import { jwtVerify } from 'jose';
-import { Company, Customer, DocumentFolder, Expense, MERCIER_PROPS, Subscription, deriveVatPosition } from '@bob/core';
+import { Company, Customer, DocumentFolder, Expense, deriveVatPosition } from '@bob/core';
+import { MERCIER_PROPS } from '@bob/core/testing';
 import type { DocumentIntelligencePort, OcrPort, PaymentGatewayPort, PdfRendererPort } from '@bob/core';
 import { BackendService } from './backend.service';
-import { InMemoryPersistence } from './persistence/persistence';
+import { InMemoryPersistence } from './persistence/persistence.testing';
 import { requestContext, type AppLogger, type Principal } from './observability/logger';
 import { SupabaseAuthGuard } from './auth/auth.guard';
 import type { SupabaseAdminPort } from './auth/supabase-admin';
@@ -22,6 +23,17 @@ const jwtVerifyMock = vi.mocked(jwtVerify);
 
 function makeService(options?: { documentIntelligence?: DocumentIntelligencePort }) {
   const p = new InMemoryPersistence();
+  // Ce harness exerce des capacités Business : chaque tenant utilisé possède une ligne
+  // d'abonnement explicite, comme après le provisioning réel. Aucun fallback du service.
+  for (const companyId of [MERCIER_PROPS.id, 'company-intrus', 'co-test', 'company-franchise']) {
+    void p.subscriptions.startTrial({
+      id: `sub-${companyId}`,
+      companyId,
+      plan: 'business',
+      trialEndsAt: '2099-12-31T23:59:59.000Z',
+      now: '2026-01-01T00:00:00.000Z',
+    });
+  }
   const admin: SupabaseAdminPort = {
     setUserCompanyId: vi.fn(async () => undefined),
     deleteUser: vi.fn(async () => undefined),
@@ -355,9 +367,6 @@ describe('PONT-SERVEUR v1 ⑤ — getDiagnostic : annualEncaissedCents RÉEL (vi
       type: 'b2c',
       name: 'Mme Client',
       address: { line1: '1 rue Basse', zip: '92310', city: 'Sèvres' },
-      score: 100,
-      avgDelayDays: 0,
-      outstanding: 0,
     });
     if (!customer.ok) throw new Error('fixture: customer franchise invalide');
     await p.customers.save(customer.value);
@@ -497,6 +506,46 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
       expect(r.value.card.title).toBe('Qui te doit quoi');
       expect(r.value.card.body).toContain('SARL Martin Rénovation');
       expect(r.value.card.body).toMatch(/1\s200,00\s€/); // 120 000 cents dus (netToPay − paid) — espace fine insécable fr-FR
+    });
+  });
+
+  // Audit 20260717, correction 5 : avant ce test, getBusinessReview était absent de
+  // buildBobActions() — bob-agent.ts:1330 retombait TOUJOURS sur le fail-safe (card.title
+  // 'Ton pilotage', jamais 'Ton activité') faute d'implémentation côté serveur, malgré le
+  // commentaire pilotage.tsx:5 promettant la parité. Ce test prouve la parité : MÊME
+  // deriveBusinessReview, MÊMES données réelles du tenant, MÊME format que l'écran Pilotage.
+  it('pilotage : « comment va mon chiffre d\'affaires ? » répond avec deriveBusinessReview sur les données RÉELLES du tenant (parité voix ↔ écran Pilotage)', async () => {
+    const { service, p } = makeService();
+    await p.seed();
+    await asPrincipal(MERCIER, async () => {
+      const { invoiceId } = await issueFinalInvoice(service, {
+        customerId: 'cust-martin',
+        unitPriceHT: 100000,
+        vatRate: 20,
+      });
+      const paid = await service.registerPayment({
+        invoiceId,
+        amount: 120000,
+        method: 'transfer',
+        idempotencyKey: null,
+      });
+      expect(paid.ok).toBe(true);
+
+      const r = await service.askBob("Comment va mon chiffre d'affaires ?");
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.value.intent).toBe('pilotage');
+      expect(r.value.kind).toBe('answer');
+      // 'Ton activité' = la vraie revue (deriveBusinessReview) ; 'Ton pilotage' = le fail-safe.
+      expect(r.value.card.title).toBe('Ton activité');
+      expect(r.value.card.body).toContain('Facturé (hors TVA)');
+      // La finale porte 100 % du HT (jamais le TTC) : CA facturé du mois = 100 000 c — même
+      // chiffre que currentMonth.invoicedHtCents sur l'écran Pilotage.
+      expect(r.value.card.body).toMatch(/1\s000,00\s€/);
+      expect(r.value.card.body).toContain('Encaissé (TVA comprise)');
+      // Le paiement enregistré ci-dessus (TTC) : CA encaissé du mois = 120 000 c — même chiffre
+      // que currentMonth.collectedTtcCents sur l'écran Pilotage.
+      expect(r.value.card.body).toMatch(/1\s200,00\s€/);
     });
   });
 
@@ -1057,9 +1106,6 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
         type: 'b2b',
         name: 'Client sans email',
         address: { line1: '1 rue du Test', zip: '75001', city: 'Paris' },
-        score: 100,
-        avgDelayDays: 0,
-        outstanding: 0,
       });
       if (!customer.ok) throw new Error('fixture: createCustomer KO');
       const created = await service.createQuote({
@@ -2055,18 +2101,29 @@ describe('PONT-SERVEUR — coffre documentaire original-first et suppression sû
 });
 
 describe('enforcement des offres (pilier 2) — le serveur fait foi, jamais l\'UI', () => {
-  type SubscriptionAuthority = { subscriptionFor(companyId: string): unknown };
-  const subscriptionOf = (tier: 'free' | 'solo' | 'pro' | 'business', status: 'active' | 'past_due' = 'active') => {
-    const started = Subscription.start({ id: 'sub-test', companyId: 'co-test', tier, status });
-    if (!started.ok) throw new Error('abonnement de test non constructible');
-    return started.value;
-  };
+  const persistSubscription = async (
+    p: InMemoryPersistence,
+    input: {
+      companyId: string;
+      plan: 'free' | 'solo' | 'pro' | 'business';
+      status?: 'active' | 'past_due';
+    },
+  ) => p.subscriptions.save({
+    id: `sub-${input.companyId}`,
+    companyId: input.companyId,
+    plan: input.plan,
+    status: input.status ?? 'active',
+    trialEndsAt: null,
+    currentPeriodEnd: '2099-12-31T23:59:59.000Z',
+    store: null,
+    storeRef: null,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  });
 
   it('listAccountingEntries REFUSE sous Free (accounting_foundation)', async () => {
-    const { service } = makeService();
-    vi.spyOn(service as unknown as SubscriptionAuthority, 'subscriptionFor').mockReturnValue(
-      subscriptionOf('free') as never,
-    );
+    const { service, p } = makeService();
+    await persistSubscription(p, { companyId: MERCIER.companyId!, plan: 'free' });
 
     const result = await asPrincipal(MERCIER, () => service.listAccountingEntries());
 
@@ -2078,10 +2135,8 @@ describe('enforcement des offres (pilier 2) — le serveur fait foi, jamais l\'U
   });
 
   it('listAccountingEntries PASSE à partir de Solo', async () => {
-    const { service } = makeService();
-    vi.spyOn(service as unknown as SubscriptionAuthority, 'subscriptionFor').mockReturnValue(
-      subscriptionOf('solo') as never,
-    );
+    const { service, p } = makeService();
+    await persistSubscription(p, { companyId: MERCIER.companyId!, plan: 'solo' });
 
     const result = await asPrincipal(MERCIER, () => service.listAccountingEntries());
 
@@ -2089,10 +2144,8 @@ describe('enforcement des offres (pilier 2) — le serveur fait foi, jamais l\'U
   });
 
   it('exportFec REFUSE sous Pro (accounting_operations) avec un message d\'upsell honnête', async () => {
-    const { service } = makeService();
-    vi.spyOn(service as unknown as SubscriptionAuthority, 'subscriptionFor').mockReturnValue(
-      subscriptionOf('solo') as never,
-    );
+    const { service, p } = makeService();
+    await persistSubscription(p, { companyId: MERCIER.companyId!, plan: 'solo' });
     const result = await asPrincipal(MERCIER, () =>
       service.exportFec({ from: todayUtc(), to: todayUtc() }),
     );
@@ -2103,8 +2156,9 @@ describe('enforcement des offres (pilier 2) — le serveur fait foi, jamais l\'U
     }
   });
 
-  it('exportFec PASSE à partir de Pro (et en early-access : business pour tous)', async () => {
-    const { service } = makeService();
+  it('exportFec PASSE à partir de Pro quand la BDD porte explicitement ce palier', async () => {
+    const { service, p } = makeService();
+    await persistSubscription(p, { companyId: MERCIER.companyId!, plan: 'pro' });
     const result = await asPrincipal(MERCIER, () =>
       service.exportFec({ from: todayUtc(), to: todayUtc() }),
     );
@@ -2113,21 +2167,18 @@ describe('enforcement des offres (pilier 2) — le serveur fait foi, jamais l\'U
     if (!result.ok) expect(result.error.kind).not.toBe('forbidden');
   });
 
-  it('P1 review : un abonnement past_due ne déclenche JAMAIS de relances automatiques, même en Pro', () => {
-    const { service } = makeService();
-    vi.spyOn(service as unknown as SubscriptionAuthority, 'subscriptionFor').mockReturnValue(
-      subscriptionOf('pro', 'past_due') as never,
-    );
-    expect(service.autoDunningEntitlement('co-1')).toEqual({ allowed: false, plan: 'pro' });
+  it('P1 review : un abonnement past_due ne déclenche JAMAIS de relances automatiques, même en Pro', async () => {
+    const { service, p } = makeService();
+    await persistSubscription(p, { companyId: 'co-1', plan: 'pro', status: 'past_due' });
+    await expect(service.autoDunningEntitlement('co-1')).resolves.toEqual({ allowed: false, plan: 'pro' });
   });
 
-  it('autoDunningEntitlement : solo → refus tracé avec le plan ; business → ouvert', () => {
-    const { service } = makeService();
-    const spy = vi.spyOn(service as unknown as SubscriptionAuthority, 'subscriptionFor');
-    spy.mockReturnValue(subscriptionOf('solo') as never);
-    expect(service.autoDunningEntitlement('co-1')).toEqual({ allowed: false, plan: 'solo' });
-    spy.mockRestore();
-    // Early-access réel : subscriptionFor rend business/active pour tous — personne n'est refusé.
-    expect(service.autoDunningEntitlement('co-1')).toEqual({ allowed: true, plan: 'business' });
+  it('autoDunningEntitlement : solo → refus tracé ; business explicitement persisté → ouvert', async () => {
+    const { service, p } = makeService();
+    await persistSubscription(p, { companyId: 'co-1', plan: 'solo' });
+    await expect(service.autoDunningEntitlement('co-1')).resolves.toEqual({ allowed: false, plan: 'solo' });
+
+    await persistSubscription(p, { companyId: 'co-1', plan: 'business' });
+    await expect(service.autoDunningEntitlement('co-1')).resolves.toEqual({ allowed: true, plan: 'business' });
   });
 });

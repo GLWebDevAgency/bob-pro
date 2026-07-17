@@ -4,7 +4,7 @@
  * pill sans risque — langage prudent SPEC_EXPERT_FISCAL §V2 pt. 8, jamais « te verser »)
  * → grand-livre « Argent disponible réel » badge LE SOLDE MENT (MoneyRow lead + rangées signées
  * + total) → « Prévision de tréso » (SegmentedControl 7/30/60/90 j × Optimiste/Réaliste/Prudent)
- * → « À surveiller » (mauvais payeurs réels) → « Mise de côté auto » (réserve TVA + charges)
+ * → « À surveiller » (factures réellement échues) → « Mise de côté auto » (réserve TVA + charges)
  * → astuce première fois (dismiss persisté SecureStore) → Fab.
  *
  * DONNÉES RÉELLES (A1-C10 généralisé) : tout vient des queries du BobClient —
@@ -28,14 +28,14 @@
  * Zéro hex/rgba : useTheme()/@bob/tokens. Zéro import de src/components/ui (ancien kit).
  */
 import { useMemo, useState } from 'react';
-import { Modal, Pressable, ScrollView, Text, View } from 'react-native';
+import { Modal, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Feather, Ionicons } from '@expo/vector-icons';
 import {
-  MERCIER_PROPS,
   buildLedgerView,
   cashflowBand,
   formatEUR,
+  parisDateOnly,
   type CashflowBand,
   type CashflowSeriesPoint,
   type FiscalDeadline,
@@ -50,6 +50,7 @@ import {
   Avatar,
   Button,
   Card,
+  ErrorRetry,
   Fab,
   HeroMoneyCard,
   IconTile,
@@ -71,13 +72,15 @@ import {
   useExpenses,
   useFiscalCalendar,
   useInvoices,
+  useLatestBankBalance,
   usePayments,
 } from '../../src/data/hooks';
-import { useIdentity } from '../../src/data/identity';
 import { useFirstTimeTip } from '../../src/data/tips';
 import { useFiscalProfileFlow } from '../../src/fiscal/use-fiscal-profile-flow';
 import { useOwnerPayGuidance } from '../../src/fiscal/use-owner-pay-guidance';
 import { useBobAwareScrollInsets } from '../../src/components/use-bob-aware-scroll-insets';
+import { BankBalanceSheet } from '../../src/components/BankBalanceSheet';
+import { hasBlockingAuthoritativeDataError } from '../../src/data/authoritative-query-state';
 
 /** Clé SecureStore du coach-mark « première fois » de cet écran. */
 const TIP_KEY = 'bob.tips.argent.v1';
@@ -98,6 +101,17 @@ const BAND_LABEL: Record<CashflowBand, I18nKey> = {
   creux: 'argent.bandCreux',
   repart: 'argent.bandRepart',
 };
+
+function isBankBalanceQualificationError(error: unknown): boolean {
+  if (error === null || typeof error !== 'object' || !('kind' in error)) return false;
+  const candidate = error as { kind: unknown; service?: unknown; entity?: unknown };
+  if (candidate.kind === 'not_found' && candidate.entity === 'bank_balance_snapshot') return true;
+  return (
+    candidate.kind === 'unavailable' &&
+    typeof candidate.service === 'string' &&
+    candidate.service.startsWith('bank-balance')
+  );
+}
 
 /** Barre de skeleton (chargement) — même gabarit que la donnée qu'elle remplace. */
 function SkeletonBar({ width, height = 15 }: { width: `${number}%`; height?: number }) {
@@ -205,19 +219,14 @@ const FR_MONTHS_SHORT = [
   'déc.',
 ] as const;
 
-/** Date locale du jour (DateOnly) — même règle que hooks.ts : le calendrier fiscal comme
- * l'échéance d'une facture se jugent en calendrier LOCAL, jamais UTC. */
-function localToday(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
-
 /** '2026-09-15' → '15 sept.' (+ année si différente de l'année en cours) — présentation pure. */
 function frShortDate(dateOnly: string): string {
   const [y, m, d] = dateOnly.split('-');
   if (y === undefined || m === undefined || d === undefined) return dateOnly;
   const month = FR_MONTHS_SHORT[Number(m) - 1] ?? m;
-  return y === String(new Date().getFullYear()) ? `${Number(d)} ${month}` : `${Number(d)} ${month} ${y}`;
+  return y === String(new Date().getFullYear())
+    ? `${Number(d)} ${month}`
+    : `${Number(d)} ${month} ${y}`;
 }
 
 /**
@@ -249,7 +258,10 @@ function FiscalDeadlineRow({
     >
       <View style={{ minWidth: 62 }}>
         <Text
-          style={[font('label', 700), { fontSize: 13.5, color: colors.ink800, fontVariant: ['tabular-nums'] }]}
+          style={[
+            font('label', 700),
+            { fontSize: 13.5, color: colors.ink800, fontVariant: ['tabular-nums'] },
+          ]}
         >
           {frShortDate(deadline.date)}
         </Text>
@@ -373,10 +385,19 @@ function FirstTimeTip({ visible, onDismiss }: { visible: boolean; onDismiss: () 
           <Text style={[font('section'), { fontSize: 19, color: colors.ink800 }]}>
             {t('argent.tipTitle', { personality })}
           </Text>
-          <Text style={[font('body'), { color: colors.slate500, lineHeight: 21, marginTop: 6, marginBottom: 15 }]}>
+          <Text
+            style={[
+              font('body'),
+              { color: colors.slate500, lineHeight: 21, marginTop: 6, marginBottom: 15 },
+            ]}
+          >
             {t('argent.tipBody', { personality })}
           </Text>
-          <Button title={t('argent.tipCta', { personality })} variant="primary" onPress={onDismiss} />
+          <Button
+            title={t('argent.tipCta', { personality })}
+            variant="primary"
+            onPress={onDismiss}
+          />
         </View>
       </View>
     </Modal>
@@ -391,6 +412,7 @@ export default function Argent() {
   // SPEC_EXPERT_FISCAL §UX FLOW amendement 1/2 : Argent = entrée PRIMAIRE du mini-flow (carte
   // douce sous le héros, visible seulement si ≥1 champ non confirmé) — voix parité stricte.
   const fiscalFlow = useFiscalProfileFlow();
+  const [balanceSheetVisible, setBalanceSheetVisible] = useState(false);
 
   const [scenario, setScenario] = useState<Scenario>('realiste');
   const [horizonKey, setHorizonKey] = useState<HorizonKey>('30');
@@ -420,16 +442,22 @@ export default function Argent() {
   const expenses = useExpenses();
   const entries = useAccountingEntries();
   const customers = useCustomers();
-  const today = localToday();
+  // Audit correction 3 (timezone Argent) : le grand-livre/URSSAF ET la prévision de trésorerie
+  // (useCashflow, cf. get-cashflow.ts) doivent raisonner sur le MÊME « aujourd'hui ». Décision :
+  // le jour métier d'un artisan français = jour LOCAL Europe/Paris (même choix que le digest
+  // hebdo, digest.service.ts) — ni le fuseau ambiant de l'appareil (dérive en déplacement / mauvaise
+  // config), ni l'UTC brut serveur (en décalage ~1-2 h avec Paris juste après minuit local). Source
+  // unique : parisDateOnly() (@bob/core, shared-kernel/time.ts), aussi utilisée par GetCashflow
+  // côté serveur pour son `asOf`.
+  const today = parisDateOnly();
 
-  // C-EXP-UI2 : entrées ADDITIVES de buildLedgerView (C-EXP5c). Fiche société : démo = seed
-  // MERCIER_PROPS (EI au réel simplifié, PAS micro → le moteur ne s'applique pas, la rangée
-  // cotisations reste « — » — VOULU) ; connecté = GET /company/me (hook partagé avec useIdentity).
+  // C-EXP-UI2 : entrées ADDITIVES de buildLedgerView (C-EXP5c). La fiche société provient
+  // exclusivement de GET /company/me ; absente, la ligne reste indisponible sans valeur inventée.
   // Encaissements datés : listPayments (socle E3). Données absentes → null honnête, inchangé.
-  const identity = useIdentity();
   const companyMe = useCompanyMe();
   const payments = usePayments();
-  const ledgerCompany = identity.isDemo ? MERCIER_PROPS : companyMe.data;
+  const bankBalance = useLatestBankBalance();
+  const ledgerCompany = companyMe.data;
 
   const ledger = useMemo(
     () =>
@@ -437,6 +465,7 @@ export default function Argent() {
         invoices: invoices.data,
         expenses: expenses.data,
         accountingEntries: entries.data,
+        bankBalanceCents: bankBalance.data?.amountCents,
         // Company micro + paiements datés + date du jour → cotisationsCents RÉEL (négatif),
         // « Disponible prudent » teinté d'autant, et ledger.urssaf = la déclaration pré-calculée.
         // TODO C-EXP-UI2 v2 : buildLedgerView ne propage pas encore acre/dateCreation vers
@@ -446,32 +475,72 @@ export default function Argent() {
         payments: payments.data,
         asOf: today,
       }),
-    [invoices.data, expenses.data, entries.data, ledgerCompany, payments.data, today],
+    [
+      invoices.data,
+      expenses.data,
+      entries.data,
+      bankBalance.data?.amountCents,
+      ledgerCompany,
+      payments.data,
+      today,
+    ],
   );
-  const ledgerLoading = invoices.isLoading || expenses.isLoading || entries.isLoading;
+  const ledgerLoading =
+    invoices.isLoading ||
+    expenses.isLoading ||
+    entries.isLoading ||
+    companyMe.isLoading ||
+    payments.isLoading ||
+    bankBalance.isLoading;
 
   // C-EXP-UI1 : échéancier fiscal 90 j — dates dérivées de la fiche société, aucun montant en v1.
   const fiscal = useFiscalCalendar();
 
   // E5 : balance âgée clients (deriveAgedBalance @bob/core — même vérité pour Bob).
   const aged = useMemo(
-    () => deriveAgedBalance({ invoices: invoices.data ?? [], customers: customers.data ?? [], today }),
+    () =>
+      deriveAgedBalance({ invoices: invoices.data ?? [], customers: customers.data ?? [], today }),
     [invoices.data, customers.data, today],
   );
 
-  // Bob voit la liste « à surveiller » AFFICHÉE (mauvais payeurs réels) : « parle-moi de ce
-  // client », « résume l'écran » — lecture seule, mêmes données que l'écran.
+  const overdueCustomers = useMemo(() => {
+    const byId = new Map((customers.data ?? []).map((customer) => [customer.id, customer]));
+    return aged.byCustomer
+      .map((line) => ({
+        customer: byId.get(line.customerId),
+        overdueCents:
+          line.buckets.d1_30
+          + line.buckets.d31_60
+          + line.buckets.d61_90
+          + line.buckets.d90_plus,
+        maxDaysLate: line.maxDaysLate,
+      }))
+      .filter(
+        (entry): entry is {
+          customer: NonNullable<typeof entry.customer>;
+          overdueCents: number;
+          maxDaysLate: number;
+        } => entry.customer !== undefined && entry.overdueCents > 0,
+      )
+      .sort((left, right) => right.overdueCents - left.overdueCents);
+  }, [aged.byCustomer, customers.data]);
+
+  // Bob voit exactement les clients avec une facture échue affichés à l'écran.
   const agentContext = useMemo<AgentContext>(() => {
-    const watchlist = (customers.data ?? [])
-      .filter((c) => c.scoreBand === 'red' && c.outstanding > 0)
-      .sort((a, b) => b.outstanding - a.outstanding)
-      .slice(0, 8);
+    const contextReady = invoices.data !== undefined && customers.data !== undefined;
+    const watchlist = overdueCustomers.slice(0, 8);
     return {
       screen: { name: 'argent', instanceId: 'argent' },
-      entities: watchlist.map((c) => ({ type: 'customer' as const, id: c.id, label: c.name })),
-      capabilities: ['screen.read', 'cashflow.read', 'customer.read'],
+      entities: contextReady
+        ? watchlist.map(({ customer }) => ({
+            type: 'customer' as const,
+            id: customer.id,
+            label: customer.name,
+          }))
+        : [],
+      capabilities: contextReady ? ['screen.read', 'cashflow.read', 'customer.read'] : [],
     };
-  }, [customers.data]);
+  }, [customers.data, invoices.data, overdueCustomers]);
   usePublishAgentContext(agentContext, {}, { affordances: fiscalFlow.voiceAffordances });
 
   const series: CashflowSeriesPoint[] = [];
@@ -482,23 +551,128 @@ export default function Argent() {
   const band = cashflowBand(series, horizon);
   const bandTone = band === 'creux' ? semantic.warning : semantic.success;
 
-  // « À surveiller » : mauvais payeurs réels (score @bob/core), encours décroissant.
-  const risky = (customers.data ?? [])
-    .filter((c) => c.scoreBand === 'red' && c.outstanding > 0)
-    .sort((a, b) => b.outstanding - a.outstanding);
+  // « À surveiller » : factures réellement échues, triées par reste dû échu.
+  const risky = overdueCustomers;
   const topRisk = risky[0];
 
-  const hasError =
+  const balanceNeedsConfirmation =
+    bankBalance.isError && isBankBalanceQualificationError(bankBalance.error);
+  const cashflowHasError =
     cash7.isError ||
     cash30.isError ||
     cash60.isError ||
     cash90.isError ||
     heroSafe.isError ||
-    heroUp.isError ||
+    heroUp.isError;
+  const hasError =
+    (!balanceNeedsConfirmation && cashflowHasError) ||
+    (bankBalance.isError && !balanceNeedsConfirmation) ||
     invoices.isError ||
     expenses.isError ||
     entries.isError ||
-    customers.isError;
+    customers.isError ||
+    companyMe.isError ||
+    payments.isError ||
+    fiscal.isError ||
+    fiscalFlow.isError ||
+    payGuidance.isError;
+
+  // Un refetch peut échouer tout en laissant une photographie serveur antérieure dans le cache :
+  // elle reste une donnée réelle et l'écran l'affiche avec la bannière d'erreur ci-dessous. En
+  // revanche, si une source n'a JAMAIS répondu, aucune agrégation partielle/`[]`/zéro ne doit être
+  // rendue comme une vérité financière. L'écran devient alors intégralement fail-closed.
+  const fatalDataError =
+    hasBlockingAuthoritativeDataError([
+      cash7,
+      cash30,
+      cash60,
+      cash90,
+      heroSafe,
+      heroUp,
+      invoices,
+      expenses,
+      entries,
+      customers,
+      companyMe,
+      payments,
+      fiscal,
+      { isError: fiscalFlow.isError, data: fiscalFlow.profile },
+    ]) ||
+    (bankBalance.isError && bankBalance.data === undefined && !balanceNeedsConfirmation);
+
+  const refetchMainData = (): void => {
+    for (const query of [
+      cash7,
+      cash30,
+      cash60,
+      cash90,
+      heroSafe,
+      heroUp,
+      invoices,
+      expenses,
+      entries,
+      customers,
+      companyMe,
+      payments,
+      bankBalance,
+      fiscal,
+    ]) {
+      void query.refetch();
+    }
+    void fiscalFlow.refetch();
+  };
+
+  // Audit correction 2 : seul échappatoire manuel de l'écran avant ce correctif — même geste
+  // que Aujourd'hui (index.tsx), sur les mêmes queries que refetchMainData (ErrorRetry).
+  const refreshing =
+    cash7.isRefetching ||
+    cash30.isRefetching ||
+    cash60.isRefetching ||
+    cash90.isRefetching ||
+    heroSafe.isRefetching ||
+    heroUp.isRefetching ||
+    invoices.isRefetching ||
+    expenses.isRefetching ||
+    entries.isRefetching ||
+    customers.isRefetching ||
+    companyMe.isRefetching ||
+    payments.isRefetching ||
+    bankBalance.isRefetching ||
+    fiscal.isRefetching ||
+    fiscalFlow.isRefetching;
+
+  if (fatalDataError) {
+    return (
+      <View style={{ flex: 1, backgroundColor: colors.bg }}>
+        <ScrollView
+          style={{ flex: 1 }}
+          contentContainerStyle={{ paddingBottom: bobScrollInsets.paddingBottom }}
+          scrollIndicatorInsets={{ bottom: bobScrollInsets.scrollIndicatorBottom }}
+          automaticallyAdjustKeyboardInsets={bobScrollInsets.automaticallyAdjustKeyboardInsets}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={refetchMainData}
+              tintColor={colors.ink800}
+              colors={[colors.ink800]}
+            />
+          }
+        >
+          <InnerScreenHeader
+            eyebrow={t('argent.eyebrow', { personality })}
+            title={t('argent.title', { personality })}
+            subtitle={t('argent.subtitle', { personality })}
+          />
+          <View style={{ paddingHorizontal: 18, paddingTop: 16 }}>
+            <ErrorRetry
+              message={t('argent.dataError', { personality })}
+              onRetry={refetchMainData}
+            />
+          </View>
+        </ScrollView>
+      </View>
+    );
+  }
 
   // Phrase conditionnelle du héros : upside réel (optimiste > prudent) + le retardataire réel —
   // RÉSERVÉE au profil non confirmé ('prudent', mêmes clés qu'avant cette phase). Un profil
@@ -514,8 +688,8 @@ export default function Argent() {
           personality,
           params: {
             upTo: formatEUR(heroUp.data.payout),
-            name: topRisk.name,
-            amount: formatEUR(topRisk.outstanding),
+            name: topRisk.customer.name,
+            amount: formatEUR(topRisk.overdueCents),
           },
         })
       : guidance
@@ -538,6 +712,14 @@ export default function Argent() {
         contentContainerStyle={{ paddingBottom: bobScrollInsets.paddingBottom }}
         scrollIndicatorInsets={{ bottom: bobScrollInsets.scrollIndicatorBottom }}
         automaticallyAdjustKeyboardInsets={bobScrollInsets.automaticallyAdjustKeyboardInsets}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={refetchMainData}
+            tintColor={colors.ink800}
+            colors={[colors.ink800]}
+          />
+        }
       >
         <InnerScreenHeader
           eyebrow={t('argent.eyebrow', { personality })}
@@ -564,12 +746,59 @@ export default function Argent() {
             )}
           </View>
 
-          {hasError ? (
-            <Card style={{ marginTop: 14 }}>
-              <Text style={[font('sub'), { color: colors.slate500 }]}>
-                {t('argent.dataError', { personality })}
-              </Text>
+          {balanceNeedsConfirmation ? (
+            <Card radius={18} padding={15} style={{ marginTop: 14 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 11 }}>
+                <IconTile tone="b2b" size={36} radius={11}>
+                  <Feather name="credit-card" size={17} color={semantic.b2b} />
+                </IconTile>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={[font('cardTitle'), { fontSize: 15, color: colors.ink800 }]}>
+                    {t('argent.balanceNeededTitle', { personality })}
+                  </Text>
+                  <Text
+                    style={[font('meta'), { color: colors.slate500, lineHeight: 18, marginTop: 4 }]}
+                  >
+                    {t('argent.balanceNeededBody', { personality })}
+                  </Text>
+                  <View style={{ marginTop: 12 }}>
+                    <Button
+                      title={t('argent.balanceNeededCta', { personality })}
+                      variant="primary"
+                      onPress={() => setBalanceSheetVisible(true)}
+                    />
+                  </View>
+                </View>
+              </View>
             </Card>
+          ) : bankBalance.data ? (
+            <Card radius={16} padding={13} style={{ marginTop: 12 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                <Feather name="check-circle" size={17} color={semantic.success} />
+                <Text style={[font('meta'), { color: colors.slate500, flex: 1 }]}>
+                  {t('argent.balanceObserved', { personality })}
+                </Text>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={t('argent.balanceRefreshCta', { personality })}
+                  onPress={() => setBalanceSheetVisible(true)}
+                  hitSlop={10}
+                >
+                  <Text style={[font('label', 700), { color: colors.ink600 }]}>
+                    {t('argent.balanceRefreshCta', { personality })}
+                  </Text>
+                </Pressable>
+              </View>
+            </Card>
+          ) : null}
+
+          {hasError ? (
+            <View style={{ marginTop: 14 }}>
+              <ErrorRetry
+                message={t('argent.dataError', { personality })}
+                onRetry={refetchMainData}
+              />
+            </View>
           ) : null}
 
           {/* ── Entrée mini-flow profil fiscal (amendement 1/2 : carte douce, jamais
@@ -590,7 +819,12 @@ export default function Argent() {
                     <Text style={{ ...font('cardTitle'), fontSize: 14.5, color: colors.ink800 }}>
                       {t('fiscal.entry.title', { personality })}
                     </Text>
-                    <Text style={[font('meta'), { color: colors.slate400, marginTop: 2, lineHeight: 16 }]}>
+                    <Text
+                      style={[
+                        font('meta'),
+                        { color: colors.slate400, marginTop: 2, lineHeight: 16 },
+                      ]}
+                    >
                       {t('fiscal.entry.body', { personality })}
                     </Text>
                   </View>
@@ -656,13 +890,15 @@ export default function Argent() {
                   <EmptyMoneyRow label={t('argent.rowCharges', { personality })} />
                 )}
                 {ledger.vatCents !== null ? (
-                  <MoneyRow label={t('argent.rowVat', { personality })} amountCents={ledger.vatCents} />
+                  <MoneyRow
+                    label={t('argent.rowVat', { personality })}
+                    amountCents={ledger.vatCents}
+                  />
                 ) : (
                   <EmptyMoneyRow label={t('argent.rowVat', { personality })} />
                 )}
-                {/* Cotisations : provision URSSAF RÉELLE pour une company micro (C-EXP-UI2,
-                    company+payments+asOf passés à buildLedgerView) ; autres formes (dont la
-                    démo Mercier, EI au réel) → « — » honnête (aucune source, P23/P34). */}
+                {/* Cotisations : provision URSSAF calculée pour une company micro à partir de
+                    company+payments+asOf ; les autres situations restent indisponibles. */}
                 {ledger.cotisationsCents !== null ? (
                   <MoneyRow
                     label={t('argent.rowCotisations', { personality })}
@@ -692,8 +928,7 @@ export default function Argent() {
           {/* ── Déclaration URSSAF pré-calculée (C-EXP-UI2 — doctrine « Bob FAIT ») ──
               Visible seulement quand le moteur a parlé (company micro + paiements datés) :
               période + montant + explain voix Bob (calculés dans @bob/core, jamais ici) +
-              échéance. État absent → RIEN (pas de carte vide) — la démo Mercier (EI au réel)
-              ne l'affiche pas, c'est voulu. */}
+              échéance. État absent → RIEN (pas de carte vide). */}
           {ledger.urssaf !== null ? (
             <Card radius={20} padding={16} elevation="e2" style={{ marginTop: 14 }}>
               <View
@@ -706,7 +941,10 @@ export default function Argent() {
               >
                 <Text
                   numberOfLines={1}
-                  style={[font('cardTitle'), { fontSize: 15.5, color: colors.ink800, flexShrink: 1 }]}
+                  style={[
+                    font('cardTitle'),
+                    { fontSize: 15.5, color: colors.ink800, flexShrink: 1 },
+                  ]}
                 >
                   {t('argent.urssafTitle', {
                     personality,
@@ -722,16 +960,25 @@ export default function Argent() {
                   />
                 ) : null}
               </View>
-              <Text style={[font('meta'), { fontSize: 11.5, color: colors.slate400, marginTop: 10 }]}>
+              <Text
+                style={[font('meta'), { fontSize: 11.5, color: colors.slate400, marginTop: 10 }]}
+              >
                 {t('argent.urssafSetAside', { personality })}
               </Text>
               <View style={{ marginTop: 2 }}>
                 <MoneyText cents={ledger.urssaf.provisionCents} variant="big" />
               </View>
-              <Text style={[font('meta'), { color: colors.slate500, marginTop: 8, lineHeight: 17 }]}>
+              <Text
+                style={[font('meta'), { color: colors.slate500, marginTop: 8, lineHeight: 17 }]}
+              >
                 {ledger.urssaf.explain}
               </Text>
-              <Text style={[font('label', 600), { fontSize: 12.5, color: colors.ink800, marginTop: 10 }]}>
+              <Text
+                style={[
+                  font('label', 600),
+                  { fontSize: 12.5, color: colors.ink800, marginTop: 10 },
+                ]}
+              >
                 {t('argent.urssafDeclareBy', {
                   personality,
                   params: { date: frShortDate(ledger.urssaf.declareBy) },
@@ -783,6 +1030,42 @@ export default function Argent() {
               onChange={setScenario}
               accessibilityLabel={t('argent.forecastTitle', { personality })}
             />
+            {forecast.data ? (
+              <View
+                accessibilityRole="summary"
+                style={{ marginTop: 12, paddingTop: 11, borderTopWidth: 1, borderTopColor: colors.lineSoft }}
+              >
+                <Text style={[font('meta'), { color: colors.slate500, lineHeight: 17 }]}>
+                  {forecast.data.basis.kind === 'dated_documents'
+                    ? t('argent.forecastBasisDated', {
+                        personality,
+                        params: {
+                          date: frShortDate(forecast.data.basis.horizonEnd),
+                          rate: forecast.data.basis.receivableCollectionRatePct,
+                        },
+                      })
+                    : t('argent.forecastBasisLegacy', { personality })}
+                </Text>
+                {forecast.data.basis.kind === 'dated_documents'
+                && forecast.data.basis.receivablesUndatedCents > 0 ? (
+                  <Text style={[font('meta'), { color: colors.slate400, lineHeight: 17, marginTop: 4 }]}>
+                    {t('argent.forecastUndatedReceivables', {
+                      personality,
+                      params: { amount: formatEUR(forecast.data.basis.receivablesUndatedCents) },
+                    })}
+                  </Text>
+                ) : null}
+                {forecast.data.basis.kind === 'dated_documents'
+                && forecast.data.basis.chargesUndatedIncludedCents > 0 ? (
+                  <Text style={[font('meta'), { color: colors.slate400, lineHeight: 17, marginTop: 4 }]}>
+                    {t('argent.forecastUndatedCharges', {
+                      personality,
+                      params: { amount: formatEUR(forecast.data.basis.chargesUndatedIncludedCents) },
+                    })}
+                  </Text>
+                ) : null}
+              </View>
+            ) : null}
           </Card>
 
           {/* ── À surveiller (liste risques si données) ─────────────────────── */}
@@ -797,7 +1080,7 @@ export default function Argent() {
             <View style={{ marginTop: 18 }}>
               <SectionHeader title={t('argent.watchTitle', { personality })} />
               <View style={{ gap: 11 }}>
-                {risky.slice(0, 3).map((customer) => (
+                {risky.slice(0, 3).map(({ customer, overdueCents, maxDaysLate }) => (
                   <Card key={customer.id} radius={18} padding={14}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 11 }}>
                       <Avatar name={customer.name} size={38} shape="squircle" />
@@ -805,7 +1088,10 @@ export default function Argent() {
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
                           <Text
                             numberOfLines={1}
-                            style={[font('button'), { fontSize: 14.5, color: colors.ink800, flexShrink: 1 }]}
+                            style={[
+                              font('button'),
+                              { fontSize: 14.5, color: colors.ink800, flexShrink: 1 },
+                            ]}
                           >
                             {customer.name}
                           </Text>
@@ -814,11 +1100,17 @@ export default function Argent() {
                             variant="danger"
                           />
                         </View>
-                        <Text style={[font('meta'), { fontSize: 12.5, color: colors.slate400, marginTop: 1 }]}>
+                        <Text
+                          style={[
+                            font('meta'),
+                            { fontSize: 12.5, color: colors.slate400, marginTop: 1 },
+                          ]}
+                        >
                           {t('argent.watchOutstanding', {
                             personality,
-                            params: { amount: formatEUR(customer.outstanding) },
+                            params: { amount: formatEUR(overdueCents) },
                           })}
+                          {maxDaysLate > 0 ? ` · ${maxDaysLate} j` : ''}
                         </Text>
                       </View>
                     </View>
@@ -834,7 +1126,9 @@ export default function Argent() {
                   radius={15}
                   icon={<Ionicons name="sparkles" size={16} color={colors.surface} />}
                   // ?prompt=relance : l'assistant pré-remplit ET soumet la demande (C15).
-                  onPress={() => router.push({ pathname: '/(tabs)/assistant', params: { prompt: 'relance' } })}
+                  onPress={() =>
+                    router.push({ pathname: '/(tabs)/assistant', params: { prompt: 'relance' } })
+                  }
                 />
               </View>
             </View>
@@ -849,7 +1143,9 @@ export default function Argent() {
             <Text style={[font('cardTitle'), { fontSize: 15.5, color: colors.ink800 }]}>
               {t('argent.reserveTitle', { personality })}
             </Text>
-            <Text style={[font('label'), { fontWeight: '500', color: colors.slate500, marginTop: 3 }]}>
+            <Text
+              style={[font('label'), { fontWeight: '500', color: colors.slate500, marginTop: 3 }]}
+            >
               {t('argent.reserveBody', { personality })}
             </Text>
             <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
@@ -903,7 +1199,13 @@ export default function Argent() {
               {...(aged.totalCents !== 0
                 ? {
                     action: (
-                      <Text style={{ ...font('label'), color: colors.ink800, fontVariant: ['tabular-nums'] }}>
+                      <Text
+                        style={{
+                          ...font('label'),
+                          color: colors.ink800,
+                          fontVariant: ['tabular-nums'],
+                        }}
+                      >
                         {formatEUR(aged.totalCents)}
                       </Text>
                     ),
@@ -986,23 +1288,43 @@ export default function Argent() {
                       borderBottomColor: colors.lineSoft,
                     }}
                   >
-                    <Text style={{ ...font('body', 700), fontSize: 14, color: colors.ink800, flex: 1 }} numberOfLines={1}>
+                    <Text
+                      style={{ ...font('body', 700), fontSize: 14, color: colors.ink800, flex: 1 }}
+                      numberOfLines={1}
+                    >
                       {line.customerName}
                     </Text>
                     {line.maxDaysLate > 0 ? (
                       <StatusBadge
-                        label={t('argent.agedDays', { personality, params: { days: line.maxDaysLate } })}
+                        label={t('argent.agedDays', {
+                          personality,
+                          params: { days: line.maxDaysLate },
+                        })}
                         variant={line.maxDaysLate > 90 ? 'danger' : 'particulier'}
                       />
                     ) : null}
-                    <Text style={{ ...font('sub', 700), color: colors.ink800, fontVariant: ['tabular-nums'] }}>
+                    <Text
+                      style={{
+                        ...font('sub', 700),
+                        color: colors.ink800,
+                        fontVariant: ['tabular-nums'],
+                      }}
+                    >
                       {formatEUR(line.totalCents)}
                     </Text>
                   </Pressable>
                 ))}
                 {aged.overdueCents > 0 ? (
-                  <Text style={[font('meta', 500), { color: colors.slate400, paddingTop: 4, paddingBottom: 10 }]}>
-                    {t('argent.agedOverdue', { personality, params: { amount: formatEUR(aged.overdueCents) } })}
+                  <Text
+                    style={[
+                      font('meta', 500),
+                      { color: colors.slate400, paddingTop: 4, paddingBottom: 10 },
+                    ]}
+                  >
+                    {t('argent.agedOverdue', {
+                      personality,
+                      params: { amount: formatEUR(aged.overdueCents) },
+                    })}
                   </Text>
                 ) : null}
               </Card>
@@ -1058,8 +1380,13 @@ export default function Argent() {
                   <Feather name="trending-up" size={16} color={semantic.b2b} />
                 </IconTile>
                 <View style={{ flex: 1, minWidth: 0 }}>
-                  <Text style={{ ...font('cardTitle'), color: colors.ink800 }}>{t('pilotage.title', { personality })}</Text>
-                  <Text style={[font('meta'), { color: colors.slate400, marginTop: 2 }]} numberOfLines={1}>
+                  <Text style={{ ...font('cardTitle'), color: colors.ink800 }}>
+                    {t('pilotage.title', { personality })}
+                  </Text>
+                  <Text
+                    style={[font('meta'), { color: colors.slate400, marginTop: 2 }]}
+                    numberOfLines={1}
+                  >
                     {t('pilotage.entrySubtitle', { personality })}
                   </Text>
                 </View>
@@ -1073,6 +1400,12 @@ export default function Argent() {
       <Fab onPress={() => router.push('/devis/new')} accessibilityLabel="Nouveau devis" />
 
       <FirstTimeTip visible={tip.visible} onDismiss={tip.dismiss} />
+      <BankBalanceSheet
+        visible={balanceSheetVisible}
+        personality={personality}
+        currentAmountCents={bankBalance.data?.amountCents ?? null}
+        onClose={() => setBalanceSheetVisible(false)}
+      />
       {fiscalFlow.sheets}
     </View>
   );

@@ -20,6 +20,10 @@ import {
   PreviewPaymentAccountingEntry,
   ListCustomers,
   GetCashflow,
+  GetLatestQualifiedBankBalance,
+  CreateBankBalanceSnapshot,
+  BANK_BALANCE_FRESHNESS_POLICY_V1,
+  deriveKnownReceivables,
   SystemClock,
   deriveRelancePlan,
   ok,
@@ -51,6 +55,7 @@ import {
   deriveFiscalCalendar,
   deriveVatPosition,
   deriveAgedBalance,
+  deriveBusinessReview,
   formatEUR,
   resolveTradeConfig,
   facturXDataFromInvoice,
@@ -63,6 +68,10 @@ import {
   facturXInvoiceDuplicateKey,
   parseFacturXBasic,
   InboundEinvoice,
+  ListCatalogueItems,
+  CreateCatalogueItem,
+  UpdateCatalogueItem,
+  DeleteCatalogueItem,
   CreateChantier,
   AutofillCompanyFromSiret,
   ValidateVatNumber,
@@ -88,12 +97,13 @@ import {
   GetDocumentDownloadUrl,
   buildDocumentStorageKey,
   buildInvoiceAccountingPreviewEntry,
-  CASH_SNAPSHOT,
   type Result,
   type AppError,
   type CreateQuoteInput,
   type Scenario,
   type Horizon,
+  type CashflowProjection,
+  type QualifiedBankBalanceSnapshot,
   type PaymentMethod,
   type Quote,
   type Invoice,
@@ -112,9 +122,12 @@ import {
   type DiagnosticResult,
   type FiscalDeadline,
   type TradeConfig,
+  type Trade,
+  type VatRegime,
   type OcrExtractInput,
   type ChantierProps,
   type CreateChantierInput,
+  type CatalogueItemWriteInput,
   type CompanyLookupPort,
   type CompanyLookupResult,
   type VatValidationPort,
@@ -159,14 +172,25 @@ import {
   type ReadContextEntityInput,
   type RuntimeInvocation,
   redactPII,
-  accountingJournalLabel, chantierStatusLabel, customerTypeLabel, documentKindLabel, documentStatusLabel, expenseCategoryLabel, expenseStatusLabel, frDateLabel, invoiceKindLabel, invoiceStatusLabel, quoteStatusLabel,
+  accountingJournalLabel,
+  chantierStatusLabel,
+  customerTypeLabel,
+  documentKindLabel,
+  documentStatusLabel,
+  expenseCategoryLabel,
+  expenseStatusLabel,
+  frDateLabel,
+  invoiceKindLabel,
+  invoiceStatusLabel,
+  quoteStatusLabel,
 } from '@bob/ai';
 import type { TtsResult } from '@bob/ai';
-import { UuidGenerator, FixtureCashflowSnapshot, InMemoryChantierRepository } from './persistence/in-memory';
+import { UuidGenerator } from './id-generator';
 import { RechercheEntreprisesAdapter } from './adapters/recherche-entreprises.adapter';
 import { ViesVatAdapter } from './adapters/vies-vat.adapter';
 import { BanAddressAdapter } from './adapters/ban-address.adapter';
-import { PERSISTENCE, type Persistence } from './persistence/persistence';
+import type { Persistence } from './persistence/persistence';
+import { PERSISTENCE } from './persistence/persistence-token';
 import { CompanyScopedJournalStore } from './persistence/agent-journal';
 import { Metrics } from './observability/metrics';
 import { AppLogger, getPrincipal, requireTenant } from './observability/logger';
@@ -174,9 +198,15 @@ import { SUPABASE_ADMIN, type SupabaseAdminPort } from './auth/supabase-admin';
 import { PAYMENT_GATEWAY } from './payments/payment-gateway';
 import { PDF_RENDERER } from './documents/pdf-renderer';
 import { buildDocumentStorage, documentSha256 } from './documents/storage';
-import { generatedInvoiceDocumentId, generatedInvoiceDocumentVersionId } from './documents/generated-document-ids';
+import {
+  generatedInvoiceDocumentId,
+  generatedInvoiceDocumentVersionId,
+} from './documents/generated-document-ids';
 import { OCR_PORT } from './ocr/ocr';
-import { DOCUMENT_INTELLIGENCE_PORT, UnavailableDocumentIntelligence } from './documents/document-intelligence';
+import {
+  DOCUMENT_INTELLIGENCE_PORT,
+  UnavailableDocumentIntelligence,
+} from './documents/document-intelligence';
 import {
   DocumentFolderDeletionPlanService,
   type DocumentFolderDeletionPlanPreviewView,
@@ -278,7 +308,12 @@ export type FacturXImportDecision =
 
 export type FacturXImportOutcome =
   | { status: 'approved'; expenseId: string; xmlDocumentId: string | null }
-  | { status: 'refused'; afnorStatus: AfnorInboundRefusalStatus; reason: string; invoiceKey: string };
+  | {
+      status: 'refused';
+      afnorStatus: AfnorInboundRefusalStatus;
+      reason: string;
+      invoiceKey: string;
+    };
 
 /** Vue publique d'un devis pour la page de signature client à distance (lien tokenisé). */
 export interface SignatureView {
@@ -299,7 +334,14 @@ interface ResolvedSignatureGrant {
   quoteId: string;
 }
 
-const EXPENSE_CATEGORIES = new Set<ExpenseCategory>(['fournitures', 'materiel', 'carburant', 'repas', 'sous_traitance', 'autre']);
+const EXPENSE_CATEGORIES = new Set<ExpenseCategory>([
+  'fournitures',
+  'materiel',
+  'carburant',
+  'repas',
+  'sous_traitance',
+  'autre',
+]);
 
 class RollbackAppError extends Error {
   constructor(readonly appError: AppError) {
@@ -363,22 +405,54 @@ const DOCUMENT_UPLOAD_MIME_TYPES = new Set([
 
 function decodeBase64Document(contentBase64: unknown): Result<Uint8Array, AppError> {
   if (typeof contentBase64 !== 'string') {
-    return { ok: false, error: { kind: 'validation', issues: [{ field: 'contentBase64', message: 'Base64 invalide.' }] } };
+    return {
+      ok: false,
+      error: {
+        kind: 'validation',
+        issues: [{ field: 'contentBase64', message: 'Base64 invalide.' }],
+      },
+    };
   }
-  const raw = contentBase64.includes(',') ? contentBase64.slice(contentBase64.indexOf(',') + 1) : contentBase64;
+  const raw = contentBase64.includes(',')
+    ? contentBase64.slice(contentBase64.indexOf(',') + 1)
+    : contentBase64;
   const normalized = raw.replace(/\s/g, '');
   if (!normalized || !BASE64_PAYLOAD.test(normalized)) {
-    return { ok: false, error: { kind: 'validation', issues: [{ field: 'contentBase64', message: 'Base64 invalide.' }] } };
+    return {
+      ok: false,
+      error: {
+        kind: 'validation',
+        issues: [{ field: 'contentBase64', message: 'Base64 invalide.' }],
+      },
+    };
   }
   if (normalized.length > DOCUMENT_BASE64_MAX_CHARS) {
-    return { ok: false, error: { kind: 'validation', issues: [{ field: 'contentBase64', message: 'Document trop volumineux (10 Mo maximum).' }] } };
+    return {
+      ok: false,
+      error: {
+        kind: 'validation',
+        issues: [{ field: 'contentBase64', message: 'Document trop volumineux (10 Mo maximum).' }],
+      },
+    };
   }
   const bytes = Buffer.from(normalized, 'base64');
   if (bytes.byteLength === 0) {
-    return { ok: false, error: { kind: 'validation', issues: [{ field: 'contentBase64', message: 'Document vide.' }] } };
+    return {
+      ok: false,
+      error: {
+        kind: 'validation',
+        issues: [{ field: 'contentBase64', message: 'Document vide.' }],
+      },
+    };
   }
   if (bytes.byteLength > DOCUMENT_BINARY_MAX_BYTES) {
-    return { ok: false, error: { kind: 'validation', issues: [{ field: 'contentBase64', message: 'Document trop volumineux (10 Mo maximum).' }] } };
+    return {
+      ok: false,
+      error: {
+        kind: 'validation',
+        issues: [{ field: 'contentBase64', message: 'Document trop volumineux (10 Mo maximum).' }],
+      },
+    };
   }
   return ok(bytes);
 }
@@ -388,57 +462,80 @@ function validateUploadedDocument(input: {
   mimeType: unknown;
   bytes: Uint8Array;
 }): Result<{ filename: string; mimeType: string }, AppError> {
-  const filename = typeof input.filename === 'string' ? input.filename.replace(/\s+/g, ' ').trim() : '';
-  const mimeType = typeof input.mimeType === 'string' ? input.mimeType.split(';', 1)[0]!.trim().toLowerCase() : '';
+  const filename =
+    typeof input.filename === 'string' ? input.filename.replace(/\s+/g, ' ').trim() : '';
+  const mimeType =
+    typeof input.mimeType === 'string' ? input.mimeType.split(';', 1)[0]!.trim().toLowerCase() : '';
   const issues: { field: string; message: string }[] = [];
-  const hasUnsafeFilenameCharacter = filename.includes('/')
-    || filename.includes('\\')
-    || [...filename].some((character) => {
+  const hasUnsafeFilenameCharacter =
+    filename.includes('/') ||
+    filename.includes('\\') ||
+    [...filename].some((character) => {
       const codePoint = character.codePointAt(0) ?? 0;
       return codePoint <= 0x1f || codePoint === 0x7f;
     });
   if (!filename || filename.length > 180 || hasUnsafeFilenameCharacter) {
-    issues.push({ field: 'filename', message: 'Nom de fichier invalide (180 caractères maximum).' });
+    issues.push({
+      field: 'filename',
+      message: 'Nom de fichier invalide (180 caractères maximum).',
+    });
   }
   if (!DOCUMENT_UPLOAD_MIME_TYPES.has(mimeType)) {
-    issues.push({ field: 'mimeType', message: 'Format non pris en charge. Utilise PDF, XML, JPEG, PNG, WebP ou HEIC.' });
+    issues.push({
+      field: 'mimeType',
+      message: 'Format non pris en charge. Utilise PDF, XML, JPEG, PNG, WebP ou HEIC.',
+    });
   }
   const bytes = input.bytes;
-  const isPdf = bytes.length >= 5 && Buffer.from(bytes.subarray(0, 5)).toString('ascii') === '%PDF-';
+  const isPdf =
+    bytes.length >= 5 && Buffer.from(bytes.subarray(0, 5)).toString('ascii') === '%PDF-';
   const isJpeg = bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
-  const isPng = bytes.length >= 8 && [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
-    .every((value, index) => bytes[index] === value);
-  const isWebp = bytes.length >= 12
-    && Buffer.from(bytes.subarray(0, 4)).toString('ascii') === 'RIFF'
-    && Buffer.from(bytes.subarray(8, 12)).toString('ascii') === 'WEBP';
+  const isPng =
+    bytes.length >= 8 &&
+    [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a].every(
+      (value, index) => bytes[index] === value,
+    );
+  const isWebp =
+    bytes.length >= 12 &&
+    Buffer.from(bytes.subarray(0, 4)).toString('ascii') === 'RIFF' &&
+    Buffer.from(bytes.subarray(8, 12)).toString('ascii') === 'WEBP';
   const heifBrand = bytes.length >= 12 ? Buffer.from(bytes.subarray(8, 12)).toString('ascii') : '';
-  const isHeif = bytes.length >= 12
-    && Buffer.from(bytes.subarray(4, 8)).toString('ascii') === 'ftyp'
-    && new Set(['heic', 'heix', 'hevc', 'hevx', 'heim', 'heis', 'mif1', 'msf1']).has(heifBrand);
+  const isHeif =
+    bytes.length >= 12 &&
+    Buffer.from(bytes.subarray(4, 8)).toString('ascii') === 'ftyp' &&
+    new Set(['heic', 'heix', 'hevc', 'hevx', 'heim', 'heis', 'mif1', 'msf1']).has(heifBrand);
   const xmlHead = Buffer.from(bytes.subarray(0, Math.min(bytes.length, 512)))
     .toString('utf8')
     .replace(/^\uFEFF/, '')
     .trimStart();
   const signatureMatches =
-    (mimeType === 'application/pdf' && isPdf)
-    || (mimeType === 'image/jpeg' && isJpeg)
-    || (mimeType === 'image/png' && isPng)
-    || (mimeType === 'image/webp' && isWebp)
-    || ((mimeType === 'image/heic' || mimeType === 'image/heif') && isHeif)
-    || ((mimeType === 'application/xml' || mimeType === 'text/xml') && xmlHead.startsWith('<'));
+    (mimeType === 'application/pdf' && isPdf) ||
+    (mimeType === 'image/jpeg' && isJpeg) ||
+    (mimeType === 'image/png' && isPng) ||
+    (mimeType === 'image/webp' && isWebp) ||
+    ((mimeType === 'image/heic' || mimeType === 'image/heif') && isHeif) ||
+    ((mimeType === 'application/xml' || mimeType === 'text/xml') && xmlHead.startsWith('<'));
   if (DOCUMENT_UPLOAD_MIME_TYPES.has(mimeType) && !signatureMatches) {
-    issues.push({ field: 'mimeType', message: 'Le contenu du fichier ne correspond pas au format annoncé.' });
+    issues.push({
+      field: 'mimeType',
+      message: 'Le contenu du fichier ne correspond pas au format annoncé.',
+    });
   }
-  return issues.length > 0 ? { ok: false, error: { kind: 'validation', issues } } : ok({ filename, mimeType });
+  return issues.length > 0
+    ? { ok: false, error: { kind: 'validation', issues } }
+    : ok({ filename, mimeType });
 }
 
 function appErrorSummary(error: AppError): string {
-  if (error.kind === 'domain') return `${error.error.code}:${'field' in error.error ? error.error.field : ''}`;
+  if (error.kind === 'domain')
+    return `${error.error.code}:${'field' in error.error ? error.error.field : ''}`;
   if (error.kind === 'not_found') return `not_found:${error.entity}:${error.id}`;
   if (error.kind === 'forbidden') return `forbidden:${error.reason}`;
-  if (error.kind === 'validation') return `validation:${error.issues.map((i) => `${i.field}:${i.message}`).join(';')}`;
+  if (error.kind === 'validation')
+    return `validation:${error.issues.map((i) => `${i.field}:${i.message}`).join(';')}`;
   if (error.kind === 'conflict') return `conflict:${error.entity}:${error.reason}`;
-  if (error.kind === 'rate_limited') return `rate_limited:${error.reason}:${error.retryAfterSeconds}`;
+  if (error.kind === 'rate_limited')
+    return `rate_limited:${error.reason}:${error.retryAfterSeconds}`;
   if (error.kind === 'unavailable') return `unavailable:${error.service}`;
   return `dependency:${error.port}:${error.cause}`;
 }
@@ -465,7 +562,9 @@ const DOCUMENT_ANALYSIS_FOLDER_LABEL: Readonly<Record<DocumentFolderSystemKey, s
   accounting: 'Comptable',
 };
 
-const DOCUMENT_ANALYSIS_FACT_LABEL: Readonly<Record<DocumentAnalysis['facts'][number]['key'], string>> = {
+const DOCUMENT_ANALYSIS_FACT_LABEL: Readonly<
+  Record<DocumentAnalysis['facts'][number]['key'], string>
+> = {
   issuer_name: 'Émetteur',
   recipient_name: 'Destinataire',
   supplier_name: 'Fournisseur',
@@ -547,18 +646,33 @@ function nextArchiveRetryAt(now: string, attempts: number): string {
 }
 
 function publicSignatureUrl(token: string): string {
-  const base = (process.env.SIGN_WEB_BASE_URL ?? 'https://demo.bobpro.fr').replace(/\/$/, '');
-  return `${base}/sign/${encodeURIComponent(token)}`;
+  const configured = process.env.SIGN_WEB_BASE_URL?.trim();
+  if (!configured) throw new Error('SIGN_WEB_BASE_URL est requis pour créer un lien de signature.');
+  const base = new URL(configured);
+  if (
+    base.protocol !== 'https:' ||
+    base.hostname === 'localhost' ||
+    base.hostname === '127.0.0.1' ||
+    base.hostname === 'demo.bobpro.fr' ||
+    base.username !== '' ||
+    base.password !== '' ||
+    base.search !== '' ||
+    base.hash !== ''
+  ) {
+    throw new Error('SIGN_WEB_BASE_URL doit être une origine HTTPS live canonique.');
+  }
+  return new URL(
+    `sign/${encodeURIComponent(token)}`,
+    base.toString().endsWith('/') ? base : `${base}/`,
+  ).toString();
 }
 
 function paymentReturnUrl(path: string): string {
-  const explicitDemo = process.env.DEMO_MODE === 'true';
   const configured = process.env.PAYMENT_RETURN_BASE_URL?.trim();
-  const raw = configured || (explicitDemo ? 'https://demo.bobpro.fr' : '');
-  if (!raw) throw new Error('PAYMENT_RETURN_BASE_URL est requis pour le paiement live.');
-  const base = raw.endsWith('/') ? raw : `${raw}/`;
+  if (!configured) throw new Error('PAYMENT_RETURN_BASE_URL est requis pour le paiement live.');
+  const base = configured.endsWith('/') ? configured : `${configured}/`;
   const url = new URL(path.replace(/^\//u, ''), base);
-  if (!explicitDemo && (url.protocol !== 'https:' || url.hostname === 'demo.bobpro.fr')) {
+  if (url.protocol !== 'https:' || url.hostname === 'demo.bobpro.fr') {
     throw new Error('PAYMENT_RETURN_BASE_URL doit cibler une origine HTTPS live.');
   }
   return url.toString();
@@ -586,11 +700,6 @@ export interface AgentExecutionOptions {
 export class BackendService {
   private readonly ids = new UuidGenerator();
   private readonly clock: ClockPort = new SystemClock();
-  private readonly demoCashflowSnapshots = process.env.DEMO_MODE === 'true'
-    ? new FixtureCashflowSnapshot(CASH_SNAPSHOT)
-    : null;
-  // Module Chantiers (BTP) en mémoire pour l'instant — persistance Prisma = incrément suivant.
-  private readonly chantiers = new InMemoryChantierRepository();
   // Recherche d'entreprise par SIRET (API publique gratuite) — autofill onboarding/client.
   private readonly companyLookup: CompanyLookupPort = new RechercheEntreprisesAdapter();
   // Validation TVA (VIES) + autocomplétion d'adresse (BAN) — APIs publiques gratuites.
@@ -611,19 +720,28 @@ export class BackendService {
   }
 
   /**
-   * Abonnement du tenant — C26b : dérivation PAR TENANT (fini le singleton Mercier partagé
-   * par tous). EARLY-ACCESS RÉEL : aucune table de billing n'existe — même politique
-   * pour tous les tenants (business actif, 0 € facturé), mais l'objet porte le companyId DU
-   * TENANT. Le jour où la facturation ouvre, CETTE méthode est LE point unique qui lira la
-   * table de billing : les gatings (planCan/ai_assistant, TTS pro+, modules chantiers,
-   * paiement en ligne) suivront sans être touchés. Les chemins requête passent
-   * `this.companyId()` (Principal du guard) ; les chemins jobs/cron passent leur companyId
-   * explicite (ScheduledTenantDirectory — même règle que jobs/relance.service).
+   * Autorité unique des capacités payantes. La ligne `subscriptions` du tenant est obligatoire :
+   * son absence est une indisponibilité de provisioning, jamais un abonnement Business implicite.
+   * Un essai expiré est ramené au palier gratuit pour l'enforcement, sans modifier silencieusement
+   * la ligne (l'atterrissage persistant reste la responsabilité du workflow d'abonnement).
    */
-  private subscriptionFor(companyId: string): Subscription {
-    const started = Subscription.start({ id: `sub-${companyId}`, companyId, tier: 'business', status: 'active' });
-    if (!started.ok) throw new Error(`abonnement early-access non constructible pour ${companyId}`);
-    return started.value;
+  private async subscriptionFor(companyId: string): Promise<Result<Subscription, AppError>> {
+    const record = await this.p.subscriptions.findByCompanyId(companyId);
+    if (record === null) return err(appUnavailable('subscription'));
+
+    const trialExpired =
+      record.status === 'trialing' &&
+      record.trialEndsAt !== null &&
+      Date.parse(record.trialEndsAt) <= Date.parse(this.clock.now());
+    const started = Subscription.start({
+      id: record.id,
+      companyId: record.companyId,
+      tier: trialExpired ? 'free' : record.plan,
+      status: trialExpired ? 'active' : record.status,
+      ...(record.currentPeriodEnd === null ? {} : { currentPeriodEnd: record.currentPeriodEnd }),
+    });
+    if (!started.ok) return err(appDomain(started.error));
+    return ok(started.value);
   }
 
   /**
@@ -636,7 +754,7 @@ export class BackendService {
       invoice: this.p.invoices,
       quote: this.p.quotes,
       expense: this.p.expenses,
-      chantier: this.chantiers,
+      chantier: this.p.chantiers,
     });
     return {
       exists: (input) => this.p.runWithTenant(input.companyId, () => targets.exists(input)),
@@ -691,7 +809,13 @@ export class BackendService {
   }
 
   listCustomers() {
-    return new ListCustomers({ customers: this.p.customers }).execute({ companyId: this.companyId() });
+    return new ListCustomers({
+      customers: this.p.customers,
+      invoices: this.p.invoices,
+      payments: this.p.payments,
+    }).execute({
+      companyId: this.companyId(),
+    });
   }
   /**
    * Sonde de readiness (/health/ready) : exerce la persistance SANS tenant — aucun Principal
@@ -702,21 +826,80 @@ export class BackendService {
     const list = await this.p.customers.listByCompany('readiness-probe');
     return ok({ customers: list.length });
   }
-  getCashflow(scenario: Scenario, horizon: Horizon) {
-    // Aucune source bancaire qualifiée n'est encore persistée en live : servir CASH_SNAPSHOT
-    // inventerait le disponible du propriétaire. Le contrat reste explicitement indisponible.
-    if (process.env.DEMO_MODE !== 'true' || this.demoCashflowSnapshots === null) {
-      return Promise.resolve(err(appUnavailable('cashflow-banking-source')));
+  latestQualifiedBankBalance(): Promise<Result<QualifiedBankBalanceSnapshot, AppError>> {
+    return new GetLatestQualifiedBankBalance({
+      balances: this.p.bankBalances,
+      clock: this.clock,
+      freshnessPolicy: BANK_BALANCE_FRESHNESS_POLICY_V1,
+    }).execute({ companyId: this.companyId() });
+  }
+
+  async recordManualBankBalance(input: {
+    amountCents: number;
+    observedAt: string;
+  }): Promise<Result<QualifiedBankBalanceSnapshot, AppError>> {
+    const created = await new CreateBankBalanceSnapshot({
+      balances: this.p.bankBalances,
+      clock: this.clock,
+    }).execute({
+      id: this.ids.newId(),
+      companyId: this.companyId(),
+      amountCents: input.amountCents,
+      currency: 'EUR',
+      source: 'manual_confirmed',
+      reconciliationStatus: 'unreconciled',
+      observedAt: input.observedAt,
+    });
+    if (!created.ok) return created;
+    return this.latestQualifiedBankBalance();
+  }
+
+  async getCashflow(
+    scenario: Scenario,
+    horizon: Horizon,
+  ): Promise<Result<CashflowProjection, AppError>> {
+    const companyId = this.companyId();
+    const balance = await new GetLatestQualifiedBankBalance({
+      balances: this.p.bankBalances,
+      clock: this.clock,
+      freshnessPolicy: BANK_BALANCE_FRESHNESS_POLICY_V1,
+    }).execute({ companyId });
+    if (!balance.ok) {
+      if (balance.error.kind === 'not_found') return err(appUnavailable('cashflow-banking-source'));
+      return balance;
     }
+
+    const invoices = await this.p.invoices.listByCompany(companyId);
+    const receivables = deriveKnownReceivables({
+      companyId,
+      invoices: invoices.map((invoice) => ({
+        id: invoice.id,
+        companyId: invoice.companyId,
+        kind: invoice.kind,
+        status: invoice.status,
+        netToPayCents: invoice.totals().netToPay,
+        paidCents: invoice.paid,
+      })),
+    });
+    if (!receivables.ok) return err(appUnavailable('cashflow-financial-data'));
+
+    const snapshots = {
+      get: async (requestedCompanyId: string) => {
+        if (requestedCompanyId !== companyId) throw new Error('CASHFLOW_TENANT_SCOPE_MISMATCH');
+        return {
+          bankBalance: balance.value.amountCents,
+          receivables: receivables.value.receivablesCents,
+          // Un excédent d'avoirs est une dette connue envers les clients, pas un encours négatif.
+          charges: receivables.value.customerCreditCents,
+        };
+      },
+    };
     return new GetCashflow({
-      snapshots: this.demoCashflowSnapshots,
+      snapshots,
       expenses: this.p.expenses,
       invoices: this.p.invoices,
-    }).execute({
-      companyId: this.companyId(),
-      scenario,
-      horizon,
-    });
+      clock: this.clock,
+    }).execute({ companyId, scenario, horizon });
   }
   createQuote(input: Omit<CreateQuoteInput, 'companyId'>) {
     return new QuoteCreationCoordinator({
@@ -725,9 +908,7 @@ export class BackendService {
       clock: this.clock,
     }).execute({ companyId: this.companyId(), quote: input });
   }
-  async sendQuote(
-    quoteId: string,
-  ): Promise<
+  async sendQuote(quoteId: string): Promise<
     Result<
       {
         number: string;
@@ -744,7 +925,12 @@ export class BackendService {
   > {
     const quote = await this.ownedQuote(quoteId);
     if (!quote) return { ok: false as const, error: appNotFound('quote', quoteId) };
-    const sent = await new SendQuote({ quotes: this.p.quotes, counters: this.p.counters, uow: this.p, clock: this.clock }).execute({
+    const sent = await new SendQuote({
+      quotes: this.p.quotes,
+      counters: this.p.counters,
+      uow: this.p,
+      clock: this.clock,
+    }).execute({
       quoteId,
     });
     if (!sent.ok) return sent;
@@ -754,8 +940,15 @@ export class BackendService {
       clock: this.clock,
     }).execute({ quoteId });
     if (token.ok) {
-      this.logger.audit('quote.signature_token_created', { quoteId, expiresAt: token.value.expiresAt });
-      const deliveryStatus = await this.enqueueQuoteForSignature(quote, sent.value.number, token.value.token);
+      this.logger.audit('quote.signature_token_created', {
+        quoteId,
+        expiresAt: token.value.expiresAt,
+      });
+      const deliveryStatus = await this.enqueueQuoteForSignature(
+        quote,
+        sent.value.number,
+        token.value.token,
+      );
       return ok({
         ...sent.value,
         signatureToken: token.value.token,
@@ -776,7 +969,10 @@ export class BackendService {
     const company = await this.p.companies.findById(quote.companyId);
     const email = customer?.toProps().email;
     if (!email) {
-      this.logger.audit('quote.email_skipped', { quoteId: quote.id, reason: 'customer_email_missing' });
+      this.logger.audit('quote.email_skipped', {
+        quoteId: quote.id,
+        reason: 'customer_email_missing',
+      });
       return 'skipped';
     }
     const job = await this.notificationDelivery.enqueue({
@@ -801,7 +997,12 @@ export class BackendService {
     if (job.status === 'done') return 'sent';
     // Outbox stricte : aucun réseau tiers dans la transaction HTTP. Le cron/worker ne voit
     // le job qu'après commit ; ses retries portent l'idempotencyKey persistée par enqueue().
-    this.logger.audit('quote.email_queued', { quoteId: quote.id, number, to: email, jobId: job.id });
+    this.logger.audit('quote.email_queued', {
+      quoteId: quote.id,
+      number,
+      to: email,
+      jobId: job.id,
+    });
     return 'queued';
   }
   /**
@@ -811,7 +1012,8 @@ export class BackendService {
    * aussi, dans la même transaction, tous les liens publics actifs du devis.
    */
   async signQuote(input: { quoteId: string; signerName: string; proofDataUrl?: string }) {
-    if (!(await this.ownedQuote(input.quoteId))) return { ok: false as const, error: appNotFound('quote', input.quoteId) };
+    if (!(await this.ownedQuote(input.quoteId)))
+      return { ok: false as const, error: appNotFound('quote', input.quoteId) };
     const r = await new SignQuote({
       quotes: this.p.quotes,
       publicAccessTokens: this.p.publicAccessTokens,
@@ -824,7 +1026,10 @@ export class BackendService {
     });
     if (r.ok) {
       // Jamais le nom du signataire ni le tracé dans les logs — corrélation technique seulement.
-      this.logger.audit('quote.signed_onsite', { quoteId: input.quoteId, withProof: Boolean(input.proofDataUrl) });
+      this.logger.audit('quote.signed_onsite', {
+        quoteId: input.quoteId,
+        withProof: Boolean(input.proofDataUrl),
+      });
     }
     return r;
   }
@@ -837,7 +1042,8 @@ export class BackendService {
   async createQuoteSignatureLink(
     quoteId: string,
   ): Promise<Result<{ signatureUrl: string; expiresAt: string }, AppError>> {
-    if (!(await this.ownedQuote(quoteId))) return { ok: false as const, error: appNotFound('quote', quoteId) };
+    if (!(await this.ownedQuote(quoteId)))
+      return { ok: false as const, error: appNotFound('quote', quoteId) };
     const link = await new CreateQuoteSignatureLink({
       quotes: this.p.quotes,
       publicAccessTokens: this.p.publicAccessTokens,
@@ -845,10 +1051,14 @@ export class BackendService {
     }).execute({ quoteId });
     if (!link.ok) return link;
     this.logger.audit('quote.signature_link_created', { quoteId, expiresAt: link.value.expiresAt });
-    return ok({ signatureUrl: publicSignatureUrl(link.value.token), expiresAt: link.value.expiresAt });
+    return ok({
+      signatureUrl: publicSignatureUrl(link.value.token),
+      expiresAt: link.value.expiresAt,
+    });
   }
   async refuseQuote(quoteId: string) {
-    if (!(await this.ownedQuote(quoteId))) return { ok: false as const, error: appNotFound('quote', quoteId) };
+    if (!(await this.ownedQuote(quoteId)))
+      return { ok: false as const, error: appNotFound('quote', quoteId) };
     const r = await new RefuseQuote({
       quotes: this.p.quotes,
       publicAccessTokens: this.p.publicAccessTokens,
@@ -859,32 +1069,49 @@ export class BackendService {
     return r;
   }
   async generateInvoice(input: { quoteId: string; mode: 'deposit' | 'final' }) {
-    if (!(await this.ownedQuote(input.quoteId))) return { ok: false as const, error: appNotFound('quote', input.quoteId) };
-    return new GenerateInvoiceFromQuote({ quotes: this.p.quotes, invoices: this.p.invoices, ids: this.ids }).execute(input);
+    if (!(await this.ownedQuote(input.quoteId)))
+      return { ok: false as const, error: appNotFound('quote', input.quoteId) };
+    return new GenerateInvoiceFromQuote({
+      quotes: this.p.quotes,
+      invoices: this.p.invoices,
+      ids: this.ids,
+    }).execute(input);
   }
   /** R6 : édition d'une ligne de devis BROUILLON (Quote.updateLine garde assertDraft). */
-  async updateQuoteLine(input: { quoteId: string; lineId: string; patch: UpdateQuoteLineInput['patch'] }) {
-    if (!(await this.ownedQuote(input.quoteId))) return { ok: false as const, error: appNotFound('quote', input.quoteId) };
+  async updateQuoteLine(input: {
+    quoteId: string;
+    lineId: string;
+    patch: UpdateQuoteLineInput['patch'];
+  }) {
+    if (!(await this.ownedQuote(input.quoteId)))
+      return { ok: false as const, error: appNotFound('quote', input.quoteId) };
     const r = await new UpdateQuoteLine({ quotes: this.p.quotes, uow: this.p }).execute(input);
-    if (r.ok) this.logger.audit('quote.line_updated', { quoteId: input.quoteId, lineId: input.lineId });
+    if (r.ok)
+      this.logger.audit('quote.line_updated', { quoteId: input.quoteId, lineId: input.lineId });
     return r;
   }
   /** R6 : suppression d'une ligne de devis BROUILLON (Quote.removeLine garde assertDraft). */
   async removeQuoteLine(input: { quoteId: string; lineId: string }) {
-    if (!(await this.ownedQuote(input.quoteId))) return { ok: false as const, error: appNotFound('quote', input.quoteId) };
+    if (!(await this.ownedQuote(input.quoteId)))
+      return { ok: false as const, error: appNotFound('quote', input.quoteId) };
     const r = await new RemoveQuoteLine({ quotes: this.p.quotes, uow: this.p }).execute(input);
-    if (r.ok) this.logger.audit('quote.line_removed', { quoteId: input.quoteId, lineId: input.lineId });
+    if (r.ok)
+      this.logger.audit('quote.line_removed', { quoteId: input.quoteId, lineId: input.lineId });
     return r;
   }
   /** R6 : suppression définitive d'une facture BROUILLON (erreur détectée après génération). */
   async deleteDraftInvoice(invoiceId: string) {
-    if (!(await this.ownedInvoice(invoiceId))) return { ok: false as const, error: appNotFound('invoice', invoiceId) };
-    const r = await new DeleteDraftInvoice({ invoices: this.p.invoices, uow: this.p }).execute({ invoiceId });
+    if (!(await this.ownedInvoice(invoiceId)))
+      return { ok: false as const, error: appNotFound('invoice', invoiceId) };
+    const r = await new DeleteDraftInvoice({ invoices: this.p.invoices, uow: this.p }).execute({
+      invoiceId,
+    });
     if (r.ok) this.logger.audit('invoice.draft_deleted', { invoiceId });
     return r;
   }
   async issueInvoice(input: { invoiceId: string }) {
-    if (!(await this.ownedInvoice(input.invoiceId))) return { ok: false as const, error: appNotFound('invoice', input.invoiceId) };
+    if (!(await this.ownedInvoice(input.invoiceId)))
+      return { ok: false as const, error: appNotFound('invoice', input.invoiceId) };
     let r: Result<{ number: string }, AppError>;
     try {
       r = await this.p.runInTransaction(async () => {
@@ -921,8 +1148,14 @@ export class BackendService {
     }
     return r;
   }
-  async registerPayment(input: { invoiceId: string; amount: number; method: PaymentMethod; idempotencyKey?: string | null }) {
-    if (!(await this.ownedInvoice(input.invoiceId))) return { ok: false as const, error: appNotFound('invoice', input.invoiceId) };
+  async registerPayment(input: {
+    invoiceId: string;
+    amount: number;
+    method: PaymentMethod;
+    idempotencyKey?: string | null;
+  }) {
+    if (!(await this.ownedInvoice(input.invoiceId)))
+      return { ok: false as const, error: appNotFound('invoice', input.invoiceId) };
     let accountingAlreadyChecked = false;
     const postPaymentAccounting = async (paymentId: string) => {
       const accounting = await new RecordPaymentAccountingEntry({
@@ -994,7 +1227,9 @@ export class BackendService {
     return ok(this.mapInvoice(i));
   }
 
-  async invoiceAccountingPreview(invoiceId: string): Promise<Result<InvoiceAccountingPreview, AppError>> {
+  async invoiceAccountingPreview(
+    invoiceId: string,
+  ): Promise<Result<InvoiceAccountingPreview, AppError>> {
     const invoice = await this.ownedInvoice(invoiceId);
     if (!invoice) return { ok: false, error: appNotFound('invoice', invoiceId) };
     const chart = await this.p.chartOfAccounts.findByCompany(invoice.companyId);
@@ -1009,7 +1244,10 @@ export class BackendService {
       return ok({
         invoiceId,
         available: false,
-        reason: 'message' in entry.error && typeof entry.error.message === 'string' ? entry.error.message : 'Aperçu comptable indisponible.',
+        reason:
+          'message' in entry.error && typeof entry.error.message === 'string'
+            ? entry.error.message
+            : 'Aperçu comptable indisponible.',
         entryId: null,
         reference: invoice.number,
         entryDate: invoice.issuedAt,
@@ -1034,7 +1272,11 @@ export class BackendService {
     });
   }
 
-  paymentAccountingPreview(input: { invoiceId: string; amountCents: number; method: PaymentMethod }) {
+  paymentAccountingPreview(input: {
+    invoiceId: string;
+    amountCents: number;
+    method: PaymentMethod;
+  }) {
     return new PreviewPaymentAccountingEntry({ invoices: this.p.invoices }).execute({
       companyId: this.companyId(),
       invoiceId: input.invoiceId,
@@ -1051,31 +1293,52 @@ export class BackendService {
   /** B9 — GET /documents/search : « retrouve les devis de Mairie de Sèvres du mois dernier ».
    * Validation de FORME uniquement (dates/scope) — le tri/filtre/ranking métier vit dans le port
    * (pertinence pg_trgm côté Postgres, cf. sales-document-search.repository.ts). */
-  async searchSalesDocuments(input: SearchSalesDocumentsInput): Promise<Result<SearchSalesDocumentsResult, AppError>> {
+  async searchSalesDocuments(
+    input: SearchSalesDocumentsInput,
+  ): Promise<Result<SearchSalesDocumentsResult, AppError>> {
     const issues: { field: string; message: string }[] = [];
-    if (input.from !== undefined && !isValidDateOnly(input.from)) issues.push({ field: 'from', message: 'Date de début invalide.' });
-    if (input.to !== undefined && !isValidDateOnly(input.to)) issues.push({ field: 'to', message: 'Date de fin invalide.' });
+    if (input.from !== undefined && !isValidDateOnly(input.from))
+      issues.push({ field: 'from', message: 'Date de début invalide.' });
+    if (input.to !== undefined && !isValidDateOnly(input.to))
+      issues.push({ field: 'to', message: 'Date de fin invalide.' });
     if (input.from !== undefined && input.to !== undefined && input.from > input.to) {
       issues.push({ field: 'to', message: 'La date de fin doit suivre la date de début.' });
     }
     if (issues.length > 0) return { ok: false, error: { kind: 'validation', issues } };
-    const result = await this.p.salesDocumentSearch.search({ ...input, companyId: this.companyId() });
+    const result = await this.p.salesDocumentSearch.search({
+      ...input,
+      companyId: this.companyId(),
+    });
     return ok(result);
   }
 
   /** B9 — GET /documents/suggest : autocomplétion typée (client/numéro/libellé), LIMIT 8. */
-  async suggestSalesDocuments(input: SuggestSalesDocumentsInput): Promise<Result<SuggestSalesDocumentsResult, AppError>> {
-    const result = await this.p.salesDocumentSearch.suggest({ ...input, companyId: this.companyId() });
+  async suggestSalesDocuments(
+    input: SuggestSalesDocumentsInput,
+  ): Promise<Result<SuggestSalesDocumentsResult, AppError>> {
+    const result = await this.p.salesDocumentSearch.suggest({
+      ...input,
+      companyId: this.companyId(),
+    });
     return ok(result);
   }
 
   /** A6 (PONT-SERVEUR v1) : avoir TOTAL (brouillon) d'une facture émise — MÊME use case
    * CreateCreditNote (@bob/core) que la démo locale ; l'avoir s'émet ensuite par issueInvoice
    * (numéro A- sans trou via CounterKey 'credit', écriture comptable inverse). */
-  async createCreditNote(input: { invoiceId: string }): Promise<Result<{ creditNoteId: string }, AppError>> {
-    if (!(await this.ownedInvoice(input.invoiceId))) return { ok: false as const, error: appNotFound('invoice', input.invoiceId) };
-    const r = await new CreateCreditNote({ invoices: this.p.invoices, ids: this.ids }).execute(input);
-    if (r.ok) this.logger.audit('invoice.credit_note_created', { invoiceId: input.invoiceId, creditNoteId: r.value.creditNoteId });
+  async createCreditNote(input: {
+    invoiceId: string;
+  }): Promise<Result<{ creditNoteId: string }, AppError>> {
+    if (!(await this.ownedInvoice(input.invoiceId)))
+      return { ok: false as const, error: appNotFound('invoice', input.invoiceId) };
+    const r = await new CreateCreditNote({ invoices: this.p.invoices, ids: this.ids }).execute(
+      input,
+    );
+    if (r.ok)
+      this.logger.audit('invoice.credit_note_created', {
+        invoiceId: input.invoiceId,
+        creditNoteId: r.value.creditNoteId,
+      });
     return r;
   }
 
@@ -1084,18 +1347,28 @@ export class BackendService {
   async listPayments(): Promise<Result<PaymentView[], AppError>> {
     const list = await this.p.payments.listByCompany(this.companyId());
     return ok(
-      list.map((p) => ({ id: p.id, invoiceId: p.invoiceId, amountCents: p.amount, method: p.method, receivedAt: p.receivedAt })),
+      list.map((p) => ({
+        id: p.id,
+        invoiceId: p.invoiceId,
+        amountCents: p.amount,
+        method: p.method,
+        receivedAt: p.receivedAt,
+      })),
     );
   }
 
-  listAccountingEntries() {
-    if (!this.subscriptionFor(this.companyId()).can('accounting_foundation')) {
+  async listAccountingEntries() {
+    const subscription = await this.subscriptionFor(this.companyId());
+    if (!subscription.ok) return subscription;
+    if (!subscription.value.can('accounting_foundation')) {
       return Promise.resolve({
         ok: false as const,
         error: appForbidden("Le journal comptable est inclus à partir de l'offre Solo."),
       });
     }
-    return new ListAccountingEntries({ entries: this.p.accountingEntries }).execute({ companyId: this.companyId() });
+    return new ListAccountingEntries({ entries: this.p.accountingEntries }).execute({
+      companyId: this.companyId(),
+    });
   }
 
   /**
@@ -1106,8 +1379,13 @@ export class BackendService {
    * d'enforcement. En early-access (subscriptionFor = business pour tous), personne n'est refusé.
    */
   async exportFec(input: { from: string; to: string }) {
-    if (!this.subscriptionFor(this.companyId()).can('accounting_operations'))
-      return { ok: false as const, error: appForbidden("L'export comptable FEC est inclus à partir de l'offre Pro.") };
+    const subscription = await this.subscriptionFor(this.companyId());
+    if (!subscription.ok) return subscription;
+    if (!subscription.value.can('accounting_operations'))
+      return {
+        ok: false as const,
+        error: appForbidden("L'export comptable FEC est inclus à partir de l'offre Pro."),
+      };
     return new ExportFec({
       companies: this.p.companies,
       entries: this.p.accountingEntries,
@@ -1115,7 +1393,9 @@ export class BackendService {
     }).execute({ companyId: this.companyId(), from: input.from, to: input.to });
   }
 
-  private async resolveSignatureGrant(token: string): Promise<Result<ResolvedSignatureGrant, AppError>> {
+  private async resolveSignatureGrant(
+    token: string,
+  ): Promise<Result<ResolvedSignatureGrant, AppError>> {
     const resolved = await new ResolveQuoteSignatureToken({
       publicAccessTokens: this.p.publicAccessTokens,
       clock: this.clock,
@@ -1142,13 +1422,22 @@ export class BackendService {
         signed: q.signature !== null,
         expired: q.validUntil !== null && q.validUntil < this.clock.today(),
         validUntil: q.validUntil,
-        lines: q.lines.map((l) => ({ label: l.label, qty: l.qty, unitPriceHT: l.unitPriceHT, vatRate: l.vatRate })),
+        lines: q.lines.map((l) => ({
+          label: l.label,
+          qty: l.qty,
+          unitPriceHT: l.unitPriceHT,
+          vatRate: l.vatRate,
+        })),
         totals: q.totals(),
       });
     });
   }
 
-  async publicSignQuote(token: string, signerName: string, proofDataUrl?: string): Promise<Result<{ status: string }, AppError>> {
+  async publicSignQuote(
+    token: string,
+    signerName: string,
+    proofDataUrl?: string,
+  ): Promise<Result<{ status: string }, AppError>> {
     // Résolution initiale HORS transaction : elle ne sert qu'à connaître le tenant (runWithTenant)
     // et à refuser tôt un jeton mort. L'autorisation qui compte est la REVALIDATION que SignQuote
     // effectue DANS la transaction de signature (P0 — course révocation/rotation → signature).
@@ -1164,7 +1453,11 @@ export class BackendService {
           uow: this.p,
           clock: this.clock,
         }).execute({ quoteId: grant.value.quoteId });
-        if (expired.ok) this.logger.audit('quote.expired', { quoteId: grant.value.quoteId, status: expired.value.status });
+        if (expired.ok)
+          this.logger.audit('quote.expired', {
+            quoteId: grant.value.quoteId,
+            status: expired.value.status,
+          });
         return { ok: false, error: appForbidden('Devis expiré : signature impossible.') };
       }
       // method = 'remote_link', TOUJOURS : le serveur ne fabrique jamais un tracé qu'il n'a pas
@@ -1222,7 +1515,10 @@ export class BackendService {
           { label: 'Type', value: invoiceKindLabel(invoice.kind) },
           ...(customer ? [{ label: 'Client', value: customer.name }] : []),
           { label: 'Total TTC', value: formatEUR(invoice.totals.ttc) },
-          { label: 'Reste dû', value: formatEUR(Math.max(0, invoice.totals.netToPay - invoice.paid)) },
+          {
+            label: 'Reste dû',
+            value: formatEUR(Math.max(0, invoice.totals.netToPay - invoice.paid)),
+          },
           ...(invoice.dueAt ? [{ label: 'Échéance', value: frDateLabel(invoice.dueAt) }] : []),
         ],
       });
@@ -1245,7 +1541,9 @@ export class BackendService {
           ...(customer ? [{ label: 'Client', value: customer.name }] : []),
           { label: 'Total TTC', value: formatEUR(quote.totals.ttc) },
           { label: 'Lignes', value: String(quote.lines.length) },
-          ...(quote.depositPct !== null ? [{ label: 'Acompte', value: `${quote.depositPct} %` }] : []),
+          ...(quote.depositPct !== null
+            ? [{ label: 'Acompte', value: `${quote.depositPct} %` }]
+            : []),
         ],
       });
     }
@@ -1254,9 +1552,7 @@ export class BackendService {
       const invoices = await this.listInvoices();
       if (!invoices.ok) return invoices;
       const matches = invoices.value.flatMap((invoice) =>
-        invoice.lines
-          .filter((line) => line.id === input.id)
-          .map((line) => ({ invoice, line })),
+        invoice.lines.filter((line) => line.id === input.id).map((line) => ({ invoice, line })),
       );
       if (matches.length !== 1) return notFound();
       const { invoice, line } = matches[0]!;
@@ -1280,9 +1576,7 @@ export class BackendService {
       const quotes = await this.listQuotes();
       if (!quotes.ok) return quotes;
       const matches = quotes.value.flatMap((quote) =>
-        quote.lines
-          .filter((line) => line.id === input.id)
-          .map((line) => ({ quote, line })),
+        quote.lines.filter((line) => line.id === input.id).map((line) => ({ quote, line })),
       );
       if (matches.length !== 1) return notFound();
       const { quote, line } = matches[0]!;
@@ -1314,9 +1608,17 @@ export class BackendService {
         route: `/client/${encodeURIComponent(customer.id)}`,
         facts: [
           { label: 'Type', value: customerTypeLabel(customer.type) },
-          { label: 'Encours', value: formatEUR(customer.outstanding) },
-          { label: 'Délai moyen', value: `${customer.avgDelayDays} jours` },
-          { label: 'Score', value: `${customer.score}/100` },
+          { label: 'Encours', value: formatEUR(customer.outstandingCents) },
+          {
+            label: 'Délai moyen',
+            value:
+              customer.avgDelayDays === null
+                ? customer.paymentHistoryStatus === 'incomplete'
+                  ? 'Indisponible — paiements non rapprochés'
+                  : 'Indisponible — historique insuffisant'
+                : `${customer.avgDelayDays} jours`,
+          },
+          { label: 'Score', value: 'Indisponible — modèle non ratifié' },
         ],
       });
     }
@@ -1346,12 +1648,14 @@ export class BackendService {
       if (!document) return notFound();
       let cachedAnalysis: DocumentAnalysis | null = null;
       try {
-        const cached = await this.p.runWithTenant(this.companyId(), () => this.p.documentAnalyses.findExact({
-          companyId: this.companyId(),
-          documentId: document.id,
-          documentVersion: document.version,
-          sourceSha256: document.sha256,
-        }));
+        const cached = await this.p.runWithTenant(this.companyId(), () =>
+          this.p.documentAnalyses.findExact({
+            companyId: this.companyId(),
+            documentId: document.id,
+            documentVersion: document.version,
+            sourceSha256: document.sha256,
+          }),
+        );
         cachedAnalysis = cached?.analysis ?? null;
       } catch (cause) {
         return {
@@ -1372,16 +1676,25 @@ export class BackendService {
           { label: 'Type', value: documentKindLabel(document.kind) },
           { label: 'Statut', value: documentStatusLabel(document.status) },
           { label: 'Version', value: String(document.version) },
-          ...(document.documentDate ? [{ label: 'Date', value: frDateLabel(document.documentDate) }] : []),
+          ...(document.documentDate
+            ? [{ label: 'Date', value: frDateLabel(document.documentDate) }]
+            : []),
           ...(cachedAnalysis
             ? [
-                { label: 'Nature reconnue', value: DOCUMENT_ANALYSIS_TYPE_LABEL[cachedAnalysis.type] },
+                {
+                  label: 'Nature reconnue',
+                  value: DOCUMENT_ANALYSIS_TYPE_LABEL[cachedAnalysis.type],
+                },
                 { label: 'Résumé de Bob', value: cachedAnalysis.summary },
-                { label: 'Confiance', value: `${Math.round(cachedAnalysis.typeConfidence * 100)} %` },
+                {
+                  label: 'Confiance',
+                  value: `${Math.round(cachedAnalysis.typeConfidence * 100)} %`,
+                },
                 {
                   label: 'Rangement suggéré',
                   value: cachedAnalysis.suggestedSystemFolder
-                    ? (DOCUMENT_ANALYSIS_FOLDER_LABEL[cachedAnalysis.suggestedSystemFolder] ?? cachedAnalysis.suggestedSystemFolder)
+                    ? (DOCUMENT_ANALYSIS_FOLDER_LABEL[cachedAnalysis.suggestedSystemFolder] ??
+                      cachedAnalysis.suggestedSystemFolder)
                     : 'À choisir avec l’utilisateur',
                 },
                 ...cachedAnalysis.facts.slice(0, 3).map((fact) => ({
@@ -1431,7 +1744,10 @@ export class BackendService {
           { label: 'Crédit', value: formatEUR(entry.totalCreditCents) },
           {
             label: 'Équilibre',
-            value: entry.totalDebitCents === entry.totalCreditCents ? 'Écriture équilibrée' : 'Anomalie à vérifier',
+            value:
+              entry.totalDebitCents === entry.totalCreditCents
+                ? 'Écriture équilibrée'
+                : 'Anomalie à vérifier',
           },
         ],
       });
@@ -1471,7 +1787,10 @@ export class BackendService {
       // ci-dessus. periodeCA = CA encaissé du mois civil en cours (même simplification 1C que le
       // hook mobile useOwnerPayGuidance — pas la période URSSAF exacte, qui reste la carte Argent).
       getOwnerPayGuidance: async () => {
-        const [profileResult, cashflowResult] = await Promise.all([this.getFiscalProfile(), this.getCashflow('realiste', 30)]);
+        const [profileResult, cashflowResult] = await Promise.all([
+          this.getFiscalProfile(),
+          this.getCashflow('realiste', 30),
+        ]);
         if (!profileResult.ok) return profileResult;
         if (!cashflowResult.ok) return cashflowResult;
         const today = this.clock.today();
@@ -1480,11 +1799,17 @@ export class BackendService {
         const periodeCA = {
           encaissedCents: Math.max(
             0,
-            payments.filter((p) => p.receivedAt.slice(0, 7) === month).reduce((sum, p) => sum + p.amount, 0),
+            payments
+              .filter((p) => p.receivedAt.slice(0, 7) === month)
+              .reduce((sum, p) => sum + p.amount, 0),
           ),
           year: Number(today.slice(0, 4)),
         };
-        const guidance = deriveOwnerPayGuidance(profileResult.value, cashflowResult.value, periodeCA);
+        const guidance = deriveOwnerPayGuidance(
+          profileResult.value,
+          cashflowResult.value,
+          periodeCA,
+        );
         return ok({ guidance, payoutCents: cashflowResult.value.payout });
       },
       // C25 ① : brouillon CIBLABLE (invoiceId/customerId), dérivé du plan de relances réel
@@ -1517,8 +1842,14 @@ export class BackendService {
         if (!entry) {
           return ok(
             input?.invoiceId || input?.customerId
-              ? { subject: 'Rien à relancer pour cette cible', body: 'Aucun retard sur cette cible — facture réglée ou pas encore échue. Je ne relance pas pour rien.' }
-              : { subject: 'Rien à relancer', body: 'Aucune facture en retard — tout est réglé ou dans les temps. 🎉' },
+              ? {
+                  subject: 'Rien à relancer pour cette cible',
+                  body: 'Aucun retard sur cette cible — facture réglée ou pas encore échue. Je ne relance pas pour rien.',
+                }
+              : {
+                  subject: 'Rien à relancer',
+                  body: 'Aucune facture en retard — tout est réglé ou dans les temps. 🎉',
+                },
           );
         }
         return ok({ subject: entry.message.subject, body: entry.message.body });
@@ -1588,7 +1919,7 @@ export class BackendService {
       listFiscalDeadlines: async () => this.getFiscalCalendar(),
       // Pilier 2 : « où en est mon abonnement / mon essai » — MÊME lecture GetSubscriptionStatus
       // que GET /subscription (parité humain↔Bob). Lecture seule : jamais d'achat vocal.
-      getSubscriptionStatus: async () => ok(await this.subscriptionStatus(this.companyId())),
+      getSubscriptionStatus: async () => this.subscriptionStatus(this.companyId()),
       // BOB-1 (PONT-SERVEUR v1) : l'expert-comptable de poche — MÊMES use cases purs que les
       // écrans et le LocalBobClient (deriveVatPosition / deriveAgedBalance @bob/core).
       getVatPosition: async () => {
@@ -1598,13 +1929,21 @@ export class BackendService {
         ]);
         return ok(
           deriveVatPosition({
-            invoices: invoices.map((i) => ({ kind: i.kind, status: i.status, totals: i.totals(), paid: i.paid })),
+            invoices: invoices.map((i) => ({
+              kind: i.kind,
+              status: i.status,
+              totals: i.totals(),
+              paid: i.paid,
+            })),
             expenses: expenses.map((e) => ({ vatCents: e.toProps().vatCents })),
           }),
         );
       },
       getAgedBalance: async () => {
-        const [invoices, cust] = await Promise.all([this.p.invoices.listByCompany(this.companyId()), this.listCustomers()]);
+        const [invoices, cust] = await Promise.all([
+          this.p.invoices.listByCompany(this.companyId()),
+          this.listCustomers(),
+        ]);
         if (!cust.ok) return cust;
         return ok(
           deriveAgedBalance({
@@ -1621,6 +1960,55 @@ export class BackendService {
           }),
         );
       },
+      // BA-3 (audit 20260717, correction 5) : revue de pilotage vocale — MÊME use case pur
+      // deriveBusinessReview @bob/core que l'écran Pilotage (pilotage.tsx) et le LocalBobClient
+      // (démo, getBusinessReview) : parité garantie, une seule vérité. Sources = persistance
+      // réelle du tenant, même pattern que getVatPosition/getAgedBalance ci-dessus (accès
+      // repository direct, aucun entitlement dédié à cette lecture — cohérent avec ces voisines).
+      // Avant ce correctif, l'action était absente ici : bob-agent.ts:1330 retombait toujours sur
+      // le fail-safe honnête (« je n'ai pas accès à la revue de pilotage sur cet appareil »).
+      getBusinessReview: async () => {
+        const [entries, payments, invoices, cust, expenses, company] = await Promise.all([
+          this.p.accountingEntries.listByCompany(this.companyId()),
+          this.p.payments.listByCompany(this.companyId()),
+          this.p.invoices.listByCompany(this.companyId()),
+          this.listCustomers(),
+          this.p.expenses.listByCompany(this.companyId()),
+          this.p.companies.findById(this.companyId()),
+        ]);
+        if (!cust.ok) return cust;
+        return ok(
+          deriveBusinessReview({
+            entries: entries.map((e) => ({
+              entryDate: e.entryDate,
+              sourceType: e.sourceType,
+              lines: e.lines,
+            })),
+            payments: payments.map((p) => ({ amountCents: p.amount, receivedAt: p.receivedAt })),
+            invoices: invoices.map((i) => ({
+              kind: i.kind,
+              status: i.status,
+              totals: i.totals(),
+              paid: i.paid,
+              dueAt: i.dueAt,
+              customerId: i.customerId,
+            })),
+            customers: cust.value,
+            expenses: expenses.map((e) => {
+              const p = e.toProps();
+              return {
+                category: p.category,
+                totalTtcCents: p.totalTtcCents,
+                vatCents: p.vatCents,
+                documentDate: p.documentDate,
+                status: p.status,
+              };
+            }),
+            vatRegime: company?.vatRegime ?? null,
+            today: this.clock.today(),
+          }),
+        );
+      },
       listUnpaidExpenses: async () => {
         const list = await this.p.expenses.listByCompany(this.companyId());
         return ok(
@@ -1628,7 +2016,12 @@ export class BackendService {
             .filter((e) => e.status === 'to_pay')
             .map((e) => {
               const p = e.toProps();
-              return { id: p.id, supplierName: p.supplierName, totalTtcCents: p.totalTtcCents, documentDate: p.documentDate };
+              return {
+                id: p.id,
+                supplierName: p.supplierName,
+                totalTtcCents: p.totalTtcCents,
+                documentDate: p.documentDate,
+              };
             }),
         );
       },
@@ -1670,7 +2063,8 @@ export class BackendService {
           invoiceId: input.invoiceId,
           amount: input.amountCents,
           method: 'transfer',
-          idempotencyKey: input.idempotencyKey ?? `bob:payment:${input.invoiceId}:${input.amountCents}:transfer`,
+          idempotencyKey:
+            input.idempotencyKey ?? `bob:payment:${input.invoiceId}:${input.amountCents}:transfer`,
         }),
       sendQuote: async (input) => this.sendQuote(input.quoteId),
       issueInvoice: async (input) => this.issueInvoice({ invoiceId: input.invoiceId }),
@@ -1703,7 +2097,10 @@ export class BackendService {
     };
   }
 
-  async askBob(input: AgentAskPayload, execution?: AgentExecutionOptions): Promise<Result<AgentRun, AppError>>;
+  async askBob(
+    input: AgentAskPayload,
+    execution?: AgentExecutionOptions,
+  ): Promise<Result<AgentRun, AppError>>;
   async askBob(
     message: string,
     autonomy?: AgentAutonomy,
@@ -1714,14 +2111,14 @@ export class BackendService {
     legacyAutonomyOrExecution?: AgentAutonomy | AgentExecutionOptions,
     legacyExecution?: AgentExecutionOptions,
   ): Promise<Result<AgentRun, AppError>> {
-    const legacyAutonomy = typeof legacyAutonomyOrExecution === 'string'
-      ? legacyAutonomyOrExecution
-      : undefined;
-    const execution = typeof inputOrMessage === 'string'
-      ? legacyExecution
-      : typeof legacyAutonomyOrExecution === 'object'
-        ? legacyAutonomyOrExecution
-        : undefined;
+    const legacyAutonomy =
+      typeof legacyAutonomyOrExecution === 'string' ? legacyAutonomyOrExecution : undefined;
+    const execution =
+      typeof inputOrMessage === 'string'
+        ? legacyExecution
+        : typeof legacyAutonomyOrExecution === 'object'
+          ? legacyAutonomyOrExecution
+          : undefined;
     execution?.signal?.throwIfAborted();
     const parsed = parseAgentAskPayload(
       typeof inputOrMessage === 'string'
@@ -1735,18 +2132,26 @@ export class BackendService {
     const input = parsed.value;
 
     // L'assistant agentique est réservé aux offres avec IA (Solo+). Sans lui, l'app reste 100 % manuelle.
-    const subscription = this.subscriptionFor(this.companyId());
-    if (!planCan(subscription.tier, 'ai_assistant'))
-      return { ok: false, error: appForbidden("L'assistant Bob est inclus à partir de l'offre Solo.") };
+    const subscriptionResult = await this.subscriptionFor(this.companyId());
+    if (!subscriptionResult.ok) return subscriptionResult;
+    const subscription = subscriptionResult.value;
+    if (!subscription.can('ai_assistant'))
+      return {
+        ok: false,
+        error: appForbidden("L'assistant Bob est inclus à partir de l'offre Solo."),
+      };
     // TODO(pilier2/monthlyActions) : LE point de branchement du quota IA — chantier compteur d'usage
     // séparé (SPEC_PILIER2_MONETISATION §9 + §Reste pt 4). Lire PLAN_CATALOG[subscription.tier].ai
     // .monthlyActions (null = fair use) et refuser AVANT d'appeler l'agent, avec les invariants
     // arrêtés : alerte à 80 %, JAMAIS de coupure mid-action (was_mid_action=false), la conformité
     // (facture légale, exports de documents) n'est jamais bloquée par un quota.
-    const effectiveAutonomy = clampAgentAutonomy(input.autonomy, subscription.autonomyEntitlement());
+    const effectiveAutonomy = clampAgentAutonomy(
+      input.autonomy,
+      subscription.autonomyEntitlement(),
+    );
     const start = Date.now();
     const bobRuntime = this.bobAgent();
-    if (bobRuntime.provider === 'demo' && process.env.DEMO_MODE !== 'true') {
+    if (bobRuntime.provider === 'demo') {
       return err(appUnavailable('bob-llm'));
     }
     const agent = bobRuntime.agent;
@@ -1766,13 +2171,24 @@ export class BackendService {
         execution?.signal?.throwIfAborted();
         const proposal = await agent.dryRun(
           r.value.pending.batch?.length
-            ? r.value.pending.batch.map((item) => ({ tool: item.tool, args: item.args, label: item.label }))
-            : [{ tool: r.value.pending.tool, args: r.value.pending.args, label: r.value.pending.label }],
+            ? r.value.pending.batch.map((item) => ({
+                tool: item.tool,
+                args: item.args,
+                label: item.label,
+              }))
+            : [
+                {
+                  tool: r.value.pending.tool,
+                  args: r.value.pending.args,
+                  label: r.value.pending.label,
+                },
+              ],
           { autonomy: effectiveAutonomy },
         );
         execution?.signal?.throwIfAborted();
         const fullyPlanned =
-          proposal.outcomes.length > 0 && proposal.outcomes.every((outcome) => outcome.status === 'planned');
+          proposal.outcomes.length > 0 &&
+          proposal.outcomes.every((outcome) => outcome.status === 'planned');
         if (!proposal.ok || !fullyPlanned) {
           return {
             ok: false,
@@ -1785,7 +2201,10 @@ export class BackendService {
         }
         const principal = getPrincipal();
         if (!principal) {
-          return { ok: false, error: appForbidden('Identité requise pour créer une proposition agent.') };
+          return {
+            ok: false,
+            error: appForbidden('Identité requise pour créer une proposition agent.'),
+          };
         }
         execution?.signal?.throwIfAborted();
         // Lie l'intention opaque à l'utilisateur, pas seulement au tenant. Un collègue du même
@@ -1804,7 +2223,9 @@ export class BackendService {
           resultDigest: 'owner-bound',
         });
         execution?.signal?.throwIfAborted();
-        const expiresAt = new Date(Date.parse(proposal.startedAt) + AGENT_PROPOSAL_TTL_MS).toISOString();
+        const expiresAt = new Date(
+          Date.parse(proposal.startedAt) + AGENT_PROPOSAL_TTL_MS,
+        ).toISOString();
         r = ok({
           ...r.value,
           pending: {
@@ -1832,7 +2253,8 @@ export class BackendService {
     const outcome = r.ok ? 'ok' : 'error';
     this.metrics.aiRequests.inc({ model, intent, outcome });
     this.metrics.aiDuration.observe({ model, intent }, ms / 1000);
-    if (!r.ok && r.error.kind === 'dependency' && r.error.port === 'money-guard') this.metrics.aiGuardViolations.inc();
+    if (!r.ok && r.error.kind === 'dependency' && r.error.port === 'money-guard')
+      this.metrics.aiGuardViolations.inc();
     this.logger.audit('ai.ask', {
       model,
       intent,
@@ -1846,16 +2268,23 @@ export class BackendService {
   }
 
   async agentJournal(runId: string): Promise<Result<JournalEntry[], AppError>> {
-    if (!planCan(this.subscriptionFor(this.companyId()).tier, 'ai_assistant'))
-      return { ok: false, error: appForbidden("L'assistant Bob est inclus à partir de l'offre Solo.") };
+    const subscription = await this.subscriptionFor(this.companyId());
+    if (!subscription.ok) return subscription;
+    if (!subscription.value.can('ai_assistant'))
+      return {
+        ok: false,
+        error: appForbidden("L'assistant Bob est inclus à partir de l'offre Solo."),
+      };
     return ok(await this.p.agentJournal.load(this.companyId(), runId));
   }
 
   /** Autorité serveur du gating Bob Live. Le flag technique ne remplace jamais cet entitlement. */
-  realtimeVoiceEntitlement(): { allowed: boolean; plan: PlanTier } {
-    const subscription = this.subscriptionFor(this.companyId());
+  async realtimeVoiceEntitlement(): Promise<{ allowed: boolean; plan: PlanTier }> {
+    const subscriptionResult = await this.subscriptionFor(this.companyId());
+    if (!subscriptionResult.ok) throw new Error('subscription entitlement unavailable');
+    const subscription = subscriptionResult.value;
     return {
-      allowed: planCan(subscription.tier, 'voice_live'),
+      allowed: subscription.can('voice_live'),
       plan: subscription.tier,
     };
   }
@@ -1866,8 +2295,12 @@ export class BackendService {
    * que le cron/batch : la relance MANUELLE validée par l'utilisateur (POST /invoices/:id/relance)
    * n'est pas une feature `auto_dunning` et reste ouverte à tous les paliers.
    */
-  autoDunningEntitlement(companyId: string): { allowed: boolean; plan: PlanTier } {
-    const subscription = this.subscriptionFor(companyId);
+  async autoDunningEntitlement(
+    companyId: string,
+  ): Promise<{ allowed: boolean; plan: PlanTier | null }> {
+    const subscriptionResult = await this.subscriptionFor(companyId);
+    if (!subscriptionResult.ok) return { allowed: false, plan: null };
+    const subscription = subscriptionResult.value;
     return {
       // .can() = isActive() && planCanWithAddOns : un abonnement past_due/canceled ne déclenche
       // JAMAIS de relances automatiques (P1 review 14/07) — early-access reste active/business.
@@ -1880,18 +2313,35 @@ export class BackendService {
     return !!this.stt;
   }
 
-  voiceTtsCloudAvailable(): boolean {
-    return !!this.tts && tierAtLeast(this.subscriptionFor(this.companyId()).tier, 'pro');
+  async voiceTtsCloudAvailable(): Promise<boolean> {
+    const subscription = await this.subscriptionFor(this.companyId());
+    return (
+      subscription.ok &&
+      subscription.value.isActive() &&
+      !!this.tts &&
+      tierAtLeast(subscription.value.tier, 'pro')
+    );
   }
 
-  async transcribe(input: { audioBase64: string; mimeType: string }): Promise<Result<{ text: string }, AppError>> {
-    if (!planCan(this.subscriptionFor(this.companyId()).tier, 'ai_assistant'))
-      return { ok: false, error: appForbidden("La dictée vocale est incluse à partir de l'offre Solo.") };
+  async transcribe(input: {
+    audioBase64: string;
+    mimeType: string;
+  }): Promise<Result<{ text: string }, AppError>> {
+    const subscription = await this.subscriptionFor(this.companyId());
+    if (!subscription.ok) return subscription;
+    if (!subscription.value.can('ai_assistant'))
+      return {
+        ok: false,
+        error: appForbidden("La dictée vocale est incluse à partir de l'offre Solo."),
+      };
     const mimeType = input.mimeType.trim().toLowerCase().split(';', 1)[0] ?? '';
     if (!VOICE_AUDIO_MIME_TYPES.has(mimeType)) {
       return {
         ok: false,
-        error: { kind: 'validation', issues: [{ field: 'mimeType', message: 'Format audio non supporté.' }] },
+        error: {
+          kind: 'validation',
+          issues: [{ field: 'mimeType', message: 'Format audio non supporté.' }],
+        },
       };
     }
     if (
@@ -1903,7 +2353,9 @@ export class BackendService {
         ok: false,
         error: {
           kind: 'validation',
-          issues: [{ field: 'audioBase64', message: 'Audio manquant, invalide ou supérieur à 8 Mo.' }],
+          issues: [
+            { field: 'audioBase64', message: 'Audio manquant, invalide ou supérieur à 8 Mo.' },
+          ],
         },
       };
     }
@@ -1913,43 +2365,93 @@ export class BackendService {
         ok: false,
         error: {
           kind: 'validation',
-          issues: [{ field: 'audioBase64', message: 'Audio manquant, invalide ou supérieur à 8 Mo.' }],
+          issues: [
+            { field: 'audioBase64', message: 'Audio manquant, invalide ou supérieur à 8 Mo.' },
+          ],
         },
       };
     }
     if (!this.stt)
-      return { ok: false, error: appForbidden('Dictée cloud non configurée pour le fournisseur vocal actif. Utilise la dictée native.') };
+      return {
+        ok: false,
+        error: appForbidden(
+          'Dictée cloud non configurée pour le fournisseur vocal actif. Utilise la dictée native.',
+        ),
+      };
     try {
       const r = await this.stt.transcribe(input.audioBase64, mimeType);
       this.logger.audit('voice.transcribe', { model: r.model, chars: r.text.length });
       return ok({ text: r.text });
     } catch (e) {
-      return { ok: false, error: { kind: 'dependency', port: 'voice-stt', cause: e instanceof Error ? e.message : 'stt' } };
+      return {
+        ok: false,
+        error: {
+          kind: 'dependency',
+          port: 'voice-stt',
+          cause: e instanceof Error ? e.message : 'stt',
+        },
+      };
     }
   }
 
   async synthesizeSpeech(input: { text: string }): Promise<Result<TtsResult, AppError>> {
-    const subscription = this.subscriptionFor(this.companyId());
-    if (!planCan(subscription.tier, 'ai_assistant'))
-      return { ok: false, error: appForbidden("La voix de Bob est incluse à partir de l'offre Solo.") };
+    const subscriptionResult = await this.subscriptionFor(this.companyId());
+    if (!subscriptionResult.ok) return subscriptionResult;
+    const subscription = subscriptionResult.value;
+    if (!subscription.can('ai_assistant'))
+      return {
+        ok: false,
+        error: appForbidden("La voix de Bob est incluse à partir de l'offre Solo."),
+      };
     if (!tierAtLeast(subscription.tier, 'pro'))
-      return { ok: false, error: appForbidden("La voix cloud premium est incluse à partir de l'offre Pro.") };
+      return {
+        ok: false,
+        error: appForbidden("La voix cloud premium est incluse à partir de l'offre Pro."),
+      };
     if (!this.tts)
-      return { ok: false, error: appForbidden('Synthèse cloud non configurée pour le fournisseur vocal actif. Utilise la voix native.') };
+      return {
+        ok: false,
+        error: appForbidden(
+          'Synthèse cloud non configurée pour le fournisseur vocal actif. Utilise la voix native.',
+        ),
+      };
     const text = input.text.trim();
-    if (!text) return { ok: false, error: { kind: 'validation', issues: [{ field: 'text', message: 'Texte requis.' }] } };
+    if (!text)
+      return {
+        ok: false,
+        error: { kind: 'validation', issues: [{ field: 'text', message: 'Texte requis.' }] },
+      };
     if (text.length > 1200)
-      return { ok: false, error: { kind: 'validation', issues: [{ field: 'text', message: 'Texte trop long pour la synthèse vocale.' }] } };
+      return {
+        ok: false,
+        error: {
+          kind: 'validation',
+          issues: [{ field: 'text', message: 'Texte trop long pour la synthèse vocale.' }],
+        },
+      };
     try {
       const r = await this.tts.synthesize(text);
-      this.logger.audit('voice.synthesize', { model: r.model, chars: text.length, cloudAudio: r.audioBase64 !== null });
+      this.logger.audit('voice.synthesize', {
+        model: r.model,
+        chars: text.length,
+        cloudAudio: r.audioBase64 !== null,
+      });
       return ok(r);
     } catch (e) {
-      return { ok: false, error: { kind: 'dependency', port: 'voice-tts', cause: e instanceof Error ? e.message : 'tts' } };
+      return {
+        ok: false,
+        error: {
+          kind: 'dependency',
+          port: 'voice-tts',
+          cause: e instanceof Error ? e.message : 'tts',
+        },
+      };
     }
   }
 
-  private async loadOwnedAgentProposal(proposalIdInput: unknown): Promise<Result<OwnedAgentProposal, AppError>> {
+  private async loadOwnedAgentProposal(
+    proposalIdInput: unknown,
+  ): Promise<Result<OwnedAgentProposal, AppError>> {
     const proposalId = typeof proposalIdInput === 'string' ? proposalIdInput : '';
     if (!AGENT_PROPOSAL_ID.test(proposalId)) {
       return {
@@ -1966,11 +2468,11 @@ export class BackendService {
       const owner = proposalEntries.find((entry) => entry.tool === AGENT_PROPOSAL_OWNER_TOOL);
       const principalUserId = getPrincipal()?.userId;
       if (
-        planned.length === 0
-        || !owner
-        || typeof owner.args.userId !== 'string'
-        || typeof principalUserId !== 'string'
-        || owner.args.userId !== principalUserId
+        planned.length === 0 ||
+        !owner ||
+        typeof owner.args.userId !== 'string' ||
+        typeof principalUserId !== 'string' ||
+        owner.args.userId !== principalUserId
       ) {
         // Le même 404 opaque couvre absence, autre tenant et autre utilisateur.
         return { ok: false, error: appNotFound('agent_proposal', 'redacted') };
@@ -1979,16 +2481,21 @@ export class BackendService {
       const now = Date.parse(this.clock.now());
       const proposalAge = now - proposedAt;
       if (
-        !Number.isFinite(proposedAt)
-        || !Number.isFinite(now)
-        || proposalAge < 0
-        || proposalAge > AGENT_PROPOSAL_TTL_MS
+        !Number.isFinite(proposedAt) ||
+        !Number.isFinite(now) ||
+        proposalAge < 0 ||
+        proposalAge > AGENT_PROPOSAL_TTL_MS
       ) {
         return {
           ok: false,
           error: {
             kind: 'validation',
-            issues: [{ field: 'proposalId', message: 'Cette proposition a expiré. Demandez un nouvel aperçu.' }],
+            issues: [
+              {
+                field: 'proposalId',
+                message: 'Cette proposition a expiré. Demandez un nouvel aperçu.',
+              },
+            ],
           },
         };
       }
@@ -2011,10 +2518,17 @@ export class BackendService {
 
   /** Aperçu owner-bound d'une proposition vocale/HTTP. Les args servent uniquement au diff ;
    * `/ai/confirm` les ignore toujours et recharge ce même journal opaque. */
-  async previewBobProposal(input: { proposalId?: unknown }): Promise<Result<PendingAction, AppError>> {
-    const subscription = this.subscriptionFor(this.companyId());
-    if (!planCan(subscription.tier, 'ai_assistant')) {
-      return { ok: false, error: appForbidden("L'assistant Bob est inclus à partir de l'offre Solo.") };
+  async previewBobProposal(input: {
+    proposalId?: unknown;
+  }): Promise<Result<PendingAction, AppError>> {
+    const subscriptionResult = await this.subscriptionFor(this.companyId());
+    if (!subscriptionResult.ok) return subscriptionResult;
+    const subscription = subscriptionResult.value;
+    if (!subscription.can('ai_assistant')) {
+      return {
+        ok: false,
+        error: appForbidden("L'assistant Bob est inclus à partir de l'offre Solo."),
+      };
     }
     const loaded = await this.loadOwnedAgentProposal(input.proposalId);
     if (!loaded.ok) return loaded;
@@ -2034,9 +2548,14 @@ export class BackendService {
   }
 
   async confirmBob(input: { proposalId?: unknown }): Promise<Result<AgentRun, AppError>> {
-    const subscription = this.subscriptionFor(this.companyId());
-    if (!planCan(subscription.tier, 'ai_assistant'))
-      return { ok: false, error: appForbidden("L'assistant Bob est inclus à partir de l'offre Solo.") };
+    const subscriptionResult = await this.subscriptionFor(this.companyId());
+    if (!subscriptionResult.ok) return subscriptionResult;
+    const subscription = subscriptionResult.value;
+    if (!subscription.can('ai_assistant'))
+      return {
+        ok: false,
+        error: appForbidden("L'assistant Bob est inclus à partir de l'offre Solo."),
+      };
     const proposalIdForAudit = typeof input.proposalId === 'string' ? input.proposalId : 'invalid';
     try {
       const companyId = this.companyId();
@@ -2100,10 +2619,18 @@ export class BackendService {
         outcome: blocked ? 'error' : 'ok',
       });
       if (blocked) {
-        if (blocked.status === 'denied') return { ok: false, error: appForbidden(blocked.reason ?? 'Action refusée par la policy.') };
+        if (blocked.status === 'denied')
+          return {
+            ok: false,
+            error: appForbidden(blocked.reason ?? 'Action refusée par la policy.'),
+          };
         return {
           ok: false,
-          error: { kind: 'dependency', port: 'agent-runtime', cause: blocked.reason ?? 'agent execution failed' },
+          error: {
+            kind: 'dependency',
+            port: 'agent-runtime',
+            cause: blocked.reason ?? 'agent execution failed',
+          },
         };
       }
       const isBatch = invocations.length > 1;
@@ -2116,7 +2643,8 @@ export class BackendService {
       const quoteDeliveryStatus = quoteOutcome?.result?.deliveryStatus;
       if (!isBatch && notificationReadOutcome) {
         const updatedCount = notificationReadOutcome.result?.updatedCount;
-        const count = typeof updatedCount === 'number' && Number.isInteger(updatedCount) ? updatedCount : 0;
+        const count =
+          typeof updatedCount === 'number' && Number.isInteger(updatedCount) ? updatedCount : 0;
         return ok({
           kind: 'done',
           intent: 'marquer_notifications_lues',
@@ -2211,10 +2739,18 @@ export class BackendService {
         },
       });
     } catch (e) {
-      this.logger.audit('ai.confirm', { proposalId: proposalIdForAudit, outcome: 'error', journal: 'failed' });
+      this.logger.audit('ai.confirm', {
+        proposalId: proposalIdForAudit,
+        outcome: 'error',
+        journal: 'failed',
+      });
       return {
         ok: false,
-        error: { kind: 'dependency', port: 'agent-journal', cause: e instanceof Error ? e.message : 'journal append failed' },
+        error: {
+          kind: 'dependency',
+          port: 'agent-journal',
+          cause: e instanceof Error ? e.message : 'journal append failed',
+        },
       };
     }
   }
@@ -2222,36 +2758,34 @@ export class BackendService {
   // ——— Monétisation ———
   /**
    * Lecture d'autorité de l'abonnement du tenant — GetSubscriptionStatus (@bob/core) sur la
-   * table `subscriptions` (pilier 2). Fallback HONNÊTE early-access (business actif, 0 €) pour
-   * les tenants provisionnés AVANT la table — jamais un essai fantôme. Partagée par
+   * table `subscriptions` (pilier 2). Une ligne absente est remontée `unavailable` : aucun
+   * palier n'est inventé. Partagée par
    * GET /subscription, le bilan de fin d'essai et l'affordance vocale « où en est mon essai ».
    */
-  private async subscriptionStatus(companyId: string): Promise<SubscriptionStatusView> {
-    const status = await new GetSubscriptionStatus({ subscriptions: this.p.subscriptions }).execute({
+  private subscriptionStatus(companyId: string): Promise<Result<SubscriptionStatusView, AppError>> {
+    return new GetSubscriptionStatus({ subscriptions: this.p.subscriptions }).execute({
       companyId,
       now: this.clock.now(),
     });
-    if (!status.ok) throw new Error('lecture d’abonnement impossible — use case pur sans échec attendu');
-    return status.value;
   }
 
   /**
    * GET /subscription (C26b → pilier 2) — abonnement RÉEL du tenant courant, DB-backed
    * (guard : JWT + tenant requis). Palier EFFECTIF de l'essai inversé : pendant l'essai le
-   * palier prêté (Pro), expiré → atterrissage doux sur Découverte (free, données conservées),
-   * fallback sans ligne → early-access historique (zéro régression pour l'existant).
+   * palier prêté (Pro), expiré → atterrissage doux sur Découverte (free, données conservées).
    */
   async getSubscription() {
-    const s = await this.subscriptionStatus(this.companyId());
+    const status = await this.subscriptionStatus(this.companyId());
+    if (!status.ok) return status;
+    const s = status.value;
     const effectiveTier: PlanTier = s.trialPhase === 'expired' ? 'free' : s.plan;
-    const earlyAccess = s.source === 'early_access_fallback';
-    return {
+    return ok({
       tier: effectiveTier,
       status: s.status,
-      earlyAccess,
-      // Rien n'est facturé pendant l'accès anticipé ni pendant un essai : seul un abonnement
+      earlyAccess: false,
+      // Rien n'est facturé pendant un essai : seul un abonnement
       // ACTIF persisté porte le prix catalogue (source unique PLAN_CATALOG).
-      priceCents: !earlyAccess && s.status === 'active' ? PLAN_CATALOG[effectiveTier].priceCents : 0,
+      priceCents: s.status === 'active' ? PLAN_CATALOG[effectiveTier].priceCents : 0,
       currentPeriodEnd: s.currentPeriodEnd,
       trialEndsAt: s.trialEndsAt,
       trialPhase: s.trialPhase,
@@ -2264,14 +2798,17 @@ export class BackendService {
       addOns: [] as string[],
       addOnCatalog: Object.values(ADDON_CATALOG),
       catalog: Object.values(PLAN_CATALOG),
-    };
+    });
   }
 
   async getProfile(): Promise<Result<TradeConfig, AppError>> {
     const company = await this.p.companies.findById(this.companyId());
     if (!company) return { ok: false, error: appNotFound('company', this.companyId()) };
-    const subscription = this.subscriptionFor(this.companyId());
-    return ok(resolveTradeConfig(company.trade, subscription.tier, subscription.addOns));
+    const subscription = await this.subscriptionFor(this.companyId());
+    if (!subscription.ok) return subscription;
+    return ok(
+      resolveTradeConfig(company.trade, subscription.value.tier, subscription.value.addOns),
+    );
   }
 
   // ——— Profil fiscal (BOB EXPERT FISCAL, Phase 1A — SPEC_EXPERT_FISCAL.md §V2) ———
@@ -2294,7 +2831,10 @@ export class BackendService {
    * invariants revalidés (UpdateFiscalProfileField @bob/core) — rejette avec l'erreur domaine
    * (422) si la mise à jour rend le profil incohérent ; rien n'est modifié dans ce cas.
    */
-  async updateFiscalProfileField(field: string, value: unknown): Promise<Result<FiscalProfileView, AppError>> {
+  async updateFiscalProfileField(
+    field: string,
+    value: unknown,
+  ): Promise<Result<FiscalProfileView, AppError>> {
     const parsed = parseFiscalProfileFieldPatch(field, value);
     if (!parsed.ok) return parsed;
     const companyId = this.companyId();
@@ -2320,29 +2860,100 @@ export class BackendService {
     return new SearchAddress({ addresses: this.addresses }).execute({ query });
   }
 
+  // ——— Catalogue propriétaire (PostgreSQL/RLS en live, aucune suggestion tarifaire implicite) ———
+  async listCatalogueItems() {
+    return new ListCatalogueItems({ catalogue: this.p.catalogue }).execute({
+      companyId: this.companyId(),
+    });
+  }
+
+  async createCatalogueItem(item: CatalogueItemWriteInput) {
+    const result = await new CreateCatalogueItem({
+      catalogue: this.p.catalogue,
+      ids: this.ids,
+      clock: this.clock,
+    }).execute({ companyId: this.companyId(), item });
+    if (result.ok) {
+      this.logger.audit('catalogue.item_created', {
+        companyId: this.companyId(),
+        itemId: result.value.id,
+        revision: result.value.revision,
+      });
+    }
+    return result;
+  }
+
+  async updateCatalogueItem(input: {
+    itemId: string;
+    expectedRevision: number;
+    item: CatalogueItemWriteInput;
+  }) {
+    const result = await new UpdateCatalogueItem({
+      catalogue: this.p.catalogue,
+      clock: this.clock,
+    }).execute({
+      companyId: this.companyId(),
+      itemId: input.itemId,
+      expectedRevision: input.expectedRevision,
+      item: input.item,
+    });
+    if (result.ok) {
+      this.logger.audit('catalogue.item_updated', {
+        companyId: this.companyId(),
+        itemId: result.value.id,
+        revision: result.value.revision,
+      });
+    }
+    return result;
+  }
+
+  async deleteCatalogueItem(input: { itemId: string; expectedRevision: number }) {
+    const result = await new DeleteCatalogueItem({ catalogue: this.p.catalogue }).execute({
+      companyId: this.companyId(),
+      itemId: input.itemId,
+      expectedRevision: input.expectedRevision,
+    });
+    if (result.ok) {
+      this.logger.audit('catalogue.item_deleted', {
+        companyId: this.companyId(),
+        itemId: input.itemId,
+        expectedRevision: input.expectedRevision,
+      });
+    }
+    return result;
+  }
+
   // ——— Module Chantiers (vertical BTP, gated par métier × palier/add-on) ———
   private async chantiersAllowed(): Promise<boolean> {
     const company = await this.p.companies.findById(this.companyId());
     if (!company) return false;
-    const subscription = this.subscriptionFor(this.companyId());
-    return resolveTradeConfig(company.trade, subscription.tier, subscription.addOns).modules.some(
-      (m) => m.key === 'chantiers' && m.active,
-    );
+    const subscription = await this.subscriptionFor(this.companyId());
+    if (!subscription.ok) return false;
+    return resolveTradeConfig(
+      company.trade,
+      subscription.value.tier,
+      subscription.value.addOns,
+    ).modules.some((m) => m.key === 'chantiers' && m.active);
   }
 
-  async createChantier(input: Omit<CreateChantierInput, 'companyId'>): Promise<Result<{ id: string }, AppError>> {
+  async createChantier(
+    input: Omit<CreateChantierInput, 'companyId'>,
+  ): Promise<Result<{ id: string }, AppError>> {
     if (!(await this.chantiersAllowed()))
       return {
         ok: false,
-        error: appForbidden('Module Chantiers réservé aux métiers du bâtiment (offre Solo minimum, ou Pack BTP).'),
+        error: appForbidden(
+          'Module Chantiers réservé aux métiers du bâtiment (offre Solo minimum, ou Pack BTP).',
+        ),
       };
     const r = await new CreateChantier({
-      chantiers: this.chantiers,
+      chantiers: this.p.chantiers,
       customers: this.p.customers,
       ids: this.ids,
       clock: this.clock,
     }).execute({ companyId: this.companyId(), ...input });
-    if (r.ok) this.logger.audit('chantier.created', { companyId: this.companyId(), id: r.value.id });
+    if (r.ok)
+      this.logger.audit('chantier.created', { companyId: this.companyId(), id: r.value.id });
     return r;
   }
 
@@ -2350,9 +2961,11 @@ export class BackendService {
     if (!(await this.chantiersAllowed()))
       return {
         ok: false,
-        error: appForbidden('Module Chantiers réservé aux métiers du bâtiment (offre Solo minimum, ou Pack BTP).'),
+        error: appForbidden(
+          'Module Chantiers réservé aux métiers du bâtiment (offre Solo minimum, ou Pack BTP).',
+        ),
       };
-    const list = await this.chantiers.listByCompany(this.companyId());
+    const list = await this.p.chantiers.listByCompany(this.companyId());
     return ok(list.map((c) => c.toProps()));
   }
 
@@ -2390,6 +3003,55 @@ export class BackendService {
     const company = await this.p.companies.findById(this.companyId());
     if (!company) return { ok: false, error: appNotFound('company', this.companyId()) };
     return ok(company.toProps());
+  }
+
+  /** Profil d'exploitation explicitement confirmé par le propriétaire. */
+  async updateCompanyProfile(input: {
+    trade: Trade;
+    vatRegime: VatRegime;
+  }): Promise<Result<CompanyProps, AppError>> {
+    const companyId = this.companyId();
+    const current = await this.p.companies.findById(companyId);
+    if (!current) return { ok: false, error: appNotFound('company', companyId) };
+    const updated = Company.of({
+      ...current.toProps(),
+      trade: input.trade,
+      vatRegime: input.vatRegime,
+    });
+    if (!updated.ok) return { ok: false, error: appDomain(updated.error) };
+    await this.p.companies.save(updated.value);
+    this.logger.audit('company.profile_confirmed', {
+      companyId,
+      trade: input.trade,
+      vatRegime: input.vatRegime,
+    });
+    return ok(updated.value.toProps());
+  }
+
+  /** Réglages facturation §Coordonnées bancaires (RIB) — écrit iban/bic (déjà persistés, jusqu'ici
+   * jamais éditables après l'onboarding). Partiel : un champ `undefined` en entrée = inchangé,
+   * `null` = effacé explicitement (jamais un iban/bic fantôme réinjecté par accident). */
+  async updateCompanyBilling(input: {
+    iban?: string | null;
+    bic?: string | null;
+  }): Promise<Result<CompanyProps, AppError>> {
+    const companyId = this.companyId();
+    const current = await this.p.companies.findById(companyId);
+    if (!current) return { ok: false, error: appNotFound('company', companyId) };
+    const props = current.toProps();
+    const updated = Company.of({
+      ...props,
+      iban: input.iban === undefined ? props.iban : (input.iban ?? undefined),
+      bic: input.bic === undefined ? props.bic : (input.bic ?? undefined),
+    });
+    if (!updated.ok) return { ok: false, error: appDomain(updated.error) };
+    await this.p.companies.save(updated.value);
+    this.logger.audit('company.billing_updated', {
+      companyId,
+      ibanChanged: input.iban !== undefined,
+      bicChanged: input.bic !== undefined,
+    });
+    return ok(updated.value.toProps());
   }
 
   /** C-EXP5b : échéancier fiscal du tenant — MÊME use case pur (deriveFiscalCalendar @bob/core)
@@ -2432,8 +3094,13 @@ export class BackendService {
 
   /** Lien de paiement en ligne d'une facture — gated par l'offre (Pro+). */
   async invoicePaymentLink(invoiceId: string): Promise<Result<{ url: string }, AppError>> {
-    if (!this.subscriptionFor(this.companyId()).can('online_payment')) {
-      return { ok: false, error: appForbidden("Le paiement en ligne nécessite l'offre Pro ou Business.") };
+    const subscription = await this.subscriptionFor(this.companyId());
+    if (!subscription.ok) return subscription;
+    if (!subscription.value.can('online_payment')) {
+      return {
+        ok: false,
+        error: appForbidden("Le paiement en ligne nécessite l'offre Pro ou Business."),
+      };
     }
     const inv = await this.ownedInvoice(invoiceId);
     if (!inv) return { ok: false, error: appNotFound('invoice', invoiceId) };
@@ -2451,14 +3118,20 @@ export class BackendService {
     const inv = await this.ownedInvoice(invoiceId);
     if (!inv) return { ok: false, error: appNotFound('invoice', invoiceId) };
     const rendered = await this.renderInvoicePdf(inv);
-    if (rendered.ok) this.logger.audit('invoice.pdf', { invoiceId, number: inv.number ?? '(brouillon)', facturX: !!inv.number && !!inv.issuedAt });
+    if (rendered.ok)
+      this.logger.audit('invoice.pdf', {
+        invoiceId,
+        number: inv.number ?? '(brouillon)',
+        facturX: !!inv.number && !!inv.issuedAt,
+      });
     return rendered;
   }
 
   private async renderInvoicePdf(inv: Invoice): Promise<Result<Uint8Array, AppError>> {
     const company = await this.p.companies.findById(inv.companyId);
     const customer = await this.p.customers.findById(inv.customerId);
-    if (!company || !customer) return { ok: false, error: appNotFound('company-or-customer', inv.id) };
+    if (!company || !customer)
+      return { ok: false, error: appNotFound('company-or-customer', inv.id) };
     const addr = customer.toProps().address;
     const totals = inv.totals();
     const data: InvoicePdfData = {
@@ -2471,7 +3144,12 @@ export class BackendService {
       issuedAt: inv.issuedAt,
       dueAt: inv.dueAt,
       kind: inv.kind,
-      lines: inv.lines.map((l) => ({ label: l.label, qty: l.qty, unitPriceHT: l.unitPriceHT, vatRate: l.vatRate })),
+      lines: inv.lines.map((l) => ({
+        label: l.label,
+        qty: l.qty,
+        unitPriceHT: l.unitPriceHT,
+        vatRate: l.vatRate,
+      })),
       totals: { ht: totals.ht, vat: totals.vat, ttc: totals.ttc, netToPay: totals.netToPay },
       mentions: [...inv.mentions],
     };
@@ -2502,7 +3180,8 @@ export class BackendService {
       return { ok: false, error: appForbidden('Facture non émise : Factur-X indisponible.') };
     const company = await this.p.companies.findById(inv.companyId);
     const customer = await this.p.customers.findById(inv.customerId);
-    if (!company || !customer) return { ok: false, error: appNotFound('company-or-customer', inv.id) };
+    if (!company || !customer)
+      return { ok: false, error: appNotFound('company-or-customer', inv.id) };
     const buyer = customer.toProps();
     const fxData = facturXDataFromInvoice(inv, company, {
       name: customer.name,
@@ -2546,10 +3225,10 @@ export class BackendService {
         save: (document) => this.p.runWithTenant(companyId, () => this.p.documents.save(document)),
       },
       folders: {
-        findById: (scopedCompanyId, folderId) => this.p.runWithTenant(
-          scopedCompanyId,
-          () => this.p.documentFolders.findById(scopedCompanyId, folderId),
-        ),
+        findById: (scopedCompanyId, folderId) =>
+          this.p.runWithTenant(scopedCompanyId, () =>
+            this.p.documentFolders.findById(scopedCompanyId, folderId),
+          ),
       },
       linkTargets: this.documentLinkTargets(),
       storage: this.documentStorage,
@@ -2576,7 +3255,9 @@ export class BackendService {
     });
   }
 
-  private async provisionDefaultDocumentFolders(companyId: string): Promise<Result<void, AppError>> {
+  private async provisionDefaultDocumentFolders(
+    companyId: string,
+  ): Promise<Result<void, AppError>> {
     const listed = await new ListDocumentFolders({ folders: this.p.documentFolders }).execute({
       companyId,
       parentId: null,
@@ -2608,7 +3289,10 @@ export class BackendService {
         now,
       });
     } catch (e) {
-      this.logger.warn(`Enqueue archivage facture impossible: ${e instanceof Error ? e.message : String(e)}`, 'documents');
+      this.logger.warn(
+        `Enqueue archivage facture impossible: ${e instanceof Error ? e.message : String(e)}`,
+        'documents',
+      );
     }
   }
 
@@ -2617,8 +3301,10 @@ export class BackendService {
     invoiceId: string,
   ): Promise<Result<{ created: number; skipped: number }, AppError>> {
     const inv = await this.p.invoices.findById(invoiceId);
-    if (!inv || inv.companyId !== companyId) return { ok: false, error: appNotFound('invoice', invoiceId) };
-    if (!inv.number || !inv.issuedAt) return { ok: false, error: appForbidden('Facture non émise : archivage impossible.') };
+    if (!inv || inv.companyId !== companyId)
+      return { ok: false, error: appNotFound('invoice', invoiceId) };
+    if (!inv.number || !inv.issuedAt)
+      return { ok: false, error: appForbidden('Facture non émise : archivage impossible.') };
     let created = 0;
     let skipped = 0;
     try {
@@ -2675,11 +3361,20 @@ export class BackendService {
       }
       return ok({ created, skipped });
     } catch (e) {
-      return { ok: false, error: { kind: 'dependency', port: 'document-archive', cause: e instanceof Error ? e.message : String(e) } };
+      return {
+        ok: false,
+        error: {
+          kind: 'dependency',
+          port: 'document-archive',
+          cause: e instanceof Error ? e.message : String(e),
+        },
+      };
     }
   }
 
-  async runDocumentArchiveJobs(input: { companyId?: string; limit?: number } = {}): Promise<Result<{ scanned: number; archived: number; failed: number }, AppError>> {
+  async runDocumentArchiveJobs(
+    input: { companyId?: string; limit?: number } = {},
+  ): Promise<Result<{ scanned: number; archived: number; failed: number }, AppError>> {
     const companyId = input.companyId ?? this.companyId();
     const limit = Math.max(1, Math.min(input.limit ?? 10, 50));
     return this.p.runWithTenant(companyId, async () => {
@@ -2701,15 +3396,25 @@ export class BackendService {
         } else {
           failed += 1;
           const failedAt = this.clock.now();
-          await this.p.documentArchiveJobs.markFailed(job.id, failedAt, nextArchiveRetryAt(failedAt, job.attempts), appErrorSummary(result.error));
-          this.logger.warn(`Archivage facture en retry: ${appErrorSummary(result.error)}`, 'documents');
+          await this.p.documentArchiveJobs.markFailed(
+            job.id,
+            failedAt,
+            nextArchiveRetryAt(failedAt, job.attempts),
+            appErrorSummary(result.error),
+          );
+          this.logger.warn(
+            `Archivage facture en retry: ${appErrorSummary(result.error)}`,
+            'documents',
+          );
         }
       }
       return ok({ scanned: jobs.length, archived, failed });
     });
   }
 
-  async runNotificationJobs(input: { companyId?: string; limit?: number } = {}): Promise<Result<{ scanned: number; sent: number; failed: number }, AppError>> {
+  async runNotificationJobs(
+    input: { companyId?: string; limit?: number } = {},
+  ): Promise<Result<{ scanned: number; sent: number; failed: number }, AppError>> {
     const companyId = input.companyId ?? this.companyId();
     const limit = Math.max(1, Math.min(input.limit ?? 25, 100));
     try {
@@ -2717,7 +3422,11 @@ export class BackendService {
     } catch (e) {
       return {
         ok: false,
-        error: { kind: 'dependency', port: 'notification-jobs', cause: e instanceof Error ? e.message : String(e) },
+        error: {
+          kind: 'dependency',
+          port: 'notification-jobs',
+          cause: e instanceof Error ? e.message : String(e),
+        },
       };
     }
   }
@@ -2733,11 +3442,13 @@ export class BackendService {
     });
   }
 
-  async listDocumentFolders(input: {
-    parentId?: string | null;
-    limit?: number;
-    cursor?: string | null;
-  } = {}): Promise<Result<{ items: DocumentFolderView[]; nextCursor: string | null }, AppError>> {
+  async listDocumentFolders(
+    input: {
+      parentId?: string | null;
+      limit?: number;
+      cursor?: string | null;
+    } = {},
+  ): Promise<Result<{ items: DocumentFolderView[]; nextCursor: string | null }, AppError>> {
     return new ListDocumentFolders({ folders: this.p.documentFolders }).execute({
       companyId: this.companyId(),
       ...(input.parentId !== undefined ? { parentId: input.parentId } : {}),
@@ -2748,7 +3459,9 @@ export class BackendService {
 
   async getDocumentFolder(folderId: string): Promise<Result<DocumentFolderView, AppError>> {
     const folder = await this.p.documentFolders.findById(this.companyId(), folderId);
-    return folder && folder.status === 'active' ? ok(folder.toProps()) : { ok: false, error: appNotFound('document_folder', folderId) };
+    return folder && folder.status === 'active'
+      ? ok(folder.toProps())
+      : { ok: false, error: appNotFound('document_folder', folderId) };
   }
 
   async createDocumentFolder(input: {
@@ -2765,7 +3478,11 @@ export class BackendService {
       name: input.name,
       parentId: input.parentId ?? null,
     });
-    if (result.ok) this.logger.audit('document_folder.created', { companyId: this.companyId(), folderId: result.value.id });
+    if (result.ok)
+      this.logger.audit('document_folder.created', {
+        companyId: this.companyId(),
+        folderId: result.value.id,
+      });
     return result;
   }
 
@@ -2779,7 +3496,11 @@ export class BackendService {
       clock: this.clock,
       uow: this.p,
     }).execute({ companyId: this.companyId(), ...input });
-    if (result.ok) this.logger.audit('document_folder.renamed', { companyId: this.companyId(), folderId: input.folderId });
+    if (result.ok)
+      this.logger.audit('document_folder.renamed', {
+        companyId: this.companyId(),
+        folderId: input.folderId,
+      });
     return result;
   }
 
@@ -2793,7 +3514,12 @@ export class BackendService {
       clock: this.clock,
       uow: this.p,
     }).execute({ companyId: this.companyId(), ...input });
-    if (result.ok) this.logger.audit('document_folder.moved', { companyId: this.companyId(), folderId: input.folderId, parentId: input.parentId });
+    if (result.ok)
+      this.logger.audit('document_folder.moved', {
+        companyId: this.companyId(),
+        folderId: input.folderId,
+        parentId: input.parentId,
+      });
     return result;
   }
 
@@ -2803,13 +3529,14 @@ export class BackendService {
       store: {
         insert: (plan) => this.p.runWithTenant(plan.companyId, () => store.insert(plan)),
         consume: (input) => this.p.runWithTenant(input.companyId, () => store.consume(input)),
-        purgeExpired: (input) => this.p.runWithTenant(input.companyId, () => store.purgeExpired(input)),
+        purgeExpired: (input) =>
+          this.p.runWithTenant(input.companyId, () => store.purgeExpired(input)),
       },
       previewDeleteFolder: {
-        execute: (input) => this.p.runWithTenant(
-          input.companyId,
-          () => new PreviewDeleteDocumentFolder({ folders: this.p.documentFolders }).execute(input),
-        ),
+        execute: (input) =>
+          this.p.runWithTenant(input.companyId, () =>
+            new PreviewDeleteDocumentFolder({ folders: this.p.documentFolders }).execute(input),
+          ),
       },
       deleteFolder: {
         // Transaction distincte de la consommation : le plan reste brûlé si le snapshot a
@@ -2863,27 +3590,29 @@ export class BackendService {
   async executeDocumentFolderDeletion(input: {
     planId: string;
     strategy: DeleteDocumentFolderStrategy;
-  }): Promise<Result<{ folderId: string; transferredDocuments: number; transferredChildren: number }, AppError>> {
+  }): Promise<
+    Result<
+      { folderId: string; transferredDocuments: number; transferredChildren: number },
+      AppError
+    >
+  > {
     const result = await this.documentFolderDeletionPlanService().consume({
       companyId: this.companyId(),
       planId: input.planId,
       strategy: input.strategy,
     });
-    this.logger.audit(
-      result.ok ? 'document_folder.deleted' : 'document_folder.deletion_rejected',
-      {
-        companyId: this.companyId(),
-        planId: input.planId,
-        strategy: input.strategy.kind,
-        ...(result.ok
-          ? {
-              folderId: result.value.folderId,
-              transferredDocuments: result.value.transferredDocuments,
-              transferredChildren: result.value.transferredChildren,
-            }
-          : { errorKind: result.error.kind }),
-      },
-    );
+    this.logger.audit(result.ok ? 'document_folder.deleted' : 'document_folder.deletion_rejected', {
+      companyId: this.companyId(),
+      planId: input.planId,
+      strategy: input.strategy.kind,
+      ...(result.ok
+        ? {
+            folderId: result.value.folderId,
+            transferredDocuments: result.value.transferredDocuments,
+            transferredChildren: result.value.transferredChildren,
+          }
+        : { errorKind: result.error.kind }),
+    });
     return result;
   }
 
@@ -2892,22 +3621,29 @@ export class BackendService {
     folderId: string | null;
     expectedRevision: number;
   }): Promise<Result<{ documentId: string; folderId: string | null; revision: number }, AppError>> {
-    const result = await new MoveDocumentToFolder({ folders: this.p.documentFolders, uow: this.p }).execute({
+    const result = await new MoveDocumentToFolder({
+      folders: this.p.documentFolders,
+      uow: this.p,
+    }).execute({
       companyId: this.companyId(),
       ...input,
     });
-    if (result.ok) this.logger.audit('document.moved', { companyId: this.companyId(), ...result.value });
+    if (result.ok)
+      this.logger.audit('document.moved', { companyId: this.companyId(), ...result.value });
     return result;
   }
 
-  async documentDownloadUrl(documentId: string, ttlSeconds?: number): Promise<Result<DocumentDownloadUrl, AppError>> {
+  async documentDownloadUrl(
+    documentId: string,
+    ttlSeconds?: number,
+  ): Promise<Result<DocumentDownloadUrl, AppError>> {
     const companyId = this.companyId();
     return new GetDocumentDownloadUrl({
       documents: {
-        findById: (scopedCompanyId, id) => this.p.runWithTenant(
-          scopedCompanyId,
-          () => this.p.documents.findById(scopedCompanyId, id),
-        ),
+        findById: (scopedCompanyId, id) =>
+          this.p.runWithTenant(scopedCompanyId, () =>
+            this.p.documents.findById(scopedCompanyId, id),
+          ),
       },
       storage: this.documentStorage,
     }).execute({
@@ -2931,13 +3667,19 @@ export class BackendService {
     let cacheHit = false;
     let intelligenceInvoked = false;
     try {
-      const document = await this.p.runWithTenant(companyId, () => this.p.documents.findById(companyId, documentId));
+      const document = await this.p.runWithTenant(companyId, () =>
+        this.p.documents.findById(companyId, documentId),
+      );
       if (!document) {
         result = { ok: false, error: appNotFound('document', documentId) };
       } else if (document.status !== 'active') {
         result = {
           ok: false,
-          error: { kind: 'conflict', entity: 'document', reason: 'Un document supprimé ne peut pas être analysé.' },
+          error: {
+            kind: 'conflict',
+            entity: 'document',
+            reason: 'Un document supprimé ne peut pas être analysé.',
+          },
         };
       } else {
         const props = document.toProps();
@@ -2945,12 +3687,14 @@ export class BackendService {
           (latest, version) => (version.version > latest.version ? version : latest),
           props.versions[0]!,
         );
-        const cached = await this.p.runWithTenant(companyId, () => this.p.documentAnalyses.findExact({
-          companyId,
-          documentId,
-          documentVersion: currentVersion.version,
-          sourceSha256: currentVersion.sha256,
-        }));
+        const cached = await this.p.runWithTenant(companyId, () =>
+          this.p.documentAnalyses.findExact({
+            companyId,
+            documentId,
+            documentVersion: currentVersion.version,
+            sourceSha256: currentVersion.sha256,
+          }),
+        );
         if (cached) {
           cacheHit = true;
           result = ok(cached.analysis);
@@ -2958,10 +3702,10 @@ export class BackendService {
           intelligenceInvoked = true;
           result = await new AnalyzeDocument({
             documents: {
-              findById: (scopedCompanyId, id) => this.p.runWithTenant(
-                scopedCompanyId,
-                () => this.p.documents.findById(scopedCompanyId, id),
-              ),
+              findById: (scopedCompanyId, id) =>
+                this.p.runWithTenant(scopedCompanyId, () =>
+                  this.p.documents.findById(scopedCompanyId, id),
+                ),
             },
             storage: this.documentStorage,
             intelligence: this.documentIntelligence,
@@ -2969,15 +3713,17 @@ export class BackendService {
           }).execute({ companyId, documentId });
           if (result.ok) {
             const analyzed = result.value;
-            const winner = await this.p.runWithTenant(companyId, () => this.p.documentAnalyses.putIfAbsent({
-              companyId,
-              documentId: analyzed.documentId,
-              documentVersion: analyzed.documentVersion,
-              sourceSha256: analyzed.sourceSha256,
-              analyzerVersion: analyzed.analyzerVersion,
-              analysis: analyzed,
-              analyzedAt: analyzed.analyzedAt,
-            }));
+            const winner = await this.p.runWithTenant(companyId, () =>
+              this.p.documentAnalyses.putIfAbsent({
+                companyId,
+                documentId: analyzed.documentId,
+                documentVersion: analyzed.documentVersion,
+                sourceSha256: analyzed.sourceSha256,
+                analyzerVersion: analyzed.analyzerVersion,
+                analysis: analyzed,
+                analyzedAt: analyzed.analyzedAt,
+              }),
+            );
             result = ok(winner.analysis);
           }
         }
@@ -2999,7 +3745,10 @@ export class BackendService {
         outcome: result.ok ? 'ok' : result.error.kind,
       });
       this.metrics.aiDuration.observe(
-        { model: result.ok ? result.value.analyzerVersion : 'document-intelligence', intent: 'document_analysis' },
+        {
+          model: result.ok ? result.value.analyzerVersion : 'document-intelligence',
+          intent: 'document_analysis',
+        },
         (Date.now() - startedAt) / 1000,
       );
     }
@@ -3021,7 +3770,11 @@ export class BackendService {
   async uploadDocument(input: UploadDocumentInput): Promise<Result<DocumentView, AppError>> {
     const decoded = decodeBase64Document(input.contentBase64);
     if (!decoded.ok) return decoded;
-    const validated = validateUploadedDocument({ filename: input.filename, mimeType: input.mimeType, bytes: decoded.value });
+    const validated = validateUploadedDocument({
+      filename: input.filename,
+      mimeType: input.mimeType,
+      bytes: decoded.value,
+    });
     if (!validated.ok) return validated;
     const stored = await this.storeDocument({
       kind: input.kind ?? 'other',
@@ -3052,28 +3805,46 @@ export class BackendService {
    * comptable. Un retry avec la même clé est idempotent ; une clé rejouée avec un autre
    * fichier est rejetée explicitement.
    */
-  async createDocumentIntake(input: CreateDocumentIntakeInput): Promise<Result<DocumentView, AppError>> {
+  async createDocumentIntake(
+    input: CreateDocumentIntakeInput,
+  ): Promise<Result<DocumentView, AppError>> {
     const key = typeof input.idempotencyKey === 'string' ? input.idempotencyKey.trim() : '';
     if (key.length < 8 || key.length > 160) {
       return {
         ok: false,
-        error: { kind: 'validation', issues: [{ field: 'idempotencyKey', message: 'Clé d’idempotence invalide.' }] },
+        error: {
+          kind: 'validation',
+          issues: [{ field: 'idempotencyKey', message: 'Clé d’idempotence invalide.' }],
+        },
       };
     }
     const decoded = decodeBase64Document(input.contentBase64);
     if (!decoded.ok) return decoded;
-    const validated = validateUploadedDocument({ filename: input.filename, mimeType: input.mimeType, bytes: decoded.value });
+    const validated = validateUploadedDocument({
+      filename: input.filename,
+      mimeType: input.mimeType,
+      bytes: decoded.value,
+    });
     if (!validated.ok) return validated;
     const companyId = this.companyId();
-    const fingerprint = createHash('sha256').update(companyId).update('\0').update(key).digest('hex');
+    const fingerprint = createHash('sha256')
+      .update(companyId)
+      .update('\0')
+      .update(key)
+      .digest('hex');
     const id = `intake-${fingerprint.slice(0, 32)}`;
     const versionId = `intake-version-${fingerprint.slice(0, 32)}`;
     const sha256 = documentSha256(decoded.value);
-    const existing = await this.p.runWithTenant(companyId, () => this.p.documents.findById(companyId, id));
+    const existing = await this.p.runWithTenant(companyId, () =>
+      this.p.documents.findById(companyId, id),
+    );
     if (existing) {
       const props = existing.toProps();
       if (props.sha256 !== sha256 || props.mimeType !== validated.value.mimeType) {
-        return { ok: false, error: { kind: 'conflict', entity: 'document_intake', reason: 'idempotency_key_reused' } };
+        return {
+          ok: false,
+          error: { kind: 'conflict', entity: 'document_intake', reason: 'idempotency_key_reused' },
+        };
       }
       return ok(documentToView(existing));
     }
@@ -3106,12 +3877,21 @@ export class BackendService {
     if (stored.error.kind === 'dependency' && stored.error.port === 'document-storage') {
       for (const delayMs of [0, 20, 50, 100, 200]) {
         if (delayMs > 0) await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
-        const concurrent = await this.p.runWithTenant(companyId, () => this.p.documents.findById(companyId, id));
+        const concurrent = await this.p.runWithTenant(companyId, () =>
+          this.p.documents.findById(companyId, id),
+        );
         if (!concurrent) continue;
         const props = concurrent.toProps();
         return props.sha256 === sha256 && props.mimeType === validated.value.mimeType
           ? ok(documentToView(concurrent))
-          : { ok: false, error: { kind: 'conflict', entity: 'document_intake', reason: 'idempotency_key_reused' } };
+          : {
+              ok: false,
+              error: {
+                kind: 'conflict',
+                entity: 'document_intake',
+                reason: 'idempotency_key_reused',
+              },
+            };
       }
     }
     return stored;
@@ -3145,7 +3925,10 @@ export class BackendService {
   }
 
   /** OCR d'un document fournisseur (base64) -> extraction structurée, scopée au tenant. */
-  async extractDocument(input: { contentBase64: string; mimeType: string }): Promise<Result<OcrExtraction, AppError>> {
+  async extractDocument(input: {
+    contentBase64: string;
+    mimeType: string;
+  }): Promise<Result<OcrExtraction, AppError>> {
     const issues: { field: string; message: string }[] = [];
     if (typeof input.contentBase64 !== 'string' || input.contentBase64.trim().length === 0) {
       issues.push({ field: 'contentBase64', message: 'Document vide.' });
@@ -3156,21 +3939,30 @@ export class BackendService {
     if (issues.length > 0) return { ok: false, error: { kind: 'validation', issues } };
     // A3-C14 : le prompt OCR est personnalisé par l'activité (TradeConfig) — données typées, pas de texte libre.
     const companyId = this.companyId();
-    const company = await this.p.runWithTenant(companyId, () => this.p.companies.findById(companyId));
-    const subscription = this.subscriptionFor(companyId);
+    const company = await this.p.runWithTenant(companyId, () =>
+      this.p.companies.findById(companyId),
+    );
+    const subscription = await this.subscriptionFor(companyId);
+    if (!subscription.ok) return subscription;
     const trade = company
       ? ((): NonNullable<OcrExtractInput['trade']> => {
-          const config = resolveTradeConfig(company.trade, subscription.tier, subscription.addOns);
+          const config = resolveTradeConfig(
+            company.trade,
+            subscription.value.tier,
+            subscription.value.addOns,
+          );
           return {
             label: config.label,
             customerWord: config.vocabulary.customer,
             projectWord: config.vocabulary.project,
-            defaultVatRatePct: config.defaultVatRate,
           };
         })()
       : undefined;
     const startedAt = Date.now();
-    const r = await new ExtractDocument({ ocr: this.ocr }).execute({ ...input, ...(trade ? { trade } : {}) });
+    const r = await new ExtractDocument({ ocr: this.ocr }).execute({
+      ...input,
+      ...(trade ? { trade } : {}),
+    });
     if (!r.ok) return r;
 
     let value = r.value;
@@ -3202,10 +3994,22 @@ export class BackendService {
   }): Promise<Result<ExpenseDefaultsView, AppError>> {
     const supplierName = input.supplierName.trim();
     if (!supplierName) {
-      return { ok: false, error: { kind: 'validation', issues: [{ field: 'supplierName', message: 'Fournisseur requis.' }] } };
+      return {
+        ok: false,
+        error: {
+          kind: 'validation',
+          issues: [{ field: 'supplierName', message: 'Fournisseur requis.' }],
+        },
+      };
     }
     if (!EXPENSE_CATEGORIES.has(input.categoryGuess)) {
-      return { ok: false, error: { kind: 'validation', issues: [{ field: 'categoryGuess', message: 'Catégorie inconnue.' }] } };
+      return {
+        ok: false,
+        error: {
+          kind: 'validation',
+          issues: [{ field: 'categoryGuess', message: 'Catégorie inconnue.' }],
+        },
+      };
     }
     const profile = await this.p.supplierMemory.supplierProfile(this.companyId(), supplierName);
     if (profile) {
@@ -3227,7 +4031,11 @@ export class BackendService {
   }
 
   private expenseCreationCoordinator(): ExpenseCreationCoordinator {
-    return new ExpenseCreationCoordinator({ persistence: this.p, ids: this.ids, clock: this.clock });
+    return new ExpenseCreationCoordinator({
+      persistence: this.p,
+      ids: this.ids,
+      clock: this.clock,
+    });
   }
 
   /** Effets volontairement post-commit : ils ne doivent jamais survivre au rollback d'un lien document. */
@@ -3251,11 +4059,14 @@ export class BackendService {
       });
     }
     if (!outcome.created) return;
-    this.logger.audit('expense.recorded', { companyId, id: outcome.expenseId, ttc: input.totalTtcCents });
+    this.logger.audit('expense.recorded', {
+      companyId,
+      id: outcome.expenseId,
+      ttc: input.totalTtcCents,
+    });
     try {
-      const profile = await this.p.runWithTenant(
-        companyId,
-        () => this.p.supplierMemory.rememberSupplier(
+      const profile = await this.p.runWithTenant(companyId, () =>
+        this.p.supplierMemory.rememberSupplier(
           companyId,
           {
             name: input.supplierName,
@@ -3280,9 +4091,14 @@ export class BackendService {
     }
   }
 
-  async recordExpense(input: Omit<RecordExpenseInput, 'companyId'>): Promise<Result<{ id: string }, AppError>> {
+  async recordExpense(
+    input: Omit<RecordExpenseInput, 'companyId'>,
+  ): Promise<Result<{ id: string }, AppError>> {
     const companyId = this.companyId();
-    const coordinated = await this.expenseCreationCoordinator().execute({ companyId, expense: input });
+    const coordinated = await this.expenseCreationCoordinator().execute({
+      companyId,
+      expense: input,
+    });
     if (!coordinated.ok) return coordinated;
     await this.afterExpenseCreationCommitted(companyId, input, coordinated.value);
     return ok({ id: coordinated.value.expenseId });
@@ -3298,29 +4114,34 @@ export class BackendService {
     if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 1) {
       return {
         ok: false,
-        error: { kind: 'validation', issues: [{ field: 'expectedRevision', message: 'Révision document invalide.' }] },
+        error: {
+          kind: 'validation',
+          issues: [{ field: 'expectedRevision', message: 'Révision document invalide.' }],
+        },
       };
     }
     if (
-      typeof input.targetFolderId !== 'string'
-      || input.targetFolderId.length === 0
-      || input.targetFolderId.length > 200
-      || input.targetFolderId !== input.targetFolderId.trim()
-      || [...input.targetFolderId].some((character) => {
+      typeof input.targetFolderId !== 'string' ||
+      input.targetFolderId.length === 0 ||
+      input.targetFolderId.length > 200 ||
+      input.targetFolderId !== input.targetFolderId.trim() ||
+      [...input.targetFolderId].some((character) => {
         const code = character.codePointAt(0) ?? 0;
         return code <= 0x1f || code === 0x7f;
       })
     ) {
       return {
         ok: false,
-        error: { kind: 'validation', issues: [{ field: 'targetFolderId', message: 'Dossier de destination invalide.' }] },
+        error: {
+          kind: 'validation',
+          issues: [{ field: 'targetFolderId', message: 'Dossier de destination invalide.' }],
+        },
       };
     }
 
     const companyId = this.companyId();
-    const archived = await this.p.runWithTenant(
-      companyId,
-      () => this.p.documents.findById(companyId, input.documentId),
+    const archived = await this.p.runWithTenant(companyId, () =>
+      this.p.documents.findById(companyId, input.documentId),
     );
     if (!archived || archived.status !== 'active') {
       return { ok: false, error: appNotFound('document', input.documentId) };
@@ -3356,18 +4177,27 @@ export class BackendService {
               ),
             };
           }
-          const replayFolder = await this.p.documentFolders.findById(companyId, input.targetFolderId);
+          const replayFolder = await this.p.documentFolders.findById(
+            companyId,
+            input.targetFolderId,
+          );
           return replayFolder?.status === 'active'
             ? ok(documentToView(current))
             : {
                 ok: false as const,
-                error: appConflict('document', 'Le dossier de destination de cette demande n’est plus actif.'),
+                error: appConflict(
+                  'document',
+                  'Le dossier de destination de cette demande n’est plus actif.',
+                ),
               };
         }
         if (current.revision !== input.expectedRevision) {
           return {
             ok: false as const,
-            error: appConflict('document', 'Le document a été modifié. Recharge avant de créer la dépense.'),
+            error: appConflict(
+              'document',
+              'Le document a été modifié. Recharge avant de créer la dépense.',
+            ),
           };
         }
 
@@ -3387,7 +4217,10 @@ export class BackendService {
         } else {
           const target = await this.p.documentFolders.findById(companyId, input.targetFolderId);
           if (!target || target.status !== 'active') {
-            return { ok: false as const, error: appNotFound('document_folder', input.targetFolderId) };
+            return {
+              ok: false as const,
+              error: appNotFound('document_folder', input.targetFolderId),
+            };
           }
         }
 
@@ -3424,8 +4257,11 @@ export class BackendService {
    * DÉCAISSEMENT 401/512 à la date du jour (PayExpense @bob/core, idempotent de bout en bout).
    * MÊME use case que l'écran Dépenses de la démo locale et que l'outil agent payer_depense.
    * Transaction tenant : la transition et l'écriture réussissent ou s'annulent ENSEMBLE. */
-  async payExpense(input: { expenseId: string }): Promise<Result<{ status: 'paid'; alreadyPaid: boolean }, AppError>> {
-    if (!(await this.ownedExpense(input.expenseId))) return { ok: false as const, error: appNotFound('expense', input.expenseId) };
+  async payExpense(input: {
+    expenseId: string;
+  }): Promise<Result<{ status: 'paid'; alreadyPaid: boolean }, AppError>> {
+    if (!(await this.ownedExpense(input.expenseId)))
+      return { ok: false as const, error: appNotFound('expense', input.expenseId) };
     let r: Result<{ status: 'paid'; alreadyPaid: boolean }, AppError>;
     try {
       r = await this.p.runInTransaction(async () => {
@@ -3442,7 +4278,11 @@ export class BackendService {
       if (e instanceof RollbackAppError) return { ok: false as const, error: e.appError };
       throw e;
     }
-    if (r.ok) this.logger.audit('expense.paid', { expenseId: input.expenseId, alreadyPaid: r.value.alreadyPaid });
+    if (r.ok)
+      this.logger.audit('expense.paid', {
+        expenseId: input.expenseId,
+        alreadyPaid: r.value.alreadyPaid,
+      });
     return r;
   }
 
@@ -3467,18 +4307,31 @@ export class BackendService {
       const existingInvoiceKeys = expenses
         .map((e) => expenseDuplicateKey(e.toProps()))
         .filter((k): k is string => k !== null);
-      const imported = runFacturXReceptionControls({ xml, mySiren: company.siren, existingInvoiceKeys });
-      if (!imported.ok) return { ok: false as const, error: this.facturXControlError(imported.error) };
+      const imported = runFacturXReceptionControls({
+        xml,
+        mySiren: company.siren,
+        existingInvoiceKeys,
+      });
+      if (!imported.ok)
+        return { ok: false as const, error: this.facturXControlError(imported.error) };
       // Catégorie de charge proposée via la MÉMOIRE FOURNISSEUR (habitude validée > défaut d'import).
-      const profile = await this.p.supplierMemory.supplierProfile(companyId, imported.value.supplierName);
+      const profile = await this.p.supplierMemory.supplierProfile(
+        companyId,
+        imported.value.supplierName,
+      );
       const draft = withSupplierCategory(imported.value, profile ? profile.category : null);
-      return ok({ draft, controls: ['destinataire', 'coherence_en16931', 'doublon'] as FacturXImportControl[] });
+      return ok({
+        draft,
+        controls: ['destinataire', 'coherence_en16931', 'doublon'] as FacturXImportControl[],
+      });
     });
   }
 
   /** POST /expenses/import-facturx — contrôles + brouillon. RIEN n'est enregistré : la décision
    *  (approve/refuse AFNOR) appartient à l'appelant via confirmFacturXExpense. */
-  async importFacturXExpense(input: { xml: string }): Promise<Result<FacturXImportReview, AppError>> {
+  async importFacturXExpense(input: {
+    xml: string;
+  }): Promise<Result<FacturXImportReview, AppError>> {
     const review = await this.facturXReview(input.xml);
     if (review.ok) {
       this.logger.audit('facturx.import_reviewed', {
@@ -3523,9 +4376,8 @@ export class BackendService {
       // plateforme agréée). Le fix v1 clôt l'incohérence approuvée↔refusée via l'Expense sans sur-ingénierie.
       if (parsed.ok) {
         const companyId = this.companyId();
-        const booked = await this.p.runWithTenant(
-          companyId,
-          () => this.p.expenses.listByCompany(companyId),
+        const booked = await this.p.runWithTenant(companyId, () =>
+          this.p.expenses.listByCompany(companyId),
         );
         if (booked.some((e) => expenseDuplicateKey(e.toProps()) === invoiceKey)) {
           return {
@@ -3551,24 +4403,39 @@ export class BackendService {
       });
       if (!refused.ok) return { ok: false as const, error: appDomain(refused.error) };
       const refusal = inbound.value.refusal;
-      if (!refusal) return { ok: false as const, error: { kind: 'dependency', port: 'einvoice-inbound', cause: 'refus sans trace' } };
+      if (!refusal)
+        return {
+          ok: false as const,
+          error: { kind: 'dependency', port: 'einvoice-inbound', cause: 'refus sans trace' },
+        };
       this.logger.audit('facturx.import_refused', {
         companyId: this.companyId(),
         invoiceKey,
         afnorStatus: refusal.afnorStatus,
       });
-      return ok({ status: 'refused', afnorStatus: refusal.afnorStatus, reason: refusal.reason, invoiceKey });
+      return ok({
+        status: 'refused',
+        afnorStatus: refusal.afnorStatus,
+        reason: refusal.reason,
+        invoiceKey,
+      });
     }
     if (input.decision.action !== 'approve') {
       return {
         ok: false as const,
-        error: { kind: 'validation', issues: [{ field: 'decision.action', message: 'Décision inconnue (approve ou refuse).' }] },
+        error: {
+          kind: 'validation',
+          issues: [{ field: 'decision.action', message: 'Décision inconnue (approve ou refuse).' }],
+        },
       };
     }
     if (input.decision.category !== undefined && !EXPENSE_CATEGORIES.has(input.decision.category)) {
       return {
         ok: false as const,
-        error: { kind: 'validation', issues: [{ field: 'decision.category', message: 'Catégorie inconnue.' }] },
+        error: {
+          kind: 'validation',
+          issues: [{ field: 'decision.category', message: 'Catégorie inconnue.' }],
+        },
       };
     }
     const review = await this.facturXReview(input.xml);
@@ -3581,7 +4448,10 @@ export class BackendService {
     // MÊME chemin que toute dépense (parité humain↔Bob) : RecordExpense + écritures E1 en
     // transaction tenant + apprentissage mémoire fournisseur — rien de spécifique à dupliquer.
     const recorded = await this.recordExpense(
-      facturXDraftToRecordExpenseInput(draft, input.decision.category !== undefined ? { category: input.decision.category } : {}),
+      facturXDraftToRecordExpenseInput(
+        draft,
+        input.decision.category !== undefined ? { category: input.decision.category } : {},
+      ),
     );
     if (!recorded.ok) return recorded;
     // Archivage PROBANT du XML de la facture APPROUVÉE, lié à l'Expense créée (kind facturx_xml).
@@ -3602,7 +4472,10 @@ export class BackendService {
     } else {
       // La dépense et ses écritures sont posées (transaction close) : on n'annule pas une
       // comptabilité valide pour un souci de coffre — trace explicite, ré-archivage manuel possible.
-      this.logger.warn(`Archivage XML Factur-X impossible: ${appErrorSummary(archived.error)}`, 'documents');
+      this.logger.warn(
+        `Archivage XML Factur-X impossible: ${appErrorSummary(archived.error)}`,
+        'documents',
+      );
     }
     this.logger.audit('facturx.import_approved', {
       companyId: this.companyId(),
@@ -3628,11 +4501,15 @@ export class BackendService {
    *   écriture d'app_metadata.company_id via l'API admin Supabase. Échec admin = erreur
    *   EXPLICITE loggée (le client réessaie ; la company déjà créée est réutilisée telle quelle).
    */
-  async registerCompany(input: Omit<CompanyProps, 'id'>): Promise<Result<{ companyId: string }, AppError>> {
+  async registerCompany(
+    input: Omit<CompanyProps, 'id'>,
+  ): Promise<Result<{ companyId: string }, AppError>> {
     const principal = getPrincipal();
     if (!principal) {
       // Bug d'ordonnancement : le guard pose TOUJOURS un principal sur cet endpoint (liste blanche).
-      throw new Error('registerCompany sans Principal — le guard doit authentifier avant ce point.');
+      throw new Error(
+        'registerCompany sans Principal — le guard doit authentifier avant ce point.',
+      );
     }
 
     if (principal.companyId !== null) {
@@ -3648,7 +4525,9 @@ export class BackendService {
     // frontière avant que l'id ne serve de GUC RLS.
     const companyId = `company-${principal.userId}`;
     if (principal.userId === '' || !/^[A-Za-z0-9-]{1,64}$/.test(companyId)) {
-      throw new Error(`provisioning tenant : userId inattendu (« ${principal.userId} ») — id de company non dérivable.`);
+      throw new Error(
+        `provisioning tenant : userId inattendu (« ${principal.userId} ») — id de company non dérivable.`,
+      );
     }
     const r = Company.of({ id: companyId, ...input });
     if (!r.ok) return { ok: false, error: appDomain(r.error) };
@@ -3683,7 +4562,11 @@ export class BackendService {
       );
       return { ok: false, error: { kind: 'dependency', port: 'supabase-admin', cause } };
     }
-    this.logger.audit('company.provisioned', { companyId, userId: principal.userId, name: input.name });
+    this.logger.audit('company.provisioned', {
+      companyId,
+      userId: principal.userId,
+      name: input.name,
+    });
     return ok({ companyId });
   }
 
@@ -3704,7 +4587,10 @@ export class BackendService {
    *     la reprise est un retry de CET appel Supabase seul (deleteUser sur un user déjà supprimé
    *     répond 404, traité comme un succès idempotent), jamais un nouveau tour du use case.
    */
-  async closeAccount(input: { confirmationText: string; reason?: string | null }): Promise<Result<{ closedAt: string }, AppError>> {
+  async closeAccount(input: {
+    confirmationText: string;
+    reason?: string | null;
+  }): Promise<Result<{ closedAt: string }, AppError>> {
     const principal = getPrincipal();
     if (!principal) {
       // Bug d'ordonnancement : le guard pose TOUJOURS un principal AVEC tenant sur cette route.
@@ -3751,7 +4637,9 @@ export class BackendService {
     return ok({ closedAt: closed.value.closedAt });
   }
 
-  async createCustomer(input: Omit<CustomerProps, 'id' | 'companyId'>): Promise<Result<{ id: string }, AppError>> {
+  async createCustomer(
+    input: Omit<CustomerProps, 'id' | 'companyId'>,
+  ): Promise<Result<{ id: string }, AppError>> {
     const id = this.ids.newId();
     const r = Customer.of({ id, companyId: this.companyId(), ...input });
     if (!r.ok) return { ok: false, error: appDomain(r.error) };
