@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { OcrPort, PaymentGatewayPort, PdfRendererPort } from '@bob/core';
+import { err, type AppError, type OcrPort, type PaymentGatewayPort, type PdfRendererPort, type Result } from '@bob/core';
 import { BackendService } from './backend.service';
 import { InMemoryPersistence } from './persistence/persistence.testing';
 import { requestContext, type AppLogger, type Principal } from './observability/logger';
@@ -33,6 +33,19 @@ function harness(gateway: PaymentGatewayPort = {} as PaymentGatewayPort) {
     { audit: vi.fn(), error: vi.fn(), warn: vi.fn(), log: vi.fn() } as unknown as AppLogger,
   );
   return { persistence, service };
+}
+
+function authoritativeBobLists(service: BackendService) {
+  return (
+    service as unknown as {
+      buildBobActions(): {
+        listPayableInvoices(): Promise<Result<unknown, AppError>>;
+        listSendableQuotes(): Promise<Result<unknown, AppError>>;
+        listIssuableInvoices(): Promise<Result<unknown, AppError>>;
+        getBusinessReview(): Promise<Result<unknown, AppError>>;
+      };
+    }
+  ).buildBobActions();
 }
 
 describe('frontières runtime live — aucune fixture silencieuse', () => {
@@ -101,6 +114,31 @@ describe('frontières runtime live — aucune fixture silencieuse', () => {
     const result = await asPrincipal(() => service.askBob({ message: 'Bonjour Bob' }));
 
     expect(result).toEqual({ ok: false, error: { kind: 'unavailable', service: 'bob-llm' } });
+  });
+
+  it('les listes d’action Bob propagent une dépendance clients en échec au lieu de fabriquer « Client »', async () => {
+    const { service } = harness();
+    const unavailable = err<AppError>({
+      kind: 'dependency',
+      port: 'customers',
+      cause: 'snapshot unavailable',
+    });
+    vi.spyOn(service, 'listCustomers').mockResolvedValue(unavailable);
+    const actions = authoritativeBobLists(service);
+
+    await expect(asPrincipal(() => actions.listPayableInvoices())).resolves.toEqual(unavailable);
+    await expect(asPrincipal(() => actions.listSendableQuotes())).resolves.toEqual(unavailable);
+    await expect(asPrincipal(() => actions.listIssuableInvoices())).resolves.toEqual(unavailable);
+  });
+
+  it('la revue Bob refuse une société absente au lieu de calculer avec un régime fiscal null', async () => {
+    const { service } = harness();
+    const actions = authoritativeBobLists(service);
+
+    await expect(asPrincipal(() => actions.getBusinessReview())).resolves.toEqual({
+      ok: false,
+      error: { kind: 'unavailable', service: 'company' },
+    });
   });
 
   it('les retours Stripe sont construits depuis l’origine live, sans URL demo', async () => {

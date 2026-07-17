@@ -28,6 +28,14 @@ class MemoryNotes implements ChantierNoteRepository {
   async listByChantier(companyId: string, chantierId: string): Promise<ChantierNote[]> {
     return this.rows.filter((n) => n.companyId === companyId && n.chantierId === chantierId);
   }
+  async countByCompany(companyId: string): Promise<Map<string, number>> {
+    const counts = new Map<string, number>();
+    for (const n of this.rows) {
+      if (n.companyId !== companyId) continue;
+      counts.set(n.chantierId, (counts.get(n.chantierId) ?? 0) + 1);
+    }
+    return counts;
+  }
   all(): ChantierNote[] {
     return this.rows;
   }

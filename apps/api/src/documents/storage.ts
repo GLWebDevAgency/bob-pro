@@ -180,10 +180,18 @@ export class SupabaseDocumentStorage implements DocumentStoragePort {
       if (SupabaseDocumentStorage.isNotFound(response.status, text)) return null;
       throw new Error(`Supabase storage stat failed: ${response.status} ${text}`);
     }
-    const info = (await response.json()) as { size?: number; content_type?: string };
+    const info = (await response.json()) as { size?: unknown; content_type?: unknown };
+    if (!Number.isSafeInteger(info.size) || (info.size as number) < 0) {
+      // La taille participe à la preuve d'intégrité du document. Une réponse Storage malformée
+      // ne doit jamais être présentée comme un vrai fichier vide (ancien repli `0`).
+      throw new Error('Supabase storage stat response missing valid size.');
+    }
     return {
-      sizeBytes: Number.isSafeInteger(info.size) ? (info.size as number) : 0,
-      contentType: info.content_type ?? 'application/octet-stream',
+      sizeBytes: info.size as number,
+      contentType:
+        typeof info.content_type === 'string' && info.content_type.trim() !== ''
+          ? info.content_type
+          : 'application/octet-stream',
     };
   }
 

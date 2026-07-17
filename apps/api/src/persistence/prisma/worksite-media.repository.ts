@@ -62,4 +62,15 @@ export class PrismaWorksiteMediaStorage implements WorksiteMediaStorage {
   async remove(companyId: string, id: string): Promise<void> {
     await this.prisma.client().chantierPhoto.deleteMany({ where: { id, companyId } });
   }
+
+  /** Agrégat bulk (1 requête groupBy) : compteur de rangée de la liste des chantiers — jamais
+   * un listByChantier() par chantier (N+1). */
+  async countByCompany(companyId: string): Promise<Map<string, number>> {
+    const rows = await this.prisma.client().chantierPhoto.groupBy({
+      by: ['chantierId'],
+      where: { companyId },
+      _count: { _all: true },
+    });
+    return new Map(rows.map((row) => [row.chantierId, row._count._all]));
+  }
 }

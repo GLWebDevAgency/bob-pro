@@ -60,7 +60,6 @@ import {
   type CustomerStanding,
   type EinvoiceChannel,
   type RelancePriority,
-  type WorksiteTerminology,
 } from '@bob/core';
 import type { InvoiceView, UpdateCustomerClientInput } from '@bob/api-client';
 import { shadowNative } from '@bob/tokens';
@@ -114,21 +113,10 @@ import {
   ShieldIcon,
 } from '../../src/components/icons';
 import { useBobAwareScrollInsets } from '../../src/components/use-bob-aware-scroll-insets';
+import { ChantierRowCountBadges } from '../../src/components/chantier-row-counts';
+import { DEFAULT_WORKSITE_TERM, worksiteParamsFor } from '../../src/lib/worksite-terminology';
 
 const SEARCH_DEBOUNCE_MS = 350;
-
-/** Repli neutre tant que le profil métier n'est pas chargé — vocabulaire BTP par défaut
- * (le plus courant), jamais un flash de texte anglais/vide. Remplacé dès profile.data prêt. */
-const DEFAULT_WORKSITE_TERM: WorksiteTerminology = {
-  singular: 'chantier',
-  plural: 'chantiers',
-  gender: 'm',
-  article: { indefinite: 'un', definite: 'le' },
-};
-
-function capitalize(word: string): string {
-  return word.length === 0 ? word : word[0]!.toUpperCase() + word.slice(1);
-}
 
 /** Badge type + pastel d'avatar (tokens sémantiques §7) — partyLine b2b/b2g uniquement. */
 const TONE_BY_TYPE: Record<CustomerListItem['type'], StatusBadgeVariant> = {
@@ -389,15 +377,7 @@ export default function ClientDetail() {
   // Terminologie adaptative par métier (tradeToWorksiteTerminology @bob/core) — un plombier
   // parle de « chantier », un freelance IT de « mission »… Repli neutre tant que non chargé.
   const worksiteTerm = profile.data ? tradeToWorksiteTerminology(profile.data.trade) : DEFAULT_WORKSITE_TERM;
-  const worksiteParams = {
-    term: worksiteTerm.singular,
-    termCap: capitalize(worksiteTerm.singular),
-    plural: worksiteTerm.plural,
-    pluralCap: capitalize(worksiteTerm.plural),
-    article: worksiteTerm.article.indefinite,
-    de: worksiteTerm.gender === 'f' ? 'de la' : 'du',
-    newAdj: worksiteTerm.gender === 'f' ? 'Nouvelle' : 'Nouveau',
-  };
+  const worksiteParams = worksiteParamsFor(worksiteTerm);
   const chantiersModuleActive = (profile.data?.modules ?? []).some(
     (m) => m.key === 'chantiers' && m.active,
   );
@@ -1356,6 +1336,10 @@ export default function ClientDetail() {
                               .filter(Boolean)
                               .join(' · ')}
                           </Text>
+                          <ChantierRowCountBadges
+                            counts={{ noteCount: chantier.noteCount, photoCount: chantier.photoCount }}
+                            personality={personality}
+                          />
                         </View>
                         <StatusBadge
                           label={t(

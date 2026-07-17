@@ -69,4 +69,8 @@ export interface ChantierRepository {
 export interface ChantierNoteRepository {
   save(n: ChantierNote): Promise<void>;
   listByChantier(companyId: string, chantierId: string): Promise<ChantierNote[]>;
+  /** Agrégat bulk (1 requête, groupBy) : nombre de notes par chantier pour TOUT le tenant —
+   * alimente la liste des chantiers (compteurs de rangée) sans repasser en N+1 par chantier.
+   * Ne contient que les chantiers ayant au moins une note (absent = 0). */
+  countByCompany(companyId: string): Promise<Map<string, number>>;
 }

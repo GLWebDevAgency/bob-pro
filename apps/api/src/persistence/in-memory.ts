@@ -29,6 +29,8 @@ import {
   type PaymentRepository,
   type PublicAccessGrant,
   type PublicAccessTokenRepository,
+  type PublicAccessResourceType,
+  type PublicAccessScope,
   type ExpenseRepository,
   type AccountingEntryRepository,
   type ChartOfAccountsRepository,
@@ -1029,9 +1031,9 @@ export class InMemoryPublicAccessTokenRepository implements PublicAccessTokenRep
 
   async create(input: {
     companyId: string;
-    resourceType: 'quote';
+    resourceType: PublicAccessResourceType;
     resourceId: string;
-    scope: 'quote_signature';
+    scope: PublicAccessScope;
     expiresAt: string;
   }): Promise<{ id: string; token: string }> {
     const id = randomUUID();
@@ -1066,9 +1068,9 @@ export class InMemoryPublicAccessTokenRepository implements PublicAccessTokenRep
 
   async revokeActiveFor(input: {
     companyId: string;
-    resourceType: 'quote';
+    resourceType: PublicAccessResourceType;
     resourceId: string;
-    scope: 'quote_signature';
+    scope: PublicAccessScope;
     at: string;
   }): Promise<void> {
     for (const [id, row] of this.rows) {
@@ -1211,6 +1213,18 @@ export class InMemoryChantierRepository implements ChantierRepository {
   }
 }
 
+/** Agrège companyId/chantierId → nombre de lignes — même contrat que le groupBy Prisma
+ * (PrismaChantierNoteRepository/PrismaWorksiteMediaStorage), pour que le double en mémoire des
+ * tests exerce EXACTEMENT le même comportement (tenant-scoped, sans les chantiers à 0). */
+function countByChantier(rows: Iterable<{ companyId: string; chantierId: string }>, companyId: string): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    if (row.companyId !== companyId) continue;
+    counts.set(row.chantierId, (counts.get(row.chantierId) ?? 0) + 1);
+  }
+  return counts;
+}
+
 export class InMemoryChantierNoteRepository implements ChantierNoteRepository {
   private rows: ChantierNote[] = [];
   async save(n: ChantierNote): Promise<void> {
@@ -1220,6 +1234,9 @@ export class InMemoryChantierNoteRepository implements ChantierNoteRepository {
     return this.rows
       .filter((n) => n.companyId === companyId && n.chantierId === chantierId)
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+  async countByCompany(companyId: string): Promise<Map<string, number>> {
+    return countByChantier(this.rows, companyId);
   }
 
   snapshot(): ChantierNote[] {
@@ -1248,6 +1265,9 @@ export class InMemoryWorksiteMediaStorage implements WorksiteMediaStorage {
   async remove(companyId: string, id: string): Promise<void> {
     const item = this.map.get(id);
     if (item && item.companyId === companyId) this.map.delete(id);
+  }
+  async countByCompany(companyId: string): Promise<Map<string, number>> {
+    return countByChantier(this.map.values(), companyId);
   }
 
   snapshot(): Map<string, WorksiteMediaItem> {

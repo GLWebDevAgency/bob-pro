@@ -6,14 +6,15 @@
  * Le PDF s'ouvre depuis le coffre (document lié) quand il existe — sinon pas de bouton.
  * L'aperçu comptable (fonctionnalité réelle antérieure) est conservé sous les mentions.
  */
-import { useMemo } from 'react';
-import { Alert, Linking, Text, View } from 'react-native';
+import { useMemo, useRef } from 'react';
+import { Alert, Linking, Share, Text, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { buildPieceView, type PieceLinkedRef } from '@bob/core';
+import { buildPieceView, normalizeVoiceText, type PieceLinkedRef } from '@bob/core';
 import { t } from '@bob/i18n';
 import { Card, ErrorRetry, SectionHeader, Skeleton, SkeletonCard, SkeletonHeader, font, useTheme } from '@bob/ui';
 import { Button } from '@bob/ui';
 import {
+  useCreateInvoiceViewLink,
   useCustomers,
   useGenerateInvoice,
   useInvoice,
@@ -37,6 +38,7 @@ import {
   type AgentCapability,
   type AgentContext,
   type AgentAccessLayout,
+  type AgentSurface,
 } from '../../src/agent';
 
 export default function FactureDetail() {
@@ -45,6 +47,7 @@ export default function FactureDetail() {
   const router = useRouter();
   const client = useBobClient();
   const invoice = useInvoice(id);
+  const viewLink = useCreateInvoiceViewLink();
   const invoices = useInvoices();
   const quotes = useQuotes();
   const customers = useCustomers();

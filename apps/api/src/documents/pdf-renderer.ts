@@ -1,5 +1,5 @@
 import { PDFDocument, StandardFonts, rgb, AFRelationship, PDFName, type PDFFont, type PDFPage } from 'pdf-lib';
-import { formatEUR, type PdfRendererPort, type InvoicePdfData } from '@bob/core';
+import { formatEUR, type PdfRendererPort, type InvoicePdfData, type QuotePdfData } from '@bob/core';
 
 export const PDF_RENDERER = Symbol('PDF_RENDERER');
 
@@ -161,6 +161,55 @@ export class PdfRenderer implements PdfRendererPort {
       });
       const metaStream = doc.context.stream(facturXXmp(), { Type: 'Metadata', Subtype: 'XML' });
       doc.catalog.set(PDFName.of('Metadata'), doc.context.register(metaStream));
+    }
+
+    return doc.save();
+  }
+
+  /** Devis — même famille visuelle que la facture (pdf-lib, une page A4) mais sans RIB/assurance/
+   *  Factur-X : ce n'est pas une pièce comptable probante. Accent fixe (navy) : un devis n'a pas
+   *  de `billingPresentation` (réglages propres aux factures). */
+  async renderQuote(data: QuotePdfData): Promise<Uint8Array> {
+    const doc = await PDFDocument.create();
+    const page: PDFPage = doc.addPage([595, 842]);
+    const font: PDFFont = await doc.embedFont(StandardFonts.Helvetica);
+    const bold: PDFFont = await doc.embedFont(StandardFonts.HelveticaBold);
+    const ink = rgb(0.05, 0.14, 0.25);
+    const slate = rgb(0.36, 0.42, 0.48);
+    const accent = rgb(0.05, 0.14, 0.25);
+    page.drawRectangle({ x: 0, y: 834, width: 595, height: 8, color: accent });
+    let y = 800;
+    const draw = (text: string, size = 10, f: PDFFont = font, color = ink): void => {
+      page.drawText(sanitize(text), { x: 40, y, size, font: f, color });
+      y -= size + 6;
+    };
+
+    draw(`Devis ${data.number}`, 22, bold, accent);
+    y -= 8;
+    draw(data.companyName, 12, bold);
+    draw(data.companyAddress);
+    if (data.companyRcsOrRm) draw(data.companyRcsOrRm);
+    y -= 12;
+    draw(`Client : ${data.customerName}`, 11, bold);
+    draw(data.customerAddress);
+    if (data.validUntil) draw(`Valable jusqu'au ${data.validUntil}`);
+    y -= 12;
+
+    draw('Designation', 10, bold);
+    for (const l of data.lines) {
+      draw(`${l.label}  -  ${l.qty} x ${money(l.unitPriceHT)} HT  (TVA ${l.vatRate} %)`);
+    }
+    y -= 10;
+    draw(`Total HT : ${money(data.totals.ht)}`, 11);
+    draw(`TVA : ${money(data.totals.vat)}`, 11);
+    draw(`Total TTC : ${money(data.totals.ttc)}`, 13, bold);
+    if (data.depositPct !== null) {
+      draw(`Acompte a la signature (${data.depositPct} %) : ${money(data.totals.netToPay)}`, 10, font, slate);
+    }
+    y -= 8;
+
+    if (data.signedBy) {
+      draw(`Signe par ${data.signedBy}`, 9, bold, accent);
     }
 
     return doc.save();

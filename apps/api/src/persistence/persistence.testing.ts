@@ -15,8 +15,9 @@ import { InMemoryExpenseCreationRequestStore } from './expense-creation-requests
 import { InMemoryQuoteCreationRequestStore } from './quote-creation-requests.testing';
 import { InMemoryQuoteDraftSlotRepository } from './quote-draft-slots.testing';
 import { InMemoryCompanyBillingSettingsRepository } from './billing-settings.testing';
+import { InMemoryDiagnosticAssessmentRepository } from './diagnostic-assessment.testing';
+import { InMemoryRealtimeAdmission } from '../voice/realtime/realtime-admission.testing';
 import {
-  InMemoryRealtimeAdmission,
   type RealtimeAdmissionPolicy,
   type RealtimeAdmissionPort,
 } from '../voice/realtime/realtime-admission';
@@ -72,6 +73,7 @@ export class InMemoryPersistence implements Persistence {
   private transactionTail: Promise<void> = Promise.resolve();
   readonly companies = new InMemoryCompanyRepository();
   readonly billingSettings = new InMemoryCompanyBillingSettingsRepository();
+  readonly diagnosticAssessments = new InMemoryDiagnosticAssessmentRepository();
   readonly customers = new InMemoryCustomerRepository();
   readonly quotes = new InMemoryQuoteRepository();
   readonly invoices = new InMemoryInvoiceRepository();
@@ -160,6 +162,7 @@ export class InMemoryPersistence implements Persistence {
     const quoteCreationRequestSnapshot = this.quoteCreationRequests.snapshot();
     const quoteDraftSlotSnapshot = this.quoteDraftSlots.snapshot();
     const billingSettingsSnapshot = this.billingSettings.snapshot();
+    const diagnosticAssessmentSnapshot = this.diagnosticAssessments.snapshot();
     try {
       return await this.transactionContext.run(Symbol('in-memory-transaction'), fn);
     } catch (error) {
@@ -181,6 +184,7 @@ export class InMemoryPersistence implements Persistence {
       this.quoteCreationRequests.restore(quoteCreationRequestSnapshot);
       this.quoteDraftSlots.restore(quoteDraftSlotSnapshot);
       this.billingSettings.restore(billingSettingsSnapshot);
+      this.diagnosticAssessments.restore(diagnosticAssessmentSnapshot);
       throw error;
     } finally {
       release();

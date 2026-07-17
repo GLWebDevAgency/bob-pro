@@ -34,6 +34,7 @@ function makeService() {
         `%PDF-1.7\narchive:${data.number}:${data.billingPresentation.accentColor}`,
       );
     }),
+    renderQuote: vi.fn(async (data) => new TextEncoder().encode(`%PDF-1.7\nquote:${data.number}`)),
   };
   const notificationDelivery = {
     enqueue: vi.fn(async (input: { notification: unknown }) => ({

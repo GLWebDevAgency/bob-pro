@@ -25,6 +25,7 @@ import { t, type Personality } from '@bob/i18n';
 import type { QuoteView, InvoiceView } from '@bob/api-client';
 import { type AgentAffordance } from './agent';
 import { useCustomers, useInvoices, useQuotes } from './data/hooks';
+import { isFreshSalesVoiceSnapshot } from './data/sales-voice-query-policy';
 
 function periodLabelToPhrase(label: PeriodLabel, personality: Personality): string {
   if (label === 'thisMonth') return t('ventes.period.thisMonth', { personality });
@@ -66,19 +67,13 @@ export function useSalesDocumentVoiceAffordance(personality: Personality): Agent
     quotes: quotes.data ?? ([] as QuoteView[]),
     invoices: invoices.data ?? ([] as InvoiceView[]),
     customers: customers.data ?? [],
-    ready:
-      quotes.data !== undefined &&
-      invoices.data !== undefined &&
-      customers.data !== undefined,
+    ready: isFreshSalesVoiceSnapshot(quotes, invoices, customers),
   });
   dataRef.current = {
     quotes: quotes.data ?? [],
     invoices: invoices.data ?? [],
     customers: customers.data ?? [],
-    ready:
-      quotes.data !== undefined &&
-      invoices.data !== undefined &&
-      customers.data !== undefined,
+    ready: isFreshSalesVoiceSnapshot(quotes, invoices, customers),
   };
   const routerRef = useRef(router);
   routerRef.current = router;

@@ -230,9 +230,9 @@ describe('SupabaseAuthGuard — prod (JWT Supabase, C24b provisioning)', () => {
     expect(jwtVerifyMock).not.toHaveBeenCalled();
   });
 
-  it('infra publique sans principal : /health et /public/sign/ seulement', async () => {
+  it('infra publique sans principal : /health, /public/sign/ et /public/view/ seulement', async () => {
     const guard = new SupabaseAuthGuard();
-    for (const url of ['/health', '/health/ready', '/public/sign/tok-1']) {
+    for (const url of ['/health', '/health/ready', '/public/sign/tok-1', '/public/view/tok-1', '/public/view/tok-1/pdf']) {
       const r = await activate(guard, { url, method: 'GET', headers: {} });
       expect(r.allowed).toBe(true);
       expect(r.principal).toBeUndefined();

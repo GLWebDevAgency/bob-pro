@@ -30,6 +30,8 @@ import { RealtimeVoiceModule } from './voice/realtime/realtime.module';
 import { FiscalModule } from './fiscal/fiscal.module';
 import { QuoteDraftController } from './quotes/quote-draft.controller';
 import { QuoteDraftService } from './quotes/quote-draft.service';
+import { DiagnosticAssessmentController } from './diagnostic/diagnostic-assessment.controller';
+import { DiagnosticAssessmentService } from './diagnostic/diagnostic-assessment.service';
 import {
   HealthController,
   CustomersController,
@@ -59,6 +61,7 @@ import {
   CatalogueController,
   ChantiersController,
   PublicSignatureController,
+  PublicDocumentViewController,
   NotificationsController,
   DevicesController,
   PublicPushRevocationsController,
@@ -103,11 +106,13 @@ import {
     CatalogueController,
     ChantiersController,
     PublicSignatureController,
+    PublicDocumentViewController,
     NotificationsController,
     DevicesController,
     PublicPushRevocationsController,
     QuoteDraftController,
     CabinetController,
+    DiagnosticAssessmentController,
   ],
   providers: [
     BackendService,
@@ -128,6 +133,7 @@ import {
     CabinetApiService,
     CabinetInvitationDeliveryScheduler,
     QuoteDraftService,
+    DiagnosticAssessmentService,
     { provide: APP_GUARD, useClass: ThrottlerGuard },
     { provide: APP_GUARD, useClass: SupabaseAuthGuard },
     { provide: APP_INTERCEPTOR, useClass: TenantPersistenceInterceptor },

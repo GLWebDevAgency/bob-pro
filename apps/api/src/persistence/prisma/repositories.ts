@@ -29,6 +29,8 @@ import {
   type PaymentRepository,
   type PublicAccessGrant,
   type PublicAccessTokenRepository,
+  type PublicAccessResourceType,
+  type PublicAccessScope,
   type ExpenseRepository,
   type AccountingEntryProps,
   type AccountingEntryRepository,
@@ -2181,9 +2183,9 @@ export class PrismaPublicAccessTokenRepository implements PublicAccessTokenRepos
 
   async create(input: {
     companyId: string;
-    resourceType: 'quote';
+    resourceType: PublicAccessResourceType;
     resourceId: string;
-    scope: 'quote_signature';
+    scope: PublicAccessScope;
     expiresAt: string;
   }): Promise<{ id: string; token: string }> {
     const token = newPublicToken();
@@ -2229,9 +2231,9 @@ export class PrismaPublicAccessTokenRepository implements PublicAccessTokenRepos
 
   async revokeActiveFor(input: {
     companyId: string;
-    resourceType: 'quote';
+    resourceType: PublicAccessResourceType;
     resourceId: string;
-    scope: 'quote_signature';
+    scope: PublicAccessScope;
     at: string;
   }): Promise<void> {
     await this.prisma.client().publicAccessToken.updateMany({

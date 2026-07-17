@@ -23,4 +23,8 @@ export interface WorksiteMediaStorage {
   listByChantier(companyId: string, chantierId: string): Promise<WorksiteMediaItem[]>;
   findById(companyId: string, id: string): Promise<WorksiteMediaItem | null>;
   remove(companyId: string, id: string): Promise<void>;
+  /** Agrégat bulk (1 requête, groupBy) : nombre de photos par chantier pour TOUT le tenant —
+   * alimente la liste des chantiers (compteurs de rangée) sans repasser en N+1 par chantier.
+   * Ne contient que les chantiers ayant au moins une photo (absent = 0). */
+  countByCompany(companyId: string): Promise<Map<string, number>>;
 }

@@ -120,6 +120,25 @@ describe('SupabaseDocumentStorage — 400 not_found = absence, pas une erreur', 
     }
   });
 
+  it.each([
+    ['absente', {}],
+    ['négative', { size: -1 }],
+    ['non entière', { size: 1.5 }],
+    ['textuelle', { size: '10' }],
+  ])('une taille %s échoue fermé au lieu de fabriquer un fichier à 0 octet', async (_label, body) => {
+    const storage = makeStorage(
+      (async () =>
+        new Response(JSON.stringify(body), {
+          status: 200,
+        })) as typeof fetch,
+    );
+    try {
+      await expect(storage.stat('co-1', KEY)).rejects.toThrow('missing valid size');
+    } finally {
+      (storage as unknown as { __restore: () => void }).__restore();
+    }
+  });
+
   it('une VRAIE erreur (500) continue de throw — jamais un null menteur', async () => {
     const storage = makeStorage(
       (async () => new Response('boom', { status: 500 })) as typeof fetch,

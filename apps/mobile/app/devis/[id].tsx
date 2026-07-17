@@ -5,7 +5,7 @@
  * Nav croisée réelle : première facture issue du devis (parentQuoteId).
  */
 import { useMemo, useRef, useState } from 'react';
-import { Alert, Linking, Text, View } from 'react-native';
+import { Alert, Linking, Share, Text, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { buildPieceView, frSpokenNumbersToDigits, normalizeVoiceText, type PieceLineView, type PieceLinkedRef } from '@bob/core';
 import { challengeFor } from '@bob/ai';
@@ -13,6 +13,7 @@ import { t } from '@bob/i18n';
 import { Card, ErrorRetry, SkeletonCard, SkeletonHeader, font, useTheme } from '@bob/ui';
 import {
   appErrorMessage,
+  useCreateQuoteViewLink,
   useCustomers,
   useInvoices,
   useQuote,
@@ -79,6 +80,7 @@ export default function DevisDetail() {
   const router = useRouter();
   const client = useBobClient();
   const quote = useQuote(id);
+  const viewLink = useCreateQuoteViewLink();
   const customers = useCustomers();
   const invoices = useInvoices();
   const documents = useDocuments();
@@ -231,6 +233,14 @@ export default function DevisDetail() {
   depositPctRef.current = quote.data?.depositPct ?? null;
   const personalityRef = useRef(personality);
   personalityRef.current = personality;
+  // R7 : « partage le lien du devis » — dit + ouvre le Share (pattern établi), SANS Sheet
+  // intermédiaire : contrairement au choix de signature (3 options dont un e-mail sortant réel),
+  // ce lien n'a AUCUN effet sortant tant que le Share natif n'est pas complété par l'utilisateur
+  // (même garantie que le tap sur l'icône « Partager le lien »).
+  const viewLinkRef = useRef(viewLink);
+  viewLinkRef.current = viewLink;
+  const quoteNumberRef = useRef<string | null>(quote.data?.number ?? null);
+  quoteNumberRef.current = quote.data?.number ?? null;
   const quoteVoiceSurface = useMemo<AgentSurface>(
     () => ({
       affordances: [
@@ -327,6 +337,30 @@ export default function DevisDetail() {
           },
         },
         {
+          // R7 : « partage le lien du devis » — tout statut sauf brouillon (parité avec l'icône
+          // « Partager le lien »). Contient « lien » mais PAS « signature » : les affordances
+          // signature ci-dessus sont testées AVANT celle-ci et consomment déjà ces phrases-là.
+          id: 'devis.shareViewLink',
+          match: (utterance) => {
+            if (statusRef.current === undefined || statusRef.current === 'draft') return null;
+            const n = normalizeVoiceText(utterance);
+            if (!/\b(partage|partager|envoie|envoyer)\b/.test(n) || !/\blien\b/.test(n) || /signature/.test(n))
+              return null;
+            return async () => {
+              const p = personalityRef.current;
+              try {
+                const result = await viewLinkRef.current.mutateAsync(id);
+                await Share.share({
+                  message: `Bonjour, voici le lien pour consulter le devis${quoteNumberRef.current ? ` ${quoteNumberRef.current}` : ''} : ${result.viewUrl}`,
+                });
+                return { say: t('devis.voice.shareLinkOpened', { personality: p }) };
+              } catch {
+                return { say: t('piece.shareLinkError', { personality: p }) };
+              }
+            };
+          },
+        },
+        {
           // R6/R7 : « modifie la deuxième ligne, mets 3 heures » — devis BROUILLON uniquement
           // (un devis signé est un contrat, l'UI n'affiche déjà rien d'éditable hors draft).
           // Plancher de sûreté : la voix OUVRE la Sheet préremplie — le tap sur Enregistrer
@@ -412,6 +446,21 @@ export default function DevisDetail() {
         else if (shared === 'error') Alert.alert('Oups', t('piece.shareError', { personality }));
       }
     : null;
+  // Lien public de VISUALISATION (canal universel, sans e-mail) — tout statut sauf brouillon
+  // (un devis brouillon n'a rien à montrer à un client). SANS AUCUN sortant tant que le Share
+  // natif n'est pas complété par l'utilisateur — même doctrine que « Envoyer le lien » (R4).
+  const shareViewLink = quote.data && quote.data.status !== 'draft'
+    ? async (): Promise<void> => {
+        try {
+          const result = await viewLink.mutateAsync(id);
+          await Share.share({
+            message: `Bonjour, voici le lien pour consulter le devis${quote.data?.number ? ` ${quote.data.number}` : ''} : ${result.viewUrl}`,
+          });
+        } catch {
+          Alert.alert('Oups', t('piece.shareLinkError', { personality }));
+        }
+      }
+    : null;
 
   if (quote.isLoading || customers.isLoading || invoices.isLoading || documents.isLoading) {
     return (
@@ -462,6 +511,7 @@ export default function DevisDetail() {
         onOpenInvoice={(ref: PieceLinkedRef) => router.push(`/facture/${ref.id}`)}
         onOpenPdf={openPdf ? () => void openPdf() : undefined}
         onSharePdf={sharePdf ? () => void sharePdf() : undefined}
+        onShareLink={shareViewLink ? () => void shareViewLink() : undefined}
         // R6 : swipe droite→gauche = Modifier/Supprimer — DRAFT uniquement (un devis signé est
         // un contrat, l'UI n'affiche rien d'éditable hors draft).
         editableLines={q.status === 'draft'}

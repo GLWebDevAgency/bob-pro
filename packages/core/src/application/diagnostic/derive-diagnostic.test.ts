@@ -39,6 +39,7 @@ function input(overrides: Partial<DeriveDiagnosticInput> = {}): DeriveDiagnostic
     profile: { trade: 'plombier' },
     answers: {},
     today: '2026-07-03',
+    companySize: 'tpe_pme',
     ...overrides,
   };
 }
@@ -92,6 +93,16 @@ describe('deriveDiagnostic — audit expert-comptable (C23 v2)', () => {
     expect(r.mix.b2b.volumeCents).toBe(500_000);
     expect(r.mix.b2b.channel).toBe('pa');
     expect(r.mix.b2g.channel).toBe('chorus_pro');
+  });
+
+  it('ne fabrique aucune échéance d’émission quand la taille réelle de société est inconnue', () => {
+    const unknownSizeInput = input({
+      facts: facts({ customerTypes: ['b2b'] }),
+      customers: [{ id: 'c1', type: 'b2b', siren: '732829320' }],
+    });
+    delete unknownSizeInput.companySize;
+    const r = deriveDiagnostic(unknownSizeInput);
+    expect(r.items.find((item) => item.kind === 'emission_einvoicing')?.deadline).toBeNull();
   });
 
   it('b2b avec SIREN manquants : count + route fiche client (1 manquant) ou carnet (plusieurs)', () => {

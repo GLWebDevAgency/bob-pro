@@ -20,6 +20,8 @@ import type {
   PaymentMethod,
   PlanTier,
   DiagnosticResult,
+  DiagnosticAssessmentView,
+  DiagnosticAssessmentWriteRequest,
   FiscalDeadline,
   OcrExtraction,
   ExpenseProps,
@@ -27,7 +29,7 @@ import type {
   TradeConfig,
   Trade,
   VatRegime,
-  ChantierProps,
+  ChantierListItem,
   ChantierNoteProps,
   WorksiteMediaItem,
   CreateChantierInput,
@@ -65,6 +67,7 @@ import type {
   RecordExpensePaymentClientOutput,
   SendQuoteOutput,
   CreateQuoteSignatureLinkOutput,
+  CreateDocumentViewLinkOutput,
   SendRelanceClientOutput,
   NotificationView,
   NotificationUnreadPreview,
@@ -1327,6 +1330,12 @@ export class HttpBobClient implements BobClient {
   getDiagnostic() {
     return this.req<DiagnosticResult>('GET', '/diagnostic');
   }
+  getDiagnosticAssessment() {
+    return this.req<DiagnosticAssessmentView>('GET', '/diagnostic/assessment');
+  }
+  saveDiagnosticAssessment(input: DiagnosticAssessmentWriteRequest) {
+    return this.req<DiagnosticAssessmentView>('PUT', '/diagnostic/assessment', input);
+  }
   /** C-EXP5b : échéancier fiscal du tenant, servi par le serveur (deriveFiscalCalendar). */
   getFiscalCalendar() {
     return this.req<FiscalDeadline[]>('GET', '/fiscal-calendar');
@@ -1950,7 +1959,7 @@ export class HttpBobClient implements BobClient {
     return this.req<{ id: string }>('POST', '/chantiers', input);
   }
   listChantiers() {
-    return this.req<ChantierProps[]>('GET', '/chantiers');
+    return this.req<ChantierListItem[]>('GET', '/chantiers');
   }
   listChantierNotes(chantierId: string) {
     return this.req<ChantierNoteProps[]>('GET', `/chantiers/${encodeURIComponent(chantierId)}/notes`);
@@ -2103,6 +2112,13 @@ export class HttpBobClient implements BobClient {
       `/quotes/${encodeURIComponent(quoteId)}/signature-link`,
     );
   }
+  /** Lien public de VISUALISATION — même doctrine SANS AUCUN sortant. */
+  createQuoteViewLink(quoteId: string) {
+    return this.req<CreateDocumentViewLinkOutput>(
+      'POST',
+      `/quotes/${encodeURIComponent(quoteId)}/view-link`,
+    );
+  }
   signQuote(input: { quoteId: string; signerName: string; proofDataUrl?: string }) {
     return this.req<{ status: string }>('POST', `/quotes/${input.quoteId}/sign`, {
       signerName: input.signerName,
@@ -2145,6 +2161,13 @@ export class HttpBobClient implements BobClient {
     return this.req<{ deleted: true }>(
       'DELETE',
       `/invoices/${encodeURIComponent(invoiceId)}/draft`,
+    );
+  }
+  /** Lien public de VISUALISATION — même doctrine SANS AUCUN sortant que createQuoteViewLink. */
+  createInvoiceViewLink(invoiceId: string) {
+    return this.req<CreateDocumentViewLinkOutput>(
+      'POST',
+      `/invoices/${encodeURIComponent(invoiceId)}/view-link`,
     );
   }
   /** C25 ② : envoi RÉEL — le serveur choisit le ton (plan @bob/core) et livre email + miroir push. */

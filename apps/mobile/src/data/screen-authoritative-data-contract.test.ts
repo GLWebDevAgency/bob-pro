@@ -89,6 +89,7 @@ describe('contrat données autoritatives des écrans métier', () => {
     expect(accounting).toContain("capabilities: canExposeAccounting ? ['screen.read', 'accounting.read'] : []");
     expect(closing).toContain('const agentDataReady =');
     expect(closing).toContain("capabilities: agentDataReady ? ['screen.read'] : []");
+    expect(closing).not.toMatch(/yy\s*\?\?\s*\d{4}|mm\s*\?\?\s*\d+/u);
   });
 
   it('le scan ne propose aucun classement à partir d’une fausse liste de dossiers vide', () => {
@@ -148,7 +149,14 @@ describe('contrat données autoritatives des écrans métier', () => {
     expect(onboarding).toContain('const sourcesFresh = sourcesReady && !sourcesStaleError');
     expect(onboarding).toContain('|| !sourcesFresh');
     expect(diagnostic).not.toMatch(/item\.count\s*\?\?\s*0/u);
-    expect(diagnostic).toContain('sourcesReady && !queryState.failed');
+    expect(diagnostic).toContain('const assessmentQ = useDiagnosticAssessment()');
+    expect(diagnostic).toContain('const saveAssessment = useSaveDiagnosticAssessment()');
+    expect(diagnostic).toContain('expectedRevision: assessmentQ.data.saved?.revision ?? 0');
+    expect(diagnostic).toContain('expectedSourceFingerprint: sourceFingerprintSnapshot');
+    expect(diagnostic).toContain('const result = persistedResult ? (');
+    expect(diagnostic).not.toContain('<Result derived={derived}');
+    expect(diagnostic).not.toContain('today: localToday()');
+    expect(diagnostic).toContain('!queryState.failed && (sourceSnapshot !== null || sourcesReady)');
   });
 
   it('Assistant attend un abonnement vérifié et ne prétend pas être en ligne avant un échange réel', () => {

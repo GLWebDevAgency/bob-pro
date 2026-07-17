@@ -3,8 +3,9 @@
  * horodatées (création manuelle ET vocale, « ajoute une note : … » préremplit le composeur,
  * seul le tap Ajouter écrit) + grille de photos (appareil photo/galerie, plein écran,
  * suppression ConfirmSheet). Le titre de la fiche est le nom donné par l'utilisateur — aucun
- * texte de cet écran ne prononce « chantier » en dur (terminologie adaptative déjà appliquée
- * en amont : onglet et création depuis la fiche client, cf. tradeToWorksiteTerminology).
+ * texte de cet écran ne prononce « chantier » en dur : terminologie adaptative appliquée en
+ * amont (onglet et création depuis la fiche client) ET ici même (permission appareil photo,
+ * seule copie de cet écran qui nommait encore le regroupement — cf. tradeToWorksiteTerminology).
  *
  * Octets des photos : DocumentStoragePort (même stockage que le coffre documents) derrière le
  * port applicatif WorksiteMediaStorage — la migration Cloudflare R2 (post-V1) ne touchera QUE
@@ -29,6 +30,7 @@ import {
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
+import { tradeToWorksiteTerminology } from '@bob/core';
 import { shadowNative } from '@bob/tokens';
 import { t } from '@bob/i18n';
 import {
@@ -48,6 +50,7 @@ import {
   useChantierNotes,
   useChantiers,
   useDeleteWorksitePhoto,
+  useProfile,
   useUploadWorksitePhoto,
   useWorksitePhotos,
   useWorksitePhotoUrl,
@@ -56,6 +59,7 @@ import { useConfirm } from '../../src/components/ConfirmSheet';
 import { usePublishAgentContext, type AgentContext, type AgentSurface } from '../../src/agent';
 import { CameraIcon, ChevronLeftIcon, CloseIcon, TrashIcon } from '../../src/components/icons';
 import { useBobAwareScrollInsets } from '../../src/components/use-bob-aware-scroll-insets';
+import { DEFAULT_WORKSITE_TERM, worksiteParamsFor } from '../../src/lib/worksite-terminology';
 
 const MONTHS_SHORT = [
   'janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin',
@@ -131,6 +135,12 @@ export default function ChantierDetail() {
 
   const chantiers = useChantiers();
   const chantier = (chantiers.data ?? []).find((c) => c.id === id) ?? null;
+  const profile = useProfile();
+
+  // Terminologie adaptative par métier (tradeToWorksiteTerminology @bob/core) — seule copie de
+  // cette fiche qui nomme encore le regroupement (permission appareil photo).
+  const worksiteTerm = profile.data ? tradeToWorksiteTerminology(profile.data.trade) : DEFAULT_WORKSITE_TERM;
+  const worksiteParams = worksiteParamsFor(worksiteTerm);
 
   const notes = useChantierNotes(id);
   const addNote = useAddChantierNote(id);
@@ -206,6 +216,7 @@ export default function ChantierDetail() {
       setPhotoError(
         t(source === 'camera' ? 'chantierFiche.photoPermissionCamera' : 'chantierFiche.photoPermissionLibrary', {
           personality,
+          params: worksiteParams,
         }),
       );
       return;

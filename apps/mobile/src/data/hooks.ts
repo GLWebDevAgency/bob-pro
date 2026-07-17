@@ -23,6 +23,7 @@ import type {
   VatRegime,
   CustomerPortfolio,
   CompanyBillingSettingsPatch,
+  DiagnosticAssessmentWriteRequest,
 } from '@bob/core';
 import type {
   CreateCustomerClientInput,
@@ -77,6 +78,7 @@ const keys = {
   notificationUnreadPreview: ['notifications', 'unread-preview'] as const,
   fiscalProfile: ['fiscal-profile'] as const,
   companyBillingSettings: companyBillingSettingsQueryKey,
+  diagnosticAssessment: ['diagnostic-assessment'] as const,
   salesDocumentSearch: (input: SearchSalesDocumentsClientInput) =>
     ['sales-document-search', input] as const,
   salesDocumentSuggest: (query: string) => ['sales-document-suggest', query] as const,
@@ -497,6 +499,38 @@ export function useDiagnostic() {
       const r = await client.getDiagnostic();
       if (!r.ok) throw r.error;
       return r.value;
+    },
+  });
+}
+
+/** Résultat terminé en BDD. `never_run` et `stale` restent des états explicites et sans score. */
+export function useDiagnosticAssessment() {
+  const client = useBobClient();
+  return useQuery({
+    queryKey: keys.diagnosticAssessment,
+    queryFn: async () => {
+      const result = await client.getDiagnosticAssessment();
+      if (!result.ok) throw result.error;
+      return result.value;
+    },
+  });
+}
+
+/** Sauvegarde finale : le serveur revalide les réponses et recalcule score/axes depuis PostgreSQL. */
+export function useSaveDiagnosticAssessment() {
+  const client = useBobClient();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: DiagnosticAssessmentWriteRequest) => {
+      const result = await client.saveDiagnosticAssessment(input);
+      if (!result.ok) throw result.error;
+      return result.value;
+    },
+    onSuccess: (assessment) => {
+      queryClient.setQueryData(keys.diagnosticAssessment, assessment);
+    },
+    onError: () => {
+      void queryClient.invalidateQueries({ queryKey: keys.diagnosticAssessment });
     },
   });
 }
@@ -1010,6 +1044,34 @@ export function useCreateQuoteSignatureLink() {
   return useMutation({
     mutationFn: async (quoteId: string) => {
       const r = await client.createQuoteSignatureLink(quoteId);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+  });
+}
+
+/**
+ * Lien public de VISUALISATION (devis) — canal d'envoi universel, sans e-mail requis. Même
+ * doctrine SANS AUCUN sortant que useCreateQuoteSignatureLink : cette commande ne fait que
+ * préparer/rotate le lien ; le partage (Share natif) reste côté appelant.
+ */
+export function useCreateQuoteViewLink() {
+  const client = useBobClient();
+  return useMutation({
+    mutationFn: async (quoteId: string) => {
+      const r = await client.createQuoteViewLink(quoteId);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+  });
+}
+
+/** Lien public de VISUALISATION (facture) — même doctrine que useCreateQuoteViewLink. */
+export function useCreateInvoiceViewLink() {
+  const client = useBobClient();
+  return useMutation({
+    mutationFn: async (invoiceId: string) => {
+      const r = await client.createInvoiceViewLink(invoiceId);
       if (!r.ok) throw r.error;
       return r.value;
     },

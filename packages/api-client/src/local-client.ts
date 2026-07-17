@@ -21,6 +21,7 @@ import {
   SendQuote,
   SignQuote,
   CreateQuoteSignatureLink,
+  CreateDocumentViewLink,
   sha256Hex,
   RefuseQuote,
   CreateCreditNote,
@@ -120,6 +121,8 @@ import {
   type CustomerListItem,
   type CreateQuoteOutput,
   type DiagnosticResult,
+  type DiagnosticAssessmentView,
+  type DiagnosticAssessmentWriteRequest,
   type FiscalDeadline,
   type OcrExtraction,
   type ExpenseProps,
@@ -128,7 +131,7 @@ import {
   type TradeConfig,
   type Trade,
   type VatRegime,
-  type ChantierProps,
+  type ChantierListItem,
   type ChantierNoteProps,
   type WorksiteMediaItem,
   type CreateChantierInput,
@@ -197,6 +200,7 @@ import type {
   SubscriptionView,
   SendQuoteOutput,
   CreateQuoteSignatureLinkOutput,
+  CreateDocumentViewLinkOutput,
   SendRelanceClientOutput,
   NotificationView,
   NotificationUnreadPreview,
@@ -2030,6 +2034,20 @@ export class LocalBobClient implements BobClient {
     );
   }
 
+  /**
+   * Le diagnostic persistant exige PostgreSQL, RLS et une empreinte serveur. L'adaptateur local
+   * de test échoue donc explicitement au lieu d'inventer un résultat ou une révision en mémoire.
+   */
+  async getDiagnosticAssessment(): Promise<Result<DiagnosticAssessmentView, AppError>> {
+    return err(appUnavailable('diagnostic-assessment-persistence'));
+  }
+
+  async saveDiagnosticAssessment(
+    _input: DiagnosticAssessmentWriteRequest,
+  ): Promise<Result<DiagnosticAssessmentView, AppError>> {
+    return err(appUnavailable('diagnostic-assessment-persistence'));
+  }
+
   async extractDocument(input: {
     contentBase64: string;
     mimeType: string;
@@ -2558,9 +2576,19 @@ export class LocalBobClient implements BobClient {
     }).execute({ companyId: this.companyId, ...input });
   }
 
-  async listChantiers(): Promise<Result<ChantierProps[], AppError>> {
-    const list = await this.chantiers.listByCompany(this.companyId);
-    return ok(list.map((c) => c.toProps()));
+  async listChantiers(): Promise<Result<ChantierListItem[], AppError>> {
+    const [list, noteCounts, photoCounts] = await Promise.all([
+      this.chantiers.listByCompany(this.companyId),
+      this.chantierNotes.countByCompany(this.companyId),
+      this.worksiteMedia.countByCompany(this.companyId),
+    ]);
+    return ok(
+      list.map((c) => ({
+        ...c.toProps(),
+        noteCount: noteCounts.get(c.id) ?? 0,
+        photoCount: photoCounts.get(c.id) ?? 0,
+      })),
+    );
   }
 
   async listChantierNotes(chantierId: string): Promise<Result<ChantierNoteProps[], AppError>> {
@@ -2798,6 +2826,45 @@ export class LocalBobClient implements BobClient {
       ok: true,
       value: {
         signatureUrl: `https://demo.bobpro.fr/sign/${encodeURIComponent(link.value.token)}`,
+        expiresAt: link.value.expiresAt,
+      },
+    };
+  }
+
+  /** Lien public de VISUALISATION — même doctrine SANS AUCUN sortant que createQuoteSignatureLink
+   * (adaptateur de démo : l'URL n'est résoluble par personne d'autre que ce device). */
+  async createQuoteViewLink(quoteId: string): Promise<Result<CreateDocumentViewLinkOutput, AppError>> {
+    await this.ready;
+    const link = await new CreateDocumentViewLink({
+      quotes: this.quotes,
+      invoices: this.invoices,
+      publicAccessTokens: this.publicAccessTokens,
+      clock: this.clock,
+    }).execute({ kind: 'quote', id: quoteId });
+    if (!link.ok) return link;
+    return {
+      ok: true,
+      value: {
+        viewUrl: `https://demo.bobpro.fr/view/${encodeURIComponent(link.value.token)}`,
+        expiresAt: link.value.expiresAt,
+      },
+    };
+  }
+
+  /** Lien public de VISUALISATION (facture) — même doctrine que createQuoteViewLink. */
+  async createInvoiceViewLink(invoiceId: string): Promise<Result<CreateDocumentViewLinkOutput, AppError>> {
+    await this.ready;
+    const link = await new CreateDocumentViewLink({
+      quotes: this.quotes,
+      invoices: this.invoices,
+      publicAccessTokens: this.publicAccessTokens,
+      clock: this.clock,
+    }).execute({ kind: 'invoice', id: invoiceId });
+    if (!link.ok) return link;
+    return {
+      ok: true,
+      value: {
+        viewUrl: `https://demo.bobpro.fr/view/${encodeURIComponent(link.value.token)}`,
         expiresAt: link.value.expiresAt,
       },
     };

@@ -854,3 +854,122 @@ describe('i18n — Réglages facturation, fusion proto (retours device fondateur
     expect(t('reglages.defaultsNote', { personality: 'direct' })).toBe('Validité : déjà active. Le reste arrive.');
   });
 });
+
+describe('i18n — chantiers.* paramétré par métier (tradeToWorksiteTerminology @bob/core)', () => {
+  // Reflète exactement worksiteParamsFor (apps/mobile/src/lib/worksite-terminology.ts) pour un
+  // nom masculin (BTP, « chantier ») et un nom féminin (freelance IT, « mission ») — zéro texte
+  // « chantier » figé ne doit survivre à l'interpolation pour un métier non-BTP.
+  const chantierParams = {
+    term: 'chantier',
+    termCap: 'Chantier',
+    plural: 'chantiers',
+    pluralCap: 'Chantiers',
+    article: 'un',
+    de: 'du',
+    newAdj: 'Nouveau',
+    demonstrative: 'ce',
+    articleDefCap: 'Le',
+    premierAdj: 'premier',
+    createdAdj: 'créé',
+    aucunAdj: 'Aucun',
+  };
+  const missionParams = {
+    term: 'mission',
+    termCap: 'Mission',
+    plural: 'missions',
+    pluralCap: 'Missions',
+    article: 'une',
+    de: 'de la',
+    newAdj: 'Nouvelle',
+    demonstrative: 'cette',
+    articleDefCap: 'La',
+    premierAdj: 'première',
+    createdAdj: 'créée',
+    aucunAdj: 'Aucune',
+  };
+
+  it('titre/action : {pluralCap}/{newAdj} {term} sur les 3 humeurs, BTP et non-BTP', () => {
+    expect(t('chantiers.title', { params: chantierParams })).toBe('Chantiers');
+    expect(t('chantiers.title', { personality: 'pro', params: missionParams })).toBe('Missions');
+    expect(t('chantiers.add', { params: chantierParams })).toBe('Nouveau chantier');
+    expect(t('chantiers.add', { personality: 'pro', params: chantierParams })).toBe('Créer un chantier');
+    expect(t('chantiers.add', { params: missionParams })).toBe('Nouvelle mission');
+    expect(t('chantiers.add', { personality: 'pro', params: missionParams })).toBe('Créer une mission');
+    expect(t('chantiers.add', { personality: 'direct', params: missionParams })).toBe('Nouvelle mission');
+  });
+
+  it('confirmation de création : accord du genre en tête de phrase (Le/La) ET du participe (créé/créée)', () => {
+    expect(t('chantiers.created', { personality: 'pro', params: { ...chantierParams, name: 'Villa Durand' } })).toBe(
+      'Le chantier Villa Durand a été créé.',
+    );
+    expect(t('chantiers.created', { personality: 'pro', params: { ...missionParams, name: 'Refonte du site' } })).toBe(
+      'La mission Refonte du site a été créée.',
+    );
+  });
+
+  it('erreur de création : démonstratif accordé (ce/cette) et contraction de/du/de la', () => {
+    expect(t('chantiers.createError', { params: chantierParams })).toBe(
+      'Je n’ai pas pu créer ce chantier. Rien n’a été perdu, réessaie.',
+    );
+    expect(t('chantiers.createError', { params: missionParams })).toBe(
+      'Je n’ai pas pu créer cette mission. Rien n’a été perdu, réessaie.',
+    );
+    expect(t('chantiers.createError', { personality: 'pro', params: chantierParams })).toBe(
+      'La création du chantier a échoué. Aucune donnée n’a été perdue.',
+    );
+    expect(t('chantiers.createError', { personality: 'pro', params: missionParams })).toBe(
+      'La création de la mission a échoué. Aucune donnée n’a été perdue.',
+    );
+  });
+
+  it('module non débloqué : {pluralCap} dans le titre ET le corps, jamais « Chantiers » figé pour une mission', () => {
+    expect(t('chantiers.moduleTitle', { params: missionParams })).toBe('Module Missions');
+    expect(t('chantiers.moduleBody', { personality: 'pro', params: missionParams })).toBe(
+      'Activez ce module pour regrouper devis, factures et situations par mission.',
+    );
+    expect(t('chantiers.profileError', { personality: 'pro', params: missionParams })).toBe(
+      'Impossible de vérifier l’activation du module Missions. Veuillez réessayer.',
+    );
+  });
+
+  it('états vides et libellés de liste : {plural}/{term} accordés', () => {
+    expect(t('chantiers.dataError', { personality: 'pro', params: missionParams })).toBe(
+      'Impossible de charger les missions. Veuillez réessayer.',
+    );
+    expect(t('chantiers.emptyTitle', { params: chantierParams })).toBe('Aucun chantier pour l’instant');
+    expect(t('chantiers.emptyTitle', { params: missionParams })).toBe('Aucune mission pour l’instant');
+    expect(t('chantiers.emptyTitle', { personality: 'direct', params: missionParams })).toBe('Aucune mission');
+    expect(t('chantiers.emptyBody', { personality: 'pro', params: chantierParams })).toBe(
+      'Créez un premier chantier afin d’y associer les devis, factures et documents concernés.',
+    );
+    expect(t('chantiers.emptyBody', { personality: 'pro', params: missionParams })).toBe(
+      'Créez une première mission afin d’y associer les devis, factures et documents concernés.',
+    );
+    expect(t('chantiers.emptyBody', { personality: 'direct', params: missionParams })).toBe(
+      'Crée une mission pour y rattacher tes pièces.',
+    );
+    expect(t('chantiers.listTitle', { params: missionParams })).toBe('Tes missions');
+    expect(t('chantiers.listTitle', { personality: 'pro', params: missionParams })).toBe('Vos missions');
+  });
+
+  it('formulaire de création : contraction « de » (Nom du chantier / Nom de la mission)', () => {
+    expect(t('chantiers.nameLabel', { params: chantierParams })).toBe('Nom du chantier');
+    expect(t('chantiers.nameLabel', { params: missionParams })).toBe('Nom de la mission');
+    expect(t('chantiers.addressPlaceholder', { personality: 'pro', params: chantierParams })).toBe(
+      'Adresse du chantier (facultatif)',
+    );
+    expect(t('chantiers.addressPlaceholder', { personality: 'pro', params: missionParams })).toBe(
+      'Adresse de la mission (facultatif)',
+    );
+    expect(t('chantiers.createSubmit', { params: missionParams })).toBe('Créer une mission');
+  });
+
+  it('permission appareil photo (chantierFiche.*) : seule clé qui nommait encore « chantier » en dur', () => {
+    expect(t('chantierFiche.photoPermissionCamera', { params: chantierParams })).toBe(
+      'Autorise l’appareil photo pour prendre une photo du chantier.',
+    );
+    expect(t('chantierFiche.photoPermissionCamera', { params: missionParams })).toBe(
+      'Autorise l’appareil photo pour prendre une photo de la mission.',
+    );
+  });
+});

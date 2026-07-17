@@ -40,7 +40,7 @@ function textToHtml(s: string): string {
   return `<html><body><p>${escapeHtml(s).replace(/\n/g, '<br>')}</p></body></html>`;
 }
 
-/** Notifier de démo : trace uniquement le résultat technique, jamais le contenu ou le destinataire. */
+/** Notifier Brevo : journalise uniquement le résultat technique, jamais le contenu ou le destinataire. */
 @Injectable()
 /** Adapter Brevo Transactional Email API. Ne connaît que le port NotificationPort. */
 export class BrevoEmailNotifier implements NotificationPort {

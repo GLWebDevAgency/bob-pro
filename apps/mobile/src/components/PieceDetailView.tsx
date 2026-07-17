@@ -32,6 +32,7 @@ import {
   CloseIcon,
   DepositIcon,
   FileIcon,
+  LinkIcon,
   LockIcon,
   ReturnArrowIcon,
   RotateIcon,
@@ -343,6 +344,10 @@ export interface PieceDetailViewProps {
   onOpenPdf?: (() => void) | undefined;
   /** Envoie le PDF au client (A4) — feuille de partage native sur le vrai fichier. */
   onSharePdf?: (() => void) | undefined;
+  /** Partage le LIEN de consultation (devis/facture, canal universel sans e-mail) — génère/rote
+   * le view-link puis ouvre le Share natif. Distinct de onSharePdf (fichier brut) : le lien
+   * fonctionne même sans PDF archivé, et le destinataire consulte + télécharge lui-même. */
+  onShareLink?: (() => void) | undefined;
   /** Sections réelles supplémentaires (aperçu comptable…) rendues sous les mentions. */
   extra?: ReactNode;
   /** R6 : lignes éditables au swipe — VRAI uniquement quand l'appelant sait que c'est un devis
@@ -360,6 +365,7 @@ export function PieceDetailView({
   actions,
   onOpenPdf,
   onSharePdf,
+  onShareLink,
   extra,
   nextStepAction,
   editableLines,
@@ -861,6 +867,28 @@ export function PieceDetailView({
               }}
             >
               <SendIcon color={colors.ink600} size={17} />
+            </Pressable>
+          ) : null}
+          {onShareLink ? (
+            /* Lien de consultation (canal universel, sans e-mail) — même gabarit icône seule
+               que le partage PDF, à côté de lui. */
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t('piece.actionShareLink', { personality })}
+              onPress={onShareLink}
+              style={{
+                alignItems: 'center',
+                justifyContent: 'center',
+                backgroundColor: colors.surface,
+                borderWidth: 1,
+                borderColor: controls.buttonSecondaryBorder,
+                borderRadius: 15,
+                paddingVertical: 15,
+                paddingHorizontal: 15,
+                minHeight: 44,
+              }}
+            >
+              <LinkIcon color={colors.ink600} size={17} />
             </Pressable>
           ) : null}
           <View style={{ flex: 1 }}>{actions}</View>

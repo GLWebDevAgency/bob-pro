@@ -213,6 +213,17 @@ export function SendIcon({ color, size = 18, strokeWidth = 2 }: IconProps) {
   );
 }
 
+/** Maillon de chaîne — « Partager le lien » (lucide link-2). */
+export function LinkIcon({ color, size = 17, strokeWidth = 2 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" stroke={color} strokeWidth={strokeWidth} {...common}>
+      <Path d="M15 7h3a5 5 0 0 1 5 5 5 5 0 0 1-5 5h-3" />
+      <Path d="M9 17H6a5 5 0 0 1-5-5 5 5 0 0 1 5-5h3" />
+      <Path d="M8 12h8" />
+    </Svg>
+  );
+}
+
 /** Combiné — tuile « Appeler » (lucide phone). */
 export function PhoneIcon({ color, size = 18, strokeWidth = 2 }: IconProps) {
   return (

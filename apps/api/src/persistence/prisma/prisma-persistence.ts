@@ -37,6 +37,7 @@ import { PrismaWorksiteMediaStorage } from './worksite-media.repository';
 import { PrismaBankBalanceSnapshotRepository } from './bank-balance-snapshots.repository';
 import { PrismaQuoteDraftSlotRepository } from './quote-draft-slots.repository';
 import { PrismaCompanyBillingSettingsRepository } from './company-billing-settings.repository';
+import { PrismaDiagnosticAssessmentRepository } from './diagnostic-assessment.repository';
 import type {
   RealtimeAdmissionPolicy,
   RealtimeAdmissionPort,
@@ -62,6 +63,7 @@ import type { RealtimeControlRepositoryPort } from '../../voice/realtime/realtim
 export class PrismaPersistence implements Persistence {
   readonly companies: PrismaCompanyRepository;
   readonly billingSettings: PrismaCompanyBillingSettingsRepository;
+  readonly diagnosticAssessments: PrismaDiagnosticAssessmentRepository;
   readonly customers: PrismaCustomerRepository;
   readonly quotes: PrismaQuoteRepository;
   readonly invoices: PrismaInvoiceRepository;
@@ -127,6 +129,7 @@ export class PrismaPersistence implements Persistence {
   constructor(private readonly prisma: PrismaService) {
     this.companies = new PrismaCompanyRepository(prisma);
     this.billingSettings = new PrismaCompanyBillingSettingsRepository(prisma);
+    this.diagnosticAssessments = new PrismaDiagnosticAssessmentRepository(prisma);
     this.customers = new PrismaCustomerRepository(prisma);
     this.quotes = new PrismaQuoteRepository(prisma);
     this.invoices = new PrismaInvoiceRepository(prisma);

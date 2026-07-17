@@ -884,42 +884,47 @@ const legacyFr = {
   },
 
   // ── Chantiers — états honnêtes, création assistée et suivi terrain ───────────
+  // Paramétré par métier (tradeToWorksiteTerminology @bob/core) : {term}/{plural}/{pluralCap}
+  // = « chantier(s) » (BTP), « mission(s) » (IT/conseil), « projet(s) » (défaut)… jamais
+  // « chantier » figé pour tous. {article}/{de}/{newAdj}/{demonstrative}/{articleDefCap}/
+  // {premierAdj}/{createdAdj}/{aucunAdj} portent l'accord (genre, élision, début de phrase,
+  // participe passé) — cf. worksiteParamsFor (apps/mobile/src/lib/worksite-terminology.ts).
   'chantiers.back': { pote: 'Retour', pro: 'Retour', direct: 'Retour' },
   'chantiers.eyebrow': { pote: 'SUIVI TERRAIN', pro: 'SUIVI TERRAIN', direct: 'TERRAIN' },
-  'chantiers.title': { pote: 'Chantiers', pro: 'Chantiers', direct: 'Chantiers' },
+  'chantiers.title': { pote: '{pluralCap}', pro: '{pluralCap}', direct: '{pluralCap}' },
   'chantiers.subtitle': {
     pote: 'Tes interventions, leurs pièces et leur avancement au même endroit.',
     pro: 'Suivi des interventions, des pièces associées et de leur avancement.',
     direct: 'Interventions, pièces, avancement.',
   },
   'chantiers.add': {
-    pote: 'Nouveau chantier',
-    pro: 'Créer un chantier',
-    direct: 'Nouveau chantier',
+    pote: '{newAdj} {term}',
+    pro: 'Créer {article} {term}',
+    direct: '{newAdj} {term}',
   },
   'chantiers.created': {
     pote: '{name} est prêt — tu peux y rattacher tes prochaines pièces.',
-    pro: 'Le chantier {name} a été créé.',
+    pro: '{articleDefCap} {term} {name} a été {createdAdj}.',
     direct: '{name} créé.',
   },
   'chantiers.createError': {
-    pote: 'Je n’ai pas pu créer ce chantier. Rien n’a été perdu, réessaie.',
-    pro: 'La création du chantier a échoué. Aucune donnée n’a été perdue.',
+    pote: 'Je n’ai pas pu créer {demonstrative} {term}. Rien n’a été perdu, réessaie.',
+    pro: 'La création {de} {term} a échoué. Aucune donnée n’a été perdue.',
     direct: 'Création impossible. Réessaie.',
   },
   'chantiers.profileError': {
-    pote: 'Je n’arrive pas à vérifier si le module Chantiers est actif. Réessaie.',
-    pro: 'Impossible de vérifier l’activation du module Chantiers. Veuillez réessayer.',
+    pote: 'Je n’arrive pas à vérifier si le module {pluralCap} est actif. Réessaie.',
+    pro: 'Impossible de vérifier l’activation du module {pluralCap}. Veuillez réessayer.',
     direct: 'Activation non vérifiée. Réessaie.',
   },
   'chantiers.moduleTitle': {
-    pote: 'Module Chantiers',
-    pro: 'Module Chantiers',
-    direct: 'Module Chantiers',
+    pote: 'Module {pluralCap}',
+    pro: 'Module {pluralCap}',
+    direct: 'Module {pluralCap}',
   },
   'chantiers.moduleBody': {
     pote: 'Active-le pour regrouper devis, factures et situations par intervention.',
-    pro: 'Activez ce module pour regrouper devis, factures et situations par chantier.',
+    pro: 'Activez ce module pour regrouper devis, factures et situations par {term}.',
     direct: 'Regroupe devis, factures et situations.',
   },
   'chantiers.seePlans': {
@@ -928,21 +933,21 @@ const legacyFr = {
     direct: 'Voir les offres',
   },
   'chantiers.dataError': {
-    pote: 'Je n’arrive pas à charger tes chantiers. Réessaie, je garde le contexte.',
-    pro: 'Impossible de charger les chantiers. Veuillez réessayer.',
+    pote: 'Je n’arrive pas à charger tes {plural}. Réessaie, je garde le contexte.',
+    pro: 'Impossible de charger les {plural}. Veuillez réessayer.',
     direct: 'Chargement impossible. Réessaie.',
   },
   'chantiers.emptyTitle': {
-    pote: 'Aucun chantier pour l’instant',
-    pro: 'Aucun chantier pour le moment',
-    direct: 'Aucun chantier',
+    pote: '{aucunAdj} {term} pour l’instant',
+    pro: '{aucunAdj} {term} pour le moment',
+    direct: '{aucunAdj} {term}',
   },
   'chantiers.emptyBody': {
     pote: 'Crée le premier : Bob pourra ensuite y ranger les devis, factures et documents liés.',
-    pro: 'Créez un premier chantier afin d’y associer les devis, factures et documents concernés.',
-    direct: 'Crée un chantier pour y rattacher tes pièces.',
+    pro: 'Créez {article} {premierAdj} {term} afin d’y associer les devis, factures et documents concernés.',
+    direct: 'Crée {article} {term} pour y rattacher tes pièces.',
   },
-  'chantiers.listTitle': { pote: 'Tes chantiers', pro: 'Vos chantiers', direct: 'Chantiers' },
+  'chantiers.listTitle': { pote: 'Tes {plural}', pro: 'Vos {plural}', direct: '{pluralCap}' },
   'chantiers.openedOn': {
     pote: 'Ouvert le {date}',
     pro: 'Ouvert le {date}',
@@ -951,16 +956,16 @@ const legacyFr = {
   'chantiers.open': { pote: 'En cours', pro: 'En cours', direct: 'En cours' },
   'chantiers.closed': { pote: 'Terminé', pro: 'Terminé', direct: 'Terminé' },
   'chantiers.createTitle': {
-    pote: 'Nouveau chantier',
-    pro: 'Créer un chantier',
-    direct: 'Nouveau chantier',
+    pote: '{newAdj} {term}',
+    pro: 'Créer {article} {term}',
+    direct: '{newAdj} {term}',
   },
   'chantiers.createHint': {
     pote: 'Donne-lui un nom clair. L’adresse est optionnelle et je peux t’aider à la retrouver.',
     pro: 'Renseignez un nom explicite. L’adresse est facultative et peut être recherchée automatiquement.',
     direct: 'Nom requis. Adresse facultative.',
   },
-  'chantiers.nameLabel': { pote: 'Nom du chantier', pro: 'Nom du chantier', direct: 'Nom' },
+  'chantiers.nameLabel': { pote: 'Nom {de} {term}', pro: 'Nom {de} {term}', direct: 'Nom' },
   'chantiers.namePlaceholder': {
     pote: 'Villa Durand, rénovation cuisine…',
     pro: 'Ex. Villa Durand',
@@ -969,7 +974,7 @@ const legacyFr = {
   'chantiers.addressLabel': { pote: 'Adresse', pro: 'Adresse', direct: 'Adresse' },
   'chantiers.addressPlaceholder': {
     pote: 'Commence à taper une adresse',
-    pro: 'Adresse du chantier (facultatif)',
+    pro: 'Adresse {de} {term} (facultatif)',
     direct: 'Adresse facultative',
   },
   'chantiers.addressError': {
@@ -984,8 +989,8 @@ const legacyFr = {
   },
   'chantiers.retry': { pote: 'Réessayer', pro: 'Réessayer', direct: 'Réessayer' },
   'chantiers.createSubmit': {
-    pote: 'Créer le chantier',
-    pro: 'Créer le chantier',
+    pote: 'Créer {article} {term}',
+    pro: 'Créer {article} {term}',
     direct: 'Créer',
   },
 
@@ -1043,8 +1048,10 @@ const legacyFr = {
   'chantierFiche.photoSourceCamera': { pote: 'Appareil photo', pro: 'Appareil photo', direct: 'Appareil photo' },
   'chantierFiche.photoSourceLibrary': { pote: 'Galerie', pro: 'Galerie', direct: 'Galerie' },
   'chantierFiche.photoSourceCancel': { pote: 'Annuler', pro: 'Annuler', direct: 'Annuler' },
+  // Paramétré par métier (tradeToWorksiteTerminology) : {term} = « chantier »/« mission »/… —
+  // seule clé chantierFiche.* qui nommait encore le regroupement en dur.
   'chantierFiche.photoPermissionCamera': {
-    pote: 'Autorise l’appareil photo pour prendre une photo du chantier.',
+    pote: 'Autorise l’appareil photo pour prendre une photo {de} {term}.',
     pro: 'Autorisez l’appareil photo pour ajouter une photo.',
     direct: 'Accès appareil photo requis.',
   },
@@ -2708,6 +2715,12 @@ const legacyFr = {
     pro: 'Le choix est ouvert — touchez « Envoyer le lien » pour l’envoyer à votre client.',
     direct: 'Choix ouvert. Touche « Envoyer le lien ».',
   },
+  // R7 : lien de consultation partagé — dit + Share natif déjà ouvert (pas de Sheet à toucher).
+  'devis.voice.shareLinkOpened': {
+    pote: 'C’est parti, je t’ouvre le partage du lien.',
+    pro: 'Le partage du lien est ouvert.',
+    direct: 'Partage ouvert.',
+  },
   // ASK-1 — questions structurées (modale de choix quand la demande est ambiguë)
   'assistant.askAnswer': { pote: 'Répondre', pro: 'Répondre', direct: 'Répondre' },
   'assistant.askConfirm': { pote: 'Valider', pro: 'Valider', direct: 'Valider' },
@@ -3777,6 +3790,22 @@ const legacyFr = {
   'piece.shareError': {
     pote: 'Je n’ai pas réussi à préparer le fichier. On réessaie ?',
     pro: 'Le fichier n’a pas pu être préparé. Veuillez réessayer.',
+    direct: 'Échec de préparation. Réessaie.',
+  },
+  // Lien public de consultation (canal universel, sans e-mail requis) — devis/facture
+  'piece.actionShareLink': {
+    pote: 'Partager le lien',
+    pro: 'Partager le lien',
+    direct: 'Lien',
+  },
+  'piece.shareLinkUnavailable': {
+    pote: 'Le partage n’est pas dispo sur cet appareil — réessaie depuis un autre.',
+    pro: 'Le partage n’est pas disponible sur cet appareil.',
+    direct: 'Partage indispo.',
+  },
+  'piece.shareLinkError': {
+    pote: 'Je n’ai pas réussi à préparer le lien. On réessaie ?',
+    pro: 'Le lien n’a pas pu être préparé. Veuillez réessayer.',
     direct: 'Échec de préparation. Réessaie.',
   },
   'piece.actionEncaisser': { pote: 'Encaisser', pro: 'Encaisser', direct: 'Encaisser' },

@@ -93,7 +93,16 @@ export class SupabaseAuthGuard implements CanActivate {
     // Infra + endpoints publics EXPLICITES (signature client à distance). Préfixe étroit volontaire :
     // tout nouvel endpoint public doit être ajouté ici sciemment (pas d'ouverture /public/* large).
     const path = req.url.split('?', 1)[0] ?? req.url;
-    if (path === '/health' || path.startsWith('/health/') || path.startsWith('/public/sign/')) return true;
+    if (
+      path === '/health' ||
+      path.startsWith('/health/') ||
+      path.startsWith('/public/sign/') ||
+      // Lien public de VISUALISATION (devis/facture, sans signature) — même doctrine : préfixe
+      // étroit et explicite, jamais /public/* large. Résolution/autorisation réelles portées par
+      // le jeton opaque (PublicAccessToken scope document_view), pas par ce guard.
+      path.startsWith('/public/view/')
+    )
+      return true;
     if (path === '/metrics') return hasValidMetricsCredential(req.headers);
     // Inscription AVANT compte (C24b) : lookup annuaire public, AVANT toute lecture d'Authorization.
     if (isPublicSignupEndpoint(req.method ?? 'GET', req.url)) return true;

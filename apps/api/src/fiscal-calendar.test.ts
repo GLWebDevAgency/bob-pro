@@ -97,6 +97,42 @@ describe('C-EXP5b — GET /fiscal-calendar : échéancier fiscal servi depuis la
     expect(r.error).toEqual({ kind: 'not_found', entity: 'company', id: 'co-fantome' });
   });
 
+  it('consomme la clôture confirmée en BDD au lieu de conserver l’hypothèse 31/12', async () => {
+    const { service, p } = makeService();
+    await p.seed();
+    const principal = { userId: 'u-1', companyId: MERCIER_PROPS.id } as const;
+    const updated = await asPrincipal(principal, () =>
+      service.updateFiscalProfileField('fiscalYearEnd', { month: 6, day: 30 }));
+    expect(updated).toMatchObject({
+      ok: true,
+      value: {
+        fiscalYearEnd: {
+          status: 'confirme_utilisateur',
+          value: { month: 6, day: 30 },
+        },
+      },
+    });
+
+    const before = todayUtc();
+    const result = await asPrincipal(principal, () => service.getFiscalCalendar());
+    const after = todayUtc();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const candidates = [before, after].map((asOf) =>
+      deriveFiscalCalendar({
+        company: {
+          legalForm: MERCIER_PROPS.legalForm,
+          vatRegime: MERCIER_PROPS.vatRegime,
+          dateCreation: null,
+        },
+        asOf,
+        horizonDays: 90,
+        fiscalYearEnd: '06-30',
+        urssafPeriodicity: null,
+      }));
+    expect(candidates).toContainEqual(result.value);
+  });
+
   it('sans tenant : échec explicite côté service (le guard a répondu 403 en amont, zéro repli démo)', async () => {
     const { service } = makeService();
     // Méthode async : le requireTenant() synchrone devient un rejet de promesse — jamais un repli.

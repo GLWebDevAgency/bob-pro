@@ -979,10 +979,30 @@ describe('assistant Bob local (C40 ⑧ — ask/confirm/journal on-device) + cré
     expect(viewUrl.ok).toBe(true);
     if (viewUrl.ok) expect(viewUrl.value.url).toMatch(/^data:image\/jpeg;base64,/);
 
+    // Compteurs de rangée (liste des chantiers) : 1 note + 1 photo à ce stade.
+    const listWithCounts = await client.listChantiers();
+    expect(listWithCounts.ok).toBe(true);
+    if (listWithCounts.ok) {
+      expect(listWithCounts.value.find((c) => c.id === chantier.value.id)).toMatchObject({
+        noteCount: 1,
+        photoCount: 1,
+      });
+    }
+
     const deleted = await client.deleteWorksitePhoto(photo.value.id);
     expect(deleted.ok).toBe(true);
     const photosAfter = await client.listWorksitePhotos(chantier.value.id);
     expect(photosAfter.ok && photosAfter.value).toEqual([]);
+
+    // La photo supprimée sort du compteur ; la note reste (append-only, jamais supprimée).
+    const listAfterDelete = await client.listChantiers();
+    expect(listAfterDelete.ok).toBe(true);
+    if (listAfterDelete.ok) {
+      expect(listAfterDelete.value.find((c) => c.id === chantier.value.id)).toMatchObject({
+        noteCount: 1,
+        photoCount: 0,
+      });
+    }
   });
 
   it('refuse une note ou une photo sur un chantier introuvable', async () => {

@@ -96,7 +96,7 @@ export interface DeriveDiagnosticInput {
   profile: DiagProfileData;
   answers: DiagnosticAnswers;
   today: DateOnly;
-  /** Émission obligatoire dès 2026 pour les ETI/GE, 2027 pour les TPE/PME (défaut = cible produit). */
+  /** Émission obligatoire dès 2026 pour les ETI/GE, 2027 pour les TPE/PME. Absence = inconnue. */
   companySize?: 'tpe_pme' | 'eti_ge';
 }
 
@@ -314,8 +314,11 @@ export function deriveDiagnostic(input: DeriveDiagnosticInput): DeriveDiagnostic
   // Échéances RÉELLES — lues dans les faits (calendrier unique du domaine compliance) :
   // réception 2026-09-01 (tous assujettis) · émission 2027-09-01 (TPE/PME), 2026-09-01 si ETI/GE.
   const receptionDeadline = factDueDate(facts, 'einvoice-reception');
-  const emissionDeadline =
-    (input.companySize ?? 'tpe_pme') === 'eti_ge' ? receptionDeadline : factDueDate(facts, 'einvoice-emission');
+  const emissionDeadline = input.companySize === 'eti_ge'
+    ? receptionDeadline
+    : input.companySize === 'tpe_pme'
+      ? factDueDate(facts, 'einvoice-emission')
+      : null;
 
   const franchise = factStatus(facts, 'tva-franchise') !== null;
   const decennaleStatus = factStatus(facts, 'decennale');

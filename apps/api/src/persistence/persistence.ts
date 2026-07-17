@@ -7,6 +7,7 @@ import type {
   ChartOfAccountsRepository,
   CompanyRepository,
   CompanyBillingSettingsRepository,
+  DiagnosticAssessmentRepository,
   CustomerRepository,
   DocumentFolderRepository,
   DocumentRepository,
@@ -63,6 +64,7 @@ export interface ServerPaymentRepository extends PaymentRepository {
 export interface Persistence {
   companies: CompanyRepository;
   billingSettings: CompanyBillingSettingsRepository;
+  diagnosticAssessments: DiagnosticAssessmentRepository;
   customers: CustomerRepository;
   quotes: QuoteRepository;
   invoices: InvoiceRepository;

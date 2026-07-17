@@ -21,6 +21,8 @@ import type {
   InvoiceKind,
   PlanTier,
   DiagnosticResult,
+  DiagnosticAssessmentView,
+  DiagnosticAssessmentWriteRequest,
   FiscalDeadline,
   OcrExtraction,
   ExpenseProps,
@@ -32,7 +34,7 @@ import type {
   TradeConfig,
   Trade,
   VatRegime,
-  ChantierProps,
+  ChantierListItem,
   ChantierNoteProps,
   WorksiteMediaItem,
   CreateChantierInput,
@@ -151,6 +153,18 @@ export interface SendQuoteOutput {
 export interface CreateQuoteSignatureLinkOutput {
   /** URL publique sign-web prête à partager — construite CÔTÉ SERVEUR (source unique). */
   signatureUrl: string;
+  expiresAt: string;
+}
+
+/**
+ * Lien public de VISUALISATION (devis OU facture, sans signature) — canal d'envoi universel :
+ * la pièce se partage par SMS/WhatsApp, le client la consulte et télécharge le PDF depuis son
+ * téléphone, sans jamais exiger son e-mail. Même doctrine SANS AUCUN sortant que
+ * CreateQuoteSignatureLinkOutput (POST :id/view-link ne fait que préparer/rotate le lien).
+ */
+export interface CreateDocumentViewLinkOutput {
+  /** URL publique sign-web (route /view/:token) prête à partager — construite CÔTÉ SERVEUR. */
+  viewUrl: string;
   expiresAt: string;
 }
 
@@ -693,6 +707,12 @@ export interface BobClient {
   }): Promise<Result<{ closedAt: string }, AppError>>;
   invoicePaymentLink(invoiceId: string): Promise<Result<{ url: string }, AppError>>;
   getDiagnostic(): Promise<Result<DiagnosticResult, AppError>>;
+  /** Résultat terminé persistant. `never_run`/`stale` ne contiennent jamais un faux score. */
+  getDiagnosticAssessment(): Promise<Result<DiagnosticAssessmentView, AppError>>;
+  /** Le client n'envoie aucun score : seulement réponses + preuves de concurrence. */
+  saveDiagnosticAssessment(
+    input: DiagnosticAssessmentWriteRequest,
+  ): Promise<Result<DiagnosticAssessmentView, AppError>>;
   /** GET /fiscal-calendar (C-EXP5b) : échéances fiscales à venir (fenêtre 90 j) dérivées de la
    * fiche société par deriveFiscalCalendar (@bob/core). fiscalYearEnd / périodicité URSSAF pas
    * encore capturés côté serveur : les échéances concernées arrivent en confidence 'assumed'
@@ -867,7 +887,7 @@ export interface BobClient {
   createChantier(
     input: Omit<CreateChantierInput, 'companyId'>,
   ): Promise<Result<{ id: string }, AppError>>;
-  listChantiers(): Promise<Result<ChantierProps[], AppError>>;
+  listChantiers(): Promise<Result<ChantierListItem[], AppError>>;
   // ── Journal + photos de chantier (fiche chantier, extension V1) ──
   listChantierNotes(chantierId: string): Promise<Result<ChantierNoteProps[], AppError>>;
   addChantierNote(chantierId: string, input: { text: string }): Promise<Result<{ id: string }, AppError>>;
@@ -923,6 +943,9 @@ export interface BobClient {
   createQuoteSignatureLink(
     quoteId: string,
   ): Promise<Result<CreateQuoteSignatureLinkOutput, AppError>>;
+  /** Lien public de VISUALISATION d'un devis (POST /quotes/:id/view-link) — SANS AUCUN effet
+   * sortant, tout statut sauf brouillon. */
+  createQuoteViewLink(quoteId: string): Promise<Result<CreateDocumentViewLinkOutput, AppError>>;
   /** R4 : `proofDataUrl` = tracé du pad (dataURL) — le SERVEUR calcule le SHA-256 de preuve ;
    * le dataURL n'est jamais persisté tel quel. Absent = signature sans capture (preuve absente,
    * jamais fabriquée). */
@@ -949,6 +972,9 @@ export interface BobClient {
   /** R6 : suppression définitive d'une facture BROUILLON (DELETE /invoices/:id/draft) — erreur
    * détectée après génération depuis un devis ; garde stricte status==='draft'. */
   deleteDraftInvoice(invoiceId: string): Promise<Result<{ deleted: true }, AppError>>;
+  /** Lien public de VISUALISATION d'une facture (POST /invoices/:id/view-link) — SANS AUCUN
+   * effet sortant, facture ÉMISE uniquement (jamais un brouillon). */
+  createInvoiceViewLink(invoiceId: string): Promise<Result<CreateDocumentViewLinkOutput, AppError>>;
   /** C25 ② : envoi RÉEL d'une relance ciblée — POST /invoices/:id/relance (ton du plan @bob/core,
    * confirmation côté UI/agent avant l'appel : action sortante vers un tiers). */
   sendRelance(invoiceId: string): Promise<Result<SendRelanceClientOutput, AppError>>;

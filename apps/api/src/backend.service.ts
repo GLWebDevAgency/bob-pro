@@ -84,6 +84,9 @@ import {
   CreateQuoteSignatureToken,
   CreateQuoteSignatureLink,
   ResolveQuoteSignatureToken,
+  CreateDocumentViewLink,
+  ResolveDocumentViewToken,
+  type ResolvedDocumentViewGrant,
   sha256Hex,
   StoreDocument,
   ListDocuments,
@@ -123,6 +126,7 @@ import {
   type PdfRendererPort,
   type DocumentStoragePort,
   type InvoicePdfData,
+  type QuotePdfData,
   type CompanyProps,
   type CompanyBillingSettings,
   type CompanyBillingSettingsPatch,
@@ -134,7 +138,7 @@ import {
   type Trade,
   type VatRegime,
   type OcrExtractInput,
-  type ChantierProps,
+  type ChantierListItem,
   type ChantierNoteProps,
   type CreateChantierInput,
   type WorksiteMediaItem,
@@ -350,6 +354,34 @@ interface ResolvedSignatureGrant {
   quoteId: string;
 }
 
+/** Vue publique d'une pièce (devis OU facture) pour la page de VISUALISATION (lien tokenisé,
+ *  scope document_view) — lecture seule, jamais de capacité de signature/paiement. */
+export type DocumentPublicView =
+  | {
+      kind: 'quote';
+      number: string | null;
+      companyName: string;
+      customerName: string;
+      status: string;
+      signed: boolean;
+      validUntil: string | null;
+      lines: { label: string; qty: number; unitPriceHT: number; vatRate: number }[];
+      totals: Totals;
+    }
+  | {
+      kind: 'invoice';
+      number: string | null;
+      companyName: string;
+      customerName: string;
+      status: string;
+      issuedAt: string | null;
+      dueAt: string | null;
+      paid: number;
+      lines: { label: string; qty: number; unitPriceHT: number; vatRate: number }[];
+      totals: Totals;
+      mentions: string[];
+    };
+
 const EXPENSE_CATEGORIES = new Set<ExpenseCategory>([
   'fournitures',
   'materiel',
@@ -358,6 +390,12 @@ const EXPENSE_CATEGORIES = new Set<ExpenseCategory>([
   'sous_traitance',
   'autre',
 ]);
+
+function notificationMutationCount(result: unknown): number | null {
+  if (typeof result !== 'object' || result === null) return null;
+  const value = (result as { updatedCount?: unknown }).updatedCount;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
 
 class RollbackAppError extends Error {
   constructor(readonly appError: AppError) {
@@ -661,9 +699,12 @@ function nextArchiveRetryAt(now: string, attempts: number): string {
   return addMinutesIso(now, delayMinutes);
 }
 
-function publicSignatureUrl(token: string): string {
+/** Origine durcie de sign-web, commune à toutes les routes publiques tokenisées (signature ET
+ *  visualisation) : HTTPS live canonique, jamais localhost/demo, jamais de credentials/query/hash
+ *  embarqués dans l'URL de base. */
+function signWebOrigin(purpose: string): URL {
   const configured = process.env.SIGN_WEB_BASE_URL?.trim();
-  if (!configured) throw new Error('SIGN_WEB_BASE_URL est requis pour créer un lien de signature.');
+  if (!configured) throw new Error(`SIGN_WEB_BASE_URL est requis pour créer ${purpose}.`);
   const base = new URL(configured);
   if (
     base.protocol !== 'https:' ||
@@ -677,10 +718,25 @@ function publicSignatureUrl(token: string): string {
   ) {
     throw new Error('SIGN_WEB_BASE_URL doit être une origine HTTPS live canonique.');
   }
+  return base;
+}
+
+function signWebPublicUrl(segment: string, token: string): string {
+  const base = signWebOrigin(segment === 'sign' ? 'un lien de signature' : 'un lien de consultation');
   return new URL(
-    `sign/${encodeURIComponent(token)}`,
+    `${segment}/${encodeURIComponent(token)}`,
     base.toString().endsWith('/') ? base : `${base}/`,
   ).toString();
+}
+
+function publicSignatureUrl(token: string): string {
+  return signWebPublicUrl('sign', token);
+}
+
+/** Même origine durcie que `publicSignatureUrl` (sign-web) — route de VISUALISATION distincte
+ *  (`/view/:token`, sans capacité de signature). */
+function publicDocumentViewUrl(token: string): string {
+  return signWebPublicUrl('view', token);
 }
 
 function paymentReturnUrl(path: string): string {
@@ -696,6 +752,19 @@ function paymentReturnUrl(path: string): string {
 
 function notificationDedupeHash(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
+}
+
+/**
+ * Le calendrier ne reçoit une clôture comme certaine que lorsqu'elle vient d'une source fiable
+ * ou d'une confirmation du propriétaire. Une hypothèse persistée reste une hypothèse : la
+ * convertir en « 12-31 » ferait perdre sa provenance et présenterait une date supposée comme un
+ * fait. `null` confirmé signifie explicitement exercice civil.
+ */
+function confirmedFiscalYearEnd(profile: FiscalProfileView): string | null {
+  const datum = profile.fiscalYearEnd;
+  if (datum.status !== 'source_fiable' && datum.status !== 'confirme_utilisateur') return null;
+  if (datum.value === null) return '12-31';
+  return `${String(datum.value.month).padStart(2, '0')}-${String(datum.value.day).padStart(2, '0')}`;
 }
 
 /** Version historique conservée pour reprendre les scans dont la réponse Expense s'est perdue. */
@@ -836,7 +905,7 @@ export class BackendService {
   }
   /**
    * Sonde de readiness (/health/ready) : exerce la persistance SANS tenant — aucun Principal
-   * n'est posé sur /health (guard pass-through) et le repli démo a été supprimé (C24b).
+   * n'est posé sur /health (guard pass-through) et aucune persistance de secours n'existe.
    * Le tenant sonde n'existe pas : seul l'aller-retour persistance compte (RLS → liste vide).
    */
   async readiness(): Promise<Result<{ customers: number }, AppError>> {
@@ -1072,6 +1141,45 @@ export class BackendService {
       signatureUrl: publicSignatureUrl(link.value.token),
       expiresAt: link.value.expiresAt,
     });
+  }
+
+  /**
+   * Lien public de VISUALISATION (devis) — canal d'envoi universel, sans e-mail requis : la
+   * pièce se partage par SMS/WhatsApp, le client la consulte et télécharge le PDF depuis son
+   * téléphone. Même doctrine P0 R4 que createQuoteSignatureLink : AUCUN sortant, rotation à
+   * chaque appel. Tout statut sauf brouillon (sent/viewed/signed/refused/expired) — une
+   * consultation n'est jamais un engagement, contrairement à la signature.
+   */
+  async createQuoteViewLink(quoteId: string): Promise<Result<{ viewUrl: string; expiresAt: string }, AppError>> {
+    if (!(await this.ownedQuote(quoteId)))
+      return { ok: false as const, error: appNotFound('quote', quoteId) };
+    const link = await new CreateDocumentViewLink({
+      quotes: this.p.quotes,
+      invoices: this.p.invoices,
+      publicAccessTokens: this.p.publicAccessTokens,
+      clock: this.clock,
+    }).execute({ kind: 'quote', id: quoteId });
+    if (!link.ok) return link;
+    this.logger.audit('quote.view_link_created', { quoteId, expiresAt: link.value.expiresAt });
+    return ok({ viewUrl: publicDocumentViewUrl(link.value.token), expiresAt: link.value.expiresAt });
+  }
+
+  /**
+   * Lien public de VISUALISATION (facture) — même doctrine que createQuoteViewLink. Guard :
+   * facture ÉMISE uniquement (jamais un brouillon), appliqué par CreateDocumentViewLink.
+   */
+  async createInvoiceViewLink(invoiceId: string): Promise<Result<{ viewUrl: string; expiresAt: string }, AppError>> {
+    if (!(await this.ownedInvoice(invoiceId)))
+      return { ok: false as const, error: appNotFound('invoice', invoiceId) };
+    const link = await new CreateDocumentViewLink({
+      quotes: this.p.quotes,
+      invoices: this.p.invoices,
+      publicAccessTokens: this.p.publicAccessTokens,
+      clock: this.clock,
+    }).execute({ kind: 'invoice', id: invoiceId });
+    if (!link.ok) return link;
+    this.logger.audit('invoice.view_link_created', { invoiceId, expiresAt: link.value.expiresAt });
+    return ok({ viewUrl: publicDocumentViewUrl(link.value.token), expiresAt: link.value.expiresAt });
   }
   async refuseQuote(quoteId: string) {
     if (!(await this.ownedQuote(quoteId)))
@@ -1351,7 +1459,7 @@ export class BackendService {
   }
 
   /** A6 (PONT-SERVEUR v1) : avoir TOTAL (brouillon) d'une facture émise — MÊME use case
-   * CreateCreditNote (@bob/core) que la démo locale ; l'avoir s'émet ensuite par issueInvoice
+   * CreateCreditNote (@bob/core) que toutes les surfaces ; l'avoir s'émet ensuite par issueInvoice
    * (numéro A- sans trou via CounterKey 'credit', écriture comptable inverse). */
   async createCreditNote(input: {
     invoiceId: string;
@@ -1370,7 +1478,7 @@ export class BackendService {
   }
 
   /** E3 (PONT-SERVEUR v1) : encaissements datés du tenant — socle du CA encaissé annuel (293 B),
-   * de la balance âgée et de la prescription. Même projection que le LocalBobClient. */
+   * de la balance âgée et de la prescription. */
   async listPayments(): Promise<Result<PaymentView[], AppError>> {
     const list = await this.p.payments.listByCompany(this.companyId());
     return ok(
@@ -1510,6 +1618,76 @@ export class BackendService {
         this.logger.audit('quote.public_signed', { quoteId: grant.value.quoteId });
       }
       return r;
+    });
+  }
+
+  private async resolveDocumentViewGrant(
+    token: string,
+  ): Promise<Result<ResolvedDocumentViewGrant, AppError>> {
+    return new ResolveDocumentViewToken({
+      publicAccessTokens: this.p.publicAccessTokens,
+      clock: this.clock,
+    }).execute({ token });
+  }
+
+  // ——— Consultation client à distance (public, par lien tokenisé, scope document_view) ———
+  /** Vue publique d'une pièce (devis OU facture) par token opaque — lecture seule. */
+  async publicDocumentView(token: string): Promise<Result<DocumentPublicView, AppError>> {
+    const grant = await this.resolveDocumentViewGrant(token);
+    if (!grant.ok) return grant;
+    return this.p.runWithTenant(grant.value.companyId, async () => {
+      if (grant.value.kind === 'quote') {
+        const q = await this.p.quotes.findById(grant.value.documentId);
+        if (!q) return { ok: false, error: appNotFound('quote', 'redacted') };
+        await this.p.publicAccessTokens.markUsed(grant.value.grantId, this.clock.now());
+        const company = await this.p.companies.findById(q.companyId);
+        const customer = await this.p.customers.findById(q.customerId);
+        return ok<DocumentPublicView>({
+          kind: 'quote',
+          number: q.number,
+          companyName: company?.name ?? '',
+          customerName: customer?.name ?? '',
+          status: q.status,
+          signed: q.signature !== null,
+          validUntil: q.validUntil,
+          lines: q.lines.map((l) => ({ label: l.label, qty: l.qty, unitPriceHT: l.unitPriceHT, vatRate: l.vatRate })),
+          totals: q.totals(),
+        });
+      }
+      const inv = await this.p.invoices.findById(grant.value.documentId);
+      if (!inv) return { ok: false, error: appNotFound('invoice', 'redacted') };
+      await this.p.publicAccessTokens.markUsed(grant.value.grantId, this.clock.now());
+      const company = await this.p.companies.findById(inv.companyId);
+      const customer = await this.p.customers.findById(inv.customerId);
+      return ok<DocumentPublicView>({
+        kind: 'invoice',
+        number: inv.number,
+        companyName: company?.name ?? '',
+        customerName: customer?.name ?? '',
+        status: inv.status,
+        issuedAt: inv.issuedAt,
+        dueAt: inv.dueAt,
+        paid: inv.paid,
+        lines: inv.lines.map((l) => ({ label: l.label, qty: l.qty, unitPriceHT: l.unitPriceHT, vatRate: l.vatRate })),
+        totals: inv.totals(),
+        mentions: [...inv.mentions],
+      });
+    });
+  }
+
+  /** PDF de la pièce consultée par lien public (même token que publicDocumentView). */
+  async publicDocumentPdf(token: string): Promise<Result<Uint8Array, AppError>> {
+    const grant = await this.resolveDocumentViewGrant(token);
+    if (!grant.ok) return grant;
+    return this.p.runWithTenant(grant.value.companyId, async () => {
+      if (grant.value.kind === 'quote') {
+        const q = await this.p.quotes.findById(grant.value.documentId);
+        if (!q) return { ok: false, error: appNotFound('quote', 'redacted') };
+        return this.renderQuotePdf(q);
+      }
+      const inv = await this.p.invoices.findById(grant.value.documentId);
+      if (!inv) return { ok: false, error: appNotFound('invoice', 'redacted') };
+      return this.loadInvoicePdfBytes(inv);
     });
   }
 
@@ -1840,7 +2018,7 @@ export class BackendService {
         return ok({ guidance, payoutCents: cashflowResult.value.payout });
       },
       // C25 ① : brouillon CIBLABLE (invoiceId/customerId), dérivé du plan de relances réel
-      // (@bob/core deriveRelancePlan) — même moteur que le cron, le mobile et le LocalBobClient.
+      // (@bob/core deriveRelancePlan) — même moteur que le cron et les surfaces mobiles.
       draftRelance: async (input) => {
         const [inv, cust] = await Promise.all([this.listInvoices(), this.listCustomers()]);
         if (!inv.ok) return inv;
@@ -1884,29 +2062,43 @@ export class BackendService {
       listPayableInvoices: async () => {
         const [inv, cust] = await Promise.all([this.listInvoices(), this.listCustomers()]);
         if (!inv.ok) return inv;
-        const names = new Map((cust.ok ? cust.value : []).map((c) => [c.id, c.name]));
-        const payable = inv.value
-          .filter((i) => ['issued', 'partially_paid', 'late'].includes(i.status) && i.number)
+        if (!cust.ok) return cust;
+        const names = new Map(cust.value.map((c) => [c.id, c.name]));
+        const candidates = inv.value
+          .filter(
+            (i) =>
+              ['issued', 'partially_paid', 'late'].includes(i.status)
+              && i.number !== null,
+          )
+          .filter((i) => remainingInvoiceBalanceCents(i) > 0);
+        if (candidates.some((invoice) => !names.has(invoice.customerId))) {
+          return err(appUnavailable('customer-reference'));
+        }
+        const payable = candidates
           .map((i) => ({
             id: i.id,
-            number: i.number ?? i.id,
+            number: i.number!,
             remainingCents: remainingInvoiceBalanceCents(i),
-            customerName: names.get(i.customerId) ?? 'Client',
-          }))
-          .filter((i) => i.remainingCents > 0);
+            customerName: names.get(i.customerId)!,
+          }));
         return ok(payable);
       },
       listSendableQuotes: async () => {
         const [quotes, cust] = await Promise.all([this.listQuotes(), this.listCustomers()]);
         if (!quotes.ok) return quotes;
-        const names = new Map((cust.ok ? cust.value : []).map((c) => [c.id, c.name]));
+        if (!cust.ok) return cust;
+        const names = new Map(cust.value.map((c) => [c.id, c.name]));
+        const candidates = quotes.value
+          .filter((q) => ['draft', 'sent', 'viewed'].includes(q.status));
+        if (candidates.some((quote) => !names.has(quote.customerId))) {
+          return err(appUnavailable('customer-reference'));
+        }
         return ok(
-          quotes.value
-            .filter((q) => ['draft', 'sent', 'viewed'].includes(q.status))
+          candidates
             .map((q) => ({
               id: q.id,
               number: q.number,
-              customerName: names.get(q.customerId) ?? 'Client',
+              customerName: names.get(q.customerId)!,
               totalTtcCents: q.totals.ttc,
               status: q.status,
             })),
@@ -1915,14 +2107,19 @@ export class BackendService {
       listIssuableInvoices: async () => {
         const [invoices, cust] = await Promise.all([this.listInvoices(), this.listCustomers()]);
         if (!invoices.ok) return invoices;
-        const names = new Map((cust.ok ? cust.value : []).map((c) => [c.id, c.name]));
+        if (!cust.ok) return cust;
+        const names = new Map(cust.value.map((c) => [c.id, c.name]));
+        const candidates = invoices.value
+          .filter((i) => i.status === 'draft' && !i.number);
+        if (candidates.some((invoice) => !names.has(invoice.customerId))) {
+          return err(appUnavailable('customer-reference'));
+        }
         return ok(
-          invoices.value
-            .filter((i) => i.status === 'draft' && !i.number)
+          candidates
             .map((i) => ({
               id: i.id,
               number: i.number,
-              customerName: names.get(i.customerId) ?? 'Client',
+              customerName: names.get(i.customerId)!,
               totalTtcCents: i.totals.ttc,
               status: i.status,
             })),
@@ -1948,7 +2145,7 @@ export class BackendService {
       // que GET /subscription (parité humain↔Bob). Lecture seule : jamais d'achat vocal.
       getSubscriptionStatus: async () => this.subscriptionStatus(this.companyId()),
       // BOB-1 (PONT-SERVEUR v1) : l'expert-comptable de poche — MÊMES use cases purs que les
-      // écrans et le LocalBobClient (deriveVatPosition / deriveAgedBalance @bob/core).
+      // écrans (deriveVatPosition / deriveAgedBalance @bob/core).
       getVatPosition: async () => {
         const [invoices, expenses] = await Promise.all([
           this.p.invoices.listByCompany(this.companyId()),
@@ -1988,7 +2185,7 @@ export class BackendService {
         );
       },
       // BA-3 (audit 20260717, correction 5) : revue de pilotage vocale — MÊME use case pur
-      // deriveBusinessReview @bob/core que l'écran Pilotage (pilotage.tsx) et le LocalBobClient
+      // deriveBusinessReview @bob/core que l'écran Pilotage (pilotage.tsx)
       // (démo, getBusinessReview) : parité garantie, une seule vérité. Sources = persistance
       // réelle du tenant, même pattern que getVatPosition/getAgedBalance ci-dessus (accès
       // repository direct, aucun entitlement dédié à cette lecture — cohérent avec ces voisines).
@@ -2004,6 +2201,7 @@ export class BackendService {
           this.p.companies.findById(this.companyId()),
         ]);
         if (!cust.ok) return cust;
+        if (company === null) return err(appUnavailable('company'));
         return ok(
           deriveBusinessReview({
             entries: entries.map((e) => ({
@@ -2031,7 +2229,7 @@ export class BackendService {
                 status: p.status,
               };
             }),
-            vatRegime: company?.vatRegime ?? null,
+            vatRegime: company.vatRegime,
             today: this.clock.today(),
           }),
         );
@@ -2677,9 +2875,17 @@ export class BackendService {
       );
       const quoteDeliveryStatus = quoteOutcome?.result?.deliveryStatus;
       if (!isBatch && notificationReadOutcome) {
-        const updatedCount = notificationReadOutcome.result?.updatedCount;
-        const count =
-          typeof updatedCount === 'number' && Number.isInteger(updatedCount) ? updatedCount : 0;
+        const count = notificationMutationCount(notificationReadOutcome.result);
+        if (count === null) {
+          return {
+            ok: false,
+            error: {
+              kind: 'dependency',
+              port: 'agent-runtime',
+              cause: 'Résultat de mutation notifications invalide.',
+            },
+          };
+        }
         return ok({
           kind: 'done',
           intent: 'marquer_notifications_lues',
@@ -2731,6 +2937,42 @@ export class BackendService {
         });
       }
       if (isBatch) {
+        const summaryLines: string[] = [];
+        for (const outcome of record.outcomes) {
+          const status = outcome.result?.deliveryStatus;
+          if (outcome.tool === 'envoyer_devis' && status === 'queued') {
+            summaryLines.push(`⏳ ${outcome.label} — envoi programmé`);
+            continue;
+          }
+          if (outcome.tool === 'envoyer_devis' && status === 'sent') {
+            summaryLines.push(`✓ ${outcome.label} — e-mail pris en charge`);
+            continue;
+          }
+          if (outcome.tool === 'envoyer_devis' && status === 'skipped') {
+            summaryLines.push(`⚠ ${outcome.label} — aucun e-mail programmé`);
+            continue;
+          }
+          if (outcome.tool === 'marquer_notifications_lues') {
+            const count = notificationMutationCount(outcome.result);
+            if (count === null) {
+              return {
+                ok: false,
+                error: {
+                  kind: 'dependency',
+                  port: 'agent-runtime',
+                  cause: 'Résultat de mutation notifications invalide.',
+                },
+              };
+            }
+            summaryLines.push(
+              count === 0
+                ? '✓ Notifications déjà à jour au moment de l’exécution'
+                : `✓ ${count} notification${count > 1 ? 's' : ''} marquée${count > 1 ? 's' : ''} comme lue${count > 1 ? 's' : ''}`,
+            );
+            continue;
+          }
+          summaryLines.push(`✓ ${outcome.label}`);
+        }
         return ok({
           kind: 'done',
           intent: 'unknown',
@@ -2738,28 +2980,7 @@ export class BackendService {
           plan: record.outcomes.map((outcome) => outcome.label),
           card: {
             title: 'Actions traitées',
-            body: record.outcomes
-              .map((outcome) => {
-                const status = outcome.result?.deliveryStatus;
-                if (outcome.tool === 'envoyer_devis' && status === 'queued')
-                  return `⏳ ${outcome.label} — envoi programmé`;
-                if (outcome.tool === 'envoyer_devis' && status === 'sent')
-                  return `✓ ${outcome.label} — e-mail pris en charge`;
-                if (outcome.tool === 'envoyer_devis' && status === 'skipped')
-                  return `⚠ ${outcome.label} — aucun e-mail programmé`;
-                if (outcome.tool === 'marquer_notifications_lues') {
-                  const updatedCount = outcome.result?.updatedCount;
-                  const count =
-                    typeof updatedCount === 'number' && Number.isInteger(updatedCount)
-                      ? updatedCount
-                      : 0;
-                  return count === 0
-                    ? '✓ Notifications déjà à jour au moment de l’exécution'
-                    : `✓ ${count} notification${count > 1 ? 's' : ''} marquée${count > 1 ? 's' : ''} comme lue${count > 1 ? 's' : ''}`;
-                }
-                return `✓ ${outcome.label}`;
-              })
-              .join('\n'),
+            body: summaryLines.join('\n'),
           },
         });
       }
@@ -2992,7 +3213,10 @@ export class BackendService {
     return r;
   }
 
-  async listChantiers(): Promise<Result<ChantierProps[], AppError>> {
+  /** Compteurs notes/photos par chantier (rangée de liste) : DEUX agrégats bulk (groupBy),
+   * JAMAIS un listByChantier() par chantier — le coût reste constant quel que soit le nombre
+   * de chantiers. */
+  async listChantiers(): Promise<Result<ChantierListItem[], AppError>> {
     if (!(await this.chantiersAllowed()))
       return {
         ok: false,
@@ -3000,8 +3224,19 @@ export class BackendService {
           'Module Chantiers réservé aux métiers du bâtiment (offre Solo minimum, ou Pack BTP).',
         ),
       };
-    const list = await this.p.chantiers.listByCompany(this.companyId());
-    return ok(list.map((c) => c.toProps()));
+    const companyId = this.companyId();
+    const [list, noteCounts, photoCounts] = await Promise.all([
+      this.p.chantiers.listByCompany(companyId),
+      this.p.chantierNotes.countByCompany(companyId),
+      this.p.worksiteMedia.countByCompany(companyId),
+    ]);
+    return ok(
+      list.map((c) => ({
+        ...c.toProps(),
+        noteCount: noteCounts.get(c.id) ?? 0,
+        photoCount: photoCounts.get(c.id) ?? 0,
+      })),
+    );
   }
 
   /** Journal + photos (fiche chantier, extension V1) : gate module IDENTIQUE à createChantier —
@@ -3107,7 +3342,7 @@ export class BackendService {
     const today = this.clock.today();
     // E6 (PONT-SERVEUR v1) : recettes ENCAISSÉES de l'année civile courante — la surveillance des
     // seuils de franchise 293 B lit du RÉEL (paiements datés du tenant), jamais un statut
-    // décoratif. Même dérivation que le LocalBobClient (les avoirs ne génèrent pas de paiement).
+    // décoratif. Les avoirs ne génèrent pas de paiement.
     const year = today.slice(0, 4);
     const payments = await this.p.payments.listByCompany(this.companyId());
     const annualEncaissedCents = payments
@@ -3238,13 +3473,16 @@ export class BackendService {
     return ok(updated.value.toProps());
   }
 
-  /** C-EXP5b : échéancier fiscal du tenant — MÊME use case pur (deriveFiscalCalendar @bob/core)
-   * que la démo locale et l'outil agent. fiscalYearEnd / urssafPeriodicity ne sont PAS encore
-   * capturés (un claim réglages les posera) : null → le use case émet ces échéances en 'assumed',
-   * honnête, avec un explain qui invite à confirmer. */
+  /** C-EXP5b : échéancier fiscal du tenant — MÊME use case pur (deriveFiscalCalendar @bob/core).
+   * La clôture confirmée est relue depuis le profil fiscal PostgreSQL. Une hypothèse ou une
+   * périodicité URSSAF encore absente reste `null` et produit uniquement des échéances marquées
+   * `assumed` ; jamais un réglage local ou une date présentée comme certaine. */
   async getFiscalCalendar(): Promise<Result<FiscalDeadline[], AppError>> {
-    const company = await this.p.companies.findById(this.companyId());
-    if (!company) return { ok: false, error: appNotFound('company', this.companyId()) };
+    const companyId = this.companyId();
+    const company = await this.p.companies.findById(companyId);
+    if (!company) return { ok: false, error: appNotFound('company', companyId) };
+    const fiscalProfile = await this.getFiscalProfile();
+    if (!fiscalProfile.ok) return fiscalProfile;
     return ok(
       deriveFiscalCalendar({
         company: {
@@ -3254,7 +3492,7 @@ export class BackendService {
         },
         asOf: this.clock.today(),
         horizonDays: 90,
-        fiscalYearEnd: null,
+        fiscalYearEnd: confirmedFiscalYearEnd(fiscalProfile.value),
         urssafPeriodicity: null,
       }),
     );
@@ -3301,6 +3539,15 @@ export class BackendService {
   async invoicePdf(invoiceId: string): Promise<Result<Uint8Array, AppError>> {
     const inv = await this.ownedInvoice(invoiceId);
     if (!inv) return { ok: false, error: appNotFound('invoice', invoiceId) };
+    return this.loadInvoicePdfBytes(inv);
+  }
+
+  /**
+   * Corps commun à `invoicePdf` (authentifié, `ownedInvoice`) et `publicDocumentPdf` (public,
+   * résolu via `runWithTenant`) — aucune des deux ne s'appuie sur `this.companyId()` ici, tout
+   * transite par `inv.companyId` chargé par l'appelant selon SA propre frontière d'autorisation.
+   */
+  private async loadInvoicePdfBytes(inv: Invoice): Promise<Result<Uint8Array, AppError>> {
     // Une pièce émise est immuable : on sert uniquement l'octet archivé au moment de l'émission.
     // Une archive absente/corrompue est une indisponibilité à réparer, jamais une autorisation de
     // régénérer avec l'identité ou les réglages actuels de la société.
@@ -3325,7 +3572,7 @@ export class BackendService {
         return err(appUnavailable('invoice-archive'));
       }
       this.logger.audit('invoice.pdf', {
-        invoiceId,
+        invoiceId: inv.id,
         number: inv.number,
         facturX: true,
         source: 'immutable_archive',
@@ -3335,7 +3582,7 @@ export class BackendService {
     const rendered = await this.renderInvoicePdf(inv);
     if (rendered.ok)
       this.logger.audit('invoice.pdf', {
-        invoiceId,
+        invoiceId: inv.id,
         number: inv.number ?? '(brouillon)',
         facturX: !!inv.number && !!inv.issuedAt,
       });
@@ -3417,6 +3664,38 @@ export class BackendService {
       facturX = { xml: buildFacturXBasicXml(fxData) };
     }
     const bytes = await this.pdf.renderInvoice(data, facturX);
+    return ok(bytes);
+  }
+
+  /** Rend le PDF d'un devis (lien public de visualisation) — pas de RIB/assurance/Factur-X, ce
+   *  n'est pas une pièce comptable probante ; jamais archivé (un devis n'est jamais figé comme
+   *  une facture émise, il reste régénérable à la volée depuis son état courant). */
+  private async renderQuotePdf(q: Quote): Promise<Result<Uint8Array, AppError>> {
+    const company = await this.p.companies.findById(q.companyId);
+    const customer = await this.p.customers.findById(q.customerId);
+    if (!company || !customer)
+      return { ok: false, error: appNotFound('company-or-customer', q.id) };
+    const addr = customer.toProps().address;
+    const totals = q.totals();
+    const data: QuotePdfData = {
+      number: q.number ?? '(brouillon)',
+      companyName: company.name,
+      companyAddress: `${company.address.line1}, ${company.address.zip} ${company.address.city}`,
+      companyRcsOrRm: company.rcsOrRm ?? null,
+      customerName: customer.name,
+      customerAddress: `${addr.line1}, ${addr.zip} ${addr.city}`,
+      validUntil: q.validUntil,
+      lines: q.lines.map((l) => ({
+        label: l.label,
+        qty: l.qty,
+        unitPriceHT: l.unitPriceHT,
+        vatRate: l.vatRate,
+      })),
+      totals: { ht: totals.ht, vat: totals.vat, ttc: totals.ttc, netToPay: totals.netToPay },
+      depositPct: q.depositPct,
+      signedBy: q.signature?.signerName ?? null,
+    };
+    const bytes = await this.pdf.renderQuote(data);
     return ok(bytes);
   }
 

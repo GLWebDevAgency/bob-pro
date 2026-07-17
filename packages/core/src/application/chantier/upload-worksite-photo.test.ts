@@ -38,6 +38,14 @@ class MemoryMedia implements WorksiteMediaStorage {
     const item = this.map.get(id);
     if (item && item.companyId === companyId) this.map.delete(id);
   }
+  async countByCompany(companyId: string): Promise<Map<string, number>> {
+    const counts = new Map<string, number>();
+    for (const item of this.map.values()) {
+      if (item.companyId !== companyId) continue;
+      counts.set(item.chantierId, (counts.get(item.chantierId) ?? 0) + 1);
+    }
+    return counts;
+  }
 }
 
 class MemoryStorage implements DocumentStoragePort {

@@ -1,7 +1,13 @@
 import { type Instant } from '../../shared-kernel/time';
 
-export type PublicAccessScope = 'quote_signature';
-export type PublicAccessResourceType = 'quote';
+/**
+ * `document_view` (liens publics de visualisation devis/facture, sans signature) réutilise
+ * EXACTEMENT la même infra durcie que `quote_signature` — révocable, hashé, audité, résolu en
+ * transaction. Ne JAMAIS élargir `revokeAllForCompany` par scope : la clôture de compte doit
+ * couper tous les scopes indifféremment (voir CloseAccount).
+ */
+export type PublicAccessScope = 'quote_signature' | 'document_view';
+export type PublicAccessResourceType = 'quote' | 'invoice';
 
 export interface PublicAccessGrant {
   id: string;

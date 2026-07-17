@@ -51,7 +51,7 @@ describe('CabinetApiService — vertical Slice 0 in-memory', () => {
   function setup() {
     const persistence = new InMemoryPersistence();
     const notifier = new CapturingNotifier();
-    const verifiedEmailByUserId: Readonly<Record<string, string>> = {
+    const verifiedEmailByUserId: Readonly<Partial<Record<string, string>>> = {
       'expert-admin': 'admin@cabinet.test',
       'expert-collab': 'collab@cabinet.test',
       'expert-manager': 'manager@cabinet.test',

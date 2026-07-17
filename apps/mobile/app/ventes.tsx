@@ -26,6 +26,7 @@ import {
 import { useBobAwareScrollInsets } from '../src/components/use-bob-aware-scroll-insets';
 import { useConfirm } from '../src/components/ConfirmSheet';
 import { hasMeaningfulQuoteDraft, useQuoteDraft } from '../src/quote-draft';
+import { salesDocumentMatchesActiveSearch } from '../src/data/sales-search-result-policy';
 import { useSalesDocumentVoiceAffordance } from '../src/documents-voice-search';
 import { parseSalesDocumentRouteParams } from '../src/data/documents-search-route-params';
 import { DateRangeChips, type DateRangeValue } from '../src/components/DateRangeChips';
@@ -96,17 +97,16 @@ export default function Ventes() {
   const confirm = useConfirm();
   const [draftDeleteBusy, setDraftDeleteBusy] = useState(false);
 
-  const nameOf = (customerId: string) => (customers.data ?? []).find((c) => c.id === customerId)?.name ?? 'Client';
+  const nameOf = (customerId: string) => (customers.data ?? []).find((c) => c.id === customerId)?.name ?? '—';
 
-  // Brouillon local de devis (C21 redécoupe 2026-07-17) — jamais côté serveur, jamais dans
-  // `quotes`. Composé ICI depuis apps/mobile/src/quote-draft (slot unique : au plus une carte) ;
-  // `pendingResume` prime (wizard soft-reseté cette session) sinon l'état live s'il est déjà
-  // un brouillon enregistré (démarrage à froid direct sur cet écran).
-  const localDraft =
-    quoteDraft.pendingResume ??
-    (hasMeaningfulQuoteDraft(quoteDraft.state) && quoteDraft.state.saved !== null
-      ? quoteDraft.state
-      : null);
+  // Brouillon de devis propriétaire : slot BDD distinct de `quotes`, hydraté par GET avant rendu.
+  // `pendingResume` prime (soft-reset du wizard), sans aucun repli SecureStore ni état synthétique.
+  const localDraft = quoteDraft.persistence.ready
+    ? quoteDraft.pendingResume
+      ?? (hasMeaningfulQuoteDraft(quoteDraft.state) && quoteDraft.state.saved !== null
+        ? quoteDraft.state
+        : null)
+    : null;
   const localDraftName = localDraft?.customer?.name ?? null;
   const deleteLocalDraft = async (): Promise<void> => {
     if (draftDeleteBusy) return;
@@ -131,6 +131,12 @@ export default function Ventes() {
   // failed se lit TOUJOURS avec loading (combineQueryStates) — un échec réseau ne devient
   // jamais silencieusement « zéro devis/facture » (classe de bug P0 de l'audit états).
   const queryState = combineQueryStates(quotes, invoices, customers);
+  const ventesDataReady =
+    !queryState.loading &&
+    !queryState.failed &&
+    quotes.data !== undefined &&
+    invoices.data !== undefined &&
+    customers.data !== undefined;
 
   // ── Filtre + recherche PLEIN TEXTE (n°, client, LIGNES — « chauffe-eau » retrouve la
   //    facture même sans se souvenir du client). Accents/casse ignorés, données déjà locales. ──
@@ -185,14 +191,24 @@ export default function Ventes() {
   };
   const serverSearch = useSalesDocumentSearch(searchInput, hasServerFilters);
   const matchedIds = hasServerFilters && serverSearch.data ? new Set(serverSearch.data.hits.map((h) => h.id)) : null;
+  const serverSearchBlockingError = hasServerFilters
+    && serverSearch.isError
+    && serverSearch.data === undefined;
+  const serverSearchStaleError = hasServerFilters
+    && serverSearch.isError
+    && serverSearch.data !== undefined;
 
   const suggestQuery = debouncedQuery;
   const suggest = useSalesDocumentSuggestions(suggestQuery, suggestOpen && suggestQuery.length > 0);
 
   const matches = (id: string, number: string | null, customerId: string, lines: readonly { label: string }[]): boolean => {
     const local = localMatches(number, customerId, lines);
-    if (!hasServerFilters) return local;
-    return matchedIds !== null ? matchedIds.has(id) : local;
+    return salesDocumentMatchesActiveSearch({
+      id,
+      localMatch: local,
+      hasServerFilters,
+      serverMatchedIds: matchedIds,
+    });
   };
   const sortedQuotes = [...(quotes.data ?? [])]
     .filter((q) => kindFilter !== 'invoices' && matches(q.id, q.number, q.customerId, q.lines))
@@ -260,6 +276,8 @@ export default function Ventes() {
   setFiltersRef.current = { setKindFilter, setQuery };
   const dataRef = useRef({ quotes: quotes.data ?? [], invoices: invoices.data ?? [], nameOf });
   dataRef.current = { quotes: quotes.data ?? [], invoices: invoices.data ?? [], nameOf };
+  const ventesDataReadyRef = useRef(ventesDataReady);
+  ventesDataReadyRef.current = ventesDataReady;
   const personalityRef = useRef(personality);
   personalityRef.current = personality;
   // ── Parité vocale du brouillon local (« continue mon brouillon » / « supprime le brouillon »)
@@ -328,6 +346,9 @@ export default function Ventes() {
             const spoken = m[1].replace(/^(un|une|le|la|les|l) /, '').trim();
             if (spoken.length < 3) return null;
             return () => {
+              if (!ventesDataReadyRef.current) {
+                return { say: t('docs.dataError', { personality: personalityRef.current }) };
+              }
               setFiltersRef.current.setQuery(spoken);
               const { quotes: qs, invoices: is, nameOf: name } = dataRef.current;
               const hay = (number: string | null, customerId: string, lines: readonly { label: string }[]) =>
@@ -349,18 +370,21 @@ export default function Ventes() {
     }),
     [salesDocumentVoiceAffordance],
   );
+  const ventesContextReady =
+    ventesDataReady
+    && (!hasServerFilters || (serverSearch.data !== undefined && !serverSearch.isError));
   const ventesAgentContext = useMemo<AgentContext>(() => {
-    const qs = [...(quotes.data ?? [])].sort((a, b) => QUOTE_ORDER[a.status] - QUOTE_ORDER[b.status]).slice(0, 8);
-    const is = [...(invoices.data ?? [])].sort((a, b) => INVOICE_ORDER[a.status] - INVOICE_ORDER[b.status]).slice(0, 8);
+    const qs = ventesContextReady ? sortedQuotes.slice(0, 8) : [];
+    const is = ventesContextReady ? sortedInvoices.slice(0, 8) : [];
     return {
       screen: { name: 'ventes', instanceId: 'ventes' },
       entities: [
         ...qs.map((q) => ({ type: 'quote' as const, id: q.id, label: q.number ? `Devis ${q.number}` : 'Devis brouillon' })),
         ...is.map((i) => ({ type: 'invoice' as const, id: i.id, label: i.number ? `Facture ${i.number}` : 'Facture brouillon' })),
       ],
-      capabilities: ['screen.read', 'quote.read', 'invoice.read'],
+      capabilities: ventesContextReady ? ['screen.read', 'quote.read', 'invoice.read'] : [],
     };
-  }, [quotes.data, invoices.data]);
+  }, [sortedInvoices, sortedQuotes, ventesContextReady]);
   usePublishAgentContext(ventesAgentContext, undefined, ventesSurface);
 
   return (
@@ -404,7 +428,8 @@ export default function Ventes() {
               <Pressable
                 key={key}
                 accessibilityRole="button"
-                accessibilityState={{ selected: kindFilter === key }}
+                accessibilityState={{ selected: kindFilter === key, disabled: !ventesDataReady }}
+                disabled={!ventesDataReady}
                 onPress={() => setKindFilter(key)}
                 style={{
                   paddingHorizontal: 14,
@@ -413,6 +438,7 @@ export default function Ventes() {
                   borderWidth: 1,
                   borderColor: kindFilter === key ? semantic.ai : colors.line,
                   backgroundColor: kindFilter === key ? semantic.aiBg : colors.surface,
+                  opacity: ventesDataReady ? 1 : 0.5,
                 }}
               >
                 <Text
@@ -430,6 +456,7 @@ export default function Ventes() {
             <TextInput
               value={query}
               onChangeText={setQuery}
+              editable={ventesDataReady}
               onFocus={() => setSuggestOpen(true)}
               onBlur={() => setSuggestOpen(false)}
               placeholder={t('ventes.searchPlaceholder', { personality })}
@@ -453,6 +480,8 @@ export default function Ventes() {
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={t('ventes.searchAdvancedButton', { personality })}
+              accessibilityState={{ disabled: !ventesDataReady }}
+              disabled={!ventesDataReady}
               onPress={() => setFiltersModalOpen(true)}
               style={{
                 width: 44,
@@ -463,12 +492,13 @@ export default function Ventes() {
                 backgroundColor: hasActiveFilterChips ? semantic.aiBg : colors.surface,
                 alignItems: 'center',
                 justifyContent: 'center',
+                opacity: ventesDataReady ? 1 : 0.5,
               }}
             >
               <Ionicons name="options-outline" size={20} color={hasActiveFilterChips ? semantic.aiInk : colors.ink800} />
             </Pressable>
           </View>
-          {suggestOpen ? (
+          {suggestOpen && ventesDataReady ? (
             <DocumentSearchAutocomplete
               query={query}
               suggestions={suggest.data?.suggestions}
@@ -491,7 +521,13 @@ export default function Ventes() {
               }}
             />
           ) : null}
-          <DateRangeChips value={dateRange} onChange={setDateRange} today={new Date().toISOString().slice(0, 10)} />
+          {ventesDataReady ? (
+            <DateRangeChips
+              value={dateRange}
+              onChange={setDateRange}
+              today={new Date().toISOString().slice(0, 10)}
+            />
+          ) : null}
           {hasActiveFilterChips ? (
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
               {debouncedQuery.length > 0 ? (
@@ -525,8 +561,15 @@ export default function Ventes() {
               ) : null}
             </View>
           ) : null}
+          {serverSearchBlockingError || serverSearchStaleError ? (
+            <ErrorRetry
+              message={t('docs.dataError', { personality })}
+              onRetry={() => void serverSearch.refetch()}
+            />
+          ) : null}
           {!queryState.loading &&
           !queryState.failed &&
+          !serverSearch.isError &&
           (hasServerFilters ? !serverSearch.isLoading : normalizedQuery !== '') &&
           sortedQuotes.length + sortedInvoices.length === 0 ? (
             <Text style={[font('sub'), { color: colors.slate500 }]}>
@@ -537,7 +580,7 @@ export default function Ventes() {
 
         <DocumentSearchFiltersModal
           key={`${advancedInitial.customerId ?? ''}|${advancedInitial.dateRange?.from ?? ''}|${advancedInitial.dateRange?.to ?? ''}|${advancedInitial.status ?? ''}`}
-          visible={filtersModalOpen}
+          visible={filtersModalOpen && ventesDataReady}
           onClose={() => setFiltersModalOpen(false)}
           onApply={applyAdvancedFilters}
           initial={advancedInitial}
@@ -606,7 +649,7 @@ export default function Ventes() {
                 </View>
               </Card>
             ) : null}
-            {queryState.loading ? (
+            {queryState.loading || (hasServerFilters && serverSearch.isLoading) ? (
               <View style={{ gap: 10 }}>
                 <SkeletonRow lines={2} trailing="text" />
                 <SkeletonRow lines={2} trailing="text" />
@@ -614,7 +657,7 @@ export default function Ventes() {
               </View>
             ) : queryState.failed ? (
               <ErrorRetry message="Impossible de charger tes documents." onRetry={queryState.refetchAll} />
-            ) : sortedQuotes.length === 0 ? (
+            ) : serverSearchBlockingError ? null : sortedQuotes.length === 0 ? (
               <Card>
                 <Text style={[font('body'), { color: colors.slate500 }]}>Aucun devis pour l&apos;instant.</Text>
               </Card>
@@ -688,7 +731,7 @@ export default function Ventes() {
         {kindFilter !== 'quotes' ? (
           <View>
             <SectionHeader title="Factures" />
-            {queryState.loading ? (
+            {queryState.loading || (hasServerFilters && serverSearch.isLoading) ? (
               <View style={{ gap: 10 }}>
                 <SkeletonRow lines={2} trailing="text" />
                 <SkeletonRow lines={2} trailing="text" />
@@ -699,7 +742,7 @@ export default function Ventes() {
               kindFilter === 'invoices' ? (
                 <ErrorRetry message="Impossible de charger tes documents." onRetry={queryState.refetchAll} />
               ) : null
-            ) : sortedInvoices.length === 0 ? (
+            ) : serverSearchBlockingError ? null : sortedInvoices.length === 0 ? (
               <Card>
                 <Text style={[font('body'), { color: colors.slate500 }]}>Aucune facture pour l&apos;instant.</Text>
               </Card>

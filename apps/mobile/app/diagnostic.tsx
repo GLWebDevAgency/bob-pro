@@ -11,9 +11,9 @@
  * chaque item pointe une route réelle de l'app (SIREN manquant → fiche client, etc. — mêmes
  * écrans que les intents de Bob, parité C40).
  *
- * PERSISTANCE : BobClient n'expose aucun endpoint d'écriture du diagnostic (vérifié
- * packages/api-client/src/client.ts) → réponses et score restent en état LOCAL, aucune écriture
- * fantôme. TODO(C23) : persister answers/score quand l'endpoint compliance existera (C40/api).
+ * PERSISTANCE : GET/PUT /diagnostic/assessment. Le mobile n'envoie QUE les réponses, la révision
+ * CAS et l'empreinte du dossier figée au démarrage. Le serveur recharge PostgreSQL, recalcule
+ * score/axes et refuse le résultat si les sources ont changé. Absence = jamais réalisé, jamais 0.
  *
  * Écarts assumés vs proto (tokens only, zéro hex/rgba) :
  * · le fond 172° indigo→navy profond du proto n'existe pas en rampe → themes.indigo.d1 vers
@@ -45,11 +45,21 @@ import {
   type DiagAxisId,
   type DiagnosticAnswers,
   type DiagQuestionId,
+  type PersistedDiagnosticAnswers,
+  validateDiagnosticAssessmentAnswers,
 } from '@bob/core';
 import { themes, vault } from '@bob/tokens';
 import { t, type I18nKey, type Personality } from '@bob/i18n';
 import { ScoreBar, ScoreRing, font, useReduceMotion, useTheme } from '@bob/ui';
-import { useCustomers, useDiagnostic, useInvoices, usePayments, useProfile } from '../src/data/hooks';
+import {
+  useCustomers,
+  useDiagnostic,
+  useDiagnosticAssessment,
+  useInvoices,
+  usePayments,
+  useProfile,
+  useSaveDiagnosticAssessment,
+} from '../src/data/hooks';
 import { combineQueryStates } from '../src/data/query-state';
 import { usePublishAgentContext, type AgentContext } from '../src/agent';
 import {
@@ -103,16 +113,33 @@ const AXIS_LABEL: Record<DiagAxisId, I18nKey> = {
   donnees: 'diag.axisDonnees',
 };
 
-/** Date locale du jour (DateOnly) — même règle que hooks.useTodayPriorities (calendrier local). */
-function localToday(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
-
 /** '2026-09-01' → '01/09/2026' (affichage des échéances du plan). */
 function frDate(dateOnly: string): string {
   const [y, m, d] = dateOnly.split('-');
   return y !== undefined && m !== undefined && d !== undefined ? `${d}/${m}/${y}` : dateOnly;
+}
+
+type PickedAnswers = Partial<Record<DiagQuestionId, number>>;
+
+function answersFromPicked(picked: PickedAnswers): DiagnosticAnswers {
+  const answers: DiagnosticAnswers = {};
+  for (const id of Object.keys(QUESTIONS) as DiagQuestionId[]) {
+    const index = picked[id];
+    const value = index === undefined ? undefined : QUESTIONS[id].options[index]?.value;
+    if (value !== undefined) answers[id] = value;
+  }
+  return answers;
+}
+
+function pickedFromAnswers(answers: PersistedDiagnosticAnswers): PickedAnswers {
+  const picked: PickedAnswers = {};
+  for (const id of Object.keys(QUESTIONS) as DiagQuestionId[]) {
+    const value = answers[id];
+    if (value === undefined) continue;
+    const index = QUESTIONS[id].options.findIndex((option) => option.value === value);
+    if (index >= 0) picked[id] = index;
+  }
+  return picked;
 }
 
 // ── Barre de progression fine du proto (piste white10, remplissage dégradé indigo) ──
@@ -269,27 +296,39 @@ export default function Diagnostic() {
   const invoicesQ = useInvoices();
   const paymentsQ = usePayments();
   const profileQ = useProfile();
-  const queryState = combineQueryStates(diagnostic, customersQ, invoicesQ, paymentsQ, profileQ);
+  const assessmentQ = useDiagnosticAssessment();
+  const saveAssessment = useSaveDiagnosticAssessment();
+  const queryState = combineQueryStates(
+    diagnostic,
+    customersQ,
+    invoicesQ,
+    paymentsQ,
+    profileQ,
+    assessmentQ,
+  );
 
   const [phase, setPhase] = useState<'intro' | 'steps' | 'result'>('intro');
   // step 0 = constats de l'audit automatique, puis 1..n = questions adaptatives.
   const [step, setStep] = useState(0);
-  const [picked, setPicked] = useState<Partial<Record<DiagQuestionId, number>>>({});
+  const [picked, setPicked] = useState<PickedAnswers>({});
   type DiagnosticBase = Omit<DeriveDiagnosticInput, 'answers'>;
   const [sourceSnapshot, setSourceSnapshot] = useState<DiagnosticBase | null>(null);
+  const [sourceFingerprintSnapshot, setSourceFingerprintSnapshot] = useState<string | null>(null);
+  const [persistedResult, setPersistedResult] = useState<DeriveDiagnosticResult | null>(null);
+  const [saveError, setSaveError] = useState(false);
+  const hydratedSavedRevision = useRef<string | null>(null);
 
-  const answers = useMemo<DiagnosticAnswers>(() => {
-    const out: DiagnosticAnswers = {};
-    for (const id of Object.keys(QUESTIONS) as DiagQuestionId[]) {
-      const index = picked[id];
-      const value = index === undefined ? undefined : QUESTIONS[id].options[index]?.value;
-      if (value !== undefined) out[id] = value;
-    }
-    return out;
-  }, [picked]);
+  const answers = useMemo<DiagnosticAnswers>(() => answersFromPicked(picked), [picked]);
 
   const liveSource = useMemo<DiagnosticBase | null>(() => {
-    if (!diagnostic.data || !customersQ.data || !invoicesQ.data || !paymentsQ.data || !profileQ.data) return null;
+    if (
+      !diagnostic.data
+      || !customersQ.data
+      || !invoicesQ.data
+      || !paymentsQ.data
+      || !profileQ.data
+      || !assessmentQ.data
+    ) return null;
     const invoices = invoicesQ.data;
     return {
       facts: diagnostic.data,
@@ -309,9 +348,17 @@ export default function Diagnostic() {
         amountCents: payment.amountCents,
       })),
       profile: { trade: profileQ.data.trade },
-      today: localToday(),
+      // L'autorité temporelle vient du serveur (Europe/Paris), jamais de l'horloge du téléphone.
+      today: assessmentQ.data.currentSourceAsOf,
     };
-  }, [customersQ.data, diagnostic.data, invoicesQ.data, paymentsQ.data, profileQ.data]);
+  }, [
+    assessmentQ.data,
+    customersQ.data,
+    diagnostic.data,
+    invoicesQ.data,
+    paymentsQ.data,
+    profileQ.data,
+  ]);
 
   /** Les données métier sont figées au démarrage ; seules les réponses font évoluer le score. */
   const derived = useMemo<DeriveDiagnosticResult | null>(() => {
@@ -319,13 +366,51 @@ export default function Diagnostic() {
     return source === null ? null : deriveDiagnostic({ ...source, answers });
   }, [answers, liveSource, sourceSnapshot]);
 
-  const questions = derived?.questions ?? [];
+  const questions = assessmentQ.data?.questions ?? [];
+  const questionsAligned = derived !== null
+    && derived.questions.length === questions.length
+    && derived.questions.every((question, index) => question === questions[index]);
   const totalSteps = questions.length + 1; // constats + questions
-  const sourcesReady = liveSource !== null;
-  const blockingError = queryState.failed && !sourcesReady && sourceSnapshot === null;
-  const staleSourceError = queryState.failed && sourcesReady && sourceSnapshot === null;
+  const sourceRefreshing = diagnostic.isFetching
+    || customersQ.isFetching
+    || invoicesQ.isFetching
+    || paymentsQ.isFetching
+    || profileQ.isFetching
+    || assessmentQ.isFetching;
+  const sourcesReady = liveSource !== null && assessmentQ.data !== undefined && questionsAligned;
+  const blockingError = queryState.failed;
+  const staleSourceError = queryState.failed && sourcesReady;
+  const businessResultStale = assessmentQ.data?.status === 'stale';
+  const canBegin = sourcesReady
+    && !queryState.failed
+    && !sourceRefreshing
+    && !saveAssessment.isPending;
+
+  useEffect(() => {
+    const saved = assessmentQ.data?.saved;
+    if (saved === null || saved === undefined || phase !== 'intro') return;
+    const key = `${saved.revision}:${saved.updatedAt}`;
+    if (hydratedSavedRevision.current === key) return;
+    hydratedSavedRevision.current = key;
+    setPicked(pickedFromAnswers(saved.answers));
+  }, [assessmentQ.data?.saved, phase]);
+
+  useEffect(() => {
+    if (
+      phase !== 'result'
+      || assessmentQ.data === undefined
+      || assessmentQ.data.status === 'current'
+    ) return;
+    // Un résultat devenu obsolète n'est jamais laissé à l'écran comme s'il était courant.
+    setPersistedResult(null);
+    setSourceSnapshot(null);
+    setSourceFingerprintSnapshot(null);
+    setPhase('intro');
+  }, [assessmentQ.data?.status, phase]);
 
   const retry = (): void => {
+    setSaveError(false);
+    saveAssessment.reset();
     queryState.refetchAll();
   };
 
@@ -339,20 +424,70 @@ export default function Diagnostic() {
     else {
       setPhase('intro');
       setSourceSnapshot(null);
+      setSourceFingerprintSnapshot(null);
+      setPersistedResult(null);
       setPicked({});
     }
   };
 
   const answer = (id: DiagQuestionId, optionIndex: number): void => {
-    setPicked((p) => ({ ...p, [id]: optionIndex }));
-    if (step >= questions.length) setPhase('result');
-    else setStep(step + 1);
+    if (saveAssessment.isPending) return;
+    const nextPicked = { ...picked, [id]: optionIndex };
+    setPicked(nextPicked);
+    if (step < questions.length) {
+      setStep(step + 1);
+      return;
+    }
+
+    const parsedAnswers = validateDiagnosticAssessmentAnswers(
+      answersFromPicked(nextPicked),
+      questions,
+    );
+    if (
+      !parsedAnswers.ok
+      || assessmentQ.data === undefined
+      || sourceFingerprintSnapshot === null
+      || queryState.failed
+    ) {
+      setSaveError(true);
+      return;
+    }
+
+    setSaveError(false);
+    void saveAssessment.mutateAsync({
+      expectedRevision: assessmentQ.data.saved?.revision ?? 0,
+      expectedSourceFingerprint: sourceFingerprintSnapshot,
+      answers: parsedAnswers.value,
+    }).then((saved) => {
+      if (saved.status !== 'current' || saved.result === null) {
+        throw new Error('DIAGNOSTIC_ASSESSMENT_NOT_CURRENT_AFTER_SAVE');
+      }
+      setPersistedResult(saved.result);
+      setSourceFingerprintSnapshot(saved.currentSourceFingerprint);
+      setPhase('result');
+    }).catch(() => {
+      // Conflit CAS, source modifiée ou panne : aucun score calculé localement n'est exposé.
+      setSaveError(true);
+      setPersistedResult(null);
+      setSourceSnapshot(null);
+      setSourceFingerprintSnapshot(null);
+      setPhase('intro');
+      queryState.refetchAll();
+    });
   };
 
   const begin = (): void => {
-    if (liveSource === null) return;
+    if (!canBegin || liveSource === null || assessmentQ.data === undefined) return;
     setSourceSnapshot(liveSource);
+    setSourceFingerprintSnapshot(assessmentQ.data.currentSourceFingerprint);
+    setSaveError(false);
     setStep(0);
+    if (assessmentQ.data.status === 'current' && assessmentQ.data.result !== null) {
+      setPersistedResult(assessmentQ.data.result);
+      setPhase('result');
+      return;
+    }
+    setPersistedResult(null);
     setPhase('steps');
   };
 
@@ -361,7 +496,7 @@ export default function Diagnostic() {
       screen: { name: 'diagnostic', instanceId: `diagnostic:${phase}:${step}` },
       entities: [],
       capabilities:
-        sourceSnapshot !== null || (sourcesReady && !queryState.failed) ? ['screen.read'] : [],
+        !queryState.failed && (sourceSnapshot !== null || sourcesReady) ? ['screen.read'] : [],
     }),
     [phase, queryState.failed, sourceSnapshot, sourcesReady, step],
   );
@@ -444,7 +579,14 @@ export default function Diagnostic() {
             ? t('diag.introBody', { personality, params: { count: questions.length } })
             : t('diag.dataLoading', { personality })}
         </Text>
-        {staleSourceError ? (
+        {saveError ? (
+          <Text
+            accessibilityRole="alert"
+            style={[font('sub'), { color: overlays.white70, textAlign: 'center', marginTop: 14 }]}
+          >
+            {t('diag.dataError', { personality })}
+          </Text>
+        ) : staleSourceError || businessResultStale ? (
           <Text
             accessibilityRole="alert"
             style={[font('sub'), { color: overlays.white70, textAlign: 'center', marginTop: 14 }]}
@@ -463,8 +605,8 @@ export default function Diagnostic() {
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={t(blockingError ? 'diag.retry' : 'diag.introCta', { personality })}
-        accessibilityState={{ disabled: !sourcesReady && !blockingError, busy: queryState.loading }}
-        disabled={!sourcesReady && !blockingError}
+        accessibilityState={{ disabled: !canBegin && !blockingError, busy: queryState.loading }}
+        disabled={!canBegin && !blockingError}
         onPress={blockingError ? retry : begin}
         style={({ pressed }) => ({
           minHeight: 52,
@@ -473,12 +615,12 @@ export default function Diagnostic() {
           paddingVertical: 16,
           justifyContent: 'center',
           alignItems: 'center',
-          opacity: sourcesReady || blockingError ? 1 : 0.65,
+          opacity: canBegin || blockingError ? 1 : 0.65,
           transform: [{ scale: pressed && !reduceMotion ? 0.97 : 1 }],
         })}
       >
         <Text style={[font('button'), { color: themes.indigo.d1 }]}>
-          {t(blockingError ? 'diag.retry' : sourcesReady ? 'diag.introCta' : 'diag.dataLoading', {
+          {t(blockingError ? 'diag.retry' : canBegin ? 'diag.introCta' : 'diag.dataLoading', {
             personality,
           })}
         </Text>
@@ -586,8 +728,16 @@ export default function Diagnostic() {
         accessibilityRole="button"
         accessibilityLabel={t('diag.auditContinue', { personality })}
         onPress={() => {
-          if (questions.length === 0) setPhase('result');
-          else setStep(1);
+          // Le contrat courant exige au moins platform + accountant. Une liste vide signale une
+          // incohérence serveur : fermeture explicite, jamais de résultat local non persisté.
+          if (questions.length === 0) {
+            setSaveError(true);
+            setSourceSnapshot(null);
+            setSourceFingerprintSnapshot(null);
+            setPhase('intro');
+            return;
+          }
+          setStep(1);
         }}
         style={({ pressed }) => ({
           minHeight: 52,
@@ -638,7 +788,12 @@ export default function Diagnostic() {
                 key={option.key}
                 accessibilityRole="button"
                 accessibilityLabel={t(option.key, { personality })}
-                accessibilityState={{ selected }}
+                accessibilityState={{
+                  selected,
+                  disabled: saveAssessment.isPending,
+                  busy: saveAssessment.isPending,
+                }}
+                disabled={saveAssessment.isPending}
                 onPress={() => answer(questionId, index)}
                 style={({ pressed }) => ({
                   minHeight: 52,
@@ -657,13 +812,32 @@ export default function Diagnostic() {
             );
           })}
         </View>
+        {saveAssessment.isPending ? (
+          <View
+            accessibilityRole="progressbar"
+            accessibilityLabel={t('diag.dataLoading', { personality })}
+            style={{ alignItems: 'center', gap: 10, marginTop: 18 }}
+          >
+            <ActivityIndicator color={colors.surface} />
+            <Text style={[font('sub'), { color: overlays.white66 }]}> 
+              {t('diag.dataLoading', { personality })}
+            </Text>
+          </View>
+        ) : null}
       </ScrollView>
     ) : (
       pending
     );
 
-  const result = derived ? (
-    <Result derived={derived} onClose={() => router.back()} bobScrollInsets={bobScrollInsets} />
+  const result = persistedResult ? (
+    <Result
+      derived={persistedResult}
+      onClose={() => router.back()}
+      bobScrollInsets={bobScrollInsets}
+      actionsDisabled={
+        queryState.failed || sourceRefreshing || assessmentQ.data?.status !== 'current'
+      }
+    />
   ) : pending;
 
   return (
@@ -734,10 +908,12 @@ function Result({
   derived,
   onClose,
   bobScrollInsets,
+  actionsDisabled,
 }: {
   derived: DeriveDiagnosticResult;
   onClose: () => void;
   bobScrollInsets: BobAwareScrollInsets;
+  actionsDisabled: boolean;
 }) {
   const { colors, overlays, personality } = useTheme();
   const reduceMotion = useReduceMotion();
@@ -866,7 +1042,7 @@ function Result({
             last={i === rows.length - 1}
             personality={personality}
             onPress={
-              !item.done && item.route !== null
+              !actionsDisabled && !item.done && item.route !== null
                 ? () => router.push(item.route as Href) // routes réelles de l'app, testées côté core
                 : undefined
             }
@@ -874,15 +1050,27 @@ function Result({
         ))}
       </View>
 
+      {actionsDisabled ? (
+        <Text
+          accessibilityRole="alert"
+          style={[font('sub'), { color: overlays.white70, textAlign: 'center', marginBottom: 12 }]}
+        >
+          {t('diag.staleData', { personality })}
+        </Text>
+      ) : null}
+
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={t('diag.resultCta', { personality })}
+        accessibilityState={{ disabled: actionsDisabled }}
+        disabled={actionsDisabled}
         onPress={() => router.push(primaryRoute as Href)}
         style={({ pressed }) => ({
           minHeight: 52,
           borderRadius: 16,
           overflow: 'hidden',
-          transform: [{ scale: pressed && !reduceMotion ? 0.97 : 1 }],
+          opacity: actionsDisabled ? 0.55 : 1,
+          transform: [{ scale: pressed && !reduceMotion && !actionsDisabled ? 0.97 : 1 }],
           shadowColor: themes.indigo.ink2,
           shadowOpacity: 0.4,
           shadowRadius: 24,

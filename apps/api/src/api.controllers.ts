@@ -1024,7 +1024,7 @@ export class ProfileController {
 }
 
 /** Échéancier fiscal (C-EXP5b) : dates dérivées de la fiche société du tenant par
- * deriveFiscalCalendar (@bob/core) — mêmes règles pour l'API, la démo locale et l'outil agent.
+ * deriveFiscalCalendar (@bob/core) — mêmes règles pour l'API et l'outil agent.
  * JWT + tenant requis (guard global, comme /diagnostic — aucune liste blanche). */
 @Controller('fiscal-calendar')
 export class FiscalCalendarController {
@@ -1270,6 +1270,12 @@ export class QuotesController {
   async createSignatureLink(@Param('id') id: string) {
     return unwrap(await this.backend.createQuoteSignatureLink(id));
   }
+  /** Lien public de VISUALISATION (canal d'envoi universel, sans e-mail) — même doctrine SANS
+   * AUCUN sortant que :id/signature-link. Tout statut sauf brouillon. */
+  @Post(':id/view-link')
+  async createViewLink(@Param('id') id: string) {
+    return unwrap(await this.backend.createQuoteViewLink(id));
+  }
   @Post(':id/sign')
   async sign(@Param('id') id: string, @Body() body: unknown) {
     assertJsonObjectBody(body);
@@ -1369,6 +1375,12 @@ export class InvoicesController {
   @Post(':id/payment-link')
   async paymentLink(@Param('id') id: string) {
     return unwrap(await this.backend.invoicePaymentLink(id));
+  }
+  /** Lien public de VISUALISATION (canal d'envoi universel, sans e-mail) — même doctrine SANS
+   * AUCUN sortant que quotes/:id/signature-link. Facture ÉMISE uniquement, jamais un brouillon. */
+  @Post(':id/view-link')
+  async createViewLink(@Param('id') id: string) {
+    return unwrap(await this.backend.createInvoiceViewLink(id));
   }
   @Get(':id/pdf')
   async pdf(@Param('id') id: string): Promise<StreamableFile> {
@@ -1644,6 +1656,36 @@ export class PublicSignatureController {
     assertJsonObjectBody(body);
     const parsed = parseSignQuoteBody(body);
     return unwrap(await this.backend.publicSignQuote(token, parsed.signerName, parsed.proofDataUrl));
+  }
+}
+
+/**
+ * Consultation publique d'un devis OU d'une facture (lien sans e-mail, scope document_view) —
+ * jamais de capacité de signature/paiement ici, lecture seule + PDF. Mêmes headers durcis que
+ * PublicSignatureController (R4 challenge GPT) : no-store/no-referrer/noindex.
+ */
+@Controller('public/view')
+export class PublicDocumentViewController {
+  constructor(private readonly backend: BackendService) {}
+  @Get(':token')
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @Header('Cache-Control', 'no-store')
+  @Header('Referrer-Policy', 'no-referrer')
+  @Header('X-Robots-Tag', 'noindex, nofollow')
+  async get(@Param('token') token: string) {
+    return unwrap(await this.backend.publicDocumentView(token));
+  }
+  @Get(':token/pdf')
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @Header('Cache-Control', 'no-store')
+  @Header('Referrer-Policy', 'no-referrer')
+  @Header('X-Robots-Tag', 'noindex, nofollow')
+  async pdf(@Param('token') token: string): Promise<StreamableFile> {
+    const bytes = unwrap(await this.backend.publicDocumentPdf(token));
+    return new StreamableFile(Buffer.from(bytes), {
+      type: 'application/pdf',
+      disposition: 'inline; filename="document.pdf"',
+    });
   }
 }
 

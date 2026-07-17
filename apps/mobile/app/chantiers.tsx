@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { tradeToWorksiteTerminology } from '@bob/core';
 import { shadowNative } from '@bob/tokens';
 import { t } from '@bob/i18n';
 import {
@@ -32,6 +33,8 @@ import { useChantiers, useCreateChantier, useProfile, useSearchAddress } from '.
 import { usePublishAgentContext, type AgentContext } from '../src/agent';
 import { CheckIcon, ChevronLeftIcon, ChevronRightIcon, PlusIcon } from '../src/components/icons';
 import { useBobAwareScrollInsets } from '../src/components/use-bob-aware-scroll-insets';
+import { ChantierRowCountBadges } from '../src/components/chantier-row-counts';
+import { DEFAULT_WORKSITE_TERM, worksiteParamsFor } from '../src/lib/worksite-terminology';
 
 const SEARCH_DEBOUNCE_MS = 350;
 
@@ -52,6 +55,11 @@ export default function Chantiers() {
   const chantiers = useChantiers(moduleActive && !profile.isError);
   const create = useCreateChantier();
   const search = useSearchAddress();
+
+  // Terminologie adaptative par métier (tradeToWorksiteTerminology @bob/core) — un plombier
+  // parle de « chantier », un freelance IT de « mission »… Repli neutre tant que non chargé.
+  const worksiteTerm = profile.data ? tradeToWorksiteTerminology(profile.data.trade) : DEFAULT_WORKSITE_TERM;
+  const worksiteParams = worksiteParamsFor(worksiteTerm);
 
   const [createOpen, setCreateOpen] = useState(false);
   const [name, setName] = useState('');
@@ -122,9 +130,9 @@ export default function Chantiers() {
         onSuccess: () => {
           const createdName = trimmedName;
           closeCreate();
-          setToast(t('chantiers.created', { personality, params: { name: createdName } }));
+          setToast(t('chantiers.created', { personality, params: { ...worksiteParams, name: createdName } }));
         },
-        onError: () => setFormError(t('chantiers.createError', { personality })),
+        onError: () => setFormError(t('chantiers.createError', { personality, params: worksiteParams })),
       },
     );
   };
@@ -161,13 +169,13 @@ export default function Chantiers() {
 
       <InnerScreenHeader
         eyebrow={t('chantiers.eyebrow', { personality })}
-        title={t('chantiers.title', { personality })}
+        title={t('chantiers.title', { personality, params: worksiteParams })}
         subtitle={t('chantiers.subtitle', { personality })}
         action={
           ready ? (
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel={t('chantiers.add', { personality })}
+              accessibilityLabel={t('chantiers.add', { personality, params: worksiteParams })}
               onPress={() => setCreateOpen(true)}
               style={{
                 width: 44,
@@ -210,12 +218,15 @@ export default function Chantiers() {
             </Card>
           </View>
         ) : profile.isError ? (
-          <ErrorRetry message={t('chantiers.profileError', { personality })} onRetry={() => void profile.refetch()} />
+          <ErrorRetry
+            message={t('chantiers.profileError', { personality, params: worksiteParams })}
+            onRetry={() => void profile.refetch()}
+          />
         ) : !moduleActive ? (
           <Card>
             <EmptyState
-              title={t('chantiers.moduleTitle', { personality })}
-              body={t('chantiers.moduleBody', { personality })}
+              title={t('chantiers.moduleTitle', { personality, params: worksiteParams })}
+              body={t('chantiers.moduleBody', { personality, params: worksiteParams })}
               cta={{ label: t('chantiers.seePlans', { personality }), onPress: () => router.push('/compte') }}
             />
           </Card>
@@ -230,20 +241,23 @@ export default function Chantiers() {
           </View>
         ) : chantiers.isError ? (
           <ErrorRetry
-            message={t('chantiers.dataError', { personality })}
+            message={t('chantiers.dataError', { personality, params: worksiteParams })}
             onRetry={() => void chantiers.refetch()}
           />
         ) : list.length === 0 ? (
           <Card>
             <EmptyState
-              title={t('chantiers.emptyTitle', { personality })}
-              body={t('chantiers.emptyBody', { personality })}
-              cta={{ label: t('chantiers.add', { personality }), onPress: () => setCreateOpen(true) }}
+              title={t('chantiers.emptyTitle', { personality, params: worksiteParams })}
+              body={t('chantiers.emptyBody', { personality, params: worksiteParams })}
+              cta={{
+                label: t('chantiers.add', { personality, params: worksiteParams }),
+                onPress: () => setCreateOpen(true),
+              }}
             />
           </Card>
         ) : (
           <View>
-            <SectionHeader title={t('chantiers.listTitle', { personality })} />
+            <SectionHeader title={t('chantiers.listTitle', { personality, params: worksiteParams })} />
             <View style={{ gap: 10 }}>
               {list.map((chantier) => (
                 <Pressable
@@ -266,6 +280,10 @@ export default function Chantiers() {
                             params: { date: frDate(chantier.openedAt) },
                           })}
                         </Text>
+                        <ChantierRowCountBadges
+                          counts={{ noteCount: chantier.noteCount, photoCount: chantier.photoCount }}
+                          personality={personality}
+                        />
                       </View>
                       <StatusBadge
                         label={t(chantier.status === 'open' ? 'chantiers.open' : 'chantiers.closed', {
@@ -286,21 +304,21 @@ export default function Chantiers() {
       <Sheet visible={createOpen} onClose={closeCreate}>
         <KeyboardAvoidingView {...(Platform.OS === 'ios' ? { behavior: 'padding' as const } : {})}>
           <Text style={[font('pageTitle'), { fontSize: 20, color: colors.ink900 }]}>
-            {t('chantiers.createTitle', { personality })}
+            {t('chantiers.createTitle', { personality, params: worksiteParams })}
           </Text>
           <Text style={[font('sub'), { color: colors.slate500, lineHeight: 19, marginTop: 4 }]}>
             {t('chantiers.createHint', { personality })}
           </Text>
 
           <Text style={[font('label', 700), { color: colors.slate400, marginTop: 16 }]}>
-            {t('chantiers.nameLabel', { personality }).toUpperCase()}
+            {t('chantiers.nameLabel', { personality, params: worksiteParams }).toUpperCase()}
           </Text>
           <TextInput
             value={name}
             onChangeText={setName}
             placeholder={t('chantiers.namePlaceholder', { personality })}
             placeholderTextColor={colors.slate300}
-            accessibilityLabel={t('chantiers.nameLabel', { personality })}
+            accessibilityLabel={t('chantiers.nameLabel', { personality, params: worksiteParams })}
             returnKeyType="next"
             style={[
               font('body'),
@@ -326,7 +344,7 @@ export default function Chantiers() {
               setAddress(value);
               setSelectedAddress(null);
             }}
-            placeholder={t('chantiers.addressPlaceholder', { personality })}
+            placeholder={t('chantiers.addressPlaceholder', { personality, params: worksiteParams })}
             placeholderTextColor={colors.slate300}
             accessibilityLabel={t('chantiers.addressLabel', { personality })}
             style={[
@@ -395,7 +413,7 @@ export default function Chantiers() {
           ) : null}
 
           <Button
-            title={t('chantiers.createSubmit', { personality })}
+            title={t('chantiers.createSubmit', { personality, params: worksiteParams })}
             disabled={!name.trim()}
             loading={create.isPending}
             onPress={submit}

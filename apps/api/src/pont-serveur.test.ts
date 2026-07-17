@@ -12,6 +12,7 @@ import { SupabaseAuthGuard } from './auth/auth.guard';
 import type { SupabaseAdminPort } from './auth/supabase-admin';
 import type { NotificationDeliveryService } from './jobs/notification-delivery.service';
 import type { Metrics } from './observability/metrics';
+import { InMemoryDocumentStorage } from './documents/storage.testing';
 
 // jose mocké (même politique que fiscal-calendar.test) : on teste le CONTRAT du guard sur les
 // nouveaux endpoints (JWT + tenant requis), pas la crypto — jwtVerify est piloté par chaque test.
@@ -20,6 +21,15 @@ vi.mock('jose', () => ({
   jwtVerify: vi.fn(),
 }));
 const jwtVerifyMock = vi.mocked(jwtVerify);
+
+beforeEach(() => {
+  // Dépendance de configuration réelle du service de signature. Le test utilise une origine
+  // réservée, sans serveur ni raccourci de production.
+  vi.stubEnv('SIGN_WEB_BASE_URL', 'https://sign.bob.test');
+  // Le routeur reste en configuration live. Les demandes couvertes ici sont résolues par les
+  // règles déterministes avant que l'adapter HTTP puisse utiliser cette clé sentinelle.
+  vi.stubEnv('OPENAI_API_KEY', 'test-only-never-sent');
+});
 
 function makeService(options?: { documentIntelligence?: DocumentIntelligencePort }) {
   const p = new InMemoryPersistence();
@@ -63,6 +73,7 @@ function makeService(options?: { documentIntelligence?: DocumentIntelligencePort
     metrics,
     logger,
     options?.documentIntelligence,
+    new InMemoryDocumentStorage(),
   );
   return { service, p, notificationDelivery, metrics };
 }
@@ -464,13 +475,13 @@ describe('PONT-SERVEUR v1 ⑥ — POST /invoices/:id/credit-note (avoir A6, comp
 
 describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_agee, payer_depense (parité humain↔Bob)', () => {
   beforeEach(() => {
-    // Router en mode démo déterministe : aucune clé LLM — l'intention passe par la regex,
-    // les outils par le registre (mêmes use cases que l'UI, c'est ce qu'on teste).
+    // Un fournisseur doit être configuré comme en live ; ces scénarios sont entièrement
+    // déterministes et résolus par le classifieur local avant tout appel réseau.
     vi.stubEnv('ANTHROPIC_API_KEY', '');
     vi.stubEnv('GLM_API_KEY', '');
     vi.stubEnv('DEEPSEEK_API_KEY', '');
     vi.stubEnv('MISTRAL_API_KEY', '');
-    vi.stubEnv('OPENAI_API_KEY', '');
+    vi.stubEnv('OPENAI_API_KEY', 'test-only-never-sent');
   });
   afterEach(() => {
     vi.unstubAllEnvs();
@@ -828,7 +839,7 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
     expect(result.value.card.body).toMatch(/Total HT : 1\s000,00\s€/);
   });
 
-  it('payer_depense : mutation registre accounting — PROPOSITION (dry-run) puis confirmBob exécute PayExpense', async () => {
+  it('payer_depense : enregistre un règlement déjà effectué après preuve, puis confirmation', async () => {
     const { service, p } = makeService();
     await p.seed();
     await asPrincipal(MERCIER, async () => {
@@ -843,12 +854,18 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
       if (!recorded.ok) return;
 
       // ① Dry-run : palier accounting = PLANCHER — toujours proposé, jamais exécuté d'office.
-      const proposed = await service.askBob('règle la dépense Leroy Merlin');
+      const proposed = await service.askBob(
+        `J’ai payé la dépense Leroy Merlin le ${todayUtc()} par carte`,
+      );
       expect(proposed.ok).toBe(true);
       if (!proposed.ok) return;
       expect(proposed.value.kind).toBe('proposed');
-      expect(proposed.value.pending?.tool).toBe('payer_depense');
-      expect(proposed.value.pending?.args).toEqual({ expenseId: recorded.value.id });
+      expect(proposed.value.pending?.tool).toBe('enregistrer_reglement_depense');
+      expect(proposed.value.pending?.args).toEqual({
+        expenseId: recorded.value.id,
+        paidOn: todayUtc(),
+        method: 'card',
+      });
       expect(proposed.value.pending?.proposalId).toMatch(/^[A-Za-z0-9_-]{8,160}$/);
       expect(Date.parse(proposed.value.pending?.expiresAt ?? '')).toBeGreaterThan(Date.parse(todayUtc()));
 
@@ -991,7 +1008,7 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
         category: 'fournitures',
       });
       if (!recorded.ok) throw new Error('fixture: recordExpense KO');
-      return service.askBob('règle la dépense Point P');
+      return service.askBob(`J’ai payé la dépense Point P le ${todayUtc()} par carte`);
     });
     expect(proposed.ok && proposed.value.pending?.proposalId).toBeTruthy();
     if (!proposed.ok || !proposed.value.pending) return;
@@ -1030,7 +1047,9 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
         category: 'fournitures',
       });
       if (!recorded.ok) throw new Error('fixture: recordExpense KO');
-      return service.askBob('règle la dépense Proposition privée');
+      return service.askBob(
+        `J’ai payé la dépense Proposition privée le ${todayUtc()} par carte`,
+      );
     });
     expect(proposed.ok && proposed.value.pending?.proposalId).toBeTruthy();
     if (!proposed.ok || !proposed.value.pending) return;
@@ -1166,7 +1185,7 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
       // seulement le jeton opaque.
       if (sent.ok) {
         expect(sent.value.signatureToken).toBeTruthy();
-        expect(sent.value.signatureUrl).toBe(`https://demo.bobpro.fr/sign/${sent.value.signatureToken}`);
+        expect(sent.value.signatureUrl).toBe(`https://sign.bob.test/sign/${sent.value.signatureToken}`);
       }
     });
   });
@@ -1191,7 +1210,7 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
       // AUCUN e-mail, AUCUN job d'outbox : c'était exactement le P0 (« envoyer le lien »
       // mettait l'e-mail en outbox avant que le partage natif soit confirmé).
       expect(notificationDelivery.enqueue).not.toHaveBeenCalled();
-      expect(link.value.signatureUrl.startsWith('https://demo.bobpro.fr/sign/')).toBe(true);
+      expect(link.value.signatureUrl.startsWith('https://sign.bob.test/sign/')).toBe(true);
 
       // Rotation réelle : l'ancien lien (celui du flux e-mail) est mort immédiatement…
       const oldView = await service.publicQuoteForSignature(tokenFromEmailFlow);
@@ -1400,7 +1419,9 @@ describe('PONT-SERVEUR — proposition opaque : garde temporelle TTL (audit voca
       });
       expect(recorded.ok).toBe(true);
       if (!recorded.ok) return;
-      const proposed = await service.askBob('règle la dépense Gedimat');
+      const proposed = await service.askBob(
+        `J’ai payé la dépense Gedimat le ${todayUtc()} par carte`,
+      );
       expect(proposed.ok && proposed.value.kind).toBe('proposed');
       if (!proposed.ok || !proposed.value.pending?.proposalId) return;
 

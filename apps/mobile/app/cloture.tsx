@@ -164,9 +164,13 @@ export default function Cloture() {
   const piecesTotal = pieces.reduce((s, i) => s + i.count, 0);
   const allClear = anomaliesTotal === 0 && piecesTotal === 0;
 
-  const [yy, mm] = mois.key.split('-').map(Number);
+  // `mois.key` est produit localement au format AAAA-MM. On le relit sans année/mois de
+  // secours : un fallback calendaire codé en dur pourrait fabriquer une période comptable
+  // différente de celle affichée si ce contrat interne venait à être cassé.
+  const yy = Number(mois.key.slice(0, 4));
+  const mm = Number(mois.key.slice(5, 7));
   const fecFrom = `${mois.key}-01`;
-  const fecTo = `${mois.key}-${pad(new Date(yy ?? 2026, mm ?? 1, 0).getDate())}`;
+  const fecTo = `${mois.key}-${pad(new Date(yy, mm, 0).getDate())}`;
   // Période COMPTABLE des états et de la revue = l'exercice À DATE (le bilan est cumulatif —
   // un bilan du seul mois serait faux) ; le mois reste la période du FEC et l'emballage.
   const reviewFrom = `${yy}-01-01`;
