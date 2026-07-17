@@ -13,7 +13,7 @@ export interface RealtimeEntitlementPort {
 }
 
 export interface RealtimeEntitlementExecutor {
-  realtimeVoiceEntitlement(): RealtimeEntitlementDecision;
+  realtimeVoiceEntitlement(): Promise<RealtimeEntitlementDecision>;
 }
 
 /** Recrée une portée tenant courte : aucun résultat d'abonnement n'est partagé entre sessions. */
@@ -31,7 +31,7 @@ export class RealtimeBackendEntitlementAdapter implements RealtimeEntitlementPor
       },
       () => this.persistence.runWithTenant(
         input.companyId,
-        () => Promise.resolve(this.resolveExecutor().realtimeVoiceEntitlement()),
+        () => this.resolveExecutor().realtimeVoiceEntitlement(),
       ),
     );
   }

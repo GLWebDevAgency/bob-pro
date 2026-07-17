@@ -6,7 +6,7 @@ import { RealtimeBackendEntitlementAdapter } from './realtime-entitlement';
 describe('RealtimeBackendEntitlementAdapter', () => {
   it('vérifie le plan dans une portée identité+tenant fraîche', async () => {
     const runWithTenant = vi.fn(async (_companyId: string, operation: () => Promise<unknown>) => operation());
-    const realtimeVoiceEntitlement = vi.fn(() => {
+    const realtimeVoiceEntitlement = vi.fn(async () => {
       expect(getPrincipal()).toEqual({ userId: 'user-1', companyId: 'company-1' });
       return { allowed: true, plan: 'pro' as const };
     });
@@ -25,7 +25,7 @@ describe('RealtimeBackendEntitlementAdapter', () => {
       {
         runWithTenant: vi.fn(async () => { throw new Error('billing unavailable'); }),
       } as unknown as Persistence,
-      () => ({ realtimeVoiceEntitlement: () => ({ allowed: true, plan: 'business' }) }),
+      () => ({ realtimeVoiceEntitlement: async () => ({ allowed: true, plan: 'business' }) }),
     );
 
     await expect(adapter.check({ userId: 'user-1', companyId: 'company-1' }))

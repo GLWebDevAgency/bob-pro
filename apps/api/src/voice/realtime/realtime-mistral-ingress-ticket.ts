@@ -188,7 +188,7 @@ export interface MistralRealtimeIngressTicketAuthority {
 }
 
 /**
- * Adaptateur fail-closed pour les modes démo/test sans PostgreSQL. Ce n'est pas une autorité
+ * Adaptateur fail-closed lorsqu'aucune autorité PostgreSQL n'est disponible. Ce n'est pas une autorité
  * mémoire : aucun ticket ne peut y être émis ou consommé et aucun état n'y est conservé.
  */
 export class DisabledMistralRealtimeIngressTicketAuthority

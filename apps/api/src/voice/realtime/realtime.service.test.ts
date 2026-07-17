@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { Metrics } from '../../observability/metrics';
 import { requestContext, setPrincipal, type AppLogger } from '../../observability/logger';
+import { InMemoryRealtimeAdmission } from './realtime-admission.testing';
 import {
-  InMemoryRealtimeAdmission,
   type RealtimeAdmissionPolicy,
   type RealtimeAdmissionPort,
 } from './realtime-admission';

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { InMemoryRealtimeAdmission } from './realtime-admission.testing';
 import {
-  InMemoryRealtimeAdmission,
   hashRealtimeLeaseToken,
   validateRealtimeAdmissionPolicy,
   type RealtimeAdmissionEntropy,
