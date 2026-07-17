@@ -338,6 +338,7 @@ export default function DocumentDetailScreen() {
         <ErrorRetry
           message="Ce document n’est pas disponible. Il a peut-être été déplacé ou le coffre n’a pas pu être chargé."
           onRetry={() => void document.refetch()}
+          retrying={document.isRefetching}
         />
       </View>
     );
@@ -377,6 +378,7 @@ export default function DocumentDetailScreen() {
           <ErrorRetry
             message="Le document affiché est la dernière version disponible. Son actualisation n’a pas abouti."
             onRetry={() => void document.refetch()}
+            retrying={document.isRefetching}
           />
         </View>
       ) : null}

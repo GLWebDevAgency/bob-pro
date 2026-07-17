@@ -284,6 +284,13 @@ export default function FactureDetail() {
               documents.refetch(),
             ]);
           }}
+          retrying={
+            invoice.isRefetching ||
+            invoices.isRefetching ||
+            quotes.isRefetching ||
+            customers.isRefetching ||
+            documents.isRefetching
+          }
           secondaryLabel={t('piece.close', { personality })}
           onSecondaryAction={() => router.back()}
         />
@@ -352,6 +359,7 @@ export default function FactureDetail() {
             <ErrorRetry
               message={t('piece.accountingError', { personality })}
               onRetry={() => void acct.refetch()}
+              retrying={acct.isRefetching}
             />
           </Card>
         ) : acct.data?.available === false ? (

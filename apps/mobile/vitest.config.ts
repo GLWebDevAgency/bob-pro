@@ -8,6 +8,7 @@ export default defineConfig({
       'src/agent/**/*.test.ts',
       'src/audio/**/*.test.ts',
       'src/auth-recovery/**/*.test.ts',
+      'src/auth-confirmation/**/*.test.ts',
       'src/data/**/*.test.ts',
       'src/assistant/**/*.test.ts',
       'src/voice-flow/**/*.test.ts',

@@ -976,6 +976,7 @@ export default function ScanDocument() {
           <ErrorRetry
             message="La mémoire fournisseur de cette société n’est pas disponible. Les valeurs visibles restent celles lues sur le document ; aucune dépense ne sera créée tant que le serveur ne les aura pas vérifiées."
             onRetry={() => void supplierDefaults.refetch()}
+            retrying={supplierDefaults.isRefetching}
           />
         ) : null}
 

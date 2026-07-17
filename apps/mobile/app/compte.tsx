@@ -290,12 +290,22 @@ export default function Compte() {
             {profileLoading ? (
               <ProfileSkeleton label={say('account.profileLoading')} />
             ) : profileHasBlockingError ? (
-              <ErrorRetry message={say('account.dataError')} onRetry={refetchProfile} />
+              <ErrorRetry
+                message={say('account.dataError')}
+                onRetry={refetchProfile}
+                retrying={profile.isRefetching || companyMe.isRefetching || fiscalFlow.isRefetching}
+              />
             ) : (
               <>
             {profileHasStaleError ? (
               <View style={{ marginBottom: 16 }}>
-                <ErrorRetry message={say('account.dataError')} onRetry={refetchProfile} />
+                <ErrorRetry
+                  message={say('account.dataError')}
+                  onRetry={refetchProfile}
+                  retrying={
+                    profile.isRefetching || companyMe.isRefetching || fiscalFlow.isRefetching
+                  }
+                />
               </View>
             ) : null}
             <SectionHeader title={say('account.sectionCompany')} />
@@ -645,6 +655,7 @@ export default function Compte() {
               <ErrorRetry
                 message={say('account.subscriptionError')}
                 onRetry={() => void subscription.refetch()}
+                retrying={subscription.isRefetching}
               />
             ) : !subscriptionReady ? null : (
               <>
@@ -653,6 +664,7 @@ export default function Compte() {
                 <ErrorRetry
                   message={say('account.subscriptionError')}
                   onRetry={() => void subscription.refetch()}
+                  retrying={subscription.isRefetching}
                 />
               </View>
             ) : null}

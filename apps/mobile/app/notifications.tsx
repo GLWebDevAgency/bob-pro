@@ -738,12 +738,20 @@ export default function Notifications() {
         {!serverSnapshotReady && !blockingError ? (
           <NotificationsSkeleton />
         ) : blockingError ? (
-          <ErrorRetry message={t('notif.dataError', { personality })} onRetry={feed.refetch} />
+          <ErrorRetry
+            message={t('notif.dataError', { personality })}
+            onRetry={feed.refetch}
+            retrying={feed.isRefetching}
+          />
         ) : feed.isLoading ? (
           <NotificationsSkeleton />
         ) : staleFeed ? (
           <View style={{ gap: 14 }}>
-            <ErrorRetry message={t('notif.dataError', { personality })} onRetry={feed.refetch} />
+            <ErrorRetry
+            message={t('notif.dataError', { personality })}
+            onRetry={feed.refetch}
+            retrying={feed.isRefetching}
+          />
             {feed.items.length > 0 ? (
               <View>
                 <SectionHeader title={t('notif.sectionFeed', { personality })} />

@@ -484,6 +484,12 @@ export default function DevisDetail() {
           onRetry={() => {
             void Promise.all([quote.refetch(), customers.refetch(), invoices.refetch(), documents.refetch()]);
           }}
+          retrying={
+            quote.isRefetching ||
+            customers.isRefetching ||
+            invoices.isRefetching ||
+            documents.isRefetching
+          }
           secondaryLabel={t('piece.close', { personality })}
           onSecondaryAction={() => router.back()}
         />

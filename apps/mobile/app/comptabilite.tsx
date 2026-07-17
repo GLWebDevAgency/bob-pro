@@ -23,10 +23,10 @@ import { formatEUR, summarizeAccountingEntries } from '@bob/core';
 import { patterns, vault } from '@bob/tokens';
 import { t, type I18nKey } from '@bob/i18n';
 import {
-  Button,
   Card,
   Chip,
   EmptyState,
+  ErrorRetry,
   IconTile,
   SectionHeader,
   SkeletonCard,
@@ -256,17 +256,12 @@ export default function Comptabilite() {
           </View>
         ) : entries.isError ? (
           <View style={{ paddingTop: 16, paddingHorizontal: 18 }}>
-            <Card>
-              <Text accessibilityRole="alert" style={[font('sub'), { color: colors.slate500 }]}>
-                {t('compta.dataError', { personality })}
-              </Text>
-              <View style={{ height: 12 }} />
-              <Button
-                title={t('compta.retry', { personality })}
-                variant="secondary"
-                onPress={() => void entries.refetch()}
-              />
-            </Card>
+            {/* Socle ErrorRetry (bord danger + pending visible) — plus de carte d'échec locale. */}
+            <ErrorRetry
+              message={t('compta.dataError', { personality })}
+              onRetry={() => void entries.refetch()}
+              retrying={entries.isRefetching}
+            />
           </View>
         ) : (
           <>
@@ -350,9 +345,7 @@ export default function Comptabilite() {
             {sorted.length === 0 ? (
               <View style={{ paddingTop: 12, paddingHorizontal: 18 }}>
                 <Card>
-                  <Text style={[font('sub'), { color: colors.slate500, lineHeight: 19 }]}>
-                    {t('compta.empty', { personality })}
-                  </Text>
+                  <EmptyState body={t('compta.empty', { personality })} />
                 </Card>
               </View>
             ) : (

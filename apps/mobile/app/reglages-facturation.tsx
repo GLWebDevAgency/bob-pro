@@ -166,6 +166,7 @@ export default function ReglagesFacturation() {
               void invoices.refetch();
               void billingPrefs.refetch();
             }}
+            retrying={company.isRefetching || invoices.isRefetching}
           />
         ) : (
           <>

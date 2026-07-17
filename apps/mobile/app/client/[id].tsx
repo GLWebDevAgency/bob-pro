@@ -912,6 +912,7 @@ export default function ClientDetail() {
             <ErrorRetry
               message={t('fiche.dataError', { personality })}
               onRetry={() => void customers.refetch()}
+              retrying={customers.isRefetching}
               secondaryLabel={t('fiche.backToClients', { personality })}
               onSecondaryAction={goBack}
             />
@@ -1060,6 +1061,7 @@ export default function ClientDetail() {
                 <ErrorRetry
                   message={t('fiche.dataError', { personality })}
                   onRetry={() => void customers.refetch()}
+                  retrying={customers.isRefetching}
                 />
               ) : null}
 
@@ -1068,6 +1070,7 @@ export default function ClientDetail() {
                 <ErrorRetry
                   message={t('fiche.dataError', { personality })}
                   onRetry={retryPieces}
+                  retrying={invoices.isRefetching || quotes.isRefetching}
                 />
               ) : null}
 
@@ -1198,6 +1201,7 @@ export default function ClientDetail() {
                       void chantiers.refetch();
                       void profile.refetch();
                     }}
+                    retrying={chantiers.isRefetching || profile.isRefetching}
                   />
                 ) : !chantiersReady ? null : !chantiersModuleActive ? (
                   <View style={{ gap: 10 }}>
@@ -1208,6 +1212,7 @@ export default function ClientDetail() {
                           void chantiers.refetch();
                           void profile.refetch();
                         }}
+                        retrying={chantiers.isRefetching || profile.isRefetching}
                       />
                     ) : null}
                     <Card>
@@ -1234,6 +1239,7 @@ export default function ClientDetail() {
                           void chantiers.refetch();
                           void profile.refetch();
                         }}
+                        retrying={chantiers.isRefetching || profile.isRefetching}
                       />
                     ) : null}
                     <View
@@ -1366,6 +1372,7 @@ export default function ClientDetail() {
                   <ErrorRetry
                     message={t('fiche.dataError', { personality })}
                     onRetry={refreshAll}
+                    retrying={refreshing}
                   />
                 ) : !relatedDocumentsReady ? null : (
                   <View style={{ gap: 10 }}>
@@ -1373,6 +1380,7 @@ export default function ClientDetail() {
                       <ErrorRetry
                         message={t('fiche.dataError', { personality })}
                         onRetry={refreshAll}
+                        retrying={refreshing}
                       />
                     ) : null}
                     {custDocs.length === 0 ? (

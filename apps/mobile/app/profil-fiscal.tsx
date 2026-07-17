@@ -131,7 +131,11 @@ export default function ProfilFiscal() {
         ) : flow.isError && !profile ? (
           // Aucune donnée en cache : un échec pur, jamais un profil vide qui laisserait croire
           // que rien n'est renseigné.
-          <ErrorRetry message={t('fiscal.screen.dataError', { personality })} onRetry={() => void flow.refetch()} />
+          <ErrorRetry
+            message={t('fiscal.screen.dataError', { personality })}
+            onRetry={() => void flow.refetch()}
+            retrying={flow.isRefetching}
+          />
         ) : profile ? (
           <>
             {flow.isError ? (

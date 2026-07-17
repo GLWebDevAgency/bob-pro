@@ -221,6 +221,7 @@ export default function Chantiers() {
           <ErrorRetry
             message={t('chantiers.profileError', { personality, params: worksiteParams })}
             onRetry={() => void profile.refetch()}
+            retrying={profile.isRefetching}
           />
         ) : !moduleActive ? (
           <Card>
@@ -243,6 +244,7 @@ export default function Chantiers() {
           <ErrorRetry
             message={t('chantiers.dataError', { personality, params: worksiteParams })}
             onRetry={() => void chantiers.refetch()}
+            retrying={chantiers.isRefetching}
           />
         ) : list.length === 0 ? (
           <Card>

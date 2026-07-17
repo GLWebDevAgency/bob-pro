@@ -542,12 +542,20 @@ export default function Onboarding() {
     </View>
   ) : step >= 1 && sourcesBlockingError ? (
     <View style={{ flex: 1, justifyContent: 'center' }}>
-      <ErrorRetry message={t('account.dataError', { personality })} onRetry={refetchSources} />
+      <ErrorRetry
+        message={t('account.dataError', { personality })}
+        onRetry={refetchSources}
+        retrying={profileQ.isRefetching || companyQ.isRefetching}
+      />
     </View>
   ) : step >= 1 && sourcesStaleError ? (
     <>
       <View style={{ marginTop: 10 }}>
-        <ErrorRetry message={t('account.dataError', { personality })} onRetry={refetchSources} />
+        <ErrorRetry
+        message={t('account.dataError', { personality })}
+        onRetry={refetchSources}
+        retrying={profileQ.isRefetching || companyQ.isRefetching}
+      />
       </View>
       {flowContent}
     </>

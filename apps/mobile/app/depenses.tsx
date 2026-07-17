@@ -289,6 +289,7 @@ export default function Depenses() {
             <ErrorRetry
               message={t('dep.dataError', { personality })}
               onRetry={() => void expenses.refetch()}
+              retrying={expenses.isRefetching}
             />
           </View>
         ) : summary === null ? null : (
@@ -298,6 +299,7 @@ export default function Depenses() {
                 <ErrorRetry
                   message={t('dep.dataError', { personality })}
                   onRetry={() => void expenses.refetch()}
+                  retrying={expenses.isRefetching}
                 />
               </View>
             ) : null}

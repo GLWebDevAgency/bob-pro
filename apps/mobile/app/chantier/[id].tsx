@@ -297,7 +297,11 @@ export default function ChantierDetail() {
         </View>
       ) : chantiers.isError ? (
         <View style={{ paddingHorizontal: 18, paddingTop: 14 }}>
-          <ErrorRetry message={t('chantierFiche.dataError', { personality })} onRetry={() => void chantiers.refetch()} />
+          <ErrorRetry
+            message={t('chantierFiche.dataError', { personality })}
+            onRetry={() => void chantiers.refetch()}
+            retrying={chantiers.isRefetching}
+          />
         </View>
       ) : notFound ? (
         <View style={{ paddingHorizontal: 18, paddingTop: 14 }}>
@@ -349,7 +353,11 @@ export default function ChantierDetail() {
           {notes.isLoading ? (
             <SkeletonRow avatar="square" trailing={false} style={{ minHeight: 58 }} />
           ) : notes.isError ? (
-            <ErrorRetry message={t('chantierFiche.dataError', { personality })} onRetry={() => void notes.refetch()} />
+            <ErrorRetry
+              message={t('chantierFiche.dataError', { personality })}
+              onRetry={() => void notes.refetch()}
+              retrying={notes.isRefetching}
+            />
           ) : (notes.data ?? []).length === 0 ? (
             <Card>
               <EmptyState body={t('chantierFiche.notesEmpty', { personality })} />
@@ -451,7 +459,11 @@ export default function ChantierDetail() {
           {photos.isLoading ? (
             <SkeletonRow avatar="square" trailing={false} style={{ minHeight: 58 }} />
           ) : photos.isError ? (
-            <ErrorRetry message={t('chantierFiche.dataError', { personality })} onRetry={() => void photos.refetch()} />
+            <ErrorRetry
+              message={t('chantierFiche.dataError', { personality })}
+              onRetry={() => void photos.refetch()}
+              retrying={photos.isRefetching}
+            />
           ) : (photos.data ?? []).length === 0 ? (
             <Card>
               <EmptyState

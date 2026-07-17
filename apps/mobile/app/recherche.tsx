@@ -264,6 +264,7 @@ export default function Recherche() {
             <ErrorRetry
               message={t('search.dataError', { personality })}
               onRetry={queryState.refetchAll}
+              retrying={refreshing}
             />
           </View>
         ) : searching && queryState.loading ? (

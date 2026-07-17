@@ -345,6 +345,7 @@ export default function DocumentFolderScreen() {
         <ErrorRetry
           message="Ce dossier n’existe plus ou le coffre n’a pas pu être chargé."
           onRetry={() => void folder.refetch()}
+          retrying={folder.isRefetching}
         />
       </View>
     );
@@ -413,6 +414,7 @@ export default function DocumentFolderScreen() {
           <ErrorRetry
             message="Le dossier affiché est la dernière version disponible. Son actualisation n’a pas abouti."
             onRetry={() => void folder.refetch()}
+            retrying={folder.isRefetching}
           />
         ) : null}
 
@@ -456,7 +458,11 @@ export default function DocumentFolderScreen() {
                 }
               />
               {children.isError ? (
-                <ErrorRetry message="Les sous-dossiers n’ont pas pu être chargés." onRetry={() => void children.refetch()} />
+                <ErrorRetry
+                  message="Les sous-dossiers n’ont pas pu être chargés."
+                  onRetry={() => void children.refetch()}
+                  retrying={children.isRefetching}
+                />
               ) : childFolders.length === 0 ? (
                 <Card elevation="e1">
                   <EmptyState body="Aucun sous-dossier ici. Tu peux en créer pour organiser ce coffre à ton rythme." />
@@ -473,7 +479,11 @@ export default function DocumentFolderScreen() {
             <View>
               <SectionHeader title={`Documents (${storedDocuments.length})`} />
               {documents.isError ? (
-                <ErrorRetry message="Les documents de ce dossier n’ont pas pu être chargés." onRetry={() => void documents.refetch()} />
+                <ErrorRetry
+                  message="Les documents de ce dossier n’ont pas pu être chargés."
+                  onRetry={() => void documents.refetch()}
+                  retrying={documents.isRefetching}
+                />
               ) : storedDocuments.length === 0 ? (
                 <Card elevation="e1">
                   <EmptyState body="Aucun document directement dans ce dossier." />
@@ -589,6 +599,7 @@ export default function DocumentFolderScreen() {
                     <ErrorRetry
                       message="Les destinations de transfert n’ont pas pu être chargées. Aucun dossier ne sera supprimé."
                       onRetry={() => void rootFolders.refetch()}
+                      retrying={rootFolders.isRefetching}
                     />
                   </View>
                 ) : transferTargets.length === 0 ? (

@@ -111,6 +111,13 @@ export default function Cloture() {
   // absente ou en échec ferme aussi Bob : l'agent ne doit jamais commenter une clôture
   // calculée à partir de tableaux vides transitoires.
   const queryState = combineQueryStates(invoices, quotes, documents, entries, company);
+  // Pending VISIBLE du « Réessayer » (ErrorRetry) — passe feel 18/07.
+  const refreshing =
+    invoices.isRefetching ||
+    quotes.isRefetching ||
+    documents.isRefetching ||
+    entries.isRefetching ||
+    company.isRefetching;
   const agentDataReady =
     entitlement.verified &&
     entitled &&
@@ -367,7 +374,11 @@ export default function Cloture() {
           ) : queryState.failed ? (
             // P0 (audit 14/07) : un échec réseau n'est JAMAIS présenté comme « tout est prêt
             // pour le comptable » — remplace toute la synthèse À LA PLACE du contenu.
-            <ErrorRetry message={t('today.dataError', { personality })} onRetry={queryState.refetchAll} />
+            <ErrorRetry
+              message={t('today.dataError', { personality })}
+              onRetry={queryState.refetchAll}
+              retrying={refreshing}
+            />
           ) : (
             <>
               {/* Synthèse — tout prêt ou points restants */}

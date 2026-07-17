@@ -894,6 +894,7 @@ export default function Assistant() {
         <ErrorRetry
           message={t('account.subscriptionError', { personality })}
           onRetry={() => void subscriptionQuery.refetch()}
+          retrying={subscriptionQuery.isRefetching}
         />
       </View>
     );

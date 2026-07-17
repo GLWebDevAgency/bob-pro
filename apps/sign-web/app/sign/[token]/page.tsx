@@ -2,7 +2,14 @@
 
 import { useEffect, useState, use } from 'react';
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3000';
+/**
+ * NEXT_PUBLIC_API_URL est inlinée au build (Vercel). Le repli localhost n'existe QU'EN dev
+ * local : un build de production sans la variable affiche une erreur explicite au lieu de
+ * viser silencieusement localhost (audit URLs/redirections 2026-07).
+ */
+const API =
+  process.env.NEXT_PUBLIC_API_URL ??
+  (process.env.NODE_ENV === 'development' ? 'http://localhost:3000' : null);
 
 interface SignatureView {
   number: string | null;
@@ -53,6 +60,10 @@ export default function SignPage({ params }: { params: Promise<{ token: string }
   const [done, setDone] = useState(false);
 
   useEffect(() => {
+    if (!API) {
+      setError('Service momentanément indisponible. Réessayez plus tard.');
+      return;
+    }
     let active = true;
     fetch(`${API}/public/sign/${encodeURIComponent(token)}`, {
       cache: 'no-store',
@@ -70,7 +81,7 @@ export default function SignPage({ params }: { params: Promise<{ token: string }
   }, [token]);
 
   async function sign(): Promise<void> {
-    if (!name.trim() || signing) return;
+    if (!API || !name.trim() || signing) return;
     setSigning(true);
     setError(null);
     try {

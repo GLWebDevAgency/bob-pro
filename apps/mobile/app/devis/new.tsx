@@ -1625,6 +1625,7 @@ export default function DevisNew() {
                 <ErrorRetry
                   message={t('devis.dataError', { personality })}
                   onRetry={() => void customers.refetch()}
+                  retrying={customers.isRefetching}
                 />
               ) : (customers.data ?? []).length === 0 ? (
                 <Card>
@@ -1849,6 +1850,7 @@ export default function DevisNew() {
                     <ErrorRetry
                       message={t('catalogue.dataError', { personality })}
                       onRetry={catalogue.refetch}
+                      retrying={catalogue.isRefetching}
                     />
                   </View>
                 ) : null}
@@ -1966,6 +1968,7 @@ export default function DevisNew() {
                     <ErrorRetry
                       message={t('devis.vatProfileUnavailable', { personality })}
                       onRetry={() => void company.refetch()}
+                      retrying={company.isRefetching}
                     />
                   </View>
                 ) : company.isLoading ? (
@@ -2444,6 +2447,7 @@ export default function DevisNew() {
                 <ErrorRetry
                   message={t('catalogue.dataError', { personality })}
                   onRetry={catalogue.refetch}
+                  retrying={catalogue.isRefetching}
                 />
               ) : catalogue.prestations.length === 0 ? (
                 <Text style={[font('sub'), { color: colors.slate500 }]}>

@@ -26,6 +26,7 @@ import {
   InnerScreenHeader,
   SectionHeader,
   SkeletonCard,
+  StaggeredList,
   StatusBadge,
   font,
   useTheme,
@@ -104,6 +105,14 @@ export default function Pilotage() {
   // P1 (audit 14/07) : failed se lit TOUJOURS avec loading — ne jamais confondre un échec
   // réseau avec une absence de données (le pilotage prendrait alors l'air d'un cabinet vide).
   const queryState = combineQueryStates(entries, payments, invoices, customers, expenses, company);
+  // Pending VISIBLE du « Réessayer » — l'utilisateur voit que ça travaille (passe feel 18/07).
+  const reviewRefetching =
+    entries.isRefetching ||
+    payments.isRefetching ||
+    invoices.isRefetching ||
+    customers.isRefetching ||
+    expenses.isRefetching ||
+    company.isRefetching;
 
   // Une seule vérité : le MÊME use case pur que Bob (getBusinessReview) — parité garantie.
   const review: BusinessReview | null = useMemo(() => {
@@ -386,7 +395,9 @@ export default function Pilotage() {
     const cur = r.currentMonth;
     const trend = r.lastClosedComparison;
     return (
-      <>
+      // Cascade sobre : chaque carte du bilan fond en entrant (40 ms/rang, cap 8) —
+      // les wrappers FadeIn restent des enfants directs du conteneur gap:14 (zéro saut).
+      <StaggeredList>
         {/* Mois en cours — isopérimètre, jamais de % plein-mois */}
         {section(
           'pilotage.sectionMonth',
@@ -618,7 +629,7 @@ export default function Pilotage() {
         <Text style={[font('meta'), { color: colors.slate400, textAlign: 'center' }]}>
           {t('pilotage.coverage', { personality, params: { month: monthLabel(r.coverage.firstMonth) } })}
         </Text>
-      </>
+      </StaggeredList>
     );
   };
 
@@ -699,7 +710,11 @@ export default function Pilotage() {
             // P1 (audit 14/07) : un échec réseau n'est JAMAIS confondu avec une absence de
             // données — vérifié AVANT le calcul/rendu de review (jamais un « rien à afficher »
             // qui masquerait le fait que le fetch a raté).
-            <ErrorRetry message={t('today.dataError', { personality })} onRetry={queryState.refetchAll} />
+            <ErrorRetry
+              message={t('today.dataError', { personality })}
+              onRetry={queryState.refetchAll}
+              retrying={reviewRefetching}
+            />
           ) : queryState.loading || review === null ? (
             // L'échec est testé AVANT `review === null` : sinon un premier chargement en
             // erreur laisse `review` nul et affiche un skeleton éternel au lieu du retry.

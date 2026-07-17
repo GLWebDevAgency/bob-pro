@@ -55,6 +55,7 @@ import {
   Sheet,
   Skeleton,
   SkeletonRow,
+  StaggeredList,
   Toast,
   font,
   useReduceMotion,
@@ -171,12 +172,13 @@ function CatalogueCard({
               swipeRef.current?.close();
               onDelete(p);
             }}
-            style={{
+            style={({ pressed }) => ({
               width: 64,
               alignItems: 'center',
               justifyContent: 'center',
               backgroundColor: semantic.dangerBg,
-            }}
+              opacity: pressed ? 0.7 : 1,
+            })}
           >
             <Feather name="trash-2" size={18} color={semantic.danger} />
           </Pressable>
@@ -187,7 +189,7 @@ function CatalogueCard({
         onPress={() => onEdit(p)}
         accessibilityRole="button"
         accessibilityLabel={`${p.label} · ${formatEUR(p.unitPriceHT)}`}
-        style={{
+        style={({ pressed }) => ({
           flexDirection: 'row',
           alignItems: 'center',
           gap: 12,
@@ -196,8 +198,10 @@ function CatalogueCard({
           borderRadius: radius.card,
           paddingVertical: 13,
           paddingHorizontal: 15,
+          opacity: pressed ? 0.82 : 1,
+          transform: [{ scale: pressed ? 0.98 : 1 }],
           ...shadowNative.e1,
-        }}
+        })}
       >
         <View style={{ flex: 1, gap: 4 }}>
           <Text style={[font('label', 600), { fontSize: 14.5, color: colors.ink900 }]}>
@@ -466,16 +470,17 @@ export default function Catalogue() {
             accessibilityState={{ disabled: !catalogueReady }}
             disabled={!catalogueReady}
             onPress={openAdd}
-            style={{
+            style={({ pressed }) => ({
               width: 44,
               height: 44,
               borderRadius: 22,
               backgroundColor: theme.ink,
               alignItems: 'center',
               justifyContent: 'center',
-              opacity: catalogueReady ? 1 : 0.45,
+              opacity: !catalogueReady ? 0.45 : pressed ? 0.85 : 1,
+              transform: [{ scale: pressed && catalogueReady ? 0.94 : 1 }],
               ...shadowNative.e1,
-            }}
+            })}
           >
             <PlusIcon color={colors.surface} size={20} strokeWidth={2.4} />
           </Pressable>
@@ -613,6 +618,7 @@ export default function Catalogue() {
             <ErrorRetry
               message={t('catalogue.dataError', { personality })}
               onRetry={catalogue.refetch}
+              retrying={catalogue.isRefetching}
             />
           </View>
         ) : null}
@@ -631,31 +637,36 @@ export default function Catalogue() {
             <ErrorRetry
               message={t('catalogue.dataError', { personality })}
               onRetry={catalogue.refetch}
+              retrying={catalogue.isRefetching}
             />
           </View>
         ) : visible.length === 0 ? (
           <Card style={{ marginTop: 8 }}>
             <EmptyState
               body={t('catalogue.empty', { personality })}
+              icon={<Feather name="tool" size={16} color={semantic.success} />}
               cta={{ label: t('catalogue.add', { personality }), onPress: openAdd }}
             />
           </Card>
         ) : (
-          groups.map((group) => (
-            <View key={group.category}>
-              <SectionHeader title={t(CATEGORY_KEY[group.category], { personality })} />
-              <View style={{ gap: 9 }}>
-                {group.items.map((p) => (
-                  <CatalogueCard
-                    key={p.id}
-                    p={p}
-                    onEdit={openEdit}
-                    onDelete={(item) => void requestDeletePrestation(item)}
-                  />
-                ))}
+          // Cascade sobre au premier rendu : chaque catégorie fond en entrant (cap 8 rangs).
+          <StaggeredList>
+            {groups.map((group) => (
+              <View key={group.category}>
+                <SectionHeader title={t(CATEGORY_KEY[group.category], { personality })} />
+                <View style={{ gap: 9 }}>
+                  {group.items.map((p) => (
+                    <CatalogueCard
+                      key={p.id}
+                      p={p}
+                      onEdit={openEdit}
+                      onDelete={(item) => void requestDeletePrestation(item)}
+                    />
+                  ))}
+                </View>
               </View>
-            </View>
-          ))
+            ))}
+          </StaggeredList>
         )}
       </ScrollView>
 
