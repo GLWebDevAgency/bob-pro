@@ -506,17 +506,19 @@ export class LocalBobClient implements BobClient {
         createdBy: view.createdBy,
         retentionUntil: view.retentionUntil,
         deletedAt: view.status === 'deleted' ? view.createdAt : null,
-        versions: [{
-          id: `${view.id}:v${view.version}`,
-          documentId: view.id,
-          version: view.version,
-          storageKey: view.storageKey,
-          sha256: view.sha256,
-          mimeType: view.mimeType,
-          byteSize: view.byteSize,
-          createdAt: view.createdAt,
-          reason: 'Adaptateur LocalBobClient',
-        }],
+        versions: [
+          {
+            id: `${view.id}:v${view.version}`,
+            documentId: view.id,
+            version: view.version,
+            storageKey: view.storageKey,
+            sha256: view.sha256,
+            mimeType: view.mimeType,
+            byteSize: view.byteSize,
+            createdAt: view.createdAt,
+            reason: 'Adaptateur LocalBobClient',
+          },
+        ],
         tags: [...view.tags],
       });
     },
@@ -583,6 +585,24 @@ export class LocalBobClient implements BobClient {
   private readonly subscriptions = new Map<string, SubscriptionRecord>();
   private readonly subscriptionRepository: SubscriptionRepository = {
     findByCompanyId: async (companyId) => this.subscriptions.get(companyId) ?? null,
+    startEarlyAccess: async (input) => {
+      const existing = this.subscriptions.get(input.companyId);
+      if (existing) return existing;
+      const record: SubscriptionRecord = {
+        id: input.id,
+        companyId: input.companyId,
+        plan: input.plan,
+        status: 'active',
+        trialEndsAt: null,
+        currentPeriodEnd: null,
+        store: 'none',
+        storeRef: null,
+        createdAt: input.now,
+        updatedAt: input.now,
+      };
+      this.subscriptions.set(input.companyId, record);
+      return record;
+    },
     startTrial: async (input) => {
       const existing = this.subscriptions.get(input.companyId);
       if (existing) return existing;
@@ -625,6 +645,7 @@ export class LocalBobClient implements BobClient {
       pdfAccentColor: 'navy',
       defaultQuoteValidityDays: 30,
       defaultDepositPercent: 30,
+      defaultInvoicePaymentTermsDays: 30,
       createdAt: settingsCreatedAt,
       updatedAt: settingsCreatedAt,
     };
@@ -962,6 +983,8 @@ export class LocalBobClient implements BobClient {
       // C26b — early-access aligné sur le serveur : aucun billing, 0 € facturé (même vérité que le seed).
       earlyAccess: true,
       priceCents: 0,
+      store: 'none',
+      billingAvailable: false,
       currentPeriodEnd: null,
       features: [...planEntitlements('business')],
       ai: PLAN_CATALOG.business.ai,
@@ -989,6 +1012,10 @@ export class LocalBobClient implements BobClient {
         limits: p.limits,
       })),
     });
+  }
+
+  async listSubscriptionInvoices(): Promise<Result<[], AppError>> {
+    return ok([]);
   }
 
   async startCheckout(tier: PlanTier): Promise<Result<{ url: string }, AppError>> {
@@ -1088,11 +1115,19 @@ export class LocalBobClient implements BobClient {
     const updated = Company.of({
       ...requiredProps,
       ...(input.iban === undefined
-        ? (currentIban === undefined ? {} : { iban: currentIban })
-        : (input.iban === null ? {} : { iban: input.iban })),
+        ? currentIban === undefined
+          ? {}
+          : { iban: currentIban }
+        : input.iban === null
+          ? {}
+          : { iban: input.iban }),
       ...(input.bic === undefined
-        ? (currentBic === undefined ? {} : { bic: currentBic })
-        : (input.bic === null ? {} : { bic: input.bic })),
+        ? currentBic === undefined
+          ? {}
+          : { bic: currentBic }
+        : input.bic === null
+          ? {}
+          : { bic: input.bic }),
     });
     if (!updated.ok) return err(appDomain(updated.error));
     await this.companies.save(updated.value);
@@ -2731,7 +2766,11 @@ export class LocalBobClient implements BobClient {
     if (this.quoteDraftSlot === null) return ok(null);
     const payload = parseQuoteDraftPayload(this.quoteDraftSlot.payload);
     if (!payload.ok) {
-      return err({ kind: 'dependency', port: 'local-quote-draft', cause: 'Brouillon local corrompu.' });
+      return err({
+        kind: 'dependency',
+        port: 'local-quote-draft',
+        cause: 'Brouillon local corrompu.',
+      });
     }
     return ok({ ...this.quoteDraftSlot, payload: payload.value });
   }
@@ -2754,8 +2793,8 @@ export class LocalBobClient implements BobClient {
     }
     const current = this.quoteDraftSlot;
     if (
-      (current === null && input.expectedRevision !== 0)
-      || (current !== null && current.revision !== input.expectedRevision)
+      (current === null && input.expectedRevision !== 0) ||
+      (current !== null && current.revision !== input.expectedRevision)
     ) {
       return err(appConflict('quote_draft_slot', 'stale_revision'));
     }
@@ -2770,9 +2809,7 @@ export class LocalBobClient implements BobClient {
     return ok({ ...this.quoteDraftSlot, payload: payload.value });
   }
 
-  async deleteQuoteDraft(
-    expectedRevision: number,
-  ): Promise<Result<{ deleted: true }, AppError>> {
+  async deleteQuoteDraft(expectedRevision: number): Promise<Result<{ deleted: true }, AppError>> {
     if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) {
       return err({
         kind: 'validation',
@@ -2833,7 +2870,9 @@ export class LocalBobClient implements BobClient {
 
   /** Lien public de VISUALISATION — même doctrine SANS AUCUN sortant que createQuoteSignatureLink
    * (adaptateur de démo : l'URL n'est résoluble par personne d'autre que ce device). */
-  async createQuoteViewLink(quoteId: string): Promise<Result<CreateDocumentViewLinkOutput, AppError>> {
+  async createQuoteViewLink(
+    quoteId: string,
+  ): Promise<Result<CreateDocumentViewLinkOutput, AppError>> {
     await this.ready;
     const link = await new CreateDocumentViewLink({
       quotes: this.quotes,
@@ -2852,7 +2891,9 @@ export class LocalBobClient implements BobClient {
   }
 
   /** Lien public de VISUALISATION (facture) — même doctrine que createQuoteViewLink. */
-  async createInvoiceViewLink(invoiceId: string): Promise<Result<CreateDocumentViewLinkOutput, AppError>> {
+  async createInvoiceViewLink(
+    invoiceId: string,
+  ): Promise<Result<CreateDocumentViewLinkOutput, AppError>> {
     await this.ready;
     const link = await new CreateDocumentViewLink({
       quotes: this.quotes,
@@ -2967,6 +3008,18 @@ export class LocalBobClient implements BobClient {
     input: IssueInvoiceInput,
     clock: ClockPort = this.clock,
   ): Promise<Result<{ number: string }, AppError>> {
+    const paymentTermsDays = this.billingSettings.defaultInvoicePaymentTermsDays;
+    if (input.terms === undefined && paymentTermsDays === null) {
+      return err({
+        kind: 'validation',
+        issues: [
+          {
+            field: 'paymentTerms',
+            message: 'Choisissez vos conditions de paiement avant d’émettre cette facture.',
+          },
+        ],
+      });
+    }
     const issued = await new IssueInvoice({
       invoices: this.invoices,
       companies: this.companies,
@@ -2974,7 +3027,18 @@ export class LocalBobClient implements BobClient {
       counters: this.counters,
       uow: this.uow,
       clock,
-    }).execute(input);
+    }).execute(
+      input.terms !== undefined
+        ? input
+        : {
+            invoiceId: input.invoiceId,
+            terms: {
+              days: paymentTermsDays as number,
+              endOfMonth: false,
+              label: `Paiement à ${paymentTermsDays as number} jours`,
+            },
+          },
+    );
     if (!issued.ok) return issued;
     const accounting = await new RecordIssuedInvoiceAccountingEntry({
       invoices: this.invoices,
