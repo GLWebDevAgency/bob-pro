@@ -1,4 +1,4 @@
-import { type Result, ok, err, type AppError, type FiscalDeadline, formatEUR, PLAN_CATALOG, type SubscriptionStatusView } from '@bob/core';
+import { type Result, ok, err, type AppError, type FiscalDeadline, formatEUR, parisDateOnly, PLAN_CATALOG, type SubscriptionStatusView } from '@bob/core';
 import { ModelRouter, type ModelChoice } from '../router/model-router';
 import { renderWithGuard } from '../guardrails/money-guard';
 import { naturalizeReply, type NaturalizeTone } from '../guardrails/naturalize';
@@ -9,7 +9,11 @@ import { buildBobTools } from '../tools/registry';
 import { type AnyTool } from '../tools/tool';
 import { type AgentAutonomy, DEFAULT_AUTONOMY, requiresConfirmation } from './autonomy';
 import { type BobIntent, detectIntent } from './intent';
-import { classifyWithLlm, classifyWithRegex } from './classifier';
+import {
+  classifyWithLlm,
+  classifyWithRegex,
+  DETERMINISTIC_CLASSIFIER_MODEL,
+} from './classifier';
 import {
   AgentRuntime,
   type RuntimeInvocation,
@@ -21,6 +25,7 @@ import {
   type RuntimeIds,
 } from '../runtime';
 import { buildSpokenConfirmation, parseVoiceConsent } from '../voice/voice-confirm';
+import { expensePaymentMethodLabel, parseExpensePaymentDetails } from './expense-payment-command';
 import {
   type AgentAskPayload,
   type AgentCapability,
@@ -46,6 +51,12 @@ export interface BatchItem {
   tool: string;
   args: Record<string, unknown>;
   label: string;
+}
+
+function notificationUpdatedCount(output: unknown): number | null {
+  if (typeof output !== 'object' || output === null) return null;
+  const value = (output as { updatedCount?: unknown }).updatedCount;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
 export interface PendingAction {
@@ -127,7 +138,7 @@ function askToPick(input: {
 export interface AgentRun {
   kind: AgentRunKind;
   intent: BobIntent;
-  /** Modèle effectif (provider routé, id de modèle réel, ou « demo »). */
+  /** Modèle effectif (provider/modèle réel, classifieur déterministe, ou indisponible). */
   model: string;
   plan: string[];
   card: ActionCard;
@@ -465,9 +476,6 @@ function fiscalDeadlineLine(d: FiscalDeadline): string {
 function subscriptionStatusBody(s: SubscriptionStatusView): string {
   const label = PLAN_CATALOG[s.plan].label;
   const dateFr = (iso: string): string => `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}`;
-  if (s.source === 'early_access_fallback') {
-    return 'Tu es en accès anticipé : toutes les fonctions sont ouvertes et rien ne t’est facturé.';
-  }
   if (s.status === 'trialing' && s.trialEndsAt !== null) {
     if (s.trialPhase === 'expired') {
       return `Ton essai ${label} s’est terminé le ${dateFr(s.trialEndsAt)}. Tu es en Découverte (gratuit) : tes documents et ta facturation conforme restent disponibles. Pour continuer avec ${label}, passe par l’écran Compte.`;
@@ -499,7 +507,7 @@ function intentForTool(tool: string): BobIntent {
   if (tool === 'etat_abonnement') return 'abonnement';
   if (tool === 'position_tva') return 'tva';
   if (tool === 'balance_agee') return 'balance';
-  if (tool === 'payer_depense') return 'payer_depense';
+  if (tool === 'enregistrer_reglement_depense') return 'payer_depense';
   if (tool === 'resultat_provisoire') return 'resultat';
   if (tool === 'mon_bilan') return 'bilan';
   if (tool === 'generer_facture' || tool === 'generer_facture_devis') return 'generer_facture';
@@ -580,7 +588,7 @@ export class BobAgent {
     signal?: AbortSignal,
   ) {
     signal?.throwIfAborted();
-    if (this.deps.llm && routedModel !== 'demo') {
+    if (this.deps.llm && routedModel !== 'unavailable') {
       try {
         return await classifyWithLlm(this.deps.llm, message, history, context, signal);
       } catch {
@@ -609,9 +617,23 @@ export class BobAgent {
     const context = payload.value.context;
     opts.onPhase?.('comprends');
     const routed = this.deps.router.route('intent.detect');
-    const plan = await this.classify(userMessage, routed.model, history, context, opts.signal);
+    // Une réponse vocale courte (« hier », « par carte ») doit poursuivre la question Bob en
+    // cours. On n'élargit ce contexte qu'au parcours règlement, avec une question Bob explicite,
+    // pour ne jamais ressusciter arbitrairement un ancien intent mutatif.
+    const lastBobTurn = [...(history ?? [])].reverse().find((turn) => turn.role === 'bob');
+    const recentUserTurns = (history ?? []).slice(-5).filter((turn) => turn.role === 'user');
+    const isExpensePaymentContinuation = lastBobTurn !== undefined
+      && /(date|moyen).{0,30}r[èe]glement|r[èe]glement.{0,30}(date|moyen)/i.test(lastBobTurn.text)
+      && recentUserTurns.some((turn) => /(d[ée]pense|fournisseur).*(pay[ée]|r[ée]gl)|(?:pay[ée]|r[ée]gl).*(d[ée]pense|fournisseur)/i.test(turn.text));
+    const classificationMessage = isExpensePaymentContinuation
+      ? `${recentUserTurns.map((turn) => turn.text).join(' ')} ${userMessage}`
+      : userMessage;
+    const plan = await this.classify(classificationMessage, routed.model, history, context, opts.signal);
     opts.signal?.throwIfAborted();
-    const model = plan.model !== 'demo' ? plan.model : routed.model;
+    const model =
+      plan.model !== DETERMINISTIC_CLASSIFIER_MODEL || routed.model === 'unavailable'
+        ? plan.model
+        : routed.model;
     const steps = plan.steps.filter((s) => s.intent !== 'unknown');
     // La lecture contextuelle est une réponse, pas une action de lot : dans une demande
     // multi-étapes, on la retire du lot (sinon elle serait perdue en silence) — seule, elle
@@ -627,14 +649,21 @@ export class BobAgent {
       result =
         effective.length > 1
           ? await this.runMulti(effective, autonomy, model, userMessage, context)
-          : await this.runSingle(effective[0]!, autonomy, model, userMessage, context);
+          : await this.runSingle(effective[0]!, autonomy, model, userMessage, context, history);
     }
     // Les ports métier ne sont pas tous interruptibles, mais aucun résultat tardif ne franchit ce fence.
     opts.signal?.throwIfAborted();
     // LIVE-2 : mise en mots des FAITS par le LLM — réponses et résultats seulement, JAMAIS
     // les actions proposées (le consentement reste verbatim) ni les questions structurées
     // (leur formulation est lue par speakableQuestion). Fallback silencieux : le gabarit.
-    if (result.ok && this.deps.llm && model !== 'demo' && (result.value.kind === 'answer' || result.value.kind === 'done') && !result.value.ask?.length) {
+    if (
+      result.ok
+      && this.deps.llm
+      && model !== 'unavailable'
+      && model !== DETERMINISTIC_CLASSIFIER_MODEL
+      && (result.value.kind === 'answer' || result.value.kind === 'done')
+      && !result.value.ask?.length
+    ) {
       const natural = await naturalizeReply(this.deps.llm, {
         title: result.value.card.title,
         body: result.value.card.body,
@@ -678,6 +707,7 @@ export class BobAgent {
     model: string,
     message: string,
     context?: AgentContext,
+    history?: AskOptions['history'],
   ): Promise<Result<AgentRun, AppError>> {
     const intent = step.intent;
     const reference = step.reference;
@@ -1443,17 +1473,20 @@ export class BobAgent {
     }
 
     if (intent === 'payer_depense') {
-      // BOB-1/E4 : régler un fournisseur — liste réelle → résolution par nom → PROPOSITION
-      // (palier accounting : le plancher confirme toujours une écriture comptable).
+      // Enregistrer un règlement DEJA réalisé : Bob doit obtenir la cible, la date et le moyen
+      // avant toute proposition. Il n'initie aucun transfert et n'invente jamais « aujourd'hui ».
       const listUnpaid = this.deps.actions.listUnpaidExpenses?.bind(this.deps.actions);
-      const tool = this.tool('payer_depense');
+      const tool = this.tool('enregistrer_reglement_depense');
       if (!listUnpaid || !tool) {
         return ok({
           kind: 'answer',
           intent,
           model,
           plan: ['Vérifier la capacité de l’hôte'],
-          card: { title: 'Régler une dépense', body: 'Je ne peux pas régler de dépense sur cet appareil pour le moment.' },
+          card: {
+            title: 'Enregistrer un règlement',
+            body: 'Je ne peux pas enregistrer cette preuve de règlement pour le moment. Aucun paiement n’a été effectué.',
+          },
         });
       }
       const r = await listUnpaid();
@@ -1464,11 +1497,19 @@ export class BobAgent {
           intent,
           model,
           plan: ['Lister les dépenses à payer'],
-          card: { title: 'Régler une dépense', body: 'Aucune dépense à payer — ton poste fournisseurs est à jour.' },
+          card: { title: 'Règlements fournisseurs', body: 'Aucune dépense à payer — ton poste fournisseurs est à jour.' },
         });
       }
-      const normalized = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
-      const target = r.value.find((e) => normalized(message).includes(normalized(e.supplierName)));
+      const conversation = [
+        ...(history ?? []).slice(-4).filter((turn) => turn.role === 'user').map((turn) => turn.text),
+        message,
+      ].join(' ');
+      const normalizedConversation = normalized(conversation);
+      const target = r.value.find((expense) => {
+        const id = normalized(expense.id);
+        return (id.length >= 3 && containsExactTokens(normalizedConversation, id))
+          || normalizedConversation.includes(normalized(expense.supplierName));
+      });
       if (!target) {
         return ok({
           kind: 'answer',
@@ -1478,7 +1519,7 @@ export class BobAgent {
           card: { title: 'Quelle dépense ?', body: 'Dis-moi quel fournisseur régler :' },
           choices: r.value.map((e) => ({
             label: `${e.supplierName} — ${formatEUR(e.totalTtcCents)}`,
-            value: `règle la dépense ${e.supplierName}`,
+            value: `j’ai déjà payé la dépense ${e.supplierName}`,
           })),
           ask: [
             askToPick({
@@ -1488,29 +1529,124 @@ export class BobAgent {
               items: r.value.map((e) => ({
                 value: e.id,
                 label: e.supplierName,
-                description: `${formatEUR(e.totalTtcCents)} · du ${e.documentDate} — décaissement au journal de banque`,
-                followUp: `Règle la dépense ${e.supplierName}`,
+                description: `${formatEUR(e.totalTtcCents)} · du ${e.documentDate} — règlement déjà effectué`,
+                followUp: `J’ai déjà payé la dépense ${e.id}`,
               })),
             }),
           ],
         });
       }
-      const args = { expenseId: target.id };
-      const label = `Régler ${target.supplierName} (${formatEUR(target.totalTtcCents)}) — décaissement au journal de banque`;
+
+      const now = this.deps.runtime?.clock.now();
+      const today = now && /^\d{4}-\d{2}-\d{2}T/.test(now) ? parisDateOnly(now) : null;
+      const details = parseExpensePaymentDetails(conversation, today);
+      if (!details.paidOn) {
+        const options = today
+          ? [
+              {
+                value: today,
+                label: 'Aujourd’hui',
+                description: today,
+                followUp: `J’ai payé la dépense ${target.id} aujourd’hui`,
+              },
+              {
+                value: 'yesterday',
+                label: 'Hier',
+                description: 'La veille de la date du jour',
+                followUp: `J’ai payé la dépense ${target.id} hier`,
+              },
+            ]
+          : [];
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Identifier la dépense', 'Demander la date réelle du règlement'],
+          card: {
+            title: 'Quelle date de règlement ?',
+            body: `À quelle date as-tu réellement payé ${target.supplierName} ? Dis-la au format JJ/MM/AAAA. Je ne la devine pas.`,
+          },
+          ...(options.length >= 2
+            ? {
+                choices: options.map((option) => ({ label: option.label, value: option.followUp })),
+                ask: [askToPick({
+                  id: 'payer_depense.date',
+                  question: `Quand as-tu payé ${target.supplierName} ?`,
+                  header: 'Date',
+                  items: options,
+                })],
+              }
+            : {}),
+        });
+      }
+      if (today && details.paidOn > today) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Contrôler la date déclarée'],
+          card: {
+            title: 'Date future impossible',
+            body: `Le ${details.paidOn} est dans le futur. Donne-moi la date d’un règlement déjà effectué ; rien n’a été enregistré.`,
+          },
+        });
+      }
+      if (!details.method) {
+        const dateFr = `${details.paidOn.slice(8, 10)}/${details.paidOn.slice(5, 7)}/${details.paidOn.slice(0, 4)}`;
+        const methods = [
+          { value: 'transfer', label: 'Virement', followUp: `J’ai payé la dépense ${target.id} le ${details.paidOn} par virement` },
+          { value: 'card', label: 'Carte', followUp: `J’ai payé la dépense ${target.id} le ${details.paidOn} par carte` },
+          { value: 'cash', label: 'Espèces', followUp: `J’ai payé la dépense ${target.id} le ${details.paidOn} en espèces` },
+        ];
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Identifier la dépense', 'Conserver la date réelle', 'Demander le moyen de règlement'],
+          card: {
+            title: 'Quel moyen de règlement ?',
+            body: `${target.supplierName} · ${formatEUR(target.totalTtcCents)} · payé le ${dateFr}. Choisis le moyen réellement utilisé.`,
+          },
+          choices: methods.map((option) => ({ label: option.label, value: option.followUp })),
+          ask: [askToPick({
+            id: 'payer_depense.methode',
+            question: 'Comment as-tu réglé cette dépense ?',
+            header: 'Moyen',
+            items: methods,
+          })],
+        });
+      }
+      const args = {
+        expenseId: target.id,
+        paidOn: details.paidOn,
+        method: details.method,
+        ...(details.reference ? { reference: details.reference } : {}),
+      };
+      const dateFr = `${details.paidOn.slice(8, 10)}/${details.paidOn.slice(5, 7)}/${details.paidOn.slice(0, 4)}`;
+      const label = `Enregistrer le règlement déjà effectué de ${target.supplierName} (${formatEUR(target.totalTtcCents)}), le ${dateFr} par ${expensePaymentMethodLabel(details.method)}`;
       if (requiresConfirmation(tool, autonomy)) {
         return ok({
           kind: 'proposed',
           intent,
           model,
-          plan: ['Trouver la dépense', 'Préparer le décaissement 401/512', 'Attendre ta confirmation'],
-          card: { title: 'Règlement à confirmer', body: `${label}\nJe l’enregistre ?` },
+          plan: ['Trouver la dépense', 'Contrôler la preuve', 'Préparer l’écriture 401/512 ou 401/530', 'Attendre ta confirmation'],
+          card: {
+            title: 'Enregistrement à confirmer',
+            body: `${label}${details.reference ? ` · réf. ${details.reference}` : ''}.\nBob n’initie aucun virement : il enregistre ce que tu déclares avoir déjà payé. Je continue ?`,
+          },
           pending: { tool: tool.name, args, label },
           spokenPrompt: buildSpokenConfirmation(label),
         });
       }
       const run = await tool.run(args);
       if (!run.ok) return err(run.error);
-      return ok({ kind: 'done', intent, model, plan: ['Régler la dépense'], card: { title: 'Dépense réglée ✓', body: `${label} — c’est fait.` } });
+      return ok({
+        kind: 'done',
+        intent,
+        model,
+        plan: ['Enregistrer la preuve du règlement'],
+        card: { title: 'Règlement enregistré ✓', body: `${label} — la preuve et l’écriture sont enregistrées.` },
+      });
     }
 
     if (intent === 'envoyer_devis') {
@@ -2182,11 +2318,14 @@ export class BobAgent {
       const run = await tool.run(parsed.value);
       if (!run.ok) return err(run.error);
       if (a.tool === 'marquer_notifications_lues') {
-        const output = run.value as { updatedCount?: unknown };
-        const updatedCount =
-          typeof output.updatedCount === 'number' && Number.isInteger(output.updatedCount)
-            ? output.updatedCount
-            : 0;
+        const updatedCount = notificationUpdatedCount(run.value);
+        if (updatedCount === null) {
+          return err({
+            kind: 'dependency',
+            port: 'notifications',
+            cause: 'Résultat de mutation invalide.',
+          });
+        }
         lines.push(
           updatedCount === 0
             ? '✓ Notifications déjà à jour au moment de l’exécution'
@@ -2220,11 +2359,14 @@ export class BobAgent {
     const run = await tool.run(parsed.value);
     if (!run.ok) return err(run.error);
     if (pending.tool === 'marquer_notifications_lues') {
-      const output = run.value as { updatedCount?: unknown };
-      const updatedCount =
-        typeof output.updatedCount === 'number' && Number.isInteger(output.updatedCount)
-          ? output.updatedCount
-          : 0;
+      const updatedCount = notificationUpdatedCount(run.value);
+      if (updatedCount === null) {
+        return err({
+          kind: 'dependency',
+          port: 'notifications',
+          cause: 'Résultat de mutation invalide.',
+        });
+      }
       return ok({
         kind: 'done',
         intent: 'marquer_notifications_lues',
