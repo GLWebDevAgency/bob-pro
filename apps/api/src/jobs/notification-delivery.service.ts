@@ -2,8 +2,12 @@ import { randomUUID } from 'node:crypto';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { SystemClock, type Notification, type NotificationPort } from '@bob/core';
-import { PERSISTENCE, type Persistence } from '../persistence/persistence';
-import { type DeliverableNotificationJob, type NotificationJob } from '../persistence/notification-jobs';
+import type { Persistence } from '../persistence/persistence';
+import { PERSISTENCE } from '../persistence/persistence-token';
+import {
+  type DeliverableNotificationJob,
+  type NotificationJob,
+} from '../persistence/notification-jobs';
 import { NOTIFIER } from '../notifications/notifier';
 import { EXPO_PUSH, type ExpoPushService } from '../notifications/expo-push';
 import { AppLogger } from '../observability/logger';
@@ -52,7 +56,10 @@ export class NotificationDeliveryService {
         if (r.scanned > 0) this.logger.audit('notification.jobs.scheduled', r);
       })
       .catch((e: unknown) => {
-        this.logger.warn(`Retry notifications inattendu: ${e instanceof Error ? e.message : String(e)}`, 'notifications');
+        this.logger.warn(
+          `Retry notifications inattendu: ${e instanceof Error ? e.message : String(e)}`,
+          'notifications',
+        );
       });
   }
 
@@ -67,9 +74,10 @@ export class NotificationDeliveryService {
     // La clé provider est créée UNE fois avec l'entrée d'outbox et persiste sur tous les
     // retries. Brevo déduplique 30 min ; au-delà, un lease orphelin est mis en quarantaine
     // pour revue humaine plutôt que rejoué avec une promesse d'exactly-once impossible.
-    const notification: Notification = input.notification.channel === 'email'
-      ? { ...input.notification, idempotencyKey: id }
-      : { ...input.notification };
+    const notification: Notification =
+      input.notification.channel === 'email'
+        ? { ...input.notification, idempotencyKey: id }
+        : { ...input.notification };
     return this.p.notificationJobs.enqueue({
       id,
       companyId: input.companyId,
@@ -80,7 +88,10 @@ export class NotificationDeliveryService {
     });
   }
 
-  async tryDeliver(companyId: string, job: DeliverableNotificationJob): Promise<DeliveryAttemptOutcome> {
+  async tryDeliver(
+    companyId: string,
+    job: DeliverableNotificationJob,
+  ): Promise<DeliveryAttemptOutcome> {
     const claimAt = this.clock.now();
     const leaseUntil = addMinutesIso(claimAt, 5);
     const leaseToken = randomUUID();
@@ -210,17 +221,22 @@ export class NotificationDeliveryService {
    * tokens invalidés purgés, absence d'appareil tracée (jamais silencieux). Ne lève pas. */
   private async pushMirror(companyId: string, job: DeliverableNotificationJob): Promise<void> {
     if (!this.push) {
-      this.logger.audit('notification.push.skipped', { companyId, jobId: job.id, reason: 'push_channel_absent' });
+      this.logger.audit('notification.push.skipped', {
+        companyId,
+        jobId: job.id,
+        reason: 'push_channel_absent',
+      });
       return;
     }
     const devices = await this.p.runWithTenant(companyId, () =>
-      this.p.devices.listDeliveryTargetsByCompany(
-        companyId,
-        activeBindingCutoff(this.clock.now()),
-      ),
+      this.p.devices.listDeliveryTargetsByCompany(companyId, activeBindingCutoff(this.clock.now())),
     );
     if (devices.length === 0) {
-      this.logger.audit('notification.push.skipped', { companyId, jobId: job.id, reason: 'no_device_registered' });
+      this.logger.audit('notification.push.skipped', {
+        companyId,
+        jobId: job.id,
+        reason: 'no_device_registered',
+      });
       return;
     }
     const outcome = await this.push.send(
@@ -238,9 +254,11 @@ export class NotificationDeliveryService {
         },
       })),
     );
-    const invalidTokens = new Set(outcome.rejected
-      .filter((rejection) => rejection.error === 'DeviceNotRegistered')
-      .map((rejection) => rejection.token));
+    const invalidTokens = new Set(
+      outcome.rejected
+        .filter((rejection) => rejection.error === 'DeviceNotRegistered')
+        .map((rejection) => rejection.token),
+    );
     if (invalidTokens.size > 0) {
       // Token expiré/désinstallé : purge transactionnelle courte, après le réseau Expo.
       await this.p.runWithTenant(companyId, async () => {
@@ -264,7 +282,10 @@ export class NotificationDeliveryService {
     });
   }
 
-  async runForCompany(companyId: string, limit = 25): Promise<{ scanned: number; sent: number; failed: number }> {
+  async runForCompany(
+    companyId: string,
+    limit = 25,
+  ): Promise<{ scanned: number; sent: number; failed: number }> {
     const safeLimit = Math.max(1, Math.min(limit, 100));
     const jobs = await this.p.runWithTenant(companyId, () =>
       this.p.notificationJobs.listDue(companyId, this.clock.now(), safeLimit),
@@ -279,7 +300,9 @@ export class NotificationDeliveryService {
     return { scanned: jobs.length, sent, failed };
   }
 
-  async runAllCompanies(limitPerCompany = 25): Promise<{ companies: number; scanned: number; sent: number; failed: number }> {
+  async runAllCompanies(
+    limitPerCompany = 25,
+  ): Promise<{ companies: number; scanned: number; sent: number; failed: number }> {
     const companyIds = await this.tenants.listCompanyIds();
     let scanned = 0;
     let sent = 0;

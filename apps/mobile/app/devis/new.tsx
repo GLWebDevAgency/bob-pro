@@ -59,6 +59,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { challengeFor, parseVoiceConsent } from '@bob/ai';
 import {
   addDays,
+  parisDateOnly,
   computeTotals,
   formatEUR,
   searchCatalogue,
@@ -428,6 +429,25 @@ export default function DevisNew() {
     // Mount uniquement — une seule décision par ouverture d'écran (resumeRequested/quoteDraft
     // sont lus via refs/valeurs figées à l'ouverture ; les redemander ne doit rien redéclencher).
   }, []);
+  const billingDefaultsApplied = useRef(false);
+  const [billingDefaultsReady, setBillingDefaultsReady] = useState(false);
+  useEffect(() => {
+    if (billingDefaultsApplied.current || !freshnessReady) return;
+    if (resumeRequested) {
+      billingDefaultsApplied.current = true;
+      setBillingDefaultsReady(true);
+      return;
+    }
+    const prefs = billingPrefs.prefs;
+    if (prefs === null) return;
+    const applied = quoteDraft.applyAtRevision(
+      { type: 'set_deposit_pct', depositPct: prefs.defaultDepositPercent },
+      quoteDraft.state.revision,
+    );
+    if (!applied.ok) return;
+    billingDefaultsApplied.current = true;
+    setBillingDefaultsReady(true);
+  }, [billingPrefs.prefs, freshnessReady, quoteDraft.state.revision, resumeRequested]);
   const [resumeBannerDismissed, setResumeBannerDismissed] = useState(false);
 
   // « Nouveau devis POUR Camping Les Pins » : le nom entendu (hint session) est résolu contre
@@ -1083,7 +1103,12 @@ export default function DevisNew() {
         // Validité du devis = préférence Réglages facturation (défaut 30 j) appliquée depuis
         // AUJOURD'HUI (pas depuis un instant figé au montage — le devis peut être terminé bien
         // après l'ouverture de l'écran).
-        const validUntil = addDays(new Date().toISOString().slice(0, 10), billingPrefs.prefs.defaultQuoteValidityDays);
+        const prefs = billingPrefs.prefs;
+        if (prefs === null) {
+          setError(t('reglages.dataError', { personality }));
+          return;
+        }
+        const validUntil = addDays(parisDateOnly(), prefs.defaultQuoteValidityDays);
         const created = await createQuote.mutateAsync({
           customerId: d.customerId,
           lines: d.lines.map((l) => ({ ...l })),
@@ -1263,9 +1288,9 @@ export default function DevisNew() {
     setExitActionBusy(true);
     const action = pendingExit.current ?? (() => router.back());
 
-    // La sanitisation (signature, proposition, mission) se fait dans le codec et ne remplace
-    // l'état mémoire qu'APRÈS le commit du pointeur. Si SecureStore échoue, rien de ce que la
-    // personne voit — tracé, proposition ou guidage — n'est détruit avant son retry.
+    // La sanitisation (signature, proposition, mission) se fait à la frontière V2→V1 et ne
+    // remplace l'état mémoire qu'APRÈS le commit CAS du slot BDD. Si le serveur échoue, rien de ce
+    // que la personne voit — tracé, proposition ou guidage — n'est détruit avant son retry.
     const persisted = await quoteDraft.save();
     if (persisted) {
       leave(action);
@@ -1291,6 +1316,29 @@ export default function DevisNew() {
   };
 
   // ════════ RECAP (machine: 'recap', devis réel créé — JAMAIS de facture) ═════
+  if (!billingDefaultsReady) {
+    return (
+      <View
+        style={{
+          flex: 1,
+          backgroundColor: colors.bg,
+          paddingTop: insets.top + 24,
+          paddingHorizontal: 18,
+          justifyContent: 'center',
+        }}
+      >
+        {billingPrefs.isError ? (
+          <ErrorRetry
+            message={t('reglages.dataError', { personality })}
+            onRetry={() => { void billingPrefs.refetch(); }}
+          />
+        ) : (
+          <ActivityIndicator color={semantic.ai} size="large" />
+        )}
+      </View>
+    );
+  }
+
   if (quoteResult !== null) {
     const signed = quoteResult.status === 'signed';
     const tint = signed ? semantic.success : semantic.warning;
@@ -2324,7 +2372,12 @@ export default function DevisNew() {
             {quoteDraft.persistence.error !== null ? (
               <Card style={{ borderColor: semantic.danger }}>
                 <Text accessibilityRole="alert" style={[font('sub'), { color: semantic.danger }]}>
-                  {t('devis.draftExit.persistenceError', { personality })}
+                  {t(
+                    quoteDraft.persistence.error === 'conflict'
+                      ? 'devis.draftExit.persistenceConflict'
+                      : 'devis.draftExit.persistenceError',
+                    { personality },
+                  )}
                 </Text>
               </Card>
             ) : null}

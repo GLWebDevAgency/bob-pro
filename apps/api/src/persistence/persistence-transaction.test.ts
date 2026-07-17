@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DocumentFolder } from '@bob/core';
-import { InMemoryPersistence } from './persistence';
+import { InMemoryPersistence } from './persistence.testing';
 
 function folder(id: string, name: string) {
   const result = DocumentFolder.create({

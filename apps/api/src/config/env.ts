@@ -2,7 +2,8 @@ import { z } from 'zod';
 
 const schema = z.object({
   PORT: z.coerce.number().default(3000),
-  // Le serveur normal est live. La démo n'existe que sur opt-in explicite (`DEMO_MODE=true`).
+  // Relâche uniquement les dépendances externes obligatoires dans certains tests de composition.
+  // Ce flag ne peut désactiver ni JWT/RLS, ni fournir de données synthétiques au runtime.
   DEMO_MODE: z.enum(['true', 'false']).default('false'),
   ANTHROPIC_API_KEY: z.string().optional(),
   GLM_API_KEY: z.string().optional(),
@@ -108,6 +109,8 @@ const schema = z.object({
   STRIPE_PRICE_SOLO: z.string().optional(),
   STRIPE_PRICE_PRO: z.string().optional(),
   STRIPE_PRICE_BUSINESS: z.string().optional(),
+  STRIPE_WEBHOOK_SECRET: z.string().trim().startsWith('whsec_').optional(),
+  STRIPE_LIVEMODE: z.enum(['true', 'false']).optional(),
   PAYMENT_RETURN_BASE_URL: z.string().url().optional(),
   DATABASE_URL: z.string().optional(),
   DIRECT_URL: z.string().optional(),
@@ -124,12 +127,12 @@ const schema = z.object({
   BREVO_API_BASE_URL: z.string().url().default('https://api.brevo.com/v3'),
   BREVO_SENDER_EMAIL: z.string().email().optional(),
   BREVO_SENDER_NAME: z.string().default('Bob Pro'),
-  SIGN_WEB_BASE_URL: z.string().url().default('https://demo.bobpro.fr'),
+  SIGN_WEB_BASE_URL: z.string().url().optional(),
   METRICS_TOKEN: z.string().min(32).optional(),
   CABINET_RELEASE_ENV: z.enum(['development', 'staging', 'production']).default('development'),
   CABINET_INVITATION_TOKEN_ENCRYPTION_KEY: z.string().min(32).optional(),
   CABINET_INVITATION_TOKEN_KEY_VERSION: z.coerce.number().int().positive().default(1),
-  CABINET_INVITATION_WEB_BASE_URL: z.string().url().default('https://demo.bobpro.fr/cabinet'),
+  CABINET_INVITATION_WEB_BASE_URL: z.string().url().optional(),
   CABINET_INVITATION_WORKER_ENABLED: z.enum(['true', 'false']).default('false'),
   JOB_CABINET_IDS: z.string().optional(),
   CABINET_INVITATION_WORKER_USER_ID: z.string().uuid().optional(),
@@ -254,11 +257,11 @@ export function loadEnv(): Env {
   if (!parsed.success) {
     throw new Error(`Variables d'environnement invalides : ${parsed.error.toString()}`);
   }
-  // Garde-fou : en production, le mode démo (auth pass-through) exposerait des endpoints sans token
-  // et consommerait des ressources externes (API publiques) de façon anonyme. On refuse de démarrer.
+  // Garde-fou de déploiement : même si ce flag ne contourne plus JWT/RLS, un serveur de production
+  // doit certifier toutes ses dépendances externes au démarrage et ne jamais utiliser le profil de test.
   if (process.env.NODE_ENV === 'production' && parsed.data.DEMO_MODE !== 'false') {
     throw new Error(
-      "Refus de démarrer : en production, DEMO_MODE doit valoir 'false' (l'auth pass-through démo désactive la sécurité).",
+      "Refus de démarrer : en production, DEMO_MODE doit valoir 'false' (profil de test interdit).",
     );
   }
   if (parsed.data.DEMO_MODE === 'false') {
@@ -268,6 +271,8 @@ export function loadEnv(): Env {
       'SUPABASE_URL',
       'SUPABASE_SERVICE_ROLE_KEY',
       'CABINET_INVITATION_TOKEN_ENCRYPTION_KEY',
+      'SIGN_WEB_BASE_URL',
+      'CABINET_INVITATION_WEB_BASE_URL',
       'BREVO_API_KEY',
       'BREVO_SENDER_EMAIL',
       'METRICS_TOKEN',
@@ -301,6 +306,8 @@ export function loadEnv(): Env {
       'STRIPE_PRICE_SOLO',
       'STRIPE_PRICE_PRO',
       'STRIPE_PRICE_BUSINESS',
+      'STRIPE_WEBHOOK_SECRET',
+      'STRIPE_LIVEMODE',
       'PAYMENT_RETURN_BASE_URL',
     ];
     const missingPayment = paymentRequired.filter((key) => !parsed.data[key]);
@@ -322,7 +329,7 @@ export function loadEnv(): Env {
       ['SIGN_WEB_BASE_URL', parsed.data.SIGN_WEB_BASE_URL],
       ['CABINET_INVITATION_WEB_BASE_URL', parsed.data.CABINET_INVITATION_WEB_BASE_URL],
     ] as const) {
-      const url = new URL(raw);
+      const url = new URL(raw as string);
       if (
         url.protocol !== 'https:' ||
         url.hostname === 'localhost' ||
@@ -356,7 +363,7 @@ export function loadEnv(): Env {
       if (secret?.includes('[') || secret?.includes(']'))
         throw new Error(`${name} contient un placeholder.`);
     }
-    const invitationUrl = new URL(parsed.data.CABINET_INVITATION_WEB_BASE_URL);
+    const invitationUrl = new URL(parsed.data.CABINET_INVITATION_WEB_BASE_URL as string);
     if (invitationUrl.protocol !== 'https:' && invitationUrl.hostname !== 'localhost') {
       throw new Error('CABINET_INVITATION_WEB_BASE_URL doit utiliser HTTPS hors localhost.');
     }

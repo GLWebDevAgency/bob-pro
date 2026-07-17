@@ -18,7 +18,7 @@ import { useRouter } from 'expo-router';
 import { formatEURWhole } from '@bob/core';
 import type { TrialReportView } from '@bob/api-client';
 import { t } from '@bob/i18n';
-import { Button, Card, font, useTheme } from '@bob/ui';
+import { Button, Card, ErrorRetry, font, useTheme } from '@bob/ui';
 import { useQuery } from '@tanstack/react-query';
 import { useBobClient } from '../data/client';
 
@@ -27,7 +27,7 @@ import { useBobClient } from '../data/client';
  * (pas d'essai, phase active, client sans la capacité, réseau) : la carte ne se rend pas,
  * aucun spinner de vente, zéro régression pour les tenants early-access.
  */
-export function useTrialReport(): TrialReportView | null {
+export function useTrialReport() {
   const client = useBobClient();
   const query = useQuery({
     queryKey: ['trial-report'],
@@ -40,7 +40,12 @@ export function useTrialReport(): TrialReportView | null {
     staleTime: 15 * 60 * 1000, // le bilan d'essai ne bouge pas à la minute
     retry: false, // pas de bilan = pas de carte — jamais un spinner de vente
   });
-  return query.data ?? null;
+  return {
+    report: query.data ?? null,
+    isLoading: query.isLoading,
+    isError: query.isError,
+    refetch: query.refetch,
+  };
 }
 
 /** Lignes de faits — UNIQUEMENT celles qui existent (jamais un zéro gonflé en argument). */
@@ -130,7 +135,28 @@ export function TrialReportCard({ report }: { readonly report: TrialReportView }
 
 /** Intégration écran : la carte derrière le hook — invisible hors fin d'essai, sans condition à écrire. */
 export function LatestTrialReportCard(): React.JSX.Element | null {
-  const report = useTrialReport();
+  const { personality } = useTheme();
+  const query = useTrialReport();
+  if (query.isLoading && query.report === null) return null;
+  if (query.isError && query.report === null) {
+    return (
+      <ErrorRetry
+        message={t('today.dataError', { personality })}
+        onRetry={() => void query.refetch()}
+      />
+    );
+  }
+  const report = query.report;
   if (report === null || report.trial === null || report.trial.phase === 'active') return null;
-  return <TrialReportCard report={report} />;
+  return (
+    <View style={{ gap: 8 }}>
+      {query.isError ? (
+        <ErrorRetry
+          message={t('today.dataError', { personality })}
+          onRetry={() => void query.refetch()}
+        />
+      ) : null}
+      <TrialReportCard report={report} />
+    </View>
+  );
 }

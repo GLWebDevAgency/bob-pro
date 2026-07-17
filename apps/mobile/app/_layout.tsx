@@ -33,10 +33,21 @@ import { ProvisioningScreen } from '../src/screens/ProvisioningScreen';
 import { BiometricGate } from '../src/screens/BiometricGate';
 import { companyIdFromAppMetadata } from '../src/data/tenant-identity';
 import { PASSWORD_RECOVERY_ROUTE } from '../src/auth-recovery/password-recovery';
+import { useLegacyCatalogueProtection } from '../src/data/catalogue';
 
 // Garde le splash NATIF visible pendant le chargement critique. L'appel au scope module est
 // volontaire : exécuté avant que React puisse rendre une frame blanche.
 void SplashScreen.preventAutoHideAsync();
+
+/**
+ * Migration device-scoped, indépendante du compte : retire l'ancienne clé globale en clair dès
+ * le démarrage, uniquement après copie vérifiée dans le coffre. L'archive n'est attribuée à aucun
+ * tenant et son état explicatif reste disponible sur l'écran Catalogue.
+ */
+function CatalogueLegacyProtectionBridge() {
+  useLegacyCatalogueProtection();
+  return null;
+}
 
 function AppReadyGate({ fontsReady, children }: { fontsReady: boolean; children: ReactNode }) {
   const { loading } = useAuth();
@@ -62,8 +73,6 @@ function AuthGate({ children }: { children: ReactNode }) {
     useAuth();
   const { colors, personality } = useTheme();
   const pathname = usePathname();
-  // La galerie @bob/ui (claim C03) est un outil de design sans données : hors porte d'auth.
-  if (pathname === '/gallery') return <>{children}</>;
   // La récupération est volontairement hors du tenant/provisioning : le lien email constitue
   // la preuve éphémère, puis PasswordRecoveryScreen établit la session avant updateUser.
   // L'événement PASSWORD_RECOVERY ouvre le même écran même si le routeur n'a pas encore bougé.
@@ -136,6 +145,7 @@ export default function RootLayout() {
       <SafeAreaProvider>
         <QueryClientProvider client={queryClient}>
           <ThemeProvider>
+            <CatalogueLegacyProtectionBridge />
             <AuthProvider>
               <StatusBar style="light" />
               {/* C24 : le client data vit AU-DESSUS de la porte d'auth — l'inscription
@@ -172,11 +182,11 @@ export default function RootLayout() {
                               <Stack.Screen name="documents/folder/[id]" />
                               <Stack.Screen name="voix" options={{ presentation: 'modal' }} />
                               <Stack.Screen name="chantiers" />
+                              <Stack.Screen name="chantier/[id]" />
                               <Stack.Screen name="ventes" />
                               <Stack.Screen name="comptabilite" />
                               <Stack.Screen name="cloture" />
                               <Stack.Screen name="pilotage" />
-                              <Stack.Screen name="gallery" />
                             </Stack>
                             <GlobalBobAccess />
                           </ConfirmProvider>

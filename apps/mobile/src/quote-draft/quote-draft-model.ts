@@ -220,6 +220,7 @@ function cloneFlow(flow: DevisFlowState): DevisFlowState {
       ...flow.draft,
       lines: flow.draft.lines.map(cloneLine),
       tvaContext: flow.draft.tvaContext === null ? null : { ...flow.draft.tvaContext },
+      vatRate: flow.draft.vatRate,
     },
   };
 }
@@ -357,13 +358,15 @@ export function hasStagedQuoteDraftLine(state: QuoteDraftState): boolean {
   return form.label.trim() !== '' || form.unitPrice.trim() !== '' || form.quantity.trim() !== '1';
 }
 
-/** Un défaut TVA semé par le profil ne suffit pas, à lui seul, à créer un faux brouillon. */
+/** Un choix TVA est une décision explicite et doit survivre à la reprise du brouillon. */
 export function hasMeaningfulQuoteDraft(state: QuoteDraftState): boolean {
   const draft = state.flow.draft;
   return (
     state.flow.step !== 'client' ||
     draft.customerId !== null ||
     draft.lines.length > 0 ||
+    draft.tvaContext !== null ||
+    draft.vatRate !== null ||
     draft.signerName !== null ||
     draft.signMode !== null ||
     draft.depositPct !== 30 ||
@@ -509,6 +512,13 @@ function applyRawCommand(
   if (command.type === 'add_line') {
     const step = requireStep(state, ['lignes'], 'L’ajout d’une ligne');
     if (!step.ok) return step;
+    if (state.flow.draft.tvaContext === null || state.flow.draft.vatRate === null) {
+      return fail({
+        code: 'validation',
+        field: 'vatRate',
+        message: 'Confirme le taux de TVA avant d’ajouter une ligne.',
+      });
+    }
     const lineId = command.lineId.trim();
     if (lineId === '')
       return fail({ code: 'validation', field: 'lineId', message: 'Identifiant de ligne requis.' });
@@ -517,6 +527,13 @@ function applyRawCommand(
     }
     const line = validateQuoteDraftLine(command.line);
     if (!line.ok) return line;
+    if (line.value.vatRate !== state.flow.draft.vatRate) {
+      return fail({
+        code: 'validation',
+        field: 'vatRate',
+        message: 'Le taux de la ligne doit correspondre au taux confirmé du devis.',
+      });
+    }
     return ok({
       ...state,
       flow: devisEdit(cloneFlow(state.flow), {
@@ -550,6 +567,13 @@ function applyRawCommand(
     }
     const line = validateQuoteDraftLine({ ...cloneLine(current), ...command.patch });
     if (!line.ok) return line;
+    if (state.flow.draft.vatRate === null || line.value.vatRate !== state.flow.draft.vatRate) {
+      return fail({
+        code: 'validation',
+        field: 'vatRate',
+        message: 'Modifie le taux depuis le choix TVA du devis.',
+      });
+    }
     const lines = state.flow.draft.lines.map((candidate, candidateIndex) =>
       candidateIndex === index ? line.value : cloneLine(candidate),
     );
@@ -580,10 +604,18 @@ function applyRawCommand(
     if (!isVatRate(command.vatRate)) {
       return fail({ code: 'validation', field: 'vatRate', message: 'Taux de TVA non autorisé.' });
     }
+    if (command.context === null) {
+      return fail({
+        code: 'validation',
+        field: 'vatRate',
+        message: 'Le contexte TVA doit être confirmé.',
+      });
+    }
     return ok({
       ...state,
       flow: devisEdit(cloneFlow(state.flow), {
-        tvaContext: command.context === null ? null : { ...command.context },
+        tvaContext: { ...command.context },
+        vatRate: command.vatRate,
         lines: state.flow.draft.lines.map((line) => ({
           ...cloneLine(line),
           vatRate: command.vatRate,

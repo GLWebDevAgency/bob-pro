@@ -99,7 +99,7 @@ async function issueFinalInvoice(
   return { invoiceId: generated.value.invoiceId, number: issued.value.number };
 }
 
-describe('PONT-SERVEUR v1 ① — POST /expenses/:id/pay (PayExpense : to_pay→paid + décaissement 401/512)', () => {
+describe('PONT-SERVEUR v1 ① — POST /expenses/:id/pay (preuve réelle + décaissement 401/512)', () => {
   it('règle la dépense : statut paid, écriture expense:{id}:paid au journal de banque (401/512), idempotent', async () => {
     const { service } = makeService();
     await asPrincipal(MERCIER, async () => {
@@ -115,10 +115,20 @@ describe('PONT-SERVEUR v1 ① — POST /expenses/:id/pay (PayExpense : to_pay→
       expect(recorded.ok).toBe(true);
       if (!recorded.ok) return;
 
-      const paid = await service.payExpense({ expenseId: recorded.value.id });
+      const evidence = {
+        expenseId: recorded.value.id,
+        paidOn: todayUtc(),
+        method: 'transfer' as const,
+        reference: 'VIR-CEDEO-42',
+      };
+      const paid = await service.recordExpensePayment(evidence);
       expect(paid.ok).toBe(true);
       if (!paid.ok) return;
-      expect(paid.value).toEqual({ status: 'paid', alreadyPaid: false });
+      expect(paid.value).toEqual({
+        status: 'paid',
+        alreadyRecorded: false,
+        paymentEntryId: `expense:${recorded.value.id}:paid`,
+      });
 
       const expenses = await service.listExpenses();
       expect(expenses.ok && expenses.value.find((e) => e.id === recorded.value.id)?.status).toBe('paid');
@@ -136,8 +146,8 @@ describe('PONT-SERVEUR v1 ① — POST /expenses/:id/pay (PayExpense : to_pay→
       ]);
 
       // Idempotent de bout en bout : re-payer ne double JAMAIS le journal.
-      const again = await service.payExpense({ expenseId: recorded.value.id });
-      expect(again.ok && again.value.alreadyPaid).toBe(true);
+      const again = await service.recordExpensePayment(evidence);
+      expect(again.ok && again.value.alreadyRecorded).toBe(true);
       const entriesAfter = await service.listAccountingEntries();
       expect(
         entriesAfter.ok && entriesAfter.value.filter((e) => e.id === `expense:${recorded.value.id}:paid`),
@@ -153,7 +163,11 @@ describe('PONT-SERVEUR v1 ① — POST /expenses/:id/pay (PayExpense : to_pay→
     expect(recorded.ok).toBe(true);
     if (!recorded.ok) return;
 
-    const r = await asPrincipal(INTRUS, () => service.payExpense({ expenseId: recorded.value.id }));
+    const r = await asPrincipal(INTRUS, () => service.recordExpensePayment({
+      expenseId: recorded.value.id,
+      paidOn: todayUtc(),
+      method: 'card',
+    }));
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toEqual({ kind: 'not_found', entity: 'expense', id: recorded.value.id });
   });

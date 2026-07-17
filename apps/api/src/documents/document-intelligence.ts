@@ -9,7 +9,7 @@ import {
   type DocumentIntelligencePort,
   type Result,
 } from '@bob/core';
-import { hasClaudeKey, hasMistralKey, isDemoMode } from '../config/env';
+import { hasClaudeKey, hasMistralKey } from '../config/env';
 
 export const DOCUMENT_INTELLIGENCE_PORT = Symbol('DOCUMENT_INTELLIGENCE_PORT');
 
@@ -372,28 +372,6 @@ export class ClaudeDocumentIntelligence implements DocumentIntelligencePort {
   }
 }
 
-export class DemoDocumentIntelligence implements DocumentIntelligencePort {
-  async analyzeDocument(input: DocumentIntelligenceInput): Promise<Result<DocumentIntelligenceOutput, AppError>> {
-    const name = input.filename.toLowerCase();
-    const type = /facture/.test(name) ? 'supplier_invoice' : /ticket|recu|reçu/.test(name) ? 'receipt' : 'other';
-    return ok({
-      analyzerVersion: `${ANALYZER_VERSION}:demo`,
-      analysis: {
-        type,
-        typeConfidence: type === 'other' ? 0.35 : 0.8,
-        summary:
-          type === 'other'
-            ? 'Bob a conservé le document, mais il faut confirmer sa nature et son rangement.'
-            : 'Bob reconnaît une pièce d’achat. Vérifie les informations avant de la classer.',
-        facts: [],
-        suggestedTags: type === 'other' ? ['a-classer'] : ['achat'],
-        suggestedFilename: input.filename,
-        warnings: ['Mode démo : les champs détaillés doivent être confirmés.'],
-      },
-    });
-  }
-}
-
 export class UnavailableDocumentIntelligence implements DocumentIntelligencePort {
   analyzeDocument(): Promise<Result<DocumentIntelligenceOutput, AppError>> {
     return Promise.resolve(dependency('document-intelligence', 'Aucun moteur documentaire configuré en production.'));
@@ -417,7 +395,6 @@ class FallbackDocumentIntelligence implements DocumentIntelligencePort {
 export const documentIntelligenceProvider = {
   provide: DOCUMENT_INTELLIGENCE_PORT,
   useFactory: (): DocumentIntelligencePort => {
-    if (isDemoMode()) return new DemoDocumentIntelligence();
     const engines: DocumentIntelligencePort[] = [];
     if (hasMistralKey()) engines.push(new MistralDocumentIntelligence(process.env.MISTRAL_API_KEY as string));
     if (hasClaudeKey()) engines.push(new ClaudeDocumentIntelligence(process.env.ANTHROPIC_API_KEY as string));

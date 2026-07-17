@@ -63,6 +63,22 @@ describe('resolveMobileDataMode', () => {
     ).toThrow(new MobileDataConfigurationError('insecure_release_url'));
   });
 
+  it.each(['development', 'preview', 'production'])(
+    'refuse le domaine de démonstration comme autorité data (%s)',
+    (easBuildProfile) => {
+      expect(() => resolveMobileDataMode({
+        ...REMOTE,
+        apiUrl: 'https://demo.bobpro.fr/api',
+        easBuildProfile,
+      })).toThrow(new MobileDataConfigurationError('demo_forbidden'));
+      expect(() => resolveMobileDataMode({
+        ...REMOTE,
+        supabaseUrl: 'https://demo.bobpro.fr',
+        easBuildProfile,
+      })).toThrow(new MobileDataConfigurationError('demo_forbidden'));
+    },
+  );
+
   it('refuse un jeton API statique dans toutes les apps utilisateur connectées', () => {
     expect(() => resolveMobileDataMode({ ...REMOTE, apiToken: 'shared-secret' })).toThrow(
       new MobileDataConfigurationError('static_token_forbidden'),

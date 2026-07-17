@@ -30,7 +30,7 @@ import {
   DeleteDraftInvoice,
   IssueInvoice,
   RegisterPayment,
-  PayExpense,
+  RecordExpensePayment,
   RecordExpenseAccountingEntries,
   RecordIssuedInvoiceAccountingEntry,
   RecordPaymentAccountingEntry,
@@ -74,6 +74,9 @@ import {
   UpdateCatalogueItem,
   DeleteCatalogueItem,
   CreateChantier,
+  AddChantierNote,
+  UploadWorksitePhoto,
+  DeleteWorksitePhoto,
   AutofillCompanyFromSiret,
   ValidateVatNumber,
   GetFiscalProfile,
@@ -88,6 +91,7 @@ import {
   type SubscriptionRecord,
   Company,
   Customer,
+  UpdateCustomer,
   deriveRelancePlan,
   ok,
   err,
@@ -125,13 +129,19 @@ import {
   type Trade,
   type VatRegime,
   type ChantierProps,
+  type ChantierNoteProps,
+  type WorksiteMediaItem,
   type CreateChantierInput,
   type CompanyProps,
+  type CompanyBillingSettings,
+  type CompanyBillingSettingsPatch,
   type CustomerPortfolio,
   type CompanyLookupResult,
   type VatCheckResult,
   type AddressSuggestion,
   type DocumentView,
+  Document,
+  type DocumentRepository,
   type DocumentDownloadUrl,
   type DocumentFolderView,
   type DeleteDocumentFolderStrategy,
@@ -164,6 +174,9 @@ import {
   InMemoryExpenseRepository,
   InMemoryCatalogueRepository,
   InMemoryChantierRepository,
+  InMemoryChantierNoteRepository,
+  InMemoryWorksiteMediaStorage,
+  InMemoryDocumentStorage,
   InMemoryAccountingEntryRepository,
   InMemoryChartOfAccountsRepository,
 } from './in-memory/repositories';
@@ -179,6 +192,8 @@ import type {
   QuoteView,
   InvoiceView,
   PaymentView,
+  RecordExpensePaymentClientInput,
+  RecordExpensePaymentClientOutput,
   SubscriptionView,
   SendQuoteOutput,
   CreateQuoteSignatureLinkOutput,
@@ -224,6 +239,7 @@ import type {
   RecordDocumentExpenseClientOutput,
   AskBobClientInput,
   CreateCustomerClientInput,
+  UpdateCustomerClientInput,
   SearchSalesDocumentsClientInput,
   ValueDigestView,
   TrialReportView,
@@ -452,9 +468,55 @@ export class LocalBobClient implements BobClient {
   private quoteCreationTail: Promise<void> = Promise.resolve();
   private quoteDraftSlot: QuoteDraftSlotView | null = null;
   private readonly chantiers = new InMemoryChantierRepository();
+  private readonly chantierNotes = new InMemoryChantierNoteRepository();
+  private readonly worksiteMedia = new InMemoryWorksiteMediaStorage();
+  private readonly worksitePhotoBytes = new InMemoryDocumentStorage();
   private readonly accountingEntries = new InMemoryAccountingEntryRepository();
   private readonly chartOfAccounts = new InMemoryChartOfAccountsRepository();
   private readonly documents: DocumentView[] = [];
+  /** Adaptateur strictement réservé au client de test : restitue l'agrégat attendu par le core. */
+  private readonly paymentProofDocuments: Pick<DocumentRepository, 'findById'> = {
+    findById: async (companyId, documentId) => {
+      const view = this.documents.find(
+        (candidate) => candidate.companyId === companyId && candidate.id === documentId,
+      );
+      if (!view) return null;
+      return Document.rehydrate({
+        id: view.id,
+        companyId: view.companyId,
+        kind: view.kind,
+        origin: view.origin,
+        status: view.status,
+        filename: view.filename,
+        mimeType: view.mimeType,
+        byteSize: view.byteSize,
+        sha256: view.sha256,
+        storageKey: view.storageKey,
+        folderId: view.folderId,
+        revision: view.revision,
+        linkedEntityType: view.linkedEntityType,
+        linkedEntityId: view.linkedEntityId,
+        documentDate: view.documentDate,
+        issuedAt: view.issuedAt,
+        createdAt: view.createdAt,
+        createdBy: view.createdBy,
+        retentionUntil: view.retentionUntil,
+        deletedAt: view.status === 'deleted' ? view.createdAt : null,
+        versions: [{
+          id: `${view.id}:v${view.version}`,
+          documentId: view.id,
+          version: view.version,
+          storageKey: view.storageKey,
+          sha256: view.sha256,
+          mimeType: view.mimeType,
+          byteSize: view.byteSize,
+          createdAt: view.createdAt,
+          reason: 'Adaptateur LocalBobClient',
+        }],
+        tags: [...view.tags],
+      });
+    },
+  };
   private readonly documentContents = new Map<
     string,
     { contentBase64: string; mimeType: string }
@@ -545,10 +607,23 @@ export class LocalBobClient implements BobClient {
   // Assistant local (C40 ⑧) : journal append-only en mémoire + agent @bob/ai instancié à la demande.
   private readonly journal = new InMemoryJournalStore();
   private agent: BobAgent | null = null;
+  private billingSettings: CompanyBillingSettings;
 
   constructor(opts?: LocalBobClientOptions) {
     const company = seedCompany();
     this.companyId = company.id;
+    const settingsCreatedAt = new Date().toISOString();
+    this.billingSettings = {
+      companyId: company.id,
+      revision: 1,
+      showRibOnInvoices: false,
+      showInsuranceOnInvoices: true,
+      pdfAccentColor: 'navy',
+      defaultQuoteValidityDays: 30,
+      defaultDepositPercent: 30,
+      createdAt: settingsCreatedAt,
+      updatedAt: settingsCreatedAt,
+    };
     this.companies.seed(company);
     this.customers.seed(seedCustomers());
     this.clock = opts?.clock ?? new SystemClock();
@@ -1018,6 +1093,26 @@ export class LocalBobClient implements BobClient {
     if (!updated.ok) return err(appDomain(updated.error));
     await this.companies.save(updated.value);
     return ok(updated.value.toProps());
+  }
+
+  async getCompanyBillingSettings(): Promise<Result<CompanyBillingSettings, AppError>> {
+    return ok({ ...this.billingSettings });
+  }
+
+  async updateCompanyBillingSettings(input: {
+    expectedRevision: number;
+    patch: CompanyBillingSettingsPatch;
+  }): Promise<Result<CompanyBillingSettings, AppError>> {
+    if (input.expectedRevision !== this.billingSettings.revision) {
+      return err(appConflict('company_billing_settings', 'stale_revision'));
+    }
+    this.billingSettings = {
+      ...this.billingSettings,
+      ...input.patch,
+      revision: this.billingSettings.revision + 1,
+      updatedAt: new Date().toISOString(),
+    };
+    return ok({ ...this.billingSettings });
   }
 
   /** C-EXP5b (adaptateur démo) : MÊMES règles que le serveur — deriveFiscalCalendar sur la fiche
@@ -1988,6 +2083,18 @@ export class LocalBobClient implements BobClient {
     return ok({ id });
   }
 
+  /** Édition post-création — même chemin que PATCH /customers/:id côté serveur. */
+  async updateCustomer(
+    id: string,
+    input: UpdateCustomerClientInput,
+  ): Promise<Result<{ id: string }, AppError>> {
+    return new UpdateCustomer({ customers: this.customers }).execute({
+      id,
+      companyId: this.companyId,
+      ...input,
+    });
+  }
+
   async getCashflow(input: {
     scenario: Scenario;
     horizon: Horizon;
@@ -2380,15 +2487,18 @@ export class LocalBobClient implements BobClient {
     return ok({ status: 'approved', expenseId: recorded.value.id, xmlDocumentId: id });
   }
 
-  /** E4 : règle la dépense — transition + écriture de décaissement à la date du jour. */
-  async payExpense(input: { expenseId: string }): Promise<Result<{ status: string }, AppError>> {
+  /** Adaptateur de test : même preuve explicite et même use case que le serveur. */
+  async payExpense(
+    input: RecordExpensePaymentClientInput,
+  ): Promise<Result<RecordExpensePaymentClientOutput, AppError>> {
     await this.ready;
-    return new PayExpense({
+    return new RecordExpensePayment({
       expenses: this.expenses,
       entries: this.accountingEntries,
       clock: this.clock,
       charts: this.chartOfAccounts,
-    }).execute(input);
+      documents: this.paymentProofDocuments,
+    }).execute({ ...input, companyId: this.companyId });
   }
 
   async listExpenses(): Promise<Result<ExpenseProps[], AppError>> {
@@ -2451,6 +2561,68 @@ export class LocalBobClient implements BobClient {
   async listChantiers(): Promise<Result<ChantierProps[], AppError>> {
     const list = await this.chantiers.listByCompany(this.companyId);
     return ok(list.map((c) => c.toProps()));
+  }
+
+  async listChantierNotes(chantierId: string): Promise<Result<ChantierNoteProps[], AppError>> {
+    const list = await this.chantierNotes.listByChantier(this.companyId, chantierId);
+    return ok(list.map((n) => n.toProps()));
+  }
+
+  async addChantierNote(
+    chantierId: string,
+    input: { text: string },
+  ): Promise<Result<{ id: string }, AppError>> {
+    const company = await this.companies.findById(this.companyId);
+    return new AddChantierNote({
+      chantiers: this.chantiers,
+      notes: this.chantierNotes,
+      ids: this.ids,
+      clock: this.clock,
+    }).execute({
+      companyId: this.companyId,
+      chantierId,
+      text: input.text,
+      authorLabel: company?.name ?? 'Bob Pro',
+    });
+  }
+
+  async listWorksitePhotos(chantierId: string): Promise<Result<WorksiteMediaItem[], AppError>> {
+    return ok(await this.worksiteMedia.listByChantier(this.companyId, chantierId));
+  }
+
+  async uploadWorksitePhoto(
+    chantierId: string,
+    input: { contentBase64: string; mimeType: string; filename: string },
+  ): Promise<Result<WorksiteMediaItem, AppError>> {
+    return new UploadWorksitePhoto({
+      chantiers: this.chantiers,
+      media: this.worksiteMedia,
+      storage: this.worksitePhotoBytes,
+      ids: this.ids,
+      clock: this.clock,
+    }).execute({
+      companyId: this.companyId,
+      chantierId,
+      bytes: new Uint8Array(Buffer.from(input.contentBase64, 'base64')),
+      contentType: input.mimeType,
+      filename: input.filename,
+    });
+  }
+
+  async worksitePhotoViewUrl(
+    photoId: string,
+  ): Promise<Result<{ url: string; expiresInSeconds: number }, AppError>> {
+    const item = await this.worksiteMedia.findById(this.companyId, photoId);
+    if (!item) return err(appNotFound('worksite_photo', photoId));
+    const url = await this.worksitePhotoBytes.getSignedUrl(this.companyId, item.storageKey, 300);
+    return ok({ url, expiresInSeconds: 300 });
+  }
+
+  async deleteWorksitePhoto(photoId: string): Promise<Result<void, AppError>> {
+    return new DeleteWorksitePhoto({
+      media: this.worksiteMedia,
+      storage: this.worksitePhotoBytes,
+    }).execute({ companyId: this.companyId, id: photoId });
   }
 
   // Écritures billing : barrière this.ready (le seed démo doit être ENTIÈREMENT posé avant
@@ -3365,10 +3537,10 @@ export class LocalBobClient implements BobClient {
             }),
         );
       },
-      payExpense: async (input) => {
+      recordExpensePayment: async (input) => {
         const r = await this.payExpense(input);
         if (!r.ok) return r;
-        return ok({ status: r.value.status });
+        return ok(r.value);
       },
       // C25 ① : brouillon CIBLABLE, dérivé du plan de relances réel (@bob/core — ton par
       // ancienneté, reste dû netToPay − paid). Fini le « plus gros encours, J+7 inventé ».

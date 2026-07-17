@@ -84,6 +84,7 @@ export function makeEnv() {
     },
     findById: async (companyId, id) => paymentsArr.find((p) => p.companyId === companyId && p.id === id) ?? null,
     listByInvoice: async (invoiceId) => paymentsArr.filter((p) => p.invoiceId === invoiceId),
+    listByCompany: async (companyId) => paymentsArr.filter((p) => p.companyId === companyId),
     findByIdempotencyKey: async (companyId, key) =>
       paymentsArr.find((p) => p.companyId === companyId && p.idempotencyKey === key) ?? null,
   };

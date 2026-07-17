@@ -3,7 +3,7 @@
  *
  * DONNÉES RÉELLES, une seule vérité : useNotificationsFeed (hooks) compose
  * · le FIL SERVEUR (GET /notifications — jobs réels : relances envoyées/en retry ; lu/non-lu
- *   PERSISTÉS via POST /notifications/:id/read ; le LocalBobClient dérive en démo) ;
+ *   PERSISTÉS via POST /notifications/:id/read) ;
  * · les agrégats @bob/core sur les queries partagées — deriveRelancePlan (relances dues et
  *   planifiées, ton escaladé par ancienneté) + deriveUpcomingDues (échéances ≤ 7 j) +
  *   todayCompanyFromDiagnostic (conformité e-invoicing).
@@ -22,7 +22,7 @@
  * · l'écran cadence éditable du proto n'existe pas (pas de réglage serveur) — la mise en demeure
  *   n'est JAMAIS envoyée par le cron : elle attend le geste confirmé ici (relance.medWarning).
  */
-import { useCallback, useState, useMemo } from 'react';
+import { useCallback, useState, useMemo, useRef } from 'react';
 import { AccessibilityInfo, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native';
 import { useFocusEffect, useRouter, type Href } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -97,6 +97,12 @@ function frDate(dateOnly: string): string {
 /** Référence visible d'une pièce — jamais un id interne nu si un numéro existe. */
 function displayDoc(docNumber: string | null, invoiceId: string): string {
   return docNumber ?? invoiceId;
+}
+
+/** Preuve minimale du contenu confirmé : une même facture dont le montant, le retard ou le ton
+ * a changé doit repasser par la modale, même si son identifiant est identique. */
+function relanceProof(entry: RelancePlanEntry): string {
+  return [entry.invoiceId, entry.amountCents, entry.daysLate, entry.tone, entry.docNumber ?? ''].join('|');
 }
 
 function toneColor(tone: RelanceTone, semantic: { particulier: string; b2b: string; danger: string }): string {
@@ -536,6 +542,16 @@ export default function Notifications() {
   const sendRelance = useSendRelance();
   const pushConsent = usePushPermissionConsent();
   const [toast, setToast] = useState<string | null>(null);
+  const serverSnapshotReady = feed.unreadCount !== null;
+  const blockingError = feed.isError && !serverSnapshotReady;
+  const feedFresh = serverSnapshotReady && !feed.isLoading && !feed.isError;
+  const staleFeed = serverSnapshotReady && feed.isError;
+  const feedFreshRef = useRef(feedFresh);
+  feedFreshRef.current = feedFresh;
+  const dueRelanceProofsRef = useRef<ReadonlyMap<string, string>>(new Map());
+  dueRelanceProofsRef.current = new Map(
+    feed.due.map((entry) => [entry.invoiceId, relanceProof(entry)] as const),
+  );
 
   // Retour depuis les réglages iOS/Android : relire le statut, sans jamais rouvrir le prompt.
   useFocusEffect(
@@ -547,6 +563,13 @@ export default function Notifications() {
   // Bob voit le fil ET les factures du plan réellement affiché. Il peut ainsi lire les
   // notifications, puis cibler honnêtement « relance la facture F-… » sans repli silencieux.
   const agentContext = useMemo<AgentContext>(() => {
+    if (!feedFresh) {
+      return {
+        screen: { name: 'notifications', instanceId: 'notifications' },
+        entities: [],
+        capabilities: [],
+      };
+    }
     const entities: AgentContext['entities'][number][] = feed.items.slice(0, 12).map((item) => ({
       type: 'notification',
       id: item.id,
@@ -567,7 +590,7 @@ export default function Notifications() {
       entities,
       capabilities: ['screen.read', 'notification.read', 'invoice.read'],
     };
-  }, [feed.due, feed.items, feed.scheduled]);
+  }, [feed.due, feed.items, feed.scheduled, feedFresh]);
   usePublishAgentContext(agentContext);
 
   const planCount = feed.due.length + feed.scheduled.length;
@@ -577,7 +600,7 @@ export default function Notifications() {
 
   /** Item du fil : lu persisté (serveur) + deep link vers la pièce si la notif en porte un. */
   const openFeedItem = (item: NotificationView): void => {
-    if (item.readAt === null) {
+    if (feedFresh && item.readAt === null) {
       markRead.mutate(item.id, {
         onError: () => setToast(t('notif.markReadError', { personality })),
       });
@@ -588,6 +611,7 @@ export default function Notifications() {
 
   /** Parité manuel ↔ Bob : preview serveur frais, consentement, puis même commande read-through. */
   const markAllNotificationsRead = async (): Promise<void> => {
+    if (!feedFreshRef.current) return;
     const refreshed = await unreadPreview.refetch();
     const preview = refreshed.data;
     if (refreshed.isError || preview === undefined) {
@@ -608,7 +632,7 @@ export default function Notifications() {
       }),
       challenge: { kind: 'tap' },
     });
-    if (!accepted) return;
+    if (!accepted || !feedFreshRef.current) return;
     markAllRead.mutate(preview.throughCreatedAt, {
       onSuccess: (result) => {
         const successKey: I18nKey =
@@ -630,6 +654,7 @@ export default function Notifications() {
 
   /** ENVOI RÉEL confirmé (C25 ② — action sortante, mise en demeure jamais sans validation). */
   const relanceNow = async (entry: RelancePlanEntry): Promise<void> => {
+    if (!feedFreshRef.current) return;
     const name = entry.customerName || displayDoc(entry.docNumber, entry.invoiceId);
     const body = t('relance.confirmBody', {
       personality,
@@ -644,6 +669,14 @@ export default function Notifications() {
       destructive: entry.tone === 'miseendemeure',
     });
     if (!okToSend) return;
+    if (
+      !feedFreshRef.current
+      || dueRelanceProofsRef.current.get(entry.invoiceId) !== relanceProof(entry)
+    ) {
+      setToast(t('notif.dataError', { personality }));
+      feed.refetch();
+      return;
+    }
     sendRelance.mutate(entry.invoiceId, {
       onSuccess: (result) =>
         setToast(
@@ -702,10 +735,26 @@ export default function Notifications() {
         {pushConsent.surface === 'primer' ? (
           <PushConsentCard consent={pushConsent} personality={personality} onToast={setToast} />
         ) : null}
-        {feed.isLoading ? (
+        {!serverSnapshotReady && !blockingError ? (
           <NotificationsSkeleton />
-        ) : feed.isError ? (
+        ) : blockingError ? (
           <ErrorRetry message={t('notif.dataError', { personality })} onRetry={feed.refetch} />
+        ) : feed.isLoading ? (
+          <NotificationsSkeleton />
+        ) : staleFeed ? (
+          <View style={{ gap: 14 }}>
+            <ErrorRetry message={t('notif.dataError', { personality })} onRetry={feed.refetch} />
+            {feed.items.length > 0 ? (
+              <View>
+                <SectionHeader title={t('notif.sectionFeed', { personality })} />
+                <View style={{ gap: 10 }}>
+                  {feed.items.map((item) => (
+                    <FeedItemCard key={item.id} item={item} personality={personality} onPress={openFeedItem} />
+                  ))}
+                </View>
+              </View>
+            ) : null}
+          </View>
         ) : !hasNews ? (
           // 0 notification : état vide de premier rang — la voix de Bob, aucune carte fantôme.
           <Card>
@@ -718,12 +767,15 @@ export default function Notifications() {
                 <SectionHeader
                   title={t('notif.sectionFeed', { personality })}
                   action={
-                    (unreadPreview.data?.unreadCount ?? 0) > 0 ? (
+                    feedFresh
+                    && !unreadPreview.isError
+                    && unreadPreview.data !== undefined
+                    && unreadPreview.data.unreadCount > 0 ? (
                       <Button
                         title={t('notif.markAllAction', { personality })}
                         accessibilityLabel={t('notif.markAllActionA11y', {
                           personality,
-                          params: { count: unreadPreview.data?.unreadCount ?? 0 },
+                          params: { count: unreadPreview.data.unreadCount },
                         })}
                         variant="secondary"
                         size="compact"

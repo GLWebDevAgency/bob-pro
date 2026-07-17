@@ -4,7 +4,6 @@ import {
   err,
   appDomain,
   appUnavailable,
-  DemoOcrAdapter,
   SystemClock,
   type OcrPort,
   type OcrExtractInput,
@@ -14,7 +13,7 @@ import {
   type AppError,
 } from '@bob/core';
 import { buildSystemPrompt, type PromptContext } from '@bob/ai';
-import { hasClaudeKey, hasMistralKey, isDemoMode } from '../config/env';
+import { hasClaudeKey, hasMistralKey } from '../config/env';
 
 export const OCR_PORT = Symbol('OCR_PORT');
 
@@ -36,9 +35,6 @@ function ocrSystemPrompt(input: OcrExtractInput, today: string): string {
             label: input.trade.label,
             customerWord: input.trade.customerWord,
             projectWord: input.trade.projectWord,
-            ...(input.trade.defaultVatRatePct !== undefined
-              ? { defaultVatRatePct: input.trade.defaultVatRatePct }
-              : {}),
           },
         }
       : {}),
@@ -505,11 +501,10 @@ export class UnavailableOcrAdapter implements OcrPort {
 }
 
 /**
- * Bascule : démo déterministe uniquement en DEMO_MODE=true ; sinon chaîne LLM réelle,
- * Mistral en priorité et Claude Vision en repli. Sans clé live, la capacité est indisponible.
+ * Chaîne OCR de production : Mistral en priorité et Claude Vision en repli.
+ * Sans clé live, la capacité est indisponible ; le serveur ne fabrique jamais d'extraction.
  */
 export function buildOcrAdapter(): OcrPort {
-  if (isDemoMode()) return new DemoOcrAdapter(new SystemClock());
   const engines: NamedOcrEngine[] = [];
   if (hasMistralKey())
     engines.push({

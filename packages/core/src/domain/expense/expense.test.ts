@@ -48,14 +48,79 @@ describe('Expense.record', () => {
     expect(e.documentDate).toBe('2030-01-01');
   });
 
-  it('accepte et conserve un SIREN valide ; markPaid bascule le statut', () => {
+  it('accepte et conserve un SIREN valide', () => {
     const r = Expense.record({ ...base, supplierSiren: '732829320' });
     expect(r.ok).toBe(true);
     if (r.ok) {
-      r.value.markPaid();
-      expect(r.value.status).toBe('paid');
       expect(r.value.toProps().supplierSiren).toBe('732829320');
     }
+  });
+
+  it('enregistre une preuve de règlement explicite, normalisée et non future', () => {
+    const r = Expense.record(base);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const paid = r.value.recordPayment(
+      {
+        paidOn: '2026-06-14',
+        method: 'transfer',
+        reference: '  VIR-2026-0042  ',
+        proofDocumentId: '  document-1  ',
+      },
+      { today: '2026-06-15' },
+    );
+    expect(paid).toEqual({ ok: true, value: { alreadyRecorded: false } });
+    expect(r.value.toProps()).toMatchObject({
+      status: 'paid',
+      paymentEvidence: {
+        paidOn: '2026-06-14',
+        method: 'transfer',
+        reference: 'VIR-2026-0042',
+        proofDocumentId: 'document-1',
+      },
+    });
+  });
+
+  it('refuse date future, moyen inconnu et références non bornées sans changer le statut', () => {
+    const cases = [
+      { paidOn: '2026-06-16', method: 'transfer' as const },
+      { paidOn: '2026-06-14', method: 'cheque' as unknown as 'transfer' },
+      { paidOn: '2026-06-14', method: 'card' as const, reference: 'x'.repeat(141) },
+      { paidOn: '2026-06-14', method: 'cash' as const, proofDocumentId: 'x'.repeat(201) },
+    ];
+    for (const evidence of cases) {
+      const r = Expense.record(base);
+      expect(r.ok).toBe(true);
+      if (!r.ok) continue;
+      expect(r.value.recordPayment(evidence, { today: '2026-06-15' }).ok).toBe(false);
+      expect(r.value.status).toBe('to_pay');
+      expect(r.value.paymentEvidence).toBeNull();
+    }
+  });
+
+  it('un retry identique est idempotent ; une preuve différente échoue sans réécriture', () => {
+    const r = Expense.record(base);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const evidence = { paidOn: '2026-06-14', method: 'card' as const, reference: 'CB-42' };
+    expect(r.value.recordPayment(evidence, { today: '2026-06-15' })).toEqual({
+      ok: true,
+      value: { alreadyRecorded: false },
+    });
+    expect(r.value.recordPayment(evidence, { today: '2026-06-15' })).toEqual({
+      ok: true,
+      value: { alreadyRecorded: true },
+    });
+    expect(r.value.recordPayment({ ...evidence, paidOn: '2026-06-13' }, { today: '2026-06-15' }).ok).toBe(false);
+    expect(r.value.paymentEvidence?.paidOn).toBe('2026-06-14');
+  });
+
+  it('interdit de créer un statut payé sans preuve ou une preuve sur un statut à payer', () => {
+    expect(Expense.record({ ...base, status: 'paid' }).ok).toBe(false);
+    expect(Expense.record({
+      ...base,
+      paymentEvidence: { paidOn: '2026-06-14', method: 'cash', reference: null, proofDocumentId: null },
+    }).ok).toBe(false);
   });
 
   // C-EXP6b — extension ADDITIVE : n° de facture fournisseur (BT-1) + échéance (BT-9).

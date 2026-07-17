@@ -35,8 +35,6 @@ import {
   type AccountingAccountProps,
   type ChartOfAccountsRepository,
   type ExpenseCategory,
-  type ExpenseStatus,
-  type ExpenseSource,
   type SequenceCounterPort,
   type CounterKey,
   type SubscriptionRecord,
@@ -85,6 +83,8 @@ import {
   quoteLineToCreate,
   invoiceKindToDocKind,
   signatureProofToPersistence,
+  expenseRowToProps,
+  expensePropsToPersistence,
 } from './mappers';
 
 const LINES_INCLUDE = { lines: { orderBy: { position: 'asc' as const } } };
@@ -2259,15 +2259,20 @@ export class PrismaPublicAccessTokenRepository implements PublicAccessTokenRepos
 export class PrismaExpenseRepository implements ExpenseRepository {
   constructor(private readonly prisma: PrismaService) {}
   async save(e: Expense): Promise<void> {
-    const data = e.toProps();
+    const data = expensePropsToPersistence(e.toProps());
+    const { id, ...writeData } = data;
     try {
-      await this.prisma.client().expense.upsert({ where: { id: data.id }, create: data, update: data });
+      await this.prisma.client().expense.upsert({
+        where: { id },
+        create: { id, ...writeData },
+        update: writeData,
+      });
     } catch (err) {
       // C-EXP-FIX1 (Bug 1 — DOUBLON TOCTOU) : l'index UNIQUE PARTIEL uniq_expense_supplier_invoice
       // rejette la 2e e-facture concurrente (P2002). On la traduit en sentinelle métier (jamais un
       // 500) ; l'upsert par id ne peut violer QUE cet index (le conflit d'id, lui, fait un update).
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
-        throw new DuplicateExpenseInvoiceError(data.companyId, data.supplierSiren, data.supplierInvoiceNumber ?? null);
+        throw new DuplicateExpenseInvoiceError(data.companyId, data.supplierSiren, data.supplierInvoiceNumber);
       }
       throw err;
     }
@@ -2275,47 +2280,19 @@ export class PrismaExpenseRepository implements ExpenseRepository {
   async findById(id: string): Promise<Expense | null> {
     const row = await this.prisma.client().expense.findUnique({ where: { id } });
     if (!row) return null;
-    return Expense.rehydrate(this.toProps(row));
+    return Expense.rehydrate(expenseRowToProps(row));
+  }
+  async lockById(id: string): Promise<Expense | null> {
+    // Doit être appelé dans `runInTransaction` : PostgreSQL sérialise deux preuves concurrentes
+    // avant que l'une puisse écraser la date/le moyen de l'autre.
+    await this.prisma.client().$queryRaw`SELECT id FROM expenses WHERE id = ${id} FOR UPDATE`;
+    return this.findById(id);
   }
   async listByCompany(companyId: string): Promise<Expense[]> {
     // Réhydratation (données déjà validées) : ne jamais faire disparaître une dépense persistée
     // — sinon la trésorerie sous-compterait les charges (cf. revue EN 16931 / cashflow).
     const rows = await this.prisma.client().expense.findMany({ where: { companyId } });
-    return rows.map((row) => Expense.rehydrate(this.toProps(row)));
-  }
-  private toProps(row: {
-    id: string;
-    companyId: string;
-    supplierName: string;
-    supplierSiren: string | null;
-    documentDate: string;
-    totalTtcCents: number;
-    totalHtCents: number | null;
-    vatCents: number | null;
-    vatRatePct: number | null;
-    category: string;
-    status: string;
-    source: string;
-    supplierInvoiceNumber: string | null;
-    dueAt: string | null;
-  }) {
-    return {
-      id: row.id,
-      companyId: row.companyId,
-      supplierName: row.supplierName,
-      supplierSiren: row.supplierSiren,
-      documentDate: row.documentDate,
-      totalTtcCents: row.totalTtcCents,
-      totalHtCents: row.totalHtCents,
-      vatCents: row.vatCents,
-      vatRatePct: row.vatRatePct,
-      category: row.category as ExpenseCategory,
-      status: row.status as ExpenseStatus,
-      source: row.source as ExpenseSource,
-      // C-EXP6b — champs Factur-X (additifs, null pour l'historique OCR/manuel).
-      supplierInvoiceNumber: row.supplierInvoiceNumber,
-      dueAt: row.dueAt,
-    };
+    return rows.map((row) => Expense.rehydrate(expenseRowToProps(row)));
   }
 }
 

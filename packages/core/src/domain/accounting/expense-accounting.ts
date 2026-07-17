@@ -1,6 +1,6 @@
 import { type DomainResult, err } from '../../shared-kernel/result';
-import { type DateOnly } from '../../shared-kernel/time';
 import { type Expense, type ExpenseCategory } from '../expense/expense';
+import { type PaymentMethod } from '../payment/payment';
 import { AccountingEntry, type AccountingEntryLineProps } from './accounting-entry';
 import { type ChartOfAccounts } from './chart-of-accounts';
 
@@ -20,6 +20,8 @@ export interface ExpenseAccountingAccounts {
   vatDeductible: string;
   /** 512 Banques (décaissement) — PayExpense affinera par mode de paiement (530 espèces). */
   bank: string;
+  /** 530 Caisse — règlement fournisseur en espèces. */
+  cash: string;
   chargeByCategory: ExpenseChargeAccountMap;
 }
 
@@ -36,6 +38,7 @@ export const DEFAULT_EXPENSE_ACCOUNTING_ACCOUNTS: ExpenseAccountingAccounts = {
   supplier: '401',
   vatDeductible: '44566',
   bank: '512',
+  cash: '530',
   chargeByCategory: {
     fournitures: '606',
     materiel: '606',
@@ -51,6 +54,7 @@ function mergeAccounts(overrides: Partial<ExpenseAccountingAccounts> | undefined
     supplier: overrides?.supplier ?? DEFAULT_EXPENSE_ACCOUNTING_ACCOUNTS.supplier,
     vatDeductible: overrides?.vatDeductible ?? DEFAULT_EXPENSE_ACCOUNTING_ACCOUNTS.vatDeductible,
     bank: overrides?.bank ?? DEFAULT_EXPENSE_ACCOUNTING_ACCOUNTS.bank,
+    cash: overrides?.cash ?? DEFAULT_EXPENSE_ACCOUNTING_ACCOUNTS.cash,
     chargeByCategory: { ...DEFAULT_EXPENSE_ACCOUNTING_ACCOUNTS.chargeByCategory, ...(overrides?.chargeByCategory ?? {}) },
   };
 }
@@ -108,10 +112,12 @@ export function buildRecordedExpenseAccountingEntry(
 export interface BuildExpensePaymentAccountingEntryInput {
   entryId: string;
   expense: Expense;
-  /** Date de règlement — à défaut, la date de la pièce (dépense enregistrée déjà payée). */
-  paidOn?: DateOnly;
   chart?: ChartOfAccounts;
   accounts?: Partial<ExpenseAccountingAccounts>;
+}
+
+function paymentAccountFor(method: PaymentMethod, accounts: ExpenseAccountingAccounts): string {
+  return method === 'cash' ? accounts.cash : accounts.bank;
 }
 
 /**
@@ -125,9 +131,16 @@ export function buildExpensePaymentAccountingEntry(
   const p = input.expense.toProps();
   if (p.totalTtcCents <= 0) return err(appValidation('expense.totalTtcCents', 'Montant TTC requis pour comptabiliser.'));
   if (p.status !== 'paid') return err(appValidation('expense.status', 'La dépense doit être payée pour poster le règlement.'));
+  if (!p.paymentEvidence)
+    return err(appValidation(
+      'expense.paymentEvidence',
+      'La date et le moyen de règlement explicites sont requis pour poster le règlement.',
+    ));
 
   const accounts = mergeAccounts(input.accounts);
   const label = `Règlement ${p.supplierName}`;
+  const paymentAccount = paymentAccountFor(p.paymentEvidence.method, accounts);
+  const reference = p.paymentEvidence.reference ?? p.supplierInvoiceNumber ?? p.supplierName;
 
   return AccountingEntry.create(
     {
@@ -136,12 +149,12 @@ export function buildExpensePaymentAccountingEntry(
       journal: 'bank',
       sourceType: 'expense',
       sourceId: p.id,
-      entryDate: input.paidOn ?? p.documentDate,
-      reference: p.supplierName,
+      entryDate: p.paymentEvidence.paidOn,
+      reference,
       label,
       lines: [
         { account: accounts.supplier, label, debitCents: p.totalTtcCents, creditCents: 0 },
-        { account: accounts.bank, label, debitCents: 0, creditCents: p.totalTtcCents },
+        { account: paymentAccount, label, debitCents: 0, creditCents: p.totalTtcCents },
       ],
     },
     input.chart ? { chart: input.chart } : {},

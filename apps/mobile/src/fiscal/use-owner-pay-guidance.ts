@@ -12,6 +12,8 @@ export interface UseOwnerPayGuidanceResult {
   /** undefined tant que le profil fiscal ou le cashflow fourni ne sont pas encore chargés. */
   guidance: OwnerPayGuidance | undefined;
   isLoading: boolean;
+  /** Une erreur amont ne doit jamais être confondue avec un profil fiscal ou un CA absents. */
+  isError: boolean;
 }
 
 /**
@@ -28,8 +30,8 @@ export interface UseOwnerPayGuidanceResult {
  * vérité pour LA DÉCLARATION) ; ici on veut seulement une provision « du mois » raisonnable pour
  * le retrait suggéré, pas une déclaration officielle. Aucun nouvel endpoint en 1C (mission) :
  * `usePayments()` est la même query déjà chargée par l'écran Argent (cache react-query partagé,
- * coût nul en plus). Paiements absents/en erreur → periodeCA absent → `deriveOwnerPayGuidance`
- * retombe honnêtement sur `kind: 'prudent'`.
+ * coût nul en plus). Une absence de paiements réussie produit bien un CA nul ; une ERREUR réseau,
+ * elle, est propagée via `isError` et ne doit jamais devenir un scénario « prudent » silencieux.
  */
 export function useOwnerPayGuidance(cashflow: OwnerPayGuidanceCashflow | undefined): UseOwnerPayGuidanceResult {
   const profile = useFiscalProfile();
@@ -55,5 +57,9 @@ export function useOwnerPayGuidance(cashflow: OwnerPayGuidanceCashflow | undefin
     return deriveOwnerPayGuidance(profile.data, cashflow, periodeCA);
   }, [profile.data, payments.data, cashflow]);
 
-  return { guidance, isLoading: profile.isLoading || payments.isLoading };
+  return {
+    guidance,
+    isLoading: profile.isLoading || payments.isLoading,
+    isError: profile.isError || payments.isError,
+  };
 }

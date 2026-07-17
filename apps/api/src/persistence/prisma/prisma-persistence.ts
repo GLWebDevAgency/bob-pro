@@ -1,4 +1,3 @@
-import { DEFAULT_DOCUMENT_FOLDERS, normalizeDocumentFolderName, seedCompany, seedCustomers } from '@bob/core';
 import type { Persistence } from '../persistence';
 import { PrismaService } from './prisma.service';
 import {
@@ -22,7 +21,6 @@ import {
   PrismaFiscalProfileRepository,
   PrismaSequenceCounter,
 } from './repositories';
-import { companyPropsToCreate, customerPropsToCreate } from './mappers';
 import { createPrismaCabinetInfrastructure } from '../../cabinet/prisma-cabinet-infrastructure';
 import type { CabinetInfrastructure } from '../../cabinet/cabinet-infrastructure';
 import { PrismaDocumentFolderDeletionPlanStore } from '../document-folder-deletion-plans';
@@ -30,6 +28,15 @@ import { PrismaDocumentAnalysisStore } from '../document-analyses';
 import { PrismaExpenseCreationRequestStore } from '../expense-creation-requests';
 import { PrismaSalesDocumentSearchRepository } from './sales-document-search.repository';
 import { PrismaQuoteCreationRequestStore } from '../quote-creation-requests';
+import {
+  PrismaCatalogueRepository,
+  PrismaChantierRepository,
+  PrismaChantierNoteRepository,
+} from './catalogue-chantiers.repository';
+import { PrismaWorksiteMediaStorage } from './worksite-media.repository';
+import { PrismaBankBalanceSnapshotRepository } from './bank-balance-snapshots.repository';
+import { PrismaQuoteDraftSlotRepository } from './quote-draft-slots.repository';
+import { PrismaCompanyBillingSettingsRepository } from './company-billing-settings.repository';
 import type {
   RealtimeAdmissionPolicy,
   RealtimeAdmissionPort,
@@ -51,10 +58,10 @@ import type {
 } from '../../voice/realtime/realtime-mistral-ingress-ticket';
 import { PrismaRealtimeControlRepository } from '../../voice/realtime/realtime-control.prisma';
 import type { RealtimeControlRepositoryPort } from '../../voice/realtime/realtime-control.repository';
-import { isDemoMode } from '../../config/env';
 
 export class PrismaPersistence implements Persistence {
   readonly companies: PrismaCompanyRepository;
+  readonly billingSettings: PrismaCompanyBillingSettingsRepository;
   readonly customers: PrismaCustomerRepository;
   readonly quotes: PrismaQuoteRepository;
   readonly invoices: PrismaInvoiceRepository;
@@ -68,13 +75,19 @@ export class PrismaPersistence implements Persistence {
   readonly payments: PrismaPaymentRepository;
   readonly publicAccessTokens: PrismaPublicAccessTokenRepository;
   readonly expenses: PrismaExpenseRepository;
+  readonly catalogue: PrismaCatalogueRepository;
+  readonly chantiers: PrismaChantierRepository;
+  readonly chantierNotes: PrismaChantierNoteRepository;
+  readonly worksiteMedia: PrismaWorksiteMediaStorage;
   readonly expenseCreationRequests: PrismaExpenseCreationRequestStore;
   readonly quoteCreationRequests: PrismaQuoteCreationRequestStore;
+  readonly quoteDraftSlots: PrismaQuoteDraftSlotRepository;
   readonly accountingEntries: PrismaAccountingEntryRepository;
   readonly chartOfAccounts: PrismaChartOfAccountsRepository;
   readonly agentJournal: PrismaAgentJournalRepository;
   readonly supplierMemory: PrismaSupplierMemoryRepository;
   readonly subscriptions: PrismaSubscriptionRepository;
+  readonly bankBalances: PrismaBankBalanceSnapshotRepository;
   readonly fiscalProfiles: PrismaFiscalProfileRepository;
   readonly salesDocumentSearch: PrismaSalesDocumentSearchRepository;
   readonly counters: PrismaSequenceCounter;
@@ -113,6 +126,7 @@ export class PrismaPersistence implements Persistence {
 
   constructor(private readonly prisma: PrismaService) {
     this.companies = new PrismaCompanyRepository(prisma);
+    this.billingSettings = new PrismaCompanyBillingSettingsRepository(prisma);
     this.customers = new PrismaCustomerRepository(prisma);
     this.quotes = new PrismaQuoteRepository(prisma);
     this.invoices = new PrismaInvoiceRepository(prisma);
@@ -126,13 +140,19 @@ export class PrismaPersistence implements Persistence {
     this.payments = new PrismaPaymentRepository(prisma);
     this.publicAccessTokens = new PrismaPublicAccessTokenRepository(prisma);
     this.expenses = new PrismaExpenseRepository(prisma);
+    this.catalogue = new PrismaCatalogueRepository(prisma);
+    this.chantiers = new PrismaChantierRepository(prisma);
+    this.chantierNotes = new PrismaChantierNoteRepository(prisma);
+    this.worksiteMedia = new PrismaWorksiteMediaStorage(prisma);
     this.expenseCreationRequests = new PrismaExpenseCreationRequestStore(prisma);
     this.quoteCreationRequests = new PrismaQuoteCreationRequestStore(prisma);
+    this.quoteDraftSlots = new PrismaQuoteDraftSlotRepository(prisma);
     this.accountingEntries = new PrismaAccountingEntryRepository(prisma);
     this.chartOfAccounts = new PrismaChartOfAccountsRepository(prisma);
     this.agentJournal = new PrismaAgentJournalRepository(prisma);
     this.supplierMemory = new PrismaSupplierMemoryRepository(prisma);
     this.subscriptions = new PrismaSubscriptionRepository(prisma);
+    this.bankBalances = new PrismaBankBalanceSnapshotRepository(prisma);
     this.fiscalProfiles = new PrismaFiscalProfileRepository(prisma);
     this.salesDocumentSearch = new PrismaSalesDocumentSearchRepository(prisma);
     this.counters = new PrismaSequenceCounter(prisma);
@@ -164,35 +184,4 @@ export class PrismaPersistence implements Persistence {
     return this.prisma.withCabinetInvitation(userId, verifiedEmail, tokenHash, () => fn());
   }
 
-  async seed(): Promise<void> {
-    // Les identités Mercier et ses clients sont des fixtures de démonstration. Une valeur absente,
-    // invalide ou `false` ne doit JAMAIS écrire ces lignes dans la base d'un compte réel.
-    if (!isDemoMode()) return;
-    const company = companyPropsToCreate(seedCompany().toProps());
-    const customers = seedCustomers().map((c) => customerPropsToCreate(c.toProps()));
-    // FORCE RLS s'applique aussi au bootstrap : sous le rôle applicatif non-superuser, les upserts
-    // doivent passer par la transaction où le GUC tenant est posé, sinon WITH CHECK rejette (42501).
-    await this.prisma.withTenant(company.id, async (tx) => {
-      await tx.company.upsert({ where: { id: company.id }, create: company, update: company });
-      for (const customer of customers) {
-        await tx.customer.upsert({ where: { id: customer.id }, create: customer, update: customer });
-      }
-      for (const folder of DEFAULT_DOCUMENT_FOLDERS) {
-        const id = `${company.id}:vault:${folder.systemKey}`;
-        const data = {
-          companyId: company.id,
-          parentId: null,
-          name: folder.name,
-          normalizedName: normalizeDocumentFolderName(folder.name),
-          systemKey: folder.systemKey,
-          status: 'active' as const,
-          revision: 1,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-          deletedAt: null,
-        };
-        await tx.documentFolder.upsert({ where: { id }, create: { id, ...data }, update: data });
-      }
-    });
-  }
 }

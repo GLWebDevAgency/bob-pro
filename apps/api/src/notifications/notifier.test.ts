@@ -1,31 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppLogger } from '../observability/logger';
-import { BrevoEmailNotifier, DemoNotifier } from './notifier';
+import { BrevoEmailNotifier } from './notifier';
 
 const audit = vi.fn();
 const logger = { audit } as unknown as AppLogger;
-
-describe('DemoNotifier', () => {
-  it('journalise le canal sans PII ni contenu métier', async () => {
-    const notifier = new DemoNotifier(logger);
-
-    await notifier.send({
-      channel: 'email',
-      to: 'client@example.com',
-      subject: 'Facture sensible',
-      body: 'Montant et coordonnées bancaires',
-    });
-
-    expect(audit).toHaveBeenCalledWith('notification.sent', {
-      provider: 'demo',
-      channel: 'email',
-    });
-    const serializedCalls = JSON.stringify(audit.mock.calls);
-    expect(serializedCalls).not.toContain('client@example.com');
-    expect(serializedCalls).not.toContain('Facture sensible');
-    expect(serializedCalls).not.toContain('coordonnées bancaires');
-  });
-});
 
 describe('BrevoEmailNotifier', () => {
   beforeEach(() => {

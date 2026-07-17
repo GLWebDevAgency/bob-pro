@@ -65,6 +65,13 @@ function draft(label = 'Pose chauffe-eau'): QuoteDraftState {
     }),
   );
   state = value(applyQuoteDraftCommand(state, { type: 'next_step' }));
+  state = value(
+    applyQuoteDraftCommand(state, {
+      type: 'set_vat',
+      context: { housingOlderThan2y: true, energyRenovation: false },
+      vatRate: 10,
+    }),
+  );
   return value(
     addLine(state, {
       lineId: 'line-1',
@@ -103,7 +110,7 @@ describe('generation quote draft store', () => {
             category: 'labor' as const,
             qty: 1,
             unitPriceHT: 1_000,
-            vatRate: 20 as const,
+            vatRate: 10 as const,
           })),
         },
       },

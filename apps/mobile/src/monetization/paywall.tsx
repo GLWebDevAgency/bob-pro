@@ -13,20 +13,18 @@ import { Text, View } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
 import {
-  decidePaywall,
   decideReactivePaywallPressure,
   PLAN_CATALOG,
-  type AddOn,
   type Feature,
   type PaywallDecision,
   type PaywallPressureHistory,
   type PlanTier,
-  type SubscriptionStatus,
 } from '@bob/core';
 import { t, type Personality } from '@bob/i18n';
 import { Button, Card } from '@bob/ui';
 import { useTheme } from '@bob/ui';
 import { useSubscription } from '../data/hooks';
+import { resolveEntitlement, type EntitlementState } from './resolve-entitlement';
 
 /** Source du paywall — reprise du contrat analytics (@bob/core PaywallSource). */
 export type PaywallSurfaceSource =
@@ -36,39 +34,29 @@ export type PaywallSurfaceSource =
   | 'trial_ending'
   | 'quota_reached';
 
-export interface Entitlement {
+export interface Entitlement extends EntitlementState {
   /** Vrai si la capacité est OUVERTE (serveur fait foi via GET /subscription). */
   readonly allowed: boolean;
   /** Décision de déblocage quand allowed=false — null pendant le chargement. */
   readonly decision: PaywallDecision | null;
-  /** Chargement en cours : les écrans affichent leur squelette, JAMAIS le paywall
-   *  (politique fail-open d'affichage : on ne vend pas sur un écran pas encore sûr). */
+  /** Chargement en cours : les écrans affichent leur squelette, jamais un contenu protégé. */
   readonly loading: boolean;
-  /** Vrai uniquement après lecture réussie de l'abonnement serveur. Un affichage peut
-   * rester fail-open sur erreur, mais aucune donnée payante ne doit être publiée à Bob
-   * tant que cette autorité n'est pas vérifiée. */
+  /** Vrai uniquement après lecture réussie de l'abonnement serveur. Une erreur reste fermée. */
   readonly verified: boolean;
 }
 
 /** LE hook d'entitlement typé — remplace les `(sub?.features ?? []).includes('x')` épars. */
 export function useEntitlement(feature: Feature): Entitlement {
   const subscription = useSubscription();
-  return useMemo(() => {
-    const view = subscription.data;
-    if (view === undefined) {
-      // Échec DURABLE de GET /subscription : fail-open d'AFFICHAGE (review 14/07, P2) — on ne
-      // verrouille jamais l'écran d'un client payant sur un aléa réseau ; le SERVEUR reste
-      // l'autorité de chaque action (gates appForbidden) et on ne vend rien sur un doute.
-      if (subscription.isError) return { allowed: true, decision: null, loading: false, verified: false };
-      return { allowed: false, decision: null, loading: true, verified: false };
-    }
-    const tier = (view.tier as PlanTier | undefined) ?? 'free';
-    const status = (view.status as SubscriptionStatus | undefined) ?? 'active';
-    const addOns = (view.addOns ?? []) as AddOn[];
-    if (view.features.includes(feature)) return { allowed: true, decision: null, loading: false, verified: true };
-    const decision = decidePaywall({ feature, tier, addOns, status });
-    return { allowed: decision.kind === 'allowed', decision, loading: false, verified: true };
-  }, [subscription.data, subscription.isError, feature]);
+  return useMemo(
+    () => resolveEntitlement({
+      feature,
+      view: subscription.data,
+      loading: subscription.isLoading,
+      failed: subscription.isError,
+    }),
+    [subscription.data, subscription.isError, subscription.isLoading, feature],
+  );
 }
 
 // ── Gouvernance de pression : mémoire LOCALE des rejets, par source ──

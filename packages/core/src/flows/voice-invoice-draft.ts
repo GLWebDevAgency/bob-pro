@@ -39,8 +39,8 @@ export interface VoicePrestation {
 export interface DeriveVoiceInvoiceDraftInput {
   transcript: string;
   customers: readonly VoiceCustomerRef[];
-  /** Taux métier (TradeConfig.defaultVatRate) si le transcript ne précise rien — sinon 20. */
-  defaultVatRate?: number;
+  /** Taux déjà confirmé par l'utilisateur pour CETTE facture. */
+  confirmedVatRate?: number | null;
   /** Catalogue de l'artisan (C27) — PU par défaut d'une prestation NOMMÉE sans montant énoncé. */
   prestations?: readonly VoicePrestation[];
 }
@@ -49,7 +49,10 @@ export interface VoiceInvoiceDerivation {
   draft: VoiceInvoiceDraft;
   /** Moyen d'encaissement entendu (« par carte », « en espèces ») — défaut virement. */
   paymentMethod: PaymentMethod;
-  vatRate: VatRate;
+  vatRate: VatRate | null;
+  /** true = les montants reconnus ne sont volontairement pas transformés en lignes tant que
+   * le taux n'a pas été confirmé. */
+  vatConfirmationRequired: boolean;
 }
 
 /** minuscules + sans accents (œ -> oe) + ponctuation -> espaces, encadré d'espaces (mots entiers). */
@@ -198,10 +201,28 @@ export function deriveVoiceInvoiceDraft(input: DeriveVoiceInvoiceDraftInput): Vo
   const transcript = input.transcript.trim();
   const normalized = normalizeVoiceText(transcript);
   const spokenRate = parseSpokenVatRate(normalized);
-  const vatRate: VatRate =
-    spokenRate ?? (input.defaultVatRate !== undefined && isVatRate(input.defaultVatRate) ? input.defaultVatRate : 20);
+  const vatRate: VatRate | null =
+    spokenRate
+    ?? (input.confirmedVatRate !== undefined
+      && input.confirmedVatRate !== null
+      && isVatRate(input.confirmedVatRate)
+      ? input.confirmedVatRate
+      : null);
   const laborDuration = parseSpokenLaborDuration(normalized);
   const laborLabel = laborDuration !== null ? `Main-d’œuvre · ${laborDuration}` : 'Main-d’œuvre';
+
+  if (vatRate === null) {
+    return {
+      draft: {
+        transcript: transcript.length > 0 ? transcript : null,
+        customerId: matchSpokenCustomer(normalized, input.customers),
+        lines: [],
+      },
+      paymentMethod: parsePaymentMethod(normalized),
+      vatRate: null,
+      vatConfirmationRequired: true,
+    };
+  }
 
   const amounts = parseAmounts(normalized);
   let totalTtc = amounts.filter((a) => a.kind === 'total').at(-1)?.cents ?? null;
@@ -261,5 +282,6 @@ export function deriveVoiceInvoiceDraft(input: DeriveVoiceInvoiceDraftInput): Vo
     },
     paymentMethod: parsePaymentMethod(normalized),
     vatRate,
+    vatConfirmationRequired: false,
   };
 }

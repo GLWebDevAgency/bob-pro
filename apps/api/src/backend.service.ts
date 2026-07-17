@@ -13,6 +13,7 @@ import {
   CreateCreditNote,
   RegisterPayment,
   RecordExpensePayment,
+  validateCompanyBillingSettingsPatch,
   RecordIssuedInvoiceAccountingEntry,
   RecordPaymentAccountingEntry,
   ListAccountingEntries,
@@ -35,6 +36,7 @@ import {
   appDomain,
   Company,
   Customer,
+  UpdateCustomer,
   Subscription,
   PLAN_CATALOG,
   ADDON_CATALOG,
@@ -73,6 +75,9 @@ import {
   UpdateCatalogueItem,
   DeleteCatalogueItem,
   CreateChantier,
+  AddChantierNote,
+  UploadWorksitePhoto,
+  DeleteWorksitePhoto,
   AutofillCompanyFromSiret,
   ValidateVatNumber,
   SearchAddress,
@@ -116,8 +121,11 @@ import {
   type PlanTier,
   type PaymentGatewayPort,
   type PdfRendererPort,
+  type DocumentStoragePort,
   type InvoicePdfData,
   type CompanyProps,
+  type CompanyBillingSettings,
+  type CompanyBillingSettingsPatch,
   type CustomerPortfolio,
   type CustomerProps,
   type DiagnosticResult,
@@ -127,7 +135,9 @@ import {
   type VatRegime,
   type OcrExtractInput,
   type ChantierProps,
+  type ChantierNoteProps,
   type CreateChantierInput,
+  type WorksiteMediaItem,
   type CatalogueItemWriteInput,
   type CompanyLookupPort,
   type CompanyLookupResult,
@@ -199,7 +209,11 @@ import { AppLogger, getPrincipal, requireTenant } from './observability/logger';
 import { SUPABASE_ADMIN, type SupabaseAdminPort } from './auth/supabase-admin';
 import { PAYMENT_GATEWAY } from './payments/payment-gateway';
 import { PDF_RENDERER } from './documents/pdf-renderer';
-import { buildDocumentStorage, documentSha256 } from './documents/storage';
+import {
+  DOCUMENT_STORAGE,
+  UnavailableDocumentStorage,
+  documentSha256,
+} from './documents/storage';
 import {
   generatedInvoiceDocumentId,
   generatedInvoiceDocumentVersionId,
@@ -695,8 +709,8 @@ export interface AgentExecutionOptions {
 }
 
 /**
- * Autorité serveur : wire les use cases du domaine sur le bundle Persistence injecté
- * (in-memory en démo, Prisma/Postgres en prod). L'app bascule en HttpBobClient sans changer d'écran.
+ * Autorité serveur : wire les use cases du domaine sur le bundle Persistence injecté.
+ * Le runtime de production est Prisma/PostgreSQL et échoue fermé si une dépendance manque.
  */
 @Injectable()
 export class BackendService {
@@ -710,11 +724,10 @@ export class BackendService {
   // Les routes vocales historiques suivent le même profil mono-fournisseur que Bob Live.
   private readonly stt = buildSttCloud();
   private readonly tts = buildTtsCloud();
-  private readonly documentStorage = buildDocumentStorage();
 
   /**
-   * Tenant courant : companyId du Principal posé par le guard (en démo : société de seed via
-   * le guard, plus jamais ici). Principal absent ou sans tenant = bug d'ordonnancement — le
+   * Tenant courant : companyId du Principal posé par le guard. Principal absent ou sans tenant =
+   * bug d'ordonnancement — le
    * guard répond 403 PROVISIONING_REQUIRED avant : on échoue explicitement (C24b, zéro repli).
    */
   private companyId(): string {
@@ -774,6 +787,8 @@ export class BackendService {
     private readonly logger: AppLogger,
     @Inject(DOCUMENT_INTELLIGENCE_PORT)
     private readonly documentIntelligence: DocumentIntelligencePort = new UnavailableDocumentIntelligence(),
+    @Inject(DOCUMENT_STORAGE)
+    private readonly documentStorage: DocumentStoragePort = new UnavailableDocumentStorage(),
   ) {}
 
   private mapQuote(q: Quote): QuoteView {
@@ -1137,6 +1152,17 @@ export class BackendService {
           entryId: accounting.value.id,
           created: accounting.value.created,
         });
+        try {
+          // Outbox DANS la même transaction que le numéro légal et l'écriture comptable : une
+          // facture ne peut jamais être commitée sans ordre durable d'archivage de son original.
+          await this.enqueueInvoiceArchive(input.invoiceId);
+        } catch (error) {
+          throw new RollbackAppError({
+            kind: 'dependency',
+            port: 'document-archive-outbox',
+            cause: error instanceof Error ? error.message : String(error),
+          });
+        }
         return issued;
       });
     } catch (e) {
@@ -1145,7 +1171,6 @@ export class BackendService {
     }
     if (r.ok) {
       this.logger.audit('invoice.issued', { invoiceId: input.invoiceId, number: r.value.number });
-      await this.enqueueInvoiceArchive(input.invoiceId);
       await this.runDocumentArchiveJobs({ limit: 5 });
     }
     return r;
@@ -2070,6 +2095,14 @@ export class BackendService {
         }),
       sendQuote: async (input) => this.sendQuote(input.quoteId),
       issueInvoice: async (input) => this.issueInvoice({ invoiceId: input.invoiceId }),
+      // creer_client (C40 TODO partagé) : fiche MINIMALE (nom + type), même use case createCustomer
+      // que l'écran Clients — l'adresse (requise par le domaine) part vide, à compléter sur la fiche.
+      createCustomer: async (input) =>
+        this.createCustomer({
+          name: input.name,
+          type: input.type,
+          address: { line1: '', zip: '', city: '' },
+        }),
     };
   }
 
@@ -2081,9 +2114,9 @@ export class BackendService {
       hasMistralKey: hasMistralKey(),
       hasOpenaiKey: hasOpenaiKey(),
     });
-    // Le fournisseur qui qualifie la demande (tool-calling) est choisi par le routeur ; sinon regex.
+    // Le fournisseur qui qualifie la demande (tool-calling) est choisi par le routeur.
     const provider = router.route('intent.detect').model;
-    const llm = provider !== 'demo' ? buildLlmForProvider(provider) : undefined;
+    const llm = provider !== 'unavailable' ? buildLlmForProvider(provider) : undefined;
     return {
       provider,
       agent: new BobAgent({
@@ -2153,7 +2186,7 @@ export class BackendService {
     );
     const start = Date.now();
     const bobRuntime = this.bobAgent();
-    if (bobRuntime.provider === 'demo') {
+    if (bobRuntime.provider === 'unavailable') {
       return err(appUnavailable('bob-llm'));
     }
     const agent = bobRuntime.agent;
@@ -2251,7 +2284,7 @@ export class BackendService {
     execution?.signal?.throwIfAborted();
     const ms = Date.now() - start;
     const intent = r.ok ? r.value.intent : 'error';
-    const model = r.ok ? r.value.model : 'demo';
+    const model = r.ok ? r.value.model : 'unavailable';
     const outcome = r.ok ? 'ok' : 'error';
     this.metrics.aiRequests.inc({ model, intent, outcome });
     this.metrics.aiDuration.observe({ model, intent }, ms / 1000);
@@ -2971,6 +3004,101 @@ export class BackendService {
     return ok(list.map((c) => c.toProps()));
   }
 
+  /** Journal + photos (fiche chantier, extension V1) : gate module IDENTIQUE à createChantier —
+   * pas de chemin parallèle possible pour contourner l'offre. */
+  private async chantierMediaForbidden(): Promise<AppError | null> {
+    if (await this.chantiersAllowed()) return null;
+    return appForbidden('Module Chantiers réservé aux métiers du bâtiment (offre Solo minimum, ou Pack BTP).');
+  }
+
+  async addChantierNote(
+    chantierId: string,
+    input: { text: string },
+  ): Promise<Result<{ id: string }, AppError>> {
+    const forbidden = await this.chantierMediaForbidden();
+    if (forbidden) return { ok: false, error: forbidden };
+    const company = await this.p.companies.findById(this.companyId());
+    if (!company) return { ok: false, error: appNotFound('company', this.companyId()) };
+    const r = await new AddChantierNote({
+      chantiers: this.p.chantiers,
+      notes: this.p.chantierNotes,
+      ids: this.ids,
+      clock: this.clock,
+    }).execute({
+      companyId: this.companyId(),
+      chantierId,
+      text: input.text,
+      // Attribution auto (produit mono-utilisateur aujourd'hui) — prêt pour un futur
+      // multi-utilisateur (cabinet, salariés) sans migration ni changement de contrat.
+      authorLabel: company.name,
+    });
+    if (r.ok) this.logger.audit('chantier.note.added', { companyId: this.companyId(), chantierId });
+    return r;
+  }
+
+  async listChantierNotes(chantierId: string): Promise<Result<ChantierNoteProps[], AppError>> {
+    const forbidden = await this.chantierMediaForbidden();
+    if (forbidden) return { ok: false, error: forbidden };
+    const list = await this.p.chantierNotes.listByChantier(this.companyId(), chantierId);
+    return ok(list.map((n) => n.toProps()));
+  }
+
+  async uploadWorksitePhoto(
+    chantierId: string,
+    input: { contentBase64: string; mimeType: string; filename: string },
+  ): Promise<Result<WorksiteMediaItem, AppError>> {
+    const forbidden = await this.chantierMediaForbidden();
+    if (forbidden) return { ok: false, error: forbidden };
+    let bytes: Uint8Array;
+    try {
+      bytes = new Uint8Array(Buffer.from(input.contentBase64, 'base64'));
+    } catch {
+      return { ok: false, error: appDomain({ code: 'VALIDATION', field: 'contentBase64', message: 'Photo illisible.' }) };
+    }
+    const r = await new UploadWorksitePhoto({
+      chantiers: this.p.chantiers,
+      media: this.p.worksiteMedia,
+      storage: this.documentStorage,
+      ids: this.ids,
+      clock: this.clock,
+    }).execute({
+      companyId: this.companyId(),
+      chantierId,
+      bytes,
+      contentType: input.mimeType,
+      filename: input.filename,
+    });
+    if (r.ok) this.logger.audit('chantier.photo.uploaded', { companyId: this.companyId(), chantierId, id: r.value.id });
+    return r;
+  }
+
+  async listWorksitePhotos(chantierId: string): Promise<Result<WorksiteMediaItem[], AppError>> {
+    const forbidden = await this.chantierMediaForbidden();
+    if (forbidden) return { ok: false, error: forbidden };
+    return ok(await this.p.worksiteMedia.listByChantier(this.companyId(), chantierId));
+  }
+
+  async worksitePhotoViewUrl(photoId: string): Promise<Result<{ url: string; expiresInSeconds: number }, AppError>> {
+    const forbidden = await this.chantierMediaForbidden();
+    if (forbidden) return { ok: false, error: forbidden };
+    const item = await this.p.worksiteMedia.findById(this.companyId(), photoId);
+    if (!item) return { ok: false, error: appNotFound('worksite_photo', photoId) };
+    const ttlSeconds = 300;
+    const url = await this.documentStorage.getSignedUrl(this.companyId(), item.storageKey, ttlSeconds);
+    return ok({ url, expiresInSeconds: ttlSeconds });
+  }
+
+  async deleteWorksitePhoto(photoId: string): Promise<Result<void, AppError>> {
+    const forbidden = await this.chantierMediaForbidden();
+    if (forbidden) return { ok: false, error: forbidden };
+    const r = await new DeleteWorksitePhoto({
+      media: this.p.worksiteMedia,
+      storage: this.documentStorage,
+    }).execute({ companyId: this.companyId(), id: photoId });
+    if (r.ok) this.logger.audit('chantier.photo.deleted', { companyId: this.companyId(), id: photoId });
+    return r;
+  }
+
   async getDiagnostic(): Promise<Result<DiagnosticResult, AppError>> {
     const company = await this.p.companies.findById(this.companyId());
     if (!company) return { ok: false, error: appNotFound('company', this.companyId()) };
@@ -3005,6 +3133,53 @@ export class BackendService {
     const company = await this.p.companies.findById(this.companyId());
     if (!company) return { ok: false, error: appNotFound('company', this.companyId()) };
     return ok(company.toProps());
+  }
+
+  /** Réglages canoniques : absence = incohérence de provisioning, jamais un fallback client. */
+  async getCompanyBillingSettings(): Promise<Result<CompanyBillingSettings, AppError>> {
+    const companyId = this.companyId();
+    const settings = await this.p.billingSettings.findByCompanyId(companyId);
+    if (settings === null) return err(appUnavailable('company-billing-settings'));
+    return ok(settings);
+  }
+
+  async updateCompanyBillingSettings(input: {
+    expectedRevision: number;
+    patch: CompanyBillingSettingsPatch;
+  }): Promise<Result<CompanyBillingSettings, AppError>> {
+    const validated = validateCompanyBillingSettingsPatch(input.patch);
+    if (!validated.ok) return err(appDomain(validated.error));
+    if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 1) {
+      return {
+        ok: false,
+        error: {
+          kind: 'validation',
+          issues: [{ field: 'expectedRevision', message: 'Révision invalide.' }],
+        },
+      };
+    }
+    const changesArchivedPdf =
+      validated.value.showRibOnInvoices !== undefined
+      || validated.value.showInsuranceOnInvoices !== undefined
+      || validated.value.pdfAccentColor !== undefined;
+    if (changesArchivedPdf) {
+      const archiveReady = await this.assertIssuedInvoiceArchivesComplete(this.companyId());
+      if (!archiveReady.ok) return archiveReady;
+    }
+    const result = await this.p.billingSettings.update({
+      companyId: this.companyId(),
+      expectedRevision: input.expectedRevision,
+      patch: validated.value,
+    });
+    if (result.status === 'revision_conflict') {
+      return err(appConflict('company_billing_settings', 'stale_revision'));
+    }
+    this.logger.audit('company.billing_settings_updated', {
+      companyId: this.companyId(),
+      revision: result.settings.revision,
+      fields: Object.keys(validated.value).sort(),
+    });
+    return ok(result.settings);
   }
 
   /** Profil d'exploitation explicitement confirmé par le propriétaire. */
@@ -3043,6 +3218,8 @@ export class BackendService {
     bic?: string | null;
   }): Promise<Result<CompanyProps, AppError>> {
     const companyId = this.companyId();
+    const archiveReady = await this.assertIssuedInvoiceArchivesComplete(companyId);
+    if (!archiveReady.ok) return archiveReady;
     const current = await this.p.companies.findById(companyId);
     if (!current) return { ok: false, error: appNotFound('company', companyId) };
     const props = current.toProps();
@@ -3124,6 +3301,37 @@ export class BackendService {
   async invoicePdf(invoiceId: string): Promise<Result<Uint8Array, AppError>> {
     const inv = await this.ownedInvoice(invoiceId);
     if (!inv) return { ok: false, error: appNotFound('invoice', invoiceId) };
+    // Une pièce émise est immuable : on sert uniquement l'octet archivé au moment de l'émission.
+    // Une archive absente/corrompue est une indisponibilité à réparer, jamais une autorisation de
+    // régénérer avec l'identité ou les réglages actuels de la société.
+    if (inv.number !== null && inv.issuedAt !== null) {
+      const documents = await this.p.documents.findByEntity(inv.companyId, 'invoice', inv.id);
+      const archivedCandidates = documents.filter(
+        (document) => document.kind === 'invoice_pdf' && document.status === 'active',
+      );
+      // Zéro ou plusieurs originaux actifs = archive ambiguë/corrompue. Ne jamais choisir le
+      // premier résultat d'une requête dont l'ordre n'est pas un invariant métier.
+      if (archivedCandidates.length !== 1) return err(appUnavailable('invoice-archive'));
+      const archived = archivedCandidates[0]!;
+      const archiveMetadata = archived.toProps();
+      const stored = await this.documentStorage.get(inv.companyId, archiveMetadata.storageKey);
+      if (
+        stored === null
+        || stored.contentType !== 'application/pdf'
+        || archiveMetadata.mimeType !== 'application/pdf'
+        || stored.bytes.byteLength !== archiveMetadata.byteSize
+        || documentSha256(stored.bytes) !== archiveMetadata.sha256
+      ) {
+        return err(appUnavailable('invoice-archive'));
+      }
+      this.logger.audit('invoice.pdf', {
+        invoiceId,
+        number: inv.number,
+        facturX: true,
+        source: 'immutable_archive',
+      });
+      return ok(stored.bytes);
+    }
     const rendered = await this.renderInvoicePdf(inv);
     if (rendered.ok)
       this.logger.audit('invoice.pdf', {
@@ -3134,12 +3342,35 @@ export class BackendService {
     return rendered;
   }
 
+  /**
+   * Changer une donnée qui influe sur le PDF est interdit tant qu'une facture émise n'a pas son
+   * original archivé. Cette barrière ferme la fenêtre émission→job et protège aussi les imports
+   * legacy incomplets contre une régénération rétroactive.
+   */
+  private async assertIssuedInvoiceArchivesComplete(companyId: string): Promise<Result<void, AppError>> {
+    const invoices = await this.p.invoices.listByCompany(companyId);
+    for (const invoice of invoices) {
+      if (invoice.number === null || invoice.issuedAt === null) continue;
+      const documents = await this.p.documents.findByEntity(companyId, 'invoice', invoice.id);
+      const archived = documents.some(
+        (document) => document.kind === 'invoice_pdf' && document.status === 'active',
+      );
+      if (!archived) {
+        return err(appConflict('company_billing_settings', 'issued_invoice_archive_missing'));
+      }
+    }
+    return ok(undefined);
+  }
+
   private async renderInvoicePdf(inv: Invoice): Promise<Result<Uint8Array, AppError>> {
     const company = await this.p.companies.findById(inv.companyId);
     const customer = await this.p.customers.findById(inv.customerId);
     if (!company || !customer)
       return { ok: false, error: appNotFound('company-or-customer', inv.id) };
+    const billingSettings = await this.p.billingSettings.findByCompanyId(inv.companyId);
+    if (billingSettings === null) return err(appUnavailable('company-billing-settings'));
     const addr = customer.toProps().address;
+    const companyProps = company.toProps();
     const totals = inv.totals();
     const data: InvoicePdfData = {
       number: inv.number ?? '(brouillon)',
@@ -3159,6 +3390,20 @@ export class BackendService {
       })),
       totals: { ht: totals.ht, vat: totals.vat, ttc: totals.ttc, netToPay: totals.netToPay },
       mentions: [...inv.mentions],
+      billingPresentation: {
+        accentColor: billingSettings.pdfAccentColor,
+        rib:
+          billingSettings.showRibOnInvoices && companyProps.iban
+            ? {
+                iban: companyProps.iban,
+                bic: companyProps.bic ?? null,
+              }
+            : null,
+        insurance:
+          billingSettings.showInsuranceOnInvoices && company.decennale
+            ? { ...company.decennale }
+            : null,
+      },
     };
     // Facture émise -> PDF hybride Factur-X (XML CII embarqué).
     let facturX: { xml: string } | undefined;
@@ -3286,21 +3531,14 @@ export class BackendService {
   }
 
   private async enqueueInvoiceArchive(invoiceId: string): Promise<void> {
-    try {
-      const now = this.clock.now();
-      await this.p.documentArchiveJobs.enqueue({
-        id: this.ids.newId(),
-        companyId: this.companyId(),
-        invoiceId,
-        reason: 'invoice-issued',
-        now,
-      });
-    } catch (e) {
-      this.logger.warn(
-        `Enqueue archivage facture impossible: ${e instanceof Error ? e.message : String(e)}`,
-        'documents',
-      );
-    }
+    const now = this.clock.now();
+    await this.p.documentArchiveJobs.enqueue({
+      id: this.ids.newId(),
+      companyId: this.companyId(),
+      invoiceId,
+      reason: 'invoice-issued',
+      now,
+    });
   }
 
   private async archiveIssuedInvoiceDocumentsForCompany(
@@ -4283,6 +4521,7 @@ export class BackendService {
           entries: this.p.accountingEntries,
           clock: this.clock,
           charts: this.p.chartOfAccounts,
+          documents: this.p.documents,
         }).execute({ ...input, companyId: this.companyId() });
         if (!paid.ok) throw new RollbackAppError(paid.error);
         return paid;
@@ -4539,6 +4778,7 @@ export class BackendService {
       const r = Company.of({ id: principal.companyId, ...input });
       if (!r.ok) return { ok: false, error: appDomain(r.error) };
       await this.p.companies.save(r.value);
+      await this.p.billingSettings.ensureForCompany(principal.companyId);
       this.logger.audit('company.registered', { companyId: principal.companyId, name: input.name });
       return ok({ companyId: principal.companyId });
     }
@@ -4557,6 +4797,7 @@ export class BackendService {
     // on pose ici le GUC RLS sur l'id provisionné pour que la politique WITH CHECK passe.
     const provisioned = await this.p.runWithTenant(companyId, async () => {
       await this.p.companies.save(r.value);
+      await this.p.billingSettings.ensureForCompany(companyId);
       // Reverse trial 14 j (pilier 2, SPEC décision 1) : le compte NEUF démarre avec Pro
       // complet, sans carte. startTrial est IDEMPOTENT : le retry de provisioning (cf. bloc
       // supabaseAdmin ci-dessous) ne réinitialise JAMAIS une échéance d'essai déjà posée.
@@ -4668,5 +4909,21 @@ export class BackendService {
     await this.p.customers.save(r.value);
     this.logger.audit('customer.created', { id, companyId: this.companyId() });
     return ok({ id });
+  }
+
+  /** Édition post-création (C13/C40 TODO partagé) — la fiche mobile permet de compléter/corriger
+   * ce que la création MINIMALE (nom + type) n'a pas saisi. Remplacement complet revalidé par
+   * Customer.of (mêmes invariants qu'à la création), scopé au tenant courant. */
+  async updateCustomer(
+    id: string,
+    input: Omit<CustomerProps, 'id' | 'companyId'>,
+  ): Promise<Result<{ id: string }, AppError>> {
+    const r = await new UpdateCustomer({ customers: this.p.customers }).execute({
+      id,
+      companyId: this.companyId(),
+      ...input,
+    });
+    if (r.ok) this.logger.audit('customer.updated', { id, companyId: this.companyId() });
+    return r;
   }
 }

@@ -85,14 +85,15 @@ export default function ProfilFiscal() {
   const flow = useFiscalProfileFlow();
   const profile = flow.profile;
   const [editingField, setEditingField] = useState<FiscalEditableField | null>(null);
+  const profileReady = profile !== undefined;
 
   const agentContext = useMemo<AgentContext>(
     () => ({
       screen: { name: 'profil-fiscal', instanceId: 'profil-fiscal' },
       entities: [],
-      capabilities: ['screen.read', 'fiscal_profile.read', 'fiscal_profile.propose'],
+      capabilities: profileReady ? ['screen.read', 'fiscal_profile.read', 'fiscal_profile.propose'] : [],
     }),
-    [],
+    [profileReady],
   );
   usePublishAgentContext(agentContext, {}, { affordances: flow.voiceAffordances });
 

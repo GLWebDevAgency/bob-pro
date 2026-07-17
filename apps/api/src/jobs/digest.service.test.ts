@@ -3,7 +3,7 @@ import type { Company, Invoice, NotificationPort, Payment } from '@bob/core';
 import { DigestService, weeklyDigestWindow, type DigestWindow } from './digest.service';
 import { NotificationDeliveryService } from './notification-delivery.service';
 import { ScheduledTenantDirectory } from './tenant-directory';
-import { InMemoryPersistence } from '../persistence/persistence';
+import { InMemoryPersistence } from '../persistence/persistence.testing';
 import type { SupabaseAdminPort } from '../auth/supabase-admin';
 import { requestContext, type AppLogger } from '../observability/logger';
 

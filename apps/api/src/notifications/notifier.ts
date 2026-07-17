@@ -1,7 +1,6 @@
 import { Injectable, type Provider } from '@nestjs/common';
 import { type NotificationPort, type Notification } from '@bob/core';
 import { AppLogger } from '../observability/logger';
-import { isDemoMode } from '../config/env';
 
 export const NOTIFIER = Symbol('NOTIFIER');
 
@@ -43,16 +42,6 @@ function textToHtml(s: string): string {
 
 /** Notifier de démo : trace uniquement le résultat technique, jamais le contenu ou le destinataire. */
 @Injectable()
-export class DemoNotifier implements NotificationPort {
-  constructor(private readonly logger: AppLogger) {}
-  async send(notification: Notification): Promise<void> {
-    this.logger.audit('notification.sent', {
-      provider: 'demo',
-      channel: notification.channel,
-    });
-  }
-}
-
 /** Adapter Brevo Transactional Email API. Ne connaît que le port NotificationPort. */
 export class BrevoEmailNotifier implements NotificationPort {
   constructor(
@@ -118,8 +107,7 @@ export function buildNotifier(logger: AppLogger): NotificationPort {
   const apiKey = process.env.BREVO_API_KEY;
   const senderEmail = process.env.BREVO_SENDER_EMAIL;
   if (!apiKey || !senderEmail) {
-    // Démo assumée (DEMO_MODE=true) : trace d'audit sans envoi réel. En prod : échec propre par job.
-    return isDemoMode() ? new DemoNotifier(logger) : new MisconfiguredEmailNotifier();
+    return new MisconfiguredEmailNotifier();
   }
   return new BrevoEmailNotifier(logger, {
     apiKey,

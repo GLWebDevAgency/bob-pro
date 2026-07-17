@@ -53,6 +53,9 @@ function assertRemoteUrl(raw: string, release: boolean): void {
   if (release && (url.protocol !== 'https:' || isLoopback(url.hostname))) {
     throw new MobileDataConfigurationError('insecure_release_url');
   }
+  if (url.hostname === 'demo.bobpro.fr') {
+    throw new MobileDataConfigurationError('demo_forbidden');
+  }
 }
 
 /**

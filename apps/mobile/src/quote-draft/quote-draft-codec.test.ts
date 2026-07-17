@@ -43,6 +43,13 @@ function populatedDraft(): QuoteDraftState {
   let state = value(selectCustomer(createQuoteDraft('session-1'), CUSTOMER));
   state = value(applyQuoteDraftCommand(state, { type: 'next_step' })); // client -> lignes
   state = value(
+    applyQuoteDraftCommand(state, {
+      type: 'set_vat',
+      context: { housingOlderThan2y: true, energyRenovation: false },
+      vatRate: 10,
+    }),
+  );
+  state = value(
     addLine(state, {
       lineId: 'line-1',
       line: LINE,
@@ -72,6 +79,13 @@ describe('quote draft strict snapshot codec', () => {
     }).state;
     let state = value(selectCustomer(completed, CUSTOMER));
     state = value(applyQuoteDraftCommand(state, { type: 'next_step' })); // client -> lignes
+    state = value(
+      applyQuoteDraftCommand(state, {
+        type: 'set_vat',
+        context: { housingOlderThan2y: true, energyRenovation: false },
+        vatRate: 10,
+      }),
+    );
     state = value(addLine(state, { lineId: 'line-2', line: LINE, interaction: 'voice' }));
     state = value(applyQuoteDraftCommand(state, { type: 'next_step' })); // lignes -> tvaMentions
     state = value(applyQuoteDraftCommand(state, { type: 'next_step' })); // tvaMentions -> acompte
@@ -124,6 +138,13 @@ describe('quote draft strict snapshot codec', () => {
     // une preuve à protéger — un redémarrage peut la retrouver à l'identique.
     let state = value(selectCustomer(createQuoteDraft('session-1'), CUSTOMER));
     state = value(applyQuoteDraftCommand(state, { type: 'next_step' })); // client -> lignes
+    state = value(
+      applyQuoteDraftCommand(state, {
+        type: 'set_vat',
+        context: { housingOlderThan2y: true, energyRenovation: false },
+        vatRate: 10,
+      }),
+    );
     state = value(addLine(state, { lineId: 'line-1', line: LINE, interaction: 'manual' }));
     state = value(applyQuoteDraftCommand(state, { type: 'next_step' })); // lignes -> tvaMentions
     state = value(applyQuoteDraftCommand(state, { type: 'next_step' })); // tvaMentions -> acompte
@@ -162,6 +183,15 @@ describe('quote draft strict snapshot codec', () => {
     expect(() => decodeQuoteDraftSnapshot(future, IDENTITY)).toThrowError(
       expect.objectContaining({ code: 'unsupported_version' }),
     );
+    const legacyWithoutConfirmedVat = mutateSnapshot(encoded, (snapshot) => {
+      snapshot['version'] = 1;
+      const draft = snapshot['draft'] as Record<string, unknown>;
+      const flow = draft['flow'] as Record<string, unknown>;
+      delete (flow['draft'] as Record<string, unknown>)['vatRate'];
+    });
+    expect(() => decodeQuoteDraftSnapshot(legacyWithoutConfirmedVat, IDENTITY)).toThrowError(
+      expect.objectContaining({ code: 'unsupported_version' }),
+    );
   });
 
   it('échoue fermé sur JSON, propriétés en trop, incohérences et preuve injectée', () => {
@@ -198,6 +228,15 @@ describe('quote draft strict snapshot codec', () => {
       (draft['saved'] as Record<string, unknown>)['contentRevision'] = -1;
     });
     expect(() => decodeQuoteDraftSnapshot(staleSavedMarker, IDENTITY)).toThrowError(
+      expect.objectContaining({ code: 'invalid_snapshot' }),
+    );
+
+    const missingVatAfterVatStep = mutateSnapshot(encoded, (snapshot) => {
+      const draft = snapshot['draft'] as Record<string, unknown>;
+      const flow = draft['flow'] as Record<string, unknown>;
+      (flow['draft'] as Record<string, unknown>)['tvaContext'] = null;
+    });
+    expect(() => decodeQuoteDraftSnapshot(missingVatAfterVatStep, IDENTITY)).toThrowError(
       expect.objectContaining({ code: 'invalid_snapshot' }),
     );
   });

@@ -1,0 +1,257 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { Document } from '@bob/core';
+import type {
+  InvoicePdfData,
+  OcrPort,
+  PaymentGatewayPort,
+  PdfRendererPort,
+} from '@bob/core';
+import { MERCIER_PROPS } from '@bob/core/testing';
+import { BackendService } from './backend.service';
+import { InMemoryDocumentStorage } from './documents/storage.testing';
+import type { NotificationDeliveryService } from './jobs/notification-delivery.service';
+import type { Metrics } from './observability/metrics';
+import { requestContext, type AppLogger, type Principal } from './observability/logger';
+import { InMemoryPersistence } from './persistence/persistence.testing';
+
+const OWNER: Principal = { userId: 'owner-pdf', companyId: MERCIER_PROPS.id };
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
+function asOwner<T>(run: () => T): T {
+  return requestContext.run({ correlationId: 'invoice-pdf-immutability', principal: OWNER }, run);
+}
+
+function makeService() {
+  const persistence = new InMemoryPersistence();
+  const rendered: InvoicePdfData[] = [];
+  const renderer: PdfRendererPort = {
+    renderInvoice: vi.fn(async (data) => {
+      rendered.push(structuredClone(data));
+      return new TextEncoder().encode(
+        `%PDF-1.7\narchive:${data.number}:${data.billingPresentation.accentColor}`,
+      );
+    }),
+  };
+  const notificationDelivery = {
+    enqueue: vi.fn(async (input: { notification: unknown }) => ({
+      id: 'notification-job-pdf',
+      status: 'pending',
+      notification: input.notification,
+    })),
+    tryDeliver: vi.fn(async () => true),
+  } as unknown as NotificationDeliveryService;
+  const logger = {
+    audit: vi.fn(),
+    error: vi.fn(),
+    warn: vi.fn(),
+    log: vi.fn(),
+  } as unknown as AppLogger;
+  const metrics = {
+    aiRequests: { inc: vi.fn() },
+    aiDuration: { observe: vi.fn() },
+    aiGuardViolations: { inc: vi.fn() },
+  } as unknown as Metrics;
+  const storage = new InMemoryDocumentStorage();
+  const service = new BackendService(
+    persistence,
+    {} as PaymentGatewayPort,
+    renderer,
+    {} as OcrPort,
+    { setUserCompanyId: vi.fn(), deleteUser: vi.fn() },
+    notificationDelivery,
+    metrics,
+    logger,
+    undefined,
+    storage,
+  );
+  return { persistence, rendered, renderer, service, storage };
+}
+
+async function prepareFinalInvoice(service: BackendService): Promise<string> {
+  const quote = await service.createQuote({
+    customerId: 'cust-martin',
+    lines: [
+      {
+        label: 'Prestation archivée',
+        category: 'labor',
+        qty: 1,
+        unitPriceHT: 125_000,
+        vatRate: 20,
+      },
+    ],
+  });
+  if (!quote.ok) throw new Error('createQuote failed');
+  const sent = await service.sendQuote(quote.value.quoteId);
+  if (!sent.ok) throw new Error('sendQuote failed');
+  const signed = await service.signQuote({
+    quoteId: quote.value.quoteId,
+    signerName: 'Client archive',
+  });
+  if (!signed.ok) throw new Error('signQuote failed');
+  const generated = await service.generateInvoice({ quoteId: quote.value.quoteId, mode: 'final' });
+  if (!generated.ok) throw new Error('generateInvoice failed');
+  return generated.value.invoiceId;
+}
+
+async function issueInvoice(service: BackendService): Promise<string> {
+  const invoiceId = await prepareFinalInvoice(service);
+  const issued = await service.issueInvoice({ invoiceId });
+  if (!issued.ok) throw new Error('issueInvoice failed');
+  return invoiceId;
+}
+
+describe('facture PDF émise — original immuable', () => {
+  it('sert exactement les octets archivés malgré un réglage ultérieur et refuse toute archive ambiguë ou corrompue', async () => {
+    vi.stubEnv('SIGN_WEB_BASE_URL', 'https://signature.example.test');
+    const { persistence, rendered, renderer, service, storage } = makeService();
+    await persistence.seed();
+
+    await asOwner(async () => {
+      const invoiceId = await issueInvoice(service);
+      expect(renderer.renderInvoice).toHaveBeenCalledTimes(1);
+      expect(rendered[0]?.billingPresentation).toEqual({
+        accentColor: 'navy',
+        rib: null,
+        insurance: MERCIER_PROPS.decennale,
+      });
+
+      const documents = await persistence.documents.findByEntity(
+        MERCIER_PROPS.id,
+        'invoice',
+        invoiceId,
+      );
+      const pdfDocument = documents.find((document) => document.kind === 'invoice_pdf');
+      expect(pdfDocument).toBeDefined();
+      if (pdfDocument === undefined) return;
+      const original = await storage.get(MERCIER_PROPS.id, pdfDocument.storageKey);
+      expect(original).not.toBeNull();
+      if (original === null) return;
+
+      const settings = await service.getCompanyBillingSettings();
+      expect(settings.ok).toBe(true);
+      if (!settings.ok) return;
+      const changed = await service.updateCompanyBillingSettings({
+        expectedRevision: settings.value.revision,
+        patch: { pdfAccentColor: 'purple', showRibOnInvoices: true },
+      });
+      expect(changed.ok && changed.value.pdfAccentColor).toBe('purple');
+
+      const downloaded = await service.invoicePdf(invoiceId);
+      expect(downloaded.ok).toBe(true);
+      if (!downloaded.ok) return;
+      expect(downloaded.value).toEqual(original.bytes);
+      expect(renderer.renderInvoice).toHaveBeenCalledTimes(1);
+
+      // Métadonnée de taille corrompue : le SHA reste identique mais le GET échoue fermé.
+      const originalProps = pdfDocument.toProps();
+      await persistence.documents.save(
+        Document.rehydrate({
+          ...originalProps,
+          byteSize: originalProps.byteSize + 1,
+          versions: originalProps.versions.map((version) =>
+            version.version === Math.max(...originalProps.versions.map((item) => item.version))
+              ? { ...version, byteSize: version.byteSize + 1 }
+              : version,
+          ),
+        }),
+      );
+      await expect(service.invoicePdf(invoiceId)).resolves.toEqual({
+        ok: false,
+        error: { kind: 'unavailable', service: 'invoice-archive' },
+      });
+      await persistence.documents.save(Document.rehydrate(originalProps));
+
+      // Octets altérés à taille identique : le contrôle SHA refuse l'objet.
+      const corruptedBytes = new Uint8Array(original.bytes);
+      corruptedBytes[corruptedBytes.length - 1] = (corruptedBytes.at(-1) ?? 0) ^ 1;
+      await storage.remove(MERCIER_PROPS.id, pdfDocument.storageKey);
+      await storage.put({
+        companyId: MERCIER_PROPS.id,
+        key: pdfDocument.storageKey,
+        bytes: corruptedBytes,
+        contentType: 'application/pdf',
+      });
+      await expect(service.invoicePdf(invoiceId)).resolves.toEqual({
+        ok: false,
+        error: { kind: 'unavailable', service: 'invoice-archive' },
+      });
+
+      // Objet absent : aucune régénération opportuniste avec les nouveaux réglages.
+      await storage.remove(MERCIER_PROPS.id, pdfDocument.storageKey);
+      await expect(service.invoicePdf(invoiceId)).resolves.toEqual({
+        ok: false,
+        error: { kind: 'unavailable', service: 'invoice-archive' },
+      });
+      await storage.put({
+        companyId: MERCIER_PROPS.id,
+        key: pdfDocument.storageKey,
+        bytes: original.bytes,
+        contentType: 'application/pdf',
+      });
+
+      // Deux originaux actifs liés à la même facture : le GET refuse l'ambiguïté, quel que soit
+      // l'ordre de retour du repository.
+      const duplicate = await service.uploadDocument({
+        contentBase64: Buffer.from(original.bytes).toString('base64'),
+        mimeType: 'application/pdf',
+        filename: 'copie-facture.pdf',
+        kind: 'invoice_pdf',
+        linkedEntityType: 'invoice',
+        linkedEntityId: invoiceId,
+      });
+      expect(duplicate.ok).toBe(true);
+      await expect(service.invoicePdf(invoiceId)).resolves.toEqual({
+        ok: false,
+        error: { kind: 'unavailable', service: 'invoice-archive' },
+      });
+      expect(renderer.renderInvoice).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('rollback émission, numéro et comptabilité si l’outbox d’archive ne peut pas être écrite', async () => {
+    vi.stubEnv('SIGN_WEB_BASE_URL', 'https://signature.example.test');
+    const { persistence, renderer, service } = makeService();
+    await persistence.seed();
+
+    await asOwner(async () => {
+      const invoiceId = await prepareFinalInvoice(service);
+      vi.spyOn(persistence.documentArchiveJobs, 'enqueue').mockRejectedValueOnce(
+        new Error('postgres unavailable'),
+      );
+
+      const failed = await service.issueInvoice({ invoiceId });
+      expect(failed).toEqual({
+        ok: false,
+        error: {
+          kind: 'dependency',
+          port: 'document-archive-outbox',
+          cause: 'postgres unavailable',
+        },
+      });
+      const rolledBack = await persistence.invoices.findById(invoiceId);
+      expect(rolledBack?.number).toBeNull();
+      expect(rolledBack?.issuedAt).toBeNull();
+      expect(await persistence.accountingEntries.listByCompany(MERCIER_PROPS.id)).toHaveLength(0);
+      expect(
+        await persistence.documentArchiveJobs.listDue(
+          MERCIER_PROPS.id,
+          '9999-12-31T23:59:59.999Z',
+          10,
+        ),
+      ).toHaveLength(0);
+      expect(renderer.renderInvoice).not.toHaveBeenCalled();
+
+      const retry = await service.issueInvoice({ invoiceId });
+      expect(retry.ok).toBe(true);
+      if (!retry.ok) return;
+      expect(retry.value.number).toMatch(/^F-\d{4}-0001$/u);
+      expect(renderer.renderInvoice).toHaveBeenCalledTimes(1);
+      const persisted = await persistence.invoices.findById(invoiceId);
+      expect(persisted?.number).toBe(retry.value.number);
+      expect(await persistence.accountingEntries.listByCompany(MERCIER_PROPS.id)).toHaveLength(1);
+    });
+  });
+});

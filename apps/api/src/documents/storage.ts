@@ -1,13 +1,53 @@
 import { createHash } from 'node:crypto';
 import { type DocumentStoragePort, type StoredObject } from '@bob/core';
-import { isDemoMode, loadEnv } from '../config/env';
+import { loadEnv } from '../config/env';
+
+export const DOCUMENT_STORAGE = Symbol('DOCUMENT_STORAGE');
 
 export function documentSha256(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
-function copy(bytes: Uint8Array): Uint8Array {
-  return new Uint8Array(bytes);
+/**
+ * Adaptateur fail-closed uniquement utilisé quand BackendService est instancié manuellement sans
+ * son module Nest (tests unitaires qui n'exercent pas le coffre). Le runtime AppModule injecte
+ * toujours le provider live construit par `buildDocumentStorage`.
+ */
+export class UnavailableDocumentStorage implements DocumentStoragePort {
+  private fail(): never {
+    throw new Error('DOCUMENT_STORAGE_UNAVAILABLE');
+  }
+
+  put(_input: {
+    companyId: string;
+    key: string;
+    bytes: Uint8Array;
+    contentType: string;
+  }): Promise<StoredObject> {
+    return this.fail();
+  }
+
+  get(
+    _companyId: string,
+    _key: string,
+  ): Promise<{ bytes: Uint8Array; contentType: string } | null> {
+    return this.fail();
+  }
+
+  getSignedUrl(_companyId: string, _key: string, _ttlSeconds: number): Promise<string> {
+    return this.fail();
+  }
+
+  stat(
+    _companyId: string,
+    _key: string,
+  ): Promise<{ sizeBytes: number; contentType: string } | null> {
+    return this.fail();
+  }
+
+  remove(_companyId: string, _key: string): Promise<void> {
+    return this.fail();
+  }
 }
 
 function assertTenantStorageKey(companyId: string, key: string): void {
@@ -22,49 +62,6 @@ function encodePath(path: string): string {
     .split('/')
     .map((part) => encodeURIComponent(part))
     .join('/');
-}
-
-export class InMemoryDocumentStorage implements DocumentStoragePort {
-  private readonly objects = new Map<string, { companyId: string; bytes: Uint8Array; contentType: string; sha256: string }>();
-
-  async put(input: { companyId: string; key: string; bytes: Uint8Array; contentType: string }): Promise<StoredObject> {
-    assertTenantStorageKey(input.companyId, input.key);
-    if (this.objects.has(input.key)) throw new Error('Document object already exists.');
-    const digest = documentSha256(input.bytes);
-    this.objects.set(input.key, {
-      companyId: input.companyId,
-      bytes: copy(input.bytes),
-      contentType: input.contentType,
-      sha256: digest,
-    });
-    return { key: input.key, sizeBytes: input.bytes.byteLength, sha256: digest };
-  }
-
-  async get(companyId: string, key: string): Promise<{ bytes: Uint8Array; contentType: string } | null> {
-    assertTenantStorageKey(companyId, key);
-    const object = this.objects.get(key);
-    if (!object || object.companyId !== companyId) return null;
-    return { bytes: copy(object.bytes), contentType: object.contentType };
-  }
-
-  async getSignedUrl(companyId: string, key: string, ttlSeconds: number): Promise<string> {
-    assertTenantStorageKey(companyId, key);
-    if (!this.objects.has(key)) throw new Error('Document object not found.');
-    return `memory://bob-documents/${encodePath(key)}?ttl=${ttlSeconds}`;
-  }
-
-  async stat(companyId: string, key: string): Promise<{ sizeBytes: number; contentType: string } | null> {
-    assertTenantStorageKey(companyId, key);
-    const object = this.objects.get(key);
-    if (!object || object.companyId !== companyId) return null;
-    return { sizeBytes: object.bytes.byteLength, contentType: object.contentType };
-  }
-
-  async remove(companyId: string, key: string): Promise<void> {
-    assertTenantStorageKey(companyId, key);
-    const object = this.objects.get(key);
-    if (object?.companyId === companyId) this.objects.delete(key);
-  }
 }
 
 export class SupabaseDocumentStorage implements DocumentStoragePort {
@@ -106,22 +103,40 @@ export class SupabaseDocumentStorage implements DocumentStoragePort {
    * HEAD aveugle sur ce 400 faisait échouer stat, donc TOUT put/get). On discrimine par le corps.
    */
   private static isNotFound(status: number, bodyText: string): boolean {
-    return status === 404 || (status === 400 && /not_found|"statusCode"\s*:\s*"404"/.test(bodyText));
+    return (
+      status === 404 || (status === 400 && /not_found|"statusCode"\s*:\s*"404"/.test(bodyText))
+    );
   }
 
-  async put(input: { companyId: string; key: string; bytes: Uint8Array; contentType: string }): Promise<StoredObject> {
+  async put(input: {
+    companyId: string;
+    key: string;
+    bytes: Uint8Array;
+    contentType: string;
+  }): Promise<StoredObject> {
     assertTenantStorageKey(input.companyId, input.key);
-    if (await this.stat(input.companyId, input.key)) throw new Error('Document object already exists.');
+    if (await this.stat(input.companyId, input.key))
+      throw new Error('Document object already exists.');
     const response = await fetch(this.objectUrl(input.key), {
       method: 'POST',
       headers: { ...this.headers(input.contentType), 'x-upsert': 'false' },
       body: Buffer.from(input.bytes),
     });
-    if (!response.ok) throw new Error(`Supabase storage upload failed: ${response.status} ${await response.text()}`);
-    return { key: input.key, sizeBytes: input.bytes.byteLength, sha256: documentSha256(input.bytes) };
+    if (!response.ok)
+      throw new Error(
+        `Supabase storage upload failed: ${response.status} ${await response.text()}`,
+      );
+    return {
+      key: input.key,
+      sizeBytes: input.bytes.byteLength,
+      sha256: documentSha256(input.bytes),
+    };
   }
 
-  async get(companyId: string, key: string): Promise<{ bytes: Uint8Array; contentType: string } | null> {
+  async get(
+    companyId: string,
+    key: string,
+  ): Promise<{ bytes: Uint8Array; contentType: string } | null> {
     assertTenantStorageKey(companyId, key);
     const response = await fetch(this.objectUrl(key), { method: 'GET', headers: this.headers() });
     if (!response.ok) {
@@ -142,14 +157,20 @@ export class SupabaseDocumentStorage implements DocumentStoragePort {
       headers: this.headers('application/json'),
       body: JSON.stringify({ expiresIn: ttlSeconds }),
     });
-    if (!response.ok) throw new Error(`Supabase storage signed URL failed: ${response.status} ${await response.text()}`);
+    if (!response.ok)
+      throw new Error(
+        `Supabase storage signed URL failed: ${response.status} ${await response.text()}`,
+      );
     const payload = (await response.json()) as { signedURL?: string; signedUrl?: string };
     const signed = payload.signedURL ?? payload.signedUrl;
     if (!signed) throw new Error('Supabase storage signed URL response missing URL.');
     return signed.startsWith('http') ? signed : `${this.config.url.replace(/\/$/, '')}${signed}`;
   }
 
-  async stat(companyId: string, key: string): Promise<{ sizeBytes: number; contentType: string } | null> {
+  async stat(
+    companyId: string,
+    key: string,
+  ): Promise<{ sizeBytes: number; contentType: string } | null> {
     assertTenantStorageKey(companyId, key);
     // GET /object/info/ et non HEAD : un HEAD sans corps ne permet pas de distinguer le 400
     // « not_found » de Supabase d'une vraie erreur (cause du xmlDocumentId null en prod).
@@ -168,7 +189,10 @@ export class SupabaseDocumentStorage implements DocumentStoragePort {
 
   async remove(companyId: string, key: string): Promise<void> {
     assertTenantStorageKey(companyId, key);
-    const response = await fetch(this.objectUrl(key), { method: 'DELETE', headers: this.headers() });
+    const response = await fetch(this.objectUrl(key), {
+      method: 'DELETE',
+      headers: this.headers(),
+    });
     if (!response.ok) {
       const text = await response.text();
       if (SupabaseDocumentStorage.isNotFound(response.status, text)) return;
@@ -179,15 +203,14 @@ export class SupabaseDocumentStorage implements DocumentStoragePort {
 
 export function buildDocumentStorage(): DocumentStoragePort {
   const env = loadEnv();
-  if (!isDemoMode()) {
-    if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
-      throw new Error('SUPABASE_URL et SUPABASE_SERVICE_ROLE_KEY sont requis pour le stockage documentaire live.');
-    }
-    return new SupabaseDocumentStorage({
-      url: env.SUPABASE_URL,
-      serviceRoleKey: env.SUPABASE_SERVICE_ROLE_KEY,
-      bucket: env.SUPABASE_STORAGE_BUCKET,
-    });
+  if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
+    throw new Error(
+      'SUPABASE_URL et SUPABASE_SERVICE_ROLE_KEY sont requis pour le stockage documentaire live.',
+    );
   }
-  return new InMemoryDocumentStorage();
+  return new SupabaseDocumentStorage({
+    url: env.SUPABASE_URL,
+    serviceRoleKey: env.SUPABASE_SERVICE_ROLE_KEY,
+    bucket: env.SUPABASE_STORAGE_BUCKET,
+  });
 }

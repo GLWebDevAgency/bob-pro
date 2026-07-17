@@ -1,9 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import { ForbiddenException, Injectable, type CanActivate, type ExecutionContext } from '@nestjs/common';
 import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from 'jose';
-import { MERCIER_PROPS } from '@bob/core';
 import { setPrincipal } from '../observability/logger';
-import { isDemoMode } from '../config/env';
 
 interface RequestLike {
   url: string;
@@ -33,6 +31,11 @@ function isPublicPushRevocationEndpoint(method: string, url: string): boolean {
   return method === 'POST' && url === '/public/push-revocations';
 }
 
+/** Webhook Stripe : public au sens JWT uniquement ; signature HMAC vérifiée sur le raw body. */
+function isStripeWebhookEndpoint(method: string, url: string): boolean {
+  return method === 'POST' && url === '/webhooks/stripe';
+}
+
 /**
  * Niveau 2 — JWT VALIDE requis mais tenant OPTIONNEL (C24b) : le provisioning exige d'être
  * authentifié (le JWT fournit le userId pour l'id déterministe company-<userId> et l'écriture
@@ -49,9 +52,8 @@ function isCabinetEndpoint(url: string): boolean {
   return path === '/cabinet/v1' || path.startsWith('/cabinet/v1/');
 }
 
-/** /metrics reste ergonomique en démo, mais devient fail-closed derrière un secret en live. */
+/** /metrics est toujours fail-closed derrière un secret, quel que soit le profil de démarrage. */
 function hasValidMetricsCredential(headers: Record<string, string | undefined>): boolean {
-  if (isDemoMode()) return true;
   const expected = process.env.METRICS_TOKEN;
   if (!expected || expected.length < 32) return false;
   const authorization = headers['authorization'];
@@ -67,8 +69,9 @@ function hasValidMetricsCredential(headers: Record<string, string | undefined>):
 
 /**
  * Garde d'authentification.
- * - Démo (DEMO_MODE) : pass-through, tenant via x-company-id (défaut : société de seed).
- * - Prod : vérifie le JWT Supabase via JWKS public (signature + exp), pose le Principal (anti-IDOR).
+ * - Tous les profils : vérifie le JWT Supabase via JWKS public (signature + exp), pose le
+ *   Principal (anti-IDOR). Aucun header local ni variable d'environnement ne peut contourner
+ *   cette frontière dans l'artefact serveur.
  *   Un JWT valide SANS app_metadata.company_id conforme → principal { userId, companyId: null } :
  *   seuls les endpoints de la liste blanche passent ; le reste reçoit 403 PROVISIONING_REQUIRED
  *   (JAMAIS de repli sur le tenant de démo — c'était une lecture cross-tenant).
@@ -95,24 +98,7 @@ export class SupabaseAuthGuard implements CanActivate {
     // Inscription AVANT compte (C24b) : lookup annuaire public, AVANT toute lecture d'Authorization.
     if (isPublicSignupEndpoint(req.method ?? 'GET', req.url)) return true;
     if (isPublicPushRevocationEndpoint(req.method ?? 'GET', req.url)) return true;
-
-    if (isDemoMode()) {
-      // Démo : tenant via header x-company-id (par défaut la société de seed). Comportement C24b inchangé.
-      const tenant = req.headers['x-company-id'];
-      if (isCabinetEndpoint(req.url)) {
-        const userId = req.headers['x-demo-user-id'] || 'demo';
-        const email = (req.headers['x-demo-user-email'] || 'demo@bobpro.fr').trim().toLowerCase();
-        setPrincipal({
-          userId,
-          companyId: null,
-          email,
-          emailVerified: true,
-        });
-      } else {
-        setPrincipal({ userId: 'demo', companyId: (typeof tenant === 'string' && tenant) || MERCIER_PROPS.id });
-      }
-      return true;
-    }
+    if (isStripeWebhookEndpoint(req.method ?? 'GET', req.url)) return true;
 
     const auth = req.headers['authorization'];
     if (typeof auth !== 'string' || !auth.startsWith('Bearer ')) return false;

@@ -5,6 +5,8 @@ import { type DateOnly, type Instant } from '../../shared-kernel/time';
 
 export type LegalForm = 'EI' | 'EURL' | 'SASU' | 'SARL' | 'SAS' | 'micro';
 export type VatRegime = 'franchise' | 'reel_simpl' | 'reel_normal';
+/** Clientèle principale explicitement confirmée par le propriétaire pendant l'onboarding. */
+export type CustomerPortfolio = 'b2c' | 'b2b' | 'b2g' | 'mixte';
 export type Trade =
   | 'plombier'
   | 'electricien'
@@ -41,6 +43,8 @@ export interface CompanyProps {
   apeCode?: string;
   trade: Trade;
   vatRegime: VatRegime;
+  /** Absent tant que l'utilisateur ne l'a pas confirmé — aucune valeur par défaut implicite. */
+  customerPortfolio?: CustomerPortfolio;
   rcsOrRm?: string;
   address: Address;
   /** N° TVA intracom (fiche annuaire à l'inscription — C24b « fiche société complète »). */
@@ -77,6 +81,16 @@ export class Company {
     if (!siret.ok) return siret;
     if (siret.value.siren().value !== siren.value.value)
       return err({ code: 'VALIDATION', field: 'siret', message: 'SIRET incoherent avec le SIREN.' });
+    if (
+      p.customerPortfolio !== undefined
+      && !(['b2c', 'b2b', 'b2g', 'mixte'] as const).includes(p.customerPortfolio)
+    ) {
+      return err({
+        code: 'VALIDATION',
+        field: 'customerPortfolio',
+        message: 'Clientele principale invalide.',
+      });
+    }
     return ok(new Company(p));
   }
 
@@ -100,6 +114,9 @@ export class Company {
   }
   get vatRegime(): VatRegime {
     return this.p.vatRegime;
+  }
+  get customerPortfolio(): CustomerPortfolio | undefined {
+    return this.p.customerPortfolio;
   }
   get address(): Address {
     return this.p.address;

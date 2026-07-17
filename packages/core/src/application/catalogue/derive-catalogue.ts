@@ -44,6 +44,10 @@ function hasExactKeys(value: Record<string, unknown>, expected: readonly string[
   return actual.length === sorted.length && actual.every((key, index) => key === sorted[index]);
 }
 
+export function isCustomPrestationId(value: unknown): value is string {
+  return typeof value === 'string' && CUSTOM_PRESTATION_ID.test(value);
+}
+
 /** Prestation créée/importée par l'entreprise et persistée par son autorité tenant. */
 export interface CustomPrestation {
   readonly id: string;
@@ -69,7 +73,7 @@ export function parseCustomPrestation(value: unknown): CustomPrestation | null {
   const unitPriceHT = value['unitPriceHT'];
   const vatRate = value['vatRate'];
 
-  if (typeof id !== 'string' || !CUSTOM_PRESTATION_ID.test(id)) return null;
+  if (!isCustomPrestationId(id)) return null;
   if (typeof label !== 'string') return null;
   const canonicalLabel = label.trim();
   if (

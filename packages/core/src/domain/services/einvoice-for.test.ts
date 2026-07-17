@@ -20,9 +20,6 @@ const baseCustomer: CustomerProps = {
   type: 'b2c',
   name: 'X',
   address: { line1: 'x', zip: '75001', city: 'Paris' },
-  score: 80,
-  avgDelayDays: 0,
-  outstanding: 0,
 };
 
 const co = (): Company => {

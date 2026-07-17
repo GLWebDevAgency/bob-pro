@@ -10,7 +10,8 @@ import {
 import { Reflector } from '@nestjs/core';
 import { from, lastValueFrom, type Observable } from 'rxjs';
 import { getPrincipal } from '../observability/logger';
-import { PERSISTENCE, type Persistence } from './persistence';
+import type { Persistence } from './persistence';
+import { PERSISTENCE } from './persistence-token';
 
 const TENANT_TRANSACTION_DISABLED = Symbol('tenant-transaction-disabled');
 

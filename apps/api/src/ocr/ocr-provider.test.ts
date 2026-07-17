@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { DemoOcrAdapter } from '@bob/core';
+import { DemoOcrAdapter } from '@bob/core/testing';
 import { buildOcrAdapter, FallbackOcrChain, UnavailableOcrAdapter } from './ocr';
 
 function clearProviderKeys(): void {
@@ -7,7 +7,7 @@ function clearProviderKeys(): void {
   vi.stubEnv('ANTHROPIC_API_KEY', '');
 }
 
-describe('composition OCR — démo explicitement opt-in', () => {
+describe('composition OCR — uniquement fournisseurs réels', () => {
   afterEach(() => vi.unstubAllEnvs());
 
   it('retourne unavailable en live sans fournisseur, jamais DemoOcrAdapter', async () => {
@@ -35,10 +35,11 @@ describe('composition OCR — démo explicitement opt-in', () => {
     expect(buildOcrAdapter()).toBeInstanceOf(FallbackOcrChain);
   });
 
-  it('autorise le moteur déterministe seulement avec DEMO_MODE=true', () => {
+  it('reste indisponible même avec DEMO_MODE=true : aucun OCR synthétique dans le backend', () => {
     vi.stubEnv('DEMO_MODE', 'true');
     clearProviderKeys();
 
-    expect(buildOcrAdapter()).toBeInstanceOf(DemoOcrAdapter);
+    expect(buildOcrAdapter()).toBeInstanceOf(UnavailableOcrAdapter);
+    expect(buildOcrAdapter()).not.toBeInstanceOf(DemoOcrAdapter);
   });
 });

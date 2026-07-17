@@ -36,6 +36,7 @@ import type {
   Trade,
   VatRegime,
   CustomerPortfolio,
+  ExpensePaymentEvidenceInput,
 } from '@bob/core';
 import { Iban, isCatalogueCategory, isValidDateOnly, isVatRate } from '@bob/core';
 import { type AgentAskPayload } from '@bob/ai';
@@ -103,6 +104,15 @@ const COMPANY_PROFILE_FIELDS = new Set(['trade', 'vatRegime', 'customerPortfolio
 /** Réglages facturation §Coordonnées bancaires (RIB) — champs déjà persistés (CompanyProps.iban/
  * bic) mais jusqu'ici jamais éditables : seul endpoint qui les écrit après l'onboarding. */
 const COMPANY_BILLING_FIELDS = new Set(['iban', 'bic']);
+const COMPANY_BILLING_SETTINGS_FIELDS = new Set([
+  'expectedRevision',
+  'showRibOnInvoices',
+  'showInsuranceOnInvoices',
+  'pdfAccentColor',
+  'defaultQuoteValidityDays',
+  'defaultDepositPercent',
+]);
+const INVOICE_PDF_ACCENTS = new Set(['navy', 'green', 'purple', 'orange']);
 const BIC_PATTERN = /^[A-Z0-9]{8}([A-Z0-9]{3})?$/;
 const MANUAL_BANK_BALANCE_FIELDS = new Set(['amountCents', 'observedAt']);
 const CREATE_CUSTOMER_FIELDS = new Set([
@@ -112,6 +122,7 @@ const CREATE_CUSTOMER_FIELDS = new Set([
   'address',
   'email',
   'phone',
+  'contactName',
   'paymentTermsLabel',
   'isInternational',
   'isSubcontractingBtp',
@@ -143,6 +154,13 @@ const DOCUMENT_EXPENSE_FIELDS = new Set(
 const DOCUMENT_EXPENSE_BODY_FIELDS = new Set(['expectedRevision', 'targetFolderId', 'expense']);
 const EXPENSE_CATEGORIES = new Set(['fournitures', 'materiel', 'carburant', 'repas', 'sous_traitance', 'autre']);
 const EXPENSE_SOURCES = new Set(['ocr', 'manual', 'facturx']);
+const EXPENSE_PAYMENT_FIELDS = new Set([
+  'paidOn',
+  'method',
+  'reference',
+  'proofDocumentId',
+]);
+const EXPENSE_PAYMENT_METHODS = new Set<PaymentMethod>(['card', 'transfer', 'cash']);
 const DOCUMENT_UPLOAD_FIELDS = new Set([
   'contentBase64',
   'mimeType',
@@ -195,7 +213,9 @@ function parseManualBankBalanceBody(body: Record<string, unknown>): {
   return { amountCents: body.amountCents as number, observedAt: body.observedAt };
 }
 
-function parseCreateCustomerBody(
+/** Champs partagés création ET édition (C13/C40 TODO partagé) — même allowlist, même forme :
+ * l'édition post-création est un remplacement complet revalidé par Customer.of, pas un patch. */
+function parseCustomerBody(
   body: Record<string, unknown>,
 ): Omit<CustomerProps, 'id' | 'companyId'> {
   const unknownField = Object.keys(body).find((field) => !CREATE_CUSTOMER_FIELDS.has(field));
@@ -226,6 +246,7 @@ function parseCreateCustomerBody(
     || !validOptionalString(body.siren)
     || !validOptionalString(body.email)
     || !validOptionalString(body.phone)
+    || !validOptionalString(body.contactName)
     || !validOptionalString(body.paymentTermsLabel)
     || !validOptionalBoolean(body.isInternational)
     || !validOptionalBoolean(body.isSubcontractingBtp)
@@ -243,6 +264,7 @@ function parseCreateCustomerBody(
     ...(body.siren !== undefined ? { siren: body.siren as string } : {}),
     ...(body.email !== undefined ? { email: body.email as string } : {}),
     ...(body.phone !== undefined ? { phone: body.phone as string } : {}),
+    ...(body.contactName !== undefined ? { contactName: body.contactName as string } : {}),
     ...(body.paymentTermsLabel !== undefined
       ? { paymentTermsLabel: body.paymentTermsLabel as string }
       : {}),
@@ -940,7 +962,14 @@ export class CustomersController {
   @Post()
   async create(@Body() body: unknown) {
     assertJsonObjectBody(body);
-    return unwrap(await this.backend.createCustomer(parseCreateCustomerBody(body)));
+    return unwrap(await this.backend.createCustomer(parseCustomerBody(body)));
+  }
+  /** Édition post-création (C13/C40 TODO partagé) — remplacement complet revalidé, MÊME
+   * allowlist que la création (parseCustomerBody), jamais un patch partiel côté domaine. */
+  @Patch(':id')
+  async update(@Param('id') id: string, @Body() body: unknown) {
+    assertJsonObjectBody(body);
+    return unwrap(await this.backend.updateCustomer(id, parseCustomerBody(body)));
   }
 }
 
@@ -1094,6 +1123,76 @@ export class CompanyLookupController {
     }
     if (issues.length > 0) throwValidationIssues(issues);
     return unwrap(await this.backend.updateCompanyBilling({ iban, bic }));
+  }
+
+  @Get('billing-settings')
+  async billingSettings() {
+    return unwrap(await this.backend.getCompanyBillingSettings());
+  }
+
+  /**
+   * CAS obligatoire : un appareil qui édite une révision périmée reçoit 409 et doit recharger.
+   * Les champs sans consommateur serveur (logo, conditions de paiement) sont volontairement
+   * absents du contrat, donc impossibles à enregistrer comme faux réglage.
+   */
+  @Patch('billing-settings')
+  async updateBillingSettings(@Body() body: unknown) {
+    assertJsonObjectBody(body);
+    const unknownField = Object.keys(body).find(
+      (field) => !COMPANY_BILLING_SETTINGS_FIELDS.has(field),
+    );
+    if (unknownField !== undefined) {
+      throwValidationIssues([{ field: unknownField, message: 'Champ non autorisé.' }]);
+    }
+    const issues: ValidationIssue[] = [];
+    if (!Number.isSafeInteger(body.expectedRevision) || Number(body.expectedRevision) < 1) {
+      issues.push({ field: 'expectedRevision', message: 'Révision invalide.' });
+    }
+    for (const field of ['showRibOnInvoices', 'showInsuranceOnInvoices'] as const) {
+      if (field in body && typeof body[field] !== 'boolean') {
+        issues.push({ field, message: 'Booléen requis.' });
+      }
+    }
+    if (
+      'pdfAccentColor' in body
+      && (typeof body.pdfAccentColor !== 'string' || !INVOICE_PDF_ACCENTS.has(body.pdfAccentColor))
+    ) {
+      issues.push({ field: 'pdfAccentColor', message: 'Couleur invalide.' });
+    }
+    for (const [field, min, max] of [
+      ['defaultQuoteValidityDays', 1, 365],
+      ['defaultDepositPercent', 0, 100],
+    ] as const) {
+      if (
+        field in body
+        && (!Number.isSafeInteger(body[field]) || Number(body[field]) < min || Number(body[field]) > max)
+      ) {
+        issues.push({ field, message: `Entier entre ${min} et ${max} requis.` });
+      }
+    }
+    const patch = {
+      ...('showRibOnInvoices' in body ? { showRibOnInvoices: body.showRibOnInvoices as boolean } : {}),
+      ...('showInsuranceOnInvoices' in body
+        ? { showInsuranceOnInvoices: body.showInsuranceOnInvoices as boolean }
+        : {}),
+      ...('pdfAccentColor' in body
+        ? { pdfAccentColor: body.pdfAccentColor as 'navy' | 'green' | 'purple' | 'orange' }
+        : {}),
+      ...('defaultQuoteValidityDays' in body
+        ? { defaultQuoteValidityDays: body.defaultQuoteValidityDays as number }
+        : {}),
+      ...('defaultDepositPercent' in body
+        ? { defaultDepositPercent: body.defaultDepositPercent as number }
+        : {}),
+    };
+    if (Object.keys(patch).length === 0) {
+      issues.push({ field: 'settings', message: 'Au moins un réglage est requis.' });
+    }
+    if (issues.length > 0) throwValidationIssues(issues);
+    return unwrap(await this.backend.updateCompanyBillingSettings({
+      expectedRevision: body.expectedRevision as number,
+      patch,
+    }));
   }
 }
 
@@ -1592,6 +1691,31 @@ export class CatalogueController {
   }
 }
 
+function parseChantierNoteBody(body: Record<string, unknown>): { text: string } {
+  const unknownField = Object.keys(body).find((field) => field !== 'text');
+  if (unknownField !== undefined) throwValidationIssues([{ field: unknownField, message: 'Champ non autorisé.' }]);
+  if (typeof body.text !== 'string' || body.text.trim().length === 0)
+    throwValidationIssues([{ field: 'text', message: 'Texte de note requis.' }]);
+  return { text: body.text as string };
+}
+
+const WORKSITE_PHOTO_FIELDS = new Set(['contentBase64', 'mimeType', 'filename']);
+
+function parseWorksitePhotoBody(
+  body: Record<string, unknown>,
+): { contentBase64: string; mimeType: string; filename: string } {
+  const unknownField = Object.keys(body).find((field) => !WORKSITE_PHOTO_FIELDS.has(field));
+  if (unknownField !== undefined) throwValidationIssues([{ field: unknownField, message: 'Champ non autorisé.' }]);
+  if (
+    typeof body.contentBase64 !== 'string' || body.contentBase64.length === 0
+    || typeof body.mimeType !== 'string' || !body.mimeType.startsWith('image/')
+    || typeof body.filename !== 'string' || body.filename.trim().length === 0
+  ) {
+    throwValidationIssues([{ field: 'body', message: 'Photo invalide.' }]);
+  }
+  return { contentBase64: body.contentBase64, mimeType: body.mimeType, filename: body.filename };
+}
+
 @Controller('chantiers')
 export class ChantiersController {
   constructor(private readonly backend: BackendService) {}
@@ -1602,6 +1726,34 @@ export class ChantiersController {
   @Post()
   async create(@Body() body: Omit<CreateChantierInput, 'companyId'>) {
     return unwrap(await this.backend.createChantier(body));
+  }
+  // ── Journal (notes horodatées) — fiche chantier, extension V1 ──
+  @Get(':id/notes')
+  async listNotes(@Param('id') id: string) {
+    return unwrap(await this.backend.listChantierNotes(id));
+  }
+  @Post(':id/notes')
+  async addNote(@Param('id') id: string, @Body() body: unknown) {
+    assertJsonObjectBody(body);
+    return unwrap(await this.backend.addChantierNote(id, parseChantierNoteBody(body)));
+  }
+  // ── Photos — grille de vignettes, fiche chantier, extension V1 ──
+  @Get(':id/photos')
+  async listPhotos(@Param('id') id: string) {
+    return unwrap(await this.backend.listWorksitePhotos(id));
+  }
+  @Post(':id/photos')
+  async uploadPhoto(@Param('id') id: string, @Body() body: unknown) {
+    assertJsonObjectBody(body);
+    return unwrap(await this.backend.uploadWorksitePhoto(id, parseWorksitePhotoBody(body)));
+  }
+  @Get('photos/:photoId/view-url')
+  async photoViewUrl(@Param('photoId') photoId: string) {
+    return unwrap(await this.backend.worksitePhotoViewUrl(photoId));
+  }
+  @Delete('photos/:photoId')
+  async deletePhoto(@Param('photoId') photoId: string) {
+    return unwrap(await this.backend.deleteWorksitePhoto(photoId));
   }
 }
 
@@ -1643,11 +1795,41 @@ export class ExpensesController {
   async confirmImportFacturX(@Body() body: { xml: string; decision: FacturXImportDecision }) {
     return unwrap(await this.backend.confirmFacturXExpense({ xml: body.xml ?? '', decision: body.decision }));
   }
-  /** E4 (PONT-SERVEUR v1) : règle une dépense fournisseur — MÊME route que le HttpBobClient
-   * (payExpense), transition to_pay→paid + décaissement 401/512 (idempotent). */
+  /** Enregistre un règlement fournisseur déjà effectué. Bob ne déclenche aucun virement : le
+   * propriétaire fournit obligatoirement date + moyen, et peut rattacher une preuve du coffre. */
   @Post(':id/pay')
-  async pay(@Param('id') id: string) {
-    return unwrap(await this.backend.payExpense({ expenseId: id }));
+  async pay(@Param('id') id: string, @Body() body: unknown) {
+    assertJsonObjectBody(body);
+    const unknownField = Object.keys(body).find((field) => !EXPENSE_PAYMENT_FIELDS.has(field));
+    if (
+      unknownField !== undefined
+      || typeof body.paidOn !== 'string'
+      || !isValidDateOnly(body.paidOn)
+      || typeof body.method !== 'string'
+      || !EXPENSE_PAYMENT_METHODS.has(body.method as PaymentMethod)
+      || (body.reference !== undefined && body.reference !== null && typeof body.reference !== 'string')
+      || (
+        body.proofDocumentId !== undefined
+        && body.proofDocumentId !== null
+        && typeof body.proofDocumentId !== 'string'
+      )
+    ) {
+      throwValidationIssues([{
+        field: unknownField ?? 'paymentEvidence',
+        message: unknownField === undefined
+          ? 'Date et moyen de règlement valides requis.'
+          : 'Champ non autorisé.',
+      }]);
+    }
+    const evidence: ExpensePaymentEvidenceInput = {
+      paidOn: body.paidOn,
+      method: body.method as PaymentMethod,
+      ...(body.reference === undefined ? {} : { reference: body.reference as string | null }),
+      ...(body.proofDocumentId === undefined
+        ? {}
+        : { proofDocumentId: body.proofDocumentId as string | null }),
+    };
+    return unwrap(await this.backend.recordExpensePayment({ expenseId: id, ...evidence }));
   }
 }
 

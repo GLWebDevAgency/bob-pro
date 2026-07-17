@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import { MERCIER_PROPS, type CompanyProps, type OcrPort, type PaymentGatewayPort, type PdfRendererPort } from '@bob/core';
+import type { CompanyProps, OcrPort, PaymentGatewayPort, PdfRendererPort } from '@bob/core';
+import { MERCIER_PROPS } from '@bob/core/testing';
 import { BackendService } from './backend.service';
-import { InMemoryPersistence } from './persistence/persistence';
+import { InMemoryPersistence } from './persistence/persistence.testing';
 import { requestContext, type AppLogger, type Principal } from './observability/logger';
 import type { SupabaseAdminPort } from './auth/supabase-admin';
 import type { NotificationDeliveryService } from './jobs/notification-delivery.service';

@@ -49,7 +49,7 @@ import {
 import { themes, vault } from '@bob/tokens';
 import { t, type I18nKey, type Personality } from '@bob/i18n';
 import { ScoreBar, ScoreRing, font, useReduceMotion, useTheme } from '@bob/ui';
-import { useCustomers, useDiagnostic, useInvoices, useProfile } from '../src/data/hooks';
+import { useCustomers, useDiagnostic, useInvoices, usePayments, useProfile } from '../src/data/hooks';
 import { combineQueryStates } from '../src/data/query-state';
 import { usePublishAgentContext, type AgentContext } from '../src/agent';
 import {
@@ -204,7 +204,9 @@ function ItemRow({
   ) : (
     <ClockIcon color={overlays.white70} size={14} strokeWidth={2.2} />
   );
-  const detail = t(item.detailKey, { personality, params: { count: item.count ?? 0 } });
+  const detail = item.count === undefined
+    ? t(item.detailKey, { personality })
+    : t(item.detailKey, { personality, params: { count: item.count } });
   const body = (
     <>
       <View
@@ -265,8 +267,9 @@ export default function Diagnostic() {
   const diagnostic = useDiagnostic();
   const customersQ = useCustomers();
   const invoicesQ = useInvoices();
+  const paymentsQ = usePayments();
   const profileQ = useProfile();
-  const queryState = combineQueryStates(diagnostic, customersQ, invoicesQ, profileQ);
+  const queryState = combineQueryStates(diagnostic, customersQ, invoicesQ, paymentsQ, profileQ);
 
   const [phase, setPhase] = useState<'intro' | 'steps' | 'result'>('intro');
   // step 0 = constats de l'audit automatique, puis 1..n = questions adaptatives.
@@ -286,7 +289,7 @@ export default function Diagnostic() {
   }, [picked]);
 
   const liveSource = useMemo<DiagnosticBase | null>(() => {
-    if (!diagnostic.data || !customersQ.data || !invoicesQ.data || !profileQ.data) return null;
+    if (!diagnostic.data || !customersQ.data || !invoicesQ.data || !paymentsQ.data || !profileQ.data) return null;
     const invoices = invoicesQ.data;
     return {
       facts: diagnostic.data,
@@ -299,14 +302,16 @@ export default function Diagnostic() {
         ttcCents: i.totals.ttc,
         lineCategories: i.lines.map((l) => l.category),
       })),
-      // Encaissements réels : cumul `paid` des factures (pas d'endpoint payments dédié).
-      payments: invoices
-        .filter((i) => i.paid > 0)
-        .map((i) => ({ invoiceId: i.id, amountCents: i.paid })),
+      // Encaissements unitaires réellement persistés : jamais reconstruits depuis un cumul de
+      // facture, qui perdrait les dates, doublons et paiements partiels successifs.
+      payments: paymentsQ.data.map((payment) => ({
+        invoiceId: payment.invoiceId,
+        amountCents: payment.amountCents,
+      })),
       profile: { trade: profileQ.data.trade },
       today: localToday(),
     };
-  }, [customersQ.data, diagnostic.data, invoicesQ.data, profileQ.data]);
+  }, [customersQ.data, diagnostic.data, invoicesQ.data, paymentsQ.data, profileQ.data]);
 
   /** Les données métier sont figées au démarrage ; seules les réponses font évoluer le score. */
   const derived = useMemo<DeriveDiagnosticResult | null>(() => {
@@ -355,9 +360,10 @@ export default function Diagnostic() {
     () => ({
       screen: { name: 'diagnostic', instanceId: `diagnostic:${phase}:${step}` },
       entities: [],
-      capabilities: ['screen.read'],
+      capabilities:
+        sourceSnapshot !== null || (sourcesReady && !queryState.failed) ? ['screen.read'] : [],
     }),
-    [phase, step],
+    [phase, queryState.failed, sourceSnapshot, sourcesReady, step],
   );
   usePublishAgentContext(agentContext, { bottomAvoidance: 72 });
   const bobScrollInsets = useBobAwareScrollInsets({
@@ -434,10 +440,9 @@ export default function Diagnostic() {
             },
           ]}
         >
-          {t('diag.introBody', {
-            personality,
-            params: { count: totalSteps > 1 ? questions.length : 3 },
-          })}
+          {sourcesReady
+            ? t('diag.introBody', { personality, params: { count: questions.length } })
+            : t('diag.dataLoading', { personality })}
         </Text>
         {staleSourceError ? (
           <Text

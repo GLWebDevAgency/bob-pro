@@ -24,6 +24,8 @@ function validLiveEnv(): void {
   vi.stubEnv('STRIPE_PRICE_SOLO', 'price_solo');
   vi.stubEnv('STRIPE_PRICE_PRO', 'price_pro');
   vi.stubEnv('STRIPE_PRICE_BUSINESS', 'price_business');
+  vi.stubEnv('STRIPE_WEBHOOK_SECRET', `whsec_${'w'.repeat(32)}`);
+  vi.stubEnv('STRIPE_LIVEMODE', 'true');
   vi.stubEnv('PAYMENT_RETURN_BASE_URL', 'https://app.bobpro.fr');
 }
 
@@ -37,8 +39,19 @@ describe('configuration live — capacités obligatoires sans fallback demo', ()
       DEMO_MODE: 'false',
       MISTRAL_API_KEY: 'mistral-live-key',
       STRIPE_SECRET_KEY: 'sk_live_test',
+      STRIPE_LIVEMODE: 'true',
       PAYMENT_RETURN_BASE_URL: 'https://app.bobpro.fr',
     });
+  });
+
+  it('refuse le live sans réconciliation webhook signée et sans mode Stripe explicite', () => {
+    validLiveEnv();
+    vi.stubEnv('STRIPE_WEBHOOK_SECRET', '');
+    expect(() => loadEnv()).toThrow(/STRIPE_WEBHOOK_SECRET/u);
+
+    vi.stubEnv('STRIPE_WEBHOOK_SECRET', `whsec_${'w'.repeat(32)}`);
+    vi.stubEnv('STRIPE_LIVEMODE', '');
+    expect(() => loadEnv()).toThrow(/STRIPE_LIVEMODE/u);
   });
 
   it('refuse le live sans fournisseur LLM', () => {

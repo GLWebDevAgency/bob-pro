@@ -99,12 +99,23 @@ export class RechercheEntreprisesAdapter implements CompanyLookupPort {
     if (!r) return null; // 200 + 0 résultat = réellement introuvable
 
     const siege = r.siege ?? {};
+    const officialSiren = r.siren?.replace(/\s/gu, '') ?? '';
+    const officialSiret = siege.siret?.replace(/\s/gu, '') ?? '';
+    const exactIdentity = v.length === 9 ? officialSiren === v : officialSiret === v;
+    if (!exactIdentity) return null;
+    if (!/^\d{9}$/u.test(officialSiren) || !/^\d{14}$/u.test(officialSiret)) {
+      throw new CompanyLookupUnavailableError('Réponse amont incomplète : identité officielle absente.');
+    }
+    const denomination = (r.nom_complet ?? r.nom_raison_sociale ?? '').trim();
+    if (!denomination) {
+      throw new CompanyLookupUnavailableError('Réponse amont incomplète : raison sociale absente.');
+    }
     const naf = r.activite_principale ?? null;
     const line1 =
       [siege.numero_voie, siege.type_voie, siege.libelle_voie].filter(Boolean).join(' ').trim() || (siege.adresse ?? '');
     const address =
       siege.code_postal && siege.libelle_commune ? { line1, zip: siege.code_postal, city: siege.libelle_commune } : null;
-    const siren = r.siren ?? v.slice(0, 9);
+    const siren = officialSiren;
     const tva = Array.isArray(r.tva) ? r.tva[0] : typeof r.tva === 'string' ? r.tva : null;
     // Fiche société COMPLÈTE (C24b) : nature_juridique (code INSEE, ex. 5710) + date_creation
     // (ISO) sont renvoyés par l'API réelle — on les remonte, mappés prudemment (code inconnu →
@@ -116,8 +127,8 @@ export class RechercheEntreprisesAdapter implements CompanyLookupPort {
         : null;
     const result: CompanyLookupResult = {
       siren,
-      siret: siege.siret ?? v,
-      denomination: r.nom_complet ?? r.nom_raison_sociale ?? `Entreprise ${siren}`,
+      siret: officialSiret,
+      denomination,
       nafApe: naf,
       trade: nafToTrade(naf),
       natureJuridiqueCode: natureJuridique,

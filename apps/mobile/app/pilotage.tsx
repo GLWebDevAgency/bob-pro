@@ -107,11 +107,23 @@ export default function Pilotage() {
 
   // Une seule vérité : le MÊME use case pur que Bob (getBusinessReview) — parité garantie.
   const review: BusinessReview | null = useMemo(() => {
-    if (queryState.loading) return null;
+    // Une query manquante n'est pas un zéro. On ne construit donc aucun agrégat — même
+    // temporaire et invisible — si une source a échoué. Cela empêche aussi le contexte vocal
+    // de publier un classement calculé sur un sous-ensemble de données.
+    if (
+      queryState.loading ||
+      queryState.failed ||
+      entries.data === undefined ||
+      payments.data === undefined ||
+      invoices.data === undefined ||
+      customers.data === undefined ||
+      expenses.data === undefined ||
+      company.data === undefined
+    ) return null;
     return deriveBusinessReview({
-      entries: (entries.data ?? []).map((e) => ({ entryDate: e.entryDate, sourceType: e.sourceType, lines: e.lines })),
-      payments: (payments.data ?? []).map((p) => ({ amountCents: p.amountCents, receivedAt: p.receivedAt })),
-      invoices: (invoices.data ?? []).map((i) => ({
+      entries: entries.data.map((e) => ({ entryDate: e.entryDate, sourceType: e.sourceType, lines: e.lines })),
+      payments: payments.data.map((p) => ({ amountCents: p.amountCents, receivedAt: p.receivedAt })),
+      invoices: invoices.data.map((i) => ({
         kind: i.kind,
         status: i.status,
         totals: i.totals,
@@ -119,18 +131,34 @@ export default function Pilotage() {
         dueAt: i.dueAt,
         customerId: i.customerId,
       })),
-      customers: (customers.data ?? []).map((c) => ({ id: c.id, name: c.name })),
-      expenses: (expenses.data ?? []).map((e) => ({
+      customers: customers.data.map((c) => ({ id: c.id, name: c.name })),
+      expenses: expenses.data.map((e) => ({
         category: e.category,
         totalTtcCents: e.totalTtcCents,
         vatCents: e.vatCents,
         documentDate: e.documentDate,
         status: e.status,
       })),
-      vatRegime: company.data?.vatRegime ?? null,
+      vatRegime: company.data.vatRegime ?? null,
       today: todayLocal(),
     });
-  }, [queryState.loading, entries.data, payments.data, invoices.data, customers.data, expenses.data, company.data]);
+  }, [
+    queryState.failed,
+    queryState.loading,
+    entries.data,
+    payments.data,
+    invoices.data,
+    customers.data,
+    expenses.data,
+    company.data,
+  ]);
+
+  const agentDataReady =
+    entitlement.verified &&
+    entitled &&
+    !queryState.loading &&
+    !queryState.failed &&
+    review !== null;
 
   // Bob voit les top clients AFFICHÉS : « parle-moi de ce client », « résume l'écran ».
   // Le paywall est une frontière de visibilité : aucune entité ni capability client ne fuit
@@ -138,16 +166,16 @@ export default function Pilotage() {
   const agentContext = useMemo<AgentContext>(
     () => ({
       screen: { name: 'pilotage', instanceId: 'pilotage' },
-      entities: entitled
-        ? (review?.topClients.lines ?? []).slice(0, 5).map((line) => ({
+      entities: agentDataReady && review !== null
+        ? review.topClients.lines.slice(0, 5).map((line) => ({
             type: 'customer' as const,
             id: line.customerId,
             label: line.customerName,
           }))
         : [],
-      capabilities: entitled ? ['screen.read', 'customer.read'] : ['screen.read'],
+      capabilities: agentDataReady ? ['screen.read', 'customer.read'] : [],
     }),
-    [entitled, review],
+    [agentDataReady, review],
   );
   usePublishAgentContext(agentContext);
 

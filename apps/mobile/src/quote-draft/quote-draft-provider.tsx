@@ -10,6 +10,9 @@ import {
 } from 'react';
 import { ActivityIndicator, View } from 'react-native';
 import type { LineInput } from '@bob/core';
+import { t } from '@bob/i18n';
+import { ErrorRetry } from '@bob/ui';
+import type { BobClient } from '@bob/api-client';
 import { useAuth } from '../data/auth';
 import { useBobClient } from '../data/client';
 import { registerBeforeSignOutCleanup } from '../data/session-cleanup';
@@ -48,9 +51,12 @@ import {
   type QuoteDraftState,
 } from './quote-draft-model';
 import type { CataloguePrestation } from '@bob/core';
-import type { QuoteDraftStorageIdentity } from './quote-draft-codec';
-import { createSecureQuoteDraftPersistence } from './quote-draft-secure-store';
-import type { QuoteDraftPersistence } from './quote-draft-store';
+import {
+  createQuoteDraftRemotePersistence,
+  disposeQuoteDraftSession,
+  isQuoteDraftRevisionConflict,
+  type QuoteDraftRemotePersistence,
+} from './quote-draft-remote-store';
 
 export interface QuoteDraftProviderRuntime {
   readonly now: () => number;
@@ -76,7 +82,7 @@ export interface QuoteDraftContextValue {
   readonly persistence: {
     readonly ready: boolean;
     readonly status: 'hydrating' | 'ready' | 'saving' | 'clearing' | 'error';
-    readonly error: 'load' | 'save' | 'clear' | null;
+    readonly error: 'load' | 'save' | 'clear' | 'conflict' | null;
   };
   readonly apply: (command: QuoteDraftCommand) => QuoteDraftResult<QuoteDraftState>;
   readonly applyAtRevision: (
@@ -119,14 +125,14 @@ export interface QuoteDraftContextValue {
   }) => QuoteDraftResult<QuoteDraftState>;
   readonly stopMission: (reason: QuoteDraftMissionStopReason) => void;
   readonly completeMission: () => void;
-  /** `true` signifie que le pointeur chiffré a réellement été committé sur le device. */
+  /** `true` signifie que le slot BDD a réellement été committé avec sa révision CAS. */
   readonly save: () => Promise<boolean>;
-  /** N'efface la mémoire qu'après suppression durable du snapshot. */
+  /** N'efface la mémoire qu'après suppression durable et CAS du slot serveur. */
   readonly discard: () => Promise<boolean>;
   /** Fence pièce + purge durable ; un échec laisse le brouillon récupérable pour retry. */
   readonly complete: (artifactId: string) => Promise<boolean>;
   readonly reset: () => Promise<boolean>;
-  /** Ouvre une session VIERGE en mémoire, SANS toucher le disque : un brouillon déjà enregistré
+  /** Ouvre une session VIERGE en mémoire, SANS toucher le serveur : un brouillon déjà enregistré
    * et significatif est parké dans `pendingResume` (jamais silencieusement écrasé ni repris).
    * Idempotent : rappeler sans avoir rien saisi ne re-parque rien (la session courante est
    * déjà vierge). Toute entrée « créer un devis » doit appeler ceci — jamais reprendre en
@@ -138,72 +144,44 @@ export interface QuoteDraftContextValue {
 
 const QuoteDraftContext = createContext<QuoteDraftContextValue | null>(null);
 
-const DEFAULT_PERSISTENCE = createSecureQuoteDraftPersistence();
-
 interface QuoteDraftProviderProps {
   readonly children: ReactNode;
-  readonly initialState?: QuoteDraftState;
   readonly runtime?: QuoteDraftProviderRuntime;
-  /** Ports injectables pour tests/intégration ; la production dérive toujours la vraie identité. */
-  readonly persistence?: QuoteDraftPersistence;
-  readonly identity?: QuoteDraftStorageIdentity;
+  /** Fabrique injectable pour tests ; la production utilise exclusivement le client HTTP. */
+  readonly createPersistence?: (client: BobClient) => QuoteDraftRemotePersistence;
 }
 
 export function QuoteDraftProvider({
   children,
-  initialState,
   runtime = DEFAULT_RUNTIME,
-  persistence = DEFAULT_PERSISTENCE,
-  identity: injectedIdentity,
+  createPersistence = createQuoteDraftRemotePersistence,
 }: QuoteDraftProviderProps) {
   const { enabled, session } = useAuth();
   const client = useBobClient();
-  const injectedMode = injectedIdentity?.mode;
-  const injectedUserId = injectedIdentity?.userId;
-  const injectedCompanyId = injectedIdentity?.companyId;
   const authenticatedUserId = session?.user.id ?? null;
   const authenticatedCompanyId = companyIdFromAppMetadata(session?.user.app_metadata);
-  const identity = useMemo<QuoteDraftStorageIdentity>(() => {
-    if (
-      injectedMode !== undefined &&
-      injectedUserId !== undefined &&
-      injectedCompanyId !== undefined
-    ) {
-      return { mode: injectedMode, userId: injectedUserId, companyId: injectedCompanyId };
-    }
-    if (!enabled) {
-      return { mode: 'demo', userId: 'local-demo-user', companyId: client.companyId };
-    }
-    if (authenticatedUserId === null || authenticatedCompanyId === null) {
-      // AuthGate ne monte pas ce provider dans ce cas. Ce throw empêche néanmoins qu'une future
-      // composition fasse retomber un brouillon authentifié dans un namespace public.
-      throw new Error('QuoteDraftProvider: identité authentifiée incomplète');
-    }
-    return {
-      mode: 'authenticated',
-      userId: authenticatedUserId,
-      companyId: authenticatedCompanyId,
-    };
-    // Les valeurs scalaires rendent l'identité stable pendant un refresh JWT. Une nouvelle
-    // instance `Session` portant le même compte ne doit surtout pas relancer l'hydratation.
-  }, [
-    authenticatedCompanyId,
-    authenticatedUserId,
-    client.companyId,
-    enabled,
-    injectedCompanyId,
-    injectedMode,
-    injectedUserId,
-  ]);
-  const identityKey = JSON.stringify([identity.mode, identity.userId, identity.companyId]);
+  const authenticated = enabled
+    && authenticatedUserId !== null
+    && authenticatedCompanyId !== null
+    && client.companyId === authenticatedCompanyId;
+  const sessionKey = authenticated
+    ? `${authenticatedCompanyId}:${authenticatedUserId}`
+    : 'unauthenticated';
+  const persistence = useMemo(
+    () => (authenticated ? createPersistence(client) : null),
+    [authenticated, client, createPersistence, sessionKey],
+  );
+  if (!authenticated || persistence === null) {
+    // AuthGate ne monte pas ce provider sans session. Cette barrière empêche néanmoins toute
+    // future composition de créer un brouillon local, public ou attribué à une identité inventée.
+    throw new Error('QuoteDraftProvider: session authentifiée et tenant cohérent requis');
+  }
 
   // La key React est une fence synchrone : aucun rendu du compte B ne peut exposer une frame du
   // brouillon du compte A pendant que les effets d'identité se mettent à jour.
   return (
     <QuoteDraftSessionProvider
-      key={identityKey}
-      identity={identity}
-      initialState={initialState}
+      key={sessionKey}
       persistence={persistence}
       runtime={runtime}
     >
@@ -214,30 +192,24 @@ export function QuoteDraftProvider({
 
 function QuoteDraftSessionProvider({
   children,
-  identity,
-  initialState,
   persistence,
   runtime,
 }: {
   readonly children: ReactNode;
-  readonly identity: QuoteDraftStorageIdentity;
-  readonly initialState?: QuoteDraftState;
-  readonly persistence: QuoteDraftPersistence;
+  readonly persistence: QuoteDraftRemotePersistence;
   readonly runtime: QuoteDraftProviderRuntime;
 }) {
-  const { colors } = useTheme();
+  const { colors, personality } = useTheme();
   const [state, setState] = useState<QuoteDraftState>(
-    () => initialState ?? createQuoteDraft(runtime.newId('session')),
+    () => createQuoteDraft(runtime.newId('session')),
   );
   /** Brouillon enregistré parké par `startFresh` — jamais écrasé tant qu'il n'est pas repris ou
-   * qu'une nouvelle sauvegarde/suppression ne le rend caduc (le disque est un slot UNIQUE). */
+   * qu'une nouvelle sauvegarde/suppression ne le rend caduc (la BDD est un slot UNIQUE). */
   const [pendingResume, setPendingResume] = useState<QuoteDraftState | null>(null);
   const [persistenceState, setPersistenceState] = useState<QuoteDraftContextValue['persistence']>(
-    () =>
-      initialState === undefined
-        ? { ready: false, status: 'hydrating', error: null }
-        : { ready: true, status: 'ready', error: null },
+    () => ({ ready: false, status: 'hydrating', error: null }),
   );
+  const [hydrationAttempt, setHydrationAttempt] = useState(0);
   // Fence synchrone : tap et transcript reçus dans le même tick sont sérialisés sur le dernier état.
   const stateRef = useRef(state);
   stateRef.current = state;
@@ -245,11 +217,11 @@ function QuoteDraftSessionProvider({
   const persistenceOperation = useRef<'save' | 'clear' | 'complete' | null>(null);
 
   useEffect(() => {
-    if (initialState !== undefined) return;
     let active = true;
     const epochAtStart = mutationEpoch.current;
+    setPersistenceState({ ready: false, status: 'hydrating', error: null });
     void persistence
-      .load(identity)
+      .load()
       .then((hydrated) => {
         if (!active) return;
         // Double fence : les enfants ne sont pas encore montés, et une future évolution qui les
@@ -262,24 +234,40 @@ function QuoteDraftSessionProvider({
       })
       .catch(() => {
         if (!active) return;
-        // Pas de crash et surtout aucun fallback en clair : le devis reste utilisable en mémoire.
-        setPersistenceState({ ready: true, status: 'error', error: 'load' });
+        // Fail closed : l'état vierge en mémoire reste caché. Un échec serveur n'est jamais
+        // présenté comme l'absence d'un brouillon et aucune donnée locale ne prend le relais.
+        setPersistenceState({ ready: false, status: 'error', error: 'load' });
       });
     return () => {
       active = false;
     };
-  }, [identity, initialState, persistence]);
-
-  useEffect(
-    () => registerBeforeSignOutCleanup(() => persistence.clear(identity)),
-    [identity, persistence],
-  );
+  }, [hydrationAttempt, persistence]);
 
   const assign = useCallback((next: QuoteDraftState, isMutation = true): void => {
     if (isMutation) mutationEpoch.current += 1;
     stateRef.current = next;
     setState(next);
   }, []);
+
+  useEffect(() => {
+    const unregister = registerBeforeSignOutCleanup(() => {
+      // La déconnexion invalide les réponses tardives et purge toute mémoire du compte courant.
+      // Le slot BDD reste intact afin que l'utilisateur puisse le reprendre à sa prochaine session.
+      persistence.dispose();
+      mutationEpoch.current += 1;
+      persistenceOperation.current = null;
+      const empty = createQuoteDraft(runtime.newId('session'));
+      stateRef.current = empty;
+      setState(empty);
+      setPendingResume(null);
+      setPersistenceState({ ready: false, status: 'hydrating', error: null });
+      return disposeQuoteDraftSession(persistence);
+    });
+    return () => {
+      unregister();
+      persistence.dispose();
+    };
+  }, [persistence, runtime]);
 
   const commit = useCallback(
     (result: QuoteDraftResult<QuoteDraftState>): QuoteDraftResult<QuoteDraftState> => {
@@ -451,14 +439,14 @@ function QuoteDraftSessionProvider({
     persistenceOperation.current = 'save';
     setPersistenceState({ ready: true, status: 'saving', error: null });
     try {
-      // Une transcription peut arriver pendant un write SecureStore. On recommence alors avec le
-      // dernier état au lieu de quitter sur une version déjà dépassée.
+      // Une transcription peut arriver pendant un PUT. On recommence alors avec le dernier état ;
+      // l'adapter sérialise les requêtes et avance la révision CAS après chaque commit réel.
       for (let attempt = 0; attempt < 3; attempt += 1) {
         const epoch = mutationEpoch.current;
-        const saved = await persistence.save(identity, stateRef.current, runtime.now());
+        const saved = await persistence.save(stateRef.current);
         if (epoch !== mutationEpoch.current) continue;
         assign(saved, false);
-        // Le slot disque unique porte désormais CETTE session : un ancien brouillon parké
+        // Le slot BDD unique porte désormais CETTE session : un ancien brouillon parké
         // (jamais re-sauvegardé depuis) n'existe plus nulle part — le proposer resterait fantôme.
         setPendingResume(null);
         setPersistenceState({ ready: true, status: 'ready', error: null });
@@ -466,32 +454,40 @@ function QuoteDraftSessionProvider({
       }
       setPersistenceState({ ready: true, status: 'error', error: 'save' });
       return false;
-    } catch {
-      setPersistenceState({ ready: true, status: 'error', error: 'save' });
+    } catch (error: unknown) {
+      setPersistenceState({
+        ready: true,
+        status: 'error',
+        error: isQuoteDraftRevisionConflict(error) ? 'conflict' : 'save',
+      });
       return false;
     } finally {
       persistenceOperation.current = null;
     }
-  }, [assign, identity, persistence, runtime]);
+  }, [assign, persistence]);
 
   const discard = useCallback(async (): Promise<boolean> => {
     if (persistenceOperation.current !== null) return false;
     persistenceOperation.current = 'clear';
     setPersistenceState({ ready: true, status: 'clearing', error: null });
     try {
-      await persistence.clear(identity);
+      await persistence.clear();
       assign(discardQuoteDraft(stateRef.current, runtime.newId('session')));
-      // Le slot disque unique est vidé : un brouillon parké n'y survit pas non plus.
+      // Le slot BDD unique est vidé : un brouillon parké n'y survit pas non plus.
       setPendingResume(null);
       setPersistenceState({ ready: true, status: 'ready', error: null });
       return true;
-    } catch {
-      setPersistenceState({ ready: true, status: 'error', error: 'clear' });
+    } catch (error: unknown) {
+      setPersistenceState({
+        ready: true,
+        status: 'error',
+        error: isQuoteDraftRevisionConflict(error) ? 'conflict' : 'clear',
+      });
       return false;
     } finally {
       persistenceOperation.current = null;
     }
-  }, [assign, identity, persistence, runtime]);
+  }, [assign, persistence, runtime]);
 
   const complete = useCallback(
     async (artifactId: string): Promise<boolean> => {
@@ -504,19 +500,23 @@ function QuoteDraftSessionProvider({
       persistenceOperation.current = 'complete';
       setPersistenceState({ ready: true, status: 'clearing', error: null });
       try {
-        await persistence.clear(identity);
+        await persistence.clear();
         assign(result.state);
         setPendingResume(null);
         setPersistenceState({ ready: true, status: 'ready', error: null });
         return true;
-      } catch {
-        setPersistenceState({ ready: true, status: 'error', error: 'clear' });
+      } catch (error: unknown) {
+        setPersistenceState({
+          ready: true,
+          status: 'error',
+          error: isQuoteDraftRevisionConflict(error) ? 'conflict' : 'clear',
+        });
         return false;
       } finally {
         persistenceOperation.current = null;
       }
     },
-    [assign, identity, persistence, runtime],
+    [assign, persistence, runtime],
   );
 
   const reset = discard;
@@ -595,10 +595,29 @@ function QuoteDraftSessionProvider({
     ],
   );
 
+  if (!persistenceState.ready && persistenceState.error === 'load') {
+    return (
+      <View
+        style={{
+          flex: 1,
+          justifyContent: 'center',
+          paddingHorizontal: 24,
+          backgroundColor: colors.bg,
+        }}
+      >
+        <ErrorRetry
+          message={t('devis.draftLoad.error', { personality })}
+          onRetry={() => setHydrationAttempt((attempt) => attempt + 1)}
+        />
+      </View>
+    );
+  }
+
   if (!persistenceState.ready) {
     return (
       <View
         accessibilityRole="progressbar"
+        accessibilityLabel={t('devis.draftLoad.loading', { personality })}
         style={{
           flex: 1,
           alignItems: 'center',

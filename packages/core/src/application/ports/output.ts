@@ -13,6 +13,17 @@ export interface InvoicePdfData {
   lines: { label: string; qty: number; unitPriceHT: number; vatRate: number }[];
   totals: { ht: number; vat: number; ttc: number; netToPay: number };
   mentions: string[];
+  /** Présentation et coordonnées déjà résolues depuis la configuration PostgreSQL du tenant. */
+  billingPresentation: {
+    accentColor: import('../billing/company-billing-settings').InvoicePdfAccentColor;
+    rib: { iban: string; bic: string | null } | null;
+    insurance: {
+      insurer: string;
+      policyNo: string;
+      coverage: string;
+      expiresAt: string;
+    } | null;
+  };
 }
 
 export interface PdfRendererPort {

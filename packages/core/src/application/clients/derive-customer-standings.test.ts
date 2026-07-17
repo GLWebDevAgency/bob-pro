@@ -13,7 +13,7 @@ import {
 // ── Fixtures unitaires ciblées (fonction pure : données en clair suffisent) ──
 
 function customer(overrides: Partial<StandingCustomerData> & Pick<StandingCustomerData, 'id'>): StandingCustomerData {
-  return { outstanding: 0, scoreBand: 'orange', ...overrides };
+  return { outstandingCents: 0, ...overrides };
 }
 
 function invoice(
@@ -90,30 +90,30 @@ describe('deriveCustomerStandings', () => {
     ]);
   });
 
-  it('repli sans pièce : outstanding + scoreBand du client (rouge → retard · encours → attente · vert → à jour · sinon → nouveau)', () => {
+  it('repli sans pièce : encours réel → attente, zéro → nouveau, jamais un retard inventé', () => {
     const standings = derive({
       customers: [
-        customer({ id: 'cust-martin', outstanding: 248000, scoreBand: 'red' }),
-        customer({ id: 'cust-sevres', outstanding: 185000, scoreBand: 'orange' }),
-        customer({ id: 'cust-durand', scoreBand: 'green' }),
-        customer({ id: 'cust-camping', scoreBand: 'red' }),
+        customer({ id: 'cust-martin', outstandingCents: 248000 }),
+        customer({ id: 'cust-sevres', outstandingCents: 185000 }),
+        customer({ id: 'cust-durand' }),
+        customer({ id: 'cust-camping' }),
       ],
     });
-    expect(standings.map((s) => s.kind)).toEqual(['en_retard', 'en_attente', 'a_jour', 'nouveau']);
+    expect(standings.map((s) => s.kind)).toEqual(['en_attente', 'en_attente', 'nouveau', 'nouveau']);
     expect(standings.map((s) => s.amountCents)).toEqual([248000, 185000, 0, 0]);
     // Sources indisponibles (chargement/erreur) → même repli, jamais un chiffre inventé.
     const offline = deriveCustomerStandings({
-      customers: [customer({ id: 'cust-martin', outstanding: 248000, scoreBand: 'red' })],
+      customers: [customer({ id: 'cust-martin', outstandingCents: 248000 })],
       today: TODAY,
     });
-    expect(only(offline).kind).toBe('en_retard');
+    expect(only(offline).kind).toBe('en_attente');
   });
 
   it('pendingTotalCents : Σ retard + attente, hors devis (réf proto 4 330 €)', () => {
     const standings = derive({
       customers: [
-        customer({ id: 'cust-martin', outstanding: 248000, scoreBand: 'red' }),
-        customer({ id: 'cust-sevres', outstanding: 185000 }),
+        customer({ id: 'cust-martin', outstandingCents: 248000 }),
+        customer({ id: 'cust-sevres', outstandingCents: 185000 }),
         customer({ id: 'cust-bernard' }),
       ],
       quotes: [quote({ customerId: 'cust-bernard' })],

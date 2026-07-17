@@ -4,7 +4,7 @@ import { RelanceService } from './relance.service';
 import { NotificationDeliveryService } from './notification-delivery.service';
 import { ScheduledTenantDirectory } from './tenant-directory';
 import type { AppLogger } from '../observability/logger';
-import { InMemoryPersistence } from '../persistence/persistence';
+import { InMemoryPersistence } from '../persistence/persistence.testing';
 
 const logger = { audit: vi.fn(), warn: vi.fn() } as unknown as AppLogger;
 
@@ -46,7 +46,7 @@ async function makeService(setup: { invoices: Invoice[]; customers: Customer[] }
       delivery,
       new ScheduledTenantDirectory(persistence, logger),
       logger,
-      { autoDunningEntitlement: () => ({ allowed: true as const, plan: 'business' as const }) },
+      { autoDunningEntitlement: async () => ({ allowed: true as const, plan: 'business' as const }) },
     ),
     delivery,
     persistence,

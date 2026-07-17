@@ -81,5 +81,5 @@ export interface AnalyticsPort {
   track(event: TrackedEvent): void;
 }
 
-/** Adapter nul — hôtes sans analytics configurée (tests, démo, opt-out RGPD). */
+/** Adapter nul — opt-out RGPD explicite ou environnement sans collecte analytique. */
 export const NOOP_ANALYTICS: AnalyticsPort = { track: () => undefined };

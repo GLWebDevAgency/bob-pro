@@ -3,21 +3,30 @@
  * E1). Pattern écran poussé (A3-C17) : rangée retour sticky (bg .92) + en-tête compact →
  * HÉROS stats réelles (summarizeExpenses @bob/core : reste à payer / décaissé du mois /
  * TVA déductible du mois) → CTA scan (même flux OCR que Bob) → liste des dépenses
- * (à payer d'abord) avec l'action E4 « Payer » : PayExpense = transition + écriture de
- * décaissement 401/512 au journal de banque, confirmation typée ACCOUNTING (plancher de
+ * (à payer d'abord) avec l'action E4 « Enregistrer comme payée » : preuve explicite + transition
+ * + écriture de décaissement 401/512 au journal de banque, confirmation typée ACCOUNTING (plancher de
  * sécurité identique à l'encaissement). Zéro hex, zéro fixture, états de premier rang.
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, ScrollView, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { challengeFor } from '@bob/ai';
-import { formatEUR, summarizeExpenses, type ExpenseCategory, type ExpenseProps } from '@bob/core';
+import {
+  formatEUR,
+  parisDateOnly,
+  summarizeExpenses,
+  type ExpenseCategory,
+  type ExpensePaymentEvidenceInput,
+  type ExpenseProps,
+  type PaymentMethod,
+} from '@bob/core';
 import { patterns } from '@bob/tokens';
 import { t, type I18nKey } from '@bob/i18n';
 import {
   Button,
   Card,
+  ErrorRetry,
   IconTile,
   SectionHeader,
   Skeleton,
@@ -30,8 +39,11 @@ import {
 import { useExpenses, usePayExpense } from '../src/data/hooks';
 import { usePublishAgentContext, type AgentContext } from '../src/agent';
 import { useConfirm } from '../src/components/ConfirmSheet';
+import { ExpensePaymentSheet } from '../src/components/ExpensePaymentSheet';
 import { CheckIcon, ChevronLeftIcon, WalletIcon } from '../src/components/icons';
 import { useBobAwareScrollInsets } from '../src/components/use-bob-aware-scroll-insets';
+import { displayExpensePaymentDate } from '../src/finance/expense-payment-form';
+import { hasBlockingAuthoritativeDataError } from '../src/data/authoritative-query-state';
 
 const CAT_KEY: Record<ExpenseCategory, I18nKey> = {
   fournitures: 'dep.catFournitures',
@@ -54,11 +66,6 @@ const CAT_TONE: Record<ExpenseCategory, StatusBadgeVariant> = {
 /** Même palier de confirmation que l'encaissement : une écriture au journal se confirme. */
 const ACCOUNTING = { mutating: true, outbound: false, riskTier: 'accounting' } as const;
 
-function todayISO(d: Date = new Date()): string {
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  return `${d.getFullYear()}-${m}-${String(d.getDate()).padStart(2, '0')}`;
-}
-
 function formatDate(iso: string): string {
   const [y, m, d] = iso.slice(0, 10).split('-');
   return d && m && y ? `${d}/${m}/${y}` : iso.slice(0, 10);
@@ -73,12 +80,31 @@ export default function Depenses() {
   const pay = usePayExpense();
   const confirm = useConfirm();
   const [toast, setToast] = useState<string | null>(null);
+  const [paymentSheetExpense, setPaymentSheetExpense] = useState<ExpenseProps | null>(null);
+  const [paymentDraft, setPaymentDraft] = useState<{
+    expense: ExpenseProps;
+    evidence: ExpensePaymentEvidenceInput;
+  } | null>(null);
+  const [paymentFormError, setPaymentFormError] = useState<string | null>(null);
+  const paymentConfirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dataReady = expenses.data !== undefined;
+  const blockingError = hasBlockingAuthoritativeDataError([expenses]);
+  const staleError = dataReady && expenses.isError;
+  const dataFresh = dataReady && !staleError;
+  const dataFreshRef = useRef(dataFresh);
+  dataFreshRef.current = dataFresh;
+  const expensesRef = useRef(expenses.data);
+  expensesRef.current = expenses.data;
 
-  const month = todayISO().slice(0, 7);
-  const summary = useMemo(() => summarizeExpenses(expenses.data ?? [], { month }), [expenses.data, month]);
+  const month = parisDateOnly().slice(0, 7);
+  const summary = useMemo(
+    () => expenses.data === undefined ? null : summarizeExpenses(expenses.data, { month }),
+    [expenses.data, month],
+  );
   // À payer d'abord (les plus récentes en tête), puis les payées.
   const sorted = useMemo(() => {
-    const list = [...(expenses.data ?? [])];
+    if (expenses.data === undefined) return [];
+    const list = [...expenses.data];
     return list.sort(
       (a, b) =>
         (a.status === 'to_pay' ? 0 : 1) - (b.status === 'to_pay' ? 0 : 1) ||
@@ -86,37 +112,115 @@ export default function Depenses() {
     );
   }, [expenses.data]);
 
-  // Bob voit les dépenses AFFICHÉES : « résume cette dépense », « paie celle-ci » (S2).
+  // Bob voit les dépenses AFFICHÉES. Le runtime peut enregistrer un paiement déjà réalisé,
+  // jamais prétendre initier un virement sans rail bancaire.
   const agentContext = useMemo<AgentContext>(
-    () => ({
-      screen: { name: 'depenses', instanceId: 'depenses' },
-      entities: sorted.slice(0, 12).map((e) => ({ type: 'expense' as const, id: e.id, label: e.supplierName })),
-      capabilities: ['screen.read', 'expense.read'],
-    }),
-    [sorted],
+    () => {
+      const contextReady = dataFresh;
+      return {
+        screen: { name: 'depenses', instanceId: 'depenses' },
+        entities: contextReady
+          ? sorted
+              .slice(0, 12)
+              .map((e) => ({ type: 'expense' as const, id: e.id, label: e.supplierName }))
+          : [],
+        capabilities: contextReady ? ['screen.read', 'expense.read'] : [],
+      };
+    },
+    [dataFresh, sorted],
   );
   usePublishAgentContext(agentContext);
 
-  const payExpense = (expense: ExpenseProps): void => {
-    void (async () => {
+  useEffect(
+    () => () => {
+      if (paymentConfirmTimer.current !== null) clearTimeout(paymentConfirmTimer.current);
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (dataFresh) return;
+    if (paymentConfirmTimer.current !== null) {
+      clearTimeout(paymentConfirmTimer.current);
+      paymentConfirmTimer.current = null;
+    }
+    setPaymentSheetExpense(null);
+    setPaymentDraft(null);
+    setPaymentFormError(null);
+  }, [dataFresh]);
+
+  const paymentMethodLabel = (method: PaymentMethod): string =>
+    t(
+      method === 'card'
+        ? 'dep.paymentMethodCard'
+        : method === 'transfer'
+          ? 'dep.paymentMethodTransfer'
+          : 'dep.paymentMethodCash',
+      { personality },
+    );
+
+  const openPaymentSheet = (expense: ExpenseProps): void => {
+    if (!dataFresh) return;
+    setPaymentDraft(null);
+    setPaymentFormError(null);
+    setPaymentSheetExpense(expense);
+  };
+
+  const submitPaymentEvidence = (
+    expense: ExpenseProps,
+    evidence: ExpensePaymentEvidenceInput,
+  ): void => {
+    if (!dataFresh) return;
+    setPaymentDraft({ expense, evidence });
+    setPaymentFormError(null);
+    setPaymentSheetExpense(null);
+    if (paymentConfirmTimer.current !== null) clearTimeout(paymentConfirmTimer.current);
+    // La Sheet partagée termine sa sortie avant d'ouvrir la confirmation comptable : une seule
+    // modale native à la fois, notamment sur iOS.
+    paymentConfirmTimer.current = setTimeout(() => {
+      paymentConfirmTimer.current = null;
+      void (async () => {
       const ok = await confirm({
         title: t('dep.payConfirmTitle', { personality }),
         message: t('dep.payConfirmBody', {
           personality,
-          params: { supplier: expense.supplierName, amount: formatEUR(expense.totalTtcCents) },
+          params: {
+            supplier: expense.supplierName,
+            amount: formatEUR(expense.totalTtcCents),
+            date: displayExpensePaymentDate(evidence.paidOn),
+            method: paymentMethodLabel(evidence.method),
+            reference: evidence.reference ? ` Référence : ${evidence.reference}.` : '',
+          },
         }),
         challenge: challengeFor(ACCOUNTING, 'confirm_all', { amountCents: expense.totalTtcCents }),
       });
-      if (!ok) return;
+      if (!ok) {
+        if (dataFreshRef.current) setPaymentSheetExpense(expense);
+        return;
+      }
+      const currentExpense = expensesRef.current?.find((candidate) => candidate.id === expense.id);
+      if (!dataFreshRef.current || currentExpense?.status !== 'to_pay') {
+        setToast(t('dep.dataError', { personality }));
+        void expenses.refetch();
+        return;
+      }
       pay.mutate(
-        { expenseId: expense.id },
+        { expenseId: expense.id, ...evidence },
         {
-          onSuccess: () =>
-            setToast(t('dep.paidToast', { personality, params: { supplier: expense.supplierName } })),
-          onError: () => setToast(t('dep.payError', { personality })),
+          onSuccess: () => {
+            setPaymentDraft(null);
+            setToast(
+              t('dep.paidToast', { personality, params: { supplier: expense.supplierName } }),
+            );
+          },
+          onError: () => {
+            setPaymentFormError(t('dep.payError', { personality }));
+            if (dataFreshRef.current) setPaymentSheetExpense(expense);
+          },
         },
       );
-    })();
+      })();
+    }, 240);
   };
 
   return (
@@ -143,7 +247,13 @@ export default function Depenses() {
             accessibilityLabel={t('dep.back', { personality })}
             onPress={() => router.back()}
             hitSlop={8}
-            style={{ flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'flex-start', minHeight: 34 }}
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 4,
+              alignSelf: 'flex-start',
+              minHeight: 34,
+            }}
           >
             <ChevronLeftIcon color={colors.ink800} size={18} strokeWidth={2.2} />
             <Text style={[font('label', 600), { fontSize: 15, color: colors.ink800 }]}>
@@ -153,8 +263,13 @@ export default function Depenses() {
         </View>
 
         <View style={{ paddingTop: 2, paddingHorizontal: 20, paddingBottom: 4 }}>
-          <Text style={[font('eyebrow'), { color: colors.slate400 }]}>{t('dep.eyebrow', { personality })}</Text>
-          <Text style={[font('pageTitle'), { color: colors.ink800, marginTop: 2 }]} accessibilityRole="header">
+          <Text style={[font('eyebrow'), { color: colors.slate400 }]}>
+            {t('dep.eyebrow', { personality })}
+          </Text>
+          <Text
+            style={[font('pageTitle'), { color: colors.ink800, marginTop: 2 }]}
+            accessibilityRole="header"
+          >
             {t('dep.title', { personality })}
           </Text>
           <Text style={[font('body'), { color: colors.slate500, marginTop: 3 }]}>
@@ -162,29 +277,30 @@ export default function Depenses() {
           </Text>
         </View>
 
-        {expenses.isLoading ? (
+        {!dataReady && !blockingError ? (
           <View style={{ paddingTop: 16, paddingHorizontal: 18, gap: 12 }}>
             {/* Héros (Card radius={20} padding={16}) mesurée dans ce fichier : eyebrow + gros
                 montant + sous-titre + 2 mini-stats + CTA ≈ 228 de haut, zéro saut à l'arrivée. */}
             <Skeleton height={228} radius={20} />
             <Skeleton height={140} radius={18} />
           </View>
-        ) : expenses.isError ? (
+        ) : blockingError ? (
           <View style={{ paddingTop: 16, paddingHorizontal: 18 }}>
-            <Card>
-              <Text accessibilityRole="alert" style={[font('sub'), { color: colors.slate500 }]}>
-                {t('dep.dataError', { personality })}
-              </Text>
-              <View style={{ height: 12 }} />
-              <Button
-                title={t('dep.retry', { personality })}
-                variant="secondary"
-                onPress={() => void expenses.refetch()}
-              />
-            </Card>
+            <ErrorRetry
+              message={t('dep.dataError', { personality })}
+              onRetry={() => void expenses.refetch()}
+            />
           </View>
-        ) : (
+        ) : summary === null ? null : (
           <>
+            {staleError ? (
+              <View style={{ paddingTop: 16, paddingHorizontal: 18 }}>
+                <ErrorRetry
+                  message={t('dep.dataError', { personality })}
+                  onRetry={() => void expenses.refetch()}
+                />
+              </View>
+            ) : null}
             {/* HÉROS : reste à payer (la dette fournisseurs vivante) + mois + TVA. */}
             <View style={{ paddingTop: 16, paddingHorizontal: 18 }}>
               <Card radius={20} padding={16}>
@@ -202,7 +318,14 @@ export default function Depenses() {
                 >
                   {formatEUR(summary.toPayCents)}
                 </Text>
-                <Text style={{ ...font('sub', 500), fontSize: 12.5, color: colors.slate500, marginTop: 2 }}>
+                <Text
+                  style={{
+                    ...font('sub', 500),
+                    fontSize: 12.5,
+                    color: colors.slate500,
+                    marginTop: 2,
+                  }}
+                >
                   {summary.toPayCount === 1
                     ? t('dep.toPayCountOne', { personality })
                     : t('dep.toPayCount', { personality, params: { count: summary.toPayCount } })}
@@ -210,8 +333,16 @@ export default function Depenses() {
                 <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
                   {(
                     [
-                      { key: 'dep.paidMonth', cents: summary.paidThisMonthCents, color: colors.ink800 },
-                      { key: 'dep.vatMonth', cents: summary.vatDeductibleThisMonthCents, color: semantic.success },
+                      {
+                        key: 'dep.paidMonth',
+                        cents: summary.paidThisMonthCents,
+                        color: colors.ink800,
+                      },
+                      {
+                        key: 'dep.vatMonth',
+                        cents: summary.vatDeductibleThisMonthCents,
+                        color: semantic.success,
+                      },
                     ] as const
                   ).map(({ key, cents, color }) => (
                     <View
@@ -264,7 +395,9 @@ export default function Depenses() {
                   <SectionHeader
                     title={t('dep.sectionList', { personality })}
                     action={
-                      <Text style={[font('label'), { color: colors.slate400 }]}>{sorted.length}</Text>
+                      <Text style={[font('label'), { color: colors.slate400 }]}>
+                        {sorted.length}
+                      </Text>
                     }
                   />
                 </View>
@@ -288,21 +421,37 @@ export default function Depenses() {
                           />
                         </IconTile>
                         <View style={{ flex: 1, minWidth: 0 }}>
-                          <Text style={{ ...font('cardTitle'), color: colors.ink800 }} numberOfLines={1}>
+                          <Text
+                            style={{ ...font('cardTitle'), color: colors.ink800 }}
+                            numberOfLines={1}
+                          >
                             {expense.supplierName}
                           </Text>
-                          <Text style={[font('meta'), { color: colors.slate300, marginTop: 2 }]} numberOfLines={1}>
-                            {t(CAT_KEY[expense.category], { personality })} · {formatDate(expense.documentDate)}
+                          <Text
+                            style={[font('meta'), { color: colors.slate300, marginTop: 2 }]}
+                            numberOfLines={1}
+                          >
+                            {t(CAT_KEY[expense.category], { personality })} ·{' '}
+                            {formatDate(expense.documentDate)}
                           </Text>
                         </View>
                         <View style={{ alignItems: 'flex-end', gap: 6 }}>
-                          <Text style={{ ...font('sub', 700), color: colors.ink800, fontVariant: ['tabular-nums'] }}>
+                          <Text
+                            style={{
+                              ...font('sub', 700),
+                              color: colors.ink800,
+                              fontVariant: ['tabular-nums'],
+                            }}
+                          >
                             {formatEUR(expense.totalTtcCents)}
                           </Text>
                           <StatusBadge
-                            label={t(expense.status === 'paid' ? 'dep.statusPaid' : 'dep.statusToPay', {
-                              personality,
-                            })}
+                            label={t(
+                              expense.status === 'paid' ? 'dep.statusPaid' : 'dep.statusToPay',
+                              {
+                                personality,
+                              },
+                            )}
                             variant={expense.status === 'paid' ? 'success' : 'particulier'}
                           />
                         </View>
@@ -322,9 +471,9 @@ export default function Depenses() {
                             size="compact"
                             radius={11}
                             loading={pay.isPending && pay.variables?.expenseId === expense.id}
-                            disabled={pay.isPending}
+                            disabled={pay.isPending || !dataFresh}
                             style={{ alignSelf: 'flex-start' }}
-                            onPress={() => payExpense(expense)}
+                            onPress={() => openPaymentSheet(expense)}
                             accessibilityLabel={`${t('dep.pay', { personality })} — ${expense.supplierName}`}
                           />
                         </View>
@@ -337,6 +486,26 @@ export default function Depenses() {
           </>
         )}
       </ScrollView>
+
+      <ExpensePaymentSheet
+        visible={paymentSheetExpense !== null && dataFresh}
+        personality={personality}
+        supplierName={paymentSheetExpense?.supplierName ?? null}
+        initialEvidence={
+          paymentSheetExpense && paymentDraft?.expense.id === paymentSheetExpense.id
+            ? paymentDraft.evidence
+            : null
+        }
+        error={paymentFormError}
+        onClose={() => {
+          setPaymentSheetExpense(null);
+          setPaymentDraft(null);
+          setPaymentFormError(null);
+        }}
+        onSubmit={(evidence) => {
+          if (paymentSheetExpense && dataFresh) submitPaymentEvidence(paymentSheetExpense, evidence);
+        }}
+      />
 
       <Toast
         message={toast ?? ''}

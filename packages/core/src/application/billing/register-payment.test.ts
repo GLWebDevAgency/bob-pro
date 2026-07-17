@@ -35,6 +35,7 @@ function makeDeps(opts: { existingKey?: string | null; status?: string; existing
     },
     findById: async () => null,
     listByInvoice: async () => [],
+    listByCompany: async () => [],
     findByIdempotencyKey: async (_c, key) =>
       opts.existingKey && key === opts.existingKey
         ? ({

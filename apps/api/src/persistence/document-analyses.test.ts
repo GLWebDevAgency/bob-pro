@@ -2,12 +2,12 @@ import { makeDocumentAnalysis, type DocumentAnalysis } from '@bob/core';
 import { describe, expect, it, vi } from 'vitest';
 import {
   DOCUMENT_ANALYSIS_SCHEMA_VERSION,
-  InMemoryDocumentAnalysisStore,
   InvalidDocumentAnalysisCacheRecordError,
   PrismaDocumentAnalysisStore,
   type DocumentAnalysisCacheRecord,
   type DocumentAnalysisCacheWrite,
 } from './document-analyses';
+import { InMemoryDocumentAnalysisStore } from './document-analyses.testing';
 import type { PrismaService } from './prisma/prisma.service';
 
 const SHA = 'a'.repeat(64);

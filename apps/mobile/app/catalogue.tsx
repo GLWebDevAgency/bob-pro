@@ -237,6 +237,8 @@ export default function Catalogue() {
   const [filter, setFilter] = useState<Filter>('all');
   const [draft, setDraft] = useState<SheetDraft | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const catalogueReady = catalogue.mode === 'ready';
+  const catalogueRefreshFailed = catalogueReady && catalogue.isError;
 
   const visible = useMemo(() => {
     const foundIds = new Set(searchCatalogue(catalogue.prestations, query).map((item) => item.id));
@@ -254,8 +256,12 @@ export default function Catalogue() {
     [visible],
   );
 
-  const openAdd = (): void =>
+  const openAdd = (): void => {
+    // Sans première photographie PostgreSQL, Bob ne peut pas vérifier si la prestation existe
+    // déjà. La création reste donc fermée afin de ne pas produire de doublon sur un simple échec.
+    if (!catalogueReady) return;
     setDraft({ source: null, label: '', price: '', vatRate: null, category: 'labor' });
+  };
 
   const openEdit = (p: RemoteCataloguePrestation): void =>
     setDraft({
@@ -279,6 +285,7 @@ export default function Catalogue() {
       || !draftValid
       || priceValue === null
       || draft.vatRate === null
+      || !catalogueReady
       || upsert.isPending
     ) return;
     const item = {
@@ -314,7 +321,7 @@ export default function Catalogue() {
    * future ne pourra jamais être supprimée comme si elle appartenait au propriétaire.
    */
   const requestDeletePrestation = async (p: RemoteCataloguePrestation): Promise<void> => {
-    if (p.indicative || remove.isPending) return;
+    if (!catalogueReady || p.indicative || remove.isPending) return;
     const ok = await confirm({
       title: t('catalogue.deleteConfirmTitle', { personality, params: { label: p.label } }),
       message: t('catalogue.deleteConfirmBody', { personality }),
@@ -369,6 +376,8 @@ export default function Catalogue() {
   //    matchSpokenPrestations (core) ignore les références indicatives non propriétaires. ──
   const catalogueRef = useRef<readonly RemoteCataloguePrestation[]>(catalogue.prestations);
   catalogueRef.current = catalogue.prestations;
+  const catalogueReadyRef = useRef(catalogueReady);
+  catalogueReadyRef.current = catalogueReady;
   const personalityRef = useRef(personality);
   personalityRef.current = personality;
   const deleteVoiceRef = useRef<(p: RemoteCataloguePrestation) => void>(() => undefined);
@@ -378,9 +387,9 @@ export default function Catalogue() {
     () => ({
       screen: { name: '/catalogue', instanceId: 'catalogue' },
       entities: [],
-      capabilities: ['screen.read'],
+      capabilities: catalogueReady ? ['screen.read'] : [],
     }),
-    [],
+    [catalogueReady],
   );
   const agentLayout = useMemo<AgentAccessLayout>(() => ({}), []);
   const catalogueVoiceSurface = useMemo<AgentSurface>(
@@ -389,6 +398,7 @@ export default function Catalogue() {
         {
           id: 'catalogue.deleteByLabel',
           match: (utterance) => {
+            if (!catalogueReadyRef.current) return null;
             const normalized = normalizeVoiceText(utterance);
             if (!/\b(supprime|enleve|retire|efface)\b/.test(normalized)) return null;
             return () => {
@@ -447,6 +457,8 @@ export default function Catalogue() {
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={t('catalogue.add', { personality })}
+            accessibilityState={{ disabled: !catalogueReady }}
+            disabled={!catalogueReady}
             onPress={openAdd}
             style={{
               width: 44,
@@ -455,6 +467,7 @@ export default function Catalogue() {
               backgroundColor: theme.ink,
               alignItems: 'center',
               justifyContent: 'center',
+              opacity: catalogueReady ? 1 : 0.45,
               ...shadowNative.e1,
             }}
           >
@@ -481,6 +494,7 @@ export default function Catalogue() {
           <TextInput
             value={query}
             onChangeText={setQuery}
+            editable={catalogueReady}
             placeholder={t('catalogue.searchPlaceholder', { personality })}
             placeholderTextColor={colors.slate400}
             autoCorrect={false}
@@ -488,7 +502,12 @@ export default function Catalogue() {
             style={[font('body'), { flex: 1, color: colors.ink900, paddingVertical: 10 }]}
           />
         </View>
-        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+        <View
+          pointerEvents={catalogueReady ? 'auto' : 'none'}
+          accessibilityElementsHidden={!catalogueReady}
+          importantForAccessibility={catalogueReady ? 'auto' : 'no-hide-descendants'}
+          style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, opacity: catalogueReady ? 1 : 0.55 }}
+        >
           <Chip
             label={t('catalogue.catAll', { personality })}
             active={filter === 'all'}
@@ -583,7 +602,16 @@ export default function Catalogue() {
           </Card>
         ) : null}
 
-        {catalogue.isLoading ? (
+        {catalogueRefreshFailed ? (
+          <View style={{ marginTop: 8 }}>
+            <ErrorRetry
+              message={t('catalogue.dataError', { personality })}
+              onRetry={catalogue.refetch}
+            />
+          </View>
+        ) : null}
+
+        {catalogue.mode === 'loading' ? (
           <View style={{ marginTop: 8, gap: 9 }}>
             <Skeleton height={17} width="42%" radius={8} style={{ marginBottom: 2 }} />
             {Array.from({ length: 4 }, (_, index) => (
@@ -592,7 +620,7 @@ export default function Catalogue() {
               </Card>
             ))}
           </View>
-        ) : catalogue.isError ? (
+        ) : catalogue.mode === 'error' ? (
           <View style={{ marginTop: 8 }}>
             <ErrorRetry
               message={t('catalogue.dataError', { personality })}

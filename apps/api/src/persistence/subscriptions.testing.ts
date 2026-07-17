@@ -1,10 +1,6 @@
 import type { SubscriptionRecord, SubscriptionRepository } from '@bob/core';
 
-/**
- * Abonnements en mémoire (pilier 2) — parité de contrat avec PrismaSubscriptionRepository :
- * une ligne par company (unique companyId), startTrial IDEMPOTENT (un retry de provisioning
- * ne réinitialise jamais une échéance d'essai), save = upsert complet.
- */
+/** Double déterministe réservé au harness de tests API. */
 export class InMemorySubscriptionRepository implements SubscriptionRepository {
   private readonly byCompany = new Map<string, SubscriptionRecord>();
 

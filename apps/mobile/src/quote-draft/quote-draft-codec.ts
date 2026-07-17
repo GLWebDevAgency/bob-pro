@@ -22,7 +22,7 @@ import {
  * elles ne doivent jamais pouvoir être rejouées après un redémarrage de processus.
  */
 export const QUOTE_DRAFT_SNAPSHOT_SCHEMA = 'bob.quote-draft' as const;
-export const QUOTE_DRAFT_SNAPSHOT_VERSION = 1 as const;
+export const QUOTE_DRAFT_SNAPSHOT_VERSION = 2 as const;
 
 const MAX_ID_LENGTH = 200;
 const MAX_CUSTOMER_NAME_LENGTH = 300;
@@ -60,7 +60,7 @@ export class QuoteDraftSnapshotCodecError extends Error {
   }
 }
 
-interface PersistedQuoteDraftV1 {
+interface PersistedQuoteDraftV2 {
   readonly schema: typeof QUOTE_DRAFT_SNAPSHOT_SCHEMA;
   readonly version: typeof QUOTE_DRAFT_SNAPSHOT_VERSION;
   readonly identity: QuoteDraftStorageIdentity;
@@ -308,7 +308,15 @@ function parseFlow(value: unknown): DevisFlowState | null {
   const draft = value['draft'];
   if (
     !isRecord(draft) ||
-    !hasExactKeys(draft, ['customerId', 'lines', 'tvaContext', 'depositPct', 'signMode', 'signerName'])
+    !hasExactKeys(draft, [
+      'customerId',
+      'lines',
+      'tvaContext',
+      'vatRate',
+      'depositPct',
+      'signMode',
+      'signerName',
+    ])
   )
     return null;
   const customerId = draft['customerId'];
@@ -319,6 +327,14 @@ function parseFlow(value: unknown): DevisFlowState | null {
   if (lines.some((line) => line === null)) return null;
   const tvaContext = parseTvaContext(draft['tvaContext']);
   if (tvaContext === undefined) return null;
+  const rawVatRate = draft['vatRate'];
+  if (rawVatRate !== null && (typeof rawVatRate !== 'number' || !isVatRate(rawVatRate))) {
+    return null;
+  }
+  const vatRate = rawVatRate as DevisFlowState['draft']['vatRate'];
+  // Contexte et taux constituent une seule décision explicite : aucun demi-état restaurable.
+  if ((tvaContext === null) !== (vatRate === null)) return null;
+  if (lines.some((line) => line?.vatRate !== vatRate)) return null;
   const depositPct = draft['depositPct'];
   if (
     typeof depositPct !== 'number' ||
@@ -335,12 +351,17 @@ function parseFlow(value: unknown): DevisFlowState | null {
   if (step !== 'client' && customerId === null) return null;
   if ((step === 'tvaMentions' || step === 'acompte' || step === 'signature') && lines.length === 0)
     return null;
+  // L'écran TVA peut légitimement être restauré avant le choix. En revanche, une étape
+  // ultérieure prouve que la décision fiscale aurait dû être prise : un snapshot ancien ou
+  // fabriqué ne doit jamais contourner cette frontière.
+  if ((step === 'acompte' || step === 'signature') && vatRate === null) return null;
   return {
     step,
     draft: {
       customerId,
       lines: lines as LineInput[],
       tvaContext,
+      vatRate,
       depositPct,
       signMode,
       signerName: null,
@@ -391,7 +412,7 @@ export function encodeQuoteDraftSnapshot(
   const safeState = prepareQuoteDraftForPersistence(state, savedAt);
   // Encode puis redécode : l'écriture est fail-closed face à toute nouvelle forme de state que le
   // contrat disque n'aurait pas encore explicitement acceptée.
-  const snapshot: PersistedQuoteDraftV1 = {
+  const snapshot: PersistedQuoteDraftV2 = {
     schema: QUOTE_DRAFT_SNAPSHOT_SCHEMA,
     version: QUOTE_DRAFT_SNAPSHOT_VERSION,
     identity: { ...identity },

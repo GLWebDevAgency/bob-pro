@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   expenseCreationFingerprint,
-  InMemoryExpenseCreationRequestStore,
   InvalidExpenseCreationRequestError,
   PrismaExpenseCreationRequestStore,
   type ExpenseCreationRequestRecord,
 } from './expense-creation-requests';
+import { InMemoryExpenseCreationRequestStore } from './expense-creation-requests.testing';
 import type { PrismaService } from './prisma/prisma.service';
 
 const NOW = '2026-07-13T12:00:00.000Z';

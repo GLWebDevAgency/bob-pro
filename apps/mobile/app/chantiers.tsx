@@ -30,7 +30,7 @@ import {
 } from '@bob/ui';
 import { useChantiers, useCreateChantier, useProfile, useSearchAddress } from '../src/data/hooks';
 import { usePublishAgentContext, type AgentContext } from '../src/agent';
-import { CheckIcon, ChevronLeftIcon, PlusIcon } from '../src/components/icons';
+import { CheckIcon, ChevronLeftIcon, ChevronRightIcon, PlusIcon } from '../src/components/icons';
 import { useBobAwareScrollInsets } from '../src/components/use-bob-aware-scroll-insets';
 
 const SEARCH_DEBOUNCE_MS = 350;
@@ -85,7 +85,12 @@ export default function Chantiers() {
     return () => clearTimeout(timeout);
   }, [address, createOpen, selectedAddress]);
 
-  const ready = moduleActive && !chantiers.isLoading && !chantiers.isError;
+  const ready =
+    profile.data !== undefined &&
+    moduleActive &&
+    chantiers.data !== undefined &&
+    !chantiers.isLoading &&
+    !chantiers.isError;
   const agentContext = useMemo<AgentContext>(
     () => ({
       screen: { name: 'chantiers', instanceId: 'chantiers' },
@@ -96,7 +101,7 @@ export default function Chantiers() {
             label: chantier.name,
           }))
         : [],
-      capabilities: ready ? ['screen.read', 'chantier.read'] : ['screen.read'],
+      capabilities: ready ? ['screen.read', 'chantier.read'] : [],
     }),
     [chantiers.data, ready],
   );
@@ -124,7 +129,7 @@ export default function Chantiers() {
     );
   };
 
-  const list = chantiers.data ?? [];
+  const list = chantiers.data ?? null;
   const showAddressResults =
     selectedAddress === null &&
     address.trim().length >= 3 &&
@@ -159,7 +164,7 @@ export default function Chantiers() {
         title={t('chantiers.title', { personality })}
         subtitle={t('chantiers.subtitle', { personality })}
         action={
-          moduleActive && !profile.isError ? (
+          ready ? (
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={t('chantiers.add', { personality })}
@@ -194,7 +199,7 @@ export default function Chantiers() {
           />
         }
       >
-        {profile.isLoading ? (
+        {profile.isLoading || profile.data === undefined ? (
           <View style={{ gap: 10 }}>
             <Skeleton height={17} width="38%" radius={8} />
             <Card padding={0} style={{ paddingHorizontal: 14 }}>
@@ -214,7 +219,7 @@ export default function Chantiers() {
               cta={{ label: t('chantiers.seePlans', { personality }), onPress: () => router.push('/compte') }}
             />
           </Card>
-        ) : chantiers.isLoading ? (
+        ) : chantiers.isLoading || list === null ? (
           <View style={{ gap: 10 }}>
             <Skeleton height={17} width="34%" radius={8} />
             {Array.from({ length: 3 }, (_, index) => (
@@ -241,28 +246,37 @@ export default function Chantiers() {
             <SectionHeader title={t('chantiers.listTitle', { personality })} />
             <View style={{ gap: 10 }}>
               {list.map((chantier) => (
-                <Card key={chantier.id}>
-                  <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 12 }}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={[font('cardTitle'), { color: colors.ink900 }]}>{chantier.name}</Text>
-                      {chantier.address ? (
-                        <Text style={[font('sub'), { color: colors.slate500, marginTop: 4 }]}>{chantier.address}</Text>
-                      ) : null}
-                      <Text style={[font('meta'), { color: colors.slate400, marginTop: 5 }]}>
-                        {t('chantiers.openedOn', {
+                <Pressable
+                  key={chantier.id}
+                  accessibilityRole="button"
+                  accessibilityLabel={chantier.name}
+                  onPress={() => router.push(`/chantier/${chantier.id}`)}
+                  style={({ pressed }) => [{ minHeight: 44 }, pressed && { opacity: 0.85 }]}
+                >
+                  <Card>
+                    <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 12 }}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={[font('cardTitle'), { color: colors.ink900 }]}>{chantier.name}</Text>
+                        {chantier.address ? (
+                          <Text style={[font('sub'), { color: colors.slate500, marginTop: 4 }]}>{chantier.address}</Text>
+                        ) : null}
+                        <Text style={[font('meta'), { color: colors.slate400, marginTop: 5 }]}>
+                          {t('chantiers.openedOn', {
+                            personality,
+                            params: { date: frDate(chantier.openedAt) },
+                          })}
+                        </Text>
+                      </View>
+                      <StatusBadge
+                        label={t(chantier.status === 'open' ? 'chantiers.open' : 'chantiers.closed', {
                           personality,
-                          params: { date: frDate(chantier.openedAt) },
                         })}
-                      </Text>
+                        variant={chantier.status === 'open' ? 'b2b' : 'success'}
+                      />
+                      <ChevronRightIcon color={colors.slate300} size={14} strokeWidth={2} />
                     </View>
-                    <StatusBadge
-                      label={t(chantier.status === 'open' ? 'chantiers.open' : 'chantiers.closed', {
-                        personality,
-                      })}
-                      variant={chantier.status === 'open' ? 'b2b' : 'success'}
-                    />
-                  </View>
-                </Card>
+                  </Card>
+                </Pressable>
               ))}
             </View>
           </View>

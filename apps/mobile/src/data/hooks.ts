@@ -22,17 +22,21 @@ import type {
   Trade,
   VatRegime,
   CustomerPortfolio,
+  CompanyBillingSettingsPatch,
 } from '@bob/core';
 import type {
   CreateCustomerClientInput,
+  UpdateCustomerClientInput,
   NotificationView,
   RegisterPaymentClientInput,
+  RecordExpensePaymentClientInput,
   SearchSalesDocumentsClientInput,
 } from '@bob/api-client';
 import type { FiscalProfileFieldPatch, FiscalProfileView } from '@bob/core';
 import { supabaseEnabled } from './supabase';
 import { useAuth } from './auth';
 import { useBobClient } from './client';
+import { companyBillingSettingsQueryKey } from './billing-settings-query';
 
 /** Ouvre une URL externe en remontant un échec à l'utilisateur (lien Stripe/paiement). */
 function openUrl(url: string): void {
@@ -72,10 +76,49 @@ const keys = {
   notifications: ['notifications'] as const,
   notificationUnreadPreview: ['notifications', 'unread-preview'] as const,
   fiscalProfile: ['fiscal-profile'] as const,
+  companyBillingSettings: companyBillingSettingsQueryKey,
   salesDocumentSearch: (input: SearchSalesDocumentsClientInput) =>
     ['sales-document-search', input] as const,
   salesDocumentSuggest: (query: string) => ['sales-document-suggest', query] as const,
 };
+
+export function useCompanyBillingSettings() {
+  const { session } = useAuth();
+  const client = useBobClient();
+  return useQuery({
+    queryKey: keys.companyBillingSettings(client.companyId),
+    enabled: supabaseEnabled && !!session,
+    queryFn: async () => {
+      const result = await client.getCompanyBillingSettings();
+      if (!result.ok) throw result.error;
+      return result.value;
+    },
+  });
+}
+
+export function useUpdateCompanyBillingSettings() {
+  const client = useBobClient();
+  const queryClient = useQueryClient();
+  const queryKey = keys.companyBillingSettings(client.companyId);
+  return useMutation({
+    mutationFn: async (input: {
+      expectedRevision: number;
+      patch: CompanyBillingSettingsPatch;
+    }) => {
+      const result = await client.updateCompanyBillingSettings(input);
+      if (!result.ok) throw result.error;
+      return result.value;
+    },
+    onSuccess: (settings) => {
+      queryClient.setQueryData(queryKey, settings);
+    },
+    onError: () => {
+      // Un 409 CAS ou une panne laisse l'ancien état visible, sans faux succès ; la relecture
+      // remet ensuite l'écran sur la révision gagnante du serveur.
+      void queryClient.invalidateQueries({ queryKey });
+    },
+  });
+}
 
 export function useSubscription() {
   const client = useBobClient();
@@ -167,6 +210,7 @@ export function useCreateChantier() {
       name: string;
       customerId?: string | null;
       address?: string | null;
+      notes?: string | null;
     }) => {
       const r = await client.createChantier(input);
       if (!r.ok) throw r.error;
@@ -174,6 +218,92 @@ export function useCreateChantier() {
     },
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['chantiers'] }),
     onError: alertError,
+  });
+}
+
+/** Fiche chantier (extension V1) — journal de notes horodatées. */
+export function useChantierNotes(chantierId: string, enabled = true) {
+  const client = useBobClient();
+  return useQuery({
+    queryKey: ['chantier-notes', chantierId],
+    enabled: enabled && chantierId.length > 0,
+    queryFn: async () => {
+      const r = await client.listChantierNotes(chantierId);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+  });
+}
+
+export function useAddChantierNote(chantierId: string) {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { text: string }) => {
+      const r = await client.addChantierNote(chantierId, input);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['chantier-notes', chantierId] }),
+    onError: alertError,
+  });
+}
+
+/** Fiche chantier (extension V1) — grille de photos, octets via DocumentStoragePort. */
+export function useWorksitePhotos(chantierId: string, enabled = true) {
+  const client = useBobClient();
+  return useQuery({
+    queryKey: ['chantier-photos', chantierId],
+    enabled: enabled && chantierId.length > 0,
+    queryFn: async () => {
+      const r = await client.listWorksitePhotos(chantierId);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+  });
+}
+
+export function useUploadWorksitePhoto(chantierId: string) {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { contentBase64: string; mimeType: string; filename: string }) => {
+      const r = await client.uploadWorksitePhoto(chantierId, input);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['chantier-photos', chantierId] }),
+    onError: alertError,
+  });
+}
+
+export function useDeleteWorksitePhoto(chantierId: string) {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (photoId: string) => {
+      const r = await client.deleteWorksitePhoto(photoId);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['chantier-photos', chantierId] }),
+    onError: alertError,
+  });
+}
+
+/** URL de visualisation signée (5 min, TTL serveur) — une requête par photo, réutilisée pour la
+ * vignette ET le plein écran (mêmes octets, pas de rendition dédiée). */
+export function useWorksitePhotoUrl(photoId: string, enabled = true) {
+  const client = useBobClient();
+  return useQuery({
+    queryKey: ['chantier-photo-url', photoId],
+    enabled: enabled && photoId.length > 0,
+    staleTime: 4 * 60 * 1000,
+    queryFn: async () => {
+      const r = await client.worksitePhotoViewUrl(photoId);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
   });
 }
 
@@ -225,9 +355,8 @@ export function useProfile() {
 /** Fiche société RÉELLE du tenant en mode connecté — GET /company/me (PONT-SERVEUR ④).
  *  Query PARTAGÉE ['company-me'] (une seule définition, un seul cache) : useIdentity
  *  (identity.ts) et l'écran Argent (C-EXP-UI2 — ligne cotisations du grand-livre) la
- *  consomment tous les deux. getCompanyMe est OPTIONNEL sur l'interface (LocalBobClient
- *  pas encore — TODO session B tracé) : absence/échec → data undefined, jamais un nom
- *  ou une provision inventés. */
+ *  consomment tous les deux. Absence/échec → data undefined, jamais un nom ou une provision
+ *  inventés. */
 export function useCompanyMe() {
   const { session } = useAuth();
   const client = useBobClient();
@@ -415,12 +544,12 @@ export function useRecordExpense() {
   });
 }
 
-/** E4 : régler une dépense — même use case que Bob ; rafraîchit charges, journal et tréso. */
+/** Enregistrer un règlement déjà réalisé — preuve explicite ; rafraîchit charges, journal et tréso. */
 export function usePayExpense() {
   const client = useBobClient();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (input: { expenseId: string }) => {
+    mutationFn: async (input: RecordExpensePaymentClientInput) => {
       const r = await client.payExpense(input);
       if (!r.ok) throw r.error;
       return r.value;
@@ -456,6 +585,22 @@ export function useCreateCustomer() {
       return r.value;
     },
     onSuccess: () => void qc.invalidateQueries({ queryKey: keys.customers }),
+  });
+}
+
+/** Édition post-création (C13/C40 TODO partagé) — la fiche permet de compléter/corriger ce que
+ * la création MINIMALE n'a pas saisi (adresse, SIREN, contact…). Remplacement complet. */
+export function useUpdateCustomer() {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { id: string; patch: UpdateCustomerClientInput }) => {
+      const r = await client.updateCustomer(input.id, input.patch);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: () => void qc.invalidateQueries({ queryKey: keys.customers }),
+    onError: alertError,
   });
 }
 

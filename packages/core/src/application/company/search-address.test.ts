@@ -19,4 +19,25 @@ describe('SearchAddress', () => {
     expect(r.ok && r.value.length).toBe(0);
     expect(called).toBe(false);
   });
+
+  it('distingue une panne amont d une recherche sans résultat', async () => {
+    const unavailable: AddressAutocompletePort = {
+      async search() {
+        throw new Error('BAN HTTP 503');
+      },
+    };
+
+    const result = await new SearchAddress({ addresses: unavailable }).execute({
+      query: '8 boulevard du Port',
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        kind: 'dependency',
+        port: 'address-autocomplete',
+        cause: 'BAN HTTP 503',
+      },
+    });
+  });
 });

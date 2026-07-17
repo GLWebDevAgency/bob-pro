@@ -178,13 +178,16 @@ export function usePushPermissionConsent(): PushPermissionConsent {
  */
 export function PushNotificationsBridge() {
   const client = useBobClient();
-  const { enabled: authEnabled, session } = useAuth();
+  const { session } = useAuth();
   const router = useRouter();
   const queryClient = useQueryClient();
   const [eventBridgeReady, setEventBridgeReady] = useState(false);
   const authenticatedCompanyId = companyIdFromAppMetadata(session?.user.app_metadata);
-  const ownerCompanyId = authEnabled ? authenticatedCompanyId : client.companyId;
-  const ownerUserId = authEnabled ? (session?.user.id ?? null) : 'local-demo-device';
+  // Une installation push appartient exclusivement à l'identité Supabase courante. En l'absence
+  // de session ou de company_id signé, le bridge reste neutralisé : aucune identité locale ou
+  // valeur de développement ne peut créer une liaison serveur.
+  const ownerCompanyId = authenticatedCompanyId;
+  const ownerUserId = session?.user.id ?? null;
 
   useEffect(() => {
     let mounted = true;

@@ -54,7 +54,7 @@ export interface AccountCompanyView {
   siretFormatted: string;
   /** « EI · Plombier » — forme juridique + libellé métier (TradeConfig serveur en priorité). */
   legalTradeLine: string;
-  /** « Réel simplifié · TVA 10 % » — régime réel + taux métier ; franchise sans taux (293 B). */
+  /** Régime TVA persisté uniquement — aucun taux n'est déduit du métier. */
   vatLine: string;
 }
 
@@ -152,11 +152,6 @@ export function formatSiret(siret: string): string {
   return `${digits.slice(0, 3)} ${digits.slice(3, 6)} ${digits.slice(6, 9)} ${digits.slice(9)}`;
 }
 
-/** Taux à la française : 5.5 → « 5,5 ». */
-function formatRate(rate: number): string {
-  return String(rate).replace('.', ',');
-}
-
 /**
  * Statut d'un service dérivé du RÉEL : module actif dans le TradeConfig serveur, sinon « À venir ».
  * `moduleKey` null = aucun module produit ne couvre ce service → jamais « Actif » (honnêteté).
@@ -176,10 +171,9 @@ function deriveCompany(
   if (company === null) return null; // jamais une fiche inventée : l'écran affiche l'état vide.
   const tradeLabel = tradeConfig?.label ?? tradeProfile(company.trade).label;
   const regimeLabel = VAT_REGIME_LABELS[company.vatRegime];
-  const vatLine =
-    company.vatRegime === 'franchise' || tradeConfig === null
-      ? regimeLabel
-      : `${regimeLabel} · TVA ${formatRate(tradeConfig.defaultVatRate)} %`;
+  // Le régime vient de la fiche société persistée. Le métier ne permet jamais de
+  // déduire un taux : il dépend de la prestation, du client et de son contexte fiscal.
+  const vatLine = regimeLabel;
   return {
     name: company.name,
     siretFormatted: formatSiret(company.siret),

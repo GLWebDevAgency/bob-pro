@@ -7,11 +7,11 @@
  *
  * DONNÉES 100 % RÉELLES (A1-C10 généralisé) : useCustomers + useInvoices + useQuotes ;
  * le statut et l'encours PAR CLIENT se dérivent dans @bob/core (deriveCustomerStandings,
- * use case pur testé) depuis les pièces réelles — repli sur outstanding + scoreBand du
- * client (scoring core) quand il n'a aucune pièce. AUCUN repli fixtures : loading →
+ * use case pur testé) depuis les pièces réelles — repli sur l'encours serveur dérivé,
+ * sans score de risque inventé, quand les pièces ne sont pas disponibles. AUCUN repli fixtures : loading →
  * skeletons · erreur → voix de Bob (clients.dataError) · 0 client → invitation à créer ·
- * 0 résultat de recherche/filtre → clients.noResults. Tri par score décroissant
- * (score-customer @bob/core, servi par le hook) — l'ordre de la réf est celui du seed.
+ * 0 résultat de recherche/filtre → clients.noResults. Tri par encours réel décroissant,
+ * puis nom.
  *
  * PARITÉ D'ACTIONS humain ↔ Bob (directive 23:52) :
  * · rangée → /client/[id] (fiche client C13 — les CTA relance/facture y vivent) ;
@@ -30,7 +30,7 @@
  *   dégradés par client du proto (hex hors tokens).
  * Zéro hex/rgba : useTheme()/@bob/tokens. Zéro import de src/components/ui (ancien kit).
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
@@ -54,7 +54,6 @@ import { shadowNative } from '@bob/tokens';
 import { t, type I18nKey, type Personality } from '@bob/i18n';
 import {
   Avatar,
-  Button,
   Card,
   Chip,
   EmptyState,
@@ -71,6 +70,8 @@ import {
 } from '@bob/ui';
 import { useCreateCustomer, useCustomers, useInvoices, useQuotes } from '../../src/data/hooks';
 import { combineQueryStates } from '../../src/data/query-state';
+import { hasBlockingAuthoritativeDataError } from '../../src/data/authoritative-query-state';
+import { CustomerForm } from '../../src/components/customer-form';
 import { usePublishAgentContext, type AgentContext } from '../../src/agent';
 import { CheckIcon, ChevronRightIcon, PlusIcon, SearchIcon } from '../../src/components/icons';
 import { useBobAwareScrollInsets } from '../../src/components/use-bob-aware-scroll-insets';
@@ -134,12 +135,14 @@ function rowSubtitle(type: CustomerListItem['type'], standing: CustomerStanding,
 }
 
 /** Bouton « + » navy du header (réf : 42×42, radius 13, aplat ink du thème). */
-function AddClientButton({ onPress }: { onPress: () => void }) {
+function AddClientButton({ onPress, disabled }: { onPress: () => void; disabled: boolean }) {
   const { personality, theme, colors } = useTheme();
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={t('clients.addClient', { personality })}
+      accessibilityState={{ disabled }}
+      disabled={disabled}
       onPress={onPress}
       hitSlop={6}
       style={({ pressed }) => [
@@ -154,7 +157,8 @@ function AddClientButton({ onPress }: { onPress: () => void }) {
           justifyContent: 'center',
           ...shadowNative.e2,
         },
-        pressed && { transform: [{ scale: 0.94 }] },
+        disabled ? { opacity: 0.45 } : null,
+        pressed && !disabled ? { transform: [{ scale: 0.94 }] } : null,
       ]}
     >
       <PlusIcon color={colors.surface} />
@@ -301,56 +305,38 @@ function CustomerRowCard({
 }
 
 /**
- * Feuille « nouveau client » (C40) — création MINIMALE : nom + type. Le reste (adresse,
- * SIREN, email…) se complète sur la fiche ; défauts neutres identiques à l'outil agent
- * creer_client (adresse vide, score 100, aucun historique) — MÊME use case createCustomer.
+ * Feuille « nouveau client » (C40) — enrichie par type (arbitrage fondateur révisé) :
+ * PARTICULIER = prénom + nom SEULS obligatoires ; ENTREPRISE/PUBLIC = raison sociale seule
+ * obligatoire (avec recherche SIRET pour préremplir). Email/téléphone/adresse restent TOUJOURS
+ * optionnels — aucun moyen de contact n'est exigé : l'envoi de pièces passera par un lien
+ * partageable (Share natif), pas par un email forcé qui produirait des adresses bidon.
+ * MÊME use case createCustomer que l'outil agent creer_client.
  */
 function CreateClientSheet({
   visible,
+  canSubmit,
   onClose,
   onCreated,
 }: {
   visible: boolean;
+  canSubmit: boolean;
   onClose: () => void;
   onCreated: (name: string) => void;
 }) {
-  const { personality, colors, semantic } = useTheme();
+  const { personality, colors } = useTheme();
   const createCustomer = useCreateCustomer();
-  const [name, setName] = useState('');
-  const [type, setType] = useState<CustomerListItem['type']>('b2c');
   const [failed, setFailed] = useState(false);
-  const trimmed = name.trim();
-
-  const reset = (): void => {
-    setName('');
-    setType('b2c');
-    setFailed(false);
-  };
-
-  const submit = (): void => {
-    if (!trimmed || createCustomer.isPending) return;
-    setFailed(false);
-    createCustomer.mutate(
-      {
-        name: trimmed,
-        type,
-        address: { line1: '', zip: '', city: '' },
-        score: 100,
-        avgDelayDays: 0,
-        outstanding: 0,
-      },
-      {
-        onSuccess: () => {
-          reset();
-          onCreated(trimmed);
-        },
-        onError: () => setFailed(true),
-      },
-    );
-  };
+  // Remonte la Sheet à une nouvelle instance à chaque ouverture : le formulaire repart neutre.
+  const [instanceKey, setInstanceKey] = useState(0);
 
   return (
-    <Sheet visible={visible} onClose={onClose}>
+    <Sheet
+      visible={visible}
+      onClose={() => {
+        onClose();
+        setInstanceKey((k) => k + 1);
+      }}
+    >
       <KeyboardAvoidingView {...(Platform.OS === 'ios' ? { behavior: 'padding' as const } : {})}>
         <Text style={[font('pageTitle'), { fontSize: 20, color: colors.ink900 }]}>
           {t('clients.createTitle', { personality })}
@@ -358,58 +344,23 @@ function CreateClientSheet({
         <Text style={[font('sub'), { color: colors.slate500, lineHeight: 19, marginTop: 4 }]}>
           {t('clients.createHint', { personality })}
         </Text>
-
-        <Text style={[font('label', 700), { fontSize: 12, color: colors.slate400, marginTop: 16 }]}>
-          {t('clients.createNameLabel', { personality }).toUpperCase()}
-        </Text>
-        <TextInput
-          value={name}
-          onChangeText={setName}
-          placeholder={t('clients.createNamePlaceholder', { personality })}
-          placeholderTextColor={colors.slate300}
-          autoCorrect={false}
-          returnKeyType="done"
-          onSubmitEditing={submit}
-          accessibilityLabel={t('clients.createNameLabel', { personality })}
-          style={[
-            font('body'),
-            {
-              marginTop: 7,
-              borderWidth: 1,
-              borderColor: colors.lineSoft,
-              borderRadius: 12,
-              paddingVertical: 11,
-              paddingHorizontal: 13,
-              color: colors.ink800,
-            },
-          ]}
-        />
-
-        <Text style={[font('label', 700), { fontSize: 12, color: colors.slate400, marginTop: 14 }]}>
-          {t('clients.createTypeLabel', { personality }).toUpperCase()}
-        </Text>
-        <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
-          {FILTERS.filter((f): f is { key: CustomerListItem['type']; label: I18nKey } => f.key !== 'tous').map((f) => (
-            <Chip key={f.key} label={t(f.label, { personality })} active={type === f.key} onPress={() => setType(f.key)} />
-          ))}
-        </View>
-
-        {failed ? (
-          <Text
-            accessibilityRole="alert"
-            style={[font('sub'), { color: semantic.danger, lineHeight: 19, marginTop: 12 }]}
-          >
-            {t('clients.createError', { personality })}
-          </Text>
-        ) : null}
-
-        <Button
-          title={t('clients.createSubmit', { personality })}
-          variant="primary"
-          disabled={!trimmed}
-          loading={createCustomer.isPending}
-          style={{ marginTop: 16 }}
-          onPress={submit}
+        <CustomerForm
+          key={instanceKey}
+          personality={personality}
+          submitLabel={t('clients.createSubmit', { personality })}
+          submitting={createCustomer.isPending}
+          errorMessage={failed ? t('clients.createError', { personality }) : null}
+          onSubmit={(payload) => {
+            if (!canSubmit) return;
+            setFailed(false);
+            createCustomer.mutate(payload, {
+              onSuccess: () => {
+                setInstanceKey((k) => k + 1);
+                onCreated(payload.name);
+              },
+              onError: () => setFailed(true),
+            });
+          }}
         />
       </KeyboardAvoidingView>
     </Sheet>
@@ -429,28 +380,43 @@ export default function Clients() {
   // Création client (C40) : UN SEUL point d'entrée pour le « + », l'empty state et le Fab.
   const [createOpen, setCreateOpen] = useState(false);
   const [createdToast, setCreatedToast] = useState<string | null>(null);
-  const openCreate = (): void => setCreateOpen(true);
+  const sourcesReady =
+    customers.data !== undefined && invoices.data !== undefined && quotes.data !== undefined;
+  const blockingError = hasBlockingAuthoritativeDataError([customers, invoices, quotes]);
+  const staleError =
+    sourcesReady && !blockingError && (customers.isError || invoices.isError || quotes.isError);
+  const sourcesFresh = sourcesReady && !staleError;
+  const openCreate = (): void => {
+    if (sourcesFresh) setCreateOpen(true);
+  };
 
-  // Standing par client — dérivé dans @bob/core depuis les pièces réelles (repli client sans pièce).
+  useEffect(() => {
+    if (!sourcesFresh) setCreateOpen(false);
+  }, [sourcesFresh]);
+
+  // Standing par client — dérivé uniquement lorsque les trois photographies serveur existent.
+  // Une source absente ne devient jamais une collection vide ni un encours à zéro.
   const standings = useMemo(
-    () =>
-      deriveCustomerStandings({
-        customers: customers.data ?? [],
-        invoices: invoices.data, // undefined pendant chargement/erreur → repli, jamais un chiffre inventé
+    () => {
+      if (customers.data === undefined || invoices.data === undefined || quotes.data === undefined) return [];
+      return deriveCustomerStandings({
+        customers: customers.data,
+        invoices: invoices.data,
         quotes: quotes.data,
         today: localToday(),
-      }),
+      });
+    },
     [customers.data, invoices.data, quotes.data],
   );
   const standingById = useMemo(() => new Map(standings.map((s) => [s.customerId, s])), [standings]);
 
-  // Tri par score décroissant (score-customer @bob/core, servi par le hook) — égalité :
-  // encours décroissant puis nom. NB : l'ordre de la réf est celui du seed, pas du score.
+  // Tri par encours réellement dérivé puis nom. Aucun pseudo-score ne décide de l'ordre.
   const sorted = useMemo(
-    () =>
-      [...(customers.data ?? [])].sort(
-        (a, b) => b.score - a.score || b.outstanding - a.outstanding || a.name.localeCompare(b.name),
-      ),
+    () => customers.data === undefined
+      ? []
+      : [...customers.data].sort(
+          (a, b) => b.outstandingCents - a.outstandingCents || a.name.localeCompare(b.name),
+        ),
     [customers.data],
   );
 
@@ -463,8 +429,10 @@ export default function Clients() {
   }, [sorted, filter, query]);
 
   const queryState = combineQueryStates(customers, invoices, quotes);
-  const booting = queryState.loading;
-  const hasError = queryState.failed;
+  const booting = !sourcesReady && !blockingError;
+  const standingInvariantBroken = sourcesFresh
+    && list.some((customer) => !standingById.has(customer.id));
+  const displayError = blockingError || standingInvariantBroken;
   const refreshing = customers.isRefetching || invoices.isRefetching || quotes.isRefetching;
   const carnet = customers.data;
   const totalCents = pendingTotalCents(standings);
@@ -475,7 +443,7 @@ export default function Clients() {
     () => ({
       screen: { name: 'clients', instanceId: 'clients' },
       entities:
-        !booting && !hasError
+        sourcesFresh && !displayError
           ? list.slice(0, 20).map((customer) => ({
               type: 'customer' as const,
               id: customer.id,
@@ -483,9 +451,9 @@ export default function Clients() {
             }))
           : [],
       capabilities:
-        !booting && !hasError ? ['screen.read', 'customer.read'] : ['screen.read'],
+        sourcesFresh && !displayError ? ['screen.read', 'customer.read'] : [],
     }),
-    [booting, hasError, list],
+    [displayError, list, sourcesFresh],
   );
   usePublishAgentContext(agentContext);
 
@@ -509,10 +477,10 @@ export default function Clients() {
         <InnerScreenHeader
           eyebrow={t('clients.eyebrow', { personality })}
           title={t('clients.title', { personality })}
-          action={<AddClientButton onPress={openCreate} />}
+          action={<AddClientButton onPress={openCreate} disabled={!sourcesFresh} />}
         />
         {/* Sous-titre hors InnerScreenHeader : le montant interpolé est teinté (la prop subtitle est un string). */}
-        {carnet !== undefined && carnet.length > 0 && !booting ? (
+        {carnet !== undefined && sourcesReady && carnet.length > 0 && !booting ? (
           <CarnetSubtitle count={carnet.length} totalCents={totalCents} />
         ) : null}
 
@@ -535,7 +503,7 @@ export default function Clients() {
         </ScrollView>
 
         <View style={{ paddingHorizontal: 18, paddingTop: 8, gap: 10 }}>
-          {hasError ? (
+          {displayError ? (
             <ErrorRetry
               message={t('clients.dataError', { personality })}
               onRetry={queryState.refetchAll}
@@ -547,14 +515,21 @@ export default function Clients() {
               <ClientSkeletonRow />
               <ClientSkeletonRow />
             </>
-          ) : carnet === undefined ? null /* erreur : la carte clients.dataError ci-dessus parle déjà */ : carnet.length ===
-            0 ? (
+          ) : carnet === undefined ? null : (
+            <>
+              {staleError ? (
+                <ErrorRetry
+                  message={t('clients.dataError', { personality })}
+                  onRetry={queryState.refetchAll}
+                />
+              ) : null}
+              {carnet.length === 0 ? (
             // 0 client : invitation à créer — même point d'entrée que le « + » et le Fab.
             <Card radius={18} padding={18}>
               <EmptyState
                 title={t('clients.emptyTitle', { personality })}
                 body={t('clients.emptyBody', { personality })}
-                cta={{ label: t('clients.emptyCta', { personality }), onPress: openCreate }}
+                cta={sourcesFresh ? { label: t('clients.emptyCta', { personality }), onPress: openCreate } : undefined}
               />
             </Card>
           ) : list.length === 0 ? (
@@ -564,12 +539,8 @@ export default function Clients() {
             </Card>
           ) : (
             list.map((customer) => {
-              const standing = standingById.get(customer.id) ?? {
-                customerId: customer.id,
-                kind: 'nouveau' as const,
-                amountCents: 0,
-                daysLate: 0,
-              };
+              const standing = standingById.get(customer.id);
+              if (standing === undefined) return null;
               return (
                 <CustomerRowCard
                   key={customer.id}
@@ -580,13 +551,18 @@ export default function Clients() {
               );
             })
           )}
+            </>
+          )}
         </View>
       </ScrollView>
 
-      <Fab onPress={openCreate} accessibilityLabel={t('clients.addClient', { personality })} />
+      {sourcesFresh ? (
+        <Fab onPress={openCreate} accessibilityLabel={t('clients.addClient', { personality })} />
+      ) : null}
 
       <CreateClientSheet
-        visible={createOpen}
+        visible={createOpen && sourcesFresh}
+        canSubmit={sourcesFresh}
         onClose={() => setCreateOpen(false)}
         onCreated={(name) => {
           setCreateOpen(false);

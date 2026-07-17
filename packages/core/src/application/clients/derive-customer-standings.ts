@@ -1,5 +1,4 @@
 import { type DateOnly } from '../../shared-kernel/time';
-import { type ScoreBand } from '../../domain/customer/score';
 import { type InvoiceKind } from '../../domain/billing/invoice/invoice';
 import { type InvoiceStatus, type QuoteStatus } from '../../domain/billing/shared/state-machines';
 
@@ -8,19 +7,16 @@ import { type InvoiceStatus, type QuoteStatus } from '../../domain/billing/share
  * Entrée = données RÉELLES projetées (clients + factures + devis tels que servis par
  * l'api-client) ; sortie = un statut + encours PAR CLIENT, prêt pour l'écran Clients.
  * Aucune I/O, aucun repli fixtures : quand les pièces sont exposées, le statut se
- * dérive d'elles ; sinon (source absente ou client sans pièce) on retombe sur les
- * champs du client lui-même (outstanding + scoreBand du scoring core) — jamais sur
- * un chiffre inventé.
+ * dérive d'elles ; sinon (source absente ou client sans pièce) on ne reprend que
+ * l'encours déjà dérivé côté serveur. Aucun score de risque n'est fabriqué.
  */
 
 // ── Entrées (projections minimales, structurellement compatibles avec les vues api-client) ──
 
 export interface StandingCustomerData {
   id: string;
-  /** Encours du client tel qu'exposé par l'API (centimes) — repli si aucune pièce. */
-  outstanding: number;
-  /** Bande de score du scoring core (score-customer) — red = mauvais payeur. */
-  scoreBand: ScoreBand;
+  /** Encours dérivé des factures/paiements par l'API (centimes) — repli si aucune pièce. */
+  outstandingCents: number;
 }
 
 export interface StandingInvoiceData {
@@ -91,22 +87,20 @@ function isOverdue(invoice: StandingInvoiceData, today: DateOnly): boolean {
 }
 
 /**
- * Repli sans pièce : les champs du client lui-même (données réelles de l'API, pas des
- * fixtures). Un encours avec bande rouge (score-customer) = mauvais payeur → en retard ;
- * un encours sinon → en attente ; à zéro, une bande verte n'existe qu'avec un historique
- * de paiements à l'heure (formule score-customer : la ponctualité seule porte au vert)
- * → à jour ; sinon → nouveau.
+ * Repli sans pièce : l'encours dérivé côté serveur reste utilisable. Sans dates d'échéance,
+ * il serait mensonger de le qualifier « en retard » ; il reste donc « en attente ».
+ * À zéro et sans pièce, le client est « nouveau ».
  */
 function fallbackStanding(customer: StandingCustomerData): CustomerStanding {
   const base = { customerId: customer.id, daysLate: 0 };
-  if (customer.outstanding > 0) {
+  if (customer.outstandingCents > 0) {
     return {
       ...base,
-      kind: customer.scoreBand === 'red' ? 'en_retard' : 'en_attente',
-      amountCents: customer.outstanding,
+      kind: 'en_attente',
+      amountCents: customer.outstandingCents,
     };
   }
-  return { ...base, kind: customer.scoreBand === 'green' ? 'a_jour' : 'nouveau', amountCents: 0 };
+  return { ...base, kind: 'nouveau', amountCents: 0 };
 }
 
 /**

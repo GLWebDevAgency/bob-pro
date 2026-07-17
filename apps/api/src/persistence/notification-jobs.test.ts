@@ -4,7 +4,7 @@ import { NotificationDeliveryService } from '../jobs/notification-delivery.servi
 import { ScheduledTenantDirectory } from '../jobs/tenant-directory';
 import type { AppLogger } from '../observability/logger';
 import { InMemoryNotificationJobRepository } from './in-memory';
-import { InMemoryPersistence } from './persistence';
+import { InMemoryPersistence } from './persistence.testing';
 
 const logger = {
   audit: vi.fn(),

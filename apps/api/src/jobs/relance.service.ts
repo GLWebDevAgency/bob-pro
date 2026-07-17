@@ -11,14 +11,18 @@ import {
   type RelancePlanEntry,
   type Result,
 } from '@bob/core';
-import { PERSISTENCE, type Persistence } from '../persistence/persistence';
+import type { Persistence } from '../persistence/persistence';
+import { PERSISTENCE } from '../persistence/persistence-token';
 import { AppLogger, requireTenant } from '../observability/logger';
 import { BackendService } from '../backend.service';
 
 /** Port ÉTROIT de l'autorité d'abonnement vue par le cron — satisfait structurellement par
  *  BackendService (token DI), stubable en une ligne dans les tests (jamais tout le backend). */
 export interface AutoDunningEntitlements {
-  autoDunningEntitlement(companyId: string): { allowed: boolean; plan: import('@bob/core').PlanTier };
+  autoDunningEntitlement(companyId: string): Promise<{
+    allowed: boolean;
+    plan: import('@bob/core').PlanTier | null;
+  }>;
 }
 import { NotificationDeliveryService } from './notification-delivery.service';
 import { ScheduledTenantDirectory } from './tenant-directory';
@@ -112,7 +116,8 @@ export class RelanceService {
       notification: { channel: 'email', to: email, subject: message.subject, body: message.body },
     });
     if (job.status === 'done') return { jobId: job.id, status: 'done' }; // déjà relancée aujourd'hui (dédup)
-    if (job.notification === null) return { jobId: job.id, status: job.status === 'failed' ? 'failed' : 'pending' };
+    if (job.notification === null)
+      return { jobId: job.id, status: job.status === 'failed' ? 'failed' : 'pending' };
     return { jobId: job.id, status: 'pending' };
   }
 
@@ -123,7 +128,7 @@ export class RelanceService {
     // tenant sans erreur — refus audité, comportement du cron inchangé pour les autres tenants.
     // La relance MANUELLE (sendRelanceForInvoice) n'est pas gated : auto_dunning = relance AUTO.
     // En early-access (business pour tous), ce garde ne refuse personne aujourd'hui.
-    const entitlement = this.backend.autoDunningEntitlement(companyId);
+    const entitlement = await this.backend.autoDunningEntitlement(companyId);
     if (!entitlement.allowed) {
       this.logger.audit('relances.skipped_plan', {
         companyId,
@@ -150,7 +155,10 @@ export class RelanceService {
         }
         const email = emails.get(entry.customerId);
         if (!email) {
-          this.logger.audit('relance.email_skipped', { invoiceId: entry.invoiceId, reason: 'customer_email_missing' });
+          this.logger.audit('relance.email_skipped', {
+            invoiceId: entry.invoiceId,
+            reason: 'customer_email_missing',
+          });
           continue;
         }
         const dispatched = await this.dispatchEntry(companyId, entry, email, 'automatic');
@@ -169,7 +177,9 @@ export class RelanceService {
    */
   /** Variante requête HTTP : tenant du Principal authentifié (même règle que BackendService —
    * C24b : tenant OBLIGATOIRE, le repli société de démo est supprimé). */
-  sendRelance(invoiceId: string): Promise<Result<{ jobId: string; status: string; tone: string }, AppError>> {
+  sendRelance(
+    invoiceId: string,
+  ): Promise<Result<{ jobId: string; status: string; tone: string }, AppError>> {
     return this.sendRelanceForInvoice(requireTenant(), invoiceId);
   }
 
@@ -200,7 +210,12 @@ export class RelanceService {
           ok: false as const,
           error: {
             kind: 'validation' as const,
-            issues: [{ field: 'invoiceId', message: 'Facture non relançable — réglée, annulée ou pas encore échue.' }],
+            issues: [
+              {
+                field: 'invoiceId',
+                message: 'Facture non relançable — réglée, annulée ou pas encore échue.',
+              },
+            ],
           },
         };
       }
@@ -210,7 +225,12 @@ export class RelanceService {
           ok: false as const,
           error: {
             kind: 'validation' as const,
-            issues: [{ field: 'customer.email', message: 'Email du client manquant — complète sa fiche avant de relancer.' }],
+            issues: [
+              {
+                field: 'customer.email',
+                message: 'Email du client manquant — complète sa fiche avant de relancer.',
+              },
+            ],
           },
         };
       }
@@ -244,7 +264,13 @@ export class RelanceService {
       sent += result.sent;
       deduplicated += result.deduplicated;
     }
-    this.logger.audit('relances.run_all', { companies: companyIds.length, scanned, queued, sent, deduplicated });
+    this.logger.audit('relances.run_all', {
+      companies: companyIds.length,
+      scanned,
+      queued,
+      sent,
+      deduplicated,
+    });
     return { companies: companyIds.length, scanned, queued, sent, deduplicated };
   }
 }

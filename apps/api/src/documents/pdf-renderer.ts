@@ -13,6 +13,19 @@ const sanitize = (s: string): string =>
 
 const money = (cents: number): string => sanitize(formatEUR(cents));
 
+function accentColor(accent: InvoicePdfData['billingPresentation']['accentColor']) {
+  switch (accent) {
+    case 'green':
+      return rgb(0.03, 0.48, 0.29);
+    case 'purple':
+      return rgb(0.42, 0.30, 0.72);
+    case 'orange':
+      return rgb(0.88, 0.43, 0.08);
+    case 'navy':
+      return rgb(0.05, 0.14, 0.25);
+  }
+}
+
 function wrap(text: string, max: number): string[] {
   const words = text.split(' ');
   const lines: string[] = [];
@@ -81,13 +94,15 @@ export class PdfRenderer implements PdfRendererPort {
     const bold: PDFFont = await doc.embedFont(StandardFonts.HelveticaBold);
     const ink = rgb(0.05, 0.14, 0.25);
     const slate = rgb(0.36, 0.42, 0.48);
+    const accent = accentColor(data.billingPresentation.accentColor);
+    page.drawRectangle({ x: 0, y: 834, width: 595, height: 8, color: accent });
     let y = 800;
     const draw = (text: string, size = 10, f: PDFFont = font, color = ink): void => {
       page.drawText(sanitize(text), { x: 40, y, size, font: f, color });
       y -= size + 6;
     };
 
-    draw(`Facture ${data.number}`, 22, bold);
+    draw(`Facture ${data.number}`, 22, bold, accent);
     y -= 8;
     draw(data.companyName, 12, bold);
     draw(data.companyAddress);
@@ -109,6 +124,24 @@ export class PdfRenderer implements PdfRendererPort {
     draw(`Total TTC : ${money(data.totals.ttc)}`, 13, bold);
     draw(`Net a payer : ${money(data.totals.netToPay)}`, 13, bold);
     y -= 16;
+
+    if (data.billingPresentation.rib) {
+      draw('Coordonnees de paiement', 9, bold, accent);
+      draw(`IBAN : ${data.billingPresentation.rib.iban}`, 8);
+      if (data.billingPresentation.rib.bic) {
+        draw(`BIC : ${data.billingPresentation.rib.bic}`, 8);
+      }
+      y -= 8;
+    }
+
+    if (data.billingPresentation.insurance) {
+      const insurance = data.billingPresentation.insurance;
+      draw('Assurance professionnelle', 9, bold, accent);
+      draw(`${insurance.insurer} - police ${insurance.policyNo}`, 8);
+      for (const chunk of wrap(insurance.coverage, 100)) draw(chunk, 7, font, slate);
+      draw(`Valable jusqu'au ${insurance.expiresAt}`, 7, font, slate);
+      y -= 8;
+    }
 
     draw('Mentions legales', 9, bold);
     for (const m of data.mentions) {

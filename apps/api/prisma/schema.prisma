@@ -34,6 +34,20 @@ enum CustomerType {
   b2g
 }
 
+enum CustomerPortfolio {
+  b2c
+  b2b
+  b2g
+  mixte
+}
+
+enum InvoicePdfAccentColor {
+  navy
+  green
+  purple
+  orange
+}
+
 enum DocKind {
   quote
   invoice
@@ -237,6 +251,23 @@ enum SubscriptionStore {
   none
 }
 
+enum ChantierStatus {
+  open
+  closed
+}
+
+enum BankBalanceSource {
+  manual_confirmed
+  bank_statement
+  bank_connector
+}
+
+enum BankBalanceReconciliationStatus {
+  unreconciled
+  partially_reconciled
+  reconciled
+}
+
 model Company {
   id                      String                         @id
   name                    String
@@ -246,6 +277,8 @@ model Company {
   apeCode                 String?
   trade                   String
   vatRegime               VatRegime
+  /// Clientèle principale confirmée par le propriétaire. NULL tant que la question n'a pas été répondue.
+  customerPortfolio       CustomerPortfolio?
   rcsOrRm                 String?
   addrLine1               String
   addrZip                 String
@@ -274,6 +307,7 @@ model Company {
   expenses                Expense[]
   expenseCreationRequests ExpenseCreationRequest[]
   quoteCreationRequests   QuoteCreationRequest[]
+  quoteDraftSlots         QuoteDraftSlot[]
   documents               StoredDocument[]
   documentFolders         DocumentFolder[]
   folderDeletionPlans     DocumentFolderDeletionPlan[]
@@ -284,6 +318,11 @@ model Company {
   accountingAccounts      AccountingAccount[]
   accountingEntries       AccountingEntry[]
   supplierMemory          SupplierMemoryProfile[]
+  cataloguePrestations    CataloguePrestation[]
+  chantiers               Chantier[]
+  chantierNotes           ChantierNote[]
+  chantierPhotos          ChantierPhoto[]
+  bankBalanceSnapshots    BankBalanceSnapshot[]
   counters                DocumentCounter[]
   realtimeAdmissionEvents RealtimeAdmissionEvent[]
   realtimeSessionLeases   RealtimeSessionLease[]
@@ -295,8 +334,61 @@ model Company {
   realtimeVoiceUsageDaily RealtimeVoiceUsageDaily[]
   subscription            Subscription?
   fiscalProfile           FiscalProfile?
+  billingSettings         CompanyBillingSettings?
 
   @@map("companies")
+}
+
+/// Politique produit de présentation et valeurs initiales des pièces. Une ligne canonique par
+/// société ; le mobile ne possède aucun fallback local. `revision` protège les mises à jour
+/// concurrentes entre appareils par compare-and-swap.
+model CompanyBillingSettings {
+  companyId                String                @id
+  company                  Company               @relation(fields: [companyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  showRibOnInvoices        Boolean               @default(false)
+  showInsuranceOnInvoices  Boolean               @default(true)
+  pdfAccentColor           InvoicePdfAccentColor @default(navy)
+  defaultQuoteValidityDays Int                   @default(30)
+  defaultDepositPercent    Int                   @default(30)
+  revision                 Int                   @default(1)
+  createdAt                DateTime              @default(now()) @db.Timestamptz(6)
+  updatedAt                DateTime              @updatedAt @db.Timestamptz(6)
+
+  @@map("company_billing_settings")
+}
+
+/// Preuve append-only d'un solde réellement observé. Aucune ligne n'est créée par défaut :
+/// saisie propriétaire confirmée, relevé importé ou connecteur bancaire uniquement.
+model BankBalanceSnapshot {
+  id                   String                          @id
+  companyId            String
+  company              Company                         @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  amountCents          BigInt
+  currency             String                          @default("EUR")
+  source               BankBalanceSource
+  reconciliationStatus BankBalanceReconciliationStatus
+  observedAt           DateTime                        @db.Timestamptz(6)
+  recordedAt           DateTime                        @default(now()) @db.Timestamptz(6)
+
+  @@index([companyId, observedAt(sort: Desc), recordedAt(sort: Desc), id(sort: Desc)], map: "bank_balance_snapshots_company_latest_idx")
+  @@map("bank_balance_snapshots")
+}
+
+/// Slot de brouillon de devis serveur : un seul brouillon actif par propriétaire et par société.
+/// Le payload JSON est versionné et revalidé par le core à chaque lecture/écriture ; `revision`
+/// porte le compare-and-swap afin qu'un appareil périmé ne puisse jamais écraser un autre appareil.
+model QuoteDraftSlot {
+  companyId      String
+  company        Company  @relation(fields: [companyId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  ownerUserId    String
+  revision       Int      @default(1)
+  payloadVersion Int      @default(1)
+  payload        Json
+  createdAt      DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime @updatedAt @db.Timestamptz(6)
+
+  @@id([companyId, ownerUserId], name: "quote_draft_slot_owner")
+  @@map("quote_draft_slots")
 }
 
 model Customer {
@@ -312,12 +404,13 @@ model Customer {
   addrCity            String
   email               String?
   phone               String?
+  /// Nom du contact chez le client entreprise/public (raison sociale ≠ personne physique jointe).
+  contactName         String?
   ptLabel             String?
-  score               Int          @default(0)
-  avgDelayDays        Int          @default(0)
-  outstanding         Int          @default(0)
   isSubcontractingBtp Boolean      @default(false)
+  chantiers           Chantier[]
 
+  @@unique([id, companyId], name: "uniq_customer_id_company", map: "uniq_customer_id_company")
   @@index([companyId])
   @@index([companyId, type])
   // B9 — recherche floue « retrouve les devis de Mairie de Sèvres » (GET /documents/search,
@@ -329,6 +422,85 @@ model Customer {
   // en pensant combler un drift : `prisma migrate diff` l'ignore silencieusement (type non
   // modélisable), il n'est ni recréé ni supprimé par erreur.
   @@map("customers")
+}
+
+/// Catalogue tarifaire personnel du tenant. Aucun enregistrement n'est seedé en production :
+/// chaque ligne vient d'une création explicite du propriétaire ou d'un import qu'il confirme.
+model CataloguePrestation {
+  id          String       @id
+  companyId   String
+  company     Company      @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  label       String
+  category    LineCategory
+  unit        String?
+  unitPriceHt Int
+  vatRate     Decimal      @db.Decimal(4, 2)
+  revision    Int          @default(1)
+  createdAt   DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime     @updatedAt @db.Timestamptz(6)
+
+  @@unique([id, companyId], name: "uniq_catalogue_prestation_id_company", map: "uniq_catalogue_prestation_id_company")
+  @@index([companyId, category, label], map: "catalogue_prestations_company_category_label_idx")
+  @@map("catalogue_prestations")
+}
+
+/// Dossier chantier durable. Le lien client est composite afin qu'une ligne ne puisse jamais
+/// référencer un client d'un autre tenant, y compris en cas de défaut applicatif.
+model Chantier {
+  id         String         @id
+  companyId  String
+  company    Company        @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  name       String
+  customerId String?
+  customer   Customer?      @relation(fields: [customerId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Cascade)
+  address    String?
+  notes      String?
+  status     ChantierStatus @default(open)
+  openedAt   DateTime       @db.Date
+  createdAt  DateTime       @default(now()) @db.Timestamptz(6)
+  updatedAt  DateTime       @updatedAt @db.Timestamptz(6)
+  chantierNotes  ChantierNote[]
+  photos         ChantierPhoto[]
+
+  @@unique([id, companyId], name: "uniq_chantier_id_company", map: "uniq_chantier_id_company")
+  @@index([companyId, status, openedAt(sort: Desc)], map: "chantiers_company_status_opened_idx")
+  @@index([customerId, companyId], map: "chantiers_customer_company_idx")
+  @@map("chantiers")
+}
+
+/// Journal d'activité horodaté d'un chantier/projet — DISTINCT de Chantier.notes (description de
+/// création). Append-only (V1) : jamais éditée ni supprimée.
+model ChantierNote {
+  id          String   @id
+  companyId   String
+  company     Company  @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  chantierId  String
+  chantier    Chantier @relation(fields: [chantierId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Cascade)
+  text        String
+  authorLabel String
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([companyId, chantierId, createdAt(sort: Desc)], map: "chantier_notes_chantier_created_idx")
+  @@map("chantier_notes")
+}
+
+/// Photo liée à un chantier/projet — métadonnées SÉPARÉES du coffre documents fiscal
+/// (StoredDocument porte rétention/versions/classification propres aux pièces légales, hors
+/// sujet ici). Octets stockés via le même DocumentStoragePort (storageKey).
+model ChantierPhoto {
+  id         String   @id
+  companyId  String
+  company    Company  @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  chantierId String
+  chantier   Chantier @relation(fields: [chantierId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Cascade)
+  filename   String
+  mimeType   String
+  byteSize   Int
+  storageKey String   @unique
+  createdAt  DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([companyId, chantierId, createdAt(sort: Desc)], map: "chantier_photos_chantier_created_idx")
+  @@map("chantier_photos")
 }
 
 model Quote {
@@ -487,6 +659,14 @@ model Expense {
   vatRatePct            Float?
   category              String
   status                String                   @default("to_pay")
+  /// Preuve explicite du règlement déclaré par le propriétaire. Jamais préremplie ni déduite.
+  paymentPaidOn         DateTime?                @db.Date
+  paymentMethod         PaymentMethod?
+  paymentReference      String?                  @db.VarChar(140)
+  paymentProofDocumentId String?                 @db.VarChar(200)
+  paymentProofDocument  StoredDocument?          @relation("ExpensePaymentProof", fields: [companyId, paymentProofDocumentId], references: [companyId, id], onDelete: Restrict, onUpdate: Cascade)
+  /// TRUE uniquement pour une ligne historique déjà `paid` avant l'introduction de la preuve structurée.
+  paymentEvidenceLegacyUnverified Boolean        @default(false)
   source                String                   @default("manual")
   /// C-EXP6b — n° de facture fournisseur (Factur-X BT-1) : clé anti-doublon avec le SIREN.
   supplierInvoiceNumber String?
@@ -497,6 +677,7 @@ model Expense {
 
   @@unique([id, companyId], name: "uniq_expense_id_company", map: "uniq_expense_id_company")
   @@index([companyId])
+  @@index([companyId, paymentProofDocumentId])
   // C-EXP-FIX1 (Bug 1 — DOUBLON TOCTOU) : index UNIQUE PARTIEL
   // (companyId, supplierSiren, supplierInvoiceNumber) WHERE supplierInvoiceNumber IS NOT NULL —
   // /// @unique partiel géré en SQL (Prisma ne l'exprime pas nativement), cf. migration
@@ -589,6 +770,7 @@ model StoredDocument {
   tags             String[]                        @default([])
   versions         StoredDocumentVersion[]
   analyses         DocumentAnalysisCache[]         @relation("StoredDocumentAnalyses")
+  expensePaymentProofs Expense[]                    @relation("ExpensePaymentProof")
 
   @@unique([companyId, id], name: "uniq_stored_document_company_id", map: "uniq_stored_document_company_id")
   @@index([companyId, kind])
@@ -1150,6 +1332,7 @@ model Cabinet {
   invitations          CabinetInvitation[]
   invitationDeliveries CabinetInvitationDelivery[]
   auditEvents          CabinetAuditEvent[]
+  dossiers             CabinetDossier[]
 
   @@index([createdByUserId])
   @@index([status])
@@ -1252,6 +1435,41 @@ model CabinetInvitationDelivery {
   @@index([cabinetId, status, nextAttemptAt])
   @@index([invitationId])
   @@map("cabinet_invitation_deliveries")
+}
+
+/// Analyse FEC dérivée et validée d'un dossier cabinet. Le FEC brut n'est jamais persisté ici :
+/// le JSON contient uniquement les états structurés, protégés par empreinte et révision CAS.
+model CabinetDossier {
+  id                          String   @id
+  cabinetId                   String
+  cabinet                     Cabinet  @relation(fields: [cabinetId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  siren                       String   @db.VarChar(9)
+  clientName                  String   @db.VarChar(200)
+  sourceFileName              String   @db.VarChar(255)
+  entryCount                  Int
+  rowCount                    Int
+  periodFrom                  DateTime @db.Date
+  periodTo                    DateTime @db.Date
+  turnoverCents               BigInt
+  resultCents                 BigInt
+  totalDebitCents             BigInt
+  totalCreditCents            BigInt
+  trialBalanceBalanced        Boolean
+  balanceSheetBalanced        Boolean
+  statementsConsistent        Boolean
+  balanceSheetDifferenceCents BigInt
+  analysis                    Json
+  analysisSha256              String   @db.Char(64)
+  review                      Json?
+  fiscal                      Json
+  lastImportedAt              DateTime @db.Timestamptz(3)
+  revision                    Int      @default(1)
+  createdAt                   DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt                   DateTime @updatedAt @db.Timestamptz(3)
+
+  @@unique([cabinetId, siren], name: "cabinet_dossier_siren", map: "cabinet_dossiers_cabinetId_siren_key")
+  @@index([cabinetId, updatedAt(sort: Desc), id(sort: Desc)], map: "cabinet_dossiers_cabinetId_updatedAt_id_idx")
+  @@map("cabinet_dossiers")
 }
 
 // Journal de sécurité append-only côté rôle runtime. Le payload ne contient jamais de jeton brut.

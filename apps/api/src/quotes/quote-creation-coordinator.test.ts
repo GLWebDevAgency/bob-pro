@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { seedCompany, type CreateQuoteInput, type IdGeneratorPort } from '@bob/core';
-import { InMemoryPersistence } from '../persistence/persistence';
+import type { CreateQuoteInput, IdGeneratorPort } from '@bob/core';
+import { seedCompany } from '@bob/core/testing';
+import { InMemoryPersistence } from '../persistence/persistence.testing';
 import { QuoteCreationCoordinator } from './quote-creation-coordinator';
 
 const companyId = seedCompany().id;

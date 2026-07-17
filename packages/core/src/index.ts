@@ -43,6 +43,7 @@ export * from './domain/document/document';
 export * from './domain/document/document-folder';
 export * from './domain/document/document-analysis';
 export * from './domain/chantier/chantier';
+export * from './domain/chantier/chantier-note';
 export * from './domain/dunning/relance-plan';
 export * from './domain/compliance/einvoice-transmission';
 export * from './domain/compliance/diagnostic';
@@ -55,6 +56,8 @@ export * from './domain/company/trade-profile';
 export * from './domain/company/naf-to-trade';
 export * from './domain/company/nature-juridique';
 export * from './domain/ocr/ocr-extraction';
+export * from './domain/banking/bank-balance-snapshot';
+export * from './domain/banking/bank-balance-freshness';
 
 // Domaine Cabinet — tenant, memberships, invitations, RBAC et release flags
 export * from './domain/cabinet/cabinet-permissions';
@@ -69,7 +72,7 @@ export * from './flows/devis-proposal';
 export * from './flows/voice-invoice';
 export * from './flows/voice-quote-line';
 
-// Couche Application — use cases, ports, fixtures
+// Couche Application — use cases et ports de production
 export * from './application/result';
 export * from './application/ports/repositories';
 export * from './application/ports/services';
@@ -90,7 +93,10 @@ export * from './application/ports/cabinet-invitation-token';
 export * from './application/ports/cabinet-invitation-dispatch';
 export * from './application/ports/release-flag-repository';
 export * from './application/ports/subscription-repository';
+export * from './application/ports/bank-balance-snapshot-repository';
 export * from './application/subscription/get-subscription-status';
+export * from './application/banking/create-bank-balance-snapshot';
+export * from './application/banking/get-latest-qualified-bank-balance';
 export * from './application/billing/create-quote';
 export * from './application/billing/send-quote';
 export * from './application/billing/sign-quote';
@@ -103,6 +109,7 @@ export * from './application/billing/register-payment';
 export * from './application/billing/delete-draft-invoice';
 export * from './application/billing/update-quote-line';
 export * from './application/billing/remove-quote-line';
+export * from './application/billing/company-billing-settings';
 export * from './application/public-access/create-quote-signature-token';
 export * from './application/public-access/create-quote-signature-link';
 export * from './application/public-access/resolve-quote-signature-token';
@@ -113,21 +120,32 @@ export * from './application/relances/derive-relance-plan';
 export * from './application/diagnostic/derive-diagnostic';
 export * from './application/onboarding/derive-trade-profile';
 export * from './application/catalogue/derive-catalogue';
+export * from './application/catalogue/catalogue-repository';
+export * from './application/catalogue/catalogue-items';
 export * from './application/compte/derive-account-view';
 export * from './application/account/close-account';
 export * from './application/argent/build-ledger-view';
 export * from './application/argent/derive-vat-position';
+export * from './application/argent/derive-known-receivables';
 export * from './application/billing/build-piece-view';
 export * from './application/clients/derive-customer-standings';
 export * from './application/clients/derive-aged-balance';
+export * from './application/clients/derive-customer-financial-metrics';
+export * from './application/clients/update-customer';
+export * from './application/quote-drafts/quote-draft-slot';
 export * from './application/accounting/derive-sig';
 export * from './application/accounting/derive-closing-review';
 export * from './application/pilotage/derive-business-review';
 export * from './application/expenses/record-expense';
 export * from './application/expenses/import-facturx-expense';
 export * from './application/expenses/pay-expense';
+export * from './application/expenses/record-expense-payment';
 export * from './application/expenses/summarize-expenses';
 export * from './application/chantier/create-chantier';
+export * from './application/chantier/add-chantier-note';
+export * from './application/chantier/upload-worksite-photo';
+export * from './application/chantier/delete-worksite-photo';
+export * from './application/ports/worksite-media';
 export * from './application/company/autofill-company';
 export * from './application/company/validate-vat';
 export * from './application/company/search-address';
@@ -166,7 +184,6 @@ export * from './application/cabinet/manage-cabinet-member';
 export * from './application/cabinet/revoke-cabinet-invitation';
 export * from './application/cabinet/query-cabinets';
 export * from './application/cabinet/evaluate-release-flag';
-export * from './application/fixtures/index';
 
 // Monétisation
 export * from './domain/monetization/paywall';
@@ -184,10 +201,9 @@ export * from './application/ports/payment';
 // Ports de sortie (PDF, notification)
 export * from './application/ports/output';
 
-// OCR documents (port + use case + adapter démo déterministe)
+// OCR documents (port + use case de production)
 export * from './application/ports/ocr';
 export * from './application/ocr/extract-document';
-export * from './application/ocr/demo-ocr-adapter';
 
 // Échéancier fiscal (C-EXP5 v1 — P09 : deriveFiscalCalendar)
 export * from './application/fiscal/derive-fiscal-calendar';

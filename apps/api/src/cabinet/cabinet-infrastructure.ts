@@ -6,6 +6,7 @@ import type {
   CabinetRepository,
   ReleaseFlagRepository,
 } from '@bob/core';
+import type { CabinetDossierRepository } from './dossiers/cabinet-dossier-repository';
 
 export interface CabinetInvitationPage {
   items: CabinetInvitation[];
@@ -67,6 +68,7 @@ export interface CabinetInvitationDeliveryStore {
 
 export interface CabinetInfrastructure {
   cabinets: CabinetRepository;
+  dossiers: CabinetDossierRepository;
   invitations: CabinetInvitationRepository;
   flags: ReleaseFlagRepository;
   invitationQueries: CabinetInvitationQueryStore;

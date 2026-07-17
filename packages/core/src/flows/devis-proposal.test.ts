@@ -20,6 +20,7 @@ const base = (): DevisFlowStateWithProposal => ({
       { label: 'Chauffe-eau 200 L', category: 'supply', qty: 1, unitPriceHT: 54_000, vatRate: 10 },
     ],
     tvaContext: null,
+    vatRate: null,
     depositPct: 30,
     signMode: null,
     signerName: null,

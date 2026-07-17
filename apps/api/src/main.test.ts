@@ -23,6 +23,25 @@ describe('API JSON ingress policy', () => {
     expect(usesDefaultJsonBodyParser(request('POST', url))).toBe(false);
   });
 
+  it('réserve la grande enveloppe à la seule sauvegarde structurée d’un dossier FEC', () => {
+    expect(usesLargeJsonBodyParser(request(
+      'PUT',
+      '/cabinet/v1/cabinets/cabinet-1/dossiers/552100554',
+    ))).toBe(true);
+    expect(usesDefaultJsonBodyParser(request(
+      'PUT',
+      '/cabinet/v1/cabinets/cabinet-1/dossiers/552100554',
+    ))).toBe(false);
+    expect(usesLargeJsonBodyParser(request(
+      'POST',
+      '/cabinet/v1/cabinets/cabinet-1/dossiers/552100554',
+    ))).toBe(false);
+    expect(usesLargeJsonBodyParser(request(
+      'PUT',
+      '/cabinet/v1/cabinets/cabinet-1/dossiers/not-a-siren',
+    ))).toBe(false);
+  });
+
   it('tolère query string et slash terminal sur une route autorisée', () => {
     expect(usesLargeJsonBodyParser(request('post', '/documents/upload/?source=mobile'))).toBe(true);
   });

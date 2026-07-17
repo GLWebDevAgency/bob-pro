@@ -112,6 +112,13 @@ export default function Recherche() {
   const quotes = useQuotes();
   const documents = useDocuments();
   const queryState = combineQueryStates(customers, invoices, quotes, documents);
+  const dataReady =
+    !queryState.loading &&
+    !queryState.failed &&
+    customers.data !== undefined &&
+    invoices.data !== undefined &&
+    quotes.data !== undefined &&
+    documents.data !== undefined;
   const refreshing =
     customers.isRefetching || invoices.isRefetching || quotes.isRefetching || documents.isRefetching;
 
@@ -130,7 +137,7 @@ export default function Recherche() {
   const agentContext = useMemo<AgentContext>(
     () => ({
       screen: { name: '/recherche', instanceId: '/recherche' },
-      entities: trimmed && !queryState.loading && !queryState.failed
+      entities: trimmed && dataReady
         ? [
             ...result.customers.slice(0, 6).map((customer) => ({
               type: 'customer' as const,
@@ -149,12 +156,11 @@ export default function Recherche() {
             })),
           ]
         : [],
-      capabilities:
-        !queryState.loading && !queryState.failed
-          ? ['screen.read', 'search.read', 'invoice.read', 'quote.read', 'customer.read', 'document.read']
-          : ['screen.read'],
+      capabilities: dataReady
+        ? ['screen.read', 'search.read', 'invoice.read', 'quote.read', 'customer.read', 'document.read']
+        : [],
     }),
-    [queryState.failed, queryState.loading, result, trimmed],
+    [dataReady, result, trimmed],
   );
   usePublishAgentContext(agentContext);
 

@@ -1,6 +1,12 @@
 import {
   type CompanyProps,
   type CustomerProps,
+  type CustomerPortfolio,
+  type ExpenseProps,
+  type ExpensePaymentEvidence,
+  type ExpenseCategory,
+  type ExpenseStatus,
+  type ExpenseSource,
   type LegalForm,
   type VatRegime,
   type Trade,
@@ -71,6 +77,7 @@ export function quoteLineToCreate(l: QuoteLine, owner: { quoteId?: string; invoi
 interface CompanyRow {
   id: string; name: string; legalForm: string; siren: string; siret: string; apeCode: string | null;
   trade: string; vatRegime: string; rcsOrRm: string | null; addrLine1: string; addrZip: string; addrCity: string;
+  customerPortfolio: string | null;
   tvaIntracom: string | null; dateCreation: Date | null;
   iban: string | null; bic: string | null; insurerName: string | null; policyNo: string | null;
   coverage: string | null; policyExpiresAt: Date | null;
@@ -89,6 +96,7 @@ export function companyRowToProps(row: CompanyRow): CompanyProps {
     address: { line1: row.addrLine1, zip: row.addrZip, city: row.addrCity },
   };
   if (row.apeCode) props.apeCode = row.apeCode;
+  if (row.customerPortfolio) props.customerPortfolio = row.customerPortfolio as CustomerPortfolio;
   if (row.rcsOrRm) props.rcsOrRm = row.rcsOrRm;
   if (row.tvaIntracom) props.tvaIntracom = row.tvaIntracom;
   if (row.dateCreation) props.dateCreation = row.dateCreation.toISOString().slice(0, 10);
@@ -117,6 +125,7 @@ export function companyPropsToCreate(p: CompanyProps) {
     apeCode: p.apeCode ?? null,
     trade: p.trade,
     vatRegime: p.vatRegime,
+    customerPortfolio: p.customerPortfolio ?? null,
     rcsOrRm: p.rcsOrRm ?? null,
     addrLine1: p.address.line1,
     addrZip: p.address.zip,
@@ -137,7 +146,8 @@ export function companyPropsToCreate(p: CompanyProps) {
 interface CustomerRow {
   id: string; companyId: string; type: string; name: string; siren: string | null; isInternational: boolean;
   addrLine1: string; addrZip: string; addrCity: string; email: string | null; phone: string | null;
-  ptLabel: string | null; score: number; avgDelayDays: number; outstanding: number; isSubcontractingBtp: boolean;
+  contactName: string | null;
+  ptLabel: string | null; isSubcontractingBtp: boolean;
 }
 
 export function customerRowToProps(row: CustomerRow): CustomerProps {
@@ -147,15 +157,13 @@ export function customerRowToProps(row: CustomerRow): CustomerProps {
     type: row.type as CustomerType,
     name: row.name,
     address: { line1: row.addrLine1, zip: row.addrZip, city: row.addrCity },
-    score: row.score,
-    avgDelayDays: row.avgDelayDays,
-    outstanding: row.outstanding,
     isInternational: row.isInternational,
     isSubcontractingBtp: row.isSubcontractingBtp,
   };
   if (row.siren) props.siren = row.siren;
   if (row.email) props.email = row.email;
   if (row.phone) props.phone = row.phone;
+  if (row.contactName) props.contactName = row.contactName;
   if (row.ptLabel) props.paymentTermsLabel = row.ptLabel;
   return props;
 }
@@ -173,11 +181,108 @@ export function customerPropsToCreate(p: CustomerProps) {
     addrCity: p.address.city,
     email: p.email ?? null,
     phone: p.phone ?? null,
+    contactName: p.contactName ?? null,
     ptLabel: p.paymentTermsLabel ?? null,
-    score: p.score,
-    avgDelayDays: p.avgDelayDays,
-    outstanding: p.outstanding,
     isSubcontractingBtp: p.isSubcontractingBtp ?? false,
+  };
+}
+
+interface ExpenseRow {
+  id: string;
+  companyId: string;
+  supplierName: string;
+  supplierSiren: string | null;
+  documentDate: string;
+  totalTtcCents: number;
+  totalHtCents: number | null;
+  vatCents: number | null;
+  vatRatePct: number | null;
+  category: string;
+  status: string;
+  paymentPaidOn: Date | null;
+  paymentMethod: string | null;
+  paymentReference: string | null;
+  paymentProofDocumentId: string | null;
+  paymentEvidenceLegacyUnverified: boolean;
+  source: string;
+  supplierInvoiceNumber: string | null;
+  dueAt: string | null;
+}
+
+/**
+ * Réhydrate la preuve réellement persistée. Une ligne historique est explicitement rendue sans
+ * preuve ; une combinaison impossible est une corruption de stockage et fait échouer la lecture.
+ */
+export function expenseRowToProps(row: ExpenseRow): ExpenseProps {
+  const hasStructuredEvidence = row.paymentPaidOn !== null
+    || row.paymentMethod !== null
+    || row.paymentReference !== null
+    || row.paymentProofDocumentId !== null;
+  if (row.status === 'to_pay' && (hasStructuredEvidence || row.paymentEvidenceLegacyUnverified)) {
+    throw new Error(`Corrupted expense payment state for ${row.id}: unpaid expense carries payment evidence.`);
+  }
+  if (row.status === 'paid') {
+    const structuredComplete = row.paymentPaidOn !== null && row.paymentMethod !== null;
+    const legacyComplete = row.paymentEvidenceLegacyUnverified && !hasStructuredEvidence;
+    if ((!structuredComplete && !legacyComplete) || (structuredComplete && row.paymentEvidenceLegacyUnverified)) {
+      throw new Error(`Corrupted expense payment state for ${row.id}: paid expense evidence is incomplete.`);
+    }
+  }
+
+  const paymentEvidence: ExpensePaymentEvidence | null = row.paymentPaidOn && row.paymentMethod
+    ? {
+        paidOn: row.paymentPaidOn.toISOString().slice(0, 10),
+        method: row.paymentMethod as ExpensePaymentEvidence['method'],
+        reference: row.paymentReference,
+        proofDocumentId: row.paymentProofDocumentId,
+      }
+    : null;
+
+  return {
+    id: row.id,
+    companyId: row.companyId,
+    supplierName: row.supplierName,
+    supplierSiren: row.supplierSiren,
+    documentDate: row.documentDate,
+    totalTtcCents: row.totalTtcCents,
+    totalHtCents: row.totalHtCents,
+    vatCents: row.vatCents,
+    vatRatePct: row.vatRatePct,
+    category: row.category as ExpenseCategory,
+    status: row.status as ExpenseStatus,
+    paymentEvidence,
+    source: row.source as ExpenseSource,
+    supplierInvoiceNumber: row.supplierInvoiceNumber,
+    dueAt: row.dueAt,
+  };
+}
+
+/** Écriture explicite : aucun objet métier inconnu n'est transmis implicitement à Prisma. */
+export function expensePropsToPersistence(p: ExpenseProps) {
+  const evidence = p.paymentEvidence ?? null;
+  if (p.status === 'to_pay' && evidence !== null) {
+    throw new Error(`Invalid expense payment state for ${p.id}: unpaid expense carries payment evidence.`);
+  }
+  return {
+    id: p.id,
+    companyId: p.companyId,
+    supplierName: p.supplierName,
+    supplierSiren: p.supplierSiren,
+    documentDate: p.documentDate,
+    totalTtcCents: p.totalTtcCents,
+    totalHtCents: p.totalHtCents,
+    vatCents: p.vatCents,
+    vatRatePct: p.vatRatePct,
+    category: p.category,
+    status: p.status,
+    paymentPaidOn: evidence ? new Date(`${evidence.paidOn}T00:00:00.000Z`) : null,
+    paymentMethod: evidence?.method ?? null,
+    paymentReference: evidence?.reference ?? null,
+    paymentProofDocumentId: evidence?.proofDocumentId ?? null,
+    paymentEvidenceLegacyUnverified: p.status === 'paid' && evidence === null,
+    source: p.source,
+    supplierInvoiceNumber: p.supplierInvoiceNumber ?? null,
+    dueAt: p.dueAt ?? null,
   };
 }
 

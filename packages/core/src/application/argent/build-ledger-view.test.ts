@@ -49,13 +49,14 @@ function expense(overrides: Partial<LedgerExpenseData> = {}): LedgerExpenseData 
 describe('buildLedgerView', () => {
   it('total = solde + Σ rangées signées (signes corrects sur chaque ligne)', () => {
     const view = buildLedgerView({
+      bankBalanceCents: 682000,
       invoices: [invoice({ totals: { netToPay: 570000 } })],
       expenses: [expense({ totalTtcCents: 290000, vatCents: 10000 })],
       // La déductible se lit AU GRAND-LIVRE (44566 posté par le cycle achats E1).
       accountingEntries: [saleEntry(500000, 134000), paymentEntry(682000), purchaseEntry(50000, 10000)],
     });
 
-    expect(view.bankCents).toBe(682000); // 512 débit − crédit
+    expect(view.bankCents).toBe(682000); // snapshot bancaire qualifié, jamais somme 512 sans à-nouveau
     expect(view.receivablesCents).toBe(570000); // + entre
     expect(view.chargesCents).toBe(-290000); // − sort
     expect(view.vatCents).toBe(-124000); // − (134 000 collectée − 10 000 déductible au 44566)
@@ -94,11 +95,12 @@ describe('buildLedgerView', () => {
 
   it('TVA nette plancher 0 (déductible > collectée) et réserve = valeurs positives TVA + charges', () => {
     const view = buildLedgerView({
+      bankBalanceCents: 15000,
       expenses: [expense({ totalTtcCents: 110000 })],
       accountingEntries: [saleEntry(100000, 20000), paymentEntry(15000, '530'), purchaseEntry(800000, 200000)],
     });
     expect(view.vatCents).toBe(0); // jamais une TVA « négative » (crédit) dans le grand-livre, ni un -0
-    expect(view.bankCents).toBe(15000); // la caisse (530) compte comme trésorerie
+    expect(view.bankCents).toBe(15000);
     expect(view.reserve.vatCents).toBe(0);
     expect(view.reserve.chargesCents).toBe(110000); // charges à mettre de côté, en positif
   });
@@ -110,6 +112,13 @@ describe('buildLedgerView', () => {
     });
     expect(view.chargesCents).toBe(0);
     expect(view.vatCents).toBe(0);
+  });
+
+  it('des écritures 512/530 sans snapshot ne deviennent jamais un faux solde bancaire', () => {
+    const view = buildLedgerView({ accountingEntries: [paymentEntry(682000)] });
+
+    expect(view.bankCents).toBeNull();
+    expect(view.totalCents).toBeNull();
   });
 });
 

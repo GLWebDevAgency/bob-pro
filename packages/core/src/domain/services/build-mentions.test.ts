@@ -21,9 +21,6 @@ const baseCustomer: CustomerProps = {
   type: 'b2c',
   name: 'Martin',
   address: { line1: 'x', zip: '75001', city: 'Paris' },
-  score: 80,
-  avgDelayDays: 5,
-  outstanding: 0,
 };
 
 const company = (over: Partial<CompanyProps> = {}): Company => {

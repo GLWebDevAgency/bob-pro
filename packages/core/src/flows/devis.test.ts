@@ -31,7 +31,8 @@ describe('flows/devis (C21 redécoupe — le wizard s’ARRÊTE au devis, jamais
         { label: 'Chauffe-eau 200 L', category: 'supply', qty: 1, unitPriceHT: 80000, vatRate: 10 },
         { label: "Main d'oeuvre", category: 'labor', qty: 1, unitPriceHT: 68000, vatRate: 10 },
       ],
-      tvaContext: { housingOlderThan2y: true },
+      tvaContext: { housingOlderThan2y: true, energyRenovation: false },
+      vatRate: 10,
     });
     s = expectOk(devisNext(s));
     expect(s.step).toBe('tvaMentions');
@@ -92,7 +93,12 @@ describe('flows/devis (C21 redécoupe — le wizard s’ARRÊTE au devis, jamais
 
   it('signature à distance : « envoyer » n’exige ni pad ni nom — le devis reste à signer, jamais proposé à la facturation par ce flow', () => {
     let s = startDevis();
-    s = devisEdit(s, { customerId: 'c1', lines: [{ label: 'X', category: 'labor', qty: 1, unitPriceHT: 10000, vatRate: 20 }] });
+    s = devisEdit(s, {
+      customerId: 'c1',
+      lines: [{ label: 'X', category: 'labor', qty: 1, unitPriceHT: 10000, vatRate: 20 }],
+      tvaContext: { housingOlderThan2y: false, energyRenovation: false },
+      vatRate: 20,
+    });
     s = expectOk(devisNext(s)); // client -> lignes
     s = expectOk(devisNext(s)); // lignes -> tvaMentions
     s = expectOk(devisNext(s)); // tvaMentions -> acompte
@@ -111,5 +117,36 @@ describe('flows/devis (C21 redécoupe — le wizard s’ARRÊTE au devis, jamais
     expect(back.step).toBe('client');
     expect(DEVIS_STEPS.indexOf('recap')).toBe(DEVIS_STEPS.length - 1);
     expect(DEVIS_STEPS.indexOf('acompte')).toBeLessThan(DEVIS_STEPS.indexOf('signature')); // acompte AVANT signature
+  });
+
+  it('refuse de quitter l’étape TVA tant qu’aucun taux n’a été confirmé', () => {
+    let s = startDevis();
+    s = devisEdit(s, {
+      customerId: 'c1',
+      lines: [{ label: 'X', category: 'labor', qty: 1, unitPriceHT: 10000, vatRate: 20 }],
+    });
+    s = expectOk(devisNext(s));
+    s = expectOk(devisNext(s));
+    const blocked = devisNext(s);
+    expect(blocked).toMatchObject({
+      ok: false,
+      error: { code: 'VALIDATION', field: 'vatRate' },
+    });
+  });
+
+  it('ne confond jamais contexte fiscal et taux confirmé', () => {
+    let s = startDevis();
+    s = devisEdit(s, {
+      customerId: 'c1',
+      lines: [{ label: 'X', category: 'labor', qty: 1, unitPriceHT: 10000, vatRate: 20 }],
+      tvaContext: { housingOlderThan2y: false, energyRenovation: false },
+      vatRate: null,
+    });
+    s = expectOk(devisNext(s));
+    s = expectOk(devisNext(s));
+    expect(devisNext(s)).toMatchObject({
+      ok: false,
+      error: { code: 'VALIDATION', field: 'vatRate' },
+    });
   });
 });

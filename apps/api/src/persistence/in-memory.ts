@@ -6,13 +6,17 @@ import {
   AccountingEntry,
   ChartOfAccounts,
   Expense,
+  Chantier,
+  ChantierNote,
+  type ChantierNoteRepository,
+  type WorksiteMediaItem,
+  type WorksiteMediaStorage,
   type Company,
   type Customer,
   Document,
   DocumentFolder,
   type DocumentFolderProps,
   type Payment,
-  type Chantier,
   type CompanyRepository,
   type CustomerRepository,
   type QuoteRepository,
@@ -29,10 +33,13 @@ import {
   type AccountingEntryRepository,
   type ChartOfAccountsRepository,
   type ChantierRepository,
+  type CatalogueItemRecord,
+  type CatalogueRepository,
+  type CatalogueCreateWriteResult,
+  type CatalogueUpdateWriteResult,
+  type CatalogueDeleteWriteResult,
   type SequenceCounterPort,
   type CounterKey,
-  type IdGeneratorPort,
-  type CashflowSnapshotPort,
 } from '@bob/core';
 import type {
   DocumentArchiveJob,
@@ -119,12 +126,28 @@ export class InMemoryQuoteRepository implements QuoteRepository {
   }
 
   restore(snapshot: Map<string, Quote>): void {
-    this.map = new Map([...snapshot].map(([id, quote]) => [id, Quote.rehydrate(quote.toSnapshot())]));
+    this.map = new Map(
+      [...snapshot].map(([id, quote]) => [id, Quote.rehydrate(quote.toSnapshot())]),
+    );
   }
 }
 
 export class InMemoryInvoiceRepository implements InvoiceRepository {
   private readonly map = new Map<string, Invoice>();
+
+  snapshot(): Map<string, Invoice> {
+    return new Map(
+      [...this.map].map(([id, invoice]) => [id, Invoice.rehydrate(invoice.toSnapshot())]),
+    );
+  }
+
+  restore(snapshot: Map<string, Invoice>): void {
+    this.map.clear();
+    for (const [id, invoice] of snapshot) {
+      this.map.set(id, Invoice.rehydrate(invoice.toSnapshot()));
+    }
+  }
+
   async findById(id: string): Promise<Invoice | null> {
     return this.map.get(id) ?? null;
   }
@@ -134,13 +157,29 @@ export class InMemoryInvoiceRepository implements InvoiceRepository {
     const stored = this.map.get(id);
     return stored ? Invoice.rehydrate(stored.toSnapshot()) : null;
   }
-  async findByParentQuoteId(companyId: string, parentQuoteId: string, kind: Invoice['kind']): Promise<Invoice | null> {
-    return [...this.map.values()].find((i) => i.companyId === companyId && i.parentQuoteId === parentQuoteId && i.kind === kind) ?? null;
+  async findByParentQuoteId(
+    companyId: string,
+    parentQuoteId: string,
+    kind: Invoice['kind'],
+  ): Promise<Invoice | null> {
+    return (
+      [...this.map.values()].find(
+        (i) => i.companyId === companyId && i.parentQuoteId === parentQuoteId && i.kind === kind,
+      ) ?? null
+    );
   }
-  async findCreditNoteBySourceInvoiceId(companyId: string, sourceInvoiceId: string): Promise<Invoice | null> {
-    return [...this.map.values()].find(
-      (invoice) => invoice.companyId === companyId && invoice.kind === 'credit_note' && invoice.creditNoteSource?.invoiceId === sourceInvoiceId,
-    ) ?? null;
+  async findCreditNoteBySourceInvoiceId(
+    companyId: string,
+    sourceInvoiceId: string,
+  ): Promise<Invoice | null> {
+    return (
+      [...this.map.values()].find(
+        (invoice) =>
+          invoice.companyId === companyId &&
+          invoice.kind === 'credit_note' &&
+          invoice.creditNoteSource?.invoiceId === sourceInvoiceId,
+      ) ?? null
+    );
   }
   async listByCompany(companyId: string): Promise<Invoice[]> {
     return [...this.map.values()].filter((i) => i.companyId === companyId);
@@ -178,7 +217,8 @@ export class InMemoryDocumentRepository implements DocumentRepository {
     expectedRevision: number;
   }): Promise<'saved' | 'revision_conflict' | 'not_found'> {
     const current = this.map.get(input.documentId);
-    if (!current || current.companyId !== input.companyId || current.status !== 'active') return 'not_found';
+    if (!current || current.companyId !== input.companyId || current.status !== 'active')
+      return 'not_found';
     if (current.revision !== input.expectedRevision) return 'revision_conflict';
     const next = Document.rehydrate(current.toProps());
     const classified = next.classify({
@@ -196,7 +236,11 @@ export class InMemoryDocumentRepository implements DocumentRepository {
   async findByEntity(companyId: string, entityType: string, entityId: string): Promise<Document[]> {
     return [...this.map.values()].filter((d) => {
       const props = d.toProps();
-      return props.companyId === companyId && props.linkedEntityType === entityType && props.linkedEntityId === entityId;
+      return (
+        props.companyId === companyId &&
+        props.linkedEntityType === entityType &&
+        props.linkedEntityId === entityId
+      );
     });
   }
   async listByCompany(companyId: string): Promise<Document[]> {
@@ -254,7 +298,9 @@ export class InMemoryDocumentFolderRepository implements DocumentFolderRepositor
         ...[...this.map.values()]
           .filter(
             (candidate) =>
-              candidate.companyId === companyId && candidate.status === 'active' && candidate.parentId === folder.id,
+              candidate.companyId === companyId &&
+              candidate.status === 'active' &&
+              candidate.parentId === folder.id,
           )
           .map((candidate) => DocumentFolder.rehydrate(candidate)),
       );
@@ -271,19 +317,25 @@ export class InMemoryDocumentFolderRepository implements DocumentFolderRepositor
     const sorted = [...this.map.values()]
       .filter(
         (folder) =>
-          folder.companyId === input.companyId && folder.status === 'active' && folder.parentId === input.parentId,
+          folder.companyId === input.companyId &&
+          folder.status === 'active' &&
+          folder.parentId === input.parentId,
       )
       .map((folder) => DocumentFolder.rehydrate(folder))
       .sort((a, b) => {
         const left = a.toProps();
         const right = b.toProps();
-        return left.normalizedName.localeCompare(right.normalizedName) || left.id.localeCompare(right.id);
+        return (
+          left.normalizedName.localeCompare(right.normalizedName) || left.id.localeCompare(right.id)
+        );
       });
-    const start = input.cursor ? Math.max(0, sorted.findIndex((folder) => folder.id === input.cursor) + 1) : 0;
+    const start = input.cursor
+      ? Math.max(0, sorted.findIndex((folder) => folder.id === input.cursor) + 1)
+      : 0;
     const page = sorted.slice(start, start + input.limit + 1);
     const hasMore = page.length > input.limit;
     const items = page.slice(0, input.limit);
-    return { items, nextCursor: hasMore ? items.at(-1)?.id ?? null : null };
+    return { items, nextCursor: hasMore ? (items.at(-1)?.id ?? null) : null };
   }
 
   async findActiveSiblingByNormalizedName(input: {
@@ -303,7 +355,10 @@ export class InMemoryDocumentFolderRepository implements DocumentFolderRepositor
     return props ? DocumentFolder.rehydrate(props) : null;
   }
 
-  async save(folder: DocumentFolder, expectedRevision: number | null): Promise<DocumentFolderWriteResult> {
+  async save(
+    folder: DocumentFolder,
+    expectedRevision: number | null,
+  ): Promise<DocumentFolderWriteResult> {
     const props = folder.toProps();
     const duplicate = await this.findActiveSiblingByNormalizedName({
       companyId: props.companyId,
@@ -322,14 +377,26 @@ export class InMemoryDocumentFolderRepository implements DocumentFolderRepositor
     return { status: 'saved' };
   }
 
-  async findDocumentMembership(companyId: string, documentId: string): Promise<DocumentFolderMembership | null> {
+  async findDocumentMembership(
+    companyId: string,
+    documentId: string,
+  ): Promise<DocumentFolderMembership | null> {
     const document = await this.documents.findById(companyId, documentId);
     return document
-      ? { id: document.id, companyId: document.companyId, folderId: document.folderId, status: document.status, revision: document.revision }
+      ? {
+          id: document.id,
+          companyId: document.companyId,
+          folderId: document.folderId,
+          status: document.status,
+          revision: document.revision,
+        }
       : null;
   }
 
-  async listDocumentMemberships(companyId: string, folderIds: readonly string[]): Promise<DocumentFolderMembership[]> {
+  async listDocumentMemberships(
+    companyId: string,
+    folderIds: readonly string[],
+  ): Promise<DocumentFolderMembership[]> {
     const allowed = new Set(folderIds);
     return (await this.documents.listByCompany(companyId))
       .filter((document) => document.folderId !== null && allowed.has(document.folderId))
@@ -361,13 +428,30 @@ export class InMemoryDocumentFolderRepository implements DocumentFolderRepositor
 export class InMemoryDocumentArchiveJobRepository implements DocumentArchiveJobRepository {
   private readonly map = new Map<string, DocumentArchiveJob>();
 
+  snapshot(): DocumentArchiveJob[] {
+    return [...this.map.values()].map((job) => ({ ...job }));
+  }
+
+  restore(snapshot: readonly DocumentArchiveJob[]): void {
+    this.map.clear();
+    for (const job of snapshot) this.map.set(job.id, { ...job });
+  }
+
   async enqueue(input: EnqueueDocumentArchiveJobInput): Promise<void> {
     const existing = [...this.map.values()].find(
-      (job) => job.companyId === input.companyId && job.invoiceId === input.invoiceId && job.reason === input.reason,
+      (job) =>
+        job.companyId === input.companyId &&
+        job.invoiceId === input.invoiceId &&
+        job.reason === input.reason,
     );
     if (existing) {
       if (existing.status !== 'done') {
-        this.map.set(existing.id, { ...existing, status: 'pending', nextAttemptAt: input.now, updatedAt: input.now });
+        this.map.set(existing.id, {
+          ...existing,
+          status: 'pending',
+          nextAttemptAt: input.now,
+          updatedAt: input.now,
+        });
       }
       return;
     }
@@ -425,7 +509,10 @@ export class InMemoryNotificationJobRepository implements NotificationJobReposit
   async enqueue(input: EnqueueNotificationJobInput): Promise<NotificationJob> {
     const payloadFingerprint = notificationPayloadFingerprint(input.notification);
     const existing = [...this.map.values()].find(
-      (job) => job.companyId === input.companyId && job.kind === input.kind && job.dedupeKey === input.dedupeKey,
+      (job) =>
+        job.companyId === input.companyId &&
+        job.kind === input.kind &&
+        job.dedupeKey === input.dedupeKey,
     );
     if (existing) {
       if (existing.payloadFingerprint !== payloadFingerprint) {
@@ -435,7 +522,8 @@ export class InMemoryNotificationJobRepository implements NotificationJobReposit
         // Une clé provider identifie une requête IMMUABLE. Modifier to/subject/body sous la
         // même UUID ferait croire que B a été livré si Brevo avait déjà accepté A.
         // Un lease, même expiré, reste en place pour le chemin de récupération/quarantaine.
-        if (existing.nextAttemptAt > input.now || existing.leaseToken !== null) return this.clone(existing);
+        if (existing.nextAttemptAt > input.now || existing.leaseToken !== null)
+          return this.clone(existing);
         const updated: NotificationJob = {
           ...existing,
           status: 'pending',
@@ -479,7 +567,11 @@ export class InMemoryNotificationJobRepository implements NotificationJobReposit
     return job?.companyId === companyId ? this.clone(job) : null;
   }
 
-  async listDue(companyId: string, now: string, limit: number): Promise<DeliverableNotificationJob[]> {
+  async listDue(
+    companyId: string,
+    now: string,
+    limit: number,
+  ): Promise<DeliverableNotificationJob[]> {
     return [...this.map.values()]
       .filter((job) => job.companyId === companyId)
       .filter((job) => job.status === 'pending' || job.status === 'failed')
@@ -509,8 +601,10 @@ export class InMemoryNotificationJobRepository implements NotificationJobReposit
     ) {
       return { outcome: 'skipped' };
     }
-    const attemptedAtMs = job.providerAttemptedAt === null ? null : Date.parse(job.providerAttemptedAt);
-    const providerWindowExpired = attemptedAtMs !== null && Date.parse(now) >= attemptedAtMs + 25 * 60_000;
+    const attemptedAtMs =
+      job.providerAttemptedAt === null ? null : Date.parse(job.providerAttemptedAt);
+    const providerWindowExpired =
+      attemptedAtMs !== null && Date.parse(now) >= attemptedAtMs + 25 * 60_000;
     const channelCannotRetry = attemptedAtMs !== null && job.channel !== 'email';
     if (providerWindowExpired || channelCannotRetry) {
       this.map.set(id, {
@@ -555,8 +649,10 @@ export class InMemoryNotificationJobRepository implements NotificationJobReposit
     ) {
       return false;
     }
-    return job.channel !== 'email'
-      || Date.parse(observedAt) < Date.parse(job.providerAttemptedAt) + 25 * 60_000;
+    return (
+      job.channel !== 'email' ||
+      Date.parse(observedAt) < Date.parse(job.providerAttemptedAt) + 25 * 60_000
+    );
   }
 
   async markDone(id: string, companyId: string, leaseToken: string, at: string): Promise<boolean> {
@@ -619,10 +715,7 @@ export class InMemoryNotificationJobRepository implements NotificationJobReposit
 
   async previewUnread(companyId: string, observedAt: string): Promise<NotificationUnreadPreview> {
     const unreadCount = [...this.map.values()].filter(
-      (job) =>
-        job.companyId === companyId &&
-        job.readAt === null &&
-        job.createdAt < observedAt,
+      (job) => job.companyId === companyId && job.readAt === null && job.createdAt < observedAt,
     ).length;
     return { unreadCount, throughCreatedAt: observedAt };
   }
@@ -644,11 +737,7 @@ export class InMemoryNotificationJobRepository implements NotificationJobReposit
     if (throughCreatedAt > at) return { updatedCount: 0, readAt: at, cutoffAccepted: false };
     let updatedCount = 0;
     for (const [id, job] of this.map.entries()) {
-      if (
-        job.companyId !== companyId ||
-        job.readAt !== null ||
-        job.createdAt >= throughCreatedAt
-      ) {
+      if (job.companyId !== companyId || job.readAt !== null || job.createdAt >= throughCreatedAt) {
         continue;
       }
       this.map.set(id, { ...job, readAt: at, updatedAt: at });
@@ -661,14 +750,17 @@ export class InMemoryNotificationJobRepository implements NotificationJobReposit
 /** Appareils push Expo (C25) — un token global, rebind atomique vers le dernier principal. */
 export class InMemoryDeviceRepository implements DeviceRepository {
   private readonly map = new Map<string, DeviceRecord>();
-  private readonly installations = new Map<string, {
-    revocationSecretHash: string;
-    maxGeneration: number;
-    currentBindingId: string | null;
-    currentCompanyId: string | null;
-    currentUserId: string | null;
-    lastConfirmedAt: string | null;
-  }>();
+  private readonly installations = new Map<
+    string,
+    {
+      revocationSecretHash: string;
+      maxGeneration: number;
+      currentBindingId: string | null;
+      currentCompanyId: string | null;
+      currentUserId: string | null;
+      lastConfirmedAt: string | null;
+    }
+  >();
 
   async register(input: RegisterDeviceInput): Promise<DeviceRegistrationResult> {
     const rows = [...this.map.values()];
@@ -680,25 +772,26 @@ export class InMemoryDeviceRepository implements DeviceRepository {
         return { status: 'superseded' };
       }
       const idempotent =
-        input.bindingGeneration === installation.maxGeneration
-        && installation.currentBindingId === input.bindingId
-        && installation.currentCompanyId === input.companyId
-        && installation.currentUserId === input.userId
-        && byInstallation?.expoPushToken === input.expoPushToken
-        && byInstallation.bindingId === input.bindingId
-        && byInstallation.bindingGeneration === input.bindingGeneration;
-      if (input.bindingGeneration < installation.maxGeneration || (
-        input.bindingGeneration === installation.maxGeneration && !idempotent
-      )) {
+        input.bindingGeneration === installation.maxGeneration &&
+        installation.currentBindingId === input.bindingId &&
+        installation.currentCompanyId === input.companyId &&
+        installation.currentUserId === input.userId &&
+        byInstallation?.expoPushToken === input.expoPushToken &&
+        byInstallation.bindingId === input.bindingId &&
+        byInstallation.bindingGeneration === input.bindingGeneration;
+      if (
+        input.bindingGeneration < installation.maxGeneration ||
+        (input.bindingGeneration === installation.maxGeneration && !idempotent)
+      ) {
         return { status: 'superseded' };
       }
     }
 
     const bindingCollision = rows.find(
       (device) =>
-        device.bindingId === input.bindingId
-        && device.id !== byToken?.id
-        && device.id !== byInstallation?.id,
+        device.bindingId === input.bindingId &&
+        device.id !== byToken?.id &&
+        device.id !== byInstallation?.id,
     );
     if (bindingCollision) return { status: 'superseded' };
 
@@ -718,9 +811,9 @@ export class InMemoryDeviceRepository implements DeviceRepository {
     if (byToken?.installationId && byToken.installationId !== input.installationId) {
       const previous = this.installations.get(byToken.installationId);
       if (
-        previous
-        && previous.currentBindingId === byToken.bindingId
-        && previous.maxGeneration === byToken.bindingGeneration
+        previous &&
+        previous.currentBindingId === byToken.bindingId &&
+        previous.maxGeneration === byToken.bindingGeneration
       ) {
         this.installations.set(byToken.installationId, {
           ...previous,
@@ -774,22 +867,25 @@ export class InMemoryDeviceRepository implements DeviceRepository {
     return [...this.map.values()]
       .filter((d) => {
         if (
-          d.companyId !== companyId
-          || d.installationId === null
-          || d.bindingId === null
-          || d.bindingGeneration === null
-          || d.revocationSecretHash === null
-          || d.updatedAt < confirmedAfter
-        ) return false;
+          d.companyId !== companyId ||
+          d.installationId === null ||
+          d.bindingId === null ||
+          d.bindingGeneration === null ||
+          d.revocationSecretHash === null ||
+          d.updatedAt < confirmedAfter
+        )
+          return false;
         const installation = this.installations.get(d.installationId);
-        return installation !== undefined
-          && installation.revocationSecretHash === d.revocationSecretHash
-          && installation.currentBindingId === d.bindingId
-          && installation.maxGeneration === d.bindingGeneration
-          && installation.currentCompanyId === d.companyId
-          && installation.currentUserId === d.userId
-          && installation.lastConfirmedAt !== null
-          && installation.lastConfirmedAt >= confirmedAfter;
+        return (
+          installation !== undefined &&
+          installation.revocationSecretHash === d.revocationSecretHash &&
+          installation.currentBindingId === d.bindingId &&
+          installation.maxGeneration === d.bindingGeneration &&
+          installation.currentCompanyId === d.companyId &&
+          installation.currentUserId === d.userId &&
+          installation.lastConfirmedAt !== null &&
+          installation.lastConfirmedAt >= confirmedAfter
+        );
       })
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
       .map((d) => ({
@@ -808,13 +904,13 @@ export class InMemoryDeviceRepository implements DeviceRepository {
   ): Promise<void> {
     for (const [id, d] of this.map) {
       if (
-        d.companyId === companyId
-        && d.userId === userId
-        && d.expoPushToken === expoPushToken
-        && d.installationId === null
-        && d.bindingId === null
-        && d.bindingGeneration === null
-        && d.revocationSecretHash === null
+        d.companyId === companyId &&
+        d.userId === userId &&
+        d.expoPushToken === expoPushToken &&
+        d.installationId === null &&
+        d.bindingId === null &&
+        d.bindingGeneration === null &&
+        d.revocationSecretHash === null
       ) {
         this.map.delete(id);
       }
@@ -822,18 +918,20 @@ export class InMemoryDeviceRepository implements DeviceRepository {
   }
 
   async removeInvalidDeliveryTarget(input: InvalidPushDeliveryTarget): Promise<void> {
-    const device = [...this.map.values()].find((candidate) =>
-      candidate.companyId === input.companyId
-      && candidate.expoPushToken === input.expoPushToken
-      && candidate.bindingId === input.bindingId
-      && candidate.bindingGeneration === input.bindingGeneration,
+    const device = [...this.map.values()].find(
+      (candidate) =>
+        candidate.companyId === input.companyId &&
+        candidate.expoPushToken === input.expoPushToken &&
+        candidate.bindingId === input.bindingId &&
+        candidate.bindingGeneration === input.bindingGeneration,
     );
     if (
-      !device?.installationId
-      || !device.bindingId
-      || device.bindingGeneration === null
-      || !device.revocationSecretHash
-    ) return;
+      !device?.installationId ||
+      !device.bindingId ||
+      device.bindingGeneration === null ||
+      !device.revocationSecretHash
+    )
+      return;
     await this.revokeThroughGeneration({
       installationId: device.installationId,
       throughGeneration: device.bindingGeneration,
@@ -871,11 +969,12 @@ export class InMemoryDeviceRepository implements DeviceRepository {
     // ligne Device orpheline <= N doit être purgée avec la capacité exacte.
     for (const [id, device] of this.map) {
       if (
-        device.installationId === input.installationId
-        && device.revocationSecretHash === input.revocationSecretHash
-        && device.bindingGeneration !== null
-        && device.bindingGeneration <= input.throughGeneration
-      ) this.map.delete(id);
+        device.installationId === input.installationId &&
+        device.revocationSecretHash === input.revocationSecretHash &&
+        device.bindingGeneration !== null &&
+        device.bindingGeneration <= input.throughGeneration
+      )
+        this.map.delete(id);
     }
   }
 
@@ -885,9 +984,9 @@ export class InMemoryDeviceRepository implements DeviceRepository {
       if (device.installationId !== null) {
         const installation = this.installations.get(device.installationId);
         if (
-          installation
-          && installation.currentCompanyId === companyId
-          && installation.currentBindingId === device.bindingId
+          installation &&
+          installation.currentCompanyId === companyId &&
+          installation.currentBindingId === device.bindingId
         ) {
           this.installations.set(device.installationId, {
             ...installation,
@@ -916,15 +1015,17 @@ export class InMemoryPaymentRepository implements PaymentRepository {
   async findByIdempotencyKey(companyId: string, key: string): Promise<Payment | null> {
     return this.list.find((p) => p.companyId === companyId && p.idempotencyKey === key) ?? null;
   }
-  /** E3 (PONT-SERVEUR v1) : encaissements datés du tenant — CA encaissé annuel (293 B), balance
-   *  âgée/prescription. Même extension concrète que le repo in-memory de l'api-client. */
+  /** E3 : encaissements datés du tenant — métriques client, CA encaissé et balance âgée. */
   async listByCompany(companyId: string): Promise<Payment[]> {
     return this.list.filter((p) => p.companyId === companyId);
   }
 }
 
 export class InMemoryPublicAccessTokenRepository implements PublicAccessTokenRepository {
-  private readonly rows = new Map<string, PublicAccessGrant & { token: string; lastUsedAt: string | null }>();
+  private readonly rows = new Map<
+    string,
+    PublicAccessGrant & { token: string; lastUsedAt: string | null }
+  >();
 
   async create(input: {
     companyId: string;
@@ -1008,7 +1109,11 @@ export class InMemoryExpenseRepository implements ExpenseRepository {
       for (const other of this.map.values()) {
         if (other.id === props.id) continue;
         const o = other.toProps();
-        if (o.companyId === props.companyId && o.supplierSiren === siren && o.supplierInvoiceNumber === invoiceNumber) {
+        if (
+          o.companyId === props.companyId &&
+          o.supplierSiren === siren &&
+          o.supplierInvoiceNumber === invoiceNumber
+        ) {
           throw new DuplicateExpenseInvoiceError(props.companyId, siren, invoiceNumber);
         }
       }
@@ -1023,11 +1128,15 @@ export class InMemoryExpenseRepository implements ExpenseRepository {
   }
 
   snapshot(): Map<string, Expense> {
-    return new Map([...this.map].map(([id, expense]) => [id, Expense.rehydrate(expense.toProps())]));
+    return new Map(
+      [...this.map].map(([id, expense]) => [id, Expense.rehydrate(expense.toProps())]),
+    );
   }
 
   restore(snapshot: Map<string, Expense>): void {
-    this.map = new Map([...snapshot].map(([id, expense]) => [id, Expense.rehydrate(expense.toProps())]));
+    this.map = new Map(
+      [...snapshot].map(([id, expense]) => [id, Expense.rehydrate(expense.toProps())]),
+    );
   }
 }
 
@@ -1040,7 +1149,9 @@ export class InMemoryAccountingEntryRepository implements AccountingEntryReposit
 
   async findById(companyId: string, id: string): Promise<AccountingEntry | null> {
     const entry = this.map.get(id);
-    return entry && entry.companyId === companyId ? AccountingEntry.rehydrate(entry.toProps()) : null;
+    return entry && entry.companyId === companyId
+      ? AccountingEntry.rehydrate(entry.toProps())
+      : null;
   }
 
   async listByCompany(companyId: string): Promise<AccountingEntry[]> {
@@ -1050,11 +1161,15 @@ export class InMemoryAccountingEntryRepository implements AccountingEntryReposit
   }
 
   snapshot(): Map<string, AccountingEntry> {
-    return new Map([...this.map].map(([id, entry]) => [id, AccountingEntry.rehydrate(entry.toProps())]));
+    return new Map(
+      [...this.map].map(([id, entry]) => [id, AccountingEntry.rehydrate(entry.toProps())]),
+    );
   }
 
   restore(snapshot: Map<string, AccountingEntry>): void {
-    this.map = new Map([...snapshot].map(([id, entry]) => [id, AccountingEntry.rehydrate(entry.toProps())]));
+    this.map = new Map(
+      [...snapshot].map(([id, entry]) => [id, AccountingEntry.rehydrate(entry.toProps())]),
+    );
   }
 }
 
@@ -1072,7 +1187,7 @@ export class InMemoryChartOfAccountsRepository implements ChartOfAccountsReposit
 }
 
 export class InMemoryChantierRepository implements ChantierRepository {
-  private readonly map = new Map<string, Chantier>();
+  private map = new Map<string, Chantier>();
   async save(c: Chantier): Promise<void> {
     this.map.set(c.id, c);
   }
@@ -1082,11 +1197,127 @@ export class InMemoryChantierRepository implements ChantierRepository {
   async listByCompany(companyId: string): Promise<Chantier[]> {
     return [...this.map.values()].filter((c) => c.companyId === companyId);
   }
+
+  snapshot(): Map<string, Chantier> {
+    return new Map(
+      [...this.map].map(([id, chantier]) => [id, Chantier.rehydrate(chantier.toProps())]),
+    );
+  }
+
+  restore(snapshot: Map<string, Chantier>): void {
+    this.map = new Map(
+      [...snapshot].map(([id, chantier]) => [id, Chantier.rehydrate(chantier.toProps())]),
+    );
+  }
+}
+
+export class InMemoryChantierNoteRepository implements ChantierNoteRepository {
+  private rows: ChantierNote[] = [];
+  async save(n: ChantierNote): Promise<void> {
+    this.rows.push(n);
+  }
+  async listByChantier(companyId: string, chantierId: string): Promise<ChantierNote[]> {
+    return this.rows
+      .filter((n) => n.companyId === companyId && n.chantierId === chantierId)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  snapshot(): ChantierNote[] {
+    return this.rows.map((n) => ChantierNote.rehydrate(n.toProps()));
+  }
+
+  restore(snapshot: ChantierNote[]): void {
+    this.rows = snapshot.map((n) => ChantierNote.rehydrate(n.toProps()));
+  }
+}
+
+export class InMemoryWorksiteMediaStorage implements WorksiteMediaStorage {
+  private map = new Map<string, WorksiteMediaItem>();
+  async save(item: WorksiteMediaItem): Promise<void> {
+    this.map.set(item.id, item);
+  }
+  async listByChantier(companyId: string, chantierId: string): Promise<WorksiteMediaItem[]> {
+    return [...this.map.values()]
+      .filter((i) => i.companyId === companyId && i.chantierId === chantierId)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+  async findById(companyId: string, id: string): Promise<WorksiteMediaItem | null> {
+    const item = this.map.get(id);
+    return item && item.companyId === companyId ? item : null;
+  }
+  async remove(companyId: string, id: string): Promise<void> {
+    const item = this.map.get(id);
+    if (item && item.companyId === companyId) this.map.delete(id);
+  }
+
+  snapshot(): Map<string, WorksiteMediaItem> {
+    return new Map(this.map);
+  }
+
+  restore(snapshot: Map<string, WorksiteMediaItem>): void {
+    this.map = new Map(snapshot);
+  }
+}
+
+/** Adapter de test/démo uniquement. Le runtime live injecte PrismaCatalogueRepository. */
+export class InMemoryCatalogueRepository implements CatalogueRepository {
+  private map = new Map<string, CatalogueItemRecord>();
+
+  async listByCompany(companyId: string): Promise<readonly CatalogueItemRecord[]> {
+    return [...this.map.values()]
+      .filter((item) => item.companyId === companyId)
+      .map((item) => ({ ...item }))
+      .sort((left, right) => left.label.localeCompare(right.label, 'fr'));
+  }
+
+  async create(item: CatalogueItemRecord): Promise<CatalogueCreateWriteResult> {
+    if (this.map.has(item.id)) return { status: 'id_conflict' };
+    this.map.set(item.id, { ...item });
+    return { status: 'created', item: { ...item } };
+  }
+
+  async update(
+    input: Parameters<CatalogueRepository['update']>[0],
+  ): Promise<CatalogueUpdateWriteResult> {
+    const current = this.map.get(input.id);
+    if (current === undefined || current.companyId !== input.companyId)
+      return { status: 'not_found' };
+    if (current.revision !== input.expectedRevision) return { status: 'revision_conflict' };
+    const updated: CatalogueItemRecord = {
+      ...input.item,
+      createdAt: current.createdAt,
+    };
+    this.map.set(input.id, updated);
+    return { status: 'updated', item: { ...updated } };
+  }
+
+  async delete(
+    input: Parameters<CatalogueRepository['delete']>[0],
+  ): Promise<CatalogueDeleteWriteResult> {
+    const current = this.map.get(input.id);
+    if (current === undefined || current.companyId !== input.companyId)
+      return { status: 'not_found' };
+    if (current.revision !== input.expectedRevision) return { status: 'revision_conflict' };
+    this.map.delete(input.id);
+    return { status: 'deleted' };
+  }
+
+  snapshot(): Map<string, CatalogueItemRecord> {
+    return new Map([...this.map].map(([id, item]) => [id, { ...item }]));
+  }
+
+  restore(snapshot: Map<string, CatalogueItemRecord>): void {
+    this.map = new Map([...snapshot].map(([id, item]) => [id, { ...item }]));
+  }
 }
 
 export class InMemorySequenceCounter implements SequenceCounterPort {
   private readonly counters = new Map<string, number>();
-  async allocate(input: { companyId: string; counterKey: CounterKey; fiscalYear: number }): Promise<{
+  async allocate(input: {
+    companyId: string;
+    counterKey: CounterKey;
+    fiscalYear: number;
+  }): Promise<{
     sequence: number;
     formatted: DocNumber;
   }> {
@@ -1104,20 +1335,5 @@ export class InMemorySequenceCounter implements SequenceCounterPort {
   restore(snap: Map<string, number>): void {
     this.counters.clear();
     for (const [k, v] of snap) this.counters.set(k, v);
-  }
-}
-
-export class UuidGenerator implements IdGeneratorPort {
-  newId(): string {
-    // Cryptographiquement aléatoire (122 bits) : ids non énumérables — important car l'id de devis
-    // sert de jeton dans le lien de signature publique.
-    return randomUUID();
-  }
-}
-
-export class FixtureCashflowSnapshot implements CashflowSnapshotPort {
-  constructor(private readonly snapshot: { bankBalance: number; receivables: number; charges: number; vatDue: number }) {}
-  async get(_companyId: string): Promise<{ bankBalance: number; receivables: number; charges: number; vatDue: number }> {
-    return this.snapshot;
   }
 }

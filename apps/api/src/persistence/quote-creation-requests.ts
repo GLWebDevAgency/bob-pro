@@ -156,11 +156,10 @@ function validateOutput(value: unknown): CreateQuoteOutput {
   };
 }
 
-function cloneOutput(output: CreateQuoteOutput): CreateQuoteOutput {
-  return { quoteId: output.quoteId, totals: { ...output.totals, vatByRate: { ...output.totals.vatByRate } } };
-}
-
-function validateRecord(record: QuoteCreationRequestRecord): QuoteCreationRequestRecord {
+/** @internal Partagé avec le store déterministe situé dans `*.testing.ts`. */
+export function validateQuoteCreationRequestRecord(
+  record: QuoteCreationRequestRecord,
+): QuoteCreationRequestRecord {
   const companyId = exactString(record.companyId, 'companyId');
   const keyHash = validateHash(record.keyHash, 'keyHash');
   const payloadHash = validateHash(record.payloadHash, 'payloadHash');
@@ -172,19 +171,14 @@ function validateRecord(record: QuoteCreationRequestRecord): QuoteCreationReques
   return { companyId, keyHash, payloadHash, output, createdAt: record.createdAt };
 }
 
-function validateKey(key: QuoteCreationRequestKey): QuoteCreationRequestKey {
+/** @internal Partagé avec le store déterministe situé dans `*.testing.ts`. */
+export function validateQuoteCreationRequestKey(
+  key: QuoteCreationRequestKey,
+): QuoteCreationRequestKey {
   return {
     companyId: exactString(key.companyId, 'companyId'),
     keyHash: validateHash(key.keyHash, 'keyHash'),
   };
-}
-
-function cloneRecord(record: QuoteCreationRequestRecord): QuoteCreationRequestRecord {
-  return { ...record, output: cloneOutput(record.output) };
-}
-
-function memoryKey(key: QuoteCreationRequestKey): string {
-  return JSON.stringify([key.companyId, key.keyHash]);
 }
 
 function fromPrisma(row: PrismaQuoteCreationRequest): QuoteCreationRequestRecord {
@@ -198,7 +192,7 @@ function fromPrisma(row: PrismaQuoteCreationRequest): QuoteCreationRequestRecord
       vatByRate: row.vatByRate,
     },
   });
-  return validateRecord({
+  return validateQuoteCreationRequestRecord({
     companyId: row.companyId,
     keyHash: row.keyHash,
     payloadHash: row.payloadHash,
@@ -207,37 +201,11 @@ function fromPrisma(row: PrismaQuoteCreationRequest): QuoteCreationRequestRecord
   });
 }
 
-export class InMemoryQuoteCreationRequestStore implements QuoteCreationRequestStore {
-  private rows = new Map<string, QuoteCreationRequestRecord>();
-
-  async find(key: QuoteCreationRequestKey): Promise<QuoteCreationRequestRecord | null> {
-    const row = this.rows.get(memoryKey(validateKey(key)));
-    return row ? cloneRecord(row) : null;
-  }
-
-  async putIfAbsent(record: QuoteCreationRequestRecord): Promise<QuoteCreationRequestRecord> {
-    const candidate = validateRecord(record);
-    const key = memoryKey(candidate);
-    const winner = this.rows.get(key);
-    if (winner) return cloneRecord(winner);
-    this.rows.set(key, cloneRecord(candidate));
-    return cloneRecord(candidate);
-  }
-
-  snapshot(): Map<string, QuoteCreationRequestRecord> {
-    return new Map([...this.rows].map(([key, record]) => [key, cloneRecord(record)]));
-  }
-
-  restore(snapshot: Map<string, QuoteCreationRequestRecord>): void {
-    this.rows = new Map([...snapshot].map(([key, record]) => [key, cloneRecord(record)]));
-  }
-}
-
 export class PrismaQuoteCreationRequestStore implements QuoteCreationRequestStore {
   constructor(private readonly prisma: PrismaService) {}
 
   async find(key: QuoteCreationRequestKey): Promise<QuoteCreationRequestRecord | null> {
-    const valid = validateKey(key);
+    const valid = validateQuoteCreationRequestKey(key);
     const row = await this.prisma.client().quoteCreationRequest.findUnique({
       where: { quote_creation_request_key: valid },
     });
@@ -245,7 +213,7 @@ export class PrismaQuoteCreationRequestStore implements QuoteCreationRequestStor
   }
 
   async putIfAbsent(record: QuoteCreationRequestRecord): Promise<QuoteCreationRequestRecord> {
-    const candidate = validateRecord(record);
+    const candidate = validateQuoteCreationRequestRecord(record);
     await this.prisma.client().quoteCreationRequest.createMany({
       data: {
         companyId: candidate.companyId,

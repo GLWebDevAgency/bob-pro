@@ -18,7 +18,7 @@ describe('flows/voice-invoice-draft (C20 — transcript -> brouillon pur)', () =
       transcript:
         "Facture pour Mme Durand — remplacement du mitigeur de cuisine. Main-d'œuvre 1h30, matériel 85 €. Total 245 € TTC, paiement par carte.",
       customers: CUSTOMERS,
-      defaultVatRate: 20,
+      confirmedVatRate: 20,
     });
     expect(r.draft.customerId).toBe('durand');
     expect(r.paymentMethod).toBe('card');
@@ -35,7 +35,7 @@ describe('flows/voice-invoice-draft (C20 — transcript -> brouillon pur)', () =
     const r = deriveVoiceInvoiceDraft({
       transcript: 'Facture de 300 euros pour le débouchage chez Mme Durand',
       customers: CUSTOMERS,
-      defaultVatRate: 20,
+      confirmedVatRate: 20,
     });
     expect(r.draft.customerId).toBe('durand');
     expect(r.draft.lines).toHaveLength(1);
@@ -47,7 +47,7 @@ describe('flows/voice-invoice-draft (C20 — transcript -> brouillon pur)', () =
     const r = deriveVoiceInvoiceDraft({
       transcript: 'Pour Martin, fournitures 120 €, TVA 10 %, payé en espèces',
       customers: CUSTOMERS,
-      defaultVatRate: 20,
+      confirmedVatRate: 20,
     });
     expect(r.vatRate).toBe(10);
     expect(r.paymentMethod).toBe('cash');
@@ -65,11 +65,11 @@ describe('flows/voice-invoice-draft (C20 — transcript -> brouillon pur)', () =
     expect(r.draft.transcript).toBe('Facture pour le chantier de la rue des Lilas');
   });
 
-  it('TVA métier par défaut (BTP 10 %) et montants décimaux « 89,50 € »', () => {
+  it('TVA déjà confirmée (10 %) et montants décimaux « 89,50 € »', () => {
     const r = deriveVoiceInvoiceDraft({
       transcript: 'Déplacement 20 €, matériel 89,50 € chez Camping Les Pins',
       customers: CUSTOMERS,
-      defaultVatRate: 10,
+      confirmedVatRate: 10,
     });
     expect(r.vatRate).toBe(10);
     expect(r.draft.customerId).toBe('camping');
@@ -95,7 +95,7 @@ describe('flows/voice-invoice-draft (C20 — transcript -> brouillon pur)', () =
     const r = deriveVoiceInvoiceDraft({
       transcript: 'Facture pour Mme Durand, debouchage de canalisation dans la salle de bain',
       customers: CUSTOMERS,
-      defaultVatRate: 10,
+      confirmedVatRate: 10,
       prestations: PRESTATIONS,
     });
     expect(r.draft.customerId).toBe('durand');
@@ -112,7 +112,7 @@ describe('flows/voice-invoice-draft (C20 — transcript -> brouillon pur)', () =
     const r = deriveVoiceInvoiceDraft({
       transcript: 'Débouchage canalisation chez Mme Durand, 180 € au total',
       customers: CUSTOMERS,
-      defaultVatRate: 10,
+      confirmedVatRate: 10,
       prestations: PRESTATIONS,
     });
     // Montant unique sans catégorie = total TTC énoncé (comportement C20 inchangé).
@@ -120,10 +120,22 @@ describe('flows/voice-invoice-draft (C20 — transcript -> brouillon pur)', () =
     expect(r.draft.lines[0]).toMatchObject({ unitPriceHT: Math.round(18000 / 1.1) });
   });
 
+  it('montant reconnu sans taux confirmé => clarification, aucune ligne persistable', () => {
+    const r = deriveVoiceInvoiceDraft({
+      transcript: 'Facture de 300 euros pour Mme Durand',
+      customers: CUSTOMERS,
+    });
+    expect(r.vatRate).toBeNull();
+    expect(r.vatConfirmationRequired).toBe(true);
+    expect(r.draft.customerId).toBe('durand');
+    expect(r.draft.lines).toEqual([]);
+  });
+
   it('les indicatifs métier sont IGNORÉS ; « 200 L » n’est pas exigé à l’oral ; TVA énoncée > TVA catalogue', () => {
     const none = deriveVoiceInvoiceDraft({
       transcript: 'Recherche de fuite chez Mme Durand', // seule une prestation INDICATIVE matcherait
       customers: CUSTOMERS,
+      confirmedVatRate: 10,
       prestations: PRESTATIONS,
     });
     expect(none.draft.lines).toHaveLength(0); // « rien compris » reste un état de premier rang

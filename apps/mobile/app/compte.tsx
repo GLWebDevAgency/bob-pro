@@ -201,12 +201,28 @@ export default function Compte() {
   ]);
   const profileHasStaleError = !profileHasBlockingError
     && (profile.isError || companyMe.isError || fiscalFlow.isError);
-  const profileLoading = profile.isLoading || companyMe.isLoading || fiscalFlow.isLoading;
+  const profileSourcesReady =
+    profile.data !== undefined && companyMe.data !== undefined && fiscalFlow.profile !== undefined;
+  const profileFresh = profileSourcesReady && !profileHasStaleError;
+  const profileLoading =
+    !profileSourcesReady
+    && !profileHasBlockingError
+    && (profile.isLoading || companyMe.isLoading || fiscalFlow.isLoading || !profileSourcesReady);
+  const subscriptionReady = subscription.data !== undefined;
+  const subscriptionBlockingError = subscription.isError && !subscriptionReady;
+  const subscriptionStaleError = subscription.isError && subscriptionReady;
+  const subscriptionLoading = !subscriptionReady && !subscriptionBlockingError;
+  const deleteCompanyName = profileFresh ? companyMe.data?.name ?? null : null;
+  const deleteAllowed = authEnabled && deleteCompanyName !== null && deleteCompanyName.trim() !== '';
   const refetchProfile = (): void => {
     void profile.refetch();
     void companyMe.refetch();
     void fiscalFlow.refetch();
   };
+
+  useEffect(() => {
+    if (!deleteAllowed) setDeleteSheetOpen(false);
+  }, [deleteAllowed]);
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
@@ -575,8 +591,10 @@ export default function Compte() {
                 <Pressable
                   accessibilityRole="button"
                   accessibilityLabel={`${say('account.deleteAccountRow')}. ${say('account.deleteAccountRowSub')}`}
-                  disabled={!identity.companyName}
-                  onPress={() => setDeleteSheetOpen(true)}
+                  disabled={!deleteAllowed}
+                  onPress={() => {
+                    if (deleteAllowed) setDeleteSheetOpen(true);
+                  }}
                   style={[
                     {
                       flexDirection: 'row',
@@ -589,7 +607,7 @@ export default function Compte() {
                       padding: 15,
                       marginTop: 10,
                     },
-                    !identity.companyName ? { opacity: 0.5 } : null,
+                    !deleteAllowed ? { opacity: 0.5 } : null,
                   ]}
                 >
                   <IconTile tone="danger" size={34} radius={11}>
@@ -608,10 +626,10 @@ export default function Compte() {
                 <Text style={[font('meta'), { color: colors.slate400, marginTop: 10, lineHeight: 17 }]}>
                   {say('account.gdprNote', { email: SUPPORT_EMAIL })}
                 </Text>
-                {identity.companyName ? (
+                {deleteCompanyName !== null ? (
                   <CloseAccountSheet
-                    visible={deleteSheetOpen}
-                    companyName={identity.companyName}
+                    visible={deleteSheetOpen && deleteAllowed}
+                    companyName={deleteCompanyName}
                     personality={personality}
                     onClose={() => setDeleteSheetOpen(false)}
                   />
@@ -621,15 +639,23 @@ export default function Compte() {
           </>
         ) : (
           <>
-            {subscription.isLoading ? (
+            {subscriptionLoading ? (
               <SubscriptionSkeleton label={say('account.subscriptionLoading')} />
-            ) : subscription.isError ? (
+            ) : subscriptionBlockingError ? (
               <ErrorRetry
                 message={say('account.subscriptionError')}
                 onRetry={() => void subscription.refetch()}
               />
-            ) : (
+            ) : !subscriptionReady ? null : (
               <>
+            {subscriptionStaleError ? (
+              <View style={{ marginBottom: 16 }}>
+                <ErrorRetry
+                  message={say('account.subscriptionError')}
+                  onRetry={() => void subscription.refetch()}
+                />
+              </View>
+            ) : null}
             {/* Offre courante — la VÉRITÉ produit (accès anticipé), jamais un plan « ACTIVE » inventé */}
             <View style={[{ borderRadius: 20, marginBottom: 18 }, shadowComponentsNative.heroMoney]}>
               <LinearGradient

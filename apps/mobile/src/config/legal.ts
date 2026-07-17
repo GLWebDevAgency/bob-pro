@@ -1,18 +1,24 @@
+function requiredPublicConfig(name: string, value: string | undefined): string {
+  const normalized = value?.trim();
+  if (!normalized) {
+    throw new Error(`Configuration mobile incomplète : ${name} est requis.`);
+  }
+  return normalized;
+}
+
 /**
- * Mentions légales in-app (audit stores 20260716, bloquants #2/#4) — CONFIG CENTRALISÉE.
- *
- * PLACEHOLDERS assumés : le domaine bobpro.fr n'est pas encore réservé (D2 du programme V1,
- * bloqué fondateur — cf. design_handoff_bob_pro/PROGRAMME_V1_PUBLICATION.md). Ces URLs pointent
- * vers un sous-domaine de démonstration EN ATTENDANT le domaine définitif : à remplacer ICI
- * (un seul point de mise à jour) dès que les pages légales réelles sont hébergées — aucun autre
- * fichier ne doit jamais coder une URL/adresse légale en dur.
+ * Mentions légales in-app. Les valeurs sont injectées par l'environnement certifié : aucun
+ * domaine de démonstration ni contact fictif ne peut se retrouver silencieusement dans le binaire.
+ * Le garde Expo valide en plus leur forme avant toute build.
  */
 export const LEGAL_URLS = {
-  terms: 'https://demo.bobpro.fr/legal/cgu',
-  privacy: 'https://demo.bobpro.fr/legal/confidentialite',
+  terms: requiredPublicConfig('EXPO_PUBLIC_TERMS_URL', process.env.EXPO_PUBLIC_TERMS_URL),
+  privacy: requiredPublicConfig('EXPO_PUBLIC_PRIVACY_URL', process.env.EXPO_PUBLIC_PRIVACY_URL),
 } as const;
 
-/** Adresse support/contact — même placeholder tant que bonjour@bobpro.fr n'est pas actif (D2). */
-export const SUPPORT_EMAIL = 'bonjour@bobpro.fr';
+export const SUPPORT_EMAIL = requiredPublicConfig(
+  'EXPO_PUBLIC_SUPPORT_EMAIL',
+  process.env.EXPO_PUBLIC_SUPPORT_EMAIL,
+);
 
 export const SUPPORT_MAILTO = `mailto:${SUPPORT_EMAIL}`;

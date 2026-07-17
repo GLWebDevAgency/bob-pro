@@ -814,6 +814,74 @@ const legacyFr = {
     pro: 'La création du client a échoué. Veuillez réessayer.',
     direct: 'Création impossible. Réessaie.',
   },
+  // Formulaire client enrichi par type (CustomerForm, partagé création C12/C40 ET édition C13) —
+  // arbitrage fondateur révisé : identité SEULE obligatoire (prénom+nom / raison sociale), tout
+  // moyen de contact reste optionnel (l'envoi passera par un lien partageable, jamais un email forcé).
+  'clients.createFirstNameLabel': { pote: 'Prénom', pro: 'Prénom', direct: 'Prénom' },
+  'clients.createFirstNamePlaceholder': { pote: 'Julie', pro: 'Prénom', direct: 'Prénom' },
+  'clients.createLastNameLabel': { pote: 'Nom', pro: 'Nom', direct: 'Nom' },
+  'clients.createLastNamePlaceholder': { pote: 'Durand', pro: 'Nom', direct: 'Nom' },
+  'clients.createCompanyNameLabel': {
+    pote: 'Raison sociale',
+    pro: 'Raison sociale',
+    direct: 'Raison sociale',
+  },
+  'clients.createCompanyNamePlaceholder': {
+    pote: 'SARL Martin, Mairie de Sèvres…',
+    pro: 'Raison sociale de l’entreprise',
+    direct: 'Raison sociale',
+  },
+  'clients.createSiretLabel': { pote: 'SIRET', pro: 'SIRET', direct: 'SIRET' },
+  'clients.createSiretPlaceholder': {
+    pote: '14 chiffres, si tu l’as sous la main',
+    pro: 'Numéro SIRET (facultatif)',
+    direct: 'SIRET',
+  },
+  'clients.createSiretSearch': { pote: 'Rechercher', pro: 'Rechercher', direct: 'Rechercher' },
+  'clients.createSiretError': {
+    pote: 'Je ne trouve pas cette fiche. Tu peux continuer à la main.',
+    pro: 'Fiche introuvable. Vous pouvez poursuivre la saisie manuellement.',
+    direct: 'Introuvable. Saisie manuelle.',
+  },
+  'clients.createSiretFound': {
+    pote: 'Trouvé : {name} — je préremplis la fiche.',
+    pro: 'Fiche trouvée : {name}.',
+    direct: 'Trouvé : {name}.',
+  },
+  'clients.createContactNameLabel': {
+    pote: 'Contact chez le client',
+    pro: 'Nom du contact',
+    direct: 'Contact',
+  },
+  'clients.createContactNamePlaceholder': {
+    pote: 'Prénom Nom de ton interlocuteur',
+    pro: 'Nom du contact',
+    direct: 'Contact',
+  },
+  'clients.createEmailLabel': { pote: 'Email', pro: 'Email', direct: 'Email' },
+  'clients.createEmailPlaceholder': {
+    pote: 'email@exemple.fr (facultatif)',
+    pro: 'Adresse email (facultative)',
+    direct: 'Email',
+  },
+  'clients.createPhoneLabel': { pote: 'Téléphone', pro: 'Téléphone', direct: 'Tél.' },
+  'clients.createPhonePlaceholder': {
+    pote: '06 12 34 56 78 (facultatif)',
+    pro: 'Numéro de téléphone (facultatif)',
+    direct: 'Téléphone',
+  },
+  // Copy de l'arbitrage fondateur (canal d'envoi = lien partageable, pas d'email forcé).
+  'clients.createContactHint': {
+    pote: 'Avec un email, je peux envoyer et relancer tout seul. Sans, tu partages les liens toi-même — SMS, WhatsApp, comme tu veux.',
+    pro: 'Avec un email, l’envoi et les relances sont automatiques. Sans, les liens se partagent manuellement (SMS, WhatsApp…).',
+    direct: 'Email = envoi auto. Sinon, tu partages le lien toi-même.',
+  },
+  'clients.createAddressLabel': { pote: 'Adresse', pro: 'Adresse', direct: 'Adresse' },
+  'clients.createAddressPlaceholder': {
+    pote: 'Commence à taper une adresse (facultatif)',
+    pro: 'Adresse (facultative)',
+    direct: 'Adresse facultative',
+  },
 
   // ── Chantiers — états honnêtes, création assistée et suivi terrain ───────────
   'chantiers.back': { pote: 'Retour', pro: 'Retour', direct: 'Retour' },
@@ -921,6 +989,104 @@ const legacyFr = {
     direct: 'Créer',
   },
 
+  // ── Fiche chantier/projet (extension V1) — journal de notes + photos ─────────
+  'chantierFiche.back': { pote: 'Retour', pro: 'Retour', direct: 'Retour' },
+  'chantierFiche.notFound': {
+    pote: 'Introuvable — retour à la fiche client.',
+    pro: 'Introuvable. Retour à la fiche client.',
+    direct: 'Introuvable.',
+  },
+  'chantierFiche.dataError': {
+    pote: 'Je n’arrive pas à charger cette fiche. Réessaie, je garde le contexte.',
+    pro: 'Impossible de charger cette fiche. Veuillez réessayer.',
+    direct: 'Chargement impossible. Réessaie.',
+  },
+  'chantierFiche.notesTitle': { pote: 'Journal', pro: 'Journal', direct: 'Journal' },
+  'chantierFiche.notesEmpty': {
+    pote: 'Aucune note pour l’instant — ajoute la première.',
+    pro: 'Aucune note pour le moment.',
+    direct: 'Aucune note.',
+  },
+  'chantierFiche.notePlaceholder': {
+    pote: 'Ex. Fuite réparée, reste le joint du ballon…',
+    pro: 'Ajouter une note',
+    direct: 'Note',
+  },
+  'chantierFiche.noteSubmit': { pote: 'Ajouter', pro: 'Ajouter', direct: 'Ajouter' },
+  'chantierFiche.voiceNoteOpened': {
+    pote: 'Note prête — vérifie et valide à l’écran.',
+    pro: 'Note prête à valider à l’écran.',
+    direct: 'Note prête. Valide à l’écran.',
+  },
+  'chantierFiche.noteError': {
+    pote: 'Je n’ai pas pu enregistrer cette note. Réessaie.',
+    pro: 'L’enregistrement de la note a échoué. Veuillez réessayer.',
+    direct: 'Échec. Réessaie.',
+  },
+  'chantierFiche.noteAuthorDate': {
+    pote: '{author} · {date}',
+    pro: '{author} · {date}',
+    direct: '{date}',
+  },
+  'chantierFiche.photosTitle': { pote: 'Photos', pro: 'Photos', direct: 'Photos' },
+  'chantierFiche.photosEmpty': {
+    pote: 'Aucune photo pour l’instant — ajoute la première.',
+    pro: 'Aucune photo pour le moment.',
+    direct: 'Aucune photo.',
+  },
+  'chantierFiche.photoAdd': { pote: 'Ajouter une photo', pro: 'Ajouter une photo', direct: 'Photo' },
+  'chantierFiche.photoSourceTitle': {
+    pote: 'Ajouter une photo',
+    pro: 'Ajouter une photo',
+    direct: 'Ajouter une photo',
+  },
+  'chantierFiche.photoSourceCamera': { pote: 'Appareil photo', pro: 'Appareil photo', direct: 'Appareil photo' },
+  'chantierFiche.photoSourceLibrary': { pote: 'Galerie', pro: 'Galerie', direct: 'Galerie' },
+  'chantierFiche.photoSourceCancel': { pote: 'Annuler', pro: 'Annuler', direct: 'Annuler' },
+  'chantierFiche.photoPermissionCamera': {
+    pote: 'Autorise l’appareil photo pour prendre une photo du chantier.',
+    pro: 'Autorisez l’appareil photo pour ajouter une photo.',
+    direct: 'Accès appareil photo requis.',
+  },
+  'chantierFiche.photoPermissionLibrary': {
+    pote: 'Autorise l’accès aux photos pour en choisir une.',
+    pro: 'Autorisez l’accès aux photos pour en choisir une.',
+    direct: 'Accès aux photos requis.',
+  },
+  'chantierFiche.photoUploadError': {
+    pote: 'Je n’ai pas pu envoyer cette photo. Réessaie.',
+    pro: 'L’envoi de la photo a échoué. Veuillez réessayer.',
+    direct: 'Envoi impossible. Réessaie.',
+  },
+  'chantierFiche.photoOpen': { pote: 'Voir la photo', pro: 'Voir la photo', direct: 'Photo' },
+  'chantierFiche.photoClose': { pote: 'Fermer', pro: 'Fermer', direct: 'Fermer' },
+  'chantierFiche.photoDelete': { pote: 'Supprimer', pro: 'Supprimer', direct: 'Supprimer' },
+  'chantierFiche.photoDeleteConfirmTitle': {
+    pote: 'Supprimer cette photo ?',
+    pro: 'Supprimer cette photo ?',
+    direct: 'Supprimer la photo ?',
+  },
+  'chantierFiche.photoDeleteConfirmBody': {
+    pote: 'La photo sera définitivement supprimée. Cette action est irréversible.',
+    pro: 'La photo sera définitivement supprimée. Cette action est irréversible.',
+    direct: 'Suppression définitive.',
+  },
+  'chantierFiche.photoDeleteError': {
+    pote: 'Je n’ai pas pu supprimer cette photo. Réessaie.',
+    pro: 'La suppression a échoué. Veuillez réessayer.',
+    direct: 'Échec. Réessaie.',
+  },
+  'chantierFiche.photoLoadError': {
+    pote: 'Je n’arrive pas à ouvrir cette photo.',
+    pro: 'Impossible d’ouvrir cette photo.',
+    direct: 'Ouverture impossible.',
+  },
+  // Compte notes/photos sur la rangée liste (fiche client, onglet Chantiers/Projets…).
+  'chantierFiche.rowNotesCount': { pote: '{count} note', pro: '{count} note', direct: '{count} note' },
+  'chantierFiche.rowNotesCountPlural': { pote: '{count} notes', pro: '{count} notes', direct: '{count} notes' },
+  'chantierFiche.rowPhotosCount': { pote: '{count} photo', pro: '{count} photo', direct: '{count} photo' },
+  'chantierFiche.rowPhotosCountPlural': { pote: '{count} photos', pro: '{count} photos', direct: '{count} photos' },
+
   // ── C13 — écran « Fiche client » ─────────────────────────────────────────────
   // Barre retour + menu « … » (no-op accessible, menu TODO).
   'fiche.back': {
@@ -932,6 +1098,39 @@ const legacyFr = {
     pote: 'Options',
     pro: 'Options',
     direct: 'Options',
+  },
+  // Édition post-création (C13/C40 TODO partagé) — la création mobile est MINIMALE (nom + type),
+  // cette feuille permet de compléter/corriger adresse, SIREN, contact… Mêmes champs, même
+  // formulaire (CustomerForm) que la création.
+  'fiche.editCta': {
+    pote: 'Modifier la fiche',
+    pro: 'Modifier la fiche',
+    direct: 'Modifier',
+  },
+  'fiche.editTitle': {
+    pote: 'Modifier la fiche',
+    pro: 'Modifier la fiche',
+    direct: 'Modifier la fiche',
+  },
+  'fiche.editHint': {
+    pote: 'Corrige ou complète ce qui manque — adresse, SIREN, contact…',
+    pro: 'Complétez ou corrigez les informations de la fiche.',
+    direct: 'Corrige les informations.',
+  },
+  'fiche.editSubmit': {
+    pote: 'Enregistrer',
+    pro: 'Enregistrer',
+    direct: 'Enregistrer',
+  },
+  'fiche.editSuccess': {
+    pote: 'Fiche mise à jour ✓',
+    pro: 'Fiche mise à jour.',
+    direct: 'Fiche mise à jour.',
+  },
+  'fiche.editError': {
+    pote: 'Je n’ai pas pu enregistrer. Rien n’a été perdu, réessaie.',
+    pro: 'L’enregistrement a échoué. Aucune donnée n’a été perdue.',
+    direct: 'Échec. Rien n’a changé.',
   },
   // partyLine adaptatif : badge type + SIREN seulement b2b/b2g (RIEN pour un particulier).
   'fiche.badgeB2b': {
@@ -1090,10 +1289,12 @@ const legacyFr = {
     pro: 'Activité',
     direct: 'Activité',
   },
+  // Paramétré par métier (tradeToWorksiteTerminology @bob/core) : {pluralCap} = « Chantiers »
+  // (BTP), « Missions » (IT/conseil), « Projets » (défaut)… jamais « chantier » figé pour tous.
   'fiche.tabChantiers': {
-    pote: 'Chantiers',
-    pro: 'Chantiers',
-    direct: 'Chantiers',
+    pote: '{pluralCap}',
+    pro: '{pluralCap}',
+    direct: '{pluralCap}',
   },
   'fiche.tabDocs': {
     pote: 'Docs',
@@ -1183,10 +1384,71 @@ const legacyFr = {
     pro: 'Aucune pièce pour le moment. Le premier devis initiera l’historique.',
     direct: 'Aucune pièce. Fais un devis.',
   },
+  // Paramétré par métier (tradeToWorksiteTerminology) : {plural} = « chantiers »/« missions »/…
   'fiche.chantiersEmpty': {
-    pote: 'Aucun chantier relié pour l’instant — j’y rangerai tes interventions.',
-    pro: 'Aucun chantier associé pour le moment.',
-    direct: 'Aucun chantier.',
+    pote: 'Aucun {plural} relié pour l’instant — j’y rangerai tes pièces.',
+    pro: 'Aucun {plural} associé pour le moment.',
+    direct: 'Aucun {plural}.',
+  },
+  'fiche.chantiersEmptyCta': {
+    pote: 'Créer {article} {term}',
+    pro: 'Créer {article} {term}',
+    direct: 'Créer {article} {term}',
+  },
+  'fiche.chantierAddLabel': {
+    pote: '{newAdj} {term}',
+    pro: '{newAdj} {term}',
+    direct: '{newAdj} {term}',
+  },
+  'fiche.chantierSectionTitle': {
+    pote: 'Tes {plural}',
+    pro: 'Vos {plural}',
+    direct: '{pluralCap}',
+  },
+  'fiche.chantierCreateTitle': {
+    pote: '{newAdj} {term}',
+    pro: '{newAdj} {term}',
+    direct: '{newAdj} {term}',
+  },
+  'fiche.chantierCreateHint': {
+    pote: 'Rattaché à ce client — l’adresse est déjà reprise de sa fiche, tu peux la corriger.',
+    pro: 'Rattaché à ce client ; l’adresse reprend celle de la fiche et reste modifiable.',
+    direct: 'Rattaché au client. Adresse reprise, modifiable.',
+  },
+  'fiche.chantierNameLabel': {
+    pote: 'Nom {de} {term}',
+    pro: 'Nom {de} {term}',
+    direct: 'Nom',
+  },
+  'fiche.chantierNamePlaceholder': {
+    pote: 'Ex. Rénovation cuisine, Refonte du site…',
+    pro: 'Ex. Rénovation cuisine',
+    direct: 'Nom',
+  },
+  'fiche.chantierNotesLabel': {
+    pote: 'Notes',
+    pro: 'Notes',
+    direct: 'Notes',
+  },
+  'fiche.chantierNotesPlaceholder': {
+    pote: 'Code portail, étage, consignes d’accès… (facultatif)',
+    pro: 'Contexte, accès, consignes (facultatif)',
+    direct: 'Notes (facultatif)',
+  },
+  'fiche.chantierCreateSubmit': {
+    pote: 'Créer {article} {term}',
+    pro: 'Créer {article} {term}',
+    direct: 'Créer',
+  },
+  'fiche.chantierCreateError': {
+    pote: 'Je n’ai pas pu créer {article} {term}. Rien n’a été perdu, réessaie.',
+    pro: 'La création a échoué. Aucune donnée n’a été perdue.',
+    direct: 'Création impossible. Réessaie.',
+  },
+  'fiche.chantierCreatedToast': {
+    pote: '{name} est prêt — tu peux y rattacher devis et factures.',
+    pro: '{name} a été créé.',
+    direct: '{name} créé.',
   },
   'fiche.docsEmpty': {
     pote: 'Aucun document classé ici pour l’instant.',
@@ -2748,6 +3010,16 @@ const legacyFr = {
     pro: 'Fermer',
     direct: 'Fermer',
   },
+  'devis.draftLoad.loading': {
+    pote: 'Je récupère ton brouillon sécurisé.',
+    pro: 'Chargement du brouillon sécurisé.',
+    direct: 'Chargement du brouillon.',
+  },
+  'devis.draftLoad.error': {
+    pote: 'Je n’arrive pas à récupérer ton brouillon. Rien de local ne sera affiché à sa place.',
+    pro: 'Le brouillon n’a pas pu être récupéré. Aucune donnée locale ne lui est substituée.',
+    direct: 'Brouillon inaccessible. Aucune donnée locale affichée.',
+  },
   'devis.draftExit.title': {
     pote: 'Que veux-tu faire de ce devis ?',
     pro: 'Que souhaitez-vous faire de ce devis ?',
@@ -2777,6 +3049,11 @@ const legacyFr = {
     pote: 'Je n’ai pas pu sécuriser le brouillon. Il reste ouvert : réessaie avant de partir.',
     pro: 'L’enregistrement sécurisé a échoué. Votre devis reste ouvert : veuillez réessayer.',
     direct: 'Enregistrement sécurisé impossible. Le devis reste ouvert : réessaie.',
+  },
+  'devis.draftExit.persistenceConflict': {
+    pote: 'Ce brouillon a changé ailleurs. Je n’écrase pas la version plus récente : recharge-la avant de continuer.',
+    pro: 'Ce brouillon a été modifié ailleurs. La version plus récente n’a pas été écrasée ; rechargez-la avant de poursuivre.',
+    direct: 'Brouillon modifié ailleurs. Version récente préservée : recharge avant de continuer.',
   },
   'devis.draftExit.continue': {
     pote: 'Continuer le devis',
@@ -4887,10 +5164,63 @@ const legacyFr = {
     direct: 'Paiement déjà fait ?',
   },
   'dep.payConfirmBody': {
-    pote: 'Aucun virement ne part d’ici. Je note seulement {amount} payés aujourd’hui à {supplier} et je mets le journal à jour.',
-    pro: 'Aucun paiement n’est déclenché. Bob enregistre uniquement un règlement de {amount} daté d’aujourd’hui pour {supplier}.',
-    direct: 'Aucun virement. J’enregistre {amount} payés aujourd’hui à {supplier}.',
+    pote: 'Aucun virement ne part d’ici. Je note {amount} réglés à {supplier} le {date}, par {method}.{reference}',
+    pro: 'Aucun paiement n’est déclenché. Enregistrer le règlement de {amount} à {supplier}, daté du {date}, par {method}.{reference}',
+    direct: 'Aucun virement. Noter {amount} à {supplier}, le {date}, par {method}.{reference}',
   },
+  'dep.paymentSheetTitle': {
+    pote: 'Comment l’as-tu payée ?',
+    pro: 'Preuve du règlement',
+    direct: 'Détails du paiement',
+  },
+  'dep.paymentSheetBody': {
+    pote: 'Je note un paiement déjà fait à {supplier}. Aucun argent ne part de Bob.',
+    pro: 'Renseignez le règlement déjà effectué à {supplier}. Bob ne déclenche aucun transfert.',
+    direct: 'Paiement déjà effectué à {supplier}. Aucun transfert.',
+  },
+  'dep.paymentDateLabel': { pote: 'Date du paiement', pro: 'Date du règlement', direct: 'Date' },
+  'dep.paymentDatePlaceholder': { pote: 'JJ/MM/AAAA', pro: 'JJ/MM/AAAA', direct: 'JJ/MM/AAAA' },
+  'dep.paymentToday': { pote: 'Aujourd’hui', pro: 'Aujourd’hui', direct: 'Aujourd’hui' },
+  'dep.paymentDateRequired': {
+    pote: 'Choisis la date du paiement.',
+    pro: 'La date du règlement est requise.',
+    direct: 'Date requise.',
+  },
+  'dep.paymentDateInvalid': {
+    pote: 'Cette date ne semble pas correcte.',
+    pro: 'Saisissez une date valide au format JJ/MM/AAAA.',
+    direct: 'Date invalide.',
+  },
+  'dep.paymentDateFuture': {
+    pote: 'Un paiement déjà fait ne peut pas être dans le futur.',
+    pro: 'La date du règlement ne peut pas être future.',
+    direct: 'Date future interdite.',
+  },
+  'dep.paymentMethodLabel': {
+    pote: 'Comment as-tu payé ?',
+    pro: 'Moyen de règlement',
+    direct: 'Moyen',
+  },
+  'dep.paymentMethodCard': { pote: 'Carte', pro: 'Carte bancaire', direct: 'Carte' },
+  'dep.paymentMethodTransfer': { pote: 'Virement', pro: 'Virement bancaire', direct: 'Virement' },
+  'dep.paymentMethodCash': { pote: 'Espèces', pro: 'Espèces', direct: 'Espèces' },
+  'dep.paymentMethodRequired': {
+    pote: 'Choisis comment tu as payé.',
+    pro: 'Le moyen de règlement est requis.',
+    direct: 'Moyen requis.',
+  },
+  'dep.paymentReferenceLabel': {
+    pote: 'Référence (facultatif)',
+    pro: 'Référence du règlement (facultatif)',
+    direct: 'Référence (facultatif)',
+  },
+  'dep.paymentReferencePlaceholder': {
+    pote: 'N° de virement ou ticket',
+    pro: 'N° de virement, remise ou ticket',
+    direct: 'N° de référence',
+  },
+  'dep.paymentContinue': { pote: 'Vérifier', pro: 'Vérifier le règlement', direct: 'Vérifier' },
+  'dep.paymentCancel': { pote: 'Annuler', pro: 'Annuler', direct: 'Annuler' },
   'dep.paidToast': {
     pote: 'Paiement de {supplier} enregistré ✓',
     pro: 'Paiement de {supplier} enregistré dans le journal.',
@@ -5825,9 +6155,9 @@ const legacyFr = {
     direct: 'Paiements par virement',
   },
   'reglages.ribOnPdfNote': {
-    pote: 'Ce réglage change l’aperçu ici — je l’appliquerai au PDF généré très bientôt.',
-    pro: 'Ce réglage s’applique à l’aperçu. Il sera bientôt appliqué au PDF généré.',
-    direct: 'Aperçu seulement pour l’instant. PDF à venir.',
+    pote: 'Ce réglage s’applique aux PDF de tes prochaines factures.',
+    pro: 'Ce réglage s’applique aux PDF des prochaines factures.',
+    direct: 'Appliqué aux prochains PDF.',
   },
   'reglages.ibanSheetTitle': { pote: 'Ton IBAN', pro: 'Votre IBAN', direct: 'IBAN' },
   'reglages.ibanSheetBody': {
@@ -5894,14 +6224,12 @@ const legacyFr = {
     direct: 'Optionnel',
   },
   'reglages.insuranceOnPdfNote': {
-    pote: 'Ce réglage change l’aperçu ici — je l’appliquerai au PDF généré très bientôt.',
-    pro: 'Ce réglage s’applique à l’aperçu. Il sera bientôt appliqué au PDF généré.',
-    direct: 'Aperçu seulement pour l’instant. PDF à venir.',
+    pote: 'Ce réglage s’applique aux PDF de tes prochaines factures.',
+    pro: 'Ce réglage s’applique aux PDF des prochaines factures.',
+    direct: 'Appliqué aux prochains PDF.',
   },
 
-  // ── Valeurs par défaut — validité (réellement appliquée aux prochains devis) + acompte/
-  // conditions/couleur (préférences mémorisées, appliquées à l'aperçu ; branchement complet
-  // documenté en attente) ─────────────────────────────────────────────────────────────────────
+  // Valeurs canoniques PostgreSQL : validité/acompte alimentent le wizard devis, couleur le PDF.
   'reglages.sectionDefaults': {
     pote: 'Valeurs par défaut',
     pro: 'Valeurs par défaut',
@@ -5936,9 +6264,9 @@ const legacyFr = {
     direct: 'Couleur PDF',
   },
   'reglages.defaultsNote': {
-    pote: 'La validité s’applique déjà à tes prochains devis. L’acompte, les conditions de paiement et la couleur sont mémorisés ici — je les appliquerai partout très bientôt.',
-    pro: 'La validité s’applique déjà à vos prochains devis. L’acompte, les conditions de paiement et la couleur sont mémorisés ici — ils seront bientôt appliqués partout.',
-    direct: 'Validité : déjà active. Le reste arrive.',
+    pote: 'La validité et l’acompte s’appliquent à chaque nouveau devis. La couleur s’applique aux prochains PDF.',
+    pro: 'La validité et l’acompte s’appliquent à chaque nouveau devis. La couleur s’applique aux prochains PDF.',
+    direct: 'Appliqué aux nouveaux devis et PDF.',
   },
 
   'reglages.soonBadge': { pote: 'Bientôt', pro: 'À venir', direct: 'Bientôt' },

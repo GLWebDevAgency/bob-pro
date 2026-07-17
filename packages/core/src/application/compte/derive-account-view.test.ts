@@ -84,7 +84,7 @@ describe('application/compte/deriveAccountView (C26 — doctrine honnêteté)', 
     expect(view.profile.team.requiredTier).toBe('business');
   });
 
-  it('fiche entreprise : SIRET formaté, forme · métier, régime réel avec taux métier', () => {
+  it('fiche entreprise : SIRET, forme, métier et régime réel sans taux inventé', () => {
     const view = deriveAccountView({
       ...emptyInput,
       company: mercierLike,
@@ -94,7 +94,7 @@ describe('application/compte/deriveAccountView (C26 — doctrine honnêteté)', 
       name: 'Mercier Plomberie',
       siretFormatted: '732 829 320 00074',
       legalTradeLine: 'EI · Plombier',
-      vatLine: 'Réel simplifié · TVA 10 %',
+      vatLine: 'Réel simplifié',
     });
   });
 

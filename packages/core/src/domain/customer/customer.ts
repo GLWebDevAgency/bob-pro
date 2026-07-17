@@ -1,6 +1,5 @@
-import { type DomainResult, ok } from '../../shared-kernel/result';
+import { type DomainResult, err, ok } from '../../shared-kernel/result';
 import { type Address } from '../../shared-kernel/contact';
-import { Score, type ScoreBand } from './score';
 
 export type CustomerType = 'b2c' | 'b2b' | 'b2g';
 
@@ -13,24 +12,56 @@ export interface CustomerProps {
   address: Address;
   email?: string;
   phone?: string;
+  /** Contact chez le client entreprise/public (raison sociale ≠ personne physique jointe). */
+  contactName?: string;
   paymentTermsLabel?: string;
-  score: number;
-  avgDelayDays: number;
-  outstanding: number;
   isInternational?: boolean;
   isSubcontractingBtp?: boolean;
 }
 
 export class Customer {
-  private constructor(
-    private readonly p: CustomerProps,
-    private readonly scoreVo: Score,
-  ) {}
+  private constructor(private readonly p: CustomerProps) {}
 
   static of(p: CustomerProps): DomainResult<Customer> {
-    const s = Score.of(p.score);
-    if (!s.ok) return s;
-    return ok(new Customer(p, s.value));
+    if (typeof p.id !== 'string' || p.id.trim().length === 0)
+      return err({ code: 'VALIDATION', field: 'id', message: 'Identifiant client requis.' });
+    if (typeof p.companyId !== 'string' || p.companyId.trim().length === 0)
+      return err({ code: 'VALIDATION', field: 'companyId', message: 'Entreprise requise.' });
+    if (!['b2c', 'b2b', 'b2g'].includes(p.type))
+      return err({ code: 'VALIDATION', field: 'type', message: 'Type de client invalide.' });
+    if (typeof p.name !== 'string' || p.name.trim().length === 0 || p.name.trim().length > 200)
+      return err({ code: 'VALIDATION', field: 'name', message: 'Nom client requis (200 caractères maximum).' });
+    if (
+      p.address === null
+      || typeof p.address !== 'object'
+      || typeof p.address.line1 !== 'string'
+      || typeof p.address.zip !== 'string'
+      || typeof p.address.city !== 'string'
+    )
+      return err({ code: 'VALIDATION', field: 'address', message: 'Adresse client invalide.' });
+    if (p.siren !== undefined && !/^\d{9}$/.test(p.siren))
+      return err({ code: 'VALIDATION', field: 'siren', message: 'SIREN invalide : 9 chiffres requis.' });
+    if (p.contactName !== undefined && p.contactName.trim().length > 200)
+      return err({ code: 'VALIDATION', field: 'contactName', message: 'Nom du contact limité à 200 caractères.' });
+
+    // Projection exacte : même si un appelant JavaScript injecte d'anciens champs
+    // `score`/`avgDelayDays`/`outstanding`, ils ne deviennent jamais un état métier.
+    const contactName = p.contactName?.trim();
+    const props: CustomerProps = {
+      id: p.id,
+      companyId: p.companyId,
+      type: p.type,
+      name: p.name.trim(),
+      address: { ...p.address },
+      ...(p.siren !== undefined ? { siren: p.siren } : {}),
+      ...(p.email !== undefined ? { email: p.email } : {}),
+      ...(p.phone !== undefined ? { phone: p.phone } : {}),
+      ...(contactName ? { contactName } : {}),
+      ...(p.paymentTermsLabel !== undefined ? { paymentTermsLabel: p.paymentTermsLabel } : {}),
+      ...(p.isInternational !== undefined ? { isInternational: p.isInternational } : {}),
+      ...(p.isSubcontractingBtp !== undefined ? { isSubcontractingBtp: p.isSubcontractingBtp } : {}),
+    };
+    return ok(new Customer(props));
   }
 
   get id(): string {
@@ -54,14 +85,11 @@ export class Customer {
   get phone(): string | undefined {
     return this.p.phone;
   }
-  get outstanding(): number {
-    return this.p.outstanding;
+  get contactName(): string | undefined {
+    return this.p.contactName;
   }
-  get avgDelayDays(): number {
-    return this.p.avgDelayDays;
-  }
-  get score(): number {
-    return this.scoreVo.value;
+  get address(): Address {
+    return { ...this.p.address };
   }
   get isSubcontractingBtp(): boolean {
     return this.p.isSubcontractingBtp === true;
@@ -77,10 +105,6 @@ export class Customer {
   isProfessional(): boolean {
     return this.p.type === 'b2b' || this.p.type === 'b2g';
   }
-  scoreBand(): ScoreBand {
-    return this.scoreVo.band();
-  }
-
   /** Snapshot de persistance (réhydratation via Customer.of). */
   toProps(): CustomerProps {
     return { ...this.p, address: { ...this.p.address } };

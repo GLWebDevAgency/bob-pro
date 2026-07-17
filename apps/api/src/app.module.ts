@@ -8,6 +8,7 @@ import { ObservabilityModule } from './observability/observability.module';
 import { CorrelationMiddleware } from './observability/correlation.middleware';
 import { paymentGatewayProvider } from './payments/payment-gateway';
 import { PDF_RENDERER, PdfRenderer } from './documents/pdf-renderer';
+import { DOCUMENT_STORAGE, buildDocumentStorage } from './documents/storage';
 import { ocrProvider } from './ocr/ocr';
 import { documentIntelligenceProvider } from './documents/document-intelligence';
 import { notifierProvider } from './notifications/notifier';
@@ -27,10 +28,13 @@ import { CabinetApiService } from './cabinet/cabinet-api.service';
 import { CabinetInvitationDeliveryScheduler } from './cabinet/cabinet-invitation-delivery.scheduler';
 import { RealtimeVoiceModule } from './voice/realtime/realtime.module';
 import { FiscalModule } from './fiscal/fiscal.module';
+import { QuoteDraftController } from './quotes/quote-draft.controller';
+import { QuoteDraftService } from './quotes/quote-draft.service';
 import {
   HealthController,
   CustomersController,
   CashflowController,
+  BankBalanceController,
   QuotesController,
   InvoicesController,
   AccountingController,
@@ -52,6 +56,7 @@ import {
   DocumentFolderDeletionPlansController,
   ExpensesController,
   PaymentsController,
+  CatalogueController,
   ChantiersController,
   PublicSignatureController,
   NotificationsController,
@@ -72,6 +77,7 @@ import {
     HealthController,
     CustomersController,
     CashflowController,
+    BankBalanceController,
     QuotesController,
     InvoicesController,
     AccountingController,
@@ -94,11 +100,13 @@ import {
     DocumentFolderDeletionPlansController,
     ExpensesController,
     PaymentsController,
+    CatalogueController,
     ChantiersController,
     PublicSignatureController,
     NotificationsController,
     DevicesController,
     PublicPushRevocationsController,
+    QuoteDraftController,
     CabinetController,
   ],
   providers: [
@@ -112,12 +120,14 @@ import {
     ocrProvider,
     documentIntelligenceProvider,
     { provide: PDF_RENDERER, useClass: PdfRenderer },
+    { provide: DOCUMENT_STORAGE, useFactory: buildDocumentStorage },
     notifierProvider,
     expoPushProvider,
     supabaseAdminProvider,
     NotificationsApiService,
     CabinetApiService,
     CabinetInvitationDeliveryScheduler,
+    QuoteDraftService,
     { provide: APP_GUARD, useClass: ThrottlerGuard },
     { provide: APP_GUARD, useClass: SupabaseAuthGuard },
     { provide: APP_INTERCEPTOR, useClass: TenantPersistenceInterceptor },

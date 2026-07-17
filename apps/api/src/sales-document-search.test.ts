@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Company, Customer } from '@bob/core';
 import type { PaymentGatewayPort, PdfRendererPort, OcrPort } from '@bob/core';
 import { BackendService } from './backend.service';
-import { InMemoryPersistence } from './persistence/persistence';
+import { InMemoryPersistence } from './persistence/persistence.testing';
 import { requestContext, type AppLogger, type Principal } from './observability/logger';
 import type { SupabaseAdminPort } from './auth/supabase-admin';
 import type { NotificationDeliveryService } from './jobs/notification-delivery.service';
@@ -75,9 +75,6 @@ async function seedIntrusTenant(p: InMemoryPersistence): Promise<Principal> {
     type: 'b2g',
     name: 'Mairie de Sèvres',
     address: { line1: '1 place', zip: '92310', city: 'Sèvres' },
-    score: 0,
-    avgDelayDays: 0,
-    outstanding: 0,
   });
   if (!customer.ok) throw new Error('fixture: customer intrus invalide');
   await p.customers.save(customer.value);

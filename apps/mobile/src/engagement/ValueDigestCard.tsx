@@ -17,7 +17,7 @@ import { Pressable, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { formatEURWhole, type ValueDigest } from '@bob/core';
 import { t, type I18nKey } from '@bob/i18n';
-import { Card, font, useTheme } from '@bob/ui';
+import { Card, ErrorRetry, font, useTheme } from '@bob/ui';
 import { useQuery } from '@tanstack/react-query';
 import { useBobClient } from '../data/client';
 import { CheckIcon, ChevronRightIcon } from '../components/icons';
@@ -28,7 +28,7 @@ import { CheckIcon, ChevronRightIcon } from '../components/icons';
  * projections que le cron « lundi de Bob », jamais deux calculs qui divergent). Sans substance
  * ou sans réseau : null → la carte est invisible, zéro régression visuelle.
  */
-export function useLatestValueDigest(): ValueDigest | null {
+export function useLatestValueDigest() {
   const client = useBobClient();
   const query = useQuery({
     queryKey: ['value-digest'],
@@ -40,7 +40,12 @@ export function useLatestValueDigest(): ValueDigest | null {
     staleTime: 15 * 60 * 1000, // le digest hebdo ne bouge pas à la minute
     retry: false, // pas de valeur = pas de carte — jamais un spinner de vente
   });
-  return query.data?.digest ?? null;
+  return {
+    digest: query.data?.digest ?? null,
+    isLoading: query.isLoading,
+    isError: query.isError,
+    refetch: query.refetch,
+  };
 }
 
 /** Accroche unique → clé i18n + interpolations. `estimated` = du TEMPS est affiché (note requise). */
@@ -149,7 +154,27 @@ export function ValueDigestCard({ digest }: { readonly digest: ValueDigest }): R
  * serveur n'expose pas le digest (null), sans aucune condition à écrire dans l'écran.
  */
 export function LatestValueDigestCard(): React.JSX.Element | null {
-  const digest = useLatestValueDigest();
-  if (digest === null) return null;
-  return <ValueDigestCard digest={digest} />;
+  const { personality } = useTheme();
+  const query = useLatestValueDigest();
+  if (query.isLoading && query.digest === null) return null;
+  if (query.isError && query.digest === null) {
+    return (
+      <ErrorRetry
+        message={t('today.dataError', { personality })}
+        onRetry={() => void query.refetch()}
+      />
+    );
+  }
+  if (query.digest === null) return null;
+  return (
+    <View style={{ gap: 8 }}>
+      {query.isError ? (
+        <ErrorRetry
+          message={t('today.dataError', { personality })}
+          onRetry={() => void query.refetch()}
+        />
+      ) : null}
+      <ValueDigestCard digest={query.digest} />
+    </View>
+  );
 }

@@ -28,8 +28,12 @@ import type {
   Trade,
   VatRegime,
   ChantierProps,
+  ChantierNoteProps,
+  WorksiteMediaItem,
   CreateChantierInput,
   CompanyProps,
+  CompanyBillingSettings,
+  CompanyBillingSettingsPatch,
   CustomerPortfolio,
   CompanyLookupResult,
   VatCheckResult,
@@ -57,6 +61,8 @@ import type {
   TrialReportView,
   RegisterPaymentClientInput,
   RegisterPaymentClientOutput,
+  RecordExpensePaymentClientInput,
+  RecordExpensePaymentClientOutput,
   SendQuoteOutput,
   CreateQuoteSignatureLinkOutput,
   SendRelanceClientOutput,
@@ -105,6 +111,7 @@ import type {
   RecordDocumentExpenseClientOutput,
   AskBobClientInput,
   CreateCustomerClientInput,
+  UpdateCustomerClientInput,
   SearchSalesDocumentsClientInput,
   QuoteDraftSlotView,
   SaveQuoteDraftClientInput,
@@ -229,6 +236,8 @@ const CUSTOMER_LIST_ITEM_FIELDS = [
   'id',
   'name',
   'type',
+  'address',
+  'contactName',
   'score',
   'scoreBand',
   'scoreStatus',
@@ -245,6 +254,16 @@ const CUSTOMER_LIST_ITEM_FIELDS = [
   'phone',
 ] as const;
 
+function isCustomerAddress(value: unknown): value is { line1: string; zip: string; city: string } {
+  return (
+    isRecord(value)
+    && hasExactKeys(value, ['line1', 'zip', 'city'])
+    && typeof value.line1 === 'string'
+    && typeof value.zip === 'string'
+    && typeof value.city === 'string'
+  );
+}
+
 function decodeCustomerListItem(value: unknown): CustomerListItem | null {
   if (!isRecord(value) || !hasExactKeys(value, CUSTOMER_LIST_ITEM_FIELDS)) return null;
   if (
@@ -253,6 +272,8 @@ function decodeCustomerListItem(value: unknown): CustomerListItem | null {
     || typeof value.name !== 'string'
     || value.name.length === 0
     || (value.type !== 'b2c' && value.type !== 'b2b' && value.type !== 'b2g')
+    || !isCustomerAddress(value.address)
+    || (value.contactName !== null && typeof value.contactName !== 'string')
     || value.score !== null
     || value.scoreBand !== null
     || value.scoreStatus !== 'model_not_ratified'
@@ -296,6 +317,31 @@ function decodeCustomerList(value: unknown): CustomerListItem[] | null {
     items.push(item);
   }
   return items;
+}
+
+/** Allowlist réseau explicite (création ET édition — même forme, cf. CustomersController) : un
+ * objet élargi à l'exécution ne fait jamais fuiter un champ non prévu vers l'API. */
+function customerClientBody(
+  input: CreateCustomerClientInput | UpdateCustomerClientInput,
+): CreateCustomerClientInput {
+  return {
+    type: input.type,
+    name: input.name,
+    address: { ...input.address },
+    ...(input.siren !== undefined ? { siren: input.siren } : {}),
+    ...(input.email !== undefined ? { email: input.email } : {}),
+    ...(input.phone !== undefined ? { phone: input.phone } : {}),
+    ...(input.contactName !== undefined ? { contactName: input.contactName } : {}),
+    ...(input.paymentTermsLabel !== undefined
+      ? { paymentTermsLabel: input.paymentTermsLabel }
+      : {}),
+    ...(input.isInternational !== undefined
+      ? { isInternational: input.isInternational }
+      : {}),
+    ...(input.isSubcontractingBtp !== undefined
+      ? { isSubcontractingBtp: input.isSubcontractingBtp }
+      : {}),
+  };
 }
 
 function decodeCatalogueItem(value: unknown): CatalogueItemView | null {
@@ -1302,6 +1348,18 @@ export class HttpBobClient implements BobClient {
   updateCompanyBilling(input: { iban?: string | null; bic?: string | null }) {
     return this.req<CompanyProps>('PATCH', '/company/billing', input);
   }
+  getCompanyBillingSettings() {
+    return this.req<CompanyBillingSettings>('GET', '/company/billing-settings');
+  }
+  updateCompanyBillingSettings(input: {
+    expectedRevision: number;
+    patch: CompanyBillingSettingsPatch;
+  }) {
+    return this.req<CompanyBillingSettings>('PATCH', '/company/billing-settings', {
+      expectedRevision: input.expectedRevision,
+      ...input.patch,
+    });
+  }
   lookupCompany(siret: string) {
     return this.req<CompanyLookupResult>(
       'GET',
@@ -1836,9 +1894,14 @@ export class HttpBobClient implements BobClient {
   confirmFacturXExpense(input: { xml: string; decision: FacturXImportDecision }) {
     return this.req<FacturXImportOutcome>('POST', '/expenses/import-facturx/confirm', input);
   }
-  /** E4 — endpoint serveur à poser (suivi CLAIMS) : règlement d'une dépense fournisseur. */
-  payExpense(input: { expenseId: string }) {
-    return this.req<{ status: string }>('POST', `/expenses/${input.expenseId}/pay`);
+  /** Preuve explicite d'un règlement fournisseur déjà réalisé ; aucun rail bancaire. */
+  payExpense(input: RecordExpensePaymentClientInput) {
+    const { expenseId, ...evidence } = input;
+    return this.req<RecordExpensePaymentClientOutput>(
+      'POST',
+      `/expenses/${expenseId}/pay`,
+      evidence,
+    );
   }
   listExpenses() {
     return this.req<ExpenseProps[]>('GET', '/expenses');
@@ -1889,28 +1952,39 @@ export class HttpBobClient implements BobClient {
   listChantiers() {
     return this.req<ChantierProps[]>('GET', '/chantiers');
   }
+  listChantierNotes(chantierId: string) {
+    return this.req<ChantierNoteProps[]>('GET', `/chantiers/${encodeURIComponent(chantierId)}/notes`);
+  }
+  addChantierNote(chantierId: string, input: { text: string }) {
+    return this.req<{ id: string }>('POST', `/chantiers/${encodeURIComponent(chantierId)}/notes`, input);
+  }
+  listWorksitePhotos(chantierId: string) {
+    return this.req<WorksiteMediaItem[]>('GET', `/chantiers/${encodeURIComponent(chantierId)}/photos`);
+  }
+  uploadWorksitePhoto(
+    chantierId: string,
+    input: { contentBase64: string; mimeType: string; filename: string },
+  ) {
+    return this.req<WorksiteMediaItem>('POST', `/chantiers/${encodeURIComponent(chantierId)}/photos`, input);
+  }
+  worksitePhotoViewUrl(photoId: string) {
+    return this.req<{ url: string; expiresInSeconds: number }>(
+      'GET',
+      `/chantiers/photos/${encodeURIComponent(photoId)}/view-url`,
+    );
+  }
+  deleteWorksitePhoto(photoId: string) {
+    return this.req<void>('DELETE', `/chantiers/photos/${encodeURIComponent(photoId)}`);
+  }
   listCustomers() {
     return this.req<CustomerListItem[]>('GET', '/customers', undefined, undefined, decodeCustomerList);
   }
   createCustomer(input: CreateCustomerClientInput) {
-    const body: CreateCustomerClientInput = {
-      type: input.type,
-      name: input.name,
-      address: { ...input.address },
-      ...(input.siren !== undefined ? { siren: input.siren } : {}),
-      ...(input.email !== undefined ? { email: input.email } : {}),
-      ...(input.phone !== undefined ? { phone: input.phone } : {}),
-      ...(input.paymentTermsLabel !== undefined
-        ? { paymentTermsLabel: input.paymentTermsLabel }
-        : {}),
-      ...(input.isInternational !== undefined
-        ? { isInternational: input.isInternational }
-        : {}),
-      ...(input.isSubcontractingBtp !== undefined
-        ? { isSubcontractingBtp: input.isSubcontractingBtp }
-        : {}),
-    };
-    return this.req<{ id: string }>('POST', '/customers', body);
+    return this.req<{ id: string }>('POST', '/customers', customerClientBody(input));
+  }
+  /** Édition post-création (C13/C40 TODO partagé) — même allowlist que la création. */
+  updateCustomer(id: string, input: UpdateCustomerClientInput) {
+    return this.req<{ id: string }>('PATCH', `/customers/${encodeURIComponent(id)}`, customerClientBody(input));
   }
   // —— Assistant Bob (C40 ⑧) : l'agent tourne CÔTÉ SERVEUR — journal company-scoped, autonomie clampée ——
   askBob(input: AskBobClientInput) {

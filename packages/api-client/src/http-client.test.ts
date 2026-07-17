@@ -795,7 +795,16 @@ describe('HttpBobClient', () => {
       const u = String(url);
       const method = init?.method ?? 'GET';
       if (u === 'https://api.bob.test/expenses/exp-1/pay' && method === 'POST') {
-        return new Response(JSON.stringify({ status: 'paid', alreadyPaid: false }), { headers: { 'content-type': 'application/json' } });
+        expect(JSON.parse(String(init?.body))).toEqual({
+          paidOn: '2026-07-04',
+          method: 'transfer',
+          reference: 'VIR-42',
+        });
+        return new Response(JSON.stringify({
+          status: 'paid',
+          alreadyRecorded: false,
+          paymentEntryId: 'expense:exp-1:paid',
+        }), { headers: { 'content-type': 'application/json' } });
       }
       if (u === 'https://api.bob.test/payments' && method === 'GET') {
         return new Response(JSON.stringify([payment]), { headers: { 'content-type': 'application/json' } });
@@ -808,7 +817,12 @@ describe('HttpBobClient', () => {
     vi.stubGlobal('fetch', fetchMock);
     const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-mercier' });
 
-    const paid = await client.payExpense({ expenseId: 'exp-1' });
+    const paid = await client.payExpense({
+      expenseId: 'exp-1',
+      paidOn: '2026-07-04',
+      method: 'transfer',
+      reference: 'VIR-42',
+    });
     expect(paid.ok && paid.value.status).toBe('paid');
 
     const payments = await client.listPayments();
@@ -1184,11 +1198,37 @@ describe('HttpBobClient — assistant Bob (C40 ⑧ : ask/confirm/journal serveur
     if (r.ok) expect(r.value).toEqual({ id: 'cust-42' });
   });
 
+  it('updateCustomer PATCHe /customers/:id (édition post-création C13/C40 TODO partagé)', async () => {
+    const input = {
+      name: 'SARL Nguyen',
+      type: 'b2b' as const,
+      siren: '123456789',
+      contactName: 'Mme Nguyen',
+      address: { line1: '4 rue Basse', zip: '92310', city: 'Sèvres' },
+    };
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      if (String(url) === 'https://api.bob.test/customers/cust-42' && init?.method === 'PATCH') {
+        expect(JSON.parse(String(init?.body))).toEqual(input);
+        return new Response(JSON.stringify({ id: 'cust-42' }), { headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ error: { kind: 'not_found', resource: 'route' } }), { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-mercier' });
+    const r = await client.updateCustomer('cust-42', input);
+
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value).toEqual({ id: 'cust-42' });
+  });
+
   it('listCustomers accepte uniquement des métriques dérivées cohérentes et un score absent', async () => {
     const item = {
       id: 'cust-42',
       name: 'Mme Nguyen',
       type: 'b2c',
+      address: { line1: '4 rue Basse', zip: '92310', city: 'Sèvres' },
+      contactName: null,
       score: null,
       scoreBand: null,
       scoreStatus: 'model_not_ratified',
@@ -1220,6 +1260,8 @@ describe('HttpBobClient — assistant Bob (C40 ⑧ : ask/confirm/journal serveur
       id: 'cust-42',
       name: 'Mme Nguyen',
       type: 'b2c',
+      address: { line1: '4 rue Basse', zip: '92310', city: 'Sèvres' },
+      contactName: null,
       score: null,
       scoreBand: null,
       scoreStatus: 'model_not_ratified',

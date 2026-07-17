@@ -15,6 +15,7 @@ import { useRouter } from 'expo-router';
 import {
   matchSpokenCustomer,
   normalizeVoiceText,
+  parisDateOnly,
   parseFrenchPeriod,
   searchSalesDocumentsInMemory,
   type PeriodLabel,
@@ -65,11 +66,19 @@ export function useSalesDocumentVoiceAffordance(personality: Personality): Agent
     quotes: quotes.data ?? ([] as QuoteView[]),
     invoices: invoices.data ?? ([] as InvoiceView[]),
     customers: customers.data ?? [],
+    ready:
+      quotes.data !== undefined &&
+      invoices.data !== undefined &&
+      customers.data !== undefined,
   });
   dataRef.current = {
     quotes: quotes.data ?? [],
     invoices: invoices.data ?? [],
     customers: customers.data ?? [],
+    ready:
+      quotes.data !== undefined &&
+      invoices.data !== undefined &&
+      customers.data !== undefined,
   };
   const routerRef = useRef(router);
   routerRef.current = router;
@@ -82,9 +91,13 @@ export function useSalesDocumentVoiceAffordance(personality: Personality): Agent
   return useMemo<AgentAffordance>(() => ({
     id: 'sales-documents.voiceSearch',
     match: (utterance) => {
+      // Une absence de réponse réseau n'est jamais un portefeuille vide. Tant que les trois
+      // sources tenant-scoped n'ont pas livré une valeur, cette affordance ne répond pas et ne
+      // prononce surtout pas « aucun résultat » à partir de tableaux de chargement.
+      if (!dataRef.current.ready) return null;
       const normalized = normalizeVoiceText(utterance);
       if (!TRIGGER_RE.test(normalized)) return null;
-      const today = new Date().toISOString().slice(0, 10);
+      const today = parisDateOnly();
       const period = parseFrenchPeriod(utterance, today);
       const { quotes: qs, invoices: is, customers: cs } = dataRef.current;
       const customerId = matchSpokenCustomer(normalized, cs);

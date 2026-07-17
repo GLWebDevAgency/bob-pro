@@ -26,14 +26,19 @@ import type {
   ExpenseProps,
   ExpenseCategory,
   RecordExpenseInput,
+  ExpensePaymentEvidenceInput,
   FacturXExpenseDraft,
   AfnorInboundRefusalStatus,
   TradeConfig,
   Trade,
   VatRegime,
   ChantierProps,
+  ChantierNoteProps,
+  WorksiteMediaItem,
   CreateChantierInput,
   CompanyProps,
+  CompanyBillingSettings,
+  CompanyBillingSettingsPatch,
   CustomerPortfolio,
   CompanyLookupResult,
   VatCheckResult,
@@ -113,6 +118,17 @@ export interface RegisterPaymentClientInput {
 export interface RegisterPaymentClientOutput {
   status: string;
   paymentId: string;
+}
+
+/** Preuve d'un règlement fournisseur déjà réalisé hors de Bob. */
+export interface RecordExpensePaymentClientInput extends ExpensePaymentEvidenceInput {
+  readonly expenseId: string;
+}
+
+export interface RecordExpensePaymentClientOutput {
+  readonly status: 'paid';
+  readonly alreadyRecorded: boolean;
+  readonly paymentEntryId: string;
 }
 
 export interface SendQuoteOutput {
@@ -492,6 +508,7 @@ export type AskBobClientInput = Readonly<{ message: string }> &
 
 /** POST /customers — identité/coordonnées uniquement. Les métriques sont toujours dérivées côté serveur. */
 export type CreateCustomerClientInput = Omit<CustomerProps, 'id' | 'companyId'>;
+export type UpdateCustomerClientInput = Omit<CustomerProps, 'id' | 'companyId'>;
 
 /** Envoi RÉEL d'une relance ciblée (C25 ② — endpoint POST /invoices/:id/relance, DTO serveur
  * constaté : { jobId, status, tone }). Le serveur choisit le ton via le plan @bob/core
@@ -562,8 +579,9 @@ export interface UnregisterDeviceClientInput {
 
 /**
  * Façade data consommée par l'app mobile (via TanStack Query).
- * Deux implémentations : LocalBobClient (fixtures, hors-ligne — V1) et, plus tard, HttpBobClient (NestJS).
- * L'UI ne connaît que cette interface : brancher le backend = changer d'implémentation, sans toucher aux écrans.
+ * Le runtime mobile utilise exclusivement HttpBobClient (NestJS + PostgreSQL/RLS). Les doubles
+ * mémoire ne sont accessibles que depuis l'entrypoint explicite `@bob/api-client/testing`.
+ * L'UI ne connaît que cette interface, mais une release ne peut pas substituer sa source de vérité.
  */
 /**
  * GET /subscription (C26b) — abonnement RÉEL du tenant. Étend SubscriptionInfo (@bob/core,
@@ -636,7 +654,7 @@ export interface BobClient {
   readonly companyId: string;
   /** GET /subscription (C26b) : abonnement réel du tenant (SubscriptionView ⊂ SubscriptionInfo @bob/core).
    * En early-access le serveur renvoie earlyAccess: true, priceCents: 0 — l'écran Compte en dérive
-   * l'état honnête. Local (démo) : early-access aligné sur le seed. */
+   * l'état honnête. */
   getSubscription(): Promise<Result<SubscriptionView, AppError>>;
   /** GET /fiscal-profile (BOB EXPERT FISCAL, Phase 1A) : profil fiscal du tenant — dérivé par
    *  hypothèses depuis la forme juridique si absent, chaque champ portant son statut
@@ -696,6 +714,12 @@ export interface BobClient {
     iban?: string | null;
     bic?: string | null;
   }): Promise<Result<CompanyProps, AppError>>;
+  /** Réglages PostgreSQL du tenant. Aucune valeur de repli n'est autorisée côté client. */
+  getCompanyBillingSettings(): Promise<Result<CompanyBillingSettings, AppError>>;
+  updateCompanyBillingSettings(input: {
+    expectedRevision: number;
+    patch: CompanyBillingSettingsPatch;
+  }): Promise<Result<CompanyBillingSettings, AppError>>;
   lookupCompany(siret: string): Promise<Result<CompanyLookupResult, AppError>>;
   /** POST /onboarding/company (C24b) : crée la société du compte (provisioning tenant à
    * l'inscription — id décidé PAR LE SERVEUR, jamais fourni par le client) ou met à jour
@@ -824,8 +848,10 @@ export interface BobClient {
     xml: string;
     decision: FacturXImportDecision;
   }): Promise<Result<FacturXImportOutcome, AppError>>;
-  /** E4 : règle une dépense (to_pay→paid + décaissement 401/512) — même use case que Bob. */
-  payExpense(input: { expenseId: string }): Promise<Result<{ status: string }, AppError>>;
+  /** Enregistre un règlement déjà réalisé, avec preuve explicite — même use case que Bob. */
+  payExpense(
+    input: RecordExpensePaymentClientInput,
+  ): Promise<Result<RecordExpensePaymentClientOutput, AppError>>;
   listExpenses(): Promise<Result<ExpenseProps[], AppError>>;
   listCatalogueItems(): Promise<Result<readonly CatalogueItemView[], AppError>>;
   createCatalogueItem(input: CatalogueItemWriteInput): Promise<Result<CatalogueItemView, AppError>>;
@@ -842,9 +868,22 @@ export interface BobClient {
     input: Omit<CreateChantierInput, 'companyId'>,
   ): Promise<Result<{ id: string }, AppError>>;
   listChantiers(): Promise<Result<ChantierProps[], AppError>>;
+  // ── Journal + photos de chantier (fiche chantier, extension V1) ──
+  listChantierNotes(chantierId: string): Promise<Result<ChantierNoteProps[], AppError>>;
+  addChantierNote(chantierId: string, input: { text: string }): Promise<Result<{ id: string }, AppError>>;
+  listWorksitePhotos(chantierId: string): Promise<Result<WorksiteMediaItem[], AppError>>;
+  uploadWorksitePhoto(
+    chantierId: string,
+    input: { contentBase64: string; mimeType: string; filename: string },
+  ): Promise<Result<WorksiteMediaItem, AppError>>;
+  worksitePhotoViewUrl(photoId: string): Promise<Result<{ url: string; expiresInSeconds: number }, AppError>>;
+  deleteWorksitePhoto(photoId: string): Promise<Result<void, AppError>>;
   listCustomers(): Promise<Result<CustomerListItem[], AppError>>;
   /** Crée une fiche client — même use case pour l'UI (C12) et l'outil agent creer_client (C40). */
   createCustomer(input: CreateCustomerClientInput): Promise<Result<{ id: string }, AppError>>;
+  /** Édition post-création (C13/C40 TODO partagé) — remplacement complet revalidé, mêmes champs
+   * que la création (SIREN, adresse, contact… complétés depuis la fiche). */
+  updateCustomer(id: string, input: UpdateCustomerClientInput): Promise<Result<{ id: string }, AppError>>;
   // —— Assistant Bob : autorité serveur unique, journal tenant-scoped ——
   /** POST /ai/ask : l'agent tourne CÔTÉ SERVEUR (autonomie clampée par l'offre, journal
    * append-only company-scoped). Le binaire mobile ne possède aucun cerveau de repli local. */

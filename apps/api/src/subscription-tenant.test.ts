@@ -4,7 +4,7 @@ import type { ExecutionContext } from '@nestjs/common';
 import { jwtVerify } from 'jose';
 import type { OcrPort, PaymentGatewayPort, PdfRendererPort } from '@bob/core';
 import { BackendService } from './backend.service';
-import { InMemoryPersistence } from './persistence/persistence';
+import { InMemoryPersistence } from './persistence/persistence.testing';
 import { getPrincipal, requestContext, type AppLogger, type Principal } from './observability/logger';
 import { SupabaseAuthGuard } from './auth/auth.guard';
 import type { SupabaseAdminPort } from './auth/supabase-admin';
@@ -49,24 +49,12 @@ function ctx(req: { url: string; method?: string; headers: Record<string, string
 }
 
 describe('C26b — subscription dérivée PAR TENANT (plus de singleton Mercier)', () => {
-  it('GET /subscription SANS ligne DB (tenant pré-migration) : fallback early-access HONNÊTE (business actif, 0 €, aucun essai fantôme)', async () => {
+  it('GET /subscription SANS ligne DB : indisponible, jamais Business implicite', async () => {
     const { service } = makeService();
 
-    const payload = await asPrincipal({ userId: 'u-a', companyId: 'co-artisan-a' }, () => service.getSubscription());
+    const result = await asPrincipal({ userId: 'u-a', companyId: 'co-artisan-a' }, () => service.getSubscription());
 
-    expect(payload).toMatchObject({
-      tier: 'business',
-      status: 'active',
-      earlyAccess: true,
-      priceCents: 0,
-      currentPeriodEnd: null,
-      trialEndsAt: null,
-      trialPhase: null,
-      trialDaysLeft: null,
-    });
-    // Aucun gating existant cassé : les droits business restent ouverts pendant l'accès anticipé.
-    expect(payload.features).toContain('ai_assistant');
-    expect(payload.catalog.length).toBeGreaterThan(0);
+    expect(result).toEqual({ ok: false, error: { kind: 'unavailable', service: 'subscription' } });
   });
 
   it('GET /subscription AVEC ligne d’essai (pilier 2) : DB-backed — Pro prêté, trialing, jours restants réels', async () => {
@@ -75,7 +63,10 @@ describe('C26b — subscription dérivée PAR TENANT (plus de singleton Mercier)
     const endsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
     await p.subscriptions.startTrial({ id: 'sub-co-artisan-a', companyId: 'co-artisan-a', plan: 'pro', trialEndsAt: endsAt, now });
 
-    const payload = await asPrincipal({ userId: 'u-a', companyId: 'co-artisan-a' }, () => service.getSubscription());
+    const result = await asPrincipal({ userId: 'u-a', companyId: 'co-artisan-a' }, () => service.getSubscription());
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const payload = result.value;
 
     expect(payload).toMatchObject({
       tier: 'pro',
@@ -101,28 +92,37 @@ describe('C26b — subscription dérivée PAR TENANT (plus de singleton Mercier)
       now: new Date(Date.now() - 16 * 24 * 60 * 60 * 1000).toISOString(),
     });
 
-    const payload = await asPrincipal({ userId: 'u-a', companyId: 'co-artisan-a' }, () => service.getSubscription());
+    const result = await asPrincipal({ userId: 'u-a', companyId: 'co-artisan-a' }, () => service.getSubscription());
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const payload = result.value;
 
     expect(payload).toMatchObject({ tier: 'free', trialPhase: 'expired', trialDaysLeft: 0, priceCents: 0 });
     expect(payload.features).toContain('ai_quota'); // Découverte reste ouverte (facturation conforme)
     expect(payload.features).not.toContain('voice_live');
   });
 
-  it('deux tenants → deux abonnements DISTINCTS, chacun portant SON companyId (sub-<companyId>)', () => {
-    const { service } = makeService();
+  it('deux tenants → deux abonnements BDD DISTINCTS, chacun portant SON companyId', async () => {
+    const { service, p } = makeService();
+    const now = new Date().toISOString();
+    const trialEndsAt = new Date(Date.now() + 14 * 86_400_000).toISOString();
+    await p.subscriptions.startTrial({ id: 'sub-co-artisan-a', companyId: 'co-artisan-a', plan: 'pro', trialEndsAt, now });
+    await p.subscriptions.startTrial({ id: 'sub-co-artisan-b', companyId: 'co-artisan-b', plan: 'solo', trialEndsAt, now });
 
-    const a = service['subscriptionFor']('co-artisan-a');
-    const b = service['subscriptionFor']('co-artisan-b');
+    const a = await service['subscriptionFor']('co-artisan-a');
+    const b = await service['subscriptionFor']('co-artisan-b');
 
-    expect(a.id).toBe('sub-co-artisan-a');
-    expect(a.companyId).toBe('co-artisan-a');
-    expect(b.id).toBe('sub-co-artisan-b');
-    expect(b.companyId).toBe('co-artisan-b');
-    expect(a).not.toBe(b);
-    // Early-access réel : même POLITIQUE pour tous (business actif) — seule l'identité diffère.
-    expect(a.tier).toBe('business');
-    expect(b.tier).toBe('business');
-    expect(a.isActive()).toBe(true);
+    expect(a.ok).toBe(true);
+    expect(b.ok).toBe(true);
+    if (!a.ok || !b.ok) return;
+    expect(a.value.id).toBe('sub-co-artisan-a');
+    expect(a.value.companyId).toBe('co-artisan-a');
+    expect(b.value.id).toBe('sub-co-artisan-b');
+    expect(b.value.companyId).toBe('co-artisan-b');
+    expect(a.value).not.toBe(b.value);
+    expect(a.value.tier).toBe('pro');
+    expect(b.value.tier).toBe('solo');
+    expect(a.value.isActive()).toBe(true);
   });
 
   it('sans tenant : échec EXPLICITE côté service — le guard doit avoir répondu 403 en amont, zéro repli', async () => {
@@ -135,7 +135,7 @@ describe('C26b — subscription dérivée PAR TENANT (plus de singleton Mercier)
 describe('C26b — GET /subscription au guard : JWT + tenant REQUIS (comme tout endpoint tenant)', () => {
   // Construit à la COLLECTION (DEMO_MODE non stubbé → storage démo) : le stub DEMO_MODE=false
   // ci-dessous ne concerne que la POLITIQUE du guard, pas la construction du service.
-  const { service } = makeService();
+  const { service, p } = makeService();
 
   beforeEach(() => {
     vi.stubEnv('DEMO_MODE', 'false');
@@ -149,6 +149,14 @@ describe('C26b — GET /subscription au guard : JWT + tenant REQUIS (comme tout 
   const BEARER = { authorization: 'Bearer jwt-de-test' };
 
   it('JWT valide AVEC tenant : requête admise (200) — le Principal posé alimente la dérivation par tenant', async () => {
+    const now = new Date().toISOString();
+    await p.subscriptions.startTrial({
+      id: 'sub-co-artisan-a',
+      companyId: 'co-artisan-a',
+      plan: 'pro',
+      trialEndsAt: new Date(Date.now() + 14 * 86_400_000).toISOString(),
+      now,
+    });
     jwtVerifyMock.mockResolvedValue({
       payload: { sub: 'u-1', app_metadata: { company_id: 'co-artisan-a' } },
     } as never);
@@ -159,8 +167,10 @@ describe('C26b — GET /subscription au guard : JWT + tenant REQUIS (comme tout 
       expect(allowed).toBe(true);
       expect(getPrincipal()).toEqual({ userId: 'u-1', companyId: 'co-artisan-a' });
       // Même contexte ALS que la requête réelle : le service dérive l'abonnement DU tenant du JWT.
-      expect(await service.getSubscription()).toMatchObject({ earlyAccess: true, priceCents: 0, tier: 'business' });
-      expect(service['subscriptionFor']('co-artisan-a').companyId).toBe('co-artisan-a');
+      const status = await service.getSubscription();
+      expect(status.ok && status.value).toMatchObject({ earlyAccess: false, priceCents: 0, tier: 'pro' });
+      const subscription = await service['subscriptionFor']('co-artisan-a');
+      expect(subscription.ok && subscription.value.companyId).toBe('co-artisan-a');
     });
   });
 

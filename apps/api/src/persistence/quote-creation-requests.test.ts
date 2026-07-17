@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { CreateQuoteInput } from '@bob/core';
 import {
-  InMemoryQuoteCreationRequestStore,
   quoteCreationFingerprint,
 } from './quote-creation-requests';
+import { InMemoryQuoteCreationRequestStore } from './quote-creation-requests.testing';
 
 const quote: Omit<CreateQuoteInput, 'companyId'> = {
   customerId: 'customer-1',

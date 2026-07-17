@@ -873,6 +873,130 @@ describe('assistant Bob local (C40 ⑧ — ask/confirm/journal on-device) + cré
     });
   });
 
+  it('édite une fiche post-création (C13/C40 TODO partagé) — complète adresse/SIREN/contact', async () => {
+    const client = makeClient();
+    const created = await client.createCustomer({
+      name: 'Mme Petit',
+      type: 'b2c',
+      address: { line1: '', zip: '', city: '' },
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const updated = await client.updateCustomer(created.value.id, {
+      name: 'SARL Petit & Fils',
+      type: 'b2b',
+      siren: '123456789',
+      contactName: 'Mme Petit',
+      email: 'contact@petit.fr',
+      address: { line1: '4 rue du Test', zip: '75001', city: 'Paris' },
+    });
+    expect(updated.ok).toBe(true);
+
+    const list = await client.listCustomers();
+    expect(list.ok).toBe(true);
+    if (!list.ok) return;
+    expect(list.value.find((c) => c.id === created.value.id)).toMatchObject({
+      name: 'SARL Petit & Fils',
+      type: 'b2b',
+      siren: '123456789',
+      contactName: 'Mme Petit',
+      address: { line1: '4 rue du Test', zip: '75001', city: 'Paris' },
+    });
+  });
+
+  it('refuse d’éditer une fiche introuvable', async () => {
+    const client = makeClient();
+    const r = await client.updateCustomer('ghost', {
+      name: 'Fantôme',
+      type: 'b2c',
+      address: { line1: '', zip: '', city: '' },
+    });
+    expect(r.ok).toBe(false);
+  });
+
+  it('crée un chantier rattaché au client, avec adresse et note (fiche client — onglet Chantiers)', async () => {
+    const client = makeClient();
+    const created = await client.createCustomer({
+      name: 'M. Terrain',
+      type: 'b2c',
+      address: { line1: '8 rue Haute', zip: '69001', city: 'Lyon' },
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const chantier = await client.createChantier({
+      name: 'Rénovation cuisine',
+      customerId: created.value.id,
+      address: '8 rue Haute, 69001 Lyon',
+      notes: 'Code portail 1234, chien dans le jardin.',
+    });
+    expect(chantier.ok).toBe(true);
+
+    const list = await client.listChantiers();
+    expect(list.ok).toBe(true);
+    if (!list.ok || !chantier.ok) return;
+    expect(list.value.find((c) => c.id === chantier.value.id)).toMatchObject({
+      name: 'Rénovation cuisine',
+      customerId: created.value.id,
+      notes: 'Code portail 1234, chien dans le jardin.',
+    });
+  });
+
+  it('fiche chantier — journal de notes horodatées et photos (grille de vignettes, extension V1)', async () => {
+    const client = makeClient();
+    const chantier = await client.createChantier({ name: 'Villa Durand' });
+    expect(chantier.ok).toBe(true);
+    if (!chantier.ok) return;
+
+    const note = await client.addChantierNote(chantier.value.id, {
+      text: 'Fuite réparée, reste le joint du ballon.',
+    });
+    expect(note.ok).toBe(true);
+
+    const notes = await client.listChantierNotes(chantier.value.id);
+    expect(notes.ok).toBe(true);
+    if (!notes.ok) return;
+    expect(notes.value).toHaveLength(1);
+    expect(notes.value[0]).toMatchObject({ text: 'Fuite réparée, reste le joint du ballon.' });
+    expect(typeof notes.value[0]?.authorLabel).toBe('string');
+
+    const photo = await client.uploadWorksitePhoto(chantier.value.id, {
+      contentBase64: Buffer.from('fake-jpeg-bytes').toString('base64'),
+      mimeType: 'image/jpeg',
+      filename: 'chantier.jpg',
+    });
+    expect(photo.ok).toBe(true);
+    if (!photo.ok) return;
+
+    const photos = await client.listWorksitePhotos(chantier.value.id);
+    expect(photos.ok).toBe(true);
+    if (!photos.ok) return;
+    expect(photos.value).toHaveLength(1);
+    expect(photos.value[0]?.id).toBe(photo.value.id);
+
+    const viewUrl = await client.worksitePhotoViewUrl(photo.value.id);
+    expect(viewUrl.ok).toBe(true);
+    if (viewUrl.ok) expect(viewUrl.value.url).toMatch(/^data:image\/jpeg;base64,/);
+
+    const deleted = await client.deleteWorksitePhoto(photo.value.id);
+    expect(deleted.ok).toBe(true);
+    const photosAfter = await client.listWorksitePhotos(chantier.value.id);
+    expect(photosAfter.ok && photosAfter.value).toEqual([]);
+  });
+
+  it('refuse une note ou une photo sur un chantier introuvable', async () => {
+    const client = makeClient();
+    const note = await client.addChantierNote('ghost', { text: 'x' });
+    expect(note.ok).toBe(false);
+    const photo = await client.uploadWorksitePhoto('ghost', {
+      contentBase64: Buffer.from('x').toString('base64'),
+      mimeType: 'image/jpeg',
+      filename: 'x.jpg',
+    });
+    expect(photo.ok).toBe(false);
+  });
+
   it('askBob propose (plancher) puis confirmBob exécute EN JOURNALISANT — le journal est lisible on-device', async () => {
     const client = new LocalBobClient({ clock: new FixtureClock('2026-06-01'), ids: seqIds() });
 

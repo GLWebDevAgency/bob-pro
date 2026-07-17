@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { InMemoryPersistence } from '../persistence/persistence';
+import { InMemoryPersistence } from '../persistence/persistence.testing';
 import { requestContext } from '../observability/logger';
 import { NotificationsApiService } from './notifications-api.service';
 

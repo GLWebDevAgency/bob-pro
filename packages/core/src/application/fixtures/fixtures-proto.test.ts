@@ -29,7 +29,7 @@ describe('fixtures-proto (alignement Bob Pro.dc.html v2)', () => {
     expect(seedCustomers()).toHaveLength(6);
   });
 
-  it('les clients sont portés de DATA_CLIENTS du proto (noms, types, sirens, encours)', () => {
+  it('les identités clients du mode démo ne portent aucune métrique financière synthétique', () => {
     const byId = new Map(seedCustomers().map((c) => [c.id, c]));
 
     // Mme Durand — particulier à jour (facture F-2026-104 de 1 180 € payée).
@@ -37,22 +37,22 @@ describe('fixtures-proto (alignement Bob Pro.dc.html v2)', () => {
     expect(durand.name).toBe('Mme Durand');
     expect(durand.type).toBe('b2c');
     expect(durand.siren).toBeUndefined(); // siren: null dans le proto
-    expect(durand.outstanding).toBe(0);
+    expect(durand.toProps()).not.toHaveProperty('outstanding');
 
     // SARL Martin Rénovation — b2b en retard : encours 2 480 € dont F-2026-088 (1 240 €, 9 j).
     const martin = byId.get('cust-martin')!;
     expect(martin.name).toBe('SARL Martin Rénovation');
     expect(martin.type).toBe('b2b');
     expect(martin.siren).toBe('821503642');
-    expect(martin.outstanding).toBe(248000);
-    expect(martin.avgDelayDays).toBe(22); // « Paie à 22 j »
+    expect(martin.toProps()).not.toHaveProperty('score');
+    expect(martin.toProps()).not.toHaveProperty('avgDelayDays');
 
     // Camping Les Pins — b2b nouveau, 0 € (facturation élec. à configurer).
     const camping = byId.get('cust-camping')!;
     expect(camping.name).toBe('Camping Les Pins');
     expect(camping.type).toBe('b2b');
     expect(camping.siren).toBe('789220117');
-    expect(camping.outstanding).toBe(0);
+    expect(camping.toProps()).not.toHaveProperty('outstanding');
 
     // Les 3 canaux e-invoicing du proto restent représentés (b2c/b2b/b2g).
     expect(byId.get('cust-sevres')!.type).toBe('b2g');

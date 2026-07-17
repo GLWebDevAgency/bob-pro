@@ -27,7 +27,7 @@ describe('deriveTradeProfile — onboarding adaptatif (C22)', () => {
     expect(r.preview).toEqual(['Chantiers', 'Acomptes', 'Photos avant/après', 'TVA travaux', 'Retenue de garantie']);
     expect(r.highlights).toEqual(['decennale', 'retenue_garantie', 'tva_travaux']);
     expect(r.spaceLabel).toBe('plombier');
-    expect(r.defaultVatRate).toBe(10);
+    expect(r).not.toHaveProperty('defaultVatRate');
     expect(r.vocabulary.project).toBe('Chantier');
   });
 
@@ -45,12 +45,12 @@ describe('deriveTradeProfile — onboarding adaptatif (C22)', () => {
     expect(deriveTradeProfile('freelance_it').preview).toEqual(['Régie & TJM', 'CRA', 'Forfait projet', 'Maintenance (TMA)', 'Frais refacturés']);
     expect(deriveTradeProfile('freelance_it').highlights).toEqual(['cra']);
     expect(deriveTradeProfile('freelance_it').vocabulary.project).toBe('Mission');
-    expect(deriveTradeProfile('freelance_it').defaultVatRate).toBe(20);
+    expect(deriveTradeProfile('freelance_it')).not.toHaveProperty('defaultVatRate');
     expect(deriveTradeProfile('photographe').preview).toEqual(['Prestations', 'Acompte', 'Cession de droits', 'Galeries']);
     expect(deriveTradeProfile('photographe').highlights).toEqual(['cession_droits']);
     expect(deriveTradeProfile('coach').preview).toEqual(['Séances', 'Forfaits', 'Abonnements', 'Acompte']);
     expect(deriveTradeProfile('coach').highlights).toEqual([]);
-    expect(deriveTradeProfile('coach').defaultVatRate).toBe(20);
+    expect(deriveTradeProfile('coach')).not.toHaveProperty('defaultVatRate');
   });
 
   it('autre : espace « pro » (proto onbMetierLabel), preview générique, aucun repère spécifique', () => {

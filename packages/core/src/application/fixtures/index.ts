@@ -23,24 +23,22 @@ export const MERCIER_PROPS: CompanyProps = {
 };
 
 /**
- * Les 6 clients du proto, portés depuis `DATA_CLIENTS` de Bob Pro.dc.html (lignes ~2326-2400) avec
- * leurs scores `SCORES` (Durand 96 · Martin 62 · Sèvres 78 · Lefèvre 99 · Bernard 88 · Camping 50).
- * Encours en CENTIMES fidèles au proto ; les ids `cust-*` restent stables (consommés par
- * api-client/api/mobile). avgDelayDays = « délai » proto (« — » → 0).
+ * Les 6 identités clients du mode de démonstration. Les métriques financières ne vivent jamais
+ * dans une fiche client : même en démo elles sont dérivées des factures et paiements seedés.
  */
 export const CUSTOMER_PROPS: Omit<CustomerProps, 'companyId'>[] = [
   // Mme Durand — b2c, à jour (facture F-2026-104 de 1 180 € payée le 12 juin, acompte 590 €, devis signé 1 770 €).
-  { id: 'cust-durand', type: 'b2c', name: 'Mme Durand', address: { line1: '12 rue des Lilas', zip: '92310', city: 'Sèvres' }, email: 'm.durand@email.fr', phone: '06 12 34 56 78', paymentTermsLabel: 'Paiement à réception', score: 96, avgDelayDays: 6, outstanding: 0 },
+  { id: 'cust-durand', type: 'b2c', name: 'Mme Durand', address: { line1: '12 rue des Lilas', zip: '92310', city: 'Sèvres' }, email: 'm.durand@email.fr', phone: '06 12 34 56 78', paymentTermsLabel: 'Paiement à réception' },
   // SARL Martin Rénovation — b2b, 2 480 € en retard dont F-2026-088 (1 240 €, en retard 9 j) ; paie à 22 j.
-  { id: 'cust-martin', type: 'b2b', name: 'SARL Martin Rénovation', siren: '821503642', address: { line1: 'ZA des Bruyères', zip: '92140', city: 'Clamart' }, email: 'contact@martin-renov.fr', phone: '01 45 22 10 90', paymentTermsLabel: 'Paiement à 30 jours', score: 62, avgDelayDays: 22, outstanding: 248000 },
+  { id: 'cust-martin', type: 'b2b', name: 'SARL Martin Rénovation', siren: '821503642', address: { line1: 'ZA des Bruyères', zip: '92140', city: 'Clamart' }, email: 'contact@martin-renov.fr', phone: '01 45 22 10 90', paymentTermsLabel: 'Paiement à 30 jours' },
   // Mairie de Sèvres — b2g, 1 850 € en attente (facture Chorus F-2026-090 transmise, marché entretien).
-  { id: 'cust-sevres', type: 'b2g', name: 'Mairie de Sèvres', siren: '217504028', address: { line1: '54 Grande Rue', zip: '92310', city: 'Sèvres' }, email: 'marches@ville-sevres.fr', phone: '01 41 14 10 10', paymentTermsLabel: 'Mandat administratif', score: 78, avgDelayDays: 34, outstanding: 185000 },
+  { id: 'cust-sevres', type: 'b2g', name: 'Mairie de Sèvres', siren: '217504028', address: { line1: '54 Grande Rue', zip: '92310', city: 'Sèvres' }, email: 'marches@ville-sevres.fr', phone: '01 41 14 10 10', paymentTermsLabel: 'Mandat administratif' },
   // Boulangerie Lefèvre — b2b, contrat entretien annuel, à jour (F-2026-077 et F-2026-055 payées).
-  { id: 'cust-lefevre', type: 'b2b', name: 'Boulangerie Lefèvre', siren: '402118553', address: { line1: '3 place du Marché', zip: '92310', city: 'Sèvres' }, email: 'boulangerie.lefevre@email.fr', phone: '06 88 77 66 55', paymentTermsLabel: 'Paiement à 15 jours', score: 99, avgDelayDays: 11, outstanding: 0 },
+  { id: 'cust-lefevre', type: 'b2b', name: 'Boulangerie Lefèvre', siren: '402118553', address: { line1: '3 place du Marché', zip: '92310', city: 'Sèvres' }, email: 'boulangerie.lefevre@email.fr', phone: '06 88 77 66 55', paymentTermsLabel: 'Paiement à 15 jours' },
   // M. Bernard — b2c, devis chauffe-eau 200 L (1 480 €) en attente, aucun encours.
-  { id: 'cust-bernard', type: 'b2c', name: 'M. Bernard', address: { line1: '8 allée des Roses', zip: '92190', city: 'Meudon' }, email: 'p.bernard@email.fr', phone: '06 33 22 11 00', paymentTermsLabel: 'Paiement à réception', score: 88, avgDelayDays: 0, outstanding: 0 },
+  { id: 'cust-bernard', type: 'b2c', name: 'M. Bernard', address: { line1: '8 allée des Roses', zip: '92190', city: 'Meudon' }, email: 'p.bernard@email.fr', phone: '06 33 22 11 00', paymentTermsLabel: 'Paiement à réception' },
   // Camping Les Pins — b2b, nouveau client (0 €), facturation électronique à configurer.
-  { id: 'cust-camping', type: 'b2b', name: 'Camping Les Pins', siren: '789220117', address: { line1: 'Route du Littoral', zip: '83700', city: 'Saint-Raphaël' }, email: 'contact@camping-lespins.fr', phone: '04 94 00 11 22', paymentTermsLabel: 'À définir', score: 50, avgDelayDays: 0, outstanding: 0 },
+  { id: 'cust-camping', type: 'b2b', name: 'Camping Les Pins', siren: '789220117', address: { line1: 'Route du Littoral', zip: '83700', city: 'Saint-Raphaël' }, email: 'contact@camping-lespins.fr', phone: '04 94 00 11 22', paymentTermsLabel: 'À définir' },
 ];
 
 /** Snapshot de trésorerie du proto (« le solde ment » : 6 820 € banque mais TVA + charges à venir). */
@@ -115,9 +113,9 @@ export function seedExpenses(companyId: string, today: DateOnly): Expense[] {
     // Leroy Merlin — la dépense OCR rapprochée du reçu « à valider » (proto : 184,90 € / TVA 30,82 €).
     { id: 'local-expense-leroy', supplierName: 'Leroy Merlin', supplierSiren: null, documentDate: today, totalTtcCents: 18490, totalHtCents: 15408, vatCents: 3082, vatRatePct: 20, category: 'fournitures', status: 'to_pay', source: 'ocr' },
     // Cedeo — robinetterie, reçu déjà classé (dossier Achats).
-    { id: 'local-expense-cedeo', supplierName: 'Cedeo', supplierSiren: null, documentDate: `${month}-01`, totalTtcCents: 34200, totalHtCents: 28500, vatCents: 5700, vatRatePct: 20, category: 'materiel', status: 'paid', source: 'ocr' },
+    { id: 'local-expense-cedeo', supplierName: 'Cedeo', supplierSiren: null, documentDate: `${month}-01`, totalTtcCents: 34200, totalHtCents: 28500, vatCents: 5700, vatRatePct: 20, category: 'materiel', status: 'paid', paymentEvidence: { paidOn: `${month}-01`, method: 'transfer', reference: 'FIXTURE-CEDEO', proofDocumentId: null }, source: 'ocr' },
     // Point P — matériaux, mois précédent (mémoire fournisseurs sans peser sur le mois courant).
-    { id: 'local-expense-pointp', supplierName: 'Point P', supplierSiren: null, documentDate: `${prevMonth}-14`, totalTtcCents: 52040, totalHtCents: 43367, vatCents: 8673, vatRatePct: 20, category: 'materiel', status: 'paid', source: 'manual' },
+    { id: 'local-expense-pointp', supplierName: 'Point P', supplierSiren: null, documentDate: `${prevMonth}-14`, totalTtcCents: 52040, totalHtCents: 43367, vatCents: 8673, vatRatePct: 20, category: 'materiel', status: 'paid', paymentEvidence: { paidOn: `${prevMonth}-14`, method: 'card', reference: 'FIXTURE-POINTP', proofDocumentId: null }, source: 'manual' },
   ];
   return specs.map((spec) => {
     const r = Expense.record({ ...spec, companyId }, { today });

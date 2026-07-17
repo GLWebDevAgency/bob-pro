@@ -92,7 +92,10 @@ function validateHash(value: unknown, field: 'keyHash' | 'payloadHash'): string 
   return value;
 }
 
-function validateRecord(record: ExpenseCreationRequestRecord): ExpenseCreationRequestRecord {
+/** @internal Partagé avec le store déterministe situé dans `*.testing.ts`. */
+export function validateExpenseCreationRequestRecord(
+  record: ExpenseCreationRequestRecord,
+): ExpenseCreationRequestRecord {
   const companyId = exactString(record.companyId, 'companyId');
   const expenseId = exactString(record.expenseId, 'expenseId');
   const keyHash = validateHash(record.keyHash, 'keyHash');
@@ -104,23 +107,18 @@ function validateRecord(record: ExpenseCreationRequestRecord): ExpenseCreationRe
   return { companyId, keyHash, payloadHash, expenseId, createdAt: record.createdAt };
 }
 
-function validateKey(key: ExpenseCreationRequestKey): ExpenseCreationRequestKey {
+/** @internal Partagé avec le store déterministe situé dans `*.testing.ts`. */
+export function validateExpenseCreationRequestKey(
+  key: ExpenseCreationRequestKey,
+): ExpenseCreationRequestKey {
   return {
     companyId: exactString(key.companyId, 'companyId'),
     keyHash: validateHash(key.keyHash, 'keyHash'),
   };
 }
 
-function cloneRecord(record: ExpenseCreationRequestRecord): ExpenseCreationRequestRecord {
-  return { ...record };
-}
-
-function memoryKey(key: ExpenseCreationRequestKey): string {
-  return JSON.stringify([key.companyId, key.keyHash]);
-}
-
 function fromPrisma(row: PrismaExpenseCreationRequest): ExpenseCreationRequestRecord {
-  return validateRecord({
+  return validateExpenseCreationRequestRecord({
     companyId: row.companyId,
     keyHash: row.keyHash,
     payloadHash: row.payloadHash,
@@ -129,38 +127,11 @@ function fromPrisma(row: PrismaExpenseCreationRequest): ExpenseCreationRequestRe
   });
 }
 
-export class InMemoryExpenseCreationRequestStore implements ExpenseCreationRequestStore {
-  private rows = new Map<string, ExpenseCreationRequestRecord>();
-
-  async find(key: ExpenseCreationRequestKey): Promise<ExpenseCreationRequestRecord | null> {
-    const valid = validateKey(key);
-    const row = this.rows.get(memoryKey(valid));
-    return row ? cloneRecord(row) : null;
-  }
-
-  async putIfAbsent(record: ExpenseCreationRequestRecord): Promise<ExpenseCreationRequestRecord> {
-    const candidate = validateRecord(record);
-    const key = memoryKey(candidate);
-    const winner = this.rows.get(key);
-    if (winner) return cloneRecord(winner);
-    this.rows.set(key, cloneRecord(candidate));
-    return cloneRecord(candidate);
-  }
-
-  snapshot(): Map<string, ExpenseCreationRequestRecord> {
-    return new Map([...this.rows].map(([key, record]) => [key, cloneRecord(record)]));
-  }
-
-  restore(snapshot: Map<string, ExpenseCreationRequestRecord>): void {
-    this.rows = new Map([...snapshot].map(([key, record]) => [key, cloneRecord(record)]));
-  }
-}
-
 export class PrismaExpenseCreationRequestStore implements ExpenseCreationRequestStore {
   constructor(private readonly prisma: PrismaService) {}
 
   async find(key: ExpenseCreationRequestKey): Promise<ExpenseCreationRequestRecord | null> {
-    const valid = validateKey(key);
+    const valid = validateExpenseCreationRequestKey(key);
     const row = await this.prisma.client().expenseCreationRequest.findUnique({
       where: { expense_creation_request_key: valid },
     });
@@ -168,7 +139,7 @@ export class PrismaExpenseCreationRequestStore implements ExpenseCreationRequest
   }
 
   async putIfAbsent(record: ExpenseCreationRequestRecord): Promise<ExpenseCreationRequestRecord> {
-    const candidate = validateRecord(record);
+    const candidate = validateExpenseCreationRequestRecord(record);
     // PostgreSQL : INSERT ... ON CONFLICT DO NOTHING. Une course bloque sur l'index unique puis
     // relit, en READ COMMITTED, la ligne gagnante dès son commit.
     await this.prisma.client().expenseCreationRequest.createMany({

@@ -16,7 +16,8 @@ import {
   type ValueDigest,
   type ValueEvent,
 } from '@bob/core';
-import { PERSISTENCE, type Persistence } from '../persistence/persistence';
+import type { Persistence } from '../persistence/persistence';
+import { PERSISTENCE } from '../persistence/persistence-token';
 import { NotificationDedupeConflictError } from '../persistence/notification-jobs';
 import { SUPABASE_ADMIN, type SupabaseAdminPort } from '../auth/supabase-admin';
 import { AppLogger, requireTenant } from '../observability/logger';
@@ -95,7 +96,8 @@ function parisWallClock(at: Date): string {
     minute: '2-digit',
     hourCycle: 'h23',
   }).formatToParts(at);
-  const get = (type: Intl.DateTimeFormatPartTypes): string => parts.find((p) => p.type === type)?.value ?? '';
+  const get = (type: Intl.DateTimeFormatPartTypes): string =>
+    parts.find((p) => p.type === type)?.value ?? '';
   return `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')}`;
 }
 
@@ -175,25 +177,37 @@ function digestSubject(digest: ValueDigest): string {
       ? `Ton lundi Bob — ${formatEuros(h.amountCents)} récupérés sur tes impayés`
       : `Ton lundi Bob — ${formatEuros(h.amountCents)} encaissés la semaine dernière`;
   }
-  if (h.kind === 'time') return `Ton lundi Bob — environ ${formatMinutes(h.minutes)} d'admin en moins`;
+  if (h.kind === 'time')
+    return `Ton lundi Bob — environ ${formatMinutes(h.minutes)} d'admin en moins`;
   return `Ton lundi Bob — ${h.documents} documents créés la semaine dernière`;
 }
 
 /** Corps FR déterministe (même digest ⇒ même empreinte outbox). Faits présentés tels quels ;
  *  le temps économisé est TOUJOURS annoncé comme estimation (« environ », règle value-ledger). */
-export function weeklyDigestMessage(digest: ValueDigest, window: DigestWindow): { subject: string; body: string } {
-  const lines: string[] = [`Ta semaine du ${frDate(window.startDate)} au ${frDate(addDaysDateOnly(window.endDate, -1))} :`];
+export function weeklyDigestMessage(
+  digest: ValueDigest,
+  window: DigestWindow,
+): { subject: string; body: string } {
+  const lines: string[] = [
+    `Ta semaine du ${frDate(window.startDate)} au ${frDate(addDaysDateOnly(window.endDate, -1))} :`,
+  ];
   if (digest.collectedCents > 0) {
-    const recovered = digest.recoveredCents > 0 ? ` (dont ${formatEuros(digest.recoveredCents)} récupérés après relance)` : '';
+    const recovered =
+      digest.recoveredCents > 0
+        ? ` (dont ${formatEuros(digest.recoveredCents)} récupérés après relance)`
+        : '';
     lines.push(`· Encaissé : ${formatEuros(digest.collectedCents)}${recovered}`);
   }
   if (digest.documentsCreated > 0) {
-    const voice = digest.documentsViaVoice > 0 ? ` (dont ${digest.documentsViaVoice} à la voix)` : '';
+    const voice =
+      digest.documentsViaVoice > 0 ? ` (dont ${digest.documentsViaVoice} à la voix)` : '';
     lines.push(`· Documents créés : ${digest.documentsCreated}${voice}`);
   }
   if (digest.relancesSent > 0) lines.push(`· Relances envoyées : ${digest.relancesSent}`);
   if (digest.estimatedMinutesSaved > 0) {
-    lines.push(`· Temps administratif gagné : environ ${formatMinutes(digest.estimatedMinutesSaved)} (estimation)`);
+    lines.push(
+      `· Temps administratif gagné : environ ${formatMinutes(digest.estimatedMinutesSaved)} (estimation)`,
+    );
   }
   lines.push('', 'Ouvre Bob pour le détail et les prochaines actions.');
   return { subject: digestSubject(digest), body: lines.join('\n') };
@@ -236,7 +250,10 @@ export class DigestService {
     try {
       await this.runDigests();
     } catch (e) {
-      this.logger.warn(`Digest hebdo interrompu: ${e instanceof Error ? e.message : String(e)}`, 'digest');
+      this.logger.warn(
+        `Digest hebdo interrompu: ${e instanceof Error ? e.message : String(e)}`,
+        'digest',
+      );
     } finally {
       this.running = false;
     }
@@ -274,13 +291,20 @@ export class DigestService {
     return summary;
   }
 
-  async runDigestForCompany(companyId: string, window: DigestWindow): Promise<DigestCompanyOutcome> {
+  async runDigestForCompany(
+    companyId: string,
+    window: DigestWindow,
+  ): Promise<DigestCompanyOutcome> {
     const dedupeKey = `digest:${companyId}:${window.isoWeek}:${DIGEST_POLICY_VERSION}`;
     const { events, alreadyEnqueued } = await this.p.runWithTenant(companyId, () =>
       this.collectValueEvents(companyId, window, dedupeKey),
     );
 
-    const digest = buildValueDigest({ periodStart: window.periodStart, periodEnd: window.periodEnd, events });
+    const digest = buildValueDigest({
+      periodStart: window.periodStart,
+      periodEnd: window.periodEnd,
+      events,
+    });
     if (digest === null) return 'no_substance'; // contrainte codée : jamais une notification sans substance
 
     // Réseau Supabase HORS transaction tenant (même hygiène que la livraison : aucun GUC/lock
@@ -302,7 +326,12 @@ export class DigestService {
           companyId,
           kind: 'weekly-digest',
           dedupeKey,
-          notification: { channel: 'email', to: email, subject: message.subject, body: message.body },
+          notification: {
+            channel: 'email',
+            to: email,
+            subject: message.subject,
+            body: message.body,
+          },
         }),
       );
       const queuedNow = !(alreadyEnqueued || job.status === 'done');
@@ -317,7 +346,12 @@ export class DigestService {
       }
       const outcome: DigestCompanyOutcome =
         alreadyEnqueued || job.status === 'done' ? 'deduplicated' : 'queued';
-      this.logger.audit('digest.queued', { companyId, isoWeek: window.isoWeek, jobId: job.id, outcome });
+      this.logger.audit('digest.queued', {
+        companyId,
+        isoWeek: window.isoWeek,
+        jobId: job.id,
+        outcome,
+      });
       return outcome;
     } catch (e) {
       if (e instanceof NotificationDedupeConflictError) {
@@ -348,7 +382,10 @@ export class DigestService {
    * digest null = semaine sans substance (la carte mobile ne se rend pas, zéro bruit).
    */
   async latestForCurrentTenant(): Promise<
-    Result<{ digest: ValueDigest | null; periodStart: string; periodEnd: string; isoWeek: string }, AppError>
+    Result<
+      { digest: ValueDigest | null; periodStart: string; periodEnd: string; isoWeek: string },
+      AppError
+    >
   > {
     const companyId = requireTenant();
     const window = weeklyDigestWindow(new Date(this.clock.now()));
@@ -357,8 +394,17 @@ export class DigestService {
       window,
       `digest:${companyId}:${window.isoWeek}:${DIGEST_POLICY_VERSION}`,
     );
-    const digest = buildValueDigest({ periodStart: window.periodStart, periodEnd: window.periodEnd, events });
-    return ok({ digest, periodStart: window.periodStart, periodEnd: window.periodEnd, isoWeek: window.isoWeek });
+    const digest = buildValueDigest({
+      periodStart: window.periodStart,
+      periodEnd: window.periodEnd,
+      events,
+    });
+    return ok({
+      digest,
+      periodStart: window.periodStart,
+      periodEnd: window.periodEnd,
+      isoWeek: window.isoWeek,
+    });
   }
 
   /**
@@ -374,15 +420,29 @@ export class DigestService {
       return ok({ digest: null, periodStart: null, periodEnd: null, trial: null });
     }
     const now = this.clock.now();
-    const trial: ReverseTrialState = { tier: record.plan, startedAt: record.createdAt, endsAt: record.trialEndsAt };
+    const trial: ReverseTrialState = {
+      tier: record.plan,
+      startedAt: record.createdAt,
+      endsAt: record.trialEndsAt,
+    };
     const periodStart = record.createdAt;
     const periodEnd = Date.parse(now) < Date.parse(record.trialEndsAt) ? now : record.trialEndsAt;
     const startDate = parisDateOnly(new Date(periodStart));
     // Borne date-only EXCLUSIVE : lendemain du dernier jour couvert — les factures (datées en
     // DateOnly) du dernier jour d'essai comptent, granularité jour assumée.
     const endDate = addDaysDateOnly(parisDateOnly(new Date(periodEnd)), 1);
-    const window: DigestWindow = { periodStart, periodEnd, startDate, endDate, isoWeek: isoWeekLabel(startDate) };
-    const { events } = await this.collectValueEvents(companyId, window, `trial-report:${companyId}`);
+    const window: DigestWindow = {
+      periodStart,
+      periodEnd,
+      startDate,
+      endDate,
+      isoWeek: isoWeekLabel(startDate),
+    };
+    const { events } = await this.collectValueEvents(
+      companyId,
+      window,
+      `trial-report:${companyId}`,
+    );
     const digest = buildValueDigest({ periodStart, periodEnd, events });
     return ok({
       digest,
@@ -402,13 +462,19 @@ export class DigestService {
    * l'utilisateur (tap sur la carte, pas son rendu). Fire-and-forget via l'AnalyticsPort
    * (Noop sans endpoint, opt-out RGPD structurel) : n'échoue jamais côté client.
    */
-  async recordDigestOpened(input: { highlightKind?: unknown }): Promise<Result<{ recorded: boolean }, AppError>> {
+  async recordDigestOpened(input: {
+    highlightKind?: unknown;
+  }): Promise<Result<{ recorded: boolean }, AppError>> {
     const companyId = requireTenant();
     const kind = input.highlightKind;
     if (kind !== 'money' && kind !== 'time' && kind !== 'volume') {
       return {
         ok: false,
-        error: appDomain({ code: 'VALIDATION', field: 'highlightKind', message: 'Accroche de digest inconnue.' }),
+        error: appDomain({
+          code: 'VALIDATION',
+          field: 'highlightKind',
+          message: 'Accroche de digest inconnue.',
+        }),
       };
     }
     this.analytics.track({
@@ -432,13 +498,16 @@ export class DigestService {
     const startMs = Date.parse(window.periodStart);
     const endMs = Date.parse(window.periodEnd);
 
-    const doneRelances = recentJobs.filter((job) => job.kind === 'invoice-relance' && job.status === 'done');
+    const doneRelances = recentJobs.filter(
+      (job) => job.kind === 'invoice-relance' && job.status === 'done',
+    );
     const firstRelanceAtByInvoice = new Map<string, string>();
     for (const job of doneRelances) {
       const invoiceId = relanceInvoiceId(job.dedupeKey);
       if (invoiceId === null) continue;
       const known = firstRelanceAtByInvoice.get(invoiceId);
-      if (known === undefined || job.createdAt < known) firstRelanceAtByInvoice.set(invoiceId, job.createdAt);
+      if (known === undefined || job.createdAt < known)
+        firstRelanceAtByInvoice.set(invoiceId, job.createdAt);
     }
 
     const events: ValueEvent[] = [];
@@ -472,7 +541,9 @@ export class DigestService {
       events.push({ kind: 'document_created', at: `${issuedAt}T12:00:00.000Z` });
     }
 
-    const alreadyEnqueued = recentJobs.some((job) => job.kind === 'weekly-digest' && job.dedupeKey === dedupeKey);
+    const alreadyEnqueued = recentJobs.some(
+      (job) => job.kind === 'weekly-digest' && job.dedupeKey === dedupeKey,
+    );
     return { events, alreadyEnqueued };
   }
 

@@ -1,12 +1,9 @@
-import { type Result, ok, err } from '../../shared-kernel/result';
-import { type AppError, appNotFound } from '../result';
+import { type Result, err } from '../../shared-kernel/result';
+import { type AppError, appDomain } from '../result';
 import { type ExpenseRepository } from '../ports/repositories';
 import { type ClockPort } from '../ports/services';
 import { type AccountingEntryRepository } from '../ports/accounting-entry-repository';
 import { type ChartOfAccountsRepository } from '../ports/chart-of-accounts-repository';
-import { buildExpensePaymentAccountingEntry } from '../../domain/accounting/expense-accounting';
-import { expensePaymentAccountingEntryId } from '../accounting/record-expense-accounting-entries';
-import { appDomain } from '../result';
 
 export interface PayExpenseDeps {
   expenses: ExpenseRepository;
@@ -26,29 +23,12 @@ export class PayExpense {
   constructor(private readonly deps: PayExpenseDeps) {}
 
   async execute(input: { expenseId: string }): Promise<Result<{ status: 'paid'; alreadyPaid: boolean }, AppError>> {
-    const expense = await this.deps.expenses.findById(input.expenseId);
-    if (!expense) return err(appNotFound('expense', input.expenseId));
-
-    const alreadyPaid = expense.status === 'paid';
-    if (!alreadyPaid) {
-      expense.markPaid();
-      await this.deps.expenses.save(expense);
-    }
-
-    const entryId = expensePaymentAccountingEntryId(expense.id);
-    const existing = await this.deps.entries.findById(expense.companyId, entryId);
-    if (!existing) {
-      const chart = this.deps.charts ? await this.deps.charts.findByCompany(expense.companyId) : null;
-      const entry = buildExpensePaymentAccountingEntry({
-        entryId,
-        expense,
-        paidOn: this.deps.clock.today(),
-        ...(chart ? { chart } : {}),
-      });
-      if (!entry.ok) return err(appDomain(entry.error));
-      await this.deps.entries.save(entry.value);
-    }
-
-    return ok({ status: 'paid', alreadyPaid });
+    void this.deps;
+    void input;
+    return err(appDomain({
+      code: 'VALIDATION',
+      field: 'paymentEvidence',
+      message: 'Date et moyen du règlement requis. Utiliser RecordExpensePayment.',
+    }));
   }
 }

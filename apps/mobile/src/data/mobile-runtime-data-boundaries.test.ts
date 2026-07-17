@@ -11,6 +11,8 @@ const RUNTIME_ROOTS = [
 
 const FORBIDDEN_RUNTIME_IMPORT =
   /(?:from\s*|import\s*\()['"][^'"]*(?:@bob\/(?:core|api-client|ai)\/testing|\/fixtures(?:\/|['"]?)|\/in-memory(?:\/|['"]?)|local-client|demo-(?:adapter|ocr|stt|tts))[^'"]*['"]/u;
+const FORBIDDEN_RUNTIME_SYMBOL =
+  /\b(?:InMemory[A-Za-z0-9_]*|LocalBobClient|DemoOcrAdapter|MERCIER_PROPS|TODAY_FIXTURE|CASH_SNAPSHOT|seedCompany|seedCustomers|seedExpenses|seedVaultDocuments)\b/u;
 
 function runtimeSources(root: string): string[] {
   return readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
@@ -29,6 +31,15 @@ describe('frontières des données du runtime mobile', () => {
     const leaks = sources.flatMap((path) => {
       const code = readFileSync(path, 'utf8');
       return FORBIDDEN_RUNTIME_IMPORT.test(code) ? [relative(MOBILE_ROOT, path)] : [];
+    });
+
+    expect(leaks).toEqual([]);
+  });
+
+  it('aucun symbole de double, seed ou fixture ne subsiste dans le runtime mobile', () => {
+    const leaks = sources.flatMap((path) => {
+      const code = readFileSync(path, 'utf8');
+      return FORBIDDEN_RUNTIME_SYMBOL.test(code) ? [relative(MOBILE_ROOT, path)] : [];
     });
 
     expect(leaks).toEqual([]);
@@ -65,6 +76,26 @@ describe('frontières des données du runtime mobile', () => {
 
     expect(push).not.toMatch(/local[-_]demo|authEnabled\s*\?/u);
     expect(tenantIdentity).not.toMatch(/configuredDemo|static tenant/iu);
+  });
+
+  it('le brouillon de devis de production dépend uniquement du slot HTTP authentifié', () => {
+    const provider = readFileSync(
+      new URL('../quote-draft/quote-draft-provider.tsx', import.meta.url),
+      'utf8',
+    );
+    const runtimeBarrel = readFileSync(
+      new URL('../quote-draft/index.ts', import.meta.url),
+      'utf8',
+    );
+
+    expect(provider).toContain('createQuoteDraftRemotePersistence');
+    expect(provider).toContain('registerBeforeSignOutCleanup');
+    expect(provider).toContain('disposeQuoteDraftSession');
+    expect(provider).not.toMatch(/registerBeforeSignOutCleanup\([^)]*persistence\.clear/su);
+    expect(provider).toContain("{ ready: false, status: 'error', error: 'load' }");
+    expect(provider).not.toMatch(/SecureStore|createSecureQuoteDraftPersistence|quote-draft-store/iu);
+    expect(provider).not.toMatch(/\bdemo\b|local-demo|QuoteDraftStorageIdentity/iu);
+    expect(runtimeBarrel).not.toMatch(/quote-draft-codec|quote-draft-store|secure-store/iu);
   });
 
   it('le diagnostic consomme les encaissements persistés et aucun compteur de questions fictif', () => {

@@ -3,7 +3,22 @@ import { cashflowBand, type CashflowSeriesPoint } from './cashflow-band';
 import { projectCashflow, type Horizon } from './project-cashflow';
 
 function point(horizon: Horizon, available: number, payout: number): CashflowSeriesPoint {
-  return { horizon, projection: { available, payout, vatDue: 0, risk: available < 0 } };
+  return {
+    horizon,
+    projection: {
+      available,
+      payout,
+      vatDue: 0,
+      risk: available < 0,
+      basis: {
+        modelVersion: 'cashflow-projection/2',
+        kind: 'aggregate_legacy',
+        scenario: 'realiste',
+        horizonDays: horizon,
+        receivableCollectionRatePct: 90,
+      },
+    },
+  };
 }
 
 describe('cashflowBand', () => {

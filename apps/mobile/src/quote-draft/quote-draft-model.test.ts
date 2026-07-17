@@ -56,7 +56,14 @@ function value<T>(result: { ok: true; value: T } | { ok: false; error: unknown }
 
 function onLines(): QuoteDraftState {
   const selected = value(selectCustomer(createQuoteDraft('draft-1'), CUSTOMER));
-  return value(applyQuoteDraftCommand(selected, { type: 'next_step' }));
+  const lines = value(applyQuoteDraftCommand(selected, { type: 'next_step' }));
+  return value(
+    applyQuoteDraftCommand(lines, {
+      type: 'set_vat',
+      context: { housingOlderThan2y: true, energyRenovation: false },
+      vatRate: 10,
+    }),
+  );
 }
 
 describe('quote draft shared model', () => {
@@ -94,6 +101,17 @@ describe('quote draft shared model', () => {
 
     const second = applyQuoteDraftCommand(onLines(), { type: 'next_step' });
     expect(second).toMatchObject({ ok: false, error: { code: 'validation', field: 'lines' } });
+  });
+
+  it('refuse toute ligne avant le choix explicite de TVA', () => {
+    const selected = value(selectCustomer(createQuoteDraft('draft-no-vat'), CUSTOMER));
+    const lines = value(applyQuoteDraftCommand(selected, { type: 'next_step' }));
+    expect(
+      addLine(lines, { lineId: 'line-1', line: LABOR, interaction: 'manual' }),
+    ).toMatchObject({
+      ok: false,
+      error: { code: 'validation', field: 'vatRate' },
+    });
   });
 
   it('interdit les éditions hors de leur étape, y compris après passage en revue', () => {
@@ -472,17 +490,34 @@ describe('quote draft shared model', () => {
     });
   });
 
-  it('ne considère pas le défaut TVA du profil comme un brouillon utilisateur', () => {
-    const seeded = value(
+  it('considère le choix TVA explicite comme une modification utilisateur', () => {
+    const selectedVat = value(
       applyQuoteDraftCommand(createQuoteDraft('draft-1'), {
         type: 'set_vat',
-        context: { housingOlderThan2y: true },
+        context: { housingOlderThan2y: true, energyRenovation: false },
         vatRate: 10,
       }),
     );
-    expect(seeded.flow.draft.tvaContext).toEqual({ housingOlderThan2y: true });
-    expect(hasMeaningfulQuoteDraft(seeded)).toBe(false);
-    expect(hasUnsavedQuoteDraftChanges(seeded)).toBe(false);
+    expect(selectedVat.flow.draft.tvaContext).toEqual({
+      housingOlderThan2y: true,
+      energyRenovation: false,
+    });
+    expect(selectedVat.flow.draft.vatRate).toBe(10);
+    expect(hasMeaningfulQuoteDraft(selectedVat)).toBe(true);
+    expect(hasUnsavedQuoteDraftChanges(selectedVat)).toBe(true);
+  });
+
+  it('refuse un taux sans contexte fiscal confirmé', () => {
+    expect(
+      applyQuoteDraftCommand(createQuoteDraft('draft-1'), {
+        type: 'set_vat',
+        context: null,
+        vatRate: 20,
+      }),
+    ).toMatchObject({
+      ok: false,
+      error: { code: 'validation', field: 'vatRate' },
+    });
   });
 
   it('fait passer client, TVA, signature et acompte par les mêmes commandes sérialisables', () => {
@@ -505,7 +540,7 @@ describe('quote draft shared model', () => {
     state = value(
       applyQuoteDraftCommand(state, {
         type: 'set_vat',
-        context: { energyRenovation: true },
+        context: { housingOlderThan2y: true, energyRenovation: true },
         vatRate: 5.5,
       }),
     );

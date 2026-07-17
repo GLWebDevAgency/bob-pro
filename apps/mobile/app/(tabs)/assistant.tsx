@@ -13,7 +13,8 @@
  * que les CTA d'écrans — jamais un chemin parallèle). Les actions sensibles reviennent
  * en `proposed` : carte d'action avec diff (buildActionDiff + aperçu comptable réel via
  * invoiceAccountingPreview) et exécution UNIQUEMENT via agent.confirm (préparer ≠ envoyer).
- * En mode démo, le LocalBobClient expose l'agent (routeur déterministe) — zéro script.
+ * Le binaire passe toujours par l'agent serveur ; aucun routeur local ni jeu de données de
+ * démonstration n'est embarqué comme voie de repli.
  *
  * ?prompt=relance | relance_devis (edges C10/C11/C13) : pré-remplit puis SOUMET la
  * demande correspondante (commande canonique @bob/i18n — matche detectIntent).
@@ -70,9 +71,9 @@ import {
 import { PLAN_CATALOG, type AppError, type PaywallDecision } from '@bob/core';
 import { conformityCard, patterns, shadowNative, themes } from '@bob/tokens';
 import { t, type I18nKey } from '@bob/i18n';
-import { Button, Chip, QuestionSheet, Skeleton, font, useReduceMotion, useTheme } from '@bob/ui';
+import { Button, Chip, ErrorRetry, QuestionSheet, Skeleton, font, useReduceMotion, useTheme } from '@bob/ui';
 import { useBobClient } from '../../src/data/client';
-import { useInvoices, useQuotes } from '../../src/data/hooks';
+import { useInvoices, useQuotes, useSubscription } from '../../src/data/hooks';
 import { PaywallCard, isPaywallMuted, useEntitlement } from '../../src/monetization/paywall';
 import { makeBobAgent } from '../../src/data/bob';
 import { getAutonomy } from '../../src/data/settings';
@@ -278,6 +279,7 @@ export default function Assistant() {
   // ici on décide seulement du TEASER quand le tap n'ouvre aucun droit).
   const assistantEntitlement = useEntitlement('ai_assistant');
   const liveEntitlement = useEntitlement('voice_live');
+  const subscriptionQuery = useSubscription();
   const invoicesQuery = useInvoices();
   const quotesQuery = useQuotes();
   const { prompt } = useLocalSearchParams<{ prompt?: string }>();
@@ -289,7 +291,9 @@ export default function Assistant() {
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [phase, setPhase] = useState<string | null>(null);
-  const [reachable, setReachable] = useState(true);
+  // Inconnu tant qu'aucun aller-retour agent n'a réussi/échoué : ne jamais afficher « en ligne »
+  // comme une donnée de santé inventée au premier rendu.
+  const [reachable, setReachable] = useState<boolean | null>(null);
   const [assistantFocused, setAssistantFocused] = useState(false);
   /** ASK-1 : question structurée active (modale) — ouverte automatiquement à l'arrivée du run. */
   const [activeAsk, setActiveAsk] = useState<AgentQuestion | null>(null);
@@ -427,7 +431,7 @@ export default function Assistant() {
 
   const ask = async (raw: string): Promise<{ run: AgentRun; item: ChatItem } | null> => {
     const message = raw.trim();
-    if (!message || busy) return null;
+    if (!message || busy || !assistantEntitlement.verified || !entitled) return null;
     setInput('');
     pushText('user', message);
     setBusy(true);
@@ -759,7 +763,7 @@ export default function Assistant() {
 
   /** Valider : exécute l'action proposée via agent.confirm — LE flux de confirmation existant. */
   const confirm = async (item: ChatItem): Promise<AgentRun | null> => {
-    if (!item.pending || busy) return null;
+    if (!item.pending || busy || !assistantEntitlement.verified || !entitled) return null;
     // Une action financière ne part jamais avec un aperçu fabriqué à partir de données
     // absentes, obsolètes après erreur, ou d'une pièce introuvable.
     if (pendingPreview(item.pending, item.accountingLines).kind !== 'ready') return null;
@@ -870,9 +874,31 @@ export default function Assistant() {
       : globalSession.phase
     : liveState;
 
-  // ── Garde d'abonnement (feature ai_assistant) — honnête, l'app reste utilisable à la main ;
-  // pendant le chargement de l'abonnement on ne verrouille rien (fail-open d'affichage). ──
-  if (!assistantEntitlement.loading && !entitled) {
+  // ── Garde d'abonnement autoritative : aucun prompt, live ou outil tant que GET /subscription
+  // n'a pas répondu avec succès. Une erreur avec cache reste fermée jusqu'au prochain succès. ──
+  if (assistantEntitlement.loading) {
+    return (
+      <View style={{ flex: 1, backgroundColor: colors.bg, padding: 20, paddingTop: insets.top + 40, gap: 14 }}>
+        <Skeleton width={56} height={56} radius={18} />
+        <Skeleton width="48%" height={24} radius={10} />
+        <Skeleton width="92%" height={15} radius={8} />
+        <Skeleton width="76%" height={15} radius={8} />
+      </View>
+    );
+  }
+
+  if (!assistantEntitlement.verified) {
+    return (
+      <View style={{ flex: 1, backgroundColor: colors.bg, padding: 20, paddingTop: insets.top + 40 }}>
+        <ErrorRetry
+          message={t('account.subscriptionError', { personality })}
+          onRetry={() => void subscriptionQuery.refetch()}
+        />
+      </View>
+    );
+  }
+
+  if (!entitled) {
     return (
       <View
         style={{
@@ -967,7 +993,7 @@ export default function Assistant() {
               <Text style={[font('section'), { fontSize: 18, color: colors.ink900 }]}>
                 {t('assistant.title', { personality })}
               </Text>
-              <View
+              {reachable !== null ? <View
                 accessibilityRole="text"
                 style={{
                   flexDirection: 'row',
@@ -995,7 +1021,7 @@ export default function Assistant() {
                 >
                   {t(reachable ? 'assistant.online' : 'assistant.offlinePill', { personality })}
                 </Text>
-              </View>
+              </View> : null}
             </View>
             <Text style={[font('label'), { fontSize: 12.5, color: semantic.ai, marginTop: 1 }]}>
               {t('assistant.subtitle', { personality })}

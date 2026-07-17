@@ -260,11 +260,16 @@ export default function DocumentDetailScreen() {
   };
 
   const agentContext = useMemo<AgentContext>(
-    () => ({
-      screen: { name: 'document-detail', instanceId: `document:${documentId}` },
-      entities: document.data ? [{ type: 'document', id: document.data.id, label: document.data.filename }] : [],
-      capabilities: ['screen.read', 'document.read'],
-    }),
+    () => {
+      const contextDocument = isDocumentView(document.data) ? document.data : null;
+      return {
+        screen: { name: 'document-detail', instanceId: `document:${documentId}` },
+        entities: contextDocument
+          ? [{ type: 'document' as const, id: contextDocument.id, label: contextDocument.filename }]
+          : [],
+        capabilities: contextDocument ? ['screen.read', 'document.read'] : [],
+      };
+    },
     [document.data, documentId],
   );
   usePublishAgentContext(agentContext);

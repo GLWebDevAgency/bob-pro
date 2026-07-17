@@ -65,7 +65,10 @@ function exactRequiredString(value: unknown, field: string, maxLength?: number):
   return value;
 }
 
-function validateKey(key: DocumentAnalysisCacheKey): DocumentAnalysisCacheKey {
+/** @internal Partagé avec le store déterministe situé dans `*.testing.ts`. */
+export function validateDocumentAnalysisCacheKey(
+  key: DocumentAnalysisCacheKey,
+): DocumentAnalysisCacheKey {
   const companyId = exactRequiredString(key.companyId, 'companyId');
   const documentId = exactRequiredString(key.documentId, 'documentId');
   if (!Number.isSafeInteger(key.documentVersion) || key.documentVersion <= 0) {
@@ -94,8 +97,11 @@ function cloneAnalysis(analysis: DocumentAnalysis): DocumentAnalysis {
   return structuredClone(analysis);
 }
 
-function validatedRecord(record: DocumentAnalysisCacheWrite): DocumentAnalysisCacheRecord {
-  const key = validateKey(record);
+/** @internal Partagé avec le store déterministe situé dans `*.testing.ts`. */
+export function validateDocumentAnalysisCacheRecord(
+  record: DocumentAnalysisCacheWrite,
+): DocumentAnalysisCacheRecord {
+  const key = validateDocumentAnalysisCacheKey(record);
   if (
     record.analysisSchemaVersion !== undefined &&
     record.analysisSchemaVersion !== DOCUMENT_ANALYSIS_SCHEMA_VERSION
@@ -142,16 +148,8 @@ function validatedRecord(record: DocumentAnalysisCacheWrite): DocumentAnalysisCa
   };
 }
 
-function cloneRecord(record: DocumentAnalysisCacheRecord): DocumentAnalysisCacheRecord {
-  return { ...record, analysis: cloneAnalysis(record.analysis) };
-}
-
-function cacheKey(key: DocumentAnalysisCacheKey): string {
-  return JSON.stringify([key.companyId, key.documentId, key.documentVersion, key.sourceSha256]);
-}
-
 function fromPrisma(row: PrismaDocumentAnalysisCache): DocumentAnalysisCacheRecord {
-  return validatedRecord({
+  return validateDocumentAnalysisCacheRecord({
     companyId: row.companyId,
     documentId: row.documentId,
     documentVersion: row.documentVersion,
@@ -163,38 +161,11 @@ function fromPrisma(row: PrismaDocumentAnalysisCache): DocumentAnalysisCacheReco
   });
 }
 
-export class InMemoryDocumentAnalysisStore implements DocumentAnalysisStore {
-  private rows = new Map<string, DocumentAnalysisCacheRecord>();
-
-  async findExact(key: DocumentAnalysisCacheKey): Promise<DocumentAnalysisCacheRecord | null> {
-    const validKey = validateKey(key);
-    const row = this.rows.get(cacheKey(validKey));
-    return row ? cloneRecord(row) : null;
-  }
-
-  async putIfAbsent(record: DocumentAnalysisCacheWrite): Promise<DocumentAnalysisCacheRecord> {
-    const candidate = validatedRecord(record);
-    const key = cacheKey(candidate);
-    const winner = this.rows.get(key);
-    if (winner) return cloneRecord(winner);
-    this.rows.set(key, cloneRecord(candidate));
-    return cloneRecord(candidate);
-  }
-
-  snapshot(): Map<string, DocumentAnalysisCacheRecord> {
-    return new Map([...this.rows].map(([key, record]) => [key, cloneRecord(record)]));
-  }
-
-  restore(snapshot: Map<string, DocumentAnalysisCacheRecord>): void {
-    this.rows = new Map([...snapshot].map(([key, record]) => [key, cloneRecord(record)]));
-  }
-}
-
 export class PrismaDocumentAnalysisStore implements DocumentAnalysisStore {
   constructor(private readonly prisma: PrismaService) {}
 
   async findExact(key: DocumentAnalysisCacheKey): Promise<DocumentAnalysisCacheRecord | null> {
-    const validKey = validateKey(key);
+    const validKey = validateDocumentAnalysisCacheKey(key);
     const row = await this.prisma.client().documentAnalysisCache.findUnique({
       where: { document_analysis_cache_key: validKey },
     });
@@ -202,7 +173,7 @@ export class PrismaDocumentAnalysisStore implements DocumentAnalysisStore {
   }
 
   async putIfAbsent(record: DocumentAnalysisCacheWrite): Promise<DocumentAnalysisCacheRecord> {
-    const candidate = validatedRecord(record);
+    const candidate = validateDocumentAnalysisCacheRecord(record);
     // PostgreSQL traduit createMany(skipDuplicates) en INSERT ... ON CONFLICT DO NOTHING : deux
     // workers concurrents convergent vers la première ligne validée, sans UPDATE ni last-write-wins.
     await this.prisma.client().documentAnalysisCache.createMany({

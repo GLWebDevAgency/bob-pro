@@ -56,6 +56,13 @@ export function devisDiff(before: DevisDraft, after: DevisDraft): DevisDiffField
   if (before.depositPct !== after.depositPct) {
     fields.push({ field: 'Acompte', before: `${before.depositPct} %`, after: `${after.depositPct} %` });
   }
+  if (before.vatRate !== after.vatRate) {
+    fields.push({
+      field: 'TVA',
+      before: before.vatRate === null ? '—' : `${before.vatRate} %`,
+      after: after.vatRate === null ? '—' : `${after.vatRate} %`,
+    });
+  }
   if (before.signerName !== after.signerName) {
     fields.push({ field: 'Signataire', before: before.signerName ?? '—', after: after.signerName ?? '—' });
   }

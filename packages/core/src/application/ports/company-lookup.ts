@@ -24,7 +24,8 @@ export interface CompanyLookupResult {
 
 /**
  * Port de recherche d'entreprise par SIRET.
- * Adapter réel = API Recherche d'entreprises (gratuite, sans clé) ; adapter demo = déterministe.
+ * L'adapter de production interroge une source officielle et renvoie `null` si elle ne répond
+ * pas : le domaine ne fabrique jamais une entreprise de remplacement.
  */
 export interface CompanyLookupPort {
   lookupBySiret(siret: string): Promise<CompanyLookupResult | null>;

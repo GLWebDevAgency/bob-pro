@@ -9,6 +9,8 @@ export interface ChantierProps {
   name: string;
   customerId: string | null;
   address: string | null;
+  /** Note libre (contexte, accès, consignes) — jamais affichée comme une pièce, purement informative. */
+  notes: string | null;
   status: ChantierStatus;
   openedAt: DateOnly;
 }
@@ -24,7 +26,10 @@ export class Chantier {
   static record(props: ChantierProps): DomainResult<Chantier> {
     const name = props.name.trim();
     if (!name) return err({ code: 'VALIDATION', field: 'name', message: 'Nom de chantier requis.' });
-    return ok(new Chantier({ ...props, name }));
+    const notes = props.notes?.trim() || null;
+    if (notes && notes.length > 2000)
+      return err({ code: 'VALIDATION', field: 'notes', message: 'Note limitée à 2000 caractères.' });
+    return ok(new Chantier({ ...props, name, notes }));
   }
 
   /** Réhydratation depuis le stockage (données déjà validées). */
@@ -43,6 +48,15 @@ export class Chantier {
   }
   get status(): ChantierStatus {
     return this.p.status;
+  }
+  get address(): string | null {
+    return this.p.address;
+  }
+  get customerId(): string | null {
+    return this.p.customerId;
+  }
+  get notes(): string | null {
+    return this.p.notes;
   }
 
   close(): void {

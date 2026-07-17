@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ExecutionContext } from '@nestjs/common';
 import { jwtVerify } from 'jose';
-import { deriveFiscalCalendar, MERCIER_PROPS } from '@bob/core';
+import { deriveFiscalCalendar } from '@bob/core';
+import { MERCIER_PROPS } from '@bob/core/testing';
 import type { OcrPort, PaymentGatewayPort, PdfRendererPort } from '@bob/core';
 import { BackendService } from './backend.service';
-import { InMemoryPersistence } from './persistence/persistence';
+import { InMemoryPersistence } from './persistence/persistence.testing';
 import { requestContext, type AppLogger, type Principal } from './observability/logger';
 import { SupabaseAuthGuard } from './auth/auth.guard';
 import type { SupabaseAdminPort } from './auth/supabase-admin';

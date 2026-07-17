@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { suggestVatRate } from './suggest-vat-rate';
+import { suggestVatRate, type SuggestVatInput } from './suggest-vat-rate';
 import { Company, type CompanyProps } from '../company/company';
 import { Customer, type CustomerProps } from '../customer/customer';
 
@@ -20,9 +20,6 @@ const baseCustomer: CustomerProps = {
   type: 'b2c',
   name: 'Martin',
   address: { line1: 'x', zip: '75001', city: 'Paris' },
-  score: 80,
-  avgDelayDays: 5,
-  outstanding: 0,
 };
 
 const company = (over: Partial<CompanyProps> = {}): Company => {
@@ -38,15 +35,15 @@ const customer = (over: Partial<CustomerProps> = {}): Customer => {
 
 describe('suggestVatRate', () => {
   it('travaux logement >2 ans => 10 (chauffe-eau)', () => {
-    const r = suggestVatRate({ company: company(), customer: customer(), category: 'labor', context: { housingOlderThan2y: true } });
+    const r = suggestVatRate({ company: company(), customer: customer(), category: 'labor', requestedRate: 10, context: { housingOlderThan2y: true } });
     expect(r.ok && r.value).toBe(10);
   });
   it('renovation energetique => 5.5', () => {
-    const r = suggestVatRate({ company: company(), customer: customer(), category: 'labor', context: { energyRenovation: true } });
+    const r = suggestVatRate({ company: company(), customer: customer(), category: 'labor', requestedRate: 5.5, context: { housingOlderThan2y: true, energyRenovation: true } });
     expect(r.ok && r.value).toBe(5.5);
   });
   it("test d'or franchise : regime franchise => 0", () => {
-    const r = suggestVatRate({ company: company({ vatRegime: 'franchise' }), customer: customer(), category: 'supply' });
+    const r = suggestVatRate({ company: company({ vatRegime: 'franchise' }), customer: customer(), category: 'supply', requestedRate: 0 });
     expect(r.ok && r.value).toBe(0);
   });
   it("test d'or franchise : taux 20 demande sous franchise => rejet 293B", () => {
@@ -55,12 +52,39 @@ describe('suggestVatRate', () => {
     if (!r.ok) expect(r.error).toMatchObject({ code: 'VAT_RATE_NOT_APPLICABLE', reason: 'franchise_293B' });
   });
   it("test d'or autoliquidation : sous-traitance BTP B2B => 0", () => {
-    const r = suggestVatRate({ company: company(), customer: customer({ type: 'b2b', siren: '732829320', isSubcontractingBtp: true }), category: 'labor' });
+    const r = suggestVatRate({ company: company(), customer: customer({ type: 'b2b', siren: '732829320', isSubcontractingBtp: true }), category: 'labor', requestedRate: 0 });
     expect(r.ok && r.value).toBe(0);
   });
   it("test d'or autoliquidation : taux !=0 demande => rejet", () => {
     const r = suggestVatRate({ company: company(), customer: customer({ type: 'b2b', siren: '732829320', isSubcontractingBtp: true }), category: 'labor', requestedRate: 20 });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toMatchObject({ code: 'VAT_RATE_NOT_APPLICABLE', reason: 'autoliquidation' });
+  });
+  it('aucun taux demandé => validation fail-closed, jamais 20 % implicite', () => {
+    // Simulation d'une frontière JSON/non typée : le contrat TS interdit déjà cet oubli.
+    const input = {
+      company: company(),
+      customer: customer(),
+      category: 'labor',
+    } as unknown as SuggestVatInput;
+    const r = suggestVatRate(input);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatchObject({ code: 'VALIDATION', field: 'vatRate' });
+  });
+  it('10 % sans éligibilité logement et 0 % hors franchise/autoliquidation sont rejetés', () => {
+    const ten = suggestVatRate({
+      company: company(),
+      customer: customer(),
+      category: 'labor',
+      requestedRate: 10,
+    });
+    const zero = suggestVatRate({
+      company: company(),
+      customer: customer(),
+      category: 'labor',
+      requestedRate: 0,
+    });
+    expect(ten.ok).toBe(false);
+    expect(zero.ok).toBe(false);
   });
 });

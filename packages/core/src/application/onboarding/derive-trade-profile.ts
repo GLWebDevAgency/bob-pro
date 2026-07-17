@@ -1,5 +1,4 @@
 import { type Trade } from '../../domain/company/company';
-import { type VatRate } from '../../domain/billing/shared/vat-rate';
 import { TRADE_PROFILES } from '../../domain/company/trade-profile';
 
 /**
@@ -15,8 +14,8 @@ import { TRADE_PROFILES } from '../../domain/company/trade-profile';
  * · `spaceLabel` = « ton espace {métier} » (proto `onbMetierLabel` : autre → « pro »,
  *   sinon libellé en minuscules).
  *
- * Zéro duplication de source : tout est dérivé de TRADE_PROFILES (modules, TVA par
- * défaut, vocabulaire). L'appartenance bâtiment = présence du module `chantiers`,
+ * Zéro duplication de source : tout est dérivé de TRADE_PROFILES (modules, vocabulaire).
+ * L'appartenance bâtiment = présence du module `chantiers`,
  * strictement équivalente au set BTP du domaine company (les 5 mêmes métiers) — testé.
  */
 
@@ -25,7 +24,7 @@ export type TradeHighlightId =
   | 'decennale' // assurance décennale — métiers du bâtiment
   | 'consuel' // attestation de conformité électrique — électricien
   | 'retenue_garantie' // retenue de garantie 5 % — module métier
-  | 'tva_travaux' // TVA travaux 10 % par défaut (rénovation logement)
+  | 'tva_travaux' // TVA travaux à choisir selon l'éligibilité du chantier
   | 'cession_droits' // cession de droits — photographe
   | 'cra'; // compte rendu d'activité — consultant
 
@@ -37,8 +36,6 @@ export interface TradeSpacePreview {
   preview: readonly string[];
   /** Repères de vocabulaire/conformité propres au métier (ordre = pertinence). */
   highlights: readonly TradeHighlightId[];
-  /** TVA par défaut du métier (10 % travaux · 20 % services) — TRADE_PROFILES. */
-  defaultVatRate: VatRate;
   /** Vocabulaire de l'app (Chantier / Mission / Prestation / Séance / Projet). */
   vocabulary: { customer: string; project: string };
 }
@@ -74,7 +71,7 @@ export function deriveTradeProfile(trade: Trade): TradeSpacePreview {
   if (isBtp) highlights.push('decennale');
   if (trade === 'electricien') highlights.push('consuel');
   if (p.modules.includes('retenue_garantie')) highlights.push('retenue_garantie');
-  if (p.defaultVatRate === 10) highlights.push('tva_travaux');
+  if (isBtp) highlights.push('tva_travaux');
   if (p.modules.includes('cession_droits')) highlights.push('cession_droits');
   if (p.modules.includes('cra')) highlights.push('cra');
 
@@ -83,7 +80,6 @@ export function deriveTradeProfile(trade: Trade): TradeSpacePreview {
     spaceLabel: trade === 'autre' ? 'pro' : p.label.toLowerCase(),
     preview: PREVIEW[trade],
     highlights,
-    defaultVatRate: p.defaultVatRate,
     vocabulary: { ...p.vocabulary },
   };
 }

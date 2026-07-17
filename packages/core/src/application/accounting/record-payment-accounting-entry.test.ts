@@ -105,6 +105,10 @@ class MemoryPayments implements PaymentRepository {
     return this.row.invoiceId === invoiceId ? [this.row] : [];
   }
 
+  async listByCompany(companyId: string): Promise<Payment[]> {
+    return this.row.companyId === companyId ? [this.row] : [];
+  }
+
   async findByIdempotencyKey(companyId: string, key: string): Promise<Payment | null> {
     return this.row.companyId === companyId && this.row.idempotencyKey === key ? this.row : null;
   }

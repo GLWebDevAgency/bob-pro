@@ -4,7 +4,7 @@
  *
  * FLUX :
  * · snapshot d'inscription complet (user_metadata.company_snapshot, posé au signUp C24) et
- *   forme juridique connue → registerCompany AUTOMATIQUE, état « on prépare ton espace » ;
+ *   forme juridique connue → confirmation du régime TVA, jamais deviné depuis l'annuaire ;
  * · snapshot sans forme juridique mappée (code INSEE hors périmètre) → récap fiche +
  *   choix EXPLICITE de la forme (jamais devinée) ;
  * · aucun brouillon (SIRET passé à l'inscription) → mini-formulaire SIRET → lookup →
@@ -19,7 +19,13 @@ import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Siret, type AppError, type CompanyLookupResult, type LegalForm } from '@bob/core';
+import {
+  Siret,
+  type AppError,
+  type CompanyLookupResult,
+  type LegalForm,
+  type VatRegime,
+} from '@bob/core';
 import { themes } from '@bob/tokens';
 import { t, type I18nKey } from '@bob/i18n';
 import { font, useTheme } from '@bob/ui';
@@ -37,6 +43,12 @@ import { CompanyFicheCard, formatSiret } from '../components/CompanyFicheCard';
 import { SparkIcon } from '../components/icons';
 
 type Phase = 'auto' | 'siret' | 'confirm';
+
+const VAT_OPTIONS: readonly { id: VatRegime; label: I18nKey }[] = [
+  { id: 'franchise', label: 'onboard.vatFranchise' },
+  { id: 'reel_simpl', label: 'onboard.vatReelSimpl' },
+  { id: 'reel_normal', label: 'onboard.vatReelNormal' },
+];
 
 /** Erreur AppError du lookup SIRET → copy (introuvable ≠ invalide ≠ annuaire en panne). */
 function lookupErrorKey(error: AppError): I18nKey {
@@ -70,14 +82,21 @@ export function ProvisioningScreen() {
   const [phase, setPhase] = useState<Phase>(draft.snapshot || draft.siret ? 'auto' : 'siret');
   const [company, setCompany] = useState<CompanyLookupResult | null>(draft.snapshot);
   const [legalForm, setLegalForm] = useState<LegalForm | null>(draft.snapshot?.legalForm ?? null);
+  const [vatRegime, setVatRegime] = useState<VatRegime | null>(null);
   const [siret, setSiret] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function register(lookup: CompanyLookupResult, form: LegalForm): Promise<void> {
+  async function register(
+    lookup: CompanyLookupResult,
+    form: LegalForm,
+    confirmedVatRegime: VatRegime,
+  ): Promise<void> {
     setBusy(true);
     setError(null);
-    const r = await client.registerCompany(registerInputFromLookup(lookup, form));
+    const r = await client.registerCompany(
+      registerInputFromLookup(lookup, form, confirmedVatRegime),
+    );
     if (!r.ok) {
       setBusy(false);
       setError(say('auth.provisioningError'));
@@ -106,12 +125,8 @@ export function ProvisioningScreen() {
     }
     setCompany(r.value);
     setLegalForm(r.value.legalForm);
-    if (r.value.legalForm) {
-      await register(r.value, r.value.legalForm);
-      return;
-    }
     setBusy(false);
-    setPhase('confirm'); // forme juridique inconnue de l'annuaire : l'utilisateur choisit
+    setPhase('confirm'); // forme éventuellement connue, régime TVA toujours confirmé par l'utilisateur
   }
 
   // Chemin automatique au montage : brouillon d'inscription → espace créé sans re-saisie.
@@ -119,9 +134,7 @@ export function ProvisioningScreen() {
   useEffect(() => {
     if (autoStarted.current) return;
     autoStarted.current = true;
-    if (draft.snapshot && draft.snapshot.legalForm) {
-      void register(draft.snapshot, draft.snapshot.legalForm);
-    } else if (draft.snapshot) {
+    if (draft.snapshot) {
       setPhase('confirm');
     } else if (draft.siret) {
       void lookupThenContinue(draft.siret);
@@ -144,7 +157,11 @@ export function ProvisioningScreen() {
       setError(say('auth.provisioningLegalFormLabel'));
       return;
     }
-    await register(company, legalForm);
+    if (!vatRegime) {
+      setError(say('onboard.vatTitle'));
+      return;
+    }
+    await register(company, legalForm, vatRegime);
   }
 
   const header = (
@@ -289,6 +306,45 @@ export function ProvisioningScreen() {
             </View>
           </View>
         ) : null}
+        <View style={{ gap: 8 }}>
+          <Text style={[font('label', 600), { fontSize: 12.5, color: overlays.white70 }]}>
+            {say('onboard.vatTitle')}
+          </Text>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+            {VAT_OPTIONS.map((option) => {
+              const selected = vatRegime === option.id;
+              return (
+                <Pressable
+                  key={option.id}
+                  accessibilityRole="button"
+                  accessibilityLabel={say(option.label)}
+                  accessibilityState={{ selected }}
+                  onPress={() => {
+                    setVatRegime(option.id);
+                    setError(null);
+                  }}
+                  style={{
+                    backgroundColor: selected ? colors.surface : overlays.white07,
+                    borderWidth: 1,
+                    borderColor: selected ? colors.surface : overlays.white16,
+                    borderRadius: 12,
+                    paddingHorizontal: 12,
+                    paddingVertical: 9,
+                  }}
+                >
+                  <Text
+                    style={[
+                      font('label', 600),
+                      { fontSize: 13, color: selected ? colors.ink900 : overlays.white70 },
+                    ]}
+                  >
+                    {say(option.label)}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </View>
         {errorLine}
         {cta(error ? say('auth.provisioningRetry') : say('auth.provisioningConfirmCta'), () => void submitConfirm())}
       </View>

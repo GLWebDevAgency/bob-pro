@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, HttpCode, HttpException, HttpStatus, Param, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Headers, HttpCode, HttpException, HttpStatus, Param, Patch, Post, Put, Query } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { z } from 'zod';
 import { CabinetApiService } from './cabinet-api.service';
@@ -35,6 +35,41 @@ function bodyOf<T>(schema: z.ZodType<T>, body: unknown): T {
   return parsed.data;
 }
 
+function dossierValidation(field: string): never {
+  throw new HttpException(
+    { code: 'CABINET_DOSSIER_INVALID', params: { field } },
+    HttpStatus.UNPROCESSABLE_ENTITY,
+  );
+}
+
+export function dossierExpectedRevision(
+  ifMatch: string | undefined,
+  ifNoneMatch: string | undefined,
+): number | null {
+  if (ifMatch === undefined && ifNoneMatch === '*') return null;
+  if (ifNoneMatch === undefined && ifMatch !== undefined) {
+    const match = /^"([1-9]\d*)"$/.exec(ifMatch.trim());
+    const revision = match?.[1] ? Number(match[1]) : Number.NaN;
+    if (Number.isSafeInteger(revision)) return revision;
+    dossierValidation('if-match');
+  }
+  if (ifMatch === undefined && ifNoneMatch === undefined) {
+    throw new HttpException(
+      { code: 'CABINET_DOSSIER_PRECONDITION_REQUIRED' },
+      HttpStatus.PRECONDITION_REQUIRED,
+    );
+  }
+  dossierValidation('precondition');
+}
+
+function dossierInput(body: unknown, siren: string, expectedRevision: number | null): unknown {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) dossierValidation('body');
+  const input = body as Record<string, unknown>;
+  if ('expectedRevision' in input) dossierValidation('expectedRevision');
+  if (input.siren !== siren) dossierValidation('siren');
+  return { ...input, expectedRevision };
+}
+
 @Controller('cabinet/v1')
 export class CabinetController {
   constructor(private readonly cabinet: CabinetApiService) {}
@@ -62,6 +97,43 @@ export class CabinetController {
   @Get('cabinets/:cabinetId/members')
   listMembers(@Param('cabinetId') cabinetId: string, @Query() query: unknown) {
     return this.cabinet.listMembers(cabinetId, bodyOf(cursorPageSchema, query));
+  }
+
+  @Get('cabinets/:cabinetId/dossiers')
+  listDossiers(@Param('cabinetId') cabinetId: string, @Query() query: unknown) {
+    return this.cabinet.listDossiers(cabinetId, bodyOf(cursorPageSchema, query));
+  }
+
+  @Get('cabinets/:cabinetId/dossiers/:siren')
+  getDossier(@Param('cabinetId') cabinetId: string, @Param('siren') siren: string) {
+    return this.cabinet.getDossier(cabinetId, siren);
+  }
+
+  @Put('cabinets/:cabinetId/dossiers/:siren')
+  saveDossier(
+    @Param('cabinetId') cabinetId: string,
+    @Param('siren') siren: string,
+    @Headers('if-match') ifMatch: string | undefined,
+    @Headers('if-none-match') ifNoneMatch: string | undefined,
+    @Body() body: unknown,
+  ) {
+    return this.cabinet.saveDossier(
+      cabinetId,
+      dossierInput(body, siren, dossierExpectedRevision(ifMatch, ifNoneMatch)),
+    );
+  }
+
+  @Delete('cabinets/:cabinetId/dossiers/:siren')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  deleteDossier(
+    @Param('cabinetId') cabinetId: string,
+    @Param('siren') siren: string,
+    @Headers('if-match') ifMatch: string | undefined,
+    @Headers('if-none-match') ifNoneMatch: string | undefined,
+  ) {
+    const revision = dossierExpectedRevision(ifMatch, ifNoneMatch);
+    if (revision === null) dossierValidation('if-match');
+    return this.cabinet.deleteDossier(cabinetId, siren, revision);
   }
 
   @Patch('cabinets/:cabinetId/members/:memberId')

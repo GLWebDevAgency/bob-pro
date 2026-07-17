@@ -15,7 +15,6 @@ export interface OcrExtractInput {
     label: string;
     customerWord: string;
     projectWord: string;
-    defaultVatRatePct?: number;
   };
 }
 

@@ -82,6 +82,15 @@ export default function DevisDetail() {
   const customers = useCustomers();
   const invoices = useInvoices();
   const documents = useDocuments();
+  const screenDataReady =
+    quote.data !== undefined &&
+    customers.data !== undefined &&
+    invoices.data !== undefined &&
+    documents.data !== undefined &&
+    !quote.isError &&
+    !customers.isError &&
+    !invoices.isError &&
+    !documents.isError;
 
   const view = useMemo(() => {
     const q = quote.data;
@@ -122,11 +131,11 @@ export default function DevisDetail() {
   );
   const agentContext = useMemo<AgentContext>(() => {
     const q = quote.data;
-    if (!q) {
+    if (!q || !screenDataReady) {
       return {
         screen: { name: '/devis/[id]', instanceId: `quote:${id}` },
         entities: [],
-        capabilities: ['screen.read'],
+        capabilities: [],
       };
     }
     const customer = (customers.data ?? []).find((item) => item.id === q.customerId);
@@ -151,7 +160,7 @@ export default function DevisDetail() {
       ],
       capabilities: ['screen.read', 'quote.read', ...actionCapabilities],
     };
-  }, [customers.data, id, invoices.isSuccess, quote.data]);
+  }, [customers.data, id, invoices.data, invoices.isSuccess, quote.data, screenDataReady]);
   const agentLayout = useMemo<AgentAccessLayout>(() => ({ bottomAvoidance: 86 }), []);
   const confirm = useConfirm();
 
@@ -214,8 +223,8 @@ export default function DevisDetail() {
   //    de choix (QuoteActionsHandle) — JAMAIS n'appelle generate.mutateAsync elle-même. Seul le tap
   //    sur le bouton visible (état b) ou dans le Sheet (état a) déclenche réellement la génération. ──
   const actionsRef = useRef<QuoteActionsHandle>(null);
-  const statusRef = useRef(quote.data?.status);
-  statusRef.current = quote.data?.status;
+  const statusRef = useRef(screenDataReady ? quote.data?.status : undefined);
+  statusRef.current = screenDataReady ? quote.data?.status : undefined;
   const linkedRef = useRef(quoteLinkedInvoices);
   linkedRef.current = quoteLinkedInvoices;
   const depositPctRef = useRef<number | null>(quote.data?.depositPct ?? null);
@@ -404,7 +413,7 @@ export default function DevisDetail() {
       }
     : null;
 
-  if (quote.isLoading || customers.isLoading || invoices.isLoading) {
+  if (quote.isLoading || customers.isLoading || invoices.isLoading || documents.isLoading) {
     return (
       <View style={{ flex: 1, backgroundColor: colors.bg }}>
         <SkeletonHeader onClose={() => router.back()} />
@@ -418,13 +427,13 @@ export default function DevisDetail() {
   }
   // Un ÉCHEC réseau n'est JAMAIS un cul-de-sac : retry ET fermeture restent disponibles
   // (avant ce correctif l'utilisateur était piégé sans issue — bug P0 de l'audit états).
-  if (quote.isError || customers.isError || invoices.isError) {
+  if (quote.isError || customers.isError || invoices.isError || documents.isError) {
     return (
       <View style={{ flex: 1, justifyContent: 'center', backgroundColor: colors.bg, padding: 18 }}>
         <ErrorRetry
           message={t('piece.dataError', { personality })}
           onRetry={() => {
-            void Promise.all([quote.refetch(), customers.refetch(), invoices.refetch()]);
+            void Promise.all([quote.refetch(), customers.refetch(), invoices.refetch(), documents.refetch()]);
           }}
           secondaryLabel={t('piece.close', { personality })}
           onSecondaryAction={() => router.back()}

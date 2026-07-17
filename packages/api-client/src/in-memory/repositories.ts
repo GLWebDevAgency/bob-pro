@@ -1,4 +1,4 @@
-import { AccountingEntry, ChartOfAccounts, Expense, Invoice, Quote } from '@bob/core';
+import { AccountingEntry, ChantierNote, ChartOfAccounts, Expense, Invoice, Quote } from '@bob/core';
 import type {
   Company,
   Customer,
@@ -15,6 +15,11 @@ import type {
   AccountingEntryRepository,
   ChartOfAccountsRepository,
   ChantierRepository,
+  ChantierNoteRepository,
+  WorksiteMediaItem,
+  WorksiteMediaStorage,
+  DocumentStoragePort,
+  StoredObject,
   CatalogueItemRecord,
   CatalogueRepository,
   CatalogueCreateWriteResult,
@@ -311,5 +316,62 @@ export class InMemoryChantierRepository implements ChantierRepository {
   }
   async listByCompany(companyId: string): Promise<Chantier[]> {
     return [...this.map.values()].filter((c) => c.companyId === companyId);
+  }
+}
+
+export class InMemoryChantierNoteRepository implements ChantierNoteRepository {
+  private readonly rows: ChantierNote[] = [];
+  async save(n: ChantierNote): Promise<void> {
+    this.rows.push(n);
+  }
+  async listByChantier(companyId: string, chantierId: string): Promise<ChantierNote[]> {
+    return this.rows
+      .filter((n) => n.companyId === companyId && n.chantierId === chantierId)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+}
+
+export class InMemoryWorksiteMediaStorage implements WorksiteMediaStorage {
+  private readonly map = new Map<string, WorksiteMediaItem>();
+  async save(item: WorksiteMediaItem): Promise<void> {
+    this.map.set(item.id, item);
+  }
+  async listByChantier(companyId: string, chantierId: string): Promise<WorksiteMediaItem[]> {
+    return [...this.map.values()]
+      .filter((i) => i.companyId === companyId && i.chantierId === chantierId)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+  async findById(companyId: string, id: string): Promise<WorksiteMediaItem | null> {
+    const item = this.map.get(id);
+    return item && item.companyId === companyId ? item : null;
+  }
+  async remove(companyId: string, id: string): Promise<void> {
+    const item = this.map.get(id);
+    if (item && item.companyId === companyId) this.map.delete(id);
+  }
+}
+
+/** Démo/local uniquement — octets en mémoire, URL de visualisation en data: URI. Le runtime live
+ * utilise SupabaseDocumentStorage (apps/api) derrière le MÊME DocumentStoragePort. */
+export class InMemoryDocumentStorage implements DocumentStoragePort {
+  private readonly map = new Map<string, { bytes: Uint8Array; contentType: string }>();
+  async put(input: { companyId: string; key: string; bytes: Uint8Array; contentType: string }): Promise<StoredObject> {
+    this.map.set(input.key, { bytes: input.bytes, contentType: input.contentType });
+    return { key: input.key, sizeBytes: input.bytes.byteLength, sha256: 'demo' };
+  }
+  async get(_companyId: string, key: string): Promise<{ bytes: Uint8Array; contentType: string } | null> {
+    return this.map.get(key) ?? null;
+  }
+  async getSignedUrl(_companyId: string, key: string, _ttlSeconds: number): Promise<string> {
+    const item = this.map.get(key);
+    if (!item) throw new Error('InMemoryDocumentStorage: objet introuvable.');
+    return `data:${item.contentType};base64,${Buffer.from(item.bytes).toString('base64')}`;
+  }
+  async stat(_companyId: string, key: string): Promise<{ sizeBytes: number; contentType: string } | null> {
+    const item = this.map.get(key);
+    return item ? { sizeBytes: item.bytes.byteLength, contentType: item.contentType } : null;
+  }
+  async remove(_companyId: string, key: string): Promise<void> {
+    this.map.delete(key);
   }
 }

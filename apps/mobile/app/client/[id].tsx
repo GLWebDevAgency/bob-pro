@@ -4,8 +4,8 @@
  * → en-tête (Avatar squircle tone par type · nom · partyLine ADAPTATIF : badge type +
  * SIREN seulement b2b/b2g, RIEN pour un particulier) → 4 actions rapides (Devis /
  * Relancer / Appeler / Email — tuiles blanches icône+label) → 3 KPI (Encours teinté par
- * statut · Délai moyen · CA 12 mois) → Card « Score de paiement » (ScoreBar §13 +
- * {score}/100 + légende par tranche) → carte conformité e-invoicing (canal
+ * statut · Délai moyen · CA 12 mois) → Card « Historique de paiement » avec statut
+ * de rapprochement explicite (aucun score inventé) → carte conformité e-invoicing (canal
  * einvoiceChannelFor @bob/core : PA b2b / e-reporting b2c / Chorus Pro b2g) → Segmented
  * onglets Activité/Chantiers/Docs/Infos (Activité fonctionnelle, le reste en état vide
  * propre) → CTA sticky contextuelle par standing.
@@ -28,16 +28,25 @@
  * · avatar en pastel sémantique par type (Avatar tone — gamme tokens), pas l'aplat navy
  *   du proto (hex hors tokens) — même écart documenté que C12 ; taille 54 (réf) au-delà
  *   de la fourchette 34–44 des redlines §8 (avatars de liste) ;
- * · ScoreBar §13 : tranche 50–75 = warning (ambre) là où le proto teinte la barre en
- *   rouge à 62 — les tranches tokens priment ;
  * · la date des rangées d'activité est l'échéance (dueAt) / validité (validUntil) — la
  *   seule date réelle exposée par les vues ; le proto affichait la date d'émission ;
  * · pas de rangée « Règlement reçu » : aucun flux paiements par client côté BobClient
  *   aujourd'hui (TODO C40) — les statuts Réglée/Réglée en partie portent l'info.
  * Zéro hex/rgba : useTheme()/@bob/tokens. Zéro import de src/components/ui (ancien kit).
  */
-import { useMemo, useState, type ReactNode } from 'react';
-import { Alert, Linking, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import {
+  Alert,
+  KeyboardAvoidingView,
+  Linking,
+  Platform,
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
@@ -46,52 +55,80 @@ import {
   einvoiceChannelFor,
   formatEURWhole,
   revenueLast12MonthsCents,
+  tradeToWorksiteTerminology,
   type CustomerListItem,
   type CustomerStanding,
   type EinvoiceChannel,
   type RelancePriority,
+  type WorksiteTerminology,
 } from '@bob/core';
-import type { InvoiceView } from '@bob/api-client';
+import type { InvoiceView, UpdateCustomerClientInput } from '@bob/api-client';
 import { shadowNative } from '@bob/tokens';
-import { t, type I18nKey, type Personality } from '@bob/i18n';
+import { t, type I18nKey } from '@bob/i18n';
 import {
   Avatar,
+  Button,
   Card,
   EmptyState,
   ErrorRetry,
   IconTile,
-  ScoreBar,
   SegmentedControl,
+  Sheet,
   Skeleton,
   SkeletonRow,
   StatusBadge,
+  Toast,
   font,
   statusBadgeColors,
   useStatusBadgePalette,
   useTheme,
   type StatusBadgeVariant,
 } from '@bob/ui';
-import { useChantiers, useCustomers, useInvoices, useQuotes } from '../../src/data/hooks';
+import {
+  useChantiers,
+  useCreateChantier,
+  useCustomers,
+  useProfile,
+  useQuotes,
+  useInvoices,
+  useSearchAddress,
+  useUpdateCustomer,
+} from '../../src/data/hooks';
 import { useDocuments } from '../../src/data/documents';
 import { useBobClient } from '../../src/data/client';
+import { hasBlockingAuthoritativeDataError } from '../../src/data/authoritative-query-state';
 import { usePublishAgentContext, type AgentContext, type AgentAccessLayout } from '../../src/agent';
+import { CustomerForm, type CustomerFormInitial } from '../../src/components/customer-form';
 import {
   ChevronLeftIcon,
   ChevronRightIcon,
+  CheckIcon,
   EllipsisIcon,
   FileIcon,
   FileTextIcon,
   FolderSmallIcon,
   MailIcon,
   PhoneIcon,
+  PlusIcon,
   SendIcon,
   ShieldIcon,
 } from '../../src/components/icons';
 import { useBobAwareScrollInsets } from '../../src/components/use-bob-aware-scroll-insets';
 
-// TODO C25/C40 — menu « … » de la fiche (renommer, archiver…) : aucun use case côté
-// BobClient aujourd'hui. No-op accessible ; brancher ici les actions que Bob invoquera.
-const openFicheMenu = (): undefined => undefined;
+const SEARCH_DEBOUNCE_MS = 350;
+
+/** Repli neutre tant que le profil métier n'est pas chargé — vocabulaire BTP par défaut
+ * (le plus courant), jamais un flash de texte anglais/vide. Remplacé dès profile.data prêt. */
+const DEFAULT_WORKSITE_TERM: WorksiteTerminology = {
+  singular: 'chantier',
+  plural: 'chantiers',
+  gender: 'm',
+  article: { indefinite: 'un', definite: 'le' },
+};
+
+function capitalize(word: string): string {
+  return word.length === 0 ? word : word[0]!.toUpperCase() + word.slice(1);
+}
 
 /** Badge type + pastel d'avatar (tokens sémantiques §7) — partyLine b2b/b2g uniquement. */
 const TONE_BY_TYPE: Record<CustomerListItem['type'], StatusBadgeVariant> = {
@@ -161,23 +198,6 @@ function dateLabel(date: string): string {
 /** « 821503642 » → « 821 503 642 » (réf : SIREN groupé par 3). */
 function formatSiren(siren: string): string {
   return siren.replace(/(\d{3})(?=\d)/g, '$1 ');
-}
-
-/** Tranches du score (§13, contrat C13) : < 50 danger · 50–75 warning · > 75 success. */
-function scoreToneOf(score: number): 'danger' | 'warning' | 'success' {
-  if (score < 50) return 'danger';
-  if (score <= 75) return 'warning';
-  return 'success';
-}
-
-/** Légende du score par tranche — voix de Bob, délai moyen réel injecté sur 50–75. */
-function scoreLegend(score: number, avgDelayDays: number, personality: Personality): string {
-  const tone = scoreToneOf(score);
-  if (tone === 'danger') return t('fiche.scoreBad', { personality });
-  if (tone === 'success') return t('fiche.scoreGood', { personality });
-  return avgDelayDays > 0
-    ? t('fiche.scoreMid', { personality, params: { days: avgDelayDays } })
-    : t('fiche.scoreMidBare', { personality });
 }
 
 /** Rangée d'activité projetée (pièce réelle → titre, date, note, montant teinté). */
@@ -351,10 +371,47 @@ export default function ClientDetail() {
   // A1-C13 : onglets remplis — chantiers réels du client + docs liés à SES pièces.
   const chantiers = useChantiers();
   const documents = useDocuments();
+  const profile = useProfile();
+  const createChantier = useCreateChantier();
+  const updateCustomer = useUpdateCustomer();
   const [tab, setTab] = useState<TabKey>('activity');
+  const [chantierCreateOpen, setChantierCreateOpen] = useState(false);
+  const [chantierName, setChantierName] = useState('');
+  const [chantierNotes, setChantierNotes] = useState('');
+  const [chantierAddressQuery, setChantierAddressQuery] = useState('');
+  const [chantierAddressLocked, setChantierAddressLocked] = useState(false);
+  const [chantierError, setChantierError] = useState(false);
+  const chantierAddressSearch = useSearchAddress();
+  const [editOpen, setEditOpen] = useState(false);
+  const [editError, setEditError] = useState(false);
+  const [ficheToast, setFicheToast] = useState<string | null>(null);
+
+  // Terminologie adaptative par métier (tradeToWorksiteTerminology @bob/core) — un plombier
+  // parle de « chantier », un freelance IT de « mission »… Repli neutre tant que non chargé.
+  const worksiteTerm = profile.data ? tradeToWorksiteTerminology(profile.data.trade) : DEFAULT_WORKSITE_TERM;
+  const worksiteParams = {
+    term: worksiteTerm.singular,
+    termCap: capitalize(worksiteTerm.singular),
+    plural: worksiteTerm.plural,
+    pluralCap: capitalize(worksiteTerm.plural),
+    article: worksiteTerm.article.indefinite,
+    de: worksiteTerm.gender === 'f' ? 'de la' : 'du',
+    newAdj: worksiteTerm.gender === 'f' ? 'Nouvelle' : 'Nouveau',
+  };
+  const chantiersModuleActive = (profile.data?.modules ?? []).some(
+    (m) => m.key === 'chantiers' && m.active,
+  );
 
   const today = localToday();
-  const customer = (customers.data ?? []).find((c) => c.id === id) ?? null;
+  const customer = customers.data?.find((c) => c.id === id) ?? null;
+  const customerSnapshotReady = customers.data !== undefined;
+  const customerBlockingError = hasBlockingAuthoritativeDataError([customers]);
+  const customerStaleError = customerSnapshotReady && customers.isError;
+  const customerFresh = customerSnapshotReady && !customerStaleError;
+  const piecesReady = invoices.data !== undefined && quotes.data !== undefined;
+  const piecesBlockingError = hasBlockingAuthoritativeDataError([invoices, quotes]);
+  const piecesStaleError = piecesReady && (invoices.isError || quotes.isError);
+  const piecesFresh = piecesReady && !piecesStaleError;
 
   // Pièces réelles DU client (les vues arrivent typées du BobClient — jamais de fixtures).
   const custInvoices = useMemo(
@@ -366,19 +423,17 @@ export default function ClientDetail() {
     [quotes.data, id],
   );
 
-  // Standing + montants : deriveCustomerStandings (@bob/core) — zéro duplication ;
-  // sources indisponibles (chargement/erreur) → repli sur les champs du client, jamais un chiffre inventé.
-  const standing = useMemo<CustomerStanding>(() => {
-    const derived = customer
-      ? deriveCustomerStandings({
-          customers: [customer],
-          invoices: invoices.data,
-          quotes: quotes.data,
-          today,
-        })[0]
-      : undefined;
-    return derived ?? { customerId: id, kind: 'nouveau', amountCents: 0, daysLate: 0 };
-  }, [customer, invoices.data, quotes.data, today, id]);
+  // Standing + montants : aucune identité/statut de secours. Sans les deux collections
+  // autoritatives, l'UI affiche « — » et ferme les actions au lieu de fabriquer « nouveau / 0 € ».
+  const standing = useMemo<CustomerStanding | null>(() => {
+    if (customer === null || invoices.data === undefined || quotes.data === undefined) return null;
+    return deriveCustomerStandings({
+      customers: [customer],
+      invoices: invoices.data,
+      quotes: quotes.data,
+      today,
+    })[0] ?? null;
+  }, [customer, invoices.data, quotes.data, today]);
 
   // Relances : le MÊME moteur que la carte C10 (deriveTodayPriorities) — la CTA sticky
   // et les jours de retard des rangées citent le doc réel, trié retard puis montant.
@@ -396,40 +451,43 @@ export default function ClientDetail() {
     [relances],
   );
 
-  // Défensif contre une API amont pas encore à jour de la projection C13 (champs absents → null/0).
+  // Coordonnées et métriques qualifiées. `null` reste « inconnu », jamais transformé en zéro.
   const siren = customer?.siren ?? null;
   const email = customer?.email ?? null;
   const phone = customer?.phone ?? null;
-  const avgDelayDays = customer?.avgDelayDays ?? 0;
+  const avgDelayDays = customer?.avgDelayDays ?? null;
 
   // Chantiers DU client (module vertical BTP) — rangées réelles, aucun détail fantôme.
   const custChantiers = useMemo(
-    () => (chantiers.data ?? []).filter((c) => c.customerId === id),
+    () => chantiers.data?.filter((c) => c.customerId === id) ?? [],
     [chantiers.data, id],
   );
   const agentContext = useMemo<AgentContext>(
-    () => ({
-      screen: { name: '/client/[id]', instanceId: `customer:${id}` },
-      entities: customer
-        ? [
-            { type: 'customer' as const, id: customer.id, label: customer.name },
-            ...custInvoices.slice(0, 8).map((invoice) => ({
-              type: 'invoice' as const,
-              id: invoice.id,
-              label: invoice.number ? `Facture ${invoice.number}` : 'Facture brouillon',
-            })),
-            ...custQuotes.slice(0, 8).map((quote) => ({
-              type: 'quote' as const,
-              id: quote.id,
-              label: quote.number ? `Devis ${quote.number}` : 'Devis brouillon',
-            })),
-          ]
-        : [],
-      capabilities: customer
-        ? ['screen.read', 'customer.read', 'invoice.read', 'quote.read']
-        : ['screen.read'],
-    }),
-    [custInvoices, custQuotes, customer, id],
+    () => {
+      const contextReady = customer !== null && customerFresh && piecesFresh;
+      return {
+        screen: { name: '/client/[id]', instanceId: `customer:${id}` },
+        entities: contextReady
+          ? [
+              { type: 'customer' as const, id: customer.id, label: customer.name },
+              ...custInvoices.slice(0, 8).map((invoice) => ({
+                type: 'invoice' as const,
+                id: invoice.id,
+                label: invoice.number ? `Facture ${invoice.number}` : 'Facture brouillon',
+              })),
+              ...custQuotes.slice(0, 8).map((quote) => ({
+                type: 'quote' as const,
+                id: quote.id,
+                label: quote.number ? `Devis ${quote.number}` : 'Devis brouillon',
+              })),
+            ]
+          : [],
+        capabilities: contextReady
+          ? ['screen.read', 'customer.read', 'invoice.read', 'quote.read']
+          : [],
+      };
+    },
+    [custInvoices, custQuotes, customer, customerFresh, id, piecesFresh],
   );
   const agentLayout = useMemo<AgentAccessLayout>(() => ({ bottomAvoidance: 78 }), []);
   usePublishAgentContext(agentContext, agentLayout);
@@ -437,10 +495,16 @@ export default function ClientDetail() {
 
   // Docs DU client = documents du coffre liés à SES pièces (factures, devis, chantiers).
   const custDocs = useMemo(() => {
+    if (
+      documents.data === undefined
+      || invoices.data === undefined
+      || quotes.data === undefined
+      || chantiers.data === undefined
+    ) return [];
     const invoiceIds = new Set(custInvoices.map((i) => i.id));
     const quoteIds = new Set(custQuotes.map((q) => q.id));
     const chantierIds = new Set(custChantiers.map((c) => c.id));
-    return (documents.data ?? [])
+    return documents.data
       .filter(
         (d) =>
           d.linkedEntityId !== null &&
@@ -449,7 +513,7 @@ export default function ClientDetail() {
             (d.linkedEntityType === 'chantier' && chantierIds.has(d.linkedEntityId))),
       )
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  }, [documents.data, custInvoices, custQuotes, custChantiers]);
+  }, [chantiers.data, documents.data, invoices.data, quotes.data, custInvoices, custQuotes, custChantiers]);
 
   // Ouverture d'un document = même chemin que le coffre C14 (URL signée → viewer système).
   const openDocument = async (docId: string): Promise<void> => {
@@ -463,10 +527,15 @@ export default function ClientDetail() {
     return [
       { key: 'fiche.infoType' as I18nKey, value: t(TYPE_KEY[customer.type], { personality }) },
       ...(siren ? [{ key: 'fiche.infoSiren' as I18nKey, value: formatSiren(siren) }] : []),
+      ...(customer.contactName
+        ? [{ key: 'clients.createContactNameLabel' as I18nKey, value: customer.contactName }]
+        : []),
       ...(email ? [{ key: 'fiche.infoEmail' as I18nKey, value: email }] : []),
       ...(phone ? [{ key: 'fiche.infoPhone' as I18nKey, value: phone }] : []),
-      { key: 'fiche.infoScore' as I18nKey, value: `${customer.score}/100` },
-      ...(avgDelayDays > 0
+      ...(customer.address.line1
+        ? [{ key: 'clients.createAddressLabel' as I18nKey, value: `${customer.address.line1}, ${customer.address.zip} ${customer.address.city}` }]
+        : []),
+      ...(avgDelayDays !== null
         ? [
             {
               key: 'fiche.infoDelay' as I18nKey,
@@ -477,20 +546,130 @@ export default function ClientDetail() {
     ];
   }, [customer, siren, email, phone, avgDelayDays, personality]);
 
-  const booting = customers.isLoading || invoices.isLoading || quotes.isLoading;
+  // Préremplissage de l'édition (fiche.editCta) — prénom/nom reconstitués depuis `name` (le
+  // domaine n'a qu'un seul champ, cf. chaîne complète C13/C40 TODO partagé) : premier mot =
+  // prénom, reste = nom (repli honnête, l'utilisateur corrige si besoin).
+  const customerFormInitial = useMemo<CustomerFormInitial | undefined>(() => {
+    if (!customer) return undefined;
+    const [firstWord, ...rest] = customer.name.trim().split(/\s+/);
+    const hasStructuredAddress = customer.address.line1 !== '' || customer.address.city !== '';
+    return {
+      type: customer.type,
+      firstName: customer.type === 'b2c' ? (firstWord ?? '') : '',
+      lastName: customer.type === 'b2c' ? rest.join(' ') : '',
+      companyName: customer.type === 'b2c' ? '' : customer.name,
+      siren: siren,
+      contactName: customer.contactName ?? '',
+      email: email ?? '',
+      phone: phone ?? '',
+      address: hasStructuredAddress ? customer.address : null,
+      addressLabel: hasStructuredAddress
+        ? `${customer.address.line1}, ${customer.address.zip} ${customer.address.city}`
+        : '',
+    };
+  }, [customer, siren, email, phone]);
+
+  // Ouverture du chantier/projet : adresse PRÉ-REMPLIE depuis la fiche client (arbitrage fondateur).
+  const openChantierCreate = (): void => {
+    if (!customerFresh || !chantiersFresh || !chantiersModuleActive) return;
+    setChantierName('');
+    setChantierNotes('');
+    setChantierError(false);
+    const prefill = customer?.address.line1
+      ? `${customer.address.line1}, ${customer.address.zip} ${customer.address.city}`
+      : '';
+    setChantierAddressQuery(prefill);
+    setChantierAddressLocked(prefill !== '');
+    chantierAddressSearch.reset();
+    setChantierCreateOpen(true);
+  };
+  const closeChantierCreate = (): void => setChantierCreateOpen(false);
+
+  useEffect(() => {
+    if (!chantierCreateOpen) return;
+    const query = chantierAddressQuery.trim();
+    if (query.length < 3 || chantierAddressLocked) {
+      chantierAddressSearch.reset();
+      return;
+    }
+    const timeout = setTimeout(() => chantierAddressSearch.mutate(query), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timeout);
+  }, [chantierAddressQuery, chantierAddressLocked, chantierCreateOpen]);
+
+  const submitChantierCreate = (): void => {
+    const trimmedName = chantierName.trim();
+    if (!trimmedName || createChantier.isPending || !customerFresh || !chantiersFresh) return;
+    setChantierError(false);
+    createChantier.mutate(
+      {
+        name: trimmedName,
+        customerId: id,
+        address: chantierAddressQuery.trim() || null,
+        notes: chantierNotes.trim() || null,
+      },
+      {
+        onSuccess: () => {
+          setChantierCreateOpen(false);
+          setFicheToast(
+            t('fiche.chantierCreatedToast', { personality, params: { ...worksiteParams, name: trimmedName } }),
+          );
+        },
+        onError: () => setChantierError(true),
+      },
+    );
+  };
+
+  const submitEdit = (payload: UpdateCustomerClientInput): void => {
+    if (!customerFresh || customer === null) return;
+    setEditError(false);
+    updateCustomer.mutate(
+      { id, patch: payload },
+      {
+        onSuccess: () => {
+          setEditOpen(false);
+          setFicheToast(t('fiche.editSuccess', { personality }));
+        },
+        onError: () => setEditError(true),
+      },
+    );
+  };
+
+  const booting =
+    (!customerSnapshotReady && !customerBlockingError)
+    || (!piecesReady && !piecesBlockingError);
   // Une liste en cache peut être vide au moment où son rafraîchissement échoue : ne jamais
   // transformer cet échec en « client introuvable ». Si la fiche ciblée est en cache, on la
   // conserve et on expose l'échec de rafraîchissement en ligne.
-  const customerUnavailable = customers.isError && customer === null;
-  const customerRefreshFailed = customers.isError && customer !== null;
-  const docsUnavailable = invoices.data === undefined || quotes.data === undefined;
-  const hasDocsError = invoices.isError || quotes.isError;
+  const customerUnavailable = customerBlockingError || (customers.isError && customer === null);
+  const customerRefreshFailed = customerStaleError && customer !== null;
+  const docsUnavailable = !piecesReady;
+  const hasDocsError = piecesBlockingError || piecesStaleError;
+  const chantiersReady = chantiers.data !== undefined && profile.data !== undefined;
+  const chantiersBlockingError = hasBlockingAuthoritativeDataError([chantiers, profile]);
+  const chantiersStaleError =
+    chantiersReady && (chantiers.isError || profile.isError);
+  const chantiersFresh = chantiersReady && !chantiersStaleError;
+  const relatedDocumentsReady =
+    documents.data !== undefined
+    && invoices.data !== undefined
+    && quotes.data !== undefined
+    && chantiers.data !== undefined;
+  const relatedDocumentsBlockingError = hasBlockingAuthoritativeDataError([
+    documents,
+    invoices,
+    quotes,
+    chantiers,
+  ]);
+  const relatedDocumentsStaleError =
+    relatedDocumentsReady
+    && (documents.isError || invoices.isError || quotes.isError || chantiers.isError);
   const refreshing =
     customers.isRefetching ||
     invoices.isRefetching ||
     quotes.isRefetching ||
     chantiers.isRefetching ||
-    documents.isRefetching;
+    documents.isRefetching ||
+    profile.isRefetching;
 
   const retryPieces = (): void => {
     void Promise.all([invoices.refetch(), quotes.refetch()]);
@@ -503,14 +682,26 @@ export default function ClientDetail() {
       quotes.refetch(),
       chantiers.refetch(),
       documents.refetch(),
+      profile.refetch(),
     ]);
   };
 
+  useEffect(() => {
+    if (!customerFresh) setEditOpen(false);
+    if (!customerFresh || !chantiersFresh) setChantierCreateOpen(false);
+  }, [chantiersFresh, customerFresh]);
+
   // KPI dérivés : encours = standing (retard/attente = dû réel) · CA 12 mois = @bob/core.
   const outstandingCents =
-    standing.kind === 'en_retard' || standing.kind === 'en_attente' ? standing.amountCents : 0;
+    standing !== null && (standing.kind === 'en_retard' || standing.kind === 'en_attente')
+      ? standing.amountCents
+      : standing === null
+        ? null
+        : 0;
   const outstandingColor =
-    standing.kind === 'en_retard'
+    standing === null
+      ? colors.slate300
+      : standing.kind === 'en_retard'
       ? semantic.danger
       : standing.kind === 'en_attente'
         ? semantic.warning
@@ -520,10 +711,12 @@ export default function ClientDetail() {
 
   // Conformité e-invoicing : canal par type (règle @bob/core), copy dédiée par canal ;
   // b2b/b2g sans SIREN = état honnête « à compléter » (jamais un « tout est prêt » inventé).
-  const channel: EinvoiceChannel = einvoiceChannelFor(customer?.type ?? 'b2c');
+  const channel: EinvoiceChannel | null = customer === null ? null : einvoiceChannelFor(customer.type);
   const sirenReady = siren !== null;
   const compliance =
-    channel === 'pa'
+    channel === null
+      ? null
+      : channel === 'pa'
       ? {
           title: 'fiche.compliTitlePa' as I18nKey,
           body: (sirenReady ? 'fiche.compliBodyPa' : 'fiche.compliSirenMissing') as I18nKey,
@@ -617,7 +810,9 @@ export default function ClientDetail() {
   // dépassée : on ne relance pas) / nouveau → « Nouveau devis » → /devis/new.
   const topRelance = relances[0];
   const cta =
-    standing.kind === 'en_retard'
+    standing === null
+      ? null
+      : standing.kind === 'en_retard'
       ? {
           label:
             topRelance && topRelance.docNumber !== null
@@ -658,7 +853,10 @@ export default function ClientDetail() {
     void Linking.openURL(url).catch(() => Alert.alert(t('fiche.linkError', { personality })));
   };
 
-  const tabOptions = TAB_KEYS.map((key) => ({ key, label: t(TAB_LABEL[key], { personality }) }));
+  const tabOptions = TAB_KEYS.map((key) => ({
+    key,
+    label: t(TAB_LABEL[key], { personality, params: key === 'chantiers' ? worksiteParams : undefined }),
+  }));
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
@@ -701,8 +899,12 @@ export default function ClientDetail() {
           </Pressable>
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel={t('fiche.more', { personality })}
-            onPress={openFicheMenu}
+            accessibilityLabel={t('fiche.editCta', { personality })}
+            accessibilityState={{ disabled: !customerFresh || customer === null }}
+            disabled={!customerFresh || customer === null}
+            onPress={() => {
+              if (customerFresh && customer !== null) setEditOpen(true);
+            }}
             hitSlop={8}
             style={({ pressed }) => [
               {
@@ -716,7 +918,8 @@ export default function ClientDetail() {
                 justifyContent: 'center',
                 ...shadowNative.e1,
               },
-              pressed && { transform: [{ scale: 0.94 }] },
+              !customerFresh || customer === null ? { opacity: 0.45 } : null,
+              pressed && customerFresh && customer !== null ? { transform: [{ scale: 0.94 }] } : null,
             ]}
           >
             <EllipsisIcon color={colors.slate400} />
@@ -844,11 +1047,13 @@ export default function ClientDetail() {
                 <ActionTile
                   label={t('fiche.actionQuote', { personality })}
                   icon={<FileTextIcon color={colors.ink600} size={19} />}
+                  disabled={!customerFresh}
                   onPress={() => router.push('/devis/new')}
                 />
                 <ActionTile
                   label={t('fiche.actionRelance', { personality })}
                   icon={<SendIcon color={colors.ink600} size={19} />}
+                  disabled={!customerFresh || !piecesFresh}
                   onPress={() =>
                     router.push({ pathname: '/(tabs)/assistant', params: { prompt: 'relance' } })
                   }
@@ -856,7 +1061,7 @@ export default function ClientDetail() {
                 <ActionTile
                   label={t('fiche.actionCall', { personality })}
                   icon={<PhoneIcon color={colors.ink600} size={19} />}
-                  disabled={phone === null}
+                  disabled={phone === null || !customerFresh}
                   onPress={
                     phone !== null
                       ? () => openLink(`tel:${phone.replace(/[^+\d]/g, '')}`)
@@ -866,7 +1071,7 @@ export default function ClientDetail() {
                 <ActionTile
                   label={t('fiche.actionEmail', { personality })}
                   icon={<MailIcon color={colors.ink600} size={19} />}
-                  disabled={email === null}
+                  disabled={email === null || !customerFresh}
                   onPress={email !== null ? () => openLink(`mailto:${email}`) : undefined}
                 />
               </View>
@@ -890,17 +1095,17 @@ export default function ClientDetail() {
               <View style={{ flexDirection: 'row', gap: 9 }}>
                 <KpiCell
                   label={t('fiche.kpiOutstanding', { personality })}
-                  value={formatEURWhole(outstandingCents)}
+                  value={outstandingCents === null ? '—' : formatEURWhole(outstandingCents)}
                   color={outstandingColor}
                 />
                 <KpiCell
                   label={t('fiche.kpiAvgDelay', { personality })}
                   value={
-                    avgDelayDays > 0
+                    avgDelayDays !== null
                       ? t('fiche.kpiDays', { personality, params: { days: avgDelayDays } })
                       : '—'
                   }
-                  color={avgDelayDays > 0 ? colors.ink900 : colors.slate300}
+                  color={avgDelayDays !== null ? colors.ink900 : colors.slate300}
                 />
                 <KpiCell
                   label={t('fiche.kpiRevenue12m', { personality })}
@@ -909,48 +1114,53 @@ export default function ClientDetail() {
                 />
               </View>
 
-              {/* ── Score de paiement (ScoreBar §13 + légende par tranche) ── */}
+              {/* ── Historique de paiement qualifié — aucun score sans modèle ratifié ── */}
               <Card radius={18} padding={16} elevation="e2">
                 <View
                   style={{
                     flexDirection: 'row',
                     alignItems: 'baseline',
                     justifyContent: 'space-between',
-                    marginBottom: 11,
                   }}
                 >
                   <Text style={[font('cardTitle'), { fontSize: 15.5, color: colors.ink800 }]}>
-                    {t('fiche.scoreTitle', { personality })}
+                    {t('fiche.paymentHistoryTitle', { personality })}
                   </Text>
-                  <Text style={[font('meta'), { color: colors.slate400 }]}>
-                    <Text
-                      style={[
-                        font('bigNum'),
-                        {
-                          fontSize: 19,
-                          color: semantic[scoreToneOf(customer.score)],
-                          fontVariant: ['tabular-nums'],
-                        },
-                      ]}
-                    >
-                      {customer.score}
-                    </Text>
-                    /100
-                  </Text>
+                  <StatusBadge
+                    label={
+                      customer.paymentHistoryStatus === 'known' && customer.paidOnTimeRatio !== null
+                        ? t('fiche.paymentHistoryKnownBadge', { personality })
+                        : t('fiche.paymentHistoryPendingBadge', { personality })
+                    }
+                    variant={
+                      customer.paymentHistoryStatus === 'known' && customer.paidOnTimeRatio !== null
+                        ? 'success'
+                        : 'particulier'
+                    }
+                  />
                 </View>
-                <ScoreBar
-                  score={customer.score}
-                  accessibilityLabel={t('fiche.scoreTitle', { personality })}
-                />
                 <Text
-                  style={[font('meta'), { fontSize: 11.5, color: colors.slate400, marginTop: 9 }]}
+                  style={[font('meta'), { fontSize: 12, color: colors.slate400, lineHeight: 17, marginTop: 9 }]}
                 >
-                  {scoreLegend(customer.score, avgDelayDays, personality)}
+                  {customer.paymentHistoryStatus === 'known' && customer.paidOnTimeRatio !== null
+                    ? t('fiche.paymentHistoryKnown', {
+                        personality,
+                        params: {
+                          count: customer.settledInvoiceCount,
+                          ratio: Math.round(customer.paidOnTimeRatio * 100),
+                        },
+                      })
+                    : customer.paymentHistoryStatus === 'incomplete'
+                      ? t('fiche.paymentHistoryIncomplete', { personality })
+                      : t('fiche.paymentHistoryInsufficient', {
+                          personality,
+                          params: { count: customer.settledInvoiceCount },
+                        })}
                 </Text>
               </Card>
 
               {/* ── Conformité e-invoicing (canal einvoiceChannelFor @bob/core) ── */}
-              <Card radius={18} padding={15}>
+              {compliance !== null ? <Card radius={18} padding={15}>
                 <View style={{ flexDirection: 'row', gap: 12 }}>
                   <IconTile tone={compliance.tone} size={34} radius={11}>
                     <ShieldIcon color={statusBadgeColors(compliance.tone, palette).fg} size={16} />
@@ -969,7 +1179,7 @@ export default function ClientDetail() {
                     </Text>
                   </View>
                 </View>
-              </Card>
+              </Card> : null}
 
               {/* ── Onglets Activité / Chantiers / Docs / Infos ── */}
               <SegmentedControl
@@ -999,31 +1209,118 @@ export default function ClientDetail() {
                   </Card>
                 )
               ) : tab === 'chantiers' ? (
-                chantiers.isLoading ? (
+                !chantiersReady && !chantiersBlockingError ? (
                   <TabRowsSkeleton />
-                ) : chantiers.isError ? (
+                ) : chantiersBlockingError ? (
                   <ErrorRetry
                     message={t('fiche.dataError', { personality })}
-                    onRetry={() => void chantiers.refetch()}
+                    onRetry={() => {
+                      void chantiers.refetch();
+                      void profile.refetch();
+                    }}
                   />
-                ) : custChantiers.length === 0 ? (
-                  <Card>
-                    <EmptyState body={t(TAB_EMPTY.chantiers, { personality })} />
-                  </Card>
+                ) : !chantiersReady ? null : !chantiersModuleActive ? (
+                  <View style={{ gap: 10 }}>
+                    {chantiersStaleError ? (
+                      <ErrorRetry
+                        message={t('fiche.dataError', { personality })}
+                        onRetry={() => {
+                          void chantiers.refetch();
+                          void profile.refetch();
+                        }}
+                      />
+                    ) : null}
+                    <Card>
+                      <EmptyState
+                        title={t('chantiers.moduleTitle', { personality })}
+                        body={t('chantiers.moduleBody', { personality })}
+                        cta={
+                          chantiersFresh
+                            ? {
+                                label: t('chantiers.seePlans', { personality }),
+                                onPress: () => router.push('/compte'),
+                              }
+                            : undefined
+                        }
+                      />
+                    </Card>
+                  </View>
                 ) : (
+                  <View style={{ gap: 10 }}>
+                    {chantiersStaleError ? (
+                      <ErrorRetry
+                        message={t('fiche.dataError', { personality })}
+                        onRetry={() => {
+                          void chantiers.refetch();
+                          void profile.refetch();
+                        }}
+                      />
+                    ) : null}
+                    <View
+                      style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        marginBottom: 10,
+                      }}
+                    >
+                      <Text style={[font('label', 700), { fontSize: 13, color: colors.slate500 }]}>
+                        {t('fiche.chantierSectionTitle', { personality, params: worksiteParams })}
+                      </Text>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={t('fiche.chantierAddLabel', { personality, params: worksiteParams })}
+                        accessibilityState={{ disabled: !chantiersFresh || !customerFresh }}
+                        disabled={!chantiersFresh || !customerFresh}
+                        onPress={openChantierCreate}
+                        hitSlop={8}
+                        style={({ pressed }) => [
+                          {
+                            width: 44,
+                            height: 44,
+                            borderRadius: 22,
+                            backgroundColor: theme.ink,
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            ...shadowNative.e1,
+                          },
+                          !chantiersFresh || !customerFresh ? { opacity: 0.45 } : null,
+                          pressed && chantiersFresh && customerFresh ? { transform: [{ scale: 0.94 }] } : null,
+                        ]}
+                      >
+                        <PlusIcon color={colors.surface} size={18} />
+                      </Pressable>
+                    </View>
+                    {custChantiers.length === 0 ? (
+                      <Card>
+                        <EmptyState
+                          body={t('fiche.chantiersEmpty', { personality, params: worksiteParams })}
+                          cta={
+                            chantiersFresh && customerFresh
+                              ? {
+                                  label: t('fiche.chantiersEmptyCta', { personality, params: worksiteParams }),
+                                  onPress: openChantierCreate,
+                                }
+                              : undefined
+                          }
+                        />
+                      </Card>
+                    ) : (
                   <Card radius={18} padding={0} style={{ paddingHorizontal: 14 }}>
                     {custChantiers.map((chantier, index) => (
-                      <View
+                      <Pressable
                         key={chantier.id}
-                        accessible
+                        accessibilityRole="button"
                         accessibilityLabel={`${chantier.name}, ${t(
                           chantier.status === 'open' ? 'fiche.chantierOpen' : 'fiche.chantierClosed',
                           { personality },
                         )}`}
+                        onPress={() => router.push(`/chantier/${chantier.id}`)}
                         style={{
                           flexDirection: 'row',
                           alignItems: 'center',
                           gap: 11,
+                          minHeight: 44,
                           paddingVertical: 12,
                           borderBottomWidth: index < custChantiers.length - 1 ? 1 : 0,
                           borderBottomColor: colors.lineSoft,
@@ -1071,24 +1368,35 @@ export default function ClientDetail() {
                           )}
                           variant={chantier.status === 'open' ? 'b2b' : 'success'}
                         />
-                      </View>
+                        <ChevronRightIcon color={controls.chevron} size={14} strokeWidth={2} />
+                      </Pressable>
                     ))}
                   </Card>
+                    )}
+                  </View>
                 )
               ) : tab === 'docs' ? (
-                documents.isLoading ? (
+                !relatedDocumentsReady && !relatedDocumentsBlockingError ? (
                   <TabRowsSkeleton />
-                ) : documents.isError ? (
+                ) : relatedDocumentsBlockingError ? (
                   <ErrorRetry
                     message={t('fiche.dataError', { personality })}
-                    onRetry={() => void documents.refetch()}
+                    onRetry={refreshAll}
                   />
-                ) : custDocs.length === 0 ? (
-                  <Card>
-                    <EmptyState body={t(TAB_EMPTY.docs, { personality })} />
-                  </Card>
-                ) : (
-                  <Card radius={18} padding={0} style={{ paddingHorizontal: 14 }}>
+                ) : !relatedDocumentsReady ? null : (
+                  <View style={{ gap: 10 }}>
+                    {relatedDocumentsStaleError ? (
+                      <ErrorRetry
+                        message={t('fiche.dataError', { personality })}
+                        onRetry={refreshAll}
+                      />
+                    ) : null}
+                    {custDocs.length === 0 ? (
+                      <Card>
+                        <EmptyState body={t(TAB_EMPTY.docs, { personality })} />
+                      </Card>
+                    ) : (
+                      <Card radius={18} padding={0} style={{ paddingHorizontal: 14 }}>
                     {custDocs.map((docItem, index) => (
                       <Pressable
                         key={docItem.id}
@@ -1121,7 +1429,9 @@ export default function ClientDetail() {
                         <ChevronRightIcon color={controls.chevron} size={14} strokeWidth={2} />
                       </Pressable>
                     ))}
-                  </Card>
+                      </Card>
+                    )}
+                  </View>
                 )
               ) : infoRows.length === 0 ? (
                 <Card>
@@ -1161,7 +1471,7 @@ export default function ClientDetail() {
       </ScrollView>
 
       {/* ── CTA sticky contextuelle par standing (aplat ink du thème, réf) ── */}
-      {!booting && !customerUnavailable && customer !== null ? (
+      {!booting && customerFresh && piecesFresh && customer !== null && cta !== null ? (
         <View style={{ position: 'absolute', left: 18, right: 18, bottom: insets.bottom + 14 }}>
           <Pressable
             accessibilityRole="button"
@@ -1189,6 +1499,176 @@ export default function ClientDetail() {
           </Pressable>
         </View>
       ) : null}
+
+      {/* ── Sheet création chantier/projet — rattaché à CE client, adresse préremplie ── */}
+      <Sheet
+        visible={chantierCreateOpen && customerFresh && chantiersFresh}
+        onClose={closeChantierCreate}
+      >
+        <KeyboardAvoidingView {...(Platform.OS === 'ios' ? { behavior: 'padding' as const } : {})}>
+          <Text style={[font('pageTitle'), { fontSize: 20, color: colors.ink900 }]}>
+            {t('fiche.chantierCreateTitle', { personality, params: worksiteParams })}
+          </Text>
+          <Text style={[font('sub'), { color: colors.slate500, lineHeight: 19, marginTop: 4 }]}>
+            {t('fiche.chantierCreateHint', { personality })}
+          </Text>
+
+          <Text style={[font('label', 700), { fontSize: 12, color: colors.slate400, marginTop: 16 }]}>
+            {t('fiche.chantierNameLabel', { personality, params: worksiteParams }).toUpperCase()}
+          </Text>
+          <TextInput
+            value={chantierName}
+            onChangeText={setChantierName}
+            placeholder={t('fiche.chantierNamePlaceholder', { personality })}
+            placeholderTextColor={colors.slate300}
+            accessibilityLabel={t('fiche.chantierNameLabel', { personality, params: worksiteParams })}
+            style={[
+              font('body'),
+              {
+                minHeight: 44,
+                marginTop: 7,
+                borderWidth: 1,
+                borderColor: colors.lineSoft,
+                borderRadius: 12,
+                paddingHorizontal: 13,
+                paddingVertical: 11,
+                color: colors.ink800,
+              },
+            ]}
+          />
+
+          <Text style={[font('label', 700), { fontSize: 12, color: colors.slate400, marginTop: 14 }]}>
+            {t('chantiers.addressLabel', { personality }).toUpperCase()}
+          </Text>
+          <TextInput
+            value={chantierAddressQuery}
+            onChangeText={(v) => {
+              setChantierAddressQuery(v);
+              setChantierAddressLocked(false);
+            }}
+            placeholder={t('chantiers.addressPlaceholder', { personality })}
+            placeholderTextColor={colors.slate300}
+            accessibilityLabel={t('chantiers.addressLabel', { personality })}
+            style={[
+              font('body'),
+              {
+                minHeight: 44,
+                marginTop: 7,
+                borderWidth: 1,
+                borderColor: colors.lineSoft,
+                borderRadius: 12,
+                paddingHorizontal: 13,
+                paddingVertical: 11,
+                color: colors.ink800,
+              },
+            ]}
+          />
+          {chantierAddressSearch.isPending && chantierAddressSearch.variables === chantierAddressQuery.trim() ? (
+            <View style={{ marginTop: 9, gap: 6 }}>
+              <Skeleton height={13} width="88%" radius={6} />
+            </View>
+          ) : !chantierAddressLocked
+            && chantierAddressQuery.trim().length >= 3
+            && chantierAddressSearch.variables === chantierAddressQuery.trim()
+            && chantierAddressSearch.isSuccess
+            && chantierAddressSearch.data !== undefined ? (
+            chantierAddressSearch.data.length > 0 ? (
+              <View accessibilityLiveRegion="polite" style={{ marginTop: 7, gap: 2 }}>
+                {chantierAddressSearch.data.map((suggestion, index) => (
+                  <Pressable
+                    key={`${suggestion.label}-${index}`}
+                    accessibilityRole="button"
+                    accessibilityLabel={suggestion.label}
+                    onPress={() => {
+                      setChantierAddressQuery(suggestion.label);
+                      setChantierAddressLocked(true);
+                      chantierAddressSearch.reset();
+                    }}
+                    style={{ minHeight: 44, justifyContent: 'center', paddingHorizontal: 7 }}
+                  >
+                    <Text style={[font('sub'), { color: colors.ink800 }]}>{suggestion.label}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            ) : (
+              <Text style={[font('sub'), { color: colors.slate500, marginTop: 9 }]}>
+                {t('chantiers.addressNoResult', { personality })}
+              </Text>
+            )
+          ) : null}
+
+          <Text style={[font('label', 700), { fontSize: 12, color: colors.slate400, marginTop: 14 }]}>
+            {t('fiche.chantierNotesLabel', { personality }).toUpperCase()}
+          </Text>
+          <TextInput
+            value={chantierNotes}
+            onChangeText={setChantierNotes}
+            placeholder={t('fiche.chantierNotesPlaceholder', { personality })}
+            placeholderTextColor={colors.slate300}
+            accessibilityLabel={t('fiche.chantierNotesLabel', { personality })}
+            multiline
+            numberOfLines={3}
+            style={[
+              font('body'),
+              {
+                minHeight: 72,
+                marginTop: 7,
+                borderWidth: 1,
+                borderColor: colors.lineSoft,
+                borderRadius: 12,
+                paddingHorizontal: 13,
+                paddingVertical: 11,
+                color: colors.ink800,
+                textAlignVertical: 'top',
+              },
+            ]}
+          />
+
+          {chantierError ? (
+            <Text accessibilityRole="alert" style={[font('sub'), { color: semantic.danger, marginTop: 12 }]}>
+              {t('fiche.chantierCreateError', { personality, params: worksiteParams })}
+            </Text>
+          ) : null}
+
+          <Button
+            title={t('fiche.chantierCreateSubmit', { personality, params: worksiteParams })}
+            disabled={!chantierName.trim()}
+            loading={createChantier.isPending}
+            onPress={submitChantierCreate}
+            style={{ marginTop: 16 }}
+          />
+        </KeyboardAvoidingView>
+      </Sheet>
+
+      {/* ── Sheet édition fiche client (C13/C40 TODO partagé) — mêmes champs que la création ── */}
+      <Sheet visible={editOpen && customerFresh} onClose={() => setEditOpen(false)}>
+        <KeyboardAvoidingView {...(Platform.OS === 'ios' ? { behavior: 'padding' as const } : {})}>
+          <Text style={[font('pageTitle'), { fontSize: 20, color: colors.ink900 }]}>
+            {t('fiche.editTitle', { personality })}
+          </Text>
+          <Text style={[font('sub'), { color: colors.slate500, lineHeight: 19, marginTop: 4 }]}>
+            {t('fiche.editHint', { personality })}
+          </Text>
+          {customerFormInitial ? (
+            <CustomerForm
+              key={editOpen ? 'edit-open' : 'edit-closed'}
+              personality={personality}
+              initial={customerFormInitial}
+              submitLabel={t('fiche.editSubmit', { personality })}
+              submitting={updateCustomer.isPending}
+              errorMessage={editError ? t('fiche.editError', { personality }) : null}
+              onSubmit={submitEdit}
+            />
+          ) : null}
+        </KeyboardAvoidingView>
+      </Sheet>
+
+      <Toast
+        message={ficheToast ?? ''}
+        visible={ficheToast !== null}
+        onHide={() => setFicheToast(null)}
+        icon={<CheckIcon color={colors.surface} />}
+      />
     </View>
   );
 }

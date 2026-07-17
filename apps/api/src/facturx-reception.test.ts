@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { MERCIER_PROPS, buildFacturXBasicXml, type FacturXInvoiceData } from '@bob/core';
+import { buildFacturXBasicXml, type FacturXInvoiceData } from '@bob/core';
+import { MERCIER_PROPS } from '@bob/core/testing';
 import type { OcrPort, PaymentGatewayPort, PdfRendererPort } from '@bob/core';
 import { BackendService } from './backend.service';
-import { InMemoryPersistence } from './persistence/persistence';
+import { InMemoryPersistence } from './persistence/persistence.testing';
 import { requestContext, type AppLogger, type Principal } from './observability/logger';
 import type { SupabaseAdminPort } from './auth/supabase-admin';
 import type { NotificationDeliveryService } from './jobs/notification-delivery.service';

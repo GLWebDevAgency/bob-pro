@@ -9,6 +9,7 @@ export interface CreateChantierInput {
   name: string;
   customerId?: string | null;
   address?: string | null;
+  notes?: string | null;
 }
 
 export interface CreateChantierDeps {
@@ -34,6 +35,7 @@ export class CreateChantier {
       name: input.name,
       customerId: input.customerId ?? null,
       address: input.address ?? null,
+      notes: input.notes ?? null,
       status: 'open',
       openedAt: this.deps.clock.today(),
     });

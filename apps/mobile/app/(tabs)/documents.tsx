@@ -62,6 +62,7 @@ import { useChantiers, useCustomers, useExpenses, useExportFec, useInvoices } fr
 import { useCreateDocumentFolder, useDocumentFolders, useDocuments } from '../../src/data/documents';
 import { usePublishAgentContext, type AgentContext } from '../../src/agent';
 import { useBobAwareScrollInsets } from '../../src/components/use-bob-aware-scroll-insets';
+import { hasBlockingAuthoritativeDataError } from '../../src/data/authoritative-query-state';
 import {
   ChartIcon,
   ChatIcon,
@@ -319,16 +320,26 @@ export default function Documents() {
 
   // Bob voit les documents AFFICHÉS : « résume ce document », « classe celui-ci » (S2).
   const agentContext = useMemo<AgentContext>(
-    () => ({
-      screen: { name: 'documents', instanceId: 'documents' },
-      entities: (documents.data ?? []).slice(0, 12).map((d) => ({
-        type: 'document' as const,
-        id: d.id,
-        label: d.filename,
-      })),
-      capabilities: ['screen.read', 'document.read'],
-    }),
-    [documents.data],
+    () => {
+      const contextReady =
+        documents.data !== undefined &&
+        documentFolders.data !== undefined &&
+        expenses.data !== undefined &&
+        invoices.data !== undefined &&
+        customers.data !== undefined;
+      return {
+        screen: { name: 'documents', instanceId: 'documents' },
+        entities: contextReady
+          ? documents.data.slice(0, 12).map((d) => ({
+              type: 'document' as const,
+              id: d.id,
+              label: d.filename,
+            }))
+          : [],
+        capabilities: contextReady ? ['screen.read', 'document.read'] : [],
+      };
+    },
+    [customers.data, documentFolders.data, documents.data, expenses.data, invoices.data],
   );
   usePublishAgentContext(agentContext);
 
@@ -385,11 +396,18 @@ export default function Documents() {
     || expenses.isLoading
     || invoices.isLoading
     || customers.isLoading;
-  const hasError = (documents.isError && documents.data === undefined)
-    || (documentFolders.isError && documentFolders.data === undefined);
+  const hasError = hasBlockingAuthoritativeDataError([
+    documents,
+    documentFolders,
+    expenses,
+    invoices,
+    customers,
+  ]);
   const staleVaultError = (documents.isError && documents.data !== undefined)
     || (documentFolders.isError && documentFolders.data !== undefined);
-  const secondaryError = expenses.isError || invoices.isError || customers.isError;
+  const secondaryError = (expenses.isError && expenses.data !== undefined)
+    || (invoices.isError && invoices.data !== undefined)
+    || (customers.isError && customers.data !== undefined);
   const refreshing = documents.isRefetching
     || documentFolders.isRefetching
     || expenses.isRefetching
@@ -442,19 +460,24 @@ export default function Documents() {
 
   // Projections structurelles : DocumentView/ExpenseProps/InvoiceView/CustomerListItem ⊇ Vault*Data.
   const view: VaultView | null = useMemo(() => {
-    if (!documents.data) return null;
+    // Aucun `?? []` ici : une réponse serveur réellement vide est `[]`, tandis qu'une source
+    // jamais chargée reste `undefined` et bloque l'agrégat complet via `hasError` ci-dessus.
+    if (!documents.data || !expenses.data || !invoices.data || !customers.data) return null;
     return deriveVaultView({
       documents: documents.data,
-      expenses: expenses.data ?? [],
-      invoices: invoices.data ?? [],
-      customers: customers.data ?? [],
+      expenses: expenses.data,
+      invoices: invoices.data,
+      customers: customers.data,
       today: todayISO(),
     });
   }, [documents.data, expenses.data, invoices.data, customers.data]);
 
   // E10 : reste à payer réel (summarizeExpenses @bob/core) — sous-titre de la porte Dépenses.
   const expensesToPayCents = useMemo(
-    () => summarizeExpenses(expenses.data ?? [], { month: todayISO().slice(0, 7) }).toPayCents,
+    () =>
+      expenses.data === undefined
+        ? null
+        : summarizeExpenses(expenses.data, { month: todayISO().slice(0, 7) }).toPayCents,
     [expenses.data],
   );
 
@@ -1000,7 +1023,7 @@ export default function Documents() {
                       {t('dep.title', { personality })}
                     </Text>
                     <Text style={{ ...font('meta', 500), color: colors.slate300, marginTop: 1 }} numberOfLines={1}>
-                      {t('dep.toPay', { personality })} · {formatEUR(expensesToPayCents)}
+                      {t('dep.toPay', { personality })} · {expensesToPayCents === null ? '—' : formatEUR(expensesToPayCents)}
                     </Text>
                   </View>
                   <ChevronRightIcon color={controls.chevron} size={14} strokeWidth={2} />

@@ -107,11 +107,30 @@ export default function Cloture() {
   const [sendingDossier, setSendingDossier] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
+  // Toutes les synthèses de clôture croisent ces cinq lectures autoritatives. Une source
+  // absente ou en échec ferme aussi Bob : l'agent ne doit jamais commenter une clôture
+  // calculée à partir de tableaux vides transitoires.
+  const queryState = combineQueryStates(invoices, quotes, documents, entries, company);
+  const agentDataReady =
+    entitlement.verified &&
+    entitled &&
+    !queryState.loading &&
+    !queryState.failed &&
+    invoices.data !== undefined &&
+    quotes.data !== undefined &&
+    documents.data !== undefined &&
+    entries.data !== undefined &&
+    company.data !== undefined;
+
   // Bob sait que tu es sur la clôture — « lance la revue » (intent revue_cloture) fait le
   // reste ; aucune entité publiée : les contrôles ne sont pas des pièces adressables (S3).
   const agentContext = useMemo<AgentContext>(
-    () => ({ screen: { name: 'cloture', instanceId: 'cloture' }, entities: [], capabilities: ['screen.read'] }),
-    [],
+    () => ({
+      screen: { name: 'cloture', instanceId: 'cloture' },
+      entities: [],
+      capabilities: agentDataReady ? ['screen.read'] : [],
+    }),
+    [agentDataReady],
   );
   usePublishAgentContext(agentContext);
 
@@ -126,8 +145,6 @@ export default function Cloture() {
   const docs = documents.data ?? [];
   // P0 (audit 14/07) : failed se lit TOUJOURS avec loading — un timeout réseau ne devient
   // jamais un allClear=true silencieux (socle combineQueryStates, cf. src/data/query-state.ts).
-  const queryState = combineQueryStates(invoices, quotes, documents, entries, company);
-
   const signedNotInvoiced = qs.filter((q) => q.status === 'signed' && !inv.some((i) => i.parentQuoteId === q.id));
   const invoicePdfIds = new Set(docs.filter((d) => d.kind === 'invoice_pdf' && d.linkedEntityId).map((d) => d.linkedEntityId));
   const missingPdf = inv

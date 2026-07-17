@@ -18,6 +18,12 @@ function expenseProps(over: Partial<ExpenseProps> = {}): ExpenseProps {
     vatRatePct: 20,
     category: 'materiel',
     status: 'paid',
+    paymentEvidence: {
+      paidOn: '2026-07-02',
+      method: 'transfer',
+      reference: 'VIR-TEST-1',
+      proofDocumentId: null,
+    },
     source: 'ocr',
     ...over,
   };
@@ -60,7 +66,7 @@ describe('RecordExpenseAccountingEntries (cycle achats complet)', () => {
   });
 
   it('dépense À PAYER : achat seul, pas de décaissement (401 reste créditeur — dette réelle)', async () => {
-    const env = makeEnv([expenseProps({ id: 'exp-2', status: 'to_pay' })]);
+    const env = makeEnv([expenseProps({ id: 'exp-2', status: 'to_pay', paymentEvidence: null })]);
     const r = await env.usecase.execute({ expenseId: 'exp-2' });
     expect(r.ok && r.value.paymentEntryId).toBeNull();
     expect(env.saved.size).toBe(1);

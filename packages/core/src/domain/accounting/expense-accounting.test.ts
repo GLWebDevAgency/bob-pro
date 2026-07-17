@@ -80,23 +80,57 @@ describe('buildRecordedExpenseAccountingEntry (cycle achats — journal AC)', ()
 });
 
 describe('buildExpensePaymentAccountingEntry (décaissement — journal BQ)', () => {
-  it('dépense payée : 401 débit / 512 crédit (apurement du poste fournisseurs)', () => {
+  it('virement : date/référence de preuve, 401 débit / 512 crédit', () => {
     const r = buildExpensePaymentAccountingEntry({
       entryId: 'expense:exp-1:paid',
-      expense: expense({ status: 'paid' }),
+      expense: expense({
+        status: 'paid',
+        paymentEvidence: {
+          paidOn: '2026-07-08',
+          method: 'transfer',
+          reference: 'VIR-2026-0042',
+          proofDocumentId: null,
+        },
+      }),
       chart,
     });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.value.journal).toBe('bank');
+    expect(r.value.entryDate).toBe('2026-07-08');
+    expect(r.value.reference).toBe('VIR-2026-0042');
     expect(r.value.lines).toEqual([
       { account: '401', label: 'Règlement Leroy Merlin', debitCents: 18490, creditCents: 0 },
       { account: '512', label: 'Règlement Leroy Merlin', debitCents: 0, creditCents: 18490 },
     ]);
   });
 
+  it('carte → 512 ; espèces → 530, sans moyen comptable inventé', () => {
+    const build = (method: 'card' | 'cash') => buildExpensePaymentAccountingEntry({
+      entryId: `expense:exp-1:${method}`,
+      expense: expense({
+        status: 'paid',
+        paymentEvidence: { paidOn: '2026-07-08', method, reference: null, proofDocumentId: null },
+      }),
+      chart,
+    });
+    const card = build('card');
+    const cash = build('cash');
+    expect(card.ok && card.value.lines.map((line) => line.account)).toEqual(['401', '512']);
+    expect(cash.ok && cash.value.lines.map((line) => line.account)).toEqual(['401', '530']);
+  });
+
   it('refuse le décaissement d’une dépense encore à payer', () => {
     const r = buildExpensePaymentAccountingEntry({ entryId: 'e:topay', expense: expense(), chart });
+    expect(r.ok).toBe(false);
+  });
+
+  it('refuse une dépense marquée payée sans preuve historique fiable', () => {
+    const r = buildExpensePaymentAccountingEntry({
+      entryId: 'e:legacy',
+      expense: expense({ status: 'paid', paymentEvidence: null }),
+      chart,
+    });
     expect(r.ok).toBe(false);
   });
 });

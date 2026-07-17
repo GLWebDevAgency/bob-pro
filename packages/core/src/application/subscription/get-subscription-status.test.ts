@@ -43,23 +43,13 @@ class FakeSubscriptionRepository implements SubscriptionRepository {
 const T0 = '2026-07-14T09:00:00.000Z';
 
 describe('GetSubscriptionStatus — source de vérité DB (pilier 2)', () => {
-  it('aucune ligne (tenant pré-migration) → repli HONNÊTE early-access, aucun essai fantôme', async () => {
+  it('aucune ligne → indisponible, jamais un palier commercial implicite', async () => {
     const repo = new FakeSubscriptionRepository();
     const useCase = new GetSubscriptionStatus({ subscriptions: repo });
 
     const r = await useCase.execute({ companyId: 'co-legacy', now: T0 });
 
-    expect(r.ok && r.value).toEqual({
-      plan: 'business',
-      status: 'active',
-      trialEndsAt: null,
-      trialPhase: null,
-      trialDaysLeft: null,
-      currentPeriodEnd: null,
-      store: null,
-      storeRef: null,
-      source: 'early_access_fallback',
-    });
+    expect(r).toEqual({ ok: false, error: { kind: 'unavailable', service: 'subscription' } });
   });
 
   it('essai inversé en cours (trialing, Pro prêté) → plan = pro, phase active, jours restants', async () => {

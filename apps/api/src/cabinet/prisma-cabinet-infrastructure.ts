@@ -29,6 +29,7 @@ import {
   type CabinetInvitationDeliveryView,
 } from './cabinet-infrastructure';
 import { CabinetInvitationTokenAdapter, CabinetInvitationTokenCipher } from './cabinet-token';
+import { PrismaCabinetDossierRepository } from './dossiers/prisma-cabinet-dossier.repository';
 
 type CabinetAggregateRow = Prisma.CabinetGetPayload<{ include: { members: true } }>;
 type ReleaseFlagRow = Prisma.ReleaseFlagGetPayload<{ include: { subjects: true } }>;
@@ -761,6 +762,7 @@ export function createPrismaCabinetInfrastructure(prisma: PrismaService): Cabine
   const cipher = new CabinetInvitationTokenCipher();
   return {
     cabinets: new PrismaCabinetRepository(prisma),
+    dossiers: new PrismaCabinetDossierRepository(prisma),
     invitations: new PrismaCabinetInvitationRepository(prisma),
     invitationQueries: new PrismaCabinetInvitationQueryStore(prisma),
     flags: new PrismaReleaseFlagRepository(prisma),

@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Notification, NotificationPort } from '@bob/core';
 import { CabinetApiService } from './cabinet-api.service';
-import { InMemoryPersistence } from '../persistence/persistence';
+import { InMemoryPersistence } from '../persistence/persistence.testing';
 import { Metrics } from '../observability/metrics';
 import { requestContext, type AppLogger, type Principal } from '../observability/logger';
+import type { SupabaseAdminPort } from '../auth/supabase-admin';
 
 class CapturingNotifier implements NotificationPort {
   readonly sent: Notification[] = [];
@@ -50,14 +51,25 @@ describe('CabinetApiService — vertical Slice 0 in-memory', () => {
   function setup() {
     const persistence = new InMemoryPersistence();
     const notifier = new CapturingNotifier();
+    const verifiedEmailByUserId: Readonly<Record<string, string>> = {
+      'expert-admin': 'admin@cabinet.test',
+      'expert-collab': 'collab@cabinet.test',
+      'expert-manager': 'manager@cabinet.test',
+      intrus: 'intrus@cabinet.test',
+      '79e27b85-d458-445e-a759-e8b1a49e1641': 'worker@cabinet.test',
+    };
     const supabaseAdmin = {
       setUserCompanyId: vi.fn(async () => undefined),
-      getVerifiedEmail: vi.fn(async () => null),
+      getVerifiedEmail: vi.fn(async (userId: string) => verifiedEmailByUserId[userId] ?? null),
+      getUserIdentity: vi.fn(async (userId: string) => ({
+        email: verifiedEmailByUserId[userId] ?? null,
+        displayName: null,
+      })),
       deleteUser: vi.fn(async () => undefined),
     };
     const metrics = new Metrics();
     const service = new CabinetApiService(persistence, notifier, supabaseAdmin, metrics, logger());
-    return { persistence, notifier, service, metrics };
+    return { persistence, notifier, service, metrics, supabaseAdmin };
   }
 
   const admin: Principal = {
@@ -110,7 +122,7 @@ describe('CabinetApiService — vertical Slice 0 in-memory', () => {
   });
 
   it('refuse email non vérifié/mismatched et protège le dernier admin', async () => {
-    const { notifier, service } = setup();
+    const { notifier, service, supabaseAdmin } = setup();
     const cabinet = await asPrincipal(admin, () => service.createCabinet({ name: 'Cabinet Atlas' }));
     const members = await asPrincipal(admin, () => service.listMembers(cabinet.id));
 
@@ -141,7 +153,42 @@ describe('CabinetApiService — vertical Slice 0 in-memory', () => {
       response: { code: 'CABINET_INVITATION_INVALID' },
     });
     const unverified = { ...wrongEmail, email: 'cible@cabinet.test', emailVerified: false };
+    supabaseAdmin.getVerifiedEmail.mockResolvedValueOnce(null);
     await expect(asPrincipal(unverified, () => service.acceptInvitation({ token }))).rejects.toMatchObject({ status: 403 });
+  });
+
+  it('échoue fermé sans vérification Supabase Admin, même si DEMO_MODE est actif', async () => {
+    const { persistence, notifier, service, metrics } = setup();
+    const cabinet = await asPrincipal(admin, () => service.createCabinet({ name: 'Cabinet Atlas' }));
+    await asPrincipal(admin, () =>
+      service.inviteMember(cabinet.id, { email: 'collab@cabinet.test', role: 'collaborator' }),
+    );
+    const unavailableAdmin: SupabaseAdminPort = {
+      setUserCompanyId: async () => undefined,
+      deleteUser: async () => undefined,
+    };
+    const failClosed = new CabinetApiService(
+      persistence,
+      notifier,
+      unavailableAdmin,
+      metrics,
+      logger(),
+    );
+    const collaborator: Principal = {
+      userId: 'expert-collab',
+      companyId: null,
+      email: 'collab@cabinet.test',
+      emailVerified: true,
+    };
+
+    await expect(
+      asPrincipal(collaborator, () =>
+        failClosed.acceptInvitation({ token: invitationToken(notifier.sent[0]!) }),
+      ),
+    ).rejects.toMatchObject({
+      status: 503,
+      response: { code: 'CABINET_IDENTITY_PROVIDER_UNAVAILABLE' },
+    });
   });
 
   it('garde l’invitation dans une outbox failed lorsque le mailer tombe', async () => {

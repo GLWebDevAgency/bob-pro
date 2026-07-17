@@ -1,7 +1,8 @@
 /**
  * Ligne de devis DICTÉE (S2-GUIDÉ) — « ajoute deux heures de main-d'œuvre à 55 euros de
  * l'heure » devient une ligne prête pour la machine devis : catégorie INFÉRÉE (main-d'œuvre /
- * fourniture / déplacement), quantité, prix énoncé, TVA énoncée sinon métier, libellé formaté.
+ * fourniture / déplacement), quantité, prix énoncé et TVA explicitement énoncée ou
+ * déjà confirmée dans le devis. Sans TVA confirmée, le parseur rend un état de clarification.
  * CATALOGUE D'ABORD : une prestation enregistrée par l'artisan qui matche l'énoncé fournit
  * libellé/catégorie/prix/TVA (le prix ou la TVA énoncés priment). AMBIGUÏTÉ → question,
  * jamais un choix silencieux ; PRIX MANQUANT hors catalogue → demande, JAMAIS un prix inventé.
@@ -27,6 +28,8 @@ export interface ParsedQuoteLine {
   readonly source: 'catalogue' | 'dictee';
 }
 
+export type ParsedQuoteLineWithoutVat = Omit<ParsedQuoteLine, 'vatRate'>;
+
 export type ParseQuoteLineResult =
   | { readonly kind: 'line'; readonly line: ParsedQuoteLine }
   | { readonly kind: 'ambiguous'; readonly options: readonly string[] }
@@ -34,6 +37,9 @@ export type ParseQuoteLineResult =
    * le « papa vocal » ne redemande donc QUE le prix (cf. `completePendingQuoteLinePrice`),
    * jamais l'énoncé complet. */
   | { readonly kind: 'missing_price'; readonly label: string; readonly qty: number; readonly category: LineCategory }
+  /** Libellé, quantité et prix sont sûrs ; seul le taux manque. Rien n'est persistable tant
+   * que l'utilisateur ne l'a pas choisi sur le devis. */
+  | { readonly kind: 'missing_vat'; readonly line: ParsedQuoteLineWithoutVat }
   | { readonly kind: 'none' };
 
 /**
@@ -197,8 +203,8 @@ export function isVoiceAddLineUtterance(utterance: string): boolean {
 
 export interface ParseVoiceQuoteLineOptions {
   readonly prestations?: readonly VoicePrestation[];
-  /** Taux métier (TradeConfig) si rien d'énoncé — sinon 20. */
-  readonly defaultVatRate?: VatRate;
+  /** Taux déjà choisi par l'utilisateur pour CE devis, jamais un taux de métier. */
+  readonly confirmedVatRate?: VatRate | null;
 }
 
 export function parseVoiceQuoteLine(
@@ -260,17 +266,17 @@ export function parseVoiceQuoteLine(
   if (label === '') return { kind: 'none' };
   if (spokenPrice === null) return { kind: 'missing_price', label, qty, category };
 
-  return {
-    kind: 'line',
-    line: {
-      label,
-      category,
-      qty,
-      unitPriceHT: spokenPrice,
-      vatRate: spokenVat ?? options.defaultVatRate ?? 20,
-      source: 'dictee',
-    },
+  const confirmedVatRate = spokenVat ?? options.confirmedVatRate ?? null;
+  const line = {
+    label,
+    category,
+    qty,
+    unitPriceHT: spokenPrice,
+    source: 'dictee' as const,
   };
+  return confirmedVatRate === null
+    ? { kind: 'missing_vat', line }
+    : { kind: 'line', line: { ...line, vatRate: confirmedVatRate } };
 }
 
 /**

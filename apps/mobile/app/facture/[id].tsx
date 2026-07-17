@@ -49,6 +49,17 @@ export default function FactureDetail() {
   const quotes = useQuotes();
   const customers = useCustomers();
   const documents = useDocuments();
+  const screenDataReady =
+    invoice.data !== undefined &&
+    invoices.data !== undefined &&
+    quotes.data !== undefined &&
+    customers.data !== undefined &&
+    documents.data !== undefined &&
+    !invoice.isError &&
+    !invoices.isError &&
+    !quotes.isError &&
+    !customers.isError &&
+    !documents.isError;
   const acct = useInvoiceAccountingPreview(id, !!invoice.data);
   const ledger = acct.data?.available ? acct.data : null;
   // Pont A1-C16 : générer la facture finale = MÊME use case que le briefing et que Bob
@@ -105,11 +116,14 @@ export default function FactureDetail() {
   }, [invoice.data, invoices.data, quotes.data, customers.data]);
   const agentContext = useMemo<AgentContext>(() => {
     const inv = invoice.data;
-    if (!inv) {
+    if (
+      !inv
+      || !screenDataReady
+    ) {
       return {
         screen: { name: '/facture/[id]', instanceId: `invoice:${id}` },
         entities: [],
-        capabilities: ['screen.read'],
+        capabilities: [],
       };
     }
     const customer = (customers.data ?? []).find((item) => item.id === inv.customerId);
@@ -135,7 +149,7 @@ export default function FactureDetail() {
       ],
       capabilities: ['screen.read', 'invoice.read', ...actionCapabilities],
     };
-  }, [customers.data, id, invoice.data]);
+  }, [customers.data, id, invoice.data, invoices.data, quotes.data, screenDataReady]);
   const agentLayout = useMemo<AgentAccessLayout>(() => ({ bottomAvoidance: 86 }), []);
   usePublishAgentContext(agentContext, agentLayout);
 
@@ -173,7 +187,13 @@ export default function FactureDetail() {
       }
     : null;
 
-  if (invoice.isLoading || invoices.isLoading || quotes.isLoading || customers.isLoading) {
+  if (
+    invoice.isLoading
+    || invoices.isLoading
+    || quotes.isLoading
+    || customers.isLoading
+    || documents.isLoading
+  ) {
     return (
       <View style={{ flex: 1, backgroundColor: colors.bg }}>
         <SkeletonHeader onClose={() => router.back()} />
@@ -187,13 +207,25 @@ export default function FactureDetail() {
   }
   // Un ÉCHEC réseau n'est JAMAIS un cul-de-sac : retry ET fermeture restent disponibles
   // (avant ce correctif l'utilisateur était piégé sans issue — bug P0 de l'audit états).
-  if (invoice.isError || invoices.isError || quotes.isError || customers.isError) {
+  if (
+    invoice.isError
+    || invoices.isError
+    || quotes.isError
+    || customers.isError
+    || documents.isError
+  ) {
     return (
       <View style={{ flex: 1, justifyContent: 'center', backgroundColor: colors.bg, padding: 18 }}>
         <ErrorRetry
           message={t('piece.dataError', { personality })}
           onRetry={() => {
-            void Promise.all([invoice.refetch(), invoices.refetch(), quotes.refetch(), customers.refetch()]);
+            void Promise.all([
+              invoice.refetch(),
+              invoices.refetch(),
+              quotes.refetch(),
+              customers.refetch(),
+              documents.refetch(),
+            ]);
           }}
           secondaryLabel={t('piece.close', { personality })}
           onSecondaryAction={() => router.back()}

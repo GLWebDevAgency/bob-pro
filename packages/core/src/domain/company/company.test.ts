@@ -34,4 +34,18 @@ describe('Company', () => {
     const r = Company.of({ ...baseProps, siret: '55208131766522' });
     expect(r.ok).toBe(false);
   });
+  it('conserve une clientèle confirmée sans en inventer une par défaut', () => {
+    const withoutPortfolio = Company.of(baseProps);
+    expect(withoutPortfolio.ok && withoutPortfolio.value.customerPortfolio).toBeUndefined();
+
+    const withPortfolio = Company.of({ ...baseProps, customerPortfolio: 'b2g' });
+    expect(withPortfolio.ok && withPortfolio.value.customerPortfolio).toBe('b2g');
+  });
+  it('rejette une clientèle hors contrat à la réhydratation', () => {
+    const r = Company.of({ ...baseProps, customerPortfolio: 'particuliers-et-pros' as never });
+    expect(r).toMatchObject({
+      ok: false,
+      error: { code: 'VALIDATION', field: 'customerPortfolio' },
+    });
+  });
 });

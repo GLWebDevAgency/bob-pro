@@ -19,7 +19,7 @@ import {
  * ligne `null` — l'écran affiche « — », jamais un chiffre inventé (décision A1-C10).
  *
  * Sources par ligne :
- * · solde bancaire        → écritures comptables, comptes de trésorerie (512 banque / 530 caisse) ;
+ * · solde bancaire        → snapshot bancaire qualifié fourni explicitement ;
  * · factures attendues    → factures émises encaissables : netToPay − paid (plafond netToPay, jamais ttc) ;
  * · charges & achats      → dépenses « à payer » (TTC) ;
  * · TVA à reverser        → TVA collectée (4457x, écritures de vente) − TVA déductible (dépenses) ;
@@ -74,6 +74,11 @@ export interface LedgerCompanyData {
 
 /** `undefined` = source indisponible (chargement/erreur) → lignes `null`, jamais 0 inventé. */
 export interface BuildLedgerViewInput {
+  /**
+   * Dernier solde qualifié (connexion bancaire, relevé confirmé ou saisie confirmée).
+   * Les mouvements 512/530 ne suffisent jamais à reconstruire un solde sans à-nouveau.
+   */
+  bankBalanceCents?: number | undefined;
   invoices?: readonly LedgerInvoiceData[] | undefined;
   expenses?: readonly LedgerExpenseData[] | undefined;
   accountingEntries?: readonly LedgerEntryData[] | undefined;
@@ -117,15 +122,8 @@ export interface LedgerView {
 /** Statuts encore encaissables — aligné sur deriveTodayPriorities (C10). */
 const COLLECTIBLE: ReadonlySet<InvoiceStatus> = new Set(['issued', 'partially_paid', 'late']);
 
-/** Comptes de trésorerie du plan par défaut (payment-accounting) : 512 banque, 530 caisse. */
-const TREASURY_PREFIXES = ['512', '530'] as const;
-
 /** Comptes de TVA collectée (invoice-accounting : 44571 + subdivisions). */
 const VAT_COLLECTED_PREFIX = '4457';
-
-function isTreasury(account: string): boolean {
-  return TREASURY_PREFIXES.some((prefix) => account.startsWith(prefix));
-}
 
 function sumEntryLines(
   entries: readonly LedgerEntryData[],
@@ -161,8 +159,9 @@ function receivableCents(invoice: LedgerInvoiceData): number {
  * intégralement, sans pondération optimiste des encaissements.
  */
 export function buildLedgerView(input: BuildLedgerViewInput): LedgerView {
-  const bankCents =
-    input.accountingEntries === undefined ? null : sumEntryLines(input.accountingEntries, isTreasury, 'debit');
+  const bankCents = input.bankBalanceCents === undefined || !Number.isSafeInteger(input.bankBalanceCents)
+    ? null
+    : input.bankBalanceCents;
 
   const receivablesCents =
     input.invoices === undefined

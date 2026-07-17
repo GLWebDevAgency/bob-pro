@@ -27,9 +27,21 @@ import { NOTIFIER } from '../notifications/notifier';
 import { SUPABASE_ADMIN, type SupabaseAdminPort } from '../auth/supabase-admin';
 import { AppLogger, getPrincipal } from '../observability/logger';
 import { Metrics } from '../observability/metrics';
-import { PERSISTENCE, type Persistence } from '../persistence/persistence';
+import type { Persistence } from '../persistence/persistence';
+import { PERSISTENCE } from '../persistence/persistence-token';
 import { jobCabinetIds } from '../config/env';
-import { CabinetOptimisticConflictError, CabinetPersistenceConflictError } from './cabinet-infrastructure';
+import {
+  CabinetOptimisticConflictError,
+  CabinetPersistenceConflictError,
+} from './cabinet-infrastructure';
+import {
+  CabinetDossierService,
+  CabinetDossierServiceError,
+} from './dossiers/cabinet-dossier-service';
+import {
+  CabinetDossierCursorError,
+  CabinetDossierPersistenceCorruptionError,
+} from './dossiers/prisma-cabinet-dossier.repository';
 
 const CABINET_SLICE_FLAG = 'cabinet.slice0';
 const DELIVERY_LEASE_MS = 60_000;
@@ -51,21 +63,38 @@ function releaseEnvironment(): 'development' | 'staging' | 'production' {
   return value === 'staging' || value === 'production' ? value : 'development';
 }
 
-function domainCode(error: AppError): { status: number; code: string; params?: Record<string, unknown> } {
+function domainCode(error: AppError): {
+  status: number;
+  code: string;
+  params?: Record<string, unknown>;
+} {
   if (error.kind === 'not_found') {
     return {
       status: HttpStatus.NOT_FOUND,
-      code: error.entity === 'cabinet_invitation' ? 'CABINET_INVITATION_INVALID' : 'CABINET_NOT_FOUND',
+      code:
+        error.entity === 'cabinet_invitation' ? 'CABINET_INVITATION_INVALID' : 'CABINET_NOT_FOUND',
     };
   }
   if (error.kind === 'forbidden') {
-    return { status: HttpStatus.FORBIDDEN, code: 'CABINET_FORBIDDEN', params: { reason: error.reason } };
+    return {
+      status: HttpStatus.FORBIDDEN,
+      code: 'CABINET_FORBIDDEN',
+      params: { reason: error.reason },
+    };
   }
   if (error.kind === 'conflict') {
-    return { status: HttpStatus.CONFLICT, code: 'CABINET_CONFLICT', params: { reason: error.reason } };
+    return {
+      status: HttpStatus.CONFLICT,
+      code: 'CABINET_CONFLICT',
+      params: { reason: error.reason },
+    };
   }
   if (error.kind === 'validation') {
-    return { status: HttpStatus.UNPROCESSABLE_ENTITY, code: 'CABINET_VALIDATION', params: { issues: error.issues } };
+    return {
+      status: HttpStatus.UNPROCESSABLE_ENTITY,
+      code: 'CABINET_VALIDATION',
+      params: { issues: error.issues },
+    };
   }
   if (error.kind === 'dependency') {
     return { status: HttpStatus.SERVICE_UNAVAILABLE, code: 'CABINET_DEPENDENCY_UNAVAILABLE' };
@@ -84,9 +113,17 @@ function domainCode(error: AppError): { status: number; code: string; params?: R
   const domain = error.error;
   switch (domain.code) {
     case 'CABINET_LAST_ADMIN_REQUIRED':
-      return { status: HttpStatus.CONFLICT, code: domain.code, params: { cabinetId: domain.cabinetId } };
+      return {
+        status: HttpStatus.CONFLICT,
+        code: domain.code,
+        params: { cabinetId: domain.cabinetId },
+      };
     case 'CABINET_INVITATION_EXPIRED':
-      return { status: HttpStatus.GONE, code: domain.code, params: { expiresAt: domain.expiresAt } };
+      return {
+        status: HttpStatus.GONE,
+        code: domain.code,
+        params: { expiresAt: domain.expiresAt },
+      };
     case 'CABINET_INVITATION_ALREADY_USED':
       return { status: HttpStatus.CONFLICT, code: domain.code };
     case 'CABINET_INVITATION_EMAIL_MISMATCH':
@@ -97,9 +134,17 @@ function domainCode(error: AppError): { status: number; code: string; params?: R
     case 'CABINET_MEMBER_ALREADY_EXISTS':
       return { status: HttpStatus.CONFLICT, code: domain.code };
     case 'VALIDATION':
-      return { status: HttpStatus.UNPROCESSABLE_ENTITY, code: 'CABINET_VALIDATION', params: { field: domain.field } };
+      return {
+        status: HttpStatus.UNPROCESSABLE_ENTITY,
+        code: 'CABINET_VALIDATION',
+        params: { field: domain.field },
+      };
     case 'INVALID_TRANSITION':
-      return { status: HttpStatus.CONFLICT, code: 'CABINET_CONFLICT', params: { from: domain.from, to: domain.to } };
+      return {
+        status: HttpStatus.CONFLICT,
+        code: 'CABINET_CONFLICT',
+        params: { from: domain.from, to: domain.to },
+      };
     default:
       return { status: HttpStatus.UNPROCESSABLE_ENTITY, code: domain.code };
   }
@@ -109,19 +154,28 @@ function unwrapCabinet<T>(result: Result<T, AppError>, operation: string, metric
   if (result.ok) return result.value;
   const mapped = domainCode(result.error);
   if (mapped.status === HttpStatus.FORBIDDEN) {
-    metrics.cabinetAuthorizationDenials.inc({ operation, reason: String(mapped.params?.reason ?? mapped.code) });
+    metrics.cabinetAuthorizationDenials.inc({
+      operation,
+      reason: String(mapped.params?.reason ?? mapped.code),
+    });
   }
-  throw new HttpException({ code: mapped.code, ...(mapped.params ? { params: mapped.params } : {}) }, mapped.status);
+  throw new HttpException(
+    { code: mapped.code, ...(mapped.params ? { params: mapped.params } : {}) },
+    mapped.status,
+  );
 }
 
 @Injectable()
 export class CabinetApiService {
   private readonly clock = new SystemClock();
   private readonly ids = { newId: (): string => randomUUID() };
-  private readonly identityCache = new Map<string, {
-    expiresAt: number;
-    value: { email: string | null; displayName: string | null };
-  }>();
+  private readonly identityCache = new Map<
+    string,
+    {
+      expiresAt: number;
+      value: { email: string | null; displayName: string | null };
+    }
+  >();
 
   constructor(
     @Inject(PERSISTENCE) private readonly persistence: Persistence,
@@ -152,7 +206,11 @@ export class CabinetApiService {
     return this.operation('list_cabinets', () =>
       this.persistence.runWithIdentity(principal.userId, async () => {
         const useCase = new ListCabinetsForUser(this.persistence.cabinet.cabinets);
-        const cabinets = unwrapCabinet(await useCase.execute({ userId: principal.userId }), 'list_cabinets', this.metrics);
+        const cabinets = unwrapCabinet(
+          await useCase.execute({ userId: principal.userId }),
+          'list_cabinets',
+          this.metrics,
+        );
         const items: CabinetSummaryResponse[] = [];
         for (const cabinet of cabinets) {
           await this.persistence.runWithCabinet(principal.userId, cabinet.id, async () => {
@@ -182,7 +240,10 @@ export class CabinetApiService {
         try {
           new Intl.DateTimeFormat('fr-FR', { timeZone }).format(new Date());
         } catch {
-          throw new HttpException({ code: 'CABINET_VALIDATION', params: { field: 'timeZone' } }, HttpStatus.UNPROCESSABLE_ENTITY);
+          throw new HttpException(
+            { code: 'CABINET_VALIDATION', params: { field: 'timeZone' } },
+            HttpStatus.UNPROCESSABLE_ENTITY,
+          );
         }
         const useCase = new CreateCabinet({
           cabinets: this.persistence.cabinet.cabinets,
@@ -238,7 +299,10 @@ export class CabinetApiService {
       );
       const start = input.cursor ? items.findIndex((member) => member.id === input.cursor) + 1 : 0;
       if (input.cursor && start === 0) {
-        throw new HttpException({ code: 'CABINET_VALIDATION', params: { field: 'cursor' } }, HttpStatus.UNPROCESSABLE_ENTITY);
+        throw new HttpException(
+          { code: 'CABINET_VALIDATION', params: { field: 'cursor' } },
+          HttpStatus.UNPROCESSABLE_ENTITY,
+        );
       }
       const limit = Math.max(1, Math.min(input.limit ?? 50, 100));
       const pageItems = items.slice(start, start + limit);
@@ -253,6 +317,39 @@ export class CabinetApiService {
         hasMore,
       };
     });
+  }
+
+  async listDossiers(cabinetId: string, input: { cursor?: string; limit?: number } = {}) {
+    const principal = this.principal();
+    return this.withCabinetDossiers('list_dossiers', cabinetId, (service) =>
+      service.list({
+        cabinetId,
+        actorUserId: principal.userId,
+        ...(input.cursor ? { cursor: input.cursor } : {}),
+        ...(input.limit === undefined ? {} : { limit: input.limit }),
+      }),
+    );
+  }
+
+  async getDossier(cabinetId: string, siren: string) {
+    const principal = this.principal();
+    return this.withCabinetDossiers('get_dossier', cabinetId, (service) =>
+      service.get({ cabinetId, actorUserId: principal.userId, siren }),
+    );
+  }
+
+  async saveDossier(cabinetId: string, dossier: unknown) {
+    const principal = this.principal();
+    return this.withCabinetDossiers('save_dossier', cabinetId, (service) =>
+      service.upsert({ cabinetId, actorUserId: principal.userId, dossier }),
+    );
+  }
+
+  async deleteDossier(cabinetId: string, siren: string, expectedRevision: number): Promise<void> {
+    const principal = this.principal();
+    return this.withCabinetDossiers('delete_dossier', cabinetId, (service) =>
+      service.delete({ cabinetId, actorUserId: principal.userId, siren, expectedRevision }),
+    );
   }
 
   async listInvitations(cabinetId: string, input: { cursor?: string; limit?: number } = {}) {
@@ -275,7 +372,9 @@ export class CabinetApiService {
         limit: input.limit ?? 50,
       });
       return {
-        items: page.items.map((invitation) => cabinetInvitationToView(invitation, this.clock.now())),
+        items: page.items.map((invitation) =>
+          cabinetInvitationToView(invitation, this.clock.now()),
+        ),
         nextCursor: page.nextCursor,
         hasMore: page.nextCursor !== null,
       };
@@ -285,7 +384,10 @@ export class CabinetApiService {
   async inviteMember(cabinetId: string, input: { email: string; role: CabinetRole }) {
     const principal = this.principal();
     if (!['admin', 'manager', 'collaborator'].includes(input.role as string)) {
-      throw new HttpException({ code: 'CABINET_VALIDATION', params: { field: 'role' } }, HttpStatus.UNPROCESSABLE_ENTITY);
+      throw new HttpException(
+        { code: 'CABINET_VALIDATION', params: { field: 'role' } },
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
     }
     const invitation = await this.withCabinet('invite_member', cabinetId, async () => {
       const useCase = new InviteCabinetMember({
@@ -350,7 +452,11 @@ export class CabinetApiService {
   }
 
   /** Worker borné : le user de service doit être une membership active autorisée dans chaque cabinet. */
-  async processInvitationDeliveries(cabinetId: string, workerUserId: string, limit = 10): Promise<number> {
+  async processInvitationDeliveries(
+    cabinetId: string,
+    workerUserId: string,
+    limit = 10,
+  ): Promise<number> {
     await this.persistence.runWithCabinet(workerUserId, cabinetId, async () => {
       const cabinet = await this.persistence.cabinet.cabinets.findById(cabinetId);
       const actor = cabinet?.activeMemberForUser(workerUserId);
@@ -365,7 +471,8 @@ export class CabinetApiService {
       });
       for (const invitationId of expiredIds) {
         const locked = await this.persistence.cabinet.invitations.lockById(invitationId);
-        if (!locked || locked.status !== 'pending' || locked.effectiveStatus(now) !== 'expired') continue;
+        if (!locked || locked.status !== 'pending' || locked.effectiveStatus(now) !== 'expired')
+          continue;
         const expectedVersion = locked.version;
         const expired = locked.expire(now);
         if (!expired.ok) continue;
@@ -397,11 +504,17 @@ export class CabinetApiService {
   }> {
     const principal = this.principal();
     if (!input.token?.trim()) {
-      throw new HttpException({ code: 'CABINET_VALIDATION', params: { field: 'token' } }, HttpStatus.UNPROCESSABLE_ENTITY);
+      throw new HttpException(
+        { code: 'CABINET_VALIDATION', params: { field: 'token' } },
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
     }
     const verifiedEmail = await this.resolveVerifiedEmail(principal);
     if (!verifiedEmail) {
-      throw new HttpException({ code: 'CABINET_INVITATION_EMAIL_UNVERIFIED' }, HttpStatus.FORBIDDEN);
+      throw new HttpException(
+        { code: 'CABINET_INVITATION_EMAIL_UNVERIFIED' },
+        HttpStatus.FORBIDDEN,
+      );
     }
     return this.operation('accept_invitation', async () => {
       const hash = await this.persistence.cabinet.tokens.hash(input.token ?? '');
@@ -447,8 +560,12 @@ export class CabinetApiService {
   ): Promise<CabinetMemberView> {
     const principal = this.principal();
     const keys = Object.keys(input);
-    const validRole = input.role === undefined || ['admin', 'manager', 'collaborator'].includes(input.role as string);
-    const validStatus = input.status === undefined || ['active', 'suspended', 'revoked'].includes(input.status as string);
+    const validRole =
+      input.role === undefined ||
+      ['admin', 'manager', 'collaborator'].includes(input.role as string);
+    const validStatus =
+      input.status === undefined ||
+      ['active', 'suspended', 'revoked'].includes(input.status as string);
     if (
       keys.some((key) => key !== 'role' && key !== 'status') ||
       !validRole ||
@@ -475,7 +592,11 @@ export class CabinetApiService {
           );
         }
       }
-      const deps = { cabinets: this.persistence.cabinet.cabinets, clock: this.clock, uow: this.persistence };
+      const deps = {
+        cabinets: this.persistence.cabinet.cabinets,
+        clock: this.clock,
+        uow: this.persistence,
+      };
       const base = { cabinetId, actorUserId: principal.userId, memberId };
       const result = input.role
         ? new ChangeCabinetMemberRole(deps).execute({ ...base, role: input.role })
@@ -488,7 +609,11 @@ export class CabinetApiService {
     });
   }
 
-  private async withCabinet<T>(operation: string, cabinetId: string, fn: () => Promise<T>): Promise<T> {
+  private async withCabinet<T>(
+    operation: string,
+    cabinetId: string,
+    fn: () => Promise<T>,
+  ): Promise<T> {
     const principal = this.principal();
     return this.operation(operation, () =>
       this.persistence.runWithCabinet(principal.userId, cabinetId, async () => {
@@ -496,6 +621,70 @@ export class CabinetApiService {
         return fn();
       }),
     );
+  }
+
+  private async withCabinetDossiers<T>(
+    operation: string,
+    cabinetId: string,
+    fn: (service: CabinetDossierService) => Promise<T>,
+  ): Promise<T> {
+    return this.withCabinet(operation, cabinetId, async () => {
+      const service = new CabinetDossierService({
+        dossiers: this.persistence.cabinet.dossiers,
+        actors: {
+          resolveActiveActor: async (selectedCabinetId, userId) => {
+            const cabinet = await this.persistence.cabinet.cabinets.findById(selectedCabinetId);
+            const actor = cabinet?.activeMemberForUser(userId);
+            return cabinet?.status === 'active' && actor
+              ? { cabinetId: selectedCabinetId, userId, role: actor.role }
+              : null;
+          },
+        },
+        ids: this.ids,
+        clock: this.clock,
+      });
+      try {
+        return await fn(service);
+      } catch (error) {
+        this.throwDossierError(operation, error);
+      }
+    });
+  }
+
+  private throwDossierError(operation: string, error: unknown): never {
+    if (error instanceof CabinetDossierCursorError) {
+      throw new HttpException(
+        { code: 'CABINET_DOSSIER_INVALID', params: { field: 'cursor' } },
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+    }
+    if (error instanceof CabinetDossierPersistenceCorruptionError) {
+      this.logger.error('Analyse dossier cabinet corrompue en persistance.', undefined, 'CabinetDossier');
+      throw new HttpException({ code: 'CABINET_DOSSIER_UNAVAILABLE' }, HttpStatus.SERVICE_UNAVAILABLE);
+    }
+    if (!(error instanceof CabinetDossierServiceError)) throw error;
+    if (error.code === 'CABINET_DOSSIER_FORBIDDEN') {
+      const membershipMissing = error.details?.reason === 'membership';
+      this.metrics.cabinetAuthorizationDenials.inc({ operation, reason: String(error.details?.reason ?? 'role') });
+      throw new HttpException(
+        { code: membershipMissing ? 'CABINET_DOSSIER_NOT_FOUND' : error.code },
+        membershipMissing ? HttpStatus.NOT_FOUND : HttpStatus.FORBIDDEN,
+      );
+    }
+    if (error.code === 'CABINET_DOSSIER_INVALID') {
+      throw new HttpException(
+        { code: error.code, params: error.details },
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+    }
+    if (error.code === 'CABINET_DOSSIER_NOT_FOUND') {
+      throw new HttpException({ code: error.code }, HttpStatus.NOT_FOUND);
+    }
+    if (error.code === 'CABINET_DOSSIER_INTEGRITY') {
+      this.logger.error('Empreinte dossier cabinet incohérente.', undefined, 'CabinetDossier');
+      throw new HttpException({ code: 'CABINET_DOSSIER_UNAVAILABLE' }, HttpStatus.SERVICE_UNAVAILABLE);
+    }
+    throw new HttpException({ code: error.code }, HttpStatus.CONFLICT);
   }
 
   private async evaluateFlag(userId: string, cabinetId?: string) {
@@ -525,11 +714,18 @@ export class CabinetApiService {
     }
   }
 
-  private async deliverOne(cabinetId: string, actorUserId: string, invitationId?: string): Promise<string | null> {
+  private async deliverOne(
+    cabinetId: string,
+    actorUserId: string,
+    invitationId?: string,
+  ): Promise<string | null> {
     const gateBeforeClaim = await this.deliveryGate(cabinetId, actorUserId);
     if (gateBeforeClaim.status !== 'open' || !gateBeforeClaim.actorRole) {
       this.metrics.cabinetInvitationDeliveries.inc({
-        outcome: gateBeforeClaim.status === 'cabinet_inactive' ? 'skipped_cabinet_inactive' : 'skipped_flag_disabled',
+        outcome:
+          gateBeforeClaim.status === 'cabinet_inactive'
+            ? 'skipped_cabinet_inactive'
+            : 'skipped_flag_disabled',
       });
       return null;
     }
@@ -540,9 +736,10 @@ export class CabinetApiService {
         cabinetId,
         now: now.toISOString(),
         leaseUntil: leaseUntil.toISOString(),
-        allowedInvitationRoles: gateBeforeClaim.actorRole === 'admin'
-          ? ['admin', 'manager', 'collaborator'] as const
-          : ['collaborator'] as const,
+        allowedInvitationRoles:
+          gateBeforeClaim.actorRole === 'admin'
+            ? (['admin', 'manager', 'collaborator'] as const)
+            : (['collaborator'] as const),
       };
       return invitationId
         ? this.persistence.cabinet.deliveries.claimForInvitation({ ...input, invitationId })
@@ -570,7 +767,10 @@ export class CabinetApiService {
         }
       }
       this.metrics.cabinetInvitationDeliveries.inc({
-        outcome: gateBeforeSend.status === 'cabinet_inactive' ? 'skipped_cabinet_inactive' : 'skipped_flag_disabled',
+        outcome:
+          gateBeforeSend.status === 'cabinet_inactive'
+            ? 'skipped_cabinet_inactive'
+            : 'skipped_flag_disabled',
       });
       return null;
     }
@@ -578,8 +778,23 @@ export class CabinetApiService {
     let rawToken: string;
     try {
       rawToken = this.persistence.cabinet.decryptInvitationToken(delivery);
-      const baseUrl = (process.env.CABINET_INVITATION_WEB_BASE_URL ?? 'https://demo.bobpro.fr/cabinet')
-        .replace(/#.*$/, '');
+      const configuredBaseUrl = process.env.CABINET_INVITATION_WEB_BASE_URL?.trim();
+      if (!configuredBaseUrl) {
+        throw new Error('CABINET_INVITATION_WEB_BASE_URL is required for invitation delivery.');
+      }
+      const parsedBaseUrl = new URL(configuredBaseUrl);
+      if (
+        parsedBaseUrl.protocol !== 'https:' ||
+        parsedBaseUrl.hostname === 'localhost' ||
+        parsedBaseUrl.hostname === '127.0.0.1' ||
+        parsedBaseUrl.hostname === 'demo.bobpro.fr' ||
+        parsedBaseUrl.username !== '' ||
+        parsedBaseUrl.password !== ''
+      ) {
+        throw new Error('CABINET_INVITATION_WEB_BASE_URL must be a canonical live HTTPS URL.');
+      }
+      parsedBaseUrl.hash = '';
+      const baseUrl = parsedBaseUrl.toString();
       const invitationLink = `${baseUrl}#invitation=${encodeURIComponent(rawToken)}`;
       await this.notifier.send({
         channel: 'email',
@@ -613,7 +828,10 @@ export class CabinetApiService {
         }
         throw error;
       }
-      this.logger.warn('Invitation cabinet conservée dans l’outbox après échec de livraison.', 'CabinetInvitation');
+      this.logger.warn(
+        'Invitation cabinet conservée dans l’outbox après échec de livraison.',
+        'CabinetInvitation',
+      );
       this.metrics.cabinetInvitationDeliveries.inc({ outcome: 'failed' });
       return 'failed';
     }
@@ -651,10 +869,7 @@ export class CabinetApiService {
     return principal;
   }
 
-  private async deliveryGate(
-    cabinetId: string,
-    actorUserId: string,
-  ): Promise<DeliveryGate> {
+  private async deliveryGate(cabinetId: string, actorUserId: string): Promise<DeliveryGate> {
     return this.persistence.runWithCabinet(actorUserId, cabinetId, async () => {
       const cabinet = await this.persistence.cabinet.cabinets.findById(cabinetId);
       const actor = cabinet?.activeMemberForUser(actorUserId);
@@ -662,30 +877,39 @@ export class CabinetApiService {
         return { status: 'cabinet_inactive', actorRole: null };
       }
       return {
-        status: (await this.evaluateFlag(actorUserId, cabinetId)).enabled ? 'open' : 'feature_disabled',
+        status: (await this.evaluateFlag(actorUserId, cabinetId)).enabled
+          ? 'open'
+          : 'feature_disabled',
         actorRole: actor.role,
       };
     });
   }
 
-  private async resolveVerifiedEmail(principal: ReturnType<CabinetApiService['principal']>): Promise<string | null> {
-    if (process.env.DEMO_MODE !== 'false') {
-      return principal.emailVerified === true && principal.email ? principal.email.trim().toLowerCase() : null;
-    }
+  private async resolveVerifiedEmail(
+    principal: ReturnType<CabinetApiService['principal']>,
+  ): Promise<string | null> {
     if (!this.supabaseAdmin.getVerifiedEmail) {
-      throw new HttpException({ code: 'CABINET_IDENTITY_PROVIDER_UNAVAILABLE' }, HttpStatus.SERVICE_UNAVAILABLE);
+      throw new HttpException(
+        { code: 'CABINET_IDENTITY_PROVIDER_UNAVAILABLE' },
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
     }
     try {
       return await this.supabaseAdmin.getVerifiedEmail(principal.userId);
     } catch {
-      throw new HttpException({ code: 'CABINET_IDENTITY_PROVIDER_UNAVAILABLE' }, HttpStatus.SERVICE_UNAVAILABLE);
+      throw new HttpException(
+        { code: 'CABINET_IDENTITY_PROVIDER_UNAVAILABLE' },
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
     }
   }
 
-  private async identityForRoster(userId: string): Promise<{ email: string | null; displayName: string | null }> {
+  private async identityForRoster(
+    userId: string,
+  ): Promise<{ email: string | null; displayName: string | null }> {
     const cached = this.identityCache.get(userId);
     if (cached && cached.expiresAt > Date.now()) return cached.value;
-    if (!this.supabaseAdmin.getUserIdentity || process.env.DEMO_MODE !== 'false') {
+    if (!this.supabaseAdmin.getUserIdentity) {
       return { email: null, displayName: null };
     }
     try {
@@ -697,7 +921,11 @@ export class CabinetApiService {
     }
   }
 
-  private async mapWithConcurrency<T, U>(items: T[], concurrency: number, mapper: (item: T) => Promise<U>): Promise<U[]> {
+  private async mapWithConcurrency<T, U>(
+    items: T[],
+    concurrency: number,
+    mapper: (item: T) => Promise<U>,
+  ): Promise<U[]> {
     const output = new Array<U>(items.length);
     let cursor = 0;
     const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
@@ -718,8 +946,14 @@ export class CabinetApiService {
       return value;
     } catch (error) {
       this.metrics.cabinetOperations.inc({ operation: name, outcome: 'failure' });
-      if (error instanceof CabinetOptimisticConflictError || error instanceof CabinetPersistenceConflictError) {
-        throw new HttpException({ code: 'CABINET_CONFLICT', params: { reason: error.message } }, HttpStatus.CONFLICT);
+      if (
+        error instanceof CabinetOptimisticConflictError ||
+        error instanceof CabinetPersistenceConflictError
+      ) {
+        throw new HttpException(
+          { code: 'CABINET_CONFLICT', params: { reason: error.message } },
+          HttpStatus.CONFLICT,
+        );
       }
       throw error;
     }

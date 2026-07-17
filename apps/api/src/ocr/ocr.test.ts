@@ -96,7 +96,7 @@ describe('MistralOcrAdapter (OCR dédié → extraction structurée → garde-fo
     });
     await adapter.extractDocument({
       ...INPUT,
-      trade: { label: 'Développeur / consultant', customerWord: 'client', projectWord: 'mission', defaultVatRatePct: 20 },
+      trade: { label: 'Développeur / consultant', customerWord: 'client', projectWord: 'mission' },
     });
 
     const chatBody = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)) as {

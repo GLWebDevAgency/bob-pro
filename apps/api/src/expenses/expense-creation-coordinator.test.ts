@@ -8,7 +8,7 @@ import {
 } from '@bob/core';
 import { describe, expect, it, vi } from 'vitest';
 import { expenseCreationFingerprint, type ExpenseCreationRequestRecord } from '../persistence/expense-creation-requests';
-import { InMemoryPersistence } from '../persistence/persistence';
+import { InMemoryPersistence } from '../persistence/persistence.testing';
 import { ExpenseCreationCoordinator } from './expense-creation-coordinator';
 
 const COMPANY = 'company-expense-coordinator';

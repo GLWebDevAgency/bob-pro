@@ -126,7 +126,7 @@ export default function Comptabilite() {
               label: `${entry.reference} — ${entry.label}`,
             }))
           : [],
-        capabilities: canExposeAccounting ? ['screen.read', 'accounting.read'] : ['screen.read'],
+        capabilities: canExposeAccounting ? ['screen.read', 'accounting.read'] : [],
       };
     },
     [entitlement.verified, entitled, entries.data, entries.isError, sorted],

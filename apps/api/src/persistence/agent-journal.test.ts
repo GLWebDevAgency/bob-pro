@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { CompanyScopedJournalStore, InMemoryAgentJournalRepository } from './agent-journal';
+import { CompanyScopedJournalStore } from './agent-journal';
+import { InMemoryAgentJournalRepository } from './agent-journal.testing';
 import type { JournalEntry } from '@bob/ai';
 
 const entry = (seq: number, runId = 'run-1'): JournalEntry => ({

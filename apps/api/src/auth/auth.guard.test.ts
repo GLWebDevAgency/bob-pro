@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ForbiddenException } from '@nestjs/common';
 import type { ExecutionContext } from '@nestjs/common';
 import { jwtVerify } from 'jose';
-import { MERCIER_PROPS } from '@bob/core';
 import { getPrincipal, requestContext, type Principal } from '../observability/logger';
 import { SupabaseAuthGuard } from './auth.guard';
 
@@ -36,41 +35,6 @@ async function activate(
 }
 
 const BEARER = { authorization: 'Bearer jwt-de-test' };
-
-describe('SupabaseAuthGuard — mode démo (inchangé C24b)', () => {
-  beforeEach(() => {
-    vi.stubEnv('DEMO_MODE', 'true');
-  });
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
-
-  it('pose le tenant x-company-id, sinon la société de seed', async () => {
-    const guard = new SupabaseAuthGuard();
-    const custom = await activate(guard, { url: '/quotes', method: 'GET', headers: { 'x-company-id': 'co-autre' } });
-    expect(custom.allowed).toBe(true);
-    expect(custom.principal).toEqual({ userId: 'demo', companyId: 'co-autre' });
-
-    const seeded = await activate(guard, { url: '/quotes', method: 'GET', headers: {} });
-    expect(seeded.allowed).toBe(true);
-    expect(seeded.principal).toEqual({ userId: 'demo', companyId: MERCIER_PROPS.id });
-  });
-
-  it('isole le contexte Cabinet du tenant Company et fournit une identité démo vérifiée', async () => {
-    const result = await activate(new SupabaseAuthGuard(), {
-      url: '/cabinet/v1/cabinets',
-      method: 'GET',
-      headers: { 'x-company-id': 'ne-doit-pas-etre-utilise', 'x-demo-user-id': 'expert-1', 'x-demo-user-email': 'EXPERT@EXAMPLE.COM' },
-    });
-    expect(result.allowed).toBe(true);
-    expect(result.principal).toEqual({
-      userId: 'expert-1',
-      companyId: null,
-      email: 'expert@example.com',
-      emailVerified: true,
-    });
-  });
-});
 
 describe('SupabaseAuthGuard — prod (JWT Supabase, C24b provisioning)', () => {
   beforeEach(() => {
@@ -247,6 +211,23 @@ describe('SupabaseAuthGuard — prod (JWT Supabase, C24b provisioning)', () => {
 
     const missing = await activate(guard, { url: '/quotes', method: 'GET', headers: {} });
     expect(missing.allowed).toBe(false);
+  });
+
+  it('DEMO_MODE et les headers de harness ne contournent jamais le JWT', async () => {
+    vi.stubEnv('DEMO_MODE', 'true');
+    const result = await activate(new SupabaseAuthGuard(), {
+      url: '/quotes',
+      method: 'GET',
+      headers: {
+        'x-company-id': 'company-piege',
+        'x-demo-user-id': 'user-piege',
+        'x-demo-user-email': 'piege@example.com',
+      },
+    });
+
+    expect(result.allowed).toBe(false);
+    expect(result.principal).toBeUndefined();
+    expect(jwtVerifyMock).not.toHaveBeenCalled();
   });
 
   it('infra publique sans principal : /health et /public/sign/ seulement', async () => {

@@ -102,3 +102,52 @@ describe('HttpBobClient — coordonnées bancaires (RIB)', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('HttpBobClient — réglages facturation BDD', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('lit puis écrit par CAS sans aplatir le patch avec une valeur locale', async () => {
+    const settings = {
+      companyId: 'company-owner',
+      revision: 4,
+      showRibOnInvoices: true,
+      showInsuranceOnInvoices: false,
+      pdfAccentColor: 'green',
+      defaultQuoteValidityDays: 45,
+      defaultDepositPercent: 20,
+      createdAt: '2026-07-17T06:00:00.000Z',
+      updatedAt: '2026-07-17T06:05:00.000Z',
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(settings), {
+        headers: { 'content-type': 'application/json' },
+      }))
+      .mockImplementationOnce(async (url: unknown, init?: RequestInit) => {
+        expect(String(url)).toBe('https://api.bob.test/company/billing-settings');
+        expect(init?.method).toBe('PATCH');
+        expect(JSON.parse(String(init?.body))).toEqual({
+          expectedRevision: 4,
+          defaultQuoteValidityDays: 60,
+        });
+        return new Response(JSON.stringify({
+          ...settings,
+          revision: 5,
+          defaultQuoteValidityDays: 60,
+        }), { headers: { 'content-type': 'application/json' } });
+      });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({
+      baseUrl: 'https://api.bob.test',
+      companyId: 'company-owner',
+      getToken: async () => 'owner-token',
+    });
+
+    await expect(client.getCompanyBillingSettings()).resolves.toEqual({ ok: true, value: settings });
+    await expect(client.updateCompanyBillingSettings({
+      expectedRevision: 4,
+      patch: { defaultQuoteValidityDays: 60 },
+    })).resolves.toMatchObject({ ok: true, value: { revision: 5, defaultQuoteValidityDays: 60 } });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});

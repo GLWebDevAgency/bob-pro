@@ -18,7 +18,10 @@ export function allowedCorsOrigins(env: CorsEnv): string[] {
     .map((origin) => origin.trim())
     .filter(Boolean);
 
-  const origins = [...rawOrigins, env.SIGN_WEB_BASE_URL].map(normalizeOrigin);
+  const origins = [
+    ...rawOrigins,
+    ...(env.SIGN_WEB_BASE_URL ? [env.SIGN_WEB_BASE_URL] : []),
+  ].map(normalizeOrigin);
   return [...new Set(origins)];
 }
 

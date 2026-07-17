@@ -1,5 +1,6 @@
+import Stripe from 'stripe';
 import { describe, expect, it } from 'vitest';
-import { buildPaymentGateway, DemoPaymentGateway, StripePaymentGateway } from './payment-gateway';
+import { buildPaymentGateway, StripePaymentGateway } from './payment-gateway';
 
 const LIVE_PAYMENT_ENV = {
   DEMO_MODE: 'false',
@@ -7,6 +8,8 @@ const LIVE_PAYMENT_ENV = {
   STRIPE_PRICE_SOLO: 'price_solo',
   STRIPE_PRICE_PRO: 'price_pro',
   STRIPE_PRICE_BUSINESS: 'price_business',
+  STRIPE_WEBHOOK_SECRET: 'whsec_test_only_not_a_live_secret',
+  STRIPE_LIVEMODE: 'false',
   PAYMENT_RETURN_BASE_URL: 'https://app.bobpro.fr',
 } as const;
 
@@ -30,15 +33,66 @@ describe('composition paiement — aucun lien démo en live', () => {
     const gateway = buildPaymentGateway(LIVE_PAYMENT_ENV);
 
     expect(gateway).toBeInstanceOf(StripePaymentGateway);
-    expect(gateway).not.toBeInstanceOf(DemoPaymentGateway);
   });
 
-  it('conserve les liens déterministes uniquement sur opt-in DEMO_MODE=true', async () => {
-    const gateway = buildPaymentGateway({ DEMO_MODE: 'true' });
+  it('DEMO_MODE ne peut jamais réactiver des liens de paiement synthétiques', () => {
+    expect(() => buildPaymentGateway({ DEMO_MODE: 'true' })).toThrow(
+      /Paiement live indisponible.*STRIPE_SECRET_KEY/u,
+    );
+  });
 
-    expect(gateway).toBeInstanceOf(DemoPaymentGateway);
+  it('vérifie la signature sur les octets bruts exacts et refuse tout payload altéré', () => {
+    const secret = LIVE_PAYMENT_ENV.STRIPE_WEBHOOK_SECRET;
+    const gateway = new StripePaymentGateway(
+      LIVE_PAYMENT_ENV.STRIPE_SECRET_KEY,
+      { solo: 'price_solo', pro: 'price_pro', business: 'price_business' },
+      LIVE_PAYMENT_ENV.PAYMENT_RETURN_BASE_URL,
+      secret,
+      false,
+    );
+    const payload = JSON.stringify({
+      id: 'evt_signed',
+      object: 'event',
+      api_version: '2026-02-25.clover',
+      created: 1_784_275_200,
+      data: { object: { id: 'sub_1' } },
+      livemode: false,
+      pending_webhooks: 1,
+      request: null,
+      type: 'customer.subscription.updated',
+    });
+    const signature = Stripe.webhooks.generateTestHeaderString({
+      payload,
+      secret,
+      timestamp: Math.floor(Date.now() / 1_000),
+    });
+
+    expect(gateway.verifyWebhook(Buffer.from(payload), signature).id).toBe('evt_signed');
+    expect(() => gateway.verifyWebhook(Buffer.from(`${payload} `), signature)).toThrow();
+  });
+
+  it('refuse les anciens appels non tracés au lieu de réutiliser companyId comme customer Stripe', async () => {
+    const gateway = new StripePaymentGateway(
+      LIVE_PAYMENT_ENV.STRIPE_SECRET_KEY,
+      { solo: 'price_solo', pro: 'price_pro', business: 'price_business' },
+      LIVE_PAYMENT_ENV.PAYMENT_RETURN_BASE_URL,
+      LIVE_PAYMENT_ENV.STRIPE_WEBHOOK_SECRET,
+      false,
+    );
+
     await expect(
-      gateway.createBillingPortal({ companyId: 'demo', returnUrl: 'ignored' }),
-    ).resolves.toEqual({ url: 'https://demo.bobpro.fr/billing-portal' });
+      gateway.createBillingPortal({ companyId: 'co-1', returnUrl: 'https://app.bobpro.fr/compte' }),
+    ).rejects.toThrow(/aucun customer Stripe durablement lié/u);
+    await expect(
+      gateway.createSubscriptionCheckout({
+        companyId: 'co-1',
+        tier: 'pro',
+        successUrl: 'https://app.bobpro.fr/success',
+        cancelUrl: 'https://app.bobpro.fr/cancel',
+      }),
+    ).rejects.toThrow(/tentative durable/u);
+    await expect(
+      gateway.createInvoicePaymentLink({ invoiceId: 'inv-1', amountCents: 1_000, label: 'Facture' }),
+    ).rejects.toThrow(/tentative durable tenantée/u);
   });
 });

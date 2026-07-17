@@ -41,7 +41,13 @@ function isJsonContentType(request: IncomingMessage): boolean {
  */
 export function usesLargeJsonBodyParser(request: IncomingMessage): boolean {
   if (!isJsonContentType(request)) return false;
-  return LARGE_JSON_PAYLOAD_ROUTES.has(`${request.method?.toUpperCase() ?? ''} ${requestPath(request)}`);
+  const method = request.method?.toUpperCase() ?? '';
+  const path = requestPath(request);
+  if (LARGE_JSON_PAYLOAD_ROUTES.has(`${method} ${path}`)) return true;
+  // Seule la sortie structurée de l'analyse FEC transite : jamais le FEC brut. La route reste
+  // bornée à un PUT exact et à un SIREN canonique, les endpoints voisins gardent 256 ko.
+  return method === 'PUT'
+    && /^\/cabinet\/v1\/cabinets\/[^/]{1,160}\/dossiers\/\d{9}$/.test(path);
 }
 
 export function usesDefaultJsonBodyParser(request: IncomingMessage): boolean {
@@ -50,7 +56,12 @@ export function usesDefaultJsonBodyParser(request: IncomingMessage): boolean {
 
 async function bootstrap(): Promise<void> {
   const env = loadEnv();
-  const app = await NestFactory.create<NestExpressApplication>(AppModule, { bufferLogs: true });
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    bufferLogs: true,
+    // La signature Stripe porte sur les octets EXACTS reçus. Nest conserve `request.rawBody`
+    // avant parsing ; aucun JSON re-sérialisé n'est admis par le contrôleur webhook.
+    rawBody: true,
+  });
   app.useLogger(app.get(AppLogger));
   // Ne jamais activer `trust proxy` globalement : Railway expose l'IP canonique via X-Real-IP,
   // consommé et validé uniquement par le throttler. X-Forwarded-For reste donc sans effet.
@@ -76,7 +87,7 @@ async function bootstrap(): Promise<void> {
   app
     .get(AppLogger)
     .log(
-      `Bob Pro API -> http://localhost:${env.PORT} (demo=${env.DEMO_MODE}, claude=${!!env.ANTHROPIC_API_KEY}, glm=${!!env.GLM_API_KEY})`,
+      `Bob Pro API -> http://localhost:${env.PORT} (data=postgresql, auth=jwt, claude=${!!env.ANTHROPIC_API_KEY}, glm=${!!env.GLM_API_KEY})`,
       'Bootstrap',
     );
 }

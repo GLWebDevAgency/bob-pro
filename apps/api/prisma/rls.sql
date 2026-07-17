@@ -9,6 +9,7 @@ DECLARE t text;
 BEGIN
   FOR t IN SELECT unnest(ARRAY[
     'companies',
+    'company_billing_settings',
     'customers',
     'quotes',
     'invoices',
@@ -18,6 +19,7 @@ BEGIN
     'expenses',
     'expense_creation_requests',
     'quote_creation_requests',
+    'quote_draft_slots',
     'documents',
     'document_analyses',
     'document_folders',
@@ -32,6 +34,11 @@ BEGIN
     'accounting_entries',
     'accounting_entry_lines',
     'supplier_memory_profiles',
+    'bank_balance_snapshots',
+    'catalogue_prestations',
+    'chantiers',
+    'chantier_notes',
+    'chantier_photos',
     'subscriptions',
     'fiscal_profiles',
     'document_counters',
@@ -48,6 +55,7 @@ BEGIN
     'cabinet_admin_guards',
     'cabinet_invitations',
     'cabinet_invitation_deliveries',
+    'cabinet_dossiers',
     'cabinet_audit_events',
     'release_flags',
     'release_flag_subjects',
@@ -63,8 +71,82 @@ CREATE POLICY tenant_isolation ON companies
   USING (id = current_setting('app.current_company_id', true))
   WITH CHECK (id = current_setting('app.current_company_id', true));
 
+-- Les réglages sont immuables en identité (companyId) et ne peuvent jamais être supprimés par le
+-- runtime. Le PATCH applicatif fait un CAS sur revision ; RLS reste la défense inter-tenant.
+DROP POLICY IF EXISTS tenant_isolation ON company_billing_settings;
+DROP POLICY IF EXISTS company_billing_settings_select ON company_billing_settings;
+DROP POLICY IF EXISTS company_billing_settings_insert ON company_billing_settings;
+DROP POLICY IF EXISTS company_billing_settings_update ON company_billing_settings;
+CREATE POLICY company_billing_settings_select ON company_billing_settings FOR SELECT
+  USING ("companyId" = current_setting('app.current_company_id', true));
+CREATE POLICY company_billing_settings_insert ON company_billing_settings FOR INSERT
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+CREATE POLICY company_billing_settings_update ON company_billing_settings FOR UPDATE
+  USING ("companyId" = current_setting('app.current_company_id', true))
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+
 DROP POLICY IF EXISTS tenant_isolation ON customers;
 CREATE POLICY tenant_isolation ON customers
+  USING ("companyId" = current_setting('app.current_company_id', true))
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+
+DROP POLICY IF EXISTS tenant_isolation ON bank_balance_snapshots;
+DROP POLICY IF EXISTS bank_balance_snapshot_select ON bank_balance_snapshots;
+DROP POLICY IF EXISTS bank_balance_snapshot_insert ON bank_balance_snapshots;
+CREATE POLICY bank_balance_snapshot_select ON bank_balance_snapshots FOR SELECT
+  USING ("companyId" = current_setting('app.current_company_id', true));
+CREATE POLICY bank_balance_snapshot_insert ON bank_balance_snapshots FOR INSERT
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+
+-- Un brouillon est plus fin que le tenant : seul le propriétaire JWT courant peut le lire ou
+-- l'écrire. Le backend doit poser les deux GUC dans la même transaction avant toute requête.
+DROP POLICY IF EXISTS tenant_isolation ON quote_draft_slots;
+DROP POLICY IF EXISTS quote_draft_slot_owner_select ON quote_draft_slots;
+DROP POLICY IF EXISTS quote_draft_slot_owner_insert ON quote_draft_slots;
+DROP POLICY IF EXISTS quote_draft_slot_owner_update ON quote_draft_slots;
+DROP POLICY IF EXISTS quote_draft_slot_owner_delete ON quote_draft_slots;
+CREATE POLICY quote_draft_slot_owner_select ON quote_draft_slots FOR SELECT
+  USING (
+    "companyId" = current_setting('app.current_company_id', true)
+    AND "ownerUserId" = nullif(current_setting('app.current_user_id', true), '')
+  );
+CREATE POLICY quote_draft_slot_owner_insert ON quote_draft_slots FOR INSERT
+  WITH CHECK (
+    "companyId" = current_setting('app.current_company_id', true)
+    AND "ownerUserId" = nullif(current_setting('app.current_user_id', true), '')
+  );
+CREATE POLICY quote_draft_slot_owner_update ON quote_draft_slots FOR UPDATE
+  USING (
+    "companyId" = current_setting('app.current_company_id', true)
+    AND "ownerUserId" = nullif(current_setting('app.current_user_id', true), '')
+  )
+  WITH CHECK (
+    "companyId" = current_setting('app.current_company_id', true)
+    AND "ownerUserId" = nullif(current_setting('app.current_user_id', true), '')
+  );
+CREATE POLICY quote_draft_slot_owner_delete ON quote_draft_slots FOR DELETE
+  USING (
+    "companyId" = current_setting('app.current_company_id', true)
+    AND "ownerUserId" = nullif(current_setting('app.current_user_id', true), '')
+  );
+
+DROP POLICY IF EXISTS tenant_isolation ON catalogue_prestations;
+CREATE POLICY tenant_isolation ON catalogue_prestations
+  USING ("companyId" = current_setting('app.current_company_id', true))
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+
+DROP POLICY IF EXISTS tenant_isolation ON chantiers;
+CREATE POLICY tenant_isolation ON chantiers
+  USING ("companyId" = current_setting('app.current_company_id', true))
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+
+DROP POLICY IF EXISTS tenant_isolation ON chantier_notes;
+CREATE POLICY tenant_isolation ON chantier_notes
+  USING ("companyId" = current_setting('app.current_company_id', true))
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+
+DROP POLICY IF EXISTS tenant_isolation ON chantier_photos;
+CREATE POLICY tenant_isolation ON chantier_photos
   USING ("companyId" = current_setting('app.current_company_id', true))
   WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
 
@@ -1005,6 +1087,37 @@ CREATE POLICY cabinet_audit_insert ON cabinet_audit_events FOR INSERT
     "cabinetId" = nullif(current_setting('app.current_cabinet_id', true), '')
     AND "actorUserId" = nullif(current_setting('app.current_user_id', true), '')
     AND app_has_cabinet_role("cabinetId", ARRAY['admin', 'manager']::"CabinetRole"[])
+  );
+
+-- Dossiers/FEC : tant que les assignations collaborateur ne sont pas matérialisées, seuls
+-- admin et manager voient le portefeuille. La suppression, plus sensible, reste admin-only.
+DROP POLICY IF EXISTS cabinet_dossier_select ON cabinet_dossiers;
+DROP POLICY IF EXISTS cabinet_dossier_insert ON cabinet_dossiers;
+DROP POLICY IF EXISTS cabinet_dossier_update ON cabinet_dossiers;
+DROP POLICY IF EXISTS cabinet_dossier_delete ON cabinet_dossiers;
+CREATE POLICY cabinet_dossier_select ON cabinet_dossiers FOR SELECT
+  USING (
+    "cabinetId" = nullif(current_setting('app.current_cabinet_id', true), '')
+    AND app_has_cabinet_role("cabinetId", ARRAY['admin', 'manager']::"CabinetRole"[])
+  );
+CREATE POLICY cabinet_dossier_insert ON cabinet_dossiers FOR INSERT
+  WITH CHECK (
+    "cabinetId" = nullif(current_setting('app.current_cabinet_id', true), '')
+    AND app_has_cabinet_role("cabinetId", ARRAY['admin', 'manager']::"CabinetRole"[])
+  );
+CREATE POLICY cabinet_dossier_update ON cabinet_dossiers FOR UPDATE
+  USING (
+    "cabinetId" = nullif(current_setting('app.current_cabinet_id', true), '')
+    AND app_has_cabinet_role("cabinetId", ARRAY['admin', 'manager']::"CabinetRole"[])
+  )
+  WITH CHECK (
+    "cabinetId" = nullif(current_setting('app.current_cabinet_id', true), '')
+    AND app_has_cabinet_role("cabinetId", ARRAY['admin', 'manager']::"CabinetRole"[])
+  );
+CREATE POLICY cabinet_dossier_delete ON cabinet_dossiers FOR DELETE
+  USING (
+    "cabinetId" = nullif(current_setting('app.current_cabinet_id', true), '')
+    AND app_has_cabinet_role("cabinetId", ARRAY['admin']::"CabinetRole"[])
   );
 
 DROP POLICY IF EXISTS cabinet_invitation_delivery_select ON cabinet_invitation_deliveries;

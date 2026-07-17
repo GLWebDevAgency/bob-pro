@@ -28,12 +28,12 @@ import {
   type RecordDocumentExpenseClientInput,
   type RecordDocumentExpenseClientOutput,
 } from '@bob/api-client';
-import { InMemoryCompanyMemory, suggestCategoryClarification, suggestExpenseDefaults } from '@bob/ai';
+import { suggestCategoryClarification } from '@bob/ai';
 import { ErrorRetry, QuestionSheet, Sheet, Skeleton } from '@bob/ui';
 import type { ExpenseCategory } from '@bob/core';
 import { useTheme } from '../src/theme';
 import { useQueryClient } from '@tanstack/react-query';
-import { useExtractDocument, useExpenses } from '../src/data/hooks';
+import { useExtractDocument } from '../src/data/hooks';
 import {
   useAnalyzeDocument,
   useCreateDocumentFolder,
@@ -47,6 +47,8 @@ import { useBobClient } from '../src/data/client';
 import { usePublishAgentContext, type AgentContext } from '../src/agent';
 import { Card, Button, Badge, SectionHeader, font } from '../src/components/ui';
 import { useBobAwareScrollInsets } from '../src/components/use-bob-aware-scroll-insets';
+import { useSupplierExpenseDefaults } from '../src/data/supplier-memory';
+import { deriveSupplierExpenseDefaultsState } from '../src/data/supplier-memory-query';
 
 const DOCUMENT_MAX_BYTES = 10 * 1024 * 1024;
 const LOCAL_FILE_READ_TIMEOUT_MS = 20_000;
@@ -166,7 +168,6 @@ export default function ScanDocument() {
   const createFolder = useCreateDocumentFolder();
   const moveDocument = useMoveDocumentToFolder();
   const record = useRecordDocumentExpense();
-  const expenses = useExpenses();
   const client = useBobClient();
   const queryClient = useQueryClient();
   const mountedRef = useRef(true);
@@ -190,6 +191,9 @@ export default function ScanDocument() {
   const [captureError, setCaptureError] = useState<string | null>(null);
   const [exitBlocked, setExitBlocked] = useState(false);
   const data = extract.data;
+  const foldersReady = rootFolders.data !== undefined;
+  const foldersBlockingError = rootFolders.isError && !foldersReady;
+  const foldersStale = rootFolders.isError && foldersReady;
 
   useEffect(() => {
     mountedRef.current = true;
@@ -207,7 +211,7 @@ export default function ScanDocument() {
       entities: archivedDocument
         ? [{ type: 'document', id: archivedDocument.id, label: archivedDocument.filename }]
         : [],
-      capabilities: ['screen.read', 'document.read'],
+      capabilities: archivedDocument ? ['screen.read', 'document.read'] : [],
     }),
     [archivedDocument],
   );
@@ -226,8 +230,9 @@ export default function ScanDocument() {
   }, [analysis.data]);
 
   const suggestedFolder = useMemo(() => {
+    if (!foldersReady) return null;
     const systemKey = analysis.data?.suggestedSystemFolder;
-    const folders = rootFolders.data ?? [];
+    const folders = rootFolders.data;
     if (systemKey) {
       const systemFolder = folders.find((folder) => folder.systemKey === systemKey);
       if (systemFolder) return systemFolder;
@@ -235,12 +240,12 @@ export default function ScanDocument() {
     if (!suggestedFolderName) return null;
     const normalized = normalizeDocumentFolderName(suggestedFolderName);
     return folders.find((folder) => folder.normalizedName === normalized) ?? null;
-  }, [analysis.data?.suggestedSystemFolder, rootFolders.data, suggestedFolderName]);
+  }, [analysis.data?.suggestedSystemFolder, foldersReady, rootFolders.data, suggestedFolderName]);
 
-  const suggestedNewFolderName = suggestedFolder === null ? suggestedFolderName : null;
+  const suggestedNewFolderName = foldersReady && suggestedFolder === null ? suggestedFolderName : null;
 
   const currentFolder = useMemo(
-    () => (rootFolders.data ?? []).find((folder) => folder.id === archivedDocument?.folderId) ?? null,
+    () => rootFolders.data?.find((folder) => folder.id === archivedDocument?.folderId) ?? null,
     [archivedDocument?.folderId, rootFolders.data],
   );
 
@@ -251,7 +256,8 @@ export default function ScanDocument() {
     && (archivedMimeType === null || !supportsDocumentAnalysis(archivedMimeType));
 
   const filingOptions = useMemo(() => {
-    const folders = rootFolders.data ?? [];
+    if (!foldersReady) return [];
+    const folders = rootFolders.data;
     const ordered = suggestedFolder
       ? [suggestedFolder, ...folders.filter((folder) => folder.id !== suggestedFolder.id)]
       : folders;
@@ -274,19 +280,18 @@ export default function ScanDocument() {
           : 'Choisir toi-même le nom du nouveau dossier.',
       },
     ];
-  }, [rootFolders.data, suggestedFolder, suggestedNewFolderName]);
+  }, [foldersReady, rootFolders.data, suggestedFolder, suggestedNewFolderName]);
 
   useEffect(() => {
     if (
       !analysis.data
       || filingDeferred
-      || rootFolders.isLoading
-      || rootFolders.isError
+      || !foldersReady
       || filingRecoveryPending
       || filingPromptDocumentId === analysis.data.documentId
     ) return;
     setFilingPromptDocumentId(analysis.data.documentId);
-  }, [analysis.data, filingDeferred, filingPromptDocumentId, filingRecoveryPending, rootFolders.isError, rootFolders.isLoading]);
+  }, [analysis.data, filingDeferred, filingPromptDocumentId, filingRecoveryPending, foldersReady]);
 
   async function archiveAndAnalyze(input: CreateDocumentIntakeClientInput): Promise<void> {
     try {
@@ -374,21 +379,26 @@ export default function ScanDocument() {
     }
   }
 
-  // Mémoire d'entreprise dérivée de l'historique réel des dépenses (fournisseurs déjà classés).
-  const memory = useMemo(
-    () =>
-      new InMemoryCompanyMemory(
-        (expenses.data ?? []).map((e) => ({
-          name: e.supplierName,
-          siren: e.supplierSiren,
-          category: e.category,
-          vatRatePct: e.vatRatePct,
-        })),
-      ),
-    [expenses.data],
+  const supplierDefaultsInput = useMemo(
+    () => data
+      ? {
+          supplierName: data.supplierName,
+          supplierSiren: data.supplierSiren,
+          vatRatePctApplied: data.vatRatePctApplied,
+          categoryGuess: data.categoryGuess,
+        }
+      : null,
+    [data],
   );
-  // Défauts proposés : la mémoire fait primer TA catégorie habituelle sur la devinette OCR (sinon fallback OCR).
-  const defaults = data ? suggestExpenseDefaults(memory, data) : null;
+  // Source unique : mémoire fournisseur PostgreSQL/RLS du tenant. Une panne ne devient jamais
+  // silencieusement « aucune habitude » et ne déclenche aucun recalcul depuis les dépenses locales.
+  const supplierDefaults = useSupplierExpenseDefaults(supplierDefaultsInput);
+  const supplierDefaultsState = deriveSupplierExpenseDefaultsState({
+    hasExtraction: data !== undefined,
+    companyId: supplierDefaults.companyId,
+    query: supplierDefaults,
+  });
+  const defaults = supplierDefaultsState.kind === 'ready' ? supplierDefaultsState.value : null;
 
   // ASK-3 : catégorie ambiguë (devinette OCR hésitante ou « autre », jamais sur une habitude
   // fournisseur) — question structurée AVANT l'enregistrement ; le choix nourrit la mémoire.
@@ -457,6 +467,9 @@ export default function ScanDocument() {
     invalidateAfterDirectReplay = false,
   ): void {
     if (invalidateAfterDirectReplay) void invalidateDocumentExpense(out);
+    // L'enregistrement serveur vient d'apprendre/actualiser ce fournisseur. Ne jamais laisser
+    // un ancien résultat « OCR » masquer ce nouveau profil lors du scan suivant.
+    void queryClient.invalidateQueries({ queryKey: ['supplier-memory'] });
     // L'utilisateur peut quitter dès que l'original est archivé. Un retour réseau tardif met à
     // jour les caches, mais ne doit jamais le téléporter vers un écran qu'il vient de fermer.
     if (!mountedRef.current) return;
@@ -530,7 +543,7 @@ export default function ScanDocument() {
       return;
     }
     const document = archivedDocument;
-    if (!document || !data || record.isPending) return;
+    if (!document || !data || !defaults || record.isPending) return;
     // Le choix « Plus tard — laisser dans À classer » reste respecté : créer une dépense ne
     // déclenche jamais un rangement silencieux. On redemande explicitement le dossier.
     if (document.folderId === null) {
@@ -547,12 +560,12 @@ export default function ScanDocument() {
       targetFolderId: document.folderId,
       expense: {
         supplierName: data.supplierName,
-        supplierSiren: defaults?.supplierSiren ?? data.supplierSiren,
+        supplierSiren: defaults.supplierSiren,
         documentDate: data.documentDate,
         totalTtcCents: data.totalTtcCents,
         totalHtCents: data.totalHtCents,
         vatCents: data.vatCents,
-        vatRatePct: defaults?.vatRatePct ?? data.vatRatePctApplied,
+        vatRatePct: defaults.vatRatePct,
         category,
       },
     };
@@ -568,7 +581,7 @@ export default function ScanDocument() {
   }
 
   function classifyInFolder(folderId: string): void {
-    if (!archivedDocument) return;
+    if (!archivedDocument || !foldersReady) return;
     setFilingPromptDocumentId(null);
     moveDocument.mutate(
       { documentId: archivedDocument.id, folderId, expectedRevision: archivedDocument.revision },
@@ -604,6 +617,7 @@ export default function ScanDocument() {
   }
 
   function openFolderEditor(): void {
+    if (!foldersReady) return;
     setFilingPromptDocumentId(null);
     setFolderName(suggestedNewFolderName ?? '');
     setFolderError(null);
@@ -611,7 +625,7 @@ export default function ScanDocument() {
   }
 
   function createAndClassifyFolder(): void {
-    if (!archivedDocument || createFolder.isPending) return;
+    if (!archivedDocument || !foldersReady || createFolder.isPending) return;
     const validated = validateDocumentFolderName(folderName);
     if (!validated.ok) {
       setFolderError(
@@ -647,6 +661,12 @@ export default function ScanDocument() {
     || createFolder.isPending
     || record.isPending
     || reconcilePending;
+  const recordActionRequiresSupplierDefaults = recordResolution === null
+    || (
+      recordResolution.kind === 'stale'
+      && recordResolution.current !== null
+      && recordResolution.current.linkedEntityId === null
+    );
   // Après l'archivage, toutes les opérations sont reprenables depuis le coffre et bornées côté
   // client HTTP. Seule la courte fenêtre où l'on ne sait pas encore si l'original existe empêche
   // une sortie accidentelle.
@@ -769,27 +789,34 @@ export default function ScanDocument() {
             <Text style={[font('sub'), { color: colors.slate500, marginTop: 4, lineHeight: 19 }]}>Bob conserve le HEIC/HEIF original sans le modifier. Aucun transcodage fiable n’est installé sur cet appareil, donc il ne lance pas une analyse vouée à l’échec. Pour une lecture assistée, importe une copie JPEG ou PDF.</Text>
             <View style={{ marginTop: 12, gap: 8 }}>
               {archivedDocument.folderId === null ? (
-                rootFolders.isLoading ? (
-                  <View accessibilityRole="progressbar" accessibilityLiveRegion="polite" accessibilityLabel="Chargement des dossiers">
-                    <Skeleton height={52} radius={18} />
-                  </View>
-                ) : rootFolders.isError ? (
-                  <View>
-                    <Text accessibilityRole="alert" style={[font('sub'), { color: semantic.danger, lineHeight: 19 }]}>Les dossiers ne sont pas disponibles. L’original reste conservé dans « À classer ».</Text>
-                    <View style={{ marginTop: 10 }}>
-                      <Button title="Réessayer de charger les dossiers" variant="secondary" onPress={() => void rootFolders.refetch()} />
-                    </View>
-                  </View>
-                ) : (
-                  <Button
-                    title="Choisir un dossier sans analyse"
-                    variant="secondary"
-                    onPress={() => {
-                      setFilingDeferred(false);
-                      setFilingPromptDocumentId(archivedDocument.id);
-                    }}
-                  />
-                )
+                <>
+                  {foldersStale ? (
+                    <Text accessibilityRole="alert" style={[font('meta'), { color: semantic.warning, lineHeight: 17 }]}>La dernière liste serveur des dossiers reste affichée ; sa mise à jour a échoué.</Text>
+                  ) : null}
+                  {!foldersReady ? (
+                    foldersBlockingError ? (
+                      <View>
+                        <Text accessibilityRole="alert" style={[font('sub'), { color: semantic.danger, lineHeight: 19 }]}>Les dossiers ne sont pas disponibles. L’original reste conservé dans « À classer ».</Text>
+                        <View style={{ marginTop: 10 }}>
+                          <Button title="Réessayer de charger les dossiers" variant="secondary" onPress={() => void rootFolders.refetch()} />
+                        </View>
+                      </View>
+                    ) : (
+                      <View accessibilityRole="progressbar" accessibilityLiveRegion="polite" accessibilityLabel="Chargement des dossiers">
+                        <Skeleton height={52} radius={18} />
+                      </View>
+                    )
+                  ) : (
+                    <Button
+                      title="Choisir un dossier sans analyse"
+                      variant="secondary"
+                      onPress={() => {
+                        setFilingDeferred(false);
+                        setFilingPromptDocumentId(archivedDocument.id);
+                      }}
+                    />
+                  )}
+                </>
               ) : null}
               <Button
                 title="Voir l’original"
@@ -830,22 +857,27 @@ export default function ScanDocument() {
                 <Text key={warning} style={[font('meta'), { color: semantic.warning, marginTop: 9 }]}>• {warning}</Text>
               ))}
               <View style={{ marginTop: 14, gap: 8 }}>
+                {foldersStale ? (
+                  <Text accessibilityRole="alert" style={[font('meta'), { color: semantic.warning, lineHeight: 17 }]}>La dernière liste serveur des dossiers reste utilisable ; sa mise à jour a échoué.</Text>
+                ) : null}
                 {currentFolder ? (
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
                     <Ionicons name="folder" size={17} color={semantic.success} />
                     <Text style={[font('sub'), { color: colors.ink800, flex: 1 }]}>Classé dans « {currentFolder.name} »</Text>
                   </View>
-                ) : rootFolders.isLoading ? (
-                  <View accessibilityRole="progressbar" accessibilityLiveRegion="polite" accessibilityLabel="Chargement des dossiers">
-                    <Skeleton height={52} radius={18} />
-                  </View>
-                ) : rootFolders.isError ? (
-                  <View>
-                    <Text accessibilityRole="alert" style={[font('sub'), { color: semantic.danger, lineHeight: 19 }]}>Les dossiers ne sont pas disponibles. Bob ne proposera aucun rangement tant qu’ils ne sont pas rechargés.</Text>
-                    <View style={{ marginTop: 10 }}>
-                      <Button title="Réessayer de charger les dossiers" variant="secondary" onPress={() => void rootFolders.refetch()} />
+                ) : !foldersReady ? (
+                  foldersBlockingError ? (
+                    <View>
+                      <Text accessibilityRole="alert" style={[font('sub'), { color: semantic.danger, lineHeight: 19 }]}>Les dossiers ne sont pas disponibles. Bob ne proposera aucun rangement tant qu’ils ne sont pas rechargés.</Text>
+                      <View style={{ marginTop: 10 }}>
+                        <Button title="Réessayer de charger les dossiers" variant="secondary" onPress={() => void rootFolders.refetch()} />
+                      </View>
                     </View>
-                  </View>
+                  ) : (
+                    <View accessibilityRole="progressbar" accessibilityLiveRegion="polite" accessibilityLabel="Chargement des dossiers">
+                      <Skeleton height={52} radius={18} />
+                    </View>
+                  )
                 ) : (
                   <Button
                     title={suggestedFolder ? `Classer dans « ${suggestedFolder.name} »` : 'Choisir un dossier'}
@@ -928,6 +960,25 @@ export default function ScanDocument() {
           </Card>
         ) : null}
 
+        {supplierDefaultsState.kind === 'loading' ? (
+          <Card>
+            <View
+              accessibilityRole="progressbar"
+              accessibilityLiveRegion="polite"
+              accessibilityLabel="Vérification de la mémoire fournisseur"
+            >
+              <Skeleton height={16} width="74%" radius={7} />
+            </View>
+          </Card>
+        ) : null}
+
+        {supplierDefaultsState.kind === 'unavailable' ? (
+          <ErrorRetry
+            message="La mémoire fournisseur de cette société n’est pas disponible. Les valeurs visibles restent celles lues sur le document ; aucune dépense ne sera créée tant que le serveur ne les aura pas vérifiées."
+            onRetry={() => void supplierDefaults.refetch()}
+          />
+        ) : null}
+
         {data ? (
           <>
             <SectionHeader title="Extraction" />
@@ -944,7 +995,11 @@ export default function ScanDocument() {
                   <Row label="Taux TVA" value={`${defaults?.vatRatePct ?? data.vatRatePctApplied} %`} colors={colors} />
                 ) : null}
                 <View>
-                  <Row label="Catégorie" value={CATEGORY_LABEL[category] ?? category} colors={colors} />
+                  <Row
+                    label={defaults ? 'Catégorie' : 'Catégorie OCR · non vérifiée'}
+                    value={CATEGORY_LABEL[category] ?? category}
+                    colors={colors}
+                  />
                   {defaults?.source === 'memory' ? (
                     <Text style={[font('meta'), { color: semantic.ai, marginTop: 2, textAlign: 'right' }]}>
                       ✨ Proposé d’après ton historique
@@ -1040,14 +1095,27 @@ export default function ScanDocument() {
                     && recordResolution.current !== null
                     && recordResolution.current.linkedEntityId !== null
                     ? 'Voir le document actuel'
-                  : recordResolution?.kind === 'stale' && recordResolution.current !== null
-                    ? `Confirmer avec la version ${recordResolution.current.revision}`
                   : recordResolution?.kind === 'rejected'
                     ? 'Voir le document et corriger'
+                  : supplierDefaultsState.kind === 'loading'
+                    ? 'Vérification du fournisseur…'
+                  : supplierDefaultsState.kind === 'unavailable'
+                    ? 'Mémoire fournisseur indisponible'
+                  : recordResolution?.kind === 'stale' && recordResolution.current !== null
+                    ? `Confirmer avec la version ${recordResolution.current.revision}`
                   : archivedDocument?.folderId
                     ? 'Créer la dépense et lier l’original'
                     : 'Choisir un dossier avant de créer'}
-              disabled={record.isPending || reconcilePending || archivedDocument === null || linkedExpenseId !== null}
+              disabled={
+                record.isPending
+                || reconcilePending
+                || (
+                  recordActionRequiresSupplierDefaults
+                  && supplierDefaultsState.kind !== 'ready'
+                )
+                || archivedDocument === null
+                || linkedExpenseId !== null
+              }
               onPress={recordExpenseFromDocument}
             />
           </>
@@ -1075,8 +1143,7 @@ export default function ScanDocument() {
         visible={
           filingPromptDocumentId !== null
           && (analysis.data?.documentId ?? archivedDocument?.id) === filingPromptDocumentId
-          && !rootFolders.isLoading
-          && !rootFolders.isError
+          && foldersReady
           && !filingRecoveryPending
           && filingOptions.length > 0
           && !askCategory

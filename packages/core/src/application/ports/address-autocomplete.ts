@@ -7,7 +7,8 @@ export interface AddressSuggestion extends Address {
 
 /**
  * Port d'autocomplétion d'adresse (Base Adresse Nationale).
- * Graceful : renvoyer [] en cas d'indisponibilité amont (jamais lever).
+ * `[]` signifie exclusivement « aucune suggestion trouvée ». Une panne amont doit lever afin
+ * que le use case la transforme en indisponibilité explicite plutôt qu'en faux état vide.
  */
 export interface AddressAutocompletePort {
   search(query: string): Promise<AddressSuggestion[]>;

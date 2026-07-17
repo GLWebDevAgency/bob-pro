@@ -12,12 +12,12 @@
  * garantie, TVA travaux, cession de droits, CRA) et « ton espace {métier} ». L'écran ne
  * porte AUCUNE règle métier ; la grille affiche les libellés TRADE_PROFILES (= proto).
  *
- * PERSISTANCE : BobClient n'expose AUCUNE écriture de profil (vérifié
- * packages/api-client/src/client.ts : getProfile est en lecture seule, pas de
- * PATCH/POST profil ou company) → le flux PRÉ-REMPLIT le métier depuis le profil réel
- * (useProfile) et garde les réponses en état LOCAL — aucune écriture fantôme.
- * TODO(C22) : persister trade / clientèle / vatRegime quand l'endpoint d'écriture
- * profil existera côté api (registre C40 — parité humain ↔ Bob sur la même écriture).
+ * PERSISTANCE : métier et régime TVA sont relus depuis la société du tenant puis
+ * enregistrés par PATCH /company/profile avant toute navigation vers le diagnostic.
+ * Une panne serveur laisse l'utilisateur sur le preview avec une erreur explicite :
+ * aucune confirmation locale ne peut être présentée comme une donnée sauvegardée.
+ * La clientèle est persistée avec le métier et le régime TVA sur la société du tenant.
+ * Une valeur absente reste explicitement non confirmée : aucun canal n'est choisi par défaut.
  *
  * Écarts assumés vs proto (tokens only, zéro hex/rgba) :
  * · le fond 172° navy→nuit du proto n'existe pas en rampe → themes.marine.d1 vers
@@ -40,12 +40,14 @@ import {
   type Trade,
   type TradeHighlightId,
   type VatRegime,
+  type CustomerPortfolio,
 } from '@bob/core';
 import { themes, vault } from '@bob/tokens';
 import { t, type I18nKey, type Personality } from '@bob/i18n';
-import { Card, IconTile, Stepper, font, useTheme } from '@bob/ui';
-import { useProfile } from '../src/data/hooks';
+import { Card, ErrorRetry, IconTile, Stepper, font, useTheme } from '@bob/ui';
+import { useCompanyMe, useProfile, useUpdateCompanyProfile } from '../src/data/hooks';
 import { CheckIcon, ChevronLeftIcon, ShieldIcon, SparkIcon, SparkSmallIcon } from '../src/components/icons';
+import { hasBlockingAuthoritativeDataError } from '../src/data/authoritative-query-state';
 
 // ── Grille de métiers — icônes du proto (§METIERS), libellés = TRADE_PROFILES (exacts) ──
 const TRADE_EMOJI: Record<Trade, string> = {
@@ -63,8 +65,7 @@ const TRADE_EMOJI: Record<Trade, string> = {
 const TRADES = Object.values(TRADE_PROFILES); // ordre du proto (plombier → autre)
 
 // ── Clientèle — b2c/b2b/b2g/mixte (contrat C22), copy pédagogique par canal 2026 ──
-type Clientele = 'b2c' | 'b2b' | 'b2g' | 'mixte';
-const CLIENTELES: readonly { id: Clientele; emoji: string; label: I18nKey; sub: I18nKey }[] = [
+const CLIENTELES: readonly { id: CustomerPortfolio; emoji: string; label: I18nKey; sub: I18nKey }[] = [
   { id: 'b2c', emoji: '🏠', label: 'onboard.clientB2c', sub: 'onboard.clientB2cSub' },
   { id: 'b2b', emoji: '🏢', label: 'onboard.clientB2b', sub: 'onboard.clientB2bSub' },
   { id: 'b2g', emoji: '🏛️', label: 'onboard.clientB2g', sub: 'onboard.clientB2gSub' },
@@ -122,19 +123,22 @@ function SpacePreviewBox({ items, personality }: { items: readonly string[]; per
 }
 
 /** CTA blanc plein écran du proto (Commencer / Continuer / C'est bien moi). */
-function PrimaryCta({ label, onPress }: { label: string; onPress: () => void }) {
+function PrimaryCta({ label, onPress, disabled = false }: { label: string; onPress: () => void; disabled?: boolean }) {
   const { colors } = useTheme();
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={label}
+      accessibilityState={{ disabled }}
+      disabled={disabled}
       onPress={onPress}
       style={({ pressed }) => ({
         backgroundColor: colors.surface,
         borderRadius: 16,
         paddingVertical: 16,
         alignItems: 'center',
-        transform: [{ scale: pressed ? 0.97 : 1 }],
+        opacity: disabled ? 0.65 : 1,
+        transform: [{ scale: pressed && !disabled ? 0.97 : 1 }],
       })}
     >
       <Text style={[font('button'), { color: colors.ink900 }]}>{label}</Text>
@@ -147,15 +151,49 @@ export default function Onboarding() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
 
-  // Pré-remplissage depuis le PROFIL RÉEL (lecture seule — cf. en-tête PERSISTANCE).
+  // Pré-remplissage depuis les sources serveur du tenant, puis écriture atomique au CTA final.
   const profileQ = useProfile();
+  const companyQ = useCompanyMe();
+  const updateCompanyProfile = useUpdateCompanyProfile();
   const [pickedTrade, setPickedTrade] = useState<Trade | null>(null);
-  const [clientele, setClientele] = useState<Clientele | null>(null);
+  const [pickedCustomerPortfolio, setPickedCustomerPortfolio] = useState<CustomerPortfolio | null>(null);
   const [vatRegime, setVatRegime] = useState<VatRegime | null>(null);
   const [step, setStep] = useState(0); // 0 bienvenue · 1 métier · 2 clientèle · 3 TVA · 4 preview
 
   const trade = pickedTrade ?? profileQ.data?.trade ?? null;
+  const customerPortfolio = pickedCustomerPortfolio ?? companyQ.data?.customerPortfolio ?? null;
+  const effectiveVatRegime = vatRegime ?? companyQ.data?.vatRegime ?? null;
   const derived = useMemo(() => (trade === null ? null : deriveTradeProfile(trade)), [trade]);
+  const sourcesReady = profileQ.data !== undefined && companyQ.data !== undefined;
+  const sourcesBlockingError = hasBlockingAuthoritativeDataError([profileQ, companyQ]);
+  const sourcesLoading = !sourcesReady && !sourcesBlockingError;
+  const sourcesStaleError = sourcesReady && (profileQ.isError || companyQ.isError);
+  const sourcesFresh = sourcesReady && !sourcesStaleError;
+  const refetchSources = (): void => {
+    void profileQ.refetch();
+    void companyQ.refetch();
+  };
+
+  const saveAndContinue = async (): Promise<void> => {
+    if (
+      trade === null
+      || customerPortfolio === null
+      || effectiveVatRegime === null
+      || updateCompanyProfile.isPending
+      || !sourcesFresh
+    ) return;
+    try {
+      await updateCompanyProfile.mutateAsync({
+        trade,
+        customerPortfolio,
+        vatRegime: effectiveVatRegime,
+      });
+      router.replace('/diagnostic');
+    } catch {
+      // L'erreur reste portée par la mutation et affichée dans le preview. Ne jamais
+      // avancer comme si les choix avaient été persistés.
+    }
+  };
 
   /** Skip honnête (« Plus tard ») : on rend la main là d'où on vient, sinon l'app. */
   const exit = (): void => {
@@ -209,15 +247,6 @@ export default function Onboarding() {
         <Text style={[font('sub'), { color: overlays.white60, marginBottom: 18 }]}>
           {t('onboard.tradeSub', { personality })}
         </Text>
-        {profileQ.isError ? (
-          <Text
-            accessibilityRole="alert"
-            accessibilityLiveRegion="polite"
-            style={[font('meta'), { color: overlays.white60, marginBottom: 12 }]}
-          >
-            {t('onboard.profileError', { personality })}
-          </Text>
-        ) : null}
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
           {TRADES.map((p) => {
             const selected = trade === p.trade;
@@ -272,14 +301,14 @@ export default function Onboarding() {
         </Text>
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 11 }}>
           {CLIENTELES.map((c) => {
-            const selected = clientele === c.id;
+            const selected = customerPortfolio === c.id;
             return (
               <Pressable
                 key={c.id}
                 accessibilityRole="button"
                 accessibilityLabel={t(c.label, { personality })}
                 accessibilityState={{ selected }}
-                onPress={() => setClientele(c.id)}
+                onPress={() => setPickedCustomerPortfolio(c.id)}
                 style={({ pressed }) => ({
                   flexBasis: '47%',
                   flexGrow: 1,
@@ -303,7 +332,7 @@ export default function Onboarding() {
           })}
         </View>
       </View>
-      {clientele !== null ? (
+      {customerPortfolio !== null ? (
         <PrimaryCta label={t('onboard.continue', { personality })} onPress={() => setStep(3)} />
       ) : null}
     </>
@@ -321,7 +350,7 @@ export default function Onboarding() {
         </Text>
         <View style={{ gap: 11 }}>
           {VAT_OPTIONS.map((option) => {
-            const selected = vatRegime === option.id;
+            const selected = effectiveVatRegime === option.id;
             return (
               <Pressable
                 key={option.id}
@@ -348,7 +377,7 @@ export default function Onboarding() {
             );
           })}
         </View>
-        {vatRegime !== null ? (
+        {effectiveVatRegime !== null ? (
           <View
             accessibilityLiveRegion="polite"
             style={{
@@ -364,20 +393,20 @@ export default function Onboarding() {
           >
             <SparkSmallIcon color={vault.scanChipIcon} size={15} strokeWidth={2} />
             <Text style={[font('sub'), { flex: 1, fontSize: 13.5, lineHeight: 20, color: colors.surface }]}>
-              {t(vatRegime === 'franchise' ? 'onboard.vatFranchiseNote' : 'onboard.vatReelNote', { personality })}
+              {t(effectiveVatRegime === 'franchise' ? 'onboard.vatFranchiseNote' : 'onboard.vatReelNote', { personality })}
             </Text>
           </View>
         ) : null}
       </View>
-      {vatRegime !== null ? (
+      {effectiveVatRegime !== null ? (
         <PrimaryCta label={t('onboard.continue', { personality })} onPress={() => setStep(4)} />
       ) : null}
     </>
   );
 
   // ── Étape 4 — preview « ton espace {métier} » + handoff diagnostic (proto §onb4) ──
-  const clienteleLabel = CLIENTELES.find((c) => c.id === clientele)?.label;
-  const vatLabel = VAT_OPTIONS.find((o) => o.id === vatRegime)?.label;
+  const clienteleLabel = CLIENTELES.find((c) => c.id === customerPortfolio)?.label;
+  const vatLabel = VAT_OPTIONS.find((o) => o.id === effectiveVatRegime)?.label;
   const previewStep = derived ? (
     <>
       <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingVertical: 18, flexGrow: 1, justifyContent: 'center' }} showsVerticalScrollIndicator={false}>
@@ -443,12 +472,15 @@ export default function Onboarding() {
       </ScrollView>
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={t('onboard.previewCta', { personality })}
-        onPress={() => router.replace('/diagnostic')}
+        accessibilityLabel={t(updateCompanyProfile.isPending ? 'onboard.saving' : 'onboard.previewCta', { personality })}
+        accessibilityState={{ disabled: updateCompanyProfile.isPending || !sourcesFresh }}
+        disabled={updateCompanyProfile.isPending || !sourcesFresh}
+        onPress={() => void saveAndContinue()}
         style={({ pressed }) => ({
           borderRadius: 16,
           overflow: 'hidden',
-          transform: [{ scale: pressed ? 0.97 : 1 }],
+          opacity: updateCompanyProfile.isPending || !sourcesFresh ? 0.7 : 1,
+          transform: [{ scale: pressed && !updateCompanyProfile.isPending && sourcesFresh ? 0.97 : 1 }],
           marginBottom: 10,
         })}
       >
@@ -459,9 +491,20 @@ export default function Onboarding() {
           style={{ paddingVertical: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 }}
         >
           <ShieldIcon color={colors.surface} size={18} strokeWidth={2} />
-          <Text style={[font('button'), { color: colors.surface }]}>{t('onboard.previewCta', { personality })}</Text>
+          <Text style={[font('button'), { color: colors.surface }]}>
+            {t(updateCompanyProfile.isPending ? 'onboard.saving' : 'onboard.previewCta', { personality })}
+          </Text>
         </LinearGradient>
       </Pressable>
+      {updateCompanyProfile.isError ? (
+        <Text
+          accessibilityRole="alert"
+          accessibilityLiveRegion="assertive"
+          style={[font('meta'), { color: colors.surface, textAlign: 'center', marginBottom: 8 }]}
+        >
+          {t('onboard.saveError', { personality })}
+        </Text>
+      ) : null}
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={t('onboard.later', { personality })}
@@ -478,7 +521,37 @@ export default function Onboarding() {
     tradeStep
   );
 
-  const content = step === 0 ? welcome : step === 1 ? tradeStep : step === 2 ? clienteleStep : step === 3 ? vatStep : previewStep;
+  const flowContent = step === 0
+    ? welcome
+    : step === 1
+      ? tradeStep
+      : step === 2
+        ? clienteleStep
+        : step === 3
+          ? vatStep
+          : previewStep;
+  const content = step >= 1 && sourcesLoading ? (
+    <View
+      accessibilityRole="progressbar"
+      accessibilityLiveRegion="polite"
+      style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}
+    >
+      <Text style={[font('body'), { color: overlays.white70 }]}>
+        {t('account.profileLoading', { personality })}
+      </Text>
+    </View>
+  ) : step >= 1 && sourcesBlockingError ? (
+    <View style={{ flex: 1, justifyContent: 'center' }}>
+      <ErrorRetry message={t('account.dataError', { personality })} onRetry={refetchSources} />
+    </View>
+  ) : step >= 1 && sourcesStaleError ? (
+    <>
+      <View style={{ marginTop: 10 }}>
+        <ErrorRetry message={t('account.dataError', { personality })} onRetry={refetchSources} />
+      </View>
+      {flowContent}
+    </>
+  ) : flowContent;
 
   return (
     <View style={{ flex: 1, backgroundColor: themes.marine.d1 }}>

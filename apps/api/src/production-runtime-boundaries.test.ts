@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { OcrPort, PaymentGatewayPort, PdfRendererPort } from '@bob/core';
 import { BackendService } from './backend.service';
-import { InMemoryPersistence } from './persistence/persistence';
+import { InMemoryPersistence } from './persistence/persistence.testing';
 import { requestContext, type AppLogger, type Principal } from './observability/logger';
 import type { SupabaseAdminPort } from './auth/supabase-admin';
 import type { NotificationDeliveryService } from './jobs/notification-delivery.service';
@@ -51,16 +51,17 @@ describe('frontières runtime live — aucune fixture silencieuse', () => {
     });
   });
 
-  it('la projection démo remplace la TVA fixture par la TVA dérivée des factures du tenant', async () => {
+  it('DEMO_MODE ne réactive jamais une projection de trésorerie synthétique', async () => {
     vi.stubEnv('DEMO_MODE', 'true');
     const { persistence, service } = harness();
     await persistence.seed();
 
     const result = await asPrincipal(() => service.getCashflow('realiste', 30));
 
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value.vatDue).toBe(0);
+    expect(result).toEqual({
+      ok: false,
+      error: { kind: 'unavailable', service: 'cashflow-banking-source' },
+    });
   });
 
   it('Bob retourne unavailable en live sans fournisseur LLM, jamais model=demo', async () => {
@@ -84,7 +85,7 @@ describe('frontières runtime live — aucune fixture silencieuse', () => {
     expect(result).toEqual({ ok: false, error: { kind: 'unavailable', service: 'bob-llm' } });
   });
 
-  it('conserve le modèle déterministe uniquement dans le harness DEMO_MODE=true', async () => {
+  it('DEMO_MODE ne réactive jamais un faux modèle Bob', async () => {
     vi.stubEnv('DEMO_MODE', 'true');
     for (const key of [
       'ANTHROPIC_API_KEY',
@@ -99,8 +100,7 @@ describe('frontières runtime live — aucune fixture silencieuse', () => {
 
     const result = await asPrincipal(() => service.askBob({ message: 'Bonjour Bob' }));
 
-    expect(result.ok).toBe(true);
-    if (result.ok) expect(result.value.model).toBe('demo');
+    expect(result).toEqual({ ok: false, error: { kind: 'unavailable', service: 'bob-llm' } });
   });
 
   it('les retours Stripe sont construits depuis l’origine live, sans URL demo', async () => {

@@ -124,16 +124,28 @@ export default function DocumentFolderScreen() {
   }, [folder.data, manageRequested]);
 
   const agentContext = useMemo<AgentContext>(
-    () => ({
-      screen: { name: 'document-folder', instanceId: `document-folder:${folderId}` },
-      entities: (documents.data ?? []).slice(0, 16).map((document) => ({
-        type: 'document' as const,
-        id: document.id,
-        label: document.filename,
-      })),
-      capabilities: ['screen.read', 'document.read'],
-    }),
-    [documents.data, folderId],
+    () => {
+      const folderReady = folder.data !== undefined;
+      // Cet écran masque les rangées document lors d'une erreur de leur query. Bob doit voir
+      // exactement la même surface : aucune photographie cachée ni faux dossier vide.
+      const documentsReady = documents.data !== undefined && !documents.isError;
+      return {
+        screen: { name: 'document-folder', instanceId: `document-folder:${folderId}` },
+        entities: documentsReady
+          ? documents.data.slice(0, 16).map((document) => ({
+              type: 'document' as const,
+              id: document.id,
+              label: document.filename,
+            }))
+          : [],
+        capabilities: folderReady
+          ? documentsReady
+            ? ['screen.read', 'document.read']
+            : ['screen.read']
+          : [],
+      };
+    },
+    [documents.data, documents.isError, folder.data, folderId],
   );
   usePublishAgentContext(agentContext);
 

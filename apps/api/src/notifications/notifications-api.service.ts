@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import { SystemClock, appNotFound, ok, type AppError, type Result } from '@bob/core';
-import { PERSISTENCE, type Persistence } from '../persistence/persistence';
+import type { Persistence } from '../persistence/persistence';
+import { PERSISTENCE } from '../persistence/persistence-token';
 import { type NotificationJob } from '../persistence/notification-jobs';
 import { getPrincipal, requireTenant } from '../observability/logger';
 import { notificationRoute } from './notification-route';
@@ -92,7 +93,12 @@ function validateExpoPushToken(token: unknown): Result<string, AppError> {
     ok: false,
     error: {
       kind: 'validation',
-      issues: [{ field: 'expoPushToken', message: 'Token Expo Push invalide (attendu ExponentPushToken[…]).' }],
+      issues: [
+        {
+          field: 'expoPushToken',
+          message: 'Token Expo Push invalide (attendu ExponentPushToken[…]).',
+        },
+      ],
     },
   };
 }
@@ -110,7 +116,11 @@ function validateBindingGeneration(
   value: unknown,
   field = 'bindingGeneration',
 ): Result<number, AppError> {
-  if (Number.isSafeInteger(value) && Number(value) >= 1 && Number(value) <= MAX_BINDING_GENERATION) {
+  if (
+    Number.isSafeInteger(value) &&
+    Number(value) >= 1 &&
+    Number(value) <= MAX_BINDING_GENERATION
+  ) {
     return ok(Number(value));
   }
   return invalidDeviceField(field, 'Génération de binding invalide.');
@@ -152,7 +162,10 @@ export class NotificationsApiService {
 
   async list(limitRaw?: string): Promise<Result<NotificationItemDto[], AppError>> {
     const parsed = Number(limitRaw);
-    const limit = Number.isFinite(parsed) && parsed > 0 ? Math.min(Math.floor(parsed), MAX_FEED_LIMIT) : DEFAULT_FEED_LIMIT;
+    const limit =
+      Number.isFinite(parsed) && parsed > 0
+        ? Math.min(Math.floor(parsed), MAX_FEED_LIMIT)
+        : DEFAULT_FEED_LIMIT;
     const jobs = await this.p.notificationJobs.listRecent(this.companyId(), limit);
     return ok(jobs.map(toItem));
   }
@@ -168,10 +181,7 @@ export class NotificationsApiService {
    * commande. Une notification créée après cet instant ne sera jamais absorbée par confirmation.
    */
   async unreadPreview(): Promise<Result<NotificationUnreadPreviewDto, AppError>> {
-    const preview = await this.p.notificationJobs.previewUnread(
-      this.companyId(),
-      this.clock.now(),
-    );
+    const preview = await this.p.notificationJobs.previewUnread(this.companyId(), this.clock.now());
     return ok(preview);
   }
 
@@ -214,7 +224,10 @@ export class NotificationsApiService {
     if (!revocationSecret.ok) return revocationSecret;
     const token = tokenResult.value;
     const platformRaw = decoded.value.platform;
-    if (platformRaw !== undefined && (typeof platformRaw !== 'string' || !PLATFORMS.has(platformRaw))) {
+    if (
+      platformRaw !== undefined &&
+      (typeof platformRaw !== 'string' || !PLATFORMS.has(platformRaw))
+    ) {
       return invalidDeviceField('platform', 'Plateforme invalide (ios ou android attendue).');
     }
     const platform = typeof platformRaw === 'string' ? platformRaw : null;
@@ -238,14 +251,18 @@ export class NotificationsApiService {
     input: unknown,
     scope: 'authenticated' | 'public',
   ): Promise<Result<RevokeDeviceBindingDto, AppError>> {
-    const decoded = exactJsonObject(
-      input,
-      ['installationId', 'throughGeneration', 'revocationSecret'],
-    );
+    const decoded = exactJsonObject(input, [
+      'installationId',
+      'throughGeneration',
+      'revocationSecret',
+    ]);
     if (!decoded.ok) return decoded;
     const installationId = validateUuidV4('installationId', decoded.value.installationId);
     if (!installationId.ok) return installationId;
-    const throughGeneration = validateBindingGeneration(decoded.value.throughGeneration, 'throughGeneration');
+    const throughGeneration = validateBindingGeneration(
+      decoded.value.throughGeneration,
+      'throughGeneration',
+    );
     if (!throughGeneration.ok) return throughGeneration;
     const secret = validateInstallationSecret(decoded.value.revocationSecret);
     if (!secret.ok) return secret;
@@ -254,9 +271,14 @@ export class NotificationsApiService {
       installationId: installationId.value,
       throughGeneration: throughGeneration.value,
       revocationSecretHash: hashInstallationSecret(secret.value),
-      scope: scope === 'authenticated'
-        ? { kind: 'authenticated', companyId: this.companyId(), userId: principal?.userId ?? null }
-        : { kind: 'public' },
+      scope:
+        scope === 'authenticated'
+          ? {
+              kind: 'authenticated',
+              companyId: this.companyId(),
+              userId: principal?.userId ?? null,
+            }
+          : { kind: 'public' },
     });
     return ok({ accepted: true });
   }

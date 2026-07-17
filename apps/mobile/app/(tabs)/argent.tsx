@@ -493,6 +493,11 @@ export default function Argent() {
     payments.isLoading ||
     bankBalance.isLoading;
 
+  // La balance âgée dépend de DEUX réponses autoritatives. Une facture chargée sans son client
+  // ne doit jamais devenir une ligne sans nom, et un carnet chargé sans les factures ne doit
+  // jamais devenir un faux état « aucun retard » pendant le démarrage.
+  const agedLoading = invoices.isLoading || customers.isLoading;
+
   // C-EXP-UI1 : échéancier fiscal 90 j — dates dérivées de la fiche société, aucun montant en v1.
   const fiscal = useFiscalCalendar();
 
@@ -524,24 +529,6 @@ export default function Argent() {
       )
       .sort((left, right) => right.overdueCents - left.overdueCents);
   }, [aged.byCustomer, customers.data]);
-
-  // Bob voit exactement les clients avec une facture échue affichés à l'écran.
-  const agentContext = useMemo<AgentContext>(() => {
-    const contextReady = invoices.data !== undefined && customers.data !== undefined;
-    const watchlist = overdueCustomers.slice(0, 8);
-    return {
-      screen: { name: 'argent', instanceId: 'argent' },
-      entities: contextReady
-        ? watchlist.map(({ customer }) => ({
-            type: 'customer' as const,
-            id: customer.id,
-            label: customer.name,
-          }))
-        : [],
-      capabilities: contextReady ? ['screen.read', 'cashflow.read', 'customer.read'] : [],
-    };
-  }, [customers.data, invoices.data, overdueCustomers]);
-  usePublishAgentContext(agentContext, {}, { affordances: fiscalFlow.voiceAffordances });
 
   const series: CashflowSeriesPoint[] = [];
   if (cash7.data) series.push({ horizon: 7, projection: cash7.data });
@@ -599,6 +586,46 @@ export default function Argent() {
       { isError: fiscalFlow.isError, data: fiscalFlow.profile },
     ]) ||
     (bankBalance.isError && bankBalance.data === undefined && !balanceNeedsConfirmation);
+  const agentDataReady =
+    !fatalDataError &&
+    cash7.data !== undefined &&
+    cash30.data !== undefined &&
+    cash60.data !== undefined &&
+    cash90.data !== undefined &&
+    heroSafe.data !== undefined &&
+    heroUp.data !== undefined &&
+    invoices.data !== undefined &&
+    expenses.data !== undefined &&
+    entries.data !== undefined &&
+    customers.data !== undefined &&
+    companyMe.data !== undefined &&
+    payments.data !== undefined &&
+    fiscal.data !== undefined &&
+    fiscalFlow.profile !== undefined &&
+    (bankBalance.data !== undefined || balanceNeedsConfirmation);
+
+  // Bob voit exactement les clients avec une facture échue affichés à l'écran. Si UNE source
+  // indispensable n'a jamais répondu, l'écran est une page de récupération : aucune capacité
+  // financière ni affordance fiscale ne doit rester active derrière elle.
+  const agentContext = useMemo<AgentContext>(() => {
+    const watchlist = overdueCustomers.slice(0, 8);
+    return {
+      screen: { name: 'argent', instanceId: 'argent' },
+      entities: agentDataReady
+        ? watchlist.map(({ customer }) => ({
+            type: 'customer' as const,
+            id: customer.id,
+            label: customer.name,
+          }))
+        : [],
+      capabilities: agentDataReady ? ['screen.read', 'cashflow.read', 'customer.read'] : [],
+    };
+  }, [agentDataReady, overdueCustomers]);
+  usePublishAgentContext(
+    agentContext,
+    {},
+    { affordances: agentDataReady ? fiscalFlow.voiceAffordances : [] },
+  );
 
   const refetchMainData = (): void => {
     for (const query of [
@@ -730,7 +757,7 @@ export default function Argent() {
         <View style={{ paddingHorizontal: 18 }}>
           {/* ── Héros « trésorerie mobilisable » ────────────────────────────── */}
           <View style={{ marginTop: 16 }}>
-            {heroSafe.data ? (
+            {heroSafe.data && !payGuidance.isLoading ? (
               <HeroMoneyCard
                 label={
                   guidance
@@ -742,7 +769,7 @@ export default function Argent() {
                 caption={heroCaption}
               />
             ) : (
-              <HeroPlaceholder loading={heroSafe.isLoading} />
+              <HeroPlaceholder loading={heroSafe.isLoading || payGuidance.isLoading} />
             )}
           </View>
 
@@ -1069,7 +1096,7 @@ export default function Argent() {
           </Card>
 
           {/* ── À surveiller (liste risques si données) ─────────────────────── */}
-          {customers.isLoading ? (
+          {agedLoading ? (
             <View style={{ marginTop: 18 }}>
               <SectionHeader title={t('argent.watchTitle', { personality })} />
               <Card>
@@ -1212,7 +1239,7 @@ export default function Argent() {
                   }
                 : {})}
             />
-            {ledgerLoading ? (
+            {agedLoading ? (
               <Card>
                 <SkeletonBar width="62%" />
               </Card>

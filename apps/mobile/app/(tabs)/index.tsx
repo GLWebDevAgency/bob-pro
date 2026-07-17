@@ -13,7 +13,7 @@
  * (deriveTodayPriorities, use case pur testé) — AUCUN repli fixtures silencieux :
  * loading → skeletons · erreur → voix de Bob (today.dataError) sans chiffre inventé ·
  * donnée absente → tuile vide « — » · 0 priorité → today.subtitleNone + section vide propre.
- * Le mode démo légitime = le client démo (LocalBobClient), jamais l'écran.
+ * Un mode de démonstration explicite reste isolé de cet écran de production.
  *
  * PARITÉ D'ACTIONS humain ↔ Bob (directive 23:52) : chaque CTA emprunte le MÊME point
  * d'entrée que l'action équivalente de Bob — aucun chemin parallèle construit ici :
@@ -486,15 +486,15 @@ export default function Aujourdhui() {
     return fresh;
   });
 
-  // Rappel de brouillon (C21 redécoupe) : composé CÔTÉ MOBILE, jamais remonté au serveur — le
-  // stockage local est un slot UNIQUE (voir apps/mobile/src/quote-draft), donc au plus UNE carte.
-  // `pendingResume` (soft-reset côté wizard) prime sur l'état live ; sinon, un brouillon jamais
-  // rouvert cette session (démarrage à froid direct sur le Home) reste visible via `state`.
-  const localDraft =
-    quoteDraft.pendingResume ??
-    (hasMeaningfulQuoteDraft(quoteDraft.state) && quoteDraft.state.saved !== null
-      ? quoteDraft.state
-      : null);
+  // Rappel du slot BDD propriétaire (C21) : l'état mobile n'est rendu qu'après le GET autoritatif.
+  // `pendingResume` (soft-reset côté wizard) prime sur la version hydratée ; aucun cache local ni
+  // état vierge transitoire ne peut fabriquer une carte pendant un échec réseau.
+  const localDraft = quoteDraft.persistence.ready
+    ? quoteDraft.pendingResume
+      ?? (hasMeaningfulQuoteDraft(quoteDraft.state) && quoteDraft.state.saved !== null
+        ? quoteDraft.state
+        : null)
+    : null;
   const draftAgeMs = localDraft?.saved != null ? Date.now() - localDraft.saved.at : null;
   const showDraftReminder =
     localDraft !== null &&
@@ -502,7 +502,7 @@ export default function Aujourdhui() {
   const draftPriority: DraftQuotePriority | null = showDraftReminder
     ? {
         kind: 'devis_brouillon',
-        id: 'devis-brouillon-local',
+        id: 'devis-brouillon-server',
         customerName: localDraft.customer?.name ?? null,
       }
     : null;
@@ -515,6 +515,25 @@ export default function Aujourdhui() {
   const displayed = allPriorities.slice(0, DISPLAY_CAP);
   const remaining = displayed.length;
   const todayReady = !today.isLoading && !today.isError;
+  // Le contexte « écran d'accueil » inclut trésorerie, solde, fiscalité, notifications et
+  // priorités. Bob ne publie donc aucune capacité financière à partir du seul briefing : la
+  // photographie complète réellement visible doit avoir répondu, y compris le solde qualifié.
+  const homeAgentDataReady =
+    todayReady &&
+    cashflow.data !== undefined &&
+    !cashflow.isError &&
+    bankBalance.data !== undefined &&
+    !bankBalance.isError &&
+    fiscalFlow.profile !== undefined &&
+    !fiscalFlow.isError &&
+    invoices.data !== undefined &&
+    !invoices.isError &&
+    companyMe.data !== undefined &&
+    !companyMe.isError &&
+    !notifications.isLoading &&
+    !notifications.isError &&
+    notifications.unreadCount !== null &&
+    quoteDraft.persistence.ready;
   const agentContext = useMemo<AgentContext>(() => {
     const entities: AgentEntityRef[] = [];
     const seen = new Set<string>();
@@ -543,8 +562,8 @@ export default function Aujourdhui() {
     }
     return {
       screen: { name: '/(tabs)/index', instanceId: 'today' },
-      entities: todayReady ? entities : [],
-      capabilities: todayReady
+      entities: homeAgentDataReady ? entities : [],
+      capabilities: homeAgentDataReady
         ? [
             'screen.read',
             'today.read',
@@ -556,7 +575,7 @@ export default function Aujourdhui() {
           ]
         : [],
     };
-  }, [today.priorities, todayReady]);
+  }, [homeAgentDataReady, today.priorities]);
 
   // ── Parité vocale du rappel de brouillon (« continue mon devis en cours » / « supprime le
   // brouillon ») — refs pour une identité STABLE de l'affordance (même convention que
@@ -633,7 +652,7 @@ export default function Aujourdhui() {
     {
       affordances: [
         salesDocumentVoiceAffordance,
-        ...fiscalFlow.voiceAffordances,
+        ...(homeAgentDataReady ? fiscalFlow.voiceAffordances : []),
         ...draftVoiceAffordances,
       ],
     },
@@ -661,11 +680,20 @@ export default function Aujourdhui() {
   const lateCents = receivableKpis?.lateCents;
   // Projection indicative à 30 jours : jamais assimilée à une fin de mois ni au solde observé.
   const projection30Cents = cashflow.data?.available;
-  const glanceLoading = cashflow.isLoading || invoices.isLoading;
   const primaryState = combineQueryStates(companyMe, invoices, today, notifications);
   const expectedBankBalanceMissing =
     bankBalance.isError && isExpectedMissingBankingInput(bankBalance.error);
   const expectedCashflowMissing = cashflow.isError && isExpectedMissingBankingInput(cashflow.error);
+  const glanceReady = cashflow.data !== undefined && invoices.data !== undefined;
+  const glanceLoading =
+    !glanceReady &&
+    ((cashflow.isLoading && cashflow.data === undefined) ||
+      (invoices.isLoading && invoices.data === undefined));
+  const glanceBlockingError =
+    (invoices.isError && invoices.data === undefined) ||
+    (cashflow.isError && cashflow.data === undefined && !expectedCashflowMissing);
+  const glanceMissingBankingInput =
+    expectedCashflowMissing && cashflow.data === undefined;
   const financialDataFailed =
     (bankBalance.isError && !expectedBankBalanceMissing) ||
     (cashflow.isError && !expectedCashflowMissing);
@@ -826,6 +854,14 @@ export default function Aujourdhui() {
                     <SkeletonTile />
                     <SkeletonTile />
                   </>
+                ) : glanceBlockingError || (!glanceReady && !glanceMissingBankingInput) ? (
+                  <View style={{ flexBasis: '100%' }}>
+                    <ErrorRetry message={t('today.dataError', { personality })} onRetry={refreshAll} />
+                  </View>
+                ) : glanceMissingBankingInput ? (
+                  <Card style={{ flexBasis: '100%' }}>
+                    <EmptyState body={t('today.balanceMissingHint', { personality })} />
+                  </Card>
                 ) : (
                   <>
                     <KpiTile

@@ -16,15 +16,15 @@ const CATALOGUE: readonly VoicePrestation[] = [
 ];
 
 describe('parseVoiceQuoteLine — dictée fondateur (S2-GUIDÉ)', () => {
-  it('« deux heures de main-d’œuvre à 55 euros » → labor ×2, PU énoncé, TVA métier', () => {
-    const r = parseVoiceQuoteLine('ajoute deux heures de main-d’œuvre à 55 euros', { defaultVatRate: 10 });
+  it('« deux heures de main-d’œuvre à 55 euros » → labor ×2, PU énoncé, TVA déjà confirmée', () => {
+    const r = parseVoiceQuoteLine('ajoute deux heures de main-d’œuvre à 55 euros', { confirmedVatRate: 10 });
     expect(r.kind).toBe('line');
     if (r.kind !== 'line') return;
     expect(r.line).toMatchObject({ category: 'labor', qty: 2, unitPriceHT: 5_500, vatRate: 10, source: 'dictee' });
   });
 
   it('un BIEN discret sans main-d’œuvre est une FOURNITURE, libellé propre et capitalisé', () => {
-    const r = parseVoiceQuoteLine('ajoute un chauffe-eau 300 litres à 890 euros', {});
+    const r = parseVoiceQuoteLine('ajoute un chauffe-eau 300 litres à 890 euros', { confirmedVatRate: 20 });
     expect(r.kind).toBe('line');
     if (r.kind !== 'line') return;
     expect(r.line.category).toBe('supply');
@@ -67,26 +67,26 @@ describe('parseVoiceQuoteLine — dictée fondateur (S2-GUIDÉ)', () => {
   });
 
   it('TVA énoncée prime, « quantité 3 » comprise, unités discrètes → fourniture', () => {
-    const r = parseVoiceQuoteLine('3 unités de robinet thermostatique à 45 euros tva 20', { defaultVatRate: 10 });
+    const r = parseVoiceQuoteLine('3 unités de robinet thermostatique à 45 euros tva 20', { confirmedVatRate: 10 });
     expect(r.kind).toBe('line');
     if (r.kind !== 'line') return;
     expect(r.line).toMatchObject({ qty: 3, vatRate: 20, category: 'supply', unitPriceHT: 4_500 });
   });
 
   it('nombres EN TOUTES LETTRES (dictée réelle) : « cinquante-cinq euros », « quatre-vingt-quinze », « cent vingt »', () => {
-    const r = parseVoiceQuoteLine('ajoute deux heures de main-d’œuvre à cinquante-cinq euros', { defaultVatRate: 10 });
+    const r = parseVoiceQuoteLine('ajoute deux heures de main-d’œuvre à cinquante-cinq euros', { confirmedVatRate: 10 });
     expect(r.kind).toBe('line');
     if (r.kind === 'line') expect(r.line).toMatchObject({ qty: 2, unitPriceHT: 5_500, category: 'labor' });
-    const r2 = parseVoiceQuoteLine('ajoute un déplacement à quatre-vingt-quinze euros', {});
+    const r2 = parseVoiceQuoteLine('ajoute un déplacement à quatre-vingt-quinze euros', { confirmedVatRate: 20 });
     expect(r2.kind === 'line' && r2.line.unitPriceHT).toBe(9_500);
     expect(r2.kind === 'line' && r2.line.category).toBe('travel');
-    const r3 = parseVoiceQuoteLine('mets trois unités de robinet à cent vingt euros', {});
+    const r3 = parseVoiceQuoteLine('mets trois unités de robinet à cent vingt euros', { confirmedVatRate: 20 });
     expect(r3.kind === 'line' && r3.line.unitPriceHT).toBe(12_000);
     expect(r3.kind === 'line' && r3.line.qty).toBe(3);
   });
 
   it('« 2 heures pour 110 euros au total » → PU 55 € (division EXACTE), jamais 2 × 110', () => {
-    const r = parseVoiceQuoteLine('2 heures de dépannage pour 110 euros au total', {});
+    const r = parseVoiceQuoteLine('2 heures de dépannage pour 110 euros au total', { confirmedVatRate: 20 });
     expect(r.kind).toBe('line');
     if (r.kind === 'line') expect(r.line).toMatchObject({ qty: 2, unitPriceHT: 5_500 });
   });
@@ -97,7 +97,7 @@ describe('parseVoiceQuoteLine — dictée fondateur (S2-GUIDÉ)', () => {
   });
 
   it('le libellé ne garde ni les nombres en lettres ni « euros »', () => {
-    const r = parseVoiceQuoteLine('ajoute un dépannage à cinquante-cinq euros', {});
+    const r = parseVoiceQuoteLine('ajoute un dépannage à cinquante-cinq euros', { confirmedVatRate: 20 });
     expect(r.kind).toBe('line');
     if (r.kind === 'line') {
       expect(r.line.label.toLowerCase()).not.toMatch(/cinquante|euro/);
@@ -113,6 +113,14 @@ describe('parseVoiceQuoteLine — dictée fondateur (S2-GUIDÉ)', () => {
   it('une prestation INDICATIVE du catalogue ne chiffre jamais une ligne', () => {
     const r = parseVoiceQuoteLine('prestation indicative', { prestations: CATALOGUE });
     expect(r.kind).not.toBe('line');
+  });
+
+  it('prix compris mais TVA absente => missing_vat, jamais 20 % implicite', () => {
+    const r = parseVoiceQuoteLine('ajoute deux heures de plomberie à 55 euros');
+    expect(r.kind).toBe('missing_vat');
+    if (r.kind !== 'missing_vat') return;
+    expect(r.line).toMatchObject({ qty: 2, unitPriceHT: 5_500, category: 'labor' });
+    expect(r.line).not.toHaveProperty('vatRate');
   });
 });
 
@@ -168,7 +176,7 @@ describe('parseVoiceQuoteLine — « ajoute deux heures de main-d’œuvre » (b
   });
 
   it('AVEC prix énoncé (« ajoute 3 heures de plomberie à 45 euros ») → ligne COMPLÈTE, aucune question', () => {
-    const r = parseVoiceQuoteLine('ajoute 3 heures de plomberie à 45 euros', {});
+    const r = parseVoiceQuoteLine('ajoute 3 heures de plomberie à 45 euros', { confirmedVatRate: 20 });
     expect(r.kind).toBe('line');
     if (r.kind !== 'line') return;
     expect(r.line).toMatchObject({ qty: 3, category: 'labor', unitPriceHT: 4_500 });

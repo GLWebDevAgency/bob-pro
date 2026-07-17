@@ -4,9 +4,6 @@ import {
   type CabinetInvitationTokenPort,
   type IssuedCabinetInvitationToken,
 } from '@bob/core';
-import { isDemoMode } from '../config/env';
-
-const DEMO_ENCRYPTION_KEY = 'bob-pro-cabinet-demo-key-not-for-production';
 
 function decodeCanonicalBase64Url(value: string, field: string, expectedBytes?: number): Buffer {
   if (!/^[A-Za-z0-9_-]+$/.test(value)) throw new Error(`Invalid ${field} encoding.`);
@@ -50,7 +47,7 @@ export class CabinetInvitationTokenCipher {
     secret = process.env.CABINET_INVITATION_TOKEN_ENCRYPTION_KEY,
     keyVersion = Number(process.env.CABINET_INVITATION_TOKEN_KEY_VERSION ?? '1'),
   ) {
-    const resolved = secret || (isDemoMode() ? DEMO_ENCRYPTION_KEY : '');
+    const resolved = secret?.trim() ?? '';
     if (resolved.length < 32) {
       throw new Error('CABINET_INVITATION_TOKEN_ENCRYPTION_KEY must contain at least 32 characters.');
     }

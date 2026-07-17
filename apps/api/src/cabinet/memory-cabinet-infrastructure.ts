@@ -23,6 +23,7 @@ import {
   type CabinetInvitationDeliveryView,
 } from './cabinet-infrastructure';
 import { CabinetInvitationTokenAdapter, CabinetInvitationTokenCipher } from './cabinet-token';
+import type { CabinetDossierRepository } from './dossiers/cabinet-dossier-repository';
 
 interface MemoryDelivery extends Omit<CabinetInvitationDeliveryView, 'encryptedToken'> {
   createdAt: string;
@@ -36,6 +37,14 @@ interface MemoryDelivery extends Omit<CabinetInvitationDeliveryView, 'encryptedT
 function clone<T>(value: T): T {
   return structuredClone(value);
 }
+
+const unavailableDossiers: CabinetDossierRepository = {
+  listSummaries: async () => { throw new Error('Cabinet dossier test repository is not configured.'); },
+  findBySiren: async () => { throw new Error('Cabinet dossier test repository is not configured.'); },
+  create: async () => { throw new Error('Cabinet dossier test repository is not configured.'); },
+  replace: async () => { throw new Error('Cabinet dossier test repository is not configured.'); },
+  delete: async () => { throw new Error('Cabinet dossier test repository is not configured.'); },
+};
 
 class MemoryCabinetRepository implements CabinetRepository {
   constructor(private readonly rows: Map<string, CabinetSnapshot>) {}
@@ -168,6 +177,7 @@ export class MemoryCabinetInfrastructure implements CabinetInfrastructure {
   private readonly cabinetContext = new AsyncLocalStorage<{ userId: string; cabinetId: string }>();
 
   readonly cabinets = new MemoryCabinetRepository(this.cabinetRows);
+  readonly dossiers = unavailableDossiers;
   readonly invitations: MemoryInvitationRepository;
   readonly invitationQueries = {
     listPendingPage: async (input: {

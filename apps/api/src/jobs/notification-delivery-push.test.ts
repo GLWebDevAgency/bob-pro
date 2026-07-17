@@ -4,8 +4,8 @@ import type { NotificationPort } from '@bob/core';
 import { NotificationDeliveryService } from './notification-delivery.service';
 import { ScheduledTenantDirectory } from './tenant-directory';
 import type { AppLogger } from '../observability/logger';
-import { InMemoryPersistence } from '../persistence/persistence';
-import { MisconfiguredEmailNotifier, buildNotifier, DemoNotifier } from '../notifications/notifier';
+import { InMemoryPersistence } from '../persistence/persistence.testing';
+import { MisconfiguredEmailNotifier, buildNotifier } from '../notifications/notifier';
 import type { ExpoPushService } from '../notifications/expo-push';
 
 function makeLogger(): AppLogger {
@@ -459,14 +459,14 @@ describe('mailer via env — clé absente = échec propre par job, jamais silenc
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('BREVO_API_KEY'), 'notifications');
   });
 
-  it('buildNotifier : démo → DemoNotifier assumé ; hors démo sans clé → notifier qui échoue', () => {
+  it('buildNotifier : aucune clé → notifier qui échoue, y compris avec DEMO_MODE', () => {
     const logger = makeLogger();
     const env = { DEMO_MODE: process.env.DEMO_MODE, BREVO_API_KEY: process.env.BREVO_API_KEY, BREVO_SENDER_EMAIL: process.env.BREVO_SENDER_EMAIL };
     try {
       delete process.env.BREVO_API_KEY;
       delete process.env.BREVO_SENDER_EMAIL;
       process.env.DEMO_MODE = 'true';
-      expect(buildNotifier(logger)).toBeInstanceOf(DemoNotifier);
+      expect(buildNotifier(logger)).toBeInstanceOf(MisconfiguredEmailNotifier);
       process.env.DEMO_MODE = 'false';
       expect(buildNotifier(logger)).toBeInstanceOf(MisconfiguredEmailNotifier);
     } finally {

@@ -1,6 +1,7 @@
 import { type DomainResult, ok, err } from '../shared-kernel/result';
 import { assertTransition } from '../domain/billing/shared/state-machines';
 import { type LineInput } from '../domain/billing/shared/line-item';
+import { type VatRate } from '../domain/billing/shared/vat-rate';
 
 /**
  * Flow Devis (C21, redécoupe 2026-07 — le wizard s'ARRÊTE au devis) — machine à états
@@ -49,6 +50,8 @@ export interface DevisDraft {
   lines: LineInput[];
   /** Contexte TVA choisi à l'étape tvaMentions (consommé par suggestVatRate côté use-case). */
   tvaContext: DevisTvaContext | null;
+  /** Taux explicitement confirmé pour ce devis. `null` est un état de premier rang. */
+  vatRate: VatRate | null;
   /** Acompte du proto : 30 % par défaut — clause CONTRACTUELLE décidée avant la signature. */
   depositPct: number;
   /** Sur place (pad + preuve, signQuote appelé) ou envoi (email avec le lien, signature différée). */
@@ -68,6 +71,7 @@ export function startDevis(): DevisFlowState {
       customerId: null,
       lines: [],
       tvaContext: null,
+      vatRate: null,
       depositPct: 30,
       signMode: null,
       signerName: null,
@@ -85,7 +89,14 @@ const ADVANCE_GUARDS: Record<DevisStep, (d: DevisDraft) => DomainResult<void>> =
     d.lines.length > 0
       ? ok(undefined)
       : err({ code: 'VALIDATION', field: 'lines', message: 'Ajoute au moins une prestation' }),
-  tvaMentions: () => ok(undefined),
+  tvaMentions: (d) =>
+    d.tvaContext !== null && d.vatRate !== null
+      ? ok(undefined)
+      : err({
+          code: 'VALIDATION',
+          field: 'vatRate',
+          message: 'Confirme le taux de TVA avant de continuer',
+        }),
   acompte: (d) =>
     d.depositPct >= 0 && d.depositPct <= 100
       ? ok(undefined)

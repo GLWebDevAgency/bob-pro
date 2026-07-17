@@ -5,6 +5,7 @@ import { type Invoice, type InvoiceKind } from '../../domain/billing/invoice/inv
 import { type Payment } from '../../domain/payment/payment';
 import { type Expense } from '../../domain/expense/expense';
 import { type Chantier } from '../../domain/chantier/chantier';
+import { type ChantierNote } from '../../domain/chantier/chantier-note';
 
 export interface CompanyRepository {
   findById(id: string): Promise<Company | null>;
@@ -45,6 +46,8 @@ export interface PaymentRepository {
   save(p: Payment): Promise<void>;
   findById(companyId: string, id: string): Promise<Payment | null>;
   listByInvoice(invoiceId: string): Promise<Payment[]>;
+  /** Projection tenant-wide utilisée par les métriques client ; une seule lecture, sans N+1. */
+  listByCompany(companyId: string): Promise<Payment[]>;
   /** Idempotence : retrouve un paiement déjà enregistré avec cette clé (null si aucun). */
   findByIdempotencyKey(companyId: string, key: string): Promise<Payment | null>;
 }
@@ -52,6 +55,8 @@ export interface PaymentRepository {
 export interface ExpenseRepository {
   save(e: Expense): Promise<void>;
   findById(id: string): Promise<Expense | null>;
+  /** Verrou pessimiste dans l'unité de travail courante pour les transitions comptables. */
+  lockById?(id: string): Promise<Expense | null>;
   listByCompany(companyId: string): Promise<Expense[]>;
 }
 
@@ -59,4 +64,9 @@ export interface ChantierRepository {
   save(c: Chantier): Promise<void>;
   findById(id: string): Promise<Chantier | null>;
   listByCompany(companyId: string): Promise<Chantier[]>;
+}
+
+export interface ChantierNoteRepository {
+  save(n: ChantierNote): Promise<void>;
+  listByChantier(companyId: string, chantierId: string): Promise<ChantierNote[]>;
 }
