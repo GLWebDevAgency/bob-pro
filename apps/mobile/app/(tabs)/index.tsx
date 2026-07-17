@@ -5,10 +5,11 @@
  * « À régler aujourd'hui » (PriorityCard ; conformité = carte info lavande, sans checkbox) →
  * « En un coup d'œil » (KpiTile ×4 iconées) → « Vite fait » (QuickAction ×4, dont Catalogue
  * C27 — TODAY_QUICK_ACTIONS) → footer.
- * PAS de FAB sur cet écran : les réglages s'ouvrent via l'avatar (JM) → profil.
+ * PAS de FAB sur cet écran : les réglages s'ouvrent via l'avatar (JM) → modale menu profil
+ * (design_handoff_bob_pro/Bob Pro.dc.html §PROFILE SHEET) → compte/onboarding/astuces/diagnostic.
  *
  * DONNÉES RÉELLES (amendement A1-C10) : tout vient des queries du BobClient
- * (useCashflow/useCustomers/useTodayPriorities) ; les priorités sont dérivées dans @bob/core
+ * (solde bancaire qualifié, factures, cashflow et priorités) ; les priorités sont dérivées dans @bob/core
  * (deriveTodayPriorities, use case pur testé) — AUCUN repli fixtures silencieux :
  * loading → skeletons · erreur → voix de Bob (today.dataError) sans chiffre inventé ·
  * donnée absente → tuile vide « — » · 0 priorité → today.subtitleNone + section vide propre.
@@ -26,7 +27,16 @@
  * Densité Zen : masque « En un coup d'œil » + « Vite fait ». Zéro hex/rgba : useTheme()/@bob/tokens.
  */
 import { useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, RefreshControl, ScrollView, Text, View, type StyleProp, type ViewStyle } from 'react-native';
+import {
+  ActivityIndicator,
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  Text,
+  View,
+  type StyleProp,
+  type ViewStyle,
+} from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
@@ -35,7 +45,7 @@ import { formatEURWhole, normalizeVoiceText, type TodayPriority } from '@bob/cor
 import { useIdentity } from '../../src/data/identity';
 import type { InvoiceView } from '@bob/api-client';
 import { patterns, shadowNative } from '@bob/tokens';
-import { t, type I18nKey } from '@bob/i18n';
+import { t } from '@bob/i18n';
 import {
   AppHeaderNavy,
   Button,
@@ -55,8 +65,9 @@ import {
 } from '@bob/ui';
 import {
   useCashflow,
-  useCustomers,
+  useCompanyMe,
   useInvoices,
+  useLatestBankBalance,
   useNotificationsFeed,
   useTodayPriorities,
 } from '../../src/data/hooks';
@@ -64,6 +75,7 @@ import { Badge } from '../../src/components/ui';
 import { useConfirm } from '../../src/components/ConfirmSheet';
 import { hasMeaningfulQuoteDraft, useQuoteDraft } from '../../src/quote-draft';
 import { combineQueryStates } from '../../src/data/query-state';
+import { ProfileMenuSheet } from '../../src/components/profile-menu-sheet';
 import { CollectInvoiceButton } from '../../src/components/CollectInvoiceButton';
 import { TODAY_QUICK_ACTIONS } from '../../src/components/today-quick-actions';
 import { useBobAwareScrollInsets } from '../../src/components/use-bob-aware-scroll-insets';
@@ -76,8 +88,8 @@ import {
   type AgentEntityRef,
 } from '../../src/agent';
 import { useFiscalProfileFlow } from '../../src/fiscal/use-fiscal-profile-flow';
-import { useOwnerPayGuidance } from '../../src/fiscal/use-owner-pay-guidance';
 import { useSalesDocumentVoiceAffordance } from '../../src/documents-voice-search';
+import { deriveHomeReceivableKpis } from '../../src/home/derive-home-receivable-kpis';
 import {
   CalendarIcon,
   ChevronRightIcon,
@@ -112,6 +124,18 @@ const DRAFT_REMINDER_MIN_AGE_MS = 60 * 60 * 1000;
 // Suppression d'un brouillon = geste réversible-fort (même palier que le trash « brouillon »
 // des factures, InvoiceActions) — TOUJOURS derrière une ConfirmSheet, jamais un tap unique.
 const DRAFT_DELETE_RISK = { mutating: true, outbound: false, riskTier: 'reversible' } as const;
+
+function isExpectedMissingBankingInput(error: unknown): boolean {
+  if (error === null || typeof error !== 'object' || !('kind' in error)) return false;
+  const candidate = error as { kind: unknown; service?: unknown; entity?: unknown };
+  if (candidate.kind === 'not_found' && candidate.entity === 'bank_balance_snapshot') return true;
+  return (
+    candidate.kind === 'unavailable' &&
+    typeof candidate.service === 'string' &&
+    (candidate.service.startsWith('bank-balance') ||
+      candidate.service === 'cashflow-banking-source')
+  );
+}
 
 /** Vrai UNE SEULE fois par processus JS (cold start) — approxime « l'app vient d'être rouverte »
  * sans dépendre d'AppState : un changement d'onglet ne relance jamais le module. */
@@ -167,10 +191,22 @@ function SkeletonPriority() {
  * Héros « Dispo réel » sans donnée (chargement ou hors-ligne) : même géométrie que la
  * FloatingBalanceCard (recette @bob/tokens patterns.floatingBalanceCard) — jamais un montant inventé.
  */
-function HeroPlaceholder({ loading }: { loading: boolean }) {
+function HeroPlaceholder({
+  loading,
+  failed,
+  onPress,
+}: {
+  loading: boolean;
+  failed: boolean;
+  onPress: () => void;
+}) {
   const { personality, colors, controls } = useTheme();
+  const hintKey = failed ? 'today.balanceUnavailableHint' : 'today.balanceMissingHint';
   return (
-    <View
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={t(hintKey, { personality })}
+      onPress={onPress}
       style={{
         marginTop: HERO.overlap,
         marginHorizontal: HERO.sideInset,
@@ -203,7 +239,12 @@ function HeroPlaceholder({ loading }: { loading: boolean }) {
           —
         </Text>
       )}
-    </View>
+      {!loading ? (
+        <Text style={[font('meta'), { color: colors.slate500, marginTop: 5 }]}>
+          {t(hintKey, { personality })}
+        </Text>
+      ) : null}
+    </Pressable>
   );
 }
 
@@ -211,14 +252,10 @@ function HeroPlaceholder({ loading }: { loading: boolean }) {
  * DisplayPriority) — copy @bob/i18n, CTA = parité d'actions Bob. */
 function TodayPriorityCard({
   priority,
-  done,
-  onToggle,
   invoice,
   onCollected,
 }: {
   priority: DisplayPriority;
-  done: boolean;
-  onToggle: () => void;
   /** Facture réelle de la relance (A2-C10) — active « Encaisser » directement sur la carte. */
   invoice?: InvoiceView | undefined;
   onCollected?: (amountCents: number) => void;
@@ -228,8 +265,6 @@ function TodayPriorityCard({
   const quoteDraft = useQuoteDraft();
   const confirm = useConfirm();
   const [draftDeleteBusy, setDraftDeleteBusy] = useState(false);
-  const checkIcon = <Feather name="check" size={14} color={semantic.success} />;
-  const common = { done, onToggle, checkIcon } as const;
 
   switch (priority.kind) {
     case 'relance': {
@@ -279,7 +314,6 @@ function TodayPriorityCard({
               ) : null}
             </View>
           }
-          {...common}
         />
       );
     }
@@ -310,7 +344,6 @@ function TodayPriorityCard({
               onPress={() => router.push(`/devis/${priority.quoteId}`)}
             />
           }
-          {...common}
         />
       );
     }
@@ -352,9 +385,21 @@ function TodayPriorityCard({
           title={t('today.prioDraftTitle', { personality, params: { name } })}
           subtitle={t('today.prioDraftHint', { personality })}
           leadingIcon={<Feather name="file-text" size={13} color={semantic.warning} />}
-          badge={<Badge label={t('today.prioDraftBadge', { personality }).toUpperCase()} tone="warning" />}
+          badge={
+            <Badge
+              label={t('today.prioDraftBadge', { personality }).toUpperCase()}
+              tone="warning"
+            />
+          }
           cta={
-            <View style={{ flexDirection: 'row', gap: 8, alignSelf: 'flex-start', alignItems: 'center' }}>
+            <View
+              style={{
+                flexDirection: 'row',
+                gap: 8,
+                alignSelf: 'flex-start',
+                alignItems: 'center',
+              }}
+            >
               <Button
                 title={t('today.ctaDraftResume', { personality })}
                 variant="primary"
@@ -411,11 +456,12 @@ function TodayPriorityCard({
 
 export default function Aujourdhui() {
   const identity = useIdentity();
+  const companyMe = useCompanyMe();
   const { personality, density, colors, semantic } = useTheme();
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const cashflow = useCashflow('realiste', 30);
-  const customers = useCustomers();
+  const bankBalance = useLatestBankBalance();
   const today = useTodayPriorities();
   const quoteDraft = useQuoteDraft();
   // A2-C10 : mêmes queries que useTodayPriorities (cache partagé, coût nul) — la carte
@@ -426,17 +472,12 @@ export default function Aujourdhui() {
   // SPEC_EXPERT_FISCAL amendement 2 : Home = simple badge de fiabilité sur le montant, PAS de
   // 2ᵉ carte — le badge et la voix ouvrent le MÊME mini-flow que la carte d'Argent.
   const fiscalFlow = useFiscalProfileFlow();
-  // Phase 1C : today.payoutHint s'adapte au profil fiscal CONFIRMÉ (même moteur que le héros
-  // Argent, porte sur LE MÊME cashflow réaliste/30j que celui affiché ici) — la pastille de
-  // fiabilité 1B (fiscalFlow.hasPending, badge ci-dessous) reste inchangée.
-  const payGuidance = useOwnerPayGuidance(cashflow.data);
-  const guidance = payGuidance.guidance;
   const bobScrollInsets = useBobAwareScrollInsets({ minimumBottom: 140 });
 
-  // « Fait » togglable local — le moteur de tâches arrive avec C25 (relances).
-  const [done, setDone] = useState<Record<string, boolean>>({});
-  const toggle = (id: string) => () => setDone((d) => ({ ...d, [id]: !d[id] }));
   const [toast, setToast] = useState<string | null>(null);
+  // Modale menu profil (design_handoff_bob_pro/Bob Pro.dc.html §PROFILE SHEET) — l'avatar
+  // n'ouvre plus /compte directement, il ouvre CE menu (le flow décrit par le proto).
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   // Cold start (voir `appSessionFresh` ci-dessus) — capturé UNE fois, avant que ce composant
   // (ou tout autre écran monté avant lui) ne consomme le flag pour ce processus JS.
   const [isFreshAppSession] = useState(() => {
@@ -459,7 +500,11 @@ export default function Aujourdhui() {
     localDraft !== null &&
     (isFreshAppSession || (draftAgeMs !== null && draftAgeMs > DRAFT_REMINDER_MIN_AGE_MS));
   const draftPriority: DraftQuotePriority | null = showDraftReminder
-    ? { kind: 'devis_brouillon', id: 'devis-brouillon-local', customerName: localDraft.customer?.name ?? null }
+    ? {
+        kind: 'devis_brouillon',
+        id: 'devis-brouillon-local',
+        customerName: localDraft.customer?.name ?? null,
+      }
     : null;
   // Priorité basse (fin de liste) : un rappel de brouillon n'a jamais à évincer une vraie
   // urgence (relance en retard, facture finale à émettre).
@@ -468,7 +513,7 @@ export default function Aujourdhui() {
     : today.priorities;
 
   const displayed = allPriorities.slice(0, DISPLAY_CAP);
-  const remaining = displayed.filter((p) => !done[p.id]).length;
+  const remaining = displayed.length;
   const todayReady = !today.isLoading && !today.isError;
   const agentContext = useMemo<AgentContext>(() => {
     const entities: AgentEntityRef[] = [];
@@ -498,18 +543,20 @@ export default function Aujourdhui() {
     }
     return {
       screen: { name: '/(tabs)/index', instanceId: 'today' },
-      entities,
-      capabilities: [
-        'screen.read',
-        'today.read',
-        'cashflow.read',
-        'priorities.read',
-        'invoice.read',
-        'quote.read',
-        'customer.read',
-      ],
+      entities: todayReady ? entities : [],
+      capabilities: todayReady
+        ? [
+            'screen.read',
+            'today.read',
+            'cashflow.read',
+            'priorities.read',
+            'invoice.read',
+            'quote.read',
+            'customer.read',
+          ]
+        : [],
     };
-  }, [today.priorities]);
+  }, [today.priorities, todayReady]);
 
   // ── Parité vocale du rappel de brouillon (« continue mon devis en cours » / « supprime le
   // brouillon ») — refs pour une identité STABLE de l'affordance (même convention que
@@ -536,7 +583,9 @@ export default function Aujourdhui() {
           if (!/(continue|reprend\w*).{0,15}(devis|brouillon)/.test(n)) return null;
           return () => {
             routerRef.current.push('/devis/new?resume=1');
-            return { say: t('today.voiceDraftResume', { personality: homePersonalityRef.current }) };
+            return {
+              say: t('today.voiceDraftResume', { personality: homePersonalityRef.current }),
+            };
           };
         },
       },
@@ -548,10 +597,14 @@ export default function Aujourdhui() {
           const n = normalizeVoiceText(utterance);
           if (!/(supprime|efface)\w*.{0,15}(devis|brouillon)/.test(n)) return null;
           return () => {
-            const name = draft.customer?.name ?? t('today.prioDraftNoCustomer', { personality: homePersonalityRef.current });
+            const name =
+              draft.customer?.name ??
+              t('today.prioDraftNoCustomer', { personality: homePersonalityRef.current });
             void (async () => {
               const ok = await confirmRef.current({
-                title: t('today.draftDeleteConfirmTitle', { personality: homePersonalityRef.current }),
+                title: t('today.draftDeleteConfirmTitle', {
+                  personality: homePersonalityRef.current,
+                }),
                 message: t('today.draftDeleteConfirmBody', {
                   personality: homePersonalityRef.current,
                   params: { name },
@@ -561,7 +614,9 @@ export default function Aujourdhui() {
               });
               if (ok) await quoteDraftRef.current.discard();
             })();
-            return { say: t('today.voiceDraftDeleteOpened', { personality: homePersonalityRef.current }) };
+            return {
+              say: t('today.voiceDraftDeleteOpened', { personality: homePersonalityRef.current }),
+            };
           };
         },
       },
@@ -572,29 +627,62 @@ export default function Aujourdhui() {
   // mois dernier ») : Accueil est la seconde porte d'entrée voulue par le fondateur, la logique
   // vit une seule fois dans apps/mobile/src/documents-voice-search.ts.
   const salesDocumentVoiceAffordance = useSalesDocumentVoiceAffordance(personality);
-  usePublishAgentContext(agentContext, {}, {
-    affordances: [salesDocumentVoiceAffordance, ...fiscalFlow.voiceAffordances, ...draftVoiceAffordances],
-  });
-
-  // KPI : uniquement des agrégats dérivés des queries réelles — sinon tuile vide « — ».
-  const owedCents = customers.data?.reduce((sum, c) => sum + c.outstanding, 0);
-  const lateCents = customers.data?.reduce(
-    (sum, c) => sum + (c.scoreBand === 'red' ? c.outstanding : 0),
-    0,
+  usePublishAgentContext(
+    agentContext,
+    {},
+    {
+      affordances: [
+        salesDocumentVoiceAffordance,
+        ...fiscalFlow.voiceAffordances,
+        ...draftVoiceAffordances,
+      ],
+    },
   );
-  const eomCents = cashflow.data?.available; // horizon 30 j réaliste = fin de mois
-  const glanceLoading = cashflow.isLoading || customers.isLoading;
-  const primaryState = combineQueryStates(cashflow, customers, today);
+
+  // KPI : les encours viennent directement des factures émises/encaissées persistées. Les
+  // anciennes colonnes score/outstanding du client ne sont jamais une autorité financière ici.
+  const receivableKpis = useMemo(
+    () =>
+      invoices.data
+        ? deriveHomeReceivableKpis(
+            invoices.data.map((invoice) => ({
+              id: invoice.id,
+              companyId: invoice.companyId,
+              kind: invoice.kind,
+              status: invoice.status,
+              netToPayCents: invoice.totals.netToPay,
+              paidCents: invoice.paid,
+            })),
+          )
+        : null,
+    [invoices.data],
+  );
+  const owedCents = receivableKpis?.owedCents;
+  const lateCents = receivableKpis?.lateCents;
+  // Projection indicative à 30 jours : jamais assimilée à une fin de mois ni au solde observé.
+  const projection30Cents = cashflow.data?.available;
+  const glanceLoading = cashflow.isLoading || invoices.isLoading;
+  const primaryState = combineQueryStates(companyMe, invoices, today, notifications);
+  const expectedBankBalanceMissing =
+    bankBalance.isError && isExpectedMissingBankingInput(bankBalance.error);
+  const expectedCashflowMissing = cashflow.isError && isExpectedMissingBankingInput(cashflow.error);
+  const financialDataFailed =
+    (bankBalance.isError && !expectedBankBalanceMissing) ||
+    (cashflow.isError && !expectedCashflowMissing);
+  const dataFailed = primaryState.failed || financialDataFailed || fiscalFlow.isError;
   const refreshing =
     cashflow.isRefetching ||
-    customers.isRefetching ||
+    bankBalance.isRefetching ||
     today.isRefetching ||
     invoices.isRefetching ||
-    notifications.isRefetching;
+    notifications.isRefetching ||
+    companyMe.isRefetching ||
+    fiscalFlow.isRefetching;
   const refreshAll = (): void => {
     primaryState.refetchAll();
-    void invoices.refetch();
-    void notifications.refetch();
+    void cashflow.refetch();
+    void bankBalance.refetch();
+    void fiscalFlow.refetch();
   };
 
   const cockpit = density !== 'Zen';
@@ -637,48 +725,33 @@ export default function Aujourdhui() {
           bellIcon={<Feather name="bell" size={20} color={colors.surface} />}
           // C25 v2 : pastille = NON-LUS du fil SERVEUR (GET /notifications, lu/non-lu persistés) —
           // même query que l'écran /notifications, jamais un point rouge inventé.
-          hasUnread={notifications.unreadCount > 0}
-          onAvatarPress={() => router.push('/compte')}
+          hasUnread={notifications.unreadCount !== null && notifications.unreadCount > 0}
+          onAvatarPress={() => setProfileMenuOpen(true)}
           onBellPress={() => router.push('/notifications')}
         />
 
-        {cashflow.data ? (
+        {bankBalance.data ? (
           <FloatingBalanceCard
             label={t('today.balanceLabel', { personality })}
-            amountCents={cashflow.data.available}
-            // Phase 1C : kind 'prudent' (profil non confirmé) garde LA MÊME clé qu'avant cette
-            // phase (zéro régression) ; un profil confirmé bascule sur la phrase adaptée à sa
-            // situation (guidance.captionKey, mêmes params que le héros Argent — parité).
-            voiceLine={
-              guidance && guidance.kind !== 'prudent'
-                ? t(guidance.captionKey as I18nKey, { personality, params: guidance.params })
-                : t('today.payoutHint', {
-                    personality,
-                    params: { amount: formatEURWhole(cashflow.data.payout) },
-                  })
-            }
+            amountCents={bankBalance.data.amountCents}
+            voiceLine={t('today.balanceObservedHint', { personality })}
             chevronIcon={<ChevronRightIcon color={colors.slate400} size={15} strokeWidth={2.4} />}
             voiceIcon={<DepositIcon color={semantic.success} size={16} />}
             onPress={() => router.push('/(tabs)/argent')}
-            {...(fiscalFlow.hasPending
-              ? {
-                  badge: {
-                    label: t('fiscal.badge.label', { personality }),
-                    accessibilityHint: t('fiscal.badge.accessibilityHint', { personality }),
-                    onPress: fiscalFlow.openFlow,
-                  },
-                }
-              : {})}
           />
         ) : (
-          <HeroPlaceholder loading={cashflow.isLoading} />
+          <HeroPlaceholder
+            loading={bankBalance.isLoading}
+            failed={bankBalance.isError && !expectedBankBalanceMissing}
+            onPress={() => router.push('/(tabs)/argent')}
+          />
         )}
 
         <View style={{ paddingHorizontal: 18, paddingTop: 22, gap: 20 }}>
-          {primaryState.failed ? (
+          {dataFailed ? (
             <ErrorRetry
               message={t('today.dataError', { personality })}
-              onRetry={primaryState.refetchAll}
+              onRetry={refreshAll}
             />
           ) : null}
 
@@ -717,8 +790,6 @@ export default function Aujourdhui() {
                     <TodayPriorityCard
                       key={p.id}
                       priority={p}
-                      done={!!done[p.id]}
-                      onToggle={toggle(p.id)}
                       invoice={
                         p.kind === 'relance'
                           ? (invoices.data ?? []).find((i) => i.id === p.invoiceId)
@@ -786,7 +857,9 @@ export default function Aujourdhui() {
                     <KpiTile
                       style={KPI_TILE}
                       label={t('today.kpiEom', { personality })}
-                      {...(eomCents !== undefined ? { amountCents: eomCents } : {})}
+                      {...(projection30Cents !== undefined
+                        ? { amountCents: projection30Cents }
+                        : {})}
                       tone="ink"
                       icon={<CalendarIcon color={colors.ink600} />}
                       onPress={() => router.push('/(tabs)/argent')}
@@ -807,13 +880,7 @@ export default function Aujourdhui() {
                     style={{ flex: 1 }}
                     label={t(action.labelKey, { personality })}
                     tone={action.tone}
-                    icon={(
-                      <Feather
-                        name={action.icon}
-                        size={18}
-                        color={semantic[action.tone]}
-                      />
-                    )}
+                    icon={<Feather name={action.icon} size={18} color={semantic[action.tone]} />}
                     onPress={() => router.push(action.route)}
                   />
                 ))}
@@ -839,6 +906,18 @@ export default function Aujourdhui() {
         icon={<Feather name="check" size={16} color={colors.surface} />}
       />
       {fiscalFlow.sheets}
+
+      <ProfileMenuSheet
+        visible={profileMenuOpen}
+        onClose={() => setProfileMenuOpen(false)}
+        fullName={identity.fullName}
+        company={companyMe.data ?? null}
+        personality={personality}
+        onOpenAccount={() => router.push('/compte')}
+        onOpenOnboarding={() => router.push('/onboarding')}
+        onOpenDiagnostic={() => router.push('/diagnostic')}
+        onTipsReset={() => setToast(t('menu.tipsResetToast', { personality }))}
+      />
     </View>
   );
 }

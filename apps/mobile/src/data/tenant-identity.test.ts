@@ -1,9 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  companyIdFromAppMetadata,
-  configuredDemoCompanyId,
-  validCompanyId,
-} from './tenant-identity';
+import { companyIdFromAppMetadata, validCompanyId } from './tenant-identity';
 
 describe('tenant identity', () => {
   it('lit uniquement le tenant canonique du JWT', () => {
@@ -11,12 +7,6 @@ describe('tenant identity', () => {
     expect(companyIdFromAppMetadata({ company_id: '../other-tenant' })).toBeNull();
     expect(companyIdFromAppMetadata({ company_id: '' })).toBeNull();
     expect(companyIdFromAppMetadata(null)).toBeNull();
-  });
-
-  it('refuse toute valeur statique implicite ou mal formée', () => {
-    expect(configuredDemoCompanyId(undefined)).toBeNull();
-    expect(configuredDemoCompanyId('company-mercier')).toBe('company-mercier');
-    expect(configuredDemoCompanyId('tenant_with_underscore')).toBeNull();
   });
 
   it('borne le format exactement comme le contrat API', () => {

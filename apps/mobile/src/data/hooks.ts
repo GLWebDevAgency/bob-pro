@@ -21,6 +21,7 @@ import type {
   RemoveQuoteLineInput,
   Trade,
   VatRegime,
+  CustomerPortfolio,
 } from '@bob/core';
 import type {
   CreateCustomerClientInput,
@@ -232,10 +233,10 @@ export function useCompanyMe() {
   const client = useBobClient();
   return useQuery({
     queryKey: ['company-me'],
-    enabled: supabaseEnabled && !!session && typeof client.getCompanyMe === 'function',
+    enabled: supabaseEnabled && !!session,
     staleTime: 24 * 60 * 60 * 1000, // la fiche société bouge rarement
     queryFn: async () => {
-      const r = await client.getCompanyMe!();
+      const r = await client.getCompanyMe();
       if (!r.ok) throw r.error;
       return r.value;
     },
@@ -246,7 +247,11 @@ export function useUpdateCompanyProfile() {
   const client = useBobClient();
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (input: { trade: Trade; vatRegime: VatRegime }) => {
+    mutationFn: async (input: {
+      trade: Trade;
+      vatRegime: VatRegime;
+      customerPortfolio?: CustomerPortfolio;
+    }) => {
       const result = await client.updateCompanyProfile(input);
       if (!result.ok) throw result.error;
       return result.value;

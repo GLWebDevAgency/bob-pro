@@ -58,6 +58,7 @@ import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { challengeFor, parseVoiceConsent } from '@bob/ai';
 import {
+  addDays,
   computeTotals,
   formatEUR,
   searchCatalogue,
@@ -72,6 +73,7 @@ import {
   type VatRate,
   matchSpokenCustomers,
   normalizeVoiceText,
+  parseSpokenVatRate,
   frSpokenNumbersToDigits,
   type LineInput,
   parseVoiceQuoteLine,
@@ -103,14 +105,15 @@ import {
 } from '@bob/ui';
 import {
   appErrorMessage,
+  useCompanyMe,
   useCreateQuote,
   useCreateQuoteSignatureLink,
   useCustomers,
-  useProfile,
   useSendQuote,
   useSignQuote,
 } from '../../src/data/hooks';
 import { useCatalogue } from '../../src/data/catalogue';
+import { useBillingPrefs } from '../../src/data/billing-prefs';
 import {
   consumeWizardHint,
   usePublishAgentContext,
@@ -147,6 +150,7 @@ const STEP_KEYS: Record<DevisStep, I18nKey> = {
 const GUARD_COPY: Readonly<Record<string, I18nKey>> = {
   customerId: 'devis.guardClient',
   lines: 'devis.guardLines',
+  vatRate: 'devis.vatRequired',
   signMode: 'devis.guardSignMode',
   signerName: 'devis.guardSignature',
   depositPct: 'devis.guardDeposit',
@@ -182,28 +186,76 @@ const LINE_CATEGORIES: readonly { key: LineCategory; labelKey: I18nKey }[] = [
  * (mêmes couples que suggestVatRate — le use case CreateQuote fait foi et revalide :
  * requestedRate hors ensemble, franchise 293 B ou autoliquidation ⇒ erreur réelle).
  */
-type VatChoice = 'standard' | 'housing' | 'energy';
-const VAT_CHOICES: readonly {
+type VatChoice =
+  | 'standard'
+  | 'special_reduced'
+  | 'housing'
+  | 'energy'
+  | 'autoliquidation'
+  | 'franchise';
+type VatChoiceOption = {
   key: VatChoice;
   labelKey: I18nKey;
   rate: VatRate;
-  context: DevisTvaContext | null;
-}[] = [
-  { key: 'standard', labelKey: 'devis.vatStandard', rate: 20, context: null },
-  { key: 'housing', labelKey: 'devis.vatHousing', rate: 10, context: { housingOlderThan2y: true } },
+  /** Les deux booléens sont toujours présents : `null` reste l'état non confirmé. */
+  context: DevisTvaContext;
+};
+const TAXABLE_VAT_CHOICES: readonly VatChoiceOption[] = [
+  {
+    key: 'standard',
+    labelKey: 'devis.vatStandard',
+    rate: 20,
+    context: { housingOlderThan2y: false, energyRenovation: false },
+  },
+  {
+    key: 'special_reduced',
+    labelKey: 'devis.vatSpecialReduced',
+    rate: 2.1,
+    context: { housingOlderThan2y: false, energyRenovation: false },
+  },
+  {
+    key: 'housing',
+    labelKey: 'devis.vatHousing',
+    rate: 10,
+    context: { housingOlderThan2y: true, energyRenovation: false },
+  },
   {
     key: 'energy',
     labelKey: 'devis.vatEnergy',
     rate: 5.5,
     context: { housingOlderThan2y: true, energyRenovation: true },
   },
+  {
+    key: 'autoliquidation',
+    labelKey: 'devis.vatAutoliquidation',
+    rate: 0,
+    // Combinaison sentinelle du flow local ; le serveur n'accepte 0 que si le client est
+    // réellement en sous-traitance BTP. Elle ne fabrique donc aucune éligibilité.
+    context: { housingOlderThan2y: false, energyRenovation: true },
+  },
+];
+const FRANCHISE_VAT_CHOICES: readonly VatChoiceOption[] = [
+  {
+    key: 'franchise',
+    labelKey: 'devis.vatFranchise',
+    rate: 0,
+    context: { housingOlderThan2y: false, energyRenovation: false },
+  },
 ];
 
-/** Le choix courant se DÉRIVE du brouillon de la machine (source unique). */
-function vatChoiceOf(context: DevisTvaContext | null): VatChoice {
-  if (context?.energyRenovation) return 'energy';
-  if (context?.housingOlderThan2y) return 'housing';
-  return 'standard';
+/** Le choix courant se DÉRIVE du couple taux + contexte persisté, jamais du métier. */
+function vatChoiceOf(
+  context: DevisTvaContext | null,
+  rate: VatRate | null,
+  choices: readonly VatChoiceOption[],
+): VatChoice | null {
+  if (context === null || rate === null) return null;
+  return choices.find(
+    (choice) =>
+      choice.rate === rate
+      && choice.context.housingOlderThan2y === context.housingOlderThan2y
+      && choice.context.energyRenovation === context.energyRenovation,
+  )?.key ?? null;
 }
 
 /** Presets d'acompte (30 % = défaut proto, 0 = facture unique). */
@@ -233,8 +285,12 @@ export default function DevisNew() {
   const confirm = useConfirm();
   const quoteDraft = useQuoteDraft();
   const customers = useCustomers();
-  const { data: profile } = useProfile();
+  const company = useCompanyMe();
   const catalogue = useCatalogue();
+  // Réglages facturation §Valeurs par défaut — validité du devis (préférence LOCALE, cf.
+  // billing-prefs.ts). CreateQuoteInput.validUntil existe déjà de bout en bout (core/API) mais
+  // n'était jusqu'ici jamais posé par ce flow : SEUL branchement réel de ce réglage.
+  const billingPrefs = useBillingPrefs();
   const createQuote = useCreateQuote();
   const sendQuote = useSendQuote();
   const signQuote = useSignQuote();
@@ -306,8 +362,15 @@ export default function DevisNew() {
   const contextCustomer = customer ?? quoteDraft.state.customer;
   const stepIndex = DEVIS_STEPS.indexOf(flow.step);
   const stepLabels = DEVIS_STEPS.map((s) => t(STEP_KEYS[s], { personality }));
-  const vatChoice = vatChoiceOf(draft.tvaContext);
-  const currentRate = VAT_CHOICES.find((c) => c.key === vatChoice)?.rate ?? 20;
+  const isVatFranchise = company.data?.vatRegime === 'franchise';
+  const vatChoices = company.data === undefined
+    ? []
+    : isVatFranchise
+      ? FRANCHISE_VAT_CHOICES
+      : TAXABLE_VAT_CHOICES;
+  const vatChoice = vatChoiceOf(draft.tvaContext, draft.vatRate, vatChoices);
+  // Un changement de régime société invalide honnêtement un ancien choix qui n'existe plus.
+  const currentRate = vatChoice === null ? null : draft.vatRate;
   const totals = computeTotals([...draft.lines], { depositPct: draft.depositPct });
   // Vue « client » sur navy UNIQUEMENT quand le pad est effectivement montré (mode sur place
   // choisi) — le choix du mode et l'envoi à distance restent sur le thème clair habituel.
@@ -402,8 +465,16 @@ export default function DevisNew() {
       unitPriceHT: p.unitPriceHT,
       vatRate: p.vatRate,
     }));
+  const catalogueAvailabilityRef = useRef({
+    mode: catalogue.mode,
+  });
+  catalogueAvailabilityRef.current = {
+    mode: catalogue.mode,
+  };
   const currentRateRef = useRef(currentRate);
   currentRateRef.current = currentRate;
+  const vatChoicesRef = useRef<readonly VatChoiceOption[]>(vatChoices);
+  vatChoicesRef.current = vatChoices;
   const personalityRef = useRef(personality);
   personalityRef.current = personality;
   /** Pont voix → formulaire (parité stricte) : la dictée PRÉPARE les champs visibles ;
@@ -439,6 +510,30 @@ export default function DevisNew() {
     };
 
     return [
+      {
+        // « TVA 20 » / « mets la TVA à 10 % » : même commande que les radios.
+        // Un taux indisponible pour le régime courant n'est jamais appliqué par approximation.
+        id: 'devis.selectVat',
+        match: (utterance) => {
+          const spokenRate = parseSpokenVatRate(normalizeVoiceText(utterance));
+          if (spokenRate === null) return null;
+          const choice = vatChoicesRef.current.find((candidate) => candidate.rate === spokenRate);
+          if (choice === undefined) {
+            return () => ({ say: tt('devis.voice.vatUnavailable') });
+          }
+          return () => {
+            const selected = quoteDraft.applyAtRevision(
+              { type: 'set_vat', context: choice.context, vatRate: choice.rate },
+              quoteStateRef.current.revision,
+            );
+            return {
+              say: selected.ok
+                ? tt('devis.voice.vatSelected', { rate: fmtRate(choice.rate) })
+                : tt('devis.voice.vatUnavailable'),
+            };
+          };
+        },
+      },
       {
         // PRIORITÉ ABSOLUE quand une proposition attend : « oui/je confirme » applique,
         // « non/annule » rejette — parsé par NOTRE parseur déterministe, jamais par un LLM.
@@ -669,7 +764,13 @@ export default function DevisNew() {
               category: pending.category,
             });
             return {
-              say: tt('devis.voice.linePrepared', { label: pending.label, qty: pending.qty, price: formatEUR(price) }),
+              say:
+                tt('devis.voice.linePrepared', {
+                  label: pending.label,
+                  qty: pending.qty,
+                  price: formatEUR(price),
+                })
+                + (currentRateRef.current === null ? ` ${tt('devis.voice.vatRequired')}` : ''),
             };
           };
         },
@@ -681,9 +782,16 @@ export default function DevisNew() {
           // Déclencheur explicite : un verbe d'ajout — « où suis-je ? » reste au cerveau global.
           if (!isVoiceAddLineUtterance(utterance)) return null;
           return () => {
+            const catalogueAvailability = catalogueAvailabilityRef.current;
+            if (catalogueAvailability.mode === 'loading') {
+              return { say: tt('catalogue.loading') };
+            }
+            if (catalogueAvailability.mode === 'error') {
+              return { say: tt('catalogue.dataError') };
+            }
             const parsed = parseVoiceQuoteLine(utterance, {
               prestations: prestationsRef.current,
-              defaultVatRate: currentRateRef.current,
+              confirmedVatRate: currentRateRef.current,
             });
             if (parsed.kind === 'ambiguous') {
               pendingLineRef.current = null;
@@ -707,6 +815,22 @@ export default function DevisNew() {
               pendingLineRef.current = null;
               return { say: tt('devis.voice.missingPrice', { label: '…' }) };
             }
+            if (parsed.kind === 'missing_vat') {
+              pendingLineRef.current = null;
+              lineFormRef.current.prepare({
+                label: parsed.line.label,
+                qty: parsed.line.qty,
+                unitPriceHT: parsed.line.unitPriceHT,
+                category: parsed.line.category,
+              });
+              return {
+                say: tt('devis.voice.missingVatReady', {
+                  label: parsed.line.label,
+                  qty: parsed.line.qty,
+                  price: formatEUR(parsed.line.unitPriceHT),
+                }),
+              };
+            }
             pendingLineRef.current = null;
             // PROPOSER → VALIDER (spec fondateur) : la dictée remplit les CHAMPS VISIBLES du
             // formulaire — rien n'entre au brouillon sans « valide la ligne » (voix) ou le
@@ -721,9 +845,11 @@ export default function DevisNew() {
             // TVA : UNE par devis (étape TVA). Si la dictée/le catalogue en voulait une autre,
             // on le DIT — jamais une perte silencieuse.
             const vatNotice =
-              line.vatRate !== currentRateRef.current
-                ? ` ${tt('devis.voice.vatNotice', { rate: currentRateRef.current })}`
-                : '';
+              currentRateRef.current === null
+                ? ` ${tt('devis.voice.vatRequired')}`
+                : line.vatRate !== currentRateRef.current
+                  ? ` ${tt('devis.voice.vatNotice', { rate: currentRateRef.current })}`
+                  : '';
             return {
               say:
                 tt(line.source === 'catalogue' ? 'devis.voice.linePreparedCatalogue' : 'devis.voice.linePrepared', {
@@ -788,24 +914,6 @@ export default function DevisNew() {
     };
   }, [quoteDraft.expireProposal, quoteDraft.startMission, quoteDraft.stopMission]);
 
-  // Défaut métier (BTP ⇒ TVA 10 = logement > 2 ans, comme le proto) : semé UNE fois
-  // dans le brouillon de la machine, tant que rien n'est saisi — jamais écrasé ensuite.
-  const seeded = useRef(false);
-  useEffect(() => {
-    if (seeded.current || profile === undefined) return;
-    seeded.current = true;
-    if (profile.defaultVatRate === 10) {
-      const current = quoteStateRef.current.flow.draft;
-      if (current.tvaContext === null && current.lines.length === 0) {
-        quoteDraft.apply({
-          type: 'set_vat',
-          context: { housingOlderThan2y: true },
-          vatRate: 10,
-        });
-      }
-    }
-  }, [profile]);
-
   // À chaque (re)entrée sur l'étape signature : pad remonté VIERGE ⇒ capture réinitialisée
   // (ce qui est affiché = ce qui est commité — revenir en arrière exige de re-signer),
   // et nom du signataire pré-rempli avec le client choisi.
@@ -830,7 +938,11 @@ export default function DevisNew() {
   // ── Étape 2 : lignes ───────────────────────────────────────────────────────
   const lineQtyValue = parsePositive(lineQty);
   const linePriceValue = parsePositive(linePrice);
-  const lineValid = lineLabel.trim() !== '' && lineQtyValue !== null && linePriceValue !== null;
+  const lineValid =
+    lineLabel.trim() !== ''
+    && lineQtyValue !== null
+    && linePriceValue !== null
+    && currentRate !== null;
 
   // Suggestions du catalogue (C27) au fil de la saisie du libellé — searchCatalogue @bob/core
   // (accents/casse ignorés). La saisie LIBRE reste reine : proposer n'impose jamais.
@@ -852,7 +964,12 @@ export default function DevisNew() {
   };
 
   const addLine = (): LineInput | null => {
-    if (!lineValid || lineQtyValue === null || linePriceValue === null) return null;
+    if (
+      !lineValid
+      || lineQtyValue === null
+      || linePriceValue === null
+      || currentRate === null
+    ) return null;
     const line: LineInput = {
       label: lineLabel.trim(),
       category: lineCat,
@@ -927,7 +1044,7 @@ export default function DevisNew() {
   };
 
   // ── Étape 3 : choix TVA = contexte + taux, appliqué à tout le devis ────────
-  const selectVat = (choice: (typeof VAT_CHOICES)[number]): void => {
+  const selectVat = (choice: VatChoiceOption): void => {
     quoteDraft.applyAtRevision(
       { type: 'set_vat', context: choice.context, vatRate: choice.rate },
       quoteDraft.state.revision,
@@ -946,7 +1063,14 @@ export default function DevisNew() {
   const runQuoteCreation = async (d: DevisDraft): Promise<void> => {
     // Ref synchrone : deux taps dans le même frame ne voient jamais deux `busy=false`.
     if (generationInFlight.current) return;
-    if (d.customerId === null || d.signMode === null || (d.signMode === 'onsite' && d.signerName === null)) {
+    if (
+      d.customerId === null
+      || d.tvaContext === null
+      || d.vatRate === null
+      || d.lines.some((line) => line.vatRate !== d.vatRate)
+      || d.signMode === null
+      || (d.signMode === 'onsite' && d.signerName === null)
+    ) {
       setError(t('devis.errAction', { personality }));
       return;
     }
@@ -956,11 +1080,21 @@ export default function DevisNew() {
     try {
       let quoteId = chain.current.quoteId;
       if (quoteId === null) {
+        // Validité du devis = préférence Réglages facturation (défaut 30 j) appliquée depuis
+        // AUJOURD'HUI (pas depuis un instant figé au montage — le devis peut être terminé bien
+        // après l'ouverture de l'écran).
+        const validUntil = addDays(new Date().toISOString().slice(0, 10), billingPrefs.prefs.defaultQuoteValidityDays);
         const created = await createQuote.mutateAsync({
           customerId: d.customerId,
           lines: d.lines.map((l) => ({ ...l })),
-          ...(d.tvaContext !== null ? { context: d.tvaContext } : {}),
+          context: {
+            housingOlderThan2y: d.tvaContext.housingOlderThan2y === true,
+            energyRenovation:
+              d.tvaContext.energyRenovation === true
+              && d.tvaContext.housingOlderThan2y === true,
+          },
           ...(d.depositPct > 0 ? { depositPct: d.depositPct } : {}),
+          validUntil,
         });
         quoteId = created.quoteId;
         chain.current.quoteId = quoteId;
@@ -1662,6 +1796,14 @@ export default function DevisNew() {
                 </View>
 
                 {/* Suggestions du catalogue (C27) — tap = pré-remplit, saisie libre intacte */}
+                {catalogue.isError ? (
+                  <View style={{ marginTop: 10 }}>
+                    <ErrorRetry
+                      message={t('catalogue.dataError', { personality })}
+                      onRetry={catalogue.refetch}
+                    />
+                  </View>
+                ) : null}
                 {suggestions.length > 0 ? (
                   <View style={{ marginTop: 10, gap: 6 }}>
                     <Text style={[font('label', 700), { fontSize: 11.5, color: colors.slate400 }]}>
@@ -1768,9 +1910,40 @@ export default function DevisNew() {
                     />
                   ))}
                 </View>
-                <Text style={[font('meta'), { color: colors.slate400, marginTop: 10 }]}>
-                  {t('devis.vatSuggested', { personality, params: { rate: fmtRate(currentRate) } })}
+                <Text style={[font('meta', 600), { color: colors.slate500, marginTop: 12 }]}>
+                  {t('devis.vatRequiredLabel', { personality })}
                 </Text>
+                {company.isError ? (
+                  <View style={{ marginTop: 8 }}>
+                    <ErrorRetry
+                      message={t('devis.vatProfileUnavailable', { personality })}
+                      onRetry={() => void company.refetch()}
+                    />
+                  </View>
+                ) : company.isLoading ? (
+                  <View style={{ marginTop: 8 }}>
+                    <SkeletonRow avatar={false} lines={1} trailing="pill" />
+                  </View>
+                ) : (
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+                    {vatChoices.map((choice) => (
+                      <Chip
+                        key={choice.key}
+                        label={t(choice.labelKey, { personality })}
+                        active={vatChoice === choice.key}
+                        onPress={() => selectVat(choice)}
+                      />
+                    ))}
+                  </View>
+                )}
+                {currentRate === null && !company.isLoading && !company.isError ? (
+                  <Text
+                    accessibilityRole="alert"
+                    style={[font('meta'), { color: semantic.danger, marginTop: 8 }]}
+                  >
+                    {t('devis.vatRequired', { personality })}
+                  </Text>
+                ) : null}
                 <View style={{ marginTop: 12 }}>
                   <Button
                     title={t('devis.addLine', { personality })}
@@ -1890,7 +2063,7 @@ export default function DevisNew() {
               <Text style={[font('sub'), { color: subColor, marginBottom: 4 }]}>
                 {t('devis.vatSub', { personality })}
               </Text>
-              {VAT_CHOICES.map((choice) => {
+              {vatChoices.map((choice) => {
                 const selected = vatChoice === choice.key;
                 return (
                   <Pressable
@@ -1920,7 +2093,12 @@ export default function DevisNew() {
                 );
               })}
               <Text style={[font('sub'), { color: colors.slate500, lineHeight: 20 }]}>
-                {t('devis.vatHint', { personality, params: { rate: fmtRate(currentRate) } })}
+                {currentRate === null
+                  ? t('devis.vatRequired', { personality })
+                  : t('devis.vatHint', {
+                      personality,
+                      params: { rate: fmtRate(currentRate) },
+                    })}
               </Text>
               <Card radius={16} padding={15} style={{ backgroundColor: semantic.successBg, borderColor: semantic.successBg }}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, marginBottom: 7 }}>
@@ -2198,7 +2376,23 @@ export default function DevisNew() {
               {t('devis.cataloguePickTitle', { personality })}
             </Text>
             <ScrollView contentContainerStyle={{ paddingHorizontal: 20, gap: 8, paddingBottom: 8 }}>
-              {catalogue.prestations.length === 0 ? (
+              {catalogue.mode === 'loading' ? (
+                <View
+                  accessibilityRole="progressbar"
+                  accessibilityLiveRegion="polite"
+                  style={{ alignItems: 'center', paddingVertical: 20, gap: 10 }}
+                >
+                  <ActivityIndicator color={semantic.ai} />
+                  <Text style={[font('sub'), { color: colors.slate500 }]}>
+                    {t('catalogue.loading', { personality })}
+                  </Text>
+                </View>
+              ) : catalogue.mode === 'error' ? (
+                <ErrorRetry
+                  message={t('catalogue.dataError', { personality })}
+                  onRetry={catalogue.refetch}
+                />
+              ) : catalogue.prestations.length === 0 ? (
                 <Text style={[font('sub'), { color: colors.slate500 }]}>
                   {t('devis.cataloguePickEmpty', { personality })}
                 </Text>

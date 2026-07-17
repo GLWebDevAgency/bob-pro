@@ -33,6 +33,8 @@ export function normalizePersonality(value: unknown): Personality {
 type Copy = Readonly<Record<Personality, string>>;
 
 const legacyFr = {
+  'common.close': { pote: 'Fermer', pro: 'Fermer', direct: 'Fermer' },
+  'common.cancel': { pote: 'Annuler', pro: 'Annuler', direct: 'Annuler' },
   'bob.greeting': {
     pote: 'Salut {name} 👋',
     pro: 'Bonjour {name}',
@@ -73,9 +75,24 @@ const legacyFr = {
     direct: '~{amount} mobilisables. Rémunération à préciser.',
   },
   'today.balanceLabel': {
-    pote: 'Dispo réel aujourd’hui',
-    pro: 'Disponible réel aujourd’hui',
-    direct: 'Dispo réel',
+    pote: 'Solde bancaire observé',
+    pro: 'Solde bancaire observé',
+    direct: 'Solde observé',
+  },
+  'today.balanceObservedHint': {
+    pote: 'C’est le dernier solde que tu as confirmé. Les prévisions restent séparées dans Argent.',
+    pro: 'Dernier solde confirmé. Les projections sont présentées séparément dans Argent.',
+    direct: 'Dernier solde confirmé. Projections dans Argent.',
+  },
+  'today.balanceMissingHint': {
+    pote: 'Confirme ton solde dans Argent — je ne vais rien inventer.',
+    pro: 'Confirmez le solde dans Argent. Aucune valeur n’est estimée à sa place.',
+    direct: 'Confirme le solde dans Argent.',
+  },
+  'today.balanceUnavailableHint': {
+    pote: 'Je n’arrive pas à relire ton solde. Ouvre Argent pour réessayer.',
+    pro: 'Le solde bancaire est temporairement indisponible. Ouvrez Argent pour réessayer.',
+    direct: 'Solde indisponible. Réessaie dans Argent.',
   },
   'today.sectionToday': {
     pote: 'À régler aujourd’hui',
@@ -118,9 +135,9 @@ const legacyFr = {
     direct: 'TVA',
   },
   'today.kpiEom': {
-    pote: 'Fin de mois',
-    pro: 'Solde fin de mois',
-    direct: 'Fin de mois',
+    pote: 'Projection à 30 jours',
+    pro: 'Projection à 30 jours',
+    direct: 'Projection 30 j',
   },
   'today.quickQuote': {
     pote: 'Devis',
@@ -280,6 +297,71 @@ const legacyFr = {
     pro: 'L’état réel de vos comptes, en toute transparence.',
     direct: 'Les comptes, sans mentir.',
   },
+  'argent.balanceNeededTitle': {
+    pote: 'Dis-moi ce qu’il y a vraiment en banque',
+    pro: 'Confirmez votre solde bancaire',
+    direct: 'Solde bancaire requis',
+  },
+  'argent.balanceNeededBody': {
+    pote: 'Sans solde récent, je préfère ne rien inventer. Tu peux le confirmer maintenant ; il restera valable 24 h.',
+    pro: 'Aucune projection n’est affichée sans solde récent. Confirmez-le maintenant ; cette preuve reste qualifiée 24 h.',
+    direct: 'Pas de projection sans solde récent. Validité : 24 h.',
+  },
+  'argent.balanceNeededCta': {
+    pote: 'Confirmer mon solde',
+    pro: 'Confirmer le solde',
+    direct: 'Saisir le solde',
+  },
+  'argent.balanceRefreshCta': {
+    pote: 'Actualiser',
+    pro: 'Actualiser',
+    direct: 'Actualiser',
+  },
+  'argent.balanceObserved': {
+    pote: 'Solde confirmé récemment · source propriétaire',
+    pro: 'Solde confirmé récemment · source propriétaire',
+    direct: 'Solde confirmé · propriétaire',
+  },
+  'argent.balanceSheetTitle': {
+    pote: 'Quel est ton solde maintenant ?',
+    pro: 'Confirmer le solde bancaire',
+    direct: 'Solde bancaire actuel',
+  },
+  'argent.balanceSheetBody': {
+    pote: 'Recopie le montant visible sur ton compte, découvert compris. Je l’utilise comme point de départ, sans le confondre avec une synchronisation bancaire.',
+    pro: 'Saisissez le montant actuellement visible sur le compte, découvert compris. Il sera identifié comme une confirmation manuelle.',
+    direct: 'Saisis le montant actuel, découvert compris. Source : confirmation manuelle.',
+  },
+  'argent.balanceFieldLabel': {
+    pote: 'Solde actuel',
+    pro: 'Solde actuel',
+    direct: 'Solde',
+  },
+  'argent.balanceInvalid': {
+    pote: 'Entre un montant valide, par exemple 1 234,56.',
+    pro: 'Saisissez un montant valide, par exemple 1 234,56.',
+    direct: 'Montant invalide.',
+  },
+  'argent.balanceProof': {
+    pote: 'Je garde la date et la source de cette confirmation. Rien n’est présenté comme synchronisé par la banque.',
+    pro: 'La date et la source sont conservées. Cette valeur n’est jamais présentée comme une synchronisation bancaire.',
+    direct: 'Date et source conservées. Pas de fausse synchronisation.',
+  },
+  'argent.balanceSaveError': {
+    pote: 'Je n’ai pas pu enregistrer ce solde. Rien n’a été modifié.',
+    pro: 'Le solde n’a pas pu être enregistré. Aucune modification n’a été appliquée.',
+    direct: 'Échec. Rien n’a changé.',
+  },
+  'argent.balanceSaving': {
+    pote: 'J’enregistre…',
+    pro: 'Enregistrement…',
+    direct: 'Enregistrement…',
+  },
+  'argent.balanceConfirm': {
+    pote: 'Oui, c’est le bon solde',
+    pro: 'Confirmer ce solde',
+    direct: 'Confirmer',
+  },
   // Langage prudent (SPEC_EXPERT_FISCAL §V2 pt. 8, cas « profil incomplet ») : trésorerie
   // mobilisable ≠ rémunération — jamais « te verser » tant que forme juridique/régime fiscal
   // ne sont pas connus du produit. Le pill « sans risque » reste vrai (réserves non touchées).
@@ -356,6 +438,26 @@ const legacyFr = {
     pote: '{days} j',
     pro: '{days} j',
     direct: '{days} j',
+  },
+  'argent.forecastBasisDated': {
+    pote: 'Jusqu’au {date} · je retiens {rate} % des créances avec une échéance dans cette période.',
+    pro: 'Projection jusqu’au {date} · {rate} % des créances échéant sur la période sont retenues.',
+    direct: 'Jusqu’au {date} · {rate} % des créances échues retenues.',
+  },
+  'argent.forecastUndatedReceivables': {
+    pote: '{amount} de créances sans échéance restent hors prévision.',
+    pro: '{amount} de créances sans échéance sont exclues de la prévision.',
+    direct: '{amount} sans échéance exclus.',
+  },
+  'argent.forecastUndatedCharges': {
+    pote: '{amount} de charges sans échéance sont quand même incluses par prudence.',
+    pro: '{amount} de charges sans échéance sont incluses par prudence.',
+    direct: '{amount} sans échéance inclus par prudence.',
+  },
+  'argent.forecastBasisLegacy': {
+    pote: 'Cette estimation utilise encore une base non datée. Ajoute les échéances pour la rendre plus précise.',
+    pro: 'Cette projection repose sur une base agrégée non datée ; sa précision est limitée.',
+    direct: 'Base non datée. Précision limitée.',
   },
   'argent.scenarioOptimiste': {
     pote: 'Optimiste',
@@ -888,6 +990,37 @@ const legacyFr = {
     pote: '{days} j',
     pro: '{days} j',
     direct: '{days} j',
+  },
+  // Historique qualifié depuis factures + paiements. Aucun score avant modèle ratifié.
+  'fiche.paymentHistoryTitle': {
+    pote: 'Historique de paiement',
+    pro: 'Historique de paiement',
+    direct: 'Historique de paiement',
+  },
+  'fiche.paymentHistoryKnownBadge': {
+    pote: 'Fiable',
+    pro: 'Disponible',
+    direct: 'Disponible',
+  },
+  'fiche.paymentHistoryPendingBadge': {
+    pote: 'À compléter',
+    pro: 'Indisponible',
+    direct: 'Indisponible',
+  },
+  'fiche.paymentHistoryKnown': {
+    pote: '{count} factures rapprochées · {ratio} % réglées dans les délais.',
+    pro: '{count} factures rapprochées · {ratio} % réglées dans les délais.',
+    direct: '{count} factures · {ratio} % dans les délais.',
+  },
+  'fiche.paymentHistoryIncomplete': {
+    pote: 'Des paiements ne sont pas encore rapprochés de leurs factures. Je ne calcule pas de délai approximatif.',
+    pro: 'Le rapprochement factures-paiements est incomplet. Aucun délai approximatif n’est affiché.',
+    direct: 'Rapprochement incomplet. Aucun délai calculé.',
+  },
+  'fiche.paymentHistoryInsufficient': {
+    pote: '{count} facture(s) rapprochée(s) sur 3 nécessaires. Je te donne une tendance dès que l’historique est suffisant.',
+    pro: '{count} facture(s) rapprochée(s) sur 3 nécessaires pour calculer un historique fiable.',
+    direct: '{count}/3 factures rapprochées. Historique insuffisant.',
   },
   // Score de paiement (ScoreBar §13) + légende par tranche (<50 · 50–75 · >75).
   'fiche.scoreTitle': {
@@ -1883,6 +2016,11 @@ const legacyFr = {
     pro: '{qty} × {label} noté. Quel est le prix HT ?',
     direct: '{qty} × {label} : prix HT ?',
   },
+  'devis.voice.missingVatReady': {
+    pote: '{qty} × {label} à {price} HT, c’est prêt. Choisis maintenant la TVA, puis valide la ligne.',
+    pro: '{qty} × {label} à {price} HT est prêt. Choisissez le taux de TVA, puis validez la ligne.',
+    direct: '{qty} × {label}, {price} HT. Choisis la TVA puis valide.',
+  },
   'devis.voice.lineRemoved': {
     pote: 'Retiré : {label}.',
     pro: 'Ligne retirée : {label}.',
@@ -1919,6 +2057,21 @@ const legacyFr = {
     pote: 'La TVA du devis est réglée à {rate} % — elle se change à l’étape TVA.',
     pro: 'La TVA du devis est de {rate} % ; elle se modifie à l’étape TVA.',
     direct: 'TVA du devis : {rate} % (étape TVA pour changer).',
+  },
+  'devis.voice.vatRequired': {
+    pote: 'Il reste à choisir la TVA avant de pouvoir ajouter la ligne.',
+    pro: 'Le taux de TVA doit être confirmé avant l’ajout de la ligne.',
+    direct: 'Choisis la TVA avant d’ajouter.',
+  },
+  'devis.voice.vatSelected': {
+    pote: 'TVA {rate} % confirmée pour ce devis.',
+    pro: 'Taux de TVA {rate} % confirmé pour ce devis.',
+    direct: 'TVA {rate} % confirmée.',
+  },
+  'devis.voice.vatUnavailable': {
+    pote: 'Ce taux ne colle pas au régime actuel. Choisis une option affichée, je ne veux rien inventer.',
+    pro: 'Ce taux n’est pas disponible pour le régime actuel. Sélectionnez une option affichée.',
+    direct: 'Taux indisponible pour ce régime.',
   },
   'devis.voice.nothingToRemove': {
     pote: 'Il n’y a pas encore de ligne à retirer.',
@@ -1983,7 +2136,11 @@ const legacyFr = {
   },
   'ventes.suggest.sectionCustomers': { pote: 'Clients', pro: 'Clients', direct: 'Clients' },
   'ventes.suggest.sectionNumbers': { pote: 'Numéros', pro: 'Numéros', direct: 'Numéros' },
-  'ventes.suggest.sectionLabels': { pote: 'Prestations', pro: 'Prestations', direct: 'Prestations' },
+  'ventes.suggest.sectionLabels': {
+    pote: 'Prestations',
+    pro: 'Prestations',
+    direct: 'Prestations',
+  },
   'ventes.suggest.sectionRecent': {
     pote: 'Recherches récentes',
     pro: 'Recherches récentes',
@@ -2034,7 +2191,11 @@ const legacyFr = {
     direct: 'Client…',
   },
   'ventes.advancedSearch.fieldNumber': { pote: 'Numéro', pro: 'Numéro de pièce', direct: 'N°' },
-  'ventes.advancedSearch.numberPlaceholder': { pote: 'Ex. F-2026-0012', pro: 'Ex. F-2026-0012', direct: 'F-2026-0012' },
+  'ventes.advancedSearch.numberPlaceholder': {
+    pote: 'Ex. F-2026-0012',
+    pro: 'Ex. F-2026-0012',
+    direct: 'F-2026-0012',
+  },
   'ventes.advancedSearch.fieldLabel': {
     pote: 'Prestation',
     pro: 'Libellé de ligne',
@@ -2083,21 +2244,41 @@ const legacyFr = {
   },
   'ventes.voiceSearchKindQuotes': { pote: 'devis', pro: 'devis', direct: 'devis' },
   'ventes.voiceSearchKindInvoices': { pote: 'factures', pro: 'factures', direct: 'factures' },
-  'ventes.voiceSearchKindAll': { pote: 'devis et factures', pro: 'devis et factures', direct: 'pièces' },
+  'ventes.voiceSearchKindAll': {
+    pote: 'devis et factures',
+    pro: 'devis et factures',
+    direct: 'pièces',
+  },
   // Fragments composés par le code (jamais affichés seuls) pour bâtir le {period} des clés
   // voiceSearchResult* ci-dessus — une SEULE source de vérité entre les chips et la voix
   // (packages/core parseFrenchPeriod pose le label, ces clés le traduisent en phrase).
   'ventes.period.thisMonth': { pote: 'de ce mois-ci', pro: 'de ce mois-ci', direct: 'ce mois-ci' },
-  'ventes.period.lastMonth': { pote: 'du mois dernier', pro: 'du mois dernier', direct: 'mois dernier' },
-  'ventes.period.thisWeek': { pote: 'de cette semaine', pro: 'de cette semaine', direct: 'cette semaine' },
+  'ventes.period.lastMonth': {
+    pote: 'du mois dernier',
+    pro: 'du mois dernier',
+    direct: 'mois dernier',
+  },
+  'ventes.period.thisWeek': {
+    pote: 'de cette semaine',
+    pro: 'de cette semaine',
+    direct: 'cette semaine',
+  },
   'ventes.period.today': { pote: 'du jour', pro: 'du jour', direct: 'aujourd’hui' },
-  'ventes.period.thisYear': { pote: 'de cette année', pro: 'de cette année', direct: 'cette année' },
+  'ventes.period.thisYear': {
+    pote: 'de cette année',
+    pro: 'de cette année',
+    direct: 'cette année',
+  },
   'ventes.period.lastNMonths': {
     pote: 'des {n} derniers mois',
     pro: 'des {n} derniers mois',
     direct: '{n} derniers mois',
   },
-  'ventes.period.since': { pote: 'depuis {month}', pro: 'depuis {month}', direct: 'depuis {month}' },
+  'ventes.period.since': {
+    pote: 'depuis {month}',
+    pro: 'depuis {month}',
+    direct: 'depuis {month}',
+  },
 
   // Brouillon local de devis (C21 redécoupe 2026-07-17) — carte visible en tête de la liste
   // Devis, jamais confondu avec un devis brouillon SERVEUR (QUOTE_BADGE.draft) : celui-ci n'a
@@ -2675,7 +2856,7 @@ const legacyFr = {
     pro: 'Votre carnet est vide. Créez d’abord un client depuis l’onglet Clients.',
     direct: 'Carnet vide. Ajoute un client d’abord.',
   },
-  // Étape 2 — lignes (saisie libre : libellé, qté, PU HT, catégorie ; TVA suggérée).
+  // Étape 2 — lignes (saisie libre : libellé, qté, PU HT, catégorie ; TVA confirmée).
   'devis.linesTitle': {
     pote: 'Qu’est-ce qu’on facture ?',
     pro: 'Détaillez les prestations',
@@ -2787,6 +2968,21 @@ const legacyFr = {
     pro: 'TVA suggérée : {rate} %',
     direct: 'TVA suggérée : {rate} %',
   },
+  'devis.vatRequiredLabel': {
+    pote: 'TVA de ce devis',
+    pro: 'Taux de TVA du devis',
+    direct: 'TVA du devis',
+  },
+  'devis.vatRequired': {
+    pote: 'Choisis le taux avant d’ajouter une ligne. Je ne mets jamais 20 % à ta place.',
+    pro: 'Confirmez le taux avant d’ajouter une ligne. Aucun taux n’est appliqué par défaut.',
+    direct: 'TVA requise. Aucun taux automatique.',
+  },
+  'devis.vatProfileUnavailable': {
+    pote: 'Je n’arrive pas à relire ton régime TVA. Réessaie avant de chiffrer.',
+    pro: 'Le régime de TVA n’a pas pu être chargé. Réessayez avant de chiffrer.',
+    direct: 'Régime TVA indisponible. Réessaie.',
+  },
   'devis.totalHt': {
     pote: 'Total HT',
     pro: 'Total HT',
@@ -2818,6 +3014,11 @@ const legacyFr = {
     pro: 'Taux normal — 20 %',
     direct: 'Normal — 20 %',
   },
+  'devis.vatSpecialReduced': {
+    pote: 'Taux particulier réglementé — 2,1 %',
+    pro: 'Taux particulier réglementé — 2,1 %',
+    direct: 'Taux particulier — 2,1 %',
+  },
   'devis.vatHousing': {
     pote: 'Logement de plus de 2 ans — 10 %',
     pro: 'Logement de plus de 2 ans — 10 %',
@@ -2827,6 +3028,16 @@ const legacyFr = {
     pote: 'Rénovation énergétique — 5,5 %',
     pro: 'Rénovation énergétique — 5,5 %',
     direct: 'Réno énergétique — 5,5 %',
+  },
+  'devis.vatAutoliquidation': {
+    pote: 'Sous-traitance BTP en autoliquidation — 0 %',
+    pro: 'Autoliquidation de TVA — sous-traitance BTP — 0 %',
+    direct: 'Autoliquidation BTP — 0 %',
+  },
+  'devis.vatFranchise': {
+    pote: 'Franchise en base — TVA non facturée',
+    pro: 'Franchise en base (art. 293 B) — TVA non facturée',
+    direct: 'Franchise en base — 0 %',
   },
   'devis.vatHint': {
     pote: 'Je mets tout le devis à {rate} % — et je revérifie le taux au moment de générer (franchise, autoliquidation).',
@@ -3758,6 +3969,12 @@ const legacyFr = {
     direct: 'Dernier truc : le check 2026.',
   },
   'onboard.previewCta': { pote: 'C’est parti', pro: 'C’est parti', direct: 'C’est parti' },
+  'onboard.saving': { pote: 'Je sauvegarde…', pro: 'Enregistrement…', direct: 'Enregistrement…' },
+  'onboard.saveError': {
+    pote: 'Je n’ai pas pu enregistrer tes choix. Vérifie ta connexion et réessaie.',
+    pro: 'Les choix n’ont pas pu être enregistrés. Vérifiez votre connexion puis réessayez.',
+    direct: 'Enregistrement impossible. Vérifie ta connexion et réessaie.',
+  },
   'onboard.hlDecennale': {
     pote: 'Ta décennale suivie et rappelée',
     pro: 'Assurance décennale suivie',
@@ -4659,26 +4876,30 @@ const legacyFr = {
   'dep.sectionList': { pote: 'Tes dépenses', pro: 'Vos dépenses', direct: 'Dépenses' },
   'dep.statusToPay': { pote: 'À payer', pro: 'À payer', direct: 'À payer' },
   'dep.statusPaid': { pote: 'Payée', pro: 'Payée', direct: 'Payée' },
-  'dep.pay': { pote: 'Payer', pro: 'Marquer payée', direct: 'Payer' },
+  'dep.pay': {
+    pote: 'Enregistrer comme payée',
+    pro: 'Enregistrer comme payée',
+    direct: 'Noter payée',
+  },
   'dep.payConfirmTitle': {
-    pote: 'Régler cette dépense ?',
-    pro: 'Régler la dépense',
-    direct: 'Régler ?',
+    pote: 'Tu l’as déjà payée ?',
+    pro: 'Confirmer un paiement déjà effectué',
+    direct: 'Paiement déjà fait ?',
   },
   'dep.payConfirmBody': {
-    pote: 'Je passe {supplier} en payée et j’écris le décaissement au journal de banque ({amount}).',
-    pro: 'La dépense {supplier} passe en payée ; le décaissement ({amount}) est écrit au journal de banque.',
-    direct: '{supplier} payée · décaissement {amount} au journal.',
+    pote: 'Aucun virement ne part d’ici. Je note seulement {amount} payés aujourd’hui à {supplier} et je mets le journal à jour.',
+    pro: 'Aucun paiement n’est déclenché. Bob enregistre uniquement un règlement de {amount} daté d’aujourd’hui pour {supplier}.',
+    direct: 'Aucun virement. J’enregistre {amount} payés aujourd’hui à {supplier}.',
   },
   'dep.paidToast': {
-    pote: '{supplier} réglée ✓ — le journal est à jour.',
-    pro: 'Dépense {supplier} réglée. Journal de banque à jour.',
-    direct: '{supplier} réglée.',
+    pote: 'Paiement de {supplier} enregistré ✓',
+    pro: 'Paiement de {supplier} enregistré dans le journal.',
+    direct: '{supplier} : paiement noté.',
   },
   'dep.payError': {
-    pote: 'Le règlement a raté — on réessaie ?',
-    pro: 'Le règlement a échoué. Veuillez réessayer.',
-    direct: 'Règlement KO. Réessaie.',
+    pote: 'Je n’ai pas pu enregistrer le paiement — rien n’a changé.',
+    pro: 'Le paiement n’a pas pu être enregistré. Aucune modification n’a été appliquée.',
+    direct: 'Enregistrement KO. Rien n’a changé.',
   },
   'dep.catFournitures': { pote: 'Fournitures', pro: 'Fournitures', direct: 'Fournitures' },
   'dep.catMateriel': { pote: 'Matériel', pro: 'Matériel', direct: 'Matériel' },
@@ -5297,6 +5518,11 @@ const legacyFr = {
   },
   'catalogue.vatField': { pote: 'TVA', pro: 'TVA', direct: 'TVA' },
   'catalogue.vatRatePct': { pote: '{rate} %', pro: '{rate} %', direct: '{rate} %' },
+  'catalogue.vatRequired': {
+    pote: 'Choisis le taux de cette prestation. Je ne mets pas 20 % automatiquement.',
+    pro: 'Sélectionnez explicitement le taux de cette prestation.',
+    direct: 'Taux requis. Aucun défaut automatique.',
+  },
   'catalogue.categoryField': { pote: 'Catégorie', pro: 'Catégorie', direct: 'Catégorie' },
   'catalogue.save': { pote: 'Enregistrer', pro: 'Enregistrer', direct: 'Enregistrer' },
   'catalogue.delete': {
@@ -5324,6 +5550,11 @@ const legacyFr = {
     pro: 'Impossible de charger le catalogue. Veuillez réessayer.',
     direct: 'Catalogue injoignable. Réessaie.',
   },
+  'catalogue.loading': {
+    pote: 'Je charge ton catalogue. Une seconde.',
+    pro: 'Chargement du catalogue en cours.',
+    direct: 'Je charge le catalogue.',
+  },
   'catalogue.legacyProtectedTitle': {
     pote: 'Anciennes données mises à l’abri',
     pro: 'Anciennes données protégées',
@@ -5332,7 +5563,8 @@ const legacyFr = {
   'catalogue.legacyProtectedBody': {
     pote: 'J’ai trouvé un ancien catalogue local. Je le garde chiffré sur cet appareil, mais je ne l’utilise pas : impossible de vérifier à quel compte il appartenait. Il reste ici jusqu’à ce que tu le supprimes.',
     pro: 'Un ancien catalogue local est conservé chiffré sur cet appareil, sans être utilisé : son compte d’origine ne peut pas être vérifié. Il sera conservé jusqu’à sa suppression explicite.',
-    direct: 'Ancien catalogue chiffré, non utilisé : compte d’origine invérifiable. Conservé jusqu’à suppression.',
+    direct:
+      'Ancien catalogue chiffré, non utilisé : compte d’origine invérifiable. Conservé jusqu’à suppression.',
   },
   'catalogue.legacyDeleteCta': {
     pote: 'Supprimer ces anciennes données',
@@ -5374,7 +5606,9 @@ const legacyFr = {
     pro: 'Depuis votre catalogue',
     direct: 'Catalogue',
   },
-  'catalogue.back': { pote: 'Retour', pro: 'Retour', direct: 'Retour' },
+  // Le libellé nomme l'écran de destination (retours device fondateur, jamais « Retour »
+  // générique) — le catalogue n'est ouvert QUE depuis Facturation & modèles.
+  'catalogue.back': { pote: 'Facturation', pro: 'Facturation', direct: 'Facturation' },
   // Corbeille unifiée (DeleteIconButton) : sheet d'édition + swipe des cartes perso — jamais
   // une suppression directe, toujours cette ConfirmSheet (destructive, tap simple).
   'catalogue.deleteConfirmTitle': {
@@ -5447,9 +5681,38 @@ const legacyFr = {
     direct: 'TVA & mentions',
   },
   'reglages.vatDefaultLabel': {
-    pote: 'TVA par défaut de ton métier ({trade})',
-    pro: 'TVA par défaut du métier ({trade})',
-    direct: 'TVA par défaut ({trade})',
+    pote: 'Règle de saisie TVA',
+    pro: 'Règle de saisie de la TVA',
+    direct: 'Règle TVA',
+  },
+  'reglages.vatFranchiseValue': {
+    pote: 'Franchise en base · 0 %',
+    pro: 'Franchise en base · 0 %',
+    direct: 'Franchise · 0 %',
+  },
+  'reglages.vatPerDocumentValue': {
+    pote: 'À choisir sur chaque devis',
+    pro: 'À confirmer sur chaque pièce',
+    direct: 'Choix par pièce',
+  },
+  // Segmented control réel branché sur PATCH /company/profile (le même endpoint que l'onboarding —
+  // reel_simpl/reel_normal étaient déjà affichés comme UN SEUL bucket « à choisir sur chaque devis » ;
+  // le segment « Réel » choisit reel_normal, la simplification 2 options du proto assumée ici).
+  'reglages.vatSegmentReel': { pote: 'Réel · TVA 20 %', pro: 'Réel · TVA 20 %', direct: 'Réel · 20 %' },
+  'reglages.vatSegmentFranchise': {
+    pote: 'Franchise en base',
+    pro: 'Franchise en base',
+    direct: 'Franchise',
+  },
+  'reglages.vatRegimeHelpFranchise': {
+    pote: 'Pas de TVA sur tes factures — la mention obligatoire est ajoutée automatiquement.',
+    pro: 'Pas de TVA sur vos factures — la mention obligatoire est ajoutée automatiquement.',
+    direct: 'Sans TVA. Mention ajoutée automatiquement.',
+  },
+  'reglages.vatRegimeHelpReel': {
+    pote: 'Tu factures la TVA — le taux se confirme sur chaque devis ou facture.',
+    pro: 'Vous facturez la TVA — le taux se confirme sur chaque devis ou facture.',
+    direct: 'TVA facturée. Taux confirmé pièce par pièce.',
   },
   'reglages.mentionsAuto': {
     pote: 'Pénalités de retard, TVA, décennale si bâtiment… je pose les mentions obligatoires tout seul sur chaque pièce, selon ton régime et ton client.',
@@ -5486,32 +5749,273 @@ const legacyFr = {
     pro: 'Aucune facture émise pour le moment.',
     direct: 'Aucune facture émise.',
   },
-  'reglages.sectionLogo': { pote: 'Logo', pro: 'Logo', direct: 'Logo' },
-  'reglages.logoSoon': {
-    pote: 'Ton logo sur tes devis et factures — j’y travaille, ça arrive.',
-    pro: 'L’ajout de votre logo sur vos documents arrive prochainement.',
-    direct: 'Logo sur les PDF : bientôt.',
+  // ── Fusion proto (retours device fondateur) — Aperçu en direct ─────────────────────────────
+  'reglages.previewLive': { pote: 'Aperçu en direct', pro: 'Aperçu en direct', direct: 'Aperçu en direct' },
+  'reglages.previewInvoiceLabel': { pote: 'FACTURE', pro: 'FACTURE', direct: 'FACTURE' },
+  'reglages.previewNumberPlaceholder': {
+    pote: 'Ton prochain numéro',
+    pro: 'Votre prochain numéro',
+    direct: 'Prochain numéro',
   },
+
+  // ── Logo (image picker + copie locale persistante — aucun champ `logoUrl` côté serveur) ───
+  'reglages.sectionLogo': { pote: 'Logo', pro: 'Logo', direct: 'Logo' },
+  'reglages.logoTitle': { pote: 'Ton logo', pro: 'Votre logo', direct: 'Logo' },
+  'reglages.logoSub': {
+    pote: 'PNG ou JPG, fond transparent conseillé',
+    pro: 'PNG ou JPG, fond transparent conseillé',
+    direct: 'PNG/JPG, fond transparent conseillé',
+  },
+  'reglages.logoAdd': { pote: 'Ajouter', pro: 'Ajouter', direct: 'Ajouter' },
+  'reglages.logoChange': { pote: 'Changer', pro: 'Changer', direct: 'Changer' },
+  'reglages.logoRemove': { pote: 'Supprimer', pro: 'Supprimer', direct: 'Supprimer' },
+  'reglages.logoPermissionDenied': {
+    pote: 'Autorise l’accès à tes photos pour choisir un logo.',
+    pro: 'Autorisez l’accès à vos photos pour choisir un logo.',
+    direct: 'Accès photos requis.',
+  },
+  'reglages.logoError': {
+    pote: 'Le logo n’a pas pu être enregistré, là. Réessaie.',
+    pro: 'Le logo n’a pas pu être enregistré. Veuillez réessayer.',
+    direct: 'Échec de l’enregistrement du logo.',
+  },
+  'reglages.logoOnPdfNote': {
+    pote: 'Pour l’instant, ton logo change l’aperçu ici — je l’imprimerai sur le PDF très bientôt.',
+    pro: 'Pour l’instant, ce logo s’applique à l’aperçu. Il sera bientôt imprimé sur le PDF généré.',
+    direct: 'Aperçu seulement pour l’instant. PDF à venir.',
+  },
+
+  // ── Identité sur les factures (lecture réelle — édition post-inscription pas encore possible) ─
+  'reglages.sectionIdentity': {
+    pote: 'Identité sur les factures',
+    pro: 'Identité sur les factures',
+    direct: 'Identité',
+  },
+  'reglages.identityName': { pote: 'Raison sociale', pro: 'Raison sociale', direct: 'Raison sociale' },
+  'reglages.identitySiret': { pote: 'SIRET', pro: 'SIRET', direct: 'SIRET' },
+  'reglages.identityRm': { pote: 'N° RM / RCS', pro: 'N° RM / RCS', direct: 'RM / RCS' },
+  'reglages.identityAddress': { pote: 'Adresse', pro: 'Adresse', direct: 'Adresse' },
+  'reglages.identityNotEditableNote': {
+    pote: 'Ces informations viennent de ton inscription — écris-nous pour les corriger, ça arrive vite.',
+    pro: 'Ces informations proviennent de votre inscription — contactez-nous pour les corriger.',
+    direct: 'Non modifiable ici. Contacte-nous.',
+  },
+
+  // ── Coordonnées bancaires (RIB) — SEUL champ d'identité réellement éditable ici (PATCH
+  // /company/billing) : iban/bic existaient déjà côté société mais sans endpoint d'écriture. ──
   'reglages.sectionRib': {
     pote: 'Coordonnées bancaires (RIB)',
     pro: 'Coordonnées bancaires (RIB)',
     direct: 'RIB',
   },
-  'reglages.ribSoon': {
-    pote: 'Ton RIB sur les factures pour les virements — ça arrive aussi.',
-    pro: 'L’affichage du RIB sur les factures (paiement par virement) arrive prochainement.',
-    direct: 'RIB sur factures : bientôt.',
+  'reglages.ribIbanLabel': { pote: 'IBAN', pro: 'IBAN', direct: 'IBAN' },
+  'reglages.ribIbanEmpty': {
+    pote: 'Aucun IBAN enregistré',
+    pro: 'Aucun IBAN enregistré',
+    direct: 'Aucun IBAN',
   },
+  'reglages.ribToggleLabel': {
+    pote: 'Afficher le RIB sur les factures',
+    pro: 'Afficher le RIB sur les factures',
+    direct: 'RIB sur factures',
+  },
+  'reglages.ribToggleSub': {
+    pote: 'Pour les paiements par virement',
+    pro: 'Pour les paiements par virement',
+    direct: 'Paiements par virement',
+  },
+  'reglages.ribOnPdfNote': {
+    pote: 'Ce réglage change l’aperçu ici — je l’appliquerai au PDF généré très bientôt.',
+    pro: 'Ce réglage s’applique à l’aperçu. Il sera bientôt appliqué au PDF généré.',
+    direct: 'Aperçu seulement pour l’instant. PDF à venir.',
+  },
+  'reglages.ibanSheetTitle': { pote: 'Ton IBAN', pro: 'Votre IBAN', direct: 'IBAN' },
+  'reglages.ibanSheetBody': {
+    pote: 'Utilisé pour afficher ton RIB sur tes factures, si tu le souhaites.',
+    pro: 'Utilisé pour afficher votre RIB sur vos factures, si vous le souhaitez.',
+    direct: 'Affiché sur tes factures si activé.',
+  },
+  'reglages.ibanSheetLabel': { pote: 'IBAN', pro: 'IBAN', direct: 'IBAN' },
+  'reglages.ibanSheetPlaceholder': {
+    pote: 'FR76 3000 6000 0112 3456 7890 189',
+    pro: 'FR76 3000 6000 0112 3456 7890 189',
+    direct: 'FR76…',
+  },
+  'reglages.ibanSheetInvalid': {
+    pote: 'Cet IBAN ne semble pas valide — vérifie les chiffres.',
+    pro: 'Cet IBAN ne semble pas valide — vérifiez la saisie.',
+    direct: 'IBAN invalide.',
+  },
+  'reglages.ibanSheetError': {
+    pote: 'Je n’arrive pas à enregistrer ton IBAN, là. Réessaie.',
+    pro: 'Impossible d’enregistrer l’IBAN pour le moment. Veuillez réessayer.',
+    direct: 'Échec de l’enregistrement.',
+  },
+  'reglages.ibanSheetSave': { pote: 'Enregistrer', pro: 'Enregistrer', direct: 'Enregistrer' },
+  'reglages.ibanSheetCancel': { pote: 'Annuler', pro: 'Annuler', direct: 'Annuler' },
+
+  // ── Assurance — adaptatif métier (décennale BTP / RC Pro hors bâtiment) ────────────────────
+  'reglages.sectionInsuranceBtp': { pote: 'Assurance', pro: 'Assurance', direct: 'Assurance' },
+  'reglages.sectionInsuranceOther': {
+    pote: 'Assurance (RC Pro)',
+    pro: 'Assurance (RC Pro)',
+    direct: 'RC Pro',
+  },
+  'reglages.insuranceDecennaleLabel': { pote: 'Décennale', pro: 'Décennale', direct: 'Décennale' },
+  'reglages.insuranceRcProLabel': { pote: 'RC Pro', pro: 'RC Pro', direct: 'RC Pro' },
+  'reglages.insuranceEmptyBtp': {
+    pote: 'Aucune décennale enregistrée pour l’instant — écris-nous pour l’ajouter.',
+    pro: 'Aucune assurance décennale enregistrée — contactez-nous pour l’ajouter.',
+    direct: 'Aucune décennale enregistrée.',
+  },
+  'reglages.insuranceEmptyOther': {
+    pote: 'Aucune RC Pro enregistrée pour l’instant — écris-nous pour l’ajouter.',
+    pro: 'Aucune RC Pro enregistrée — contactez-nous pour l’ajouter.',
+    direct: 'Aucune RC Pro enregistrée.',
+  },
+  'reglages.insuranceToggleLabelBtp': {
+    pote: 'Afficher sur les factures BTP',
+    pro: 'Afficher sur les factures BTP',
+    direct: 'Sur factures BTP',
+  },
+  'reglages.insuranceToggleSubBtp': {
+    pote: 'Obligatoire pour le bâtiment',
+    pro: 'Obligatoire pour le bâtiment',
+    direct: 'Obligatoire (bâtiment)',
+  },
+  'reglages.insuranceToggleLabelOther': {
+    pote: 'Afficher sur les factures',
+    pro: 'Afficher sur les factures',
+    direct: 'Sur les factures',
+  },
+  'reglages.insuranceToggleSubOther': {
+    pote: 'Rassure tes clients',
+    pro: 'Rassure vos clients',
+    direct: 'Optionnel',
+  },
+  'reglages.insuranceOnPdfNote': {
+    pote: 'Ce réglage change l’aperçu ici — je l’appliquerai au PDF généré très bientôt.',
+    pro: 'Ce réglage s’applique à l’aperçu. Il sera bientôt appliqué au PDF généré.',
+    direct: 'Aperçu seulement pour l’instant. PDF à venir.',
+  },
+
+  // ── Valeurs par défaut — validité (réellement appliquée aux prochains devis) + acompte/
+  // conditions/couleur (préférences mémorisées, appliquées à l'aperçu ; branchement complet
+  // documenté en attente) ─────────────────────────────────────────────────────────────────────
+  'reglages.sectionDefaults': {
+    pote: 'Valeurs par défaut',
+    pro: 'Valeurs par défaut',
+    direct: 'Valeurs par défaut',
+  },
+  'reglages.defaultsValidityLabel': {
+    pote: 'Validité des devis',
+    pro: 'Validité des devis',
+    direct: 'Validité devis',
+  },
+  'reglages.defaultsValidityDays': {
+    pote: '{days} jours',
+    pro: '{days} jours',
+    direct: '{days} j',
+  },
+  'reglages.defaultsDepositLabel': {
+    pote: 'Acompte par défaut',
+    pro: 'Acompte par défaut',
+    direct: 'Acompte',
+  },
+  'reglages.defaultsPaymentTermsLabel': {
+    pote: 'Conditions de paiement',
+    pro: 'Conditions de paiement',
+    direct: 'Conditions',
+  },
+  'reglages.paymentTermsReception': { pote: 'À réception', pro: 'À réception', direct: 'Réception' },
+  'reglages.paymentTermsJ30': { pote: '30 jours', pro: '30 jours', direct: '30 j' },
+  'reglages.paymentTermsJ45': { pote: '45 jours', pro: '45 jours', direct: '45 j' },
+  'reglages.defaultsAccentLabel': {
+    pote: 'Couleur d’accent du PDF',
+    pro: 'Couleur d’accent du PDF',
+    direct: 'Couleur PDF',
+  },
+  'reglages.defaultsNote': {
+    pote: 'La validité s’applique déjà à tes prochains devis. L’acompte, les conditions de paiement et la couleur sont mémorisés ici — je les appliquerai partout très bientôt.',
+    pro: 'La validité s’applique déjà à vos prochains devis. L’acompte, les conditions de paiement et la couleur sont mémorisés ici — ils seront bientôt appliqués partout.',
+    direct: 'Validité : déjà active. Le reste arrive.',
+  },
+
   'reglages.soonBadge': { pote: 'Bientôt', pro: 'À venir', direct: 'Bientôt' },
   'reglages.dataError': {
     pote: 'Je n’arrive pas à lire tes réglages, là. On réessaie ?',
     pro: 'Impossible de charger les réglages. Veuillez réessayer.',
     direct: 'Réglages injoignables. Réessaie.',
   },
-  'reglages.back': { pote: 'Retour', pro: 'Retour', direct: 'Retour' },
+  // Le libellé nomme l'écran de destination — reglages-facturation ET profil-fiscal ne sont
+  // ouverts QUE depuis Compte (compte.tsx), la clé partagée reste donc correcte pour les deux.
+  'reglages.back': { pote: 'Compte', pro: 'Compte', direct: 'Compte' },
+
+  // ── Modale menu profil (design_handoff_bob_pro/Bob Pro.dc.html §PROFILE SHEET) — tap sur
+  // l'avatar du Home, LE flow du handoff : bottom sheet, jamais une navigation directe. ────────
+  'menu.title': { pote: 'Menu profil', pro: 'Menu profil', direct: 'Menu' },
+  'menu.closeLabel': { pote: 'Fermer', pro: 'Fermer', direct: 'Fermer' },
+  'menu.account': {
+    pote: 'Mon compte & abonnement',
+    pro: 'Mon compte & abonnement',
+    direct: 'Compte & abonnement',
+  },
+  'menu.accountSub': {
+    pote: 'Profil, entreprise, offre Pro',
+    pro: 'Profil, entreprise, offre Pro',
+    direct: 'Profil · entreprise · offre',
+  },
+  'menu.onboarding': { pote: 'Revoir l’onboarding', pro: 'Revoir l’onboarding', direct: 'Onboarding' },
+  'menu.onboardingSub': {
+    pote: 'Configuration adaptée à ton métier',
+    pro: 'Configuration adaptée à votre métier',
+    direct: 'Configuration par métier',
+  },
+  'menu.tips': { pote: 'Revoir les astuces', pro: 'Revoir les astuces', direct: 'Astuces' },
+  'menu.tipsSub': {
+    pote: 'Réaffiche les conseils first-run des écrans',
+    pro: 'Réaffiche les conseils de premier lancement',
+    direct: 'Réaffiche les conseils des écrans',
+  },
+  'menu.tipsResetToast': {
+    pote: 'Les astuces réapparaîtront sur leurs écrans.',
+    pro: 'Les astuces réapparaîtront sur leurs écrans.',
+    direct: 'Astuces réaffichées.',
+  },
+  'menu.diagnostic': {
+    pote: 'Diagnostic conformité 2026',
+    pro: 'Diagnostic conformité 2026',
+    direct: 'Diagnostic 2026',
+  },
+  'menu.diagnosticSub': {
+    pote: 'Où tu en es pour la facture élec.',
+    pro: 'Votre avancement pour la facture électronique',
+    direct: 'Facture électronique 2026',
+  },
+
+  // ── Gate « entreprise complète » (DocumentActions.tsx — émission devis/facture) ─────────────
+  'gate.companyIncompleteTitle': {
+    pote: 'Complète ta fiche entreprise',
+    pro: 'Complétez votre fiche entreprise',
+    direct: 'Fiche entreprise incomplète',
+  },
+  'gate.companyIncompleteBodyQuote': {
+    pote: 'Pour envoyer un devis officiel, renseigne d’abord ton entreprise (RM/RCS et adresse).',
+    pro: 'Pour envoyer un devis officiel, veuillez d’abord renseigner votre entreprise (RM/RCS et adresse).',
+    direct: 'RM/RCS et adresse requis avant l’envoi.',
+  },
+  'gate.companyIncompleteBodyInvoice': {
+    pote: 'Pour émettre une facture, renseigne d’abord ton entreprise (RM/RCS et adresse).',
+    pro: 'Pour émettre une facture, veuillez d’abord renseigner votre entreprise (RM/RCS et adresse).',
+    direct: 'RM/RCS et adresse requis avant l’émission.',
+  },
+  'gate.companyIncompleteCta': { pote: 'Compléter', pro: 'Compléter', direct: 'Compléter' },
+  'gate.companyIncompleteCancel': { pote: 'Plus tard', pro: 'Plus tard', direct: 'Plus tard' },
 
   // ── C26 — Compte & abonnement ───────────────────────────────────────────────
-  'account.back': { pote: 'Retour', pro: 'Retour', direct: 'Retour' },
+  // « Fermer » (pas « Retour ») : Compte est désormais atteint depuis la modale menu profil
+  // (bottom sheet) — on ferme un écran ouvert depuis une modale, on n'y « retourne » pas.
+  'account.back': { pote: 'Fermer', pro: 'Fermer', direct: 'Fermer' },
   'account.eyebrow': { pote: 'Ton compte', pro: 'Votre compte', direct: 'Compte' },
   'account.title': { pote: 'Mon compte', pro: 'Mon compte', direct: 'Mon compte' },
   'account.subtitle': {
@@ -5538,10 +6042,17 @@ const legacyFr = {
     direct: 'Forme · activité',
   },
   'account.companyVat': { pote: 'Régime TVA', pro: 'Régime TVA', direct: 'TVA' },
-  'account.companyEmpty': {
-    pote: 'Ta fiche entreprise s’affichera ici dès que ton compte sera relié à ta société.',
-    pro: 'Les informations de votre entreprise s’afficheront ici une fois votre société reliée à votre compte.',
-    direct: 'Fiche entreprise : pas encore reliée.',
+  // Retours device fondateur — l'ancien texte mort « ça s'affichera ici » devient une carte
+  // actionnable (contact support, aucun flow de ré-édition en libre-service pour l'instant).
+  'account.companyEmptyTitle': {
+    pote: 'Renseigne ta fiche entreprise',
+    pro: 'Complétez votre fiche entreprise',
+    direct: 'Fiche entreprise incomplète',
+  },
+  'account.companyEmptyBody': {
+    pote: 'On dirait que ta société n’est pas encore reliée à ton compte — écris-nous, on répare ça avec toi.',
+    pro: 'Votre société ne semble pas reliée à votre compte — contactez-nous, nous nous en occupons avec vous.',
+    direct: 'Société non reliée. Contacte-nous.',
   },
   'account.billingRow': {
     pote: 'Facturation & modèles',
@@ -5700,7 +6211,11 @@ const legacyFr = {
 
   // ── Audit stores 20260716 — footer légal + suppression de compte (Apple 5.1.1(v)) ─────────
   'account.sectionLegal': { pote: 'Infos légales', pro: 'Informations légales', direct: 'Légal' },
-  'account.appVersion': { pote: 'Version {version}', pro: 'Version {version}', direct: 'v{version}' },
+  'account.appVersion': {
+    pote: 'Version {version}',
+    pro: 'Version {version}',
+    direct: 'v{version}',
+  },
   'account.legalTerms': {
     pote: 'Conditions d’utilisation',
     pro: 'Conditions d’utilisation',
@@ -5751,7 +6266,11 @@ const legacyFr = {
     pro: 'Cette action est définitive. Voici précisément ce qu’elle implique.',
     direct: 'Action définitive et irréversible.',
   },
-  'account.deleteSheetGoesTitle': { pote: 'Ce qui disparaît', pro: 'Ce qui disparaît', direct: 'Supprimé' },
+  'account.deleteSheetGoesTitle': {
+    pote: 'Ce qui disparaît',
+    pro: 'Ce qui disparaît',
+    direct: 'Supprimé',
+  },
   'account.deleteSheetGoesBody': {
     pote: 'Ton accès à l’appli et tes informations personnelles (nom, contact) sont supprimés.',
     pro: 'Votre accès à l’application et vos informations personnelles (nom, contact) sont supprimés.',
@@ -5869,7 +6388,10 @@ const legacyFr = {
   },
 } as const satisfies Record<string, Copy>;
 
-const fr = { ...legacyFr, ...cabinetFr, ...monetizationFr, ...fiscalFr } as const satisfies Record<string, Copy>;
+const fr = { ...legacyFr, ...cabinetFr, ...monetizationFr, ...fiscalFr } as const satisfies Record<
+  string,
+  Copy
+>;
 
 export type I18nKey = keyof typeof fr;
 

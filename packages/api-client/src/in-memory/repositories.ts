@@ -15,6 +15,11 @@ import type {
   AccountingEntryRepository,
   ChartOfAccountsRepository,
   ChantierRepository,
+  CatalogueItemRecord,
+  CatalogueRepository,
+  CatalogueCreateWriteResult,
+  CatalogueUpdateWriteResult,
+  CatalogueDeleteWriteResult,
 } from '@bob/core';
 
 export class InMemoryCompanyRepository implements CompanyRepository {
@@ -43,8 +48,8 @@ export class InMemoryCustomerRepository implements CustomerRepository {
   async findById(id: string): Promise<Customer | null> {
     return this.map.get(id) ?? null;
   }
-  async listByCompany(_companyId: string): Promise<Customer[]> {
-    return [...this.map.values()];
+  async listByCompany(companyId: string): Promise<Customer[]> {
+    return [...this.map.values()].filter((customer) => customer.companyId === companyId);
   }
   async save(c: Customer): Promise<void> {
     this.map.set(c.id, c);
@@ -260,6 +265,39 @@ export class InMemoryChartOfAccountsRepository implements ChartOfAccountsReposit
   async findByCompany(companyId: string): Promise<ChartOfAccounts | null> {
     const chart = this.map.get(companyId);
     return chart ? ChartOfAccounts.rehydrate(chart.toProps()) : null;
+  }
+}
+
+export class InMemoryCatalogueRepository implements CatalogueRepository {
+  private readonly map = new Map<string, CatalogueItemRecord>();
+
+  async listByCompany(companyId: string): Promise<readonly CatalogueItemRecord[]> {
+    return [...this.map.values()]
+      .filter((item) => item.companyId === companyId)
+      .map((item) => ({ ...item }));
+  }
+
+  async create(item: CatalogueItemRecord): Promise<CatalogueCreateWriteResult> {
+    if (this.map.has(item.id)) return { status: 'id_conflict' };
+    this.map.set(item.id, { ...item });
+    return { status: 'created', item: { ...item } };
+  }
+
+  async update(input: Parameters<CatalogueRepository['update']>[0]): Promise<CatalogueUpdateWriteResult> {
+    const current = this.map.get(input.id);
+    if (current === undefined || current.companyId !== input.companyId) return { status: 'not_found' };
+    if (current.revision !== input.expectedRevision) return { status: 'revision_conflict' };
+    const updated: CatalogueItemRecord = { ...input.item, createdAt: current.createdAt };
+    this.map.set(input.id, updated);
+    return { status: 'updated', item: { ...updated } };
+  }
+
+  async delete(input: Parameters<CatalogueRepository['delete']>[0]): Promise<CatalogueDeleteWriteResult> {
+    const current = this.map.get(input.id);
+    if (current === undefined || current.companyId !== input.companyId) return { status: 'not_found' };
+    if (current.revision !== input.expectedRevision) return { status: 'revision_conflict' };
+    this.map.delete(input.id);
+    return { status: 'deleted' };
   }
 }
 

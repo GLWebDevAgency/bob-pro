@@ -32,8 +32,12 @@ import type {
   DeleteDocumentFolderStrategy,
   UpdateQuoteLineInput,
   SalesDocumentSearchScope,
+  CatalogueItemWriteInput,
+  Trade,
+  VatRegime,
+  CustomerPortfolio,
 } from '@bob/core';
-import { isValidDateOnly } from '@bob/core';
+import { Iban, isCatalogueCategory, isValidDateOnly, isVatRate } from '@bob/core';
 import { type AgentAskPayload } from '@bob/ai';
 import { Throttle } from '@nestjs/throttler';
 import { BackendService, type FacturXImportDecision, type UploadDocumentInput } from './backend.service';
@@ -60,6 +64,10 @@ function assertJsonObjectBody(value: unknown): asserts value is Record<string, u
       HttpStatus.UNPROCESSABLE_ENTITY,
     );
   }
+}
+
+function isJsonRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 const RECORD_EXPENSE_FIELDS = new Set([
@@ -89,6 +97,40 @@ const CREATE_QUOTE_CONTEXT_FIELDS = new Set(['housingOlderThan2y', 'energyRenova
 const INVOICE_GENERATION_FIELDS = new Set(['mode']);
 const QUOTE_LINE_PATCH_FIELDS = new Set(['label', 'qty', 'unitPriceHT', 'vatRate']);
 const SIGN_QUOTE_FIELDS = new Set(['signerName', 'proofDataUrl']);
+const CATALOGUE_ITEM_FIELDS = new Set(['label', 'category', 'unit', 'unitPriceHT', 'vatRate']);
+const CATALOGUE_ITEM_UPDATE_FIELDS = new Set([...CATALOGUE_ITEM_FIELDS, 'expectedRevision']);
+const COMPANY_PROFILE_FIELDS = new Set(['trade', 'vatRegime', 'customerPortfolio']);
+/** Réglages facturation §Coordonnées bancaires (RIB) — champs déjà persistés (CompanyProps.iban/
+ * bic) mais jusqu'ici jamais éditables : seul endpoint qui les écrit après l'onboarding. */
+const COMPANY_BILLING_FIELDS = new Set(['iban', 'bic']);
+const BIC_PATTERN = /^[A-Z0-9]{8}([A-Z0-9]{3})?$/;
+const MANUAL_BANK_BALANCE_FIELDS = new Set(['amountCents', 'observedAt']);
+const CREATE_CUSTOMER_FIELDS = new Set([
+  'type',
+  'name',
+  'siren',
+  'address',
+  'email',
+  'phone',
+  'paymentTermsLabel',
+  'isInternational',
+  'isSubcontractingBtp',
+]);
+const CUSTOMER_ADDRESS_FIELDS = new Set(['line1', 'zip', 'city']);
+const TRADES = new Set<Trade>([
+  'plombier',
+  'electricien',
+  'macon',
+  'peintre',
+  'paysagiste',
+  'consultant',
+  'freelance_it',
+  'photographe',
+  'coach',
+  'autre',
+]);
+const VAT_REGIMES = new Set<VatRegime>(['franchise', 'reel_simpl', 'reel_normal']);
+const CUSTOMER_PORTFOLIOS = new Set<CustomerPortfolio>(['b2c', 'b2b', 'b2g', 'mixte']);
 // Tracé du pad : dataURL SVG/PNG de quelques Ko en pratique — borne large mais finie (anti-DoS).
 const SIGN_PROOF_MAX_CHARS = 512_000;
 const QUOTE_LINE_CATEGORIES = new Set(['labor', 'supply', 'travel', 'disbursement', 'subscription']);
@@ -130,6 +172,122 @@ function throwValidationIssues(issues: ValidationIssue[]): never {
     { ok: false, error: { kind: 'validation', issues } },
     HttpStatus.UNPROCESSABLE_ENTITY,
   );
+}
+
+function parseManualBankBalanceBody(body: Record<string, unknown>): {
+  amountCents: number;
+  observedAt: string;
+} {
+  const unknownField = Object.keys(body).find((field) => !MANUAL_BANK_BALANCE_FIELDS.has(field));
+  if (unknownField !== undefined) {
+    throwValidationIssues([{ field: unknownField, message: 'Champ non autorisé.' }]);
+  }
+  if (!Number.isSafeInteger(body.amountCents)) {
+    throwValidationIssues([{ field: 'amountCents', message: 'Solde en centimes entier requis.' }]);
+  }
+  if (
+    typeof body.observedAt !== 'string'
+    || !Number.isFinite(Date.parse(body.observedAt))
+    || new Date(Date.parse(body.observedAt)).toISOString() !== body.observedAt
+  ) {
+    throwValidationIssues([{ field: 'observedAt', message: 'Instant ISO canonique requis.' }]);
+  }
+  return { amountCents: body.amountCents as number, observedAt: body.observedAt };
+}
+
+function parseCreateCustomerBody(
+  body: Record<string, unknown>,
+): Omit<CustomerProps, 'id' | 'companyId'> {
+  const unknownField = Object.keys(body).find((field) => !CREATE_CUSTOMER_FIELDS.has(field));
+  if (unknownField !== undefined) {
+    throwValidationIssues([{ field: unknownField, message: 'Champ non autorisé.' }]);
+  }
+  if (!isJsonRecord(body.address)) {
+    throwValidationIssues([{ field: 'address', message: 'Adresse objet requise.' }]);
+  }
+  const unknownAddressField = Object.keys(body.address).find(
+    (field) => !CUSTOMER_ADDRESS_FIELDS.has(field),
+  );
+  if (unknownAddressField !== undefined) {
+    throwValidationIssues([{
+      field: `address.${unknownAddressField}`,
+      message: 'Champ non autorisé.',
+    }]);
+  }
+  const validOptionalString = (value: unknown) => value === undefined || typeof value === 'string';
+  const validOptionalBoolean = (value: unknown) =>
+    value === undefined || typeof value === 'boolean';
+  if (
+    (body.type !== 'b2c' && body.type !== 'b2b' && body.type !== 'b2g')
+    || typeof body.name !== 'string'
+    || typeof body.address.line1 !== 'string'
+    || typeof body.address.zip !== 'string'
+    || typeof body.address.city !== 'string'
+    || !validOptionalString(body.siren)
+    || !validOptionalString(body.email)
+    || !validOptionalString(body.phone)
+    || !validOptionalString(body.paymentTermsLabel)
+    || !validOptionalBoolean(body.isInternational)
+    || !validOptionalBoolean(body.isSubcontractingBtp)
+  ) {
+    throwValidationIssues([{ field: 'body', message: 'Fiche client invalide.' }]);
+  }
+  return {
+    type: body.type,
+    name: body.name,
+    address: {
+      line1: body.address.line1,
+      zip: body.address.zip,
+      city: body.address.city,
+    },
+    ...(body.siren !== undefined ? { siren: body.siren as string } : {}),
+    ...(body.email !== undefined ? { email: body.email as string } : {}),
+    ...(body.phone !== undefined ? { phone: body.phone as string } : {}),
+    ...(body.paymentTermsLabel !== undefined
+      ? { paymentTermsLabel: body.paymentTermsLabel as string }
+      : {}),
+    ...(body.isInternational !== undefined
+      ? { isInternational: body.isInternational as boolean }
+      : {}),
+    ...(body.isSubcontractingBtp !== undefined
+      ? { isSubcontractingBtp: body.isSubcontractingBtp as boolean }
+      : {}),
+  };
+}
+
+function parseCatalogueItemBody(
+  body: Record<string, unknown>,
+  mode: 'create' | 'update',
+): { item: CatalogueItemWriteInput; expectedRevision?: number } {
+  const allowed = mode === 'create' ? CATALOGUE_ITEM_FIELDS : CATALOGUE_ITEM_UPDATE_FIELDS;
+  const unknownField = Object.keys(body).find((field) => !allowed.has(field));
+  if (unknownField !== undefined) {
+    throwValidationIssues([{ field: unknownField, message: 'Champ non autorisé.' }]);
+  }
+  const unit = body.unit;
+  const valid =
+    typeof body.label === 'string'
+    && isCatalogueCategory(body.category)
+    && (unit === null || typeof unit === 'string')
+    && Number.isSafeInteger(body.unitPriceHT)
+    && typeof body.vatRate === 'number'
+    && isVatRate(body.vatRate);
+  const revision = body.expectedRevision;
+  const validRevision = mode === 'create'
+    || (Number.isSafeInteger(revision) && (revision as number) >= 1);
+  if (!valid || !validRevision) {
+    throwValidationIssues([{ field: 'body', message: 'Prestation catalogue invalide.' }]);
+  }
+  const item: CatalogueItemWriteInput = {
+    label: body.label as string,
+    category: body.category as CatalogueItemWriteInput['category'],
+    unit: unit as string | null,
+    unitPriceHT: body.unitPriceHT as number,
+    vatRate: body.vatRate as CatalogueItemWriteInput['vatRate'],
+  };
+  return mode === 'update'
+    ? { item, expectedRevision: revision as number }
+    : { item };
 }
 
 function hasControlCharacter(value: string): boolean {
@@ -755,7 +913,7 @@ export class HealthController {
 
   @Get()
   health() {
-    return { ok: true, service: 'bob-pro-api', mode: process.env.DEMO_MODE !== 'false' ? 'demo' : 'live' };
+    return { ok: true, service: 'bob-pro-api', dataMode: 'postgresql' as const };
   }
 
   @Get('ready')
@@ -780,8 +938,9 @@ export class CustomersController {
     return unwrap(await this.backend.listCustomers());
   }
   @Post()
-  async create(@Body() body: Omit<CustomerProps, 'id' | 'companyId'>) {
-    return unwrap(await this.backend.createCustomer(body));
+  async create(@Body() body: unknown) {
+    assertJsonObjectBody(body);
+    return unwrap(await this.backend.createCustomer(parseCreateCustomerBody(body)));
   }
 }
 
@@ -866,6 +1025,76 @@ export class CompanyLookupController {
   async me() {
     return unwrap(await this.backend.getCompanyMe());
   }
+
+  @Patch('profile')
+  async updateProfile(@Body() body: unknown) {
+    assertJsonObjectBody(body);
+    const unknownField = Object.keys(body).find((field) => !COMPANY_PROFILE_FIELDS.has(field));
+    if (
+      unknownField !== undefined
+      || typeof body.trade !== 'string'
+      || !TRADES.has(body.trade as Trade)
+      || typeof body.vatRegime !== 'string'
+      || !VAT_REGIMES.has(body.vatRegime as VatRegime)
+      || (
+        body.customerPortfolio !== undefined
+        && (
+          typeof body.customerPortfolio !== 'string'
+          || !CUSTOMER_PORTFOLIOS.has(body.customerPortfolio as CustomerPortfolio)
+        )
+      )
+    ) {
+      throwValidationIssues([{
+        field: unknownField ?? 'body',
+        message: unknownField === undefined ? 'Profil entreprise invalide.' : 'Champ non autorisé.',
+      }]);
+    }
+    return unwrap(await this.backend.updateCompanyProfile({
+      trade: body.trade as Trade,
+      vatRegime: body.vatRegime as VatRegime,
+      ...(body.customerPortfolio === undefined
+        ? {}
+        : { customerPortfolio: body.customerPortfolio as CustomerPortfolio }),
+    }));
+  }
+
+  /** PATCH /company/billing — Réglages facturation §Coordonnées bancaires : le seul endroit qui
+   * écrit iban/bic après l'onboarding. Partiel (les deux champs optionnels, absent = inchangé,
+   * `null` explicite = effacer) — contrairement à /profile, on ne force pas les deux à la fois
+   * (l'IBAN et le BIC n'ont pas de dépendance mutuelle contractuelle). */
+  @Patch('billing')
+  async updateBilling(@Body() body: unknown) {
+    assertJsonObjectBody(body);
+    const unknownField = Object.keys(body).find((field) => !COMPANY_BILLING_FIELDS.has(field));
+    if (unknownField !== undefined) {
+      throwValidationIssues([{ field: unknownField, message: 'Champ non autorisé.' }]);
+    }
+    const issues: ValidationIssue[] = [];
+    let iban: string | null | undefined;
+    if ('iban' in body) {
+      if (body.iban === null) {
+        iban = null;
+      } else if (typeof body.iban === 'string') {
+        const parsed = Iban.of(body.iban);
+        if (!parsed.ok) issues.push({ field: 'iban', message: 'IBAN invalide.' });
+        else iban = parsed.value.value;
+      } else {
+        issues.push({ field: 'iban', message: 'IBAN doit être une chaîne ou null.' });
+      }
+    }
+    let bic: string | null | undefined;
+    if ('bic' in body) {
+      if (body.bic === null) {
+        bic = null;
+      } else if (typeof body.bic === 'string' && BIC_PATTERN.test(body.bic.trim().toUpperCase())) {
+        bic = body.bic.trim().toUpperCase();
+      } else {
+        issues.push({ field: 'bic', message: 'BIC invalide.' });
+      }
+    }
+    if (issues.length > 0) throwValidationIssues(issues);
+    return unwrap(await this.backend.updateCompanyBilling({ iban, bic }));
+  }
 }
 
 @Controller('vat')
@@ -895,6 +1124,22 @@ export class CashflowController {
   @Get()
   async get(@Query('scenario') scenario: Scenario = 'realiste', @Query('horizon') horizon = '30') {
     return unwrap(await this.backend.getCashflow(scenario, Number(horizon) as Horizon));
+  }
+}
+
+@Controller('bank-balance')
+export class BankBalanceController {
+  constructor(private readonly backend: BackendService) {}
+
+  @Get()
+  async latest() {
+    return unwrap(await this.backend.latestQualifiedBankBalance());
+  }
+
+  @Post('manual')
+  async recordManual(@Body() body: unknown) {
+    assertJsonObjectBody(body);
+    return unwrap(await this.backend.recordManualBankBalance(parseManualBankBalanceBody(body)));
   }
 }
 
@@ -1303,6 +1548,50 @@ export class PublicSignatureController {
   }
 }
 
+@Controller('catalogue/prestations')
+export class CatalogueController {
+  constructor(private readonly backend: BackendService) {}
+
+  @Get()
+  async list() {
+    return unwrap(await this.backend.listCatalogueItems());
+  }
+
+  @Post()
+  async create(@Body() body: unknown) {
+    assertJsonObjectBody(body);
+    const parsed = parseCatalogueItemBody(body, 'create');
+    return unwrap(await this.backend.createCatalogueItem(parsed.item));
+  }
+
+  @Patch(':itemId')
+  async update(@Param('itemId') itemId: string, @Body() body: unknown) {
+    assertJsonObjectBody(body);
+    const parsed = parseCatalogueItemBody(body, 'update');
+    return unwrap(await this.backend.updateCatalogueItem({
+      itemId,
+      expectedRevision: parsed.expectedRevision as number,
+      item: parsed.item,
+    }));
+  }
+
+  @Delete(':itemId')
+  async remove(@Param('itemId') itemId: string, @Body() body: unknown) {
+    assertJsonObjectBody(body);
+    const unknownField = Object.keys(body).find((field) => field !== 'expectedRevision');
+    if (unknownField !== undefined) {
+      throwValidationIssues([{ field: unknownField, message: 'Champ non autorisé.' }]);
+    }
+    if (!Number.isSafeInteger(body.expectedRevision) || (body.expectedRevision as number) < 1) {
+      throwValidationIssues([{ field: 'expectedRevision', message: 'Révision invalide.' }]);
+    }
+    return unwrap(await this.backend.deleteCatalogueItem({
+      itemId,
+      expectedRevision: body.expectedRevision as number,
+    }));
+  }
+}
+
 @Controller('chantiers')
 export class ChantiersController {
   constructor(private readonly backend: BackendService) {}
@@ -1495,8 +1784,8 @@ export class JobsController {
 export class SubscriptionController {
   constructor(private readonly backend: BackendService) {}
   @Get()
-  get() {
-    return this.backend.getSubscription();
+  async get() {
+    return unwrap(await this.backend.getSubscription());
   }
   @Post('checkout')
   checkout(@Body() body: { tier: PlanTier }) {
@@ -1552,8 +1841,11 @@ export class AiController {
 export class VoiceController {
   constructor(private readonly backend: BackendService) {}
   @Get('config')
-  config() {
-    return { cloudAvailable: this.backend.voiceCloudAvailable(), ttsCloudAvailable: this.backend.voiceTtsCloudAvailable() };
+  async config() {
+    return {
+      cloudAvailable: this.backend.voiceCloudAvailable(),
+      ttsCloudAvailable: await this.backend.voiceTtsCloudAvailable(),
+    };
   }
   @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Post('transcribe')

@@ -1167,9 +1167,6 @@ describe('HttpBobClient — assistant Bob (C40 ⑧ : ask/confirm/journal serveur
       name: 'Mme Nguyen',
       type: 'b2c' as const,
       address: { line1: '4 rue Basse', zip: '92310', city: 'Sèvres' },
-      score: 100,
-      avgDelayDays: 0,
-      outstanding: 0,
     };
     const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
       if (String(url) === 'https://api.bob.test/customers' && init?.method === 'POST') {
@@ -1185,6 +1182,65 @@ describe('HttpBobClient — assistant Bob (C40 ⑧ : ask/confirm/journal serveur
 
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.value).toEqual({ id: 'cust-42' });
+  });
+
+  it('listCustomers accepte uniquement des métriques dérivées cohérentes et un score absent', async () => {
+    const item = {
+      id: 'cust-42',
+      name: 'Mme Nguyen',
+      type: 'b2c',
+      score: null,
+      scoreBand: null,
+      scoreStatus: 'model_not_ratified',
+      grossReceivableCents: 75_000,
+      issuedCreditCents: 5_000,
+      outstandingCents: 70_000,
+      customerCreditCents: 0,
+      siren: null,
+      avgDelayDays: null,
+      paidOnTimeRatio: null,
+      paymentHistoryStatus: 'insufficient_history',
+      settledInvoiceCount: 1,
+      email: null,
+      phone: null,
+    };
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(JSON.stringify([item]), { headers: { 'content-type': 'application/json' } })));
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-mercier' });
+    await expect(client.listCustomers()).resolves.toEqual({ ok: true, value: [item] });
+  });
+
+  it.each([
+    { score: 100 },
+    { outstandingCents: 69_999 },
+    { avgDelayDays: 0 },
+    { paymentHistoryStatus: 'known' },
+  ])('listCustomers rejette une projection incohérente ou synthétique (%j)', async (override) => {
+    const item = {
+      id: 'cust-42',
+      name: 'Mme Nguyen',
+      type: 'b2c',
+      score: null,
+      scoreBand: null,
+      scoreStatus: 'model_not_ratified',
+      grossReceivableCents: 75_000,
+      issuedCreditCents: 5_000,
+      outstandingCents: 70_000,
+      customerCreditCents: 0,
+      siren: null,
+      avgDelayDays: null,
+      paidOnTimeRatio: null,
+      paymentHistoryStatus: 'insufficient_history',
+      settledInvoiceCount: 1,
+      email: null,
+      phone: null,
+      ...override,
+    };
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(JSON.stringify([item]), { headers: { 'content-type': 'application/json' } })));
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-mercier' });
+    const result = await client.listCustomers();
+    expect(result).toMatchObject({ ok: false, error: { kind: 'dependency' } });
   });
 
   it('C25 : relance ciblée réelle + fil de notifications + devices (endpoints serveur)', async () => {
@@ -2006,6 +2062,77 @@ describe('HttpBobClient — Bob Live WebRTC', () => {
 
     expect(result).toMatchObject({ ok: false, error: { kind: 'dependency', port: 'api' } });
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  describe('Catalogue propriétaire BDD-only', () => {
+    const item = {
+      id: '11111111-1111-4111-8111-111111111111',
+      label: 'Main-d’œuvre plomberie',
+      category: 'labor',
+      unit: 'heure',
+      unitPriceHT: 5_500,
+      vatRate: 20,
+      revision: 1,
+      createdAt: '2026-07-17T10:00:00.000Z',
+      updatedAt: '2026-07-17T10:00:00.000Z',
+    } as const;
+
+    it('liste uniquement des lignes serveur strictement décodées', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([item]), {
+        headers: { 'content-type': 'application/json' },
+      })));
+      const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+
+      await expect(client.listCatalogueItems()).resolves.toEqual({ ok: true, value: [item] });
+    });
+
+    it('refuse une ligne enrichie/corrompue au lieu de la rendre dans l’UI', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([{ ...item, marketPrice: 7_500 }]), {
+        headers: { 'content-type': 'application/json' },
+      })));
+      const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+
+      await expect(client.listCatalogueItems()).resolves.toMatchObject({
+        ok: false,
+        error: { kind: 'dependency', port: 'api-contract' },
+      });
+    });
+
+    it('transporte la révision CAS sur édition et suppression', async () => {
+      const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        expect(String(url)).toBe(
+          'https://api.bob.test/catalogue/prestations/11111111-1111-4111-8111-111111111111',
+        );
+        if (init?.method === 'PATCH') {
+          expect(body).toMatchObject({ expectedRevision: 1, unitPriceHT: 5_500 });
+          return new Response(JSON.stringify({ ...item, revision: 2 }), {
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        expect(init?.method).toBe('DELETE');
+        expect(body).toEqual({ expectedRevision: 2 });
+        return new Response(JSON.stringify({ id: item.id, deleted: true }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+
+      await expect(client.updateCatalogueItem({
+        itemId: item.id,
+        expectedRevision: 1,
+        item: {
+          label: item.label,
+          category: item.category,
+          unit: item.unit,
+          unitPriceHT: item.unitPriceHT,
+          vatRate: item.vatRate,
+        },
+      })).resolves.toMatchObject({ ok: true, value: { revision: 2 } });
+      await expect(client.deleteCatalogueItem({ itemId: item.id, expectedRevision: 2 }))
+        .resolves.toEqual({ ok: true, value: { id: item.id, deleted: true } });
+    });
   });
 
   describe('B9 — searchSalesDocuments / suggestSalesDocuments', () => {

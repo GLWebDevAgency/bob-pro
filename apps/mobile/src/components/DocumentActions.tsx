@@ -4,9 +4,10 @@ import { router } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
 import type { QuoteView, InvoiceView } from '@bob/api-client';
 import { challengeFor, buildActionDiff } from '@bob/ai';
-import { t } from '@bob/i18n';
+import { t, type Personality } from '@bob/i18n';
 import { DeleteIconButton, QuestionSheet, useTheme } from '@bob/ui';
 import {
+  useCompanyMe,
   useSendQuote,
   useSignQuote,
   useCreateQuoteSignatureLink,
@@ -22,8 +23,28 @@ import {
 import { Button, Badge } from './ui';
 import { useConfirm } from './ConfirmSheet';
 import { useBobClient } from '../data/client';
+import { companyCanIssue } from '../data/company-completeness';
 import { deriveQuoteInvoiceCtaState, type QuoteInvoiceLinksState } from './quote-invoice-actions.logic';
 import { SignOnsiteSheet } from './SignOnsiteSheet';
+
+/**
+ * Gate « entreprise complète » (RÈGLE PRODUIT, compte.tsx §Entreprise) : l'app reste utilisable
+ * sans fiche entreprise complète (brouillons…), le gate n'apparaît qu'à l'ACTE qui l'exige
+ * légalement — ici, la toute première émission (devis « Envoyer » depuis l'état brouillon,
+ * facture « Émettre » depuis l'état brouillon : c'est précisément à ce moment que le numéro légal
+ * est alloué). Les renvois/partages d'un devis DÉJÀ envoyé ne sont pas re-gatés : la complétude a
+ * déjà été vérifiée à son premier envoi. CTA → /compte (fiche entreprise, §3 du chantier).
+ */
+function showCompanyIncompleteGate(kind: 'quote' | 'invoice', personality: Personality): void {
+  Alert.alert(
+    t('gate.companyIncompleteTitle', { personality }),
+    t(kind === 'quote' ? 'gate.companyIncompleteBodyQuote' : 'gate.companyIncompleteBodyInvoice', { personality }),
+    [
+      { text: t('gate.companyIncompleteCancel', { personality }), style: 'cancel' },
+      { text: t('gate.companyIncompleteCta', { personality }), onPress: () => router.push('/compte') },
+    ],
+  );
+}
 
 // Profils de risque des actions manuelles (mêmes paliers que le registre d'outils de Bob -> confirmation typée).
 const OUTBOUND = { mutating: true, outbound: true, riskTier: 'outbound' } as const;
@@ -163,6 +184,11 @@ export const QuoteActions = forwardRef<
   const generate = useGenerateInvoice();
   const { busy, run } = useActionLock();
   const confirm = useConfirm();
+  // Gate entreprise complète — ne concerne QUE le premier envoi (état brouillon), cf. doc du
+  // gate en tête de fichier. `undefined` (pas encore chargé) est traité comme incomplet : on ne
+  // laisse jamais partir un numéro légal avant d'être sûr de la fiche société.
+  const companyMe = useCompanyMe();
+  const companyComplete = companyCanIssue(companyMe.data);
   // Confort UX : bascule l'état affiché DANS LA SESSION dès le succès, sans attendre le refetch des
   // factures liées côté appelant. La sûreté anti-doublon reste AU DOMAINE (GenerateInvoiceFromQuote,
   // idempotent par parentQuoteId+kind) ; `linkedInvoices` est la source DURABLE (survit au re-render).
@@ -278,6 +304,10 @@ export const QuoteActions = forwardRef<
         disabled={!!busy}
         onPress={() =>
           void (async () => {
+            if (!companyComplete) {
+              showCompanyIncompleteGate('quote', personality);
+              return;
+            }
             const ok = await confirm({
               title: 'Envoyer le devis',
               message: `Le devis part chez ${customerName}.`,
@@ -476,7 +506,11 @@ export function InvoiceActions({
   const { busy, lock, run } = useActionLock();
   const confirm = useConfirm();
   const client = useBobClient();
-  const { semantic } = useTheme();
+  const { semantic, personality } = useTheme();
+  // Gate entreprise complète — même doctrine que QuoteActions (voir showCompanyIncompleteGate) :
+  // ne concerne que la toute première émission (état brouillon → numéro légal alloué).
+  const companyMe = useCompanyMe();
+  const companyComplete = companyCanIssue(companyMe.data);
 
   // A6 : avoir TOTAL — confirmation FISCAL (l'avoir s'émettra avec son numéro A- et
   // l'écriture inverse), puis navigation vers le brouillon créé.
@@ -518,6 +552,10 @@ export function InvoiceActions({
             disabled={!!busy}
             onPress={() =>
               void (async () => {
+                if (!companyComplete) {
+                  showCompanyIncompleteGate('invoice', personality);
+                  return;
+                }
                 // Aperçu comptable prévisionnel (le domaine sait prévisualiser un brouillon) — best-effort.
                 const preview = await client.invoiceAccountingPreview(invoice.id);
                 const accountingLines = preview.ok && preview.value.available ? preview.value.lines : undefined;

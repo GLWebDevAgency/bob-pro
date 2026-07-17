@@ -634,7 +634,7 @@ describe('i18n — C23 diag.*', () => {
       'Séquence sans trou, allouée à l’émission. Géré.',
     );
     expect(t('reglages.vatDefaultLabel', { params: { trade: 'Plombier' } })).toBe(
-      'TVA par défaut de ton métier (Plombier)',
+      'Règle de saisie TVA',
     );
     expect(t('reglages.soonBadge', { personality: 'pro' })).toBe('À venir');
     expect(t('reglages.mentionsEmpty', { personality: 'direct' })).toBe('Visible dès ta première facture.');
@@ -678,8 +678,9 @@ describe('i18n — C26 account.*', () => {
       'Prochainement : un mois offert pour vous deux.',
     );
     expect(t('account.teamRowSub', { personality: 'direct' })).toBe('Invitations, rôles. Bientôt.');
-    expect(t('account.companyEmpty', { personality: 'pro' })).toBe(
-      'Les informations de votre entreprise s’afficheront ici une fois votre société reliée à votre compte.',
+    expect(t('account.companyEmptyTitle', { personality: 'pro' })).toBe('Complétez votre fiche entreprise');
+    expect(t('account.companyEmptyBody', { personality: 'pro' })).toBe(
+      'Votre société ne semble pas reliée à votre compte — contactez-nous, nous nous en occupons avec vous.',
     );
     expect(t('account.dataError', { personality: 'direct' })).toBe('Profil injoignable. Réessaie.');
   });
@@ -772,5 +773,84 @@ describe('i18n — C-EXP-UI2 argent.urssaf*', () => {
     expect(t('ventes.voiceSearchNoResults', { personality: 'direct' })).toBe('Aucun résultat.');
     expect(t('ventes.period.lastNMonths', { params: { n: 2 } })).toBe('des 2 derniers mois');
     expect(t('ventes.period.since', { params: { month: 'janvier' } })).toBe('depuis janvier');
+  });
+});
+
+describe('i18n — modale menu profil (design_handoff_bob_pro/Bob Pro.dc.html §PROFILE SHEET)', () => {
+  it('4 destinations ×3 humeurs + libellés de la feuille', () => {
+    expect(t('menu.title', { personality: 'direct' })).toBe('Menu');
+    expect(t('menu.account')).toBe('Mon compte & abonnement');
+    expect(t('menu.accountSub', { personality: 'direct' })).toBe('Profil · entreprise · offre');
+    expect(t('menu.onboarding', { personality: 'pro' })).toBe('Revoir l’onboarding');
+    expect(t('menu.tips')).toBe('Revoir les astuces');
+    expect(t('menu.tipsResetToast', { personality: 'direct' })).toBe('Astuces réaffichées.');
+    expect(t('menu.diagnostic', { personality: 'pro' })).toBe('Diagnostic conformité 2026');
+    expect(t('menu.diagnosticSub')).toBe('Où tu en es pour la facture élec.');
+  });
+});
+
+describe('i18n — gate entreprise complète (DocumentActions.tsx, émission devis/facture)', () => {
+  it('titre + corps déclinés devis/facture ×3 humeurs, CTA/annulation', () => {
+    expect(t('gate.companyIncompleteTitle', { personality: 'pro' })).toBe('Complétez votre fiche entreprise');
+    expect(t('gate.companyIncompleteBodyQuote')).toBe(
+      'Pour envoyer un devis officiel, renseigne d’abord ton entreprise (RM/RCS et adresse).',
+    );
+    expect(t('gate.companyIncompleteBodyInvoice', { personality: 'direct' })).toBe(
+      'RM/RCS et adresse requis avant l’émission.',
+    );
+    expect(t('gate.companyIncompleteCta')).toBe('Compléter');
+    expect(t('gate.companyIncompleteCancel', { personality: 'pro' })).toBe('Plus tard');
+  });
+});
+
+describe('i18n — Réglages facturation, fusion proto (retours device fondateur)', () => {
+  it('back nomme l’écran de destination — plus de « Retour » générique', () => {
+    expect(t('account.back')).toBe('Fermer');
+    expect(t('reglages.back')).toBe('Compte');
+    expect(t('catalogue.back', { personality: 'pro' })).toBe('Facturation');
+  });
+
+  it('aperçu en direct + identité (lecture réelle, non éditable ici)', () => {
+    expect(t('reglages.previewLive')).toBe('Aperçu en direct');
+    expect(t('reglages.sectionIdentity', { personality: 'direct' })).toBe('Identité');
+    expect(t('reglages.identityRm')).toBe('N° RM / RCS');
+    expect(t('reglages.identityNotEditableNote', { personality: 'pro' })).toBe(
+      'Ces informations proviennent de votre inscription — contactez-nous pour les corriger.',
+    );
+  });
+
+  it('logo — ajout/suppression ×3, permission refusée, note PDF à venir', () => {
+    expect(t('reglages.logoAdd')).toBe('Ajouter');
+    expect(t('reglages.logoChange', { personality: 'pro' })).toBe('Changer');
+    expect(t('reglages.logoPermissionDenied', { personality: 'direct' })).toBe('Accès photos requis.');
+    expect(t('reglages.logoOnPdfNote', { personality: 'direct' })).toBe(
+      'Aperçu seulement pour l’instant. PDF à venir.',
+    );
+  });
+
+  it('RIB — libellé toggle + feuille d’édition IBAN', () => {
+    expect(t('reglages.ribToggleLabel')).toBe('Afficher le RIB sur les factures');
+    expect(t('reglages.ribIbanEmpty', { personality: 'direct' })).toBe('Aucun IBAN');
+    expect(t('reglages.ibanSheetInvalid', { personality: 'pro' })).toBe(
+      'Cet IBAN ne semble pas valide — vérifiez la saisie.',
+    );
+    expect(t('reglages.ibanSheetSave')).toBe('Enregistrer');
+  });
+
+  it('assurance — adaptatif BTP (décennale) vs hors bâtiment (RC Pro)', () => {
+    expect(t('reglages.sectionInsuranceBtp')).toBe('Assurance');
+    expect(t('reglages.sectionInsuranceOther', { personality: 'direct' })).toBe('RC Pro');
+    expect(t('reglages.insuranceToggleSubBtp')).toBe('Obligatoire pour le bâtiment');
+    expect(t('reglages.insuranceEmptyOther', { personality: 'pro' })).toBe(
+      'Aucune RC Pro enregistrée — contactez-nous pour l’ajouter.',
+    );
+  });
+
+  it('valeurs par défaut — jours interpolés, conditions de paiement, note de branchement', () => {
+    expect(t('reglages.defaultsValidityDays', { params: { days: 30 } })).toBe('30 jours');
+    expect(t('reglages.defaultsValidityDays', { personality: 'direct', params: { days: 45 } })).toBe('45 j');
+    expect(t('reglages.paymentTermsReception')).toBe('À réception');
+    expect(t('reglages.paymentTermsJ30', { personality: 'pro' })).toBe('30 jours');
+    expect(t('reglages.defaultsNote', { personality: 'direct' })).toBe('Validité : déjà active. Le reste arrive.');
   });
 });

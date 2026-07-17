@@ -13,12 +13,19 @@ export interface InnerScreenHeaderProps {
   title: string;
   subtitle?: string;
   action?: ReactNode;
+  /**
+   * Un bouton retour précède déjà l'en-tête (compose avec lui) : le paddingTop fixe de
+   * `patterns.innerScreenHeader` (56, pensé pour un en-tête EN PREMIER élément d'écran, qui
+   * doit lui-même absorber l'encoche) devient un sur-espace — le bouton retour a déjà sa
+   * propre marge de sécurité. `compact` retombe sur un espacement de respiration minimal.
+   */
+  compact?: boolean;
 }
 
-export function InnerScreenHeader({ eyebrow, title, subtitle, action }: InnerScreenHeaderProps) {
+export function InnerScreenHeader({ eyebrow, title, subtitle, action, compact = false }: InnerScreenHeaderProps) {
   const { colors } = useTheme();
   return (
-    <View style={styles.root}>
+    <View style={[styles.root, compact ? styles.rootCompact : null]}>
       <View style={styles.texts}>
         <Text style={[font('eyebrow'), { color: colors.slate400 }]} accessibilityRole="text">
           {eyebrow}
@@ -47,6 +54,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-end',
   },
+  rootCompact: { paddingTop: 10 },
   texts: { flex: 1 },
   title: { marginTop: 4 },
   subtitle: { marginTop: 4 },

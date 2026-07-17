@@ -10,8 +10,3 @@ export function companyIdFromAppMetadata(metadata: unknown): string | null {
   const companyId = (metadata as Record<string, unknown>)['company_id'];
   return validCompanyId(companyId) ? companyId : null;
 }
-
-/** Static tenant selection is accepted only for an explicitly configured dev/demo client. */
-export function configuredDemoCompanyId(value: unknown): string | null {
-  return validCompanyId(value) ? value : null;
-}

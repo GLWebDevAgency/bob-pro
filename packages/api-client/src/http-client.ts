@@ -1,4 +1,10 @@
-import { isAllowedAgentNavigationRoute, type AgentRun, type JournalEntry, type PendingAction } from '@bob/ai';
+import {
+  isAllowedAgentNavigationRoute,
+  type AgentRun,
+  type JournalEntry,
+  type PendingAction,
+} from '@bob/ai';
+import { isCustomPrestationId, parseCustomPrestation } from '@bob/core';
 import type {
   Result,
   AppError,
@@ -19,9 +25,12 @@ import type {
   ExpenseProps,
   RecordExpenseInput,
   TradeConfig,
+  Trade,
+  VatRegime,
   ChantierProps,
   CreateChantierInput,
   CompanyProps,
+  CustomerPortfolio,
   CompanyLookupResult,
   VatCheckResult,
   AddressSuggestion,
@@ -33,13 +42,19 @@ import type {
   FiscalProfileView,
   SearchSalesDocumentsResult,
   SuggestSalesDocumentsResult,
+  CatalogueItemView,
+  CatalogueItemWriteInput,
+  CatalogueDeletionView,
+  QualifiedBankBalanceSnapshot,
 } from '@bob/core';
 import type {
   BobClient,
   QuoteView,
   InvoiceView,
   PaymentView,
-  SubscriptionView, ValueDigestView, TrialReportView,
+  SubscriptionView,
+  ValueDigestView,
+  TrialReportView,
   RegisterPaymentClientInput,
   RegisterPaymentClientOutput,
   SendQuoteOutput,
@@ -91,6 +106,8 @@ import type {
   AskBobClientInput,
   CreateCustomerClientInput,
   SearchSalesDocumentsClientInput,
+  QuoteDraftSlotView,
+  SaveQuoteDraftClientInput,
 } from './client';
 import {
   decodeDocumentAnalysisForDocument,
@@ -106,6 +123,12 @@ import {
 } from './document-codecs';
 import { decodeExpenseCreation } from './expense-idempotency';
 import { decodeQuoteCreation } from './quote-idempotency';
+import {
+  decodeQuoteDraftDeletion,
+  decodeQuoteDraftEnvelope,
+  decodeQuoteDraftSlot,
+  type QuoteDraftEnvelopeWire,
+} from './quote-draft-codec';
 
 export interface HttpBobClientOptions {
   baseUrl: string;
@@ -158,15 +181,17 @@ function assertSecureApiBaseUrl(value: string): void {
   } catch {
     throw new Error('API base URL invalide.');
   }
-  const loopback = url.protocol === 'http:'
-    && (url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]');
+  const loopback =
+    url.protocol === 'http:' &&
+    (url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]');
   if (
-    (url.protocol !== 'https:' && !loopback)
-    || url.username !== ''
-    || url.password !== ''
-    || url.search !== ''
-    || url.hash !== ''
-  ) throw new Error('API base URL non sûre : HTTPS requis hors développement local.');
+    (url.protocol !== 'https:' && !loopback) ||
+    url.username !== '' ||
+    url.password !== '' ||
+    url.search !== '' ||
+    url.hash !== ''
+  )
+    throw new Error('API base URL non sûre : HTTPS requis hors développement local.');
 }
 
 function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
@@ -174,23 +199,19 @@ function hasExactKeys(value: Record<string, unknown>, expected: readonly string[
   return keys.length === expected.length && keys.every((key) => expected.includes(key));
 }
 
-function decodePushRegistrationResponse(
-  value: unknown,
-): { status: 'bound' | 'superseded' } | null {
+function decodePushRegistrationResponse(value: unknown): { status: 'bound' | 'superseded' } | null {
   if (
-    !isRecord(value)
-    || !hasExactKeys(value, ['status'])
-    || (value.status !== 'bound' && value.status !== 'superseded')
-  ) return null;
+    !isRecord(value) ||
+    !hasExactKeys(value, ['status']) ||
+    (value.status !== 'bound' && value.status !== 'superseded')
+  )
+    return null;
   return { status: value.status };
 }
 
 function decodePushRevocationResponse(value: unknown): { accepted: true } | null {
-  if (
-    !isRecord(value)
-    || !hasExactKeys(value, ['accepted'])
-    || value.accepted !== true
-  ) return null;
+  if (!isRecord(value) || !hasExactKeys(value, ['accepted']) || value.accepted !== true)
+    return null;
   return { accepted: true };
 }
 
@@ -204,6 +225,138 @@ function isCanonicalIsoTimestamp(value: unknown): value is string {
   return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value;
 }
 
+const CUSTOMER_LIST_ITEM_FIELDS = [
+  'id',
+  'name',
+  'type',
+  'score',
+  'scoreBand',
+  'scoreStatus',
+  'grossReceivableCents',
+  'issuedCreditCents',
+  'outstandingCents',
+  'customerCreditCents',
+  'siren',
+  'avgDelayDays',
+  'paidOnTimeRatio',
+  'paymentHistoryStatus',
+  'settledInvoiceCount',
+  'email',
+  'phone',
+] as const;
+
+function decodeCustomerListItem(value: unknown): CustomerListItem | null {
+  if (!isRecord(value) || !hasExactKeys(value, CUSTOMER_LIST_ITEM_FIELDS)) return null;
+  if (
+    typeof value.id !== 'string'
+    || value.id.length === 0
+    || typeof value.name !== 'string'
+    || value.name.length === 0
+    || (value.type !== 'b2c' && value.type !== 'b2b' && value.type !== 'b2g')
+    || value.score !== null
+    || value.scoreBand !== null
+    || value.scoreStatus !== 'model_not_ratified'
+    || !isBoundedInteger(value.grossReceivableCents, 0, Number.MAX_SAFE_INTEGER)
+    || !isBoundedInteger(value.issuedCreditCents, 0, Number.MAX_SAFE_INTEGER)
+    || !isBoundedInteger(value.outstandingCents, 0, Number.MAX_SAFE_INTEGER)
+    || !isBoundedInteger(value.customerCreditCents, 0, Number.MAX_SAFE_INTEGER)
+    || (value.siren !== null && typeof value.siren !== 'string')
+    || (value.avgDelayDays !== null && !isBoundedInteger(value.avgDelayDays, 0, Number.MAX_SAFE_INTEGER))
+    || (value.paidOnTimeRatio !== null
+      && (typeof value.paidOnTimeRatio !== 'number'
+        || !Number.isFinite(value.paidOnTimeRatio)
+        || value.paidOnTimeRatio < 0
+        || value.paidOnTimeRatio > 1))
+    || (value.paymentHistoryStatus !== 'known'
+      && value.paymentHistoryStatus !== 'insufficient_history'
+      && value.paymentHistoryStatus !== 'incomplete')
+    || !isBoundedInteger(value.settledInvoiceCount, 0, Number.MAX_SAFE_INTEGER)
+    || (value.email !== null && typeof value.email !== 'string')
+    || (value.phone !== null && typeof value.phone !== 'string')
+  ) return null;
+
+  const net = value.grossReceivableCents - value.issuedCreditCents;
+  if (
+    value.outstandingCents !== Math.max(0, net)
+    || value.customerCreditCents !== Math.max(0, -net)
+    || (value.paymentHistoryStatus === 'known'
+      ? value.avgDelayDays === null || value.paidOnTimeRatio === null || value.settledInvoiceCount < 3
+      : value.avgDelayDays !== null || value.paidOnTimeRatio !== null)
+  ) return null;
+
+  return value as unknown as CustomerListItem;
+}
+
+function decodeCustomerList(value: unknown): CustomerListItem[] | null {
+  if (!Array.isArray(value)) return null;
+  const items: CustomerListItem[] = [];
+  for (const candidate of value) {
+    const item = decodeCustomerListItem(candidate);
+    if (item === null) return null;
+    items.push(item);
+  }
+  return items;
+}
+
+function decodeCatalogueItem(value: unknown): CatalogueItemView | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      'id',
+      'label',
+      'category',
+      'unit',
+      'unitPriceHT',
+      'vatRate',
+      'revision',
+      'createdAt',
+      'updatedAt',
+    ]) ||
+    !isBoundedInteger(value.revision, 1, Number.MAX_SAFE_INTEGER) ||
+    !isCanonicalIsoTimestamp(value.createdAt) ||
+    !isCanonicalIsoTimestamp(value.updatedAt)
+  )
+    return null;
+  const item = parseCustomPrestation({
+    id: value.id,
+    label: value.label,
+    category: value.category,
+    unit: value.unit,
+    unitPriceHT: value.unitPriceHT,
+    vatRate: value.vatRate,
+  });
+  return item === null
+    ? null
+    : {
+        ...item,
+        revision: value.revision,
+        createdAt: value.createdAt,
+        updatedAt: value.updatedAt,
+      };
+}
+
+function decodeCatalogueItems(value: unknown): readonly CatalogueItemView[] | null {
+  if (!Array.isArray(value)) return null;
+  const items: CatalogueItemView[] = [];
+  for (const candidate of value) {
+    const item = decodeCatalogueItem(candidate);
+    if (item === null) return null;
+    items.push(item);
+  }
+  return items;
+}
+
+function decodeCatalogueDeletion(value: unknown): CatalogueDeletionView | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ['id', 'deleted']) ||
+    !isCustomPrestationId(value.id) ||
+    value.deleted !== true
+  )
+    return null;
+  return { id: value.id, deleted: true };
+}
+
 function isMistralRealtimeWebsocketUrl(
   value: unknown,
   expectedApiBaseUrl: string,
@@ -213,17 +366,19 @@ function isMistralRealtimeWebsocketUrl(
     const url = new URL(value);
     const api = new URL(expectedApiBaseUrl);
     if (
-      url.username !== ''
-      || url.password !== ''
-      || url.search !== ''
-      || url.hash !== ''
-      || url.pathname !== '/v1/voice/realtime/mistral'
-    ) return false;
+      url.username !== '' ||
+      url.password !== '' ||
+      url.search !== '' ||
+      url.hash !== '' ||
+      url.pathname !== '/v1/voice/realtime/mistral'
+    )
+      return false;
     const sameAuthority = url.hostname === api.hostname && url.port === api.port;
     if (!sameAuthority) return false;
     if (api.protocol === 'https:') return url.protocol === 'wss:';
-    const loopback = api.protocol === 'http:'
-      && (api.hostname === 'localhost' || api.hostname === '127.0.0.1' || api.hostname === '[::1]');
+    const loopback =
+      api.protocol === 'http:' &&
+      (api.hostname === 'localhost' || api.hostname === '127.0.0.1' || api.hostname === '[::1]');
     return loopback && url.protocol === 'ws:';
   } catch {
     return false;
@@ -236,8 +391,10 @@ function isRealtimeSpeechAudioUrl(value: unknown): value is string {
     const url = new URL(value);
     if (url.username !== '' || url.password !== '' || url.hash !== '') return false;
     if (url.protocol === 'https:') return true;
-    return url.protocol === 'http:'
-      && (url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]');
+    return (
+      url.protocol === 'http:' &&
+      (url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]')
+    );
   } catch {
     return false;
   }
@@ -245,16 +402,17 @@ function isRealtimeSpeechAudioUrl(value: unknown): value is string {
 
 function decodeRealtimeVoiceControlReference(value: unknown): RealtimeVoiceControlReference | null {
   if (
-    !isRecord(value)
-    || !hasExactKeys(value, ['turnId', 'acknowledgementId', 'contextRevision', 'contextDigest'])
-    || typeof value.turnId !== 'string'
-    || !UUID_PATTERN.test(value.turnId)
-    || typeof value.acknowledgementId !== 'string'
-    || !UUID_PATTERN.test(value.acknowledgementId)
-    || !isBoundedInteger(value.contextRevision, 1, 2_147_483_647)
-    || typeof value.contextDigest !== 'string'
-    || !SHA_256_PATTERN.test(value.contextDigest)
-  ) return null;
+    !isRecord(value) ||
+    !hasExactKeys(value, ['turnId', 'acknowledgementId', 'contextRevision', 'contextDigest']) ||
+    typeof value.turnId !== 'string' ||
+    !UUID_PATTERN.test(value.turnId) ||
+    typeof value.acknowledgementId !== 'string' ||
+    !UUID_PATTERN.test(value.acknowledgementId) ||
+    !isBoundedInteger(value.contextRevision, 1, 2_147_483_647) ||
+    typeof value.contextDigest !== 'string' ||
+    !SHA_256_PATTERN.test(value.contextDigest)
+  )
+    return null;
   return {
     turnId: value.turnId,
     acknowledgementId: value.acknowledgementId,
@@ -271,15 +429,16 @@ function decodeRealtimeVoiceSpeechBinding(value: Record<string, unknown>): {
   contextDigest: string;
 } | null {
   if (
-    typeof value.artifactId !== 'string'
-    || !UUID_PATTERN.test(value.artifactId)
-    || typeof value.turnId !== 'string'
-    || !UUID_PATTERN.test(value.turnId)
-    || !isBoundedInteger(value.sequence, 1, REALTIME_SPEECH_MAX_SEQUENCE)
-    || !isBoundedInteger(value.contextRevision, 1, 2_147_483_647)
-    || typeof value.contextDigest !== 'string'
-    || !SHA_256_PATTERN.test(value.contextDigest)
-  ) return null;
+    typeof value.artifactId !== 'string' ||
+    !UUID_PATTERN.test(value.artifactId) ||
+    typeof value.turnId !== 'string' ||
+    !UUID_PATTERN.test(value.turnId) ||
+    !isBoundedInteger(value.sequence, 1, REALTIME_SPEECH_MAX_SEQUENCE) ||
+    !isBoundedInteger(value.contextRevision, 1, 2_147_483_647) ||
+    typeof value.contextDigest !== 'string' ||
+    !SHA_256_PATTERN.test(value.contextDigest)
+  )
+    return null;
   return {
     artifactId: value.artifactId,
     turnId: value.turnId,
@@ -289,15 +448,18 @@ function decodeRealtimeVoiceSpeechBinding(value: Record<string, unknown>): {
   };
 }
 
-function decodeRealtimeVoiceSpeechFeed(status: number, value: unknown): RealtimeVoiceSpeechFeed | null {
+function decodeRealtimeVoiceSpeechFeed(
+  status: number,
+  value: unknown,
+): RealtimeVoiceSpeechFeed | null {
   if (status === 204) return value === undefined ? { status: 'none' } : null;
   if (!isRecord(value)) return null;
   const binding = decodeRealtimeVoiceSpeechBinding(value);
   if (!binding) return null;
   if (
-    status === 202
-    && value.status === 'rendering'
-    && hasExactKeys(value, [
+    status === 202 &&
+    value.status === 'rendering' &&
+    hasExactKeys(value, [
       'status',
       'artifactId',
       'turnId',
@@ -305,10 +467,11 @@ function decodeRealtimeVoiceSpeechFeed(status: number, value: unknown): Realtime
       'contextRevision',
       'contextDigest',
     ])
-  ) return { status: 'rendering', ...binding };
+  )
+    return { status: 'rendering', ...binding };
   if (
-    status === 200
-    && hasExactKeys(value, [
+    status === 200 &&
+    hasExactKeys(value, [
       'artifactId',
       'turnId',
       'audioUrl',
@@ -319,14 +482,22 @@ function decodeRealtimeVoiceSpeechFeed(status: number, value: unknown): Realtime
       'sequence',
       'contextRevision',
       'contextDigest',
-    ])
-    && isRealtimeSpeechAudioUrl(value.audioUrl)
-    && typeof value.audioSha256 === 'string'
-    && SHA_256_PATTERN.test(value.audioSha256)
-    && typeof value.mimeType === 'string'
-    && REALTIME_SPEECH_MIME_TYPES.has(value.mimeType as RealtimeVoiceSpeechMimeType)
-    && isBoundedInteger(value.byteSize, REALTIME_SPEECH_MIN_AUDIO_BYTES, REALTIME_SPEECH_MAX_AUDIO_BYTES)
-    && isBoundedInteger(value.durationMs, REALTIME_SPEECH_MIN_DURATION_MS, REALTIME_SPEECH_MAX_DURATION_MS)
+    ]) &&
+    isRealtimeSpeechAudioUrl(value.audioUrl) &&
+    typeof value.audioSha256 === 'string' &&
+    SHA_256_PATTERN.test(value.audioSha256) &&
+    typeof value.mimeType === 'string' &&
+    REALTIME_SPEECH_MIME_TYPES.has(value.mimeType as RealtimeVoiceSpeechMimeType) &&
+    isBoundedInteger(
+      value.byteSize,
+      REALTIME_SPEECH_MIN_AUDIO_BYTES,
+      REALTIME_SPEECH_MAX_AUDIO_BYTES,
+    ) &&
+    isBoundedInteger(
+      value.durationMs,
+      REALTIME_SPEECH_MIN_DURATION_MS,
+      REALTIME_SPEECH_MAX_DURATION_MS,
+    )
   ) {
     return {
       status: 'ready',
@@ -339,15 +510,13 @@ function decodeRealtimeVoiceSpeechFeed(status: number, value: unknown): Realtime
     };
   }
   if (
-    status === 410
-    && value.status === 'terminal'
-    && (
-      value.reason === 'cancelled'
-      || value.reason === 'failed'
-      || value.reason === 'expired'
-      || value.reason === 'delivered'
-    )
-    && hasExactKeys(value, [
+    status === 410 &&
+    value.status === 'terminal' &&
+    (value.reason === 'cancelled' ||
+      value.reason === 'failed' ||
+      value.reason === 'expired' ||
+      value.reason === 'delivered') &&
+    hasExactKeys(value, [
       'status',
       'artifactId',
       'turnId',
@@ -356,7 +525,8 @@ function decodeRealtimeVoiceSpeechFeed(status: number, value: unknown): Realtime
       'contextRevision',
       'contextDigest',
     ])
-  ) return { status: 'terminal', ...binding, reason: value.reason };
+  )
+    return { status: 'terminal', ...binding, reason: value.reason };
   return null;
 }
 
@@ -382,41 +552,43 @@ function decodeHttpAppError(value: unknown): AppError | null {
   if (!isRecord(value) || !isRecord(value.error)) return null;
   const error = value.error;
   if (
-    error.kind === 'not_found'
-    && hasExactKeys(error, ['kind', 'entity', 'id'])
-    && isBoundedString(error.entity, 120)
-    && isBoundedString(error.id, 200)
-  ) return { kind: 'not_found', entity: error.entity, id: error.id };
+    error.kind === 'not_found' &&
+    hasExactKeys(error, ['kind', 'entity', 'id']) &&
+    isBoundedString(error.entity, 120) &&
+    isBoundedString(error.id, 200)
+  )
+    return { kind: 'not_found', entity: error.entity, id: error.id };
   if (
-    error.kind === 'conflict'
-    && hasExactKeys(error, ['kind', 'entity', 'reason'])
-    && isBoundedString(error.entity, 120)
-    && isBoundedString(error.reason)
-  ) return { kind: 'conflict', entity: error.entity, reason: error.reason };
+    error.kind === 'conflict' &&
+    hasExactKeys(error, ['kind', 'entity', 'reason']) &&
+    isBoundedString(error.entity, 120) &&
+    isBoundedString(error.reason)
+  )
+    return { kind: 'conflict', entity: error.entity, reason: error.reason };
   if (
-    error.kind === 'forbidden'
-    && hasExactKeys(error, ['kind', 'reason'])
-    && isBoundedString(error.reason)
-  ) return { kind: 'forbidden', reason: error.reason };
+    error.kind === 'forbidden' &&
+    hasExactKeys(error, ['kind', 'reason']) &&
+    isBoundedString(error.reason)
+  )
+    return { kind: 'forbidden', reason: error.reason };
   if (
-    error.kind === 'rate_limited'
-    && hasExactKeys(error, ['kind', 'reason', 'retryAfterSeconds'])
-    && isBoundedString(error.reason)
-    && isBoundedInteger(error.retryAfterSeconds, 0, 86_400)
+    error.kind === 'rate_limited' &&
+    hasExactKeys(error, ['kind', 'reason', 'retryAfterSeconds']) &&
+    isBoundedString(error.reason) &&
+    isBoundedInteger(error.retryAfterSeconds, 0, 86_400)
   ) {
-    return { kind: 'rate_limited', reason: error.reason, retryAfterSeconds: error.retryAfterSeconds };
+    return {
+      kind: 'rate_limited',
+      reason: error.reason,
+      retryAfterSeconds: error.retryAfterSeconds,
+    };
   }
   if (
-    error.kind === 'unavailable'
-    && (
-      hasExactKeys(error, ['kind', 'service'])
-      || hasExactKeys(error, ['kind', 'service', 'retryAfterSeconds'])
-    )
-    && isBoundedString(error.service, 120)
-    && (
-      error.retryAfterSeconds === undefined
-      || isBoundedInteger(error.retryAfterSeconds, 0, 86_400)
-    )
+    error.kind === 'unavailable' &&
+    (hasExactKeys(error, ['kind', 'service']) ||
+      hasExactKeys(error, ['kind', 'service', 'retryAfterSeconds'])) &&
+    isBoundedString(error.service, 120) &&
+    (error.retryAfterSeconds === undefined || isBoundedInteger(error.retryAfterSeconds, 0, 86_400))
   ) {
     return {
       kind: 'unavailable',
@@ -427,25 +599,27 @@ function decodeHttpAppError(value: unknown): AppError | null {
     };
   }
   if (
-    error.kind === 'dependency'
-    && hasExactKeys(error, ['kind', 'port', 'cause'])
-    && isBoundedString(error.port, 120)
-    && isBoundedString(error.cause)
-  ) return { kind: 'dependency', port: error.port, cause: error.cause };
+    error.kind === 'dependency' &&
+    hasExactKeys(error, ['kind', 'port', 'cause']) &&
+    isBoundedString(error.port, 120) &&
+    isBoundedString(error.cause)
+  )
+    return { kind: 'dependency', port: error.port, cause: error.cause };
   if (
-    error.kind === 'validation'
-    && hasExactKeys(error, ['kind', 'issues'])
-    && Array.isArray(error.issues)
-    && error.issues.length > 0
-    && error.issues.length <= 20
+    error.kind === 'validation' &&
+    hasExactKeys(error, ['kind', 'issues']) &&
+    Array.isArray(error.issues) &&
+    error.issues.length > 0 &&
+    error.issues.length <= 20
   ) {
     const issues = error.issues.map((issue) => {
       if (
-        !isRecord(issue)
-        || !hasExactKeys(issue, ['field', 'message'])
-        || !isBoundedString(issue.field, 160)
-        || !isBoundedString(issue.message)
-      ) return null;
+        !isRecord(issue) ||
+        !hasExactKeys(issue, ['field', 'message']) ||
+        !isBoundedString(issue.field, 160) ||
+        !isBoundedString(issue.message)
+      )
+        return null;
       return { field: issue.field, message: issue.message };
     });
     if (issues.every((issue): issue is { field: string; message: string } => issue !== null)) {
@@ -510,7 +684,10 @@ async function readBoundedJsonBody(response: Response, maxBytes: number): Promis
   }
 }
 
-function invalidRealtimeSpeechInput<T>(field: string, message: string): Promise<Result<T, AppError>> {
+function invalidRealtimeSpeechInput<T>(
+  field: string,
+  message: string,
+): Promise<Result<T, AppError>> {
   return Promise.resolve({
     ok: false,
     error: { kind: 'validation', issues: [{ field, message }] },
@@ -520,37 +697,35 @@ function invalidRealtimeSpeechInput<T>(field: string, message: string): Promise<
 function decodeRealtimeVoiceConfig(value: unknown): RealtimeVoiceConfig | null {
   if (!isRecord(value)) return null;
   if (
-    typeof value.available !== 'boolean'
-    || (value.transport !== 'webrtc' && value.transport !== 'mistral-pcm')
-    || typeof value.model !== 'string'
-    || value.model.length === 0
-    || value.model.length > 100
-    || (value.voice !== 'marin' && value.voice !== 'cedar')
-    || typeof value.configVersion !== 'string'
-    || !/^bob-live-[a-z0-9-]{1,80}$/.test(value.configVersion)
-    || value.requiresDevelopmentBuild !== true
-    || typeof value.maxSessionSeconds !== 'number'
-    || !Number.isInteger(value.maxSessionSeconds)
-    || value.maxSessionSeconds < 60
-    || value.maxSessionSeconds > 900
-    || value.speechDelivery !== 'audited-signed-url-v1'
-    || (
-      value.availabilityReason !== undefined
-      && value.availabilityReason !== 'disabled'
-      && value.availabilityReason !== 'not_entitled'
-      && value.availabilityReason !== 'entitlement_unavailable'
-    )
-  ) return null;
-  const availabilityReason = value.availabilityReason === 'disabled'
-    || value.availabilityReason === 'not_entitled'
-    || value.availabilityReason === 'entitlement_unavailable'
-    ? value.availabilityReason
-    : null;
+    typeof value.available !== 'boolean' ||
+    (value.transport !== 'webrtc' && value.transport !== 'mistral-pcm') ||
+    typeof value.model !== 'string' ||
+    value.model.length === 0 ||
+    value.model.length > 100 ||
+    (value.voice !== 'marin' && value.voice !== 'cedar') ||
+    typeof value.configVersion !== 'string' ||
+    !/^bob-live-[a-z0-9-]{1,80}$/.test(value.configVersion) ||
+    value.requiresDevelopmentBuild !== true ||
+    typeof value.maxSessionSeconds !== 'number' ||
+    !Number.isInteger(value.maxSessionSeconds) ||
+    value.maxSessionSeconds < 60 ||
+    value.maxSessionSeconds > 900 ||
+    value.speechDelivery !== 'audited-signed-url-v1' ||
+    (value.availabilityReason !== undefined &&
+      value.availabilityReason !== 'disabled' &&
+      value.availabilityReason !== 'not_entitled' &&
+      value.availabilityReason !== 'entitlement_unavailable')
+  )
+    return null;
+  const availabilityReason =
+    value.availabilityReason === 'disabled' ||
+    value.availabilityReason === 'not_entitled' ||
+    value.availabilityReason === 'entitlement_unavailable'
+      ? value.availabilityReason
+      : null;
   return {
     available: value.available,
-    ...(availabilityReason === null
-      ? {}
-      : { availabilityReason }),
+    ...(availabilityReason === null ? {} : { availabilityReason }),
     transport: value.transport,
     model: value.model,
     voice: value.voice,
@@ -569,11 +744,14 @@ function decodeRealtimeSpeechSourcePolicy(
   if (!isRecord(value) || !hasExactKeys(value, ['mode', 'allowedOrigin', 'allowedPathPrefix'])) {
     return null;
   }
-  if (value.mode !== 'signed-url-v1'
-    || typeof value.allowedOrigin !== 'string'
-    || typeof value.allowedPathPrefix !== 'string'
-    || value.allowedOrigin.length > 2_048
-    || value.allowedPathPrefix.length > 2_048) return null;
+  if (
+    value.mode !== 'signed-url-v1' ||
+    typeof value.allowedOrigin !== 'string' ||
+    typeof value.allowedPathPrefix !== 'string' ||
+    value.allowedOrigin.length > 2_048 ||
+    value.allowedPathPrefix.length > 2_048
+  )
+    return null;
   let origin: URL;
   let fullPrefix: URL;
   try {
@@ -582,37 +760,46 @@ function decodeRealtimeSpeechSourcePolicy(
   } catch {
     return null;
   }
-  const loopback = origin.protocol === 'http:'
-    && (origin.hostname === 'localhost' || origin.hostname === '127.0.0.1' || origin.hostname === '[::1]');
-  if ((origin.protocol !== 'https:' && !loopback)
-    || origin.origin !== value.allowedOrigin
-    || origin.pathname !== '/'
-    || origin.username !== ''
-    || origin.password !== ''
-    || origin.search !== ''
-    || origin.hash !== ''
-    || fullPrefix.origin !== value.allowedOrigin
-    || fullPrefix.pathname !== value.allowedPathPrefix
-    || fullPrefix.search !== ''
-    || fullPrefix.hash !== ''
-    || !value.allowedPathPrefix.startsWith('/')
-    || !value.allowedPathPrefix.endsWith('/')
-    || value.allowedPathPrefix.includes('%')) return null;
+  const loopback =
+    origin.protocol === 'http:' &&
+    (origin.hostname === 'localhost' ||
+      origin.hostname === '127.0.0.1' ||
+      origin.hostname === '[::1]');
+  if (
+    (origin.protocol !== 'https:' && !loopback) ||
+    origin.origin !== value.allowedOrigin ||
+    origin.pathname !== '/' ||
+    origin.username !== '' ||
+    origin.password !== '' ||
+    origin.search !== '' ||
+    origin.hash !== '' ||
+    fullPrefix.origin !== value.allowedOrigin ||
+    fullPrefix.pathname !== value.allowedPathPrefix ||
+    fullPrefix.search !== '' ||
+    fullPrefix.hash !== '' ||
+    !value.allowedPathPrefix.startsWith('/') ||
+    !value.allowedPathPrefix.endsWith('/') ||
+    value.allowedPathPrefix.includes('%')
+  )
+    return null;
   const segments = value.allowedPathPrefix.split('/');
   if (segments[0] !== '' || segments.at(-1) !== '') return null;
   const body = segments.slice(1, -1);
   if (body.some((segment) => !/^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/u.test(segment))) return null;
   const tail = body.slice(-9);
-  if (tail.length !== 9
-    || tail[0] !== 'storage'
-    || tail[1] !== 'v1'
-    || tail[2] !== 'object'
-    || tail[3] !== 'sign'
-    || !/^[a-z0-9](?:[a-z0-9._-]{0,61}[a-z0-9])?$/u.test(tail[4] ?? '')
-    || tail[5] !== 'companies'
-    || tail[6] !== expectedCompanyId
-    || tail[7] !== 'bob-live'
-    || tail[8] !== expectedSessionHandle) return null;
+  if (
+    tail.length !== 9 ||
+    tail[0] !== 'storage' ||
+    tail[1] !== 'v1' ||
+    tail[2] !== 'object' ||
+    tail[3] !== 'sign' ||
+    !/^[a-z0-9](?:[a-z0-9._-]{0,61}[a-z0-9])?$/u.test(tail[4] ?? '') ||
+    tail[5] !== 'companies' ||
+    tail[6] !== expectedCompanyId ||
+    tail[7] !== 'bob-live' ||
+    tail[8] !== expectedSessionHandle
+  )
+    return null;
   return {
     mode: 'signed-url-v1',
     allowedOrigin: value.allowedOrigin,
@@ -637,20 +824,23 @@ function decodeRealtimeVoiceCall(
     'speechSourcePolicy',
   ] as const;
   if (
-    typeof value.sessionHandle !== 'string'
-    || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.sessionHandle)
-    || !isCanonicalIsoTimestamp(value.hardExpiresAt)
-    || typeof value.model !== 'string'
-    || value.model.length === 0
-    || value.model.length > 100
-    || (value.voice !== 'marin' && value.voice !== 'cedar')
-    || typeof value.configVersion !== 'string'
-    || !/^bob-live-[a-z0-9-]{1,80}$/.test(value.configVersion)
-    || typeof value.maxSessionSeconds !== 'number'
-    || !Number.isInteger(value.maxSessionSeconds)
-    || value.maxSessionSeconds < 60
-    || value.maxSessionSeconds > 900
-  ) return null;
+    typeof value.sessionHandle !== 'string' ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      value.sessionHandle,
+    ) ||
+    !isCanonicalIsoTimestamp(value.hardExpiresAt) ||
+    typeof value.model !== 'string' ||
+    value.model.length === 0 ||
+    value.model.length > 100 ||
+    (value.voice !== 'marin' && value.voice !== 'cedar') ||
+    typeof value.configVersion !== 'string' ||
+    !/^bob-live-[a-z0-9-]{1,80}$/.test(value.configVersion) ||
+    typeof value.maxSessionSeconds !== 'number' ||
+    !Number.isInteger(value.maxSessionSeconds) ||
+    value.maxSessionSeconds < 60 ||
+    value.maxSessionSeconds > 900
+  )
+    return null;
 
   const speechSourcePolicy = decodeRealtimeSpeechSourcePolicy(
     value.speechSourcePolicy,
@@ -671,12 +861,13 @@ function decodeRealtimeVoiceCall(
 
   if (value.transport === 'webrtc') {
     if (
-      !hasExactKeys(value, [...commonKeys, 'answerSdp'])
-      || typeof value.answerSdp !== 'string'
-      || value.answerSdp.length < 16
-      || value.answerSdp.length > 256 * 1024
-      || !value.answerSdp.startsWith('v=0')
-    ) return null;
+      !hasExactKeys(value, [...commonKeys, 'answerSdp']) ||
+      typeof value.answerSdp !== 'string' ||
+      value.answerSdp.length < 16 ||
+      value.answerSdp.length > 256 * 1024 ||
+      !value.answerSdp.startsWith('v=0')
+    )
+      return null;
     return { transport: 'webrtc', answerSdp: value.answerSdp, ...common };
   }
 
@@ -692,22 +883,23 @@ function decodeRealtimeVoiceCall(
         'maxAudioBytes',
         'contextRevision',
         'contextDigest',
-      ])
-      || !isMistralRealtimeWebsocketUrl(value.websocketUrl, expectedApiBaseUrl)
-      || typeof value.companyId !== 'string'
-      || !COMPANY_ID_PATTERN.test(value.companyId)
-      || value.companyId !== expectedCompanyId
-      || typeof value.ticket !== 'string'
-      || !MISTRAL_REALTIME_TICKET_PATTERN.test(value.ticket)
-      || value.protocol !== 'bob.mistral-pcm.v1'
-      || !isCanonicalIsoTimestamp(value.ticketExpiresAt)
-      || Date.parse(value.ticketExpiresAt) > Date.parse(value.hardExpiresAt)
-      || !isBoundedInteger(value.maxAudioBytes, 32_000, 28_800_000)
-      || value.maxAudioBytes % 2 !== 0
-      || !isBoundedInteger(value.contextRevision, 1, 2_147_483_647)
-      || typeof value.contextDigest !== 'string'
-      || !SHA_256_PATTERN.test(value.contextDigest)
-    ) return null;
+      ]) ||
+      !isMistralRealtimeWebsocketUrl(value.websocketUrl, expectedApiBaseUrl) ||
+      typeof value.companyId !== 'string' ||
+      !COMPANY_ID_PATTERN.test(value.companyId) ||
+      value.companyId !== expectedCompanyId ||
+      typeof value.ticket !== 'string' ||
+      !MISTRAL_REALTIME_TICKET_PATTERN.test(value.ticket) ||
+      value.protocol !== 'bob.mistral-pcm.v1' ||
+      !isCanonicalIsoTimestamp(value.ticketExpiresAt) ||
+      Date.parse(value.ticketExpiresAt) > Date.parse(value.hardExpiresAt) ||
+      !isBoundedInteger(value.maxAudioBytes, 32_000, 28_800_000) ||
+      value.maxAudioBytes % 2 !== 0 ||
+      !isBoundedInteger(value.contextRevision, 1, 2_147_483_647) ||
+      typeof value.contextDigest !== 'string' ||
+      !SHA_256_PATTERN.test(value.contextDigest)
+    )
+      return null;
     return {
       transport: 'mistral-pcm',
       websocketUrl: value.websocketUrl,
@@ -740,30 +932,33 @@ function decodeRealtimeVoiceControlAcknowledgement(
   ]);
   const required = ['turnId', 'acknowledgementId', 'kind', 'contextRevision', 'contextDigest'];
   if (
-    required.some((key) => !(key in value))
-    || Object.keys(value).some((key) => !allowed.has(key))
-    || typeof value.turnId !== 'string'
-    || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.turnId)
-    || typeof value.acknowledgementId !== 'string'
-    || !UUID_PATTERN.test(value.acknowledgementId)
-    || (value.kind !== 'answer' && value.kind !== 'proposed' && value.kind !== 'done')
-    || !Number.isSafeInteger(value.contextRevision)
-    || (value.contextRevision as number) < 1
-    || (value.contextRevision as number) > 2_147_483_647
-    || typeof value.contextDigest !== 'string'
-    || !/^[a-f0-9]{64}$/.test(value.contextDigest)
-    || (value.navigate !== undefined && !isAllowedAgentNavigationRoute(value.navigate))
-    || (value.proposalId !== undefined && (
-      typeof value.proposalId !== 'string'
-      || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.proposalId)
-    ))
-    || (value.proposalExpiresAt !== undefined && (
-      typeof value.proposalExpiresAt !== 'string'
-      || value.proposalExpiresAt.length > 40
-      || !Number.isFinite(Date.parse(value.proposalExpiresAt))
-      || value.proposalId === undefined
-    ))
-  ) return null;
+    required.some((key) => !(key in value)) ||
+    Object.keys(value).some((key) => !allowed.has(key)) ||
+    typeof value.turnId !== 'string' ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      value.turnId,
+    ) ||
+    typeof value.acknowledgementId !== 'string' ||
+    !UUID_PATTERN.test(value.acknowledgementId) ||
+    (value.kind !== 'answer' && value.kind !== 'proposed' && value.kind !== 'done') ||
+    !Number.isSafeInteger(value.contextRevision) ||
+    (value.contextRevision as number) < 1 ||
+    (value.contextRevision as number) > 2_147_483_647 ||
+    typeof value.contextDigest !== 'string' ||
+    !/^[a-f0-9]{64}$/.test(value.contextDigest) ||
+    (value.navigate !== undefined && !isAllowedAgentNavigationRoute(value.navigate)) ||
+    (value.proposalId !== undefined &&
+      (typeof value.proposalId !== 'string' ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+          value.proposalId,
+        ))) ||
+    (value.proposalExpiresAt !== undefined &&
+      (typeof value.proposalExpiresAt !== 'string' ||
+        value.proposalExpiresAt.length > 40 ||
+        !Number.isFinite(Date.parse(value.proposalExpiresAt)) ||
+        value.proposalId === undefined))
+  )
+    return null;
   return {
     turnId: value.turnId,
     acknowledgementId: value.acknowledgementId,
@@ -772,7 +967,9 @@ function decodeRealtimeVoiceControlAcknowledgement(
     contextDigest: value.contextDigest,
     ...(typeof value.navigate === 'string' ? { navigate: value.navigate } : {}),
     ...(typeof value.proposalId === 'string' ? { proposalId: value.proposalId } : {}),
-    ...(typeof value.proposalExpiresAt === 'string' ? { proposalExpiresAt: value.proposalExpiresAt } : {}),
+    ...(typeof value.proposalExpiresAt === 'string'
+      ? { proposalExpiresAt: value.proposalExpiresAt }
+      : {}),
   };
 }
 
@@ -801,25 +998,28 @@ export class HttpBobClient implements BobClient {
     let removeExternalAbort: (() => void) | undefined;
     try {
       if (externalSignal?.aborted) throw new Error('Requête annulée.');
-      const controller = timeoutMs === undefined && externalSignal === undefined ? null : new AbortController();
-      const externalDeadline = externalSignal === undefined
-        ? null
-        : new Promise<never>((_resolve, reject) => {
-            const abort = (): void => {
-              controller?.abort();
-              reject(new Error('Requête annulée.'));
-            };
-            externalSignal.addEventListener('abort', abort, { once: true });
-            removeExternalAbort = () => externalSignal.removeEventListener('abort', abort);
-          });
-      const deadline = timeoutMs === undefined
-        ? null
-        : new Promise<never>((_resolve, reject) => {
-            timeout = setTimeout(() => {
-              controller?.abort();
-              reject(new Error(`Délai réseau dépassé après ${timeoutMs} ms.`));
-            }, timeoutMs);
-          });
+      const controller =
+        timeoutMs === undefined && externalSignal === undefined ? null : new AbortController();
+      const externalDeadline =
+        externalSignal === undefined
+          ? null
+          : new Promise<never>((_resolve, reject) => {
+              const abort = (): void => {
+                controller?.abort();
+                reject(new Error('Requête annulée.'));
+              };
+              externalSignal.addEventListener('abort', abort, { once: true });
+              removeExternalAbort = () => externalSignal.removeEventListener('abort', abort);
+            });
+      const deadline =
+        timeoutMs === undefined
+          ? null
+          : new Promise<never>((_resolve, reject) => {
+              timeout = setTimeout(() => {
+                controller?.abort();
+                reject(new Error(`Délai réseau dépassé après ${timeoutMs} ms.`));
+              }, timeoutMs);
+            });
       const withinDeadline = <V>(operation: Promise<V>): Promise<V> => {
         const boundaries = [operation];
         if (deadline) boundaries.push(deadline);
@@ -848,9 +1048,9 @@ export class HttpBobClient implements BobClient {
       const requestUrl = `${this.opts.baseUrl}${path}`;
       const res = await withinDeadline(fetch(requestUrl, init));
       if (
-        typeof res.url === 'string'
-        && res.url !== ''
-        && new URL(res.url).origin !== new URL(requestUrl).origin
+        typeof res.url === 'string' &&
+        res.url !== '' &&
+        new URL(res.url).origin !== new URL(requestUrl).origin
       ) {
         throw new Error('Redirection API cross-origin refusée.');
       }
@@ -878,7 +1078,14 @@ export class HttpBobClient implements BobClient {
       }
       return { ok: true, value: data as T };
     } catch (e) {
-      return { ok: false, error: { kind: 'dependency', port: 'api', cause: e instanceof Error ? e.message : 'réseau' } };
+      return {
+        ok: false,
+        error: {
+          kind: 'dependency',
+          port: 'api',
+          cause: e instanceof Error ? e.message : 'réseau',
+        },
+      };
     } finally {
       if (timeout !== undefined) clearTimeout(timeout);
       removeExternalAbort?.();
@@ -902,27 +1109,25 @@ export class HttpBobClient implements BobClient {
     try {
       if (signal?.aborted) throw new Error('Requête annulée.');
       const controller = new AbortController();
-      const externalDeadline = signal === undefined
-        ? null
-        : new Promise<never>((_resolve, reject) => {
-            const abort = (): void => {
-              controller.abort();
-              reject(new Error('Requête annulée.'));
-            };
-            signal.addEventListener('abort', abort, { once: true });
-            removeExternalAbort = () => signal.removeEventListener('abort', abort);
-          });
+      const externalDeadline =
+        signal === undefined
+          ? null
+          : new Promise<never>((_resolve, reject) => {
+              const abort = (): void => {
+                controller.abort();
+                reject(new Error('Requête annulée.'));
+              };
+              signal.addEventListener('abort', abort, { once: true });
+              removeExternalAbort = () => signal.removeEventListener('abort', abort);
+            });
       const deadline = new Promise<never>((_resolve, reject) => {
         timeout = setTimeout(() => {
           controller.abort();
           reject(new Error(`Délai réseau dépassé après ${REALTIME_SPEECH_REQUEST_TIMEOUT_MS} ms.`));
         }, REALTIME_SPEECH_REQUEST_TIMEOUT_MS);
       });
-      const withinDeadline = <V>(operation: Promise<V>): Promise<V> => Promise.race([
-        operation,
-        deadline,
-        ...(externalDeadline ? [externalDeadline] : []),
-      ]);
+      const withinDeadline = <V>(operation: Promise<V>): Promise<V> =>
+        Promise.race([operation, deadline, ...(externalDeadline ? [externalDeadline] : [])]);
       const token = await withinDeadline(
         this.opts.getToken ? this.opts.getToken() : Promise.resolve(null),
       );
@@ -951,8 +1156,11 @@ export class HttpBobClient implements BobClient {
       if (!response.ok) {
         return {
           ok: false,
-          error: decodeHttpAppError(data)
-            ?? { kind: 'dependency', port: 'api', cause: `HTTP ${response.status}` },
+          error: decodeHttpAppError(data) ?? {
+            kind: 'dependency',
+            port: 'api',
+            cause: `HTTP ${response.status}`,
+          },
         };
       }
       return {
@@ -993,17 +1201,17 @@ export class HttpBobClient implements BobClient {
       });
       const withinDeadline = <V>(operation: Promise<V>): Promise<V> =>
         Promise.race([operation, deadline]);
-      const token = this.opts.getToken
-        ? await withinDeadline(this.opts.getToken())
-        : null;
-      const res = await withinDeadline(fetch(`${this.opts.baseUrl}${path}`, {
-        method: 'GET',
-        signal: controller.signal,
-        headers: {
-          'x-company-id': this.companyId,
-          ...(token ? { authorization: `Bearer ${token}` } : {}),
-        },
-      }));
+      const token = this.opts.getToken ? await withinDeadline(this.opts.getToken()) : null;
+      const res = await withinDeadline(
+        fetch(`${this.opts.baseUrl}${path}`, {
+          method: 'GET',
+          signal: controller.signal,
+          headers: {
+            'x-company-id': this.companyId,
+            ...(token ? { authorization: `Bearer ${token}` } : {}),
+          },
+        }),
+      );
       const contentType = res.headers.get('content-type');
       const content = await withinDeadline(res.text());
       if (!res.ok) {
@@ -1015,12 +1223,22 @@ export class HttpBobClient implements BobClient {
               : { kind: 'dependency', port: 'api', cause: `HTTP ${res.status}` };
           return { ok: false, error };
         } catch {
-          return { ok: false, error: { kind: 'dependency', port: 'api', cause: `HTTP ${res.status}` } };
+          return {
+            ok: false,
+            error: { kind: 'dependency', port: 'api', cause: `HTTP ${res.status}` },
+          };
         }
       }
       return { ok: true, value: { content, headers: res.headers, contentType } };
     } catch (e) {
-      return { ok: false, error: { kind: 'dependency', port: 'api', cause: e instanceof Error ? e.message : 'réseau' } };
+      return {
+        ok: false,
+        error: {
+          kind: 'dependency',
+          port: 'api',
+          cause: e instanceof Error ? e.message : 'réseau',
+        },
+      };
     } finally {
       if (timeout !== undefined) clearTimeout(timeout);
     }
@@ -1033,7 +1251,9 @@ export class HttpBobClient implements BobClient {
     return this.req<FiscalProfileView>('GET', '/fiscal-profile');
   }
   updateFiscalProfileField(field: string, value: unknown) {
-    return this.req<FiscalProfileView>('PATCH', `/fiscal-profile/${encodeURIComponent(field)}`, { value });
+    return this.req<FiscalProfileView>('PATCH', `/fiscal-profile/${encodeURIComponent(field)}`, {
+      value,
+    });
   }
   latestValueDigest() {
     return this.req<ValueDigestView>('GET', '/engagement/digest/latest');
@@ -1072,8 +1292,21 @@ export class HttpBobClient implements BobClient {
   getCompanyMe() {
     return this.req<CompanyProps>('GET', '/company/me');
   }
+  updateCompanyProfile(input: {
+    trade: Trade;
+    vatRegime: VatRegime;
+    customerPortfolio?: CustomerPortfolio;
+  }) {
+    return this.req<CompanyProps>('PATCH', '/company/profile', input);
+  }
+  updateCompanyBilling(input: { iban?: string | null; bic?: string | null }) {
+    return this.req<CompanyProps>('PATCH', '/company/billing', input);
+  }
   lookupCompany(siret: string) {
-    return this.req<CompanyLookupResult>('GET', `/company/lookup?siret=${encodeURIComponent(siret)}`);
+    return this.req<CompanyLookupResult>(
+      'GET',
+      `/company/lookup?siret=${encodeURIComponent(siret)}`,
+    );
   }
   /** C24b : le serveur décide l'id (provisioning déterministe company-<userId>) — jamais d'id envoyé. */
   registerCompany(input: Omit<CompanyProps, 'id'>) {
@@ -1105,15 +1338,16 @@ export class HttpBobClient implements BobClient {
     );
   }
   createRealtimeVoiceCall(input: RealtimeVoiceCallInput, signal?: AbortSignal) {
-    const body = input.transport === 'mistral-pcm'
-      ? {
-          context: input.context,
-          ...(input.sessionHandle === undefined ? {} : { sessionHandle: input.sessionHandle }),
-        }
-      : {
-          sdp: input.sdp,
-          ...(input.sessionHandle === undefined ? {} : { sessionHandle: input.sessionHandle }),
-        };
+    const body =
+      input.transport === 'mistral-pcm'
+        ? {
+            context: input.context,
+            ...(input.sessionHandle === undefined ? {} : { sessionHandle: input.sessionHandle }),
+          }
+        : {
+            sdp: input.sdp,
+            ...(input.sessionHandle === undefined ? {} : { sessionHandle: input.sessionHandle }),
+          };
     return this.req<RealtimeVoiceCall>(
       'POST',
       '/voice/realtime/calls',
@@ -1130,7 +1364,7 @@ export class HttpBobClient implements BobClient {
       `/voice/realtime/calls/${encodeURIComponent(sessionHandle)}`,
       undefined,
       undefined,
-      (value) => isRecord(value) && value.ended === true ? { ended: true } : null,
+      (value) => (isRecord(value) && value.ended === true ? { ended: true } : null),
       REALTIME_BOOTSTRAP_TIMEOUT_MS,
       signal,
     );
@@ -1145,13 +1379,14 @@ export class HttpBobClient implements BobClient {
       `/voice/realtime/calls/${encodeURIComponent(sessionHandle)}/context`,
       input,
       undefined,
-      (value) => isRecord(value)
-        && Number.isSafeInteger(value.revision)
-        && (value.revision as number) >= 1
-        && typeof value.contextDigest === 'string'
-        && /^[a-f0-9]{64}$/.test(value.contextDigest)
-        ? { revision: value.revision as number, contextDigest: value.contextDigest }
-        : null,
+      (value) =>
+        isRecord(value) &&
+        Number.isSafeInteger(value.revision) &&
+        (value.revision as number) >= 1 &&
+        typeof value.contextDigest === 'string' &&
+        /^[a-f0-9]{64}$/.test(value.contextDigest)
+          ? { revision: value.revision as number, contextDigest: value.contextDigest }
+          : null,
       REALTIME_BOOTSTRAP_TIMEOUT_MS,
       signal,
     );
@@ -1195,7 +1430,10 @@ export class HttpBobClient implements BobClient {
         'Le handle de session Bob Live doit être un UUID.',
       );
     }
-    if (!isRecord(input) || !isBoundedInteger(input.afterSequence, 0, REALTIME_SPEECH_MAX_SEQUENCE)) {
+    if (
+      !isRecord(input) ||
+      !isBoundedInteger(input.afterSequence, 0, REALTIME_SPEECH_MAX_SEQUENCE)
+    ) {
       return invalidRealtimeSpeechInput<RealtimeVoiceSpeechFeed>(
         'afterSequence',
         'La séquence Bob Live doit être un entier compris entre 0 et 2147483647.',
@@ -1245,7 +1483,11 @@ export class HttpBobClient implements BobClient {
         'L’artefact vocal Bob Live doit être un UUID.',
       );
     }
-    if (!isRecord(input) || typeof input.deliveryId !== 'string' || !UUID_PATTERN.test(input.deliveryId)) {
+    if (
+      !isRecord(input) ||
+      typeof input.deliveryId !== 'string' ||
+      !UUID_PATTERN.test(input.deliveryId)
+    ) {
       return invalidRealtimeSpeechInput<RealtimeVoiceSpeechDeliveryAcknowledgement>(
         'deliveryId',
         'L’identifiant de livraison Bob Live doit être un UUID.',
@@ -1282,17 +1524,26 @@ export class HttpBobClient implements BobClient {
       return invalidRealtimeSpeechInput<void>('turnId', 'Le tour Bob Live doit être un UUID.');
     }
     if (!UUID_PATTERN.test(artifactId)) {
-      return invalidRealtimeSpeechInput<void>('artifactId', 'L’artefact vocal Bob Live doit être un UUID.');
+      return invalidRealtimeSpeechInput<void>(
+        'artifactId',
+        'L’artefact vocal Bob Live doit être un UUID.',
+      );
     }
-    if (!isRecord(input) || typeof input.cancellationId !== 'string' || !UUID_PATTERN.test(input.cancellationId)) {
+    if (
+      !isRecord(input) ||
+      typeof input.cancellationId !== 'string' ||
+      !UUID_PATTERN.test(input.cancellationId)
+    ) {
       return invalidRealtimeSpeechInput<void>(
         'cancellationId',
         'L’identifiant d’annulation Bob Live doit être un UUID.',
       );
     }
     if (
-      typeof input.reason !== 'string'
-      || !REALTIME_SPEECH_CANCELLATION_REASONS.has(input.reason as RealtimeVoiceSpeechCancellationReason)
+      typeof input.reason !== 'string' ||
+      !REALTIME_SPEECH_CANCELLATION_REASONS.has(
+        input.reason as RealtimeVoiceSpeechCancellationReason,
+      )
     ) {
       return invalidRealtimeSpeechInput<void>(
         'reason',
@@ -1303,7 +1554,7 @@ export class HttpBobClient implements BobClient {
       'POST',
       `/voice/realtime/calls/${encodeURIComponent(sessionHandle)}/turns/${encodeURIComponent(turnId)}/speech/${encodeURIComponent(artifactId)}/cancellations`,
       { cancellationId: input.cancellationId, reason: input.reason },
-      (status, value) => status === 204 && value === undefined ? true : null,
+      (status, value) => (status === 204 && value === undefined ? true : null),
       signal,
     );
     return result.ok ? { ok: true, value: undefined } : result;
@@ -1311,10 +1562,12 @@ export class HttpBobClient implements BobClient {
   listDocuments(input: ListDocumentsClientInput = {}) {
     const params = new URLSearchParams();
     if (input.kind !== undefined) params.set('kind', input.kind);
-    if (input.linkedEntityType !== undefined) params.set('linkedEntityType', input.linkedEntityType);
+    if (input.linkedEntityType !== undefined)
+      params.set('linkedEntityType', input.linkedEntityType);
     if (input.linkedEntityId !== undefined) params.set('linkedEntityId', input.linkedEntityId);
     if (input.folderId !== undefined) params.set('folderId', input.folderId ?? 'null');
-    if (input.includeDeleted !== undefined) params.set('includeDeleted', String(input.includeDeleted));
+    if (input.includeDeleted !== undefined)
+      params.set('includeDeleted', String(input.includeDeleted));
     const qs = params.toString();
     return this.req<DocumentView[]>(
       'GET',
@@ -1341,10 +1594,11 @@ export class HttpBobClient implements BobClient {
       '/documents/upload',
       input,
       undefined,
-      (value) => decodeDocumentViewForContext(value, {
-        companyId: this.companyId,
-        ...(input.folderId !== undefined ? { folderId: input.folderId } : {}),
-      }),
+      (value) =>
+        decodeDocumentViewForContext(value, {
+          companyId: this.companyId,
+          ...(input.folderId !== undefined ? { folderId: input.folderId } : {}),
+        }),
       DOCUMENT_UPLOAD_TIMEOUT_MS,
     );
   }
@@ -1369,10 +1623,11 @@ export class HttpBobClient implements BobClient {
       `/document-folders${query ? `?${query}` : ''}`,
       undefined,
       undefined,
-      (value) => decodeDocumentFolderPageForContext(value, {
-        companyId: this.companyId,
-        parentId: input.parentId ?? null,
-      }),
+      (value) =>
+        decodeDocumentFolderPageForContext(value, {
+          companyId: this.companyId,
+          parentId: input.parentId ?? null,
+        }),
       DOCUMENT_READ_TIMEOUT_MS,
     );
   }
@@ -1382,10 +1637,11 @@ export class HttpBobClient implements BobClient {
       `/document-folders/${encodeURIComponent(folderId)}`,
       undefined,
       undefined,
-      (value) => decodeDocumentFolderViewForContext(value, {
-        companyId: this.companyId,
-        folderId,
-      }),
+      (value) =>
+        decodeDocumentFolderViewForContext(value, {
+          companyId: this.companyId,
+          folderId,
+        }),
       DOCUMENT_READ_TIMEOUT_MS,
     );
   }
@@ -1395,10 +1651,11 @@ export class HttpBobClient implements BobClient {
       '/document-folders',
       input,
       undefined,
-      (value) => decodeDocumentFolderViewForContext(value, {
-        companyId: this.companyId,
-        parentId: input.parentId ?? null,
-      }),
+      (value) =>
+        decodeDocumentFolderViewForContext(value, {
+          companyId: this.companyId,
+          parentId: input.parentId ?? null,
+        }),
       DOCUMENT_MUTATION_TIMEOUT_MS,
     );
   }
@@ -1414,12 +1671,13 @@ export class HttpBobClient implements BobClient {
       `/document-folders/${encodeURIComponent(folderId)}`,
       body,
       undefined,
-      (value) => decodeDocumentFolderViewForContext(value, {
-        companyId: this.companyId,
-        folderId,
-        allowedRevisions: [input.expectedRevision, input.expectedRevision + 1],
-        ...(input.parentId !== undefined ? { parentId: input.parentId } : {}),
-      }),
+      (value) =>
+        decodeDocumentFolderViewForContext(value, {
+          companyId: this.companyId,
+          folderId,
+          allowedRevisions: [input.expectedRevision, input.expectedRevision + 1],
+          ...(input.parentId !== undefined ? { parentId: input.parentId } : {}),
+        }),
       DOCUMENT_MUTATION_TIMEOUT_MS,
     );
   }
@@ -1433,10 +1691,7 @@ export class HttpBobClient implements BobClient {
       DOCUMENT_MUTATION_TIMEOUT_MS,
     );
   }
-  executeDocumentFolderDeletion(input: {
-    planId: string;
-    strategy: DeleteDocumentFolderStrategy;
-  }) {
+  executeDocumentFolderDeletion(input: { planId: string; strategy: DeleteDocumentFolderStrategy }) {
     return this.req<DocumentFolderDeletionExecutionView>(
       'POST',
       `/document-folder-deletion-plans/${encodeURIComponent(input.planId)}/executions`,
@@ -1446,7 +1701,11 @@ export class HttpBobClient implements BobClient {
       DOCUMENT_MUTATION_TIMEOUT_MS,
     );
   }
-  moveDocumentToFolder(input: { documentId: string; folderId: string | null; expectedRevision: number }) {
+  moveDocumentToFolder(input: {
+    documentId: string;
+    folderId: string | null;
+    expectedRevision: number;
+  }) {
     const { documentId, ...body } = input;
     return this.req<{ documentId: string; folderId: string | null; revision: number }>(
       'PUT',
@@ -1474,13 +1733,14 @@ export class HttpBobClient implements BobClient {
       `/documents/${encodeURIComponent(documentId)}/classify`,
       body,
       undefined,
-      (value) => decodeDocumentViewForContext(value, {
-        companyId: this.companyId,
-        documentId,
-        linkedEntityType: input.linkedEntityType,
-        linkedEntityId: input.linkedEntityId,
-        allowedRevisions: [input.expectedRevision, input.expectedRevision + 1],
-      }),
+      (value) =>
+        decodeDocumentViewForContext(value, {
+          companyId: this.companyId,
+          documentId,
+          linkedEntityType: input.linkedEntityType,
+          linkedEntityId: input.linkedEntityId,
+          allowedRevisions: [input.expectedRevision, input.expectedRevision + 1],
+        }),
       DOCUMENT_MUTATION_TIMEOUT_MS,
     );
   }
@@ -1497,9 +1757,7 @@ export class HttpBobClient implements BobClient {
         ? { totalHtCents: input.expense.totalHtCents }
         : {}),
       ...(input.expense.vatCents !== undefined ? { vatCents: input.expense.vatCents } : {}),
-      ...(input.expense.vatRatePct !== undefined
-        ? { vatRatePct: input.expense.vatRatePct }
-        : {}),
+      ...(input.expense.vatRatePct !== undefined ? { vatRatePct: input.expense.vatRatePct } : {}),
       ...(input.expense.supplierInvoiceNumber !== undefined
         ? { supplierInvoiceNumber: input.expense.supplierInvoiceNumber }
         : {}),
@@ -1514,12 +1772,13 @@ export class HttpBobClient implements BobClient {
         expense,
       },
       undefined,
-      (value) => decodeDocumentExpenseCreationForContext(value, {
-        companyId: this.companyId,
-        documentId: input.documentId,
-        targetFolderId: input.targetFolderId,
-        expectedRevision: input.expectedRevision,
-      }),
+      (value) =>
+        decodeDocumentExpenseCreationForContext(value, {
+          companyId: this.companyId,
+          documentId: input.documentId,
+          targetFolderId: input.targetFolderId,
+          expectedRevision: input.expectedRevision,
+        }),
       // Transaction DB courte. Une coupure libère l'UI ; la même commande est ensuite rejouée
       // grâce au registre SHA, sans présumer si le serveur avait déjà commité.
       15_000,
@@ -1584,6 +1843,46 @@ export class HttpBobClient implements BobClient {
   listExpenses() {
     return this.req<ExpenseProps[]>('GET', '/expenses');
   }
+  listCatalogueItems() {
+    return this.req<readonly CatalogueItemView[]>(
+      'GET',
+      '/catalogue/prestations',
+      undefined,
+      undefined,
+      decodeCatalogueItems,
+    );
+  }
+  createCatalogueItem(input: CatalogueItemWriteInput) {
+    return this.req<CatalogueItemView>(
+      'POST',
+      '/catalogue/prestations',
+      input,
+      undefined,
+      decodeCatalogueItem,
+    );
+  }
+  updateCatalogueItem(input: {
+    itemId: string;
+    expectedRevision: number;
+    item: CatalogueItemWriteInput;
+  }) {
+    return this.req<CatalogueItemView>(
+      'PATCH',
+      `/catalogue/prestations/${encodeURIComponent(input.itemId)}`,
+      { ...input.item, expectedRevision: input.expectedRevision },
+      undefined,
+      decodeCatalogueItem,
+    );
+  }
+  deleteCatalogueItem(input: { itemId: string; expectedRevision: number }) {
+    return this.req<CatalogueDeletionView>(
+      'DELETE',
+      `/catalogue/prestations/${encodeURIComponent(input.itemId)}`,
+      { expectedRevision: input.expectedRevision },
+      undefined,
+      decodeCatalogueDeletion,
+    );
+  }
   createChantier(input: Omit<CreateChantierInput, 'companyId'>) {
     return this.req<{ id: string }>('POST', '/chantiers', input);
   }
@@ -1591,10 +1890,27 @@ export class HttpBobClient implements BobClient {
     return this.req<ChantierProps[]>('GET', '/chantiers');
   }
   listCustomers() {
-    return this.req<CustomerListItem[]>('GET', '/customers');
+    return this.req<CustomerListItem[]>('GET', '/customers', undefined, undefined, decodeCustomerList);
   }
   createCustomer(input: CreateCustomerClientInput) {
-    return this.req<{ id: string }>('POST', '/customers', input);
+    const body: CreateCustomerClientInput = {
+      type: input.type,
+      name: input.name,
+      address: { ...input.address },
+      ...(input.siren !== undefined ? { siren: input.siren } : {}),
+      ...(input.email !== undefined ? { email: input.email } : {}),
+      ...(input.phone !== undefined ? { phone: input.phone } : {}),
+      ...(input.paymentTermsLabel !== undefined
+        ? { paymentTermsLabel: input.paymentTermsLabel }
+        : {}),
+      ...(input.isInternational !== undefined
+        ? { isInternational: input.isInternational }
+        : {}),
+      ...(input.isSubcontractingBtp !== undefined
+        ? { isSubcontractingBtp: input.isSubcontractingBtp }
+        : {}),
+    };
+    return this.req<{ id: string }>('POST', '/customers', body);
   }
   // —— Assistant Bob (C40 ⑧) : l'agent tourne CÔTÉ SERVEUR — journal company-scoped, autonomie clampée ——
   askBob(input: AskBobClientInput) {
@@ -1610,10 +1926,7 @@ export class HttpBobClient implements BobClient {
     return this.req<AgentRun>('POST', '/ai/ask', body);
   }
   previewBobProposal(proposalId: string) {
-    return this.req<PendingAction>(
-      'GET',
-      `/ai/proposals/${encodeURIComponent(proposalId)}`,
-    );
+    return this.req<PendingAction>('GET', `/ai/proposals/${encodeURIComponent(proposalId)}`);
   }
   confirmBob(pending: PendingAction) {
     // La confirmation HTTP référence exclusivement la proposition persistée côté serveur.
@@ -1632,6 +1945,12 @@ export class HttpBobClient implements BobClient {
       'GET',
       `/cashflow?scenario=${encodeURIComponent(input.scenario)}&horizon=${encodeURIComponent(String(input.horizon))}`,
     );
+  }
+  getLatestBankBalance() {
+    return this.req<QualifiedBankBalanceSnapshot>('GET', '/bank-balance');
+  }
+  recordManualBankBalance(input: { amountCents: number; observedAt: string }) {
+    return this.req<QualifiedBankBalanceSnapshot>('POST', '/bank-balance/manual', input);
   }
   createQuote(input: Omit<CreateQuoteInput, 'companyId'>) {
     const body: Omit<CreateQuoteInput, 'companyId'> = {
@@ -1669,12 +1988,46 @@ export class HttpBobClient implements BobClient {
       QUOTE_CREATION_TIMEOUT_MS,
     );
   }
+  async getQuoteDraft(): Promise<Result<QuoteDraftSlotView | null, AppError>> {
+    const result = await this.req<QuoteDraftEnvelopeWire>(
+      'GET',
+      '/quote-drafts/current',
+      undefined,
+      { 'cache-control': 'no-store', pragma: 'no-cache' },
+      decodeQuoteDraftEnvelope,
+    );
+    return result.ok ? { ok: true, value: result.value.slot } : result;
+  }
+  saveQuoteDraft(input: SaveQuoteDraftClientInput) {
+    return this.req<QuoteDraftSlotView>(
+      'PUT',
+      '/quote-drafts/current',
+      {
+        expectedRevision: input.expectedRevision,
+        payload: input.payload,
+      },
+      { 'cache-control': 'no-store' },
+      decodeQuoteDraftSlot,
+    );
+  }
+  deleteQuoteDraft(expectedRevision: number) {
+    return this.req<{ deleted: true }>(
+      'DELETE',
+      '/quote-drafts/current',
+      { expectedRevision },
+      { 'cache-control': 'no-store' },
+      decodeQuoteDraftDeletion,
+    );
+  }
   sendQuote(quoteId: string) {
     return this.req<SendQuoteOutput>('POST', `/quotes/${quoteId}/send`);
   }
   /** P0 R4 : préparer le lien ≠ envoyer un e-mail — cette route ne déclenche AUCUN sortant. */
   createQuoteSignatureLink(quoteId: string) {
-    return this.req<CreateQuoteSignatureLinkOutput>('POST', `/quotes/${encodeURIComponent(quoteId)}/signature-link`);
+    return this.req<CreateQuoteSignatureLinkOutput>(
+      'POST',
+      `/quotes/${encodeURIComponent(quoteId)}/signature-link`,
+    );
   }
   signQuote(input: { quoteId: string; signerName: string; proofDataUrl?: string }) {
     return this.req<{ status: string }>('POST', `/quotes/${input.quoteId}/sign`, {
@@ -1686,7 +2039,9 @@ export class HttpBobClient implements BobClient {
     return this.req<{ status: string }>('POST', `/quotes/${quoteId}/refuse`);
   }
   generateInvoice(input: { quoteId: string; mode: 'deposit' | 'final' }) {
-    return this.req<{ invoiceId: string }>('POST', `/quotes/${input.quoteId}/invoice`, { mode: input.mode });
+    return this.req<{ invoiceId: string }>('POST', `/quotes/${input.quoteId}/invoice`, {
+      mode: input.mode,
+    });
   }
   updateQuoteLine(input: UpdateQuoteLineInput) {
     return this.req<{ status: string }>(
@@ -1713,7 +2068,10 @@ export class HttpBobClient implements BobClient {
     return this.req<{ number: string }>('POST', `/invoices/${input.invoiceId}/issue`, input);
   }
   deleteDraftInvoice(invoiceId: string) {
-    return this.req<{ deleted: true }>('DELETE', `/invoices/${encodeURIComponent(invoiceId)}/draft`);
+    return this.req<{ deleted: true }>(
+      'DELETE',
+      `/invoices/${encodeURIComponent(invoiceId)}/draft`,
+    );
   }
   /** C25 ② : envoi RÉEL — le serveur choisit le ton (plan @bob/core) et livre email + miroir push. */
   sendRelance(invoiceId: string) {
@@ -1742,7 +2100,14 @@ export class HttpBobClient implements BobClient {
     );
   }
   unregisterDevice(input: UnregisterDeviceClientInput) {
-    return this.req<{ unregistered: true }>('DELETE', '/devices', input, undefined, undefined, 10_000);
+    return this.req<{ unregistered: true }>(
+      'DELETE',
+      '/devices',
+      input,
+      undefined,
+      undefined,
+      10_000,
+    );
   }
   revokeDeviceBinding(input: RevokeDeviceBindingClientInput) {
     return this.req<{ accepted: true }>(
@@ -1765,9 +2130,18 @@ export class HttpBobClient implements BobClient {
     );
   }
   registerPayment(input: RegisterPaymentClientInput) {
-    const body = { amount: input.amount, method: input.method, idempotencyKey: input.idempotencyKey ?? undefined };
+    const body = {
+      amount: input.amount,
+      method: input.method,
+      idempotencyKey: input.idempotencyKey ?? undefined,
+    };
     const headers = input.idempotencyKey ? { 'idempotency-key': input.idempotencyKey } : undefined;
-    return this.req<RegisterPaymentClientOutput>('POST', `/invoices/${input.invoiceId}/pay`, body, headers);
+    return this.req<RegisterPaymentClientOutput>(
+      'POST',
+      `/invoices/${input.invoiceId}/pay`,
+      body,
+      headers,
+    );
   }
   getQuote(id: string) {
     return this.req<QuoteView>('GET', `/quotes/${id}`);
@@ -1781,9 +2155,19 @@ export class HttpBobClient implements BobClient {
   invoiceAccountingPreview(invoiceId: string) {
     return this.req<InvoiceAccountingPreview>('GET', `/invoices/${invoiceId}/accounting-preview`);
   }
-  paymentAccountingPreview(input: { invoiceId: string; amountCents: number; method: PaymentMethod }) {
-    const qs = new URLSearchParams({ amount: String(input.amountCents), method: input.method }).toString();
-    return this.req<PaymentAccountingPreview>('GET', `/invoices/${input.invoiceId}/payment-accounting-preview?${qs}`);
+  paymentAccountingPreview(input: {
+    invoiceId: string;
+    amountCents: number;
+    method: PaymentMethod;
+  }) {
+    const qs = new URLSearchParams({
+      amount: String(input.amountCents),
+      method: input.method,
+    }).toString();
+    return this.req<PaymentAccountingPreview>(
+      'GET',
+      `/invoices/${input.invoiceId}/payment-accounting-preview?${qs}`,
+    );
   }
   listInvoices() {
     return this.req<InvoiceView[]>('GET', '/invoices');

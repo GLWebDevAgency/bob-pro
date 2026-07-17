@@ -2,7 +2,6 @@ import type { ValueEvent } from '@bob/core';
 import {
   BobAgent,
   ModelRouter,
-  InMemoryJournalStore,
   pendingToInvocations,
   type BobActions,
   type AgentRun,
@@ -15,7 +14,9 @@ import {
   type InvoiceableQuote,
   type AgentDocument,
 } from '@bob/ai';
-import { buildValueDigest,
+import { InMemoryJournalStore } from '@bob/ai/testing';
+import {
+  buildValueDigest,
   CreateQuote,
   SendQuote,
   SignQuote,
@@ -39,11 +40,6 @@ import { buildValueDigest,
   ListCustomers,
   GetCashflow,
   SystemClock,
-  seedCompany,
-  seedCustomers,
-  seedExpenses,
-  seedVaultDocuments,
-  CASH_SNAPSHOT,
   PLAN_CATALOG,
   ADDON_CATALOG,
   planEntitlements,
@@ -66,7 +62,6 @@ import { buildValueDigest,
   buildInvoiceAccountingPreviewEntry,
   createFrenchOperationalChartOfAccounts,
   ExtractDocument,
-  DemoOcrAdapter,
   RecordExpense,
   importFacturXExpense as runFacturXReceptionControls,
   withSupplierCategory,
@@ -74,6 +69,10 @@ import { buildValueDigest,
   expenseDuplicateKey,
   parseFacturXBasic,
   InboundEinvoice,
+  ListCatalogueItems,
+  CreateCatalogueItem,
+  UpdateCatalogueItem,
+  DeleteCatalogueItem,
   CreateChantier,
   AutofillCompanyFromSiret,
   ValidateVatNumber,
@@ -92,10 +91,13 @@ import { buildValueDigest,
   deriveRelancePlan,
   ok,
   err,
+  appUnavailable,
   appNotFound,
   appForbidden,
   appDomain,
   appConflict,
+  parseQuoteDraftPayload,
+  QUOTE_DRAFT_PAYLOAD_VERSION,
   type ClockPort,
   type IdGeneratorPort,
   type CreateQuoteInput,
@@ -110,6 +112,7 @@ import { buildValueDigest,
   type Horizon,
   type PaymentMethod,
   type CashflowProjection,
+  type QualifiedBankBalanceSnapshot,
   type CustomerListItem,
   type CreateQuoteOutput,
   type DiagnosticResult,
@@ -119,9 +122,12 @@ import { buildValueDigest,
   type RecordExpenseInput,
   type PlanTier,
   type TradeConfig,
+  type Trade,
+  type VatRegime,
   type ChantierProps,
   type CreateChantierInput,
   type CompanyProps,
+  type CustomerPortfolio,
   type CompanyLookupResult,
   type VatCheckResult,
   type AddressSuggestion,
@@ -130,14 +136,24 @@ import { buildValueDigest,
   type DocumentFolderView,
   type DeleteDocumentFolderStrategy,
   type DocumentAnalysis,
-  type SubscriptionStatusView,
   searchSalesDocumentsInMemory,
   suggestSalesDocumentsInMemory,
   type SalesDocumentSearchPiece,
   type SearchSalesDocumentsResult,
   type SuggestSalesDocumentsResult,
   type Totals,
+  type CatalogueItemWriteInput,
+  type CatalogueItemView,
+  type CatalogueDeletionView,
 } from '@bob/core';
+import {
+  CASH_SNAPSHOT,
+  DemoOcrAdapter,
+  seedCompany,
+  seedCustomers,
+  seedExpenses,
+  seedVaultDocuments,
+} from '@bob/core/testing';
 import {
   InMemoryCompanyRepository,
   InMemoryCustomerRepository,
@@ -146,13 +162,18 @@ import {
   InMemoryPaymentRepository,
   InMemoryPublicAccessTokenRepository,
   InMemoryExpenseRepository,
+  InMemoryCatalogueRepository,
   InMemoryChantierRepository,
   InMemoryAccountingEntryRepository,
   InMemoryChartOfAccountsRepository,
 } from './in-memory/repositories';
 import { DemoCompanyLookupAdapter } from './in-memory/company-lookup';
 import { DemoVatAdapter, DemoAddressAdapter } from './in-memory/enrichment';
-import { InMemorySequenceCounter, CounterIdGenerator, FixtureCashflowSnapshot } from './in-memory/services';
+import {
+  InMemorySequenceCounter,
+  CounterIdGenerator,
+  FixtureCashflowSnapshot,
+} from './in-memory/services';
 import type {
   BobClient,
   QuoteView,
@@ -204,13 +225,13 @@ import type {
   AskBobClientInput,
   CreateCustomerClientInput,
   SearchSalesDocumentsClientInput,
- ValueDigestView,
-  TrialReportView } from './client';
+  ValueDigestView,
+  TrialReportView,
+  QuoteDraftSlotView,
+  SaveQuoteDraftClientInput,
+} from './client';
 import { localExpenseCreationFingerprint, portableSha256Bytes } from './expense-idempotency';
-import {
-  cloneQuoteCreation,
-  localQuoteCreationFingerprint,
-} from './quote-idempotency';
+import { cloneQuoteCreation, localQuoteCreationFingerprint } from './quote-idempotency';
 
 export interface LocalBobClientOptions {
   clock?: ClockPort;
@@ -267,7 +288,9 @@ function bytesToBase64(bytes: Uint8Array): string {
 
 function decodeBase64Document(contentBase64: unknown): Base64DocumentDecode {
   if (typeof contentBase64 !== 'string') return { ok: false, reason: 'invalid' };
-  const raw = contentBase64.includes(',') ? contentBase64.slice(contentBase64.indexOf(',') + 1) : contentBase64;
+  const raw = contentBase64.includes(',')
+    ? contentBase64.slice(contentBase64.indexOf(',') + 1)
+    : contentBase64;
   const normalized = raw.replace(/\s/g, '');
   if (!normalized) return { ok: false, reason: 'empty' };
   if (normalized.length > DOCUMENT_BASE64_MAX_CHARS + 2) return { ok: false, reason: 'too_large' };
@@ -328,29 +351,37 @@ function asciiPrefix(bytes: Uint8Array, length: number, offset = 0): string {
 function documentSignatureMatches(mimeType: string, bytes: Uint8Array): boolean {
   const isPdf = asciiPrefix(bytes, 5) === '%PDF-';
   const isJpeg = bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
-  const isPng = bytes.length >= 8 && [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
-    .every((value, index) => bytes[index] === value);
+  const isPng =
+    bytes.length >= 8 &&
+    [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a].every(
+      (value, index) => bytes[index] === value,
+    );
   const isWebp = asciiPrefix(bytes, 4) === 'RIFF' && asciiPrefix(bytes, 4, 8) === 'WEBP';
   const heifBrand = asciiPrefix(bytes, 4, 8);
-  const isHeif = asciiPrefix(bytes, 4, 4) === 'ftyp'
-    && new Set(['heic', 'heix', 'hevc', 'hevx', 'heim', 'heis', 'mif1', 'msf1']).has(heifBrand);
+  const isHeif =
+    asciiPrefix(bytes, 4, 4) === 'ftyp' &&
+    new Set(['heic', 'heix', 'hevc', 'hevx', 'heim', 'heis', 'mif1', 'msf1']).has(heifBrand);
   const xmlHead = asciiPrefix(bytes, Math.min(bytes.length, 512))
     .replace(/^\u00ef\u00bb\u00bf/, '')
     .trimStart();
-  return (mimeType === 'application/pdf' && isPdf)
-    || (mimeType === 'image/jpeg' && isJpeg)
-    || (mimeType === 'image/png' && isPng)
-    || (mimeType === 'image/webp' && isWebp)
-    || ((mimeType === 'image/heic' || mimeType === 'image/heif') && isHeif)
-    || ((mimeType === 'application/xml' || mimeType === 'text/xml') && xmlHead.startsWith('<'));
+  return (
+    (mimeType === 'application/pdf' && isPdf) ||
+    (mimeType === 'image/jpeg' && isJpeg) ||
+    (mimeType === 'image/png' && isPng) ||
+    (mimeType === 'image/webp' && isWebp) ||
+    ((mimeType === 'image/heic' || mimeType === 'image/heif') && isHeif) ||
+    ((mimeType === 'application/xml' || mimeType === 'text/xml') && xmlHead.startsWith('<'))
+  );
 }
 
 function cloneDocumentView(document: DocumentView): DocumentView {
   return { ...document, tags: [...document.tags] };
 }
 
-const LOCAL_DEMO_JPEG_BASE64 = '/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXhpZgAATU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAAaADAAQAAAABAAAAAQAAAAD/7QA4UGhvdG9zaG9wIDMuMAA4QklNBAQAAAAAAAA4QklNBCUAAAAAABDUHYzZjwCyBOmACZjs+EJ+/8AAEQgAAQABAwEiAAIRAQMRAf/EAB8AAAEFAQEBAQEBAAAAAAAAAAABAgMEBQYHCAkKC//EALUQAAIBAwMCBAMFBQQEAAABfQECAwAEEQUSITFBBhNRYQcicRQygZGhCCNCscEVUtHwJDNicoIJChYXGBkaJSYnKCkqNDU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+v/EAB8BAAMBAQEBAQEBAQEAAAAAAAABAgMEBQYHCAkKC//EALURAAIBAgQEAwQHBQQEAAECdwABAgMRBAUhMQYSQVEHYXETIjKBCBRCkaGxwQkjM1LwFWJy0QoWJDThJfEXGBkaJicoKSo1Njc4OTpDREVGR0hJSlNUVVZXWFlaY2RlZmdoaWpzdHV2d3h5eoKDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uLj5OXm5+jp6vLz9PX29/j5+v/bAEMAAgICAgICAwICAwUDAwMFBgUFBQUGCAYGBgYGCAoICAgICAgKCgoKCgoKCgwMDAwMDA4ODg4ODw8PDw8PDw8PD//bAEMBAgICBAQEBwQEBxALCQsQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEP/dAAQAAf/aAAwDAQACEQMRAD8A/RSiiivcPPP/2Q==';
-const LOCAL_DEMO_PDF_BASE64 = 'JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCAyMDAgMjAwXSAvQ29udGVudHMgNCAwIFIgL1Jlc291cmNlcyA8PCA+PiA+PgplbmRvYmoKNCAwIG9iago8PCAvTGVuZ3RoIDAgPj4Kc3RyZWFtCgplbmRzdHJlYW0KZW5kb2JqCnhyZWYKMCA1CjAwMDAwMDAwMDAgNjU1MzUgZiAKMDAwMDAwMDAwOSAwMDAwMCBuIAowMDAwMDAwMDU4IDAwMDAwIG4gCjAwMDAwMDAxMTUgMDAwMDAgbiAKMDAwMDAwMDIxOSAwMDAwMCBuIAp0cmFpbGVyCjw8IC9TaXplIDUgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjI2OAolJUVPRgo=';
+const LOCAL_DEMO_JPEG_BASE64 =
+  '/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXhpZgAATU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAAaADAAQAAAABAAAAAQAAAAD/7QA4UGhvdG9zaG9wIDMuMAA4QklNBAQAAAAAAAA4QklNBCUAAAAAABDUHYzZjwCyBOmACZjs+EJ+/8AAEQgAAQABAwEiAAIRAQMRAf/EAB8AAAEFAQEBAQEBAAAAAAAAAAABAgMEBQYHCAkKC//EALUQAAIBAwMCBAMFBQQEAAABfQECAwAEEQUSITFBBhNRYQcicRQygZGhCCNCscEVUtHwJDNicoIJChYXGBkaJSYnKCkqNDU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+v/EAB8BAAMBAQEBAQEBAQEAAAAAAAABAgMEBQYHCAkKC//EALURAAIBAgQEAwQHBQQEAAECdwABAgMRBAUhMQYSQVEHYXETIjKBCBRCkaGxwQkjM1LwFWJy0QoWJDThJfEXGBkaJicoKSo1Njc4OTpDREVGR0hJSlNUVVZXWFlaY2RlZmdoaWpzdHV2d3h5eoKDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uLj5OXm5+jp6vLz9PX29/j5+v/bAEMAAgICAgICAwICAwUDAwMFBgUFBQUGCAYGBgYGCAoICAgICAgKCgoKCgoKCgwMDAwMDA4ODg4ODw8PDw8PDw8PD//bAEMBAgICBAQEBwQEBxALCQsQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEP/dAAQAAf/aAAwDAQACEQMRAD8A/RSiiivcPPP/2Q==';
+const LOCAL_DEMO_PDF_BASE64 =
+  'JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCAyMDAgMjAwXSAvQ29udGVudHMgNCAwIFIgL1Jlc291cmNlcyA8PCA+PiA+PgplbmRvYmoKNCAwIG9iago8PCAvTGVuZ3RoIDAgPj4Kc3RyZWFtCgplbmRzdHJlYW0KZW5kb2JqCnhyZWYKMCA1CjAwMDAwMDAwMDAgNjU1MzUgZiAKMDAwMDAwMDAwOSAwMDAwMCBuIAowMDAwMDAwMDU4IDAwMDAwIG4gCjAwMDAwMDAxMTUgMDAwMDAgbiAKMDAwMDAwMDIxOSAwMDAwMCBuIAp0cmFpbGVyCjw8IC9TaXplIDUgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjI2OAolJUVPRgo=';
 
 function normalizeSupplierNameLocal(name: string): string {
   return name
@@ -382,8 +413,15 @@ const PAYABLE_STATUSES = new Set(['issued', 'partially_paid', 'late']);
 const SENDABLE_QUOTE_STATUSES = new Set(['draft', 'sent', 'viewed']);
 
 /** Clamp d'autonomie identique au serveur (apps/api ai/autonomy-entitlements) : jamais au-delà de l'offre. */
-const AUTONOMY_RANK: Record<AgentAutonomy, number> = { confirm_all: 0, confirm_outbound: 1, auto: 2 };
-function clampAutonomy(requested: AgentAutonomy | undefined, entitlement: AgentAutonomy): AgentAutonomy {
+const AUTONOMY_RANK: Record<AgentAutonomy, number> = {
+  confirm_all: 0,
+  confirm_outbound: 1,
+  auto: 2,
+};
+function clampAutonomy(
+  requested: AgentAutonomy | undefined,
+  entitlement: AgentAutonomy,
+): AgentAutonomy {
   const desired = requested ?? entitlement;
   return AUTONOMY_RANK[desired] <= AUTONOMY_RANK[entitlement] ? desired : entitlement;
 }
@@ -401,19 +439,30 @@ export class LocalBobClient implements BobClient {
   private readonly ids: IdGeneratorPort;
   private readonly ocr: DemoOcrAdapter;
   private readonly expenses = new InMemoryExpenseRepository();
-  private readonly expenseCreationRequests = new Map<string, { payloadHash: string; expenseId: string }>();
+  private readonly catalogue = new InMemoryCatalogueRepository();
+  private readonly expenseCreationRequests = new Map<
+    string,
+    { payloadHash: string; expenseId: string }
+  >();
   private expenseCreationTail: Promise<void> = Promise.resolve();
   private readonly quoteCreationRequests = new Map<
     string,
     { payloadHash: string; output: CreateQuoteOutput }
   >();
   private quoteCreationTail: Promise<void> = Promise.resolve();
+  private quoteDraftSlot: QuoteDraftSlotView | null = null;
   private readonly chantiers = new InMemoryChantierRepository();
   private readonly accountingEntries = new InMemoryAccountingEntryRepository();
   private readonly chartOfAccounts = new InMemoryChartOfAccountsRepository();
   private readonly documents: DocumentView[] = [];
-  private readonly documentContents = new Map<string, { contentBase64: string; mimeType: string }>();
-  private readonly documentIntakes = new Map<string, { documentId: string; sha256: string; mimeType: string }>();
+  private readonly documentContents = new Map<
+    string,
+    { contentBase64: string; mimeType: string }
+  >();
+  private readonly documentIntakes = new Map<
+    string,
+    { documentId: string; sha256: string; mimeType: string }
+  >();
   private readonly documentFolders: DocumentFolderView[] = [];
   private readonly documentFolderDeletionPlans = new Map<string, LocalDocumentFolderDeletionPlan>();
   private documentSeq = 0;
@@ -421,17 +470,23 @@ export class LocalBobClient implements BobClient {
   private readonly notifications: NotificationView[] = [];
   private readonly relanceDedupe = new Map<string, string>();
   private notificationSeq = 0;
-  private readonly pushDevices = new Map<string, {
-    installationId: string;
-    bindingId: string;
-    bindingGeneration: number;
-  }>();
-  private readonly pushInstallations = new Map<string, {
-    bindingId: string | null;
-    maxGeneration: number;
-    revocationSecret: string;
-    expoPushToken: string | null;
-  }>();
+  private readonly pushDevices = new Map<
+    string,
+    {
+      installationId: string;
+      bindingId: string;
+      bindingGeneration: number;
+    }
+  >();
+  private readonly pushInstallations = new Map<
+    string,
+    {
+      bindingId: string | null;
+      maxGeneration: number;
+      revocationSecret: string;
+      expoPushToken: string | null;
+    }
+  >();
   private readonly companyLookup = new DemoCompanyLookupAdapter();
   // Unité de travail in-memory : annule l'allocation du compteur si fn lève (pas de trou) — parité backend.
   private readonly uow = {
@@ -504,10 +559,14 @@ export class LocalBobClient implements BobClient {
     if (chart.ok) void this.chartOfAccounts.save(chart.value);
     // Coffre de démo (A1-C14) : dépenses fournisseurs + reçu Leroy Merlin « à valider »
     // → exerce le flux réel scan → proposition → « Classer là » → dossier Achats.
-    for (const expense of seedExpenses(this.companyId, this.clock.today())) void this.expenses.save(expense);
-    this.documents.push(...seedVaultDocuments(this.companyId, this.clock.now(), this.clock.today()));
+    for (const expense of seedExpenses(this.companyId, this.clock.today()))
+      void this.expenses.save(expense);
+    this.documents.push(
+      ...seedVaultDocuments(this.companyId, this.clock.now(), this.clock.today()),
+    );
     for (const document of this.documents) {
-      const contentBase64 = document.mimeType === 'application/pdf' ? LOCAL_DEMO_PDF_BASE64 : LOCAL_DEMO_JPEG_BASE64;
+      const contentBase64 =
+        document.mimeType === 'application/pdf' ? LOCAL_DEMO_PDF_BASE64 : LOCAL_DEMO_JPEG_BASE64;
       const decoded = decodeBase64Document(contentBase64);
       if (!decoded.ok) throw new Error(`Fixture document locale invalide: ${document.id}`);
       document.byteSize = decoded.bytes.length;
@@ -520,7 +579,10 @@ export class LocalBobClient implements BobClient {
         filename: document.filename,
         mimeType: document.mimeType,
       });
-      this.documentContents.set(document.id, { contentBase64: decoded.contentBase64, mimeType: document.mimeType });
+      this.documentContents.set(document.id, {
+        contentBase64: decoded.contentBase64,
+        mimeType: document.mimeType,
+      });
     }
     this.documentFolders.push(
       ...DEFAULT_DOCUMENT_FOLDERS.map((folder) => ({
@@ -618,7 +680,13 @@ export class LocalBobClient implements BobClient {
       {
         customerId: 'cust-sevres',
         lines: [
-          { label: 'Remplacement chauffe-eau — bâtiment mairie', category: 'labor', qty: 1, unitPriceHT: 154167, vatRate: 20 },
+          {
+            label: 'Remplacement chauffe-eau — bâtiment mairie',
+            category: 'labor',
+            qty: 1,
+            unitPriceHT: 154167,
+            vatRate: 20,
+          },
         ],
       },
       past,
@@ -626,9 +694,16 @@ export class LocalBobClient implements BobClient {
     if (sevres.ok) {
       const sevresQuoteId = sevres.value.quoteId;
       await this.sendQuoteInternal(sevresQuoteId, past);
-      await this.signQuoteInternal({ quoteId: sevresQuoteId, signerName: 'Mairie de Sèvres' }, past);
-      const sevresInvoice = await this.generateInvoiceInternal({ quoteId: sevresQuoteId, mode: 'final' });
-      if (sevresInvoice.ok) await this.issueInvoiceInternal({ invoiceId: sevresInvoice.value.invoiceId }, past);
+      await this.signQuoteInternal(
+        { quoteId: sevresQuoteId, signerName: 'Mairie de Sèvres' },
+        past,
+      );
+      const sevresInvoice = await this.generateInvoiceInternal({
+        quoteId: sevresQuoteId,
+        mode: 'final',
+      });
+      if (sevresInvoice.ok)
+        await this.issueInvoiceInternal({ invoiceId: sevresInvoice.value.invoiceId }, past);
     }
 
     // ── Chantier Martin (C16) : devis signé avec acompte (test d'or 488,40), acompte émis
@@ -637,8 +712,20 @@ export class LocalBobClient implements BobClient {
       customerId: 'cust-martin',
       depositPct: 30,
       lines: [
-        { label: 'Pose pompe à chaleur — main-d’œuvre', category: 'labor', qty: 1, unitPriceHT: 98000, vatRate: 20 },
-        { label: 'Fournitures hydrauliques', category: 'supply', qty: 1, unitPriceHT: 37667, vatRate: 20 },
+        {
+          label: 'Pose pompe à chaleur — main-d’œuvre',
+          category: 'labor',
+          qty: 1,
+          unitPriceHT: 98000,
+          vatRate: 20,
+        },
+        {
+          label: 'Fournitures hydrauliques',
+          category: 'supply',
+          qty: 1,
+          unitPriceHT: 37667,
+          vatRate: 20,
+        },
       ],
     });
     if (!created.ok) return;
@@ -649,7 +736,11 @@ export class LocalBobClient implements BobClient {
     if (!generated.ok) return;
     await this.issueInvoiceInternal({ invoiceId: generated.value.invoiceId });
     // L'acompte est encaissé — plafonné netToPay (488,40 €), comme la doctrine l'exige.
-    await this.registerPaymentInternal({ invoiceId: generated.value.invoiceId, amount: 48840, method: 'card' });
+    await this.registerPaymentInternal({
+      invoiceId: generated.value.invoiceId,
+      amount: 48840,
+      method: 'card',
+    });
 
     // ── Devis EN ATTENTE de réponse : matérialise le « devis 1 480 € » du proto (hors
     // total dû — les devis ne sont jamais du dû, doctrine standings) + un second envoyé.
@@ -657,12 +748,28 @@ export class LocalBobClient implements BobClient {
     // démo exerce TOUT le registre (doctrine C14), y compris l'ambiguïté.
     const durandQuote = await this.createQuoteInternal({
       customerId: 'cust-durand',
-      lines: [{ label: 'Rénovation salle de bain — phase 2', category: 'labor', qty: 1, unitPriceHT: 123333, vatRate: 20 }],
+      lines: [
+        {
+          label: 'Rénovation salle de bain — phase 2',
+          category: 'labor',
+          qty: 1,
+          unitPriceHT: 123333,
+          vatRate: 20,
+        },
+      ],
     });
     if (durandQuote.ok) await this.sendQuoteInternal(durandQuote.value.quoteId);
     const sevresMaintenance = await this.createQuoteInternal({
       customerId: 'cust-sevres',
-      lines: [{ label: 'Entretien annuel chaudières — bâtiments municipaux', category: 'labor', qty: 1, unitPriceHT: 62500, vatRate: 20 }],
+      lines: [
+        {
+          label: 'Entretien annuel chaudières — bâtiments municipaux',
+          category: 'labor',
+          qty: 1,
+          unitPriceHT: 62500,
+          vatRate: 20,
+        },
+      ],
     });
     if (sevresMaintenance.ok) await this.sendQuoteInternal(sevresMaintenance.value.quoteId);
 
@@ -673,13 +780,28 @@ export class LocalBobClient implements BobClient {
       customerId: 'cust-lefevre',
       depositPct: 40,
       lines: [
-        { label: 'Rénovation plomberie du fournil', category: 'labor', qty: 1, unitPriceHT: 210000, vatRate: 10 },
-        { label: 'Fournitures cuivre et raccords', category: 'supply', qty: 1, unitPriceHT: 65000, vatRate: 10 },
+        {
+          label: 'Rénovation plomberie du fournil',
+          category: 'labor',
+          qty: 1,
+          unitPriceHT: 210000,
+          vatRate: 10,
+        },
+        {
+          label: 'Fournitures cuivre et raccords',
+          category: 'supply',
+          qty: 1,
+          unitPriceHT: 65000,
+          vatRate: 10,
+        },
       ],
     });
     if (lefevre.ok) {
       await this.sendQuoteInternal(lefevre.value.quoteId);
-      await this.signQuoteInternal({ quoteId: lefevre.value.quoteId, signerName: 'Boulangerie Lefèvre' });
+      await this.signQuoteInternal({
+        quoteId: lefevre.value.quoteId,
+        signerName: 'Boulangerie Lefèvre',
+      });
     }
   }
 
@@ -804,7 +926,10 @@ export class LocalBobClient implements BobClient {
    * (CloseAccount) : closedAt posé, liens de signature publics révoqués. Aucune identité
    * Supabase à supprimer en local (pas de session réelle) — le signOut() mobile fait le reste.
    */
-  async closeAccount(input: { confirmationText: string; reason?: string }): Promise<Result<{ closedAt: string }, AppError>> {
+  async closeAccount(input: {
+    confirmationText: string;
+    reason?: string;
+  }): Promise<Result<{ closedAt: string }, AppError>> {
     const r = await new CloseAccount({
       companies: this.companies,
       subscriptions: this.subscriptionRepository,
@@ -838,7 +963,10 @@ export class LocalBobClient implements BobClient {
   }
 
   /** PATCH /fiscal-profile/:field (démo) — mêmes règles de validation/invariants que le serveur. */
-  async updateFiscalProfileField(field: string, value: unknown): Promise<Result<FiscalProfileView, AppError>> {
+  async updateFiscalProfileField(
+    field: string,
+    value: unknown,
+  ): Promise<Result<FiscalProfileView, AppError>> {
     const parsed = parseFiscalProfileFieldPatch(field, value);
     if (!parsed.ok) return parsed;
     const company = seedCompany();
@@ -850,9 +978,46 @@ export class LocalBobClient implements BobClient {
     });
   }
 
-  /** GET /company/me (PONT-SERVEUR ④) — en démo, la fiche société du seed (Mercier). */
+  /** GET /company/me (adaptateur de test) — relit le repository, jamais une nouvelle fixture. */
   async getCompanyMe(): Promise<Result<CompanyProps, AppError>> {
-    return ok(seedCompany().toProps());
+    const company = await this.companies.findById(this.companyId);
+    return company === null ? err(appNotFound('company', this.companyId)) : ok(company.toProps());
+  }
+
+  async updateCompanyProfile(input: {
+    trade: Trade;
+    vatRegime: VatRegime;
+    customerPortfolio?: CustomerPortfolio;
+  }): Promise<Result<CompanyProps, AppError>> {
+    const current = await this.companies.findById(this.companyId);
+    if (current === null) return err(appNotFound('company', this.companyId));
+    const updated = Company.of({ ...current.toProps(), ...input });
+    if (!updated.ok) return err(appDomain(updated.error));
+    await this.companies.save(updated.value);
+    return ok(updated.value.toProps());
+  }
+
+  /** Adaptateur local (démo) — mêmes règles que le serveur (PATCH /company/billing). */
+  async updateCompanyBilling(input: {
+    iban?: string | null;
+    bic?: string | null;
+  }): Promise<Result<CompanyProps, AppError>> {
+    const current = await this.companies.findById(this.companyId);
+    if (current === null) return err(appNotFound('company', this.companyId));
+    const props = current.toProps();
+    const { iban: currentIban, bic: currentBic, ...requiredProps } = props;
+    const updated = Company.of({
+      ...requiredProps,
+      ...(input.iban === undefined
+        ? (currentIban === undefined ? {} : { iban: currentIban })
+        : (input.iban === null ? {} : { iban: input.iban })),
+      ...(input.bic === undefined
+        ? (currentBic === undefined ? {} : { bic: currentBic })
+        : (input.bic === null ? {} : { bic: input.bic })),
+    });
+    if (!updated.ok) return err(appDomain(updated.error));
+    await this.companies.save(updated.value);
+    return ok(updated.value.toProps());
   }
 
   /** C-EXP5b (adaptateur démo) : MÊMES règles que le serveur — deriveFiscalCalendar sur la fiche
@@ -881,7 +1046,9 @@ export class LocalBobClient implements BobClient {
 
   /** C24b (adaptateur démo) : pas de provisioning Supabase hors-ligne — met à jour la société
    * seedée et renvoie SON id (parité de contrat avec le serveur : l'id vient TOUJOURS du serveur). */
-  async registerCompany(input: Omit<CompanyProps, 'id'>): Promise<Result<{ companyId: string }, AppError>> {
+  async registerCompany(
+    input: Omit<CompanyProps, 'id'>,
+  ): Promise<Result<{ companyId: string }, AppError>> {
     const r = Company.of({ id: this.companyId, ...input });
     if (!r.ok) return err(appDomain(r.error));
     await this.companies.save(r.value);
@@ -901,7 +1068,9 @@ export class LocalBobClient implements BobClient {
     return ok({ text: 'encaisse la facture 2026-014' });
   }
 
-  async synthesizeSpeech(_input: { text: string }): Promise<Result<VoiceSynthesisResult, AppError>> {
+  async synthesizeSpeech(_input: {
+    text: string;
+  }): Promise<Result<VoiceSynthesisResult, AppError>> {
     return ok({ audioBase64: null, mimeType: null, model: 'native' });
   }
 
@@ -950,7 +1119,10 @@ export class LocalBobClient implements BobClient {
     _input: RealtimeVoiceControlReference,
     _signal?: AbortSignal,
   ): Promise<Result<RealtimeVoiceControlAcknowledgement, AppError>> {
-    return { ok: false, error: appForbidden('Les contrôles Bob Live exigent l’autorité du backend.') };
+    return {
+      ok: false,
+      error: appForbidden('Les contrôles Bob Live exigent l’autorité du backend.'),
+    };
   }
 
   async getNextRealtimeVoiceSpeech(
@@ -958,7 +1130,10 @@ export class LocalBobClient implements BobClient {
     _input: RealtimeVoiceSpeechFeedInput,
     _signal?: AbortSignal,
   ): Promise<Result<RealtimeVoiceSpeechFeed, AppError>> {
-    return { ok: false, error: appForbidden('La voix auditée Bob Live exige le backend sécurisé.') };
+    return {
+      ok: false,
+      error: appForbidden('La voix auditée Bob Live exige le backend sécurisé.'),
+    };
   }
 
   async acknowledgeRealtimeVoiceSpeechDelivery(
@@ -968,7 +1143,10 @@ export class LocalBobClient implements BobClient {
     _input: RealtimeVoiceSpeechDeliveryInput,
     _signal?: AbortSignal,
   ): Promise<Result<RealtimeVoiceSpeechDeliveryAcknowledgement, AppError>> {
-    return { ok: false, error: appForbidden('La livraison vocale Bob Live exige le backend sécurisé.') };
+    return {
+      ok: false,
+      error: appForbidden('La livraison vocale Bob Live exige le backend sécurisé.'),
+    };
   }
 
   async cancelRealtimeVoiceSpeech(
@@ -978,52 +1156,80 @@ export class LocalBobClient implements BobClient {
     _input: RealtimeVoiceSpeechCancellationInput,
     _signal?: AbortSignal,
   ): Promise<Result<void, AppError>> {
-    return { ok: false, error: appForbidden('L’annulation vocale Bob Live exige le backend sécurisé.') };
+    return {
+      ok: false,
+      error: appForbidden('L’annulation vocale Bob Live exige le backend sécurisé.'),
+    };
   }
 
-  async listDocuments(input: ListDocumentsClientInput = {}): Promise<Result<DocumentView[], AppError>> {
+  async listDocuments(
+    input: ListDocumentsClientInput = {},
+  ): Promise<Result<DocumentView[], AppError>> {
     return ok(
       this.documents
         .filter((d) => input.includeDeleted === true || d.status === 'active')
         .filter((d) => (input.kind !== undefined ? d.kind === input.kind : true))
-        .filter((d) => (input.linkedEntityType !== undefined ? d.linkedEntityType === input.linkedEntityType : true))
-        .filter((d) => (input.linkedEntityId !== undefined ? d.linkedEntityId === input.linkedEntityId : true))
+        .filter((d) =>
+          input.linkedEntityType !== undefined
+            ? d.linkedEntityType === input.linkedEntityType
+            : true,
+        )
+        .filter((d) =>
+          input.linkedEntityId !== undefined ? d.linkedEntityId === input.linkedEntityId : true,
+        )
         .filter((d) => (input.folderId !== undefined ? d.folderId === input.folderId : true))
         .map(cloneDocumentView),
     );
   }
 
   async getDocument(documentId: string): Promise<Result<DocumentView, AppError>> {
-    const document = this.documents.find((candidate) => candidate.id === documentId && candidate.status === 'active');
+    const document = this.documents.find(
+      (candidate) => candidate.id === documentId && candidate.status === 'active',
+    );
     return document ? ok(cloneDocumentView(document)) : err(appNotFound('document', documentId));
   }
 
   async uploadDocument(input: UploadDocumentClientInput): Promise<Result<DocumentView, AppError>> {
     const decoded = decodeBase64Document(input.contentBase64);
     if (!decoded.ok) {
-      const message = decoded.reason === 'too_large'
-        ? 'Document trop volumineux (10 Mo maximum).'
-        : decoded.reason === 'empty'
-          ? 'Document vide.'
-          : 'Base64 invalide.';
+      const message =
+        decoded.reason === 'too_large'
+          ? 'Document trop volumineux (10 Mo maximum).'
+          : decoded.reason === 'empty'
+            ? 'Document vide.'
+            : 'Base64 invalide.';
       return err({ kind: 'validation', issues: [{ field: 'contentBase64', message }] });
     }
-    const filename = typeof input.filename === 'string' ? input.filename.replace(/\s+/g, ' ').trim() : '';
-    const mimeType = typeof input.mimeType === 'string' ? input.mimeType.split(';', 1)[0]!.trim().toLowerCase() : '';
-    const unsafeFilename = filename.includes('/')
-      || filename.includes('\\')
-      || [...filename].some((character) => {
+    const filename =
+      typeof input.filename === 'string' ? input.filename.replace(/\s+/g, ' ').trim() : '';
+    const mimeType =
+      typeof input.mimeType === 'string'
+        ? input.mimeType.split(';', 1)[0]!.trim().toLowerCase()
+        : '';
+    const unsafeFilename =
+      filename.includes('/') ||
+      filename.includes('\\') ||
+      [...filename].some((character) => {
         const point = character.codePointAt(0) ?? 0;
         return point <= 0x1f || point === 0x7f;
       });
     const issues: { field: string; message: string }[] = [];
     if (!filename || filename.length > 180 || unsafeFilename) {
-      issues.push({ field: 'filename', message: 'Nom de fichier invalide (180 caractères maximum).' });
+      issues.push({
+        field: 'filename',
+        message: 'Nom de fichier invalide (180 caractères maximum).',
+      });
     }
     if (!DOCUMENT_UPLOAD_MIME_TYPES.has(mimeType)) {
-      issues.push({ field: 'mimeType', message: 'Format non pris en charge. Utilise PDF, XML, JPEG, PNG, WebP ou HEIC.' });
+      issues.push({
+        field: 'mimeType',
+        message: 'Format non pris en charge. Utilise PDF, XML, JPEG, PNG, WebP ou HEIC.',
+      });
     } else if (!documentSignatureMatches(mimeType, decoded.bytes)) {
-      issues.push({ field: 'mimeType', message: 'Le contenu du fichier ne correspond pas au format annoncé.' });
+      issues.push({
+        field: 'mimeType',
+        message: 'Le contenu du fichier ne correspond pas au format annoncé.',
+      });
     }
     if (issues.length > 0) return err({ kind: 'validation', issues });
     const byteSize = decoded.bytes.length;
@@ -1061,36 +1267,57 @@ export class LocalBobClient implements BobClient {
       createdAt: this.clock.now(),
       createdBy: 'local',
       retentionUntil: addYears(documentDate ?? today, 10),
-      tags: [...new Set((input.tags ?? []).map((t) => t.trim().toLowerCase()).filter((t) => t.length >= 2 && t.length <= 32))].slice(0, 16),
+      tags: [
+        ...new Set(
+          (input.tags ?? [])
+            .map((t) => t.trim().toLowerCase())
+            .filter((t) => t.length >= 2 && t.length <= 32),
+        ),
+      ].slice(0, 16),
     };
     this.documents.unshift(view);
     this.documentContents.set(id, { contentBase64: decoded.contentBase64, mimeType });
     return ok(cloneDocumentView(view));
   }
 
-  async createDocumentIntake(input: CreateDocumentIntakeClientInput): Promise<Result<DocumentView, AppError>> {
+  async createDocumentIntake(
+    input: CreateDocumentIntakeClientInput,
+  ): Promise<Result<DocumentView, AppError>> {
     const key = input.idempotencyKey.trim();
     if (key.length < 8 || key.length > 160) {
-      return err({ kind: 'validation', issues: [{ field: 'idempotencyKey', message: 'Clé d’idempotence invalide.' }] });
+      return err({
+        kind: 'validation',
+        issues: [{ field: 'idempotencyKey', message: 'Clé d’idempotence invalide.' }],
+      });
     }
     const decoded = decodeBase64Document(input.contentBase64);
     if (!decoded.ok) {
-      const message = decoded.reason === 'too_large'
-        ? 'Document trop volumineux (10 Mo maximum).'
-        : decoded.reason === 'empty'
-          ? 'Document vide.'
-          : 'Base64 invalide.';
+      const message =
+        decoded.reason === 'too_large'
+          ? 'Document trop volumineux (10 Mo maximum).'
+          : decoded.reason === 'empty'
+            ? 'Document vide.'
+            : 'Base64 invalide.';
       return err({ kind: 'validation', issues: [{ field: 'contentBase64', message }] });
     }
-    const mimeType = typeof input.mimeType === 'string' ? input.mimeType.split(';', 1)[0]!.trim().toLowerCase() : '';
+    const mimeType =
+      typeof input.mimeType === 'string'
+        ? input.mimeType.split(';', 1)[0]!.trim().toLowerCase()
+        : '';
     const sha256 = portableSha256Bytes(decoded.bytes);
     const previous = this.documentIntakes.get(key);
     if (previous) {
       if (previous.sha256 !== sha256 || previous.mimeType !== mimeType) {
-        return err({ kind: 'conflict', entity: 'document_intake', reason: 'idempotency_key_reused' });
+        return err({
+          kind: 'conflict',
+          entity: 'document_intake',
+          reason: 'idempotency_key_reused',
+        });
       }
       const existing = this.documents.find((document) => document.id === previous.documentId);
-      return existing ? ok(cloneDocumentView(existing)) : err(appNotFound('document', previous.documentId));
+      return existing
+        ? ok(cloneDocumentView(existing))
+        : err(appNotFound('document', previous.documentId));
     }
     const archived = await this.uploadDocument({
       contentBase64: input.contentBase64,
@@ -1103,7 +1330,11 @@ export class LocalBobClient implements BobClient {
     const archivedIndex = this.documents.findIndex((document) => document.id === archived.value.id);
     if (archivedIndex < 0) return err(appNotFound('document', archived.value.id));
     const archivedDocument = this.documents[archivedIndex]!;
-    const intakeDocument: DocumentView = { ...archivedDocument, origin: 'ocr', tags: [...archivedDocument.tags] };
+    const intakeDocument: DocumentView = {
+      ...archivedDocument,
+      origin: 'ocr',
+      tags: [...archivedDocument.tags],
+    };
     this.documents[archivedIndex] = intakeDocument;
     this.documentIntakes.set(key, {
       documentId: intakeDocument.id,
@@ -1119,19 +1350,26 @@ export class LocalBobClient implements BobClient {
     const parentId = input.parentId ?? null;
     const limit = input.limit ?? 30;
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
-      return err({ kind: 'validation', issues: [{ field: 'limit', message: 'Pagination invalide.' }] });
+      return err({
+        kind: 'validation',
+        issues: [{ field: 'limit', message: 'Pagination invalide.' }],
+      });
     }
     const sorted = this.documentFolders
       .filter((folder) => folder.status === 'active' && folder.parentId === parentId)
       .sort((a, b) => a.normalizedName.localeCompare(b.normalizedName) || a.id.localeCompare(b.id));
-    const start = input.cursor ? Math.max(0, sorted.findIndex((folder) => folder.id === input.cursor) + 1) : 0;
+    const start = input.cursor
+      ? Math.max(0, sorted.findIndex((folder) => folder.id === input.cursor) + 1)
+      : 0;
     const page = sorted.slice(start, start + limit + 1);
     const items = page.slice(0, limit).map((folder) => ({ ...folder }));
-    return ok({ items, nextCursor: page.length > limit ? items.at(-1)?.id ?? null : null });
+    return ok({ items, nextCursor: page.length > limit ? (items.at(-1)?.id ?? null) : null });
   }
 
   async getDocumentFolder(folderId: string): Promise<Result<DocumentFolderView, AppError>> {
-    const folder = this.documentFolders.find((candidate) => candidate.id === folderId && candidate.status === 'active');
+    const folder = this.documentFolders.find(
+      (candidate) => candidate.id === folderId && candidate.status === 'active',
+    );
     return folder ? ok({ ...folder }) : err(appNotFound('document_folder', folderId));
   }
 
@@ -1141,20 +1379,30 @@ export class LocalBobClient implements BobClient {
   }): Promise<Result<DocumentFolderView, AppError>> {
     const validatedName = validateDocumentFolderName(input.name);
     if (!validatedName.ok) {
-      return err({ kind: 'validation', issues: [{ field: 'name', message: 'Nom de dossier invalide.' }] });
+      return err({
+        kind: 'validation',
+        issues: [{ field: 'name', message: 'Nom de dossier invalide.' }],
+      });
     }
     const { name, normalizedName } = validatedName.value;
     const parentId = input.parentId ?? null;
-    if (parentId && !this.documentFolders.some((folder) => folder.id === parentId && folder.status === 'active')) {
+    if (
+      parentId &&
+      !this.documentFolders.some((folder) => folder.id === parentId && folder.status === 'active')
+    ) {
       return err(appNotFound('document_folder', parentId));
     }
     if (
       this.documentFolders.some(
         (folder) =>
-          folder.status === 'active' && folder.parentId === parentId && folder.normalizedName === normalizedName,
+          folder.status === 'active' &&
+          folder.parentId === parentId &&
+          folder.normalizedName === normalizedName,
       )
     ) {
-      return err(appConflict('document_folder', 'Un dossier de même nom existe déjà à cet emplacement.'));
+      return err(
+        appConflict('document_folder', 'Un dossier de même nom existe déjà à cet emplacement.'),
+      );
     }
     const now = this.clock.now();
     const folder: DocumentFolderView = {
@@ -1180,17 +1428,26 @@ export class LocalBobClient implements BobClient {
     name?: string;
     parentId?: string | null;
   }): Promise<Result<DocumentFolderView, AppError>> {
-    const folder = this.documentFolders.find((candidate) => candidate.id === input.folderId && candidate.status === 'active');
+    const folder = this.documentFolders.find(
+      (candidate) => candidate.id === input.folderId && candidate.status === 'active',
+    );
     if (!folder) return err(appNotFound('document_folder', input.folderId));
-    if (folder.revision !== input.expectedRevision) return err(appConflict('document_folder', 'Le dossier a été modifié.'));
+    if (folder.revision !== input.expectedRevision)
+      return err(appConflict('document_folder', 'Le dossier a été modifié.'));
     const changes = Number(input.name !== undefined) + Number(input.parentId !== undefined);
     if (changes !== 1) {
-      return err({ kind: 'validation', issues: [{ field: 'input', message: 'Une seule modification à la fois.' }] });
+      return err({
+        kind: 'validation',
+        issues: [{ field: 'input', message: 'Une seule modification à la fois.' }],
+      });
     }
     if (input.name !== undefined) {
       const validatedName = validateDocumentFolderName(input.name);
       if (!validatedName.ok) {
-        return err({ kind: 'validation', issues: [{ field: 'name', message: 'Nom de dossier invalide.' }] });
+        return err({
+          kind: 'validation',
+          issues: [{ field: 'name', message: 'Nom de dossier invalide.' }],
+        });
       }
       const { name, normalizedName } = validatedName.value;
       const duplicate = this.documentFolders.some(
@@ -1200,26 +1457,38 @@ export class LocalBobClient implements BobClient {
           candidate.parentId === folder.parentId &&
           candidate.normalizedName === normalizedName,
       );
-      if (duplicate) return err(appConflict('document_folder', 'Un dossier de même nom existe déjà.'));
+      if (duplicate)
+        return err(appConflict('document_folder', 'Un dossier de même nom existe déjà.'));
       folder.name = name;
       folder.normalizedName = normalizedName;
     } else {
       const parentId = input.parentId ?? null;
       if (parentId === folder.id) {
-        return err({ kind: 'validation', issues: [{ field: 'parentId', message: 'Cycle de dossiers interdit.' }] });
+        return err({
+          kind: 'validation',
+          issues: [{ field: 'parentId', message: 'Cycle de dossiers interdit.' }],
+        });
       }
       let cursor = parentId;
       let depth = 1;
       while (cursor) {
         if (cursor === folder.id) {
-          return err({ kind: 'validation', issues: [{ field: 'parentId', message: 'Cycle de dossiers interdit.' }] });
+          return err({
+            kind: 'validation',
+            issues: [{ field: 'parentId', message: 'Cycle de dossiers interdit.' }],
+          });
         }
-        const parent = this.documentFolders.find((candidate) => candidate.id === cursor && candidate.status === 'active');
+        const parent = this.documentFolders.find(
+          (candidate) => candidate.id === cursor && candidate.status === 'active',
+        );
         if (!parent) return err(appNotFound('document_folder', cursor));
         cursor = parent.parentId;
         depth += 1;
         if (depth > 8) {
-          return err({ kind: 'validation', issues: [{ field: 'parentId', message: 'Profondeur maximale atteinte.' }] });
+          return err({
+            kind: 'validation',
+            issues: [{ field: 'parentId', message: 'Profondeur maximale atteinte.' }],
+          });
         }
       }
       folder.parentId = parentId;
@@ -1232,7 +1501,9 @@ export class LocalBobClient implements BobClient {
   async previewDocumentFolderDeletion(
     folderId: string,
   ): Promise<Result<DocumentFolderDeletionPlanView, AppError>> {
-    const folder = this.documentFolders.find((candidate) => candidate.id === folderId && candidate.status === 'active');
+    const folder = this.documentFolders.find(
+      (candidate) => candidate.id === folderId && candidate.status === 'active',
+    );
     if (!folder) return err(appNotFound('document_folder', folderId));
     if (folder.systemKey !== null) {
       return err(appForbidden('Les dossiers système peuvent être renommés, mais pas supprimés.'));
@@ -1241,16 +1512,23 @@ export class LocalBobClient implements BobClient {
     const pending = [folder.id];
     while (pending.length > 0) {
       const currentId = pending.shift()!;
-      const current = this.documentFolders.find((candidate) => candidate.id === currentId && candidate.status === 'active');
+      const current = this.documentFolders.find(
+        (candidate) => candidate.id === currentId && candidate.status === 'active',
+      );
       if (!current) continue;
       subtree.push(current);
-      pending.push(...this.documentFolders
-        .filter((candidate) => candidate.status === 'active' && candidate.parentId === current.id)
-        .map((candidate) => candidate.id));
+      pending.push(
+        ...this.documentFolders
+          .filter((candidate) => candidate.status === 'active' && candidate.parentId === current.id)
+          .map((candidate) => candidate.id),
+      );
     }
     const folderIds = new Set(subtree.map((candidate) => candidate.id));
     const documents = this.documents.filter(
-      (document) => document.status === 'active' && document.folderId !== null && folderIds.has(document.folderId),
+      (document) =>
+        document.status === 'active' &&
+        document.folderId !== null &&
+        folderIds.has(document.folderId),
     );
     const planId = `folder-delete-${this.ids.newId()}`;
     const expiresAt = new Date(Date.parse(this.clock.now()) + 5 * 60_000).toISOString();
@@ -1261,10 +1539,18 @@ export class LocalBobClient implements BobClient {
       expectedRevision: folder.revision,
       snapshot: {
         folders: subtree
-          .map((candidate) => ({ id: candidate.id, parentId: candidate.parentId, revision: candidate.revision }))
+          .map((candidate) => ({
+            id: candidate.id,
+            parentId: candidate.parentId,
+            revision: candidate.revision,
+          }))
           .sort((left, right) => left.id.localeCompare(right.id)),
         documents: documents
-          .map((document) => ({ id: document.id, folderId: document.folderId, revision: document.revision }))
+          .map((document) => ({
+            id: document.id,
+            folderId: document.folderId,
+            revision: document.revision,
+          }))
           .sort((left, right) => left.id.localeCompare(right.id)),
       },
       expiresAt,
@@ -1275,7 +1561,12 @@ export class LocalBobClient implements BobClient {
     return ok({
       planId,
       expiresAt,
-      folder: { id: folder.id, parentId: folder.parentId, name: folder.name, systemKey: folder.systemKey },
+      folder: {
+        id: folder.id,
+        parentId: folder.parentId,
+        name: folder.name,
+        systemKey: folder.systemKey,
+      },
       directChildCount: directChildren.length,
       descendantFolderCount: Math.max(0, subtree.length - 1),
       directDocumentCount: directDocuments.length,
@@ -1290,12 +1581,17 @@ export class LocalBobClient implements BobClient {
   }): Promise<Result<DocumentFolderDeletionExecutionView, AppError>> {
     const plan = this.documentFolderDeletionPlans.get(input.planId);
     if (
-      !plan
-      || plan.companyId !== this.companyId
-      || plan.consumed
-      || Date.parse(plan.expiresAt) <= Date.parse(this.clock.now())
+      !plan ||
+      plan.companyId !== this.companyId ||
+      plan.consumed ||
+      Date.parse(plan.expiresAt) <= Date.parse(this.clock.now())
     ) {
-      return err(appConflict('document_folder_deletion_plan', 'Cette confirmation a expiré ou a déjà été utilisée.'));
+      return err(
+        appConflict(
+          'document_folder_deletion_plan',
+          'Cette confirmation a expiré ou a déjà été utilisée.',
+        ),
+      );
     }
     plan.consumed = true;
     const folder = this.documentFolders.find(
@@ -1325,19 +1621,30 @@ export class LocalBobClient implements BobClient {
     const currentFolderIds = new Set(currentSubtree.map((candidate) => candidate.id));
     const snapshotNow = {
       folders: currentSubtree
-        .map((candidate) => ({ id: candidate.id, parentId: candidate.parentId, revision: candidate.revision }))
+        .map((candidate) => ({
+          id: candidate.id,
+          parentId: candidate.parentId,
+          revision: candidate.revision,
+        }))
         .sort((left, right) => left.id.localeCompare(right.id)),
       documents: this.documents
         .filter(
-          (document) => document.status === 'active'
-            && document.folderId !== null
-            && currentFolderIds.has(document.folderId),
+          (document) =>
+            document.status === 'active' &&
+            document.folderId !== null &&
+            currentFolderIds.has(document.folderId),
         )
-        .map((document) => ({ id: document.id, folderId: document.folderId, revision: document.revision }))
+        .map((document) => ({
+          id: document.id,
+          folderId: document.folderId,
+          revision: document.revision,
+        }))
         .sort((left, right) => left.id.localeCompare(right.id)),
     };
     if (JSON.stringify(snapshotNow) !== JSON.stringify(plan.snapshot)) {
-      return err(appConflict('document_folder', 'Le contenu du dossier a changé. Recrée un aperçu.'));
+      return err(
+        appConflict('document_folder', 'Le contenu du dossier a changé. Recrée un aperçu.'),
+      );
     }
     const directChildren = this.documentFolders.filter(
       (candidate) => candidate.status === 'active' && candidate.parentId === folder.id,
@@ -1347,7 +1654,9 @@ export class LocalBobClient implements BobClient {
     );
     if (input.strategy.kind === 'empty') {
       if (directChildren.length > 0 || directDocuments.length > 0) {
-        return err(appConflict('document_folder', 'Le dossier n’est pas vide. Choisis un transfert.'));
+        return err(
+          appConflict('document_folder', 'Le dossier n’est pas vide. Choisis un transfert.'),
+        );
       }
     } else {
       const targetFolderId = input.strategy.targetFolderId;
@@ -1359,7 +1668,10 @@ export class LocalBobClient implements BobClient {
         return err(appConflict('document_folder', 'Le dossier de destination a changé.'));
       }
       if (plan.snapshot.folders.some((candidate) => candidate.id === target.id)) {
-        return err({ kind: 'validation', issues: [{ field: 'targetFolderId', message: 'Destination invalide.' }] });
+        return err({
+          kind: 'validation',
+          issues: [{ field: 'targetFolderId', message: 'Destination invalide.' }],
+        });
       }
       const targetChildNames = new Set(
         this.documentFolders
@@ -1367,7 +1679,9 @@ export class LocalBobClient implements BobClient {
           .map((candidate) => candidate.normalizedName),
       );
       if (directChildren.some((child) => targetChildNames.has(child.normalizedName))) {
-        return err(appConflict('document_folder', 'Un sous-dossier de même nom existe dans la destination.'));
+        return err(
+          appConflict('document_folder', 'Un sous-dossier de même nom existe dans la destination.'),
+        );
       }
       for (const child of directChildren) {
         child.parentId = target.id;
@@ -1400,10 +1714,13 @@ export class LocalBobClient implements BobClient {
     );
     const document = this.documents[documentIndex];
     if (!document) return err(appNotFound('document', input.documentId));
-    if (document.revision !== input.expectedRevision) return err(appConflict('document', 'Le document a été modifié.'));
+    if (document.revision !== input.expectedRevision)
+      return err(appConflict('document', 'Le document a été modifié.'));
     if (
       input.folderId !== null &&
-      !this.documentFolders.some((folder) => folder.id === input.folderId && folder.status === 'active')
+      !this.documentFolders.some(
+        (folder) => folder.id === input.folderId && folder.status === 'active',
+      )
     ) {
       return err(appNotFound('document_folder', input.folderId));
     }
@@ -1417,11 +1734,17 @@ export class LocalBobClient implements BobClient {
       this.documents[documentIndex] = moved;
       return ok({ documentId: moved.id, folderId: moved.folderId, revision: moved.revision });
     }
-    return ok({ documentId: document.id, folderId: document.folderId, revision: document.revision });
+    return ok({
+      documentId: document.id,
+      folderId: document.folderId,
+      revision: document.revision,
+    });
   }
 
   async analyzeDocument(documentId: string): Promise<Result<DocumentAnalysis, AppError>> {
-    const document = this.documents.find((candidate) => candidate.id === documentId && candidate.status === 'active');
+    const document = this.documents.find(
+      (candidate) => candidate.id === documentId && candidate.status === 'active',
+    );
     if (!document) return err(appNotFound('document', documentId));
     const content = this.documentContents.get(documentId);
     const lower = document.filename.toLowerCase();
@@ -1433,7 +1756,9 @@ export class LocalBobClient implements BobClient {
         mimeType: content.mimeType,
       });
       if (extracted.ok) {
-        const evidence = [{ page: 1, excerpt: extracted.value.rawText.slice(0, 160), boundingBox: null }];
+        const evidence = [
+          { page: 1, excerpt: extracted.value.rawText.slice(0, 160), boundingBox: null },
+        ];
         draft = {
           type: /ticket|recu|reçu/.test(lower) ? 'receipt' : 'supplier_invoice',
           typeConfidence: extracted.value.confidence,
@@ -1456,7 +1781,10 @@ export class LocalBobClient implements BobClient {
             {
               key: 'total_ttc',
               valueType: 'money',
-              value: { amountMinor: extracted.value.totalTtcCents, currency: extracted.value.currency },
+              value: {
+                amountMinor: extracted.value.totalTtcCents,
+                currency: extracted.value.currency,
+              },
               confidence: extracted.value.confidence,
               provenance: { source: 'document_text', evidence, derivedFrom: [], rule: null },
             },
@@ -1465,16 +1793,25 @@ export class LocalBobClient implements BobClient {
                   {
                     key: 'vat_amount' as const,
                     valueType: 'money' as const,
-                    value: { amountMinor: extracted.value.vatCents, currency: extracted.value.currency },
+                    value: {
+                      amountMinor: extracted.value.vatCents,
+                      currency: extracted.value.currency,
+                    },
                     confidence: extracted.value.confidence,
-                    provenance: { source: 'document_text' as const, evidence, derivedFrom: [], rule: null },
+                    provenance: {
+                      source: 'document_text' as const,
+                      evidence,
+                      derivedFrom: [],
+                      rule: null,
+                    },
                   },
                 ]
               : []),
           ],
           suggestedTags: extracted.value.suggestedTags,
           suggestedFilename: extracted.value.suggestedFilename,
-          warnings: extracted.value.confidence < 0.75 ? ['Certains champs doivent être confirmés.'] : [],
+          warnings:
+            extracted.value.confidence < 0.75 ? ['Certains champs doivent être confirmés.'] : [],
         };
       } else {
         draft = {
@@ -1509,18 +1846,33 @@ export class LocalBobClient implements BobClient {
     return analysis.ok ? ok(analysis.value) : err(appDomain(analysis.error));
   }
 
-  async classifyDocument(input: ClassifyDocumentClientInput): Promise<Result<DocumentView, AppError>> {
-    const documentIndex = this.documents.findIndex((d) => d.id === input.documentId && d.status === 'active');
+  async classifyDocument(
+    input: ClassifyDocumentClientInput,
+  ): Promise<Result<DocumentView, AppError>> {
+    const documentIndex = this.documents.findIndex(
+      (d) => d.id === input.documentId && d.status === 'active',
+    );
     const document = this.documents[documentIndex];
     if (!document) return err(appNotFound('document', input.documentId));
     if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 1) {
-      return err({ kind: 'validation', issues: [{ field: 'expectedRevision', message: 'Révision document invalide.' }] });
+      return err({
+        kind: 'validation',
+        issues: [{ field: 'expectedRevision', message: 'Révision document invalide.' }],
+      });
     }
     if (document.revision !== input.expectedRevision) {
-      return err(appConflict('document', 'Le document a été modifié. Recharge avant de confirmer le rattachement.'));
+      return err(
+        appConflict(
+          'document',
+          'Le document a été modifié. Recharge avant de confirmer le rattachement.',
+        ),
+      );
     }
     if (typeof input.linkedEntityId !== 'string' || !input.linkedEntityId.trim())
-      return err({ kind: 'validation', issues: [{ field: 'linkedEntityId', message: 'Rattachement métier incomplet.' }] });
+      return err({
+        kind: 'validation',
+        issues: [{ field: 'linkedEntityId', message: 'Rattachement métier incomplet.' }],
+      });
     const classified: DocumentView = {
       ...document,
       linkedEntityType: input.linkedEntityType,
@@ -1532,11 +1884,17 @@ export class LocalBobClient implements BobClient {
     return ok(cloneDocumentView(classified));
   }
 
-  async documentDownloadUrl(documentId: string, ttlSeconds = 300): Promise<Result<DocumentDownloadUrl, AppError>> {
+  async documentDownloadUrl(
+    documentId: string,
+    ttlSeconds = 300,
+  ): Promise<Result<DocumentDownloadUrl, AppError>> {
     const document = this.documents.find((d) => d.id === documentId && d.status === 'active');
     if (!document) return err(appNotFound('document', documentId));
     if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds < 60 || ttlSeconds > 3_600) {
-      return err({ kind: 'validation', issues: [{ field: 'ttlSeconds', message: 'Durée du lien invalide.' }] });
+      return err({
+        kind: 'validation',
+        issues: [{ field: 'ttlSeconds', message: 'Durée du lien invalide.' }],
+      });
     }
     const content = this.documentContents.get(documentId);
     if (!content) {
@@ -1577,11 +1935,16 @@ export class LocalBobClient implements BobClient {
     );
   }
 
-  async extractDocument(input: { contentBase64: string; mimeType: string }): Promise<Result<OcrExtraction, AppError>> {
+  async extractDocument(input: {
+    contentBase64: string;
+    mimeType: string;
+  }): Promise<Result<OcrExtraction, AppError>> {
     return new ExtractDocument({ ocr: this.ocr }).execute(input);
   }
 
-  async suggestExpenseDefaults(input: SuggestExpenseDefaultsInput): Promise<Result<ExpenseDefaultsView, AppError>> {
+  async suggestExpenseDefaults(
+    input: SuggestExpenseDefaultsInput,
+  ): Promise<Result<ExpenseDefaultsView, AppError>> {
     const key = normalizeSupplierNameLocal(input.supplierName);
     const expenses = await this.expenses.listByCompany(this.companyId);
     const known = expenses
@@ -1607,11 +1970,17 @@ export class LocalBobClient implements BobClient {
   }
 
   async listCustomers(): Promise<Result<CustomerListItem[], AppError>> {
-    return new ListCustomers({ customers: this.customers }).execute({ companyId: this.companyId });
+    return new ListCustomers({
+      customers: this.customers,
+      invoices: this.invoices,
+      payments: this.payments,
+    }).execute({ companyId: this.companyId });
   }
 
   /** Crée une fiche client — même chemin que POST /customers côté serveur (Customer.of + save). */
-  async createCustomer(input: CreateCustomerClientInput): Promise<Result<{ id: string }, AppError>> {
+  async createCustomer(
+    input: CreateCustomerClientInput,
+  ): Promise<Result<{ id: string }, AppError>> {
     const id = this.ids.newId();
     const r = Customer.of({ id, companyId: this.companyId, ...input });
     if (!r.ok) return err(appDomain(r.error));
@@ -1619,14 +1988,30 @@ export class LocalBobClient implements BobClient {
     return ok({ id });
   }
 
-  async getCashflow(input: { scenario: Scenario; horizon: Horizon }): Promise<Result<CashflowProjection, AppError>> {
+  async getCashflow(input: {
+    scenario: Scenario;
+    horizon: Horizon;
+  }): Promise<Result<CashflowProjection, AppError>> {
     // Position TVA RÉELLE (chantier 2) : les factures alimentent deriveVatPosition — le
     // vatDue de la fixture ne sert plus que de repli sans repo. Barrière : le seed d'abord.
     await this.ready;
-    return new GetCashflow({ snapshots: this.snapshots, expenses: this.expenses, invoices: this.invoices }).execute({
+    return new GetCashflow({
+      snapshots: this.snapshots,
+      expenses: this.expenses,
+      invoices: this.invoices,
+      clock: this.clock,
+    }).execute({
       companyId: this.companyId,
       ...input,
     });
+  }
+
+  async getLatestBankBalance(): Promise<Result<QualifiedBankBalanceSnapshot, AppError>> {
+    return err(appUnavailable('bank-balance-testing-adapter'));
+  }
+
+  async recordManualBankBalance(): Promise<Result<QualifiedBankBalanceSnapshot, AppError>> {
+    return err(appUnavailable('bank-balance-testing-adapter'));
   }
 
   private async recordExpenseWithinLock(
@@ -1636,7 +2021,12 @@ export class LocalBobClient implements BobClient {
     if (fingerprint === 'invalid') {
       return err({
         kind: 'validation',
-        issues: [{ field: 'idempotencyKey', message: "Clé d'idempotence invalide (1 à 200 caractères imprimables)." }],
+        issues: [
+          {
+            field: 'idempotencyKey',
+            message: "Clé d'idempotence invalide (1 à 200 caractères imprimables).",
+          },
+        ],
       });
     }
 
@@ -1644,10 +2034,12 @@ export class LocalBobClient implements BobClient {
       const published = this.expenseCreationRequests.get(fingerprint.keyHash);
       if (published) {
         if (published.payloadHash !== fingerprint.payloadHash) {
-          return err(appConflict(
-            'expense_creation',
-            "Cette clé d'idempotence a déjà été utilisée pour une autre dépense.",
-          ));
+          return err(
+            appConflict(
+              'expense_creation',
+              "Cette clé d'idempotence a déjà été utilisée pour une autre dépense.",
+            ),
+          );
         }
         const expense = await this.expenses.findById(published.expenseId);
         return expense && expense.companyId === this.companyId
@@ -1663,7 +2055,11 @@ export class LocalBobClient implements BobClient {
     const expenseSnapshot = this.expenses.snapshot();
     const accountingSnapshot = this.accountingEntries.snapshot();
     try {
-      const recorded = await new RecordExpense({ expenses: this.expenses, ids: this.ids, clock: this.clock }).execute({
+      const recorded = await new RecordExpense({
+        expenses: this.expenses,
+        ids: this.ids,
+        clock: this.clock,
+      }).execute({
         ...input,
         // L'identité de l'adaptateur local gagne aussi sur un objet runtime élargi.
         companyId: this.companyId,
@@ -1695,7 +2091,9 @@ export class LocalBobClient implements BobClient {
     }
   }
 
-  async recordExpense(input: Omit<RecordExpenseInput, 'companyId'>): Promise<Result<{ id: string }, AppError>> {
+  async recordExpense(
+    input: Omit<RecordExpenseInput, 'companyId'>,
+  ): Promise<Result<{ id: string }, AppError>> {
     await this.ready;
     return this.withExpenseCreationLock(() => this.recordExpenseWithinLock(input));
   }
@@ -1731,9 +2129,7 @@ export class LocalBobClient implements BobClient {
           ? { totalHtCents: input.expense.totalHtCents }
           : {}),
         ...(input.expense.vatCents !== undefined ? { vatCents: input.expense.vatCents } : {}),
-        ...(input.expense.vatRatePct !== undefined
-          ? { vatRatePct: input.expense.vatRatePct }
-          : {}),
+        ...(input.expense.vatRatePct !== undefined ? { vatRatePct: input.expense.vatRatePct } : {}),
         ...(input.expense.supplierInvoiceNumber !== undefined
           ? { supplierInvoiceNumber: input.expense.supplierInvoiceNumber }
           : {}),
@@ -1752,19 +2148,23 @@ export class LocalBobClient implements BobClient {
       // si le registre, la dépense, le dossier et le payload prouvent qu'il s'agit du même geste.
       if (document.linkedEntityType !== null || document.linkedEntityId !== null) {
         if (
-          document.linkedEntityType !== 'expense'
-          || document.linkedEntityId === null
-          || document.folderId !== targetFolder.id
+          document.linkedEntityType !== 'expense' ||
+          document.linkedEntityId === null ||
+          document.folderId !== targetFolder.id
         ) {
-          return err(appConflict('document', 'Ce document est déjà rattaché à une autre destination.'));
+          return err(
+            appConflict('document', 'Ce document est déjà rattaché à une autre destination.'),
+          );
         }
         const published = this.expenseCreationRequests.get(fingerprint.keyHash);
         if (
-          !published
-          || published.payloadHash !== fingerprint.payloadHash
-          || published.expenseId !== document.linkedEntityId
+          !published ||
+          published.payloadHash !== fingerprint.payloadHash ||
+          published.expenseId !== document.linkedEntityId
         ) {
-          return err(appConflict('expense_creation', 'La reprise ne correspond pas à la dépense déjà liée.'));
+          return err(
+            appConflict('expense_creation', 'La reprise ne correspond pas à la dépense déjà liée.'),
+          );
         }
         const existingExpense = await this.expenses.findById(published.expenseId);
         return existingExpense && existingExpense.companyId === this.companyId
@@ -1783,7 +2183,9 @@ export class LocalBobClient implements BobClient {
         });
       }
       if (document.revision !== input.expectedRevision) {
-        return err(appConflict('document', 'Le document a été modifié. Recharge avant de confirmer.'));
+        return err(
+          appConflict('document', 'Le document a été modifié. Recharge avant de confirmer.'),
+        );
       }
 
       const expenseSnapshot = this.expenses.snapshot();
@@ -1799,7 +2201,11 @@ export class LocalBobClient implements BobClient {
         for (const [key, value] of requestSnapshot) {
           this.expenseCreationRequests.set(key, { ...value });
         }
-        this.documents.splice(0, this.documents.length, ...documentsSnapshot.map(cloneDocumentView));
+        this.documents.splice(
+          0,
+          this.documents.length,
+          ...documentsSnapshot.map(cloneDocumentView),
+        );
       };
 
       try {
@@ -1808,9 +2214,8 @@ export class LocalBobClient implements BobClient {
           restore();
           return recorded;
         }
-        const movedRevision = document.folderId === targetFolder.id
-          ? document.revision
-          : document.revision + 1;
+        const movedRevision =
+          document.folderId === targetFolder.id ? document.revision : document.revision + 1;
         const linked: DocumentView = {
           ...document,
           folderId: targetFolder.id,
@@ -1838,10 +2243,17 @@ export class LocalBobClient implements BobClient {
     const existingInvoiceKeys = expenses
       .map((e) => expenseDuplicateKey(e.toProps()))
       .filter((k): k is string => k !== null);
-    const imported = runFacturXReceptionControls({ xml, mySiren: company.siren, existingInvoiceKeys });
+    const imported = runFacturXReceptionControls({
+      xml,
+      mySiren: company.siren,
+      existingInvoiceKeys,
+    });
     if (!imported.ok) {
       // Erreur de contrôle typée aplatie comme à la frontière HTTP : field = facturx.<code>.
-      return err({ kind: 'validation', issues: [{ field: `facturx.${imported.error.code}`, message: imported.error.message }] });
+      return err({
+        kind: 'validation',
+        issues: [{ field: `facturx.${imported.error.code}`, message: imported.error.message }],
+      });
     }
     const supplierKey = normalizeSupplierNameLocal(imported.value.supplierName);
     const known = expenses
@@ -1854,7 +2266,9 @@ export class LocalBobClient implements BobClient {
   }
 
   /** C-EXP6b ① : contrôle de réception + brouillon — RIEN n'est enregistré (décision à l'appelant). */
-  async importFacturXExpense(input: { xml: string }): Promise<Result<FacturXImportReview, AppError>> {
+  async importFacturXExpense(input: {
+    xml: string;
+  }): Promise<Result<FacturXImportReview, AppError>> {
     await this.ready;
     return this.facturXReviewLocal(input.xml);
   }
@@ -1881,11 +2295,20 @@ export class LocalBobClient implements BobClient {
       });
       if (!refused.ok) return err(appDomain(refused.error));
       const refusal = inbound.value.refusal;
-      if (!refusal) return err({ kind: 'dependency', port: 'einvoice-inbound', cause: 'refus sans trace' });
-      return ok({ status: 'refused', afnorStatus: refusal.afnorStatus, reason: refusal.reason, invoiceKey });
+      if (!refusal)
+        return err({ kind: 'dependency', port: 'einvoice-inbound', cause: 'refus sans trace' });
+      return ok({
+        status: 'refused',
+        afnorStatus: refusal.afnorStatus,
+        reason: refusal.reason,
+        invoiceKey,
+      });
     }
     if (input.decision.action !== 'approve') {
-      return err({ kind: 'validation', issues: [{ field: 'decision.action', message: 'Décision inconnue (approve ou refuse).' }] });
+      return err({
+        kind: 'validation',
+        issues: [{ field: 'decision.action', message: 'Décision inconnue (approve ou refuse).' }],
+      });
     }
     const review = await this.facturXReviewLocal(input.xml);
     if (!review.ok) return review;
@@ -1896,7 +2319,10 @@ export class LocalBobClient implements BobClient {
     if (!approved.ok) return err(appDomain(approved.error));
     // MÊME chemin que toute dépense : RecordExpense + écritures du cycle achats (E1).
     const recorded = await this.recordExpense(
-      facturXDraftToRecordExpenseInput(draft, input.decision.category !== undefined ? { category: input.decision.category } : {}),
+      facturXDraftToRecordExpenseInput(
+        draft,
+        input.decision.category !== undefined ? { category: input.decision.category } : {},
+      ),
     );
     if (!recorded.ok) return recorded;
     // Archive du XML APPROUVÉ au coffre local (kind facturx_xml), lié à l'Expense créée.
@@ -1904,7 +2330,12 @@ export class LocalBobClient implements BobClient {
     if (xmlBytes.length === 0 || xmlBytes.length > DOCUMENT_BINARY_MAX_BYTES) {
       return err({
         kind: 'validation',
-        issues: [{ field: 'xml', message: xmlBytes.length === 0 ? 'Document XML vide.' : 'Document XML trop volumineux.' }],
+        issues: [
+          {
+            field: 'xml',
+            message: xmlBytes.length === 0 ? 'Document XML vide.' : 'Document XML trop volumineux.',
+          },
+        ],
       });
     }
     this.documentSeq += 1;
@@ -1942,7 +2373,10 @@ export class LocalBobClient implements BobClient {
       tags: [],
     };
     this.documents.unshift(view);
-    this.documentContents.set(id, { contentBase64: bytesToBase64(xmlBytes), mimeType: 'application/xml' });
+    this.documentContents.set(id, {
+      contentBase64: bytesToBase64(xmlBytes),
+      mimeType: 'application/xml',
+    });
     return ok({ status: 'approved', expenseId: recorded.value.id, xmlDocumentId: id });
   }
 
@@ -1963,8 +2397,55 @@ export class LocalBobClient implements BobClient {
     return ok(list.map((e) => e.toProps()));
   }
 
-  async createChantier(input: Omit<CreateChantierInput, 'companyId'>): Promise<Result<{ id: string }, AppError>> {
-    return new CreateChantier({ chantiers: this.chantiers, customers: this.customers, ids: this.ids, clock: this.clock }).execute({ companyId: this.companyId, ...input });
+  async listCatalogueItems(): Promise<Result<readonly CatalogueItemView[], AppError>> {
+    return new ListCatalogueItems({ catalogue: this.catalogue }).execute({
+      companyId: this.companyId,
+    });
+  }
+
+  async createCatalogueItem(
+    input: CatalogueItemWriteInput,
+  ): Promise<Result<CatalogueItemView, AppError>> {
+    return new CreateCatalogueItem({
+      catalogue: this.catalogue,
+      ids: this.ids,
+      clock: this.clock,
+    }).execute({ companyId: this.companyId, item: input });
+  }
+
+  async updateCatalogueItem(input: {
+    itemId: string;
+    expectedRevision: number;
+    item: CatalogueItemWriteInput;
+  }): Promise<Result<CatalogueItemView, AppError>> {
+    return new UpdateCatalogueItem({ catalogue: this.catalogue, clock: this.clock }).execute({
+      companyId: this.companyId,
+      itemId: input.itemId,
+      expectedRevision: input.expectedRevision,
+      item: input.item,
+    });
+  }
+
+  async deleteCatalogueItem(input: {
+    itemId: string;
+    expectedRevision: number;
+  }): Promise<Result<CatalogueDeletionView, AppError>> {
+    return new DeleteCatalogueItem({ catalogue: this.catalogue }).execute({
+      companyId: this.companyId,
+      itemId: input.itemId,
+      expectedRevision: input.expectedRevision,
+    });
+  }
+
+  async createChantier(
+    input: Omit<CreateChantierInput, 'companyId'>,
+  ): Promise<Result<{ id: string }, AppError>> {
+    return new CreateChantier({
+      chantiers: this.chantiers,
+      customers: this.customers,
+      ids: this.ids,
+      clock: this.clock,
+    }).execute({ companyId: this.companyId, ...input });
   }
 
   async listChantiers(): Promise<Result<ChantierProps[], AppError>> {
@@ -1976,24 +2457,33 @@ export class LocalBobClient implements BobClient {
   // toute écriture utilisateur — sinon la numérotation sans-trou se mélange, cf. tests).
   // Les variantes *Internal (sans barrière, clock injectable) servent le seed lui-même.
 
-  async createQuote(input: Omit<CreateQuoteInput, 'companyId'>): Promise<Result<CreateQuoteOutput, AppError>> {
+  async createQuote(
+    input: Omit<CreateQuoteInput, 'companyId'>,
+  ): Promise<Result<CreateQuoteOutput, AppError>> {
     await this.ready;
     return this.withQuoteCreationLock(async () => {
       const fingerprint = localQuoteCreationFingerprint(this.companyId, input);
       if (fingerprint === 'invalid') {
         return err({
           kind: 'validation',
-          issues: [{ field: 'idempotencyKey', message: "Clé d'idempotence invalide (1 à 200 caractères imprimables)." }],
+          issues: [
+            {
+              field: 'idempotencyKey',
+              message: "Clé d'idempotence invalide (1 à 200 caractères imprimables).",
+            },
+          ],
         });
       }
       if (fingerprint) {
         const published = this.quoteCreationRequests.get(fingerprint.keyHash);
         if (published) {
           if (published.payloadHash !== fingerprint.payloadHash) {
-            return err(appConflict(
-              'quote_creation',
-              "Cette clé d'idempotence a déjà été utilisée pour un autre devis.",
-            ));
+            return err(
+              appConflict(
+                'quote_creation',
+                "Cette clé d'idempotence a déjà été utilisée pour un autre devis.",
+              ),
+            );
           }
           const quote = await this.quotes.findById(published.output.quoteId);
           return quote && quote.companyId === this.companyId
@@ -2037,6 +2527,66 @@ export class LocalBobClient implements BobClient {
     }).execute({ ...input, companyId: this.companyId });
   }
 
+  async getQuoteDraft(): Promise<Result<QuoteDraftSlotView | null, AppError>> {
+    if (this.quoteDraftSlot === null) return ok(null);
+    const payload = parseQuoteDraftPayload(this.quoteDraftSlot.payload);
+    if (!payload.ok) {
+      return err({ kind: 'dependency', port: 'local-quote-draft', cause: 'Brouillon local corrompu.' });
+    }
+    return ok({ ...this.quoteDraftSlot, payload: payload.value });
+  }
+
+  async saveQuoteDraft(
+    input: SaveQuoteDraftClientInput,
+  ): Promise<Result<QuoteDraftSlotView, AppError>> {
+    const payload = parseQuoteDraftPayload(input.payload);
+    if (!payload.ok) {
+      return err({
+        kind: 'validation',
+        issues: [{ field: 'payload', message: `Brouillon invalide (${payload.error.code}).` }],
+      });
+    }
+    if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0) {
+      return err({
+        kind: 'validation',
+        issues: [{ field: 'expectedRevision', message: 'Révision invalide.' }],
+      });
+    }
+    const current = this.quoteDraftSlot;
+    if (
+      (current === null && input.expectedRevision !== 0)
+      || (current !== null && current.revision !== input.expectedRevision)
+    ) {
+      return err(appConflict('quote_draft_slot', 'stale_revision'));
+    }
+    const now = this.clock.now();
+    this.quoteDraftSlot = {
+      revision: current === null ? 1 : current.revision + 1,
+      payloadVersion: QUOTE_DRAFT_PAYLOAD_VERSION,
+      payload: payload.value,
+      createdAt: current?.createdAt ?? now,
+      updatedAt: now,
+    };
+    return ok({ ...this.quoteDraftSlot, payload: payload.value });
+  }
+
+  async deleteQuoteDraft(
+    expectedRevision: number,
+  ): Promise<Result<{ deleted: true }, AppError>> {
+    if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) {
+      return err({
+        kind: 'validation',
+        issues: [{ field: 'expectedRevision', message: 'Révision invalide.' }],
+      });
+    }
+    if (this.quoteDraftSlot === null) return err(appNotFound('quote_draft_slot', 'current'));
+    if (this.quoteDraftSlot.revision !== expectedRevision) {
+      return err(appConflict('quote_draft_slot', 'stale_revision'));
+    }
+    this.quoteDraftSlot = null;
+    return ok({ deleted: true });
+  }
+
   async sendQuote(quoteId: string): Promise<Result<SendQuoteOutput, AppError>> {
     await this.ready;
     return this.sendQuoteInternal(quoteId);
@@ -2046,7 +2596,12 @@ export class LocalBobClient implements BobClient {
     quoteId: string,
     clock: ClockPort = this.clock,
   ): Promise<Result<SendQuoteOutput, AppError>> {
-    const result = await new SendQuote({ quotes: this.quotes, counters: this.counters, uow: this.uow, clock }).execute({
+    const result = await new SendQuote({
+      quotes: this.quotes,
+      counters: this.counters,
+      uow: this.uow,
+      clock,
+    }).execute({
       quoteId,
     });
     // L'adapter local ne contacte aucun tiers : ne jamais afficher un faux « email envoyé ».
@@ -2057,7 +2612,9 @@ export class LocalBobClient implements BobClient {
    * local n'a de toute façon aucun canal e-mail). Même use case core, même rotation de jeton.
    * L'URL imite la construction serveur (base démo) : en mode local elle n'est résoluble par
    * personne d'autre que ce device — c'est un adaptateur de démo, pas un vrai lien public. */
-  async createQuoteSignatureLink(quoteId: string): Promise<Result<CreateQuoteSignatureLinkOutput, AppError>> {
+  async createQuoteSignatureLink(
+    quoteId: string,
+  ): Promise<Result<CreateQuoteSignatureLinkOutput, AppError>> {
     await this.ready;
     const link = await new CreateQuoteSignatureLink({
       quotes: this.quotes,
@@ -2074,7 +2631,11 @@ export class LocalBobClient implements BobClient {
     };
   }
 
-  async signQuote(input: { quoteId: string; signerName: string; proofDataUrl?: string }): Promise<Result<{ status: string }, AppError>> {
+  async signQuote(input: {
+    quoteId: string;
+    signerName: string;
+    proofDataUrl?: string;
+  }): Promise<Result<{ status: string }, AppError>> {
     await this.ready;
     return this.signQuoteInternal(input);
   }
@@ -2107,7 +2668,10 @@ export class LocalBobClient implements BobClient {
     }).execute({ quoteId });
   }
 
-  async generateInvoice(input: { quoteId: string; mode: 'deposit' | 'final' }): Promise<Result<{ invoiceId: string }, AppError>> {
+  async generateInvoice(input: {
+    quoteId: string;
+    mode: 'deposit' | 'final';
+  }): Promise<Result<{ invoiceId: string }, AppError>> {
     await this.ready;
     return this.generateInvoiceInternal(input);
   }
@@ -2116,17 +2680,25 @@ export class LocalBobClient implements BobClient {
     quoteId: string;
     mode: 'deposit' | 'final';
   }): Promise<Result<{ invoiceId: string }, AppError>> {
-    return new GenerateInvoiceFromQuote({ quotes: this.quotes, invoices: this.invoices, ids: this.ids }).execute(input);
+    return new GenerateInvoiceFromQuote({
+      quotes: this.quotes,
+      invoices: this.invoices,
+      ids: this.ids,
+    }).execute(input);
   }
 
   /** R6 : édition d'une ligne de devis BROUILLON — même use case core que l'API (parité d'actions). */
-  async updateQuoteLine(input: UpdateQuoteLineInput): Promise<Result<{ status: string }, AppError>> {
+  async updateQuoteLine(
+    input: UpdateQuoteLineInput,
+  ): Promise<Result<{ status: string }, AppError>> {
     await this.ready;
     return new UpdateQuoteLine({ quotes: this.quotes, uow: this.uow }).execute(input);
   }
 
   /** R6 : suppression d'une ligne de devis BROUILLON — même use case core que l'API. */
-  async removeQuoteLine(input: RemoveQuoteLineInput): Promise<Result<{ status: string }, AppError>> {
+  async removeQuoteLine(
+    input: RemoveQuoteLineInput,
+  ): Promise<Result<{ status: string }, AppError>> {
     await this.ready;
     return new RemoveQuoteLine({ quotes: this.quotes, uow: this.uow }).execute(input);
   }
@@ -2139,11 +2711,15 @@ export class LocalBobClient implements BobClient {
   /** R6 : suppression définitive d'une facture BROUILLON — même use case core que l'API. */
   async deleteDraftInvoice(invoiceId: string): Promise<Result<{ deleted: true }, AppError>> {
     await this.ready;
-    return new DeleteDraftInvoice({ invoices: this.invoices, uow: this.uow }).execute({ invoiceId });
+    return new DeleteDraftInvoice({ invoices: this.invoices, uow: this.uow }).execute({
+      invoiceId,
+    });
   }
 
   /** A6 : avoir TOTAL (brouillon) — s'émet ensuite par issueInvoice (numéro A-, écriture inverse). */
-  async createCreditNote(input: { invoiceId: string }): Promise<Result<{ creditNoteId: string }, AppError>> {
+  async createCreditNote(input: {
+    invoiceId: string;
+  }): Promise<Result<{ creditNoteId: string }, AppError>> {
     await this.ready;
     return new CreateCreditNote({ invoices: this.invoices, ids: this.ids }).execute(input);
   }
@@ -2177,12 +2753,21 @@ export class LocalBobClient implements BobClient {
     const [inv, cust] = await Promise.all([this.listInvoices(), this.listCustomers()]);
     if (!inv.ok) return inv;
     if (!cust.ok) return cust;
-    const plan = deriveRelancePlan({ invoices: inv.value, customers: cust.value, today: this.clock.today() });
+    const plan = deriveRelancePlan({
+      invoices: inv.value,
+      customers: cust.value,
+      today: this.clock.today(),
+    });
     const entry = plan.find((e) => e.invoiceId === invoiceId);
     if (!entry) {
       return err({
         kind: 'validation',
-        issues: [{ field: 'invoiceId', message: 'Facture non relançable — réglée, annulée ou pas encore échue.' }],
+        issues: [
+          {
+            field: 'invoiceId',
+            message: 'Facture non relançable — réglée, annulée ou pas encore échue.',
+          },
+        ],
       });
     }
     const dedupeKey = `${invoiceId}:${this.clock.today()}`;
@@ -2238,7 +2823,12 @@ export class LocalBobClient implements BobClient {
     ) {
       return err({
         kind: 'validation',
-        issues: [{ field: 'throughCreatedAt', message: 'Cutoff serveur invalide. Demandez un nouvel aperçu.' }],
+        issues: [
+          {
+            field: 'throughCreatedAt',
+            message: 'Cutoff serveur invalide. Demandez un nouvel aperçu.',
+          },
+        ],
       });
     }
     let updatedCount = 0;
@@ -2254,19 +2844,18 @@ export class LocalBobClient implements BobClient {
     input: RegisterDeviceClientInput,
   ): Promise<Result<{ status: 'bound' | 'superseded' }, AppError>> {
     const fence = this.pushInstallations.get(input.installationId);
-    const idempotent = fence?.maxGeneration === input.bindingGeneration
-      && fence.bindingId === input.bindingId
-      && fence.revocationSecret === input.revocationSecret
-      && fence.expoPushToken === input.expoPushToken;
+    const idempotent =
+      fence?.maxGeneration === input.bindingGeneration &&
+      fence.bindingId === input.bindingId &&
+      fence.revocationSecret === input.revocationSecret &&
+      fence.expoPushToken === input.expoPushToken;
     if (
-      fence
-      && (
-        fence.revocationSecret !== input.revocationSecret
-        ||
-        input.bindingGeneration < fence.maxGeneration
-        || (input.bindingGeneration === fence.maxGeneration && !idempotent)
-      )
-    ) return ok({ status: 'superseded' });
+      fence &&
+      (fence.revocationSecret !== input.revocationSecret ||
+        input.bindingGeneration < fence.maxGeneration ||
+        (input.bindingGeneration === fence.maxGeneration && !idempotent))
+    )
+      return ok({ status: 'superseded' });
     this.pushInstallations.set(input.installationId, {
       bindingId: input.bindingId,
       maxGeneration: input.bindingGeneration,
@@ -2344,9 +2933,10 @@ export class LocalBobClient implements BobClient {
     // a déjà avancé au-delà de N.
     for (const [token, device] of this.pushDevices) {
       if (
-        device.installationId === input.installationId
-        && device.bindingGeneration <= input.throughGeneration
-      ) this.pushDevices.delete(token);
+        device.installationId === input.installationId &&
+        device.bindingGeneration <= input.throughGeneration
+      )
+        this.pushDevices.delete(token);
     }
     return ok({ accepted: true });
   }
@@ -2366,7 +2956,13 @@ export class LocalBobClient implements BobClient {
     await this.ready;
     const list = await this.payments.listByCompany(this.companyId);
     return ok(
-      list.map((p) => ({ id: p.id, invoiceId: p.invoiceId, amountCents: p.amount, method: p.method, receivedAt: p.receivedAt })),
+      list.map((p) => ({
+        id: p.id,
+        invoiceId: p.invoiceId,
+        amountCents: p.amount,
+        method: p.method,
+        receivedAt: p.receivedAt,
+      })),
     );
   }
 
@@ -2423,7 +3019,9 @@ export class LocalBobClient implements BobClient {
     return ok(this.mapInvoice(i));
   }
 
-  async invoiceAccountingPreview(invoiceId: string): Promise<Result<InvoiceAccountingPreview, AppError>> {
+  async invoiceAccountingPreview(
+    invoiceId: string,
+  ): Promise<Result<InvoiceAccountingPreview, AppError>> {
     await this.ready;
     const invoice = await this.invoices.findById(invoiceId);
     if (!invoice) return err(appNotFound('invoice', invoiceId));
@@ -2439,7 +3037,10 @@ export class LocalBobClient implements BobClient {
       return ok({
         invoiceId,
         available: false,
-        reason: 'message' in entry.error && typeof entry.error.message === 'string' ? entry.error.message : 'Aperçu comptable indisponible.',
+        reason:
+          'message' in entry.error && typeof entry.error.message === 'string'
+            ? entry.error.message
+            : 'Aperçu comptable indisponible.',
         entryId: null,
         reference: invoice.number,
         entryDate: invoice.issuedAt,
@@ -2487,16 +3088,46 @@ export class LocalBobClient implements BobClient {
    * mode démo serveur (InMemorySalesDocumentSearchRepository, apps/api) — un devis n'a pas de
    * date métier en mémoire (contrairement à Invoice.issuedAt), donc `date: null`, exclu de toute
    * plage de dates active plutôt que deviné (voir search-sales-documents.ts). */
-  async searchSalesDocuments(input: SearchSalesDocumentsClientInput): Promise<Result<SearchSalesDocumentsResult, AppError>> {
+  async searchSalesDocuments(
+    input: SearchSalesDocumentsClientInput,
+  ): Promise<Result<SearchSalesDocumentsResult, AppError>> {
     await this.ready;
     const [quotes, invoices, customers] = await Promise.all([
       this.quotes.listByCompany(this.companyId),
       this.invoices.listByCompany(this.companyId),
       this.customers.listByCompany(this.companyId),
     ]);
-    const toPiece = (totals: Totals, extra: { id: string; number: string | null; customerId: string; status: string; date: string | null; lines: readonly { label: string }[] }): SalesDocumentSearchPiece => ({ ...extra, totals });
-    const quotePieces = quotes.map((q) => toPiece(q.totals(), { id: q.id, number: q.number, customerId: q.customerId, status: q.status, date: null, lines: q.lines.map((l) => ({ label: l.label })) }));
-    const invoicePieces = invoices.map((i) => toPiece(i.totals(), { id: i.id, number: i.number, customerId: i.customerId, status: i.status, date: i.issuedAt, lines: i.lines.map((l) => ({ label: l.label })) }));
+    const toPiece = (
+      totals: Totals,
+      extra: {
+        id: string;
+        number: string | null;
+        customerId: string;
+        status: string;
+        date: string | null;
+        lines: readonly { label: string }[];
+      },
+    ): SalesDocumentSearchPiece => ({ ...extra, totals });
+    const quotePieces = quotes.map((q) =>
+      toPiece(q.totals(), {
+        id: q.id,
+        number: q.number,
+        customerId: q.customerId,
+        status: q.status,
+        date: null,
+        lines: q.lines.map((l) => ({ label: l.label })),
+      }),
+    );
+    const invoicePieces = invoices.map((i) =>
+      toPiece(i.totals(), {
+        id: i.id,
+        number: i.number,
+        customerId: i.customerId,
+        status: i.status,
+        date: i.issuedAt,
+        lines: i.lines.map((l) => ({ label: l.label })),
+      }),
+    );
     return ok(
       searchSalesDocumentsInMemory({
         ...input,
@@ -2508,7 +3139,9 @@ export class LocalBobClient implements BobClient {
     );
   }
 
-  async suggestSalesDocuments(query: string): Promise<Result<SuggestSalesDocumentsResult, AppError>> {
+  async suggestSalesDocuments(
+    query: string,
+  ): Promise<Result<SuggestSalesDocumentsResult, AppError>> {
     await this.ready;
     const [quotes, invoices, customers] = await Promise.all([
       this.quotes.listByCompany(this.companyId),
@@ -2519,15 +3152,33 @@ export class LocalBobClient implements BobClient {
       suggestSalesDocumentsInMemory({
         query,
         customers: customers.map((c) => ({ id: c.id, name: c.name })),
-        quotes: quotes.map((q) => ({ id: q.id, number: q.number, customerId: q.customerId, status: q.status, date: null, totals: q.totals(), lines: q.lines.map((l) => ({ label: l.label })) })),
-        invoices: invoices.map((i) => ({ id: i.id, number: i.number, customerId: i.customerId, status: i.status, date: i.issuedAt, totals: i.totals(), lines: i.lines.map((l) => ({ label: l.label })) })),
+        quotes: quotes.map((q) => ({
+          id: q.id,
+          number: q.number,
+          customerId: q.customerId,
+          status: q.status,
+          date: null,
+          totals: q.totals(),
+          lines: q.lines.map((l) => ({ label: l.label })),
+        })),
+        invoices: invoices.map((i) => ({
+          id: i.id,
+          number: i.number,
+          customerId: i.customerId,
+          status: i.status,
+          date: i.issuedAt,
+          totals: i.totals(),
+          lines: i.lines.map((l) => ({ label: l.label })),
+        })),
       }),
     );
   }
 
   async listAccountingEntries(): Promise<Result<AccountingEntryView[], AppError>> {
     await this.ready;
-    return new ListAccountingEntries({ entries: this.accountingEntries }).execute({ companyId: this.companyId });
+    return new ListAccountingEntries({ entries: this.accountingEntries }).execute({
+      companyId: this.companyId,
+    });
   }
 
   async exportFec(input: { from: string; to: string }) {
@@ -2547,8 +3198,16 @@ export class LocalBobClient implements BobClient {
             this.expenses.listByCompany(companyId),
           ]);
           return {
-            invoices: invoices.map((i) => ({ id: i.id, status: i.status, customerId: i.customerId })),
-            payments: payments.map((p) => ({ id: p.id, invoiceId: p.invoiceId, receivedAt: p.receivedAt })),
+            invoices: invoices.map((i) => ({
+              id: i.id,
+              status: i.status,
+              customerId: i.customerId,
+            })),
+            payments: payments.map((p) => ({
+              id: p.id,
+              invoiceId: p.invoiceId,
+              receivedAt: p.receivedAt,
+            })),
             customers: customers.map((c) => ({ id: c.id, name: c.name })),
             expenses: expenses.map((e) => ({ id: e.id, supplierName: e.supplierName })),
           };
@@ -2583,7 +3242,12 @@ export class LocalBobClient implements BobClient {
         ]);
         return ok(
           deriveVatPosition({
-            invoices: invoices.map((i) => ({ kind: i.kind, status: i.status, totals: i.totals(), paid: i.paid })),
+            invoices: invoices.map((i) => ({
+              kind: i.kind,
+              status: i.status,
+              totals: i.totals(),
+              paid: i.paid,
+            })),
             expenses: expenses.map((e) => ({ vatCents: e.toProps().vatCents })),
           }),
         );
@@ -2593,7 +3257,13 @@ export class LocalBobClient implements BobClient {
         const [inv, cust] = await Promise.all([this.listInvoices(), this.listCustomers()]);
         if (!inv.ok) return inv;
         if (!cust.ok) return cust;
-        return ok(deriveAgedBalance({ invoices: inv.value, customers: cust.value, today: this.clock.today() }));
+        return ok(
+          deriveAgedBalance({
+            invoices: inv.value,
+            customers: cust.value,
+            today: this.clock.today(),
+          }),
+        );
       },
       getTrialBalance: async () => {
         await this.ready;
@@ -2622,7 +3292,11 @@ export class LocalBobClient implements BobClient {
         ]);
         return ok(
           deriveBusinessReview({
-            entries: entries.map((e) => ({ entryDate: e.entryDate, sourceType: e.sourceType, lines: e.lines })),
+            entries: entries.map((e) => ({
+              entryDate: e.entryDate,
+              sourceType: e.sourceType,
+              lines: e.lines,
+            })),
             payments: payments.map((p) => ({ amountCents: p.amount, receivedAt: p.receivedAt })),
             invoices: invoices.map((i) => ({
               kind: i.kind,
@@ -2660,7 +3334,9 @@ export class LocalBobClient implements BobClient {
         const today = this.clock.today();
         const engaged = invoices.filter((i) => i.status !== 'draft' && i.status !== 'cancelled');
         const withPdf = new Set(
-          this.documents.filter((d) => d.kind === 'invoice_pdf' && d.linkedEntityId).map((d) => d.linkedEntityId),
+          this.documents
+            .filter((d) => d.kind === 'invoice_pdf' && d.linkedEntityId)
+            .map((d) => d.linkedEntityId),
         );
         const provided = engaged.filter((i) => withPdf.has(i.id)).length;
         return ok(
@@ -2680,7 +3356,12 @@ export class LocalBobClient implements BobClient {
             .filter((e) => e.status === 'to_pay')
             .map((e) => {
               const p = e.toProps();
-              return { id: p.id, supplierName: p.supplierName, totalTtcCents: p.totalTtcCents, documentDate: p.documentDate };
+              return {
+                id: p.id,
+                supplierName: p.supplierName,
+                totalTtcCents: p.totalTtcCents,
+                documentDate: p.documentDate,
+              };
             }),
         );
       },
@@ -2695,7 +3376,11 @@ export class LocalBobClient implements BobClient {
         const [inv, cust] = await Promise.all([this.listInvoices(), this.listCustomers()]);
         if (!inv.ok) return inv;
         if (!cust.ok) return cust;
-        const plan = deriveRelancePlan({ invoices: inv.value, customers: cust.value, today: this.clock.today() });
+        const plan = deriveRelancePlan({
+          invoices: inv.value,
+          customers: cust.value,
+          today: this.clock.today(),
+        });
         const entry = input?.invoiceId
           ? plan.find((e) => e.invoiceId === input.invoiceId)
           : input?.customerId
@@ -2704,8 +3389,14 @@ export class LocalBobClient implements BobClient {
         if (!entry) {
           return ok(
             input?.invoiceId || input?.customerId
-              ? { subject: 'Rien à relancer pour cette cible', body: 'Aucun retard sur cette cible — facture réglée ou pas encore échue. Je ne relance pas pour rien.' }
-              : { subject: 'Rien à relancer', body: 'Aucune facture en retard — tout est réglé ou dans les temps. 🎉' },
+              ? {
+                  subject: 'Rien à relancer pour cette cible',
+                  body: 'Aucun retard sur cette cible — facture réglée ou pas encore échue. Je ne relance pas pour rien.',
+                }
+              : {
+                  subject: 'Rien à relancer',
+                  body: 'Aucune facture en retard — tout est réglé ou dans les temps. 🎉',
+                },
           );
         }
         return ok({ subject: entry.message.subject, body: entry.message.body });
@@ -2753,14 +3444,21 @@ export class LocalBobClient implements BobClient {
         return ok(
           quotes
             .filter((q) => q.status === 'signed')
-            .filter((q) => !invoices.some((i) => i.parentQuoteId === q.id && i.kind === 'final' && i.status !== 'cancelled'))
+            .filter(
+              (q) =>
+                !invoices.some(
+                  (i) => i.parentQuoteId === q.id && i.kind === 'final' && i.status !== 'cancelled',
+                ),
+            )
             .map((q) => ({
               id: q.id,
               number: q.number,
               customerName: names.get(q.customerId) ?? '',
               totalTtcCents: q.totals().ttc,
               depositPct: q.depositPct,
-              depositInvoiced: invoices.some((i) => i.parentQuoteId === q.id && i.kind === 'deposit' && i.status !== 'cancelled'),
+              depositInvoiced: invoices.some(
+                (i) => i.parentQuoteId === q.id && i.kind === 'deposit' && i.status !== 'cancelled',
+              ),
             })),
         );
       },
@@ -2794,26 +3492,16 @@ export class LocalBobClient implements BobClient {
       },
       // C-EXP5b : lecture du calendrier fiscal — même use case que getFiscalCalendar (parité humain↔Bob).
       listFiscalDeadlines: async () => this.getFiscalCalendar(),
-      // Pilier 2 : « où en est mon abonnement » — la MÊME vérité que getSubscription (démo :
-      // early-access honnête, aucun essai fantôme). Lecture seule, jamais d'achat vocal.
-      getSubscriptionStatus: async () =>
-        ok({
-          plan: 'business',
-          status: 'active',
-          trialEndsAt: null,
-          trialPhase: null,
-          trialDaysLeft: null,
-          currentPeriodEnd: null,
-          store: null,
-          storeRef: null,
-          source: 'early_access_fallback',
-        } satisfies SubscriptionStatusView),
+      // Le client local ne possède aucune autorité d'abonnement persistée : il échoue fermé.
+      getSubscriptionStatus: async () => err(appUnavailable('subscription')),
       registerPayment: async (input) =>
         this.registerPayment({
           invoiceId: input.invoiceId,
           amount: input.amountCents,
           method: 'transfer',
-          idempotencyKey: input.idempotencyKey ?? `local-bob:payment:${input.invoiceId}:${input.amountCents}:transfer`,
+          idempotencyKey:
+            input.idempotencyKey ??
+            `local-bob:payment:${input.invoiceId}:${input.amountCents}:transfer`,
         }),
       sendQuote: async (input) => this.sendQuote(input.quoteId),
       issueInvoice: async (input) => this.issueInvoice({ invoiceId: input.invoiceId }),
@@ -2849,21 +3537,22 @@ export class LocalBobClient implements BobClient {
         });
       },
       createCustomer: async (input) =>
-        // Défauts neutres d'une fiche minimale : adresse à compléter, aucun historique (score 100, encours 0).
+        // Une fiche porte uniquement l'identité ; les métriques viennent des pièces persistées.
         this.createCustomer({
           name: input.name,
           type: input.type,
           address: { line1: '', zip: '', city: '' },
-          score: 100,
-          avgDelayDays: 0,
-          outstanding: 0,
         }),
       // C25 ② : outil envoyer_relance — même chemin que le bouton « Relancer » de l'écran
       // Notifications (sendRelance) ; en démo, l'envoi alimente le fil local (jamais un tiers).
       sendRelance: async (input) => {
         const r = await this.sendRelance(input.invoiceId);
         if (!r.ok) return r;
-        return ok({ jobId: r.value.jobId, status: r.value.status, ...(r.value.tone !== undefined ? { tone: r.value.tone } : {}) });
+        return ok({
+          jobId: r.value.jobId,
+          status: r.value.status,
+          ...(r.value.tone !== undefined ? { tone: r.value.tone } : {}),
+        });
       },
     };
   }
@@ -2917,8 +3606,13 @@ export class LocalBobClient implements BobClient {
     });
     const blocked = record.outcomes.find((o) => o.status === 'denied' || o.status === 'failed');
     if (blocked) {
-      if (blocked.status === 'denied') return err(appForbidden(blocked.reason ?? 'Action refusée par la policy.'));
-      return err({ kind: 'dependency', port: 'agent-runtime', cause: blocked.reason ?? 'agent execution failed' });
+      if (blocked.status === 'denied')
+        return err(appForbidden(blocked.reason ?? 'Action refusée par la policy.'));
+      return err({
+        kind: 'dependency',
+        port: 'agent-runtime',
+        cause: blocked.reason ?? 'agent execution failed',
+      });
     }
     const isBatch = pending.batch !== undefined && pending.batch.length > 0;
     return ok({
@@ -2928,7 +3622,9 @@ export class LocalBobClient implements BobClient {
       plan: record.outcomes.map((o) => o.label),
       card: {
         title: 'Fait ✓',
-        body: isBatch ? record.outcomes.map((o) => `✓ ${o.label}`).join('\n') : `${pending.label} — c’est noté.`,
+        body: isBatch
+          ? record.outcomes.map((o) => `✓ ${o.label}`).join('\n')
+          : `${pending.label} — c’est noté.`,
       },
     });
   }

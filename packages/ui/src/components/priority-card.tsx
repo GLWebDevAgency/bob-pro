@@ -52,7 +52,7 @@ export function PriorityCard({
   const { colors, semantic, controls } = useTheme();
   // 'conformite' ET 'brouillon' n'ont pas de checkbox (rien à cocher) ; seul 'conformite'
   // porte le fond dégradé lavande — 'brouillon' reste un fond surface normal, accent warning.
-  const noCheckbox = status === 'conformite' || status === 'brouillon';
+  const noCheckbox = status === 'conformite' || status === 'brouillon' || onToggle === undefined;
   const lavender = status === 'conformite';
   const c = resolvePriorityCardColors(status, !noCheckbox && done, {
     accents: {
@@ -94,7 +94,7 @@ export function PriorityCard({
       />
 
       <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
-        {noCheckbox ? (
+        {noCheckbox && leadingIcon ? (
           <View
             style={{
               width: 26,
@@ -109,13 +109,13 @@ export function PriorityCard({
           >
             {leadingIcon}
           </View>
-        ) : (
+        ) : onToggle ? (
           <Pressable
             accessibilityRole="checkbox"
             accessibilityLabel={title}
             accessibilityState={{ checked: done }}
             hitSlop={10}
-            {...(onToggle ? { onPress: onToggle } : {})}
+            onPress={onToggle}
             style={{
               width: 26,
               height: 26,
@@ -131,7 +131,7 @@ export function PriorityCard({
           >
             {done ? checkIcon : null}
           </Pressable>
-        )}
+        ) : null}
 
         <View style={{ flex: 1 }}>
           {badge ? <View style={{ alignSelf: 'flex-start', marginBottom: 3 }}>{badge}</View> : null}

@@ -12,7 +12,7 @@ import {
   IssueInvoice,
   CreateCreditNote,
   RegisterPayment,
-  PayExpense,
+  RecordExpensePayment,
   RecordIssuedInvoiceAccountingEntry,
   RecordPaymentAccountingEntry,
   ListAccountingEntries,
@@ -118,6 +118,7 @@ import {
   type PdfRendererPort,
   type InvoicePdfData,
   type CompanyProps,
+  type CustomerPortfolio,
   type CustomerProps,
   type DiagnosticResult,
   type FiscalDeadline,
@@ -139,6 +140,7 @@ import {
   type OcrPort,
   type RecordExpenseInput,
   type ExpenseProps,
+  type ExpensePaymentEvidenceInput,
   type FacturXExpenseDraft,
   type AfnorInboundRefusalStatus,
   type DocumentKind,
@@ -2051,12 +2053,12 @@ export class BackendService {
         }
         return ok({ updatedCount: result.updatedCount, readAt: result.readAt });
       },
-      // BOB-1/E4 : payer_depense — mutation au palier accounting (le registre exige la confirmation,
-      // pattern dry-run/confirm), MÊME use case PayExpense que POST /expenses/:id/pay.
-      payExpense: async (input) => {
-        const r = await this.payExpense(input);
+      // Enregistre uniquement un règlement fournisseur déjà effectué : date et moyen viennent de
+      // la proposition confirmée ; Bob ne déclenche jamais de transfert bancaire sur ce chemin.
+      recordExpensePayment: async (input) => {
+        const r = await this.recordExpensePayment(input);
         if (!r.ok) return r;
-        return ok({ status: r.value.status });
+        return ok(r.value);
       },
       registerPayment: async (input) =>
         this.registerPayment({
@@ -3009,6 +3011,7 @@ export class BackendService {
   async updateCompanyProfile(input: {
     trade: Trade;
     vatRegime: VatRegime;
+    customerPortfolio?: CustomerPortfolio;
   }): Promise<Result<CompanyProps, AppError>> {
     const companyId = this.companyId();
     const current = await this.p.companies.findById(companyId);
@@ -3017,6 +3020,9 @@ export class BackendService {
       ...current.toProps(),
       trade: input.trade,
       vatRegime: input.vatRegime,
+      ...(input.customerPortfolio === undefined
+        ? {}
+        : { customerPortfolio: input.customerPortfolio }),
     });
     if (!updated.ok) return { ok: false, error: appDomain(updated.error) };
     await this.p.companies.save(updated.value);
@@ -3024,6 +3030,7 @@ export class BackendService {
       companyId,
       trade: input.trade,
       vatRegime: input.vatRegime,
+      customerPortfolioChanged: input.customerPortfolio !== undefined,
     });
     return ok(updated.value.toProps());
   }
@@ -4253,24 +4260,30 @@ export class BackendService {
     return ok(list.map((e) => e.toProps()));
   }
 
-  /** E4 (PONT-SERVEUR v1) : règle une dépense fournisseur — transition to_pay→paid + écriture de
-   * DÉCAISSEMENT 401/512 à la date du jour (PayExpense @bob/core, idempotent de bout en bout).
-   * MÊME use case que l'écran Dépenses de la démo locale et que l'outil agent payer_depense.
-   * Transaction tenant : la transition et l'écriture réussissent ou s'annulent ENSEMBLE. */
-  async payExpense(input: {
+  /** Enregistre la preuve d'un règlement fournisseur déjà exécuté hors de Bob. Date et moyen sont
+   * obligatoires ; la transition et l'écriture 401/512 ou 401/530 sont atomiques dans le tenant. */
+  async recordExpensePayment(input: {
     expenseId: string;
-  }): Promise<Result<{ status: 'paid'; alreadyPaid: boolean }, AppError>> {
+  } & ExpensePaymentEvidenceInput): Promise<Result<{
+    status: 'paid';
+    alreadyRecorded: boolean;
+    paymentEntryId: string;
+  }, AppError>> {
     if (!(await this.ownedExpense(input.expenseId)))
       return { ok: false as const, error: appNotFound('expense', input.expenseId) };
-    let r: Result<{ status: 'paid'; alreadyPaid: boolean }, AppError>;
+    let r: Result<{
+      status: 'paid';
+      alreadyRecorded: boolean;
+      paymentEntryId: string;
+    }, AppError>;
     try {
       r = await this.p.runInTransaction(async () => {
-        const paid = await new PayExpense({
+        const paid = await new RecordExpensePayment({
           expenses: this.p.expenses,
           entries: this.p.accountingEntries,
           clock: this.clock,
           charts: this.p.chartOfAccounts,
-        }).execute(input);
+        }).execute({ ...input, companyId: this.companyId() });
         if (!paid.ok) throw new RollbackAppError(paid.error);
         return paid;
       });
@@ -4281,9 +4294,18 @@ export class BackendService {
     if (r.ok)
       this.logger.audit('expense.paid', {
         expenseId: input.expenseId,
-        alreadyPaid: r.value.alreadyPaid,
+        paidOn: input.paidOn,
+        method: input.method,
+        alreadyRecorded: r.value.alreadyRecorded,
+        referenceProvided: Boolean(input.reference),
+        proofDocumentProvided: Boolean(input.proofDocumentId),
       });
     return r;
+  }
+
+  /** Alias HTTP conservé pendant la migration des clients ; il exige désormais la preuve complète. */
+  async payExpense(input: { expenseId: string } & ExpensePaymentEvidenceInput) {
+    return this.recordExpensePayment(input);
   }
 
   // ——— Réception e-facture (C-EXP6b) : le CONTRÔLE DE RÉCEPTION d'un cabinet ———

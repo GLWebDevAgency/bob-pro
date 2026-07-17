@@ -66,4 +66,13 @@ describe('frontières des données du runtime mobile', () => {
     expect(push).not.toMatch(/local[-_]demo|authEnabled\s*\?/u);
     expect(tenantIdentity).not.toMatch(/configuredDemo|static tenant/iu);
   });
+
+  it('le diagnostic consomme les encaissements persistés et aucun compteur de questions fictif', () => {
+    const diagnostic = readFileSync(new URL('../../app/diagnostic.tsx', import.meta.url), 'utf8');
+
+    expect(diagnostic).toContain('const paymentsQ = usePayments()');
+    expect(diagnostic).toContain('paymentsQ.data.map');
+    expect(diagnostic).not.toMatch(/questions\.length\s*:\s*3/u);
+    expect(diagnostic).not.toMatch(/amountCents:\s*i\.paid/u);
+  });
 });

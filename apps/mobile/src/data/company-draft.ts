@@ -1,5 +1,5 @@
 import type { Session } from '@supabase/supabase-js';
-import type { CompanyLookupResult, CompanyProps, LegalForm, Trade } from '@bob/core';
+import type { CompanyLookupResult, CompanyProps, LegalForm, Trade, VatRegime } from '@bob/core';
 
 /**
  * Fiche entreprise en attente de provisioning (C24b).
@@ -74,14 +74,14 @@ export function readDraftSiret(session: Session | null): string | null {
 /**
  * Fiche annuaire → input registerCompany (fiche société COMPLÈTE en base, C24b).
  * - legalForm : celle du lookup, sinon le choix explicite de l'utilisateur (JAMAIS devinée) ;
- * - vatRegime : défaut honnête « réel normal » (le régime fiscal n'est pas dans l'annuaire),
- *   modifiable ensuite dans les réglages facturation ;
+ * - vatRegime : choix explicite de l'utilisateur (l'annuaire ne le connaît pas) ;
  * - trade : celui du lookup (NAF), sinon « autre » — affiné par l'onboarding métier (C22) ;
  * - adresse : celle du siège si connue, sinon vide (complétée avant émission — assertCanIssue).
  */
 export function registerInputFromLookup(
   lookup: CompanyLookupResult,
   legalForm: LegalForm,
+  vatRegime: VatRegime,
 ): Omit<CompanyProps, 'id'> {
   return {
     name: lookup.denomination,
@@ -90,7 +90,7 @@ export function registerInputFromLookup(
     siret: lookup.siret,
     ...(lookup.nafApe ? { apeCode: lookup.nafApe } : {}),
     trade: lookup.trade ?? 'autre',
-    vatRegime: 'reel_normal',
+    vatRegime,
     address: lookup.address ?? { line1: '', zip: '', city: '' },
     ...(lookup.tvaIntracom ? { tvaIntracom: lookup.tvaIntracom } : {}),
     ...(lookup.dateCreation ? { dateCreation: lookup.dateCreation } : {}),

@@ -1,5 +1,6 @@
 import type { AgentContext, AgentRun, AskOptions, JournalEntry, PendingAction } from '@bob/ai';
-import type { ValueDigest,
+import type {
+  ValueDigest,
   Result,
   AppError,
   CreateQuoteInput,
@@ -28,9 +29,12 @@ import type { ValueDigest,
   FacturXExpenseDraft,
   AfnorInboundRefusalStatus,
   TradeConfig,
+  Trade,
+  VatRegime,
   ChantierProps,
   CreateChantierInput,
   CompanyProps,
+  CustomerPortfolio,
   CompanyLookupResult,
   VatCheckResult,
   AddressSuggestion,
@@ -47,6 +51,11 @@ import type { ValueDigest,
   SearchSalesDocumentsResult,
   SuggestSalesDocumentsInput,
   SuggestSalesDocumentsResult,
+  CatalogueItemView,
+  CatalogueItemWriteInput,
+  CatalogueDeletionView,
+  QualifiedBankBalanceSnapshot,
+  QuoteDraftPayloadV1,
 } from '@bob/core';
 
 export interface QuoteView {
@@ -127,6 +136,20 @@ export interface CreateQuoteSignatureLinkOutput {
   /** URL publique sign-web prête à partager — construite CÔTÉ SERVEUR (source unique). */
   signatureUrl: string;
   expiresAt: string;
+}
+
+/** Vue réseau du slot courant : les identités tenant/propriétaire restent exclusivement serveur. */
+export interface QuoteDraftSlotView {
+  readonly revision: number;
+  readonly payloadVersion: QuoteDraftPayloadV1['version'];
+  readonly payload: QuoteDraftPayloadV1;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface SaveQuoteDraftClientInput {
+  readonly expectedRevision: number;
+  readonly payload: QuoteDraftPayloadV1;
 }
 
 export interface ListDocumentsClientInput {
@@ -298,9 +321,7 @@ export interface RealtimeVoiceControlAcknowledgement extends RealtimeVoiceContro
   proposalExpiresAt?: string;
 }
 
-export type RealtimeVoiceSpeechMimeType =
-  | 'audio/mpeg'
-  | 'audio/wav';
+export type RealtimeVoiceSpeechMimeType = 'audio/mpeg' | 'audio/wav';
 
 interface RealtimeVoiceSpeechBinding {
   artifactId: string;
@@ -315,17 +336,17 @@ export type RealtimeVoiceSpeechFeed =
   | { status: 'none' }
   | ({ status: 'rendering' } & RealtimeVoiceSpeechBinding)
   | ({
-    status: 'ready';
-    audioUrl: string;
-    audioSha256: string;
-    mimeType: RealtimeVoiceSpeechMimeType;
-    byteSize: number;
-    durationMs: number;
-  } & RealtimeVoiceSpeechBinding)
+      status: 'ready';
+      audioUrl: string;
+      audioSha256: string;
+      mimeType: RealtimeVoiceSpeechMimeType;
+      byteSize: number;
+      durationMs: number;
+    } & RealtimeVoiceSpeechBinding)
   | ({
-    status: 'terminal';
-    reason: 'cancelled' | 'failed' | 'expired' | 'delivered';
-  } & RealtimeVoiceSpeechBinding);
+      status: 'terminal';
+      reason: 'cancelled' | 'failed' | 'expired' | 'delivered';
+    } & RealtimeVoiceSpeechBinding);
 
 export interface RealtimeVoiceSpeechFeedInput {
   /** `0` demande le premier segment ; les appels suivants réutilisent la dernière séquence vue. */
@@ -344,12 +365,7 @@ export interface RealtimeVoiceSpeechDeliveryAcknowledgement {
 }
 
 export type RealtimeVoiceSpeechCancellationReason =
-  | 'barge_in'
-  | 'user_cancel'
-  | 'context_changed'
-  | 'session_end'
-  | 'superseded'
-  | 'playback_error';
+  'barge_in' | 'user_cancel' | 'context_changed' | 'session_end' | 'superseded' | 'playback_error';
 
 export interface RealtimeVoiceSpeechCancellationInput {
   cancellationId: string;
@@ -440,7 +456,12 @@ export type FacturXImportDecision =
 
 export type FacturXImportOutcome =
   | { status: 'approved'; expenseId: string; xmlDocumentId: string | null }
-  | { status: 'refused'; afnorStatus: AfnorInboundRefusalStatus; reason: string; invoiceKey: string };
+  | {
+      status: 'refused';
+      afnorStatus: AfnorInboundRefusalStatus;
+      reason: string;
+      invoiceKey: string;
+    };
 
 export interface ExportFecClientOutput {
   filename: string;
@@ -469,7 +490,7 @@ export interface ExportFecMetadata {
 export type AskBobClientInput = Readonly<{ message: string }> &
   Pick<AskOptions, 'autonomy' | 'history' | 'tone' | 'context'>;
 
-/** POST /customers — DTO serveur constaté (CustomersController) : CustomerProps sans id/companyId. */
+/** POST /customers — identité/coordonnées uniquement. Les métriques sont toujours dérivées côté serveur. */
 export type CreateCustomerClientInput = Omit<CustomerProps, 'id' | 'companyId'>;
 
 /** Envoi RÉEL d'une relance ciblée (C25 ② — endpoint POST /invoices/:id/relance, DTO serveur
@@ -623,7 +644,10 @@ export interface BobClient {
   getFiscalProfile(): Promise<Result<FiscalProfileView, AppError>>;
   /** PATCH /fiscal-profile/:field : confirme UN champ (statut → confirme_utilisateur). Rejette
    *  (AppError 'domain'/FISCAL_PROFILE_INCONSISTENT) si la mise à jour rend le profil incohérent. */
-  updateFiscalProfileField(field: string, value: unknown): Promise<Result<FiscalProfileView, AppError>>;
+  updateFiscalProfileField(
+    field: string,
+    value: unknown,
+  ): Promise<Result<FiscalProfileView, AppError>>;
   /** Digest de valeur de la semaine écoulée (pilier 2) — calculé SERVEUR, null = sans substance. */
   latestValueDigest(): Promise<Result<ValueDigestView, AppError>>;
   /** Bilan de fin d'essai (pilier 2) : agrégats du digest CUMULÉS sur l'essai — trial null = pas d'essai.
@@ -645,7 +669,10 @@ export interface BobClient {
    * erroné renvoie une AppError 'validation', la company reste ouverte. AUCUNE parité vocale :
    * la destruction de compte ne s'invoque jamais par la voix.
    */
-  closeAccount(input: { confirmationText: string; reason?: string }): Promise<Result<{ closedAt: string }, AppError>>;
+  closeAccount(input: {
+    confirmationText: string;
+    reason?: string;
+  }): Promise<Result<{ closedAt: string }, AppError>>;
   invoicePaymentLink(invoiceId: string): Promise<Result<{ url: string }, AppError>>;
   getDiagnostic(): Promise<Result<DiagnosticResult, AppError>>;
   /** GET /fiscal-calendar (C-EXP5b) : échéances fiscales à venir (fenêtre 90 j) dérivées de la
@@ -654,22 +681,34 @@ export interface BobClient {
    * (hypothèse honnête à confirmer) ; amountHint toujours null en v1 (aucun montant inventé). */
   getFiscalCalendar(): Promise<Result<FiscalDeadline[], AppError>>;
   getProfile(): Promise<Result<TradeConfig, AppError>>;
-  /** GET /company/me (PONT-SERVEUR v1) : la fiche société RÉELLE du tenant (CompanyProps complet)
-   * — l'identité en mode connecté (useIdentity) lit ENFIN la raison sociale/ligne légale de la BDD
-   * au lieu de masquer la ligne (TODO tracé apps/mobile/src/data/identity.ts depuis C24).
-   * OPTIONNELLE le temps d'une session : LocalBobClient est en WIP session B — TODO(session B) :
-   * implémenter getCompanyMe() dans LocalBobClient (renvoyer la company du seed, `seedCompany().toProps()`),
-   * puis rendre la méthode obligatoire ici. Les écrans traitent l'absence comme « pas encore
-   * disponible », jamais un nom inventé. */
-  getCompanyMe?(): Promise<Result<CompanyProps, AppError>>;
+  /** GET /company/me : fiche société persistée du tenant authentifié. Obligatoire pour toute
+   * implémentation du client afin qu'aucun écran ne puisse interpréter une méthode absente comme
+   * une société vide ou un état hors-ligne. */
+  getCompanyMe(): Promise<Result<CompanyProps, AppError>>;
+  updateCompanyProfile(input: {
+    trade: Trade;
+    vatRegime: VatRegime;
+    customerPortfolio?: CustomerPortfolio;
+  }): Promise<Result<CompanyProps, AppError>>;
+  /** PATCH /company/billing (Réglages facturation §RIB) : iban/bic, partiel — champ omis =
+   * inchangé, `null` = effacé. Seul endroit qui les écrit après l'onboarding. */
+  updateCompanyBilling(input: {
+    iban?: string | null;
+    bic?: string | null;
+  }): Promise<Result<CompanyProps, AppError>>;
   lookupCompany(siret: string): Promise<Result<CompanyLookupResult, AppError>>;
   /** POST /onboarding/company (C24b) : crée la société du compte (provisioning tenant à
    * l'inscription — id décidé PAR LE SERVEUR, jamais fourni par le client) ou met à jour
    * SA société quand le tenant existe déjà. Local (démo) : la société seedée. */
-  registerCompany(input: Omit<CompanyProps, 'id'>): Promise<Result<{ companyId: string }, AppError>>;
+  registerCompany(
+    input: Omit<CompanyProps, 'id'>,
+  ): Promise<Result<{ companyId: string }, AppError>>;
   checkVat(vatNumber: string): Promise<Result<VatCheckResult, AppError>>;
   searchAddress(query: string): Promise<Result<AddressSuggestion[], AppError>>;
-  transcribe(input: { audioBase64: string; mimeType: string }): Promise<Result<{ text: string }, AppError>>;
+  transcribe(input: {
+    audioBase64: string;
+    mimeType: string;
+  }): Promise<Result<{ text: string }, AppError>>;
   synthesizeSpeech(input: { text: string }): Promise<Result<VoiceSynthesisResult, AppError>>;
   voiceConfig(): Promise<Result<VoiceConfig, AppError>>;
   realtimeVoiceConfig(): Promise<Result<RealtimeVoiceConfig, AppError>>;
@@ -716,17 +755,26 @@ export interface BobClient {
   getDocument(documentId: string): Promise<Result<DocumentView, AppError>>;
   uploadDocument(input: UploadDocumentClientInput): Promise<Result<DocumentView, AppError>>;
   /** Archive l'original avant toute analyse ; idempotent sur `idempotencyKey`. */
-  createDocumentIntake(input: CreateDocumentIntakeClientInput): Promise<Result<DocumentView, AppError>>;
-  listDocumentFolders(input?: ListDocumentFoldersClientInput): Promise<Result<DocumentFolderPageView, AppError>>;
+  createDocumentIntake(
+    input: CreateDocumentIntakeClientInput,
+  ): Promise<Result<DocumentView, AppError>>;
+  listDocumentFolders(
+    input?: ListDocumentFoldersClientInput,
+  ): Promise<Result<DocumentFolderPageView, AppError>>;
   getDocumentFolder(folderId: string): Promise<Result<DocumentFolderView, AppError>>;
-  createDocumentFolder(input: { name: string; parentId?: string | null }): Promise<Result<DocumentFolderView, AppError>>;
+  createDocumentFolder(input: {
+    name: string;
+    parentId?: string | null;
+  }): Promise<Result<DocumentFolderView, AppError>>;
   updateDocumentFolder(input: {
     folderId: string;
     expectedRevision: number;
     name?: string;
     parentId?: string | null;
   }): Promise<Result<DocumentFolderView, AppError>>;
-  previewDocumentFolderDeletion(folderId: string): Promise<Result<DocumentFolderDeletionPlanView, AppError>>;
+  previewDocumentFolderDeletion(
+    folderId: string,
+  ): Promise<Result<DocumentFolderDeletionPlanView, AppError>>;
   executeDocumentFolderDeletion(input: {
     planId: string;
     strategy: DeleteDocumentFolderStrategy;
@@ -737,7 +785,10 @@ export interface BobClient {
     expectedRevision: number;
   }): Promise<Result<{ documentId: string; folderId: string | null; revision: number }, AppError>>;
   analyzeDocument(documentId: string): Promise<Result<DocumentAnalysis, AppError>>;
-  documentDownloadUrl(documentId: string, ttlSeconds?: number): Promise<Result<DocumentDownloadUrl, AppError>>;
+  documentDownloadUrl(
+    documentId: string,
+    ttlSeconds?: number,
+  ): Promise<Result<DocumentDownloadUrl, AppError>>;
   /** Confirme le classement proposé après OCR (A1-C14) — même use case pour l'UI et Bob. */
   classifyDocument(input: ClassifyDocumentClientInput): Promise<Result<DocumentView, AppError>>;
   /**
@@ -747,9 +798,16 @@ export interface BobClient {
   recordDocumentExpense(
     input: RecordDocumentExpenseClientInput,
   ): Promise<Result<RecordDocumentExpenseClientOutput, AppError>>;
-  extractDocument(input: { contentBase64: string; mimeType: string }): Promise<Result<OcrExtraction, AppError>>;
-  suggestExpenseDefaults(input: SuggestExpenseDefaultsInput): Promise<Result<ExpenseDefaultsView, AppError>>;
-  recordExpense(input: Omit<RecordExpenseInput, 'companyId'>): Promise<Result<{ id: string }, AppError>>;
+  extractDocument(input: {
+    contentBase64: string;
+    mimeType: string;
+  }): Promise<Result<OcrExtraction, AppError>>;
+  suggestExpenseDefaults(
+    input: SuggestExpenseDefaultsInput,
+  ): Promise<Result<ExpenseDefaultsView, AppError>>;
+  recordExpense(
+    input: Omit<RecordExpenseInput, 'companyId'>,
+  ): Promise<Result<{ id: string }, AppError>>;
   /** C-EXP6b ① — POST /expenses/import-facturx : CONTRÔLE DE RÉCEPTION d'une e-facture
    * (destinataire = mon SIREN, cohérence EN 16931 rejouée, doublon exact) + brouillon expert
    * (multi-taux au centime, autoliquidation NON déductible, BT-9 → dueAt, mémoire fournisseur).
@@ -762,18 +820,34 @@ export interface BobClient {
    * RecordExpense (écritures 6xx/44566/401 automatiques, zéro 44566 en autoliquidation) + XML
    * archivé au coffre lié à l'Expense ; `refuse` → motif OBLIGATOIRE (210 refusée / 213 rejetée),
    * accepté MÊME sur une pièce qui échoue aux contrôles (c'est précisément le geste attendu). */
-  confirmFacturXExpense(input: { xml: string; decision: FacturXImportDecision }): Promise<Result<FacturXImportOutcome, AppError>>;
+  confirmFacturXExpense(input: {
+    xml: string;
+    decision: FacturXImportDecision;
+  }): Promise<Result<FacturXImportOutcome, AppError>>;
   /** E4 : règle une dépense (to_pay→paid + décaissement 401/512) — même use case que Bob. */
   payExpense(input: { expenseId: string }): Promise<Result<{ status: string }, AppError>>;
   listExpenses(): Promise<Result<ExpenseProps[], AppError>>;
-  createChantier(input: Omit<CreateChantierInput, 'companyId'>): Promise<Result<{ id: string }, AppError>>;
+  listCatalogueItems(): Promise<Result<readonly CatalogueItemView[], AppError>>;
+  createCatalogueItem(input: CatalogueItemWriteInput): Promise<Result<CatalogueItemView, AppError>>;
+  updateCatalogueItem(input: {
+    itemId: string;
+    expectedRevision: number;
+    item: CatalogueItemWriteInput;
+  }): Promise<Result<CatalogueItemView, AppError>>;
+  deleteCatalogueItem(input: {
+    itemId: string;
+    expectedRevision: number;
+  }): Promise<Result<CatalogueDeletionView, AppError>>;
+  createChantier(
+    input: Omit<CreateChantierInput, 'companyId'>,
+  ): Promise<Result<{ id: string }, AppError>>;
   listChantiers(): Promise<Result<ChantierProps[], AppError>>;
   listCustomers(): Promise<Result<CustomerListItem[], AppError>>;
   /** Crée une fiche client — même use case pour l'UI (C12) et l'outil agent creer_client (C40). */
   createCustomer(input: CreateCustomerClientInput): Promise<Result<{ id: string }, AppError>>;
-  // —— Assistant Bob (C40, TODO ⑧ « journal on-device ») — endpoints /ai existants ——
-  /** POST /ai/ask : en HTTP l'agent tourne CÔTÉ SERVEUR (autonomie clampée par l'offre, journal
-   * append-only company-scoped) ; l'adaptateur local exécute l'agent @bob/ai on-device (mode dev). */
+  // —— Assistant Bob : autorité serveur unique, journal tenant-scoped ——
+  /** POST /ai/ask : l'agent tourne CÔTÉ SERVEUR (autonomie clampée par l'offre, journal
+   * append-only company-scoped). Le binaire mobile ne possède aucun cerveau de repli local. */
   askBob(input: AskBobClientInput): Promise<Result<AgentRun, AppError>>;
   /** Recharge une proposition opaque pour afficher son diff. Le serveur vérifie tenant,
    * propriétaire et expiration ; le payload reste non autoritatif pour la confirmation. */
@@ -783,24 +857,55 @@ export interface BobClient {
   /** GET /ai/runs/:runId/journal : entrées d'audit append-only d'un run (company-scoped côté serveur).
    * NB : les DTO AgentRun de ask/confirm n'exposent pas (encore) le runId — voir rapport C40. */
   getRunJournal(runId: string): Promise<Result<JournalEntry[], AppError>>;
-  getCashflow(input: { scenario: Scenario; horizon: Horizon }): Promise<Result<CashflowProjection, AppError>>;
-  createQuote(input: Omit<CreateQuoteInput, 'companyId'>): Promise<Result<CreateQuoteOutput, AppError>>;
+  getCashflow(input: {
+    scenario: Scenario;
+    horizon: Horizon;
+  }): Promise<Result<CashflowProjection, AppError>>;
+  getLatestBankBalance(): Promise<Result<QualifiedBankBalanceSnapshot, AppError>>;
+  recordManualBankBalance(input: {
+    amountCents: number;
+    observedAt: string;
+  }): Promise<Result<QualifiedBankBalanceSnapshot, AppError>>;
+  createQuote(
+    input: Omit<CreateQuoteInput, 'companyId'>,
+  ): Promise<Result<CreateQuoteOutput, AppError>>;
+  /** Slot BDD du brouillon courant, isolé côté serveur par companyId + userId du JWT. */
+  getQuoteDraft(): Promise<Result<QuoteDraftSlotView | null, AppError>>;
+  /** expectedRevision=0 crée ; toute reprise ultérieure exige la révision exacte observée. */
+  saveQuoteDraft(
+    input: SaveQuoteDraftClientInput,
+  ): Promise<Result<QuoteDraftSlotView, AppError>>;
+  /** Suppression CAS : un écran périmé ne peut jamais effacer une reprise plus récente. */
+  deleteQuoteDraft(
+    expectedRevision: number,
+  ): Promise<Result<{ deleted: true }, AppError>>;
   sendQuote(quoteId: string): Promise<Result<SendQuoteOutput, AppError>>;
   /** P0 R4 : prépare/rotate le lien de signature SANS AUCUN effet sortant (jamais d'e-mail). */
-  createQuoteSignatureLink(quoteId: string): Promise<Result<CreateQuoteSignatureLinkOutput, AppError>>;
+  createQuoteSignatureLink(
+    quoteId: string,
+  ): Promise<Result<CreateQuoteSignatureLinkOutput, AppError>>;
   /** R4 : `proofDataUrl` = tracé du pad (dataURL) — le SERVEUR calcule le SHA-256 de preuve ;
    * le dataURL n'est jamais persisté tel quel. Absent = signature sans capture (preuve absente,
    * jamais fabriquée). */
-  signQuote(input: { quoteId: string; signerName: string; proofDataUrl?: string }): Promise<Result<{ status: string }, AppError>>;
+  signQuote(input: {
+    quoteId: string;
+    signerName: string;
+    proofDataUrl?: string;
+  }): Promise<Result<{ status: string }, AppError>>;
   refuseQuote(quoteId: string): Promise<Result<{ status: string }, AppError>>;
-  generateInvoice(input: { quoteId: string; mode: 'deposit' | 'final' }): Promise<Result<{ invoiceId: string }, AppError>>;
+  generateInvoice(input: {
+    quoteId: string;
+    mode: 'deposit' | 'final';
+  }): Promise<Result<{ invoiceId: string }, AppError>>;
   /** R6 : édition d'une ligne de devis BROUILLON (PATCH /quotes/:id/lines/:lineId) — draft only,
    * un devis signé est un contrat (l'agrégat garde assertDraft). */
   updateQuoteLine(input: UpdateQuoteLineInput): Promise<Result<{ status: string }, AppError>>;
   /** R6 : suppression d'une ligne de devis BROUILLON (DELETE /quotes/:id/lines/:lineId). */
   removeQuoteLine(input: RemoveQuoteLineInput): Promise<Result<{ status: string }, AppError>>;
   /** A6 : avoir TOTAL (brouillon) d'une facture émise — même use case pour l'UI et Bob. */
-  createCreditNote(input: { invoiceId: string }): Promise<Result<{ creditNoteId: string }, AppError>>;
+  createCreditNote(input: {
+    invoiceId: string;
+  }): Promise<Result<{ creditNoteId: string }, AppError>>;
   issueInvoice(input: IssueInvoiceInput): Promise<Result<{ number: string }, AppError>>;
   /** R6 : suppression définitive d'une facture BROUILLON (DELETE /invoices/:id/draft) — erreur
    * détectée après génération depuis un devis ; garde stricte status==='draft'. */
@@ -820,14 +925,24 @@ export interface BobClient {
     input: NotificationReadThroughInput,
   ): Promise<Result<NotificationReadThroughOutput, AppError>>;
   /** POST /devices : rebind global atomique vers le principal courant. */
-  registerDevice(input: RegisterDeviceClientInput): Promise<Result<{ status: 'bound' | 'superseded' }, AppError>>;
+  registerDevice(
+    input: RegisterDeviceClientInput,
+  ): Promise<Result<{ status: 'bound' | 'superseded' }, AppError>>;
   /** DELETE /devices : retire le binding du tenant courant avant la fin de session. */
-  unregisterDevice(input: UnregisterDeviceClientInput): Promise<Result<{ unregistered: true }, AppError>>;
+  unregisterDevice(
+    input: UnregisterDeviceClientInput,
+  ): Promise<Result<{ unregistered: true }, AppError>>;
   /** Fence authentifiée écrite avant signOut, même si le POST d'inscription est encore en vol. */
-  revokeDeviceBinding(input: RevokeDeviceBindingClientInput): Promise<Result<{ accepted: true }, AppError>>;
+  revokeDeviceBinding(
+    input: RevokeDeviceBindingClientInput,
+  ): Promise<Result<{ accepted: true }, AppError>>;
   /** Replay public one-way d'une tombstone après destruction du JWT. */
-  replayPushRevocation(input: RevokeDeviceBindingClientInput): Promise<Result<{ accepted: true }, AppError>>;
-  registerPayment(input: RegisterPaymentClientInput): Promise<Result<RegisterPaymentClientOutput, AppError>>;
+  replayPushRevocation(
+    input: RevokeDeviceBindingClientInput,
+  ): Promise<Result<{ accepted: true }, AppError>>;
+  registerPayment(
+    input: RegisterPaymentClientInput,
+  ): Promise<Result<RegisterPaymentClientOutput, AppError>>;
   /** E3 : encaissements datés du tenant — CA encaissé annuel (seuils 293 B), lettrage futur. */
   listPayments(): Promise<Result<PaymentView[], AppError>>;
   getQuote(id: string): Promise<Result<QuoteView, AppError>>;
@@ -845,7 +960,9 @@ export interface BobClient {
   /** B9 — GET /documents/search : « retrouve les devis de Mairie de Sèvres du mois dernier ».
    * Nommé "SalesDocuments" (et non "Documents") pour ne jamais se confondre avec le coffre GED
    * (listDocuments/DocumentView, un domaine différent malgré le même préfixe d'URL /documents). */
-  searchSalesDocuments(input: SearchSalesDocumentsClientInput): Promise<Result<SearchSalesDocumentsResult, AppError>>;
+  searchSalesDocuments(
+    input: SearchSalesDocumentsClientInput,
+  ): Promise<Result<SearchSalesDocumentsResult, AppError>>;
   /** B9 — GET /documents/suggest : autocomplétion typée {kind, value, count}, LIMIT 8. */
   suggestSalesDocuments(query: string): Promise<Result<SuggestSalesDocumentsResult, AppError>>;
 }
@@ -855,4 +972,9 @@ export interface BobClient {
 export type SearchSalesDocumentsClientInput = Omit<SearchSalesDocumentsInput, 'scope'> & {
   scope?: SearchSalesDocumentsInput['scope'];
 };
-export type { SearchSalesDocumentsInput, SearchSalesDocumentsResult, SuggestSalesDocumentsInput, SuggestSalesDocumentsResult };
+export type {
+  SearchSalesDocumentsInput,
+  SearchSalesDocumentsResult,
+  SuggestSalesDocumentsInput,
+  SuggestSalesDocumentsResult,
+};

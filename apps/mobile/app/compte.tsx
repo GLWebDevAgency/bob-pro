@@ -15,7 +15,7 @@
  *   « À venir ».
  * Toute la dérivation vit dans @bob/core (deriveAccountView, use case pur testé) ; l'écran rend.
  *
- * DONNÉES RÉELLES : identité via useIdentity (JAMAIS « Mercier » en dur — la démo vient du seed),
+ * DONNÉES RÉELLES : identité via useIdentity (jamais de société d'exemple),
  * email = session Supabase (useAuth), profil métier via useProfile (client.getProfile),
  * Se déconnecter = signOut réel, « Facturation & modèles » → /reglages-facturation (C27).
  * Erreur profil → bannière voix de Bob SANS bloquer l'écran (la déconnexion reste accessible),
@@ -37,7 +37,6 @@ import {
   deriveAccountView,
   diffPlanChange,
   formatEURWhole,
-  MERCIER_PROPS,
   PLAN_CATALOG,
   TIER_ORDER,
   type AccountConnectionView,
@@ -56,7 +55,6 @@ import {
   EmptyState,
   ErrorRetry,
   IconTile,
-  InnerScreenHeader,
   SectionHeader,
   SegmentedControl,
   Skeleton,
@@ -69,13 +67,14 @@ import {
 } from '@bob/ui';
 import { useIdentity } from '../src/data/identity';
 import { useAuth } from '../src/data/auth';
-import { useProfile, useSubscription } from '../src/data/hooks';
+import { useCompanyMe, useProfile, useSubscription } from '../src/data/hooks';
 import { useFiscalProfileFlow } from '../src/fiscal/use-fiscal-profile-flow';
 import { LEGAL_URLS, SUPPORT_EMAIL, SUPPORT_MAILTO } from '../src/config/legal';
 import { CloseAccountSheet } from '../src/components/account/close-account-sheet';
+import { ScreenHeader } from '../src/components/screen-header';
 import { useBobAwareScrollInsets } from '../src/components/use-bob-aware-scroll-insets';
+import { hasBlockingAuthoritativeDataError } from '../src/data/authoritative-query-state';
 import {
-  ChevronLeftIcon,
   ChevronRightIcon,
   CurrencyIcon,
   FileTextIcon,
@@ -143,6 +142,7 @@ export default function Compte() {
   const identity = useIdentity();
   const { enabled: authEnabled, session, signOut } = useAuth();
   const profile = useProfile();
+  const companyMe = useCompanyMe();
   const subscription = useSubscription();
   // SPEC_EXPERT_FISCAL §UX FLOW amendement 5 : résidence du profil fiscal = carte Compte →
   // écran dédié /profil-fiscal (query PARTAGÉE — coût nul, déjà chaude si Argent/Home l'ont lue).
@@ -167,8 +167,7 @@ export default function Compte() {
           companyName: identity.companyName,
           legalLine: identity.legalLine,
         },
-        // Démo = la société du seed @bob/core ; connecté = null tant que GET /company/me n'existe pas.
-        company: identity.isDemo ? MERCIER_PROPS : null,
+        company: companyMe.data ?? null,
         tradeConfig: profile.data ?? null,
         // GET /subscription RÉEL (C26b) — SubscriptionView ⊂ SubscriptionInfo, passé tel quel.
         // earlyAccess: true (aucun billing) → null pour la vue : deriveAccountView rend l'état
@@ -176,7 +175,7 @@ export default function Compte() {
         // null aussi : même état honnête, jamais un plan inventé.
         subscription: subscription.data && !subscription.data.earlyAccess ? subscription.data : null,
       }),
-    [identity, profile.data, subscription.data],
+    [companyMe.data, identity, profile.data, subscription.data],
   );
 
   const email = session?.user?.email ?? null;
@@ -195,25 +194,25 @@ export default function Compte() {
 
   const heroGradient = parseGradient(grad.hero);
   const offer = view.subscription.offer;
+  const profileHasBlockingError = hasBlockingAuthoritativeDataError([
+    profile,
+    companyMe,
+    { isError: fiscalFlow.isError, data: fiscalFlow.profile },
+  ]);
+  const profileHasStaleError = !profileHasBlockingError
+    && (profile.isError || companyMe.isError || fiscalFlow.isError);
+  const profileLoading = profile.isLoading || companyMe.isLoading || fiscalFlow.isLoading;
+  const refetchProfile = (): void => {
+    void profile.refetch();
+    void companyMe.refetch();
+    void fiscalFlow.refetch();
+  };
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <View style={{ paddingTop: insets.top + 10, paddingHorizontal: 16 }}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={say('account.back')}
-          onPress={() => router.back()}
-          hitSlop={8}
-          style={{ flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'flex-start', minHeight: 44 }}
-        >
-          <ChevronLeftIcon color={colors.ink800} size={18} strokeWidth={2.2} />
-          <Text style={[font('label', 600), { fontSize: 15, color: colors.ink800 }]}>
-            {say('account.back')}
-          </Text>
-        </Pressable>
-      </View>
-
-      <InnerScreenHeader
+      <ScreenHeader
+        backLabel={say('account.back')}
+        onBack={() => router.back()}
         eyebrow={say('account.eyebrow')}
         title={say('account.title')}
         subtitle={say('account.subtitle')}
@@ -243,9 +242,13 @@ export default function Compte() {
         showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl
-            refreshing={tab === 'profil' ? profile.isRefetching : subscription.isRefetching}
+            refreshing={
+              tab === 'profil'
+                ? profile.isRefetching || companyMe.isRefetching || fiscalFlow.isRefetching
+                : subscription.isRefetching
+            }
             onRefresh={() => {
-              if (tab === 'profil') void profile.refetch();
+              if (tab === 'profil') refetchProfile();
               else void subscription.refetch();
             }}
             tintColor={colors.ink800}
@@ -255,7 +258,7 @@ export default function Compte() {
       >
         {tab === 'profil' ? (
           <>
-            {/* Identité — jamais en dur : useIdentity (seed en démo) + email de la session réelle */}
+            {/* Identité — session signée + fiche société BDD uniquement. */}
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 13, marginBottom: 16 }}>
               <Avatar name={avatarName} size={54} />
               <View style={{ flex: 1 }}>
@@ -268,16 +271,21 @@ export default function Compte() {
               </View>
             </View>
 
-            {profile.isLoading ? (
+            {profileLoading ? (
               <ProfileSkeleton label={say('account.profileLoading')} />
-            ) : profile.isError ? (
-              <ErrorRetry message={say('account.dataError')} onRetry={() => void profile.refetch()} />
+            ) : profileHasBlockingError ? (
+              <ErrorRetry message={say('account.dataError')} onRetry={refetchProfile} />
             ) : (
               <>
+            {profileHasStaleError ? (
+              <View style={{ marginBottom: 16 }}>
+                <ErrorRetry message={say('account.dataError')} onRetry={refetchProfile} />
+              </View>
+            ) : null}
             <SectionHeader title={say('account.sectionCompany')} />
-            <Card padding={15} style={{ marginBottom: 16 }}>
-              {view.profile.company ? (
-                (
+            {view.profile.company ? (
+              <Card padding={15} style={{ marginBottom: 16 }}>
+                {(
                   [
                     { key: 'name', label: say('account.companyName'), value: view.profile.company.name, tabular: false },
                     { key: 'siret', label: say('account.companySiret'), value: view.profile.company.siretFormatted, tabular: true },
@@ -308,11 +316,52 @@ export default function Compte() {
                       {row.value}
                     </Text>
                   </View>
-                ))
-              ) : (
-                <Text style={[font('sub'), { color: colors.slate500 }]}>{say('account.companyEmpty')}</Text>
-              )}
-            </Card>
+                ))}
+              </Card>
+            ) : (
+              // Cul-de-sac corrigé (retours device fondateur) : en architecture, une fiche
+              // société arrive TOUJOURS avant cet écran (ProvisioningScreen, gate racine
+              // _layout.tsx) — ce null ne devrait donc survenir que si `GET /company/me`
+              // a échoué silencieusement malgré un tenant valide dans le JWT. Aucun flow
+              // libre-service de ré-édition de la fiche n'existe encore (SIRET/raison
+              // sociale ne sont éditables qu'à l'inscription) : la carte reste ACTIONNABLE
+              // (contact support réel) plutôt qu'un texte mort « ça s'affichera bientôt ».
+              // TODO tracé : construire un écran dédié de complétion post-inscription +
+              // endpoint d'écriture (au-delà d'iban/bic, cf. PATCH /company/billing) le
+              // jour où ce cas cesse d'être une exception.
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`${say('account.companyEmptyTitle')}. ${say('account.companyEmptyBody')}`}
+                onPress={() => openExternalUrl(SUPPORT_MAILTO)}
+                style={[
+                  {
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 13,
+                    backgroundColor: colors.surface,
+                    borderRadius: radius.cardLg,
+                    borderWidth: 1,
+                    borderColor: controls.cardBorder,
+                    padding: 15,
+                    marginBottom: 16,
+                  },
+                  shadowNative.e1,
+                ]}
+              >
+                <IconTile tone="b2g" size={36} radius={11}>
+                  <FileTextIcon color={semantic.b2g} size={18} />
+                </IconTile>
+                <View style={{ flex: 1 }}>
+                  <Text style={[font('sub', 700), { fontSize: 14.5, color: colors.ink800 }]}>
+                    {say('account.companyEmptyTitle')}
+                  </Text>
+                  <Text style={[font('meta'), { color: colors.slate400, marginTop: 1 }]}>
+                    {say('account.companyEmptyBody')}
+                  </Text>
+                </View>
+                <ChevronRightIcon color={colors.slate300} size={17} />
+              </Pressable>
+            )}
 
             {/* Facturation & modèles → écran C27 (réel) */}
             <Pressable

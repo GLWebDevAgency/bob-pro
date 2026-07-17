@@ -842,9 +842,6 @@ describe('assistant Bob local (C40 ⑧ — ask/confirm/journal on-device) + cré
       name: 'Mme Nguyen',
       type: 'b2c',
       address: { line1: '', zip: '', city: '' },
-      score: 100,
-      avgDelayDays: 0,
-      outstanding: 0,
     });
     expect(created.ok).toBe(true);
     if (!created.ok) return;
@@ -856,17 +853,24 @@ describe('assistant Bob local (C40 ⑧ — ask/confirm/journal on-device) + cré
     expect(list.value.find((c) => c.id === created.value.id)).toMatchObject({ name: 'Mme Nguyen', type: 'b2c' });
   });
 
-  it('refuse un score hors domaine (Customer.of fait foi, comme le serveur)', async () => {
-    const r = await makeClient().createCustomer({
-      name: 'M. Hors-Borne',
+  it('ne porte aucune métrique synthétique sur une nouvelle fiche', async () => {
+    const client = makeClient();
+    const created = await client.createCustomer({
+      name: 'M. Sans historique',
       type: 'b2c',
       address: { line1: '', zip: '', city: '' },
-      score: 250,
-      avgDelayDays: 0,
-      outstanding: 0,
     });
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error.kind).toBe('domain');
+    expect(created.ok).toBe(true);
+    const list = await client.listCustomers();
+    expect(list.ok).toBe(true);
+    if (!list.ok || !created.ok) return;
+    expect(list.value.find((entry) => entry.id === created.value.id)).toMatchObject({
+      score: null,
+      scoreBand: null,
+      outstandingCents: 0,
+      avgDelayDays: null,
+      paymentHistoryStatus: 'insufficient_history',
+    });
   });
 
   it('askBob propose (plancher) puis confirmBob exécute EN JOURNALISANT — le journal est lisible on-device', async () => {

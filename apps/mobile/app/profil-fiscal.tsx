@@ -13,14 +13,15 @@ import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { FISCAL_PROFILE_FIELDS, type FiscalProfileView } from '@bob/core';
 import { t, type Personality } from '@bob/i18n';
-import { Button, Card, ErrorRetry, InnerScreenHeader, SkeletonCard, font, useTheme } from '@bob/ui';
+import { Button, Card, ErrorRetry, SkeletonCard, font, useTheme } from '@bob/ui';
 import { usePublishAgentContext, type AgentContext } from '../src/agent';
 import { useFiscalProfileFlow } from '../src/fiscal/use-fiscal-profile-flow';
 import { FIELD_NAME_KEY, FIELD_STATUS_LABEL_KEY, FIELD_STATUS_TONE, type FiscalProfileFieldName } from '../src/fiscal/fiscal-i18n-keys';
 import { fieldSourceCaption, fieldValueDisplay } from '../src/fiscal/fiscal-value-labels';
 import { FiscalStatusPill } from '../src/components/fiscal/FiscalStatusPill';
 import { FiscalFieldEditSheet, type FiscalEditableField } from '../src/components/fiscal/FiscalFieldEditSheet';
-import { ChevronLeftIcon, ChevronRightIcon } from '../src/components/icons';
+import { ChevronRightIcon } from '../src/components/icons';
+import { ScreenHeader } from '../src/components/screen-header';
 import { useBobAwareScrollInsets } from '../src/components/use-bob-aware-scroll-insets';
 
 function FiscalFieldRow({
@@ -97,22 +98,9 @@ export default function ProfilFiscal() {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <View style={{ paddingTop: insets.top + 10, paddingHorizontal: 16 }}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={t('reglages.back', { personality })}
-          onPress={() => router.back()}
-          hitSlop={8}
-          style={{ flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'flex-start', minHeight: 44 }}
-        >
-          <ChevronLeftIcon color={colors.ink800} size={18} strokeWidth={2.2} />
-          <Text style={[font('label', 600), { fontSize: 15, color: colors.ink800 }]}>
-            {t('reglages.back', { personality })}
-          </Text>
-        </Pressable>
-      </View>
-
-      <InnerScreenHeader
+      <ScreenHeader
+        backLabel={t('reglages.back', { personality })}
+        onBack={() => router.back()}
         eyebrow={t('fiscal.screen.eyebrow', { personality })}
         title={t('fiscal.screen.title', { personality })}
         subtitle={t('fiscal.screen.subtitle', { personality })}

@@ -11,6 +11,9 @@ import { useCompanyMe } from './hooks';
  */
 export interface Identity {
   firstName: string | null;
+  /** Nom complet (session Supabase, `user_metadata.full_name`) — replie sur `firstName` seul
+   * quand la session n'expose pas de nom de famille (jamais un nom inventé). */
+  fullName: string | null;
   initials: string;
   companyName: string | null;
   /** Détail légal (forme · SIRET) issu de la fiche BDD. */
@@ -51,6 +54,7 @@ export function useIdentity(): Identity {
     const company = companyMe.data ?? null;
     return {
       firstName,
+      fullName: fullName ?? firstName,
       initials: initialsOf(fullName ?? firstName),
       companyName: company?.name ?? null,
       legalLine: company ? legalLineOf(company) : null,
