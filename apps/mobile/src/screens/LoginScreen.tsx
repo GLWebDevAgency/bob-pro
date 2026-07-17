@@ -205,6 +205,9 @@ export function LoginScreen() {
   const [siret, setSiret] = useState(''); // chiffres bruts (14 max), affiché groupé
   const [company, setCompany] = useState<CompanyLookupResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Code TYPÉ de la dernière erreur de connexion : `email_not_confirmed` débloque le renvoi
+  // de l'email de confirmation (avec la nouvelle cible de redirection) directement depuis ici.
+  const [loginErrorCode, setLoginErrorCode] = useState<AuthErrorCode | null>(null);
   const [notice, setNotice] = useState<string | null>(null); // confirmations (reset envoyé)
   const [busy, setBusy] = useState(false);
   const [resendBusy, setResendBusy] = useState(false);
@@ -220,6 +223,7 @@ export function LoginScreen() {
 
   const goTo = (next: Step): void => {
     setError(null);
+    setLoginErrorCode(null);
     setNotice(null);
     setStep(next);
   };
@@ -251,6 +255,7 @@ export function LoginScreen() {
     }
     setBusy(true);
     setError(null);
+    setLoginErrorCode(null);
     setNotice(null);
     // AVANT l'await : Supabase notifie SIGNED_IN pendant l'appel — le BiometricGate peut
     // monter avant la fin de cette fonction et doit déjà savoir que le login est interactif
@@ -260,6 +265,7 @@ export function LoginScreen() {
     setBusy(false);
     if (res.error) {
       setError(say(AUTH_ERR_KEY[res.error]));
+      setLoginErrorCode(res.error);
       return;
     }
     // Session posée → AuthGate bascule l'app ; le gate biométrique proposera l'opt-in.
@@ -424,6 +430,17 @@ export function LoginScreen() {
       />
       <GhostLink label={say('auth.forgot')} align="right" onPress={() => void submitReset()} />
       <ErrorLine message={error} />
+      {loginErrorCode === 'email_not_confirmed' ? (
+        // Compte réel jamais confirmé (ex. ancien email parti vers localhost) : le renvoi part
+        // d'ici avec la NOUVELLE cible de redirection — aucun besoin de recréer le compte.
+        <GhostLink
+          label={say('auth.loginResendConfirm')}
+          onPress={() => {
+            goTo('verify');
+            void submitVerificationResend();
+          }}
+        />
+      ) : null}
       {notice ? (
         <Text
           accessibilityLiveRegion="polite"

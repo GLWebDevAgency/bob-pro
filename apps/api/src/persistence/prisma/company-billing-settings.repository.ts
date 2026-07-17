@@ -17,6 +17,7 @@ function fromRow(row: CompanyBillingSettingsRow): CompanyBillingSettings {
     pdfAccentColor: row.pdfAccentColor,
     defaultQuoteValidityDays: row.defaultQuoteValidityDays,
     defaultDepositPercent: row.defaultDepositPercent,
+    defaultInvoicePaymentTermsDays: row.defaultInvoicePaymentTermsDays,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -58,6 +59,7 @@ export class PrismaCompanyBillingSettingsRepository implements CompanyBillingSet
       pdfAccentColor?: CompanyBillingSettings['pdfAccentColor'];
       defaultQuoteValidityDays?: number;
       defaultDepositPercent?: number;
+      defaultInvoicePaymentTermsDays?: number | null;
       revision: { increment: number };
       updatedAt: Date;
     } = {

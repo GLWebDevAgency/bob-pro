@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import resolveConfig from '../../app.config';
 
@@ -65,5 +67,21 @@ describe('app.config BDD-only gate', () => {
     vi.stubEnv('EXPO_PUBLIC_TERMS_URL', 'https://bob.example/legal/cgu');
     vi.stubEnv('EXPO_PUBLIC_PRIVACY_URL', 'https://bob.example/legal/confidentialite');
     expect(resolveConfig(context)).toEqual(context.config);
+  });
+
+  it('ne versionne aucune coordonnée fictive dans les profils EAS distribués', () => {
+    const easConfig = readFileSync(resolve(process.cwd(), 'eas.json'), 'utf8');
+    const parsed = JSON.parse(easConfig) as {
+      build: Record<string, { environment?: string; env?: Record<string, string> }>;
+    };
+    expect(easConfig).not.toContain('demo.bobpro.fr');
+    expect(easConfig).not.toContain('EXPO_PUBLIC_DEMO_MODE');
+    expect(easConfig).not.toContain('EXPO_PUBLIC_API_TOKEN');
+    for (const profile of ['preview', 'production'] as const) {
+      expect(parsed.build[profile]?.environment).toBe(profile);
+      expect(parsed.build[profile]?.env).not.toHaveProperty('EXPO_PUBLIC_TERMS_URL');
+      expect(parsed.build[profile]?.env).not.toHaveProperty('EXPO_PUBLIC_PRIVACY_URL');
+      expect(parsed.build[profile]?.env?.EXPO_PUBLIC_SUPPORT_EMAIL).toBe('bonjour@bobpro.fr');
+    }
   });
 });

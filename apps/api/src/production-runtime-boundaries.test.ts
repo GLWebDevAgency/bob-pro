@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { err, type AppError, type OcrPort, type PaymentGatewayPort, type PdfRendererPort, type Result } from '@bob/core';
+import {
+  err,
+  type AppError,
+  type OcrPort,
+  type PaymentGatewayPort,
+  type PdfRendererPort,
+  type Result,
+} from '@bob/core';
 import { BackendService } from './backend.service';
 import { InMemoryPersistence } from './persistence/persistence.testing';
 import { requestContext, type AppLogger, type Principal } from './observability/logger';
@@ -51,18 +58,16 @@ function authoritativeBobLists(service: BackendService) {
 describe('frontières runtime live — aucune fixture silencieuse', () => {
   afterEach(() => vi.unstubAllEnvs());
 
-  it('getCashflow en live sans AUCUNE donnée : état vide marqué bankingSource none — jamais une fixture vue au démarrage', async () => {
+  it('getCashflow en live sans solde confirmé : indisponible, jamais une fixture ni un zéro', async () => {
     vi.stubEnv('DEMO_MODE', 'true');
     const { service } = harness();
     vi.stubEnv('DEMO_MODE', 'false');
 
     const result = await asPrincipal(() => service.getCashflow('realiste', 30));
 
-    // Tenant vierge : 200 avec un ZÉRO explicitement marqué 'none' (décision fondateur 17/07) —
-    // aucun montant fixture ne fuit, aucun solde n'est inventé.
-    expect(result).toMatchObject({
-      ok: true,
-      value: { available: 0, payout: 0, vatDue: 0, bankingSource: 'none' },
+    expect(result).toEqual({
+      ok: false,
+      error: { kind: 'unavailable', service: 'cashflow-banking-source' },
     });
   });
 
@@ -73,11 +78,11 @@ describe('frontières runtime live — aucune fixture silencieuse', () => {
 
     const result = await asPrincipal(() => service.getCashflow('realiste', 30));
 
-    // Le seed démo ne porte AUCUN document financier ni solde : la projection reste l'état
-    // vide marqué — jamais des montants synthétiques réactivés par DEMO_MODE.
-    expect(result).toMatchObject({
-      ok: true,
-      value: { available: 0, payout: 0, vatDue: 0, bankingSource: 'none' },
+    // Le seed de test ne porte aucun solde confirmé : DEMO_MODE ne peut ni le réactiver ni
+    // transformer l'absence de donnée bancaire en montant affichable.
+    expect(result).toEqual({
+      ok: false,
+      error: { kind: 'unavailable', service: 'cashflow-banking-source' },
     });
   });
 

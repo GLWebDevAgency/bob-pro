@@ -41,7 +41,11 @@ import type {
 import { Iban, isCatalogueCategory, isValidDateOnly, isVatRate } from '@bob/core';
 import { type AgentAskPayload } from '@bob/ai';
 import { Throttle } from '@nestjs/throttler';
-import { BackendService, type FacturXImportDecision, type UploadDocumentInput } from './backend.service';
+import {
+  BackendService,
+  type FacturXImportDecision,
+  type UploadDocumentInput,
+} from './backend.service';
 import { RelanceService } from './jobs/relance.service';
 import { DocumentArchiveService } from './jobs/document-archive.service';
 import { NotificationsApiService } from './notifications/notifications-api.service';
@@ -55,13 +59,22 @@ import {
 import { DigestService } from './jobs/digest.service';
 import { unwrap } from './http/result';
 import { readReleaseMetadata } from './release-metadata';
-import { WithoutTenantPersistenceTransaction } from './persistence/tenant-persistence.interceptor';
+import {
+  AllowsMissingCompanyRow,
+  WithoutTenantPersistenceTransaction,
+} from './persistence/tenant-persistence.interceptor';
 import { clientIpSourceForRequest } from './config/client-ip';
 
 function assertJsonObjectBody(value: unknown): asserts value is Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     throw new HttpException(
-      { ok: false, error: { kind: 'validation', issues: [{ field: 'body', message: 'Corps JSON objet requis.' }] } },
+      {
+        ok: false,
+        error: {
+          kind: 'validation',
+          issues: [{ field: 'body', message: 'Corps JSON objet requis.' }],
+        },
+      },
       HttpStatus.UNPROCESSABLE_ENTITY,
     );
   }
@@ -93,7 +106,14 @@ const CREATE_QUOTE_FIELDS = new Set([
   'validUntil',
   'context',
 ]);
-const CREATE_QUOTE_LINE_FIELDS = new Set(['label', 'category', 'qty', 'unit', 'unitPriceHT', 'vatRate']);
+const CREATE_QUOTE_LINE_FIELDS = new Set([
+  'label',
+  'category',
+  'qty',
+  'unit',
+  'unitPriceHT',
+  'vatRate',
+]);
 const CREATE_QUOTE_CONTEXT_FIELDS = new Set(['housingOlderThan2y', 'energyRenovation']);
 const INVOICE_GENERATION_FIELDS = new Set(['mode']);
 const QUOTE_LINE_PATCH_FIELDS = new Set(['label', 'qty', 'unitPriceHT', 'vatRate']);
@@ -111,6 +131,7 @@ const COMPANY_BILLING_SETTINGS_FIELDS = new Set([
   'pdfAccentColor',
   'defaultQuoteValidityDays',
   'defaultDepositPercent',
+  'defaultInvoicePaymentTermsDays',
 ]);
 const INVOICE_PDF_ACCENTS = new Set(['navy', 'green', 'purple', 'orange']);
 const BIC_PATTERN = /^[A-Z0-9]{8}([A-Z0-9]{3})?$/;
@@ -144,7 +165,13 @@ const VAT_REGIMES = new Set<VatRegime>(['franchise', 'reel_simpl', 'reel_normal'
 const CUSTOMER_PORTFOLIOS = new Set<CustomerPortfolio>(['b2c', 'b2b', 'b2g', 'mixte']);
 // Tracé du pad : dataURL SVG/PNG de quelques Ko en pratique — borne large mais finie (anti-DoS).
 const SIGN_PROOF_MAX_CHARS = 512_000;
-const QUOTE_LINE_CATEGORIES = new Set(['labor', 'supply', 'travel', 'disbursement', 'subscription']);
+const QUOTE_LINE_CATEGORIES = new Set([
+  'labor',
+  'supply',
+  'travel',
+  'disbursement',
+  'subscription',
+]);
 const QUOTE_VAT_RATES = new Set([0, 2.1, 5.5, 10, 20]);
 const MAX_QUOTE_LINES = 100;
 const MAX_QUOTE_HT_CENTS = 1_500_000_000;
@@ -152,14 +179,16 @@ const DOCUMENT_EXPENSE_FIELDS = new Set(
   [...RECORD_EXPENSE_FIELDS].filter((field) => field !== 'idempotencyKey' && field !== 'source'),
 );
 const DOCUMENT_EXPENSE_BODY_FIELDS = new Set(['expectedRevision', 'targetFolderId', 'expense']);
-const EXPENSE_CATEGORIES = new Set(['fournitures', 'materiel', 'carburant', 'repas', 'sous_traitance', 'autre']);
-const EXPENSE_SOURCES = new Set(['ocr', 'manual', 'facturx']);
-const EXPENSE_PAYMENT_FIELDS = new Set([
-  'paidOn',
-  'method',
-  'reference',
-  'proofDocumentId',
+const EXPENSE_CATEGORIES = new Set([
+  'fournitures',
+  'materiel',
+  'carburant',
+  'repas',
+  'sous_traitance',
+  'autre',
 ]);
+const EXPENSE_SOURCES = new Set(['ocr', 'manual', 'facturx']);
+const EXPENSE_PAYMENT_FIELDS = new Set(['paidOn', 'method', 'reference', 'proofDocumentId']);
 const EXPENSE_PAYMENT_METHODS = new Set<PaymentMethod>(['card', 'transfer', 'cash']);
 const DOCUMENT_UPLOAD_FIELDS = new Set([
   'contentBase64',
@@ -172,7 +201,11 @@ const DOCUMENT_UPLOAD_FIELDS = new Set([
   'folderId',
   'tags',
 ]);
-const DOCUMENT_CLASSIFY_FIELDS = new Set(['linkedEntityType', 'linkedEntityId', 'expectedRevision']);
+const DOCUMENT_CLASSIFY_FIELDS = new Set([
+  'linkedEntityType',
+  'linkedEntityId',
+  'expectedRevision',
+]);
 const DOCUMENT_KINDS = new Set<DocumentKind>([
   'invoice_pdf',
   'quote_pdf',
@@ -181,7 +214,13 @@ const DOCUMENT_KINDS = new Set<DocumentKind>([
   'signed_quote',
   'other',
 ]);
-const DOCUMENT_LINK_TYPES = new Set<DocumentLinkedEntityType>(['invoice', 'quote', 'expense', 'chantier', 'company']);
+const DOCUMENT_LINK_TYPES = new Set<DocumentLinkedEntityType>([
+  'invoice',
+  'quote',
+  'expense',
+  'chantier',
+  'company',
+]);
 
 type ValidationIssue = { field: string; message: string };
 
@@ -204,9 +243,9 @@ function parseManualBankBalanceBody(body: Record<string, unknown>): {
     throwValidationIssues([{ field: 'amountCents', message: 'Solde en centimes entier requis.' }]);
   }
   if (
-    typeof body.observedAt !== 'string'
-    || !Number.isFinite(Date.parse(body.observedAt))
-    || new Date(Date.parse(body.observedAt)).toISOString() !== body.observedAt
+    typeof body.observedAt !== 'string' ||
+    !Number.isFinite(Date.parse(body.observedAt)) ||
+    new Date(Date.parse(body.observedAt)).toISOString() !== body.observedAt
   ) {
     throwValidationIssues([{ field: 'observedAt', message: 'Instant ISO canonique requis.' }]);
   }
@@ -215,9 +254,7 @@ function parseManualBankBalanceBody(body: Record<string, unknown>): {
 
 /** Champs partagés création ET édition (C13/C40 TODO partagé) — même allowlist, même forme :
  * l'édition post-création est un remplacement complet revalidé par Customer.of, pas un patch. */
-function parseCustomerBody(
-  body: Record<string, unknown>,
-): Omit<CustomerProps, 'id' | 'companyId'> {
+function parseCustomerBody(body: Record<string, unknown>): Omit<CustomerProps, 'id' | 'companyId'> {
   const unknownField = Object.keys(body).find((field) => !CREATE_CUSTOMER_FIELDS.has(field));
   if (unknownField !== undefined) {
     throwValidationIssues([{ field: unknownField, message: 'Champ non autorisé.' }]);
@@ -229,27 +266,29 @@ function parseCustomerBody(
     (field) => !CUSTOMER_ADDRESS_FIELDS.has(field),
   );
   if (unknownAddressField !== undefined) {
-    throwValidationIssues([{
-      field: `address.${unknownAddressField}`,
-      message: 'Champ non autorisé.',
-    }]);
+    throwValidationIssues([
+      {
+        field: `address.${unknownAddressField}`,
+        message: 'Champ non autorisé.',
+      },
+    ]);
   }
   const validOptionalString = (value: unknown) => value === undefined || typeof value === 'string';
   const validOptionalBoolean = (value: unknown) =>
     value === undefined || typeof value === 'boolean';
   if (
-    (body.type !== 'b2c' && body.type !== 'b2b' && body.type !== 'b2g')
-    || typeof body.name !== 'string'
-    || typeof body.address.line1 !== 'string'
-    || typeof body.address.zip !== 'string'
-    || typeof body.address.city !== 'string'
-    || !validOptionalString(body.siren)
-    || !validOptionalString(body.email)
-    || !validOptionalString(body.phone)
-    || !validOptionalString(body.contactName)
-    || !validOptionalString(body.paymentTermsLabel)
-    || !validOptionalBoolean(body.isInternational)
-    || !validOptionalBoolean(body.isSubcontractingBtp)
+    (body.type !== 'b2c' && body.type !== 'b2b' && body.type !== 'b2g') ||
+    typeof body.name !== 'string' ||
+    typeof body.address.line1 !== 'string' ||
+    typeof body.address.zip !== 'string' ||
+    typeof body.address.city !== 'string' ||
+    !validOptionalString(body.siren) ||
+    !validOptionalString(body.email) ||
+    !validOptionalString(body.phone) ||
+    !validOptionalString(body.contactName) ||
+    !validOptionalString(body.paymentTermsLabel) ||
+    !validOptionalBoolean(body.isInternational) ||
+    !validOptionalBoolean(body.isSubcontractingBtp)
   ) {
     throwValidationIssues([{ field: 'body', message: 'Fiche client invalide.' }]);
   }
@@ -288,15 +327,15 @@ function parseCatalogueItemBody(
   }
   const unit = body.unit;
   const valid =
-    typeof body.label === 'string'
-    && isCatalogueCategory(body.category)
-    && (unit === null || typeof unit === 'string')
-    && Number.isSafeInteger(body.unitPriceHT)
-    && typeof body.vatRate === 'number'
-    && isVatRate(body.vatRate);
+    typeof body.label === 'string' &&
+    isCatalogueCategory(body.category) &&
+    (unit === null || typeof unit === 'string') &&
+    Number.isSafeInteger(body.unitPriceHT) &&
+    typeof body.vatRate === 'number' &&
+    isVatRate(body.vatRate);
   const revision = body.expectedRevision;
-  const validRevision = mode === 'create'
-    || (Number.isSafeInteger(revision) && (revision as number) >= 1);
+  const validRevision =
+    mode === 'create' || (Number.isSafeInteger(revision) && (revision as number) >= 1);
   if (!valid || !validRevision) {
     throwValidationIssues([{ field: 'body', message: 'Prestation catalogue invalide.' }]);
   }
@@ -307,9 +346,7 @@ function parseCatalogueItemBody(
     unitPriceHT: body.unitPriceHT as number,
     vatRate: body.vatRate as CatalogueItemWriteInput['vatRate'],
   };
-  return mode === 'update'
-    ? { item, expectedRevision: revision as number }
-    : { item };
+  return mode === 'update' ? { item, expectedRevision: revision as number } : { item };
 }
 
 function hasControlCharacter(value: string): boolean {
@@ -324,11 +361,11 @@ function hasForbiddenSignerCharacter(value: string): boolean {
   return [...value].some((character) => {
     const code = character.codePointAt(0) ?? 0;
     return (
-      (code >= 0x80 && code <= 0x9f)
-      || (code >= 0x200b && code <= 0x200d)
-      || (code >= 0x202a && code <= 0x202e)
-      || (code >= 0x2066 && code <= 0x2069)
-      || code === 0xfeff
+      (code >= 0x80 && code <= 0x9f) ||
+      (code >= 0x200b && code <= 0x200d) ||
+      (code >= 0x202a && code <= 0x202e) ||
+      (code >= 0x2066 && code <= 0x2069) ||
+      code === 0xfeff
     );
   });
 }
@@ -348,7 +385,10 @@ function parseInvoiceGenerationBody(body: Record<string, unknown>): { mode: 'dep
   return { mode: mode as 'deposit' | 'final' };
 }
 
-function parseSignQuoteBody(body: Record<string, unknown>): { signerName: string; proofDataUrl?: string } {
+function parseSignQuoteBody(body: Record<string, unknown>): {
+  signerName: string;
+  proofDataUrl?: string;
+} {
   const issues: ValidationIssue[] = [];
   for (const field of Object.keys(body)) {
     if (!SIGN_QUOTE_FIELDS.has(field)) {
@@ -357,10 +397,10 @@ function parseSignQuoteBody(body: Record<string, unknown>): { signerName: string
   }
   const value = body['signerName'];
   if (
-    typeof value !== 'string'
-    || value.trim().length < 2
-    || value.length > 120
-    || hasForbiddenSignerCharacter(value)
+    typeof value !== 'string' ||
+    value.trim().length < 2 ||
+    value.length > 120 ||
+    hasForbiddenSignerCharacter(value)
   ) {
     issues.push({ field: 'signerName', message: 'Nom du signataire invalide.' });
   }
@@ -370,10 +410,10 @@ function parseSignQuoteBody(body: Record<string, unknown>): { signerName: string
   const proof = body['proofDataUrl'];
   if (proof !== undefined) {
     if (
-      typeof proof !== 'string'
-      || !proof.startsWith('data:image/')
-      || proof.length > SIGN_PROOF_MAX_CHARS
-      || hasControlCharacter(proof)
+      typeof proof !== 'string' ||
+      !proof.startsWith('data:image/') ||
+      proof.length > SIGN_PROOF_MAX_CHARS ||
+      hasControlCharacter(proof)
     ) {
       issues.push({ field: 'proofDataUrl', message: 'Tracé de signature invalide.' });
     }
@@ -400,10 +440,10 @@ function parseQuoteLinePatchBody(body: Record<string, unknown>): UpdateQuoteLine
   if (Object.hasOwn(body, 'label')) {
     const value = body['label'];
     if (
-      typeof value !== 'string'
-      || value.trim().length === 0
-      || value.length > 500
-      || hasControlCharacter(value)
+      typeof value !== 'string' ||
+      value.trim().length === 0 ||
+      value.length > 500 ||
+      hasControlCharacter(value)
     ) {
       issues.push({ field: 'label', message: 'Libellé requis (500 caractères maximum).' });
     } else {
@@ -413,11 +453,11 @@ function parseQuoteLinePatchBody(body: Record<string, unknown>): UpdateQuoteLine
   if (Object.hasOwn(body, 'qty')) {
     const value = body['qty'];
     if (
-      typeof value !== 'number'
-      || !Number.isFinite(value)
-      || value <= 0
-      || value > 1_000_000
-      || Math.round(value * 1_000) !== value * 1_000
+      typeof value !== 'number' ||
+      !Number.isFinite(value) ||
+      value <= 0 ||
+      value > 1_000_000 ||
+      Math.round(value * 1_000) !== value * 1_000
     ) {
       issues.push({ field: 'qty', message: 'Quantité positive avec 3 décimales maximum requise.' });
     } else {
@@ -426,7 +466,11 @@ function parseQuoteLinePatchBody(body: Record<string, unknown>): UpdateQuoteLine
   }
   if (Object.hasOwn(body, 'unitPriceHT')) {
     const value = body['unitPriceHT'];
-    if (!Number.isSafeInteger(value) || (value as number) < 0 || (value as number) > MAX_QUOTE_HT_CENTS) {
+    if (
+      !Number.isSafeInteger(value) ||
+      (value as number) < 0 ||
+      (value as number) > MAX_QUOTE_HT_CENTS
+    ) {
       issues.push({ field: 'unitPriceHT', message: 'Prix HT en centimes invalide.' });
     } else {
       patch.unitPriceHT = value as number;
@@ -453,10 +497,10 @@ function requiredExpenseString(
 ): string {
   const value = body[field];
   if (
-    typeof value !== 'string'
-    || value.trim().length === 0
-    || value.length > maxLength
-    || hasControlCharacter(value)
+    typeof value !== 'string' ||
+    value.trim().length === 0 ||
+    value.length > maxLength ||
+    hasControlCharacter(value)
   ) {
     issues.push({ field, message: `Texte requis (${maxLength} caractères maximum).` });
     return '';
@@ -473,11 +517,7 @@ function optionalExpenseString(
   if (!Object.hasOwn(body, field)) return undefined;
   const value = body[field];
   if (value === null) return null;
-  if (
-    typeof value !== 'string'
-    || value.length > maxLength
-    || hasControlCharacter(value)
-  ) {
+  if (typeof value !== 'string' || value.length > maxLength || hasControlCharacter(value)) {
     issues.push({ field, message: `Texte attendu (${maxLength} caractères maximum).` });
     return undefined;
   }
@@ -522,27 +562,28 @@ function parseCreateQuoteBody(body: Record<string, unknown>): Omit<CreateQuoteIn
 
   const customerId = body['customerId'];
   if (
-    typeof customerId !== 'string'
-    || customerId.length === 0
-    || customerId.length > 240
-    || customerId !== customerId.trim()
-    || hasControlCharacter(customerId)
+    typeof customerId !== 'string' ||
+    customerId.length === 0 ||
+    customerId.length > 240 ||
+    customerId !== customerId.trim() ||
+    hasControlCharacter(customerId)
   ) {
     issues.push({ field: 'customerId', message: 'Identifiant client invalide.' });
   }
 
   const rawKey = body['idempotencyKey'];
   if (
-    rawKey !== undefined
-    && rawKey !== null
-    && (
-      typeof rawKey !== 'string'
-      || rawKey.trim().length === 0
-      || rawKey.length > 200
-      || hasControlCharacter(rawKey)
-    )
+    rawKey !== undefined &&
+    rawKey !== null &&
+    (typeof rawKey !== 'string' ||
+      rawKey.trim().length === 0 ||
+      rawKey.length > 200 ||
+      hasControlCharacter(rawKey))
   ) {
-    issues.push({ field: 'idempotencyKey', message: "Clé d'idempotence invalide (1 à 200 caractères imprimables)." });
+    issues.push({
+      field: 'idempotencyKey',
+      message: "Clé d'idempotence invalide (1 à 200 caractères imprimables).",
+    });
   }
 
   const rawLines = body['lines'];
@@ -565,12 +606,15 @@ function parseCreateQuoteBody(body: Record<string, unknown>): Omit<CreateQuoteIn
       }
       const label = line['label'];
       if (
-        typeof label !== 'string'
-        || label.trim().length === 0
-        || label.length > 500
-        || hasControlCharacter(label)
+        typeof label !== 'string' ||
+        label.trim().length === 0 ||
+        label.length > 500 ||
+        hasControlCharacter(label)
       ) {
-        issues.push({ field: `${prefix}.label`, message: 'Libellé requis (500 caractères maximum).' });
+        issues.push({
+          field: `${prefix}.label`,
+          message: 'Libellé requis (500 caractères maximum).',
+        });
       }
       const category = line['category'];
       if (typeof category !== 'string' || !QUOTE_LINE_CATEGORIES.has(category)) {
@@ -578,28 +622,36 @@ function parseCreateQuoteBody(body: Record<string, unknown>): Omit<CreateQuoteIn
       }
       const qty = line['qty'];
       if (
-        typeof qty !== 'number'
-        || !Number.isFinite(qty)
-        || qty <= 0
-        || qty > 1_000_000
-        || Math.round(qty * 1_000) !== qty * 1_000
+        typeof qty !== 'number' ||
+        !Number.isFinite(qty) ||
+        qty <= 0 ||
+        qty > 1_000_000 ||
+        Math.round(qty * 1_000) !== qty * 1_000
       ) {
-        issues.push({ field: `${prefix}.qty`, message: 'Quantité positive avec 3 décimales maximum requise.' });
+        issues.push({
+          field: `${prefix}.qty`,
+          message: 'Quantité positive avec 3 décimales maximum requise.',
+        });
       }
       const unit = line['unit'];
       if (
-        unit !== undefined
-        && (
-          typeof unit !== 'string'
-          || unit.trim().length === 0
-          || unit.length > 80
-          || hasControlCharacter(unit)
-        )
+        unit !== undefined &&
+        (typeof unit !== 'string' ||
+          unit.trim().length === 0 ||
+          unit.length > 80 ||
+          hasControlCharacter(unit))
       ) {
-        issues.push({ field: `${prefix}.unit`, message: 'Unité invalide (80 caractères maximum).' });
+        issues.push({
+          field: `${prefix}.unit`,
+          message: 'Unité invalide (80 caractères maximum).',
+        });
       }
       const unitPriceHT = line['unitPriceHT'];
-      if (!Number.isSafeInteger(unitPriceHT) || (unitPriceHT as number) < 0 || (unitPriceHT as number) > MAX_QUOTE_HT_CENTS) {
+      if (
+        !Number.isSafeInteger(unitPriceHT) ||
+        (unitPriceHT as number) < 0 ||
+        (unitPriceHT as number) > MAX_QUOTE_HT_CENTS
+      ) {
         issues.push({ field: `${prefix}.unitPriceHT`, message: 'Prix HT en centimes invalide.' });
       }
       const vatRate = line['vatRate'];
@@ -608,22 +660,22 @@ function parseCreateQuoteBody(body: Record<string, unknown>): Omit<CreateQuoteIn
       }
 
       if (
-        typeof qty === 'number'
-        && Number.isFinite(qty)
-        && Number.isSafeInteger(unitPriceHT)
-        && (unitPriceHT as number) >= 0
+        typeof qty === 'number' &&
+        Number.isFinite(qty) &&
+        Number.isSafeInteger(unitPriceHT) &&
+        (unitPriceHT as number) >= 0
       ) {
         totalHtCents += Math.round(qty * (unitPriceHT as number));
       }
       if (
-        typeof label === 'string'
-        && typeof category === 'string'
-        && QUOTE_LINE_CATEGORIES.has(category)
-        && typeof qty === 'number'
-        && Number.isFinite(qty)
-        && Number.isSafeInteger(unitPriceHT)
-        && typeof vatRate === 'number'
-        && QUOTE_VAT_RATES.has(vatRate)
+        typeof label === 'string' &&
+        typeof category === 'string' &&
+        QUOTE_LINE_CATEGORIES.has(category) &&
+        typeof qty === 'number' &&
+        Number.isFinite(qty) &&
+        Number.isSafeInteger(unitPriceHT) &&
+        typeof vatRate === 'number' &&
+        QUOTE_VAT_RATES.has(vatRate)
       ) {
         lines.push({
           label,
@@ -642,19 +694,20 @@ function parseCreateQuoteBody(body: Record<string, unknown>): Omit<CreateQuoteIn
 
   const depositPct = body['depositPct'];
   if (
-    depositPct !== undefined
-    && (
-      typeof depositPct !== 'number'
-      || !Number.isFinite(depositPct)
-      || depositPct < 0
-      || depositPct > 100
-    )
+    depositPct !== undefined &&
+    (typeof depositPct !== 'number' ||
+      !Number.isFinite(depositPct) ||
+      depositPct < 0 ||
+      depositPct > 100)
   ) {
-    issues.push({ field: 'depositPct', message: 'Pourcentage d\'acompte invalide.' });
+    issues.push({ field: 'depositPct', message: "Pourcentage d'acompte invalide." });
   }
 
   const validUntil = body['validUntil'];
-  if (validUntil !== undefined && (typeof validUntil !== 'string' || !isValidDateOnly(validUntil))) {
+  if (
+    validUntil !== undefined &&
+    (typeof validUntil !== 'string' || !isValidDateOnly(validUntil))
+  ) {
     issues.push({ field: 'validUntil', message: 'Date de validité invalide (AAAA-MM-JJ).' });
   }
 
@@ -676,8 +729,10 @@ function parseCreateQuoteBody(body: Record<string, unknown>): Omit<CreateQuoteIn
         }
       }
       if (
-        (candidate['housingOlderThan2y'] === undefined || typeof candidate['housingOlderThan2y'] === 'boolean')
-        && (candidate['energyRenovation'] === undefined || typeof candidate['energyRenovation'] === 'boolean')
+        (candidate['housingOlderThan2y'] === undefined ||
+          typeof candidate['housingOlderThan2y'] === 'boolean') &&
+        (candidate['energyRenovation'] === undefined ||
+          typeof candidate['energyRenovation'] === 'boolean')
       ) {
         context = {
           ...(typeof candidate['housingOlderThan2y'] === 'boolean'
@@ -732,9 +787,12 @@ function parseRecordExpenseBody(
   }
   const vatRatePct = Object.hasOwn(body, 'vatRatePct') ? body.vatRatePct : undefined;
   if (
-    vatRatePct !== undefined
-    && vatRatePct !== null
-    && (typeof vatRatePct !== 'number' || !Number.isFinite(vatRatePct) || vatRatePct < 0 || vatRatePct > 100)
+    vatRatePct !== undefined &&
+    vatRatePct !== null &&
+    (typeof vatRatePct !== 'number' ||
+      !Number.isFinite(vatRatePct) ||
+      vatRatePct < 0 ||
+      vatRatePct > 100)
   ) {
     issues.push({ field: 'vatRatePct', message: 'Taux de TVA attendu entre 0 et 100.' });
   }
@@ -749,7 +807,9 @@ function parseRecordExpenseBody(
     ...(totalHtCents !== undefined ? { totalHtCents } : {}),
     ...(vatCents !== undefined ? { vatCents } : {}),
     ...(vatRatePct !== undefined ? { vatRatePct: vatRatePct as number | null } : {}),
-    ...(source !== undefined ? { source: source as NonNullable<RecordExpenseInput['source']> } : {}),
+    ...(source !== undefined
+      ? { source: source as NonNullable<RecordExpenseInput['source']> }
+      : {}),
     ...(supplierInvoiceNumber !== undefined ? { supplierInvoiceNumber } : {}),
     ...(dueAt !== undefined ? { dueAt } : {}),
     ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
@@ -774,11 +834,11 @@ function parseRecordDocumentExpenseBody(body: Record<string, unknown>): RecordDo
   }
   const targetFolderId = body.targetFolderId;
   if (
-    typeof targetFolderId !== 'string'
-    || targetFolderId.length === 0
-    || targetFolderId.length > 200
-    || targetFolderId !== targetFolderId.trim()
-    || hasControlCharacter(targetFolderId)
+    typeof targetFolderId !== 'string' ||
+    targetFolderId.length === 0 ||
+    targetFolderId.length > 200 ||
+    targetFolderId !== targetFolderId.trim() ||
+    hasControlCharacter(targetFolderId)
   ) {
     issues.push({ field: 'targetFolderId', message: 'Identifiant de dossier canonique requis.' });
   }
@@ -808,11 +868,11 @@ function canonicalDocumentString(
   issues: ValidationIssue[],
 ): string {
   if (
-    typeof value !== 'string'
-    || value.length === 0
-    || value.length > maxLength
-    || value !== value.trim()
-    || hasControlCharacter(value)
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > maxLength ||
+    value !== value.trim() ||
+    hasControlCharacter(value)
   ) {
     issues.push({ field, message: `Texte canonique requis (${maxLength} caractères maximum).` });
     return '';
@@ -827,14 +887,21 @@ function parseUploadDocumentBody(body: Record<string, unknown>): UploadDocumentI
   }
 
   const contentBase64 = body.contentBase64;
-  if (typeof contentBase64 !== 'string' || contentBase64.trim().length === 0 || contentBase64.length > 14_000_000) {
+  if (
+    typeof contentBase64 !== 'string' ||
+    contentBase64.trim().length === 0 ||
+    contentBase64.length > 14_000_000
+  ) {
     issues.push({ field: 'contentBase64', message: 'Document base64 requis (10 Mo maximum).' });
   }
   const mimeType = canonicalDocumentString(body.mimeType, 'mimeType', 120, issues);
   const filename = canonicalDocumentString(body.filename, 'filename', 255, issues);
 
   const kind = Object.hasOwn(body, 'kind') ? body.kind : undefined;
-  if (kind !== undefined && (typeof kind !== 'string' || !DOCUMENT_KINDS.has(kind as DocumentKind))) {
+  if (
+    kind !== undefined &&
+    (typeof kind !== 'string' || !DOCUMENT_KINDS.has(kind as DocumentKind))
+  ) {
     issues.push({ field: 'kind', message: 'Type de document inconnu.' });
   }
 
@@ -843,14 +910,23 @@ function parseUploadDocumentBody(body: Record<string, unknown>): UploadDocumentI
   const linkedEntityType = hasLinkedEntityType ? body.linkedEntityType : undefined;
   const linkedEntityId = hasLinkedEntityId ? body.linkedEntityId : undefined;
   if (hasLinkedEntityType !== hasLinkedEntityId) {
-    issues.push({ field: 'linkedEntity', message: 'Le type et l’identifiant de rattachement sont indissociables.' });
+    issues.push({
+      field: 'linkedEntity',
+      message: 'Le type et l’identifiant de rattachement sont indissociables.',
+    });
   } else if (hasLinkedEntityType) {
     const bothNull = linkedEntityType === null && linkedEntityId === null;
     const bothNonNull = linkedEntityType !== null && linkedEntityId !== null;
     if (!bothNull && !bothNonNull) {
-      issues.push({ field: 'linkedEntity', message: 'Le rattachement doit être null/null ou type/id.' });
+      issues.push({
+        field: 'linkedEntity',
+        message: 'Le rattachement doit être null/null ou type/id.',
+      });
     } else if (bothNonNull) {
-      if (typeof linkedEntityType !== 'string' || !DOCUMENT_LINK_TYPES.has(linkedEntityType as DocumentLinkedEntityType)) {
+      if (
+        typeof linkedEntityType !== 'string' ||
+        !DOCUMENT_LINK_TYPES.has(linkedEntityType as DocumentLinkedEntityType)
+      ) {
         issues.push({ field: 'linkedEntityType', message: 'Type de rattachement inconnu.' });
       }
       canonicalDocumentString(linkedEntityId, 'linkedEntityId', 200, issues);
@@ -868,19 +944,21 @@ function parseUploadDocumentBody(body: Record<string, unknown>): UploadDocumentI
 
   const tags = Object.hasOwn(body, 'tags') ? body.tags : undefined;
   if (
-    tags !== undefined
-    && (
-      !Array.isArray(tags)
-      || tags.length > 16
-      || tags.some((tag) => (
-        typeof tag !== 'string'
-        || tag.trim().length < 2
-        || tag.trim().length > 32
-        || hasControlCharacter(tag)
+    tags !== undefined &&
+    (!Array.isArray(tags) ||
+      tags.length > 16 ||
+      tags.some(
+        (tag) =>
+          typeof tag !== 'string' ||
+          tag.trim().length < 2 ||
+          tag.trim().length > 32 ||
+          hasControlCharacter(tag),
       ))
-    )
   ) {
-    issues.push({ field: 'tags', message: 'Au plus 16 tags texte de 2 à 32 caractères sont attendus.' });
+    issues.push({
+      field: 'tags',
+      message: 'Au plus 16 tags texte de 2 à 32 caractères sont attendus.',
+    });
   }
 
   if (issues.length > 0) throwValidationIssues(issues);
@@ -913,10 +991,18 @@ function parseClassifyDocumentBody(body: Record<string, unknown>): ClassifyDocum
     issues.push({ field: 'body', message: 'Le corps contient un champ non autorisé.' });
   }
   const linkedEntityType = body.linkedEntityType;
-  if (typeof linkedEntityType !== 'string' || !DOCUMENT_LINK_TYPES.has(linkedEntityType as DocumentLinkedEntityType)) {
+  if (
+    typeof linkedEntityType !== 'string' ||
+    !DOCUMENT_LINK_TYPES.has(linkedEntityType as DocumentLinkedEntityType)
+  ) {
     issues.push({ field: 'linkedEntityType', message: 'Type de rattachement inconnu.' });
   }
-  const linkedEntityId = canonicalDocumentString(body.linkedEntityId, 'linkedEntityId', 200, issues);
+  const linkedEntityId = canonicalDocumentString(
+    body.linkedEntityId,
+    'linkedEntityId',
+    200,
+    issues,
+  );
   const expectedRevision = body.expectedRevision;
   if (!Number.isSafeInteger(expectedRevision) || (expectedRevision as number) < 1) {
     issues.push({ field: 'expectedRevision', message: 'Révision document positive attendue.' });
@@ -942,7 +1028,8 @@ export class HealthController {
   async ready(@Req() request: Record<string, unknown>) {
     // C24b : sonde SANS tenant (aucun Principal sur /health ; plus de repli société de démo).
     const r = await this.backend.readiness();
-    if (!r.ok) throw new HttpException({ ready: false, error: r.error }, HttpStatus.SERVICE_UNAVAILABLE);
+    if (!r.ok)
+      throw new HttpException({ ready: false, error: r.error }, HttpStatus.SERVICE_UNAVAILABLE);
     return {
       ready: true,
       customers: r.value.customers,
@@ -976,7 +1063,10 @@ export class CustomersController {
 @Controller('onboarding')
 export class OnboardingController {
   constructor(private readonly backend: BackendService) {}
+  /** @AllowsMissingCompanyRow : un JWT portant un company_id SANS ligne en base (NO_COMPANY)
+   * doit pouvoir re-provisionner ici — registerCompany recrée la MÊME company (id du JWT). */
   @Post('company')
+  @AllowsMissingCompanyRow()
   async company(@Body() body: Omit<CompanyProps, 'id'>) {
     return unwrap(await this.backend.registerCompany(body));
   }
@@ -1060,31 +1150,32 @@ export class CompanyLookupController {
     assertJsonObjectBody(body);
     const unknownField = Object.keys(body).find((field) => !COMPANY_PROFILE_FIELDS.has(field));
     if (
-      unknownField !== undefined
-      || typeof body.trade !== 'string'
-      || !TRADES.has(body.trade as Trade)
-      || typeof body.vatRegime !== 'string'
-      || !VAT_REGIMES.has(body.vatRegime as VatRegime)
-      || (
-        body.customerPortfolio !== undefined
-        && (
-          typeof body.customerPortfolio !== 'string'
-          || !CUSTOMER_PORTFOLIOS.has(body.customerPortfolio as CustomerPortfolio)
-        )
-      )
+      unknownField !== undefined ||
+      typeof body.trade !== 'string' ||
+      !TRADES.has(body.trade as Trade) ||
+      typeof body.vatRegime !== 'string' ||
+      !VAT_REGIMES.has(body.vatRegime as VatRegime) ||
+      (body.customerPortfolio !== undefined &&
+        (typeof body.customerPortfolio !== 'string' ||
+          !CUSTOMER_PORTFOLIOS.has(body.customerPortfolio as CustomerPortfolio)))
     ) {
-      throwValidationIssues([{
-        field: unknownField ?? 'body',
-        message: unknownField === undefined ? 'Profil entreprise invalide.' : 'Champ non autorisé.',
-      }]);
+      throwValidationIssues([
+        {
+          field: unknownField ?? 'body',
+          message:
+            unknownField === undefined ? 'Profil entreprise invalide.' : 'Champ non autorisé.',
+        },
+      ]);
     }
-    return unwrap(await this.backend.updateCompanyProfile({
-      trade: body.trade as Trade,
-      vatRegime: body.vatRegime as VatRegime,
-      ...(body.customerPortfolio === undefined
-        ? {}
-        : { customerPortfolio: body.customerPortfolio as CustomerPortfolio }),
-    }));
+    return unwrap(
+      await this.backend.updateCompanyProfile({
+        trade: body.trade as Trade,
+        vatRegime: body.vatRegime as VatRegime,
+        ...(body.customerPortfolio === undefined
+          ? {}
+          : { customerPortfolio: body.customerPortfolio as CustomerPortfolio }),
+      }),
+    );
   }
 
   /** PATCH /company/billing — Réglages facturation §Coordonnées bancaires : le seul endroit qui
@@ -1132,8 +1223,8 @@ export class CompanyLookupController {
 
   /**
    * CAS obligatoire : un appareil qui édite une révision périmée reçoit 409 et doit recharger.
-   * Les champs sans consommateur serveur (logo, conditions de paiement) sont volontairement
-   * absents du contrat, donc impossibles à enregistrer comme faux réglage.
+   * Les champs sans consommateur serveur (logo) sont volontairement absents du contrat.
+   * Les conditions de paiement sont nullable tant que le propriétaire ne les a pas confirmées.
    */
   @Patch('billing-settings')
   async updateBillingSettings(@Body() body: unknown) {
@@ -1154,8 +1245,8 @@ export class CompanyLookupController {
       }
     }
     if (
-      'pdfAccentColor' in body
-      && (typeof body.pdfAccentColor !== 'string' || !INVOICE_PDF_ACCENTS.has(body.pdfAccentColor))
+      'pdfAccentColor' in body &&
+      (typeof body.pdfAccentColor !== 'string' || !INVOICE_PDF_ACCENTS.has(body.pdfAccentColor))
     ) {
       issues.push({ field: 'pdfAccentColor', message: 'Couleur invalide.' });
     }
@@ -1164,14 +1255,30 @@ export class CompanyLookupController {
       ['defaultDepositPercent', 0, 100],
     ] as const) {
       if (
-        field in body
-        && (!Number.isSafeInteger(body[field]) || Number(body[field]) < min || Number(body[field]) > max)
+        field in body &&
+        (!Number.isSafeInteger(body[field]) ||
+          Number(body[field]) < min ||
+          Number(body[field]) > max)
       ) {
         issues.push({ field, message: `Entier entre ${min} et ${max} requis.` });
       }
     }
+    if (
+      'defaultInvoicePaymentTermsDays' in body &&
+      body.defaultInvoicePaymentTermsDays !== null &&
+      (!Number.isSafeInteger(body.defaultInvoicePaymentTermsDays) ||
+        Number(body.defaultInvoicePaymentTermsDays) < 1 ||
+        Number(body.defaultInvoicePaymentTermsDays) > 60)
+    ) {
+      issues.push({
+        field: 'defaultInvoicePaymentTermsDays',
+        message: 'Entier entre 1 et 60, ou null, requis.',
+      });
+    }
     const patch = {
-      ...('showRibOnInvoices' in body ? { showRibOnInvoices: body.showRibOnInvoices as boolean } : {}),
+      ...('showRibOnInvoices' in body
+        ? { showRibOnInvoices: body.showRibOnInvoices as boolean }
+        : {}),
       ...('showInsuranceOnInvoices' in body
         ? { showInsuranceOnInvoices: body.showInsuranceOnInvoices as boolean }
         : {}),
@@ -1184,15 +1291,22 @@ export class CompanyLookupController {
       ...('defaultDepositPercent' in body
         ? { defaultDepositPercent: body.defaultDepositPercent as number }
         : {}),
+      ...('defaultInvoicePaymentTermsDays' in body
+        ? {
+            defaultInvoicePaymentTermsDays: body.defaultInvoicePaymentTermsDays as number | null,
+          }
+        : {}),
     };
     if (Object.keys(patch).length === 0) {
       issues.push({ field: 'settings', message: 'Au moins un réglage est requis.' });
     }
     if (issues.length > 0) throwValidationIssues(issues);
-    return unwrap(await this.backend.updateCompanyBillingSettings({
-      expectedRevision: body.expectedRevision as number,
-      patch,
-    }));
+    return unwrap(
+      await this.backend.updateCompanyBillingSettings({
+        expectedRevision: body.expectedRevision as number,
+        patch,
+      }),
+    );
   }
 }
 
@@ -1288,7 +1402,9 @@ export class QuotesController {
   @Post(':id/invoice')
   async invoice(@Param('id') id: string, @Body() body: unknown) {
     assertJsonObjectBody(body);
-    return unwrap(await this.backend.generateInvoice({ quoteId: id, ...parseInvoiceGenerationBody(body) }));
+    return unwrap(
+      await this.backend.generateInvoice({ quoteId: id, ...parseInvoiceGenerationBody(body) }),
+    );
   }
   /** R6 : édition d'une ligne de devis BROUILLON (le use case/l'agrégat gardent le statut). */
   @Patch(':id/lines/:lineId')
@@ -1298,7 +1414,13 @@ export class QuotesController {
     @Body() body: unknown,
   ) {
     assertJsonObjectBody(body);
-    return unwrap(await this.backend.updateQuoteLine({ quoteId: id, lineId, patch: parseQuoteLinePatchBody(body) }));
+    return unwrap(
+      await this.backend.updateQuoteLine({
+        quoteId: id,
+        lineId,
+        patch: parseQuoteLinePatchBody(body),
+      }),
+    );
   }
   /** R6 : suppression d'une ligne de devis BROUILLON. */
   @Delete(':id/lines/:lineId')
@@ -1333,7 +1455,11 @@ export class InvoicesController {
     return unwrap(await this.backend.invoiceAccountingPreview(id));
   }
   @Get(':id/payment-accounting-preview')
-  async paymentAccountingPreview(@Param('id') id: string, @Query('amount') amount: string, @Query('method') method?: PaymentMethod) {
+  async paymentAccountingPreview(
+    @Param('id') id: string,
+    @Query('amount') amount: string,
+    @Query('method') method?: PaymentMethod,
+  ) {
     return unwrap(
       await this.backend.paymentAccountingPreview({
         invoiceId: id,
@@ -1416,7 +1542,10 @@ export class AccountingController {
     });
   }
   @Get('fec-description')
-  async fecDescription(@Query('from') from: string, @Query('to') to: string): Promise<StreamableFile> {
+  async fecDescription(
+    @Query('from') from: string,
+    @Query('to') to: string,
+  ): Promise<StreamableFile> {
     const fec = unwrap(await this.backend.exportFec({ from: from ?? '', to: to ?? '' }));
     return new StreamableFile(Buffer.from(fec.descriptionContent, 'utf-8'), {
       type: fec.mimeType,
@@ -1502,25 +1631,26 @@ export class DocumentsController {
   @WithoutTenantPersistenceTransaction()
   async intake(
     @Body()
-    body: { contentBase64: string; mimeType: string; filename: string; idempotencyKey: string },
+    body: {
+      contentBase64: string;
+      mimeType: string;
+      filename: string;
+      idempotencyKey: string;
+    },
   ) {
     assertJsonObjectBody(body);
     return unwrap(await this.backend.createDocumentIntake(body));
   }
   @Post(':id/classify')
-  async classify(
-    @Param('id') documentId: string,
-    @Body() body: unknown,
-  ) {
+  async classify(@Param('id') documentId: string, @Body() body: unknown) {
     assertJsonObjectBody(body);
-    return unwrap(await this.backend.classifyDocument({ documentId, ...parseClassifyDocumentBody(body) }));
+    return unwrap(
+      await this.backend.classifyDocument({ documentId, ...parseClassifyDocumentBody(body) }),
+    );
   }
   @Put(':id/expense')
   @WithoutTenantPersistenceTransaction()
-  async recordExpenseFromDocument(
-    @Param('id') documentId: string,
-    @Body() body: unknown,
-  ) {
+  async recordExpenseFromDocument(@Param('id') documentId: string, @Body() body: unknown) {
     assertJsonObjectBody(body);
     return unwrap(
       await this.backend.recordDocumentExpense({
@@ -1605,12 +1735,24 @@ export class DocumentFoldersController {
     const changes = Number(body.name !== undefined) + Number(body.parentId !== undefined);
     if (changes !== 1) {
       throw new HttpException(
-        { ok: false, error: { kind: 'validation', issues: [{ field: 'body', message: 'Une seule modification à la fois.' }] } },
+        {
+          ok: false,
+          error: {
+            kind: 'validation',
+            issues: [{ field: 'body', message: 'Une seule modification à la fois.' }],
+          },
+        },
         HttpStatus.UNPROCESSABLE_ENTITY,
       );
     }
     return body.name !== undefined
-      ? unwrap(await this.backend.renameDocumentFolder({ folderId, name: body.name, expectedRevision: body.expectedRevision }))
+      ? unwrap(
+          await this.backend.renameDocumentFolder({
+            folderId,
+            name: body.name,
+            expectedRevision: body.expectedRevision,
+          }),
+        )
       : unwrap(
           await this.backend.moveDocumentFolder({
             folderId,
@@ -1632,7 +1774,9 @@ export class DocumentFolderDeletionPlansController {
     @Body() body: { strategy: DeleteDocumentFolderStrategy },
   ) {
     assertJsonObjectBody(body);
-    return unwrap(await this.backend.executeDocumentFolderDeletion({ planId, strategy: body.strategy }));
+    return unwrap(
+      await this.backend.executeDocumentFolderDeletion({ planId, strategy: body.strategy }),
+    );
   }
 }
 
@@ -1655,7 +1799,9 @@ export class PublicSignatureController {
   async sign(@Param('token') token: string, @Body() body: unknown) {
     assertJsonObjectBody(body);
     const parsed = parseSignQuoteBody(body);
-    return unwrap(await this.backend.publicSignQuote(token, parsed.signerName, parsed.proofDataUrl));
+    return unwrap(
+      await this.backend.publicSignQuote(token, parsed.signerName, parsed.proofDataUrl),
+    );
   }
 }
 
@@ -1709,11 +1855,13 @@ export class CatalogueController {
   async update(@Param('itemId') itemId: string, @Body() body: unknown) {
     assertJsonObjectBody(body);
     const parsed = parseCatalogueItemBody(body, 'update');
-    return unwrap(await this.backend.updateCatalogueItem({
-      itemId,
-      expectedRevision: parsed.expectedRevision as number,
-      item: parsed.item,
-    }));
+    return unwrap(
+      await this.backend.updateCatalogueItem({
+        itemId,
+        expectedRevision: parsed.expectedRevision as number,
+        item: parsed.item,
+      }),
+    );
   }
 
   @Delete(':itemId')
@@ -1726,16 +1874,19 @@ export class CatalogueController {
     if (!Number.isSafeInteger(body.expectedRevision) || (body.expectedRevision as number) < 1) {
       throwValidationIssues([{ field: 'expectedRevision', message: 'Révision invalide.' }]);
     }
-    return unwrap(await this.backend.deleteCatalogueItem({
-      itemId,
-      expectedRevision: body.expectedRevision as number,
-    }));
+    return unwrap(
+      await this.backend.deleteCatalogueItem({
+        itemId,
+        expectedRevision: body.expectedRevision as number,
+      }),
+    );
   }
 }
 
 function parseChantierNoteBody(body: Record<string, unknown>): { text: string } {
   const unknownField = Object.keys(body).find((field) => field !== 'text');
-  if (unknownField !== undefined) throwValidationIssues([{ field: unknownField, message: 'Champ non autorisé.' }]);
+  if (unknownField !== undefined)
+    throwValidationIssues([{ field: unknownField, message: 'Champ non autorisé.' }]);
   if (typeof body.text !== 'string' || body.text.trim().length === 0)
     throwValidationIssues([{ field: 'text', message: 'Texte de note requis.' }]);
   return { text: body.text as string };
@@ -1743,15 +1894,21 @@ function parseChantierNoteBody(body: Record<string, unknown>): { text: string } 
 
 const WORKSITE_PHOTO_FIELDS = new Set(['contentBase64', 'mimeType', 'filename']);
 
-function parseWorksitePhotoBody(
-  body: Record<string, unknown>,
-): { contentBase64: string; mimeType: string; filename: string } {
+function parseWorksitePhotoBody(body: Record<string, unknown>): {
+  contentBase64: string;
+  mimeType: string;
+  filename: string;
+} {
   const unknownField = Object.keys(body).find((field) => !WORKSITE_PHOTO_FIELDS.has(field));
-  if (unknownField !== undefined) throwValidationIssues([{ field: unknownField, message: 'Champ non autorisé.' }]);
+  if (unknownField !== undefined)
+    throwValidationIssues([{ field: unknownField, message: 'Champ non autorisé.' }]);
   if (
-    typeof body.contentBase64 !== 'string' || body.contentBase64.length === 0
-    || typeof body.mimeType !== 'string' || !body.mimeType.startsWith('image/')
-    || typeof body.filename !== 'string' || body.filename.trim().length === 0
+    typeof body.contentBase64 !== 'string' ||
+    body.contentBase64.length === 0 ||
+    typeof body.mimeType !== 'string' ||
+    !body.mimeType.startsWith('image/') ||
+    typeof body.filename !== 'string' ||
+    body.filename.trim().length === 0
   ) {
     throwValidationIssues([{ field: 'body', message: 'Photo invalide.' }]);
   }
@@ -1835,7 +1992,9 @@ export class ExpensesController {
   @WithoutTenantPersistenceTransaction()
   @Post('import-facturx/confirm')
   async confirmImportFacturX(@Body() body: { xml: string; decision: FacturXImportDecision }) {
-    return unwrap(await this.backend.confirmFacturXExpense({ xml: body.xml ?? '', decision: body.decision }));
+    return unwrap(
+      await this.backend.confirmFacturXExpense({ xml: body.xml ?? '', decision: body.decision }),
+    );
   }
   /** Enregistre un règlement fournisseur déjà effectué. Bob ne déclenche aucun virement : le
    * propriétaire fournit obligatoirement date + moyen, et peut rattacher une preuve du coffre. */
@@ -1844,24 +2003,27 @@ export class ExpensesController {
     assertJsonObjectBody(body);
     const unknownField = Object.keys(body).find((field) => !EXPENSE_PAYMENT_FIELDS.has(field));
     if (
-      unknownField !== undefined
-      || typeof body.paidOn !== 'string'
-      || !isValidDateOnly(body.paidOn)
-      || typeof body.method !== 'string'
-      || !EXPENSE_PAYMENT_METHODS.has(body.method as PaymentMethod)
-      || (body.reference !== undefined && body.reference !== null && typeof body.reference !== 'string')
-      || (
-        body.proofDocumentId !== undefined
-        && body.proofDocumentId !== null
-        && typeof body.proofDocumentId !== 'string'
-      )
+      unknownField !== undefined ||
+      typeof body.paidOn !== 'string' ||
+      !isValidDateOnly(body.paidOn) ||
+      typeof body.method !== 'string' ||
+      !EXPENSE_PAYMENT_METHODS.has(body.method as PaymentMethod) ||
+      (body.reference !== undefined &&
+        body.reference !== null &&
+        typeof body.reference !== 'string') ||
+      (body.proofDocumentId !== undefined &&
+        body.proofDocumentId !== null &&
+        typeof body.proofDocumentId !== 'string')
     ) {
-      throwValidationIssues([{
-        field: unknownField ?? 'paymentEvidence',
-        message: unknownField === undefined
-          ? 'Date et moyen de règlement valides requis.'
-          : 'Champ non autorisé.',
-      }]);
+      throwValidationIssues([
+        {
+          field: unknownField ?? 'paymentEvidence',
+          message:
+            unknownField === undefined
+              ? 'Date et moyen de règlement valides requis.'
+              : 'Champ non autorisé.',
+        },
+      ]);
     }
     const evidence: ExpensePaymentEvidenceInput = {
       paidOn: body.paidOn,
@@ -2074,7 +2236,12 @@ export class VoiceController {
   @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Post('transcribe')
   async transcribe(@Body() body: { audioBase64?: string; mimeType?: string }) {
-    return unwrap(await this.backend.transcribe({ audioBase64: body.audioBase64 ?? '', mimeType: body.mimeType ?? 'audio/m4a' }));
+    return unwrap(
+      await this.backend.transcribe({
+        audioBase64: body.audioBase64 ?? '',
+        mimeType: body.mimeType ?? 'audio/m4a',
+      }),
+    );
   }
   @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Post('synthesize')

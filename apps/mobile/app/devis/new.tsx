@@ -1152,8 +1152,8 @@ export default function DevisNew() {
         return;
       }
       // Le devis est créé/envoyé (et peut-être signé), mais l'ancien brouillon ne doit jamais
-      // ressusciter au prochain boot. On attend donc la purge SecureStore avant d'afficher le
-      // recap. Un échec reste retryable : les checkpoints de cette chaîne gardent les ids réels
+      // ressusciter au prochain boot. On attend donc la suppression CAS du slot PostgreSQL avant
+      // d'afficher le recap. Un échec reste retryable : les checkpoints gardent les ids réels
       // et empêchent toute double création — JAMAIS de facture, quel que soit l'état atteint.
       const draftCleared = await quoteDraft.complete(quoteId);
       if (!draftCleared) {

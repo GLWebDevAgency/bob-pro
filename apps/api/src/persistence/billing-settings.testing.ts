@@ -10,6 +10,9 @@ const INITIAL_POLICY = {
   pdfAccentColor: 'navy' as const,
   defaultQuoteValidityDays: 30,
   defaultDepositPercent: 30,
+  // Test harness uniquement : les scénarios historiques d'émission choisissent explicitement J+30.
+  // La migration PostgreSQL de production laisse cette colonne à NULL.
+  defaultInvoicePaymentTermsDays: 30,
 };
 
 function clone(value: CompanyBillingSettings): CompanyBillingSettings {

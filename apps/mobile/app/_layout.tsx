@@ -29,10 +29,20 @@ import { AgentContextProvider, AgentSessionProvider } from '../src/agent';
 import { QuoteDraftProvider } from '../src/quote-draft';
 import { LoginScreen } from '../src/screens/LoginScreen';
 import { PasswordRecoveryScreen } from '../src/screens/PasswordRecoveryScreen';
+import { EmailConfirmationScreen } from '../src/screens/EmailConfirmationScreen';
 import { ProvisioningScreen } from '../src/screens/ProvisioningScreen';
 import { BiometricGate } from '../src/screens/BiometricGate';
 import { companyIdFromAppMetadata } from '../src/data/tenant-identity';
+import {
+  shouldRouteToProvisioning,
+  useServerNoCompanySignal,
+} from '../src/data/no-company-state';
+import {
+  queryRetryDelayMs,
+  shouldRetryQueryFailure,
+} from '../src/data/query-retry-policy';
 import { PASSWORD_RECOVERY_ROUTE } from '../src/auth-recovery/password-recovery';
+import { EMAIL_CONFIRMATION_ROUTE } from '../src/auth-confirmation/email-confirmation';
 import { useLegacyCatalogueProtection } from '../src/data/catalogue';
 
 // Garde le splash NATIF visible pendant le chargement critique. L'appel au scope module est
@@ -53,9 +63,11 @@ function AppReadyGate({ fontsReady, children }: { fontsReady: boolean; children:
   const { loading } = useAuth();
   const pathname = usePathname();
   const [hasPresentedApp, setHasPresentedApp] = useState(false);
-  const recoveryLink = pathname === PASSWORD_RECOVERY_ROUTE;
-  // Le formulaire de récupération peut s'afficher et vérifier sa preuve en parallèle du
-  // bootstrap de session. Un getSession lent ne doit pas ajouter 8 secondes après le tap email.
+  const recoveryLink =
+    pathname === PASSWORD_RECOVERY_ROUTE || pathname === EMAIL_CONFIRMATION_ROUTE;
+  // Les écrans « lien email » (récupération, confirmation d'inscription) peuvent s'afficher et
+  // vérifier leur preuve en parallèle du bootstrap de session. Un getSession lent ne doit pas
+  // ajouter 8 secondes après le tap email.
   const ready = fontsReady && (!loading || recoveryLink);
   useEffect(() => {
     if (!ready || hasPresentedApp) return;
@@ -69,16 +81,33 @@ function AppReadyGate({ fontsReady, children }: { fontsReady: boolean; children:
 
 /** Porte d'authentification : en mode connecté (Supabase configuré), exige une session. */
 function AuthGate({ children }: { children: ReactNode }) {
-  const { enabled, session, loading, initializationError, retryInitialization, passwordRecovery } =
-    useAuth();
+  const {
+    enabled,
+    session,
+    loading,
+    initializationError,
+    retryInitialization,
+    passwordRecovery,
+    emailConfirmation,
+  } = useAuth();
   const { colors, personality } = useTheme();
   const pathname = usePathname();
+  // Bug device live : JWT valide AVEC company_id mais AUCUNE company en base (403 NO_COMPANY de
+  // l'interceptor tenant — base réinitialisée / provisioning interrompu). Signal LIVE dérivé du
+  // cache react-query : dès qu'une query le porte, l'app quitte les tabs pour l'onboarding.
+  const serverReportsNoCompany = useServerNoCompanySignal();
   // La récupération est volontairement hors du tenant/provisioning : le lien email constitue
   // la preuve éphémère, puis PasswordRecoveryScreen établit la session avant updateUser.
   // L'événement PASSWORD_RECOVERY ouvre le même écran même si le routeur n'a pas encore bougé.
   const isRecoveryRoute = pathname === PASSWORD_RECOVERY_ROUTE;
   if (isRecoveryRoute || passwordRecovery.phase !== 'idle') {
     return <PasswordRecoveryScreen />;
+  }
+  // Confirmation d'inscription : même sortie de gate que la récupération — l'écran consomme le
+  // deep link (`bobpro:///auth/callback`), échange la preuve PKCE puis laisse AuthGate entrer
+  // naturellement une fois la session publiée.
+  if (pathname === EMAIL_CONFIRMATION_ROUTE || emailConfirmation.phase !== 'idle') {
+    return <EmailConfirmationScreen />;
   }
   if (enabled && loading) {
     return (
@@ -114,10 +143,12 @@ function AuthGate({ children }: { children: ReactNode }) {
   if (enabled && !session) return <LoginScreen />;
   // C24b : session SANS tenant (app_metadata.company_id absent — compte neuf pas encore
   // provisionné) → l'app N'ENTRE PAS sur les tabs (tout endpoint tenant répondrait 403
-  // PROVISIONING_REQUIRED). L'écran crée l'espace puis refreshSession : le JWT frais porte
-  // company_id et ce même gate laisse passer naturellement.
+  // PROVISIONING_REQUIRED). MÊME sortie quand le SERVEUR déclare le tenant sans company
+  // (403 NO_COMPANY : company_id du JWT sans ligne en base) : session valide + company absente
+  // tombe TOUJOURS sur l'onboarding, jamais sur des tabs en erreur. L'écran crée l'espace puis
+  // refreshSession + purge des queries NO_COMPANY : ce même gate laisse passer naturellement.
   const companyId = enabled && session ? companyIdFromAppMetadata(session.user.app_metadata) : null;
-  if (enabled && session && companyId === null) {
+  if (enabled && session && shouldRouteToProvisioning({ companyId, serverReportsNoCompany })) {
     return <ProvisioningScreen />;
   }
   // C24 : session persistée + opt-in biométrie → Face ID/Touch ID avant l'app (dégradé honnête).
@@ -126,7 +157,18 @@ function AuthGate({ children }: { children: ReactNode }) {
 
 export default function RootLayout() {
   const [queryClient] = useState(
-    () => new QueryClient({ defaultOptions: { queries: { staleTime: 30_000, retry: false } } }),
+    () =>
+      new QueryClient({
+        defaultOptions: {
+          queries: {
+            staleTime: 30_000,
+            // Politique UNIQUE (query-retry-policy) : 4xx/NO_COMPANY → zéro retry auto ;
+            // réseau/5xx → retry borné (2) avec backoff plafonné. Le retry manuel reste.
+            retry: shouldRetryQueryFailure,
+            retryDelay: queryRetryDelayMs,
+          },
+        },
+      }),
   );
   // Identité typographique du proto (tokens.fonts) — une famille par poids (Android).
   const [fontsLoaded, fontError] = useFonts({
@@ -163,6 +205,7 @@ export default function RootLayout() {
                             <Stack screenOptions={{ headerShown: false }}>
                               <Stack.Screen name="(tabs)" />
                               <Stack.Screen name="auth/recovery" />
+                              <Stack.Screen name="auth/callback" />
                               <Stack.Screen name="devis/new" options={{ presentation: 'modal' }} />
                               <Stack.Screen name="devis/[id]" />
                               <Stack.Screen name="facture/[id]" />

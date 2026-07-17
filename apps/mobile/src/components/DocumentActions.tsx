@@ -2,12 +2,13 @@ import { forwardRef, useImperativeHandle, useRef, useState, type ReactNode } fro
 import { View, Alert, Share } from 'react-native';
 import { router } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
-import type { QuoteView, InvoiceView } from '@bob/api-client';
+import type { AccountingPreviewLine, QuoteView, InvoiceView } from '@bob/api-client';
 import { challengeFor, buildActionDiff } from '@bob/ai';
 import { t, type Personality } from '@bob/i18n';
 import { DeleteIconButton, QuestionSheet, useTheme } from '@bob/ui';
 import {
   useCompanyMe,
+  useCompanyBillingSettings,
   useSendQuote,
   useSignQuote,
   useCreateQuoteSignatureLink,
@@ -24,8 +25,12 @@ import { Button, Badge } from './ui';
 import { useConfirm } from './ConfirmSheet';
 import { useBobClient } from '../data/client';
 import { companyCanIssue } from '../data/company-completeness';
-import { deriveQuoteInvoiceCtaState, type QuoteInvoiceLinksState } from './quote-invoice-actions.logic';
+import {
+  deriveQuoteInvoiceCtaState,
+  type QuoteInvoiceLinksState,
+} from './quote-invoice-actions.logic';
 import { SignOnsiteSheet } from './SignOnsiteSheet';
+import { resolveCollectAccountingPreview } from './collect-accounting-preview';
 
 /**
  * Gate « entreprise complète » (RÈGLE PRODUIT, compte.tsx §Entreprise) : l'app reste utilisable
@@ -38,10 +43,15 @@ import { SignOnsiteSheet } from './SignOnsiteSheet';
 function showCompanyIncompleteGate(kind: 'quote' | 'invoice', personality: Personality): void {
   Alert.alert(
     t('gate.companyIncompleteTitle', { personality }),
-    t(kind === 'quote' ? 'gate.companyIncompleteBodyQuote' : 'gate.companyIncompleteBodyInvoice', { personality }),
+    t(kind === 'quote' ? 'gate.companyIncompleteBodyQuote' : 'gate.companyIncompleteBodyInvoice', {
+      personality,
+    }),
     [
       { text: t('gate.companyIncompleteCancel', { personality }), style: 'cancel' },
-      { text: t('gate.companyIncompleteCta', { personality }), onPress: () => router.push('/compte') },
+      {
+        text: t('gate.companyIncompleteCta', { personality }),
+        onPress: () => router.push('/compte'),
+      },
     ],
   );
 }
@@ -83,12 +93,18 @@ export const INVOICE_BADGE: Record<InvoiceView['status'], { label: string; tone:
 export const hasQuoteActions = (q: QuoteView): boolean =>
   q.status === 'draft' || q.status === 'sent' || q.status === 'viewed' || q.status === 'signed';
 export const hasInvoiceActions = (inv: InvoiceView): boolean =>
-  inv.status === 'draft' || inv.status === 'issued' || inv.status === 'partially_paid' || inv.status === 'late';
+  inv.status === 'draft' ||
+  inv.status === 'issued' ||
+  inv.status === 'partially_paid' ||
+  inv.status === 'late';
 
 /** A6 : un avoir se crée sur une facture ÉMISE (payée comprise) — jamais sur un avoir. */
 export const canCreateCreditNote = (inv: InvoiceView): boolean =>
   inv.kind !== 'credit_note' &&
-  (inv.status === 'issued' || inv.status === 'partially_paid' || inv.status === 'paid' || inv.status === 'late');
+  (inv.status === 'issued' ||
+    inv.status === 'partially_paid' ||
+    inv.status === 'paid' ||
+    inv.status === 'late');
 
 // ── Encaissement : invariants partagés (InvoiceActions + briefing A2-C10) ─────────────────
 // Assiette = netToPay (acompte si depositPct, sinon ttc) : le domaine PLAFONNE le paiement à
@@ -102,18 +118,24 @@ export const isCollectible = (inv: InvoiceView): boolean =>
   collectRemainingCents(inv) > 0;
 
 /** Clé d'idempotence du paiement manuel — même recette partout (anti double encaissement). */
-export const paymentIdempotencyKey = (invoice: Pick<InvoiceView, 'id' | 'paid'>, remaining: number): string =>
-  `mobile:payment:${invoice.id}:${invoice.paid}:${remaining}:transfer`;
+export const paymentIdempotencyKey = (
+  invoice: Pick<InvoiceView, 'id' | 'paid'>,
+  remaining: number,
+): string => `mobile:payment:${invoice.id}:${invoice.paid}:${remaining}:transfer`;
 
 /** Confirmation typée de l'encaissement — SOURCE UNIQUE du diff et du challenge ACCOUNTING. */
-export function collectConfirmSpec(invoice: InvoiceView, remaining: number) {
+export function collectConfirmSpec(
+  invoice: InvoiceView,
+  remaining: number,
+  accountingLines: readonly AccountingPreviewLine[],
+) {
   return {
     title: 'Enregistrer le paiement',
     message: 'Met à jour le journal de banque, le compte client et les relances.',
     diff: buildActionDiff(
       'encaisser_facture',
       { amountCents: remaining },
-      { number: invoice.number, remainingCents: remaining },
+      { number: invoice.number, remainingCents: remaining, accountingLines },
     ),
     challenge: challengeFor(ACCOUNTING, 'confirm_all', { amountCents: remaining }),
   };
@@ -175,7 +197,10 @@ export const QuoteActions = forwardRef<
     customerName: string;
     linkedInvoices?: QuoteLinkedInvoices;
   }
->(function QuoteActions({ quote, customerName, linkedInvoices = NO_LINKED_INVOICES }, ref): ReactNode {
+>(function QuoteActions(
+  { quote, customerName, linkedInvoices = NO_LINKED_INVOICES },
+  ref,
+): ReactNode {
   const { personality } = useTheme();
   const send = useSendQuote();
   const sign = useSignQuote();
@@ -269,11 +294,17 @@ export const QuoteActions = forwardRef<
     await run('sendEmail', async () => {
       const result = await send.mutateAsync(quote.id);
       if (result.deliveryStatus === 'queued') {
-        Alert.alert('Envoi programmé', 'L’e-mail partira en arrière-plan. Vous pouvez suivre sa livraison dans l’activité.');
+        Alert.alert(
+          'Envoi programmé',
+          'L’e-mail partira en arrière-plan. Vous pouvez suivre sa livraison dans l’activité.',
+        );
       } else if (result.deliveryStatus === 'sent') {
         Alert.alert('E-mail envoyé', 'L’e-mail a été pris en charge par le service d’envoi.');
       } else {
-        Alert.alert('Aucun e-mail programmé', 'Vérifiez l’adresse e-mail du client, puis réessayez.');
+        Alert.alert(
+          'Aucun e-mail programmé',
+          'Vérifiez l’adresse e-mail du client, puis réessayez.',
+        );
       }
     });
   };
@@ -323,7 +354,10 @@ export const QuoteActions = forwardRef<
                     'L’e-mail partira en arrière-plan. Vous pouvez suivre sa livraison dans l’activité.',
                   );
                 } else if (result.deliveryStatus === 'sent') {
-                  Alert.alert('Devis envoyé', 'L’e-mail a été pris en charge par le service d’envoi.');
+                  Alert.alert(
+                    'Devis envoyé',
+                    'L’e-mail a été pris en charge par le service d’envoi.',
+                  );
                 } else {
                   Alert.alert(
                     'Devis préparé',
@@ -376,11 +410,16 @@ export const QuoteActions = forwardRef<
           header="Signature"
           question="Comment le client signe-t-il ?"
           options={[
-            { value: 'onsite', label: 'Sur place', description: 'Il signe du doigt, directement sur votre téléphone.' },
+            {
+              value: 'onsite',
+              label: 'Sur place',
+              description: 'Il signe du doigt, directement sur votre téléphone.',
+            },
             {
               value: 'link',
               label: 'Envoyer le lien',
-              description: 'Prépare le lien à partager toi-même — rien ne part tant que tu ne l’envoies pas.',
+              description:
+                'Prépare le lien à partager toi-même — rien ne part tant que tu ne l’envoies pas.',
             },
             {
               value: 'email',
@@ -417,7 +456,9 @@ export const QuoteActions = forwardRef<
             setOnsiteOpen(false);
             setOnsiteError(null);
           }}
-          onSubmit={(signerName, proofDataUrl) => void submitOnsiteSignature(signerName, proofDataUrl)}
+          onSubmit={(signerName, proofDataUrl) =>
+            void submitOnsiteSignature(signerName, proofDataUrl)
+          }
         />
       </>
     );
@@ -428,7 +469,11 @@ export const QuoteActions = forwardRef<
     if (invoiceCtaState === 'final_draft_pending' || invoiceCtaState === 'final_exists') {
       return (
         <Badge
-          label={invoiceCtaState === 'final_draft_pending' ? 'Facture brouillon prête' : 'Facture générée'}
+          label={
+            invoiceCtaState === 'final_draft_pending'
+              ? 'Facture brouillon prête'
+              : 'Facture générée'
+          }
           tone={invoiceCtaState === 'final_draft_pending' ? 'warning' : 'success'}
         />
       );
@@ -511,6 +556,7 @@ export function InvoiceActions({
   // ne concerne que la toute première émission (état brouillon → numéro légal alloué).
   const companyMe = useCompanyMe();
   const companyComplete = companyCanIssue(companyMe.data);
+  const billingSettings = useCompanyBillingSettings();
 
   // A6 : avoir TOTAL — confirmation FISCAL (l'avoir s'émettra avec son numéro A- et
   // l'écriture inverse), puis navigation vers le brouillon créé.
@@ -549,20 +595,52 @@ export function InvoiceActions({
           <Button
             title="Émettre"
             loading={busy === 'issue'}
-            disabled={!!busy}
+            disabled={!!busy || billingSettings.isLoading}
             onPress={() =>
               void (async () => {
                 if (!companyComplete) {
                   showCompanyIncompleteGate('invoice', personality);
                   return;
                 }
+                if (billingSettings.isError || billingSettings.data === undefined) {
+                  Alert.alert(t('reglages.dataError', { personality }), undefined, [
+                    {
+                      text: t('common.close', { personality }),
+                      style: 'cancel',
+                    },
+                  ]);
+                  return;
+                }
+                const paymentTermsDays = billingSettings.data.defaultInvoicePaymentTermsDays;
+                if (paymentTermsDays === null) {
+                  Alert.alert(
+                    t('invoice.paymentTermsMissingTitle', { personality }),
+                    t('invoice.paymentTermsMissingBody', { personality }),
+                    [
+                      { text: t('common.cancel', { personality }), style: 'cancel' },
+                      {
+                        text: t('invoice.paymentTermsMissingCta', { personality }),
+                        onPress: () => router.push('/reglages-facturation'),
+                      },
+                    ],
+                  );
+                  return;
+                }
                 // Aperçu comptable prévisionnel (le domaine sait prévisualiser un brouillon) — best-effort.
                 const preview = await client.invoiceAccountingPreview(invoice.id);
-                const accountingLines = preview.ok && preview.value.available ? preview.value.lines : undefined;
+                const accountingLines =
+                  preview.ok && preview.value.available ? preview.value.lines : undefined;
                 const ok = await confirm({
                   title: 'Émettre la facture',
-                  message: 'Numéro légal attribué et transmission e-invoicing.',
-                  diff: buildActionDiff('emettre_facture', {}, { number: invoice.number, accountingLines }),
+                  message: `Numéro légal attribué · échéance à ${paymentTermsDays} jours · transmission e-invoicing.`,
+                  diff: buildActionDiff(
+                    'emettre_facture',
+                    { paymentTermsDays },
+                    {
+                      number: invoice.number,
+                      accountingLines,
+                    },
+                  ),
                   challenge: challengeFor(FISCAL, 'confirm_all'),
                 });
                 if (ok) await run('issue', () => issue.mutateAsync(invoice.id));
@@ -599,7 +677,11 @@ export function InvoiceActions({
       </View>
     );
   }
-  if (invoice.status === 'issued' || invoice.status === 'partially_paid' || invoice.status === 'late') {
+  if (
+    invoice.status === 'issued' ||
+    invoice.status === 'partially_paid' ||
+    invoice.status === 'late'
+  ) {
     const remaining = collectRemainingCents(invoice);
     return (
       <View style={{ flexDirection: 'row', gap: 8 }}>
@@ -611,7 +693,33 @@ export function InvoiceActions({
               disabled={!!busy}
               onPress={() =>
                 void (async () => {
-                  const ok = await confirm(collectConfirmSpec(invoice, remaining));
+                  const preview = await resolveCollectAccountingPreview(client, {
+                    invoiceId: invoice.id,
+                    expectedRemainingCents: remaining,
+                  });
+                  if (preview.kind === 'error') {
+                    Alert.alert('Aperçu indisponible', appErrorMessage(preview.error));
+                    return;
+                  }
+                  if (preview.kind === 'unavailable') {
+                    Alert.alert('Aperçu indisponible', preview.reason);
+                    return;
+                  }
+                  if (preview.kind === 'stale') {
+                    Alert.alert(
+                      'Facture actualisée',
+                      'Le reste dû a changé. Actualise la facture avant d’enregistrer le paiement.',
+                    );
+                    return;
+                  }
+                  if (preview.kind === 'invalid_contract') {
+                    Alert.alert(
+                      'Aperçu indisponible',
+                      'La preuve comptable reçue est incohérente. Réessaie avant d’enregistrer le paiement.',
+                    );
+                    return;
+                  }
+                  const ok = await confirm(collectConfirmSpec(invoice, remaining, preview.lines));
                   if (ok)
                     await run('pay', () =>
                       pay.mutateAsync({

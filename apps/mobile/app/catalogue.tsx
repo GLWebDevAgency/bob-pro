@@ -151,7 +151,13 @@ function CatalogueCard({
               swipeRef.current?.close();
               onEdit(p);
             }}
-            style={{ width: 64, alignItems: 'center', justifyContent: 'center', backgroundColor: controls.segmentedTrack }}
+            style={({ pressed }) => ({
+              width: 64,
+              alignItems: 'center',
+              justifyContent: 'center',
+              backgroundColor: controls.segmentedTrack,
+              opacity: pressed ? 0.7 : 1,
+            })}
           >
             <Feather name="edit-2" size={18} color={colors.ink600} />
           </Pressable>

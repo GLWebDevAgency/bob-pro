@@ -45,6 +45,7 @@ import {
   Card,
   EmptyState,
   ErrorRetry,
+  FadeIn,
   IconTile,
   InnerScreenHeader,
   Sheet,
@@ -548,6 +549,9 @@ export default function Documents() {
 
   const recentSub = (invoice: VaultRecentInvoice): string => {
     const kind = t(KIND_LABEL_KEY[invoice.kind], { personality });
+    if (invoice.customerType === null) {
+      return t('docs.recentSubUnavailable', { personality, params: { kind } });
+    }
     if (invoice.customerType === 'b2b') return t('docs.recentSubB2b', { personality, params: { kind } });
     if (invoice.customerType === 'b2g') return t('docs.recentSubB2g', { personality });
     return t('docs.recentSubB2c', { personality });
@@ -668,9 +672,16 @@ export default function Documents() {
         {secondaryError && !hasError ? (
           <View style={{ paddingHorizontal: 18, paddingTop: 14 }}>
             <Card>
-              <Text accessibilityRole="alert" accessibilityLiveRegion="polite" style={[font('sub'), { color: colors.slate500, lineHeight: 19 }]}>Le coffre reste disponible, mais certaines synthèses comptables n’ont pas pu être actualisées.</Text>
+              <Text accessibilityRole="alert" accessibilityLiveRegion="polite" style={[font('sub'), { color: colors.slate500, lineHeight: 19 }]}>
+                {t('docs.staleSummaries', { personality })}
+              </Text>
               <View style={{ marginTop: 10 }}>
-                <Button title="Réessayer les synthèses" variant="secondary" onPress={refreshAll} />
+                <Button
+                  title={t('docs.staleSummariesCta', { personality })}
+                  variant="secondary"
+                  loading={refreshing}
+                  onPress={refreshAll}
+                />
               </View>
             </Card>
           </View>
@@ -679,15 +690,20 @@ export default function Documents() {
         {staleVaultError && !hasError ? (
           <View style={{ paddingHorizontal: 18, paddingTop: 14 }}>
             <ErrorRetry
-              message="Le coffre affiché est la dernière version disponible. Son actualisation n’a pas abouti."
+              message={t('docs.staleVault', { personality })}
               onRetry={refreshAll}
+              retrying={refreshing}
             />
           </View>
         ) : null}
 
         {hasError ? (
           <View style={{ paddingHorizontal: 18, paddingTop: 20 }}>
-            <ErrorRetry message={t('docs.dataError', { personality })} onRetry={refreshAll} />
+            <ErrorRetry
+              message={t('docs.dataError', { personality })}
+              onRetry={refreshAll}
+              retrying={refreshing}
+            />
           </View>
         ) : isLoading ? (
           <View
@@ -719,6 +735,10 @@ export default function Documents() {
               accessibilityRole="button"
               accessibilityLabel={t('search.everywhere', { personality, params: { query: trimmedQuery } })}
               onPress={() => router.push({ pathname: '/recherche', params: { q: trimmedQuery } })}
+              style={({ pressed }) => ({
+                opacity: pressed ? 0.82 : 1,
+                transform: [{ scale: pressed ? 0.98 : 1 }],
+              })}
             >
               <Card>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
@@ -741,6 +761,10 @@ export default function Documents() {
                   accessibilityRole="button"
                   accessibilityLabel={docItem.filename}
                   onPress={() => void openDocument(docItem.id)}
+                  style={({ pressed }) => ({
+                    opacity: pressed ? 0.82 : 1,
+                    transform: [{ scale: pressed ? 0.98 : 1 }],
+                  })}
                 >
                   <Card>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 11 }}>
@@ -775,7 +799,7 @@ export default function Documents() {
           <>
             {/* À valider — uniquement s'il y a des docs OCR non classés (données réelles) */}
             {view.toValidate.length > 0 ? (
-              <View style={{ paddingHorizontal: 18, paddingTop: 20 }}>
+              <FadeIn index={0} style={{ paddingHorizontal: 18, paddingTop: 20 }}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
                   <Text style={[font('cardTitle'), { color: colors.ink800 }]} accessibilityRole="header">
                     {t('docs.sectionToValidate', { personality })}
@@ -806,22 +830,23 @@ export default function Documents() {
                     />
                   ))}
                 </View>
-              </View>
+              </FadeIn>
             ) : null}
 
             {empty ? (
-              <View style={{ paddingHorizontal: 18, paddingTop: 20 }}>
+              <FadeIn index={0} style={{ paddingHorizontal: 18, paddingTop: 20 }}>
                 <Card>
                   <EmptyState
                     title={t('docs.emptyTitle', { personality })}
                     body={t('docs.emptyBody', { personality })}
+                    icon={<FileIcon color={semantic.success} />}
                   />
                 </Card>
-              </View>
+              </FadeIn>
             ) : null}
 
             {/* Dossiers persistés : navigation réelle, identité stable, sous-dossiers côté détail. */}
-            <View style={{ paddingHorizontal: 18, paddingTop: 20 }}>
+            <FadeIn index={1} style={{ paddingHorizontal: 18, paddingTop: 20 }}>
               <View style={{ minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 8 }}>
                 <Text style={[font('cardTitle'), { color: colors.ink800, flex: 1 }]} accessibilityRole="header">
                   {t('docs.sectionFolders', { personality })}
@@ -917,10 +942,10 @@ export default function Documents() {
                   })}
                 </View>
               )}
-            </View>
+            </FadeIn>
 
             {/* Compta & conformité */}
-            <View style={{ paddingHorizontal: 18, paddingTop: 20 }}>
+            <FadeIn index={2} style={{ paddingHorizontal: 18, paddingTop: 20 }}>
               <Text style={[font('cardTitle'), { color: colors.ink800, marginBottom: 12 }]} accessibilityRole="header">
                 {t('docs.sectionCompta', { personality })}
               </Text>
@@ -991,7 +1016,11 @@ export default function Documents() {
                 accessibilityRole="button"
                 accessibilityLabel={t('dep.title', { personality })}
                 onPress={() => router.push('/depenses')}
-                style={{ marginBottom: 12 }}
+                style={({ pressed }) => ({
+                  marginBottom: 12,
+                  opacity: pressed ? 0.82 : 1,
+                  transform: [{ scale: pressed ? 0.98 : 1 }],
+                })}
               >
                 <View
                   style={{
@@ -1036,7 +1065,11 @@ export default function Documents() {
                 accessibilityRole="button"
                 accessibilityLabel={t('compta.title', { personality })}
                 onPress={() => router.push('/comptabilite')}
-                style={{ marginBottom: 12 }}
+                style={({ pressed }) => ({
+                  marginBottom: 12,
+                  opacity: pressed ? 0.82 : 1,
+                  transform: [{ scale: pressed ? 0.98 : 1 }],
+                })}
               >
                 <View
                   style={{
@@ -1103,34 +1136,47 @@ export default function Documents() {
                     <Pressable
                       key={invoice.id}
                       accessibilityRole="button"
-                      accessibilityLabel={`${invoice.number} · ${invoice.customerName}`}
+                      accessibilityLabel={`${invoice.number} · ${invoice.customerName ?? t('docs.recentCustomerUnavailable', { personality })}`}
                       onPress={() => router.push(`/facture/${invoice.id}`)}
-                      style={{
+                      style={({ pressed }) => ({
                         flexDirection: 'row',
                         alignItems: 'center',
                         gap: 11,
                         paddingVertical: 12,
                         borderBottomWidth: i < view.recentInvoices.length - 1 ? 1 : 0,
                         borderBottomColor: colors.lineSoft,
-                      }}
+                        opacity: pressed ? 0.65 : 1,
+                      })}
                     >
                       <View
                         style={{
                           width: 34,
                           height: 34,
                           borderRadius: 10,
-                          backgroundColor: invoice.customerType === 'b2b' ? semantic.b2bBg : invoice.customerType === 'b2g' ? semantic.b2gBg : semantic.particulierBg,
+                          backgroundColor: invoice.customerType === 'b2b'
+                            ? semantic.b2bBg
+                            : invoice.customerType === 'b2g'
+                              ? semantic.b2gBg
+                              : invoice.customerType === 'b2c'
+                                ? semantic.particulierBg
+                                : colors.lineSoft,
                           alignItems: 'center',
                           justifyContent: 'center',
                         }}
                       >
                         <FileIcon
-                          color={invoice.customerType === 'b2b' ? semantic.b2b : invoice.customerType === 'b2g' ? semantic.b2g : semantic.particulier}
+                          color={invoice.customerType === 'b2b'
+                            ? semantic.b2b
+                            : invoice.customerType === 'b2g'
+                              ? semantic.b2g
+                              : invoice.customerType === 'b2c'
+                                ? semantic.particulier
+                                : colors.slate500}
                         />
                       </View>
                       <View style={{ flex: 1, minWidth: 0 }}>
                         <Text style={{ ...font('body', 700), fontSize: 14, color: colors.ink800 }} numberOfLines={1}>
-                          {invoice.number} · {invoice.customerName}
+                          {invoice.number} · {invoice.customerName ?? t('docs.recentCustomerUnavailable', { personality })}
                         </Text>
                         <Text style={{ ...font('meta', 500), color: colors.slate300, marginTop: 1 }}>
                           {recentSub(invoice)}
@@ -1184,7 +1230,7 @@ export default function Documents() {
                   </Text>
                 </View>
               ) : null}
-            </View>
+            </FadeIn>
 
             {view.totalCount > 0 ? (
               <Text
@@ -1292,7 +1338,7 @@ export default function Documents() {
                 }),
               })
             }
-            style={{
+            style={({ pressed }) => ({
               minHeight: 48,
               flexDirection: 'row',
               alignItems: 'center',
@@ -1300,7 +1346,8 @@ export default function Documents() {
               paddingVertical: 12,
               borderBottomWidth: 1,
               borderBottomColor: colors.lineSoft,
-            }}
+              opacity: classify.isPending ? 0.6 : pressed ? 0.65 : 1,
+            })}
           >
             <IconTile tone="success" size={34} radius={10}>
               <SparkSmallIcon color={semantic.success} />
@@ -1347,7 +1394,7 @@ export default function Documents() {
                     })
                   : undefined
               }
-              style={{
+              style={({ pressed }) => ({
                 minHeight: 48,
                 flexDirection: 'row',
                 alignItems: 'center',
@@ -1355,7 +1402,8 @@ export default function Documents() {
                 paddingVertical: 12,
                 borderBottomWidth: i < openChantiers.length - 1 ? 1 : 0,
                 borderBottomColor: colors.lineSoft,
-              }}
+                opacity: classify.isPending ? 0.6 : pressed ? 0.65 : 1,
+              })}
             >
               <IconTile tone="b2b" size={34} radius={10}>
                 <FolderSmallIcon color={semantic.b2b} />

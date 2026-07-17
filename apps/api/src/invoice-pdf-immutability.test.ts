@@ -1,11 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Document } from '@bob/core';
-import type {
-  InvoicePdfData,
-  OcrPort,
-  PaymentGatewayPort,
-  PdfRendererPort,
-} from '@bob/core';
+import type { InvoicePdfData, OcrPort, PaymentGatewayPort, PdfRendererPort } from '@bob/core';
 import { MERCIER_PROPS } from '@bob/core/testing';
 import { BackendService } from './backend.service';
 import { InMemoryDocumentStorage } from './documents/storage.testing';
@@ -105,6 +100,39 @@ async function issueInvoice(service: BackendService): Promise<string> {
 }
 
 describe('facture PDF émise — original immuable', () => {
+  it('refuse l’émission quand aucun délai réel n’est confirmé en BDD', async () => {
+    vi.stubEnv('SIGN_WEB_BASE_URL', 'https://signature.example.test');
+    const { persistence, renderer, service } = makeService();
+    await persistence.seed();
+
+    await asOwner(async () => {
+      const settings = await service.getCompanyBillingSettings();
+      expect(settings.ok).toBe(true);
+      if (!settings.ok) return;
+      const cleared = await service.updateCompanyBillingSettings({
+        expectedRevision: settings.value.revision,
+        patch: { defaultInvoicePaymentTermsDays: null },
+      });
+      expect(cleared.ok).toBe(true);
+
+      const invoiceId = await prepareFinalInvoice(service);
+      await expect(service.issueInvoice({ invoiceId })).resolves.toEqual({
+        ok: false,
+        error: {
+          kind: 'validation',
+          issues: [
+            {
+              field: 'paymentTerms',
+              message: 'Choisissez vos conditions de paiement avant d’émettre cette facture.',
+            },
+          ],
+        },
+      });
+      expect((await persistence.invoices.findById(invoiceId))?.number).toBeNull();
+      expect(renderer.renderInvoice).not.toHaveBeenCalled();
+    });
+  });
+
   it('sert exactement les octets archivés malgré un réglage ultérieur et refuse toute archive ambiguë ou corrompue', async () => {
     vi.stubEnv('SIGN_WEB_BASE_URL', 'https://signature.example.test');
     const { persistence, rendered, renderer, service, storage } = makeService();

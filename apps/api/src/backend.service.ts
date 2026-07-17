@@ -213,11 +213,7 @@ import { AppLogger, getPrincipal, requireTenant } from './observability/logger';
 import { SUPABASE_ADMIN, type SupabaseAdminPort } from './auth/supabase-admin';
 import { PAYMENT_GATEWAY } from './payments/payment-gateway';
 import { PDF_RENDERER } from './documents/pdf-renderer';
-import {
-  DOCUMENT_STORAGE,
-  UnavailableDocumentStorage,
-  documentSha256,
-} from './documents/storage';
+import { DOCUMENT_STORAGE, UnavailableDocumentStorage, documentSha256 } from './documents/storage';
 import {
   generatedInvoiceDocumentId,
   generatedInvoiceDocumentVersionId,
@@ -727,7 +723,9 @@ function signWebOrigin(purpose: string): URL {
 }
 
 function signWebPublicUrl(segment: string, token: string): string {
-  const base = signWebOrigin(segment === 'sign' ? 'un lien de signature' : 'un lien de consultation');
+  const base = signWebOrigin(
+    segment === 'sign' ? 'un lien de signature' : 'un lien de consultation',
+  );
   return new URL(
     `${segment}/${encodeURIComponent(token)}`,
     base.toString().endsWith('/') ? base : `${base}/`,
@@ -968,28 +966,19 @@ export class BackendService {
       freshnessPolicy: BANK_BALANCE_FRESHNESS_POLICY_V1,
     }).execute({ companyId });
 
-    const invoices = await this.p.invoices.listByCompany(companyId);
-    let bankBalanceCents: number;
-    let bankingSource: NonNullable<CashflowProjection['bankingSource']>;
-    if (balance.ok) {
-      bankBalanceCents = balance.value.amountCents;
-      bankingSource = 'qualified_snapshot';
-    } else if (balance.error.kind === 'not_found') {
-      // Tenant VIERGE (aucune observation bancaire ET aucun document financier) : état vide
-      // PROPRE — 200 à zéro, marqué `bankingSource: 'none'` — jamais une 503 « unhandled
-      // exception » dans les logs pour un compte qui vient d'ouvrir (incident fondateur
-      // 17/07). Dès qu'un document financier existe, l'absence d'observation redevient
-      // bloquante : aucune projection d'argent RÉEL n'est posée sur un zéro inventé.
-      const expenses = await this.p.expenses.listByCompany(companyId);
-      if (invoices.length > 0 || expenses.length > 0)
-        return err(appUnavailable('cashflow-banking-source'));
-      bankBalanceCents = 0;
-      bankingSource = 'none';
-    } else {
+    if (!balance.ok) {
+      // Une absence d'observation n'est pas un solde observé à zéro, même pour un tenant vierge.
+      // Le client transforme cet état attendu en demande de confirmation : aucun montant ne peut
+      // ainsi traverser l'API, alimenter Bob ou être mis en cache avant sa saisie réelle.
+      if (balance.error.kind === 'not_found') return err(appUnavailable('cashflow-banking-source'));
+
       // Observation périmée/qualification : fail-closed inchangé (bank-balance-stale & co) —
       // une vieille vérité n'est pas une vérité, le mobile déclenche la confirmation du solde.
       return balance;
     }
+
+    const invoices = await this.p.invoices.listByCompany(companyId);
+    const bankBalanceCents = balance.value.amountCents;
 
     const receivables = deriveKnownReceivables({
       companyId,
@@ -1022,7 +1011,7 @@ export class BackendService {
       clock: this.clock,
     }).execute({ companyId, scenario, horizon });
     if (!projected.ok) return projected;
-    return ok({ ...projected.value, bankingSource });
+    return ok({ ...projected.value, bankingSource: 'qualified_snapshot' });
   }
   createQuote(input: Omit<CreateQuoteInput, 'companyId'>) {
     return new QuoteCreationCoordinator({
@@ -1187,7 +1176,9 @@ export class BackendService {
    * chaque appel. Tout statut sauf brouillon (sent/viewed/signed/refused/expired) — une
    * consultation n'est jamais un engagement, contrairement à la signature.
    */
-  async createQuoteViewLink(quoteId: string): Promise<Result<{ viewUrl: string; expiresAt: string }, AppError>> {
+  async createQuoteViewLink(
+    quoteId: string,
+  ): Promise<Result<{ viewUrl: string; expiresAt: string }, AppError>> {
     if (!(await this.ownedQuote(quoteId)))
       return { ok: false as const, error: appNotFound('quote', quoteId) };
     const link = await new CreateDocumentViewLink({
@@ -1198,14 +1189,19 @@ export class BackendService {
     }).execute({ kind: 'quote', id: quoteId });
     if (!link.ok) return link;
     this.logger.audit('quote.view_link_created', { quoteId, expiresAt: link.value.expiresAt });
-    return ok({ viewUrl: publicDocumentViewUrl(link.value.token), expiresAt: link.value.expiresAt });
+    return ok({
+      viewUrl: publicDocumentViewUrl(link.value.token),
+      expiresAt: link.value.expiresAt,
+    });
   }
 
   /**
    * Lien public de VISUALISATION (facture) — même doctrine que createQuoteViewLink. Guard :
    * facture ÉMISE uniquement (jamais un brouillon), appliqué par CreateDocumentViewLink.
    */
-  async createInvoiceViewLink(invoiceId: string): Promise<Result<{ viewUrl: string; expiresAt: string }, AppError>> {
+  async createInvoiceViewLink(
+    invoiceId: string,
+  ): Promise<Result<{ viewUrl: string; expiresAt: string }, AppError>> {
     if (!(await this.ownedInvoice(invoiceId)))
       return { ok: false as const, error: appNotFound('invoice', invoiceId) };
     const link = await new CreateDocumentViewLink({
@@ -1216,7 +1212,10 @@ export class BackendService {
     }).execute({ kind: 'invoice', id: invoiceId });
     if (!link.ok) return link;
     this.logger.audit('invoice.view_link_created', { invoiceId, expiresAt: link.value.expiresAt });
-    return ok({ viewUrl: publicDocumentViewUrl(link.value.token), expiresAt: link.value.expiresAt });
+    return ok({
+      viewUrl: publicDocumentViewUrl(link.value.token),
+      expiresAt: link.value.expiresAt,
+    });
   }
   async refuseQuote(quoteId: string) {
     if (!(await this.ownedQuote(quoteId)))
@@ -1272,8 +1271,30 @@ export class BackendService {
     return r;
   }
   async issueInvoice(input: { invoiceId: string }) {
-    if (!(await this.ownedInvoice(input.invoiceId)))
-      return { ok: false as const, error: appNotFound('invoice', input.invoiceId) };
+    const invoice = await this.ownedInvoice(input.invoiceId);
+    if (!invoice) return { ok: false as const, error: appNotFound('invoice', input.invoiceId) };
+    const settings = await this.p.billingSettings.findByCompanyId(invoice.companyId);
+    if (settings === null) return err(appUnavailable('company-billing-settings'));
+    const paymentTermsDays = settings.defaultInvoicePaymentTermsDays;
+    if (paymentTermsDays === null) {
+      return err<AppError>({
+        kind: 'validation',
+        issues: [
+          {
+            field: 'paymentTerms',
+            message: 'Choisissez vos conditions de paiement avant d’émettre cette facture.',
+          },
+        ],
+      });
+    }
+    const issueInput = {
+      invoiceId: input.invoiceId,
+      terms: {
+        days: paymentTermsDays,
+        endOfMonth: false,
+        label: `Paiement à ${paymentTermsDays} jours`,
+      },
+    };
     let r: Result<{ number: string }, AppError>;
     try {
       r = await this.p.runInTransaction(async () => {
@@ -1284,7 +1305,7 @@ export class BackendService {
           counters: this.p.counters,
           uow: this.p,
           clock: this.clock,
-        }).execute(input);
+        }).execute(issueInput);
         if (!issued.ok) return issued;
         const accounting = await new RecordIssuedInvoiceAccountingEntry({
           invoices: this.p.invoices,
@@ -1683,7 +1704,12 @@ export class BackendService {
           status: q.status,
           signed: q.signature !== null,
           validUntil: q.validUntil,
-          lines: q.lines.map((l) => ({ label: l.label, qty: l.qty, unitPriceHT: l.unitPriceHT, vatRate: l.vatRate })),
+          lines: q.lines.map((l) => ({
+            label: l.label,
+            qty: l.qty,
+            unitPriceHT: l.unitPriceHT,
+            vatRate: l.vatRate,
+          })),
           totals: q.totals(),
         });
       }
@@ -1701,7 +1727,12 @@ export class BackendService {
         issuedAt: inv.issuedAt,
         dueAt: inv.dueAt,
         paid: inv.paid,
-        lines: inv.lines.map((l) => ({ label: l.label, qty: l.qty, unitPriceHT: l.unitPriceHT, vatRate: l.vatRate })),
+        lines: inv.lines.map((l) => ({
+          label: l.label,
+          qty: l.qty,
+          unitPriceHT: l.unitPriceHT,
+          vatRate: l.vatRate,
+        })),
         totals: inv.totals(),
         mentions: [...inv.mentions],
       });
@@ -2106,21 +2137,18 @@ export class BackendService {
         const names = new Map(cust.value.map((c) => [c.id, c.name]));
         const candidates = inv.value
           .filter(
-            (i) =>
-              ['issued', 'partially_paid', 'late'].includes(i.status)
-              && i.number !== null,
+            (i) => ['issued', 'partially_paid', 'late'].includes(i.status) && i.number !== null,
           )
           .filter((i) => remainingInvoiceBalanceCents(i) > 0);
         if (candidates.some((invoice) => !names.has(invoice.customerId))) {
           return err(appUnavailable('customer-reference'));
         }
-        const payable = candidates
-          .map((i) => ({
-            id: i.id,
-            number: i.number!,
-            remainingCents: remainingInvoiceBalanceCents(i),
-            customerName: names.get(i.customerId)!,
-          }));
+        const payable = candidates.map((i) => ({
+          id: i.id,
+          number: i.number!,
+          remainingCents: remainingInvoiceBalanceCents(i),
+          customerName: names.get(i.customerId)!,
+        }));
         return ok(payable);
       },
       listSendableQuotes: async () => {
@@ -2128,20 +2156,20 @@ export class BackendService {
         if (!quotes.ok) return quotes;
         if (!cust.ok) return cust;
         const names = new Map(cust.value.map((c) => [c.id, c.name]));
-        const candidates = quotes.value
-          .filter((q) => ['draft', 'sent', 'viewed'].includes(q.status));
+        const candidates = quotes.value.filter((q) =>
+          ['draft', 'sent', 'viewed'].includes(q.status),
+        );
         if (candidates.some((quote) => !names.has(quote.customerId))) {
           return err(appUnavailable('customer-reference'));
         }
         return ok(
-          candidates
-            .map((q) => ({
-              id: q.id,
-              number: q.number,
-              customerName: names.get(q.customerId)!,
-              totalTtcCents: q.totals.ttc,
-              status: q.status,
-            })),
+          candidates.map((q) => ({
+            id: q.id,
+            number: q.number,
+            customerName: names.get(q.customerId)!,
+            totalTtcCents: q.totals.ttc,
+            status: q.status,
+          })),
         );
       },
       listIssuableInvoices: async () => {
@@ -2149,20 +2177,18 @@ export class BackendService {
         if (!invoices.ok) return invoices;
         if (!cust.ok) return cust;
         const names = new Map(cust.value.map((c) => [c.id, c.name]));
-        const candidates = invoices.value
-          .filter((i) => i.status === 'draft' && !i.number);
+        const candidates = invoices.value.filter((i) => i.status === 'draft' && !i.number);
         if (candidates.some((invoice) => !names.has(invoice.customerId))) {
           return err(appUnavailable('customer-reference'));
         }
         return ok(
-          candidates
-            .map((i) => ({
-              id: i.id,
-              number: i.number,
-              customerName: names.get(i.customerId)!,
-              totalTtcCents: i.totals.ttc,
-              status: i.status,
-            })),
+          candidates.map((i) => ({
+            id: i.id,
+            number: i.number,
+            customerName: names.get(i.customerId)!,
+            totalTtcCents: i.totals.ttc,
+            status: i.status,
+          })),
         );
       },
       listDocuments: async () => {
@@ -3085,7 +3111,8 @@ export class BackendService {
       earlyAccess,
       // Rien n'est facturé pendant un essai NI en accès anticipé : seul un abonnement
       // ACTIF persisté porte le prix catalogue (source unique PLAN_CATALOG).
-      priceCents: !earlyAccess && s.status === 'active' ? PLAN_CATALOG[effectiveTier].priceCents : 0,
+      priceCents:
+        !earlyAccess && s.status === 'active' ? PLAN_CATALOG[effectiveTier].priceCents : 0,
       currentPeriodEnd: s.currentPeriodEnd,
       trialEndsAt: s.trialEndsAt,
       trialPhase: s.trialPhase,
@@ -3287,7 +3314,9 @@ export class BackendService {
    * pas de chemin parallèle possible pour contourner l'offre. */
   private async chantierMediaForbidden(): Promise<AppError | null> {
     if (await this.chantiersAllowed()) return null;
-    return appForbidden('Module Chantiers réservé aux métiers du bâtiment (offre Solo minimum, ou Pack BTP).');
+    return appForbidden(
+      'Module Chantiers réservé aux métiers du bâtiment (offre Solo minimum, ou Pack BTP).',
+    );
   }
 
   async addChantierNote(
@@ -3332,7 +3361,14 @@ export class BackendService {
     try {
       bytes = new Uint8Array(Buffer.from(input.contentBase64, 'base64'));
     } catch {
-      return { ok: false, error: appDomain({ code: 'VALIDATION', field: 'contentBase64', message: 'Photo illisible.' }) };
+      return {
+        ok: false,
+        error: appDomain({
+          code: 'VALIDATION',
+          field: 'contentBase64',
+          message: 'Photo illisible.',
+        }),
+      };
     }
     const r = await new UploadWorksitePhoto({
       chantiers: this.p.chantiers,
@@ -3347,7 +3383,12 @@ export class BackendService {
       contentType: input.mimeType,
       filename: input.filename,
     });
-    if (r.ok) this.logger.audit('chantier.photo.uploaded', { companyId: this.companyId(), chantierId, id: r.value.id });
+    if (r.ok)
+      this.logger.audit('chantier.photo.uploaded', {
+        companyId: this.companyId(),
+        chantierId,
+        id: r.value.id,
+      });
     return r;
   }
 
@@ -3357,13 +3398,19 @@ export class BackendService {
     return ok(await this.p.worksiteMedia.listByChantier(this.companyId(), chantierId));
   }
 
-  async worksitePhotoViewUrl(photoId: string): Promise<Result<{ url: string; expiresInSeconds: number }, AppError>> {
+  async worksitePhotoViewUrl(
+    photoId: string,
+  ): Promise<Result<{ url: string; expiresInSeconds: number }, AppError>> {
     const forbidden = await this.chantierMediaForbidden();
     if (forbidden) return { ok: false, error: forbidden };
     const item = await this.p.worksiteMedia.findById(this.companyId(), photoId);
     if (!item) return { ok: false, error: appNotFound('worksite_photo', photoId) };
     const ttlSeconds = 300;
-    const url = await this.documentStorage.getSignedUrl(this.companyId(), item.storageKey, ttlSeconds);
+    const url = await this.documentStorage.getSignedUrl(
+      this.companyId(),
+      item.storageKey,
+      ttlSeconds,
+    );
     return ok({ url, expiresInSeconds: ttlSeconds });
   }
 
@@ -3374,7 +3421,8 @@ export class BackendService {
       media: this.p.worksiteMedia,
       storage: this.documentStorage,
     }).execute({ companyId: this.companyId(), id: photoId });
-    if (r.ok) this.logger.audit('chantier.photo.deleted', { companyId: this.companyId(), id: photoId });
+    if (r.ok)
+      this.logger.audit('chantier.photo.deleted', { companyId: this.companyId(), id: photoId });
     return r;
   }
 
@@ -3438,9 +3486,9 @@ export class BackendService {
       };
     }
     const changesArchivedPdf =
-      validated.value.showRibOnInvoices !== undefined
-      || validated.value.showInsuranceOnInvoices !== undefined
-      || validated.value.pdfAccentColor !== undefined;
+      validated.value.showRibOnInvoices !== undefined ||
+      validated.value.showInsuranceOnInvoices !== undefined ||
+      validated.value.pdfAccentColor !== undefined;
     if (changesArchivedPdf) {
       const archiveReady = await this.assertIssuedInvoiceArchivesComplete(this.companyId());
       if (!archiveReady.ok) return archiveReady;
@@ -3607,11 +3655,11 @@ export class BackendService {
       const archiveMetadata = archived.toProps();
       const stored = await this.documentStorage.get(inv.companyId, archiveMetadata.storageKey);
       if (
-        stored === null
-        || stored.contentType !== 'application/pdf'
-        || archiveMetadata.mimeType !== 'application/pdf'
-        || stored.bytes.byteLength !== archiveMetadata.byteSize
-        || documentSha256(stored.bytes) !== archiveMetadata.sha256
+        stored === null ||
+        stored.contentType !== 'application/pdf' ||
+        archiveMetadata.mimeType !== 'application/pdf' ||
+        stored.bytes.byteLength !== archiveMetadata.byteSize ||
+        documentSha256(stored.bytes) !== archiveMetadata.sha256
       ) {
         return err(appUnavailable('invoice-archive'));
       }
@@ -3638,7 +3686,9 @@ export class BackendService {
    * original archivé. Cette barrière ferme la fenêtre émission→job et protège aussi les imports
    * legacy incomplets contre une régénération rétroactive.
    */
-  private async assertIssuedInvoiceArchivesComplete(companyId: string): Promise<Result<void, AppError>> {
+  private async assertIssuedInvoiceArchivesComplete(
+    companyId: string,
+  ): Promise<Result<void, AppError>> {
     const invoices = await this.p.invoices.listByCompany(companyId);
     for (const invoice of invoices) {
       if (invoice.number === null || invoice.issuedAt === null) continue;
@@ -4823,20 +4873,30 @@ export class BackendService {
 
   /** Enregistre la preuve d'un règlement fournisseur déjà exécuté hors de Bob. Date et moyen sont
    * obligatoires ; la transition et l'écriture 401/512 ou 401/530 sont atomiques dans le tenant. */
-  async recordExpensePayment(input: {
-    expenseId: string;
-  } & ExpensePaymentEvidenceInput): Promise<Result<{
-    status: 'paid';
-    alreadyRecorded: boolean;
-    paymentEntryId: string;
-  }, AppError>> {
+  async recordExpensePayment(
+    input: {
+      expenseId: string;
+    } & ExpensePaymentEvidenceInput,
+  ): Promise<
+    Result<
+      {
+        status: 'paid';
+        alreadyRecorded: boolean;
+        paymentEntryId: string;
+      },
+      AppError
+    >
+  > {
     if (!(await this.ownedExpense(input.expenseId)))
       return { ok: false as const, error: appNotFound('expense', input.expenseId) };
-    let r: Result<{
-      status: 'paid';
-      alreadyRecorded: boolean;
-      paymentEntryId: string;
-    }, AppError>;
+    let r: Result<
+      {
+        status: 'paid';
+        alreadyRecorded: boolean;
+        paymentEntryId: string;
+      },
+      AppError
+    >;
     try {
       r = await this.p.runInTransaction(async () => {
         const paid = await new RecordExpensePayment({

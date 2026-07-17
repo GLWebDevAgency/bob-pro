@@ -13,9 +13,17 @@
  * listInvoices + listExpenses + listAccountingEntries + company/payments/asOf (C-EXP-UI2 :
  * cotisations URSSAF réelles + carte « déclaration pré-calculée » pour une company MICRO —
  * ledger.urssaf) ; la réserve = buildLedgerView().reserve.
- * AUCUN repli fixtures : loading → skeletons · erreur → voix de Bob (argent.dataError) sans
- * chiffre inventé · donnée absente → « — » par ligne (cotisations hors micro : aucune source,
- * P23/P34 · abonnements : TODO C40).
+ * AUCUN repli fixtures — états premier rang (montée d'exigence 16/07) :
+ * · loading → SKELETONS du socle @bob/ui, FIDÈLES à la géométrie finale (héros/ledger/échéancier),
+ *   pulse subtil (reduce-motion : statique) ; le message d'erreur n'apparaît JAMAIS pendant le
+ *   premier chargement ;
+ * · compte NEUF (toutes sources vides) → état VIDE INVITANT (argent.empty*) avec CTA solde/devis,
+ *   jamais un désert de « — » ;
+ * · erreur réelle → ErrorRetry (retry MANUEL avec état pending visible ; le retry AUTO est borné
+ *   par la politique globale query-retry-policy — zéro tunnel) ;
+ * · donnée absente ponctuelle → « — » par ligne (cotisations hors micro : aucune source, P23/P34) ;
+ * · skeleton → contenu : fondu doux + cascade légère (FadeIn @bob/ui, 40 ms/section,
+ *   reduce-motion : apparition immédiate).
  *
  * PARITÉ D'ACTIONS humain ↔ Bob (directive 23:52) : écran en LECTURE SEULE — aucune action
  * mutante. Les navigations empruntent les mêmes points d'entrée que Bob :
@@ -28,7 +36,15 @@
  * Zéro hex/rgba : useTheme()/@bob/tokens. Zéro import de src/components/ui (ancien kit).
  */
 import { useMemo, useState } from 'react';
-import { Modal, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native';
+import {
+  Modal,
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  Text,
+  View,
+  type ViewStyle,
+} from 'react-native';
 import { useRouter } from 'expo-router';
 import { Feather, Ionicons } from '@expo/vector-icons';
 import {
@@ -52,6 +68,7 @@ import {
   Card,
   ErrorRetry,
   Fab,
+  FadeIn,
   HeroMoneyCard,
   IconTile,
   InnerScreenHeader,
@@ -59,6 +76,7 @@ import {
   MoneyText,
   SectionHeader,
   SegmentedControl,
+  Skeleton,
   StatusBadge,
   font,
   useReduceMotion,
@@ -81,6 +99,10 @@ import { useOwnerPayGuidance } from '../../src/fiscal/use-owner-pay-guidance';
 import { useBobAwareScrollInsets } from '../../src/components/use-bob-aware-scroll-insets';
 import { BankBalanceSheet } from '../../src/components/BankBalanceSheet';
 import { hasBlockingAuthoritativeDataError } from '../../src/data/authoritative-query-state';
+import {
+  isBankBalanceQualificationError,
+  isCashflowBankingInputMissing,
+} from '../../src/data/cashflow-banking-state';
 
 /** Clé SecureStore du coach-mark « première fois » de cet écran. */
 const TIP_KEY = 'bob.tips.argent.v1';
@@ -102,26 +124,10 @@ const BAND_LABEL: Record<CashflowBand, I18nKey> = {
   repart: 'argent.bandRepart',
 };
 
-function isBankBalanceQualificationError(error: unknown): boolean {
-  if (error === null || typeof error !== 'object' || !('kind' in error)) return false;
-  const candidate = error as { kind: unknown; service?: unknown; entity?: unknown };
-  if (candidate.kind === 'not_found' && candidate.entity === 'bank_balance_snapshot') return true;
-  return (
-    candidate.kind === 'unavailable' &&
-    typeof candidate.service === 'string' &&
-    candidate.service.startsWith('bank-balance')
-  );
-}
-
-/** Barre de skeleton (chargement) — même gabarit que la donnée qu'elle remplace. */
-function SkeletonBar({ width, height = 15 }: { width: `${number}%`; height?: number }) {
-  const { colors } = useTheme();
-  return <View style={{ height, width, borderRadius: 6, backgroundColor: colors.lineSoft }} />;
-}
-
 /**
- * Héros sans donnée (chargement ou erreur) : même géométrie que la HeroMoneyCard
- * (radius 24, padding 20) — jamais un montant inventé (A1-C10).
+ * Héros sans donnée (chargement ou erreur) : MÊME géométrie que la HeroMoneyCard (radius 24,
+ * padding 20, label → montant heroNum + pill → caption) — zéro saut quand la donnée arrive,
+ * et jamais un montant inventé (A1-C10). Skeletons du socle @bob/ui (pulse, reduce-motion safe).
  */
 function HeroPlaceholder({ loading }: { loading: boolean }) {
   const { personality, colors, controls } = useTheme();
@@ -140,9 +146,13 @@ function HeroPlaceholder({ loading }: { loading: boolean }) {
         {t('argent.heroLabel', { personality })}
       </Text>
       {loading ? (
-        <View style={{ marginTop: 10 }}>
-          <SkeletonBar width="52%" height={34} />
-        </View>
+        <>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6 }}>
+            <Skeleton width="52%" height={34} radius={9} />
+            <Skeleton width={92} height={22} radius={999} />
+          </View>
+          <Skeleton width="74%" height={13} style={{ marginTop: 9 }} />
+        </>
       ) : (
         <Text style={{ ...font('heroNum'), color: colors.slate400, marginTop: 4 }}>—</Text>
       )}
@@ -289,20 +299,80 @@ function FiscalDeadlineRow({
   );
 }
 
-/** Skeleton d'une rangée du grand-livre. */
-function SkeletonMoneyRow({ divider = true }: { divider?: boolean }) {
+/** Barre de texte squelettée à hauteur de ligne EXACTE (boxHeight = lineHeight du texte réel) —
+ *  la géométrie du row skeleton == celle du row final : zéro saut à l'arrivée des données. */
+function SkeletonTextLine({
+  width,
+  barHeight = 14,
+  boxHeight = 20,
+}: {
+  width: number | `${number}%`;
+  barHeight?: number;
+  boxHeight?: number;
+}) {
+  return (
+    <View style={{ height: boxHeight, justifyContent: 'center' }}>
+      <Skeleton width={width} height={barHeight} />
+    </View>
+  );
+}
+
+/** Skeleton d'une rangée du grand-livre — MÊME gabarit que MoneyRow (padding V 9, séparateur
+ *  patterns.moneyRow.divider, lead avec icône 17, total padding-top 13 + montant 20). */
+function SkeletonMoneyRow({
+  variant = 'default',
+  divider = true,
+}: {
+  variant?: 'default' | 'lead' | 'total';
+  divider?: boolean;
+}) {
+  const isLead = variant === 'lead';
+  const isTotal = variant === 'total';
   return (
     <View
       style={{
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'space-between',
-        paddingVertical: 12,
+        paddingVertical: 9,
+        ...(isTotal ? { paddingTop: 13 } : {}),
         ...(divider ? { borderBottomWidth: 1, borderBottomColor: patterns.moneyRow.divider } : {}),
       }}
     >
-      <SkeletonBar width="45%" />
-      <SkeletonBar width="20%" />
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
+        {isLead ? <Skeleton width={17} height={17} radius={5} /> : null}
+        <SkeletonTextLine width={isLead ? 138 : 118} />
+      </View>
+      <SkeletonTextLine
+        width={isTotal ? 92 : 72}
+        barHeight={isTotal ? 18 : 15}
+        boxHeight={isTotal ? 27 : 21}
+      />
+    </View>
+  );
+}
+
+/** Skeleton d'une échéance fiscale — MÊME gabarit que FiscalDeadlineRow (padding V 11,
+ *  colonne date 62, label + explain). */
+function SkeletonDeadlineRow({ last = false }: { last?: boolean }) {
+  const { colors } = useTheme();
+  return (
+    <View
+      style={{
+        flexDirection: 'row',
+        alignItems: 'flex-start',
+        gap: 12,
+        paddingVertical: 11,
+        ...(last ? {} : { borderBottomWidth: 1, borderBottomColor: colors.lineSoft }),
+      }}
+    >
+      <View style={{ minWidth: 62 }}>
+        <SkeletonTextLine width={50} barHeight={13} boxHeight={18} />
+      </View>
+      <View style={{ flex: 1, gap: 5 }}>
+        <SkeletonTextLine width="58%" barHeight={13} boxHeight={18} />
+        <SkeletonTextLine width="84%" barHeight={11} boxHeight={16} />
+      </View>
     </View>
   );
 }
@@ -408,7 +478,14 @@ export default function Argent() {
   const { personality, colors, semantic } = useTheme();
   const bobScrollInsets = useBobAwareScrollInsets({ minimumBottom: 140 });
   const router = useRouter();
+  const reduceMotion = useReduceMotion();
   const tip = useFirstTimeTip(TIP_KEY);
+  // Press state des cartes navigables (micro-interaction) : opacité toujours, scale subtil
+  // seulement hors reduce-motion — le feedback reste perceptible sans mouvement.
+  const cardPressed = (pressed: boolean): ViewStyle =>
+    pressed
+      ? { opacity: 0.88, ...(reduceMotion ? {} : { transform: [{ scale: 0.98 }] }) }
+      : {};
   // SPEC_EXPERT_FISCAL §UX FLOW amendement 1/2 : Argent = entrée PRIMAIRE du mini-flow (carte
   // douce sous le héros, visible seulement si ≥1 champ non confirmé) — voix parité stricte.
   const fiscalFlow = useFiscalProfileFlow();
@@ -514,14 +591,13 @@ export default function Argent() {
       .map((line) => ({
         customer: byId.get(line.customerId),
         overdueCents:
-          line.buckets.d1_30
-          + line.buckets.d31_60
-          + line.buckets.d61_90
-          + line.buckets.d90_plus,
+          line.buckets.d1_30 + line.buckets.d31_60 + line.buckets.d61_90 + line.buckets.d90_plus,
         maxDaysLate: line.maxDaysLate,
       }))
       .filter(
-        (entry): entry is {
+        (
+          entry,
+        ): entry is {
           customer: NonNullable<typeof entry.customer>;
           overdueCents: number;
           maxDaysLate: number;
@@ -544,6 +620,9 @@ export default function Argent() {
 
   const balanceNeedsConfirmation =
     bankBalance.isError && isBankBalanceQualificationError(bankBalance.error);
+  const cashflowNeedsBalance = [cash7, cash30, cash60, cash90, heroSafe, heroUp].every(
+    (query) => query.isError && isCashflowBankingInputMissing(query.error),
+  );
   const cashflowHasError =
     cash7.isError ||
     cash30.isError ||
@@ -552,7 +631,7 @@ export default function Argent() {
     heroSafe.isError ||
     heroUp.isError;
   const hasError =
-    (!balanceNeedsConfirmation && cashflowHasError) ||
+    (!cashflowNeedsBalance && cashflowHasError) ||
     (bankBalance.isError && !balanceNeedsConfirmation) ||
     invoices.isError ||
     expenses.isError ||
@@ -570,12 +649,27 @@ export default function Argent() {
   // rendue comme une vérité financière. L'écran devient alors intégralement fail-closed.
   const fatalDataError =
     hasBlockingAuthoritativeDataError([
-      cash7,
-      cash30,
-      cash60,
-      cash90,
-      heroSafe,
-      heroUp,
+      { isError: cash7.isError && !isCashflowBankingInputMissing(cash7.error), data: cash7.data },
+      {
+        isError: cash30.isError && !isCashflowBankingInputMissing(cash30.error),
+        data: cash30.data,
+      },
+      {
+        isError: cash60.isError && !isCashflowBankingInputMissing(cash60.error),
+        data: cash60.data,
+      },
+      {
+        isError: cash90.isError && !isCashflowBankingInputMissing(cash90.error),
+        data: cash90.data,
+      },
+      {
+        isError: heroSafe.isError && !isCashflowBankingInputMissing(heroSafe.error),
+        data: heroSafe.data,
+      },
+      {
+        isError: heroUp.isError && !isCashflowBankingInputMissing(heroUp.error),
+        data: heroUp.data,
+      },
       invoices,
       expenses,
       entries,
@@ -668,7 +762,35 @@ export default function Argent() {
     fiscal.isRefetching ||
     fiscalFlow.isRefetching;
 
-  if (fatalDataError) {
+  // Premier chargement : tant qu'UNE source autoritative n'a pas fini son premier fetch,
+  // l'écran reste en SKELETONS — le message d'erreur n'apparaît JAMAIS pendant cette phase
+  // (grille fondateur : « pourquoi pas de skeletons ? »). isLoading ne couvre que le premier
+  // fetch (jamais les refetchs) : aucune source ne peut maintenir cet état indéfiniment.
+  const initialSourcesLoading =
+    ledgerLoading ||
+    agedLoading ||
+    cash7.isLoading ||
+    cash30.isLoading ||
+    cash60.isLoading ||
+    cash90.isLoading ||
+    heroSafe.isLoading ||
+    heroUp.isLoading ||
+    fiscal.isLoading ||
+    fiscalFlow.isLoading ||
+    payGuidance.isLoading;
+
+  // Compte NEUF (post-onboarding) : toutes les sources ont répondu et sont VIDES — l'écran
+  // devient une invitation (solde à confirmer, premier devis), jamais un désert de « — ».
+  const accountEmpty =
+    invoices.data?.length === 0 &&
+    expenses.data?.length === 0 &&
+    entries.data?.length === 0 &&
+    customers.data?.length === 0 &&
+    payments.data?.length === 0;
+  const showWelcome =
+    accountEmpty === true && !initialSourcesLoading && !fatalDataError && !hasError;
+
+  if (fatalDataError && !initialSourcesLoading) {
     return (
       <View style={{ flex: 1, backgroundColor: colors.bg }}>
         <ScrollView
@@ -694,6 +816,7 @@ export default function Argent() {
             <ErrorRetry
               message={t('argent.dataError', { personality })}
               onRetry={refetchMainData}
+              retrying={refreshing}
             />
           </View>
         </ScrollView>
@@ -758,22 +881,63 @@ export default function Argent() {
           {/* ── Héros « trésorerie mobilisable » ────────────────────────────── */}
           <View style={{ marginTop: 16 }}>
             {heroSafe.data && !payGuidance.isLoading ? (
-              <HeroMoneyCard
-                label={
-                  guidance
-                    ? t(guidance.headlineKey as I18nKey, { personality, params: guidance.params })
-                    : t('argent.heroLabel', { personality })
-                }
-                amountCents={guidance?.amountCents ?? heroSafe.data.payout}
-                pill={t('argent.heroPill', { personality })}
-                caption={heroCaption}
-              />
+              <FadeIn index={0}>
+                <HeroMoneyCard
+                  label={
+                    guidance
+                      ? t(guidance.headlineKey as I18nKey, { personality, params: guidance.params })
+                      : t('argent.heroLabel', { personality })
+                  }
+                  amountCents={guidance?.amountCents ?? heroSafe.data.payout}
+                  pill={t('argent.heroPill', { personality })}
+                  caption={heroCaption}
+                />
+              </FadeIn>
             ) : (
               <HeroPlaceholder loading={heroSafe.isLoading || payGuidance.isLoading} />
             )}
           </View>
 
-          {balanceNeedsConfirmation ? (
+          {/* ── Compte NEUF : invitation (jamais un désert de « — ») — le CTA solde remplace
+              la carte « confirme ton solde » (même geste, hiérarchie soignée). ─────────── */}
+          {showWelcome ? (
+            <FadeIn index={1} style={{ marginTop: 14 }}>
+              <Card radius={22} padding={20} elevation="e2">
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                  <IconTile tone="success" size={44} radius={14}>
+                    <Ionicons name="sparkles" size={20} color={semantic.success} />
+                  </IconTile>
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text style={[font('section'), { fontSize: 18, color: colors.ink800 }]}>
+                      {t('argent.emptyTitle', { personality })}
+                    </Text>
+                  </View>
+                </View>
+                <Text
+                  style={[
+                    font('body'),
+                    { color: colors.slate500, lineHeight: 21, marginTop: 10 },
+                  ]}
+                >
+                  {t('argent.emptyBody', { personality })}
+                </Text>
+                <View style={{ gap: 10, marginTop: 16 }}>
+                  {bankBalance.data === undefined ? (
+                    <Button
+                      title={t('argent.emptyCtaBalance', { personality })}
+                      variant="primary"
+                      onPress={() => setBalanceSheetVisible(true)}
+                    />
+                  ) : null}
+                  <Button
+                    title={t('argent.emptyCtaQuote', { personality })}
+                    variant={bankBalance.data === undefined ? 'secondary' : 'primary'}
+                    onPress={() => router.push('/devis/new')}
+                  />
+                </View>
+              </Card>
+            </FadeIn>
+          ) : balanceNeedsConfirmation ? (
             <Card radius={18} padding={15} style={{ marginTop: 14 }}>
               <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 11 }}>
                 <IconTile tone="b2b" size={36} radius={11}>
@@ -824,6 +988,7 @@ export default function Argent() {
               <ErrorRetry
                 message={t('argent.dataError', { personality })}
                 onRetry={refetchMainData}
+                retrying={refreshing}
               />
             </View>
           ) : null}
@@ -835,7 +1000,7 @@ export default function Argent() {
               accessibilityRole="button"
               accessibilityLabel={`${t('fiscal.entry.title', { personality })}. ${t('fiscal.entry.body', { personality })}`}
               onPress={fiscalFlow.openFlow}
-              style={{ marginTop: 14 }}
+              style={({ pressed }) => [{ marginTop: 14 }, cardPressed(pressed)]}
             >
               <Card radius={18} padding={15}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 11 }}>
@@ -881,15 +1046,15 @@ export default function Argent() {
             </View>
             {ledgerLoading ? (
               <>
+                <SkeletonMoneyRow variant="lead" />
                 <SkeletonMoneyRow />
                 <SkeletonMoneyRow />
                 <SkeletonMoneyRow />
                 <SkeletonMoneyRow />
-                <SkeletonMoneyRow />
-                <SkeletonMoneyRow divider={false} />
+                <SkeletonMoneyRow variant="total" divider={false} />
               </>
             ) : (
-              <>
+              <FadeIn index={1}>
                 {ledger.bankCents !== null ? (
                   <MoneyRow
                     label={t('argent.rowBank', { personality })}
@@ -948,7 +1113,7 @@ export default function Argent() {
                     divider={false}
                   />
                 )}
-              </>
+              </FadeIn>
             )}
           </Card>
 
@@ -1029,16 +1194,19 @@ export default function Argent() {
               }}
             >
               {forecast.data ? (
-                <>
+                <FadeIn
+                  index={2}
+                  style={{ flexDirection: 'row', alignItems: 'baseline', gap: 8 }}
+                >
                   <MoneyText cents={forecast.data.available} variant="big" color={bandTone} />
                   {band !== null ? (
                     <Text style={[font('meta'), { fontSize: 12.5, color: bandTone }]}>
                       {t(BAND_LABEL[band], { personality })}
                     </Text>
                   ) : null}
-                </>
+                </FadeIn>
               ) : forecast.isLoading ? (
-                <SkeletonBar width="38%" height={21} />
+                <Skeleton width="38%" height={21} radius={7} />
               ) : (
                 <Text style={{ ...font('bigNum'), color: colors.slate400 }}>—</Text>
               )}
@@ -1060,7 +1228,12 @@ export default function Argent() {
             {forecast.data ? (
               <View
                 accessibilityRole="summary"
-                style={{ marginTop: 12, paddingTop: 11, borderTopWidth: 1, borderTopColor: colors.lineSoft }}
+                style={{
+                  marginTop: 12,
+                  paddingTop: 11,
+                  borderTopWidth: 1,
+                  borderTopColor: colors.lineSoft,
+                }}
               >
                 <Text style={[font('meta'), { color: colors.slate500, lineHeight: 17 }]}>
                   {forecast.data.basis.kind === 'dated_documents'
@@ -1073,21 +1246,27 @@ export default function Argent() {
                       })
                     : t('argent.forecastBasisLegacy', { personality })}
                 </Text>
-                {forecast.data.basis.kind === 'dated_documents'
-                && forecast.data.basis.receivablesUndatedCents > 0 ? (
-                  <Text style={[font('meta'), { color: colors.slate400, lineHeight: 17, marginTop: 4 }]}>
+                {forecast.data.basis.kind === 'dated_documents' &&
+                forecast.data.basis.receivablesUndatedCents > 0 ? (
+                  <Text
+                    style={[font('meta'), { color: colors.slate400, lineHeight: 17, marginTop: 4 }]}
+                  >
                     {t('argent.forecastUndatedReceivables', {
                       personality,
                       params: { amount: formatEUR(forecast.data.basis.receivablesUndatedCents) },
                     })}
                   </Text>
                 ) : null}
-                {forecast.data.basis.kind === 'dated_documents'
-                && forecast.data.basis.chargesUndatedIncludedCents > 0 ? (
-                  <Text style={[font('meta'), { color: colors.slate400, lineHeight: 17, marginTop: 4 }]}>
+                {forecast.data.basis.kind === 'dated_documents' &&
+                forecast.data.basis.chargesUndatedIncludedCents > 0 ? (
+                  <Text
+                    style={[font('meta'), { color: colors.slate400, lineHeight: 17, marginTop: 4 }]}
+                  >
                     {t('argent.forecastUndatedCharges', {
                       personality,
-                      params: { amount: formatEUR(forecast.data.basis.chargesUndatedIncludedCents) },
+                      params: {
+                        amount: formatEUR(forecast.data.basis.chargesUndatedIncludedCents),
+                      },
                     })}
                   </Text>
                 ) : null}
@@ -1106,7 +1285,7 @@ export default function Argent() {
           ) : risky.length > 0 ? (
             <View style={{ marginTop: 18 }}>
               <SectionHeader title={t('argent.watchTitle', { personality })} />
-              <View style={{ gap: 11 }}>
+              <FadeIn index={3} style={{ gap: 11 }}>
                 {risky.slice(0, 3).map(({ customer, overdueCents, maxDaysLate }) => (
                   <Card key={customer.id} radius={18} padding={14}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 11 }}>
@@ -1157,7 +1336,7 @@ export default function Argent() {
                     router.push({ pathname: '/(tabs)/assistant', params: { prompt: 'relance' } })
                   }
                 />
-              </View>
+              </FadeIn>
             </View>
           ) : null}
 
@@ -1197,7 +1376,7 @@ export default function Argent() {
                   </Text>
                   {ledgerLoading ? (
                     <View style={{ marginTop: 6 }}>
-                      <SkeletonBar width="55%" height={17} />
+                      <Skeleton width="55%" height={17} />
                     </View>
                   ) : (
                     <Text
@@ -1241,7 +1420,7 @@ export default function Argent() {
             />
             {agedLoading ? (
               <Card>
-                <SkeletonBar width="62%" />
+                <Skeleton width="62%" height={15} />
               </Card>
             ) : aged.totalCents === 0 ? (
               <Card>
@@ -1306,14 +1485,17 @@ export default function Argent() {
                     accessibilityRole="button"
                     accessibilityLabel={line.customerName}
                     onPress={() => router.push(`/client/${line.customerId}`)}
-                    style={{
-                      flexDirection: 'row',
-                      alignItems: 'center',
-                      gap: 10,
-                      paddingVertical: 12,
-                      borderBottomWidth: index < top.length - 1 ? 1 : 0,
-                      borderBottomColor: colors.lineSoft,
-                    }}
+                    style={({ pressed }) => [
+                      {
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        gap: 10,
+                        paddingVertical: 12,
+                        borderBottomWidth: index < top.length - 1 ? 1 : 0,
+                        borderBottomColor: colors.lineSoft,
+                      },
+                      cardPressed(pressed),
+                    ]}
                   >
                     <Text
                       style={{ ...font('body', 700), fontSize: 14, color: colors.ink800, flex: 1 }}
@@ -1362,9 +1544,9 @@ export default function Argent() {
           <View style={{ marginTop: 20 }}>
             <SectionHeader title={t('argent.upcomingTitle', { personality })} />
             {fiscal.isLoading ? (
-              <Card>
-                <SkeletonMoneyRow />
-                <SkeletonMoneyRow divider={false} />
+              <Card radius={18} padding={0} style={{ paddingHorizontal: 16, paddingVertical: 4 }}>
+                <SkeletonDeadlineRow />
+                <SkeletonDeadlineRow last />
               </Card>
             ) : fiscal.isError ? (
               // Bannière discrète : l'échéancier manque, le reste de l'écran reste utilisable.
@@ -1381,16 +1563,18 @@ export default function Argent() {
                 </Text>
               </Card>
             ) : (
-              <Card radius={18} padding={0} style={{ paddingHorizontal: 16, paddingVertical: 4 }}>
-                {(fiscal.data ?? []).map((deadline, index, all) => (
-                  <FiscalDeadlineRow
-                    key={deadline.id}
-                    deadline={deadline}
-                    personality={personality}
-                    last={index === all.length - 1}
-                  />
-                ))}
-              </Card>
+              <FadeIn index={5}>
+                <Card radius={18} padding={0} style={{ paddingHorizontal: 16, paddingVertical: 4 }}>
+                  {(fiscal.data ?? []).map((deadline, index, all) => (
+                    <FiscalDeadlineRow
+                      key={deadline.id}
+                      deadline={deadline}
+                      personality={personality}
+                      last={index === all.length - 1}
+                    />
+                  ))}
+                </Card>
+              </FadeIn>
             )}
           </View>
 
@@ -1399,7 +1583,7 @@ export default function Argent() {
             accessibilityRole="button"
             accessibilityLabel={t('pilotage.title', { personality })}
             onPress={() => router.push('/pilotage')}
-            style={{ marginTop: 20 }}
+            style={({ pressed }) => [{ marginTop: 20 }, cardPressed(pressed)]}
           >
             <Card>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 11 }}>

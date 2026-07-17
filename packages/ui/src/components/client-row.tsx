@@ -5,10 +5,11 @@
  * tabular-nums teinté par `tone` ; chevron controls.chevron (injectable).
  */
 import type { ReactNode } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
 import { formatEUR } from '@bob/core';
 import { font, useTheme } from '../theme';
+import { PressableScale } from './pressable-scale';
 
 export type ClientRowTone = 'success' | 'danger' | 'warning' | 'neutral';
 
@@ -51,7 +52,7 @@ export function ClientRow({
   const amountText = amountCents !== undefined ? formatEUR(amountCents) : undefined;
 
   return (
-    <Pressable
+    <PressableScale
       {...(onPress !== undefined ? { onPress } : {})}
       style={styles.row}
       accessibilityRole="button"
@@ -96,7 +97,7 @@ export function ClientRow({
           />
         </Svg>
       )}
-    </Pressable>
+    </PressableScale>
   );
 }
 

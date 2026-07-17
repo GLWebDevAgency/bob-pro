@@ -52,8 +52,10 @@ import {
   Card,
   EmptyState,
   ErrorRetry,
+  FadeIn,
   FloatingBalanceCard,
   KpiTile,
+  PressableScale,
   PriorityCard,
   QuickAction,
   SectionHeader,
@@ -71,6 +73,7 @@ import {
   useNotificationsFeed,
   useTodayPriorities,
 } from '../../src/data/hooks';
+import { isExpectedMissingBankingInput } from '../../src/data/cashflow-banking-state';
 import { Badge } from '../../src/components/ui';
 import { useConfirm } from '../../src/components/ConfirmSheet';
 import { hasMeaningfulQuoteDraft, useQuoteDraft } from '../../src/quote-draft';
@@ -104,11 +107,9 @@ import {
 const DISPLAY_CAP = 3;
 
 /**
- * Rappel de brouillon de devis (C21 redécoupe 2026-07-17) — CLIENT-SIDE UNIQUEMENT : le
- * brouillon vit en local (SecureStore, voir apps/mobile/src/quote-draft), jamais côté serveur.
- * Il n'entre donc PAS dans @bob/core TodayPriority (dérivé de données serveur) — cette carte
- * est composée ICI, dans le rendu du Home, en fusionnant `today.priorities` (serveur) avec cet
- * unique rappel local (le stockage est un slot UNIQUE : au plus un brouillon à la fois).
+ * Rappel du slot de brouillon propriétaire persisté en PostgreSQL. Il n'entre pas dans
+ * @bob/core TodayPriority : cette carte mobile compose le briefing avec l'unique slot renvoyé
+ * par l'API authentifiée, uniquement après hydratation réussie.
  */
 interface DraftQuotePriority {
   readonly kind: 'devis_brouillon';
@@ -124,18 +125,6 @@ const DRAFT_REMINDER_MIN_AGE_MS = 60 * 60 * 1000;
 // Suppression d'un brouillon = geste réversible-fort (même palier que le trash « brouillon »
 // des factures, InvoiceActions) — TOUJOURS derrière une ConfirmSheet, jamais un tap unique.
 const DRAFT_DELETE_RISK = { mutating: true, outbound: false, riskTier: 'reversible' } as const;
-
-function isExpectedMissingBankingInput(error: unknown): boolean {
-  if (error === null || typeof error !== 'object' || !('kind' in error)) return false;
-  const candidate = error as { kind: unknown; service?: unknown; entity?: unknown };
-  if (candidate.kind === 'not_found' && candidate.entity === 'bank_balance_snapshot') return true;
-  return (
-    candidate.kind === 'unavailable' &&
-    typeof candidate.service === 'string' &&
-    (candidate.service.startsWith('bank-balance') ||
-      candidate.service === 'cashflow-banking-source')
-  );
-}
 
 /** Vrai UNE SEULE fois par processus JS (cold start) — approxime « l'app vient d'être rouverte »
  * sans dépendre d'AppState : un changement d'onglet ne relance jamais le module. */
@@ -203,7 +192,7 @@ function HeroPlaceholder({
   const { personality, colors, controls } = useTheme();
   const hintKey = failed ? 'today.balanceUnavailableHint' : 'today.balanceMissingHint';
   return (
-    <Pressable
+    <PressableScale
       accessibilityRole="button"
       accessibilityLabel={t(hintKey, { personality })}
       onPress={onPress}
@@ -244,7 +233,7 @@ function HeroPlaceholder({
           {t(hintKey, { personality })}
         </Text>
       ) : null}
-    </Pressable>
+    </PressableScale>
   );
 }
 
@@ -430,15 +419,16 @@ function TodayPriorityCard({
                     }
                   })()
                 }
-                style={{
+                style={({ pressed }) => ({
                   width: 40,
                   height: 40,
                   borderRadius: 12,
                   alignItems: 'center',
                   justifyContent: 'center',
                   backgroundColor: semantic.dangerBg,
-                  opacity: draftDeleteBusy ? 0.5 : 1,
-                }}
+                  opacity: draftDeleteBusy ? 0.5 : pressed ? 0.7 : 1,
+                  transform: [{ scale: pressed && !draftDeleteBusy ? 0.94 : 1 }],
+                })}
               >
                 {draftDeleteBusy ? (
                   <ActivityIndicator size="small" color={semantic.danger} />
@@ -489,21 +479,21 @@ export default function Aujourdhui() {
   // Rappel du slot BDD propriétaire (C21) : l'état mobile n'est rendu qu'après le GET autoritatif.
   // `pendingResume` (soft-reset côté wizard) prime sur la version hydratée ; aucun cache local ni
   // état vierge transitoire ne peut fabriquer une carte pendant un échec réseau.
-  const localDraft = quoteDraft.persistence.ready
-    ? quoteDraft.pendingResume
-      ?? (hasMeaningfulQuoteDraft(quoteDraft.state) && quoteDraft.state.saved !== null
+  const persistedDraft = quoteDraft.persistence.ready
+    ? (quoteDraft.pendingResume ??
+      (hasMeaningfulQuoteDraft(quoteDraft.state) && quoteDraft.state.saved !== null
         ? quoteDraft.state
-        : null)
+        : null))
     : null;
-  const draftAgeMs = localDraft?.saved != null ? Date.now() - localDraft.saved.at : null;
+  const draftAgeMs = persistedDraft?.saved != null ? Date.now() - persistedDraft.saved.at : null;
   const showDraftReminder =
-    localDraft !== null &&
+    persistedDraft !== null &&
     (isFreshAppSession || (draftAgeMs !== null && draftAgeMs > DRAFT_REMINDER_MIN_AGE_MS));
   const draftPriority: DraftQuotePriority | null = showDraftReminder
     ? {
         kind: 'devis_brouillon',
         id: 'devis-brouillon-server',
-        customerName: localDraft.customer?.name ?? null,
+        customerName: persistedDraft.customer?.name ?? null,
       }
     : null;
   // Priorité basse (fin de liste) : un rappel de brouillon n'a jamais à évincer une vraie
@@ -581,8 +571,8 @@ export default function Aujourdhui() {
   // brouillon ») — refs pour une identité STABLE de l'affordance (même convention que
   // ventes.tsx) ; la suppression reste TOUJOURS derrière la ConfirmSheet, jamais un tap voix
   // unique (verrouillage fondateur — aucune suppression en un seul geste, nulle part).
-  const localDraftRef = useRef(localDraft);
-  localDraftRef.current = localDraft;
+  const persistedDraftRef = useRef(persistedDraft);
+  persistedDraftRef.current = persistedDraft;
   const routerRef = useRef(router);
   routerRef.current = router;
   const confirm = useConfirm();
@@ -597,7 +587,7 @@ export default function Aujourdhui() {
       {
         id: 'today.resumeDraft',
         match: (utterance) => {
-          if (localDraftRef.current === null) return null;
+          if (persistedDraftRef.current === null) return null;
           const n = normalizeVoiceText(utterance);
           if (!/(continue|reprend\w*).{0,15}(devis|brouillon)/.test(n)) return null;
           return () => {
@@ -611,7 +601,7 @@ export default function Aujourdhui() {
       {
         id: 'today.deleteDraft',
         match: (utterance) => {
-          const draft = localDraftRef.current;
+          const draft = persistedDraftRef.current;
           if (draft === null) return null;
           const n = normalizeVoiceText(utterance);
           if (!/(supprime|efface)\w*.{0,15}(devis|brouillon)/.test(n)) return null;
@@ -692,8 +682,7 @@ export default function Aujourdhui() {
   const glanceBlockingError =
     (invoices.isError && invoices.data === undefined) ||
     (cashflow.isError && cashflow.data === undefined && !expectedCashflowMissing);
-  const glanceMissingBankingInput =
-    expectedCashflowMissing && cashflow.data === undefined;
+  const glanceMissingBankingInput = expectedCashflowMissing && cashflow.data === undefined;
   const financialDataFailed =
     (bankBalance.isError && !expectedBankBalanceMissing) ||
     (cashflow.isError && !expectedCashflowMissing);
@@ -780,6 +769,7 @@ export default function Aujourdhui() {
             <ErrorRetry
               message={t('today.dataError', { personality })}
               onRetry={refreshAll}
+              retrying={refreshing}
             />
           ) : null}
 
@@ -813,7 +803,8 @@ export default function Aujourdhui() {
                   <SkeletonPriority />
                 </View>
               ) : displayed.length > 0 ? (
-                <View style={{ gap: 11 }}>
+                // Sortie de skeleton : fondu (transform/opacity only — zéro saut de layout).
+                <FadeIn index={0} style={{ gap: 11 }}>
                   {displayed.map((p) => (
                     <TodayPriorityCard
                       key={p.id}
@@ -833,12 +824,18 @@ export default function Aujourdhui() {
                       }
                     />
                   ))}
-                </View>
+                </FadeIn>
               ) : todayReady ? (
-                // 0 priorité : état vide de premier rang — la voix de Bob, aucune carte fantôme.
-                <Card>
-                  <EmptyState body={t('today.subtitleNone', { personality })} />
-                </Card>
+                // 0 priorité : état vide de premier rang — un vrai moment positif (coche success),
+                // la voix de Bob, aucune carte fantôme.
+                <FadeIn index={0}>
+                  <Card>
+                    <EmptyState
+                      body={t('today.subtitleNone', { personality })}
+                      icon={<Feather name="check" size={16} color={semantic.success} />}
+                    />
+                  </Card>
+                </FadeIn>
               ) : null /* erreur : la carte today.dataError ci-dessus parle déjà */
             }
           </View>
@@ -846,24 +843,26 @@ export default function Aujourdhui() {
           {cockpit ? (
             <View>
               <SectionHeader title={t('today.sectionGlance', { personality })} />
-              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 11 }}>
-                {glanceLoading ? (
-                  <>
-                    <SkeletonTile />
-                    <SkeletonTile />
-                    <SkeletonTile />
-                    <SkeletonTile />
-                  </>
-                ) : glanceBlockingError || (!glanceReady && !glanceMissingBankingInput) ? (
-                  <View style={{ flexBasis: '100%' }}>
-                    <ErrorRetry message={t('today.dataError', { personality })} onRetry={refreshAll} />
-                  </View>
-                ) : glanceMissingBankingInput ? (
-                  <Card style={{ flexBasis: '100%' }}>
-                    <EmptyState body={t('today.balanceMissingHint', { personality })} />
-                  </Card>
-                ) : (
-                  <>
+              {glanceLoading ? (
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 11 }}>
+                  <SkeletonTile />
+                  <SkeletonTile />
+                  <SkeletonTile />
+                  <SkeletonTile />
+                </View>
+              ) : glanceBlockingError || (!glanceReady && !glanceMissingBankingInput) ? (
+                <ErrorRetry
+                  message={t('today.dataError', { personality })}
+                  onRetry={refreshAll}
+                  retrying={refreshing}
+                />
+              ) : glanceMissingBankingInput ? (
+                <Card>
+                  <EmptyState body={t('today.balanceMissingHint', { personality })} />
+                </Card>
+              ) : (
+                // Même géométrie que la grille de skeletons — le fondu n'ajoute AUCUN saut.
+                <FadeIn index={1} style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 11 }}>
                     <KpiTile
                       style={KPI_TILE}
                       label={t('today.kpiOwed', { personality })}
@@ -900,16 +899,16 @@ export default function Aujourdhui() {
                       icon={<CalendarIcon color={colors.ink600} />}
                       onPress={() => router.push('/(tabs)/argent')}
                     />
-                  </>
-                )}
-              </View>
+                </FadeIn>
+              )}
             </View>
           ) : null}
 
           {cockpit ? (
             <View>
               <SectionHeader title={t('today.sectionQuick', { personality })} />
-              <View style={{ flexDirection: 'row', gap: 10 }}>
+              {/* Section statique : entre dans la même cascade sobre que le reste du briefing. */}
+              <FadeIn index={2} style={{ flexDirection: 'row', gap: 10 }}>
                 {TODAY_QUICK_ACTIONS.map((action) => (
                   <QuickAction
                     key={action.id}
@@ -920,7 +919,7 @@ export default function Aujourdhui() {
                     onPress={() => router.push(action.route)}
                   />
                 ))}
-              </View>
+              </FadeIn>
             </View>
           ) : null}
 

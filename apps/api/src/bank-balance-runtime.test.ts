@@ -100,24 +100,14 @@ describe('solde bancaire runtime — vérité tenant et absence de fallback', ()
     });
   });
 
-  it('tenant VIERGE (aucune observation, aucun document) : état vide PROPRE marqué bankingSource none — 200, jamais une 503', async () => {
-    // Incident fondateur 17/07 : un compte qui vient d'ouvrir recevait « unhandled
-    // HttpException » (503 cashflow-banking-source) sur chaque écran Argent. Décision : un
-    // tenant sans AUCUNE donnée financière reçoit une projection vide EXPLICITEMENT marquée —
-    // jamais un solde inventé (le marqueur distingue ce zéro d'un vrai solde observé à 0 €).
+  it('tenant vierge : exige un solde confirmé et ne fabrique aucune projection à zéro', async () => {
     const { service } = harness();
 
     const projection = await asPrincipal(OWNER, () => service.getCashflow('realiste', 30));
 
-    expect(projection).toMatchObject({
-      ok: true,
-      value: {
-        available: 0,
-        payout: 0,
-        risk: false,
-        vatDue: 0,
-        bankingSource: 'none',
-      },
+    expect(projection).toEqual({
+      ok: false,
+      error: { kind: 'unavailable', service: 'cashflow-banking-source' },
     });
   });
 
@@ -141,7 +131,10 @@ describe('solde bancaire runtime — vérité tenant et absence de fallback', ()
   it('avec observation confirmée : la projection est marquée qualified_snapshot', async () => {
     const { service } = harness();
     await asPrincipal(OWNER, () =>
-      service.recordManualBankBalance({ amountCents: 250_000, observedAt: new Date().toISOString() }),
+      service.recordManualBankBalance({
+        amountCents: 250_000,
+        observedAt: new Date().toISOString(),
+      }),
     );
 
     const projection = await asPrincipal(OWNER, () => service.getCashflow('realiste', 30));

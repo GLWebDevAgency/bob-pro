@@ -9,6 +9,7 @@ import { useRef, useState } from 'react';
 import { Alert } from 'react-native';
 import type { InvoiceView } from '@bob/api-client';
 import { Button } from '@bob/ui';
+import { useBobClient } from '../data/client';
 import { appErrorMessage, useRegisterPayment } from '../data/hooks';
 import { useConfirm } from './ConfirmSheet';
 import {
@@ -17,6 +18,7 @@ import {
   isCollectible,
   paymentIdempotencyKey,
 } from './DocumentActions';
+import { resolveCollectAccountingPreview } from './collect-accounting-preview';
 
 export function CollectInvoiceButton({
   invoice,
@@ -29,6 +31,7 @@ export function CollectInvoiceButton({
   onDone?: (amountCents: number) => void;
 }) {
   const pay = useRegisterPayment();
+  const client = useBobClient();
   const confirm = useConfirm();
   const lock = useRef(false);
   const [busy, setBusy] = useState(false);
@@ -49,7 +52,35 @@ export function CollectInvoiceButton({
           if (lock.current) return;
           lock.current = true;
           try {
-            const ok = await confirm(collectConfirmSpec(invoice, remaining));
+            const preview = await resolveCollectAccountingPreview(client, {
+              invoiceId: invoice.id,
+              expectedRemainingCents: remaining,
+            });
+            if (preview.kind === 'error') {
+              Alert.alert('Aperçu indisponible', appErrorMessage(preview.error));
+              return;
+            }
+            if (preview.kind === 'unavailable') {
+              Alert.alert('Aperçu indisponible', preview.reason);
+              return;
+            }
+            if (preview.kind === 'stale') {
+              Alert.alert(
+                'Facture actualisée',
+                'Le reste dû a changé. Actualise la facture avant d’enregistrer le paiement.',
+              );
+              return;
+            }
+            if (preview.kind === 'invalid_contract') {
+              Alert.alert(
+                'Aperçu indisponible',
+                'La preuve comptable reçue est incohérente. Réessaie avant d’enregistrer le paiement.',
+              );
+              return;
+            }
+            const ok = await confirm(
+              collectConfirmSpec(invoice, remaining, preview.lines),
+            );
             if (!ok) return;
             setBusy(true);
             await pay.mutateAsync({

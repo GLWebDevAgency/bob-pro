@@ -116,7 +116,7 @@ export function PriorityCard({
             accessibilityState={{ checked: done }}
             hitSlop={10}
             onPress={onToggle}
-            style={{
+            style={({ pressed }) => ({
               width: 26,
               height: 26,
               borderRadius: 13,
@@ -127,7 +127,10 @@ export function PriorityCard({
               justifyContent: 'center',
               marginRight: 13,
               marginTop: 1,
-            }}
+              // Press feedback (passe feel 18/07) : même langage instantané que Button (0.94),
+              // amplifié pour une cible de 26 — le doigt sent la coche avant le state.
+              transform: [{ scale: pressed ? 0.88 : 1 }],
+            })}
           >
             {done ? checkIcon : null}
           </Pressable>

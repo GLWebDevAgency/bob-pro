@@ -11,8 +11,8 @@
  *    CompanyProps depuis C24b mais n'avaient jamais d'endpoint d'écriture après l'onboarding).
  *  · toggles RIB/assurance + couleur PDF → CompanyBillingSettings PostgreSQL et renderer PDF ;
  *  · validité/acompte → même source PostgreSQL, appliquée au démarrage d'un nouveau devis.
- *  · logo et conditions de paiement sont masqués : aucun stockage objet/consommateur métier sûr
- *    n'existe encore. Ils ne réapparaîtront qu'une fois branchés de bout en bout.
+ *  · conditions de paiement → PostgreSQL puis IssueInvoice ; aucune facture ne peut être émise
+ *    avant un choix explicite. Le logo reste masqué tant que son stockage objet n'existe pas.
  *  · Numérotation : le proto affiche un « format éditable » + « prochain numéro » — non repris :
  *    la numérotation est allouée atomiquement par le serveur (SequenceCounterPort), l'éditer
  *    côté client sans effet réel serait un contrôle décoratif (contraire à la doctrine du
@@ -26,7 +26,16 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { shadowNative, themes } from '@bob/tokens';
 import { t } from '@bob/i18n';
-import { Card, Chip, ErrorRetry, SectionHeader, SegmentedControl, SkeletonCard, font, useTheme } from '@bob/ui';
+import {
+  Card,
+  Chip,
+  ErrorRetry,
+  SectionHeader,
+  SegmentedControl,
+  SkeletonCard,
+  font,
+  useTheme,
+} from '@bob/ui';
 import { Company, formatSiret, tradeProfile, type InvoicePdfAccentColor } from '@bob/core';
 import type { InvoiceView } from '@bob/api-client';
 import { useCompanyMe, useInvoices, useUpdateCompanyProfile } from '../src/data/hooks';
@@ -67,6 +76,7 @@ function SoonPill() {
 
 const VALIDITY_PRESETS: readonly number[] = [15, 30, 45, 60];
 const DEPOSIT_PRESETS: readonly number[] = [0, 10, 20, 30, 40, 50];
+const PAYMENT_TERMS_PRESETS: readonly number[] = [15, 30, 45, 60];
 const ACCENT_ORDER: readonly InvoicePdfAccentColor[] = ['navy', 'green', 'purple', 'orange'];
 
 export default function ReglagesFacturation() {
@@ -129,7 +139,11 @@ export default function ReglagesFacturation() {
 
       <ScrollView
         style={{ flex: 1 }}
-        contentContainerStyle={{ paddingHorizontal: 18, paddingTop: 14, paddingBottom: bobScrollInsets.paddingBottom }}
+        contentContainerStyle={{
+          paddingHorizontal: 18,
+          paddingTop: 14,
+          paddingBottom: bobScrollInsets.paddingBottom,
+        }}
         automaticallyAdjustKeyboardInsets={bobScrollInsets.automaticallyAdjustKeyboardInsets}
         scrollIndicatorInsets={{ bottom: bobScrollInsets.scrollIndicatorBottom }}
         showsVerticalScrollIndicator={false}
@@ -156,11 +170,26 @@ export default function ReglagesFacturation() {
         ) : (
           <>
             {/* Aperçu du même accent et des mêmes options que le renderer PDF serveur. */}
-            <View style={{ borderRadius: 18, overflow: 'hidden', backgroundColor: colors.surface, ...shadowNative.e2 }}>
+            <View
+              style={{
+                borderRadius: 18,
+                overflow: 'hidden',
+                backgroundColor: colors.surface,
+                ...shadowNative.e2,
+              }}
+            >
               <View style={{ height: 7, backgroundColor: accentColor }} />
               <View style={{ padding: 16 }}>
-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                  <View style={{ flexDirection: 'row', gap: 11, alignItems: 'center', flexShrink: 1 }}>
+                <View
+                  style={{
+                    flexDirection: 'row',
+                    justifyContent: 'space-between',
+                    alignItems: 'flex-start',
+                  }}
+                >
+                  <View
+                    style={{ flexDirection: 'row', gap: 11, alignItems: 'center', flexShrink: 1 }}
+                  >
                     <View
                       style={{
                         width: 42,
@@ -181,7 +210,10 @@ export default function ReglagesFacturation() {
                       </Text>
                     </View>
                     <View style={{ flexShrink: 1 }}>
-                      <Text numberOfLines={1} style={[font('sub', 700), { fontSize: 14.5, color: colors.ink900 }]}>
+                      <Text
+                        numberOfLines={1}
+                        style={[font('sub', 700), { fontSize: 14.5, color: colors.ink900 }]}
+                      >
                         {data.name}
                       </Text>
                       <Text style={[font('meta'), { color: colors.slate400 }]}>
@@ -190,10 +222,20 @@ export default function ReglagesFacturation() {
                     </View>
                   </View>
                   <View style={{ alignItems: 'flex-end' }}>
-                    <Text style={[font('label', 800), { fontSize: 15, color: accentColor, letterSpacing: 0.5 }]}>
+                    <Text
+                      style={[
+                        font('label', 800),
+                        { fontSize: 15, color: accentColor, letterSpacing: 0.5 },
+                      ]}
+                    >
                       {t('reglages.previewInvoiceLabel', { personality })}
                     </Text>
-                    <Text style={[font('meta'), { color: colors.slate400, fontVariant: ['tabular-nums'] }]}>
+                    <Text
+                      style={[
+                        font('meta'),
+                        { color: colors.slate400, fontVariant: ['tabular-nums'] },
+                      ]}
+                    >
                       {previewNumber}
                     </Text>
                   </View>
@@ -204,10 +246,7 @@ export default function ReglagesFacturation() {
                 </Text>
                 {prefs.showRibOnInvoices && data.iban ? (
                   <Text
-                    style={[
-                      font('meta'),
-                      { color: colors.slate300, lineHeight: 17, marginTop: 4 },
-                    ]}
+                    style={[font('meta'), { color: colors.slate300, lineHeight: 17, marginTop: 4 }]}
                   >
                     {`${t('reglages.ribIbanLabel', { personality })} ${maskedIban(data.iban)}${
                       data.bic ? ` · BIC ${data.bic}` : ''
@@ -216,22 +255,25 @@ export default function ReglagesFacturation() {
                 ) : null}
                 {prefs.showInsuranceOnInvoices && data.decennale ? (
                   <Text
-                    style={[
-                      font('meta'),
-                      { color: colors.slate300, lineHeight: 17, marginTop: 4 },
-                    ]}
+                    style={[font('meta'), { color: colors.slate300, lineHeight: 17, marginTop: 4 }]}
                   >
                     {`${t(
-                      isBtp
-                        ? 'reglages.insuranceDecennaleLabel'
-                        : 'reglages.insuranceRcProLabel',
+                      isBtp ? 'reglages.insuranceDecennaleLabel' : 'reglages.insuranceRcProLabel',
                       { personality },
                     )} ${data.decennale.insurer} · n°${data.decennale.policyNo}`}
                   </Text>
                 ) : null}
               </View>
             </View>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 8, marginBottom: 6 }}>
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 6,
+                marginTop: 8,
+                marginBottom: 6,
+              }}
+            >
               <Feather name="eye" size={13} color={colors.slate400} />
               <Text style={[font('label', 600), { fontSize: 11.5, color: colors.slate400 }]}>
                 {t('reglages.previewLive', { personality })}
@@ -243,9 +285,22 @@ export default function ReglagesFacturation() {
             <Card padding={4} style={{ paddingHorizontal: 15, marginBottom: 18 }}>
               {(
                 [
-                  { key: 'name', label: t('reglages.identityName', { personality }), value: data.name },
-                  { key: 'siret', label: t('reglages.identitySiret', { personality }), value: formatSiret(data.siret), tabular: true },
-                  { key: 'rm', label: t('reglages.identityRm', { personality }), value: data.rcsOrRm ?? '—' },
+                  {
+                    key: 'name',
+                    label: t('reglages.identityName', { personality }),
+                    value: data.name,
+                  },
+                  {
+                    key: 'siret',
+                    label: t('reglages.identitySiret', { personality }),
+                    value: formatSiret(data.siret),
+                    tabular: true,
+                  },
+                  {
+                    key: 'rm',
+                    label: t('reglages.identityRm', { personality }),
+                    value: data.rcsOrRm ?? '—',
+                  },
                   {
                     key: 'address',
                     label: t('reglages.identityAddress', { personality }),
@@ -279,7 +334,12 @@ export default function ReglagesFacturation() {
                 </View>
               ))}
             </Card>
-            <Text style={[font('meta'), { color: colors.slate300, marginTop: -10, marginBottom: 18, lineHeight: 16 }]}>
+            <Text
+              style={[
+                font('meta'),
+                { color: colors.slate300, marginTop: -10, marginBottom: 18, lineHeight: 16 },
+              ]}
+            >
               {t('reglages.identityNotEditableNote', { personality })}
             </Text>
 
@@ -310,10 +370,16 @@ export default function ReglagesFacturation() {
                   <Text
                     style={[
                       font('sub', 700),
-                      { fontSize: 13.5, color: data.iban ? colors.ink800 : colors.slate400, fontVariant: ['tabular-nums'] },
+                      {
+                        fontSize: 13.5,
+                        color: data.iban ? colors.ink800 : colors.slate400,
+                        fontVariant: ['tabular-nums'],
+                      },
                     ]}
                   >
-                    {data.iban ? maskedIban(data.iban) : t('reglages.ribIbanEmpty', { personality })}
+                    {data.iban
+                      ? maskedIban(data.iban)
+                      : t('reglages.ribIbanEmpty', { personality })}
                   </Text>
                   <ChevronRightIcon color={colors.slate300} size={15} />
                 </View>
@@ -326,7 +392,12 @@ export default function ReglagesFacturation() {
                 subtitle={t('reglages.ribToggleSub', { personality })}
               />
             </Card>
-            <Text style={[font('meta'), { color: colors.slate300, marginTop: -10, marginBottom: 18, lineHeight: 16 }]}>
+            <Text
+              style={[
+                font('meta'),
+                { color: colors.slate300, marginTop: -10, marginBottom: 18, lineHeight: 16 },
+              ]}
+            >
               {t('reglages.ribOnPdfNote', { personality })}
             </Text>
 
@@ -353,10 +424,22 @@ export default function ReglagesFacturation() {
                   marginTop: 12,
                 }}
               >
-                <Feather name="check-circle" size={14} color={semantic.success} style={{ marginTop: 2 }} />
-                <Text style={[font('meta'), { fontSize: 12.5, color: semantic.success, lineHeight: 18, flex: 1 }]}>
+                <Feather
+                  name="check-circle"
+                  size={14}
+                  color={semantic.success}
+                  style={{ marginTop: 2 }}
+                />
+                <Text
+                  style={[
+                    font('meta'),
+                    { fontSize: 12.5, color: semantic.success, lineHeight: 18, flex: 1 },
+                  ]}
+                >
                   {t(
-                    vatSegment === 'franchise' ? 'reglages.vatRegimeHelpFranchise' : 'reglages.vatRegimeHelpReel',
+                    vatSegment === 'franchise'
+                      ? 'reglages.vatRegimeHelpFranchise'
+                      : 'reglages.vatRegimeHelpReel',
                     { personality },
                   )}
                 </Text>
@@ -374,16 +457,26 @@ export default function ReglagesFacturation() {
                     </Text>
                   ) : null}
                   {lastInvoice.mentions.map((mention, i) => (
-                    <View key={`${i}-${mention.slice(0, 16)}`} style={{ flexDirection: 'row', gap: 8 }}>
+                    <View
+                      key={`${i}-${mention.slice(0, 16)}`}
+                      style={{ flexDirection: 'row', gap: 8 }}
+                    >
                       <Text style={[font('meta'), { color: colors.slate400 }]}>•</Text>
-                      <Text style={[font('meta'), { fontSize: 12.5, color: colors.slate500, lineHeight: 19, flex: 1 }]}>
+                      <Text
+                        style={[
+                          font('meta'),
+                          { fontSize: 12.5, color: colors.slate500, lineHeight: 19, flex: 1 },
+                        ]}
+                      >
                         {mention}
                       </Text>
                     </View>
                   ))}
                 </View>
               ) : (
-                <Text style={[font('sub'), { color: colors.slate500, lineHeight: 20, marginTop: 8 }]}>
+                <Text
+                  style={[font('sub'), { color: colors.slate500, lineHeight: 20, marginTop: 8 }]}
+                >
                   {t('reglages.mentionsEmpty', { personality })}
                 </Text>
               )}
@@ -391,7 +484,9 @@ export default function ReglagesFacturation() {
 
             {/* ── Assurance — adaptatif métier (décennale BTP / RC Pro hors bâtiment) ── */}
             <SectionHeader
-              title={t(isBtp ? 'reglages.sectionInsuranceBtp' : 'reglages.sectionInsuranceOther', { personality })}
+              title={t(isBtp ? 'reglages.sectionInsuranceBtp' : 'reglages.sectionInsuranceOther', {
+                personality,
+              })}
             />
             <Card padding={4} style={{ paddingHorizontal: 15, marginBottom: 18 }}>
               {data.decennale ? (
@@ -407,17 +502,29 @@ export default function ReglagesFacturation() {
                   }}
                 >
                   <Text style={[font('sub'), { color: colors.slate400 }]}>
-                    {t(isBtp ? 'reglages.insuranceDecennaleLabel' : 'reglages.insuranceRcProLabel', { personality })}
+                    {t(
+                      isBtp ? 'reglages.insuranceDecennaleLabel' : 'reglages.insuranceRcProLabel',
+                      { personality },
+                    )}
                   </Text>
                   <Text style={[font('sub', 700), { fontSize: 14, color: colors.ink800 }]}>
                     {`${data.decennale.insurer} · n°${data.decennale.policyNo}`}
                   </Text>
                 </View>
               ) : (
-                <View style={{ paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: colors.lineSoft, gap: 8 }}>
+                <View
+                  style={{
+                    paddingVertical: 12,
+                    borderBottomWidth: 1,
+                    borderBottomColor: colors.lineSoft,
+                    gap: 8,
+                  }}
+                >
                   <SoonPill />
                   <Text style={[font('sub'), { color: colors.slate500, lineHeight: 19 }]}>
-                    {t(isBtp ? 'reglages.insuranceEmptyBtp' : 'reglages.insuranceEmptyOther', { personality })}
+                    {t(isBtp ? 'reglages.insuranceEmptyBtp' : 'reglages.insuranceEmptyOther', {
+                      personality,
+                    })}
                   </Text>
                 </View>
               )}
@@ -425,11 +532,22 @@ export default function ReglagesFacturation() {
                 value={prefs.showInsuranceOnInvoices}
                 onChange={(next) => billingPrefs.update({ showInsuranceOnInvoices: next })}
                 disabled={billingPrefs.isPending || !data.decennale}
-                title={t(isBtp ? 'reglages.insuranceToggleLabelBtp' : 'reglages.insuranceToggleLabelOther', { personality })}
-                subtitle={t(isBtp ? 'reglages.insuranceToggleSubBtp' : 'reglages.insuranceToggleSubOther', { personality })}
+                title={t(
+                  isBtp ? 'reglages.insuranceToggleLabelBtp' : 'reglages.insuranceToggleLabelOther',
+                  { personality },
+                )}
+                subtitle={t(
+                  isBtp ? 'reglages.insuranceToggleSubBtp' : 'reglages.insuranceToggleSubOther',
+                  { personality },
+                )}
               />
             </Card>
-            <Text style={[font('meta'), { color: colors.slate300, marginTop: -10, marginBottom: 18, lineHeight: 16 }]}>
+            <Text
+              style={[
+                font('meta'),
+                { color: colors.slate300, marginTop: -10, marginBottom: 18, lineHeight: 16 },
+              ]}
+            >
               {t('reglages.insuranceOnPdfNote', { personality })}
             </Text>
 
@@ -477,7 +595,11 @@ export default function ReglagesFacturation() {
                     key={days}
                     label={t('reglages.defaultsValidityDays', { personality, params: { days } })}
                     active={prefs.defaultQuoteValidityDays === days}
-                    onPress={billingPrefs.isPending ? undefined : () => billingPrefs.update({ defaultQuoteValidityDays: days })}
+                    onPress={
+                      billingPrefs.isPending
+                        ? undefined
+                        : () => billingPrefs.update({ defaultQuoteValidityDays: days })
+                    }
                   />
                 ))}
               </View>
@@ -495,10 +617,48 @@ export default function ReglagesFacturation() {
                         : t('devis.depositPct', { personality, params: { pct } })
                     }
                     active={prefs.defaultDepositPercent === pct}
-                    onPress={billingPrefs.isPending ? undefined : () => billingPrefs.update({ defaultDepositPercent: pct })}
+                    onPress={
+                      billingPrefs.isPending
+                        ? undefined
+                        : () => billingPrefs.update({ defaultDepositPercent: pct })
+                    }
                   />
                 ))}
               </View>
+
+              <Text style={[font('sub'), { color: colors.slate500, marginBottom: 9 }]}>
+                {t('reglages.defaultsPaymentTermsLabel', { personality })}
+              </Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
+                {PAYMENT_TERMS_PRESETS.map((days) => (
+                  <Chip
+                    key={days}
+                    label={t('reglages.defaultsValidityDays', {
+                      personality,
+                      params: { days },
+                    })}
+                    active={prefs.defaultInvoicePaymentTermsDays === days}
+                    onPress={
+                      billingPrefs.isPending
+                        ? undefined
+                        : () => billingPrefs.update({ defaultInvoicePaymentTermsDays: days })
+                    }
+                  />
+                ))}
+              </View>
+              {prefs.defaultInvoicePaymentTermsDays === null ? (
+                <Text
+                  accessibilityRole="alert"
+                  style={[
+                    font('meta'),
+                    { color: semantic.warning, lineHeight: 17, marginBottom: 16 },
+                  ]}
+                >
+                  {t('reglages.paymentTermsRequired', { personality })}
+                </Text>
+              ) : (
+                <View style={{ marginBottom: 16 }} />
+              )}
 
               <Text style={[font('sub'), { color: colors.slate500, marginBottom: 9 }]}>
                 {t('reglages.defaultsAccentLabel', { personality })}
@@ -526,7 +686,9 @@ export default function ReglagesFacturation() {
                 ))}
               </View>
             </Card>
-            <Text style={[font('meta'), { color: colors.slate300, marginBottom: 22, lineHeight: 16 }]}>
+            <Text
+              style={[font('meta'), { color: colors.slate300, marginBottom: 22, lineHeight: 16 }]}
+            >
               {t('reglages.defaultsNote', { personality })}
             </Text>
 

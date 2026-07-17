@@ -606,6 +606,27 @@ const legacyFr = {
     pro: 'Impossible de consulter vos comptes pour le moment. Veuillez réessayer dans un instant.',
     direct: 'Comptes injoignables. Réessaie.',
   },
+  // État VIDE invitant (compte neuf après onboarding) — jamais un désert de « — » ni une erreur.
+  'argent.emptyTitle': {
+    pote: 'Ton argent apparaîtra ici',
+    pro: 'Vos finances apparaîtront ici',
+    direct: 'Ton argent, ici',
+  },
+  'argent.emptyBody': {
+    pote: 'Commence par confirmer ton solde en banque, puis crée ton premier devis — je m’occupe de suivre le reste.',
+    pro: 'Commencez par confirmer votre solde bancaire, puis créez votre premier devis — le suivi se fait ensuite automatiquement.',
+    direct: 'Confirme ton solde, crée ton premier devis. Le suivi suit.',
+  },
+  'argent.emptyCtaBalance': {
+    pote: 'Confirmer mon solde',
+    pro: 'Confirmer mon solde',
+    direct: 'Confirmer le solde',
+  },
+  'argent.emptyCtaQuote': {
+    pote: 'Créer mon premier devis',
+    pro: 'Créer mon premier devis',
+    direct: 'Premier devis',
+  },
 
   // ── C12 — écran « Clients » (copy pote = exacte du proto) ────────────────────
   'clients.eyebrow': {
@@ -1039,13 +1060,21 @@ const legacyFr = {
     pro: 'Aucune photo pour le moment.',
     direct: 'Aucune photo.',
   },
-  'chantierFiche.photoAdd': { pote: 'Ajouter une photo', pro: 'Ajouter une photo', direct: 'Photo' },
+  'chantierFiche.photoAdd': {
+    pote: 'Ajouter une photo',
+    pro: 'Ajouter une photo',
+    direct: 'Photo',
+  },
   'chantierFiche.photoSourceTitle': {
     pote: 'Ajouter une photo',
     pro: 'Ajouter une photo',
     direct: 'Ajouter une photo',
   },
-  'chantierFiche.photoSourceCamera': { pote: 'Appareil photo', pro: 'Appareil photo', direct: 'Appareil photo' },
+  'chantierFiche.photoSourceCamera': {
+    pote: 'Appareil photo',
+    pro: 'Appareil photo',
+    direct: 'Appareil photo',
+  },
   'chantierFiche.photoSourceLibrary': { pote: 'Galerie', pro: 'Galerie', direct: 'Galerie' },
   'chantierFiche.photoSourceCancel': { pote: 'Annuler', pro: 'Annuler', direct: 'Annuler' },
   // Paramétré par métier (tradeToWorksiteTerminology) : {term} = « chantier »/« mission »/… —
@@ -1089,10 +1118,26 @@ const legacyFr = {
     direct: 'Ouverture impossible.',
   },
   // Compte notes/photos sur la rangée liste (fiche client, onglet Chantiers/Projets…).
-  'chantierFiche.rowNotesCount': { pote: '{count} note', pro: '{count} note', direct: '{count} note' },
-  'chantierFiche.rowNotesCountPlural': { pote: '{count} notes', pro: '{count} notes', direct: '{count} notes' },
-  'chantierFiche.rowPhotosCount': { pote: '{count} photo', pro: '{count} photo', direct: '{count} photo' },
-  'chantierFiche.rowPhotosCountPlural': { pote: '{count} photos', pro: '{count} photos', direct: '{count} photos' },
+  'chantierFiche.rowNotesCount': {
+    pote: '{count} note',
+    pro: '{count} note',
+    direct: '{count} note',
+  },
+  'chantierFiche.rowNotesCountPlural': {
+    pote: '{count} notes',
+    pro: '{count} notes',
+    direct: '{count} notes',
+  },
+  'chantierFiche.rowPhotosCount': {
+    pote: '{count} photo',
+    pro: '{count} photo',
+    direct: '{count} photo',
+  },
+  'chantierFiche.rowPhotosCountPlural': {
+    pote: '{count} photos',
+    pro: '{count} photos',
+    direct: '{count} photos',
+  },
 
   // ── C13 — écran « Fiche client » ─────────────────────────────────────────────
   // Barre retour + menu « … » (no-op accessible, menu TODO).
@@ -1865,6 +1910,16 @@ const legacyFr = {
     pro: 'Client public · B2G → Chorus Pro',
     direct: 'B2G → Chorus',
   },
+  'docs.recentCustomerUnavailable': {
+    pote: 'Client indisponible',
+    pro: 'Client indisponible',
+    direct: 'Client indisponible',
+  },
+  'docs.recentSubUnavailable': {
+    pote: '{kind} · canal à confirmer',
+    pro: '{kind} · canal à confirmer',
+    direct: '{kind} · canal à confirmer',
+  },
   'docs.memoryTitle': {
     pote: 'Mémoire fournisseurs',
     pro: 'Mémoire fournisseurs',
@@ -1909,6 +1964,21 @@ const legacyFr = {
     pote: 'Je n’arrive pas à ouvrir ton coffre-fort, là. On réessaie dans un instant ?',
     pro: 'Impossible de charger vos documents pour le moment. Veuillez réessayer dans un instant.',
     direct: 'Coffre injoignable. Réessaie.',
+  },
+  'docs.staleSummaries': {
+    pote: 'Ton coffre est là, mais certaines synthèses compta n’ont pas voulu se rafraîchir.',
+    pro: 'Le coffre reste disponible, mais certaines synthèses comptables n’ont pas pu être actualisées.',
+    direct: 'Coffre OK, synthèses compta pas à jour.',
+  },
+  'docs.staleSummariesCta': {
+    pote: 'Réessayer les synthèses',
+    pro: 'Réessayer les synthèses',
+    direct: 'Réessayer',
+  },
+  'docs.staleVault': {
+    pote: 'Je te montre la dernière version de ton coffre — son actualisation n’a pas abouti.',
+    pro: 'Le coffre affiché est la dernière version disponible. Son actualisation n’a pas abouti.',
+    direct: 'Coffre affiché = dernière version. Actualisation échouée.',
   },
 
   // ── C15 — écran « Assistant (Bob) » ──────────────────────────────────────────
@@ -2369,6 +2439,31 @@ const legacyFr = {
     pote: 'Rien ne colle à ta recherche — essaie un autre mot.',
     pro: 'Aucun résultat pour cette recherche.',
     direct: 'Aucun résultat.',
+  },
+  'ventes.dataError': {
+    pote: 'Je n’arrive pas à charger tes devis et factures, là. On réessaie ?',
+    pro: 'Impossible de charger vos devis et factures pour le moment. Veuillez réessayer.',
+    direct: 'Devis/factures injoignables. Réessaie.',
+  },
+  'ventes.emptyQuotesTitle': {
+    pote: 'Ton premier devis',
+    pro: 'Votre premier devis',
+    direct: 'Premier devis',
+  },
+  'ventes.emptyQuotesBody': {
+    pote: 'C’est ici que vivront tes devis. Crée le premier — deux minutes, et je t’aide à chaque étape.',
+    pro: 'Vos devis apparaîtront ici. Créez le premier — l’assistant vous guide à chaque étape.',
+    direct: 'Aucun devis. Crée le premier.',
+  },
+  'ventes.emptyQuotesCta': {
+    pote: 'Créer mon premier devis',
+    pro: 'Créer un devis',
+    direct: 'Créer un devis',
+  },
+  'ventes.emptyInvoicesBody': {
+    pote: 'Tes factures naîtront ici, directement de tes devis signés — acompte, solde, tout suit.',
+    pro: 'Vos factures apparaîtront ici, générées depuis vos devis signés.',
+    direct: 'Aucune facture. Elles naissent des devis signés.',
   },
   'ventes.validUntil': {
     pote: 'Valide jusqu’au {date}',
@@ -4573,6 +4668,76 @@ const legacyFr = {
     pro: 'Email renvoyé. Pensez à vérifier vos courriers indésirables.',
     direct: 'Email renvoyé. Vérifie les indésirables.',
   },
+  'auth.loginResendConfirm': {
+    pote: 'Renvoyer l’email de confirmation',
+    pro: 'Renvoyer l’email de confirmation',
+    direct: 'Renvoyer l’email',
+  },
+  'auth.confirmCheckingTitle': {
+    pote: 'Je confirme ton compte',
+    pro: 'Confirmation du compte',
+    direct: 'Confirmation…',
+  },
+  'auth.confirmCheckingBody': {
+    pote: 'Une seconde — je valide ton lien et je te connecte.',
+    pro: 'Votre lien de confirmation est en cours de vérification.',
+    direct: 'Lien en cours de vérification.',
+  },
+  'auth.confirmSignedInTitle': {
+    pote: 'C’est bon, ton compte est confirmé 🎉',
+    pro: 'Compte confirmé',
+    direct: 'Compte confirmé.',
+  },
+  'auth.confirmSignedInBody': {
+    pote: 'Je t’ouvre Bob Pro tout de suite.',
+    pro: 'Votre session est ouverte, l’application démarre.',
+    direct: 'Session ouverte.',
+  },
+  'auth.confirmDoneTitle': {
+    pote: 'C’est bon, ton compte est confirmé 🎉',
+    pro: 'Compte confirmé',
+    direct: 'Compte confirmé.',
+  },
+  'auth.confirmDoneBody': {
+    pote: 'Connecte-toi avec ton email et ton mot de passe, et c’est parti.',
+    pro: 'Connectez-vous avec votre email et votre mot de passe pour commencer.',
+    direct: 'Connecte-toi. C’est parti.',
+  },
+  'auth.confirmDoneCta': {
+    pote: 'Me connecter',
+    pro: 'Me connecter',
+    direct: 'Connexion',
+  },
+  'auth.confirmExpiredTitle': {
+    pote: 'Ce lien a expiré',
+    pro: 'Lien expiré',
+    direct: 'Lien expiré',
+  },
+  'auth.confirmExpiredBody': {
+    pote: 'Pas de souci : retourne à la connexion, entre ton email et ton mot de passe — je te proposerai de renvoyer un email tout neuf.',
+    pro: 'Depuis l’écran de connexion, saisissez vos identifiants : un nouvel email de confirmation pourra être renvoyé.',
+    direct: 'Reconnecte-toi : je te renverrai un email.',
+  },
+  'auth.confirmInvalidTitle': {
+    pote: 'Ce lien ne fonctionne pas',
+    pro: 'Lien invalide',
+    direct: 'Lien invalide',
+  },
+  'auth.confirmInvalidBody': {
+    pote: 'Il a peut-être déjà servi. Retourne à la connexion : si besoin, je te renvoie un email de confirmation.',
+    pro: 'Ce lien est invalide ou a déjà été utilisé. Un nouvel email peut être renvoyé depuis la connexion.',
+    direct: 'Lien invalide ou déjà utilisé. Reconnecte-toi.',
+  },
+  'auth.confirmCheckFailedTitle': {
+    pote: 'Je n’arrive pas à vérifier le lien',
+    pro: 'Vérification impossible',
+    direct: 'Vérification impossible',
+  },
+  'auth.confirmBack': {
+    pote: 'Retour à la connexion',
+    pro: 'Retour à la connexion',
+    direct: 'Connexion',
+  },
   'auth.recoveryCheckingTitle': {
     pote: 'Je vérifie ton lien',
     pro: 'Vérification du lien',
@@ -6063,7 +6228,11 @@ const legacyFr = {
   // Segmented control réel branché sur PATCH /company/profile (le même endpoint que l'onboarding —
   // reel_simpl/reel_normal étaient déjà affichés comme UN SEUL bucket « à choisir sur chaque devis » ;
   // le segment « Réel » choisit reel_normal, la simplification 2 options du proto assumée ici).
-  'reglages.vatSegmentReel': { pote: 'Réel · TVA 20 %', pro: 'Réel · TVA 20 %', direct: 'Réel · 20 %' },
+  'reglages.vatSegmentReel': {
+    pote: 'Réel · TVA 20 %',
+    pro: 'Réel · TVA 20 %',
+    direct: 'Réel · 20 %',
+  },
   'reglages.vatSegmentFranchise': {
     pote: 'Franchise en base',
     pro: 'Franchise en base',
@@ -6115,7 +6284,11 @@ const legacyFr = {
     direct: 'Aucune facture émise.',
   },
   // ── Fusion proto (retours device fondateur) — Aperçu en direct ─────────────────────────────
-  'reglages.previewLive': { pote: 'Aperçu en direct', pro: 'Aperçu en direct', direct: 'Aperçu en direct' },
+  'reglages.previewLive': {
+    pote: 'Aperçu en direct',
+    pro: 'Aperçu en direct',
+    direct: 'Aperçu en direct',
+  },
   'reglages.previewInvoiceLabel': { pote: 'FACTURE', pro: 'FACTURE', direct: 'FACTURE' },
   'reglages.previewNumberPlaceholder': {
     pote: 'Ton prochain numéro',
@@ -6156,7 +6329,11 @@ const legacyFr = {
     pro: 'Identité sur les factures',
     direct: 'Identité',
   },
-  'reglages.identityName': { pote: 'Raison sociale', pro: 'Raison sociale', direct: 'Raison sociale' },
+  'reglages.identityName': {
+    pote: 'Raison sociale',
+    pro: 'Raison sociale',
+    direct: 'Raison sociale',
+  },
   'reglages.identitySiret': { pote: 'SIRET', pro: 'SIRET', direct: 'SIRET' },
   'reglages.identityRm': { pote: 'N° RM / RCS', pro: 'N° RM / RCS', direct: 'RM / RCS' },
   'reglages.identityAddress': { pote: 'Adresse', pro: 'Adresse', direct: 'Adresse' },
@@ -6290,18 +6467,43 @@ const legacyFr = {
     pro: 'Conditions de paiement',
     direct: 'Conditions',
   },
-  'reglages.paymentTermsReception': { pote: 'À réception', pro: 'À réception', direct: 'Réception' },
+  'reglages.paymentTermsReception': {
+    pote: 'À réception',
+    pro: 'À réception',
+    direct: 'Réception',
+  },
   'reglages.paymentTermsJ30': { pote: '30 jours', pro: '30 jours', direct: '30 j' },
   'reglages.paymentTermsJ45': { pote: '45 jours', pro: '45 jours', direct: '45 j' },
+  'reglages.paymentTermsRequired': {
+    pote: 'Choisis ce délai avant d’émettre ta prochaine facture — je ne vais pas en inventer un.',
+    pro: 'Choisissez ce délai avant la prochaine émission. Aucune échéance n’est présumée.',
+    direct: 'Requis avant émission. Aucun délai présumé.',
+  },
   'reglages.defaultsAccentLabel': {
     pote: 'Couleur d’accent du PDF',
     pro: 'Couleur d’accent du PDF',
     direct: 'Couleur PDF',
   },
   'reglages.defaultsNote': {
-    pote: 'La validité et l’acompte s’appliquent à chaque nouveau devis. La couleur s’applique aux prochains PDF.',
-    pro: 'La validité et l’acompte s’appliquent à chaque nouveau devis. La couleur s’applique aux prochains PDF.',
-    direct: 'Appliqué aux nouveaux devis et PDF.',
+    pote: 'La validité et l’acompte s’appliquent aux nouveaux devis. Le délai choisi fixe l’échéance des prochaines factures.',
+    pro: 'La validité et l’acompte s’appliquent aux nouveaux devis. Le délai choisi fixe l’échéance des prochaines factures.',
+    direct: 'Appliqué aux nouveaux devis, factures et PDF.',
+  },
+
+  'invoice.paymentTermsMissingTitle': {
+    pote: 'Choisis ton délai de paiement',
+    pro: 'Conditions de paiement requises',
+    direct: 'Délai requis',
+  },
+  'invoice.paymentTermsMissingBody': {
+    pote: 'Avant de donner un numéro légal à cette facture, choisis son vrai délai dans Facturation & modèles.',
+    pro: 'Choisissez le délai contractuel dans Facturation & modèles avant d’attribuer le numéro légal.',
+    direct: 'Choisis le délai réel avant l’émission légale.',
+  },
+  'invoice.paymentTermsMissingCta': {
+    pote: 'Choisir le délai',
+    pro: 'Configurer',
+    direct: 'Configurer',
   },
 
   'reglages.soonBadge': { pote: 'Bientôt', pro: 'À venir', direct: 'Bientôt' },
@@ -6328,7 +6530,11 @@ const legacyFr = {
     pro: 'Profil, entreprise, offre Pro',
     direct: 'Profil · entreprise · offre',
   },
-  'menu.onboarding': { pote: 'Revoir l’onboarding', pro: 'Revoir l’onboarding', direct: 'Onboarding' },
+  'menu.onboarding': {
+    pote: 'Revoir l’onboarding',
+    pro: 'Revoir l’onboarding',
+    direct: 'Onboarding',
+  },
   'menu.onboardingSub': {
     pote: 'Configuration adaptée à ton métier',
     pro: 'Configuration adaptée à votre métier',

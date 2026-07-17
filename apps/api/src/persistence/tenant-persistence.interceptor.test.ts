@@ -3,9 +3,10 @@ import { Reflector } from '@nestjs/core';
 import { lastValueFrom, of } from 'rxjs';
 import { describe, expect, it, vi } from 'vitest';
 import { requestContext } from '../observability/logger';
-import { ExpensesController, QuotesController } from '../api.controllers';
+import { ExpensesController, OnboardingController, QuotesController } from '../api.controllers';
 import type { Persistence } from './persistence';
 import {
+  AllowsMissingCompanyRow,
   TenantPersistenceInterceptor,
   WithoutTenantPersistenceTransaction,
 } from './tenant-persistence.interceptor';
@@ -15,7 +16,13 @@ class TestController {
 
   @WithoutTenantPersistenceTransaction()
   worker(): void {}
+
+  @AllowsMissingCompanyRow()
+  provisioning(): void {}
 }
+
+/** Company ouverte factice — le cas nominal d'une route tenant. */
+const openCompany = { isClosed: () => false };
 
 function contextFor(handler: (...args: never[]) => unknown, url: string, controller: object = TestController): ExecutionContext {
   return {
@@ -28,7 +35,7 @@ function contextFor(handler: (...args: never[]) => unknown, url: string, control
 describe('TenantPersistenceInterceptor — frontières transactionnelles', () => {
   it('enveloppe une route tenant ordinaire dans la transaction RLS', async () => {
     const runWithTenant = vi.fn(async (_companyId: string, fn: () => Promise<unknown>) => fn());
-    const companies = { findById: async () => null };
+    const companies = { findById: async () => openCompany };
     const interceptor = new TenantPersistenceInterceptor(
       { runWithTenant, companies } as unknown as Persistence,
       new Reflector(),
@@ -49,6 +56,102 @@ describe('TenantPersistenceInterceptor — frontières transactionnelles', () =>
     expect(value).toBe('ok');
     expect(runWithTenant).toHaveBeenCalledOnce();
     expect(runWithTenant).toHaveBeenCalledWith('co-1', expect.any(Function));
+  });
+
+  it('refuse une route tenant ordinaire quand la company du JWT est ABSENTE de la base (403 NO_COMPANY)', async () => {
+    const runWithTenant = vi.fn(async (_companyId: string, fn: () => Promise<unknown>) => fn());
+    // JWT avec app_metadata.company_id posé, mais base réinitialisée : findById → null.
+    const companies = { findById: async () => null };
+    const interceptor = new TenantPersistenceInterceptor(
+      { runWithTenant, companies } as unknown as Persistence,
+      new Reflector(),
+    );
+    const next = { handle: vi.fn(() => of('ok')) } satisfies CallHandler;
+
+    let thrown: unknown = null;
+    await requestContext.run(
+      {
+        correlationId: 'tenant-interceptor-no-company-test',
+        principal: { userId: 'user-1', companyId: 'co-stale' },
+      },
+      async () => {
+        try {
+          await lastValueFrom(interceptor.intercept(
+            contextFor(TestController.prototype.regular, '/customers'),
+            next,
+          ));
+        } catch (e) {
+          thrown = e;
+        }
+      },
+    );
+
+    expect(thrown).toBeInstanceOf(ForbiddenException);
+    // Code stable + enveloppe AppError décodable par les clients (contrat http/result.ts).
+    expect((thrown as ForbiddenException).getResponse()).toMatchObject({
+      code: 'NO_COMPANY',
+      error: { kind: 'forbidden', reason: 'NO_COMPANY' },
+    });
+    // Aucun handler tenant ne doit s'exécuter sans company : pas d'agrégat fantôme sur base vide.
+    expect(next.handle).not.toHaveBeenCalled();
+  });
+
+  it('laisse POST /onboarding/company re-provisionner MALGRÉ une company absente (@AllowsMissingCompanyRow)', async () => {
+    const runWithTenant = vi.fn(async (_companyId: string, fn: () => Promise<unknown>) => fn());
+    const companies = { findById: async () => null };
+    const interceptor = new TenantPersistenceInterceptor(
+      { runWithTenant, companies } as unknown as Persistence,
+      new Reflector(),
+    );
+    const next = { handle: vi.fn(() => of('provisioned')) } satisfies CallHandler;
+
+    const value = await requestContext.run(
+      {
+        correlationId: 'tenant-interceptor-reprovisioning-test',
+        principal: { userId: 'user-1', companyId: 'co-stale' },
+      },
+      () => lastValueFrom(interceptor.intercept(
+        contextFor(OnboardingController.prototype.company, '/onboarding/company', OnboardingController),
+        next,
+      )),
+    );
+
+    // La transaction tenant reste ouverte (GUC RLS posé) et le handler recrée la company.
+    expect(value).toBe('provisioned');
+    expect(runWithTenant).toHaveBeenCalledWith('co-stale', expect.any(Function));
+    expect(next.handle).toHaveBeenCalledOnce();
+  });
+
+  it('une route décorée @AllowsMissingCompanyRow refuse toujours une company CLÔTURÉE', async () => {
+    const runWithTenant = vi.fn(async (_companyId: string, fn: () => Promise<unknown>) => fn());
+    const companies = { findById: async () => ({ isClosed: () => true }) };
+    const interceptor = new TenantPersistenceInterceptor(
+      { runWithTenant, companies } as unknown as Persistence,
+      new Reflector(),
+    );
+    const next = { handle: vi.fn(() => of('ok')) } satisfies CallHandler;
+
+    let thrown: unknown = null;
+    await requestContext.run(
+      {
+        correlationId: 'tenant-interceptor-closed-optional-test',
+        principal: { userId: 'user-1', companyId: 'co-closed' },
+      },
+      async () => {
+        try {
+          await lastValueFrom(interceptor.intercept(
+            contextFor(TestController.prototype.provisioning, '/onboarding/company'),
+            next,
+          ));
+        } catch (e) {
+          thrown = e;
+        }
+      },
+    );
+
+    expect(thrown).toBeInstanceOf(ForbiddenException);
+    expect((thrown as ForbiddenException).getResponse()).toMatchObject({ code: 'ACCOUNT_CLOSED' });
+    expect(next.handle).not.toHaveBeenCalled();
   });
 
   it('refuse une route tenant ordinaire sur une company clôturée (403 ACCOUNT_CLOSED)', async () => {

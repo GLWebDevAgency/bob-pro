@@ -34,7 +34,7 @@ describe('i18n', () => {
     expect(PERSONALITY_LABELS[normalizePersonality('Direct')]).toBe('Direct');
   });
 
-  it("today.subtitle interpole {count} sur les 3 humeurs (variante n=0 séparée)", () => {
+  it('today.subtitle interpole {count} sur les 3 humeurs (variante n=0 séparée)', () => {
     expect(t('today.subtitle', { params: { count: 3 } })).toBe(
       '3 trucs à régler, et après tu factures tranquille.',
     );
@@ -112,18 +112,22 @@ describe('i18n', () => {
     expect(t('clients.subtitle', { params: { count: 6, total: '4 330 €' } })).toBe(
       '6 clients · 4 330 € en attente',
     );
-    expect(t('clients.subtitle', { personality: 'pro', params: { count: 6, total: '4 330 €' } })).toBe(
-      '6 clients · 4 330 € en attente',
+    expect(
+      t('clients.subtitle', { personality: 'pro', params: { count: 6, total: '4 330 €' } }),
+    ).toBe('6 clients · 4 330 € en attente');
+    expect(
+      t('clients.subtitle', { personality: 'direct', params: { count: 6, total: '4 330 €' } }),
+    ).toBe('6 clients · 4 330 € dus');
+    expect(t('clients.subtitleOne', { params: { total: '120 €' } })).toBe(
+      '1 client · 120 € en attente',
     );
-    expect(t('clients.subtitle', { personality: 'direct', params: { count: 6, total: '4 330 €' } })).toBe(
-      '6 clients · 4 330 € dus',
-    );
-    expect(t('clients.subtitleOne', { params: { total: '120 €' } })).toBe('1 client · 120 € en attente');
   });
 
   it('clients : sous-titres contextuels, empty state et erreur déclinent les 3 humeurs', () => {
     expect(t('clients.subLateDays', { params: { days: 9 } })).toBe('Paie avec 9 j de retard');
-    expect(t('clients.subLateDays', { personality: 'direct', params: { days: 9 } })).toBe('Retard : 9 j');
+    expect(t('clients.subLateDays', { personality: 'direct', params: { days: 9 } })).toBe(
+      'Retard : 9 j',
+    );
     expect(t('clients.subPendingB2g')).toBe('Suivi via Chorus Pro');
     expect(t('clients.emptyTitle')).toBe('Ton carnet est vide');
     expect(t('clients.emptyTitle', { personality: 'pro' })).toBe('Votre carnet est vide');
@@ -137,11 +141,15 @@ describe('i18n', () => {
     expect(t('clients.createNameLabel')).toBe('Nom');
     expect(t('clients.createTypeLabel', { personality: 'pro' })).toBe('Type de client');
     expect(t('clients.createSubmit')).toBe('Ajouter au carnet');
-    expect(t('clients.createSuccess', { params: { name: 'Mme Nguyen' } })).toBe('Mme Nguyen est dans ton carnet ✓');
+    expect(t('clients.createSuccess', { params: { name: 'Mme Nguyen' } })).toBe(
+      'Mme Nguyen est dans ton carnet ✓',
+    );
     expect(t('clients.createSuccess', { personality: 'pro', params: { name: 'Mme Nguyen' } })).toBe(
       'Mme Nguyen a été ajouté à votre carnet.',
     );
-    expect(t('clients.createError', { personality: 'direct' })).toBe('Création impossible. Réessaie.');
+    expect(t('clients.createError', { personality: 'direct' })).toBe(
+      'Création impossible. Réessaie.',
+    );
   });
 
   it('fiche.* : copy du contrat C13 (score par tranche, conformité PA, actions)', () => {
@@ -173,7 +181,9 @@ describe('i18n', () => {
     expect(t('fiche.ctaNewQuote')).toBe('Nouveau devis');
     expect(t('fiche.badgeB2b')).toBe('Entreprise');
     expect(t('fiche.sirenLabel', { params: { siren: '821 503 642' } })).toBe('SIREN 821 503 642');
-    expect(t('fiche.statusLate', { personality: 'direct', params: { days: 9 } })).toBe('Retard 9 j');
+    expect(t('fiche.statusLate', { personality: 'direct', params: { days: 9 } })).toBe(
+      'Retard 9 j',
+    );
     expect(t('fiche.notFound').length).toBeGreaterThan(0);
     expect(t('fiche.dataError', { personality: 'pro' }).length).toBeGreaterThan(0);
   });
@@ -222,9 +232,9 @@ describe('i18n — C14 docs.*', () => {
     expect(t('docs.classifiedToast', { params: { supplier: 'Leroy Merlin' } })).toBe(
       'Leroy Merlin classé · Achats ✓',
     );
-    expect(t('docs.classifiedToast', { personality: 'direct', params: { supplier: 'Cedeo' } })).toBe(
-      'Cedeo → Achats.',
-    );
+    expect(
+      t('docs.classifiedToast', { personality: 'direct', params: { supplier: 'Cedeo' } }),
+    ).toBe('Cedeo → Achats.');
     expect(t('docs.open')).toBe('Ouvrir');
   });
 
@@ -232,6 +242,10 @@ describe('i18n — C14 docs.*', () => {
     expect(t('docs.recentSubB2b', { params: { kind: 'Acompte' } })).toBe('Acompte · B2B → PDP');
     expect(t('docs.recentSubB2c')).toBe('Particulier · B2C → e-reporting');
     expect(t('docs.recentSubB2g', { personality: 'direct' })).toBe('B2G → Chorus');
+    expect(t('docs.recentCustomerUnavailable')).toBe('Client indisponible');
+    expect(t('docs.recentSubUnavailable', { params: { kind: 'Facture' } })).toBe(
+      'Facture · canal à confirmer',
+    );
   });
 });
 
@@ -254,7 +268,9 @@ describe('i18n — C15 assistant.*', () => {
       'Demandez. J’agis — je ne me contente pas de répondre.',
     );
     expect(t('assistant.subtitle', { personality: 'direct' })).toBe('Demande. J’exécute.');
-    expect(t('assistant.offline', { personality: 'direct' })).toBe('Serveur injoignable. Réessaie.');
+    expect(t('assistant.offline', { personality: 'direct' })).toBe(
+      'Serveur injoignable. Réessaie.',
+    );
   });
 
   it('confirmation explicite : libellés Valider/Annuler + garde-fou + commandes {ref}', () => {
@@ -275,18 +291,26 @@ describe('i18n — C15 assistant.*', () => {
     expect(t('agent.global.idle')).toBe('Parler à Bob');
     expect(t('agent.global.listening', { personality: 'pro' })).toBe('Je vous écoute…');
     expect(t('agent.global.thinking', { personality: 'direct' })).toBe('Analyse…');
-    expect(t('agent.global.context', { personality: 'pro', params: { context: 'facture F-14' } })).toBe(
-      'Contexte actif : facture F-14',
+    expect(
+      t('agent.global.context', { personality: 'pro', params: { context: 'facture F-14' } }),
+    ).toBe('Contexte actif : facture F-14');
+    expect(t('agent.global.reviewRequired', { personality: 'direct' })).toBe(
+      'À finaliser dans l’Assistant. Rien de fait.',
     );
-    expect(t('agent.global.reviewRequired', { personality: 'direct' })).toBe('À finaliser dans l’Assistant. Rien de fait.');
-    expect(t('agent.global.continueInAssistant', { personality: 'direct' })).toBe('Ouvrir l’Assistant');
-    expect(t('agent.global.heardNothing', { personality: 'pro' })).toBe('Je n’ai rien entendu. Touchez le bouton pour reprendre.');
+    expect(t('agent.global.continueInAssistant', { personality: 'direct' })).toBe(
+      'Ouvrir l’Assistant',
+    );
+    expect(t('agent.global.heardNothing', { personality: 'pro' })).toBe(
+      'Je n’ai rien entendu. Touchez le bouton pour reprendre.',
+    );
     expect(t('agent.global.dismiss', { personality: 'pro' })).toBe('Fermer la réponse de Bob');
     // Plancher vocal : les textes de relance de consentement ne contiennent AUCUN token
     // que parseVoiceConsent accepte (ni confirmation, ni annulation) — l'écho ne décide jamais.
     for (const personality of ['pote', 'pro', 'direct'] as const) {
       const retry = t('live.unclearConsent', { personality }).toLowerCase();
-      expect(retry).not.toMatch(/annul|je confirme|\bd.accord\b|\boui\b|\bok\b|vas[- ]?y|j.autorise/);
+      expect(retry).not.toMatch(
+        /annul|je confirme|\bd.accord\b|\boui\b|\bok\b|vas[- ]?y|j.autorise/,
+      );
     }
   });
 });
@@ -310,19 +334,28 @@ describe('i18n — C20 voix.*', () => {
       'Encaisser maintenant · 245,00 €',
     );
     expect(t('voix.vatRate', { params: { rate: 20 } })).toBe('TVA 20 %');
+    expect(t('voix.donePaidText', { params: { amount: '245,00 €', number: 'F-2026-118' } })).toBe(
+      '245,00 € encaissés. La facture F-2026-118 est émise, classée, et ta tréso est à jour.',
+    );
     expect(
-      t('voix.donePaidText', { params: { amount: '245,00 €', number: 'F-2026-118' } }),
-    ).toBe('245,00 € encaissés. La facture F-2026-118 est émise, classée, et ta tréso est à jour.');
-    expect(
-      t('voix.confirmSendBody', { personality: 'pro', params: { name: 'Mme Durand', amount: '245,00 €' } }),
+      t('voix.confirmSendBody', {
+        personality: 'pro',
+        params: { name: 'Mme Durand', amount: '245,00 €' },
+      }),
     ).toBe('La facture de Mme Durand (245,00 €) sera émise avec son numéro légal.');
   });
 
   it('micro refusé/indisponible et erreurs : voix de Bob sur les 3 humeurs', () => {
-    expect(t('voix.micDenied', { personality: 'direct' })).toBe('Micro refusé. Réglages, ou écris.');
+    expect(t('voix.micDenied', { personality: 'direct' })).toBe(
+      'Micro refusé. Réglages, ou écris.',
+    );
     expect(t('voix.micUnavailable').length).toBeGreaterThan(0);
-    expect(t('voix.errNoLines')).toBe('Je n’ai pas entendu de prestation ni de montant — on réessaie ?');
-    expect(t('voix.errNoCustomer', { personality: 'pro' })).toBe('Sélectionnez le client avant de facturer.');
+    expect(t('voix.errNoLines')).toBe(
+      'Je n’ai pas entendu de prestation ni de montant — on réessaie ?',
+    );
+    expect(t('voix.errNoCustomer', { personality: 'pro' })).toBe(
+      'Sélectionnez le client avant de facturer.',
+    );
   });
 });
 
@@ -332,7 +365,9 @@ describe('i18n — C21 devis.*', () => {
     expect(t('devis.draftExit.body', { personality: 'pro' })).toContain('reprendre ici plus tard');
     expect(t('devis.draftExit.signatureBody')).toContain('devra être refaite');
     expect(t('devis.draftExit.proposalBody', { personality: 'direct' })).toContain('non appliquée');
-    expect(t('devis.draftExit.generationBody', { personality: 'pro' })).toContain('éviter un doublon');
+    expect(t('devis.draftExit.generationBody', { personality: 'pro' })).toContain(
+      'éviter un doublon',
+    );
     expect(t('devis.draftExit.persistenceError', { personality: 'pro' })).toContain('reste ouvert');
     expect(t('devis.draftExit.continue')).toBe('Continuer le devis');
     expect(t('devis.draftExit.save', { personality: 'direct' })).toBe('Garder et fermer');
@@ -345,7 +380,9 @@ describe('i18n — C21 devis.*', () => {
     expect(t('devis.stepRecap', { personality: 'direct' })).toBe('Récap');
     expect(t('devis.signTitle')).toBe('Comment il signe ?');
     expect(t('devis.signTitle', { personality: 'pro' })).toBe('Comment le client signe-t-il ?');
-    expect(t('devis.guardClient', { personality: 'pro' })).toBe('Sélectionnez un client avant de continuer.');
+    expect(t('devis.guardClient', { personality: 'pro' })).toBe(
+      'Sélectionnez un client avant de continuer.',
+    );
     expect(t('devis.guardLines', { personality: 'direct' })).toBe('Une ligne minimum.');
     expect(t('devis.guardSignMode', { personality: 'direct' })).toBe('Sur place ou envoyer ?');
     expect(t('devis.guardSignature').length).toBeGreaterThan(0);
@@ -362,8 +399,12 @@ describe('i18n — C21 devis.*', () => {
         params: { number: 'F-2026-118', name: 'M. Bernard', amount: '488,40 €' },
       }),
     ).toBe('M. Bernard a signé le devis F-2026-118 — 488,40 € TTC.');
-    expect(t('devis.toastSigned', { params: { number: 'F-2026-118' } })).toBe('Devis F-2026-118 signé ✓');
-    expect(t('devis.toastSent', { params: { number: 'F-2026-118' } })).toBe('Devis F-2026-118 envoyé ✓');
+    expect(t('devis.toastSigned', { params: { number: 'F-2026-118' } })).toBe(
+      'Devis F-2026-118 signé ✓',
+    );
+    expect(t('devis.toastSent', { params: { number: 'F-2026-118' } })).toBe(
+      'Devis F-2026-118 envoyé ✓',
+    );
     expect(t('devis.vatSuggested', { params: { rate: 10 } })).toBe('TVA suggérée : 10 %');
     expect(t('devis.vatHint', { personality: 'direct', params: { rate: 5.5 } })).toBe(
       'Tout à 5.5 %. Revérifié à la génération.',
@@ -376,12 +417,12 @@ describe('i18n — C21 devis.*', () => {
     expect(t('devis.signClear')).toBe('Effacer');
     expect(t('devis.signOnsiteCta', { personality: 'direct' })).toBe('Valider');
     expect(t('devis.sendCta', { personality: 'direct' })).toBe('Envoyer');
-    expect(
-      t('devis.confirmSendBody', { params: { name: 'M. Bernard', amount: '488,40 €' } }),
-    ).toBe('Le devis part chez M. Bernard par e-mail, avec le lien pour signer — 488,40 € TTC.');
-    expect(
-      t('devis.confirmSignBody', { params: { name: 'M. Bernard', amount: '488,40 €' } }),
-    ).toBe('J’envoie le devis à M. Bernard et j’enregistre sa signature sur ton téléphone — 488,40 € TTC.');
+    expect(t('devis.confirmSendBody', { params: { name: 'M. Bernard', amount: '488,40 €' } })).toBe(
+      'Le devis part chez M. Bernard par e-mail, avec le lien pour signer — 488,40 € TTC.',
+    );
+    expect(t('devis.confirmSignBody', { params: { name: 'M. Bernard', amount: '488,40 €' } })).toBe(
+      'J’envoie le devis à M. Bernard et j’enregistre sa signature sur ton téléphone — 488,40 € TTC.',
+    );
     expect(t('devis.errAction', { personality: 'pro' }).length).toBeGreaterThan(0);
   });
 });
@@ -405,18 +446,27 @@ describe('i18n — C25 notif.* + relance.*', () => {
   it('notif.* : copy de la cloche sur les 3 humeurs, items interpolés {name}/{doc}/{amount}/{days}', () => {
     expect(t('notif.title')).toBe('Notifications');
     expect(t('notif.subtitle')).toBe('Je te préviens quand ça compte — pas pour rien.');
-    expect(t('notif.subtitle', { personality: 'pro' })).toBe('L’essentiel de votre activité, au bon moment.');
+    expect(t('notif.subtitle', { personality: 'pro' })).toBe(
+      'L’essentiel de votre activité, au bon moment.',
+    );
     expect(t('notif.subtitle', { personality: 'direct' })).toBe('L’essentiel. Rien d’autre.');
-    expect(t('notif.itemRelanceTitle', { params: { name: 'SARL Martin' } })).toBe('Relance SARL Martin');
+    expect(t('notif.itemRelanceTitle', { params: { name: 'SARL Martin' } })).toBe(
+      'Relance SARL Martin',
+    );
     expect(
       t('notif.itemRelanceSub', { params: { doc: 'F-2026-088', amount: '1 240 €', days: 9 } }),
     ).toBe('F-2026-088 · 1 240 € · 9 j de retard');
     expect(
-      t('notif.itemDueSub', { personality: 'direct', params: { doc: 'F-2026-104', amount: '920 €', days: 3 } }),
+      t('notif.itemDueSub', {
+        personality: 'direct',
+        params: { doc: 'F-2026-104', amount: '920 €', days: 3 },
+      }),
     ).toBe('F-2026-104 · 920 € · J-3');
     expect(t('notif.actionView')).toBe('Voir la pièce');
     expect(t('notif.actionRelance')).toBe('Relancer');
-    expect(t('notif.conformiteSub')).toBe('Réception des e-factures à configurer avant le 1ᵉʳ sept. 2026.');
+    expect(t('notif.conformiteSub')).toBe(
+      'Réception des e-factures à configurer avant le 1ᵉʳ sept. 2026.',
+    );
     expect(t('notif.empty')).toBe('Rien à signaler — tout roule.');
     expect(t('notif.empty', { personality: 'direct' })).toBe('RAS.');
     expect(t('notif.dataError', { personality: 'pro' }).length).toBeGreaterThan(0);
@@ -424,14 +474,18 @@ describe('i18n — C25 notif.* + relance.*', () => {
 
   it('consentement push : explique la valeur, laisse un vrai refus et distingue les états OS', () => {
     expect(t('notif.pushPrimerTitle')).toBe('Bob te prévient au bon moment');
-    expect(t('notif.pushPrimerBody', { personality: 'pro' })).toContain('Vous pouvez continuer sans les activer.');
+    expect(t('notif.pushPrimerBody', { personality: 'pro' })).toContain(
+      'Vous pouvez continuer sans les activer.',
+    );
     expect(t('notif.pushPrimerLater')).toBe('Pas maintenant');
     expect(t('notif.pushDismissedBody', { personality: 'direct' })).toContain('Le fil reste ici.');
     expect(t('notif.pushDeniedBody')).toContain('Ton fil reste disponible ici.');
     expect(t('notif.pushSettingsAction', { personality: 'pro' })).toBe('Ouvrir les réglages');
     expect(t('notif.pushProvisionalTitle')).toBe('Alertes discrètes actives');
     expect(t('notif.pushProvisionalAction', { personality: 'direct' })).toBe('Tout autoriser');
-    expect(t('notif.pushUnavailableBody', { personality: 'pro' })).toContain('Votre fil reste disponible ici.');
+    expect(t('notif.pushUnavailableBody', { personality: 'pro' })).toContain(
+      'Votre fil reste disponible ici.',
+    );
     expect(t('notif.pushEnabledToast')).toContain('Bob pourra te prévenir');
   });
 
@@ -443,10 +497,14 @@ describe('i18n — C25 notif.* + relance.*', () => {
     expect(t('relance.autoTitle')).toBe('Relances automatiques');
     expect(t('relance.autoSub')).toBe('Bob relance les retards tout seul, au bon moment.');
     expect(t('relance.queue', { params: { count: 2 } })).toBe('Actives · 2 clients en file');
-    expect(t('relance.queueOne', { personality: 'pro' })).toBe('Actives · 1 client en file d’attente');
+    expect(t('relance.queueOne', { personality: 'pro' })).toBe(
+      'Actives · 1 client en file d’attente',
+    );
     expect(t('relance.medWarning')).toContain('L441-10');
     expect(t('relance.medWarning', { personality: 'pro' })).toContain('40 €');
-    expect(t('relance.medWarning', { personality: 'direct' })).toContain('jamais sans ta validation');
+    expect(t('relance.medWarning', { personality: 'direct' })).toContain(
+      'jamais sans ta validation',
+    );
     expect(t('relance.scheduledLine', { params: { tone: 'Ferme', date: '15/07/2026' } })).toBe(
       'Ferme · le 15/07/2026',
     );
@@ -461,7 +519,9 @@ describe('i18n — C25 notif.* + relance.*', () => {
       'J’envoie la relance de 1 240 € à SARL Martin, au ton du plan. Tu valides ?',
     );
     expect(t('relance.confirmMedNote', { personality: 'pro' })).toContain('L441-10');
-    expect(t('relance.sentToast', { params: { name: 'SARL Martin' } })).toBe('Relance envoyée à SARL Martin ✓');
+    expect(t('relance.sentToast', { params: { name: 'SARL Martin' } })).toBe(
+      'Relance envoyée à SARL Martin ✓',
+    );
     expect(t('relance.queuedToast', { personality: 'pro', params: { name: 'SARL Martin' } })).toBe(
       'Relance programmée pour SARL Martin. L’envoi sera suivi dans l’activité.',
     );
@@ -497,7 +557,9 @@ describe('i18n — C23 diag.*', () => {
 
   it('décline le parcours sur les 3 humeurs (questions adaptatives, axes, plan d’action)', () => {
     expect(t('diag.questionTag', { params: { n: 1, total: 3 } })).toBe('Question 1 / 3');
-    expect(t('diag.questionTag', { personality: 'direct', params: { n: 2, total: 2 } })).toBe('Q2 / 2');
+    expect(t('diag.questionTag', { personality: 'direct', params: { n: 2, total: 2 } })).toBe(
+      'Q2 / 2',
+    );
     expect(t('diag.auditMix', { personality: 'pro', params: { b2c: 4, b2b: 2, b2g: 1 } })).toBe(
       'Vos clients : 4 particuliers · 2 professionnels · 1 secteur public',
     );
@@ -596,9 +658,9 @@ describe('i18n — C23 diag.*', () => {
     expect(t('onboard.previewTitle', { params: { trade: 'plombier' } })).toBe(
       'Ton espace plombier est prêt',
     );
-    expect(t('onboard.previewTitle', { personality: 'pro', params: { trade: 'électricien' } })).toBe(
-      'Votre espace électricien est prêt',
-    );
+    expect(
+      t('onboard.previewTitle', { personality: 'pro', params: { trade: 'électricien' } }),
+    ).toBe('Votre espace électricien est prêt');
     expect(t('onboard.previewTitle', { personality: 'direct', params: { trade: 'pro' } })).toBe(
       'Espace pro : prêt.',
     );
@@ -637,7 +699,9 @@ describe('i18n — C23 diag.*', () => {
       'Règle de saisie TVA',
     );
     expect(t('reglages.soonBadge', { personality: 'pro' })).toBe('À venir');
-    expect(t('reglages.mentionsEmpty', { personality: 'direct' })).toBe('Visible dès ta première facture.');
+    expect(t('reglages.mentionsEmpty', { personality: 'direct' })).toBe(
+      'Visible dès ta première facture.',
+    );
   });
 });
 
@@ -672,13 +736,17 @@ describe('i18n — C26 account.*', () => {
   });
 
   it('services, parrainage, équipe et erreurs à la voix de Bob', () => {
-    expect(t('account.serviceOnlinePaymentSub')).toBe('Encaisse par carte — 1,2 % par encaissement');
+    expect(t('account.serviceOnlinePaymentSub')).toBe(
+      'Encaisse par carte — 1,2 % par encaissement',
+    );
     expect(t('account.serviceInsurance', { personality: 'direct' })).toBe('Décennale & RC Pro');
     expect(t('account.referralSoon', { personality: 'pro' })).toBe(
       'Prochainement : un mois offert pour vous deux.',
     );
     expect(t('account.teamRowSub', { personality: 'direct' })).toBe('Invitations, rôles. Bientôt.');
-    expect(t('account.companyEmptyTitle', { personality: 'pro' })).toBe('Complétez votre fiche entreprise');
+    expect(t('account.companyEmptyTitle', { personality: 'pro' })).toBe(
+      'Complétez votre fiche entreprise',
+    );
     expect(t('account.companyEmptyBody', { personality: 'pro' })).toBe(
       'Votre société ne semble pas reliée à votre compte — contactez-nous, nous nous en occupons avec vous.',
     );
@@ -704,10 +772,16 @@ describe('i18n — C-EXP-UI1 argent.upcoming* + relance pénalités/prescription
       '+0,62 €/jour · 27,71 € courus',
     );
     expect(
-      t('relance.penaltiesLine', { personality: 'pro', params: { daily: '0,62 €', accrued: '27,71 €' } }),
+      t('relance.penaltiesLine', {
+        personality: 'pro',
+        params: { daily: '0,62 €', accrued: '27,71 €' },
+      }),
     ).toBe('+0,62 € par jour · 27,71 € courus à ce jour');
     expect(
-      t('relance.penaltiesLine', { personality: 'direct', params: { daily: '0,62 €', accrued: '27,71 €' } }),
+      t('relance.penaltiesLine', {
+        personality: 'direct',
+        params: { daily: '0,62 €', accrued: '27,71 €' },
+      }),
     ).toBe('+0,62 €/j · 27,71 €');
   });
 
@@ -718,12 +792,12 @@ describe('i18n — C-EXP-UI1 argent.upcoming* + relance pénalités/prescription
     expect(t('relance.prescriptionLost', { params: { date: '15/09/2026' } })).toBe(
       'Après le 15/09/2026, c’est perdu — plus aucun recours.',
     );
-    expect(t('relance.prescriptionLost', { personality: 'direct', params: { date: '15/09/2026' } })).toBe(
-      'Après le 15/09/2026 : perdu.',
-    );
-    expect(t('relance.prescriptionDead', { personality: 'pro', params: { date: '02/01/2026' } })).toBe(
-      'Créance prescrite depuis le 02/01/2026 — aucun recours judiciaire possible.',
-    );
+    expect(
+      t('relance.prescriptionLost', { personality: 'direct', params: { date: '15/09/2026' } }),
+    ).toBe('Après le 15/09/2026 : perdu.');
+    expect(
+      t('relance.prescriptionDead', { personality: 'pro', params: { date: '02/01/2026' } }),
+    ).toBe('Créance prescrite depuis le 02/01/2026 — aucun recours judiciaire possible.');
   });
 });
 
@@ -735,18 +809,18 @@ describe('i18n — C-EXP-UI2 argent.urssaf*', () => {
     expect(t('argent.urssafTitle', { personality: 'pro', params: { period: 'T3 2026' } })).toBe(
       'Déclaration URSSAF · T3 2026',
     );
-    expect(t('argent.urssafTitle', { personality: 'direct', params: { period: 'juillet 2026' } })).toBe(
-      'URSSAF · juillet 2026',
-    );
+    expect(
+      t('argent.urssafTitle', { personality: 'direct', params: { period: 'juillet 2026' } }),
+    ).toBe('URSSAF · juillet 2026');
     expect(t('argent.urssafSetAside')).toBe('À mettre de côté');
     expect(t('argent.urssafSetAside', { personality: 'pro' })).toBe('Montant à provisionner');
     expect(t('argent.urssafSetAside', { personality: 'direct' })).toBe('À provisionner');
     expect(t('argent.urssafDeclareBy', { params: { date: '31 oct.' } })).toBe(
       'À déclarer au plus tard le 31 oct.',
     );
-    expect(t('argent.urssafDeclareBy', { personality: 'direct', params: { date: '31 oct.' } })).toBe(
-      'Déclaration : 31 oct. max.',
-    );
+    expect(
+      t('argent.urssafDeclareBy', { personality: 'direct', params: { date: '31 oct.' } }),
+    ).toBe('Déclaration : 31 oct. max.');
   });
 
   it('B9 — recherche intelligente devis & factures : chips de dates, filtres actifs, confirmation vocale composée', () => {
@@ -761,7 +835,12 @@ describe('i18n — C-EXP-UI2 argent.urssaf*', () => {
     // ce test fige le contrat de forme des 3 variantes de confirmation vocale.
     expect(
       t('ventes.voiceSearchResultWithCustomerAndPeriod', {
-        params: { kind: 'devis', customer: 'Mairie de Sèvres', period: 'du mois dernier', count: 3 },
+        params: {
+          kind: 'devis',
+          customer: 'Mairie de Sèvres',
+          period: 'du mois dernier',
+          count: 3,
+        },
       }),
     ).toBe('Voilà les devis de Mairie de Sèvres du mois dernier — j’en ai trouvé 3.');
     expect(
@@ -791,7 +870,9 @@ describe('i18n — modale menu profil (design_handoff_bob_pro/Bob Pro.dc.html §
 
 describe('i18n — gate entreprise complète (DocumentActions.tsx, émission devis/facture)', () => {
   it('titre + corps déclinés devis/facture ×3 humeurs, CTA/annulation', () => {
-    expect(t('gate.companyIncompleteTitle', { personality: 'pro' })).toBe('Complétez votre fiche entreprise');
+    expect(t('gate.companyIncompleteTitle', { personality: 'pro' })).toBe(
+      'Complétez votre fiche entreprise',
+    );
     expect(t('gate.companyIncompleteBodyQuote')).toBe(
       'Pour envoyer un devis officiel, renseigne d’abord ton entreprise (RM/RCS et adresse).',
     );
@@ -822,7 +903,9 @@ describe('i18n — Réglages facturation, fusion proto (retours device fondateur
   it('logo — ajout/suppression ×3, permission refusée, note PDF à venir', () => {
     expect(t('reglages.logoAdd')).toBe('Ajouter');
     expect(t('reglages.logoChange', { personality: 'pro' })).toBe('Changer');
-    expect(t('reglages.logoPermissionDenied', { personality: 'direct' })).toBe('Accès photos requis.');
+    expect(t('reglages.logoPermissionDenied', { personality: 'direct' })).toBe(
+      'Accès photos requis.',
+    );
     expect(t('reglages.logoOnPdfNote', { personality: 'direct' })).toBe(
       'Aperçu seulement pour l’instant. PDF à venir.',
     );
@@ -848,10 +931,17 @@ describe('i18n — Réglages facturation, fusion proto (retours device fondateur
 
   it('valeurs par défaut — jours interpolés, conditions de paiement, note de branchement', () => {
     expect(t('reglages.defaultsValidityDays', { params: { days: 30 } })).toBe('30 jours');
-    expect(t('reglages.defaultsValidityDays', { personality: 'direct', params: { days: 45 } })).toBe('45 j');
+    expect(
+      t('reglages.defaultsValidityDays', { personality: 'direct', params: { days: 45 } }),
+    ).toBe('45 j');
     expect(t('reglages.paymentTermsReception')).toBe('À réception');
     expect(t('reglages.paymentTermsJ30', { personality: 'pro' })).toBe('30 jours');
-    expect(t('reglages.defaultsNote', { personality: 'direct' })).toBe('Validité : déjà active. Le reste arrive.');
+    expect(t('reglages.defaultsNote', { personality: 'direct' })).toBe(
+      'Appliqué aux nouveaux devis, factures et PDF.',
+    );
+    expect(t('reglages.paymentTermsRequired', { personality: 'pro' })).toContain(
+      'Aucune échéance n’est présumée',
+    );
   });
 });
 
@@ -892,19 +982,31 @@ describe('i18n — chantiers.* paramétré par métier (tradeToWorksiteTerminolo
     expect(t('chantiers.title', { params: chantierParams })).toBe('Chantiers');
     expect(t('chantiers.title', { personality: 'pro', params: missionParams })).toBe('Missions');
     expect(t('chantiers.add', { params: chantierParams })).toBe('Nouveau chantier');
-    expect(t('chantiers.add', { personality: 'pro', params: chantierParams })).toBe('Créer un chantier');
+    expect(t('chantiers.add', { personality: 'pro', params: chantierParams })).toBe(
+      'Créer un chantier',
+    );
     expect(t('chantiers.add', { params: missionParams })).toBe('Nouvelle mission');
-    expect(t('chantiers.add', { personality: 'pro', params: missionParams })).toBe('Créer une mission');
-    expect(t('chantiers.add', { personality: 'direct', params: missionParams })).toBe('Nouvelle mission');
+    expect(t('chantiers.add', { personality: 'pro', params: missionParams })).toBe(
+      'Créer une mission',
+    );
+    expect(t('chantiers.add', { personality: 'direct', params: missionParams })).toBe(
+      'Nouvelle mission',
+    );
   });
 
   it('confirmation de création : accord du genre en tête de phrase (Le/La) ET du participe (créé/créée)', () => {
-    expect(t('chantiers.created', { personality: 'pro', params: { ...chantierParams, name: 'Villa Durand' } })).toBe(
-      'Le chantier Villa Durand a été créé.',
-    );
-    expect(t('chantiers.created', { personality: 'pro', params: { ...missionParams, name: 'Refonte du site' } })).toBe(
-      'La mission Refonte du site a été créée.',
-    );
+    expect(
+      t('chantiers.created', {
+        personality: 'pro',
+        params: { ...chantierParams, name: 'Villa Durand' },
+      }),
+    ).toBe('Le chantier Villa Durand a été créé.');
+    expect(
+      t('chantiers.created', {
+        personality: 'pro',
+        params: { ...missionParams, name: 'Refonte du site' },
+      }),
+    ).toBe('La mission Refonte du site a été créée.');
   });
 
   it('erreur de création : démonstratif accordé (ce/cette) et contraction de/du/de la', () => {
@@ -936,9 +1038,15 @@ describe('i18n — chantiers.* paramétré par métier (tradeToWorksiteTerminolo
     expect(t('chantiers.dataError', { personality: 'pro', params: missionParams })).toBe(
       'Impossible de charger les missions. Veuillez réessayer.',
     );
-    expect(t('chantiers.emptyTitle', { params: chantierParams })).toBe('Aucun chantier pour l’instant');
-    expect(t('chantiers.emptyTitle', { params: missionParams })).toBe('Aucune mission pour l’instant');
-    expect(t('chantiers.emptyTitle', { personality: 'direct', params: missionParams })).toBe('Aucune mission');
+    expect(t('chantiers.emptyTitle', { params: chantierParams })).toBe(
+      'Aucun chantier pour l’instant',
+    );
+    expect(t('chantiers.emptyTitle', { params: missionParams })).toBe(
+      'Aucune mission pour l’instant',
+    );
+    expect(t('chantiers.emptyTitle', { personality: 'direct', params: missionParams })).toBe(
+      'Aucune mission',
+    );
     expect(t('chantiers.emptyBody', { personality: 'pro', params: chantierParams })).toBe(
       'Créez un premier chantier afin d’y associer les devis, factures et documents concernés.',
     );
@@ -949,7 +1057,9 @@ describe('i18n — chantiers.* paramétré par métier (tradeToWorksiteTerminolo
       'Crée une mission pour y rattacher tes pièces.',
     );
     expect(t('chantiers.listTitle', { params: missionParams })).toBe('Tes missions');
-    expect(t('chantiers.listTitle', { personality: 'pro', params: missionParams })).toBe('Vos missions');
+    expect(t('chantiers.listTitle', { personality: 'pro', params: missionParams })).toBe(
+      'Vos missions',
+    );
   });
 
   it('formulaire de création : contraction « de » (Nom du chantier / Nom de la mission)', () => {

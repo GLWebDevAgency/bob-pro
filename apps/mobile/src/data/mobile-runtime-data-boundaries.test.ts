@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { extname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -96,6 +96,13 @@ describe('frontières des données du runtime mobile', () => {
     expect(provider).not.toMatch(/SecureStore|createSecureQuoteDraftPersistence|quote-draft-store/iu);
     expect(provider).not.toMatch(/\bdemo\b|local-demo|QuoteDraftStorageIdentity/iu);
     expect(runtimeBarrel).not.toMatch(/quote-draft-codec|quote-draft-store|secure-store/iu);
+    for (const obsoleteLocalPersistence of [
+      '../quote-draft/quote-draft-codec.ts',
+      '../quote-draft/quote-draft-store.ts',
+      '../quote-draft/quote-draft-secure-store.ts',
+    ]) {
+      expect(existsSync(new URL(obsoleteLocalPersistence, import.meta.url))).toBe(false);
+    }
   });
 
   it('le diagnostic consomme les encaissements persistés et aucun compteur de questions fictif', () => {

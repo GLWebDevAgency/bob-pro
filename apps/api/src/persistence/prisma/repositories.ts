@@ -115,11 +115,15 @@ export class PrismaCompanyRepository implements CompanyRepository {
   }
   async list(): Promise<Company[]> {
     const rows = await this.prisma.client().company.findMany({ orderBy: { id: 'asc' } });
-    return rows.map((row) => Company.of(companyRowToProps(row))).flatMap((r) => (r.ok ? [r.value] : []));
+    return rows
+      .map((row) => Company.of(companyRowToProps(row)))
+      .flatMap((r) => (r.ok ? [r.value] : []));
   }
   async save(c: Company): Promise<void> {
     const data = companyPropsToCreate(c.toProps());
-    await this.prisma.client().company.upsert({ where: { id: data.id }, create: data, update: data });
+    await this.prisma
+      .client()
+      .company.upsert({ where: { id: data.id }, create: data, update: data });
   }
 }
 
@@ -133,18 +137,24 @@ export class PrismaCustomerRepository implements CustomerRepository {
   }
   async listByCompany(companyId: string): Promise<Customer[]> {
     const rows = await this.prisma.client().customer.findMany({ where: { companyId } });
-    return rows.map((row) => Customer.of(customerRowToProps(row))).flatMap((r) => (r.ok ? [r.value] : []));
+    return rows
+      .map((row) => Customer.of(customerRowToProps(row)))
+      .flatMap((r) => (r.ok ? [r.value] : []));
   }
   async save(c: Customer): Promise<void> {
     const data = customerPropsToCreate(c.toProps());
-    await this.prisma.client().customer.upsert({ where: { id: data.id }, create: data, update: data });
+    await this.prisma
+      .client()
+      .customer.upsert({ where: { id: data.id }, create: data, update: data });
   }
 }
 
 export class PrismaQuoteRepository implements QuoteRepository {
   constructor(private readonly prisma: PrismaService) {}
   async findById(id: string): Promise<Quote | null> {
-    const row = await this.prisma.client().quote.findUnique({ where: { id }, include: LINES_INCLUDE });
+    const row = await this.prisma
+      .client()
+      .quote.findUnique({ where: { id }, include: LINES_INCLUDE });
     if (!row) return null;
     return Quote.rehydrate(quoteRowToSnapshot(row));
   }
@@ -156,7 +166,9 @@ export class PrismaQuoteRepository implements QuoteRepository {
     return Quote.rehydrate(quoteRowToSnapshot(row));
   }
   async listByCompany(companyId: string): Promise<Quote[]> {
-    const rows = await this.prisma.client().quote.findMany({ where: { companyId }, include: LINES_INCLUDE });
+    const rows = await this.prisma
+      .client()
+      .quote.findMany({ where: { companyId }, include: LINES_INCLUDE });
     return rows.map((row) => Quote.rehydrate(quoteRowToSnapshot(row)));
   }
   async save(q: Quote): Promise<void> {
@@ -174,7 +186,10 @@ export class PrismaQuoteRepository implements QuoteRepository {
       validUntil: s.validUntil ? new Date(s.validUntil) : null,
       signerName: s.signature?.signerName ?? null,
       signedAt: s.signature ? new Date(s.signature.signedAt) : null,
-      signatureProof: signatureProof === null ? Prisma.DbNull : (signatureProof as unknown as Prisma.InputJsonValue),
+      signatureProof:
+        signatureProof === null
+          ? Prisma.DbNull
+          : (signatureProof as unknown as Prisma.InputJsonValue),
       totalsHt: totals.ht,
       totalsVat: totals.vat,
       totalsTtc: totals.ttc,
@@ -189,7 +204,11 @@ export class PrismaQuoteRepository implements QuoteRepository {
       await tx.lineItem.createMany({ data: lines });
     } else {
       await this.prisma.$transaction([
-        this.prisma.quote.upsert({ where: { id: s.id }, create: { id: s.id, ...base }, update: base }),
+        this.prisma.quote.upsert({
+          where: { id: s.id },
+          create: { id: s.id, ...base },
+          update: base,
+        }),
         this.prisma.lineItem.deleteMany({ where: { quoteId: s.id } }),
         this.prisma.lineItem.createMany({ data: lines }),
       ]);
@@ -200,7 +219,9 @@ export class PrismaQuoteRepository implements QuoteRepository {
 export class PrismaInvoiceRepository implements InvoiceRepository {
   constructor(private readonly prisma: PrismaService) {}
   async findById(id: string): Promise<Invoice | null> {
-    const row = await this.prisma.client().invoice.findUnique({ where: { id }, include: LINES_INCLUDE });
+    const row = await this.prisma
+      .client()
+      .invoice.findUnique({ where: { id }, include: LINES_INCLUDE });
     if (!row) return null;
     return Invoice.rehydrate(invoiceRowToSnapshot(row));
   }
@@ -212,7 +233,11 @@ export class PrismaInvoiceRepository implements InvoiceRepository {
     if (!row) return null;
     return Invoice.rehydrate(invoiceRowToSnapshot(row));
   }
-  async findByParentQuoteId(companyId: string, parentQuoteId: string, kind: Invoice['kind']): Promise<Invoice | null> {
+  async findByParentQuoteId(
+    companyId: string,
+    parentQuoteId: string,
+    kind: Invoice['kind'],
+  ): Promise<Invoice | null> {
     const row = await this.prisma.client().invoice.findFirst({
       where: { companyId, parentQuoteId, kind: invoiceKindToDocKind(kind) },
       include: LINES_INCLUDE,
@@ -220,7 +245,10 @@ export class PrismaInvoiceRepository implements InvoiceRepository {
     });
     return row ? Invoice.rehydrate(invoiceRowToSnapshot(row)) : null;
   }
-  async findCreditNoteBySourceInvoiceId(companyId: string, sourceInvoiceId: string): Promise<Invoice | null> {
+  async findCreditNoteBySourceInvoiceId(
+    companyId: string,
+    sourceInvoiceId: string,
+  ): Promise<Invoice | null> {
     const row = await this.prisma.client().invoice.findFirst({
       where: { companyId, sourceInvoiceId, kind: 'credit_note' },
       include: LINES_INCLUDE,
@@ -228,7 +256,9 @@ export class PrismaInvoiceRepository implements InvoiceRepository {
     return row ? Invoice.rehydrate(invoiceRowToSnapshot(row)) : null;
   }
   async listByCompany(companyId: string): Promise<Invoice[]> {
-    const rows = await this.prisma.client().invoice.findMany({ where: { companyId }, include: LINES_INCLUDE });
+    const rows = await this.prisma
+      .client()
+      .invoice.findMany({ where: { companyId }, include: LINES_INCLUDE });
     return rows.map((row) => Invoice.rehydrate(invoiceRowToSnapshot(row)));
   }
   async save(i: Invoice): Promise<void> {
@@ -261,7 +291,10 @@ export class PrismaInvoiceRepository implements InvoiceRepository {
     const lines = s.lines.map((l, idx) => quoteLineToCreate(l, { invoiceId: s.id }, idx));
     const persist = async (): Promise<void> => {
       const tx = this.prisma.client();
-      const existing = await tx.invoice.findUnique({ where: { id: s.id }, select: { id: true, status: true } });
+      const existing = await tx.invoice.findUnique({
+        where: { id: s.id },
+        select: { id: true, status: true },
+      });
       if (!existing) {
         if (s.kind === 'credit_note') {
           const sourceInvoiceId = s.sourceInvoiceId;
@@ -274,7 +307,8 @@ export class PrismaInvoiceRepository implements InvoiceRepository {
             update: { sourceInvoiceId },
             select: { id: true },
           });
-          if (published.id === s.id && lines.length > 0) await tx.lineItem.createMany({ data: lines });
+          if (published.id === s.id && lines.length > 0)
+            await tx.lineItem.createMany({ data: lines });
           return;
         }
         await tx.invoice.create({ data: { id: s.id, ...base } });
@@ -472,12 +506,18 @@ export class PrismaDocumentRepository implements DocumentRepository {
     return exists ? 'revision_conflict' : 'not_found';
   }
   async findById(companyId: string, id: string): Promise<Document | null> {
-    const row = await this.prisma.client().storedDocument.findFirst({ where: { id, companyId }, include: DOCUMENT_INCLUDE });
+    const row = await this.prisma
+      .client()
+      .storedDocument.findFirst({ where: { id, companyId }, include: DOCUMENT_INCLUDE });
     return row ? Document.rehydrate(documentRowToProps(row)) : null;
   }
   async findByEntity(companyId: string, entityType: string, entityId: string): Promise<Document[]> {
     const rows = await this.prisma.client().storedDocument.findMany({
-      where: { companyId, linkedEntityType: entityType as DocumentProps['linkedEntityType'], linkedEntityId: entityId },
+      where: {
+        companyId,
+        linkedEntityType: entityType as DocumentProps['linkedEntityType'],
+        linkedEntityId: entityId,
+      },
       include: DOCUMENT_INCLUDE,
       orderBy: { createdAt: 'desc' },
     });
@@ -554,7 +594,9 @@ export class PrismaDocumentFolderRepository implements DocumentFolderRepository 
   constructor(private readonly prisma: PrismaService) {}
 
   async findById(companyId: string, folderId: string): Promise<DocumentFolder | null> {
-    const row = await this.prisma.client().documentFolder.findFirst({ where: { id: folderId, companyId } });
+    const row = await this.prisma
+      .client()
+      .documentFolder.findFirst({ where: { id: folderId, companyId } });
     return row ? documentFolderFromRow(row) : null;
   }
 
@@ -616,7 +658,7 @@ export class PrismaDocumentFolderRepository implements DocumentFolderRepository 
     const page = rows.slice(0, input.limit);
     return {
       items: page.map(documentFolderFromRow),
-      nextCursor: hasMore ? page.at(-1)?.id ?? null : null,
+      nextCursor: hasMore ? (page.at(-1)?.id ?? null) : null,
     };
   }
 
@@ -638,7 +680,10 @@ export class PrismaDocumentFolderRepository implements DocumentFolderRepository 
     return row ? documentFolderFromRow(row) : null;
   }
 
-  async save(folder: DocumentFolder, expectedRevision: number | null): Promise<DocumentFolderWriteResult> {
+  async save(
+    folder: DocumentFolder,
+    expectedRevision: number | null,
+  ): Promise<DocumentFolderWriteResult> {
     const props = folder.toProps();
     try {
       if (expectedRevision === null) {
@@ -658,17 +703,29 @@ export class PrismaDocumentFolderRepository implements DocumentFolderRepository 
     }
   }
 
-  async findDocumentMembership(companyId: string, documentId: string): Promise<DocumentFolderMembership | null> {
+  async findDocumentMembership(
+    companyId: string,
+    documentId: string,
+  ): Promise<DocumentFolderMembership | null> {
     const row = await this.prisma.client().storedDocument.findFirst({
       where: { id: documentId, companyId },
       select: { id: true, companyId: true, folderId: true, status: true, revision: true },
     });
     return row
-      ? { id: row.id, companyId: row.companyId, folderId: row.folderId, status: row.status, revision: row.revision }
+      ? {
+          id: row.id,
+          companyId: row.companyId,
+          folderId: row.folderId,
+          status: row.status,
+          revision: row.revision,
+        }
       : null;
   }
 
-  async listDocumentMemberships(companyId: string, folderIds: readonly string[]): Promise<DocumentFolderMembership[]> {
+  async listDocumentMemberships(
+    companyId: string,
+    folderIds: readonly string[],
+  ): Promise<DocumentFolderMembership[]> {
     if (folderIds.length === 0) return [];
     return this.prisma.client().storedDocument.findMany({
       where: { companyId, folderId: { in: [...folderIds] } },
@@ -797,9 +854,13 @@ export class PrismaDocumentArchiveJobRepository implements DocumentArchiveJobRep
   }
 }
 
-const PROVIDER_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const PROVIDER_UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-function notificationFromJson(value: Prisma.JsonValue | null, expectedJobId: string): NotificationJob['notification'] {
+function notificationFromJson(
+  value: Prisma.JsonValue | null,
+  expectedJobId: string,
+): NotificationJob['notification'] {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
   const candidate = value as Record<string, unknown>;
   const channel = candidate.channel;
@@ -808,15 +869,14 @@ function notificationFromJson(value: Prisma.JsonValue | null, expectedJobId: str
   const body = candidate.body;
   const idempotencyKey = candidate.idempotencyKey;
   if (
-    (channel !== 'email' && channel !== 'sms')
-    || typeof to !== 'string'
-    || typeof subject !== 'string'
-    || typeof body !== 'string'
-    || (channel === 'email' && (
-      typeof idempotencyKey !== 'string'
-      || !PROVIDER_UUID_PATTERN.test(idempotencyKey)
-      || idempotencyKey !== expectedJobId
-    ))
+    (channel !== 'email' && channel !== 'sms') ||
+    typeof to !== 'string' ||
+    typeof subject !== 'string' ||
+    typeof body !== 'string' ||
+    (channel === 'email' &&
+      (typeof idempotencyKey !== 'string' ||
+        !PROVIDER_UUID_PATTERN.test(idempotencyKey) ||
+        idempotencyKey !== expectedJobId))
   ) {
     return null;
   }
@@ -916,7 +976,9 @@ export class PrismaNotificationJobRepository implements NotificationJobRepositor
             lastError: null,
           },
         });
-        const current = await this.prisma.client().notificationJob.findUnique({ where: { id: existing.id } });
+        const current = await this.prisma
+          .client()
+          .notificationJob.findUnique({ where: { id: existing.id } });
         if (!current) throw new Error(`Notification job disparu pendant enqueue: ${existing.id}`);
         return notificationJobRowToView(current);
       }
@@ -953,7 +1015,8 @@ export class PrismaNotificationJobRepository implements NotificationJobRepositor
         },
       },
     });
-    if (!winner) throw new Error(`Notification job absent après enqueue idempotent: ${input.dedupeKey}`);
+    if (!winner)
+      throw new Error(`Notification job absent après enqueue idempotent: ${input.dedupeKey}`);
     if (winner.payloadFingerprint !== payloadFingerprint) {
       throw new NotificationDedupeConflictError(input.dedupeKey);
     }
@@ -966,7 +1029,11 @@ export class PrismaNotificationJobRepository implements NotificationJobRepositor
     return row ? notificationJobRowToView(row) : null;
   }
 
-  async listDue(companyId: string, now: string, limit: number): Promise<DeliverableNotificationJob[]> {
+  async listDue(
+    companyId: string,
+    now: string,
+    limit: number,
+  ): Promise<DeliverableNotificationJob[]> {
     const rows = await this.prisma.client().notificationJob.findMany({
       where: {
         companyId,
@@ -993,15 +1060,21 @@ export class PrismaNotificationJobRepository implements NotificationJobRepositor
     // ré-enqueue idempotente sans changer l'intention à livrer.
     void expectedUpdatedAt;
     const requestedLeaseMs = new Date(leaseUntil).getTime() - new Date(now).getTime();
-    if (!Number.isFinite(requestedLeaseMs) || requestedLeaseMs <= 0 || requestedLeaseMs > 30 * 60_000) {
+    if (
+      !Number.isFinite(requestedLeaseMs) ||
+      requestedLeaseMs <= 0 ||
+      requestedLeaseMs > 30 * 60_000
+    ) {
       throw new Error('Durée de lease notification invalide.');
     }
     // Une seule instruction, une seule horloge et un verrou de ligne : la décision est soit
     // « claim encore couvert par la fenêtre provider », soit « quarantaine », jamais les deux.
-    const claimedRows = await this.prisma.client().$queryRaw<Array<{
-      quarantined: boolean;
-      channelWithoutIdempotency: boolean;
-    }>>`
+    const claimedRows = await this.prisma.client().$queryRaw<
+      Array<{
+        quarantined: boolean;
+        channelWithoutIdempotency: boolean;
+      }>
+    >`
       WITH candidate AS (
         SELECT id,
                (
@@ -1149,10 +1222,12 @@ export class PrismaNotificationJobRepository implements NotificationJobRepositor
     // Même statement, même horloge et même précision que notification_jobs.createdAt
     // (TIMESTAMP(3)). La borne est EXCLUSIVE : une insertion concurrente au même milliseconde
     // que l'aperçu ne peut pas élargir la portée au moment de la confirmation.
-    const rows = await this.prisma.client().$queryRaw<Array<{
-      unreadCount: number;
-      throughCreatedAt: Date;
-    }>>`
+    const rows = await this.prisma.client().$queryRaw<
+      Array<{
+        unreadCount: number;
+        throughCreatedAt: Date;
+      }>
+    >`
       WITH cutoff AS (
         SELECT date_trunc('milliseconds', statement_timestamp() AT TIME ZONE 'UTC') AS value
       )
@@ -1180,7 +1255,9 @@ export class PrismaNotificationJobRepository implements NotificationJobRepositor
       where: { id, companyId, readAt: null },
       data: { readAt: new Date(at), updatedAt: new Date(at) },
     });
-    const current = await this.prisma.client().notificationJob.findFirst({ where: { id, companyId } });
+    const current = await this.prisma
+      .client()
+      .notificationJob.findFirst({ where: { id, companyId } });
     return current ? notificationJobRowToView(current) : null;
   }
 
@@ -1191,11 +1268,13 @@ export class PrismaNotificationJobRepository implements NotificationJobRepositor
   ): Promise<NotificationReadThroughResult> {
     // PostgreSQL valide aussi que la borne n'est pas future. readAt et updatedAt utilisent
     // l'horloge DB ; le résultat reste idempotent grâce au prédicat readAt IS NULL.
-    const rows = await this.prisma.client().$queryRaw<Array<{
-      updatedCount: number;
-      readAt: Date;
-      cutoffAccepted: boolean;
-    }>>`
+    const rows = await this.prisma.client().$queryRaw<
+      Array<{
+        updatedCount: number;
+        readAt: Date;
+        cutoffAccepted: boolean;
+      }>
+    >`
       WITH timing AS (
         SELECT (${new Date(throughCreatedAt)}::timestamptz AT TIME ZONE 'UTC')::timestamp(3) AS cutoff,
                date_trunc('milliseconds', statement_timestamp() AT TIME ZONE 'UTC') AS read_at
@@ -1282,14 +1361,16 @@ export class PrismaDeviceRepository implements DeviceRepository {
         `;
         if (openCompany.length === 0) return { status: 'superseded' };
 
-        const installationRows = await client.$queryRaw<Array<{
-          id: string;
-          revocationSecretHash: string;
-          maxGeneration: number;
-          currentBindingId: string | null;
-          currentCompanyId: string | null;
-          currentUserId: string | null;
-        }>>`
+        const installationRows = await client.$queryRaw<
+          Array<{
+            id: string;
+            revocationSecretHash: string;
+            maxGeneration: number;
+            currentBindingId: string | null;
+            currentCompanyId: string | null;
+            currentUserId: string | null;
+          }>
+        >`
           SELECT "id", "revocationSecretHash", "maxGeneration", "currentBindingId",
                  "currentCompanyId", "currentUserId"
           FROM "push_installations"
@@ -1299,12 +1380,14 @@ export class PrismaDeviceRepository implements DeviceRepository {
         `;
         const installation = installationRows[0];
 
-        const byTokenRows = await client.$queryRaw<Array<{
-          id: string;
-          installationId: string | null;
-          bindingId: string | null;
-          bindingGeneration: number | null;
-        }>>`
+        const byTokenRows = await client.$queryRaw<
+          Array<{
+            id: string;
+            installationId: string | null;
+            bindingId: string | null;
+            bindingGeneration: number | null;
+          }>
+        >`
           SELECT "id", "installationId", "bindingId", "bindingGeneration"
           FROM "devices"
           WHERE "expoPushToken" = ${input.expoPushToken}
@@ -1312,12 +1395,14 @@ export class PrismaDeviceRepository implements DeviceRepository {
         `;
         const byToken = byTokenRows[0];
 
-        const byInstallationRows = await client.$queryRaw<Array<{
-          id: string;
-          expoPushToken: string;
-          bindingId: string | null;
-          bindingGeneration: number | null;
-        }>>`
+        const byInstallationRows = await client.$queryRaw<
+          Array<{
+            id: string;
+            expoPushToken: string;
+            bindingId: string | null;
+            bindingGeneration: number | null;
+          }>
+        >`
           SELECT "id", "expoPushToken", "bindingId", "bindingGeneration"
           FROM "devices"
           WHERE "installationId" = ${input.installationId}::uuid
@@ -1346,18 +1431,19 @@ export class PrismaDeviceRepository implements DeviceRepository {
 
         if (installation) {
           const idempotent =
-            input.bindingGeneration === installation.maxGeneration
-            && installation.currentBindingId === input.bindingId
-            && installation.currentCompanyId === input.companyId
-            && installation.currentUserId === input.userId
+            input.bindingGeneration === installation.maxGeneration &&
+            installation.currentBindingId === input.bindingId &&
+            installation.currentCompanyId === input.companyId &&
+            installation.currentUserId === input.userId &&
             // Un token Expo peut tourner. Un retry à génération égale ne peut confirmer que le
             // token déjà lié ; tout changement de token exige une génération strictement neuve.
-            && byInstallation?.expoPushToken === input.expoPushToken
-            && byInstallation.bindingId === input.bindingId
-            && byInstallation.bindingGeneration === input.bindingGeneration;
-          if (input.bindingGeneration < installation.maxGeneration || (
-            input.bindingGeneration === installation.maxGeneration && !idempotent
-          )) {
+            byInstallation?.expoPushToken === input.expoPushToken &&
+            byInstallation.bindingId === input.bindingId &&
+            byInstallation.bindingGeneration === input.bindingGeneration;
+          if (
+            input.bindingGeneration < installation.maxGeneration ||
+            (input.bindingGeneration === installation.maxGeneration && !idempotent)
+          ) {
             return { status: 'superseded' };
           }
 
@@ -1418,19 +1504,21 @@ export class PrismaDeviceRepository implements DeviceRepository {
           `;
         }
 
-        const rows = await client.$queryRaw<Array<{
-          id: string;
-          companyId: string;
-          userId: string | null;
-          expoPushToken: string;
-          platform: string | null;
-          installationId: string | null;
-          bindingId: string | null;
-          bindingGeneration: number | null;
-          revocationSecretHash: string | null;
-          createdAt: Date;
-          updatedAt: Date;
-        }>>(Prisma.sql`
+        const rows = await client.$queryRaw<
+          Array<{
+            id: string;
+            companyId: string;
+            userId: string | null;
+            expoPushToken: string;
+            platform: string | null;
+            installationId: string | null;
+            bindingId: string | null;
+            bindingGeneration: number | null;
+            revocationSecretHash: string | null;
+            createdAt: Date;
+            updatedAt: Date;
+          }>
+        >(Prisma.sql`
           INSERT INTO "devices" (
             "id", "companyId", "userId", "expoPushToken", "platform",
             "installationId", "bindingId", "bindingGeneration", "revocationSecretHash",
@@ -1454,9 +1542,7 @@ export class PrismaDeviceRepository implements DeviceRepository {
                     "createdAt", "updatedAt"
         `);
         const row = rows[0];
-        return row
-          ? { status: 'bound', device: deviceRowToRecord(row) }
-          : { status: 'superseded' };
+        return row ? { status: 'bound', device: deviceRowToRecord(row) } : { status: 'superseded' };
       } catch (error: unknown) {
         failed = true;
         throw error;
@@ -1491,13 +1577,15 @@ export class PrismaDeviceRepository implements DeviceRepository {
       try {
         // Le fence durable est l'autorité. Une ligne Device orpheline ou partiellement purgée ne
         // doit jamais redevenir livrable, même si elle est encore visible dans le tenant.
-        const rows = await client.$queryRaw<Array<{
-          expoPushToken: string;
-          platform: string | null;
-          bindingId: string;
-          bindingGeneration: number;
-          updatedAt: Date;
-        }>>(Prisma.sql`
+        const rows = await client.$queryRaw<
+          Array<{
+            expoPushToken: string;
+            platform: string | null;
+            bindingId: string;
+            bindingGeneration: number;
+            updatedAt: Date;
+          }>
+        >(Prisma.sql`
           SELECT device."expoPushToken", device."platform", device."bindingId",
                  device."bindingGeneration", installation."lastConfirmedAt" AS "updatedAt"
           FROM "devices" AS device
@@ -1622,11 +1710,12 @@ export class PrismaDeviceRepository implements DeviceRepository {
       }
     });
     if (
-      !device?.installationId
-      || !device.bindingId
-      || device.bindingGeneration === null
-      || !device.revocationSecretHash
-    ) return;
+      !device?.installationId ||
+      !device.bindingId ||
+      device.bindingGeneration === null ||
+      !device.revocationSecretHash
+    )
+      return;
     await this.revokeThroughGeneration({
       installationId: device.installationId,
       throughGeneration: device.bindingGeneration,
@@ -1670,16 +1759,20 @@ export class PrismaDeviceRepository implements DeviceRepository {
         await client.$executeRaw`
           SELECT pg_advisory_xact_lock(hashtextextended('bob-device-registry-v2', 0))
         `;
-        const installation = (await client.$queryRaw<Array<{
-          id: string;
-          maxGeneration: number;
-        }>>`
+        const installation = (
+          await client.$queryRaw<
+            Array<{
+              id: string;
+              maxGeneration: number;
+            }>
+          >`
           SELECT "id", "maxGeneration"
           FROM "push_installations"
           WHERE "id" = ${input.installationId}::uuid
             AND "revocationSecretHash" = ${input.revocationSecretHash}
           LIMIT 1
-        `)[0];
+        `
+        )[0];
 
         if (installation && installation.maxGeneration <= input.throughGeneration) {
           await client.$executeRaw`
@@ -1755,10 +1848,12 @@ export class PrismaDeviceRepository implements DeviceRepository {
       `;
       let failed = false;
       try {
-        const installations = await client.$queryRaw<Array<{
-          installationId: string;
-          revocationSecretHash: string;
-        }>>`
+        const installations = await client.$queryRaw<
+          Array<{
+            installationId: string;
+            revocationSecretHash: string;
+          }>
+        >`
           SELECT "installationId", "revocationSecretHash"
           FROM "devices"
           WHERE "companyId" = ${companyId}
@@ -1856,7 +1951,9 @@ function journalRowToEntry(row: {
     phase: row.phase as 'planned' | 'denied' | 'executed' | 'failed',
     tool: row.tool,
     label: row.label,
-    args: (row.args && typeof row.args === 'object' && !Array.isArray(row.args) ? row.args : {}) as Record<string, unknown>,
+    args: (row.args && typeof row.args === 'object' && !Array.isArray(row.args)
+      ? row.args
+      : {}) as Record<string, unknown>,
     mutating: row.mutating,
     outbound: row.outbound,
     compliance: row.compliance as 'low' | 'medium' | 'high',
@@ -1999,7 +2096,10 @@ export class PrismaChartOfAccountsRepository implements ChartOfAccountsRepositor
       orderBy: { code: 'asc' },
     });
     if (rows.length === 0) return null;
-    return ChartOfAccounts.rehydrate({ companyId, accounts: rows.map(accountingAccountRowToProps) });
+    return ChartOfAccounts.rehydrate({
+      companyId,
+      accounts: rows.map(accountingAccountRowToProps),
+    });
   }
 }
 
@@ -2157,7 +2257,9 @@ export class PrismaPaymentRepository implements PaymentRepository {
     return row ? this.rowToPayment(row) : null;
   }
   async findByIdempotencyKey(companyId: string, key: string): Promise<Payment | null> {
-    const row = await this.prisma.client().payment.findFirst({ where: { companyId, idempotencyKey: key } });
+    const row = await this.prisma
+      .client()
+      .payment.findFirst({ where: { companyId, idempotencyKey: key } });
     return row ? this.rowToPayment(row) : null;
   }
   async listByInvoice(invoiceId: string): Promise<Payment[]> {
@@ -2170,7 +2272,9 @@ export class PrismaPaymentRepository implements PaymentRepository {
   /** E3 (PONT-SERVEUR v1) : encaissements datés du tenant — CA encaissé annuel (293 B), balance
    *  âgée/prescription. Tri chronologique stable (findMany sans orderBy est non déterministe). */
   async listByCompany(companyId: string): Promise<Payment[]> {
-    const rows = await this.prisma.client().payment.findMany({ where: { companyId }, orderBy: { receivedAt: 'asc' } });
+    const rows = await this.prisma
+      .client()
+      .payment.findMany({ where: { companyId }, orderBy: { receivedAt: 'asc' } });
     return rows.flatMap((row) => {
       const payment = this.rowToPayment(row);
       return payment ? [payment] : [];
@@ -2222,11 +2326,15 @@ export class PrismaPublicAccessTokenRepository implements PublicAccessTokenRepos
   }
 
   async markUsed(id: string, at: string): Promise<void> {
-    await this.prisma.client().publicAccessToken.update({ where: { id }, data: { lastUsedAt: new Date(at) } });
+    await this.prisma
+      .client()
+      .publicAccessToken.update({ where: { id }, data: { lastUsedAt: new Date(at) } });
   }
 
   async revoke(id: string, at: string): Promise<void> {
-    await this.prisma.client().publicAccessToken.update({ where: { id }, data: { revokedAt: new Date(at) } });
+    await this.prisma
+      .client()
+      .publicAccessToken.update({ where: { id }, data: { revokedAt: new Date(at) } });
   }
 
   async revokeActiveFor(input: {
@@ -2274,7 +2382,11 @@ export class PrismaExpenseRepository implements ExpenseRepository {
       // rejette la 2e e-facture concurrente (P2002). On la traduit en sentinelle métier (jamais un
       // 500) ; l'upsert par id ne peut violer QUE cet index (le conflit d'id, lui, fait un update).
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
-        throw new DuplicateExpenseInvoiceError(data.companyId, data.supplierSiren, data.supplierInvoiceNumber);
+        throw new DuplicateExpenseInvoiceError(
+          data.companyId,
+          data.supplierSiren,
+          data.supplierInvoiceNumber,
+        );
       }
       throw err;
     }
@@ -2301,7 +2413,10 @@ export class PrismaExpenseRepository implements ExpenseRepository {
 export class PrismaSupplierMemoryRepository implements SupplierMemoryRepository {
   constructor(private readonly prisma: PrismaService) {}
 
-  async supplierProfile(companyId: string, supplierName: string): Promise<SupplierMemoryProfile | null> {
+  async supplierProfile(
+    companyId: string,
+    supplierName: string,
+  ): Promise<SupplierMemoryProfile | null> {
     const key = normalizeSupplierName(supplierName);
     if (!key) return null;
     const row = await this.prisma.client().supplierMemoryProfile.findUnique({
@@ -2310,7 +2425,11 @@ export class PrismaSupplierMemoryRepository implements SupplierMemoryRepository 
     return row ? this.toProfile(row) : null;
   }
 
-  async rememberSupplier(companyId: string, input: RememberSupplierInput, at: string): Promise<SupplierMemoryProfile> {
+  async rememberSupplier(
+    companyId: string,
+    input: RememberSupplierInput,
+    at: string,
+  ): Promise<SupplierMemoryProfile> {
     const key = normalizeSupplierName(input.name);
     const row = await this.prisma.client().supplierMemoryProfile.upsert({
       where: { uniq_supplier_memory_company_key: { companyId, key } },
@@ -2329,7 +2448,9 @@ export class PrismaSupplierMemoryRepository implements SupplierMemoryRepository 
         displayName: input.name.trim() || input.name,
         ...(input.siren !== undefined && input.siren !== null ? { siren: input.siren } : {}),
         category: input.category,
-        ...(input.vatRatePct !== undefined && input.vatRatePct !== null ? { vatRatePct: input.vatRatePct } : {}),
+        ...(input.vatRatePct !== undefined && input.vatRatePct !== null
+          ? { vatRatePct: input.vatRatePct }
+          : {}),
         seen: { increment: 1 },
         lastSeenAt: new Date(at),
       },
@@ -2405,7 +2526,9 @@ export class PrismaSubscriptionRepository implements SubscriptionRepository {
       ],
       skipDuplicates: true,
     });
-    const row = await this.prisma.client().subscription.findUnique({ where: { companyId: input.companyId } });
+    const row = await this.prisma
+      .client()
+      .subscription.findUnique({ where: { companyId: input.companyId } });
     if (!row) throw new Error(`Abonnement introuvable après startTrial pour ${input.companyId}.`);
     return subscriptionRowToRecord(row);
   }
@@ -2421,7 +2544,12 @@ export class PrismaSubscriptionRepository implements SubscriptionRepository {
     };
     const row = await this.prisma.client().subscription.upsert({
       where: { companyId: record.companyId },
-      create: { id: record.id, companyId: record.companyId, createdAt: new Date(record.createdAt), ...data },
+      create: {
+        id: record.id,
+        companyId: record.companyId,
+        createdAt: new Date(record.createdAt),
+        ...data,
+      },
       update: data,
     });
     return subscriptionRowToRecord(row);
@@ -2511,14 +2639,19 @@ function fiscalProfileRowToProps(row: {
     activityNature: row.activityNature as unknown as FiscalProfileProps['activityNature'],
     vatRegime: row.vatRegime as unknown as FiscalProfileProps['vatRegime'],
     acre: row.acre as unknown as FiscalProfileProps['acre'],
-    versementLiberatoire: row.versementLiberatoire as unknown as FiscalProfileProps['versementLiberatoire'],
+    versementLiberatoire:
+      row.versementLiberatoire as unknown as FiscalProfileProps['versementLiberatoire'],
     fiscalYearEnd: row.fiscalYearEnd as unknown as FiscalProfileProps['fiscalYearEnd'],
   };
 }
 
 export class PrismaSequenceCounter implements SequenceCounterPort {
   constructor(private readonly prisma: PrismaService) {}
-  async allocate(input: { companyId: string; counterKey: CounterKey; fiscalYear: number }): Promise<{
+  async allocate(input: {
+    companyId: string;
+    counterKey: CounterKey;
+    fiscalYear: number;
+  }): Promise<{
     sequence: number;
     formatted: DocNumber;
   }> {
@@ -2529,7 +2662,13 @@ export class PrismaSequenceCounter implements SequenceCounterPort {
       ON CONFLICT ("companyId", "counterKey", "fiscalYear")
       DO UPDATE SET "nextValue" = document_counters."nextValue" + 1
       RETURNING "nextValue" AS next_value`;
-    const seq = Number(rows[0]?.next_value ?? 1);
+    if (rows.length !== 1) {
+      throw new Error(`DOCUMENT_COUNTER_ALLOCATION_CORRUPT:expected_one_row:got_${rows.length}`);
+    }
+    const seq = Number(rows[0]!.next_value);
+    if (!Number.isSafeInteger(seq) || seq < 1) {
+      throw new Error('DOCUMENT_COUNTER_ALLOCATION_CORRUPT:invalid_next_value');
+    }
     // D = devis · F = facture · A = avoir (A6, CounterKey 'credit') — trois familles, trois séquences
     // sans trou ; la table document_counters est générique (counterKey texte), aucune migration.
     const prefix = input.counterKey === 'quote' ? 'D' : input.counterKey === 'credit' ? 'A' : 'F';

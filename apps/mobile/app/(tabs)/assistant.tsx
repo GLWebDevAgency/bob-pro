@@ -411,9 +411,10 @@ export default function Assistant() {
     if (invoiceId) {
       void client.invoiceAccountingPreview(invoiceId).then((result) => {
         if (!result.ok || !result.value.available || result.value.lines.length === 0) return;
+        const accountingLines = result.value.lines;
         setItems((prev) => prev.map((candidate) => (
           candidate.id === id
-            ? { ...candidate, accountingLines: result.value.lines }
+            ? { ...candidate, accountingLines }
             : candidate
         )));
       }).catch(() => undefined);

@@ -12,7 +12,7 @@ import { useCustomers, useQuotes, useInvoices, useSalesDocumentSearch, useSalesD
 import { usePublishAgentContext, type AgentContext, type AgentSurface } from '../src/agent';
 import { frDateLabel } from '@bob/ai';
 import { Card, Badge, MoneyText, SectionHeader, font } from '../src/components/ui';
-import { ErrorRetry, SkeletonRow } from '@bob/ui';
+import { EmptyState, ErrorRetry, FadeIn, SkeletonRow } from '@bob/ui';
 import { combineQueryStates } from '../src/data/query-state';
 import {
   QuoteActions,
@@ -76,7 +76,13 @@ function ActiveFilterChip({ label, onRemove }: { label: string; onRemove: () => 
         accessibilityLabel={`${t('ventes.activeFilter.remove', { personality })} — ${label}`}
         onPress={onRemove}
         hitSlop={8}
-        style={{ width: 18, height: 18, alignItems: 'center', justifyContent: 'center' }}
+        style={({ pressed }) => ({
+          width: 18,
+          height: 18,
+          alignItems: 'center',
+          justifyContent: 'center',
+          opacity: pressed ? 0.6 : 1,
+        })}
       >
         <Ionicons name="close" size={14} color={semantic.aiInk} />
       </Pressable>
@@ -99,22 +105,22 @@ export default function Ventes() {
 
   const nameOf = (customerId: string) => (customers.data ?? []).find((c) => c.id === customerId)?.name ?? '—';
 
-  // Brouillon de devis propriétaire : slot BDD distinct de `quotes`, hydraté par GET avant rendu.
-  // `pendingResume` prime (soft-reset du wizard), sans aucun repli SecureStore ni état synthétique.
-  const localDraft = quoteDraft.persistence.ready
+  // Brouillon propriétaire : slot PostgreSQL distinct de `quotes`, hydraté par GET avant rendu.
+  // `pendingResume` prime uniquement comme vue mémoire de ce slot après un soft-reset du wizard.
+  const persistedDraft = quoteDraft.persistence.ready
     ? quoteDraft.pendingResume
       ?? (hasMeaningfulQuoteDraft(quoteDraft.state) && quoteDraft.state.saved !== null
         ? quoteDraft.state
         : null)
     : null;
-  const localDraftName = localDraft?.customer?.name ?? null;
-  const deleteLocalDraft = async (): Promise<void> => {
+  const persistedDraftName = persistedDraft?.customer?.name ?? null;
+  const deletePersistedDraft = async (): Promise<void> => {
     if (draftDeleteBusy) return;
     const ok = await confirm({
       title: t('ventes.draftCard.deleteConfirmTitle', { personality }),
       message: t('ventes.draftCard.deleteConfirmBody', {
         personality,
-        params: { name: localDraftName ?? t('ventes.draftCard.noCustomer', { personality }) },
+        params: { name: persistedDraftName ?? t('ventes.draftCard.noCustomer', { personality }) },
       }),
       challenge: challengeFor(DRAFT_DELETE_RISK, 'confirm_all'),
       destructive: true,
@@ -131,6 +137,8 @@ export default function Ventes() {
   // failed se lit TOUJOURS avec loading (combineQueryStates) — un échec réseau ne devient
   // jamais silencieusement « zéro devis/facture » (classe de bug P0 de l'audit états).
   const queryState = combineQueryStates(quotes, invoices, customers);
+  // Pending VISIBLE du « Réessayer » (ErrorRetry) — jamais un bouton muet qui refetch en douce.
+  const ventesRefetching = quotes.isRefetching || invoices.isRefetching || customers.isRefetching;
   const ventesDataReady =
     !queryState.loading &&
     !queryState.failed &&
@@ -280,17 +288,15 @@ export default function Ventes() {
   ventesDataReadyRef.current = ventesDataReady;
   const personalityRef = useRef(personality);
   personalityRef.current = personality;
-  // ── Parité vocale du brouillon local (« continue mon brouillon » / « supprime le brouillon »)
+  // ── Parité vocale du brouillon persistant (« continue mon brouillon » / « supprime le brouillon »)
   // — la suppression reste TOUJOURS derrière la ConfirmSheet, jamais un tap voix unique
   // (verrouillage fondateur : aucune suppression en un seul geste, nulle part).
-  const localDraftNameRef = useRef(localDraftName);
-  localDraftNameRef.current = localDraftName;
-  const hasLocalDraftRef = useRef(localDraft !== null);
-  hasLocalDraftRef.current = localDraft !== null;
+  const hasPersistedDraftRef = useRef(persistedDraft !== null);
+  hasPersistedDraftRef.current = persistedDraft !== null;
   const routerRef = useRef(router);
   routerRef.current = router;
-  const deleteLocalDraftRef = useRef(deleteLocalDraft);
-  deleteLocalDraftRef.current = deleteLocalDraft;
+  const deletePersistedDraftRef = useRef(deletePersistedDraft);
+  deletePersistedDraftRef.current = deletePersistedDraft;
   const salesDocumentVoiceAffordance = useSalesDocumentVoiceAffordance(personality);
   const ventesSurface = useMemo<AgentSurface>(
     () => ({
@@ -302,7 +308,7 @@ export default function Ventes() {
         {
           id: 'ventes.resumeDraft',
           match: (utterance) => {
-            if (!hasLocalDraftRef.current) return null;
+            if (!hasPersistedDraftRef.current) return null;
             const n = normalizeVoiceText(utterance);
             if (!/(continue|reprend\w*).{0,15}(devis|brouillon)/.test(n)) return null;
             return () => {
@@ -314,11 +320,11 @@ export default function Ventes() {
         {
           id: 'ventes.deleteDraft',
           match: (utterance) => {
-            if (!hasLocalDraftRef.current) return null;
+            if (!hasPersistedDraftRef.current) return null;
             const n = normalizeVoiceText(utterance);
             if (!/(supprime|efface)\w*.{0,15}(devis|brouillon)/.test(n)) return null;
             return () => {
-              void deleteLocalDraftRef.current();
+              void deletePersistedDraftRef.current();
               return { say: t('ventes.voiceDraftDeleteOpened', { personality: personalityRef.current }) };
             };
           },
@@ -394,7 +400,13 @@ export default function Ventes() {
           onPress={() => router.back()}
           accessibilityRole="button"
           accessibilityLabel="Retour"
-          style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}
+          hitSlop={8}
+          style={({ pressed }) => ({
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 4,
+            opacity: pressed ? 0.6 : 1,
+          })}
         >
           <Ionicons name="chevron-back" size={22} color={colors.ink800} />
           <Text style={[font('body'), { color: colors.ink800 }]}>Accueil</Text>
@@ -431,15 +443,16 @@ export default function Ventes() {
                 accessibilityState={{ selected: kindFilter === key, disabled: !ventesDataReady }}
                 disabled={!ventesDataReady}
                 onPress={() => setKindFilter(key)}
-                style={{
+                style={({ pressed }) => ({
                   paddingHorizontal: 14,
                   paddingVertical: 8,
                   borderRadius: 999,
                   borderWidth: 1,
                   borderColor: kindFilter === key ? semantic.ai : colors.line,
                   backgroundColor: kindFilter === key ? semantic.aiBg : colors.surface,
-                  opacity: ventesDataReady ? 1 : 0.5,
-                }}
+                  opacity: !ventesDataReady ? 0.5 : pressed ? 0.7 : 1,
+                  transform: [{ scale: pressed && ventesDataReady ? 0.97 : 1 }],
+                })}
               >
                 <Text
                   style={[
@@ -483,7 +496,7 @@ export default function Ventes() {
               accessibilityState={{ disabled: !ventesDataReady }}
               disabled={!ventesDataReady}
               onPress={() => setFiltersModalOpen(true)}
-              style={{
+              style={({ pressed }) => ({
                 width: 44,
                 height: 44,
                 borderRadius: 12,
@@ -492,8 +505,9 @@ export default function Ventes() {
                 backgroundColor: hasActiveFilterChips ? semantic.aiBg : colors.surface,
                 alignItems: 'center',
                 justifyContent: 'center',
-                opacity: ventesDataReady ? 1 : 0.5,
-              }}
+                opacity: !ventesDataReady ? 0.5 : pressed ? 0.7 : 1,
+                transform: [{ scale: pressed && ventesDataReady ? 0.95 : 1 }],
+              })}
             >
               <Ionicons name="options-outline" size={20} color={hasActiveFilterChips ? semantic.aiInk : colors.ink800} />
             </Pressable>
@@ -565,6 +579,7 @@ export default function Ventes() {
             <ErrorRetry
               message={t('docs.dataError', { personality })}
               onRetry={() => void serverSearch.refetch()}
+              retrying={serverSearch.isRefetching}
             />
           ) : null}
           {!queryState.loading &&
@@ -592,14 +607,14 @@ export default function Ventes() {
         {kindFilter !== 'invoices' ? (
           <View>
             <SectionHeader title="Devis" />
-            {/* Brouillon LOCAL (jamais côté serveur) — toujours visible en tête, indépendant du
-                chargement/de la recherche serveur (un seul brouillon possible, slot unique). */}
-            {localDraft !== null ? (
+            {/* Slot de brouillon PostgreSQL — visible seulement après hydratation réussie,
+                indépendamment de la liste des pièces (un seul slot propriétaire possible). */}
+            {persistedDraft !== null ? (
               <Card style={{ marginBottom: 10, borderColor: semantic.warning }}>
                 <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                   <View style={{ flex: 1, paddingRight: 12 }}>
                     <Text style={[font('cardTitle'), { color: colors.ink900 }]}>
-                      {localDraftName ?? t('ventes.draftCard.noCustomer', { personality })}
+                      {persistedDraftName ?? t('ventes.draftCard.noCustomer', { personality })}
                     </Text>
                     <Text style={[font('meta'), { color: colors.slate400, marginTop: 2 }]}>
                       {t('ventes.draftCard.subtitle', { personality })}
@@ -612,14 +627,16 @@ export default function Ventes() {
                     accessibilityRole="button"
                     accessibilityLabel={t('ventes.draftCard.resume', { personality })}
                     onPress={() => router.push('/devis/new?resume=1')}
-                    style={{
+                    style={({ pressed }) => ({
                       flex: 1,
                       minHeight: 44,
                       borderRadius: 12,
                       backgroundColor: colors.ink900,
                       alignItems: 'center',
                       justifyContent: 'center',
-                    }}
+                      transform: [{ scale: pressed ? 0.97 : 1 }],
+                      opacity: pressed ? 0.9 : 1,
+                    })}
                   >
                     <Text style={[font('button'), { color: colors.surface }]}>
                       {t('ventes.draftCard.resume', { personality })}
@@ -629,16 +646,17 @@ export default function Ventes() {
                     accessibilityRole="button"
                     accessibilityLabel={t('ventes.draftCard.delete', { personality })}
                     disabled={draftDeleteBusy}
-                    onPress={() => void deleteLocalDraft()}
-                    style={{
+                    onPress={() => void deletePersistedDraft()}
+                    style={({ pressed }) => ({
                       width: 44,
                       height: 44,
                       borderRadius: 12,
                       alignItems: 'center',
                       justifyContent: 'center',
                       backgroundColor: semantic.dangerBg,
-                      opacity: draftDeleteBusy ? 0.5 : 1,
-                    }}
+                      opacity: draftDeleteBusy ? 0.5 : pressed ? 0.7 : 1,
+                      transform: [{ scale: pressed && !draftDeleteBusy ? 0.94 : 1 }],
+                    })}
                   >
                     {draftDeleteBusy ? (
                       <ActivityIndicator size="small" color={semantic.danger} />
@@ -656,13 +674,33 @@ export default function Ventes() {
                 <SkeletonRow lines={2} trailing="text" />
               </View>
             ) : queryState.failed ? (
-              <ErrorRetry message="Impossible de charger tes documents." onRetry={queryState.refetchAll} />
+              <ErrorRetry
+                message={t('ventes.dataError', { personality })}
+                onRetry={queryState.refetchAll}
+                retrying={ventesRefetching}
+              />
             ) : serverSearchBlockingError ? null : sortedQuotes.length === 0 ? (
-              <Card>
-                <Text style={[font('body'), { color: colors.slate500 }]}>Aucun devis pour l&apos;instant.</Text>
-              </Card>
+              // Vide de PREMIER PAS uniquement (aucun filtre actif) : recherche vide = la ligne
+              // « noResults » au-dessus parle déjà — pas de double message.
+              normalizedQuery === '' && !hasServerFilters ? (
+                <Card>
+                  <EmptyState
+                    title={t('ventes.emptyQuotesTitle', { personality })}
+                    body={t('ventes.emptyQuotesBody', { personality })}
+                    icon={<Ionicons name="document-text-outline" size={17} color={semantic.success} />}
+                    {...(persistedDraft === null
+                      ? {
+                          cta: {
+                            label: t('ventes.emptyQuotesCta', { personality }),
+                            onPress: () => router.push('/devis/new'),
+                          },
+                        }
+                      : {})}
+                  />
+                </Card>
+              ) : null
             ) : (
-              <View style={{ gap: 10 }}>
+              <FadeIn index={0} style={{ gap: 10 }}>
                   {sortedQuotes.map((q) => {
                     const badge = QUOTE_BADGE[q.status];
                     return (
@@ -671,7 +709,12 @@ export default function Ventes() {
                           onPress={() => router.push(`/devis/${q.id}`)}
                           accessibilityRole="button"
                           accessibilityLabel={`Devis ${q.number ?? 'brouillon'} — ${nameOf(q.customerId)}`}
-                          style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}
+                          style={({ pressed }) => ({
+                            flexDirection: 'row',
+                            justifyContent: 'space-between',
+                            alignItems: 'flex-start',
+                            opacity: pressed ? 0.65 : 1,
+                          })}
                         >
                           <View style={{ flex: 1, paddingRight: 12 }}>
                             <Text style={[font('cardTitle'), { color: colors.ink900 }]}>{q.number ?? 'Brouillon'}</Text>
@@ -689,14 +732,15 @@ export default function Ventes() {
                                     accessibilityRole="button"
                                     accessibilityLabel={`Facture ${li.number ?? ''}`}
                                     onPress={() => router.push(`/facture/${li.id}`)}
-                                    style={{
+                                    style={({ pressed }) => ({
                                       borderWidth: 1,
                                       borderColor: semantic.ai,
                                       backgroundColor: semantic.aiBg,
                                       borderRadius: 999,
                                       paddingHorizontal: 8,
                                       paddingVertical: 3,
-                                    }}
+                                      opacity: pressed ? 0.6 : 1,
+                                    })}
                                   >
                                     <Text style={[font('meta'), { fontSize: 11, fontWeight: '600', color: semantic.aiInk }]}>
                                       {li.number ?? '—'} · {formatEUR(li.totals.netToPay)}
@@ -723,7 +767,7 @@ export default function Ventes() {
                       </Card>
                     );
                   })}
-                </View>
+                </FadeIn>
               )}
           </View>
         ) : null}
@@ -740,14 +784,20 @@ export default function Ventes() {
               </View>
             ) : queryState.failed ? (
               kindFilter === 'invoices' ? (
-                <ErrorRetry message="Impossible de charger tes documents." onRetry={queryState.refetchAll} />
+                <ErrorRetry
+                  message={t('ventes.dataError', { personality })}
+                  onRetry={queryState.refetchAll}
+                  retrying={ventesRefetching}
+                />
               ) : null
             ) : serverSearchBlockingError ? null : sortedInvoices.length === 0 ? (
-              <Card>
-                <Text style={[font('body'), { color: colors.slate500 }]}>Aucune facture pour l&apos;instant.</Text>
-              </Card>
+              normalizedQuery === '' && !hasServerFilters ? (
+                <Card>
+                  <EmptyState body={t('ventes.emptyInvoicesBody', { personality })} />
+                </Card>
+              ) : null
             ) : (
-              <View style={{ gap: 10 }}>
+              <FadeIn index={1} style={{ gap: 10 }}>
                   {sortedInvoices.map((inv) => {
                     const badge = INVOICE_BADGE[inv.status];
                     // Assiette = netToPay (acompte si depositPct) : montant réellement encaissable sur la facture.
@@ -759,7 +809,12 @@ export default function Ventes() {
                           onPress={() => router.push(`/facture/${inv.id}`)}
                           accessibilityRole="button"
                           accessibilityLabel={`Facture ${inv.number ?? 'brouillon'} — ${nameOf(inv.customerId)}`}
-                          style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}
+                          style={({ pressed }) => ({
+                            flexDirection: 'row',
+                            justifyContent: 'space-between',
+                            alignItems: 'flex-start',
+                            opacity: pressed ? 0.65 : 1,
+                          })}
                         >
                           <View style={{ flex: 1, paddingRight: 12 }}>
                             <Text style={[font('cardTitle'), { color: colors.ink900 }]}>{inv.number ?? 'Brouillon'}</Text>
@@ -792,13 +847,14 @@ export default function Ventes() {
                                   accessibilityRole="button"
                                   accessibilityLabel={`Devis ${quoteOf(inv)?.number ?? ''}`}
                                   onPress={() => router.push(`/devis/${inv.parentQuoteId}`)}
-                                  style={{
+                                  style={({ pressed }) => ({
                                     borderWidth: 1,
                                     borderColor: colors.line,
                                     borderRadius: 999,
                                     paddingHorizontal: 8,
                                     paddingVertical: 3,
-                                  }}
+                                    opacity: pressed ? 0.6 : 1,
+                                  })}
                                 >
                                   <Text style={[font('meta'), { fontSize: 11, fontWeight: '600', color: colors.slate500 }]}>
                                     {t('piece.kindDevis', { personality })} {quoteOf(inv)?.number ?? ''}
@@ -826,7 +882,7 @@ export default function Ventes() {
                       </Card>
                     );
                   })}
-                </View>
+                </FadeIn>
               )}
           </View>
         ) : null}

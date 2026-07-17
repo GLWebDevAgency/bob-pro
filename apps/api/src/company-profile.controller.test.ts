@@ -11,11 +11,13 @@ describe('CompanyLookupController — profil société confirmé', () => {
     const updateCompanyProfile = vi.fn();
     const value = controller({ updateCompanyProfile } as never);
 
-    await expect(value.updateProfile({
-      trade: 'plombier',
-      vatRegime: 'franchise',
-      companyId: 'other-company',
-    })).rejects.toMatchObject({ status: 422 });
+    await expect(
+      value.updateProfile({
+        trade: 'plombier',
+        vatRegime: 'franchise',
+        companyId: 'other-company',
+      }),
+    ).rejects.toMatchObject({ status: 422 });
     expect(updateCompanyProfile).not.toHaveBeenCalled();
   });
 
@@ -23,8 +25,9 @@ describe('CompanyLookupController — profil société confirmé', () => {
     const updateCompanyProfile = vi.fn();
     const value = controller({ updateCompanyProfile } as never);
 
-    await expect(value.updateProfile({ trade: 'artisan', vatRegime: 'auto' }))
-      .rejects.toMatchObject({ status: 422 });
+    await expect(
+      value.updateProfile({ trade: 'artisan', vatRegime: 'auto' }),
+    ).rejects.toMatchObject({ status: 422 });
     expect(updateCompanyProfile).not.toHaveBeenCalled();
   });
 
@@ -32,11 +35,13 @@ describe('CompanyLookupController — profil société confirmé', () => {
     const updateCompanyProfile = vi.fn();
     const value = controller({ updateCompanyProfile } as never);
 
-    await expect(value.updateProfile({
-      trade: 'plombier',
-      vatRegime: 'franchise',
-      customerPortfolio: 'particuliers_et_amis',
-    })).rejects.toMatchObject({ status: 422 });
+    await expect(
+      value.updateProfile({
+        trade: 'plombier',
+        vatRegime: 'franchise',
+        customerPortfolio: 'particuliers_et_amis',
+      }),
+    ).rejects.toMatchObject({ status: 422 });
     expect(updateCompanyProfile).not.toHaveBeenCalled();
   });
 
@@ -47,12 +52,13 @@ describe('CompanyLookupController — profil société confirmé', () => {
     }));
     const value = controller({ updateCompanyProfile } as never);
 
-    await expect(value.updateProfile({
-      trade: 'electricien',
-      vatRegime: 'reel_simpl',
-      customerPortfolio: 'b2g',
-    }))
-      .resolves.toMatchObject({ trade: 'electricien', vatRegime: 'reel_simpl' });
+    await expect(
+      value.updateProfile({
+        trade: 'electricien',
+        vatRegime: 'reel_simpl',
+        customerPortfolio: 'b2g',
+      }),
+    ).resolves.toMatchObject({ trade: 'electricien', vatRegime: 'reel_simpl' });
     expect(updateCompanyProfile).toHaveBeenCalledWith({
       trade: 'electricien',
       vatRegime: 'reel_simpl',
@@ -66,8 +72,9 @@ describe('CompanyLookupController — coordonnées bancaires (RIB)', () => {
     const updateCompanyBilling = vi.fn();
     const value = controller({ updateCompanyBilling } as never);
 
-    await expect(value.updateBilling({ iban: 'FR76 3000 6000 0112 3456 7890 189', logo: 'x' }))
-      .rejects.toMatchObject({ status: 422 });
+    await expect(
+      value.updateBilling({ iban: 'FR76 3000 6000 0112 3456 7890 189', logo: 'x' }),
+    ).rejects.toMatchObject({ status: 422 });
     expect(updateCompanyBilling).not.toHaveBeenCalled();
   });
 
@@ -75,8 +82,9 @@ describe('CompanyLookupController — coordonnées bancaires (RIB)', () => {
     const updateCompanyBilling = vi.fn();
     const value = controller({ updateCompanyBilling } as never);
 
-    await expect(value.updateBilling({ iban: 'FR76 3000 6000 0112 3456 7890 188' }))
-      .rejects.toMatchObject({ status: 422 });
+    await expect(
+      value.updateBilling({ iban: 'FR76 3000 6000 0112 3456 7890 188' }),
+    ).rejects.toMatchObject({ status: 422 });
     expect(updateCompanyBilling).not.toHaveBeenCalled();
   });
 
@@ -84,8 +92,7 @@ describe('CompanyLookupController — coordonnées bancaires (RIB)', () => {
     const updateCompanyBilling = vi.fn();
     const value = controller({ updateCompanyBilling } as never);
 
-    await expect(value.updateBilling({ bic: 'trop-court' }))
-      .rejects.toMatchObject({ status: 422 });
+    await expect(value.updateBilling({ bic: 'trop-court' })).rejects.toMatchObject({ status: 422 });
     expect(updateCompanyBilling).not.toHaveBeenCalled();
   });
 
@@ -113,24 +120,53 @@ describe('CompanyLookupController — coordonnées bancaires (RIB)', () => {
 });
 
 describe('CompanyLookupController — réglages facturation canoniques', () => {
-  it('refuse logo et conditions de paiement tant qu’ils n’ont aucun consommateur serveur', async () => {
+  it('refuse toujours un logo sans stockage objet et un ancien format de conditions', async () => {
     const updateCompanyBillingSettings = vi.fn();
     const value = controller({ updateCompanyBillingSettings } as never);
 
-    await expect(value.updateBillingSettings({
-      expectedRevision: 1,
-      logoUri: 'file:///private/logo.png',
-      defaultPaymentTerms: 'j30',
-    })).rejects.toMatchObject({ status: 422 });
+    await expect(
+      value.updateBillingSettings({
+        expectedRevision: 1,
+        logoUri: 'file:///private/logo.png',
+        defaultPaymentTerms: 'j30',
+      }),
+    ).rejects.toMatchObject({ status: 422 });
     expect(updateCompanyBillingSettings).not.toHaveBeenCalled();
+  });
+
+  it('accepte uniquement un délai de paiement explicite borné ou son effacement', async () => {
+    const updateCompanyBillingSettings = vi.fn(async ({ patch }) => ({
+      ok: true as const,
+      value: { revision: 3, ...patch },
+    }));
+    const value = controller({ updateCompanyBillingSettings } as never);
+
+    await expect(
+      value.updateBillingSettings({
+        expectedRevision: 2,
+        defaultInvoicePaymentTermsDays: 30,
+      }),
+    ).resolves.toMatchObject({ defaultInvoicePaymentTermsDays: 30 });
+    expect(updateCompanyBillingSettings).toHaveBeenLastCalledWith({
+      expectedRevision: 2,
+      patch: { defaultInvoicePaymentTermsDays: 30 },
+    });
+
+    await expect(
+      value.updateBillingSettings({
+        expectedRevision: 2,
+        defaultInvoicePaymentTermsDays: 0,
+      }),
+    ).rejects.toMatchObject({ status: 422 });
   });
 
   it('exige une révision CAS et au moins un réglage', async () => {
     const updateCompanyBillingSettings = vi.fn();
     const value = controller({ updateCompanyBillingSettings } as never);
 
-    await expect(value.updateBillingSettings({ expectedRevision: 0 }))
-      .rejects.toMatchObject({ status: 422 });
+    await expect(value.updateBillingSettings({ expectedRevision: 0 })).rejects.toMatchObject({
+      status: 422,
+    });
     expect(updateCompanyBillingSettings).not.toHaveBeenCalled();
   });
 
@@ -141,18 +177,22 @@ describe('CompanyLookupController — réglages facturation canoniques', () => {
     }));
     const value = controller({ updateCompanyBillingSettings } as never);
 
-    await expect(value.updateBillingSettings({
-      expectedRevision: 7,
-      pdfAccentColor: 'purple',
-      defaultQuoteValidityDays: 45,
-      defaultDepositPercent: 20,
-    })).resolves.toMatchObject({ revision: 8 });
+    await expect(
+      value.updateBillingSettings({
+        expectedRevision: 7,
+        pdfAccentColor: 'purple',
+        defaultQuoteValidityDays: 45,
+        defaultDepositPercent: 20,
+        defaultInvoicePaymentTermsDays: 30,
+      }),
+    ).resolves.toMatchObject({ revision: 8 });
     expect(updateCompanyBillingSettings).toHaveBeenCalledWith({
       expectedRevision: 7,
       patch: {
         pdfAccentColor: 'purple',
         defaultQuoteValidityDays: 45,
         defaultDepositPercent: 20,
+        defaultInvoicePaymentTermsDays: 30,
       },
     });
   });

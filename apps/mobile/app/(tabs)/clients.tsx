@@ -62,6 +62,7 @@ import {
   InnerScreenHeader,
   Sheet,
   SkeletonRow as BaseSkeletonRow,
+  StaggeredList,
   StatusBadge,
   Toast,
   font,
@@ -73,7 +74,13 @@ import { combineQueryStates } from '../../src/data/query-state';
 import { hasBlockingAuthoritativeDataError } from '../../src/data/authoritative-query-state';
 import { CustomerForm } from '../../src/components/customer-form';
 import { usePublishAgentContext, type AgentContext } from '../../src/agent';
-import { CheckIcon, ChevronRightIcon, PlusIcon, SearchIcon } from '../../src/components/icons';
+import {
+  CheckIcon,
+  ChevronRightIcon,
+  PeopleIcon,
+  PlusIcon,
+  SearchIcon,
+} from '../../src/components/icons';
 import { useBobAwareScrollInsets } from '../../src/components/use-bob-aware-scroll-insets';
 
 type TypeFilter = 'tous' | CustomerListItem['type'];
@@ -273,7 +280,14 @@ function CustomerRowCard({
         accessibilityRole="button"
         accessibilityLabel={`${customer.name}, ${subtitle}, ${amountLabel} ${statusWord}`}
         onPress={onPress}
-        style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 13, minHeight: 44 }}
+        style={({ pressed }) => ({
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 12,
+          paddingVertical: 13,
+          minHeight: 44,
+          opacity: pressed ? 0.65 : 1,
+        })}
       >
         <Avatar name={customer.name} tone={badge.variant} />
         <View style={{ flex: 1 }}>
@@ -507,6 +521,7 @@ export default function Clients() {
             <ErrorRetry
               message={t('clients.dataError', { personality })}
               onRetry={queryState.refetchAll}
+              retrying={refreshing}
             />
           ) : booting ? (
             <>
@@ -521,6 +536,7 @@ export default function Clients() {
                 <ErrorRetry
                   message={t('clients.dataError', { personality })}
                   onRetry={queryState.refetchAll}
+                  retrying={refreshing}
                 />
               ) : null}
               {carnet.length === 0 ? (
@@ -529,6 +545,8 @@ export default function Clients() {
               <EmptyState
                 title={t('clients.emptyTitle', { personality })}
                 body={t('clients.emptyBody', { personality })}
+                icon={<PeopleIcon size={17} color={colors.ink600} />}
+                iconTone="particulier"
                 cta={sourcesFresh ? { label: t('clients.emptyCta', { personality }), onPress: openCreate } : undefined}
               />
             </Card>
@@ -538,18 +556,21 @@ export default function Clients() {
               <EmptyState body={t('clients.noResults', { personality })} />
             </Card>
           ) : (
-            list.map((customer) => {
-              const standing = standingById.get(customer.id);
-              if (standing === undefined) return null;
-              return (
-                <CustomerRowCard
-                  key={customer.id}
-                  customer={customer}
-                  standing={standing}
-                  onPress={() => router.push({ pathname: '/client/[id]', params: { id: customer.id } })}
-                />
-              );
-            })
+            // Cascade sobre au premier rendu du carnet — chaque rangée fond en entrant (cap 8).
+            <StaggeredList>
+              {list.map((customer) => {
+                const standing = standingById.get(customer.id);
+                if (standing === undefined) return null;
+                return (
+                  <CustomerRowCard
+                    key={customer.id}
+                    customer={customer}
+                    standing={standing}
+                    onPress={() => router.push({ pathname: '/client/[id]', params: { id: customer.id } })}
+                  />
+                );
+              })}
+            </StaggeredList>
           )}
             </>
           )}

@@ -2,12 +2,13 @@
  * QuickAction — raccourci « Vite fait » (grille 4, COMPONENT_SPECS.md §6).
  * Surface radius 16, padding 14/6, colonne centrée : pastille 34 (radius 11, fond
  * pastel sémantique par tone) + icône 18 injectée, puis label 11.5/600 slate500.
- * Cible tactile ≥ 44 (minHeight/minWidth).
+ * Cible tactile ≥ 44 (minHeight/minWidth) ; press feedback standard PressableScale.
  */
 import type { ReactNode } from 'react';
-import { Pressable, Text, View, type StyleProp, type ViewStyle } from 'react-native';
+import { Text, View, type StyleProp, type ViewStyle } from 'react-native';
 import { shadowNative } from '@bob/tokens';
 import { font, useTheme } from '../theme';
+import { PressableScale } from './pressable-scale';
 
 export type QuickActionTone =
   | 'success'
@@ -43,7 +44,7 @@ export function QuickAction({ style,
   };
 
   return (
-    <Pressable
+    <PressableScale
       accessibilityRole="button"
       accessibilityLabel={label}
       {...(onPress ? { onPress } : {})}
@@ -84,6 +85,6 @@ export function QuickAction({ style,
       >
         {label}
       </Text>
-    </Pressable>
+    </PressableScale>
   );
 }

@@ -74,6 +74,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
           pdfAccentColor: 'navy',
           defaultQuoteValidityDays: 30,
           defaultDepositPercent: 30,
+          defaultInvoicePaymentTermsDays: null,
         });
         expect(await repoA.findByCompanyId(companyB)).toBeNull();
       });
@@ -87,16 +88,20 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
       const repoA = new PrismaCompanyBillingSettingsRepository(workerA);
       const repoB = new PrismaCompanyBillingSettingsRepository(workerB);
       const [first, second] = await Promise.all([
-        workerA.withTenant(companyA, () => repoA.update({
-          companyId: companyA,
-          expectedRevision: 1,
-          patch: { pdfAccentColor: 'green' },
-        })),
-        workerB.withTenant(companyA, () => repoB.update({
-          companyId: companyA,
-          expectedRevision: 1,
-          patch: { pdfAccentColor: 'purple' },
-        })),
+        workerA.withTenant(companyA, () =>
+          repoA.update({
+            companyId: companyA,
+            expectedRevision: 1,
+            patch: { pdfAccentColor: 'green' },
+          }),
+        ),
+        workerB.withTenant(companyA, () =>
+          repoB.update({
+            companyId: companyA,
+            expectedRevision: 1,
+            patch: { pdfAccentColor: 'purple' },
+          }),
+        ),
       ]);
       expect([first.status, second.status].sort()).toEqual(['revision_conflict', 'updated']);
       const persisted = await workerA.withTenant(companyA, () => repoA.findByCompanyId(companyA));
@@ -105,19 +110,25 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
     });
 
     it('refuse en base les contournements du CAS et les champs structurels mutés', async () => {
-      await expect(admin.$executeRawUnsafe(
-        'UPDATE company_billing_settings SET "pdfAccentColor" = \'orange\' WHERE "companyId" = $1',
-        companyA,
-      )).rejects.toBeDefined();
-      await expect(admin.$executeRawUnsafe(
-        'UPDATE company_billing_settings SET "companyId" = $2, revision = revision + 1 WHERE "companyId" = $1',
-        companyA,
-        companyB,
-      )).rejects.toBeDefined();
-      await expect(admin.$executeRawUnsafe(
-        'UPDATE company_billing_settings SET "updatedAt" = "updatedAt" - interval \'1 second\', revision = revision + 1 WHERE "companyId" = $1',
-        companyA,
-      )).rejects.toBeDefined();
+      await expect(
+        admin.$executeRawUnsafe(
+          'UPDATE company_billing_settings SET "pdfAccentColor" = \'orange\' WHERE "companyId" = $1',
+          companyA,
+        ),
+      ).rejects.toBeDefined();
+      await expect(
+        admin.$executeRawUnsafe(
+          'UPDATE company_billing_settings SET "companyId" = $2, revision = revision + 1 WHERE "companyId" = $1',
+          companyA,
+          companyB,
+        ),
+      ).rejects.toBeDefined();
+      await expect(
+        admin.$executeRawUnsafe(
+          'UPDATE company_billing_settings SET "updatedAt" = "updatedAt" - interval \'1 second\', revision = revision + 1 WHERE "companyId" = $1',
+          companyA,
+        ),
+      ).rejects.toBeDefined();
     });
   },
 );

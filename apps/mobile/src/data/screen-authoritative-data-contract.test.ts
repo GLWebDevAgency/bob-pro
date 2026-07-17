@@ -56,7 +56,9 @@ describe('contrat données autoritatives des écrans métier', () => {
     expect(source).toContain('capabilities: homeAgentDataReady');
     expect(source).toContain('const glanceBlockingError =');
     expect(source).toContain('const glanceMissingBankingInput =');
-    expect(source).toContain("<ErrorRetry message={t('today.dataError'");
+    // Tolérant au formatage (props sur une ou plusieurs lignes) : le contrat porte sur la
+    // présence de l'ErrorRetry avec la voix today.dataError, pas sur la mise en page JSX.
+    expect(source).toMatch(/<ErrorRetry\s+message=\{t\('today\.dataError'/u);
   });
 
   it('les détails ferment leurs capacités Bob derrière leurs états de récupération', () => {

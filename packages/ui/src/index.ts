@@ -23,6 +23,8 @@ export * from './components/card';
 export * from './components/skeleton';
 export * from './components/ui-states';
 export * from './hooks/use-reduce-motion';
+export * from './components/fade-in';
+export * from './components/pressable-scale';
 export * from './components/icon-tile';
 export * from './components/delete-icon-button';
 export * from './components/eyebrow';

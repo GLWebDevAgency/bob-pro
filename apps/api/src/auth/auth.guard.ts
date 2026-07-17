@@ -134,9 +134,12 @@ export class SupabaseAuthGuard implements CanActivate {
       if (!userId) return false;
       if (companyId === null && !allowsMissingTenant(req.method ?? 'GET', req.url)) {
         // THROW (≠ return false) : le JWT est VALIDE — le client doit provisionner son tenant
-        // (POST /onboarding/company), pas se ré-authentifier. Le corps porte un code stable.
+        // (POST /onboarding/company), pas se ré-authentifier. Le corps porte un code stable ;
+        // l'enveloppe `error` (contrat AppError, http/result.ts) est ADDITIVE pour que le client
+        // mobile décode ce 403 comme un forbidden ciblé (routage onboarding) et non une panne.
         throw new ForbiddenException({
           code: 'PROVISIONING_REQUIRED',
+          error: { kind: 'forbidden', reason: 'PROVISIONING_REQUIRED' },
           message: 'Compte sans espace de travail : appelle POST /onboarding/company pour le créer.',
         });
       }

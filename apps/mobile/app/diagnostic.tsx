@@ -819,7 +819,7 @@ export default function Diagnostic() {
             style={{ alignItems: 'center', gap: 10, marginTop: 18 }}
           >
             <ActivityIndicator color={colors.surface} />
-            <Text style={[font('sub'), { color: overlays.white66 }]}> 
+            <Text style={[font('sub'), { color: overlays.white66 }]}>
               {t('diag.dataLoading', { personality })}
             </Text>
           </View>

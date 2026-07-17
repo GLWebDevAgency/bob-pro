@@ -32,6 +32,14 @@ import {
   type PasswordRecoveryErrorCode,
   type PasswordRecoveryState,
 } from '../auth-recovery/password-recovery';
+import {
+  EMAIL_CONFIRMATION_ROUTE,
+  EMAIL_CONFIRMATION_SCHEME,
+  emailConfirmationWebRelayUrl,
+  initialEmailConfirmationState,
+  parseEmailConfirmationUrl,
+  type EmailConfirmationState,
+} from '../auth-confirmation/email-confirmation';
 
 /**
  * Erreurs d'auth TYPÉES (C24) : la couche data traduit les erreurs Supabase (anglais,
@@ -154,6 +162,14 @@ interface AuthValue {
    */
   resetPassword: (email: string) => Promise<{ error: AuthErrorCode | null }>;
   resendSignupConfirmation: (email: string) => Promise<{ error: AuthErrorCode | null }>;
+  /**
+   * Retour du lien de confirmation d'inscription (deep link `bobpro:///auth/callback`) :
+   * échange la preuve PKCE/implicite contre une session quand elle est présente, sinon
+   * constate honnêtement « compte confirmé, connexion manuelle ».
+   */
+  emailConfirmation: EmailConfirmationState;
+  beginEmailConfirmation: (url: string) => Promise<void>;
+  finishEmailConfirmation: () => void;
   passwordRecovery: PasswordRecoveryState;
   beginPasswordRecovery: (url: string) => Promise<void>;
   updateRecoveredPassword: (
@@ -171,6 +187,20 @@ const PASSWORD_RECOVERY_REDIRECT_URL = createURL(PASSWORD_RECOVERY_ROUTE.slice(1
   scheme: PASSWORD_RECOVERY_SCHEME,
   isTripleSlashed: true,
 });
+/**
+ * Cible EXPLICITE de l'email de confirmation d'inscription — sans elle, GoTrue retombe sur la
+ * Site URL du projet Supabase (défaut `http://localhost:3000`) et le lien est inutilisable
+ * (bug fondateur « Fly Services », 2026-07). Priorité à la page relais web sign-web
+ * (`EXPO_PUBLIC_SIGNUP_CONFIRMATION_WEB_URL`) : elle fonctionne quel que soit l'appareil qui
+ * ouvre l'email et rouvre l'app via le deep link. À défaut, deep link direct.
+ * Les deux valeurs doivent être allowlistées dans le dashboard Supabase (Redirect URLs).
+ */
+const EMAIL_CONFIRMATION_REDIRECT_URL =
+  emailConfirmationWebRelayUrl(process.env.EXPO_PUBLIC_SIGNUP_CONFIRMATION_WEB_URL) ??
+  createURL(EMAIL_CONFIRMATION_ROUTE.slice(1), {
+    scheme: EMAIL_CONFIRMATION_SCHEME,
+    isTripleSlashed: true,
+  });
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
@@ -181,6 +211,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     passwordRecoveryReducer,
     initialPasswordRecoveryState,
   );
+  const [emailConfirmation, setEmailConfirmation] = useState<EmailConfirmationState>(
+    initialEmailConfirmationState,
+  );
+  const emailConfirmationAttempt = useRef(0);
   // A session event can legitimately win the race against getSession() (deep link, refresh,
   // sign-in). The revision fences the late bootstrap result so it cannot overwrite fresher auth.
   const authRevision = useRef(0);
@@ -302,6 +336,76 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     dispatchPasswordRecovery({ type: 'reset' });
   }, []);
 
+  const beginEmailConfirmation = useCallback(
+    async (url: string): Promise<void> => {
+      const attempt = ++emailConfirmationAttempt.current;
+      const parsed = parseEmailConfirmationUrl(url);
+      if (!parsed.ok) {
+        setEmailConfirmation({
+          phase: 'error',
+          error: parsed.reason === 'expired_link' ? 'expired_link' : 'invalid_link',
+        });
+        return;
+      }
+      // GoTrue ne redirige vers `redirect_to` qu'APRÈS vérification : un retour sans preuve
+      // (lien ouvert sur un autre appareil que celui du signUp) = compte confirmé, connexion
+      // manuelle — on ne promet jamais une session qu'on ne peut pas établir.
+      if (!parsed.proof) {
+        setEmailConfirmation({ phase: 'confirmed', error: null });
+        return;
+      }
+      const sb = supabase;
+      if (!sb) {
+        setEmailConfirmation({ phase: 'error', error: 'unknown' });
+        return;
+      }
+      setEmailConfirmation({ phase: 'confirming', error: null });
+      const settle = (next: EmailConfirmationState): void => {
+        if (attempt === emailConfirmationAttempt.current) setEmailConfirmation(next);
+      };
+      const proof = parsed.proof;
+      try {
+        const { data, error } = await runAuthRequestWithTimeout(
+          () =>
+            proof.kind === 'pkce'
+              ? sb.auth.exchangeCodeForSession(proof.code)
+              : sb.auth.setSession({
+                  access_token: proof.accessToken,
+                  refresh_token: proof.refreshToken,
+                }),
+          AUTH_REQUEST_TIMEOUT_MS,
+        );
+        if (attempt !== emailConfirmationAttempt.current) return;
+        if (!error && data.session) {
+          publishSession(data.session);
+          settle({ phase: 'signed_in', error: null });
+          return;
+        }
+        const mapped = mapAuthError(error);
+        settle(
+          mapped === 'network' || mapped === 'rate_limited'
+            ? { phase: 'error', error: mapped }
+            : // Preuve refusée (code déjà consommé, verifier absent après réinstallation…) :
+              // la vérification serveur, elle, a déjà eu lieu — connexion manuelle.
+              { phase: 'confirmed', error: null },
+        );
+      } catch (error: unknown) {
+        const mapped = mapThrownAuthError(error);
+        settle(
+          mapped === 'network' || mapped === 'rate_limited'
+            ? { phase: 'error', error: mapped }
+            : { phase: 'confirmed', error: null },
+        );
+      }
+    },
+    [publishSession],
+  );
+
+  const finishEmailConfirmation = useCallback((): void => {
+    emailConfirmationAttempt.current += 1;
+    setEmailConfirmation(initialEmailConfirmationState);
+  }, []);
+
   useEffect(() => {
     if (!supabase) {
       setLoading(false);
@@ -350,6 +454,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         passwordRecoveryAuthorized.current = false;
         passwordRecoveryExchangeExpected.current = false;
         dispatchPasswordRecovery({ type: 'reset' });
+        emailConfirmationAttempt.current += 1;
+        setEmailConfirmation(initialEmailConfirmationState);
       }
     });
     // En RN, le refresh auto du token doit être piloté par l'état de l'app (requis par Supabase).
@@ -394,6 +500,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 email,
                 password,
                 options: {
+                  // Sans cible explicite, GoTrue redirige la confirmation vers la Site URL du
+                  // projet (défaut localhost) — le lien serait mort pour tout utilisateur réel.
+                  emailRedirectTo: EMAIL_CONFIRMATION_REDIRECT_URL,
                   data: {
                     first_name: firstName,
                     full_name: fullName,
@@ -443,6 +552,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               sb.auth.resend({
                 type: 'signup',
                 email,
+                // Même cible que le signUp : un email renvoyé ne doit jamais retomber sur la
+                // Site URL par défaut du projet.
+                options: { emailRedirectTo: EMAIL_CONFIRMATION_REDIRECT_URL },
               }),
             AUTH_REQUEST_TIMEOUT_MS,
           );
@@ -451,6 +563,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           return { error: mapThrownAuthError(error) };
         }
       },
+      emailConfirmation,
+      beginEmailConfirmation,
+      finishEmailConfirmation,
       passwordRecovery,
       beginPasswordRecovery,
       updateRecoveredPassword,
@@ -477,6 +592,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       loading,
       initializationError,
       retryInitialization,
+      emailConfirmation,
+      beginEmailConfirmation,
+      finishEmailConfirmation,
       passwordRecovery,
       beginPasswordRecovery,
       updateRecoveredPassword,

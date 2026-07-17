@@ -14,6 +14,7 @@ import type { Persistence } from './persistence';
 import { PERSISTENCE } from './persistence-token';
 
 const TENANT_TRANSACTION_DISABLED = Symbol('tenant-transaction-disabled');
+const TENANT_COMPANY_ROW_OPTIONAL = Symbol('tenant-company-row-optional');
 
 /**
  * Une route worker portant ce décorateur doit ouvrir elle-même ses transactions RLS courtes.
@@ -21,6 +22,14 @@ const TENANT_TRANSACTION_DISABLED = Symbol('tenant-transaction-disabled');
  */
 export const WithoutTenantPersistenceTransaction = () =>
   SetMetadata(TENANT_TRANSACTION_DISABLED, true);
+
+/**
+ * Route tenant qui doit rester joignable même quand le JWT référence une company ABSENTE de la
+ * base (métadonnées écrites puis base réinitialisée/restaurée). À réserver au provisioning :
+ * POST /onboarding/company recrée la MÊME company (id du JWT) — la bloquer par NO_COMPANY
+ * verrouillerait définitivement le compte hors de l'app.
+ */
+export const AllowsMissingCompanyRow = () => SetMetadata(TENANT_COMPANY_ROW_OPTIONAL, true);
 
 /**
  * Enrôle chaque requête tenant dans le contexte de persistance courant.
@@ -51,6 +60,10 @@ export class TenantPersistenceInterceptor implements NestInterceptor {
     // public, provisioning), et registerCompany ouvre lui-même runWithTenant sur l'id provisionné.
     if (!principal || principal.companyId === null) return next.handle();
     const companyId = principal.companyId;
+    const companyRowOptional = this.reflector.getAllAndOverride<boolean>(
+      TENANT_COMPANY_ROW_OPTIONAL,
+      [context.getHandler(), context.getClass()],
+    );
     return from(
       this.persistence.runWithTenant(companyId, async () => {
         // Clôture de compte (CloseAccount, Apple 5.1.1(v)) : DANS la transaction tenant (donc
@@ -60,6 +73,22 @@ export class TenantPersistenceInterceptor implements NestInterceptor {
         // /account elle-même désactive cette transaction automatique (@WithoutTenantPersistenceTransaction)
         // et gère son propre runWithTenant : elle n'est donc jamais bloquée par son propre effet.
         const company = await this.persistence.companies.findById(companyId);
+        // JWT valide + app_metadata.company_id posé, mais AUCUNE company en base (base
+        // réinitialisée, provisioning interrompu après écriture des métadonnées…). Sans code
+        // dédié, chaque endpoint répondait sa propre erreur (404 company/me, listes vides,
+        // cashflow indisponible) : indistinguable d'une panne côté mobile → tunnel de retry.
+        // Code STABLE additif : le client détecte NO_COMPANY et route vers l'onboarding
+        // (POST /onboarding/company, exempté via @AllowsMissingCompanyRow, recrée la MÊME
+        // company). L'enveloppe `error` suit le contrat AppError de http/result.ts pour que
+        // les clients existants la décodent sans nouveau parseur.
+        if (company === null && !companyRowOptional) {
+          throw new ForbiddenException({
+            code: 'NO_COMPANY',
+            error: { kind: 'forbidden', reason: 'NO_COMPANY' },
+            message:
+              'Aucune société en base pour ce tenant : appelle POST /onboarding/company pour la recréer.',
+          });
+        }
         if (company?.isClosed()) {
           throw new ForbiddenException({ code: 'ACCOUNT_CLOSED', message: 'Compte clôturé.' });
         }

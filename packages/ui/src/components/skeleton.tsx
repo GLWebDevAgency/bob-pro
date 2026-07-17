@@ -1,17 +1,65 @@
 /**
  * SKELETONS — le socle UNIQUE du chantier états/transitions (audit 14/07, 40 findings).
  *
- * DOCTRINE FIGÉE : un skeleton Bob Pro est un bloc lineSoft STATIQUE — pas de shimmer,
- * pas de pulse. Ce n'est pas une paresse : c'est un choix (déjà dominant dans 9 écrans,
- * reduced-motion-safe par construction, calme visuellement). La fidélité se joue sur la
+ * DOCTRINE (amendée — montée d'exigence fondateur 16/07) : un skeleton Bob Pro est un bloc
+ * lineSoft qui RESPIRE — pulse d'opacité subtil (1 → 0,55, ~1,6 s aller-retour, native driver),
+ * jamais un gradient qui balaie. Reduce-motion : teinte STATIQUE (le comportement historique),
+ * garanti par useReduceMotion — l'unique implémentation du socle. La fidélité se joue sur la
  * GÉOMÉTRIE : mêmes hauteurs/rayons/positions que le composant final — ZÉRO saut de layout
  * quand les données arrivent. Remplace les 9+ réimplémentations locales (SkeletonBlock/
  * SkeletonBar/SkeletonTile/SkeletonRow) — ne plus jamais en écrire une locale.
  */
-import { View, type DimensionValue, type StyleProp, type ViewStyle } from 'react-native';
+import { useEffect, useRef } from 'react';
+import {
+  Animated,
+  Easing,
+  View,
+  type DimensionValue,
+  type StyleProp,
+  type ViewStyle,
+} from 'react-native';
 import { shadowNative } from '@bob/tokens';
 import { useTheme } from '../theme';
+import { useReduceMotion } from '../hooks/use-reduce-motion';
 import { Card } from './card';
+
+/** Cadence unique du pulse — partagée par tous les skeletons pour une respiration cohérente. */
+const SKELETON_PULSE_MIN_OPACITY = 0.55;
+const SKELETON_PULSE_HALF_PERIOD_MS = 800;
+
+/**
+ * Opacité animée du pulse — null sous reduce-motion (bloc statique, zéro animation montée).
+ * Boucle opacité pure sur le thread natif : aucun travail JS par frame, aucun layout.
+ */
+function useSkeletonPulse(): Animated.Value | null {
+  const reduceMotion = useReduceMotion();
+  const opacity = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    if (reduceMotion) {
+      opacity.setValue(1);
+      return;
+    }
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(opacity, {
+          toValue: SKELETON_PULSE_MIN_OPACITY,
+          duration: SKELETON_PULSE_HALF_PERIOD_MS,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+        Animated.timing(opacity, {
+          toValue: 1,
+          duration: SKELETON_PULSE_HALF_PERIOD_MS,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [opacity, reduceMotion]);
+  return reduceMotion ? null : opacity;
+}
 
 export interface SkeletonProps {
   width?: DimensionValue;
@@ -21,13 +69,18 @@ export interface SkeletonProps {
   style?: StyleProp<ViewStyle>;
 }
 
-/** Le primitif : un rectangle lineSoft, statique, sans bordure ni ombre. */
+/** Le primitif : un rectangle lineSoft au pulse subtil (statique sous reduce-motion). */
 export function Skeleton({ width = '100%', height, radius = 8, style }: SkeletonProps) {
   const { colors } = useTheme();
+  const pulse = useSkeletonPulse();
   return (
-    <View
+    <Animated.View
       accessibilityElementsHidden
-      style={[{ width, height, borderRadius: radius, backgroundColor: colors.lineSoft }, style]}
+      style={[
+        { width, height, borderRadius: radius, backgroundColor: colors.lineSoft },
+        pulse !== null ? { opacity: pulse } : null,
+        style,
+      ]}
     />
   );
 }

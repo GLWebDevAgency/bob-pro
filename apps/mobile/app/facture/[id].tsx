@@ -354,6 +354,13 @@ export default function FactureDetail() {
               onRetry={() => void acct.refetch()}
             />
           </Card>
+        ) : acct.data?.available === false ? (
+          <Card>
+            <SectionHeader title="Écriture comptable" />
+            <Text accessibilityRole="alert" style={[font('meta'), { color: colors.slate500 }]}>
+              {acct.data.reason}
+            </Text>
+          </Card>
         ) : ledger && ledger.lines.length > 0 ? (
           <Card>
             <SectionHeader title="Écriture comptable" />

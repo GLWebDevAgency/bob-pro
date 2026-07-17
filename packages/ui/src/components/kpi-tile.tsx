@@ -6,10 +6,11 @@
  * Le chiffre est le héros : tabular-nums.
  */
 import type { ReactNode } from 'react';
-import { Pressable, Text, View, type StyleProp, type ViewStyle } from 'react-native';
+import { Text, View, type StyleProp, type ViewStyle } from 'react-native';
 import { formatEURWhole } from '@bob/core';
 import { shadowNative } from '@bob/tokens';
 import { font, useTheme } from '../theme';
+import { PressableScale } from './pressable-scale';
 
 export type KpiTone = 'success' | 'danger' | 'warning' | 'ink';
 
@@ -39,7 +40,7 @@ export function KpiTile({ style,
   const amount = empty ? '—' : formatEURWhole(amountCents);
 
   return (
-    <Pressable
+    <PressableScale
       accessibilityRole="button"
       accessibilityLabel={`${label}, ${amount}`}
       {...(onPress ? { onPress } : {})}
@@ -79,6 +80,6 @@ export function KpiTile({ style,
       >
         {amount}
       </Text>
-    </Pressable>
+    </PressableScale>
   );
 }

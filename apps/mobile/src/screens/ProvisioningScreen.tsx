@@ -18,6 +18,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
+import { useQueryClient } from '@tanstack/react-query';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   Siret,
@@ -31,6 +32,7 @@ import { t, type I18nKey } from '@bob/i18n';
 import { font, useTheme } from '@bob/ui';
 import { useAuth } from '../data/auth';
 import { useBobClient } from '../data/client';
+import { clearNoCompanyQueries } from '../data/no-company-state';
 import { supabase } from '../data/supabase';
 import {
   LEGAL_FORM_LABELS,
@@ -68,6 +70,7 @@ function lookupErrorKey(error: AppError): I18nKey {
 export function ProvisioningScreen() {
   const { session, signOut } = useAuth();
   const client = useBobClient();
+  const queryClient = useQueryClient();
   const { colors, overlays, semantic, personality } = useTheme();
   const insets = useSafeAreaInsets();
 
@@ -110,7 +113,12 @@ export function ProvisioningScreen() {
     if (!refreshed || refreshed.error) {
       setError(say('auth.provisioningError'));
       setPhase('confirm'); // registerCompany est idempotent : le retry rejoue tout sans risque
+      return;
     }
+    // Cas NO_COMPANY (JWT avec company_id mais base sans ligne — cet écran affiché par le signal
+    // serveur) : la company vient d'être recréée → purge des queries marquées, le signal retombe
+    // et l'AuthGate rend les tabs qui refetchent sur un cache propre.
+    clearNoCompanyQueries(queryClient);
   }
 
   async function lookupThenContinue(rawSiret: string): Promise<void> {
