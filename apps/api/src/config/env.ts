@@ -311,19 +311,29 @@ export function loadEnv(): Env {
       'PAYMENT_RETURN_BASE_URL',
     ];
     const missingPayment = paymentRequired.filter((key) => !parsed.data[key]);
-    if (missingPayment.length > 0) {
+    // Early-access V1 (décision produit — SPEC pilier 2/PROGRAMME V1) : le paiement est
+    // ABSENT tant que Stripe n'est pas provisionné. Config totalement vide = mode
+    // early-access assumé (les CTA d'achat sont gelés côté UI). Une config ENTAMÉE mais
+    // incomplète reste une erreur fatale : on ne démarre jamais avec un paiement à moitié
+    // câblé.
+    if (missingPayment.length > 0 && missingPayment.length < paymentRequired.length) {
       throw new Error(`Configuration paiement live incomplète : ${missingPayment.join(', ')}.`);
     }
-    const paymentReturnUrl = new URL(parsed.data.PAYMENT_RETURN_BASE_URL as string);
-    if (
-      paymentReturnUrl.protocol !== 'https:' ||
-      paymentReturnUrl.hostname === 'localhost' ||
-      paymentReturnUrl.hostname === '127.0.0.1' ||
-      paymentReturnUrl.hostname === 'demo.bobpro.fr'
-    ) {
-      throw new Error(
-        'PAYMENT_RETURN_BASE_URL doit être une origine HTTPS live, non locale et non démo.',
-      );
+    // Stripe totalement absent (accès anticipé) : aucune URL de retour à valider, le gateway est
+    // inerte (`DisabledPaymentGateway`). Ne valider PAYMENT_RETURN_BASE_URL que lorsque Stripe est
+    // effectivement provisionné — sinon `new URL(undefined)` ferait échouer le démarrage.
+    if (missingPayment.length === 0) {
+      const paymentReturnUrl = new URL(parsed.data.PAYMENT_RETURN_BASE_URL as string);
+      if (
+        paymentReturnUrl.protocol !== 'https:' ||
+        paymentReturnUrl.hostname === 'localhost' ||
+        paymentReturnUrl.hostname === '127.0.0.1' ||
+        paymentReturnUrl.hostname === 'demo.bobpro.fr'
+      ) {
+        throw new Error(
+          'PAYMENT_RETURN_BASE_URL doit être une origine HTTPS live, non locale et non démo.',
+        );
+      }
     }
     for (const [name, raw] of [
       ['SIGN_WEB_BASE_URL', parsed.data.SIGN_WEB_BASE_URL],

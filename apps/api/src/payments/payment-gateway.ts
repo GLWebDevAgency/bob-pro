@@ -193,6 +193,72 @@ export class StripePaymentGateway implements PaymentGatewayPort, StripeBillingPr
   }
 }
 
+const PAYMENT_DISABLED_MESSAGE = 'Paiement non activé (accès anticipé)';
+
+/**
+ * Adapter inerte pour l'accès anticipé V1 (décision produit — early-access sans Stripe).
+ * Composé uniquement quand les 7 variables Stripe sont TOUTES absentes (cf. `buildPaymentGateway`) :
+ * aucune dépendance Stripe, aucun appel réseau. Chaque méthode rejette une erreur métier propre —
+ * les CTA d'achat sont gelés côté UI, ce gateway n'est donc appelé qu'en cas d'appel résiduel.
+ */
+export class DisabledPaymentGateway implements PaymentGatewayPort, StripeBillingProvider {
+  readonly expectedLivemode = false;
+
+  private refuse(): never {
+    throw new Error(PAYMENT_DISABLED_MESSAGE);
+  }
+
+  async createSubscriptionCheckout(_input: {
+    companyId: string;
+    checkoutAttemptId?: string;
+    tier: PlanTier;
+    stripeCustomerId?: string | null;
+    successUrl: string;
+    cancelUrl: string;
+  }): Promise<CheckoutResult> {
+    this.refuse();
+  }
+
+  async createBillingPortal(_input: {
+    stripeCustomerId?: string;
+    companyId?: string;
+    returnUrl: string;
+  }): Promise<{ url: string }> {
+    this.refuse();
+  }
+
+  async createInvoicePaymentLink(_input: {
+    companyId?: string;
+    checkoutAttemptId?: string;
+    invoiceId: string;
+    amountCents: number;
+    label: string;
+  }): Promise<CheckoutResult> {
+    this.refuse();
+  }
+
+  async expireCheckoutSession(_sessionId: string): Promise<void> {
+    this.refuse();
+  }
+
+  verifyWebhook(_rawBody: Buffer, _signature: string): VerifiedStripeWebhookEvent {
+    this.refuse();
+  }
+
+  async retrieveCheckoutSession(_sessionId: string): Promise<StripeCheckoutSessionSnapshot> {
+    this.refuse();
+  }
+
+  async retrieveSubscription(_subscriptionId: string): Promise<StripeSubscriptionSnapshot> {
+    this.refuse();
+  }
+
+  /** Requête pure (aucun état, aucun réseau) : aucun price n'est configuré, donc jamais de tier. */
+  tierForPriceIds(_priceIds: readonly string[]): Exclude<PlanTier, 'free'> | null {
+    return null;
+  }
+}
+
 function expandableId(value: string | { id: string } | null): string | null {
   return typeof value === 'string' ? value : value?.id ?? null;
 }
@@ -238,6 +304,12 @@ export function buildPaymentGateway(env: PaymentGatewayEnv = process.env): Payme
     env.STRIPE_LIVEMODE !== 'true' && env.STRIPE_LIVEMODE !== 'false' ? 'STRIPE_LIVEMODE' : null,
     !env.PAYMENT_RETURN_BASE_URL ? 'PAYMENT_RETURN_BASE_URL' : null,
   ].filter((value): value is string => value !== null);
+  // Early-access V1 : aucune variable Stripe posée = paiement volontairement désactivé —
+  // gateway inerte qui répond une erreur métier propre si jamais appelé (les CTA d'achat
+  // sont gelés côté UI). Config ENTAMÉE mais incomplète = erreur fatale, inchangé.
+  if (missing.length === 7) {
+    return new DisabledPaymentGateway();
+  }
   if (missing.length > 0) {
     throw new Error(
       `Paiement live indisponible : configuration incomplète (${missing.join(', ')}).`,
