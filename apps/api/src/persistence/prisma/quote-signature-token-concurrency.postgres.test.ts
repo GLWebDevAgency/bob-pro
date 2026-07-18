@@ -29,8 +29,56 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+async function awaitGateOrFail<T>(
+  gate: Promise<T>,
+  operation: Promise<unknown>,
+  label: string,
+): Promise<T> {
+  let gateReached = false;
+  const operationBeforeGate = operation.then(
+    (value) => {
+      if (!gateReached) {
+        throw new Error(
+          `${label} completed before acquiring the expected lock: ${JSON.stringify(value)}`,
+        );
+      }
+      return new Promise<never>(() => undefined);
+    },
+    (error: unknown) => {
+      if (!gateReached) throw error;
+      return new Promise<never>(() => undefined);
+    },
+  );
+  return Promise.race([
+    gate.then((value) => {
+      gateReached = true;
+      return value;
+    }),
+    operationBeforeGate,
+  ]);
+}
+
+function validSiret(siren: string, establishmentSequence: number): string {
+  const nic = String(establishmentSequence % 10_000).padStart(4, '0');
+  const prefix = `${siren}${nic}`;
+  let sum = 0;
+  let double = true;
+  for (let index = prefix.length - 1; index >= 0; index -= 1) {
+    let digit = Number(prefix[index]);
+    if (double) {
+      digit *= 2;
+      if (digit > 9) digit -= 9;
+    }
+    sum += digit;
+    double = !double;
+  }
+  return `${prefix}${(10 - (sum % 10)) % 10}`;
+}
+
 async function backendPid(worker: PrismaService): Promise<number> {
-  const rows = await worker.client().$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
+  const rows = await worker.client().$queryRaw<
+    Array<{ pid: number }>
+  >`SELECT pg_backend_pid() AS pid`;
   const pid = rows[0]?.pid;
   if (pid === undefined) throw new Error('PostgreSQL backend PID unavailable.');
   return pid;
@@ -123,14 +171,15 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
       secondWorker = new PrismaService({ datasourceUrl: runtimeUrl });
       await Promise.all([admin.$connect(), firstWorker.$connect(), secondWorker.$connect()]);
 
-      const suffix = String(parseInt(randomUUID().replaceAll('-', '').slice(0, 8), 16) % 100_000).padStart(5, '0');
+      const establishmentSequence =
+        parseInt(randomUUID().replaceAll('-', '').slice(0, 8), 16) % 100_000;
       await admin.company.create({
         data: {
           id: companyId,
           name: 'Certification R4',
           legalForm: 'EI',
           siren: '552100554',
-          siret: `552100554${suffix}`,
+          siret: validSiret('552100554', establishmentSequence),
           trade: 'autre',
           vatRegime: 'reel_normal',
           addrLine1: '1 rue de la Certification',
@@ -201,7 +250,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
           clock,
         }).execute({ quoteId, signerName: 'Client R4' });
       });
-      const signPid = await signLocked.promise;
+      const signPid = await awaitGateOrFail(signLocked.promise, signPromise, 'signature gagnante');
 
       const rotationPid = deferred<number>();
       const rotationPromise = new CreateQuoteSignatureToken({
@@ -229,10 +278,18 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
           error: { code: 'INVALID_TRANSITION', from: 'signed', to: 'signed' },
         });
       }
-      expect((await admin.quote.findUniqueOrThrow({ where: { id: quoteId } })).status).toBe('signed');
+      expect((await admin.quote.findUniqueOrThrow({ where: { id: quoteId } })).status).toBe(
+        'signed',
+      );
       expect(
         await admin.publicAccessToken.count({
-          where: { companyId, resourceType: 'quote', resourceId: quoteId, scope: 'quote_signature', revokedAt: null },
+          where: {
+            companyId,
+            resourceType: 'quote',
+            resourceId: quoteId,
+            scope: 'quote_signature',
+            revokedAt: null,
+          },
         }),
       ).toBe(0);
     }, 30_000);
@@ -261,7 +318,11 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         uow: tenantUow(firstWorker),
         clock,
       }).execute({ quoteId });
-      const firstPid = await firstLocked.promise;
+      const firstPid = await awaitGateOrFail(
+        firstLocked.promise,
+        firstPromise,
+        'première rotation',
+      );
 
       const secondPid = deferred<number>();
       const secondPromise = new CreateQuoteSignatureToken({
@@ -288,7 +349,13 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
       expect(await secondTokens.findActive(second.value.token, NOW)).not.toBeNull();
       expect(
         await admin.publicAccessToken.count({
-          where: { companyId, resourceType: 'quote', resourceId: quoteId, scope: 'quote_signature', revokedAt: null },
+          where: {
+            companyId,
+            resourceType: 'quote',
+            resourceId: quoteId,
+            scope: 'quote_signature',
+            revokedAt: null,
+          },
         }),
       ).toBe(1);
     }, 30_000);
@@ -317,7 +384,11 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         uow: tenantUow(firstWorker),
         clock,
       }).execute({ quoteId });
-      const rotationPid = await rotationLocked.promise;
+      const rotationPid = await awaitGateOrFail(
+        rotationLocked.promise,
+        rotationPromise,
+        'rotation gagnante',
+      );
 
       const signingPid = deferred<number>();
       const signPromise = secondWorker.withTenant(companyId, async () => {
@@ -341,12 +412,19 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
       const [rotated, signed] = await Promise.all([rotationPromise, signPromise]);
       if (blockingError) throw blockingError;
       expect(rotated.ok && signed.ok).toBe(true);
-      if (!rotated.ok || !signed.ok) throw new Error('Serialized rotation and signature must succeed.');
+      if (!rotated.ok || !signed.ok)
+        throw new Error('Serialized rotation and signature must succeed.');
       expect(signed.value.status).toBe('signed');
       expect(await rotateTokens.findActive(rotated.value.token, NOW)).toBeNull();
       expect(
         await admin.publicAccessToken.count({
-          where: { companyId, resourceType: 'quote', resourceId: quoteId, scope: 'quote_signature', revokedAt: null },
+          where: {
+            companyId,
+            resourceType: 'quote',
+            resourceId: quoteId,
+            scope: 'quote_signature',
+            revokedAt: null,
+          },
         }),
       ).toBe(0);
     }, 30_000);
