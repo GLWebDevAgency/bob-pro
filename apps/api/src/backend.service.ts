@@ -1136,6 +1136,7 @@ export class BackendService {
     const token = await new CreateQuoteSignatureToken({
       quotes: this.p.quotes,
       publicAccessTokens: this.p.publicAccessTokens,
+      uow: this.p,
       clock: this.clock,
     }).execute({ quoteId });
     if (token.ok) {
@@ -1254,6 +1255,7 @@ export class BackendService {
     const link = await new CreateQuoteSignatureLink({
       quotes: this.p.quotes,
       publicAccessTokens: this.p.publicAccessTokens,
+      uow: this.p,
       clock: this.clock,
     }).execute({ quoteId });
     if (!link.ok) return link;

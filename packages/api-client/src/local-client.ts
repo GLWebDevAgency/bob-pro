@@ -2950,6 +2950,7 @@ export class LocalBobClient implements BobClient {
     const link = await new CreateQuoteSignatureLink({
       quotes: this.quotes,
       publicAccessTokens: this.publicAccessTokens,
+      uow: this.uow,
       clock: this.clock,
     }).execute({ quoteId });
     if (!link.ok) return link;

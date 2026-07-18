@@ -39,7 +39,8 @@ function makeDeps(q: Quote | null) {
     },
     revokeAllForCompany: async () => undefined,
   };
-  const deps: CreateQuoteSignatureLinkDeps = { quotes, publicAccessTokens, clock };
+  const uow = { runInTransaction: <T>(fn: () => Promise<T>) => fn() };
+  const deps: CreateQuoteSignatureLinkDeps = { quotes, publicAccessTokens, uow, clock };
   return { deps, counts: () => ({ tokenCreates }), events };
 }
 
@@ -48,7 +49,7 @@ describe('CreateQuoteSignatureLink (P0 R4 — préparer le lien SANS effet sorta
     // Preuve par construction : le type des dépendances est le contrat. Si quelqu'un ajoute un
     // port outbox/notification ici, ce test (et la revue) doit hurler — c'était le P0.
     const depKeys = Object.keys(makeDeps(quote('sent')).deps).sort();
-    expect(depKeys).toEqual(['clock', 'publicAccessTokens', 'quotes']);
+    expect(depKeys).toEqual(['clock', 'publicAccessTokens', 'quotes', 'uow']);
   });
 
   it('révoque les jetons actifs PUIS crée le nouveau (rotation : l’ancien lien meurt immédiatement)', async () => {

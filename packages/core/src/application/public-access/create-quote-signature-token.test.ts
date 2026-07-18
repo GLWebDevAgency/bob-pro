@@ -16,18 +16,37 @@ function quote(status: string, number: string | null = 'D-2026-0001', validUntil
   } as unknown as Quote;
 }
 
-function makeDeps(q: Quote | null) {
+function makeDeps(
+  q: Quote | null,
+  options: { lockedQuote?: Quote | null; failCreate?: boolean } = {},
+) {
   let tokenCreates = 0;
   let revokeActiveCalls = 0;
+  let transactions = 0;
+  let lockCalls = 0;
+  let findCalls = 0;
+  let clockCalls = 0;
+  let activeGrants = ['legacy-grant'];
+  const events: string[] = [];
   const quotes: QuoteRepository = {
-    findById: async () => q,
-    lockById: async () => q,
+    findById: async () => {
+      findCalls++;
+      return q;
+    },
+    lockById: async () => {
+      lockCalls++;
+      events.push('lock');
+      return options.lockedQuote === undefined ? q : options.lockedQuote;
+    },
     listByCompany: async () => [],
     save: async () => undefined,
   };
   const publicAccessTokens: PublicAccessTokenRepository = {
     create: async () => {
       tokenCreates++;
+      events.push('create');
+      if (options.failCreate) throw new Error('token-create-failed');
+      activeGrants.push('grant-1');
       return { id: 'grant-1', token: 'pst_token' };
     },
     findActive: async () => null,
@@ -35,10 +54,40 @@ function makeDeps(q: Quote | null) {
     revoke: async () => undefined,
     revokeActiveFor: async () => {
       revokeActiveCalls++;
+      events.push('revoke');
+      activeGrants = [];
     },
     revokeAllForCompany: async () => undefined,
   };
-  return { deps: { quotes, publicAccessTokens, clock }, counts: () => ({ tokenCreates, revokeActiveCalls }) };
+  const uow = {
+    runInTransaction: async <T>(fn: () => Promise<T>): Promise<T> => {
+      transactions++;
+      events.push('tx.begin');
+      const snapshot = [...activeGrants];
+      try {
+        const result = await fn();
+        events.push('tx.commit');
+        return result;
+      } catch (error) {
+        activeGrants = snapshot;
+        events.push('tx.rollback');
+        throw error;
+      }
+    },
+  };
+  const countedClock = {
+    ...clock,
+    now: () => {
+      clockCalls++;
+      return clock.now();
+    },
+  };
+  return {
+    deps: { quotes, publicAccessTokens, uow, clock: countedClock },
+    counts: () => ({ tokenCreates, revokeActiveCalls, transactions, lockCalls, findCalls, clockCalls }),
+    state: () => ({ activeGrants: [...activeGrants] }),
+    events,
+  };
 }
 
 describe('CreateQuoteSignatureToken', () => {
@@ -48,7 +97,14 @@ describe('CreateQuoteSignatureToken', () => {
 
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.value.token).toBe('pst_token');
-    expect(counts()).toEqual({ tokenCreates: 1, revokeActiveCalls: 1 });
+    expect(counts()).toEqual({
+      tokenCreates: 1,
+      revokeActiveCalls: 1,
+      transactions: 1,
+      lockCalls: 1,
+      findCalls: 0,
+      clockCalls: 1,
+    });
   });
 
   it('rejette un devis draft même s’il a déjà un numéro', async () => {
@@ -57,7 +113,7 @@ describe('CreateQuoteSignatureToken', () => {
 
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.kind).toBe('domain');
-    expect(counts()).toEqual({ tokenCreates: 0, revokeActiveCalls: 0 });
+    expect(counts()).toMatchObject({ tokenCreates: 0, revokeActiveCalls: 0, transactions: 1, lockCalls: 1 });
   });
 
   it('rejette un devis déjà signé', async () => {
@@ -66,7 +122,7 @@ describe('CreateQuoteSignatureToken', () => {
 
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.kind).toBe('domain');
-    expect(counts()).toEqual({ tokenCreates: 0, revokeActiveCalls: 0 });
+    expect(counts()).toMatchObject({ tokenCreates: 0, revokeActiveCalls: 0, transactions: 1, lockCalls: 1 });
   });
 
   it('rejette un devis dont la date de validité est dépassée', async () => {
@@ -75,6 +131,24 @@ describe('CreateQuoteSignatureToken', () => {
 
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.kind).toBe('domain');
-    expect(counts()).toEqual({ tokenCreates: 0, revokeActiveCalls: 0 });
+    expect(counts()).toMatchObject({ tokenCreates: 0, revokeActiveCalls: 0, transactions: 1, lockCalls: 1 });
+  });
+
+  it('valide exclusivement la rélecture verrouillée, jamais un snapshot sent périmé', async () => {
+    const { deps, counts } = makeDeps(quote('sent'), { lockedQuote: quote('signed') });
+    const r = await new CreateQuoteSignatureToken(deps).execute({ quoteId: 'quote-1' });
+
+    expect(r.ok).toBe(false);
+    expect(counts()).toMatchObject({ tokenCreates: 0, revokeActiveCalls: 0, findCalls: 0, lockCalls: 1 });
+  });
+
+  it('annule la révocation si la création du nouveau jeton échoue', async () => {
+    const { deps, state, events } = makeDeps(quote('sent'), { failCreate: true });
+
+    await expect(new CreateQuoteSignatureToken(deps).execute({ quoteId: 'quote-1' })).rejects.toThrow(
+      'token-create-failed',
+    );
+    expect(state().activeGrants).toEqual(['legacy-grant']);
+    expect(events).toEqual(['tx.begin', 'lock', 'revoke', 'create', 'tx.rollback']);
   });
 });
