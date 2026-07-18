@@ -250,6 +250,7 @@ enum SubscriptionStatus {
 enum SubscriptionStore {
   apple
   google
+  stripe
   none
 }
 
@@ -437,6 +438,8 @@ model Customer {
   ptLabel             String?
   isSubcontractingBtp Boolean      @default(false)
   chantiers           Chantier[]
+  quotes              Quote[]
+  invoices            Invoice[]
 
   @@unique([id, companyId], name: "uniq_customer_id_company", map: "uniq_customer_id_company")
   @@index([companyId])
@@ -536,6 +539,7 @@ model Quote {
   companyId        String
   company          Company                @relation(fields: [companyId], references: [id])
   customerId       String
+  customer         Customer               @relation(fields: [customerId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict)
   status           QuoteStatus            @default(draft)
   number           String?
   // B9 — un devis n'a pas de date métier propre (contrairement à Invoice.issuedAt) : createdAt
@@ -557,10 +561,12 @@ model Quote {
   vatByRate        Json                   @default("{}")
   lines            LineItem[]             @relation("QuoteLines")
   creationRequests QuoteCreationRequest[]
+  generatedInvoices Invoice[]             @relation("QuoteGeneratedInvoices")
 
   @@unique([companyId, number], name: "uniq_quote_number")
   @@unique([id, companyId], name: "uniq_quote_id_company", map: "uniq_quote_id_company")
   @@index([companyId, status])
+  @@index([customerId, companyId], map: "quotes_customer_company_idx")
   // B9 — chips de dates ("ce mois-ci"/"mois dernier") : tenant + tri/plage sur une seule
   // descente d'index, sans tri en mémoire côté Postgres.
   @@index([companyId, createdAt(sort: Desc)], map: "quotes_company_created_idx")
@@ -576,12 +582,14 @@ model Invoice {
   companyId             String
   company               Company       @relation(fields: [companyId], references: [id])
   customerId            String
+  customer              Customer      @relation(fields: [customerId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict)
   kind                  DocKind
   status                InvoiceStatus @default(draft)
   number                String?
   issuedAt              DateTime?
   dueAt                 DateTime?
   parentQuoteId         String?
+  parentQuote           Quote?        @relation("QuoteGeneratedInvoices", fields: [parentQuoteId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict)
   // Trace légale immuable de la facture exacte annulée par un avoir total.
   // Les quatre champs sont tous NULL hors avoir et tous renseignés pour tout nouvel avoir.
   sourceInvoiceId       String?
@@ -594,6 +602,8 @@ model Invoice {
   // Acompte déjà facturé, déduit du net à payer d'une finale (A2-C16).
   depositDeductionCents Int           @default(0)
   depositInvoiceId      String?
+  depositInvoice        Invoice?      @relation("InvoiceDepositDeductions", fields: [depositInvoiceId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict)
+  deductedByInvoices    Invoice[]     @relation("InvoiceDepositDeductions")
   paidCents             Int           @default(0)
   totalsHt              Int           @default(0)
   totalsVat             Int           @default(0)
@@ -609,6 +619,8 @@ model Invoice {
   @@unique([companyId, sourceInvoiceId], name: "uniq_credit_note_source_invoice", map: "uniq_credit_note_source_invoice")
   @@index([companyId, parentQuoteId, kind], map: "invoices_parent_quote_kind_idx")
   @@index([companyId, status])
+  @@index([customerId, companyId], map: "invoices_customer_company_idx")
+  @@index([depositInvoiceId, companyId], map: "invoices_deposit_company_idx")
   @@index([dueAt])
   // B9 — chips de dates ("ce mois-ci"/"mois dernier") : tenant + tri/plage sur une seule
   // descente d'index. issuedAt est NULL en brouillon — hors périmètre "recherche par période"
@@ -646,14 +658,14 @@ model Payment {
   companyId      String
   company        Company       @relation(fields: [companyId], references: [id])
   invoiceId      String
-  invoice        Invoice       @relation(fields: [invoiceId], references: [id])
+  invoice        Invoice       @relation(fields: [invoiceId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict)
   amount         Int
   method         PaymentMethod
   receivedAt     DateTime
   idempotencyKey String?
 
   @@unique([companyId, idempotencyKey])
-  @@index([invoiceId])
+  @@index([invoiceId, companyId], map: "payments_invoice_company_idx")
   @@map("payments")
 }
 
@@ -1576,20 +1588,27 @@ model ReleaseFlagSubject {
 // Pilier 2 (monétisation) — état d'abonnement PERSISTÉ par tenant, source de vérité derrière
 // GetSubscriptionStatus (@bob/core). Une ligne par company (essai inversé démarré au
 // provisioning, cf. backend.service.registerCompany) ; `plan` porte le palier grante MAINTENANT
-// (cf. commentaire de l'enum SubscriptionPlan). Additif : le gating interne existant continue
-// de lire le stub early-access (subscriptionFor) tant que la facturation réelle n'est pas ouverte.
+// (cf. commentaire de l'enum SubscriptionPlan). `store=none` porte un accès anticipé/gracieux
+// explicitement persisté ; aucune absence de ligne ne confère de droit implicite.
 model Subscription {
-  id               String             @id
-  companyId        String             @unique
-  company          Company            @relation(fields: [companyId], references: [id])
-  plan             SubscriptionPlan
-  status           SubscriptionStatus @default(trialing)
-  trialEndsAt      DateTime?
-  currentPeriodEnd DateTime?
-  store            SubscriptionStore?
-  storeRef         String?
-  createdAt        DateTime           @default(now())
-  updatedAt        DateTime           @updatedAt
+  id                   String             @id
+  companyId            String             @unique
+  company              Company            @relation(fields: [companyId], references: [id])
+  plan                 SubscriptionPlan
+  status               SubscriptionStatus @default(trialing)
+  trialEndsAt          DateTime?
+  currentPeriodEnd     DateTime?
+  store                SubscriptionStore?
+  storeRef             String?
+  stripeCustomerId     String?
+  stripeSubscriptionId String?
+  stripeLastEventId    String?
+  stripeLastSyncedAt   DateTime?           @db.Timestamptz(6)
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  // Les deux index uniques partiels Stripe sont définis dans la migration
+  // 20260717100000_stripe_billing_reconciliation (le DSL Prisma ne porte pas leur prédicat).
 
   @@map("subscriptions")
 }
