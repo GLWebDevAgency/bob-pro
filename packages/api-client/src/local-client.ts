@@ -60,6 +60,8 @@ import {
   DEFAULT_DOCUMENT_FOLDERS,
   normalizeDocumentFolderName,
   validateDocumentFolderName,
+  validateDocumentDisplayName,
+  DOCUMENT_DISPLAY_NAME_MAX_LENGTH,
   makeDocumentAnalysis,
   buildInvoiceAccountingPreviewEntry,
   createFrenchOperationalChartOfAccounts,
@@ -213,6 +215,8 @@ import type {
   RevokeDeviceBindingClientInput,
   UnregisterDeviceClientInput,
   ListDocumentsClientInput,
+  DocumentListItemView,
+  RenameDocumentClientInput,
   UploadDocumentClientInput,
   CreateDocumentIntakeClientInput,
   ListDocumentFoldersClientInput,
@@ -253,6 +257,7 @@ import type {
   QuoteDraftSlotView,
   SaveQuoteDraftClientInput,
 } from './client';
+import { documentAnalysisSummaryView, documentExtractionSummaryView } from './document-codecs';
 import { localExpenseCreationFingerprint, portableSha256Bytes } from './expense-idempotency';
 import { cloneQuoteCreation, localQuoteCreationFingerprint } from './quote-idempotency';
 
@@ -401,6 +406,11 @@ function cloneDocumentView(document: DocumentView): DocumentView {
   return { ...document, tags: [...document.tags] };
 }
 
+/** Libellé d'affichage par défaut dérivé du filename (miroir du domaine — jamais vide). */
+function localDefaultDisplayName(filename: string): string {
+  return filename.replace(/\s+/g, ' ').trim().slice(0, DOCUMENT_DISPLAY_NAME_MAX_LENGTH).trim() || 'Document';
+}
+
 const LOCAL_DEMO_JPEG_BASE64 =
   '/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXhpZgAATU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAAaADAAQAAAABAAAAAQAAAAD/7QA4UGhvdG9zaG9wIDMuMAA4QklNBAQAAAAAAAA4QklNBCUAAAAAABDUHYzZjwCyBOmACZjs+EJ+/8AAEQgAAQABAwEiAAIRAQMRAf/EAB8AAAEFAQEBAQEBAAAAAAAAAAABAgMEBQYHCAkKC//EALUQAAIBAwMCBAMFBQQEAAABfQECAwAEEQUSITFBBhNRYQcicRQygZGhCCNCscEVUtHwJDNicoIJChYXGBkaJSYnKCkqNDU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+v/EAB8BAAMBAQEBAQEBAQEAAAAAAAABAgMEBQYHCAkKC//EALURAAIBAgQEAwQHBQQEAAECdwABAgMRBAUhMQYSQVEHYXETIjKBCBRCkaGxwQkjM1LwFWJy0QoWJDThJfEXGBkaJicoKSo1Njc4OTpDREVGR0hJSlNUVVZXWFlaY2RlZmdoaWpzdHV2d3h5eoKDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uLj5OXm5+jp6vLz9PX29/j5+v/bAEMAAgICAgICAwICAwUDAwMFBgUFBQUGCAYGBgYGCAoICAgICAgKCgoKCgoKCgwMDAwMDA4ODg4ODw8PDw8PDw8PD//bAEMBAgICBAQEBwQEBxALCQsQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEP/dAAQAAf/aAAwDAQACEQMRAD8A/RSiiivcPPP/2Q==';
 const LOCAL_DEMO_PDF_BASE64 =
@@ -534,6 +544,8 @@ export class LocalBobClient implements BobClient {
     string,
     { documentId: string; sha256: string; mimeType: string }
   >();
+  /** Cache local des analyses (parité du cache persistant serveur) — clé documentId, liée version+sha à la lecture. */
+  private readonly documentAnalyses = new Map<string, DocumentAnalysis>();
   private readonly documentFolders: DocumentFolderView[] = [];
   private readonly documentFolderDeletionPlans = new Map<string, LocalDocumentFolderDeletionPlan>();
   private documentSeq = 0;
@@ -1301,7 +1313,7 @@ export class LocalBobClient implements BobClient {
 
   async listDocuments(
     input: ListDocumentsClientInput = {},
-  ): Promise<Result<DocumentView[], AppError>> {
+  ): Promise<Result<DocumentListItemView[], AppError>> {
     return ok(
       this.documents
         .filter((d) => input.includeDeleted === true || d.status === 'active')
@@ -1315,8 +1327,55 @@ export class LocalBobClient implements BobClient {
           input.linkedEntityId !== undefined ? d.linkedEntityId === input.linkedEntityId : true,
         )
         .filter((d) => (input.folderId !== undefined ? d.folderId === input.folderId : true))
-        .map(cloneDocumentView),
+        .map((document) => {
+          // Parité serveur : résumés issus du SEUL cache local d'analyses (peuplé par
+          // analyzeDocument), liés à la version courante de l'original — jamais inventés.
+          const cached = this.documentAnalyses.get(document.id);
+          const analysis =
+            cached && cached.documentVersion === document.version && cached.sourceSha256 === document.sha256
+              ? cached
+              : null;
+          return {
+            ...cloneDocumentView(document),
+            analysis: analysis ? documentAnalysisSummaryView(analysis) : null,
+            extraction: analysis ? documentExtractionSummaryView(analysis) : null,
+          };
+        }),
     );
+  }
+
+  /** PUT /documents/:id/name (parité serveur RenameDocument) : libellé validé par le domaine, révision optimiste. */
+  async renameDocument(input: RenameDocumentClientInput): Promise<Result<DocumentView, AppError>> {
+    const documentIndex = this.documents.findIndex(
+      (candidate) => candidate.id === input.documentId && candidate.status === 'active',
+    );
+    const document = this.documents[documentIndex];
+    if (!document) return err(appNotFound('document', input.documentId));
+    if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 1) {
+      return err({
+        kind: 'validation',
+        issues: [{ field: 'expectedRevision', message: 'Révision document invalide.' }],
+      });
+    }
+    if (document.revision !== input.expectedRevision) {
+      return err(appConflict('document', 'Le document a été modifié. Recharge avant de renommer.'));
+    }
+    const validated = validateDocumentDisplayName(input.displayName);
+    if (!validated.ok) {
+      return err({
+        kind: 'validation',
+        issues: [{ field: 'displayName', message: validated.error.code === 'VALIDATION' ? validated.error.message : 'Nom d’affichage invalide.' }],
+      });
+    }
+    if (document.displayName === validated.value) return ok(cloneDocumentView(document));
+    const renamed: DocumentView = {
+      ...document,
+      displayName: validated.value,
+      revision: document.revision + 1,
+      tags: [...document.tags],
+    };
+    this.documents[documentIndex] = renamed;
+    return ok(cloneDocumentView(renamed));
   }
 
   async getDocument(documentId: string): Promise<Result<DocumentView, AppError>> {
@@ -1390,6 +1449,7 @@ export class LocalBobClient implements BobClient {
       origin: 'uploaded',
       status: 'active',
       filename,
+      displayName: localDefaultDisplayName(filename),
       mimeType,
       byteSize,
       sha256,
@@ -1977,10 +2037,14 @@ export class LocalBobClient implements BobClient {
       documentVersion: document.version,
       sourceSha256: document.sha256,
       originalFilename: document.filename,
-      analyzerVersion: 'bob-document-intelligence-2026-07-13.1:local',
+      analyzerVersion: 'bob-document-intelligence-2026-07-18.1:local',
       analyzedAt: this.clock.now(),
     });
-    return analysis.ok ? ok(analysis.value) : err(appDomain(analysis.error));
+    if (!analysis.ok) return err(appDomain(analysis.error));
+    // Parité du cache persistant serveur : la liste des documents peut ensuite embarquer le
+    // résumé sans relancer d'analyse.
+    this.documentAnalyses.set(documentId, analysis.value);
+    return ok(analysis.value);
   }
 
   async classifyDocument(
@@ -2524,6 +2588,7 @@ export class LocalBobClient implements BobClient {
       origin: 'uploaded',
       status: 'active',
       filename,
+      displayName: localDefaultDisplayName(filename),
       mimeType: 'application/xml',
       byteSize: xmlBytes.length,
       sha256,

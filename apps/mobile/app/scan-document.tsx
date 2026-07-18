@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Animated,
+  Easing,
   KeyboardAvoidingView,
   Pressable,
   ScrollView,
@@ -8,6 +10,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useNavigation, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -18,6 +21,7 @@ import {
   normalizeDocumentFolderName,
   validateDocumentFolderName,
   type DocumentAnalysis,
+  type DocumentDestinationSuggestion,
   type DocumentFolderSystemKey,
   type DocumentView,
 } from '@bob/core';
@@ -30,11 +34,20 @@ import {
 } from '@bob/api-client';
 import { suggestCategoryClarification } from '@bob/ai';
 import { t } from '@bob/i18n';
-import { ErrorRetry, QuestionSheet, Sheet, Skeleton } from '@bob/ui';
+import { ErrorRetry, QuestionSheet, Sheet, Skeleton, useReduceMotion } from '@bob/ui';
+import { vault } from '@bob/tokens';
 import type { ExpenseCategory, PaymentMethod } from '@bob/core';
 import { useTheme } from '../src/theme';
 import { useQueryClient } from '@tanstack/react-query';
-import { useExtractDocument } from '../src/data/hooks';
+import { useChantiers, useExtractDocument } from '../src/data/hooks';
+import { suggestedRenameFor } from '../src/documents/pending-card-copy';
+import {
+  SCAN_LINE_TRAVEL_BOTTOM,
+  SCAN_LINE_TRAVEL_TOP,
+  SCAN_PULSE_OPACITY_MAX,
+  SCAN_PULSE_OPACITY_MIN,
+  resolveScanReadingMotion,
+} from '../src/scan/scan-reading-motion';
 import {
   useAnalyzeDocument,
   useCreateDocumentFolder,
@@ -60,6 +73,8 @@ import {
 const DOCUMENT_MAX_BYTES = 10 * 1024 * 1024;
 const LOCAL_FILE_READ_TIMEOUT_MS = 20_000;
 const CREATE_FOLDER_OPTION = '__create_folder__';
+/** Option « chantier » du rangement — encode l'id réel du chantier ouvert (jamais inventé). */
+const CHANTIER_OPTION_PREFIX = 'chantier:';
 const ARCHIVE_MIME_TYPES = new Set<string>([
   'application/pdf',
   'application/xml',
@@ -175,6 +190,8 @@ export default function ScanDocument() {
   const createFolder = useCreateDocumentFolder();
   const moveDocument = useMoveDocumentToFolder();
   const record = useRecordDocumentExpense();
+  // Chantiers ouverts du tenant — cibles réelles du rangement (un doc peut vivre hors chantier).
+  const chantiers = useChantiers();
   const client = useBobClient();
   const queryClient = useQueryClient();
   const mountedRef = useRef(true);
@@ -197,7 +214,14 @@ export default function ScanDocument() {
   const [capturePending, setCapturePending] = useState(false);
   const [captureError, setCaptureError] = useState<string | null>(null);
   const [exitBlocked, setExitBlocked] = useState(false);
+  // « Classer dans {destination} » (1-tap du handoff) : application de la destination suggérée.
+  const [destinationPending, setDestinationPending] = useState(false);
+  const [destinationError, setDestinationError] = useState(false);
   const data = extract.data;
+  const openChantiers = useMemo(
+    () => (chantiers.data ?? []).filter((chantier) => chantier.status === 'open'),
+    [chantiers.data],
+  );
   const foldersReady = rootFolders.data !== undefined;
   const foldersBlockingError = rootFolders.isError && !foldersReady;
   const foldersStale = rootFolders.isError && foldersReady;
@@ -262,21 +286,52 @@ export default function ScanDocument() {
   const analysisUnavailable = archivedDocument !== null
     && (archivedMimeType === null || !supportsDocumentAnalysis(archivedMimeType));
 
+  // Destination suggérée VALIDÉE côté domaine (chantier du contexte OU dossier système) —
+  // null = décision humaine, jamais un chantier forcé.
+  const suggestedDestination = analysis.data?.suggestedDestination ?? null;
+  const suggestedChantierId = suggestedDestination?.kind === 'chantier' ? suggestedDestination.chantierId : null;
+
+  // Un original déjà rattaché à une autre entité que la dépense (ex. chantier après le CTA
+  // « Classer dans Chantier · X ») ne peut plus devenir le justificatif d'une NOUVELLE dépense :
+  // le serveur refuse par conflit et le coordinator annule toute la création. On retire donc la
+  // confirmation vouée à l'échec au lieu de laisser l'artisan la découvrir en 409 terminal.
+  const documentLinkedElsewhere =
+    archivedDocument !== null
+    && archivedDocument.linkedEntityType !== null
+    && archivedDocument.linkedEntityType !== 'expense';
+
+  // Rangement proposé : la suggestion en tête, puis les dossiers hors chantier (première
+  // classe : frais généraux, assurances, fiscal…), puis les chantiers ouverts, puis créer.
   const filingOptions = useMemo(() => {
     if (!foldersReady) return [];
     const folders = rootFolders.data;
     const ordered = suggestedFolder
       ? [suggestedFolder, ...folders.filter((folder) => folder.id !== suggestedFolder.id)]
       : folders;
-    const existing = ordered.map((folder) => ({
+    const folderOptions = ordered.map((folder) => ({
       value: folder.id,
-      label: suggestedFolder?.id === folder.id ? `Recommandé · ${folder.name}` : folder.name,
+      label: suggestedFolder?.id === folder.id
+        ? t('scan.recommendedOption', { personality, params: { label: folder.name } })
+        : folder.name,
       description: suggestedFolder?.id === folder.id
-        ? 'Bob propose ce rangement à partir du contenu réellement lu.'
-        : 'Classer l’original dans ce dossier.',
+        ? t('scan.folderOptionDescSuggested', { personality })
+        : t('scan.folderOptionDesc', { personality }),
     }));
+    const chantierOptions = openChantiers.map((chantier) => ({
+      value: `${CHANTIER_OPTION_PREFIX}${chantier.id}`,
+      label: chantier.id === suggestedChantierId
+        ? t('scan.recommendedOption', {
+            personality,
+            params: { label: t('scan.chantierOption', { personality, params: { name: chantier.name } }) },
+          })
+        : t('scan.chantierOption', { personality, params: { name: chantier.name } }),
+      description: t('scan.chantierOptionDesc', { personality }),
+    }));
+    const recommendedValue = suggestedChantierId === null ? null : `${CHANTIER_OPTION_PREFIX}${suggestedChantierId}`;
     return [
-      ...existing,
+      ...chantierOptions.filter((option) => option.value === recommendedValue),
+      ...folderOptions,
+      ...chantierOptions.filter((option) => option.value !== recommendedValue),
       {
         value: CREATE_FOLDER_OPTION,
         label: suggestedNewFolderName
@@ -287,7 +342,7 @@ export default function ScanDocument() {
           : 'Choisir toi-même le nom du nouveau dossier.',
       },
     ];
-  }, [foldersReady, rootFolders.data, suggestedFolder, suggestedNewFolderName]);
+  }, [foldersReady, openChantiers, personality, rootFolders.data, suggestedChantierId, suggestedFolder, suggestedNewFolderName]);
 
   useEffect(() => {
     if (
@@ -325,6 +380,8 @@ export default function ScanDocument() {
     setRecordTargetError(false);
     setReconcilePending(false);
     setRecordResolution(null);
+    setDestinationPending(false);
+    setDestinationError(false);
     setChosenCategory(null);
     setCategoryDismissed(false);
     setSettlementChoice(null);
@@ -416,7 +473,9 @@ export default function ScanDocument() {
   const [chosenCategory, setChosenCategory] = useState<ExpenseCategory | null>(null);
   const [categoryDismissed, setCategoryDismissed] = useState(false);
   const clarification = data && defaults ? suggestCategoryClarification(defaults, data) : null;
-  const askCategory = clarification !== null && chosenCategory === null && !categoryDismissed;
+  // Plus de dépense possible quand l'original est rattaché ailleurs : ne rien demander.
+  const askCategory =
+    clarification !== null && chosenCategory === null && !categoryDismissed && !documentLinkedElsewhere;
   const category: ExpenseCategory = chosenCategory ?? defaults?.category ?? (data?.categoryGuess ?? 'autre');
 
   // Statut payé/à payer : un ticket EST une preuve de paiement → dépense créée PAYÉE avec le
@@ -435,7 +494,11 @@ export default function ScanDocument() {
   const effectiveMethod: PaymentMethod =
     settlementMethod ?? settlementProposal?.methodSeen ?? DEFAULT_TICKET_PAYMENT_METHOD;
   const askSettlement =
-    data !== undefined && effectiveSettlement === null && !settlementDismissed && !askCategory;
+    data !== undefined
+    && effectiveSettlement === null
+    && !settlementDismissed
+    && !askCategory
+    && !documentLinkedElsewhere;
 
   async function capture(from: 'camera' | 'library'): Promise<void> {
     setCaptureError(null);
@@ -639,10 +702,120 @@ export default function ScanDocument() {
             current?.id === moved.documentId
               ? { ...current, folderId: moved.folderId, revision: moved.revision }
               : current);
+          applySuggestedName(moved.documentId, moved.revision);
         },
         onError: () => setFilingPromptDocumentId(archivedDocument.id),
       },
     );
+  }
+
+  /**
+   * Le nom professionnel proposé devient le nom du document AU CLASSEMENT (l'intelligence
+   * demandée) — best-effort : jamais sur un renommage humain, jamais bloquant pour le
+   * rangement déjà commis. La révision fraîche renvoyée resynchronise l'état local.
+   */
+  function applySuggestedName(documentId: string, revision: number): void {
+    const document = archivedDocument;
+    if (!document || document.id !== documentId) return;
+    const rename = suggestedRenameFor(document, analysis.data?.suggestedDisplayName ?? null);
+    if (rename === null) return;
+    void client
+      .renameDocument({ documentId, displayName: rename, expectedRevision: revision })
+      .then((renamed) => {
+        if (!renamed.ok || !mountedRef.current) return;
+        setArchivedDocument((current) => (current?.id === documentId ? renamed.value : current));
+        void queryClient.invalidateQueries({ queryKey: ['documents'] });
+        void queryClient.invalidateQueries({ queryKey: ['document', documentId] });
+      });
+  }
+
+  /**
+   * « Classer dans {destination} » (handoff §SCAN OVERLAY) : applique la destination VALIDÉE.
+   * · dossier système → déplacement réel (MoveDocumentToFolder) ;
+   * · chantier → rangement dans Chantiers (si pas déjà rangé) + lien métier ClassifyDocument —
+   *   mêmes use cases que Bob. Échec → l'original reste dans « À classer », message honnête.
+   */
+  async function applyDestination(destination: DocumentDestinationSuggestion): Promise<void> {
+    const document = archivedDocument;
+    if (!document || !foldersReady || destinationPending) return;
+    setFilingPromptDocumentId(null);
+    setDestinationError(false);
+    setDestinationPending(true);
+    try {
+      let revision = document.revision;
+      const systemKey: DocumentFolderSystemKey =
+        destination.kind === 'system_folder' ? destination.systemKey : 'projects';
+      const targetFolder = rootFolders.data?.find((folder) => folder.systemKey === systemKey) ?? null;
+      if (destination.kind === 'system_folder' && targetFolder === null) {
+        // Dossier système absent du coffre : on redemande à l'humain, aucun rangement deviné.
+        setFilingDeferred(false);
+        setFilingPromptDocumentId(document.id);
+        return;
+      }
+      const shouldMove = destination.kind === 'system_folder'
+        ? targetFolder !== null && document.folderId !== targetFolder.id
+        : document.folderId === null && targetFolder !== null; // ne jamais écraser un rangement humain
+      if (shouldMove && targetFolder) {
+        const moved = await client.moveDocumentToFolder({
+          documentId: document.id,
+          folderId: targetFolder.id,
+          expectedRevision: revision,
+        });
+        if (!moved.ok) throw moved.error;
+        revision = moved.value.revision;
+        if (mountedRef.current) {
+          setArchivedDocument((current) =>
+            current?.id === moved.value.documentId
+              ? { ...current, folderId: moved.value.folderId, revision: moved.value.revision }
+              : current);
+        }
+      }
+      if (destination.kind === 'chantier') {
+        const classified = await client.classifyDocument({
+          documentId: document.id,
+          linkedEntityType: 'chantier',
+          linkedEntityId: destination.chantierId,
+          expectedRevision: revision,
+        });
+        if (!classified.ok) throw classified.error;
+        revision = classified.value.revision;
+        if (mountedRef.current) {
+          setArchivedDocument((current) => (current?.id === document.id ? classified.value : current));
+        }
+      }
+      // Nom professionnel appliqué au classement — best-effort sur la révision fraîche.
+      const rename = suggestedRenameFor(document, analysis.data?.suggestedDisplayName ?? null);
+      if (rename !== null) {
+        const renamed = await client.renameDocument({
+          documentId: document.id,
+          displayName: rename,
+          expectedRevision: revision,
+        });
+        if (renamed.ok && mountedRef.current) {
+          setArchivedDocument((current) => (current?.id === document.id ? renamed.value : current));
+        }
+      }
+      setRecordTargetError(false);
+      void queryClient.invalidateQueries({ queryKey: ['documents'] });
+      void queryClient.invalidateQueries({ queryKey: ['document', document.id] });
+      void queryClient.invalidateQueries({ queryKey: ['document-folders'] });
+    } catch {
+      if (mountedRef.current) setDestinationError(true);
+    } finally {
+      if (mountedRef.current) setDestinationPending(false);
+    }
+  }
+
+  /** Choix « Chantier · {name} » du rangement — cible réelle listée, jamais un id inventé. */
+  function classifyToChantier(chantierId: string): void {
+    const chantier = openChantiers.find((candidate) => candidate.id === chantierId);
+    if (!chantier) return;
+    void applyDestination({
+      kind: 'chantier',
+      chantierId: chantier.id,
+      label: chantier.name,
+      motif: '',
+    });
   }
 
   async function recoverFolderChoice(): Promise<void> {
@@ -707,7 +880,8 @@ export default function ScanDocument() {
     || filingRecoveryPending
     || createFolder.isPending
     || record.isPending
-    || reconcilePending;
+    || reconcilePending
+    || destinationPending;
   const recordActionRequiresSupplierDefaults = recordResolution === null
     || (
       recordResolution.kind === 'stale'
@@ -874,27 +1048,77 @@ export default function ScanDocument() {
           </Card>
         ) : null}
 
-        {analysis.isPending ? (
-          <Card>
-            <View accessibilityRole="progressbar" accessibilityLiveRegion="polite" accessibilityLabel="Bob lit le document et vérifie ses preuves" style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-              <ActivityIndicator color={semantic.ai} />
-              <Text style={[font('body'), { color: colors.ink800, flex: 1 }]}>Bob lit le document et vérifie ses preuves…</Text>
-            </View>
-          </Card>
-        ) : null}
+        {/* « Je lis ton document… » (handoff §SCAN OVERLAY) — miniature squelette + ligne de
+            scan indigo en aller-retour ; reduced-motion → pulse discret sans déplacement. */}
+        {analysis.isPending || extract.isPending ? <ScanReadingCard /> : null}
 
         {analysis.data ? (
           <>
             <SectionHeader title="Ce que Bob a compris" />
             <Card>
-              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
-                <Text style={[font('cardTitle'), { color: colors.ink900, flex: 1 }]}>{DOCUMENT_TYPE_LABEL[analysis.data.type]}</Text>
+              {/* Pastille verte « Document lu » (handoff §SCAN OVERLAY, résultat). */}
+              <View
+                accessibilityLiveRegion="polite"
+                style={{
+                  alignSelf: 'flex-start',
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 7,
+                  backgroundColor: semantic.successBg,
+                  paddingVertical: 6,
+                  paddingHorizontal: 12,
+                  borderRadius: 20,
+                  marginBottom: 13,
+                }}
+              >
+                <Ionicons name="checkmark" size={15} color={semantic.success} />
+                <Text style={[font('meta'), { fontWeight: '700', fontSize: 13, color: semantic.success }]}>
+                  {t('scan.readDone', { personality })}
+                </Text>
+              </View>
+              {/* TITRE INTELLIGENT — le libellé professionnel proposé, jamais un nom de fichier brut. */}
+              <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
+                <Text style={[font('pageTitle'), { fontSize: 20, color: colors.ink900, flex: 1 }]} numberOfLines={2}>
+                  {analysis.data.suggestedDisplayName}
+                </Text>
                 <Badge
                   label={`${Math.round(analysis.data.typeConfidence * 100)} %`}
                   tone={analysis.data.requiresHumanReview ? 'warning' : 'success'}
                 />
               </View>
+              <Text style={[font('meta'), { color: colors.slate400, marginTop: 2 }]}>
+                {DOCUMENT_TYPE_LABEL[analysis.data.type]}
+              </Text>
               <Text style={[font('body'), { color: colors.slate500, lineHeight: 21, marginTop: 8 }]}>{analysis.data.summary}</Text>
+              {/* Tableau du handoff : Montant TTC / TVA récupérable (vert) / Rattaché à (indigo). */}
+              {data || analysis.data.suggestedDestination ? (
+                <View style={{ marginTop: 12, borderTopWidth: 1, borderTopColor: colors.lineSoft, paddingTop: 4 }}>
+                  {data ? (
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: colors.lineSoft }}>
+                      <Text style={[font('sub'), { color: colors.slate400 }]}>{t('scan.amountTtc', { personality })}</Text>
+                      <Text style={[font('sub'), { color: colors.ink900, fontWeight: '700', fontVariant: ['tabular-nums'] }]}>
+                        {formatEUR(data.totalTtcCents)}
+                      </Text>
+                    </View>
+                  ) : null}
+                  {data && data.vatCents !== null ? (
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: colors.lineSoft }}>
+                      <Text style={[font('sub'), { color: colors.slate400 }]}>{t('scan.vatRecoverable', { personality })}</Text>
+                      <Text style={[font('sub'), { color: semantic.success, fontWeight: '700', fontVariant: ['tabular-nums'] }]}>
+                        {formatEUR(data.vatCents)}
+                      </Text>
+                    </View>
+                  ) : null}
+                  {analysis.data.suggestedDestination ? (
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 8 }}>
+                      <Text style={[font('sub'), { color: colors.slate400 }]}>{t('scan.attachedTo', { personality })}</Text>
+                      <Text style={[font('sub'), { color: semantic.ai, fontWeight: '700' }]} numberOfLines={1}>
+                        {analysis.data.suggestedDestination.label}
+                      </Text>
+                    </View>
+                  ) : null}
+                </View>
+              ) : null}
               {analysis.data.suggestedTags.length > 0 ? (
                 <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 12 }}>
                   {analysis.data.suggestedTags.map((tag) => <Badge key={tag} label={`#${tag}`} tone="ai" />)}
@@ -925,6 +1149,32 @@ export default function ScanDocument() {
                       <Skeleton height={52} radius={18} />
                     </View>
                   )
+                ) : analysis.data.suggestedDestination ? (
+                  <>
+                    {/* CTA plein indigo du handoff : applique la destination validée en 1 tap. */}
+                    <Button
+                      title={t('scan.classifyInto', {
+                        personality,
+                        params: { label: analysis.data.suggestedDestination.label },
+                      })}
+                      variant="aiSolid"
+                      loading={destinationPending}
+                      disabled={destinationPending || moveDocument.isPending}
+                      onPress={() => {
+                        const destination = analysis.data?.suggestedDestination;
+                        if (destination) void applyDestination(destination);
+                      }}
+                    />
+                    <Button
+                      title={t('scan.chooseOtherFolder', { personality })}
+                      variant="secondary"
+                      disabled={destinationPending}
+                      onPress={() => {
+                        setFilingDeferred(false);
+                        setFilingPromptDocumentId(analysis.data.documentId);
+                      }}
+                    />
+                  </>
                 ) : (
                   <Button
                     title={suggestedFolder ? `Classer dans « ${suggestedFolder.name} »` : 'Choisir un dossier'}
@@ -935,6 +1185,11 @@ export default function ScanDocument() {
                     }}
                   />
                 )}
+                {destinationError ? (
+                  <Text accessibilityRole="alert" style={[font('sub'), { color: semantic.warning, lineHeight: 19 }]}>
+                    {t('scan.destinationError', { personality })}
+                  </Text>
+                ) : null}
                 <Button
                   title="Voir l’original et les preuves"
                   variant="secondary"
@@ -980,15 +1235,6 @@ export default function ScanDocument() {
           )
         ) : null}
 
-        {extract.isPending ? (
-          <Card>
-            <View accessibilityRole="progressbar" accessibilityLiveRegion="polite" accessibilityLabel="Lecture comptable du document" style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-              <ActivityIndicator color={colors.ink800} />
-              <Text style={[font('body'), { color: colors.ink800 }]}>Lecture du document…</Text>
-            </View>
-          </Card>
-        ) : null}
-
         {extract.isError ? (
           <Card>
             <Text style={[font('cardTitle'), { color: semantic.warning }]}>Lecture comptable non disponible</Text>
@@ -1027,7 +1273,30 @@ export default function ScanDocument() {
           />
         ) : null}
 
-        {data ? (
+        {/* La pièce est désormais liée à son chantier : plus aucune dépense ne peut la prendre
+            comme preuve (conflit serveur garanti). Message honnête au lieu d'un bouton piégé.
+            Une réconciliation en cours (stale/rejected) garde ses cartes dédiées plus précises. */}
+        {data && documentLinkedElsewhere && recordResolution === null ? (
+          <Card>
+            <Text accessibilityLiveRegion="polite" style={[font('cardTitle'), { color: colors.ink900 }]}>
+              {t('scan.linkedChantierTitle', { personality })}
+            </Text>
+            <Text style={[font('sub'), { color: colors.slate500, marginTop: 4, lineHeight: 19 }]}>
+              {t('scan.linkedChantierBody', { personality })}
+            </Text>
+            {archivedDocument ? (
+              <View style={{ marginTop: 12 }}>
+                <Button
+                  title={t('scan.linkedChantierCta', { personality })}
+                  variant="secondary"
+                  onPress={() => router.push({ pathname: '/documents/[id]', params: { id: archivedDocument.id } })}
+                />
+              </View>
+            ) : null}
+          </Card>
+        ) : null}
+
+        {data && (!documentLinkedElsewhere || recordResolution !== null) ? (
           <>
             <SectionHeader title="Extraction" />
             <Card>
@@ -1339,9 +1608,10 @@ export default function ScanDocument() {
           setFilingDeferred(true);
         }}
         onSelect={(values) => {
-          const folderId = values[0];
-          if (folderId === CREATE_FOLDER_OPTION) openFolderEditor();
-          else if (folderId) classifyInFolder(folderId);
+          const value = values[0];
+          if (value === CREATE_FOLDER_OPTION) openFolderEditor();
+          else if (value?.startsWith(CHANTIER_OPTION_PREFIX)) classifyToChantier(value.slice(CHANTIER_OPTION_PREFIX.length));
+          else if (value) classifyInFolder(value);
         }}
         onOther={() => {
           setFilingPromptDocumentId(null);
@@ -1428,6 +1698,108 @@ export default function ScanDocument() {
 function displayDate(iso: string): string {
   const [y, m, d] = iso.slice(0, 10).split('-');
   return d && m && y ? `${d}/${m}/${y}` : iso.slice(0, 10);
+}
+
+/**
+ * « Je lis ton document… » (handoff §SCAN OVERLAY) : miniature papier squelette 120×154 +
+ * LIGNE DE SCAN indigo (glow) en aller-retour + spinner. Reduced-motion : la ligne reste
+ * au centre et bat doucement en opacité (resolveScanReadingMotion — logique pure testée).
+ */
+function ScanReadingCard() {
+  const { colors, semantic, personality } = useTheme();
+  const reduceMotion = useReduceMotion();
+  const progress = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const readingMotion = resolveScanReadingMotion(reduceMotion);
+    progress.setValue(0);
+    const sweep = Animated.loop(
+      Animated.sequence([
+        Animated.timing(progress, {
+          toValue: 1,
+          duration: readingMotion.durationMs,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+        Animated.timing(progress, {
+          toValue: 0,
+          duration: readingMotion.durationMs,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    sweep.start();
+    return () => sweep.stop();
+  }, [progress, reduceMotion]);
+
+  const mode = resolveScanReadingMotion(reduceMotion).mode;
+  const midTravel = (SCAN_LINE_TRAVEL_TOP + SCAN_LINE_TRAVEL_BOTTOM) / 2;
+  const translateY = mode === 'sweep'
+    ? progress.interpolate({ inputRange: [0, 1], outputRange: [SCAN_LINE_TRAVEL_TOP, SCAN_LINE_TRAVEL_BOTTOM] })
+    : midTravel;
+  const lineOpacity = mode === 'pulse'
+    ? progress.interpolate({ inputRange: [0, 1], outputRange: [SCAN_PULSE_OPACITY_MIN, SCAN_PULSE_OPACITY_MAX] })
+    : 1;
+
+  return (
+    <Card>
+      <View
+        accessibilityRole="progressbar"
+        accessibilityLiveRegion="polite"
+        accessibilityLabel={t('scan.reading', { personality })}
+        style={{ alignItems: 'center', paddingVertical: 6 }}
+      >
+        <View
+          style={{
+            width: 120,
+            height: 154,
+            borderRadius: 12,
+            borderWidth: 1,
+            borderColor: vault.readerBorder,
+            overflow: 'hidden',
+          }}
+        >
+          <LinearGradient
+            colors={[colors.surface, vault.thumbTop]}
+            start={{ x: 0.2, y: 0 }}
+            end={{ x: 0.8, y: 1 }}
+            style={{ flex: 1, paddingVertical: 14, paddingHorizontal: 12 }}
+          >
+            <View style={{ height: 8, width: '60%', backgroundColor: vault.readerLineTitle, borderRadius: 3, marginBottom: 9 }} />
+            <View style={{ height: 6, width: '90%', backgroundColor: vault.readerLineBody, borderRadius: 3, marginBottom: 6 }} />
+            <View style={{ height: 6, width: '80%', backgroundColor: vault.readerLineBody, borderRadius: 3, marginBottom: 6 }} />
+            <View style={{ height: 6, width: '88%', backgroundColor: vault.readerLineBody, borderRadius: 3, marginBottom: 6 }} />
+            <View style={{ height: 6, width: '50%', backgroundColor: vault.readerLineBody, borderRadius: 3 }} />
+          </LinearGradient>
+          <Animated.View
+            style={{
+              position: 'absolute',
+              left: '6%',
+              right: '6%',
+              top: 0,
+              height: 3,
+              borderRadius: 3,
+              backgroundColor: semantic.ai,
+              opacity: lineOpacity,
+              transform: [{ translateY }],
+              shadowColor: vault.scanLineGlow,
+              shadowOpacity: 1,
+              shadowRadius: 10,
+              shadowOffset: { width: 0, height: 0 },
+              elevation: 4,
+            }}
+          />
+        </View>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 9, marginTop: 20 }}>
+          <ActivityIndicator color={semantic.ai} />
+          <Text style={[font('body'), { fontWeight: '600', fontSize: 15, color: colors.ink800 }]}>
+            {t('scan.reading', { personality })}
+          </Text>
+        </View>
+      </View>
+    </Card>
+  );
 }
 
 /** Chip de choix binaire/multiple (statut payé·à payer, moyen de règlement) — zéro hex. */

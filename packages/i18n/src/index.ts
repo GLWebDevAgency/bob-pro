@@ -1617,6 +1617,58 @@ const legacyFr = {
     pro: 'Facture fournisseur',
     direct: 'Fournisseur',
   },
+  // Badge type de la carte « À valider » — reflète le VRAI type analysé (DocumentAnalysisType).
+  'docs.typeReceipt': {
+    pote: 'Ticket de caisse',
+    pro: 'Ticket de caisse',
+    direct: 'Ticket',
+  },
+  'docs.typeBankStatement': {
+    pote: 'Relevé bancaire',
+    pro: 'Relevé bancaire',
+    direct: 'Relevé',
+  },
+  'docs.typeInsurance': {
+    pote: 'Attestation d’assurance',
+    pro: 'Attestation d’assurance',
+    direct: 'Assurance',
+  },
+  'docs.typeTaxSocial': {
+    pote: 'Fiscal & social',
+    pro: 'Document fiscal ou social',
+    direct: 'Fiscal',
+  },
+  'docs.typeContract': {
+    pote: 'Contrat',
+    pro: 'Contrat',
+    direct: 'Contrat',
+  },
+  'docs.typeCompanyRecord': {
+    pote: 'Document de société',
+    pro: 'Document de société',
+    direct: 'Société',
+  },
+  'docs.typeChantierPhoto': {
+    pote: 'Photo de chantier',
+    pro: 'Photo de chantier',
+    direct: 'Photo chantier',
+  },
+  'docs.typeAccounting': {
+    pote: 'Document comptable',
+    pro: 'Document comptable',
+    direct: 'Comptable',
+  },
+  'docs.typeOther': {
+    pote: 'À préciser',
+    pro: 'Document à préciser',
+    direct: 'À préciser',
+  },
+  // Pas encore d'analyse persistée pour cette version : badge honnête, jamais un type inventé.
+  'docs.typeUnknown': {
+    pote: 'À lire',
+    pro: 'Analyse en attente',
+    direct: 'À lire',
+  },
   'docs.agoMinutes': {
     pote: 'il y a {n} min',
     pro: 'il y a {n} min',
@@ -1698,6 +1750,28 @@ const legacyFr = {
     pote: 'Pas d’autre destination pour l’instant — crée un chantier et je saurai y ranger tes documents.',
     pro: 'Aucune autre destination disponible. Créez un chantier pour y classer des documents.',
     direct: 'Aucune autre destination.',
+  },
+  // Encart « Je pense : … » — préfixe seul, la destination validée (label en gras) suit.
+  'docs.aiGuess': {
+    pote: 'Je pense : ',
+    pro: 'Je suggère : ',
+    direct: 'Je pense : ',
+  },
+  // Bandeau vert après classement (handoff §isDocs, état « classé » en fade-in).
+  'docs.classifiedBanner': {
+    pote: '{name} classé · {destination}',
+    pro: 'Classé : {name} → {destination}.',
+    direct: '{name} → {destination}.',
+  },
+  'docs.pickSuggestedMeta': {
+    pote: 'Ma proposition',
+    pro: 'Proposition de Bob',
+    direct: 'Proposition IA',
+  },
+  'docs.pickFolderMeta': {
+    pote: 'Dossier du coffre',
+    pro: 'Dossier du coffre',
+    direct: 'Dossier',
   },
   'docs.otherFolder': {
     pote: 'Autre dossier',
@@ -5562,6 +5636,87 @@ const legacyFr = {
     pote: 'Dis-moi d’abord si c’est déjà payé ou à payer — je ne devine pas ça.',
     pro: 'Indiquez d’abord si la pièce est déjà payée ou à régler.',
     direct: 'Choisis : payé ou à payer.',
+  },
+  // ── Scan — overlay « Je lis ton document… » + résultat (handoff §SCAN OVERLAY) ──
+  'scan.reading': {
+    pote: 'Je lis ton document…',
+    pro: 'Lecture du document en cours…',
+    direct: 'Je lis…',
+  },
+  'scan.readDone': {
+    pote: 'Document lu',
+    pro: 'Document lu',
+    direct: 'Lu',
+  },
+  'scan.amountTtc': {
+    pote: 'Montant TTC',
+    pro: 'Montant TTC',
+    direct: 'TTC',
+  },
+  'scan.vatRecoverable': {
+    pote: 'TVA récupérable',
+    pro: 'TVA récupérable',
+    direct: 'TVA récup.',
+  },
+  'scan.attachedTo': {
+    pote: 'Rattaché à',
+    pro: 'Rattaché à',
+    direct: 'Rattaché à',
+  },
+  'scan.classifyInto': {
+    pote: 'Classer dans {label}',
+    pro: 'Classer dans {label}',
+    direct: '→ {label}',
+  },
+  'scan.chooseOtherFolder': {
+    pote: 'Choisir un autre dossier',
+    pro: 'Choisir un autre dossier',
+    direct: 'Autre dossier',
+  },
+  'scan.chantierOption': {
+    pote: 'Chantier · {name}',
+    pro: 'Chantier · {name}',
+    direct: 'Chantier · {name}',
+  },
+  'scan.recommendedOption': {
+    pote: 'Recommandé · {label}',
+    pro: 'Recommandé · {label}',
+    direct: 'Reco · {label}',
+  },
+  'scan.folderOptionDescSuggested': {
+    pote: 'Je te propose ce rangement d’après ce que j’ai vraiment lu.',
+    pro: 'Bob propose ce rangement à partir du contenu réellement lu.',
+    direct: 'Rangement déduit du contenu lu.',
+  },
+  'scan.folderOptionDesc': {
+    pote: 'Je range l’original dans ce dossier.',
+    pro: 'Classer l’original dans ce dossier.',
+    direct: 'Dans ce dossier.',
+  },
+  'scan.chantierOptionDesc': {
+    pote: 'Je range l’original dans Chantiers et je le lie à ce chantier.',
+    pro: 'L’original est classé dans Chantiers et rattaché à ce chantier.',
+    direct: 'Chantiers + lien chantier.',
+  },
+  'scan.destinationError': {
+    pote: 'Le classement a raté — l’original reste bien au chaud dans « À classer ».',
+    pro: 'Le classement a échoué. L’original reste conservé dans « À classer ».',
+    direct: 'Classement KO. Original conservé.',
+  },
+  'scan.linkedChantierTitle': {
+    pote: 'Original rattaché au chantier',
+    pro: 'Original rattaché au chantier',
+    direct: 'Rattaché au chantier',
+  },
+  'scan.linkedChantierBody': {
+    pote: 'Cette pièce est maintenant liée à son chantier : je ne peux plus créer une dépense avec elle comme justificatif. Si tu veux quand même suivre cet achat, crée la dépense depuis l’écran Dépenses — les montants lus restent visibles sur le document.',
+    pro: 'Ce document est désormais rattaché à son chantier : il ne peut plus servir de justificatif à une nouvelle dépense. Pour suivre cet achat, créez la dépense depuis l’écran Dépenses — les montants lus restent consultables sur le document.',
+    direct: 'Pièce liée au chantier : plus de dépense possible avec ce justificatif. Dépense à créer depuis Dépenses.',
+  },
+  'scan.linkedChantierCta': {
+    pote: 'Voir le document',
+    pro: 'Voir le document',
+    direct: 'Voir le document',
   },
 
   // ── CLOTURE-UI — écran « Clôture » (refonte @bob/ui) ────────────────────────

@@ -3,7 +3,7 @@
  * Aucune couleur en dur : la palette est injectée depuis useTheme() par button.tsx.
  */
 
-export type ButtonVariant = 'primary' | 'secondary' | 'ai' | 'danger';
+export type ButtonVariant = 'primary' | 'secondary' | 'ai' | 'aiSolid' | 'danger';
 
 /** Sous-ensemble de tokens nécessaires au bouton (injecté depuis useTheme). */
 export interface ButtonPalette {
@@ -89,6 +89,17 @@ export function resolveButtonAppearance(
         textColor: p.ink600,
       };
     case 'ai':
+      return {
+        gradient: false,
+        backgroundColor: p.ai,
+        borderColor: 'transparent',
+        borderWidth: 0,
+        textColor: p.surface,
+      };
+    case 'aiSolid':
+      // Indigo PLEIN du handoff (§Documents « Classer là », §Scan « Classer dans … ») :
+      // le CTA 1-tap d'une action IA confirmée. Contrat distinct de 'ai' (qui peut
+      // évoluer vers un rendu pâle) — l'aplat semantic.ai est ici garanti.
       return {
         gradient: false,
         backgroundColor: p.ai,

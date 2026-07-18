@@ -96,3 +96,22 @@ confirm_all INTACT à chaque conséquence, coût/modèle tracés par tour. Promp
 (pattern prompt-pack), goldens, évals. Chantier majeur POST-V1 (le gel s'applique) —
 spec unifiée à co-challenger GPT avant tout code ; la V1 publie avec le vocal actuel
 (fix extraction livré) + le fix scanner ticket.
+
+### P8.1 — Graphe de connaissances (question fondateur 18/07, avis Claude)
+Oui comme ATOUT, non comme INFRASTRUCTURE dédiée. Le domaine est déjà un graphe
+(client↔chantier↔devis↔facture↔dépense↔document↔fournisseur) — matérialisé par les FK
+Postgres + le modèle DDD ; un tenant artisan = quelques milliers de nœuds, ça tient en
+une requête. Introduire une base graphe (Neo4j/triplestore/GraphRAG) = double-écriture,
+sync, dérive : refusé tant que le besoin multi-sauts à grande échelle n'est pas prouvé.
+Plan en 3 crans, chacun ne se justifiant que si le précédent plafonne :
+1. (P8 déjà prévu) TYPED TOOLS DE NAVIGATION : l'agent parcourt le graphe existant via
+   les use cases (get_chantier → list_expenses(chantierId) → get_document…). C'est un
+   knowledge graph interrogé par outils — sans nouvelle techno. + « tenant context »
+   (spec SCANNER V2) : résumé structuré du graphe injecté dans les prompts.
+2. ARÊTES INFÉRÉES PERSISTÉES : les liens que l'IA découvre (fournisseur récurrent,
+   abonnement détecté, document↔chantier suggéré, corrélations produit) deviennent des
+   arêtes de première classe AVEC provenance + confiance + validation humaine — le vrai
+   apport « KG » ; amorcé par la suggestion de destination livrée le 18/07 (validation
+   anti-hallucination contre le contexte = discipline KG déjà en place).
+3. (si preuve du besoin) PROJECTION graphe/vecteurs DÉRIVÉE de Postgres (jamais source
+   de vérité) : CTE récursives + pgvector d'abord, GraphRAG seulement si mesuré utile.

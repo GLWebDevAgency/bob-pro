@@ -9,6 +9,8 @@ import {
   type DocumentOrigin,
   type DocumentStatus,
 } from '../../domain/document/document';
+import { fallbackDocumentDestinationFor, type DocumentAnalysisType } from '../../domain/document/document-analysis';
+import { type DocumentDestinationSuggestion } from '../../domain/document/document-destination';
 
 /**
  * Use case pur « coffre-fort » (claim C14) : projections RÉELLES (documents / dépenses /
@@ -19,18 +21,45 @@ import {
 
 // ── Entrées (projections minimales, structurellement compatibles avec les vues api-client) ──
 
+/** Extrait de l'analyse persistée (DocumentAnalysis) — structurellement assignable depuis elle. */
+export interface VaultDocumentAnalysisData {
+  type: DocumentAnalysisType;
+  typeConfidence: number;
+  /** Libellé professionnel proposé (« Facture Leroy Merlin — 184,90 € »). */
+  suggestedDisplayName?: string | null;
+  /** Destination déjà validée côté domaine — absente sur une analyse historique. */
+  suggestedDestination?: DocumentDestinationSuggestion | null;
+}
+
+/** Extrait de l'extraction OCR persistée (OcrExtraction) — structurellement assignable depuis elle. */
+export interface VaultDocumentExtractionData {
+  supplierName?: string | null;
+  totalTtcCents: number;
+  vatCents: number | null;
+  documentDate: DateOnly | null;
+}
+
 export interface VaultDocumentData {
   id: string;
   kind: DocumentKind;
   origin: DocumentOrigin;
   status: DocumentStatus;
   filename: string;
+  /** Libellé d'affichage persisté (renommage) — le serveur le défaut au filename. */
+  displayName?: string | null;
   linkedEntityType: DocumentLinkedEntityType | null;
   linkedEntityId: string | null;
+  /** Dossier du coffre (rangement) — un document rangé n'est PLUS « à valider », même sans
+   *  lien métier : le 1-tap « Classer là » vers un dossier est un classement de plein droit. */
+  folderId?: string | null;
   documentDate: DateOnly | null;
   createdAt: Instant;
   /** Tags persistés (#11) — participent à la recherche du coffre. */
   tags?: readonly string[];
+  /** Analyse persistée, ajoutée par l'appelant quand disponible (jamais inventée ici). */
+  analysis?: VaultDocumentAnalysisData | null;
+  /** Extraction OCR persistée, ajoutée par l'appelant quand disponible. */
+  extraction?: VaultDocumentExtractionData | null;
 }
 
 export interface VaultExpenseData {
@@ -39,6 +68,8 @@ export interface VaultExpenseData {
   documentDate: DateOnly;
   totalTtcCents: number;
   vatCents: number | null;
+  /** Pièce du coffre explicitement liée au règlement (paymentEvidence.proofDocumentId). */
+  proofDocumentId?: string | null;
 }
 
 export interface VaultInvoiceData {
@@ -66,13 +97,29 @@ export interface DeriveVaultViewInput {
 
 // ── Sortie (vue consommée par l'écran Documents) ──
 
+/** Chips Montant / TVA / Date de la carte « À valider » — issues de données réelles uniquement. */
+export interface VaultPendingDocMetrics {
+  totalTtcCents: number;
+  vatCents: number | null;
+  documentDate: DateOnly | null;
+}
+
 /** Document scanné (OCR) pas encore classé — la carte « À valider ». */
 export interface VaultPendingDoc {
   id: string;
   filename: string;
+  /** Libellé intelligent : renommage explicite > suggestion d'analyse > fournisseur réel > filename. */
+  displayName: string;
   receivedAt: Instant;
-  /** Dépense dont le fournisseur se retrouve dans le nom de fichier — chips métriques réelles
-   *  ET cible du « Classer là » (ClassifyDocument, A1-C14). */
+  /** Type réel analysé + confiance — null tant qu'aucune analyse persistée n'est fournie. */
+  analysisType: DocumentAnalysisType | null;
+  typeConfidence: number | null;
+  /** Dépense rapprochée prioritaire, sinon extraction OCR, sinon null (jamais inventé). */
+  metrics: VaultPendingDocMetrics | null;
+  /** Destination validée prête à afficher (« Je pense : … ») — null : demander à l'humain. */
+  suggestedDestination: DocumentDestinationSuggestion | null;
+  /** Dépense explicitement liée (proofDocumentId) ou dont le fournisseur se retrouve dans le
+   *  nom de fichier — chips métriques réelles ET cible du « Classer là » (ClassifyDocument, A1-C14). */
   matchedExpense: {
     id: string;
     supplierName: string;
@@ -181,22 +228,82 @@ function docMonthDate(doc: VaultDocumentData): string {
   return doc.documentDate ?? doc.createdAt.slice(0, 10);
 }
 
+/**
+ * Rapprochement dépense↔document : le lien EXPLICITE (proofDocumentId) prime toujours ;
+ * l'inclusion du fournisseur normalisé dans le nom de fichier reste le dernier recours.
+ */
+function matchExpense(doc: VaultDocumentData, expenses: readonly VaultExpenseData[]): VaultExpenseData | null {
+  const explicit = expenses.find((e) => e.proofDocumentId != null && e.proofDocumentId === doc.id);
+  if (explicit) return explicit;
+  const filename = normalizeFilename(doc.filename);
+  return (
+    expenses.find(
+      (e) => normalizeSupplierName(e.supplierName).length > 0 && filename.includes(normalizeSupplierName(e.supplierName)),
+    ) ?? null
+  );
+}
+
+/**
+ * Libellé intelligent de la carte : un renommage explicite (displayName ≠ filename) prime,
+ * puis la suggestion d'analyse, puis le fournisseur réel — le filename brut en dernier recours.
+ */
+function pendingDisplayName(doc: VaultDocumentData, matched: VaultExpenseData | null): string {
+  const renamed = doc.displayName?.trim() ?? '';
+  if (renamed.length > 0 && renamed !== doc.filename.trim()) return renamed;
+  const suggested = doc.analysis?.suggestedDisplayName?.trim() ?? '';
+  if (suggested.length > 0) return suggested;
+  const supplier = (matched?.supplierName ?? doc.extraction?.supplierName ?? '').trim();
+  if (supplier.length > 0) return supplier;
+  return doc.filename;
+}
+
+/** Chips métriques : la dépense rapprochée (comptable) prime, sinon l'extraction OCR réelle. */
+function pendingMetrics(doc: VaultDocumentData, matched: VaultExpenseData | null): VaultPendingDocMetrics | null {
+  if (matched) {
+    return { totalTtcCents: matched.totalTtcCents, vatCents: matched.vatCents, documentDate: matched.documentDate };
+  }
+  if (doc.extraction) {
+    return {
+      totalTtcCents: doc.extraction.totalTtcCents,
+      vatCents: doc.extraction.vatCents,
+      documentDate: doc.extraction.documentDate,
+    };
+  }
+  return null;
+}
+
+/**
+ * Destination affichable : celle déjà validée dans l'analyse persistée ; une analyse
+ * HISTORIQUE (champ absent) retombe sur le dossier système déterministe de son type.
+ * Un null explicite est respecté : le domaine a déjà tranché « décision humaine ».
+ */
+function pendingDestination(doc: VaultDocumentData): DocumentDestinationSuggestion | null {
+  if (!doc.analysis) return null;
+  if (doc.analysis.suggestedDestination !== undefined) return doc.analysis.suggestedDestination;
+  return fallbackDocumentDestinationFor(doc.analysis.type);
+}
+
 function deriveToValidate(
   documents: readonly VaultDocumentData[],
   expenses: readonly VaultExpenseData[],
 ): VaultPendingDoc[] {
+  // « À valider » = scanné (OCR), sans lien métier ET sans dossier : ranger dans un dossier
+  // (« Classer là » vers Assurances, Achats…) sort la carte de la file — sinon elle revient
+  // à l'identique après refetch alors que le bandeau « classé » vient d'affirmer le contraire.
   return documents
-    .filter((d) => d.origin === 'ocr' && d.linkedEntityType === null)
+    .filter((d) => d.origin === 'ocr' && d.linkedEntityType === null && (d.folderId ?? null) === null)
     .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
     .map((d) => {
-      const filename = normalizeFilename(d.filename);
-      const matched = expenses.find(
-        (e) => normalizeSupplierName(e.supplierName).length > 0 && filename.includes(normalizeSupplierName(e.supplierName)),
-      );
+      const matched = matchExpense(d, expenses);
       return {
         id: d.id,
         filename: d.filename,
+        displayName: pendingDisplayName(d, matched),
         receivedAt: d.createdAt,
+        analysisType: d.analysis?.type ?? null,
+        typeConfidence: d.analysis?.typeConfidence ?? null,
+        metrics: pendingMetrics(d, matched),
+        suggestedDestination: pendingDestination(d),
         matchedExpense: matched
           ? {
               id: matched.id,

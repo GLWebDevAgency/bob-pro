@@ -171,6 +171,7 @@ export function seedVaultDocuments(companyId: string, now: Instant, today: DateO
     origin: input.origin,
     status: 'active',
     filename: input.filename,
+    displayName: input.filename,
     mimeType: input.mimeType,
     byteSize: input.byteSize,
     sha256: SEED_DOC_SHA,

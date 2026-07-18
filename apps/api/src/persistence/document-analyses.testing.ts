@@ -34,6 +34,18 @@ export class InMemoryDocumentAnalysisStore implements DocumentAnalysisStore {
     return cloneRecord(candidate);
   }
 
+  async findManyExact(
+    companyId: string,
+    keys: readonly Omit<DocumentAnalysisCacheKey, 'companyId'>[],
+  ): Promise<DocumentAnalysisCacheRecord[]> {
+    const records: DocumentAnalysisCacheRecord[] = [];
+    for (const key of keys) {
+      const row = this.rows.get(cacheKey(validateDocumentAnalysisCacheKey({ companyId, ...key })));
+      if (row) records.push(cloneRecord(row));
+    }
+    return records;
+  }
+
   snapshot(): Map<string, DocumentAnalysisCacheRecord> {
     return new Map([...this.rows].map(([key, record]) => [key, cloneRecord(record)]));
   }

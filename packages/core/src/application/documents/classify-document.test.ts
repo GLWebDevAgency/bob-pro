@@ -80,6 +80,19 @@ class MemoryDocuments implements DocumentRepository {
     this.map.set(next.id, next);
     return 'saved';
   }
+  async rename(
+    input: Parameters<DocumentRepository['rename']>[0],
+  ): Promise<'saved' | 'revision_conflict' | 'not_found'> {
+    if (this.forceRevisionConflict) return 'revision_conflict';
+    const current = this.map.get(input.documentId);
+    if (!current || current.companyId !== input.companyId || current.status !== 'active') return 'not_found';
+    if (current.revision !== input.expectedRevision) return 'revision_conflict';
+    const next = Document.rehydrate(current.toProps());
+    const result = next.rename(input.displayName);
+    if (!result.ok) return 'revision_conflict';
+    this.map.set(next.id, next);
+    return 'saved';
+  }
   async findById(companyId: string, id: string): Promise<Document | null> {
     const document = this.map.get(id);
     return document && document.companyId === companyId ? document : null;

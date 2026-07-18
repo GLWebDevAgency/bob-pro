@@ -8,6 +8,8 @@ export interface DocumentView {
   origin: DocumentOrigin;
   status: DocumentStatus;
   filename: string;
+  /** Libellé d'affichage (renommable) — jamais vide, défaut dérivé du filename. */
+  displayName: string;
   mimeType: string;
   byteSize: number;
   sha256: string;
@@ -35,6 +37,7 @@ export function documentToView(document: Document): DocumentView {
     origin: p.origin,
     status: p.status,
     filename: p.filename,
+    displayName: document.displayName,
     mimeType: p.mimeType,
     byteSize: p.byteSize,
     sha256: p.sha256,

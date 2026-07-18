@@ -25,6 +25,8 @@ export interface DocumentProps {
   origin: DocumentOrigin;
   status: DocumentStatus;
   filename: string;
+  /** Libellé d'affichage (renommable) — le `filename` d'archive reste IMMUABLE. Défaut : filename. */
+  displayName?: string | null;
   mimeType: string;
   byteSize: number;
   sha256: string;
@@ -54,6 +56,49 @@ const SHA256 = /^[a-f0-9]{64}$/;
 
 function nonEmpty(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
+}
+
+export const DOCUMENT_DISPLAY_NAME_MAX_LENGTH = 120;
+
+/** Caractère de contrôle ASCII (C0 + DEL) — interdit dans un libellé d'affichage. */
+function isControlCharacter(character: string): boolean {
+  const code = character.charCodeAt(0);
+  return code <= 0x1f || code === 0x7f;
+}
+
+/**
+ * Valide un libellé d'affichage de document (renommage humain ou par Bob) :
+ * espaces réduits, non vide, borné, sans caractère de contrôle.
+ */
+export function validateDocumentDisplayName(value: unknown): DomainResult<string> {
+  if (typeof value !== 'string') {
+    return err({ code: 'VALIDATION', field: 'displayName', message: "Nom d'affichage requis." });
+  }
+  const name = value.replace(/\s+/g, ' ').trim();
+  if (!name) return err({ code: 'VALIDATION', field: 'displayName', message: "Nom d'affichage requis." });
+  if (name.length > DOCUMENT_DISPLAY_NAME_MAX_LENGTH) {
+    return err({
+      code: 'VALIDATION',
+      field: 'displayName',
+      message: `Le nom d'affichage ne peut pas dépasser ${DOCUMENT_DISPLAY_NAME_MAX_LENGTH} caractères.`,
+    });
+  }
+  if ([...name].some(isControlCharacter)) {
+    return err({ code: 'VALIDATION', field: 'displayName', message: "Le nom d'affichage contient un caractère interdit." });
+  }
+  return ok(name);
+}
+
+/** Libellé par défaut dérivé du filename d'archive (assaini et borné, jamais vide). */
+function defaultDocumentDisplayName(filename: string): string {
+  const collapsed = [...filename]
+    .map((character) => (isControlCharacter(character) ? ' ' : character))
+    .join('')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, DOCUMENT_DISPLAY_NAME_MAX_LENGTH)
+    .trim();
+  return collapsed || 'Document';
 }
 
 function validByteSize(value: number): boolean {
@@ -138,11 +183,22 @@ export class Document {
 
     const tags = [...new Set(props.tags.map((t) => t.trim().toLowerCase()).filter((t) => t.length >= 2 && t.length <= 32))].slice(0, 16);
 
+    // Libellé d'affichage : fourni → validé strictement ; absent → dérivé du filename (immuable).
+    let displayName: string;
+    if (props.displayName !== undefined && props.displayName !== null) {
+      const validated = validateDocumentDisplayName(props.displayName);
+      if (!validated.ok) return validated;
+      displayName = validated.value;
+    } else {
+      displayName = defaultDocumentDisplayName(filename);
+    }
+
     return ok(new Document({
       ...props,
       folderId: props.folderId ?? null,
       revision: props.revision ?? 1,
       filename,
+      displayName,
       linkedEntityId: props.linkedEntityId?.trim() ?? null,
       versions,
       tags,
@@ -177,6 +233,11 @@ export class Document {
 
   get folderId(): string | null {
     return this.p.folderId ?? null;
+  }
+
+  /** Libellé d'affichage courant — retombe sur le filename pour les lignes historiques. */
+  get displayName(): string {
+    return this.p.displayName ?? defaultDocumentDisplayName(this.p.filename);
   }
 
   get revision(): number {
@@ -231,6 +292,21 @@ export class Document {
     return ok(undefined);
   }
 
+  /**
+   * Renomme le libellé d'affichage (humain ou Bob — parité d'actions). Le `filename`
+   * d'archive, les versions et les empreintes restent immuables : seule la présentation change.
+   */
+  rename(displayName: string): DomainResult<void> {
+    if (this.p.status !== 'active') return err({ code: 'INVALID_TRANSITION', from: this.p.status, to: 'active' });
+    const validated = validateDocumentDisplayName(displayName);
+    if (!validated.ok) return validated;
+    if (this.displayName !== validated.value) {
+      this.p.displayName = validated.value;
+      this.bumpRevision();
+    }
+    return ok(undefined);
+  }
+
   markDeleted(at: Instant): DomainResult<void> {
     if (this.p.status === 'deleted') return ok(undefined);
     this.p.status = 'deleted';
@@ -244,6 +320,7 @@ export class Document {
       ...this.p,
       folderId: this.p.folderId ?? null,
       revision: this.p.revision ?? 1,
+      displayName: this.displayName,
       versions: this.p.versions.map((v) => ({ ...v })),
     };
   }

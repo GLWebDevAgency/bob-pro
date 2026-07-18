@@ -102,6 +102,7 @@ import {
   DeleteDocumentFolder,
   DEFAULT_DOCUMENT_FOLDERS,
   AnalyzeDocument,
+  RenameDocument,
   DOCUMENT_INTELLIGENCE_MAX_BYTES,
   documentToView,
   GetDocumentDownloadUrl,
@@ -169,6 +170,10 @@ import {
   type DocumentFolderSystemKey,
   type DeleteDocumentFolderStrategy,
   type DocumentAnalysis,
+  type DocumentAnalysisType,
+  type DocumentClassificationContext,
+  type DocumentDestinationSuggestion,
+  type DateOnly,
   type DocumentIntelligencePort,
   type DocumentLinkTargetPort,
   isValidDateOnly,
@@ -427,6 +432,71 @@ export interface ListDocumentsInput {
   linkedEntityId?: string;
   folderId?: string | null;
   includeDeleted?: boolean;
+}
+
+/** Résumé d'analyse embarqué dans GET /documents — issu du SEUL cache persistant (aucun LLM à la lecture). */
+export interface DocumentAnalysisSummaryView {
+  type: DocumentAnalysisType;
+  typeConfidence: number;
+  suggestedDisplayName: string;
+  suggestedDestination: DocumentDestinationSuggestion | null;
+  requiresHumanReview: boolean;
+}
+
+/** Chips de l'écran Documents (montant/TVA/date), projetées depuis les faits prouvés de l'analyse. */
+export interface DocumentExtractionSummaryView {
+  supplierName: string | null;
+  totalTtcCents: number;
+  vatCents: number | null;
+  documentDate: DateOnly | null;
+}
+
+/**
+ * Item de GET /documents : la vue document + le résumé d'analyse persisté. `analysis: null`
+ * signifie « pas encore analysé pour cette version de l'original » — jamais une valeur inventée.
+ */
+export type DocumentListItemView = DocumentView & {
+  analysis: DocumentAnalysisSummaryView | null;
+  extraction: DocumentExtractionSummaryView | null;
+};
+
+function documentAnalysisSummary(analysis: DocumentAnalysis): DocumentAnalysisSummaryView {
+  return {
+    type: analysis.type,
+    typeConfidence: analysis.typeConfidence,
+    suggestedDisplayName: analysis.suggestedDisplayName,
+    suggestedDestination: analysis.suggestedDestination,
+    requiresHumanReview: analysis.requiresHumanReview,
+  };
+}
+
+/** Montant d'un fait money en centimes — EUR uniquement (jamais de conversion implicite). */
+function factEurCents(analysis: DocumentAnalysis, key: 'total_ttc' | 'vat_amount'): number | null {
+  const fact = analysis.facts.find(
+    (candidate) => candidate.key === key && candidate.valueType === 'money',
+  );
+  return fact?.valueType === 'money' && fact.value.currency === 'EUR' ? fact.value.amountMinor : null;
+}
+
+/**
+ * Chips de liste dérivées des faits PROUVÉS de l'analyse. Sans total TTC lisible, aucune chip
+ * n'est fabriquée (null) : l'écran retombe sur l'état « à confirmer », jamais sur un montant inventé.
+ */
+function documentExtractionSummary(analysis: DocumentAnalysis): DocumentExtractionSummaryView | null {
+  const totalTtcCents = factEurCents(analysis, 'total_ttc');
+  if (totalTtcCents === null) return null;
+  const supplierFact = analysis.facts.find(
+    (candidate) => candidate.key === 'supplier_name' && candidate.valueType === 'text',
+  );
+  const dateFact = analysis.facts.find(
+    (candidate) => candidate.key === 'document_date' && candidate.valueType === 'date',
+  );
+  return {
+    supplierName: supplierFact?.valueType === 'text' ? supplierFact.value : null,
+    totalTtcCents,
+    vatCents: factEurCents(analysis, 'vat_amount'),
+    documentDate: dateFact?.valueType === 'date' ? dateFact.value : null,
+  };
 }
 
 export interface CreateDocumentIntakeInput {
@@ -834,7 +904,11 @@ export class BackendService {
    * la ligne (l'atterrissage persistant reste la responsabilité du workflow d'abonnement).
    */
   private async subscriptionFor(companyId: string): Promise<Result<Subscription, AppError>> {
-    const record = await this.p.subscriptions.findByCompanyId(companyId);
+    // Sous FORCE RLS, une lecture hors transaction tenant (routes @WithoutTenantPersistenceTransaction)
+    // masque la ligne et fabrique un faux « subscription-record » 503 — runWithTenant est réentrant.
+    const record = await this.p.runWithTenant(companyId, () =>
+      this.p.subscriptions.findByCompanyId(companyId),
+    );
     if (record === null) return err(appUnavailable('subscription-record'));
 
     const trialExpired =
@@ -4160,8 +4234,10 @@ export class BackendService {
     }
   }
 
-  async listDocuments(input: ListDocumentsInput = {}): Promise<Result<DocumentView[], AppError>> {
-    return new ListDocuments({ documents: this.p.documents }).execute({
+  async listDocuments(
+    input: ListDocumentsInput = {},
+  ): Promise<Result<DocumentListItemView[], AppError>> {
+    const documents = await new ListDocuments({ documents: this.p.documents }).execute({
       companyId: this.companyId(),
       ...(input.kind !== undefined ? { kind: input.kind } : {}),
       ...(input.linkedEntityType !== undefined ? { linkedEntityType: input.linkedEntityType } : {}),
@@ -4169,6 +4245,62 @@ export class BackendService {
       ...(input.folderId !== undefined ? { folderId: input.folderId } : {}),
       ...(input.includeDeleted !== undefined ? { includeDeleted: input.includeDeleted } : {}),
     });
+    if (!documents.ok) return documents;
+
+    // Enrichissement depuis le SEUL cache persistant, en UNE requête (jamais de LLM ni de N+1
+    // à la lecture). Un cache indisponible dégrade en « pas encore analysé », jamais en erreur
+    // de liste : le coffre reste consultable.
+    let analysesByDocument = new Map<string, DocumentAnalysis>();
+    try {
+      const records = await this.p.documentAnalyses.findManyExact(
+        this.companyId(),
+        documents.value.map((document) => ({
+          documentId: document.id,
+          documentVersion: document.version,
+          sourceSha256: document.sha256,
+        })),
+      );
+      analysesByDocument = new Map(records.map((record) => [record.documentId, record.analysis]));
+    } catch (cause) {
+      this.logger.warn(
+        `Enrichissement analyses du coffre indisponible: ${cause instanceof Error ? cause.message : String(cause)}`,
+        'documents',
+      );
+    }
+    return ok(
+      documents.value.map((document) => {
+        const analysis = analysesByDocument.get(document.id) ?? null;
+        return {
+          ...document,
+          analysis: analysis ? documentAnalysisSummary(analysis) : null,
+          extraction: analysis ? documentExtractionSummary(analysis) : null,
+        };
+      }),
+    );
+  }
+
+  /**
+   * PUT /documents/:id/name — renomme le libellé d'affichage (RenameDocument @bob/core, parité
+   * humain↔Bob). Tenant-scopé par companyId + révision optimiste, comme les routes voisines.
+   */
+  async renameDocument(input: {
+    documentId: string;
+    displayName: string;
+    expectedRevision: number;
+  }): Promise<Result<DocumentView, AppError>> {
+    const result = await new RenameDocument({ documents: this.p.documents }).execute({
+      companyId: this.companyId(),
+      documentId: input.documentId,
+      displayName: input.displayName,
+      expectedRevision: input.expectedRevision,
+    });
+    if (result.ok)
+      this.logger.audit('document.renamed', {
+        companyId: this.companyId(),
+        documentId: input.documentId,
+        revision: result.value.revision,
+      });
+    return result;
   }
 
   async listDocumentFolders(
@@ -4389,6 +4521,52 @@ export class BackendService {
       : { ok: false, error: appNotFound('document', documentId) };
   }
 
+  /**
+   * Contexte de classement tenant-aware pour l'analyse documentaire : chantiers OUVERTS réels
+   * (avec client éventuel) + dossiers racine du coffre. Ce sont les SEULES cibles que le modèle
+   * peut suggérer — toute autre est rejetée par le domaine (anti-hallucination). Un échec de
+   * lecture dégrade en contexte vide (l'analyse retombe sur les dossiers système), jamais en erreur.
+   */
+  private async documentClassificationContext(
+    companyId: string,
+  ): Promise<DocumentClassificationContext> {
+    try {
+      const [chantiers, customers, foldersPage] = await Promise.all([
+        // chantiersAllowed() lit companies + subscriptions, deux tables FORCE RLS — or la route
+        // POST /documents/:id/analysis désactive la transaction tenant ambiante
+        // (@WithoutTenantPersistenceTransaction). HORS runWithTenant, ces lectures renvoient
+        // null sans erreur sous FORCE RLS (rôle non-superuser) et le contexte chantiers serait
+        // TOUJOURS vide en production : le gating DOIT donc s'évaluer DANS la portée tenant.
+        this.p.runWithTenant(companyId, async () =>
+          (await this.chantiersAllowed()) ? this.p.chantiers.listByCompany(companyId) : [],
+        ),
+        this.p.runWithTenant(companyId, () => this.p.customers.listByCompany(companyId)),
+        this.p.runWithTenant(companyId, () =>
+          this.p.documentFolders.listChildren({ companyId, parentId: null, limit: 100 }),
+        ),
+      ]);
+      const customerNames = new Map(customers.map((customer) => [customer.id, customer.name]));
+      return {
+        chantiersOuverts: chantiers
+          .map((chantier) => chantier.toProps())
+          .filter((props) => props.status === 'open')
+          .map((props) => ({
+            id: props.id,
+            nom: props.name,
+            clientNom: props.customerId ? (customerNames.get(props.customerId) ?? null) : null,
+          })),
+        dossiers: foldersPage.items
+          .filter((folder) => folder.status === 'active')
+          .map((folder) => {
+            const props = folder.toProps();
+            return { id: props.id, nom: props.name, systemKey: props.systemKey ?? null };
+          }),
+      };
+    } catch {
+      return { chantiersOuverts: [], dossiers: [] };
+    }
+  }
+
   async analyzeStoredDocument(documentId: string): Promise<Result<DocumentAnalysis, AppError>> {
     const companyId = this.companyId();
     const startedAt = Date.now();
@@ -4429,6 +4607,9 @@ export class BackendService {
           result = ok(cached.analysis);
         } else {
           intelligenceInvoked = true;
+          // Contexte tenant transmis au moteur puis utilisé par le domaine pour VALIDER la
+          // destination suggérée : sans lui, aucune suggestion de chantier ne peut survivre.
+          const classificationContext = await this.documentClassificationContext(companyId);
           result = await new AnalyzeDocument({
             documents: {
               findById: (scopedCompanyId, id) =>
@@ -4439,7 +4620,7 @@ export class BackendService {
             storage: this.documentStorage,
             intelligence: this.documentIntelligence,
             clock: this.clock,
-          }).execute({ companyId, documentId });
+          }).execute({ companyId, documentId, context: classificationContext });
           if (result.ok) {
             const analyzed = result.value;
             const winner = await this.p.runWithTenant(companyId, () =>
@@ -4671,7 +4852,12 @@ export class BackendService {
     const company = await this.p.runWithTenant(companyId, () =>
       this.p.companies.findById(companyId),
     );
-    const subscription = await this.subscriptionFor(companyId);
+    // Même classe de bug RLS que le contexte de classement : POST /documents/ocr est
+    // @WithoutTenantPersistenceTransaction, or subscriptions est FORCE RLS — la lecture doit
+    // être tenant-scopée, sinon 503 subscription-record systématique en production.
+    const subscription = await this.p.runWithTenant(companyId, () =>
+      this.subscriptionFor(companyId),
+    );
     if (!subscription.ok) return subscription;
     const trade = company
       ? ((): NonNullable<OcrExtractInput['trade']> => {

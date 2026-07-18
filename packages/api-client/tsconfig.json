@@ -3,7 +3,12 @@
   "compilerOptions": {
     "baseUrl": ".",
     "lib": ["ES2022", "DOM"],
-    "paths": { "@bob/core": ["../core/src/index.ts"], "@bob/ai": ["../ai/src/index.ts"] }
+    "paths": {
+      "@bob/core": ["../core/src/index.ts"],
+      "@bob/core/testing": ["../core/src/testing.ts"],
+      "@bob/ai": ["../ai/src/index.ts"],
+      "@bob/ai/testing": ["../ai/src/testing.ts"]
+    }
   },
   "include": ["src"]
 }

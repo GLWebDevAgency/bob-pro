@@ -11,6 +11,13 @@ export interface DocumentRepository {
     linkedEntityId: string;
     expectedRevision: number;
   }): Promise<'saved' | 'revision_conflict' | 'not_found'>;
+  /** Mutation atomique du libellé d'affichage (révision optimiste) — l'adapter journalise pour l'audit. */
+  rename(input: {
+    companyId: string;
+    documentId: string;
+    displayName: string;
+    expectedRevision: number;
+  }): Promise<'saved' | 'revision_conflict' | 'not_found'>;
   findById(companyId: string, id: string): Promise<Document | null>;
   findByEntity(companyId: string, entityType: string, entityId: string): Promise<Document[]>;
   listByCompany(companyId: string): Promise<Document[]>;

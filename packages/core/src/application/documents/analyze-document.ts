@@ -1,6 +1,8 @@
 import { makeDocumentAnalysis, type DocumentAnalysis } from '../../domain/document/document-analysis';
+import { type DocumentDestinationContext } from '../../domain/document/document-destination';
+import { type DocumentFolderSystemKey } from '../../domain/document/document-folder';
 import { type Result, err } from '../../shared-kernel/result';
-import { type DocumentIntelligencePort } from '../ports/document-intelligence';
+import { type DocumentClassificationContext, type DocumentIntelligencePort } from '../ports/document-intelligence';
 import { type DocumentRepository } from '../ports/document-repository';
 import { type DocumentStoragePort } from '../ports/document-storage';
 import { type ClockPort } from '../ports/services';
@@ -21,6 +23,12 @@ export const DOCUMENT_INTELLIGENCE_MAX_BYTES = 10 * 1024 * 1024;
 export interface AnalyzeDocumentInput {
   companyId: string;
   documentId: string;
+  /**
+   * Contexte de classement tenant-aware (chantiers ouverts + dossiers du coffre), transmis au
+   * moteur puis utilisé pour VALIDER la destination suggérée au retour. Optionnel — compat :
+   * absent, comportement actuel + fallback déterministe par type.
+   */
+  context?: DocumentClassificationContext;
 }
 
 export interface AnalyzeDocumentDeps {
@@ -36,6 +44,26 @@ function dependencyError(port: string, error: unknown): AppError {
 
 function normalizedMimeType(value: string): string {
   return (value.split(';')[0] ?? '').trim().toLowerCase();
+}
+
+/**
+ * Projette le contexte applicatif (port) vers le contexte de validation du domaine :
+ * seuls les chantiers listés existent, et les clés système autorisées sont celles des
+ * dossiers système réellement présents (liste vide ⇒ défaut produit : toutes les clés).
+ */
+function toDestinationContext(context: DocumentClassificationContext | undefined): DocumentDestinationContext | undefined {
+  if (!context) return undefined;
+  const systemKeys = [
+    ...new Set(
+      context.dossiers
+        .map((dossier) => dossier.systemKey)
+        .filter((key): key is DocumentFolderSystemKey => key !== null && key !== undefined),
+    ),
+  ];
+  return {
+    chantiers: context.chantiersOuverts.map(({ id, nom }) => ({ id, nom })),
+    ...(systemKeys.length > 0 ? { systemKeys } : {}),
+  };
 }
 
 /**
@@ -111,20 +139,27 @@ export class AnalyzeDocument {
         mimeType,
         // Isole l'original en mémoire d'un adapter qui muterait accidentellement son buffer.
         bytes: stored.bytes.slice(),
+        ...(input.context !== undefined ? { classificationContext: input.context } : {}),
       });
     } catch (error) {
       return err(dependencyError('document-intelligence', error));
     }
     if (!intelligenceResult.ok) return intelligenceResult;
 
-    const analysis = makeDocumentAnalysis(intelligenceResult.value.analysis, {
-      documentId: document.id,
-      documentVersion: currentVersion.version,
-      sourceSha256: currentVersion.sha256,
-      originalFilename: props.filename,
-      analyzerVersion: intelligenceResult.value.analyzerVersion,
-      analyzedAt: this.deps.clock.now(),
-    });
+    // La suggestion de destination du moteur est REVALIDÉE ici contre le contexte tenant :
+    // un chantierId hors contexte est rejeté et retombe sur le dossier système déterministe.
+    const analysis = makeDocumentAnalysis(
+      intelligenceResult.value.analysis,
+      {
+        documentId: document.id,
+        documentVersion: currentVersion.version,
+        sourceSha256: currentVersion.sha256,
+        originalFilename: props.filename,
+        analyzerVersion: intelligenceResult.value.analyzerVersion,
+        analyzedAt: this.deps.clock.now(),
+      },
+      toDestinationContext(input.context),
+    );
     if (!analysis.ok) return err(appDomain(analysis.error));
     return analysis;
   }

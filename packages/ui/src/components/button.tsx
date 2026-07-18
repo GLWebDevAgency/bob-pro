@@ -1,6 +1,6 @@
 /**
- * Button — redlines §18. 4 types (primaire dégradé cta · secondaire · IA · danger léger)
- * + état désactivé. Hauteur ≥ 44, radius 11–15, icône injectée, press scale 0.94.
+ * Button — redlines §18. 5 types (primaire dégradé cta · secondaire · IA · IA plein
+ * `aiSolid` (indigo #semantic.ai du handoff, CTA 1-tap) · danger léger) + état désactivé. Hauteur ≥ 44, radius 11–15, icône injectée, press scale 0.94.
  * `size="compact"` : CTA de carte priorité (réf dc.html) — padding 9/15, texte 13.5/600,
  * fond primaire en aplat ink (pas de dégradé aux petites tailles), hitSlop pour ≥ 44.
  * `trailingIcon` : icône après le libellé (ex. chevron › du diagnostic).

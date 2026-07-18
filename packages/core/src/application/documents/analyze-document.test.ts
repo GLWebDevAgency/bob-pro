@@ -85,6 +85,10 @@ class MemoryDocuments implements DocumentRepository {
     return 'not_found';
   }
 
+  async rename(): Promise<'saved' | 'revision_conflict' | 'not_found'> {
+    return 'not_found';
+  }
+
   async findById(companyId: string, id: string): Promise<Document | null> {
     if (!this.document || this.document.companyId !== companyId || this.document.id !== id) return null;
     return this.document;
@@ -313,5 +317,82 @@ describe('AnalyzeDocument', () => {
     expect(result.ok).toBe(false);
     if (!result.ok && result.error.kind === 'validation') expect(result.error.issues).toHaveLength(2);
     expect(intelligence.calls).toHaveLength(0);
+  });
+
+  it('transmet le contexte de classement au moteur et valide la destination au retour', async () => {
+    const { intelligence, useCase } = setup();
+    intelligence.output = ok({
+      analyzerVersion: 'generic-doc-v1',
+      analysis: {
+        ...validDraft(),
+        type: 'supplier_invoice',
+        suggestedDestination: { kind: 'chantier', chantierId: 'ch-durand', motif: 'matériel chantier Durand' },
+      },
+    });
+
+    const result = await useCase.execute({
+      companyId: 'co-1',
+      documentId: 'doc-1',
+      context: {
+        chantiersOuverts: [{ id: 'ch-durand', nom: 'Rénovation Durand', clientNom: 'Mme Durand' }],
+        dossiers: [
+          { id: 'f-achats', nom: 'Achats', systemKey: 'purchases' },
+          { id: 'f-perso', nom: 'Mes contrats', systemKey: null },
+        ],
+      },
+    });
+
+    expect(intelligence.calls[0]?.classificationContext).toEqual({
+      chantiersOuverts: [{ id: 'ch-durand', nom: 'Rénovation Durand', clientNom: 'Mme Durand' }],
+      dossiers: [
+        { id: 'f-achats', nom: 'Achats', systemKey: 'purchases' },
+        { id: 'f-perso', nom: 'Mes contrats', systemKey: null },
+      ],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.suggestedDestination).toEqual({
+      kind: 'chantier',
+      chantierId: 'ch-durand',
+      label: 'Rénovation Durand',
+      motif: 'matériel chantier Durand',
+    });
+  });
+
+  it('rejette un chantier hors contexte au retour et retombe sur le dossier système du type', async () => {
+    const { intelligence, useCase } = setup();
+    intelligence.output = ok({
+      analyzerVersion: 'generic-doc-v1',
+      analysis: {
+        ...validDraft(),
+        type: 'supplier_invoice',
+        suggestedDestination: { kind: 'chantier', chantierId: 'ch-hallucine' },
+      },
+    });
+
+    const result = await useCase.execute({
+      companyId: 'co-1',
+      documentId: 'doc-1',
+      context: {
+        chantiersOuverts: [{ id: 'ch-durand', nom: 'Rénovation Durand' }],
+        dossiers: [{ id: 'f-achats', nom: 'Achats', systemKey: 'purchases' }],
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.suggestedDestination).toMatchObject({ kind: 'system_folder', systemKey: 'purchases' });
+  });
+
+  it('compat ascendante : sans contexte, aucun contexte ne part au moteur et le fallback par type s’applique', async () => {
+    const { intelligence, useCase } = setup();
+
+    const result = await useCase.execute({ companyId: 'co-1', documentId: 'doc-1' });
+
+    expect(intelligence.calls[0]?.classificationContext).toBeUndefined();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.suggestedDestination).toMatchObject({ kind: 'system_folder', systemKey: 'bank', label: 'Banque' });
+    expect(result.value.suggestedDisplayName).toBe('2026 07 releve bancaire');
   });
 });

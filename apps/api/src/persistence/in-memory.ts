@@ -231,6 +231,22 @@ export class InMemoryDocumentRepository implements DocumentRepository {
     this.map.set(input.documentId, next);
     return 'saved';
   }
+  async rename(input: {
+    companyId: string;
+    documentId: string;
+    displayName: string;
+    expectedRevision: number;
+  }): Promise<'saved' | 'revision_conflict' | 'not_found'> {
+    const current = this.map.get(input.documentId);
+    if (!current || current.companyId !== input.companyId || current.status !== 'active')
+      return 'not_found';
+    if (current.revision !== input.expectedRevision) return 'revision_conflict';
+    const next = Document.rehydrate(current.toProps());
+    const renamed = next.rename(input.displayName);
+    if (!renamed.ok) return 'revision_conflict';
+    this.map.set(input.documentId, next);
+    return 'saved';
+  }
   async findById(companyId: string, id: string): Promise<Document | null> {
     const d = this.map.get(id);
     return d && d.companyId === companyId ? d : null;

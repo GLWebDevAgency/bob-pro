@@ -1,19 +1,28 @@
 import {
+  DOCUMENT_ANALYSIS_TYPES,
+  DOCUMENT_DISPLAY_NAME_MAX_LENGTH,
   DOCUMENT_FOLDER_SYSTEM_KEYS,
   makeDocumentAnalysis,
+  makeDocumentDestinationSuggestion,
   normalizeDocumentFolderName,
   validateDocumentFolderName,
   type DocumentAnalysis,
   type DocumentAnalysisDraft,
+  type DocumentAnalysisType,
+  type DocumentDestinationContext,
+  type DocumentDestinationSuggestion,
   type DocumentDownloadUrl,
   type DocumentFolderSystemKey,
   type DocumentFolderView,
   type DocumentView,
 } from '@bob/core';
 import type {
+  DocumentAnalysisSummaryView,
+  DocumentExtractionSummaryView,
   DocumentFolderDeletionExecutionView,
   DocumentFolderDeletionPlanView,
   DocumentFolderPageView,
+  DocumentListItemView,
   RecordDocumentExpenseClientOutput,
 } from './client';
 
@@ -89,6 +98,11 @@ function stableJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
+/** Fallback déterministe du libellé d'affichage (miroir de defaultDocumentDisplayName du domaine). */
+function displayNameFromFilename(filename: string): string {
+  return filename.slice(0, DOCUMENT_DISPLAY_NAME_MAX_LENGTH).trim() || 'Document';
+}
+
 export function decodeDocumentView(value: unknown): DocumentView | null {
   const candidate = object(value);
   if (!candidate) return null;
@@ -108,11 +122,20 @@ export function decodeDocumentView(value: unknown): DocumentView | null {
   const revision = positiveInteger(candidate.revision);
   const version = positiveInteger(candidate.version);
   const byteSize = positiveInteger(candidate.byteSize);
+  // Tolérance : champ absent/null (serveur historique) ⇒ fallback filename ; présent mais
+  // hors contrat ⇒ rejet strict, comme les autres champs.
+  const displayName =
+    candidate.displayName === undefined || candidate.displayName === null
+      ? filename !== null
+        ? displayNameFromFilename(filename)
+        : null
+      : string(candidate.displayName, DOCUMENT_DISPLAY_NAME_MAX_LENGTH);
 
   if (
     !id
     || !companyId
     || !filename
+    || !displayName
     || !mimeType
     || !storageKey
     || folderId === undefined
@@ -154,6 +177,7 @@ export function decodeDocumentView(value: unknown): DocumentView | null {
     origin: candidate.origin as DocumentView['origin'],
     status: candidate.status as DocumentView['status'],
     filename,
+    displayName,
     mimeType,
     byteSize,
     sha256: candidate.sha256,
@@ -181,6 +205,126 @@ export function decodeDocumentViews(value: unknown): DocumentView[] | null {
     documents.push(document);
   }
   return documents;
+}
+
+const ANALYSIS_TYPES = new Set<string>(DOCUMENT_ANALYSIS_TYPES);
+
+/** Résumé d'analyse d'un item de liste. Défensif : toute forme hors contrat ⇒ null. */
+export function decodeDocumentAnalysisSummary(value: unknown): DocumentAnalysisSummaryView | null {
+  const candidate = object(value);
+  if (!candidate) return null;
+  const suggestedDisplayName = string(candidate.suggestedDisplayName, 120);
+  if (
+    typeof candidate.type !== 'string'
+    || !ANALYSIS_TYPES.has(candidate.type)
+    || typeof candidate.typeConfidence !== 'number'
+    || !Number.isFinite(candidate.typeConfidence)
+    || candidate.typeConfidence < 0
+    || candidate.typeConfidence > 1
+    || !suggestedDisplayName
+    || typeof candidate.requiresHumanReview !== 'boolean'
+  ) return null;
+  return {
+    type: candidate.type as DocumentAnalysisType,
+    typeConfidence: candidate.typeConfidence,
+    suggestedDisplayName,
+    suggestedDestination:
+      candidate.suggestedDestination === null || candidate.suggestedDestination === undefined
+        ? null
+        : decodeDocumentDestinationSuggestion(candidate.suggestedDestination),
+    requiresHumanReview: candidate.requiresHumanReview,
+  };
+}
+
+/** Chips Montant/TVA/Date d'un item de liste. Défensif : sans total TTC entier ⇒ null. */
+export function decodeDocumentExtractionSummary(value: unknown): DocumentExtractionSummaryView | null {
+  const candidate = object(value);
+  if (!candidate) return null;
+  if (!Number.isSafeInteger(candidate.totalTtcCents)) return null;
+  const supplierName = candidate.supplierName === null || candidate.supplierName === undefined
+    ? null
+    : string(candidate.supplierName, 240);
+  const vatCents = candidate.vatCents === null || candidate.vatCents === undefined
+    ? null
+    : Number.isSafeInteger(candidate.vatCents) ? candidate.vatCents as number : null;
+  const documentDate = candidate.documentDate === null || candidate.documentDate === undefined
+    ? null
+    : dateOnly(candidate.documentDate);
+  return {
+    supplierName,
+    totalTtcCents: candidate.totalTtcCents as number,
+    vatCents,
+    documentDate,
+  };
+}
+
+/**
+ * Item enrichi de GET /documents : la vue document reste STRICTE (id, tenant, empreintes) ;
+ * les résumés d'analyse sont TOLÉRANTS — absents ou hors contrat ⇒ null (« pas encore
+ * analysé »), jamais un crash de liste ni une valeur inventée.
+ */
+export function decodeDocumentListItem(value: unknown): DocumentListItemView | null {
+  const document = decodeDocumentView(value);
+  if (!document) return null;
+  const candidate = object(value);
+  return {
+    ...document,
+    analysis: decodeDocumentAnalysisSummary(candidate?.analysis),
+    extraction: decodeDocumentExtractionSummary(candidate?.extraction),
+  };
+}
+
+export function decodeDocumentListItemsForCompany(
+  value: unknown,
+  companyId: string,
+): DocumentListItemView[] | null {
+  if (!Array.isArray(value) || value.length > 5_000) return null;
+  const items: DocumentListItemView[] = [];
+  for (const item of value) {
+    const decoded = decodeDocumentListItem(item);
+    if (!decoded || decoded.companyId !== companyId) return null;
+    items.push(decoded);
+  }
+  return items;
+}
+
+/** Projection canonique analyse → résumé de liste (même règle que le serveur — parité local/http). */
+export function documentAnalysisSummaryView(analysis: DocumentAnalysis): DocumentAnalysisSummaryView {
+  return {
+    type: analysis.type,
+    typeConfidence: analysis.typeConfidence,
+    suggestedDisplayName: analysis.suggestedDisplayName,
+    suggestedDestination: analysis.suggestedDestination,
+    requiresHumanReview: analysis.requiresHumanReview,
+  };
+}
+
+function analysisFactEurCents(analysis: DocumentAnalysis, key: 'total_ttc' | 'vat_amount'): number | null {
+  const fact = analysis.facts.find(
+    (candidate) => candidate.key === key && candidate.valueType === 'money',
+  );
+  return fact?.valueType === 'money' && fact.value.currency === 'EUR' ? fact.value.amountMinor : null;
+}
+
+/**
+ * Projection canonique analyse → chips (même règle que le serveur — parité local/http) :
+ * sans total TTC prouvé en EUR, aucune chip n'est fabriquée.
+ */
+export function documentExtractionSummaryView(analysis: DocumentAnalysis): DocumentExtractionSummaryView | null {
+  const totalTtcCents = analysisFactEurCents(analysis, 'total_ttc');
+  if (totalTtcCents === null) return null;
+  const supplierFact = analysis.facts.find(
+    (candidate) => candidate.key === 'supplier_name' && candidate.valueType === 'text',
+  );
+  const dateFact = analysis.facts.find(
+    (candidate) => candidate.key === 'document_date' && candidate.valueType === 'date',
+  );
+  return {
+    supplierName: supplierFact?.valueType === 'text' ? supplierFact.value : null,
+    totalTtcCents,
+    vatCents: analysisFactEurCents(analysis, 'vat_amount'),
+    documentDate: dateFact?.valueType === 'date' ? dateFact.value : null,
+  };
 }
 
 export function decodeDocumentDownloadUrl(value: unknown): DocumentDownloadUrl | null {
@@ -348,6 +492,50 @@ export function decodeDocumentMove(value: unknown): { documentId: string; folder
   return documentId && folderId !== undefined && revision ? { documentId, folderId, revision } : null;
 }
 
+/**
+ * Reconstruit le contexte de validation de destination À PARTIR de la valeur reçue.
+ *
+ * Le client ne connaît pas la liste des chantiers du tenant au moment du décodage :
+ * l'anti-hallucination a déjà eu lieu CÔTÉ SERVEUR (AnalyzeDocument + makeDocumentAnalysis).
+ * La seule exigence ici est le déterminisme du round-trip — une suggestion chantier se revalide
+ * contre elle-même, un null explicite est reproduit en interdisant le fallback par type.
+ * Même logique côté API dans apps/api/src/persistence/document-analyses.ts.
+ */
+function destinationRevalidationContext(candidate: JsonObject): DocumentDestinationContext | undefined {
+  if (!('suggestedDestination' in candidate)) return undefined; // serveur historique : fallback déterministe
+  const destination = candidate.suggestedDestination;
+  if (destination === null) return { chantiers: [], systemKeys: [] };
+  const raw = object(destination);
+  if (raw && raw.kind === 'chantier' && typeof raw.chantierId === 'string' && typeof raw.label === 'string') {
+    return { chantiers: [{ id: raw.chantierId, nom: raw.label }] };
+  }
+  return { chantiers: [] };
+}
+
+/**
+ * Décode une destination suggérée isolée (résumé de liste). Défensif : toute forme hors
+ * contrat ⇒ null (jamais de crash) ; le label d'un dossier système est re-dérivé du produit.
+ */
+export function decodeDocumentDestinationSuggestion(value: unknown): DocumentDestinationSuggestion | null {
+  const raw = object(value);
+  if (!raw) return null;
+  const motif = typeof raw.motif === 'string' ? raw.motif : null;
+  if (raw.kind === 'chantier') {
+    if (typeof raw.chantierId !== 'string' || typeof raw.label !== 'string') return null;
+    return makeDocumentDestinationSuggestion(
+      { kind: 'chantier', chantierId: raw.chantierId, motif },
+      { chantiers: [{ id: raw.chantierId, nom: raw.label }] },
+    );
+  }
+  if (raw.kind === 'system_folder') {
+    return makeDocumentDestinationSuggestion(
+      { kind: 'system_folder', systemKey: typeof raw.systemKey === 'string' ? raw.systemKey : null, motif },
+      { chantiers: [] },
+    );
+  }
+  return null;
+}
+
 export function decodeDocumentAnalysis(value: unknown): DocumentAnalysis | null {
   const candidate = object(value);
   if (!candidate) return null;
@@ -382,6 +570,11 @@ export function decodeDocumentAnalysis(value: unknown): DocumentAnalysis | null 
       facts: candidate.facts as Exclude<DocumentAnalysisDraft['facts'], null | undefined>,
       suggestedTags: candidate.suggestedTags,
       suggestedFilename: candidate.suggestedFilename,
+      suggestedDisplayName:
+        typeof candidate.suggestedDisplayName === 'string' ? candidate.suggestedDisplayName : null,
+      suggestedDestination: (candidate.suggestedDestination ?? null) as NonNullable<
+        DocumentAnalysisDraft['suggestedDestination']
+      > | null,
       warnings: candidate.warnings,
     },
     {
@@ -392,6 +585,7 @@ export function decodeDocumentAnalysis(value: unknown): DocumentAnalysis | null 
       analyzerVersion,
       analyzedAt,
     },
+    destinationRevalidationContext(candidate),
   );
   if (!parsed.ok) return null;
 
@@ -405,7 +599,17 @@ export function decodeDocumentAnalysis(value: unknown): DocumentAnalysis | null 
     facts: candidate.facts,
     suggestedTags: candidate.suggestedTags,
     suggestedFilename: candidate.suggestedFilename,
+    // Tolérance serveur historique : champs absents ⇒ comparés à la normalisation du domaine
+    // (fallback déterministe), jamais un rejet ni un crash.
+    suggestedDisplayName:
+      'suggestedDisplayName' in candidate
+        ? candidate.suggestedDisplayName
+        : parsed.value.suggestedDisplayName,
     suggestedSystemFolder: candidate.suggestedSystemFolder,
+    suggestedDestination:
+      'suggestedDestination' in candidate
+        ? candidate.suggestedDestination
+        : parsed.value.suggestedDestination,
     warnings: candidate.warnings,
     requiresHumanReview: candidate.requiresHumanReview,
     analyzerVersion: candidate.analyzerVersion,

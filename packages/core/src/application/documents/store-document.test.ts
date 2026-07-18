@@ -60,6 +60,9 @@ class MemoryDocuments implements DocumentRepository {
   async classify(): Promise<'saved' | 'revision_conflict' | 'not_found'> {
     return 'not_found';
   }
+  async rename(): Promise<'saved' | 'revision_conflict' | 'not_found'> {
+    return 'not_found';
+  }
   async findById(companyId: string, id: string): Promise<Document | null> {
     const document = this.map.get(id);
     return document && document.companyId === companyId ? document : null;

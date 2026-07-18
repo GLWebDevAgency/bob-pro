@@ -690,6 +690,69 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     }
   });
 
+  it('renomme le libellé d’affichage avec révision optimiste, sans toucher au filename d’archive', async () => {
+    const client = makeClient();
+    const before = await client.getDocument('seed-doc-leroy');
+    expect(before.ok).toBe(true);
+    if (!before.ok) return;
+    expect(before.value.displayName).toBe(before.value.filename);
+
+    const renamed = await client.renameDocument({
+      documentId: before.value.id,
+      displayName: 'Reçu Leroy Merlin — 184,90 €',
+      expectedRevision: before.value.revision,
+    });
+    expect(renamed.ok).toBe(true);
+    if (!renamed.ok) return;
+    expect(renamed.value.displayName).toBe('Reçu Leroy Merlin — 184,90 €');
+    expect(renamed.value.filename).toBe(before.value.filename);
+    expect(renamed.value.revision).toBe(before.value.revision + 1);
+
+    // Révision périmée ⇒ conflit (parité serveur), et le libellé courant reste inchangé.
+    const stale = await client.renameDocument({
+      documentId: before.value.id,
+      displayName: 'Autre nom',
+      expectedRevision: before.value.revision,
+    });
+    expect(stale).toMatchObject({ ok: false, error: { kind: 'conflict' } });
+
+    // Libellé identique ⇒ idempotent, aucune révision brûlée.
+    const unchanged = await client.renameDocument({
+      documentId: before.value.id,
+      displayName: 'Reçu Leroy Merlin — 184,90 €',
+      expectedRevision: renamed.value.revision,
+    });
+    expect(unchanged.ok).toBe(true);
+    if (unchanged.ok) expect(unchanged.value.revision).toBe(renamed.value.revision);
+  });
+
+  it('embarque le résumé d’analyse dans la liste après analyzeDocument (parité cache serveur)', async () => {
+    const client = makeClient();
+    const initial = await client.listDocuments();
+    expect(initial.ok).toBe(true);
+    if (!initial.ok) return;
+    const pending = initial.value.find((document) => document.id === 'seed-doc-leroy');
+    // Avant analyse : aucun résumé inventé.
+    expect(pending?.analysis).toBeNull();
+    expect(pending?.extraction).toBeNull();
+
+    const analyzed = await client.analyzeDocument('seed-doc-leroy');
+    expect(analyzed.ok).toBe(true);
+    if (!analyzed.ok) return;
+
+    const enriched = await client.listDocuments();
+    expect(enriched.ok).toBe(true);
+    if (!enriched.ok) return;
+    const item = enriched.value.find((document) => document.id === 'seed-doc-leroy');
+    expect(item?.analysis).toEqual({
+      type: analyzed.value.type,
+      typeConfidence: analyzed.value.typeConfidence,
+      suggestedDisplayName: analyzed.value.suggestedDisplayName,
+      suggestedDestination: analyzed.value.suggestedDestination,
+      requiresHumanReview: analyzed.value.requiresHumanReview,
+    });
+  });
+
   it('crée la dépense, son écriture et le lien document en un geste local rejouable', async () => {
     const client = makeClient();
     const folders = await client.listDocumentFolders({ parentId: null, limit: 100 });

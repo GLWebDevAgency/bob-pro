@@ -44,6 +44,10 @@ export function usesLargeJsonBodyParser(request: IncomingMessage): boolean {
   const method = request.method?.toUpperCase() ?? '';
   const path = requestPath(request);
   if (LARGE_JSON_PAYLOAD_ROUTES.has(`${method} ${path}`)) return true;
+  // Photos de chantier : POST /chantiers/:id/photos transporte l'image en base64 (≤ 10 Mo
+  // décodés ≈ 13,4 Mo dans le JSON). Segment id borné et non vide, méthode et suffixe exacts —
+  // les routes voisines (/notes, /photos/:photoId/…) gardent la petite enveloppe.
+  if (method === 'POST' && /^\/chantiers\/[^/]{1,160}\/photos$/.test(path)) return true;
   // Seule la sortie structurée de l'analyse FEC transite : jamais le FEC brut. La route reste
   // bornée à un PUT exact et à un SIREN canonique, les endpoints voisins gardent 256 ko.
   return method === 'PUT'

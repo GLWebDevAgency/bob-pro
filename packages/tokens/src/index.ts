@@ -271,6 +271,11 @@ export const vault = {
   scanShadow: '0 10px 24px rgba(12,35,64,.2)',
   metricChipBg: '#F6F8FA', // chips Montant / TVA / Date de la carte à valider
   toValidateBorder: '#ECEAFB', // bordure lavande de la carte à valider
+  classifiedBorder: '#CFE6D6', // bandeau vert « {nom} classé · {destination} » (fond = semantic.successBg)
+  readerBorder: '#E2E7EF', // miniature papier de l'overlay « Je lis ton document… »
+  readerLineTitle: '#D9E0E8', // ligne de titre du squelette papier (overlay scan)
+  readerLineBody: '#E6EBF1', // lignes de corps du squelette papier (overlay scan)
+  scanLineGlow: 'rgba(67,56,202,.7)', // glow de la ligne de scan indigo (couleur = semantic.ai)
   thumbTop: '#F1F3F7', // vignette document (dégradé 160°)
   thumbBottom: '#E2E7EF',
   thumbBorder: '#DCE2EA',

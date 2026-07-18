@@ -94,7 +94,7 @@ describe('vaultFolderOf — mapping v1 des 6 dossiers du proto', () => {
 });
 
 describe('deriveVaultView — à valider (OCR non classé)', () => {
-  it('ne retient que les docs OCR sans lien, du plus récent au plus ancien', () => {
+  it('ne retient que les docs OCR sans lien NI dossier, du plus récent au plus ancien', () => {
     const v = deriveVaultView({
       ...EMPTY,
       documents: [
@@ -102,9 +102,22 @@ describe('deriveVaultView — à valider (OCR non classé)', () => {
         doc({ id: 'b', origin: 'ocr', createdAt: '2026-07-02T08:00:00.000Z' }),
         doc({ id: 'c', origin: 'ocr', linkedEntityType: 'expense', linkedEntityId: 'exp-9' }),
         doc({ id: 'd', origin: 'uploaded' }),
+        // Rangé via « Classer là » (dossier système/dossier) SANS lien métier : classé quand même.
+        doc({ id: 'e', origin: 'ocr', folderId: 'folder-insurance' }),
       ],
     });
     expect(v.toValidate.map((p) => p.id)).toEqual(['b', 'a']);
+  });
+
+  it('un folderId null ou absent (projection partielle) reste « à valider »', () => {
+    const v = deriveVaultView({
+      ...EMPTY,
+      documents: [
+        doc({ id: 'explicit-null', origin: 'ocr', folderId: null }),
+        doc({ id: 'absent', origin: 'ocr' }),
+      ],
+    });
+    expect(v.toValidate.map((p) => p.id).sort()).toEqual(['absent', 'explicit-null']);
   });
 
   it('rapproche la dépense dont le fournisseur figure dans le nom de fichier (casse/accents/tirets ignorés)', () => {
@@ -116,6 +129,118 @@ describe('deriveVaultView — à valider (OCR non classé)', () => {
     expect(v.toValidate[0]?.matchedExpense?.supplierName).toBe('Leroy Merlin');
     expect(v.toValidate[0]?.matchedExpense?.id).toBe('exp-1');
     expect(v.toValidate[0]?.matchedExpense?.vatCents).toBe(3082);
+  });
+
+  it('préfère le lien explicite (proofDocumentId) au rapprochement fragile par nom de fichier', () => {
+    const v = deriveVaultView({
+      ...EMPTY,
+      documents: [doc({ id: 'doc-scan', origin: 'ocr', filename: 'recu-leroy-merlin.jpg' })],
+      expenses: [
+        expense({ id: 'e-filename', supplierName: 'Leroy Merlin' }),
+        expense({ id: 'e-explicit', supplierName: 'Cedeo', proofDocumentId: 'doc-scan', totalTtcCents: 4200 }),
+      ],
+    });
+    expect(v.toValidate[0]?.matchedExpense?.id).toBe('e-explicit');
+    expect(v.toValidate[0]?.metrics?.totalTtcCents).toBe(4200);
+  });
+});
+
+describe('deriveVaultView — carte « À valider » enrichie (analyse + extraction réelles)', () => {
+  const analysis = {
+    type: 'supplier_invoice',
+    typeConfidence: 0.93,
+    suggestedDisplayName: 'Facture Leroy Merlin — 184,90 €',
+    suggestedDestination: {
+      kind: 'chantier',
+      chantierId: 'ch-durand',
+      label: 'Rénovation Durand',
+      motif: 'matériel pour le chantier Durand',
+    },
+  } as const;
+
+  it('porte le type réel, le libellé intelligent et la destination validée de l’analyse', () => {
+    const v = deriveVaultView({
+      ...EMPTY,
+      documents: [doc({ id: 'a', origin: 'ocr', filename: 'scan-083012.jpg', analysis })],
+    });
+    const pending = v.toValidate[0];
+    expect(pending).toMatchObject({
+      analysisType: 'supplier_invoice',
+      typeConfidence: 0.93,
+      displayName: 'Facture Leroy Merlin — 184,90 €',
+      suggestedDestination: { kind: 'chantier', chantierId: 'ch-durand', label: 'Rénovation Durand' },
+    });
+  });
+
+  it('chips depuis l’extraction OCR MÊME SANS dépense rapprochée ; la dépense reste prioritaire', () => {
+    const extraction = { supplierName: 'Leroy Merlin', totalTtcCents: 18490, vatCents: 3082, documentDate: '2026-06-27' };
+    const sansDepense = deriveVaultView({
+      ...EMPTY,
+      documents: [doc({ id: 'a', origin: 'ocr', filename: 'scan-083012.jpg', extraction })],
+    });
+    expect(sansDepense.toValidate[0]?.metrics).toEqual({
+      totalTtcCents: 18490,
+      vatCents: 3082,
+      documentDate: '2026-06-27',
+    });
+    expect(sansDepense.toValidate[0]?.displayName).toBe('Leroy Merlin'); // fournisseur réel, pas le filename brut
+
+    const avecDepense = deriveVaultView({
+      ...EMPTY,
+      documents: [doc({ id: 'a', origin: 'ocr', filename: 'recu-leroy-merlin.jpg', extraction })],
+      expenses: [expense({ totalTtcCents: 19990, vatCents: 3332, documentDate: '2026-07-01' })],
+    });
+    expect(avecDepense.toValidate[0]?.metrics).toEqual({
+      totalTtcCents: 19990,
+      vatCents: 3332,
+      documentDate: '2026-07-01',
+    });
+  });
+
+  it('un renommage explicite (displayName ≠ filename) prime sur la suggestion d’analyse', () => {
+    const v = deriveVaultView({
+      ...EMPTY,
+      documents: [
+        doc({ id: 'a', origin: 'ocr', filename: 'scan-083012.jpg', displayName: 'Mon nom choisi', analysis }),
+      ],
+    });
+    expect(v.toValidate[0]?.displayName).toBe('Mon nom choisi');
+  });
+
+  it('sans mieux que le filename : displayName = filename, métriques et destination nulles (rien d’inventé)', () => {
+    const v = deriveVaultView({
+      ...EMPTY,
+      documents: [doc({ id: 'a', origin: 'ocr', filename: 'scan-083012.jpg' })],
+    });
+    expect(v.toValidate[0]).toMatchObject({
+      displayName: 'scan-083012.jpg',
+      analysisType: null,
+      typeConfidence: null,
+      metrics: null,
+      suggestedDestination: null,
+    });
+  });
+
+  it('analyse historique sans destination : fallback déterministe par type ; null explicite respecté', () => {
+    const historique = deriveVaultView({
+      ...EMPTY,
+      documents: [
+        doc({ id: 'a', origin: 'ocr', analysis: { type: 'insurance_certificate', typeConfidence: 0.8 } }),
+      ],
+    });
+    expect(historique.toValidate[0]?.suggestedDestination).toMatchObject({
+      kind: 'system_folder',
+      systemKey: 'insurance',
+      label: 'Assurances',
+    });
+
+    const explicite = deriveVaultView({
+      ...EMPTY,
+      documents: [
+        doc({ id: 'a', origin: 'ocr', analysis: { type: 'company_record', typeConfidence: 0.8, suggestedDestination: null } }),
+      ],
+    });
+    expect(explicite.toValidate[0]?.suggestedDestination).toBeNull();
   });
 });
 
@@ -220,6 +345,14 @@ describe('searchVault — recherche normalisée du coffre', () => {
   it('matche sans casse ni accents, tous les mots requis', () => {
     expect(searchVault(docs, 'RADIATEUR leroy').map((d) => d.id)).toEqual(['a']);
     expect(searchVault(docs, 'releve').map((d) => d.id)).toEqual(['c']);
+  });
+
+  it('matche le titre intelligent (displayName) d’un document renommé, pas seulement le filename', () => {
+    const renamed = [
+      doc({ id: 'r', filename: 'IMG_4521.jpg', displayName: 'Facture Leroy Merlin — juin', createdAt: '2026-07-04T08:00:00.000Z' }),
+    ];
+    expect(searchVault(renamed, 'leroy').map((d) => d.id)).toEqual(['r']);
+    expect(searchVault(renamed, 'img 4521').map((d) => d.id)).toEqual(['r']); // le filename reste indexé
   });
 
   it('matche aussi la clé de dossier (achats, comptable)', () => {

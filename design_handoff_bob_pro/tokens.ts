@@ -113,6 +113,14 @@ export const shadow = {
   e3: '0 18px 36px rgba(12,35,64,.17)',                               // pop (héros, carte flottante) — réf dc.html
 } as const;
 
+/** MOTION — durées nommées du produit (fast/base/content/ambient), reduced-motion coupé. */
+export const motion = {
+  fast: 200,
+  base: 220,
+  content: 360,
+  ambient: 1500,
+} as const;
+
 /** Équivalents RN (shadowColor #0D2644). */
 export const shadowNative = {
   e1: { shadowColor: '#0D2644', shadowOpacity: 0.06, shadowRadius: 16, shadowOffset: { width: 0, height: 6 }, elevation: 3 },
@@ -191,6 +199,11 @@ export const vault = {
   scanShadow: '0 10px 24px rgba(12,35,64,.2)',
   metricChipBg: '#F6F8FA', // chips Montant / TVA / Date de la carte à valider
   toValidateBorder: '#ECEAFB', // bordure lavande de la carte à valider
+  classifiedBorder: '#CFE6D6', // bandeau vert « {nom} classé · {destination} » (fond = semantic.successBg)
+  readerBorder: '#E2E7EF', // miniature papier de l'overlay « Je lis ton document… »
+  readerLineTitle: '#D9E0E8', // ligne de titre du squelette papier (overlay scan)
+  readerLineBody: '#E6EBF1', // lignes de corps du squelette papier (overlay scan)
+  scanLineGlow: 'rgba(67,56,202,.7)', // glow de la ligne de scan indigo (couleur = semantic.ai)
   thumbTop: '#F1F3F7', // vignette document (dégradé 160°)
   thumbBottom: '#E2E7EF',
   thumbBorder: '#DCE2EA',

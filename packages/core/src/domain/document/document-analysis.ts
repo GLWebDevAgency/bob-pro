@@ -1,5 +1,12 @@
 import { type DomainResult, err, ok } from '../../shared-kernel/result';
 import { type DateOnly, type Instant, isValidDateOnly } from '../../shared-kernel/time';
+import { DOCUMENT_DISPLAY_NAME_MAX_LENGTH } from './document';
+import {
+  makeDocumentDestinationSuggestion,
+  type DocumentDestinationContext,
+  type DocumentDestinationSuggestion,
+  type DocumentDestinationSuggestionDraft,
+} from './document-destination';
 import { type DocumentFolderSystemKey } from './document-folder';
 
 /** Taxonomie documentaire transverse. Elle ne déclenche jamais, à elle seule, une écriture comptable. */
@@ -163,6 +170,10 @@ export interface DocumentAnalysisDraft {
   suggestedTags?: readonly unknown[] | null;
   /** Nom sans extension. La valeur est toujours réassainie par le domaine. */
   suggestedFilename?: string | null;
+  /** Libellé professionnel proposé (« Facture Leroy Merlin — 184,90 € »), réassaini par le domaine. */
+  suggestedDisplayName?: string | null;
+  /** Destination proposée (chantier OU dossier système) — validée contre le contexte tenant. */
+  suggestedDestination?: DocumentDestinationSuggestionDraft | null;
   warnings?: readonly unknown[] | null;
 }
 
@@ -177,8 +188,15 @@ export interface DocumentAnalysis {
   suggestedTags: readonly string[];
   /** Nom canonique sans extension. */
   suggestedFilename: string;
+  /** Libellé d'affichage professionnel, jamais vide (fallback humanisé du nom canonique). */
+  suggestedDisplayName: string;
   /** Suggestion déterministe ; null signifie qu'une décision humaine est nécessaire. */
   suggestedSystemFolder: DocumentFolderSystemKey | null;
+  /**
+   * Destination validée (chantier du contexte OU dossier système) — null : décision humaine.
+   * Un document hors chantier (frais généraux, Kbis…) est un résultat de première classe.
+   */
+  suggestedDestination: DocumentDestinationSuggestion | null;
   warnings: readonly string[];
   requiresHumanReview: boolean;
   analyzerVersion: string;
@@ -428,6 +446,30 @@ function normalizeFacts(raw: readonly DocumentFactDraft[] | null | undefined): D
   return [...direct.values()].slice(0, MAX_FACTS);
 }
 
+/**
+ * Libellé d'affichage : proposition du modèle assainie, sinon humanisation déterministe
+ * du nom canonique (kebab → espaces, initiale en capitale). Jamais vide.
+ */
+function normalizeSuggestedDisplayName(suggested: string | null | undefined, canonicalFilename: string): string {
+  const cleaned = cleanText(suggested ?? '', DOCUMENT_DISPLAY_NAME_MAX_LENGTH);
+  if (cleaned.length >= 3) return cleaned;
+  const humanized = canonicalFilename.replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return humanized.charAt(0).toUpperCase() + humanized.slice(1);
+}
+
+/**
+ * Fallback déterministe de destination : le dossier système dérivé du type
+ * (`suggestedSystemFolderFor`), repassé par la validation de contexte. Null = décision humaine.
+ */
+export function fallbackDocumentDestinationFor(
+  type: DocumentAnalysisType,
+  contexte?: DocumentDestinationContext,
+): DocumentDestinationSuggestion | null {
+  const systemKey = suggestedSystemFolderFor(type);
+  if (systemKey === null) return null;
+  return makeDocumentDestinationSuggestion({ kind: 'system_folder', systemKey }, contexte ?? { chantiers: [] });
+}
+
 /** Le dossier système est une politique déterministe du produit, jamais un identifiant inventé par le modèle. */
 export function suggestedSystemFolderFor(type: DocumentAnalysisType): DocumentFolderSystemKey | null {
   switch (type) {
@@ -456,10 +498,15 @@ export function suggestedSystemFolderFor(type: DocumentAnalysisType): DocumentFo
  *
  * Ce value object ne contient volontairement ni écriture, ni dépense, ni commande : l'analyse
  * explique et propose un rangement, tandis que toute mutation reste un use case séparé et confirmé.
+ *
+ * `destinationContext` (optionnel — compat ascendante) : chantiers/dossiers réels du tenant.
+ * Absent, toute suggestion de chantier est rejetée et la destination retombe sur le dossier
+ * système déterministe du type.
  */
 export function makeDocumentAnalysis(
   draft: DocumentAnalysisDraft,
   context: MakeDocumentAnalysisContext,
+  destinationContext?: DocumentDestinationContext,
 ): DomainResult<DocumentAnalysis> {
   if (!context.documentId.trim()) return err({ code: 'VALIDATION', field: 'documentId', message: 'Id document requis.' });
   if (!Number.isSafeInteger(context.documentVersion) || context.documentVersion <= 0) {
@@ -484,6 +531,12 @@ export function makeDocumentAnalysis(
   const warnings = normalizeWarnings(draft.warnings);
   const typeConfidence = confidence(draft.typeConfidence);
   const suggestedSystemFolder = suggestedSystemFolderFor(type);
+  const suggestedFilename = normalizeFilename(draft.suggestedFilename, context.originalFilename, type);
+  // Destination : proposition du modèle validée contre le contexte tenant (anti-hallucination),
+  // sinon fallback déterministe par type. Null = décision humaine, jamais une devinette.
+  const suggestedDestination =
+    makeDocumentDestinationSuggestion(draft.suggestedDestination, destinationContext ?? { chantiers: [] }) ??
+    fallbackDocumentDestinationFor(type, destinationContext);
   const requiresHumanReview =
     type === 'other' ||
     typeConfidence < 0.75 ||
@@ -501,8 +554,10 @@ export function makeDocumentAnalysis(
     summary,
     facts,
     suggestedTags: normalizeTags(draft.suggestedTags, type),
-    suggestedFilename: normalizeFilename(draft.suggestedFilename, context.originalFilename, type),
+    suggestedFilename,
+    suggestedDisplayName: normalizeSuggestedDisplayName(draft.suggestedDisplayName, suggestedFilename),
     suggestedSystemFolder,
+    suggestedDestination,
     warnings,
     requiresHumanReview,
     analyzerVersion,

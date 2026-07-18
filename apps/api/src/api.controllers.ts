@@ -1048,6 +1048,34 @@ function parseUploadDocumentBody(body: Record<string, unknown>): UploadDocumentI
   };
 }
 
+type RenameDocumentBody = {
+  displayName: string;
+  expectedRevision: number;
+};
+
+const DOCUMENT_RENAME_FIELDS = new Set(['displayName', 'expectedRevision']);
+
+/** PUT /documents/:id/name — le domaine (validateDocumentDisplayName) revalide derrière. */
+function parseRenameDocumentBody(body: Record<string, unknown>): RenameDocumentBody {
+  const issues: ValidationIssue[] = [];
+  if (Object.keys(body).some((field) => !DOCUMENT_RENAME_FIELDS.has(field))) {
+    issues.push({ field: 'body', message: 'Le corps contient un champ non autorisé.' });
+  }
+  const displayName = body.displayName;
+  if (typeof displayName !== 'string' || displayName.trim().length === 0 || displayName.length > 512) {
+    issues.push({ field: 'displayName', message: "Nom d'affichage requis." });
+  }
+  const expectedRevision = body.expectedRevision;
+  if (!Number.isSafeInteger(expectedRevision) || (expectedRevision as number) < 1) {
+    issues.push({ field: 'expectedRevision', message: 'Révision document positive attendue.' });
+  }
+  if (issues.length > 0) throwValidationIssues(issues);
+  return {
+    displayName: displayName as string,
+    expectedRevision: expectedRevision as number,
+  };
+}
+
 type ClassifyDocumentBody = {
   linkedEntityType: DocumentLinkedEntityType;
   linkedEntityId: string;
@@ -1741,6 +1769,12 @@ export class DocumentsController {
   ) {
     assertJsonObjectBody(body);
     return unwrap(await this.backend.moveDocumentToFolder({ documentId, ...body }));
+  }
+  /** Renomme le libellé d'affichage (le filename d'archive reste immuable) — RenameDocument @bob/core. */
+  @Put(':id/name')
+  async rename(@Param('id') documentId: string, @Body() body: unknown) {
+    assertJsonObjectBody(body);
+    return unwrap(await this.backend.renameDocument({ documentId, ...parseRenameDocumentBody(body) }));
   }
   @Get(':id/download-url')
   @WithoutTenantPersistenceTransaction()

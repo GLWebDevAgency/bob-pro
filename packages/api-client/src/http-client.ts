@@ -85,6 +85,8 @@ import type {
   FacturXImportDecision,
   FacturXImportOutcome,
   ListDocumentsClientInput,
+  DocumentListItemView,
+  RenameDocumentClientInput,
   UploadDocumentClientInput,
   VoiceConfig,
   VoiceSynthesisResult,
@@ -133,7 +135,7 @@ import {
   decodeDocumentFolderViewForContext,
   decodeDocumentMoveForContext,
   decodeDocumentViewForContext,
-  decodeDocumentViewsForCompany,
+  decodeDocumentListItemsForCompany,
 } from './document-codecs';
 import { decodeExpenseCreation } from './expense-idempotency';
 import { decodeQuoteCreation } from './quote-idempotency';
@@ -1868,13 +1870,31 @@ export class HttpBobClient implements BobClient {
     if (input.includeDeleted !== undefined)
       params.set('includeDeleted', String(input.includeDeleted));
     const qs = params.toString();
-    return this.req<DocumentView[]>(
+    return this.req<DocumentListItemView[]>(
       'GET',
       `/documents${qs ? `?${qs}` : ''}`,
       undefined,
       undefined,
-      (value) => decodeDocumentViewsForCompany(value, this.companyId),
+      (value) => decodeDocumentListItemsForCompany(value, this.companyId),
       DOCUMENT_READ_TIMEOUT_MS,
+    );
+  }
+  /** PUT /documents/:id/name — renomme le libellé d'affichage ; la vue retournée est liée au tenant et à la révision. */
+  renameDocument(input: RenameDocumentClientInput) {
+    const { documentId, ...body } = input;
+    return this.req<DocumentView>(
+      'PUT',
+      `/documents/${encodeURIComponent(documentId)}/name`,
+      body,
+      undefined,
+      (value) =>
+        decodeDocumentViewForContext(value, {
+          companyId: this.companyId,
+          documentId,
+          // Renommage effectif : révision N→N+1 ; libellé inchangé (idempotence) : révision N.
+          allowedRevisions: [input.expectedRevision, input.expectedRevision + 1],
+        }),
+      DOCUMENT_MUTATION_TIMEOUT_MS,
     );
   }
   getDocument(documentId: string) {

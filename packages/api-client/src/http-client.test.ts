@@ -386,6 +386,7 @@ describe('HttpBobClient', () => {
         origin: 'ocr',
         status: 'active',
         filename: 'ticket.jpg',
+        displayName: 'ticket.jpg',
         mimeType: 'image/jpeg',
         byteSize: 123,
         sha256: sha,
@@ -478,6 +479,7 @@ describe('HttpBobClient', () => {
       origin: 'ocr',
       status: 'active',
       filename: 'ticket.jpg',
+      displayName: 'ticket.jpg',
       mimeType: 'image/jpeg',
       byteSize: 123,
       sha256: sha,
@@ -540,6 +542,11 @@ describe('HttpBobClient', () => {
       linkedEntityId: 'expense-1',
       expectedRevision: 1,
     });
+    await client.renameDocument({
+      documentId: rawId,
+      displayName: 'Facture Cedeo — 120,00 €',
+      expectedRevision: 1,
+    });
     await client.documentDownloadUrl(rawId);
 
     expect(urls).toEqual([
@@ -551,6 +558,7 @@ describe('HttpBobClient', () => {
       `https://api.bob.test/documents/${encodedId}/folder`,
       `https://api.bob.test/documents/${encodedId}/analysis`,
       `https://api.bob.test/documents/${encodedId}/classify`,
+      `https://api.bob.test/documents/${encodedId}/name`,
       `https://api.bob.test/documents/${encodedId}/download-url`,
     ]);
     expect(signals).toHaveLength(urls.length);

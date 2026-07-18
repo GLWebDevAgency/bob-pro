@@ -100,3 +100,57 @@ describe('Document', () => {
     expect(r.value.toProps().versions.map((v) => v.version)).toEqual([1, 2]);
   });
 });
+
+describe('Document — displayName (libellé d’affichage, filename immuable)', () => {
+  it('défaut : le libellé reprend le filename ; fourni : il est validé et normalisé', () => {
+    const byDefault = Document.record(props());
+    expect(byDefault.ok && byDefault.value.displayName).toBe('ticket.jpg');
+    expect(byDefault.ok && byDefault.value.toProps().displayName).toBe('ticket.jpg');
+
+    const provided = Document.record(props({ displayName: '  Facture   Leroy Merlin — 184,90 € ' }));
+    expect(provided.ok && provided.value.displayName).toBe('Facture Leroy Merlin — 184,90 €');
+  });
+
+  it('rejette à l’enregistrement un libellé fourni invalide (vide, trop long, contrôle)', () => {
+    expect(Document.record(props({ displayName: '   ' })).ok).toBe(false);
+    expect(Document.record(props({ displayName: 'x'.repeat(121) })).ok).toBe(false);
+    expect(Document.record(props({ displayName: 'nom\u0000interdit' })).ok).toBe(false);
+  });
+
+  it('rename : nouveau libellé + révision incrémentée, filename et versions intacts', () => {
+    const r = Document.record(props());
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+
+    const renamed = r.value.rename('Facture Leroy Merlin');
+    expect(renamed.ok).toBe(true);
+    expect(r.value.displayName).toBe('Facture Leroy Merlin');
+    expect(r.value.revision).toBe(2);
+    expect(r.value.toProps().filename).toBe('ticket.jpg');
+    expect(r.value.toProps().versions).toHaveLength(1);
+  });
+
+  it('rename : idempotent à libellé identique, refuse un libellé invalide ou un doc supprimé', () => {
+    const r = Document.record(props({ displayName: 'Facture Leroy Merlin' }));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+
+    expect(r.value.rename('Facture Leroy Merlin').ok).toBe(true);
+    expect(r.value.revision).toBe(1); // aucune écriture fantôme
+
+    const invalid = r.value.rename('   ');
+    expect(invalid.ok).toBe(false);
+    if (!invalid.ok) expect(invalid.error).toMatchObject({ code: 'VALIDATION', field: 'displayName' });
+
+    expect(r.value.markDeleted('2026-06-02T10:00:00.000Z').ok).toBe(true);
+    const onDeleted = r.value.rename('Autre nom');
+    expect(onDeleted.ok).toBe(false);
+    if (!onDeleted.ok) expect(onDeleted.error.code).toBe('INVALID_TRANSITION');
+  });
+
+  it('réhydrate une ligne historique sans displayName : retombe sur le filename', () => {
+    const historical = Document.rehydrate(props());
+    expect(historical.displayName).toBe('ticket.jpg');
+    expect(historical.toProps().displayName).toBe('ticket.jpg');
+  });
+});

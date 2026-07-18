@@ -119,20 +119,85 @@ describe('InMemoryDocumentAnalysisStore', () => {
     );
   });
 
-  it('fixe le schéma JSON à V1 et rejette explicitement toute version inconnue', async () => {
+  it('fixe le schéma JSON à V2 et rejette explicitement toute autre version à l’écriture', async () => {
     const store = new InMemoryDocumentAnalysisStore();
     const candidate = record();
-    const { analysisSchemaVersion: _, ...legacyWrite } = candidate;
+    const { analysisSchemaVersion: _, ...versionlessWrite } = candidate;
 
-    await expect(store.putIfAbsent(legacyWrite)).resolves.toMatchObject({
+    await expect(store.putIfAbsent(versionlessWrite)).resolves.toMatchObject({
       analysisSchemaVersion: DOCUMENT_ANALYSIS_SCHEMA_VERSION,
     });
     await expect(store.putIfAbsent({
       ...candidate,
-      analysisSchemaVersion: 2,
+      analysisSchemaVersion: 1,
     } satisfies DocumentAnalysisCacheWrite)).rejects.toMatchObject({
       field: 'analysisSchemaVersion',
     });
+  });
+
+  it('revalide une destination chantier persistée contre elle-même (round-trip write/read)', async () => {
+    const store = new InMemoryDocumentAnalysisStore();
+    const analysis = makeDocumentAnalysis(
+      {
+        type: 'supplier_invoice',
+        typeConfidence: 0.97,
+        summary: 'Facture fournisseur Cedeo pour le chantier Durand.',
+        facts: [],
+        suggestedTags: ['cedeo'],
+        suggestedFilename: 'facture-cedeo',
+        suggestedDisplayName: 'Facture Cedeo — 120,00 €',
+        suggestedDestination: {
+          kind: 'chantier',
+          chantierId: 'chantier-1',
+          motif: 'Matériel pour le chantier Durand',
+        },
+        warnings: [],
+      },
+      {
+        documentId: 'doc-1',
+        documentVersion: 1,
+        sourceSha256: SHA,
+        originalFilename: 'facture.pdf',
+        analyzerVersion: 'vision-v1',
+        analyzedAt: ANALYZED_AT,
+      },
+      { chantiers: [{ id: 'chantier-1', nom: 'Rénovation Villa Durand' }] },
+    );
+    if (!analysis.ok) throw new Error('Invalid test fixture');
+
+    await store.putIfAbsent({
+      companyId: 'co-1',
+      documentId: 'doc-1',
+      documentVersion: 1,
+      sourceSha256: SHA,
+      analyzerVersion: 'vision-v1',
+      analysis: analysis.value,
+      analyzedAt: ANALYZED_AT,
+    });
+    await expect(store.findExact({
+      companyId: 'co-1', documentId: 'doc-1', documentVersion: 1, sourceSha256: SHA,
+    })).resolves.toMatchObject({
+      analysis: {
+        suggestedDestination: {
+          kind: 'chantier',
+          chantierId: 'chantier-1',
+          label: 'Rénovation Villa Durand',
+        },
+      },
+    });
+  });
+
+  it('sert la lecture en lot pour l’enrichissement de liste (version + sha exacts)', async () => {
+    const store = new InMemoryDocumentAnalysisStore();
+    await store.putIfAbsent(record({ documentId: 'doc-1', summary: 'Analyse doc 1.' }));
+    await store.putIfAbsent(record({ documentId: 'doc-2', summary: 'Analyse doc 2.' }));
+
+    const records = await store.findManyExact('co-1', [
+      { documentId: 'doc-1', documentVersion: 1, sourceSha256: SHA },
+      { documentId: 'doc-2', documentVersion: 2, sourceSha256: SHA }, // version obsolète ⇒ absent
+      { documentId: 'doc-3', documentVersion: 1, sourceSha256: SHA }, // jamais analysé ⇒ absent
+    ]);
+    expect(records.map((entry) => entry.documentId)).toEqual(['doc-1']);
   });
 });
 
@@ -163,7 +228,31 @@ describe('PrismaDocumentAnalysisStore', () => {
       where: {
         document_analysis_cache_key: {
           companyId: 'co-1', documentId: 'doc-1', documentVersion: 1, sourceSha256: SHA,
+          analysisSchemaVersion: DOCUMENT_ANALYSIS_SCHEMA_VERSION,
         },
+      },
+    });
+  });
+
+  it('ne lit que le contrat courant en lot et saute les lignes corrompues sans casser la liste', async () => {
+    const valid = record({ documentId: 'doc-1', summary: 'Analyse doc 1.' });
+    const corrupted = prismaRow(record({ documentId: 'doc-2', summary: 'Analyse doc 2.' }));
+    corrupted.analysis = { ...corrupted.analysis, analyzerVersion: 'tampered' } as DocumentAnalysis;
+    const findMany = vi.fn(async () => [prismaRow(valid), corrupted]);
+    const store = new PrismaDocumentAnalysisStore({
+      client: () => ({ documentAnalysisCache: { findMany } }),
+    } as unknown as PrismaService);
+
+    const records = await store.findManyExact('co-1', [
+      { documentId: 'doc-1', documentVersion: 1, sourceSha256: SHA },
+      { documentId: 'doc-2', documentVersion: 1, sourceSha256: SHA },
+    ]);
+    expect(records.map((entry) => entry.documentId)).toEqual(['doc-1']);
+    expect(findMany).toHaveBeenCalledWith({
+      where: {
+        companyId: 'co-1',
+        analysisSchemaVersion: DOCUMENT_ANALYSIS_SCHEMA_VERSION,
+        documentId: { in: ['doc-1', 'doc-2'] },
       },
     });
   });
@@ -194,6 +283,7 @@ describe('PrismaDocumentAnalysisStore', () => {
       where: {
         document_analysis_cache_key: {
           companyId: 'co-2', documentId: 'doc-1', documentVersion: 1, sourceSha256: SHA,
+          analysisSchemaVersion: DOCUMENT_ANALYSIS_SCHEMA_VERSION,
         },
       },
     });
@@ -202,7 +292,7 @@ describe('PrismaDocumentAnalysisStore', () => {
   it('échoue fermé à la lecture d’une ligne utilisant un schéma JSON inconnu', async () => {
     const unsupported = {
       ...prismaRow(record()),
-      analysisSchemaVersion: 2,
+      analysisSchemaVersion: 3,
     };
     const store = new PrismaDocumentAnalysisStore({
       client: () => ({

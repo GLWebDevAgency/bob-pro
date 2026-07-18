@@ -792,6 +792,9 @@ model StoredDocument {
   origin               StoredDocumentOrigin
   status               StoredDocumentStatus            @default(active)
   filename             String
+  /** Libellé d'affichage renommable (« Facture Leroy Merlin — 184,90 € »). NULL = lignes
+   * historiques : le domaine retombe sur le filename, aucune valeur n'est rétro-remplie. */
+  displayName          String?
   mimeType             String
   byteSize             Int
   sha256               String                          @db.Char(64)
@@ -822,8 +825,9 @@ model StoredDocument {
 
 /**
  * Cache append-only d'une analyse documentaire validée. La clé inclut le tenant,
- * la version logique et l'empreinte de l'original : un résultat publié n'est jamais
- * remplacé silencieusement par une nouvelle exécution d'analyseur.
+ * la version logique, l'empreinte de l'original ET la version de contrat JSON :
+ * un résultat publié n'est jamais remplacé silencieusement — une évolution du contrat
+ * (analysisSchemaVersion) publie une NOUVELLE ligne, l'historique reste intact.
  */
 model DocumentAnalysisCache {
   companyId             String
@@ -837,7 +841,7 @@ model DocumentAnalysisCache {
   analysis              Json
   analyzedAt            DateTime              @db.Timestamptz(6)
 
-  @@id([companyId, documentId, documentVersion, sourceSha256], name: "document_analysis_cache_key", map: "document_analyses_pkey")
+  @@id([companyId, documentId, documentVersion, sourceSha256, analysisSchemaVersion], name: "document_analysis_cache_key", map: "document_analyses_pkey")
   @@map("document_analyses")
 }
 

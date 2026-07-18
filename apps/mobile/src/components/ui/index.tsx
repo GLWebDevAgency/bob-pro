@@ -87,7 +87,9 @@ export function Card({
 }
 
 // ── Button ────────────────────────────────────────────────────────────
-type ButtonVariant = 'primary' | 'secondary' | 'ai' | 'danger';
+// `aiSolid` = indigo PLEIN du handoff (« Classer dans … ») — aplat semantic.ai, texte blanc ;
+// `ai` reste le fond pâle historique (semantic.aiBg) des actions IA secondaires.
+type ButtonVariant = 'primary' | 'secondary' | 'ai' | 'aiSolid' | 'danger';
 export function Button({
   title,
   onPress,
@@ -127,8 +129,20 @@ export function Button({
       </Pressable>
     );
   }
-  const bg = variant === 'ai' ? semantic.aiBg : variant === 'danger' ? semantic.dangerBg : colors.lineSoft;
-  const fg = variant === 'ai' ? semantic.ai : variant === 'danger' ? semantic.danger : colors.ink800;
+  const bg = variant === 'aiSolid'
+    ? semantic.ai
+    : variant === 'ai'
+      ? semantic.aiBg
+      : variant === 'danger'
+        ? semantic.dangerBg
+        : colors.lineSoft;
+  const fg = variant === 'aiSolid'
+    ? colors.surface
+    : variant === 'ai'
+      ? semantic.ai
+      : variant === 'danger'
+        ? semantic.danger
+        : colors.ink800;
   return (
     <Pressable
       onPress={disabled ? undefined : onPress}
@@ -137,7 +151,7 @@ export function Button({
       accessibilityState={{ disabled: !!disabled, busy: !!loading }}
       style={[base, { backgroundColor: bg }]}
     >
-      {label(fg)}
+      {loading && variant === 'aiSolid' ? <ActivityIndicator color={colors.surface} /> : label(fg)}
     </Pressable>
   );
 }

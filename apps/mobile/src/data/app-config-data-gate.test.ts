@@ -78,10 +78,16 @@ describe('app.config BDD-only gate', () => {
     expect(easConfig).not.toContain('EXPO_PUBLIC_DEMO_MODE');
     expect(easConfig).not.toContain('EXPO_PUBLIC_API_TOKEN');
     for (const profile of ['preview', 'production'] as const) {
+      const env = parsed.build[profile]?.env;
       expect(parsed.build[profile]?.environment).toBe(profile);
-      expect(parsed.build[profile]?.env).not.toHaveProperty('EXPO_PUBLIC_TERMS_URL');
-      expect(parsed.build[profile]?.env).not.toHaveProperty('EXPO_PUBLIC_PRIVACY_URL');
-      expect(parsed.build[profile]?.env?.EXPO_PUBLIC_SUPPORT_EMAIL).toBe('bonjour@bobpro.fr');
+      // Décision 18/07 (build cloud a939c1a8 en échec faute de vars expo.dev) : les URLs légales
+      // sont PUBLIQUES et versionnées dans eas.json — la garde BDD-only d'app.config.ts les exige
+      // à l'évaluation cloud. HTTPS obligatoire, jamais de domaine démo.
+      expect(env?.EXPO_PUBLIC_TERMS_URL).toMatch(/^https:\/\//u);
+      expect(env?.EXPO_PUBLIC_PRIVACY_URL).toMatch(/^https:\/\//u);
+      // Adresse VIVANTE exigée : bonjour@bobpro.fr n'a pas de boîte réelle (domaine non acquis).
+      // À re-trancher au renommage Nico avec un domaine réellement servi.
+      expect(env?.EXPO_PUBLIC_SUPPORT_EMAIL).toBe('ghassenelimame@gmail.com');
     }
   });
 });

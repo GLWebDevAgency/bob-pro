@@ -46,6 +46,17 @@ describe('API JSON ingress policy', () => {
     expect(usesLargeJsonBodyParser(request('post', '/documents/upload/?source=mobile'))).toBe(true);
   });
 
+  it('réserve la grande enveloppe à l’upload de photo de chantier (id dynamique)', () => {
+    expect(usesLargeJsonBodyParser(request('POST', '/chantiers/chantier-123/photos'))).toBe(true);
+    expect(usesDefaultJsonBodyParser(request('POST', '/chantiers/chantier-123/photos'))).toBe(false);
+    expect(usesLargeJsonBodyParser(request('POST', '/chantiers/chantier-123/photos/?src=mobile'))).toBe(true);
+    expect(usesLargeJsonBodyParser(request('GET', '/chantiers/chantier-123/photos'))).toBe(false);
+    expect(usesLargeJsonBodyParser(request('POST', '/chantiers/chantier-123/notes'))).toBe(false);
+    expect(usesLargeJsonBodyParser(request('POST', '/chantiers//photos'))).toBe(false);
+    expect(usesLargeJsonBodyParser(request('POST', '/chantiers/a/b/photos'))).toBe(false);
+    expect(usesLargeJsonBodyParser(request('POST', '/chantiers/chantier-123/photos/evil'))).toBe(false);
+  });
+
   it.each([
     ['POST', '/documents/123/classify'],
     ['GET', '/documents/upload'],

@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   DOCUMENT_ANALYSIS_TYPES,
+  fallbackDocumentDestinationFor,
   makeDocumentAnalysis,
   suggestedSystemFolderFor,
   type DocumentAnalysisDraft,
   type MakeDocumentAnalysisContext,
 } from './document-analysis';
+import { type DocumentDestinationContext } from './document-destination';
 
 const context: MakeDocumentAnalysisContext = {
   documentId: 'doc-1',
@@ -230,5 +232,105 @@ describe('makeDocumentAnalysis', () => {
     expect(result.value.typeConfidence).toBe(0);
     expect(result.value.suggestedSystemFolder).toBeNull();
     expect(result.value.requiresHumanReview).toBe(true);
+  });
+});
+
+describe('makeDocumentAnalysis — libellé d’affichage suggéré', () => {
+  it('assainit la proposition du modèle (espaces, bornage)', () => {
+    const result = makeDocumentAnalysis(
+      { ...bankDraft(), suggestedDisplayName: '  Relevé   bancaire — juillet 2026 ' },
+      context,
+    );
+    expect(result.ok && result.value.suggestedDisplayName).toBe('Relevé bancaire — juillet 2026');
+  });
+
+  it('retombe sur une humanisation du nom canonique quand la proposition est inutilisable', () => {
+    const result = makeDocumentAnalysis({ ...bankDraft(), suggestedDisplayName: ' x ' }, context);
+    expect(result.ok && result.value.suggestedDisplayName).toBe('Releve juillet 2026');
+  });
+});
+
+describe('makeDocumentAnalysis — destination validée (tenant-aware, anti-hallucination)', () => {
+  const destinationContext: DocumentDestinationContext = {
+    chantiers: [{ id: 'ch-durand', nom: 'Rénovation Durand' }],
+  };
+
+  function invoiceDraft(over: Partial<DocumentAnalysisDraft> = {}): DocumentAnalysisDraft {
+    return {
+      type: 'supplier_invoice',
+      typeConfidence: 0.9,
+      summary: 'Facture fournisseur Leroy Merlin.',
+      facts: bankDraft().facts ?? [],
+      ...over,
+    };
+  }
+
+  it('accepte un chantier du contexte : suggestion prête à afficher, hors chantier possible aussi', () => {
+    const result = makeDocumentAnalysis(
+      invoiceDraft({
+        suggestedDestination: { kind: 'chantier', chantierId: 'ch-durand', motif: 'matériel pour le chantier Durand' },
+      }),
+      context,
+      destinationContext,
+    );
+    expect(result.ok && result.value.suggestedDestination).toEqual({
+      kind: 'chantier',
+      chantierId: 'ch-durand',
+      label: 'Rénovation Durand',
+      motif: 'matériel pour le chantier Durand',
+    });
+
+    const horsChantier = makeDocumentAnalysis(
+      invoiceDraft({ suggestedDestination: { kind: 'system_folder', systemKey: 'purchases', motif: 'frais généraux' } }),
+      context,
+      destinationContext,
+    );
+    expect(horsChantier.ok && horsChantier.value.suggestedDestination).toMatchObject({
+      kind: 'system_folder',
+      systemKey: 'purchases',
+      label: 'Achats',
+    });
+  });
+
+  it('rejette un chantier halluciné et retombe sur le dossier système déterministe du type', () => {
+    const result = makeDocumentAnalysis(
+      invoiceDraft({ suggestedDestination: { kind: 'chantier', chantierId: 'ch-invente' } }),
+      context,
+      destinationContext,
+    );
+    expect(result.ok && result.value.suggestedDestination).toMatchObject({
+      kind: 'system_folder',
+      systemKey: 'purchases',
+    });
+  });
+
+  it('compat ascendante : sans contexte, toute suggestion de chantier est rejetée (fallback par type)', () => {
+    const result = makeDocumentAnalysis(
+      invoiceDraft({ suggestedDestination: { kind: 'chantier', chantierId: 'ch-durand' } }),
+      context,
+    );
+    expect(result.ok && result.value.suggestedDestination).toMatchObject({
+      kind: 'system_folder',
+      systemKey: 'purchases',
+    });
+  });
+
+  it('un type sans dossier système reste sans destination : décision humaine, jamais une devinette', () => {
+    const result = makeDocumentAnalysis(
+      { type: 'company_record', typeConfidence: 0.9, summary: 'Extrait Kbis de la société.' },
+      context,
+      destinationContext,
+    );
+    expect(result.ok && result.value.suggestedDestination).toBeNull();
+  });
+});
+
+describe('fallbackDocumentDestinationFor', () => {
+  it('suit suggestedSystemFolderFor et respecte la liste de clés autorisées', () => {
+    expect(fallbackDocumentDestinationFor('receipt')).toMatchObject({ kind: 'system_folder', systemKey: 'purchases' });
+    expect(fallbackDocumentDestinationFor('other')).toBeNull();
+    expect(
+      fallbackDocumentDestinationFor('bank_statement', { chantiers: [], systemKeys: ['purchases'] }),
+    ).toBeNull();
   });
 });

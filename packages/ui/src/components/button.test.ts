@@ -45,6 +45,17 @@ describe('resolveButtonAppearance', () => {
     expect(a.gradient).toBe(false);
   });
 
+  it('IA plein (handoff « Classer là ») → aplat semantic.ai garanti + texte surface', () => {
+    const a = resolveButtonAppearance('aiSolid', false, palette);
+    expect(a).toEqual({
+      gradient: false,
+      backgroundColor: semantic.ai,
+      borderColor: 'transparent',
+      borderWidth: 0,
+      textColor: neutrals.surface,
+    });
+  });
+
   it('danger léger → transparent + bord et texte danger', () => {
     const a = resolveButtonAppearance('danger', false, palette);
     expect(a.backgroundColor).toBe('transparent');
@@ -54,7 +65,7 @@ describe('resolveButtonAppearance', () => {
   });
 
   it('désactivé → piste segmentedTrack + texte slate300, quelle que soit la variante', () => {
-    for (const variant of ['primary', 'secondary', 'ai', 'danger'] as const) {
+    for (const variant of ['primary', 'secondary', 'ai', 'aiSolid', 'danger'] as const) {
       const a = resolveButtonAppearance(variant, true, palette);
       expect(a.gradient).toBe(false);
       expect(a.backgroundColor).toBe(controls.segmentedTrack);

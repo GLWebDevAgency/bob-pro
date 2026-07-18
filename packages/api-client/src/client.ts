@@ -45,6 +45,7 @@ import type {
   CompanyLookupResult,
   VatCheckResult,
   AddressSuggestion,
+  DateOnly,
   DocumentKind,
   DocumentLinkedEntityType,
   DocumentView,
@@ -52,6 +53,8 @@ import type {
   DocumentFolderView,
   DeleteDocumentFolderStrategy,
   DocumentAnalysis,
+  DocumentAnalysisType,
+  DocumentDestinationSuggestion,
   SubscriptionInfo,
   FiscalProfileView,
   SearchSalesDocumentsInput,
@@ -199,6 +202,42 @@ export interface ListDocumentsClientInput {
   linkedEntityId?: string;
   folderId?: string | null;
   includeDeleted?: boolean;
+}
+
+/**
+ * Résumé d'analyse embarqué par GET /documents — issu du SEUL cache persistant serveur
+ * (jamais d'appel LLM à la lecture). `null` = pas encore analysé pour cette version de
+ * l'original ; l'écran ne re-poste plus /analysis en boucle sur la liste.
+ */
+export interface DocumentAnalysisSummaryView {
+  type: DocumentAnalysisType;
+  typeConfidence: number;
+  /** Libellé professionnel (« Facture Leroy Merlin — 184,90 € »), jamais vide. */
+  suggestedDisplayName: string;
+  /** Destination validée côté serveur (chantier réel OU dossier système) — null : décision humaine. */
+  suggestedDestination: DocumentDestinationSuggestion | null;
+  requiresHumanReview: boolean;
+}
+
+/** Chips Montant/TVA/Date de l'écran Documents, projetées depuis les faits PROUVÉS de l'analyse. */
+export interface DocumentExtractionSummaryView {
+  supplierName: string | null;
+  totalTtcCents: number;
+  vatCents: number | null;
+  documentDate: DateOnly | null;
+}
+
+/** Item de GET /documents : la vue document + les résumés persistés (structurellement assignable à VaultDocumentData @bob/core). */
+export type DocumentListItemView = DocumentView & {
+  analysis: DocumentAnalysisSummaryView | null;
+  extraction: DocumentExtractionSummaryView | null;
+};
+
+export interface RenameDocumentClientInput {
+  documentId: string;
+  /** Nouveau libellé d'affichage — le filename d'archive reste immuable. */
+  displayName: string;
+  expectedRevision: number;
 }
 
 export interface UploadDocumentClientInput {
@@ -829,8 +868,12 @@ export interface BobClient {
     input: RealtimeVoiceSpeechCancellationInput,
     signal?: AbortSignal,
   ): Promise<Result<void, AppError>>;
-  listDocuments(input?: ListDocumentsClientInput): Promise<Result<DocumentView[], AppError>>;
+  listDocuments(
+    input?: ListDocumentsClientInput,
+  ): Promise<Result<DocumentListItemView[], AppError>>;
   getDocument(documentId: string): Promise<Result<DocumentView, AppError>>;
+  /** PUT /documents/:id/name — renomme le libellé d'affichage (RenameDocument @bob/core, parité humain↔Bob). */
+  renameDocument(input: RenameDocumentClientInput): Promise<Result<DocumentView, AppError>>;
   uploadDocument(input: UploadDocumentClientInput): Promise<Result<DocumentView, AppError>>;
   /** Archive l'original avant toute analyse ; idempotent sur `idempotencyKey`. */
   createDocumentIntake(

@@ -238,6 +238,42 @@ describe('i18n — C14 docs.*', () => {
     expect(t('docs.open')).toBe('Ouvrir');
   });
 
+  it('badge type réel, « Je pense : … » et bandeau classé (design handoff, 3 humeurs)', () => {
+    expect(t('docs.typeReceipt')).toBe('Ticket de caisse');
+    expect(t('docs.typeReceipt', { personality: 'direct' })).toBe('Ticket');
+    expect(t('docs.typeInsurance', { personality: 'pro' })).toBe('Attestation d’assurance');
+    expect(t('docs.typeUnknown', { personality: 'pro' })).toBe('Analyse en attente');
+    expect(t('docs.aiGuess')).toBe('Je pense : ');
+    expect(t('docs.aiGuess', { personality: 'pro' })).toBe('Je suggère : ');
+    expect(
+      t('docs.classifiedBanner', {
+        params: { name: 'Facture Leroy Merlin — 184,90 €', destination: 'Chantier Durand' },
+      }),
+    ).toBe('Facture Leroy Merlin — 184,90 € classé · Chantier Durand');
+    expect(
+      t('docs.classifiedBanner', {
+        personality: 'direct',
+        params: { name: 'Kbis', destination: 'Fiscal & social' },
+      }),
+    ).toBe('Kbis → Fiscal & social.');
+    expect(t('docs.pickFolderMeta', { personality: 'direct' })).toBe('Dossier');
+  });
+
+  it('overlay scan : lecture, résultat et destination suggérée (3 humeurs)', () => {
+    expect(t('scan.reading')).toBe('Je lis ton document…');
+    expect(t('scan.reading', { personality: 'pro' })).toBe('Lecture du document en cours…');
+    expect(t('scan.readDone')).toBe('Document lu');
+    expect(t('scan.classifyInto', { params: { label: 'Chantier Durand' } })).toBe(
+      'Classer dans Chantier Durand',
+    );
+    expect(t('scan.classifyInto', { personality: 'direct', params: { label: 'Achats' } })).toBe(
+      '→ Achats',
+    );
+    expect(t('scan.chooseOtherFolder', { personality: 'direct' })).toBe('Autre dossier');
+    expect(t('scan.attachedTo')).toBe('Rattaché à');
+    expect(t('scan.destinationError', { personality: 'pro' })).toContain('À classer');
+  });
+
   it('sous-titres factures récentes par canal (proto : PDP / e-reporting / Chorus)', () => {
     expect(t('docs.recentSubB2b', { params: { kind: 'Acompte' } })).toBe('Acompte · B2B → PDP');
     expect(t('docs.recentSubB2c')).toBe('Particulier · B2C → e-reporting');

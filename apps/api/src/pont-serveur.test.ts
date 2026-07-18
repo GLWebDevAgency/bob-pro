@@ -2081,6 +2081,133 @@ describe('PONT-SERVEUR — coffre documentaire original-first et suppression sû
     });
   });
 
+  it('transmet le contexte de classement, rejette un chantier halluciné, enrichit la liste et renomme', async () => {
+    const analyzeDocument = vi.fn<DocumentIntelligencePort['analyzeDocument']>(async () => ({
+      ok: true,
+      value: {
+        analyzerVersion: 'document-test-v2',
+        analysis: {
+          type: 'supplier_invoice',
+          typeConfidence: 0.97,
+          summary: 'Facture fournisseur Cedeo de 184,90 € TTC.',
+          facts: [
+            {
+              key: 'supplier_name',
+              valueType: 'text',
+              value: 'Cedeo',
+              confidence: 0.99,
+              provenance: {
+                source: 'document_text',
+                evidence: [{ page: 1, excerpt: 'CEDEO', boundingBox: null }],
+              },
+            },
+            {
+              key: 'total_ttc',
+              valueType: 'money',
+              value: { amountMinor: 18_490, currency: 'EUR' },
+              confidence: 0.98,
+              provenance: {
+                source: 'document_text',
+                evidence: [{ page: 1, excerpt: 'Total TTC 184,90 €', boundingBox: null }],
+              },
+            },
+            {
+              key: 'vat_amount',
+              valueType: 'money',
+              value: { amountMinor: 3_082, currency: 'EUR' },
+              confidence: 0.98,
+              provenance: {
+                source: 'document_text',
+                evidence: [{ page: 1, excerpt: 'TVA 30,82 €', boundingBox: null }],
+              },
+            },
+            {
+              key: 'document_date',
+              valueType: 'date',
+              value: '2026-06-27',
+              confidence: 0.97,
+              provenance: {
+                source: 'document_text',
+                evidence: [{ page: 1, excerpt: '27/06/2026', boundingBox: null }],
+              },
+            },
+          ],
+          suggestedTags: ['achat'],
+          suggestedFilename: '2026-06-27-cedeo-184eur',
+          suggestedDisplayName: 'Facture Cedeo — 184,90 €',
+          // Id INVENTÉ par le modèle : absent du contexte tenant ⇒ rejet anti-hallucination.
+          suggestedDestination: { kind: 'chantier', chantierId: 'chantier-invente', motif: 'Chantier deviné' },
+          warnings: [],
+        },
+      },
+    }));
+    const { service, p } = makeService({ documentIntelligence: { analyzeDocument } });
+    await p.seed();
+
+    await asPrincipal(MERCIER, async () => {
+      const archived = await service.createDocumentIntake({
+        contentBase64: '/9j/2Q==',
+        mimeType: 'image/jpeg',
+        filename: 'facture-cedeo.jpg',
+        idempotencyKey: 'scan-classement-contexte-0001',
+      });
+      expect(archived.ok).toBe(true);
+      if (!archived.ok) return;
+
+      const analysis = await service.analyzeStoredDocument(archived.value.id);
+      expect(analysis.ok).toBe(true);
+      if (!analysis.ok) return;
+      // Le moteur a bien reçu le contexte tenant (chantiers ouverts + dossiers du coffre).
+      expect(analyzeDocument.mock.calls[0]?.[0]?.classificationContext).toMatchObject({
+        chantiersOuverts: expect.any(Array),
+        dossiers: expect.any(Array),
+      });
+      expect(analysis.value.suggestedDisplayName).toBe('Facture Cedeo — 184,90 €');
+      // Chantier halluciné rejeté ⇒ fallback déterministe sur le dossier système du type.
+      expect(analysis.value.suggestedDestination).toMatchObject({
+        kind: 'system_folder',
+        systemKey: 'purchases',
+      });
+
+      // GET /documents embarque le résumé persisté SANS nouvel appel LLM ni N+1.
+      const listed = await service.listDocuments();
+      expect(listed.ok).toBe(true);
+      if (!listed.ok) return;
+      const item = listed.value.find((document) => document.id === archived.value.id);
+      expect(item?.analysis).toMatchObject({
+        type: 'supplier_invoice',
+        suggestedDisplayName: 'Facture Cedeo — 184,90 €',
+        requiresHumanReview: false,
+      });
+      expect(item?.extraction).toEqual({
+        supplierName: 'Cedeo',
+        totalTtcCents: 18_490,
+        vatCents: 3_082,
+        documentDate: '2026-06-27',
+      });
+      expect(analyzeDocument).toHaveBeenCalledTimes(1);
+
+      // Renommage : libellé d'affichage seul, filename d'archive immuable, révision optimiste.
+      const renamed = await service.renameDocument({
+        documentId: archived.value.id,
+        displayName: 'Facture Cedeo — 184,90 €',
+        expectedRevision: item?.revision ?? archived.value.revision,
+      });
+      expect(renamed.ok).toBe(true);
+      if (!renamed.ok) return;
+      expect(renamed.value.displayName).toBe('Facture Cedeo — 184,90 €');
+      expect(renamed.value.filename).toBe('facture-cedeo.jpg');
+      expect(renamed.value.revision).toBe((item?.revision ?? 1) + 1);
+
+      const stale = await service.renameDocument({
+        documentId: archived.value.id,
+        displayName: 'Autre libellé',
+        expectedRevision: item?.revision ?? 1,
+      });
+      expect(stale).toMatchObject({ ok: false, error: { kind: 'conflict' } });
+    });
+  });
+
   it('archive idempotemment, transfère via un plan opaque puis refuse son rejeu', async () => {
     const { service, p } = makeService();
     await p.seed();

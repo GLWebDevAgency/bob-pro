@@ -397,6 +397,7 @@ interface DocumentRow {
   origin: string;
   status: string;
   filename: string;
+  displayName: string | null;
   mimeType: string;
   byteSize: number;
   sha256: string;
@@ -423,6 +424,7 @@ function documentRowToProps(row: DocumentRow): DocumentProps {
     origin: row.origin as DocumentProps['origin'],
     status: row.status as DocumentProps['status'],
     filename: row.filename,
+    displayName: row.displayName,
     mimeType: row.mimeType,
     byteSize: row.byteSize,
     sha256: row.sha256,
@@ -459,6 +461,7 @@ function documentPropsToData(p: DocumentProps) {
     origin: p.origin,
     status: p.status,
     filename: p.filename,
+    displayName: p.displayName ?? null,
     mimeType: p.mimeType,
     byteSize: p.byteSize,
     sha256: p.sha256,
@@ -525,6 +528,32 @@ export class PrismaDocumentRepository implements DocumentRepository {
       data: {
         linkedEntityType: input.linkedEntityType,
         linkedEntityId: input.linkedEntityId,
+        revision: { increment: 1 },
+      },
+    });
+    if (updated.count === 1) return 'saved';
+    const exists = await this.prisma.client().storedDocument.findFirst({
+      where: { id: input.documentId, companyId: input.companyId, status: 'active' },
+      select: { id: true },
+    });
+    return exists ? 'revision_conflict' : 'not_found';
+  }
+  /** Renommage du libellé d'affichage, protégé par révision optimiste (même contrat que classify). */
+  async rename(input: {
+    companyId: string;
+    documentId: string;
+    displayName: string;
+    expectedRevision: number;
+  }): Promise<'saved' | 'revision_conflict' | 'not_found'> {
+    const updated = await this.prisma.client().storedDocument.updateMany({
+      where: {
+        id: input.documentId,
+        companyId: input.companyId,
+        status: 'active',
+        revision: input.expectedRevision,
+      },
+      data: {
+        displayName: input.displayName,
         revision: { increment: 1 },
       },
     });

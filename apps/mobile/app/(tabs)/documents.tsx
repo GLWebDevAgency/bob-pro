@@ -26,12 +26,15 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Feather } from '@expo/vector-icons';
 import {
   deriveVaultView,
+  documentSystemFolderLabel,
   formatEUR,
   formatEURWhole,
   searchVault,
   summarizeExpenses,
   validateDocumentFolderName,
+  type DocumentFolderSystemKey,
   type VaultDocumentData,
+  type VaultExpenseData,
   type VaultFolderKey,
   type VaultPendingDoc,
   type VaultRecentInvoice,
@@ -48,6 +51,7 @@ import {
   FadeIn,
   IconTile,
   InnerScreenHeader,
+  PressableScale,
   Sheet,
   Skeleton,
   SkeletonCard,
@@ -57,6 +61,12 @@ import {
   parseGradient,
   useTheme,
 } from '@bob/ui';
+import {
+  analysisTypeLabelKey,
+  destinationSuggestionSegments,
+  formatDayMonth,
+  suggestedRenameFor,
+} from '../../src/documents/pending-card-copy';
 import { useBobClient } from '../../src/data/client';
 import { shareFec } from '../../src/lib/share-fec';
 import { useChantiers, useCustomers, useExpenses, useExportFec, useInvoices } from '../../src/data/hooks';
@@ -101,6 +111,11 @@ function todayISO(d: Date = new Date()): string {
 function formatDate(iso: string): string {
   const [y, m, d] = iso.slice(0, 10).split('-');
   return d && m && y ? `${d}/${m}/${y}` : iso.slice(0, 10);
+}
+
+/** Titre intelligent d'une row du coffre — jamais un nom de fichier brut quand un displayName existe. */
+function vaultDocTitle(docItem: VaultDocumentData): string {
+  return docItem.displayName?.trim() || docItem.filename;
 }
 
 /** « il y a 2 min » / « il y a 3 h » / date — copy docs.ago* (voix de Bob). */
@@ -153,7 +168,30 @@ function DocThumb() {
   );
 }
 
-/** Carte « À valider » — doc OCR non classé, métriques réelles du rapprochement dépense. */
+/** Chip métrique (fond #F6F8FA radius 9) — libellé gris + valeur 700, teinte injectée. */
+function MetricChip({ label, value, valueColor, tabular }: {
+  label: string;
+  value: string;
+  valueColor: string;
+  tabular?: boolean;
+}) {
+  const { colors } = useTheme();
+  return (
+    <View style={{ backgroundColor: vault.metricChipBg, borderRadius: 9, paddingVertical: 7, paddingHorizontal: 10, flexDirection: 'row' }}>
+      <Text style={{ ...font('meta', 500), fontSize: 12.5, color: colors.slate400 }}>{label}</Text>
+      <Text style={{ ...font('meta', 700), fontSize: 12.5, color: valueColor, ...(tabular ? { fontVariant: ['tabular-nums'] as const } : {}) }}>
+        {value}
+      </Text>
+    </View>
+  );
+}
+
+/**
+ * Carte « À valider » (handoff §isDocs) — alimentée par les VRAIES données de GET /documents :
+ * badge = type analysé (uppercase violet) · titre = displayName intelligent · chips depuis
+ * l'extraction même sans dépense rapprochée · « Je pense : … » = destination VALIDÉE côté
+ * domaine (chantier nominatif OU dossier hors chantier — jamais un chantier forcé).
+ */
 function PendingCard({
   doc,
   onOpen,
@@ -163,13 +201,19 @@ function PendingCard({
 }: {
   doc: VaultPendingDoc;
   onOpen: () => void;
-  onClassify: (expenseId: string) => void;
-  /** A8 : ouvre le choix d'une AUTRE destination (chantiers…) — le 1-tap IA reste premier. */
+  /** 1-tap « Classer là » : applique la destination suggérée (parent = même use case que Bob). */
+  onClassify: () => void;
+  /** A8 : ouvre le choix d'une AUTRE destination (chantiers + dossiers hors chantier). */
   onPickTarget: () => void;
   classifying: boolean;
 }) {
   const { personality, colors, semantic } = useTheme();
-  const exp = doc.matchedExpense;
+  const metrics = doc.metrics;
+  const suggestion = doc.suggestedDestination;
+  const oneTap = suggestion !== null || doc.matchedExpense !== null;
+  const guessSegments = suggestion
+    ? destinationSuggestionSegments(suggestion.motif, suggestion.label)
+    : null;
   return (
     <View
       style={{
@@ -181,13 +225,19 @@ function PendingCard({
         ...shadowComponentsNative.priorityCard,
       }}
     >
-      <View style={{ flexDirection: 'row', gap: 13 }}>
+      {/* Vignette + identité — la rangée ouvre l'original (l'affordance « Ouvrir » demeure). */}
+      <PressableScale
+        accessibilityRole="button"
+        accessibilityLabel={`${t('docs.open', { personality })} — ${doc.displayName}`}
+        onPress={onOpen}
+        style={{ flexDirection: 'row', gap: 13 }}
+      >
         <DocThumb />
         <View style={{ flex: 1, minWidth: 0 }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, marginBottom: 2 }}>
             <View style={{ backgroundColor: semantic.aiBg, borderRadius: 5, paddingVertical: 2, paddingHorizontal: 6 }}>
               <Text style={{ ...font('label', 700), fontSize: 10, color: vault.aiDeep }}>
-                {t('docs.badgeSupplierInvoice', { personality }).toUpperCase()}
+                {t(analysisTypeLabelKey(doc.analysisType), { personality }).toUpperCase()}
               </Text>
             </View>
             <Text style={{ ...font('meta', 500), fontSize: 11, color: colors.slate300 }}>
@@ -195,101 +245,141 @@ function PendingCard({
             </Text>
           </View>
           <Text style={[font('cardTitle'), { color: colors.ink800 }]} numberOfLines={1}>
-            {exp?.supplierName ?? doc.filename}
+            {doc.displayName}
           </Text>
         </View>
-      </View>
+      </PressableScale>
 
-      {exp ? (
-        <>
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginVertical: 13 }}>
-            <View style={{ backgroundColor: vault.metricChipBg, borderRadius: 9, paddingVertical: 7, paddingHorizontal: 10, flexDirection: 'row' }}>
-              <Text style={{ ...font('meta', 500), fontSize: 12.5, color: colors.slate400 }}>
-                {t('docs.metricAmount', { personality })}
-              </Text>
-              <Text style={{ ...font('meta', 700), fontSize: 12.5, color: colors.ink800, fontVariant: ['tabular-nums'] }}>
-                {formatEUR(exp.totalTtcCents)}
-              </Text>
-            </View>
-            {exp.vatCents !== null ? (
-              <View style={{ backgroundColor: vault.metricChipBg, borderRadius: 9, paddingVertical: 7, paddingHorizontal: 10, flexDirection: 'row' }}>
-                <Text style={{ ...font('meta', 500), fontSize: 12.5, color: colors.slate400 }}>
-                  {t('docs.metricVat', { personality })}
-                </Text>
-                <Text style={{ ...font('meta', 700), fontSize: 12.5, color: semantic.success, fontVariant: ['tabular-nums'] }}>
-                  {formatEUR(exp.vatCents)}
-                </Text>
-              </View>
-            ) : null}
-            <View style={{ backgroundColor: vault.metricChipBg, borderRadius: 9, paddingVertical: 7, paddingHorizontal: 10, flexDirection: 'row' }}>
-              <Text style={{ ...font('meta', 500), fontSize: 12.5, color: colors.slate400 }}>
-                {t('docs.metricDate', { personality })}
-              </Text>
-              <Text style={{ ...font('meta', 700), fontSize: 12.5, color: colors.ink800 }}>
-                {formatDate(exp.documentDate)}
-              </Text>
-            </View>
-          </View>
-          <View
-            style={{
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: 7,
-              backgroundColor: conformityCard.bgTop,
-              borderRadius: 11,
-              paddingVertical: 9,
-              paddingHorizontal: 12,
-              marginBottom: 13,
-            }}
-          >
-            <SparkSmallIcon color={semantic.b2g} />
-            <Text style={{ ...font('meta', 600), fontSize: 12.5, color: semantic.b2g, flex: 1 }}>
-              {t('docs.aiGuessExpense', { personality, params: { supplier: exp.supplierName } })}
-            </Text>
-          </View>
-        </>
-      ) : (
-        <View style={{ height: 13 }} />
-      )}
+      {/* Chips Montant / TVA récup. / Date — extraction OCR réelle même sans dépense liée. */}
+      {metrics ? (
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 13 }}>
+          <MetricChip
+            label={t('docs.metricAmount', { personality })}
+            value={formatEUR(metrics.totalTtcCents)}
+            valueColor={colors.ink800}
+            tabular
+          />
+          {metrics.vatCents !== null ? (
+            <MetricChip
+              label={t('docs.metricVat', { personality })}
+              value={formatEUR(metrics.vatCents)}
+              valueColor={semantic.success}
+              tabular
+            />
+          ) : null}
+          {metrics.documentDate !== null ? (
+            <MetricChip
+              label={t('docs.metricDate', { personality })}
+              value={formatDayMonth(metrics.documentDate)}
+              valueColor={colors.ink800}
+            />
+          ) : null}
+        </View>
+      ) : null}
 
-      <View style={{ flexDirection: 'row', gap: 9 }}>
-        {exp ? (
+      {/* « Je pense : … » — cible validée en gras ; repli honnête : dépense rapprochée. */}
+      {guessSegments && guessSegments.length > 0 ? (
+        <View
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 7,
+            backgroundColor: conformityCard.bgTop,
+            borderRadius: 11,
+            paddingVertical: 9,
+            paddingHorizontal: 12,
+            marginTop: 13,
+          }}
+        >
+          <SparkSmallIcon color={semantic.ai} />
+          <Text style={{ ...font('meta', 600), fontSize: 12.5, color: semantic.ai, flex: 1 }}>
+            {t('docs.aiGuess', { personality })}
+            {guessSegments.map((segment, i) => (
+              <Text
+                key={`${i}-${segment.text}`}
+                style={{ ...font('meta', segment.bold ? 700 : 600), fontSize: 12.5, color: semantic.ai }}
+              >
+                {segment.text}
+              </Text>
+            ))}
+          </Text>
+        </View>
+      ) : doc.matchedExpense ? (
+        <View
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 7,
+            backgroundColor: conformityCard.bgTop,
+            borderRadius: 11,
+            paddingVertical: 9,
+            paddingHorizontal: 12,
+            marginTop: 13,
+          }}
+        >
+          <SparkSmallIcon color={semantic.ai} />
+          <Text style={{ ...font('meta', 600), fontSize: 12.5, color: semantic.ai, flex: 1 }}>
+            {t('docs.aiGuessExpense', { personality, params: { supplier: doc.matchedExpense.supplierName } })}
+          </Text>
+        </View>
+      ) : null}
+
+      {/* « Classer là » PLEIN indigo (aiSolid) + « Autre dossier » blanc bordé (handoff). */}
+      <View style={{ flexDirection: 'row', gap: 9, marginTop: 13 }}>
+        {oneTap ? (
           <Button
             title={t('docs.classify', { personality })}
-            variant="ai"
+            variant="aiSolid"
             size="compact"
             radius={12}
             loading={classifying}
             style={{ flex: 1 }}
-            onPress={() => onClassify(exp.id)}
-            accessibilityLabel={`${t('docs.classify', { personality })} — ${exp.supplierName}`}
+            onPress={onClassify}
+            accessibilityLabel={`${t('docs.classify', { personality })} — ${doc.displayName}`}
           />
         ) : null}
         <Button
-          title={t('docs.open', { personality })}
+          title={t('docs.otherFolder', { personality })}
           variant="secondary"
           size="compact"
           radius={12}
-          {...(exp ? {} : { style: { alignSelf: 'flex-start' } })}
-          onPress={onOpen}
-          accessibilityLabel={`${t('docs.open', { personality })} — ${doc.filename}`}
+          {...(oneTap ? {} : { style: { flex: 1 } })}
+          onPress={onPickTarget}
+          accessibilityLabel={`${t('docs.otherFolder', { personality })} — ${doc.displayName}`}
         />
       </View>
-
-      {/* A8 : autre destination (chantier…) — lien discret, la proposition IA reste le 1-tap. */}
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={t('docs.pickOther', { personality })}
-        onPress={onPickTarget}
-        hitSlop={6}
-        style={{ alignSelf: 'flex-start', minHeight: 44, justifyContent: 'center', marginTop: 2 }}
-      >
-        <Text style={{ ...font('meta', 600), fontSize: 12.5, color: semantic.b2b }}>
-          {t('docs.pickOther', { personality })}
-        </Text>
-      </Pressable>
     </View>
   );
+}
+
+/** Destination d'un classement — chaque variante porte le libellé prêt pour le bandeau vert. */
+type ClassifyTarget =
+  | { kind: 'chantier'; chantierId: string; label: string }
+  | { kind: 'system_folder'; systemKey: DocumentFolderSystemKey; label: string }
+  | { kind: 'expense'; expenseId: string; label: string }
+  | { kind: 'folder'; folderId: string; label: string };
+
+/**
+ * Cible du « Classer là » : la destination validée par le domaine prime ; la dépense
+ * rapprochée reprend la main quand la destination est « Achats » (le lien de preuve
+ * dépense↔document est plus riche qu'un simple rangement) ou qu'aucune n'existe.
+ */
+function oneTapTargetFor(doc: VaultPendingDoc): ClassifyTarget | null {
+  const destination = doc.suggestedDestination;
+  if (
+    doc.matchedExpense
+    && (destination === null || (destination.kind === 'system_folder' && destination.systemKey === 'purchases'))
+  ) {
+    return {
+      kind: 'expense',
+      expenseId: doc.matchedExpense.id,
+      label: destination?.label ?? documentSystemFolderLabel('purchases'),
+    };
+  }
+  if (destination === null) return null;
+  return destination.kind === 'chantier'
+    ? { kind: 'chantier', chantierId: destination.chantierId, label: destination.label }
+    : { kind: 'system_folder', systemKey: destination.systemKey, label: destination.label };
 }
 
 export default function Documents() {
@@ -308,6 +398,8 @@ export default function Documents() {
 
   const [query, setQuery] = useState('');
   const [toast, setToast] = useState<string | null>(null);
+  // Bandeau vert « {nom} classé · {destination} » (handoff, état classé) — FadeIn à chaque clé.
+  const [classifiedBanner, setClassifiedBanner] = useState<{ key: number; text: string } | null>(null);
   // A8 : doc en cours de classement manuel (Sheet des destinations réelles).
   const [pickerDoc, setPickerDoc] = useState<VaultPendingDoc | null>(null);
   const [rootFolderEditorOpen, setRootFolderEditorOpen] = useState(false);
@@ -334,7 +426,8 @@ export default function Documents() {
           ? documents.data.slice(0, 12).map((d) => ({
               type: 'document' as const,
               id: d.id,
-              label: d.filename,
+              // Parité humain↔Bob : l'agent voit le même libellé intelligent que l'écran.
+              label: d.displayName || d.filename,
             }))
           : [],
         capabilities: contextReady ? ['screen.read', 'document.read'] : [],
@@ -344,47 +437,81 @@ export default function Documents() {
   );
   usePublishAgentContext(agentContext);
 
-  // « Classer là » (A1-C14) + picker de cible (A8) : confirme le classement — même use
-  // case que Bob (classifyDocument), la cible peut être la dépense proposée OU un chantier.
+  // « Classer là » (A1-C14) + picker de cible (A8) : confirme le classement — mêmes use
+  // cases que Bob (MoveDocumentToFolder / ClassifyDocument / RenameDocument). La cible peut
+  // être la destination suggérée (chantier OU dossier hors chantier), la dépense rapprochée,
+  // un chantier ouvert ou un dossier du coffre choisi à la main.
   const classify = useMutation({
     mutationFn: async (input: {
       documentId: string;
-      linkedEntityType: 'expense' | 'chantier';
-      linkedEntityId: string;
-      toast: string;
+      /** Nom intelligent courant (bandeau) — remplacé par le renommage s'il s'applique. */
+      displayName: string;
+      target: ClassifyTarget;
     }) => {
       const document = documents.data?.find((candidate) => candidate.id === input.documentId);
       if (!document) throw new Error('Document indisponible.');
-      let expectedRevision = document.revision;
-      // Le lien métier et le rangement sont deux axes distincts. Pour qu'un « Classer là » ne
-      // fasse jamais disparaître un original encore sans dossier, on déplace d'abord vers le
-      // dossier système cohérent. Si le rattachement échoue ensuite, le document reste visible.
-      if (document.folderId === null) {
-        const systemKey = input.linkedEntityType === 'expense' ? 'purchases' : 'projects';
-        const target = documentFolders.data?.find((folder) => folder.systemKey === systemKey);
-        if (!target) throw new Error('Dossier de destination indisponible.');
+      let revision = document.revision;
+      // 1) Rangement. Une destination « dossier » déplace toujours (c'est l'action même) ;
+      //    un lien métier (chantier/dépense) ne déplace que si l'original n'a pas encore de
+      //    dossier — on n'écrase jamais un rangement déjà choisi par l'humain.
+      const isFolderDestination = input.target.kind === 'folder' || input.target.kind === 'system_folder';
+      const targetFolderId = input.target.kind === 'folder'
+        ? input.target.folderId
+        : (documentFolders.data?.find((folder) =>
+            folder.systemKey === (input.target.kind === 'system_folder'
+              ? input.target.systemKey
+              : input.target.kind === 'chantier' ? 'projects' : 'purchases'),
+          )?.id ?? null);
+      if (targetFolderId === null) {
+        if (isFolderDestination || document.folderId === null) {
+          throw new Error('Dossier de destination indisponible.');
+        }
+      } else if (isFolderDestination ? document.folderId !== targetFolderId : document.folderId === null) {
         const moved = await client.moveDocumentToFolder({
           documentId: document.id,
-          folderId: target.id,
-          expectedRevision: document.revision,
+          folderId: targetFolderId,
+          expectedRevision: revision,
         });
         if (!moved.ok) throw moved.error;
-        expectedRevision = moved.value.revision;
+        revision = moved.value.revision;
       }
-      const r = await client.classifyDocument({
-        documentId: input.documentId,
-        linkedEntityType: input.linkedEntityType,
-        linkedEntityId: input.linkedEntityId,
-        expectedRevision,
-      });
-      if (!r.ok) throw r.error;
-      return input;
+      // 2) Lien métier (deuxième axe) — même use case que Bob (ClassifyDocument @bob/core).
+      if (input.target.kind === 'chantier' || input.target.kind === 'expense') {
+        const classified = await client.classifyDocument({
+          documentId: document.id,
+          linkedEntityType: input.target.kind,
+          linkedEntityId: input.target.kind === 'chantier' ? input.target.chantierId : input.target.expenseId,
+          expectedRevision: revision,
+        });
+        if (!classified.ok) throw classified.error;
+        revision = classified.value.revision;
+      }
+      // 3) Le nom professionnel proposé devient le nom du document au classement (l'intelligence
+      //    demandée). Best-effort : le classement est déjà commis, un échec de renommage ne le
+      //    défait pas — le libellé intelligent reste servi par l'analyse en attendant.
+      const rename = suggestedRenameFor(document, document.analysis?.suggestedDisplayName ?? null);
+      let appliedName = rename ?? input.displayName;
+      if (rename !== null) {
+        const renamed = await client.renameDocument({
+          documentId: document.id,
+          displayName: rename,
+          expectedRevision: revision,
+        });
+        if (!renamed.ok) appliedName = input.displayName;
+      }
+      return { target: input.target, appliedName };
     },
-    onSuccess: (input) => {
+    onSuccess: (result) => {
       void queryClient.invalidateQueries({ queryKey: ['documents'] });
       void queryClient.invalidateQueries({ queryKey: ['expenses'] });
       setPickerDoc(null);
-      setToast(input.toast);
+      setClassifiedBanner({
+        key: Date.now(),
+        text: t('docs.classifiedBanner', {
+          personality,
+          params: { name: result.appliedName, destination: result.target.label },
+        }),
+      });
     },
     onError: () => setToast(t('docs.classifyError', { personality })),
   });
@@ -459,19 +586,34 @@ export default function Documents() {
     );
   };
 
-  // Projections structurelles : DocumentView/ExpenseProps/InvoiceView/CustomerListItem ⊇ Vault*Data.
+  // Le rapprochement EXPLICITE dépense↔document passe par paymentEvidence.proofDocumentId :
+  // l'appelant projette le lien à plat (contrat VaultExpenseData) — jamais deviné côté core.
+  const vaultExpenses: VaultExpenseData[] | undefined = useMemo(
+    () =>
+      expenses.data?.map((expense) => ({
+        id: expense.id,
+        supplierName: expense.supplierName,
+        documentDate: expense.documentDate,
+        totalTtcCents: expense.totalTtcCents,
+        vatCents: expense.vatCents,
+        proofDocumentId: expense.paymentEvidence?.proofDocumentId ?? null,
+      })),
+    [expenses.data],
+  );
+
+  // Projections structurelles : DocumentListItemView/InvoiceView/CustomerListItem ⊇ Vault*Data.
   const view: VaultView | null = useMemo(() => {
     // Aucun `?? []` ici : une réponse serveur réellement vide est `[]`, tandis qu'une source
     // jamais chargée reste `undefined` et bloque l'agrégat complet via `hasError` ci-dessus.
-    if (!documents.data || !expenses.data || !invoices.data || !customers.data) return null;
+    if (!documents.data || !vaultExpenses || !invoices.data || !customers.data) return null;
     return deriveVaultView({
       documents: documents.data,
-      expenses: expenses.data,
+      expenses: vaultExpenses,
       invoices: invoices.data,
       customers: customers.data,
       today: todayISO(),
     });
-  }, [documents.data, expenses.data, invoices.data, customers.data]);
+  }, [documents.data, vaultExpenses, invoices.data, customers.data]);
 
   // E10 : reste à payer réel (summarizeExpenses @bob/core) — sous-titre de la porte Dépenses.
   const expensesToPayCents = useMemo(
@@ -759,7 +901,7 @@ export default function Documents() {
                 <Pressable
                   key={docItem.id}
                   accessibilityRole="button"
-                  accessibilityLabel={docItem.filename}
+                  accessibilityLabel={vaultDocTitle(docItem)}
                   onPress={() => void openDocument(docItem.id)}
                   style={({ pressed }) => ({
                     opacity: pressed ? 0.82 : 1,
@@ -782,7 +924,7 @@ export default function Documents() {
                       </View>
                       <View style={{ flex: 1, minWidth: 0 }}>
                         <Text style={{ ...font('body', 700), fontSize: 14, color: colors.ink800 }} numberOfLines={1}>
-                          {docItem.filename}
+                          {vaultDocTitle(docItem)}
                         </Text>
                         <Text style={{ ...font('meta', 500), color: colors.slate300, marginTop: 2 }}>
                           {formatDate(docItem.documentDate ?? docItem.createdAt)}
@@ -797,6 +939,31 @@ export default function Documents() {
           </View>
         ) : view ? (
           <>
+            {/* Bandeau vert « {nom} classé · {destination} » — fade-in après un classement. */}
+            {classifiedBanner ? (
+              <FadeIn key={classifiedBanner.key} index={0} style={{ paddingHorizontal: 18, paddingTop: 20 }}>
+                <View
+                  accessibilityLiveRegion="polite"
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 12,
+                    backgroundColor: semantic.successBg,
+                    borderWidth: 1,
+                    borderColor: vault.classifiedBorder,
+                    borderRadius: 18,
+                    paddingVertical: 14,
+                    paddingHorizontal: 16,
+                  }}
+                >
+                  <Feather name="check-circle" size={22} color={semantic.success} />
+                  <Text style={{ ...font('body', 600), fontSize: 14, color: semantic.success, flex: 1 }}>
+                    {classifiedBanner.text}
+                  </Text>
+                </View>
+              </FadeIn>
+            ) : null}
+
             {/* À valider — uniquement s'il y a des docs OCR non classés (données réelles) */}
             {view.toValidate.length > 0 ? (
               <FadeIn index={0} style={{ paddingHorizontal: 18, paddingTop: 20 }}>
@@ -804,7 +971,8 @@ export default function Documents() {
                   <Text style={[font('cardTitle'), { color: colors.ink800 }]} accessibilityRole="header">
                     {t('docs.sectionToValidate', { personality })}
                   </Text>
-                  <View style={{ backgroundColor: semantic.b2g, borderRadius: 10, paddingVertical: 2, paddingHorizontal: 8 }}>
+                  {/* Compteur INDIGO PLEIN (handoff) — semantic.ai, texte blanc. */}
+                  <View style={{ backgroundColor: semantic.ai, borderRadius: 10, paddingVertical: 2, paddingHorizontal: 8 }}>
                     <Text style={{ ...font('meta', 700), color: colors.surface }}>{view.toValidate.length}</Text>
                   </View>
                 </View>
@@ -816,17 +984,12 @@ export default function Documents() {
                       onOpen={() => void openDocument(p.id)}
                       onPickTarget={() => setPickerDoc(p)}
                       classifying={classify.isPending && classify.variables?.documentId === p.id}
-                      onClassify={(expenseId) =>
-                        classify.mutate({
-                          documentId: p.id,
-                          linkedEntityType: 'expense',
-                          linkedEntityId: expenseId,
-                          toast: t('docs.classifiedToast', {
-                            personality,
-                            params: { supplier: p.matchedExpense?.supplierName ?? p.filename },
-                          }),
-                        })
-                      }
+                      onClassify={() => {
+                        const target = oneTapTargetFor(p);
+                        if (target && !classify.isPending) {
+                          classify.mutate({ documentId: p.id, displayName: p.displayName, target });
+                        }
+                      }}
                     />
                   ))}
                 </View>
@@ -1317,52 +1480,65 @@ export default function Documents() {
         </KeyboardAvoidingView>
       </Sheet>
 
-      {/* A8 : Sheet des destinations RÉELLES — proposition IA en tête, puis chantiers ouverts. */}
+      {/* A8 : Sheet des destinations RÉELLES — la suggestion en tête, puis les chantiers
+          ouverts ET les dossiers hors chantier (un doc hors chantier est un cas de première
+          classe : frais généraux, assurances, fiscal…). */}
       <Sheet visible={pickerDoc !== null} onClose={() => setPickerDoc(null)}>
         <Text style={[font('cardTitle'), { color: colors.ink900, marginBottom: 12 }]} accessibilityRole="header">
           {t('docs.pickTitle', { personality })}
         </Text>
-        {pickerDoc?.matchedExpense ? (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={pickerDoc.matchedExpense.supplierName}
-            disabled={classify.isPending}
-            onPress={() =>
-              classify.mutate({
-                documentId: pickerDoc.id,
-                linkedEntityType: 'expense',
-                linkedEntityId: pickerDoc.matchedExpense!.id,
-                toast: t('docs.classifiedToast', {
-                  personality,
-                  params: { supplier: pickerDoc.matchedExpense!.supplierName },
-                }),
-              })
-            }
-            style={({ pressed }) => ({
-              minHeight: 48,
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: 11,
-              paddingVertical: 12,
-              borderBottomWidth: 1,
-              borderBottomColor: colors.lineSoft,
-              opacity: classify.isPending ? 0.6 : pressed ? 0.65 : 1,
-            })}
-          >
-            <IconTile tone="success" size={34} radius={10}>
-              <SparkSmallIcon color={semantic.success} />
-            </IconTile>
-            <View style={{ flex: 1, minWidth: 0 }}>
-              <Text style={{ ...font('body', 700), fontSize: 14, color: colors.ink800 }} numberOfLines={1}>
-                {pickerDoc.matchedExpense.supplierName}
-              </Text>
-              <Text style={[font('meta'), { color: colors.slate400, marginTop: 1 }]}>
-                {t('docs.pickProposalMeta', { personality })}
-              </Text>
-            </View>
-            <ChevronRightIcon color={controls.chevron} size={14} strokeWidth={2} />
-          </Pressable>
-        ) : null}
+        {pickerDoc ? (() => {
+          const suggested = oneTapTargetFor(pickerDoc);
+          if (!suggested) return null;
+          const title = suggested.kind === 'expense' && pickerDoc.matchedExpense
+            ? pickerDoc.matchedExpense.supplierName
+            : suggested.label;
+          const meta = suggested.kind === 'expense'
+            ? t('docs.pickProposalMeta', { personality })
+            : t('docs.pickSuggestedMeta', { personality });
+          return (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`${title} — ${meta}`}
+              disabled={classify.isPending}
+              onPress={() =>
+                classify.mutate({ documentId: pickerDoc.id, displayName: pickerDoc.displayName, target: suggested })
+              }
+              style={({ pressed }) => ({
+                minHeight: 48,
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 11,
+                paddingVertical: 12,
+                borderBottomWidth: 1,
+                borderBottomColor: colors.lineSoft,
+                opacity: classify.isPending ? 0.6 : pressed ? 0.65 : 1,
+              })}
+            >
+              <View
+                style={{
+                  width: 34,
+                  height: 34,
+                  borderRadius: 10,
+                  backgroundColor: semantic.aiBg,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <SparkSmallIcon color={semantic.ai} />
+              </View>
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={{ ...font('body', 700), fontSize: 14, color: colors.ink800 }} numberOfLines={1}>
+                  {title}
+                </Text>
+                <Text style={[font('meta'), { color: colors.slate400, marginTop: 1 }]}>
+                  {meta}
+                </Text>
+              </View>
+              <ChevronRightIcon color={controls.chevron} size={14} strokeWidth={2} />
+            </Pressable>
+          );
+        })() : null}
         {chantiers.isLoading ? (
           <View
             accessibilityRole="progressbar"
@@ -1378,7 +1554,7 @@ export default function Documents() {
             onRetry={() => void chantiers.refetch()}
           />
         ) : (
-          openChantiers.map((chantier, i) => (
+          openChantiers.map((chantier) => (
             <Pressable
               key={chantier.id}
               accessibilityRole="button"
@@ -1388,9 +1564,8 @@ export default function Documents() {
                 pickerDoc
                   ? classify.mutate({
                       documentId: pickerDoc.id,
-                      linkedEntityType: 'chantier',
-                      linkedEntityId: chantier.id,
-                      toast: t('docs.classifiedIntoToast', { personality, params: { name: chantier.name } }),
+                      displayName: pickerDoc.displayName,
+                      target: { kind: 'chantier', chantierId: chantier.id, label: chantier.name },
                     })
                   : undefined
               }
@@ -1400,7 +1575,7 @@ export default function Documents() {
                 alignItems: 'center',
                 gap: 11,
                 paddingVertical: 12,
-                borderBottomWidth: i < openChantiers.length - 1 ? 1 : 0,
+                borderBottomWidth: 1,
                 borderBottomColor: colors.lineSoft,
                 opacity: classify.isPending ? 0.6 : pressed ? 0.65 : 1,
               })}
@@ -1420,7 +1595,64 @@ export default function Documents() {
             </Pressable>
           ))
         )}
-        {!chantiers.isLoading && !chantiers.isError && !pickerDoc?.matchedExpense && openChantiers.length === 0 ? (
+        {/* Dossiers hors chantier (racine du coffre : Achats, Assurances, Fiscal & social…). */}
+        {rootFolders.map((folder, i) => {
+          const tint = folderTint(folder);
+          return (
+            <Pressable
+              key={folder.id}
+              accessibilityRole="button"
+              accessibilityLabel={folder.name}
+              disabled={classify.isPending}
+              onPress={() =>
+                pickerDoc
+                  ? classify.mutate({
+                      documentId: pickerDoc.id,
+                      displayName: pickerDoc.displayName,
+                      target: { kind: 'folder', folderId: folder.id, label: folder.name },
+                    })
+                  : undefined
+              }
+              style={({ pressed }) => ({
+                minHeight: 48,
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 11,
+                paddingVertical: 12,
+                borderBottomWidth: i < rootFolders.length - 1 ? 1 : 0,
+                borderBottomColor: colors.lineSoft,
+                opacity: classify.isPending ? 0.6 : pressed ? 0.65 : 1,
+              })}
+            >
+              <View
+                style={{
+                  width: 34,
+                  height: 34,
+                  borderRadius: 10,
+                  backgroundColor: tint.bg,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <FolderSmallIcon color={tint.tint} />
+              </View>
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={{ ...font('body', 700), fontSize: 14, color: colors.ink800 }} numberOfLines={1}>
+                  {folder.name}
+                </Text>
+                <Text style={[font('meta'), { color: colors.slate400, marginTop: 1 }]}>
+                  {t('docs.pickFolderMeta', { personality })}
+                </Text>
+              </View>
+              <ChevronRightIcon color={controls.chevron} size={14} strokeWidth={2} />
+            </Pressable>
+          );
+        })}
+        {!chantiers.isLoading
+          && !chantiers.isError
+          && (pickerDoc === null || oneTapTargetFor(pickerDoc) === null)
+          && openChantiers.length === 0
+          && rootFolders.length === 0 ? (
           <Text style={[font('sub'), { color: colors.slate500, lineHeight: 19 }]}>
             {t('docs.pickEmpty', { personality })}
           </Text>

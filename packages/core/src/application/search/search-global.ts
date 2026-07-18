@@ -8,7 +8,7 @@ import { type VaultDocumentData } from '../documents/derive-vault-view';
 /**
  * Recherche GLOBALE (A7) — un seul use case pur pour l'écran /recherche ET pour Bob
  * (« retrouve la facture de la mairie ») : clients par nom, pièces par numéro OU par nom
- * de client, documents via searchVault (nom de fichier + tags — source unique C14).
+ * de client, documents via searchVault (titre intelligent + nom de fichier + tags — source unique C14).
  * Insensible aux accents/casse (normalizeSupplierName). Aucune I/O ; requête vide → vide.
  */
 

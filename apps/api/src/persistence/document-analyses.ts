@@ -3,6 +3,7 @@ import {
   makeDocumentAnalysis,
   type DocumentAnalysis,
   type DocumentAnalysisDraft,
+  type DocumentDestinationContext,
 } from '@bob/core';
 import type {
   DocumentAnalysisCache as PrismaDocumentAnalysisCache,
@@ -15,8 +16,11 @@ const SHA256 = /^[a-f0-9]{64}$/;
 /**
  * Version du contrat JSON persistant, indépendante de la version de l'analyseur IA.
  * Toute évolution incompatible doit créer un nouveau validateur SQL et incrémenter cette valeur.
+ * V2 (2026-07-18) : + suggestedDisplayName, + suggestedDestination. La version fait partie de la
+ * clé primaire : bumper PUBLIE de nouvelles lignes (les V1 historiques deviennent invisibles au
+ * store — invalidation de cache sans UPDATE ni DELETE, append-only préservé).
  */
-export const DOCUMENT_ANALYSIS_SCHEMA_VERSION = 1 as const;
+export const DOCUMENT_ANALYSIS_SCHEMA_VERSION = 2 as const;
 
 export interface DocumentAnalysisCacheKey {
   readonly companyId: string;
@@ -46,6 +50,15 @@ export interface DocumentAnalysisStore {
   findExact(key: DocumentAnalysisCacheKey): Promise<DocumentAnalysisCacheRecord | null>;
   /** Insert-only : en cas de course, retourne la ligne gagnante sans jamais la remplacer. */
   putIfAbsent(record: DocumentAnalysisCacheWrite): Promise<DocumentAnalysisCacheRecord>;
+  /**
+   * Lecture EN LOT pour l'enrichissement de GET /documents (jamais de N+1, jamais d'appel LLM).
+   * Ne retourne que les lignes du contrat courant qui revalident ; une ligne corrompue est
+   * simplement absente du résumé — elle ne fait jamais tomber la liste du coffre.
+   */
+  findManyExact(
+    companyId: string,
+    keys: readonly Omit<DocumentAnalysisCacheKey, 'companyId'>[],
+  ): Promise<DocumentAnalysisCacheRecord[]>;
 }
 
 export class InvalidDocumentAnalysisCacheRecordError extends Error {
@@ -97,6 +110,33 @@ function cloneAnalysis(analysis: DocumentAnalysis): DocumentAnalysis {
   return structuredClone(analysis);
 }
 
+/**
+ * Reconstruit le contexte de validation de destination À PARTIR de la valeur persistée.
+ *
+ * À la relecture, le cache ne connaît plus les chantiers du tenant : l'anti-hallucination a déjà
+ * eu lieu à l'écriture (AnalyzeDocument valide contre le contexte réel). La seule exigence ici est
+ * le DÉTERMINISME du round-trip :
+ * - suggestion chantier persistée → revalidée contre elle-même (id + label stockés) ;
+ * - null explicite → reproduit en interdisant le fallback par type (systemKeys vides) ;
+ * - dossier système → clés produit par défaut.
+ * Même logique côté client dans packages/api-client/src/document-codecs.ts (decodeDocumentAnalysis).
+ */
+function destinationRevalidationContext(analysis: Record<string, unknown>): DocumentDestinationContext {
+  const destination = analysis.suggestedDestination;
+  if (destination === null) return { chantiers: [], systemKeys: [] };
+  if (typeof destination === 'object' && destination !== null && Reflect.get(destination, 'kind') === 'chantier') {
+    const chantierId = Reflect.get(destination, 'chantierId');
+    const label = Reflect.get(destination, 'label');
+    return {
+      chantiers:
+        typeof chantierId === 'string' && typeof label === 'string'
+          ? [{ id: chantierId, nom: label }]
+          : [],
+    };
+  }
+  return { chantiers: [] };
+}
+
 /** @internal Partagé avec le store déterministe situé dans `*.testing.ts`. */
 export function validateDocumentAnalysisCacheRecord(
   record: DocumentAnalysisCacheWrite,
@@ -117,17 +157,21 @@ export function validateDocumentAnalysisCacheRecord(
     throw new InvalidDocumentAnalysisCacheRecordError('analysis', 'JSON object required');
   }
 
-  const analysis = makeDocumentAnalysis(record.analysis as unknown as DocumentAnalysisDraft, {
-    documentId: key.documentId,
-    documentVersion: key.documentVersion,
-    sourceSha256: key.sourceSha256,
-    originalFilename:
-      typeof record.analysis.suggestedFilename === 'string'
-        ? record.analysis.suggestedFilename
-        : 'document',
-    analyzerVersion,
-    analyzedAt,
-  });
+  const analysis = makeDocumentAnalysis(
+    record.analysis as unknown as DocumentAnalysisDraft,
+    {
+      documentId: key.documentId,
+      documentVersion: key.documentVersion,
+      sourceSha256: key.sourceSha256,
+      originalFilename:
+        typeof record.analysis.suggestedFilename === 'string'
+          ? record.analysis.suggestedFilename
+          : 'document',
+      analyzerVersion,
+      analyzedAt,
+    },
+    destinationRevalidationContext(record.analysis as unknown as Record<string, unknown>),
+  );
   if (!analysis.ok) {
     const field = analysis.error.code === 'VALIDATION' ? analysis.error.field : 'analysis';
     const message = analysis.error.code === 'VALIDATION' ? analysis.error.message : analysis.error.code;
@@ -167,9 +211,47 @@ export class PrismaDocumentAnalysisStore implements DocumentAnalysisStore {
   async findExact(key: DocumentAnalysisCacheKey): Promise<DocumentAnalysisCacheRecord | null> {
     const validKey = validateDocumentAnalysisCacheKey(key);
     const row = await this.prisma.client().documentAnalysisCache.findUnique({
-      where: { document_analysis_cache_key: validKey },
+      // Version de contrat dans la clé : une ligne V1 historique est un MISS (invalidation).
+      where: {
+        document_analysis_cache_key: {
+          ...validKey,
+          analysisSchemaVersion: DOCUMENT_ANALYSIS_SCHEMA_VERSION,
+        },
+      },
     });
     return row ? fromPrisma(row) : null;
+  }
+
+  async findManyExact(
+    companyId: string,
+    keys: readonly Omit<DocumentAnalysisCacheKey, 'companyId'>[],
+  ): Promise<DocumentAnalysisCacheRecord[]> {
+    if (keys.length === 0) return [];
+    const validKeys = keys.map((key) => validateDocumentAnalysisCacheKey({ companyId, ...key }));
+    // Une seule requête pour toute la liste (peu de versions par document) ; l'appariement exact
+    // version+sha se fait en mémoire pour éviter un OR combinatoire côté SQL.
+    const rows = await this.prisma.client().documentAnalysisCache.findMany({
+      where: {
+        companyId,
+        analysisSchemaVersion: DOCUMENT_ANALYSIS_SCHEMA_VERSION,
+        documentId: { in: [...new Set(validKeys.map((key) => key.documentId))] },
+      },
+    });
+    const wanted = new Set(
+      validKeys.map((key) => `${key.documentId}#${key.documentVersion}#${key.sourceSha256}`),
+    );
+    const records: DocumentAnalysisCacheRecord[] = [];
+    for (const row of rows) {
+      if (!wanted.has(`${row.documentId}#${row.documentVersion}#${row.sourceSha256}`)) continue;
+      try {
+        records.push(fromPrisma(row));
+      } catch (cause) {
+        // Ligne corrompue : absente du résumé de liste, jamais un crash du coffre. Les chemins
+        // unitaires (findExact) continuent, eux, d'échouer explicitement.
+        if (!(cause instanceof InvalidDocumentAnalysisCacheRecordError)) throw cause;
+      }
+    }
+    return records;
   }
 
   async putIfAbsent(record: DocumentAnalysisCacheWrite): Promise<DocumentAnalysisCacheRecord> {
@@ -196,6 +278,7 @@ export class PrismaDocumentAnalysisStore implements DocumentAnalysisStore {
           documentId: candidate.documentId,
           documentVersion: candidate.documentVersion,
           sourceSha256: candidate.sourceSha256,
+          analysisSchemaVersion: candidate.analysisSchemaVersion,
         },
       },
     });
