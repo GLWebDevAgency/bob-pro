@@ -6,10 +6,21 @@
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js", "require": "./dist/index.cjs" }
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./testing": {
+      "types": "./dist-testing/testing.d.ts",
+      "import": "./dist-testing/testing.js",
+      "require": "./dist-testing/testing.cjs"
+    }
   },
   "scripts": {
-    "build": "tsup src/index.ts --format esm,cjs --dts",
+    "build": "tsup src/index.ts --format esm,cjs --dts --clean && node scripts/assert-production-artifact.mjs",
+    "build:testing": "tsup src/testing.ts --format esm,cjs --dts --out-dir dist-testing --clean",
+    "artifact:verify": "node scripts/assert-production-artifact.mjs",
     "test": "vitest run",
     "test:cabinet:coverage": "vitest run src/domain/cabinet src/application/cabinet --coverage",
     "test:watch": "vitest",
