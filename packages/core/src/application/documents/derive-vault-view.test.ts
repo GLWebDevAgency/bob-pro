@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   deriveVaultView,
+  documentNeedsHumanReview,
   normalizeSupplierName,
   vaultFolderOf,
   VAULT_FOLDER_KEYS,
@@ -93,31 +94,83 @@ describe('vaultFolderOf — mapping v1 des 6 dossiers du proto', () => {
   });
 });
 
-describe('deriveVaultView — à valider (OCR non classé)', () => {
-  it('ne retient que les docs OCR sans lien NI dossier, du plus récent au plus ancien', () => {
+describe('documentNeedsHumanReview — règle unique file « À valider » ↔ écrans', () => {
+  it('OCR jamais confirmé (reviewedAt null ou absent) hors dépense → à confirmer', () => {
+    expect(documentNeedsHumanReview(doc({ origin: 'ocr' }))).toBe(true);
+    expect(documentNeedsHumanReview(doc({ origin: 'ocr', reviewedAt: null }))).toBe(true);
+    // Lié à un chantier : le lien métier ne vaut pas confirmation à lui seul.
+    expect(documentNeedsHumanReview(doc({ origin: 'ocr', linkedEntityType: 'chantier', linkedEntityId: 'ch-1' }))).toBe(true);
+  });
+
+  it('confirmé, non-OCR ou lié à une dépense → plus rien à confirmer', () => {
+    expect(documentNeedsHumanReview(doc({ origin: 'ocr', reviewedAt: '2026-07-01T10:00:00.000Z' }))).toBe(false);
+    expect(documentNeedsHumanReview(doc({ origin: 'uploaded' }))).toBe(false);
+    expect(documentNeedsHumanReview(doc({ origin: 'ocr', linkedEntityType: 'expense', linkedEntityId: 'exp-1' }))).toBe(false);
+  });
+});
+
+describe('deriveVaultView — à valider (OCR non CONFIRMÉ, LOT 2)', () => {
+  it('retient les docs OCR jamais confirmés — y compris rangés — sauf liés à une dépense, du plus récent au plus ancien', () => {
     const v = deriveVaultView({
       ...EMPTY,
       documents: [
         doc({ id: 'a', origin: 'ocr', createdAt: '2026-07-01T08:00:00.000Z' }),
         doc({ id: 'b', origin: 'ocr', createdAt: '2026-07-02T08:00:00.000Z' }),
+        // Lié à une dépense : traité par construction (réconciliation comptable) — ABSENT.
         doc({ id: 'c', origin: 'ocr', linkedEntityType: 'expense', linkedEntityId: 'exp-9' }),
         doc({ id: 'd', origin: 'uploaded' }),
-        // Rangé via « Classer là » (dossier système/dossier) SANS lien métier : classé quand même.
-        doc({ id: 'e', origin: 'ocr', folderId: 'folder-insurance' }),
+        // Rangé par erreur et jamais validé : la carte RESTE visible (« Rangé — à confirmer »).
+        doc({ id: 'e', origin: 'ocr', folderId: 'folder-insurance', createdAt: '2026-07-01T10:00:00.000Z' }),
       ],
     });
-    expect(v.toValidate.map((p) => p.id)).toEqual(['b', 'a']);
+    expect(v.toValidate.map((p) => p.id)).toEqual(['b', 'e', 'a']);
   });
 
-  it('un folderId null ou absent (projection partielle) reste « à valider »', () => {
+  it('un doc rangé mais non confirmé est VISIBLE et porte folderId + folderName (« Rangé · Achats — à confirmer »)', () => {
     const v = deriveVaultView({
       ...EMPTY,
       documents: [
-        doc({ id: 'explicit-null', origin: 'ocr', folderId: null }),
-        doc({ id: 'absent', origin: 'ocr' }),
+        doc({ id: 'range', origin: 'ocr', folderId: 'folder-achats', folderName: 'Achats' }),
       ],
     });
-    expect(v.toValidate.map((p) => p.id).sort()).toEqual(['absent', 'explicit-null']);
+    expect(v.toValidate[0]).toMatchObject({ id: 'range', folderId: 'folder-achats', folderName: 'Achats' });
+  });
+
+  it('un doc acquitté (reviewedAt posé) est ABSENT de la file, rangé ou non', () => {
+    const v = deriveVaultView({
+      ...EMPTY,
+      documents: [
+        doc({ id: 'ack-nu', origin: 'ocr', reviewedAt: '2026-07-02T09:00:00.000Z' }),
+        doc({ id: 'ack-range', origin: 'ocr', folderId: 'folder-achats', reviewedAt: '2026-07-02T09:00:00.000Z' }),
+        doc({ id: 'encore-la', origin: 'ocr' }),
+      ],
+    });
+    expect(v.toValidate.map((p) => p.id)).toEqual(['encore-la']);
+  });
+
+  it('compat historique : reviewedAt null ou ABSENT de la projection ⇒ toujours à confirmer, jamais de crash', () => {
+    const v = deriveVaultView({
+      ...EMPTY,
+      documents: [
+        doc({ id: 'explicit-null', origin: 'ocr', reviewedAt: null }),
+        doc({ id: 'absent', origin: 'ocr' }),
+        // Classé vers un chantier AVANT le LOT 2 (reviewedAt inconnu) : reste à confirmer.
+        doc({ id: 'chantier-historique', origin: 'ocr', linkedEntityType: 'chantier', linkedEntityId: 'ch-1' }),
+      ],
+    });
+    expect(v.toValidate.map((p) => p.id).sort()).toEqual(['absent', 'chantier-historique', 'explicit-null']);
+  });
+
+  it('non rangé : folderId et folderName null ; rangé sans nom résolu : folderName null (rien d’inventé)', () => {
+    const v = deriveVaultView({
+      ...EMPTY,
+      documents: [
+        doc({ id: 'nu', origin: 'ocr', createdAt: '2026-07-02T08:00:00.000Z' }),
+        doc({ id: 'sans-nom', origin: 'ocr', folderId: 'folder-x', folderName: '  ', createdAt: '2026-07-01T08:00:00.000Z' }),
+      ],
+    });
+    expect(v.toValidate[0]).toMatchObject({ id: 'nu', folderId: null, folderName: null });
+    expect(v.toValidate[1]).toMatchObject({ id: 'sans-nom', folderId: 'folder-x', folderName: null });
   });
 
   it('rapproche la dépense dont le fournisseur figure dans le nom de fichier (casse/accents/tirets ignorés)', () => {

@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { Document, type DocumentProps } from '../../domain/document/document';
+import { type ClockPort } from '../ports/services';
 import { type DocumentRepository } from '../ports/document-repository';
 import { buildDocumentStorageKey } from './storage-key';
 import { ClassifyDocument } from './classify-document';
 
 const SHA = 'a'.repeat(64);
 const COMPANY = 'co-mercier';
+const NOW = '2026-07-16T09:00:00.000Z';
+const clock: ClockPort = { now: () => NOW, today: () => '2026-07-16' };
 const existingLinkTargets = { exists: async () => true };
 
 function makeDocument(over: Partial<DocumentProps> = {}): Document {
@@ -77,6 +80,22 @@ class MemoryDocuments implements DocumentRepository {
       linkedEntityId: input.linkedEntityId,
     });
     if (!result.ok) return 'revision_conflict';
+    // Le classement persiste aussi la validation (latch calculé par le use case).
+    const reviewed = next.markReviewed(input.reviewedAt);
+    if (!reviewed.ok) return 'revision_conflict';
+    this.map.set(next.id, next);
+    return 'saved';
+  }
+  async markReviewed(
+    input: Parameters<DocumentRepository['markReviewed']>[0],
+  ): Promise<'saved' | 'revision_conflict' | 'not_found'> {
+    if (this.forceRevisionConflict) return 'revision_conflict';
+    const current = this.map.get(input.documentId);
+    if (!current || current.companyId !== input.companyId || current.status !== 'active') return 'not_found';
+    if (current.revision !== input.expectedRevision) return 'revision_conflict';
+    const next = Document.rehydrate(current.toProps());
+    const result = next.markReviewed(input.reviewedAt);
+    if (!result.ok) return 'revision_conflict';
     this.map.set(next.id, next);
     return 'saved';
   }
@@ -109,10 +128,10 @@ class MemoryDocuments implements DocumentRepository {
 }
 
 describe('ClassifyDocument (A1-C14 — confirmation du classement proposé après OCR)', () => {
-  it('rattache le document à la dépense et persiste (sort d’« À valider »)', async () => {
+  it('rattache le document à la dépense, pose la validation et persiste (sort d’« À valider »)', async () => {
     const documents = new MemoryDocuments();
     await documents.save(makeDocument());
-    const uc = new ClassifyDocument({ documents, linkTargets: existingLinkTargets });
+    const uc = new ClassifyDocument({ documents, linkTargets: existingLinkTargets, clock });
 
     const r = await uc.execute({
       companyId: COMPANY,
@@ -126,19 +145,24 @@ describe('ClassifyDocument (A1-C14 — confirmation du classement proposé aprè
     if (r.ok) {
       expect(r.value.linkedEntityType).toBe('expense');
       expect(r.value.linkedEntityId).toBe('exp-leroy');
-      expect(r.value.revision).toBe(2);
+      // Un classement explicite vaut validation humaine (LOT 2).
+      expect(r.value.reviewedAt).toBe(NOW);
+      // Deux mutations de domaine (classify + markReviewed) = deux crans de révision.
+      expect(r.value.revision).toBe(3);
     }
     const saved = await documents.findById(COMPANY, 'doc-leroy');
     expect(saved?.toProps().linkedEntityId).toBe('exp-leroy');
+    expect(saved?.reviewedAt).toBe(NOW);
 
     const replay = await uc.execute({
       companyId: COMPANY,
       documentId: 'doc-leroy',
       linkedEntityType: 'expense',
       linkedEntityId: ' exp-leroy ',
-      expectedRevision: 2,
+      expectedRevision: 3,
     });
-    expect(replay.ok && replay.value.revision).toBe(2);
+    expect(replay.ok && replay.value.revision).toBe(3);
+    expect(replay.ok && replay.value.reviewedAt).toBe(NOW); // latch — jamais réécrit
 
     const stale = await uc.execute({
       companyId: COMPANY,
@@ -150,8 +174,28 @@ describe('ClassifyDocument (A1-C14 — confirmation du classement proposé aprè
     expect(stale).toMatchObject({ ok: false, error: { kind: 'conflict' } });
   });
 
+  it('un document déjà validé qui se classe garde l’horodatage de sa première validation', async () => {
+    const documents = new MemoryDocuments();
+    await documents.save(makeDocument({ reviewedAt: '2026-07-10T08:00:00.000Z' }));
+    const uc = new ClassifyDocument({ documents, linkTargets: existingLinkTargets, clock });
+
+    const r = await uc.execute({
+      companyId: COMPANY,
+      documentId: 'doc-leroy',
+      linkedEntityType: 'expense',
+      linkedEntityId: 'exp-leroy',
+      expectedRevision: 1,
+    });
+
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.reviewedAt).toBe('2026-07-10T08:00:00.000Z');
+      expect(r.value.revision).toBe(2); // seul classify a muté
+    }
+  });
+
   it('refuse un document introuvable (ou hors tenant)', async () => {
-    const uc = new ClassifyDocument({ documents: new MemoryDocuments(), linkTargets: existingLinkTargets });
+    const uc = new ClassifyDocument({ documents: new MemoryDocuments(), linkTargets: existingLinkTargets, clock });
     const r = await uc.execute({
       companyId: COMPANY,
       documentId: 'inconnu',
@@ -166,7 +210,7 @@ describe('ClassifyDocument (A1-C14 — confirmation du classement proposé aprè
   it('refuse un rattachement incomplet (invariant du domaine)', async () => {
     const documents = new MemoryDocuments();
     await documents.save(makeDocument());
-    const uc = new ClassifyDocument({ documents, linkTargets: existingLinkTargets });
+    const uc = new ClassifyDocument({ documents, linkTargets: existingLinkTargets, clock });
     const r = await uc.execute({
       companyId: COMPANY,
       documentId: 'doc-leroy',
@@ -182,7 +226,7 @@ describe('ClassifyDocument (A1-C14 — confirmation du classement proposé aprè
     await documents.save(
       makeDocument({ id: 'doc-del', status: 'deleted', deletedAt: '2026-07-02T08:00:00.000Z' }),
     );
-    const uc = new ClassifyDocument({ documents, linkTargets: existingLinkTargets });
+    const uc = new ClassifyDocument({ documents, linkTargets: existingLinkTargets, clock });
     const r = await uc.execute({
       companyId: COMPANY,
       documentId: 'doc-del',
@@ -198,7 +242,7 @@ describe('ClassifyDocument (A1-C14 — confirmation du classement proposé aprè
     await documents.save(makeDocument());
     documents.forceRevisionConflict = true;
 
-    const result = await new ClassifyDocument({ documents, linkTargets: existingLinkTargets }).execute({
+    const result = await new ClassifyDocument({ documents, linkTargets: existingLinkTargets, clock }).execute({
       companyId: COMPANY,
       documentId: 'doc-leroy',
       linkedEntityType: 'expense',
@@ -223,6 +267,7 @@ describe('ClassifyDocument (A1-C14 — confirmation du classement proposé aprè
     const result = await new ClassifyDocument({
       documents,
       linkTargets: { exists: async () => false },
+      clock,
     }).execute({
       companyId: COMPANY,
       documentId: 'doc-leroy',

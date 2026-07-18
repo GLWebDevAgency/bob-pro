@@ -92,6 +92,8 @@ import {
   StoreDocument,
   ListDocuments,
   ClassifyDocument,
+  AcknowledgeDocument,
+  validateDocumentDisplayName,
   CreateDocumentFolder,
   ListDocumentFolders,
   RenameDocumentFolder,
@@ -456,6 +458,11 @@ export interface DocumentAnalysisSummaryView {
   suggestedDisplayName: string;
   suggestedDestination: DocumentDestinationSuggestion | null;
   requiresHumanReview: boolean;
+  /** Résumé de Bob — la carte du détail doit être EXACTEMENT la carte du scan. */
+  summary: string;
+  suggestedTags: readonly string[];
+  /** Avertissements qui justifient `requiresHumanReview` — jamais un badge orange inexpliqué. */
+  warnings: readonly string[];
 }
 
 /** Chips de l'écran Documents (montant/TVA/date), projetées depuis les faits prouvés de l'analyse. */
@@ -482,6 +489,9 @@ function documentAnalysisSummary(analysis: DocumentAnalysis): DocumentAnalysisSu
     suggestedDisplayName: analysis.suggestedDisplayName,
     suggestedDestination: analysis.suggestedDestination,
     requiresHumanReview: analysis.requiresHumanReview,
+    summary: analysis.summary,
+    suggestedTags: analysis.suggestedTags,
+    warnings: analysis.warnings,
   };
 }
 
@@ -2482,6 +2492,45 @@ export class BackendService {
           })),
         );
       },
+      // S1 (LOT 5) : devis SIGNÉS facturables — matière de generer_facture (ASK-2). Un devis
+      // sort de la liste dès que sa facture FINALE existe ; l'acompte déjà émis est signalé
+      // (depositInvoiced) pour que la finale devienne l'évidence. Mêmes données que
+      // listSendableQuotes (quotes + invoices liées + noms clients), même dérivation dans
+      // les trois implémentations du client — parité stricte.
+      listInvoiceableQuotes: async () => {
+        const [quotes, invoices, cust] = await Promise.all([
+          this.listQuotes(),
+          this.listInvoices(),
+          this.listCustomers(),
+        ]);
+        if (!quotes.ok) return quotes;
+        if (!invoices.ok) return invoices;
+        if (!cust.ok) return cust;
+        const names = new Map(cust.value.map((c) => [c.id, c.name]));
+        const candidates = quotes.value
+          .filter((q) => q.status === 'signed')
+          .filter(
+            (q) =>
+              !invoices.value.some(
+                (i) => i.parentQuoteId === q.id && i.kind === 'final' && i.status !== 'cancelled',
+              ),
+          );
+        if (candidates.some((quote) => !names.has(quote.customerId))) {
+          return err(appUnavailable('customer-reference'));
+        }
+        return ok(
+          candidates.map((q) => ({
+            id: q.id,
+            number: q.number,
+            customerName: names.get(q.customerId)!,
+            totalTtcCents: q.totals.ttc,
+            depositPct: q.depositPct,
+            depositInvoiced: invoices.value.some(
+              (i) => i.parentQuoteId === q.id && i.kind === 'deposit' && i.status !== 'cancelled',
+            ),
+          })),
+        );
+      },
       listIssuableInvoices: async () => {
         const [invoices, cust] = await Promise.all([this.listInvoices(), this.listCustomers()]);
         if (!invoices.ok) return invoices;
@@ -2505,15 +2554,174 @@ export class BackendService {
         const r = await this.listDocuments({ includeDeleted: false });
         if (!r.ok) return r;
         return ok(
-          r.value.slice(0, 12).map((d) => ({
-            id: d.id,
-            filename: d.filename,
-            kind: d.kind,
-            linkedEntityType: d.linkedEntityType,
-            linkedEntityId: d.linkedEntityId,
-            createdAt: d.createdAt,
-          })),
+          r.value.slice(0, 12).map((d) => {
+            // Libellé intelligent (mêmes règles que smartDocumentTitle côté mobile) :
+            // renommage humain > suggestion d'analyse persistée > displayName serveur.
+            const display = d.displayName.replace(/\s+/g, ' ').trim();
+            const suggested = (d.analysis?.suggestedDisplayName ?? '').replace(/\s+/g, ' ').trim();
+            const smartName = display.length > 0 && display !== d.filename
+              ? display
+              : suggested.length > 0 ? suggested : (display.length > 0 ? display : d.filename);
+            return {
+              id: d.id,
+              filename: d.filename,
+              kind: d.kind,
+              linkedEntityType: d.linkedEntityType,
+              linkedEntityId: d.linkedEntityId,
+              createdAt: d.createdAt,
+              // Ciblage vocal du coffre (valider_document) : libellé + état de la file « À valider ».
+              displayName: smartName,
+              origin: d.origin,
+              folderId: d.folderId,
+              reviewedAt: d.reviewedAt,
+            };
+          }),
         );
+      },
+      // Parité « papa vocal » : « c'est bon, valide le ticket » — MÊME use case
+      // AcknowledgeDocument que POST /documents/:id/acknowledge et le bouton « Confirmer »
+      // de la file « À valider ». La révision courante est résolue ici (le geste vocal n'a
+      // pas de vue optimiste) ; le latch du domaine garde l'idempotence de la validation.
+      acknowledgeDocument: async (input) => {
+        const current = await this.getDocument(input.documentId);
+        if (!current.ok) return current;
+        const r = await this.acknowledgeDocument({
+          documentId: input.documentId,
+          expectedRevision: current.value.revision,
+        });
+        if (!r.ok) return r;
+        // Une validation sans reviewedAt posé serait une rupture du contrat du use case.
+        return r.value.reviewedAt !== null
+          ? ok({ documentId: input.documentId, reviewedAt: r.value.reviewedAt })
+          : err(appUnavailable('document-acknowledge'));
+      },
+      // LOT 5 : destinations de classement RÉELLES — chantiers OUVERTS (module autorisé) +
+      // dossiers racine actifs du coffre. MÊMES cibles que le contexte d'analyse documentaire
+      // (documentClassificationContext) : rien d'autre n'est proposable, anti-hallucination.
+      listFilingDestinations: async () => {
+        const [chantiers, foldersPage] = await Promise.all([
+          (async () =>
+            (await this.chantiersAllowed())
+              ? this.p.chantiers.listByCompany(this.companyId())
+              : [])(),
+          this.p.documentFolders.listChildren({
+            companyId: this.companyId(),
+            parentId: null,
+            limit: 100,
+          }),
+        ]);
+        return ok({
+          chantiers: chantiers
+            .map((chantier) => chantier.toProps())
+            .filter((props) => props.status === 'open')
+            .map((props) => ({ id: props.id, nom: props.name })),
+          dossiers: foldersPage.items
+            .filter((folder) => folder.status === 'active')
+            .map((folder) => {
+              const props = folder.toProps();
+              return { id: props.id, nom: props.name, systemKey: props.systemKey ?? null };
+            }),
+        });
+      },
+      // LOT 5 : « range le ticket Aldi dans le chantier Durand » — MÊME séquence que le geste
+      // « Classer là » mobile (use-apply-destination) : MoveDocumentToFolder + ClassifyDocument
+      // (chantier) + nom intelligent (applyAnalysisSuggestedDisplayName, règle suggestedRenameFor :
+      // un renommage humain n'est JAMAIS écrasé ; le renommage est cosmétique, jamais bloquant).
+      fileDocument: async (input) => {
+        const current = await this.getDocument(input.documentId);
+        if (!current.ok) return current;
+        let revision = current.value.revision;
+        if (input.destination.kind === 'folder') {
+          if (current.value.folderId !== input.destination.folderId) {
+            const moved = await this.moveDocumentToFolder({
+              documentId: input.documentId,
+              folderId: input.destination.folderId,
+              expectedRevision: revision,
+            });
+            if (!moved.ok) return moved;
+            revision = moved.value.revision;
+          }
+        } else {
+          // Destination chantier : rangement dans « Chantiers » UNIQUEMENT si l'original n'a
+          // pas encore de dossier (jamais écraser un rangement humain) — même plan que le mobile
+          // (planDestinationApplication), puis lien métier chantier.
+          if (current.value.folderId === null) {
+            const rootFolders = await this.p.documentFolders.listChildren({
+              companyId: this.companyId(),
+              parentId: null,
+              limit: 100,
+            });
+            const projects = rootFolders.items.find(
+              (folder) => folder.status === 'active' && folder.toProps().systemKey === 'projects',
+            );
+            if (projects) {
+              const moved = await this.moveDocumentToFolder({
+                documentId: input.documentId,
+                folderId: projects.toProps().id,
+                expectedRevision: revision,
+              });
+              if (!moved.ok) return moved;
+              revision = moved.value.revision;
+            }
+          }
+          const classified = await this.classifyDocument({
+            documentId: input.documentId,
+            linkedEntityType: 'chantier',
+            linkedEntityId: input.destination.chantierId,
+            expectedRevision: revision,
+          });
+          if (!classified.ok) return classified;
+        }
+        const fresh = await this.getDocument(input.documentId);
+        if (!fresh.ok) return fresh;
+        const renamed = await this.applyAnalysisSuggestedDisplayName(this.companyId(), fresh.value);
+        const view = renamed ?? fresh.value;
+        return ok({
+          documentId: view.id,
+          folderId: view.folderId,
+          linkedEntityType: view.linkedEntityType,
+          linkedEntityId: view.linkedEntityId,
+          displayName: view.displayName,
+        });
+      },
+      // LOT 5 : « renomme-le facture matériaux salle de bain » — MÊME use case RenameDocument
+      // que PUT /documents/:id/name. Le nom dicté devient un renommage HUMAIN (displayName ≠
+      // filename) : prioritaire, plus jamais écrasé par une suggestion d'analyse.
+      renameDocument: async (input) => {
+        const current = await this.getDocument(input.documentId);
+        if (!current.ok) return current;
+        const renamed = await this.renameDocument({
+          documentId: input.documentId,
+          displayName: input.displayName,
+          expectedRevision: current.value.revision,
+        });
+        if (!renamed.ok) return renamed;
+        return ok({ documentId: renamed.value.id, displayName: renamed.value.displayName });
+      },
+      // LOT 5 : « retrouve la facture du radiateur de mars » — MÊME recherche que
+      // GET /documents/search (searchSalesDocuments, ranking Postgres/pg_trgm). Lecture pure.
+      searchDocuments: async (input) => {
+        const r = await this.searchSalesDocuments({
+          query: input.query,
+          scope: input.scope ?? 'all',
+          ...(input.from !== undefined ? { from: input.from } : {}),
+          ...(input.to !== undefined ? { to: input.to } : {}),
+          limit: 8,
+        });
+        if (!r.ok) return r;
+        return ok({
+          hits: r.value.hits.map((hit) => ({
+            source: hit.source,
+            id: hit.id,
+            number: hit.number,
+            customerName: hit.customerName,
+            status: hit.status,
+            date: hit.date,
+            totalTtcCents: hit.totals.ttc,
+            matchedLineLabel: hit.matchedLineLabel,
+          })),
+          totalCount: r.value.totalCount,
+        });
       },
       // C-EXP5b : lecture du calendrier fiscal — même use case que GET /fiscal-calendar (parité humain↔Bob).
       listFiscalDeadlines: async () => this.getFiscalCalendar(),
@@ -2671,6 +2879,11 @@ export class BackendService {
         }),
       sendQuote: async (input) => this.sendQuote(input.quoteId),
       issueInvoice: async (input) => this.issueInvoice({ invoiceId: input.invoiceId }),
+      // S1 (LOT 5) : RESSUSCITE generer_facture_devis — l'outil était annoncé au LLM avec un
+      // handler ASK-2 complet mais MORT en prod (action absente de l'hôte). Pur câblage vers le
+      // MÊME use case GenerateInvoiceFromQuote que l'UI ; le safetyFloor fiscal du registre
+      // s'active seul (confirmation même en 'auto').
+      generateInvoice: async (input) => this.generateInvoice(input),
       // creer_client (C40 TODO partagé) : fiche MINIMALE (nom + type), même use case createCustomer
       // que l'écran Clients — l'adresse (requise par le domaine) part vide, à compléter sur la fiche.
       createCustomer: async (input) =>
@@ -4690,6 +4903,8 @@ export class BackendService {
     const result = await new MoveDocumentToFolder({
       folders: this.p.documentFolders,
       uow: this.p,
+      // Ranger DANS un dossier vaut validation humaine (reviewedAt, latch) — le use case décide.
+      clock: this.clock,
     }).execute({
       companyId: this.companyId(),
       ...input,
@@ -4719,11 +4934,65 @@ export class BackendService {
     });
   }
 
-  async getDocument(documentId: string): Promise<Result<DocumentView, AppError>> {
+  /**
+   * GET /documents/:id — MÊME shape enrichi que la liste (DocumentListItemView) : résumé
+   * d'analyse + chips depuis le SEUL cache persistant, AUCUN appel LLM à la lecture. Un cache
+   * indisponible dégrade en « pas encore analysé » (null), jamais en erreur de lecture.
+   */
+  async getDocument(documentId: string): Promise<Result<DocumentListItemView, AppError>> {
     const document = await this.p.documents.findById(this.companyId(), documentId);
-    return document && document.status === 'active'
-      ? ok(documentToView(document))
-      : { ok: false, error: appNotFound('document', documentId) };
+    if (!document || document.status !== 'active') {
+      return { ok: false, error: appNotFound('document', documentId) };
+    }
+    const view = documentToView(document);
+    let analysis: DocumentAnalysis | null = null;
+    try {
+      const cached = await this.p.documentAnalyses.findExact({
+        companyId: this.companyId(),
+        documentId: view.id,
+        documentVersion: view.version,
+        sourceSha256: view.sha256,
+      });
+      analysis = cached?.analysis ?? null;
+    } catch (cause) {
+      this.logger.warn(
+        `Enrichissement analyse du document indisponible: ${cause instanceof Error ? cause.message : String(cause)}`,
+        'documents',
+      );
+    }
+    return ok({
+      ...view,
+      analysis: analysis ? documentAnalysisSummary(analysis) : null,
+      extraction: analysis ? documentExtractionSummary(analysis) : null,
+    });
+  }
+
+  /**
+   * POST /documents/:id/acknowledge — « c'est bon, je valide » : pose la confirmation humaine
+   * (reviewedAt) SANS déplacer ni lier (AcknowledgeDocument @bob/core, parité humain↔Bob).
+   * Tenant-scopé par companyId + révision optimiste, comme les routes documents voisines.
+   */
+  async acknowledgeDocument(input: {
+    documentId: string;
+    expectedRevision: number;
+  }): Promise<Result<DocumentView, AppError>> {
+    const result = await new AcknowledgeDocument({
+      documents: this.p.documents,
+      clock: this.clock,
+    }).execute({
+      companyId: this.companyId(),
+      documentId: input.documentId,
+      expectedRevision: input.expectedRevision,
+    });
+    if (result.ok) {
+      this.logger.audit('document.acknowledged', {
+        companyId: this.companyId(),
+        documentId: input.documentId,
+        revision: result.value.revision,
+        reviewedAt: result.value.reviewedAt,
+      });
+    }
+    return result;
   }
 
   /**
@@ -5021,6 +5290,8 @@ export class BackendService {
     const result = await new ClassifyDocument({
       documents: this.p.documents,
       linkTargets: this.documentLinkTargets(),
+      // Un classement explicite vaut validation humaine (reviewedAt, latch) — géré par le use case.
+      clock: this.clock,
     }).execute({
       companyId: this.companyId(),
       documentId: input.documentId,
@@ -5225,6 +5496,52 @@ export class BackendService {
   }
 
   /**
+   * LOT 3 — nom intelligent au record : applique le suggestedDisplayName de l'analyse PERSISTÉE
+   * en cache (aucun LLM ici) au moment où la dépense est créée, UNIQUEMENT si le libellé courant
+   * vaut encore le filename d'archive (règle suggestedRenameFor côté serveur : un renommage
+   * humain n'est JAMAIS écrasé). Cosmétique : tout échec dégrade en « pas de renommage »,
+   * jamais en échec de la dépense. Retourne la vue renommée, ou null si rien n'a été appliqué.
+   */
+  private async applyAnalysisSuggestedDisplayName(
+    companyId: string,
+    view: DocumentView,
+  ): Promise<DocumentView | null> {
+    try {
+      const cached = await this.p.documentAnalyses.findExact({
+        companyId,
+        documentId: view.id,
+        documentVersion: view.version,
+        sourceSha256: view.sha256,
+      });
+      const suggested = (cached?.analysis.suggestedDisplayName ?? '').replace(/\s+/g, ' ').trim();
+      if (!suggested) return null;
+      const current = view.displayName.replace(/\s+/g, ' ').trim();
+      const original = view.filename.replace(/\s+/g, ' ').trim();
+      // Renommage humain (displayName ≠ filename) : intouchable — même règle que le mobile.
+      if (current.length > 0 && current !== original) return null;
+      if (suggested === current) return null;
+      const validated = validateDocumentDisplayName(suggested);
+      if (!validated.ok) return null;
+      const saved = await this.p.documents.rename({
+        companyId,
+        documentId: view.id,
+        displayName: validated.value,
+        expectedRevision: view.revision,
+      });
+      if (saved !== 'saved') return null;
+      this.logger.audit('document.renamed', {
+        companyId,
+        documentId: view.id,
+        revision: view.revision + 1,
+        source: 'analysis-suggestion',
+      });
+      return { ...view, displayName: validated.value, revision: view.revision + 1 };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Dernier geste du scan : la dépense, E1, le rangement et le lien métier commitent ensemble.
    * L'original est déjà archivé ; aucune I/O storage/IA n'entre dans cette transaction courte.
    */
@@ -5337,6 +5654,7 @@ export class BackendService {
           const moved = await new MoveDocumentToFolder({
             folders: this.p.documentFolders,
             uow: this.p,
+            clock: this.clock,
           }).execute({
             companyId,
             documentId: input.documentId,
@@ -5355,9 +5673,10 @@ export class BackendService {
           }
         }
 
-        return new ClassifyDocument({
+        const classified = await new ClassifyDocument({
           documents: this.p.documents,
           linkTargets: this.documentLinkTargets(),
+          clock: this.clock,
         }).execute({
           companyId,
           documentId: input.documentId,
@@ -5365,6 +5684,10 @@ export class BackendService {
           linkedEntityId: expenseId,
           expectedRevision: revision,
         });
+        if (!classified.ok) return classified;
+        // LOT 3 — nom intelligent au record, DANS la même transaction que la dépense/E1/lien.
+        const renamed = await this.applyAnalysisSuggestedDisplayName(companyId, classified.value);
+        return ok(renamed ?? classified.value);
       },
     );
     if (!coordinated.ok) return coordinated;

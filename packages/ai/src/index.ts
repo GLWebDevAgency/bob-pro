@@ -5,6 +5,7 @@ export * from './voice/voice-confirm';
 export * from './voice/voice-choice';
 export * from './voice/echo-guard';
 export * from './voice/streaming';
+export * from './voice/speech-sanitizer';
 export * from './voice/canonical-speech';
 export * from './realtime/agent-bridge';
 export * from './realtime/usage-metering';

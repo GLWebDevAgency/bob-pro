@@ -115,3 +115,25 @@ Plan en 3 crans, chacun ne se justifiant que si le précédent plafonne :
    anti-hallucination contre le contexte = discipline KG déjà en place).
 3. (si preuve du besoin) PROJECTION graphe/vecteurs DÉRIVÉE de Postgres (jamais source
    de vérité) : CTE récursives + pgvector d'abord, GraphRAG seulement si mesuré utile.
+
+### P8.2 — Mémoire de l'agent (question fondateur 18/07, avis Claude)
+Redis REFUSÉ pour la mémoire : c'est un cache de latence/état éphémère, or la mémoire
+d'agent n'a ni problème de latence (quelques ms Postgres, invisibles dans un tour LLM
+de 1-3 s) ni de volume (tenant artisan minuscule) — une infra de plus = une source de
+vérité de plus. Modèle en 3 couches, calqué sur le fonctionnement de Claude Code :
+1. MÉMOIRE DE TRAVAIL (session) : le fil de conversation (history, 5 derniers tours
+   utilisateur + dernier tour Bob pour les anaphores — LIVE-2, déjà en place) ; la
+   fondation durable est POSÉE par la lane GPT (mistral-conversation-authority Postgres,
+   v2 fail-closed OFF) — c'est là que vivront reprise/replay, pas dans Redis.
+2. MÉMOIRE DES ACTES : Bob ne doit JAMAIS « se souvenir » de ce qu'il a fait — il RELIT.
+   La BDD métier + l'audit trail (audit:document.* etc.) SONT sa mémoire d'actions :
+   source de vérité relue à la demande (tool historique/audit), zéro dérive possible.
+   Principe Claude Code : l'état du monde (git/BDD) prime toujours sur le souvenir.
+3. MÉMOIRE SÉMANTIQUE DURABLE (le chantier P8, pas avant) : petits faits CURÉS par
+   tenant — habitudes (« Free → frais généraux »), corrections, préférences — persistés
+   Postgres avec provenance + confiance + validation humaine (= les arêtes inférées de
+   P8.1), injectés en contexte au bon moment (tenant context du scanner V2, même canal).
+   + COMPACTION : résumé de fin de session généré par le modèle, stocké en BDD, relu à
+   l'ouverture de la suivante (le pattern résumé-de-contexte de Claude Code).
+V1 : RIEN à construire — fil de session + BDD + audit suffisent ; l'amnésie
+inter-sessions des échanges (pas des données) est un comportement v1 standard.

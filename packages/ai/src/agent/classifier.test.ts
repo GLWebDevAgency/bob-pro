@@ -70,6 +70,23 @@ describe('classifyWithLlm (tool-calling -> plan)', () => {
     expect(r.steps[1]?.reference).toBe('Durand');
   });
 
+  it('mappe les outils documents du LOT 5 (classer/renommer/chercher) avec leur référence', async () => {
+    const r = await classifyWithLlm(
+      fakeLlm({
+        text: null,
+        toolCalls: [
+          { name: 'classer_document', arguments: { reference: 'ticket Aldi' } },
+          { name: 'renommer_document', arguments: { reference: 'ticket Aldi' } },
+          { name: 'chercher_document', arguments: { reference: 'radiateur' } },
+        ],
+        model: 'glm',
+      }),
+      'range le ticket aldi puis renomme-le et retrouve la facture du radiateur',
+    );
+    expect(r.steps.map((s) => s.intent)).toEqual(['classer_document', 'renommer_document', 'chercher_document']);
+    expect(r.steps[2]?.reference).toBe('radiateur');
+  });
+
   it('mappe séparément le batch « notifications lues »', async () => {
     const r = await classifyWithLlm(
       fakeLlm({
@@ -80,6 +97,14 @@ describe('classifyWithLlm (tool-calling -> plan)', () => {
       'marque toutes mes notifications comme lues',
     );
     expect(r.steps).toEqual([{ intent: 'marquer_notifications_lues', reference: null }]);
+  });
+
+  it('mappe l’outil aide_capacites (découvrabilité S9) sur l’intent aide', async () => {
+    const r = await classifyWithLlm(
+      fakeLlm({ text: null, toolCalls: [{ name: 'aide_capacites', arguments: {} }], model: 'glm' }),
+      'tu sais faire quoi ?',
+    );
+    expect(r.steps).toEqual([{ intent: 'aide', reference: null }]);
   });
 
   it('réponse texte (aucun outil) -> plan vide (hors périmètre)', async () => {

@@ -811,6 +811,10 @@ model StoredDocument {
   createdBy            String?
   retentionUntil       String
   deletedAt            DateTime?
+  /** Confirmation humaine (« c'est bon, je valide ») d'un document scanné — humain ou Bob,
+   * parité voix. NULL = jamais validé : un doc rangé (folderId non nul) SANS validation reste
+   * « à valider ». La première validation fait foi (latch), jamais réécrite. */
+  reviewedAt           DateTime?
   tags                 String[]                        @default([])
   versions             StoredDocumentVersion[]
   analyses             DocumentAnalysisCache[]         @relation("StoredDocumentAnalyses")

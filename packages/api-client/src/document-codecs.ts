@@ -130,6 +130,12 @@ export function decodeDocumentView(value: unknown): DocumentView | null {
         ? displayNameFromFilename(filename)
         : null
       : string(candidate.displayName, DOCUMENT_DISPLAY_NAME_MAX_LENGTH);
+  // Compat ascendante : champ absent/null (serveur historique) ⇒ null « jamais validé »,
+  // JAMAIS un crash ; présent mais hors contrat ⇒ rejet strict, comme les autres champs.
+  const reviewedAt =
+    candidate.reviewedAt === undefined || candidate.reviewedAt === null
+      ? null
+      : instant(candidate.reviewedAt) ?? undefined;
 
   if (
     !id
@@ -148,6 +154,7 @@ export function decodeDocumentView(value: unknown): DocumentView | null {
     || !revision
     || !version
     || !byteSize
+    || reviewedAt === undefined
     || !DOCUMENT_KINDS.has(String(candidate.kind))
     || !DOCUMENT_ORIGINS.has(String(candidate.origin))
     || !DOCUMENT_STATUSES.has(String(candidate.status))
@@ -193,6 +200,7 @@ export function decodeDocumentView(value: unknown): DocumentView | null {
     createdBy,
     retentionUntil,
     tags,
+    reviewedAt,
   };
 }
 
@@ -208,6 +216,23 @@ export function decodeDocumentViews(value: unknown): DocumentView[] | null {
 }
 
 const ANALYSIS_TYPES = new Set<string>(DOCUMENT_ANALYSIS_TYPES);
+
+/**
+ * Liste bornée de chaînes propres (tags/warnings du résumé). Défensif par CHAMP : une forme
+ * hors contrat (non-tableau, entrée non-string, trop longue) est ignorée — jamais un crash,
+ * jamais un rejet du résumé entier (compat ascendante avec les serveurs sans ces champs).
+ */
+function boundedStringList(value: unknown, maxItems: number, maxLength: number): readonly string[] {
+  if (!Array.isArray(value)) return [];
+  const items: string[] = [];
+  for (const entry of value) {
+    const item = string(entry, maxLength);
+    if (!item || items.includes(item)) continue;
+    items.push(item);
+    if (items.length >= maxItems) break;
+  }
+  return items;
+}
 
 /** Résumé d'analyse d'un item de liste. Défensif : toute forme hors contrat ⇒ null. */
 export function decodeDocumentAnalysisSummary(value: unknown): DocumentAnalysisSummaryView | null {
@@ -233,6 +258,12 @@ export function decodeDocumentAnalysisSummary(value: unknown): DocumentAnalysisS
         ? null
         : decodeDocumentDestinationSuggestion(candidate.suggestedDestination),
     requiresHumanReview: candidate.requiresHumanReview,
+    // Carte « exactement celle du scan » : résumé/tags/warnings persistés (bornes du domaine —
+    // summary ≤ 800, ≤ 8 tags de ≤ 32, ≤ 8 warnings de ≤ 240). Champ absent ⇒ null/[] (compat
+    // ascendante avec les serveurs antérieurs), jamais un crash ni une valeur inventée.
+    summary: string(candidate.summary, 800),
+    suggestedTags: boundedStringList(candidate.suggestedTags, 8, 32),
+    warnings: boundedStringList(candidate.warnings, 8, 240),
   };
 }
 
@@ -274,6 +305,24 @@ export function decodeDocumentListItem(value: unknown): DocumentListItemView | n
   };
 }
 
+/**
+ * Item enrichi lié au tenant/à la ressource demandés (GET /documents/:id) : la vue document
+ * reste STRICTE, les résumés d'analyse restent TOLÉRANTS (absents/hors contrat ⇒ null).
+ */
+export function decodeDocumentListItemForContext(
+  value: unknown,
+  context: DocumentViewDecodeContext,
+): DocumentListItemView | null {
+  const document = decodeDocumentViewForContext(value, context);
+  if (!document) return null;
+  const candidate = object(value);
+  return {
+    ...document,
+    analysis: decodeDocumentAnalysisSummary(candidate?.analysis),
+    extraction: decodeDocumentExtractionSummary(candidate?.extraction),
+  };
+}
+
 export function decodeDocumentListItemsForCompany(
   value: unknown,
   companyId: string,
@@ -296,6 +345,9 @@ export function documentAnalysisSummaryView(analysis: DocumentAnalysis): Documen
     suggestedDisplayName: analysis.suggestedDisplayName,
     suggestedDestination: analysis.suggestedDestination,
     requiresHumanReview: analysis.requiresHumanReview,
+    summary: analysis.summary,
+    suggestedTags: analysis.suggestedTags,
+    warnings: analysis.warnings,
   };
 }
 
@@ -669,12 +721,15 @@ export function decodeDocumentExpenseCreationForContext(
     folderId: context.targetFolderId,
     linkedEntityType: 'expense',
     linkedEntityId: expenseId,
-    // Même dossier : classify N→N+1. Nouveau dossier : move N→N+1 puis
-    // classify N+1→N+2. Un replay peut aussi recevoir la révision courante N.
+    // Même dossier : classify+validation N→N+2. Nouveau dossier : move+validation N→N+2 puis
+    // classify N+2→N+3. Le nom intelligent (suggestedDisplayName appliqué au record) peut
+    // ajouter +1. Un replay peut aussi recevoir une révision intermédiaire ou la courante N.
     allowedRevisions: [
       context.expectedRevision,
       context.expectedRevision + 1,
       context.expectedRevision + 2,
+      context.expectedRevision + 3,
+      context.expectedRevision + 4,
     ],
   });
   return document ? { expenseId, document } : null;
@@ -752,7 +807,11 @@ export function decodeDocumentMoveForContext(
     !moved
     || moved.documentId !== context.documentId
     || moved.folderId !== context.folderId
-    || (moved.revision !== context.expectedRevision && moved.revision !== context.expectedRevision + 1)
+    // N : no-op idempotent · N+1 : déplacement OU validation seule (ranger vers le dossier
+    // courant pose reviewedAt) · N+2 : déplacement + validation (rangement vaut confirmation).
+    || (moved.revision !== context.expectedRevision
+      && moved.revision !== context.expectedRevision + 1
+      && moved.revision !== context.expectedRevision + 2)
   ) return null;
   return moved;
 }

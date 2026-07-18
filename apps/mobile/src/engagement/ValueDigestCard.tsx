@@ -37,7 +37,7 @@ export function useLatestValueDigest() {
       if (!result.ok) throw result.error;
       return result.value;
     },
-    staleTime: 15 * 60 * 1000, // le digest hebdo ne bouge pas à la minute
+    staleTime: 60 * 60 * 1000, // S8 : le digest est HEBDOMADAIRE (cron lundi) — 1 h sans re-GET
     retry: false, // pas de valeur = pas de carte — jamais un spinner de vente
   });
   return {

@@ -100,6 +100,109 @@ export interface AgentDocument {
   linkedEntityType: string | null;
   linkedEntityId: string | null;
   createdAt: string;
+  // —— Champs OPTIONNELS (rétro-compatibles hôtes existants) — ciblage vocal du coffre ——
+  /** Libellé intelligent (renommage humain > suggestion d'analyse > filename) — « le ticket Aldi ». */
+  displayName?: string;
+  /** Provenance (generated | uploaded | ocr) — seul un scan (ocr) entre dans « À valider ». */
+  origin?: string;
+  /** Dossier de rangement — null : pas encore rangé (la validation vocale exige un doc rangé). */
+  folderId?: string | null;
+  /** Confirmation humaine posée (latch) — null : le doc attend encore « c'est bon, je valide ». */
+  reviewedAt?: string | null;
+}
+
+/** Outil valider_document (parité humain↔Bob) : pose reviewedAt via AcknowledgeDocument @bob/core
+ * — même use case que le bouton « Confirmer » de la file « À valider ». Ne déplace ni ne lie rien. */
+export interface AcknowledgeDocumentActionInput {
+  documentId: string;
+}
+
+/** Chantier OUVERT du tenant — cible RÉELLE de classement (jamais un id inventé par le LLM). */
+export interface FilingChantier {
+  id: string;
+  nom: string;
+}
+
+/** Dossier du coffre (racine, actif) — cible RÉELLE de classement par nom. */
+export interface FilingFolder {
+  id: string;
+  nom: string;
+  /** Clé système (purchases/sales/projects/…) — null : dossier créé par l'artisan. */
+  systemKey: string | null;
+}
+
+/** Destinations de classement du tenant (outil classer_document) : les SEULES cibles que Bob
+ * peut proposer — même autorité que le contexte d'analyse documentaire (anti-hallucination). */
+export interface FilingDestinations {
+  chantiers: FilingChantier[];
+  dossiers: FilingFolder[];
+}
+
+/** Destination d'un classement vocal — chantier ouvert (lien métier) OU dossier du coffre. */
+export type FileDocumentDestination =
+  | { kind: 'chantier'; chantierId: string }
+  | { kind: 'folder'; folderId: string };
+
+/** Outil classer_document : MÊME séquence que le geste « Classer là » mobile —
+ * MoveDocumentToFolder + ClassifyDocument (chantier) + nom intelligent (règle suggestedRenameFor :
+ * jamais par-dessus un renommage humain). L'hôte exécute la séquence via les MÊMES use cases. */
+export interface FileDocumentActionInput {
+  documentId: string;
+  destination: FileDocumentDestination;
+}
+
+export interface FileDocumentActionOutput {
+  documentId: string;
+  folderId: string | null;
+  linkedEntityType: string | null;
+  linkedEntityId: string | null;
+  /** Libellé après classement (nom intelligent appliqué, ou libellé humain conservé). */
+  displayName: string;
+}
+
+/** Outil renommer_document : RenameDocument (@bob/core) — le nom donné devient un renommage
+ * HUMAIN prioritaire (les suggestions d'analyse ne l'écraseront plus jamais). */
+export interface RenameDocumentActionInput {
+  documentId: string;
+  displayName: string;
+}
+
+export interface RenameDocumentActionOutput {
+  documentId: string;
+  displayName: string;
+}
+
+/** Outil chercher_document : recherche RÉELLE devis & factures (GET /documents/search côté API,
+ * pg_trgm) — lecture pure, mêmes résultats que l'écran de recherche. */
+export interface SearchDocumentsActionInput {
+  query: string;
+  scope?: 'quote' | 'invoice' | 'all';
+  /** Bornes incluses (YYYY-MM-DD) — dérivées d'un mois dit (« de mars »), jamais devinées. */
+  from?: string;
+  to?: string;
+}
+
+export interface AgentSearchHit {
+  source: 'quote' | 'invoice';
+  id: string;
+  number: string | null;
+  customerName: string;
+  status: string;
+  date: string | null;
+  totalTtcCents: number;
+  /** Libellé de LIGNE ayant matché (« radiateur ») — null si le match vient du numéro/client. */
+  matchedLineLabel: string | null;
+}
+
+export interface SearchDocumentsActionOutput {
+  hits: AgentSearchHit[];
+  totalCount: number;
+}
+
+export interface AcknowledgeDocumentActionOutput {
+  documentId: string;
+  /** Horodatage de validation posé (ou conservé — latch : la première validation fait foi). */
+  reviewedAt: string;
 }
 
 /** Outil relance_brouillon (parité C15 TODO ① — C25) : cible optionnelle. Sans cible, l'hôte
@@ -275,4 +378,23 @@ export interface BobActions {
   markNotificationsReadThrough?(
     input: NotificationReadThroughInput,
   ): Promise<Result<NotificationReadThroughOutput, AppError>>;
+  /** « C'est bon, valide le ticket » — MÊME use case AcknowledgeDocument (@bob/core) que le
+   * bouton « Confirmer » de la file « À valider » (parité humain↔Bob). L'hôte résout la
+   * révision courante côté serveur ; le latch garantit l'idempotence (jamais réécrit). */
+  acknowledgeDocument?(
+    input: AcknowledgeDocumentActionInput,
+  ): Promise<Result<AcknowledgeDocumentActionOutput, AppError>>;
+  /** Destinations de classement RÉELLES du tenant (chantiers ouverts + dossiers racine actifs)
+   * — lecture pure, la SEULE autorité de résolution de classer_document (jamais d'id inventé). */
+  listFilingDestinations?(): Promise<Result<FilingDestinations, AppError>>;
+  /** « Range le ticket Aldi dans le chantier Durand » — MÊME séquence que le geste « Classer
+   * là » mobile : MoveDocumentToFolder + ClassifyDocument (chantier) + nom intelligent
+   * (suggestedRenameFor : un renommage humain n'est JAMAIS écrasé). L'hôte résout les révisions. */
+  fileDocument?(input: FileDocumentActionInput): Promise<Result<FileDocumentActionOutput, AppError>>;
+  /** « Renomme-le facture matériaux salle de bain » — MÊME use case RenameDocument que l'écran
+   * détail : le nom dicté devient un renommage humain PRIORITAIRE sur toute suggestion. */
+  renameDocument?(input: RenameDocumentActionInput): Promise<Result<RenameDocumentActionOutput, AppError>>;
+  /** « Retrouve la facture du radiateur de mars » — MÊME recherche que GET /documents/search
+   * (devis & factures, ranking serveur). Lecture pure, résultats réels uniquement. */
+  searchDocuments?(input: SearchDocumentsActionInput): Promise<Result<SearchDocumentsActionOutput, AppError>>;
 }

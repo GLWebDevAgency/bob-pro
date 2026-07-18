@@ -438,9 +438,10 @@ describe('HttpBobClient', () => {
       linkedEntityId: 'forged',
     };
 
+    // Compat ascendante : reviewedAt absent (serveur historique) ⇒ null, jamais un rejet.
     await expect(client.recordDocumentExpense(runtimeExtendedInput)).resolves.toEqual({
       ok: true,
-      value: response,
+      value: { expenseId: 'expense-1', document: { ...response.document, reviewedAt: null } },
     });
   });
 
@@ -503,7 +504,12 @@ describe('HttpBobClient', () => {
     vi.stubGlobal('fetch', fetchMock);
     const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
 
-    await expect(client.getDocument(documentId)).resolves.toEqual({ ok: true, value: response });
+    // GET /documents/:id enrichi : même shape que la liste — résumés absents ⇒ null (« pas
+    // encore analysé »), reviewedAt absent (serveur historique) ⇒ null, jamais un rejet.
+    await expect(client.getDocument(documentId)).resolves.toEqual({
+      ok: true,
+      value: { ...response, reviewedAt: null, analysis: null, extraction: null },
+    });
 
     fetchMock.mockImplementationOnce(async () => new Response(JSON.stringify({
       ...response,
@@ -515,6 +521,133 @@ describe('HttpBobClient', () => {
     if (!crossTenant.ok) {
       expect(crossTenant.error).toMatchObject({ kind: 'dependency', port: 'api-contract' });
     }
+  });
+
+  it('acknowledgeDocument : POST encodé, révision bornée, refuse une 2xx sans confirmation posée', async () => {
+    const sha = 'a'.repeat(64);
+    const documentId = 'document/ack?1';
+    const response = {
+      id: documentId,
+      companyId: 'company-1',
+      kind: 'expense_receipt',
+      origin: 'ocr',
+      status: 'active',
+      filename: 'ticket.jpg',
+      displayName: 'ticket.jpg',
+      mimeType: 'image/jpeg',
+      byteSize: 123,
+      sha256: sha,
+      storageKey: `companies/company-1/documents/${documentId}/v1/${sha}.jpg`,
+      folderId: null,
+      revision: 2,
+      version: 1,
+      linkedEntityType: null,
+      linkedEntityId: null,
+      documentDate: '2026-07-13',
+      issuedAt: null,
+      createdAt: '2026-07-13T12:00:00.000Z',
+      createdBy: 'user-1',
+      retentionUntil: '2036-07-13',
+      tags: ['ticket'],
+      reviewedAt: '2026-07-13T12:01:00.000Z',
+    };
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      expect(String(url)).toBe('https://api.bob.test/documents/document%2Fack%3F1/acknowledge');
+      expect(init?.method).toBe('POST');
+      // Seule la révision optimiste voyage — reviewedAt reste sous autorité serveur.
+      expect(JSON.parse(String(init?.body))).toEqual({ expectedRevision: 1 });
+      return new Response(JSON.stringify(response), { headers: { 'content-type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+
+    await expect(client.acknowledgeDocument({ documentId, expectedRevision: 1 })).resolves.toEqual({
+      ok: true,
+      value: response,
+    });
+
+    // 2xx sans reviewedAt posé = rupture de contrat : jamais accepté silencieusement.
+    fetchMock.mockImplementationOnce(async () => new Response(JSON.stringify({
+      ...response,
+      reviewedAt: null,
+    }), { headers: { 'content-type': 'application/json' } }));
+    const unconfirmed = await client.acknowledgeDocument({ documentId, expectedRevision: 1 });
+    expect(unconfirmed).toMatchObject({
+      ok: false,
+      error: { kind: 'dependency', port: 'api-contract' },
+    });
+
+    // Révision hors bande [N, N+1] : la réponse ne peut pas provenir de cette commande.
+    fetchMock.mockImplementationOnce(async () => new Response(JSON.stringify({
+      ...response,
+      revision: 4,
+    }), { headers: { 'content-type': 'application/json' } }));
+    const outOfBand = await client.acknowledgeDocument({ documentId, expectedRevision: 1 });
+    expect(outOfBand).toMatchObject({
+      ok: false,
+      error: { kind: 'dependency', port: 'api-contract' },
+    });
+  });
+
+  it('classifyDocument : accepte la bande N..N+2 (classement + validation atomiques) et rejette au-delà', async () => {
+    const sha = 'b'.repeat(64);
+    const documentId = 'document-classify-1';
+    // Serveur ClassifyDocument sur un doc jamais validé : classement (+1) PUIS reviewedAt (+1) ⇒ N+2.
+    const response = {
+      id: documentId,
+      companyId: 'company-1',
+      kind: 'expense_receipt',
+      origin: 'ocr',
+      status: 'active',
+      filename: 'facture.jpg',
+      displayName: 'facture.jpg',
+      mimeType: 'image/jpeg',
+      byteSize: 123,
+      sha256: sha,
+      storageKey: `companies/company-1/documents/${documentId}/v1/${sha}.jpg`,
+      folderId: 'folder-achats',
+      revision: 3,
+      version: 1,
+      linkedEntityType: 'chantier',
+      linkedEntityId: 'chantier-1',
+      documentDate: '2026-07-13',
+      issuedAt: null,
+      createdAt: '2026-07-13T12:00:00.000Z',
+      createdBy: 'user-1',
+      retentionUntil: '2036-07-13',
+      tags: ['facture'],
+      reviewedAt: '2026-07-13T12:01:00.000Z',
+    };
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify(response), { headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+    const input = {
+      documentId,
+      linkedEntityType: 'chantier' as const,
+      linkedEntityId: 'chantier-1',
+      expectedRevision: 1,
+    };
+
+    // N+2 (doc jamais validé — le cas de TOUT classement direct sans move préalable) : accepté.
+    await expect(client.classifyDocument(input)).resolves.toEqual({ ok: true, value: response });
+
+    // N+1 (doc déjà validé : classement seul) : accepté.
+    fetchMock.mockImplementationOnce(async () => new Response(JSON.stringify({
+      ...response,
+      revision: 2,
+    }), { headers: { 'content-type': 'application/json' } }));
+    await expect(client.classifyDocument(input)).resolves.toMatchObject({ ok: true });
+
+    // N+3 : hors bande — la réponse ne peut pas provenir de cette commande.
+    fetchMock.mockImplementationOnce(async () => new Response(JSON.stringify({
+      ...response,
+      revision: 4,
+    }), { headers: { 'content-type': 'application/json' } }));
+    await expect(client.classifyDocument(input)).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'dependency', port: 'api-contract' },
+    });
   });
 
   it('encode chaque segment dynamique du coffre documentaire', async () => {
@@ -1175,6 +1308,7 @@ describe('HttpBobClient', () => {
 
 describe('HttpBobClient — assistant Bob (C40 ⑧ : ask/confirm/journal serveur)', () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
@@ -1244,6 +1378,37 @@ describe('HttpBobClient — assistant Bob (C40 ⑧ : ask/confirm/journal serveur
     expect(r.value).toEqual(proposedRun);
     expect(r.value.pending?.tool).toBe('encaisser_facture'); // rejouable tel quel via confirmBob
   });
+
+  it.each([
+    ['askBob', (client: HttpBobClient) => client.askBob({ message: 'encaisse la facture 2026-014' })],
+    ['previewBobProposal', (client: HttpBobClient) => client.previewBobProposal('proposal-server-1')],
+    ['confirmBob', (client: HttpBobClient) => client.confirmBob(proposedRun.pending!)],
+  ] as const)(
+    'borne le tour agent %s à 50 s : abort à l’expiration → AppError kind dependency',
+    async (_label, invoke) => {
+      vi.useFakeTimers();
+      let requestSignal: AbortSignal | null | undefined;
+      vi.stubGlobal('fetch', vi.fn((_url: unknown, init?: RequestInit) => {
+        requestSignal = init?.signal;
+        return new Promise<Response>(() => undefined); // serveur muet : la requête pend
+      }));
+      const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-1' });
+
+      const pending = invoke(client);
+      await vi.advanceTimersByTimeAsync(50_000);
+
+      // L'Assistant mobile mappe ce kind sur ses circuits hors-ligne (assistant.offline / live.error).
+      await expect(pending).resolves.toMatchObject({
+        ok: false,
+        error: {
+          kind: 'dependency',
+          port: 'api',
+          cause: 'Délai réseau dépassé après 50000 ms.',
+        },
+      });
+      expect(requestSignal?.aborted).toBe(true);
+    },
+  );
 
   it('confirmBob ne POSTe que le proposalId opaque sur /ai/confirm et rend le run « done »', async () => {
     const doneRun: AgentRun = {

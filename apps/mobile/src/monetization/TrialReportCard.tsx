@@ -37,7 +37,7 @@ export function useTrialReport() {
       if (!result.ok) throw result.error;
       return result.value;
     },
-    staleTime: 15 * 60 * 1000, // le bilan d'essai ne bouge pas à la minute
+    staleTime: 60 * 60 * 1000, // S8 : le bilan d'essai bouge au rythme de l'essai — 1 h sans re-GET
     retry: false, // pas de bilan = pas de carte — jamais un spinner de vente
   });
   return {

@@ -88,6 +88,7 @@ import type {
   ListDocumentsClientInput,
   DocumentListItemView,
   RenameDocumentClientInput,
+  AcknowledgeDocumentClientInput,
   UploadDocumentClientInput,
   VoiceConfig,
   VoiceSynthesisResult,
@@ -136,6 +137,7 @@ import {
   decodeDocumentFolderViewForContext,
   decodeDocumentMoveForContext,
   decodeDocumentViewForContext,
+  decodeDocumentListItemForContext,
   decodeDocumentListItemsForCompany,
 } from './document-codecs';
 import { decodeExpenseCreation } from './expense-idempotency';
@@ -159,6 +161,10 @@ const DOCUMENT_UPLOAD_TIMEOUT_MS = 45_000;
 const DOCUMENT_ANALYSIS_TIMEOUT_MS = 75_000;
 const TEXT_EXPORT_TIMEOUT_MS = 45_000;
 const QUOTE_CREATION_TIMEOUT_MS = 20_000;
+// Tour d'agent Bob (classification LLM + action + naturalisation) : long mais jamais infini.
+// À l'expiration, `req` rend un AppError kind 'dependency' — l'Assistant mobile retombe alors
+// sur ses circuits hors-ligne existants (assistant.offline / live.error + ré-écoute).
+const AGENT_TURN_TIMEOUT_MS = 50_000;
 // Supérieur au budget serveur maximal (8,5 s) avec marge réseau/décodage, sans attente infinie.
 const REALTIME_BOOTSTRAP_TIMEOUT_MS = 12_000;
 const REALTIME_CONTROL_ACK_TIMEOUT_MS = 4_000;
@@ -1898,14 +1904,37 @@ export class HttpBobClient implements BobClient {
       DOCUMENT_MUTATION_TIMEOUT_MS,
     );
   }
+  /** GET /documents/:id — même shape enrichi que la liste ; les résumés d'analyse restent
+   * tolérants (absents/hors contrat ⇒ null « pas encore analysé », jamais un crash). */
   getDocument(documentId: string) {
-    return this.req<DocumentView>(
+    return this.req<DocumentListItemView>(
       'GET',
       `/documents/${encodeURIComponent(documentId)}`,
       undefined,
       undefined,
-      (value) => decodeDocumentViewForContext(value, { companyId: this.companyId, documentId }),
+      (value) => decodeDocumentListItemForContext(value, { companyId: this.companyId, documentId }),
       DOCUMENT_READ_TIMEOUT_MS,
+    );
+  }
+  /** POST /documents/:id/acknowledge — pose reviewedAt (latch) sans déplacer ni lier. */
+  acknowledgeDocument(input: AcknowledgeDocumentClientInput) {
+    const { documentId, ...body } = input;
+    return this.req<DocumentView>(
+      'POST',
+      `/documents/${encodeURIComponent(documentId)}/acknowledge`,
+      body,
+      undefined,
+      (value) => {
+        const document = decodeDocumentViewForContext(value, {
+          companyId: this.companyId,
+          documentId,
+          // Validation effective : révision N→N+1 ; déjà validé (idempotence latch) : révision N.
+          allowedRevisions: [input.expectedRevision, input.expectedRevision + 1],
+        });
+        // Une réponse 2xx sans confirmation posée est une rupture de contrat.
+        return document && document.reviewedAt !== null ? document : null;
+      },
+      DOCUMENT_MUTATION_TIMEOUT_MS,
     );
   }
   uploadDocument(input: UploadDocumentClientInput) {
@@ -2059,7 +2088,15 @@ export class HttpBobClient implements BobClient {
           documentId,
           linkedEntityType: input.linkedEntityType,
           linkedEntityId: input.linkedEntityId,
-          allowedRevisions: [input.expectedRevision, input.expectedRevision + 1],
+          // ClassifyDocument (@bob/core) = classement + validation humaine atomiques :
+          // N (replay idempotent — déjà lié ET validé), N+1 (doc déjà validé : classement
+          // seul), N+2 (doc jamais validé : classement + reviewedAt). Même bande que le
+          // serveur et que les clients local/in-memory (parité).
+          allowedRevisions: [
+            input.expectedRevision,
+            input.expectedRevision + 1,
+            input.expectedRevision + 2,
+          ],
         }),
       DOCUMENT_MUTATION_TIMEOUT_MS,
     );
@@ -2300,10 +2337,17 @@ export class HttpBobClient implements BobClient {
       ...(input.tone !== undefined ? { tone: input.tone } : {}),
       ...(input.context !== undefined ? { context: input.context } : {}),
     };
-    return this.req<AgentRun>('POST', '/ai/ask', body);
+    return this.req<AgentRun>('POST', '/ai/ask', body, undefined, undefined, AGENT_TURN_TIMEOUT_MS);
   }
   previewBobProposal(proposalId: string) {
-    return this.req<PendingAction>('GET', `/ai/proposals/${encodeURIComponent(proposalId)}`);
+    return this.req<PendingAction>(
+      'GET',
+      `/ai/proposals/${encodeURIComponent(proposalId)}`,
+      undefined,
+      undefined,
+      undefined,
+      AGENT_TURN_TIMEOUT_MS,
+    );
   }
   confirmBob(pending: PendingAction) {
     // La confirmation HTTP référence exclusivement la proposition persistée côté serveur.
@@ -2312,7 +2356,7 @@ export class HttpBobClient implements BobClient {
     // pas de proposalId — on lui renvoie alors l'ancien contrat (PendingAction complet) au
     // lieu d'un { proposalId: undefined } qui casserait toute confirmation.
     const body = pending.proposalId !== undefined ? { proposalId: pending.proposalId } : pending;
-    return this.req<AgentRun>('POST', '/ai/confirm', body);
+    return this.req<AgentRun>('POST', '/ai/confirm', body, undefined, undefined, AGENT_TURN_TIMEOUT_MS);
   }
   getRunJournal(runId: string) {
     return this.req<JournalEntry[]>('GET', `/ai/runs/${encodeURIComponent(runId)}/journal`);

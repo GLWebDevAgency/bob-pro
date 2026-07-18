@@ -149,4 +149,37 @@ describe('SupabaseDocumentStorage — 400 not_found = absence, pas une erreur', 
       (storage as unknown as { __restore: () => void }).__restore();
     }
   });
+
+  it('getSignedUrl : le chemin relatif Supabase (« /object/sign/… ») est préfixé de /storage/v1', async () => {
+    const storage = makeStorage(
+      (async () =>
+        new Response(JSON.stringify({ signedURL: `/object/sign/bob-documents/${KEY}?token=t1` }), {
+          status: 200,
+        })) as typeof fetch,
+    );
+    try {
+      await expect(storage.getSignedUrl('co-1', KEY, 60)).resolves.toBe(
+        `https://stub.supabase.co/storage/v1/object/sign/bob-documents/${KEY}?token=t1`,
+      );
+    } finally {
+      (storage as unknown as { __restore: () => void }).__restore();
+    }
+  });
+
+  it('getSignedUrl : un chemin déjà absolu ou déjà préfixé /storage/v1 reste intact', async () => {
+    const storage = makeStorage(
+      (async () =>
+        new Response(
+          JSON.stringify({ signedURL: `/storage/v1/object/sign/bob-documents/${KEY}?token=t2` }),
+          { status: 200 },
+        )) as typeof fetch,
+    );
+    try {
+      await expect(storage.getSignedUrl('co-1', KEY, 60)).resolves.toBe(
+        `https://stub.supabase.co/storage/v1/object/sign/bob-documents/${KEY}?token=t2`,
+      );
+    } finally {
+      (storage as unknown as { __restore: () => void }).__restore();
+    }
+  });
 });

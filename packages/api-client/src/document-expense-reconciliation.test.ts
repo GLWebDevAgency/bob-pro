@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { AppError, DocumentView } from '@bob/core';
-import type { RecordDocumentExpenseClientInput, RecordDocumentExpenseClientOutput } from './client';
+import type { AppError } from '@bob/core';
+import type {
+  DocumentListItemView,
+  RecordDocumentExpenseClientInput,
+  RecordDocumentExpenseClientOutput,
+} from './client';
 import { reconcileDocumentExpenseCommand } from './document-expense-reconciliation';
 
 const command: RecordDocumentExpenseClientInput = {
@@ -19,7 +23,9 @@ const currentDocument = {
   id: 'document-1',
   revision: 5,
   folderId: 'folder-concurrent',
-} as DocumentView;
+  analysis: null,
+  extraction: null,
+} as DocumentListItemView;
 
 const committed = {
   expenseId: 'expense-1',

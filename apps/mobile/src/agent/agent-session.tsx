@@ -11,7 +11,7 @@ import {
 import { AppState } from 'react-native';
 import { router } from 'expo-router';
 import { randomUUID } from 'expo-crypto';
-import { echoOverlap, isAllowedAgentNavigationRoute, type AgentRun, type AskOptions , splitSpokenSentences, summarizeVoiceLatency, type VoiceLatencyTrace } from '@bob/ai';
+import { echoOverlap, isAllowedAgentNavigationRoute, type AgentRun, type AskOptions , planSpokenDelivery, summarizeVoiceLatency, type VoiceLatencyTrace } from '@bob/ai';
 import { t } from '@bob/i18n';
 import { useTheme } from '@bob/ui';
 import { makeBobAgent } from '../data/bob';
@@ -28,9 +28,12 @@ import {
 import { snapshotAgentContext, useAgentContext, useAgentSurface, type AgentContext } from './agent-context';
 import {
   agentContextSemanticKey,
+  composeHandoffSpeech,
+  LEGACY_LISTENING_SILENCE_GRACE_MS,
   planAgentSessionFallback,
   revalidateAgentSessionBackgroundAfterPermission,
   realtimeOwnsAgentSession,
+  shouldRecoverLegacyListeningSilence,
   shouldStopAgentSessionForAppState,
   type AgentSessionDriver,
 } from './agent-session-runtime';
@@ -409,8 +412,11 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
       // Semi-duplex fail-safe : aucune oreille ouverte pendant le TTS. Le tap stoppe la
       // session ; l'écoute ne reprend qu'après la purge. BOB LIVE P1 : la réponse part en
       // FILE DE PHRASES — Bob parle dès la première, le tap coupe entre deux phrases.
-      await speakSentences(splitSpokenSentences(clean));
-      lastSpokenRef.current = { text: clean, endedAt: Date.now() };
+      // S6 : le texte est SANITIZÉ pour l'oreille (puces, tirets, montants) — l'écran garde
+      // le gabarit intact (setResponse en amont) et l'echo-guard référence ce qui est DIT.
+      const delivery = planSpokenDelivery(clean);
+      await speakSentences(delivery.sentences ?? [delivery.text]);
+      lastSpokenRef.current = { text: delivery.text, endedAt: Date.now() };
       if (!continueListening || !activeRef.current) {
         setSessionPhase(terminalPhase);
         return;
@@ -574,7 +580,10 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
         activeRef.current = false;
         setActive(false);
         await voiceRef.current.cancel();
-        await say(body, false);
+        // S4 — CONTINUITÉ MAINS-LIBRES : la consigne se PRONONCE avec la réponse AVANT la
+        // mise en veille — sans regarder l'écran, l'utilisateur sait que ça se termine dans
+        // l'Assistant. L'affichage garde body et consigne séparés (carte GlobalBobAccess).
+        await say(composeHandoffSpeech(body, t('agent.global.reviewRequired', { personality })), false);
         return;
       }
 
@@ -600,6 +609,40 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
     currentTraceRef.current = { sttFinalAt: Date.now() };
     void runTurn(text);
   };
+
+  // ── S3 — ORBE HONNÊTE : la reco native s'arrête SEULE sur silence (ni résultat, ni
+  // onIssue) — sans ce miroir de l'onglet Assistant, l'orbe promet « Je t'écoute… » micro
+  // fermé. On ne constate que la FERMETURE réelle de l'oreille (transition ouverte→fermée,
+  // jamais la latence d'ouverture/permission), après la grâce du résultat terminal natif,
+  // et jamais pendant un tour déjà pris en charge (écho avalé qui ré-écoute). ──
+  const voiceListening = voice.listening;
+  const legacyEarWasOpenRef = useRef(false);
+  useEffect(() => {
+    const earWasOpen = legacyEarWasOpenRef.current;
+    legacyEarWasOpenRef.current = voiceListening;
+    if (!earWasOpen || voiceListening) return undefined;
+    if (!shouldRecoverLegacyListeningSilence({
+      active: activeRef.current,
+      driver: driverRef.current,
+      phase,
+      voiceListening,
+    })) return undefined;
+    const timer = setTimeout(() => {
+      // Un transcript arrivé pendant la grâce possède déjà la suite (runTurn → listen()).
+      if (turnInFlightRef.current) return;
+      if (!shouldRecoverLegacyListeningSilence({
+        active: activeRef.current,
+        driver: driverRef.current,
+        phase: phaseRefForGreeting.current,
+        voiceListening: voiceRef.current.listening,
+      })) return;
+      // Aucune disparition muette : si rien n'est affiché, l'utilisateur sait POURQUOI
+      // l'écoute s'est refermée (même contrat que finishListening).
+      setResponse((current) => current ?? t('agent.global.heardNothing', { personality }));
+      setSessionPhase('idle');
+    }, LEGACY_LISTENING_SILENCE_GRACE_MS);
+    return () => clearTimeout(timer);
+  }, [voiceListening, phase, personality, setSessionPhase]);
 
   // GUIDAGE À L'ARRIVÉE (S2-GUIDÉ) : quand l'écran/étape focalisé publie un guidage et que la
   // session est active, Bob le lit UNE fois (key stable) puis ré-écoute. Pendant un tour en
@@ -662,10 +705,12 @@ export function AgentSessionProvider({ children }: { readonly children: ReactNod
         // Écran monté AVANT la session : son guidage se joue au démarrage (jamais perdu).
         void speakGreeting(mountedGreeting);
       } else {
-        void listen();
+        // S4 — jamais d'oreille ouverte en silence : le premier démarrage legacy S'ANNONCE
+        // (« Mode vocal activé — je t'écoute. ») puis écoute — même contrat que le guidage.
+        void say(t('live.on', { personality }), true);
       }
     })();
-  }, [listen, speakGreeting]);
+  }, [personality, say, speakGreeting]);
 
   const dismissResponse = useCallback((): void => {
     setResponse(null);

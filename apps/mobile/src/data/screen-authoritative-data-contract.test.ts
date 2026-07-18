@@ -151,7 +151,11 @@ describe('contrat données autoritatives des écrans métier', () => {
     const onboarding = screen('onboarding.tsx');
     const diagnostic = screen('diagnostic.tsx');
 
-    expect(account).toContain('const subscriptionStaleError = subscription.isError && subscriptionReady');
+    // Contrat réaligné 18/07 : la lane abonnement couvre aussi les factures Stripe (invoices),
+    // et le formatage est multi-ligne — l'intention (stale = ready && erreur) est inchangée.
+    expect(account).toMatch(
+      /const subscriptionStaleError =\s*subscriptionReady && \(subscription\.isError \|\| subscriptionInvoices\.isError\)/u,
+    );
     expect(account).toContain('const deleteAllowed = authEnabled && deleteCompanyName !== null');
     expect(onboarding).toContain('const sourcesFresh = sourcesReady && !sourcesStaleError');
     expect(onboarding).toContain('|| !sourcesFresh');

@@ -49,9 +49,14 @@ export interface VaultDocumentData {
   displayName?: string | null;
   linkedEntityType: DocumentLinkedEntityType | null;
   linkedEntityId: string | null;
-  /** Dossier du coffre (rangement) — un document rangé n'est PLUS « à valider », même sans
-   *  lien métier : le 1-tap « Classer là » vers un dossier est un classement de plein droit. */
+  /** Dossier du coffre (rangement) — indépendant de la validation : un doc rangé mais jamais
+   *  confirmé reste « à valider » (carte « Rangé · {dossier} — à confirmer »). */
   folderId?: string | null;
+  /** Nom du dossier de rangement, résolu et FOURNI par l'appelant (jamais inventé ici). */
+  folderName?: string | null;
+  /** Confirmation humaine (AcknowledgeDocument ou classement explicite) — absent ⇒ null :
+   *  compat ascendante défensive avec les documents historiques. */
+  reviewedAt?: string | null;
   documentDate: DateOnly | null;
   createdAt: Instant;
   /** Tags persistés (#11) — participent à la recherche du coffre. */
@@ -104,13 +109,19 @@ export interface VaultPendingDocMetrics {
   documentDate: DateOnly | null;
 }
 
-/** Document scanné (OCR) pas encore classé — la carte « À valider ». */
+/** Document scanné (OCR) pas encore CONFIRMÉ par un humain — la carte « À valider ». */
 export interface VaultPendingDoc {
   id: string;
   filename: string;
   /** Libellé intelligent : renommage explicite > suggestion d'analyse > fournisseur réel > filename. */
   displayName: string;
   receivedAt: Instant;
+  /** Rangement actuel — non-null : état « rangé mais non confirmé », la carte affiche
+   *  « Rangé · {folderName} — à confirmer » et son geste principal devient Confirmer
+   *  (AcknowledgeDocument) ; Classer là / Autre dossier restent disponibles. */
+  folderId: string | null;
+  /** Nom du dossier fourni par l'appelant — null si non rangé ou nom non résolu. */
+  folderName: string | null;
   /** Type réel analysé + confiance — null tant qu'aucune analyse persistée n'est fournie. */
   analysisType: DocumentAnalysisType | null;
   typeConfidence: number | null;
@@ -283,23 +294,40 @@ function pendingDestination(doc: VaultDocumentData): DocumentDestinationSuggesti
   return fallbackDocumentDestinationFor(doc.analysis.type);
 }
 
+/**
+ * RÈGLE UNIQUE « à confirmer par un humain » : scanné (OCR) jamais CONFIRMÉ (reviewedAt
+ * null, y compris les lignes historiques où le champ est absent — compat ascendante),
+ * hors document lié à une DÉPENSE — celui-là est traité par construction (réconciliation
+ * comptable). Partagée entre la file « À valider » (deriveToValidate) et les écrans
+ * (bouton « Confirmer » du détail) : aucune duplication de la règle côté UI.
+ */
+export function documentNeedsHumanReview(
+  doc: Pick<VaultDocumentData, 'origin' | 'reviewedAt' | 'linkedEntityType'>,
+): boolean {
+  return doc.origin === 'ocr' && (doc.reviewedAt ?? null) === null && doc.linkedEntityType !== 'expense';
+}
+
 function deriveToValidate(
   documents: readonly VaultDocumentData[],
   expenses: readonly VaultExpenseData[],
 ): VaultPendingDoc[] {
-  // « À valider » = scanné (OCR), sans lien métier ET sans dossier : ranger dans un dossier
-  // (« Classer là » vers Assurances, Achats…) sort la carte de la file — sinon elle revient
-  // à l'identique après refetch alors que le bandeau « classé » vient d'affirmer le contraire.
+  // « À valider » = documentNeedsHumanReview (règle unique ci-dessus). Le rangement seul ne
+  // sort plus la carte de la file : un doc rangé sans geste de validation s'affiche
+  // « Rangé · {dossier} — à confirmer » jusqu'à AcknowledgeDocument ou un classement
+  // explicite (qui posent reviewedAt).
   return documents
-    .filter((d) => d.origin === 'ocr' && d.linkedEntityType === null && (d.folderId ?? null) === null)
+    .filter(documentNeedsHumanReview)
     .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
     .map((d) => {
       const matched = matchExpense(d, expenses);
+      const folderId = d.folderId ?? null;
       return {
         id: d.id,
         filename: d.filename,
         displayName: pendingDisplayName(d, matched),
         receivedAt: d.createdAt,
+        folderId,
+        folderName: folderId !== null ? (d.folderName?.trim() || null) : null,
         analysisType: d.analysis?.type ?? null,
         typeConfidence: d.analysis?.typeConfidence ?? null,
         metrics: pendingMetrics(d, matched),

@@ -3,6 +3,7 @@ import { Document, type DocumentLinkedEntityType } from '../../domain/document/d
 import { type AppError, appConflict, appDomain, appNotFound } from '../result';
 import { type DocumentLinkTargetPort } from '../ports/document-link-target';
 import { type DocumentRepository } from '../ports/document-repository';
+import { type ClockPort } from '../ports/services';
 import { documentToView, type DocumentView } from './document-view';
 
 export interface ClassifyDocumentInput {
@@ -16,6 +17,7 @@ export interface ClassifyDocumentInput {
 export interface ClassifyDocumentDeps {
   documents: DocumentRepository;
   linkTargets: DocumentLinkTargetPort;
+  clock: ClockPort;
 }
 
 /**
@@ -47,6 +49,10 @@ export class ClassifyDocument {
       linkedEntityId: input.linkedEntityId,
     });
     if (!classified.ok) return err(appDomain(classified.error));
+    // Un geste explicite de classement vaut validation humaine (le doc sort d'« À valider ») ;
+    // latch idempotent — une validation antérieure garde son horodatage d'origine.
+    const reviewed = next.markReviewed(this.deps.clock.now());
+    if (!reviewed.ok) return err(appDomain(reviewed.error));
     const nextProps = next.toProps();
     if (!(await this.deps.linkTargets.exists({
       companyId: input.companyId,
@@ -61,6 +67,7 @@ export class ClassifyDocument {
       documentId: input.documentId,
       linkedEntityType: nextProps.linkedEntityType!,
       linkedEntityId: nextProps.linkedEntityId!,
+      reviewedAt: nextProps.reviewedAt!,
       expectedRevision: input.expectedRevision,
     });
     if (saved === 'not_found') return err(appNotFound('document', input.documentId));

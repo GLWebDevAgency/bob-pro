@@ -13,7 +13,7 @@ import { usePathname, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { shadowNative, themes } from '@bob/tokens';
 import { t, type I18nKey } from '@bob/i18n';
-import { font, useReduceMotion, useTheme } from '@bob/ui';
+import { Button, font, useReduceMotion, useTheme } from '@bob/ui';
 import { useAgentAccessLayout, useAgentContext, useAgentSession } from '../agent';
 import { useSubscription } from '../data/hooks';
 import { CloseIcon, MicIcon, SparkIcon } from './icons';
@@ -242,25 +242,24 @@ export function GlobalBobAccess() {
               <Text style={[font('meta'), { color: semantic.warning, marginTop: 6 }]}>
                 {t('agent.global.reviewRequired', { personality })}
               </Text>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={t('agent.global.continueInAssistant', { personality })}
-                hitSlop={8}
-                onPress={() => {
-                  // Le run, sa proposition opaque, son contexte et son historique restent dans
-                  // le provider mémoire. Rien de sensible n'entre dans l'URL et la commande
-                  // anaphorique n'est jamais rejouée depuis zéro.
-                  const handoff = session.handoff;
-                  if (handoff === null) return;
-                  session.requestHandoff(handoff.id);
-                  router.push('/(tabs)/assistant');
-                }}
-                style={{ minHeight: 44, marginTop: 4, alignSelf: 'flex-start', justifyContent: 'center' }}
-              >
-                <Text style={[font('meta', 700), { color: semantic.ai }]}>
-                  {t('agent.global.continueInAssistant', { personality })} →
-                </Text>
-              </Pressable>
+              {/* S4 — CONTINUITÉ MAINS-LIBRES : un VRAI bouton (affordance pleine, cible 44+),
+                  pas un lien texte — la suite du geste vocal mérite le CTA le plus lisible. */}
+              <View style={{ marginTop: 8, alignSelf: 'stretch' }}>
+                <Button
+                  title={t('agent.global.continueInAssistant', { personality })}
+                  variant="ai"
+                  radius={12}
+                  onPress={() => {
+                    // Le run, sa proposition opaque, son contexte et son historique restent dans
+                    // le provider mémoire. Rien de sensible n'entre dans l'URL et la commande
+                    // anaphorique n'est jamais rejouée depuis zéro.
+                    const handoff = session.handoff;
+                    if (handoff === null) return;
+                    session.requestHandoff(handoff.id);
+                    router.push('/(tabs)/assistant');
+                  }}
+                />
+              </View>
             </>
           ) : null}
         </View>

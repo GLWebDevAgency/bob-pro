@@ -144,6 +144,51 @@ export const LLM_TOOL_SPECS: LlmToolSpec[] = [
     parameters: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
+    name: 'valider_document',
+    description:
+      'Valider un document scanné déjà rangé (« c’est bon, valide le ticket Aldi ») : confirme la lecture, le document sort de la file « À valider ». Ne déplace rien, ne lie rien, aucune écriture comptable. PAS pour émettre ou payer une facture.',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'classer_document',
+    description:
+      'Classer/ranger un document du coffre vers un chantier ouvert ou un dossier réel (« range le ticket Aldi dans le chantier Durand », « classe la facture Leroy Merlin dans frais généraux »). Même geste que « Classer là » : rangement + lien chantier + nom intelligent. PAS pour émettre, payer ou valider une pièce.',
+    parameters: {
+      type: 'object',
+      properties: {
+        reference: { type: 'string', description: 'Libellé du document à classer (ex. « ticket Aldi »)' },
+      },
+      required: [],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'renommer_document',
+    description:
+      'Renommer le libellé d’affichage d’un document du coffre (« renomme-le facture matériaux salle de bain »). Le nom donné devient prioritaire sur les suggestions automatiques. Ne déplace rien, ne lie rien.',
+    parameters: {
+      type: 'object',
+      properties: {
+        reference: { type: 'string', description: 'Libellé du document à renommer (ex. « ticket Aldi »)' },
+      },
+      required: [],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'chercher_document',
+    description:
+      'Retrouver des devis/factures réels par mots-clés et période (« retrouve la facture du radiateur de mars »). Lecture seule : liste les résultats et ouvre le plus pertinent. PAS pour lister tout le coffre (documents_liste).',
+    parameters: {
+      type: 'object',
+      properties: {
+        reference: { type: 'string', description: 'Mots-clés à retrouver (objet, client ou numéro — ex. « radiateur »)' },
+      },
+      required: [],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'resultat_provisoire',
     description:
       'Résultat provisoire de l’activité : produits moins charges au grand-livre réel (balance générale). Répond à « combien je gagne ? », « je suis en bénéfice ? ».',
@@ -186,6 +231,12 @@ export const LLM_TOOL_SPECS: LlmToolSpec[] = [
     parameters: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
+    name: 'aide_capacites',
+    description:
+      'Présenter ce que Bob sait faire : le catalogue des commandes par domaine (facturation, dépenses, fiscal, pilotage) avec un exemple parlé chacun. Répond à « aide », « tu sais faire quoi ? », « comment tu peux m’aider ? ». PAS pour une demande hors périmètre (dans ce cas, n’appeler aucun outil).',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
     name: 'etat_abonnement',
     description:
       'État de l’abonnement du compte : offre en cours, essai (jours restants, échéance), statut de paiement. Lecture seule — aucun achat par la voix. Répond à « où en est mon abonnement ? », « il me reste combien de jours d’essai ? ».',
@@ -213,6 +264,10 @@ const TOOL_TO_INTENT: Record<string, BobIntent> = {
   position_tva: 'tva',
   balance_agee: 'balance',
   payer_depense: 'payer_depense',
+  valider_document: 'valider_document',
+  classer_document: 'classer_document',
+  renommer_document: 'renommer_document',
+  chercher_document: 'chercher_document',
   resultat_provisoire: 'resultat',
   mon_bilan: 'bilan',
   generer_facture_devis: 'generer_facture',
@@ -221,6 +276,7 @@ const TOOL_TO_INTENT: Record<string, BobIntent> = {
   delai_paiement: 'dso',
   top_clients: 'top_clients',
   etat_abonnement: 'abonnement',
+  aide_capacites: 'aide',
 };
 
 /** Une étape résolue d'un plan (une intention + sa référence éventuelle). */

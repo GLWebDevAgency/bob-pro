@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest';
 import type { AgentContext } from '@bob/ai';
 import {
   agentContextSemanticKey,
+  composeHandoffSpeech,
   planAgentSessionFallback,
   revalidateAgentSessionBackgroundAfterPermission,
   realtimeOwnsAgentSession,
+  shouldRecoverLegacyListeningSilence,
   shouldStopAgentSessionForAppState,
 } from './agent-session-runtime';
 
@@ -127,6 +129,49 @@ describe('agent session runtime fences', () => {
     resolveLifecycle();
     await expect(revalidation).resolves.toBe(false);
     expect(stopped).toBe(false);
+  });
+
+  it('S3 — retombe au repos honnête quand l’oreille legacy est fermée en pleine « écoute »', () => {
+    // Cas nominal : la reco native s'est terminée seule sur silence — l'orbe doit cesser
+    // de promettre « Je t'écoute… » et retomber en idle avec agent.global.heardNothing.
+    expect(shouldRecoverLegacyListeningSilence({
+      active: true,
+      driver: 'legacy',
+      phase: 'listening',
+      voiceListening: false,
+    })).toBe(true);
+  });
+
+  it('S3 — ne rattrape jamais un faux silence (temps réel, autre phase, oreille ouverte, session éteinte)', () => {
+    const nominal = {
+      active: true,
+      driver: 'legacy' as const,
+      phase: 'listening',
+      voiceListening: false,
+    };
+    expect(shouldRecoverLegacyListeningSilence({ ...nominal, driver: 'live' })).toBe(false);
+    expect(shouldRecoverLegacyListeningSilence({ ...nominal, driver: 'live_bootstrap' })).toBe(false);
+    expect(shouldRecoverLegacyListeningSilence({ ...nominal, driver: 'idle' })).toBe(false);
+    expect(shouldRecoverLegacyListeningSilence({ ...nominal, phase: 'thinking' })).toBe(false);
+    expect(shouldRecoverLegacyListeningSilence({ ...nominal, phase: 'speaking' })).toBe(false);
+    expect(shouldRecoverLegacyListeningSilence({ ...nominal, phase: 'idle' })).toBe(false);
+    expect(shouldRecoverLegacyListeningSilence({ ...nominal, voiceListening: true })).toBe(false);
+    expect(shouldRecoverLegacyListeningSilence({ ...nominal, active: false })).toBe(false);
+  });
+
+  it('S4 — le handoff prononce le corps de la réponse PUIS la consigne Assistant', () => {
+    expect(composeHandoffSpeech(
+      'J’envoie la relance à Durand SARL.',
+      'Cette action se termine dans l’Assistant — rien n’a été fait pour l’instant.',
+    )).toBe(
+      'J’envoie la relance à Durand SARL. Cette action se termine dans l’Assistant — rien n’a été fait pour l’instant.',
+    );
+  });
+
+  it('S4 — le handoff reste prononçable même avec un morceau vide (jamais d’espace orphelin)', () => {
+    expect(composeHandoffSpeech('', 'Consigne.')).toBe('Consigne.');
+    expect(composeHandoffSpeech('Corps.', '  ')).toBe('Corps.');
+    expect(composeHandoffSpeech('  Corps.  ', ' Consigne. ')).toBe('Corps. Consigne.');
   });
 
   it('reste fail-closed si le waiter permission dérive et que l’app est en background', async () => {

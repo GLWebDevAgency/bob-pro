@@ -12,9 +12,18 @@ import {
   EXPENSE_PAYMENT_REFERENCE_MAX_LENGTH,
   isValidDateOnly,
   isVatRate,
+  validateDocumentDisplayName,
 } from '@bob/core';
 import { type AnyTool, type Tool, type ToolPublicResult } from './tool';
 import {
+  type AcknowledgeDocumentActionInput,
+  type AcknowledgeDocumentActionOutput,
+  type FileDocumentActionInput,
+  type FileDocumentActionOutput,
+  type RenameDocumentActionInput,
+  type RenameDocumentActionOutput,
+  type SearchDocumentsActionInput,
+  type SearchDocumentsActionOutput,
   type BobActions,
   type DraftRelanceActionInput,
   type SendRelanceActionInput,
@@ -485,6 +494,166 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
       run: () => getSubscriptionStatusAction(),
     };
     tools.push(etatAbonnement as AnyTool);
+  }
+
+  // —— Outil OPTIONNEL valider_document (parité « papa vocal ») : « c'est bon, valide le
+  // ticket » pose reviewedAt via AcknowledgeDocument @bob/core — MÊME use case que le bouton
+  // « Confirmer » de la file « À valider ». Latch idempotent : jamais de validation réécrite.
+  const acknowledgeDocumentAction = actions.acknowledgeDocument?.bind(actions);
+  if (acknowledgeDocumentAction) {
+    const validerDocument: Tool<AcknowledgeDocumentActionInput, AcknowledgeDocumentActionOutput> = {
+      name: 'valider_document',
+      description:
+        'Confirme la lecture d’un document scanné déjà rangé (« c’est bon, je valide ») : le document sort de la file « À valider ». Ne déplace rien, ne lie rien, n’écrit rien dans les livres.',
+      mutating: true,
+      outbound: false,
+      compliance: 'medium',
+      // Marqueur de lecture interne (palier descriptif reversible), MAIS latch sans commande
+      // d'annulation (reviewedAt n'est jamais réécrit) : plancher de consentement — la
+      // validation reste un geste de l'artisan, même en autonomie 'auto'.
+      safetyFloor: true,
+      riskTier: 'reversible',
+      parse: (raw): Result<AcknowledgeDocumentActionInput, AppError> => {
+        const r = raw as { documentId?: unknown };
+        if (typeof r?.documentId !== 'string' || r.documentId.length === 0)
+          return err(appValidation('documentId', 'Document manquant.'));
+        return ok({ documentId: r.documentId });
+      },
+      projectPublicResult: (output): ToolPublicResult => ({
+        documentId: output.documentId,
+        reviewedAt: output.reviewedAt,
+      }),
+      run: (input) => acknowledgeDocumentAction(input),
+    };
+    tools.push(validerDocument as AnyTool);
+  }
+
+  // —— Outil OPTIONNEL classer_document (parité « papa vocal ») : « range le ticket Aldi dans
+  // le chantier Durand » — MÊME séquence que le geste « Classer là » mobile (MoveDocumentToFolder
+  // + ClassifyDocument + nom intelligent, règle suggestedRenameFor côté hôte). Les destinations
+  // sont résolues par le handler contre les listes RÉELLES du tenant — jamais un id inventé.
+  const fileDocumentAction = actions.fileDocument?.bind(actions);
+  if (fileDocumentAction) {
+    const classerDocument: Tool<FileDocumentActionInput, FileDocumentActionOutput> = {
+      name: 'classer_document',
+      description:
+        'Classe un document du coffre — même geste que « Classer là » : déplacement vers un dossier réel OU lien à un chantier ouvert (avec rangement dans « Chantiers » si le document n’a pas encore de dossier), puis nom intelligent (jamais par-dessus un renommage humain).',
+      mutating: true,
+      outbound: false,
+      compliance: 'medium',
+      // Le rangement POSE la validation humaine (reviewedAt, latch sans annulation) et un lien
+      // métier : plancher de consentement — le classement reste un geste de l'artisan, même en 'auto'.
+      safetyFloor: true,
+      riskTier: 'reversible',
+      parse: (raw): Result<FileDocumentActionInput, AppError> => {
+        const r = raw as { documentId?: unknown; destination?: unknown };
+        if (typeof r?.documentId !== 'string' || r.documentId.length === 0)
+          return err(appValidation('documentId', 'Document manquant.'));
+        const d = r.destination as { kind?: unknown; chantierId?: unknown; folderId?: unknown } | null | undefined;
+        if (typeof d !== 'object' || d === null || Array.isArray(d))
+          return err(appValidation('destination', 'Destination manquante.'));
+        if (d.kind === 'chantier') {
+          if (typeof d.chantierId !== 'string' || d.chantierId.length === 0)
+            return err(appValidation('destination.chantierId', 'Chantier manquant.'));
+          return ok({ documentId: r.documentId, destination: { kind: 'chantier', chantierId: d.chantierId } });
+        }
+        if (d.kind === 'folder') {
+          if (typeof d.folderId !== 'string' || d.folderId.length === 0)
+            return err(appValidation('destination.folderId', 'Dossier manquant.'));
+          return ok({ documentId: r.documentId, destination: { kind: 'folder', folderId: d.folderId } });
+        }
+        return err(appValidation('destination.kind', 'Destination invalide (chantier | folder).'));
+      },
+      projectPublicResult: (output): ToolPublicResult => ({
+        documentId: output.documentId,
+        folderId: output.folderId,
+        displayName: output.displayName,
+      }),
+      run: (input) => fileDocumentAction(input),
+    };
+    tools.push(classerDocument as AnyTool);
+  }
+
+  // —— Outil OPTIONNEL renommer_document : « renomme-le facture matériaux salle de bain » —
+  // MÊME use case RenameDocument que l'écran détail. Le nom dicté devient un renommage HUMAIN :
+  // prioritaire, plus jamais écrasé par une suggestion d'analyse (d'où le plancher de consentement).
+  const renameDocumentAction = actions.renameDocument?.bind(actions);
+  if (renameDocumentAction) {
+    const renommerDocument: Tool<RenameDocumentActionInput, RenameDocumentActionOutput> = {
+      name: 'renommer_document',
+      description:
+        'Renomme le libellé d’affichage d’un document du coffre. Le nom donné devient prioritaire : les suggestions automatiques ne l’écraseront plus. Ne déplace rien, ne lie rien.',
+      mutating: true,
+      outbound: false,
+      compliance: 'low',
+      // Promotion en renommage humain SANS commande d'annulation de cette priorité : plancher
+      // de consentement — même en autonomie 'auto', le nom reste un choix de l'artisan.
+      safetyFloor: true,
+      riskTier: 'reversible',
+      parse: (raw): Result<RenameDocumentActionInput, AppError> => {
+        const r = raw as { documentId?: unknown; displayName?: unknown };
+        if (typeof r?.documentId !== 'string' || r.documentId.length === 0)
+          return err(appValidation('documentId', 'Document manquant.'));
+        // MÊME règle de domaine que l'écran (validateDocumentDisplayName @bob/core) : espaces
+        // réduits, borné, sans caractère de contrôle — jamais deux validations à faire dériver.
+        const validated = validateDocumentDisplayName(r.displayName);
+        if (!validated.ok) {
+          return err(
+            appValidation(
+              'displayName',
+              'message' in validated.error ? validated.error.message : 'Nom d’affichage invalide.',
+            ),
+          );
+        }
+        return ok({ documentId: r.documentId, displayName: validated.value });
+      },
+      projectPublicResult: (output): ToolPublicResult => ({
+        documentId: output.documentId,
+        displayName: output.displayName,
+      }),
+      run: (input) => renameDocumentAction(input),
+    };
+    tools.push(renommerDocument as AnyTool);
+  }
+
+  // —— Outil OPTIONNEL chercher_document : lecture pure de la recherche devis & factures
+  // (GET /documents/search — ranking serveur pg_trgm). Aucun résultat inventé, aucune mutation.
+  const searchDocumentsAction = actions.searchDocuments?.bind(actions);
+  if (searchDocumentsAction) {
+    const chercherDocument: Tool<SearchDocumentsActionInput, SearchDocumentsActionOutput> = {
+      name: 'chercher_document',
+      description:
+        'Retrouve des devis et factures réels par mots-clés (objet, client, numéro) et période — même recherche que l’écran (« retrouve la facture du radiateur de mars »). Lecture seule.',
+      mutating: false,
+      outbound: false,
+      compliance: 'medium',
+      riskTier: 'read',
+      parse: (raw): Result<SearchDocumentsActionInput, AppError> => {
+        const r = raw as { query?: unknown; scope?: unknown; from?: unknown; to?: unknown };
+        if (typeof r?.query !== 'string' || r.query.length > 200)
+          return err(appValidation('query', 'Requête de recherche invalide.'));
+        const query = r.query.replace(/\s+/g, ' ').trim();
+        if (r.scope !== undefined && r.scope !== 'quote' && r.scope !== 'invoice' && r.scope !== 'all')
+          return err(appValidation('scope', 'Portée invalide (quote | invoice | all).'));
+        if (r.from !== undefined && !(typeof r.from === 'string' && DATE_ONLY.test(r.from)))
+          return err(appValidation('from', 'Début de période (YYYY-MM-DD) invalide.'));
+        if (r.to !== undefined && !(typeof r.to === 'string' && DATE_ONLY.test(r.to)))
+          return err(appValidation('to', 'Fin de période (YYYY-MM-DD) invalide.'));
+        if (typeof r.from === 'string' && typeof r.to === 'string' && r.to < r.from)
+          return err(appValidation('to', 'La fin de période précède le début.'));
+        // Sans mot-clé, une période est requise : jamais un ratissage vide non demandé.
+        if (query.length === 0 && r.from === undefined && r.to === undefined)
+          return err(appValidation('query', 'Mots-clés ou période requis.'));
+        return ok({
+          query,
+          ...(r.scope !== undefined ? { scope: r.scope as NonNullable<SearchDocumentsActionInput['scope']> } : {}),
+          ...(typeof r.from === 'string' ? { from: r.from } : {}),
+          ...(typeof r.to === 'string' ? { to: r.to } : {}),
+        });
+      },
+      run: (input) => searchDocumentsAction(input),
+    };
+    tools.push(chercherDocument as AnyTool);
   }
 
   const createCustomerAction = actions.createCustomer?.bind(actions);

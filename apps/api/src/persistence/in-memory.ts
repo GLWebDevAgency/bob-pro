@@ -256,11 +256,14 @@ export class InMemoryDocumentRepository implements DocumentRepository {
   async save(d: Document): Promise<void> {
     this.map.set(d.id, d);
   }
+  /** Rejoue LES DEUX opérations de domaine (classify puis markReviewed, latch) — la révision
+   *  persistée correspond exactement à la DocumentView retournée par le use case. */
   async classify(input: {
     companyId: string;
     documentId: string;
     linkedEntityType: Parameters<Document['classify']>[0]['linkedEntityType'];
     linkedEntityId: string;
+    reviewedAt: string;
     expectedRevision: number;
   }): Promise<'saved' | 'revision_conflict' | 'not_found'> {
     const current = this.map.get(input.documentId);
@@ -273,6 +276,25 @@ export class InMemoryDocumentRepository implements DocumentRepository {
       linkedEntityId: input.linkedEntityId,
     });
     if (!classified.ok) return 'revision_conflict';
+    const reviewed = next.markReviewed(input.reviewedAt);
+    if (!reviewed.ok) return 'revision_conflict';
+    this.map.set(input.documentId, next);
+    return 'saved';
+  }
+  /** Pose la confirmation humaine SANS déplacer ni lier (AcknowledgeDocument) — latch domaine. */
+  async markReviewed(input: {
+    companyId: string;
+    documentId: string;
+    reviewedAt: string;
+    expectedRevision: number;
+  }): Promise<'saved' | 'revision_conflict' | 'not_found'> {
+    const current = this.map.get(input.documentId);
+    if (!current || current.companyId !== input.companyId || current.status !== 'active')
+      return 'not_found';
+    if (current.revision !== input.expectedRevision) return 'revision_conflict';
+    const next = Document.rehydrate(current.toProps());
+    const reviewed = next.markReviewed(input.reviewedAt);
+    if (!reviewed.ok) return 'revision_conflict';
     this.map.set(input.documentId, next);
     return 'saved';
   }
@@ -452,6 +474,7 @@ export class InMemoryDocumentFolderRepository implements DocumentFolderRepositor
           folderId: document.folderId,
           status: document.status,
           revision: document.revision,
+          reviewedAt: document.reviewedAt,
         }
       : null;
   }
@@ -469,22 +492,31 @@ export class InMemoryDocumentFolderRepository implements DocumentFolderRepositor
         folderId: document.folderId,
         status: document.status,
         revision: document.revision,
+        reviewedAt: document.reviewedAt,
       }));
   }
 
+  /** Rejoue moveToFolder PUIS markReviewed (reviewedAt non nul = rangement vaut validation,
+   *  latch) sur un CLONE : une tentative perdante ne mute jamais l'agrégat partagé. */
   async moveDocument(input: {
     companyId: string;
     documentId: string;
     targetFolderId: string | null;
+    reviewedAt: string | null;
     expectedRevision: number;
   }): Promise<DocumentFolderMembershipWriteResult> {
     const document = await this.documents.findById(input.companyId, input.documentId);
     if (!document || document.status !== 'active') return { status: 'not_found' };
     if (document.revision !== input.expectedRevision) return { status: 'revision_conflict' };
-    const moved = document.moveToFolder(input.targetFolderId);
+    const next = Document.rehydrate(document.toProps());
+    const moved = next.moveToFolder(input.targetFolderId);
     if (!moved.ok) return { status: 'revision_conflict' };
-    await this.documents.save(document);
-    return { status: 'saved', revision: document.revision };
+    if (input.reviewedAt !== null) {
+      const reviewed = next.markReviewed(input.reviewedAt);
+      if (!reviewed.ok) return { status: 'revision_conflict' };
+    }
+    await this.documents.save(next);
+    return { status: 'saved', revision: next.revision };
   }
 }
 

@@ -181,7 +181,16 @@ export function Chip({ label, active, onPress }: { label: string; active?: boole
 
 // ── Badge (statut / type) ─────────────────────────────────────────────
 type BadgeTone = 'b2b' | 'b2g' | 'particulier' | 'success' | 'warning' | 'danger' | 'ai';
-export function Badge({ label, tone }: { label: string; tone: BadgeTone }) {
+export function Badge({
+  label,
+  tone,
+  accessibilityLabel,
+}: {
+  label: string;
+  tone: BadgeTone;
+  /** Contexte accessible quand le libellé visuel seul est ambigu (ex. « 84 % »). */
+  accessibilityLabel?: string;
+}) {
   const { semantic, radius } = useTheme();
   const map: Record<BadgeTone, { bg: string; fg: string }> = {
     b2b: { bg: semantic.b2bBg, fg: semantic.b2b },
@@ -194,8 +203,11 @@ export function Badge({ label, tone }: { label: string; tone: BadgeTone }) {
   };
   const c = map[tone];
   return (
-    <View style={{ backgroundColor: c.bg, borderRadius: radius.chip, paddingHorizontal: 10, paddingVertical: 4, alignSelf: 'flex-start' }}>
-      <Text style={[font('meta'), { color: c.fg }]}>{label}</Text>
+    <View
+      {...(accessibilityLabel !== undefined ? { accessible: true, accessibilityLabel } : {})}
+      style={{ backgroundColor: c.bg, borderRadius: radius.chip, paddingHorizontal: 10, paddingVertical: 4, alignSelf: 'flex-start' }}
+    >
+      <Text accessible={accessibilityLabel === undefined} style={[font('meta'), { color: c.fg }]}>{label}</Text>
     </View>
   );
 }

@@ -393,6 +393,9 @@ export class DeleteDocumentFolder {
             companyId: input.companyId,
             documentId: document.id,
             targetFolderId: target.id,
+            // Transfert technique de suppression : ce n'est PAS un geste de classement —
+            // la confirmation humaine (reviewedAt) du document reste strictement intacte.
+            reviewedAt: null,
             expectedRevision: document.revision,
           });
           if (moved.status === 'not_found') return err(appNotFound('document', document.id));
@@ -414,7 +417,7 @@ export class DeleteDocumentFolder {
 }
 
 export class MoveDocumentToFolder {
-  constructor(private readonly deps: { folders: DocumentFolderRepository; uow: UnitOfWorkPort }) {}
+  constructor(private readonly deps: { folders: DocumentFolderRepository; uow: UnitOfWorkPort; clock: ClockPort }) {}
 
   execute(input: {
     companyId: string;
@@ -431,13 +434,19 @@ export class MoveDocumentToFolder {
       const document = await this.deps.folders.findDocumentMembership(input.companyId, input.documentId);
       if (!document || document.status !== 'active') return err(appNotFound('document', input.documentId));
       if (document.revision !== input.expectedRevision) return err(conflict('Le document a été modifié.'));
-      if (document.folderId === input.folderId) {
+      // Ranger DANS un dossier est un geste explicite de classement : il vaut validation
+      // humaine (reviewedAt, latch — une confirmation antérieure n'est jamais réécrite).
+      // Sortir d'un dossier (folderId null) n'est pas un classement et n'invalide rien.
+      const reviewedAt =
+        input.folderId !== null && (document.reviewedAt ?? null) === null ? this.deps.clock.now() : null;
+      if (document.folderId === input.folderId && reviewedAt === null) {
         return ok({ documentId: document.id, folderId: document.folderId, revision: document.revision });
       }
       const moved = await this.deps.folders.moveDocument({
         companyId: input.companyId,
         documentId: input.documentId,
         targetFolderId: input.folderId,
+        reviewedAt,
         expectedRevision: input.expectedRevision,
       });
       if (moved.status === 'not_found') return err(appNotFound('document', input.documentId));

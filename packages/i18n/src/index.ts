@@ -1612,12 +1612,13 @@ const legacyFr = {
     pro: 'À valider',
     direct: 'À valider',
   },
-  'docs.badgeSupplierInvoice': {
+  // Libellés des 10 types analysés (DocumentAnalysisType) — source UNIQUE scan ↔ carte
+  // partagée ↔ badge « À valider » (ANALYSIS_TYPE_LABEL_KEY côté mobile).
+  'docs.typeSupplierInvoice': {
     pote: 'Facture fournisseur',
     pro: 'Facture fournisseur',
     direct: 'Fournisseur',
   },
-  // Badge type de la carte « À valider » — reflète le VRAI type analysé (DocumentAnalysisType).
   'docs.typeReceipt': {
     pote: 'Ticket de caisse',
     pro: 'Ticket de caisse',
@@ -1762,6 +1763,63 @@ const legacyFr = {
     pote: '{name} classé · {destination}',
     pro: 'Classé : {name} → {destination}.',
     direct: '{name} → {destination}.',
+  },
+  // Doc rangé (folderId non nul) mais jamais CONFIRMÉ (reviewedAt null) — carte « À valider ».
+  'docs.filedToConfirm': {
+    pote: 'Rangé · {folder} — à confirmer',
+    pro: 'Rangé dans {folder} — à confirmer',
+    direct: '{folder} — à confirmer',
+  },
+  // Nom du dossier non résolu (affichage dégradé, jamais inventé).
+  'docs.filedToConfirmUnknown': {
+    pote: 'Rangé — à confirmer',
+    pro: 'Rangé — à confirmer',
+    direct: 'Rangé — à confirmer',
+  },
+  // Geste principal : AcknowledgeDocument (« c'est bon, je valide ») — latch idempotent.
+  'docs.confirmCta': {
+    pote: 'C’est bon',
+    pro: 'Confirmer',
+    direct: 'OK',
+  },
+  'docs.confirmedBanner': {
+    pote: '{name} confirmé ✓',
+    pro: 'Confirmé : {name}.',
+    direct: '{name} ✓',
+  },
+  'docs.confirmError': {
+    pote: 'La confirmation a raté, là. On réessaie ?',
+    pro: 'La confirmation a échoué. Veuillez réessayer.',
+    direct: 'Confirmation ratée. Réessaie.',
+  },
+  // Lien métier DÉJÀ posé : un « Classer là » ne le réécrit jamais — décision depuis le détail.
+  'docs.classifyLinkedError': {
+    pote: 'Ce document est déjà rattaché ailleurs. Ouvre-le pour décider — je n’écrase rien tout seul.',
+    pro: 'Ce document est déjà rattaché à une autre entité. Ouvrez son détail pour décider.',
+    direct: 'Déjà rattaché. Ouvre le document.',
+  },
+  // Contexte accessible du badge de confiance « {pct} % » (carte partagée + extraction).
+  'docs.confidenceA11y': {
+    pote: 'Confiance de lecture : {pct} %',
+    pro: 'Confiance de lecture : {pct} %',
+    direct: 'Confiance : {pct} %',
+  },
+  // État « classé » de la carte document (écran détail — parité avec la carte du scan).
+  'docs.classifiedIn': {
+    pote: 'Classé dans « {folder} »',
+    pro: 'Classé dans « {folder} »',
+    direct: '→ {folder}',
+  },
+  // Accordéon Traçabilité : les preuves détaillées de lecture, repliées par défaut.
+  'docs.traceToggle': {
+    pote: 'Voir ce que Bob a lu (preuves)',
+    pro: 'Afficher les données lues (preuves)',
+    direct: 'Preuves de lecture',
+  },
+  'docs.traceEmpty': {
+    pote: 'Aucune donnée chiffrée à prouver sur ce document.',
+    pro: 'Aucune donnée extraite à prouver pour ce document.',
+    direct: 'Aucune donnée extraite.',
   },
   'docs.pickSuggestedMeta': {
     pote: 'Ma proposition',
@@ -2104,6 +2162,44 @@ const legacyFr = {
     pote: 'Prêt pour 2026 ?',
     pro: 'Prêt pour 2026 ?',
     direct: 'Prêt 2026 ?',
+  },
+  // DÉCOUVRABILITÉ (S9) — extension du pool (rotation par visite, SUGGESTION_CHIP_POOL) :
+  // chaque libellé reste une commande CANONIQUE qui matche detectIntent @bob/ai à coup sûr
+  // (tva / balance / pilotage / nouveau_devis / scan / echeances / aide).
+  'assistant.chipVat': {
+    pote: 'Combien de TVA je dois ?',
+    pro: 'Quelle est ma position de TVA ?',
+    direct: 'Ma TVA ?',
+  },
+  'assistant.chipBalance': {
+    pote: 'Qui me doit de l’argent ?',
+    pro: 'Qui me doit de l’argent ?',
+    direct: 'Qui me doit quoi ?',
+  },
+  'assistant.chipPilotage': {
+    pote: 'Comment va mon activité ?',
+    pro: 'Comment va mon activité ?',
+    direct: 'Ça monte ou ça baisse ?',
+  },
+  'assistant.chipNewQuote': {
+    pote: 'Fais-moi un devis',
+    pro: 'Créer un nouveau devis',
+    direct: 'Nouveau devis',
+  },
+  'assistant.chipScan': {
+    pote: 'Scanne un ticket',
+    pro: 'Scanner un justificatif',
+    direct: 'Scan ticket',
+  },
+  'assistant.chipEcheances': {
+    pote: 'Mes échéances à venir ?',
+    pro: 'Quelles sont mes échéances fiscales ?',
+    direct: 'Échéances ?',
+  },
+  'assistant.chipHelp': {
+    pote: 'Tu sais faire quoi ?',
+    pro: 'Que savez-vous faire ?',
+    direct: 'Tu fais quoi ?',
   },
   // Commandes canoniques : ?prompt=relance_devis (edge C13) + chips de désambiguïsation
   // ({ref} = numéro de pièce). Formulées pour matcher les intents @bob/ai à coup sûr.
@@ -5672,6 +5768,19 @@ const legacyFr = {
     pote: 'Choisir un autre dossier',
     pro: 'Choisir un autre dossier',
     direct: 'Autre dossier',
+  },
+  // Feuille de rangement (confirmSingle) : bouton qui valide le choix surligné.
+  'scan.filingConfirm': {
+    pote: 'Classer',
+    pro: 'Classer',
+    direct: 'Classer',
+  },
+  // Question de la feuille quand la destination VALIDÉE par le domaine est un chantier
+  // (préséance : elle prime sur toute heuristique de dossier système).
+  'scan.filingQuestionChantier': {
+    pote: 'Je te propose « {label} ». Où veux-tu conserver l’original ?',
+    pro: 'Bob propose « {label} ». Où souhaitez-vous conserver l’original ?',
+    direct: '« {label} » ? Sinon, choisis.',
   },
   'scan.chantierOption': {
     pote: 'Chantier · {name}',

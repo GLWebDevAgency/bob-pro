@@ -155,6 +155,7 @@ export * from './application/ports/worksite-media';
 export * from './application/company/autofill-company';
 export * from './application/company/validate-vat';
 export * from './application/company/search-address';
+export * from './application/documents/acknowledge-document';
 export * from './application/documents/classify-document';
 export * from './application/documents/rename-document';
 export * from './application/documents/document-folders';

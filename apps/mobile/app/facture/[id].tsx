@@ -19,12 +19,18 @@ import {
   useGenerateInvoice,
   useInvoice,
   useInvoiceAccountingPreview,
+  useInvoicePaymentLink,
   useInvoices,
   useQuotes,
 } from '../../src/data/hooks';
 import { useDocuments } from '../../src/data/documents';
 import { useBobClient } from '../../src/data/client';
 import { shareDocument } from '../../src/lib/share-document';
+import { goBackOrHome } from '../../src/lib/navigation';
+import {
+  isPaymentLinkEligible,
+  matchesPaymentLinkUtterance,
+} from '../../src/lib/payment-link-affordance';
 import {
   InvoiceActions,
   canCreateCreditNote,
@@ -48,6 +54,9 @@ export default function FactureDetail() {
   const client = useBobClient();
   const invoice = useInvoice(id);
   const viewLink = useCreateInvoiceViewLink();
+  // S5 : MÊME hook que le bouton « Lien de paiement » (InvoiceActions) — présentation
+  // 'manual' : c'est l'affordance vocale qui ouvre le Share natif et parle l'échec.
+  const paymentLink = useInvoicePaymentLink('manual');
   const invoices = useInvoices();
   const quotes = useQuotes();
   const customers = useCustomers();
@@ -164,17 +173,52 @@ export default function FactureDetail() {
   canShareLinkRef.current = invoice.data?.number !== null && invoice.data?.number !== undefined;
   const viewLinkRef = useRef(viewLink);
   viewLinkRef.current = viewLink;
+  // S5 : « envoie le lien de paiement » — même hook que le bouton (parité structurelle via
+  // isPaymentLinkEligible, la condition exacte de la branche bouton dans InvoiceActions).
+  const paymentLinkRef = useRef(paymentLink);
+  paymentLinkRef.current = paymentLink;
+  const canSharePaymentLinkRef = useRef(
+    invoice.data != null && isPaymentLinkEligible(invoice.data.status),
+  );
+  canSharePaymentLinkRef.current = invoice.data != null && isPaymentLinkEligible(invoice.data.status);
   const personalityRef = useRef(personality);
   personalityRef.current = personality;
   const invoiceVoiceSurface = useMemo<AgentSurface>(
     () => ({
       affordances: [
         {
+          // S5 : lien de PAIEMENT à la voix — MÊME flux useInvoicePaymentLink que le bouton
+          // « Lien de paiement », présenté via le Share natif : AUCUN envoi sortant tant que
+          // le Share n'est pas complété par l'utilisateur (doctrine devis.shareViewLink).
+          // Testée AVANT shareViewLink : la phrase contient « lien » et serait sinon
+          // consommée par elle (premier match gagne, cf. agent-session §affordances).
+          id: 'facture.sharePaymentLink',
+          match: (utterance) => {
+            if (!canSharePaymentLinkRef.current) return null;
+            if (!matchesPaymentLinkUtterance(utterance)) return null;
+            return async () => {
+              const p = personalityRef.current;
+              try {
+                const result = await paymentLinkRef.current.mutateAsync(id);
+                await Share.share({
+                  message: `Bonjour, voici le lien pour régler la facture${invoiceNumberRef.current ? ` ${invoiceNumberRef.current}` : ''} : ${result.url}`,
+                });
+                return { say: t('facture.voice.shareLinkOpened', { personality: p }) };
+              } catch {
+                return { say: t('piece.shareLinkError', { personality: p }) };
+              }
+            };
+          },
+        },
+        {
+          // Contient « lien » mais PAS « paiement » : l'affordance paiement ci-dessus est
+          // testée AVANT et consomme déjà ces phrases-là (même doctrine que devis/signature).
           id: 'facture.shareViewLink',
           match: (utterance) => {
             if (!canShareLinkRef.current) return null;
             const n = normalizeVoiceText(utterance);
-            if (!/\b(partage|partager|envoie|envoyer)\b/.test(n) || !/\blien\b/.test(n)) return null;
+            if (!/\b(partage|partager|envoie|envoyer)\b/.test(n) || !/\blien\b/.test(n) || /\bpaiement\b/.test(n))
+              return null;
             return async () => {
               const p = personalityRef.current;
               try {
@@ -297,14 +341,19 @@ export default function FactureDetail() {
       </View>
     );
   }
+  // « Introuvable » n'est pas un cul-de-sac non plus (S7) : réessayer (la pièce peut
+  // apparaître après sync) ET fermer — sortie sûre même sans pile derrière (deep link),
+  // via le helper partagé avec devis/[id] (pattern client/chantier).
   if (!view || !invoice.data) {
     return (
       <View style={{ flex: 1, justifyContent: 'center', backgroundColor: colors.bg, padding: 18 }}>
-        <Card>
-          <Text accessibilityRole="alert" style={[font('sub'), { color: colors.slate500 }]}>
-            {t('piece.notFound', { personality })}
-          </Text>
-        </Card>
+        <ErrorRetry
+          message={t('piece.notFound', { personality })}
+          onRetry={() => void invoice.refetch()}
+          retrying={invoice.isRefetching}
+          secondaryLabel={t('piece.close', { personality })}
+          onSecondaryAction={() => goBackOrHome(router)}
+        />
       </View>
     );
   }

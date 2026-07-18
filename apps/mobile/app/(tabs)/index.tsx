@@ -695,7 +695,19 @@ export default function Aujourdhui() {
     notifications.isRefetching ||
     companyMe.isRefetching ||
     fiscalFlow.isRefetching;
+  // S8 : le pull-to-refresh ne recharge QUE les queries AFFICHÉES par ce briefing (trésorerie,
+  // solde bancaire, factures, fil de notifications) — clients/devis/diagnostic/profil fiscal
+  // vivent sur leur politique staleTime + invalidations de mutation. DoD : retour dashboard
+  // ≤ 6 GET, sans donnée périmée après mutation (les mutateurs invalident leurs domaines).
   const refreshAll = (): void => {
+    void cashflow.refetch();
+    void bankBalance.refetch();
+    void invoices.refetch();
+    notifications.refetchFeed();
+  };
+  // Le RETRY d'erreur relance TOUT (comportement historique) : une query en échec doit pouvoir
+  // se rétablir même hors de la liste affichée (company-me, priorités, profil fiscal…).
+  const retryAll = (): void => {
     primaryState.refetchAll();
     void cashflow.refetch();
     void bankBalance.refetch();
@@ -768,7 +780,7 @@ export default function Aujourdhui() {
           {dataFailed ? (
             <ErrorRetry
               message={t('today.dataError', { personality })}
-              onRetry={refreshAll}
+              onRetry={retryAll}
               retrying={refreshing}
             />
           ) : null}
@@ -853,7 +865,7 @@ export default function Aujourdhui() {
               ) : glanceBlockingError || (!glanceReady && !glanceMissingBankingInput) ? (
                 <ErrorRetry
                   message={t('today.dataError', { personality })}
-                  onRetry={refreshAll}
+                  onRetry={retryAll}
                   retrying={refreshing}
                 />
               ) : glanceMissingBankingInput ? (

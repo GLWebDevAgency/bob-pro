@@ -195,3 +195,127 @@ describe('detectIntent — pilier 2 (abonnement/essai, lecture seule)', () => {
     expect(detectIntent('Combien je peux me verser ?')).toBe('payout');
   });
 });
+
+describe('detectIntent — valider_document (« c\'est bon, valide le ticket »)', () => {
+  it('reconnaît la validation vocale d\'un document scanné AVANT scan/documents', () => {
+    for (const m of [
+      'Valide le ticket Aldi',
+      'C’est bon, valide le ticket',
+      'Confirme le reçu Leroy Merlin',
+      'Tu peux valider le justificatif',
+      'Valide le document du scan d’hier',
+      'Marque le ticket comme vu',
+    ]) {
+      expect(detectIntent(m)).toBe('valider_document');
+    }
+  });
+
+  it('ne cannibalise ni la facturation, ni le scan, ni la négation', () => {
+    // « valide la facture » reste AMBIGU avec l'émission légale : jamais de mutation dessus.
+    expect(detectIntent('Valide la facture 2026-014')).not.toBe('valider_document');
+    // Scanner reste scanner.
+    expect(detectIntent('Scanne ce ticket')).toBe('scan');
+    expect(detectIntent('Prends une photo du ticket')).toBe('scan');
+    // Négation : aucune action proposée.
+    expect(detectIntent('Ne valide pas le ticket')).not.toBe('valider_document');
+    expect(detectIntent('Ne confirme surtout pas ce document')).not.toBe('valider_document');
+    // Les listes de pièces restent une lecture.
+    expect(detectIntent('Montre mes documents archivés')).toBe('documents');
+  });
+});
+
+describe('detectIntent — classer_document (« range le ticket Aldi dans le chantier Durand »)', () => {
+  it('reconnaît le classement vocal AVANT scan, documents et voir_chantiers', () => {
+    for (const m of [
+      'Range le ticket Aldi dans le chantier Durand',
+      'Classe la facture Leroy Merlin dans frais généraux',
+      'Tu peux ranger le justificatif dans Achats',
+      'Déplace ce document vers le dossier Admin',
+      'Classe-le dans le chantier Maison Bernard',
+    ]) {
+      expect(detectIntent(m)).toBe('classer_document');
+    }
+  });
+
+  it('ne cannibalise ni le scan, ni les chantiers, ni la négation', () => {
+    expect(detectIntent('Scanne ce ticket')).toBe('scan');
+    expect(detectIntent('Ouvre mes chantiers')).toBe('voir_chantiers');
+    expect(detectIntent('Mes plus gros clients, un classement')).toBe('top_clients');
+    expect(detectIntent('Ne range pas le ticket')).not.toBe('classer_document');
+    expect(detectIntent('Ne classe surtout pas ce document')).not.toBe('classer_document');
+  });
+});
+
+describe('detectIntent — renommer_document (« renomme-le facture matériaux salle de bain »)', () => {
+  it('reconnaît le renommage vocal d’une pièce du coffre', () => {
+    for (const m of [
+      'Renomme-le facture matériaux salle de bain',
+      'Renomme le ticket Aldi en facture Aldi',
+      'Rebaptise le justificatif en attestation décennale',
+    ]) {
+      expect(detectIntent(m)).toBe('renommer_document');
+    }
+  });
+
+  it('exclut clients/dossiers/chantiers (autres gestes) et la négation', () => {
+    expect(detectIntent('Renomme le client Durand')).not.toBe('renommer_document');
+    expect(detectIntent('Renomme le dossier Achats')).not.toBe('renommer_document');
+    expect(detectIntent('Ne renomme pas le ticket')).not.toBe('renommer_document');
+  });
+});
+
+describe('detectIntent — chercher_document (« retrouve la facture du radiateur de mars »)', () => {
+  it('reconnaît la recherche de pièces AVANT scan/documents/nouveau_devis', () => {
+    for (const m of [
+      'Retrouve la facture du radiateur de mars',
+      'Cherche le devis chauffe-eau',
+      'Trouve-moi la facture Martin',
+      'Recherche un devis pour le camping',
+    ]) {
+      expect(detectIntent(m)).toBe('chercher_document');
+    }
+  });
+
+  it('ne cannibalise ni les listes, ni la création de devis', () => {
+    expect(detectIntent('Montre mes documents archivés')).toBe('documents');
+    expect(detectIntent('Liste mes factures impayées')).toBe('factures');
+    expect(detectIntent('Fais-moi un devis')).toBe('nouveau_devis');
+  });
+});
+
+describe('detectIntent — aide (découvrabilité S9 : catalogue des capacités)', () => {
+  it('reconnaît les questions sur les capacités de Bob', () => {
+    for (const m of [
+      'Aide',
+      'aide-moi',
+      'Help',
+      'Tu sais faire quoi ?',
+      'Tu peux faire quoi ?',
+      'Que sais-tu faire ?',
+      'Que peux-tu faire ?',
+      'Que savez-vous faire ?',
+      'Qu’est-ce que tu sais faire ?',
+      "Qu'est-ce que tu peux faire ?",
+      'Montre-moi ce que tu sais faire',
+      'À quoi tu sers ?',
+      'Comment tu peux m’aider ?',
+      'Tu fais quoi ?',
+      'J’ai besoin d’aide',
+    ]) {
+      expect(detectIntent(m)).toBe('aide');
+    }
+  });
+
+  it('ne capte JAMAIS une vraie commande qui contient « aide » ou « faire »', () => {
+    expect(detectIntent('Aide-moi à faire un devis')).toBe('nouveau_devis');
+    expect(detectIntent('Besoin d’aide pour ma relance')).toBe('relance');
+    expect(detectIntent('Tu peux faire un devis pour Martin ?')).toBe('nouveau_devis');
+    expect(detectIntent('Tu peux faire la facture du devis ?')).toBe('generer_facture');
+    expect(detectIntent('J’ai besoin d’aide sur ma TVA')).toBe('tva');
+  });
+
+  it('le hors-périmètre reste unknown (jamais requalifié en aide)', () => {
+    expect(detectIntent('Quel temps fait-il ?')).toBe('unknown');
+    expect(detectIntent('Raconte-moi une blague')).toBe('unknown');
+  });
+});

@@ -19,6 +19,10 @@ export type BobIntent =
   | 'balance' // balance âgée : qui me doit quoi, depuis quand — lecture, BOB-1
   | 'marquer_notifications_lues' // batch atomique borné par cutoff serveur — mutation confirmée
   | 'payer_depense' // enregistrer un règlement fournisseur déjà effectué — mutation comptable
+  | 'valider_document' // « c'est bon, valide le ticket » — pose reviewedAt (AcknowledgeDocument), parité file « À valider »
+  | 'classer_document' // « range le ticket Aldi dans le chantier Durand » — même séquence que « Classer là » (LOT 5)
+  | 'renommer_document' // « renomme-le facture matériaux salle de bain » — RenameDocument, nom humain prioritaire (LOT 5)
+  | 'chercher_document' // « retrouve la facture du radiateur de mars » — recherche réelle devis & factures, lecture (LOT 5)
   | 'resultat' // résultat provisoire (produits − charges du grand-livre) — lecture, BOB-2
   | 'bilan' // bilan simplifié actif/passif — lecture, BOB-4
   | 'revue_cloture' // « mon dossier est-il prêt pour le comptable ? » — verdict de revue, DOSSIER-2
@@ -26,6 +30,7 @@ export type BobIntent =
   | 'dso' // « on me paie en combien de temps ? » — DSO 90 j + € immobilisés, BA-3
   | 'top_clients' // plus gros clients 12 mois + dépendance — lecture, BA-3
   | 'abonnement' // « où en est mon abonnement / mon essai ? » — lecture seule, pilier 2 (jamais d'achat vocal)
+  | 'aide' // « aide », « tu sais faire quoi ? » — catalogue parlé des capacités (découvrabilité, jamais un refus)
   | 'unknown';
 
 function normalizeIntent(message: string): string {
@@ -68,6 +73,22 @@ export function detectIntent(message: string): BobIntent {
     )
   )
     return 'contexte_ecran';
+  // DÉCOUVRABILITÉ (S9) : question sur les CAPACITÉS de Bob — patterns stricts (interrogatifs
+  // « quoi/que/ce que » requis) pour ne JAMAIS capter une vraie commande (« tu peux faire un
+  // devis pour Martin » reste nouveau_devis) ; « aide » seul est ancré début/fin de message.
+  if (
+    /\b(tu|vous) (sais|savez|peux|pouvez) faire quoi\b/.test(normalizedMessage) ||
+    /\bque (sais|peux)[- ]tu faire\b|\bque (savez|pouvez)[- ]vous faire\b/.test(normalizedMessage) ||
+    /\bqu.{0,3}est[- ]ce que (tu|vous) (sais|savez|peux|pouvez) faire\b/.test(normalizedMessage) ||
+    /\bce que (tu sais|vous savez) faire\b/.test(normalizedMessage) ||
+    /\ba quoi (tu sers|sers[- ]tu|vous servez|servez[- ]vous)\b/.test(normalizedMessage) ||
+    /\bcomment (tu peux|vous pouvez) m.{0,3}aider\b/.test(normalizedMessage) ||
+    /\btu fais quoi\b/.test(normalizedMessage) ||
+    // « besoin d'aide » / « aide » SEULS (ancrés) : « besoin d'aide pour un devis » reste un devis.
+    /^\s*(j.{0,3}ai )?besoin d.{0,3}aide\s*[!?.…]*\s*$/.test(normalizedMessage) ||
+    /^\s*(aide|aide[- ]moi|de l.{0,3}aide|help|au secours)\s*[!?.…]*\s*$/.test(normalizedMessage)
+  )
+    return 'aide';
   // BOB-1 : régler une DÉPENSE/FOURNISSEUR — AVANT « encaisser » (« règle », « payé » collisionnent).
   if (/(pai|pay|regl|sold).*(depense|fournisseur)|(depense|fournisseur).*(pai|pay|regl|sold)/.test(normalizedMessage))
     return 'payer_depense';
@@ -107,6 +128,53 @@ export function detectIntent(message: string): BobIntent {
   // Résultat provisoire (BOB-2) : AVANT payout (« combien je gagne » ≠ « me verser »).
   if (/(r[ée]sultat|b[ée]n[ée]fice|combien je gagne|je gagne combien|en perte|balance g[ée]n[ée]rale)/.test(m))
     return 'resultat';
+  // Recherche de pièce (LOT 5) : « retrouve la facture du radiateur de mars » — AVANT scan,
+  // documents, nouveau_devis (« un devis » y collisionne) et emettre_facture. Lecture pure.
+  if (
+    /\b(retrouve|retrouver|retrouves|recherche|rechercher|cherche|chercher|trouve|trouver)\b.{0,50}\b(facture|factures|devis|document|documents|piece|pieces)\b/.test(
+      normalizedMessage,
+    )
+  )
+    return 'chercher_document';
+  // Classement d'un document (LOT 5) : « range le ticket Aldi dans le chantier Durand »,
+  // « classe la facture Leroy Merlin dans frais généraux » — AVANT scan/documents (« ticket »,
+  // « justificatif » y collisionnent) et AVANT voir_chantiers (« chantier » y collisionne).
+  // « classe » sans complément documentaire ni destination ne suffit pas. Négation ⇒ rien.
+  if (
+    (/\b(range|ranger|ranges|classe|classer|classes|deplace|deplacer|deplaces)\b.{0,60}\b(document|ticket|recu|justificatif|piece|attestation|releve|scan|facture|devis)s?\b/.test(
+      normalizedMessage,
+    ) ||
+      /\b(range|ranger|ranges|classe|classer|classes|deplace|deplacer|deplaces)\b.{0,50}\b(dans|vers|au|aux)\b/.test(
+        normalizedMessage,
+      )) &&
+    !/\b(ne|n|pas|jamais|surtout pas)\b.{0,24}\b(range|ranger|classe|classer|deplace|deplacer)\b|\b(range|ranger|classe|classer|deplace|deplacer)\b.{0,30}\bpas\b/.test(
+      normalizedMessage,
+    )
+  )
+    return 'classer_document';
+  // Renommage d'un document (LOT 5) : « renomme-le facture matériaux salle de bain » — le nom
+  // dicté devient un renommage humain prioritaire. Clients/dossiers/chantiers exclus (autre geste).
+  if (
+    /\b(renomme|renommer|renommes|rebaptise|rebaptiser|rebaptises)\b/.test(normalizedMessage) &&
+    !/\b(renomme|renommer|renommes|rebaptise|rebaptiser|rebaptises)\b.{0,24}\b(client|chantier|dossier)\b/.test(
+      normalizedMessage,
+    ) &&
+    !/\b(ne|n|pas|jamais|surtout pas)\b.{0,24}\b(renomme|renommer|rebaptise|rebaptiser)\b|\b(renomme|renommer|rebaptise|rebaptiser)\b.{0,30}\bpas\b/.test(
+      normalizedMessage,
+    )
+  )
+    return 'renommer_document';
+  // Validation d'un document scanné (« c'est bon, valide le ticket Aldi ») : AVANT scan
+  // (« ticket », « reçu », « justificatif » y collisionnent) et AVANT documents. Les noms
+  // facture/devis sont EXCLUS du groupe nominal : « valide la facture » resterait ambigu avec
+  // l'émission légale — jamais de mutation sur une intention ambiguë. Négation ⇒ aucune action.
+  if (
+    /\b(valide|valider|confirme|confirmer)\b.{0,40}\b(document|ticket|recu|justificatif|piece|attestation|releve|scan)\b|\b(document|ticket|recu|justificatif|piece|attestation|releve)s?\b.{0,30}\b(est|sont)?\s*(bon|bons|ok|valid[ée]s?)\b.{0,15}\b(valide|confirme)\b|\bmarque\b.{0,30}\b(document|ticket|recu|justificatif|piece)\b.{0,20}\bcomme (vu|lu|valid[ée])\b/.test(
+      normalizedMessage,
+    ) &&
+    !/\b(ne|n|pas|jamais|surtout pas)\b.{0,24}\b(valide|valider|confirme|confirmer|marque)\b|\b(valide|valider|confirme|confirmer|marque)\b.{0,30}\bpas\b/.test(normalizedMessage)
+  )
+    return 'valider_document';
   if (/(scan|num[ée]ris|ticket|justificatif|note de frais|re[çc]u|photo.*(facture|ticket|d[ée]pense))/.test(m)) return 'scan';
   if (/(envoi|envoie|envoyer|transmets|exp[ée]die).*(devis)|devis.*(client|signature|envoi|envoyer|transmettre)/.test(m))
     return 'envoyer_devis';

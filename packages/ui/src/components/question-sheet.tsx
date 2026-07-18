@@ -10,6 +10,7 @@ import { Pressable, Text, View } from 'react-native';
 import { useTheme, font } from '../theme';
 import { Sheet } from './sheet';
 import { Button } from './button';
+import { questionConfirmVisible, toggleQuestionOption } from './question-sheet.logic';
 
 export interface QuestionSheetOption {
   readonly value: string;
@@ -25,7 +26,14 @@ export interface QuestionSheetProps {
   readonly options: readonly QuestionSheetOption[];
   /** Choix multiple (checkboxes + bouton valider) — défaut : choix unique (tap direct). */
   readonly multiSelect?: boolean;
-  /** Libellé du bouton de validation (multi) — i18n côté app. */
+  /**
+   * Choix unique avec CONFIRMATION explicite (opt-in) : le tap surligne la sélection,
+   * la validation attend le bouton `confirmLabel` — plus jamais d'action au tap sec.
+   * Compat ascendante : sans ce drapeau, le choix unique valide au tap (historique).
+   * Ignoré en `multiSelect` (qui confirme déjà).
+   */
+  readonly confirmSingle?: boolean;
+  /** Libellé du bouton de validation (multi ou choix unique confirmé) — i18n côté app. */
   readonly confirmLabel: string;
   /** Libellé du geste d'échappement « autre / préciser » — i18n côté app. */
   readonly otherLabel: string;
@@ -34,6 +42,8 @@ export interface QuestionSheetProps {
   readonly onSelect: (values: string[]) => void;
   /** L'utilisateur préfère répondre librement : l'app focus l'input du chat. */
   readonly onOther: () => void;
+  /** Fin de l'animation de fermeture (feuille démontée) — séquencement externe des sheets. */
+  readonly onDidClose?: (() => void) | undefined;
 }
 
 export function QuestionSheet({
@@ -42,14 +52,17 @@ export function QuestionSheet({
   question,
   options,
   multiSelect = false,
+  confirmSingle = false,
   confirmLabel,
   otherLabel,
   onClose,
   onSelect,
   onOther,
+  onDidClose,
 }: QuestionSheetProps) {
   const { colors, semantic, controls, radius } = useTheme();
   const [picked, setPicked] = useState<ReadonlySet<string>>(new Set());
+  const mode = { multiSelect, confirmSingle };
 
   // Nouvelle question (ou réouverture) : sélection remise à zéro.
   useEffect(() => {
@@ -57,17 +70,9 @@ export function QuestionSheet({
   }, [visible, question]);
 
   const toggle = (value: string): void => {
-    if (!multiSelect) {
-      setPicked(new Set([value]));
-      onSelect([value]);
-      return;
-    }
-    setPicked((prev) => {
-      const next = new Set(prev);
-      if (next.has(value)) next.delete(value);
-      else next.add(value);
-      return next;
-    });
+    const result = toggleQuestionOption(picked, value, mode);
+    setPicked(result.picked);
+    if (result.committed) onSelect([...result.picked]);
   };
 
   return (
@@ -76,6 +81,7 @@ export function QuestionSheet({
       onClose={onClose}
       accessibilityLabel={`${header}. ${question}`}
       closeAccessibilityLabel="Fermer la question"
+      onDidClose={onDidClose}
     >
       <View
         style={{
@@ -163,7 +169,7 @@ export function QuestionSheet({
         })}
       </View>
 
-      {multiSelect ? (
+      {questionConfirmVisible(mode) ? (
         <View style={{ marginTop: 4 }}>
           <Button
             title={confirmLabel}
@@ -183,7 +189,7 @@ export function QuestionSheet({
           alignSelf: 'center',
           minHeight: 44,
           justifyContent: 'center',
-          marginTop: multiSelect ? 6 : 2,
+          marginTop: questionConfirmVisible(mode) ? 6 : 2,
           paddingHorizontal: 12,
         }}
       >

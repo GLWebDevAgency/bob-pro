@@ -105,6 +105,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Expense creation idempotency — certificat
       const moved = await new MoveDocumentToFolder({
         folders: persistence.documentFolders,
         uow: persistence,
+        clock,
       }).execute({
         companyId,
         documentId: input.documentId,
@@ -115,6 +116,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Expense creation idempotency — certificat
 
       return new ClassifyDocument({
         documents: persistence.documents,
+        clock,
         linkTargets: new RepositoryDocumentLinkTargets({
           company: persistence.companies,
           invoice: persistence.invoices,
@@ -392,7 +394,9 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Expense creation idempotency — certificat
       () => firstPersistence.documents.findById(companyId, workflowDocumentId),
     )).resolves.toMatchObject({
       folderId: targetFolderId,
-      revision: 3,
+      // Rangement (+1) + validation humaine posée par le rangement (+1) = 3, puis
+      // classement du lien dépense (+1, le doc est déjà validé) = 4.
+      revision: 4,
     });
 
     const replay = await firstCoordinator.execute(
@@ -408,7 +412,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Expense creation idempotency — certificat
       followUp: {
         id: workflowDocumentId,
         folderId: targetFolderId,
-        revision: 3,
+        revision: 4,
         linkedEntityType: 'expense',
         linkedEntityId: first.value.expenseId,
       },

@@ -164,7 +164,11 @@ export class SupabaseDocumentStorage implements DocumentStoragePort {
     const payload = (await response.json()) as { signedURL?: string; signedUrl?: string };
     const signed = payload.signedURL ?? payload.signedUrl;
     if (!signed) throw new Error('Supabase storage signed URL response missing URL.');
-    return signed.startsWith('http') ? signed : `${this.config.url.replace(/\/$/, '')}${signed}`;
+    if (signed.startsWith('http')) return signed;
+    // Supabase renvoie un chemin relatif à /storage/v1 (« /object/sign/… ») : sans ce segment,
+    // la gateway répond « requested path is invalid » (constaté en prod le 2026-07-18).
+    const base = this.config.url.replace(/\/$/, '');
+    return signed.startsWith('/storage/v1/') ? `${base}${signed}` : `${base}/storage/v1${signed}`;
   }
 
   async stat(

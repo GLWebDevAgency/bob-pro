@@ -1281,6 +1281,26 @@ function parseRenameDocumentBody(body: Record<string, unknown>): RenameDocumentB
   };
 }
 
+type AcknowledgeDocumentBody = {
+  expectedRevision: number;
+};
+
+const DOCUMENT_ACKNOWLEDGE_FIELDS = new Set(['expectedRevision']);
+
+/** POST /documents/:id/acknowledge — seule la révision optimiste est acceptée du client. */
+function parseAcknowledgeDocumentBody(body: Record<string, unknown>): AcknowledgeDocumentBody {
+  const issues: ValidationIssue[] = [];
+  if (Object.keys(body).some((field) => !DOCUMENT_ACKNOWLEDGE_FIELDS.has(field))) {
+    issues.push({ field: 'body', message: 'Le corps contient un champ non autorisé.' });
+  }
+  const expectedRevision = body.expectedRevision;
+  if (!Number.isSafeInteger(expectedRevision) || (expectedRevision as number) < 1) {
+    issues.push({ field: 'expectedRevision', message: 'Révision document positive attendue.' });
+  }
+  if (issues.length > 0) throwValidationIssues(issues);
+  return { expectedRevision: expectedRevision as number };
+}
+
 type ClassifyDocumentBody = {
   linkedEntityType: DocumentLinkedEntityType;
   linkedEntityId: string;
@@ -1950,6 +1970,17 @@ export class DocumentsController {
     assertJsonObjectBody(body);
     return unwrap(
       await this.backend.classifyDocument({ documentId, ...parseClassifyDocumentBody(body) }),
+    );
+  }
+  /** « C'est bon, je valide » : pose reviewedAt SANS déplacer ni lier (AcknowledgeDocument @bob/core). */
+  @Post(':id/acknowledge')
+  async acknowledge(@Param('id') documentId: string, @Body() body: unknown) {
+    assertJsonObjectBody(body);
+    return unwrap(
+      await this.backend.acknowledgeDocument({
+        documentId,
+        ...parseAcknowledgeDocumentBody(body),
+      }),
     );
   }
   @Put(':id/expense')

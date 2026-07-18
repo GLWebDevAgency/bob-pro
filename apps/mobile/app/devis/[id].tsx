@@ -5,12 +5,12 @@
  * Nav croisée réelle : première facture issue du devis (parentQuoteId).
  */
 import { useMemo, useRef, useState } from 'react';
-import { Alert, Linking, Share, Text, View } from 'react-native';
+import { Alert, Linking, Share, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { buildPieceView, frSpokenNumbersToDigits, normalizeVoiceText, type PieceLineView, type PieceLinkedRef } from '@bob/core';
 import { challengeFor } from '@bob/ai';
 import { t } from '@bob/i18n';
-import { Card, ErrorRetry, SkeletonCard, SkeletonHeader, font, useTheme } from '@bob/ui';
+import { ErrorRetry, SkeletonCard, SkeletonHeader, useTheme } from '@bob/ui';
 import {
   appErrorMessage,
   useCreateQuoteViewLink,
@@ -23,6 +23,7 @@ import {
 import { useDocuments } from '../../src/data/documents';
 import { useBobClient } from '../../src/data/client';
 import { shareDocument } from '../../src/lib/share-document';
+import { goBackOrHome } from '../../src/lib/navigation';
 import {
   QuoteActions,
   hasQuoteActions,
@@ -496,14 +497,19 @@ export default function DevisDetail() {
       </View>
     );
   }
+  // « Introuvable » n'est pas un cul-de-sac non plus (S7) : réessayer (la pièce peut
+  // apparaître après sync) ET fermer — sortie sûre même sans pile derrière (deep link),
+  // via le helper partagé avec facture/[id] (pattern client/chantier).
   if (!view || !quote.data) {
     return (
       <View style={{ flex: 1, justifyContent: 'center', backgroundColor: colors.bg, padding: 18 }}>
-        <Card>
-          <Text accessibilityRole="alert" style={[font('sub'), { color: colors.slate500 }]}>
-            {t('piece.notFound', { personality })}
-          </Text>
-        </Card>
+        <ErrorRetry
+          message={t('piece.notFound', { personality })}
+          onRetry={() => void quote.refetch()}
+          retrying={quote.isRefetching}
+          secondaryLabel={t('piece.close', { personality })}
+          onSecondaryAction={() => goBackOrHome(router)}
+        />
       </View>
     );
   }

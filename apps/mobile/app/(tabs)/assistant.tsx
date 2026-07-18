@@ -58,6 +58,7 @@ import {
   echoOverlap,
   isAllowedAgentNavigationRoute,
   parseBargeIn,
+  planSpokenDelivery,
   speechWordCount,
   parseVoiceChoice,
   parseVoiceConsent,
@@ -81,6 +82,9 @@ import { speechRecognitionAvailable, useSpeak, useVoiceInput } from '../../src/d
 import { ActionDiffView } from '../../src/components/ActionDiffView';
 import { SendIcon, SparkIcon } from '../../src/components/icons';
 import { useAgentSession } from '../../src/agent';
+import { planLiveSilenceRecovery } from '../../src/assistant/live-silence';
+import { AGENT_REFRESH_QUERY_KEY_PREFIXES } from '../../src/assistant/refresh-after-action';
+import { SUGGESTION_CHIP_POOL, rotateSuggestionChips } from '../../src/assistant/suggestion-chips';
 import {
   derivePendingPreview,
   type PendingPreviewState,
@@ -97,13 +101,9 @@ interface ChatItem {
   readonly accountingLines?: readonly AccountingLine[];
 }
 
-/** Chips suggestions (proto §isAssistant) — chaque tap = une VRAIE requête agent. */
-const SUGGESTION_CHIPS: readonly I18nKey[] = [
-  'assistant.chipRelance',
-  'assistant.chipPayout',
-  'assistant.chipMonth',
-  'assistant.chipDiag',
-];
+/** DÉCOUVRABILITÉ (S9) : compteur de VISITES de l'onglet (niveau module — survit aux remounts,
+ * repart à zéro au cold start) ; chaque focus avance la fenêtre de rotation des chips. */
+let assistantVisitSeq = 0;
 
 /** ?prompt=… → commande canonique (edges C10/C11/C13 — parité d'actions [23:52]). */
 const ENTRY_PROMPTS: Readonly<Partial<Record<string, I18nKey>>> = {
@@ -299,6 +299,10 @@ export default function Assistant() {
   const [activeAsk, setActiveAsk] = useState<AgentQuestion | null>(null);
   /** TEASER BOB LIVE : décision de déblocage affichée après un tap Live sans droit voice_live. */
   const [livePaywall, setLivePaywall] = useState<PaywallDecision | null>(null);
+  /** S9 : rangée de chips de la visite courante — fenêtre déterministe du pool canonique. */
+  const [suggestionChips, setSuggestionChips] = useState<readonly I18nKey[]>(() =>
+    rotateSuggestionChips(SUGGESTION_CHIP_POOL, assistantVisitSeq),
+  );
   const inputRef = useRef<TextInput>(null);
   const scrollRef = useRef<ScrollView>(null);
   const handoffContextRef = useRef<{
@@ -328,12 +332,13 @@ export default function Assistant() {
     return t(actionKey, { personality });
   };
 
+  /** S8 : après un run « done », invalide chaque préfixe du contrat pur (testé) — y compris
+   * documents/dossiers (LOT 5) et dépenses/écritures, sinon les onglets déjà montés affichent
+   * une donnée périmée en contradiction avec ce que Bob vient d'affirmer. */
   const refreshAfterAction = (): void => {
-    void qc.invalidateQueries({ queryKey: ['invoices'] });
-    void qc.invalidateQueries({ queryKey: ['quotes'] });
-    void qc.invalidateQueries({ queryKey: ['customers'] });
-    void qc.invalidateQueries({ queryKey: ['cashflow'] });
-    void qc.invalidateQueries({ queryKey: ['notifications'] });
+    for (const queryKey of AGENT_REFRESH_QUERY_KEY_PREFIXES) {
+      void qc.invalidateQueries({ queryKey });
+    }
   };
 
   /**
@@ -508,6 +513,13 @@ export default function Assistant() {
   const ECHO_GRACE_MS = 5000;
   /** Disjoncteur : 3 échos ignorés d'affilée → repos (l'orbe se relance au tap). */
   const echoStreakRef = useRef(0);
+  /** S4 : l'oreille a été observée OUVERTE — seule une vraie transition ouverte→fermée
+   * compte comme fin d'écoute (jamais la latence d'ouverture permission/getVoiceMode). */
+  const liveEarWasOpenRef = useRef(false);
+  /** S4 : UNE relance parlée par silence — remis à zéro à chaque transcript réel. */
+  const silenceRetriedRef = useRef(false);
+  /** S4 : ré-écoute post-écho en vol (grâce du lease natif) — jamais prise pour un silence. */
+  const echoRelistenRef = useRef(false);
 
   /** Référence d'écho active : l'énoncé en cours, ou le dernier fini s'il est récent. */
   const echoReference = (): string => {
@@ -521,7 +533,7 @@ export default function Assistant() {
     | { kind: 'choice'; question: AgentQuestion; retried: boolean }
     | { kind: 'consent'; item: ChatItem; retried: boolean }
   >({ kind: 'command' });
-  const { speakAndWait, stopSpeaking } = useSpeak();
+  const { speakAndWait, speakSentences, stopSpeaking } = useSpeak();
 
   const voice = useVoiceInput(
     (text) => {
@@ -546,6 +558,9 @@ export default function Assistant() {
   useFocusEffect(
     useCallback(() => {
       setAssistantFocused(true);
+      // S9 : rotation PAR VISITE — cette visite montre la fenêtre courante, la prochaine avance.
+      setSuggestionChips(rotateSuggestionChips(SUGGESTION_CHIP_POOL, assistantVisitSeq));
+      assistantVisitSeq += 1;
       return () => {
         setAssistantFocused(false);
         // Le contexte hérité appartient au fil ouvert depuis l'overlay, pas aux futures
@@ -558,6 +573,8 @@ export default function Assistant() {
         void voiceRef.current.cancel();
         setLiveState('idle');
         expectationRef.current = { kind: 'command' };
+        silenceRetriedRef.current = false;
+        echoRelistenRef.current = false;
       };
     }, [stopSpeaking]),
   );
@@ -571,16 +588,22 @@ export default function Assistant() {
 
   const say = async (text: string, opts: { bargeIn?: boolean } = {}): Promise<void> => {
     if (!liveRef.current) return;
+    // S6 — MÊME bouche que la session globale : texte SANITIZÉ pour l'oreille (l'écran garde
+    // le gabarit intact) et FILE DE PHRASES — Bob parle dès la première, le tap/barge-in coupe
+    // entre deux. Les CONSENTEMENTS (bargeIn:false) restent MONOBLOCS : un prompt de
+    // confirmation ne se coupe jamais en deux. L'echo-guard référence ce qui est réellement DIT.
+    const delivery = planSpokenDelivery(text, { monolithic: opts.bargeIn === false });
     setLiveState('speaking');
-    speakingTextRef.current = text;
+    speakingTextRef.current = delivery.text;
     // LIVE-3 : l'oreille reste ouverte PENDANT la lecture (natif seulement — en cloud, le
     // tap du bandeau reste l'interruption). JAMAIS pendant une demande de CONFIRMATION :
     // l'écho du prompt contient « je confirme »/« annule » — risque d'exécution fantôme.
     if ((opts.bargeIn ?? true) && speechRecognitionAvailable && !voiceRef.current.listening)
       void voiceRef.current.start();
-    await speakAndWait(text);
+    if (delivery.sentences === null) await speakAndWait(delivery.text);
+    else await speakSentences(delivery.sentences);
     speakingTextRef.current = '';
-    lastSpokenRef.current = { text, endedAt: Date.now() };
+    lastSpokenRef.current = { text: delivery.text, endedAt: Date.now() };
   };
 
   /** Pause de purge : laisse l'audio résiduel du TTS sortir des buffers AVANT d'écouter. */
@@ -627,7 +650,14 @@ export default function Assistant() {
       setLiveState('idle');
       return;
     }
-    if (liveRef.current && !voiceRef.current.listening) void voiceRef.current.start();
+    if (liveRef.current && !voiceRef.current.listening) {
+      // S4 : cette ré-écoute traverse la grâce du lease natif — la détection de silence ne
+      // doit jamais parler pendant cette fenêtre (on répondrait à son propre écho).
+      echoRelistenRef.current = true;
+      void voiceRef.current.start().finally(() => {
+        echoRelistenRef.current = false;
+      });
+    }
   };
 
   const onLiveTranscript = async (text: string): Promise<void> => {
@@ -663,6 +693,7 @@ export default function Assistant() {
       }
     }
     echoStreakRef.current = 0;
+    silenceRetriedRef.current = false; // un transcript réel réarme la relance unique (S4)
     setLiveState('thinking');
 
     if (expected.kind === 'choice') {
@@ -748,6 +779,8 @@ export default function Assistant() {
     setLive(true);
     liveRef.current = true;
     expectationRef.current = { kind: 'command' };
+    silenceRetriedRef.current = false;
+    echoRelistenRef.current = false;
     setLiveState('listening');
     void voiceRef.current.start().then((started) => {
       if (started) return;
@@ -757,10 +790,35 @@ export default function Assistant() {
     });
   };
 
-  // Fin d'écoute sans transcript (silence) : l'orbe retombe en « prêt » — un tap relance.
+  // S4 — CONTINUITÉ MAINS-LIBRES : fin d'écoute SANS transcript (la reco native se termine
+  // seule sur silence). 1er silence : UNE relance parlée (heardNothing) + UNE ré-écoute.
+  // 2e silence d'affilée : repos SILENCIEUX — un tap relance. La décision est PURE
+  // (live-silence.ts) et ne réagit qu'à une fermeture RÉELLE de l'oreille — jamais à la
+  // latence d'ouverture ni à la ré-écoute post-écho.
   useEffect(() => {
-    if (live && !voice.listening && liveState === 'listening') setLiveState('idle');
-  }, [live, voice.listening, liveState]);
+    const earWasOpen = liveEarWasOpenRef.current;
+    liveEarWasOpenRef.current = voice.listening;
+    const plan = planLiveSilenceRecovery({
+      live,
+      state: liveState,
+      voiceListening: voice.listening,
+      earWasOpen,
+      echoRelistenInFlight: echoRelistenRef.current,
+      nativeRecognition: speechRecognitionAvailable,
+      alreadyRetried: silenceRetriedRef.current,
+    });
+    if (plan.kind === 'none') return;
+    if (plan.kind === 'rest') {
+      setLiveState('idle');
+      return;
+    }
+    silenceRetriedRef.current = true;
+    void (async () => {
+      await say(t('agent.global.heardNothing', { personality }));
+      await settle(500);
+      listen();
+    })();
+  }, [live, voice.listening, liveState, personality]);
 
   /** Valider : exécute l'action proposée via agent.confirm — LE flux de confirmation existant. */
   const confirm = async (item: ChatItem): Promise<AgentRun | null> => {
@@ -1294,7 +1352,7 @@ export default function Assistant() {
               paddingBottom: 12,
             }}
           >
-            {SUGGESTION_CHIPS.map((key) => {
+            {suggestionChips.map((key) => {
               const label = t(key, { personality });
               return (
                 <SuggestionChip

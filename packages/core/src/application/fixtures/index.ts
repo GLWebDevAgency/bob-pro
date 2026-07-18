@@ -194,6 +194,8 @@ export function seedVaultDocuments(companyId: string, now: Instant, today: DateO
     createdBy: 'local',
     retentionUntil,
     tags: input.tags ?? [],
+    // Démo fidèle au réel : aucun document seedé n'a encore été confirmé par l'artisan.
+    reviewedAt: null,
   });
   const twoMinutesAgo = new Date(Date.parse(now) - 120_000).toISOString();
   return [

@@ -840,3 +840,545 @@ describe('BobAgent — enregistrement vocal d’un règlement fournisseur', () =
     expect(confirmed.value.card.body).toContain('Rien n’a été modifié');
   });
 });
+
+describe('valider_document — parité vocale avec le bouton « Confirmer » de « À valider »', () => {
+  const acknowledged: unknown[] = [];
+  const docActions = (over: Partial<BobActions> = {}): BobActions => ({
+    ...actions,
+    listDocuments: async () =>
+      ok([
+        {
+          id: 'doc-aldi',
+          filename: 'scan-93813.jpg',
+          kind: 'expense_receipt',
+          linkedEntityType: null,
+          linkedEntityId: null,
+          createdAt: '2026-07-15T09:00:00.000Z',
+          displayName: 'Ticket Aldi — 23,90 €',
+          origin: 'ocr',
+          folderId: 'folder-achats',
+          reviewedAt: null,
+        },
+        {
+          id: 'doc-cedeo',
+          filename: 'scan-93814.jpg',
+          kind: 'expense_receipt',
+          linkedEntityType: null,
+          linkedEntityId: null,
+          createdAt: '2026-07-15T10:00:00.000Z',
+          displayName: 'Facture Cedeo — 184,90 €',
+          origin: 'ocr',
+          folderId: null,
+          reviewedAt: null,
+        },
+      ]),
+    acknowledgeDocument: async (input) => {
+      acknowledged.push(input);
+      return ok({ documentId: input.documentId, reviewedAt: '2026-07-15T11:00:00.000Z' });
+    },
+    ...over,
+  });
+  const agentWith = (over: Partial<BobActions> = {}) =>
+    new BobAgent({ router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }), actions: docActions(over) });
+
+  it('cible le document par son libellé intelligent et PROPOSE (plancher : latch sans annulation), même en auto', async () => {
+    acknowledged.length = 0;
+    const agent = agentWith();
+    const r = await agent.ask('C’est bon, valide le ticket Aldi', { autonomy: 'auto' });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.intent).toBe('valider_document');
+    expect(r.value.kind).toBe('proposed');
+    expect(r.value.pending).toMatchObject({ tool: 'valider_document', args: { documentId: 'doc-aldi' } });
+    // Rien n'est validé avant le consentement.
+    expect(acknowledged).toEqual([]);
+    // La confirmation exécute le MÊME use case (délégation à l'hôte).
+    const done = await agent.confirm(r.value.pending!);
+    expect(done.ok && done.value.kind).toBe('done');
+    expect(acknowledged).toEqual([{ documentId: 'doc-aldi' }]);
+  });
+
+  it('refuse honnêtement un document non rangé (pièce orpheline sinon) — rien n’est modifié', async () => {
+    acknowledged.length = 0;
+    const r = await agentWith().ask('Valide le document Cedeo');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(r.value.card.title).toBe('À ranger d’abord');
+    expect(acknowledged).toEqual([]);
+  });
+
+  it('sans cible identifiable : liste la file « À valider » et demande, sans jamais valider à l’aveugle', async () => {
+    acknowledged.length = 0;
+    const r = await agentWith().ask('Valide le ticket');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(r.value.card.title).toBe('Quel document ?');
+    expect(r.value.choices?.length).toBe(2);
+    expect(acknowledged).toEqual([]);
+  });
+
+  it('hôte sans la capacité (rétro-compat) : réponse honnête, aucune validation inventée', async () => {
+    const r = await new BobAgent({
+      router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }),
+      actions,
+    }).ask('Valide le ticket Aldi');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(r.value.card.body).toContain('Rien n’a été modifié');
+  });
+
+  it('file vide (tout validé ou hôte sans reviewedAt/origin) : réponse « rien à valider »', async () => {
+    const r = await agentWith({
+      listDocuments: async () =>
+        ok([
+          {
+            id: 'doc-1',
+            filename: 'facture-F2026-001.pdf',
+            kind: 'invoice_pdf',
+            linkedEntityType: 'invoice',
+            linkedEntityId: 'inv-1',
+            createdAt: '2026-07-01T10:00:00.000Z',
+          },
+        ]),
+    }).ask('Valide le ticket Aldi');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(r.value.card.title).toBe('Rien à valider');
+  });
+});
+
+describe('classer_document — parité vocale avec le geste « Classer là » (LOT 5)', () => {
+  const filed: unknown[] = [];
+  const classerActions = (over: Partial<BobActions> = {}): BobActions => ({
+    ...actions,
+    listDocuments: async () =>
+      ok([
+        {
+          id: 'doc-aldi',
+          filename: 'scan-93813.jpg',
+          kind: 'expense_receipt',
+          linkedEntityType: null,
+          linkedEntityId: null,
+          createdAt: '2026-07-15T09:00:00.000Z',
+          displayName: 'Ticket Aldi — 23,90 €',
+          origin: 'ocr',
+          folderId: null,
+          reviewedAt: null,
+        },
+        {
+          id: 'doc-cedeo',
+          filename: 'scan-93814.jpg',
+          kind: 'expense_receipt',
+          linkedEntityType: null,
+          linkedEntityId: null,
+          createdAt: '2026-07-15T10:00:00.000Z',
+          displayName: 'Facture Cedeo — 184,90 €',
+          origin: 'ocr',
+          folderId: null,
+          reviewedAt: null,
+        },
+      ]),
+    listFilingDestinations: async () =>
+      ok({
+        chantiers: [
+          { id: 'chantier-durand', nom: 'Maison Durand' },
+          { id: 'chantier-bernard', nom: 'Rénovation Bernard' },
+        ],
+        dossiers: [
+          { id: 'folder-achats', nom: 'Achats', systemKey: 'purchases' },
+          { id: 'folder-frais', nom: 'Frais généraux', systemKey: null },
+        ],
+      }),
+    fileDocument: async (input) => {
+      filed.push(input);
+      return ok({
+        documentId: input.documentId,
+        folderId: input.destination.kind === 'folder' ? input.destination.folderId : 'folder-chantiers',
+        linkedEntityType: input.destination.kind === 'chantier' ? 'chantier' : null,
+        linkedEntityId: input.destination.kind === 'chantier' ? input.destination.chantierId : null,
+        displayName: 'Ticket Aldi — 23,90 €',
+      });
+    },
+    ...over,
+  });
+  const agentWith = (over: Partial<BobActions> = {}) =>
+    new BobAgent({ router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }), actions: classerActions(over) });
+
+  it('« range le ticket Aldi dans le chantier Durand » : cible réelle + PROPOSE (plancher), même en auto', async () => {
+    filed.length = 0;
+    const agent = agentWith();
+    const r = await agent.ask('Range le ticket Aldi dans le chantier Durand', { autonomy: 'auto' });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.intent).toBe('classer_document');
+    expect(r.value.kind).toBe('proposed');
+    expect(r.value.pending).toMatchObject({
+      tool: 'classer_document',
+      args: { documentId: 'doc-aldi', destination: { kind: 'chantier', chantierId: 'chantier-durand' } },
+    });
+    // Rien n'est classé avant le consentement.
+    expect(filed).toEqual([]);
+    const done = await agent.confirm(r.value.pending!);
+    expect(done.ok && done.value.kind).toBe('done');
+    expect(filed).toEqual([
+      { documentId: 'doc-aldi', destination: { kind: 'chantier', chantierId: 'chantier-durand' } },
+    ]);
+  });
+
+  it('« classe la facture Cedeo dans frais généraux » : dossier par nom, insensible aux accents', async () => {
+    filed.length = 0;
+    const r = await agentWith().ask('Classe la facture Cedeo dans frais generaux');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('proposed');
+    expect(r.value.pending).toMatchObject({
+      args: { documentId: 'doc-cedeo', destination: { kind: 'folder', folderId: 'folder-frais' } },
+    });
+  });
+
+  it('destination introuvable : refus HONNÊTE, jamais un id inventé, rien modifié', async () => {
+    filed.length = 0;
+    const r = await agentWith().ask('Range le ticket Aldi dans le chantier Xylophone');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(r.value.card.title).toBe('Destination introuvable');
+    expect(r.value.card.body).toContain('Rien n’a été modifié');
+    expect(filed).toEqual([]);
+  });
+
+  it('document résolu mais destination absente : question avec les destinations RÉELLES', async () => {
+    filed.length = 0;
+    const r = await agentWith().ask('Range le ticket Aldi');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(r.value.card.title).toBe('Où le classer ?');
+    expect(r.value.ask?.[0]?.options.length).toBeGreaterThan(0);
+    // Le followUp est VERBATIM : l'UI ne reconstruit jamais la commande.
+    expect(r.value.ask?.[0]?.options[0]?.followUp).toContain('Classe le document doc-aldi');
+    expect(filed).toEqual([]);
+  });
+
+  it('document ambigu : question, jamais un classement à l’aveugle', async () => {
+    filed.length = 0;
+    const r = await agentWith().ask('Classe le scan dans Achats');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(r.value.card.title).toBe('Quel document ?');
+    // La destination déjà résolue survit dans le followUp de chaque option.
+    expect(r.value.ask?.[0]?.options[0]?.followUp).toContain('dans le dossier Achats');
+    expect(filed).toEqual([]);
+  });
+
+  it('hôte sans la capacité (rétro-compat) : réponse honnête, rien modifié', async () => {
+    const r = await new BobAgent({
+      router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }),
+      actions,
+    }).ask('Range le ticket Aldi dans Achats');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(r.value.card.body).toContain('Rien n’a été modifié');
+  });
+});
+
+describe('renommer_document — RenameDocument, nom humain prioritaire (LOT 5)', () => {
+  const renamed: unknown[] = [];
+  const renameActions = (over: Partial<BobActions> = {}): BobActions => ({
+    ...actions,
+    listDocuments: async () =>
+      ok([
+        {
+          id: 'doc-aldi',
+          filename: 'scan-93813.jpg',
+          kind: 'expense_receipt',
+          linkedEntityType: null,
+          linkedEntityId: null,
+          createdAt: '2026-07-15T09:00:00.000Z',
+          displayName: 'Ticket Aldi — 23,90 €',
+          origin: 'ocr',
+          folderId: 'folder-achats',
+          reviewedAt: null,
+        },
+      ]),
+    renameDocument: async (input) => {
+      renamed.push(input);
+      return ok({ documentId: input.documentId, displayName: input.displayName });
+    },
+    ...over,
+  });
+  const agentWith = (over: Partial<BobActions> = {}) =>
+    new BobAgent({ router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }), actions: renameActions(over) });
+
+  it('« renomme le ticket Aldi en … » : cible + nouveau nom, PROPOSE (plancher) puis exécute', async () => {
+    renamed.length = 0;
+    const agent = agentWith();
+    const r = await agent.ask('Renomme le ticket Aldi en Facture matériaux salle de bain', { autonomy: 'auto' });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.intent).toBe('renommer_document');
+    expect(r.value.kind).toBe('proposed');
+    expect(r.value.pending).toMatchObject({
+      tool: 'renommer_document',
+      args: { documentId: 'doc-aldi', displayName: 'Facture matériaux salle de bain' },
+    });
+    expect(renamed).toEqual([]);
+    const done = await agent.confirm(r.value.pending!);
+    expect(done.ok && done.value.kind).toBe('done');
+    expect(renamed).toEqual([{ documentId: 'doc-aldi', displayName: 'Facture matériaux salle de bain' }]);
+  });
+
+  it('« renomme-le … » : anaphore levée par l’historique court', async () => {
+    renamed.length = 0;
+    const r = await agentWith().ask('Renomme-le Facture matériaux salle de bain', {
+      history: [
+        { role: 'user', text: 'C’est bon, valide le ticket Aldi' },
+        { role: 'bob', text: 'Validation à confirmer' },
+      ],
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('proposed');
+    expect(r.value.pending).toMatchObject({
+      args: { documentId: 'doc-aldi', displayName: 'Facture matériaux salle de bain' },
+    });
+  });
+
+  it('cible dite sans nouveau nom : demande le nom, rien modifié', async () => {
+    renamed.length = 0;
+    const r = await agentWith().ask('Renomme le ticket Aldi');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(r.value.card.title).toContain('Renommer');
+    expect(r.value.card.body).toContain('Rien n’a été modifié');
+    expect(renamed).toEqual([]);
+  });
+
+  it('hôte sans la capacité : réponse honnête', async () => {
+    const r = await new BobAgent({
+      router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }),
+      actions,
+    }).ask('Renomme le ticket Aldi en Facture Aldi');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(r.value.card.body).toContain('Rien n’a été modifié');
+  });
+});
+
+describe('chercher_document — recherche réelle + navigation (LOT 5)', () => {
+  const searched: unknown[] = [];
+  const searchActions = (over: Partial<BobActions> = {}): BobActions => ({
+    ...actions,
+    searchDocuments: async (input) => {
+      searched.push(input);
+      return ok({
+        hits: [
+          {
+            source: 'invoice' as const,
+            id: 'inv-77',
+            number: '2026-031',
+            customerName: 'Durand SARL',
+            status: 'issued',
+            date: '2026-03-12',
+            totalTtcCents: 132000,
+            matchedLineLabel: 'Radiateur acier',
+          },
+          {
+            source: 'quote' as const,
+            id: 'quote-12',
+            number: 'D2026-040',
+            customerName: 'M. Martin',
+            status: 'sent',
+            date: null,
+            totalTtcCents: 90000,
+            matchedLineLabel: null,
+          },
+        ],
+        totalCount: 2,
+      });
+    },
+    ...over,
+  });
+  const agentWith = (over: Partial<BobActions> = {}) =>
+    new BobAgent({ router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }), actions: searchActions(over) });
+
+  it('« retrouve la facture du radiateur » : résultats réels + navigation vers le plus pertinent', async () => {
+    searched.length = 0;
+    const r = await agentWith().ask('Retrouve la facture du radiateur');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.intent).toBe('chercher_document');
+    expect(r.value.kind).toBe('done');
+    expect(r.value.pending).toBeUndefined(); // lecture pure : jamais de mutation
+    expect(r.value.navigate).toBe('/facture/inv-77');
+    expect(r.value.card.body).toContain('Facture 2026-031 — Durand SARL');
+    expect(r.value.card.body).toContain('Radiateur acier');
+    // Le geste et le bruit sont neutralisés : la requête = les mots significatifs.
+    expect(searched).toEqual([{ query: 'radiateur', scope: 'invoice' }]);
+  });
+
+  it('aucun résultat : réponse honnête, jamais une pièce inventée', async () => {
+    const r = await agentWith({
+      searchDocuments: async () => ok({ hits: [], totalCount: 0 }),
+    }).ask('Retrouve la facture du zeppelin');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(r.value.card.title).toBe('Rien trouvé');
+    expect(r.value.navigate).toBeUndefined();
+  });
+
+  it('requête vide sans période : demande une précision, aucune recherche lancée', async () => {
+    searched.length = 0;
+    const r = await agentWith().ask('Retrouve la facture');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(r.value.card.title).toBe('Que faut-il retrouver ?');
+    expect(searched).toEqual([]);
+  });
+
+  it('hôte sans la capacité : réponse honnête', async () => {
+    const r = await new BobAgent({
+      router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }),
+      actions,
+    }).ask('Retrouve la facture du radiateur');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(r.value.card.body).toContain('recherche');
+  });
+});
+
+describe('documents_liste enrichi — file « à confirmer » dans la réponse (LOT 5)', () => {
+  const docsWithPending: BobActions = {
+    ...actions,
+    listDocuments: async () =>
+      ok([
+        {
+          id: 'doc-aldi',
+          filename: 'scan-93813.jpg',
+          kind: 'expense_receipt',
+          linkedEntityType: null,
+          linkedEntityId: null,
+          createdAt: '2026-07-15T09:00:00.000Z',
+          displayName: 'Ticket Aldi — 23,90 €',
+          origin: 'ocr',
+          folderId: 'folder-achats',
+          reviewedAt: null,
+        },
+        {
+          id: 'doc-1',
+          filename: 'facture-F2026-001.pdf',
+          kind: 'invoice_pdf',
+          linkedEntityType: 'invoice',
+          linkedEntityId: 'inv-1',
+          createdAt: '2026-07-01T10:00:00.000Z',
+          displayName: 'Facture F2026-001',
+          origin: 'generated',
+          folderId: 'folder-ventes',
+          reviewedAt: '2026-07-01T10:00:00.000Z',
+        },
+      ]),
+    listFilingDestinations: async () =>
+      ok({
+        chantiers: [],
+        dossiers: [{ id: 'folder-achats', nom: 'Achats', systemKey: 'purchases' }],
+      }),
+  };
+
+  it('annonce la file à confirmer avec le libellé intelligent et le dossier réel, et propose la validation', async () => {
+    const agent = new BobAgent({ router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }), actions: docsWithPending });
+    const r = await agent.ask('Montre mes documents archivés');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.intent).toBe('documents');
+    expect(r.value.kind).toBe('answer');
+    expect(r.value.card.body).toContain('Tu as 1 document à confirmer');
+    expect(r.value.card.body).toContain('« Ticket Aldi — 23,90 € » rangé dans Achats');
+    expect(r.value.card.body).toContain('je te les montre ?');
+    // La liste archivée historique reste présente sous l'annonce.
+    expect(r.value.card.body).toContain('facture-F2026-001.pdf');
+    // Le followUp verbatim déclenche le flux valider_document (plancher préservé côté outil).
+    expect(r.value.ask?.[0]?.options[0]?.followUp).toBe('Valide le document doc-aldi');
+  });
+
+  it('sans file à confirmer (hôte historique) : réponse INCHANGÉE', async () => {
+    const agent = new BobAgent({ router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }), actions });
+    const r = await agent.ask('Montre mes documents archivés');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.card.body).not.toContain('à confirmer');
+    expect(r.value.ask).toBeUndefined();
+    expect(r.value.card.body).toContain('facture-F2026-001.pdf');
+  });
+});
+
+describe('BobAgent — découvrabilité (S9 : aide + catalogue par domaines)', () => {
+  it('« tu sais faire quoi ? » → run aide : catalogue par domaines, aucune action, pas d’écartement', async () => {
+    const r = await makeAgent().ask('Tu sais faire quoi ?');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.intent).toBe('aide');
+    expect(r.value.kind).toBe('answer');
+    expect(r.value.pending).toBeUndefined();
+    expect(r.value.navigate).toBeUndefined();
+    // Les quatre domaines, chacun avec au moins un exemple parlé.
+    expect(r.value.card.body).toContain('Facturation');
+    expect(r.value.card.body).toContain('Dépenses');
+    expect(r.value.card.body).toContain('Fiscal');
+    expect(r.value.card.body).toContain('Pilotage');
+    expect(r.value.card.body).toContain('encaisse la facture 2026-014');
+    // Un mode d'emploi, pas un refus : la phrase d'écartement hors-périmètre n'apparaît pas.
+    expect(r.value.card.body).not.toContain('hors de ce périmètre');
+  });
+
+  it('« aide » seul suit le même chemin catalogue (jamais unknown)', async () => {
+    const r = await makeAgent().ask('aide');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.intent).toBe('aide');
+    expect(r.value.card.body).toContain('Pilotage');
+  });
+
+  it('hors-périmètre : l’écartement unknown embarque désormais le MÊME catalogue', async () => {
+    const r = await makeAgent().ask('raconte-moi une blague');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.intent).toBe('unknown');
+    expect(r.value.card.body).toContain('hors de ce périmètre');
+    expect(r.value.card.body).toContain('Facturation');
+    expect(r.value.card.body).toContain('Dépenses');
+    expect(r.value.card.body).toContain('Fiscal');
+    expect(r.value.card.body).toContain('Pilotage');
+  });
+
+  it('le catalogue aide reste VERBATIM : jamais naturalisé par le LLM', async () => {
+    const generate = vi.fn(async () => ({ text: 'Ne doit jamais être appelée.', model: 'glm' }));
+    const llm: LlmPort = {
+      id: 'fake',
+      async complete() {
+        return { text: null, toolCalls: [{ name: 'aide_capacites', arguments: {} }], model: 'glm' };
+      },
+      generate,
+      async health() {
+        return { healthy: true };
+      },
+    };
+    const agent = new BobAgent({ router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: true }), actions, llm });
+    const r = await agent.ask('comment tu peux m’aider ?');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.intent).toBe('aide');
+    expect(r.value.naturalBody).toBeUndefined();
+    expect(generate).not.toHaveBeenCalled();
+  });
+});

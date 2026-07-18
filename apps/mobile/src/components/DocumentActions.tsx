@@ -31,6 +31,7 @@ import {
 } from './quote-invoice-actions.logic';
 import { SignOnsiteSheet } from './SignOnsiteSheet';
 import { resolveCollectAccountingPreview } from './collect-accounting-preview';
+import { isPaymentLinkEligible } from '../lib/payment-link-affordance';
 
 /**
  * Gate « entreprise complète » (RÈGLE PRODUIT, compte.tsx §Entreprise) : l'app reste utilisable
@@ -677,11 +678,9 @@ export function InvoiceActions({
       </View>
     );
   }
-  if (
-    invoice.status === 'issued' ||
-    invoice.status === 'partially_paid' ||
-    invoice.status === 'late'
-  ) {
+  // S5 : prédicat PARTAGÉ avec l'affordance vocale « lien de paiement » (facture/[id].tsx) —
+  // la parité voix↔tap est structurelle : même condition, même hook (useInvoicePaymentLink).
+  if (isPaymentLinkEligible(invoice.status)) {
     const remaining = collectRemainingCents(invoice);
     return (
       <View style={{ flexDirection: 'row', gap: 8 }}>

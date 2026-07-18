@@ -93,6 +93,24 @@ export function useDocumentsInFolder(folderId: string | null) {
   });
 }
 
+/** « C'est bon, je valide » — pose la confirmation humaine (reviewedAt) SANS déplacer ni
+ * lier ; idempotent côté serveur (latch), même use case pour l'UI et pour Bob (parité voix). */
+export function useAcknowledgeDocument() {
+  const client = useBobClient();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { documentId: string; expectedRevision: number }) => {
+      const result = await client.acknowledgeDocument(input);
+      if (!result.ok) throw result.error;
+      return result.value;
+    },
+    onSuccess: (_result, input) => {
+      void queryClient.invalidateQueries({ queryKey: ['documents'] });
+      void queryClient.invalidateQueries({ queryKey: ['document', input.documentId] });
+    },
+  });
+}
+
 export function useAnalyzeDocument() {
   const client = useBobClient();
   return useMutation({

@@ -84,6 +84,9 @@ class MemoryDocuments implements DocumentRepository {
   async classify(): Promise<'saved' | 'revision_conflict' | 'not_found'> {
     return 'not_found';
   }
+  async markReviewed(): Promise<'saved' | 'revision_conflict' | 'not_found'> {
+    return 'not_found';
+  }
 
   async rename(): Promise<'saved' | 'revision_conflict' | 'not_found'> {
     return 'not_found';

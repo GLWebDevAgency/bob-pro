@@ -11,9 +11,12 @@ import { validateDocumentDisplayName, type DocumentAnalysisType } from '@bob/cor
 import type { I18nKey } from '@bob/i18n';
 import { FR_MONTH_NAMES } from '../fiscal/fiscal-dates';
 
-/** Badge type de la carte — reflète le VRAI type analysé (jamais un type en dur). */
+/**
+ * Type analysé → clé i18n (docs.type*, ×3 tons) — map UNIQUE partagée : badge de la carte
+ * « À valider », carte « Ce que Bob a compris » (scan ↔ détail) et rows de dossier.
+ */
 export const ANALYSIS_TYPE_LABEL_KEY: Readonly<Record<DocumentAnalysisType, I18nKey>> = {
-  supplier_invoice: 'docs.badgeSupplierInvoice',
+  supplier_invoice: 'docs.typeSupplierInvoice',
   receipt: 'docs.typeReceipt',
   bank_statement: 'docs.typeBankStatement',
   insurance_certificate: 'docs.typeInsurance',

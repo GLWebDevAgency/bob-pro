@@ -218,6 +218,12 @@ export interface DocumentAnalysisSummaryView {
   /** Destination validée côté serveur (chantier réel OU dossier système) — null : décision humaine. */
   suggestedDestination: DocumentDestinationSuggestion | null;
   requiresHumanReview: boolean;
+  /** Résumé de Bob (carte du scan) — null : serveur antérieur au champ (compat ascendante). */
+  summary: string | null;
+  /** Chips #tags de la carte — [] : absent du payload (compat ascendante), jamais inventées. */
+  suggestedTags: readonly string[];
+  /** Avertissements qui justifient `requiresHumanReview` — [] : absent du payload. */
+  warnings: readonly string[];
 }
 
 /** Chips Montant/TVA/Date de l'écran Documents, projetées depuis les faits PROUVÉS de l'analyse. */
@@ -238,6 +244,13 @@ export interface RenameDocumentClientInput {
   documentId: string;
   /** Nouveau libellé d'affichage — le filename d'archive reste immuable. */
   displayName: string;
+  expectedRevision: number;
+}
+
+/** POST /documents/:id/acknowledge — « c'est bon, je valide » : seule la révision optimiste
+ * voyage ; reviewedAt est posé par le serveur (latch — la première validation fait foi). */
+export interface AcknowledgeDocumentClientInput {
+  documentId: string;
   expectedRevision: number;
 }
 
@@ -872,7 +885,14 @@ export interface BobClient {
   listDocuments(
     input?: ListDocumentsClientInput,
   ): Promise<Result<DocumentListItemView[], AppError>>;
-  getDocument(documentId: string): Promise<Result<DocumentView, AppError>>;
+  /** GET /documents/:id — MÊME shape enrichi que la liste (analysis/extraction depuis le cache
+   * persistant serveur, jamais de LLM à la lecture) ; `analysis: null` = pas encore analysé. */
+  getDocument(documentId: string): Promise<Result<DocumentListItemView, AppError>>;
+  /** POST /documents/:id/acknowledge — pose la confirmation humaine (reviewedAt) SANS déplacer
+   * ni lier ; idempotent (latch), même use case pour l'UI et pour Bob (parité voix). */
+  acknowledgeDocument(
+    input: AcknowledgeDocumentClientInput,
+  ): Promise<Result<DocumentView, AppError>>;
   /** PUT /documents/:id/name — renomme le libellé d'affichage (RenameDocument @bob/core, parité humain↔Bob). */
   renameDocument(input: RenameDocumentClientInput): Promise<Result<DocumentView, AppError>>;
   uploadDocument(input: UploadDocumentClientInput): Promise<Result<DocumentView, AppError>>;

@@ -465,6 +465,7 @@ interface DocumentRow {
   createdBy: string | null;
   retentionUntil: string;
   deletedAt: Date | null;
+  reviewedAt: Date | null;
   tags: string[];
   versions: DocumentVersionRow[];
 }
@@ -492,6 +493,8 @@ function documentRowToProps(row: DocumentRow): DocumentProps {
     createdBy: row.createdBy,
     retentionUntil: row.retentionUntil,
     deletedAt: row.deletedAt?.toISOString() ?? null,
+    // Ligne historique (colonne nouvellement NULL) ⇒ null : jamais validé, aucune valeur inventée.
+    reviewedAt: row.reviewedAt?.toISOString() ?? null,
     tags: row.tags ?? [],
     versions: row.versions.map((v) => ({
       id: v.id,
@@ -529,6 +532,7 @@ function documentPropsToData(p: DocumentProps) {
     createdBy: p.createdBy,
     retentionUntil: p.retentionUntil,
     deletedAt: p.deletedAt ? new Date(p.deletedAt) : null,
+    reviewedAt: p.reviewedAt ? new Date(p.reviewedAt) : null,
     tags: [...p.tags],
   };
 }
@@ -564,13 +568,31 @@ export class PrismaDocumentRepository implements DocumentRepository {
       });
     }
   }
+  /**
+   * Classement + validation humaine atomiques. L'adapter REJOUE les deux opérations de domaine
+   * (classify puis markReviewed, latch) pour que la révision persistée corresponde exactement à
+   * la DocumentView retournée par le use case : +2 pour un doc jamais validé, +1 sinon.
+   */
   async classify(input: {
     companyId: string;
     documentId: string;
     linkedEntityType: NonNullable<DocumentProps['linkedEntityType']>;
     linkedEntityId: string;
+    reviewedAt: string;
     expectedRevision: number;
   }): Promise<'saved' | 'revision_conflict' | 'not_found'> {
+    const current = await this.findById(input.companyId, input.documentId);
+    if (!current || current.status !== 'active') return 'not_found';
+    if (current.revision !== input.expectedRevision) return 'revision_conflict';
+    const next = Document.rehydrate(current.toProps());
+    const classified = next.classify({
+      linkedEntityType: input.linkedEntityType,
+      linkedEntityId: input.linkedEntityId,
+    });
+    if (!classified.ok) return 'revision_conflict';
+    const reviewed = next.markReviewed(input.reviewedAt);
+    if (!reviewed.ok) return 'revision_conflict';
+    const nextProps = next.toProps();
     const updated = await this.prisma.client().storedDocument.updateMany({
       where: {
         id: input.documentId,
@@ -579,8 +601,37 @@ export class PrismaDocumentRepository implements DocumentRepository {
         revision: input.expectedRevision,
       },
       data: {
-        linkedEntityType: input.linkedEntityType,
-        linkedEntityId: input.linkedEntityId,
+        linkedEntityType: nextProps.linkedEntityType,
+        linkedEntityId: nextProps.linkedEntityId,
+        reviewedAt: nextProps.reviewedAt ? new Date(nextProps.reviewedAt) : null,
+        revision: nextProps.revision ?? input.expectedRevision + 2,
+      },
+    });
+    if (updated.count === 1) return 'saved';
+    const exists = await this.prisma.client().storedDocument.findFirst({
+      where: { id: input.documentId, companyId: input.companyId, status: 'active' },
+      select: { id: true },
+    });
+    return exists ? 'revision_conflict' : 'not_found';
+  }
+  /** Pose la confirmation humaine SANS déplacer ni lier (AcknowledgeDocument) — CAS sur la révision. */
+  async markReviewed(input: {
+    companyId: string;
+    documentId: string;
+    reviewedAt: string;
+    expectedRevision: number;
+  }): Promise<'saved' | 'revision_conflict' | 'not_found'> {
+    const updated = await this.prisma.client().storedDocument.updateMany({
+      where: {
+        id: input.documentId,
+        companyId: input.companyId,
+        status: 'active',
+        revision: input.expectedRevision,
+        // Latch : la première validation fait foi — jamais réécrite, même sur retry perdant.
+        reviewedAt: null,
+      },
+      data: {
+        reviewedAt: new Date(input.reviewedAt),
         revision: { increment: 1 },
       },
     });
@@ -821,7 +872,14 @@ export class PrismaDocumentFolderRepository implements DocumentFolderRepository 
   ): Promise<DocumentFolderMembership | null> {
     const row = await this.prisma.client().storedDocument.findFirst({
       where: { id: documentId, companyId },
-      select: { id: true, companyId: true, folderId: true, status: true, revision: true },
+      select: {
+        id: true,
+        companyId: true,
+        folderId: true,
+        status: true,
+        revision: true,
+        reviewedAt: true,
+      },
     });
     return row
       ? {
@@ -830,6 +888,7 @@ export class PrismaDocumentFolderRepository implements DocumentFolderRepository 
           folderId: row.folderId,
           status: row.status,
           revision: row.revision,
+          reviewedAt: row.reviewedAt?.toISOString() ?? null,
         }
       : null;
   }
@@ -839,18 +898,53 @@ export class PrismaDocumentFolderRepository implements DocumentFolderRepository 
     folderIds: readonly string[],
   ): Promise<DocumentFolderMembership[]> {
     if (folderIds.length === 0) return [];
-    return this.prisma.client().storedDocument.findMany({
+    const rows = await this.prisma.client().storedDocument.findMany({
       where: { companyId, folderId: { in: [...folderIds] } },
-      select: { id: true, companyId: true, folderId: true, status: true, revision: true },
+      select: {
+        id: true,
+        companyId: true,
+        folderId: true,
+        status: true,
+        revision: true,
+        reviewedAt: true,
+      },
     });
+    return rows.map((row) => ({
+      id: row.id,
+      companyId: row.companyId,
+      folderId: row.folderId,
+      status: row.status,
+      revision: row.revision,
+      reviewedAt: row.reviewedAt?.toISOString() ?? null,
+    }));
   }
 
+  /**
+   * Déplacement + éventuelle validation humaine (reviewedAt non nul : le rangement vaut
+   * confirmation), atomiques sous CAS de révision. La révision avance du MÊME pas que le
+   * rejeu domaine (moveToFolder puis markReviewed) : +1 par mutation effective, latch respecté.
+   */
   async moveDocument(input: {
     companyId: string;
     documentId: string;
     targetFolderId: string | null;
+    reviewedAt: string | null;
     expectedRevision: number;
   }): Promise<DocumentFolderMembershipWriteResult> {
+    const current = await this.prisma.client().storedDocument.findFirst({
+      where: { id: input.documentId, companyId: input.companyId },
+      select: { folderId: true, status: true, revision: true, reviewedAt: true },
+    });
+    if (!current || current.status !== 'active') return { status: 'not_found' };
+    if (current.revision !== input.expectedRevision) return { status: 'revision_conflict' };
+    const movesFolder = current.folderId !== input.targetFolderId;
+    // Latch : une confirmation déjà posée n'est JAMAIS réécrite, même si l'appelant en fournit une.
+    const posesReview = input.reviewedAt !== null && current.reviewedAt === null;
+    const nextRevision =
+      input.expectedRevision + (movesFolder ? 1 : 0) + (posesReview ? 1 : 0);
+    if (nextRevision === input.expectedRevision) {
+      return { status: 'saved', revision: input.expectedRevision };
+    }
     const updated = await this.prisma.client().storedDocument.updateMany({
       where: {
         id: input.documentId,
@@ -858,9 +952,13 @@ export class PrismaDocumentFolderRepository implements DocumentFolderRepository 
         status: 'active',
         revision: input.expectedRevision,
       },
-      data: { folderId: input.targetFolderId, revision: { increment: 1 } },
+      data: {
+        folderId: input.targetFolderId,
+        ...(posesReview ? { reviewedAt: new Date(input.reviewedAt!) } : {}),
+        revision: nextRevision,
+      },
     });
-    if (updated.count === 1) return { status: 'saved', revision: input.expectedRevision + 1 };
+    if (updated.count === 1) return { status: 'saved', revision: nextRevision };
     const exists = await this.prisma.client().storedDocument.findFirst({
       where: { id: input.documentId, companyId: input.companyId, status: 'active' },
       select: { id: true },

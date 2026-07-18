@@ -2,7 +2,15 @@ import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ExecutionContext } from '@nestjs/common';
 import { jwtVerify } from 'jose';
-import { Company, Customer, DocumentFolder, Expense, deriveVatPosition } from '@bob/core';
+import {
+  Company,
+  Customer,
+  DocumentFolder,
+  Expense,
+  deriveVatPosition,
+  makeDocumentAnalysis,
+  type DocumentView,
+} from '@bob/core';
 import { MERCIER_PROPS } from '@bob/core/testing';
 import type {
   DocumentIntelligencePort,
@@ -2666,6 +2674,622 @@ describe('PONT-SERVEUR — coffre documentaire original-first et suppression sû
         strategy: { kind: 'empty' },
       });
       expect(replay.ok).toBe(false);
+    });
+  });
+});
+
+describe('PONT-SERVEUR lots 2-3 — reviewedAt (validation humaine), GET /documents/:id enrichi, nom intelligent', () => {
+  /** Analyse persistée en cache pour la VERSION COURANTE de l'original — jamais de LLM en test. */
+  async function seedAnalysisCache(
+    p: InMemoryPersistence,
+    view: DocumentView,
+    suggestedDisplayName: string,
+  ) {
+    const analysis = makeDocumentAnalysis(
+      {
+        type: 'receipt',
+        typeConfidence: 0.92,
+        summary: 'Ticket fournisseur reconnu sur l’original archivé.',
+        facts: [
+          {
+            key: 'total_ttc',
+            valueType: 'money',
+            value: { amountMinor: 18_490, currency: 'EUR' },
+            confidence: 0.9,
+            provenance: {
+              source: 'document_text',
+              evidence: [{ page: 1, excerpt: 'TOTAL TTC 184,90', boundingBox: null }],
+              derivedFrom: [],
+              rule: null,
+            },
+          },
+        ],
+        suggestedTags: ['ticket'],
+        suggestedFilename: view.filename,
+        suggestedDisplayName,
+        warnings: [],
+      },
+      {
+        documentId: view.id,
+        documentVersion: view.version,
+        sourceSha256: view.sha256,
+        originalFilename: view.filename,
+        analyzerVersion: 'test-analyzer-1',
+        analyzedAt: '2026-07-18T09:00:00.000Z',
+      },
+    );
+    if (!analysis.ok) throw new Error('fixture: analyse invalide');
+    await p.runWithTenant(view.companyId, () =>
+      p.documentAnalyses.putIfAbsent({
+        companyId: view.companyId,
+        documentId: view.id,
+        documentVersion: view.version,
+        sourceSha256: view.sha256,
+        analyzerVersion: analysis.value.analyzerVersion,
+        analysis: analysis.value,
+        analyzedAt: analysis.value.analyzedAt,
+      }),
+    );
+    return analysis.value;
+  }
+
+  it('POST /documents/:id/acknowledge : pose reviewedAt SANS déplacer ni lier, latch idempotent, anti-IDOR tenant', async () => {
+    const { service, p } = makeService();
+    await p.seed();
+    const archived = await asPrincipal(MERCIER, async () => {
+      const intake = await service.createDocumentIntake({
+        contentBase64: '/9j/2Q==',
+        mimeType: 'image/jpeg',
+        filename: 'ticket-a-valider.jpg',
+        idempotencyKey: 'scan-acknowledge-0001',
+      });
+      expect(intake.ok).toBe(true);
+      if (!intake.ok) throw new Error('fixture: intake KO');
+      // Ligne fraîche : jamais validée — le scan seul ne vaut pas confirmation.
+      expect(intake.value.reviewedAt).toBeNull();
+
+      const acknowledged = await service.acknowledgeDocument({
+        documentId: intake.value.id,
+        expectedRevision: intake.value.revision,
+      });
+      expect(acknowledged.ok).toBe(true);
+      if (!acknowledged.ok) throw new Error('acknowledge KO');
+      // Seule la confirmation change : ni rangement, ni lien métier, ni archive.
+      expect(acknowledged.value).toMatchObject({
+        id: intake.value.id,
+        folderId: null,
+        linkedEntityType: null,
+        linkedEntityId: null,
+        filename: intake.value.filename,
+        revision: intake.value.revision + 1,
+      });
+      expect(acknowledged.value.reviewedAt).not.toBeNull();
+
+      // Idempotence latch : re-valider ne réécrit RIEN — même horodatage, même révision.
+      const replay = await service.acknowledgeDocument({
+        documentId: intake.value.id,
+        expectedRevision: acknowledged.value.revision,
+      });
+      expect(replay.ok && replay.value.reviewedAt).toBe(acknowledged.value.reviewedAt);
+      expect(replay.ok && replay.value.revision).toBe(acknowledged.value.revision);
+
+      // Révision périmée : conflit explicite, jamais d'écrasement silencieux.
+      const stale = await service.acknowledgeDocument({
+        documentId: intake.value.id,
+        expectedRevision: intake.value.revision,
+      });
+      expect(stale).toMatchObject({ ok: false, error: { kind: 'conflict' } });
+      return acknowledged.value;
+    });
+
+    // Anti-IDOR : un autre tenant ne voit même pas l'existence du document.
+    await asPrincipal(INTRUS, async () => {
+      const cross = await service.acknowledgeDocument({
+        documentId: archived.id,
+        expectedRevision: archived.revision,
+      });
+      expect(cross).toMatchObject({ ok: false, error: { kind: 'not_found' } });
+    });
+  });
+
+  it('classer / ranger vaut validation humaine (reviewedAt latché) ; sortir d’un dossier n’invalide jamais', async () => {
+    const { service, p } = makeService();
+    await p.seed();
+    await asPrincipal(MERCIER, async () => {
+      const expense = await service.recordExpense({
+        supplierName: 'Cedeo',
+        documentDate: todayUtc(),
+        totalTtcCents: 18_490,
+        category: 'fournitures',
+        source: 'manual',
+      });
+      expect(expense.ok).toBe(true);
+      if (!expense.ok) return;
+
+      // ① classifyDocument : classify + markReviewed rejoués — révision +2, reviewedAt posé.
+      const forClassify = await service.createDocumentIntake({
+        contentBase64: '/9j/2Q==',
+        mimeType: 'image/jpeg',
+        filename: 'a-classer.jpg',
+        idempotencyKey: 'scan-classify-review-0001',
+      });
+      expect(forClassify.ok).toBe(true);
+      if (!forClassify.ok) return;
+      const classified = await service.classifyDocument({
+        documentId: forClassify.value.id,
+        linkedEntityType: 'expense',
+        linkedEntityId: expense.value.id,
+        expectedRevision: forClassify.value.revision,
+      });
+      expect(classified.ok && classified.value.revision).toBe(forClassify.value.revision + 2);
+      expect(classified.ok && classified.value.reviewedAt).not.toBeNull();
+
+      // ② ranger DANS un dossier : move + validation — révision +2, reviewedAt posé.
+      const folders = await service.listDocumentFolders();
+      const purchases = folders.ok
+        ? folders.value.items.find((folder) => folder.systemKey === 'purchases')
+        : undefined;
+      if (!purchases) throw new Error('fixture: dossier Achats absent');
+      const forMove = await service.createDocumentIntake({
+        contentBase64: '/9j/4AAQSkZJRg==',
+        mimeType: 'image/jpeg',
+        filename: 'a-ranger.jpg',
+        idempotencyKey: 'scan-move-review-0001',
+      });
+      expect(forMove.ok).toBe(true);
+      if (!forMove.ok) return;
+      const moved = await service.moveDocumentToFolder({
+        documentId: forMove.value.id,
+        folderId: purchases.id,
+        expectedRevision: forMove.value.revision,
+      });
+      expect(moved.ok && moved.value.revision).toBe(forMove.value.revision + 2);
+      const afterMove = await service.getDocument(forMove.value.id);
+      expect(afterMove.ok && afterMove.value.reviewedAt).not.toBeNull();
+      if (!afterMove.ok) return;
+      const confirmedAt = afterMove.value.reviewedAt;
+
+      // ③ SORTIR d'un dossier n'est pas un classement : la confirmation reste intacte.
+      const movedOut = await service.moveDocumentToFolder({
+        documentId: forMove.value.id,
+        folderId: null,
+        expectedRevision: afterMove.value.revision,
+      });
+      expect(movedOut.ok && movedOut.value.revision).toBe(afterMove.value.revision + 1);
+      const afterOut = await service.getDocument(forMove.value.id);
+      expect(afterOut.ok && afterOut.value.reviewedAt).toBe(confirmedAt);
+      if (!afterOut.ok) return;
+
+      // ④ re-ranger un document DÉJÀ validé : +1 seulement — le latch n'est jamais réécrit.
+      const movedBack = await service.moveDocumentToFolder({
+        documentId: forMove.value.id,
+        folderId: purchases.id,
+        expectedRevision: afterOut.value.revision,
+      });
+      expect(movedBack.ok && movedBack.value.revision).toBe(afterOut.value.revision + 1);
+      const afterBack = await service.getDocument(forMove.value.id);
+      expect(afterBack.ok && afterBack.value.reviewedAt).toBe(confirmedAt);
+    });
+  });
+
+  it('parité « papa vocal » : « c’est bon, valide le ticket » propose valider_document PUIS pose reviewedAt (MÊME use case AcknowledgeDocument)', async () => {
+    const { service, p } = makeService();
+    await p.seed();
+    await asPrincipal(MERCIER, async () => {
+      const folders = await service.listDocumentFolders();
+      const purchases = folders.ok
+        ? folders.value.items.find((folder) => folder.systemKey === 'purchases')
+        : undefined;
+      if (!purchases) throw new Error('fixture: dossier Achats absent');
+      const scanned = await service.createDocumentIntake({
+        contentBase64: '/9j/2Q==',
+        mimeType: 'image/jpeg',
+        filename: 'ticket-aldi.jpg',
+        idempotencyKey: 'scan-voice-ack-0001',
+      });
+      expect(scanned.ok).toBe(true);
+      if (!scanned.ok) return;
+      // État « Rangé · Achats — à confirmer » (stock historique pré-latch) : rangé SANS
+      // validation, seedé par le port de persistance — l'API actuelle, elle, pose reviewedAt
+      // au rangement. C'est exactement la file que la voix doit savoir vider.
+      const legacyMove = await p.documentFolders.moveDocument({
+        companyId: MERCIER.companyId!,
+        documentId: scanned.value.id,
+        targetFolderId: purchases.id,
+        reviewedAt: null,
+        expectedRevision: scanned.value.revision,
+      });
+      expect(legacyMove.status).toBe('saved');
+
+      const proposed = await service.askBob('C’est bon, valide le ticket Aldi');
+      expect(proposed.ok).toBe(true);
+      if (!proposed.ok) return;
+      expect(proposed.value.intent).toBe('valider_document');
+      // Latch sans commande d'annulation : plancher de consentement — Bob propose, jamais direct.
+      expect(proposed.value.kind).toBe('proposed');
+      expect(proposed.value.pending).toMatchObject({
+        tool: 'valider_document',
+        args: { documentId: scanned.value.id },
+      });
+      const before = await service.getDocument(scanned.value.id);
+      expect(before.ok && before.value.reviewedAt).toBeNull();
+
+      const confirmed = await service.confirmBob({ proposalId: proposed.value.pending?.proposalId });
+      expect(confirmed.ok).toBe(true);
+      if (!confirmed.ok) return;
+      expect(confirmed.value.kind).toBe('done');
+
+      // MÊME effet que le bouton « Confirmer » de la file « À valider » : reviewedAt posé,
+      // rien déplacé, rien lié — le document sort de la file, sa place ne change pas.
+      const after = await service.getDocument(scanned.value.id);
+      expect(after.ok).toBe(true);
+      if (!after.ok) return;
+      expect(after.value.reviewedAt).not.toBeNull();
+      expect(after.value.folderId).toBe(purchases.id);
+      expect(after.value.linkedEntityType).toBeNull();
+    });
+  });
+
+  it('GET /documents/:id : MÊME shape enrichi que la liste (cache d’analyses, aucun LLM), parité stricte', async () => {
+    const { service, p } = makeService();
+    await p.seed();
+    await asPrincipal(MERCIER, async () => {
+      const intake = await service.createDocumentIntake({
+        contentBase64: '/9j/2Q==',
+        mimeType: 'image/jpeg',
+        filename: 'ticket-cedeo.jpg',
+        idempotencyKey: 'scan-get-enrichi-0001',
+      });
+      expect(intake.ok).toBe(true);
+      if (!intake.ok) return;
+
+      // Pas encore analysé : résumés null — jamais inventés.
+      const bare = await service.getDocument(intake.value.id);
+      expect(bare.ok && bare.value).toMatchObject({
+        id: intake.value.id,
+        analysis: null,
+        extraction: null,
+        reviewedAt: null,
+      });
+
+      const analysis = await seedAnalysisCache(p, intake.value, 'Facture Cedeo — 184,90 €');
+      const enriched = await service.getDocument(intake.value.id);
+      expect(enriched.ok).toBe(true);
+      if (!enriched.ok) return;
+      expect(enriched.value.analysis).toEqual({
+        type: analysis.type,
+        typeConfidence: analysis.typeConfidence,
+        suggestedDisplayName: 'Facture Cedeo — 184,90 €',
+        suggestedDestination: analysis.suggestedDestination,
+        requiresHumanReview: analysis.requiresHumanReview,
+        // La carte du détail = la carte du scan : résumé, #tags et warnings persistés.
+        summary: analysis.summary,
+        suggestedTags: analysis.suggestedTags,
+        warnings: analysis.warnings,
+      });
+      expect(enriched.value.extraction).toMatchObject({ totalTtcCents: 18_490 });
+
+      // Parité stricte GET /documents/:id ↔ item de GET /documents.
+      const list = await service.listDocuments();
+      const item = list.ok ? list.value.find((document) => document.id === intake.value.id) : undefined;
+      expect(item).toEqual(enriched.value);
+    });
+  });
+
+  it('LOT 3 — nom intelligent au record : suggestedDisplayName appliqué dans la MÊME transaction, jamais sur un renommage humain', async () => {
+    const { service, p } = makeService();
+    await p.seed();
+    await asPrincipal(MERCIER, async () => {
+      const folders = await service.listDocumentFolders();
+      const purchases = folders.ok
+        ? folders.value.items.find((folder) => folder.systemKey === 'purchases')
+        : undefined;
+      if (!purchases) throw new Error('fixture: dossier Achats absent');
+
+      // ① displayName encore = filename ⇒ la suggestion persistée s'applique au record.
+      const first = await service.createDocumentIntake({
+        contentBase64: '/9j/2Q==',
+        mimeType: 'image/jpeg',
+        filename: 'ticket-cedeo.jpg',
+        idempotencyKey: 'scan-smart-name-0001',
+      });
+      expect(first.ok).toBe(true);
+      if (!first.ok) return;
+      expect(first.value.displayName).toBe('ticket-cedeo.jpg');
+      await seedAnalysisCache(p, first.value, 'Facture Cedeo — 184,90 €');
+      const recorded = await service.recordDocumentExpense({
+        documentId: first.value.id,
+        expectedRevision: first.value.revision,
+        targetFolderId: purchases.id,
+        expense: {
+          supplierName: 'Cedeo',
+          documentDate: todayUtc(),
+          totalTtcCents: 18_490,
+          category: 'fournitures',
+        },
+      });
+      expect(recorded.ok).toBe(true);
+      if (!recorded.ok) return;
+      // move(+1) + validation posée par le geste (+1) + classify(+1) + rename intelligent (+1).
+      expect(recorded.value.document).toMatchObject({
+        displayName: 'Facture Cedeo — 184,90 €',
+        filename: 'ticket-cedeo.jpg', // l'archive reste IMMUABLE
+        folderId: purchases.id,
+        revision: first.value.revision + 4,
+      });
+      expect(recorded.value.document.reviewedAt).not.toBeNull();
+      // L'état persisté correspond à la vue retournée (même transaction, même révision).
+      const persisted = await service.getDocument(first.value.id);
+      expect(persisted.ok && persisted.value.displayName).toBe('Facture Cedeo — 184,90 €');
+      expect(persisted.ok && persisted.value.revision).toBe(recorded.value.document.revision);
+
+      // ② un renommage HUMAIN antérieur n'est JAMAIS écrasé par la suggestion.
+      const second = await service.createDocumentIntake({
+        contentBase64: '/9j/4AAQSkZJRg==',
+        mimeType: 'image/jpeg',
+        filename: 'ticket-cedeo-2.jpg',
+        idempotencyKey: 'scan-smart-name-0002',
+      });
+      expect(second.ok).toBe(true);
+      if (!second.ok) return;
+      const humanRename = await service.renameDocument({
+        documentId: second.value.id,
+        displayName: 'Mon ticket perso',
+        expectedRevision: second.value.revision,
+      });
+      expect(humanRename.ok).toBe(true);
+      if (!humanRename.ok) return;
+      await seedAnalysisCache(p, second.value, 'Facture Cedeo — 220,00 €');
+      const recordedSecond = await service.recordDocumentExpense({
+        documentId: second.value.id,
+        expectedRevision: humanRename.value.revision,
+        targetFolderId: purchases.id,
+        expense: {
+          supplierName: 'Cedeo',
+          documentDate: todayUtc(),
+          totalTtcCents: 22_000,
+          category: 'fournitures',
+        },
+      });
+      expect(recordedSecond.ok).toBe(true);
+      if (!recordedSecond.ok) return;
+      // Pas de rename : move(+1) + validation(+1) + classify(+1) uniquement.
+      expect(recordedSecond.value.document).toMatchObject({
+        displayName: 'Mon ticket perso',
+        revision: humanRename.value.revision + 3,
+      });
+    });
+  });
+});
+
+describe('LOT 5 — parité agent Bob documents + S1 facturation vocale (câblage serveur)', () => {
+  it('S1 : « fais la facture du devis » VIT côté serveur — listInvoiceableQuotes réel, plancher fiscal, confirmation → facture', async () => {
+    const { service, p } = makeService();
+    await p.seed();
+    await asPrincipal(MERCIER, async () => {
+      // Flow RÉEL : devis → envoi → signature (jamais un statut fabriqué).
+      const quote = await service.createQuote({
+        customerId: 'cust-martin',
+        lines: [{ label: 'Salle de bain', category: 'labor', qty: 1, unitPriceHT: 100_000, vatRate: 20 }],
+      });
+      expect(quote.ok).toBe(true);
+      if (!quote.ok) return;
+      const sent = await service.sendQuote(quote.value.quoteId);
+      expect(sent.ok).toBe(true);
+      const signed = await service.signQuote({ quoteId: quote.value.quoteId, signerName: 'Signataire Test' });
+      expect(signed.ok).toBe(true);
+
+      // AVANT ce câblage, l'outil était annoncé au LLM mais MORT : le handler retombait sur le
+      // fail-safe « je n'ai pas accès à la facturation des devis sur cet appareil ».
+      const proposed = await service.askBob('Fais la facture du devis');
+      expect(proposed.ok).toBe(true);
+      if (!proposed.ok) return;
+      expect(proposed.value.intent).toBe('generer_facture');
+      // Palier fiscal (chaîne de facturation légale) : TOUJOURS proposé, jamais exécuté d'office.
+      expect(proposed.value.kind).toBe('proposed');
+      expect(proposed.value.pending).toMatchObject({
+        tool: 'generer_facture',
+        args: { quoteId: quote.value.quoteId, mode: 'final' },
+      });
+
+      const confirmed = await service.confirmBob({ proposalId: proposed.value.pending?.proposalId });
+      expect(confirmed.ok).toBe(true);
+      if (!confirmed.ok) return;
+      expect(confirmed.value.kind).toBe('done');
+
+      // MÊME use case GenerateInvoiceFromQuote que l'UI : la facture brouillon existe.
+      const invoices = await service.listInvoices();
+      expect(invoices.ok).toBe(true);
+      if (!invoices.ok) return;
+      const generated = invoices.value.find(
+        (i) => i.parentQuoteId === quote.value.quoteId && i.kind === 'final',
+      );
+      expect(generated).toBeDefined();
+      expect(generated?.status).toBe('draft');
+
+      // Le devis facturé sort de la liste : « fais la facture du devis » ne retrouve plus rien.
+      const nothingLeft = await service.askBob('Fais la facture du devis');
+      expect(nothingLeft.ok).toBe(true);
+      if (!nothingLeft.ok) return;
+      expect(nothingLeft.value.kind).toBe('answer');
+      expect(nothingLeft.value.card.body).toContain('Aucun devis signé');
+    });
+  });
+
+  it('classer_document : « range le ticket aldi dans Achats » → MÊME séquence que « Classer là » après confirmation', async () => {
+    const { service, p } = makeService();
+    await p.seed();
+    await asPrincipal(MERCIER, async () => {
+      const folders = await service.listDocumentFolders();
+      const purchases = folders.ok
+        ? folders.value.items.find((folder) => folder.systemKey === 'purchases')
+        : undefined;
+      if (!purchases) throw new Error('fixture: dossier Achats absent');
+      const scanned = await service.createDocumentIntake({
+        contentBase64: '/9j/2Q==',
+        mimeType: 'image/jpeg',
+        filename: 'ticket-aldi.jpg',
+        idempotencyKey: 'scan-voice-file-0001',
+      });
+      expect(scanned.ok).toBe(true);
+      if (!scanned.ok) return;
+      expect(scanned.value.folderId).toBeNull();
+
+      const proposed = await service.askBob('Range le ticket aldi dans Achats');
+      expect(proposed.ok).toBe(true);
+      if (!proposed.ok) return;
+      expect(proposed.value.intent).toBe('classer_document');
+      // Ranger pose la validation (latch) : plancher de consentement — toujours proposé.
+      expect(proposed.value.kind).toBe('proposed');
+      expect(proposed.value.pending).toMatchObject({
+        tool: 'classer_document',
+        args: { documentId: scanned.value.id, destination: { kind: 'folder', folderId: purchases.id } },
+      });
+      const before = await service.getDocument(scanned.value.id);
+      expect(before.ok && before.value.folderId).toBeNull();
+
+      const confirmed = await service.confirmBob({ proposalId: proposed.value.pending?.proposalId });
+      expect(confirmed.ok).toBe(true);
+      if (!confirmed.ok) return;
+      expect(confirmed.value.kind).toBe('done');
+
+      // MÊME effet que le geste mobile : rangé dans Achats, et le rangement VAUT validation
+      // humaine (reviewedAt latché par MoveDocumentToFolder) — aucun lien métier inventé.
+      const after = await service.getDocument(scanned.value.id);
+      expect(after.ok).toBe(true);
+      if (!after.ok) return;
+      expect(after.value.folderId).toBe(purchases.id);
+      expect(after.value.reviewedAt).not.toBeNull();
+      expect(after.value.linkedEntityType).toBeNull();
+    });
+  });
+
+  it('classer_document : destination inventée → refus honnête, rien modifié (jamais d’id halluciné)', async () => {
+    const { service, p } = makeService();
+    await p.seed();
+    await asPrincipal(MERCIER, async () => {
+      const scanned = await service.createDocumentIntake({
+        contentBase64: '/9j/2Q==',
+        mimeType: 'image/jpeg',
+        filename: 'ticket-aldi.jpg',
+        idempotencyKey: 'scan-voice-file-0002',
+      });
+      expect(scanned.ok).toBe(true);
+      if (!scanned.ok) return;
+      const refused = await service.askBob('Range le ticket aldi dans le dossier Licornes');
+      expect(refused.ok).toBe(true);
+      if (!refused.ok) return;
+      expect(refused.value.kind).toBe('answer');
+      expect(refused.value.card.title).toBe('Destination introuvable');
+      const untouched = await service.getDocument(scanned.value.id);
+      expect(untouched.ok && untouched.value.folderId).toBeNull();
+    });
+  });
+
+  it('renommer_document : « renomme le ticket aldi en … » → RenameDocument réel, nom humain prioritaire', async () => {
+    const { service, p } = makeService();
+    await p.seed();
+    await asPrincipal(MERCIER, async () => {
+      const scanned = await service.createDocumentIntake({
+        contentBase64: '/9j/2Q==',
+        mimeType: 'image/jpeg',
+        filename: 'ticket-aldi.jpg',
+        idempotencyKey: 'scan-voice-rename-0001',
+      });
+      expect(scanned.ok).toBe(true);
+      if (!scanned.ok) return;
+
+      const proposed = await service.askBob('Renomme le ticket aldi en Facture matériaux salle de bain');
+      expect(proposed.ok).toBe(true);
+      if (!proposed.ok) return;
+      expect(proposed.value.intent).toBe('renommer_document');
+      expect(proposed.value.kind).toBe('proposed');
+      expect(proposed.value.pending).toMatchObject({
+        tool: 'renommer_document',
+        args: { documentId: scanned.value.id, displayName: 'Facture matériaux salle de bain' },
+      });
+
+      const confirmed = await service.confirmBob({ proposalId: proposed.value.pending?.proposalId });
+      expect(confirmed.ok).toBe(true);
+      if (!confirmed.ok) return;
+      expect(confirmed.value.kind).toBe('done');
+
+      const after = await service.getDocument(scanned.value.id);
+      expect(after.ok && after.value.displayName).toBe('Facture matériaux salle de bain');
+      // Renommage HUMAIN désormais : displayName ≠ filename — plus jamais écrasé par l'analyse.
+      expect(after.ok && after.value.filename).toBe('ticket-aldi.jpg');
+    });
+  });
+
+  it('chercher_document : « retrouve la facture du radiateur » → recherche réelle + navigation vers la pièce', async () => {
+    const { service, p } = makeService();
+    await p.seed();
+    await asPrincipal(MERCIER, async () => {
+      // Pièce RÉELLE : devis signé → facture finale émise, avec la ligne « Radiateur acier ».
+      const quote = await service.createQuote({
+        customerId: 'cust-martin',
+        lines: [{ label: 'Radiateur acier', category: 'supply', qty: 1, unitPriceHT: 45_000, vatRate: 20 }],
+      });
+      expect(quote.ok).toBe(true);
+      if (!quote.ok) return;
+      const sent = await service.sendQuote(quote.value.quoteId);
+      expect(sent.ok).toBe(true);
+      const signed = await service.signQuote({ quoteId: quote.value.quoteId, signerName: 'Signataire Test' });
+      expect(signed.ok).toBe(true);
+      const generated = await service.generateInvoice({ quoteId: quote.value.quoteId, mode: 'final' });
+      expect(generated.ok).toBe(true);
+      if (!generated.ok) return;
+      const issued = await service.issueInvoice({ invoiceId: generated.value.invoiceId });
+      expect(issued.ok).toBe(true);
+
+      const found = await service.askBob('Retrouve la facture du radiateur');
+      expect(found.ok).toBe(true);
+      if (!found.ok) return;
+      expect(found.value.intent).toBe('chercher_document');
+      // Lecture pure : jamais de mutation, navigation vers la pièce la plus pertinente.
+      expect(found.value.kind).toBe('done');
+      expect(found.value.pending).toBeUndefined();
+      expect(found.value.navigate).toBe(`/facture/${encodeURIComponent(generated.value.invoiceId)}`);
+      expect(found.value.card.body).toContain('Radiateur acier');
+    });
+  });
+
+  it('documents_liste enrichi : la file « à confirmer » entre dans la réponse avec le dossier réel', async () => {
+    const { service, p } = makeService();
+    await p.seed();
+    await asPrincipal(MERCIER, async () => {
+      const folders = await service.listDocumentFolders();
+      const purchases = folders.ok
+        ? folders.value.items.find((folder) => folder.systemKey === 'purchases')
+        : undefined;
+      if (!purchases) throw new Error('fixture: dossier Achats absent');
+      const scanned = await service.createDocumentIntake({
+        contentBase64: '/9j/2Q==',
+        mimeType: 'image/jpeg',
+        filename: 'ticket-aldi.jpg',
+        idempotencyKey: 'scan-voice-liste-0001',
+      });
+      expect(scanned.ok).toBe(true);
+      if (!scanned.ok) return;
+      // File « Rangé — à confirmer » (stock historique pré-latch) : rangé SANS validation.
+      const legacyMove = await p.documentFolders.moveDocument({
+        companyId: MERCIER_PROPS.id,
+        documentId: scanned.value.id,
+        targetFolderId: purchases.id,
+        reviewedAt: null,
+        expectedRevision: scanned.value.revision,
+      });
+      expect(legacyMove.status).toBe('saved');
+
+      const listed = await service.askBob('Montre mes documents archivés');
+      expect(listed.ok).toBe(true);
+      if (!listed.ok) return;
+      expect(listed.value.intent).toBe('documents');
+      expect(listed.value.kind).toBe('answer');
+      expect(listed.value.card.body).toContain('à confirmer');
+      expect(listed.value.card.body).toContain('rangé dans Achats');
+      // Le followUp verbatim relie la file au flux valider_document (plancher préservé).
+      expect(listed.value.ask?.[0]?.options.some((o) => o.followUp === `Valide le document ${scanned.value.id}`)).toBe(true);
     });
   });
 });

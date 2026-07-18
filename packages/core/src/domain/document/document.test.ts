@@ -154,3 +154,80 @@ describe('Document — displayName (libellé d’affichage, filename immuable)',
     expect(historical.toProps().displayName).toBe('ticket.jpg');
   });
 });
+
+describe('Document — reviewedAt (confirmation humaine, LOT 2)', () => {
+  it('défaut : reviewedAt null, y compris pour une ligne historique sans le champ', () => {
+    const recorded = Document.record(props());
+    expect(recorded.ok).toBe(true);
+    if (recorded.ok) {
+      expect(recorded.value.reviewedAt).toBeNull();
+      expect(recorded.value.toProps().reviewedAt).toBeNull();
+    }
+    // Réhydratation d'une ligne persistée AVANT la feature (champ absent) : jamais de crash.
+    const historical = Document.rehydrate(props());
+    expect(historical.reviewedAt).toBeNull();
+    expect(historical.toProps().reviewedAt).toBeNull();
+  });
+
+  it('markReviewed pose la confirmation et incrémente la révision — sans toucher au reste', () => {
+    const r = Document.record(props());
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+
+    const before = r.value.toProps();
+    expect(r.value.markReviewed('2026-07-16T09:00:00.000Z').ok).toBe(true);
+    const after = r.value.toProps();
+    expect(after.reviewedAt).toBe('2026-07-16T09:00:00.000Z');
+    expect(after.revision).toBe(2);
+    // Le filename d'archive, le rangement et le lien métier restent strictement intacts.
+    expect(after.filename).toBe(before.filename);
+    expect(after.displayName).toBe(before.displayName);
+    expect(after.folderId).toBe(before.folderId);
+    expect(after.linkedEntityType).toBe(before.linkedEntityType);
+    expect(after.linkedEntityId).toBe(before.linkedEntityId);
+  });
+
+  it('markReviewed est idempotent : re-marquer conserve la première validation, sans révision fantôme', () => {
+    const r = Document.record(props());
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+
+    expect(r.value.markReviewed('2026-07-16T09:00:00.000Z').ok).toBe(true);
+    expect(r.value.markReviewed('2026-07-17T15:00:00.000Z').ok).toBe(true);
+    expect(r.value.reviewedAt).toBe('2026-07-16T09:00:00.000Z'); // la première fait foi
+    expect(r.value.revision).toBe(2);
+  });
+
+  it('markReviewed refuse un horodatage vide et un document supprimé non validé', () => {
+    const invalid = Document.record(props());
+    expect(invalid.ok).toBe(true);
+    if (invalid.ok) {
+      const empty = invalid.value.markReviewed('   ');
+      expect(empty.ok).toBe(false);
+      if (!empty.ok) expect(empty.error).toMatchObject({ code: 'VALIDATION', field: 'reviewedAt' });
+      expect(invalid.value.reviewedAt).toBeNull();
+      expect(invalid.value.revision).toBe(1);
+    }
+
+    const deleted = Document.record(props({ status: 'deleted', deletedAt: '2026-06-02T10:00:00.000Z' }));
+    expect(deleted.ok).toBe(true);
+    if (deleted.ok) {
+      const onDeleted = deleted.value.markReviewed('2026-07-16T09:00:00.000Z');
+      expect(onDeleted.ok).toBe(false);
+      if (!onDeleted.ok) expect(onDeleted.error.code).toBe('INVALID_TRANSITION');
+    }
+  });
+
+  it('record rejette un reviewedAt fourni mais vide, accepte null et une valeur réelle', () => {
+    const empty = Document.record(props({ reviewedAt: '  ' }));
+    expect(empty.ok).toBe(false);
+    if (!empty.ok) expect(empty.error).toMatchObject({ code: 'VALIDATION', field: 'reviewedAt' });
+
+    const explicitNull = Document.record(props({ reviewedAt: null }));
+    expect(explicitNull.ok && explicitNull.value.reviewedAt).toBeNull();
+
+    const reviewed = Document.record(props({ reviewedAt: '2026-07-16T09:00:00.000Z' }));
+    expect(reviewed.ok).toBe(true);
+    if (reviewed.ok) expect(reviewed.value.reviewedAt).toBe('2026-07-16T09:00:00.000Z');
+  });
+});

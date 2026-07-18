@@ -197,7 +197,9 @@ function PendingCard({
   onOpen,
   onClassify,
   onPickTarget,
+  onConfirm,
   classifying,
+  confirming,
 }: {
   doc: VaultPendingDoc;
   onOpen: () => void;
@@ -205,13 +207,19 @@ function PendingCard({
   onClassify: () => void;
   /** A8 : ouvre le choix d'une AUTRE destination (chantiers + dossiers hors chantier). */
   onPickTarget: () => void;
+  /** Doc RANGÉ mais jamais confirmé : « C'est bon » = AcknowledgeDocument (latch idempotent). */
+  onConfirm: () => void;
   classifying: boolean;
+  confirming: boolean;
 }) {
   const { personality, colors, semantic } = useTheme();
   const metrics = doc.metrics;
   const suggestion = doc.suggestedDestination;
+  // Rangé (folderId non nul) mais reviewedAt null : la carte devient « Rangé · {dossier} —
+  // à confirmer » et son geste principal est la CONFIRMATION, plus un nouveau classement.
+  const filedToConfirm = doc.folderId !== null;
   const oneTap = suggestion !== null || doc.matchedExpense !== null;
-  const guessSegments = suggestion
+  const guessSegments = !filedToConfirm && suggestion
     ? destinationSuggestionSegments(suggestion.motif, suggestion.label)
     : null;
   return (
@@ -277,6 +285,30 @@ function PendingCard({
         </View>
       ) : null}
 
+      {/* Rangé mais jamais confirmé : bandeau « Rangé · {dossier} — à confirmer » (nom du
+          dossier fourni par l'appelant ; absent ⇒ affichage dégradé, jamais inventé). */}
+      {filedToConfirm ? (
+        <View
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 7,
+            backgroundColor: conformityCard.bgTop,
+            borderRadius: 11,
+            paddingVertical: 9,
+            paddingHorizontal: 12,
+            marginTop: 13,
+          }}
+        >
+          <FolderSmallIcon color={semantic.ai} />
+          <Text style={{ ...font('meta', 600), fontSize: 12.5, color: semantic.ai, flex: 1 }} numberOfLines={2}>
+            {doc.folderName !== null
+              ? t('docs.filedToConfirm', { personality, params: { folder: doc.folderName } })
+              : t('docs.filedToConfirmUnknown', { personality })}
+          </Text>
+        </View>
+      ) : null}
+
       {/* « Je pense : … » — cible validée en gras ; repli honnête : dépense rapprochée. */}
       {guessSegments && guessSegments.length > 0 ? (
         <View
@@ -304,7 +336,7 @@ function PendingCard({
             ))}
           </Text>
         </View>
-      ) : doc.matchedExpense ? (
+      ) : !filedToConfirm && doc.matchedExpense ? (
         <View
           style={{
             flexDirection: 'row',
@@ -324,9 +356,21 @@ function PendingCard({
         </View>
       ) : null}
 
-      {/* « Classer là » PLEIN indigo (aiSolid) + « Autre dossier » blanc bordé (handoff). */}
+      {/* Rangé → « C'est bon » (confirmation) en geste principal ; sinon « Classer là »
+          PLEIN indigo (aiSolid). « Autre dossier » blanc bordé reste disponible (handoff). */}
       <View style={{ flexDirection: 'row', gap: 9, marginTop: 13 }}>
-        {oneTap ? (
+        {filedToConfirm ? (
+          <Button
+            title={t('docs.confirmCta', { personality })}
+            variant="aiSolid"
+            size="compact"
+            radius={12}
+            loading={confirming}
+            style={{ flex: 1 }}
+            onPress={onConfirm}
+            accessibilityLabel={`${t('docs.confirmCta', { personality })} — ${doc.displayName}`}
+          />
+        ) : oneTap ? (
           <Button
             title={t('docs.classify', { personality })}
             variant="aiSolid"
@@ -343,7 +387,7 @@ function PendingCard({
           variant="secondary"
           size="compact"
           radius={12}
-          {...(oneTap ? {} : { style: { flex: 1 } })}
+          {...(filedToConfirm || oneTap ? {} : { style: { flex: 1 } })}
           onPress={onPickTarget}
           accessibilityLabel={`${t('docs.otherFolder', { personality })} — ${doc.displayName}`}
         />
@@ -351,6 +395,9 @@ function PendingCard({
     </View>
   );
 }
+
+/** Lien métier DÉJÀ posé sur le document : un classement ne le réécrit JAMAIS en silence. */
+class DocumentAlreadyLinkedError extends Error {}
 
 /** Destination d'un classement — chaque variante porte le libellé prêt pour le bandeau vert. */
 type ClassifyTarget =
@@ -477,10 +524,17 @@ export default function Documents() {
       }
       // 2) Lien métier (deuxième axe) — même use case que Bob (ClassifyDocument @bob/core).
       if (input.target.kind === 'chantier' || input.target.kind === 'expense') {
+        const linkedEntityId = input.target.kind === 'chantier' ? input.target.chantierId : input.target.expenseId;
+        // Un linkedEntity DÉJÀ posé (chantier, facture…) ne se réécrit jamais via un
+        // « Classer là » ou le picker : ClassifyDocument écraserait le lien en silence.
+        // Refus honnête — la décision se prend depuis le détail du document (geste explicite).
+        const sameLink = document.linkedEntityType === input.target.kind
+          && document.linkedEntityId === linkedEntityId;
+        if (document.linkedEntityType !== null && !sameLink) throw new DocumentAlreadyLinkedError();
         const classified = await client.classifyDocument({
           documentId: document.id,
           linkedEntityType: input.target.kind,
-          linkedEntityId: input.target.kind === 'chantier' ? input.target.chantierId : input.target.expenseId,
+          linkedEntityId,
           expectedRevision: revision,
         });
         if (!classified.ok) throw classified.error;
@@ -513,7 +567,38 @@ export default function Documents() {
         }),
       });
     },
-    onError: () => setToast(t('docs.classifyError', { personality })),
+    onError: (error) =>
+      setToast(t(
+        error instanceof DocumentAlreadyLinkedError ? 'docs.classifyLinkedError' : 'docs.classifyError',
+        { personality },
+      )),
+  });
+
+  // « C'est bon » (docs rangés mais jamais confirmés) : AcknowledgeDocument — pose la
+  // confirmation humaine (reviewedAt, latch idempotent) SANS déplacer ni lier. Même use
+  // case pour Bob (parité voix). Échec (révision périmée…) → toast honnête + refetch.
+  const acknowledge = useMutation({
+    mutationFn: async (input: { documentId: string; displayName: string }) => {
+      const document = documents.data?.find((candidate) => candidate.id === input.documentId);
+      if (!document) throw new Error('Document indisponible.');
+      const result = await client.acknowledgeDocument({
+        documentId: document.id,
+        expectedRevision: document.revision,
+      });
+      if (!result.ok) throw result.error;
+      return input.displayName;
+    },
+    onSuccess: (name) => {
+      void queryClient.invalidateQueries({ queryKey: ['documents'] });
+      setClassifiedBanner({
+        key: Date.now(),
+        text: t('docs.confirmedBanner', { personality, params: { name } }),
+      });
+    },
+    onError: () => {
+      setToast(t('docs.confirmError', { personality }));
+      void documents.refetch();
+    },
   });
 
   const cta = parseGradient(grad.cta);
@@ -601,19 +686,31 @@ export default function Documents() {
     [expenses.data],
   );
 
+  // folderName RÉSOLU par l'appelant (contrat VaultDocumentData — le core ne résout jamais un
+  // nom) : dossiers racine du coffre ; nom introuvable (sous-dossier, panne) ⇒ null, affichage
+  // dégradé « Rangé — à confirmer », jamais un nom inventé.
+  const vaultDocuments: VaultDocumentData[] | undefined = useMemo(() => {
+    if (!documents.data) return undefined;
+    const folderNames = new Map((documentFolders.data ?? []).map((folder) => [folder.id, folder.name]));
+    return documents.data.map((document) => ({
+      ...document,
+      folderName: document.folderId !== null ? folderNames.get(document.folderId) ?? null : null,
+    }));
+  }, [documents.data, documentFolders.data]);
+
   // Projections structurelles : DocumentListItemView/InvoiceView/CustomerListItem ⊇ Vault*Data.
   const view: VaultView | null = useMemo(() => {
     // Aucun `?? []` ici : une réponse serveur réellement vide est `[]`, tandis qu'une source
     // jamais chargée reste `undefined` et bloque l'agrégat complet via `hasError` ci-dessus.
-    if (!documents.data || !vaultExpenses || !invoices.data || !customers.data) return null;
+    if (!vaultDocuments || !vaultExpenses || !invoices.data || !customers.data) return null;
     return deriveVaultView({
-      documents: documents.data,
+      documents: vaultDocuments,
       expenses: vaultExpenses,
       invoices: invoices.data,
       customers: customers.data,
       today: todayISO(),
     });
-  }, [documents.data, vaultExpenses, invoices.data, customers.data]);
+  }, [vaultDocuments, vaultExpenses, invoices.data, customers.data]);
 
   // E10 : reste à payer réel (summarizeExpenses @bob/core) — sous-titre de la porte Dépenses.
   const expensesToPayCents = useMemo(
@@ -984,10 +1081,16 @@ export default function Documents() {
                       onOpen={() => void openDocument(p.id)}
                       onPickTarget={() => setPickerDoc(p)}
                       classifying={classify.isPending && classify.variables?.documentId === p.id}
+                      confirming={acknowledge.isPending && acknowledge.variables?.documentId === p.id}
                       onClassify={() => {
                         const target = oneTapTargetFor(p);
                         if (target && !classify.isPending) {
                           classify.mutate({ documentId: p.id, displayName: p.displayName, target });
+                        }
+                      }}
+                      onConfirm={() => {
+                        if (!acknowledge.isPending) {
+                          acknowledge.mutate({ documentId: p.id, displayName: p.displayName });
                         }
                       }}
                     />

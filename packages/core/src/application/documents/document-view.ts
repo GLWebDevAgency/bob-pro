@@ -25,6 +25,8 @@ export interface DocumentView {
   createdBy: string | null;
   retentionUntil: DateOnly;
   tags: string[];
+  /** Confirmation humaine du document scanné — null : jamais validé (dont lignes historiques). */
+  reviewedAt: Instant | null;
 }
 
 export function documentToView(document: Document): DocumentView {
@@ -53,5 +55,6 @@ export function documentToView(document: Document): DocumentView {
     createdBy: p.createdBy,
     retentionUntil: p.retentionUntil,
     tags: [...p.tags],
+    reviewedAt: p.reviewedAt ?? null,
   };
 }

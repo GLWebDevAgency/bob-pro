@@ -33,6 +33,12 @@ export interface SheetProps {
   readonly accessibilityLabel?: string;
   /** Libellé du bouton de fermeture visible. */
   readonly closeAccessibilityLabel?: string;
+  /**
+   * Appelé UNE fois quand l'animation de sortie est terminée et la feuille démontée —
+   * permet à l'appelant de séquencer des feuilles SANS chevauchement visuel (au plus
+   * une visible). Jamais appelé au montage initial d'une feuille fermée.
+   */
+  readonly onDidClose?: (() => void) | undefined;
 }
 
 export function Sheet({
@@ -41,6 +47,7 @@ export function Sheet({
   children,
   accessibilityLabel = 'Fenêtre d’options',
   closeAccessibilityLabel = 'Fermer',
+  onDidClose,
 }: SheetProps) {
   const { colors, controls, overlays, radius } = useTheme();
   const insets = useSafeAreaInsets();
@@ -59,6 +66,11 @@ export function Sheet({
   const focusFrameRef = useRef<ReturnType<typeof requestAnimationFrame> | null>(null);
   const visibleRef = useRef(visible);
   visibleRef.current = visible;
+  // onDidClose lu via ref : l'effet [visible, progress] ne doit pas se redéclencher quand
+  // l'appelant change de callback ; wasOpenRef évite toute notification au montage fermé.
+  const onDidCloseRef = useRef(onDidClose);
+  onDidCloseRef.current = onDidClose;
+  const wasOpenRef = useRef(false);
 
   const geometry = resolveSheetGeometry(windowHeight, insets);
 
@@ -66,6 +78,7 @@ export function Sheet({
     if (visible) {
       modalShownRef.current = false;
       openingCompleteRef.current = false;
+      wasOpenRef.current = true;
       setMounted(true);
       Animated.timing(progress, {
         toValue: 1,
@@ -80,12 +93,18 @@ export function Sheet({
     }
     modalShownRef.current = false;
     openingCompleteRef.current = false;
+    // Notifier UNIQUEMENT une vraie fermeture (la feuille a été ouverte), jamais le
+    // montage initial fermé ; une sortie interrompue (finished=false) ne notifie pas.
+    const shouldNotifyClose = wasOpenRef.current;
+    wasOpenRef.current = false;
     Animated.timing(progress, {
       toValue: 0,
       duration: reduceMotionRef.current ? 0 : DURATION_MS,
       useNativeDriver: true,
     }).start(({ finished }) => {
-      if (finished) setMounted(false);
+      if (!finished) return;
+      setMounted(false);
+      if (shouldNotifyClose) onDidCloseRef.current?.();
     });
   }, [visible, progress]);
 

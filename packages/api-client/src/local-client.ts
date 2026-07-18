@@ -218,6 +218,7 @@ import type {
   ListDocumentsClientInput,
   DocumentListItemView,
   RenameDocumentClientInput,
+  AcknowledgeDocumentClientInput,
   UploadDocumentClientInput,
   CreateDocumentIntakeClientInput,
   ListDocumentFoldersClientInput,
@@ -1389,11 +1390,54 @@ export class LocalBobClient implements BobClient {
     return ok(cloneDocumentView(renamed));
   }
 
-  async getDocument(documentId: string): Promise<Result<DocumentView, AppError>> {
+  /** Parité serveur GET /documents/:id : MÊME shape enrichi que la liste, résumés depuis le
+   * SEUL cache local d'analyses (peuplé par analyzeDocument) — jamais inventés. */
+  async getDocument(documentId: string): Promise<Result<DocumentListItemView, AppError>> {
     const document = this.documents.find(
       (candidate) => candidate.id === documentId && candidate.status === 'active',
     );
-    return document ? ok(cloneDocumentView(document)) : err(appNotFound('document', documentId));
+    if (!document) return err(appNotFound('document', documentId));
+    const cached = this.documentAnalyses.get(document.id);
+    const analysis =
+      cached && cached.documentVersion === document.version && cached.sourceSha256 === document.sha256
+        ? cached
+        : null;
+    return ok({
+      ...cloneDocumentView(document),
+      analysis: analysis ? documentAnalysisSummaryView(analysis) : null,
+      extraction: analysis ? documentExtractionSummaryView(analysis) : null,
+    });
+  }
+
+  /** Parité serveur POST /documents/:id/acknowledge (AcknowledgeDocument @bob/core) : pose
+   * reviewedAt SANS déplacer ni lier — latch idempotent, révision optimiste. */
+  async acknowledgeDocument(
+    input: AcknowledgeDocumentClientInput,
+  ): Promise<Result<DocumentView, AppError>> {
+    if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 1) {
+      return err({
+        kind: 'validation',
+        issues: [{ field: 'expectedRevision', message: 'Révision document invalide.' }],
+      });
+    }
+    const documentIndex = this.documents.findIndex(
+      (candidate) => candidate.id === input.documentId && candidate.status === 'active',
+    );
+    const document = this.documents[documentIndex];
+    if (!document) return err(appNotFound('document', input.documentId));
+    if (document.revision !== input.expectedRevision) {
+      return err(appConflict('document', 'Le document a été modifié. Recharge avant de valider.'));
+    }
+    // Latch : la première validation fait foi — re-valider ne réécrit rien.
+    if (document.reviewedAt !== null) return ok(cloneDocumentView(document));
+    const acknowledged: DocumentView = {
+      ...document,
+      reviewedAt: this.clock.now(),
+      revision: document.revision + 1,
+      tags: [...document.tags],
+    };
+    this.documents[documentIndex] = acknowledged;
+    return ok(cloneDocumentView(acknowledged));
   }
 
   async uploadDocument(input: UploadDocumentClientInput): Promise<Result<DocumentView, AppError>> {
@@ -1475,6 +1519,7 @@ export class LocalBobClient implements BobClient {
       createdAt: this.clock.now(),
       createdBy: 'local',
       retentionUntil: addYears(documentDate ?? today, 10),
+      reviewedAt: null,
       tags: [
         ...new Set(
           (input.tags ?? [])
@@ -1932,21 +1977,26 @@ export class LocalBobClient implements BobClient {
     ) {
       return err(appNotFound('document_folder', input.folderId));
     }
-    if (document.folderId !== input.folderId) {
-      const moved: DocumentView = {
-        ...document,
-        folderId: input.folderId,
-        revision: document.revision + 1,
-        tags: [...document.tags],
-      };
-      this.documents[documentIndex] = moved;
-      return ok({ documentId: moved.id, folderId: moved.folderId, revision: moved.revision });
+    // Parité serveur (MoveDocumentToFolder @bob/core) : ranger DANS un dossier vaut validation
+    // humaine (reviewedAt, latch) ; sortir d'un dossier (folderId null) n'invalide jamais rien.
+    const posesReview = input.folderId !== null && document.reviewedAt === null;
+    const movesFolder = document.folderId !== input.folderId;
+    if (!movesFolder && !posesReview) {
+      return ok({
+        documentId: document.id,
+        folderId: document.folderId,
+        revision: document.revision,
+      });
     }
-    return ok({
-      documentId: document.id,
-      folderId: document.folderId,
-      revision: document.revision,
-    });
+    const moved: DocumentView = {
+      ...document,
+      folderId: input.folderId,
+      ...(posesReview ? { reviewedAt: this.clock.now() } : {}),
+      revision: document.revision + (movesFolder ? 1 : 0) + (posesReview ? 1 : 0),
+      tags: [...document.tags],
+    };
+    this.documents[documentIndex] = moved;
+    return ok({ documentId: moved.id, folderId: moved.folderId, revision: moved.revision });
   }
 
   async analyzeDocument(documentId: string): Promise<Result<DocumentAnalysis, AppError>> {
@@ -2085,11 +2135,15 @@ export class LocalBobClient implements BobClient {
         kind: 'validation',
         issues: [{ field: 'linkedEntityId', message: 'Rattachement métier incomplet.' }],
       });
+    // Parité serveur (ClassifyDocument @bob/core) : un classement explicite vaut validation
+    // humaine — reviewedAt latched (+1 de révision), la première validation fait foi.
+    const posesReview = document.reviewedAt === null;
     const classified: DocumentView = {
       ...document,
       linkedEntityType: input.linkedEntityType,
       linkedEntityId: input.linkedEntityId.trim(),
-      revision: document.revision + 1,
+      ...(posesReview ? { reviewedAt: this.clock.now() } : {}),
+      revision: document.revision + 1 + (posesReview ? 1 : 0),
       tags: [...document.tags],
     };
     this.documents[documentIndex] = classified;
@@ -2464,14 +2518,50 @@ export class LocalBobClient implements BobClient {
           restore();
           return recorded;
         }
-        const movedRevision =
-          document.folderId === targetFolder.id ? document.revision : document.revision + 1;
+        // Parité serveur : move (+1 si dossier changé) + validation humaine posée par le
+        // rangement/classement (+1, latch) + classify (+1) — même pas de révision que le rejeu
+        // domaine côté API.
+        const movesFolder = document.folderId !== targetFolder.id;
+        const posesReview = document.reviewedAt === null;
+        // LOT 3 — nom intelligent au record (règle suggestedRenameFor, parité serveur) : le
+        // suggestedDisplayName de l'analyse EN CACHE s'applique uniquement si le libellé vaut
+        // encore le filename d'archive — un renommage humain n'est JAMAIS écrasé.
+        const cachedAnalysis = this.documentAnalyses.get(document.id);
+        const analysis =
+          cachedAnalysis
+          && cachedAnalysis.documentVersion === document.version
+          && cachedAnalysis.sourceSha256 === document.sha256
+            ? cachedAnalysis
+            : null;
+        const suggested = (analysis?.suggestedDisplayName ?? '').replace(/\s+/g, ' ').trim();
+        const currentName = document.displayName.replace(/\s+/g, ' ').trim();
+        const originalName = document.filename.replace(/\s+/g, ' ').trim();
+        let displayName = document.displayName;
+        let renameApplied = false;
+        if (
+          suggested.length > 0
+          && (currentName.length === 0 || currentName === originalName)
+          && suggested !== currentName
+        ) {
+          const validatedSuggestion = validateDocumentDisplayName(suggested);
+          if (validatedSuggestion.ok) {
+            displayName = validatedSuggestion.value;
+            renameApplied = true;
+          }
+        }
         const linked: DocumentView = {
           ...document,
           folderId: targetFolder.id,
           linkedEntityType: 'expense',
           linkedEntityId: recorded.value.id,
-          revision: movedRevision + 1,
+          displayName,
+          ...(posesReview ? { reviewedAt: this.clock.now() } : {}),
+          revision:
+            document.revision
+            + (movesFolder ? 1 : 0)
+            + (posesReview ? 1 : 0)
+            + 1
+            + (renameApplied ? 1 : 0),
           tags: [...document.tags],
         };
         this.documents[documentIndex] = linked;
@@ -2621,6 +2711,9 @@ export class LocalBobClient implements BobClient {
       createdAt: this.clock.now(),
       createdBy: 'local',
       retentionUntil: addYears(draft.documentDate, 10),
+      // Lié à une dépense dès sa création : hors file « À valider » par construction — la
+      // confirmation explicite reste null tant qu'aucun geste humain ne l'a posée.
+      reviewedAt: null,
       tags: [],
     };
     this.documents.unshift(view);

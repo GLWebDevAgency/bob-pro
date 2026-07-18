@@ -46,6 +46,9 @@ export interface DocumentProps {
   versions: DocumentVersionProps[];
   /** Tags de classement/recherche (#11 excellence) — normalisés, ≤ 16. */
   tags: string[];
+  /** Confirmation humaine (ou Bob — parité voix) d'un document scanné.
+   *  null / absent (ligne historique) = jamais validé. La première validation fait foi. */
+  reviewedAt?: Instant | null;
 }
 
 const KINDS: readonly DocumentKind[] = ['invoice_pdf', 'quote_pdf', 'facturx_xml', 'expense_receipt', 'signed_quote', 'other'];
@@ -163,6 +166,8 @@ export class Document {
       return err({ code: 'VALIDATION', field: 'retentionUntil', message: 'Date de rétention invalide.' });
     if (props.status === 'deleted' && props.deletedAt === null)
       return err({ code: 'VALIDATION', field: 'deletedAt', message: 'Date de suppression requise.' });
+    if (props.reviewedAt !== undefined && props.reviewedAt !== null && !nonEmpty(props.reviewedAt))
+      return err({ code: 'VALIDATION', field: 'reviewedAt', message: 'Date de validation invalide.' });
     if (props.versions.length === 0) return err({ code: 'VALIDATION', field: 'versions', message: 'Version initiale requise.' });
 
     const versions: DocumentVersionProps[] = [];
@@ -200,6 +205,7 @@ export class Document {
       filename,
       displayName,
       linkedEntityId: props.linkedEntityId?.trim() ?? null,
+      reviewedAt: props.reviewedAt ?? null,
       versions,
       tags,
     }));
@@ -242,6 +248,11 @@ export class Document {
 
   get revision(): number {
     return this.p.revision ?? 1;
+  }
+
+  /** Confirmation humaine (« c'est bon ») — null pour toute ligne historique non validée. */
+  get reviewedAt(): Instant | null {
+    return this.p.reviewedAt ?? null;
   }
 
   addVersion(version: DocumentVersionProps): DomainResult<void> {
@@ -307,6 +318,21 @@ export class Document {
     return ok(undefined);
   }
 
+  /**
+   * Pose la confirmation humaine du document (« c'est bon, je valide » — humain ou Bob,
+   * parité d'actions). Ne déplace ni ne lie rien : seul reviewedAt change (révision
+   * optimiste). Idempotent : re-marquer un document déjà validé ne change rien — la
+   * première validation fait foi, son horodatage n'est jamais écrasé.
+   */
+  markReviewed(at: Instant): DomainResult<void> {
+    if ((this.p.reviewedAt ?? null) !== null) return ok(undefined);
+    if (this.p.status !== 'active') return err({ code: 'INVALID_TRANSITION', from: this.p.status, to: 'active' });
+    if (!nonEmpty(at)) return err({ code: 'VALIDATION', field: 'reviewedAt', message: 'Date de validation requise.' });
+    this.p.reviewedAt = at;
+    this.bumpRevision();
+    return ok(undefined);
+  }
+
   markDeleted(at: Instant): DomainResult<void> {
     if (this.p.status === 'deleted') return ok(undefined);
     this.p.status = 'deleted';
@@ -321,6 +347,7 @@ export class Document {
       folderId: this.p.folderId ?? null,
       revision: this.p.revision ?? 1,
       displayName: this.displayName,
+      reviewedAt: this.p.reviewedAt ?? null,
       versions: this.p.versions.map((v) => ({ ...v })),
     };
   }

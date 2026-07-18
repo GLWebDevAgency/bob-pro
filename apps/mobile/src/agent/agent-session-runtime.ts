@@ -61,6 +61,47 @@ export function shouldStopAgentSessionForAppState(
   return state === 'background' && !permissionRequestInFlight;
 }
 
+/**
+ * S3 — ORBE HONNÊTE : grâce avant de constater qu'une écoute annoncée n'a plus d'oreille.
+ * Alignée sur la grâce du résultat terminal natif (un final peut suivre `end` de quelques ms).
+ */
+export const LEGACY_LISTENING_SILENCE_GRACE_MS = 350;
+
+export interface LegacyListeningSilenceInput {
+  readonly active: boolean;
+  readonly driver: AgentSessionDriver;
+  readonly phase: string;
+  readonly voiceListening: boolean;
+}
+
+/**
+ * S3 — ORBE HONNÊTE : la reco native se termine SEULE sur silence (ni résultat, ni onIssue).
+ * Sans ce constat, l'orbe promet « Je t'écoute… » micro fermé. Vrai UNIQUEMENT pour le pilote
+ * legacy : en temps réel, la phase vient du serveur et l'oreille locale est volontairement
+ * fermée — ce n'est jamais un silence à rattraper.
+ */
+export function shouldRecoverLegacyListeningSilence(input: LegacyListeningSilenceInput): boolean {
+  return (
+    input.active
+    && input.driver === 'legacy'
+    && input.phase === 'listening'
+    && !input.voiceListening
+  );
+}
+
+/**
+ * S4 — CONTINUITÉ MAINS-LIBRES : le handoff se PRONONCE avant la mise en veille — le corps de
+ * la réponse PUIS la consigne (« ça se termine dans l'Assistant »). Mains libres, l'utilisateur
+ * sait quoi faire sans regarder l'écran ; l'affichage, lui, garde les deux textes séparés.
+ */
+export function composeHandoffSpeech(body: string, reviewInstruction: string): string {
+  const trimmedBody = body.trim();
+  const instruction = reviewInstruction.trim();
+  if (trimmedBody === '') return instruction;
+  if (instruction === '') return trimmedBody;
+  return `${trimmedBody} ${instruction}`;
+}
+
 export interface AgentSessionBackgroundRevalidation {
   readonly waitForPermissionRequests: () => Promise<void>;
   readonly waitForLifecycleStabilization: () => Promise<void>;

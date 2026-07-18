@@ -123,10 +123,16 @@ export function useUpdateCompanyBillingSettings() {
   });
 }
 
+/** Politique staleTime par domaine (S8) : l'abonnement ne change que par un acte explicite
+ * (checkout, portail de facturation) — ces mutateurs invalident la query ci-dessous. Entre deux,
+ * aucun re-GET au retour d'écran : 15 min de fraîcheur assumée, invalidation-driven. */
+const SUBSCRIPTION_STALE_TIME_MS = 15 * 60 * 1000;
+
 export function useSubscription() {
   const client = useBobClient();
   return useQuery({
     queryKey: ['subscription'],
+    staleTime: SUBSCRIPTION_STALE_TIME_MS,
     queryFn: async () => {
       const r = await client.getSubscription();
       if (!r.ok) throw r.error;
@@ -149,26 +155,39 @@ export function useSubscriptionInvoices() {
 
 export function useStartCheckout() {
   const client = useBobClient();
+  const qc = useQueryClient();
   return useMutation({
     mutationFn: async (tier: PlanTier) => {
       const r = await client.startCheckout(tier);
       if (!r.ok) throw r.error;
       return r.value;
     },
-    onSuccess: (v) => openUrl(v.url),
+    onSuccess: (v) => {
+      // L'achat se conclut HORS de l'app (navigateur Stripe) : on marque l'abonnement périmé
+      // dès l'ouverture pour que le retour dans l'app relise l'état réel malgré le staleTime long.
+      void qc.invalidateQueries({ queryKey: ['subscription'] });
+      void qc.invalidateQueries({ queryKey: ['subscription-invoices'] });
+      openUrl(v.url);
+    },
     onError: alertError,
   });
 }
 
 export function useBillingPortal() {
   const client = useBobClient();
+  const qc = useQueryClient();
   return useMutation({
     mutationFn: async () => {
       const r = await client.billingPortal();
       if (!r.ok) throw r.error;
       return r.value;
     },
-    onSuccess: (v) => openUrl(v.url),
+    onSuccess: (v) => {
+      // Même doctrine que useStartCheckout : le portail peut changer l'offre hors de l'app.
+      void qc.invalidateQueries({ queryKey: ['subscription'] });
+      void qc.invalidateQueries({ queryKey: ['subscription-invoices'] });
+      openUrl(v.url);
+    },
     onError: alertError,
   });
 }
@@ -191,7 +210,14 @@ export function useCloseAccount() {
   });
 }
 
-export function useInvoicePaymentLink() {
+/**
+ * Lien de paiement d'une facture — MÊME flux côté API dans les deux présentations.
+ * · 'open' (défaut — tap « Lien de paiement », InvoiceActions) : le lien s'ouvre
+ *   directement et l'échec s'affiche en Alert (comportement historique inchangé).
+ * · 'manual' (parité vocale S5, facture/[id]) : l'appelant présente lui-même le lien
+ *   (Share natif) et PARLE l'échec — le hook ne double ni l'ouverture ni l'alerte.
+ */
+export function useInvoicePaymentLink(presentation: 'open' | 'manual' = 'open') {
   const client = useBobClient();
   return useMutation({
     mutationFn: async (invoiceId: string) => {
@@ -199,8 +225,12 @@ export function useInvoicePaymentLink() {
       if (!r.ok) throw r.error;
       return r.value;
     },
-    onSuccess: (v) => openUrl(v.url),
-    onError: alertError,
+    onSuccess: (v) => {
+      if (presentation === 'open') openUrl(v.url);
+    },
+    onError: (e) => {
+      if (presentation === 'open') alertError(e);
+    },
   });
 }
 
@@ -461,6 +491,9 @@ export function useFiscalCalendar() {
   const client = useBobClient();
   return useQuery({
     queryKey: ['fiscal-calendar'],
+    // S8 : dérivé de la fiche société + du profil fiscal — invalidé par leurs mutateurs
+    // (useUpdateCompanyProfile, useUpdateFiscalProfileField). Pas de re-GET par navigation.
+    staleTime: 15 * 60 * 1000,
     queryFn: async () => {
       const r = await client.getFiscalCalendar();
       if (!r.ok) throw r.error;
@@ -500,6 +533,9 @@ export function useUpdateFiscalProfileField() {
     },
     onSuccess: (profile: FiscalProfileView) => {
       qc.setQueryData(keys.fiscalProfile, profile);
+      // S8 : périodicité/régime confirmés changent les échéances dérivées — sans cette
+      // invalidation, le calendrier fiscal (staleTime 15 min) resterait périmé après le mini-flow.
+      void qc.invalidateQueries({ queryKey: ['fiscal-calendar'] });
     },
   });
 }
@@ -508,6 +544,9 @@ export function useDiagnostic() {
   const client = useBobClient();
   return useQuery({
     queryKey: ['diagnostic'],
+    // S8 : le diagnostic conformité ne bouge qu'avec la fiche société (useUpdateCompanyProfile
+    // l'invalide) — 15 min de fraîcheur assumée, pas de re-GET à chaque retour d'écran.
+    staleTime: 15 * 60 * 1000,
     queryFn: async () => {
       const r = await client.getDiagnostic();
       if (!r.ok) throw r.error;
@@ -673,6 +712,11 @@ export function useCashflow(scenario: Scenario, horizon: Horizon) {
   const client = useBobClient();
   return useQuery({
     queryKey: keys.cashflow(scenario, horizon),
+    // S8 — invalidation-driven : TOUTES les mutations qui déplacent la trésorerie invalident
+    // ['cashflow'] (recordExpense/payExpense/regularize, issueInvoice/registerPayment,
+    // generateInvoice, recordManualBankBalance, flux scan/documents, refreshAfterAction de
+    // l'assistant). Entre deux mutations, la projection est stable : 5 min sans re-GET.
+    staleTime: 5 * 60 * 1000,
     queryFn: async () => {
       const r = await client.getCashflow({ scenario, horizon });
       if (!r.ok) throw r.error;
@@ -847,6 +891,9 @@ export interface NotificationsFeed {
   isRefetching: boolean;
   isError: boolean;
   refetch: () => void;
+  /** S8 : recharge le SEUL fil serveur (lu/non-lu) — le pull-to-refresh du dashboard s'en sert
+   * pour ne pas re-GET factures/clients/diagnostic qui vivent sur leur propre politique. */
+  refetchFeed: () => void;
 }
 
 export function useNotificationsFeed(personality?: RelancePersonality): NotificationsFeed {
@@ -907,6 +954,9 @@ export function useNotificationsFeed(personality?: RelancePersonality): Notifica
       void invoices.refetch();
       void customers.refetch();
       void diagnostic.refetch();
+      void feed.refetch();
+    },
+    refetchFeed: () => {
       void feed.refetch();
     },
   };

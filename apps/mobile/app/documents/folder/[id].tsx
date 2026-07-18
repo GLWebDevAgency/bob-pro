@@ -13,10 +13,12 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { shadowNative } from '@bob/tokens';
 import {
+  formatEUR,
   validateDocumentFolderName,
   type DocumentFolderView,
-  type DocumentView,
 } from '@bob/core';
+import type { DocumentListItemView } from '@bob/api-client';
+import { t } from '@bob/i18n';
 import {
   Button,
   Card,
@@ -51,6 +53,8 @@ import {
   PlusIcon,
   ShieldIcon,
 } from '../../../src/components/icons';
+import { ANALYSIS_TYPE_LABEL_KEY, formatDayMonth } from '../../../src/documents/pending-card-copy';
+import { smartDocumentTitle } from '../../../src/documents/document-insight-card.logic';
 
 type FolderEditor =
   | { readonly kind: 'create'; readonly name: string }
@@ -88,7 +92,7 @@ export default function DocumentFolderScreen() {
   const manageRequested = firstParam(params.manage) === '1';
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { colors, semantic, controls, theme } = useTheme();
+  const { colors, semantic, controls, theme, personality } = useTheme();
 
   const folder = useDocumentFolder(folderId);
   const children = useDocumentFolders(folderId);
@@ -135,7 +139,8 @@ export default function DocumentFolderScreen() {
           ? documents.data.slice(0, 16).map((document) => ({
               type: 'document' as const,
               id: document.id,
-              label: document.filename,
+              // Parité humain↔Bob : l'agent voit le même libellé intelligent que l'écran.
+              label: smartDocumentTitle(document, document.analysis?.suggestedDisplayName ?? null),
             }))
           : [],
         capabilities: folderReady
@@ -804,11 +809,19 @@ export default function DocumentFolderScreen() {
     );
   }
 
-  function DocumentRow({ document }: { readonly document: DocumentView }) {
+  /**
+   * Rangée document ENRICHIE (DocumentListItemView, plus jamais le shape nu) : titre
+   * intelligent (renommage humain > suggestion d'analyse), badge du VRAI type analysé,
+   * montant + date quand l'extraction persistée existe — rien n'est inventé, la garantie
+   * d'archivage (« Original conservé ») demeure.
+   */
+  function DocumentRow({ document }: { readonly document: DocumentListItemView }) {
+    const title = smartDocumentTitle(document, document.analysis?.suggestedDisplayName ?? null);
+    const extraction = document.extraction;
     return (
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={`${document.filename}, original ${mimeLabel(document.mimeType)} conservé`}
+        accessibilityLabel={`${title}, original ${mimeLabel(document.mimeType)} conservé`}
         accessibilityHint="Ouvre l’original, l’analyse de Bob et sa traçabilité."
         onPress={() => router.push(`/documents/${document.id}`)}
         style={({ pressed }) => ({
@@ -839,9 +852,26 @@ export default function DocumentFolderScreen() {
           <FileTextIcon color={semantic.ai} size={21} />
         </View>
         <View style={{ flex: 1, minWidth: 0 }}>
-          <Text selectable numberOfLines={1} style={[font('body', 700), { color: colors.ink900 }]}>{document.filename}</Text>
+          {document.analysis ? (
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, marginBottom: 2 }}>
+              {/* Badge du type RÉEL analysé (jamais un type en dur). */}
+              <View style={{ backgroundColor: semantic.aiBg, borderRadius: 5, paddingVertical: 2, paddingHorizontal: 6 }}>
+                <Text style={{ ...font('label', 700), fontSize: 10, color: semantic.ai }}>
+                  {t(ANALYSIS_TYPE_LABEL_KEY[document.analysis.type], { personality }).toUpperCase()}
+                </Text>
+              </View>
+            </View>
+          ) : null}
+          <Text selectable numberOfLines={1} style={[font('body', 700), { color: colors.ink900 }]}>{title}</Text>
           <Text selectable numberOfLines={1} style={[font('meta'), { color: semantic.success, marginTop: 3 }]}>Original conservé · {mimeLabel(document.mimeType)} · {bytesLabel(document.byteSize)}</Text>
-          <Text selectable numberOfLines={1} style={[font('meta'), { color: colors.slate400, marginTop: 2 }]}>Version {document.version} · jusqu’au {formatDate(document.retentionUntil)} · empreinte {document.sha256.slice(0, 8)}…</Text>
+          {extraction ? (
+            <Text selectable numberOfLines={1} style={[font('meta'), { color: colors.slate400, marginTop: 2, fontVariant: ['tabular-nums'] }]}>
+              {formatEUR(extraction.totalTtcCents)}
+              {extraction.documentDate !== null ? ` · ${formatDayMonth(extraction.documentDate)}` : ''}
+            </Text>
+          ) : (
+            <Text selectable numberOfLines={1} style={[font('meta'), { color: colors.slate400, marginTop: 2 }]}>Version {document.version} · jusqu’au {formatDate(document.retentionUntil)} · empreinte {document.sha256.slice(0, 8)}…</Text>
+          )}
         </View>
         <ChevronRightIcon color={colors.slate400} size={18} />
       </Pressable>

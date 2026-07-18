@@ -552,6 +552,50 @@ describe('DocumentsController polymorphic document links runtime boundary', () =
     await expect(controller.classify('document-1', body)).resolves.toEqual({ id: 'document-1', revision: 2 });
     expect(backend.classifyDocument).toHaveBeenCalledWith({ documentId: 'document-1', ...body });
   });
+
+  it.each([
+    [{ expectedRevision: 1, reviewedAt: '2026-07-18T09:00:00.000Z' }, 'body'],
+    [{ expectedRevision: 1, companyId: 'other' }, 'body'],
+    [{ expectedRevision: 0 }, 'expectedRevision'],
+    [{}, 'expectedRevision'],
+  ])('rejette un acknowledge malformé/injecté (%j) — reviewedAt reste sous autorité serveur', async (body, field) => {
+    const backend = { acknowledgeDocument: vi.fn() };
+    const controller = new DocumentsController(backend as unknown as BackendService);
+
+    let thrown: unknown;
+    try {
+      await controller.acknowledge('document-1', body);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(HttpException);
+    expect((thrown as HttpException).getStatus()).toBe(422);
+    expect((thrown as HttpException).getResponse()).toMatchObject({
+      error: { kind: 'validation', issues: expect.arrayContaining([expect.objectContaining({ field })]) },
+    });
+    expect(backend.acknowledgeDocument).not.toHaveBeenCalled();
+  });
+
+  it('ne transmet à acknowledge que le document de route et la révision autorisée', async () => {
+    const backend = {
+      acknowledgeDocument: vi.fn(async () => ({
+        ok: true as const,
+        value: { id: 'document-1', revision: 2, reviewedAt: '2026-07-18T09:00:00.000Z' },
+      })),
+    };
+    const controller = new DocumentsController(backend as unknown as BackendService);
+
+    await expect(controller.acknowledge('document-1', { expectedRevision: 1 })).resolves.toEqual({
+      id: 'document-1',
+      revision: 2,
+      reviewedAt: '2026-07-18T09:00:00.000Z',
+    });
+    expect(backend.acknowledgeDocument).toHaveBeenCalledWith({
+      documentId: 'document-1',
+      expectedRevision: 1,
+    });
+  });
 });
 
 describe('DocumentsController B9 — GET /documents/search & /documents/suggest', () => {

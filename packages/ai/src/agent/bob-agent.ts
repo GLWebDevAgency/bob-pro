@@ -480,6 +480,53 @@ function documentLine(d: AgentDocument): string {
   return `• ${d.filename} — ${d.kind}${link}`;
 }
 
+/** Libellé intelligent d'une pièce du coffre (renommage humain > suggestion d'analyse > filename). */
+function agentDocumentLabel(d: AgentDocument): string {
+  const label = (d.displayName ?? '').trim();
+  return label.length > 0 ? label : d.filename;
+}
+
+/** Mots du GESTE documentaire (valider/classer/renommer) — neutralisés avant le ciblage par
+ * jetons : « valide le ticket Aldi » ne doit cibler que par « aldi », jamais par « ticket ». */
+const DOCUMENT_GESTURE_WORDS: ReadonlySet<string> = new Set([
+  'valide', 'valider', 'valides', 'confirme', 'confirmer', 'marque', 'marquer', 'comme',
+  'document', 'documents', 'ticket', 'tickets', 'recu', 'recus', 'justificatif',
+  'justificatifs', 'piece', 'pieces', 'attestation', 'releve', 'scan', 'scans',
+  'bon', 'bons', 'est', 'c', 'ca', 'cest', 'peux', 'veux', 'moi', 'stp', 'plait',
+  'le', 'la', 'les', 'l', 'de', 'du', 'des', 'un', 'une', 'mon', 'ma', 'mes',
+  'ce', 'cet', 'cette', 'pour', 'dans', 'sur', 'hier', 'tout', 'vu', 'lu',
+]);
+
+/** Ciblage par jetons SIGNIFICATIFS d'une pièce du coffre (« le ticket Aldi » → « aldi ») :
+ * id exact en tokens entiers, ou mot du libellé intelligent/filename. `extraGestureWords`
+ * neutralise les verbes propres à chaque geste (classer/renommer) sans toucher au socle. */
+function matchDocumentsByTokens(
+  conversation: string,
+  docs: readonly AgentDocument[],
+  extraGestureWords: readonly string[] = [],
+): AgentDocument[] {
+  const stopwords = new Set([...DOCUMENT_GESTURE_WORDS, ...extraGestureWords]);
+  const normalizedConversation = normalized(conversation);
+  const conversationTokens = normalizedConversation
+    .split(/[^a-z0-9]+/)
+    .filter((word) => word.length >= 3 && !stopwords.has(word));
+  return docs.filter((d) => {
+    const id = normalized(d.id);
+    if (id.length >= 3 && containsExactTokens(normalizedConversation, id)) return true;
+    const labelTokens = new Set(
+      normalized(`${agentDocumentLabel(d)} ${d.filename}`).split(/[^a-z0-9]+/).filter((word) => word.length >= 3),
+    );
+    return conversationTokens.some((word) => labelTokens.has(word));
+  });
+}
+
+/** Jetons significatifs d'un nom de destination (chantier/dossier) — casse et accents ignorés. */
+function destinationNameTokens(nom: string): string[] {
+  return normalized(nom)
+    .split(/[^a-z0-9]+/)
+    .filter((word) => word.length >= 3 && !NAME_STOPWORDS.has(word));
+}
+
 /** Ligne d'échéance fiscale, sobre (C-EXP5b) : date FR, libellé, « à confirmer » sur les
  * hypothèses ('assumed'), puis l'explication du use case — jamais un montant (v1 n'en émet pas). */
 function fiscalDeadlineLine(d: FiscalDeadline): string {
@@ -536,6 +583,10 @@ function intentForTool(tool: string): BobIntent {
   if (tool === 'position_tva') return 'tva';
   if (tool === 'balance_agee') return 'balance';
   if (tool === 'enregistrer_reglement_depense') return 'payer_depense';
+  if (tool === 'valider_document') return 'valider_document';
+  if (tool === 'classer_document') return 'classer_document';
+  if (tool === 'renommer_document') return 'renommer_document';
+  if (tool === 'chercher_document') return 'chercher_document';
   if (tool === 'resultat_provisoire') return 'resultat';
   if (tool === 'mon_bilan') return 'bilan';
   if (tool === 'generer_facture' || tool === 'generer_facture_devis') return 'generer_facture';
@@ -684,12 +735,15 @@ export class BobAgent {
     // LIVE-2 : mise en mots des FAITS par le LLM — réponses et résultats seulement, JAMAIS
     // les actions proposées (le consentement reste verbatim) ni les questions structurées
     // (leur formulation est lue par speakableQuestion). Fallback silencieux : le gabarit.
+    // Le catalogue « aide » (S9) reste lui aussi VERBATIM : ses exemples sont des commandes
+    // canoniques garanties par detectIntent — une reformulation les casserait.
     if (
       result.ok
       && this.deps.llm
       && model !== 'unavailable'
       && model !== DETERMINISTIC_CLASSIFIER_MODEL
       && (result.value.kind === 'answer' || result.value.kind === 'done')
+      && result.value.intent !== 'aide'
       && !result.value.ask?.length
     ) {
       const natural = await naturalizeReply(this.deps.llm, {
@@ -713,6 +767,17 @@ export class BobAgent {
     return result;
   }
 
+  /** DÉCOUVRABILITÉ (S9) : catalogue des capacités PAR DOMAINE, un exemple parlé chacun —
+   * les exemples sont des commandes CANONIQUES qui matchent detectIntent à coup sûr. */
+  private capabilityCatalog(): string {
+    return [
+      '· Facturation — « fais un devis pour Martin », « encaisse la facture 2026-014 », « relance les retards »',
+      '· Dépenses — « scanne ce ticket », « j’ai payé Leroy Merlin hier par carte »',
+      '· Fiscal — « combien de TVA je dois ? », « mes échéances à venir », « prêt pour 2026 ? »',
+      '· Pilotage — « comment va mon activité ? », « qui me doit de l’argent ? », « combien je peux me verser ? »',
+    ].join('\n');
+  }
+
   private unknownRun(model: string): AgentRun {
     return {
       kind: 'answer',
@@ -723,7 +788,25 @@ export class BobAgent {
         title: 'Bob',
         body:
           'Je ne traite que l’administratif et le financier de ton activité (je ne réponds pas aux questions hors de ce périmètre). ' +
-          'Je peux : encaisser une facture (« encaisse la facture 2026-014 »), lister tes impayés, préparer une relance, ou calculer ta trésorerie mobilisable.',
+          'Voici ce que je sais faire :\n' +
+          this.capabilityCatalog(),
+      },
+    };
+  }
+
+  /** « aide » / « tu sais faire quoi ? » : le MÊME catalogue, sans la phrase d'écartement —
+   * la personne demande un mode d'emploi, pas un refus. Livré verbatim (jamais naturalisé). */
+  private helpRun(model: string): AgentRun {
+    return {
+      kind: 'answer',
+      intent: 'aide',
+      model,
+      plan: ['Présenter les capacités'],
+      card: {
+        title: 'Ce que je sais faire',
+        body:
+          'Je m’occupe de l’administratif et du financier de ton activité. Dis-moi par exemple :\n' +
+          this.capabilityCatalog(),
       },
     };
   }
@@ -900,6 +983,10 @@ export class BobAgent {
         card: { title: summary.label, body: summaryBody(summary) },
       });
     }
+
+    // DÉCOUVRABILITÉ (S9) : l'aide explicite rend le catalogue des capacités — jamais l'écartement
+    // hors-périmètre (unknown), et jamais une action : réponse pure, aucun pending ni navigate.
+    if (intent === 'aide') return ok(this.helpRun(model));
 
     const nav = NAV_ROUTES[intent];
     if (nav) {
@@ -1150,7 +1237,608 @@ export class BobAgent {
       if (!r.ok) return err(r.error);
       const docs = r.value.slice(0, 8);
       const body = docs.length ? docs.map(documentLine).join('\n') : 'Aucun document archivé pour le moment.';
-      return ok({ kind: 'answer', intent, model, plan: ['Lister les documents archivés'], card: { title: 'Documents', body } });
+      // LOT 5 : la file « à confirmer » (reviewedAt null) entre dans la réponse — MÊME définition
+      // que la file de l'écran Documents (scanné OCR, jamais confirmé, hors dépense). Un hôte
+      // historique sans reviewedAt/origin n'expose rien : aucune file « supposée ».
+      const pending = r.value.filter(
+        (d) => d.origin === 'ocr' && d.reviewedAt === null && d.linkedEntityType !== 'expense',
+      );
+      if (pending.length === 0) {
+        return ok({ kind: 'answer', intent, model, plan: ['Lister les documents archivés'], card: { title: 'Documents', body } });
+      }
+      const first = pending[0]!;
+      // « rangé dans Achats » : nom RÉEL du dossier si l'hôte expose les destinations — sinon
+      // la mention est simplement omise (jamais un nom deviné).
+      let folderName: string | null = null;
+      const listDestinations = this.deps.actions.listFilingDestinations?.bind(this.deps.actions);
+      if (listDestinations && typeof first.folderId === 'string') {
+        const destinations = await listDestinations();
+        if (destinations.ok) {
+          folderName = destinations.value.dossiers.find((f) => f.id === first.folderId)?.nom ?? null;
+        }
+      }
+      const intro = `Tu as ${pending.length} document${pending.length > 1 ? 's' : ''} à confirmer, dont « ${agentDocumentLabel(first)} »${folderName !== null ? ` rangé dans ${folderName}` : ''} — je te les montre ?`;
+      return ok({
+        kind: 'answer',
+        intent,
+        model,
+        plan: ['Lister les documents archivés', 'Repérer la file « À confirmer »'],
+        card: { title: 'Documents', body: `${intro}\n${body}` },
+        choices: pending.slice(0, 4).map((d) => ({
+          label: `Valider « ${agentDocumentLabel(d)} »`,
+          value: `Valide le document ${d.id}`,
+        })),
+        ask: [
+          askToPick({
+            id: 'documents.a_confirmer',
+            question: 'Lequel veux-tu confirmer ?',
+            header: 'À confirmer',
+            items: pending.slice(0, 4).map((d) => ({
+              value: d.id,
+              label: agentDocumentLabel(d),
+              description: `scanné le ${d.createdAt.slice(8, 10)}/${d.createdAt.slice(5, 7)}/${d.createdAt.slice(0, 4)}`,
+              followUp: `Valide le document ${d.id}`,
+            })),
+          }),
+        ],
+      });
+    }
+
+    if (intent === 'valider_document') {
+      // « C'est bon, valide le ticket Aldi » — MÊME use case AcknowledgeDocument (@bob/core)
+      // que le bouton « Confirmer » de la file « À valider » (parité humain↔Bob). Bob ne
+      // valide JAMAIS un document qu'il ne peut pas cibler sans ambiguïté.
+      const acknowledge = this.deps.actions.acknowledgeDocument?.bind(this.deps.actions);
+      const tool = this.tool('valider_document');
+      if (!acknowledge || !tool) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier la capacité de l’hôte'],
+          card: {
+            title: 'Valider un document',
+            body: 'Je ne peux pas valider de document pour le moment. Rien n’a été modifié — tu peux le confirmer depuis l’écran Documents.',
+          },
+        });
+      }
+      const r = await this.deps.actions.listDocuments();
+      if (!r.ok) return err(r.error);
+      // Même définition que la file « À valider » (écran Documents) : scanné (OCR), jamais
+      // confirmé, hors dépense. Un hôte historique sans reviewedAt/origin n'expose rien —
+      // aucun document « supposé » à valider, jamais une validation à l'aveugle.
+      const pending = r.value.filter(
+        (d) => d.origin === 'ocr' && d.reviewedAt === null && d.linkedEntityType !== 'expense',
+      );
+      if (pending.length === 0) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Lister la file « À valider »'],
+          card: { title: 'Rien à valider', body: 'Aucun document scanné n’attend ta validation. 🎉' },
+        });
+      }
+      const conversation = [
+        ...(history ?? []).slice(-4).filter((turn) => turn.role === 'user').map((turn) => turn.text),
+        message,
+      ].join(' ');
+      const targetLabel = agentDocumentLabel;
+      // Ciblage par jetons SIGNIFICATIFS (« le ticket Aldi » → « aldi ») : les mots du geste
+      // lui-même sont neutralisés. Une cible n'est retenue que si elle est UNIQUE — toute
+      // ambiguïté redevient une question, jamais une validation à l'aveugle.
+      const matches = matchDocumentsByTokens(conversation, pending);
+      const target = matches.length === 1 ? matches[0]! : null;
+      if (!target) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Lister la file « À valider »'],
+          card: { title: 'Quel document ?', body: 'Dis-moi quel document valider :' },
+          choices: pending.slice(0, 8).map((d) => ({
+            label: targetLabel(d),
+            value: `valide le document ${d.id}`,
+          })),
+          ask: [
+            askToPick({
+              id: 'valider_document.cible',
+              question: 'Quel document veux-tu valider ?',
+              header: 'Document',
+              items: pending.slice(0, 8).map((d) => ({
+                value: d.id,
+                label: targetLabel(d),
+                description: `scanné le ${d.createdAt.slice(8, 10)}/${d.createdAt.slice(5, 7)}/${d.createdAt.slice(0, 4)}`,
+                followUp: `Valide le document ${d.id}`,
+              })),
+            }),
+          ],
+        });
+      }
+      // Un doc non rangé ne se « valide » pas (même règle que l'écran détail) : reviewedAt le
+      // sortirait de la file sans le placer dans aucun dossier — pièce orpheline. Bob refuse
+      // honnêtement et oriente vers le classement ; rien n'est modifié.
+      if ((target.folderId ?? null) === null) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Contrôler le rangement avant validation'],
+          card: {
+            title: 'À ranger d’abord',
+            body: `« ${targetLabel(target)} » n’est pas encore rangé dans un dossier. Classe-le d’abord (écran Documents → « Classer »), puis je pourrai le valider. Rien n’a été modifié.`,
+          },
+        });
+      }
+      const args = { documentId: target.id };
+      const label = `Valider « ${targetLabel(target)} » (il sort de la file « À valider »)`;
+      if (requiresConfirmation(tool, autonomy)) {
+        return ok({
+          kind: 'proposed',
+          intent,
+          model,
+          plan: ['Trouver le document', 'Contrôler son rangement', 'Attendre ta confirmation'],
+          card: {
+            title: 'Validation à confirmer',
+            body: `${label}. Je ne déplace rien, je ne lie rien : je confirme seulement que tu l’as vu. Je continue ?`,
+          },
+          pending: { tool: tool.name, args, label },
+          spokenPrompt: buildSpokenConfirmation(label),
+        });
+      }
+      const run = await tool.run(args);
+      if (!run.ok) return err(run.error);
+      return ok({
+        kind: 'done',
+        intent,
+        model,
+        plan: ['Valider le document'],
+        card: { title: 'Document validé ✓', body: `${label} — c’est fait.` },
+      });
+    }
+
+    if (intent === 'classer_document') {
+      // LOT 5 — « Range le ticket Aldi dans le chantier Durand » : MÊME séquence que le geste
+      // « Classer là » mobile (MoveDocumentToFolder + ClassifyDocument + nom intelligent), via
+      // l'action hôte fileDocument. Destination = chantier OUVERT ou dossier RÉEL du tenant —
+      // jamais un id inventé : refus honnête si introuvable, question si ambigu.
+      const fileDocument = this.deps.actions.fileDocument?.bind(this.deps.actions);
+      const listDestinations = this.deps.actions.listFilingDestinations?.bind(this.deps.actions);
+      const tool = this.tool('classer_document');
+      if (!fileDocument || !listDestinations || !tool) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier la capacité de l’hôte'],
+          card: {
+            title: 'Classer un document',
+            body: 'Je ne peux pas classer de document sur cet appareil pour le moment. Rien n’a été modifié — tu peux le faire depuis l’écran Documents.',
+          },
+        });
+      }
+      const [docsResult, destinationsResult] = await Promise.all([
+        this.deps.actions.listDocuments(),
+        listDestinations(),
+      ]);
+      if (!docsResult.ok) return err(docsResult.error);
+      if (!destinationsResult.ok) return err(destinationsResult.error);
+      if (docsResult.value.length === 0) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Lister le coffre'],
+          card: { title: 'Rien à classer', body: 'Aucun document dans le coffre pour le moment.' },
+        });
+      }
+      // « range X dans Y » : le marqueur sépare la pièce (avant) de la destination (après).
+      const splitMatch = /\b(dans|vers|au|aux|chez)\b/i.exec(message);
+      const docPartRaw = splitMatch ? message.slice(0, splitMatch.index) : message;
+      const destPartRaw = splitMatch ? message.slice(splitMatch.index + splitMatch[0].length) : '';
+      // Résolution du document par jetons (comme valider_document) — l'historique court lève
+      // l'anaphore (« range-le dans Achats » après avoir parlé du ticket).
+      const conversation = [
+        ...(history ?? []).slice(-4).filter((turn) => turn.role === 'user').map((turn) => turn.text),
+        docPartRaw,
+      ].join(' ');
+      const CLASSER_GESTURE_WORDS = ['range', 'ranger', 'ranges', 'classe', 'classer', 'classes', 'deplace', 'deplacer', 'deplaces', 'mets', 'met', 'vers', 'chantier', 'chantiers', 'dossier', 'dossiers'];
+      const matches = matchDocumentsByTokens(conversation, docsResult.value, CLASSER_GESTURE_WORDS);
+      const target = matches.length === 1 ? matches[0]! : null;
+      // Résolution de la destination : nom insensible casse/accents contre les listes RÉELLES.
+      const destinations = [
+        ...destinationsResult.value.chantiers.map((c) => ({ kind: 'chantier' as const, id: c.id, nom: c.nom })),
+        ...destinationsResult.value.dossiers.map((f) => ({ kind: 'folder' as const, id: f.id, nom: f.nom })),
+      ];
+      const scope = normalized(destPartRaw.trim().length > 0 ? destPartRaw : message);
+      const wantsChantier = /\bchantiers?\b/.test(scope);
+      const wantsFolder = /\bdossiers?\b/.test(scope);
+      const eligible =
+        wantsChantier && !wantsFolder
+          ? destinations.filter((d) => d.kind === 'chantier')
+          : wantsFolder && !wantsChantier
+            ? destinations.filter((d) => d.kind === 'folder')
+            : destinations;
+      const scopeTokens = new Set(scope.split(/[^a-z0-9]+/).filter((word) => word.length >= 3));
+      // Un nom ENTIER présent prime (« frais généraux » complet) ; sinon un mot significatif
+      // suffit à candidater — l'ambiguïté redevient une question, jamais un rangement deviné.
+      const strongMatches = eligible.filter((d) => {
+        const tokens = destinationNameTokens(d.nom);
+        return tokens.length > 0 && tokens.every((word) => scopeTokens.has(word));
+      });
+      const looseMatches = eligible.filter((d) => destinationNameTokens(d.nom).some((word) => scopeTokens.has(word)));
+      const destination =
+        strongMatches.length === 1 ? strongMatches[0]! : strongMatches.length === 0 && looseMatches.length === 1 ? looseMatches[0]! : null;
+      const destinationChoices = strongMatches.length > 1 ? strongMatches : looseMatches;
+      const destinationLabel = (d: { kind: 'chantier' | 'folder'; nom: string }): string =>
+        d.kind === 'chantier' ? `le chantier ${d.nom}` : `le dossier ${d.nom}`;
+
+      if (!target) {
+        const options = (matches.length > 1 ? matches : docsResult.value).slice(0, 8);
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Lister le coffre', 'Lever l’ambiguïté du document'],
+          card: { title: 'Quel document ?', body: 'Dis-moi quel document classer :' },
+          choices: options.map((d) => ({
+            label: agentDocumentLabel(d),
+            value: `Classe le document ${d.id}${destination ? ` dans ${destinationLabel(destination)}` : ''}`,
+          })),
+          ask: [
+            askToPick({
+              id: 'classer_document.cible',
+              question: 'Quel document veux-tu classer ?',
+              header: 'Document',
+              items: options.map((d) => ({
+                value: d.id,
+                label: agentDocumentLabel(d),
+                description: `scanné le ${d.createdAt.slice(8, 10)}/${d.createdAt.slice(5, 7)}/${d.createdAt.slice(0, 4)}`,
+                followUp: `Classe le document ${d.id}${destination ? ` dans ${destinationLabel(destination)}` : ''}`,
+              })),
+            }),
+          ],
+        });
+      }
+
+      if (!destination) {
+        // Destination NOMMÉE mais introuvable dans les listes réelles : refus honnête —
+        // Bob n'invente jamais un chantier ni un dossier.
+        if (destPartRaw.trim().length > 0 && destinationChoices.length === 0) {
+          const said = destPartRaw.replace(/\s+/g, ' ').trim();
+          return ok({
+            kind: 'answer',
+            intent,
+            model,
+            plan: ['Vérifier la destination contre les listes réelles'],
+            card: {
+              title: 'Destination introuvable',
+              body: `Je ne trouve ni chantier ouvert ni dossier correspondant à « ${said} ». Rien n’a été modifié — donne-moi un chantier ouvert ou un dossier existant.`,
+            },
+          });
+        }
+        const options = (destinationChoices.length > 0 ? destinationChoices : destinations).slice(0, 4);
+        if (options.length === 0) {
+          return ok({
+            kind: 'answer',
+            intent,
+            model,
+            plan: ['Lister les destinations réelles'],
+            card: {
+              title: 'Aucune destination',
+              body: 'Je ne vois ni chantier ouvert ni dossier où ranger cette pièce. Crée d’abord un dossier depuis l’écran Documents — rien n’a été modifié.',
+            },
+          });
+        }
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Identifier le document', 'Lever l’ambiguïté de la destination'],
+          card: {
+            title: 'Où le classer ?',
+            body: `Où veux-tu classer « ${agentDocumentLabel(target)} » ?`,
+          },
+          choices: options.map((d) => ({
+            label: d.kind === 'chantier' ? `Chantier ${d.nom}` : `Dossier ${d.nom}`,
+            value: `Classe le document ${target.id} dans ${destinationLabel(d)}`,
+          })),
+          ask: [
+            askToPick({
+              id: 'classer_document.destination',
+              question: `Où veux-tu classer « ${agentDocumentLabel(target)} » ?`,
+              header: 'Destination',
+              items: options.map((d) => ({
+                value: d.id,
+                label: d.kind === 'chantier' ? `Chantier ${d.nom}` : `Dossier ${d.nom}`,
+                followUp: `Classe le document ${target.id} dans ${destinationLabel(d)}`,
+              })),
+            }),
+          ],
+        });
+      }
+
+      const args: Record<string, unknown> = {
+        documentId: target.id,
+        destination:
+          destination.kind === 'chantier'
+            ? { kind: 'chantier', chantierId: destination.id }
+            : { kind: 'folder', folderId: destination.id },
+      };
+      const label = `Classer « ${agentDocumentLabel(target)} » dans ${destinationLabel(destination)}`;
+      if (requiresConfirmation(tool, autonomy)) {
+        return ok({
+          kind: 'proposed',
+          intent,
+          model,
+          plan: ['Trouver le document', 'Résoudre la destination réelle', 'Attendre ta confirmation'],
+          card: {
+            title: 'Classement à confirmer',
+            body: `${label}. Même geste que « Classer là » : je range, je lie au chantier si besoin, et j’applique le nom intelligent — jamais par-dessus un renommage humain. Je continue ?`,
+          },
+          pending: { tool: tool.name, args, label },
+          spokenPrompt: buildSpokenConfirmation(label),
+        });
+      }
+      const run = await tool.run(args);
+      if (!run.ok) return err(run.error);
+      return ok({
+        kind: 'done',
+        intent,
+        model,
+        plan: ['Classer le document'],
+        card: { title: 'Document classé ✓', body: `${label} — c’est fait.` },
+      });
+    }
+
+    if (intent === 'renommer_document') {
+      // LOT 5 — « Renomme-le facture matériaux salle de bain » : MÊME use case RenameDocument
+      // que l'écran détail. Le nom dicté devient un renommage HUMAIN prioritaire — d'où la
+      // confirmation systématique (plancher) avant toute écriture.
+      const rename = this.deps.actions.renameDocument?.bind(this.deps.actions);
+      const tool = this.tool('renommer_document');
+      if (!rename || !tool) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier la capacité de l’hôte'],
+          card: {
+            title: 'Renommer un document',
+            body: 'Je ne peux pas renommer de document sur cet appareil pour le moment. Rien n’a été modifié — tu peux le faire depuis l’écran Documents.',
+          },
+        });
+      }
+      const docsResult = await this.deps.actions.listDocuments();
+      if (!docsResult.ok) return err(docsResult.error);
+      if (docsResult.value.length === 0) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Lister le coffre'],
+          card: { title: 'Rien à renommer', body: 'Aucun document dans le coffre pour le moment.' },
+        });
+      }
+      const RENAME_GESTURE_WORDS = ['renomme', 'renommer', 'renommes', 'rebaptise', 'rebaptiser', 'rebaptises', 'en', 'comme', 'nouveau', 'nom'];
+      const historyText = (history ?? []).slice(-4).filter((turn) => turn.role === 'user').map((turn) => turn.text).join(' ');
+      // Nouveau nom extrait du message BRUT (accents et casse conservés — c'est un libellé).
+      const tail = /\b(?:renomme[sz]?|renommer|rebaptise[sz]?|rebaptiser)\b(.*)$/i.exec(message)?.[1] ?? '';
+      const separator = /\b(?:en|comme)\b/i.exec(tail);
+      let target: AgentDocument | null = null;
+      let ambiguous: AgentDocument[] = [];
+      let newName = '';
+      if (separator) {
+        // « renomme le ticket Aldi en facture Aldi » : pièce avant, nom après.
+        const docPart = tail.slice(0, separator.index);
+        newName = tail.slice(separator.index + separator[0].length);
+        const matches = matchDocumentsByTokens(`${historyText} ${docPart}`, docsResult.value, RENAME_GESTURE_WORDS);
+        target = matches.length === 1 ? matches[0]! : null;
+        ambiguous = matches;
+      } else {
+        // Sans « en » : soit la fin désigne la pièce (nom manquant), soit c'est le nouveau nom
+        // d'une pièce anaphorique (« renomme-le facture matériaux salle de bain »).
+        const tailMatches = matchDocumentsByTokens(tail, docsResult.value, RENAME_GESTURE_WORDS);
+        if (tailMatches.length === 1) {
+          target = tailMatches[0]!; // la fin désigne la pièce — le nouveau nom manque encore
+        } else if (tailMatches.length > 1) {
+          ambiguous = tailMatches;
+        } else {
+          const pronoun = /^[\s,:–—-]*(?:-?\s*(?:le|la|l['’]))\s*/i.exec(tail);
+          newName = pronoun ? tail.slice(pronoun[0].length) : tail;
+          const anaphoric = matchDocumentsByTokens(historyText, docsResult.value, RENAME_GESTURE_WORDS);
+          target = anaphoric.length === 1 ? anaphoric[0]! : null;
+          ambiguous = anaphoric;
+        }
+      }
+      newName = newName.replace(/["«»]/g, ' ').replace(/\s+/g, ' ').trim();
+      if (!target) {
+        const options = (ambiguous.length > 1 ? ambiguous : docsResult.value).slice(0, 8);
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Lister le coffre', 'Lever l’ambiguïté du document'],
+          card: { title: 'Quel document ?', body: 'Dis-moi quel document renommer :' },
+          choices: options.map((d) => ({
+            label: agentDocumentLabel(d),
+            value: `Renomme le document ${d.id}${newName ? ` en ${newName}` : ''}`,
+          })),
+          ask: [
+            askToPick({
+              id: 'renommer_document.cible',
+              question: 'Quel document veux-tu renommer ?',
+              header: 'Document',
+              items: options.map((d) => ({
+                value: d.id,
+                label: agentDocumentLabel(d),
+                description: `scanné le ${d.createdAt.slice(8, 10)}/${d.createdAt.slice(5, 7)}/${d.createdAt.slice(0, 4)}`,
+                followUp: `Renomme le document ${d.id}${newName ? ` en ${newName}` : ''}`,
+              })),
+            }),
+          ],
+        });
+      }
+      if (!newName) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Identifier le document', 'Demander le nouveau nom'],
+          card: {
+            title: `Renommer « ${agentDocumentLabel(target)} »`,
+            body: `Quel nouveau nom ? Dis « renomme le document ${target.id} en … ». Rien n’a été modifié.`,
+          },
+        });
+      }
+      const args = { documentId: target.id, displayName: newName };
+      const parsed = tool.parse(args);
+      if (!parsed.ok) return err(parsed.error);
+      const label = `Renommer « ${agentDocumentLabel(target)} » en « ${newName} »`;
+      if (requiresConfirmation(tool, autonomy)) {
+        return ok({
+          kind: 'proposed',
+          intent,
+          model,
+          plan: ['Trouver le document', 'Préparer le renommage', 'Attendre ta confirmation'],
+          card: {
+            title: 'Renommage à confirmer',
+            body: `${label}. Ton nom devient prioritaire : les suggestions automatiques ne l’écraseront plus. Je continue ?`,
+          },
+          pending: { tool: tool.name, args, label },
+          spokenPrompt: buildSpokenConfirmation(label),
+        });
+      }
+      const run = await tool.run(parsed.value);
+      if (!run.ok) return err(run.error);
+      return ok({
+        kind: 'done',
+        intent,
+        model,
+        plan: ['Renommer le document'],
+        card: { title: 'Document renommé ✓', body: `${label} — c’est fait.` },
+      });
+    }
+
+    if (intent === 'chercher_document') {
+      // LOT 5 — « Retrouve la facture du radiateur de mars » : MÊME recherche que
+      // GET /documents/search (devis & factures réels, ranking serveur). Lecture pure, puis
+      // navigation vers la pièce la plus pertinente (pattern contexte_ecran/ouvrir_*).
+      const search = this.deps.actions.searchDocuments?.bind(this.deps.actions);
+      if (!search) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier la capacité de l’hôte'],
+          card: {
+            title: 'Retrouver un document',
+            body: 'Je n’ai pas accès à la recherche de documents sur cet appareil pour le moment.',
+          },
+        });
+      }
+      const normalizedMessage = normalized(message);
+      // Portée dite : « facture » / « devis » — les deux (ou aucun) = tout.
+      const saysInvoice = /\bfactures?\b/.test(normalizedMessage);
+      const saysQuote = /\bdevis\b/.test(normalizedMessage);
+      const scope: 'quote' | 'invoice' | 'all' = saysInvoice && !saysQuote ? 'invoice' : saysQuote && !saysInvoice ? 'quote' : 'all';
+      // « de mars » → plage de dates RÉELLE, dérivée de l'horloge du runtime — jamais devinée sans elle.
+      const MONTHS: Readonly<Record<string, number>> = {
+        janvier: 1, fevrier: 2, mars: 3, avril: 4, mai: 5, juin: 6,
+        juillet: 7, aout: 8, septembre: 9, octobre: 10, novembre: 11, decembre: 12,
+      };
+      const monthWord = /\b(janvier|fevrier|mars|avril|mai|juin|juillet|aout|septembre|octobre|novembre|decembre)\b/.exec(normalizedMessage)?.[1];
+      const saidYear = /\b(20\d{2})\b(?!-)/.exec(normalizedMessage)?.[1];
+      const now = this.deps.runtime?.clock.now();
+      const today = now && /^\d{4}-\d{2}-\d{2}T/.test(now) ? parisDateOnly(now) : null;
+      let from: string | undefined;
+      let to: string | undefined;
+      if (monthWord !== undefined && (today !== null || saidYear !== undefined)) {
+        const month = MONTHS[monthWord]!;
+        // Sans année dite : le mois écoulé le plus récent (jamais un mois futur).
+        const year = saidYear !== undefined
+          ? Number(saidYear)
+          : month <= Number(today!.slice(5, 7)) ? Number(today!.slice(0, 4)) : Number(today!.slice(0, 4)) - 1;
+        const mm = String(month).padStart(2, '0');
+        const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+        from = `${year}-${mm}-01`;
+        to = `${year}-${mm}-${String(lastDay).padStart(2, '0')}`;
+      }
+      // Requête = mots significatifs, geste et bruit neutralisés (la référence LLM prime).
+      const SEARCH_STOPWORDS = new Set([
+        'retrouve', 'retrouver', 'retrouves', 'recherche', 'rechercher', 'cherche', 'chercher',
+        'trouve', 'trouver', 'moi', 'stp', 'plait', 'peux', 'veux', 'peut',
+        'le', 'la', 'les', 'l', 'un', 'une', 'du', 'de', 'des', 'd', 'mon', 'ma', 'mes',
+        'ce', 'cet', 'cette', 'dans', 'sur', 'pour', 'et', 'en', 'que', 'qui',
+        'facture', 'factures', 'devis', 'document', 'documents', 'piece', 'pieces',
+        'mois', 'dernier', 'derniere',
+      ]);
+      const queryBase = reference !== null && reference.trim().length > 0 ? reference : message;
+      const query = normalized(queryBase)
+        .split(/[^a-z0-9-]+/)
+        .filter(
+          (word) =>
+            word.length >= 2 &&
+            !SEARCH_STOPWORDS.has(word) &&
+            MONTHS[word] === undefined &&
+            !(monthWord !== undefined && /^20\d{2}$/.test(word)),
+        )
+        .join(' ')
+        .trim();
+      if (query.length === 0 && from === undefined) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Préciser la recherche'],
+          card: {
+            title: 'Que faut-il retrouver ?',
+            body: 'Donne-moi un mot du libellé, un client, un numéro ou une période (« la facture du radiateur de mars »).',
+          },
+        });
+      }
+      const r = await search({
+        query,
+        scope,
+        ...(from !== undefined ? { from } : {}),
+        ...(to !== undefined ? { to } : {}),
+      });
+      if (!r.ok) return err(r.error);
+      if (r.value.hits.length === 0) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Chercher dans les devis & factures réels'],
+          card: {
+            title: 'Rien trouvé',
+            body: `Je n’ai rien retrouvé pour « ${query || `cette période`} ». Précise le client, un mot du libellé ou le numéro — je ne devine pas.`,
+          },
+        });
+      }
+      const hitLabel = (h: (typeof r.value.hits)[number]): string =>
+        `${h.source === 'invoice' ? 'Facture' : 'Devis'} ${h.number ?? '(brouillon)'} — ${h.customerName}`;
+      const lines = r.value.hits.slice(0, 5).map((h) => {
+        const dateFr = h.date !== null ? ` · ${h.date.slice(8, 10)}/${h.date.slice(5, 7)}/${h.date.slice(0, 4)}` : '';
+        const line = h.matchedLineLabel !== null ? ` (ligne : ${h.matchedLineLabel})` : '';
+        return `• ${hitLabel(h)} · ${formatEUR(h.totalTtcCents)}${dateFr}${line}`;
+      });
+      const rest = r.value.totalCount - Math.min(r.value.hits.length, 5);
+      const top = r.value.hits[0]!;
+      const route = top.source === 'invoice'
+        ? `/facture/${encodeURIComponent(top.id)}`
+        : `/devis/${encodeURIComponent(top.id)}`;
+      return ok({
+        kind: 'done',
+        intent,
+        model,
+        plan: ['Chercher dans les devis & factures réels', 'Ouvrir la pièce la plus pertinente'],
+        card: {
+          title: `${r.value.totalCount} résultat${r.value.totalCount > 1 ? 's' : ''}`,
+          body: `${lines.join('\n')}${rest > 0 ? `\n… et ${rest} autre${rest > 1 ? 's' : ''}.` : ''}\nJe t’ouvre ${hitLabel(top)}.`,
+        },
+        navigate: route,
+      });
     }
 
     if (intent === 'echeances') {

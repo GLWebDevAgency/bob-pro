@@ -788,6 +788,192 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     if (unchanged.ok) expect(unchanged.value.revision).toBe(renamed.value.revision);
   });
 
+  it('acknowledgeDocument : pose reviewedAt SANS déplacer ni lier, latch idempotent (parité serveur)', async () => {
+    const client = makeClient();
+    const before = await client.getDocument('seed-doc-leroy');
+    expect(before.ok).toBe(true);
+    if (!before.ok) return;
+    // Ligne jamais validée : le scan seul ne vaut pas confirmation.
+    expect(before.value.reviewedAt).toBeNull();
+
+    const acknowledged = await client.acknowledgeDocument({
+      documentId: before.value.id,
+      expectedRevision: before.value.revision,
+    });
+    expect(acknowledged.ok).toBe(true);
+    if (!acknowledged.ok) return;
+    // Seule la confirmation change : ni rangement, ni lien métier, ni archive.
+    expect(acknowledged.value).toMatchObject({
+      id: before.value.id,
+      folderId: before.value.folderId,
+      linkedEntityType: before.value.linkedEntityType,
+      filename: before.value.filename,
+      revision: before.value.revision + 1,
+    });
+    expect(acknowledged.value.reviewedAt).not.toBeNull();
+
+    // Latch : re-valider ne réécrit rien — même horodatage, même révision.
+    const replay = await client.acknowledgeDocument({
+      documentId: before.value.id,
+      expectedRevision: acknowledged.value.revision,
+    });
+    expect(replay.ok && replay.value.reviewedAt).toBe(acknowledged.value.reviewedAt);
+    expect(replay.ok && replay.value.revision).toBe(acknowledged.value.revision);
+
+    // Révision périmée ⇒ conflit explicite (parité serveur).
+    const stale = await client.acknowledgeDocument({
+      documentId: before.value.id,
+      expectedRevision: before.value.revision,
+    });
+    expect(stale).toMatchObject({ ok: false, error: { kind: 'conflict' } });
+  });
+
+  it('ranger vaut validation humaine (latch), sortir d’un dossier n’invalide jamais (parité core)', async () => {
+    const client = makeClient();
+    const folders = await client.listDocumentFolders({ parentId: null, limit: 100 });
+    const purchases = folders.ok
+      ? folders.value.items.find((folder) => folder.systemKey === 'purchases')
+      : undefined;
+    expect(purchases).toBeDefined();
+    if (!purchases) return;
+    const before = await client.getDocument('seed-doc-leroy');
+    expect(before.ok).toBe(true);
+    if (!before.ok) return;
+    expect(before.value.reviewedAt).toBeNull();
+
+    // Ranger DANS un dossier : déplacement (+1) + validation posée par le geste (+1).
+    const moved = await client.moveDocumentToFolder({
+      documentId: before.value.id,
+      folderId: purchases.id,
+      expectedRevision: before.value.revision,
+    });
+    expect(moved.ok && moved.value.revision).toBe(before.value.revision + 2);
+    const confirmed = await client.getDocument(before.value.id);
+    expect(confirmed.ok && confirmed.value.reviewedAt).not.toBeNull();
+    if (!confirmed.ok) return;
+
+    // Sortir du dossier n'est PAS un classement : la confirmation reste intacte.
+    const movedOut = await client.moveDocumentToFolder({
+      documentId: before.value.id,
+      folderId: null,
+      expectedRevision: confirmed.value.revision,
+    });
+    expect(movedOut.ok && movedOut.value.revision).toBe(confirmed.value.revision + 1);
+    const afterOut = await client.getDocument(before.value.id);
+    expect(afterOut.ok && afterOut.value.reviewedAt).toBe(confirmed.value.reviewedAt);
+    if (!afterOut.ok) return;
+
+    // Re-ranger un document déjà validé : +1 seulement, le latch n'est jamais réécrit.
+    const movedBack = await client.moveDocumentToFolder({
+      documentId: before.value.id,
+      folderId: purchases.id,
+      expectedRevision: afterOut.value.revision,
+    });
+    expect(movedBack.ok && movedBack.value.revision).toBe(afterOut.value.revision + 1);
+    const afterBack = await client.getDocument(before.value.id);
+    expect(afterBack.ok && afterBack.value.reviewedAt).toBe(confirmed.value.reviewedAt);
+  });
+
+  it('getDocument rend le MÊME shape enrichi que la liste (parité GET /documents/:id serveur)', async () => {
+    const client = makeClient();
+    const bare = await client.getDocument('seed-doc-leroy');
+    expect(bare.ok).toBe(true);
+    if (!bare.ok) return;
+    // Pas encore analysé : résumés null, jamais inventés.
+    expect(bare.value.analysis).toBeNull();
+    expect(bare.value.extraction).toBeNull();
+
+    const analyzed = await client.analyzeDocument('seed-doc-leroy');
+    expect(analyzed.ok).toBe(true);
+    if (!analyzed.ok) return;
+    const enriched = await client.getDocument('seed-doc-leroy');
+    expect(enriched.ok).toBe(true);
+    if (!enriched.ok) return;
+    expect(enriched.value.analysis).toEqual({
+      type: analyzed.value.type,
+      typeConfidence: analyzed.value.typeConfidence,
+      suggestedDisplayName: analyzed.value.suggestedDisplayName,
+      suggestedDestination: analyzed.value.suggestedDestination,
+      requiresHumanReview: analyzed.value.requiresHumanReview,
+      // La carte du détail = la carte du scan : résumé, #tags et warnings persistés.
+      summary: analyzed.value.summary,
+      suggestedTags: analyzed.value.suggestedTags,
+      warnings: analyzed.value.warnings,
+    });
+
+    // Parité stricte item de liste ↔ lecture unitaire.
+    const list = await client.listDocuments();
+    const item = list.ok ? list.value.find((document) => document.id === 'seed-doc-leroy') : undefined;
+    expect(item).toEqual(enriched.value);
+  });
+
+  it('LOT 3 — applique suggestedDisplayName au record si le libellé vaut encore le filename, jamais sur un renommage humain', async () => {
+    const client = makeClient();
+    const folders = await client.listDocumentFolders({ parentId: null, limit: 100 });
+    const purchases = folders.ok
+      ? folders.value.items.find((folder) => folder.systemKey === 'purchases')
+      : undefined;
+    expect(purchases).toBeDefined();
+    if (!purchases) return;
+
+    // ① displayName encore = filename ⇒ la suggestion de l'analyse EN CACHE s'applique.
+    const analyzed = await client.analyzeDocument('seed-doc-leroy');
+    expect(analyzed.ok).toBe(true);
+    if (!analyzed.ok) return;
+    const before = await client.getDocument('seed-doc-leroy');
+    expect(before.ok).toBe(true);
+    if (!before.ok) return;
+    expect(before.value.displayName).toBe(before.value.filename);
+    expect(analyzed.value.suggestedDisplayName).not.toBe(before.value.displayName);
+    const recorded = await client.recordDocumentExpense({
+      documentId: before.value.id,
+      expectedRevision: before.value.revision,
+      targetFolderId: purchases.id,
+      expense: {
+        supplierName: 'Leroy Merlin',
+        documentDate: '2026-06-01',
+        totalTtcCents: 18_490,
+        category: 'fournitures' as const,
+      },
+    });
+    expect(recorded.ok).toBe(true);
+    if (!recorded.ok) return;
+    // move(+1) + validation(+1) + classify(+1) + nom intelligent (+1) — parité serveur.
+    expect(recorded.value.document).toMatchObject({
+      displayName: analyzed.value.suggestedDisplayName,
+      filename: before.value.filename, // l'archive reste IMMUABLE
+      revision: before.value.revision + 4,
+    });
+
+    // ② un renommage HUMAIN antérieur n'est JAMAIS écrasé par la suggestion.
+    const analyzedSecond = await client.analyzeDocument('seed-doc-f104');
+    expect(analyzedSecond.ok).toBe(true);
+    const second = await client.getDocument('seed-doc-f104');
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    const humanRename = await client.renameDocument({
+      documentId: second.value.id,
+      displayName: 'Mon reçu perso',
+      expectedRevision: second.value.revision,
+    });
+    expect(humanRename.ok).toBe(true);
+    if (!humanRename.ok) return;
+    const recordedSecond = await client.recordDocumentExpense({
+      documentId: second.value.id,
+      expectedRevision: humanRename.value.revision,
+      targetFolderId: purchases.id,
+      expense: {
+        supplierName: 'Cedeo',
+        documentDate: '2026-06-01',
+        totalTtcCents: 22_000,
+        category: 'fournitures' as const,
+      },
+    });
+    expect(recordedSecond.ok).toBe(true);
+    if (!recordedSecond.ok) return;
+    expect(recordedSecond.value.document.displayName).toBe('Mon reçu perso');
+  });
+
   it('embarque le résumé d’analyse dans la liste après analyzeDocument (parité cache serveur)', async () => {
     const client = makeClient();
     const initial = await client.listDocuments();
@@ -812,6 +998,10 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
       suggestedDisplayName: analyzed.value.suggestedDisplayName,
       suggestedDestination: analyzed.value.suggestedDestination,
       requiresHumanReview: analyzed.value.requiresHumanReview,
+      // Parité cache serveur : le résumé persisté porte aussi résumé/#tags/warnings.
+      summary: analyzed.value.summary,
+      suggestedTags: analyzed.value.suggestedTags,
+      warnings: analyzed.value.warnings,
     });
   });
 
@@ -854,13 +1044,15 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     const created = await client.recordDocumentExpense(request);
     expect(created.ok).toBe(true);
     if (!created.ok) return;
+    // +3 : rangement (+1), validation humaine posée par le geste (reviewedAt, +1), lien (+1).
     expect(created.value.document).toMatchObject({
       id: uploaded.value.id,
       folderId: purchases.id,
       linkedEntityType: 'expense',
       linkedEntityId: created.value.expenseId,
-      revision: uploaded.value.revision + 2,
+      revision: uploaded.value.revision + 3,
     });
+    expect(created.value.document.reviewedAt).not.toBeNull();
 
     // Simule une réponse HTTP perdue : la révision d'origine reste acceptée uniquement parce
     // que le registre et le document prouvent que le même geste a déjà été commité.

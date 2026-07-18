@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Animated,
@@ -21,7 +21,6 @@ import {
   normalizeDocumentFolderName,
   validateDocumentFolderName,
   type DocumentAnalysis,
-  type DocumentDestinationSuggestion,
   type DocumentFolderSystemKey,
   type DocumentView,
 } from '@bob/core';
@@ -41,6 +40,9 @@ import { useTheme } from '../src/theme';
 import { useQueryClient } from '@tanstack/react-query';
 import { useChantiers, useExtractDocument } from '../src/data/hooks';
 import { suggestedRenameFor } from '../src/documents/pending-card-copy';
+import { DocumentInsightCard } from '../src/documents/document-insight-card';
+import { deriveDocumentInsight } from '../src/documents/document-insight-card.logic';
+import { useApplyDestination } from '../src/documents/use-apply-destination';
 import {
   SCAN_LINE_TRAVEL_BOTTOM,
   SCAN_LINE_TRAVEL_TOP,
@@ -69,6 +71,12 @@ import {
   settlementExpenseFields,
   type ScanSettlementChoice,
 } from '../src/scan/scan-settlement';
+import {
+  INITIAL_SCAN_DECISION_QUEUE,
+  reduceScanDecisionQueue,
+  visibleScanSheet,
+  type ScanDecisionSignals,
+} from '../src/scan/scan-decision-queue';
 
 const DOCUMENT_MAX_BYTES = 10 * 1024 * 1024;
 const LOCAL_FILE_READ_TIMEOUT_MS = 20_000;
@@ -151,19 +159,6 @@ const CATEGORY_LABEL: Record<string, string> = {
   autre: 'Autre',
 };
 
-const DOCUMENT_TYPE_LABEL: Record<DocumentAnalysis['type'], string> = {
-  supplier_invoice: 'Facture fournisseur',
-  receipt: 'Ticket ou reçu',
-  bank_statement: 'Relevé bancaire',
-  insurance_certificate: 'Attestation d’assurance',
-  tax_or_social_document: 'Document fiscal ou social',
-  contract: 'Contrat',
-  company_record: 'Document de société',
-  chantier_photo: 'Photo de chantier',
-  accounting_document: 'Document comptable',
-  other: 'Document à préciser',
-};
-
 const SYSTEM_FOLDER_NAME: Readonly<Record<DocumentFolderSystemKey, string>> = {
   projects: 'Chantiers',
   purchases: 'Achats',
@@ -199,9 +194,11 @@ export default function ScanDocument() {
   const photoRef = useRef<{ contentBase64: string; mimeType: string } | null>(null);
   const intakeInputRef = useRef<CreateDocumentIntakeClientInput | null>(null);
   const [archivedDocument, setArchivedDocument] = useState<DocumentView | null>(null);
-  const [filingPromptDocumentId, setFilingPromptDocumentId] = useState<string | null>(null);
-  const [filingDeferred, setFilingDeferred] = useState(false);
-  const [folderEditorOpen, setFolderEditorOpen] = useState(false);
+  // SÉQUENCEMENT DES DÉCISIONS (machine pure) : au plus UNE sheet visible, ordre
+  // catégorie → règlement, et la feuille de rangement JAMAIS auto-ouverte — elle ne
+  // s'ouvre que sur geste humain (« Choisir un autre dossier », reprise, re-demande).
+  const [decisionQueue, dispatchDecision] = useReducer(reduceScanDecisionQueue, INITIAL_SCAN_DECISION_QUEUE);
+  const visibleSheet = visibleScanSheet(decisionQueue);
   const [folderName, setFolderName] = useState('');
   const [folderError, setFolderError] = useState<string | null>(null);
   const [filingRecoveryPending, setFilingRecoveryPending] = useState(false);
@@ -214,9 +211,6 @@ export default function ScanDocument() {
   const [capturePending, setCapturePending] = useState(false);
   const [captureError, setCaptureError] = useState<string | null>(null);
   const [exitBlocked, setExitBlocked] = useState(false);
-  // « Classer dans {destination} » (1-tap du handoff) : application de la destination suggérée.
-  const [destinationPending, setDestinationPending] = useState(false);
-  const [destinationError, setDestinationError] = useState(false);
   const data = extract.data;
   const openChantiers = useMemo(
     () => (chantiers.data ?? []).filter((chantier) => chantier.status === 'open'),
@@ -225,6 +219,30 @@ export default function ScanDocument() {
   const foldersReady = rootFolders.data !== undefined;
   const foldersBlockingError = rootFolders.isError && !foldersReady;
   const foldersStale = rootFolders.isError && foldersReady;
+
+  /**
+   * « Classer dans {destination} » (handoff §SCAN OVERLAY) : hook PARTAGÉ avec l'écran
+   * document (move + classify chantier + nom intelligent + invalidations — mêmes use cases
+   * que Bob, comportement du scan inchangé). Échec → l'original reste dans « À classer ».
+   */
+  const applyDestination = useApplyDestination({
+    foldersReady,
+    rootFolders: rootFolders.data,
+    // Dossier système absent du coffre : on redemande à l'humain, aucun rangement deviné.
+    onFilingRequested: () => dispatchDecision({ type: 'filing-requested' }),
+    onMoved: (moved) =>
+      setArchivedDocument((current) =>
+        current?.id === moved.documentId
+          ? { ...current, folderId: moved.folderId, revision: moved.revision }
+          : current),
+    onDocumentReplaced: (fresh) =>
+      setArchivedDocument((current) => (current?.id === fresh.id ? fresh : current)),
+    onApplied: () => {
+      setRecordTargetError(false);
+      // Destination appliquée : l'invite de rangement est consommée pour ce document.
+      dispatchDecision({ type: 'filing-classified' });
+    },
+  });
 
   useEffect(() => {
     mountedRef.current = true;
@@ -252,17 +270,31 @@ export default function ScanDocument() {
     keyboardMode: 'parent',
   });
 
+  // Destination suggérée VALIDÉE côté domaine (chantier du contexte OU dossier système) —
+  // null = décision humaine, jamais un chantier forcé. PRÉSÉANCE : quand le core a validé
+  // une destination, elle PRIME sur l'heuristique brute suggestedSystemFolder de l'analyse
+  // — jamais deux « Recommandé » concurrents (chantier ET dossier système) dans le rangement.
+  const suggestedDestination = analysis.data?.suggestedDestination ?? null;
+  const suggestedChantierId = suggestedDestination?.kind === 'chantier' ? suggestedDestination.chantierId : null;
+
   const suggestedFolderName = useMemo(() => {
     const result = analysis.data;
     if (!result) return null;
-    return result.suggestedSystemFolder
-      ? SYSTEM_FOLDER_NAME[result.suggestedSystemFolder]
+    // Destination chantier validée : aucun dossier système concurrent n'est proposé.
+    if (suggestedChantierId !== null) return null;
+    const systemKey = suggestedDestination?.kind === 'system_folder'
+      ? suggestedDestination.systemKey
+      : result.suggestedSystemFolder;
+    return systemKey
+      ? SYSTEM_FOLDER_NAME[systemKey]
       : (CUSTOM_FOLDER_NAME[result.type] ?? null);
-  }, [analysis.data]);
+  }, [analysis.data, suggestedChantierId, suggestedDestination]);
 
   const suggestedFolder = useMemo(() => {
-    if (!foldersReady) return null;
-    const systemKey = analysis.data?.suggestedSystemFolder;
+    if (!foldersReady || suggestedChantierId !== null) return null;
+    const systemKey = suggestedDestination?.kind === 'system_folder'
+      ? suggestedDestination.systemKey
+      : analysis.data?.suggestedSystemFolder;
     const folders = rootFolders.data;
     if (systemKey) {
       const systemFolder = folders.find((folder) => folder.systemKey === systemKey);
@@ -271,7 +303,14 @@ export default function ScanDocument() {
     if (!suggestedFolderName) return null;
     const normalized = normalizeDocumentFolderName(suggestedFolderName);
     return folders.find((folder) => folder.normalizedName === normalized) ?? null;
-  }, [analysis.data?.suggestedSystemFolder, foldersReady, rootFolders.data, suggestedFolderName]);
+  }, [
+    analysis.data?.suggestedSystemFolder,
+    foldersReady,
+    rootFolders.data,
+    suggestedChantierId,
+    suggestedDestination,
+    suggestedFolderName,
+  ]);
 
   const suggestedNewFolderName = foldersReady && suggestedFolder === null ? suggestedFolderName : null;
 
@@ -285,11 +324,6 @@ export default function ScanDocument() {
     : null;
   const analysisUnavailable = archivedDocument !== null
     && (archivedMimeType === null || !supportsDocumentAnalysis(archivedMimeType));
-
-  // Destination suggérée VALIDÉE côté domaine (chantier du contexte OU dossier système) —
-  // null = décision humaine, jamais un chantier forcé.
-  const suggestedDestination = analysis.data?.suggestedDestination ?? null;
-  const suggestedChantierId = suggestedDestination?.kind === 'chantier' ? suggestedDestination.chantierId : null;
 
   // Un original déjà rattaché à une autre entité que la dépense (ex. chantier après le CTA
   // « Classer dans Chantier · X ») ne peut plus devenir le justificatif d'une NOUVELLE dépense :
@@ -344,16 +378,12 @@ export default function ScanDocument() {
     ];
   }, [foldersReady, openChantiers, personality, rootFolders.data, suggestedChantierId, suggestedFolder, suggestedNewFolderName]);
 
+  // La machine suit le document archivé : tout changement remet la file de décisions à
+  // zéro — l'invite de rangement consommée d'un document ne fuit jamais vers le suivant.
+  const archivedDocumentId = archivedDocument?.id ?? null;
   useEffect(() => {
-    if (
-      !analysis.data
-      || filingDeferred
-      || !foldersReady
-      || filingRecoveryPending
-      || filingPromptDocumentId === analysis.data.documentId
-    ) return;
-    setFilingPromptDocumentId(analysis.data.documentId);
-  }, [analysis.data, filingDeferred, filingPromptDocumentId, filingRecoveryPending, foldersReady]);
+    dispatchDecision({ type: 'document-changed', documentId: archivedDocumentId });
+  }, [archivedDocumentId]);
 
   async function archiveAndAnalyze(input: CreateDocumentIntakeClientInput): Promise<void> {
     try {
@@ -369,10 +399,8 @@ export default function ScanDocument() {
   }
 
   function resetForNewDocument(): void {
+    // La file de décisions se réinitialise via l'effet « document-changed » (archivedDocument → null).
     setArchivedDocument(null);
-    setFilingPromptDocumentId(null);
-    setFilingDeferred(false);
-    setFolderEditorOpen(false);
     setFolderName('');
     setFolderError(null);
     setFilingRecoveryPending(false);
@@ -380,8 +408,7 @@ export default function ScanDocument() {
     setRecordTargetError(false);
     setReconcilePending(false);
     setRecordResolution(null);
-    setDestinationPending(false);
-    setDestinationError(false);
+    applyDestination.reset();
     setChosenCategory(null);
     setCategoryDismissed(false);
     setSettlementChoice(null);
@@ -499,6 +526,22 @@ export default function ScanDocument() {
     && !settlementDismissed
     && !askCategory
     && !documentLinkedElsewhere;
+
+  // Signaux de la file de décisions — la machine pure garantit l'ordre catégorie →
+  // règlement et n'ouvre JAMAIS le rangement d'elle-même (geste humain requis).
+  const documentFolderId = archivedDocument?.folderId ?? null;
+  const decisionSignals = useMemo<ScanDecisionSignals>(
+    () => ({
+      categoryPending: askCategory,
+      settlementPending: askSettlement,
+      filingReady: foldersReady && !filingRecoveryPending && filingOptions.length > 0,
+      documentFiled: documentFolderId !== null,
+    }),
+    [askCategory, askSettlement, documentFolderId, filingOptions.length, filingRecoveryPending, foldersReady],
+  );
+  useEffect(() => {
+    dispatchDecision({ type: 'signals-changed', signals: decisionSignals });
+  }, [decisionSignals]);
 
   async function capture(from: 'camera' | 'library'): Promise<void> {
     setCaptureError(null);
@@ -645,11 +688,11 @@ export default function ScanDocument() {
     }
     setSettlementError(false);
     // Le choix « Plus tard — laisser dans À classer » reste respecté : créer une dépense ne
-    // déclenche jamais un rangement silencieux. On redemande explicitement le dossier.
+    // déclenche jamais un rangement silencieux. On redemande explicitement le dossier —
+    // geste humain (tentative de dépense) : la machine ré-ouvre même une invite consommée.
     if (document.folderId === null) {
       setRecordTargetError(true);
-      setFilingDeferred(false);
-      setFilingPromptDocumentId(document.id);
+      dispatchDecision({ type: 'filing-requested' });
       return;
     }
     setRecordTargetError(false);
@@ -692,7 +735,6 @@ export default function ScanDocument() {
 
   function classifyInFolder(folderId: string): void {
     if (!archivedDocument || !foldersReady) return;
-    setFilingPromptDocumentId(null);
     moveDocument.mutate(
       { documentId: archivedDocument.id, folderId, expectedRevision: archivedDocument.revision },
       {
@@ -702,9 +744,12 @@ export default function ScanDocument() {
             current?.id === moved.documentId
               ? { ...current, folderId: moved.folderId, revision: moved.revision }
               : current);
+          // Classement réussi : invite CONSOMMÉE — plus aucune ré-ouverture automatique.
+          dispatchDecision({ type: 'filing-classified' });
           applySuggestedName(moved.documentId, moved.revision);
         },
-        onError: () => setFilingPromptDocumentId(archivedDocument.id),
+        // Échec du déplacement : la feuille revient pour reprendre le geste interrompu.
+        onError: () => dispatchDecision({ type: 'filing-requested' }),
       },
     );
   }
@@ -729,93 +774,15 @@ export default function ScanDocument() {
       });
   }
 
-  /**
-   * « Classer dans {destination} » (handoff §SCAN OVERLAY) : applique la destination VALIDÉE.
-   * · dossier système → déplacement réel (MoveDocumentToFolder) ;
-   * · chantier → rangement dans Chantiers (si pas déjà rangé) + lien métier ClassifyDocument —
-   *   mêmes use cases que Bob. Échec → l'original reste dans « À classer », message honnête.
-   */
-  async function applyDestination(destination: DocumentDestinationSuggestion): Promise<void> {
-    const document = archivedDocument;
-    if (!document || !foldersReady || destinationPending) return;
-    setFilingPromptDocumentId(null);
-    setDestinationError(false);
-    setDestinationPending(true);
-    try {
-      let revision = document.revision;
-      const systemKey: DocumentFolderSystemKey =
-        destination.kind === 'system_folder' ? destination.systemKey : 'projects';
-      const targetFolder = rootFolders.data?.find((folder) => folder.systemKey === systemKey) ?? null;
-      if (destination.kind === 'system_folder' && targetFolder === null) {
-        // Dossier système absent du coffre : on redemande à l'humain, aucun rangement deviné.
-        setFilingDeferred(false);
-        setFilingPromptDocumentId(document.id);
-        return;
-      }
-      const shouldMove = destination.kind === 'system_folder'
-        ? targetFolder !== null && document.folderId !== targetFolder.id
-        : document.folderId === null && targetFolder !== null; // ne jamais écraser un rangement humain
-      if (shouldMove && targetFolder) {
-        const moved = await client.moveDocumentToFolder({
-          documentId: document.id,
-          folderId: targetFolder.id,
-          expectedRevision: revision,
-        });
-        if (!moved.ok) throw moved.error;
-        revision = moved.value.revision;
-        if (mountedRef.current) {
-          setArchivedDocument((current) =>
-            current?.id === moved.value.documentId
-              ? { ...current, folderId: moved.value.folderId, revision: moved.value.revision }
-              : current);
-        }
-      }
-      if (destination.kind === 'chantier') {
-        const classified = await client.classifyDocument({
-          documentId: document.id,
-          linkedEntityType: 'chantier',
-          linkedEntityId: destination.chantierId,
-          expectedRevision: revision,
-        });
-        if (!classified.ok) throw classified.error;
-        revision = classified.value.revision;
-        if (mountedRef.current) {
-          setArchivedDocument((current) => (current?.id === document.id ? classified.value : current));
-        }
-      }
-      // Nom professionnel appliqué au classement — best-effort sur la révision fraîche.
-      const rename = suggestedRenameFor(document, analysis.data?.suggestedDisplayName ?? null);
-      if (rename !== null) {
-        const renamed = await client.renameDocument({
-          documentId: document.id,
-          displayName: rename,
-          expectedRevision: revision,
-        });
-        if (renamed.ok && mountedRef.current) {
-          setArchivedDocument((current) => (current?.id === document.id ? renamed.value : current));
-        }
-      }
-      setRecordTargetError(false);
-      void queryClient.invalidateQueries({ queryKey: ['documents'] });
-      void queryClient.invalidateQueries({ queryKey: ['document', document.id] });
-      void queryClient.invalidateQueries({ queryKey: ['document-folders'] });
-    } catch {
-      if (mountedRef.current) setDestinationError(true);
-    } finally {
-      if (mountedRef.current) setDestinationPending(false);
-    }
-  }
-
   /** Choix « Chantier · {name} » du rangement — cible réelle listée, jamais un id inventé. */
   function classifyToChantier(chantierId: string): void {
     const chantier = openChantiers.find((candidate) => candidate.id === chantierId);
     if (!chantier) return;
-    void applyDestination({
-      kind: 'chantier',
-      chantierId: chantier.id,
-      label: chantier.name,
-      motif: '',
-    });
+    void applyDestination.apply(
+      archivedDocument,
+      { kind: 'chantier', chantierId: chantier.id, label: chantier.name, motif: '' },
+      analysis.data?.suggestedDisplayName ?? null,
+    );
   }
 
   async function recoverFolderChoice(): Promise<void> {
@@ -829,8 +796,8 @@ export default function ScanDocument() {
       if (!freshDocument.ok || !mountedRef.current) return;
       setArchivedDocument(freshDocument.value);
       moveDocument.reset();
-      setFilingDeferred(false);
-      setFilingPromptDocumentId(freshDocument.value.id);
+      // Geste humain de reprise : la feuille de rangement se ré-ouvre sur l'état frais.
+      dispatchDecision({ type: 'filing-requested' });
     } finally {
       if (mountedRef.current) setFilingRecoveryPending(false);
     }
@@ -838,10 +805,10 @@ export default function ScanDocument() {
 
   function openFolderEditor(): void {
     if (!foldersReady) return;
-    setFilingPromptDocumentId(null);
     setFolderName(suggestedNewFolderName ?? '');
     setFolderError(null);
-    setFolderEditorOpen(true);
+    // L'éditeur prendra la place de la feuille de rangement APRÈS sa sortie (jamais superposé).
+    dispatchDecision({ type: 'folder-editor-requested' });
   }
 
   function createAndClassifyFolder(): void {
@@ -860,7 +827,7 @@ export default function ScanDocument() {
       { name: validated.value.name, parentId: null },
       {
         onSuccess: (created) => {
-          setFolderEditorOpen(false);
+          dispatchDecision({ type: 'folder-editor-completed' });
           setFolderName('');
           classifyInFolder(created.id);
         },
@@ -881,7 +848,7 @@ export default function ScanDocument() {
     || createFolder.isPending
     || record.isPending
     || reconcilePending
-    || destinationPending;
+    || applyDestination.pending;
   const recordActionRequiresSupplierDefaults = recordResolution === null
     || (
       recordResolution.kind === 'stale'
@@ -1031,10 +998,7 @@ export default function ScanDocument() {
                     <Button
                       title="Choisir un dossier sans analyse"
                       variant="secondary"
-                      onPress={() => {
-                        setFilingDeferred(false);
-                        setFilingPromptDocumentId(archivedDocument.id);
-                      }}
+                      onPress={() => dispatchDecision({ type: 'filing-requested' })}
                     />
                   )}
                 </>
@@ -1055,148 +1019,88 @@ export default function ScanDocument() {
         {analysis.data ? (
           <>
             <SectionHeader title="Ce que Bob a compris" />
-            <Card>
-              {/* Pastille verte « Document lu » (handoff §SCAN OVERLAY, résultat). */}
-              <View
-                accessibilityLiveRegion="polite"
-                style={{
-                  alignSelf: 'flex-start',
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  gap: 7,
-                  backgroundColor: semantic.successBg,
-                  paddingVertical: 6,
-                  paddingHorizontal: 12,
-                  borderRadius: 20,
-                  marginBottom: 13,
-                }}
-              >
-                <Ionicons name="checkmark" size={15} color={semantic.success} />
-                <Text style={[font('meta'), { fontWeight: '700', fontSize: 13, color: semantic.success }]}>
-                  {t('scan.readDone', { personality })}
-                </Text>
-              </View>
-              {/* TITRE INTELLIGENT — le libellé professionnel proposé, jamais un nom de fichier brut. */}
-              <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
-                <Text style={[font('pageTitle'), { fontSize: 20, color: colors.ink900, flex: 1 }]} numberOfLines={2}>
-                  {analysis.data.suggestedDisplayName}
-                </Text>
-                <Badge
-                  label={`${Math.round(analysis.data.typeConfidence * 100)} %`}
-                  tone={analysis.data.requiresHumanReview ? 'warning' : 'success'}
-                />
-              </View>
-              <Text style={[font('meta'), { color: colors.slate400, marginTop: 2 }]}>
-                {DOCUMENT_TYPE_LABEL[analysis.data.type]}
-              </Text>
-              <Text style={[font('body'), { color: colors.slate500, lineHeight: 21, marginTop: 8 }]}>{analysis.data.summary}</Text>
-              {/* Tableau du handoff : Montant TTC / TVA récupérable (vert) / Rattaché à (indigo). */}
-              {data || analysis.data.suggestedDestination ? (
-                <View style={{ marginTop: 12, borderTopWidth: 1, borderTopColor: colors.lineSoft, paddingTop: 4 }}>
-                  {data ? (
-                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: colors.lineSoft }}>
-                      <Text style={[font('sub'), { color: colors.slate400 }]}>{t('scan.amountTtc', { personality })}</Text>
-                      <Text style={[font('sub'), { color: colors.ink900, fontWeight: '700', fontVariant: ['tabular-nums'] }]}>
-                        {formatEUR(data.totalTtcCents)}
+            {/* CARTE PARTAGÉE scan ↔ écran document (source unique du rendu, zéro duplication). */}
+            <DocumentInsightCard
+              insight={deriveDocumentInsight({
+                analysis: analysis.data,
+                extraction: data ? { totalTtcCents: data.totalTtcCents, vatCents: data.vatCents } : null,
+                // Préséance du titre : un renommage humain déjà persisté prime sur la suggestion.
+                document: archivedDocument,
+              })}
+              actions={
+                <>
+                  {foldersStale ? (
+                    <Text accessibilityRole="alert" style={[font('meta'), { color: semantic.warning, lineHeight: 17 }]}>La dernière liste serveur des dossiers reste utilisable ; sa mise à jour a échoué.</Text>
+                  ) : null}
+                  {currentFolder ? (
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
+                      <Ionicons name="folder" size={17} color={semantic.success} />
+                      <Text style={[font('sub'), { color: colors.ink800, flex: 1 }]}>
+                        {t('docs.classifiedIn', { personality, params: { folder: currentFolder.name } })}
                       </Text>
                     </View>
-                  ) : null}
-                  {data && data.vatCents !== null ? (
-                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: colors.lineSoft }}>
-                      <Text style={[font('sub'), { color: colors.slate400 }]}>{t('scan.vatRecoverable', { personality })}</Text>
-                      <Text style={[font('sub'), { color: semantic.success, fontWeight: '700', fontVariant: ['tabular-nums'] }]}>
-                        {formatEUR(data.vatCents)}
-                      </Text>
-                    </View>
-                  ) : null}
-                  {analysis.data.suggestedDestination ? (
-                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 8 }}>
-                      <Text style={[font('sub'), { color: colors.slate400 }]}>{t('scan.attachedTo', { personality })}</Text>
-                      <Text style={[font('sub'), { color: semantic.ai, fontWeight: '700' }]} numberOfLines={1}>
-                        {analysis.data.suggestedDestination.label}
-                      </Text>
-                    </View>
-                  ) : null}
-                </View>
-              ) : null}
-              {analysis.data.suggestedTags.length > 0 ? (
-                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 12 }}>
-                  {analysis.data.suggestedTags.map((tag) => <Badge key={tag} label={`#${tag}`} tone="ai" />)}
-                </View>
-              ) : null}
-              {analysis.data.warnings.map((warning) => (
-                <Text key={warning} style={[font('meta'), { color: semantic.warning, marginTop: 9 }]}>• {warning}</Text>
-              ))}
-              <View style={{ marginTop: 14, gap: 8 }}>
-                {foldersStale ? (
-                  <Text accessibilityRole="alert" style={[font('meta'), { color: semantic.warning, lineHeight: 17 }]}>La dernière liste serveur des dossiers reste utilisable ; sa mise à jour a échoué.</Text>
-                ) : null}
-                {currentFolder ? (
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
-                    <Ionicons name="folder" size={17} color={semantic.success} />
-                    <Text style={[font('sub'), { color: colors.ink800, flex: 1 }]}>Classé dans « {currentFolder.name} »</Text>
-                  </View>
-                ) : !foldersReady ? (
-                  foldersBlockingError ? (
-                    <View>
-                      <Text accessibilityRole="alert" style={[font('sub'), { color: semantic.danger, lineHeight: 19 }]}>Les dossiers ne sont pas disponibles. Bob ne proposera aucun rangement tant qu’ils ne sont pas rechargés.</Text>
-                      <View style={{ marginTop: 10 }}>
-                        <Button title="Réessayer de charger les dossiers" variant="secondary" onPress={() => void rootFolders.refetch()} />
+                  ) : !foldersReady ? (
+                    foldersBlockingError ? (
+                      <View>
+                        <Text accessibilityRole="alert" style={[font('sub'), { color: semantic.danger, lineHeight: 19 }]}>Les dossiers ne sont pas disponibles. Bob ne proposera aucun rangement tant qu’ils ne sont pas rechargés.</Text>
+                        <View style={{ marginTop: 10 }}>
+                          <Button title="Réessayer de charger les dossiers" variant="secondary" onPress={() => void rootFolders.refetch()} />
+                        </View>
                       </View>
-                    </View>
+                    ) : (
+                      <View accessibilityRole="progressbar" accessibilityLiveRegion="polite" accessibilityLabel="Chargement des dossiers">
+                        <Skeleton height={52} radius={18} />
+                      </View>
+                    )
+                  ) : analysis.data.suggestedDestination ? (
+                    <>
+                      {/* CTA plein indigo du handoff : applique la destination validée en 1 tap. */}
+                      <Button
+                        title={t('scan.classifyInto', {
+                          personality,
+                          params: { label: analysis.data.suggestedDestination.label },
+                        })}
+                        variant="aiSolid"
+                        loading={applyDestination.pending}
+                        disabled={applyDestination.pending || moveDocument.isPending}
+                        onPress={() => {
+                          const destination = analysis.data?.suggestedDestination;
+                          if (destination) {
+                            void applyDestination.apply(
+                              archivedDocument,
+                              destination,
+                              analysis.data?.suggestedDisplayName ?? null,
+                            );
+                          }
+                        }}
+                      />
+                      <Button
+                        title={t('scan.chooseOtherFolder', { personality })}
+                        variant="secondary"
+                        disabled={applyDestination.pending}
+                        onPress={() => dispatchDecision({ type: 'filing-requested' })}
+                      />
+                    </>
                   ) : (
-                    <View accessibilityRole="progressbar" accessibilityLiveRegion="polite" accessibilityLabel="Chargement des dossiers">
-                      <Skeleton height={52} radius={18} />
-                    </View>
-                  )
-                ) : analysis.data.suggestedDestination ? (
-                  <>
-                    {/* CTA plein indigo du handoff : applique la destination validée en 1 tap. */}
                     <Button
-                      title={t('scan.classifyInto', {
-                        personality,
-                        params: { label: analysis.data.suggestedDestination.label },
-                      })}
-                      variant="aiSolid"
-                      loading={destinationPending}
-                      disabled={destinationPending || moveDocument.isPending}
-                      onPress={() => {
-                        const destination = analysis.data?.suggestedDestination;
-                        if (destination) void applyDestination(destination);
-                      }}
+                      title={suggestedFolder ? `Classer dans « ${suggestedFolder.name} »` : 'Choisir un dossier'}
+                      variant="ai"
+                      onPress={() => dispatchDecision({ type: 'filing-requested' })}
                     />
-                    <Button
-                      title={t('scan.chooseOtherFolder', { personality })}
-                      variant="secondary"
-                      disabled={destinationPending}
-                      onPress={() => {
-                        setFilingDeferred(false);
-                        setFilingPromptDocumentId(analysis.data.documentId);
-                      }}
-                    />
-                  </>
-                ) : (
+                  )}
+                  {applyDestination.error ? (
+                    <Text accessibilityRole="alert" style={[font('sub'), { color: semantic.warning, lineHeight: 19 }]}>
+                      {t('scan.destinationError', { personality })}
+                    </Text>
+                  ) : null}
                   <Button
-                    title={suggestedFolder ? `Classer dans « ${suggestedFolder.name} »` : 'Choisir un dossier'}
-                    variant="ai"
-                    onPress={() => {
-                      setFilingDeferred(false);
-                      setFilingPromptDocumentId(analysis.data.documentId);
-                    }}
+                    title="Voir l’original et les preuves"
+                    variant="secondary"
+                    onPress={() => router.push({ pathname: '/documents/[id]', params: { id: analysis.data.documentId } })}
                   />
-                )}
-                {destinationError ? (
-                  <Text accessibilityRole="alert" style={[font('sub'), { color: semantic.warning, lineHeight: 19 }]}>
-                    {t('scan.destinationError', { personality })}
-                  </Text>
-                ) : null}
-                <Button
-                  title="Voir l’original et les preuves"
-                  variant="secondary"
-                  onPress={() => router.push({ pathname: '/documents/[id]', params: { id: analysis.data.documentId } })}
-                />
-              </View>
-            </Card>
+                </>
+              }
+            />
           </>
         ) : null}
 
@@ -1302,7 +1206,14 @@ export default function ScanDocument() {
             <Card>
               <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
                 <Text style={[font('cardTitle'), { color: colors.ink900 }]}>{data.supplierName}</Text>
-                <Badge label={`${Math.round(data.confidence * 100)} %`} tone={data.confidence >= 0.85 ? 'success' : 'warning'} />
+                <Badge
+                  label={`${Math.round(data.confidence * 100)} %`}
+                  tone={data.confidence >= 0.85 ? 'success' : 'warning'}
+                  accessibilityLabel={t('docs.confidenceA11y', {
+                    personality,
+                    params: { pct: Math.round(data.confidence * 100) },
+                  })}
+                />
               </View>
               <View style={{ marginTop: 10, gap: 6 }}>
                 <Row label="Date" value={data.documentDate} colors={colors} />
@@ -1535,9 +1446,10 @@ export default function ScanDocument() {
         ) : null}
       </View>
 
-      {/* ASK-3 : la question de catégorie — mêmes modales que l'assistant (QuestionSheet). */}
+      {/* ASK-3 : la question de catégorie — mêmes modales que l'assistant (QuestionSheet).
+          La visibilité est arbitrée par la machine : au plus UNE sheet, catégorie d'abord. */}
       <QuestionSheet
-        visible={askCategory}
+        visible={visibleSheet === 'category'}
         header={clarification?.header ?? ''}
         question={clarification?.question ?? ''}
         options={clarification?.options ?? []}
@@ -1550,12 +1462,14 @@ export default function ScanDocument() {
           setCategoryDismissed(true);
         }}
         onOther={() => setCategoryDismissed(true)}
+        onDidClose={() => dispatchDecision({ type: 'sheet-closed', sheet: 'category' })}
       />
 
       {/* Statut ambigu (extraction sans discriminant fiable) : Bob DEMANDE au lieu de deviner
-          — « ticket déjà payé » ou « facture à régler », les deux réponses vocales naturelles. */}
+          — « ticket déjà payé » ou « facture à régler », les deux réponses vocales naturelles.
+          La machine la présente APRÈS la catégorie, jamais en même temps. */}
       <QuestionSheet
-        visible={askSettlement}
+        visible={visibleSheet === 'settlement'}
         header={t('scan.settlementQuestionHeader', { personality })}
         question={t('scan.settlementQuestion', { personality })}
         options={[
@@ -1582,51 +1496,49 @@ export default function ScanDocument() {
           setSettlementDismissed(true);
         }}
         onOther={() => setSettlementDismissed(true)}
+        onDidClose={() => dispatchDecision({ type: 'sheet-closed', sheet: 'settlement' })}
       />
 
+      {/* Rangement — JAMAIS auto-ouverte : la machine ne la présente que sur geste humain
+          (« Choisir un autre dossier », reprise, re-demande avant dépense). Choix unique
+          CONFIRMÉ (confirmSingle) : sélection surlignée + bouton « Classer », plus aucun
+          classement au tap sec. */}
       <QuestionSheet
-        visible={
-          filingPromptDocumentId !== null
-          && (analysis.data?.documentId ?? archivedDocument?.id) === filingPromptDocumentId
-          && foldersReady
-          && !filingRecoveryPending
-          && filingOptions.length > 0
-          && !askCategory
-          && !askSettlement
-        }
+        visible={visibleSheet === 'filing'}
         header="Rangement proposé par Bob"
-        question={suggestedFolder
-          ? `Je te propose « ${suggestedFolder.name} ». Où veux-tu conserver l’original ?`
-          : suggestedNewFolderName
-            ? `Aucun dossier ne correspond encore. Je te propose de créer « ${suggestedNewFolderName} ». Que préfères-tu ?`
-            : 'Je ne veux pas deviner son dossier. Où veux-tu conserver l’original ?'}
+        question={suggestedChantierId !== null && suggestedDestination
+          // Préséance : la destination chantier VALIDÉE par le core porte seule la proposition.
+          ? t('scan.filingQuestionChantier', { personality, params: { label: suggestedDestination.label } })
+          : suggestedFolder
+            ? `Je te propose « ${suggestedFolder.name} ». Où veux-tu conserver l’original ?`
+            : suggestedNewFolderName
+              ? `Aucun dossier ne correspond encore. Je te propose de créer « ${suggestedNewFolderName} ». Que préfères-tu ?`
+              : 'Je ne veux pas deviner son dossier. Où veux-tu conserver l’original ?'}
         options={filingOptions}
-        confirmLabel="Classer"
+        confirmSingle
+        confirmLabel={t('scan.filingConfirm', { personality })}
         otherLabel="Plus tard — laisser dans À classer"
-        onClose={() => {
-          setFilingPromptDocumentId(null);
-          setFilingDeferred(true);
-        }}
+        onClose={() => dispatchDecision({ type: 'filing-deferred' })}
         onSelect={(values) => {
           const value = values[0];
+          // La feuille se ferme d'abord (invite relâchée), puis le geste choisi s'exécute.
+          dispatchDecision({ type: 'filing-selected' });
           if (value === CREATE_FOLDER_OPTION) openFolderEditor();
           else if (value?.startsWith(CHANTIER_OPTION_PREFIX)) classifyToChantier(value.slice(CHANTIER_OPTION_PREFIX.length));
           else if (value) classifyInFolder(value);
         }}
-        onOther={() => {
-          setFilingPromptDocumentId(null);
-          setFilingDeferred(true);
-        }}
+        onOther={() => dispatchDecision({ type: 'filing-deferred' })}
+        onDidClose={() => dispatchDecision({ type: 'sheet-closed', sheet: 'filing' })}
       />
 
       <Sheet
-        visible={folderEditorOpen}
+        visible={visibleSheet === 'folderEditor'}
         onClose={() => {
           if (createFolder.isPending) return;
-          setFolderEditorOpen(false);
           setFolderError(null);
-          setFilingDeferred(true);
+          dispatchDecision({ type: 'folder-editor-deferred' });
         }}
+        onDidClose={() => dispatchDecision({ type: 'sheet-closed', sheet: 'folderEditor' })}
       >
         <KeyboardAvoidingView {...(process.env.EXPO_OS === 'ios' ? { behavior: 'padding' as const } : {})}>
           <Text accessibilityRole="header" style={[font('pageTitle'), { fontSize: 20, color: colors.ink900 }]}>Créer le dossier proposé</Text>
@@ -1673,9 +1585,8 @@ export default function ScanDocument() {
                 variant="secondary"
                 disabled={createFolder.isPending}
                 onPress={() => {
-                  setFolderEditorOpen(false);
                   setFolderError(null);
-                  setFilingDeferred(true);
+                  dispatchDecision({ type: 'folder-editor-deferred' });
                 }}
               />
             </View>
@@ -1826,6 +1737,8 @@ function ChoiceChip({
       accessibilityState={{ checked: selected }}
       accessibilityLabel={accessibilityLabel ?? label}
       onPress={onPress}
+      // Densité visuelle 34pt conservée, zone TACTILE portée à 44pt (34 + 2×5 de hitSlop).
+      hitSlop={compact ? { top: 5, bottom: 5 } : undefined}
       style={({ pressed }) => ({
         minHeight: compact ? 34 : 44,
         justifyContent: 'center',

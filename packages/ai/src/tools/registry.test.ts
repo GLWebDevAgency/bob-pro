@@ -319,3 +319,178 @@ describe('marquer_notifications_lues — lot atomique figé avant consentement',
     expect(run.ok && t.projectPublicResult?.(run.value)).toEqual({ updatedCount: 3 });
   });
 });
+
+describe('valider_document — parité « papa vocal » avec le bouton « Confirmer » (À valider)', () => {
+  it("reste absent si l'hôte ne fournit pas l'action (pas de capacité fantôme)", () => {
+    expect(buildBobTools(baseActions).map((t) => t.name)).not.toContain('valider_document');
+  });
+
+  it('mutation interne NON sortante, documentId strict, délègue au use case hôte', async () => {
+    const calls: unknown[] = [];
+    const actions: BobActions = {
+      ...baseActions,
+      acknowledgeDocument: async (input) => {
+        calls.push(input);
+        return ok({ documentId: input.documentId, reviewedAt: '2026-07-13T10:00:00.000Z' });
+      },
+    };
+    const t = tool(actions, 'valider_document')!;
+    expect(t.mutating).toBe(true);
+    expect(t.outbound).toBe(false);
+    // Latch sans commande d'annulation : plancher de consentement, même en autonomie 'auto'.
+    expect(riskTierOf(t)).toBe('reversible');
+    expect(isSafetyFloor(t)).toBe(true);
+    expect(requiresConfirmation(t, 'auto')).toBe(true);
+
+    expect(t.parse({}).ok).toBe(false);
+    expect(t.parse({ documentId: '' }).ok).toBe(false);
+    const parsed = t.parse({ documentId: 'document-1' });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const run = await t.run(parsed.value);
+    expect(run.ok && run.value).toEqual({ documentId: 'document-1', reviewedAt: '2026-07-13T10:00:00.000Z' });
+    expect(calls).toEqual([{ documentId: 'document-1' }]);
+    expect(run.ok && t.projectPublicResult?.(run.value)).toEqual({
+      documentId: 'document-1',
+      reviewedAt: '2026-07-13T10:00:00.000Z',
+    });
+  });
+});
+
+describe('classer_document — parité « papa vocal » avec le geste « Classer là » (LOT 5)', () => {
+  it("reste absent si l'hôte ne fournit pas l'action (pas de capacité fantôme)", () => {
+    expect(buildBobTools(baseActions).map((t) => t.name)).not.toContain('classer_document');
+  });
+
+  it('mutation interne NON sortante au plancher, destination strictement typée, délègue à l’hôte', async () => {
+    const calls: unknown[] = [];
+    const actions: BobActions = {
+      ...baseActions,
+      fileDocument: async (input) => {
+        calls.push(input);
+        return ok({
+          documentId: input.documentId,
+          folderId: 'folder-achats',
+          linkedEntityType: null,
+          linkedEntityId: null,
+          displayName: 'Ticket Aldi — 23,90 €',
+        });
+      },
+    };
+    const t = tool(actions, 'classer_document')!;
+    expect(t.mutating).toBe(true);
+    expect(t.outbound).toBe(false);
+    // Ranger POSE la validation (latch) et un lien métier : plancher, même en autonomie 'auto'.
+    expect(riskTierOf(t)).toBe('reversible');
+    expect(isSafetyFloor(t)).toBe(true);
+    expect(requiresConfirmation(t, 'auto')).toBe(true);
+
+    expect(t.parse({}).ok).toBe(false); // document manquant
+    expect(t.parse({ documentId: 'doc-1' }).ok).toBe(false); // destination manquante
+    expect(t.parse({ documentId: 'doc-1', destination: { kind: 'autre', folderId: 'f-1' } }).ok).toBe(false);
+    expect(t.parse({ documentId: 'doc-1', destination: { kind: 'chantier' } }).ok).toBe(false); // id manquant
+    expect(t.parse({ documentId: 'doc-1', destination: { kind: 'folder', folderId: '' } }).ok).toBe(false);
+    const parsed = t.parse({ documentId: 'doc-1', destination: { kind: 'folder', folderId: 'folder-achats' } });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const run = await t.run(parsed.value);
+    expect(run.ok && run.value).toMatchObject({ documentId: 'doc-1', folderId: 'folder-achats' });
+    expect(calls).toEqual([{ documentId: 'doc-1', destination: { kind: 'folder', folderId: 'folder-achats' } }]);
+    // Allowlist de sortie : jamais le payload métier brut.
+    expect(run.ok && t.projectPublicResult?.(run.value)).toEqual({
+      documentId: 'doc-1',
+      folderId: 'folder-achats',
+      displayName: 'Ticket Aldi — 23,90 €',
+    });
+  });
+});
+
+describe('renommer_document — RenameDocument, nom humain prioritaire (LOT 5)', () => {
+  it("reste absent si l'hôte ne fournit pas l'action", () => {
+    expect(buildBobTools(baseActions).map((t) => t.name)).not.toContain('renommer_document');
+  });
+
+  it('mutation interne au plancher, displayName validé par la règle de domaine, délègue à l’hôte', async () => {
+    const calls: unknown[] = [];
+    const actions: BobActions = {
+      ...baseActions,
+      renameDocument: async (input) => {
+        calls.push(input);
+        return ok({ documentId: input.documentId, displayName: input.displayName });
+      },
+    };
+    const t = tool(actions, 'renommer_document')!;
+    expect(t.mutating).toBe(true);
+    expect(t.outbound).toBe(false);
+    expect(riskTierOf(t)).toBe('reversible');
+    expect(isSafetyFloor(t)).toBe(true);
+    expect(requiresConfirmation(t, 'auto')).toBe(true);
+
+    expect(t.parse({ displayName: 'x' }).ok).toBe(false); // document manquant
+    expect(t.parse({ documentId: 'doc-1', displayName: '   ' }).ok).toBe(false); // nom vide
+    expect(t.parse({ documentId: 'doc-1', displayName: 'a'.repeat(121) }).ok).toBe(false); // trop long
+    const parsed = t.parse({ documentId: 'doc-1', displayName: '  Facture   matériaux salle de bain ' });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    // La règle de domaine réduit les espaces (même validation que l'écran).
+    expect((parsed.value as { displayName: string }).displayName).toBe('Facture matériaux salle de bain');
+
+    const run = await t.run(parsed.value);
+    expect(run.ok && run.value).toEqual({ documentId: 'doc-1', displayName: 'Facture matériaux salle de bain' });
+    expect(calls).toEqual([{ documentId: 'doc-1', displayName: 'Facture matériaux salle de bain' }]);
+    expect(run.ok && t.projectPublicResult?.(run.value)).toEqual({
+      documentId: 'doc-1',
+      displayName: 'Facture matériaux salle de bain',
+    });
+  });
+});
+
+describe('chercher_document — recherche réelle devis & factures, lecture pure (LOT 5)', () => {
+  it("reste absent si l'hôte ne fournit pas l'action", () => {
+    expect(buildBobTools(baseActions).map((t) => t.name)).not.toContain('chercher_document');
+  });
+
+  it('lecture stricte : jamais de confirmation, requête bornée, période ordonnée, délègue à l’hôte', async () => {
+    const calls: unknown[] = [];
+    const actions: BobActions = {
+      ...baseActions,
+      searchDocuments: async (input) => {
+        calls.push(input);
+        return ok({
+          hits: [
+            {
+              source: 'invoice' as const,
+              id: 'inv-1',
+              number: '2026-014',
+              customerName: 'Durand SARL',
+              status: 'issued',
+              date: '2026-03-12',
+              totalTtcCents: 132000,
+              matchedLineLabel: 'Radiateur acier',
+            },
+          ],
+          totalCount: 1,
+        });
+      },
+    };
+    const t = tool(actions, 'chercher_document')!;
+    expect(t.mutating).toBe(false);
+    expect(riskTierOf(t)).toBe('read');
+    expect(requiresConfirmation(t, 'confirm_all')).toBe(false);
+
+    expect(t.parse({}).ok).toBe(false); // requête manquante
+    expect(t.parse({ query: '' }).ok).toBe(false); // vide SANS période : jamais de ratissage
+    expect(t.parse({ query: '', from: '2026-03-01', to: '2026-03-31' }).ok).toBe(true); // période seule OK
+    expect(t.parse({ query: 'radiateur', from: '2026-04-01', to: '2026-03-01' }).ok).toBe(false); // inversée
+    expect(t.parse({ query: 'radiateur', scope: 'archive' }).ok).toBe(false);
+    const parsed = t.parse({ query: '  radiateur ', scope: 'invoice', from: '2026-03-01', to: '2026-03-31' });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const run = await t.run(parsed.value);
+    expect(run.ok && run.value).toMatchObject({ totalCount: 1 });
+    expect(calls).toEqual([{ query: 'radiateur', scope: 'invoice', from: '2026-03-01', to: '2026-03-31' }]);
+  });
+});

@@ -8,6 +8,8 @@ export interface DocumentFolderMembership {
   status: 'active' | 'deleted';
   /** Révision optimiste des métadonnées du document (le binaire n'est jamais touché). */
   revision: number;
+  /** Confirmation humaine du document — absent (adapter historique) ⇒ null, jamais validé. */
+  reviewedAt?: string | null;
 }
 
 export interface DocumentFolderPage {
@@ -63,6 +65,10 @@ export interface DocumentFolderRepository {
     companyId: string;
     documentId: string;
     targetFolderId: string | null;
+    /** Non-null : le rangement vaut validation humaine — l'adapter pose reviewedAt
+     *  atomiquement avec le déplacement. Null : transfert technique, la confirmation
+     *  existante du document reste strictement intacte. */
+    reviewedAt: string | null;
     expectedRevision: number;
   }): Promise<DocumentFolderMembershipWriteResult>;
 }

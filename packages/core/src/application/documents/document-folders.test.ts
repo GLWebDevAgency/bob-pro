@@ -176,13 +176,20 @@ class MemoryFolderRepository implements DocumentFolderRepository {
     companyId: string;
     documentId: string;
     targetFolderId: string | null;
+    reviewedAt: string | null;
     expectedRevision: number;
   }): Promise<DocumentFolderMembershipWriteResult> {
     const current = this.documents.get(input.documentId);
     if (!current || current.companyId !== input.companyId || current.status !== 'active') return { status: 'not_found' };
     if (current.revision !== input.expectedRevision) return { status: 'revision_conflict' };
     const revision = current.revision + 1;
-    this.documents.set(current.id, { ...current, folderId: input.targetFolderId, revision });
+    this.documents.set(current.id, {
+      ...current,
+      folderId: input.targetFolderId,
+      // Contrat du port : reviewedAt non-null est posé atomiquement avec le rangement.
+      ...(input.reviewedAt !== null ? { reviewedAt: input.reviewedAt } : {}),
+      revision,
+    });
     return { status: 'saved', revision };
   }
 }
@@ -361,10 +368,99 @@ describe('document folders application', () => {
     const h = harness();
     h.folders.seed(makeFolder({ id: 'target' }));
     h.folders.documents.set('doc-1', { id: 'doc-1', companyId: COMPANY, folderId: null, status: 'active', revision: 4 });
-    const move = new MoveDocumentToFolder({ folders: h.folders, uow: h.uow });
+    const move = new MoveDocumentToFolder({ folders: h.folders, uow: h.uow, clock });
     const result = await move.execute({ companyId: COMPANY, documentId: 'doc-1', folderId: 'target', expectedRevision: 4 });
     expect(result).toEqual(ok({ documentId: 'doc-1', folderId: 'target', revision: 5 }));
     const stale = await move.execute({ companyId: COMPANY, documentId: 'doc-1', folderId: null, expectedRevision: 4 });
     expect(stale.ok).toBe(false);
+  });
+
+  it('ranger DANS un dossier pose la validation (reviewedAt) — un geste de classement vaut confirmation', async () => {
+    const h = harness();
+    h.folders.seed(makeFolder({ id: 'achats' }));
+    h.folders.documents.set('doc-1', { id: 'doc-1', companyId: COMPANY, folderId: null, status: 'active', revision: 1 });
+    const move = new MoveDocumentToFolder({ folders: h.folders, uow: h.uow, clock });
+
+    const result = await move.execute({ companyId: COMPANY, documentId: 'doc-1', folderId: 'achats', expectedRevision: 1 });
+
+    expect(result).toEqual(ok({ documentId: 'doc-1', folderId: 'achats', revision: 2 }));
+    expect(await h.folders.findDocumentMembership(COMPANY, 'doc-1')).toMatchObject({
+      folderId: 'achats',
+      reviewedAt: NOW,
+    });
+  });
+
+  it('sortir d’un dossier (folderId null) n’invalide jamais une confirmation existante', async () => {
+    const h = harness();
+    h.folders.documents.set('doc-1', {
+      id: 'doc-1',
+      companyId: COMPANY,
+      folderId: 'achats-avant',
+      status: 'active',
+      revision: 2,
+      reviewedAt: '2026-07-10T08:00:00.000Z',
+    });
+    const move = new MoveDocumentToFolder({ folders: h.folders, uow: h.uow, clock });
+
+    const result = await move.execute({ companyId: COMPANY, documentId: 'doc-1', folderId: null, expectedRevision: 2 });
+
+    expect(result).toEqual(ok({ documentId: 'doc-1', folderId: null, revision: 3 }));
+    expect((await h.folders.findDocumentMembership(COMPANY, 'doc-1'))?.reviewedAt).toBe('2026-07-10T08:00:00.000Z');
+  });
+
+  it('re-ranger un document déjà validé conserve l’horodatage de sa première validation (latch)', async () => {
+    const h = harness();
+    h.folders.seed(makeFolder({ id: 'fiscal' }));
+    h.folders.documents.set('doc-1', {
+      id: 'doc-1',
+      companyId: COMPANY,
+      folderId: null,
+      status: 'active',
+      revision: 2,
+      reviewedAt: '2026-07-10T08:00:00.000Z',
+    });
+    const move = new MoveDocumentToFolder({ folders: h.folders, uow: h.uow, clock });
+
+    const result = await move.execute({ companyId: COMPANY, documentId: 'doc-1', folderId: 'fiscal', expectedRevision: 2 });
+
+    expect(result).toEqual(ok({ documentId: 'doc-1', folderId: 'fiscal', revision: 3 }));
+    expect((await h.folders.findDocumentMembership(COMPANY, 'doc-1'))?.reviewedAt).toBe('2026-07-10T08:00:00.000Z');
+  });
+
+  it('« Classer là » vers le dossier où le doc est déjà rangé mais non confirmé pose quand même la validation', async () => {
+    const h = harness();
+    h.folders.seed(makeFolder({ id: 'achats' }));
+    h.folders.documents.set('doc-1', { id: 'doc-1', companyId: COMPANY, folderId: 'achats', status: 'active', revision: 3 });
+    const move = new MoveDocumentToFolder({ folders: h.folders, uow: h.uow, clock });
+
+    const result = await move.execute({ companyId: COMPANY, documentId: 'doc-1', folderId: 'achats', expectedRevision: 3 });
+
+    expect(result).toEqual(ok({ documentId: 'doc-1', folderId: 'achats', revision: 4 }));
+    expect((await h.folders.findDocumentMembership(COMPANY, 'doc-1'))?.reviewedAt).toBe(NOW);
+
+    // Et une fois confirmé, re-ranger au même endroit redevient un no-op sans écriture.
+    const replay = await move.execute({ companyId: COMPANY, documentId: 'doc-1', folderId: 'achats', expectedRevision: 4 });
+    expect(replay).toEqual(ok({ documentId: 'doc-1', folderId: 'achats', revision: 4 }));
+  });
+
+  it('le transfert technique d’une suppression de dossier ne vaut PAS validation', async () => {
+    const h = harness();
+    h.folders.seed(makeFolder({ id: 'source' }), makeFolder({ id: 'target' }));
+    h.folders.documents.set('doc-1', { id: 'doc-1', companyId: COMPANY, folderId: 'source', status: 'active', revision: 1 });
+    const preview = await new PreviewDeleteDocumentFolder({ folders: h.folders }).execute({ companyId: COMPANY, folderId: 'source' });
+    if (!preview.ok) throw new Error('preview');
+
+    const result = await new DeleteDocumentFolder({ folders: h.folders, uow: h.uow, clock }).execute({
+      companyId: COMPANY,
+      folderId: 'source',
+      expectedRevision: preview.value.expectedRevision,
+      expectedSnapshot: preview.value.snapshot,
+      strategy: { kind: 'transfer', targetFolderId: 'target', targetExpectedRevision: 1 },
+    });
+
+    expect(result.ok).toBe(true);
+    const membership = await h.folders.findDocumentMembership(COMPANY, 'doc-1');
+    expect(membership?.folderId).toBe('target');
+    expect(membership?.reviewedAt ?? null).toBeNull(); // le doc reste « à confirmer »
   });
 });

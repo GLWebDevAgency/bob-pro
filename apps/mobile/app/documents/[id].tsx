@@ -1,12 +1,29 @@
+/**
+ * Écran document — « exactement la même chose que ce que tu as mis lors du scan » (fondateur) :
+ * · titre = displayName INTELLIGENT (renommage humain > suggestion d'analyse), jamais le
+ *   nom de fichier brut ;
+ * · la CARTE PARTAGÉE DocumentInsightCard en tête (pastille « Document lu », titre, tableau
+ *   Montant TTC / TVA récupérable / Rattaché à, tags, warnings) — source de rendu unique
+ *   avec le scan, zéro duplication ;
+ * · CTA « Classer dans {label} » (useApplyDestination — mêmes use cases que Bob) si non
+ *   classé, état « Classé dans X » sinon, bouton de confirmation (AcknowledgeDocument,
+ *   latch idempotent) tant que reviewedAt est null ;
+ * · les facts détaillés avec provenance (« Lu · X % ») vivent dans la section Traçabilité
+ *   REPLIÉE (accordéon) — plus de bruit en vue principale, la preuve reste accessible ;
+ * · GET /documents/:id est ENRICHI (analysis/extraction du cache serveur) : AUCUN POST
+ *   /analysis au montage quand le cache est là — le fallback mutation reste si absent.
+ */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Image, Linking, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { formatEUR, type DocumentAnalysis, type DocumentFact, type DocumentFolderView, type DocumentView } from '@bob/core';
+import { documentNeedsHumanReview, type DocumentFolderView, type DocumentView } from '@bob/core';
+import { t } from '@bob/i18n';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { usePublishAgentContext, type AgentContext } from '../../src/agent';
 import { useBobClient } from '../../src/data/client';
 import {
+  useAcknowledgeDocument,
   useAnalyzeDocument,
   useDocument,
   useDocumentFolder,
@@ -14,69 +31,19 @@ import {
   useMoveDocumentToFolder,
   supportsDocumentAnalysis,
 } from '../../src/data/documents';
+import { DocumentInsightCard } from '../../src/documents/document-insight-card';
+import {
+  FACT_LABEL,
+  deriveDocumentInsight,
+  extractionFromAnalysisFacts,
+  factValue,
+  smartDocumentTitle,
+} from '../../src/documents/document-insight-card.logic';
+import { useApplyDestination } from '../../src/documents/use-apply-destination';
 import { useTheme } from '../../src/theme';
-import { Badge, Button, Card, SectionHeader, font } from '../../src/components/ui';
+import { Button, Card, SectionHeader, font } from '../../src/components/ui';
 import { ErrorRetry, Sheet, Skeleton, SkeletonCard, SkeletonRow } from '@bob/ui';
 import { useBobAwareScrollInsets } from '../../src/components/use-bob-aware-scroll-insets';
-
-const TYPE_LABEL: Record<DocumentAnalysis['type'], string> = {
-  supplier_invoice: 'Facture fournisseur',
-  receipt: 'Ticket ou reçu',
-  bank_statement: 'Relevé bancaire',
-  insurance_certificate: 'Attestation d’assurance',
-  tax_or_social_document: 'Document fiscal ou social',
-  contract: 'Contrat',
-  company_record: 'Document de société',
-  chantier_photo: 'Photo de chantier',
-  accounting_document: 'Document comptable',
-  other: 'Document à préciser',
-};
-
-const FACT_LABEL: Record<DocumentFact['key'], string> = {
-  issuer_name: 'Émetteur',
-  recipient_name: 'Destinataire',
-  supplier_name: 'Fournisseur',
-  customer_name: 'Client',
-  company_name: 'Société',
-  document_number: 'Numéro',
-  contract_number: 'Contrat',
-  policy_number: 'Police',
-  bank_name: 'Banque',
-  account_reference: 'Compte',
-  iban_masked: 'IBAN',
-  siren: 'SIREN',
-  siret: 'SIRET',
-  fiscal_period: 'Période',
-  subject: 'Objet',
-  chantier_name: 'Chantier',
-  document_date: 'Date',
-  due_date: 'Échéance',
-  period_start: 'Début',
-  period_end: 'Fin',
-  coverage_start: 'Début de couverture',
-  coverage_end: 'Fin de couverture',
-  expiry_date: 'Expiration',
-  total_ht: 'Total HT',
-  vat_amount: 'TVA',
-  total_ttc: 'Total TTC',
-  amount_due: 'Montant dû',
-  account_balance: 'Solde',
-  tax_amount: 'Impôt / cotisation',
-  vat_rate: 'Taux de TVA',
-};
-
-function factValue(fact: DocumentFact): string {
-  switch (fact.valueType) {
-    case 'money':
-      return fact.value.currency === 'EUR'
-        ? formatEUR(fact.value.amountMinor)
-        : `${(fact.value.amountMinor / 100).toFixed(2)} ${fact.value.currency}`;
-    case 'percentage':
-      return `${fact.value} %`;
-    default:
-      return fact.value;
-  }
-}
 
 function bytesLabel(value: number): string {
   if (value < 1024) return `${value} o`;
@@ -118,31 +85,48 @@ export default function DocumentDetailScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const bobScrollInsets = useBobAwareScrollInsets({ minimumBottom: 80 });
-  const { colors, semantic } = useTheme();
+  const { colors, semantic, personality } = useTheme();
   const client = useBobClient();
   const document = useDocument(documentId);
   const analysis = useAnalyzeDocument();
+  const acknowledge = useAcknowledgeDocument();
   const moveDocument = useMoveDocumentToFolder();
   const [moveOpen, setMoveOpen] = useState(false);
   const [movePath, setMovePath] = useState<DocumentFolderView[]>([]);
   const moveParentId = movePath.at(-1)?.id ?? null;
   const moveFolders = useDocumentFolders(moveParentId);
+  const rootFolders = useDocumentFolders(null);
   const currentFolder = useDocumentFolder(document.data?.folderId ?? '');
   const [selectedFolder, setSelectedFolder] = useState<DocumentFolderView | null>(null);
   const [moveError, setMoveError] = useState<string | null>(null);
   const [moveNotice, setMoveNotice] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  // Accordéon Traçabilité : les preuves détaillées, repliées par défaut (zéro bruit).
+  const [factsOpen, setFactsOpen] = useState(false);
+  const [confirmNotice, setConfirmNotice] = useState<string | null>(null);
+  const [confirmError, setConfirmError] = useState(false);
   const requestedAnalysis = useRef<string | null>(null);
   const [original, setOriginal] = useState<{ url: string; expiresAt: number } | null>(null);
   const [originalError, setOriginalError] = useState(false);
   const [originalLoading, setOriginalLoading] = useState(false);
   const originalRequest = useRef(0);
 
+  // « Classer dans {label} » — hook PARTAGÉ avec le scan (move + classify + nom intelligent +
+  // invalidations). Dossier système absent du coffre → choix humain via la feuille Déplacer.
+  const applyDest = useApplyDestination({
+    foldersReady: rootFolders.data !== undefined,
+    rootFolders: rootFolders.data,
+    onFilingRequested: () => openMoveSheet(),
+  });
+
   useEffect(() => {
-    if (!document.data || requestedAnalysis.current === document.data.id) return;
-    requestedAnalysis.current = document.data.id;
-    if (supportsDocumentAnalysis(document.data.mimeType)) analysis.mutate(document.data.id);
-  }, [document.data?.id, document.data?.mimeType]);
+    const current = document.data;
+    if (!current || requestedAnalysis.current === current.id) return;
+    // Cache serveur présent (GET /documents/:id enrichi) : AUCUN POST /analysis au montage.
+    if (current.analysis) return;
+    requestedAnalysis.current = current.id;
+    if (supportsDocumentAnalysis(current.mimeType)) analysis.mutate(current.id);
+  }, [document.data]);
 
   const refreshOriginal = useCallback(async (): Promise<string | null> => {
     if (!documentId) return null;
@@ -265,7 +249,12 @@ export default function DocumentDetailScreen() {
       return {
         screen: { name: 'document-detail', instanceId: `document:${documentId}` },
         entities: contextDocument
-          ? [{ type: 'document' as const, id: contextDocument.id, label: contextDocument.filename }]
+          ? [{
+              type: 'document' as const,
+              id: contextDocument.id,
+              // Parité humain↔Bob : l'agent voit le même libellé intelligent que l'écran.
+              label: smartDocumentTitle(contextDocument, contextDocument.analysis?.suggestedDisplayName ?? null),
+            }]
           : [],
         capabilities: contextDocument ? ['screen.read', 'document.read'] : [],
       };
@@ -299,14 +288,11 @@ export default function DocumentDetailScreen() {
               <Skeleton width={112} height={11} radius={6} />
             </View>
           </View>
-          <Card>
-            <Skeleton height={320} radius={14} />
-            <Skeleton height={52} radius={18} style={{ marginTop: 12 }} />
-          </Card>
+          <SectionHeader title="Ce que Bob a compris" />
+          <SkeletonCard height={214} contentLines={5} radius={16} />
           <View style={{ marginTop: 20 }}>
-            <SectionHeader title="Ce que Bob a compris" />
+            <SkeletonCard height={320} contentLines={2} radius={16} />
           </View>
-          <SkeletonCard height={154} contentLines={4} radius={16} />
           <View style={{ marginTop: 20 }}>
             <SectionHeader title="Rangement" />
           </View>
@@ -347,6 +333,80 @@ export default function DocumentDetailScreen() {
   const item = document.data;
   const imageOriginal = item.mimeType.startsWith('image/') && original !== null;
   const analysisSupported = supportsDocumentAnalysis(item.mimeType);
+  // Analyse complète (mutation fraîche) > résumé persisté (cache serveur) — jamais inventée.
+  const insightAnalysis = analysis.data ?? item.analysis ?? null;
+  const insight = insightAnalysis
+    ? deriveDocumentInsight({
+        analysis: insightAnalysis,
+        extraction: item.extraction
+          ? { totalTtcCents: item.extraction.totalTtcCents, vatCents: item.extraction.vatCents }
+          : analysis.data
+            ? extractionFromAnalysisFacts(analysis.data.facts)
+            : null,
+        // Titre de la carte = préséance smartDocumentTitle : un renommage humain prime.
+        document: item,
+      })
+    : null;
+  const insightDestination = insightAnalysis?.suggestedDestination ?? null;
+  // Titre intelligent : renommage humain > suggestion d'analyse > displayName serveur.
+  const title = smartDocumentTitle(item, insightAnalysis?.suggestedDisplayName ?? null);
+  // Même GESTE que la carte de la file « À valider » (PendingCard, filedToConfirm) :
+  // documentNeedsHumanReview (@bob/core — RÈGLE UNIQUE, zéro duplication) ET déjà rangé.
+  // Un doc non rangé (folderId null) ne se « confirme » pas : reviewedAt le sortirait de la
+  // file sans le placer dans aucun dossier — pièce orpheline. Ici, le seul CTA reste « Classer ».
+  const needsConfirmation = documentNeedsHumanReview(item) && item.folderId !== null;
+
+  const confirmDocument = (): void => {
+    if (acknowledge.isPending) return;
+    setConfirmError(false);
+    acknowledge.mutate(
+      { documentId: item.id, expectedRevision: item.revision },
+      {
+        onSuccess: () =>
+          setConfirmNotice(t('docs.confirmedBanner', { personality, params: { name: title } })),
+        onError: () => {
+          setConfirmError(true);
+          void document.refetch();
+        },
+      },
+    );
+  };
+
+  const toggleFacts = (): void => {
+    const next = !factsOpen;
+    setFactsOpen(next);
+    // Les preuves détaillées ne vivent que dans l'analyse complète : on la (re)joue à la
+    // demande — geste humain, jamais au montage quand le cache résumé suffit à la carte.
+    if (next && analysisSupported && !analysis.data && !analysis.isPending) analysis.mutate(item.id);
+  };
+
+  // Bloc de confirmation (« C'est bon ») — rendu dans la carte partagée, ou seul si la
+  // carte n'existe pas encore (analyse indisponible) : la validation reste toujours possible.
+  const confirmBlock = needsConfirmation || confirmNotice !== null || confirmError ? (
+    <>
+      {needsConfirmation ? (
+        // Même geste que « C'est bon » de la carte « À valider » : indigo plein (aiSolid),
+        // jamais le dégradé cta réservé aux actions primaires de création.
+        <Button
+          title={t('docs.confirmCta', { personality })}
+          variant="aiSolid"
+          loading={acknowledge.isPending}
+          disabled={acknowledge.isPending}
+          onPress={confirmDocument}
+        />
+      ) : null}
+      {confirmNotice ? (
+        <Text accessibilityLiveRegion="polite" style={[font('meta'), { color: semantic.success }]}>
+          {confirmNotice}
+        </Text>
+      ) : null}
+      {confirmError ? (
+        <Text accessibilityRole="alert" style={[font('sub'), { color: semantic.danger, lineHeight: 19 }]}>
+          {t('docs.confirmError', { personality })}
+        </Text>
+      ) : null}
+    </>
+  ) : null;
 
   return (
     <>
@@ -368,7 +428,8 @@ export default function DocumentDetailScreen() {
           <Ionicons name="chevron-back" size={25} color={colors.ink900} />
         </Pressable>
         <View style={{ flex: 1, minWidth: 0 }}>
-          <Text accessibilityRole="header" style={[font('pageTitle'), { color: colors.ink900 }]} numberOfLines={1}>{item.filename}</Text>
+          {/* Titre INTELLIGENT — jamais le nom de fichier brut quand un meilleur libellé existe. */}
+          <Text accessibilityRole="header" style={[font('pageTitle'), { color: colors.ink900 }]} numberOfLines={1}>{title}</Text>
           <Text style={[font('meta'), { color: colors.slate400, marginTop: 2 }]}>Original · version {item.version}</Text>
         </View>
       </View>
@@ -383,44 +444,43 @@ export default function DocumentDetailScreen() {
         </View>
       ) : null}
 
-      <Card>
-        {item.mimeType.startsWith('image/') && originalLoading && original === null ? (
-          <Skeleton height={320} radius={14} />
-        ) : imageOriginal ? (
-          <Image
-            source={{ uri: original.url }}
-            accessibilityLabel={`Aperçu original de ${item.filename}`}
-            resizeMode="contain"
-            style={{ width: '100%', height: 320, borderRadius: 14, backgroundColor: colors.lineSoft }}
-          />
-        ) : (
-          <View style={{ height: item.mimeType.startsWith('image/') ? 320 : 180, alignItems: 'center', justifyContent: 'center', gap: 10 }}>
-            <Ionicons name={item.mimeType === 'application/pdf' ? 'document-text-outline' : 'document-outline'} size={46} color={semantic.b2b} />
-            <Text style={[font('sub'), { color: colors.slate500, textAlign: 'center' }]}>
-              {item.mimeType === 'application/pdf' ? 'PDF original conservé' : 'Original conservé dans le coffre'}
-            </Text>
-          </View>
-        )}
-        <View style={{ marginTop: 12 }}>
-          <Button
-            title={originalLoading ? 'Préparation de l’original…' : originalError ? 'Réessayer d’ouvrir l’original' : 'Voir l’original'}
-            disabled={originalLoading}
-            onPress={() => void openOriginal()}
-          />
-          {originalError ? (
-            <Text accessibilityRole="alert" style={[font('meta'), { color: semantic.danger, marginTop: 8 }]}>Le lien sécurisé a expiré ou n’est pas disponible. Tu peux le régénérer sans modifier le document.</Text>
-          ) : null}
-        </View>
-      </Card>
-
-      <View style={{ marginTop: 20 }}>
-        <SectionHeader title="Ce que Bob a compris" />
-      </View>
+      <SectionHeader title="Ce que Bob a compris" />
       {!analysisSupported ? (
         <Card>
           <Text accessibilityRole="alert" style={[font('cardTitle'), { color: semantic.warning }]}>Analyse non disponible pour cet original</Text>
           <Text style={[font('sub'), { color: colors.slate500, marginTop: 4, lineHeight: 19 }]}>Le HEIC/HEIF reste conservé sans aucune modification. Bob ne lance pas d’analyse vouée à l’échec : importe une copie JPEG ou PDF pour obtenir une lecture assistée.</Text>
         </Card>
+      ) : insight ? (
+        <DocumentInsightCard
+          insight={insight}
+          actions={
+            <>
+              {item.folderId !== null && currentFolder.data ? (
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
+                  <Ionicons name="folder" size={17} color={semantic.success} />
+                  <Text style={[font('sub'), { color: colors.ink800, flex: 1 }]}>
+                    {t('docs.classifiedIn', { personality, params: { folder: currentFolder.data.name } })}
+                  </Text>
+                </View>
+              ) : item.folderId === null && insightDestination ? (
+                <Button
+                  title={t('scan.classifyInto', { personality, params: { label: insightDestination.label } })}
+                  variant="aiSolid"
+                  loading={applyDest.pending}
+                  disabled={applyDest.pending || moveDocument.isPending}
+                  onPress={() =>
+                    void applyDest.apply(item, insightDestination, insightAnalysis?.suggestedDisplayName ?? null)}
+                />
+              ) : null}
+              {applyDest.error ? (
+                <Text accessibilityRole="alert" style={[font('sub'), { color: semantic.warning, lineHeight: 19 }]}>
+                  {t('scan.destinationError', { personality })}
+                </Text>
+              ) : null}
+              {confirmBlock}
+            </>
+          }
+        />
       ) : analysis.isPending ? (
         <View
           accessibilityRole="progressbar"
@@ -429,35 +489,6 @@ export default function DocumentDetailScreen() {
         >
           <SkeletonCard height={154} contentLines={4} radius={16} />
         </View>
-      ) : analysis.data ? (
-        <Card>
-          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
-            <Text style={[font('cardTitle'), { color: colors.ink900, flex: 1 }]}>{TYPE_LABEL[analysis.data.type]}</Text>
-            <Badge
-              label={`${Math.round(analysis.data.typeConfidence * 100)} %`}
-              tone={analysis.data.requiresHumanReview ? 'warning' : 'success'}
-            />
-          </View>
-          <Text style={[font('body'), { color: colors.slate500, lineHeight: 21, marginTop: 8 }]}>{analysis.data.summary}</Text>
-          {analysis.data.facts.length > 0 ? (
-            <View style={{ marginTop: 14, gap: 10 }}>
-              {analysis.data.facts.map((fact) => (
-                <View key={fact.key} style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 16 }}>
-                  <Text style={[font('sub'), { color: colors.slate400, flex: 1 }]}>{FACT_LABEL[fact.key]}</Text>
-                  <View style={{ flex: 1.3, alignItems: 'flex-end' }}>
-                    <Text style={[font('sub'), { color: colors.ink900, fontWeight: '700', textAlign: 'right' }]}>{factValue(fact)}</Text>
-                    <Text style={[font('meta'), { color: fact.confidence >= 0.75 ? semantic.success : semantic.warning }]}>
-                      {fact.provenance.evidence.length > 0 ? `Lu · ${Math.round(fact.confidence * 100)} %` : `À confirmer · ${Math.round(fact.confidence * 100)} %`}
-                    </Text>
-                  </View>
-                </View>
-              ))}
-            </View>
-          ) : null}
-          {analysis.data.warnings.map((warning) => (
-            <Text key={warning} style={[font('meta'), { color: semantic.warning, marginTop: 10 }]}>• {warning}</Text>
-          ))}
-        </Card>
       ) : (
         <Card>
           <Text style={[font('sub'), { color: colors.slate500 }]}>L’analyse n’a pas abouti. L’original reste conservé et tu peux relancer Bob.</Text>
@@ -466,6 +497,41 @@ export default function DocumentDetailScreen() {
           </View>
         </Card>
       )}
+      {insight === null && confirmBlock ? (
+        <View style={{ marginTop: 12, gap: 8 }}>{confirmBlock}</View>
+      ) : null}
+
+      <View style={{ marginTop: 20 }}>
+        <Card>
+          {item.mimeType.startsWith('image/') && originalLoading && original === null ? (
+            <Skeleton height={320} radius={14} />
+          ) : imageOriginal ? (
+            <Image
+              source={{ uri: original.url }}
+              accessibilityLabel={`Aperçu original de ${item.filename}`}
+              resizeMode="contain"
+              style={{ width: '100%', height: 320, borderRadius: 14, backgroundColor: colors.lineSoft }}
+            />
+          ) : (
+            <View style={{ height: item.mimeType.startsWith('image/') ? 320 : 180, alignItems: 'center', justifyContent: 'center', gap: 10 }}>
+              <Ionicons name={item.mimeType === 'application/pdf' ? 'document-text-outline' : 'document-outline'} size={46} color={semantic.b2b} />
+              <Text style={[font('sub'), { color: colors.slate500, textAlign: 'center' }]}>
+                {item.mimeType === 'application/pdf' ? 'PDF original conservé' : 'Original conservé dans le coffre'}
+              </Text>
+            </View>
+          )}
+          <View style={{ marginTop: 12 }}>
+            <Button
+              title={originalLoading ? 'Préparation de l’original…' : originalError ? 'Réessayer d’ouvrir l’original' : 'Voir l’original'}
+              disabled={originalLoading}
+              onPress={() => void openOriginal()}
+            />
+            {originalError ? (
+              <Text accessibilityRole="alert" style={[font('meta'), { color: semantic.danger, marginTop: 8 }]}>Le lien sécurisé a expiré ou n’est pas disponible. Tu peux le régénérer sans modifier le document.</Text>
+            ) : null}
+          </View>
+        </Card>
+      </View>
 
       <View style={{ marginTop: 20 }}>
         <SectionHeader title="Rangement" />
@@ -525,6 +591,66 @@ export default function DocumentDetailScreen() {
         <SectionHeader title="Traçabilité" />
       </View>
       <Card>
+        {analysisSupported ? (
+          <>
+            {/* Accordéon : les preuves détaillées (« Lu · X % » PAR FAIT) restent accessibles
+                sans polluer la vue principale — analyse (re)jouée à l'ouverture si absente. */}
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ expanded: factsOpen }}
+              accessibilityLabel={t('docs.traceToggle', { personality })}
+              onPress={toggleFacts}
+              style={{ minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}
+            >
+              <Text style={[font('sub'), { color: colors.ink900, fontWeight: '700', flex: 1 }]}>
+                {t('docs.traceToggle', { personality })}
+              </Text>
+              <Ionicons name={factsOpen ? 'chevron-up' : 'chevron-down'} size={18} color={colors.slate400} />
+            </Pressable>
+            {factsOpen ? (
+              analysis.isPending ? (
+                <View
+                  accessibilityRole="progressbar"
+                  accessibilityLiveRegion="polite"
+                  accessibilityLabel="Bob relit l’original et vérifie ses preuves"
+                  style={{ paddingVertical: 10, gap: 8 }}
+                >
+                  <Skeleton height={14} radius={7} />
+                  <Skeleton height={14} width="82%" radius={7} />
+                  <Skeleton height={14} width="64%" radius={7} />
+                </View>
+              ) : analysis.data ? (
+                analysis.data.facts.length > 0 ? (
+                  <View style={{ marginTop: 4, marginBottom: 8, gap: 10 }}>
+                    {analysis.data.facts.map((fact) => (
+                      <View key={fact.key} style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 16 }}>
+                        <Text style={[font('sub'), { color: colors.slate400, flex: 1 }]}>{FACT_LABEL[fact.key]}</Text>
+                        <View style={{ flex: 1.3, alignItems: 'flex-end' }}>
+                          <Text style={[font('sub'), { color: colors.ink900, fontWeight: '700', textAlign: 'right' }]}>{factValue(fact)}</Text>
+                          <Text style={[font('meta'), { color: fact.confidence >= 0.75 ? semantic.success : semantic.warning }]}>
+                            {fact.provenance.evidence.length > 0 ? `Lu · ${Math.round(fact.confidence * 100)} %` : `À confirmer · ${Math.round(fact.confidence * 100)} %`}
+                          </Text>
+                        </View>
+                      </View>
+                    ))}
+                  </View>
+                ) : (
+                  <Text style={[font('sub'), { color: colors.slate500, paddingVertical: 8 }]}>
+                    {t('docs.traceEmpty', { personality })}
+                  </Text>
+                )
+              ) : (
+                <View style={{ paddingVertical: 8 }}>
+                  <Text style={[font('sub'), { color: colors.slate500 }]}>L’analyse n’a pas abouti. L’original reste conservé et tu peux relancer Bob.</Text>
+                  <View style={{ marginTop: 10 }}>
+                    <Button title="Relancer l’analyse" variant="secondary" onPress={() => analysis.mutate(item.id)} />
+                  </View>
+                </View>
+              )
+            ) : null}
+            <View style={{ height: 1, backgroundColor: colors.lineSoft, marginVertical: 8 }} />
+          </>
+        ) : null}
         <InfoRow label="Format" value={item.mimeType} colors={colors} />
         <InfoRow label="Taille" value={bytesLabel(item.byteSize)} colors={colors} />
         <InfoRow label="Conservation" value={`Jusqu’au ${item.retentionUntil}`} colors={colors} />
