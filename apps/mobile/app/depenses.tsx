@@ -542,6 +542,35 @@ export default function Depenses() {
                             accessibilityLabel={`${t('dep.regularize', { personality })} — ${expense.supplierName}`}
                           />
                         </View>
+                      ) : expense.paymentEvidence?.proofDocumentId ? (
+                        // Lane preuves : la ligne payée montre son justificatif du coffre
+                        // (le scan du ticket, par exemple) — la preuve est VISIBLE, pas cachée.
+                        <View
+                          style={{
+                            marginTop: 12,
+                            paddingTop: 12,
+                            borderTopWidth: 1,
+                            borderTopColor: colors.lineSoft,
+                          }}
+                        >
+                          <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel={`${t('dep.proofLink', { personality })} — ${expense.supplierName}`}
+                            onPress={() => {
+                              const proofDocumentId = expense.paymentEvidence?.proofDocumentId;
+                              if (proofDocumentId) {
+                                router.push({ pathname: '/documents/[id]', params: { id: proofDocumentId } });
+                              }
+                            }}
+                            style={{ minHeight: 44, justifyContent: 'center', alignSelf: 'flex-start' }}
+                          >
+                            <Text style={[font('sub', 600), { color: semantic.success }]}>
+                              {t('dep.proofLink', { personality })}
+                              {' · '}
+                              {displayExpensePaymentDate(expense.paymentEvidence.paidOn)}
+                            </Text>
+                          </Pressable>
+                        </View>
                       ) : null}
                     </Card>
                     );

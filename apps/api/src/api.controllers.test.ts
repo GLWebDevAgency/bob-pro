@@ -398,6 +398,11 @@ describe('DocumentsController document -> expense runtime boundary', () => {
     [{ expectedRevision: 1, targetFolderId: 'folder-1', expense: { ...validExpense, idempotencyKey: 'forged' } }, 'body'],
     [{ expectedRevision: 1, targetFolderId: 'folder-1', expense: { ...validExpense, source: 'manual' } }, 'body'],
     [{ expectedRevision: 1, targetFolderId: 'folder-1', expense: validExpense, linkedEntityId: 'expense-1' }, 'body'],
+    // La PREUVE du règlement est l'original archivé, sous autorité serveur : la désigner est un contrat forgé.
+    [{ expectedRevision: 1, targetFolderId: 'folder-1', expense: { ...validExpense, payment: { paidOn: '2026-07-13', method: 'card', proofDocumentId: 'doc-x' } } }, 'payment'],
+    [{ expectedRevision: 1, targetFolderId: 'folder-1', expense: { ...validExpense, payment: { paidOn: '2026-07-13', method: 'cheque' } } }, 'payment.method'],
+    [{ expectedRevision: 1, targetFolderId: 'folder-1', expense: { ...validExpense, payment: { paidOn: '13/07/2026', method: 'card' } } }, 'payment.paidOn'],
+    [{ expectedRevision: 1, targetFolderId: 'folder-1', expense: { ...validExpense, payment: 'paid' } }, 'payment'],
   ])('rejette un contrat atomique malformé ou un champ sous autorité serveur (%j)', async (body, field) => {
     const backend = { recordDocumentExpense: vi.fn() };
     const controller = new DocumentsController(backend as unknown as BackendService);
@@ -436,6 +441,28 @@ describe('DocumentsController document -> expense runtime boundary', () => {
       expectedRevision: 3,
       targetFolderId: 'folder-purchases',
       expense: validExpense,
+    });
+  });
+
+  it('accepte un règlement déclaré (ticket déjà payé) limité à date + moyen', async () => {
+    const backend = {
+      recordDocumentExpense: vi.fn(async () => ({
+        ok: true as const,
+        value: { expenseId: 'expense-1', document: { id: 'document-1' } },
+      })),
+    };
+    const controller = new DocumentsController(backend as unknown as BackendService);
+
+    await controller.recordExpenseFromDocument('document-1', {
+      expectedRevision: 3,
+      targetFolderId: 'folder-purchases',
+      expense: { ...validExpense, payment: { paidOn: '2026-07-13', method: 'card' } },
+    });
+    expect(backend.recordDocumentExpense).toHaveBeenCalledWith({
+      documentId: 'document-1',
+      expectedRevision: 3,
+      targetFolderId: 'folder-purchases',
+      expense: { ...validExpense, payment: { paidOn: '2026-07-13', method: 'card' } },
     });
   });
 });

@@ -177,9 +177,13 @@ const QUOTE_LINE_CATEGORIES = new Set([
 const QUOTE_VAT_RATES = new Set([0, 2.1, 5.5, 10, 20]);
 const MAX_QUOTE_LINES = 100;
 const MAX_QUOTE_HT_CENTS = 1_500_000_000;
-const DOCUMENT_EXPENSE_FIELDS = new Set(
-  [...RECORD_EXPENSE_FIELDS].filter((field) => field !== 'idempotencyKey' && field !== 'source'),
-);
+// `payment` (ticket déjà réglé : date + moyen) n'est accepté QUE sur le flux document :
+// la preuve est alors l'original archivé, imposé côté serveur — jamais un champ client.
+const DOCUMENT_EXPENSE_FIELDS = new Set([
+  ...[...RECORD_EXPENSE_FIELDS].filter((field) => field !== 'idempotencyKey' && field !== 'source'),
+  'payment',
+]);
+const DOCUMENT_EXPENSE_PAYMENT_FIELDS = new Set(['paidOn', 'method']);
 const DOCUMENT_EXPENSE_BODY_FIELDS = new Set(['expectedRevision', 'targetFolderId', 'expense']);
 const EXPENSE_CATEGORIES = new Set([
   'fournitures',
@@ -836,6 +840,31 @@ function parseRecordExpenseBody(
     issues.push({ field: 'vatRatePct', message: 'Taux de TVA attendu entre 0 et 100.' });
   }
 
+  // Règlement déclaré (ticket de caisse) : date + moyen UNIQUEMENT. Référence et justificatif
+  // sont sous autorité serveur — un champ surnuméraire est un contrat forgé, donc rejeté.
+  let payment: { paidOn: string; method: PaymentMethod } | null | undefined;
+  if (Object.hasOwn(body, 'payment') && allowedFields.has('payment')) {
+    const rawPayment = body.payment;
+    if (rawPayment === null) {
+      payment = null;
+    } else if (!isJsonRecord(rawPayment)) {
+      issues.push({ field: 'payment', message: 'Règlement déclaré invalide.' });
+    } else {
+      if (Object.keys(rawPayment).some((field) => !DOCUMENT_EXPENSE_PAYMENT_FIELDS.has(field))) {
+        issues.push({ field: 'payment', message: 'Le règlement contient un champ non autorisé.' });
+      }
+      const paidOn = rawPayment.paidOn;
+      if (typeof paidOn !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(paidOn)) {
+        issues.push({ field: 'payment.paidOn', message: 'Date de règlement AAAA-MM-JJ requise.' });
+      }
+      const method = rawPayment.method;
+      if (typeof method !== 'string' || !EXPENSE_PAYMENT_METHODS.has(method as PaymentMethod)) {
+        issues.push({ field: 'payment.method', message: 'Moyen de règlement inconnu.' });
+      }
+      payment = { paidOn: paidOn as string, method: method as PaymentMethod };
+    }
+  }
+
   if (issues.length > 0) throwValidationIssues(issues);
   return {
     supplierName,
@@ -852,6 +881,7 @@ function parseRecordExpenseBody(
     ...(supplierInvoiceNumber !== undefined ? { supplierInvoiceNumber } : {}),
     ...(dueAt !== undefined ? { dueAt } : {}),
     ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
+    ...(payment !== undefined ? { payment } : {}),
   };
 }
 

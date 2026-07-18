@@ -29,8 +29,9 @@ import {
   type RecordDocumentExpenseClientOutput,
 } from '@bob/api-client';
 import { suggestCategoryClarification } from '@bob/ai';
+import { t } from '@bob/i18n';
 import { ErrorRetry, QuestionSheet, Sheet, Skeleton } from '@bob/ui';
-import type { ExpenseCategory } from '@bob/core';
+import type { ExpenseCategory, PaymentMethod } from '@bob/core';
 import { useTheme } from '../src/theme';
 import { useQueryClient } from '@tanstack/react-query';
 import { useExtractDocument } from '../src/data/hooks';
@@ -49,6 +50,12 @@ import { Card, Button, Badge, SectionHeader, font } from '../src/components/ui';
 import { useBobAwareScrollInsets } from '../src/components/use-bob-aware-scroll-insets';
 import { useSupplierExpenseDefaults } from '../src/data/supplier-memory';
 import { deriveSupplierExpenseDefaultsState } from '../src/data/supplier-memory-query';
+import {
+  DEFAULT_TICKET_PAYMENT_METHOD,
+  deriveScanSettlementProposal,
+  settlementExpenseFields,
+  type ScanSettlementChoice,
+} from '../src/scan/scan-settlement';
 
 const DOCUMENT_MAX_BYTES = 10 * 1024 * 1024;
 const LOCAL_FILE_READ_TIMEOUT_MS = 20_000;
@@ -157,7 +164,7 @@ const CUSTOM_FOLDER_NAME: Partial<Readonly<Record<DocumentAnalysis['type'], stri
 };
 
 export default function ScanDocument() {
-  const { colors, semantic } = useTheme();
+  const { colors, semantic, personality } = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const navigation = useNavigation();
@@ -320,6 +327,10 @@ export default function ScanDocument() {
     setRecordResolution(null);
     setChosenCategory(null);
     setCategoryDismissed(false);
+    setSettlementChoice(null);
+    setSettlementMethod(null);
+    setSettlementDismissed(false);
+    setSettlementError(false);
     intake.reset();
     extract.reset();
     analysis.reset();
@@ -407,6 +418,24 @@ export default function ScanDocument() {
   const clarification = data && defaults ? suggestCategoryClarification(defaults, data) : null;
   const askCategory = clarification !== null && chosenCategory === null && !categoryDismissed;
   const category: ExpenseCategory = chosenCategory ?? defaults?.category ?? (data?.categoryGuess ?? 'autre');
+
+  // Statut payé/à payer : un ticket EST une preuve de paiement → dépense créée PAYÉE avec le
+  // scan comme preuve ; une facture reste « à payer » (+ échéance lue). Ambigu → on demande,
+  // on ne devine jamais. Le choix se corrige d'un tap (« c'est déjà payé » / « c'est à payer »).
+  const [settlementChoice, setSettlementChoice] = useState<ScanSettlementChoice | null>(null);
+  const [settlementMethod, setSettlementMethod] = useState<PaymentMethod | null>(null);
+  const [settlementDismissed, setSettlementDismissed] = useState(false);
+  const [settlementError, setSettlementError] = useState(false);
+  const settlementProposal = useMemo(
+    () => (data ? deriveScanSettlementProposal(data) : null),
+    [data],
+  );
+  const effectiveSettlement: ScanSettlementChoice | null =
+    settlementChoice ?? settlementProposal?.proposal ?? null;
+  const effectiveMethod: PaymentMethod =
+    settlementMethod ?? settlementProposal?.methodSeen ?? DEFAULT_TICKET_PAYMENT_METHOD;
+  const askSettlement =
+    data !== undefined && effectiveSettlement === null && !settlementDismissed && !askCategory;
 
   async function capture(from: 'camera' | 'library'): Promise<void> {
     setCaptureError(null);
@@ -544,6 +573,14 @@ export default function ScanDocument() {
     }
     const document = archivedDocument;
     if (!document || !data || !defaults || record.isPending) return;
+    // Statut payé/à payer non tranché (extraction ambiguë et pas encore de réponse) :
+    // on repose la question au lieu de deviner un « à payer » absurde pour un ticket.
+    if (effectiveSettlement === null) {
+      setSettlementError(true);
+      setSettlementDismissed(false);
+      return;
+    }
+    setSettlementError(false);
     // Le choix « Plus tard — laisser dans À classer » reste respecté : créer une dépense ne
     // déclenche jamais un rangement silencieux. On redemande explicitement le dossier.
     if (document.folderId === null) {
@@ -567,6 +604,16 @@ export default function ScanDocument() {
         vatCents: data.vatCents,
         vatRatePct: defaults.vatRatePct,
         category,
+        // Ticket → dépense payée d'emblée (le scan devient la preuve, autorité serveur) ;
+        // facture → à payer avec l'échéance lue si présente.
+        ...settlementExpenseFields(
+          {
+            choice: effectiveSettlement,
+            method: effectiveMethod,
+            dueAt: settlementProposal?.dueAt ?? null,
+          },
+          data.documentDate,
+        ),
       },
     };
     record.mutate(
@@ -1032,6 +1079,102 @@ export default function ScanDocument() {
                   </View>
                 ) : null}
               </View>
+              {/* Statut payé/à payer proposé (ticket = preuve de paiement ≠ facture à régler).
+                  Corrigeable d'un tap — même affordance que la réponse vocale « c'est déjà
+                  payé » / « c'est à payer ». */}
+              <View
+                style={{
+                  marginTop: 14,
+                  paddingTop: 12,
+                  borderTopWidth: 1,
+                  borderTopColor: colors.lineSoft,
+                  gap: 8,
+                }}
+              >
+                <Text style={[font('label'), { color: colors.slate400, fontSize: 12, fontWeight: '700' }]}>
+                  {t('scan.settlementLabel', { personality }).toUpperCase()}
+                </Text>
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  <ChoiceChip
+                    label={t('scan.settlementPaid', { personality })}
+                    accessibilityLabel="C’est déjà payé"
+                    selected={effectiveSettlement === 'paid'}
+                    onPress={() => {
+                      setSettlementChoice('paid');
+                      setSettlementError(false);
+                    }}
+                    colors={colors}
+                    semantic={semantic}
+                  />
+                  <ChoiceChip
+                    label={t('scan.settlementToPay', { personality })}
+                    accessibilityLabel="C’est à payer"
+                    selected={effectiveSettlement === 'to_pay'}
+                    onPress={() => {
+                      setSettlementChoice('to_pay');
+                      setSettlementError(false);
+                    }}
+                    colors={colors}
+                    semantic={semantic}
+                  />
+                </View>
+                {effectiveSettlement === 'paid' ? (
+                  <>
+                    <Text style={[font('meta'), { color: semantic.success, lineHeight: 17 }]}>
+                      {t('scan.settlementPaidDetail', {
+                        personality,
+                        params: { date: displayDate(data.documentDate) },
+                      })}
+                    </Text>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                      <Text style={[font('meta'), { color: colors.slate400 }]}>
+                        {t('scan.settlementMethodLabel', { personality })}
+                      </Text>
+                      {(['card', 'transfer', 'cash'] as const).map((method) => (
+                        <ChoiceChip
+                          key={method}
+                          compact
+                          label={t(
+                            method === 'card'
+                              ? 'dep.paymentMethodCard'
+                              : method === 'transfer'
+                                ? 'dep.paymentMethodTransfer'
+                                : 'dep.paymentMethodCash',
+                            { personality },
+                          )}
+                          selected={effectiveMethod === method}
+                          onPress={() => setSettlementMethod(method)}
+                          colors={colors}
+                          semantic={semantic}
+                        />
+                      ))}
+                    </View>
+                    {settlementProposal?.methodSeen && settlementMethod === null ? (
+                      <Text style={[font('meta'), { color: semantic.ai }]}>
+                        ✨ {t('scan.settlementMethodSeen', { personality })}
+                      </Text>
+                    ) : null}
+                  </>
+                ) : effectiveSettlement === 'to_pay' ? (
+                  <>
+                    <Text style={[font('meta'), { color: colors.slate500, lineHeight: 17 }]}>
+                      {t('scan.settlementToPayDetail', { personality })}
+                    </Text>
+                    {settlementProposal?.dueAt ? (
+                      <Row
+                        label={t('scan.settlementDueDate', { personality })}
+                        value={displayDate(settlementProposal.dueAt)}
+                        colors={colors}
+                      />
+                    ) : null}
+                  </>
+                ) : null}
+                {settlementError ? (
+                  <Text accessibilityRole="alert" style={[font('sub'), { color: semantic.warning, lineHeight: 19 }]}>
+                    {t('scan.settlementRequired', { personality })}
+                  </Text>
+                ) : null}
+              </View>
             </Card>
             {recordResolution?.kind === 'unresolved' ? (
               <Card>
@@ -1140,6 +1283,38 @@ export default function ScanDocument() {
         onOther={() => setCategoryDismissed(true)}
       />
 
+      {/* Statut ambigu (extraction sans discriminant fiable) : Bob DEMANDE au lieu de deviner
+          — « ticket déjà payé » ou « facture à régler », les deux réponses vocales naturelles. */}
+      <QuestionSheet
+        visible={askSettlement}
+        header={t('scan.settlementQuestionHeader', { personality })}
+        question={t('scan.settlementQuestion', { personality })}
+        options={[
+          {
+            value: 'paid',
+            label: t('scan.settlementOptionTicket', { personality }),
+            description: t('scan.settlementOptionTicketDesc', { personality }),
+          },
+          {
+            value: 'to_pay',
+            label: t('scan.settlementOptionInvoice', { personality }),
+            description: t('scan.settlementOptionInvoiceDesc', { personality }),
+          },
+        ]}
+        confirmLabel={t('scan.settlementConfirm', { personality })}
+        otherLabel={t('scan.settlementLater', { personality })}
+        onClose={() => setSettlementDismissed(true)}
+        onSelect={(values) => {
+          const picked = values[0];
+          if (picked === 'paid' || picked === 'to_pay') {
+            setSettlementChoice(picked);
+            setSettlementError(false);
+          }
+          setSettlementDismissed(true);
+        }}
+        onOther={() => setSettlementDismissed(true)}
+      />
+
       <QuestionSheet
         visible={
           filingPromptDocumentId !== null
@@ -1148,6 +1323,7 @@ export default function ScanDocument() {
           && !filingRecoveryPending
           && filingOptions.length > 0
           && !askCategory
+          && !askSettlement
         }
         header="Rangement proposé par Bob"
         question={suggestedFolder
@@ -1246,6 +1422,62 @@ export default function ScanDocument() {
         </KeyboardAvoidingView>
       </Sheet>
     </ScrollView>
+  );
+}
+
+function displayDate(iso: string): string {
+  const [y, m, d] = iso.slice(0, 10).split('-');
+  return d && m && y ? `${d}/${m}/${y}` : iso.slice(0, 10);
+}
+
+/** Chip de choix binaire/multiple (statut payé·à payer, moyen de règlement) — zéro hex. */
+function ChoiceChip({
+  label,
+  selected,
+  onPress,
+  colors,
+  semantic,
+  compact,
+  accessibilityLabel,
+}: {
+  label: string;
+  selected: boolean;
+  onPress: () => void;
+  colors: ReturnType<typeof useTheme>['colors'];
+  semantic: ReturnType<typeof useTheme>['semantic'];
+  compact?: boolean;
+  accessibilityLabel?: string;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="radio"
+      accessibilityState={{ checked: selected }}
+      accessibilityLabel={accessibilityLabel ?? label}
+      onPress={onPress}
+      style={({ pressed }) => ({
+        minHeight: compact ? 34 : 44,
+        justifyContent: 'center',
+        borderWidth: 1.5,
+        borderColor: selected ? semantic.success : colors.lineSoft,
+        backgroundColor: selected ? colors.surface : 'transparent',
+        borderRadius: 12,
+        paddingHorizontal: compact ? 12 : 16,
+        paddingVertical: compact ? 6 : 10,
+        opacity: pressed ? 0.85 : 1,
+      })}
+    >
+      <Text
+        style={[
+          font('sub'),
+          {
+            color: selected ? colors.ink900 : colors.slate500,
+            fontWeight: selected ? '700' : '500',
+          },
+        ]}
+      >
+        {label}
+      </Text>
+    </Pressable>
   );
 }
 

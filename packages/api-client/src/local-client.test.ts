@@ -753,6 +753,55 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     expect(conflictingPayload).toMatchObject({ ok: false, error: { kind: 'conflict' } });
   });
 
+  it('ticket déjà payé : dépense locale PAYÉE d’emblée, le scan devient la preuve (autorité adaptateur)', async () => {
+    const client = makeClient();
+    const folders = await client.listDocumentFolders({ parentId: null, limit: 100 });
+    expect(folders.ok).toBe(true);
+    if (!folders.ok) return;
+    const purchases = folders.value.items.find((folder) => folder.systemKey === 'purchases');
+    if (!purchases) return;
+    const uploaded = await client.uploadDocument({
+      contentBase64: '/9j/4AAQSkZJRg==',
+      mimeType: 'image/jpeg',
+      filename: 'ticket-leroy-merlin.jpg',
+      kind: 'expense_receipt',
+      documentDate: '2026-06-01',
+    });
+    expect(uploaded.ok).toBe(true);
+    if (!uploaded.ok) return;
+
+    const created = await client.recordDocumentExpense({
+      documentId: uploaded.value.id,
+      expectedRevision: uploaded.value.revision,
+      targetFolderId: purchases.id,
+      expense: {
+        supplierName: 'Leroy Merlin',
+        documentDate: '2026-06-01',
+        totalTtcCents: 18_490,
+        category: 'fournitures' as const,
+        // Le client ne déclare QUE date + moyen : la preuve est imposée par l'adaptateur.
+        payment: { paidOn: '2026-06-01', method: 'card' as const },
+      },
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const expenses = await client.listExpenses();
+    expect(expenses.ok).toBe(true);
+    if (!expenses.ok) return;
+    const paid = expenses.value.find((expense) => expense.id === created.value.expenseId);
+    // Badge « Payée » + preuve liée : AUCUN bouton Payer possible sur cette ligne.
+    expect(paid).toMatchObject({
+      status: 'paid',
+      paymentEvidence: {
+        paidOn: '2026-06-01',
+        method: 'card',
+        reference: null,
+        proofDocumentId: uploaded.value.id,
+      },
+    });
+  });
+
   it('transfère les originaux via un plan opaque avant de supprimer un dossier personnalisé', async () => {
     const client = makeClient();
     const source = await client.createDocumentFolder({ name: 'Archives temporaires' });

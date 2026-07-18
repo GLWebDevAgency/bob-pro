@@ -3,7 +3,14 @@ import { addDays } from '../../shared-kernel/time';
 import { type AppError } from '../result';
 import { type OcrPort, type OcrExtractInput } from '../ports/ocr';
 import { type ClockPort } from '../ports/services';
-import { canonicalReceiptFilename, normalizeSuggestedTags, type OcrExtraction, type ExpenseCategoryGuess } from '../../domain/ocr/ocr-extraction';
+import {
+  canonicalReceiptFilename,
+  normalizeSuggestedTags,
+  type ExpenseCategoryGuess,
+  type OcrDocumentKind,
+  type OcrExtraction,
+  type OcrPaymentMethodSeen,
+} from '../../domain/ocr/ocr-extraction';
 
 // FNV-1a 32 bits — déterministe (pas de Date.now / Math.random) : démo reproductible.
 function hash32(s: string): number {
@@ -15,16 +22,24 @@ function hash32(s: string): number {
   return h >>> 0;
 }
 
-const SUPPLIERS: { name: string; siren: string | null; cat: ExpenseCategoryGuess }[] = [
-  { name: 'Point P Matériaux', siren: null, cat: 'materiel' },
-  { name: 'Leroy Merlin', siren: null, cat: 'fournitures' },
-  { name: 'TotalEnergies Station', siren: null, cat: 'carburant' },
-  { name: 'Brasserie du Coin', siren: null, cat: 'repas' },
-  { name: 'SARL Dupont Plomberie', siren: '732829320', cat: 'sous_traitance' },
+const SUPPLIERS: {
+  name: string;
+  siren: string | null;
+  cat: ExpenseCategoryGuess;
+  /** Discriminant payé/à payer de la démo — les trois routes (ticket/facture/ambigu) sont exerçables. */
+  kind: OcrDocumentKind | null;
+  method: OcrPaymentMethodSeen | null;
+}[] = [
+  { name: 'Point P Matériaux', siren: null, cat: 'materiel', kind: 'facture_fournisseur', method: null },
+  { name: 'Leroy Merlin', siren: null, cat: 'fournitures', kind: 'ticket_caisse', method: 'card' },
+  { name: 'TotalEnergies Station', siren: null, cat: 'carburant', kind: 'ticket_caisse', method: 'card' },
+  { name: 'Brasserie du Coin', siren: null, cat: 'repas', kind: 'ticket_caisse', method: 'cash' },
+  { name: 'SARL Dupont Plomberie', siren: '732829320', cat: 'sous_traitance', kind: 'facture_fournisseur', method: null },
   // Grossiste généraliste : on y achète de tout — la devinette « autre » est une ambiguïté
   // DE FAIT (l'OCR avoue ne pas savoir) ; confiance plafonnée basse → la question de
-  // catégorie (ASK-3) est exerçable en démo, de façon déterministe par photo.
-  { name: 'Metro Cash & Carry', siren: null, cat: 'autre' },
+  // catégorie (ASK-3) est exerçable en démo, de façon déterministe par photo. Idem pour le
+  // statut payé/à payer : kind null → l'écran de validation pose la question.
+  { name: 'Metro Cash & Carry', siren: null, cat: 'autre', kind: null, method: null },
 ];
 
 /**
@@ -57,6 +72,10 @@ export class DemoOcrAdapter implements OcrPort {
       rawText: `${sup.name}\nTOTAL TTC ${(totalTtcCents / 100).toFixed(2)} EUR\nTVA ${vatRate}%`,
       suggestedTags: normalizeSuggestedTags([sup.cat, sup.name]),
       suggestedFilename: canonicalReceiptFilename({ documentDate, supplierName: sup.name, totalTtcCents }),
+      kind: sup.kind,
+      paymentMethodSeen: sup.kind === 'ticket_caisse' ? sup.method : null,
+      // Facture fournisseur de démo : échéance réaliste à 30 jours de la pièce.
+      dueDate: sup.kind === 'facture_fournisseur' ? addDays(documentDate, 30) : null,
     };
     return ok(extraction);
   }

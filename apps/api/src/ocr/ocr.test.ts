@@ -50,6 +50,9 @@ const VALID_EXTRACTION: OcrExtraction = {
   rawText: 'CEDEO',
   suggestedTags: ['materiel', 'cedeo'],
   suggestedFilename: '2026-07-01_cedeo_342.00eur',
+  kind: 'facture_fournisseur',
+  paymentMethodSeen: null,
+  dueDate: null,
 };
 
 afterEach(() => {
@@ -80,6 +83,44 @@ describe('MistralOcrAdapter (OCR dédié → extraction structurée → garde-fo
       expect(r.value.rawText).toContain('LEROY MERLIN'); // le markdown OCR, pas la paraphrase
       expect(r.value.suggestedTags).toEqual(['chantier-durand', 'fournitures']);
       expect(r.value.suggestedFilename).toBe('facture-leroy-juillet');
+      // Modèle muet sur la nature de la pièce → null : l'aval demandera, jamais de devinette.
+      expect(r.value.kind).toBeNull();
+      expect(r.value.paymentMethodSeen).toBeNull();
+      expect(r.value.dueDate).toBeNull();
+    }
+  });
+
+  it('propage le discriminant ticket/facture (kind, moyen lu, échéance) exigé par le schéma', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ pages: [{ markdown: '# LEROY MERLIN\nCB ****1234\nTOTAL TTC 184,90 €' }] }))
+      .mockResolvedValueOnce(jsonResponse({
+        choices: [{
+          message: {
+            content: JSON.stringify({ ...DRAFT, kind: 'ticket_caisse', paymentMethodSeen: 'card', dueDate: null }),
+          },
+        }],
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const adapter = new MistralOcrAdapter('key-test', 'mistral-ocr-latest', 'mistral-small-latest', {
+      now: () => '2026-07-03T10:00:00.000Z',
+      today: () => '2026-07-03',
+    });
+    const r = await adapter.extractDocument(INPUT);
+
+    // Le contrat structurel (json_schema strict) exige les trois nouveaux champs.
+    const chatBody = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)) as {
+      response_format: { json_schema: { schema: { required: string[] } } };
+    };
+    expect(chatBody.response_format.json_schema.schema.required).toEqual(
+      expect.arrayContaining(['kind', 'paymentMethodSeen', 'dueDate']),
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.kind).toBe('ticket_caisse');
+      expect(r.value.paymentMethodSeen).toBe('card');
+      expect(r.value.dueDate).toBeNull();
     }
   });
 

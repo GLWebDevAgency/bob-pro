@@ -155,6 +155,7 @@ import {
   type ExpenseCategory,
   type OcrPort,
   type RecordExpenseInput,
+  type RecordExpensePaymentDeclaration,
   type ExpenseProps,
   type ExpensePaymentEvidenceInput,
   type FacturXExpenseDraft,
@@ -440,7 +441,11 @@ export interface RecordDocumentExpenseInput {
   documentId: string;
   expectedRevision: number;
   targetFolderId: string;
-  expense: Omit<RecordExpenseInput, 'companyId' | 'idempotencyKey' | 'source'>;
+  /** Le règlement déclaré (ticket déjà payé) se limite à date + moyen : la PREUVE
+   *  (proofDocumentId) reste sous autorité serveur — c'est le scan archivé lui-même. */
+  expense: Omit<RecordExpenseInput, 'companyId' | 'idempotencyKey' | 'source' | 'payment'> & {
+    payment?: Pick<RecordExpensePaymentDeclaration, 'paidOn' | 'method'> | null;
+  };
 }
 
 export interface RecordDocumentExpenseOutput {
@@ -4870,11 +4875,22 @@ export class BackendService {
     if (!archived || archived.status !== 'active') {
       return { ok: false, error: appNotFound('document', input.documentId) };
     }
+    const declaredPayment = input.expense.payment ?? null;
     const expense: Omit<RecordExpenseInput, 'companyId'> = {
       ...input.expense,
       // Ces deux champs restent sous autorité serveur, même pour un appel interne élargi.
       source: 'ocr',
       idempotencyKey: documentExpenseCreationKey(archived.sha256),
+      // Ticket déjà payé : l'original archivé DEVIENT la preuve du règlement (chaîne
+      // paymentEvidence) — jamais une pièce désignée par le client.
+      payment: declaredPayment
+        ? {
+            paidOn: declaredPayment.paidOn,
+            method: declaredPayment.method,
+            reference: null,
+            proofDocumentId: input.documentId,
+          }
+        : null,
     };
 
     const coordinated = await this.expenseCreationCoordinator().execute(
@@ -4968,6 +4984,8 @@ export class BackendService {
       expenseId: coordinated.value.expenseId,
       folderId: coordinated.value.followUp.folderId,
       revision: coordinated.value.followUp.revision,
+      // Ticket déjà réglé : la dépense naît payée, le scan est sa preuve.
+      paidOnCreation: declaredPayment !== null,
     });
     return ok({ expenseId: coordinated.value.expenseId, document: coordinated.value.followUp });
   }

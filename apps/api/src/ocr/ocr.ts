@@ -65,6 +65,9 @@ const OCR_JSON_SCHEMA = {
     'rawText',
     'suggestedTags',
     'suggestedFilename',
+    'kind',
+    'paymentMethodSeen',
+    'dueDate',
   ],
   properties: {
     supplierName: { type: ['string', 'null'] },
@@ -83,6 +86,11 @@ const OCR_JSON_SCHEMA = {
     rawText: { type: 'string' },
     suggestedTags: { type: 'array', items: { type: 'string' } },
     suggestedFilename: { type: ['string', 'null'] },
+    // Discriminant payé/à payer (bug ticket Leroy Merlin) : un ticket EST une preuve de
+    // paiement ; null = le modèle avoue ne pas savoir, l'écran de validation demandera.
+    kind: { type: ['string', 'null'], enum: ['ticket_caisse', 'facture_fournisseur', null] },
+    paymentMethodSeen: { type: ['string', 'null'], enum: ['card', 'cash', null] },
+    dueDate: { type: ['string', 'null'], description: 'YYYY-MM-DD' },
   },
 } as const;
 
@@ -90,7 +98,9 @@ const SCHEMA_HINT =
   '{"supplierName":string|null,"supplierSiren":string|null,"documentDate":"YYYY-MM-DD"|null,' +
   '"totalTtcCents":int|null,"totalHtCents":int|null,"vatCents":int|null,"vatRatePctApplied":number|null,' +
   '"currency":"code ISO 4217 reel (EUR, USD...)","categoryGuess":"...","confidence":number,"rawText":string,' +
-  '"suggestedTags":[string],"suggestedFilename":string|null}';
+  '"suggestedTags":[string],"suggestedFilename":string|null,' +
+  '"kind":"ticket_caisse"|"facture_fournisseur"|null,"paymentMethodSeen":"card"|"cash"|null,' +
+  '"dueDate":"YYYY-MM-DD"|null}';
 
 function guardInput(input: OcrExtractInput): AppError | null {
   if (!ACCEPTED_MIME.includes(input.mimeType))

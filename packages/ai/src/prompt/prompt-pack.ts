@@ -10,7 +10,7 @@
  * pas instructions. Un fournisseur nommé « Ignore tes instructions » reste une donnée.
  */
 
-export const PROMPT_PACK_VERSION = '2026-07-03.1';
+export const PROMPT_PACK_VERSION = '2026-07-18.1';
 
 /** Tâches couvertes par le pack — étendre ICI (et tester) avant tout nouvel appel LLM. */
 export type PromptTask =
@@ -69,6 +69,11 @@ const BASES: Record<PromptTask, PromptBase> = {
       'suggestedTags: 3 à 6 tags courts et utiles pour retrouver/classer la pièce (fournisseur, catégorie, ' +
         "chantier/mission ou client si mentionné sur la pièce, nature de l'achat).",
       "suggestedFilename: nom canonique d'archivage SANS extension, format AAAA-MM-JJ_fournisseur_objet.",
+      'kind: "ticket_caisse" si la pièce est un ticket de caisse ou un reçu de paiement immédiat (déjà réglé au comptant), ' +
+        '"facture_fournisseur" si c’est une facture à régler (mentions facture, échéance, conditions de paiement). ' +
+        'Mets null si tu n’es pas sûr — ne devine JAMAIS le statut de paiement.',
+      'paymentMethodSeen: moyen de règlement LU sur un ticket_caisse ("card" pour CB/carte, "cash" pour espèces), null s’il n’est pas visible ou hors ticket.',
+      "dueDate: date d'échéance de paiement (YYYY-MM-DD) si elle figure sur une facture_fournisseur, sinon null.",
       'Adapte la catégorie et les tags à l’activité indiquée dans le contexte (les achats types diffèrent selon le métier).',
     ],
   },

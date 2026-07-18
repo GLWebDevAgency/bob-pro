@@ -1777,6 +1777,84 @@ describe('PONT-SERVEUR — coffre documentaire original-first et suppression sû
     });
   });
 
+  it('ticket déjà payé : dépense PAYÉE d’emblée, scan = preuve (autorité serveur), écritures achat + décaissement', async () => {
+    const { service, p } = makeService();
+    await p.seed();
+    await asPrincipal(MERCIER, async () => {
+      const archived = await service.createDocumentIntake({
+        contentBase64: '/9j/2Q==',
+        mimeType: 'image/jpeg',
+        filename: 'ticket-leroy-merlin.jpg',
+        idempotencyKey: 'scan-ticket-paid-0001',
+      });
+      expect(archived.ok).toBe(true);
+      if (!archived.ok) return;
+      const folders = await service.listDocumentFolders();
+      if (!folders.ok) throw new Error('fixture: dossiers absents');
+      const purchases = folders.value.items.find((folder) => folder.systemKey === 'purchases');
+      if (!purchases) throw new Error('fixture: dossier Achats absent');
+
+      const result = await service.recordDocumentExpense({
+        documentId: archived.value.id,
+        expectedRevision: archived.value.revision,
+        targetFolderId: purchases.id,
+        expense: {
+          supplierName: 'Leroy Merlin',
+          documentDate: todayUtc(),
+          totalTtcCents: 18_490,
+          category: 'fournitures',
+          // Ticket de caisse : déjà réglé — le client ne déclare QUE date + moyen.
+          payment: { paidOn: todayUtc(), method: 'card' },
+        },
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const expenses = await p.expenses.listByCompany(MERCIER.companyId!);
+      expect(expenses).toHaveLength(1);
+      // La dépense naît PAYÉE, avec le scan archivé comme preuve — jamais un « à payer » absurde.
+      expect(expenses[0]!.toProps()).toMatchObject({
+        status: 'paid',
+        paymentEvidence: {
+          paidOn: todayUtc(),
+          method: 'card',
+          reference: null,
+          proofDocumentId: archived.value.id,
+        },
+      });
+      // Cycle achats complet : écriture d'ACHAT (AC) ET de DÉCAISSEMENT (BQ) posées ensemble.
+      const entries = await p.accountingEntries.listByCompany(MERCIER.companyId!);
+      const forExpense = entries.filter((entry) => entry.toProps().sourceId === result.value.expenseId);
+      expect(forExpense).toHaveLength(2);
+      expect(result.value.document).toMatchObject({
+        linkedEntityType: 'expense',
+        linkedEntityId: result.value.expenseId,
+      });
+
+      // Retry idempotent (réponse perdue) : même dépense, toujours payée, aucune écriture doublée.
+      const retry = await service.recordDocumentExpense({
+        documentId: archived.value.id,
+        expectedRevision: archived.value.revision,
+        targetFolderId: purchases.id,
+        expense: {
+          supplierName: 'Leroy Merlin',
+          documentDate: todayUtc(),
+          totalTtcCents: 18_490,
+          category: 'fournitures',
+          payment: { paidOn: todayUtc(), method: 'card' },
+        },
+      });
+      expect(retry.ok).toBe(true);
+      if (retry.ok) expect(retry.value.expenseId).toBe(result.value.expenseId);
+      expect(await p.expenses.listByCompany(MERCIER.companyId!)).toHaveLength(1);
+      expect(
+        (await p.accountingEntries.listByCompany(MERCIER.companyId!)).filter(
+          (entry) => entry.toProps().sourceId === result.value.expenseId,
+        ),
+      ).toHaveLength(2);
+    });
+  });
+
   it('rollback Expense + E1 + claim + move si le classify CAS perd après les écritures financières', async () => {
     const { service, p } = makeService();
     await p.seed();

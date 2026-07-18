@@ -2061,6 +2061,14 @@ export class HttpBobClient implements BobClient {
         ? { supplierInvoiceNumber: input.expense.supplierInvoiceNumber }
         : {}),
       ...(input.expense.dueAt !== undefined ? { dueAt: input.expense.dueAt } : {}),
+      // Ticket déjà réglé : date + moyen uniquement — la preuve reste l'original, côté serveur.
+      ...(input.expense.payment !== undefined
+        ? {
+            payment: input.expense.payment
+              ? { paidOn: input.expense.payment.paidOn, method: input.expense.payment.method }
+              : null,
+          }
+        : {}),
     };
     return this.req<RecordDocumentExpenseClientOutput>(
       'PUT',

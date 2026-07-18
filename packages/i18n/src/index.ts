@@ -5490,6 +5490,79 @@ const legacyFr = {
   },
   'dep.retry': { pote: 'Réessayer', pro: 'Réessayer', direct: 'Réessayer' },
   'dep.scanCta': { pote: 'Scanner un reçu', pro: 'Scanner un reçu', direct: 'Scanner' },
+  // Preuve du règlement (lane preuves) : la ligne payée montre son justificatif du coffre.
+  'dep.proofLink': {
+    pote: 'Voir la preuve du paiement',
+    pro: 'Consulter le justificatif de règlement',
+    direct: 'Preuve',
+  },
+
+  // ── SCAN — statut payé/à payer proposé après lecture (bug ticket ≠ facture) ──
+  'scan.settlementLabel': {
+    pote: 'Payée ou à payer ?',
+    pro: 'Statut du règlement',
+    direct: 'Règlement',
+  },
+  'scan.settlementPaid': { pote: 'Déjà payée', pro: 'Déjà réglée', direct: 'Payée' },
+  'scan.settlementToPay': { pote: 'À payer', pro: 'À régler', direct: 'À payer' },
+  'scan.settlementPaidDetail': {
+    pote: 'Payée le {date} — le scan devient ta preuve de paiement.',
+    pro: 'Réglée le {date} — l’original scanné est conservé comme preuve de paiement.',
+    direct: 'Payée le {date}. Scan = preuve.',
+  },
+  'scan.settlementToPayDetail': {
+    pote: 'Je la garde dans « À payer » et je te préviens au bon moment.',
+    pro: 'La dépense restera à régler ; l’échéance lue sera suivie.',
+    direct: 'Reste à payer.',
+  },
+  'scan.settlementDueDate': { pote: 'Échéance', pro: 'Échéance', direct: 'Échéance' },
+  'scan.settlementMethodLabel': {
+    pote: 'Payé comment ?',
+    pro: 'Moyen de règlement',
+    direct: 'Moyen',
+  },
+  'scan.settlementMethodSeen': {
+    pote: 'Lu sur le ticket',
+    pro: 'Lu sur le ticket',
+    direct: 'Lu sur ticket',
+  },
+  'scan.settlementQuestionHeader': {
+    pote: 'Petit doute',
+    pro: 'Vérification',
+    direct: 'À trancher',
+  },
+  'scan.settlementQuestion': {
+    pote: 'C’est un ticket déjà payé ou une facture à régler ?',
+    pro: 'S’agit-il d’un ticket déjà payé ou d’une facture à régler ?',
+    direct: 'Ticket payé ou facture à régler ?',
+  },
+  'scan.settlementOptionTicket': {
+    pote: 'Ticket déjà payé',
+    pro: 'Ticket déjà payé',
+    direct: 'Ticket payé',
+  },
+  'scan.settlementOptionTicketDesc': {
+    pote: 'La dépense sera créée payée, avec le scan comme preuve.',
+    pro: 'La dépense sera enregistrée payée ; le scan servira de preuve de règlement.',
+    direct: 'Créée payée. Scan = preuve.',
+  },
+  'scan.settlementOptionInvoice': {
+    pote: 'Facture à régler',
+    pro: 'Facture à régler',
+    direct: 'Facture à régler',
+  },
+  'scan.settlementOptionInvoiceDesc': {
+    pote: 'La dépense restera à payer, avec son échéance si elle est lisible.',
+    pro: 'La dépense restera à régler ; l’échéance lue sera reprise.',
+    direct: 'Reste à payer.',
+  },
+  'scan.settlementLater': { pote: 'Plus tard', pro: 'Décider plus tard', direct: 'Plus tard' },
+  'scan.settlementConfirm': { pote: 'Valider', pro: 'Valider', direct: 'Valider' },
+  'scan.settlementRequired': {
+    pote: 'Dis-moi d’abord si c’est déjà payé ou à payer — je ne devine pas ça.',
+    pro: 'Indiquez d’abord si la pièce est déjà payée ou à régler.',
+    direct: 'Choisis : payé ou à payer.',
+  },
 
   // ── CLOTURE-UI — écran « Clôture » (refonte @bob/ui) ────────────────────────
   'cloture.back': { pote: 'Accueil', pro: 'Accueil', direct: 'Accueil' },

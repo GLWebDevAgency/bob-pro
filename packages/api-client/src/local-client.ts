@@ -2297,6 +2297,18 @@ export class LocalBobClient implements BobClient {
           ? { supplierInvoiceNumber: input.expense.supplierInvoiceNumber }
           : {}),
         ...(input.expense.dueAt !== undefined ? { dueAt: input.expense.dueAt } : {}),
+        // Miroir de l'autorité serveur : ticket déjà réglé → la dépense naît payée et
+        // l'original archivé DEVIENT la preuve du règlement (jamais une pièce du client).
+        ...(input.expense.payment
+          ? {
+              payment: {
+                paidOn: input.expense.payment.paidOn,
+                method: input.expense.payment.method,
+                reference: null,
+                proofDocumentId: document.id,
+              },
+            }
+          : {}),
       };
       const fingerprint = localExpenseCreationFingerprint(this.companyId, expenseInput);
       if (!fingerprint || fingerprint === 'invalid') {

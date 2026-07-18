@@ -259,12 +259,15 @@ export interface ClassifyDocumentClientInput {
 /**
  * Données comptables confirmées par l'utilisateur après lecture de l'original.
  * L'identité tenant, la source OCR et la clé d'idempotence restent exclusivement
- * sous le contrôle du serveur.
+ * sous le contrôle du serveur. `payment` (ticket déjà réglé) se limite à date + moyen :
+ * la preuve du règlement est l'original scanné lui-même, imposée côté serveur.
  */
 export type DocumentExpenseDraft = Omit<
   RecordExpenseInput,
-  'companyId' | 'idempotencyKey' | 'source'
->;
+  'companyId' | 'idempotencyKey' | 'source' | 'payment'
+> & {
+  payment?: { paidOn: string; method: PaymentMethod } | null;
+};
 
 export interface RecordDocumentExpenseClientInput {
   documentId: string;

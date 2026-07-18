@@ -69,6 +69,69 @@ describe('makeOcrExtraction — validation/normalisation', () => {
   });
 });
 
+describe('makeOcrExtraction — discriminant payé/à payer (ticket ≠ facture)', () => {
+  const base = {
+    supplierName: 'Leroy Merlin',
+    documentDate: '2026-07-01',
+    totalTtcCents: 18490,
+    currency: 'EUR',
+  };
+
+  it('ticket_caisse : kind + moyen lu conservés, échéance forcée à null', () => {
+    const r = makeOcrExtraction({
+      ...base,
+      kind: 'ticket_caisse',
+      paymentMethodSeen: 'cash',
+      dueDate: '2026-08-01',
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('ticket_caisse');
+    expect(r.value.paymentMethodSeen).toBe('cash');
+    expect(r.value.dueDate).toBeNull();
+  });
+
+  it('facture_fournisseur : échéance valide conservée, moyen « constaté » forcé à null', () => {
+    const r = makeOcrExtraction({
+      ...base,
+      kind: 'facture_fournisseur',
+      paymentMethodSeen: 'card',
+      dueDate: '2026-07-31',
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('facture_fournisseur');
+    expect(r.value.paymentMethodSeen).toBeNull();
+    expect(r.value.dueDate).toBe('2026-07-31');
+  });
+
+  it('échéance invraisemblable (avant la pièce ou invalide) → dégradée à null, jamais bloquante', () => {
+    const before = makeOcrExtraction({ ...base, kind: 'facture_fournisseur', dueDate: '2026-06-01' });
+    expect(before.ok).toBe(true);
+    if (before.ok) expect(before.value.dueDate).toBeNull();
+    const invalid = makeOcrExtraction({ ...base, kind: 'facture_fournisseur', dueDate: '31/07/2026' });
+    expect(invalid.ok).toBe(true);
+    if (invalid.ok) expect(invalid.value.dueDate).toBeNull();
+  });
+
+  it('kind absent, inconnu ou halluciné → null (l’aval demande, ne devine jamais)', () => {
+    for (const kind of [undefined, null, 'devis', 'TICKET_CAISSE'] as const) {
+      const r = makeOcrExtraction({ ...base, ...(kind !== undefined ? { kind } : {}), paymentMethodSeen: 'card' });
+      expect(r.ok).toBe(true);
+      if (!r.ok) continue;
+      expect(r.value.kind).toBeNull();
+      expect(r.value.paymentMethodSeen).toBeNull();
+      expect(r.value.dueDate).toBeNull();
+    }
+  });
+
+  it('moyen de règlement hors whitelist (virement halluciné sur ticket) → null', () => {
+    const r = makeOcrExtraction({ ...base, kind: 'ticket_caisse', paymentMethodSeen: 'transfer' });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.paymentMethodSeen).toBeNull();
+  });
+});
+
 describe('makeOcrExtraction — garde-fous LLM (A2-C14)', () => {
   const base = {
     supplierName: 'Leroy Merlin',

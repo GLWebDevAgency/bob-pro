@@ -4,6 +4,20 @@ import { type AppError, appDomain } from '../result';
 import { type IdGeneratorPort, type ClockPort } from '../ports/services';
 import { type ExpenseRepository } from '../ports/repositories';
 import { Expense, type ExpenseCategory, type ExpenseSource } from '../../domain/expense/expense';
+import { type PaymentMethod } from '../../domain/payment/payment';
+
+/**
+ * Règlement DÉJÀ effectué au moment de la création (ticket de caisse scanné, par exemple) :
+ * la dépense naît PAYÉE avec sa preuve (chaîne paymentEvidence) au lieu d'un « à payer »
+ * absurde qu'il faudrait re-payer. Sans cette déclaration, la dépense reste à payer.
+ */
+export interface RecordExpensePaymentDeclaration {
+  paidOn: string;
+  method: PaymentMethod;
+  reference?: string | null;
+  /** Pièce du coffre qui justifie le règlement — le scan lui-même pour un ticket. */
+  proofDocumentId?: string | null;
+}
 
 export interface RecordExpenseInput {
   companyId: string;
@@ -25,6 +39,8 @@ export interface RecordExpenseInput {
   supplierInvoiceNumber?: string | null;
   /** Échéance fournisseur (Factur-X BT-9, C-EXP6b) — optionnelle, additive. */
   dueAt?: string | null;
+  /** Présent → la dépense est créée PAYÉE avec cette preuve ; absent/null → « à payer ». */
+  payment?: RecordExpensePaymentDeclaration | null;
 }
 
 /**
@@ -45,7 +61,20 @@ export function canonicalRecordExpensePayload(input: Omit<RecordExpenseInput, 'c
     source: input.source ?? 'manual',
     supplierInvoiceNumber: input.supplierInvoiceNumber?.trim() || null,
     dueAt: input.dueAt ?? null,
-  } as const;
+    // Additif : la clé n'apparaît que si un règlement est déclaré, afin que l'empreinte
+    // d'une création « à payer » reste identique à celle des versions antérieures
+    // (un retry qui traverse un déploiement ne doit jamais devenir un faux conflit).
+    ...(input.payment
+      ? {
+          payment: {
+            paidOn: input.payment.paidOn,
+            method: input.payment.method,
+            reference: input.payment.reference?.trim() || null,
+            proofDocumentId: input.payment.proofDocumentId?.trim() || null,
+          },
+        }
+      : {}),
+  };
 }
 
 export interface RecordExpenseDeps {
@@ -60,6 +89,9 @@ export class RecordExpense {
 
   async execute(input: RecordExpenseInput): Promise<Result<{ id: string }, AppError>> {
     const id = this.deps.ids.newId();
+    // Ticket déjà réglé (scan) : la dépense naît payée avec sa preuve — le domaine revalide
+    // date/moyen/justificatif comme pour tout règlement (jamais de « payée sans preuve »).
+    const payment = input.payment ?? null;
     const r = Expense.record({
       id,
       companyId: input.companyId,
@@ -71,7 +103,15 @@ export class RecordExpense {
       vatCents: input.vatCents ?? null,
       vatRatePct: input.vatRatePct ?? null,
       category: input.category,
-      status: 'to_pay',
+      status: payment ? 'paid' : 'to_pay',
+      paymentEvidence: payment
+        ? {
+            paidOn: payment.paidOn,
+            method: payment.method,
+            reference: payment.reference ?? null,
+            proofDocumentId: payment.proofDocumentId ?? null,
+          }
+        : null,
       source: input.source ?? 'manual',
       supplierInvoiceNumber: input.supplierInvoiceNumber ?? null,
       dueAt: input.dueAt ?? null,

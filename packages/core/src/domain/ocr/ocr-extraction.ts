@@ -15,6 +15,16 @@ const CATEGORIES: readonly ExpenseCategoryGuess[] = [
   'autre',
 ];
 
+/**
+ * Nature de la pièce — discriminant du routage payé/à payer du scan :
+ * un ticket de caisse EST une preuve de paiement (dépense payée d'emblée),
+ * une facture fournisseur est une charge à régler (dépense à payer).
+ */
+export type OcrDocumentKind = 'ticket_caisse' | 'facture_fournisseur';
+
+/** Moyen de règlement LU sur un ticket (CB → card, espèces → cash) — jamais deviné. */
+export type OcrPaymentMethodSeen = 'card' | 'cash';
+
 /** Résultat structuré et validé d'une extraction OCR. Montants en CENTIMES (entiers). */
 export interface OcrExtraction {
   supplierName: string;
@@ -32,6 +42,12 @@ export interface OcrExtraction {
   suggestedTags: string[];
   /** Nom de fichier canonique « expert-comptable » (sans extension) : AAAA-MM-JJ_fournisseur_MONTANTeur. */
   suggestedFilename: string;
+  /** Ticket déjà payé vs facture à régler — null si le modèle ne peut pas trancher (l'aval DOIT demander). */
+  kind: OcrDocumentKind | null;
+  /** Moyen de règlement visible sur un ticket, sinon null. Toujours null hors ticket_caisse. */
+  paymentMethodSeen: OcrPaymentMethodSeen | null;
+  /** Échéance de paiement lue sur une facture fournisseur (YYYY-MM-DD), sinon null. */
+  dueDate: DateOnly | null;
 }
 
 /** Forme brute (non fiable) renvoyée par un adapter avant normalisation. */
@@ -49,6 +65,9 @@ export interface OcrExtractionDraft {
   rawText?: string | null;
   suggestedTags?: unknown;
   suggestedFilename?: string | null;
+  kind?: string | null;
+  paymentMethodSeen?: string | null;
+  dueDate?: string | null;
 }
 
 const isInt = (n: unknown): n is number => typeof n === 'number' && Number.isInteger(n);
@@ -313,6 +332,23 @@ export function makeOcrExtraction(
     if (!evidence.amountFound) confidence = Math.min(confidence, 0.45);
   }
 
+  // Discriminant payé/à payer : whitelist stricte — toute autre valeur devient « je ne sais
+  // pas » (null), jamais une devinette : l'écran de validation posera alors la question.
+  const kind: OcrDocumentKind | null =
+    draft.kind === 'ticket_caisse' || draft.kind === 'facture_fournisseur' ? draft.kind : null;
+  // Un moyen de règlement « constaté » n'a de sens que sur un ticket déjà payé.
+  const paymentMethodSeen: OcrPaymentMethodSeen | null =
+    kind === 'ticket_caisse' && (draft.paymentMethodSeen === 'card' || draft.paymentMethodSeen === 'cash')
+      ? draft.paymentMethodSeen
+      : null;
+  // Échéance : uniquement sur une facture, date valide et jamais antérieure à la pièce —
+  // sinon dégradation silencieuse à null (l'échéance est une aide, pas un bloqueur).
+  let dueDate: DateOnly | null = null;
+  if (kind === 'facture_fournisseur' && typeof draft.dueDate === 'string') {
+    const dueRaw = draft.dueDate.trim();
+    if (isValidDateOnly(dueRaw) && dueRaw >= dateRaw) dueDate = dueRaw;
+  }
+
   const suggestedTags = normalizeSuggestedTags(draft.suggestedTags);
   if (suggestedTags.length === 0) {
     // Toujours des tags utiles : catégorie + fournisseur (l'expert-comptable ne rend pas copie blanche).
@@ -338,5 +374,8 @@ export function makeOcrExtraction(
     rawText,
     suggestedTags,
     suggestedFilename,
+    kind,
+    paymentMethodSeen,
+    dueDate,
   });
 }
