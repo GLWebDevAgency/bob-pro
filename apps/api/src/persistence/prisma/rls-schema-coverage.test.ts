@@ -33,8 +33,8 @@ describe('couverture RLS du schéma Prisma tenant', () => {
     const required = prismaModels(schema)
       .filter(
         (model) =>
-          /^\s*companyId\s+String\??(?:\s|$)/mu.test(model.body)
-          || /^\s*cabinetId\s+String\??(?:\s|$)/mu.test(model.body),
+          /^\s*companyId\s+String\??(?:\s|$)/mu.test(model.body) ||
+          /^\s*cabinetId\s+String\??(?:\s|$)/mu.test(model.body),
       )
       .map((model) => model.table)
       .concat('companies', 'cabinets')
@@ -42,13 +42,31 @@ describe('couverture RLS du schéma Prisma tenant', () => {
     const forced = forcedTables(rls);
     const missing = required.filter((table) => !forced.has(table));
 
-    expect(missing, `Tables tenant sans FORCE RLS dans prisma/rls.sql: ${missing.join(', ')}`)
-      .toEqual([]);
+    expect(
+      missing,
+      `Tables tenant sans FORCE RLS dans prisma/rls.sql: ${missing.join(', ')}`,
+    ).toEqual([]);
   });
 
-  it('garde la table société elle-même sous la policy tenant id = current_company_id', () => {
-    expect(rls).toMatch(
-      /CREATE POLICY tenant_isolation ON companies\s+USING \(id = current_setting\('app\.current_company_id', true\)\)\s+WITH CHECK \(id = current_setting\('app\.current_company_id', true\)\)/u,
+  it('scope SELECT/INSERT/UPDATE Company au tenant et ne crée aucune policy DELETE', () => {
+    const companyPolicies = [...rls.matchAll(/CREATE POLICY (\w+) ON companies([^;]*);/gu)].map(
+      (match) => `${match[1]}${match[2]}`,
     );
+
+    expect(companyPolicies).toHaveLength(3);
+    expect(companyPolicies).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(
+          /company_select FOR SELECT\s+USING \(id = current_setting\('app\.current_company_id', true\)\)/u,
+        ),
+        expect.stringMatching(
+          /company_insert FOR INSERT\s+WITH CHECK \(id = current_setting\('app\.current_company_id', true\)\)/u,
+        ),
+        expect.stringMatching(
+          /company_update FOR UPDATE\s+USING \(id = current_setting\('app\.current_company_id', true\)\)\s+WITH CHECK \(id = current_setting\('app\.current_company_id', true\)\)/u,
+        ),
+      ]),
+    );
+    expect(companyPolicies.join('\n')).not.toMatch(/FOR (?:ALL|DELETE)\b/u);
   });
 });

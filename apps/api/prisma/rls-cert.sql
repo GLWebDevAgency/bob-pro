@@ -28,6 +28,11 @@ SELECT pg_temp.assert_eq(
   'cert role cannot bypass RLS'
 );
 SELECT pg_temp.assert_eq(
+  CASE WHEN has_table_privilege(current_user, 'public.companies', 'DELETE') THEN 1 ELSE 0 END,
+  0,
+  'runtime role cannot hard-delete companies'
+);
+SELECT pg_temp.assert_eq(
   CASE WHEN has_table_privilege(current_user, 'public.document_analyses', 'UPDATE') THEN 1 ELSE 0 END,
   0,
   'runtime role cannot update document analyses'
@@ -115,7 +120,6 @@ DELETE FROM document_counters WHERE "companyId" IN ('rls-co-a', 'rls-co-b');
 DELETE FROM invoices WHERE id IN ('rls-invoice-a', 'rls-invoice-b');
 DELETE FROM quotes WHERE id IN ('rls-quote-a', 'rls-quote-b');
 DELETE FROM customers WHERE id IN ('rls-customer-a', 'rls-customer-b');
-DELETE FROM companies WHERE id IN ('rls-co-a', 'rls-co-b');
 COMMIT;
 
 BEGIN;
@@ -141,7 +145,6 @@ DELETE FROM document_counters WHERE "companyId" IN ('rls-co-a', 'rls-co-b');
 DELETE FROM invoices WHERE id IN ('rls-invoice-a', 'rls-invoice-b');
 DELETE FROM quotes WHERE id IN ('rls-quote-a', 'rls-quote-b');
 DELETE FROM customers WHERE id IN ('rls-customer-a', 'rls-customer-b');
-DELETE FROM companies WHERE id IN ('rls-co-a', 'rls-co-b');
 COMMIT;
 
 -- Seed tenant A through RLS WITH CHECK policies.

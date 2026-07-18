@@ -68,9 +68,18 @@ BEGIN
 END $$;
 
 DROP POLICY IF EXISTS tenant_isolation ON companies;
-CREATE POLICY tenant_isolation ON companies
+DROP POLICY IF EXISTS company_select ON companies;
+DROP POLICY IF EXISTS company_insert ON companies;
+DROP POLICY IF EXISTS company_update ON companies;
+CREATE POLICY company_select ON companies FOR SELECT
+  USING (id = current_setting('app.current_company_id', true));
+CREATE POLICY company_insert ON companies FOR INSERT
+  WITH CHECK (id = current_setting('app.current_company_id', true));
+CREATE POLICY company_update ON companies FOR UPDATE
   USING (id = current_setting('app.current_company_id', true))
   WITH CHECK (id = current_setting('app.current_company_id', true));
+-- Aucune policy DELETE : une Company est clôturée de façon monotone, jamais hard-deleted par le
+-- runtime. release.sh retire aussi le privilège SQL pour que policy et GRANT se défendent ensemble.
 
 -- Les réglages sont immuables en identité (companyId) et ne peuvent jamais être supprimés par le
 -- runtime. Le PATCH applicatif fait un CAS sur revision ; RLS reste la défense inter-tenant.

@@ -78,6 +78,10 @@ import { DuplicateExpenseInvoiceError } from './expense-duplicate-error';
 export class InMemoryCompanyRepository implements ServerCompanyRepository {
   private readonly map = new Map<string, Company>();
   private clone(c: Company): Company {
+    // Quelques tests de jobs utilisent depuis l'origine un stub structurel `{ id } as Company` :
+    // le seed du double doit le conserver. Toutes les écritures métier passent, elles, par un vrai
+    // agrégat Company et bénéficient de la copie défensive ci-dessous.
+    if (typeof c.toProps !== 'function') return c;
     const cloned = Company.of(c.toProps());
     if (!cloned.ok) throw new Error('INVALID_COMPANY_TEST_SNAPSHOT');
     return cloned.value;
@@ -108,20 +112,20 @@ export class InMemoryCompanyRepository implements ServerCompanyRepository {
   }
   async save(c: Company): Promise<void> {
     const current = this.map.get(c.id);
-    if (current?.isClosed()) throw new Error('COMPANY_NOT_OPEN_FOR_UPDATE');
+    if (current && typeof current.isClosed === 'function' && current.isClosed()) {
+      throw new Error('COMPANY_NOT_OPEN_FOR_UPDATE');
+    }
     // Les tests historiques utilisent save pour leur seed explicite. Une fois la row présente,
     // la même monotonie qu'en PostgreSQL s'applique (ouverte → ouverte/clôturée, jamais l'inverse).
     this.map.set(c.id, this.clone(c));
   }
-  snapshot(): ReturnType<Company['toProps']>[] {
-    return [...this.map.values()].map((company) => company.toProps());
+  snapshot(): Company[] {
+    return [...this.map.values()].map((company) => this.clone(company));
   }
-  restore(snapshot: readonly ReturnType<Company['toProps']>[]): void {
+  restore(snapshot: readonly Company[]): void {
     this.map.clear();
-    for (const props of snapshot) {
-      const company = Company.of(props);
-      if (!company.ok) throw new Error('INVALID_COMPANY_TEST_SNAPSHOT');
-      this.map.set(company.value.id, company.value);
+    for (const company of snapshot) {
+      this.map.set(company.id, this.clone(company));
     }
   }
 }

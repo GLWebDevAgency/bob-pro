@@ -35,6 +35,9 @@ REVOKE UPDATE, DELETE ON TABLE
   public.quote_creation_requests,
   public.bank_balance_snapshots
 FROM :"app_role";
+-- Une société se clôture, elle ne se supprime jamais depuis le runtime : son identité légale
+-- reste nécessaire aux pièces conservées et un DELETE suivi d'un INSERT la ressusciterait.
+REVOKE DELETE ON TABLE public.companies FROM :"app_role";
 REVOKE DELETE ON TABLE
   public.realtime_speech_artifacts,
   public.stripe_subscription_invoices
@@ -169,6 +172,8 @@ RUN_POSTGRES_EXPENSE_PAYMENT_CERT=true \
   pnpm --filter @bob/api exec vitest run src/persistence/prisma/expense-payment-evidence.postgres.test.ts
 RUN_POSTGRES_BILLING_SETTINGS_CERT=true \
   pnpm --filter @bob/api exec vitest run src/persistence/prisma/company-billing-settings.postgres.test.ts
+RUN_POSTGRES_COMPANY_MUTATION_LIFECYCLE_CERT=true \
+  pnpm --filter @bob/api exec vitest run src/persistence/prisma/company-mutation-lifecycle.postgres.test.ts
 RUN_POSTGRES_QUOTE_SIGNATURE_CERT=true \
   pnpm --filter @bob/api exec vitest run src/persistence/prisma/quote-signature-token-concurrency.postgres.test.ts
 RUN_POSTGRES_PUBLIC_CAPABILITY_CERT=true \
