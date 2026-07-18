@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest';
 import { buildPaymentGateway, DisabledPaymentGateway, StripePaymentGateway } from './payment-gateway';
 
 const LIVE_PAYMENT_ENV = {
-  DEMO_MODE: 'false',
   STRIPE_SECRET_KEY: 'sk_test_config_only',
   STRIPE_PRICE_SOLO: 'price_solo',
   STRIPE_PRICE_PRO: 'price_pro',
