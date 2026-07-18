@@ -7,6 +7,12 @@ export interface CheckoutResult {
 
 /** Abstraction du fournisseur de paiement. Le runtime exige un fournisseur live configuré. */
 export interface PaymentGatewayPort {
+  /**
+   * Capacité de facturation réellement provisionnée au démarrage. `false` correspond à la V1
+   * accès anticipé : aucun CTA payant ne doit être rendu ni aucune tentative créée.
+   */
+  readonly subscriptionBillingAvailable: boolean;
+
   /** Abonnement SaaS : l'artisan souscrit une offre. */
   createSubscriptionCheckout(input: {
     companyId: string;

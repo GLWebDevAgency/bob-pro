@@ -1,4 +1,5 @@
 import { type Result, ok, err } from '../../shared-kernel/result';
+import { parisDateOnly } from '../../shared-kernel/time';
 import { type AppError, appDomain } from '../result';
 import { type IdGeneratorPort, type ClockPort } from '../ports/services';
 import { type ExpenseRepository } from '../ports/repositories';
@@ -74,7 +75,10 @@ export class RecordExpense {
       source: input.source ?? 'manual',
       supplierInvoiceNumber: input.supplierInvoiceNumber ?? null,
       dueAt: input.dueAt ?? null,
-    }, { today: this.deps.clock.today() });
+      // Borne « documentDate dans le futur » : jour MÉTIER Europe/Paris, pas l'UTC brut — une
+      // pièce datée d'aujourd'hui (Paris) saisie entre minuit et ~2 h serait sinon rejetée
+      // (même correction que RecordExpensePayment / GetCashflow « Audit correction 3 »).
+    }, { today: parisDateOnly(this.deps.clock.now()) });
     if (!r.ok) return err(appDomain(r.error));
     await this.deps.expenses.save(r.value);
     return ok({ id });

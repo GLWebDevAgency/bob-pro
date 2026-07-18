@@ -10,6 +10,29 @@ class FakeSubscriptionRepository implements SubscriptionRepository {
   async findByCompanyId(companyId: string): Promise<SubscriptionRecord | null> {
     return this.byCompany.get(companyId) ?? null;
   }
+  async startEarlyAccess(input: {
+    id: string;
+    companyId: string;
+    plan: SubscriptionRecord['plan'];
+    now: string;
+  }): Promise<SubscriptionRecord> {
+    const existing = this.byCompany.get(input.companyId);
+    if (existing) return existing;
+    const record: SubscriptionRecord = {
+      id: input.id,
+      companyId: input.companyId,
+      plan: input.plan,
+      status: 'active',
+      trialEndsAt: null,
+      currentPeriodEnd: null,
+      store: 'none',
+      storeRef: null,
+      createdAt: input.now,
+      updatedAt: input.now,
+    };
+    this.byCompany.set(input.companyId, record);
+    return record;
+  }
   async startTrial(input: {
     id: string;
     companyId: string;
@@ -43,13 +66,35 @@ class FakeSubscriptionRepository implements SubscriptionRepository {
 const T0 = '2026-07-14T09:00:00.000Z';
 
 describe('GetSubscriptionStatus — source de vérité DB (pilier 2)', () => {
-  it('aucune ligne → accès anticipé HONNÊTE (business actif, 0 phase d’essai), jamais un 503 ni un essai fantôme', async () => {
+  it('aucune ligne → indisponible, jamais un abonnement Business inventé', async () => {
     const repo = new FakeSubscriptionRepository();
     const useCase = new GetSubscriptionStatus({ subscriptions: repo });
 
     const r = await useCase.execute({ companyId: 'co-legacy', now: T0 });
 
     expect(r).toEqual({
+      ok: false,
+      error: { kind: 'unavailable', service: 'subscription-record' },
+    });
+  });
+
+  it('accès anticipé historique → état gratuit réellement persisté avec store=none', async () => {
+    const repo = new FakeSubscriptionRepository();
+    repo.seed({
+      id: 'sub-co-legacy',
+      companyId: 'co-legacy',
+      plan: 'business',
+      status: 'active',
+      trialEndsAt: null,
+      currentPeriodEnd: null,
+      store: 'none',
+      storeRef: null,
+      createdAt: T0,
+      updatedAt: T0,
+    });
+    const useCase = new GetSubscriptionStatus({ subscriptions: repo });
+
+    await expect(useCase.execute({ companyId: 'co-legacy', now: T0 })).resolves.toEqual({
       ok: true,
       value: {
         plan: 'business',
@@ -58,9 +103,9 @@ describe('GetSubscriptionStatus — source de vérité DB (pilier 2)', () => {
         trialPhase: null,
         trialDaysLeft: null,
         currentPeriodEnd: null,
-        store: null,
+        store: 'none',
         storeRef: null,
-        source: 'early_access',
+        source: 'db',
       },
     });
   });

@@ -35,6 +35,29 @@ class FakeSubscriptionRepository implements SubscriptionRepository {
   async findByCompanyId(companyId: string): Promise<SubscriptionRecord | null> {
     return this.byCompany.get(companyId) ?? null;
   }
+  async startEarlyAccess(input: {
+    id: string;
+    companyId: string;
+    plan: SubscriptionRecord['plan'];
+    now: string;
+  }): Promise<SubscriptionRecord> {
+    const existing = this.byCompany.get(input.companyId);
+    if (existing) return existing;
+    const record: SubscriptionRecord = {
+      id: input.id,
+      companyId: input.companyId,
+      plan: input.plan,
+      status: 'active',
+      trialEndsAt: null,
+      currentPeriodEnd: null,
+      store: 'none',
+      storeRef: null,
+      createdAt: input.now,
+      updatedAt: input.now,
+    };
+    this.byCompany.set(input.companyId, record);
+    return record;
+  }
   async startTrial(input: {
     id: string;
     companyId: string;

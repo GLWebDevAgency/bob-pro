@@ -15,7 +15,8 @@ import { type SubscriptionStatus } from '../../domain/subscription/subscription'
  * douce vers le palier réellement payé après essai est un CHANGEMENT de `plan` par l'appelant
  * (checkout / atterrissage), jamais une mutation implicite de cette ligne.
  */
-export type SubscriptionStore = 'apple' | 'google' | 'none';
+/** Canal de facturation persisté. `none` désigne un accès gracieux explicite, jamais une absence. */
+export type SubscriptionStore = 'apple' | 'google' | 'stripe' | 'none';
 
 export interface SubscriptionRecord {
   readonly id: string;
@@ -34,6 +35,16 @@ export interface SubscriptionRecord {
 
 export interface SubscriptionRepository {
   findByCompanyId(companyId: string): Promise<SubscriptionRecord | null>;
+  /**
+   * Provisionne l'accès anticipé gratuit explicite (`business/active/store=none`). Idempotent :
+   * une ligne existante, quelle que soit son origine, n'est jamais écrasée.
+   */
+  startEarlyAccess(input: {
+    id: string;
+    companyId: string;
+    plan: PlanTier;
+    now: Instant;
+  }): Promise<SubscriptionRecord>;
   /**
    * Démarre l'essai inversé du tenant — IDEMPOTENT : si une ligne existe déjà pour ce companyId
    * (retry de provisioning, cf. backend.service.registerCompany), elle est renvoyée TELLE QUELLE,

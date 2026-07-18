@@ -22,6 +22,8 @@ import type {
   StripeBillingRepository,
   StripeCheckoutAttempt,
   StripeCheckoutSessionSnapshot,
+  StripeSubscriptionInvoiceSnapshot,
+  StripeSubscriptionInvoiceRecord,
   StripeSubscriptionSnapshot,
   VerifiedStripeWebhookEvent,
 } from './stripe-billing-contract';
@@ -117,6 +119,23 @@ function validateSubscriptionSnapshot(
   requireMetadata(snapshot.metadata, 'bob_purpose', 'subscription');
 }
 
+function validateSubscriptionInvoiceSnapshot(
+  snapshot: StripeSubscriptionInvoiceSnapshot,
+  locator: Extract<StripeReconciliationLocator, { kind: 'subscription_invoice' }>,
+): void {
+  assertSame(snapshot.stripeInvoiceId, locator.stripeInvoiceId, 'STRIPE_INVOICE_ID_MISMATCH');
+  assertSame(
+    snapshot.stripeSubscriptionId,
+    locator.stripeSubscriptionId,
+    'STRIPE_INVOICE_SUBSCRIPTION_MISMATCH',
+  );
+  requireMetadata(snapshot.metadata, 'bob_company_id', locator.companyId);
+  requireMetadata(snapshot.metadata, 'bob_purpose', 'subscription');
+  if (locator.checkoutAttemptId !== null) {
+    requireMetadata(snapshot.metadata, 'bob_checkout_id', locator.checkoutAttemptId);
+  }
+}
+
 function providerFailureCode(error: unknown): string {
   if (error instanceof StripeReconciliationError) return error.code.slice(0, 160);
   if (error instanceof Error && error.name === 'StripeSignatureVerificationError') {
@@ -165,12 +184,25 @@ export class StripeBillingService {
     this.clock = new SystemClock();
   }
 
+  get subscriptionBillingAvailable(): boolean {
+    return this.provider.subscriptionBillingAvailable;
+  }
+
+  async listSubscriptionInvoices(companyId: string): Promise<StripeSubscriptionInvoiceRecord[]> {
+    return this.persistence.runWithTenant(companyId, () =>
+      this.persistence.stripeBilling.listSubscriptionInvoices(companyId),
+    );
+  }
+
   async startSubscriptionCheckout(input: {
     companyId: string;
     tier: PlanTier;
     successUrl: string;
     cancelUrl: string;
   }): Promise<CheckoutResult> {
+    if (!this.provider.subscriptionBillingAvailable) {
+      throw reconciliationError('SUBSCRIPTION_BILLING_UNAVAILABLE');
+    }
     if (input.tier === 'free') throw reconciliationError('STRIPE_FREE_PLAN_HAS_NO_CHECKOUT');
     const subscription = await this.persistence.runWithTenant(input.companyId, () =>
       this.persistence.subscriptions.findByCompanyId(input.companyId),
@@ -229,6 +261,9 @@ export class StripeBillingService {
   }
 
   async createBillingPortal(companyId: string, returnUrl: string): Promise<{ url: string }> {
+    if (!this.provider.subscriptionBillingAvailable) {
+      throw reconciliationError('SUBSCRIPTION_BILLING_UNAVAILABLE');
+    }
     const subscription = await this.persistence.runWithTenant(companyId, () =>
       this.persistence.subscriptions.findByCompanyId(companyId),
     );
@@ -242,6 +277,9 @@ export class StripeBillingService {
     invoiceId: string;
     label: string;
   }): Promise<CheckoutResult> {
+    if (!this.provider.subscriptionBillingAvailable) {
+      throw reconciliationError('SUBSCRIPTION_BILLING_UNAVAILABLE');
+    }
     const invoice = await this.persistence.runWithTenant(input.companyId, () =>
       this.persistence.invoices.findById(input.invoiceId),
     );
@@ -345,7 +383,11 @@ export class StripeBillingService {
 
     try {
       if (locator.kind === 'checkout') await this.reconcileCheckout(event, locator);
-      else await this.reconcileSubscription(event, locator);
+      else if (locator.kind === 'subscription_invoice') {
+        await this.reconcileSubscriptionInvoice(event, locator);
+      } else {
+        await this.reconcileSubscription(event, locator);
+      }
       return { received: true, eventId: event.id, outcome: 'processed' };
     } catch (error) {
       await this.persistence
@@ -411,7 +453,7 @@ export class StripeBillingService {
       };
       validateSubscriptionSnapshot(snapshot, subLocator);
       assertSame(snapshot.customerId, session.customerId, 'STRIPE_CUSTOMER_MISMATCH');
-      await this.applySubscription(event, subLocator, snapshot, session, locator);
+      await this.applySubscription(event, subLocator, snapshot, session, locator, null);
       return;
     }
 
@@ -507,7 +549,36 @@ export class StripeBillingService {
   ): Promise<void> {
     const snapshot = await this.provider.retrieveSubscription(locator.stripeSubscriptionId);
     validateSubscriptionSnapshot(snapshot, locator);
-    await this.applySubscription(event, locator, snapshot, null, null);
+    await this.applySubscription(event, locator, snapshot, null, null, null);
+  }
+
+  private async reconcileSubscriptionInvoice(
+    event: VerifiedStripeWebhookEvent,
+    locator: Extract<StripeReconciliationLocator, { kind: 'subscription_invoice' }>,
+  ): Promise<void> {
+    const invoice = await this.provider.retrieveSubscriptionInvoice(locator.stripeInvoiceId);
+    validateSubscriptionInvoiceSnapshot(invoice, locator);
+    const snapshot = await this.provider.retrieveSubscription(locator.stripeSubscriptionId);
+    const subscriptionLocator = {
+      kind: 'subscription' as const,
+      companyId: locator.companyId,
+      checkoutAttemptId: locator.checkoutAttemptId,
+      stripeSubscriptionId: locator.stripeSubscriptionId,
+    };
+    validateSubscriptionSnapshot(snapshot, subscriptionLocator);
+    assertSame(
+      invoice.stripeCustomerId,
+      snapshot.customerId,
+      'STRIPE_INVOICE_CUSTOMER_MISMATCH',
+    );
+    await this.applySubscription(
+      event,
+      subscriptionLocator,
+      snapshot,
+      null,
+      null,
+      invoice,
+    );
   }
 
   private async applySubscription(
@@ -516,6 +587,7 @@ export class StripeBillingService {
     snapshot: StripeSubscriptionSnapshot,
     session: StripeCheckoutSessionSnapshot | null,
     checkoutLocator: Extract<StripeReconciliationLocator, { kind: 'checkout' }> | null,
+    invoiceSnapshot: StripeSubscriptionInvoiceSnapshot | null,
   ): Promise<void> {
     const tier = this.provider.tierForPriceIds(snapshot.priceIds);
     if (!tier) throw reconciliationError('STRIPE_SUBSCRIPTION_PRICE_UNMAPPED', true);
@@ -585,6 +657,14 @@ export class StripeBillingService {
           eventId: event.id,
           now: this.clock.now(),
         });
+        if (invoiceSnapshot !== null) {
+          await this.persistence.stripeBilling.upsertSubscriptionInvoice({
+            companyId: locator.companyId,
+            eventId: event.id,
+            snapshot: invoiceSnapshot,
+            now: this.clock.now(),
+          });
+        }
         if (session && checkoutLocator) {
           await this.persistence.stripeBilling.completeCheckoutAttempt({
             companyId: checkoutLocator.companyId,

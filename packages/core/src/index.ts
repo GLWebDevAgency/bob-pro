@@ -143,6 +143,7 @@ export * from './application/expenses/record-expense';
 export * from './application/expenses/import-facturx-expense';
 export * from './application/expenses/pay-expense';
 export * from './application/expenses/record-expense-payment';
+export * from './application/expenses/regularize-legacy-expense-payment';
 export * from './application/expenses/summarize-expenses';
 export * from './application/chantier/chantier-list-item';
 export * from './application/chantier/create-chantier';

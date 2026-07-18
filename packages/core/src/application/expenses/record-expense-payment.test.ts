@@ -26,7 +26,7 @@ function props(over: Partial<ExpenseProps> = {}): ExpenseProps {
   };
 }
 
-function makeEnv(seed: ExpenseProps[]) {
+function makeEnv(seed: ExpenseProps[], clockNow = '2026-07-04T10:00:00.000Z') {
   const byId = new Map(seed.map((p) => [p.id, Expense.rehydrate(p)]));
   const saved = new Map<string, AccountingEntry>();
   let expenseSaveCount = 0;
@@ -61,7 +61,9 @@ function makeEnv(seed: ExpenseProps[]) {
     },
     listByCompany: async () => [...saved.values()].map((entry) => AccountingEntry.rehydrate(entry.toProps())),
   };
-  const clock = { now: () => '2026-07-04T10:00:00.000Z', today: () => '2026-07-04' };
+  // `today()` reste l'UTC brut de SystemClock : les tests vérifient que les bornes calendrier
+  // métier n'en dépendent plus (jour Europe/Paris dérivé de `now()`).
+  const clock = { now: () => clockNow, today: () => clockNow.slice(0, 10) };
   const documents = {
     findById: async (companyId: string, id: string) => (
       companyId === 'co-1' && id === 'document-proof-1'
@@ -162,6 +164,24 @@ describe('RecordExpensePayment (preuve d’un règlement déjà effectué)', () 
     expect(env.counts()).toEqual({ expenseSaveCount: 0, entrySaveCount: 0 });
   });
 
+  it('fenêtre nocturne Paris : « aujourd’hui » (jour Paris) est accepté alors que l’UTC est encore hier', async () => {
+    // 23h30 UTC le 3 juillet = 01h30 le 4 juillet à Paris (été, UTC+2) : le jour métier est le 4.
+    const env = makeEnv([props()], '2026-07-03T23:30:00.000Z');
+    const r = await env.usecase.execute({ ...command, paidOn: '2026-07-04' });
+    expect(r).toEqual({
+      ok: true,
+      value: { status: 'paid', alreadyRecorded: false, paymentEntryId: 'expense:exp-1:paid' },
+    });
+    expect(env.saved.get('expense:exp-1:paid')?.entryDate).toBe('2026-07-04');
+  });
+
+  it('fenêtre nocturne Paris : après-demain (Paris) reste rejeté comme futur', async () => {
+    const env = makeEnv([props()], '2026-07-03T23:30:00.000Z');
+    const r = await env.usecase.execute({ ...command, paidOn: '2026-07-05' });
+    expect(!r.ok && r.error.kind).toBe('domain');
+    expect(env.counts()).toEqual({ expenseSaveCount: 0, entrySaveCount: 0 });
+  });
+
   it('rejette date future et moyen inconnu sans aucune écriture', async () => {
     const future = makeEnv([props()]);
     const unknown = makeEnv([props()]);
@@ -180,10 +200,12 @@ describe('RecordExpensePayment (preuve d’un règlement déjà effectué)', () 
     expect(env.counts()).toEqual({ expenseSaveCount: 0, entrySaveCount: 0 });
   });
 
-  it('fail-closed sur une dépense historique payée sans preuve', async () => {
+  it('fail-closed sur une dépense historique payée sans preuve — entité dédiée pour router vers la régularisation', async () => {
     const env = makeEnv([props({ status: 'paid', paymentEvidence: null })]);
     const r = await env.usecase.execute(command);
     expect(!r.ok && r.error.kind).toBe('conflict');
+    if (r.ok || r.error.kind !== 'conflict') return;
+    expect(r.error.entity).toBe('expense_payment_legacy');
     expect(env.counts()).toEqual({ expenseSaveCount: 0, entrySaveCount: 0 });
   });
 

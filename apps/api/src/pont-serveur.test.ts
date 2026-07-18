@@ -386,6 +386,7 @@ describe('PONT-SERVEUR v1 ⑤ — getDiagnostic : annualEncaissedCents RÉEL (vi
     });
     if (!company.ok) throw new Error('fixture: company franchise invalide');
     await p.companies.save(company.value);
+    await p.billingSettings.ensureForCompany(company.value.id);
     const customer = Customer.of({
       id: 'cust-franchise-1',
       companyId: 'company-franchise',

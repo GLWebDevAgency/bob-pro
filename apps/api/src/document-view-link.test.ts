@@ -273,4 +273,32 @@ describe('Lien public de VISUALISATION — jeton invalide / cross-tenant', () =>
     if (!result.ok) expect(result.error.kind).toBe('not_found');
     vi.unstubAllEnvs();
   });
+
+  it('une partie BDD manquante rend les vues publiques indisponibles, jamais avec un nom vide', async () => {
+    vi.stubEnv('SIGN_WEB_BASE_URL', 'https://view.bob.test');
+    const { service, persistence } = makeService();
+    await persistence.seed();
+    await asPrincipal(MERCIER, async () => {
+      const quoteId = await createSentQuote(service);
+      const viewLink = await service.createQuoteViewLink(quoteId);
+      const signatureLink = await service.createQuoteSignatureLink(quoteId);
+      if (!viewLink.ok || !signatureLink.ok) throw new Error('fixture KO');
+
+      vi.spyOn(persistence.customers, 'findById').mockResolvedValue(null);
+      const viewToken = decodeURIComponent(viewLink.value.viewUrl.split('/view/')[1]!);
+      const signatureToken = decodeURIComponent(
+        signatureLink.value.signatureUrl.split('/sign/')[1]!,
+      );
+
+      await expect(service.publicDocumentView(viewToken)).resolves.toEqual({
+        ok: false,
+        error: { kind: 'unavailable', service: 'document-parties' },
+      });
+      await expect(service.publicQuoteForSignature(signatureToken)).resolves.toEqual({
+        ok: false,
+        error: { kind: 'unavailable', service: 'document-parties' },
+      });
+    });
+    vi.unstubAllEnvs();
+  });
 });

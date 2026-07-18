@@ -2,6 +2,7 @@ import { type Result, err, ok } from '../../shared-kernel/result';
 import { parisDateOnly } from '../../shared-kernel/time';
 import {
   Expense,
+  isLegacyUnverifiedExpensePayment,
   normalizeExpensePaymentEvidence,
   sameExpensePaymentEvidence,
   type ExpensePaymentEvidenceInput,
@@ -16,18 +17,18 @@ import { type DocumentRepository } from '../ports/document-repository';
 import { type AppError, appConflict, appDomain, appNotFound } from '../result';
 import { expensePaymentAccountingEntryId } from '../accounting/record-expense-accounting-entries';
 
-export interface RecordExpensePaymentInput extends ExpensePaymentEvidenceInput {
+export interface RegularizeLegacyExpensePaymentInput extends ExpensePaymentEvidenceInput {
   companyId: string;
   expenseId: string;
 }
 
-export interface RecordExpensePaymentOutput {
+export interface RegularizeLegacyExpensePaymentOutput {
   status: 'paid';
-  alreadyRecorded: boolean;
+  alreadyRegularized: boolean;
   paymentEntryId: string;
 }
 
-export interface RecordExpensePaymentDeps {
+export interface RegularizeLegacyExpensePaymentDeps {
   expenses: ExpenseRepository;
   entries: AccountingEntryRepository;
   clock: ClockPort;
@@ -59,24 +60,25 @@ function sameAccountingEntry(left: AccountingEntry, right: AccountingEntry): boo
 }
 
 /**
- * Enregistre un règlement fournisseur DEJA réalisé hors de Bob.
+ * Régularise une dépense HISTORIQUE « payée sans preuve » (posée par la migration de la lane
+ * preuves : `paymentEvidenceLegacyUnverified`) : c'est la sortie de l'impasse promise par les
+ * messages « une régularisation explicite est requise ».
  *
- * La commande exige date + moyen explicites et doit être appelée dans l'unité de travail du
- * tenant : dépense et écriture comptable sont alors persistées atomiquement. Son idempotence est
- * stricte : un retry identique réussit, tandis qu'un retry qui change la preuve ou rencontre une
- * écriture différente échoue en conflit au lieu de réécrire l'historique.
+ * La commande valide la preuve exactement comme RecordExpensePayment (date au jour métier
+ * Europe/Paris, moyen explicite, justificatif du tenant), POSE l'écriture de décaissement
+ * 401/512-530 manquante (id déterministe `expense:{id}:paid`) et attache la preuve à la ligne —
+ * ce qui bascule `paymentEvidenceLegacyUnverified` → false à la persistance. Une dépense encore
+ * à payer ou déjà justifiée est refusée ; un retry strictement identique réussit sans double
+ * écriture (idempotence stricte, même doctrine que RecordExpensePayment).
  */
-export class RecordExpensePayment {
-  constructor(private readonly deps: RecordExpensePaymentDeps) {}
+export class RegularizeLegacyExpensePayment {
+  constructor(private readonly deps: RegularizeLegacyExpensePaymentDeps) {}
 
   async execute(
-    input: RecordExpensePaymentInput,
-  ): Promise<Result<RecordExpensePaymentOutput, AppError>> {
-    // Borne calendrier MÉTIER (même décision que GetCashflow, « Audit correction 3 ») :
-    // `clock.today()` (SystemClock, UTC brut) retarde d'1-2 h sur le jour Europe/Paris juste
-    // après minuit local — la sheet mobile pré-remplit « Aujourd'hui » en jour Paris
-    // (parisDateOnly), et un règlement daté du jour Paris serait rejeté « futur » pendant
-    // cette fenêtre, poussant l'utilisateur à antidater. Le jour métier est le jour Paris.
+    input: RegularizeLegacyExpensePaymentInput,
+  ): Promise<Result<RegularizeLegacyExpensePaymentOutput, AppError>> {
+    // Même borne calendrier MÉTIER que RecordExpensePayment : le jour Europe/Paris, jamais
+    // l'UTC brut (fenêtre nocturne où « aujourd'hui » Paris serait rejeté « futur »).
     const businessToday = parisDateOnly(this.deps.clock.now());
     const normalized = normalizeExpensePaymentEvidence(input, { today: businessToday });
     if (!normalized.ok) return err(appDomain(normalized.error));
@@ -96,32 +98,22 @@ export class RecordExpensePayment {
         return err(appNotFound('document', normalized.value.proofDocumentId));
     }
 
-    const persistedEvidence = expense.paymentEvidence;
-    if (expense.status === 'paid') {
-      // Entité DÉDIÉE : les appelants (outil vocal, UI) distinguent ce cas et orientent vers la
-      // régularisation explicite (RegularizeLegacyExpensePayment) au lieu d'une erreur sèche.
-      if (!persistedEvidence)
-        return err(appConflict(
-          'expense_payment_legacy',
-          'Cette dépense date d’avant le suivi des preuves de paiement : elle est marquée payée sans preuve. Régularise-la explicitement depuis l’écran Dépenses (« Payée — à justifier »).',
-        ));
-      if (!sameExpensePaymentEvidence(persistedEvidence, normalized.value))
-        return err(appConflict(
-          'expense_payment',
-          'Ce règlement existe déjà avec une date, un moyen ou une référence différente.',
-        ));
-    } else if (persistedEvidence) {
+    if (expense.status !== 'paid')
       return err(appConflict(
         'expense_payment',
-        'Une preuve de règlement existe alors que la dépense est encore à payer.',
+        'Cette dépense est encore à payer : enregistre son règlement (RecordExpensePayment), pas une régularisation.',
       ));
-    }
+    const persistedEvidence = expense.paymentEvidence;
+    if (persistedEvidence && !sameExpensePaymentEvidence(persistedEvidence, normalized.value))
+      return err(appConflict(
+        'expense_payment',
+        'Cette dépense est déjà justifiée par une preuve différente : rien à régulariser.',
+      ));
 
-    // Construire et vérifier l'écriture AVANT de muter l'agrégat évite qu'un adaptateur mémoire
-    // conservant la même référence observe un statut partiellement modifié en cas de conflit.
+    // Construire et vérifier l'écriture AVANT de muter l'agrégat (même doctrine que
+    // RecordExpensePayment) : aucun état partiel observable en cas de conflit.
     const projected = Expense.rehydrate({
       ...expense.toProps(),
-      status: 'paid',
       paymentEvidence: normalized.value,
     });
     const chart = this.deps.charts ? await this.deps.charts.findByCompany(input.companyId) : null;
@@ -140,14 +132,14 @@ export class RecordExpensePayment {
         'Une écriture de règlement différente existe déjà pour cette dépense.',
       ));
 
-    const alreadyRecorded = expense.status === 'paid';
-    if (!alreadyRecorded) {
-      const transition = expense.recordPayment(normalized.value, { today: businessToday });
+    const alreadyRegularized = !isLegacyUnverifiedExpensePayment(expense.toProps());
+    if (!alreadyRegularized) {
+      const transition = expense.regularizeLegacyPayment(normalized.value, { today: businessToday });
       if (!transition.ok) return err(appDomain(transition.error));
       await this.deps.expenses.save(expense);
     }
     if (!existingEntry) await this.deps.entries.save(built.value);
 
-    return ok({ status: 'paid', alreadyRecorded, paymentEntryId });
+    return ok({ status: 'paid', alreadyRegularized, paymentEntryId });
   }
 }

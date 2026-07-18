@@ -31,6 +31,7 @@ import type {
   NotificationView,
   RegisterPaymentClientInput,
   RecordExpensePaymentClientInput,
+  RegularizeExpensePaymentClientInput,
   SearchSalesDocumentsClientInput,
 } from '@bob/api-client';
 import type { FiscalProfileFieldPatch, FiscalProfileView } from '@bob/core';
@@ -128,6 +129,18 @@ export function useSubscription() {
     queryKey: ['subscription'],
     queryFn: async () => {
       const r = await client.getSubscription();
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+  });
+}
+
+export function useSubscriptionInvoices() {
+  const client = useBobClient();
+  return useQuery({
+    queryKey: ['subscription-invoices'],
+    queryFn: async () => {
+      const r = await client.listSubscriptionInvoices();
       if (!r.ok) throw r.error;
       return r.value;
     },
@@ -585,6 +598,24 @@ export function usePayExpense() {
   return useMutation({
     mutationFn: async (input: RecordExpensePaymentClientInput) => {
       const r = await client.payExpense(input);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['expenses'] });
+      void qc.invalidateQueries({ queryKey: ['accounting-entries'] });
+      void qc.invalidateQueries({ queryKey: ['cashflow'] });
+    },
+  });
+}
+
+/** Régulariser une ligne HISTORIQUE payée sans preuve — pose l'écriture 401/512-530 manquante. */
+export function useRegularizeExpensePayment() {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: RegularizeExpensePaymentClientInput) => {
+      const r = await client.regularizeExpensePayment(input);
       if (!r.ok) throw r.error;
       return r.value;
     },

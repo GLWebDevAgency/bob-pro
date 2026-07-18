@@ -59,12 +59,15 @@ import type {
   InvoiceView,
   PaymentView,
   SubscriptionView,
+  SubscriptionBillingInvoiceView,
   ValueDigestView,
   TrialReportView,
   RegisterPaymentClientInput,
   RegisterPaymentClientOutput,
   RecordExpensePaymentClientInput,
   RecordExpensePaymentClientOutput,
+  RegularizeExpensePaymentClientInput,
+  RegularizeExpensePaymentClientOutput,
   SendQuoteOutput,
   CreateQuoteSignatureLinkOutput,
   CreateDocumentViewLinkOutput,
@@ -226,6 +229,41 @@ function decodePushRevocationResponse(value: unknown): { accepted: true } | null
   return { accepted: true };
 }
 
+const COMPANY_BILLING_SETTINGS_FIELDS = [
+  'companyId',
+  'revision',
+  'showRibOnInvoices',
+  'showInsuranceOnInvoices',
+  'pdfAccentColor',
+  'defaultQuoteValidityDays',
+  'defaultDepositPercent',
+  'defaultInvoicePaymentTermsDays',
+  'createdAt',
+  'updatedAt',
+] as const;
+
+function decodeCompanyBillingSettings(value: unknown): CompanyBillingSettings | null {
+  if (!isRecord(value) || !hasExactKeys(value, COMPANY_BILLING_SETTINGS_FIELDS)) return null;
+  if (
+    typeof value.companyId !== 'string' ||
+    value.companyId.length === 0 ||
+    !isBoundedInteger(value.revision, 1, Number.MAX_SAFE_INTEGER) ||
+    typeof value.showRibOnInvoices !== 'boolean' ||
+    typeof value.showInsuranceOnInvoices !== 'boolean' ||
+    !['navy', 'green', 'purple', 'orange'].includes(String(value.pdfAccentColor)) ||
+    !isBoundedInteger(value.defaultQuoteValidityDays, 1, 365) ||
+    !isBoundedInteger(value.defaultDepositPercent, 0, 100) ||
+    (value.defaultInvoicePaymentTermsDays !== null &&
+      !isBoundedInteger(value.defaultInvoicePaymentTermsDays, 1, 60)) ||
+    !isCanonicalIsoTimestamp(value.createdAt) ||
+    !isCanonicalIsoTimestamp(value.updatedAt) ||
+    value.updatedAt < value.createdAt
+  ) {
+    return null;
+  }
+  return value as unknown as CompanyBillingSettings;
+}
+
 function isBoundedInteger(value: unknown, min: number, max: number): value is number {
   return Number.isSafeInteger(value) && (value as number) >= min && (value as number) <= max;
 }
@@ -260,54 +298,59 @@ const CUSTOMER_LIST_ITEM_FIELDS = [
 
 function isCustomerAddress(value: unknown): value is { line1: string; zip: string; city: string } {
   return (
-    isRecord(value)
-    && hasExactKeys(value, ['line1', 'zip', 'city'])
-    && typeof value.line1 === 'string'
-    && typeof value.zip === 'string'
-    && typeof value.city === 'string'
+    isRecord(value) &&
+    hasExactKeys(value, ['line1', 'zip', 'city']) &&
+    typeof value.line1 === 'string' &&
+    typeof value.zip === 'string' &&
+    typeof value.city === 'string'
   );
 }
 
 function decodeCustomerListItem(value: unknown): CustomerListItem | null {
   if (!isRecord(value) || !hasExactKeys(value, CUSTOMER_LIST_ITEM_FIELDS)) return null;
   if (
-    typeof value.id !== 'string'
-    || value.id.length === 0
-    || typeof value.name !== 'string'
-    || value.name.length === 0
-    || (value.type !== 'b2c' && value.type !== 'b2b' && value.type !== 'b2g')
-    || !isCustomerAddress(value.address)
-    || (value.contactName !== null && typeof value.contactName !== 'string')
-    || value.score !== null
-    || value.scoreBand !== null
-    || value.scoreStatus !== 'model_not_ratified'
-    || !isBoundedInteger(value.grossReceivableCents, 0, Number.MAX_SAFE_INTEGER)
-    || !isBoundedInteger(value.issuedCreditCents, 0, Number.MAX_SAFE_INTEGER)
-    || !isBoundedInteger(value.outstandingCents, 0, Number.MAX_SAFE_INTEGER)
-    || !isBoundedInteger(value.customerCreditCents, 0, Number.MAX_SAFE_INTEGER)
-    || (value.siren !== null && typeof value.siren !== 'string')
-    || (value.avgDelayDays !== null && !isBoundedInteger(value.avgDelayDays, 0, Number.MAX_SAFE_INTEGER))
-    || (value.paidOnTimeRatio !== null
-      && (typeof value.paidOnTimeRatio !== 'number'
-        || !Number.isFinite(value.paidOnTimeRatio)
-        || value.paidOnTimeRatio < 0
-        || value.paidOnTimeRatio > 1))
-    || (value.paymentHistoryStatus !== 'known'
-      && value.paymentHistoryStatus !== 'insufficient_history'
-      && value.paymentHistoryStatus !== 'incomplete')
-    || !isBoundedInteger(value.settledInvoiceCount, 0, Number.MAX_SAFE_INTEGER)
-    || (value.email !== null && typeof value.email !== 'string')
-    || (value.phone !== null && typeof value.phone !== 'string')
-  ) return null;
+    typeof value.id !== 'string' ||
+    value.id.length === 0 ||
+    typeof value.name !== 'string' ||
+    value.name.length === 0 ||
+    (value.type !== 'b2c' && value.type !== 'b2b' && value.type !== 'b2g') ||
+    !isCustomerAddress(value.address) ||
+    (value.contactName !== null && typeof value.contactName !== 'string') ||
+    value.score !== null ||
+    value.scoreBand !== null ||
+    value.scoreStatus !== 'model_not_ratified' ||
+    !isBoundedInteger(value.grossReceivableCents, 0, Number.MAX_SAFE_INTEGER) ||
+    !isBoundedInteger(value.issuedCreditCents, 0, Number.MAX_SAFE_INTEGER) ||
+    !isBoundedInteger(value.outstandingCents, 0, Number.MAX_SAFE_INTEGER) ||
+    !isBoundedInteger(value.customerCreditCents, 0, Number.MAX_SAFE_INTEGER) ||
+    (value.siren !== null && typeof value.siren !== 'string') ||
+    (value.avgDelayDays !== null &&
+      !isBoundedInteger(value.avgDelayDays, 0, Number.MAX_SAFE_INTEGER)) ||
+    (value.paidOnTimeRatio !== null &&
+      (typeof value.paidOnTimeRatio !== 'number' ||
+        !Number.isFinite(value.paidOnTimeRatio) ||
+        value.paidOnTimeRatio < 0 ||
+        value.paidOnTimeRatio > 1)) ||
+    (value.paymentHistoryStatus !== 'known' &&
+      value.paymentHistoryStatus !== 'insufficient_history' &&
+      value.paymentHistoryStatus !== 'incomplete') ||
+    !isBoundedInteger(value.settledInvoiceCount, 0, Number.MAX_SAFE_INTEGER) ||
+    (value.email !== null && typeof value.email !== 'string') ||
+    (value.phone !== null && typeof value.phone !== 'string')
+  )
+    return null;
 
   const net = value.grossReceivableCents - value.issuedCreditCents;
   if (
-    value.outstandingCents !== Math.max(0, net)
-    || value.customerCreditCents !== Math.max(0, -net)
-    || (value.paymentHistoryStatus === 'known'
-      ? value.avgDelayDays === null || value.paidOnTimeRatio === null || value.settledInvoiceCount < 3
+    value.outstandingCents !== Math.max(0, net) ||
+    value.customerCreditCents !== Math.max(0, -net) ||
+    (value.paymentHistoryStatus === 'known'
+      ? value.avgDelayDays === null ||
+        value.paidOnTimeRatio === null ||
+        value.settledInvoiceCount < 3
       : value.avgDelayDays !== null || value.paidOnTimeRatio !== null)
-  ) return null;
+  )
+    return null;
 
   return value as unknown as CustomerListItem;
 }
@@ -339,9 +382,7 @@ function customerClientBody(
     ...(input.paymentTermsLabel !== undefined
       ? { paymentTermsLabel: input.paymentTermsLabel }
       : {}),
-    ...(input.isInternational !== undefined
-      ? { isInternational: input.isInternational }
-      : {}),
+    ...(input.isInternational !== undefined ? { isInternational: input.isInternational } : {}),
     ...(input.isSubcontractingBtp !== undefined
       ? { isSubcontractingBtp: input.isSubcontractingBtp }
       : {}),
@@ -407,26 +448,21 @@ function decodeCatalogueDeletion(value: unknown): CatalogueDeletionView | null {
   return { id: value.id, deleted: true };
 }
 
-const ACCOUNTING_PREVIEW_LINE_FIELDS = [
-  'account',
-  'label',
-  'debitCents',
-  'creditCents',
-] as const;
+const ACCOUNTING_PREVIEW_LINE_FIELDS = ['account', 'label', 'debitCents', 'creditCents'] as const;
 
 function decodeAccountingPreviewLine(value: unknown): AccountingPreviewLine | null {
   if (
-    !isRecord(value)
-    || !hasExactKeys(value, ACCOUNTING_PREVIEW_LINE_FIELDS)
-    || typeof value.account !== 'string'
-    || value.account.trim() !== value.account
-    || value.account.length === 0
-    || typeof value.label !== 'string'
-    || value.label.trim() !== value.label
-    || value.label.length === 0
-    || !isBoundedInteger(value.debitCents, 0, Number.MAX_SAFE_INTEGER)
-    || !isBoundedInteger(value.creditCents, 0, Number.MAX_SAFE_INTEGER)
-    || ((value.debitCents > 0) === (value.creditCents > 0))
+    !isRecord(value) ||
+    !hasExactKeys(value, ACCOUNTING_PREVIEW_LINE_FIELDS) ||
+    typeof value.account !== 'string' ||
+    value.account.trim() !== value.account ||
+    value.account.length === 0 ||
+    typeof value.label !== 'string' ||
+    value.label.trim() !== value.label ||
+    value.label.length === 0 ||
+    !isBoundedInteger(value.debitCents, 0, Number.MAX_SAFE_INTEGER) ||
+    !isBoundedInteger(value.creditCents, 0, Number.MAX_SAFE_INTEGER) ||
+    value.debitCents > 0 === value.creditCents > 0
   )
     return null;
   return {
@@ -477,15 +513,15 @@ function decodeInvoiceAccountingPreview(
   if (!isRecord(value) || value.invoiceId !== expectedInvoiceId) return null;
   if (value.available === false) {
     if (
-      !hasExactKeys(value, ['invoiceId', 'available', 'reason'])
-      || !isNonEmptyCanonicalString(value.reason)
+      !hasExactKeys(value, ['invoiceId', 'available', 'reason']) ||
+      !isNonEmptyCanonicalString(value.reason)
     )
       return null;
     return { invoiceId: expectedInvoiceId, available: false, reason: value.reason };
   }
   if (
-    value.available !== true
-    || !hasExactKeys(value, [
+    value.available !== true ||
+    !hasExactKeys(value, [
       'invoiceId',
       'available',
       'entryId',
@@ -495,13 +531,13 @@ function decodeInvoiceAccountingPreview(
       'totalDebitCents',
       'totalCreditCents',
       'lines',
-    ])
-    || !isNonEmptyCanonicalString(value.entryId)
-    || !isNonEmptyCanonicalString(value.reference)
-    || !isCanonicalDateOnly(value.entryDate)
-    || !isNonEmptyCanonicalString(value.label)
-    || !isBoundedInteger(value.totalDebitCents, 1, Number.MAX_SAFE_INTEGER)
-    || !isBoundedInteger(value.totalCreditCents, 1, Number.MAX_SAFE_INTEGER)
+    ]) ||
+    !isNonEmptyCanonicalString(value.entryId) ||
+    !isNonEmptyCanonicalString(value.reference) ||
+    !isCanonicalDateOnly(value.entryDate) ||
+    !isNonEmptyCanonicalString(value.label) ||
+    !isBoundedInteger(value.totalDebitCents, 1, Number.MAX_SAFE_INTEGER) ||
+    !isBoundedInteger(value.totalCreditCents, 1, Number.MAX_SAFE_INTEGER)
   )
     return null;
   const lines = decodeAccountingPreviewLines(value.lines);
@@ -509,11 +545,11 @@ function decodeInvoiceAccountingPreview(
   const totalDebitCents = sumAccountingSide(lines, 'debitCents');
   const totalCreditCents = sumAccountingSide(lines, 'creditCents');
   if (
-    totalDebitCents === null
-    || totalCreditCents === null
-    || totalDebitCents !== value.totalDebitCents
-    || totalCreditCents !== value.totalCreditCents
-    || totalDebitCents !== totalCreditCents
+    totalDebitCents === null ||
+    totalCreditCents === null ||
+    totalDebitCents !== value.totalDebitCents ||
+    totalCreditCents !== value.totalCreditCents ||
+    totalDebitCents !== totalCreditCents
   )
     return null;
   return {
@@ -536,15 +572,15 @@ function decodePaymentAccountingPreview(
   if (!isRecord(value) || value.invoiceId !== expected.invoiceId) return null;
   if (value.available === false) {
     if (
-      !hasExactKeys(value, ['invoiceId', 'available', 'reason'])
-      || !isNonEmptyCanonicalString(value.reason)
+      !hasExactKeys(value, ['invoiceId', 'available', 'reason']) ||
+      !isNonEmptyCanonicalString(value.reason)
     )
       return null;
     return { invoiceId: expected.invoiceId, available: false, reason: value.reason };
   }
   if (
-    value.available !== true
-    || !hasExactKeys(value, [
+    value.available !== true ||
+    !hasExactKeys(value, [
       'invoiceId',
       'available',
       'reference',
@@ -554,14 +590,14 @@ function decodePaymentAccountingPreview(
       'totalDebitCents',
       'totalCreditCents',
       'lines',
-    ])
-    || value.amountCents !== expected.amountCents
-    || value.method !== expected.method
-    || !isNonEmptyCanonicalString(value.reference)
-    || !isBoundedInteger(value.amountCents, 1, Number.MAX_SAFE_INTEGER)
-    || !isBoundedInteger(value.remainingCents, 0, Number.MAX_SAFE_INTEGER)
-    || !isBoundedInteger(value.totalDebitCents, 1, Number.MAX_SAFE_INTEGER)
-    || !isBoundedInteger(value.totalCreditCents, 1, Number.MAX_SAFE_INTEGER)
+    ]) ||
+    value.amountCents !== expected.amountCents ||
+    value.method !== expected.method ||
+    !isNonEmptyCanonicalString(value.reference) ||
+    !isBoundedInteger(value.amountCents, 1, Number.MAX_SAFE_INTEGER) ||
+    !isBoundedInteger(value.remainingCents, 0, Number.MAX_SAFE_INTEGER) ||
+    !isBoundedInteger(value.totalDebitCents, 1, Number.MAX_SAFE_INTEGER) ||
+    !isBoundedInteger(value.totalCreditCents, 1, Number.MAX_SAFE_INTEGER)
   )
     return null;
   const lines = decodeAccountingPreviewLines(value.lines);
@@ -569,12 +605,12 @@ function decodePaymentAccountingPreview(
   const totalDebitCents = sumAccountingSide(lines, 'debitCents');
   const totalCreditCents = sumAccountingSide(lines, 'creditCents');
   if (
-    totalDebitCents === null
-    || totalCreditCents === null
-    || totalDebitCents !== value.totalDebitCents
-    || totalCreditCents !== value.totalCreditCents
-    || totalDebitCents !== totalCreditCents
-    || totalDebitCents !== expected.amountCents
+    totalDebitCents === null ||
+    totalCreditCents === null ||
+    totalDebitCents !== value.totalDebitCents ||
+    totalCreditCents !== value.totalCreditCents ||
+    totalDebitCents !== totalCreditCents ||
+    totalDebitCents !== expected.amountCents
   )
     return null;
   return {
@@ -1477,6 +1513,9 @@ export class HttpBobClient implements BobClient {
   getSubscription() {
     return this.req<SubscriptionView>('GET', '/subscription');
   }
+  listSubscriptionInvoices() {
+    return this.req<SubscriptionBillingInvoiceView[]>('GET', '/subscription/invoices');
+  }
   getFiscalProfile() {
     return this.req<FiscalProfileView>('GET', '/fiscal-profile');
   }
@@ -1539,16 +1578,28 @@ export class HttpBobClient implements BobClient {
     return this.req<CompanyProps>('PATCH', '/company/billing', input);
   }
   getCompanyBillingSettings() {
-    return this.req<CompanyBillingSettings>('GET', '/company/billing-settings');
+    return this.req<CompanyBillingSettings>(
+      'GET',
+      '/company/billing-settings',
+      undefined,
+      undefined,
+      decodeCompanyBillingSettings,
+    );
   }
   updateCompanyBillingSettings(input: {
     expectedRevision: number;
     patch: CompanyBillingSettingsPatch;
   }) {
-    return this.req<CompanyBillingSettings>('PATCH', '/company/billing-settings', {
-      expectedRevision: input.expectedRevision,
-      ...input.patch,
-    });
+    return this.req<CompanyBillingSettings>(
+      'PATCH',
+      '/company/billing-settings',
+      {
+        expectedRevision: input.expectedRevision,
+        ...input.patch,
+      },
+      undefined,
+      decodeCompanyBillingSettings,
+    );
   }
   lookupCompany(siret: string) {
     return this.req<CompanyLookupResult>(
@@ -2093,6 +2144,15 @@ export class HttpBobClient implements BobClient {
       evidence,
     );
   }
+  /** Régularise une dépense historique payée sans preuve : même preuve explicite, écriture 401/512-530. */
+  regularizeExpensePayment(input: RegularizeExpensePaymentClientInput) {
+    const { expenseId, ...evidence } = input;
+    return this.req<RegularizeExpensePaymentClientOutput>(
+      'POST',
+      `/expenses/${expenseId}/regularize-payment`,
+      evidence,
+    );
+  }
   listExpenses() {
     return this.req<ExpenseProps[]>('GET', '/expenses');
   }
@@ -2143,19 +2203,33 @@ export class HttpBobClient implements BobClient {
     return this.req<ChantierListItem[]>('GET', '/chantiers');
   }
   listChantierNotes(chantierId: string) {
-    return this.req<ChantierNoteProps[]>('GET', `/chantiers/${encodeURIComponent(chantierId)}/notes`);
+    return this.req<ChantierNoteProps[]>(
+      'GET',
+      `/chantiers/${encodeURIComponent(chantierId)}/notes`,
+    );
   }
   addChantierNote(chantierId: string, input: { text: string }) {
-    return this.req<{ id: string }>('POST', `/chantiers/${encodeURIComponent(chantierId)}/notes`, input);
+    return this.req<{ id: string }>(
+      'POST',
+      `/chantiers/${encodeURIComponent(chantierId)}/notes`,
+      input,
+    );
   }
   listWorksitePhotos(chantierId: string) {
-    return this.req<WorksiteMediaItem[]>('GET', `/chantiers/${encodeURIComponent(chantierId)}/photos`);
+    return this.req<WorksiteMediaItem[]>(
+      'GET',
+      `/chantiers/${encodeURIComponent(chantierId)}/photos`,
+    );
   }
   uploadWorksitePhoto(
     chantierId: string,
     input: { contentBase64: string; mimeType: string; filename: string },
   ) {
-    return this.req<WorksiteMediaItem>('POST', `/chantiers/${encodeURIComponent(chantierId)}/photos`, input);
+    return this.req<WorksiteMediaItem>(
+      'POST',
+      `/chantiers/${encodeURIComponent(chantierId)}/photos`,
+      input,
+    );
   }
   worksitePhotoViewUrl(photoId: string) {
     return this.req<{ url: string; expiresInSeconds: number }>(
@@ -2167,14 +2241,24 @@ export class HttpBobClient implements BobClient {
     return this.req<void>('DELETE', `/chantiers/photos/${encodeURIComponent(photoId)}`);
   }
   listCustomers() {
-    return this.req<CustomerListItem[]>('GET', '/customers', undefined, undefined, decodeCustomerList);
+    return this.req<CustomerListItem[]>(
+      'GET',
+      '/customers',
+      undefined,
+      undefined,
+      decodeCustomerList,
+    );
   }
   createCustomer(input: CreateCustomerClientInput) {
     return this.req<{ id: string }>('POST', '/customers', customerClientBody(input));
   }
   /** Édition post-création (C13/C40 TODO partagé) — même allowlist que la création. */
   updateCustomer(id: string, input: UpdateCustomerClientInput) {
-    return this.req<{ id: string }>('PATCH', `/customers/${encodeURIComponent(id)}`, customerClientBody(input));
+    return this.req<{ id: string }>(
+      'PATCH',
+      `/customers/${encodeURIComponent(id)}`,
+      customerClientBody(input),
+    );
   }
   // —— Assistant Bob (C40 ⑧) : l'agent tourne CÔTÉ SERVEUR — journal company-scoped, autonomie clampée ——
   askBob(input: AskBobClientInput) {

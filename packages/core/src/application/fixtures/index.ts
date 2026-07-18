@@ -117,11 +117,30 @@ export function seedExpenses(companyId: string, today: DateOnly): Expense[] {
     // Point P — matériaux, mois précédent (mémoire fournisseurs sans peser sur le mois courant).
     { id: 'local-expense-pointp', supplierName: 'Point P', supplierSiren: null, documentDate: `${prevMonth}-14`, totalTtcCents: 52040, totalHtCents: 43367, vatCents: 8673, vatRatePct: 20, category: 'materiel', status: 'paid', paymentEvidence: { paidOn: `${prevMonth}-14`, method: 'card', reference: 'FIXTURE-POINTP', proofDocumentId: null }, source: 'manual' },
   ];
-  return specs.map((spec) => {
+  const recorded = specs.map((spec) => {
     const r = Expense.record({ ...spec, companyId }, { today });
     if (!r.ok) throw new Error(`Fixture expense invalide: ${spec.id}`);
     return r.value;
   });
+  // Brico Dépôt — ligne HISTORIQUE « payée sans preuve » (paymentEvidenceLegacyUnverified de la
+  // migration preuves) : rehydrate volontaire — Expense.record refuse cet état à la saisie.
+  // Elle exerce le parcours de régularisation (badge « Payée — à justifier » → sheet → écriture).
+  recorded.push(Expense.rehydrate({
+    id: 'local-expense-brico',
+    companyId,
+    supplierName: 'Brico Dépôt',
+    supplierSiren: null,
+    documentDate: `${prevMonth}-03`,
+    totalTtcCents: 9860,
+    totalHtCents: 8217,
+    vatCents: 1643,
+    vatRatePct: 20,
+    category: 'fournitures',
+    status: 'paid',
+    paymentEvidence: null,
+    source: 'manual',
+  }));
+  return recorded;
 }
 
 const SEED_DOC_SHA = 'a'.repeat(64);

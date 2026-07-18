@@ -28,7 +28,7 @@ function makeService() {
   const logger = { audit: vi.fn(), error: vi.fn(), warn: vi.fn(), log: vi.fn() } as unknown as AppLogger;
   const service = new BackendService(
     p,
-    {} as PaymentGatewayPort,
+    { subscriptionBillingAvailable: false } as PaymentGatewayPort,
     {} as PdfRendererPort,
     {} as OcrPort,
     admin,
@@ -49,26 +49,49 @@ function ctx(req: { url: string; method?: string; headers: Record<string, string
 }
 
 describe('C26b — subscription dérivée PAR TENANT (plus de singleton Mercier)', () => {
-  it('GET /subscription SANS ligne DB : accès anticipé HONNÊTE (200) — plein accès, 0 €, aucun essai fantôme', async () => {
-    // Décision produit early-access (SPEC pilier 2, rappelée fondateur 17/07) : un tenant
-    // provisionné AVANT la table subscriptions (compte de test du fondateur) reçoit l'accès
-    // complet — plus jamais un 503 en prod démo pour un compte légitime.
+  it('GET /subscription SANS ligne DB : indisponible, jamais un accès Business inventé', async () => {
     const { service } = makeService();
 
     const result = await asPrincipal({ userId: 'u-a', companyId: 'co-artisan-a' }, () => service.getSubscription());
 
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value).toMatchObject({
+    expect(result).toEqual({
+      ok: false,
+      error: { kind: 'unavailable', service: 'subscription-record' },
+    });
+  });
+
+  it('GET /subscription accès anticipé : droits et gratuité viennent de la ligne BDD', async () => {
+    const { service, p } = makeService();
+    const now = new Date().toISOString();
+    await p.subscriptions.save({
+      id: 'sub-co-artisan-a',
+      companyId: 'co-artisan-a',
+      plan: 'business',
+      status: 'active',
+      trialEndsAt: null,
+      currentPeriodEnd: null,
+      store: 'none',
+      storeRef: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const result = await asPrincipal({ userId: 'u-a', companyId: 'co-artisan-a' }, () =>
+      service.getSubscription(),
+    );
+
+    expect(result.ok && result.value).toMatchObject({
       tier: 'business',
       status: 'active',
       earlyAccess: true,
-      priceCents: 0, // accès anticipé : rien n'est facturé, jamais le prix catalogue Business
+      priceCents: 0,
+      store: 'none',
+      billingAvailable: false,
       trialEndsAt: null,
-      trialPhase: null, // AUCUN essai fantôme : pas d'échéance inventée
+      trialPhase: null,
       trialDaysLeft: null,
     });
-    expect(result.value.features).toContain('ai_assistant'); // l'assistant Bob reste ouvert (cause du bouton rouge)
+    if (result.ok) expect(result.value.features).toContain('ai_assistant');
   });
 
   it('GET /subscription AVEC ligne d’essai (pilier 2) : DB-backed — Pro prêté, trialing, jours restants réels', async () => {
@@ -87,6 +110,8 @@ describe('C26b — subscription dérivée PAR TENANT (plus de singleton Mercier)
       status: 'trialing',
       earlyAccess: false,
       priceCents: 0, // un essai ne facture RIEN — seul un abonnement actif porte le prix catalogue
+      store: null,
+      billingAvailable: false,
       trialEndsAt: endsAt,
       trialPhase: 'active',
       trialDaysLeft: 14,

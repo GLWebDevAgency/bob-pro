@@ -4,6 +4,8 @@ import type {
   CreateStripeCheckoutAttemptInput,
   StripeBillingRepository,
   StripeCheckoutAttempt,
+  StripeSubscriptionInvoiceRecord,
+  StripeSubscriptionInvoiceSnapshot,
   StripeWebhookClaim,
   StripeWebhookClaimInput,
 } from '../../payments/stripe-billing-contract';
@@ -26,6 +28,61 @@ interface CheckoutRow {
   createdAt: Date;
   updatedAt: Date;
   completedAt: Date | null;
+}
+
+interface SubscriptionInvoiceRow {
+  stripeInvoiceId: string;
+  companyId: string;
+  stripeCustomerId: string;
+  stripeSubscriptionId: string;
+  status: string;
+  currency: string;
+  number: string | null;
+  subtotalCents: number;
+  taxCents: number;
+  totalCents: number;
+  amountPaidCents: number;
+  amountDueCents: number;
+  periodStart: Date;
+  periodEnd: Date;
+  issuedAt: Date;
+  paidAt: Date | null;
+  hostedInvoiceUrl: string | null;
+  invoicePdfUrl: string | null;
+  stripeLastEventId: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const SUBSCRIPTION_INVOICE_STATUSES = new Set(['draft', 'open', 'paid', 'void', 'uncollectible']);
+
+function subscriptionInvoiceFrom(row: SubscriptionInvoiceRow): StripeSubscriptionInvoiceRecord {
+  if (!SUBSCRIPTION_INVOICE_STATUSES.has(row.status) || row.currency !== 'eur') {
+    throw new Error('Ligne Stripe facture abonnement invalide en base.');
+  }
+  return {
+    stripeInvoiceId: row.stripeInvoiceId,
+    companyId: row.companyId,
+    stripeCustomerId: row.stripeCustomerId,
+    stripeSubscriptionId: row.stripeSubscriptionId,
+    status: row.status as StripeSubscriptionInvoiceRecord['status'],
+    currency: 'eur',
+    number: row.number,
+    subtotalCents: row.subtotalCents,
+    taxCents: row.taxCents,
+    totalCents: row.totalCents,
+    amountPaidCents: row.amountPaidCents,
+    amountDueCents: row.amountDueCents,
+    periodStart: row.periodStart.toISOString(),
+    periodEnd: row.periodEnd.toISOString(),
+    issuedAt: row.issuedAt.toISOString(),
+    paidAt: row.paidAt?.toISOString() ?? null,
+    hostedInvoiceUrl: row.hostedInvoiceUrl,
+    invoicePdfUrl: row.invoicePdfUrl,
+    stripeLastEventId: row.stripeLastEventId,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
 }
 
 function checkoutFrom(row: CheckoutRow): StripeCheckoutAttempt {
@@ -282,5 +339,63 @@ export class PrismaStripeBillingRepository implements StripeBillingRepository {
       RETURNING id
     `;
     if (rows.length !== 1) throw new Error('STRIPE_SUBSCRIPTION_BINDING_MISMATCH');
+  }
+
+  async upsertSubscriptionInvoice(input: {
+    companyId: string;
+    eventId: string;
+    snapshot: StripeSubscriptionInvoiceSnapshot;
+    now: string;
+  }): Promise<void> {
+    const invoice = input.snapshot;
+    const rows = await this.client().$queryRaw<Array<{ stripeInvoiceId: string }>>`
+      INSERT INTO stripe_subscription_invoices (
+        "stripeInvoiceId", "companyId", "stripeCustomerId", "stripeSubscriptionId",
+        status, currency, number, "subtotalCents", "taxCents", "totalCents",
+        "amountPaidCents", "amountDueCents", "periodStart", "periodEnd", "issuedAt",
+        "paidAt", "hostedInvoiceUrl", "invoicePdfUrl", "stripeLastEventId", "createdAt", "updatedAt"
+      ) VALUES (
+        ${invoice.stripeInvoiceId}, ${input.companyId}, ${invoice.stripeCustomerId},
+        ${invoice.stripeSubscriptionId},
+        ${invoice.status}::"StripeSubscriptionInvoiceStatus", ${invoice.currency}, ${invoice.number},
+        ${invoice.subtotalCents}, ${invoice.taxCents}, ${invoice.totalCents},
+        ${invoice.amountPaidCents}, ${invoice.amountDueCents}, ${new Date(invoice.periodStart)},
+        ${new Date(invoice.periodEnd)}, ${new Date(invoice.issuedAt)},
+        ${invoice.paidAt === null ? null : new Date(invoice.paidAt)}, ${invoice.hostedInvoiceUrl},
+        ${invoice.invoicePdfUrl}, ${input.eventId}, ${new Date(input.now)}, ${new Date(input.now)}
+      )
+      ON CONFLICT ("stripeInvoiceId") DO UPDATE SET
+        status = EXCLUDED.status,
+        number = EXCLUDED.number,
+        "subtotalCents" = EXCLUDED."subtotalCents",
+        "taxCents" = EXCLUDED."taxCents",
+        "totalCents" = EXCLUDED."totalCents",
+        "amountPaidCents" = EXCLUDED."amountPaidCents",
+        "amountDueCents" = EXCLUDED."amountDueCents",
+        "periodStart" = EXCLUDED."periodStart",
+        "periodEnd" = EXCLUDED."periodEnd",
+        "issuedAt" = EXCLUDED."issuedAt",
+        "paidAt" = EXCLUDED."paidAt",
+        "hostedInvoiceUrl" = EXCLUDED."hostedInvoiceUrl",
+        "invoicePdfUrl" = EXCLUDED."invoicePdfUrl",
+        "stripeLastEventId" = EXCLUDED."stripeLastEventId",
+        "updatedAt" = EXCLUDED."updatedAt"
+      WHERE stripe_subscription_invoices."companyId" = EXCLUDED."companyId"
+        AND stripe_subscription_invoices."stripeCustomerId" = EXCLUDED."stripeCustomerId"
+        AND stripe_subscription_invoices."stripeSubscriptionId" = EXCLUDED."stripeSubscriptionId"
+      RETURNING "stripeInvoiceId"
+    `;
+    if (rows.length !== 1) throw new Error('STRIPE_INVOICE_BINDING_MISMATCH');
+  }
+
+  async listSubscriptionInvoices(companyId: string): Promise<StripeSubscriptionInvoiceRecord[]> {
+    const rows = await this.client().$queryRaw<SubscriptionInvoiceRow[]>`
+      SELECT *
+        FROM stripe_subscription_invoices
+       WHERE "companyId" = ${companyId}
+       ORDER BY "issuedAt" DESC, "stripeInvoiceId" DESC
+       LIMIT 200
+    `;
+    return rows.map(subscriptionInvoiceFrom);
   }
 }

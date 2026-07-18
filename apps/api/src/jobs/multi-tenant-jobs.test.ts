@@ -22,6 +22,9 @@ function fakeCustomer(id: string, companyId: string, email: string): Customer {
     id,
     companyId,
     name: `Client ${id}`,
+    // Un Customer autoritatif porte TOUJOURS un type : sans lui, deriveRelancePlan refuse
+    // honnêtement de qualifier juridiquement la relance (P01) et ignore la facture.
+    type: 'b2b',
     toProps: () => ({ email }),
   } as unknown as Customer;
 }

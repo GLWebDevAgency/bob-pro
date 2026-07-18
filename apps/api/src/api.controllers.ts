@@ -136,6 +136,8 @@ const COMPANY_BILLING_SETTINGS_FIELDS = new Set([
 const INVOICE_PDF_ACCENTS = new Set(['navy', 'green', 'purple', 'orange']);
 const BIC_PATTERN = /^[A-Z0-9]{8}([A-Z0-9]{3})?$/;
 const MANUAL_BANK_BALANCE_FIELDS = new Set(['amountCents', 'observedAt']);
+const SUBSCRIPTION_CHECKOUT_FIELDS = new Set(['tier']);
+const SUBSCRIPTION_CHECKOUT_TIERS = new Set<PlanTier>(['solo', 'pro', 'business']);
 const CREATE_CUSTOMER_FIELDS = new Set([
   'type',
   'name',
@@ -229,6 +231,43 @@ function throwValidationIssues(issues: ValidationIssue[]): never {
     { ok: false, error: { kind: 'validation', issues } },
     HttpStatus.UNPROCESSABLE_ENTITY,
   );
+}
+
+/** Preuve de règlement fournisseur (POST :id/pay et :id/regularize-payment — MÊME contrat). */
+function parseExpensePaymentEvidenceBody(body: unknown): ExpensePaymentEvidenceInput {
+  assertJsonObjectBody(body);
+  const unknownField = Object.keys(body).find((field) => !EXPENSE_PAYMENT_FIELDS.has(field));
+  if (
+    unknownField !== undefined ||
+    typeof body.paidOn !== 'string' ||
+    !isValidDateOnly(body.paidOn) ||
+    typeof body.method !== 'string' ||
+    !EXPENSE_PAYMENT_METHODS.has(body.method as PaymentMethod) ||
+    (body.reference !== undefined &&
+      body.reference !== null &&
+      typeof body.reference !== 'string') ||
+    (body.proofDocumentId !== undefined &&
+      body.proofDocumentId !== null &&
+      typeof body.proofDocumentId !== 'string')
+  ) {
+    throwValidationIssues([
+      {
+        field: unknownField ?? 'paymentEvidence',
+        message:
+          unknownField === undefined
+            ? 'Date et moyen de règlement valides requis.'
+            : 'Champ non autorisé.',
+      },
+    ]);
+  }
+  return {
+    paidOn: body.paidOn,
+    method: body.method as PaymentMethod,
+    ...(body.reference === undefined ? {} : { reference: body.reference as string | null }),
+    ...(body.proofDocumentId === undefined
+      ? {}
+      : { proofDocumentId: body.proofDocumentId as string | null }),
+  };
 }
 
 function parseManualBankBalanceBody(body: Record<string, unknown>): {
@@ -2000,40 +2039,15 @@ export class ExpensesController {
    * propriétaire fournit obligatoirement date + moyen, et peut rattacher une preuve du coffre. */
   @Post(':id/pay')
   async pay(@Param('id') id: string, @Body() body: unknown) {
-    assertJsonObjectBody(body);
-    const unknownField = Object.keys(body).find((field) => !EXPENSE_PAYMENT_FIELDS.has(field));
-    if (
-      unknownField !== undefined ||
-      typeof body.paidOn !== 'string' ||
-      !isValidDateOnly(body.paidOn) ||
-      typeof body.method !== 'string' ||
-      !EXPENSE_PAYMENT_METHODS.has(body.method as PaymentMethod) ||
-      (body.reference !== undefined &&
-        body.reference !== null &&
-        typeof body.reference !== 'string') ||
-      (body.proofDocumentId !== undefined &&
-        body.proofDocumentId !== null &&
-        typeof body.proofDocumentId !== 'string')
-    ) {
-      throwValidationIssues([
-        {
-          field: unknownField ?? 'paymentEvidence',
-          message:
-            unknownField === undefined
-              ? 'Date et moyen de règlement valides requis.'
-              : 'Champ non autorisé.',
-        },
-      ]);
-    }
-    const evidence: ExpensePaymentEvidenceInput = {
-      paidOn: body.paidOn,
-      method: body.method as PaymentMethod,
-      ...(body.reference === undefined ? {} : { reference: body.reference as string | null }),
-      ...(body.proofDocumentId === undefined
-        ? {}
-        : { proofDocumentId: body.proofDocumentId as string | null }),
-    };
+    const evidence = parseExpensePaymentEvidenceBody(body);
     return unwrap(await this.backend.recordExpensePayment({ expenseId: id, ...evidence }));
+  }
+  /** Régularise une dépense HISTORIQUE « payée sans preuve » (migration lane preuves) : même
+   * contrat de preuve que :id/pay, écriture 401/512-530 posée, la ligne sort de l'état legacy. */
+  @Post(':id/regularize-payment')
+  async regularizePayment(@Param('id') id: string, @Body() body: unknown) {
+    const evidence = parseExpensePaymentEvidenceBody(body);
+    return unwrap(await this.backend.regularizeExpensePayment({ expenseId: id, ...evidence }));
   }
 }
 
@@ -2170,12 +2184,35 @@ export class JobsController {
 export class SubscriptionController {
   constructor(private readonly backend: BackendService) {}
   @Get()
+  @Header('Cache-Control', 'no-store, private, max-age=0')
+  @Header('Pragma', 'no-cache')
   async get() {
     return unwrap(await this.backend.getSubscription());
   }
+  @Get('invoices')
+  @Header('Cache-Control', 'no-store, private, max-age=0')
+  @Header('Pragma', 'no-cache')
+  async invoices() {
+    return unwrap(await this.backend.listSubscriptionInvoices());
+  }
   @Post('checkout')
-  checkout(@Body() body: { tier: PlanTier }) {
-    return this.backend.startCheckout(body.tier);
+  checkout(@Body() body: unknown) {
+    assertJsonObjectBody(body);
+    const unknownField = Object.keys(body).find(
+      (field) => !SUBSCRIPTION_CHECKOUT_FIELDS.has(field),
+    );
+    if (unknownField !== undefined || !SUBSCRIPTION_CHECKOUT_TIERS.has(body.tier as PlanTier)) {
+      throwValidationIssues([
+        {
+          field: unknownField ?? 'tier',
+          message:
+            unknownField === undefined
+              ? 'Offre payante invalide.'
+              : 'Champ non autorisé.',
+        },
+      ]);
+    }
+    return this.backend.startCheckout(body.tier as PlanTier);
   }
   @Post('portal')
   portal() {

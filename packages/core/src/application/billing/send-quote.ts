@@ -1,4 +1,5 @@
 import { type Result, ok, err } from '../../shared-kernel/result';
+import { parisDateOnly } from '../../shared-kernel/time';
 import { type AppError, appDomain, appNotFound } from '../result';
 import { type QuoteRepository } from '../ports/repositories';
 import { type SequenceCounterPort, type ClockPort, type UnitOfWorkPort } from '../ports/services';
@@ -19,7 +20,10 @@ export class SendQuote {
   constructor(private readonly deps: SendQuoteDeps) {}
 
   async execute(input: { quoteId: string }): Promise<Result<{ number: string }, AppError>> {
-    const fiscalYear = Number(this.deps.clock.today().slice(0, 4));
+    // Exercice de numérotation = calendrier MÉTIER Europe/Paris (même correction que
+    // IssueInvoice) : un devis envoyé juste après minuit au passage de l'an ne doit pas être
+    // numéroté sur l'exercice précédent parce que l'UTC retarde d'1-2 h sur Paris.
+    const fiscalYear = Number(parisDateOnly(this.deps.clock.now()).slice(0, 4));
 
     const pre = await this.deps.quotes.findById(input.quoteId);
     if (!pre) return err(appNotFound('quote', input.quoteId));

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import {
   SendQuote,
   SignQuote,
@@ -13,6 +13,7 @@ import {
   CreateCreditNote,
   RegisterPayment,
   RecordExpensePayment,
+  RegularizeLegacyExpensePayment,
   validateCompanyBillingSettingsPatch,
   RecordIssuedInvoiceAccountingEntry,
   RecordPaymentAccountingEntry,
@@ -26,6 +27,7 @@ import {
   BANK_BALANCE_FRESHNESS_POLICY_V1,
   deriveKnownReceivables,
   SystemClock,
+  parisDateOnly,
   deriveRelancePlan,
   ok,
   err,
@@ -212,6 +214,7 @@ import { Metrics } from './observability/metrics';
 import { AppLogger, getPrincipal, requireTenant } from './observability/logger';
 import { SUPABASE_ADMIN, type SupabaseAdminPort } from './auth/supabase-admin';
 import { PAYMENT_GATEWAY } from './payments/payment-gateway';
+import { StripeBillingService } from './payments/stripe-billing.service';
 import { PDF_RENDERER } from './documents/pdf-renderer';
 import { DOCUMENT_STORAGE, UnavailableDocumentStorage, documentSha256 } from './documents/storage';
 import {
@@ -338,7 +341,7 @@ export type FacturXImportOutcome =
 
 /** Vue publique d'un devis pour la page de signature client à distance (lien tokenisé). */
 export interface SignatureView {
-  number: string | null;
+  number: string;
   companyName: string;
   customerName: string;
   status: string;
@@ -360,7 +363,7 @@ interface ResolvedSignatureGrant {
 export type DocumentPublicView =
   | {
       kind: 'quote';
-      number: string | null;
+      number: string;
       companyName: string;
       customerName: string;
       status: string;
@@ -371,7 +374,7 @@ export type DocumentPublicView =
     }
   | {
       kind: 'invoice';
-      number: string | null;
+      number: string;
       companyName: string;
       customerName: string;
       status: string;
@@ -807,26 +810,27 @@ export class BackendService {
   }
 
   /**
+   * Jour calendaire MÉTIER (Europe/Paris) — SOURCE UNIQUE des bornes « aujourd'hui » françaises
+   * de ce service (retards, échéances fiscales, validité de devis, mois URSSAF…). Jamais
+   * `clock.today()` (UTC brut, en retard d'1-2 h sur Paris juste après minuit local) pour une
+   * comparaison calendrier : même décision que GetCashflow (@bob/core, « Audit correction 3 »).
+   * Les horodatages techniques (leases, tokens, audits) restent sur `clock.now()`/`today()`.
+   */
+  private businessToday(): string {
+    return parisDateOnly(this.clock.now());
+  }
+
+  /**
    * Autorité unique des capacités payantes, alignée sur GetSubscriptionStatus (@bob/core) :
-   * une ligne `subscriptions` fait foi ; SANS ligne (tenant provisionné avant la table),
-   * DÉCISION PRODUIT early-access (SPEC pilier 2, rappelée fondateur 2026-07-17) : accès plein
-   * business/actif, 0 € facturé, aucun essai fantôme — jamais un 503 en cascade (assistant,
-   * profil, FEC…) pour un compte légitime pré-migration.
+   * une ligne `subscriptions` fait foi. Les tenants historiques ont un accès anticipé réellement
+   * persisté par migration (`store='none'`). Une ligne absente est une incohérence de provisioning,
+   * jamais l'autorisation de fabriquer un abonnement Business en mémoire.
    * Un essai expiré est ramené au palier gratuit pour l'enforcement, sans modifier silencieusement
    * la ligne (l'atterrissage persistant reste la responsabilité du workflow d'abonnement).
    */
   private async subscriptionFor(companyId: string): Promise<Result<Subscription, AppError>> {
     const record = await this.p.subscriptions.findByCompanyId(companyId);
-    if (record === null) {
-      const earlyAccess = Subscription.start({
-        id: `sub-${companyId}`,
-        companyId,
-        tier: 'business',
-        status: 'active',
-      });
-      if (!earlyAccess.ok) return err(appDomain(earlyAccess.error));
-      return ok(earlyAccess.value);
-    }
+    if (record === null) return err(appUnavailable('subscription-record'));
 
     const trialExpired =
       record.status === 'trialing' &&
@@ -873,6 +877,8 @@ export class BackendService {
     private readonly documentIntelligence: DocumentIntelligencePort = new UnavailableDocumentIntelligence(),
     @Inject(DOCUMENT_STORAGE)
     private readonly documentStorage: DocumentStoragePort = new UnavailableDocumentStorage(),
+    @Optional()
+    private readonly stripeBilling: StripeBillingService | null = null,
   ) {}
 
   private mapQuote(q: Quote): QuoteView {
@@ -1037,6 +1043,8 @@ export class BackendService {
   > {
     const quote = await this.ownedQuote(quoteId);
     if (!quote) return { ok: false as const, error: appNotFound('quote', quoteId) };
+    const parties = await this.requiredDocumentParties(quote.companyId, quote.customerId);
+    if (!parties.ok) return parties;
     const sent = await new SendQuote({
       quotes: this.p.quotes,
       counters: this.p.counters,
@@ -1057,9 +1065,14 @@ export class BackendService {
         expiresAt: token.value.expiresAt,
       });
       const deliveryStatus = await this.enqueueQuoteForSignature(
-        quote,
-        sent.value.number,
-        token.value.token,
+        {
+          quote,
+          number: sent.value.number,
+          token: token.value.token,
+          companyName: parties.value.company.name,
+          customerName: parties.value.customer.name,
+          customerEmail: parties.value.customer.toProps().email ?? null,
+        },
       );
       return ok({
         ...sent.value,
@@ -1073,13 +1086,16 @@ export class BackendService {
   }
 
   private async enqueueQuoteForSignature(
-    quote: Quote,
-    number: string,
-    token: string,
+    input: {
+      quote: Quote;
+      number: string;
+      token: string;
+      companyName: string;
+      customerName: string;
+      customerEmail: string | null;
+    },
   ): Promise<'queued' | 'sent' | 'skipped'> {
-    const customer = await this.p.customers.findById(quote.customerId);
-    const company = await this.p.companies.findById(quote.companyId);
-    const email = customer?.toProps().email;
+    const { quote, number, token, companyName, customerName, customerEmail: email } = input;
     if (!email) {
       this.logger.audit('quote.email_skipped', {
         quoteId: quote.id,
@@ -1096,9 +1112,9 @@ export class BackendService {
         to: email,
         subject: `Devis ${number} à signer`,
         body: [
-          `Bonjour ${customer?.name ?? ''},`,
+          `Bonjour ${customerName},`,
           '',
-          `${company?.name ?? 'Votre prestataire'} vous a envoyé le devis ${number}.`,
+          `${companyName} vous a envoyé le devis ${number}.`,
           'Vous pouvez le consulter et le signer ici :',
           publicSignatureUrl(token),
           '',
@@ -1429,7 +1445,8 @@ export class BackendService {
     const entry = buildInvoiceAccountingPreviewEntry({
       entryId: `preview-invoice-${invoice.id}`,
       invoice,
-      entryDate: this.clock.today(),
+      // Aperçu daté du jour MÉTIER Paris : cohérent avec la date d'émission réelle (IssueInvoice).
+      entryDate: this.businessToday(),
       reference: invoice.number ?? 'a-emettre',
       ...(chart ? { chart } : {}),
     });
@@ -1592,6 +1609,32 @@ export class BackendService {
     return resolved;
   }
 
+  private async requiredDocumentParties(
+    companyId: string,
+    customerId: string,
+  ): Promise<Result<{ company: Company; customer: Customer }, AppError>> {
+    const [company, customer] = await Promise.all([
+      this.p.companies.findById(companyId),
+      this.p.customers.findById(customerId),
+    ]);
+    if (!company || !customer || customer.companyId !== companyId) {
+      return err(appUnavailable('document-parties'));
+    }
+    return ok({ company, customer });
+  }
+
+  private async publicDocumentParties(
+    companyId: string,
+    customerId: string,
+  ): Promise<Result<{ companyName: string; customerName: string }, AppError>> {
+    const parties = await this.requiredDocumentParties(companyId, customerId);
+    if (!parties.ok) return parties;
+    return ok({
+      companyName: parties.value.company.name,
+      customerName: parties.value.customer.name,
+    });
+  }
+
   // ——— Signature client à distance (public, par lien tokenisé) ———
   /** Vue publique d'un devis par token opaque. */
   async publicQuoteForSignature(token: string): Promise<Result<SignatureView, AppError>> {
@@ -1600,16 +1643,19 @@ export class BackendService {
     return this.p.runWithTenant(grant.value.companyId, async () => {
       const q = await this.p.quotes.findById(grant.value.quoteId);
       if (!q) return { ok: false, error: appNotFound('quote', 'redacted') };
-      const company = await this.p.companies.findById(q.companyId);
-      const customer = await this.p.customers.findById(q.customerId);
+      if (q.companyId !== grant.value.companyId || q.number === null)
+        return err(appUnavailable('public-document-integrity'));
+      const parties = await this.publicDocumentParties(q.companyId, q.customerId);
+      if (!parties.ok) return parties;
       await this.p.publicAccessTokens.markUsed(grant.value.grantId, this.clock.now());
       return ok({
         number: q.number,
-        companyName: company?.name ?? '',
-        customerName: customer?.name ?? '',
+        companyName: parties.value.companyName,
+        customerName: parties.value.customerName,
         status: q.status,
         signed: q.signature !== null,
-        expired: q.validUntil !== null && q.validUntil < this.clock.today(),
+        // Validité = calendrier FRANÇAIS : borne au jour métier Paris (cf. businessToday()).
+        expired: q.validUntil !== null && q.validUntil < this.businessToday(),
         validUntil: q.validUntil,
         lines: q.lines.map((l) => ({
           label: l.label,
@@ -1635,7 +1681,7 @@ export class BackendService {
     return this.p.runWithTenant(grant.value.companyId, async () => {
       const q = await this.p.quotes.findById(grant.value.quoteId);
       if (!q) return { ok: false, error: appNotFound('quote', 'redacted') };
-      if (q.validUntil !== null && q.validUntil < this.clock.today()) {
+      if (q.validUntil !== null && q.validUntil < this.businessToday()) {
         const expired = await new ExpireQuote({
           quotes: this.p.quotes,
           publicAccessTokens: this.p.publicAccessTokens,
@@ -1693,14 +1739,20 @@ export class BackendService {
       if (grant.value.kind === 'quote') {
         const q = await this.p.quotes.findById(grant.value.documentId);
         if (!q) return { ok: false, error: appNotFound('quote', 'redacted') };
+        if (
+          q.companyId !== grant.value.companyId ||
+          q.number === null ||
+          q.status === 'draft'
+        )
+          return err(appUnavailable('public-document-integrity'));
+        const parties = await this.publicDocumentParties(q.companyId, q.customerId);
+        if (!parties.ok) return parties;
         await this.p.publicAccessTokens.markUsed(grant.value.grantId, this.clock.now());
-        const company = await this.p.companies.findById(q.companyId);
-        const customer = await this.p.customers.findById(q.customerId);
         return ok<DocumentPublicView>({
           kind: 'quote',
           number: q.number,
-          companyName: company?.name ?? '',
-          customerName: customer?.name ?? '',
+          companyName: parties.value.companyName,
+          customerName: parties.value.customerName,
           status: q.status,
           signed: q.signature !== null,
           validUntil: q.validUntil,
@@ -1715,14 +1767,20 @@ export class BackendService {
       }
       const inv = await this.p.invoices.findById(grant.value.documentId);
       if (!inv) return { ok: false, error: appNotFound('invoice', 'redacted') };
+      if (
+        inv.companyId !== grant.value.companyId ||
+        inv.number === null ||
+        inv.issuedAt === null
+      )
+        return err(appUnavailable('public-document-integrity'));
+      const parties = await this.publicDocumentParties(inv.companyId, inv.customerId);
+      if (!parties.ok) return parties;
       await this.p.publicAccessTokens.markUsed(grant.value.grantId, this.clock.now());
-      const company = await this.p.companies.findById(inv.companyId);
-      const customer = await this.p.customers.findById(inv.customerId);
       return ok<DocumentPublicView>({
         kind: 'invoice',
         number: inv.number,
-        companyName: company?.name ?? '',
-        customerName: customer?.name ?? '',
+        companyName: parties.value.companyName,
+        customerName: parties.value.customerName,
         status: inv.status,
         issuedAt: inv.issuedAt,
         dueAt: inv.dueAt,
@@ -2069,7 +2127,8 @@ export class BackendService {
         // Même refus vocal que computePayout : jamais un conseil de versement sans solde observé.
         if (cashflowResult.value.bankingSource === 'none')
           return err(appUnavailable('cashflow-banking-source'));
-        const today = this.clock.today();
+        // Mois civil URSSAF = calendrier MÉTIER Paris (cohérent avec l'écran Argent).
+        const today = this.businessToday();
         const month = today.slice(0, 7);
         const payments = await this.p.payments.listByCompany(this.companyId());
         const periodeCA = {
@@ -2108,7 +2167,8 @@ export class BackendService {
             paid: i.paid,
           })),
           customers: cust.value,
-          today: this.clock.today(),
+          // Retards en jours = calendrier MÉTIER Paris (même moteur que le cron/les écrans).
+          today: this.businessToday(),
         });
         const entry = input?.invoiceId
           ? plan.find((e) => e.invoiceId === input.invoiceId)
@@ -2246,7 +2306,8 @@ export class BackendService {
               customerId: i.customerId,
             })),
             customers: cust.value,
-            today: this.clock.today(),
+            // Tranches de retard = calendrier MÉTIER Paris (parité avec l'écran Clients).
+            today: this.businessToday(),
           }),
         );
       },
@@ -2296,7 +2357,8 @@ export class BackendService {
               };
             }),
             vatRegime: company.vatRegime,
-            today: this.clock.today(),
+            // Mois en cours « à date égale » = calendrier MÉTIER Paris (parité écran Pilotage).
+            today: this.businessToday(),
           }),
         );
       },
@@ -3080,9 +3142,8 @@ export class BackendService {
   // ——— Monétisation ———
   /**
    * Lecture d'autorité de l'abonnement du tenant — GetSubscriptionStatus (@bob/core) sur la
-   * table `subscriptions` (pilier 2). Une ligne absente = accès anticipé HONNÊTE
-   * (source 'early_access' : business actif, 0 €, aucun essai fantôme — décision produit
-   * SPEC pilier 2, rappelée fondateur 2026-07-17). Partagée par
+   * table `subscriptions` (pilier 2). L'accès anticipé historique est une ligne BDD explicite
+   * (`business`, `active`, `store='none'`, sans période facturée). Partagée par
    * GET /subscription, le bilan de fin d'essai et l'affordance vocale « où en est mon essai ».
    */
   private subscriptionStatus(companyId: string): Promise<Result<SubscriptionStatusView, AppError>> {
@@ -3102,13 +3163,19 @@ export class BackendService {
     if (!status.ok) return status;
     const s = status.value;
     const effectiveTier: PlanTier = s.trialPhase === 'expired' ? 'free' : s.plan;
-    const earlyAccess = s.source === 'early_access';
+    const earlyAccess =
+      s.store === 'none' &&
+      s.status === 'active' &&
+      s.currentPeriodEnd === null &&
+      s.storeRef === null;
     return ok({
       tier: effectiveTier,
       status: s.status,
       // Tenant sans ligne (pré-migration) : accès anticipé assumé côté client — l'écran
       // Compte dérive l'état « accès anticipé, 0 € », jamais un plan payant inventé.
       earlyAccess,
+      store: s.store,
+      billingAvailable: this.gateway.subscriptionBillingAvailable,
       // Rien n'est facturé pendant un essai NI en accès anticipé : seul un abonnement
       // ACTIF persisté porte le prix catalogue (source unique PLAN_CATALOG).
       priceCents:
@@ -3126,6 +3193,34 @@ export class BackendService {
       addOnCatalog: Object.values(ADDON_CATALOG),
       catalog: Object.values(PLAN_CATALOG),
     });
+  }
+
+  async listSubscriptionInvoices() {
+    if (this.stripeBilling === null) return err(appUnavailable('stripe-billing'));
+    try {
+      const invoices = await this.stripeBilling.listSubscriptionInvoices(this.companyId());
+      // Contrat public minimal : les identifiants fournisseur de la relation client/abonnement,
+      // l'id du dernier webhook et les horodatages internes restent strictement côté serveur.
+      return ok(
+        invoices.map((invoice) => ({
+          stripeInvoiceId: invoice.stripeInvoiceId,
+          status: invoice.status,
+          currency: invoice.currency,
+          number: invoice.number,
+          totalCents: invoice.totalCents,
+          issuedAt: invoice.issuedAt,
+          paidAt: invoice.paidAt,
+          hostedInvoiceUrl: invoice.hostedInvoiceUrl,
+          invoicePdfUrl: invoice.invoicePdfUrl,
+        })),
+      );
+    } catch (cause) {
+      return err({
+        kind: 'dependency' as const,
+        port: 'stripe-billing-invoices',
+        cause: cause instanceof Error ? cause.message : 'stripe billing invoices unavailable',
+      });
+    }
   }
 
   async getProfile(): Promise<Result<TradeConfig, AppError>> {
@@ -3431,7 +3526,8 @@ export class BackendService {
     if (!company) return { ok: false, error: appNotFound('company', this.companyId()) };
     const customers = await this.p.customers.listByCompany(this.companyId());
     const customerTypes = [...new Set(customers.map((c) => c.type))];
-    const today = this.clock.today();
+    // Année civile 293 B, validité décennale, asOf : calendrier MÉTIER Paris.
+    const today = this.businessToday();
     // E6 (PONT-SERVEUR v1) : recettes ENCAISSÉES de l'année civile courante — la surveillance des
     // seuils de franchise 293 B lit du RÉEL (paiements datés du tenant), jamais un statut
     // décoratif. Les avoirs ne génèrent pas de paiement.
@@ -3582,7 +3678,8 @@ export class BackendService {
           vatRegime: company.vatRegime,
           dateCreation: company.dateCreation ?? null,
         },
-        asOf: this.clock.today(),
+        // Échéancier fiscal FRANÇAIS : ancré sur le jour métier Paris.
+        asOf: this.businessToday(),
         horizonDays: 90,
         fiscalYearEnd: confirmedFiscalYearEnd(fiscalProfile.value),
         urssafPeriodicity: null,
@@ -3591,7 +3688,10 @@ export class BackendService {
   }
 
   startCheckout(tier: PlanTier) {
-    return this.gateway.createSubscriptionCheckout({
+    if (!this.gateway.subscriptionBillingAvailable || this.stripeBilling === null) {
+      throw new Error('SUBSCRIPTION_BILLING_UNAVAILABLE');
+    }
+    return this.stripeBilling.startSubscriptionCheckout({
       companyId: this.companyId(),
       tier,
       successUrl: paymentReturnUrl('/abonnement/succes'),
@@ -3600,10 +3700,13 @@ export class BackendService {
   }
 
   billingPortal() {
-    return this.gateway.createBillingPortal({
-      companyId: this.companyId(),
-      returnUrl: paymentReturnUrl('/compte'),
-    });
+    if (!this.gateway.subscriptionBillingAvailable || this.stripeBilling === null) {
+      throw new Error('SUBSCRIPTION_BILLING_UNAVAILABLE');
+    }
+    return this.stripeBilling.createBillingPortal(
+      this.companyId(),
+      paymentReturnUrl('/compte'),
+    );
   }
 
   /** Lien de paiement en ligne d'une facture — gated par l'offre (Pro+). */
@@ -3618,9 +3721,12 @@ export class BackendService {
     }
     const inv = await this.ownedInvoice(invoiceId);
     if (!inv) return { ok: false, error: appNotFound('invoice', invoiceId) };
-    const link = await this.gateway.createInvoicePaymentLink({
+    if (!this.gateway.subscriptionBillingAvailable || this.stripeBilling === null) {
+      return err(appUnavailable('stripe-billing'));
+    }
+    const link = await this.stripeBilling.createInvoicePaymentLink({
+      companyId: this.companyId(),
       invoiceId,
-      amountCents: inv.totals().netToPay,
       label: `Facture ${inv.number ?? ''}`,
     });
     this.logger.audit('invoice.payment_link', { invoiceId, amountCents: inv.totals().netToPay });
@@ -4930,6 +5036,61 @@ export class BackendService {
     return this.recordExpensePayment(input);
   }
 
+  /** Régularise une dépense HISTORIQUE « payée sans preuve » (paymentEvidenceLegacyUnverified) :
+   * valide la preuve comme recordExpensePayment, pose l'écriture 401/512-530 manquante et sort la
+   * ligne de l'état legacy — atomique dans le tenant, audit dédié expense.payment_regularized. */
+  async regularizeExpensePayment(
+    input: {
+      expenseId: string;
+    } & ExpensePaymentEvidenceInput,
+  ): Promise<
+    Result<
+      {
+        status: 'paid';
+        alreadyRegularized: boolean;
+        paymentEntryId: string;
+      },
+      AppError
+    >
+  > {
+    if (!(await this.ownedExpense(input.expenseId)))
+      return { ok: false as const, error: appNotFound('expense', input.expenseId) };
+    let r: Result<
+      {
+        status: 'paid';
+        alreadyRegularized: boolean;
+        paymentEntryId: string;
+      },
+      AppError
+    >;
+    try {
+      r = await this.p.runInTransaction(async () => {
+        const regularized = await new RegularizeLegacyExpensePayment({
+          expenses: this.p.expenses,
+          entries: this.p.accountingEntries,
+          clock: this.clock,
+          charts: this.p.chartOfAccounts,
+          documents: this.p.documents,
+        }).execute({ ...input, companyId: this.companyId() });
+        if (!regularized.ok) throw new RollbackAppError(regularized.error);
+        return regularized;
+      });
+    } catch (e) {
+      if (e instanceof RollbackAppError) return { ok: false as const, error: e.appError };
+      throw e;
+    }
+    if (r.ok)
+      this.logger.audit('expense.payment_regularized', {
+        expenseId: input.expenseId,
+        paidOn: input.paidOn,
+        method: input.method,
+        alreadyRegularized: r.value.alreadyRegularized,
+        referenceProvided: Boolean(input.reference),
+        proofDocumentProvided: Boolean(input.proofDocumentId),
+      });
+    return r;
+  }
+
   // ——— Réception e-facture (C-EXP6b) : le CONTRÔLE DE RÉCEPTION d'un cabinet ———
 
   /** Erreur de contrôle typée (@bob/core) aplatie à la frontière HTTP : field = `facturx.<code>`,
@@ -5181,18 +5342,28 @@ export class BackendService {
     const provisioned = await this.p.runWithTenant(companyId, async () => {
       await this.p.companies.save(r.value);
       await this.p.billingSettings.ensureForCompany(companyId);
-      // Reverse trial 14 j (pilier 2, SPEC décision 1) : le compte NEUF démarre avec Pro
-      // complet, sans carte. startTrial est IDEMPOTENT : le retry de provisioning (cf. bloc
-      // supabaseAdmin ci-dessous) ne réinitialise JAMAIS une échéance d'essai déjà posée.
       const now = this.clock.now();
-      const trial = startReverseTrial(now);
-      await this.p.subscriptions.startTrial({
-        id: `sub-${companyId}`,
-        companyId,
-        plan: trial.tier,
-        trialEndsAt: trial.endsAt,
-        now,
-      });
+      if (this.gateway.subscriptionBillingAvailable) {
+        // À l'ouverture publique, le compte neuf démarre avec l'essai inversé Pro. La création
+        // reste idempotente : un retry ne décale jamais l'échéance.
+        const trial = startReverseTrial(now);
+        await this.p.subscriptions.startTrial({
+          id: `sub-${companyId}`,
+          companyId,
+          plan: trial.tier,
+          trialEndsAt: trial.endsAt,
+          now,
+        });
+      } else {
+        // V1 privée : accès anticipé explicite en BDD, gratuit et sans échéance. L'absence de
+        // ligne ne sert jamais de raccourci à cet état produit.
+        await this.p.subscriptions.startEarlyAccess({
+          id: `sub-${companyId}`,
+          companyId,
+          plan: 'business',
+          now,
+        });
+      }
       return this.provisionDefaultDocumentFolders(companyId);
     });
     if (!provisioned.ok) return provisioned;

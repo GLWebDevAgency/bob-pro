@@ -8,18 +8,18 @@ import {
   type PlanTier,
 } from '../../domain/subscription/plan';
 import { type SubscriptionStatus } from '../../domain/subscription/subscription';
+import { type SubscriptionStore } from '../ports/subscription-repository';
 
 /**
  * Vue « Mon compte » (claim C26 v2) — dérivation PURE identité/entreprise/profil/abonnement → écran.
  *
- * Doctrine HONNÊTETÉ (le cœur du claim) : il n'existe AUCUN backend d'abonnement (pas de Stripe
- * billing, pas de GET /subscription). Tant que `subscription` est null — c'est le cas aujourd'hui —
- * la vue dit la VÉRITÉ produit : accès anticipé, 0 €/mois, toutes les fonctions ouvertes. JAMAIS un
- * plan payant « ACTIVE » inventé, jamais de factures d'abonnement fantômes, jamais un CTA qui
- * prétend souscrire. La grille Solo/Pro/Business vient de PLAN_PRICING (constante produit,
- * domain/subscription/plan.ts) et s'affiche en PREVIEW (cta 'preview', désactivé côté écran).
- * Le jour où C26b expose GET /subscription, on passe SubscriptionInfo et la vue suit — sans
- * changer l'écran.
+ * Doctrine HONNÊTETÉ (le cœur du claim) : `subscription === null` signifie « aucune photographie
+ * serveur disponible », jamais « accès anticipé ». L'accès anticipé n'est rendu que lorsqu'il est
+ * explicitement persisté puis projeté par GET /subscription (`earlyAccess: true`, prix 0). JAMAIS
+ * un plan payant « ACTIVE » inventé, jamais de factures d'abonnement fantômes. Les offres payantes
+ * ne sont exposées que lorsque le serveur confirme que la facturation live est entièrement
+ * configurée ; leurs CTA reflètent alors le canal réellement persisté (checkout, portail Stripe
+ * ou gestion Apple/Google).
  */
 
 // ── Entrées (projections minimales, nullables : l'absence est un état de premier rang) ──
@@ -30,12 +30,32 @@ export interface AccountIdentityData {
   legalLine: string | null;
 }
 
-/** Abonnement RÉEL du tenant — null tant que le serveur n'expose pas GET /subscription (C26b). */
+/** Projection RÉELLE de GET /subscription. `null` = source indisponible, sans interprétation. */
 export interface SubscriptionInfo {
   tier: PlanTier;
   status: SubscriptionStatus;
+  /** Accès anticipé explicitement persisté côté serveur. */
+  earlyAccess: boolean;
+  /** Prix réellement projeté pour ce tenant, en centimes par mois. */
+  priceCents: number;
+  /** Canal de facturation persisté ; null avant toute liaison fournisseur. */
+  store: SubscriptionStore | null;
+  /** Vrai uniquement si le serveur a démarré avec toute la configuration paiement live. */
+  billingAvailable: boolean;
   /** Fin de période courante (Instant ISO) — null si inconnue. */
   currentPeriodEnd: string | null;
+}
+
+export interface SubscriptionInvoiceInfo {
+  stripeInvoiceId: string;
+  status: 'draft' | 'open' | 'paid' | 'void' | 'uncollectible';
+  currency: 'eur';
+  number: string | null;
+  totalCents: number;
+  issuedAt: string;
+  paidAt: string | null;
+  hostedInvoiceUrl: string | null;
+  invoicePdfUrl: string | null;
 }
 
 export interface DeriveAccountViewInput {
@@ -44,6 +64,8 @@ export interface DeriveAccountViewInput {
   /** Profil métier réel (GET /profile) — modules actifs calculés PAR LE SERVEUR selon le tenant. */
   tradeConfig: TradeConfig | null;
   subscription: SubscriptionInfo | null;
+  /** null = source indisponible ; [] = vraie réponse serveur vide. */
+  subscriptionInvoices: readonly SubscriptionInvoiceInfo[] | null;
 }
 
 // ── Sortie ──
@@ -76,6 +98,7 @@ export interface AccountServiceView {
 }
 
 export type AccountOfferView =
+  | { kind: 'unavailable' }
   | { kind: 'early_access'; monthlyCents: 0 }
   | { kind: 'plan'; tier: PlanTier; label: string; monthlyCents: number; status: SubscriptionStatus };
 
@@ -85,16 +108,12 @@ export interface AccountPlanCardView {
   monthlyCents: number;
   blurb: string;
   isCurrent: boolean;
-  /** 'preview' = facturation pas ouverte (CTA désactivé, libellé honnête) · 'current' = offre en cours. */
-  cta: 'preview' | 'current';
+  /** Action réellement disponible selon l'ouverture du billing et le canal persisté. */
+  cta: 'checkout' | 'manage' | 'store' | 'current';
 }
 
-/** Facture d'abonnement — AUCUNE aujourd'hui (accès anticipé gratuit) ; le type existe pour C26b. */
-export interface AccountSubscriptionInvoiceView {
+export interface AccountSubscriptionInvoiceView extends SubscriptionInvoiceInfo {
   id: string;
-  label: string;
-  amountCents: number;
-  paidAt: string | null;
 }
 
 export interface AccountView {
@@ -108,7 +127,7 @@ export interface AccountView {
   subscription: {
     offer: AccountOfferView;
     plans: readonly AccountPlanCardView[];
-    invoices: readonly AccountSubscriptionInvoiceView[];
+    invoices: readonly AccountSubscriptionInvoiceView[] | null;
     services: readonly AccountServiceView[];
   };
 }
@@ -183,8 +202,8 @@ function deriveCompany(
 }
 
 function deriveOffer(subscription: SubscriptionInfo | null): AccountOfferView {
-  // Pas d'abonnement serveur (ou résilié) = la réalité produit : accès anticipé, 0 €/mois.
-  if (subscription === null || subscription.status === 'canceled') {
+  if (subscription === null) return { kind: 'unavailable' };
+  if (subscription.earlyAccess) {
     return { kind: 'early_access', monthlyCents: 0 };
   }
   const plan = PLAN_CATALOG[subscription.tier];
@@ -192,14 +211,17 @@ function deriveOffer(subscription: SubscriptionInfo | null): AccountOfferView {
     kind: 'plan',
     tier: subscription.tier,
     label: plan.label,
-    monthlyCents: plan.priceCents,
+    monthlyCents: subscription.priceCents,
     status: subscription.status,
   };
 }
 
 function derivePlans(subscription: SubscriptionInfo | null): AccountPlanCardView[] {
+  if (subscription === null || !subscription.billingAvailable) return [];
   const currentTier =
-    subscription !== null && subscription.status !== 'canceled' ? subscription.tier : null;
+    subscription !== null && !subscription.earlyAccess && subscription.status !== 'canceled'
+      ? subscription.tier
+      : null;
   return PAID_TIERS.map((tier) => {
     const entry = PLAN_PRICING[tier];
     const isCurrent = currentTier === tier;
@@ -209,14 +231,20 @@ function derivePlans(subscription: SubscriptionInfo | null): AccountPlanCardView
       monthlyCents: entry.monthlyCents,
       blurb: entry.blurb,
       isCurrent,
-      // Tant que la facturation n'est pas ouverte, AUCUN CTA ne prétend souscrire.
-      cta: isCurrent ? 'current' : 'preview',
+      cta:
+        subscription.store === 'stripe'
+          ? 'manage'
+          : subscription.store === 'apple' || subscription.store === 'google'
+            ? 'store'
+            : isCurrent
+              ? 'current'
+              : 'checkout',
     };
   });
 }
 
 export function deriveAccountView(input: DeriveAccountViewInput): AccountView {
-  const { identity, company, tradeConfig, subscription } = input;
+  const { identity, company, tradeConfig, subscription, subscriptionInvoices } = input;
   return {
     profile: {
       displayName: identity?.firstName ?? identity?.companyName ?? null,
@@ -233,8 +261,10 @@ export function deriveAccountView(input: DeriveAccountViewInput): AccountView {
     subscription: {
       offer: deriveOffer(subscription),
       plans: derivePlans(subscription),
-      // État vide HONNÊTE : rien n'est facturé pendant l'accès anticipé.
-      invoices: [],
+      invoices:
+        subscriptionInvoices === null
+          ? null
+          : subscriptionInvoices.map((invoice) => ({ ...invoice, id: invoice.stripeInvoiceId })),
       services: ACCOUNT_SERVICE_KEYS.map((key) => ({
         key,
         status: deriveServiceStatus(ACCOUNT_SERVICE_MODULE[key], tradeConfig),

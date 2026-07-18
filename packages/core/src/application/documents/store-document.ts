@@ -1,5 +1,5 @@
 import { type Result, ok, err } from '../../shared-kernel/result';
-import { type DateOnly } from '../../shared-kernel/time';
+import { parisDateOnly, type DateOnly } from '../../shared-kernel/time';
 import { Document, type DocumentKind, type DocumentLinkedEntityType, type DocumentOrigin } from '../../domain/document/document';
 import { type DocumentFolderRepository } from '../ports/document-folder-repository';
 import { type DocumentRepository } from '../ports/document-repository';
@@ -67,7 +67,9 @@ export class StoreDocument {
     }
 
     const now = this.deps.clock.now();
-    const anchor = input.issuedAt ?? input.documentDate ?? this.deps.clock.today();
+    // Ancre calendrier par défaut = jour MÉTIER Europe/Paris (classement + rétention légale) :
+    // l'UTC brut daterait de la veille une pièce déposée entre minuit et ~2 h, heure de Paris.
+    const anchor = input.issuedAt ?? input.documentDate ?? parisDateOnly(now);
     const linkedEntityType = input.linkedEntityType ?? null;
     const linkedEntityId = input.linkedEntityId ?? null;
     const document = Document.record({

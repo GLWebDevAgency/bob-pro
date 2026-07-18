@@ -59,6 +59,7 @@ import type {
 } from '../../voice/realtime/realtime-mistral-ingress-ticket';
 import { PrismaRealtimeControlRepository } from '../../voice/realtime/realtime-control.prisma';
 import type { RealtimeControlRepositoryPort } from '../../voice/realtime/realtime-control.repository';
+import { PrismaStripeBillingRepository } from './stripe-billing.repository';
 
 export class PrismaPersistence implements Persistence {
   readonly companies: PrismaCompanyRepository;
@@ -94,6 +95,8 @@ export class PrismaPersistence implements Persistence {
   readonly salesDocumentSearch: PrismaSalesDocumentSearchRepository;
   readonly counters: PrismaSequenceCounter;
   readonly cabinet: CabinetInfrastructure;
+  /** Port Stripe durable, volontairement hors du contrat Persistence générique de domaine. */
+  readonly stripeBilling: PrismaStripeBillingRepository;
 
   createRealtimeAdmission(policy: RealtimeAdmissionPolicy): RealtimeAdmissionPort {
     return new PrismaRealtimeAdmission(this.prisma, policy);
@@ -160,6 +163,7 @@ export class PrismaPersistence implements Persistence {
     this.salesDocumentSearch = new PrismaSalesDocumentSearchRepository(prisma);
     this.counters = new PrismaSequenceCounter(prisma);
     this.cabinet = createPrismaCabinetInfrastructure(prisma);
+    this.stripeBilling = new PrismaStripeBillingRepository(prisma);
   }
 
   runInTransaction<T>(fn: () => Promise<T>): Promise<T> {

@@ -1,4 +1,5 @@
 import { type Result, ok, err } from '../../shared-kernel/result';
+import { parisDateOnly } from '../../shared-kernel/time';
 import { type AppError, appDomain, appNotFound } from '../result';
 import { type QuoteRepository } from '../ports/repositories';
 import { type PublicAccessTokenRepository } from '../ports/public-access-token';
@@ -28,7 +29,8 @@ export class CreateQuoteSignatureToken {
       return err(appDomain({ code: 'VALIDATION', field: 'quote', message: 'Devis non numéroté : lien de signature impossible.' }));
     if (quote.status !== 'sent' && quote.status !== 'viewed')
       return err(appDomain({ code: 'INVALID_TRANSITION', from: quote.status, to: 'signed' }));
-    if (quote.validUntil !== null && quote.validUntil < this.deps.clock.today())
+    // Validité du devis = calendrier MÉTIER Europe/Paris (même correction que ExpireQuote).
+    if (quote.validUntil !== null && quote.validUntil < parisDateOnly(this.deps.clock.now()))
       return err(appDomain({ code: 'VALIDATION', field: 'validUntil', message: 'Devis expiré : lien de signature impossible.' }));
 
     const expiresAt = addDays(this.deps.clock.now(), SIGNATURE_TOKEN_TTL_DAYS);

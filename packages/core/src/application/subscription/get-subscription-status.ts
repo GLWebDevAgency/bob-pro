@@ -1,9 +1,10 @@
-import { type Result, ok } from '../../shared-kernel/result';
+import { type Result, err, ok } from '../../shared-kernel/result';
 import { type Instant } from '../../shared-kernel/time';
 import { type AppError } from '../result';
 import { type PlanTier } from '../../domain/subscription/plan';
 import { type SubscriptionStatus } from '../../domain/subscription/subscription';
 import { type SubscriptionRepository, type SubscriptionStore } from '../ports/subscription-repository';
+import { appUnavailable } from '../result';
 import { trialDaysLeft, trialPhase, type TrialPhase } from '../../domain/monetization/trial';
 
 /**
@@ -19,10 +20,9 @@ import { trialDaysLeft, trialPhase, type TrialPhase } from '../../domain/monetiz
  * atterri (checkout ou descente douce en fin d'essai), c'est le palier réellement payé. Le
  * même champ porte les deux réalités dans le temps — jamais une ambiguïté à un instant donné.
  *
- * Repli HONNÊTE si aucune ligne n'existe (tenant provisionné avant la table `subscriptions`,
- * jamais passé par registerCompany) — DÉCISION PRODUIT early-access (SPEC pilier 2, rappelée
- * fondateur 2026-07-17) : accès plein business/active, 0 € facturé, AUCUN essai fantôme —
- * jamais une échéance inventée, jamais un 503 pour un compte légitime pré-migration.
+ * Une ligne est créée au provisioning et la migration des comptes historiques persiste leur
+ * accès anticipé (`store='none'`). Une absence est donc une incohérence de persistance : elle
+ * échoue fermée au lieu de fabriquer en mémoire un abonnement Business.
  */
 export interface SubscriptionStatusView {
   readonly plan: PlanTier;
@@ -34,29 +34,15 @@ export interface SubscriptionStatusView {
   readonly currentPeriodEnd: Instant | null;
   readonly store: SubscriptionStore | null;
   readonly storeRef: string | null;
-  /** D'où vient la vérité : 'db' = ligne subscriptions du tenant ; 'early_access' = aucune
-   *  ligne (tenant pré-migration) — l'appelant affiche l'accès anticipé honnête (0 €). */
-  readonly source: 'db' | 'early_access';
+  readonly source: 'db';
 }
-
-const EARLY_ACCESS_NO_RECORD: SubscriptionStatusView = {
-  plan: 'business',
-  status: 'active',
-  trialEndsAt: null,
-  trialPhase: null,
-  trialDaysLeft: null,
-  currentPeriodEnd: null,
-  store: null,
-  storeRef: null,
-  source: 'early_access',
-};
 
 export class GetSubscriptionStatus {
   constructor(private readonly deps: { subscriptions: SubscriptionRepository }) {}
 
   async execute(input: { companyId: string; now: Instant }): Promise<Result<SubscriptionStatusView, AppError>> {
     const record = await this.deps.subscriptions.findByCompanyId(input.companyId);
-    if (record === null) return ok(EARLY_ACCESS_NO_RECORD);
+    if (record === null) return err(appUnavailable('subscription-record'));
 
     // L'essai inversé n'existe QUE pendant status='trialing' avec une échéance posée — un
     // statut atterri (active/canceled/past_due) n'a plus de phase d'essai, même si trialEndsAt

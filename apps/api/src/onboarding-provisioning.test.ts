@@ -19,7 +19,7 @@ const INPUT: Omit<CompanyProps, 'id'> = {
   address: { line1: '4 rue du Forgeron', zip: '92310', city: 'Sèvres' },
 };
 
-function makeService() {
+function makeService(subscriptionBillingAvailable = false) {
   const p = new InMemoryPersistence();
   const admin: SupabaseAdminPort = {
     setUserCompanyId: vi.fn(async () => undefined),
@@ -28,7 +28,7 @@ function makeService() {
   const logger = { audit: vi.fn(), error: vi.fn(), warn: vi.fn(), log: vi.fn() } as unknown as AppLogger;
   const service = new BackendService(
     p,
-    {} as PaymentGatewayPort,
+    { subscriptionBillingAvailable } as PaymentGatewayPort,
     {} as PdfRendererPort,
     {} as OcrPort,
     admin,
@@ -60,17 +60,22 @@ describe('registerCompany — provisioning tenant (C24b)', () => {
     const saved = await p.companies.findById(`company-${USER_ID}`);
     expect(saved?.name).toBe('Durand Élec');
     expect(admin.setUserCompanyId).toHaveBeenCalledWith(USER_ID, `company-${USER_ID}`);
-    // Reverse trial 14 j (pilier 2) : le compte NEUF démarre en essai Pro, sans carte.
-    const trial = await p.subscriptions.findByCompanyId(`company-${USER_ID}`);
-    expect(trial).toMatchObject({ id: `sub-company-${USER_ID}`, plan: 'pro', status: 'trialing' });
-    expect(trial?.trialEndsAt).toBeTruthy();
+    // V1 privée sans Stripe : accès anticipé explicite, gratuit et sans échéance.
+    const subscription = await p.subscriptions.findByCompanyId(`company-${USER_ID}`);
+    expect(subscription).toMatchObject({
+      id: `sub-company-${USER_ID}`,
+      plan: 'business',
+      status: 'active',
+      store: 'none',
+      trialEndsAt: null,
+    });
   });
 
-  it('retry idempotent : deux appels → MÊME id, zéro company orpheline, échéance d’essai JAMAIS décalée', async () => {
+  it('retry idempotent : deux appels → MÊME id, zéro company orpheline, accès anticipé jamais réinitialisé', async () => {
     const { service, p, admin } = makeService();
 
     const first = await asPrincipal({ userId: USER_ID, companyId: null }, () => service.registerCompany(INPUT));
-    const firstTrial = await p.subscriptions.findByCompanyId(`company-${USER_ID}`);
+    const firstSubscription = await p.subscriptions.findByCompanyId(`company-${USER_ID}`);
     const second = await asPrincipal({ userId: USER_ID, companyId: null }, () =>
       service.registerCompany({ ...INPUT, name: 'Durand Élec SASU' }),
     );
@@ -79,9 +84,21 @@ describe('registerCompany — provisioning tenant (C24b)', () => {
     if (!first.ok || !second.ok) return;
     expect(second.value.companyId).toBe(first.value.companyId);
     expect(admin.setUserCompanyId).toHaveBeenCalledTimes(2);
-    // Un retry (formulaire renvoyé, admin en échec…) ne redémarre JAMAIS l'essai.
-    const secondTrial = await p.subscriptions.findByCompanyId(`company-${USER_ID}`);
-    expect(secondTrial?.trialEndsAt).toBe(firstTrial?.trialEndsAt);
+    const secondSubscription = await p.subscriptions.findByCompanyId(`company-${USER_ID}`);
+    expect(secondSubscription).toEqual(firstSubscription);
+  });
+
+  it('à l’ouverture du paiement live, un compte neuf reçoit l’essai Pro au lieu de l’accès anticipé', async () => {
+    const { service, p } = makeService(true);
+
+    const result = await asPrincipal({ userId: USER_ID, companyId: null }, () =>
+      service.registerCompany(INPUT),
+    );
+
+    expect(result.ok).toBe(true);
+    const subscription = await p.subscriptions.findByCompanyId(`company-${USER_ID}`);
+    expect(subscription).toMatchObject({ plan: 'pro', status: 'trialing', store: null });
+    expect(subscription?.trialEndsAt).toBeTruthy();
   });
 
   it("échec de l'écriture admin : erreur dependency EXPLICITE + log — la company créée reste réutilisable au retry", async () => {

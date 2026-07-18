@@ -105,19 +105,50 @@ function supplierMemoryId(companyId: string, key: string): string {
   return createHash('sha256').update(`${companyId}:${key}`, 'utf8').digest('hex').slice(0, 32);
 }
 
+type PersistedAggregateResult<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly error: unknown };
+
+type PersistedAggregateKind = 'company' | 'customer' | 'payment' | 'fiscal-profile';
+
+/**
+ * A row that exists in PostgreSQL but cannot satisfy the current domain invariants is corruption,
+ * never an absent business object. Keeping this error stable lets the HTTP boundary report an
+ * unavailable state and observability alert operators without fabricating an empty projection.
+ */
+export class PersistedDataCorruptionError extends Error {
+  readonly code = 'PERSISTED_DATA_CORRUPTION' as const;
+
+  constructor(
+    readonly aggregate: PersistedAggregateKind,
+    readonly recordId: string,
+  ) {
+    super(`PERSISTED_DATA_CORRUPTION:${aggregate}:${recordId}`);
+    this.name = 'PersistedDataCorruptionError';
+  }
+}
+
+function requirePersistedAggregate<T>(
+  aggregate: PersistedAggregateKind,
+  recordId: string,
+  result: PersistedAggregateResult<T>,
+): T {
+  if (result.ok) return result.value;
+  throw new PersistedDataCorruptionError(aggregate, recordId);
+}
+
 export class PrismaCompanyRepository implements CompanyRepository {
   constructor(private readonly prisma: PrismaService) {}
   async findById(id: string): Promise<Company | null> {
     const row = await this.prisma.client().company.findUnique({ where: { id } });
     if (!row) return null;
-    const r = Company.of(companyRowToProps(row));
-    return r.ok ? r.value : null;
+    return requirePersistedAggregate('company', row.id, Company.of(companyRowToProps(row)));
   }
   async list(): Promise<Company[]> {
     const rows = await this.prisma.client().company.findMany({ orderBy: { id: 'asc' } });
-    return rows
-      .map((row) => Company.of(companyRowToProps(row)))
-      .flatMap((r) => (r.ok ? [r.value] : []));
+    return rows.map((row) =>
+      requirePersistedAggregate('company', row.id, Company.of(companyRowToProps(row))),
+    );
   }
   async save(c: Company): Promise<void> {
     const data = companyPropsToCreate(c.toProps());
@@ -132,14 +163,13 @@ export class PrismaCustomerRepository implements CustomerRepository {
   async findById(id: string): Promise<Customer | null> {
     const row = await this.prisma.client().customer.findUnique({ where: { id } });
     if (!row) return null;
-    const r = Customer.of(customerRowToProps(row));
-    return r.ok ? r.value : null;
+    return requirePersistedAggregate('customer', row.id, Customer.of(customerRowToProps(row)));
   }
   async listByCompany(companyId: string): Promise<Customer[]> {
     const rows = await this.prisma.client().customer.findMany({ where: { companyId } });
-    return rows
-      .map((row) => Customer.of(customerRowToProps(row)))
-      .flatMap((r) => (r.ok ? [r.value] : []));
+    return rows.map((row) =>
+      requirePersistedAggregate('customer', row.id, Customer.of(customerRowToProps(row))),
+    );
   }
   async save(c: Customer): Promise<void> {
     const data = customerPropsToCreate(c.toProps());
@@ -2225,7 +2255,7 @@ export class PrismaPaymentRepository implements PaymentRepository {
     method: string;
     receivedAt: Date;
     idempotencyKey: string | null;
-  }): Payment | null {
+  }): Payment {
     const r = Payment.record({
       id: row.id,
       companyId: row.companyId,
@@ -2235,7 +2265,7 @@ export class PrismaPaymentRepository implements PaymentRepository {
       receivedAt: row.receivedAt.toISOString(),
       idempotencyKey: row.idempotencyKey,
     });
-    return r.ok ? r.value : null;
+    return requirePersistedAggregate('payment', row.id, r);
   }
 
   async save(p: Payment): Promise<void> {
@@ -2264,10 +2294,7 @@ export class PrismaPaymentRepository implements PaymentRepository {
   }
   async listByInvoice(invoiceId: string): Promise<Payment[]> {
     const rows = await this.prisma.client().payment.findMany({ where: { invoiceId } });
-    return rows.flatMap((row) => {
-      const payment = this.rowToPayment(row);
-      return payment ? [payment] : [];
-    });
+    return rows.map((row) => this.rowToPayment(row));
   }
   /** E3 (PONT-SERVEUR v1) : encaissements datés du tenant — CA encaissé annuel (293 B), balance
    *  âgée/prescription. Tri chronologique stable (findMany sans orderBy est non déterministe). */
@@ -2275,10 +2302,7 @@ export class PrismaPaymentRepository implements PaymentRepository {
     const rows = await this.prisma
       .client()
       .payment.findMany({ where: { companyId }, orderBy: { receivedAt: 'asc' } });
-    return rows.flatMap((row) => {
-      const payment = this.rowToPayment(row);
-      return payment ? [payment] : [];
-    });
+    return rows.map((row) => this.rowToPayment(row));
   }
 }
 
@@ -2505,6 +2529,38 @@ export class PrismaSubscriptionRepository implements SubscriptionRepository {
     return row ? subscriptionRowToRecord(row) : null;
   }
 
+  async startEarlyAccess(input: {
+    id: string;
+    companyId: string;
+    plan: SubscriptionRecord['plan'];
+    now: string;
+  }): Promise<SubscriptionRecord> {
+    await this.prisma.client().subscription.createMany({
+      data: [
+        {
+          id: input.id,
+          companyId: input.companyId,
+          plan: input.plan,
+          status: 'active',
+          trialEndsAt: null,
+          currentPeriodEnd: null,
+          store: 'none',
+          storeRef: null,
+          createdAt: new Date(input.now),
+          updatedAt: new Date(input.now),
+        },
+      ],
+      skipDuplicates: true,
+    });
+    const row = await this.prisma
+      .client()
+      .subscription.findUnique({ where: { companyId: input.companyId } });
+    if (!row) {
+      throw new Error(`Abonnement introuvable après startEarlyAccess pour ${input.companyId}.`);
+    }
+    return subscriptionRowToRecord(row);
+  }
+
   async startTrial(input: {
     id: string;
     companyId: string;
@@ -2596,8 +2652,11 @@ export class PrismaFiscalProfileRepository implements FiscalProfileRepository {
   async findByCompanyId(companyId: string): Promise<FiscalProfile | null> {
     const row = await this.prisma.client().fiscalProfile.findUnique({ where: { companyId } });
     if (!row) return null;
-    const r = FiscalProfile.of(fiscalProfileRowToProps(row));
-    return r.ok ? r.value : null;
+    return requirePersistedAggregate(
+      'fiscal-profile',
+      row.companyId,
+      FiscalProfile.of(fiscalProfileRowToProps(row)),
+    );
   }
 
   async save(profile: FiscalProfile): Promise<void> {

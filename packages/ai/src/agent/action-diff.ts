@@ -51,7 +51,11 @@ function paymentMethodOrTransfer(v: unknown): PaymentMethod {
  * Construit l'aperçu d'une action à partir de ses arguments et de l'état AVANT. Renvoie null pour les
  * outils sans effet notable (lecture) ou inconnus.
  */
-export function buildActionDiff(tool: string, args: Record<string, unknown>, before: DiffSnapshot = {}): ActionDiff | null {
+export function buildActionDiff(
+  tool: string,
+  args: Record<string, unknown>,
+  before: DiffSnapshot = {},
+): ActionDiff | null {
   const num = before.number ?? null;
   let spec: { title: string; fields: ActionDiffField[] } | null = null;
   let generatedAccounting: readonly AccountingLine[] = [];
@@ -70,15 +74,29 @@ export function buildActionDiff(tool: string, args: Record<string, unknown>, bef
       title: `Encaisser ${formatEUR(amount)}${num ? ` · ${num}` : ''}`,
       fields: [
         { label: 'Reste dû', before: formatEUR(remaining), after: formatEUR(after) },
-        { label: 'Statut', before: remaining > 0 ? 'À encaisser' : 'Payée', after: after === 0 ? 'Payée' : 'Partielle' },
+        {
+          label: 'Statut',
+          before: remaining > 0 ? 'À encaisser' : 'Payée',
+          after: after === 0 ? 'Payée' : 'Partielle',
+        },
       ],
     };
   } else if (tool === 'emettre_facture') {
+    const paymentTermsDays = intOr(args.paymentTermsDays, 0);
     spec = {
       title: 'Émettre la facture',
       fields: [
         { label: 'Statut', before: 'Brouillon', after: 'Émise' },
         { label: 'Numéro légal', before: num ?? '—', after: num ?? 'attribué à l’émission' },
+        ...(paymentTermsDays > 0
+          ? [
+              {
+                label: 'Échéance',
+                before: 'Non attribuée',
+                after: `${paymentTermsDays} jours après émission`,
+              },
+            ]
+          : []),
       ],
     };
   } else if (tool === 'envoyer_devis') {
@@ -89,6 +107,13 @@ export function buildActionDiff(tool: string, args: Record<string, unknown>, bef
   }
 
   if (!spec) return null; // lecture / outil sans aperçu d'état
-  const accounting = (before.accountingLines ?? generatedAccounting).filter((l) => l.debitCents > 0 || l.creditCents > 0);
-  return { tool, title: spec.title, fields: spec.fields, ...(accounting.length ? { accounting } : {}) };
+  const accounting = (before.accountingLines ?? generatedAccounting).filter(
+    (l) => l.debitCents > 0 || l.creditCents > 0,
+  );
+  return {
+    tool,
+    title: spec.title,
+    fields: spec.fields,
+    ...(accounting.length ? { accounting } : {}),
+  };
 }

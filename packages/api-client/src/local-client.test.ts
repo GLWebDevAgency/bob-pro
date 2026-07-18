@@ -270,10 +270,11 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     expect(fec.value.descriptionFilename).toBe('732829320FEC20261231-description.txt');
     expect(fec.value.descriptionContent).toContain('Codes journaux');
     // Le FEC embarque AUSSI les écritures du seed démo : facture échue 0001 (mairie),
-    // acompte 0002 + son paiement, ET le cycle achats (3 achats AC + 2 décaissements BQ
-    // des dépenses payées — expertise chantier 1) : 10 écritures, 26 lignes.
-    expect(fec.value.entryCount).toBe(10);
-    expect(fec.value.rowCount).toBe(26);
+    // acompte 0002 + son paiement, ET le cycle achats (4 achats AC + 2 décaissements BQ
+    // des dépenses justifiées — la ligne HISTORIQUE Brico Dépôt reste honnêtement sans
+    // décaissement tant qu'elle n'est pas régularisée) : 11 écritures, 29 lignes.
+    expect(fec.value.entryCount).toBe(11);
+    expect(fec.value.rowCount).toBe(29);
     const rows = fec.value.content.trimEnd().split('\n');
     expect(rows[0]?.split('\t')).toEqual([
       'JournalCode',
@@ -1091,8 +1092,13 @@ describe('coffre de démo + classement (A1-C14)', () => {
     expect(leroy).toMatchObject({ origin: 'ocr', linkedEntityType: null, kind: 'expense_receipt' });
     const expenses = await client.listExpenses();
     expect(expenses.ok && expenses.value.map((e) => e.supplierName).sort()).toEqual(
-      ['Cedeo', 'Leroy Merlin', 'Point P'],
+      ['Brico Dépôt', 'Cedeo', 'Leroy Merlin', 'Point P'],
     );
+    // La ligne HISTORIQUE de démo est honnêtement « payée sans preuve » (état régularisable).
+    expect(
+      expenses.ok
+        && expenses.value.find((e) => e.id === 'local-expense-brico'),
+    ).toMatchObject({ status: 'paid', paymentEvidence: null });
   });
 
   it('« Classer là » rattache le reçu à la dépense (sort d’à valider, dossier Achats)', async () => {
@@ -1554,5 +1560,74 @@ describe('LocalBobClient B9 — searchSalesDocuments / suggestSalesDocuments (pe
   it('suggestSalesDocuments : requête vide -> aucune suggestion (les récentes restent un concern écran)', async () => {
     const result = await makeClient().suggestSalesDocuments('');
     expect(result).toEqual({ ok: true, value: { suggestions: [] } });
+  });
+});
+
+describe('LocalBobClient — régularisation d’une ligne historique payée sans preuve', () => {
+  const evidence = {
+    expenseId: 'local-expense-brico',
+    paidOn: '2026-05-03',
+    method: 'card' as const,
+    reference: 'CB-BRICO-0503',
+  };
+
+  it('attache la preuve, pose l’écriture 401/512 manquante et sort la ligne de l’état legacy', async () => {
+    const client = makeClient();
+    const r = await client.regularizeExpensePayment(evidence);
+    expect(r).toEqual({
+      ok: true,
+      value: {
+        status: 'paid',
+        alreadyRegularized: false,
+        paymentEntryId: 'expense:local-expense-brico:paid',
+      },
+    });
+    const expenses = await client.listExpenses();
+    expect(
+      expenses.ok && expenses.value.find((e) => e.id === 'local-expense-brico'),
+    ).toMatchObject({
+      status: 'paid',
+      paymentEvidence: {
+        paidOn: '2026-05-03',
+        method: 'card',
+        reference: 'CB-BRICO-0503',
+        proofDocumentId: null,
+      },
+    });
+    const entries = await client.listAccountingEntries();
+    const entry = entries.ok
+      ? entries.value.find((e) => e.id === 'expense:local-expense-brico:paid')
+      : undefined;
+    expect(entry).toBeDefined();
+    expect(entry?.entryDate).toBe('2026-05-03');
+  });
+
+  it('retry identique idempotent ; une ligne déjà justifiée ou à payer est refusée', async () => {
+    const client = makeClient();
+    await client.regularizeExpensePayment(evidence);
+    const replay = await client.regularizeExpensePayment(evidence);
+    expect(replay.ok && replay.value.alreadyRegularized).toBe(true);
+
+    // Cedeo est justifiée (preuve seedée) : une régularisation différente est un conflit.
+    const alreadyJustified = await client.regularizeExpensePayment({
+      ...evidence,
+      expenseId: 'local-expense-cedeo',
+    });
+    expect(!alreadyJustified.ok && alreadyJustified.error.kind).toBe('conflict');
+
+    // Leroy Merlin est à payer : c'est un règlement (payExpense), pas une régularisation.
+    const stillUnpaid = await client.regularizeExpensePayment({
+      ...evidence,
+      expenseId: 'local-expense-leroy',
+    });
+    expect(!stillUnpaid.ok && stillUnpaid.error.kind).toBe('conflict');
+  });
+
+  it('payExpense sur la ligne legacy renvoie le conflit dédié qui route vers la régularisation', async () => {
+    const client = makeClient();
+    const r = await client.payExpense(evidence);
+    expect(!r.ok && r.error.kind).toBe('conflict');
+    if (r.ok || r.error.kind !== 'conflict') return;
+    expect(r.error.entity).toBe('expense_payment_legacy');
   });
 });

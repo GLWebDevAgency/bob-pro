@@ -126,8 +126,13 @@ describe('contrat données autoritatives des écrans métier', () => {
 
     expect(source).toContain('const dataFresh = dataReady && !staleError');
     expect(source).toContain('expenses.data === undefined ? null : summarizeExpenses');
-    expect(source).toContain("currentExpense?.status !== 'to_pay'");
+    // La revalidation post-confirmation couvre les DEUX gestes comptables : le règlement exige
+    // toujours `to_pay`, la régularisation exige l'état historique payé-sans-preuve.
+    expect(source).toContain("currentExpense?.status === 'to_pay'");
+    expect(source).toContain('isLegacyUnverifiedExpensePayment(currentExpense)');
+    expect(source).toContain('if (!dataFreshRef.current || !stillActionable)');
     expect(source).toContain('disabled={pay.isPending || !dataFresh}');
+    expect(source).toContain('disabled={regularize.isPending || !dataFresh}');
     expect(source).toContain("capabilities: contextReady ? ['screen.read', 'expense.read'] : []");
   });
 

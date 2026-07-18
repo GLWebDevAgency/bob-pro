@@ -7,6 +7,8 @@ import { PersistenceModule } from './persistence/persistence.module';
 import { ObservabilityModule } from './observability/observability.module';
 import { CorrelationMiddleware } from './observability/correlation.middleware';
 import { paymentGatewayProvider } from './payments/payment-gateway';
+import { StripeBillingService } from './payments/stripe-billing.service';
+import { StripeWebhookController } from './payments/stripe-webhook.controller';
 import { PDF_RENDERER, PdfRenderer } from './documents/pdf-renderer';
 import { DOCUMENT_STORAGE, buildDocumentStorage } from './documents/storage';
 import { ocrProvider } from './ocr/ocr';
@@ -65,7 +67,8 @@ import {
   NotificationsController,
   DevicesController,
   PublicPushRevocationsController,
- EngagementController } from './api.controllers';
+  EngagementController,
+} from './api.controllers';
 
 @Module({
   imports: [
@@ -113,6 +116,7 @@ import {
     QuoteDraftController,
     CabinetController,
     DiagnosticAssessmentController,
+    StripeWebhookController,
   ],
   providers: [
     BackendService,
@@ -134,6 +138,7 @@ import {
     CabinetInvitationDeliveryScheduler,
     QuoteDraftService,
     DiagnosticAssessmentService,
+    StripeBillingService,
     { provide: APP_GUARD, useClass: ThrottlerGuard },
     { provide: APP_GUARD, useClass: SupabaseAuthGuard },
     { provide: APP_INTERCEPTOR, useClass: TenantPersistenceInterceptor },

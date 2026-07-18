@@ -133,6 +133,17 @@ export interface RecordExpensePaymentClientOutput {
   readonly paymentEntryId: string;
 }
 
+/** Régularisation d'une dépense HISTORIQUE payée sans preuve (même preuve explicite qu'un règlement). */
+export interface RegularizeExpensePaymentClientInput extends ExpensePaymentEvidenceInput {
+  readonly expenseId: string;
+}
+
+export interface RegularizeExpensePaymentClientOutput {
+  readonly status: 'paid';
+  readonly alreadyRegularized: boolean;
+  readonly paymentEntryId: string;
+}
+
 export interface SendQuoteOutput {
   number: string;
   signatureToken?: string;
@@ -639,10 +650,6 @@ export interface TrialReportView {
 }
 
 export interface SubscriptionView extends SubscriptionInfo {
-  /** Accès anticipé RÉEL : aucun billing n'existe — l'écran Compte affiche l'état early-access honnête. */
-  earlyAccess: boolean;
-  /** Prix réellement facturé au tenant (centimes/mois) — 0 pendant l'accès anticipé. */
-  priceCents: number;
   /** Essai inversé (pilier 2) — présents quand le serveur est DB-backed ; absents = pas d'essai. */
   trialEndsAt?: string | null;
   trialPhase?: 'active' | 'ending_soon' | 'expired' | null;
@@ -674,12 +681,26 @@ export interface SubscriptionView extends SubscriptionInfo {
   }[];
 }
 
+export interface SubscriptionBillingInvoiceView {
+  stripeInvoiceId: string;
+  status: 'draft' | 'open' | 'paid' | 'void' | 'uncollectible';
+  currency: 'eur';
+  number: string | null;
+  totalCents: number;
+  issuedAt: string;
+  paidAt: string | null;
+  hostedInvoiceUrl: string | null;
+  invoicePdfUrl: string | null;
+}
+
 export interface BobClient {
   readonly companyId: string;
   /** GET /subscription (C26b) : abonnement réel du tenant (SubscriptionView ⊂ SubscriptionInfo @bob/core).
    * En early-access le serveur renvoie earlyAccess: true, priceCents: 0 — l'écran Compte en dérive
    * l'état honnête. */
   getSubscription(): Promise<Result<SubscriptionView, AppError>>;
+  /** Factures d'abonnement réellement persistées après réconciliation d'un webhook Stripe. */
+  listSubscriptionInvoices(): Promise<Result<SubscriptionBillingInvoiceView[], AppError>>;
   /** GET /fiscal-profile (BOB EXPERT FISCAL, Phase 1A) : profil fiscal du tenant — dérivé par
    *  hypothèses depuis la forme juridique si absent, chaque champ portant son statut
    *  (source_fiable/confirme_utilisateur/hypothese/manquant, @bob/core FiscalDatum). */
@@ -882,6 +903,12 @@ export interface BobClient {
   payExpense(
     input: RecordExpensePaymentClientInput,
   ): Promise<Result<RecordExpensePaymentClientOutput, AppError>>;
+  /** Régularise une dépense HISTORIQUE « payée sans preuve » (migration lane preuves) : valide la
+   * preuve comme payExpense, pose l'écriture 401/512-530 manquante et sort la ligne de l'état
+   * legacy — POST /expenses/:id/regularize-payment (RegularizeLegacyExpensePayment @bob/core). */
+  regularizeExpensePayment(
+    input: RegularizeExpensePaymentClientInput,
+  ): Promise<Result<RegularizeExpensePaymentClientOutput, AppError>>;
   listExpenses(): Promise<Result<ExpenseProps[], AppError>>;
   listCatalogueItems(): Promise<Result<readonly CatalogueItemView[], AppError>>;
   createCatalogueItem(input: CatalogueItemWriteInput): Promise<Result<CatalogueItemView, AppError>>;

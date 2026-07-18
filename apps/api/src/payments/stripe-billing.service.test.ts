@@ -9,6 +9,8 @@ import type {
   StripeBillingRepository,
   StripeCheckoutAttempt,
   StripeSubscriptionSnapshot,
+  StripeSubscriptionInvoiceRecord,
+  StripeSubscriptionInvoiceSnapshot,
   StripeWebhookClaim,
   StripeWebhookClaimInput,
   VerifiedStripeWebhookEvent,
@@ -20,6 +22,7 @@ class MemoryStripeBilling implements StripeBillingRepository {
   readonly attempts = new Map<string, StripeCheckoutAttempt>();
   readonly events = new Map<string, EventRow>();
   subscription: ApplyStripeSubscriptionInput | null = null;
+  readonly invoices = new Map<string, StripeSubscriptionInvoiceRecord>();
   failAfterSubscriptionWrite = false;
 
   snapshot(): string {
@@ -27,6 +30,7 @@ class MemoryStripeBilling implements StripeBillingRepository {
       attempts: [...this.attempts],
       events: [...this.events],
       subscription: this.subscription,
+      invoices: [...this.invoices],
     });
   }
 
@@ -35,12 +39,15 @@ class MemoryStripeBilling implements StripeBillingRepository {
       attempts: [string, StripeCheckoutAttempt][];
       events: [string, EventRow][];
       subscription: ApplyStripeSubscriptionInput | null;
+      invoices: [string, StripeSubscriptionInvoiceRecord][];
     };
     this.attempts.clear();
     for (const entry of value.attempts) this.attempts.set(...entry);
     this.events.clear();
     for (const entry of value.events) this.events.set(...entry);
     this.subscription = value.subscription;
+    this.invoices.clear();
+    for (const entry of value.invoices) this.invoices.set(...entry);
   }
 
   async createCheckoutAttempt(input: CreateStripeCheckoutAttemptInput): Promise<StripeCheckoutAttempt> {
@@ -105,6 +112,25 @@ class MemoryStripeBilling implements StripeBillingRepository {
   async applySubscription(input: ApplyStripeSubscriptionInput): Promise<void> {
     this.subscription = input;
   }
+  async upsertSubscriptionInvoice(input: {
+    companyId: string;
+    eventId: string;
+    snapshot: StripeSubscriptionInvoiceSnapshot;
+    now: string;
+  }): Promise<void> {
+    const previous = this.invoices.get(input.snapshot.stripeInvoiceId);
+    const { metadata: _metadata, ...persisted } = input.snapshot;
+    this.invoices.set(input.snapshot.stripeInvoiceId, {
+      ...persisted,
+      companyId: input.companyId,
+      stripeLastEventId: input.eventId,
+      createdAt: previous?.createdAt ?? input.now,
+      updatedAt: input.now,
+    });
+  }
+  async listSubscriptionInvoices(companyId: string): Promise<StripeSubscriptionInvoiceRecord[]> {
+    return [...this.invoices.values()].filter((invoice) => invoice.companyId === companyId);
+  }
 }
 
 function subscriptionEvent(input: {
@@ -147,6 +173,59 @@ function snapshot(companyId = 'co-1'): StripeSubscriptionSnapshot {
   };
 }
 
+function subscriptionInvoiceEvent(input: {
+  id: string;
+  companyId: string;
+}): VerifiedStripeWebhookEvent {
+  return {
+    id: input.id,
+    type: 'invoice.paid',
+    created: 1_784_275_200,
+    livemode: true,
+    apiVersion: '2026-02-25.clover',
+    dataObject: {
+      id: 'in_live_1',
+      parent: {
+        subscription_details: {
+          subscription: 'sub_live_1',
+          metadata: {
+            bob_company_id: input.companyId,
+            bob_checkout_id: 'checkout-1',
+            bob_purpose: 'subscription',
+          },
+        },
+      },
+    },
+  };
+}
+
+function invoiceSnapshot(companyId = 'co-1'): StripeSubscriptionInvoiceSnapshot {
+  return {
+    stripeInvoiceId: 'in_live_1',
+    stripeCustomerId: 'cus_live_1',
+    stripeSubscriptionId: 'sub_live_1',
+    status: 'paid',
+    currency: 'eur',
+    number: 'BOB-2026-0001',
+    subtotalCents: 3_250,
+    taxCents: 650,
+    totalCents: 3_900,
+    amountPaidCents: 3_900,
+    amountDueCents: 3_900,
+    periodStart: '2026-07-17T00:00:00.000Z',
+    periodEnd: '2026-08-17T00:00:00.000Z',
+    issuedAt: '2026-07-17T00:00:00.000Z',
+    paidAt: '2026-07-17T00:01:00.000Z',
+    hostedInvoiceUrl: 'https://invoice.stripe.com/i/live',
+    invoicePdfUrl: 'https://pay.stripe.com/invoice/live/pdf',
+    metadata: {
+      bob_company_id: companyId,
+      bob_checkout_id: 'checkout-1',
+      bob_purpose: 'subscription',
+    },
+  };
+}
+
 function harness(initialEvent: VerifiedStripeWebhookEvent) {
   const store = new MemoryStripeBilling();
   store.attempts.set('checkout-1', {
@@ -169,8 +248,11 @@ function harness(initialEvent: VerifiedStripeWebhookEvent) {
   });
   let verified = initialEvent;
   let currentSnapshot = snapshot();
+  let currentInvoiceSnapshot = invoiceSnapshot();
   let retrieveCount = 0;
+  let invoiceRetrieveCount = 0;
   const provider: StripeBillingProvider = {
+    subscriptionBillingAvailable: true,
     expectedLivemode: true,
     createSubscriptionCheckout: async () => ({ url: 'https://checkout.stripe.com/x', sessionId: 'cs_1' }),
     createInvoicePaymentLink: async () => ({ url: 'https://checkout.stripe.com/x', sessionId: 'cs_1' }),
@@ -183,6 +265,10 @@ function harness(initialEvent: VerifiedStripeWebhookEvent) {
     retrieveSubscription: async () => {
       retrieveCount += 1;
       return currentSnapshot;
+    },
+    retrieveSubscriptionInvoice: async () => {
+      invoiceRetrieveCount += 1;
+      return currentInvoiceSnapshot;
     },
     tierForPriceIds: (ids) => (ids.length === 1 && ids[0] === 'price_pro' ? 'pro' : null),
   };
@@ -226,7 +312,11 @@ function harness(initialEvent: VerifiedStripeWebhookEvent) {
     setSnapshot: (value: StripeSubscriptionSnapshot) => {
       currentSnapshot = value;
     },
+    setInvoiceSnapshot: (value: StripeSubscriptionInvoiceSnapshot) => {
+      currentInvoiceSnapshot = value;
+    },
     retrieveCount: () => retrieveCount,
+    invoiceRetrieveCount: () => invoiceRetrieveCount,
   };
 }
 
@@ -299,5 +389,47 @@ describe('StripeBillingService — webhook durable', () => {
     );
     expect(h.store.subscription).toBeNull();
     expect(h.store.events.get('evt_tx')?.status).toBe('failed');
+  });
+
+  it('invoice.paid relit Stripe puis persiste la facture dans le même commit que l’abonnement', async () => {
+    const event = subscriptionInvoiceEvent({ id: 'evt_invoice_paid', companyId: 'co-1' });
+    const h = harness(event);
+
+    const receipt = await h.service.handleWebhook(Buffer.from('invoice-paid'), 'signature');
+
+    expect(receipt.outcome).toBe('processed');
+    expect(h.invoiceRetrieveCount()).toBe(1);
+    expect(h.retrieveCount()).toBe(1);
+    expect(h.store.invoices.get('in_live_1')).toMatchObject({
+      companyId: 'co-1',
+      status: 'paid',
+      totalCents: 3_900,
+      stripeLastEventId: 'evt_invoice_paid',
+    });
+    await expect(h.service.listSubscriptionInvoices('co-1')).resolves.toHaveLength(1);
+  });
+
+  it('une facture dont les metadata Stripe pointent vers un autre tenant n’est jamais persistée', async () => {
+    const event = subscriptionInvoiceEvent({ id: 'evt_invoice_forged', companyId: 'co-1' });
+    const h = harness(event);
+    h.setInvoiceSnapshot(invoiceSnapshot('co-other'));
+
+    await expect(
+      h.service.handleWebhook(Buffer.from('invoice-forged'), 'signature'),
+    ).rejects.toThrow('STRIPE_METADATA_MISMATCH:bob_company_id');
+    expect(h.store.invoices.size).toBe(0);
+    expect(h.store.events.get('evt_invoice_forged')?.status).toBe('failed');
+  });
+
+  it('rollback aussi la facture si la finalisation de l’inbox échoue', async () => {
+    const event = subscriptionInvoiceEvent({ id: 'evt_invoice_tx', companyId: 'co-1' });
+    const h = harness(event);
+    h.store.failAfterSubscriptionWrite = true;
+
+    await expect(
+      h.service.handleWebhook(Buffer.from('invoice-tx'), 'signature'),
+    ).rejects.toThrow('database write failure');
+    expect(h.store.invoices.size).toBe(0);
+    expect(h.store.subscription).toBeNull();
   });
 });

@@ -59,6 +59,26 @@ function notificationUpdatedCount(output: unknown): number | null {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
+/** Dépense HISTORIQUE payée sans preuve (entité dédiée posée par RecordExpensePayment @bob/core). */
+function isLegacyExpensePaymentConflict(error: AppError): boolean {
+  return error.kind === 'conflict' && error.entity === 'expense_payment_legacy';
+}
+
+/**
+ * Parité vocale de la régularisation : au lieu de l'erreur sèche, Bob explique l'état legacy et
+ * oriente vers le geste qui existe (écran Dépenses → « Payée — à justifier » → régularisation).
+ * La régularisation reste un geste comptable confirmé au tap — jamais improvisée à la voix.
+ */
+function legacyExpenseGuidanceCard(): ActionCard {
+  return {
+    title: 'Dépense à régulariser',
+    body:
+      'Cette dépense date d’avant le suivi des preuves de paiement : elle est marquée payée sans preuve enregistrée. '
+      + 'Rien n’a été modifié. Tu peux la régulariser depuis l’écran Dépenses (badge « Payée — à justifier ») : '
+      + 'même formulaire, et j’enregistre l’écriture comptable qui manque.',
+  };
+}
+
 export interface PendingAction {
   tool: string;
   args: Record<string, unknown>;
@@ -476,7 +496,12 @@ function fiscalDeadlineLine(d: FiscalDeadline): string {
 function subscriptionStatusBody(s: SubscriptionStatusView): string {
   const label = PLAN_CATALOG[s.plan].label;
   const dateFr = (iso: string): string => `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}`;
-  if (s.source === 'early_access') {
+  if (
+    s.store === 'none' &&
+    s.status === 'active' &&
+    s.currentPeriodEnd === null &&
+    s.storeRef === null
+  ) {
     return 'Tu es en accès anticipé : toutes les fonctions sont ouvertes et rien ne t’est facturé.';
   }
   if (s.status === 'trialing' && s.trialEndsAt !== null) {
@@ -1642,7 +1667,18 @@ export class BobAgent {
         });
       }
       const run = await tool.run(args);
-      if (!run.ok) return err(run.error);
+      if (!run.ok) {
+        if (isLegacyExpensePaymentConflict(run.error)) {
+          return ok({
+            kind: 'answer',
+            intent,
+            model,
+            plan: ['Détecter une ligne historique sans preuve', 'Orienter vers la régularisation'],
+            card: legacyExpenseGuidanceCard(),
+          });
+        }
+        return err(run.error);
+      }
       return ok({
         kind: 'done',
         intent,
@@ -2360,7 +2396,20 @@ export class BobAgent {
     const parsed = tool.parse(pending.args);
     if (!parsed.ok) return err(parsed.error);
     const run = await tool.run(parsed.value);
-    if (!run.ok) return err(run.error);
+    if (!run.ok) {
+      // Une confirmation qui frappe une ligne historique sans preuve (état changé entre la
+      // proposition et l'exécution) reçoit la même orientation que le flux direct.
+      if (pending.tool === 'enregistrer_reglement_depense' && isLegacyExpensePaymentConflict(run.error)) {
+        return ok({
+          kind: 'answer',
+          intent: intentForTool(pending.tool),
+          model,
+          plan: ['Détecter une ligne historique sans preuve', 'Orienter vers la régularisation'],
+          card: legacyExpenseGuidanceCard(),
+        });
+      }
+      return err(run.error);
+    }
     if (pending.tool === 'marquer_notifications_lues') {
       const updatedCount = notificationUpdatedCount(run.value);
       if (updatedCount === null) {

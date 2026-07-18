@@ -5431,6 +5431,47 @@ const legacyFr = {
     pro: 'Le paiement n’a pas pu être enregistré. Aucune modification n’a été appliquée.',
     direct: 'Enregistrement KO. Rien n’a changé.',
   },
+  // ── Régularisation d'une ligne HISTORIQUE payée sans preuve (lane preuves) ──
+  'dep.statusPaidLegacy': {
+    pote: 'Payée — à justifier',
+    pro: 'Payée — à justifier',
+    direct: 'Payée — à justifier',
+  },
+  'dep.regularize': {
+    pote: 'Régulariser',
+    pro: 'Régulariser le règlement',
+    direct: 'Régulariser',
+  },
+  'dep.regularizeSheetTitle': {
+    pote: 'On régularise ce paiement ?',
+    pro: 'Régularisation du règlement',
+    direct: 'Régularisation',
+  },
+  'dep.regularizeSheetBody': {
+    pote: 'Cette dépense de {supplier} date d’avant le suivi des preuves. Dis-moi comment elle a été payée : je complète tes livres, sans toucher à ton compte.',
+    pro: 'Cette dépense de {supplier} est antérieure au suivi des preuves de règlement. Renseignez le paiement réellement effectué : l’écriture comptable manquante sera enregistrée. Aucun transfert n’est déclenché.',
+    direct: 'Dépense {supplier} d’avant le suivi des preuves. Indique le paiement réel. Aucun transfert.',
+  },
+  'dep.regularizeConfirmTitle': {
+    pote: 'On complète tes livres ?',
+    pro: 'Confirmer la régularisation comptable',
+    direct: 'Régulariser ?',
+  },
+  'dep.regularizeConfirmBody': {
+    pote: 'Aucun virement ne part d’ici. Je justifie {amount} déjà réglés à {supplier} le {date}, par {method}, et j’enregistre l’écriture qui manquait.{reference}',
+    pro: 'Aucun paiement n’est déclenché. Régulariser {amount} réglés à {supplier}, datés du {date}, par {method} — l’écriture de décaissement manquante sera enregistrée.{reference}',
+    direct: 'Aucun virement. Justifier {amount} à {supplier}, le {date}, par {method}. Écriture posée.{reference}',
+  },
+  'dep.regularizedToast': {
+    pote: 'Dépense {supplier} régularisée ✓',
+    pro: 'Règlement de {supplier} régularisé : écriture enregistrée.',
+    direct: '{supplier} : régularisée.',
+  },
+  'dep.regularizeError': {
+    pote: 'Je n’ai pas pu régulariser cette dépense — rien n’a changé.',
+    pro: 'La régularisation n’a pas pu être enregistrée. Aucune modification n’a été appliquée.',
+    direct: 'Régularisation KO. Rien n’a changé.',
+  },
   'dep.catFournitures': { pote: 'Fournitures', pro: 'Fournitures', direct: 'Fournitures' },
   'dep.catMateriel': { pote: 'Matériel', pro: 'Matériel', direct: 'Matériel' },
   'dep.catCarburant': { pote: 'Carburant', pro: 'Carburant', direct: 'Carburant' },
@@ -6700,15 +6741,53 @@ const legacyFr = {
     pro: 'Votre offre actuelle',
     direct: 'Offre actuelle',
   },
+  'account.planChoose': {
+    pote: 'Choisir cette offre',
+    pro: 'Choisir cette offre',
+    direct: 'Choisir',
+  },
+  'account.planManage': {
+    pote: 'Gérer mon abonnement',
+    pro: 'Gérer l’abonnement',
+    direct: 'Gérer l’abonnement',
+  },
+  'account.planManageStore': {
+    pote: 'Gérer dans le store',
+    pro: 'Gérer dans le store',
+    direct: 'Ouvrir le store',
+  },
   'account.sectionSubInvoices': {
     pote: 'Mes factures d’abonnement',
     pro: 'Mes factures d’abonnement',
     direct: 'Factures d’abo',
   },
   'account.invoicesEmpty': {
-    pote: 'Tu ne paies rien pendant l’accès anticipé — donc zéro facture. Elles s’afficheront ici le moment venu.',
-    pro: 'Aucune facture : l’accès anticipé est gratuit. Elles apparaîtront ici le moment venu.',
-    direct: 'Accès anticipé : 0 facture.',
+    pote: 'Aucune facture d’abonnement pour le moment. Elles apparaîtront ici après ton premier paiement.',
+    pro: 'Aucune facture d’abonnement pour le moment. Elles apparaîtront ici après votre premier paiement.',
+    direct: 'Aucune facture d’abonnement.',
+  },
+  'account.invoicesEmptyEarlyAccess': {
+    pote: 'Ton accès anticipé est gratuit : tu n’as donc aucune facture d’abonnement.',
+    pro: 'Votre accès anticipé est gratuit : aucune facture d’abonnement n’est due.',
+    direct: 'Accès anticipé gratuit. Aucune facture.',
+  },
+  'account.invoiceWithoutNumber': {
+    pote: 'Facture d’abonnement',
+    pro: 'Facture d’abonnement',
+    direct: 'Facture d’abonnement',
+  },
+  'account.invoiceStatusPaid': { pote: 'Payée', pro: 'Payée', direct: 'Payée' },
+  'account.invoiceStatusOpen': { pote: 'À régler', pro: 'À régler', direct: 'À régler' },
+  'account.invoiceStatusVoid': { pote: 'Annulée', pro: 'Annulée', direct: 'Annulée' },
+  'account.invoiceStatusUncollectible': {
+    pote: 'Paiement à régulariser',
+    pro: 'Paiement à régulariser',
+    direct: 'À régulariser',
+  },
+  'account.invoiceStatusDraft': {
+    pote: 'En préparation',
+    pro: 'En préparation',
+    direct: 'Brouillon',
   },
   'account.sectionServices': {
     pote: 'Services en plus',

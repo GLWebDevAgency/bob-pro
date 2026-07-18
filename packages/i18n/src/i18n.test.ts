@@ -727,9 +727,15 @@ describe('i18n — C26 account.*', () => {
     expect(t('account.planCtaUnavailable', { personality: 'pro' })).toBe(
       'Disponible à l’ouverture de la facturation',
     );
+    expect(t('account.planChoose')).toBe('Choisir cette offre');
+    expect(t('account.planManage', { personality: 'pro' })).toBe('Gérer l’abonnement');
     expect(t('account.invoicesEmpty')).toBe(
-      'Tu ne paies rien pendant l’accès anticipé — donc zéro facture. Elles s’afficheront ici le moment venu.',
+      'Aucune facture d’abonnement pour le moment. Elles apparaîtront ici après ton premier paiement.',
     );
+    expect(t('account.invoicesEmptyEarlyAccess', { personality: 'pro' })).toBe(
+      'Votre accès anticipé est gratuit : aucune facture d’abonnement n’est due.',
+    );
+    expect(t('account.invoiceStatusPaid')).toBe('Payée');
     expect(t('account.connToConnect')).toBe('À connecter');
     expect(t('account.serviceSoon', { personality: 'pro' })).toBe('À venir');
     expect(t('account.serviceActive')).toBe('Actif');

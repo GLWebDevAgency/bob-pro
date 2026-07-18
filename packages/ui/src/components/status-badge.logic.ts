@@ -4,14 +4,17 @@
  * (mêmes teintes pastel sémantiques).
  */
 
-/** Les 5 variantes des redlines §7. */
-export type StatusBadgeVariant = 'danger' | 'b2b' | 'b2g' | 'particulier' | 'success';
+/** Les 5 variantes des redlines §7 + `warning` (état « à justifier », ambre doux). */
+export type StatusBadgeVariant = 'danger' | 'warning' | 'b2b' | 'b2g' | 'particulier' | 'success';
 
 /** Sous-ensemble de tokens nécessaires (injecté depuis useTheme). */
 export interface StatusBadgePalette {
   /** semantic.danger — retard / impayé (fond = controls.dangerBadgeBg) */
   danger: string;
   dangerBadgeBg: string;
+  /** semantic.warning — attention douce (payée à justifier, en attente) */
+  warning: string;
+  warningBg: string;
   /** semantic.b2b — devis accepté / B2B */
   b2b: string;
   b2bBg: string;
@@ -50,6 +53,8 @@ export function statusBadgeColors(
   switch (variant) {
     case 'danger':
       return { fg: p.danger, bg: p.dangerBadgeBg };
+    case 'warning':
+      return { fg: p.warning, bg: p.warningBg };
     case 'b2b':
       return { fg: p.b2b, bg: p.b2bBg };
     case 'b2g':

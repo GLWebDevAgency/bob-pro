@@ -1,4 +1,5 @@
 import { type Result, ok, err } from '../../shared-kernel/result';
+import { parisDateOnly } from '../../shared-kernel/time';
 import { type AppError, appDomain, appNotFound } from '../result';
 import { PaymentTerms } from '../../shared-kernel/payment-terms';
 import { buildMentions, operationNatureOf } from '../../domain/services/build-mentions';
@@ -56,7 +57,12 @@ export class IssueInvoice {
     }
     const termsR = PaymentTerms.of(input.terms);
     if (!termsR.ok) return err(appDomain(termsR.error));
-    const fiscalYear = Number(this.deps.clock.today().slice(0, 4));
+    // Jour MÉTIER Europe/Paris (pas l'UTC brut) : la date d'émission LÉGALE, les mentions et
+    // l'exercice de numérotation doivent suivre le calendrier français — sinon une facture émise
+    // entre minuit et ~2 h (Paris) est datée de la veille, voire numérotée sur l'exercice N-1 au
+    // passage de l'an. Une seule dérivation pour les trois usages : cohérence garantie.
+    const businessToday = parisDateOnly(this.deps.clock.now());
+    const fiscalYear = Number(businessToday.slice(0, 4));
 
     try {
       const number = await this.deps.uow.runInTransaction(async () => {
@@ -82,7 +88,7 @@ export class IssueInvoice {
           company,
           customer,
           kind: 'invoice',
-          asOf: this.deps.clock.today(),
+          asOf: businessToday,
           operationNature: operationNatureOf(invoice.lines),
           // P11 : les taux des lignes déclenchent la mention certifiée taux réduits (10 %/5,5 %) —
           // l'éligibilité a été actée à la création (suggestVatRate), non persistée : cf. buildMentions.
@@ -91,7 +97,7 @@ export class IssueInvoice {
         const issued = invoice.issue({
           mentions,
           terms: termsR.value,
-          issuedAt: this.deps.clock.today(),
+          issuedAt: businessToday,
           at: this.deps.clock.now(),
         });
         if (!issued.ok) throw new TxDomainError(issued.error);

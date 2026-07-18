@@ -50,10 +50,57 @@ describe('locateStripeReconciliation', () => {
         }),
       ),
     ).toEqual({
-      kind: 'subscription',
+      kind: 'subscription_invoice',
       companyId: 'co-1',
       checkoutAttemptId: 'checkout-1',
       stripeSubscriptionId: 'sub_123',
+      stripeInvoiceId: 'in_123',
+    });
+  });
+
+  it.each([
+    'invoice.finalized',
+    'invoice.payment_failed',
+    'invoice.voided',
+    'invoice.marked_uncollectible',
+  ])('maintient toute la projection de cycle de vie pour %s', (type) => {
+    expect(
+      locateStripeReconciliation(
+        event(type, {
+          id: 'in_123',
+          parent: {
+            subscription_details: {
+              subscription: 'sub_123',
+              metadata: { bob_company_id: 'co-1' },
+            },
+          },
+        }),
+      ),
+    ).toMatchObject({
+      kind: 'subscription_invoice',
+      companyId: 'co-1',
+      stripeSubscriptionId: 'sub_123',
+      stripeInvoiceId: 'in_123',
+    });
+  });
+
+  it('accepte la forme Stripe 2024 épinglée sans confondre une facture métier Bob', () => {
+    expect(
+      locateStripeReconciliation(
+        event('invoice.finalized', {
+          id: 'in_legacy_123',
+          subscription: 'sub_legacy_123',
+          subscription_details: {
+            metadata: { bob_company_id: 'co-legacy' },
+          },
+        }),
+      ),
+    ).toEqual({
+      kind: 'subscription_invoice',
+      companyId: 'co-legacy',
+      checkoutAttemptId: null,
+      stripeSubscriptionId: 'sub_legacy_123',
+      stripeInvoiceId: 'in_legacy_123',
     });
   });
 

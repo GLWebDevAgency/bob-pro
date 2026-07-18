@@ -14,6 +14,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { challengeFor } from '@bob/ai';
 import {
   formatEUR,
+  isLegacyUnverifiedExpensePayment,
   parisDateOnly,
   summarizeExpenses,
   type ExpenseCategory,
@@ -36,10 +37,13 @@ import {
   useTheme,
   type StatusBadgeVariant,
 } from '@bob/ui';
-import { useExpenses, usePayExpense } from '../src/data/hooks';
+import { useExpenses, usePayExpense, useRegularizeExpensePayment } from '../src/data/hooks';
 import { usePublishAgentContext, type AgentContext } from '../src/agent';
 import { useConfirm } from '../src/components/ConfirmSheet';
-import { ExpensePaymentSheet } from '../src/components/ExpensePaymentSheet';
+import {
+  ExpensePaymentSheet,
+  type ExpensePaymentSheetMode,
+} from '../src/components/ExpensePaymentSheet';
 import { CheckIcon, ChevronLeftIcon, WalletIcon } from '../src/components/icons';
 import { useBobAwareScrollInsets } from '../src/components/use-bob-aware-scroll-insets';
 import { displayExpensePaymentDate } from '../src/finance/expense-payment-form';
@@ -78,9 +82,13 @@ export default function Depenses() {
   const router = useRouter();
   const expenses = useExpenses();
   const pay = usePayExpense();
+  const regularize = useRegularizeExpensePayment();
   const confirm = useConfirm();
   const [toast, setToast] = useState<string | null>(null);
   const [paymentSheetExpense, setPaymentSheetExpense] = useState<ExpenseProps | null>(null);
+  // `record` = règlement d'une dépense à payer ; `regularize` = justification d'une ligne
+  // historique payée sans preuve (même formulaire, endpoint dédié).
+  const [paymentSheetMode, setPaymentSheetMode] = useState<ExpensePaymentSheetMode>('record');
   const [paymentDraft, setPaymentDraft] = useState<{
     expense: ExpenseProps;
     evidence: ExpensePaymentEvidenceInput;
@@ -159,18 +167,21 @@ export default function Depenses() {
       { personality },
     );
 
-  const openPaymentSheet = (expense: ExpenseProps): void => {
+  const openPaymentSheet = (expense: ExpenseProps, mode: ExpensePaymentSheetMode = 'record'): void => {
     if (!dataFresh) return;
     setPaymentDraft(null);
     setPaymentFormError(null);
+    setPaymentSheetMode(mode);
     setPaymentSheetExpense(expense);
   };
 
   const submitPaymentEvidence = (
     expense: ExpenseProps,
     evidence: ExpensePaymentEvidenceInput,
+    mode: ExpensePaymentSheetMode,
   ): void => {
     if (!dataFresh) return;
+    const regularizing = mode === 'regularize';
     setPaymentDraft({ expense, evidence });
     setPaymentFormError(null);
     setPaymentSheetExpense(null);
@@ -181,8 +192,8 @@ export default function Depenses() {
       paymentConfirmTimer.current = null;
       void (async () => {
       const ok = await confirm({
-        title: t('dep.payConfirmTitle', { personality }),
-        message: t('dep.payConfirmBody', {
+        title: t(regularizing ? 'dep.regularizeConfirmTitle' : 'dep.payConfirmTitle', { personality }),
+        message: t(regularizing ? 'dep.regularizeConfirmBody' : 'dep.payConfirmBody', {
           personality,
           params: {
             supplier: expense.supplierName,
@@ -195,30 +206,43 @@ export default function Depenses() {
         challenge: challengeFor(ACCOUNTING, 'confirm_all', { amountCents: expense.totalTtcCents }),
       });
       if (!ok) {
-        if (dataFreshRef.current) setPaymentSheetExpense(expense);
+        if (dataFreshRef.current) {
+          setPaymentSheetMode(mode);
+          setPaymentSheetExpense(expense);
+        }
         return;
       }
       const currentExpense = expensesRef.current?.find((candidate) => candidate.id === expense.id);
-      if (!dataFreshRef.current || currentExpense?.status !== 'to_pay') {
+      const stillActionable = regularizing
+        ? currentExpense !== undefined && isLegacyUnverifiedExpensePayment(currentExpense)
+        : currentExpense?.status === 'to_pay';
+      if (!dataFreshRef.current || !stillActionable) {
         setToast(t('dep.dataError', { personality }));
         void expenses.refetch();
         return;
       }
-      pay.mutate(
-        { expenseId: expense.id, ...evidence },
-        {
-          onSuccess: () => {
-            setPaymentDraft(null);
-            setToast(
-              t('dep.paidToast', { personality, params: { supplier: expense.supplierName } }),
-            );
-          },
-          onError: () => {
-            setPaymentFormError(t('dep.payError', { personality }));
-            if (dataFreshRef.current) setPaymentSheetExpense(expense);
-          },
+      const callbacks = {
+        onSuccess: () => {
+          setPaymentDraft(null);
+          setToast(
+            t(regularizing ? 'dep.regularizedToast' : 'dep.paidToast', {
+              personality,
+              params: { supplier: expense.supplierName },
+            }),
+          );
         },
-      );
+        onError: () => {
+          setPaymentFormError(
+            t(regularizing ? 'dep.regularizeError' : 'dep.payError', { personality }),
+          );
+          if (dataFreshRef.current) {
+            setPaymentSheetMode(mode);
+            setPaymentSheetExpense(expense);
+          }
+        },
+      };
+      if (regularizing) regularize.mutate({ expenseId: expense.id, ...evidence }, callbacks);
+      else pay.mutate({ expenseId: expense.id, ...evidence }, callbacks);
       })();
     }, 240);
   };
@@ -404,7 +428,12 @@ export default function Depenses() {
                   />
                 </View>
                 <View style={{ paddingHorizontal: 18, gap: 11 }}>
-                  {sorted.map((expense) => (
+                  {sorted.map((expense) => {
+                    // Ligne HISTORIQUE payée sans preuve (migration lane preuves) : badge
+                    // distinct porteur de sens + action de régularisation — jamais le même
+                    // « Payée » qu'une ligne justifiée.
+                    const legacyUnverified = isLegacyUnverifiedExpensePayment(expense);
+                    return (
                     <Card key={expense.id} padding={15}>
                       <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 11 }}>
                         <IconTile tone={CAT_TONE[expense.category]} size={34} radius={10}>
@@ -449,12 +478,22 @@ export default function Depenses() {
                           </Text>
                           <StatusBadge
                             label={t(
-                              expense.status === 'paid' ? 'dep.statusPaid' : 'dep.statusToPay',
+                              legacyUnverified
+                                ? 'dep.statusPaidLegacy'
+                                : expense.status === 'paid'
+                                  ? 'dep.statusPaid'
+                                  : 'dep.statusToPay',
                               {
                                 personality,
                               },
                             )}
-                            variant={expense.status === 'paid' ? 'success' : 'particulier'}
+                            variant={
+                              legacyUnverified
+                                ? 'warning'
+                                : expense.status === 'paid'
+                                  ? 'success'
+                                  : 'particulier'
+                            }
                           />
                         </View>
                       </View>
@@ -479,9 +518,34 @@ export default function Depenses() {
                             accessibilityLabel={`${t('dep.pay', { personality })} — ${expense.supplierName}`}
                           />
                         </View>
+                      ) : legacyUnverified ? (
+                        <View
+                          style={{
+                            marginTop: 12,
+                            paddingTop: 12,
+                            borderTopWidth: 1,
+                            borderTopColor: colors.lineSoft,
+                          }}
+                        >
+                          <Button
+                            title={t('dep.regularize', { personality })}
+                            variant="secondary"
+                            size="compact"
+                            radius={11}
+                            loading={
+                              regularize.isPending
+                              && regularize.variables?.expenseId === expense.id
+                            }
+                            disabled={regularize.isPending || !dataFresh}
+                            style={{ alignSelf: 'flex-start' }}
+                            onPress={() => openPaymentSheet(expense, 'regularize')}
+                            accessibilityLabel={`${t('dep.regularize', { personality })} — ${expense.supplierName}`}
+                          />
+                        </View>
                       ) : null}
                     </Card>
-                  ))}
+                    );
+                  })}
                 </View>
               </>
             )}
@@ -493,6 +557,7 @@ export default function Depenses() {
         visible={paymentSheetExpense !== null && dataFresh}
         personality={personality}
         supplierName={paymentSheetExpense?.supplierName ?? null}
+        mode={paymentSheetMode}
         initialEvidence={
           paymentSheetExpense && paymentDraft?.expense.id === paymentSheetExpense.id
             ? paymentDraft.evidence
@@ -505,7 +570,8 @@ export default function Depenses() {
           setPaymentFormError(null);
         }}
         onSubmit={(evidence) => {
-          if (paymentSheetExpense && dataFresh) submitPaymentEvidence(paymentSheetExpense, evidence);
+          if (paymentSheetExpense && dataFresh)
+            submitPaymentEvidence(paymentSheetExpense, evidence, paymentSheetMode);
         }}
       />
 

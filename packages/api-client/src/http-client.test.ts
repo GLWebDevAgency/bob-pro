@@ -960,6 +960,17 @@ describe('HttpBobClient', () => {
           paymentEntryId: 'expense:exp-1:paid',
         }), { headers: { 'content-type': 'application/json' } });
       }
+      if (u === 'https://api.bob.test/expenses/exp-legacy/regularize-payment' && method === 'POST') {
+        expect(JSON.parse(String(init?.body))).toEqual({
+          paidOn: '2026-07-01',
+          method: 'cash',
+        });
+        return new Response(JSON.stringify({
+          status: 'paid',
+          alreadyRegularized: false,
+          paymentEntryId: 'expense:exp-legacy:paid',
+        }), { headers: { 'content-type': 'application/json' } });
+      }
       if (u === 'https://api.bob.test/payments' && method === 'GET') {
         return new Response(JSON.stringify([payment]), { headers: { 'content-type': 'application/json' } });
       }
@@ -978,6 +989,13 @@ describe('HttpBobClient', () => {
       reference: 'VIR-42',
     });
     expect(paid.ok && paid.value.status).toBe('paid');
+
+    const regularized = await client.regularizeExpensePayment({
+      expenseId: 'exp-legacy',
+      paidOn: '2026-07-01',
+      method: 'cash',
+    });
+    expect(regularized.ok && regularized.value.alreadyRegularized).toBe(false);
 
     const payments = await client.listPayments();
     expect(payments.ok && payments.value).toEqual([payment]);
@@ -1576,6 +1594,8 @@ describe('HttpBobClient — assistant Bob (C40 ⑧ : ask/confirm/journal serveur
       status: 'active',
       earlyAccess: true,
       priceCents: 0,
+      store: 'none',
+      billingAvailable: false,
       currentPeriodEnd: null,
       features: ['ai_assistant', 'accounting_foundation'],
       catalog: [],
@@ -1598,6 +1618,33 @@ describe('HttpBobClient — assistant Bob (C40 ⑧ : ask/confirm/journal serveur
     // Le cœur C26b : la vérité early-access voyage jusqu'à l'écran (0 € facturé, pas de plan inventé).
     expect(r.value.earlyAccess).toBe(true);
     expect(r.value.priceCents).toBe(0);
+  });
+
+  it('liste les seules factures d’abonnement persistées via GET /subscription/invoices', async () => {
+    const payload = [{
+      stripeInvoiceId: 'in_live_1',
+      status: 'paid',
+      currency: 'eur',
+      number: 'FR-2026-0001',
+      totalCents: 3_900,
+      issuedAt: '2026-07-17T10:00:00.000Z',
+      paidAt: '2026-07-17T10:01:00.000Z',
+      hostedInvoiceUrl: 'https://invoice.stripe.com/i/acct_live/test',
+      invoicePdfUrl: 'https://invoice.stripe.com/i/acct_live/test/pdf',
+    } as const];
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      if (String(url) === 'https://api.bob.test/subscription/invoices' && init?.method === 'GET') {
+        return new Response(JSON.stringify(payload), { headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ error: { kind: 'not_found', resource: 'route' } }), { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-mercier' });
+
+    const result = await client.listSubscriptionInvoices();
+
+    expect(result).toEqual({ ok: true, value: payload });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('BOB EXPERT FISCAL (Phase 1A) : getFiscalProfile → GET /fiscal-profile', async () => {

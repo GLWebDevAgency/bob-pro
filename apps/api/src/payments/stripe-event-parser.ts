@@ -19,6 +19,13 @@ export type StripeReconciliationLocator =
       companyId: string;
       checkoutAttemptId: string | null;
       stripeSubscriptionId: string;
+    }
+  | {
+      kind: 'subscription_invoice';
+      companyId: string;
+      checkoutAttemptId: string | null;
+      stripeSubscriptionId: string;
+      stripeInvoiceId: string;
     };
 
 const CHECKOUT_EVENTS = new Set([
@@ -36,7 +43,15 @@ const SUBSCRIPTION_EVENTS = new Set([
   'customer.subscription.resumed',
 ]);
 
-const INVOICE_SUBSCRIPTION_EVENTS = new Set(['invoice.paid', 'invoice.payment_failed']);
+// Cycle de vie nécessaire à une projection d'historique exacte. `invoice.finalized` matérialise
+// la facture ouverte ; les quatre suivants maintiennent son statut jusqu'à l'état terminal.
+const INVOICE_SUBSCRIPTION_EVENTS = new Set([
+  'invoice.finalized',
+  'invoice.paid',
+  'invoice.payment_failed',
+  'invoice.voided',
+  'invoice.marked_uncollectible',
+]);
 
 function objectOf(value: unknown): JsonObject | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -86,6 +101,11 @@ function expandableId(value: unknown, field: string): string {
 }
 
 function invoiceSubscriptionDetails(object: JsonObject): JsonObject | null {
+  // Stripe 2024 expose `subscription_details` à la racine ; les versions récentes le rangent
+  // dans `parent.subscription_details`. Le webhook reste compatible pendant une montée de version
+  // explicite de l'API Stripe, sans relâcher l'obligation de métadonnées tenantées.
+  const legacy = objectOf(object.subscription_details);
+  if (legacy) return legacy;
   const parent = objectOf(object.parent);
   return objectOf(parent?.subscription_details);
 }
@@ -126,12 +146,16 @@ export function locateStripeReconciliation(event: VerifiedStripeWebhookEvent): S
     if (!details) return { kind: 'ignored' };
     const metadata = metadataOf(details);
     return {
-      kind: 'subscription',
+      kind: 'subscription_invoice',
       companyId: companyIdFrom(metadata),
       checkoutAttemptId: metadata.bob_checkout_id
         ? requiredId(metadata.bob_checkout_id, 'checkout_attempt')
         : null,
-      stripeSubscriptionId: expandableId(details.subscription, 'subscription'),
+      stripeSubscriptionId: expandableId(
+        details.subscription ?? object.subscription,
+        'subscription',
+      ),
+      stripeInvoiceId: requiredId(object.id, 'invoice'),
     };
   }
 

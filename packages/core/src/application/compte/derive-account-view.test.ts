@@ -23,20 +23,74 @@ const mercierLike: CompanyProps = {
 
 const plombierBusiness = resolveTradeConfig('plombier', 'business');
 
-const emptyInput = { identity: null, company: null, tradeConfig: null, subscription: null };
+const emptyInput = {
+  identity: null,
+  company: null,
+  tradeConfig: null,
+  subscription: null,
+  subscriptionInvoices: null,
+};
+const billingSubscription: SubscriptionInfo = {
+  tier: 'free',
+  status: 'active',
+  earlyAccess: false,
+  priceCents: 0,
+  store: null,
+  billingAvailable: true,
+  currentPeriodEnd: null,
+};
 
 describe('application/compte/deriveAccountView (C26 — doctrine honnêteté)', () => {
-  it('subscription null → accès anticipé 0 €/mois, JAMAIS un plan payant « actif » inventé', () => {
+  it('subscription null → indisponible, JAMAIS un accès anticipé ou plan inventé', () => {
     const view = deriveAccountView({ ...emptyInput, tradeConfig: plombierBusiness });
-    expect(view.subscription.offer).toEqual({ kind: 'early_access', monthlyCents: 0 });
+    expect(view.subscription.offer).toEqual({ kind: 'unavailable' });
     for (const plan of view.subscription.plans) {
       expect(plan.isCurrent).toBe(false);
-      expect(plan.cta).toBe('preview'); // aucun CTA ne prétend souscrire
+      expect(plan.cta).toBe('checkout');
     }
   });
 
+  it('accès anticipé explicitement persisté → 0 €/mois, sans plan courant synthétique', () => {
+    const subscription: SubscriptionInfo = {
+      tier: 'business',
+      status: 'active',
+      earlyAccess: true,
+      priceCents: 0,
+      store: 'none',
+      billingAvailable: false,
+      currentPeriodEnd: null,
+    };
+    const view = deriveAccountView({ ...emptyInput, subscription });
+    expect(view.subscription.offer).toEqual({ kind: 'early_access', monthlyCents: 0 });
+    expect(view.subscription.plans).toEqual([]);
+  });
+
+  it('factures null reste indisponible ; une vraie réponse vide reste un état vide', () => {
+    expect(deriveAccountView(emptyInput).subscription.invoices).toBeNull();
+    expect(
+      deriveAccountView({ ...emptyInput, subscriptionInvoices: [] }).subscription.invoices,
+    ).toEqual([]);
+  });
+
+  it('projette une facture Stripe persistée sans inventer son numéro ni son URL', () => {
+    const invoice = {
+      stripeInvoiceId: 'in_123',
+      status: 'paid' as const,
+      currency: 'eur' as const,
+      number: 'BOB-2026-0001',
+      totalCents: 3900,
+      issuedAt: '2026-07-18T08:00:00.000Z',
+      paidAt: '2026-07-18T08:01:00.000Z',
+      hostedInvoiceUrl: 'https://invoice.stripe.com/i/acct_test',
+      invoicePdfUrl: 'https://pay.stripe.com/invoice/acct_test/pdf',
+    };
+    expect(
+      deriveAccountView({ ...emptyInput, subscriptionInvoices: [invoice] }).subscription.invoices,
+    ).toEqual([{ ...invoice, id: 'in_123' }]);
+  });
+
   it('grille = constante produit PLAN_PRICING (Solo 19 / Pro 39 / Business 79, source PLAN_CATALOG)', () => {
-    const view = deriveAccountView(emptyInput);
+    const view = deriveAccountView({ ...emptyInput, subscription: billingSubscription });
     expect(view.subscription.plans.map((p) => p.tier)).toEqual([...PAID_TIERS]);
     expect(view.subscription.plans.map((p) => p.monthlyCents)).toEqual([1900, 3900, 7900]);
     for (const plan of view.subscription.plans) {
@@ -44,10 +98,6 @@ describe('application/compte/deriveAccountView (C26 — doctrine honnêteté)', 
       expect(plan.monthlyCents).toBe(PLAN_PRICING[plan.tier].monthlyCents);
       expect(plan.blurb).toBe(PLAN_PRICING[plan.tier].blurb);
     }
-  });
-
-  it("factures d'abonnement = état vide honnête (rien n'est facturé pendant l'accès anticipé)", () => {
-    expect(deriveAccountView(emptyInput).subscription.invoices).toEqual([]);
   });
 
   it('badge service dérivé du module TradeConfig : actif ↔ module actif, sinon « À venir »', () => {
@@ -126,28 +176,50 @@ describe('application/compte/deriveAccountView (C26 — doctrine honnêteté)', 
     expect(companyOnly.profile.displayName).toBe('Mercier Plomberie');
   });
 
-  it('C26b (futur) : SubscriptionInfo réel → offre du serveur, palier courant marqué, autres en preview', () => {
-    const sub: SubscriptionInfo = { tier: 'pro', status: 'active', currentPeriodEnd: null };
+  it('SubscriptionInfo Stripe réel → prix serveur, palier courant marqué, gestion via portail', () => {
+    const sub: SubscriptionInfo = {
+      tier: 'pro',
+      status: 'active',
+      earlyAccess: false,
+      priceCents: 4200,
+      store: 'stripe',
+      billingAvailable: true,
+      currentPeriodEnd: null,
+    };
     const view = deriveAccountView({ ...emptyInput, subscription: sub });
     expect(view.subscription.offer).toEqual({
       kind: 'plan',
       tier: 'pro',
       label: 'Pro',
-      monthlyCents: 3900,
+      monthlyCents: 4200,
       status: 'active',
     });
     const pro = view.subscription.plans.find((p) => p.tier === 'pro');
     expect(pro?.isCurrent).toBe(true);
-    expect(pro?.cta).toBe('current');
+    expect(pro?.cta).toBe('manage');
     for (const other of view.subscription.plans.filter((p) => p.tier !== 'pro')) {
-      expect(other.cta).toBe('preview'); // pas de billing → pas de bouton « changer »
+      expect(other.cta).toBe('manage');
     }
   });
 
-  it('abonnement résilié → retour à la vérité accès anticipé (pas de plan fantôme)', () => {
-    const sub: SubscriptionInfo = { tier: 'business', status: 'canceled', currentPeriodEnd: null };
+  it('abonnement résilié reste résilié et ne devient jamais un accès anticipé', () => {
+    const sub: SubscriptionInfo = {
+      tier: 'business',
+      status: 'canceled',
+      earlyAccess: false,
+      priceCents: 0,
+      store: 'stripe',
+      billingAvailable: true,
+      currentPeriodEnd: null,
+    };
     const view = deriveAccountView({ ...emptyInput, subscription: sub });
-    expect(view.subscription.offer.kind).toBe('early_access');
+    expect(view.subscription.offer).toEqual({
+      kind: 'plan',
+      tier: 'business',
+      label: 'Business',
+      monthlyCents: 0,
+      status: 'canceled',
+    });
     expect(view.subscription.plans.every((p) => !p.isCurrent)).toBe(true);
   });
 

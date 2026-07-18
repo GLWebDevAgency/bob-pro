@@ -13,10 +13,18 @@ import {
   validateExpensePaymentDate,
 } from '../finance/expense-payment-form';
 
+/**
+ * `record` : règlement d'une dépense à payer (E4). `regularize` : MÊME formulaire pour justifier
+ * une ligne HISTORIQUE payée sans preuve — seuls le titre et le texte porteur de sens changent,
+ * l'appelant route vers l'endpoint de régularisation.
+ */
+export type ExpensePaymentSheetMode = 'record' | 'regularize';
+
 export interface ExpensePaymentSheetProps {
   readonly visible: boolean;
   readonly personality: Personality;
   readonly supplierName: string | null;
+  readonly mode?: ExpensePaymentSheetMode;
   readonly initialEvidence?: ExpensePaymentEvidenceInput | null;
   readonly error?: string | null;
   readonly onClose: () => void;
@@ -33,6 +41,7 @@ export function ExpensePaymentSheet({
   visible,
   personality,
   supplierName,
+  mode = 'record',
   initialEvidence = null,
   error = null,
   onClose,
@@ -54,6 +63,8 @@ export function ExpensePaymentSheet({
   }, [visible, supplierName, initialEvidence]);
 
   const say = (key: I18nKey) => t(key, { personality });
+  const titleKey: I18nKey = mode === 'regularize' ? 'dep.regularizeSheetTitle' : 'dep.paymentSheetTitle';
+  const bodyKey: I18nKey = mode === 'regularize' ? 'dep.regularizeSheetBody' : 'dep.paymentSheetBody';
   const dateResult = validateExpensePaymentDate(date, today);
   const valid = dateResult.ok && method !== null;
   const dateErrorKey: I18nKey = dateResult.ok
@@ -68,17 +79,17 @@ export function ExpensePaymentSheet({
     <Sheet
       visible={visible}
       onClose={onClose}
-      accessibilityLabel={say('dep.paymentSheetTitle')}
+      accessibilityLabel={say(titleKey)}
       closeAccessibilityLabel={say('dep.paymentCancel')}
     >
       <Text
         accessibilityRole="header"
         style={[font('cardTitle'), { color: colors.ink900, marginBottom: 8 }]}
       >
-        {say('dep.paymentSheetTitle')}
+        {say(titleKey)}
       </Text>
-      <Text style={[font('body'), { color: colors.slate500, lineHeight: 20, marginBottom: 16 }]}> 
-        {t('dep.paymentSheetBody', {
+      <Text style={[font('body'), { color: colors.slate500, lineHeight: 20, marginBottom: 16 }]}>
+        {t(bodyKey, {
           personality,
           params: { supplier: supplierName ?? '' },
         })}

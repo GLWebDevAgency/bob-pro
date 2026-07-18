@@ -2,10 +2,14 @@ import { describe, expect, it, vi } from 'vitest';
 import type { BackendService } from './backend.service';
 import { ExpensesController } from './api.controllers';
 
-function controller(recordExpensePayment = vi.fn()) {
+function controller(recordExpensePayment = vi.fn(), regularizeExpensePayment = vi.fn()) {
   return {
-    value: new ExpensesController({ recordExpensePayment } as unknown as BackendService),
+    value: new ExpensesController({
+      recordExpensePayment,
+      regularizeExpensePayment,
+    } as unknown as BackendService),
     recordExpensePayment,
+    regularizeExpensePayment,
   };
 }
 
@@ -54,5 +58,50 @@ describe('ExpensesController — preuve de règlement fournisseur', () => {
       }),
     });
     expect(recordExpensePayment).not.toHaveBeenCalled();
+  });
+});
+
+describe('ExpensesController — régularisation d’une ligne historique payée sans preuve', () => {
+  it('transmet la preuve validée au use case de régularisation, jamais au règlement', async () => {
+    const regularizeExpensePayment = vi.fn(async () => ({
+      ok: true as const,
+      value: {
+        status: 'paid' as const,
+        alreadyRegularized: false,
+        paymentEntryId: 'expense:exp-legacy:paid',
+      },
+    }));
+    const { value, recordExpensePayment } = controller(vi.fn(), regularizeExpensePayment);
+
+    await expect(value.regularizePayment('exp-legacy', {
+      paidOn: '2026-07-10',
+      method: 'cash',
+      reference: 'TICKET-9',
+    })).resolves.toMatchObject({ status: 'paid', alreadyRegularized: false });
+
+    expect(regularizeExpensePayment).toHaveBeenCalledWith({
+      expenseId: 'exp-legacy',
+      paidOn: '2026-07-10',
+      method: 'cash',
+      reference: 'TICKET-9',
+    });
+    expect(recordExpensePayment).not.toHaveBeenCalled();
+  });
+
+  it('applique le même contrat de corps strict que :id/pay', async () => {
+    const { value, regularizeExpensePayment } = controller();
+    await expect(value.regularizePayment('exp-legacy', {
+      paidOn: '2026-07-10',
+      method: 'cash',
+      amount: 100,
+    })).rejects.toMatchObject({
+      status: 422,
+      response: expect.objectContaining({
+        error: expect.objectContaining({
+          issues: [expect.objectContaining({ field: 'amount' })],
+        }),
+      }),
+    });
+    expect(regularizeExpensePayment).not.toHaveBeenCalled();
   });
 });

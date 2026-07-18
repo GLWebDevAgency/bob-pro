@@ -135,6 +135,17 @@ export function sameExpensePaymentEvidence(
 }
 
 /**
+ * Ligne HISTORIQUE « payée sans preuve » (migration lane preuves : `paymentEvidenceLegacyUnverified`
+ * côté persistance) — le seul état régularisable par RegularizeLegacyExpensePayment. Partagé
+ * avec l'UI (badge « Payée — à justifier ») pour que la détection ne diverge jamais.
+ */
+export function isLegacyUnverifiedExpensePayment(
+  expense: Pick<ExpenseProps, 'status' | 'paymentEvidence'>,
+): boolean {
+  return expense.status === 'paid' && !expense.paymentEvidence;
+}
+
+/**
  * Agrégat Expense — une dépense fournisseur (saisie manuelle ou issue de l'OCR).
  * Montants en CENTIMES. Une dépense « à payer » est une charge à venir (impacte la trésorerie).
  */
@@ -267,6 +278,37 @@ export class Expense {
     this.p.status = 'paid';
     this.p.paymentEvidence = normalized.value;
     return ok({ alreadyRecorded: false });
+  }
+
+  /**
+   * Régularise une ligne HISTORIQUE payée sans preuve (héritée de la migration) en lui attachant
+   * la preuve déclarée. Ne s'applique JAMAIS à une dépense à payer (c'est un règlement, pas une
+   * régularisation) ; idempotente sur retry strictement identique ; refuse d'écraser une preuve
+   * différente déjà enregistrée.
+   */
+  regularizeLegacyPayment(
+    evidence: ExpensePaymentEvidenceInput,
+    opts?: { today?: DateOnly },
+  ): DomainResult<{ alreadyRegularized: boolean }> {
+    const normalized = normalizeExpensePaymentEvidence(evidence, opts);
+    if (!normalized.ok) return normalized;
+    if (this.p.status !== 'paid')
+      return err({
+        code: 'VALIDATION',
+        field: 'status',
+        message: 'Cette dépense est encore à payer : enregistre son règlement, pas une régularisation.',
+      });
+    if (this.p.paymentEvidence) {
+      if (sameExpensePaymentEvidence(this.p.paymentEvidence, normalized.value))
+        return ok({ alreadyRegularized: true });
+      return err({
+        code: 'VALIDATION',
+        field: 'paymentEvidence',
+        message: 'Cette dépense est déjà justifiée par une preuve différente : rien à régulariser.',
+      });
+    }
+    this.p.paymentEvidence = normalized.value;
+    return ok({ alreadyRegularized: false });
   }
 
   toProps(): ExpenseProps {

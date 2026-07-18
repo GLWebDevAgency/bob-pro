@@ -16,6 +16,8 @@ export class ValidateVatNumber {
     if (!/^[A-Z]{2}[A-Z0-9]{2,13}$/.test(vatNumber))
       return err(appDomain({ code: 'VALIDATION', field: 'vatNumber', message: 'N° TVA intracom invalide.' }));
     const outcome = await this.deps.vat.check(vatNumber);
+    // `checkedAt` est un horodatage TECHNIQUE de la vérification VIES (traçabilité), pas une
+    // borne calendrier métier : l'UTC de `clock.today()` reste volontairement la référence.
     return ok({ vatNumber, ...outcome, checkedAt: this.deps.clock.today() });
   }
 }

@@ -377,7 +377,7 @@ describe('BobAgent (démo)', () => {
     expect(r.value.card.body).toContain('28/07/2026');
   });
 
-  it('abonnement : tenant early-access (sans ligne) → accès anticipé honnête, jamais un essai ni un prix inventés', async () => {
+  it('abonnement : accès anticipé persisté (store=none) → gratuité factuelle', async () => {
     const withSubscription: BobActions = {
       ...actions,
       getSubscriptionStatus: async () =>
@@ -388,9 +388,9 @@ describe('BobAgent (démo)', () => {
           trialPhase: null,
           trialDaysLeft: null,
           currentPeriodEnd: null,
-          store: null,
+          store: 'none' as const,
           storeRef: null,
-          source: 'early_access' as const,
+          source: 'db' as const,
         }),
     };
     const agent = new BobAgent({ router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }), actions: withSubscription });
@@ -805,5 +805,38 @@ describe('BobAgent — enregistrement vocal d’un règlement fournisseur', () =
       'J’ai payé la dépense Cedeo aujourd’hui par carte',
     );
     expect(result.ok && result.value.pending?.args).toMatchObject({ paidOn: '2026-07-04' });
+  });
+
+  it('ligne historique sans preuve : Bob informe et oriente vers la régularisation, jamais une erreur sèche', async () => {
+    const legacyActions: BobActions = {
+      ...actions,
+      listUnpaidExpenses: async () => ok([
+        { id: 'expense-brico', supplierName: 'Brico Dépôt', totalTtcCents: 9860, documentDate: '2026-06-03' },
+      ]),
+      recordExpensePayment: async () => ({
+        ok: false,
+        error: {
+          kind: 'conflict',
+          entity: 'expense_payment_legacy',
+          reason: 'Cette dépense date d’avant le suivi des preuves de paiement.',
+        },
+      }),
+    };
+    const agent = new BobAgent({
+      router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }),
+      actions: legacyActions,
+      runtime: { clock: { now: () => '2026-07-04T10:00:00.000Z' }, ids: { newId: () => 'run-legacy-1' } },
+    });
+    const proposed = await agent.ask('J’ai payé la dépense Brico Dépôt le 03/07/2026 par carte');
+    expect(proposed.ok && proposed.value.kind).toBe('proposed');
+    if (!proposed.ok || !proposed.value.pending) return;
+    const confirmed = await agent.confirm(proposed.value.pending);
+    expect(confirmed.ok).toBe(true);
+    if (!confirmed.ok) return;
+    expect(confirmed.value.kind).toBe('answer');
+    expect(confirmed.value.card.title).toBe('Dépense à régulariser');
+    expect(confirmed.value.card.body).toContain('régulariser');
+    expect(confirmed.value.card.body).toContain('Dépenses');
+    expect(confirmed.value.card.body).toContain('Rien n’a été modifié');
   });
 });

@@ -12,6 +12,8 @@ import {
 const palette: StatusBadgePalette = {
   danger: semantic.danger,
   dangerBadgeBg: controls.dangerBadgeBg,
+  warning: semantic.warning,
+  warningBg: semantic.warningBg,
   b2b: semantic.b2b,
   b2bBg: semantic.b2bBg,
   b2g: semantic.b2g,
@@ -48,6 +50,13 @@ describe('statusBadgeColors — redlines §7', () => {
     expect(statusBadgeColors('particulier', palette)).toEqual({
       fg: semantic.particulier,
       bg: semantic.particulierBg,
+    });
+  });
+
+  it('à justifier / en attente → warning + warningBg (ambre doux)', () => {
+    expect(statusBadgeColors('warning', palette)).toEqual({
+      fg: semantic.warning,
+      bg: semantic.warningBg,
     });
   });
 

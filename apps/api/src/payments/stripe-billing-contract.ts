@@ -64,6 +64,43 @@ export interface ApplyStripeSubscriptionInput {
   readonly now: string;
 }
 
+export type StripeSubscriptionInvoiceStatus =
+  | 'draft'
+  | 'open'
+  | 'paid'
+  | 'void'
+  | 'uncollectible';
+
+/** Projection fournisseur vérifiée puis persistée, sans payload Stripe brut ni donnée carte. */
+export interface StripeSubscriptionInvoiceSnapshot {
+  readonly stripeInvoiceId: string;
+  readonly stripeCustomerId: string;
+  readonly stripeSubscriptionId: string;
+  readonly status: StripeSubscriptionInvoiceStatus;
+  readonly currency: 'eur';
+  readonly number: string | null;
+  readonly subtotalCents: number;
+  readonly taxCents: number;
+  readonly totalCents: number;
+  readonly amountPaidCents: number;
+  readonly amountDueCents: number;
+  readonly periodStart: string;
+  readonly periodEnd: string;
+  readonly issuedAt: string;
+  readonly paidAt: string | null;
+  readonly hostedInvoiceUrl: string | null;
+  readonly invoicePdfUrl: string | null;
+  readonly metadata: Readonly<Record<string, string>>;
+}
+
+export interface StripeSubscriptionInvoiceRecord
+  extends Omit<StripeSubscriptionInvoiceSnapshot, 'metadata'> {
+  readonly companyId: string;
+  readonly stripeLastEventId: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
 /**
  * Port de persistance Stripe. Toutes les méthodes sont appelées dans un `runWithTenant` :
  * `companyId` reste néanmoins présent dans chaque prédicat de mutation pour que l'isolation ne
@@ -114,6 +151,13 @@ export interface StripeBillingRepository {
     now: string;
   }): Promise<void>;
   applySubscription(input: ApplyStripeSubscriptionInput): Promise<void>;
+  upsertSubscriptionInvoice(input: {
+    companyId: string;
+    eventId: string;
+    snapshot: StripeSubscriptionInvoiceSnapshot;
+    now: string;
+  }): Promise<void>;
+  listSubscriptionInvoices(companyId: string): Promise<StripeSubscriptionInvoiceRecord[]>;
 }
 
 export interface VerifiedStripeWebhookEvent {
@@ -149,6 +193,7 @@ export interface StripeSubscriptionSnapshot {
 }
 
 export interface StripeBillingProvider {
+  readonly subscriptionBillingAvailable: boolean;
   readonly expectedLivemode: boolean;
   createSubscriptionCheckout(input: {
     companyId: string;
@@ -170,5 +215,6 @@ export interface StripeBillingProvider {
   verifyWebhook(rawBody: Buffer, signature: string): VerifiedStripeWebhookEvent;
   retrieveCheckoutSession(sessionId: string): Promise<StripeCheckoutSessionSnapshot>;
   retrieveSubscription(subscriptionId: string): Promise<StripeSubscriptionSnapshot>;
+  retrieveSubscriptionInvoice(invoiceId: string): Promise<StripeSubscriptionInvoiceSnapshot>;
   tierForPriceIds(priceIds: readonly string[]): Exclude<PlanTier, 'free'> | null;
 }

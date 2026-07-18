@@ -32,6 +32,7 @@ import {
   IssueInvoice,
   RegisterPayment,
   RecordExpensePayment,
+  RegularizeLegacyExpensePayment,
   RecordExpenseAccountingEntries,
   RecordIssuedInvoiceAccountingEntry,
   RecordPaymentAccountingEntry,
@@ -197,6 +198,8 @@ import type {
   PaymentView,
   RecordExpensePaymentClientInput,
   RecordExpensePaymentClientOutput,
+  RegularizeExpensePaymentClientInput,
+  RegularizeExpensePaymentClientOutput,
   SubscriptionView,
   SendQuoteOutput,
   CreateQuoteSignatureLinkOutput,
@@ -2546,6 +2549,20 @@ export class LocalBobClient implements BobClient {
   ): Promise<Result<RecordExpensePaymentClientOutput, AppError>> {
     await this.ready;
     return new RecordExpensePayment({
+      expenses: this.expenses,
+      entries: this.accountingEntries,
+      clock: this.clock,
+      charts: this.chartOfAccounts,
+      documents: this.paymentProofDocuments,
+    }).execute({ ...input, companyId: this.companyId });
+  }
+
+  /** Régularisation d'une ligne historique payée sans preuve — même use case que le serveur. */
+  async regularizeExpensePayment(
+    input: RegularizeExpensePaymentClientInput,
+  ): Promise<Result<RegularizeExpensePaymentClientOutput, AppError>> {
+    await this.ready;
+    return new RegularizeLegacyExpensePayment({
       expenses: this.expenses,
       entries: this.accountingEntries,
       clock: this.clock,

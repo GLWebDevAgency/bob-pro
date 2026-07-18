@@ -1,16 +1,18 @@
 /**
  * Mon compte — Profil / Abonnement (claim C26 v2, réf proto dc.html §COMPTE & ABONNEMENT).
  *
- * DOCTRINE HONNÊTETÉ (le cœur du claim) : il n'existe AUCUN billing (pas de Stripe). Depuis C26b,
- * GET /subscription existe et dit cette vérité PAR TENANT (earlyAccess: true, 0 €) — les
- * « Pro · 39 € ACTIVE », factures payées et « Banque connectée » du proto restent du REMPLISSAGE :
+ * DOCTRINE HONNÊTETÉ (le cœur du claim) : GET /subscription dit la vérité PAR TENANT. En V1 privée,
+ * une ligne BDD explicite porte earlyAccess: true, 0 €, et le serveur masque les offres tant que la
+ * facturation live n'est pas complètement configurée :
  * · offre courante = Accès anticipé · 0 €/mois · toutes les fonctions ouvertes ;
- * · grille Solo 19 / Pro 39 / Business 79 = PLAN_PRICING (constante produit @bob/core),
- *   CTA désactivés « disponible à l'ouverture de la facturation » — rien ne prétend souscrire ;
+ * · à l'ouverture publique, la grille vient du catalogue serveur et déclenche le checkout durable
+ *   ou le portail réellement lié au canal de facturation persistant ;
  * · toucher une offre ≠ la sienne affiche le diff honnête « tu gagnes / tu perds » sous la
  *   grille (diffPlanChange @bob/core, SPEC pilier 2 décision 7) : gains ET pertes au même poids,
- *   économie affichée si downgrade — comparaison factuelle, AUCUNE souscription déclenchée ;
- * · factures d'abonnement = état vide honnête · banque = « À connecter » (aucun bridge) ·
+ *   économie affichée si downgrade — comparaison factuelle avant toute action ;
+ * · GET /subscription/invoices distingue une source indisponible, une vraie liste vide et les
+ *   factures Stripe persistées après webhook vérifié ;
+ *   banque = « À connecter » (aucun bridge) ·
  *   services en plus = badge dérivé du réel (deriveServiceStatus, module TradeConfig) sinon
  *   « À venir ».
  * Toute la dérivation vit dans @bob/core (deriveAccountView, use case pur testé) ; l'écran rend.
@@ -22,7 +24,7 @@
  * la vue se dégrade honnêtement (tradeConfig null → pas de taux TVA inventé, services « À venir »).
  *
  * Écarts assumés vs proto (listés au contrat) : pas de badge ACTIVE ni d'essai 14 j fantôme,
- * pas de « Banque — Crédit Agricole connectée », factures d'abo vides, parrainage/équipe = teasers
+ * pas de « Banque — Crédit Agricole connectée », parrainage/équipe = teasers
  * « à venir » (aucun flux) ; les réglages autonomie/dictée de l'ancien écran ne font pas partie
  * de la structure C26. Zéro hex/rgba : useTheme()/@bob/tokens uniquement.
  */
@@ -67,7 +69,14 @@ import {
 } from '@bob/ui';
 import { useIdentity } from '../src/data/identity';
 import { useAuth } from '../src/data/auth';
-import { useCompanyMe, useProfile, useSubscription } from '../src/data/hooks';
+import {
+  useCompanyMe,
+  useProfile,
+  useBillingPortal,
+  useStartCheckout,
+  useSubscription,
+  useSubscriptionInvoices,
+} from '../src/data/hooks';
 import { useFiscalProfileFlow } from '../src/fiscal/use-fiscal-profile-flow';
 import { LEGAL_URLS, SUPPORT_EMAIL, SUPPORT_MAILTO } from '../src/config/legal';
 import { CloseAccountSheet } from '../src/components/account/close-account-sheet';
@@ -144,6 +153,9 @@ export default function Compte() {
   const profile = useProfile();
   const companyMe = useCompanyMe();
   const subscription = useSubscription();
+  const subscriptionInvoices = useSubscriptionInvoices();
+  const startCheckout = useStartCheckout();
+  const billingPortal = useBillingPortal();
   // SPEC_EXPERT_FISCAL §UX FLOW amendement 5 : résidence du profil fiscal = carte Compte →
   // écran dédié /profil-fiscal (query PARTAGÉE — coût nul, déjà chaude si Argent/Home l'ont lue).
   const fiscalFlow = useFiscalProfileFlow();
@@ -169,13 +181,12 @@ export default function Compte() {
         },
         company: companyMe.data ?? null,
         tradeConfig: profile.data ?? null,
-        // GET /subscription RÉEL (C26b) — SubscriptionView ⊂ SubscriptionInfo, passé tel quel.
-        // earlyAccess: true (aucun billing) → null pour la vue : deriveAccountView rend l'état
-        // accès anticipé honnête (rendu inchangé — garanti par ses tests). Erreur/chargement →
-        // null aussi : même état honnête, jamais un plan inventé.
-        subscription: subscription.data && !subscription.data.earlyAccess ? subscription.data : null,
+        // GET /subscription RÉEL (C26b) — l'accès anticipé est un état BDD explicite. Une
+        // absence de photographie reste `null`/indisponible et n'est jamais interprétée.
+        subscription: subscription.data ?? null,
+        subscriptionInvoices: subscriptionInvoices.data ?? null,
       }),
-    [companyMe.data, identity, profile.data, subscription.data],
+    [companyMe.data, identity, profile.data, subscription.data, subscriptionInvoices.data],
   );
 
   const email = session?.user?.email ?? null;
@@ -208,9 +219,13 @@ export default function Compte() {
     !profileSourcesReady
     && !profileHasBlockingError
     && (profile.isLoading || companyMe.isLoading || fiscalFlow.isLoading || !profileSourcesReady);
-  const subscriptionReady = subscription.data !== undefined;
-  const subscriptionBlockingError = subscription.isError && !subscriptionReady;
-  const subscriptionStaleError = subscription.isError && subscriptionReady;
+  const subscriptionReady =
+    subscription.data !== undefined && subscriptionInvoices.data !== undefined;
+  const subscriptionBlockingError =
+    (subscription.isError && subscription.data === undefined)
+    || (subscriptionInvoices.isError && subscriptionInvoices.data === undefined);
+  const subscriptionStaleError =
+    subscriptionReady && (subscription.isError || subscriptionInvoices.isError);
   const subscriptionLoading = !subscriptionReady && !subscriptionBlockingError;
   const deleteCompanyName = profileFresh ? companyMe.data?.name ?? null : null;
   const deleteAllowed = authEnabled && deleteCompanyName !== null && deleteCompanyName.trim() !== '';
@@ -218,6 +233,18 @@ export default function Compte() {
     void profile.refetch();
     void companyMe.refetch();
     void fiscalFlow.refetch();
+  };
+  const refetchSubscription = (): void => {
+    void subscription.refetch();
+    void subscriptionInvoices.refetch();
+  };
+  const openStoreSubscriptionManagement = (): void => {
+    const store = subscription.data?.store;
+    if (store === 'apple') {
+      openExternalUrl('https://apps.apple.com/account/subscriptions');
+    } else if (store === 'google') {
+      openExternalUrl('https://play.google.com/store/account/subscriptions');
+    }
   };
 
   useEffect(() => {
@@ -261,11 +288,11 @@ export default function Compte() {
             refreshing={
               tab === 'profil'
                 ? profile.isRefetching || companyMe.isRefetching || fiscalFlow.isRefetching
-                : subscription.isRefetching
+                : subscription.isRefetching || subscriptionInvoices.isRefetching
             }
             onRefresh={() => {
               if (tab === 'profil') refetchProfile();
-              else void subscription.refetch();
+              else refetchSubscription();
             }}
             tintColor={colors.ink800}
             colors={[colors.ink800]}
@@ -654,17 +681,25 @@ export default function Compte() {
             ) : subscriptionBlockingError ? (
               <ErrorRetry
                 message={say('account.subscriptionError')}
-                onRetry={() => void subscription.refetch()}
-                retrying={subscription.isRefetching}
+                onRetry={refetchSubscription}
+                retrying={subscription.isRefetching || subscriptionInvoices.isRefetching}
               />
-            ) : !subscriptionReady ? null : (
+            ) : !subscriptionReady
+              || offer.kind === 'unavailable'
+              || view.subscription.invoices === null ? (
+              <ErrorRetry
+                message={say('account.subscriptionError')}
+                onRetry={refetchSubscription}
+                retrying={subscription.isRefetching || subscriptionInvoices.isRefetching}
+              />
+            ) : (
               <>
             {subscriptionStaleError ? (
               <View style={{ marginBottom: 16 }}>
                 <ErrorRetry
                   message={say('account.subscriptionError')}
-                  onRetry={() => void subscription.refetch()}
-                  retrying={subscription.isRefetching}
+                  onRetry={refetchSubscription}
+                  retrying={subscription.isRefetching || subscriptionInvoices.isRefetching}
                 />
               </View>
             ) : null}
@@ -715,40 +750,73 @@ export default function Compte() {
               </LinearGradient>
             </View>
 
-            {/* Grille — PLAN_PRICING (constante produit), CTA honnêtes désactivés */}
-            <SectionHeader title={say('account.sectionPlans')} />
-            {view.subscription.plans.map((plan) => (
-              <Pressable
-                key={plan.tier}
-                onPress={() => setComparedTier((current) => (current === plan.tier ? null : plan.tier))}
-                accessibilityRole="button"
-                accessibilityLabel={`${plan.label} — ${say('planDiff.gains')} / ${say('planDiff.losses')}`}
-              >
-                <Card
-                  padding={16}
-                  style={{
-                    marginBottom: 11,
-                    ...(comparedTier === plan.tier ? { borderWidth: 1.5, borderColor: colors.ink600 } : {}),
-                  }}
-                >
-                  <View style={{ flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 8 }}>
-                    <Text style={[font('section'), { color: colors.ink900 }]}>{plan.label}</Text>
-                    <Text style={[font('bigNum'), { fontSize: 20, color: colors.ink900 }]}>
-                      {formatEURWhole(plan.monthlyCents)}
-                      <Text style={[font('meta'), { color: colors.slate300 }]}>{say('account.offerPerMonth')}</Text>
-                    </Text>
-                  </View>
-                  <Text style={[font('label', 500), { color: colors.slate500, lineHeight: 21, marginBottom: 12 }]}>
-                    {plan.blurb}
-                  </Text>
-                  <Button
-                    title={plan.cta === 'current' ? say('account.planCurrent') : say('account.planCtaUnavailable')}
-                    variant="secondary"
-                    disabled
-                  />
-                </Card>
-              </Pressable>
-            ))}
+            {/* En accès anticipé privé, billingAvailable=false : aucune offre commerciale n'est
+                montrée. La grille apparaît seulement quand le serveur confirme Stripe complet. */}
+            {view.subscription.plans.length > 0 ? (
+              <>
+                <SectionHeader title={say('account.sectionPlans')} />
+                {view.subscription.plans.map((plan) => (
+                  <Card
+                    key={plan.tier}
+                    padding={16}
+                    style={{
+                      marginBottom: 11,
+                      ...(comparedTier === plan.tier
+                        ? { borderWidth: 1.5, borderColor: colors.ink600 }
+                        : {}),
+                    }}
+                  >
+                    <Pressable
+                      onPress={() =>
+                        setComparedTier((current) => (current === plan.tier ? null : plan.tier))
+                      }
+                      accessibilityRole="button"
+                      accessibilityLabel={`${plan.label} — ${say('planDiff.gains')} / ${say('planDiff.losses')}`}
+                    >
+                      <View style={{ flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 8 }}>
+                        <Text style={[font('section'), { color: colors.ink900 }]}>{plan.label}</Text>
+                        <Text style={[font('bigNum'), { fontSize: 20, color: colors.ink900 }]}>
+                          {formatEURWhole(plan.monthlyCents)}
+                          <Text style={[font('meta'), { color: colors.slate300 }]}>{say('account.offerPerMonth')}</Text>
+                        </Text>
+                      </View>
+                      <Text style={[font('label', 500), { color: colors.slate500, lineHeight: 21, marginBottom: 12 }]}>
+                        {plan.blurb}
+                      </Text>
+                    </Pressable>
+                    <Button
+                      title={
+                        plan.cta === 'current'
+                          ? say('account.planCurrent')
+                          : plan.cta === 'checkout'
+                            ? say('account.planChoose')
+                            : plan.cta === 'manage'
+                              ? say('account.planManage')
+                              : say('account.planManageStore')
+                      }
+                      variant={plan.cta === 'current' ? 'secondary' : 'primary'}
+                      disabled={
+                        plan.cta === 'current'
+                        || subscriptionStaleError
+                        || startCheckout.isPending
+                        || billingPortal.isPending
+                      }
+                      loading={
+                        (plan.cta === 'checkout'
+                          && startCheckout.isPending
+                          && startCheckout.variables === plan.tier)
+                        || (plan.cta === 'manage' && billingPortal.isPending)
+                      }
+                      onPress={() => {
+                        if (plan.cta === 'checkout') startCheckout.mutate(plan.tier);
+                        else if (plan.cta === 'manage') billingPortal.mutate();
+                        else if (plan.cta === 'store') openStoreSubscriptionManagement();
+                      }}
+                    />
+                  </Card>
+                ))}
+              </>
+            ) : null}
 
             {/* Diff HONNÊTE du changement d'offre — calculé depuis PLAN_CATALOG (diffPlanChange),
                 gains ET pertes au même poids, économie affichée si downgrade. Baseline = le plan
@@ -757,7 +825,7 @@ export default function Compte() {
             {(() => {
               if (comparedTier === null) return null;
               const currentTier: PlanTier =
-                view.subscription.plans.find((plan) => plan.cta === 'current')?.tier ?? 'free';
+                view.subscription.plans.find((plan) => plan.isCurrent)?.tier ?? 'free';
               const diff = diffPlanChange(currentTier, comparedTier);
               const isDowngrade = TIER_ORDER.indexOf(comparedTier) < TIER_ORDER.indexOf(currentTier);
               return (
@@ -821,31 +889,76 @@ export default function Compte() {
               );
             })()}
 
-            {/* Factures d'abonnement — état vide HONNÊTE (rien n'est facturé en accès anticipé) */}
+            {/* Historique autoritatif : [] vient réellement de GET /subscription/invoices.
+                Les lignes apparaissent après webhook Stripe vérifié + persistance RLS. */}
             <View style={{ marginTop: 7 }}>
               <SectionHeader title={say('account.sectionSubInvoices')} />
             </View>
             <Card padding={15} style={{ marginBottom: 18 }}>
               {view.subscription.invoices.length === 0 ? (
-                <EmptyState body={say('account.invoicesEmpty')} />
+                <EmptyState
+                  body={say(
+                    offer.kind === 'early_access'
+                      ? 'account.invoicesEmptyEarlyAccess'
+                      : 'account.invoicesEmpty',
+                  )}
+                />
               ) : (
-                view.subscription.invoices.map((invoice, index) => (
-                  <View
-                    key={invoice.id}
-                    style={{
-                      flexDirection: 'row',
-                      justifyContent: 'space-between',
-                      paddingVertical: 11,
-                      borderBottomWidth: index === view.subscription.invoices.length - 1 ? 0 : 1,
-                      borderBottomColor: colors.lineSoft,
-                    }}
-                  >
-                    <Text style={[font('sub', 600), { color: colors.ink800 }]}>{invoice.label}</Text>
-                    <Text style={[font('sub', 700), { color: colors.ink900, fontVariant: ['tabular-nums'] }]}>
-                      {formatEURWhole(invoice.amountCents)}
-                    </Text>
-                  </View>
-                ))
+                view.subscription.invoices.map((invoice, index, invoices) => {
+                  const targetUrl = invoice.invoicePdfUrl ?? invoice.hostedInvoiceUrl;
+                  const issuedDate = new Intl.DateTimeFormat('fr-FR', {
+                    day: 'numeric',
+                    month: 'long',
+                    year: 'numeric',
+                  }).format(new Date(invoice.issuedAt));
+                  const statusKey: I18nKey =
+                    invoice.status === 'paid'
+                      ? 'account.invoiceStatusPaid'
+                      : invoice.status === 'open'
+                        ? 'account.invoiceStatusOpen'
+                        : invoice.status === 'void'
+                          ? 'account.invoiceStatusVoid'
+                          : invoice.status === 'uncollectible'
+                            ? 'account.invoiceStatusUncollectible'
+                            : 'account.invoiceStatusDraft';
+                  return (
+                    <Pressable
+                      key={invoice.id}
+                      accessibilityRole={targetUrl === null ? undefined : 'link'}
+                      accessibilityLabel={`${invoice.number ?? say('account.invoiceWithoutNumber')}. ${formatEURWhole(invoice.totalCents)}. ${say(statusKey)}`}
+                      disabled={targetUrl === null}
+                      onPress={() => {
+                        if (targetUrl !== null) openExternalUrl(targetUrl);
+                      }}
+                      style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        gap: 12,
+                        paddingVertical: 11,
+                        borderBottomWidth: index === invoices.length - 1 ? 0 : 1,
+                        borderBottomColor: colors.lineSoft,
+                      }}
+                    >
+                      <IconTile tone="b2b" size={34} radius={10}>
+                        <FileTextIcon color={semantic.b2b} size={16} strokeWidth={2} />
+                      </IconTile>
+                      <View style={{ flex: 1 }}>
+                        <Text style={[font('sub', 600), { color: colors.ink800 }]}>
+                          {invoice.number ?? say('account.invoiceWithoutNumber')}
+                        </Text>
+                        <Text style={[font('meta'), { color: colors.slate400, marginTop: 1 }]}>
+                          {issuedDate} · {say(statusKey)}
+                        </Text>
+                      </View>
+                      <Text style={[font('sub', 700), { color: colors.ink900, fontVariant: ['tabular-nums'] }]}>
+                        {formatEURWhole(invoice.totalCents)}
+                      </Text>
+                      {targetUrl === null ? null : (
+                        <ChevronRightIcon color={colors.slate300} size={16} />
+                      )}
+                    </Pressable>
+                  );
+                })
               )}
             </Card>
 

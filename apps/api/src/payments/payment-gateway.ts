@@ -4,6 +4,7 @@ import { type PaymentGatewayPort, type CheckoutResult, type PlanTier } from '@bo
 import type {
   StripeBillingProvider,
   StripeCheckoutSessionSnapshot,
+  StripeSubscriptionInvoiceSnapshot,
   StripeSubscriptionSnapshot,
   VerifiedStripeWebhookEvent,
 } from './stripe-billing-contract';
@@ -12,6 +13,7 @@ export const PAYMENT_GATEWAY = Symbol('PAYMENT_GATEWAY');
 
 /** Adapter Stripe réel (clé en env). Nécessite des price IDs Stripe pour les offres. */
 export class StripePaymentGateway implements PaymentGatewayPort, StripeBillingProvider {
+  readonly subscriptionBillingAvailable = true;
   private readonly stripe: Stripe;
   constructor(
     apiKey: string,
@@ -183,6 +185,58 @@ export class StripePaymentGateway implements PaymentGatewayPort, StripeBillingPr
     };
   }
 
+  async retrieveSubscriptionInvoice(invoiceId: string): Promise<StripeSubscriptionInvoiceSnapshot> {
+    const invoice = await this.stripe.invoices.retrieve(invoiceId);
+    if (invoice.livemode !== this.expectedLivemode) {
+      throw new Error('Réponse Stripe invalide : mode de facture incohérent.');
+    }
+    if (invoice.currency.toLowerCase() !== 'eur') {
+      throw new Error('Réponse Stripe invalide : devise de facture non prise en charge.');
+    }
+    if (invoice.status === null) {
+      throw new Error('Réponse Stripe invalide : statut de facture absent.');
+    }
+    const subscriptionId = requiredExpandableId(
+      invoice.subscription,
+      'invoice.subscription',
+    );
+    const taxCents = invoice.tax ?? invoice.total_tax_amounts.reduce((sum, tax) => sum + tax.amount, 0);
+    const amounts = {
+      subtotalCents: invoice.subtotal,
+      taxCents,
+      totalCents: invoice.total,
+      amountPaidCents: invoice.amount_paid,
+      amountDueCents: invoice.amount_due,
+    };
+    for (const [field, value] of Object.entries(amounts)) {
+      if (!Number.isSafeInteger(value) || value < 0) {
+        throw new Error(`Réponse Stripe invalide : ${field}.`);
+      }
+    }
+    if (invoice.period_end < invoice.period_start) {
+      throw new Error('Réponse Stripe invalide : période de facture inversée.');
+    }
+    return {
+      stripeInvoiceId: invoice.id,
+      stripeCustomerId: requiredExpandableId(invoice.customer, 'invoice.customer'),
+      stripeSubscriptionId: subscriptionId,
+      status: invoice.status,
+      currency: 'eur',
+      number: invoice.number,
+      ...amounts,
+      periodStart: unixSecondsToIso(invoice.period_start),
+      periodEnd: unixSecondsToIso(invoice.period_end),
+      issuedAt: unixSecondsToIso(invoice.created),
+      paidAt:
+        invoice.status_transitions.paid_at === null
+          ? null
+          : unixSecondsToIso(invoice.status_transitions.paid_at),
+      hostedInvoiceUrl: canonicalStripeInvoiceUrl(invoice.hosted_invoice_url ?? null),
+      invoicePdfUrl: canonicalStripeInvoiceUrl(invoice.invoice_pdf ?? null),
+      metadata: invoice.subscription_details?.metadata ?? {},
+    };
+  }
+
   tierForPriceIds(priceIds: readonly string[]): Exclude<PlanTier, 'free'> | null {
     const unique = [...new Set(priceIds)];
     if (unique.length !== 1) return null;
@@ -202,6 +256,7 @@ const PAYMENT_DISABLED_MESSAGE = 'Paiement non activé (accès anticipé)';
  * les CTA d'achat sont gelés côté UI, ce gateway n'est donc appelé qu'en cas d'appel résiduel.
  */
 export class DisabledPaymentGateway implements PaymentGatewayPort, StripeBillingProvider {
+  readonly subscriptionBillingAvailable = false;
   readonly expectedLivemode = false;
 
   private refuse(): never {
@@ -253,6 +308,12 @@ export class DisabledPaymentGateway implements PaymentGatewayPort, StripeBilling
     this.refuse();
   }
 
+  async retrieveSubscriptionInvoice(
+    _invoiceId: string,
+  ): Promise<StripeSubscriptionInvoiceSnapshot> {
+    this.refuse();
+  }
+
   /** Requête pure (aucun état, aucun réseau) : aucun price n'est configuré, donc jamais de tier. */
   tierForPriceIds(_priceIds: readonly string[]): Exclude<PlanTier, 'free'> | null {
     return null;
@@ -263,7 +324,7 @@ function expandableId(value: string | { id: string } | null): string | null {
   return typeof value === 'string' ? value : value?.id ?? null;
 }
 
-function requiredExpandableId(value: string | { id: string }, field: string): string {
+function requiredExpandableId(value: string | { id: string } | null, field: string): string {
   const id = expandableId(value);
   if (!id) throw new Error(`Réponse Stripe invalide : ${field}.`);
   return id;
@@ -282,8 +343,21 @@ function unixSecondsToIso(seconds: number): string {
   return new Date(seconds * 1_000).toISOString();
 }
 
+function canonicalStripeInvoiceUrl(value: string | null): string | null {
+  if (value === null) return null;
+  const url = new URL(value);
+  if (
+    url.protocol !== 'https:' ||
+    url.username !== '' ||
+    url.password !== '' ||
+    (url.hostname !== 'stripe.com' && !url.hostname.endsWith('.stripe.com'))
+  ) {
+    throw new Error('Stripe a renvoyé une URL de facture non canonique.');
+  }
+  return url.toString();
+}
+
 type PaymentGatewayEnv = Readonly<{
-  DEMO_MODE?: string;
   STRIPE_SECRET_KEY?: string;
   STRIPE_PRICE_SOLO?: string;
   STRIPE_PRICE_PRO?: string;
@@ -294,7 +368,9 @@ type PaymentGatewayEnv = Readonly<{
 }>;
 
 /** Composition testable : aucune absence de secret live ne peut sélectionner l'adapter démo. */
-export function buildPaymentGateway(env: PaymentGatewayEnv = process.env): PaymentGatewayPort {
+export function buildPaymentGateway(
+  env: PaymentGatewayEnv = process.env,
+): PaymentGatewayPort & StripeBillingProvider {
   const missing = [
     !env.STRIPE_SECRET_KEY ? 'STRIPE_SECRET_KEY' : null,
     !env.STRIPE_PRICE_SOLO ? 'STRIPE_PRICE_SOLO' : null,
