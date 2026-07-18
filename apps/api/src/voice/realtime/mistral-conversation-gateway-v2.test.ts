@@ -229,6 +229,7 @@ class FakeDurableAuthority implements MistralConversationDurableAuthority {
       readonly missionConnectionEpoch: number;
       readonly closedAtServerSequence: number;
       readonly reason: NonNullable<MistralConversationDurableSnapshot['mission']['drainReason']>;
+      readonly replayGraceExpiresAt: string;
     } = null;
 
     const closeDurably = (snapshot: MistralConversationDurableSnapshot): {
@@ -322,6 +323,7 @@ class FakeDurableAuthority implements MistralConversationDurableAuthority {
         missionConnectionEpoch: nextSnapshot.missionConnectionEpoch,
         closedAtServerSequence: nextSnapshot.nextServerSequence - 1,
         reason,
+        replayGraceExpiresAt: new Date(Date.parse(this.grant.hardExpiresAt) + 60_000).toISOString(),
       };
       this.log.push('durable:terminal_replay');
       return {
@@ -729,6 +731,7 @@ async function acknowledgeEvents(
 function terminalReplayFixture(
   h: Harness,
   reason: 'user' | 'background' = 'user',
+  replayGraceExpiresAt = new Date(Date.parse(h.grant.hardExpiresAt) + 60_000).toISOString(),
 ): Extract<MistralConversationDurableOpenResult, { readonly status: 'terminal_replay' }> {
   const created = createMistralConversationDurableSession({ grant: h.grant, missionConnectionEpoch: 1 });
   const drained = reduceMistralConversationDurableSnapshot(created.snapshot, {
@@ -750,6 +753,7 @@ function terminalReplayFixture(
       missionConnectionEpoch: closed.snapshot.missionConnectionEpoch,
       closedAtServerSequence: closed.snapshot.nextServerSequence - 1,
       reason,
+      replayGraceExpiresAt,
     },
     events: [...created.events, ...drained.events, ...closed.events],
   };
@@ -2253,6 +2257,61 @@ describe('Bob Mistral conversation gateway v2 — mission WSS durable', () => {
     expect(h.provider.openTurn).not.toHaveBeenCalled();
     expect(h.authority.snapshot?.mission.lastTurnOrdinal).toBe(0);
   });
+
+  it('reste fail-closed après H tant que la capacité de reprise atomique n’existe pas', async () => {
+    const hardExpiresAt = new Date(NOW - 1_000).toISOString();
+    const replayGraceExpiresAt = new Date(NOW + 10_000).toISOString();
+    const h = harness({ grant: { hardExpiresAt } });
+    const terminal = terminalReplayFixture(h, 'user', replayGraceExpiresAt);
+    const open = vi.spyOn(h.authority, 'open').mockResolvedValueOnce(terminal);
+
+    const run = serveMistralConversationGatewayV2(h.socket, h.dependencies);
+    authenticate(h.socket, 0);
+    await expect(run).rejects.toMatchObject({ code: 'temporarily_unavailable' });
+
+    expect(open).not.toHaveBeenCalled();
+    expect(h.socket.events()).toEqual([
+      expect.objectContaining({ type: 'error', code: 'temporarily_unavailable' }),
+    ]);
+    expect(h.provider.openTurn).not.toHaveBeenCalled();
+    expect(h.pipeline.reason).not.toHaveBeenCalled();
+    expect(h.pipeline.auditAndRender).not.toHaveBeenCalled();
+    expect(h.pipeline.stageDelivery).not.toHaveBeenCalled();
+    expect(h.contextAuthorize).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      boundary: 'G égal à H',
+      replayGraceExpiresAt: BASE_GRANT.hardExpiresAt,
+    },
+    {
+      boundary: 'G au-delà de la borne maximale',
+      replayGraceExpiresAt: new Date(
+        Date.parse(BASE_GRANT.hardExpiresAt) + 7 * 24 * 60 * 60 * 1_000 + 1,
+      ).toISOString(),
+    },
+  ])(
+    'refuse un replay terminal dont $boundary',
+    async ({ replayGraceExpiresAt }) => {
+      const h = harness();
+      const terminal = terminalReplayFixture(h, 'user', replayGraceExpiresAt);
+      vi.spyOn(h.authority, 'open').mockResolvedValueOnce(terminal);
+
+      const run = serveMistralConversationGatewayV2(h.socket, h.dependencies);
+      authenticate(h.socket, 0);
+      await expect(run).rejects.toMatchObject({ code: 'temporarily_unavailable' });
+
+      expect(h.socket.events()).toEqual([
+        expect.objectContaining({ type: 'error', code: 'temporarily_unavailable' }),
+      ]);
+      expect(h.provider.openTurn).not.toHaveBeenCalled();
+      expect(h.pipeline.reason).not.toHaveBeenCalled();
+      expect(h.pipeline.auditAndRender).not.toHaveBeenCalled();
+      expect(h.pipeline.stageDelivery).not.toHaveBeenCalled();
+      expect(h.contextAuthorize).not.toHaveBeenCalled();
+    },
+  );
 
   it('refuse un replay terminal dont le curseur client dépasse le snapshot fermé', async () => {
     const h = harness();

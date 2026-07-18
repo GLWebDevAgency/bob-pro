@@ -176,6 +176,103 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
       return result.snapshot;
     }
 
+    interface MissionEvidence {
+      readonly ownerTokenHash: string;
+      readonly ownerAcquiredAt: Date;
+      readonly missionConnectionEpoch: number;
+      readonly version: bigint;
+      readonly acknowledgedServerSequence: bigint;
+      readonly nextServerSequence: bigint;
+      readonly contextRevision: number;
+      readonly contextDigest: string;
+      readonly routeMode: string;
+      readonly fullDuplexCertified: boolean;
+      readonly phase: string;
+      readonly terminalReason: string | null;
+      readonly missionState: unknown;
+      readonly turnState: unknown | null;
+      readonly finalTranscriptRecorded: boolean;
+      readonly outboxCount: number;
+      readonly commandCount: number;
+    }
+
+    async function missionEvidence(sessionHandle: string): Promise<MissionEvidence> {
+      const [evidence] = await admin.$queryRaw<MissionEvidence[]>`
+        SELECT btrim(mission."ownerTokenHash") AS "ownerTokenHash",
+               mission."ownerAcquiredAt", mission."missionConnectionEpoch", mission.version,
+               mission."acknowledgedServerSequence", mission."nextServerSequence",
+               mission."contextRevision", btrim(mission."contextDigest") AS "contextDigest",
+               mission."routeMode", mission."fullDuplexCertified", mission.phase,
+               mission."terminalReason", mission."missionState", mission."turnState",
+               mission."finalTranscriptRecorded",
+               (
+                 SELECT count(*)::int
+                   FROM realtime_mistral_conversation_outbox AS event
+                  WHERE event."companyId" = mission."companyId"
+                    AND event."missionId" = mission.id
+               ) AS "outboxCount",
+               (
+                 SELECT count(*)::int
+                   FROM realtime_mistral_conversation_commands AS command
+                  WHERE command."companyId" = mission."companyId"
+                    AND command."missionId" = mission.id
+               ) AS "commandCount"
+          FROM realtime_mistral_conversation_missions AS mission
+         WHERE mission."companyId" = ${companyId}
+           AND mission."sessionHandle" = ${sessionHandle}
+      `;
+      if (!evidence) throw new Error('Durable Mistral mission evidence missing.');
+      return evidence;
+    }
+
+    async function waitForDatabaseTime(target: string): Promise<void> {
+      const targetEpoch = Date.parse(target);
+      if (!Number.isFinite(targetEpoch)) throw new Error('Invalid certification timestamp.');
+      for (let attempt = 0; attempt < 200; attempt += 1) {
+        const [clock] = await admin.$queryRaw<Array<{ databaseNow: Date }>>`
+          SELECT clock_timestamp() AS "databaseNow"
+        `;
+        if (clock && clock.databaseNow.getTime() >= targetEpoch) return;
+        const remaining = Math.max(1, targetEpoch - (clock?.databaseNow.getTime() ?? Date.now()));
+        await new Promise((resolve) => setTimeout(resolve, Math.min(remaining, 25)));
+      }
+      throw new Error('PostgreSQL clock did not reach the requested certification boundary.');
+    }
+
+    async function installOutboxBoundaryDelay(): Promise<void> {
+      await admin.$executeRawUnsafe(`
+        CREATE OR REPLACE FUNCTION bob_test_delay_mistral_outbox_boundary()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        SET search_path = pg_catalog, public
+        AS $function$
+        BEGIN
+          PERFORM pg_sleep(3);
+          RETURN NEW;
+        END;
+        $function$
+      `);
+      await admin.$executeRawUnsafe(`
+        DROP TRIGGER IF EXISTS bob_test_delay_mistral_outbox_boundary
+        ON realtime_mistral_conversation_outbox
+      `);
+      await admin.$executeRawUnsafe(`
+        CREATE TRIGGER bob_test_delay_mistral_outbox_boundary
+        AFTER INSERT ON realtime_mistral_conversation_outbox
+        FOR EACH ROW EXECUTE FUNCTION bob_test_delay_mistral_outbox_boundary()
+      `);
+    }
+
+    async function removeOutboxBoundaryDelay(): Promise<void> {
+      await admin.$executeRawUnsafe(`
+        DROP TRIGGER IF EXISTS bob_test_delay_mistral_outbox_boundary
+        ON realtime_mistral_conversation_outbox
+      `);
+      await admin.$executeRawUnsafe(`
+        DROP FUNCTION IF EXISTS bob_test_delay_mistral_outbox_boundary()
+      `);
+    }
+
     beforeAll(async () => {
       if (!runtimeUrl || !directUrl) {
         throw new Error('DATABASE_URL (rôle runtime) et DIRECT_URL (admin) sont requis.');
@@ -198,6 +295,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
     afterAll(async () => {
       try {
         if (admin) {
+          await removeOutboxBoundaryDelay().catch(() => undefined);
           // Les tables sont append-only et protégées contre la suppression avant rétention. Le
           // bypass est strictement transactionnel et revient à `origin` avant la suppression des
           // sociétés, pour éviter la fuite de session_replication_role déjà rencontrée ailleurs.
@@ -311,6 +409,59 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
       expect(result.events).toEqual([
         expect.objectContaining({ type: 'session.ready', serverSequence: 0 }),
       ]);
+
+      const oversizedMissionId = randomUUID();
+      const oversizedBootstrapId = randomUUID();
+      const oversizedSessionHandle = `mistral_${suffix}_oversized_replay_grace`;
+      const oversizedHardExpiresAt = new Date(Date.now() + 24 * 60 * 60_000).toISOString();
+      const oversizedReplayGraceExpiresAt = new Date(
+        Date.parse(oversizedHardExpiresAt) + 7 * 24 * 60 * 60_000 + 1_000,
+      ).toISOString();
+      await expect(workers[0].withTenant(companyId, async (tx) => {
+        await tx.$executeRaw`
+          INSERT INTO realtime_mistral_conversation_missions (
+            id, "companyId", "initialBootstrapId", protocol, "subjectHash",
+            "subjectKeyVersion", plan, "sessionHandle", "ownerTokenHash",
+            "missionConnectionEpoch", version, "acknowledgedServerSequence",
+            "retainedFromServerSequence", "nextServerSequence", "nextProviderSequence",
+            "contextRevision", "contextDigest", "routeMode", "fullDuplexCertified",
+            "maxMissionAudioBytes", "missionState", "turnState", "audioBytes",
+            "finalTranscriptRecorded", phase, "terminalReason", "terminalServerSequence",
+            "ownerAcquiredAt", "closedAt", "hardExpiresAt", "replayGraceExpiresAt",
+            "retentionExpiresAt", "createdAt", "updatedAt"
+          )
+          SELECT ${oversizedMissionId}::uuid, mission."companyId",
+                 ${oversizedBootstrapId}::uuid, mission.protocol, mission."subjectHash",
+                 mission."subjectKeyVersion", mission.plan, ${oversizedSessionHandle},
+                 mission."ownerTokenHash", mission."missionConnectionEpoch", mission.version,
+                 mission."acknowledgedServerSequence", mission."retainedFromServerSequence",
+                 mission."nextServerSequence", mission."nextProviderSequence",
+                 mission."contextRevision", mission."contextDigest", mission."routeMode",
+                 mission."fullDuplexCertified", mission."maxMissionAudioBytes",
+                 jsonb_set(
+                   jsonb_set(
+                     mission."missionState",
+                     '{sessionHandle}',
+                     to_jsonb(${oversizedSessionHandle}::text),
+                     true
+                   ),
+                   '{expiresAt}',
+                   to_jsonb(${oversizedHardExpiresAt}::text),
+                   true
+                 ),
+                 mission."turnState", mission."audioBytes", mission."finalTranscriptRecorded",
+                 mission.phase, mission."terminalReason", mission."terminalServerSequence",
+                 statement_timestamp(), NULL, ${oversizedHardExpiresAt}::timestamptz,
+                 ${oversizedReplayGraceExpiresAt}::timestamptz,
+                 ${oversizedReplayGraceExpiresAt}::timestamptz,
+                 statement_timestamp(), statement_timestamp()
+            FROM realtime_mistral_conversation_missions AS mission
+           WHERE mission."companyId" = ${companyId}
+             AND mission."sessionHandle" = ${missionGrant.sessionHandle}
+        `;
+      })).rejects.toThrow(
+        'realtime_mistral_conversation_missions_replay_grace_max_check',
+      );
 
       const hidden = await workers[1].withTenant(otherCompanyId, async (tx) => {
         const [row] = await tx.$queryRaw<Array<{ count: number }>>`
@@ -453,6 +604,702 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         routeRecovery.snapshot,
         commands[winnerIndex]!,
       )).resolves.toEqual({ status: 'rejected', reason: 'invalid_state' });
+    }, 30_000);
+
+    it('fence à H toute mutation métier et toute écriture SQL directe sans effet collatéral', async () => {
+      const hardExpiresAt = new Date(Date.now() + 1_200).toISOString();
+      const missionGrant = { ...grant('hard_expiry_fence'), hardExpiresAt };
+      const missionOwner = owner('hard_expiry_fence');
+      const created = await openMission(authorities[0], missionGrant, missionOwner);
+      opened(created);
+      const before = await missionEvidence(missionGrant.sessionHandle);
+      const completionCallsBefore = completion.calls.length;
+      const tradeBefore = (await admin.company.findUniqueOrThrow({ where: { id: companyId } })).trade;
+
+      await waitForDatabaseTime(hardExpiresAt);
+
+      const clientTurnId = randomUUID();
+      const turnId = `turn_${randomUUID().replaceAll('-', '')}`;
+      const disallowed = [
+        {
+          type: 'start_turn',
+          commandId: `start:expired:${clientTurnId}`,
+          control: {
+            type: 'turn.start',
+            clientTurnId,
+            contextRevision: 1,
+            contextDigest: CONTEXT_DIGEST,
+            vadStartedAtMs: 1_000,
+            preRollMs: 160,
+          },
+          turnId,
+          bargeInCancellationId: randomUUID(),
+        },
+        {
+          type: 'ingest_audio',
+          commandId: 'audio:expired:0',
+          frame: {
+            turnOrdinal: 1,
+            audioSequence: 0,
+            audioBytes: MISTRAL_CONVERSATION_AUDIO_QUANTUM_BYTES,
+            audioSha256: 'f'.repeat(64),
+          },
+        },
+        {
+          type: 'commit_turn',
+          commandId: 'commit:expired',
+          control: {
+            type: 'turn.commit',
+            clientTurnId,
+            lastAudioSequence: 0,
+            vadEndedAtMs: 1_320,
+          },
+        },
+        {
+          type: 'cancel_turn',
+          commandId: 'cancel:expired',
+          control: {
+            type: 'turn.cancel',
+            clientTurnId,
+            cancellationId: randomUUID(),
+            reason: 'user',
+          },
+        },
+        {
+          type: 'fail_turn',
+          commandId: 'fail:expired',
+          turnId,
+          cancellationId: randomUUID(),
+          reason: 'timeout',
+          errorCode: 'internal_error',
+        },
+        {
+          type: 'record_transcript',
+          commandId: 'transcript:expired:0',
+          turnId,
+          providerSequence: 0,
+          text: TRANSCRIPT,
+          final: true,
+        },
+        {
+          type: 'advance_phase',
+          commandId: 'phase:expired:reasoning',
+          turnId,
+          phase: 'reasoning',
+        },
+        {
+          type: 'update_context',
+          commandId: 'context:expired:2',
+          control: {
+            type: 'context.update',
+            contextRevision: 2,
+            contextDigest: 'b'.repeat(64),
+          },
+        },
+        {
+          type: 'record_error',
+          commandId: 'error:expired:business',
+          errorCode: 'internal_error',
+          retryable: true,
+        },
+        {
+          type: 'drain',
+          commandId: 'drain:expired:user-reason-forbidden',
+          reason: 'user',
+          cancellationId: randomUUID(),
+        },
+      ] as const satisfies readonly MistralConversationDurableCommand[];
+
+      for (const command of disallowed) {
+        await expect(transition(
+          authorities[0],
+          missionGrant,
+          missionOwner,
+          created.snapshot,
+          command,
+        )).resolves.toEqual({ status: 'expired' });
+      }
+      expect(await missionEvidence(missionGrant.sessionHandle)).toEqual(before);
+      expect(completion.calls).toHaveLength(completionCallsBefore);
+      expect((await admin.company.findUniqueOrThrow({ where: { id: companyId } })).trade)
+        .toBe(tradeBefore);
+
+      const directDigest = 'c'.repeat(64);
+      await expect(workers[0].withTenant(companyId, async (tx) => {
+        await tx.$executeRaw`
+          UPDATE realtime_mistral_conversation_missions
+             SET version = version + 1,
+                 "contextRevision" = "contextRevision" + 1,
+                 "contextDigest" = ${directDigest},
+                 "missionState" = jsonb_set(
+                   jsonb_set(
+                     "missionState",
+                     '{contextRevision}',
+                     to_jsonb(("contextRevision" + 1)::integer),
+                     true
+                   ),
+                   '{contextDigest}',
+                   to_jsonb(${directDigest}::text),
+                   true
+                 ),
+                 "updatedAt" = clock_timestamp()
+           WHERE "companyId" = ${companyId}
+             AND "sessionHandle" = ${missionGrant.sessionHandle}
+        `;
+      })).rejects.toThrow();
+      expect(await missionEvidence(missionGrant.sessionHandle)).toEqual(before);
+    }, 30_000);
+
+    it('rollbacke entièrement si H est franchi entre append outbox et CAS snapshot', async () => {
+      const hardExpiresAt = new Date(Date.now() + 2_500).toISOString();
+      const missionGrant = { ...grant('hard_expiry_append_race'), hardExpiresAt };
+      const missionOwner = owner('hard_expiry_append_race');
+      const created = await openMission(authorities[0], missionGrant, missionOwner);
+      opened(created);
+      await installOutboxBoundaryDelay();
+      const before = await missionEvidence(missionGrant.sessionHandle);
+      const [clock] = await admin.$queryRaw<Array<{ databaseNow: Date }>>`
+        SELECT clock_timestamp() AS "databaseNow"
+      `;
+      expect(clock?.databaseNow.getTime()).toBeLessThan(Date.parse(hardExpiresAt));
+
+      const startedAt = Date.now();
+      try {
+        await expect(transition(
+          authorities[0],
+          missionGrant,
+          missionOwner,
+          created.snapshot,
+          {
+            type: 'record_error',
+            commandId: 'error:hard-expiry-append-race',
+            errorCode: 'internal_error',
+            retryable: true,
+          },
+        )).resolves.toEqual({ status: 'expired' });
+      } finally {
+        await removeOutboxBoundaryDelay();
+      }
+
+      // La durée prouve que l'INSERT a traversé le trigger AFTER INSERT avant que le CAS perde à H.
+      expect(Date.now() - startedAt).toBeGreaterThanOrEqual(2_900);
+      expect(await missionEvidence(missionGrant.sessionHandle)).toEqual(before);
+    }, 30_000);
+
+    it('interdit après H une completion pourtant valide et rollbacke son side-effect', async () => {
+      const hardExpiresAt = new Date(Date.now() + 5_000).toISOString();
+      const missionGrant = { ...grant('hard_expiry_completion'), hardExpiresAt };
+      const missionOwner = owner('hard_expiry_completion');
+      const created = await openMission(authorities[0], missionGrant, missionOwner);
+      opened(created);
+      const clientTurnId = randomUUID();
+      const turnId = `turn_${randomUUID().replaceAll('-', '')}`;
+      let snapshot = created.snapshot;
+
+      snapshot = await apply(authorities[0], missionGrant, missionOwner, snapshot, {
+        type: 'start_turn',
+        commandId: `start:expiry-completion:${clientTurnId}`,
+        control: {
+          type: 'turn.start',
+          clientTurnId,
+          contextRevision: 1,
+          contextDigest: CONTEXT_DIGEST,
+          vadStartedAtMs: 1_000,
+          preRollMs: 160,
+        },
+        turnId,
+        bargeInCancellationId: randomUUID(),
+      });
+      snapshot = await apply(authorities[0], missionGrant, missionOwner, snapshot, {
+        type: 'ingest_audio',
+        commandId: 'audio:expiry-completion:0',
+        frame: {
+          turnOrdinal: 1,
+          audioSequence: 0,
+          audioBytes: MISTRAL_CONVERSATION_AUDIO_QUANTUM_BYTES,
+          audioSha256: 'f'.repeat(64),
+        },
+      });
+      snapshot = await apply(authorities[0], missionGrant, missionOwner, snapshot, {
+        type: 'commit_turn',
+        commandId: 'commit:expiry-completion',
+        control: {
+          type: 'turn.commit',
+          clientTurnId,
+          lastAudioSequence: 0,
+          vadEndedAtMs: 1_320,
+        },
+      });
+      snapshot = await apply(authorities[0], missionGrant, missionOwner, snapshot, {
+        type: 'record_transcript',
+        commandId: 'transcript:expiry-completion:0',
+        turnId,
+        providerSequence: 0,
+        text: TRANSCRIPT,
+        final: true,
+      });
+      for (const phase of ['reasoning', 'rendering', 'delivering'] as const) {
+        snapshot = await apply(authorities[0], missionGrant, missionOwner, snapshot, {
+          type: 'advance_phase',
+          commandId: `phase:expiry-completion:${phase}`,
+          turnId,
+          phase,
+        });
+      }
+
+      const before = await missionEvidence(missionGrant.sessionHandle);
+      const completionCallsBefore = completion.calls.length;
+      const tradeBefore = (await admin.company.findUniqueOrThrow({ where: { id: companyId } })).trade;
+      completion.mode = 'opened';
+      await waitForDatabaseTime(hardExpiresAt);
+
+      const result = await transition(
+        authorities[1],
+        missionGrant,
+        missionOwner,
+        snapshot,
+        {
+          type: 'complete_turn',
+          commandId: 'complete:expiry-completion',
+          turnId,
+          missionConnectionEpoch: snapshot.missionConnectionEpoch,
+          cancellationGeneration: snapshot.mission.cancellationGeneration,
+          authorizationHandle: 'authorization_handle_expiry_certification',
+          stagedDeliveryHandle: 'staged_delivery_handle_expiry_certification',
+        },
+      );
+      expect(result).toEqual({ status: 'expired' });
+      expect(completion.calls).toHaveLength(completionCallsBefore);
+      expect((await admin.company.findUniqueOrThrow({ where: { id: companyId } })).trade)
+        .toBe(tradeBefore);
+      expect(await missionEvidence(missionGrant.sessionHandle)).toEqual(before);
+    }, 30_000);
+
+    it('terminalise une seule fois après H puis rejoue identiquement sans takeover', async () => {
+      const hardExpiresAt = new Date(Date.now() + 1_200).toISOString();
+      const missionGrant = { ...grant('hard_expiry_terminal_replay'), hardExpiresAt };
+      const initialOwner = owner('hard_expiry_terminal_initial');
+      const created = await openMission(authorities[0], missionGrant, initialOwner);
+      opened(created);
+      const before = await missionEvidence(missionGrant.sessionHandle);
+      await waitForDatabaseTime(hardExpiresAt);
+
+      const first = await openMission(
+        authorities[0],
+        { ...missionGrant, bootstrapId: randomUUID() },
+        owner('hard_expiry_terminal_resume_a'),
+      );
+      expect(first.status).toBe('terminal_replay');
+      if (first.status !== 'terminal_replay') throw new Error('Expired terminal replay missing.');
+      expect(first.snapshot).toMatchObject({
+        missionConnectionEpoch: before.missionConnectionEpoch,
+        mission: {
+          phase: 'closed',
+          drainReason: 'expired',
+          routeMode: before.routeMode,
+          fullDuplexCertified: before.fullDuplexCertified,
+          contextRevision: before.contextRevision,
+          contextDigest: before.contextDigest,
+        },
+      });
+      expect(first.events.map((event) => event.type)).toEqual([
+        'session.ready',
+        'session.draining',
+        'session.closed',
+      ]);
+      expect(first.terminal).toMatchObject({
+        missionConnectionEpoch: before.missionConnectionEpoch,
+        reason: 'expired',
+      });
+      expect(Date.parse(first.terminal.replayGraceExpiresAt)).toBeGreaterThan(Date.parse(hardExpiresAt));
+
+      const afterFirst = await missionEvidence(missionGrant.sessionHandle);
+      expect(afterFirst).toMatchObject({
+        ownerTokenHash: before.ownerTokenHash,
+        ownerAcquiredAt: before.ownerAcquiredAt,
+        missionConnectionEpoch: before.missionConnectionEpoch,
+        routeMode: before.routeMode,
+        fullDuplexCertified: before.fullDuplexCertified,
+        contextRevision: before.contextRevision,
+        contextDigest: before.contextDigest,
+        phase: 'closed',
+        terminalReason: 'expired',
+      });
+
+      const second = await openMission(
+        authorities[1],
+        { ...missionGrant, bootstrapId: randomUUID() },
+        owner('hard_expiry_terminal_resume_b'),
+      );
+      expect(second.status).toBe('terminal_replay');
+      if (second.status !== 'terminal_replay') throw new Error('Second expired terminal replay missing.');
+      expect(second.events).toEqual(first.events);
+      expect(second.terminal).toEqual(first.terminal);
+      expect(second.snapshot).toEqual(first.snapshot);
+      expect(await missionEvidence(missionGrant.sessionHandle)).toEqual(afterFirst);
+
+      const terminalCounts = await admin.$queryRaw<Array<{ eventType: string; count: number }>>`
+        SELECT "eventType", count(*)::int AS count
+          FROM realtime_mistral_conversation_outbox
+         WHERE "companyId" = ${companyId}
+           AND "sessionHandle" = ${missionGrant.sessionHandle}
+           AND "eventType" IN ('session.draining', 'session.closed')
+         GROUP BY "eventType"
+         ORDER BY "eventType"
+      `;
+      expect(terminalCounts).toEqual([
+        { eventType: 'session.closed', count: 1 },
+        { eventType: 'session.draining', count: 1 },
+      ]);
+    }, 30_000);
+
+    it('annule canoniquement un tour actif à H avant le drain et la fermeture', async () => {
+      const hardExpiresAt = new Date(Date.now() + 2_500).toISOString();
+      const missionGrant = { ...grant('active_turn_expiry'), hardExpiresAt };
+      const missionOwner = owner('active_turn_expiry');
+      const created = await openMission(authorities[0], missionGrant, missionOwner);
+      opened(created);
+      const clientTurnId = randomUUID();
+      const turnId = `turn_${randomUUID().replaceAll('-', '')}`;
+      const started = await transition(
+        authorities[0],
+        missionGrant,
+        missionOwner,
+        created.snapshot,
+        {
+          type: 'start_turn',
+          commandId: `start:${clientTurnId}`,
+          control: {
+            type: 'turn.start',
+            clientTurnId,
+            contextRevision: created.snapshot.mission.contextRevision,
+            contextDigest: CONTEXT_DIGEST,
+            vadStartedAtMs: 1_000,
+            preRollMs: 160,
+          },
+          turnId,
+          bargeInCancellationId: randomUUID(),
+        },
+      );
+      applied(started);
+      expect(started.snapshot.mission.phase).toBe('turn_active');
+      await waitForDatabaseTime(hardExpiresAt);
+
+      const terminal = await openMission(
+        authorities[1],
+        { ...missionGrant, bootstrapId: randomUUID() },
+        owner('active_turn_expiry_resume'),
+      );
+      expect(terminal.status).toBe('terminal_replay');
+      if (terminal.status !== 'terminal_replay') {
+        throw new Error('Active turn terminal replay missing.');
+      }
+      expect(terminal.events.slice(-3).map((event) => event.type)).toEqual([
+        'turn.cancelled',
+        'session.draining',
+        'session.closed',
+      ]);
+      expect(terminal.snapshot).toMatchObject({
+        turn: null,
+        missionConnectionEpoch: started.snapshot.missionConnectionEpoch,
+        mission: {
+          phase: 'closed',
+          drainReason: 'expired',
+          lastTerminalTurn: {
+            clientTurnId,
+            turnId,
+            outcome: 'cancelled',
+          },
+        },
+      });
+      const cancellation = terminal.events.at(-3);
+      expect(cancellation).toMatchObject({
+        type: 'turn.cancelled',
+        clientTurnId,
+        turnId,
+      });
+      if (cancellation?.type !== 'turn.cancelled') {
+        throw new Error('Canonical cancellation evidence missing.');
+      }
+      expect(terminal.snapshot.mission.lastTerminalTurn).toMatchObject({
+        cancellationId: cancellation.cancellationId,
+      });
+    }, 30_000);
+
+    it('conserve à H la raison user d’un drain déjà commité puis ferme exactement une fois', async () => {
+      const hardExpiresAt = new Date(Date.now() + 2_500).toISOString();
+      const missionGrant = { ...grant('user_drain_expiry'), hardExpiresAt };
+      const missionOwner = owner('user_drain_expiry');
+      const created = await openMission(authorities[0], missionGrant, missionOwner);
+      opened(created);
+      const drained = await transition(
+        authorities[0],
+        missionGrant,
+        missionOwner,
+        created.snapshot,
+        {
+          type: 'drain',
+          commandId: 'drain:user:before-expiry',
+          reason: 'user',
+          cancellationId: randomUUID(),
+        },
+      );
+      applied(drained);
+      expect(drained.snapshot.mission).toMatchObject({
+        phase: 'draining',
+        drainReason: 'user',
+      });
+      const beforeExpiry = await missionEvidence(missionGrant.sessionHandle);
+      await waitForDatabaseTime(hardExpiresAt);
+
+      const terminal = await openMission(
+        authorities[1],
+        { ...missionGrant, bootstrapId: randomUUID() },
+        owner('user_drain_expiry_resume'),
+      );
+      expect(terminal.status).toBe('terminal_replay');
+      if (terminal.status !== 'terminal_replay') {
+        throw new Error('User drain terminal replay missing.');
+      }
+      expect(terminal.events.at(-1)).toMatchObject({ type: 'session.closed', reason: 'user' });
+      expect(terminal.snapshot).toMatchObject({
+        missionConnectionEpoch: drained.snapshot.missionConnectionEpoch,
+        mission: { phase: 'closed', drainReason: 'user' },
+      });
+      const afterExpiry = await missionEvidence(missionGrant.sessionHandle);
+      expect(afterExpiry).toMatchObject({
+        ownerTokenHash: beforeExpiry.ownerTokenHash,
+        missionConnectionEpoch: beforeExpiry.missionConnectionEpoch,
+        terminalReason: 'user',
+        phase: 'closed',
+        outboxCount: beforeExpiry.outboxCount + 1,
+        commandCount: beforeExpiry.commandCount,
+      });
+
+      const replayed = await openMission(
+        authorities[0],
+        { ...missionGrant, bootstrapId: randomUUID() },
+        owner('user_drain_expiry_replay'),
+      );
+      expect(replayed.status).toBe('terminal_replay');
+      expect(await missionEvidence(missionGrant.sessionHandle)).toEqual(afterExpiry);
+    }, 30_000);
+
+    it('autorise après H uniquement l’ACK exact d’un snapshot fermé et le rejoue sans événement', async () => {
+      const hardExpiresAt = new Date(Date.now() + 1_200).toISOString();
+      const missionGrant = { ...grant('terminal_ack'), hardExpiresAt };
+      const missionOwner = owner('terminal_ack');
+      const created = await openMission(authorities[0], missionGrant, missionOwner);
+      opened(created);
+      await waitForDatabaseTime(hardExpiresAt);
+
+      const terminal = await openMission(
+        authorities[0],
+        { ...missionGrant, bootstrapId: randomUUID() },
+        owner('terminal_ack_resume'),
+      );
+      expect(terminal.status).toBe('terminal_replay');
+      if (terminal.status !== 'terminal_replay') throw new Error('Terminal ACK fixture missing.');
+      const beforeAck = await missionEvidence(missionGrant.sessionHandle);
+      const ackCommand = {
+        type: 'ack_events',
+        commandId: `ack:${terminal.snapshot.missionConnectionEpoch}:${terminal.snapshot.nextServerSequence}`,
+        control: {
+          type: 'events.ack',
+          missionConnectionEpoch: terminal.snapshot.missionConnectionEpoch,
+          nextServerSequence: terminal.snapshot.nextServerSequence,
+        },
+      } as const satisfies MistralConversationDurableCommand;
+
+      await expect(workers[0].withTenant(companyId, async (tx) => {
+        await tx.$executeRaw`
+          INSERT INTO realtime_mistral_conversation_commands (
+            "companyId", "missionId", "sessionHandle", "commandIdHash", "commandType",
+            "commandPayloadHmac", "proofKeyVersion", "missionConnectionEpoch",
+            "snapshotVersionBefore", "snapshotVersionAfter", "firstServerSequence",
+            "eventCount", "createdAt", "retentionExpiresAt"
+          )
+          SELECT mission."companyId", mission.id, mission."sessionHandle", ${'1'.repeat(64)},
+                 'ack_events', ${'2'.repeat(64)}, 1, mission."missionConnectionEpoch",
+                 mission.version - 1, mission.version, mission."nextServerSequence", 0,
+                 clock_timestamp(), mission."retentionExpiresAt"
+            FROM realtime_mistral_conversation_missions AS mission
+           WHERE mission."companyId" = ${companyId}
+             AND mission."sessionHandle" = ${missionGrant.sessionHandle}
+        `;
+      })).rejects.toThrow('terminal ACK commands are not persisted');
+      expect(await missionEvidence(missionGrant.sessionHandle)).toEqual(beforeAck);
+
+      const ack = await transition(
+        authorities[1],
+        missionGrant,
+        missionOwner,
+        terminal.snapshot,
+        ackCommand,
+      );
+      applied(ack);
+      expect(ack.events).toEqual([]);
+      const afterAck = await missionEvidence(missionGrant.sessionHandle);
+      expect(afterAck).toEqual({
+        ...beforeAck,
+        version: beforeAck.version + 1n,
+        acknowledgedServerSequence: beforeAck.nextServerSequence,
+      });
+
+      const replayed = await transition(
+        authorities[0],
+        missionGrant,
+        missionOwner,
+        terminal.snapshot,
+        ackCommand,
+      );
+      expect(replayed).toMatchObject({
+        status: 'replayed',
+        snapshot: { version: Number(afterAck.version) },
+        events: [],
+      });
+      expect(await missionEvidence(missionGrant.sessionHandle)).toEqual(afterAck);
+    }, 30_000);
+
+    it('terminalise à H même si le curseur de reprise est invalide', async () => {
+      const hardExpiresAt = new Date(Date.now() + 1_200).toISOString();
+      const missionGrant = { ...grant('terminal_invalid_cursor'), hardExpiresAt };
+      const initialOwner = owner('terminal_invalid_cursor_initial');
+      const created = await openMission(authorities[0], missionGrant, initialOwner);
+      opened(created);
+      const before = await missionEvidence(missionGrant.sessionHandle);
+      await waitForDatabaseTime(hardExpiresAt);
+
+      await expect(openMission(
+        authorities[1],
+        { ...missionGrant, bootstrapId: randomUUID() },
+        owner('terminal_invalid_cursor_resume'),
+        999,
+      )).resolves.toEqual({ status: 'invalid_cursor' });
+
+      const terminalized = await missionEvidence(missionGrant.sessionHandle);
+      expect(terminalized).toMatchObject({
+        ownerTokenHash: before.ownerTokenHash,
+        ownerAcquiredAt: before.ownerAcquiredAt,
+        missionConnectionEpoch: before.missionConnectionEpoch,
+        phase: 'closed',
+        terminalReason: 'expired',
+        outboxCount: 3,
+      });
+      const replay = await openMission(
+        authorities[0],
+        { ...missionGrant, bootstrapId: randomUUID() },
+        owner('terminal_invalid_cursor_valid_resume'),
+      );
+      expect(replay.status).toBe('terminal_replay');
+      if (replay.status !== 'terminal_replay') throw new Error('Terminal replay missing after bad cursor.');
+      expect(replay.events.map((event) => event.type)).toEqual([
+        'session.ready',
+        'session.draining',
+        'session.closed',
+      ]);
+      expect(await missionEvidence(missionGrant.sessionHandle)).toEqual(terminalized);
+    }, 30_000);
+
+    it('refuse open et toute mutation à G sans altérer la preuve retenue', async () => {
+      const missionGrant = grant('replay_grace_elapsed');
+      const missionOwner = owner('replay_grace_elapsed');
+      const created = await openMission(authorities[0], missionGrant, missionOwner);
+      opened(created);
+
+      // Voyage temporel de fixture uniquement : les triggers sont suspendus par l'admin dans cette
+      // transaction, mais toutes les CHECK restent actives. L'appel testé utilise ensuite le rôle
+      // runtime réel, RLS forcée et `clock_timestamp()` non simulé.
+      const shiftedCreatedAt = new Date(Date.now() - 120_000).toISOString();
+      const shiftedOwnerAt = new Date(Date.now() - 119_000).toISOString();
+      const shiftedHardExpiresAt = new Date(Date.now() - 90_000).toISOString();
+      const shiftedReplayGraceExpiresAt = new Date(Date.now() - 30_000).toISOString();
+      const shiftedRetentionExpiresAt = new Date(Date.now() + 60_000).toISOString();
+      await admin.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe('SET LOCAL session_replication_role = replica');
+        await tx.$executeRaw`
+          UPDATE realtime_mistral_conversation_missions
+             SET "createdAt" = ${shiftedCreatedAt}::timestamptz,
+                 "ownerAcquiredAt" = ${shiftedOwnerAt}::timestamptz,
+                 "updatedAt" = ${shiftedOwnerAt}::timestamptz,
+                 "hardExpiresAt" = ${shiftedHardExpiresAt}::timestamptz,
+                 "replayGraceExpiresAt" = ${shiftedReplayGraceExpiresAt}::timestamptz,
+                 "retentionExpiresAt" = ${shiftedRetentionExpiresAt}::timestamptz,
+                 "missionState" = jsonb_set(
+                   "missionState", '{expiresAt}', to_jsonb(${shiftedHardExpiresAt}::text), true
+                 )
+           WHERE "companyId" = ${companyId}
+             AND "sessionHandle" = ${missionGrant.sessionHandle}
+        `;
+      });
+      const shiftedGrant = { ...missionGrant, hardExpiresAt: shiftedHardExpiresAt };
+      const before = await missionEvidence(missionGrant.sessionHandle);
+
+      await expect(openMission(
+        authorities[1],
+        { ...shiftedGrant, bootstrapId: randomUUID() },
+        owner('replay_grace_elapsed_resume'),
+      )).resolves.toEqual({ status: 'expired' });
+      await expect(transition(
+        authorities[0],
+        shiftedGrant,
+        missionOwner,
+        created.snapshot,
+        {
+          type: 'drain',
+          commandId: 'drain:after-replay-grace',
+          reason: 'expired',
+          cancellationId: randomUUID(),
+        },
+      )).resolves.toEqual({ status: 'expired' });
+      expect(await missionEvidence(missionGrant.sessionHandle)).toEqual(before);
+    }, 30_000);
+
+    it('rollbacke la terminalisation si G est franchi entre append terminal et CAS snapshot', async () => {
+      const missionGrant = grant('replay_grace_append_race');
+      const missionOwner = owner('replay_grace_append_race');
+      const created = await openMission(authorities[0], missionGrant, missionOwner);
+      opened(created);
+      await installOutboxBoundaryDelay();
+
+      const shiftedCreatedAt = new Date(Date.now() - 120_000).toISOString();
+      const shiftedOwnerAt = new Date(Date.now() - 119_000).toISOString();
+      const shiftedHardExpiresAt = new Date(Date.now() - 60_000).toISOString();
+      const shiftedReplayGraceExpiresAt = new Date(Date.now() + 2_500).toISOString();
+      const shiftedRetentionExpiresAt = new Date(Date.now() + 60_000).toISOString();
+      await admin.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe('SET LOCAL session_replication_role = replica');
+        await tx.$executeRaw`
+          UPDATE realtime_mistral_conversation_missions
+             SET "createdAt" = ${shiftedCreatedAt}::timestamptz,
+                 "ownerAcquiredAt" = ${shiftedOwnerAt}::timestamptz,
+                 "updatedAt" = ${shiftedOwnerAt}::timestamptz,
+                 "hardExpiresAt" = ${shiftedHardExpiresAt}::timestamptz,
+                 "replayGraceExpiresAt" = ${shiftedReplayGraceExpiresAt}::timestamptz,
+                 "retentionExpiresAt" = ${shiftedRetentionExpiresAt}::timestamptz,
+                 "missionState" = jsonb_set(
+                   "missionState", '{expiresAt}', to_jsonb(${shiftedHardExpiresAt}::text), true
+                 )
+           WHERE "companyId" = ${companyId}
+             AND "sessionHandle" = ${missionGrant.sessionHandle}
+        `;
+      });
+      const shiftedGrant = { ...missionGrant, hardExpiresAt: shiftedHardExpiresAt };
+      const before = await missionEvidence(missionGrant.sessionHandle);
+      const startedAt = Date.now();
+
+      try {
+        await expect(openMission(
+          authorities[1],
+          { ...shiftedGrant, bootstrapId: randomUUID() },
+          owner('replay_grace_append_race_resume'),
+        )).resolves.toEqual({ status: 'expired' });
+      } finally {
+        await removeOutboxBoundaryDelay();
+      }
+
+      expect(Date.now() - startedAt).toBeGreaterThanOrEqual(2_900);
+      expect(await missionEvidence(missionGrant.sessionHandle)).toEqual(before);
     }, 30_000);
 
     it('terminalise en deux CAS une recovery qui ne tient plus dans la fenêtre live', async () => {

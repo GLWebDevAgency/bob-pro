@@ -52,6 +52,7 @@ const MAX_PROVIDER_CLOSE_TIMEOUT_MS = 5_000;
 const MAX_AUTH_TIMEOUT_MS = 10_000;
 const MAX_OPERATION_TIMEOUT_MS = 60_000;
 const MAX_REPLAY_TIMEOUT_MS = 30_000;
+const MAX_REPLAY_GRACE_MS = 7 * 24 * 60 * 60 * 1_000;
 const MIN_TIMEOUT_MS = 25;
 const INT32_MAX = 0x7fff_ffff;
 const UINT32_MAX = 0xffff_ffff;
@@ -296,6 +297,8 @@ export type MistralConversationDurableOpenResult =
         readonly missionConnectionEpoch: number;
         readonly closedAtServerSequence: number;
         readonly reason: MistralConversationSessionEndReason;
+        /** Borne BDD de lecture/ACK terminal ; elle ne prolonge jamais une capacité live. */
+        readonly replayGraceExpiresAt: string;
       };
     })
   | {
@@ -517,6 +520,8 @@ function validateGrant(grant: MistralConversationBootstrapGrant, companyId: stri
       || (grant.routeMode === 'full_duplex' && grant.fullDuplexCertified)
     )
     || hardExpiry === null
+    // Le bootstrap générique reste strictement live. Seul le futur consume-result discriminé du
+    // ticket de reprise pourra ouvrir la fenêtre H..G ; ne jamais élargir cette capacité ici.
     || hardExpiry <= now
     || hardExpiry > now + MAX_SESSION_MS
     || !isIntegerBetween(
@@ -812,6 +817,8 @@ function validateTerminalOpenResult(
 ): void {
   validateSnapshot(opened.snapshot);
   const { mission } = opened.snapshot;
+  const hardExpiry = canonicalEpoch(grant.hardExpiresAt);
+  const replayGraceExpiry = canonicalEpoch(opened.terminal?.replayGraceExpiresAt ?? '');
   const expectedReplayFrom = Math.min(
     resumeNextServerSequence,
     opened.snapshot.acknowledgedServerSequence,
@@ -844,6 +851,10 @@ function validateTerminalOpenResult(
     || opened.terminal.closedAtServerSequence < 2
     || opened.terminal.closedAtServerSequence !== opened.snapshot.nextServerSequence - 1
     || opened.terminal.reason !== mission.drainReason
+    || hardExpiry === null
+    || replayGraceExpiry === null
+    || replayGraceExpiry <= hardExpiry
+    || replayGraceExpiry > hardExpiry + MAX_REPLAY_GRACE_MS
   ) gatewayError('temporarily_unavailable');
 
   if (opened.events.length === 0) {
@@ -2749,7 +2760,9 @@ export async function serveMistralConversationGatewayV2(
       validateTerminalOpenResult(opened, grant, authenticated.resumeNextServerSequence);
       terminalReplayOpened = true;
       clearTimeout(authTimer);
-      const replayBudgetMs = Math.min(replayTimeoutMs, hardExpiry - now());
+      const replayGraceExpiry = canonicalEpoch(opened.terminal.replayGraceExpiresAt);
+      if (replayGraceExpiry === null) gatewayError('temporarily_unavailable');
+      const replayBudgetMs = Math.min(replayTimeoutMs, replayGraceExpiry - now());
       if (replayBudgetMs <= 0) gatewayError('expired');
       await runWithDeadline({
         parentSignal: handshake.signal,

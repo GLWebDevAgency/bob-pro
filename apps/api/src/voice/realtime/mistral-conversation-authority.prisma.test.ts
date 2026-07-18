@@ -91,4 +91,56 @@ describe('Prisma Mistral conversation authority — configuration fail-closed', 
 
     expect(prisma.withTenant).not.toHaveBeenCalled();
   });
+
+  it('refuse une transaction ambiante pour garantir son rollback racine', async () => {
+    const withTenant = vi.fn();
+    const prisma = {
+      inTransaction: vi.fn(() => true),
+      withTenant,
+    } as unknown as PrismaService;
+    const authority = new PrismaMistralConversationDurableAuthority(prisma, completion, validKeys);
+    const grant = {
+      bootstrapId: '30000000-0000-4000-8000-000000000001',
+      companyId: 'company-1',
+      subjectHash: 'a'.repeat(64),
+      subjectKeyVersion: 1,
+      plan: 'pro' as const,
+      sessionHandle: 'session_handle_1234567890abcdef',
+      hardExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+      contextRevision: 1,
+      contextDigest: 'b'.repeat(64),
+      routeMode: 'push_to_talk' as const,
+      fullDuplexCertified: false,
+      maxMissionAudioBytes: 320_000,
+    };
+
+    await expect(authority.open({
+      grant,
+      ownerLeaseToken: 'L'.repeat(43),
+      resumeNextServerSequence: 0,
+      maxReplayEvents: 256,
+      maxReplayBytes: 256 * 1024,
+      signal: new AbortController().signal,
+    })).resolves.toEqual({ status: 'unavailable' });
+
+    await expect(authority.transition({
+      companyId: grant.companyId,
+      subjectHash: grant.subjectHash,
+      sessionHandle: grant.sessionHandle,
+      ownerLeaseToken: 'L'.repeat(43),
+      missionConnectionEpoch: 1,
+      expectedVersion: 1,
+      maxUnacknowledgedEvents: 256,
+      maxUnacknowledgedBytes: 256 * 1024,
+      command: {
+        type: 'record_error',
+        commandId: 'error:ambient-transaction',
+        errorCode: 'internal_error',
+        retryable: true,
+      },
+      signal: new AbortController().signal,
+    })).resolves.toEqual({ status: 'unavailable' });
+
+    expect(withTenant).not.toHaveBeenCalled();
+  });
 });

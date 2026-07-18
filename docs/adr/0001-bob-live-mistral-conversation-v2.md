@@ -229,6 +229,64 @@ une capacité métier ; et le mobile/gateway doivent décider puis certifier l'A
 le pruning (la livraison est déjà rejouable sans lui, mais l'acquittement durable n'avance pas après
 `session.closed`).
 
+#### Capacité de reprise et grâce terminale
+
+La reprise n'émet jamais une seconde admission. La lease initiale représente le droit d'occuper la
+session ; un ticket de reprise représente seulement le droit ponctuel, one-shot, de reprendre cette
+même mission. Il est émis par une route HTTP authentifiée à partir du principal serveur, stocké
+uniquement sous forme SHA-256 et lié à : tenant, sujet HMAC + version de clé, mission,
+`sessionHandle`, protocole, premier curseur non appliqué et dernier `missionConnectionEpoch`
+accepté. Son TTL est court et sa portée est explicite : `live_takeover` avant l'expiration dure ou
+`terminal_replay` pendant la grâce. Il ne crée ni lease ni événement d'admission.
+
+Le ticket ne peut pas être consommé puis la mission ouverte dans deux transactions. L'autorité
+PostgreSQL expose un unique `redeemAndOpen` qui, sous RLS et locks ticket + mission :
+
+1. vérifie le hash one-shot, le tenant, le sujet, la session, le protocole, le curseur, l'epoch, la
+   portée et l'horloge BDD ;
+2. vérifie la lease initiale encore active pour un takeover live ;
+3. CAS l'epoch `N → N + 1`, change l'owner, annule le tour orphelin et calcule le suffixe contigu ;
+4. consomme le ticket dans le même commit.
+
+Deux tickets différents liés à l'epoch `N` ne peuvent donc jamais produire deux takeovers. Un
+crash ou rollback laisse ticket et mission réessayables ensemble. Le ticket brut ne traverse aucun
+autre port et n'entre jamais dans les logs.
+
+Jusqu'au déploiement de ce `consume-result` discriminé, le bootstrap générique reste fail-closed à
+`H` dans le gateway : la grâce durable ne constitue pas, à elle seule, une capacité réseau. Les
+méthodes de l'autorité possèdent en outre leur transaction PostgreSQL racine et refusent toute
+transaction ambiante ; Prisma n'offrant pas de savepoint imbriqué ici, cette règle empêche un appelant
+de capturer une erreur puis de committer un outbox ou un side-effect écrit avant un CAS perdant.
+
+Soit `H = hardExpiresAt` et `G = replayGraceExpiresAt`, selon `clock_timestamp()` lu sous lock :
+
+| Fenêtre | Mission | Autorisé |
+| --- | --- | --- |
+| `t < H` | absente | création avec capacité initiale live |
+| `t < H` | live | commandes métier, ACK et takeover live |
+| `t < H` | draining/closed | fermeture, replay terminal et ACK |
+| `H ≤ t < G` | absente | refus |
+| `H ≤ t < G` | live/recovering | `drain(expired)`, `close`, replay et ACK uniquement |
+| `H ≤ t < G` | draining | `close` en conservant la raison déjà commitée, replay et ACK |
+| `H ≤ t < G` | closed | replay et ACK uniquement |
+| `t ≥ G` | toute phase | aucun accès client ; rétention/purge seulement |
+
+Les bornes sont exclusives : à `H`, aucune nouvelle mutation métier ; à `G`, aucun replay. Une
+intention client reçue avant `H` mais linéarisée après `H` perd face à `expired`. Un `drain(user)`
+déjà commité conserve en revanche sa raison canonique. Après `H`, nouveau tour, PCM, contexte,
+route, transcript, pipeline, completion, contrôle et erreur métier sont interdits.
+
+Le replay terminal utilise une phase gateway `replay_only` : aucun provider ni pipeline n'est
+ouvert et seule une trame texte `events.ack` est acceptée. Son ACK passe par un port PostgreSQL
+étroit, autorisé par la capacité de reprise consommée et incapable de changer owner, epoch, route,
+contexte, audio ou outbox. Pendant la grâce, cet ACK n'entre pas dans le ledger de commandes : son
+idempotence vient du curseur durable monotone (`ACK ≤ curseur courant` est un replay sûr), ce qui
+interdit de greffer après coup un faux ledger ACK sur une version produite par drain ou fermeture.
+Le gateway traite aussi l'ACK reçu synchroniquement pendant l'ouverture,
+attend une fenêtre courte bornée par `G`, puis ferme ; la perte de cet ACK reste récupérable par un
+nouveau ticket. Une mission abandonnée par crash devient purgeable après sa rétention même si elle
+n'a jamais atteint `closed`.
+
 ### VAD, AEC et barge-in
 
 Le VAD s'exécute dans le moteur natif **après** le traitement voix, en fenêtres 10/20 ms avec

@@ -128,6 +128,13 @@ class CompletionAbort extends Error {
   }
 }
 
+class TemporalBoundaryAbort extends Error {
+  constructor() {
+    super('Mistral conversation temporal boundary crossed.');
+    this.name = 'TemporalBoundaryAbort';
+  }
+}
+
 function isIntegerBetween(value: unknown, minimum: number, maximum: number): value is number {
   return typeof value === 'number'
     && Number.isSafeInteger(value)
@@ -258,10 +265,11 @@ function replayBytes(events: readonly MistralConversationServerEvent[]): number 
   ), 0);
 }
 
-function terminalMetadata(snapshot: MistralConversationDurableSnapshot): {
+function terminalMetadata(snapshot: MistralConversationDurableSnapshot, replayGraceExpiresAt: Date): {
   readonly missionConnectionEpoch: number;
   readonly closedAtServerSequence: number;
   readonly reason: MistralConversationSessionEndReason;
+  readonly replayGraceExpiresAt: string;
 } {
   const reason = snapshot.mission.drainReason;
   if (snapshot.mission.phase !== 'closed' || reason === null) {
@@ -271,10 +279,14 @@ function terminalMetadata(snapshot: MistralConversationDurableSnapshot): {
     missionConnectionEpoch: snapshot.missionConnectionEpoch,
     closedAtServerSequence: snapshot.nextServerSequence - 1,
     reason,
+    replayGraceExpiresAt: replayGraceExpiresAt.toISOString(),
   };
 }
 
-function closeDurably(snapshot: MistralConversationDurableSnapshot): {
+function closeDurably(
+  snapshot: MistralConversationDurableSnapshot,
+  defaultReason: MistralConversationSessionEndReason,
+): {
   readonly snapshot: MistralConversationDurableSnapshot;
   readonly events: readonly MistralConversationServerEvent[];
   readonly steps: readonly {
@@ -292,7 +304,7 @@ function closeDurably(snapshot: MistralConversationDurableSnapshot): {
     const drained = reduceMistralConversationDurableSnapshot(working, {
       type: 'drain',
       commandId: 'drain:terminal-replay',
-      reason: 'fatal_error',
+      reason: defaultReason,
       cancellationId: '50000000-0000-4000-8000-000000000002',
     });
     working = drained.snapshot;
@@ -336,6 +348,10 @@ export class PrismaMistralConversationDurableAuthority implements MistralConvers
     input: Parameters<MistralConversationDurableAuthority['open']>[0],
   ): Promise<MistralConversationDurableOpenResult> {
     if (!validOpenInput(input) || input.signal.aborted) return { status: 'unavailable' };
+    // Cette autorité doit posséder la transaction racine : sans savepoint Prisma, réutiliser une
+    // transaction ambiante permettrait à son appelant d'attraper l'erreur puis de committer un
+    // outbox/side-effect écrit avant un CAS temporel perdant.
+    if (this.prisma.inTransaction()) return { status: 'unavailable' };
     try {
       return await this.prisma.withTenant(input.grant.companyId, async (tx) => {
         await this.lockMissionKey(tx, input.grant.companyId, input.grant.sessionHandle);
@@ -376,11 +392,42 @@ export class PrismaMistralConversationDurableAuthority implements MistralConvers
           };
         }
         if (!sameGrant(row, input.grant)) return { status: 'conflict' as const };
-        if (hardExpiresAt.getTime() <= databaseNow.getTime()) return { status: 'expired' as const };
         if (row.replayGraceExpiresAt.getTime() <= databaseNow.getTime()) {
-          return { status: 'history_unavailable' as const };
+          return { status: 'expired' as const };
         }
-        const current = snapshotFromRow(row);
+        const hardExpired = hardExpiresAt.getTime() <= databaseNow.getTime();
+        let current = snapshotFromRow(row);
+
+        // À H, la disposition durable gagne avant toute validation du curseur client. Un curseur
+        // faux ou un budget de replay trop petit peut refuser la restitution, jamais empêcher la
+        // mission d'être drainée/fermée exactement une fois.
+        if (hardExpired && current.mission.phase !== 'closed') {
+          const terminalized = closeDurably(current, 'expired');
+          let persistenceRow = row;
+          for (const step of terminalized.steps) {
+            await this.appendEvents(tx, {
+              companyId: row.companyId,
+              missionId: row.id,
+              sessionHandle: row.sessionHandle,
+              retentionExpiresAt: row.retentionExpiresAt,
+              events: step.events,
+            });
+            const persisted = await this.updateMission(
+              tx,
+              persistenceRow,
+              step.snapshot,
+              row.ownerTokenHash.trim(),
+              true,
+            );
+            if (!persisted) throw new TemporalBoundaryAbort();
+            persistenceRow = {
+              ...persistenceRow,
+              version: BigInt(step.snapshot.version),
+            };
+          }
+          current = terminalized.snapshot;
+        }
+
         if (input.resumeNextServerSequence > current.nextServerSequence) {
           return { status: 'invalid_cursor' as const };
         }
@@ -404,10 +451,12 @@ export class PrismaMistralConversationDurableAuthority implements MistralConvers
             events: prefix.events,
             replayFromServerSequence: replayFrom,
             recovery: null,
-            terminal: terminalMetadata(current),
+            terminal: terminalMetadata(current, row.replayGraceExpiresAt),
           };
         }
-        if (current.mission.phase === 'recovering_route') return { status: 'unavailable' as const };
+        if (current.mission.phase === 'recovering_route') {
+          return { status: 'unavailable' as const };
+        }
 
         const previousEpoch = current.missionConnectionEpoch;
         const previousCancellationGeneration = current.mission.cancellationGeneration;
@@ -423,7 +472,7 @@ export class PrismaMistralConversationDurableAuthority implements MistralConvers
         let recovered = false;
 
         if (current.mission.phase === 'draining') {
-          next = closeDurably(current);
+          next = closeDurably(current, 'fatal_error');
         } else {
           let candidate: ReturnType<typeof recoverMistralConversationDurableSession> | null = null;
           if (current.missionConnectionEpoch < INT32_MAX) {
@@ -454,7 +503,7 @@ export class PrismaMistralConversationDurableAuthority implements MistralConvers
             || backlog.payloadBytes + candidateBytes > input.maxReplayBytes
               - 3 * MISTRAL_CONVERSATION_MAX_SERVER_EVENT_BYTES
           ) {
-            next = closeDurably(current);
+            next = closeDurably(current, 'fatal_error');
           } else {
             next = { ...candidate, steps: [candidate] };
             recoveryCancellation = candidate.recoveryCancellation;
@@ -478,8 +527,14 @@ export class PrismaMistralConversationDurableAuthority implements MistralConvers
             retentionExpiresAt: row.retentionExpiresAt,
             events: step.events,
           });
-          const persisted = await this.updateMission(tx, persistenceRow, step.snapshot, nextOwnerHash);
-          if (!persisted) return { status: 'unavailable' as const };
+          const persisted = await this.updateMission(
+            tx,
+            persistenceRow,
+            step.snapshot,
+            nextOwnerHash,
+            false,
+          );
+          if (!persisted) throw new TemporalBoundaryAbort();
           persistenceRow = {
             ...persistenceRow,
             ownerTokenHash: nextOwnerHash,
@@ -495,7 +550,7 @@ export class PrismaMistralConversationDurableAuthority implements MistralConvers
             events: totalEvents,
             replayFromServerSequence: replayFrom,
             recovery: null,
-            terminal: terminalMetadata(next.snapshot),
+            terminal: terminalMetadata(next.snapshot, row.replayGraceExpiresAt),
           };
         }
         return {
@@ -512,8 +567,15 @@ export class PrismaMistralConversationDurableAuthority implements MistralConvers
           terminal: null,
         };
       });
-    } catch {
-      return { status: 'unavailable' };
+    } catch (error) {
+      if (error instanceof TemporalBoundaryAbort) return { status: 'expired' };
+      return {
+        status: await this.classifyTemporalFailure(
+          input.grant.companyId,
+          input.grant.sessionHandle,
+          input.grant.hardExpiresAt,
+        ),
+      };
     }
   }
 
@@ -521,12 +583,11 @@ export class PrismaMistralConversationDurableAuthority implements MistralConvers
     input: Parameters<MistralConversationDurableAuthority['transition']>[0],
   ): Promise<MistralConversationDurableTransitionResult> {
     if (!validTransitionInput(input) || input.signal.aborted) return { status: 'unavailable' };
+    if (this.prisma.inTransaction()) return { status: 'unavailable' };
     try {
       return await this.prisma.withTenant(input.companyId, async (tx) => {
         const row = await this.lockMission(tx, input.companyId, input.sessionHandle);
         if (!row) return { status: 'not_found' as const };
-        const databaseNow = await this.databaseNow(tx);
-        if (row.hardExpiresAt.getTime() <= databaseNow.getTime()) return { status: 'expired' as const };
         const current = snapshotFromRow(row);
         const ownerHash = tokenHash(input.ownerLeaseToken);
         if (
@@ -534,6 +595,28 @@ export class PrismaMistralConversationDurableAuthority implements MistralConvers
           || row.ownerTokenHash.trim() !== ownerHash
           || row.missionConnectionEpoch !== input.missionConnectionEpoch
         ) return { status: 'not_owner' as const };
+
+        const databaseNow = await this.databaseNow(tx);
+        if (row.replayGraceExpiresAt.getTime() <= databaseNow.getTime()) {
+          return { status: 'expired' as const };
+        }
+        const hardExpired = row.hardExpiresAt.getTime() <= databaseNow.getTime();
+        const terminalGraceCommand = input.command.type === 'ack_events'
+          || input.command.type === 'close'
+          || (input.command.type === 'drain' && input.command.reason === 'expired');
+        if (hardExpired && !terminalGraceCommand) return { status: 'expired' as const };
+
+        // Pendant la grâce terminale, l'idempotence d'un ACK est portée par le curseur monotone
+        // lui-même. Ne pas la déléguer au ledger : celui-ci ne possède pas le delta précédent et
+        // ne pourrait pas prouver qu'une ligne ACK correspond bien à la version qui l'a avancé.
+        if (
+          hardExpired
+          && input.command.type === 'ack_events'
+          && input.command.control.missionConnectionEpoch === current.missionConnectionEpoch
+          && input.command.control.nextServerSequence <= current.acknowledgedServerSequence
+        ) {
+          return { status: 'replayed' as const, snapshot: current, events: [] };
+        }
 
         const ledger = await this.readCommand(tx, row, input.command.commandId);
         if (ledger) {
@@ -622,13 +705,29 @@ export class PrismaMistralConversationDurableAuthority implements MistralConvers
           retentionExpiresAt: row.retentionExpiresAt,
           events: reduced.events,
         });
-        if (!await this.updateMission(tx, row, reduced.snapshot, row.ownerTokenHash.trim())) {
-          throw new Error('Durable mission CAS failed.');
+        if (!await this.updateMission(
+          tx,
+          row,
+          reduced.snapshot,
+          row.ownerTokenHash.trim(),
+          hardExpired,
+        )) {
+          throw new TemporalBoundaryAbort();
         }
-        await this.insertCommand(tx, row, current, reduced.snapshot, input.command, reduced.events.length);
+        if (!(hardExpired && input.command.type === 'ack_events')) {
+          await this.insertCommand(
+            tx,
+            row,
+            current,
+            reduced.snapshot,
+            input.command,
+            reduced.events.length,
+          );
+        }
         return { status: 'applied' as const, ...reduced };
       });
     } catch (error) {
+      if (error instanceof TemporalBoundaryAbort) return { status: 'expired' };
       if (error instanceof CompletionAbort) {
         if (error.result.status === 'context_stale') {
           return { status: 'rejected', reason: 'context_stale' };
@@ -637,7 +736,53 @@ export class PrismaMistralConversationDurableAuthority implements MistralConvers
           return { status: 'rejected', reason: 'invalid_state' };
         }
       }
-      return { status: 'unavailable' };
+      return {
+        status: await this.classifyTemporalFailure(
+          input.companyId,
+          input.sessionHandle,
+          null,
+        ),
+      };
+    }
+  }
+
+  /**
+   * Reclasse une erreur SQL qui a franchi H après le premier clock check. La lecture se fait dans
+   * une nouvelle transaction racine, donc après rollback certain des événements/side-effects de
+   * la tentative. Avant H — ou si la preuve durable est indisponible — l'échec reste opaque.
+   */
+  private async classifyTemporalFailure(
+    companyId: string,
+    sessionHandle: string,
+    fallbackHardExpiresAt: string | null,
+  ): Promise<'expired' | 'unavailable'> {
+    if (this.prisma.inTransaction()) return 'unavailable';
+    try {
+      return await this.prisma.withTenant(companyId, async (tx) => {
+        const [evidence] = await tx.$queryRaw<Array<{
+          readonly databaseNow: Date;
+          readonly hardExpiresAt: Date | null;
+        }>>`
+          SELECT clock_timestamp() AS "databaseNow",
+                 (
+                   SELECT mission."hardExpiresAt"
+                     FROM realtime_mistral_conversation_missions AS mission
+                    WHERE mission."companyId" = ${companyId}
+                      AND mission."sessionHandle" = ${sessionHandle}
+                    LIMIT 1
+                 ) AS "hardExpiresAt"
+        `;
+        if (!(evidence?.databaseNow instanceof Date)) return 'unavailable' as const;
+        const fallback = fallbackHardExpiresAt === null
+          ? null
+          : canonicalDate(fallbackHardExpiresAt);
+        const hardExpiresAt = evidence.hardExpiresAt ?? fallback;
+        return hardExpiresAt && hardExpiresAt.getTime() <= evidence.databaseNow.getTime()
+          ? 'expired' as const
+          : 'unavailable' as const;
+      });
+    } catch {
+      return 'unavailable';
     }
   }
 
@@ -727,6 +872,7 @@ export class PrismaMistralConversationDurableAuthority implements MistralConvers
     row: MissionRow,
     snapshot: MistralConversationDurableSnapshot,
     ownerTokenHash: string,
+    allowDuringReplayGrace: boolean,
   ): Promise<boolean> {
     const missionJson = JSON.stringify(snapshot.mission);
     const turnJson = snapshot.turn === null ? null : JSON.stringify(snapshot.turn);
@@ -768,7 +914,10 @@ export class PrismaMistralConversationDurableAuthority implements MistralConvers
          AND version = ${row.version}
          AND "missionConnectionEpoch" = ${row.missionConnectionEpoch}
          AND "ownerTokenHash" = ${row.ownerTokenHash.trim()}
-         AND "hardExpiresAt" > clock_timestamp()
+         AND (
+           (${allowDuringReplayGrace} AND "replayGraceExpiresAt" > clock_timestamp())
+           OR (NOT ${allowDuringReplayGrace} AND "hardExpiresAt" > clock_timestamp())
+         )
     `;
     return updated === 1;
   }
