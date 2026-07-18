@@ -62,6 +62,39 @@ export const semantic = {
 } as const;
 
 // ----------------------------------------------------------------------------
+// RÔLES DE COULEUR — contenu lisible vs états non éditoriaux
+// ----------------------------------------------------------------------------
+/**
+ * Couleurs sémantiques destinées au CONTENU et à la navigation.
+ *
+ * Les rôles `text` et `navigation` sont certifiés WCAG AA pour du petit texte
+ * sur leurs surfaces déclarées (voir index.test.ts). `nonContent` conserve la
+ * hiérarchie visuelle historique des états désactivés et des ornements : ces
+ * valeurs ne doivent jamais porter seules une information ni du texte lisible.
+ *
+ * Plusieurs rôles peuvent volontairement référencer une même primitive. Le
+ * rôle documente le contrat d'usage et permet de les faire évoluer séparément
+ * sans assombrir globalement les gris décoratifs.
+ */
+const COLOR_ROLE_VALUES = {
+  'text.primary': neutrals.ink800,
+  'text.secondary': neutrals.slate500,
+  'text.muted': neutrals.slate500,
+  'navigation.active': neutrals.ink900,
+  'navigation.assistantActive': semantic.ai,
+  'navigation.inactive': neutrals.slate500,
+  'nonContent.disabled': neutrals.slate400,
+  'nonContent.decorative': neutrals.slate300,
+} as const;
+
+export type ColorRole = keyof typeof COLOR_ROLE_VALUES;
+
+/** Résout un rôle sémantique vers sa primitive, sans exposer le gris comme contrat d'usage. */
+export function resolveColorRole<Role extends ColorRole>(role: Role): (typeof COLOR_ROLE_VALUES)[Role] {
+  return COLOR_ROLE_VALUES[role];
+}
+
+// ----------------------------------------------------------------------------
 // MARQUE — 4 thèmes (marine = défaut). Chaque thème = 5 valeurs.
 //   d1/d2/d3 = rampe de dégradé (sombre→clair) ; ink/ink2 = aplats (CTA, puces, FAB)
 // ----------------------------------------------------------------------------
@@ -191,7 +224,8 @@ export const controls = {
   ringTrack: '#E6EBF1', // piste du ScoreRing
   buttonSecondaryBorder: '#D9E0E8', // bord du bouton secondaire
   dangerBadgeBg: '#FBE7E4', // fond badge retard/impayé (redlines §7)
-  tabInactive: '#9AA7B4', // item de tab bar au repos (réf §14)
+  // Référence visuelle historique : ne pas employer pour du texte (utiliser navigation.inactive).
+  tabInactive: '#9AA7B4', // item de tab bar au repos dans le handoff §14
 } as const;
 
 // ----------------------------------------------------------------------------
@@ -366,6 +400,14 @@ export const toCssVars = (t: BrandTheme): Record<string, string> => {
     '--bob-color-ai': semantic.ai,
     '--bob-color-ai-bg': semantic.aiBg,
     '--bob-color-ai-ink': semantic.aiInk,
+    '--bob-color-text-primary': resolveColorRole('text.primary'),
+    '--bob-color-text-secondary': resolveColorRole('text.secondary'),
+    '--bob-color-text-muted': resolveColorRole('text.muted'),
+    '--bob-color-navigation-active': resolveColorRole('navigation.active'),
+    '--bob-color-navigation-assistant-active': resolveColorRole('navigation.assistantActive'),
+    '--bob-color-navigation-inactive': resolveColorRole('navigation.inactive'),
+    '--bob-color-disabled': resolveColorRole('nonContent.disabled'),
+    '--bob-color-decorative': resolveColorRole('nonContent.decorative'),
     '--bob-control-card-border': controls.cardBorder,
     '--bob-control-checkbox-border': controls.checkboxBorder,
     '--bob-control-sheet-handle': controls.sheetHandle,
