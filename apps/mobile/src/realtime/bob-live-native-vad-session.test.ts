@@ -6,11 +6,15 @@ import type {
 } from '../../modules/bob-live-audio';
 import { describe, expect, it, vi } from 'vitest';
 
+vi.mock('expo-crypto', () => ({
+  randomUUID: () => CAPTURE_ID,
+}));
 vi.mock('../../modules/bob-live-audio/src/BobLiveAudioModule', () => ({
   default: null,
 }));
 
 import {
+  BobLiveNativeVadSessionError,
   createBobLiveNativeVadSession,
   type BobLiveNativeVadSessionInput,
 } from './bob-live-native-vad-session';
@@ -111,6 +115,8 @@ function nativeHarness(
     readonly start?: () => Promise<void>;
     readonly acknowledge?: (sequence: number) => Promise<void>;
     readonly stop?: (attempt: number) => Promise<void>;
+    readonly cancel?: (attempt: number) => boolean;
+    readonly autoTerminalOnCancel?: boolean;
     readonly addListener?: (name: EventName) => void;
   } = {},
 ) {
@@ -134,9 +140,29 @@ function nativeHarness(
     stopAttempt += 1;
     await input.stop?.(stopAttempt);
   });
+  const emit = (name: EventName, value: unknown): void => {
+    for (const listener of [...(listeners.get(name) ?? [])]) listener(value as never);
+  };
+  let cancelAttempt = 0;
+  const cancel = vi.fn(() => {
+    log.push('cancel');
+    cancelAttempt += 1;
+    const accepted = input.cancel?.(cancelAttempt) ?? true;
+    if (accepted && input.autoTerminalOnCancel !== false) {
+      queueMicrotask(() => emit('onCaptureStopped', {
+        sessionId: SESSION_ID,
+        captureId: CAPTURE_ID,
+        reason: 'requested',
+      }));
+    }
+    return accepted;
+  });
   const module = {
     prepareAsync: prepare,
     startPreparedAsync: start,
+    prepareCaptureV2Async: prepare,
+    startPreparedCaptureV2Async: start,
+    cancelCaptureV2: cancel,
     acknowledgePcmAsync: acknowledge,
     stopAsync: stop,
     addListener(name: EventName, listener: (value: never) => void) {
@@ -159,9 +185,8 @@ function nativeHarness(
     start,
     acknowledge,
     stop,
-    emit(name: EventName, value: unknown): void {
-      for (const listener of [...(listeners.get(name) ?? [])]) listener(value as never);
-    },
+    cancel,
+    emit,
     listenerCount(name: EventName): number {
       return listeners.get(name)?.size ?? 0;
     },
@@ -173,11 +198,14 @@ async function startSession(
   overrides: Partial<
     Parameters<NonNullable<ReturnType<typeof createBobLiveNativeVadSession>>['start']>[0]
   > = {},
+  configOverrides: Partial<Parameters<typeof createBobLiveNativeVadSession>[0]> = {},
 ) {
   const port = createBobLiveNativeVadSession(
     {
       sessionId: SESSION_ID,
       maxCaptureDurationMs: MAX_DURATION_MS,
+      createCaptureId: () => CAPTURE_ID,
+      ...configOverrides,
     },
     harness.module,
   );
@@ -228,6 +256,32 @@ describe('Bob Live native VAD continuous session', () => {
         nativeHarness().module,
       ),
     ).toBeNull();
+    const legacyOnly = nativeHarness().module as unknown as Record<string, unknown>;
+    legacyOnly.prepareCaptureV2Async = undefined;
+    legacyOnly.startPreparedCaptureV2Async = undefined;
+    legacyOnly.cancelCaptureV2 = undefined;
+    expect(createBobLiveNativeVadSession({
+      sessionId: SESSION_ID,
+      maxCaptureDurationMs: MAX_DURATION_MS,
+    }, legacyOnly as unknown as BobLiveAudioNativeModule)).toBeNull();
+  });
+
+  it('normalise un générateur d’identité ou un appel prepare qui lève synchroniquement', async () => {
+    const identityHarness = nativeHarness();
+    await expect(startSession(identityHarness, {}, {
+      createCaptureId: () => { throw new Error('entropy unavailable'); },
+    })).rejects.toMatchObject({ code: 'native_vad_session_unavailable' });
+    expect(identityHarness.prepare).not.toHaveBeenCalled();
+    expect(identityHarness.cancel).not.toHaveBeenCalled();
+
+    const prepareHarness = nativeHarness();
+    prepareHarness.module.prepareCaptureV2Async = (() => {
+      throw new Error('bridge invocation failed');
+    }) as BobLiveAudioNativeModule['prepareCaptureV2Async'];
+    await expect(startSession(prepareHarness)).rejects.toMatchObject({
+      code: 'native_vad_session_unavailable',
+    });
+    expect(prepareHarness.cancel).toHaveBeenCalledWith(SESSION_ID, CAPTURE_ID);
   });
 
   it('installe les quatre listeners avant le micro et remet pré-roll, frames et fin', async () => {
@@ -242,11 +296,11 @@ describe('Bob Live native VAD continuous session', () => {
     });
 
     expect(harness.log.slice(0, 6)).toEqual([
+      'listen:onCaptureStopped',
       'prepare',
       'listen:onPcmChunk',
       'listen:onVadEvent',
       'listen:onCaptureError',
-      'listen:onCaptureStopped',
       'start',
     ]);
     emitPreRoll(harness);
@@ -277,7 +331,7 @@ describe('Bob Live native VAD continuous session', () => {
 
     await session.stop();
     await session.stop();
-    expect(harness.stop).toHaveBeenCalledTimes(1);
+    expect(harness.cancel).toHaveBeenCalledTimes(1);
     expect(harness.listenerCount('onVadEvent')).toBe(0);
   });
 
@@ -310,7 +364,7 @@ describe('Bob Live native VAD continuous session', () => {
     await startSession(rejected, { onError: rejectedError });
     rejected.emit('onPcmChunk', pcmEvent(0));
     await vi.waitFor(() => expect(rejectedError).toHaveBeenCalledTimes(1));
-    expect(rejected.stop).toHaveBeenCalledTimes(1);
+    expect(rejected.cancel).toHaveBeenCalledTimes(1);
 
     const firstAck = deferred<void>();
     const bounded = nativeHarness({
@@ -325,7 +379,7 @@ describe('Bob Live native VAD continuous session', () => {
     // Les événements ont rempli la borne dans le même tour JS : le fence coupe avant même le
     // premier ACK asynchrone, aucun backlog supplémentaire n'est créé.
     expect(bounded.acknowledge).not.toHaveBeenCalled();
-    expect(bounded.stop).toHaveBeenCalledTimes(1);
+    expect(bounded.cancel).toHaveBeenCalledTimes(1);
     firstAck.resolve();
   });
 
@@ -341,7 +395,7 @@ describe('Bob Live native VAD continuous session', () => {
     emitPreRoll(startHarness);
     startHarness.emit('onVadEvent', speechStarted());
     await vi.waitFor(() => expect(startError).toHaveBeenCalledTimes(1));
-    expect(startHarness.stop).toHaveBeenCalledTimes(1);
+    expect(startHarness.cancel).toHaveBeenCalledTimes(1);
     expect(startCancelled).toHaveBeenCalledWith({
       utteranceIndex: 1,
       lastCaptureSequence: 9,
@@ -361,7 +415,7 @@ describe('Bob Live native VAD continuous session', () => {
     frameHarness.emit('onPcmChunk', pcmEvent(10));
     await vi.waitFor(() => expect(frameError).toHaveBeenCalledTimes(1));
     expect(frameHarness.acknowledge.mock.calls.some((call) => call[2] === 10)).toBe(false);
-    expect(frameHarness.stop).toHaveBeenCalledTimes(1);
+    expect(frameHarness.cancel).toHaveBeenCalledTimes(1);
     expect(frameCancelled).toHaveBeenCalledWith({
       utteranceIndex: 1,
       lastCaptureSequence: 9,
@@ -394,7 +448,7 @@ describe('Bob Live native VAD continuous session', () => {
     pcmHarness.emit('onPcmChunk', pcmEvent(1));
     pcmHarness.emit('onPcmChunk', pcmEvent(2));
     await vi.waitFor(() => expect(pcmError).toHaveBeenCalledTimes(1));
-    expect(pcmHarness.stop).toHaveBeenCalledTimes(1);
+    expect(pcmHarness.cancel).toHaveBeenCalledTimes(1);
 
     const vadHarness = nativeHarness();
     const vadError = vi.fn();
@@ -410,7 +464,7 @@ describe('Bob Live native VAD continuous session', () => {
       }),
     );
     await vi.waitFor(() => expect(vadError).toHaveBeenCalledTimes(1));
-    expect(vadHarness.stop).toHaveBeenCalledTimes(1);
+    expect(vadHarness.cancel).toHaveBeenCalledTimes(1);
 
     const profileHarness = nativeHarness();
     const profileError = vi.fn();
@@ -428,7 +482,7 @@ describe('Bob Live native VAD continuous session', () => {
     );
     await vi.waitFor(() => expect(profileError).toHaveBeenCalledTimes(1));
     expect(profileSpeechStarted).not.toHaveBeenCalled();
-    expect(profileHarness.stop).toHaveBeenCalledTimes(1);
+    expect(profileHarness.cancel).toHaveBeenCalledTimes(1);
   });
 
   it('annule explicitement le tour si le transport refuse speech_ended', async () => {
@@ -463,13 +517,13 @@ describe('Bob Live native VAD continuous session', () => {
       onError,
     });
     abort.abort();
-    await vi.waitFor(() => expect(harness.stop).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(harness.cancel).toHaveBeenCalledTimes(1));
     emitPreRoll(harness);
     harness.emit('onVadEvent', speechStarted());
     expect(onSpeechStarted).not.toHaveBeenCalled();
     expect(onError).not.toHaveBeenCalled();
     await session.stop();
-    expect(harness.stop).toHaveBeenCalledTimes(1);
+    expect(harness.cancel).toHaveBeenCalledTimes(1);
   });
 
   it('traite background de façon déterministe comme un arrêt normal avant ou après abort', async () => {
@@ -485,7 +539,7 @@ describe('Bob Live native VAD continuous session', () => {
       captureId: CAPTURE_ID,
       reason: 'background',
     });
-    await vi.waitFor(() => expect(nativeFirst.stop).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(nativeFirst.listenerCount('onPcmChunk')).toBe(0));
     nativeFirstAbort.abort();
     expect(nativeFirstError).not.toHaveBeenCalled();
 
@@ -497,13 +551,13 @@ describe('Bob Live native VAD continuous session', () => {
       onError: abortFirstError,
     });
     abortFirstController.abort();
-    await vi.waitFor(() => expect(abortFirst.stop).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(abortFirst.cancel).toHaveBeenCalledTimes(1));
     abortFirst.emit('onCaptureStopped', {
       sessionId: SESSION_ID,
       captureId: CAPTURE_ID,
       reason: 'background',
     });
-    expect(abortFirst.stop).toHaveBeenCalledTimes(1);
+    expect(abortFirst.cancel).toHaveBeenCalledTimes(1);
     expect(abortFirstError).not.toHaveBeenCalled();
   });
 
@@ -516,14 +570,14 @@ describe('Bob Live native VAD continuous session', () => {
       captureId: 'stale-capture',
       code: 'capture_runtime_failed',
     });
-    expect(harness.stop).not.toHaveBeenCalled();
+    expect(harness.cancel).not.toHaveBeenCalled();
     harness.emit('onCaptureStopped', {
       sessionId: SESSION_ID,
       captureId: CAPTURE_ID,
       reason: 'watchdog_timeout',
     });
     await vi.waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
-    expect(harness.stop).toHaveBeenCalledTimes(1);
+    expect(harness.cancel).not.toHaveBeenCalled();
   });
 
   it('libère toute génération préparée si le contrat ou le démarrage échoue', async () => {
@@ -532,7 +586,7 @@ describe('Bob Live native VAD continuous session', () => {
     });
     await expect(startSession(mismatch)).rejects.toThrow('native_vad_session_unavailable');
     expect(mismatch.start).not.toHaveBeenCalled();
-    expect(mismatch.stop).toHaveBeenCalledWith(SESSION_ID, CAPTURE_ID);
+    expect(mismatch.cancel).toHaveBeenCalledWith(SESSION_ID, CAPTURE_ID);
 
     const startFailure = nativeHarness({
       start: async () => {
@@ -540,73 +594,75 @@ describe('Bob Live native VAD continuous session', () => {
       },
     });
     await expect(startSession(startFailure)).rejects.toThrow('native_vad_session_unavailable');
-    expect(startFailure.stop).toHaveBeenCalledTimes(1);
+    expect(startFailure.cancel).toHaveBeenCalledTimes(1);
     expect(startFailure.listenerCount('onPcmChunk')).toBe(0);
   });
 
-  it('attend et ferme autoritairement une préparation ou un démarrage tardif après abort', async () => {
-    const latePrepare = deferred<BobLiveAudioCapabilities>();
-    const prepareHarness = nativeHarness({ prepare: () => latePrepare.promise });
+  it('annule sans attendre une préparation ou un démarrage natif qui ne résout jamais', async () => {
+    const prepareHarness = nativeHarness({
+      prepare: async () => new Promise<BobLiveAudioCapabilities>(() => undefined),
+    });
     const prepareAbort = new AbortController();
     const preparing = startSession(prepareHarness, { signal: prepareAbort.signal });
-    let prepareSettled = false;
-    void preparing.then(
-      () => { prepareSettled = true; },
-      () => { prepareSettled = true; },
-    );
     prepareAbort.abort();
-    await Promise.resolve();
-    expect(prepareSettled).toBe(false);
-    latePrepare.resolve(capability());
     await expect(preparing).rejects.toThrow('native_vad_session_aborted');
-    expect(prepareHarness.stop).toHaveBeenCalledWith(SESSION_ID, CAPTURE_ID);
+    expect(prepareHarness.cancel).toHaveBeenCalledWith(SESSION_ID, CAPTURE_ID);
 
-    const lateStart = deferred<void>();
-    const startHarness = nativeHarness({ start: () => lateStart.promise });
+    const startHarness = nativeHarness({
+      start: async () => new Promise<void>(() => undefined),
+    });
     const startAbort = new AbortController();
     const starting = startSession(startHarness, { signal: startAbort.signal });
-    let startSettled = false;
-    void starting.then(
-      () => { startSettled = true; },
-      () => { startSettled = true; },
-    );
     await vi.waitFor(() => expect(startHarness.start).toHaveBeenCalledTimes(1));
     startAbort.abort();
-    await vi.waitFor(() => expect(startHarness.stop).toHaveBeenCalledTimes(1));
-    expect(startSettled).toBe(false);
-    lateStart.resolve();
     await expect(starting).rejects.toThrow('native_vad_session_aborted');
-    expect(startHarness.stop).toHaveBeenCalledTimes(2);
+    expect(startHarness.cancel).toHaveBeenCalledTimes(1);
   });
 
-  it('ne masque jamais un échec de fermeture après prepare/start tardif', async () => {
-    const latePrepare = deferred<BobLiveAudioCapabilities>();
+  it('quarantaine le module et conserve une preuve pending sans terminalité native', async () => {
     const prepareHarness = nativeHarness({
-      prepare: () => latePrepare.promise,
-      stop: async () => { throw new Error('bridge unavailable'); },
+      prepare: async () => new Promise<BobLiveAudioCapabilities>(() => undefined),
+      autoTerminalOnCancel: false,
     });
     const prepareAbort = new AbortController();
-    const preparing = startSession(prepareHarness, { signal: prepareAbort.signal });
-    prepareAbort.abort();
-    latePrepare.resolve(capability());
-    await expect(preparing).rejects.toThrow('native_vad_session_stop_failed');
-    expect(prepareHarness.stop).toHaveBeenCalledTimes(2);
-
-    const lateStart = deferred<void>();
-    const startHarness = nativeHarness({
-      start: () => lateStart.promise,
-      stop: async (attempt) => {
-        if (attempt >= 2) throw new Error('late bridge unavailable');
-      },
+    const port = createBobLiveNativeVadSession({
+      sessionId: SESSION_ID,
+      maxCaptureDurationMs: MAX_DURATION_MS,
+      createCaptureId: () => CAPTURE_ID,
+      terminalGraceMs: 5,
+    }, prepareHarness.module);
+    if (!port) throw new Error('port missing');
+    const preparing = port.start({
+      signal: prepareAbort.signal,
+      onSpeechStarted: () => true,
+      onSpeechFrame: () => true,
+      onSpeechEnded: () => true,
+      onSpeechCancelled: () => undefined,
+      onError: () => undefined,
     });
-    const startAbort = new AbortController();
-    const starting = startSession(startHarness, { signal: startAbort.signal });
-    await vi.waitFor(() => expect(startHarness.start).toHaveBeenCalledTimes(1));
-    startAbort.abort();
-    await vi.waitFor(() => expect(startHarness.stop).toHaveBeenCalledTimes(1));
-    lateStart.resolve();
-    await expect(starting).rejects.toThrow('native_vad_session_stop_failed');
-    expect(startHarness.stop).toHaveBeenCalledTimes(3);
+    prepareAbort.abort();
+    const error = await preparing.catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ code: 'native_vad_session_quarantined' });
+    expect((error as BobLiveNativeVadSessionError).terminalProof).toBeInstanceOf(Promise);
+    expect(port.isQuarantined()).toBe(true);
+    prepareHarness.emit('onCaptureStopped', {
+      sessionId: SESSION_ID,
+      captureId: CAPTURE_ID,
+      reason: 'requested',
+    });
+    await expect((error as BobLiveNativeVadSessionError).terminalProof).resolves.toBeUndefined();
+    // Une preuve tardive autorise le propriétaire du lease à finir son nettoyage, mais le
+    // process reste volontairement quarantainé jusqu'au restart : aucune résurrection audio.
+    expect(port.isQuarantined()).toBe(true);
+    await expect(port.start({
+      signal: new AbortController().signal,
+      onSpeechStarted: () => true,
+      onSpeechFrame: () => true,
+      onSpeechEnded: () => true,
+      onSpeechCancelled: () => undefined,
+      onError: () => undefined,
+    })).rejects.toThrow('native_vad_session_quarantined');
+    expect(prepareHarness.prepare).toHaveBeenCalledTimes(1);
   });
 
   it('nettoie les listeners déjà installés si une installation partielle échoue', async () => {
@@ -617,56 +673,31 @@ describe('Bob Live native VAD continuous session', () => {
     });
     await expect(startSession(harness)).rejects.toThrow('native_vad_session_unavailable');
     expect(harness.start).not.toHaveBeenCalled();
-    expect(harness.stop).toHaveBeenCalledTimes(1);
+    expect(harness.cancel).toHaveBeenCalledTimes(1);
     expect(harness.listenerCount('onPcmChunk')).toBe(0);
     expect(harness.listenerCount('onVadEvent')).toBe(0);
   });
 
-  it('fence avant onError, retente un stop rejeté et n’atteste jamais une fermeture impossible', async () => {
-    const transient = nativeHarness({
-      stop: async (attempt) => {
-        if (attempt === 1) throw new Error('bridge transient');
-      },
+  it('refuse toute fausse preuve terminale et quarantaine un stop non confirmé', async () => {
+    const harness = nativeHarness({ autoTerminalOnCancel: false });
+    const onError = vi.fn();
+    const session = await startSession(harness, { onError }, { terminalGraceMs: 5 });
+    const stopping = session.stop();
+    harness.emit('onCaptureStopped', {
+      sessionId: SESSION_ID,
+      captureId: 'stale-capture',
+      reason: 'requested',
     });
-    const transientSession = await startSession(transient);
-    await transientSession.stop();
-    expect(transient.stop).toHaveBeenCalledTimes(2);
-
-    const rejected = nativeHarness({
-      stop: async () => {
-        throw new Error('bridge unavailable');
-      },
+    harness.emit('onCaptureStopped', {
+      sessionId: SESSION_ID,
+      captureId: CAPTURE_ID,
+      reason: 'requested',
+      extra: true,
     });
-    const rejectedError = vi.fn(() => {
-      expect(rejected.listenerCount('onPcmChunk')).toBe(0);
-      expect(rejected.listenerCount('onVadEvent')).toBe(0);
-      expect(rejected.stop).toHaveBeenCalledTimes(2);
-    });
-    const rejectedSession = await startSession(rejected, { onError: rejectedError });
-    await expect(rejectedSession.stop()).rejects.toThrow('native_vad_session_stop_failed');
-    expect(rejectedError).toHaveBeenCalledTimes(1);
-    await expect(rejectedSession.stop()).rejects.toThrow('native_vad_session_stop_failed');
-    expect(rejected.stop).toHaveBeenCalledTimes(2);
-    expect(rejectedError).toHaveBeenCalledTimes(1);
-  });
-
-  it('borne aussi un stop natif qui ne résout jamais', async () => {
-    vi.useFakeTimers();
-    try {
-      const harness = nativeHarness({
-        stop: async () => new Promise<void>(() => undefined),
-      });
-      const onError = vi.fn();
-      const session = await startSession(harness, { onError });
-      const stopping = session.stop();
-      const rejectedStop = expect(stopping).rejects.toThrow('native_vad_session_stop_failed');
-      await vi.advanceTimersByTimeAsync(2_001);
-      expect(harness.stop).toHaveBeenCalledTimes(2);
-      await vi.advanceTimersByTimeAsync(2_001);
-      await rejectedStop;
-      expect(onError).toHaveBeenCalledTimes(1);
-    } finally {
-      vi.useRealTimers();
-    }
+    await expect(stopping).rejects.toThrow('native_vad_session_quarantined');
+    expect(harness.cancel).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledTimes(1);
+    await expect(session.stop()).rejects.toThrow('native_vad_session_quarantined');
+    expect(harness.cancel).toHaveBeenCalledTimes(1);
   });
 });

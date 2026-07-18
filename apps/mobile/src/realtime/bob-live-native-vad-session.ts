@@ -1,5 +1,8 @@
+import { randomUUID } from 'expo-crypto';
+
 import BobLiveAudioModule, {
   assertBobLiveAudioCapabilities,
+  decodeBobLiveAudioStoppedEvent,
   type BobLiveAudioCapabilities,
   type BobLiveAudioErrorEvent,
   type BobLiveAudioNativeModule,
@@ -17,17 +20,24 @@ import {
 const BOUNDED_ID = /^[A-Za-z0-9-]{1,64}$/u;
 const MIN_CAPTURE_DURATION_MS = 1_000;
 const MAX_CAPTURE_DURATION_MS = 900_000;
-const NATIVE_STOP_TIMEOUT_MS = 2_000;
+const NATIVE_PREPARE_TIMEOUT_MS = 8_000;
+const NATIVE_START_TIMEOUT_MS = 4_000;
+const NATIVE_TERMINAL_GRACE_MS = 2_000;
 
 type NativeSubscription = { remove(): void };
 
 export type BobLiveNativeVadSessionErrorCode =
   | 'native_vad_session_unavailable'
   | 'native_vad_session_aborted'
-  | 'native_vad_session_stop_failed';
+  | 'native_vad_session_stop_failed'
+  | 'native_vad_session_quarantined';
 
 export class BobLiveNativeVadSessionError extends Error {
-  constructor(readonly code: BobLiveNativeVadSessionErrorCode) {
+  constructor(
+    readonly code: BobLiveNativeVadSessionErrorCode,
+    /** Résout seulement après la preuve native exacte; peut rester pending jusqu'au restart. */
+    readonly terminalProof: Promise<void> | null = null,
+  ) {
     super(code);
     this.name = 'BobLiveNativeVadSessionError';
   }
@@ -74,6 +84,34 @@ export interface BobLiveNativeVadSession {
 
 export interface BobLiveNativeVadSessionPort {
   start(input: BobLiveNativeVadSessionInput): Promise<BobLiveNativeVadSession>;
+  /** Une quarantaine interdit toute nouvelle autorité audio sur ce port. */
+  isQuarantined(): boolean;
+}
+
+interface BobLiveAudioNativeModuleV2 extends BobLiveAudioNativeModule {
+  prepareCaptureV2Async(
+    sessionId: string,
+    captureId: string,
+    maxCaptureDurationMs?: number,
+  ): Promise<BobLiveAudioCapabilities>;
+  startPreparedCaptureV2Async(sessionId: string, captureId: string): Promise<void>;
+  cancelCaptureV2(sessionId: string, captureId: string): boolean;
+}
+
+function cancelableV2Module(
+  nativeModule: BobLiveAudioNativeModule | null,
+): BobLiveAudioNativeModuleV2 | null {
+  if (nativeModule === null) return null;
+  try {
+    const candidate = nativeModule as Partial<BobLiveAudioNativeModuleV2>;
+    return typeof candidate.prepareCaptureV2Async === 'function'
+      && typeof candidate.startPreparedCaptureV2Async === 'function'
+      && typeof candidate.cancelCaptureV2 === 'function'
+      ? nativeModule as BobLiveAudioNativeModuleV2
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function preparedCaptureId(value: unknown): string | null {
@@ -116,18 +154,36 @@ function aborted(): BobLiveNativeVadSessionError {
   return new BobLiveNativeVadSessionError('native_vad_session_aborted');
 }
 
-function raceAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
-  if (signal.aborted) return Promise.reject(aborted());
+class NativeStartupInterrupted extends Error {
+  constructor(readonly reason: 'aborted' | 'timeout') {
+    super(reason);
+    this.name = 'NativeStartupInterrupted';
+  }
+}
+
+function raceStartup<T>(
+  operation: Promise<T>,
+  signal: AbortSignal,
+  timeoutMs: number,
+): Promise<T> {
+  if (signal.aborted) return Promise.reject(new NativeStartupInterrupted('aborted'));
   return new Promise<T>((resolve, reject) => {
     let settled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const finish = (callback: () => void): void => {
       if (settled) return;
       settled = true;
       signal.removeEventListener('abort', onAbort);
+      if (timer) clearTimeout(timer);
+      timer = null;
       callback();
     };
-    const onAbort = (): void => finish(() => reject(aborted()));
+    const onAbort = (): void => finish(() => reject(new NativeStartupInterrupted('aborted')));
     signal.addEventListener('abort', onAbort, { once: true });
+    timer = setTimeout(
+      () => finish(() => reject(new NativeStartupInterrupted('timeout'))),
+      timeoutMs,
+    );
     if (signal.aborted) {
       onAbort();
       return;
@@ -139,15 +195,18 @@ function raceAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
   });
 }
 
-async function stopAttempt(operation: Promise<void>): Promise<void> {
+async function proofWithin(
+  proof: Promise<void>,
+  observed: () => boolean,
+  timeoutMs: number,
+): Promise<boolean> {
+  if (observed()) return true;
   let timer: ReturnType<typeof setTimeout> | null = null;
   try {
-    await Promise.race([
-      operation,
-      new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(
-          new BobLiveNativeVadSessionError('native_vad_session_stop_failed'),
-        ), NATIVE_STOP_TIMEOUT_MS);
+    return await Promise.race([
+      proof.then(() => true),
+      new Promise<false>((resolve) => {
+        timer = setTimeout(() => resolve(false), timeoutMs);
       }),
     ]);
   } finally {
@@ -155,21 +214,7 @@ async function stopAttempt(operation: Promise<void>): Promise<void> {
   }
 }
 
-async function stopPreparedCaptureAuthoritatively(
-  nativeModule: BobLiveAudioNativeModule,
-  sessionId: string,
-  captureId: string,
-): Promise<void> {
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      await stopAttempt(nativeModule.stopAsync(sessionId, captureId));
-      return;
-    } catch {
-      // stopAsync est idempotent : un unique retry absorbe une rupture transitoire du bridge.
-    }
-  }
-  throw new BobLiveNativeVadSessionError('native_vad_session_stop_failed');
-}
+const quarantinedNativeModules = new WeakMap<object, Promise<void>>();
 
 function normalNativeStop(
   event: BobLiveAudioStoppedEvent,
@@ -195,68 +240,136 @@ export function createBobLiveNativeVadSession(
   config: {
     readonly sessionId: string;
     readonly maxCaptureDurationMs: number;
+    /** Injection de test uniquement; chaque appel doit retourner un nonce jamais réutilisé. */
+    readonly createCaptureId?: () => string;
+    readonly prepareTimeoutMs?: number;
+    readonly startTimeoutMs?: number;
+    readonly terminalGraceMs?: number;
   },
   nativeModule: BobLiveAudioNativeModule | null = BobLiveAudioModule,
 ): BobLiveNativeVadSessionPort | null {
+  const v2NativeModule = cancelableV2Module(nativeModule);
+  const prepareTimeoutMs = config.prepareTimeoutMs ?? NATIVE_PREPARE_TIMEOUT_MS;
+  const startTimeoutMs = config.startTimeoutMs ?? NATIVE_START_TIMEOUT_MS;
+  const terminalGraceMs = config.terminalGraceMs ?? NATIVE_TERMINAL_GRACE_MS;
   if (
-    nativeModule === null
+    v2NativeModule === null
     || !BOUNDED_ID.test(config.sessionId)
     || !Number.isSafeInteger(config.maxCaptureDurationMs)
     || config.maxCaptureDurationMs < MIN_CAPTURE_DURATION_MS
     || config.maxCaptureDurationMs > MAX_CAPTURE_DURATION_MS
+    || !Number.isSafeInteger(prepareTimeoutMs)
+    || prepareTimeoutMs < 1
+    || prepareTimeoutMs > 30_000
+    || !Number.isSafeInteger(startTimeoutMs)
+    || startTimeoutMs < 1
+    || startTimeoutMs > 30_000
+    || !Number.isSafeInteger(terminalGraceMs)
+    || terminalGraceMs < 1
+    || terminalGraceMs > 10_000
   ) return null;
 
+  const quarantineError = (proof: Promise<void>): BobLiveNativeVadSessionError => {
+    const existing = quarantinedNativeModules.get(v2NativeModule);
+    if (!existing) quarantinedNativeModules.set(v2NativeModule, proof);
+    return new BobLiveNativeVadSessionError(
+      'native_vad_session_quarantined',
+      existing ?? proof,
+    );
+  };
+
   return {
+    isQuarantined(): boolean {
+      return quarantinedNativeModules.has(v2NativeModule);
+    },
+
     async start(input): Promise<BobLiveNativeVadSession> {
       if (input.signal.aborted) throw aborted();
+      const quarantined = quarantinedNativeModules.get(v2NativeModule);
+      if (quarantined) throw quarantineError(quarantined);
+      let captureId: string;
+      try {
+        captureId = (config.createCaptureId ?? randomUUID)();
+      } catch {
+        throw new BobLiveNativeVadSessionError('native_vad_session_unavailable');
+      }
+      if (!BOUNDED_ID.test(captureId)) {
+        throw new BobLiveNativeVadSessionError('native_vad_session_unavailable');
+      }
+
+      let terminalObserved = false;
+      let resolveTerminal: () => void = () => undefined;
+      const terminalProof = new Promise<void>((resolve) => {
+        resolveTerminal = resolve;
+      });
+      let terminalHandler: ((event: BobLiveAudioStoppedEvent) => void) | null = null;
+      let stoppedSubscription: NativeSubscription | null = null;
+      const removeTerminalListener = (): void => {
+        safeRemove(stoppedSubscription);
+        stoppedSubscription = null;
+      };
+      try {
+        stoppedSubscription = v2NativeModule.addListener('onCaptureStopped', (event) => {
+          let decoded: BobLiveAudioStoppedEvent;
+          try {
+            decoded = decodeBobLiveAudioStoppedEvent(event, config.sessionId, captureId);
+          } catch {
+            return;
+          }
+          if (terminalObserved) return;
+          terminalObserved = true;
+          resolveTerminal();
+          terminalHandler?.(decoded);
+        });
+      } catch {
+        removeTerminalListener();
+        throw new BobLiveNativeVadSessionError('native_vad_session_unavailable');
+      }
+      void terminalProof.then(removeTerminalListener, removeTerminalListener);
+
+      const cancelAndAwaitTerminal = async (): Promise<boolean> => {
+        try {
+          v2NativeModule.cancelCaptureV2(config.sessionId, captureId);
+        } catch {
+          // Une terminalité native exacte peut encore arriver après une rupture du bridge.
+        }
+        return proofWithin(terminalProof, () => terminalObserved, terminalGraceMs);
+      };
 
       let capabilities: BobLiveAudioCapabilities;
-      let allocatedCaptureId: string | null = null;
-      const prepareTask = nativeModule.prepareAsync(
-        config.sessionId,
-        config.maxCaptureDurationMs,
-      );
+      let prepareTask: Promise<BobLiveAudioCapabilities>;
       try {
-        capabilities = await raceAbort(prepareTask, input.signal);
-        allocatedCaptureId = preparedCaptureId(capabilities);
-        assertBobLiveAudioCapabilities(capabilities, config.sessionId);
-        if (capabilities.maxCaptureDurationMs !== config.maxCaptureDurationMs) {
-          throw new Error('native_vad_session_contract_mismatch');
-        }
-      } catch (prepareError) {
-        if (allocatedCaptureId) {
-          await stopPreparedCaptureAuthoritatively(
-            nativeModule,
-            config.sessionId,
-            allocatedCaptureId,
-          );
-        } else if (input.signal.aborted) {
-          // Une préparation native non annulable peut finir après l'abort. Elle n'a pas ouvert le
-          // micro, mais l'appelant ne peut rendre son lease qu'après libération prouvée de la
-          // génération tardive. On attend donc la Promise native au lieu d'un cleanup détaché.
-          try {
-            const lateCapabilities = await prepareTask;
-            const lateCaptureId = preparedCaptureId(lateCapabilities);
-            if (!lateCaptureId) {
-              throw new BobLiveNativeVadSessionError('native_vad_session_stop_failed');
-            }
-            await stopPreparedCaptureAuthoritatively(
-              nativeModule,
-              config.sessionId,
-              lateCaptureId,
-            );
-          } catch (lateError) {
-            if (lateError instanceof BobLiveNativeVadSessionError) throw lateError;
-            // Une préparation rejetée n'a créé aucune génération à libérer.
-          }
-        }
-        if (prepareError instanceof BobLiveNativeVadSessionError) throw prepareError;
+        prepareTask = v2NativeModule.prepareCaptureV2Async(
+          config.sessionId,
+          captureId,
+          config.maxCaptureDurationMs,
+        );
+      } catch {
+        const proved = await cancelAndAwaitTerminal();
+        if (!proved) throw quarantineError(terminalProof);
         throw input.signal.aborted
           ? aborted()
           : new BobLiveNativeVadSessionError('native_vad_session_unavailable');
       }
+      void prepareTask.catch(() => undefined);
+      try {
+        capabilities = await raceStartup(prepareTask, input.signal, prepareTimeoutMs);
+        assertBobLiveAudioCapabilities(capabilities, config.sessionId);
+        if (
+          preparedCaptureId(capabilities) !== captureId
+          || capabilities.maxCaptureDurationMs !== config.maxCaptureDurationMs
+        ) throw new Error('native_vad_session_contract_mismatch');
+      } catch (prepareError) {
+        const proved = await cancelAndAwaitTerminal();
+        if (!proved) throw quarantineError(terminalProof);
+        if (
+          input.signal.aborted
+          || (prepareError instanceof NativeStartupInterrupted
+            && prepareError.reason === 'aborted')
+        ) throw aborted();
+        throw new BobLiveNativeVadSessionError('native_vad_session_unavailable');
+      }
 
-      const captureId = capabilities.captureId;
       const stream = new BobLiveNativeVadCaptureStream(
         config.sessionId,
         captureId,
@@ -275,18 +388,15 @@ export function createBobLiveNativeVadSession(
       let pcmSubscription: NativeSubscription | null = null;
       let vadSubscription: NativeSubscription | null = null;
       let errorSubscription: NativeSubscription | null = null;
-      let stoppedSubscription: NativeSubscription | null = null;
       let abortListener: (() => void) | null = null;
 
-      const removeListeners = (): void => {
+      const removeDataListeners = (): void => {
         safeRemove(pcmSubscription);
         safeRemove(vadSubscription);
         safeRemove(errorSubscription);
-        safeRemove(stoppedSubscription);
         pcmSubscription = null;
         vadSubscription = null;
         errorSubscription = null;
-        stoppedSubscription = null;
       };
 
       const reportErrorOnce = (): void => {
@@ -312,23 +422,14 @@ export function createBobLiveNativeVadSession(
           input.signal.removeEventListener('abort', abortListener);
           abortListener = null;
         }
-        removeListeners();
+        removeDataListeners();
         const cancelledUtterance = activeUtterance;
         activeUtterance = null;
         stopTask = Promise.resolve().then(async () => {
-          let stopped = false;
-          for (let attempt = 0; attempt < 2; attempt += 1) {
-            try {
-              await stopAttempt(nativeModule.stopAsync(config.sessionId, captureId));
-              stopped = true;
-              break;
-            } catch {
-              // stopAsync est idempotent côté natif : un seul retry absorbe une rupture du bridge.
-            }
-          }
-          if (!stopped) {
+          const proved = await cancelAndAwaitTerminal();
+          if (!proved) {
             reportErrorOnce();
-            throw new BobLiveNativeVadSessionError('native_vad_session_stop_failed');
+            throw quarantineError(terminalProof);
           }
           if (reportFailure) reportErrorOnce();
         });
@@ -352,7 +453,7 @@ export function createBobLiveNativeVadSession(
       const acknowledge = (sequence: number): void => {
         acknowledgementTail = acknowledgementTail.then(async () => {
           if (!active) return;
-          await nativeModule.acknowledgePcmAsync(config.sessionId, captureId, sequence);
+          await v2NativeModule.acknowledgePcmAsync(config.sessionId, captureId, sequence);
           unacknowledgedFrames = Math.max(0, unacknowledgedFrames - 1);
         });
         void acknowledgementTail.catch(() => {
@@ -427,14 +528,29 @@ export function createBobLiveNativeVadSession(
       };
 
       const onCaptureStopped = (event: BobLiveAudioStoppedEvent): void => {
-        if (!sameCapture(event, config.sessionId, captureId) || expectedStop) return;
+        if (expectedStop) return;
+        active = false;
+        removeDataListeners();
+        if (abortListener) {
+          input.signal.removeEventListener('abort', abortListener);
+          abortListener = null;
+        }
+        const cancelledUtterance = activeUtterance;
+        activeUtterance = null;
         const normalReason = normalNativeStop(event);
-        if (normalReason) {
-          void stopNative(false, normalReason).catch(() => undefined);
-        } else {
-          failClosed('capture_failed');
+        if (!normalReason) reportErrorOnce();
+        if (cancelledUtterance) {
+          try {
+            input.onSpeechCancelled({
+              ...cancelledUtterance,
+              reason: normalReason ?? 'capture_failed',
+            });
+          } catch {
+            // La terminalité réseau reste indépendante du nettoyage natif déjà prouvé.
+          }
         }
       };
+      terminalHandler = onCaptureStopped;
 
       abortListener = (): void => {
         void stopNative(false, 'aborted').catch(() => undefined);
@@ -443,41 +559,32 @@ export function createBobLiveNativeVadSession(
 
       try {
         if (input.signal.aborted) throw aborted();
-        pcmSubscription = nativeModule.addListener('onPcmChunk', onPcmChunk);
-        vadSubscription = nativeModule.addListener('onVadEvent', onVadEvent);
-        errorSubscription = nativeModule.addListener('onCaptureError', onCaptureError);
-        stoppedSubscription = nativeModule.addListener('onCaptureStopped', onCaptureStopped);
+        pcmSubscription = v2NativeModule.addListener('onPcmChunk', onPcmChunk);
+        vadSubscription = v2NativeModule.addListener('onVadEvent', onVadEvent);
+        errorSubscription = v2NativeModule.addListener('onCaptureError', onCaptureError);
         if (input.signal.aborted) throw aborted();
-        const startTask = nativeModule.startPreparedAsync(config.sessionId, captureId);
+        const startTask = v2NativeModule.startPreparedCaptureV2Async(
+          config.sessionId,
+          captureId,
+        );
+        void startTask.catch(() => undefined);
         try {
-          await raceAbort(startTask, input.signal);
+          await raceStartup(startTask, input.signal, startTimeoutMs);
         } catch (error) {
-          if (input.signal.aborted) {
-            // Fermer d'abord la génération visible, puis attendre le démarrage non annulable. S'il
-            // résout tardivement, une seconde preuve d'arrêt empêche toute résurrection du micro.
-            await stopNative(false, 'aborted');
-            try {
-              await startTask;
-            } catch {
-              throw aborted();
-            }
-            await stopPreparedCaptureAuthoritatively(nativeModule, config.sessionId, captureId);
-          }
+          await stopNative(false, input.signal.aborted ? 'aborted' : 'capture_failed');
           throw error;
         }
-        if (!active || input.signal.aborted) throw aborted();
+        if (!active || terminalObserved || input.signal.aborted) throw aborted();
       } catch (startError) {
         try {
           await stopNative(false, input.signal.aborted ? 'aborted' : 'capture_failed');
         } catch (stopError) {
           if (stopError instanceof BobLiveNativeVadSessionError) throw stopError;
-          throw new BobLiveNativeVadSessionError('native_vad_session_stop_failed');
-        }
-        if (startError instanceof BobLiveNativeVadSessionError
-          && startError.code === 'native_vad_session_stop_failed') {
-          throw startError;
+          throw quarantineError(terminalProof);
         }
         throw input.signal.aborted
+          || (startError instanceof NativeStartupInterrupted
+            && startError.reason === 'aborted')
           ? aborted()
           : new BobLiveNativeVadSessionError('native_vad_session_unavailable');
       }

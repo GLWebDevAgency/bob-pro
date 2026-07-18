@@ -8,6 +8,7 @@ import {
   BobLiveAudioPcmStreamDecoder,
   BobLiveAudioVadStreamDecoder,
   decodeBobLiveAudioPcmChunk,
+  decodeBobLiveAudioStoppedEvent,
 } from './BobLiveAudio.contract';
 
 const SESSION_ID = 'session-123';
@@ -21,6 +22,28 @@ function frameBase64(bytes: Uint8Array): string {
 }
 
 describe('Bob Live native audio contract', () => {
+  it('n accepte comme preuve terminale que l événement exact de la génération attendue', () => {
+    expect(decodeBobLiveAudioStoppedEvent({
+      sessionId: SESSION_ID,
+      captureId: CAPTURE_ID,
+      reason: 'requested',
+    }, SESSION_ID, CAPTURE_ID)).toEqual({
+      sessionId: SESSION_ID,
+      captureId: CAPTURE_ID,
+      reason: 'requested',
+    });
+    for (const hostile of [
+      { sessionId: SESSION_ID, captureId: 'stale', reason: 'requested' },
+      { sessionId: SESSION_ID, captureId: CAPTURE_ID, reason: 'invented' },
+      { sessionId: SESSION_ID, captureId: CAPTURE_ID, reason: 'requested', extra: true },
+      null,
+    ]) {
+      expect(() => decodeBobLiveAudioStoppedEvent(hostile, SESSION_ID, CAPTURE_ID)).toThrow(
+        BobLiveAudioContractError,
+      );
+    }
+  });
+
   it('decode uniquement une trame PCM16 canonique de 40 ms pour la session attendue', () => {
     expect(
       decodeBobLiveAudioPcmChunk(

@@ -40,6 +40,8 @@ private enum CaptureFailure: String, CodedError {
   var description: String { rawValue }
 }
 
+private struct CaptureCancellationRequested: Error {}
+
 private struct AudioSessionSnapshot {
   let category: AVAudioSession.Category
   let mode: AVAudioSession.Mode
@@ -124,6 +126,7 @@ public final class BobLiveAudioModule: Module, @unchecked Sendable {
   private var eventsEnabled = true
   private var contextDestroyed = false
   private var notificationObservers: [NSObjectProtocol] = []
+  private let cancellationFence = BobLiveAudioCancellationFence()
 
   public func definition() -> ModuleDefinition {
     Name("BobLiveAudio")
@@ -171,6 +174,56 @@ public final class BobLiveAudioModule: Module, @unchecked Sendable {
       }
     }
 
+    AsyncFunction("prepareCaptureV2Async") {
+      (
+        sessionId: String,
+        captureId: String,
+        requestedMaxCaptureDurationMs: Int?
+      ) -> BobLiveAudioCapabilitiesRecord in
+      guard Self.isValidSessionId(sessionId), Self.isValidSessionId(captureId) else {
+        throw CaptureFailure.captureProtocolFailed
+      }
+      guard self.cancellationFence.beginPrepare(sessionId: sessionId, captureId: captureId) else {
+        // Un replay actif est rejeté sans devenir une commande d'arrêt. Seul le tombstone créé
+        // par cancel-before-prepare doit encore être réconcilié sur la file audio.
+        if self.cancellationFence.phase(sessionId: sessionId, captureId: captureId) == .cancelling {
+          self.captureQueue.async {
+            self.releaseV2OnQueue(sessionId: sessionId, captureId: captureId)
+          }
+        }
+        throw CaptureFailure.captureProtocolFailed
+      }
+      return try self.captureQueue.sync {
+        try self.prepareV2OnQueue(
+          sessionId: sessionId,
+          captureId: captureId,
+          requestedMaxCaptureDurationMs: requestedMaxCaptureDurationMs
+        )
+      }
+    }
+
+    AsyncFunction("startPreparedCaptureV2Async") { (sessionId: String, captureId: String) in
+      try self.captureQueue.sync {
+        try self.startPreparedV2OnQueue(sessionId: sessionId, captureId: captureId)
+      }
+    }
+
+    // Ce chemin ne doit jamais attendre captureQueue. Il pose d'abord le tombstone atomique,
+    // puis planifie seulement un nettoyage best-effort sur l'autorité audio sérialisée.
+    Function("cancelCaptureV2") { (sessionId: String, captureId: String) -> Bool in
+      guard Self.isValidSessionId(sessionId), Self.isValidSessionId(captureId) else { return false }
+      let fenced = self.cancellationFence.requestCancellation(
+        sessionId: sessionId,
+        captureId: captureId
+      )
+      if fenced {
+        self.captureQueue.async {
+          self.releaseV2OnQueue(sessionId: sessionId, captureId: captureId)
+        }
+      }
+      return fenced
+    }
+
     OnAppEntersForeground {
       self.captureQueue.async {
         if !self.contextDestroyed {
@@ -209,7 +262,8 @@ public final class BobLiveAudioModule: Module, @unchecked Sendable {
 
   private func prepareOnQueue(
     sessionId: String,
-    requestedMaxCaptureDurationMs: Int?
+    requestedMaxCaptureDurationMs: Int?,
+    requestedCaptureId: String? = nil
   ) throws -> BobLiveAudioCapabilitiesRecord {
     guard acceptingStarts, !contextDestroyed, Self.isValidSessionId(sessionId) else {
       throw CaptureFailure.captureInitializationFailed
@@ -220,6 +274,9 @@ public final class BobLiveAudioModule: Module, @unchecked Sendable {
       throw CaptureFailure.captureInitializationFailed
     }
     if activeSessionId == sessionId, let capabilities {
+      if let requestedCaptureId, capabilities.captureId != requestedCaptureId {
+        throw CaptureFailure.captureBusy
+      }
       guard capabilities.maxCaptureDurationMs == maxCaptureDurationMs else {
         throw CaptureFailure.captureProtocolFailed
       }
@@ -256,7 +313,7 @@ public final class BobLiveAudioModule: Module, @unchecked Sendable {
       preferredSampleRate: audioSession.preferredSampleRate,
       preferredIOBufferDuration: audioSession.preferredIOBufferDuration
     )
-    let captureId = UUID().uuidString.lowercased()
+    let captureId = requestedCaptureId ?? UUID().uuidString.lowercased()
     // AVAudioSession ne publie pas son etat actif. Une configuration voiceChat deja en place
     // est donc traitee conservativement comme appartenant a un autre composant: Bob la
     // restaurera mais ne la desactivera pas.
@@ -280,6 +337,14 @@ public final class BobLiveAudioModule: Module, @unchecked Sendable {
     )
 
     do {
+      try throwIfV2Cancelled(sessionId: sessionId, captureId: requestedCaptureId)
+      if let requestedCaptureId,
+         !cancellationFence.markResourcesMayBeAllocated(
+           sessionId: sessionId,
+           captureId: requestedCaptureId
+         ) {
+        throw CaptureCancellationRequested()
+      }
       try audioSession.setCategory(
         .playAndRecord,
         mode: .voiceChat,
@@ -288,6 +353,7 @@ public final class BobLiveAudioModule: Module, @unchecked Sendable {
       try audioSession.setPreferredSampleRate(targetSampleRate)
       try audioSession.setPreferredIOBufferDuration(0.02)
       try audioSession.setActive(true)
+      try throwIfV2Cancelled(sessionId: sessionId, captureId: requestedCaptureId)
       audioSessionLease = AudioSessionLease(
         generation: generation,
         snapshot: snapshot,
@@ -305,6 +371,7 @@ public final class BobLiveAudioModule: Module, @unchecked Sendable {
         // explicitement indisponible au lieu d'être déduite ou inventée.
         voiceProcessingAvailable = false
       }
+      try throwIfV2Cancelled(sessionId: sessionId, captureId: requestedCaptureId)
 
       self.engine = engine
       voiceProcessingEnabled = voiceProcessingAvailable
@@ -372,6 +439,7 @@ public final class BobLiveAudioModule: Module, @unchecked Sendable {
       tapInstalled = true
 
       engine.prepare()
+      try throwIfV2Cancelled(sessionId: sessionId, captureId: requestedCaptureId)
       activeRouteSignature = Self.audioRouteSignature(audioSession)
       // Une capture preparee mais jamais demarree ne doit pas conserver indefiniment
       // l'AVAudioSession, le tap et le microphone logique si JavaScript disparait.
@@ -397,6 +465,15 @@ public final class BobLiveAudioModule: Module, @unchecked Sendable {
       nextFrameStartedAtNanoseconds = nil
       nextSequence = 0
       lastAcknowledgedSequence = -1
+      if let requestedCaptureId {
+        completeV2ReleaseOnQueue(
+          sessionId: sessionId,
+          captureId: requestedCaptureId,
+          physicalReleaseProven: true,
+          reason: .requested,
+          emitEvent: true
+        )
+      }
       if let failure = error as? CaptureFailure {
         throw failure
       }
@@ -444,10 +521,22 @@ public final class BobLiveAudioModule: Module, @unchecked Sendable {
       throw CaptureFailure.captureInitializationFailed
     }
     do {
+      try throwIfV2Cancelled(
+        sessionId: sessionId,
+        captureId: cancellationFence.contains(sessionId: sessionId, captureId: captureId)
+          ? captureId
+          : nil
+      )
       try engine.start()
       guard engine.isRunning else {
         throw CaptureFailure.captureInitializationFailed
       }
+      try throwIfV2Cancelled(
+        sessionId: sessionId,
+        captureId: cancellationFence.contains(sessionId: sessionId, captureId: captureId)
+          ? captureId
+          : nil
+      )
       captureRunning = true
       activeRouteSignature = Self.audioRouteSignature(AVAudioSession.sharedInstance())
       lastPcmAtMonotonicMs = ProcessInfo.processInfo.systemUptime * 1_000
@@ -457,6 +546,9 @@ public final class BobLiveAudioModule: Module, @unchecked Sendable {
         phase: .capturing
       )
       installHeartbeatWatchdogOnQueue(generation: generation)
+    } catch is CaptureCancellationRequested {
+      stopOnQueue(reason: .requested, emitEvent: true)
+      throw CaptureFailure.captureInitializationFailed
     } catch {
       failOnQueue(
         generation: generation,
@@ -474,8 +566,13 @@ public final class BobLiveAudioModule: Module, @unchecked Sendable {
   ) {
     guard generation == activeGeneration,
           captureRunning,
-          activeSessionId != nil,
+          let activeSessionId,
+          let activeCaptureId,
           !pcm.isEmpty else { return }
+    if cancellationFence.isCancellationRequested(
+      sessionId: activeSessionId,
+      captureId: activeCaptureId
+    ) { return }
     guard pcm.count.isMultiple(of: MemoryLayout<Int16>.size) else {
       failOnQueue(
         generation: generation,
@@ -764,12 +861,113 @@ public final class BobLiveAudioModule: Module, @unchecked Sendable {
     nextFrameStartedAtNanoseconds = nil
     nextSequence = 0
     lastAcknowledgedSequence = -1
-    if emitEvent {
+    let v2Capture = cancellationFence.contains(sessionId: sessionId, captureId: captureId)
+    if v2Capture {
+      completeV2ReleaseOnQueue(
+        sessionId: sessionId,
+        captureId: captureId,
+        physicalReleaseProven: true,
+        reason: reason,
+        emitEvent: emitEvent
+      )
+    } else if emitEvent {
       emitOnQueue("onCaptureStopped", [
         "sessionId": sessionId,
         "captureId": captureId,
         "reason": reason.rawValue
       ])
+    }
+  }
+
+  private func prepareV2OnQueue(
+    sessionId: String,
+    captureId: String,
+    requestedMaxCaptureDurationMs: Int?
+  ) throws -> BobLiveAudioCapabilitiesRecord {
+    do {
+      guard !cancellationFence.isCancellationRequested(
+        sessionId: sessionId,
+        captureId: captureId
+      ) else { throw CaptureCancellationRequested() }
+      let result = try prepareOnQueue(
+        sessionId: sessionId,
+        requestedMaxCaptureDurationMs: requestedMaxCaptureDurationMs,
+        requestedCaptureId: captureId
+      )
+      guard cancellationFence.transition(
+        sessionId: sessionId,
+        captureId: captureId,
+        to: .prepared
+      ) else { throw CaptureCancellationRequested() }
+      return result
+    } catch {
+      releaseV2OnQueue(sessionId: sessionId, captureId: captureId)
+      if let failure = error as? CaptureFailure { throw failure }
+      throw CaptureFailure.captureInitializationFailed
+    }
+  }
+
+  private func startPreparedV2OnQueue(sessionId: String, captureId: String) throws {
+    do {
+      guard cancellationFence.transition(
+        sessionId: sessionId,
+        captureId: captureId,
+        to: .starting
+      ) else { throw CaptureCancellationRequested() }
+      try startPreparedOnQueue(sessionId: sessionId, captureId: captureId)
+      guard cancellationFence.transition(
+        sessionId: sessionId,
+        captureId: captureId,
+        to: .capturing
+      ) else { throw CaptureCancellationRequested() }
+    } catch {
+      releaseV2OnQueue(sessionId: sessionId, captureId: captureId)
+      if let failure = error as? CaptureFailure { throw failure }
+      throw CaptureFailure.captureInitializationFailed
+    }
+  }
+
+  private func releaseV2OnQueue(sessionId: String, captureId: String) {
+    if activeSessionId == sessionId, activeCaptureId == captureId {
+      stopOnQueue(reason: .requested, emitEvent: true)
+      return
+    }
+    completeV2ReleaseOnQueue(
+      sessionId: sessionId,
+      captureId: captureId,
+      physicalReleaseProven: false,
+      reason: .requested,
+      emitEvent: true
+    )
+  }
+
+  private func completeV2ReleaseOnQueue(
+    sessionId: String,
+    captureId: String,
+    physicalReleaseProven: Bool,
+    reason: CaptureStopReason,
+    emitEvent: Bool
+  ) {
+    if cancellationFence.phase(sessionId: sessionId, captureId: captureId) == .released { return }
+    _ = cancellationFence.requestCancellation(sessionId: sessionId, captureId: captureId)
+    let firstTerminal = cancellationFence.markReleased(
+      sessionId: sessionId,
+      captureId: captureId,
+      physicalReleaseProven: physicalReleaseProven
+    )
+    if emitEvent && firstTerminal {
+      emitOnQueue("onCaptureStopped", [
+        "sessionId": sessionId,
+        "captureId": captureId,
+        "reason": reason.rawValue
+      ])
+    }
+  }
+
+  private func throwIfV2Cancelled(sessionId: String, captureId: String?) throws {
+    guard let captureId else { return }
+    if cancellationFence.isCancellationRequested(sessionId: sessionId, captureId: captureId) {
+      throw CaptureCancellationRequested()
     }
   }
 

@@ -71,6 +71,8 @@ private class BobLiveAudioException(code: String) : CodedException(
   null,
 )
 
+private class CaptureCancellationRequested : RuntimeException()
+
 private data class CaptureCapabilities(
   val sessionId: String,
   val captureId: String,
@@ -147,6 +149,8 @@ class BobLiveAudioModule : Module() {
   private val acceptsEvents = AtomicBoolean(true)
   private val acceptsStarts = AtomicBoolean(true)
   private val destroyed = AtomicBoolean(false)
+  /** Fail-closed jusqu'au redémarrage du processus si une libération physique reste incertaine. */
+  private val releaseIntegrityCompromised = AtomicBoolean(false)
   private val controlExecutor: ExecutorService = Executors.newSingleThreadExecutor(
     NamedDaemonThreadFactory("BobLiveAudioControl"),
   )
@@ -157,6 +161,7 @@ class BobLiveAudioModule : Module() {
   private var activeCapture: CaptureState? = null
   private var generation = 0L
   private var audioModeOwnerGeneration: Long? = null
+  private val cancellationFence = BobLiveAudioCancellationFence()
 
   override fun definition() = ModuleDefinition {
     Name("BobLiveAudio")
@@ -194,6 +199,42 @@ class BobLiveAudioModule : Module() {
       }
     }
 
+    AsyncFunction("prepareCaptureV2Async") {
+      sessionId: String, captureId: String, requestedMaxCaptureDurationMs: Int? ->
+      if (!SESSION_ID.matches(sessionId) || !SESSION_ID.matches(captureId)) {
+        throw BobLiveAudioException("capture_protocol_failed")
+      }
+      if (!cancellationFence.beginPrepare(sessionId, captureId)) {
+        // Seul cancel-before-prepare requiert encore le worker de libération. Un replay de prepare
+        // sur une génération active ne doit surtout pas devenir une commande d'arrêt.
+        if (
+          cancellationFence.phase(sessionId, captureId)
+          == BobLiveAudioCancellationPhase.CANCELLING
+        ) scheduleV2Release(sessionId, captureId)
+        throw BobLiveAudioException("capture_protocol_failed")
+      }
+      runOnControl {
+        prepareCaptureV2OnControl(sessionId, captureId, requestedMaxCaptureDurationMs).toMap()
+      }
+    }
+
+    AsyncFunction("startPreparedCaptureV2Async") { sessionId: String, captureId: String ->
+      runOnControl {
+        startPreparedCaptureV2OnControl(sessionId, captureId)
+      }
+    }
+
+    // Fence immédiat : aucune attente du controlExecutor potentiellement bloqué dans AudioRecord.
+    Function("cancelCaptureV2") { sessionId: String, captureId: String ->
+      if (!SESSION_ID.matches(sessionId) || !SESSION_ID.matches(captureId)) {
+        false
+      } else {
+        cancellationFence.requestCancellation(sessionId, captureId).also { fenced ->
+          if (fenced) scheduleV2Release(sessionId, captureId)
+        }
+      }
+    }
+
     OnActivityEntersForeground {
       if (!destroyed.get()) acceptsStarts.set(true)
     }
@@ -205,7 +246,9 @@ class BobLiveAudioModule : Module() {
 
     OnActivityDestroys {
       acceptsStarts.set(false)
-      scheduleLifecycleStop(CaptureStopReason.CONTEXT_DESTROYED, emitEvent = false)
+      // L'AppContext et ses listeners existent encore à ce stade : la preuve terminale doit rester
+      // observable. `OnDestroy` désactive seul les événements lorsque le bridge disparaît vraiment.
+      scheduleLifecycleStop(CaptureStopReason.CONTEXT_DESTROYED, emitEvent = true)
     }
 
     OnDestroy {
@@ -222,8 +265,14 @@ class BobLiveAudioModule : Module() {
   private fun prepareCaptureOnControl(
     sessionId: String,
     requestedMaxCaptureDurationMs: Int?,
+    requestedCaptureId: String? = null,
   ): CaptureCapabilities {
-    if (!SESSION_ID.matches(sessionId) || destroyed.get() || !acceptsStarts.get()) {
+    if (
+      !SESSION_ID.matches(sessionId)
+      || destroyed.get()
+      || !acceptsStarts.get()
+      || releaseIntegrityCompromised.get()
+    ) {
       throw BobLiveAudioException("capture_initialization_failed")
     }
     val maxCaptureDurationMs = requestedMaxCaptureDurationMs ?: DEFAULT_MAX_CAPTURE_DURATION_MS
@@ -239,6 +288,10 @@ class BobLiveAudioModule : Module() {
       if (existingCapture.capabilities.maxCaptureDurationMs != maxCaptureDurationMs) {
         throw BobLiveAudioException("capture_protocol_failed")
       }
+      if (
+        requestedCaptureId != null
+        && existingCapture.capabilities.captureId != requestedCaptureId
+      ) throw BobLiveAudioException("capture_busy")
       if (existingCapture.audioFocusLease.lost.get()) {
         failCaptureOnControl(
           existingCapture,
@@ -269,8 +322,14 @@ class BobLiveAudioModule : Module() {
     var installedState: CaptureState? = null
 
     try {
+      throwIfV2Cancelled(sessionId, requestedCaptureId)
+      if (
+        requestedCaptureId != null
+        && !cancellationFence.markResourcesMayBeAllocated(sessionId, requestedCaptureId)
+      ) throw CaptureCancellationRequested()
       modeLease = acquireAudioModeOnControl(audioManager, captureGeneration)
       focusLease = acquireAudioFocus(audioManager, captureGeneration)
+      throwIfV2Cancelled(sessionId, requestedCaptureId)
 
       val minBufferBytes = AudioRecord.getMinBufferSize(
         TARGET_SAMPLE_RATE_HZ,
@@ -289,6 +348,7 @@ class BobLiveAudioModule : Module() {
         max(minBufferBytes, TARGET_FRAME_BYTES * CAPTURE_BUFFER_FRAMES),
       )
       recorder = initializedRecorder
+      throwIfV2Cancelled(sessionId, requestedCaptureId)
 
       val aec = createEffect(
         available = AcousticEchoCanceler.isAvailable(),
@@ -305,11 +365,12 @@ class BobLiveAudioModule : Module() {
         create = { AutomaticGainControl.create(initializedRecorder.audioSessionId) },
       )
       gainControl.effect?.let(effects::add)
+      throwIfV2Cancelled(sessionId, requestedCaptureId)
 
       val vad = BobLiveVad(initialGeneration = captureGeneration)
       val capabilities = CaptureCapabilities(
         sessionId = sessionId,
-        captureId = UUID.randomUUID().toString(),
+        captureId = requestedCaptureId ?: UUID.randomUUID().toString(),
         maxCaptureDurationMs = maxCaptureDurationMs,
         acousticEchoCancellation = aec.status,
         noiseSuppression = noiseSuppressor.status,
@@ -343,6 +404,7 @@ class BobLiveAudioModule : Module() {
         activeCapture = state
       }
       installedState = state
+      throwIfV2Cancelled(sessionId, requestedCaptureId)
 
       // `prepareAsync` précède volontairement l'installation des listeners JS. Un gel ou un
       // crash entre prepare et start ne doit donc jamais garder le focus et le recorder ouverts.
@@ -354,9 +416,24 @@ class BobLiveAudioModule : Module() {
         throw BobLiveAudioException("capture_initialization_failed")
       }
       return capabilities
+    } catch (_: CaptureCancellationRequested) {
+      clearFailedInstall(installedState)
+      releaseFailedPreparationOnControl(
+        sessionId,
+        requestedCaptureId,
+        recorder,
+        effects,
+        audioManager,
+        modeLease,
+        focusLease,
+        captureGeneration,
+      )
+      throw BobLiveAudioException("capture_initialization_failed")
     } catch (error: SecurityException) {
       clearFailedInstall(installedState)
-      releasePartiallyConstructedOnControl(
+      releaseFailedPreparationOnControl(
+        sessionId,
+        requestedCaptureId,
         recorder,
         effects,
         audioManager,
@@ -367,7 +444,9 @@ class BobLiveAudioModule : Module() {
       throw BobLiveAudioException("microphone_permission_denied")
     } catch (error: BobLiveAudioException) {
       clearFailedInstall(installedState)
-      releasePartiallyConstructedOnControl(
+      releaseFailedPreparationOnControl(
+        sessionId,
+        requestedCaptureId,
         recorder,
         effects,
         audioManager,
@@ -378,7 +457,9 @@ class BobLiveAudioModule : Module() {
       throw error
     } catch (_: Exception) {
       clearFailedInstall(installedState)
-      releasePartiallyConstructedOnControl(
+      releaseFailedPreparationOnControl(
+        sessionId,
+        requestedCaptureId,
         recorder,
         effects,
         audioManager,
@@ -425,12 +506,20 @@ class BobLiveAudioModule : Module() {
     if (state.started) return
 
     try {
+      throwIfV2Cancelled(
+        sessionId,
+        captureId.takeIf { cancellationFence.contains(sessionId, captureId) },
+      )
       state.watchdog?.cancel(false)
       state.watchdog = null
       state.recorder.startRecording()
       if (state.recorder.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
         throw BobLiveAudioException("capture_initialization_failed")
       }
+      throwIfV2Cancelled(
+        sessionId,
+        captureId.takeIf { cancellationFence.contains(sessionId, captureId) },
+      )
 
       val captureThread = Thread(
         { captureLoop(state) },
@@ -475,6 +564,15 @@ class BobLiveAudioModule : Module() {
       )
       state.heartbeatWatchdog = scheduleCaptureHeartbeat(state)
       captureThread.start()
+    } catch (_: CaptureCancellationRequested) {
+      stopCaptureOnControl(
+        requestedSessionId = sessionId,
+        requestedCaptureId = captureId,
+        expectedGeneration = state.generation,
+        reason = CaptureStopReason.REQUESTED,
+        emitEvent = true,
+      )
+      throw BobLiveAudioException("capture_initialization_failed")
     } catch (_: BobLiveAudioException) {
       failCaptureOnControl(state, "capture_initialization_failed", CaptureStopReason.CAPTURE_ERROR)
       throw BobLiveAudioException("capture_initialization_failed")
@@ -848,14 +946,15 @@ class BobLiveAudioModule : Module() {
         "code" to errorCode,
       ),
     )
-    releaseCaptureOnControl(state, joinThread = state.thread !== Thread.currentThread())
-    safeSendEvent(
-      "onCaptureStopped",
-      mapOf(
-        "sessionId" to state.sessionId,
-        "captureId" to state.capabilities.captureId,
-        "reason" to reason.wireValue,
-      ),
+    val releaseProof = releaseCaptureOnControl(
+      state,
+      joinThread = state.thread !== Thread.currentThread(),
+    )
+    emitTerminalAfterRelease(
+      state,
+      reason,
+      emitEvent = true,
+      releaseProof = releaseProof,
     )
   }
 
@@ -876,17 +975,8 @@ class BobLiveAudioModule : Module() {
       generation = nextGeneration(generation)
       active
     }
-    releaseCaptureOnControl(state, joinThread = true)
-    if (emitEvent) {
-      safeSendEvent(
-        "onCaptureStopped",
-        mapOf(
-          "sessionId" to state.sessionId,
-          "captureId" to state.capabilities.captureId,
-          "reason" to reason.wireValue,
-        ),
-      )
-    }
+    val releaseProof = releaseCaptureOnControl(state, joinThread = true)
+    emitTerminalAfterRelease(state, reason, emitEvent, releaseProof)
   }
 
   private fun scheduleLifecycleStop(reason: CaptureStopReason, emitEvent: Boolean) {
@@ -906,38 +996,61 @@ class BobLiveAudioModule : Module() {
     }
   }
 
-  private fun releaseCaptureOnControl(state: CaptureState, joinThread: Boolean) {
+  private fun releaseCaptureOnControl(
+    state: CaptureState,
+    joinThread: Boolean,
+  ): BobLiveAudioPhysicalReleaseProof {
     state.watchdog?.cancel(false)
     state.watchdog = null
     state.heartbeatWatchdog?.cancel(false)
     state.heartbeatWatchdog = null
     state.lastPcmAtMonotonicMs = null
     state.started = false
-    try {
-      if (state.recorder.recordingState == AudioRecord.RECORDSTATE_RECORDING) state.recorder.stop()
-    } catch (_: IllegalStateException) {
-      // La generation est invalidee; le nettoyage doit continuer.
-    }
+    val recorderStopped = stopRecorderOnControl(state.recorder)
 
     val thread = state.thread
-    if (joinThread && thread != null && thread !== Thread.currentThread()) {
-      try {
-        thread.join(STOP_JOIN_TIMEOUT_MS)
-        if (thread.isAlive) thread.interrupt()
-      } catch (_: InterruptedException) {
-        Thread.currentThread().interrupt()
-      }
-    }
-    state.thread = null
+    var captureThreadTerminated = awaitCaptureThreadTermination(thread, joinThread)
 
     state.effects.forEach(::releaseEffect)
-    try {
-      state.recorder.release()
-    } catch (_: RuntimeException) {
-      // DEAD_OBJECT ou service audio deja detruit.
-    } finally {
-      abandonAudioFocus(state.audioManager, state.audioFocusLease)
-      restoreAudioModeOnControl(state.audioManager, state.audioModeLease)
+    val recorderReleased = releaseRecorderOnControl(state.recorder)
+    // Certains constructeurs ne débloquent READ_BLOCKING qu'après release(). Une seconde attente
+    // courte est donc autorisée, sans jamais déclarer terminal un thread encore vivant.
+    if (!captureThreadTerminated) {
+      captureThreadTerminated = awaitCaptureThreadTermination(thread, joinThread)
+    }
+    if (captureThreadTerminated) state.thread = null
+
+    val audioFocusAbandoned = abandonAudioFocus(state.audioManager, state.audioFocusLease)
+    val audioModeReleased = restoreAudioModeOnControl(state.audioManager, state.audioModeLease)
+    return BobLiveAudioPhysicalReleaseProof(
+      captureThreadTerminated = captureThreadTerminated,
+      recorderStopped = recorderStopped,
+      recorderReleased = recorderReleased,
+      audioFocusAbandoned = audioFocusAbandoned,
+      audioModeReleased = audioModeReleased,
+    )
+  }
+
+  private fun releaseFailedPreparationOnControl(
+    sessionId: String,
+    captureId: String?,
+    recorder: AudioRecord?,
+    effects: List<AudioEffect>,
+    audioManager: AudioManager,
+    modeLease: AudioModeLease?,
+    focusLease: AudioFocusLease?,
+    captureGeneration: Long,
+  ) {
+    val proof = releasePartiallyConstructedOnControl(
+      recorder,
+      effects,
+      audioManager,
+      modeLease,
+      focusLease,
+      captureGeneration,
+    )
+    if (captureId != null) {
+      completeV2Release(sessionId, captureId, proof, CaptureStopReason.REQUESTED, emitEvent = true)
     }
   }
 
@@ -948,24 +1061,59 @@ class BobLiveAudioModule : Module() {
     modeLease: AudioModeLease?,
     focusLease: AudioFocusLease?,
     captureGeneration: Long,
-  ) {
+  ): BobLiveAudioPhysicalReleaseProof {
     effects.forEach(::releaseEffect)
-    if (recorder != null) {
-      try {
-        if (recorder.recordingState == AudioRecord.RECORDSTATE_RECORDING) recorder.stop()
-      } catch (_: IllegalStateException) {
-        // Recorder partiellement initialise.
-      }
-      try {
-        recorder.release()
-      } catch (_: RuntimeException) {
-        // Recorder partiellement initialise.
-      }
-    }
-    if (focusLease != null) abandonAudioFocus(audioManager, focusLease)
-    if (modeLease != null) restoreAudioModeOnControl(audioManager, modeLease)
+    val recorderStopped = recorder?.let(::stopRecorderOnControl) ?: true
+    val recorderReleased = recorder?.let(::releaseRecorderOnControl) ?: true
+    val audioFocusAbandoned = focusLease?.let { abandonAudioFocus(audioManager, it) } ?: true
+    val audioModeReleased = modeLease?.let { restoreAudioModeOnControl(audioManager, it) } ?: true
     synchronized(stateLock) {
       if (generation == captureGeneration) generation = nextGeneration(generation)
+    }
+    return BobLiveAudioPhysicalReleaseProof(
+      captureThreadTerminated = true,
+      recorderStopped = recorderStopped,
+      recorderReleased = recorderReleased,
+      audioFocusAbandoned = audioFocusAbandoned,
+      audioModeReleased = audioModeReleased,
+    )
+  }
+
+  private fun stopRecorderOnControl(recorder: AudioRecord): Boolean {
+    val recording = try {
+      recorder.recordingState == AudioRecord.RECORDSTATE_RECORDING
+    } catch (_: RuntimeException) {
+      return false
+    }
+    if (!recording) return true
+    return try {
+      recorder.stop()
+      recorder.recordingState != AudioRecord.RECORDSTATE_RECORDING
+    } catch (_: RuntimeException) {
+      false
+    }
+  }
+
+  private fun releaseRecorderOnControl(recorder: AudioRecord): Boolean = try {
+    recorder.release()
+    true
+  } catch (_: RuntimeException) {
+    false
+  }
+
+  private fun awaitCaptureThreadTermination(thread: Thread?, mayJoin: Boolean): Boolean {
+    if (thread == null || !thread.isAlive) return true
+    if (!mayJoin || thread === Thread.currentThread()) return false
+    return try {
+      thread.join(STOP_JOIN_TIMEOUT_MS)
+      if (thread.isAlive) {
+        thread.interrupt()
+        thread.join(STOP_JOIN_TIMEOUT_MS)
+      }
+      !thread.isAlive
+    } catch (_: InterruptedException) {
+      Thread.currentThread().interrupt()
+      false
     }
   }
 
@@ -980,16 +1128,25 @@ class BobLiveAudioModule : Module() {
     return lease
   }
 
-  private fun restoreAudioModeOnControl(audioManager: AudioManager, lease: AudioModeLease) {
-    if (audioModeOwnerGeneration != lease.generation) return
-    audioModeOwnerGeneration = null
-    try {
+  private fun restoreAudioModeOnControl(
+    audioManager: AudioManager,
+    lease: AudioModeLease,
+  ): Boolean {
+    if (audioModeOwnerGeneration != lease.generation) return true
+    return try {
       // Une autre brique peut avoir repris le mode entre-temps; ne jamais l'ecraser.
-      if (audioManager.mode == AudioManager.MODE_IN_COMMUNICATION) {
+      if (audioManager.mode != AudioManager.MODE_IN_COMMUNICATION) {
+        audioModeOwnerGeneration = null
+        true
+      } else {
         audioManager.mode = lease.previousMode
+        val restored = audioManager.mode == lease.previousMode
+        if (restored) audioModeOwnerGeneration = null
+        restored
       }
     } catch (_: RuntimeException) {
-      // AudioService peut disparaitre pendant l'extinction du processus.
+      // Conserver l'owner générationnel empêche toute nouvelle capture jusqu'au restart.
+      false
     }
   }
 
@@ -1043,15 +1200,17 @@ class BobLiveAudioModule : Module() {
   }
 
   @Suppress("DEPRECATION")
-  private fun abandonAudioFocus(audioManager: AudioManager, lease: AudioFocusLease) {
-    try {
+  private fun abandonAudioFocus(audioManager: AudioManager, lease: AudioFocusLease): Boolean {
+    return try {
+      val result =
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && lease.request != null) {
         audioManager.abandonAudioFocusRequest(lease.request)
       } else {
         audioManager.abandonAudioFocus(lease.listener)
       }
+      result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
     } catch (_: RuntimeException) {
-      // AudioService peut etre deja detruit.
+      false
     }
   }
 
@@ -1138,6 +1297,158 @@ class BobLiveAudioModule : Module() {
       && acceptsStarts.get()
       && !destroyed.get()
       && generation == state.generation
+      && !cancellationFence.isCancellationRequested(
+        state.sessionId,
+        state.capabilities.captureId,
+      )
+  }
+
+  private fun prepareCaptureV2OnControl(
+    sessionId: String,
+    captureId: String,
+    requestedMaxCaptureDurationMs: Int?,
+  ): CaptureCapabilities {
+    return try {
+      throwIfV2Cancelled(sessionId, captureId)
+      val result = prepareCaptureOnControl(
+        sessionId,
+        requestedMaxCaptureDurationMs,
+        requestedCaptureId = captureId,
+      )
+      if (!cancellationFence.transition(
+          sessionId,
+          captureId,
+          BobLiveAudioCancellationPhase.PREPARED,
+        )
+      ) throw CaptureCancellationRequested()
+      result
+    } catch (error: Exception) {
+      releaseV2OnControl(sessionId, captureId)
+      throw (error as? BobLiveAudioException
+        ?: BobLiveAudioException("capture_initialization_failed"))
+    }
+  }
+
+  private fun startPreparedCaptureV2OnControl(sessionId: String, captureId: String) {
+    try {
+      if (!cancellationFence.transition(
+          sessionId,
+          captureId,
+          BobLiveAudioCancellationPhase.STARTING,
+        )
+      ) throw CaptureCancellationRequested()
+      startPreparedCaptureOnControl(sessionId, captureId)
+      if (!cancellationFence.transition(
+          sessionId,
+          captureId,
+          BobLiveAudioCancellationPhase.CAPTURING,
+        )
+      ) throw CaptureCancellationRequested()
+    } catch (error: Exception) {
+      releaseV2OnControl(sessionId, captureId)
+      throw (error as? BobLiveAudioException
+        ?: BobLiveAudioException("capture_initialization_failed"))
+    }
+  }
+
+  private fun throwIfV2Cancelled(sessionId: String, captureId: String?) {
+    if (captureId != null && cancellationFence.isCancellationRequested(sessionId, captureId)) {
+      throw CaptureCancellationRequested()
+    }
+  }
+
+  private fun scheduleV2Release(sessionId: String, captureId: String) {
+    if (controlExecutor.isShutdown) return
+    try {
+      controlExecutor.execute { releaseV2OnControl(sessionId, captureId) }
+    } catch (_: RejectedExecutionException) {
+      // Le tombstone reste posé; l'absence de terminalité maintient le lease JS en quarantaine.
+    }
+  }
+
+  private fun releaseV2OnControl(sessionId: String, captureId: String) {
+    val active = synchronized(stateLock) {
+      activeCapture?.takeIf {
+        it.sessionId == sessionId && it.capabilities.captureId == captureId
+      }
+    }
+    if (active != null) {
+      stopCaptureOnControl(
+        requestedSessionId = sessionId,
+        requestedCaptureId = captureId,
+        expectedGeneration = active.generation,
+        reason = CaptureStopReason.REQUESTED,
+        emitEvent = true,
+      )
+      return
+    }
+    // `null` signifie: aucune preuve physique attachée à ce passage. Le fence ne permettra la
+    // terminalité que si cette génération n'a jamais atteint l'allocation native.
+    completeV2Release(
+      sessionId,
+      captureId,
+      releaseProof = null,
+      reason = CaptureStopReason.REQUESTED,
+      emitEvent = true,
+    )
+  }
+
+  private fun emitTerminalAfterRelease(
+    state: CaptureState,
+    reason: CaptureStopReason,
+    emitEvent: Boolean,
+    releaseProof: BobLiveAudioPhysicalReleaseProof,
+  ) {
+    val captureId = state.capabilities.captureId
+    val v2 = cancellationFence.contains(state.sessionId, captureId)
+    if (v2) {
+      completeV2Release(state.sessionId, captureId, releaseProof, reason, emitEvent)
+      return
+    }
+    if (!emitEvent) return
+    safeSendEvent(
+      "onCaptureStopped",
+      mapOf(
+        "sessionId" to state.sessionId,
+        "captureId" to captureId,
+        "reason" to reason.wireValue,
+      ),
+    )
+  }
+
+  private fun completeV2Release(
+    sessionId: String,
+    captureId: String,
+    releaseProof: BobLiveAudioPhysicalReleaseProof?,
+    reason: CaptureStopReason,
+    emitEvent: Boolean,
+  ) {
+    if (
+      cancellationFence.phase(sessionId, captureId)
+      == BobLiveAudioCancellationPhase.RELEASED
+    ) return
+    cancellationFence.requestCancellation(sessionId, captureId)
+    val resourcesMayBeAllocated = cancellationFence.resourcesMayBeAllocated(sessionId, captureId)
+    val physicalReleaseProven = releaseProof?.isComplete == true
+    if (resourcesMayBeAllocated && !physicalReleaseProven) {
+      // Ne jamais autoriser une autre autorité micro dans ce processus après une libération
+      // incertaine, y compris via l'ancien contrat v1.
+      releaseIntegrityCompromised.set(true)
+    }
+    val firstTerminal = cancellationFence.markReleased(
+      sessionId,
+      captureId,
+      physicalReleaseProven = physicalReleaseProven,
+    )
+    if (!emitEvent || !firstTerminal) return
+    safeSendEvent(
+      "onCaptureStopped",
+      mapOf(
+        "sessionId" to sessionId,
+        "captureId" to captureId,
+        "reason" to reason.wireValue,
+      ),
+    )
   }
 
   private fun safeSendEvent(name: String, body: Map<String, Any?>) {

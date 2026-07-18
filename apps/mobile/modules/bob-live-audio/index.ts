@@ -13,6 +13,7 @@ export {
   BobLiveAudioPcmStreamDecoder,
   BobLiveAudioVadStreamDecoder,
   decodeBobLiveAudioPcmChunk,
+  decodeBobLiveAudioStoppedEvent,
 } from './src/BobLiveAudio.contract';
 export type {
   BobLiveAudioCapabilities,

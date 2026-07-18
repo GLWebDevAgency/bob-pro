@@ -1,4 +1,8 @@
-import type { BobLiveAudioPcmChunkEvent, BobLiveAudioVadEvent } from './BobLiveAudio.types';
+import type {
+  BobLiveAudioPcmChunkEvent,
+  BobLiveAudioStoppedEvent,
+  BobLiveAudioVadEvent,
+} from './BobLiveAudio.types';
 
 export const BOB_LIVE_AUDIO_SAMPLE_RATE_HZ = 16_000 as const;
 export const BOB_LIVE_AUDIO_CHANNELS = 1 as const;
@@ -30,6 +34,15 @@ const VAD_CONFIG_VERSION = /^[A-Za-z0-9._-]{1,64}$/u;
 // conversion noise; it is far below the 20 ms analysis quantum and cannot hide profile drift.
 const VAD_TIMELINE_TOLERANCE_MS = 0.001;
 const PROCESSING_STATUS = new Set(['enabled', 'unavailable', 'unknown']);
+const STOP_REASON = new Set([
+  'requested',
+  'background',
+  'context_destroyed',
+  'capture_error',
+  'backpressure',
+  'watchdog_timeout',
+  'interruption',
+]);
 const CAPABILITIES_KEYS = [
   'sessionId',
   'captureId',
@@ -72,6 +85,7 @@ const VAD_EVENT_KEYS = [
   'energyDbfs',
   'noiseFloorDbfs',
 ] as const;
+const STOPPED_EVENT_KEYS = ['sessionId', 'captureId', 'reason'] as const;
 
 export class BobLiveAudioContractError extends Error {
   readonly code = 'invalid_native_audio_frame' as const;
@@ -79,6 +93,47 @@ export class BobLiveAudioContractError extends Error {
   constructor() {
     super('invalid_native_audio_frame');
     this.name = 'BobLiveAudioContractError';
+  }
+}
+
+/**
+ * Décode la seule preuve autorisant la libération du lease audio JavaScript.
+ *
+ * Le module natif émet cet événement après le nettoyage de l'engine/recorder et de l'audio focus.
+ * Une forme permissive, une génération voisine ou une raison inconnue ne vaut jamais terminalité.
+ */
+export function decodeBobLiveAudioStoppedEvent(
+  event: unknown,
+  expectedSessionId: string,
+  expectedCaptureId: string,
+): BobLiveAudioStoppedEvent {
+  if (
+    event === null
+    || typeof event !== 'object'
+    || Array.isArray(event)
+    || !BOUNDED_ID.test(expectedSessionId)
+    || !BOUNDED_ID.test(expectedCaptureId)
+  ) throw new BobLiveAudioContractError();
+  let candidate: Record<string, unknown>;
+  try {
+    candidate = event as Record<string, unknown>;
+    const keys = Object.keys(candidate);
+    if (
+      keys.length !== STOPPED_EVENT_KEYS.length
+      || !keys.every((key) => (STOPPED_EVENT_KEYS as readonly string[]).includes(key))
+      || candidate.sessionId !== expectedSessionId
+      || candidate.captureId !== expectedCaptureId
+      || typeof candidate.reason !== 'string'
+      || !STOP_REASON.has(candidate.reason)
+    ) throw new BobLiveAudioContractError();
+    return {
+      sessionId: expectedSessionId,
+      captureId: expectedCaptureId,
+      reason: candidate.reason as BobLiveAudioStoppedEvent['reason'],
+    };
+  } catch (error) {
+    if (error instanceof BobLiveAudioContractError) throw error;
+    throw new BobLiveAudioContractError();
   }
 }
 
