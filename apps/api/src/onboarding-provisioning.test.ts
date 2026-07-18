@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { CompanyProps, OcrPort, PaymentGatewayPort, PdfRendererPort } from '@bob/core';
+import type {
+  CompanyRegistrationInput,
+  OcrPort,
+  PaymentGatewayPort,
+  PdfRendererPort,
+} from '@bob/core';
 import { MERCIER_PROPS } from '@bob/core/testing';
 import { BackendService } from './backend.service';
 import { InMemoryPersistence } from './persistence/persistence.testing';
@@ -9,7 +14,7 @@ import type { NotificationDeliveryService } from './jobs/notification-delivery.s
 import type { Metrics } from './observability/metrics';
 
 const USER_ID = 'a1b2c3d4-0000-4000-8000-1234567890ab';
-const INPUT: Omit<CompanyProps, 'id'> = {
+const INPUT: CompanyRegistrationInput = {
   name: 'Durand Élec',
   legalForm: 'EI',
   siren: MERCIER_PROPS.siren,

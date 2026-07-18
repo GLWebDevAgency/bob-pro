@@ -139,6 +139,7 @@ import {
   type WorksiteMediaItem,
   type CreateChantierInput,
   type CompanyProps,
+  type CompanyRegistrationInput,
   type CompanyBillingSettings,
   type CompanyBillingSettingsPatch,
   type CustomerPortfolio,
@@ -1197,11 +1198,15 @@ export class LocalBobClient implements BobClient {
   /** C24b (adaptateur démo) : pas de provisioning Supabase hors-ligne — met à jour la société
    * seedée et renvoie SON id (parité de contrat avec le serveur : l'id vient TOUJOURS du serveur). */
   async registerCompany(
-    input: Omit<CompanyProps, 'id'>,
+    input: CompanyRegistrationInput,
   ): Promise<Result<{ companyId: string }, AppError>> {
-    const r = Company.of({ id: this.companyId, ...input });
+    const r = Company.of({ ...input, id: this.companyId });
     if (!r.ok) return err(appDomain(r.error));
-    await this.companies.save(r.value);
+    const existing = await this.companies.findById(this.companyId);
+    if (existing?.isClosed()) return err(appForbidden('Compte clôturé.'));
+    // L'onboarding est create-only : un retry avec un snapshot annuaire différent ne réécrit
+    // jamais l'identité légale déjà acceptée. Les modifications passent par les PATCH dédiés.
+    if (existing === null) await this.companies.save(r.value);
     return ok({ companyId: this.companyId });
   }
 

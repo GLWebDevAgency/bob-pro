@@ -34,8 +34,14 @@ const BTP_TRADES: ReadonlySet<Trade> = new Set([
   'paysagiste',
 ]);
 
-export interface CompanyProps {
-  id: string;
+/**
+ * Contrat positif d'inscription d'une entreprise.
+ *
+ * Il est volontairement défini champ par champ au lieu d'être dérivé de `CompanyProps` avec un
+ * `Omit` : une future propriété interne (identifiant, cycle de vie, marqueur de conformité…) ne
+ * peut ainsi jamais devenir silencieusement écrivable par `/onboarding/company`.
+ */
+export interface CompanyRegistrationInput {
   name: string;
   legalForm: LegalForm;
   siren: string;
@@ -54,6 +60,10 @@ export interface CompanyProps {
   iban?: string;
   bic?: string;
   decennale?: InsurancePolicy;
+}
+
+export interface CompanyProps extends CompanyRegistrationInput {
+  id: string;
   /**
    * Clôture de compte (Apple 5.1.1(v), CloseAccount @bob/core) — marqueur additif, JAMAIS un
    * cascade delete : présent = la company est clôturée, le tenant n'est plus accessible (guard

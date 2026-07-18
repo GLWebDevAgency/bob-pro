@@ -22,7 +22,7 @@ import type {
   Horizon,
   PaymentMethod,
   PlanTier,
-  CompanyProps,
+  CompanyRegistrationInput,
   CustomerProps,
   RecordExpenseInput,
   CreateChantierInput,
@@ -37,8 +37,9 @@ import type {
   VatRegime,
   CustomerPortfolio,
   ExpensePaymentEvidenceInput,
+  LegalForm,
 } from '@bob/core';
-import { Iban, isCatalogueCategory, isValidDateOnly, isVatRate } from '@bob/core';
+import { Iban, Siren, Siret, isCatalogueCategory, isValidDateOnly, isVatRate } from '@bob/core';
 import { type AgentAskPayload } from '@bob/ai';
 import { Throttle } from '@nestjs/throttler';
 import {
@@ -152,6 +153,31 @@ const CREATE_CUSTOMER_FIELDS = new Set([
   'isSubcontractingBtp',
 ]);
 const CUSTOMER_ADDRESS_FIELDS = new Set(['line1', 'zip', 'city']);
+const COMPANY_REGISTRATION_FIELDS = new Set([
+  'name',
+  'legalForm',
+  'siren',
+  'siret',
+  'apeCode',
+  'trade',
+  'vatRegime',
+  'customerPortfolio',
+  'rcsOrRm',
+  'address',
+  'tvaIntracom',
+  'dateCreation',
+  'iban',
+  'bic',
+  'decennale',
+]);
+const COMPANY_REGISTRATION_ADDRESS_FIELDS = new Set(['line1', 'zip', 'city']);
+const COMPANY_REGISTRATION_INSURANCE_FIELDS = new Set([
+  'insurer',
+  'policyNo',
+  'coverage',
+  'expiresAt',
+]);
+const LEGAL_FORMS = new Set<LegalForm>(['EI', 'EURL', 'SASU', 'SARL', 'SAS', 'micro']);
 const TRADES = new Set<Trade>([
   'plombier',
   'electricien',
@@ -236,6 +262,184 @@ function throwValidationIssues(issues: ValidationIssue[]): never {
     { ok: false, error: { kind: 'validation', issues } },
     HttpStatus.UNPROCESSABLE_ENTITY,
   );
+}
+
+function optionalCompanyRegistrationString(
+  body: Record<string, unknown>,
+  field: keyof CompanyRegistrationInput,
+  issues: ValidationIssue[],
+): string | undefined {
+  if (!Object.hasOwn(body, field)) return undefined;
+  const value = body[field];
+  if (typeof value !== 'string') {
+    issues.push({ field, message: 'Chaîne de caractères requise.' });
+    return undefined;
+  }
+  return value.trim();
+}
+
+/** Frontière HTTP stricte : reconstruit le DTO positif sans jamais propager le corps reçu. */
+function parseCompanyRegistrationBody(body: Record<string, unknown>): CompanyRegistrationInput {
+  const issues: ValidationIssue[] = [];
+  const unknownField = Object.keys(body).find((field) => !COMPANY_REGISTRATION_FIELDS.has(field));
+  if (unknownField !== undefined) {
+    issues.push({ field: unknownField, message: 'Champ non autorisé.' });
+  }
+
+  const name = typeof body.name === 'string' ? body.name.trim() : '';
+  if (name.length === 0) issues.push({ field: 'name', message: 'Raison sociale requise.' });
+
+  const legalForm = body.legalForm;
+  if (typeof legalForm !== 'string' || !LEGAL_FORMS.has(legalForm as LegalForm)) {
+    issues.push({ field: 'legalForm', message: 'Forme juridique inconnue.' });
+  }
+  const trade = body.trade;
+  if (typeof trade !== 'string' || !TRADES.has(trade as Trade)) {
+    issues.push({ field: 'trade', message: 'Métier inconnu.' });
+  }
+  const vatRegime = body.vatRegime;
+  if (typeof vatRegime !== 'string' || !VAT_REGIMES.has(vatRegime as VatRegime)) {
+    issues.push({ field: 'vatRegime', message: 'Régime de TVA inconnu.' });
+  }
+  const customerPortfolio = body.customerPortfolio;
+  if (
+    customerPortfolio !== undefined &&
+    (typeof customerPortfolio !== 'string' ||
+      !CUSTOMER_PORTFOLIOS.has(customerPortfolio as CustomerPortfolio))
+  ) {
+    issues.push({ field: 'customerPortfolio', message: 'Clientèle principale inconnue.' });
+  }
+
+  let siren: string | undefined;
+  if (typeof body.siren !== 'string') {
+    issues.push({ field: 'siren', message: 'SIREN requis.' });
+  } else {
+    const parsed = Siren.of(body.siren);
+    if (!parsed.ok) issues.push({ field: 'siren', message: 'SIREN invalide.' });
+    else siren = parsed.value.value;
+  }
+  let siret: string | undefined;
+  if (typeof body.siret !== 'string') {
+    issues.push({ field: 'siret', message: 'SIRET requis.' });
+  } else {
+    const parsed = Siret.of(body.siret);
+    if (!parsed.ok) issues.push({ field: 'siret', message: 'SIRET invalide.' });
+    else siret = parsed.value.value;
+  }
+  if (siren !== undefined && siret !== undefined && siret.slice(0, 9) !== siren) {
+    issues.push({ field: 'siret', message: 'SIRET incohérent avec le SIREN.' });
+  }
+
+  let address: CompanyRegistrationInput['address'] | undefined;
+  if (!isJsonRecord(body.address)) {
+    issues.push({ field: 'address', message: 'Adresse objet requise.' });
+  } else {
+    const unknownAddressField = Object.keys(body.address).find(
+      (field) => !COMPANY_REGISTRATION_ADDRESS_FIELDS.has(field),
+    );
+    if (unknownAddressField !== undefined) {
+      issues.push({ field: `address.${unknownAddressField}`, message: 'Champ non autorisé.' });
+    }
+    if (
+      typeof body.address.line1 !== 'string' ||
+      typeof body.address.zip !== 'string' ||
+      typeof body.address.city !== 'string'
+    ) {
+      issues.push({ field: 'address', message: 'Adresse invalide.' });
+    } else {
+      // Les chaînes vides sont acceptées à l'inscription si l'annuaire ne connaît pas le siège.
+      // Company.assertCanIssue() bloque ensuite tout acte légal tant que l'adresse n'est pas complétée.
+      address = {
+        line1: body.address.line1.trim(),
+        zip: body.address.zip.trim(),
+        city: body.address.city.trim(),
+      };
+    }
+  }
+
+  const apeCode = optionalCompanyRegistrationString(body, 'apeCode', issues);
+  const rcsOrRm = optionalCompanyRegistrationString(body, 'rcsOrRm', issues);
+  const tvaIntracom = optionalCompanyRegistrationString(body, 'tvaIntracom', issues);
+  const dateCreation = optionalCompanyRegistrationString(body, 'dateCreation', issues);
+  if (dateCreation !== undefined && !isValidDateOnly(dateCreation)) {
+    issues.push({ field: 'dateCreation', message: 'Date de création AAAA-MM-JJ invalide.' });
+  }
+
+  let iban: string | undefined;
+  if (Object.hasOwn(body, 'iban')) {
+    if (typeof body.iban !== 'string') {
+      issues.push({ field: 'iban', message: 'IBAN doit être une chaîne.' });
+    } else {
+      const parsed = Iban.of(body.iban);
+      if (!parsed.ok) issues.push({ field: 'iban', message: 'IBAN invalide.' });
+      else iban = parsed.value.value;
+    }
+  }
+  let bic: string | undefined;
+  if (Object.hasOwn(body, 'bic')) {
+    if (typeof body.bic !== 'string' || !BIC_PATTERN.test(body.bic.trim().toUpperCase())) {
+      issues.push({ field: 'bic', message: 'BIC invalide.' });
+    } else {
+      bic = body.bic.trim().toUpperCase();
+    }
+  }
+
+  let decennale: CompanyRegistrationInput['decennale'] | undefined;
+  if (Object.hasOwn(body, 'decennale')) {
+    if (!isJsonRecord(body.decennale)) {
+      issues.push({ field: 'decennale', message: 'Assurance décennale objet requise.' });
+    } else {
+      const unknownInsuranceField = Object.keys(body.decennale).find(
+        (field) => !COMPANY_REGISTRATION_INSURANCE_FIELDS.has(field),
+      );
+      if (unknownInsuranceField !== undefined) {
+        issues.push({
+          field: `decennale.${unknownInsuranceField}`,
+          message: 'Champ non autorisé.',
+        });
+      }
+      const insurer =
+        typeof body.decennale.insurer === 'string' ? body.decennale.insurer.trim() : '';
+      const policyNo =
+        typeof body.decennale.policyNo === 'string' ? body.decennale.policyNo.trim() : '';
+      const coverage =
+        typeof body.decennale.coverage === 'string' ? body.decennale.coverage.trim() : '';
+      const expiresAt =
+        typeof body.decennale.expiresAt === 'string' ? body.decennale.expiresAt : '';
+      if (insurer.length === 0)
+        issues.push({ field: 'decennale.insurer', message: 'Assureur requis.' });
+      if (policyNo.length === 0)
+        issues.push({ field: 'decennale.policyNo', message: 'N° de police requis.' });
+      if (coverage.length === 0)
+        issues.push({ field: 'decennale.coverage', message: 'Couverture requise.' });
+      if (!isValidDateOnly(expiresAt)) {
+        issues.push({ field: 'decennale.expiresAt', message: 'Échéance AAAA-MM-JJ invalide.' });
+      } else if (insurer.length > 0 && policyNo.length > 0 && coverage.length > 0) {
+        decennale = { insurer, policyNo, coverage, expiresAt };
+      }
+    }
+  }
+
+  if (issues.length > 0) throwValidationIssues(issues);
+  return {
+    name,
+    legalForm: legalForm as LegalForm,
+    siren: siren as string,
+    siret: siret as string,
+    trade: trade as Trade,
+    vatRegime: vatRegime as VatRegime,
+    address: address as CompanyRegistrationInput['address'],
+    ...(customerPortfolio === undefined
+      ? {}
+      : { customerPortfolio: customerPortfolio as CustomerPortfolio }),
+    ...(apeCode === undefined ? {} : { apeCode }),
+    ...(rcsOrRm === undefined ? {} : { rcsOrRm }),
+    ...(tvaIntracom === undefined ? {} : { tvaIntracom }),
+    ...(dateCreation === undefined ? {} : { dateCreation }),
+    ...(iban === undefined ? {} : { iban }),
+    ...(bic === undefined ? {} : { bic }),
+    ...(decennale === undefined ? {} : { decennale }),
+  };
 }
 
 /** Preuve de règlement fournisseur (POST :id/pay et :id/regularize-payment — MÊME contrat). */
@@ -1162,11 +1366,12 @@ export class CustomersController {
 export class OnboardingController {
   constructor(private readonly backend: BackendService) {}
   /** @AllowsMissingCompanyRow : un JWT portant un company_id SANS ligne en base (NO_COMPANY)
-   * doit pouvoir re-provisionner ici — registerCompany recrée la MÊME company (id du JWT). */
+   * doit pouvoir réparer son provisioning sur la MÊME company (id du JWT), sans la réécrire. */
   @Post('company')
   @AllowsMissingCompanyRow()
-  async company(@Body() body: Omit<CompanyProps, 'id'>) {
-    return unwrap(await this.backend.registerCompany(body));
+  async company(@Body() body: unknown) {
+    assertJsonObjectBody(body);
+    return unwrap(await this.backend.registerCompany(parseCompanyRegistrationBody(body)));
   }
 }
 

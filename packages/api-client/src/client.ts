@@ -39,6 +39,7 @@ import type {
   WorksiteMediaItem,
   CreateChantierInput,
   CompanyProps,
+  CompanyRegistrationInput,
   CompanyBillingSettings,
   CompanyBillingSettingsPatch,
   CustomerPortfolio,
@@ -814,11 +815,11 @@ export interface BobClient {
     patch: CompanyBillingSettingsPatch;
   }): Promise<Result<CompanyBillingSettings, AppError>>;
   lookupCompany(siret: string): Promise<Result<CompanyLookupResult, AppError>>;
-  /** POST /onboarding/company (C24b) : crée la société du compte (provisioning tenant à
-   * l'inscription — id décidé PAR LE SERVEUR, jamais fourni par le client) ou met à jour
-   * SA société quand le tenant existe déjà. Local (démo) : la société seedée. */
+  /** POST /onboarding/company (C24b) : crée la société du compte ou répare les dépendances
+   * d'un provisioning incomplet. L'id et le cycle de vie restent exclusivement serveur ; un
+   * retry ne modifie jamais l'identité légale déjà persistée. */
   registerCompany(
-    input: Omit<CompanyProps, 'id'>,
+    input: CompanyRegistrationInput,
   ): Promise<Result<{ companyId: string }, AppError>>;
   checkVat(vatNumber: string): Promise<Result<VatCheckResult, AppError>>;
   searchAddress(query: string): Promise<Result<AddressSuggestion[], AppError>>;

@@ -1,10 +1,115 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { BackendService } from './backend.service';
-import { CompanyLookupController } from './api.controllers';
+import { CompanyLookupController, OnboardingController } from './api.controllers';
 
 function controller(overrides: Partial<BackendService> = {}) {
   return new CompanyLookupController(overrides as BackendService);
 }
+
+const VALID_REGISTRATION = {
+  name: '  Durand Élec  ',
+  legalForm: 'EURL',
+  siren: '732 829 320',
+  siret: '732 829 320 00074',
+  apeCode: ' 43.21A ',
+  trade: 'electricien',
+  vatRegime: 'reel_simpl',
+  customerPortfolio: 'b2g',
+  rcsOrRm: ' RCS Paris 732 829 320 ',
+  address: { line1: ' 4 rue du Forgeron ', zip: ' 92310 ', city: ' Sèvres ' },
+  tvaIntracom: ' FR24732829320 ',
+  dateCreation: '1973-01-01',
+  iban: 'FR76 3000 6000 0112 3456 7890 189',
+  bic: ' agrifrpp ',
+  decennale: {
+    insurer: ' AXA ',
+    policyNo: ' DEC-123 ',
+    coverage: ' Électricité ',
+    expiresAt: '2027-12-31',
+  },
+} as const;
+
+describe('OnboardingController — contrat positif société', () => {
+  it('normalise puis transmet uniquement les champs publics explicitement autorisés', async () => {
+    const registerCompany = vi.fn(async () => ({
+      ok: true as const,
+      value: { companyId: 'company-owner' },
+    }));
+    const value = new OnboardingController({ registerCompany } as unknown as BackendService);
+
+    await expect(value.company(VALID_REGISTRATION)).resolves.toEqual({
+      companyId: 'company-owner',
+    });
+    expect(registerCompany).toHaveBeenCalledWith({
+      name: 'Durand Élec',
+      legalForm: 'EURL',
+      siren: '732829320',
+      siret: '73282932000074',
+      apeCode: '43.21A',
+      trade: 'electricien',
+      vatRegime: 'reel_simpl',
+      customerPortfolio: 'b2g',
+      rcsOrRm: 'RCS Paris 732 829 320',
+      address: { line1: '4 rue du Forgeron', zip: '92310', city: 'Sèvres' },
+      tvaIntracom: 'FR24732829320',
+      dateCreation: '1973-01-01',
+      iban: 'FR7630006000011234567890189',
+      bic: 'AGRIFRPP',
+      decennale: {
+        insurer: 'AXA',
+        policyNo: 'DEC-123',
+        coverage: 'Électricité',
+        expiresAt: '2027-12-31',
+      },
+    });
+  });
+
+  it.each(['id', 'closedAt', 'closureReason', 'futureField'])(
+    'refuse le champ serveur %s avant la couche application',
+    async (field) => {
+      const registerCompany = vi.fn();
+      const value = new OnboardingController({ registerCompany } as unknown as BackendService);
+
+      await expect(
+        value.company({ ...VALID_REGISTRATION, [field]: 'forged' }),
+      ).rejects.toMatchObject({
+        status: 422,
+      });
+      expect(registerCompany).not.toHaveBeenCalled();
+    },
+  );
+
+  it('refuse les champs imbriqués inconnus et les identifiants incohérents', async () => {
+    const registerCompany = vi.fn();
+    const value = new OnboardingController({ registerCompany } as unknown as BackendService);
+
+    await expect(
+      value.company({
+        ...VALID_REGISTRATION,
+        siren: '542107651',
+        address: { ...VALID_REGISTRATION.address, companyId: 'other' },
+        decennale: { ...VALID_REGISTRATION.decennale, closedAt: '2026-01-01' },
+      }),
+    ).rejects.toMatchObject({ status: 422 });
+    expect(registerCompany).not.toHaveBeenCalled();
+  });
+
+  it('refuse les formes, dates et coordonnées bancaires invalides sans appeler le backend', async () => {
+    const registerCompany = vi.fn();
+    const value = new OnboardingController({ registerCompany } as unknown as BackendService);
+
+    await expect(
+      value.company({
+        ...VALID_REGISTRATION,
+        legalForm: 'holding',
+        dateCreation: '2026-02-30',
+        iban: 'FR7630006000011234567890188',
+        bic: 'BAD',
+      }),
+    ).rejects.toMatchObject({ status: 422 });
+    expect(registerCompany).not.toHaveBeenCalled();
+  });
+});
 
 describe('CompanyLookupController — profil société confirmé', () => {
   it('refuse tout champ hors contrat avant la couche application', async () => {

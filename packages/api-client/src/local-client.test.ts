@@ -39,6 +39,8 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
       address: { line1: '4 rue du Forgeron', zip: '92310', city: 'Sèvres' },
     });
     expect(r.ok && r.value.companyId).toBe(client.companyId);
+    const persisted = await client.getCompanyMe();
+    expect(persisted.ok && persisted.value.name).toBe('Mercier Plomberie');
 
     // SIRET incohérent avec le SIREN : refus du domaine (Company.of), pas d'écriture fantôme.
     const bad = await client.registerCompany({
@@ -51,6 +53,27 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
       address: { line1: '1 rue Test', zip: '75001', city: 'Paris' },
     });
     expect(!bad.ok && bad.error.kind).toBe('domain');
+  });
+
+  it('C24b : un retry local après clôture reste refusé et ne ressuscite jamais la société', async () => {
+    const client = makeClient();
+    const closed = await client.closeAccount({ confirmationText: 'Mercier Plomberie' });
+    expect(closed.ok).toBe(true);
+
+    const retried = await client.registerCompany({
+      name: 'Société réouverte',
+      legalForm: 'EI',
+      siren: '732829320',
+      siret: '73282932000074',
+      trade: 'electricien',
+      vatRegime: 'franchise',
+      address: { line1: '4 rue du Forgeron', zip: '92310', city: 'Sèvres' },
+    });
+
+    expect(retried).toMatchObject({ ok: false, error: { kind: 'forbidden' } });
+    const persisted = await client.getCompanyMe();
+    expect(persisted.ok && persisted.value.closedAt).toBeTruthy();
+    expect(persisted.ok && persisted.value.name).toBe('Mercier Plomberie');
   });
 
   it('DELETE /account (démo) : confirmationText EXACT (nom de la société seedée) → clôture, mêmes règles que le serveur', async () => {

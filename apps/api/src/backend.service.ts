@@ -130,6 +130,7 @@ import {
   type InvoicePdfData,
   type QuotePdfData,
   type CompanyProps,
+  type CompanyRegistrationInput,
   type CompanyBillingSettings,
   type CompanyBillingSettingsPatch,
   type CustomerPortfolio,
@@ -5683,7 +5684,7 @@ export class BackendService {
    *   EXPLICITE loggée (le client réessaie ; la company déjà créée est réutilisée telle quelle).
    */
   async registerCompany(
-    input: Omit<CompanyProps, 'id'>,
+    input: CompanyRegistrationInput,
   ): Promise<Result<{ companyId: string }, AppError>> {
     const principal = getPrincipal();
     if (!principal) {

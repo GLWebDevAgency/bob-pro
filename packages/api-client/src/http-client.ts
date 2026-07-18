@@ -34,6 +34,7 @@ import type {
   WorksiteMediaItem,
   CreateChantierInput,
   CompanyProps,
+  CompanyRegistrationInput,
   CompanyBillingSettings,
   CompanyBillingSettingsPatch,
   CustomerPortfolio,
@@ -1610,7 +1611,7 @@ export class HttpBobClient implements BobClient {
     );
   }
   /** C24b : le serveur décide l'id (provisioning déterministe company-<userId>) — jamais d'id envoyé. */
-  registerCompany(input: Omit<CompanyProps, 'id'>) {
+  registerCompany(input: CompanyRegistrationInput) {
     return this.req<{ companyId: string }>('POST', '/onboarding/company', input);
   }
   checkVat(vatNumber: string) {

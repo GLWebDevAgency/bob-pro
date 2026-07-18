@@ -1,5 +1,11 @@
 import type { Session } from '@supabase/supabase-js';
-import type { CompanyLookupResult, CompanyProps, LegalForm, Trade, VatRegime } from '@bob/core';
+import type {
+  CompanyLookupResult,
+  CompanyRegistrationInput,
+  LegalForm,
+  Trade,
+  VatRegime,
+} from '@bob/core';
 
 /**
  * Fiche entreprise en attente de provisioning (C24b).
@@ -82,7 +88,7 @@ export function registerInputFromLookup(
   lookup: CompanyLookupResult,
   legalForm: LegalForm,
   vatRegime: VatRegime,
-): Omit<CompanyProps, 'id'> {
+): CompanyRegistrationInput {
   return {
     name: lookup.denomination,
     legalForm,
