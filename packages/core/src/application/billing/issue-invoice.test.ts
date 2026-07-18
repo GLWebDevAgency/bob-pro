@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { IssueInvoice } from './issue-invoice';
 import { Invoice } from '../../domain/billing/invoice/invoice';
+import { Company } from '../../domain/company/company';
+import { Customer } from '../../domain/customer/customer';
 import { DocNumber } from '../../domain/billing/shared/doc-number';
 import { PaymentTerms } from '../../shared-kernel/payment-terms';
 import { seedCompany, seedCustomers } from '../fixtures';
@@ -54,17 +56,25 @@ function issuedInvoice(id = 'inv-1', number = 'F-2026-0007'): Invoice {
 }
 
 function makeDeps(invoice: Invoice) {
-  const company = seedCompany();
-  const customers = seedCustomers();
+  let company = seedCompany();
+  let customers = seedCustomers();
   let allocations = 0;
   let saves = 0;
+  const events: string[] = [];
   const invoices: InvoiceRepository = {
-    findById: async (id) => (id === invoice.id ? invoice : null),
-    lockById: async (id) => (id === invoice.id ? invoice : null),
+    findById: async (id) => {
+      events.push('invoice:locator');
+      return id === invoice.id ? invoice : null;
+    },
+    lockById: async (id) => {
+      events.push('invoice:update');
+      return id === invoice.id ? invoice : null;
+    },
     findByParentQuoteId: async () => null,
     findCreditNoteBySourceInvoiceId: async () => null,
     listByCompany: async () => [invoice],
     save: async (i) => {
+      events.push('invoice:save');
       saves += 1;
       invoice = i;
     },
@@ -73,17 +83,24 @@ function makeDeps(invoice: Invoice) {
   const companies: CompanyRepository = {
     findById: async (id) => (id === company.id ? company : null),
     lockById: async (id) => (id === company.id ? company : null),
-    lockForShareById: async (id) => (id === company.id ? company : null),
+    lockForShareById: async (id) => {
+      events.push('company:share');
+      return id === company.id ? company : null;
+    },
     list: async () => [company],
     save: async () => {},
   };
   const customerRepo: CustomerRepository = {
-    findById: async (id) => customers.find((c) => c.id === id) ?? null,
+    findById: async (id) => {
+      events.push('customer:read');
+      return customers.find((c) => c.id === id) ?? null;
+    },
     listByCompany: async () => customers,
     save: async () => {},
   };
   const counters: SequenceCounterPort = {
     allocate: async () => {
+      events.push('counter:allocate');
       allocations += 1;
       return { sequence: allocations, formatted: DocNumber.format('F', 2026, allocations) };
     },
@@ -97,7 +114,17 @@ function makeDeps(invoice: Invoice) {
     uow,
     clock,
   });
-  return { usecase, counts: () => ({ allocations, saves }) };
+  return {
+    usecase,
+    events,
+    counts: () => ({ allocations, saves }),
+    replaceCompany: (next: Company) => {
+      company = next;
+    },
+    replaceCustomers: (next: Customer[]) => {
+      customers = next;
+    },
+  };
 }
 
 describe('IssueInvoice', () => {
@@ -110,6 +137,17 @@ describe('IssueInvoice', () => {
     expect(first.ok && first.value.number).toBe('F-2026-0001');
     expect(replay.ok && replay.value.number).toBe('F-2026-0001');
     expect(env.counts()).toEqual({ allocations: 1, saves: 1 });
+    expect(env.events).toEqual([
+      'invoice:locator',
+      'company:share',
+      'invoice:update',
+      'customer:read',
+      'counter:allocate',
+      'invoice:save',
+      'invoice:locator',
+      'company:share',
+      'invoice:update',
+    ]);
   });
 
   it('renvoie le numéro si le verrou relit une facture déjà émise par une course concurrente', async () => {
@@ -156,7 +194,7 @@ describe('IssueInvoice', () => {
       counters,
       uow: { runInTransaction: (fn) => fn() },
       clock,
-    }).execute({ invoiceId: 'inv-1', terms });
+    }).execute({ invoiceId: 'inv-1' });
 
     expect(r.ok && r.value.number).toBe('F-2026-0042');
     expect({ allocations, saves }).toEqual({ allocations: 0, saves: 0 });
@@ -179,6 +217,85 @@ describe('IssueInvoice', () => {
         ],
       },
     });
+    expect(env.counts()).toEqual({ allocations: 0, saves: 0 });
+    expect(env.events).toEqual([
+      'invoice:locator',
+      'company:share',
+      'invoice:update',
+      'customer:read',
+    ]);
+  });
+
+  it('refuse une émission après clôture avant de verrouiller la facture ou consommer un numéro', async () => {
+    const env = makeDeps(draftInvoice());
+    const current = seedCompany();
+    const closed = Company.of({
+      ...current.toProps(),
+      closedAt: '2026-06-30T09:59:59.000Z',
+    });
+    if (!closed.ok) throw new Error('closed company');
+    env.replaceCompany(closed.value);
+
+    const result = await env.usecase.execute({ invoiceId: 'inv-1', terms });
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        kind: 'domain',
+        error: {
+          code: 'VALIDATION',
+          field: 'company',
+          message: 'Société introuvable ou clôturée.',
+        },
+      },
+    });
+    expect(env.events).toEqual(['invoice:locator', 'company:share']);
+    expect(env.counts()).toEqual({ allocations: 0, saves: 0 });
+  });
+
+  it('revalide aussi la clôture sur un replay déjà numéroté, sans exiger les conditions', async () => {
+    const env = makeDeps(issuedInvoice());
+    const current = seedCompany();
+    const closed = Company.of({
+      ...current.toProps(),
+      closedAt: '2026-06-30T09:59:59.000Z',
+    });
+    if (!closed.ok) throw new Error('closed company');
+    env.replaceCompany(closed.value);
+
+    const result = await env.usecase.execute({ invoiceId: 'inv-1' });
+
+    expect(result.ok).toBe(false);
+    expect(env.events).toEqual(['invoice:locator', 'company:share']);
+    expect(env.counts()).toEqual({ allocations: 0, saves: 0 });
+  });
+
+  it('refuse un client frais cross-tenant avant toute allocation légale', async () => {
+    const env = makeDeps(draftInvoice());
+    const original = seedCustomers()[1]!;
+    const foreign = Customer.of({ ...original.toProps(), companyId: 'company-other' });
+    if (!foreign.ok) throw new Error('foreign customer');
+    env.replaceCustomers([foreign.value]);
+
+    const result = await env.usecase.execute({ invoiceId: 'inv-1', terms });
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        kind: 'domain',
+        error: {
+          code: 'VALIDATION',
+          field: 'customer',
+          message: 'Client introuvable.',
+        },
+      },
+    });
+    expect(env.events).toEqual([
+      'invoice:locator',
+      'company:share',
+      'invoice:update',
+      'customer:read',
+    ]);
     expect(env.counts()).toEqual({ allocations: 0, saves: 0 });
   });
 });

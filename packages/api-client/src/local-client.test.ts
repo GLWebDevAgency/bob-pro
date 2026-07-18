@@ -80,6 +80,30 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     expect(r.value.features).toContain('ai_assistant');
   });
 
+  it('rejoue localement une facture émise après suppression des conditions courantes', async () => {
+    const client = makeClient();
+    const invoices = await client.listInvoices();
+    expect(invoices.ok).toBe(true);
+    if (!invoices.ok) return;
+    const issued = invoices.value.find((invoice) => invoice.number !== null);
+    expect(issued?.number).toBeTruthy();
+    if (!issued?.number) return;
+
+    const settings = await client.getCompanyBillingSettings();
+    expect(settings.ok).toBe(true);
+    if (!settings.ok) return;
+    const cleared = await client.updateCompanyBillingSettings({
+      expectedRevision: settings.value.revision,
+      patch: { defaultInvoicePaymentTermsDays: null },
+    });
+    expect(cleared.ok).toBe(true);
+
+    await expect(client.issueInvoice({ invoiceId: issued.id })).resolves.toEqual({
+      ok: true,
+      value: { number: issued.number },
+    });
+  });
+
   it('BOB EXPERT FISCAL (Phase 1A) : getFiscalProfile dérive par hypothèses (EI/plombier → réel IR/TNS)', async () => {
     const client = makeClient();
     const r = await client.getFiscalProfile();

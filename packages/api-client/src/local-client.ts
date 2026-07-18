@@ -3112,17 +3112,20 @@ export class LocalBobClient implements BobClient {
     clock: ClockPort = this.clock,
   ): Promise<Result<{ number: string }, AppError>> {
     const paymentTermsDays = this.billingSettings.defaultInvoicePaymentTermsDays;
-    if (input.terms === undefined && paymentTermsDays === null) {
-      return err({
-        kind: 'validation',
-        issues: [
-          {
-            field: 'paymentTerms',
-            message: 'Choisissez vos conditions de paiement avant d’émettre cette facture.',
-          },
-        ],
-      });
-    }
+    // Même sémantique que le serveur : les réglages courants ne conditionnent que l'émission du
+    // brouillon. Le core verrouillé décide d'abord : une émission concurrente peut rendre ce
+    // même appel idempotent, même si ce snapshot local n'a plus de conditions.
+    const issueInput =
+      input.terms !== undefined || paymentTermsDays === null
+        ? input
+        : {
+            invoiceId: input.invoiceId,
+            terms: {
+              days: paymentTermsDays,
+              endOfMonth: false,
+              label: `Paiement à ${paymentTermsDays} jours`,
+            },
+          };
     const issued = await new IssueInvoice({
       invoices: this.invoices,
       companies: this.companies,
@@ -3130,19 +3133,25 @@ export class LocalBobClient implements BobClient {
       counters: this.counters,
       uow: this.uow,
       clock,
-    }).execute(
-      input.terms !== undefined
-        ? input
-        : {
-            invoiceId: input.invoiceId,
-            terms: {
-              days: paymentTermsDays as number,
-              endOfMonth: false,
-              label: `Paiement à ${paymentTermsDays as number} jours`,
-            },
-          },
-    );
-    if (!issued.ok) return issued;
+    }).execute(issueInput);
+    if (!issued.ok) {
+      const missingTerms =
+        input.terms === undefined &&
+        paymentTermsDays === null &&
+        issued.error.kind === 'validation' &&
+        issued.error.issues.some((issue) => issue.field === 'paymentTerms');
+      return missingTerms
+        ? err({
+            kind: 'validation',
+            issues: [
+              {
+                field: 'paymentTerms',
+                message: 'Choisissez vos conditions de paiement avant d’émettre cette facture.',
+              },
+            ],
+          })
+        : issued;
+    }
     const accounting = await new RecordIssuedInvoiceAccountingEntry({
       invoices: this.invoices,
       entries: this.accountingEntries,

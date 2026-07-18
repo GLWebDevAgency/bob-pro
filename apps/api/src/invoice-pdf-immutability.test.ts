@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { Document } from '@bob/core';
+import { Document, IssueInvoice } from '@bob/core';
 import type { InvoicePdfData, OcrPort, PaymentGatewayPort, PdfRendererPort } from '@bob/core';
 import { MERCIER_PROPS } from '@bob/core/testing';
 import { BackendService } from './backend.service';
@@ -130,6 +130,70 @@ describe('facture PDF émise — original immuable', () => {
       });
       expect((await persistence.invoices.findById(invoiceId))?.number).toBeNull();
       expect(renderer.renderInvoice).not.toHaveBeenCalled();
+    });
+  });
+
+  it('rejoue une facture déjà émise même si les conditions courantes ont ensuite été effacées', async () => {
+    vi.stubEnv('SIGN_WEB_BASE_URL', 'https://signature.example.test');
+    const { persistence, renderer, service } = makeService();
+    await persistence.seed();
+
+    await asOwner(async () => {
+      const invoiceId = await prepareFinalInvoice(service);
+      const first = await service.issueInvoice({ invoiceId });
+      expect(first.ok).toBe(true);
+      if (!first.ok) return;
+
+      const settings = await service.getCompanyBillingSettings();
+      expect(settings.ok).toBe(true);
+      if (!settings.ok) return;
+      const cleared = await service.updateCompanyBillingSettings({
+        expectedRevision: settings.value.revision,
+        patch: { defaultInvoicePaymentTermsDays: null },
+      });
+      expect(cleared.ok).toBe(true);
+
+      const replay = await service.issueInvoice({ invoiceId });
+
+      expect(replay).toEqual(first);
+      expect(renderer.renderInvoice).toHaveBeenCalledTimes(1);
+      const entries = await persistence.accountingEntries.listByCompany(MERCIER_PROPS.id);
+      expect(entries.filter((entry) => entry.sourceId === invoiceId)).toHaveLength(1);
+    });
+  });
+
+  it('reste idempotent si une émission concurrente gagne pendant la lecture de réglages absents', async () => {
+    vi.stubEnv('SIGN_WEB_BASE_URL', 'https://signature.example.test');
+    const { persistence, renderer, service } = makeService();
+    await persistence.seed();
+
+    await asOwner(async () => {
+      const invoiceId = await prepareFinalInvoice(service);
+      vi.spyOn(persistence.billingSettings, 'findByCompanyId').mockImplementationOnce(async () => {
+        const concurrent = await new IssueInvoice({
+          invoices: persistence.invoices,
+          companies: persistence.companies,
+          customers: persistence.customers,
+          counters: persistence.counters,
+          uow: persistence,
+          clock: {
+            now: () => '2026-06-30T10:00:00.000Z',
+            today: () => '2026-06-30',
+          },
+        }).execute({
+          invoiceId,
+          terms: { days: 30, endOfMonth: false, label: 'Paiement à 30 jours' },
+        });
+        expect(concurrent.ok).toBe(true);
+        return null;
+      });
+
+      const replay = await service.issueInvoice({ invoiceId });
+
+      expect(replay.ok).toBe(true);
+      expect(renderer.renderInvoice).toHaveBeenCalledTimes(1);
+      const entries = await persistence.accountingEntries.listByCompany(MERCIER_PROPS.id);
+      expect(entries.filter((entry) => entry.sourceId === invoiceId)).toHaveLength(1);
     });
   });
 
