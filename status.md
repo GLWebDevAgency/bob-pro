@@ -1,5 +1,5 @@
 # claude status
 state: active
-heartbeat_epoch: 1784347921
-head: 1d91d02
-note: chantier documents livré 1d91d02 ; deploy e7fe6450 SUCCESS ; APK 0a0c84c6 en build
+heartbeat_epoch: 1784411780
+head: 54bdb210
+note: HEAD 54bdb210 déployé (1d565245 SUCCESS) ; attente upgrade EAS fondateur pour APK ; M1-M5 audit à arbitrer
