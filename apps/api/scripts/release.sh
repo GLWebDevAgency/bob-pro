@@ -39,10 +39,13 @@ FROM :"app_role";
 -- reste nécessaire aux pièces conservées et un DELETE suivi d'un INSERT la ressusciterait.
 REVOKE DELETE ON TABLE public.companies FROM :"app_role";
 REVOKE DELETE ON TABLE
+  public.realtime_mistral_conversation_missions,
   public.realtime_speech_artifacts,
   public.stripe_subscription_invoices
 FROM :"app_role";
 REVOKE UPDATE, DELETE ON TABLE
+  public.realtime_mistral_conversation_outbox,
+  public.realtime_mistral_conversation_commands,
   public.realtime_control_grants,
   public.realtime_control_consumptions,
   public.realtime_voice_usage_events
@@ -182,6 +185,8 @@ RUN_POSTGRES_INVOICE_ISSUE_LIFECYCLE_CERT=true \
   pnpm --filter @bob/api exec vitest run src/persistence/prisma/invoice-issue-lifecycle.postgres.test.ts
 RUN_POSTGRES_STRIPE_INVOICES_CERT=true \
   pnpm --filter @bob/api exec vitest run src/persistence/prisma/stripe-subscription-invoices.postgres.test.ts
+DATABASE_URL="$DATABASE_URL" DIRECT_URL="$DIRECT_URL" \
+  sh apps/api/scripts/certify-mistral-conversation-authority.sh
 cleanup_rls_cert
 trap - EXIT INT TERM
 

@@ -46,6 +46,9 @@ BEGIN
     'realtime_admission_events',
     'realtime_session_leases',
     'realtime_mistral_ingress_tickets',
+    'realtime_mistral_conversation_missions',
+    'realtime_mistral_conversation_outbox',
+    'realtime_mistral_conversation_commands',
     'realtime_speech_artifacts',
     'realtime_control_grants',
     'realtime_control_consumptions',
@@ -265,6 +268,45 @@ CREATE POLICY tenant_isolation ON realtime_session_leases
 DROP POLICY IF EXISTS tenant_isolation ON realtime_mistral_ingress_tickets;
 CREATE POLICY tenant_isolation ON realtime_mistral_ingress_tickets
   USING ("companyId" = current_setting('app.current_company_id', true))
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+
+-- Mission v2 mutable uniquement par CAS. L'absence volontaire de policy DELETE réserve la purge
+-- post-rétention au reaper privilégié ; l'owner brut n'est jamais présent dans cette table.
+DROP POLICY IF EXISTS tenant_isolation ON realtime_mistral_conversation_missions;
+DROP POLICY IF EXISTS realtime_mistral_conversation_mission_select ON realtime_mistral_conversation_missions;
+DROP POLICY IF EXISTS realtime_mistral_conversation_mission_insert ON realtime_mistral_conversation_missions;
+DROP POLICY IF EXISTS realtime_mistral_conversation_mission_update ON realtime_mistral_conversation_missions;
+CREATE POLICY realtime_mistral_conversation_mission_select
+  ON realtime_mistral_conversation_missions FOR SELECT
+  USING ("companyId" = current_setting('app.current_company_id', true));
+CREATE POLICY realtime_mistral_conversation_mission_insert
+  ON realtime_mistral_conversation_missions FOR INSERT
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+CREATE POLICY realtime_mistral_conversation_mission_update
+  ON realtime_mistral_conversation_missions FOR UPDATE
+  USING ("companyId" = current_setting('app.current_company_id', true))
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+
+-- Outbox et ledger sont append-only. Le runtime peut rejouer/lire et insérer dans la transaction
+-- autoritaire, mais aucune policy UPDATE/DELETE ne peut rendre l'historique réécrivable.
+DROP POLICY IF EXISTS tenant_isolation ON realtime_mistral_conversation_outbox;
+DROP POLICY IF EXISTS realtime_mistral_conversation_outbox_select ON realtime_mistral_conversation_outbox;
+DROP POLICY IF EXISTS realtime_mistral_conversation_outbox_insert ON realtime_mistral_conversation_outbox;
+CREATE POLICY realtime_mistral_conversation_outbox_select
+  ON realtime_mistral_conversation_outbox FOR SELECT
+  USING ("companyId" = current_setting('app.current_company_id', true));
+CREATE POLICY realtime_mistral_conversation_outbox_insert
+  ON realtime_mistral_conversation_outbox FOR INSERT
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+
+DROP POLICY IF EXISTS tenant_isolation ON realtime_mistral_conversation_commands;
+DROP POLICY IF EXISTS realtime_mistral_conversation_command_select ON realtime_mistral_conversation_commands;
+DROP POLICY IF EXISTS realtime_mistral_conversation_command_insert ON realtime_mistral_conversation_commands;
+CREATE POLICY realtime_mistral_conversation_command_select
+  ON realtime_mistral_conversation_commands FOR SELECT
+  USING ("companyId" = current_setting('app.current_company_id', true));
+CREATE POLICY realtime_mistral_conversation_command_insert
+  ON realtime_mistral_conversation_commands FOR INSERT
   WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
 
 DROP POLICY IF EXISTS tenant_isolation ON realtime_speech_artifacts;

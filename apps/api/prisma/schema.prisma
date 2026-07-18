@@ -330,6 +330,7 @@ model Company {
   realtimeAdmissionEvents RealtimeAdmissionEvent[]
   realtimeSessionLeases   RealtimeSessionLease[]
   realtimeMistralTickets  RealtimeMistralIngressTicket[]
+  realtimeMistralMissions RealtimeMistralConversationMission[]
   realtimeSpeechArtifacts RealtimeSpeechArtifact[]
   realtimeControlGrants   RealtimeControlGrant[]
   realtimeControlUses     RealtimeControlConsumption[]
@@ -1189,6 +1190,104 @@ model RealtimeMistralIngressTicket {
   @@index([companyId, issuedAt], map: "realtime_mistral_ingress_tickets_tenant_issued_idx")
   @@index([companyId, retentionExpiresAt], map: "realtime_mistral_ingress_tickets_retention_idx")
   @@map("realtime_mistral_ingress_tickets")
+}
+
+/// Snapshot transactionnel de la mission conversationnelle Mistral v2. Les compteurs wire
+/// utilisent BIGINT car le curseur terminal UINT32_MAX + 1 dépasse un INTEGER PostgreSQL.
+/// Le token d'owner 256 bits ne quitte jamais le processus : seule son empreinte SHA-256 vit ici.
+model RealtimeMistralConversationMission {
+  id                         String                                   @id @default(uuid()) @db.Uuid
+  companyId                  String                                   @db.Text
+  company                    Company                                  @relation(fields: [companyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  initialBootstrapId         String                                   @unique(map: "realtime_mistral_conversation_missions_bootstrap_key") @db.Uuid
+  protocol                   String                                   @db.Text
+  subjectHash                String                                   @db.Char(64)
+  subjectKeyVersion          Int
+  plan                       String                                   @db.Text
+  sessionHandle              String                                   @db.Text
+  ownerTokenHash             String                                   @unique(map: "realtime_mistral_conversation_missions_owner_token_key") @db.Char(64)
+  ownerAcquiredAt            DateTime                                 @db.Timestamptz(6)
+  missionConnectionEpoch     Int
+  version                    BigInt                                   @default(1)
+  acknowledgedServerSequence BigInt                                   @default(0)
+  retainedFromServerSequence BigInt                                   @default(0)
+  nextServerSequence         BigInt
+  nextProviderSequence       BigInt                                   @default(0)
+  snapshotSchemaVersion      Int                                      @default(1)
+  phase                      String                                   @db.Text
+  contextRevision            Int
+  contextDigest              String                                   @db.Char(64)
+  routeMode                  String                                   @db.Text
+  fullDuplexCertified        Boolean
+  maxMissionAudioBytes       Int
+  audioBytes                 Int                                      @default(0)
+  missionState               Json
+  turnState                  Json?
+  finalTranscriptRecorded    Boolean                                  @default(false)
+  terminalReason             String?                                  @db.Text
+  terminalServerSequence     BigInt?
+  closedAt                   DateTime?                                @db.Timestamptz(6)
+  hardExpiresAt              DateTime                                 @db.Timestamptz(6)
+  replayGraceExpiresAt       DateTime                                 @db.Timestamptz(6)
+  retentionExpiresAt         DateTime                                 @db.Timestamptz(6)
+  createdAt                  DateTime                                 @db.Timestamptz(6)
+  updatedAt                  DateTime                                 @db.Timestamptz(6)
+  outbox                     RealtimeMistralConversationOutboxEvent[]
+  commands                   RealtimeMistralConversationCommand[]
+
+  @@unique([companyId, sessionHandle], map: "realtime_mistral_conversation_missions_session_key")
+  @@unique([id, companyId, sessionHandle], map: "realtime_mistral_conversation_missions_tenant_binding")
+  @@index([companyId, phase, hardExpiresAt], map: "realtime_mistral_conversation_missions_tenant_reaper_idx")
+  @@index([retentionExpiresAt], map: "realtime_mistral_conversation_missions_retention_idx")
+  @@map("realtime_mistral_conversation_missions")
+}
+
+/// Événement wire v2 rejouable. Le JSON canonique, qui peut contenir un transcript, est chiffré
+/// AES-256-GCM ; aucune parole ni commande brute n'est persistée en clair.
+model RealtimeMistralConversationOutboxEvent {
+  companyId            String                             @db.Text
+  missionId            String                             @db.Uuid
+  sessionHandle        String                             @db.Text
+  serverSequence       BigInt
+  eventType            String                             @db.Text
+  payloadCiphertext    Bytes
+  payloadNonce         Bytes
+  payloadTag           Bytes
+  encryptionKeyVersion Int
+  payloadBytes         Int
+  createdAt            DateTime                           @db.Timestamptz(6)
+  retentionExpiresAt   DateTime                           @db.Timestamptz(6)
+  mission              RealtimeMistralConversationMission @relation(fields: [missionId, companyId, sessionHandle], references: [id, companyId, sessionHandle], onDelete: Cascade, onUpdate: Cascade)
+
+  @@id([companyId, sessionHandle, serverSequence], name: "realtime_mistral_conversation_outbox_sequence")
+  @@index([missionId, companyId, sessionHandle], map: "realtime_mistral_conversation_outbox_mission_idx")
+  @@index([retentionExpiresAt], map: "realtime_mistral_conversation_outbox_retention_idx")
+  @@map("realtime_mistral_conversation_outbox")
+}
+
+/// Ledger append-only des commandes v2. L'identifiant est hashé et le payload est attesté par
+/// HMAC versionné ; la plage outbox permet un replay exact sans conserver la commande sensible.
+model RealtimeMistralConversationCommand {
+  companyId              String                             @db.Text
+  missionId              String                             @db.Uuid
+  sessionHandle          String                             @db.Text
+  commandIdHash          String                             @db.Char(64)
+  commandType            String                             @db.Text
+  commandPayloadHmac     String                             @db.Char(64)
+  proofKeyVersion        Int
+  missionConnectionEpoch Int
+  snapshotVersionBefore  BigInt
+  snapshotVersionAfter   BigInt
+  firstServerSequence    BigInt
+  eventCount             Int
+  createdAt              DateTime                           @db.Timestamptz(6)
+  retentionExpiresAt     DateTime                           @db.Timestamptz(6)
+  mission                RealtimeMistralConversationMission @relation(fields: [missionId, companyId, sessionHandle], references: [id, companyId, sessionHandle], onDelete: Cascade, onUpdate: Cascade)
+
+  @@id([companyId, sessionHandle, commandIdHash], name: "realtime_mistral_conversation_command_idempotency")
+  @@index([missionId, companyId, sessionHandle], map: "realtime_mistral_conversation_commands_mission_idx")
+  @@index([retentionExpiresAt], map: "realtime_mistral_conversation_commands_retention_idx")
+  @@map("realtime_mistral_conversation_commands")
 }
 
 /// Segment audio Bob Live rendu hors du canal WebRTC descendant. La base ne conserve ni texte,

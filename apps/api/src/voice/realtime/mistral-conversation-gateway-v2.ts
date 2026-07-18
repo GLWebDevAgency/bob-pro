@@ -621,6 +621,37 @@ function validateSnapshot(snapshot: MistralConversationDurableSnapshot): void {
   ) gatewayError('temporarily_unavailable');
 }
 
+/**
+ * Décodeur fail-closed destiné aux adapters durables. PostgreSQL restitue un JSONB comme
+ * `unknown` : aucun cast infra ne doit pouvoir contourner les invariants du réducteur.
+ */
+export function parseMistralConversationDurableSnapshot(
+  value: unknown,
+): MistralConversationDurableSnapshot {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    gatewayError('temporarily_unavailable');
+  }
+  const candidate = value as Record<string, unknown>;
+  if (
+    typeof candidate.mission !== 'object'
+    || candidate.mission === null
+    || Array.isArray(candidate.mission)
+    || !(
+      candidate.turn === null
+      || (
+        typeof candidate.turn === 'object'
+        && candidate.turn !== null
+        && !Array.isArray(candidate.turn)
+      )
+    )
+  ) {
+    gatewayError('temporarily_unavailable');
+  }
+  const snapshot = value as MistralConversationDurableSnapshot;
+  validateSnapshot(snapshot);
+  return snapshot;
+}
+
 function validateOpenResult(
   opened: Extract<MistralConversationDurableOpenResult, {
     readonly status: 'opened' | 'recovered' | 'replayed';
@@ -681,10 +712,6 @@ function validateOpenResult(
       || event.serverSequence !== 0
       || event.sessionHandle !== grant.sessionHandle
       || event.expiresAt !== grant.hardExpiresAt
-      || event.contextRevision !== grant.contextRevision
-      || event.contextDigest !== grant.contextDigest
-      || event.routeMode !== grant.routeMode
-      || event.fullDuplexCertified !== grant.fullDuplexCertified
       || event.maxMissionAudioBytes !== grant.maxMissionAudioBytes
       || event.nextAudioSequence !== 0
     ) gatewayError('temporarily_unavailable');
@@ -713,6 +740,10 @@ function validateOpenResult(
       || opened.events.length !== 1
       || first.type !== 'session.ready'
       || first.missionConnectionEpoch !== opened.snapshot.missionConnectionEpoch
+      || first.contextRevision !== grant.contextRevision
+      || first.contextDigest !== grant.contextDigest
+      || first.routeMode !== grant.routeMode
+      || first.fullDuplexCertified !== grant.fullDuplexCertified
     ) gatewayError('temporarily_unavailable');
     return;
   }
@@ -837,10 +868,6 @@ function validateTerminalOpenResult(
         || event.serverSequence !== 0
         || event.sessionHandle !== grant.sessionHandle
         || event.expiresAt !== grant.hardExpiresAt
-        || event.contextRevision !== grant.contextRevision
-        || event.contextDigest !== grant.contextDigest
-        || event.routeMode !== grant.routeMode
-        || event.fullDuplexCertified !== grant.fullDuplexCertified
         || event.maxMissionAudioBytes !== grant.maxMissionAudioBytes
       ) gatewayError('temporarily_unavailable');
     }
@@ -1866,7 +1893,15 @@ class SerializedAuthority {
     }
     if (
       result.snapshot.version < before.version
-      || result.snapshot.acknowledgedServerSequence !== before.acknowledgedServerSequence
+      // Une transition peut avoir été commitée après l'expiration de la deadline locale. Son
+      // replay retourne alors le snapshot autoritatif courant, qui a légitimement pu avancer
+      // (notamment via un ACK ultérieur). Refuser cette progression rendrait la réconciliation
+      // idempotente impossible après un timeout réseau.
+      || result.snapshot.acknowledgedServerSequence < before.acknowledgedServerSequence
+      || (
+        command.type === 'ack_events'
+        && result.snapshot.acknowledgedServerSequence < command.control.nextServerSequence
+      )
       || result.events.some((event) => event.serverSequence >= result.snapshot.nextServerSequence)
     ) gatewayError('temporarily_unavailable');
   }

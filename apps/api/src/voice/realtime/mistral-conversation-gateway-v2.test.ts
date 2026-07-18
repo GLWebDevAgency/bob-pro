@@ -16,6 +16,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createMistralConversationDurableSession,
   mistralConversationTransitionRejection,
+  parseMistralConversationDurableSnapshot,
   recoverMistralConversationDurableSession,
   reduceMistralConversationDurableSnapshot,
   serveMistralConversationGatewayV2,
@@ -759,6 +760,21 @@ afterEach(() => {
 });
 
 describe('Bob Mistral conversation gateway v2 — mission WSS durable', () => {
+  it('refuse fail-closed un snapshot durable JSONB incomplet ou incohérent', () => {
+    expect(() => parseMistralConversationDurableSnapshot(null)).toThrow(/temporarily_unavailable/u);
+    expect(() => parseMistralConversationDurableSnapshot({ mission: {}, turn: null }))
+      .toThrow(/temporarily_unavailable/u);
+    const created = createMistralConversationDurableSession({
+      grant: BASE_GRANT,
+      missionConnectionEpoch: 1,
+    });
+    expect(parseMistralConversationDurableSnapshot(created.snapshot)).toEqual(created.snapshot);
+    expect(() => parseMistralConversationDurableSnapshot({
+      ...created.snapshot,
+      version: 0,
+    })).toThrow(/temporarily_unavailable/u);
+  });
+
   it('enchaîne trois tours sur la même socket et persiste avant provider et downlink', async () => {
     const h = harness();
     const { run } = await connect(h);
@@ -1427,6 +1443,71 @@ describe('Bob Mistral conversation gateway v2 — mission WSS durable', () => {
     await endSession(h, run);
   });
 
+  it('rejoue le session.ready historique après changement durable de contexte et de route', async () => {
+    const h = harness({
+      grant: {
+        contextRevision: 2,
+        contextDigest: DIGEST_2,
+        routeMode: 'full_duplex',
+        fullDuplexCertified: true,
+      },
+    });
+    const initialGrant: MistralConversationBootstrapGrant = {
+      ...h.grant,
+      contextRevision: 1,
+      contextDigest: DIGEST_1,
+      routeMode: 'push_to_talk',
+      fullDuplexCertified: false,
+    };
+    const created = createMistralConversationDurableSession({
+      grant: initialGrant,
+      missionConnectionEpoch: 1,
+    });
+    const contextUpdated = reduceMistralConversationDurableSnapshot(created.snapshot, {
+      type: 'update_context',
+      commandId: `context:2:${DIGEST_2}`,
+      control: {
+        type: 'context.update',
+        contextRevision: 2,
+        contextDigest: DIGEST_2,
+      },
+    });
+    const recovered = recoverMistralConversationDurableSession(contextUpdated.snapshot, {
+      newMissionConnectionEpoch: 2,
+      cancellationId: CANCEL_1,
+      routeMode: 'full_duplex',
+      fullDuplexCertified: true,
+    });
+    const replayEvents = [...created.events, ...contextUpdated.events, ...recovered.events];
+    vi.spyOn(h.authority, 'open').mockImplementationOnce(async (input) => {
+      h.authority.ownerLeaseToken = input.ownerLeaseToken;
+      h.authority.snapshot = recovered.snapshot;
+      h.authority.outbox.push(...replayEvents);
+      return {
+        status: 'recovered',
+        snapshot: recovered.snapshot,
+        replayFromServerSequence: 0,
+        recovery: {
+          fromServerSequence: contextUpdated.snapshot.nextServerSequence,
+          previousMissionConnectionEpoch: 1,
+          previousCancellationGeneration: 0,
+          cancellation: null,
+        },
+        terminal: null,
+        events: replayEvents,
+      };
+    });
+
+    const { run } = await connect(h);
+    expect(h.socket.events().map((event) => event.type)).toEqual([
+      'session.ready',
+      'session.context_updated',
+      'session.route_recovering',
+      'session.route_recovered',
+    ]);
+    await endSession(h, run);
+  });
+
   it('réserve les dernières séquences au drain terminal et refuse tout takeover irréparable', () => {
     const h = harness();
     const created = createMistralConversationDurableSession({ grant: h.grant, missionConnectionEpoch: 1 });
@@ -1747,6 +1828,43 @@ describe('Bob Mistral conversation gateway v2 — mission WSS durable', () => {
     await waitFor(() => h.authority.attempts.filter((command) => command.type === 'ack_events').length === 2);
     expect(h.authority.snapshot?.acknowledgedServerSequence).toBe(1);
 
+    await endSession(h, run);
+  });
+
+  it('réconcilie le replay d’un ACK commité après la deadline locale', async () => {
+    const h = harness();
+    const { run } = await connect(h);
+    const current = h.authority.snapshot;
+    if (!current) throw new Error('Missing durable snapshot.');
+    const command = {
+      type: 'ack_events',
+      commandId: 'ack:1:1',
+      control: {
+        type: 'events.ack',
+        missionConnectionEpoch: 1,
+        nextServerSequence: 1,
+      },
+    } satisfies MistralConversationDurableCommand;
+
+    // Simule le commit PostgreSQL achevé après expiration de la deadline du premier appel : la
+    // vue locale SerializedAuthority est encore version 1/ACK 0, l'autorité est version 2/ACK 1.
+    await expect(h.authority.transition({
+      companyId: h.grant.companyId,
+      subjectHash: h.grant.subjectHash,
+      sessionHandle: h.grant.sessionHandle,
+      missionConnectionEpoch: 1,
+      ownerLeaseToken: h.authority.ownerLeaseToken,
+      expectedVersion: current.version,
+      maxUnacknowledgedEvents: 253,
+      maxUnacknowledgedBytes: 192 * 1024,
+      command,
+      signal: new AbortController().signal,
+    })).resolves.toMatchObject({ status: 'applied' });
+
+    h.socket.clientControl(command.control);
+    await waitFor(() => h.authority.attempts.filter((attempt) => attempt.type === 'ack_events').length === 2);
+    expect(h.socket.closes).toEqual([]);
+    expect(h.authority.snapshot?.acknowledgedServerSequence).toBe(1);
     await endSession(h, run);
   });
 
