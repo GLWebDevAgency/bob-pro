@@ -108,6 +108,23 @@ describe('configuration live — capacités obligatoires sans fallback demo', ()
     expect(loadEnv().DEMO_MODE).toBe('false');
   });
 
+  it('normalise aussi les 7 variables Stripe vides en accès anticipé', () => {
+    validLiveEnv();
+    vi.stubEnv('STRIPE_SECRET_KEY', '');
+    vi.stubEnv('STRIPE_PRICE_SOLO', '  ');
+    vi.stubEnv('STRIPE_PRICE_PRO', '');
+    vi.stubEnv('STRIPE_PRICE_BUSINESS', '');
+    vi.stubEnv('STRIPE_WEBHOOK_SECRET', '');
+    vi.stubEnv('STRIPE_LIVEMODE', '');
+    vi.stubEnv('PAYMENT_RETURN_BASE_URL', '');
+
+    const env = loadEnv();
+    expect(env).toMatchObject({ DEMO_MODE: 'false' });
+    expect(env.STRIPE_SECRET_KEY).toBeUndefined();
+    expect(env.STRIPE_WEBHOOK_SECRET).toBeUndefined();
+    expect(env.PAYMENT_RETURN_BASE_URL).toBeUndefined();
+  });
+
   it('refuse les surfaces web de démonstration dans une composition live', () => {
     validLiveEnv();
     vi.stubEnv('SIGN_WEB_BASE_URL', 'https://demo.bobpro.fr');
