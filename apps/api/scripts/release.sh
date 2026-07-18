@@ -35,7 +35,10 @@ REVOKE UPDATE, DELETE ON TABLE
   public.quote_creation_requests,
   public.bank_balance_snapshots
 FROM :"app_role";
-REVOKE DELETE ON TABLE public.realtime_speech_artifacts FROM :"app_role";
+REVOKE DELETE ON TABLE
+  public.realtime_speech_artifacts,
+  public.stripe_subscription_invoices
+FROM :"app_role";
 REVOKE UPDATE, DELETE ON TABLE
   public.realtime_control_grants,
   public.realtime_control_consumptions,
@@ -166,6 +169,8 @@ RUN_POSTGRES_EXPENSE_PAYMENT_CERT=true \
   pnpm --filter @bob/api exec vitest run src/persistence/prisma/expense-payment-evidence.postgres.test.ts
 RUN_POSTGRES_BILLING_SETTINGS_CERT=true \
   pnpm --filter @bob/api exec vitest run src/persistence/prisma/company-billing-settings.postgres.test.ts
+RUN_POSTGRES_STRIPE_INVOICES_CERT=true \
+  pnpm --filter @bob/api exec vitest run src/persistence/prisma/stripe-subscription-invoices.postgres.test.ts
 cleanup_rls_cert
 trap - EXIT INT TERM
 
