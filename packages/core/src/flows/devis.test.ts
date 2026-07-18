@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { startDevis, devisEdit, devisNext, devisBack, DEVIS_STEPS, type DevisFlowState } from './devis';
+import {
+  startDevis,
+  devisEdit,
+  devisNext,
+  devisBack,
+  DEVIS_STEPS,
+  type DevisFlowState,
+} from './devis';
 import { CreateQuote } from '../application/billing/create-quote';
 import { SendQuote } from '../application/billing/send-quote';
 import { SignQuote } from '../application/billing/sign-quote';
@@ -73,12 +80,24 @@ describe('flows/devis (C21 redécoupe — le wizard s’ARRÊTE au devis, jamais
       }),
     );
     expectOk(
-      await new SendQuote({ quotes: env.quoteRepo, counters: env.counters, uow: env.uow, clock: env.clock }).execute({
+      await new SendQuote({
+        companies: env.companyRepo,
+        quotes: env.quoteRepo,
+        counters: env.counters,
+        uow: env.uow,
+        clock: env.clock,
+      }).execute({
         quoteId: created.quoteId,
       }),
     );
     expectOk(
-      await new SignQuote({ quotes: env.quoteRepo, publicAccessTokens: env.publicAccessTokens, uow: env.uow, clock: env.clock }).execute({
+      await new SignQuote({
+        companies: env.companyRepo,
+        quotes: env.quoteRepo,
+        publicAccessTokens: env.publicAccessTokens,
+        uow: env.uow,
+        clock: env.clock,
+      }).execute({
         quoteId: created.quoteId,
         signerName: s.draft.signerName!,
       }),

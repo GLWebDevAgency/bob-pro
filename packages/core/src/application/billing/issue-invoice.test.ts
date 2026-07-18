@@ -72,6 +72,8 @@ function makeDeps(invoice: Invoice) {
   };
   const companies: CompanyRepository = {
     findById: async (id) => (id === company.id ? company : null),
+    lockById: async (id) => (id === company.id ? company : null),
+    lockForShareById: async (id) => (id === company.id ? company : null),
     list: async () => [company],
     save: async () => {},
   };
@@ -130,6 +132,8 @@ describe('IssueInvoice', () => {
     };
     const companies: CompanyRepository = {
       findById: async () => company,
+      lockById: async () => company,
+      lockForShareById: async () => company,
       list: async () => [company],
       save: async () => {},
     };

@@ -9,6 +9,10 @@ import { type ChantierNote } from '../../domain/chantier/chantier-note';
 
 export interface CompanyRepository {
   findById(id: string): Promise<Company | null>;
+  /** Verrou exclusif de cycle de vie, à prendre DANS l'UoW de clôture avant tout autre agrégat. */
+  lockById(id: string): Promise<Company | null>;
+  /** Verrou partagé de cycle de vie, à conserver pendant toute émission/utilisation de capacité. */
+  lockForShareById(id: string): Promise<Company | null>;
   list(): Promise<Company[]>;
   save(c: Company): Promise<void>;
 }
@@ -33,9 +37,16 @@ export interface InvoiceRepository {
   /** Verrouille la ligne (SELECT … FOR UPDATE) DANS une transaction et renvoie une copie fraîche.
    * Sérialise les opérations concurrentes (encaissement, émission) sur une même facture. */
   lockById(id: string): Promise<Invoice | null>;
-  findByParentQuoteId(companyId: string, parentQuoteId: string, kind: InvoiceKind): Promise<Invoice | null>;
+  findByParentQuoteId(
+    companyId: string,
+    parentQuoteId: string,
+    kind: InvoiceKind,
+  ): Promise<Invoice | null>;
   /** Retrouve l'avoir total de CETTE facture source, sans collision avec ses pièces sœurs du devis. */
-  findCreditNoteBySourceInvoiceId(companyId: string, sourceInvoiceId: string): Promise<Invoice | null>;
+  findCreditNoteBySourceInvoiceId(
+    companyId: string,
+    sourceInvoiceId: string,
+  ): Promise<Invoice | null>;
   listByCompany(companyId: string): Promise<Invoice[]>;
   save(i: Invoice): Promise<void>;
   /** R6 : supprime définitivement une facture BROUILLON (le use case garde le statut avant appel). */

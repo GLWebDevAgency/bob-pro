@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { CloseAccount } from './close-account';
 import { Company, type CompanyProps } from '../../domain/company/company';
 import { type CompanyRepository } from '../ports/repositories';
-import { type SubscriptionRecord, type SubscriptionRepository } from '../ports/subscription-repository';
+import {
+  type SubscriptionRecord,
+  type SubscriptionRepository,
+} from '../ports/subscription-repository';
 import {
   type PublicAccessGrant,
   type PublicAccessTokenRepository,
@@ -18,6 +21,12 @@ class FakeCompanyRepository implements CompanyRepository {
   }
   async findById(id: string): Promise<Company | null> {
     return this.byId.get(id) ?? null;
+  }
+  async lockById(id: string): Promise<Company | null> {
+    return this.findById(id);
+  }
+  async lockForShareById(id: string): Promise<Company | null> {
+    return this.findById(id);
   }
   async list(): Promise<Company[]> {
     return [...this.byId.values()];
@@ -123,7 +132,8 @@ class FakePublicAccessTokenRepository implements PublicAccessTokenRepository {
     }
   }
   activeCountFor(companyId: string): number {
-    return [...this.rows.values()].filter((r) => r.companyId === companyId && r.revokedAt === null).length;
+    return [...this.rows.values()].filter((r) => r.companyId === companyId && r.revokedAt === null)
+      .length;
   }
 }
 
@@ -140,7 +150,8 @@ function buildDeps() {
   const companies = new FakeCompanyRepository();
   const subscriptions = new FakeSubscriptionRepository();
   const publicAccessTokens = new FakePublicAccessTokenRepository();
-  return { companies, subscriptions, publicAccessTokens };
+  const uow = { runInTransaction: <T>(fn: () => Promise<T>) => fn() };
+  return { companies, subscriptions, publicAccessTokens, uow };
 }
 
 describe('CloseAccount — clôture de compte (Apple 5.1.1(v)), jamais un cascade delete', () => {
@@ -224,7 +235,12 @@ describe('CloseAccount — clôture de compte (Apple 5.1.1(v)), jamais un cascad
     });
     const useCase = new CloseAccount(deps);
 
-    await useCase.execute({ companyId: company.id, confirmationText: MERCIER_PROPS.name, reason: null, now: T0 });
+    await useCase.execute({
+      companyId: company.id,
+      confirmationText: MERCIER_PROPS.name,
+      reason: null,
+      now: T0,
+    });
 
     const sub = await deps.subscriptions.findByCompanyId(company.id);
     expect(sub?.status).toBe('canceled');
@@ -236,7 +252,12 @@ describe('CloseAccount — clôture de compte (Apple 5.1.1(v)), jamais un cascad
     deps.companies.seed(company);
     const useCase = new CloseAccount(deps);
 
-    const r = await useCase.execute({ companyId: company.id, confirmationText: MERCIER_PROPS.name, reason: null, now: T0 });
+    const r = await useCase.execute({
+      companyId: company.id,
+      confirmationText: MERCIER_PROPS.name,
+      reason: null,
+      now: T0,
+    });
 
     expect(r.ok).toBe(true);
   });
@@ -262,7 +283,12 @@ describe('CloseAccount — clôture de compte (Apple 5.1.1(v)), jamais un cascad
     expect(deps.publicAccessTokens.activeCountFor(company.id)).toBe(2);
     const useCase = new CloseAccount(deps);
 
-    await useCase.execute({ companyId: company.id, confirmationText: MERCIER_PROPS.name, reason: null, now: T0 });
+    await useCase.execute({
+      companyId: company.id,
+      confirmationText: MERCIER_PROPS.name,
+      reason: null,
+      now: T0,
+    });
 
     expect(deps.publicAccessTokens.activeCountFor(company.id)).toBe(0);
   });
@@ -300,7 +326,12 @@ describe('CloseAccount — clôture de compte (Apple 5.1.1(v)), jamais un cascad
     expect(deps.publicAccessTokens.activeCountFor(company.id)).toBe(3);
     const useCase = new CloseAccount(deps);
 
-    await useCase.execute({ companyId: company.id, confirmationText: MERCIER_PROPS.name, reason: null, now: T0 });
+    await useCase.execute({
+      companyId: company.id,
+      confirmationText: MERCIER_PROPS.name,
+      reason: null,
+      now: T0,
+    });
 
     expect(deps.publicAccessTokens.activeCountFor(company.id)).toBe(0);
   });
@@ -311,13 +342,27 @@ describe('CloseAccount — clôture de compte (Apple 5.1.1(v)), jamais un cascad
     deps.companies.seed(company);
     const useCase = new CloseAccount(deps);
 
-    const first = await useCase.execute({ companyId: company.id, confirmationText: MERCIER_PROPS.name, reason: null, now: T0 });
+    const first = await useCase.execute({
+      companyId: company.id,
+      confirmationText: MERCIER_PROPS.name,
+      reason: null,
+      now: T0,
+    });
     expect(first.ok && first.value.alreadyClosed).toBe(false);
 
-    const second = await useCase.execute({ companyId: company.id, confirmationText: MERCIER_PROPS.name, reason: null, now: T1 });
+    const second = await useCase.execute({
+      companyId: company.id,
+      confirmationText: MERCIER_PROPS.name,
+      reason: null,
+      now: T1,
+    });
 
     expect(second.ok).toBe(true);
-    expect(second.ok && second.value).toEqual({ companyId: company.id, closedAt: T0, alreadyClosed: true });
+    expect(second.ok && second.value).toEqual({
+      companyId: company.id,
+      closedAt: T0,
+      alreadyClosed: true,
+    });
   });
 
   it('idempotence : sur une company déjà clôturée, un confirmationText FAUX reste refusé (jamais de bypass)', async () => {
@@ -325,9 +370,19 @@ describe('CloseAccount — clôture de compte (Apple 5.1.1(v)), jamais un cascad
     const company = seededCompany();
     deps.companies.seed(company);
     const useCase = new CloseAccount(deps);
-    await useCase.execute({ companyId: company.id, confirmationText: MERCIER_PROPS.name, reason: null, now: T0 });
+    await useCase.execute({
+      companyId: company.id,
+      confirmationText: MERCIER_PROPS.name,
+      reason: null,
+      now: T0,
+    });
 
-    const r = await useCase.execute({ companyId: company.id, confirmationText: 'faux nom', reason: null, now: T1 });
+    const r = await useCase.execute({
+      companyId: company.id,
+      confirmationText: 'faux nom',
+      reason: null,
+      now: T1,
+    });
 
     expect(r.ok).toBe(false);
     expect(!r.ok && r.error.kind).toBe('validation');

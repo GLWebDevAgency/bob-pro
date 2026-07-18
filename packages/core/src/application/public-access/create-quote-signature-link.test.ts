@@ -1,12 +1,20 @@
 import { describe, expect, it } from 'vitest';
-import { CreateQuoteSignatureLink, type CreateQuoteSignatureLinkDeps } from './create-quote-signature-link';
+import {
+  CreateQuoteSignatureLink,
+  type CreateQuoteSignatureLinkDeps,
+} from './create-quote-signature-link';
 import { type Quote } from '../../domain/billing/quote/quote';
-import { type QuoteRepository } from '../ports/repositories';
+import { type Company } from '../../domain/company/company';
+import { type CompanyRepository, type QuoteRepository } from '../ports/repositories';
 import { type PublicAccessTokenRepository } from '../ports/public-access-token';
 
 const clock = { now: () => '2026-06-30T00:00:00.000Z', today: () => '2026-06-30' };
 
-function quote(status: string, number: string | null = 'D-2026-0001', validUntil: string | null = null): Quote {
+function quote(
+  status: string,
+  number: string | null = 'D-2026-0001',
+  validUntil: string | null = null,
+): Quote {
   return {
     id: 'quote-1',
     companyId: 'co-1',
@@ -25,6 +33,14 @@ function makeDeps(q: Quote | null) {
     listByCompany: async () => [],
     save: async () => undefined,
   };
+  const company = { id: 'co-1', isClosed: () => false } as Company;
+  const companies: CompanyRepository = {
+    findById: async () => company,
+    lockById: async () => company,
+    lockForShareById: async () => company,
+    list: async () => [company],
+    save: async () => undefined,
+  };
   const publicAccessTokens: PublicAccessTokenRepository = {
     create: async () => {
       tokenCreates++;
@@ -40,7 +56,7 @@ function makeDeps(q: Quote | null) {
     revokeAllForCompany: async () => undefined,
   };
   const uow = { runInTransaction: <T>(fn: () => Promise<T>) => fn() };
-  const deps: CreateQuoteSignatureLinkDeps = { quotes, publicAccessTokens, uow, clock };
+  const deps: CreateQuoteSignatureLinkDeps = { companies, quotes, publicAccessTokens, uow, clock };
   return { deps, counts: () => ({ tokenCreates }), events };
 }
 
@@ -49,7 +65,7 @@ describe('CreateQuoteSignatureLink (P0 R4 — préparer le lien SANS effet sorta
     // Preuve par construction : le type des dépendances est le contrat. Si quelqu'un ajoute un
     // port outbox/notification ici, ce test (et la revue) doit hurler — c'était le P0.
     const depKeys = Object.keys(makeDeps(quote('sent')).deps).sort();
-    expect(depKeys).toEqual(['clock', 'publicAccessTokens', 'quotes', 'uow']);
+    expect(depKeys).toEqual(['clock', 'companies', 'publicAccessTokens', 'quotes', 'uow']);
   });
 
   it('révoque les jetons actifs PUIS crée le nouveau (rotation : l’ancien lien meurt immédiatement)', async () => {

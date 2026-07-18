@@ -14,9 +14,12 @@ import type {
   ExpenseRepository,
   FiscalProfileRepository,
   InvoiceRepository,
+  Invoice,
   Payment,
   PaymentRepository,
   PublicAccessTokenRepository,
+  PublicAccessGrant,
+  Quote,
   QuoteDraftSlotRepository,
   QuoteRepository,
   SalesDocumentSearchPort,
@@ -56,6 +59,20 @@ export interface ServerPaymentRepository extends PaymentRepository {
   listByCompany(companyId: string): Promise<Payment[]>;
 }
 
+/** Verrou partagé réservé aux lectures publiques linéarisables avec rotation/clôture. */
+export interface ServerQuoteRepository extends QuoteRepository {
+  lockForShareById(id: string): Promise<Quote | null>;
+}
+
+export interface ServerInvoiceRepository extends InvoiceRepository {
+  lockForShareById(id: string): Promise<Invoice | null>;
+}
+
+export interface ServerPublicAccessTokenRepository extends PublicAccessTokenRepository {
+  /** Revalide et verrouille le grant exact dans la transaction d'utilisation publique. */
+  lockActive(token: string, at: string): Promise<PublicAccessGrant | null>;
+}
+
 /**
  * Contrat de persistance du runtime API. Ce fichier ne contient aucune implémentation ou fixture :
  * Nest injecte uniquement PrismaPersistence; les doubles résident dans persistence.testing.ts,
@@ -66,8 +83,8 @@ export interface Persistence {
   billingSettings: CompanyBillingSettingsRepository;
   diagnosticAssessments: DiagnosticAssessmentRepository;
   customers: CustomerRepository;
-  quotes: QuoteRepository;
-  invoices: InvoiceRepository;
+  quotes: ServerQuoteRepository;
+  invoices: ServerInvoiceRepository;
   documents: DocumentRepository;
   documentAnalyses: DocumentAnalysisStore;
   documentFolders: DocumentFolderRepository;
@@ -76,7 +93,7 @@ export interface Persistence {
   notificationJobs: NotificationJobRepository;
   devices: DeviceRepository;
   payments: ServerPaymentRepository;
-  publicAccessTokens: PublicAccessTokenRepository;
+  publicAccessTokens: ServerPublicAccessTokenRepository;
   expenses: ExpenseRepository;
   catalogue: CatalogueRepository;
   chantiers: ChantierRepository;

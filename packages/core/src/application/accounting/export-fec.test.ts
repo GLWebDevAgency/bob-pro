@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { AccountingEntry, type AccountingEntryProps } from '../../domain/accounting/accounting-entry';
-import { createFrenchOperationalChartOfAccounts, type ChartOfAccounts } from '../../domain/accounting/chart-of-accounts';
+import {
+  AccountingEntry,
+  type AccountingEntryProps,
+} from '../../domain/accounting/accounting-entry';
+import {
+  createFrenchOperationalChartOfAccounts,
+  type ChartOfAccounts,
+} from '../../domain/accounting/chart-of-accounts';
 import { seedCompany } from '../fixtures';
 import { type CompanyRepository } from '../ports/repositories';
 import { type AccountingEntryRepository } from '../ports/accounting-entry-repository';
@@ -17,6 +23,12 @@ class MemoryCompanies implements CompanyRepository {
   private readonly company = seedCompany();
   async findById(id: string) {
     return id === this.company.id ? this.company : null;
+  }
+  async lockById(id: string) {
+    return this.findById(id);
+  }
+  async lockForShareById(id: string) {
+    return this.findById(id);
   }
   async list() {
     return [this.company];
@@ -131,14 +143,28 @@ describe('ExportFec', () => {
     expect(lines[0]).toBe(FEC_HEADERS.join('\t'));
     const first = lines[1]!.split('\t');
     expect(first).toHaveLength(18);
-    expect(first.slice(0, 6)).toEqual(['VE', 'Journal des ventes', '000001', '20260601', '411', 'Clients']);
+    expect(first.slice(0, 6)).toEqual([
+      'VE',
+      'Journal des ventes',
+      '000001',
+      '20260601',
+      '411',
+      'Clients',
+    ]);
     expect(first[8]).toBe('F-2026-0001');
     expect(first[11]).toBe('488,40');
     expect(first[12]).toBe('0,00');
 
     const payment = lines[4]!.split('\t');
     // E9 : EcritureNum PAR JOURNAL — la première écriture du journal BQ repart à 000001.
-    expect(payment.slice(0, 6)).toEqual(['BQ', 'Journal de banque', '000001', '20260607', '512', 'Banques']);
+    expect(payment.slice(0, 6)).toEqual([
+      'BQ',
+      'Journal de banque',
+      '000001',
+      '20260607',
+      '512',
+      'Banques',
+    ]);
     expect(payment[11]).toBe('488,40');
   });
 
@@ -168,7 +194,11 @@ describe('ExportFec', () => {
   });
 
   it('refuse une periode invalide', async () => {
-    const r = await makeUseCase([]).execute({ companyId: 'company-mercier', from: '2026-12-31', to: '2026-01-01' });
+    const r = await makeUseCase([]).execute({
+      companyId: 'company-mercier',
+      from: '2026-12-31',
+      to: '2026-01-01',
+    });
 
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toMatchObject({ kind: 'validation' });
@@ -229,7 +259,11 @@ describe('ExportFec', () => {
     });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    const rows = r.value.content.trimEnd().split('\n').slice(1).map((l) => l.split('\t'));
+    const rows = r.value.content
+      .trimEnd()
+      .split('\n')
+      .slice(1)
+      .map((l) => l.split('\t'));
     const on411 = rows.filter((row) => row[4] === '411');
     // Facture payée (vente + encaissement) : lettre AA + DateLet = date du règlement.
     const lettered = on411.filter((row) => row[13] === 'AA');
@@ -240,7 +274,9 @@ describe('ExportFec', () => {
     expect(open?.[13]).toBe('');
     expect(open?.[14]).toBe('');
     // Auxiliaire client sur TOUTES les lignes 411 (solde justifiable par tiers).
-    expect(on411.every((row) => row[6] === '411CUST-SEVRES' && row[7] === 'Mairie de Sèvres')).toBe(true);
+    expect(on411.every((row) => row[6] === '411CUST-SEVRES' && row[7] === 'Mairie de Sèvres')).toBe(
+      true,
+    );
   });
 
   it('E7 : auxiliaire FOURNISSEUR sur les lignes 401 des écritures de dépense', async () => {
@@ -266,7 +302,11 @@ describe('ExportFec', () => {
     });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    const rows = r.value.content.trimEnd().split('\n').slice(1).map((l) => l.split('\t'));
+    const rows = r.value.content
+      .trimEnd()
+      .split('\n')
+      .slice(1)
+      .map((l) => l.split('\t'));
     const on401 = rows.find((row) => row[4] === '401');
     expect(on401?.[6]).toBe('401LEROY-MERLIN');
     expect(on401?.[7]).toBe('Leroy Merlin');

@@ -171,6 +171,8 @@ RUN_POSTGRES_BILLING_SETTINGS_CERT=true \
   pnpm --filter @bob/api exec vitest run src/persistence/prisma/company-billing-settings.postgres.test.ts
 RUN_POSTGRES_QUOTE_SIGNATURE_CERT=true \
   pnpm --filter @bob/api exec vitest run src/persistence/prisma/quote-signature-token-concurrency.postgres.test.ts
+RUN_POSTGRES_PUBLIC_CAPABILITY_CERT=true \
+  pnpm --filter @bob/api exec vitest run src/persistence/prisma/public-capability-lifecycle.postgres.test.ts
 RUN_POSTGRES_STRIPE_INVOICES_CERT=true \
   pnpm --filter @bob/api exec vitest run src/persistence/prisma/stripe-subscription-invoices.postgres.test.ts
 cleanup_rls_cert

@@ -38,6 +38,12 @@ export class InMemoryCompanyRepository implements CompanyRepository {
   async findById(id: string): Promise<Company | null> {
     return this.map.get(id) ?? null;
   }
+  async lockById(id: string): Promise<Company | null> {
+    return this.findById(id);
+  }
+  async lockForShareById(id: string): Promise<Company | null> {
+    return this.findById(id);
+  }
   async list(): Promise<Company[]> {
     return [...this.map.values()];
   }
@@ -84,7 +90,9 @@ export class InMemoryQuoteRepository implements QuoteRepository {
   }
 
   restore(snapshot: Map<string, Quote>): void {
-    this.map = new Map([...snapshot].map(([id, quote]) => [id, Quote.rehydrate(quote.toSnapshot())]));
+    this.map = new Map(
+      [...snapshot].map(([id, quote]) => [id, Quote.rehydrate(quote.toSnapshot())]),
+    );
   }
 }
 
@@ -97,13 +105,29 @@ export class InMemoryInvoiceRepository implements InvoiceRepository {
     const stored = this.map.get(id);
     return stored ? Invoice.rehydrate(stored.toSnapshot()) : null;
   }
-  async findByParentQuoteId(companyId: string, parentQuoteId: string, kind: Invoice['kind']): Promise<Invoice | null> {
-    return [...this.map.values()].find((i) => i.companyId === companyId && i.parentQuoteId === parentQuoteId && i.kind === kind) ?? null;
+  async findByParentQuoteId(
+    companyId: string,
+    parentQuoteId: string,
+    kind: Invoice['kind'],
+  ): Promise<Invoice | null> {
+    return (
+      [...this.map.values()].find(
+        (i) => i.companyId === companyId && i.parentQuoteId === parentQuoteId && i.kind === kind,
+      ) ?? null
+    );
   }
-  async findCreditNoteBySourceInvoiceId(companyId: string, sourceInvoiceId: string): Promise<Invoice | null> {
-    return [...this.map.values()].find(
-      (invoice) => invoice.companyId === companyId && invoice.kind === 'credit_note' && invoice.creditNoteSource?.invoiceId === sourceInvoiceId,
-    ) ?? null;
+  async findCreditNoteBySourceInvoiceId(
+    companyId: string,
+    sourceInvoiceId: string,
+  ): Promise<Invoice | null> {
+    return (
+      [...this.map.values()].find(
+        (invoice) =>
+          invoice.companyId === companyId &&
+          invoice.kind === 'credit_note' &&
+          invoice.creditNoteSource?.invoiceId === sourceInvoiceId,
+      ) ?? null
+    );
   }
   async listByCompany(companyId: string): Promise<Invoice[]> {
     return [...this.map.values()].filter((i) => i.companyId === companyId);
@@ -143,7 +167,10 @@ export class InMemoryPaymentRepository implements PaymentRepository {
 }
 
 export class InMemoryPublicAccessTokenRepository implements PublicAccessTokenRepository {
-  private readonly rows = new Map<string, PublicAccessGrant & { token: string; lastUsedAt: string | null }>();
+  private readonly rows = new Map<
+    string,
+    PublicAccessGrant & { token: string; lastUsedAt: string | null }
+  >();
   private seq = 0;
 
   async create(input: {
@@ -227,11 +254,15 @@ export class InMemoryExpenseRepository implements ExpenseRepository {
   }
 
   snapshot(): Map<string, Expense> {
-    return new Map([...this.map].map(([id, expense]) => [id, Expense.rehydrate(expense.toProps())]));
+    return new Map(
+      [...this.map].map(([id, expense]) => [id, Expense.rehydrate(expense.toProps())]),
+    );
   }
 
   restore(snapshot: Map<string, Expense>): void {
-    this.map = new Map([...snapshot].map(([id, expense]) => [id, Expense.rehydrate(expense.toProps())]));
+    this.map = new Map(
+      [...snapshot].map(([id, expense]) => [id, Expense.rehydrate(expense.toProps())]),
+    );
   }
 }
 
@@ -244,7 +275,9 @@ export class InMemoryAccountingEntryRepository implements AccountingEntryReposit
 
   async findById(companyId: string, id: string): Promise<AccountingEntry | null> {
     const entry = this.map.get(id);
-    return entry && entry.companyId === companyId ? AccountingEntry.rehydrate(entry.toProps()) : null;
+    return entry && entry.companyId === companyId
+      ? AccountingEntry.rehydrate(entry.toProps())
+      : null;
   }
 
   async listByCompany(companyId: string): Promise<AccountingEntry[]> {
@@ -254,11 +287,15 @@ export class InMemoryAccountingEntryRepository implements AccountingEntryReposit
   }
 
   snapshot(): Map<string, AccountingEntry> {
-    return new Map([...this.map].map(([id, entry]) => [id, AccountingEntry.rehydrate(entry.toProps())]));
+    return new Map(
+      [...this.map].map(([id, entry]) => [id, AccountingEntry.rehydrate(entry.toProps())]),
+    );
   }
 
   restore(snapshot: Map<string, AccountingEntry>): void {
-    this.map = new Map([...snapshot].map(([id, entry]) => [id, AccountingEntry.rehydrate(entry.toProps())]));
+    this.map = new Map(
+      [...snapshot].map(([id, entry]) => [id, AccountingEntry.rehydrate(entry.toProps())]),
+    );
   }
 }
 
@@ -290,18 +327,24 @@ export class InMemoryCatalogueRepository implements CatalogueRepository {
     return { status: 'created', item: { ...item } };
   }
 
-  async update(input: Parameters<CatalogueRepository['update']>[0]): Promise<CatalogueUpdateWriteResult> {
+  async update(
+    input: Parameters<CatalogueRepository['update']>[0],
+  ): Promise<CatalogueUpdateWriteResult> {
     const current = this.map.get(input.id);
-    if (current === undefined || current.companyId !== input.companyId) return { status: 'not_found' };
+    if (current === undefined || current.companyId !== input.companyId)
+      return { status: 'not_found' };
     if (current.revision !== input.expectedRevision) return { status: 'revision_conflict' };
     const updated: CatalogueItemRecord = { ...input.item, createdAt: current.createdAt };
     this.map.set(input.id, updated);
     return { status: 'updated', item: { ...updated } };
   }
 
-  async delete(input: Parameters<CatalogueRepository['delete']>[0]): Promise<CatalogueDeleteWriteResult> {
+  async delete(
+    input: Parameters<CatalogueRepository['delete']>[0],
+  ): Promise<CatalogueDeleteWriteResult> {
     const current = this.map.get(input.id);
-    if (current === undefined || current.companyId !== input.companyId) return { status: 'not_found' };
+    if (current === undefined || current.companyId !== input.companyId)
+      return { status: 'not_found' };
     if (current.revision !== input.expectedRevision) return { status: 'revision_conflict' };
     this.map.delete(input.id);
     return { status: 'deleted' };
@@ -324,7 +367,10 @@ export class InMemoryChantierRepository implements ChantierRepository {
 /** Agrège companyId/chantierId → nombre de lignes — même contrat que le groupBy Prisma côté API
  * (apps/api/src/persistence/prisma), pour que le mode local/démo affiche EXACTEMENT les mêmes
  * compteurs de rangée que le runtime live. */
-function countByChantier(rows: Iterable<{ companyId: string; chantierId: string }>, companyId: string): Map<string, number> {
+function countByChantier(
+  rows: Iterable<{ companyId: string; chantierId: string }>,
+  companyId: string,
+): Map<string, number> {
   const counts = new Map<string, number>();
   for (const row of rows) {
     if (row.companyId !== companyId) continue;
@@ -375,11 +421,19 @@ export class InMemoryWorksiteMediaStorage implements WorksiteMediaStorage {
  * utilise SupabaseDocumentStorage (apps/api) derrière le MÊME DocumentStoragePort. */
 export class InMemoryDocumentStorage implements DocumentStoragePort {
   private readonly map = new Map<string, { bytes: Uint8Array; contentType: string }>();
-  async put(input: { companyId: string; key: string; bytes: Uint8Array; contentType: string }): Promise<StoredObject> {
+  async put(input: {
+    companyId: string;
+    key: string;
+    bytes: Uint8Array;
+    contentType: string;
+  }): Promise<StoredObject> {
     this.map.set(input.key, { bytes: input.bytes, contentType: input.contentType });
     return { key: input.key, sizeBytes: input.bytes.byteLength, sha256: 'demo' };
   }
-  async get(_companyId: string, key: string): Promise<{ bytes: Uint8Array; contentType: string } | null> {
+  async get(
+    _companyId: string,
+    key: string,
+  ): Promise<{ bytes: Uint8Array; contentType: string } | null> {
     return this.map.get(key) ?? null;
   }
   async getSignedUrl(_companyId: string, key: string, _ttlSeconds: number): Promise<string> {
@@ -387,7 +441,10 @@ export class InMemoryDocumentStorage implements DocumentStoragePort {
     if (!item) throw new Error('InMemoryDocumentStorage: objet introuvable.');
     return `data:${item.contentType};base64,${Buffer.from(item.bytes).toString('base64')}`;
   }
-  async stat(_companyId: string, key: string): Promise<{ sizeBytes: number; contentType: string } | null> {
+  async stat(
+    _companyId: string,
+    key: string,
+  ): Promise<{ sizeBytes: number; contentType: string } | null> {
     const item = this.map.get(key);
     return item ? { sizeBytes: item.bytes.byteLength, contentType: item.contentType } : null;
   }

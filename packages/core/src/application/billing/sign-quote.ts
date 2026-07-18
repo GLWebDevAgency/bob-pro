@@ -1,12 +1,13 @@
 import { type Result, ok, err } from '../../shared-kernel/result';
 import { type AppError, appDomain, appNotFound } from '../result';
 import { type Signature, type SignatureMethod } from '../../domain/billing/shared/signature';
-import { type QuoteRepository } from '../ports/repositories';
+import { type CompanyRepository, type QuoteRepository } from '../ports/repositories';
 import { type PublicAccessTokenRepository } from '../ports/public-access-token';
 import { type ClockPort, type UnitOfWorkPort } from '../ports/services';
 import { TxDomainError } from './tx-error';
 
 export interface SignQuoteDeps {
+  companies: CompanyRepository;
   quotes: QuoteRepository;
   publicAccessTokens: PublicAccessTokenRepository;
   uow: UnitOfWorkPort;
@@ -32,14 +33,28 @@ export interface SignQuoteInput {
 
 function normalizeSignerName(value: unknown): Result<string, AppError> {
   if (typeof value !== 'string') {
-    return err(appDomain({ code: 'VALIDATION', field: 'signerName', message: 'Nom du signataire requis.' }));
+    return err(
+      appDomain({ code: 'VALIDATION', field: 'signerName', message: 'Nom du signataire requis.' }),
+    );
   }
   if (hasForbiddenFormatCharacter(value)) {
-    return err(appDomain({ code: 'VALIDATION', field: 'signerName', message: 'Nom du signataire invalide.' }));
+    return err(
+      appDomain({
+        code: 'VALIDATION',
+        field: 'signerName',
+        message: 'Nom du signataire invalide.',
+      }),
+    );
   }
   const trimmed = value.trim();
   if (trimmed.length < 2 || trimmed.length > 120) {
-    return err(appDomain({ code: 'VALIDATION', field: 'signerName', message: 'Nom du signataire invalide.' }));
+    return err(
+      appDomain({
+        code: 'VALIDATION',
+        field: 'signerName',
+        message: 'Nom du signataire invalide.',
+      }),
+    );
   }
   const normalized = trimmed.replace(/\s+/g, ' ');
   return ok(normalized);
@@ -76,8 +91,36 @@ export class SignQuote {
 
     try {
       const status = await this.deps.uow.runInTransaction(async () => {
+        // Ordre global anti-deadlock : company (SHARE) → quote (UPDATE) → token. CloseAccount
+        // prend company en UPDATE : une signature est donc entièrement avant ou après la clôture.
+        const company = await this.deps.companies.lockForShareById(pre.companyId);
+        if (!company)
+          throw new TxDomainError({
+            code: 'VALIDATION',
+            field: 'company',
+            message: 'Société introuvable.',
+          });
+        if (company.isClosed()) {
+          throw new TxDomainError({
+            code: 'VALIDATION',
+            field: 'company',
+            message: 'Compte clôturé.',
+          });
+        }
         const quote = await this.deps.quotes.lockById(input.quoteId);
-        if (!quote) throw new TxDomainError({ code: 'VALIDATION', field: 'quote', message: 'Devis introuvable.' });
+        if (!quote)
+          throw new TxDomainError({
+            code: 'VALIDATION',
+            field: 'quote',
+            message: 'Devis introuvable.',
+          });
+        if (quote.companyId !== company.id) {
+          throw new TxDomainError({
+            code: 'VALIDATION',
+            field: 'quote',
+            message: 'Devis introuvable.',
+          });
+        }
 
         const at = this.deps.clock.now();
 
@@ -90,6 +133,7 @@ export class SignQuote {
           const stillValid =
             grant !== null &&
             grant.id === input.remoteGrant.grantId &&
+            grant.companyId === company.id &&
             grant.resourceType === 'quote' &&
             grant.resourceId === quote.id &&
             grant.scope === 'quote_signature';
@@ -108,7 +152,9 @@ export class SignQuote {
           signedAt: at,
           method,
           accepted: true,
-          ...(input.proofSha256 ? { proof: { method, sha256: input.proofSha256, capturedAt: at } } : {}),
+          ...(input.proofSha256
+            ? { proof: { method, sha256: input.proofSha256, capturedAt: at } }
+            : {}),
         };
         const signed = quote.sign(signature, at);
         if (!signed.ok) throw new TxDomainError(signed.error);

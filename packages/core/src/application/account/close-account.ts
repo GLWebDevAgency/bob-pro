@@ -5,6 +5,7 @@ import { Company } from '../../domain/company/company';
 import { type CompanyRepository } from '../ports/repositories';
 import { type SubscriptionRepository } from '../ports/subscription-repository';
 import { type PublicAccessTokenRepository } from '../ports/public-access-token';
+import { type UnitOfWorkPort } from '../ports/services';
 
 export interface CloseAccountInput {
   readonly companyId: string;
@@ -58,50 +59,63 @@ export class CloseAccount {
       companies: CompanyRepository;
       subscriptions: SubscriptionRepository;
       publicAccessTokens: PublicAccessTokenRepository;
+      uow: UnitOfWorkPort;
     },
   ) {}
 
   async execute(input: CloseAccountInput): Promise<Result<CloseAccountView, AppError>> {
-    const company = await this.deps.companies.findById(input.companyId);
-    if (!company) return err(appNotFound('company', input.companyId));
+    return this.deps.uow.runInTransaction(async () => {
+      // Verrou de cycle de vie pris EN PREMIER. Toute capacité publique détient le verrou
+      // partagé correspondant jusqu'au commit : la clôture se place donc avant ou après elle,
+      // jamais au milieu d'une émission, d'une lecture ou d'une signature.
+      const company = await this.deps.companies.lockById(input.companyId);
+      if (!company) return err(appNotFound('company', input.companyId));
 
-    // Guard anti-tap accidentel : TOUJOURS revalidé, y compris sur un appel idempotent — jamais
-    // de bypass simplement parce que la company est déjà clôturée.
-    if (input.confirmationText.trim() !== company.name) {
-      return err({
-        kind: 'validation',
-        issues: [
-          {
-            field: 'confirmationText',
-            message: 'Le nom saisi ne correspond pas au nom de l’entreprise — clôture refusée.',
-          },
-        ],
+      // Guard anti-tap accidentel : TOUJOURS revalidé, y compris sur un appel idempotent — jamais
+      // de bypass simplement parce que la company est déjà clôturée.
+      if (input.confirmationText.trim() !== company.name) {
+        return err({
+          kind: 'validation',
+          issues: [
+            {
+              field: 'confirmationText',
+              message: 'Le nom saisi ne correspond pas au nom de l’entreprise — clôture refusée.',
+            },
+          ],
+        });
+      }
+
+      const alreadyClosed = company.isClosed();
+      const closedAt = company.closedAt ?? input.now;
+
+      if (!alreadyClosed) {
+        const closed = Company.of({
+          ...company.toProps(),
+          closedAt,
+          ...(input.reason !== null ? { closureReason: input.reason } : {}),
+        });
+        if (!closed.ok) return err(appDomain(closed.error));
+        await this.deps.companies.save(closed.value);
+      }
+
+      // Abonnement : invalidation idempotente (le early-access fallback — aucune ligne — n'a rien
+      // à annuler ; un canceled déjà posé n'est pas réécrit).
+      const subscription = await this.deps.subscriptions.findByCompanyId(input.companyId);
+      if (subscription && subscription.status !== 'canceled') {
+        await this.deps.subscriptions.save({
+          ...subscription,
+          status: 'canceled',
+          updatedAt: input.now,
+        });
+      }
+
+      // Tous les scopes publics sont coupés avant de libérer le verrou exclusif company.
+      await this.deps.publicAccessTokens.revokeAllForCompany({
+        companyId: input.companyId,
+        at: input.now,
       });
-    }
 
-    const alreadyClosed = company.isClosed();
-    const closedAt = company.closedAt ?? input.now;
-
-    if (!alreadyClosed) {
-      const closed = Company.of({
-        ...company.toProps(),
-        closedAt,
-        ...(input.reason !== null ? { closureReason: input.reason } : {}),
-      });
-      if (!closed.ok) return err(appDomain(closed.error));
-      await this.deps.companies.save(closed.value);
-    }
-
-    // Abonnement : invalidation idempotente (le early-access fallback — aucune ligne — n'a rien
-    // à annuler ; un canceled déjà posé n'est pas réécrit).
-    const subscription = await this.deps.subscriptions.findByCompanyId(input.companyId);
-    if (subscription && subscription.status !== 'canceled') {
-      await this.deps.subscriptions.save({ ...subscription, status: 'canceled', updatedAt: input.now });
-    }
-
-    // Liens de signature publics : coupe toute capacité d'agir encore au nom de ce tenant.
-    await this.deps.publicAccessTokens.revokeAllForCompany({ companyId: input.companyId, at: input.now });
-
-    return ok({ companyId: input.companyId, closedAt, alreadyClosed });
+      return ok({ companyId: input.companyId, closedAt, alreadyClosed });
+    });
   }
 }

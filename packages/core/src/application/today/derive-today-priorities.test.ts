@@ -93,12 +93,14 @@ describe('deriveTodayPriorities', () => {
       clock: env.clock,
     });
     const send = new SendQuote({
+      companies: env.companyRepo,
       quotes: env.quoteRepo,
       counters: env.counters,
       uow: env.uow,
       clock: env.clock,
     });
     const sign = new SignQuote({
+      companies: env.companyRepo,
       quotes: env.quoteRepo,
       publicAccessTokens: env.publicAccessTokens,
       uow: env.uow,

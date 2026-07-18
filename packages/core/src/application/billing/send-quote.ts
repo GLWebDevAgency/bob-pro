@@ -1,11 +1,12 @@
 import { type Result, ok, err } from '../../shared-kernel/result';
 import { parisDateOnly } from '../../shared-kernel/time';
 import { type AppError, appDomain, appNotFound } from '../result';
-import { type QuoteRepository } from '../ports/repositories';
+import { type CompanyRepository, type QuoteRepository } from '../ports/repositories';
 import { type SequenceCounterPort, type ClockPort, type UnitOfWorkPort } from '../ports/services';
 import { TxDomainError } from './tx-error';
 
 export interface SendQuoteDeps {
+  companies: CompanyRepository;
   quotes: QuoteRepository;
   counters: SequenceCounterPort;
   uow: UnitOfWorkPort;
@@ -30,8 +31,25 @@ export class SendQuote {
 
     try {
       const number = await this.deps.uow.runInTransaction(async () => {
+        // Ordre global anti-deadlock : company (SHARE) -> quote (UPDATE) -> compteur/token.
+        // Le devis lu avant l'UoW sert uniquement à localiser le tenant ; son état métier est
+        // intégralement rechargé sous verrou après la barrière de cycle de vie de la société.
+        const company = await this.deps.companies.lockForShareById(pre.companyId);
+        if (!company || company.isClosed()) {
+          throw new TxDomainError({
+            code: 'VALIDATION',
+            field: 'company',
+            message: 'Société introuvable ou clôturée.',
+          });
+        }
         const quote = await this.deps.quotes.lockById(input.quoteId);
-        if (!quote) throw new TxDomainError({ code: 'VALIDATION', field: 'quote', message: 'Devis introuvable.' });
+        if (!quote || quote.companyId !== company.id) {
+          throw new TxDomainError({
+            code: 'VALIDATION',
+            field: 'quote',
+            message: 'Devis introuvable.',
+          });
+        }
 
         const existing = quote.number;
         if (existing) {
@@ -40,18 +58,28 @@ export class SendQuote {
             if (!sent.ok) throw new TxDomainError(sent.error);
             await this.deps.quotes.save(quote);
           }
-          if (quote.status === 'sent' || quote.status === 'viewed' || quote.status === 'signed') return existing;
+          if (quote.status === 'sent' || quote.status === 'viewed' || quote.status === 'signed')
+            return existing;
           throw new TxDomainError({ code: 'INVALID_TRANSITION', from: quote.status, to: 'sent' });
         }
 
-        const alloc = await this.deps.counters.allocate({ companyId: quote.companyId, counterKey: 'quote', fiscalYear });
+        const alloc = await this.deps.counters.allocate({
+          companyId: quote.companyId,
+          counterKey: 'quote',
+          fiscalYear,
+        });
         const assigned = quote.assignNumber(alloc.formatted, this.deps.clock.now());
         if (!assigned.ok) throw new TxDomainError(assigned.error);
         const sent = quote.send(this.deps.clock.now());
         if (!sent.ok) throw new TxDomainError(sent.error);
         await this.deps.quotes.save(quote);
         const n = quote.number;
-        if (!n) throw new TxDomainError({ code: 'VALIDATION', field: 'number', message: 'Numero manquant.' });
+        if (!n)
+          throw new TxDomainError({
+            code: 'VALIDATION',
+            field: 'number',
+            message: 'Numero manquant.',
+          });
         return n;
       });
       return ok({ number });

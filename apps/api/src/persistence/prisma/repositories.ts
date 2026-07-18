@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { Prisma } from '@prisma/client';
+import { Prisma, type Company as PrismaCompanyRow } from '@prisma/client';
 import { normalizeSupplierName, type RememberSupplierInput } from '@bob/ai';
 import type { JournalEntry } from '@bob/ai';
 import {
@@ -106,8 +106,7 @@ function supplierMemoryId(companyId: string, key: string): string {
 }
 
 type PersistedAggregateResult<T> =
-  | { readonly ok: true; readonly value: T }
-  | { readonly ok: false; readonly error: unknown };
+  { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: unknown };
 
 type PersistedAggregateKind = 'company' | 'customer' | 'payment' | 'fiscal-profile';
 
@@ -137,18 +136,39 @@ function requirePersistedAggregate<T>(
   throw new PersistedDataCorruptionError(aggregate, recordId);
 }
 
+function requireActiveTransaction(prisma: PrismaService, operation: string): void {
+  if (!prisma.inTransaction()) {
+    throw new Error(`${operation} requires an active transaction.`);
+  }
+}
+
 export class PrismaCompanyRepository implements CompanyRepository {
   constructor(private readonly prisma: PrismaService) {}
+  private toDomain(row: PrismaCompanyRow): Company {
+    return requirePersistedAggregate('company', row.id, Company.of(companyRowToProps(row)));
+  }
   async findById(id: string): Promise<Company | null> {
     const row = await this.prisma.client().company.findUnique({ where: { id } });
     if (!row) return null;
-    return requirePersistedAggregate('company', row.id, Company.of(companyRowToProps(row)));
+    return this.toDomain(row);
+  }
+  async lockById(id: string): Promise<Company | null> {
+    requireActiveTransaction(this.prisma, 'Company lifecycle exclusive lock');
+    const db = this.prisma.client();
+    await db.$queryRaw`SELECT id FROM companies WHERE id = ${id} FOR UPDATE`;
+    const row = await db.company.findUnique({ where: { id } });
+    return row ? this.toDomain(row) : null;
+  }
+  async lockForShareById(id: string): Promise<Company | null> {
+    requireActiveTransaction(this.prisma, 'Company lifecycle shared lock');
+    const db = this.prisma.client();
+    await db.$queryRaw`SELECT id FROM companies WHERE id = ${id} FOR SHARE`;
+    const row = await db.company.findUnique({ where: { id } });
+    return row ? this.toDomain(row) : null;
   }
   async list(): Promise<Company[]> {
     const rows = await this.prisma.client().company.findMany({ orderBy: { id: 'asc' } });
-    return rows.map((row) =>
-      requirePersistedAggregate('company', row.id, Company.of(companyRowToProps(row))),
-    );
+    return rows.map((row) => this.toDomain(row));
   }
   async save(c: Company): Promise<void> {
     const data = companyPropsToCreate(c.toProps());
@@ -194,6 +214,13 @@ export class PrismaQuoteRepository implements QuoteRepository {
     const row = await db.quote.findUnique({ where: { id }, include: LINES_INCLUDE });
     if (!row) return null;
     return Quote.rehydrate(quoteRowToSnapshot(row));
+  }
+  async lockForShareById(id: string): Promise<Quote | null> {
+    requireActiveTransaction(this.prisma, 'Quote public read lock');
+    const db = this.prisma.client();
+    await db.$queryRaw`SELECT id FROM quotes WHERE id = ${id} FOR SHARE`;
+    const row = await db.quote.findUnique({ where: { id }, include: LINES_INCLUDE });
+    return row ? Quote.rehydrate(quoteRowToSnapshot(row)) : null;
   }
   async listByCompany(companyId: string): Promise<Quote[]> {
     const rows = await this.prisma
@@ -262,6 +289,13 @@ export class PrismaInvoiceRepository implements InvoiceRepository {
     const row = await db.invoice.findUnique({ where: { id }, include: LINES_INCLUDE });
     if (!row) return null;
     return Invoice.rehydrate(invoiceRowToSnapshot(row));
+  }
+  async lockForShareById(id: string): Promise<Invoice | null> {
+    requireActiveTransaction(this.prisma, 'Invoice public read lock');
+    const db = this.prisma.client();
+    await db.$queryRaw`SELECT id FROM invoices WHERE id = ${id} FOR SHARE`;
+    const row = await db.invoice.findUnique({ where: { id }, include: LINES_INCLUDE });
+    return row ? Invoice.rehydrate(invoiceRowToSnapshot(row)) : null;
   }
   async findByParentQuoteId(
     companyId: string,
@@ -2365,6 +2399,30 @@ export class PrismaPublicAccessTokenRepository implements PublicAccessTokenRepos
     const tokenHash = publicTokenHash(token);
     return this.prisma.withPublicAccessTokenHash(tokenHash, async () => {
       const row = await this.prisma.client().publicAccessToken.findUnique({ where: { tokenHash } });
+      if (!row || row.revokedAt !== null || row.expiresAt <= new Date(at)) return null;
+      return {
+        id: row.id,
+        companyId: row.companyId,
+        resourceType: row.resourceType,
+        resourceId: row.resourceId,
+        scope: row.scope,
+        expiresAt: row.expiresAt.toISOString(),
+        revokedAt: null,
+      };
+    });
+  }
+
+  async lockActive(token: string, at: string): Promise<PublicAccessGrant | null> {
+    requireActiveTransaction(this.prisma, 'Public access token use lock');
+    const tokenHash = publicTokenHash(token);
+    return this.prisma.withPublicAccessTokenHash(tokenHash, async () => {
+      const db = this.prisma.client();
+      await db.$queryRaw`
+        SELECT id FROM public_access_tokens
+        WHERE "tokenHash" = ${tokenHash}
+        FOR UPDATE
+      `;
+      const row = await db.publicAccessToken.findUnique({ where: { tokenHash } });
       if (!row || row.revokedAt !== null || row.expiresAt <= new Date(at)) return null;
       return {
         id: row.id,

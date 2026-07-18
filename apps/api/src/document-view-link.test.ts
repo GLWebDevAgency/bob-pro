@@ -27,7 +27,9 @@ function makeService() {
     });
   }
   const renderer: PdfRendererPort = {
-    renderInvoice: vi.fn(async (data) => new TextEncoder().encode(`%PDF-1.7\ninvoice:${data.number}`)),
+    renderInvoice: vi.fn(async (data) =>
+      new TextEncoder().encode(`%PDF-1.7\ninvoice:${data.number}`),
+    ),
     renderQuote: vi.fn(async (data) => new TextEncoder().encode(`%PDF-1.7\nquote:${data.number}`)),
   };
   const notificationDelivery = {
@@ -38,7 +40,12 @@ function makeService() {
     })),
     tryDeliver: vi.fn(async () => true),
   } as unknown as NotificationDeliveryService;
-  const logger = { audit: vi.fn(), error: vi.fn(), warn: vi.fn(), log: vi.fn() } as unknown as AppLogger;
+  const logger = {
+    audit: vi.fn(),
+    error: vi.fn(),
+    warn: vi.fn(),
+    log: vi.fn(),
+  } as unknown as AppLogger;
   const metrics = {
     aiRequests: { inc: vi.fn() },
     aiDuration: { observe: vi.fn() },
@@ -62,7 +69,15 @@ function makeService() {
 async function createSentQuote(service: BackendService): Promise<string> {
   const quote = await service.createQuote({
     customerId: 'cust-martin',
-    lines: [{ label: 'Prestation view-link', category: 'labor', qty: 1, unitPriceHT: 50_000, vatRate: 20 }],
+    lines: [
+      {
+        label: 'Prestation view-link',
+        category: 'labor',
+        qty: 1,
+        unitPriceHT: 50_000,
+        vatRate: 20,
+      },
+    ],
   });
   if (!quote.ok) throw new Error('fixture: createQuote KO');
   const sent = await service.sendQuote(quote.value.quoteId);
@@ -112,7 +127,9 @@ describe('Lien public de VISUALISATION — devis', () => {
     await asPrincipal(MERCIER, async () => {
       const quote = await service.createQuote({
         customerId: 'cust-martin',
-        lines: [{ label: 'Brouillon', category: 'labor', qty: 1, unitPriceHT: 10_000, vatRate: 20 }],
+        lines: [
+          { label: 'Brouillon', category: 'labor', qty: 1, unitPriceHT: 10_000, vatRate: 20 },
+        ],
       });
       if (!quote.ok) throw new Error('fixture KO');
       const link = await service.createQuoteViewLink(quote.value.quoteId);
@@ -274,7 +291,7 @@ describe('Lien public de VISUALISATION — jeton invalide / cross-tenant', () =>
     vi.unstubAllEnvs();
   });
 
-  it('une partie BDD manquante rend les vues publiques indisponibles, jamais avec un nom vide', async () => {
+  it('une partie BDD manquante reste un 404 public opaque, jamais un nom vide ni une fuite d’intégrité', async () => {
     vi.stubEnv('SIGN_WEB_BASE_URL', 'https://view.bob.test');
     const { service, persistence } = makeService();
     await persistence.seed();
@@ -292,11 +309,11 @@ describe('Lien public de VISUALISATION — jeton invalide / cross-tenant', () =>
 
       await expect(service.publicDocumentView(viewToken)).resolves.toEqual({
         ok: false,
-        error: { kind: 'unavailable', service: 'document-parties' },
+        error: { kind: 'not_found', entity: 'public-document-view-token', id: 'redacted' },
       });
       await expect(service.publicQuoteForSignature(signatureToken)).resolves.toEqual({
         ok: false,
-        error: { kind: 'unavailable', service: 'document-parties' },
+        error: { kind: 'not_found', entity: 'public-signature-token', id: 'redacted' },
       });
     });
     vi.unstubAllEnvs();

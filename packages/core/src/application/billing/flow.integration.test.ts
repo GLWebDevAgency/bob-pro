@@ -33,6 +33,7 @@ describe('Flux Devis -> signature -> facture -> paiement (intégration)', () => 
     const quoteId = created.value.quoteId;
 
     const sent = await new SendQuote({
+      companies: env.companyRepo,
       quotes: env.quoteRepo,
       counters: env.counters,
       uow: env.uow,
@@ -42,6 +43,7 @@ describe('Flux Devis -> signature -> facture -> paiement (intégration)', () => 
     if (sent.ok) expect(sent.value.number).toBe('D-2026-0001');
 
     const signed = await new SignQuote({
+      companies: env.companyRepo,
       quotes: env.quoteRepo,
       publicAccessTokens: env.publicAccessTokens,
       uow: env.uow,
@@ -102,6 +104,7 @@ describe('Flux Devis -> signature -> facture -> paiement (intégration)', () => 
       clock: env.clock,
     });
     const send = new SendQuote({
+      companies: env.companyRepo,
       quotes: env.quoteRepo,
       counters: env.counters,
       uow: env.uow,

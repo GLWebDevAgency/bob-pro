@@ -9,7 +9,11 @@ import {
 } from '@bob/core';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PrismaService } from './prisma.service';
-import { PrismaPublicAccessTokenRepository, PrismaQuoteRepository } from './repositories';
+import {
+  PrismaCompanyRepository,
+  PrismaPublicAccessTokenRepository,
+  PrismaQuoteRepository,
+} from './repositories';
 
 const RUN_POSTGRES_CERT = process.env.RUN_POSTGRES_QUOTE_SIGNATURE_CERT === 'true';
 const NOW = '2026-07-18T10:00:00.000Z';
@@ -164,11 +168,14 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
     it('une signature gagnante bloque la rotation, qui relit signed et ne ressuscite aucun lien', async () => {
       const quoteId = await seedSentQuote(9101);
       const signQuotes = new PrismaQuoteRepository(firstWorker);
+      const signCompanies = new PrismaCompanyRepository(firstWorker);
       const signTokens = new PrismaPublicAccessTokenRepository(firstWorker);
       const rotateQuotes = new PrismaQuoteRepository(secondWorker);
+      const rotateCompanies = new PrismaCompanyRepository(secondWorker);
       const rotateTokens = new PrismaPublicAccessTokenRepository(secondWorker);
 
       const initial = await new CreateQuoteSignatureToken({
+        companies: signCompanies,
         quotes: signQuotes,
         publicAccessTokens: signTokens,
         uow: tenantUow(firstWorker),
@@ -187,6 +194,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
       });
       const signPromise = firstWorker.withTenant(companyId, async () => {
         return new SignQuote({
+          companies: signCompanies,
           quotes: gatedSignQuotes,
           publicAccessTokens: signTokens,
           uow: firstWorker,
@@ -197,6 +205,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
 
       const rotationPid = deferred<number>();
       const rotationPromise = new CreateQuoteSignatureToken({
+        companies: rotateCompanies,
         quotes: rotateQuotes,
         publicAccessTokens: rotateTokens,
         uow: tenantUow(secondWorker, (pid) => rotationPid.resolve(pid)),
@@ -231,8 +240,10 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
     it('deux rotations attendent le même verrou et ne laissent qu’un seul grant actif', async () => {
       const quoteId = await seedSentQuote(9102);
       const firstQuotes = new PrismaQuoteRepository(firstWorker);
+      const firstCompanies = new PrismaCompanyRepository(firstWorker);
       const firstTokens = new PrismaPublicAccessTokenRepository(firstWorker);
       const secondQuotes = new PrismaQuoteRepository(secondWorker);
+      const secondCompanies = new PrismaCompanyRepository(secondWorker);
       const secondTokens = new PrismaPublicAccessTokenRepository(secondWorker);
       const firstLocked = deferred<number>();
       const releaseFirst = deferred<void>();
@@ -244,6 +255,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         release: releaseFirst,
       });
       const firstPromise = new CreateQuoteSignatureToken({
+        companies: firstCompanies,
         quotes: gatedFirstQuotes,
         publicAccessTokens: firstTokens,
         uow: tenantUow(firstWorker),
@@ -253,6 +265,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
 
       const secondPid = deferred<number>();
       const secondPromise = new CreateQuoteSignatureToken({
+        companies: secondCompanies,
         quotes: secondQuotes,
         publicAccessTokens: secondTokens,
         uow: tenantUow(secondWorker, (pid) => secondPid.resolve(pid)),
@@ -283,8 +296,10 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
     it('une rotation gagnante est suivie par la signature, qui révoque le nouveau lien', async () => {
       const quoteId = await seedSentQuote(9103);
       const rotateQuotes = new PrismaQuoteRepository(firstWorker);
+      const rotateCompanies = new PrismaCompanyRepository(firstWorker);
       const rotateTokens = new PrismaPublicAccessTokenRepository(firstWorker);
       const signQuotes = new PrismaQuoteRepository(secondWorker);
+      const signCompanies = new PrismaCompanyRepository(secondWorker);
       const signTokens = new PrismaPublicAccessTokenRepository(secondWorker);
       const rotationLocked = deferred<number>();
       const releaseRotation = deferred<void>();
@@ -296,6 +311,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         release: releaseRotation,
       });
       const rotationPromise = new CreateQuoteSignatureToken({
+        companies: rotateCompanies,
         quotes: gatedRotateQuotes,
         publicAccessTokens: rotateTokens,
         uow: tenantUow(firstWorker),
@@ -307,6 +323,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
       const signPromise = secondWorker.withTenant(companyId, async () => {
         signingPid.resolve(await backendPid(secondWorker));
         return new SignQuote({
+          companies: signCompanies,
           quotes: signQuotes,
           publicAccessTokens: signTokens,
           uow: secondWorker,

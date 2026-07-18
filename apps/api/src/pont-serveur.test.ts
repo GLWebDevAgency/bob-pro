@@ -4,7 +4,12 @@ import type { ExecutionContext } from '@nestjs/common';
 import { jwtVerify } from 'jose';
 import { Company, Customer, DocumentFolder, Expense, deriveVatPosition } from '@bob/core';
 import { MERCIER_PROPS } from '@bob/core/testing';
-import type { DocumentIntelligencePort, OcrPort, PaymentGatewayPort, PdfRendererPort } from '@bob/core';
+import type {
+  DocumentIntelligencePort,
+  OcrPort,
+  PaymentGatewayPort,
+  PdfRendererPort,
+} from '@bob/core';
 import { BackendService } from './backend.service';
 import { InMemoryPersistence } from './persistence/persistence.testing';
 import { requestContext, type AppLogger, type Principal } from './observability/logger';
@@ -48,7 +53,12 @@ function makeService(options?: { documentIntelligence?: DocumentIntelligencePort
     setUserCompanyId: vi.fn(async () => undefined),
     deleteUser: vi.fn(async () => undefined),
   };
-  const logger = { audit: vi.fn(), error: vi.fn(), warn: vi.fn(), log: vi.fn() } as unknown as AppLogger;
+  const logger = {
+    audit: vi.fn(),
+    error: vi.fn(),
+    warn: vi.fn(),
+    log: vi.fn(),
+  } as unknown as AppLogger;
   // Outbox stubée « pending » : sendQuote enfile mais n'atteint jamais un tiers dans la transaction test.
   const notificationDelivery = {
     enqueue: vi.fn(async (input: { notification: unknown }) => ({
@@ -96,18 +106,43 @@ async function issueFinalInvoice(
 ): Promise<{ invoiceId: string; number: string }> {
   const quote = await service.createQuote({
     customerId: input.customerId,
-    lines: [{ label: 'Prestation test', category: 'labor', qty: 1, unitPriceHT: input.unitPriceHT, vatRate: input.vatRate }],
+    lines: [
+      {
+        label: 'Prestation test',
+        category: 'labor',
+        qty: 1,
+        unitPriceHT: input.unitPriceHT,
+        vatRate: input.vatRate,
+      },
+    ],
   });
   if (!quote.ok) throw new Error('fixture: createQuote KO');
   const sent = await service.sendQuote(quote.value.quoteId);
   if (!sent.ok) throw new Error('fixture: sendQuote KO');
-  const signed = await service.signQuote({ quoteId: quote.value.quoteId, signerName: 'Signataire Test' });
+  const signed = await service.signQuote({
+    quoteId: quote.value.quoteId,
+    signerName: 'Signataire Test',
+  });
   if (!signed.ok) throw new Error('fixture: signQuote KO');
   const generated = await service.generateInvoice({ quoteId: quote.value.quoteId, mode: 'final' });
   if (!generated.ok) throw new Error('fixture: generateInvoice KO');
   const issued = await service.issueInvoice({ invoiceId: generated.value.invoiceId });
   if (!issued.ok) throw new Error('fixture: issueInvoice KO');
   return { invoiceId: generated.value.invoiceId, number: issued.value.number };
+}
+
+/** État impossible via CloseAccount correctement sérialisé, mais utile pour prouver que les
+ * routes publiques refusent aussi un ancien grant encore actif d'une société déjà clôturée. */
+async function closeCompanyWithoutRevokingTokens(p: InMemoryPersistence): Promise<void> {
+  const company = await p.companies.findById(MERCIER_PROPS.id);
+  if (!company) throw new Error('fixture: company absente');
+  const closed = Company.of({
+    ...company.toProps(),
+    closedAt: '2026-07-18T12:00:00.000Z',
+    closureReason: 'test de fence public',
+  });
+  if (!closed.ok) throw new Error('fixture: company clôturée invalide');
+  await p.companies.save(closed.value);
 }
 
 describe('PONT-SERVEUR v1 ① — POST /expenses/:id/pay (preuve réelle + décaissement 401/512)', () => {
@@ -142,7 +177,9 @@ describe('PONT-SERVEUR v1 ① — POST /expenses/:id/pay (preuve réelle + déca
       });
 
       const expenses = await service.listExpenses();
-      expect(expenses.ok && expenses.value.find((e) => e.id === recorded.value.id)?.status).toBe('paid');
+      expect(expenses.ok && expenses.value.find((e) => e.id === recorded.value.id)?.status).toBe(
+        'paid',
+      );
 
       const entries = await service.listAccountingEntries();
       expect(entries.ok).toBe(true);
@@ -161,7 +198,8 @@ describe('PONT-SERVEUR v1 ① — POST /expenses/:id/pay (preuve réelle + déca
       expect(again.ok && again.value.alreadyRecorded).toBe(true);
       const entriesAfter = await service.listAccountingEntries();
       expect(
-        entriesAfter.ok && entriesAfter.value.filter((e) => e.id === `expense:${recorded.value.id}:paid`),
+        entriesAfter.ok &&
+          entriesAfter.value.filter((e) => e.id === `expense:${recorded.value.id}:paid`),
       ).toHaveLength(1);
     });
   });
@@ -169,18 +207,26 @@ describe('PONT-SERVEUR v1 ① — POST /expenses/:id/pay (preuve réelle + déca
   it('anti-IDOR : la dépense d’un autre tenant est INTROUVABLE (not_found, jamais une fuite d’existence)', async () => {
     const { service } = makeService();
     const recorded = await asPrincipal(MERCIER, () =>
-      service.recordExpense({ supplierName: 'Cedeo', documentDate: todayUtc(), totalTtcCents: 5000, category: 'fournitures' }),
+      service.recordExpense({
+        supplierName: 'Cedeo',
+        documentDate: todayUtc(),
+        totalTtcCents: 5000,
+        category: 'fournitures',
+      }),
     );
     expect(recorded.ok).toBe(true);
     if (!recorded.ok) return;
 
-    const r = await asPrincipal(INTRUS, () => service.recordExpensePayment({
-      expenseId: recorded.value.id,
-      paidOn: todayUtc(),
-      method: 'card',
-    }));
+    const r = await asPrincipal(INTRUS, () =>
+      service.recordExpensePayment({
+        expenseId: recorded.value.id,
+        paidOn: todayUtc(),
+        method: 'card',
+      }),
+    );
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error).toEqual({ kind: 'not_found', entity: 'expense', id: recorded.value.id });
+    if (!r.ok)
+      expect(r.error).toEqual({ kind: 'not_found', entity: 'expense', id: recorded.value.id });
   });
 });
 
@@ -233,7 +279,9 @@ describe('PONT-SERVEUR v1 ② — recordExpense poste les écritures du cycle ac
         expect.objectContaining({ account: '401', debitCents: 0, creditCents: 18490 }),
       ]);
       // Pas de décaissement : la dépense est « à payer » (le 401/512 arrive avec payExpense).
-      expect(entries.value.find((e) => e.id === `expense:${recorded.value.id}:paid`)).toBeUndefined();
+      expect(
+        entries.value.find((e) => e.id === `expense:${recorded.value.id}:paid`),
+      ).toBeUndefined();
     });
   });
 
@@ -264,7 +312,9 @@ describe('PONT-SERVEUR v1 ② — recordExpense poste les écritures du cycle ac
       await expect(service.recordExpense(request)).resolves.toEqual(first);
       expect(await p.expenses.listByCompany(MERCIER.companyId!)).toHaveLength(1);
       const entries = await p.accountingEntries.listByCompany(MERCIER.companyId!);
-      expect(entries.filter((entry) => entry.toProps().sourceId === first.value.id)).toHaveLength(1);
+      expect(entries.filter((entry) => entry.toProps().sourceId === first.value.id)).toHaveLength(
+        1,
+      );
 
       const conflict = await service.recordExpense({ ...request, totalTtcCents: 18_491 });
       expect(conflict.ok).toBe(false);
@@ -298,7 +348,10 @@ describe('PONT-SERVEUR v1 ② — recordExpense poste les écritures du cycle ac
         return published;
       });
 
-      const replay = await service.recordExpense({ ...base, idempotencyKey: 'forced-concurrent-loser-1' });
+      const replay = await service.recordExpense({
+        ...base,
+        idempotencyKey: 'forced-concurrent-loser-1',
+      });
       expect(replay).toEqual(winner);
       // Le candidat avait déjà écrit Expense + E1 avant de perdre l'index. La sentinelle doit
       // les annuler avant la relecture du gagnant, sinon ces deux assertions passeraient à 2.
@@ -321,10 +374,12 @@ describe('PONT-SERVEUR v1 ② — recordExpense poste les écritures du cycle ac
     expect(await p.expenses.listByCompany(MERCIER.companyId!)).toHaveLength(1);
     expect(await p.expenses.listByCompany(INTRUS.companyId!)).toHaveLength(1);
 
-    const invalid = await asPrincipal(MERCIER, () => service.recordExpense({
-      ...request,
-      idempotencyKey: 'x'.repeat(201),
-    }));
+    const invalid = await asPrincipal(MERCIER, () =>
+      service.recordExpense({
+        ...request,
+        idempotencyKey: 'x'.repeat(201),
+      }),
+    );
     expect(invalid.ok).toBe(false);
     if (!invalid.ok) expect(invalid.error).toMatchObject({ kind: 'validation' });
     expect(await p.expenses.listByCompany(MERCIER.companyId!)).toHaveLength(1);
@@ -336,8 +391,17 @@ describe('PONT-SERVEUR v1 ③ — GET /payments (E3 : encaissements datés du te
     const { service, p } = makeService();
     await p.seed();
     await asPrincipal(MERCIER, async () => {
-      const { invoiceId } = await issueFinalInvoice(service, { customerId: 'cust-martin', unitPriceHT: 100000, vatRate: 20 });
-      const paid = await service.registerPayment({ invoiceId, amount: 48840, method: 'card', idempotencyKey: null });
+      const { invoiceId } = await issueFinalInvoice(service, {
+        customerId: 'cust-martin',
+        unitPriceHT: 100000,
+        vatRate: 20,
+      });
+      const paid = await service.registerPayment({
+        invoiceId,
+        amount: 48840,
+        method: 'card',
+        idempotencyKey: null,
+      });
       expect(paid.ok).toBe(true);
 
       const r = await service.listPayments();
@@ -369,7 +433,9 @@ describe('PONT-SERVEUR v1 ④ — GET /company/me (fiche société du tenant, Co
 
   it('tenant sans société : not_found PROPRE (jamais une fiche inventée)', async () => {
     const { service } = makeService(); // pas de seed
-    const r = await asPrincipal({ userId: 'u-1', companyId: 'co-fantome' }, () => service.getCompanyMe());
+    const r = await asPrincipal({ userId: 'u-1', companyId: 'co-fantome' }, () =>
+      service.getCompanyMe(),
+    );
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toEqual({ kind: 'not_found', entity: 'company', id: 'co-fantome' });
   });
@@ -420,7 +486,12 @@ describe('PONT-SERVEUR v1 ⑤ — getDiagnostic : annualEncaissedCents RÉEL (vi
         unitPriceHT: 4_000_000, // 40 000 € HT, TVA 0 % (franchise) → 40 000 € TTC
         vatRate: 0,
       });
-      const paid = await service.registerPayment({ invoiceId, amount: 4_000_000, method: 'transfer', idempotencyKey: null });
+      const paid = await service.registerPayment({
+        invoiceId,
+        amount: 4_000_000,
+        method: 'transfer',
+        idempotencyKey: null,
+      });
       expect(paid.ok).toBe(true);
 
       const r = await service.getDiagnostic();
@@ -440,7 +511,11 @@ describe('PONT-SERVEUR v1 ⑥ — POST /invoices/:id/credit-note (avoir A6, comp
     const { service, p } = makeService();
     await p.seed();
     await asPrincipal(MERCIER, async () => {
-      const { invoiceId } = await issueFinalInvoice(service, { customerId: 'cust-martin', unitPriceHT: 100000, vatRate: 20 });
+      const { invoiceId } = await issueFinalInvoice(service, {
+        customerId: 'cust-martin',
+        unitPriceHT: 100000,
+        vatRate: 20,
+      });
 
       const created = await service.createCreditNote({ invoiceId });
       expect(created.ok).toBe(true);
@@ -492,8 +567,17 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
     const { service, p } = makeService();
     await p.seed();
     await asPrincipal(MERCIER, async () => {
-      const { invoiceId } = await issueFinalInvoice(service, { customerId: 'cust-martin', unitPriceHT: 100000, vatRate: 20 });
-      const paid = await service.registerPayment({ invoiceId, amount: 120000, method: 'transfer', idempotencyKey: null });
+      const { invoiceId } = await issueFinalInvoice(service, {
+        customerId: 'cust-martin',
+        unitPriceHT: 100000,
+        vatRate: 20,
+      });
+      const paid = await service.registerPayment({
+        invoiceId,
+        amount: 120000,
+        method: 'transfer',
+        idempotencyKey: null,
+      });
       expect(paid.ok).toBe(true);
 
       const r = await service.askBob('combien de TVA je dois ?');
@@ -508,7 +592,13 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
           {
             kind: 'final',
             status: 'paid',
-            totals: { ht: 100000, vatByRate: { '20': 20000 }, vat: 20000, ttc: 120000, netToPay: 120000 },
+            totals: {
+              ht: 100000,
+              vatByRate: { '20': 20000 },
+              vat: 20000,
+              ttc: 120000,
+              netToPay: 120000,
+            },
             paid: 120000,
           },
         ],
@@ -523,7 +613,11 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
     const { service, p } = makeService();
     await p.seed();
     await asPrincipal(MERCIER, async () => {
-      await issueFinalInvoice(service, { customerId: 'cust-martin', unitPriceHT: 100000, vatRate: 20 });
+      await issueFinalInvoice(service, {
+        customerId: 'cust-martin',
+        unitPriceHT: 100000,
+        vatRate: 20,
+      });
 
       const r = await service.askBob("qui me doit de l'argent ?");
       expect(r.ok).toBe(true);
@@ -540,7 +634,7 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
   // 'Ton pilotage', jamais 'Ton activité') faute d'implémentation côté serveur, malgré le
   // commentaire pilotage.tsx:5 promettant la parité. Ce test prouve la parité : MÊME
   // deriveBusinessReview, MÊMES données réelles du tenant, MÊME format que l'écran Pilotage.
-  it('pilotage : « comment va mon chiffre d\'affaires ? » répond avec deriveBusinessReview sur les données RÉELLES du tenant (parité voix ↔ écran Pilotage)', async () => {
+  it("pilotage : « comment va mon chiffre d'affaires ? » répond avec deriveBusinessReview sur les données RÉELLES du tenant (parité voix ↔ écran Pilotage)", async () => {
     const { service, p } = makeService();
     await p.seed();
     await asPrincipal(MERCIER, async () => {
@@ -647,11 +741,13 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
         message: 'Résume cette notification',
         context: {
           screen: { name: '/notifications', instanceId: 'notifications' },
-          entities: [{
-            type: 'notification',
-            id: notificationId,
-            label: 'FAUSSE NOTIFICATION — facture réglée, aucun montant dû',
-          }],
+          entities: [
+            {
+              type: 'notification',
+              id: notificationId,
+              label: 'FAUSSE NOTIFICATION — facture réglée, aucun montant dû',
+            },
+          ],
           capabilities: ['screen.read', 'notification.read'],
         },
       }),
@@ -671,7 +767,9 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
         message: 'Ouvre cette notification',
         context: {
           screen: { name: '/notifications', instanceId: 'notifications' },
-          entities: [{ type: 'notification', id: notificationId, label: 'Lien forgé vers un autre écran' }],
+          entities: [
+            { type: 'notification', id: notificationId, label: 'Lien forgé vers un autre écran' },
+          ],
           capabilities: ['screen.read', 'notification.read'],
         },
       }),
@@ -717,7 +815,11 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.error).toEqual({ kind: 'not_found', entity: 'notification', id: notificationId });
+      expect(result.error).toEqual({
+        kind: 'not_found',
+        entity: 'notification',
+        id: notificationId,
+      });
     }
   });
 
@@ -739,7 +841,13 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
     const entryId = `expense:${recorded.value.id}:recorded`;
     const context = {
       screen: { name: '/comptabilite', instanceId: 'comptabilite' },
-      entities: [{ type: 'accounting_entry' as const, id: entryId, label: 'FAUSSE ÉCRITURE — déséquilibrée' }],
+      entities: [
+        {
+          type: 'accounting_entry' as const,
+          id: entryId,
+          label: 'FAUSSE ÉCRITURE — déséquilibrée',
+        },
+      ],
       capabilities: ['screen.read' as const, 'accounting.read' as const],
     };
 
@@ -761,7 +869,11 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
     );
     expect(forbidden.ok).toBe(false);
     if (!forbidden.ok) {
-      expect(forbidden.error).toEqual({ kind: 'not_found', entity: 'accounting_entry', id: entryId });
+      expect(forbidden.error).toEqual({
+        kind: 'not_found',
+        entity: 'accounting_entry',
+        id: entryId,
+      });
     }
   });
 
@@ -771,7 +883,15 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
     const created = await asPrincipal(MERCIER, () =>
       service.createQuote({
         customerId: 'cust-martin',
-        lines: [{ label: 'Pose chauffe-eau', category: 'labor', qty: 2, unitPriceHT: 45_000, vatRate: 20 }],
+        lines: [
+          {
+            label: 'Pose chauffe-eau',
+            category: 'labor',
+            qty: 2,
+            unitPriceHT: 45_000,
+            vatRate: 20,
+          },
+        ],
       }),
     );
     expect(created.ok).toBe(true);
@@ -784,7 +904,9 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
     if (!line) return;
     const context = {
       screen: { name: '/devis/[id]', instanceId: `quote:${created.value.quoteId}` },
-      entities: [{ type: 'quote_line' as const, id: line.id, label: 'LIGNE FALSIFIÉE — 1 centime' }],
+      entities: [
+        { type: 'quote_line' as const, id: line.id, label: 'LIGNE FALSIFIÉE — 1 centime' },
+      ],
       capabilities: ['screen.read' as const, 'quote.read' as const],
     };
 
@@ -868,7 +990,9 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
         method: 'card',
       });
       expect(proposed.value.pending?.proposalId).toMatch(/^[A-Za-z0-9_-]{8,160}$/);
-      expect(Date.parse(proposed.value.pending?.expiresAt ?? '')).toBeGreaterThan(Date.parse(todayUtc()));
+      expect(Date.parse(proposed.value.pending?.expiresAt ?? '')).toBeGreaterThan(
+        Date.parse(todayUtc()),
+      );
 
       const preview = await service.previewBobProposal({
         proposalId: proposed.value.pending?.proposalId,
@@ -892,9 +1016,13 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
       expect(confirmed.value.kind).toBe('done');
 
       const expenses = await service.listExpenses();
-      expect(expenses.ok && expenses.value.find((e) => e.id === recorded.value.id)?.status).toBe('paid');
+      expect(expenses.ok && expenses.value.find((e) => e.id === recorded.value.id)?.status).toBe(
+        'paid',
+      );
       const entries = await service.listAccountingEntries();
-      expect(entries.ok && entries.value.some((e) => e.id === `expense:${recorded.value.id}:paid`)).toBe(true);
+      expect(
+        entries.ok && entries.value.some((e) => e.id === `expense:${recorded.value.id}:paid`),
+      ).toBe(true);
 
       // ③ Consommation atomique : le même proposalId ne s'exécute jamais deux fois.
       const replay = await service.confirmBob(proposed.value.pending!);
@@ -963,7 +1091,9 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
           now: '2026-07-13T10:00:00.500Z',
         });
 
-        const confirmed = await service.confirmBob({ proposalId: proposed.value.pending.proposalId });
+        const confirmed = await service.confirmBob({
+          proposalId: proposed.value.pending.proposalId,
+        });
         expect(confirmed.ok).toBe(true);
         if (!confirmed.ok) return;
         expect(confirmed.value).toMatchObject({
@@ -1027,7 +1157,11 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
     );
     expect(intrusion.ok).toBe(false);
     if (!intrusion.ok) {
-      expect(intrusion.error).toEqual({ kind: 'not_found', entity: 'agent_proposal', id: 'redacted' });
+      expect(intrusion.error).toEqual({
+        kind: 'not_found',
+        entity: 'agent_proposal',
+        id: 'redacted',
+      });
     }
 
     // La tentative d'un autre tenant ne consomme pas la proposition du propriétaire.
@@ -1048,9 +1182,7 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
         category: 'fournitures',
       });
       if (!recorded.ok) throw new Error('fixture: recordExpense KO');
-      return service.askBob(
-        `J’ai payé la dépense Proposition privée le ${todayUtc()} par carte`,
-      );
+      return service.askBob(`J’ai payé la dépense Proposition privée le ${todayUtc()} par carte`);
     });
     expect(proposed.ok && proposed.value.pending?.proposalId).toBeTruthy();
     if (!proposed.ok || !proposed.value.pending) return;
@@ -1058,7 +1190,10 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
     const colleague = await asPrincipal(COLLEAGUE, () =>
       service.previewBobProposal({ proposalId: proposed.value.pending?.proposalId }),
     );
-    expect(colleague).toEqual({ ok: false, error: { kind: 'not_found', entity: 'agent_proposal', id: 'redacted' } });
+    expect(colleague).toEqual({
+      ok: false,
+      error: { kind: 'not_found', entity: 'agent_proposal', id: 'redacted' },
+    });
 
     const owner = await asPrincipal(MERCIER, () =>
       service.confirmBob({ proposalId: proposed.value.pending?.proposalId }),
@@ -1073,7 +1208,13 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
       const created = await service.createQuote({
         customerId: 'cust-martin',
         lines: [
-          { label: 'Prestation à envoyer', category: 'labor', qty: 1, unitPriceHT: 10_000, vatRate: 20 },
+          {
+            label: 'Prestation à envoyer',
+            category: 'labor',
+            qty: 1,
+            unitPriceHT: 10_000,
+            vatRate: 20,
+          },
         ],
       });
       expect(created.ok).toBe(true);
@@ -1091,11 +1232,17 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
       expect(proposed.ok && proposed.value.kind).toBe('proposed');
       if (!proposed.ok || !proposed.value.pending) return;
 
-      const confirmation = await service.confirmBob({ proposalId: proposed.value.pending.proposalId });
+      const confirmation = await service.confirmBob({
+        proposalId: proposed.value.pending.proposalId,
+      });
       expect(confirmation.ok).toBe(true);
-      expect(confirmation.ok && confirmation.value.card).toMatchObject({ title: 'Envoi programmé' });
+      expect(confirmation.ok && confirmation.value.card).toMatchObject({
+        title: 'Envoi programmé',
+      });
       const quotes = await service.listQuotes();
-      expect(quotes.ok && quotes.value.find((quote) => quote.id === created.value.quoteId)?.status).toBe('sent');
+      expect(
+        quotes.ok && quotes.value.find((quote) => quote.id === created.value.quoteId)?.status,
+      ).toBe('sent');
       expect(notificationDelivery.enqueue).toHaveBeenCalledOnce();
       expect(notificationDelivery.tryDeliver).not.toHaveBeenCalled();
     });
@@ -1112,7 +1259,9 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
     await asPrincipal(MERCIER, async () => {
       const created = await service.createQuote({
         customerId: 'cust-martin',
-        lines: [{ label: 'Déjà livré', category: 'labor', qty: 1, unitPriceHT: 10_000, vatRate: 20 }],
+        lines: [
+          { label: 'Déjà livré', category: 'labor', qty: 1, unitPriceHT: 10_000, vatRate: 20 },
+        ],
       });
       if (!created.ok) throw new Error('fixture: createQuote KO');
       const proposed = await service.askBob({
@@ -1126,7 +1275,9 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
       });
       if (!proposed.ok || !proposed.value.pending) throw new Error('fixture: proposition KO');
 
-      const confirmation = await service.confirmBob({ proposalId: proposed.value.pending.proposalId });
+      const confirmation = await service.confirmBob({
+        proposalId: proposed.value.pending.proposalId,
+      });
 
       expect(confirmation.ok && confirmation.value.card).toMatchObject({ title: 'Devis envoyé' });
     });
@@ -1144,7 +1295,9 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
       if (!customer.ok) throw new Error('fixture: createCustomer KO');
       const created = await service.createQuote({
         customerId: customer.value.id,
-        lines: [{ label: 'Sans email', category: 'labor', qty: 1, unitPriceHT: 10_000, vatRate: 20 }],
+        lines: [
+          { label: 'Sans email', category: 'labor', qty: 1, unitPriceHT: 10_000, vatRate: 20 },
+        ],
       });
       if (!created.ok) throw new Error('fixture: createQuote KO');
       const proposed = await service.askBob({
@@ -1158,7 +1311,9 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
       });
       if (!proposed.ok || !proposed.value.pending) throw new Error('fixture: proposition KO');
 
-      const confirmation = await service.confirmBob({ proposalId: proposed.value.pending.proposalId });
+      const confirmation = await service.confirmBob({
+        proposalId: proposed.value.pending.proposalId,
+      });
 
       expect(confirmation.ok && confirmation.value.card).toMatchObject({ title: 'Devis préparé' });
       expect(notificationDelivery.enqueue).not.toHaveBeenCalled();
@@ -1186,7 +1341,9 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
       // seulement le jeton opaque.
       if (sent.ok) {
         expect(sent.value.signatureToken).toBeTruthy();
-        expect(sent.value.signatureUrl).toBe(`https://sign.bob.test/sign/${sent.value.signatureToken}`);
+        expect(sent.value.signatureUrl).toBe(
+          `https://sign.bob.test/sign/${sent.value.signatureToken}`,
+        );
       }
     });
   });
@@ -1197,7 +1354,15 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
     await asPrincipal(MERCIER, async () => {
       const created = await service.createQuote({
         customerId: 'cust-martin',
-        lines: [{ label: 'Lien sans sortant', category: 'labor', qty: 1, unitPriceHT: 10_000, vatRate: 20 }],
+        lines: [
+          {
+            label: 'Lien sans sortant',
+            category: 'labor',
+            qty: 1,
+            unitPriceHT: 10_000,
+            vatRate: 20,
+          },
+        ],
       });
       if (!created.ok) throw new Error('fixture: createQuote KO');
       const sent = await service.sendQuote(created.value.quoteId);
@@ -1229,7 +1394,15 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
     await asPrincipal(MERCIER, async () => {
       const created = await service.createQuote({
         customerId: 'cust-martin',
-        lines: [{ label: 'Signature onsite', category: 'labor', qty: 1, unitPriceHT: 10_000, vatRate: 20 }],
+        lines: [
+          {
+            label: 'Signature onsite',
+            category: 'labor',
+            qty: 1,
+            unitPriceHT: 10_000,
+            vatRate: 20,
+          },
+        ],
       });
       if (!created.ok) throw new Error('fixture: createQuote KO');
       const sent = await service.sendQuote(created.value.quoteId);
@@ -1269,7 +1442,15 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
     const quoteId = await asPrincipal(MERCIER, async () => {
       const created = await service.createQuote({
         customerId: 'cust-martin',
-        lines: [{ label: 'Course de révocation', category: 'labor', qty: 1, unitPriceHT: 10_000, vatRate: 20 }],
+        lines: [
+          {
+            label: 'Course de révocation',
+            category: 'labor',
+            qty: 1,
+            unitPriceHT: 10_000,
+            vatRate: 20,
+          },
+        ],
       });
       if (!created.ok) throw new Error('fixture: createQuote KO');
       const sent = await service.sendQuote(created.value.quoteId);
@@ -1282,11 +1463,13 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
     // revalidation transactionnelle (2e findActive) ne le retrouve plus.
     const realFindActive = p.publicAccessTokens.findActive.bind(p.publicAccessTokens);
     let calls = 0;
-    const spy = vi.spyOn(p.publicAccessTokens, 'findActive').mockImplementation(async (token, at) => {
-      calls += 1;
-      if (calls >= 2) return null; // révoqué pendant la course
-      return realFindActive(token, at);
-    });
+    const spy = vi
+      .spyOn(p.publicAccessTokens, 'findActive')
+      .mockImplementation(async (token, at) => {
+        calls += 1;
+        if (calls >= 2) return null; // révoqué pendant la course
+        return realFindActive(token, at);
+      });
     try {
       const r = await service.publicSignQuote(quoteId.token, 'Client Distant');
       expect(r.ok).toBe(false);
@@ -1309,7 +1492,15 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
     const fixture = await asPrincipal(MERCIER, async () => {
       const created = await service.createQuote({
         customerId: 'cust-martin',
-        lines: [{ label: 'Signature distante', category: 'labor', qty: 1, unitPriceHT: 10_000, vatRate: 20 }],
+        lines: [
+          {
+            label: 'Signature distante',
+            category: 'labor',
+            qty: 1,
+            unitPriceHT: 10_000,
+            vatRate: 20,
+          },
+        ],
       });
       if (!created.ok) throw new Error('fixture: createQuote KO');
       const sent = await service.sendQuote(created.value.quoteId);
@@ -1330,6 +1521,87 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
     expect(replay.ok).toBe(false);
   });
 
+  it('P0 lifecycle : une société clôturée rend génériquement introuvables vue et signature, même si le grant reste actif', async () => {
+    const { service, p } = makeService();
+    await p.seed();
+    const fixture = await asPrincipal(MERCIER, async () => {
+      const created = await service.createQuote({
+        customerId: 'cust-martin',
+        lines: [
+          { label: 'Fence clôture', category: 'labor', qty: 1, unitPriceHT: 10_000, vatRate: 20 },
+        ],
+      });
+      if (!created.ok) throw new Error('fixture: createQuote KO');
+      const sent = await service.sendQuote(created.value.quoteId);
+      if (!sent.ok || !sent.value.signatureToken) throw new Error('fixture: sendQuote KO');
+      return { quoteId: created.value.quoteId, token: sent.value.signatureToken };
+    });
+    await closeCompanyWithoutRevokingTokens(p);
+    const markUsed = vi.spyOn(p.publicAccessTokens, 'markUsed');
+
+    const [view, signed] = await Promise.all([
+      service.publicQuoteForSignature(fixture.token),
+      service.publicSignQuote(fixture.token, 'Client trop tardif'),
+    ]);
+
+    expect(view).toEqual({
+      ok: false,
+      error: { kind: 'not_found', entity: 'public-signature-token', id: 'redacted' },
+    });
+    expect(signed).toEqual({
+      ok: false,
+      error: { kind: 'not_found', entity: 'public-signature-token', id: 'redacted' },
+    });
+    expect(markUsed).not.toHaveBeenCalled();
+    expect((await p.quotes.findById(fixture.quoteId))?.signature).toBeNull();
+  });
+
+  it('P0 lifecycle : devis, facture et PDF publics restent opaques après clôture, sans markUsed', async () => {
+    const { service, p } = makeService();
+    await p.seed();
+    const links = await asPrincipal(MERCIER, async () => {
+      const created = await service.createQuote({
+        customerId: 'cust-martin',
+        lines: [
+          { label: 'Vue clôture', category: 'labor', qty: 1, unitPriceHT: 20_000, vatRate: 20 },
+        ],
+      });
+      if (!created.ok) throw new Error('fixture: createQuote KO');
+      const sent = await service.sendQuote(created.value.quoteId);
+      if (!sent.ok) throw new Error('fixture: sendQuote KO');
+      const quoteLink = await service.createQuoteViewLink(created.value.quoteId);
+      if (!quoteLink.ok) throw new Error('fixture: quote view link KO');
+      const invoice = await issueFinalInvoice(service, {
+        customerId: 'cust-martin',
+        unitPriceHT: 30_000,
+        vatRate: 20,
+      });
+      const invoiceLink = await service.createInvoiceViewLink(invoice.invoiceId);
+      if (!invoiceLink.ok) throw new Error('fixture: invoice view link KO');
+      return {
+        quoteToken: decodeURIComponent(quoteLink.value.viewUrl.split('/view/')[1]!),
+        invoiceToken: decodeURIComponent(invoiceLink.value.viewUrl.split('/view/')[1]!),
+      };
+    });
+    await closeCompanyWithoutRevokingTokens(p);
+    const markUsed = vi.spyOn(p.publicAccessTokens, 'markUsed');
+
+    const results = await Promise.all([
+      service.publicDocumentView(links.quoteToken),
+      service.publicDocumentPdf(links.quoteToken),
+      service.publicDocumentView(links.invoiceToken),
+      service.publicDocumentPdf(links.invoiceToken),
+    ]);
+
+    for (const result of results) {
+      expect(result).toEqual({
+        ok: false,
+        error: { kind: 'not_found', entity: 'public-document-view-token', id: 'redacted' },
+      });
+    }
+    expect(markUsed).not.toHaveBeenCalled();
+  });
+
   it('refuse les formats et payloads audio invalides avant tout appel au provider STT', async () => {
     const { service } = makeService();
     await asPrincipal(MERCIER, async () => {
@@ -1342,7 +1614,10 @@ describe('PONT-SERVEUR v1 ⑦ — actions Bob serveur : position_tva, balance_ag
         });
       }
 
-      const malformed = await service.transcribe({ audioBase64: '***not-base64***', mimeType: 'audio/m4a' });
+      const malformed = await service.transcribe({
+        audioBase64: '***not-base64***',
+        mimeType: 'audio/m4a',
+      });
       expect(malformed.ok).toBe(false);
       if (!malformed.ok) {
         expect(malformed.error).toMatchObject({
@@ -1368,7 +1643,11 @@ describe('PONT-SERVEUR v1 — au guard : les nouveaux endpoints exigent JWT + te
     vi.unstubAllEnvs();
   });
 
-  function ctx(req: { url: string; method?: string; headers: Record<string, string | undefined> }): ExecutionContext {
+  function ctx(req: {
+    url: string;
+    method?: string;
+    headers: Record<string, string | undefined>;
+  }): ExecutionContext {
     return { switchToHttp: () => ({ getRequest: () => req }) } as unknown as ExecutionContext;
   }
 
@@ -1377,13 +1656,16 @@ describe('PONT-SERVEUR v1 — au guard : les nouveaux endpoints exigent JWT + te
     ['GET', '/payments'],
     ['POST', '/expenses/exp-1/pay'],
     ['POST', '/invoices/inv-1/credit-note'],
-  ])('sans Authorization : %s %s est refusé (seul GET /company/lookup exact est public)', async (method, url) => {
-    const guard = new SupabaseAuthGuard();
-    const allowed = await requestContext.run({ correlationId: 'test' }, () =>
-      guard.canActivate(ctx({ url, method, headers: {} })),
-    );
-    expect(allowed).toBe(false);
-  });
+  ])(
+    'sans Authorization : %s %s est refusé (seul GET /company/lookup exact est public)',
+    async (method, url) => {
+      const guard = new SupabaseAuthGuard();
+      const allowed = await requestContext.run({ correlationId: 'test' }, () =>
+        guard.canActivate(ctx({ url, method, headers: {} })),
+      );
+      expect(allowed).toBe(false);
+    },
+  );
 
   it('JWT valide AVEC tenant : GET /company/me admis — le Principal scope la fiche au tenant du JWT', async () => {
     jwtVerifyMock.mockResolvedValue({
@@ -1394,7 +1676,11 @@ describe('PONT-SERVEUR v1 — au guard : les nouveaux endpoints exigent JWT + te
 
     await requestContext.run({ correlationId: 'test' }, async () => {
       const allowed = await guard.canActivate(
-        ctx({ url: '/company/me', method: 'GET', headers: { authorization: 'Bearer jwt-de-test' } }),
+        ctx({
+          url: '/company/me',
+          method: 'GET',
+          headers: { authorization: 'Bearer jwt-de-test' },
+        }),
       );
       expect(allowed).toBe(true);
       const r = await service.getCompanyMe();
@@ -1433,15 +1719,25 @@ describe('PONT-SERVEUR — proposition opaque : garde temporelle TTL (audit voca
       const confirmed = await service.confirmBob({ proposalId: proposed.value.pending.proposalId });
       expect(confirmed.ok).toBe(false);
       if (!confirmed.ok) {
-        expect(confirmed.error).toMatchObject({ kind: 'validation', issues: [{ field: 'proposalId' }] });
+        expect(confirmed.error).toMatchObject({
+          kind: 'validation',
+          issues: [{ field: 'proposalId' }],
+        });
       }
-      const preview = await service.previewBobProposal({ proposalId: proposed.value.pending.proposalId });
+      const preview = await service.previewBobProposal({
+        proposalId: proposed.value.pending.proposalId,
+      });
       expect(preview.ok).toBe(false);
       if (!preview.ok) {
-        expect(preview.error).toMatchObject({ kind: 'validation', issues: [{ field: 'proposalId' }] });
+        expect(preview.error).toMatchObject({
+          kind: 'validation',
+          issues: [{ field: 'proposalId' }],
+        });
       }
       const expenses = await service.listExpenses();
-      expect(expenses.ok && expenses.value.find((e) => e.id === recorded.value.id)?.status).toBe('to_pay');
+      expect(expenses.ok && expenses.value.find((e) => e.id === recorded.value.id)?.status).toBe(
+        'to_pay',
+      );
     });
   });
 });
@@ -1453,7 +1749,8 @@ describe('PONT-SERVEUR — contexte écran : un id d’un AUTRE tenant est invis
     // Mercier possède une facture émise bien réelle.
     const invoiceId = await asPrincipal(MERCIER, async () => {
       const customers = await service.listCustomers();
-      if (!customers.ok || customers.value.length === 0) throw new Error('fixture: client Mercier manquant');
+      if (!customers.ok || customers.value.length === 0)
+        throw new Error('fixture: client Mercier manquant');
       const issued = await issueFinalInvoice(service, {
         customerId: customers.value[0]!.id,
         unitPriceHT: 100_000,
@@ -1487,11 +1784,19 @@ describe('PONT-SERVEUR — coffre documentaire original-first et suppression sû
     await asPrincipal(MERCIER, async () => {
       const intake = await service.createDocumentIntake({} as never);
       expect(intake.ok).toBe(false);
-      if (!intake.ok) expect(intake.error).toMatchObject({ kind: 'validation', issues: [{ field: 'idempotencyKey' }] });
+      if (!intake.ok)
+        expect(intake.error).toMatchObject({
+          kind: 'validation',
+          issues: [{ field: 'idempotencyKey' }],
+        });
 
       const upload = await service.uploadDocument({} as never);
       expect(upload.ok).toBe(false);
-      if (!upload.ok) expect(upload.error).toMatchObject({ kind: 'validation', issues: [{ field: 'contentBase64' }] });
+      if (!upload.ok)
+        expect(upload.error).toMatchObject({
+          kind: 'validation',
+          issues: [{ field: 'contentBase64' }],
+        });
 
       const folder = await service.createDocumentFolder({} as never);
       expect(folder.ok).toBe(false);
@@ -1529,7 +1834,9 @@ describe('PONT-SERVEUR — coffre documentaire original-first et suppression sû
         });
       }
       const afterInvalid = await service.listDocuments();
-      expect(afterInvalid.ok && before.ok && afterInvalid.value).toHaveLength(before.ok ? before.value.length : 0);
+      expect(afterInvalid.ok && before.ok && afterInvalid.value).toHaveLength(
+        before.ok ? before.value.length : 0,
+      );
 
       const first = await service.createDocumentIntake({
         contentBase64: '/9j/2Q==',
@@ -1595,7 +1902,9 @@ describe('PONT-SERVEUR — coffre documentaire original-first et suppression sû
       const folders = await service.listDocumentFolders();
       expect(folders.ok).toBe(true);
       if (!folders.ok) return;
-      const sameTenantFolder = folders.value.items.find((folder) => folder.systemKey === 'purchases');
+      const sameTenantFolder = folders.value.items.find(
+        (folder) => folder.systemKey === 'purchases',
+      );
       if (!sameTenantFolder) throw new Error('fixture: dossier Achats absent');
       const crossTenantFolder = DocumentFolder.create({
         id: 'folder-cross-tenant',
@@ -1649,7 +1958,9 @@ describe('PONT-SERVEUR — coffre documentaire original-first et suppression sû
         });
       }
       const afterUploads = await service.listDocuments();
-      expect(afterUploads.ok && before.ok && afterUploads.value).toHaveLength((before.ok ? before.value.length : 0) + 1);
+      expect(afterUploads.ok && before.ok && afterUploads.value).toHaveLength(
+        (before.ok ? before.value.length : 0) + 1,
+      );
 
       const sameTargetDocument = await service.createDocumentIntake({
         contentBase64: '/9j/2Q==',
@@ -1753,7 +2064,9 @@ describe('PONT-SERVEUR — coffre documentaire original-first et suppression sû
       });
       expect(await p.expenses.listByCompany(MERCIER.companyId!)).toHaveLength(1);
       const entries = await p.accountingEntries.listByCompany(MERCIER.companyId!);
-      expect(entries.filter((entry) => entry.toProps().sourceId === first.value.expenseId)).toHaveLength(1);
+      expect(
+        entries.filter((entry) => entry.toProps().sourceId === first.value.expenseId),
+      ).toHaveLength(1);
       expect(p.expenseCreationRequests.snapshot().size).toBe(1);
 
       const laterFolder = await service.createDocumentFolder({ name: 'Contrôle ultérieur' });
@@ -1824,7 +2137,9 @@ describe('PONT-SERVEUR — coffre documentaire original-first et suppression sû
       });
       // Cycle achats complet : écriture d'ACHAT (AC) ET de DÉCAISSEMENT (BQ) posées ensemble.
       const entries = await p.accountingEntries.listByCompany(MERCIER.companyId!);
-      const forExpense = entries.filter((entry) => entry.toProps().sourceId === result.value.expenseId);
+      const forExpense = entries.filter(
+        (entry) => entry.toProps().sourceId === result.value.expenseId,
+      );
       expect(forExpense).toHaveLength(2);
       expect(result.value.document).toMatchObject({
         linkedEntityType: 'expense',
@@ -1918,17 +2233,19 @@ describe('PONT-SERVEUR — coffre documentaire original-first et suppression sû
       return { document: archived.value, targetFolderId: purchases.id };
     });
 
-    const intrusion = await asPrincipal(INTRUS, () => service.recordDocumentExpense({
-      documentId: fixture.document.id,
-      expectedRevision: fixture.document.revision,
-      targetFolderId: fixture.targetFolderId,
-      expense: {
-        supplierName: 'Cedeo',
-        documentDate: todayUtc(),
-        totalTtcCents: 5_000,
-        category: 'fournitures',
-      },
-    }));
+    const intrusion = await asPrincipal(INTRUS, () =>
+      service.recordDocumentExpense({
+        documentId: fixture.document.id,
+        expectedRevision: fixture.document.revision,
+        targetFolderId: fixture.targetFolderId,
+        expense: {
+          supplierName: 'Cedeo',
+          documentDate: todayUtc(),
+          totalTtcCents: 5_000,
+          category: 'fournitures',
+        },
+      }),
+    );
 
     expect(intrusion).toEqual({
       ok: false,
@@ -2051,7 +2368,9 @@ describe('PONT-SERVEUR — coffre documentaire original-first et suppression sû
         message: 'Résume ce document',
         context: {
           screen: { name: '/documents/[id]', instanceId: `document:${archived.value.id}` },
-          entities: [{ type: 'document', id: archived.value.id, label: 'FAUX RÉSUMÉ FOURNI PAR LE MOBILE' }],
+          entities: [
+            { type: 'document', id: archived.value.id, label: 'FAUX RÉSUMÉ FOURNI PAR LE MOBILE' },
+          ],
           capabilities: ['screen.read', 'document.read'],
         },
       });
@@ -2237,7 +2556,10 @@ describe('PONT-SERVEUR — coffre documentaire original-first et suppression sû
       expect(moved.ok).toBe(true);
 
       const preview = await service.previewDocumentFolderDeletion(source.value.id);
-      expect(preview.ok && preview.value).toMatchObject({ documentCount: 1, canDeleteEmpty: false });
+      expect(preview.ok && preview.value).toMatchObject({
+        documentCount: 1,
+        canDeleteEmpty: false,
+      });
       if (!preview.ok) return;
       expect(preview.value).not.toHaveProperty('snapshot');
       const executed = await service.executeDocumentFolderDeletion({
@@ -2253,7 +2575,9 @@ describe('PONT-SERVEUR — coffre documentaire original-first et suppression sû
         value: { folderId: source.value.id, transferredDocuments: 1, transferredChildren: 0 },
       });
       const inTarget = await service.listDocuments({ folderId: target.value.id });
-      expect(inTarget.ok && inTarget.value.map((document) => document.id)).toEqual([first.value.id]);
+      expect(inTarget.ok && inTarget.value.map((document) => document.id)).toEqual([
+        first.value.id,
+      ]);
 
       const replay = await service.executeDocumentFolderDeletion({
         planId: preview.value.planId,
@@ -2286,7 +2610,10 @@ describe('PONT-SERVEUR — coffre documentaire original-first et suppression sû
       const target = await service.createDocumentFolder({ name: 'Destination sûre' });
       expect(source.ok && target.ok).toBe(true);
       if (!source.ok || !target.ok) return;
-      const child = await service.createDocumentFolder({ name: 'Sous-dossier', parentId: source.value.id });
+      const child = await service.createDocumentFolder({
+        name: 'Sous-dossier',
+        parentId: source.value.id,
+      });
       expect(child.ok).toBe(true);
       if (!child.ok) return;
       const preview = await service.previewDocumentFolderDeletion(source.value.id);
@@ -2329,7 +2656,9 @@ describe('PONT-SERVEUR — coffre documentaire original-first et suppression sû
       const sourceChildren = await service.listDocumentFolders({ parentId: source.value.id });
       const targetChildren = await service.listDocumentFolders({ parentId: target.value.id });
       expect(sourceAfter.ok).toBe(true);
-      expect(sourceChildren.ok && sourceChildren.value.items.map((folder) => folder.id)).toEqual([child.value.id]);
+      expect(sourceChildren.ok && sourceChildren.value.items.map((folder) => folder.id)).toEqual([
+        child.value.id,
+      ]);
       expect(targetChildren.ok && targetChildren.value.items).toEqual([]);
 
       const replay = await service.executeDocumentFolderDeletion({
@@ -2341,7 +2670,7 @@ describe('PONT-SERVEUR — coffre documentaire original-first et suppression sû
   });
 });
 
-describe('enforcement des offres (pilier 2) — le serveur fait foi, jamais l\'UI', () => {
+describe("enforcement des offres (pilier 2) — le serveur fait foi, jamais l'UI", () => {
   const persistSubscription = async (
     p: InMemoryPersistence,
     input: {
@@ -2349,18 +2678,19 @@ describe('enforcement des offres (pilier 2) — le serveur fait foi, jamais l\'U
       plan: 'free' | 'solo' | 'pro' | 'business';
       status?: 'active' | 'past_due';
     },
-  ) => p.subscriptions.save({
-    id: `sub-${input.companyId}`,
-    companyId: input.companyId,
-    plan: input.plan,
-    status: input.status ?? 'active',
-    trialEndsAt: null,
-    currentPeriodEnd: '2099-12-31T23:59:59.000Z',
-    store: null,
-    storeRef: null,
-    createdAt: '2026-01-01T00:00:00.000Z',
-    updatedAt: '2026-01-01T00:00:00.000Z',
-  });
+  ) =>
+    p.subscriptions.save({
+      id: `sub-${input.companyId}`,
+      companyId: input.companyId,
+      plan: input.plan,
+      status: input.status ?? 'active',
+      trialEndsAt: null,
+      currentPeriodEnd: '2099-12-31T23:59:59.000Z',
+      store: null,
+      storeRef: null,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    });
 
   it('listAccountingEntries REFUSE sous Free (accounting_foundation)', async () => {
     const { service, p } = makeService();
@@ -2384,7 +2714,7 @@ describe('enforcement des offres (pilier 2) — le serveur fait foi, jamais l\'U
     expect(result.ok).toBe(true);
   });
 
-  it('exportFec REFUSE sous Pro (accounting_operations) avec un message d\'upsell honnête', async () => {
+  it("exportFec REFUSE sous Pro (accounting_operations) avec un message d'upsell honnête", async () => {
     const { service, p } = makeService();
     await persistSubscription(p, { companyId: MERCIER.companyId!, plan: 'solo' });
     const result = await asPrincipal(MERCIER, () =>
@@ -2411,15 +2741,24 @@ describe('enforcement des offres (pilier 2) — le serveur fait foi, jamais l\'U
   it('P1 review : un abonnement past_due ne déclenche JAMAIS de relances automatiques, même en Pro', async () => {
     const { service, p } = makeService();
     await persistSubscription(p, { companyId: 'co-1', plan: 'pro', status: 'past_due' });
-    await expect(service.autoDunningEntitlement('co-1')).resolves.toEqual({ allowed: false, plan: 'pro' });
+    await expect(service.autoDunningEntitlement('co-1')).resolves.toEqual({
+      allowed: false,
+      plan: 'pro',
+    });
   });
 
   it('autoDunningEntitlement : solo → refus tracé ; business explicitement persisté → ouvert', async () => {
     const { service, p } = makeService();
     await persistSubscription(p, { companyId: 'co-1', plan: 'solo' });
-    await expect(service.autoDunningEntitlement('co-1')).resolves.toEqual({ allowed: false, plan: 'solo' });
+    await expect(service.autoDunningEntitlement('co-1')).resolves.toEqual({
+      allowed: false,
+      plan: 'solo',
+    });
 
     await persistSubscription(p, { companyId: 'co-1', plan: 'business' });
-    await expect(service.autoDunningEntitlement('co-1')).resolves.toEqual({ allowed: true, plan: 'business' });
+    await expect(service.autoDunningEntitlement('co-1')).resolves.toEqual({
+      allowed: true,
+      plan: 'business',
+    });
   });
 });

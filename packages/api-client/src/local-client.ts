@@ -1055,6 +1055,7 @@ export class LocalBobClient implements BobClient {
       companies: this.companies,
       subscriptions: this.subscriptionRepository,
       publicAccessTokens: this.publicAccessTokens,
+      uow: this.uow,
     }).execute({
       companyId: this.companyId,
       confirmationText: input.confirmationText,
@@ -2928,6 +2929,7 @@ export class LocalBobClient implements BobClient {
     clock: ClockPort = this.clock,
   ): Promise<Result<SendQuoteOutput, AppError>> {
     const result = await new SendQuote({
+      companies: this.companies,
       quotes: this.quotes,
       counters: this.counters,
       uow: this.uow,
@@ -2948,6 +2950,7 @@ export class LocalBobClient implements BobClient {
   ): Promise<Result<CreateQuoteSignatureLinkOutput, AppError>> {
     await this.ready;
     const link = await new CreateQuoteSignatureLink({
+      companies: this.companies,
       quotes: this.quotes,
       publicAccessTokens: this.publicAccessTokens,
       uow: this.uow,
@@ -2970,9 +2973,11 @@ export class LocalBobClient implements BobClient {
   ): Promise<Result<CreateDocumentViewLinkOutput, AppError>> {
     await this.ready;
     const link = await new CreateDocumentViewLink({
+      companies: this.companies,
       quotes: this.quotes,
       invoices: this.invoices,
       publicAccessTokens: this.publicAccessTokens,
+      uow: this.uow,
       clock: this.clock,
     }).execute({ kind: 'quote', id: quoteId });
     if (!link.ok) return link;
@@ -2991,9 +2996,11 @@ export class LocalBobClient implements BobClient {
   ): Promise<Result<CreateDocumentViewLinkOutput, AppError>> {
     await this.ready;
     const link = await new CreateDocumentViewLink({
+      companies: this.companies,
       quotes: this.quotes,
       invoices: this.invoices,
       publicAccessTokens: this.publicAccessTokens,
+      uow: this.uow,
       clock: this.clock,
     }).execute({ kind: 'invoice', id: invoiceId });
     if (!link.ok) return link;
@@ -3022,6 +3029,7 @@ export class LocalBobClient implements BobClient {
     // R4 : même règle que l'API — le tracé est haché (sha256Hex, pur TS : tourne on-device),
     // jamais stocké tel quel ; absent = preuve absente, jamais fabriquée.
     return new SignQuote({
+      companies: this.companies,
       quotes: this.quotes,
       publicAccessTokens: this.publicAccessTokens,
       uow: this.uow,

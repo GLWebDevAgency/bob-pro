@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { SignQuote } from './sign-quote';
+import { type Company } from '../../domain/company/company';
 import { Quote } from '../../domain/billing/quote/quote';
 import { DocNumber } from '../../domain/billing/shared/doc-number';
-import { type QuoteRepository } from '../ports/repositories';
-import { type PublicAccessGrant, type PublicAccessTokenRepository } from '../ports/public-access-token';
+import { type CompanyRepository, type QuoteRepository } from '../ports/repositories';
+import {
+  type PublicAccessGrant,
+  type PublicAccessTokenRepository,
+} from '../ports/public-access-token';
 
 const AT = '2026-06-01T10:00:00.000Z';
 const clock = { now: () => AT, today: () => '2026-06-01' };
@@ -11,17 +15,38 @@ const clock = { now: () => AT, today: () => '2026-06-01' };
 function sentQuote(): Quote {
   const q = Quote.compose({ id: 'quote-1', companyId: 'co-1', customerId: 'cust-1', at: AT });
   if (!q.ok) throw new Error('compose');
-  q.value.addLine({ id: 'line-1', label: 'Prestation', category: 'labor', qty: 1, unitPriceHT: 10000, vatRate: 20 });
+  q.value.addLine({
+    id: 'line-1',
+    label: 'Prestation',
+    category: 'labor',
+    qty: 1,
+    unitPriceHT: 10000,
+    vatRate: 20,
+  });
   q.value.assignNumber(DocNumber.format('D', 2026, 1), AT);
   q.value.send(AT);
   return q.value;
 }
 
-function makeDeps(quote: Quote | null, options: { activeGrant?: PublicAccessGrant | null } = {}) {
+function makeDeps(
+  quote: Quote | null,
+  options: { activeGrant?: PublicAccessGrant | null; companyClosed?: boolean } = {},
+) {
   let saves = 0;
   const revokeActiveCalls: { companyId: string; resourceId: string }[] = [];
   let findActiveCalls = 0;
   const uow = { runInTransaction: <T>(fn: () => Promise<T>): Promise<T> => fn() };
+  const company = {
+    id: quote?.companyId ?? 'co-1',
+    isClosed: () => options.companyClosed === true,
+  } as Company;
+  const companies: CompanyRepository = {
+    findById: async () => company,
+    lockById: async () => company,
+    lockForShareById: async () => company,
+    list: async () => [company],
+    save: async () => undefined,
+  };
   const quotes: QuoteRepository = {
     findById: async () => quote,
     lockById: async () => quote,
@@ -44,7 +69,7 @@ function makeDeps(quote: Quote | null, options: { activeGrant?: PublicAccessGran
     revokeAllForCompany: async () => undefined,
   };
   return {
-    deps: { quotes, publicAccessTokens, uow, clock },
+    deps: { companies, quotes, publicAccessTokens, uow, clock },
     counts: () => ({ saves, revokeActiveCalls: revokeActiveCalls.length, findActiveCalls }),
   };
 }
@@ -53,7 +78,10 @@ describe('SignQuote', () => {
   it('normalise le nom du signataire avant signature', async () => {
     const quote = sentQuote();
     const { deps, counts } = makeDeps(quote);
-    const r = await new SignQuote(deps).execute({ quoteId: quote.id, signerName: '  M.   Martin  ' });
+    const r = await new SignQuote(deps).execute({
+      quoteId: quote.id,
+      signerName: '  M.   Martin  ',
+    });
 
     expect(r.ok).toBe(true);
     expect(quote.signature?.signerName).toBe('M. Martin');
@@ -120,6 +148,17 @@ describe('SignQuote', () => {
     expect(counts().revokeActiveCalls).toBe(1);
   });
 
+  it('refuse toute signature lorsque le verrou relit une société clôturée', async () => {
+    const quote = sentQuote();
+    const { deps, counts } = makeDeps(quote, { companyClosed: true });
+
+    const r = await new SignQuote(deps).execute({ quoteId: quote.id, signerName: 'Martin Dupont' });
+
+    expect(r.ok).toBe(false);
+    expect(quote.signature).toBeNull();
+    expect(counts()).toEqual({ saves: 0, revokeActiveCalls: 0, findActiveCalls: 0 });
+  });
+
   // P0 R4 — le tracé transmis (hash déjà calculé côté serveur) devient une preuve d'intégrité
   // liée à la signature. Absent = pas de `proof` fabriqué.
   it('porte la preuve du tracé quand un hash est fourni, aucune preuve sinon', async () => {
@@ -130,7 +169,11 @@ describe('SignQuote', () => {
       proofSha256: 'a'.repeat(64),
     });
     expect(r1.ok).toBe(true);
-    expect(withProof.signature?.proof).toEqual({ method: 'onsite_draw', sha256: 'a'.repeat(64), capturedAt: AT });
+    expect(withProof.signature?.proof).toEqual({
+      method: 'onsite_draw',
+      sha256: 'a'.repeat(64),
+      capturedAt: AT,
+    });
 
     const withoutProof = sentQuote();
     const r2 = await new SignQuote(makeDeps(withoutProof).deps).execute({

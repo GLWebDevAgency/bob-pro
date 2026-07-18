@@ -1,8 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { CreateDocumentViewLink } from './create-document-view-link';
+import { type Company } from '../../domain/company/company';
 import { type Quote } from '../../domain/billing/quote/quote';
 import { type Invoice } from '../../domain/billing/invoice/invoice';
-import { type QuoteRepository, type InvoiceRepository } from '../ports/repositories';
+import {
+  type CompanyRepository,
+  type QuoteRepository,
+  type InvoiceRepository,
+} from '../ports/repositories';
 import { type PublicAccessTokenRepository } from '../ports/public-access-token';
 
 const clock = { now: () => '2026-06-30T00:00:00.000Z', today: () => '2026-06-30' };
@@ -15,20 +20,41 @@ function invoice(number: string | null, issuedAt: string | null, companyId = 'co
   return { id: 'invoice-1', companyId, number, issuedAt } as unknown as Invoice;
 }
 
-function makeDeps(q: Quote | null, inv: Invoice | null) {
+function makeDeps(q: Quote | null, inv: Invoice | null, options: { companyClosed?: boolean } = {}) {
   let tokenCreates = 0;
   let revokeActiveCalls = 0;
   let lastCreateInput: unknown = null;
   let lastRevokeInput: unknown = null;
+  const events: string[] = [];
+  const company = {
+    id: q?.companyId ?? inv?.companyId ?? 'co-1',
+    isClosed: () => options.companyClosed === true,
+  } as Company;
+  const companies: CompanyRepository = {
+    findById: async () => company,
+    lockById: async () => company,
+    lockForShareById: async () => {
+      events.push('company.share');
+      return company;
+    },
+    list: async () => [company],
+    save: async () => undefined,
+  };
   const quotes: QuoteRepository = {
     findById: async () => q,
-    lockById: async () => q,
+    lockById: async () => {
+      events.push('quote.lock');
+      return q;
+    },
     listByCompany: async () => [],
     save: async () => undefined,
   };
   const invoices: InvoiceRepository = {
     findById: async () => inv,
-    lockById: async () => inv,
+    lockById: async () => {
+      events.push('invoice.lock');
+      return inv;
+    },
     findByParentQuoteId: async () => null,
     findCreditNoteBySourceInvoiceId: async () => null,
     listByCompany: async () => [],
@@ -47,14 +73,17 @@ function makeDeps(q: Quote | null, inv: Invoice | null) {
     revokeActiveFor: async (input) => {
       revokeActiveCalls++;
       lastRevokeInput = input;
+      events.push('revoke');
     },
     revokeAllForCompany: async () => undefined,
   };
+  const uow = { runInTransaction: <T>(fn: () => Promise<T>) => fn() };
   return {
-    deps: { quotes, invoices, publicAccessTokens, clock },
+    deps: { companies, quotes, invoices, publicAccessTokens, uow, clock },
     counts: () => ({ tokenCreates, revokeActiveCalls }),
     lastCreateInput: () => lastCreateInput,
     lastRevokeInput: () => lastRevokeInput,
+    events,
   };
 }
 
@@ -93,6 +122,17 @@ describe('CreateDocumentViewLink — devis', () => {
     expect(counts()).toEqual({ tokenCreates: 0, revokeActiveCalls: 0 });
   });
 
+  it('refuse une société clôturée avant le verrou et la rotation du devis', async () => {
+    const { deps, counts, events } = makeDeps(quote('sent'), null, { companyClosed: true });
+
+    const r = await new CreateDocumentViewLink(deps).execute({ kind: 'quote', id: 'quote-1' });
+
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.kind).toBe('forbidden');
+    expect(counts()).toEqual({ tokenCreates: 0, revokeActiveCalls: 0 });
+    expect(events).toEqual(['company.share']);
+  });
+
   it('rejette un devis introuvable', async () => {
     const { deps, counts } = makeDeps(null, null);
     const r = await new CreateDocumentViewLink(deps).execute({ kind: 'quote', id: 'quote-1' });
@@ -108,7 +148,11 @@ describe('CreateDocumentViewLink — devis', () => {
     expect(r30.ok && r30.value.expiresAt).toBe('2026-07-30T00:00:00.000Z');
 
     const { deps: deps7 } = makeDeps(quote('sent'), null);
-    const r7 = await new CreateDocumentViewLink(deps7).execute({ kind: 'quote', id: 'quote-1', ttlDays: 7 });
+    const r7 = await new CreateDocumentViewLink(deps7).execute({
+      kind: 'quote',
+      id: 'quote-1',
+      ttlDays: 7,
+    });
     expect(r7.ok && r7.value.expiresAt).toBe('2026-07-07T00:00:00.000Z');
   });
 });

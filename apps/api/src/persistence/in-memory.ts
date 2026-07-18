@@ -83,6 +83,12 @@ export class InMemoryCompanyRepository implements CompanyRepository {
   async findById(id: string): Promise<Company | null> {
     return this.map.get(id) ?? null;
   }
+  async lockById(id: string): Promise<Company | null> {
+    return this.findById(id);
+  }
+  async lockForShareById(id: string): Promise<Company | null> {
+    return this.findById(id);
+  }
   async list(): Promise<Company[]> {
     return [...this.map.values()];
   }
@@ -115,6 +121,9 @@ export class InMemoryQuoteRepository implements QuoteRepository {
   async lockById(id: string): Promise<Quote | null> {
     const stored = this.map.get(id);
     return stored ? Quote.rehydrate(stored.toSnapshot()) : null;
+  }
+  async lockForShareById(id: string): Promise<Quote | null> {
+    return this.findById(id);
   }
   async listByCompany(companyId: string): Promise<Quote[]> {
     return [...this.map.values()].filter((q) => q.companyId === companyId);
@@ -158,6 +167,9 @@ export class InMemoryInvoiceRepository implements InvoiceRepository {
     // mutations jusqu'au save (pas de mutation en place de l'agrégat stocké en cas d'erreur).
     const stored = this.map.get(id);
     return stored ? Invoice.rehydrate(stored.toSnapshot()) : null;
+  }
+  async lockForShareById(id: string): Promise<Invoice | null> {
+    return this.findById(id);
   }
   async findByParentQuoteId(
     companyId: string,
@@ -1072,6 +1084,10 @@ export class InMemoryPublicAccessTokenRepository implements PublicAccessTokenRep
     };
   }
 
+  async lockActive(token: string, at: string): Promise<PublicAccessGrant | null> {
+    return this.findActive(token, at);
+  }
+
   async markUsed(id: string, at: string): Promise<void> {
     const row = this.rows.get(id);
     if (row) this.rows.set(id, { ...row, lastUsedAt: at });
@@ -1232,7 +1248,10 @@ export class InMemoryChantierRepository implements ChantierRepository {
 /** Agrège companyId/chantierId → nombre de lignes — même contrat que le groupBy Prisma
  * (PrismaChantierNoteRepository/PrismaWorksiteMediaStorage), pour que le double en mémoire des
  * tests exerce EXACTEMENT le même comportement (tenant-scoped, sans les chantiers à 0). */
-function countByChantier(rows: Iterable<{ companyId: string; chantierId: string }>, companyId: string): Map<string, number> {
+function countByChantier(
+  rows: Iterable<{ companyId: string; chantierId: string }>,
+  companyId: string,
+): Map<string, number> {
   const counts = new Map<string, number>();
   for (const row of rows) {
     if (row.companyId !== companyId) continue;

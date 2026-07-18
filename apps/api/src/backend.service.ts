@@ -43,7 +43,6 @@ import {
   PLAN_CATALOG,
   ADDON_CATALOG,
   planEntitlements,
-  planCan,
   tierAtLeast,
   startReverseTrial,
   GetSubscriptionStatus,
@@ -390,6 +389,21 @@ export type DocumentPublicView =
       lines: { label: string; qty: number; unitPriceHT: number; vatRate: number }[];
       totals: Totals;
       mentions: string[];
+    };
+
+type AuthorizedPublicDocumentPdf =
+  | { kind: 'quote'; data: QuotePdfData }
+  | {
+      kind: 'invoice';
+      companyId: string;
+      invoiceId: string;
+      number: string;
+      archive: {
+        storageKey: string;
+        mimeType: string;
+        byteSize: number;
+        sha256: string;
+      };
     };
 
 const EXPENSE_CATEGORIES = new Set<ExpenseCategory>([
@@ -1125,6 +1139,7 @@ export class BackendService {
     const parties = await this.requiredDocumentParties(quote.companyId, quote.customerId);
     if (!parties.ok) return parties;
     const sent = await new SendQuote({
+      companies: this.p.companies,
       quotes: this.p.quotes,
       counters: this.p.counters,
       uow: this.p,
@@ -1134,6 +1149,7 @@ export class BackendService {
     });
     if (!sent.ok) return sent;
     const token = await new CreateQuoteSignatureToken({
+      companies: this.p.companies,
       quotes: this.p.quotes,
       publicAccessTokens: this.p.publicAccessTokens,
       uow: this.p,
@@ -1144,16 +1160,14 @@ export class BackendService {
         quoteId,
         expiresAt: token.value.expiresAt,
       });
-      const deliveryStatus = await this.enqueueQuoteForSignature(
-        {
-          quote,
-          number: sent.value.number,
-          token: token.value.token,
-          companyName: parties.value.company.name,
-          customerName: parties.value.customer.name,
-          customerEmail: parties.value.customer.toProps().email ?? null,
-        },
-      );
+      const deliveryStatus = await this.enqueueQuoteForSignature({
+        quote,
+        number: sent.value.number,
+        token: token.value.token,
+        companyName: parties.value.company.name,
+        customerName: parties.value.customer.name,
+        customerEmail: parties.value.customer.toProps().email ?? null,
+      });
       return ok({
         ...sent.value,
         signatureToken: token.value.token,
@@ -1165,16 +1179,14 @@ export class BackendService {
     return ok({ ...sent.value, deliveryStatus: 'skipped' as const });
   }
 
-  private async enqueueQuoteForSignature(
-    input: {
-      quote: Quote;
-      number: string;
-      token: string;
-      companyName: string;
-      customerName: string;
-      customerEmail: string | null;
-    },
-  ): Promise<'queued' | 'sent' | 'skipped'> {
+  private async enqueueQuoteForSignature(input: {
+    quote: Quote;
+    number: string;
+    token: string;
+    companyName: string;
+    customerName: string;
+    customerEmail: string | null;
+  }): Promise<'queued' | 'sent' | 'skipped'> {
     const { quote, number, token, companyName, customerName, customerEmail: email } = input;
     if (!email) {
       this.logger.audit('quote.email_skipped', {
@@ -1223,6 +1235,7 @@ export class BackendService {
     if (!(await this.ownedQuote(input.quoteId)))
       return { ok: false as const, error: appNotFound('quote', input.quoteId) };
     const r = await new SignQuote({
+      companies: this.p.companies,
       quotes: this.p.quotes,
       publicAccessTokens: this.p.publicAccessTokens,
       uow: this.p,
@@ -1253,6 +1266,7 @@ export class BackendService {
     if (!(await this.ownedQuote(quoteId)))
       return { ok: false as const, error: appNotFound('quote', quoteId) };
     const link = await new CreateQuoteSignatureLink({
+      companies: this.p.companies,
       quotes: this.p.quotes,
       publicAccessTokens: this.p.publicAccessTokens,
       uow: this.p,
@@ -1279,9 +1293,11 @@ export class BackendService {
     if (!(await this.ownedQuote(quoteId)))
       return { ok: false as const, error: appNotFound('quote', quoteId) };
     const link = await new CreateDocumentViewLink({
+      companies: this.p.companies,
       quotes: this.p.quotes,
       invoices: this.p.invoices,
       publicAccessTokens: this.p.publicAccessTokens,
+      uow: this.p,
       clock: this.clock,
     }).execute({ kind: 'quote', id: quoteId });
     if (!link.ok) return link;
@@ -1302,9 +1318,11 @@ export class BackendService {
     if (!(await this.ownedInvoice(invoiceId)))
       return { ok: false as const, error: appNotFound('invoice', invoiceId) };
     const link = await new CreateDocumentViewLink({
+      companies: this.p.companies,
       quotes: this.p.quotes,
       invoices: this.p.invoices,
       publicAccessTokens: this.p.publicAccessTokens,
+      uow: this.p,
       clock: this.clock,
     }).execute({ kind: 'invoice', id: invoiceId });
     if (!link.ok) return link;
@@ -1705,34 +1723,49 @@ export class BackendService {
   }
 
   private async publicDocumentParties(
-    companyId: string,
+    company: Company,
     customerId: string,
-  ): Promise<Result<{ companyName: string; customerName: string }, AppError>> {
-    const parties = await this.requiredDocumentParties(companyId, customerId);
-    if (!parties.ok) return parties;
-    return ok({
-      companyName: parties.value.company.name,
-      customerName: parties.value.customer.name,
-    });
+  ): Promise<{ companyName: string; customerName: string } | null> {
+    const customer = await this.p.customers.findById(customerId);
+    if (!customer || customer.companyId !== company.id) return null;
+    return { companyName: company.name, customerName: customer.name };
   }
 
   // ——— Signature client à distance (public, par lien tokenisé) ———
   /** Vue publique d'un devis par token opaque. */
   async publicQuoteForSignature(token: string): Promise<Result<SignatureView, AppError>> {
-    const grant = await this.resolveSignatureGrant(token);
-    if (!grant.ok) return grant;
-    return this.p.runWithTenant(grant.value.companyId, async () => {
-      const q = await this.p.quotes.findById(grant.value.quoteId);
-      if (!q) return { ok: false, error: appNotFound('quote', 'redacted') };
-      if (q.companyId !== grant.value.companyId || q.number === null)
-        return err(appUnavailable('public-document-integrity'));
-      const parties = await this.publicDocumentParties(q.companyId, q.customerId);
-      if (!parties.ok) return parties;
-      await this.p.publicAccessTokens.markUsed(grant.value.grantId, this.clock.now());
+    const locator = await this.resolveSignatureGrant(token);
+    if (!locator.ok) return locator;
+    return this.p.runWithTenant(locator.value.companyId, async () => {
+      const company = await this.p.companies.lockForShareById(locator.value.companyId);
+      if (!company || company.isClosed()) {
+        return err(appNotFound('public-signature-token', 'redacted'));
+      }
+      const q = await this.p.quotes.lockForShareById(locator.value.quoteId);
+      if (!q || q.companyId !== company.id || q.number === null) {
+        return err(appNotFound('public-signature-token', 'redacted'));
+      }
+      // Le locator hors transaction ne donne AUCUNE autorisation. Le grant exact est verrouillé
+      // après company puis quote, dans la même transaction que la lecture et markUsed.
+      const at = this.clock.now();
+      const grant = await this.p.publicAccessTokens.lockActive(token, at);
+      if (
+        !grant ||
+        grant.id !== locator.value.grantId ||
+        grant.companyId !== company.id ||
+        grant.resourceType !== 'quote' ||
+        grant.resourceId !== q.id ||
+        grant.scope !== 'quote_signature'
+      ) {
+        return err(appNotFound('public-signature-token', 'redacted'));
+      }
+      const parties = await this.publicDocumentParties(company, q.customerId);
+      if (!parties) return err(appNotFound('public-signature-token', 'redacted'));
+      await this.p.publicAccessTokens.markUsed(grant.id, at);
       return ok({
         number: q.number,
-        companyName: parties.value.companyName,
-        customerName: parties.value.customerName,
+        companyName: parties.companyName,
+        customerName: parties.customerName,
         status: q.status,
         signed: q.signature !== null,
         // Validité = calendrier FRANÇAIS : borne au jour métier Paris (cf. businessToday()).
@@ -1755,23 +1788,40 @@ export class BackendService {
     proofDataUrl?: string,
   ): Promise<Result<{ status: string }, AppError>> {
     // Résolution initiale HORS transaction : elle ne sert qu'à connaître le tenant (runWithTenant)
-    // et à refuser tôt un jeton mort. L'autorisation qui compte est la REVALIDATION que SignQuote
-    // effectue DANS la transaction de signature (P0 — course révocation/rotation → signature).
-    const grant = await this.resolveSignatureGrant(token);
-    if (!grant.ok) return grant;
-    return this.p.runWithTenant(grant.value.companyId, async () => {
-      const q = await this.p.quotes.findById(grant.value.quoteId);
-      if (!q) return { ok: false, error: appNotFound('quote', 'redacted') };
+    // et à refuser tôt un jeton mort. L'autorisation qui compte est revalidée sous les verrous
+    // company → quote → grant ci-dessous ; SignQuote la revalide encore en défense en profondeur.
+    const locator = await this.resolveSignatureGrant(token);
+    if (!locator.ok) return locator;
+    return this.p.runWithTenant(locator.value.companyId, async () => {
+      const company = await this.p.companies.lockForShareById(locator.value.companyId);
+      if (!company || company.isClosed()) {
+        return err(appNotFound('public-signature-token', 'redacted'));
+      }
+      const q = await this.p.quotes.lockById(locator.value.quoteId);
+      if (!q || q.companyId !== company.id) {
+        return err(appNotFound('public-signature-token', 'redacted'));
+      }
+      const grant = await this.p.publicAccessTokens.lockActive(token, this.clock.now());
+      if (
+        !grant ||
+        grant.id !== locator.value.grantId ||
+        grant.companyId !== company.id ||
+        grant.resourceType !== 'quote' ||
+        grant.resourceId !== q.id ||
+        grant.scope !== 'quote_signature'
+      ) {
+        return err(appNotFound('public-signature-token', 'redacted'));
+      }
       if (q.validUntil !== null && q.validUntil < this.businessToday()) {
         const expired = await new ExpireQuote({
           quotes: this.p.quotes,
           publicAccessTokens: this.p.publicAccessTokens,
           uow: this.p,
           clock: this.clock,
-        }).execute({ quoteId: grant.value.quoteId });
+        }).execute({ quoteId: q.id });
         if (expired.ok)
           this.logger.audit('quote.expired', {
-            quoteId: grant.value.quoteId,
+            quoteId: q.id,
             status: expired.value.status,
           });
         return { ok: false, error: appForbidden('Devis expiré : signature impossible.') };
@@ -1780,24 +1830,35 @@ export class BackendService {
       // reçu (P0). Si la page sign-web capture un jour un tracé, son hash devient la preuve —
       // sans tracé, la signature reste honnêtement « lien distant, sans capture ».
       const r = await new SignQuote({
+        companies: this.p.companies,
         quotes: this.p.quotes,
         publicAccessTokens: this.p.publicAccessTokens,
         uow: this.p,
         clock: this.clock,
       }).execute({
-        quoteId: grant.value.quoteId,
+        quoteId: q.id,
         signerName,
-        remoteGrant: { token, grantId: grant.value.grantId },
+        remoteGrant: { token, grantId: grant.id },
         ...(proofDataUrl ? { proofSha256: sha256Hex(proofDataUrl) } : {}),
       });
-      if (r.ok) {
-        // La révocation de TOUS les grants actifs du devis a eu lieu DANS la transaction de
-        // signature (SignQuote) — plus aucun effet token post-commit à rejouer ici.
-        // Le journal technique corrèle l'événement sans dupliquer le nom du signataire dans
-        // les logs. La future preuve probante appartiendra au stockage métier chiffré, pas à
-        // l'observabilité générale.
-        this.logger.audit('quote.public_signed', { quoteId: grant.value.quoteId });
+      if (!r.ok) {
+        // Seule la saisie explicite du signataire reste une 422 utile. Toute invalidation de la
+        // capacité ou de la pièce demeure indistinguable d'un token inconnu (anti-énumération).
+        if (
+          r.error.kind === 'domain' &&
+          r.error.error.code === 'VALIDATION' &&
+          r.error.error.field === 'signerName'
+        ) {
+          return r;
+        }
+        return err(appNotFound('public-signature-token', 'redacted'));
       }
+      // La révocation de TOUS les grants actifs du devis a eu lieu DANS la transaction de
+      // signature (SignQuote) — plus aucun effet token post-commit à rejouer ici.
+      // Le journal technique corrèle l'événement sans dupliquer le nom du signataire dans
+      // les logs. La future preuve probante appartiendra au stockage métier chiffré, pas à
+      // l'observabilité générale.
+      this.logger.audit('quote.public_signed', { quoteId: q.id });
       return r;
     });
   }
@@ -1814,26 +1875,44 @@ export class BackendService {
   // ——— Consultation client à distance (public, par lien tokenisé, scope document_view) ———
   /** Vue publique d'une pièce (devis OU facture) par token opaque — lecture seule. */
   async publicDocumentView(token: string): Promise<Result<DocumentPublicView, AppError>> {
-    const grant = await this.resolveDocumentViewGrant(token);
-    if (!grant.ok) return grant;
-    return this.p.runWithTenant(grant.value.companyId, async () => {
-      if (grant.value.kind === 'quote') {
-        const q = await this.p.quotes.findById(grant.value.documentId);
-        if (!q) return { ok: false, error: appNotFound('quote', 'redacted') };
-        if (
-          q.companyId !== grant.value.companyId ||
-          q.number === null ||
-          q.status === 'draft'
-        )
-          return err(appUnavailable('public-document-integrity'));
-        const parties = await this.publicDocumentParties(q.companyId, q.customerId);
-        if (!parties.ok) return parties;
-        await this.p.publicAccessTokens.markUsed(grant.value.grantId, this.clock.now());
+    const locator = await this.resolveDocumentViewGrant(token);
+    if (!locator.ok) return locator;
+    return this.p.runWithTenant(locator.value.companyId, async () => {
+      const company = await this.p.companies.lockForShareById(locator.value.companyId);
+      if (!company || company.isClosed()) {
+        return err(appNotFound('public-document-view-token', 'redacted'));
+      }
+      const document =
+        locator.value.kind === 'quote'
+          ? await this.p.quotes.lockForShareById(locator.value.documentId)
+          : await this.p.invoices.lockForShareById(locator.value.documentId);
+      if (!document || document.companyId !== company.id) {
+        return err(appNotFound('public-document-view-token', 'redacted'));
+      }
+      const at = this.clock.now();
+      const grant = await this.p.publicAccessTokens.lockActive(token, at);
+      if (
+        !grant ||
+        grant.id !== locator.value.grantId ||
+        grant.companyId !== company.id ||
+        grant.resourceType !== locator.value.kind ||
+        grant.resourceId !== locator.value.documentId ||
+        grant.scope !== 'document_view'
+      ) {
+        return err(appNotFound('public-document-view-token', 'redacted'));
+      }
+      if (locator.value.kind === 'quote') {
+        const q = document as Quote;
+        if (q.companyId !== grant.companyId || q.number === null || q.status === 'draft')
+          return err(appNotFound('public-document-view-token', 'redacted'));
+        const parties = await this.publicDocumentParties(company, q.customerId);
+        if (!parties) return err(appNotFound('public-document-view-token', 'redacted'));
+        await this.p.publicAccessTokens.markUsed(grant.id, at);
         return ok<DocumentPublicView>({
           kind: 'quote',
           number: q.number,
-          companyName: parties.value.companyName,
-          customerName: parties.value.customerName,
+          companyName: parties.companyName,
+          customerName: parties.customerName,
           status: q.status,
           signed: q.signature !== null,
           validUntil: q.validUntil,
@@ -1846,22 +1925,17 @@ export class BackendService {
           totals: q.totals(),
         });
       }
-      const inv = await this.p.invoices.findById(grant.value.documentId);
-      if (!inv) return { ok: false, error: appNotFound('invoice', 'redacted') };
-      if (
-        inv.companyId !== grant.value.companyId ||
-        inv.number === null ||
-        inv.issuedAt === null
-      )
-        return err(appUnavailable('public-document-integrity'));
-      const parties = await this.publicDocumentParties(inv.companyId, inv.customerId);
-      if (!parties.ok) return parties;
-      await this.p.publicAccessTokens.markUsed(grant.value.grantId, this.clock.now());
+      const inv = document as Invoice;
+      if (inv.companyId !== grant.companyId || inv.number === null || inv.issuedAt === null)
+        return err(appNotFound('public-document-view-token', 'redacted'));
+      const parties = await this.publicDocumentParties(company, inv.customerId);
+      if (!parties) return err(appNotFound('public-document-view-token', 'redacted'));
+      await this.p.publicAccessTokens.markUsed(grant.id, at);
       return ok<DocumentPublicView>({
         kind: 'invoice',
         number: inv.number,
-        companyName: parties.value.companyName,
-        customerName: parties.value.customerName,
+        companyName: parties.companyName,
+        customerName: parties.customerName,
         status: inv.status,
         issuedAt: inv.issuedAt,
         dueAt: inv.dueAt,
@@ -1880,18 +1954,78 @@ export class BackendService {
 
   /** PDF de la pièce consultée par lien public (même token que publicDocumentView). */
   async publicDocumentPdf(token: string): Promise<Result<Uint8Array, AppError>> {
-    const grant = await this.resolveDocumentViewGrant(token);
-    if (!grant.ok) return grant;
-    return this.p.runWithTenant(grant.value.companyId, async () => {
-      if (grant.value.kind === 'quote') {
-        const q = await this.p.quotes.findById(grant.value.documentId);
-        if (!q) return { ok: false, error: appNotFound('quote', 'redacted') };
-        return this.renderQuotePdf(q);
-      }
-      const inv = await this.p.invoices.findById(grant.value.documentId);
-      if (!inv) return { ok: false, error: appNotFound('invoice', 'redacted') };
-      return this.loadInvoicePdfBytes(inv);
-    });
+    const locator = await this.resolveDocumentViewGrant(token);
+    if (!locator.ok) return locator;
+    const authorized = await this.p.runWithTenant<Result<AuthorizedPublicDocumentPdf, AppError>>(
+      locator.value.companyId,
+      async () => {
+        const company = await this.p.companies.lockForShareById(locator.value.companyId);
+        if (!company || company.isClosed()) {
+          return err(appNotFound('public-document-view-token', 'redacted'));
+        }
+        const document =
+          locator.value.kind === 'quote'
+            ? await this.p.quotes.lockForShareById(locator.value.documentId)
+            : await this.p.invoices.lockForShareById(locator.value.documentId);
+        if (!document || document.companyId !== company.id) {
+          return err(appNotFound('public-document-view-token', 'redacted'));
+        }
+        const at = this.clock.now();
+        const grant = await this.p.publicAccessTokens.lockActive(token, at);
+        if (
+          !grant ||
+          grant.id !== locator.value.grantId ||
+          grant.companyId !== company.id ||
+          grant.resourceType !== locator.value.kind ||
+          grant.resourceId !== locator.value.documentId ||
+          grant.scope !== 'document_view'
+        ) {
+          return err(appNotFound('public-document-view-token', 'redacted'));
+        }
+        if (locator.value.kind === 'quote') {
+          const q = document as Quote;
+          if (q.number === null || q.status === 'draft') {
+            return err(appNotFound('public-document-view-token', 'redacted'));
+          }
+          const customer = await this.p.customers.findById(q.customerId);
+          if (!customer || customer.companyId !== company.id) {
+            return err(appNotFound('public-document-view-token', 'redacted'));
+          }
+          await this.p.publicAccessTokens.markUsed(grant.id, at);
+          return ok({ kind: 'quote', data: this.quotePdfData(q, company, customer) });
+        }
+        const inv = document as Invoice;
+        if (inv.number === null || inv.issuedAt === null) {
+          return err(appNotFound('public-document-view-token', 'redacted'));
+        }
+        const documents = await this.p.documents.findByEntity(company.id, 'invoice', inv.id);
+        const archivedCandidates = documents.filter(
+          (candidate) => candidate.kind === 'invoice_pdf' && candidate.status === 'active',
+        );
+        if (archivedCandidates.length !== 1) return err(appUnavailable('invoice-archive'));
+        const archive = archivedCandidates[0]!.toProps();
+        await this.p.publicAccessTokens.markUsed(grant.id, at);
+        return ok({
+          kind: 'invoice',
+          companyId: company.id,
+          invoiceId: inv.id,
+          number: inv.number,
+          archive: {
+            storageKey: archive.storageKey,
+            mimeType: archive.mimeType,
+            byteSize: archive.byteSize,
+            sha256: archive.sha256,
+          },
+        });
+      },
+    );
+    if (!authorized.ok) return authorized;
+    // Le snapshot est complet : aucune nouvelle lecture BDD n'est faite après le commit.
+    // Rendu et stockage objet peuvent être lents/réseau, sans retenir le verrou de clôture.
+    if (authorized.value.kind === 'quote') {
+      return ok(await this.pdf.renderQuote(authorized.value.data));
+    }
+    return this.loadArchivedInvoicePdfBytes(authorized.value);
   }
 
   /**
@@ -3784,10 +3918,7 @@ export class BackendService {
     if (!this.gateway.subscriptionBillingAvailable || this.stripeBilling === null) {
       throw new Error('SUBSCRIPTION_BILLING_UNAVAILABLE');
     }
-    return this.stripeBilling.createBillingPortal(
-      this.companyId(),
-      paymentReturnUrl('/compte'),
-    );
+    return this.stripeBilling.createBillingPortal(this.companyId(), paymentReturnUrl('/compte'));
   }
 
   /** Lien de paiement en ligne d'une facture — gated par l'offre (Pro+). */
@@ -3838,25 +3969,19 @@ export class BackendService {
       // Zéro ou plusieurs originaux actifs = archive ambiguë/corrompue. Ne jamais choisir le
       // premier résultat d'une requête dont l'ordre n'est pas un invariant métier.
       if (archivedCandidates.length !== 1) return err(appUnavailable('invoice-archive'));
-      const archived = archivedCandidates[0]!;
-      const archiveMetadata = archived.toProps();
-      const stored = await this.documentStorage.get(inv.companyId, archiveMetadata.storageKey);
-      if (
-        stored === null ||
-        stored.contentType !== 'application/pdf' ||
-        archiveMetadata.mimeType !== 'application/pdf' ||
-        stored.bytes.byteLength !== archiveMetadata.byteSize ||
-        documentSha256(stored.bytes) !== archiveMetadata.sha256
-      ) {
-        return err(appUnavailable('invoice-archive'));
-      }
-      this.logger.audit('invoice.pdf', {
+      const archive = archivedCandidates[0]!.toProps();
+      return this.loadArchivedInvoicePdfBytes({
+        kind: 'invoice',
+        companyId: inv.companyId,
         invoiceId: inv.id,
         number: inv.number,
-        facturX: true,
-        source: 'immutable_archive',
+        archive: {
+          storageKey: archive.storageKey,
+          mimeType: archive.mimeType,
+          byteSize: archive.byteSize,
+          sha256: archive.sha256,
+        },
       });
-      return ok(stored.bytes);
     }
     const rendered = await this.renderInvoicePdf(inv);
     if (rendered.ok)
@@ -3866,6 +3991,28 @@ export class BackendService {
         facturX: !!inv.number && !!inv.issuedAt,
       });
     return rendered;
+  }
+
+  private async loadArchivedInvoicePdfBytes(
+    input: Extract<AuthorizedPublicDocumentPdf, { kind: 'invoice' }>,
+  ): Promise<Result<Uint8Array, AppError>> {
+    const stored = await this.documentStorage.get(input.companyId, input.archive.storageKey);
+    if (
+      stored === null ||
+      stored.contentType !== 'application/pdf' ||
+      input.archive.mimeType !== 'application/pdf' ||
+      stored.bytes.byteLength !== input.archive.byteSize ||
+      documentSha256(stored.bytes) !== input.archive.sha256
+    ) {
+      return err(appUnavailable('invoice-archive'));
+    }
+    this.logger.audit('invoice.pdf', {
+      invoiceId: input.invoiceId,
+      number: input.number,
+      facturX: true,
+      source: 'immutable_archive',
+    });
+    return ok(stored.bytes);
   }
 
   /**
@@ -3893,7 +4040,7 @@ export class BackendService {
   private async renderInvoicePdf(inv: Invoice): Promise<Result<Uint8Array, AppError>> {
     const company = await this.p.companies.findById(inv.companyId);
     const customer = await this.p.customers.findById(inv.customerId);
-    if (!company || !customer)
+    if (!company || !customer || customer.companyId !== company.id)
       return { ok: false, error: appNotFound('company-or-customer', inv.id) };
     const billingSettings = await this.p.billingSettings.findByCompanyId(inv.companyId);
     if (billingSettings === null) return err(appUnavailable('company-billing-settings'));
@@ -3954,11 +4101,16 @@ export class BackendService {
   private async renderQuotePdf(q: Quote): Promise<Result<Uint8Array, AppError>> {
     const company = await this.p.companies.findById(q.companyId);
     const customer = await this.p.customers.findById(q.customerId);
-    if (!company || !customer)
+    if (!company || !customer || customer.companyId !== company.id)
       return { ok: false, error: appNotFound('company-or-customer', q.id) };
+    const bytes = await this.pdf.renderQuote(this.quotePdfData(q, company, customer));
+    return ok(bytes);
+  }
+
+  private quotePdfData(q: Quote, company: Company, customer: Customer): QuotePdfData {
     const addr = customer.toProps().address;
     const totals = q.totals();
-    const data: QuotePdfData = {
+    return {
       number: q.number ?? '(brouillon)',
       companyName: company.name,
       companyAddress: `${company.address.line1}, ${company.address.zip} ${company.address.city}`,
@@ -3976,8 +4128,6 @@ export class BackendService {
       depositPct: q.depositPct,
       signedBy: q.signature?.signerName ?? null,
     };
-    const bytes = await this.pdf.renderQuote(data);
-    return ok(bytes);
   }
 
   /** XML Factur-X (CII BASIC) seul, pour transmission e-invoicing. Facture émise requise. */
@@ -5627,6 +5777,7 @@ export class BackendService {
         companies: this.p.companies,
         subscriptions: this.p.subscriptions,
         publicAccessTokens: this.p.publicAccessTokens,
+        uow: this.p,
       });
       const r = await useCase.execute({
         companyId,

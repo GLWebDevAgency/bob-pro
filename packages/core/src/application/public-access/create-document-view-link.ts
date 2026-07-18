@@ -1,8 +1,12 @@
 import { type Result, ok, err } from '../../shared-kernel/result';
-import { type AppError, appDomain, appNotFound } from '../result';
-import { type QuoteRepository, type InvoiceRepository } from '../ports/repositories';
+import { type AppError, appDomain, appForbidden, appNotFound } from '../result';
+import {
+  type CompanyRepository,
+  type QuoteRepository,
+  type InvoiceRepository,
+} from '../ports/repositories';
 import { type PublicAccessTokenRepository } from '../ports/public-access-token';
-import { type ClockPort } from '../ports/services';
+import { type ClockPort, type UnitOfWorkPort } from '../ports/services';
 
 /** Expiration par défaut d'un lien de VISUALISATION — plus longue que la signature (30 j) car
  *  la pièce reste consultable longtemps après (référence pour le client), sans engagement. */
@@ -15,9 +19,11 @@ function addDays(isoInstant: string, days: number): string {
 }
 
 export interface CreateDocumentViewLinkDeps {
+  companies: CompanyRepository;
   quotes: QuoteRepository;
   invoices: InvoiceRepository;
   publicAccessTokens: PublicAccessTokenRepository;
+  uow: UnitOfWorkPort;
   clock: ClockPort;
 }
 
@@ -52,48 +58,66 @@ export class CreateDocumentViewLink {
   ): Promise<Result<{ token: string; expiresAt: string }, AppError>> {
     const ttlDays = input.ttlDays ?? DOCUMENT_VIEW_TOKEN_DEFAULT_TTL_DAYS;
 
-    let companyId: string;
-    if (input.kind === 'quote') {
-      const quote = await this.deps.quotes.findById(input.id);
-      if (!quote) return err(appNotFound('quote', input.id));
-      if (quote.status === 'draft')
-        return err(
-          appDomain({
-            code: 'VALIDATION',
-            field: 'quote',
-            message: 'Devis brouillon : lien de consultation impossible.',
-          }),
-        );
-      companyId = quote.companyId;
-    } else {
-      const invoice = await this.deps.invoices.findById(input.id);
-      if (!invoice) return err(appNotFound('invoice', input.id));
-      if (invoice.number === null || invoice.issuedAt === null)
-        return err(
-          appDomain({
-            code: 'VALIDATION',
-            field: 'invoice',
-            message: 'Facture non émise : lien de consultation impossible.',
-          }),
-        );
-      companyId = invoice.companyId;
-    }
+    return this.deps.uow.runInTransaction(async () => {
+      // Localisation sans verrou, DANS le contexte tenant de l'UoW. Aucun état métier de cette
+      // copie n'est réutilisé ; les verrous suivent ensuite company → quote/invoice → token.
+      let locatorCompanyId: string;
+      if (input.kind === 'quote') {
+        const quote = await this.deps.quotes.findById(input.id);
+        if (!quote) return err(appNotFound('quote', input.id));
+        locatorCompanyId = quote.companyId;
+      } else {
+        const invoice = await this.deps.invoices.findById(input.id);
+        if (!invoice) return err(appNotFound('invoice', input.id));
+        locatorCompanyId = invoice.companyId;
+      }
 
-    const expiresAt = addDays(this.deps.clock.now(), ttlDays);
-    await this.deps.publicAccessTokens.revokeActiveFor({
-      companyId,
-      resourceType: input.kind,
-      resourceId: input.id,
-      scope: 'document_view',
-      at: this.deps.clock.now(),
+      const company = await this.deps.companies.lockForShareById(locatorCompanyId);
+      if (!company) return err(appNotFound('company', locatorCompanyId));
+      if (company.isClosed()) return err(appForbidden('Compte clôturé : lien public impossible.'));
+
+      if (input.kind === 'quote') {
+        const quote = await this.deps.quotes.lockById(input.id);
+        if (!quote || quote.companyId !== company.id) return err(appNotFound('quote', input.id));
+        if (quote.status === 'draft')
+          return err(
+            appDomain({
+              code: 'VALIDATION',
+              field: 'quote',
+              message: 'Devis brouillon : lien de consultation impossible.',
+            }),
+          );
+      } else {
+        const invoice = await this.deps.invoices.lockById(input.id);
+        if (!invoice || invoice.companyId !== company.id)
+          return err(appNotFound('invoice', input.id));
+        if (invoice.number === null || invoice.issuedAt === null)
+          return err(
+            appDomain({
+              code: 'VALIDATION',
+              field: 'invoice',
+              message: 'Facture non émise : lien de consultation impossible.',
+            }),
+          );
+      }
+
+      const at = this.deps.clock.now();
+      const expiresAt = addDays(at, ttlDays);
+      await this.deps.publicAccessTokens.revokeActiveFor({
+        companyId: company.id,
+        resourceType: input.kind,
+        resourceId: input.id,
+        scope: 'document_view',
+        at,
+      });
+      const created = await this.deps.publicAccessTokens.create({
+        companyId: company.id,
+        resourceType: input.kind,
+        resourceId: input.id,
+        scope: 'document_view',
+        expiresAt,
+      });
+      return ok({ token: created.token, expiresAt });
     });
-    const created = await this.deps.publicAccessTokens.create({
-      companyId,
-      resourceType: input.kind,
-      resourceId: input.id,
-      scope: 'document_view',
-      expiresAt,
-    });
-    return ok({ token: created.token, expiresAt });
   }
 }

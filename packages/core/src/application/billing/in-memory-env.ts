@@ -10,7 +10,10 @@ import {
   type InvoiceRepository,
   type PaymentRepository,
 } from '../ports/repositories';
-import { type PublicAccessGrant, type PublicAccessTokenRepository } from '../ports/public-access-token';
+import {
+  type PublicAccessGrant,
+  type PublicAccessTokenRepository,
+} from '../ports/public-access-token';
 import {
   type SequenceCounterPort,
   type ClockPort,
@@ -36,6 +39,8 @@ export function makeEnv() {
 
   const companyRepo: CompanyRepository = {
     findById: async (id) => (id === company.id ? company : null),
+    lockById: async (id) => (id === company.id ? company : null),
+    lockForShareById: async (id) => (id === company.id ? company : null),
     list: async () => [company],
     save: async () => {},
   };
@@ -47,7 +52,8 @@ export function makeEnv() {
   const quoteRepo: QuoteRepository = {
     findById: async (id) => quotesMap.get(id) ?? null,
     lockById: async (id) => quotesMap.get(id) ?? null,
-    listByCompany: async (companyId) => [...quotesMap.values()].filter((q) => q.companyId === companyId),
+    listByCompany: async (companyId) =>
+      [...quotesMap.values()].filter((q) => q.companyId === companyId),
     save: async (q) => {
       quotesMap.set(q.id, q);
     },
@@ -61,14 +67,21 @@ export function makeEnv() {
       ) ?? null,
     findCreditNoteBySourceInvoiceId: async (companyId, sourceInvoiceId) =>
       [...invoicesMap.values()].find(
-        (i) => i.companyId === companyId && i.kind === 'credit_note' && i.creditNoteSource?.invoiceId === sourceInvoiceId,
+        (i) =>
+          i.companyId === companyId &&
+          i.kind === 'credit_note' &&
+          i.creditNoteSource?.invoiceId === sourceInvoiceId,
       ) ?? null,
-    listByCompany: async (companyId) => [...invoicesMap.values()].filter((i) => i.companyId === companyId),
+    listByCompany: async (companyId) =>
+      [...invoicesMap.values()].filter((i) => i.companyId === companyId),
     save: async (i) => {
       const sourceId = i.creditNoteSource?.invoiceId;
       if (i.kind === 'credit_note' && sourceId) {
         const existing = [...invoicesMap.values()].find(
-          (invoice) => invoice.companyId === i.companyId && invoice.kind === 'credit_note' && invoice.creditNoteSource?.invoiceId === sourceId,
+          (invoice) =>
+            invoice.companyId === i.companyId &&
+            invoice.kind === 'credit_note' &&
+            invoice.creditNoteSource?.invoiceId === sourceId,
         );
         if (existing && existing.id !== i.id) return;
       }
@@ -82,7 +95,8 @@ export function makeEnv() {
     save: async (p) => {
       paymentsArr.push(p);
     },
-    findById: async (companyId, id) => paymentsArr.find((p) => p.companyId === companyId && p.id === id) ?? null,
+    findById: async (companyId, id) =>
+      paymentsArr.find((p) => p.companyId === companyId && p.id === id) ?? null,
     listByInvoice: async (invoiceId) => paymentsArr.filter((p) => p.invoiceId === invoiceId),
     listByCompany: async (companyId) => paymentsArr.filter((p) => p.companyId === companyId),
     findByIdempotencyKey: async (companyId, key) =>
@@ -152,9 +166,25 @@ export function makeEnv() {
     allocate: async ({ counterKey, fiscalYear }) => {
       sequences[counterKey] += 1;
       const prefix = counterKey === 'quote' ? 'D' : 'F';
-      return { sequence: sequences[counterKey], formatted: DocNumber.format(prefix, fiscalYear, sequences[counterKey]) };
+      return {
+        sequence: sequences[counterKey],
+        formatted: DocNumber.format(prefix, fiscalYear, sequences[counterKey]),
+      };
     },
   };
 
-  return { company, customer, companyRepo, customerRepo, quoteRepo, invoiceRepo, paymentRepo, publicAccessTokens, uow, ids, clock, counters };
+  return {
+    company,
+    customer,
+    companyRepo,
+    customerRepo,
+    quoteRepo,
+    invoiceRepo,
+    paymentRepo,
+    publicAccessTokens,
+    uow,
+    ids,
+    clock,
+    counters,
+  };
 }
