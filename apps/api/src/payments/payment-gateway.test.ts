@@ -14,6 +14,7 @@ const LIVE_PAYMENT_ENV = {
 
 describe('composition paiement — aucun lien démo en live', () => {
   it('compose un gateway désactivé quand les 7 variables Stripe sont TOUTES absentes (accès anticipé V1)', async () => {
+    const gateway = buildPaymentGateway({}) as DisabledPaymentGateway;
 
     expect(gateway).toBeInstanceOf(DisabledPaymentGateway);
     expect(gateway.expectedLivemode).toBe(false);
@@ -35,6 +36,7 @@ describe('composition paiement — aucun lien démo en live', () => {
 
   it('échoue par erreur de configuration en live avec une configuration Stripe partielle', () => {
     expect(() =>
+      buildPaymentGateway({ STRIPE_SECRET_KEY: 'sk_test_partial' }),
     ).toThrow(
       /Paiement live indisponible.*STRIPE_PRICE_SOLO.*STRIPE_PRICE_PRO.*STRIPE_PRICE_BUSINESS.*STRIPE_WEBHOOK_SECRET.*STRIPE_LIVEMODE.*PAYMENT_RETURN_BASE_URL/u,
     );
@@ -55,9 +57,10 @@ describe('composition paiement — aucun lien démo en live', () => {
     expect(gateway).toBeInstanceOf(StripePaymentGateway);
   });
 
+  it('une configuration Stripe entamée mais incomplète reste une erreur fatale', () => {
     expect(() =>
+      buildPaymentGateway({ STRIPE_SECRET_KEY: 'sk_test_partial', STRIPE_LIVEMODE: 'false' }),
     ).toThrow(/Paiement live indisponible.*STRIPE_PRICE_SOLO/u);
-
   });
 
   it('vérifie la signature sur les octets bruts exacts et refuse tout payload altéré', () => {
