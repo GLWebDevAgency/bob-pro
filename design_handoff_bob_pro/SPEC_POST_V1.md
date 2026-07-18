@@ -22,9 +22,23 @@ fondateur : catalogue-first bimodal + flow complet d'une traite).
 Partenariat/case study Mistral (dès V1 publiée, coût zéro) → open-core gateway realtime
 (BSL, si traction V2) → agents métier API marque blanche (V3, si prospects).
 
-## P4 — MONÉTISATION ACTIVE
-IAP StoreKit/Play (restaurer achats), conversion des ~15 sites de gating (spec pilier 2
-#4), paywall V1.1 sur pricing value-based existant.
+## P4 — MONÉTISATION ACTIVE — DÉCISION FONDATEUR 18/07 : PATTERN SHOPIFY (web checkout)
+CANAL D'ABONNEMENT = la LANDING WEB (souscription Stripe checkout sur le site, en cours
+de design Claude Design) ; l'app mobile = COMPAGNON. Objectif : conformité + éviter les
+15-30 % d'IAP. RÈGLES DE CONFORMITÉ du pattern (à appliquer au moment du paywall) :
+① l'app iOS ne pousse JAMAIS vers l'achat externe (pas de lien « abonne-toi sur le
+  site », pas de bouton d'achat) — formulations neutres « gère ton offre depuis ton
+  compte » ; ② REVOIR la grille tarifaire affichée dans compte.tsx (CTA gelés
+  aujourd'hui) : en pattern compagnon strict, prix et CTA d'achat sortent de l'app iOS
+  (ou entitlement lien externe selon juridiction/DMA au moment T) ; ③ le web
+  souscrit → webhooks Stripe existants → table subscriptions → l'app REFLÈTE l'offre.
+④ PAS d'IAP/RevenueCat en V1.1 (réévaluable si la conversion l'exige un jour).
+Conversion des ~15 sites de gating (spec pilier 2 #4) inchangée.
+NOTE Stripe Sync Engine (Supabase) : NON INSTALLÉ, déconseillé à ce stade — nos webhooks
+tenant-scoped idempotents font déjà foi dans NOTRE table subscriptions ; le Sync Engine
+dupliquerait les données Stripe dans un schéma parallèle avec pg_cron/pg_net/edge
+functions = surface d'infra sans besoin actuel. Réévaluer seulement pour de l'analytics
+revenus SQL direct.
 
 ## P5 — DIVERS ACTÉS
 Archivage image du tracé de signature + consentement versionné (suite R4) · révision de
