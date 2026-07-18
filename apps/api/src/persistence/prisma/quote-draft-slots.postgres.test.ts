@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import {
   QUOTE_DRAFT_PAYLOAD_SCHEMA,
   QUOTE_DRAFT_PAYLOAD_VERSION,
@@ -70,12 +70,22 @@ describe.skipIf(!RUN_POSTGRES_CERT)('QuoteDraftSlot — certification PostgreSQL
     await admin.company.createMany({ data: [company(companyA, '9101'), company(companyB, '9102')] });
   }, 30_000);
 
+  afterEach(async () => {
+    if (!admin) return;
+    await admin.quoteDraftSlot.deleteMany({ where: { companyId: { in: [companyA, companyB] } } });
+  });
+
   afterAll(async () => {
-    if (admin) {
-      await admin.quoteDraftSlot.deleteMany({ where: { companyId: { in: [companyA, companyB] } } }).catch(() => undefined);
-      await admin.company.deleteMany({ where: { id: { in: [companyA, companyB] } } }).catch(() => undefined);
+    try {
+      if (admin) {
+        await admin.quoteDraftSlot.deleteMany({
+          where: { companyId: { in: [companyA, companyB] } },
+        });
+        await admin.company.deleteMany({ where: { id: { in: [companyA, companyB] } } });
+      }
+    } finally {
+      await Promise.allSettled([workerA?.$disconnect(), workerB?.$disconnect(), admin?.$disconnect()]);
     }
-    await Promise.allSettled([workerA?.$disconnect(), workerB?.$disconnect(), admin?.$disconnect()]);
   });
 
   it('isole deux propriétaires du même tenant et un propriétaire entre deux tenants', async () => {
@@ -87,8 +97,20 @@ describe.skipIf(!RUN_POSTGRES_CERT)('QuoteDraftSlot — certification PostgreSQL
     });
     await asOwner(workerB, companyA, ownerB, async () => {
       expect(await repoB.get({ companyId: companyA, ownerUserId: ownerA })).toBeNull();
-      await expect(repoB.upsert({ companyId: companyA, ownerUserId: ownerA, expectedRevision: 0, payload: payload('forged') }))
-        .rejects.toBeDefined();
+    });
+    // Une violation RLS annule la transaction PostgreSQL courante. Elle doit donc être certifiée
+    // dans sa propre transaction, exactement comme une requête HTTP réelle, avant le write valide.
+    await expect(
+      asOwner(workerB, companyA, ownerB, () =>
+        repoB.upsert({
+          companyId: companyA,
+          ownerUserId: ownerA,
+          expectedRevision: 0,
+          payload: payload('forged'),
+        }),
+      ),
+    ).rejects.toBeDefined();
+    await asOwner(workerB, companyA, ownerB, async () => {
       expect(await repoB.upsert({ companyId: companyA, ownerUserId: ownerB, expectedRevision: 0, payload: payload('a-b') }))
         .toMatchObject({ status: 'created' });
     });
@@ -102,6 +124,14 @@ describe.skipIf(!RUN_POSTGRES_CERT)('QuoteDraftSlot — certification PostgreSQL
   it('refuse création doublée, mise à jour et suppression sur révision périmée', async () => {
     const repo = new PrismaQuoteDraftSlotRepository(workerA);
     await asOwner(workerA, companyA, ownerA, async () => {
+      expect(
+        await repo.upsert({
+          companyId: companyA,
+          ownerUserId: ownerA,
+          expectedRevision: 0,
+          payload: payload('initial'),
+        }),
+      ).toMatchObject({ status: 'created', slot: { revision: 1 } });
       expect(await repo.upsert({ companyId: companyA, ownerUserId: ownerA, expectedRevision: 0, payload: payload('duplicate') }))
         .toEqual({ status: 'revision_conflict', currentRevision: 1 });
       expect(await repo.upsert({ companyId: companyA, ownerUserId: ownerA, expectedRevision: 1, payload: payload('updated') }))

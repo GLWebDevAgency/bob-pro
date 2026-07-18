@@ -69,25 +69,43 @@ describe.skipIf(!RUN_POSTGRES_CERT)('Push binding v2 — certification PostgreSQ
 
   afterEach(async () => {
     if (!admin) return;
-    await admin.device.deleteMany({ where: { companyId: { in: [companyA, companyB] } } });
-    await admin.pushInstallation.deleteMany({ where: { id: { in: [...installationIds] } } });
-    await admin.company.updateMany({
-      where: { id: { in: [companyA, companyB] } },
-      data: { closedAt: null },
+    await admin.$transaction(async (tx) => {
+      await tx.device.deleteMany({ where: { companyId: { in: [companyA, companyB] } } });
+      await tx.pushInstallation.deleteMany({ where: { id: { in: [...installationIds] } } });
+      // Réouverture strictement réservée aux deux fixtures du certificat. Le trigger Company est
+      // neutralisé uniquement pour cet UPDATE, puis tous les triggers/FK sont réactivés avant la
+      // fin de transaction : le runtime reste incapable de ressusciter un compte clôturé.
+      await tx.$executeRawUnsafe("SET LOCAL session_replication_role = 'replica'");
+      await tx.company.updateMany({
+        where: { id: { in: [companyA, companyB] } },
+        data: { closedAt: null, closureReason: null },
+      });
+      await tx.$executeRawUnsafe("SET LOCAL session_replication_role = 'origin'");
     });
     installationIds.clear();
   });
 
   afterAll(async () => {
-    if (admin) {
-      await admin.device.deleteMany({ where: { companyId: { in: [companyA, companyB] } } }).catch(() => undefined);
-      await admin.pushInstallation.deleteMany({ where: { id: { in: [...installationIds] } } }).catch(() => undefined);
-      await admin.company.deleteMany({ where: { id: { in: [companyA, companyB] } } }).catch(() => undefined);
+    try {
+      if (admin) {
+        await admin.$transaction(async (tx) => {
+          await tx.device.deleteMany({ where: { companyId: { in: [companyA, companyB] } } });
+          await tx.pushInstallation.deleteMany({ where: { id: { in: [...installationIds] } } });
+          await tx.$executeRawUnsafe("SET LOCAL session_replication_role = 'replica'");
+          await tx.company.updateMany({
+            where: { id: { in: [companyA, companyB] } },
+            data: { closedAt: null, closureReason: null },
+          });
+          await tx.$executeRawUnsafe("SET LOCAL session_replication_role = 'origin'");
+          await tx.company.deleteMany({ where: { id: { in: [companyA, companyB] } } });
+        });
+      }
+    } finally {
+      await Promise.allSettled([
+        ...workers.map((worker) => worker.$disconnect()),
+        ...(admin ? [admin.$disconnect()] : []),
+      ]);
     }
-    await Promise.allSettled([
-      ...workers.map((worker) => worker.$disconnect()),
-      ...(admin ? [admin.$disconnect()] : []),
-    ]);
   });
 
   function fixture(companyId: string, userId: string, token: string, generation = 1): BindingFixture {
