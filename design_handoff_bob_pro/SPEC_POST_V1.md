@@ -85,3 +85,14 @@ AVEC ta banque, pas à sa place. »
 4. SURF MARKETING : pages comparatives SEO (« Nico vs Shine pour les devis d'artisan »),
    badge « compatible toutes banques » dès l'open banking, ciblage des artisans DÉJÀ
    clients de néobanques (ils ont prouvé qu'ils paient pour du logiciel).
+
+## P8 — BOB AGENT RUNTIME (décision fondateur 18/07) : orchestration multi-agents niveau Claude Code, propulsée Mistral
+UNIFIE P2 (boucle NLU vocale) + SCANNER V2 (agent documentaire) en UNE architecture :
+un ORCHESTRATEUR (mistral fort, routage par complexité) qui délègue à des SOUS-AGENTS
+spécialisés (documentaire, fiscal, recherche, relances…), chacun avec sa palette
+d'OUTILS TYPÉS = les use cases core existants (parité structurelle manuel↔vocal↔agent),
+des ARTEFACTS de travail (résumés, plans, propositions révisables), le plancher
+confirm_all INTACT à chaque conséquence, coût/modèle tracés par tour. Prompts versionnés
+(pattern prompt-pack), goldens, évals. Chantier majeur POST-V1 (le gel s'applique) —
+spec unifiée à co-challenger GPT avant tout code ; la V1 publie avec le vocal actuel
+(fix extraction livré) + le fix scanner ticket.
