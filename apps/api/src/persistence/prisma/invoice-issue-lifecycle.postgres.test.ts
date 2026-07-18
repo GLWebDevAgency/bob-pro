@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
 import { CloseAccount, IssueInvoice, type ClockPort, type CompanyRepository } from '@bob/core';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { BackendService } from '../../backend.service';
+import { requestContext } from '../../observability/logger';
 import { PrismaPersistence } from './prisma-persistence';
 import { PrismaService } from './prisma.service';
 
@@ -209,6 +211,76 @@ async function runIssueInvoice(input: {
   });
 }
 
+function makeBackendService(persistence: PrismaPersistence): BackendService {
+  const service = new BackendService(
+    persistence,
+    {} as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    {
+      audit: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+      log: () => undefined,
+    } as never,
+  );
+  // Le certificat porte sur la transaction légale (réglages, numéro, comptabilité, outbox).
+  // Le worker d'archivage possède ses propres certificats ; on le neutralise après l'enqueue afin
+  // de ne pas ajouter ici une dépendance objet/PDF sans affaiblir la preuve de durabilité SQL.
+  vi.spyOn(service, 'runDocumentArchiveJobs').mockResolvedValue({
+    ok: true,
+    value: { scanned: 0, archived: 0, failed: 0 },
+  });
+  return service;
+}
+
+async function runBackendIssueInvoice(input: {
+  worker: PrismaService;
+  persistence: PrismaPersistence;
+  fixture: Fixture;
+  onStart?: (pid: number) => void;
+}) {
+  const service = makeBackendService(input.persistence);
+  return requestContext.run(
+    {
+      correlationId: `invoice-lifecycle-${input.fixture.companyId}`,
+      principal: {
+        userId: `owner-${input.fixture.companyId}`,
+        companyId: input.fixture.companyId,
+      },
+    },
+    () =>
+      input.worker.withTenant(input.fixture.companyId, async () => {
+        if (input.onStart) input.onStart(await backendPid(input.worker));
+        return service.issueInvoice({ invoiceId: input.fixture.targetInvoiceId });
+      }),
+  );
+}
+
+async function runBillingSettingsUpdate(input: {
+  worker: PrismaService;
+  persistence: PrismaPersistence;
+  fixture: Fixture;
+  paymentTermsDays: number;
+  gate: Gate<number>;
+}) {
+  return input.worker.withTenant(input.fixture.companyId, async () => {
+    const company = await input.persistence.companies.lockById(input.fixture.companyId);
+    if (!company || company.isClosed()) throw new Error('Writer Company indisponible ou clôturée.');
+    const updated = await input.persistence.billingSettings.update({
+      companyId: input.fixture.companyId,
+      expectedRevision: 1,
+      patch: { defaultInvoicePaymentTermsDays: input.paymentTermsDays },
+    });
+    input.gate.acquired.resolve(await backendPid(input.worker));
+    await input.gate.release.promise;
+    return updated;
+  });
+}
+
 async function runCloseAccount(input: {
   worker: PrismaService;
   persistence: PrismaPersistence;
@@ -247,7 +319,10 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
     let secondPersistence!: PrismaPersistence;
     let sentinel!: Fixture;
 
-    async function seedFixture(label: string): Promise<Fixture> {
+    async function seedFixture(
+      label: string,
+      defaultInvoicePaymentTermsDays?: number | null,
+    ): Promise<Fixture> {
       const id = randomUUID();
       const fixture: Fixture = {
         companyId: `invoice-lifecycle-company-${id}`,
@@ -278,6 +353,14 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
             addrCity: 'Paris',
           },
         });
+        if (defaultInvoicePaymentTermsDays !== undefined) {
+          await tx.companyBillingSettings.create({
+            data: {
+              companyId: fixture.companyId,
+              defaultInvoicePaymentTermsDays,
+            },
+          });
+        }
         await tx.customer.create({
           data: {
             id: fixture.customerId,
@@ -441,18 +524,32 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
     afterAll(async () => {
       try {
         if (admin && companyIds.length > 0) {
-          // Les lignes de factures émises sont légalement immuables. Le compte DIRECT_URL de
-          // certification neutralise les triggers uniquement dans cette transaction et uniquement
-          // pour les UUID de fixture, afin de ne laisser aucune donnée après le gate.
+          // Les lignes de factures émises et la réouverture d'une société clôturée sont protégées
+          // par des triggers légaux. Le compte DIRECT_URL ne les neutralise que pour ces deux
+          // opérations sur les UUID de fixture, puis réactive explicitement tous les triggers/FK
+          // AVANT les DELETE finaux : toute future dépendance oubliée doit faire échouer le gate.
           await admin.$transaction(async (tx) => {
-            await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+            await tx.accountingEntryLine.deleteMany({
+              where: { companyId: { in: companyIds } },
+            });
+            await tx.accountingEntry.deleteMany({ where: { companyId: { in: companyIds } } });
+            await tx.documentArchiveJob.deleteMany({ where: { companyId: { in: companyIds } } });
+            await tx.$executeRawUnsafe("SET LOCAL session_replication_role = 'replica'");
             await tx.lineItem.deleteMany({
               where: { invoice: { companyId: { in: companyIds } } },
             });
+            await tx.company.updateMany({
+              where: { id: { in: companyIds } },
+              data: { closedAt: null, closureReason: null },
+            });
+            await tx.$executeRawUnsafe("SET LOCAL session_replication_role = 'origin'");
             await tx.invoice.deleteMany({ where: { companyId: { in: companyIds } } });
             await tx.documentCounter.deleteMany({ where: { companyId: { in: companyIds } } });
             await tx.publicAccessToken.deleteMany({ where: { companyId: { in: companyIds } } });
             await tx.subscription.deleteMany({ where: { companyId: { in: companyIds } } });
+            await tx.companyBillingSettings.deleteMany({
+              where: { companyId: { in: companyIds } },
+            });
             await tx.customer.deleteMany({ where: { companyId: { in: companyIds } } });
             await tx.company.deleteMany({ where: { id: { in: companyIds } } });
           });
@@ -491,8 +588,12 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         JOIN pg_namespace namespace ON namespace.oid = class.relnamespace
         WHERE namespace.nspname = 'public'
           AND class.relname IN (
+            'accounting_entries',
+            'accounting_entry_lines',
+            'company_billing_settings',
             'companies',
             'customers',
+            'document_archive_jobs',
             'document_counters',
             'invoices',
             'line_items',
@@ -502,8 +603,12 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         ORDER BY class.relname
       `;
       expect(rlsRows).toEqual([
+        { tableName: 'accounting_entries', enabled: true, forced: true },
+        { tableName: 'accounting_entry_lines', enabled: true, forced: true },
         { tableName: 'companies', enabled: true, forced: true },
+        { tableName: 'company_billing_settings', enabled: true, forced: true },
         { tableName: 'customers', enabled: true, forced: true },
+        { tableName: 'document_archive_jobs', enabled: true, forced: true },
         { tableName: 'document_counters', enabled: true, forced: true },
         { tableName: 'invoices', enabled: true, forced: true },
         { tableName: 'line_items', enabled: true, forced: true },
@@ -511,6 +616,117 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         { tableName: 'subscriptions', enabled: true, forced: true },
       ]);
     });
+
+    it('échoue fermé sans ligne de réglages et ne persiste aucun effet légal', async () => {
+      const fixture = await seedFixture('missing-billing-settings');
+
+      const issued = await runBackendIssueInvoice({
+        worker: firstWorker,
+        persistence: firstPersistence,
+        fixture,
+      });
+
+      expect(issued).toEqual({
+        ok: false,
+        error: { kind: 'unavailable', service: 'company-billing-settings' },
+      });
+      const invoice = await admin.invoice.findUniqueOrThrow({
+        where: { id: fixture.targetInvoiceId },
+      });
+      expect(invoice).toMatchObject({
+        status: 'draft',
+        number: null,
+        issuedAt: null,
+        dueAt: null,
+      });
+      expect(await admin.accountingEntry.count({ where: { companyId: fixture.companyId } })).toBe(
+        0,
+      );
+      expect(
+        await admin.documentArchiveJob.count({ where: { companyId: fixture.companyId } }),
+      ).toBe(0);
+      await assertNoGap(fixture.companyId, 1);
+      await assertSentinelUntouched();
+    });
+
+    it('attend un writer de réglages puis fige le nouveau délai, jamais le snapshot MVCC ancien', async () => {
+      const fixture = await seedFixture('billing-settings-writer-wins', 30);
+      const gate: Gate<number> = {
+        acquired: deferred<number>(),
+        release: deferred<void>(),
+      };
+      const updatePromise = runBillingSettingsUpdate({
+        worker: firstWorker,
+        persistence: firstPersistence,
+        fixture,
+        paymentTermsDays: 45,
+        gate,
+      });
+      const writerPid = await waitForGateOrFailure(
+        gate.acquired.promise,
+        updatePromise,
+        'billing-settings-writer:writer',
+      );
+
+      const issuePid = deferred<number>();
+      const issuePromise = runBackendIssueInvoice({
+        worker: secondWorker,
+        persistence: secondPersistence,
+        fixture,
+        onStart: (pid) => issuePid.resolve(pid),
+      });
+      let blockingError: unknown;
+      let observation: BlockingObservation | undefined;
+      try {
+        const blockedPid = await waitForGateOrFailure(
+          issuePid.promise,
+          issuePromise,
+          'billing-settings-writer:issuer-start',
+        );
+        expect(blockedPid).not.toBe(writerPid);
+        observation = await waitUntilBlockedBy({
+          admin,
+          blockedPid,
+          blockerPid: writerPid,
+          context: 'billing-settings-writer',
+          expectedLockSql: 'FOR SHARE',
+        });
+      } catch (error) {
+        blockingError = error;
+      } finally {
+        gate.release.resolve(undefined);
+      }
+
+      const [updated, issued] = await Promise.all([updatePromise, issuePromise]);
+      if (blockingError) throw blockingError;
+      expect(observation?.blockerPids).toEqual([writerPid]);
+      expect(updated).toMatchObject({
+        status: 'updated',
+        settings: { revision: 2, defaultInvoicePaymentTermsDays: 45 },
+      });
+      expect(issued).toEqual({ ok: true, value: { number: 'F-2026-0002' } });
+
+      const [invoice, settings] = await Promise.all([
+        admin.invoice.findUniqueOrThrow({ where: { id: fixture.targetInvoiceId } }),
+        admin.companyBillingSettings.findUniqueOrThrow({ where: { companyId: fixture.companyId } }),
+      ]);
+      expect(settings).toMatchObject({ revision: 2, defaultInvoicePaymentTermsDays: 45 });
+      expect(invoice).toMatchObject({ status: 'issued', number: 'F-2026-0002' });
+      expect(invoice.issuedAt).not.toBeNull();
+      expect(invoice.dueAt).not.toBeNull();
+      if (invoice.issuedAt === null || invoice.dueAt === null) {
+        throw new Error('Dates légales absentes après émission certifiée.');
+      }
+      expect(invoice.dueAt.getTime() - invoice.issuedAt.getTime()).toBe(45 * 24 * 60 * 60 * 1_000);
+      expect(await admin.accountingEntry.count({ where: { companyId: fixture.companyId } })).toBe(
+        1,
+      );
+      expect(
+        await admin.documentArchiveJob.count({ where: { companyId: fixture.companyId } }),
+      ).toBe(1);
+      await assertNoGap(fixture.companyId, 2);
+      await assertSentinelUntouched();
+    }, 30_000);
 
     it('émission gagnante : CloseAccount attend, puis conserve la facture légale sans trou', async () => {
       const fixture = await seedFixture('issue-wins');

@@ -1387,33 +1387,47 @@ export class BackendService {
     return r;
   }
   async issueInvoice(input: { invoiceId: string }) {
-    const invoice = await this.ownedInvoice(input.invoiceId);
-    if (!invoice) return { ok: false as const, error: appNotFound('invoice', input.invoiceId) };
-    const settings = invoice.number
-      ? undefined
-      : await this.p.billingSettings.findByCompanyId(invoice.companyId);
-    const paymentTermsDays = settings?.defaultInvoicePaymentTermsDays;
-    const issueInput: {
-      invoiceId: string;
-      terms?: { days: number; endOfMonth: boolean; label: string };
-    } =
-      paymentTermsDays === null || paymentTermsDays === undefined
-        ? { invoiceId: input.invoiceId }
-        : {
-            invoiceId: input.invoiceId,
-            terms: {
-              days: paymentTermsDays,
-              endOfMonth: false,
-              label: `Paiement à ${paymentTermsDays} jours`,
-            },
-          };
-    // Les conditions courantes ne servent qu'à FIGER un nouveau brouillon. Un replay déjà émis
-    // doit relire son numéro sous le fence Company sans dépendre d'un réglage modifié/supprimé.
-    // Même si le locator était encore draft, AUCUN retour settings ne précède le verrou : une
-    // émission concurrente peut gagner et rendre ce même appel idempotent.
+    // Locator IDOR uniquement : aucune décision d'émission ne repose sur ce snapshot hors fence.
+    const locator = await this.ownedInvoice(input.invoiceId);
+    if (!locator) return { ok: false as const, error: appNotFound('invoice', input.invoiceId) };
     let r: Result<{ number: string }, AppError>;
     try {
       r = await this.p.runInTransaction(async () => {
+        // Ordre global impératif : Company SHARE -> réglages -> Invoice UPDATE -> compteur.
+        // CloseAccount prend Company UPDATE : aucune condition de paiement n'est donc lue, puis
+        // utilisée, à cheval sur une clôture. Le use case reprend ensuite ce même verrou de façon
+        // réentrante avant de figer le document et d'allouer son numéro légal.
+        const company = await this.p.companies.lockForShareById(locator.companyId);
+        let settings: CompanyBillingSettings | null | undefined;
+        if (!company || company.isClosed()) {
+          settings = undefined;
+        } else {
+          // Relire après le fence préserve le retry : si une émission concurrente a gagné depuis
+          // le locator, le numéro existant est rendu sans dépendre d'un réglage supprimé/modifié.
+          const currentInvoice = await this.p.invoices.findById(input.invoiceId);
+          settings =
+            currentInvoice !== null &&
+            currentInvoice.companyId === company.id &&
+            currentInvoice.number === null
+              ? await this.p.billingSettings.findByCompanyId(company.id)
+              : undefined;
+        }
+        const paymentTermsDays = settings?.defaultInvoicePaymentTermsDays;
+        const issueInput: {
+          invoiceId: string;
+          terms?: { days: number; endOfMonth: boolean; label: string };
+        } =
+          paymentTermsDays === null || paymentTermsDays === undefined
+            ? { invoiceId: input.invoiceId }
+            : {
+                invoiceId: input.invoiceId,
+                terms: {
+                  days: paymentTermsDays,
+                  endOfMonth: false,
+                  label: `Paiement à ${paymentTermsDays} jours`,
+                },
+              };
+
         const issued = await new IssueInvoice({
           invoices: this.p.invoices,
           companies: this.p.companies,

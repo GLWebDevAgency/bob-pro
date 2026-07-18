@@ -162,6 +162,38 @@ describe('facture PDF émise — original immuable', () => {
     });
   });
 
+  it('prend le fence Company avant toute lecture des conditions de paiement', async () => {
+    vi.stubEnv('SIGN_WEB_BASE_URL', 'https://signature.example.test');
+    const { persistence, service } = makeService();
+    await persistence.seed();
+
+    await asOwner(async () => {
+      const invoiceId = await prepareFinalInvoice(service);
+      const events: string[] = [];
+      const originalCompanyLock = persistence.companies.lockForShareById.bind(
+        persistence.companies,
+      );
+      const originalSettingsRead = persistence.billingSettings.findByCompanyId.bind(
+        persistence.billingSettings,
+      );
+      vi.spyOn(persistence.companies, 'lockForShareById').mockImplementation(async (companyId) => {
+        events.push('company:share');
+        return originalCompanyLock(companyId);
+      });
+      vi.spyOn(persistence.billingSettings, 'findByCompanyId').mockImplementation(
+        async (companyId) => {
+          events.push('billing-settings:read');
+          return originalSettingsRead(companyId);
+        },
+      );
+
+      const issued = await service.issueInvoice({ invoiceId });
+
+      expect(issued.ok).toBe(true);
+      expect(events.slice(0, 2)).toEqual(['company:share', 'billing-settings:read']);
+    });
+  });
+
   it('reste idempotent si une émission concurrente gagne pendant la lecture de réglages absents', async () => {
     vi.stubEnv('SIGN_WEB_BASE_URL', 'https://signature.example.test');
     const { persistence, renderer, service } = makeService();
