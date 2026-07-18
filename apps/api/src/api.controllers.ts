@@ -60,6 +60,7 @@ import { DigestService } from './jobs/digest.service';
 import { unwrap } from './http/result';
 import { readReleaseMetadata } from './release-metadata';
 import {
+  AllowsClosedCompany,
   AllowsMissingCompanyRow,
   WithoutTenantPersistenceTransaction,
 } from './persistence/tenant-persistence.interceptor';
@@ -1182,6 +1183,7 @@ export class AccountController {
   constructor(private readonly backend: BackendService) {}
   @Delete()
   @WithoutTenantPersistenceTransaction()
+  @AllowsClosedCompany()
   async close(@Body() body: { confirmationText?: string; reason?: string }) {
     return unwrap(
       await this.backend.closeAccount({

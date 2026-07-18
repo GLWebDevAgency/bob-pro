@@ -15,6 +15,7 @@ import { PERSISTENCE } from './persistence-token';
 
 const TENANT_TRANSACTION_DISABLED = Symbol('tenant-transaction-disabled');
 const TENANT_COMPANY_ROW_OPTIONAL = Symbol('tenant-company-row-optional');
+const TENANT_CLOSED_COMPANY_ALLOWED = Symbol('tenant-closed-company-allowed');
 
 /**
  * Une route worker portant ce décorateur doit ouvrir elle-même ses transactions RLS courtes.
@@ -30,6 +31,14 @@ export const WithoutTenantPersistenceTransaction = () =>
  * verrouillerait définitivement le compte hors de l'app.
  */
 export const AllowsMissingCompanyRow = () => SetMetadata(TENANT_COMPANY_ROW_OPTIONAL, true);
+
+/**
+ * Exemption lifecycle exceptionnelle : laisse un handler tenant joindre une société déjà clôturée.
+ * À combiner avec @WithoutTenantPersistenceTransaction et à réserver à la reprise idempotente de
+ * CloseAccount (finalisation de la suppression auth après le commit DB). Ce décorateur ne désactive
+ * ni RLS ni le contrôle NO_COMPANY, et reste sans effet sur une route transactionnelle ordinaire.
+ */
+export const AllowsClosedCompany = () => SetMetadata(TENANT_CLOSED_COMPANY_ALLOWED, true);
 
 /**
  * Enrôle chaque requête tenant dans le contexte de persistance courant.
@@ -48,9 +57,9 @@ export class TenantPersistenceInterceptor implements NestInterceptor {
       TENANT_TRANSACTION_DISABLED,
       [context.getHandler(), context.getClass()],
     );
-    if (transactionDisabled) return next.handle();
     const principal = getPrincipal();
-    const url = context.switchToHttp().getRequest<{ url?: string }>().url ?? '';
+    const request = context.switchToHttp().getRequest<{ url?: string }>();
+    const url = request.url ?? '';
     // Cabinet possède son propre tenant. Son service ouvre une transaction avec userId+cabinetId
     // après résolution de la membership ; ne jamais hériter implicitement du Company JWT.
     const path = url.split('?', 1)[0] ?? url;
@@ -64,6 +73,50 @@ export class TenantPersistenceInterceptor implements NestInterceptor {
       TENANT_COMPANY_ROW_OPTIONAL,
       [context.getHandler(), context.getClass()],
     );
+    const closedCompanyAllowed = this.reflector.getAllAndOverride<boolean>(
+      TENANT_CLOSED_COMPANY_ALLOWED,
+      [context.getHandler(), context.getClass()],
+    );
+
+    const assertCompanyAdmission = async (allowClosed: boolean): Promise<void> => {
+      const company = await this.persistence.companies.findById(companyId);
+      // JWT valide + app_metadata.company_id posé, mais AUCUNE company en base (base
+      // réinitialisée, provisioning interrompu après écriture des métadonnées…). Sans code
+      // dédié, chaque endpoint répondait sa propre erreur (404 company/me, listes vides,
+      // cashflow indisponible) : indistinguable d'une panne côté mobile → tunnel de retry.
+      // Code STABLE additif : le client détecte NO_COMPANY et route vers l'onboarding
+      // (POST /onboarding/company, exempté via @AllowsMissingCompanyRow, recrée la MÊME
+      // company). L'enveloppe `error` suit le contrat AppError de http/result.ts pour que
+      // les clients existants la décodent sans nouveau parseur.
+      if (company === null && !companyRowOptional) {
+        throw new ForbiddenException({
+          code: 'NO_COMPANY',
+          error: { kind: 'forbidden', reason: 'NO_COMPANY' },
+          message:
+            'Aucune société en base pour ce tenant : appelle POST /onboarding/company pour la recréer.',
+        });
+      }
+      if (company?.isClosed() && !allowClosed) {
+        throw new ForbiddenException({ code: 'ACCOUNT_CLOSED', message: 'Compte clôturé.' });
+      }
+    };
+
+    if (transactionDisabled) {
+      // « Sans transaction HTTP longue » ne signifie jamais « sans contrôle du tenant ».
+      // Admission RLS courte, COMMIT, puis seulement le handler (qui ouvre ses propres claims /
+      // transactions finales autour de la BDD et garde les I/O externes hors transaction).
+      // Cette lecture ferme l'accès APRÈS une clôture déjà commitée ; les courses admission →
+      // mutation restent volontairement la responsabilité du fence Company de chaque use case.
+      return from(
+        (async () => {
+          await this.persistence.runWithTenant(companyId, () =>
+            assertCompanyAdmission(closedCompanyAllowed === true),
+          );
+          return lastValueFrom(next.handle());
+        })(),
+      );
+    }
+
     return from(
       this.persistence.runWithTenant(companyId, async () => {
         // Clôture de compte (CloseAccount, Apple 5.1.1(v)) : DANS la transaction tenant (donc
@@ -72,26 +125,7 @@ export class TenantPersistenceInterceptor implements NestInterceptor {
         // non-superuser) et laisserait ce garde silencieusement inopérant. La route DELETE
         // /account elle-même désactive cette transaction automatique (@WithoutTenantPersistenceTransaction)
         // et gère son propre runWithTenant : elle n'est donc jamais bloquée par son propre effet.
-        const company = await this.persistence.companies.findById(companyId);
-        // JWT valide + app_metadata.company_id posé, mais AUCUNE company en base (base
-        // réinitialisée, provisioning interrompu après écriture des métadonnées…). Sans code
-        // dédié, chaque endpoint répondait sa propre erreur (404 company/me, listes vides,
-        // cashflow indisponible) : indistinguable d'une panne côté mobile → tunnel de retry.
-        // Code STABLE additif : le client détecte NO_COMPANY et route vers l'onboarding
-        // (POST /onboarding/company, exempté via @AllowsMissingCompanyRow, recrée la MÊME
-        // company). L'enveloppe `error` suit le contrat AppError de http/result.ts pour que
-        // les clients existants la décodent sans nouveau parseur.
-        if (company === null && !companyRowOptional) {
-          throw new ForbiddenException({
-            code: 'NO_COMPANY',
-            error: { kind: 'forbidden', reason: 'NO_COMPANY' },
-            message:
-              'Aucune société en base pour ce tenant : appelle POST /onboarding/company pour la recréer.',
-          });
-        }
-        if (company?.isClosed()) {
-          throw new ForbiddenException({ code: 'ACCOUNT_CLOSED', message: 'Compte clôturé.' });
-        }
+        await assertCompanyAdmission(false);
         return lastValueFrom(next.handle());
       }),
     );
