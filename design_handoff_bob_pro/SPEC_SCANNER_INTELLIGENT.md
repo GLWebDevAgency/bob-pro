@@ -37,3 +37,28 @@ facture_fournisseur AVEC échéance → « à payer » + rappel À régler aujou
 ## DoD : spec co-challengée GPT avant le gros œuvre · goldens par type de document
 (corpus réel) · routage coût mesuré (télémétrie modèle/coût par scan) · états socle ·
 parité vocale · le bug ticket = fix immédiat hors gel (correction, pas feature).
+
+## V2 VISION AFFINÉE (fondateur 18/07) — L'AGENT DOCUMENTAIRE (architecture « Claude Code pour documents »)
+Réponse Claude à « ta meilleure solution » : pas un pipeline figé — UNE BOUCLE AGENTIQUE.
+Après l'OCR, UN agent (routage mistral small→medium/large selon complexité/confiance)
+reçoit : le texte + LE CONTEXTE DU TENANT (métier, fournisseurs connus, dépenses
+récurrentes existantes, historique du même fournisseur, dossiers du coffre, fiche
+société) + une PALETTE D'OUTILS TYPÉS : classifyAs · createExpense(paid|to_pay) ·
+attachAsEvidence · fileTo(dossier) · proposeRecurring(échéancier) · updateCompanyRecord
+(assurance/RIB/infos Kbis) · writeSummary(2-3 lignes) · askUser(question à choix).
+Il raisonne, enchaîne, et TOUTE conséquence passe par confirm_all (cartes de validation).
+CAS CANONIQUES :
+· KBIS : classify → extraire SIREN/greffe/date → COMPARER à la fiche société → classer
+  au dossier officiel + résumé (« Kbis Fly Services, extrait du 12/07/2026, RCS X ») +
+  si divergence → proposer la MAJ de la fiche.
+· ABONNEMENT TÉLÉPHONIQUE : facture + indices (période « du 1 au 30 », télécom, montant
+  ≈ identique aux factures PRÉCÉDENTES du même fournisseur — l'agent VOIT l'historique)
+  → « Ça ressemble à ton abonnement Free Pro, ~39,99 €/mois le 5 — je le note comme
+  charge récurrente ? » → OUI → dépense + récurrence + auto-rapprochement des suivantes.
+· RÉSUMÉ AU COUP D'ŒIL (exigence UX) : chaque document classé porte {résumé 2-3 lignes,
+  type, montants clés, dates clés} générés À L'ANALYSE et stockés — affichés en tête de
+  la fiche document AU-DESSUS de l'aperçu PDF. Jamais regénérés à la volée.
+INGÉNIERIE : prompts VERSIONNÉS par type (pattern prompt-pack existant), goldens par
+type (corpus réel), routage de modèle tracé {modèle, coût, confiance} par scan,
+escalade automatique si confiance basse. La palette d'outils = les MÊMES use cases core
+que le manuel (parité structurelle totale).
