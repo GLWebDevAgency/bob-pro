@@ -11,13 +11,12 @@ import {
   type ChantierNoteRepository,
   type WorksiteMediaItem,
   type WorksiteMediaStorage,
-  type Company,
+  Company,
   type Customer,
   Document,
   DocumentFolder,
   type DocumentFolderProps,
   type Payment,
-  type CompanyRepository,
   type CustomerRepository,
   type QuoteRepository,
   type InvoiceRepository,
@@ -43,6 +42,7 @@ import {
   type SequenceCounterPort,
   type CounterKey,
 } from '@bob/core';
+import type { ServerCompanyRepository } from './persistence';
 import type {
   DocumentArchiveJob,
   DocumentArchiveJobRepository,
@@ -75,10 +75,15 @@ import { DuplicateExpenseInvoiceError } from './expense-duplicate-error';
  * Permettent de faire tourner l'API SANS base de données. Les adapters Prisma/Postgres sont le
  * prochain incrément (cf. prisma/schema.prisma + réhydratation des agrégats).
  */
-export class InMemoryCompanyRepository implements CompanyRepository {
+export class InMemoryCompanyRepository implements ServerCompanyRepository {
   private readonly map = new Map<string, Company>();
+  private clone(c: Company): Company {
+    const cloned = Company.of(c.toProps());
+    if (!cloned.ok) throw new Error('INVALID_COMPANY_TEST_SNAPSHOT');
+    return cloned.value;
+  }
   seed(c: Company): void {
-    this.map.set(c.id, c);
+    this.map.set(c.id, this.clone(c));
   }
   async findById(id: string): Promise<Company | null> {
     return this.map.get(id) ?? null;
@@ -92,8 +97,32 @@ export class InMemoryCompanyRepository implements CompanyRepository {
   async list(): Promise<Company[]> {
     return [...this.map.values()];
   }
+  async createIfAbsentOpen(c: Company) {
+    if (c.isClosed()) throw new Error('COMPANY_REGISTRATION_CANNOT_CREATE_CLOSED_COMPANY');
+    if (this.map.has(c.id)) return 'existing' as const;
+    if ([...this.map.values()].some((existing) => existing.siret === c.siret)) {
+      return 'identity_conflict' as const;
+    }
+    this.map.set(c.id, this.clone(c));
+    return 'created' as const;
+  }
   async save(c: Company): Promise<void> {
-    this.map.set(c.id, c);
+    const current = this.map.get(c.id);
+    if (current?.isClosed()) throw new Error('COMPANY_NOT_OPEN_FOR_UPDATE');
+    // Les tests historiques utilisent save pour leur seed explicite. Une fois la row présente,
+    // la même monotonie qu'en PostgreSQL s'applique (ouverte → ouverte/clôturée, jamais l'inverse).
+    this.map.set(c.id, this.clone(c));
+  }
+  snapshot(): ReturnType<Company['toProps']>[] {
+    return [...this.map.values()].map((company) => company.toProps());
+  }
+  restore(snapshot: readonly ReturnType<Company['toProps']>[]): void {
+    this.map.clear();
+    for (const props of snapshot) {
+      const company = Company.of(props);
+      if (!company.ok) throw new Error('INVALID_COMPANY_TEST_SNAPSHOT');
+      this.map.set(company.value.id, company.value);
+    }
   }
 }
 

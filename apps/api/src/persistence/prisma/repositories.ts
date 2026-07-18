@@ -14,7 +14,6 @@ import {
   ChartOfAccounts,
   AccountingEntry,
   DocNumber,
-  type CompanyRepository,
   type CustomerRepository,
   type QuoteRepository,
   type InvoiceRepository,
@@ -45,6 +44,7 @@ import {
   type FiscalProfileProps,
   type FiscalProfileRepository,
 } from '@bob/core';
+import type { ServerCompanyRepository } from '../persistence';
 import type {
   DocumentArchiveJob,
   DocumentArchiveJobRepository,
@@ -142,7 +142,7 @@ function requireActiveTransaction(prisma: PrismaService, operation: string): voi
   }
 }
 
-export class PrismaCompanyRepository implements CompanyRepository {
+export class PrismaCompanyRepository implements ServerCompanyRepository {
   constructor(private readonly prisma: PrismaService) {}
   private toDomain(row: PrismaCompanyRow): Company {
     return requirePersistedAggregate('company', row.id, Company.of(companyRowToProps(row)));
@@ -170,11 +170,30 @@ export class PrismaCompanyRepository implements CompanyRepository {
     const rows = await this.prisma.client().company.findMany({ orderBy: { id: 'asc' } });
     return rows.map((row) => this.toDomain(row));
   }
-  async save(c: Company): Promise<void> {
+  async createIfAbsentOpen(c: Company) {
+    requireActiveTransaction(this.prisma, 'Company create-if-absent');
+    if (c.isClosed()) throw new Error('COMPANY_REGISTRATION_CANNOT_CREATE_CLOSED_COMPANY');
     const data = companyPropsToCreate(c.toProps());
-    await this.prisma
-      .client()
-      .company.upsert({ where: { id: data.id }, create: data, update: data });
+    const created = await this.prisma.client().company.createMany({
+      data: [data],
+      skipDuplicates: true,
+    });
+    if (created.count === 1) return 'created' as const;
+    // Même id : retry idempotent. Si aucun row n'est visible, un autre identifiant légal unique
+    // (notamment le SIRET) appartient déjà à une autre company ; ne jamais révéler son tenant.
+    return (await this.findById(c.id)) === null ? 'identity_conflict' : ('existing' as const);
+  }
+  async save(c: Company): Promise<void> {
+    requireActiveTransaction(this.prisma, 'Company lifecycle write');
+    const data = companyPropsToCreate(c.toProps());
+    const { id, ...update } = data;
+    // Transition monotone : une row clôturée n'est jamais modifiée et `closedAt` ne peut jamais
+    // revenir à NULL. Tous les writers prennent d'abord lockById dans la même transaction.
+    const written = await this.prisma.client().company.updateMany({
+      where: { id, closedAt: null },
+      data: update,
+    });
+    if (written.count !== 1) throw new Error('COMPANY_NOT_OPEN_FOR_UPDATE');
   }
 }
 

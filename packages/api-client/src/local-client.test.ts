@@ -74,6 +74,21 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     const persisted = await client.getCompanyMe();
     expect(persisted.ok && persisted.value.closedAt).toBeTruthy();
     expect(persisted.ok && persisted.value.name).toBe('Mercier Plomberie');
+
+    const profile = await client.updateCompanyProfile({
+      trade: 'electricien',
+      vatRegime: 'reel_simpl',
+    });
+    const billing = await client.updateCompanyBilling({
+      iban: 'FR7630006000011234567890189',
+    });
+    const settings = await client.updateCompanyBillingSettings({
+      expectedRevision: 1,
+      patch: { defaultDepositPercent: 42 },
+    });
+    for (const mutation of [profile, billing, settings]) {
+      expect(mutation).toMatchObject({ ok: false, error: { kind: 'forbidden' } });
+    }
   });
 
   it('DELETE /account (démo) : confirmationText EXACT (nom de la société seedée) → clôture, mêmes règles que le serveur', async () => {

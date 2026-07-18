@@ -1114,6 +1114,7 @@ export class LocalBobClient implements BobClient {
   }): Promise<Result<CompanyProps, AppError>> {
     const current = await this.companies.findById(this.companyId);
     if (current === null) return err(appNotFound('company', this.companyId));
+    if (current.isClosed()) return err(appForbidden('Compte clôturé.'));
     const updated = Company.of({ ...current.toProps(), ...input });
     if (!updated.ok) return err(appDomain(updated.error));
     await this.companies.save(updated.value);
@@ -1127,6 +1128,7 @@ export class LocalBobClient implements BobClient {
   }): Promise<Result<CompanyProps, AppError>> {
     const current = await this.companies.findById(this.companyId);
     if (current === null) return err(appNotFound('company', this.companyId));
+    if (current.isClosed()) return err(appForbidden('Compte clôturé.'));
     const props = current.toProps();
     const { iban: currentIban, bic: currentBic, ...requiredProps } = props;
     const updated = Company.of({
@@ -1159,6 +1161,9 @@ export class LocalBobClient implements BobClient {
     expectedRevision: number;
     patch: CompanyBillingSettingsPatch;
   }): Promise<Result<CompanyBillingSettings, AppError>> {
+    const company = await this.companies.findById(this.companyId);
+    if (company === null) return err(appNotFound('company', this.companyId));
+    if (company.isClosed()) return err(appForbidden('Compte clôturé.'));
     if (input.expectedRevision !== this.billingSettings.revision) {
       return err(appConflict('company_billing_settings', 'stale_revision'));
     }

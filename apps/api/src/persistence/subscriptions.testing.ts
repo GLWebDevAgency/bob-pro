@@ -63,4 +63,13 @@ export class InMemorySubscriptionRepository implements SubscriptionRepository {
     this.byCompany.set(record.companyId, stored);
     return { ...stored };
   }
+
+  snapshot(): SubscriptionRecord[] {
+    return [...this.byCompany.values()].map((record) => ({ ...record }));
+  }
+
+  restore(records: readonly SubscriptionRecord[]): void {
+    this.byCompany.clear();
+    for (const record of records) this.byCompany.set(record.companyId, { ...record });
+  }
 }

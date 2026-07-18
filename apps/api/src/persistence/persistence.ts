@@ -6,6 +6,7 @@ import type {
   ChantierNoteRepository,
   ChartOfAccountsRepository,
   CompanyRepository,
+  Company,
   CompanyBillingSettingsRepository,
   DiagnosticAssessmentRepository,
   CustomerRepository,
@@ -59,6 +60,16 @@ export interface ServerPaymentRepository extends PaymentRepository {
   listByCompany(companyId: string): Promise<Payment[]>;
 }
 
+export type CompanyCreateIfAbsentResult = 'created' | 'existing' | 'identity_conflict';
+
+/**
+ * Écriture serveur create-only de l'identité légale. L'onboarding n'a jamais le droit de passer
+ * par `save`, car un retry doit réparer les dépendances sans écraser la première fiche acceptée.
+ */
+export interface ServerCompanyRepository extends CompanyRepository {
+  createIfAbsentOpen(company: Company): Promise<CompanyCreateIfAbsentResult>;
+}
+
 /** Verrou partagé réservé aux lectures publiques linéarisables avec rotation/clôture. */
 export interface ServerQuoteRepository extends QuoteRepository {
   lockForShareById(id: string): Promise<Quote | null>;
@@ -79,7 +90,7 @@ export interface ServerPublicAccessTokenRepository extends PublicAccessTokenRepo
  * exclu de l'artefact de production.
  */
 export interface Persistence {
-  companies: CompanyRepository;
+  companies: ServerCompanyRepository;
   billingSettings: CompanyBillingSettingsRepository;
   diagnosticAssessments: DiagnosticAssessmentRepository;
   customers: CustomerRepository;

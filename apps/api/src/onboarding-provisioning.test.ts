@@ -5,6 +5,7 @@ import type {
   PaymentGatewayPort,
   PdfRendererPort,
 } from '@bob/core';
+import { Company } from '@bob/core';
 import { MERCIER_PROPS } from '@bob/core/testing';
 import { BackendService } from './backend.service';
 import { InMemoryPersistence } from './persistence/persistence.testing';
@@ -91,6 +92,7 @@ describe('registerCompany — provisioning tenant (C24b)', () => {
     expect(admin.setUserCompanyId).toHaveBeenCalledTimes(2);
     const secondSubscription = await p.subscriptions.findByCompanyId(`company-${USER_ID}`);
     expect(secondSubscription).toEqual(firstSubscription);
+    expect((await p.companies.findById(`company-${USER_ID}`))?.name).toBe('Durand Élec');
   });
 
   it('à l’ouverture du paiement live, un compte neuf reçoit l’essai Pro au lieu de l’accès anticipé', async () => {
@@ -114,22 +116,128 @@ describe('registerCompany — provisioning tenant (C24b)', () => {
 
     expect(!failed.ok && failed.error).toMatchObject({ kind: 'dependency', port: 'supabase-admin' });
     expect(logger.error).toHaveBeenCalledTimes(1);
-    expect(await p.companies.findById(`company-${USER_ID}`)).toBeTruthy(); // déjà sauvée : le retry ré-écrira le MÊME id
+    expect(await p.companies.findById(`company-${USER_ID}`)).toBeTruthy(); // déjà sauvée : le retry répare sans la réécrire
 
     const retried = await asPrincipal({ userId: USER_ID, companyId: null }, () => service.registerCompany(INPUT));
     expect(retried.ok && retried.value.companyId).toBe(`company-${USER_ID}`);
   });
 
-  it('principal AVEC tenant (démo/déjà provisionné) : update de SA société, admin JAMAIS appelé — aucun id client accepté', async () => {
+  it('principal AVEC tenant : crée si absente puis un retry ne réécrit jamais la fiche, admin jamais appelé', async () => {
     const { service, p, admin } = makeService();
 
     const r = await asPrincipal({ userId: 'demo', companyId: 'co-existant' }, () => service.registerCompany(INPUT));
+    const retry = await asPrincipal({ userId: 'demo', companyId: 'co-existant' }, () =>
+      service.registerCompany({ ...INPUT, name: 'Nom forgé au retry' }),
+    );
 
-    expect(r.ok).toBe(true);
-    if (!r.ok) return;
+    expect(r.ok && retry.ok).toBe(true);
+    if (!r.ok || !retry.ok) return;
     expect(r.value.companyId).toBe('co-existant');
-    expect(await p.companies.findById('co-existant')).toBeTruthy();
+    expect((await p.companies.findById('co-existant'))?.name).toBe('Durand Élec');
     expect(admin.setUserCompanyId).not.toHaveBeenCalled();
+  });
+
+  it('retry sur une company clôturée : refus ferme, aucune résurrection ni dépendance créée', async () => {
+    const { service, p, admin } = makeService();
+    const companyId = `company-${USER_ID}`;
+    const closed = Company.of({
+      ...INPUT,
+      id: companyId,
+      closedAt: '2026-07-18T00:00:00.000Z',
+      closureReason: 'test',
+    });
+    if (!closed.ok) throw new Error('fixture company invalide');
+    p.companies.seed(closed.value);
+
+    const result = await asPrincipal({ userId: USER_ID, companyId: null }, () =>
+      service.registerCompany({ ...INPUT, name: 'Tentative de réouverture' }),
+    );
+
+    expect(result).toMatchObject({ ok: false, error: { kind: 'forbidden' } });
+    expect((await p.companies.findById(companyId))?.toProps()).toMatchObject({
+      name: 'Durand Élec',
+      closedAt: '2026-07-18T00:00:00.000Z',
+      closureReason: 'test',
+    });
+    expect(await p.billingSettings.findByCompanyId(companyId)).toBeNull();
+    expect(await p.subscriptions.findByCompanyId(companyId)).toBeNull();
+    expect(admin.setUserCompanyId).not.toHaveBeenCalled();
+  });
+
+  it('SIRET déjà rattaché à une autre company : conflit opaque, aucun tenant partiel', async () => {
+    const { service, p, admin } = makeService();
+    const existing = Company.of({ ...INPUT, id: 'company-existing-owner' });
+    if (!existing.ok) throw new Error('fixture company invalide');
+    p.companies.seed(existing.value);
+
+    const result = await asPrincipal({ userId: USER_ID, companyId: null }, () =>
+      service.registerCompany(INPUT),
+    );
+    const attemptedCompanyId = `company-${USER_ID}`;
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { kind: 'conflict', entity: 'company', reason: 'identity_already_registered' },
+    });
+    expect(await p.companies.findById(attemptedCompanyId)).toBeNull();
+    expect(await p.billingSettings.findByCompanyId(attemptedCompanyId)).toBeNull();
+    expect(await p.subscriptions.findByCompanyId(attemptedCompanyId)).toBeNull();
+    expect(admin.setUserCompanyId).not.toHaveBeenCalled();
+  });
+
+  it('erreur tardive des dossiers : rollback Company + settings + abonnement, sans metadata Supabase', async () => {
+    const { service, p, admin } = makeService();
+    vi.spyOn(p.documentFolders, 'save').mockResolvedValueOnce({ status: 'name_conflict' });
+
+    const result = await asPrincipal({ userId: USER_ID, companyId: null }, () =>
+      service.registerCompany(INPUT),
+    );
+    const companyId = `company-${USER_ID}`;
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { kind: 'conflict', entity: 'document_folder' },
+    });
+    expect(await p.companies.findById(companyId)).toBeNull();
+    expect(await p.billingSettings.findByCompanyId(companyId)).toBeNull();
+    expect(await p.subscriptions.findByCompanyId(companyId)).toBeNull();
+    expect(
+      (await p.documentFolders.listChildren({ companyId, parentId: null, limit: 100 })).items,
+    ).toEqual([]);
+    expect(admin.setUserCompanyId).not.toHaveBeenCalled();
+  });
+
+  it('profil, RIB et réglages refusent tous une company clôturée avant le moindre effet', async () => {
+    const { service, p, logger } = makeService();
+    const companyId = 'company-closed-writers';
+    const closed = Company.of({
+      ...INPUT,
+      id: companyId,
+      closedAt: '2026-07-18T00:00:00.000Z',
+    });
+    if (!closed.ok) throw new Error('fixture company invalide');
+    p.companies.seed(closed.value);
+
+    const principal = { userId: 'owner', companyId };
+    const profile = await asPrincipal(principal, () =>
+      service.updateCompanyProfile({ trade: 'plombier', vatRegime: 'reel_normal' }),
+    );
+    const billing = await asPrincipal(principal, () =>
+      service.updateCompanyBilling({ iban: 'FR7630006000011234567890189' }),
+    );
+    const settings = await asPrincipal(principal, () =>
+      service.updateCompanyBillingSettings({
+        expectedRevision: 1,
+        patch: { defaultDepositPercent: 42 },
+      }),
+    );
+
+    for (const result of [profile, billing, settings]) {
+      expect(result).toMatchObject({ ok: false, error: { kind: 'forbidden' } });
+    }
+    expect((await p.companies.findById(companyId))?.toProps()).toEqual(closed.value.toProps());
+    expect(await p.billingSettings.findByCompanyId(companyId)).toBeNull();
+    expect(logger.audit).not.toHaveBeenCalled();
   });
 
   it('sans Principal : erreur interne explicite (le guard doit avoir bloqué avant) — plus AUCUN repli Mercier', async () => {

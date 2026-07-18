@@ -145,6 +145,8 @@ export class InMemoryPersistence implements Persistence {
     await predecessor;
 
     const snap = this.counters.snapshot();
+    const companySnapshot = this.companies.snapshot();
+    const subscriptionSnapshot = this.subscriptions.snapshot();
     const cabinetSnapshot = this.cabinet.snapshot?.();
     const documentSnapshot = this.documents.snapshot();
     const documentAnalysisSnapshot = this.documentAnalyses.snapshot();
@@ -167,6 +169,8 @@ export class InMemoryPersistence implements Persistence {
       return await this.transactionContext.run(Symbol('in-memory-transaction'), fn);
     } catch (error) {
       this.counters.restore(snap);
+      this.companies.restore(companySnapshot);
+      this.subscriptions.restore(subscriptionSnapshot);
       if (cabinetSnapshot !== undefined) this.cabinet.restore?.(cabinetSnapshot);
       this.documents.restore(documentSnapshot);
       this.documentAnalyses.restore(documentAnalysisSnapshot);

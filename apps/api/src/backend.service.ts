@@ -3821,24 +3821,32 @@ export class BackendService {
       validated.value.showRibOnInvoices !== undefined ||
       validated.value.showInsuranceOnInvoices !== undefined ||
       validated.value.pdfAccentColor !== undefined;
-    if (changesArchivedPdf) {
-      const archiveReady = await this.assertIssuedInvoiceArchivesComplete(this.companyId());
-      if (!archiveReady.ok) return archiveReady;
-    }
-    const result = await this.p.billingSettings.update({
-      companyId: this.companyId(),
-      expectedRevision: input.expectedRevision,
-      patch: validated.value,
+    const companyId = this.companyId();
+    const updated = await this.p.runInTransaction(async (): Promise<Result<CompanyBillingSettings, AppError>> => {
+      // Ordre global anti-deadlock : Company FOR UPDATE avant settings, factures ou documents.
+      const company = await this.p.companies.lockById(companyId);
+      if (!company) return err(appNotFound('company', companyId));
+      if (company.isClosed()) return err(appForbidden('Compte clôturé.'));
+      if (changesArchivedPdf) {
+        const archiveReady = await this.assertIssuedInvoiceArchivesComplete(companyId);
+        if (!archiveReady.ok) return archiveReady;
+      }
+      const result = await this.p.billingSettings.update({
+        companyId,
+        expectedRevision: input.expectedRevision,
+        patch: validated.value,
+      });
+      return result.status === 'revision_conflict'
+        ? err(appConflict('company_billing_settings', 'stale_revision'))
+        : ok(result.settings);
     });
-    if (result.status === 'revision_conflict') {
-      return err(appConflict('company_billing_settings', 'stale_revision'));
-    }
+    if (!updated.ok) return updated;
     this.logger.audit('company.billing_settings_updated', {
-      companyId: this.companyId(),
-      revision: result.settings.revision,
+      companyId,
+      revision: updated.value.revision,
       fields: Object.keys(validated.value).sort(),
     });
-    return ok(result.settings);
+    return updated;
   }
 
   /** Profil d'exploitation explicitement confirmé par le propriétaire. */
@@ -3848,25 +3856,30 @@ export class BackendService {
     customerPortfolio?: CustomerPortfolio;
   }): Promise<Result<CompanyProps, AppError>> {
     const companyId = this.companyId();
-    const current = await this.p.companies.findById(companyId);
-    if (!current) return { ok: false, error: appNotFound('company', companyId) };
-    const updated = Company.of({
-      ...current.toProps(),
-      trade: input.trade,
-      vatRegime: input.vatRegime,
-      ...(input.customerPortfolio === undefined
-        ? {}
-        : { customerPortfolio: input.customerPortfolio }),
+    const persisted = await this.p.runInTransaction(async (): Promise<Result<CompanyProps, AppError>> => {
+      const current = await this.p.companies.lockById(companyId);
+      if (!current) return err(appNotFound('company', companyId));
+      if (current.isClosed()) return err(appForbidden('Compte clôturé.'));
+      const updated = Company.of({
+        ...current.toProps(),
+        trade: input.trade,
+        vatRegime: input.vatRegime,
+        ...(input.customerPortfolio === undefined
+          ? {}
+          : { customerPortfolio: input.customerPortfolio }),
+      });
+      if (!updated.ok) return err(appDomain(updated.error));
+      await this.p.companies.save(updated.value);
+      return ok(updated.value.toProps());
     });
-    if (!updated.ok) return { ok: false, error: appDomain(updated.error) };
-    await this.p.companies.save(updated.value);
+    if (!persisted.ok) return persisted;
     this.logger.audit('company.profile_confirmed', {
       companyId,
       trade: input.trade,
       vatRegime: input.vatRegime,
       customerPortfolioChanged: input.customerPortfolio !== undefined,
     });
-    return ok(updated.value.toProps());
+    return persisted;
   }
 
   /** Réglages facturation §Coordonnées bancaires (RIB) — écrit iban/bic (déjà persistés, jusqu'ici
@@ -3877,24 +3890,29 @@ export class BackendService {
     bic?: string | null;
   }): Promise<Result<CompanyProps, AppError>> {
     const companyId = this.companyId();
-    const archiveReady = await this.assertIssuedInvoiceArchivesComplete(companyId);
-    if (!archiveReady.ok) return archiveReady;
-    const current = await this.p.companies.findById(companyId);
-    if (!current) return { ok: false, error: appNotFound('company', companyId) };
-    const props = current.toProps();
-    const updated = Company.of({
-      ...props,
-      iban: input.iban === undefined ? props.iban : (input.iban ?? undefined),
-      bic: input.bic === undefined ? props.bic : (input.bic ?? undefined),
+    const persisted = await this.p.runInTransaction(async (): Promise<Result<CompanyProps, AppError>> => {
+      const current = await this.p.companies.lockById(companyId);
+      if (!current) return err(appNotFound('company', companyId));
+      if (current.isClosed()) return err(appForbidden('Compte clôturé.'));
+      const archiveReady = await this.assertIssuedInvoiceArchivesComplete(companyId);
+      if (!archiveReady.ok) return archiveReady;
+      const props = current.toProps();
+      const updated = Company.of({
+        ...props,
+        iban: input.iban === undefined ? props.iban : (input.iban ?? undefined),
+        bic: input.bic === undefined ? props.bic : (input.bic ?? undefined),
+      });
+      if (!updated.ok) return err(appDomain(updated.error));
+      await this.p.companies.save(updated.value);
+      return ok(updated.value.toProps());
     });
-    if (!updated.ok) return { ok: false, error: appDomain(updated.error) };
-    await this.p.companies.save(updated.value);
+    if (!persisted.ok) return persisted;
     this.logger.audit('company.billing_updated', {
       companyId,
       ibanChanged: input.iban !== undefined,
       bicChanged: input.bic !== undefined,
     });
-    return ok(updated.value.toProps());
+    return persisted;
   }
 
   /** C-EXP5b : échéancier fiscal du tenant — MÊME use case pur (deriveFiscalCalendar @bob/core).
@@ -5673,15 +5691,15 @@ export class BackendService {
 
   // ——— Onboarding / multi-tenant ———
   /**
-   * Crée (ou met à jour) la société du tenant courant — première étape de l'onboarding.
+   * Crée la société du tenant courant ou répare un provisioning incomplet.
    *
    * C24b — deux chemins, JAMAIS d'id accepté du client (anti-rattachement à un tenant arbitraire) :
-   * - Principal AVEC tenant (démo, ou compte déjà provisionné) : met à jour SA société.
+   * - Principal AVEC tenant : l'id JWT reste l'autorité ; une fiche existante n'est jamais écrasée.
    * - Principal SANS tenant (prod, compte neuf) : PROVISIONING — id DÉTERMINISTE
    *   `company-<userId>` (userId Supabase = UUID → conforme /^[A-Za-z0-9-]{1,64}$/ ; un retry
-   *   recrée la MÊME company : idempotent, zéro orpheline), sauvegarde de la Company PUIS
-   *   écriture d'app_metadata.company_id via l'API admin Supabase. Échec admin = erreur
-   *   EXPLICITE loggée (le client réessaie ; la company déjà créée est réutilisée telle quelle).
+   *   cible la MÊME company), puis écrit app_metadata.company_id APRÈS le commit PostgreSQL.
+   * Dans les deux cas, settings/abonnement/dossiers sont réparés atomiquement. Un retry avec un
+   * autre payload conserve la première identité légale ; les changements passent par PATCH.
    */
   async registerCompany(
     input: CompanyRegistrationInput,
@@ -5693,73 +5711,82 @@ export class BackendService {
         'registerCompany sans Principal — le guard doit authentifier avant ce point.',
       );
     }
-
-    if (principal.companyId !== null) {
-      // Tenant déjà provisionné (ou démo) : comportement historique — update de SA société.
-      const r = Company.of({ id: principal.companyId, ...input });
-      if (!r.ok) return { ok: false, error: appDomain(r.error) };
-      await this.p.companies.save(r.value);
-      await this.p.billingSettings.ensureForCompany(principal.companyId);
-      this.logger.audit('company.registered', { companyId: principal.companyId, name: input.name });
-      return ok({ companyId: principal.companyId });
-    }
-
-    // Provisioning (prod, compte neuf). Le guard garantit le format du sub ; on re-vérifie à la
-    // frontière avant que l'id ne serve de GUC RLS.
-    const companyId = `company-${principal.userId}`;
+    const assignsTenantMetadata = principal.companyId === null;
+    const companyId = principal.companyId ?? `company-${principal.userId}`;
+    // Le guard garantit normalement ces formats ; on re-vérifie avant toute utilisation en GUC RLS.
     if (principal.userId === '' || !/^[A-Za-z0-9-]{1,64}$/.test(companyId)) {
       throw new Error(
         `provisioning tenant : userId inattendu (« ${principal.userId} ») — id de company non dérivable.`,
       );
     }
-    const r = Company.of({ id: companyId, ...input });
-    if (!r.ok) return { ok: false, error: appDomain(r.error) };
-    // Le TenantPersistenceInterceptor n'a PAS ouvert de transaction tenant (companyId null) :
-    // on pose ici le GUC RLS sur l'id provisionné pour que la politique WITH CHECK passe.
-    const provisioned = await this.p.runWithTenant(companyId, async () => {
-      await this.p.companies.save(r.value);
-      await this.p.billingSettings.ensureForCompany(companyId);
-      const now = this.clock.now();
-      if (this.gateway.subscriptionBillingAvailable) {
-        // À l'ouverture publique, le compte neuf démarre avec l'essai inversé Pro. La création
-        // reste idempotente : un retry ne décale jamais l'échéance.
-        const trial = startReverseTrial(now);
-        await this.p.subscriptions.startTrial({
-          id: `sub-${companyId}`,
-          companyId,
-          plan: trial.tier,
-          trialEndsAt: trial.endsAt,
-          now,
-        });
-      } else {
-        // V1 privée : accès anticipé explicite en BDD, gratuit et sans échéance. L'absence de
-        // ligne ne sert jamais de raccourci à cet état produit.
-        await this.p.subscriptions.startEarlyAccess({
-          id: `sub-${companyId}`,
-          companyId,
-          plan: 'business',
-          now,
-        });
-      }
-      return this.provisionDefaultDocumentFolders(companyId);
-    });
-    if (!provisioned.ok) return provisioned;
+    const candidate = Company.of({ ...input, id: companyId });
+    if (!candidate.ok) return err(appDomain(candidate.error));
+
+    let provisioned: { created: boolean; name: string };
     try {
-      await this.supabaseAdmin.setUserCompanyId(principal.userId, companyId);
-    } catch (e) {
-      const cause = e instanceof Error ? e.message : 'supabase-admin';
-      // Company déjà sauvée : le retry re-dérive le MÊME id et ré-écrit — idempotent, zéro orpheline.
-      this.logger.error(
-        `provisioning tenant ${companyId} : écriture app_metadata.company_id échouée (${cause}) — retry client possible, company idempotente`,
-        undefined,
-        'BackendService',
+      // runWithTenant ouvre le GUC RLS en prod ; runInTransaction donne aussi un vrai rollback au
+      // harness mémoire. Les deux sont réentrants si l'interceptor a déjà ouvert la transaction.
+      provisioned = await this.p.runWithTenant(companyId, () =>
+        this.p.runInTransaction(async () => {
+          const creation = await this.p.companies.createIfAbsentOpen(candidate.value);
+          if (creation === 'identity_conflict') {
+            throw new RollbackAppError(appConflict('company', 'identity_already_registered'));
+          }
+          // Verrou pris immédiatement après l'INSERT/ON CONFLICT : sérialise retry et clôture.
+          const company = await this.p.companies.lockById(companyId);
+          if (!company) throw new RollbackAppError(appUnavailable('company-provisioning'));
+          if (company.isClosed()) throw new RollbackAppError(appForbidden('Compte clôturé.'));
+
+          await this.p.billingSettings.ensureForCompany(companyId);
+          const now = this.clock.now();
+          if (this.gateway.subscriptionBillingAvailable) {
+            const trial = startReverseTrial(now);
+            await this.p.subscriptions.startTrial({
+              id: `sub-${companyId}`,
+              companyId,
+              plan: trial.tier,
+              trialEndsAt: trial.endsAt,
+              now,
+            });
+          } else {
+            // V1 privée : accès anticipé explicite en BDD, gratuit et sans échéance.
+            await this.p.subscriptions.startEarlyAccess({
+              id: `sub-${companyId}`,
+              companyId,
+              plan: 'business',
+              now,
+            });
+          }
+          const folders = await this.provisionDefaultDocumentFolders(companyId);
+          // Un Result.err retourné depuis une transaction serait COMMITÉ : la sentinelle force le
+          // rollback de Company + settings + abonnement + dossiers déjà créés.
+          if (!folders.ok) throw new RollbackAppError(folders.error);
+          return { created: creation === 'created', name: company.name };
+        }),
       );
-      return { ok: false, error: { kind: 'dependency', port: 'supabase-admin', cause } };
+    } catch (error) {
+      if (error instanceof RollbackAppError) return err(error.appError);
+      throw error;
     }
-    this.logger.audit('company.provisioned', {
+
+    if (assignsTenantMetadata) {
+      try {
+        await this.supabaseAdmin.setUserCompanyId(principal.userId, companyId);
+      } catch (e) {
+        const cause = e instanceof Error ? e.message : 'supabase-admin';
+        // PostgreSQL est volontairement déjà commité : le retry répare uniquement cette metadata.
+        this.logger.error(
+          `provisioning tenant ${companyId} : écriture app_metadata.company_id échouée (${cause}) — retry client possible, company idempotente`,
+          undefined,
+          'BackendService',
+        );
+        return err({ kind: 'dependency', port: 'supabase-admin', cause });
+      }
+    }
+    this.logger.audit(provisioned.created ? 'company.provisioned' : 'company.provisioning_repaired', {
       companyId,
       userId: principal.userId,
-      name: input.name,
+      name: provisioned.name,
     });
     return ok({ companyId });
   }

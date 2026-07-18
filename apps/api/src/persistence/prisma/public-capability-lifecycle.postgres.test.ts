@@ -18,7 +18,11 @@ import type { SupabaseAdminPort } from '../../auth/supabase-admin';
 import type { NotificationDeliveryService } from '../../jobs/notification-delivery.service';
 import type { AppLogger } from '../../observability/logger';
 import type { Metrics } from '../../observability/metrics';
-import type { Persistence, ServerPublicAccessTokenRepository } from '../persistence';
+import type {
+  Persistence,
+  ServerCompanyRepository,
+  ServerPublicAccessTokenRepository,
+} from '../persistence';
 import { PrismaPersistence } from './prisma-persistence';
 import { PrismaService } from './prisma.service';
 
@@ -160,12 +164,12 @@ function tenantUow(
 }
 
 function gateCompanyLock(input: {
-  repository: CompanyRepository;
+  repository: ServerCompanyRepository;
   worker: PrismaService;
   companyId: string;
   mode: 'share' | 'update';
   gate: Gate<number>;
-}): CompanyRepository {
+}): ServerCompanyRepository {
   let armed = true;
   const pauseAfterRealLock = async <T>(mode: 'share' | 'update', value: T): Promise<T> => {
     if (armed && mode === input.mode) {
@@ -189,6 +193,7 @@ function gateCompanyLock(input: {
       return id === input.companyId ? pauseAfterRealLock('share', value) : value;
     },
     list: () => input.repository.list(),
+    createIfAbsentOpen: (company) => input.repository.createIfAbsentOpen(company),
     save: (company) => input.repository.save(company),
   };
 }
