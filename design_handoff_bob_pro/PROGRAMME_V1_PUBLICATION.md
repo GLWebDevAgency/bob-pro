@@ -123,3 +123,38 @@ filtres de dates (chips + personnalisé), AUTOCOMPLÉTION sur l'input de recherc
 bouton de recherche avancée (modale : client/numéro/prestation/dates) ; ③DB optimisée
 recherche ultra-rapide (indexes trigram/composites tenant-scoped). Standards des
 meilleures apps mondiales du genre.
+
+## MAJ 19/07 — ÉLARGISSEMENT DU PÉRIMÈTRE V1 (décisions fondateur) + ÉTAT DES LIVRAISONS
+
+### Décisions fondateur du 19/07 (toutes actées)
+1. **AVENANTS = V1** (« indispensable pour exercer, ne peut pas attendre une V1.1 ») — multi-secteurs,
+   spec complète SPEC_AVENANTS.md signée Claude, 10 DEC en attente du challenge GPT. ≈16 j-agents, 9 lots.
+2. **AUDIT INDISPENSABLES** (AUDIT_INDISPENSABLES_V1.md) : « on enterre tout » — groupe A (8 obligations
+   légales) + groupe B recommandé (7 bloquants terrain) entrent en V1.
+3. **CANAL DE FACTURATION par client** (email/Chorus Pro/portail — cas RATP/caisses des écoles) : V1,
+   version guidée (champ + checklist Chorus avec n° d'engagement B8).
+4. Doctrine **« conseiller, jamais contraindre »** + **LegalHint** (pédagogie légale au point de décision) ;
+   protections du client et intégrité fiscale non contournables.
+5. M2 (relances réellement envoyées) + M4 (dépense dictée) = V1 ; M1/M3/M5 = V1.1.
+6. Connecteurs boîte mail = V1.1 (P9), vertical bâtiment/avenants-chantiers = post-V1 (P6.4/P6.5).
+
+### LIVRÉ ET DÉPLOYÉ depuis le 18/07 (serveur = HEAD 613ae684, sign-web à jour)
+- Refonte documents/scan complète (une-décision-à-la-fois, reviewedAt, DocumentInsightCard, liens
+  document↔chantier, intelligence tenant-aware) + outils vocaux documents ×4.
+- B8 bons de commande bout-en-bout (PDF + Factur-X BT-13 + flow vocal RATP + enchaînement facture).
+- Dépense↔chantier bout-en-bout + section Dépenses du chantier + M2 relances réelles + M4 dépense dictée.
+- Profil fiscal intelligent (dérivations SIRET/Sirene, modales forme/régime séparées, statut social
+  expliqué, VL masqué hors micro, sync vatRegime, seuils depuis référentiel sourcé).
+- Tenant vierge honnête (cashflow/subscription/spinner devis) — bugs du parcours réel fondateur.
+- ÉPIC A complet : 8 obligations légales dont rétractation 14 j avec fonctionnalité EN LIGNE
+  (ordonnance 2026-2, page sign-web /retract), embargo L221-10, archivage immuable du contrat signé.
+- A3bis : LegalHint, exception dépannage urgent, encaissement J+7 automatique annulable, override
+  responsabilisé fail-closed, conseil du canal de signature.
+- Navigation croisée des pièces (avoir↔facture↔devis, tags listes, couleurs par famille).
+- EN VOL : ÉPIC B (facture directe, situations+tâches, remises, conditions de paiement, retenue de
+  garantie 5 %, débours, garde-fou étranger) + canal de facturation.
+
+### RESTE AVANT SIGNATURE PUBLIABLE (les deux signent)
+Avenants (après DEC GPT) · crash reporting (webhook à fournir fondateur) · matrice flags · renommage
+NICO (bundle id = décision identité fondateur) · cold onboarding re-certifié · lanes GPT à intégrer
+(Mistral v2 dfe38b46) · grille tarifaire hors iOS · build groupé de validation fondateur (SUR GO).
