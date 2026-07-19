@@ -6,16 +6,19 @@
  * Le PDF s'ouvre depuis le coffre (document lié) quand il existe — sinon pas de bouton.
  * L'aperçu comptable (fonctionnalité réelle antérieure) est conservé sous les mentions.
  */
-import { useMemo, useRef } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { Alert, Linking, Share, Text, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { buildPieceView, normalizeVoiceText, type PieceLinkedRef } from '@bob/core';
+import { buildPieceView, normalizeVoiceText, type PieceLinkedRef, type PurchaseOrderRefInput } from '@bob/core';
+import { challengeFor } from '@bob/ai';
 import { t } from '@bob/i18n';
 import { Card, ErrorRetry, SectionHeader, Skeleton, SkeletonCard, SkeletonHeader, font, useTheme } from '@bob/ui';
 import { Button } from '@bob/ui';
 import {
+  useAttachInvoicePurchaseOrder,
   useCreateInvoiceViewLink,
   useCustomers,
+  useDetachInvoicePurchaseOrder,
   useGenerateInvoice,
   useInvoice,
   useInvoiceAccountingPreview,
@@ -39,6 +42,9 @@ import {
 } from '../../src/components/DocumentActions';
 import { AccountingLinesView } from '../../src/components/AccountingLinesView';
 import { PieceDetailView } from '../../src/components/PieceDetailView';
+import { PurchaseOrderCard, PurchaseOrderSheet } from '../../src/components/PurchaseOrderSection';
+import { purchaseOrderErrorMessage } from '../../src/components/purchase-order-form.logic';
+import { useConfirm } from '../../src/components/ConfirmSheet';
 import {
   usePublishAgentContext,
   type AgentCapability,
@@ -47,9 +53,13 @@ import {
   type AgentSurface,
 } from '../../src/agent';
 
+// B8 : retirer le bon de commande d'un BROUILLON est réversible (même palier de risque que
+// les actions réversibles de DocumentActions — jamais une action fiscale avant émission).
+const PO_REVERSIBLE = { mutating: true, outbound: false, riskTier: 'reversible' } as const;
+
 export default function FactureDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { personality, colors } = useTheme();
+  const { personality, colors, semantic } = useTheme();
   const router = useRouter();
   const client = useBobClient();
   const invoice = useInvoice(id);
@@ -77,6 +87,50 @@ export default function FactureDetail() {
   // Pont A1-C16 : générer la facture finale = MÊME use case que le briefing et que Bob
   // (generate-invoice-from-quote) — brouillon créé, on route dessus pour l'émettre.
   const generate = useGenerateInvoice();
+
+  // ── B8 : bon de commande grands comptes — repris du devis à la dérivation, modifiable
+  //    tant que la facture est BROUILLON (jamais un avoir : figé depuis la facture d'origine),
+  //    figé à l'émission (lecture seule, mention visible). ──
+  const confirm = useConfirm();
+  const attachPo = useAttachInvoicePurchaseOrder();
+  const detachPo = useDetachInvoicePurchaseOrder();
+  const [poSheetOpen, setPoSheetOpen] = useState(false);
+  const [poError, setPoError] = useState<string | null>(null);
+  const poEditable =
+    invoice.data?.status === 'draft' && invoice.data?.kind !== 'credit_note';
+  const openPoSheet = (): void => {
+    setPoError(null);
+    setPoSheetOpen(true);
+  };
+  const submitPurchaseOrder = async (input: PurchaseOrderRefInput): Promise<void> => {
+    setPoError(null);
+    try {
+      await attachPo.mutateAsync({
+        invoiceId: id,
+        purchaseOrder: input,
+        expectedRevision: invoice.data?.revision ?? 1,
+      });
+      setPoSheetOpen(false);
+    } catch (error) {
+      setPoError(purchaseOrderErrorMessage(error, t('po.saveError', { personality })));
+    }
+  };
+  const removePurchaseOrder = async (): Promise<void> => {
+    const po = invoice.data?.purchaseOrder;
+    if (!po) return;
+    const ok = await confirm({
+      title: t('po.removeConfirmTitle', { personality }),
+      message: t('po.removeConfirmBody', { personality, params: { number: po.number } }),
+      challenge: challengeFor(PO_REVERSIBLE, 'confirm_all'),
+      destructive: true,
+    });
+    if (!ok) return;
+    try {
+      await detachPo.mutateAsync({ invoiceId: id, expectedRevision: invoice.data?.revision ?? 1 });
+    } catch (error) {
+      Alert.alert('Oups', purchaseOrderErrorMessage(error, t('po.saveError', { personality })));
+    }
+  };
 
   const view = useMemo(() => {
     const inv = invoice.data;
@@ -358,8 +412,14 @@ export default function FactureDetail() {
     );
   }
   const inv = invoice.data;
+  // B8 : réassurance à l'étape « Facturer le solde » — le devis parent porte un bon de
+  // commande, il sera repris sur la facture générée (aucune re-saisie).
+  const nextStepPurchaseOrder = view.nextStep
+    ? ((quotes.data ?? []).find((q) => q.id === view.nextStep!.quoteId)?.purchaseOrder ?? null)
+    : null;
 
   return (
+    <>
     <PieceDetailView
       view={view}
       onClose={() => router.back()}
@@ -377,23 +437,63 @@ export default function FactureDetail() {
       }
       nextStepAction={
         view.nextStep ? (
-          <Button
-            title={t('piece.actionFacturerSolde', { personality })}
-            variant="primary"
-            size="compact"
-            radius={12}
-            loading={generate.isPending}
-            style={{ alignSelf: 'flex-start' }}
-            onPress={() =>
-              generate.mutate(
-                { quoteId: view.nextStep!.quoteId, mode: 'final' },
-                { onSuccess: (out) => router.push(`/facture/${out.invoiceId}`) },
-              )
-            }
-          />
+          <View style={{ gap: 10 }}>
+            {nextStepPurchaseOrder ? (
+              // B8 : le numéro d'engagement suit tout seul — réassurance, pas de re-saisie.
+              <View
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 7,
+                  backgroundColor: semantic.successBg,
+                  borderRadius: 10,
+                  paddingVertical: 9,
+                  paddingHorizontal: 12,
+                }}
+              >
+                <Text style={{ ...font('meta', 600), fontSize: 12.5, color: semantic.success, flex: 1 }}>
+                  {t('po.carriedToInvoice', {
+                    personality,
+                    params: { number: nextStepPurchaseOrder.number },
+                  })}
+                </Text>
+              </View>
+            ) : null}
+            <Button
+              title={t('piece.actionFacturerSolde', { personality })}
+              variant="primary"
+              size="compact"
+              radius={12}
+              loading={generate.isPending}
+              style={{ alignSelf: 'flex-start' }}
+              onPress={() =>
+                generate.mutate(
+                  { quoteId: view.nextStep!.quoteId, mode: 'final' },
+                  { onSuccess: (out) => router.push(`/facture/${out.invoiceId}`) },
+                )
+              }
+            />
+          </View>
         ) : null
       }
       extra={
+        <>
+        {/* B8 : section « Bon de commande » — éditable sur BROUILLON (hors avoir), lecture
+            seule dès l'émission (mention « figé à l'émission » visible). */}
+        {poEditable || inv.purchaseOrder != null ? (
+          <PurchaseOrderCard
+            purchaseOrder={inv.purchaseOrder ?? null}
+            editable={poEditable}
+            frozen={inv.purchaseOrder != null && inv.status !== 'draft'}
+            emptyBody={t('po.emptyInvoiceBody', { personality })}
+            documents={documents.data ?? []}
+            onAdd={openPoSheet}
+            onEdit={openPoSheet}
+            onRemove={() => void removePurchaseOrder()}
+            onOpenDocument={(documentId) => router.push(`/documents/${documentId}`)}
+          />
+        ) : null}
+        {
         // Un échec réseau de l'aperçu comptable ne doit JAMAIS ressembler à « pas
         // d'écriture » (bug P2 de l'audit) : loading/erreur/absence sont distingués.
         acct.isLoading ? (
@@ -428,7 +528,24 @@ export default function FactureDetail() {
             />
           </Card>
         ) : null
+        }
+        </>
       }
     />
+    <PurchaseOrderSheet
+      visible={poSheetOpen}
+      initial={inv.purchaseOrder ?? null}
+      documents={documents.data ?? []}
+      saving={attachPo.isPending}
+      error={poError}
+      onClose={() => {
+        if (attachPo.isPending) return;
+        setPoSheetOpen(false);
+        setPoError(null);
+      }}
+      onInputChange={() => setPoError(null)}
+      onSubmit={(input) => void submitPurchaseOrder(input)}
+    />
+    </>
   );
 }

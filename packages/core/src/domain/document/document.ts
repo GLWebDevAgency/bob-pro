@@ -274,6 +274,11 @@ export class Document {
   /**
    * Classe le document : rattachement métier confirmé (proposition OCR validée par
    * l'artisan, ou par Bob — parité d'actions). Un document supprimé ne se classe pas.
+   *
+   * GARDE ANTI-ÉCRASEMENT : un lien métier existant ne se réécrit JAMAIS silencieusement.
+   * Le re-lien strictement IDENTIQUE reste idempotent (aucun changement, aucune erreur —
+   * les retries des clients s'appuient dessus) ; un lien DIFFÉRENT est refusé avec
+   * `DOCUMENT_ALREADY_LINKED` (les deux liens dans l'erreur, existant vs demandé).
    */
   classify(link: { linkedEntityType: DocumentLinkedEntityType; linkedEntityId: string }): DomainResult<void> {
     if (this.p.status !== 'active') return err({ code: 'INVALID_TRANSITION', from: this.p.status, to: 'active' });
@@ -282,11 +287,25 @@ export class Document {
     if (!nonEmpty(link.linkedEntityId))
       return err({ code: 'VALIDATION', field: 'linkedEntityId', message: 'Rattachement métier incomplet.' });
     const linkedEntityId = link.linkedEntityId.trim();
-    if (this.p.linkedEntityType !== link.linkedEntityType || this.p.linkedEntityId !== linkedEntityId) {
-      this.p.linkedEntityType = link.linkedEntityType;
-      this.p.linkedEntityId = linkedEntityId;
-      this.bumpRevision();
+    // Re-lien identique : idempotent, sans révision fantôme.
+    if (this.p.linkedEntityType === link.linkedEntityType && this.p.linkedEntityId === linkedEntityId) {
+      return ok(undefined);
     }
+    // Lien DIFFÉRENT alors qu'un lien existe : refus explicite — délier est un geste à part.
+    if (this.p.linkedEntityType !== null && this.p.linkedEntityId !== null) {
+      return err({
+        code: 'DOCUMENT_ALREADY_LINKED',
+        documentId: this.p.id,
+        existing: { linkedEntityType: this.p.linkedEntityType, linkedEntityId: this.p.linkedEntityId },
+        requested: { linkedEntityType: link.linkedEntityType, linkedEntityId },
+        message:
+          `Ce document est déjà rattaché à ${this.p.linkedEntityType}/${this.p.linkedEntityId} ; `
+          + `rattachement demandé : ${link.linkedEntityType}/${linkedEntityId}. Délier d'abord le lien existant.`,
+      });
+    }
+    this.p.linkedEntityType = link.linkedEntityType;
+    this.p.linkedEntityId = linkedEntityId;
+    this.bumpRevision();
     return ok(undefined);
   }
 

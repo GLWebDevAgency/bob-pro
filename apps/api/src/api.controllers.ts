@@ -38,8 +38,17 @@ import type {
   CustomerPortfolio,
   ExpensePaymentEvidenceInput,
   LegalForm,
+  PurchaseOrderRefInput,
 } from '@bob/core';
-import { Iban, Siren, Siret, isCatalogueCategory, isValidDateOnly, isVatRate } from '@bob/core';
+import {
+  Iban,
+  MAX_PURCHASE_ORDER_NUMBER_LENGTH,
+  Siren,
+  Siret,
+  isCatalogueCategory,
+  isValidDateOnly,
+  isVatRate,
+} from '@bob/core';
 import { type AgentAskPayload } from '@bob/ai';
 import { Throttle } from '@nestjs/throttler';
 import {
@@ -631,6 +640,93 @@ function parseInvoiceGenerationBody(body: Record<string, unknown>): { mode: 'dep
   }
   if (issues.length > 0) throwValidationIssues(issues);
   return { mode: mode as 'deposit' | 'final' };
+}
+
+// ——— B8 : bon de commande (numéro d'engagement grands comptes) ———
+
+const PURCHASE_ORDER_ATTACH_FIELDS = new Set([
+  'number',
+  'receivedAt',
+  'documentId',
+  'expectedRevision',
+]);
+const PURCHASE_ORDER_DETACH_FIELDS = new Set(['expectedRevision']);
+
+function parseExpectedRevision(body: Record<string, unknown>, issues: ValidationIssue[]): number {
+  const expectedRevision = body['expectedRevision'];
+  if (!Number.isSafeInteger(expectedRevision) || (expectedRevision as number) < 1) {
+    issues.push({ field: 'expectedRevision', message: 'Révision positive attendue.' });
+    return 1;
+  }
+  return expectedRevision as number;
+}
+
+/**
+ * PUT /{quotes|invoices}/:id/purchase-order — corps plat { number, receivedAt?, documentId?,
+ * expectedRevision }. Le parseur borne les types et NORMALISE la date de réception en ISO
+ * canonique (l'idempotence du domaine compare des chaînes) ; l'assainissement/la longueur du
+ * numéro restent l'autorité de makePurchaseOrderRef (@bob/core).
+ */
+function parsePurchaseOrderAttachBody(body: Record<string, unknown>): {
+  purchaseOrder: PurchaseOrderRefInput;
+  expectedRevision: number;
+} {
+  const issues: ValidationIssue[] = [];
+  for (const field of Object.keys(body)) {
+    if (!PURCHASE_ORDER_ATTACH_FIELDS.has(field)) {
+      issues.push({ field: 'body', message: `Champ non autorisé : ${field}.` });
+    }
+  }
+  const number = body['number'];
+  if (
+    typeof number !== 'string' ||
+    number.trim().length === 0 ||
+    number.length > MAX_PURCHASE_ORDER_NUMBER_LENGTH * 4
+  ) {
+    issues.push({ field: 'number', message: 'Numéro de bon de commande requis.' });
+  }
+  const receivedAt = body['receivedAt'];
+  let normalizedReceivedAt: string | null = null;
+  if (receivedAt !== undefined && receivedAt !== null) {
+    if (typeof receivedAt !== 'string' || Number.isNaN(Date.parse(receivedAt))) {
+      issues.push({ field: 'receivedAt', message: 'Date de réception invalide.' });
+    } else {
+      normalizedReceivedAt = new Date(Date.parse(receivedAt)).toISOString();
+    }
+  }
+  const documentId = body['documentId'];
+  if (
+    documentId !== undefined &&
+    documentId !== null &&
+    (typeof documentId !== 'string' || documentId.trim().length === 0 || documentId.length > 100)
+  ) {
+    issues.push({ field: 'documentId', message: 'Document invalide.' });
+  }
+  const expectedRevision = parseExpectedRevision(body, issues);
+  if (issues.length > 0) throwValidationIssues(issues);
+  return {
+    purchaseOrder: {
+      number: number as string,
+      receivedAt: normalizedReceivedAt,
+      documentId: (documentId as string | null | undefined) ?? null,
+    },
+    expectedRevision,
+  };
+}
+
+/** DELETE /{quotes|invoices}/:id/purchase-order — seule la révision optimiste voyage. */
+function parsePurchaseOrderDetachBody(body: Record<string, unknown>): {
+  expectedRevision: number;
+} {
+  const issues: ValidationIssue[] = [];
+  for (const field of Object.keys(body)) {
+    if (!PURCHASE_ORDER_DETACH_FIELDS.has(field)) {
+      issues.push({ field: 'body', message: `Champ non autorisé : ${field}.` });
+    }
+  }
+  const expectedRevision = parseExpectedRevision(body, issues);
+  if (issues.length > 0) throwValidationIssues(issues);
+  return { expectedRevision };
 }
 
 function parseSignQuoteBody(body: Record<string, unknown>): {
@@ -1751,6 +1847,29 @@ export class QuotesController {
   async removeLine(@Param('id') id: string, @Param('lineId') lineId: string) {
     return unwrap(await this.backend.removeQuoteLine({ quoteId: id, lineId }));
   }
+  /** B8 : attache (ou remplace) le bon de commande client d'un devis NON FACTURÉ — le numéro
+   * d'engagement est saisi UNE FOIS ici puis repris automatiquement sur la facture dérivée. */
+  @Put(':id/purchase-order')
+  async attachPurchaseOrder(@Param('id') id: string, @Body() body: unknown) {
+    assertJsonObjectBody(body);
+    return unwrap(
+      await this.backend.attachQuotePurchaseOrder({
+        quoteId: id,
+        ...parsePurchaseOrderAttachBody(body),
+      }),
+    );
+  }
+  /** B8 : retrait EXPLICITE du bon de commande (devis non facturé uniquement). */
+  @Delete(':id/purchase-order')
+  async detachPurchaseOrder(@Param('id') id: string, @Body() body: unknown) {
+    assertJsonObjectBody(body);
+    return unwrap(
+      await this.backend.detachQuotePurchaseOrder({
+        quoteId: id,
+        ...parsePurchaseOrderDetachBody(body),
+      }),
+    );
+  }
 }
 
 @Controller('invoices')
@@ -1847,6 +1966,29 @@ export class InvoicesController {
       type: 'application/xml',
       disposition: `attachment; filename="factur-x-${id}.xml"`,
     });
+  }
+  /** B8 : attache (ou remplace) le bon de commande d'une facture BROUILLON — le numéro
+   * d'engagement doit être posé AVANT émission (il figure sur la pièce légale figée). */
+  @Put(':id/purchase-order')
+  async attachPurchaseOrder(@Param('id') id: string, @Body() body: unknown) {
+    assertJsonObjectBody(body);
+    return unwrap(
+      await this.backend.attachInvoicePurchaseOrder({
+        invoiceId: id,
+        ...parsePurchaseOrderAttachBody(body),
+      }),
+    );
+  }
+  /** B8 : retrait EXPLICITE du bon de commande (facture brouillon uniquement). */
+  @Delete(':id/purchase-order')
+  async detachPurchaseOrder(@Param('id') id: string, @Body() body: unknown) {
+    assertJsonObjectBody(body);
+    return unwrap(
+      await this.backend.detachInvoicePurchaseOrder({
+        invoiceId: id,
+        ...parsePurchaseOrderDetachBody(body),
+      }),
+    );
   }
 }
 

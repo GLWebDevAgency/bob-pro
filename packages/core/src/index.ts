@@ -10,6 +10,7 @@ export * from './domain/billing/shared/doc-number';
 export * from './domain/billing/shared/quantity';
 export * from './domain/billing/shared/line-item';
 export * from './domain/billing/shared/totals';
+export * from './domain/billing/shared/purchase-order-ref';
 
 // Domaine — entités
 export * from './domain/company/company';
@@ -110,6 +111,8 @@ export * from './application/billing/register-payment';
 export * from './application/billing/delete-draft-invoice';
 export * from './application/billing/update-quote-line';
 export * from './application/billing/remove-quote-line';
+export * from './application/billing/attach-purchase-order';
+export * from './application/billing/list-invoiceable-quotes';
 export * from './application/billing/company-billing-settings';
 export * from './application/public-access/create-quote-signature-token';
 export * from './application/public-access/create-quote-signature-link';
@@ -141,6 +144,7 @@ export * from './application/accounting/derive-sig';
 export * from './application/accounting/derive-closing-review';
 export * from './application/pilotage/derive-business-review';
 export * from './application/expenses/record-expense';
+export * from './application/expenses/assign-expense-to-chantier';
 export * from './application/expenses/import-facturx-expense';
 export * from './application/expenses/pay-expense';
 export * from './application/expenses/record-expense-payment';

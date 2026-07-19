@@ -67,6 +67,9 @@ import type {
   CatalogueDeletionView,
   QualifiedBankBalanceSnapshot,
   QuoteDraftPayloadV1,
+  PurchaseOrderRef,
+  PurchaseOrderRefInput,
+  PurchaseOrderMutationView,
 } from '@bob/core';
 
 export interface QuoteView {
@@ -80,6 +83,12 @@ export interface QuoteView {
   totals: Totals;
   validUntil: string | null;
   signed: boolean;
+  /** B8 : bon de commande client (numéro d'engagement grands comptes) — null si aucun.
+   *  Optionnel (compat ascendante des producteurs existants) ; le codec HTTP le normalise
+   *  TOUJOURS (absent ⇒ null), le client local le fournit depuis l'agrégat. */
+  purchaseOrder?: PurchaseOrderRef | null;
+  /** Révision optimiste des mutations de bon de commande — absent ⇒ 1 (normalisé par le codec). */
+  revision?: number;
 }
 
 export interface InvoiceView {
@@ -103,6 +112,11 @@ export interface InvoiceView {
   /** Date d'émission (E3 — socle dates : CA 12 mois, balance âgée, seuils 293 B).
    *  Nullable ET optionnelle : une API amont pas encore à jour la laisse absente. */
   issuedAt?: string | null;
+  /** B8 : bon de commande (repris du devis à la dérivation, figé à l'émission) — null si aucun.
+   *  Même doctrine défensive que QuoteView.purchaseOrder (absent ⇒ null via codec). */
+  purchaseOrder?: PurchaseOrderRef | null;
+  /** Révision optimiste des mutations de bon de commande — absent ⇒ 1 (normalisé par le codec). */
+  revision?: number;
 }
 
 /** Encaissement daté (E3) — la matière du CA encaissé annuel et du lettrage à venir. */
@@ -147,6 +161,36 @@ export interface RegularizeExpensePaymentClientOutput {
   readonly alreadyRegularized: boolean;
   readonly paymentEntryId: string;
 }
+
+// ——— B8 : bon de commande grands comptes (numéro d'engagement) ———
+
+/** PUT /quotes/:id/purchase-order — la référence complète + la révision optimiste observée. */
+export interface AttachQuotePurchaseOrderClientInput {
+  quoteId: string;
+  purchaseOrder: PurchaseOrderRefInput;
+  expectedRevision: number;
+}
+
+/** DELETE /quotes/:id/purchase-order — seule la révision optimiste voyage. */
+export interface DetachQuotePurchaseOrderClientInput {
+  quoteId: string;
+  expectedRevision: number;
+}
+
+/** PUT /invoices/:id/purchase-order — facture BROUILLON uniquement (figé à l'émission). */
+export interface AttachInvoicePurchaseOrderClientInput {
+  invoiceId: string;
+  purchaseOrder: PurchaseOrderRefInput;
+  expectedRevision: number;
+}
+
+/** DELETE /invoices/:id/purchase-order. */
+export interface DetachInvoicePurchaseOrderClientInput {
+  invoiceId: string;
+  expectedRevision: number;
+}
+
+export type { PurchaseOrderRef, PurchaseOrderRefInput, PurchaseOrderMutationView };
 
 export interface SendQuoteOutput {
   number: string;
@@ -1068,6 +1112,25 @@ export interface BobClient {
   updateQuoteLine(input: UpdateQuoteLineInput): Promise<Result<{ status: string }, AppError>>;
   /** R6 : suppression d'une ligne de devis BROUILLON (DELETE /quotes/:id/lines/:lineId). */
   removeQuoteLine(input: RemoveQuoteLineInput): Promise<Result<{ status: string }, AppError>>;
+  // ——— B8 : bon de commande grands comptes (numéro d'engagement, parité humain↔Bob) ———
+  // OPTIONNELLES (précédent trialReport) : les fakes/transports existants restent assignables ;
+  // HttpBobClient et LocalBobClient les implémentent TOUS LES DEUX (parité stricte).
+  /** PUT /quotes/:id/purchase-order — saisi UNE FOIS sur le devis, repris sur la facture dérivée. */
+  attachQuotePurchaseOrder?(
+    input: AttachQuotePurchaseOrderClientInput,
+  ): Promise<Result<PurchaseOrderMutationView, AppError>>;
+  /** DELETE /quotes/:id/purchase-order — retrait explicite (devis non facturé uniquement). */
+  detachQuotePurchaseOrder?(
+    input: DetachQuotePurchaseOrderClientInput,
+  ): Promise<Result<PurchaseOrderMutationView, AppError>>;
+  /** PUT /invoices/:id/purchase-order — facture BROUILLON uniquement (figé à l'émission). */
+  attachInvoicePurchaseOrder?(
+    input: AttachInvoicePurchaseOrderClientInput,
+  ): Promise<Result<PurchaseOrderMutationView, AppError>>;
+  /** DELETE /invoices/:id/purchase-order — retrait explicite (facture brouillon uniquement). */
+  detachInvoicePurchaseOrder?(
+    input: DetachInvoicePurchaseOrderClientInput,
+  ): Promise<Result<PurchaseOrderMutationView, AppError>>;
   /** A6 : avoir TOTAL (brouillon) d'une facture émise — même use case pour l'UI et Bob. */
   createCreditNote(input: {
     invoiceId: string;

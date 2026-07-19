@@ -148,4 +148,82 @@ describe('Expense.record', () => {
     if (blankNumber.ok) expect(blankNumber.value.supplierInvoiceNumber).toBeNull(); // vide → null
     expect(Expense.record({ ...base, dueAt: '2026-02-30' }).ok).toBe(false); // échéance impossible
   });
+
+  // Rentabilité par chantier — extension ADDITIVE : chantierId optionnel, défaut null.
+  it('chantierId optionnel : absent/null → null (lignes historiques intactes), normalisé quand présent, blanc refusé', () => {
+    const legacy = Expense.record(base); // sans le champ — call-sites historiques intacts
+    expect(legacy.ok).toBe(true);
+    if (legacy.ok) {
+      expect(legacy.value.chantierId).toBeNull();
+      expect(legacy.value.toProps().chantierId).toBeNull(); // projection TOUJOURS explicite
+    }
+
+    const explicitNull = Expense.record({ ...base, chantierId: null });
+    expect(explicitNull.ok && explicitNull.value.chantierId).toBeNull();
+
+    const assigned = Expense.record({ ...base, chantierId: '  chantier-durand  ' });
+    expect(assigned.ok).toBe(true);
+    if (assigned.ok) {
+      expect(assigned.value.chantierId).toBe('chantier-durand');
+      expect(assigned.value.toProps().chantierId).toBe('chantier-durand');
+    }
+
+    const blank = Expense.record({ ...base, chantierId: '   ' });
+    expect(blank.ok).toBe(false);
+    if (!blank.ok) expect(blank.error).toMatchObject({ code: 'VALIDATION', field: 'chantierId' });
+  });
+
+  it('rehydrate une ligne historique sans chantierId : null partout, jamais de crash', () => {
+    const historical = Expense.rehydrate(base);
+    expect(historical.chantierId).toBeNull();
+    expect(historical.toProps().chantierId).toBeNull();
+  });
+});
+
+describe('Expense.assignToChantier (imputation rentabilité par chantier)', () => {
+  it('pose le lien (normalisé), idempotent sur la même cible, refuse un id blanc', () => {
+    const e = Expense.rehydrate(base);
+
+    const assigned = e.assignToChantier('  chantier-durand  ');
+    expect(assigned.ok && assigned.value.changed).toBe(true);
+    expect(e.chantierId).toBe('chantier-durand');
+
+    // Ré-imputer le MÊME chantier : aucun changement (retry sûr, pas d'écriture fantôme).
+    const replay = e.assignToChantier('chantier-durand');
+    expect(replay.ok && replay.value.changed).toBe(false);
+    expect(e.chantierId).toBe('chantier-durand');
+
+    const blank = e.assignToChantier('   ');
+    expect(blank.ok).toBe(false);
+    if (!blank.ok) expect(blank.error).toMatchObject({ code: 'VALIDATION', field: 'chantierId' });
+    expect(e.chantierId).toBe('chantier-durand'); // le lien en place n'a pas bougé
+  });
+
+  it('ré-impute vers un AUTRE chantier (geste explicite, pas d’écrasement silencieux côté dépense)', () => {
+    const e = Expense.rehydrate({ ...base, chantierId: 'chantier-durand' });
+    const moved = e.assignToChantier('chantier-martin');
+    expect(moved.ok && moved.value.changed).toBe(true);
+    expect(e.chantierId).toBe('chantier-martin');
+  });
+
+  it('délie avec null EXPLICITE ; délier une dépense déjà hors chantier ne change rien', () => {
+    const e = Expense.rehydrate({ ...base, chantierId: 'chantier-durand' });
+
+    const unlinked = e.assignToChantier(null);
+    expect(unlinked.ok && unlinked.value.changed).toBe(true);
+    expect(e.chantierId).toBeNull();
+    expect(e.toProps().chantierId).toBeNull();
+
+    const replay = e.assignToChantier(null);
+    expect(replay.ok && replay.value.changed).toBe(false);
+  });
+
+  it('fonctionne aussi sur une ligne HISTORIQUE réhydratée sans le champ (undefined ≡ null)', () => {
+    const historical = Expense.rehydrate(base); // chantierId absent
+    const noop = historical.assignToChantier(null);
+    expect(noop.ok && noop.value.changed).toBe(false); // undefined ≡ null : rien à délier
+    const assigned = historical.assignToChantier('chantier-durand');
+    expect(assigned.ok && assigned.value.changed).toBe(true);
+    expect(historical.chantierId).toBe('chantier-durand');
+  });
 });

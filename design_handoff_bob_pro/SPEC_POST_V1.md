@@ -57,6 +57,22 @@ re-review flag).
    réponse vocale possible (« oui, pose du ballon finie » → coche/note proposée).
 3. CRA VOCAL (métiers IT/conseil — vécu fondateur) : compte-rendu quotidien de mission
    (temps passé, fait/à faire) dicté ; export mensuel (client/facturation au temps).
+4. AVENANTS (réflexion fondateur 19/07) : en BTP, l'avenant est le document contractuel
+   qui MODIFIE un marché/devis signé (travaux supplémentaires, prix, délais), signé par
+   les deux parties — juridiquement ce n'est ni un nouveau devis ni un avoir. Cible Bob :
+   « Avenant n°N au devis {ref} » = document dérivé du devis signé (lignes ajoutées/
+   modifiées, delta de prix), circuit de signature réutilisé (sign-web), la facturation
+   finale agrège devis + avenants signés. Vocal : « le client veut ajouter la reprise du
+   mur, fais un avenant ». PRÉ-REQUIS : rien en V1 (le gel s'applique) — l'avoir couvre
+   les corrections, l'avenant couvre les EXTENSIONS de marché.
+5. VERTICAL « ENTREPRISE DU BÂTIMENT » (vision fondateur 19/07 — produit dérivé possible,
+   à brainstormer) : multi-utilisateurs (patron + salariés/conducteurs de travaux),
+   rôles et permissions par chantier, pointage/planning équipes, situations de travaux
+   (facturation à l'avancement — norme BTP), sous-traitance (contrats, autoliquidation
+   TVA), coopération temps réel. IMPACT ARCHI MAJEUR : RLS multi-rôles par tenant
+   (aujourd'hui 1 tenant = 1 utilisateur), offline chantier, sync. Décision à prendre
+   post-V1 : extension de Bob Pro (plan « Équipe ») OU produit sœur sur le même core —
+   les use cases purs et le domaine restent réutilisables tels quels dans les deux cas.
 4. IA DE FORMATAGE DE NOTES : modèle PREMIUM (le plus intelligent dispo du provider
    retenu) AVEC OUTILS — décide seul : checklist/to-dos, résumé, structuration — c'est
    une application directe de la boucle agentique NLU (mêmes patterns, mêmes planchers).

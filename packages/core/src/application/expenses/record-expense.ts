@@ -1,8 +1,9 @@
 import { type Result, ok, err } from '../../shared-kernel/result';
 import { parisDateOnly } from '../../shared-kernel/time';
-import { type AppError, appDomain } from '../result';
+import { type AppError, appDomain, appNotFound } from '../result';
 import { type IdGeneratorPort, type ClockPort } from '../ports/services';
 import { type ExpenseRepository } from '../ports/repositories';
+import { type DocumentLinkTargetPort } from '../ports/document-link-target';
 import { Expense, type ExpenseCategory, type ExpenseSource } from '../../domain/expense/expense';
 import { type PaymentMethod } from '../../domain/payment/payment';
 
@@ -41,6 +42,13 @@ export interface RecordExpenseInput {
   dueAt?: string | null;
   /** Présent → la dépense est créée PAYÉE avec cette preuve ; absent/null → « à payer ». */
   payment?: RecordExpensePaymentDeclaration | null;
+  /**
+   * Chantier d'imputation (rentabilité par chantier) — OPTIONNEL, additif : le flux scan le
+   * pose directement quand la destination chantier est choisie. Fourni, il est PROUVÉ dans le
+   * tenant via `deps.chantierTargets` (anti-IDOR) avant toute persistance ; absent/null →
+   * dépense hors chantier (comportement historique intact).
+   */
+  chantierId?: string | null;
 }
 
 /**
@@ -61,6 +69,9 @@ export function canonicalRecordExpensePayload(input: Omit<RecordExpenseInput, 'c
     source: input.source ?? 'manual',
     supplierInvoiceNumber: input.supplierInvoiceNumber?.trim() || null,
     dueAt: input.dueAt ?? null,
+    // Additif (même doctrine que `payment`) : la clé n'apparaît que si un chantier est visé,
+    // pour que l'empreinte d'une création hors chantier reste identique aux versions antérieures.
+    ...(input.chantierId?.trim() ? { chantierId: input.chantierId.trim() } : {}),
     // Additif : la clé n'apparaît que si un règlement est déclaré, afin que l'empreinte
     // d'une création « à payer » reste identique à celle des versions antérieures
     // (un retry qui traverse un déploiement ne doit jamais devenir un faux conflit).
@@ -81,6 +92,13 @@ export interface RecordExpenseDeps {
   expenses: ExpenseRepository;
   ids: IdGeneratorPort;
   clock: ClockPort;
+  /**
+   * Preuve d'existence tenant-scoped du chantier visé (anti-IDOR, même port que le coffre —
+   * cf. ClassifyDocument). OPTIONNELLE pour la compat des câblages existants, mais REQUISE dès
+   * qu'un `chantierId` est fourni : sans port, la création avec chantier échoue (fail-closed,
+   * jamais un lien non vérifié en base).
+   */
+  chantierTargets?: DocumentLinkTargetPort;
 }
 
 /** Enregistre une dépense fournisseur (saisie manuelle ou confirmation d'une extraction OCR). */
@@ -115,11 +133,30 @@ export class RecordExpense {
       source: input.source ?? 'manual',
       supplierInvoiceNumber: input.supplierInvoiceNumber ?? null,
       dueAt: input.dueAt ?? null,
+      chantierId: input.chantierId ?? null,
       // Borne « documentDate dans le futur » : jour MÉTIER Europe/Paris, pas l'UTC brut — une
       // pièce datée d'aujourd'hui (Paris) saisie entre minuit et ~2 h serait sinon rejetée
       // (même correction que RecordExpensePayment / GetCashflow « Audit correction 3 »).
     }, { today: parisDateOnly(this.deps.clock.now()) });
     if (!r.ok) return err(appDomain(r.error));
+    // Anti-IDOR : un chantier visé doit être PROUVÉ dans le tenant AVANT toute persistance.
+    // Fail-closed : chantierId fourni sans port câblé = refus (jamais de lien non vérifié).
+    const chantierId = r.value.chantierId;
+    if (chantierId !== null) {
+      if (!this.deps.chantierTargets) {
+        return err({
+          kind: 'dependency',
+          port: 'DocumentLinkTargetPort',
+          cause: 'chantierId fourni sans port de vérification tenant (chantierTargets) : imputation refusée.',
+        });
+      }
+      const exists = await this.deps.chantierTargets.exists({
+        companyId: input.companyId,
+        linkedEntityType: 'chantier',
+        linkedEntityId: chantierId,
+      });
+      if (!exists) return err(appNotFound('chantier', chantierId));
+    }
     await this.deps.expenses.save(r.value);
     return ok({ id });
   }

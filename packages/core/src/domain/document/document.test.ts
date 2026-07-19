@@ -101,6 +101,99 @@ describe('Document', () => {
   });
 });
 
+describe('Document.classify — garde anti-écrasement du lien métier', () => {
+  function unlinked(over: Partial<DocumentProps> = {}): Document {
+    const r = Document.record(props({ linkedEntityType: null, linkedEntityId: null, ...over }));
+    if (!r.ok) throw new Error(`fixture invalide: ${JSON.stringify(r.error)}`);
+    return r.value;
+  }
+
+  it('classe un document non lié (mutation + révision) puis reste idempotent sur le lien IDENTIQUE', () => {
+    const doc = unlinked();
+
+    const first = doc.classify({ linkedEntityType: 'expense', linkedEntityId: '  exp-1  ' });
+    expect(first.ok).toBe(true);
+    expect(doc.toProps()).toMatchObject({ linkedEntityType: 'expense', linkedEntityId: 'exp-1', revision: 2 });
+
+    // Re-lien strictement identique (les retries clients s'appuient dessus) : ok, zéro révision fantôme.
+    const replay = doc.classify({ linkedEntityType: 'expense', linkedEntityId: 'exp-1' });
+    expect(replay.ok).toBe(true);
+    expect(doc.revision).toBe(2);
+  });
+
+  it('REFUSE un lien DIFFÉRENT quand un lien existe : DOCUMENT_ALREADY_LINKED avec les deux liens, état intact', () => {
+    const doc = unlinked();
+    expect(doc.classify({ linkedEntityType: 'expense', linkedEntityId: 'exp-1' }).ok).toBe(true);
+
+    const overwrite = doc.classify({ linkedEntityType: 'chantier', linkedEntityId: 'chantier-2' });
+    expect(overwrite.ok).toBe(false);
+    if (!overwrite.ok) {
+      expect(overwrite.error).toMatchObject({
+        code: 'DOCUMENT_ALREADY_LINKED',
+        documentId: 'doc-1',
+        existing: { linkedEntityType: 'expense', linkedEntityId: 'exp-1' },
+        requested: { linkedEntityType: 'chantier', linkedEntityId: 'chantier-2' },
+      });
+      // Le message porte les DEUX liens (existant vs demandé) — exploitable tel quel par l'UI/Bob.
+      if (overwrite.error.code === 'DOCUMENT_ALREADY_LINKED') {
+        expect(overwrite.error.message).toContain('expense/exp-1');
+        expect(overwrite.error.message).toContain('chantier/chantier-2');
+      }
+    }
+    // Aucune réécriture silencieuse : lien et révision strictement intacts.
+    expect(doc.toProps()).toMatchObject({ linkedEntityType: 'expense', linkedEntityId: 'exp-1', revision: 2 });
+  });
+
+  it('refuse aussi un MÊME type avec un autre id, et un autre type avec le même id', () => {
+    const sameTypeOtherId = Document.record(props()); // lié expense/exp-1 dès l'enregistrement
+    expect(sameTypeOtherId.ok).toBe(true);
+    if (sameTypeOtherId.ok) {
+      const r = sameTypeOtherId.value.classify({ linkedEntityType: 'expense', linkedEntityId: 'exp-2' });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe('DOCUMENT_ALREADY_LINKED');
+    }
+
+    const otherTypeSameId = Document.record(props());
+    expect(otherTypeSameId.ok).toBe(true);
+    if (otherTypeSameId.ok) {
+      const r = otherTypeSameId.value.classify({ linkedEntityType: 'chantier', linkedEntityId: 'exp-1' });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe('DOCUMENT_ALREADY_LINKED');
+    }
+  });
+
+  it('le re-lien identique sur un document DÉJÀ lié à l’enregistrement reste idempotent', () => {
+    const r = Document.record(props()); // lié expense/exp-1
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const replay = r.value.classify({ linkedEntityType: 'expense', linkedEntityId: ' exp-1 ' });
+    expect(replay.ok).toBe(true);
+    expect(r.value.revision).toBe(1); // aucune écriture fantôme
+  });
+
+  it('conserve les gardes existantes : doc supprimé, type inconnu, id vide', () => {
+    const deleted = Document.record(props({ status: 'deleted', deletedAt: '2026-06-02T10:00:00.000Z' }));
+    expect(deleted.ok).toBe(true);
+    if (deleted.ok) {
+      const r = deleted.value.classify({ linkedEntityType: 'expense', linkedEntityId: 'exp-9' });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe('INVALID_TRANSITION');
+    }
+
+    const doc = unlinked();
+    const unknownType = doc.classify({
+      linkedEntityType: 'inconnu' as unknown as 'expense',
+      linkedEntityId: 'exp-1',
+    });
+    expect(unknownType.ok).toBe(false);
+    if (!unknownType.ok) expect(unknownType.error).toMatchObject({ code: 'VALIDATION', field: 'linkedEntityType' });
+
+    const blankId = doc.classify({ linkedEntityType: 'expense', linkedEntityId: '   ' });
+    expect(blankId.ok).toBe(false);
+    if (!blankId.ok) expect(blankId.error).toMatchObject({ code: 'VALIDATION', field: 'linkedEntityId' });
+  });
+});
+
 describe('Document — displayName (libellé d’affichage, filename immuable)', () => {
   it('défaut : le libellé reprend le filename ; fourni : il est validé et normalisé', () => {
     const byDefault = Document.record(props());

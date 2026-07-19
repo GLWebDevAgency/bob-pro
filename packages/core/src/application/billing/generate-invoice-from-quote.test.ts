@@ -226,6 +226,29 @@ describe('GenerateInvoiceFromQuote', () => {
     expect(final?.depositDeductionCents).toBe(36000);
   });
 
+  // ── B8 : REPRISE AUTOMATIQUE du bon de commande au point de dérivation devis → facture ──
+
+  it('B8 : la facture générée REPREND le bon de commande du devis (source unique, jamais re-saisi)', async () => {
+    const po = { number: 'BC-RATP-4500123456', receivedAt: '2026-06-01T09:00:00.000Z', documentId: 'doc-bc' };
+    const quote = QuoteAggregate.rehydrate({ ...signedQuote().toSnapshot(), purchaseOrder: po, revision: 2 });
+    const env = makeEnv({ quote });
+
+    const deposit = await env.usecase.execute({ quoteId: quote.id, mode: 'deposit' });
+    const final = await env.usecase.execute({ quoteId: quote.id, mode: 'final' });
+    expect(deposit.ok && final.ok).toBe(true);
+    if (!deposit.ok || !final.ok) return;
+    expect((await env.invoices.findById(deposit.value.invoiceId))?.purchaseOrder).toEqual(po);
+    expect((await env.invoices.findById(final.value.invoiceId))?.purchaseOrder).toEqual(po);
+  });
+
+  it('B8 : devis sans bon de commande -> factures dérivées sans bon de commande (compat)', async () => {
+    const env = makeEnv();
+    const generated = await env.usecase.execute({ quoteId: env.quote.id, mode: 'final' });
+    expect(generated.ok).toBe(true);
+    if (!generated.ok) return;
+    expect((await env.invoices.findById(generated.value.invoiceId))?.purchaseOrder).toBeNull();
+  });
+
   // ── R3 : chaque intention porte un mode explicite. Un retry HTTP rejoue exactement le même
   //    effet ; il ne peut jamais interpréter « prochain pas » et créer une autre pièce fiscale. ──
 

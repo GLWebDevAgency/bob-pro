@@ -11,9 +11,14 @@
  * · les facts détaillés avec provenance (« Lu · X % ») vivent dans la section Traçabilité
  *   REPLIÉE (accordéon) — plus de bruit en vue principale, la preuve reste accessible ;
  * · GET /documents/:id est ENRICHI (analysis/extraction du cache serveur) : AUCUN POST
- *   /analysis au montage quand le cache est là — le fallback mutation reste si absent.
+ *   /analysis au montage quand le cache est là — le fallback mutation reste si absent ;
+ * · Rangement : « Lier à un chantier » (doc SANS lien métier) — affordance MANUELLE du geste
+ *   vocal classer_document (même use case ClassifyDocument, parité humain↔Bob) : feuille des
+ *   chantiers OUVERTS réels (suggestion d'analyse en tête), confirmation explicite, toast ;
+ *   lien déjà posé → état lecture « Chantier · {nom} » (ouvre le chantier, pas de déliaison).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Image, Linking, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -40,9 +45,12 @@ import {
   smartDocumentTitle,
 } from '../../src/documents/document-insight-card.logic';
 import { useApplyDestination } from '../../src/documents/use-apply-destination';
+import { linkChantierOptions, linkedChantierName } from '../../src/documents/link-chantier-options';
+import { useChantiers } from '../../src/data/hooks';
 import { useTheme } from '../../src/theme';
 import { Button, Card, SectionHeader, font } from '../../src/components/ui';
-import { ErrorRetry, Sheet, Skeleton, SkeletonCard, SkeletonRow } from '@bob/ui';
+import { ErrorRetry, IconTile, PressableScale, QuestionSheet, Sheet, Skeleton, SkeletonCard, SkeletonRow, Toast } from '@bob/ui';
+import { ChevronRightIcon, FolderSmallIcon } from '../../src/components/icons';
 import { useBobAwareScrollInsets } from '../../src/components/use-bob-aware-scroll-insets';
 
 function bytesLabel(value: number): string {
@@ -117,6 +125,47 @@ export default function DocumentDetailScreen() {
     foldersReady: rootFolders.data !== undefined,
     rootFolders: rootFolders.data,
     onFilingRequested: () => openMoveSheet(),
+  });
+
+  // « Lier à un chantier » — chantiers réels chargés seulement quand le geste (ou l'état
+  // lecture « Chantier · {nom} ») peut exister : doc sans lien métier, ou déjà lié chantier.
+  const documentLinkedType = document.data?.linkedEntityType ?? null;
+  const chantiers = useChantiers(
+    document.data !== undefined && (documentLinkedType === null || documentLinkedType === 'chantier'),
+  );
+  const [linkOpen, setLinkOpen] = useState(false);
+  const [linkToast, setLinkToast] = useState<string | null>(null);
+  const [linkError, setLinkError] = useState(false);
+  const queryClient = useQueryClient();
+  // MÊME use case que la voix (classer_document) et le picker A8 : ClassifyDocument
+  // linkedEntityType 'chantier' — anti-IDOR et pose de reviewedAt côté core, zéro logique locale.
+  const linkChantier = useMutation({
+    mutationFn: async (input: {
+      documentId: string;
+      chantierId: string;
+      chantierName: string;
+      expectedRevision: number;
+    }) => {
+      const result = await client.classifyDocument({
+        documentId: input.documentId,
+        linkedEntityType: 'chantier',
+        linkedEntityId: input.chantierId,
+        expectedRevision: input.expectedRevision,
+      });
+      if (!result.ok) throw result.error;
+      return { chantierName: input.chantierName };
+    },
+    onSuccess: (result) => {
+      setLinkToast(t('docs.linkChantierToast', { personality, params: { name: result.chantierName } }));
+      void queryClient.invalidateQueries({ queryKey: ['documents'] });
+      void queryClient.invalidateQueries({ queryKey: ['document', documentId] });
+    },
+    onError: () => {
+      // Conflit de révision ou chantier disparu : données réactualisées, message honnête —
+      // rien n'est écrasé (le CAS du use case refuse tout lien sur une version périmée).
+      setLinkError(true);
+      void document.refetch();
+    },
   });
 
   useEffect(() => {
@@ -355,6 +404,12 @@ export default function DocumentDetailScreen() {
   // Un doc non rangé (folderId null) ne se « confirme » pas : reviewedAt le sortirait de la
   // file sans le placer dans aucun dossier — pièce orpheline. Ici, le seul CTA reste « Classer ».
   const needsConfirmation = documentNeedsHumanReview(item) && item.folderId !== null;
+  // Chantiers OUVERTS réels + suggestion d'analyse validée (logique pure, jamais un id inventé).
+  const linkSuggestionId = insightDestination?.kind === 'chantier' ? insightDestination.chantierId : null;
+  const linkOptions = linkChantierOptions(chantiers.data ?? [], linkSuggestionId);
+  const linkedChantier = item.linkedEntityType === 'chantier'
+    ? linkedChantierName(chantiers.data ?? [], item.linkedEntityId)
+    : null;
 
   const confirmDocument = (): void => {
     if (acknowledge.isPending) return;
@@ -585,6 +640,61 @@ export default function DocumentDetailScreen() {
         <View style={{ marginTop: 12 }}>
           <Button title="Déplacer dans un dossier" variant="secondary" onPress={openMoveSheet} />
         </View>
+        {/* Lien métier chantier — ligne sœur discrète du rangement (demande fondateur) :
+            · doc SANS lien → « Lier à un chantier » (feuille des chantiers ouverts réels) ;
+            · doc déjà lié chantier → état LECTURE « Chantier · {nom} », ouvre le chantier —
+              pas de changement ni de déliaison en V1 (aucun geste dédié côté domaine) ;
+            · doc lié à une autre entité (dépense, facture…) → rien : on n'écrase jamais. */}
+        {item.linkedEntityType === null && linkOptions.length > 0 ? (
+          <>
+            <View style={{ height: 1, backgroundColor: colors.lineSoft, marginTop: 14 }} />
+            <PressableScale
+              accessibilityRole="button"
+              accessibilityLabel={t('docs.linkChantierCta', { personality })}
+              disabled={linkChantier.isPending}
+              onPress={() => {
+                setLinkError(false);
+                setLinkOpen(true);
+              }}
+              style={{ minHeight: 48, flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 8 }}
+            >
+              <IconTile tone="b2b" size={40} radius={12}>
+                <FolderSmallIcon color={semantic.b2b} size={19} />
+              </IconTile>
+              <Text style={[font('sub'), { color: colors.ink900, flex: 1, fontWeight: '700' }]}>
+                {t('docs.linkChantierCta', { personality })}
+              </Text>
+              <ChevronRightIcon color={colors.slate300} size={14} strokeWidth={2} />
+            </PressableScale>
+          </>
+        ) : item.linkedEntityType === 'chantier' ? (
+          <>
+            <View style={{ height: 1, backgroundColor: colors.lineSoft, marginTop: 14 }} />
+            <PressableScale
+              accessibilityRole="button"
+              accessibilityLabel={linkedChantier !== null
+                ? t('docs.linkChantierLinkedA11y', { personality, params: { name: linkedChantier } })
+                : t('docs.linkChantierLinkedUnknown', { personality })}
+              onPress={() => router.push(`/chantier/${item.linkedEntityId}`)}
+              style={{ minHeight: 48, flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 8 }}
+            >
+              <IconTile tone="b2b" size={40} radius={12}>
+                <FolderSmallIcon color={semantic.b2b} size={19} />
+              </IconTile>
+              <Text style={[font('sub'), { color: colors.ink900, flex: 1, fontWeight: '700' }]} numberOfLines={1}>
+                {linkedChantier !== null
+                  ? t('docs.linkChantierLinked', { personality, params: { name: linkedChantier } })
+                  : t('docs.linkChantierLinkedUnknown', { personality })}
+              </Text>
+              <ChevronRightIcon color={colors.slate300} size={14} strokeWidth={2} />
+            </PressableScale>
+          </>
+        ) : null}
+        {linkError ? (
+          <Text accessibilityRole="alert" style={[font('sub'), { color: semantic.danger, lineHeight: 19, marginTop: 10 }]}>
+            {t('docs.linkChantierError', { personality })}
+          </Text>
+        ) : null}
       </Card>
 
       <View style={{ marginTop: 20 }}>
@@ -810,6 +920,46 @@ export default function DocumentDetailScreen() {
           </View>
         </View>
       </Sheet>
+
+      {/* Sélection du chantier — chantiers OUVERTS réels, suggestion d'analyse en tête,
+          choix unique CONFIRMÉ (confirmSingle, pattern scan) : plus aucun lien au tap sec. */}
+      <QuestionSheet
+        visible={linkOpen}
+        header={t('docs.linkChantierHeader', { personality })}
+        question={t('docs.linkChantierQuestion', { personality })}
+        options={linkOptions.map((option) => ({
+          value: option.chantierId,
+          label: option.name,
+          description: option.suggested
+            ? t('docs.linkChantierSuggestedDesc', { personality })
+            : t('docs.pickChantierMeta', { personality }),
+        }))}
+        confirmSingle
+        confirmLabel={t('docs.linkChantierConfirm', { personality })}
+        otherLabel={t('docs.linkChantierLater', { personality })}
+        onClose={() => setLinkOpen(false)}
+        onSelect={(values) => {
+          const picked = linkOptions.find((option) => option.chantierId === values[0]);
+          if (!picked || linkChantier.isPending) return;
+          // La feuille se ferme d'abord (pattern scan), puis le lien s'exécute — le CAS de
+          // révision du use case refuse tout écrasement si le document a changé entre-temps.
+          setLinkOpen(false);
+          linkChantier.mutate({
+            documentId: item.id,
+            chantierId: picked.chantierId,
+            chantierName: picked.name,
+            expectedRevision: item.revision,
+          });
+        }}
+        onOther={() => setLinkOpen(false)}
+      />
+
+      <Toast
+        message={linkToast ?? ''}
+        visible={linkToast !== null}
+        onHide={() => setLinkToast(null)}
+        icon={<Ionicons name="checkmark" size={16} color={colors.surface} />}
+      />
     </>
   );
 }

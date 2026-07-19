@@ -283,6 +283,32 @@ describe('detectIntent — chercher_document (« retrouve la facture du radiateu
   });
 });
 
+describe('detectIntent — lier_bon_commande (B8 : « la RATP m’a envoyé un bon de commande »)', () => {
+  it('reconnaît le lien bon de commande AVANT scan/documents/envoyer_devis/nouveau_devis', () => {
+    for (const m of [
+      'La RATP m’a répondu pour le dernier devis avec un bon de commande',
+      'La RATP m’a envoyé un bon de commande n° 4500123',
+      'Ajoute le bon de commande BC-2207 au devis de Durand',
+      'J’ai reçu un bon de commande de la mairie, je l’ai scanné',
+      'Note le numéro d’engagement 4500123 sur le devis Durand',
+    ]) {
+      expect(detectIntent(m)).toBe('lier_bon_commande');
+    }
+  });
+
+  it('ne cannibalise ni les gestes documentaires, ni les voisins, ni la négation', () => {
+    // Un geste documentaire EXPLICITE sur le bon de commande scanné reste un geste documentaire.
+    expect(detectIntent('Classe le bon de commande dans le dossier Achats')).toBe('classer_document');
+    expect(detectIntent('Range le bon de commande scanné dans Achats')).toBe('classer_document');
+    expect(detectIntent('Cherche le bon de commande de mars')).not.toBe('lier_bon_commande');
+    // Négation : aucune action proposée.
+    expect(detectIntent('N’ajoute pas le bon de commande au devis')).not.toBe('lier_bon_commande');
+    // Les voisins restent eux-mêmes.
+    expect(detectIntent('Envoie le devis à la RATP')).toBe('envoyer_devis');
+    expect(detectIntent('Fais la facture du devis D2026-030')).toBe('generer_facture');
+  });
+});
+
 describe('detectIntent — aide (découvrabilité S9 : catalogue des capacités)', () => {
   it('reconnaît les questions sur les capacités de Bob', () => {
     for (const m of [

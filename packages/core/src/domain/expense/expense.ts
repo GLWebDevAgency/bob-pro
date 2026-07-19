@@ -76,6 +76,13 @@ export interface ExpenseProps {
   supplierInvoiceNumber?: string | null;
   /** Échéance de paiement fournisseur (Factur-X BT-9) — OPTIONNEL (additif). */
   dueAt?: DateOnly | null;
+  /**
+   * Chantier auquel la dépense est imputée (rentabilité par chantier). OPTIONNEL (additif) :
+   * null/absent = dépense hors chantier (carte société, abonnement…) — les lignes historiques
+   * restent valides telles quelles. L'existence tenant du chantier est prouvée par l'APPELANT
+   * (port de vérification, anti-IDOR) : le domaine ne garantit que la forme du lien.
+   */
+  chantierId?: string | null;
 }
 
 const isInt = (n: unknown): n is number => typeof n === 'number' && Number.isInteger(n);
@@ -200,13 +207,21 @@ export class Expense {
     const dueAt = props.dueAt ?? null;
     if (dueAt !== null && !isValidDateOnly(dueAt))
       return err({ code: 'VALIDATION', field: 'dueAt', message: 'Échéance invalide.' });
+    // Chantier — optionnel (additif) : fourni, il doit désigner quelque chose (jamais un blanc).
+    const rawChantierId = props.chantierId ?? null;
+    let chantierId: string | null = null;
+    if (rawChantierId !== null) {
+      chantierId = rawChantierId.trim();
+      if (!chantierId)
+        return err({ code: 'VALIDATION', field: 'chantierId', message: 'Chantier de rattachement invalide.' });
+    }
     let supplierSiren: string | null = null;
     if (props.supplierSiren) {
       const s = Siren.of(props.supplierSiren);
       if (!s.ok) return s;
       supplierSiren = s.value.value;
     }
-    return ok(new Expense({ ...props, supplierName, supplierSiren, paymentEvidence, supplierInvoiceNumber, dueAt }));
+    return ok(new Expense({ ...props, supplierName, supplierSiren, paymentEvidence, supplierInvoiceNumber, dueAt, chantierId }));
   }
 
   /** Réhydratation depuis le stockage (données déjà validées) — ne rejette jamais une ligne persistée. */
@@ -246,6 +261,28 @@ export class Expense {
   }
   get dueAt(): DateOnly | null {
     return this.p.dueAt ?? null;
+  }
+  /** Chantier d'imputation — null = dépense hors chantier (défaut, lignes historiques comprises). */
+  get chantierId(): string | null {
+    return this.p.chantierId ?? null;
+  }
+
+  /**
+   * Impute la dépense à un chantier — ou la délie (null EXPLICITE, geste légitime pour une
+   * dépense, contrairement au lien documentaire). Idempotent : ré-imputer le même chantier
+   * (ou délier une dépense déjà hors chantier) ne change rien (`changed: false`).
+   * L'existence tenant du chantier cible relève de l'APPELANT (port de vérification, anti-IDOR).
+   */
+  assignToChantier(chantierId: string | null): DomainResult<{ changed: boolean }> {
+    let next: string | null = null;
+    if (chantierId !== null) {
+      next = chantierId.trim();
+      if (!next)
+        return err({ code: 'VALIDATION', field: 'chantierId', message: 'Chantier de rattachement invalide.' });
+    }
+    if ((this.p.chantierId ?? null) === next) return ok({ changed: false });
+    this.p.chantierId = next;
+    return ok({ changed: true });
   }
 
   recordPayment(
@@ -315,6 +352,8 @@ export class Expense {
     return {
       ...this.p,
       paymentEvidence: this.p.paymentEvidence ? { ...this.p.paymentEvidence } : null,
+      // Projection : chantierId TOUJOURS explicite (null pour les lignes historiques sans le champ).
+      chantierId: this.p.chantierId ?? null,
     };
   }
 }

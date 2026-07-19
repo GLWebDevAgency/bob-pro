@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { buildFacturXBasicXml, facturXDataFromInvoice, frenchVatNumber, type FacturXInvoiceData } from './facturx';
+import { makePurchaseOrderRef } from '../billing/shared/purchase-order-ref';
 import { Invoice } from '../billing/invoice/invoice';
 import { Company } from '../company/company';
 import { DocNumber } from '../billing/shared/doc-number';
@@ -83,6 +84,14 @@ describe('buildFacturXBasicXml — sérialisation CII BASIC', () => {
     expect(xml).toContain('<ram:DuePayableAmount>88.50</ram:DuePayableAmount>');
   });
 
+  it('B8 — BT-13 : émet BuyerOrderReferencedDocument avec le numéro d’engagement, échappé ; jamais sans BC', () => {
+    const xml = buildFacturXBasicXml({ ...baseData(), purchaseOrderReference: 'BC <4500123>' });
+    expect(xml).toContain('<ram:BuyerOrderReferencedDocument>');
+    expect(xml).toContain('<ram:IssuerAssignedID>BC &lt;4500123&gt;</ram:IssuerAssignedID>');
+    // Sans bon de commande, l'élément est ABSENT (jamais une valeur inventée ou vide).
+    expect(buildFacturXBasicXml(baseData())).not.toContain('BuyerOrderReferencedDocument');
+  });
+
   it('franchise en base : catégorie E + motif 293 B, pas de TVA', () => {
     const d = baseData();
     delete d.seller.vatId;
@@ -148,6 +157,28 @@ describe('facturXDataFromInvoice — mapping depuis l’agrégat', () => {
     expect(b0.exemptionReason).toContain('293 B');
     expect(data.seller.vatId).toBeUndefined();
     expect(data.lines[0]!).toMatchObject({ vatCategory: 'E', vatRatePct: 0 });
+  });
+
+  it('B8 : le numéro d’engagement porté par la facture voyage en BT-13 — absent sans bon de commande', () => {
+    const company = seedCompany();
+    const inv = (Invoice.composeStandalone({ id: 'inv-po', companyId: company.id, customerId: 'cust1' }) as { ok: true; value: Invoice }).value;
+    inv.addLine({ id: 'l1', label: 'Pose chaudière', category: 'labor', qty: 1, unitPriceHT: 10000, vatRate: 20 });
+    const ref = makePurchaseOrderRef({ number: '4500123' });
+    if (!ref.ok) throw new Error('Référence de bon de commande de test invalide.');
+    const attached = inv.attachPurchaseOrder(ref.value, '2026-06-29T09:00:00Z');
+    if (!attached.ok) throw new Error('Attachement de test refusé.');
+    issueForFacturX(inv, 9);
+
+    const data = facturXDataFromInvoice(inv, company, { name: 'RATP', address: { line1: '54 quai de la Rapée', zip: '75012', city: 'Paris' } });
+    expect(data.purchaseOrderReference).toBe('4500123');
+    expect(buildFacturXBasicXml(data)).toContain('<ram:IssuerAssignedID>4500123</ram:IssuerAssignedID>');
+
+    // Sans bon de commande : la référence n'est JAMAIS inventée.
+    const bare = (Invoice.composeStandalone({ id: 'inv-sans-po', companyId: company.id, customerId: 'cust1' }) as { ok: true; value: Invoice }).value;
+    bare.addLine({ id: 'l1', label: 'Joint', category: 'supply', qty: 1, unitPriceHT: 5000, vatRate: 10 });
+    issueForFacturX(bare, 10);
+    const bareData = facturXDataFromInvoice(bare, company, { name: 'Client', address: { line1: 'x', zip: '75001', city: 'Paris' } });
+    expect(bareData.purchaseOrderReference).toBeUndefined();
   });
 
   it('refuse une facture brouillon au lieu de fabriquer un numéro et une date', () => {

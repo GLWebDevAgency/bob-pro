@@ -87,6 +87,14 @@ describe('classifyWithLlm (tool-calling -> plan)', () => {
     expect(r.steps[2]?.reference).toBe('radiateur');
   });
 
+  it('mappe l’outil lier_bon_commande (B8) avec sa référence', async () => {
+    const r = await classifyWithLlm(
+      fakeLlm({ text: null, toolCalls: [{ name: 'lier_bon_commande', arguments: { reference: 'RATP' } }], model: 'glm' }),
+      'la RATP m’a envoyé un bon de commande n° 4500123',
+    );
+    expect(r.steps).toEqual([{ intent: 'lier_bon_commande', reference: 'RATP' }]);
+  });
+
   it('mappe séparément le batch « notifications lues »', async () => {
     const r = await classifyWithLlm(
       fakeLlm({

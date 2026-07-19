@@ -126,6 +126,11 @@ import type {
   SearchSalesDocumentsClientInput,
   QuoteDraftSlotView,
   SaveQuoteDraftClientInput,
+  AttachQuotePurchaseOrderClientInput,
+  DetachQuotePurchaseOrderClientInput,
+  AttachInvoicePurchaseOrderClientInput,
+  DetachInvoicePurchaseOrderClientInput,
+  PurchaseOrderMutationView,
 } from './client';
 import {
   decodeDocumentAnalysisForDocument,
@@ -141,6 +146,11 @@ import {
   decodeDocumentListItemsForCompany,
 } from './document-codecs';
 import { decodeExpenseCreation } from './expense-idempotency';
+import {
+  decodePurchaseOrderCarrierList,
+  decodePurchaseOrderCarrierView,
+  decodePurchaseOrderMutation,
+} from './purchase-order-codec';
 import { decodeQuoteCreation } from './quote-idempotency';
 import {
   decodeQuoteDraftDeletion,
@@ -2484,6 +2494,67 @@ export class HttpBobClient implements BobClient {
       `/quotes/${encodeURIComponent(input.quoteId)}/lines/${encodeURIComponent(input.lineId)}`,
     );
   }
+  /** B8 : PUT /quotes/:id/purchase-order — corps plat {number, receivedAt?, documentId?,
+   * expectedRevision}, réponse PurchaseOrderMutationView décodée fail-closed. */
+  attachQuotePurchaseOrder(input: AttachQuotePurchaseOrderClientInput) {
+    return this.req<PurchaseOrderMutationView>(
+      'PUT',
+      `/quotes/${encodeURIComponent(input.quoteId)}/purchase-order`,
+      {
+        number: input.purchaseOrder.number,
+        ...(input.purchaseOrder.receivedAt !== undefined
+          ? { receivedAt: input.purchaseOrder.receivedAt }
+          : {}),
+        ...(input.purchaseOrder.documentId !== undefined
+          ? { documentId: input.purchaseOrder.documentId }
+          : {}),
+        expectedRevision: input.expectedRevision,
+      },
+      undefined,
+      (value) => decodePurchaseOrderMutation(value, { targetType: 'quote', targetId: input.quoteId }),
+    );
+  }
+  /** B8 : DELETE /quotes/:id/purchase-order — seule la révision optimiste voyage. */
+  detachQuotePurchaseOrder(input: DetachQuotePurchaseOrderClientInput) {
+    return this.req<PurchaseOrderMutationView>(
+      'DELETE',
+      `/quotes/${encodeURIComponent(input.quoteId)}/purchase-order`,
+      { expectedRevision: input.expectedRevision },
+      undefined,
+      (value) => decodePurchaseOrderMutation(value, { targetType: 'quote', targetId: input.quoteId }),
+    );
+  }
+  /** B8 : PUT /invoices/:id/purchase-order — facture BROUILLON uniquement (figé à l'émission). */
+  attachInvoicePurchaseOrder(input: AttachInvoicePurchaseOrderClientInput) {
+    return this.req<PurchaseOrderMutationView>(
+      'PUT',
+      `/invoices/${encodeURIComponent(input.invoiceId)}/purchase-order`,
+      {
+        number: input.purchaseOrder.number,
+        ...(input.purchaseOrder.receivedAt !== undefined
+          ? { receivedAt: input.purchaseOrder.receivedAt }
+          : {}),
+        ...(input.purchaseOrder.documentId !== undefined
+          ? { documentId: input.purchaseOrder.documentId }
+          : {}),
+        expectedRevision: input.expectedRevision,
+      },
+      undefined,
+      (value) =>
+        decodePurchaseOrderMutation(value, { targetType: 'invoice', targetId: input.invoiceId }),
+    );
+  }
+  /** B8 : DELETE /invoices/:id/purchase-order. */
+  detachInvoicePurchaseOrder(input: DetachInvoicePurchaseOrderClientInput) {
+    return this.req<PurchaseOrderMutationView>(
+      'DELETE',
+      `/invoices/${encodeURIComponent(input.invoiceId)}/purchase-order`,
+      { expectedRevision: input.expectedRevision },
+      undefined,
+      (value) =>
+        decodePurchaseOrderMutation(value, { targetType: 'invoice', targetId: input.invoiceId }),
+    );
+  }
   /** A6 — endpoint serveur à poser (suivi CLAIMS, même précédent que classifyDocument). */
   createCreditNote(input: { invoiceId: string }) {
     return this.req<{ creditNoteId: string }>('POST', `/invoices/${input.invoiceId}/credit-note`);
@@ -2579,13 +2650,20 @@ export class HttpBobClient implements BobClient {
     );
   }
   getQuote(id: string) {
-    return this.req<QuoteView>('GET', `/quotes/${id}`);
+    // B8 : codec défensif — purchaseOrder absent ⇒ null, revision absente ⇒ 1 (serveur antérieur).
+    return this.req<QuoteView>('GET', `/quotes/${id}`, undefined, undefined, (value) =>
+      decodePurchaseOrderCarrierView<QuoteView>(value),
+    );
   }
   listQuotes() {
-    return this.req<QuoteView[]>('GET', '/quotes');
+    return this.req<QuoteView[]>('GET', '/quotes', undefined, undefined, (value) =>
+      decodePurchaseOrderCarrierList<QuoteView>(value),
+    );
   }
   getInvoice(id: string) {
-    return this.req<InvoiceView>('GET', `/invoices/${id}`);
+    return this.req<InvoiceView>('GET', `/invoices/${id}`, undefined, undefined, (value) =>
+      decodePurchaseOrderCarrierView<InvoiceView>(value),
+    );
   }
   invoiceAccountingPreview(invoiceId: string) {
     return this.req<InvoiceAccountingPreview>(
@@ -2614,7 +2692,9 @@ export class HttpBobClient implements BobClient {
     );
   }
   listInvoices() {
-    return this.req<InvoiceView[]>('GET', '/invoices');
+    return this.req<InvoiceView[]>('GET', '/invoices', undefined, undefined, (value) =>
+      decodePurchaseOrderCarrierList<InvoiceView>(value),
+    );
   }
   searchSalesDocuments(input: SearchSalesDocumentsClientInput) {
     const params = new URLSearchParams();

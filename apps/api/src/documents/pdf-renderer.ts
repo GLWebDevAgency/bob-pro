@@ -112,6 +112,14 @@ export class PdfRenderer implements PdfRendererPort {
     draw(data.customerAddress);
     if (data.issuedAt) draw(`Emise le ${data.issuedAt}`);
     if (data.dueAt) draw(`Echeance : ${data.dueAt}`);
+    // B8 — numéro d'engagement du client (bon de commande) : exigence de paiement des grands
+    // comptes et obligation Chorus Pro. Zone références, sobre, avec la date de réception si connue.
+    if (data.purchaseOrder) {
+      const receivedAt = data.purchaseOrder.receivedAt
+        ? ` du ${data.purchaseOrder.receivedAt.slice(0, 10)}`
+        : '';
+      draw(`Bon de commande n° ${data.purchaseOrder.number}${receivedAt}`);
+    }
     y -= 12;
 
     draw('Designation', 10, bold);

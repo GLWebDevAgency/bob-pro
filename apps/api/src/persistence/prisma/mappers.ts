@@ -23,6 +23,7 @@ import {
   type Totals,
   type Signature,
   type SignatureMethod,
+  type PurchaseOrderRef,
 } from '@bob/core';
 
 const toDateOnly = (d: Date | null): string | null => (d ? d.toISOString().slice(0, 10) : null);
@@ -290,7 +291,47 @@ interface QuoteRow {
   id: string; companyId: string; customerId: string; status: string; number: string | null;
   validUntil: Date | null; depositPct: number | null; signerName: string | null; signedAt: Date | null;
   signatureProof: unknown;
+  purchaseOrderNumber: string | null;
+  purchaseOrderReceivedAt: Date | null;
+  purchaseOrderDocumentId: string | null;
+  revision: number;
   lines: LineRow[];
+}
+
+/** Colonnes B8 partagées quotes/invoices — réhydratation du bon de commande persisté. */
+interface PurchaseOrderColumns {
+  purchaseOrderNumber: string | null;
+  purchaseOrderReceivedAt: Date | null;
+  purchaseOrderDocumentId: string | null;
+}
+
+function purchaseOrderFromRow(row: PurchaseOrderColumns): PurchaseOrderRef | null {
+  if (row.purchaseOrderNumber === null) return null;
+  return {
+    number: row.purchaseOrderNumber,
+    receivedAt: row.purchaseOrderReceivedAt ? row.purchaseOrderReceivedAt.toISOString() : null,
+    documentId: row.purchaseOrderDocumentId,
+  };
+}
+
+/** Écriture write-side des colonnes B8 (repositories.save) — aucune méta sans numéro. */
+export function purchaseOrderToPersistence(ref: PurchaseOrderRef | null | undefined): {
+  purchaseOrderNumber: string | null;
+  purchaseOrderReceivedAt: Date | null;
+  purchaseOrderDocumentId: string | null;
+} {
+  if (!ref) {
+    return {
+      purchaseOrderNumber: null,
+      purchaseOrderReceivedAt: null,
+      purchaseOrderDocumentId: null,
+    };
+  }
+  return {
+    purchaseOrderNumber: ref.number,
+    purchaseOrderReceivedAt: ref.receivedAt ? new Date(ref.receivedAt) : null,
+    purchaseOrderDocumentId: ref.documentId,
+  };
 }
 
 const SIGNATURE_PROOF_METHODS = new Set<SignatureMethod>(['onsite_draw', 'remote_link']);
@@ -352,6 +393,8 @@ export function quoteRowToSnapshot(row: QuoteRow): QuoteSnapshot {
     depositPct: row.depositPct,
     validUntil: toDateOnly(row.validUntil),
     signature: signatureFromQuoteRow(row),
+    purchaseOrder: purchaseOrderFromRow(row),
+    revision: row.revision,
   };
 }
 
@@ -362,7 +405,12 @@ interface InvoiceRow {
   sourceInvoiceIssuedAt: Date | null;
   depositDeductionCents: number; depositInvoiceId: string | null;
   paidCents: number; totalsHt: number; totalsVat: number; totalsTtc: number; totalsNetToPay: number;
-  vatByRate: unknown; legalMentions: string[]; lines: LineRow[];
+  vatByRate: unknown; legalMentions: string[];
+  purchaseOrderNumber: string | null;
+  purchaseOrderReceivedAt: Date | null;
+  purchaseOrderDocumentId: string | null;
+  revision: number;
+  lines: LineRow[];
 }
 
 export function invoiceRowToSnapshot(row: InvoiceRow): InvoiceSnapshot {
@@ -402,5 +450,7 @@ export function invoiceRowToSnapshot(row: InvoiceRow): InvoiceSnapshot {
         : (docKindToInvoiceKind(row.sourceInvoiceKind) as CreditedInvoiceKind),
     sourceInvoiceNumber: row.sourceInvoiceNumber,
     sourceInvoiceIssuedAt: toDateOnly(row.sourceInvoiceIssuedAt),
+    purchaseOrder: purchaseOrderFromRow(row),
+    revision: row.revision,
   };
 }

@@ -1258,6 +1258,242 @@ describe('chercher_document — recherche réelle + navigation (LOT 5)', () => {
   });
 });
 
+describe('lier_bon_commande — B8 : numéro d’engagement grands comptes attaché au devis', () => {
+  const linked: unknown[] = [];
+  const poActions = (over: Partial<BobActions> = {}): BobActions => ({
+    ...actions,
+    // Devis EN COURS du tenant : deux signés facturables (RATP prioritaire, Durand porte déjà
+    // un bon de commande) + un envoyé en attente (RATP) + un brouillon (hors jeu).
+    listInvoiceableQuotes: async () =>
+      ok([
+        { id: 'sign-ratp', number: 'D2026-040', customerName: 'RATP', totalTtcCents: 1250000, depositPct: null, depositInvoiced: false, purchaseOrder: null },
+        { id: 'sign-durand', number: 'D2026-041', customerName: 'Durand SARL', totalTtcCents: 302500, depositPct: null, depositInvoiced: false, purchaseOrder: { number: 'ANC-99', receivedAt: null, documentId: null } },
+      ]),
+    listSendableQuotes: async () =>
+      ok([
+        { id: 'sent-ratp', number: 'D2026-050', customerName: 'RATP', totalTtcCents: 90000, status: 'sent' },
+        { id: 'draft-martin', number: null, customerName: 'M. Martin', totalTtcCents: 10000, status: 'draft' },
+      ]),
+    attachPurchaseOrderToQuote: async (input) => {
+      linked.push(input);
+      return ok({
+        quoteId: input.quoteId,
+        quoteNumber: input.quoteId === 'sign-ratp' ? 'D2026-040' : 'D2026-041',
+        revision: 3,
+        purchaseOrderNumber: input.number,
+        invoiceable: true,
+      });
+    },
+    ...over,
+  });
+  const agentWith = (over: Partial<BobActions> = {}) =>
+    new BobAgent({ router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }), actions: poActions(over) });
+
+  it('« la RATP m’a envoyé un bon de commande n° 4500123 » : cible le devis SIGNÉ du client (priorité sur l’envoyé) et PROPOSE, même en auto (plancher)', async () => {
+    linked.length = 0;
+    const agent = agentWith();
+    const r = await agent.ask('La RATP m’a envoyé un bon de commande n° 4500123', { autonomy: 'auto' });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.intent).toBe('lier_bon_commande');
+    expect(r.value.kind).toBe('proposed');
+    expect(r.value.pending).toMatchObject({
+      tool: 'lier_bon_commande',
+      args: { quoteId: 'sign-ratp', number: '4500123' },
+    });
+    expect(r.value.card.body).toContain('repris automatiquement sur la facture');
+    // Rien n'est lié avant le consentement.
+    expect(linked).toEqual([]);
+    // La confirmation exécute le MÊME use case (délégation à l'hôte) — puis l'ENCHAÎNEMENT :
+    // Bob propose la facture, en délégant VERBATIM au flow generer_facture_devis existant.
+    const done = await agent.confirm(r.value.pending!);
+    expect(done.ok && done.value.kind).toBe('done');
+    if (!done.ok) return;
+    expect(linked).toEqual([{ quoteId: 'sign-ratp', number: '4500123' }]);
+    expect(done.value.card.title).toBe('Bon de commande lié ✓');
+    expect(done.value.card.body).toContain('Je crée la facture du devis D2026-040 avec ce bon de commande ?');
+    expect(done.value.choices?.[0]?.value).toBe('Fais la facture du devis D2026-040');
+  });
+
+  it('« ajoute le bon de commande BC-2207 au devis de Durand » : extraction BC- + annonce du REMPLACEMENT du numéro déjà noté', async () => {
+    linked.length = 0;
+    const r = await agentWith().ask('Ajoute le bon de commande BC-2207 au devis de Durand');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('proposed');
+    expect(r.value.pending).toMatchObject({
+      tool: 'lier_bon_commande',
+      args: { quoteId: 'sign-durand', number: 'BC-2207' },
+    });
+    expect(r.value.card.body).toContain('Il remplace le n° ANC-99');
+    expect(linked).toEqual([]);
+  });
+
+  it('« Ajoute le bon de commande au devis n° D2026-040 » : le numéro DU DEVIS n’est JAMAIS promu numéro d’engagement — Bob demande le numéro du BC', async () => {
+    linked.length = 0;
+    const agent = agentWith();
+    const r = await agent.ask('Ajoute le bon de commande au devis n° D2026-040');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    // Le devis reste CIBLÉ par son numéro (non consommé) et le numéro du BC est DEMANDÉ.
+    expect(r.value.kind).toBe('answer');
+    expect(r.value.card.title).toBe('Quel numéro ?');
+    expect(r.value.card.body).toContain('de RATP pour le devis D2026-040');
+    // Variante « numéro » : même garde-fou que « n° ».
+    const v = await agent.ask('Ajoute le bon de commande au devis numéro D2026-040');
+    expect(v.ok && v.value.card.title).toBe('Quel numéro ?');
+    expect(linked).toEqual([]);
+  });
+
+  it('numéro d’engagement COURT (« n° 40 ») : la référence du devis qui le contient (D2026-040) reste ciblable — retrait en jeton entier', async () => {
+    linked.length = 0;
+    const r = await agentWith().ask('Ajoute le bon de commande n° 40 au devis D2026-040');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('proposed');
+    expect(r.value.pending).toMatchObject({
+      tool: 'lier_bon_commande',
+      args: { quoteId: 'sign-ratp', number: '40' },
+    });
+    expect(linked).toEqual([]);
+  });
+
+  it('plusieurs devis en cours pour le client : ASK avec les devis EN CLAIR, followUps verbatim — jamais un choix silencieux', async () => {
+    linked.length = 0;
+    const r = await agentWith({
+      listInvoiceableQuotes: async () =>
+        ok([
+          { id: 'sign-ratp-1', number: 'D2026-040', customerName: 'RATP', totalTtcCents: 1250000, depositPct: null, depositInvoiced: false, purchaseOrder: null },
+          { id: 'sign-ratp-2', number: 'D2026-041', customerName: 'RATP', totalTtcCents: 302500, depositPct: 30, depositInvoiced: false, purchaseOrder: null },
+        ]),
+    }).ask('La RATP m’a répondu pour le dernier devis avec un bon de commande');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(r.value.card.body).toContain('RATP a 2 devis en cours');
+    expect(r.value.card.body).toContain('Lequel a reçu le bon de commande ?');
+    expect(r.value.ask?.[0]?.id).toBe('lier_bon_commande.cible');
+    expect(r.value.ask?.[0]?.options).toHaveLength(2);
+    // Numéro pas encore dit : le followUp garde le parcours (le numéro sera demandé ensuite).
+    expect(r.value.ask?.[0]?.options[0]?.followUp).toBe('Le bon de commande est pour le devis sign-ratp-1');
+    expect(linked).toEqual([]);
+  });
+
+  it('numéro absent : Bob le DEMANDE (jamais inventé), puis la réponse courte reste dans le parcours (continuité par historique)', async () => {
+    linked.length = 0;
+    const agent = agentWith();
+    const first = await agent.ask('La RATP m’a répondu pour le dernier devis avec un bon de commande');
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    expect(first.value.kind).toBe('answer');
+    expect(first.value.card.title).toBe('Quel numéro ?');
+    expect(first.value.card.body).toContain('numéro du bon de commande de RATP pour le devis D2026-040');
+    // Réponse courte au tour suivant : la continuité relit l'historique (client + question Bob).
+    const second = await agent.ask('C’est le n° 4500123', {
+      history: [
+        { role: 'user', text: 'La RATP m’a répondu pour le dernier devis avec un bon de commande' },
+        { role: 'bob', text: first.value.card.body },
+      ],
+    });
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.value.kind).toBe('proposed');
+    expect(second.value.pending).toMatchObject({
+      tool: 'lier_bon_commande',
+      args: { quoteId: 'sign-ratp', number: '4500123' },
+    });
+    expect(linked).toEqual([]);
+  });
+
+  it('client inconnu des devis en cours : refus honnête, rien n’est modifié', async () => {
+    linked.length = 0;
+    const r = await agentWith().ask('La Mairie de Vitry m’a envoyé un bon de commande n° 88');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(r.value.card.title).toBe('Client introuvable');
+    expect(r.value.card.body).toContain('Je ne trouve pas de devis en cours pour');
+    expect(r.value.card.body).toContain('Mairie');
+    expect(linked).toEqual([]);
+  });
+
+  it('bon de commande SCANNÉ mentionné : réponse honnête — l’outil vocal lie le NUMÉRO, le document se rattache au picker', async () => {
+    const r = await agentWith().ask('La RATP m’a envoyé un bon de commande n° 4500123, je l’ai scanné');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('proposed');
+    expect(r.value.card.body).toContain('ici je lie le numéro');
+  });
+
+  it('enchaînement : « oui » après « Bon de commande lié ✓ » DÉLÈGUE au flow generer_facture_devis existant (commande canonique verbatim)', async () => {
+    const r = await agentWith().ask('Oui', {
+      history: [
+        { role: 'user', text: 'La RATP m’a envoyé un bon de commande n° 4500123' },
+        {
+          role: 'bob',
+          text: 'Lier le bon de commande n° 4500123 au devis D2026-040 de RATP (12 500,00 €) — c’est noté.\nJe crée la facture du devis D2026-040 avec ce bon de commande ? Elle reprendra le numéro d’engagement automatiquement.',
+        },
+      ],
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.intent).toBe('generer_facture');
+    expect(r.value.kind).toBe('proposed');
+    expect(r.value.pending).toMatchObject({ tool: 'generer_facture', args: { quoteId: 'sign-ratp', mode: 'final' } });
+  });
+
+  it('enchaînement : « non » clôt proprement — le lien reste fait, aucune facture créée', async () => {
+    const r = await agentWith().ask('Non merci', {
+      history: [
+        { role: 'user', text: 'La RATP m’a envoyé un bon de commande n° 4500123' },
+        {
+          role: 'bob',
+          text: 'Je crée la facture du devis D2026-040 avec ce bon de commande ? Elle reprendra le numéro d’engagement automatiquement.',
+        },
+      ],
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(r.value.intent).toBe('lier_bon_commande');
+    expect(r.value.card.body).toContain('Je ne crée pas la facture');
+  });
+
+  it('parse au plancher du domaine : un numéro > 60 caractères est refusé par makePurchaseOrderRef (autorité unique)', async () => {
+    linked.length = 0;
+    const agent = agentWith();
+    const r = await agent.confirm({
+      tool: 'lier_bon_commande',
+      args: { quoteId: 'sign-ratp', number: 'X'.repeat(61) },
+      label: 'Lier un bon de commande invalide',
+    });
+    expect(r.ok).toBe(false);
+    expect(linked).toEqual([]);
+  });
+
+  it('hôte sans la capacité (rétro-compat) : réponse honnête, rien n’est modifié', async () => {
+    const r = await new BobAgent({
+      router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }),
+      actions,
+    }).ask('Ajoute le bon de commande n° 4500123 au devis Durand');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(r.value.card.body).toContain('Rien n’a été modifié');
+  });
+
+  it('aucun devis en cours : réponse honnête (un bon de commande se lie à un devis envoyé ou signé)', async () => {
+    const r = await agentWith({
+      listInvoiceableQuotes: async () => ok([]),
+      listSendableQuotes: async () => ok([]),
+    }).ask('La RATP m’a envoyé un bon de commande n° 4500123');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.kind).toBe('answer');
+    expect(r.value.card.title).toBe('Aucun devis en cours');
+  });
+});
+
 describe('documents_liste enrichi — file « à confirmer » dans la réponse (LOT 5)', () => {
   const docsWithPending: BobActions = {
     ...actions,

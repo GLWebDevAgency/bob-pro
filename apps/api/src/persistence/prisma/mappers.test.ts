@@ -29,6 +29,11 @@ const baseRow = {
   signedAt: new Date('2026-07-14T10:00:00.000Z'),
   signatureProof: null as unknown,
   lines: [],
+  // B8 — colonnes bon de commande : ligne historique SANS bon de commande (compat ascendante).
+  purchaseOrderNumber: null,
+  purchaseOrderReceivedAt: null,
+  purchaseOrderDocumentId: null,
+  revision: 1,
 };
 
 const SHA = 'a'.repeat(64);

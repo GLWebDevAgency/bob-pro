@@ -1434,6 +1434,52 @@ describe('assistant Bob local (C40 ⑧ — ask/confirm/journal on-device) + cré
     expect(run.map((e) => e.seq)).toEqual([1, 2]);
   });
 
+  it('B8 : lier_bon_commande à la voix — attache RÉELLEMENT le numéro puis confirmBob rend l’ENCHAÎNEMENT facture (parité serveur)', async () => {
+    const client = new LocalBobClient({ clock: new FixtureClock('2026-06-01'), ids: seqIds() });
+
+    // Décor réel : client grand compte + devis signé (le seed Martin/Sèvres reste hors jeu).
+    const ratp = await client.createCustomer({
+      name: 'RATP',
+      type: 'b2g',
+      address: { line1: '54 quai de la Rapée', zip: '75012', city: 'Paris' },
+    });
+    expect(ratp.ok).toBe(true);
+    if (!ratp.ok) return;
+    const created = await client.createQuote({
+      customerId: ratp.value.id,
+      lines: [{ label: 'Rénovation local technique', category: 'labor', qty: 1, unitPriceHT: 1_000_000, vatRate: 20 }],
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    expect((await client.sendQuote(created.value.quoteId)).ok).toBe(true);
+    expect((await client.signQuote({ quoteId: created.value.quoteId, signerName: 'Mme Achats' })).ok).toBe(true);
+
+    // La voix propose (plancher de consentement) — rien n'est attaché avant confirmation.
+    const asked = await client.askBob({ message: 'La RATP m’a envoyé un bon de commande n° 4500123', autonomy: 'auto' });
+    expect(asked.ok).toBe(true);
+    if (!asked.ok) return;
+    expect(asked.value.kind).toBe('proposed');
+    expect(asked.value.pending?.tool).toBe('lier_bon_commande');
+    expect(asked.value.pending?.args).toMatchObject({ quoteId: created.value.quoteId, number: '4500123' });
+
+    // confirmBob rend le MÊME enchaînement B8 que le serveur : carte + choix verbatim + voix.
+    const confirmed = await client.confirmBob(asked.value.pending!);
+    expect(confirmed.ok).toBe(true);
+    if (!confirmed.ok) return;
+    expect(confirmed.value.kind).toBe('done');
+    expect(confirmed.value.intent).toBe('lier_bon_commande');
+    expect(confirmed.value.card.title).toBe('Bon de commande lié ✓');
+    expect(confirmed.value.card.body).toContain('avec ce bon de commande ?');
+    expect(confirmed.value.choices?.[0]?.value).toMatch(/^Fais la facture du devis /);
+    expect(confirmed.value.spokenPrompt).toContain('Je crée la facture');
+
+    // Le lien est RÉEL : le devis porte le numéro d'engagement (même use case que l'écran).
+    const quotes = await client.listQuotes();
+    expect(quotes.ok).toBe(true);
+    if (!quotes.ok) return;
+    expect(quotes.value.find((q) => q.id === created.value.quoteId)?.purchaseOrder?.number).toBe('4500123');
+  });
+
   it('getRunJournal d’un run inconnu rend une liste vide (parité serveur)', async () => {
     const r = await makeClient().getRunJournal('run-inconnu');
     expect(r.ok && r.value).toEqual([]);

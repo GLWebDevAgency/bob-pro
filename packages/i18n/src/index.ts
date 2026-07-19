@@ -1798,6 +1798,64 @@ const legacyFr = {
     pro: 'Ce document est déjà rattaché à une autre entité. Ouvrez son détail pour décider.',
     direct: 'Déjà rattaché. Ouvre le document.',
   },
+  // ── Chantier S — « Lier à un chantier » (détail document, affordance manuelle du geste
+  // vocal classer_document) : ligne d'action, feuille de sélection, toast et état lecture. ──
+  'docs.linkChantierCta': {
+    pote: 'Lier à un chantier',
+    pro: 'Lier à un chantier',
+    direct: 'Lier à un chantier',
+  },
+  'docs.linkChantierHeader': {
+    pote: 'Chantier',
+    pro: 'Chantier',
+    direct: 'Chantier',
+  },
+  'docs.linkChantierQuestion': {
+    pote: 'À quel chantier je rattache ce document ?',
+    pro: 'À quel chantier rattacher ce document ?',
+    direct: 'Quel chantier ?',
+  },
+  'docs.linkChantierSuggestedDesc': {
+    pote: 'Ma proposition — d’après ce que j’ai lu',
+    pro: 'Proposition de Bob — d’après l’analyse du document',
+    direct: 'Proposition IA',
+  },
+  'docs.linkChantierConfirm': {
+    pote: 'Lier au chantier',
+    pro: 'Lier au chantier',
+    direct: 'Lier',
+  },
+  'docs.linkChantierLater': {
+    pote: 'Plus tard',
+    pro: 'Plus tard',
+    direct: 'Plus tard',
+  },
+  'docs.linkChantierToast': {
+    pote: 'Lié au chantier « {name} » ✓',
+    pro: 'Document lié au chantier « {name} ».',
+    direct: '→ {name}.',
+  },
+  'docs.linkChantierError': {
+    pote: 'Le rattachement au chantier a raté, là. On réessaie ?',
+    pro: 'Le rattachement au chantier a échoué. Veuillez réessayer.',
+    direct: 'Rattachement raté. Réessaie.',
+  },
+  // État lecture (lien déjà posé) : ouvre le chantier au tap — pas de déliaison en V1.
+  'docs.linkChantierLinked': {
+    pote: 'Chantier · {name}',
+    pro: 'Chantier · {name}',
+    direct: 'Chantier · {name}',
+  },
+  'docs.linkChantierLinkedUnknown': {
+    pote: 'Chantier lié',
+    pro: 'Chantier lié',
+    direct: 'Chantier lié',
+  },
+  'docs.linkChantierLinkedA11y': {
+    pote: 'Ouvrir le chantier {name}',
+    pro: 'Ouvrir le chantier {name}',
+    direct: 'Ouvrir le chantier {name}',
+  },
   // Contexte accessible du badge de confiance « {pct} % » (carte partagée + extraction).
   'docs.confidenceA11y': {
     pote: 'Confiance de lecture : {pct} %',
@@ -4104,6 +4162,134 @@ const legacyFr = {
     pote: 'Je n’ai pas réussi à charger l’écriture comptable. On réessaie ?',
     pro: 'L’écriture comptable n’a pas pu être chargée. Veuillez réessayer.',
     direct: 'Écriture comptable injoignable. Réessaie.',
+  },
+
+  // ── B8 — bon de commande (numéro d'engagement grands comptes) ─────────────────
+  // Saisi UNE FOIS sur le devis, repris automatiquement sur la facture dérivée —
+  // sans lui, la facture d'un grand compte (RATP, collectivité…) est rejetée/retardée.
+  'po.sectionTitle': {
+    pote: 'Bon de commande',
+    pro: 'Bon de commande',
+    direct: 'Bon de commande',
+  },
+  'po.emptyQuoteBody': {
+    pote: 'Ton client t’a envoyé un bon de commande ? Ajoute son numéro : il suivra jusqu’à la facture.',
+    pro: 'Votre client a émis un bon de commande ? Ajoutez son numéro : il sera repris sur la facture.',
+    direct: 'Bon de commande reçu ? Ajoute le numéro — repris sur la facture.',
+  },
+  'po.emptyInvoiceBody': {
+    pote: 'Un bon de commande pour cette facture ? Ajoute son numéro avant l’émission : il figurera dessus.',
+    pro: 'Un bon de commande accompagne cette facture ? Ajoutez son numéro avant l’émission : il y figurera.',
+    direct: 'Bon de commande ? Ajoute le numéro avant l’émission.',
+  },
+  'po.addCta': { pote: 'Ajouter le numéro', pro: 'Ajouter le numéro', direct: 'Ajouter' },
+  'po.sheetTitleAdd': {
+    pote: 'Ajouter le bon de commande',
+    pro: 'Ajouter le bon de commande',
+    direct: 'Bon de commande',
+  },
+  'po.sheetTitleEdit': {
+    pote: 'Modifier le bon de commande',
+    pro: 'Modifier le bon de commande',
+    direct: 'Modifier le bon de commande',
+  },
+  'po.numberLabel': {
+    pote: 'Numéro d’engagement',
+    pro: 'Numéro d’engagement',
+    direct: 'Numéro d’engagement',
+  },
+  'po.numberPlaceholder': {
+    pote: 'Ex. BC-2026-0458',
+    pro: 'Ex. BC-2026-0458',
+    direct: 'BC-2026-0458',
+  },
+  'po.numberInvalid': {
+    pote: 'Il me faut le numéro tel qu’il apparaît sur le bon (60 caractères max).',
+    pro: 'Saisissez le numéro tel qu’il figure sur le bon de commande (60 caractères max).',
+    direct: 'Numéro requis (60 car. max).',
+  },
+  'po.dateLabel': {
+    pote: 'Reçu le (facultatif)',
+    pro: 'Date de réception (facultative)',
+    direct: 'Reçu le (option)',
+  },
+  'po.datePlaceholder': { pote: 'JJ/MM/AAAA', pro: 'JJ/MM/AAAA', direct: 'JJ/MM/AAAA' },
+  'po.dateInvalid': {
+    pote: 'Cette date ne passe pas — format JJ/MM/AAAA, tu revérifies ?',
+    pro: 'Date invalide. Format attendu : JJ/MM/AAAA.',
+    direct: 'Date invalide (JJ/MM/AAAA).',
+  },
+  'po.documentLabel': {
+    pote: 'Document du coffre (facultatif)',
+    pro: 'Document du coffre (facultatif)',
+    direct: 'Document (option)',
+  },
+  'po.documentPickCta': { pote: 'Lier un document', pro: 'Lier un document', direct: 'Lier' },
+  'po.documentChangeCta': { pote: 'Changer', pro: 'Modifier', direct: 'Changer' },
+  'po.documentClearCta': {
+    pote: 'Retirer le document',
+    pro: 'Retirer le document',
+    direct: 'Retirer le document',
+  },
+  'po.documentPickerTitle': {
+    pote: 'Choisis le document du coffre',
+    pro: 'Choisissez un document du coffre',
+    direct: 'Document du coffre',
+  },
+  'po.documentPickerEmpty': {
+    pote: 'Ton coffre est vide pour l’instant — scanne le bon de commande et reviens le lier.',
+    pro: 'Aucun document dans le coffre pour le moment.',
+    direct: 'Coffre vide.',
+  },
+  'po.documentPickerBack': { pote: 'Retour', pro: 'Retour', direct: 'Retour' },
+  'po.documentFallbackName': {
+    pote: 'Document du coffre',
+    pro: 'Document du coffre',
+    direct: 'Document',
+  },
+  'po.openDocument': {
+    pote: 'Ouvrir le document {name}',
+    pro: 'Ouvrir le document {name}',
+    direct: 'Ouvrir {name}',
+  },
+  'po.saveCta': { pote: 'Enregistrer', pro: 'Enregistrer', direct: 'Enregistrer' },
+  'po.receivedOn': { pote: 'Reçu le {date}', pro: 'Reçu le {date}', direct: 'Reçu {date}' },
+  'po.editCta': { pote: 'Modifier', pro: 'Modifier', direct: 'Modifier' },
+  'po.removeCta': { pote: 'Retirer', pro: 'Retirer', direct: 'Retirer' },
+  'po.removeConfirmTitle': {
+    pote: 'Retirer le bon de commande',
+    pro: 'Retirer le bon de commande',
+    direct: 'Retirer le bon de commande',
+  },
+  'po.removeConfirmBody': {
+    pote: 'Le numéro {number} ne suivra plus jusqu’à la facture.',
+    pro: 'Le numéro {number} ne sera plus repris sur la facture.',
+    direct: '{number} retiré — plus repris sur la facture.',
+  },
+  'po.frozenNote': {
+    pote: 'Figé à l’émission — ce numéro figure sur la facture.',
+    pro: 'Figé à l’émission — le numéro figure sur la facture.',
+    direct: 'Figé à l’émission.',
+  },
+  'po.quoteInvoicedNote': {
+    pote: 'Devis déjà facturé — le bon de commande se gère maintenant sur la facture.',
+    pro: 'Devis déjà facturé — le bon de commande se gère désormais sur la facture.',
+    direct: 'Déjà facturé — gère le BC sur la facture.',
+  },
+  'po.carriedToInvoice': {
+    pote: 'Bon de commande n° {number} repris sur la facture',
+    pro: 'Bon de commande n° {number} repris sur la facture.',
+    direct: 'BC n° {number} repris sur la facture.',
+  },
+  'po.saveError': {
+    pote: 'Je n’ai pas réussi à enregistrer le bon de commande. On réessaie ?',
+    pro: 'L’enregistrement du bon de commande a échoué. Veuillez réessayer.',
+    direct: 'Enregistrement KO. Réessaie.',
+  },
+  'po.voice.sheetOpened': {
+    pote: 'Je t’ouvre le bon de commande — vérifie et enregistre.',
+    pro: 'J’ouvre la saisie du bon de commande — vérifiez puis enregistrez.',
+    direct: 'Saisie du bon de commande ouverte.',
   },
 
   // ── C23 — flux « Diagnostic 2026 » (copy pote = exacte du proto §diag*) ───────

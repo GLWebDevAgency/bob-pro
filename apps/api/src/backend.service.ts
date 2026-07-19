@@ -104,6 +104,13 @@ import {
   DEFAULT_DOCUMENT_FOLDERS,
   AnalyzeDocument,
   RenameDocument,
+  AttachPurchaseOrderToQuote,
+  AttachPurchaseOrderToInvoice,
+  DetachPurchaseOrder,
+  ListInvoiceableQuotes,
+  type PurchaseOrderRef,
+  type PurchaseOrderRefInput,
+  type PurchaseOrderMutationView,
   DOCUMENT_INTELLIGENCE_MAX_BYTES,
   documentToView,
   GetDocumentDownloadUrl,
@@ -197,6 +204,7 @@ import {
   type ContextEntitySummary,
   type ReadContextEntityInput,
   type RuntimeInvocation,
+  purchaseOrderLinkedRun,
   redactPII,
   accountingJournalLabel,
   chantierStatusLabel,
@@ -259,6 +267,10 @@ export interface QuoteView {
   totals: Totals;
   validUntil: string | null;
   signed: boolean;
+  /** B8 : bon de commande client (numéro d'engagement) — null si aucun. */
+  purchaseOrder: PurchaseOrderRef | null;
+  /** Révision optimiste des mutations de bon de commande (>= 1). */
+  revision: number;
 }
 
 export interface InvoiceView {
@@ -277,6 +289,10 @@ export interface InvoiceView {
   lines: QuoteLine[];
   depositDeductionCents: number;
   depositInvoiceId: string | null;
+  /** B8 : bon de commande (repris du devis à la dérivation, figé à l'émission) — null si aucun. */
+  purchaseOrder: PurchaseOrderRef | null;
+  /** Révision optimiste des mutations de bon de commande (>= 1). */
+  revision: number;
 }
 
 /** Encaissement daté du tenant (E3 — PONT-SERVEUR v1) : miroir du PaymentView du client. */
@@ -997,6 +1013,8 @@ export class BackendService {
       totals: q.totals(),
       validUntil: q.validUntil,
       signed: q.signature !== null,
+      purchaseOrder: q.purchaseOrder ? { ...q.purchaseOrder } : null,
+      revision: q.revision,
     };
   }
 
@@ -1016,6 +1034,8 @@ export class BackendService {
       lines: i.lines.map((l) => ({ ...l })),
       depositDeductionCents: i.depositDeductionCents,
       depositInvoiceId: i.depositInvoiceId,
+      purchaseOrder: i.purchaseOrder ? { ...i.purchaseOrder } : null,
+      revision: i.revision,
     };
   }
 
@@ -1396,6 +1416,125 @@ export class BackendService {
     if (r.ok) this.logger.audit('invoice.draft_deleted', { invoiceId });
     return r;
   }
+
+  // ——— B8 : bon de commande grands comptes (numéro d'engagement) ————————————————————————
+  /**
+   * Anti-IDOR applicatif : un `documentId` fourni doit désigner un document ACTIF du tenant
+   * courant — sinon erreur de validation (la FK composite (companyId, documentId) reste la
+   * ceinture de sécurité en base). `null`/absent = pas de document archivé, toujours accepté.
+   */
+  private async assertPurchaseOrderDocumentOwned(
+    documentId: string | null | undefined,
+  ): Promise<Result<void, AppError>> {
+    if (documentId === null || documentId === undefined) return ok(undefined);
+    const document = await this.p.documents.findById(this.companyId(), documentId);
+    if (!document || document.status !== 'active') {
+      return err<AppError>({
+        kind: 'validation',
+        issues: [{ field: 'documentId', message: 'Document de bon de commande introuvable.' }],
+      });
+    }
+    return ok(undefined);
+  }
+
+  /**
+   * PUT /quotes/:id/purchase-order — attache (ou remplace) le bon de commande d'un devis NON
+   * FACTURÉ. Use case core (parité humain↔Bob), tenant-scoped, révision optimiste ; le CAS
+   * final en base est garanti par le verrou de ligne (lockById) dans la transaction tenant.
+   */
+  async attachQuotePurchaseOrder(input: {
+    quoteId: string;
+    purchaseOrder: PurchaseOrderRefInput;
+    expectedRevision: number;
+  }): Promise<Result<PurchaseOrderMutationView, AppError>> {
+    const documentOwned = await this.assertPurchaseOrderDocumentOwned(input.purchaseOrder.documentId);
+    if (!documentOwned.ok) return documentOwned;
+    const r = await new AttachPurchaseOrderToQuote({
+      quotes: { findById: (id) => this.p.quotes.lockById(id), save: (q) => this.p.quotes.save(q) },
+      invoices: this.p.invoices,
+      clock: this.clock,
+    }).execute({ companyId: this.companyId(), ...input });
+    if (r.ok)
+      this.logger.audit('quote.purchase_order_attached', {
+        quoteId: input.quoteId,
+        number: r.value.purchaseOrder?.number ?? null,
+        revision: r.value.revision,
+      });
+    return r;
+  }
+
+  /** DELETE /quotes/:id/purchase-order — retrait EXPLICITE (devis non facturé uniquement). */
+  async detachQuotePurchaseOrder(input: {
+    quoteId: string;
+    expectedRevision: number;
+  }): Promise<Result<PurchaseOrderMutationView, AppError>> {
+    const r = await new DetachPurchaseOrder({
+      quotes: { findById: (id) => this.p.quotes.lockById(id), save: (q) => this.p.quotes.save(q) },
+      invoices: this.p.invoices,
+      clock: this.clock,
+    }).execute({
+      companyId: this.companyId(),
+      target: { type: 'quote', quoteId: input.quoteId },
+      expectedRevision: input.expectedRevision,
+    });
+    if (r.ok)
+      this.logger.audit('quote.purchase_order_detached', {
+        quoteId: input.quoteId,
+        revision: r.value.revision,
+      });
+    return r;
+  }
+
+  /** PUT /invoices/:id/purchase-order — facture BROUILLON uniquement (jamais après émission). */
+  async attachInvoicePurchaseOrder(input: {
+    invoiceId: string;
+    purchaseOrder: PurchaseOrderRefInput;
+    expectedRevision: number;
+  }): Promise<Result<PurchaseOrderMutationView, AppError>> {
+    const documentOwned = await this.assertPurchaseOrderDocumentOwned(input.purchaseOrder.documentId);
+    if (!documentOwned.ok) return documentOwned;
+    const r = await new AttachPurchaseOrderToInvoice({
+      invoices: {
+        findById: (id) => this.p.invoices.lockById(id),
+        save: (i) => this.p.invoices.save(i),
+      },
+      clock: this.clock,
+    }).execute({ companyId: this.companyId(), ...input });
+    if (r.ok)
+      this.logger.audit('invoice.purchase_order_attached', {
+        invoiceId: input.invoiceId,
+        number: r.value.purchaseOrder?.number ?? null,
+        revision: r.value.revision,
+      });
+    return r;
+  }
+
+  /** DELETE /invoices/:id/purchase-order — retrait EXPLICITE (facture brouillon uniquement). */
+  async detachInvoicePurchaseOrder(input: {
+    invoiceId: string;
+    expectedRevision: number;
+  }): Promise<Result<PurchaseOrderMutationView, AppError>> {
+    const r = await new DetachPurchaseOrder({
+      quotes: this.p.quotes,
+      invoices: {
+        findById: (id) => this.p.invoices.lockById(id),
+        save: (i) => this.p.invoices.save(i),
+        listByCompany: (companyId) => this.p.invoices.listByCompany(companyId),
+      },
+      clock: this.clock,
+    }).execute({
+      companyId: this.companyId(),
+      target: { type: 'invoice', invoiceId: input.invoiceId },
+      expectedRevision: input.expectedRevision,
+    });
+    if (r.ok)
+      this.logger.audit('invoice.purchase_order_detached', {
+        invoiceId: input.invoiceId,
+        revision: r.value.revision,
+      });
+    return r;
+  }
+
   async issueInvoice(input: { invoiceId: string }) {
     // Locator IDOR uniquement : aucune décision d'émission ne repose sur ce snapshot hors fence.
     const locator = await this.ownedInvoice(input.invoiceId);
@@ -2492,45 +2631,17 @@ export class BackendService {
           })),
         );
       },
-      // S1 (LOT 5) : devis SIGNÉS facturables — matière de generer_facture (ASK-2). Un devis
+      // S1 (LOT 5) + B8 : devis SIGNÉS facturables — matière de generer_facture (ASK-2). Un devis
       // sort de la liste dès que sa facture FINALE existe ; l'acompte déjà émis est signalé
-      // (depositInvoiced) pour que la finale devienne l'évidence. Mêmes données que
-      // listSendableQuotes (quotes + invoices liées + noms clients), même dérivation dans
-      // les trois implémentations du client — parité stricte.
-      listInvoiceableQuotes: async () => {
-        const [quotes, invoices, cust] = await Promise.all([
-          this.listQuotes(),
-          this.listInvoices(),
-          this.listCustomers(),
-        ]);
-        if (!quotes.ok) return quotes;
-        if (!invoices.ok) return invoices;
-        if (!cust.ok) return cust;
-        const names = new Map(cust.value.map((c) => [c.id, c.name]));
-        const candidates = quotes.value
-          .filter((q) => q.status === 'signed')
-          .filter(
-            (q) =>
-              !invoices.value.some(
-                (i) => i.parentQuoteId === q.id && i.kind === 'final' && i.status !== 'cancelled',
-              ),
-          );
-        if (candidates.some((quote) => !names.has(quote.customerId))) {
-          return err(appUnavailable('customer-reference'));
-        }
-        return ok(
-          candidates.map((q) => ({
-            id: q.id,
-            number: q.number,
-            customerName: names.get(q.customerId)!,
-            totalTtcCents: q.totals.ttc,
-            depositPct: q.depositPct,
-            depositInvoiced: invoices.value.some(
-              (i) => i.parentQuoteId === q.id && i.kind === 'deposit' && i.status !== 'cancelled',
-            ),
-          })),
-        );
-      },
+      // (depositInvoiced) et le bon de commande (numéro d'engagement) est exposé AVANT émission.
+      // SOURCE UNIQUE : use case core ListInvoiceableQuotes, le même que le client local —
+      // parité stricte des trois implémentations, plus aucune dérivation inline.
+      listInvoiceableQuotes: async () =>
+        new ListInvoiceableQuotes({
+          quotes: this.p.quotes,
+          invoices: this.p.invoices,
+          customers: this.p.customers,
+        }).execute({ companyId: this.companyId() }),
       listIssuableInvoices: async () => {
         const [invoices, cust] = await Promise.all([this.listInvoices(), this.listCustomers()]);
         if (!invoices.ok) return invoices;
@@ -2884,6 +2995,39 @@ export class BackendService {
       // MÊME use case GenerateInvoiceFromQuote que l'UI ; le safetyFloor fiscal du registre
       // s'active seul (confirmation même en 'auto').
       generateInvoice: async (input) => this.generateInvoice(input),
+      // B8 — outil vocal lier_bon_commande : MÊME use case AttachPurchaseOrderToQuote que
+      // PUT /quotes/:id/purchase-order (attachQuotePurchaseOrder : tenant-scoped, verrou de
+      // ligne, audit). La révision courante est résolue ici — le geste vocal n'a pas de vue
+      // optimiste, comme acknowledgeDocument. `invoiceable` (devis signé sans facture finale)
+      // vient de ListInvoiceableQuotes : la MÊME vérité qui nourrit l'enchaînement
+      // generer_facture côté agent — jamais une dérivation locale.
+      attachPurchaseOrderToQuote: async (input) => {
+        const quote = await this.p.quotes.findById(input.quoteId);
+        if (!quote || quote.companyId !== this.companyId())
+          return err(appNotFound('quote', input.quoteId));
+        const attached = await this.attachQuotePurchaseOrder({
+          quoteId: input.quoteId,
+          purchaseOrder: { number: input.number },
+          expectedRevision: quote.revision,
+        });
+        if (!attached.ok) return attached;
+        const purchaseOrder = attached.value.purchaseOrder;
+        // Un attachement sans référence posée serait une rupture du contrat du use case.
+        if (purchaseOrder === null) return err(appUnavailable('quote-purchase-order'));
+        const invoiceable = await new ListInvoiceableQuotes({
+          quotes: this.p.quotes,
+          invoices: this.p.invoices,
+          customers: this.p.customers,
+        }).execute({ companyId: this.companyId() });
+        return ok({
+          quoteId: attached.value.targetId,
+          quoteNumber: quote.number,
+          revision: attached.value.revision,
+          purchaseOrderNumber: purchaseOrder.number,
+          invoiceable:
+            invoiceable.ok && invoiceable.value.some((q) => q.id === attached.value.targetId),
+        });
+      },
       // creer_client (C40 TODO partagé) : fiche MINIMALE (nom + type), même use case createCustomer
       // que l'écran Clients — l'adresse (requise par le domaine) part vide, à compléter sur la fiche.
       createCustomer: async (input) =>
@@ -3464,7 +3608,23 @@ export class BackendService {
       const notificationReadOutcome = record.outcomes.find(
         (outcome) => outcome.tool === 'marquer_notifications_lues' && outcome.status === 'executed',
       );
+      const purchaseOrderOutcome = record.outcomes.find(
+        (outcome) => outcome.tool === 'lier_bon_commande' && outcome.status === 'executed',
+      );
       const quoteDeliveryStatus = quoteOutcome?.result?.deliveryStatus;
+      if (!isBatch && purchaseOrderOutcome) {
+        // B8 — MÊME enchaînement que BobAgent.confirm : après le lien confirmé, la carte
+        // propose la facture du devis (choices + spokenPrompt) depuis la projection publique
+        // de l'outil — le chemin HTTP /ai/confirm rend le même parcours que le runtime local.
+        return ok(
+          purchaseOrderLinkedRun({
+            intent: 'lier_bon_commande',
+            model: 'agent-runtime',
+            label: planned[0]!.label,
+            output: purchaseOrderOutcome.result,
+          }),
+        );
+      }
       if (!isBatch && notificationReadOutcome) {
         const count = notificationMutationCount(notificationReadOutcome.result);
         if (count === null) {
@@ -4331,6 +4491,11 @@ export class BackendService {
       })),
       totals: { ht: totals.ht, vat: totals.vat, ttc: totals.ttc, netToPay: totals.netToPay },
       mentions: [...inv.mentions],
+      // B8 : le numéro d'engagement du client (bon de commande) figure sur la pièce émise —
+      // exigence de paiement grands comptes + Chorus Pro. Zone références de l'en-tête.
+      purchaseOrder: inv.purchaseOrder
+        ? { number: inv.purchaseOrder.number, receivedAt: inv.purchaseOrder.receivedAt }
+        : null,
       billingPresentation: {
         accentColor: billingSettings.pdfAccentColor,
         rib:

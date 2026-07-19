@@ -189,6 +189,22 @@ export const LLM_TOOL_SPECS: LlmToolSpec[] = [
     },
   },
   {
+    name: 'lier_bon_commande',
+    description:
+      'Attacher le numéro d’engagement d’un bon de commande reçu d’un client pro/grand compte (RATP, collectivité, major du BTP) au devis concerné (« la RATP m’a envoyé un bon de commande n° 4500123 », « ajoute le BC-2207 au devis de Durand »). Le numéro figurera automatiquement sur la facture. PAS pour classer/valider un document scanné, ni pour créer un devis, ni pour générer la facture.',
+    parameters: {
+      type: 'object',
+      properties: {
+        reference: {
+          type: 'string',
+          description: 'Client, devis ou numéro du bon de commande (ex. « RATP », « BC-2207 »)',
+        },
+      },
+      required: [],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'resultat_provisoire',
     description:
       'Résultat provisoire de l’activité : produits moins charges au grand-livre réel (balance générale). Répond à « combien je gagne ? », « je suis en bénéfice ? ».',
@@ -268,6 +284,7 @@ const TOOL_TO_INTENT: Record<string, BobIntent> = {
   classer_document: 'classer_document',
   renommer_document: 'renommer_document',
   chercher_document: 'chercher_document',
+  lier_bon_commande: 'lier_bon_commande',
   resultat_provisoire: 'resultat',
   mon_bilan: 'bilan',
   generer_facture_devis: 'generer_facture',

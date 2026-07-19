@@ -85,6 +85,7 @@ import {
   quoteLineToCreate,
   invoiceKindToDocKind,
   signatureProofToPersistence,
+  purchaseOrderToPersistence,
   expenseRowToProps,
   expensePropsToPersistence,
 } from './mappers';
@@ -271,6 +272,10 @@ export class PrismaQuoteRepository implements QuoteRepository {
       totalsTtc: totals.ttc,
       totalsNetToPay: totals.netToPay,
       vatByRate: totals.vatByRate as Record<string, number>,
+      // B8 : bon de commande + révision optimiste (le CAS final est porté par lockById
+      // dans la transaction tenant de l'adaptateur appelant).
+      ...purchaseOrderToPersistence(s.purchaseOrder),
+      revision: s.revision ?? 1,
     };
     const lines = s.lines.map((l, i) => quoteLineToCreate(l, { quoteId: s.id }, i));
     if (this.prisma.inTransaction()) {
@@ -370,6 +375,9 @@ export class PrismaInvoiceRepository implements InvoiceRepository {
       totalsNetToPay: totals.netToPay,
       vatByRate: totals.vatByRate as Record<string, number>,
       legalMentions: s.mentions,
+      // B8 : bon de commande (repris du devis ou attaché en brouillon) + révision optimiste.
+      ...purchaseOrderToPersistence(s.purchaseOrder),
+      revision: s.revision ?? 1,
     };
     const lines = s.lines.map((l, idx) => quoteLineToCreate(l, { invoiceId: s.id }, idx));
     const persist = async (): Promise<void> => {

@@ -11,6 +11,11 @@ import {
 } from '../shared/line-item';
 import { type Totals } from '../shared/totals';
 import { type Signature } from '../shared/signature';
+import {
+  type PurchaseOrderRef,
+  purchaseOrderRefEquals,
+  clonePurchaseOrderRef,
+} from '../shared/purchase-order-ref';
 import { isVatRate } from '../shared/vat-rate';
 import { Quantity } from '../shared/quantity';
 import { computeTotals } from '../../services/compute-totals';
@@ -37,6 +42,10 @@ export class Quote extends AggregateRoot<string> {
   private _number: DocNumber | null = null;
   private _depositPct: Percentage | null = null;
   private _signature: Signature | null = null;
+  /** Bon de commande client (B8) — null par défaut : compat ascendante totale. */
+  private _purchaseOrder: PurchaseOrderRef | null = null;
+  /** Révision optimiste — incrémentée par les mutations post-signature (bon de commande). */
+  private _revision = 1;
 
   private constructor(
     id: string,
@@ -70,6 +79,12 @@ export class Quote extends AggregateRoot<string> {
   }
   get signature(): Signature | null {
     return this._signature;
+  }
+  get purchaseOrder(): PurchaseOrderRef | null {
+    return this._purchaseOrder;
+  }
+  get revision(): number {
+    return this._revision;
   }
 
   private assertDraft(): DomainResult<void> {
@@ -182,6 +197,48 @@ export class Quote extends AggregateRoot<string> {
     return ok(undefined);
   }
 
+  /** Le bon de commande n'a de sens que sur un devis encore vivant (le PO arrive souvent APRÈS signature). */
+  private assertPurchaseOrderEditable(): DomainResult<void> {
+    if (this._status === 'refused' || this._status === 'expired')
+      return err({
+        code: 'VALIDATION',
+        field: 'status',
+        message: 'Un devis refusé ou expiré ne porte pas de bon de commande.',
+      });
+    return ok(undefined);
+  }
+
+  /**
+   * B8 : attache (ou remplace) le bon de commande client. Idempotent si la référence est
+   * identique (aucun événement, révision inchangée). La garde cross-agrégat « remplaçable
+   * tant que le devis n'est pas facturé » appartient au use case (elle lit les factures).
+   */
+  attachPurchaseOrder(ref: PurchaseOrderRef, at: Instant): DomainResult<void> {
+    const editable = this.assertPurchaseOrderEditable();
+    if (!editable.ok) return editable;
+    if (purchaseOrderRefEquals(this._purchaseOrder, ref)) return ok(undefined);
+    this._purchaseOrder = clonePurchaseOrderRef(ref);
+    this._revision += 1;
+    this.record({ type: 'QuotePurchaseOrderAttached', occurredAt: at, version: 1 });
+    return ok(undefined);
+  }
+
+  /** B8 : retrait EXPLICITE du bon de commande (devis non facturé — garde cross-agrégat au use case). */
+  detachPurchaseOrder(at: Instant): DomainResult<void> {
+    const editable = this.assertPurchaseOrderEditable();
+    if (!editable.ok) return editable;
+    if (this._purchaseOrder === null)
+      return err({
+        code: 'VALIDATION',
+        field: 'purchaseOrder',
+        message: 'Aucun bon de commande attaché à ce devis.',
+      });
+    this._purchaseOrder = null;
+    this._revision += 1;
+    this.record({ type: 'QuotePurchaseOrderDetached', occurredAt: at, version: 1 });
+    return ok(undefined);
+  }
+
   totals(): Totals {
     return computeTotals(
       [...this._lines],
@@ -255,6 +312,8 @@ export class Quote extends AggregateRoot<string> {
       depositPct: this._depositPct?.value ?? null,
       validUntil: this._validUntil,
       signature: this._signature,
+      purchaseOrder: this._purchaseOrder ? clonePurchaseOrderRef(this._purchaseOrder) : null,
+      revision: this._revision,
     };
   }
 
@@ -262,6 +321,9 @@ export class Quote extends AggregateRoot<string> {
     const q = new Quote(s.id, s.companyId, s.customerId, s.validUntil);
     q._status = s.status;
     q._lines = s.lines.map((l) => ({ ...l }));
+    // Compat ascendante : les snapshots antérieurs à B8 n'ont ni purchaseOrder ni revision.
+    q._purchaseOrder = s.purchaseOrder ? clonePurchaseOrderRef(s.purchaseOrder) : null;
+    q._revision = s.revision ?? 1;
     if (s.number) {
       const n = DocNumber.of(s.number);
       if (n.ok) q._number = n.value;
@@ -285,4 +347,7 @@ export interface QuoteSnapshot {
   depositPct: number | null;
   validUntil: DateOnly | null;
   signature: Signature | null;
+  /** B8 — optionnels : les snapshots antérieurs restent lisibles (compat ascendante). */
+  purchaseOrder?: PurchaseOrderRef | null;
+  revision?: number;
 }

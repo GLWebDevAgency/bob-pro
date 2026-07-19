@@ -1,11 +1,11 @@
 import { forwardRef, useImperativeHandle, useRef, useState, type ReactNode } from 'react';
-import { View, Alert, Share } from 'react-native';
+import { View, Alert, Share, Text } from 'react-native';
 import { router } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
 import type { AccountingPreviewLine, QuoteView, InvoiceView } from '@bob/api-client';
 import { challengeFor, buildActionDiff } from '@bob/ai';
 import { t, type Personality } from '@bob/i18n';
-import { DeleteIconButton, QuestionSheet, useTheme } from '@bob/ui';
+import { DeleteIconButton, QuestionSheet, font, useTheme } from '@bob/ui';
 import {
   useCompanyMe,
   useCompanyBillingSettings,
@@ -202,7 +202,7 @@ export const QuoteActions = forwardRef<
   { quote, customerName, linkedInvoices = NO_LINKED_INVOICES },
   ref,
 ): ReactNode {
-  const { personality } = useTheme();
+  const { personality, semantic } = useTheme();
   const send = useSendQuote();
   const sign = useSignQuote();
   const signatureLink = useCreateQuoteSignatureLink();
@@ -466,6 +466,31 @@ export const QuoteActions = forwardRef<
   }
   if (quote.status === 'signed') {
     const invoiceCtaState = deriveQuoteInvoiceCtaState(linked);
+    // B8 : le devis porte un bon de commande — l'étape de génération AFFICHE la reprise
+    // (« Bon de commande n° X repris sur la facture ») : réassurance, jamais de re-saisie.
+    const poReassurance = quote.purchaseOrder ? (
+      <View
+        style={{
+          flexDirection: 'row',
+          alignItems: 'center',
+          backgroundColor: semantic.successBg,
+          borderRadius: 10,
+          paddingVertical: 8,
+          paddingHorizontal: 11,
+          marginBottom: 8,
+        }}
+      >
+        <Text
+          numberOfLines={2}
+          style={{ ...font('meta', 600), fontSize: 12, color: semantic.success, flex: 1 }}
+        >
+          {t('po.carriedToInvoice', {
+            personality,
+            params: { number: quote.purchaseOrder.number },
+          })}
+        </Text>
+      </View>
+    ) : null;
     // État (c) : la finale existe déjà — plus rien à générer.
     if (invoiceCtaState === 'final_draft_pending' || invoiceCtaState === 'final_exists') {
       return (
@@ -487,12 +512,15 @@ export const QuoteActions = forwardRef<
     }
     if (invoiceCtaState === 'generate_final') {
       return (
-        <Button
-          title={t('piece.actionFacturerSolde', { personality })}
-          loading={busy === 'gen'}
-          disabled={!!busy}
-          onPress={() => void generateInvoice('final')}
-        />
+        <View>
+          {poReassurance}
+          <Button
+            title={t('piece.actionFacturerSolde', { personality })}
+            loading={busy === 'gen'}
+            disabled={!!busy}
+            onPress={() => void generateInvoice('final')}
+          />
+        </View>
       );
     }
 
@@ -506,6 +534,7 @@ export const QuoteActions = forwardRef<
     ];
     return (
       <>
+        {poReassurance}
         <Button
           title="Générer la facture"
           loading={busy === 'gen'}

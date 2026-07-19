@@ -12,12 +12,15 @@ import {
   EXPENSE_PAYMENT_REFERENCE_MAX_LENGTH,
   isValidDateOnly,
   isVatRate,
+  makePurchaseOrderRef,
   validateDocumentDisplayName,
 } from '@bob/core';
 import { type AnyTool, type Tool, type ToolPublicResult } from './tool';
 import {
   type AcknowledgeDocumentActionInput,
   type AcknowledgeDocumentActionOutput,
+  type AttachPurchaseOrderActionInput,
+  type AttachPurchaseOrderActionOutput,
   type FileDocumentActionInput,
   type FileDocumentActionOutput,
   type RenameDocumentActionInput,
@@ -654,6 +657,59 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
       run: (input) => searchDocumentsAction(input),
     };
     tools.push(chercherDocument as AnyTool);
+  }
+
+  // —— Outil OPTIONNEL lier_bon_commande (B8) : « la RATP m'a envoyé un bon de commande
+  // n° 4500123 » — MÊME use case AttachPurchaseOrderToQuote que l'écran devis. Le numéro
+  // d'engagement conditionne le PAIEMENT de la facture (grands comptes, Chorus Pro) : il est
+  // assaini par l'AUTORITÉ du domaine (makePurchaseOrderRef), jamais par une règle locale.
+  const attachPurchaseOrderAction = actions.attachPurchaseOrderToQuote?.bind(actions);
+  if (attachPurchaseOrderAction) {
+    const lierBonCommande: Tool<AttachPurchaseOrderActionInput, AttachPurchaseOrderActionOutput> = {
+      name: 'lier_bon_commande',
+      description:
+        'Attache le numéro d’engagement d’un bon de commande client (grands comptes, secteur public/Chorus Pro) à un devis. Le numéro sera repris automatiquement sur la facture dérivée. Ne crée ni devis ni facture, ne touche pas aux documents du coffre.',
+      mutating: true,
+      outbound: false,
+      compliance: 'medium',
+      // Mutation interne remplaçable (re-attache/retrait possibles tant que non facturé), MAIS
+      // le numéro est un FAIT déclaré par l'artisan et conditionne le paiement de la facture :
+      // plancher de consentement — jamais lié sans confirmation, même en autonomie 'auto'.
+      safetyFloor: true,
+      riskTier: 'reversible',
+      parse: (raw): Result<AttachPurchaseOrderActionInput, AppError> => {
+        if (typeof raw !== 'object' || raw === null || Array.isArray(raw))
+          return err(appValidation('purchaseOrder', 'Bon de commande invalide.'));
+        const r = raw as Record<string, unknown>;
+        const allowed = new Set(['quoteId', 'number']);
+        if (Object.keys(r).some((key) => !allowed.has(key)))
+          return err(appValidation('purchaseOrder', 'Champ de bon de commande inconnu.'));
+        if (typeof r.quoteId !== 'string' || r.quoteId.length === 0 || r.quoteId.length > 200)
+          return err(appValidation('quoteId', 'Devis manquant.'));
+        if (typeof r.number !== 'string')
+          return err(appValidation('number', 'Numéro de bon de commande requis.'));
+        // AUTORITÉ du domaine : assainissement (espaces), longueur (1..60) et caractères de
+        // contrôle sont jugés par makePurchaseOrderRef — une seule vérité, jamais dupliquée.
+        const ref = makePurchaseOrderRef({ number: r.number });
+        if (!ref.ok) {
+          return err(
+            appValidation(
+              'number',
+              'message' in ref.error ? ref.error.message : 'Numéro de bon de commande invalide.',
+            ),
+          );
+        }
+        return ok({ quoteId: r.quoteId, number: ref.value.number });
+      },
+      projectPublicResult: (output): ToolPublicResult => ({
+        quoteId: output.quoteId,
+        quoteNumber: output.quoteNumber,
+        purchaseOrderNumber: output.purchaseOrderNumber,
+        invoiceable: output.invoiceable,
+      }),
+      run: (input) => attachPurchaseOrderAction(input),
+    };
+    tools.push(lierBonCommande as AnyTool);
   }
 
   const createCustomerAction = actions.createCustomer?.bind(actions);

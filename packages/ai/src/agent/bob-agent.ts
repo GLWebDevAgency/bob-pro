@@ -527,6 +527,120 @@ function destinationNameTokens(nom: string): string[] {
     .filter((word) => word.length >= 3 && !NAME_STOPWORDS.has(word));
 }
 
+/** Mots du GESTE bon de commande (B8) — neutralisés avant le ciblage par jetons : « la RATP
+ * m'a envoyé un bon de commande » ne doit cibler que par « ratp », jamais par « commande ». */
+const PURCHASE_ORDER_GESTURE_WORDS: ReadonlySet<string> = new Set([
+  'bon', 'bons', 'commande', 'commandes', 'devis', 'facture', 'factures', 'numero', 'numeros',
+  'engagement', 'recu', 'recue', 'recus', 'recues', 'recois', 'recoit', 'envoye', 'envoyee',
+  'envoyes', 'envoyees', 'envoie', 'envoyer', 'repondu', 'repondue', 'repond', 'repondre',
+  'arrive', 'arrivee', 'arriver', 'ajoute', 'ajouter', 'ajoutes', 'lie', 'lier', 'lies', 'liee',
+  'attache', 'attacher', 'attaches', 'rattache', 'rattacher', 'associe', 'associer', 'mets',
+  'mettre', 'note', 'noter', 'avec', 'pour', 'dans', 'sur', 'dernier', 'derniere', 'derniers',
+  'dernieres', 'nouveau', 'nouvelle', 'client', 'clients', 'grand', 'grande', 'grands', 'compte',
+  'comptes', 'signe', 'signee', 'signes', 'vient', 'viens', 'viennent', 'scanne', 'scannee',
+  'scanner', 'scan', 'purchase', 'order', 'peux', 'veux', 'voudrais', 'peut', 'faut', 'merci',
+  'bonjour', 'salut', 'stp', 'plait', 'cest', 'est', 'ils', 'elle', 'elles', 'nous', 'vous',
+  'leur', 'leurs', 'mon', 'mes', 'ton', 'tes', 'ses', 'ces', 'cette', 'celui', 'celle', 'juste',
+  'encore', 'aussi', 'alors', 'donc', 'bien', 'voila', 'hier', 'aujourd', 'aujourdhui', 'demain',
+  'matin', 'soir', 'madame', 'monsieur', 'societe', 'entreprise', 'chez', 'tout', 'tous', 'toute',
+]);
+
+/** Un marqueur précédé du désignateur « devis »/« facture » appartient à la PIÈCE ciblée
+ * (« au devis n° D2026-030 », « le devis numéro 12 ») : son numéro n'est JAMAIS promu
+ * numéro d'engagement — une référence légale fausse ferait rejeter la facture du grand compte. */
+const TARGET_PIECE_BEFORE = /(?:devis|factures?)[\s«»"',:.]{1,6}$/i;
+
+/** Extraction du numéro d'engagement dit (« n° 4500123 », « BC-2207 », « le numéro est
+ * 4500123 », « bon de commande 4500123 ») : le jeton retenu contient TOUJOURS un chiffre —
+ * jamais un mot de la phrase promu numéro, jamais le numéro du devis (« au devis n° D2026-030 »
+ * reste une cible, pas un numéro : garde-fou TARGET_PIECE_BEFORE sur CHAQUE occurrence).
+ * Retourne aussi le texte brut apparié, à écarter du texte de ciblage du devis. */
+function extractPurchaseOrderNumber(text: string): { number: string; raw: string } | null {
+  const patterns: RegExp[] = [
+    // « n° 4500123 » / « n° ENG-445 » — marqueur explicite : préfixe alphabétique autorisé.
+    /n[°º]\s*:?\s*([A-Za-z]{0,6}[-/]?\d[\dA-Za-z\-/.]*)/i,
+    // « BC-2207 » / « BC 2207 » — motif consacré du bon de commande.
+    /\b(bc[-\s]?\d[\dA-Za-z\-/.]*)\b/i,
+    // « le numéro (d'engagement) est 4500123 » — fillers usuels tolérés, jeton adjacent.
+    /num[ée]ros?(?:\s+d.{0,3}engagement)?(?:\s+(?:est|c.est))?(?:\s+(?:le|la|du|de))?\s*:?\s*([A-Za-z]{0,6}[-/]?\d[\dA-Za-z\-/.]*)/i,
+    // « bon de commande 4500123 » — jeton commençant par un CHIFFRE à courte distance
+    // (le lookbehind écarte « …commande au devis D2026-030 »).
+    /commande\b[^\d]{0,12}?(?<![A-Za-z])(\d[\dA-Za-z\-/.]+)/i,
+  ];
+  for (const pattern of patterns) {
+    // Balayage GLOBAL : une occurrence gardée (numéro du devis) n'éteint pas le motif —
+    // « …au devis n° D2026-030, le n° 4500123 » retient bien 4500123.
+    const scan = new RegExp(pattern.source, `${pattern.flags}g`);
+    let m: RegExpExecArray | null;
+    while ((m = scan.exec(text)) !== null) {
+      if (m[1] === undefined) continue;
+      if (TARGET_PIECE_BEFORE.test(text.slice(0, m.index))) continue;
+      const cleaned = m[1].replace(/[.,;:!?]+$/, '').replace(/[-/]+$/, '');
+      if (/\d/.test(cleaned) && cleaned.length >= 2) return { number: cleaned, raw: m[1] };
+    }
+  }
+  return null;
+}
+
+/** Écarte le numéro extrait du texte de ciblage — en JETON ENTIER uniquement : un numéro
+ * court (« 40 ») ne mutile jamais une référence qui le contient (« D2026-040 »), et un
+ * désignateur voisin n'est jamais consommé par accident. */
+function stripPurchaseOrderRaw(text: string, raw: string): string {
+  const escaped = raw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return text.replace(new RegExp(`(?<![\\p{L}\\p{N}./-])${escaped}(?![\\p{L}\\p{N}./-])`, 'gu'), ' ');
+}
+
+/** Lecture STRICTE du résultat de lier_bon_commande (sortie brute OU projection publique) —
+ * null si la forme dévie : l'enchaînement ne se propose jamais sur une donnée douteuse. */
+function purchaseOrderChainView(
+  output: unknown,
+): { quoteId: string; quoteNumber: string | null; invoiceable: boolean } | null {
+  if (typeof output !== 'object' || output === null) return null;
+  const o = output as { quoteId?: unknown; quoteNumber?: unknown; invoiceable?: unknown };
+  if (typeof o.quoteId !== 'string' || o.quoteId.length === 0) return null;
+  if (o.quoteNumber !== null && o.quoteNumber !== undefined && typeof o.quoteNumber !== 'string')
+    return null;
+  if (typeof o.invoiceable !== 'boolean') return null;
+  return { quoteId: o.quoteId, quoteNumber: o.quoteNumber ?? null, invoiceable: o.invoiceable };
+}
+
+/**
+ * Carte « Bon de commande lié ✓ » + ENCHAÎNEMENT NATUREL (B8) : quand le devis est signé et
+ * facturable, Bob propose la suite — la commande VERBATIM « Fais la facture du devis {ref} »
+ * délègue au flow generer_facture_devis EXISTANT (handler ASK-2 acompte/solde), qui reprend le
+ * bon de commande automatiquement (fait par le core). Aucune duplication du flow facturation.
+ * Exportée pour que tout hôte qui confirme via son propre runtime (HTTP /ai/confirm) rende le
+ * MÊME enchaînement depuis la projection publique de l'outil.
+ */
+export function purchaseOrderLinkedRun(input: {
+  intent: BobIntent;
+  model: string;
+  label: string;
+  output: unknown;
+}): AgentRun {
+  const base: AgentRun = {
+    kind: 'done',
+    intent: input.intent,
+    model: input.model,
+    plan: ['Lier le bon de commande au devis'],
+    card: { title: 'Bon de commande lié ✓', body: `${input.label} — c’est noté.` },
+  };
+  const view = purchaseOrderChainView(input.output);
+  if (!view?.invoiceable) return base;
+  const ref = view.quoteNumber ?? view.quoteId;
+  return {
+    ...base,
+    card: {
+      title: 'Bon de commande lié ✓',
+      body:
+        `${input.label} — c’est noté.\n`
+        + `Je crée la facture du devis ${ref} avec ce bon de commande ? Elle reprendra le numéro d’engagement automatiquement.`,
+    },
+    choices: [{ label: 'Oui — crée la facture', value: `Fais la facture du devis ${ref}` }],
+    spokenPrompt: 'C’est noté. Je crée la facture avec ce bon de commande ?',
+  };
+}
+
 /** Ligne d'échéance fiscale, sobre (C-EXP5b) : date FR, libellé, « à confirmer » sur les
  * hypothèses ('assumed'), puis l'explication du use case — jamais un montant (v1 n'en émet pas). */
 function fiscalDeadlineLine(d: FiscalDeadline): string {
@@ -568,7 +682,9 @@ function subscriptionStatusBody(s: SubscriptionStatusView): string {
   return `Offre ${label} active${period}.`;
 }
 
-function intentForTool(tool: string): BobIntent {
+/** Intent public d'un outil — exporté pour que tout hôte qui confirme via son propre
+ * runtime (HTTP /ai/confirm, client local) étiquette le run comme BobAgent.confirm. */
+export function intentForTool(tool: string): BobIntent {
   if (tool === 'contexte_ecran') return 'contexte_ecran';
   if (tool === 'marquer_notifications_lues') return 'marquer_notifications_lues';
   if (tool === 'envoyer_devis') return 'envoyer_devis';
@@ -587,6 +703,7 @@ function intentForTool(tool: string): BobIntent {
   if (tool === 'classer_document') return 'classer_document';
   if (tool === 'renommer_document') return 'renommer_document';
   if (tool === 'chercher_document') return 'chercher_document';
+  if (tool === 'lier_bon_commande') return 'lier_bon_commande';
   if (tool === 'resultat_provisoire') return 'resultat';
   if (tool === 'mon_bilan') return 'bilan';
   if (tool === 'generer_facture' || tool === 'generer_facture_devis') return 'generer_facture';
@@ -704,9 +821,40 @@ export class BobAgent {
     const isExpensePaymentContinuation = lastBobTurn !== undefined
       && /(date|moyen).{0,30}r[èe]glement|r[èe]glement.{0,30}(date|moyen)/i.test(lastBobTurn.text)
       && recentUserTurns.some((turn) => /(d[ée]pense|fournisseur).*(pay[ée]|r[ée]gl)|(?:pay[ée]|r[ée]gl).*(d[ée]pense|fournisseur)/i.test(turn.text));
-    const classificationMessage = isExpensePaymentContinuation
-      ? `${recentUserTurns.map((turn) => turn.text).join(' ')} ${userMessage}`
-      : userMessage;
+    // B8 — continuité du numéro : après la question Bob « il me faut le numéro du bon de
+    // commande… », la réponse courte (« c'est le n° 4500123 ») reste dans ce parcours.
+    const isPurchaseOrderContinuation = lastBobTurn !== undefined
+      && /num[ée]ro du bon de commande/i.test(lastBobTurn.text)
+      && recentUserTurns.some((turn) => /bon de commande|purchase order|num[ée]ro d.engagement|\bbc[- ]?\d/i.test(turn.text));
+    // B8 — passerelle d'enchaînement : après « Bon de commande lié ✓ », un OUI franc délègue au
+    // flow generer_facture_devis EXISTANT via sa commande canonique VERBATIM ; un NON franc clôt
+    // proprement (le lien, lui, est déjà fait). Jamais d'action sur une réponse ambiguë.
+    const invoiceChainRef = lastBobTurn !== undefined
+      ? (/facture du devis\s+([\p{L}\p{N}][\p{L}\p{N}\-./]*)\s+avec ce bon de commande/iu.exec(lastBobTurn.text)?.[1] ?? null)
+      : null;
+    if (invoiceChainRef !== null && parseVoiceConsent(userMessage) === 'cancel') {
+      return ok({
+        kind: 'answer',
+        intent: 'lier_bon_commande',
+        model: DETERMINISTIC_CLASSIFIER_MODEL,
+        plan: ['Clore l’enchaînement facture'],
+        card: {
+          title: 'Très bien',
+          body: 'Je ne crée pas la facture. Le bon de commande reste lié au devis — dis-moi « fais la facture » quand tu seras prêt.',
+        },
+        spokenPrompt: 'Entendu, pas de facture pour l’instant. Le bon de commande reste lié au devis.',
+      });
+    }
+    const chainCommand = invoiceChainRef !== null && parseVoiceConsent(userMessage) === 'confirm'
+      ? `Fais la facture du devis ${invoiceChainRef}`
+      : null;
+    const classificationMessage = chainCommand
+      ?? (isExpensePaymentContinuation || isPurchaseOrderContinuation
+        ? `${recentUserTurns.map((turn) => turn.text).join(' ')} ${userMessage}`
+        : userMessage);
+    // Le message des handlers : la commande canonique quand l'enchaînement a été accepté,
+    // sinon la demande telle que dite (les handlers relisent l'historique eux-mêmes).
+    const effectiveMessage = chainCommand ?? userMessage;
     const plan = await this.classify(classificationMessage, routed.model, history, context, opts.signal);
     opts.signal?.throwIfAborted();
     const model =
@@ -727,8 +875,8 @@ export class BobAgent {
       opts.onPhase?.('agis');
       result =
         effective.length > 1
-          ? await this.runMulti(effective, autonomy, model, userMessage, context)
-          : await this.runSingle(effective[0]!, autonomy, model, userMessage, context, history);
+          ? await this.runMulti(effective, autonomy, model, effectiveMessage, context)
+          : await this.runSingle(effective[0]!, autonomy, model, effectiveMessage, context, history);
     }
     // Les ports métier ne sont pas tous interruptibles, mais aucun résultat tardif ne franchit ce fence.
     opts.signal?.throwIfAborted();
@@ -2506,6 +2654,228 @@ export class BobAgent {
       return ok({ kind: 'done', intent, model, plan: ['Émettre la facture'], card: { title: 'Facture émise ✓', body: `${label} — c’est émis.` } });
     }
 
+    if (intent === 'lier_bon_commande') {
+      // B8 — « la RATP m'a envoyé un bon de commande n° 4500123 » : le numéro d'engagement
+      // s'attache AU DEVIS (saisie unique) et sera repris automatiquement sur la facture
+      // dérivée (Invoice.fromSignedQuote — core). Résolution contre les listes RÉELLES du
+      // tenant : jamais un devis ni un numéro inventés ; toute ambiguïté redevient une question.
+      const attach = this.deps.actions.attachPurchaseOrderToQuote?.bind(this.deps.actions);
+      const listInvoiceable = this.deps.actions.listInvoiceableQuotes?.bind(this.deps.actions);
+      const tool = this.tool('lier_bon_commande');
+      if (!attach || !listInvoiceable || !tool) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier la capacité de l’hôte'],
+          card: {
+            title: 'Lier un bon de commande',
+            body: 'Je ne peux pas lier de bon de commande sur cet appareil pour le moment. Rien n’a été modifié — tu peux le renseigner depuis la fiche du devis.',
+          },
+        });
+      }
+      const [signedResult, sendableResult] = await Promise.all([
+        listInvoiceable(),
+        this.deps.actions.listSendableQuotes(),
+      ]);
+      if (!signedResult.ok) return err(signedResult.error);
+      if (!sendableResult.ok) return err(sendableResult.error);
+      // Devis EN COURS du tenant : signés non facturés (PRIORITÉ), puis envoyés en attente de
+      // signature. Les brouillons restent hors jeu : un bon de commande répond à un devis reçu.
+      const candidates = [
+        ...signedResult.value.map((q) => ({
+          id: q.id,
+          number: q.number,
+          customerName: q.customerName,
+          totalTtcCents: q.totalTtcCents,
+          signed: true,
+          currentPoNumber: q.purchaseOrder?.number ?? null,
+        })),
+        ...sendableResult.value
+          .filter((q) => q.status === 'sent' || q.status === 'viewed')
+          .map((q) => ({
+            id: q.id,
+            number: q.number,
+            customerName: q.customerName,
+            totalTtcCents: q.totalTtcCents,
+            signed: false,
+            currentPoNumber: null as string | null,
+          })),
+      ];
+      if (candidates.length === 0) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Lister les devis en cours'],
+          card: {
+            title: 'Aucun devis en cours',
+            body: 'Je ne vois aucun devis envoyé ou signé en attente : un bon de commande se lie à un devis en cours. Rien n’a été modifié.',
+          },
+        });
+      }
+      // Historique court : lève l'anaphore (« c'est le n° 4500123 » après la question du numéro,
+      // ou le followUp « Le bon de commande est pour le devis X » après la liste).
+      const conversation = [
+        ...(history ?? []).slice(-4).filter((turn) => turn.role === 'user').map((turn) => turn.text),
+        message,
+        reference ?? '',
+      ].join(' ');
+      const po = extractPurchaseOrderNumber(conversation);
+      // Le numéro extrait ne doit JAMAIS cibler un devis : on l'écarte du texte de résolution.
+      const resolutionText = po ? stripPurchaseOrderRaw(conversation, po.raw) : conversation;
+      const normalizedResolution = normalized(resolutionText);
+      // « je l'ai scanné » : réponse honnête — l'outil vocal V1 lie le NUMÉRO ; le document
+      // scanné se rattache ensuite à la main (champ documentId du picker), jamais deviné ici.
+      const scanNote = /\bscan/.test(normalized(`${message} ${reference ?? ''}`))
+        ? ' Le scan du bon de commande se rattachera à la main depuis la fiche du devis — ici je lie le numéro.'
+        : '';
+      // 1) Devis désigné par son numéro/id EXACT (tokens entiers — jamais un préfixe).
+      const byExplicit = candidates.filter((q) => {
+        const id = normalized(q.id);
+        const num = q.number !== null ? normalized(q.number) : null;
+        return (
+          (id.length >= 3 && containsExactTokens(normalizedResolution, id))
+          || (num !== null && num.length >= 3 && containsExactTokens(normalizedResolution, num))
+        );
+      });
+      // 2) Client par jetons SIGNIFICATIFS — la liste réelle = les clients des devis en cours.
+      const resolutionTokens = new Set(
+        normalizedResolution
+          .split(/[^a-z0-9]+/)
+          .filter((word) => word.length >= 3 && !PURCHASE_ORDER_GESTURE_WORDS.has(word)),
+      );
+      const matchedClientNames = [...new Set(candidates.map((q) => q.customerName))].filter((name) =>
+        significantNameWords(normalized(name)).some((word) => resolutionTokens.has(word)),
+      );
+      let targeted = candidates;
+      if (byExplicit.length > 0) {
+        targeted = byExplicit;
+      } else if (matchedClientNames.length === 1) {
+        const ofClient = candidates.filter((q) => q.customerName === matchedClientNames[0]);
+        const signedOfClient = ofClient.filter((q) => q.signed);
+        targeted = signedOfClient.length > 0 ? signedOfClient : ofClient;
+      } else if (matchedClientNames.length > 1) {
+        targeted = candidates.filter((q) => matchedClientNames.includes(q.customerName));
+      } else {
+        // Aucun client reconnu : un nom dit mais INCONNU des devis en cours interdit tout choix
+        // silencieux — refus honnête. Sans jeton restant, l'unicité métier peut trancher.
+        const knownTokens = new Set(
+          candidates.flatMap((q) => [
+            ...significantNameWords(normalized(q.customerName)),
+            ...normalized(`${q.number ?? ''} ${q.id}`).split(/[^a-z0-9]+/).filter((word) => word.length >= 3),
+          ]),
+        );
+        const currentTokens = normalized(po ? stripPurchaseOrderRaw(`${message} ${reference ?? ''}`, po.raw) : `${message} ${reference ?? ''}`)
+          .split(/[^a-z0-9]+/)
+          .filter((word) => word.length >= 3 && !PURCHASE_ORDER_GESTURE_WORDS.has(word));
+        const leftover = currentTokens.filter((word) => !knownTokens.has(word) && !/^\d+$/.test(word));
+        if (leftover.length > 0) {
+          const leftoverSet = new Set(leftover);
+          const said = message
+            .split(/[^\p{L}\p{N}-]+/u)
+            .filter((word) => leftoverSet.has(normalized(word)))
+            .slice(0, 4)
+            .join(' ');
+          return ok({
+            kind: 'answer',
+            intent,
+            model,
+            plan: ['Chercher les devis en cours du client'],
+            card: {
+              title: 'Client introuvable',
+              body: `Je ne trouve pas de devis en cours pour ${said.length > 0 ? said : 'ce client'}. Un bon de commande se lie à un devis déjà envoyé ou signé — vérifie le nom, ou crée d’abord le devis. Rien n’a été modifié.`,
+            },
+          });
+        }
+      }
+      const target = targeted.length === 1 ? targeted[0]! : null;
+      if (!target) {
+        // Plusieurs devis plausibles : question structurée, les devis EN CLAIR — jamais un
+        // choix silencieux sur une pièce de facturation.
+        const options = targeted.slice(0, 8);
+        const clientLabel = matchedClientNames.length === 1 ? matchedClientNames[0]! : null;
+        const statusLabel = (q: (typeof candidates)[number]): string =>
+          q.signed ? 'signé, à facturer' : 'envoyé, en attente de signature';
+        const followUpFor = (q: (typeof candidates)[number]): string =>
+          po
+            ? `Ajoute le bon de commande n° ${po.number} au devis ${q.id}`
+            : `Le bon de commande est pour le devis ${q.id}`;
+        const lines = options.map(
+          (q) => `• ${displayRef(q)} — ${q.customerName} · ${formatEUR(q.totalTtcCents)} (${statusLabel(q)})`,
+        );
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Lister les devis en cours', 'Lever l’ambiguïté du devis'],
+          card: {
+            title: 'Quel devis ?',
+            body: `${clientLabel !== null ? `${clientLabel} a ${options.length} devis en cours :` : 'Plusieurs devis sont en cours :'}\n${lines.join('\n')}\nLequel a reçu le bon de commande ?`,
+          },
+          choices: options.map((q) => ({
+            label: `${displayRef(q)} — ${q.customerName} · ${formatEUR(q.totalTtcCents)}`,
+            value: followUpFor(q),
+          })),
+          ask: [
+            askToPick({
+              id: 'lier_bon_commande.cible',
+              question:
+                clientLabel !== null
+                  ? `${clientLabel} a ${options.length} devis en cours — lequel a reçu le bon de commande ?`
+                  : 'Quel devis a reçu le bon de commande ?',
+              header: 'Devis',
+              items: options.map((q) => ({
+                value: q.id,
+                label: displayRef(q),
+                description: `${q.customerName} · ${formatEUR(q.totalTtcCents)} — ${statusLabel(q)}`,
+                followUp: followUpFor(q),
+              })),
+            }),
+          ],
+        });
+      }
+      if (!po) {
+        // Le numéro manque : Bob le DEMANDE (jamais inventé) — sans lui, la facture des grands
+        // comptes est rejetée ou retardée (exigence de paiement, Chorus Pro pour le public).
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Identifier le devis', 'Demander le numéro du bon de commande'],
+          card: {
+            title: 'Quel numéro ?',
+            body: `Il me faut le numéro du bon de commande de ${target.customerName} pour le devis ${displayRef(target)}. Dis-le-moi (par exemple « n° 4500123 ») — sans lui, la facture serait rejetée par le client.${scanNote}`,
+          },
+        });
+      }
+      const replaceNote =
+        target.currentPoNumber !== null && target.currentPoNumber !== po.number
+          ? ` Il remplace le n° ${target.currentPoNumber} déjà noté.`
+          : '';
+      const args = { quoteId: target.id, number: po.number };
+      const parsed = tool.parse(args);
+      if (!parsed.ok) return err(parsed.error);
+      const label = `Lier le bon de commande n° ${po.number} au devis ${displayRef(target)} de ${target.customerName} (${formatEUR(target.totalTtcCents)})`;
+      if (requiresConfirmation(tool, autonomy)) {
+        return ok({
+          kind: 'proposed',
+          intent,
+          model,
+          plan: ['Identifier le devis', 'Contrôler le numéro d’engagement', 'Attendre ta confirmation'],
+          card: {
+            title: 'Bon de commande à confirmer',
+            body: `${label}. Le numéro d’engagement sera repris automatiquement sur la facture.${replaceNote}${scanNote} Je confirme ?`,
+          },
+          pending: { tool: tool.name, args, label },
+          spokenPrompt: buildSpokenConfirmation(label),
+        });
+      }
+      const run = await tool.run(parsed.value);
+      if (!run.ok) return err(run.error);
+      return ok(purchaseOrderLinkedRun({ intent, model, label, output: run.value }));
+    }
+
     if (intent === 'generer_facture') {
       // ASK-2 : générer la facture d'un devis SIGNÉ — le mode (acompte/solde) est une vraie
       // décision de facturation : quand le devis prévoit un acompte non encore facturé et que
@@ -3120,6 +3490,18 @@ export class BobAgent {
               : `${updatedCount} notification${updatedCount > 1 ? 's ont' : ' a'} été marquée${updatedCount > 1 ? 's' : ''} comme lue${updatedCount > 1 ? 's' : ''}.`,
         },
       });
+    }
+    // B8 — après le lien confirmé, l'ENCHAÎNEMENT NATUREL : Bob propose la facture du devis
+    // (délégation VERBATIM au flow generer_facture_devis existant — jamais un flux parallèle).
+    if (pending.tool === 'lier_bon_commande') {
+      return ok(
+        purchaseOrderLinkedRun({
+          intent: 'lier_bon_commande',
+          model,
+          label: pending.label,
+          output: run.value,
+        }),
+      );
     }
     return ok({
       kind: 'done',

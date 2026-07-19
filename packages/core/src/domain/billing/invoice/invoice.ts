@@ -6,6 +6,11 @@ import { type PaymentTerms } from '../../../shared-kernel/payment-terms';
 import { DocNumber } from '../shared/doc-number';
 import { type QuoteLine } from '../shared/line';
 import { type Totals } from '../shared/totals';
+import {
+  type PurchaseOrderRef,
+  purchaseOrderRefEquals,
+  clonePurchaseOrderRef,
+} from '../shared/purchase-order-ref';
 import { isVatRate } from '../shared/vat-rate';
 import { Quantity } from '../shared/quantity';
 import { computeTotals } from '../../services/compute-totals';
@@ -45,6 +50,10 @@ export class Invoice extends AggregateRoot<string> {
   private _dueAt: DateOnly | null = null;
   private _paid = 0; // centimes cumulés
   private _cancelReason: string | null = null;
+  /** Bon de commande client (B8) — repris du devis à la dérivation, figé à l'émission. */
+  private _purchaseOrder: PurchaseOrderRef | null = null;
+  /** Révision optimiste — incrémentée par les mutations de bon de commande. */
+  private _revision = 1;
 
   private constructor(
     id: string,
@@ -80,6 +89,10 @@ export class Invoice extends AggregateRoot<string> {
     const kind: InvoiceKind = mode === 'deposit' ? 'deposit' : 'final';
     const inv = new Invoice(id, quote.companyId, quote.customerId, kind, dep, quote.id, null);
     for (const l of quote.lines) inv._lines.push({ ...l });
+    // B8 — REPRISE AUTOMATIQUE : le bon de commande du devis (source unique, saisi une fois)
+    // suit la facture dérivée — le numéro d'engagement figurera sur la facture émise.
+    const po = quote.purchaseOrder;
+    inv._purchaseOrder = po ? clonePurchaseOrderRef(po) : null;
     if (mode === 'final' && opts?.depositDeduction) {
       const { amountCents, invoiceId } = opts.depositDeduction;
       if (!Number.isSafeInteger(amountCents) || amountCents < 0)
@@ -139,6 +152,10 @@ export class Invoice extends AggregateRoot<string> {
     creditNote._depositDeductionCents = source._depositDeductionCents;
     creditNote._depositInvoiceId = source._depositInvoiceId;
     creditNote._frozenTotals = cloneTotals(source._frozenTotals);
+    // B8 : l'avoir cite le même numéro d'engagement que la pièce annulée (compta client grands comptes).
+    creditNote._purchaseOrder = source._purchaseOrder
+      ? clonePurchaseOrderRef(source._purchaseOrder)
+      : null;
     return ok(creditNote);
   }
 
@@ -174,6 +191,63 @@ export class Invoice extends AggregateRoot<string> {
   /** Identité légale immuable de la facture annulée par cet avoir total. */
   get creditNoteSource(): CreditNoteSourceSnapshot | null {
     return this._creditNoteSource ? { ...this._creditNoteSource } : null;
+  }
+  get purchaseOrder(): PurchaseOrderRef | null {
+    return this._purchaseOrder;
+  }
+  get revision(): number {
+    return this._revision;
+  }
+
+  /**
+   * B8 : attache (ou remplace) le bon de commande — BROUILLON uniquement : un PO se fixe
+   * AVANT émission (le numéro d'engagement doit figurer sur la pièce légale figée).
+   * Idempotent si la référence est identique. Un avoir hérite du PO de sa source : figé.
+   */
+  attachPurchaseOrder(ref: PurchaseOrderRef, at: Instant): DomainResult<void> {
+    if (this.kind === 'credit_note')
+      return err({
+        code: 'VALIDATION',
+        field: 'purchaseOrder',
+        message: 'Le bon de commande d’un avoir est figé depuis la facture source.',
+      });
+    if (this._status !== 'draft')
+      return err({
+        code: 'VALIDATION',
+        field: 'status',
+        message: 'Le bon de commande se fixe avant émission — cette facture est déjà émise.',
+      });
+    if (purchaseOrderRefEquals(this._purchaseOrder, ref)) return ok(undefined);
+    this._purchaseOrder = clonePurchaseOrderRef(ref);
+    this._revision += 1;
+    this.record({ type: 'InvoicePurchaseOrderAttached', occurredAt: at, version: 1 });
+    return ok(undefined);
+  }
+
+  /** B8 : retrait EXPLICITE du bon de commande — brouillon uniquement (mêmes gardes que l'attache). */
+  detachPurchaseOrder(at: Instant): DomainResult<void> {
+    if (this.kind === 'credit_note')
+      return err({
+        code: 'VALIDATION',
+        field: 'purchaseOrder',
+        message: 'Le bon de commande d’un avoir est figé depuis la facture source.',
+      });
+    if (this._status !== 'draft')
+      return err({
+        code: 'VALIDATION',
+        field: 'status',
+        message: 'Le bon de commande se fixe avant émission — cette facture est déjà émise.',
+      });
+    if (this._purchaseOrder === null)
+      return err({
+        code: 'VALIDATION',
+        field: 'purchaseOrder',
+        message: 'Aucun bon de commande attaché à cette facture.',
+      });
+    this._purchaseOrder = null;
+    this._revision += 1;
+    this.record({ type: 'InvoicePurchaseOrderDetached', occurredAt: at, version: 1 });
+    return ok(undefined);
   }
 
   addLine(line: QuoteLine): DomainResult<void> {
@@ -286,6 +360,8 @@ export class Invoice extends AggregateRoot<string> {
       sourceInvoiceKind: this._creditNoteSource?.kind ?? null,
       sourceInvoiceNumber: this._creditNoteSource?.number ?? null,
       sourceInvoiceIssuedAt: this._creditNoteSource?.issuedAt ?? null,
+      purchaseOrder: this._purchaseOrder ? clonePurchaseOrderRef(this._purchaseOrder) : null,
+      revision: this._revision,
     };
   }
 
@@ -318,6 +394,9 @@ export class Invoice extends AggregateRoot<string> {
     inv._paid = s.paid;
     inv._depositDeductionCents = s.depositDeductionCents ?? 0;
     inv._depositInvoiceId = s.depositInvoiceId ?? null;
+    // Compat ascendante B8 : snapshots antérieurs sans bon de commande ni révision.
+    inv._purchaseOrder = s.purchaseOrder ? clonePurchaseOrderRef(s.purchaseOrder) : null;
+    inv._revision = s.revision ?? 1;
     return inv;
   }
 }
@@ -345,6 +424,9 @@ export interface InvoiceSnapshot {
   sourceInvoiceKind?: CreditedInvoiceKind | null;
   sourceInvoiceNumber?: string | null;
   sourceInvoiceIssuedAt?: DateOnly | null;
+  /** B8 — optionnels : les snapshots antérieurs restent lisibles (compat ascendante). */
+  purchaseOrder?: PurchaseOrderRef | null;
+  revision?: number;
 }
 
 function cloneTotals(totals: Totals): Totals {

@@ -91,6 +91,32 @@ export interface InvoiceableQuote {
   depositPct: number | null;
   /** L'acompte a déjà été facturé : la finale devient l'évidence (aucune question). */
   depositInvoiced: boolean;
+  /** B8 (OPTIONNEL, rétro-compatible) : bon de commande déjà attaché au devis — null si aucun,
+   * absent chez un hôte historique. Permet à lier_bon_commande d'annoncer un remplacement. */
+  purchaseOrder?: { number: string; receivedAt: string | null; documentId: string | null } | null;
+}
+
+/** Outil lier_bon_commande (B8) : attache le NUMÉRO d'engagement d'un bon de commande à un
+ * devis — MÊME use case AttachPurchaseOrderToQuote (@bob/core) que l'écran devis. L'outil
+ * vocal V1 lie le numéro seul : le document scanné se rattache ensuite via le picker manuel
+ * (champ documentId de PUT /quotes/:id/purchase-order), jamais deviné à la voix. */
+export interface AttachPurchaseOrderActionInput {
+  quoteId: string;
+  /** Numéro d'engagement, déjà assaini par makePurchaseOrderRef (autorité du domaine). */
+  number: string;
+}
+
+export interface AttachPurchaseOrderActionOutput {
+  quoteId: string;
+  /** Numéro du devis (affichage) — null si le devis n'est pas encore numéroté. */
+  quoteNumber: string | null;
+  /** Révision du devis après mutation (vue rafraîchie côté hôte). */
+  revision: number;
+  /** Numéro d'engagement effectivement attaché (assaini par le domaine). */
+  purchaseOrderNumber: string;
+  /** Le devis est signé et encore facturable (ListInvoiceableQuotes) : Bob peut proposer
+   * l'enchaînement naturel vers generer_facture — la facture reprendra le numéro (core). */
+  invoiceable: boolean;
 }
 
 export interface AgentDocument {
@@ -397,4 +423,11 @@ export interface BobActions {
   /** « Retrouve la facture du radiateur de mars » — MÊME recherche que GET /documents/search
    * (devis & factures, ranking serveur). Lecture pure, résultats réels uniquement. */
   searchDocuments?(input: SearchDocumentsActionInput): Promise<Result<SearchDocumentsActionOutput, AppError>>;
+  /** B8 — « la RATP m'a envoyé un bon de commande n° 4500123 » : MÊME use case
+   * AttachPurchaseOrderToQuote que PUT /quotes/:id/purchase-order (parité humain↔Bob).
+   * L'hôte résout la révision courante (le geste vocal n'a pas de vue optimiste) ; le numéro
+   * sera repris automatiquement sur la facture dérivée (Invoice.fromSignedQuote, core). */
+  attachPurchaseOrderToQuote?(
+    input: AttachPurchaseOrderActionInput,
+  ): Promise<Result<AttachPurchaseOrderActionOutput, AppError>>;
 }

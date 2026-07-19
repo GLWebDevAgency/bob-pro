@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { Quote } from './quote';
 import { DocNumber } from '../shared/doc-number';
+import { makePurchaseOrderRef, type PurchaseOrderRef } from '../shared/purchase-order-ref';
 import { type Signature } from '../shared/signature';
 import { type QuoteLine } from '../shared/line';
 import { type VatRate } from '../shared/vat-rate';
@@ -96,6 +97,110 @@ describe('Quote', () => {
       const r = q.updateLine('l1', { qty: 2 });
       expect(r.ok).toBe(false);
       if (!r.ok) expect(r.error.code).toBe('INVALID_TRANSITION');
+    });
+  });
+
+  describe('bon de commande (B8)', () => {
+    const po = (number = 'BC-RATP-4500123456'): PurchaseOrderRef => {
+      const r = makePurchaseOrderRef({ number, receivedAt: AT, documentId: 'doc-1' });
+      if (!r.ok) throw new Error('po');
+      return r.value;
+    };
+    const signedQuote = (): Quote => {
+      const q = freshQuote();
+      q.addLine(line('l1'));
+      q.assignNumber(DocNumber.format('D', 2026, 1), AT);
+      q.send(AT);
+      q.markViewed(AT);
+      q.sign(sig, AT);
+      return q;
+    };
+
+    it('défaut : aucun bon de commande, révision 1 (compat ascendante)', () => {
+      const q = freshQuote();
+      expect(q.purchaseOrder).toBeNull();
+      expect(q.revision).toBe(1);
+    });
+
+    it('attache sur devis SIGNÉ (cas nominal grands comptes : le PO répond au devis)', () => {
+      const q = signedQuote();
+      q.pullEvents();
+      const r = q.attachPurchaseOrder(po(), AT);
+      expect(r.ok).toBe(true);
+      expect(q.purchaseOrder?.number).toBe('BC-RATP-4500123456');
+      expect(q.revision).toBe(2);
+      expect(q.pullEvents().map((e) => e.type)).toEqual(['QuotePurchaseOrderAttached']);
+    });
+
+    it('idempotent : ré-attacher la MÊME référence ne change ni révision ni événements', () => {
+      const q = signedQuote();
+      q.attachPurchaseOrder(po(), AT);
+      q.pullEvents();
+      const replay = q.attachPurchaseOrder(po(), AT);
+      expect(replay.ok).toBe(true);
+      expect(q.revision).toBe(2);
+      expect(q.pullEvents()).toEqual([]);
+    });
+
+    it('remplaçable : une nouvelle référence écrase l’ancienne (devis non facturé)', () => {
+      const q = signedQuote();
+      q.attachPurchaseOrder(po(), AT);
+      const r = q.attachPurchaseOrder(po('BC-2026-0002'), AT);
+      expect(r.ok).toBe(true);
+      expect(q.purchaseOrder?.number).toBe('BC-2026-0002');
+      expect(q.revision).toBe(3);
+    });
+
+    it('refusé/expiré : pas de bon de commande (le devis signé, lui, reste OK)', () => {
+      const temoinSigne = signedQuote();
+      const q = freshQuote();
+      q.addLine(line('l1'));
+      q.assignNumber(DocNumber.format('D', 2026, 1), AT);
+      q.send(AT);
+      q.refuse(AT);
+      expect(q.attachPurchaseOrder(po(), AT).ok).toBe(false);
+      expect(q.detachPurchaseOrder(AT).ok).toBe(false);
+      expect(temoinSigne.attachPurchaseOrder(po(), AT).ok).toBe(true);
+    });
+
+    it('detach explicite : retire la référence, bump révision ; sans PO -> VALIDATION', () => {
+      const q = signedQuote();
+      q.attachPurchaseOrder(po(), AT);
+      const r = q.detachPurchaseOrder(AT);
+      expect(r.ok).toBe(true);
+      expect(q.purchaseOrder).toBeNull();
+      expect(q.revision).toBe(3);
+      const again = q.detachPurchaseOrder(AT);
+      expect(again.ok).toBe(false);
+      if (!again.ok) expect(again.error).toMatchObject({ code: 'VALIDATION', field: 'purchaseOrder' });
+    });
+
+    it('snapshot round-trip : purchaseOrder + revision persistés puis relus', () => {
+      const q = signedQuote();
+      q.attachPurchaseOrder(po(), AT);
+      const back = Quote.rehydrate(q.toSnapshot());
+      expect(back.purchaseOrder).toEqual({
+        number: 'BC-RATP-4500123456',
+        receivedAt: AT,
+        documentId: 'doc-1',
+      });
+      expect(back.revision).toBe(2);
+    });
+
+    it('compat ascendante : un snapshot legacy SANS purchaseOrder/revision se relit (null / 1)', () => {
+      const legacy = Quote.rehydrate({
+        id: 'q-legacy',
+        companyId: 'c1',
+        customerId: 'k1',
+        status: 'signed',
+        lines: [line('l1')],
+        number: 'D-2026-0001',
+        depositPct: null,
+        validUntil: null,
+        signature: sig,
+      });
+      expect(legacy.purchaseOrder).toBeNull();
+      expect(legacy.revision).toBe(1);
     });
   });
 

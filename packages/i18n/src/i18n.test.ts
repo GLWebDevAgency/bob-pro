@@ -1125,3 +1125,67 @@ describe('i18n — chantiers.* paramétré par métier (tradeToWorksiteTerminolo
     );
   });
 });
+
+describe('i18n — B8 po.* (bon de commande grands comptes)', () => {
+  it('état vide devis : copy pote exacte de la mission, déclinée sur les 3 humeurs', () => {
+    expect(t('po.sectionTitle')).toBe('Bon de commande');
+    expect(t('po.emptyQuoteBody')).toBe(
+      'Ton client t’a envoyé un bon de commande ? Ajoute son numéro : il suivra jusqu’à la facture.',
+    );
+    expect(t('po.emptyQuoteBody', { personality: 'pro' })).toBe(
+      'Votre client a émis un bon de commande ? Ajoutez son numéro : il sera repris sur la facture.',
+    );
+    expect(t('po.emptyQuoteBody', { personality: 'direct' })).toBe(
+      'Bon de commande reçu ? Ajoute le numéro — repris sur la facture.',
+    );
+    expect(t('po.emptyInvoiceBody', { personality: 'direct' })).toBe(
+      'Bon de commande ? Ajoute le numéro avant l’émission.',
+    );
+    expect(t('po.addCta')).toBe('Ajouter le numéro');
+  });
+
+  it('formulaire : libellés, erreurs et picker du coffre sur les 3 humeurs', () => {
+    expect(t('po.numberLabel', { personality: 'pro' })).toBe('Numéro d’engagement');
+    expect(t('po.numberInvalid', { personality: 'direct' })).toBe('Numéro requis (60 car. max).');
+    expect(t('po.dateInvalid', { personality: 'pro' })).toBe(
+      'Date invalide. Format attendu : JJ/MM/AAAA.',
+    );
+    expect(t('po.datePlaceholder')).toBe('JJ/MM/AAAA');
+    expect(t('po.documentPickCta')).toBe('Lier un document');
+    expect(t('po.documentPickerEmpty', { personality: 'direct' })).toBe('Coffre vide.');
+    expect(t('po.saveCta')).toBe('Enregistrer');
+    expect(t('po.saveError', { personality: 'direct' })).toBe('Enregistrement KO. Réessaie.');
+  });
+
+  it('carte remplie : date {date}, retrait {number} et lecture seule (figé/déjà facturé) ×3', () => {
+    expect(t('po.receivedOn', { params: { date: '15/07/2026' } })).toBe('Reçu le 15/07/2026');
+    expect(t('po.receivedOn', { personality: 'direct', params: { date: '15/07/2026' } })).toBe(
+      'Reçu 15/07/2026',
+    );
+    expect(t('po.removeConfirmBody', { params: { number: 'BC-2026-0458' } })).toBe(
+      'Le numéro BC-2026-0458 ne suivra plus jusqu’à la facture.',
+    );
+    expect(
+      t('po.removeConfirmBody', { personality: 'pro', params: { number: 'BC-2026-0458' } }),
+    ).toBe('Le numéro BC-2026-0458 ne sera plus repris sur la facture.');
+    expect(t('po.frozenNote')).toBe('Figé à l’émission — ce numéro figure sur la facture.');
+    expect(t('po.quoteInvoicedNote', { personality: 'direct' })).toBe(
+      'Déjà facturé — gère le BC sur la facture.',
+    );
+  });
+
+  it('réassurance à la génération de facture : « Bon de commande n° X repris sur la facture » ×3', () => {
+    expect(t('po.carriedToInvoice', { params: { number: 'BC-2026-0458' } })).toBe(
+      'Bon de commande n° BC-2026-0458 repris sur la facture',
+    );
+    expect(
+      t('po.carriedToInvoice', { personality: 'pro', params: { number: 'BC-2026-0458' } }),
+    ).toBe('Bon de commande n° BC-2026-0458 repris sur la facture.');
+    expect(
+      t('po.carriedToInvoice', { personality: 'direct', params: { number: 'BC-2026-0458' } }),
+    ).toBe('BC n° BC-2026-0458 repris sur la facture.');
+    expect(t('po.voice.sheetOpened', { personality: 'direct' })).toBe(
+      'Saisie du bon de commande ouverte.',
+    );
+  });
+});

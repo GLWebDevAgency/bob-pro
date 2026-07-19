@@ -194,6 +194,73 @@ describe('ClassifyDocument (A1-C14 — confirmation du classement proposé aprè
     }
   });
 
+  it('REFUSE d’écraser un lien métier existant par un lien DIFFÉRENT (DOCUMENT_ALREADY_LINKED → 422)', async () => {
+    const documents = new MemoryDocuments();
+    await documents.save(makeDocument({ linkedEntityType: 'expense', linkedEntityId: 'exp-leroy' }));
+    const classify = documents.classify.bind(documents);
+    let classifyCalls = 0;
+    documents.classify = async (input) => {
+      classifyCalls += 1;
+      return classify(input);
+    };
+    const uc = new ClassifyDocument({ documents, linkTargets: existingLinkTargets, clock });
+
+    const r = await uc.execute({
+      companyId: COMPANY,
+      documentId: 'doc-leroy',
+      linkedEntityType: 'chantier',
+      linkedEntityId: 'chantier-durand',
+      expectedRevision: 1,
+    });
+
+    // Erreur DOMAINE (l'API la traduira en 422), avec les DEUX liens : existant vs demandé.
+    expect(r).toMatchObject({
+      ok: false,
+      error: {
+        kind: 'domain',
+        error: {
+          code: 'DOCUMENT_ALREADY_LINKED',
+          existing: { linkedEntityType: 'expense', linkedEntityId: 'exp-leroy' },
+          requested: { linkedEntityType: 'chantier', linkedEntityId: 'chantier-durand' },
+        },
+      },
+    });
+    // Ni compare-and-set, ni mutation : le lien d'origine est inviolé.
+    expect(classifyCalls).toBe(0);
+    expect((await documents.findById(COMPANY, 'doc-leroy'))?.toProps()).toMatchObject({
+      linkedEntityType: 'expense',
+      linkedEntityId: 'exp-leroy',
+      revision: 1,
+    });
+  });
+
+  it('le re-lien IDENTIQUE d’un document déjà lié reste idempotent (le client mobile s’appuie dessus)', async () => {
+    const documents = new MemoryDocuments();
+    await documents.save(
+      makeDocument({
+        linkedEntityType: 'expense',
+        linkedEntityId: 'exp-leroy',
+        reviewedAt: '2026-07-10T08:00:00.000Z',
+      }),
+    );
+    const uc = new ClassifyDocument({ documents, linkTargets: existingLinkTargets, clock });
+
+    const r = await uc.execute({
+      companyId: COMPANY,
+      documentId: 'doc-leroy',
+      linkedEntityType: 'expense',
+      linkedEntityId: ' exp-leroy ',
+      expectedRevision: 1,
+    });
+
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.linkedEntityId).toBe('exp-leroy');
+      expect(r.value.revision).toBe(1); // aucune écriture fantôme
+      expect(r.value.reviewedAt).toBe('2026-07-10T08:00:00.000Z'); // latch intact
+    }
+  });
+
   it('refuse un document introuvable (ou hors tenant)', async () => {
     const uc = new ClassifyDocument({ documents: new MemoryDocuments(), linkTargets: existingLinkTargets, clock });
     const r = await uc.execute({

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { Quote } from '../quote/quote';
 import { Invoice } from './invoice';
 import { DocNumber } from '../shared/doc-number';
+import { makePurchaseOrderRef, type PurchaseOrderRef } from '../shared/purchase-order-ref';
 import { PaymentTerms } from '../../../shared-kernel/payment-terms';
 import { type Signature } from '../shared/signature';
 import { type QuoteLine } from '../shared/line';
@@ -114,6 +115,119 @@ describe('Invoice', () => {
     expect(rehydrated.totals()).toEqual(source.totals());
   });
 
+  describe('bon de commande (B8)', () => {
+    const po = (number = 'BC-RATP-4500123456'): PurchaseOrderRef => {
+      const r = makePurchaseOrderRef({ number, receivedAt: AT, documentId: null });
+      if (!r.ok) throw new Error('po');
+      return r.value;
+    };
+
+    it('REPRISE AUTOMATIQUE : fromSignedQuote copie le PO du devis (source unique, jamais re-saisi)', () => {
+      const quote = signedDepositQuote();
+      expect(quote.attachPurchaseOrder(po(), AT).ok).toBe(true);
+      for (const mode of ['deposit', 'final'] as const) {
+        const created = Invoice.fromSignedQuote(quote, mode, `inv-${mode}`);
+        expect(created.ok).toBe(true);
+        if (!created.ok) return;
+        expect(created.value.purchaseOrder).toEqual({
+          number: 'BC-RATP-4500123456',
+          receivedAt: AT,
+          documentId: null,
+        });
+      }
+    });
+
+    it('devis sans PO -> facture sans PO (compat : rien n’est inventé)', () => {
+      const created = Invoice.fromSignedQuote(signedDepositQuote(), 'final', 'inv-1');
+      expect(created.ok).toBe(true);
+      if (created.ok) expect(created.value.purchaseOrder).toBeNull();
+    });
+
+    it('attache sur BROUILLON, idempotent, remplaçable ; révision suit', () => {
+      const invR = Invoice.composeStandalone({ id: 'i1', companyId: 'c1', customerId: 'k1' });
+      if (!invR.ok) throw new Error('inv');
+      const inv = invR.value;
+      inv.pullEvents();
+      expect(inv.attachPurchaseOrder(po(), AT).ok).toBe(true);
+      expect(inv.revision).toBe(2);
+      expect(inv.pullEvents().map((e) => e.type)).toEqual(['InvoicePurchaseOrderAttached']);
+      // Idempotence : même référence -> aucun effet.
+      expect(inv.attachPurchaseOrder(po(), AT).ok).toBe(true);
+      expect(inv.revision).toBe(2);
+      expect(inv.pullEvents()).toEqual([]);
+      // Remplacement en brouillon : OK.
+      expect(inv.attachPurchaseOrder(po('BC-2'), AT).ok).toBe(true);
+      expect(inv.purchaseOrder?.number).toBe('BC-2');
+      expect(inv.revision).toBe(3);
+    });
+
+    it('IMMUTABILITÉ post-émission : attach/detach interdits une fois la facture émise', () => {
+      const quote = signedDepositQuote();
+      quote.attachPurchaseOrder(po(), AT);
+      const inv = issuedInvoiceFromQuoteWithPo(quote, 'inv-issued');
+      const attach = inv.attachPurchaseOrder(po('BC-APRES'), AT);
+      expect(attach.ok).toBe(false);
+      if (!attach.ok) expect(attach.error).toMatchObject({ code: 'VALIDATION', field: 'status' });
+      const detach = inv.detachPurchaseOrder(AT);
+      expect(detach.ok).toBe(false);
+      // Le PO repris du devis reste imprimable sur la pièce émise.
+      expect(inv.purchaseOrder?.number).toBe('BC-RATP-4500123456');
+    });
+
+    it('avoir total : hérite du PO de la source (compta grands comptes) et le fige', () => {
+      const quote = signedDepositQuote();
+      quote.attachPurchaseOrder(po(), AT);
+      const source = issuedInvoiceFromQuoteWithPo(quote, 'inv-src');
+      const credit = Invoice.creditNoteFor(source, 'credit-1');
+      expect(credit.ok).toBe(true);
+      if (!credit.ok) return;
+      expect(credit.value.purchaseOrder?.number).toBe('BC-RATP-4500123456');
+      const mutate = credit.value.attachPurchaseOrder(po('BC-AUTRE'), AT);
+      expect(mutate.ok).toBe(false);
+      if (!mutate.ok) expect(mutate.error).toMatchObject({ code: 'VALIDATION', field: 'purchaseOrder' });
+      expect(credit.value.detachPurchaseOrder(AT).ok).toBe(false);
+    });
+
+    it('detach explicite sur brouillon ; sans PO -> VALIDATION', () => {
+      const invR = Invoice.composeStandalone({ id: 'i1', companyId: 'c1', customerId: 'k1' });
+      if (!invR.ok) throw new Error('inv');
+      const inv = invR.value;
+      expect(inv.detachPurchaseOrder(AT).ok).toBe(false);
+      inv.attachPurchaseOrder(po(), AT);
+      expect(inv.detachPurchaseOrder(AT).ok).toBe(true);
+      expect(inv.purchaseOrder).toBeNull();
+      expect(inv.revision).toBe(3);
+    });
+
+    it('snapshot round-trip + compat legacy (sans purchaseOrder/revision -> null / 1)', () => {
+      const invR = Invoice.composeStandalone({ id: 'i1', companyId: 'c1', customerId: 'k1' });
+      if (!invR.ok) throw new Error('inv');
+      invR.value.attachPurchaseOrder(po(), AT);
+      const back = Invoice.rehydrate(invR.value.toSnapshot());
+      expect(back.purchaseOrder?.number).toBe('BC-RATP-4500123456');
+      expect(back.revision).toBe(2);
+
+      const legacy = Invoice.rehydrate({
+        id: 'i-legacy',
+        companyId: 'c1',
+        customerId: 'k1',
+        kind: 'final',
+        status: 'draft',
+        lines: [],
+        number: null,
+        frozenTotals: null,
+        mentions: [],
+        issuedAt: null,
+        dueAt: null,
+        paid: 0,
+        depositPct: null,
+        parentQuoteId: null,
+      });
+      expect(legacy.purchaseOrder).toBeNull();
+      expect(legacy.revision).toBe(1);
+    });
+  });
+
   it('refuse une pseudo-source émise sans numéro, date ou totaux légaux figés', () => {
     const corrupt = Invoice.rehydrate({
       ...issuedInvoiceFromQuote('final', 'source-corrupt').toSnapshot(),
@@ -132,6 +246,17 @@ describe('Invoice', () => {
 
 function issuedInvoiceFromQuote(mode: 'final' | 'deposit', id: string): Invoice {
   const created = Invoice.fromSignedQuote(signedDepositQuote(), mode, id);
+  if (!created.ok) throw new Error('invoice');
+  const numbered = created.value.assignNumber(DocNumber.format('F', 2026, 1), AT);
+  if (!numbered.ok) throw new Error('number');
+  const issued = created.value.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT });
+  if (!issued.ok) throw new Error('issue');
+  return created.value;
+}
+
+/** B8 : facture d'acompte ÉMISE dérivée d'un devis (porteur ou non d'un bon de commande). */
+function issuedInvoiceFromQuoteWithPo(quote: Quote, id: string): Invoice {
+  const created = Invoice.fromSignedQuote(quote, 'deposit', id);
   if (!created.ok) throw new Error('invoice');
   const numbered = created.value.assignNumber(DocNumber.format('F', 2026, 1), AT);
   if (!numbered.ok) throw new Error('number');

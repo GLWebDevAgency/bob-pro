@@ -33,7 +33,12 @@ import type {
   RecordExpensePaymentClientInput,
   RegularizeExpensePaymentClientInput,
   SearchSalesDocumentsClientInput,
+  AttachQuotePurchaseOrderClientInput,
+  DetachQuotePurchaseOrderClientInput,
+  AttachInvoicePurchaseOrderClientInput,
+  DetachInvoicePurchaseOrderClientInput,
 } from '@bob/api-client';
+import type { AppError } from '@bob/core';
 import type { FiscalProfileFieldPatch, FiscalProfileView } from '@bob/core';
 import { supabaseEnabled } from './supabase';
 import { useAuth } from './auth';
@@ -1244,6 +1249,88 @@ export function useRemoveQuoteLine() {
     onSuccess: (_data, input) => {
       void qc.invalidateQueries({ queryKey: keys.quotes });
       void qc.invalidateQueries({ queryKey: keys.quote(input.quoteId) });
+    },
+  });
+}
+
+// ── B8 : bon de commande grands comptes (numéro d'engagement) ────────────────────────────
+// Saisi UNE FOIS sur le devis, repris sur la facture dérivée — mêmes use cases que Bob
+// (attach/detach-purchase-order, révision optimiste). Un client antérieur à B8 n'expose pas
+// ces méthodes (interface optionnelle) : on échoue fermé avec une AppError standard.
+
+/** Client sans support B8 (version antérieure) → AppError `unavailable` (fail-closed). */
+function purchaseOrderUnavailable(): AppError {
+  return { kind: 'unavailable', service: 'purchase-order' };
+}
+
+/** PUT /quotes/:id/purchase-order — attache (ou remplace) la référence sur un devis non facturé. */
+export function useAttachQuotePurchaseOrder() {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: AttachQuotePurchaseOrderClientInput) => {
+      if (!client.attachQuotePurchaseOrder) throw purchaseOrderUnavailable();
+      const r = await client.attachQuotePurchaseOrder(input);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: (_data, input) => {
+      void qc.invalidateQueries({ queryKey: keys.quotes });
+      void qc.invalidateQueries({ queryKey: keys.quote(input.quoteId) });
+    },
+  });
+}
+
+/** DELETE /quotes/:id/purchase-order — retrait explicite (devis non facturé uniquement). */
+export function useDetachQuotePurchaseOrder() {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: DetachQuotePurchaseOrderClientInput) => {
+      if (!client.detachQuotePurchaseOrder) throw purchaseOrderUnavailable();
+      const r = await client.detachQuotePurchaseOrder(input);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: (_data, input) => {
+      void qc.invalidateQueries({ queryKey: keys.quotes });
+      void qc.invalidateQueries({ queryKey: keys.quote(input.quoteId) });
+    },
+  });
+}
+
+/** PUT /invoices/:id/purchase-order — facture BROUILLON uniquement (figé à l'émission). */
+export function useAttachInvoicePurchaseOrder() {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: AttachInvoicePurchaseOrderClientInput) => {
+      if (!client.attachInvoicePurchaseOrder) throw purchaseOrderUnavailable();
+      const r = await client.attachInvoicePurchaseOrder(input);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: (_data, input) => {
+      void qc.invalidateQueries({ queryKey: keys.invoices });
+      void qc.invalidateQueries({ queryKey: keys.invoice(input.invoiceId) });
+    },
+  });
+}
+
+/** DELETE /invoices/:id/purchase-order — retrait explicite (facture brouillon uniquement). */
+export function useDetachInvoicePurchaseOrder() {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: DetachInvoicePurchaseOrderClientInput) => {
+      if (!client.detachInvoicePurchaseOrder) throw purchaseOrderUnavailable();
+      const r = await client.detachInvoicePurchaseOrder(input);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: (_data, input) => {
+      void qc.invalidateQueries({ queryKey: keys.invoices });
+      void qc.invalidateQueries({ queryKey: keys.invoice(input.invoiceId) });
     },
   });
 }

@@ -7,14 +7,16 @@
 import { useMemo, useRef, useState } from 'react';
 import { Alert, Linking, Share, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { buildPieceView, frSpokenNumbersToDigits, normalizeVoiceText, type PieceLineView, type PieceLinkedRef } from '@bob/core';
+import { buildPieceView, frSpokenNumbersToDigits, normalizeVoiceText, type PieceLineView, type PieceLinkedRef, type PurchaseOrderRefInput } from '@bob/core';
 import { challengeFor } from '@bob/ai';
 import { t } from '@bob/i18n';
 import { ErrorRetry, SkeletonCard, SkeletonHeader, useTheme } from '@bob/ui';
 import {
   appErrorMessage,
+  useAttachQuotePurchaseOrder,
   useCreateQuoteViewLink,
   useCustomers,
+  useDetachQuotePurchaseOrder,
   useInvoices,
   useQuote,
   useRemoveQuoteLine,
@@ -32,6 +34,8 @@ import {
 } from '../../src/components/DocumentActions';
 import { PieceDetailView } from '../../src/components/PieceDetailView';
 import { QuoteLineEditSheet, type QuoteLineEditPatch, type QuoteLineEditSeed } from '../../src/components/QuoteLineEditSheet';
+import { PurchaseOrderCard, PurchaseOrderSheet } from '../../src/components/PurchaseOrderSection';
+import { purchaseOrderErrorMessage } from '../../src/components/purchase-order-form.logic';
 import { useConfirm } from '../../src/components/ConfirmSheet';
 import {
   usePublishAgentContext,
@@ -221,6 +225,62 @@ export default function DevisDetail() {
     openDelete: (lineId) => void handleDeleteLine(lineId),
   };
 
+  // ── B8 : bon de commande grands comptes (numéro d'engagement) — saisi UNE FOIS ici,
+  //    repris automatiquement sur la facture dérivée. Éditable sur devis ENVOYÉ/VU/SIGNÉ
+  //    tant qu'aucune pièce non annulée n'en dérive (au-delà, la facture est la source —
+  //    même règle que le use case attach-purchase-order, pas de 409 surprise). ──
+  const attachPo = useAttachQuotePurchaseOrder();
+  const detachPo = useDetachQuotePurchaseOrder();
+  const [poSheetOpen, setPoSheetOpen] = useState(false);
+  const [poError, setPoError] = useState<string | null>(null);
+  const poStatusEligible =
+    quote.data?.status === 'sent' ||
+    quote.data?.status === 'viewed' ||
+    quote.data?.status === 'signed';
+  const poAlreadyInvoiced = (invoices.data ?? []).some(
+    (i) => i.parentQuoteId === id && i.status !== 'cancelled',
+  );
+  const poEditable = poStatusEligible && !poAlreadyInvoiced;
+  const openPoSheet = (): void => {
+    setPoError(null);
+    setPoSheetOpen(true);
+  };
+  const submitPurchaseOrder = async (input: PurchaseOrderRefInput): Promise<void> => {
+    setPoError(null);
+    try {
+      await attachPo.mutateAsync({
+        quoteId: id,
+        purchaseOrder: input,
+        expectedRevision: quote.data?.revision ?? 1,
+      });
+      setPoSheetOpen(false);
+    } catch (error) {
+      setPoError(purchaseOrderErrorMessage(error, t('po.saveError', { personality })));
+    }
+  };
+  const removePurchaseOrder = async (): Promise<void> => {
+    const po = quote.data?.purchaseOrder;
+    if (!po) return;
+    const ok = await confirm({
+      title: t('po.removeConfirmTitle', { personality }),
+      message: t('po.removeConfirmBody', { personality, params: { number: po.number } }),
+      challenge: challengeFor(REVERSIBLE, 'confirm_all'),
+      destructive: true,
+    });
+    if (!ok) return;
+    try {
+      await detachPo.mutateAsync({ quoteId: id, expectedRevision: quote.data?.revision ?? 1 });
+    } catch (error) {
+      Alert.alert('Oups', purchaseOrderErrorMessage(error, t('po.saveError', { personality })));
+    }
+  };
+  // B8/R7 : pont voix → écran — la voix OUVRE la même feuille que le bouton, jamais la mutation.
+  const poVoiceRef = useRef<{ canOpen: boolean; open: () => void }>({
+    canOpen: false,
+    open: () => undefined,
+  });
+  poVoiceRef.current = { canOpen: screenDataReady && poEditable, open: openPoSheet };
+
   // ── R7 (parité vocale) : « génère la facture finale »/« facture d'acompte »/« facture complète »
   //    sur un devis SIGNÉ. Plancher de sûreté : l'affordance dit (say) et, au mieux, OUVRE le Sheet
   //    de choix (QuoteActionsHandle) — JAMAIS n'appelle generate.mutateAsync elle-même. Seul le tap
@@ -407,6 +467,21 @@ export default function DevisDetail() {
             };
           },
         },
+        {
+          // B8/R7 : « ajoute le bon de commande » / « numéro d'engagement » — devis envoyé/vu/
+          // signé non facturé. La voix OUVRE la MÊME feuille de saisie que le bouton — le tap
+          // sur Enregistrer reste le SEUL point d'écriture (jamais attachPo depuis l'affordance).
+          id: 'devis.purchaseOrder',
+          match: (utterance) => {
+            if (!poVoiceRef.current.canOpen) return null;
+            const n = normalizeVoiceText(utterance);
+            if (!/bon de commande|numero d ?engagement/.test(n)) return null;
+            return () => {
+              poVoiceRef.current.open();
+              return { say: t('po.voice.sheetOpened', { personality: personalityRef.current }) };
+            };
+          },
+        },
       ],
     }),
     [],
@@ -529,6 +604,23 @@ export default function DevisDetail() {
         editableLines={q.status === 'draft'}
         onEditLine={(lineId) => handleEditLine(lineId)}
         onDeleteLine={(lineId) => void handleDeleteLine(lineId)}
+        extra={
+          // B8 : section « Bon de commande » — visible dès que le devis est envoyé/vu/signé,
+          // ou dès qu'une référence existe (lecture honnête même sur refusé/expiré).
+          poStatusEligible || q.purchaseOrder != null ? (
+            <PurchaseOrderCard
+              purchaseOrder={q.purchaseOrder ?? null}
+              editable={poEditable}
+              invoicedNote={poStatusEligible && poAlreadyInvoiced}
+              emptyBody={t('po.emptyQuoteBody', { personality })}
+              documents={documents.data ?? []}
+              onAdd={openPoSheet}
+              onEdit={openPoSheet}
+              onRemove={() => void removePurchaseOrder()}
+              onOpenDocument={(documentId) => router.push(`/documents/${documentId}`)}
+            />
+          ) : null
+        }
         actions={
           hasQuoteActions(q) ? (
             <QuoteActions
@@ -562,6 +654,20 @@ export default function DevisDetail() {
         }}
         onInputChange={() => setLineMutationError(null)}
         onSubmit={(patch) => void submitLineEdit(patch)}
+      />
+      <PurchaseOrderSheet
+        visible={poSheetOpen}
+        initial={q.purchaseOrder ?? null}
+        documents={documents.data ?? []}
+        saving={attachPo.isPending}
+        error={poError}
+        onClose={() => {
+          if (attachPo.isPending) return;
+          setPoSheetOpen(false);
+          setPoError(null);
+        }}
+        onInputChange={() => setPoError(null)}
+        onSubmit={(input) => void submitPurchaseOrder(input)}
       />
     </>
   );

@@ -46,6 +46,9 @@ export interface FacturXInvoiceData {
   dueDate?: string;
   currency: string; // EUR
   buyerReference?: string;
+  /** BT-13 — numéro d'engagement du bon de commande client (B8) : les grands comptes et
+   * Chorus Pro lisent la donnée STRUCTURÉE (BuyerOrderReferencedDocument), jamais le PDF. */
+  purchaseOrderReference?: string;
   seller: FacturXParty;
   buyer: FacturXParty;
   lines: FacturXLine[];
@@ -177,6 +180,13 @@ export function buildFacturXBasicXml(d: FacturXInvoiceData): string {
   if (d.buyerReference) L.push(`      <ram:BuyerReference>${xmlEscape(d.buyerReference)}</ram:BuyerReference>`);
   L.push(...partyXml('SellerTradeParty', d.seller));
   L.push(...partyXml('BuyerTradeParty', d.buyer));
+  // BT-13 (BuyerOrderReferencedDocument) : le numéro d'engagement voyage dans le champ
+  // structuré — sans lui, le dépôt Chorus Pro / AP grand compte rejette ou suspend la facture.
+  if (d.purchaseOrderReference) {
+    L.push('      <ram:BuyerOrderReferencedDocument>');
+    L.push(`        <ram:IssuerAssignedID>${xmlEscape(d.purchaseOrderReference)}</ram:IssuerAssignedID>`);
+    L.push('      </ram:BuyerOrderReferencedDocument>');
+  }
   L.push('    </ram:ApplicableHeaderTradeAgreement>');
 
   // Livraison (vide en BASIC)
@@ -302,6 +312,9 @@ export function facturXDataFromInvoice(invoice: Invoice, company: Company, buyer
     issueDate,
     ...(invoice.dueAt ? { dueDate: invoice.dueAt } : {}),
     currency: 'EUR',
+    // B8 — BT-13 : le numéro d'engagement porté par la facture (repris du devis) est émis dans
+    // le XML structuré, à l'identique de la mention PDF. Jamais inventé : absent sans BC.
+    ...(invoice.purchaseOrder !== null ? { purchaseOrderReference: invoice.purchaseOrder.number } : {}),
     seller,
     buyer: buyerParty,
     lines,

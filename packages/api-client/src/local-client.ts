@@ -3,6 +3,8 @@ import {
   BobAgent,
   ModelRouter,
   pendingToInvocations,
+  purchaseOrderLinkedRun,
+  intentForTool,
   type BobActions,
   type AgentRun,
   type AgentAutonomy,
@@ -26,6 +28,10 @@ import {
   RefuseQuote,
   CreateCreditNote,
   GenerateInvoiceFromQuote,
+  AttachPurchaseOrderToQuote,
+  AttachPurchaseOrderToInvoice,
+  DetachPurchaseOrder,
+  ListInvoiceableQuotes,
   UpdateQuoteLine,
   RemoveQuoteLine,
   DeleteDraftInvoice,
@@ -258,6 +264,11 @@ import type {
   TrialReportView,
   QuoteDraftSlotView,
   SaveQuoteDraftClientInput,
+  AttachQuotePurchaseOrderClientInput,
+  DetachQuotePurchaseOrderClientInput,
+  AttachInvoicePurchaseOrderClientInput,
+  DetachInvoicePurchaseOrderClientInput,
+  PurchaseOrderMutationView,
 } from './client';
 import { documentAnalysisSummaryView, documentExtractionSummaryView } from './document-codecs';
 import { localExpenseCreationFingerprint, portableSha256Bytes } from './expense-idempotency';
@@ -934,6 +945,9 @@ export class LocalBobClient implements BobClient {
       totals: q.totals(),
       validUntil: q.validUntil,
       signed: q.signature !== null,
+      // B8 : parité serveur — bon de commande + révision toujours présents en local.
+      purchaseOrder: q.purchaseOrder ? { ...q.purchaseOrder } : null,
+      revision: q.revision,
     };
   }
 
@@ -954,6 +968,9 @@ export class LocalBobClient implements BobClient {
       dueAt: i.dueAt,
       issuedAt: i.issuedAt,
       paid: i.paid,
+      // B8 : parité serveur — bon de commande + révision toujours présents en local.
+      purchaseOrder: i.purchaseOrder ? { ...i.purchaseOrder } : null,
+      revision: i.revision,
     };
   }
 
@@ -3189,6 +3206,63 @@ export class LocalBobClient implements BobClient {
     return new RemoveQuoteLine({ quotes: this.quotes, uow: this.uow }).execute(input);
   }
 
+  // ——— B8 : bon de commande grands comptes — MÊMES use cases core que l'API (parité stricte) ———
+
+  /** PUT /quotes/:id/purchase-order (miroir local) — devis NON FACTURÉ, révision optimiste. */
+  async attachQuotePurchaseOrder(
+    input: AttachQuotePurchaseOrderClientInput,
+  ): Promise<Result<PurchaseOrderMutationView, AppError>> {
+    await this.ready;
+    return new AttachPurchaseOrderToQuote({
+      quotes: this.quotes,
+      invoices: this.invoices,
+      clock: this.clock,
+    }).execute({ companyId: this.companyId, ...input });
+  }
+
+  /** DELETE /quotes/:id/purchase-order (miroir local). */
+  async detachQuotePurchaseOrder(
+    input: DetachQuotePurchaseOrderClientInput,
+  ): Promise<Result<PurchaseOrderMutationView, AppError>> {
+    await this.ready;
+    return new DetachPurchaseOrder({
+      quotes: this.quotes,
+      invoices: this.invoices,
+      clock: this.clock,
+    }).execute({
+      companyId: this.companyId,
+      target: { type: 'quote', quoteId: input.quoteId },
+      expectedRevision: input.expectedRevision,
+    });
+  }
+
+  /** PUT /invoices/:id/purchase-order (miroir local) — facture BROUILLON uniquement. */
+  async attachInvoicePurchaseOrder(
+    input: AttachInvoicePurchaseOrderClientInput,
+  ): Promise<Result<PurchaseOrderMutationView, AppError>> {
+    await this.ready;
+    return new AttachPurchaseOrderToInvoice({
+      invoices: this.invoices,
+      clock: this.clock,
+    }).execute({ companyId: this.companyId, ...input });
+  }
+
+  /** DELETE /invoices/:id/purchase-order (miroir local). */
+  async detachInvoicePurchaseOrder(
+    input: DetachInvoicePurchaseOrderClientInput,
+  ): Promise<Result<PurchaseOrderMutationView, AppError>> {
+    await this.ready;
+    return new DetachPurchaseOrder({
+      quotes: this.quotes,
+      invoices: this.invoices,
+      clock: this.clock,
+    }).execute({
+      companyId: this.companyId,
+      target: { type: 'invoice', invoiceId: input.invoiceId },
+      expectedRevision: input.expectedRevision,
+    });
+  }
+
   async issueInvoice(input: IssueInvoiceInput): Promise<Result<{ number: string }, AppError>> {
     await this.ready;
     return this.issueInvoiceInternal(input);
@@ -3945,36 +4019,16 @@ export class LocalBobClient implements BobClient {
           }));
         return ok(quotes);
       },
-      // ASK-2 : devis signés facturables — un devis sort de la liste dès que sa FINALE existe ;
-      // l'acompte déjà émis est signalé (depositInvoiced) pour que la finale devienne l'évidence.
+      // ASK-2 + B8 : devis signés facturables — SOURCE UNIQUE : use case core
+      // ListInvoiceableQuotes (le même que le serveur), qui expose aussi le bon de commande
+      // (numéro d'engagement) AVANT émission. Plus aucune dérivation inline dupliquée.
       listInvoiceableQuotes: async (): Promise<Result<InvoiceableQuote[], AppError>> => {
         await this.ready;
-        const [quotes, invoices, customers] = await Promise.all([
-          this.quotes.listByCompany(this.companyId),
-          this.invoices.listByCompany(this.companyId),
-          this.customers.listByCompany(this.companyId),
-        ]);
-        const names = new Map(customers.map((c) => [c.id, c.name]));
-        return ok(
-          quotes
-            .filter((q) => q.status === 'signed')
-            .filter(
-              (q) =>
-                !invoices.some(
-                  (i) => i.parentQuoteId === q.id && i.kind === 'final' && i.status !== 'cancelled',
-                ),
-            )
-            .map((q) => ({
-              id: q.id,
-              number: q.number,
-              customerName: names.get(q.customerId) ?? '',
-              totalTtcCents: q.totals().ttc,
-              depositPct: q.depositPct,
-              depositInvoiced: invoices.some(
-                (i) => i.parentQuoteId === q.id && i.kind === 'deposit' && i.status !== 'cancelled',
-              ),
-            })),
-        );
+        return new ListInvoiceableQuotes({
+          quotes: this.quotes,
+          invoices: this.invoices,
+          customers: this.customers,
+        }).execute({ companyId: this.companyId });
       },
       listIssuableInvoices: async () => {
         const [inv, cust] = await Promise.all([this.listInvoices(), this.listCustomers()]);
@@ -4019,6 +4073,39 @@ export class LocalBobClient implements BobClient {
         }),
       sendQuote: async (input) => this.sendQuote(input.quoteId),
       issueInvoice: async (input) => this.issueInvoice({ invoiceId: input.invoiceId }),
+      // B8 — outil vocal lier_bon_commande : MÊME use case AttachPurchaseOrderToQuote que
+      // attachQuotePurchaseOrder (miroir de PUT /quotes/:id/purchase-order) et MÊME forme de
+      // sortie que le serveur. La révision courante est résolue ici (le geste vocal n'a pas de
+      // vue optimiste) ; `invoiceable` vient de ListInvoiceableQuotes — la vérité qui nourrit
+      // l'enchaînement generer_facture — jamais une dérivation locale.
+      attachPurchaseOrderToQuote: async (input) => {
+        await this.ready;
+        const quote = await this.quotes.findById(input.quoteId);
+        if (!quote || quote.companyId !== this.companyId)
+          return err(appNotFound('quote', input.quoteId));
+        const attached = await this.attachQuotePurchaseOrder({
+          quoteId: input.quoteId,
+          purchaseOrder: { number: input.number },
+          expectedRevision: quote.revision,
+        });
+        if (!attached.ok) return attached;
+        const purchaseOrder = attached.value.purchaseOrder;
+        // Un attachement sans référence posée serait une rupture du contrat du use case.
+        if (purchaseOrder === null) return err(appUnavailable('quote-purchase-order'));
+        const invoiceable = await new ListInvoiceableQuotes({
+          quotes: this.quotes,
+          invoices: this.invoices,
+          customers: this.customers,
+        }).execute({ companyId: this.companyId });
+        return ok({
+          quoteId: attached.value.targetId,
+          quoteNumber: quote.number,
+          revision: attached.value.revision,
+          purchaseOrderNumber: purchaseOrder.number,
+          invoiceable:
+            invoiceable.ok && invoiceable.value.some((q) => q.id === attached.value.targetId),
+        });
+      },
       // —— Capacités optionnelles (C20 ③④ + C40 ⑤⑥ + creer_client) ——
       createQuote: async (input) => {
         const r = await this.createQuote({
@@ -4129,9 +4216,25 @@ export class LocalBobClient implements BobClient {
       });
     }
     const isBatch = pending.batch !== undefined && pending.batch.length > 0;
+    // B8 — MÊME enchaînement que BobAgent.confirm et que le serveur : après le lien confirmé,
+    // la carte propose la facture du devis depuis la projection publique de l'outil.
+    const purchaseOrderOutcome = record.outcomes.find(
+      (o) => o.tool === 'lier_bon_commande' && o.status === 'executed',
+    );
+    if (!isBatch && purchaseOrderOutcome) {
+      return ok(
+        purchaseOrderLinkedRun({
+          intent: 'lier_bon_commande',
+          model: 'agent-runtime',
+          label: pending.label,
+          output: purchaseOrderOutcome.result,
+        }),
+      );
+    }
     return ok({
       kind: 'done',
-      intent: 'encaisser',
+      // L'intent reflète l'outil confirmé (parité BobAgent.confirm) — jamais figé sur un geste.
+      intent: intentForTool(pending.batch?.[0]?.tool ?? pending.tool),
       model: 'agent-runtime',
       plan: record.outcomes.map((o) => o.label),
       card: {

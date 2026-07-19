@@ -228,3 +228,22 @@ describe('buildPieceView — A2-C16 : la finale porte la TRACE de l’acompte (f
     expect(v.depositDeduction).toBeNull();
   });
 });
+
+describe('buildPieceView — B8 : bon de commande grands comptes sur la pièce', () => {
+  const PO = { number: 'BC-RATP-4500123456', receivedAt: '2026-06-01T09:00:00.000Z', documentId: null };
+
+  it('devis : le bon de commande attaché est exposé tel quel', () => {
+    const v = buildPieceView({ source: 'quote', quote: goldenQuote({ purchaseOrder: PO }), customer: MARTIN });
+    expect(v.purchaseOrder).toEqual(PO);
+  });
+
+  it('facture : le numéro d’engagement repris du devis est exposé (exigence Chorus Pro)', () => {
+    const v = buildPieceView({ source: 'invoice', invoice: invoice({ purchaseOrder: PO }), customer: MAIRIE });
+    expect(v.purchaseOrder).toEqual(PO);
+  });
+
+  it('compat ascendante : projections antérieures SANS purchaseOrder -> null (jamais inventé)', () => {
+    expect(buildPieceView({ source: 'quote', quote: goldenQuote(), customer: MARTIN }).purchaseOrder).toBeNull();
+    expect(buildPieceView({ source: 'invoice', invoice: invoice(), customer: MARTIN }).purchaseOrder).toBeNull();
+  });
+});

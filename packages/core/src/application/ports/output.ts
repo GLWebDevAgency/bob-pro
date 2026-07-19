@@ -13,6 +13,12 @@ export interface InvoicePdfData {
   lines: { label: string; qty: number; unitPriceHT: number; vatRate: number }[];
   totals: { ht: number; vat: number; ttc: number; netToPay: number };
   mentions: string[];
+  /**
+   * B8 — bon de commande client (numéro d'engagement grands comptes/Chorus Pro) : imprimé dans
+   * la zone références quand présent. Optionnel (compat ascendante des adapters existants) ;
+   * absent ou null = aucune mention. `receivedAt` = date de réception (ISO), null si inconnue.
+   */
+  purchaseOrder?: { number: string; receivedAt: string | null } | null;
   /** Présentation et coordonnées déjà résolues depuis la configuration PostgreSQL du tenant. */
   billingPresentation: {
     accentColor: import('../billing/company-billing-settings').InvoicePdfAccentColor;

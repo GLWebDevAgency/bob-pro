@@ -23,6 +23,7 @@ export type BobIntent =
   | 'classer_document' // « range le ticket Aldi dans le chantier Durand » — même séquence que « Classer là » (LOT 5)
   | 'renommer_document' // « renomme-le facture matériaux salle de bain » — RenameDocument, nom humain prioritaire (LOT 5)
   | 'chercher_document' // « retrouve la facture du radiateur de mars » — recherche réelle devis & factures, lecture (LOT 5)
+  | 'lier_bon_commande' // « la RATP m'a envoyé un bon de commande n° 4500123 » — numéro d'engagement attaché au devis (B8)
   | 'resultat' // résultat provisoire (produits − charges du grand-livre) — lecture, BOB-2
   | 'bilan' // bilan simplifié actif/passif — lecture, BOB-4
   | 'revue_cloture' // « mon dossier est-il prêt pour le comptable ? » — verdict de revue, DOSSIER-2
@@ -128,6 +129,21 @@ export function detectIntent(message: string): BobIntent {
   // Résultat provisoire (BOB-2) : AVANT payout (« combien je gagne » ≠ « me verser »).
   if (/(r[ée]sultat|b[ée]n[ée]fice|combien je gagne|je gagne combien|en perte|balance g[ée]n[ée]rale)/.test(m))
     return 'resultat';
+  // Bon de commande (B8) : « la RATP m'a envoyé un bon de commande n° 4500123 », « ajoute le
+  // BC-2207 au devis de Durand » — AVANT les gestes documentaires (« commande », « reçu »,
+  // « scanné » collisionnent avec scan/documents) et AVANT envoyer_devis/nouveau_devis
+  // (« devis » y collisionne). Un geste documentaire EXPLICITE (ranger/classer/renommer/
+  // chercher le bon de commande scanné) reste un geste documentaire. Négation ⇒ rien.
+  if (
+    /\b(bons? de commande|bc[- ]?\d|numeros? d.{0,3}engagement|purchase order)\b/.test(normalizedMessage) &&
+    !/\b(range|ranger|ranges|classe|classer|classes|deplace|deplacer|deplaces|renomme|renommer|renommes|rebaptise|rebaptiser|cherche|chercher|retrouve|retrouver|trouve|trouver|recherche|rechercher)\b/.test(
+      normalizedMessage,
+    ) &&
+    !/\b(ne|n|pas|jamais|surtout pas)\b.{0,24}\b(lie|lier|lies|ajoute|ajouter|attache|attacher|rattache|rattacher|mets|note|noter)\b|\b(lie|lier|lies|ajoute|ajouter|attache|attacher|rattache|rattacher|mets|note|noter)\b.{0,30}\bpas\b/.test(
+      normalizedMessage,
+    )
+  )
+    return 'lier_bon_commande';
   // Recherche de pièce (LOT 5) : « retrouve la facture du radiateur de mars » — AVANT scan,
   // documents, nouveau_devis (« un devis » y collisionne) et emettre_facture. Lecture pure.
   if (

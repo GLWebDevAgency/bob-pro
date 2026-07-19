@@ -1,6 +1,7 @@
 import { type Totals } from '../../domain/billing/shared/totals';
 import { type QuoteLine } from '../../domain/billing/shared/line';
 import { type LineCategory } from '../../domain/billing/shared/line-item';
+import { type PurchaseOrderRef } from '../../domain/billing/shared/purchase-order-ref';
 import { type InvoiceKind } from '../../domain/billing/invoice/invoice';
 import { type InvoiceStatus, type QuoteStatus } from '../../domain/billing/shared/state-machines';
 import { einvoiceChannelFor, type EinvoiceChannel } from '../../domain/services/einvoice-for';
@@ -29,6 +30,8 @@ export interface PieceInvoiceData {
   /** Acompte déjà facturé déduit (A2-C16) — 0/null si aucun. */
   depositDeductionCents?: number;
   depositInvoiceId?: string | null;
+  /** B8 : bon de commande client (numéro d'engagement) — optionnel : projections antérieures OK. */
+  purchaseOrder?: PurchaseOrderRef | null;
 }
 
 export interface PieceQuoteData {
@@ -40,6 +43,8 @@ export interface PieceQuoteData {
   lines: readonly QuoteLine[];
   signed: boolean;
   customerId: string;
+  /** B8 : bon de commande client (numéro d'engagement) — optionnel : projections antérieures OK. */
+  purchaseOrder?: PurchaseOrderRef | null;
 }
 
 export interface PieceCustomerData {
@@ -135,6 +140,8 @@ export interface PieceView {
   mentions: readonly string[];
   /** Mentions figées à l'émission (facture non brouillon). */
   frozen: boolean;
+  /** B8 : bon de commande grands comptes — affiché sur la pièce (numéro d'engagement). */
+  purchaseOrder: PurchaseOrderRef | null;
   /** Facture finale : acompte déjà facturé, affiché en déduction avant le net à payer. */
   depositDeduction: { amountCents: number; invoiceRef: PieceLinkedRef | null } | null;
   /** Pièces liées à afficher en nav croisée. */
@@ -269,6 +276,7 @@ export function buildPieceView(input: BuildPieceViewInput): PieceView {
       signedAmountCents: q.totals.ttc,
       amountDue: { cents: q.totals.ttc, isPartialOfTtc: false },
       nextStep: null,
+      purchaseOrder: q.purchaseOrder ?? null,
       depositDeduction: null,
       transmission: null,
       isEreporting: false,
@@ -329,6 +337,7 @@ export function buildPieceView(input: BuildPieceViewInput): PieceView {
     signedAmountCents: isCredit ? -Math.abs(inv.totals.ttc) : inv.totals.ttc,
     amountDue: { cents: inv.totals.netToPay, isPartialOfTtc },
     nextStep,
+    purchaseOrder: inv.purchaseOrder ?? null,
     depositDeduction:
       (inv.depositDeductionCents ?? 0) > 0
         ? {

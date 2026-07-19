@@ -560,6 +560,16 @@ model Quote {
   totalsTtc        Int                    @default(0)
   totalsNetToPay   Int                    @default(0)
   vatByRate        Json                   @default("{}")
+  // B8 — bon de commande client (numéro d'engagement grands comptes/Chorus Pro), saisi UNE FOIS
+  // sur le devis puis repris sur la facture dérivée. Anti-IDOR : le document du coffre lié est
+  // contraint au MÊME tenant par la FK composite (companyId, purchaseOrderDocumentId).
+  purchaseOrderNumber     String?
+  purchaseOrderReceivedAt DateTime?       @db.Timestamptz(6)
+  purchaseOrderDocumentId String?
+  purchaseOrderDocument   StoredDocument? @relation("QuotePurchaseOrderDocument", fields: [companyId, purchaseOrderDocumentId], references: [companyId, id], onDelete: Restrict, onUpdate: Cascade)
+  // Révision optimiste (B8) : incrémentée par les mutations de bon de commande — le CAS final
+  // en base est porté par le verrou de ligne (lockById) dans la transaction tenant.
+  revision         Int                    @default(1)
   lines            LineItem[]             @relation("QuoteLines")
   creationRequests QuoteCreationRequest[]
   generatedInvoices Invoice[]             @relation("QuoteGeneratedInvoices")
@@ -568,6 +578,9 @@ model Quote {
   @@unique([id, companyId], name: "uniq_quote_id_company", map: "uniq_quote_id_company")
   @@index([companyId, status])
   @@index([customerId, companyId], map: "quotes_customer_company_idx")
+  // B8 — descente FK du document de bon de commande (partiel WHERE NOT NULL en SQL, comme
+  // invoices_deposit_company_idx).
+  @@index([purchaseOrderDocumentId, companyId], map: "quotes_po_document_company_idx")
   // B9 — chips de dates ("ce mois-ci"/"mois dernier") : tenant + tri/plage sur une seule
   // descente d'index, sans tri en mémoire côté Postgres.
   @@index([companyId, createdAt(sort: Desc)], map: "quotes_company_created_idx")
@@ -612,6 +625,14 @@ model Invoice {
   totalsNetToPay        Int           @default(0)
   vatByRate             Json          @default("{}")
   legalMentions         String[]      @default([])
+  // B8 — bon de commande repris du devis à la dérivation (ou attaché en brouillon), FIGÉ à
+  // l'émission (trigger invoices_legal_traceability). FK composite anti-IDOR comme sur quotes.
+  purchaseOrderNumber     String?
+  purchaseOrderReceivedAt DateTime?     @db.Timestamptz(6)
+  purchaseOrderDocumentId String?
+  purchaseOrderDocument   StoredDocument? @relation("InvoicePurchaseOrderDocument", fields: [companyId, purchaseOrderDocumentId], references: [companyId, id], onDelete: Restrict, onUpdate: Cascade)
+  // Révision optimiste (B8) — mutations de bon de commande uniquement à ce jour.
+  revision              Int           @default(1)
   lines                 LineItem[]    @relation("InvoiceLines")
   payments              Payment[]
 
@@ -622,6 +643,8 @@ model Invoice {
   @@index([companyId, status])
   @@index([customerId, companyId], map: "invoices_customer_company_idx")
   @@index([depositInvoiceId, companyId], map: "invoices_deposit_company_idx")
+  // B8 — descente FK du document de bon de commande (partiel WHERE NOT NULL en SQL).
+  @@index([purchaseOrderDocumentId, companyId], map: "invoices_po_document_company_idx")
   @@index([dueAt])
   // B9 — chips de dates ("ce mois-ci"/"mois dernier") : tenant + tri/plage sur une seule
   // descente d'index. issuedAt est NULL en brouillon — hors périmètre "recherche par période"
@@ -819,6 +842,9 @@ model StoredDocument {
   versions             StoredDocumentVersion[]
   analyses             DocumentAnalysisCache[]         @relation("StoredDocumentAnalyses")
   expensePaymentProofs Expense[]                       @relation("ExpensePaymentProof")
+  // B8 — bons de commande scannés référencés par devis/factures (FK composite anti-IDOR).
+  purchaseOrderQuotes   Quote[]                        @relation("QuotePurchaseOrderDocument")
+  purchaseOrderInvoices Invoice[]                      @relation("InvoicePurchaseOrderDocument")
 
   @@unique([companyId, id], name: "uniq_stored_document_company_id", map: "uniq_stored_document_company_id")
   @@index([companyId, kind])
