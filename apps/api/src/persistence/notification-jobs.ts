@@ -6,7 +6,9 @@ export type NotificationJobStatus = 'pending' | 'done' | 'failed';
 export interface NotificationJob {
   id: string;
   companyId: string;
-  kind: 'quote-signature' | 'invoice-relance' | 'weekly-digest';
+  /** `retractation-acknowledgment` : accusé de réception de la rétractation en ligne, sur
+   *  support durable (courriel choisi par le consommateur — art. D221-5, IV c. conso). */
+  kind: 'quote-signature' | 'invoice-relance' | 'weekly-digest' | 'retractation-acknowledgment';
   dedupeKey: string;
   channel: Notification['channel'];
   recipient: string;

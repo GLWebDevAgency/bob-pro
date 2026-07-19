@@ -93,6 +93,7 @@ describe('flows/devis (C21 redécoupe — le wizard s’ARRÊTE au devis, jamais
     expectOk(
       await new SignQuote({
         companies: env.companyRepo,
+        customers: env.customerRepo,
         quotes: env.quoteRepo,
         publicAccessTokens: env.publicAccessTokens,
         uow: env.uow,

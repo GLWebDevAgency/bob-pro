@@ -119,6 +119,24 @@ import {
   GetDocumentDownloadUrl,
   buildDocumentStorageKey,
   buildInvoiceAccountingPreviewEntry,
+  buildMentions,
+  // A3 — rétractation 14 jours B2C : textes réglementaires (avis R221-3, formulaire R221-1),
+  // libellé exact de la case d'exécution anticipée (L221-25) — source unique servie au PDF et
+  // à la page sign-web, jamais réécrite côté front.
+  retractationNoticeLines,
+  retractationFormLines,
+  RETRACTATION_EARLY_EXECUTION_LABEL,
+  // A3 — fonctionnalité de rétractation EN LIGNE (art. L221-21 dernier al. et D221-5 c. conso,
+  // en vigueur depuis le 19/06/2026) : libellés réglementaires, disponibilité, exercice.
+  RETRACTATION_WITHDRAW_FUNCTION_LABEL,
+  RETRACTATION_CONFIRM_FUNCTION_LABEL,
+  onlineRetractationAvailability,
+  deriveRetractation,
+  ExerciseRetractation,
+  type ExerciseRetractationOutput,
+  ResolveQuoteRetractationToken,
+  type SignQuoteOutput,
+  type RetractationProfessional,
   type Result,
   type AppError,
   type CreateQuoteInput,
@@ -241,6 +259,8 @@ import { DOCUMENT_STORAGE, UnavailableDocumentStorage, documentSha256 } from './
 import {
   generatedInvoiceDocumentId,
   generatedInvoiceDocumentVersionId,
+  generatedQuoteDocumentId,
+  generatedQuoteDocumentVersionId,
 } from './documents/generated-document-ids';
 import { OCR_PORT } from './ocr/ocr';
 import {
@@ -301,6 +321,9 @@ export interface InvoiceView {
   purchaseOrder: PurchaseOrderRef | null;
   /** Révision optimiste des mutations de bon de commande (>= 1). */
   revision: number;
+  /** E3 : identité FIGÉE de la facture annulée par cet AVOIR (snapshot du domaine) — nav
+   * croisée inverse avoir → facture d'origine. Null = pièce ordinaire. */
+  creditNoteSource: { invoiceId: string; kind: string; number: string; issuedAt: string } | null;
 }
 
 /** Encaissement daté du tenant (E3 — PONT-SERVEUR v1) : miroir du PaymentView du client. */
@@ -382,6 +405,19 @@ export interface SignatureView {
   validUntil: string | null;
   lines: { label: string; qty: number; unitPriceHT: number; vatRate: number }[];
   totals: Totals;
+  /** A1 — mentions légales du devis (buildMentions kind 'quote'), IDENTIQUES au PDF : la page
+   *  de signature affiche le même bloc que la pièce que le client s'engage à accepter. */
+  mentions: string[];
+  /**
+   * A3 — information rétractation 14 jours du CONSOMMATEUR, affichée AVANT signature (art.
+   * L221-18 s. c. conso ; sanction : délai porté à 12 mois, art. L221-20). Tout devis B2C signé
+   * via l'app est à distance (remote_link) ou hors établissement (onsite_draw) : présomption
+   * d'applicabilité. `noticeLines` = avis d'information type (annexe art. R221-3) ;
+   * `earlyExecutionLabel` = libellé EXACT de la case optionnelle « exécution immédiate »
+   * (renonciation L221-25) — la page l'affiche tel quel, ne le réécrit jamais.
+   * Null = client professionnel (b2b/b2g) : aucun droit de rétractation, rien d'affiché.
+   */
+  retractation: { noticeLines: string[]; earlyExecutionLabel: string } | null;
 }
 
 interface ResolvedSignatureGrant {
@@ -418,6 +454,14 @@ export type DocumentPublicView =
       mentions: string[];
     };
 
+/** Empreinte d'un original archivé — vérifiée octet à octet avant tout service (fail-closed). */
+type ArchivedPdfDescriptor = {
+  storageKey: string;
+  mimeType: string;
+  byteSize: number;
+  sha256: string;
+};
+
 type AuthorizedPublicDocumentPdf =
   | { kind: 'quote'; data: QuotePdfData }
   | {
@@ -425,12 +469,16 @@ type AuthorizedPublicDocumentPdf =
       companyId: string;
       invoiceId: string;
       number: string;
-      archive: {
-        storageKey: string;
-        mimeType: string;
-        byteSize: number;
-        sha256: string;
-      };
+      archive: ArchivedPdfDescriptor;
+    }
+  /** A8 — devis SIGNÉ : le contrat est servi depuis son original archivé à la signature,
+   *  jamais re-rendu (art. L213-1 c. conso ; valeur probante art. 1366-1367 c. civ.). */
+  | {
+      kind: 'signed_quote';
+      companyId: string;
+      quoteId: string;
+      number: string;
+      archive: ArchivedPdfDescriptor;
     };
 
 const EXPENSE_CATEGORIES = new Set<ExpenseCategory>([
@@ -873,6 +921,12 @@ function publicDocumentViewUrl(token: string): string {
   return signWebPublicUrl('view', token);
 }
 
+/** A3 — URL publique de la FONCTIONNALITÉ DE RÉTRACTATION en ligne (`/retract/:token`,
+ *  art. L221-21 dernier al. c. conso) — même origine durcie que la signature. */
+function publicRetractationUrl(token: string): string {
+  return signWebPublicUrl('retract', token);
+}
+
 function paymentReturnUrl(path: string): string {
   const configured = process.env.PAYMENT_RETURN_BASE_URL?.trim();
   if (!configured) throw new Error('PAYMENT_RETURN_BASE_URL est requis pour le paiement live.');
@@ -1056,6 +1110,8 @@ export class BackendService {
       depositInvoiceId: i.depositInvoiceId,
       purchaseOrder: i.purchaseOrder ? { ...i.purchaseOrder } : null,
       revision: i.revision,
+      // E3 : le getter du domaine clone déjà le snapshot ; null = pièce ordinaire.
+      creditNoteSource: i.creditNoteSource,
     };
   }
 
@@ -1293,28 +1349,76 @@ export class BackendService {
    * (V1 : hash + méta ; l'archivage de l'image est l'évolution suivante). SignQuote révoque
    * aussi, dans la même transaction, tous les liens publics actifs du devis.
    */
-  async signQuote(input: { quoteId: string; signerName: string; proofDataUrl?: string }) {
+  async signQuote(input: {
+    quoteId: string;
+    signerName: string;
+    proofDataUrl?: string;
+    /** A3 — case « exécution immédiate des travaux » cochée par le client B2C (art. L221-25
+     *  c. conso) au moment de signer sur place : tracée et horodatée dans la signature par
+     *  SignQuote (ignorée pour un professionnel — aucun droit de rétractation à renoncer). */
+    earlyExecutionRequested?: boolean;
+  }) {
     if (!(await this.ownedQuote(input.quoteId)))
       return { ok: false as const, error: appNotFound('quote', input.quoteId) };
-    const r = await new SignQuote({
-      companies: this.p.companies,
-      quotes: this.p.quotes,
-      publicAccessTokens: this.p.publicAccessTokens,
-      uow: this.p,
-      clock: this.clock,
-    }).execute({
-      quoteId: input.quoteId,
-      signerName: input.signerName,
-      ...(input.proofDataUrl ? { proofSha256: sha256Hex(input.proofDataUrl) } : {}),
-    });
-    if (r.ok) {
-      // Jamais le nom du signataire ni le tracé dans les logs — corrélation technique seulement.
-      this.logger.audit('quote.signed_onsite', {
-        quoteId: input.quoteId,
-        withProof: Boolean(input.proofDataUrl),
+    let r: Result<SignQuoteOutput, AppError>;
+    try {
+      r = await this.p.runInTransaction(async () => {
+        const signed = await new SignQuote({
+          companies: this.p.companies,
+          // A3 — le type du client (b2c) décide si la demande d'exécution anticipée est tracée.
+          customers: this.p.customers,
+          quotes: this.p.quotes,
+          publicAccessTokens: this.p.publicAccessTokens,
+          uow: this.p,
+          clock: this.clock,
+        }).execute({
+          quoteId: input.quoteId,
+          signerName: input.signerName,
+          ...(input.proofDataUrl ? { proofSha256: sha256Hex(input.proofDataUrl) } : {}),
+          ...(input.earlyExecutionRequested ? { earlyExecutionRequested: true } : {}),
+        });
+        if (!signed.ok) return signed;
+        try {
+          // A8 — outbox DANS la même transaction que la signature : un devis ne peut jamais
+          // être signé-commité sans ordre durable d'archivage de son original (le contrat,
+          // art. L213-1 c. conso ≥ 120 € B2C ; valeur probante art. 1366-1367 c. civ.) —
+          // même doctrine que l'émission de facture (enqueueInvoiceArchive).
+          await this.enqueueSignedQuoteArchive(this.companyId(), input.quoteId);
+        } catch (error) {
+          throw new RollbackAppError({
+            kind: 'dependency',
+            port: 'document-archive-outbox',
+            cause: error instanceof Error ? error.message : String(error),
+          });
+        }
+        return signed;
       });
+    } catch (e) {
+      if (e instanceof RollbackAppError) return { ok: false as const, error: e.appError };
+      throw e;
     }
-    return r;
+    if (!r.ok) return r;
+    // Jamais le nom du signataire ni le tracé dans les logs — corrélation technique seulement.
+    this.logger.audit('quote.signed_onsite', {
+      quoteId: input.quoteId,
+      withProof: Boolean(input.proofDataUrl),
+      // A3 — trace de l'ouverture de la fonctionnalité de rétractation (L221-21), sans jeton.
+      retractationFunction: r.value.retractation !== null,
+    });
+    // Rendu + stockage APRÈS le commit de la signature (pattern factures : snapshot BDD sous
+    // transaction, I/O d'archive hors transaction) ; le job outbox garantit le retry.
+    await this.runDocumentArchiveJobs({ limit: 5 });
+    // A3 — le jeton brut devient une URL sign-web : l'artisan la montre/transmet au client
+    // (la fonctionnalité doit rester accessible pendant TOUT le délai — D221-5).
+    return ok({
+      status: r.value.status,
+      retractation: r.value.retractation
+        ? {
+            url: publicRetractationUrl(r.value.retractation.token),
+            expiresAt: r.value.retractation.expiresAt,
+          }
+        : null,
+    });
   }
 
   /**
@@ -1412,7 +1516,11 @@ export class BackendService {
     return new GenerateInvoiceFromQuote({
       quotes: this.p.quotes,
       invoices: this.p.invoices,
+      // A3 — gel de rétractation : le use case relit le client (b2c ?) et compare le délai
+      // L221-18 à l'horloge injectée avant d'autoriser la facture FINALE.
+      customers: this.p.customers,
       ids: this.ids,
+      clock: this.clock,
     }).execute(input);
   }
   /** R6 : édition d'une ligne de devis BROUILLON (Quote.updateLine garde assertDraft). */
@@ -1566,7 +1674,13 @@ export class BackendService {
     return r;
   }
 
-  async issueInvoice(input: { invoiceId: string }) {
+  async issueInvoice(input: {
+    invoiceId: string;
+    /** A7 — date/période de la prestation si distincte de l'émission (art. 242 nonies A CGI). */
+    servicePeriod?: { start: string; end: string | null };
+    /** A7 — adresse de chantier/livraison si distincte de la facturation. */
+    deliveryAddress?: string;
+  }) {
     // Locator IDOR uniquement : aucune décision d'émission ne repose sur ce snapshot hors fence.
     const locator = await this.ownedInvoice(input.invoiceId);
     if (!locator) return { ok: false as const, error: appNotFound('invoice', input.invoiceId) };
@@ -1593,14 +1707,23 @@ export class BackendService {
               : undefined;
         }
         const paymentTermsDays = settings?.defaultInvoicePaymentTermsDays;
+        // A7 : les données d'émission (période de prestation, adresse de chantier) suivent
+        // TOUJOURS — elles sont validées puis figées par le domaine (Invoice.issue).
+        const emissionData = {
+          ...(input.servicePeriod === undefined ? {} : { servicePeriod: input.servicePeriod }),
+          ...(input.deliveryAddress === undefined ? {} : { deliveryAddress: input.deliveryAddress }),
+        };
         const issueInput: {
           invoiceId: string;
           terms?: { days: number; endOfMonth: boolean; label: string };
+          servicePeriod?: { start: string; end: string | null };
+          deliveryAddress?: string;
         } =
           paymentTermsDays === null || paymentTermsDays === undefined
-            ? { invoiceId: input.invoiceId }
+            ? { invoiceId: input.invoiceId, ...emissionData }
             : {
                 invoiceId: input.invoiceId,
+                ...emissionData,
                 terms: {
                   days: paymentTermsDays,
                   endOfMonth: false,
@@ -1612,6 +1735,8 @@ export class BackendService {
           invoices: this.p.invoices,
           companies: this.p.companies,
           customers: this.p.customers,
+          // A3 — revérification du gel/embargo à l'émission pour les pièces dérivées d'un devis.
+          quotes: this.p.quotes,
           counters: this.p.counters,
           uow: this.p,
           clock: this.clock,
@@ -1974,13 +2099,17 @@ export class BackendService {
       ) {
         return err(appNotFound('public-signature-token', 'redacted'));
       }
-      const parties = await this.publicDocumentParties(company, q.customerId);
-      if (!parties) return err(appNotFound('public-signature-token', 'redacted'));
+      // A1 : l'agrégat client COMPLET est requis (pas seulement son nom) — les mentions
+      // dépendent du type de client (médiateur B2C, SIREN B2B/B2G, pénalités pro).
+      const customer = await this.p.customers.findById(q.customerId);
+      if (!customer || customer.companyId !== company.id) {
+        return err(appNotFound('public-signature-token', 'redacted'));
+      }
       await this.p.publicAccessTokens.markUsed(grant.id, at);
       return ok({
         number: q.number,
-        companyName: parties.companyName,
-        customerName: parties.customerName,
+        companyName: company.name,
+        customerName: customer.name,
         status: q.status,
         signed: q.signature !== null,
         // Validité = calendrier FRANÇAIS : borne au jour métier Paris (cf. businessToday()).
@@ -1993,6 +2122,21 @@ export class BackendService {
           vatRate: l.vatRate,
         })),
         totals: q.totals(),
+        // A1 — le MÊME bloc mentions que le PDF du devis (source unique : quoteMentions).
+        mentions: this.quoteMentions(q, company, customer),
+        // A3 — information rétractation AVANT signature + libellé exact de la case L221-25 :
+        // uniquement pour un CONSOMMATEUR (b2c) — un professionnel n'a pas ce droit.
+        retractation:
+          customer.type === 'b2c'
+            ? {
+                // A3 — l'avis servi à la page de signature mentionne aussi la fonctionnalité
+                // en ligne (L221-5, 7°) : le client la voit AVANT de conclure.
+                noticeLines: retractationNoticeLines(this.retractationProfessional(company), {
+                  onlineFunctionLocation: this.retractationOnlineFunctionLocation(),
+                }),
+                earlyExecutionLabel: RETRACTATION_EARLY_EXECUTION_LABEL,
+              }
+            : null,
       });
     });
   }
@@ -2001,80 +2145,313 @@ export class BackendService {
     token: string,
     signerName: string,
     proofDataUrl?: string,
-  ): Promise<Result<{ status: string }, AppError>> {
+    /** A3 — case « exécution immédiate des travaux » cochée par le client B2C sur la page
+     *  sign-web AVANT de signer (art. L221-25 c. conso) : tracée et horodatée serveur dans la
+     *  signature par SignQuote — jamais déduite, ignorée pour un professionnel. */
+    earlyExecutionRequested?: boolean,
+  ): Promise<
+    Result<
+      {
+        status: string;
+        /** A3 — fonctionnalité de rétractation en ligne (L221-21) ouverte à la signature d'un
+         *  devis B2C : URL personnelle du client, valable toute la durée du délai. Null = pro. */
+        retractation: { url: string; expiresAt: string } | null;
+      },
+      AppError
+    >
+  > {
     // Résolution initiale HORS transaction : elle ne sert qu'à connaître le tenant (runWithTenant)
     // et à refuser tôt un jeton mort. L'autorisation qui compte est revalidée sous les verrous
     // company → quote → grant ci-dessous ; SignQuote la revalide encore en défense en profondeur.
     const locator = await this.resolveSignatureGrant(token);
     if (!locator.ok) return locator;
+    let signedResult: Result<SignQuoteOutput, AppError>;
+    try {
+      signedResult = await this.p.runWithTenant(locator.value.companyId, async () => {
+        const company = await this.p.companies.lockForShareById(locator.value.companyId);
+        if (!company || company.isClosed()) {
+          return err(appNotFound('public-signature-token', 'redacted'));
+        }
+        const q = await this.p.quotes.lockById(locator.value.quoteId);
+        if (!q || q.companyId !== company.id) {
+          return err(appNotFound('public-signature-token', 'redacted'));
+        }
+        const grant = await this.p.publicAccessTokens.lockActive(token, this.clock.now());
+        if (
+          !grant ||
+          grant.id !== locator.value.grantId ||
+          grant.companyId !== company.id ||
+          grant.resourceType !== 'quote' ||
+          grant.resourceId !== q.id ||
+          grant.scope !== 'quote_signature'
+        ) {
+          return err(appNotFound('public-signature-token', 'redacted'));
+        }
+        if (q.validUntil !== null && q.validUntil < this.businessToday()) {
+          const expired = await new ExpireQuote({
+            quotes: this.p.quotes,
+            publicAccessTokens: this.p.publicAccessTokens,
+            uow: this.p,
+            clock: this.clock,
+          }).execute({ quoteId: q.id });
+          if (expired.ok)
+            this.logger.audit('quote.expired', {
+              quoteId: q.id,
+              status: expired.value.status,
+            });
+          return { ok: false, error: appForbidden('Devis expiré : signature impossible.') };
+        }
+        // method = 'remote_link', TOUJOURS : le serveur ne fabrique jamais un tracé qu'il n'a pas
+        // reçu (P0). Si la page sign-web capture un jour un tracé, son hash devient la preuve —
+        // sans tracé, la signature reste honnêtement « lien distant, sans capture ».
+        const r = await this.p.runInTransaction(async () => {
+          const signed = await new SignQuote({
+            companies: this.p.companies,
+            // A3 — le type du client (b2c) décide si la demande d'exécution anticipée est tracée.
+            customers: this.p.customers,
+            quotes: this.p.quotes,
+            publicAccessTokens: this.p.publicAccessTokens,
+            uow: this.p,
+            clock: this.clock,
+          }).execute({
+            quoteId: q.id,
+            signerName,
+            remoteGrant: { token, grantId: grant.id },
+            ...(proofDataUrl ? { proofSha256: sha256Hex(proofDataUrl) } : {}),
+            ...(earlyExecutionRequested ? { earlyExecutionRequested: true } : {}),
+          });
+          if (!signed.ok) return signed;
+          try {
+            // A8 — outbox DANS la même transaction que la signature (cf. signQuote) : jamais de
+            // contrat signé commité sans ordre durable d'archivage de son original.
+            await this.enqueueSignedQuoteArchive(company.id, q.id);
+          } catch (error) {
+            throw new RollbackAppError({
+              kind: 'dependency',
+              port: 'document-archive-outbox',
+              cause: error instanceof Error ? error.message : String(error),
+            });
+          }
+          return signed;
+        });
+        if (!r.ok) {
+          // Seule la saisie explicite du signataire reste une 422 utile. Toute invalidation de la
+          // capacité ou de la pièce demeure indistinguable d'un token inconnu (anti-énumération).
+          if (
+            r.error.kind === 'domain' &&
+            r.error.error.code === 'VALIDATION' &&
+            r.error.error.field === 'signerName'
+          ) {
+            return r;
+          }
+          return err(appNotFound('public-signature-token', 'redacted'));
+        }
+        // La révocation de TOUS les grants actifs du devis a eu lieu DANS la transaction de
+        // signature (SignQuote) — plus aucun effet token post-commit à rejouer ici.
+        // Le journal technique corrèle l'événement sans dupliquer le nom du signataire dans
+        // les logs. La future preuve probante appartiendra au stockage métier chiffré, pas à
+        // l'observabilité générale.
+        this.logger.audit('quote.public_signed', { quoteId: q.id });
+        return r;
+      });
+    } catch (e) {
+      if (e instanceof RollbackAppError) return { ok: false as const, error: e.appError };
+      throw e;
+    }
+    // A8 — rendu + stockage de l'original APRÈS le commit de la transaction tenant (I/O
+    // d'archive hors transaction de signature — pattern factures) ; retry par le worker sinon.
+    if (!signedResult.ok) return signedResult;
+    await this.runDocumentArchiveJobs({ companyId: locator.value.companyId, limit: 5 });
+    // A3 — la page de signature affiche au consommateur l'URL de sa fonctionnalité de
+    // rétractation (L221-21) juste après la conclusion — la révocation des jetons de
+    // signature ne le prive plus de toute interface pendant le délai.
+    return ok({
+      status: signedResult.value.status,
+      retractation: signedResult.value.retractation
+        ? {
+            url: publicRetractationUrl(signedResult.value.retractation.token),
+            expiresAt: signedResult.value.retractation.expiresAt,
+          }
+        : null,
+    });
+  }
+
+  // ——— Fonctionnalité de rétractation en ligne (public, par lien tokenisé, scope quote_retractation) ———
+
+  private async resolveRetractationGrant(
+    token: string,
+  ): Promise<Result<{ grantId: string; companyId: string; quoteId: string }, AppError>> {
+    return new ResolveQuoteRetractationToken({
+      publicAccessTokens: this.p.publicAccessTokens,
+      clock: this.clock,
+    }).execute({ token });
+  }
+
+  /**
+   * A3 — vue publique de la fonctionnalité de rétractation (art. L221-21 dernier al. et D221-5
+   * c. conso) : identifiée « Renoncer au contrat ici », accessible SANS FRAIS pendant toute la
+   * durée du délai. La page présente le contrat (devis signé), le bouton réglementaire, la
+   * déclaration pré-remplissable (nom + courriel de réception de l'accusé) et le bouton
+   * « Confirmer la rétractation ». Même doctrine anti-énumération que la signature.
+   */
+  async publicRetractationView(token: string): Promise<
+    Result<
+      {
+        withdrawLabel: string;
+        confirmLabel: string;
+        companyName: string;
+        customerName: string;
+        quoteNumber: string;
+        signedAt: string;
+        available: boolean;
+        alreadyRetracted: boolean;
+        expiresAt: string | null;
+        /** Pré-remplissage honnête de la déclaration (D221-5 : fournir OU CONFIRMER). */
+        prefill: { declarantName: string; email: string | null };
+      },
+      AppError
+    >
+  > {
+    const locator = await this.resolveRetractationGrant(token);
+    if (!locator.ok) return locator;
     return this.p.runWithTenant(locator.value.companyId, async () => {
       const company = await this.p.companies.lockForShareById(locator.value.companyId);
       if (!company || company.isClosed()) {
-        return err(appNotFound('public-signature-token', 'redacted'));
+        return err(appNotFound('public-retractation-token', 'redacted'));
       }
-      const q = await this.p.quotes.lockById(locator.value.quoteId);
-      if (!q || q.companyId !== company.id) {
-        return err(appNotFound('public-signature-token', 'redacted'));
+      const q = await this.p.quotes.lockForShareById(locator.value.quoteId);
+      if (!q || q.companyId !== company.id || q.signature === null || q.number === null) {
+        return err(appNotFound('public-retractation-token', 'redacted'));
       }
-      const grant = await this.p.publicAccessTokens.lockActive(token, this.clock.now());
+      const at = this.clock.now();
+      const grant = await this.p.publicAccessTokens.lockActive(token, at);
       if (
         !grant ||
         grant.id !== locator.value.grantId ||
         grant.companyId !== company.id ||
         grant.resourceType !== 'quote' ||
         grant.resourceId !== q.id ||
-        grant.scope !== 'quote_signature'
+        grant.scope !== 'quote_retractation'
       ) {
-        return err(appNotFound('public-signature-token', 'redacted'));
+        return err(appNotFound('public-retractation-token', 'redacted'));
       }
-      if (q.validUntil !== null && q.validUntil < this.businessToday()) {
-        const expired = await new ExpireQuote({
-          quotes: this.p.quotes,
-          publicAccessTokens: this.p.publicAccessTokens,
-          uow: this.p,
-          clock: this.clock,
-        }).execute({ quoteId: q.id });
-        if (expired.ok)
-          this.logger.audit('quote.expired', {
-            quoteId: q.id,
-            status: expired.value.status,
-          });
-        return { ok: false, error: appForbidden('Devis expiré : signature impossible.') };
+      const customer = await this.p.customers.findById(q.customerId);
+      if (!customer || customer.companyId !== company.id) {
+        return err(appNotFound('public-retractation-token', 'redacted'));
       }
-      // method = 'remote_link', TOUJOURS : le serveur ne fabrique jamais un tracé qu'il n'a pas
-      // reçu (P0). Si la page sign-web capture un jour un tracé, son hash devient la preuve —
-      // sans tracé, la signature reste honnêtement « lien distant, sans capture ».
-      const r = await new SignQuote({
-        companies: this.p.companies,
-        quotes: this.p.quotes,
-        publicAccessTokens: this.p.publicAccessTokens,
-        uow: this.p,
-        clock: this.clock,
-      }).execute({
-        quoteId: q.id,
-        signerName,
-        remoteGrant: { token, grantId: grant.id },
-        ...(proofDataUrl ? { proofSha256: sha256Hex(proofDataUrl) } : {}),
+      await this.p.publicAccessTokens.markUsed(grant.id, at);
+      const availability = onlineRetractationAvailability(
+        deriveRetractation({ customerType: customer.type, signature: q.signature }),
+        q.retractedAt !== null,
+        at,
+      );
+      return ok({
+        withdrawLabel: RETRACTATION_WITHDRAW_FUNCTION_LABEL,
+        confirmLabel: RETRACTATION_CONFIRM_FUNCTION_LABEL,
+        companyName: company.name,
+        customerName: customer.name,
+        quoteNumber: q.number,
+        signedAt: q.signature.signedAt,
+        available: availability.available,
+        alreadyRetracted: q.retractedAt !== null,
+        expiresAt: availability.available ? availability.expiresAt : null,
+        prefill: {
+          declarantName: q.signature.signerName,
+          email: customer.email ?? null,
+        },
       });
-      if (!r.ok) {
-        // Seule la saisie explicite du signataire reste une 422 utile. Toute invalidation de la
-        // capacité ou de la pièce demeure indistinguable d'un token inconnu (anti-énumération).
-        if (
-          r.error.kind === 'domain' &&
-          r.error.error.code === 'VALIDATION' &&
-          r.error.error.field === 'signerName'
-        ) {
-          return r;
-        }
-        return err(appNotFound('public-signature-token', 'redacted'));
+    });
+  }
+
+  /**
+   * A3 — EXERCICE de la rétractation via la fonctionnalité (D221-5) : enregistre le fait dans
+   * la transaction qui verrouille le devis (ExerciseRetractation, @bob/core), puis remet
+   * l'accusé de réception sur SUPPORT DURABLE : réponse structurée (affichée et imprimable) +
+   * courriel outbox à l'adresse CHOISIE par le consommateur dans sa déclaration (D221-5, IV).
+   */
+  async publicExerciseRetractation(
+    token: string,
+    input: { declarantName: string; acknowledgmentEmail: string },
+  ): Promise<
+    Result<
+      { retractedAt: string; acknowledgmentLines: string[]; acknowledgmentEmail: string },
+      AppError
+    >
+  > {
+    const locator = await this.resolveRetractationGrant(token);
+    if (!locator.ok) return locator;
+    let exercised: Result<ExerciseRetractationOutput, AppError>;
+    try {
+      exercised = await this.p.runWithTenant(locator.value.companyId, async () =>
+        this.p.runInTransaction(async () => {
+          const result = await new ExerciseRetractation({
+            companies: this.p.companies,
+            customers: this.p.customers,
+            quotes: this.p.quotes,
+            publicAccessTokens: this.p.publicAccessTokens,
+            uow: this.p,
+            clock: this.clock,
+          }).execute({
+            quoteId: locator.value.quoteId,
+            grant: { token, grantId: locator.value.grantId },
+            declarantName: input.declarantName,
+            acknowledgmentEmail: input.acknowledgmentEmail,
+          });
+          if (!result.ok) return result;
+          // Accusé de réception sur SUPPORT DURABLE (D221-5, IV) — outbox DANS la même
+          // transaction que l'enregistrement de la rétractation (même doctrine que l'ordre
+          // d'archivage à la signature) : jamais de rétractation commitée sans ordre durable
+          // d'envoi de son accusé. Le courriel part à l'adresse fournie par le consommateur.
+          try {
+            await this.notificationDelivery.enqueue({
+              companyId: locator.value.companyId,
+              kind: 'retractation-acknowledgment',
+              dedupeKey: `quote:${locator.value.quoteId}:retractation-acknowledgment`,
+              notification: {
+                channel: 'email',
+                to: result.value.acknowledgmentEmail,
+                subject: `Accusé de réception de votre rétractation — devis ${result.value.quoteNumber}`,
+                body: result.value.acknowledgmentLines.join('\n'),
+              },
+            });
+          } catch (error) {
+            throw new RollbackAppError({
+              kind: 'dependency',
+              port: 'notification-outbox',
+              cause: error instanceof Error ? error.message : String(error),
+            });
+          }
+          return result;
+        }),
+      );
+    } catch (e) {
+      if (e instanceof RollbackAppError) return { ok: false as const, error: e.appError };
+      throw e;
+    }
+    if (!exercised.ok) {
+      // Anti-énumération : seules les erreurs de SAISIE/d'état du formulaire restent
+      // parlantes ; toute invalidation de capacité redevient un « introuvable » indistinct.
+      if (
+        exercised.error.kind === 'domain' &&
+        exercised.error.error.code === 'VALIDATION' &&
+        (exercised.error.error.field === 'declarantName' ||
+          exercised.error.error.field === 'acknowledgmentEmail' ||
+          exercised.error.error.field === 'retractation')
+      ) {
+        return exercised;
       }
-      // La révocation de TOUS les grants actifs du devis a eu lieu DANS la transaction de
-      // signature (SignQuote) — plus aucun effet token post-commit à rejouer ici.
-      // Le journal technique corrèle l'événement sans dupliquer le nom du signataire dans
-      // les logs. La future preuve probante appartiendra au stockage métier chiffré, pas à
-      // l'observabilité générale.
-      this.logger.audit('quote.public_signed', { quoteId: q.id });
-      return r;
+      return err(appNotFound('public-retractation-token', 'redacted'));
+    }
+    // Tentative d'envoi immédiate APRÈS commit (le worker outbox garantit le retry sinon).
+    await this.runNotificationJobs({ companyId: locator.value.companyId, limit: 5 });
+    this.logger.audit('quote.retracted_online', {
+      quoteId: locator.value.quoteId,
+      companyId: locator.value.companyId,
+    });
+    return ok({
+      retractedAt: exercised.value.retractedAt,
+      acknowledgmentLines: exercised.value.acknowledgmentLines,
+      acknowledgmentEmail: exercised.value.acknowledgmentEmail,
     });
   }
 
@@ -2206,6 +2583,45 @@ export class BackendService {
           if (!customer || customer.companyId !== company.id) {
             return err(appNotFound('public-document-view-token', 'redacted'));
           }
+          // A8 — devis SIGNÉ = contrat : servir UNIQUEMENT l'octet archivé au moment de la
+          // signature (art. L213-1 c. conso ; valeur probante art. 1366-1367 c. civ.), jamais un
+          // re-rendu depuis l'état courant. Le rendu dynamique reste réservé aux états non signés.
+          if (q.signature !== null) {
+            const documents = await this.p.documents.findByEntity(company.id, 'quote', q.id);
+            const archivedCandidates = documents.filter(
+              (candidate) => candidate.kind === 'signed_quote' && candidate.status === 'active',
+            );
+            // Plusieurs originaux actifs = archive ambiguë/corrompue : refus, jamais un choix
+            // arbitraire (même doctrine que les factures émises).
+            if (archivedCandidates.length > 1) return err(appUnavailable('signed-quote-archive'));
+            if (archivedCandidates.length === 1) {
+              const archive = archivedCandidates[0]!.toProps();
+              await this.p.publicAccessTokens.markUsed(grant.id, at);
+              return ok({
+                kind: 'signed_quote',
+                companyId: company.id,
+                quoteId: q.id,
+                number: q.number,
+                archive: {
+                  storageKey: archive.storageKey,
+                  mimeType: archive.mimeType,
+                  byteSize: archive.byteSize,
+                  sha256: archive.sha256,
+                },
+              });
+            }
+            // Archive absente : si un ordre d'archivage existe (signature post-A8), la fenêtre
+            // signature→job est une indisponibilité à réparer, jamais une autorisation de
+            // régénérer. Sans aucun ordre (devis signé AVANT A8), le rendu dynamique reste le
+            // seul service honnête — l'original d'époque n'existe pas et ne sera jamais
+            // fabriqué rétroactivement.
+            const archiveOrder = await this.p.documentArchiveJobs.findByPiece(
+              company.id,
+              q.id,
+              'quote-signed',
+            );
+            if (archiveOrder !== null) return err(appUnavailable('signed-quote-archive'));
+          }
           await this.p.publicAccessTokens.markUsed(grant.id, at);
           return ok({ kind: 'quote', data: this.quotePdfData(q, company, customer) });
         }
@@ -2239,6 +2655,9 @@ export class BackendService {
     // Rendu et stockage objet peuvent être lents/réseau, sans retenir le verrou de clôture.
     if (authorized.value.kind === 'quote') {
       return ok(await this.pdf.renderQuote(authorized.value.data));
+    }
+    if (authorized.value.kind === 'signed_quote') {
+      return this.loadArchivedSignedQuotePdfBytes(authorized.value);
     }
     return this.loadArchivedInvoicePdfBytes(authorized.value);
   }
@@ -2672,6 +3091,8 @@ export class BackendService {
           quotes: this.p.quotes,
           invoices: this.p.invoices,
           customers: this.p.customers,
+          // A3 — le gel de rétractation (finalBlockedUntil) se calcule contre l'horloge injectée.
+          clock: this.clock,
         }).execute({ companyId: this.companyId() }),
       listIssuableInvoices: async () => {
         const [invoices, cust] = await Promise.all([this.listInvoices(), this.listCustomers()]);
@@ -3107,6 +3528,8 @@ export class BackendService {
           quotes: this.p.quotes,
           invoices: this.p.invoices,
           customers: this.p.customers,
+          // A3 — même horloge que le use case de génération (gel de rétractation cohérent).
+          clock: this.clock,
         }).execute({ companyId: this.companyId() });
         return ok({
           quoteId: attached.value.targetId,
@@ -4398,6 +4821,11 @@ export class BackendService {
       const current = await this.p.companies.lockById(companyId);
       if (!current) return err(appNotFound('company', companyId));
       if (current.isClosed()) return err(appForbidden('Compte clôturé.'));
+      // A8 — le régime de TVA est relu au RENDU du devis (mention art. 293 B CGI via
+      // buildMentions) : tant qu'un contrat signé n'a pas son original archivé, le changer
+      // fabriquerait une archive différente du document signé par le client.
+      const quoteArchiveReady = await this.assertSignedQuoteArchivesComplete(companyId);
+      if (!quoteArchiveReady.ok) return quoteArchiveReady;
       const updated = Company.of({
         ...current.toProps(),
         trade: input.trade,
@@ -4449,6 +4877,63 @@ export class BackendService {
       companyId,
       ibanChanged: input.iban !== undefined,
       bicChanged: input.bic !== undefined,
+    });
+    return persisted;
+  }
+
+  /**
+   * PATCH /company/legal — Réglages entreprise §Identité légale : capital social (A6,
+   * art. R123-238 c. com.) et médiateur de la consommation (A2, art. L612-1/L616-1 c. conso).
+   * MÊME sémantique partielle que /company/billing : champ `undefined` = inchangé, `null` =
+   * effacé explicitement. Ces valeurs s'impriment sur les pièces (bloc émetteur/mention B2C) :
+   * même barrière d'archives que le RIB — les originaux déjà émis doivent être archivés avant
+   * qu'une donnée relue au rendu puisse changer.
+   */
+  async updateCompanyLegal(input: {
+    capitalSocialCents?: number | null;
+    mediateurConso?: { nom: string; coordonnees: string } | null;
+    /** A3 — coordonnées de l'ENTREPRISE exigées par les modèles de rétractation en vigueur
+     *  (courriel : formulaire R221-1 + avis R221-3 ; téléphone : avis R221-3 — décret
+     *  n° 2022-424). Même sémantique partielle : undefined = inchangé, null = effacé. */
+    email?: string | null;
+    phone?: string | null;
+  }): Promise<Result<CompanyProps, AppError>> {
+    const companyId = this.companyId();
+    const persisted = await this.p.runInTransaction(async (): Promise<Result<CompanyProps, AppError>> => {
+      const current = await this.p.companies.lockById(companyId);
+      if (!current) return err(appNotFound('company', companyId));
+      if (current.isClosed()) return err(appForbidden('Compte clôturé.'));
+      const archiveReady = await this.assertIssuedInvoiceArchivesComplete(companyId);
+      if (!archiveReady.ok) return archiveReady;
+      // A8 — capital (A6) et médiateur (A2) s'impriment AUSSI sur le devis, relus au rendu
+      // (quoteMentions) : un contrat signé dont l'original n'est pas encore archivé bloque.
+      const quoteArchiveReady = await this.assertSignedQuoteArchivesComplete(companyId);
+      if (!quoteArchiveReady.ok) return quoteArchiveReady;
+      const props = current.toProps();
+      const updated = Company.of({
+        ...props,
+        capitalSocialCents:
+          input.capitalSocialCents === undefined
+            ? props.capitalSocialCents
+            : (input.capitalSocialCents ?? undefined),
+        mediateurConso:
+          input.mediateurConso === undefined
+            ? props.mediateurConso
+            : (input.mediateurConso ?? undefined),
+        email: input.email === undefined ? props.email : (input.email ?? undefined),
+        phone: input.phone === undefined ? props.phone : (input.phone ?? undefined),
+      });
+      if (!updated.ok) return err(appDomain(updated.error));
+      await this.p.companies.save(updated.value);
+      return ok(updated.value.toProps());
+    });
+    if (!persisted.ok) return persisted;
+    this.logger.audit('company.legal_updated', {
+      companyId,
+      capitalChanged: input.capitalSocialCents !== undefined,
+      mediateurChanged: input.mediateurConso !== undefined,
+      emailChanged: input.email !== undefined,
+      phoneChanged: input.phone !== undefined,
     });
     return persisted;
   }
@@ -4570,26 +5055,64 @@ export class BackendService {
     return rendered;
   }
 
-  private async loadArchivedInvoicePdfBytes(
-    input: Extract<AuthorizedPublicDocumentPdf, { kind: 'invoice' }>,
+  /**
+   * Charge un original archivé en vérifiant l'INTÉGRITÉ octet à octet (type MIME, taille,
+   * SHA-256) contre les métadonnées du Document. Tout écart = indisponibilité à réparer,
+   * jamais un service dégradé ni une régénération (fail-closed, commun factures et devis signés).
+   */
+  private async loadVerifiedArchivedPdfBytes(
+    companyId: string,
+    archive: ArchivedPdfDescriptor,
+    unavailableService: 'invoice-archive' | 'signed-quote-archive',
   ): Promise<Result<Uint8Array, AppError>> {
-    const stored = await this.documentStorage.get(input.companyId, input.archive.storageKey);
+    const stored = await this.documentStorage.get(companyId, archive.storageKey);
     if (
       stored === null ||
       stored.contentType !== 'application/pdf' ||
-      input.archive.mimeType !== 'application/pdf' ||
-      stored.bytes.byteLength !== input.archive.byteSize ||
-      documentSha256(stored.bytes) !== input.archive.sha256
+      archive.mimeType !== 'application/pdf' ||
+      stored.bytes.byteLength !== archive.byteSize ||
+      documentSha256(stored.bytes) !== archive.sha256
     ) {
-      return err(appUnavailable('invoice-archive'));
+      return err(appUnavailable(unavailableService));
     }
+    return ok(stored.bytes);
+  }
+
+  private async loadArchivedInvoicePdfBytes(
+    input: Extract<AuthorizedPublicDocumentPdf, { kind: 'invoice' }>,
+  ): Promise<Result<Uint8Array, AppError>> {
+    const bytes = await this.loadVerifiedArchivedPdfBytes(
+      input.companyId,
+      input.archive,
+      'invoice-archive',
+    );
+    if (!bytes.ok) return bytes;
     this.logger.audit('invoice.pdf', {
       invoiceId: input.invoiceId,
       number: input.number,
       facturX: true,
       source: 'immutable_archive',
     });
-    return ok(stored.bytes);
+    return bytes;
+  }
+
+  /** A8 — sert l'original du contrat signé (devis) archivé à la signature, après vérification
+   *  d'intégrité ; le nom du signataire ne sort jamais dans les journaux techniques. */
+  private async loadArchivedSignedQuotePdfBytes(
+    input: Extract<AuthorizedPublicDocumentPdf, { kind: 'signed_quote' }>,
+  ): Promise<Result<Uint8Array, AppError>> {
+    const bytes = await this.loadVerifiedArchivedPdfBytes(
+      input.companyId,
+      input.archive,
+      'signed-quote-archive',
+    );
+    if (!bytes.ok) return bytes;
+    this.logger.audit('quote.pdf', {
+      quoteId: input.quoteId,
+      number: input.number,
+      source: 'immutable_archive',
+    });
+    return bytes;
   }
 
   /**
@@ -4610,6 +5133,24 @@ export class BackendService {
       if (!archived) {
         return err(appConflict('company_billing_settings', 'issued_invoice_archive_missing'));
       }
+    }
+    return ok(undefined);
+  }
+
+  /**
+   * A8 — même doctrine que assertIssuedInvoiceArchivesComplete, pour le CONTRAT : tant qu'un
+   * ordre d'archivage de devis signé n'est pas abouti (fenêtre signature→job, job en échec),
+   * aucune donnée relue au rendu du devis ne peut changer — sinon l'archive produite en retard
+   * ne serait plus le document que le client a signé (art. 1366-1367 c. civ.). Les devis signés
+   * AVANT A8 n'ont aucun ordre d'archivage : jamais rétro-générés (un rendu actuel ne serait
+   * pas le contrat d'époque), donc hors barrière, honnêtement.
+   */
+  private async assertSignedQuoteArchivesComplete(
+    companyId: string,
+  ): Promise<Result<void, AppError>> {
+    const incomplete = await this.p.documentArchiveJobs.countIncomplete(companyId, 'quote-signed');
+    if (incomplete > 0) {
+      return err(appConflict('company_billing_settings', 'signed_quote_archive_missing'));
     }
     return ok(undefined);
   }
@@ -4647,6 +5188,21 @@ export class BackendService {
       purchaseOrder: inv.purchaseOrder
         ? { number: inv.purchaseOrder.number, receivedAt: inv.purchaseOrder.receivedAt }
         : null,
+      // A5 : identité de la facture annulée (avoir total) — le renderer titre « Avoir » et
+      // imprime la référence à la pièce initiale (242 nonies A CGI). Null = pièce ordinaire.
+      // E3 : l'identité (invoiceId) fait partie de la projection figée.
+      creditNoteSource: inv.creditNoteSource
+        ? {
+            invoiceId: inv.creditNoteSource.invoiceId,
+            kind: inv.creditNoteSource.kind,
+            number: inv.creditNoteSource.number,
+            issuedAt: inv.creditNoteSource.issuedAt,
+          }
+        : null,
+      // A7 : figés à l'émission par le domaine ; null HONNÊTE pour les factures émises avant
+      // la migration (jamais rétro-remplis — le renderer n'imprime alors rien).
+      servicePeriod: inv.servicePeriod,
+      deliveryAddress: inv.deliveryAddress,
       billingPresentation: {
         accentColor: billingSettings.pdfAccentColor,
         rib:
@@ -4669,6 +5225,10 @@ export class BackendService {
       const fxData = facturXDataFromInvoice(inv, company, {
         name: customer.name,
         ...(buyer.siren ? { siren: buyer.siren } : {}),
+        // A4 — faits fiscaux réels du preneur (jamais un défaut) : ils pilotent la catégorie AE
+        // (autoliquidation sous-traitance BTP, art. 283, 2 nonies du CGI) dans le XML Factur-X.
+        type: customer.type,
+        isSubcontractingBtp: customer.isSubcontractingBtp,
         address: buyer.address,
       });
       facturX = { xml: buildFacturXBasicXml(fxData) };
@@ -4677,9 +5237,11 @@ export class BackendService {
     return ok(bytes);
   }
 
-  /** Rend le PDF d'un devis (lien public de visualisation) — pas de RIB/assurance/Factur-X, ce
-   *  n'est pas une pièce comptable probante ; jamais archivé (un devis n'est jamais figé comme
-   *  une facture émise, il reste régénérable à la volée depuis son état courant). */
+  /** Rend le PDF d'un devis — pas de RIB/assurance/Factur-X (ce n'est pas une pièce comptable).
+   *  Un devis NON signé reste régénérable à la volée depuis son état courant (lien public de
+   *  visualisation). A8 : dès la SIGNATURE, ce rendu est figé et archivé (le contrat,
+   *  art. L213-1 c. conso) par archiveSignedQuoteDocumentsForCompany — toute consultation d'un
+   *  devis signé sert ensuite l'original archivé, jamais un re-rendu. */
   private async renderQuotePdf(q: Quote): Promise<Result<Uint8Array, AppError>> {
     const company = await this.p.companies.findById(q.companyId);
     const customer = await this.p.customers.findById(q.customerId);
@@ -4709,7 +5271,77 @@ export class BackendService {
       totals: { ht: totals.ht, vat: totals.vat, ttc: totals.ttc, netToPay: totals.netToPay },
       depositPct: q.depositPct,
       signedBy: q.signature?.signerName ?? null,
+      mentions: this.quoteMentions(q, company, customer),
+      // A3 — devis B2C : bloc d'information rétractation (avis type R221-3) + FORMULAIRE
+      // DÉTACHABLE (modèle type annexe R221-1, joint au contrat — art. L221-5/L221-9 c. conso).
+      // Client professionnel : null, rien d'imprimé. A8 : figé dans l'original archivé à la
+      // signature — jamais re-rendu ensuite.
+      retractation:
+        customer.type === 'b2c'
+          ? {
+              // A3 — l'avis mentionne l'existence et l'emplacement de la fonctionnalité de
+              // rétractation en ligne (L221-5, 7° ; annexe R221-3, instruction (3)).
+              noticeLines: retractationNoticeLines(this.retractationProfessional(company), {
+                onlineFunctionLocation: this.retractationOnlineFunctionLocation(),
+              }),
+              formLines: retractationFormLines(this.retractationProfessional(company)),
+            }
+          : null,
     };
+  }
+
+  /**
+   * A3 — identité du professionnel insérée dans les textes réglementaires de rétractation.
+   * Les modèles types EN VIGUEUR (décret n° 2022-424 du 25/03/2022) EXIGENT l'adresse
+   * électronique (formulaire R221-1 et avis R221-3) et le téléphone (avis R221-3, instruction
+   * (2)) — sans la réserve « lorsqu'ils sont disponibles », disparue en 2022. Les valeurs
+   * viennent du profil ENTREPRISE (PATCH /company/legal) : insérées dès qu'elles sont saisies,
+   * jamais fabriquées — l'incomplétude est mesurable via retractationContactGaps (@bob/core).
+   */
+  private retractationProfessional(company: Company): RetractationProfessional {
+    return {
+      name: company.name,
+      addressLine: `${company.address.line1}, ${company.address.zip} ${company.address.city}`,
+      email: company.email ?? null,
+      phone: company.phone ?? null,
+    };
+  }
+
+  /**
+   * A3 — « explication appropriée » de l'emplacement de la fonctionnalité de rétractation en
+   * ligne (avis type R221-3, instruction (3), décret n° 2026-3 : « insérer l'adresse internet
+   * ou une autre explication appropriée ») : l'URL personnelle n'existe qu'à la signature
+   * (jeton créé dans la transaction de signature, jamais persisté en clair) — l'avis imprimé
+   * AVANT et AU moment de la signature décrit donc où elle est remise. Servie au PDF du devis
+   * B2C et à la page sign-web (source unique).
+   */
+  private retractationOnlineFunctionLocation(): string {
+    return (
+      'le lien personnel de rétractation qui vous est remis à la signature du devis ' +
+      '(affiché après signature et transmis avec votre exemplaire du contrat)'
+    );
+  }
+
+  /**
+   * A1/A2/A6 — mentions légales du devis, calculées AU RENDU depuis l'état courant via
+   * buildMentions (@bob/core) : un devis NON signé n'est pas une pièce figée (régénérable à la
+   * volée, cf. renderQuotePdf) — contrairement à la facture dont les mentions sont figées à
+   * l'émission (issue-invoice.ts). Source UNIQUE pour le PDF du devis ET la page de signature.
+   * A8 : à la signature, le rendu (mentions comprises) est capturé dans l'original archivé du
+   * contrat ; c'est cet octet-là qui est servi ensuite, plus jamais ce calcul.
+   */
+  private quoteMentions(q: Quote, company: Company, customer: Customer): string[] {
+    return buildMentions({
+      company,
+      customer,
+      kind: 'quote',
+      asOf: this.businessToday(),
+      // P11 : les taux des lignes déclenchent la mention certifiée taux réduits (10 %/5,5 %).
+      lineVatRates: q.lines.map((l) => l.vatRate),
+      // A1 : date d'établissement dérivée à l'envoi (null = brouillon/legacy, mention omise).
+      establishedOn: q.issuedAt,
+      validUntil: q.validUntil,
+    });
   }
 
   /** XML Factur-X (CII BASIC) seul, pour transmission e-invoicing. Facture émise requise. */
@@ -4730,6 +5362,10 @@ export class BackendService {
     const fxData = facturXDataFromInvoice(inv, company, {
       name: customer.name,
       ...(buyer.siren ? { siren: buyer.siren } : {}),
+      // A4 — faits fiscaux réels du preneur (jamais un défaut) : ils pilotent la catégorie AE
+      // (autoliquidation sous-traitance BTP, art. 283, 2 nonies du CGI) dans le XML Factur-X.
+      type: customer.type,
+      isSubcontractingBtp: customer.isSubcontractingBtp,
       address: buyer.address,
     });
     return ok(buildFacturXBasicXml(fxData));
@@ -4827,8 +5463,22 @@ export class BackendService {
     await this.p.documentArchiveJobs.enqueue({
       id: this.ids.newId(),
       companyId: this.companyId(),
-      invoiceId,
+      pieceId: invoiceId,
       reason: 'invoice-issued',
+      now,
+    });
+  }
+
+  /** A8 — ordre durable d'archivage de l'original du devis signé (le contrat). À appeler DANS
+   *  la transaction de signature ; `companyId` explicite car la signature publique n'a pas de
+   *  principal authentifié. */
+  private async enqueueSignedQuoteArchive(companyId: string, quoteId: string): Promise<void> {
+    const now = this.clock.now();
+    await this.p.documentArchiveJobs.enqueue({
+      id: this.ids.newId(),
+      companyId,
+      pieceId: quoteId,
+      reason: 'quote-signed',
       now,
     });
   }
@@ -4909,6 +5559,60 @@ export class BackendService {
     }
   }
 
+  /**
+   * A8 — fige l'original du CONTRAT (devis signé) : PDF rendu depuis l'état au moment de la
+   * signature (mentions A1/A2/A6 comprises, cf. quotePdfData), SHA-256 et stockage par la MÊME
+   * mécanique que les originaux de factures émises (storeDocument + coffre). Idempotent : id de
+   * document déterministe par (tenant, devis) — un retry ne crée jamais un second original.
+   * Conservation : 10 ans par défaut (StoreDocument), conforme à l'art. L213-1 code conso
+   * (contrats électroniques B2C ≥ 120 €) ; valeur probante art. 1366-1367 code civil.
+   */
+  private async archiveSignedQuoteDocumentsForCompany(
+    companyId: string,
+    quoteId: string,
+  ): Promise<Result<{ created: number; skipped: number }, AppError>> {
+    const q = await this.p.quotes.findById(quoteId);
+    if (!q || q.companyId !== companyId) return { ok: false, error: appNotFound('quote', quoteId) };
+    if (q.signature === null)
+      return { ok: false, error: appForbidden('Devis non signé : archivage impossible.') };
+    try {
+      const existing = await this.p.documents.findByEntity(companyId, 'quote', quoteId);
+      const hasPdf = existing.some(
+        (document) => document.kind === 'signed_quote' && document.status === 'active',
+      );
+      if (hasPdf) return ok({ created: 0, skipped: 1 });
+      const pdf = await this.renderQuotePdf(q);
+      if (!pdf.ok) return pdf;
+      const archived = await this.storeDocument({
+        id: generatedQuoteDocumentId(companyId, quoteId, 'signed_quote'),
+        versionId: generatedQuoteDocumentVersionId(companyId, quoteId, 'signed_quote'),
+        companyId,
+        kind: 'signed_quote',
+        origin: 'generated',
+        filename: `devis-signe-${q.number ?? quoteId}.pdf`,
+        mimeType: 'application/pdf',
+        bytes: pdf.value,
+        linkedEntityType: 'quote',
+        linkedEntityId: quoteId,
+        // Date du document = jour (calendrier français) de la signature — l'événement qui fige.
+        documentDate: parisDateOnly(q.signature.signedAt),
+        issuedAt: q.issuedAt,
+        reason: 'quote-signed',
+      });
+      if (!archived.ok) return archived;
+      return ok({ created: 1, skipped: 0 });
+    } catch (e) {
+      return {
+        ok: false,
+        error: {
+          kind: 'dependency',
+          port: 'document-archive',
+          cause: e instanceof Error ? e.message : String(e),
+        },
+      };
+    }
+  }
+
   async runDocumentArchiveJobs(
     input: { companyId?: string; limit?: number } = {},
   ): Promise<Result<{ scanned: number; archived: number; failed: number }, AppError>> {
@@ -4920,13 +5624,19 @@ export class BackendService {
       let archived = 0;
       let failed = 0;
       for (const job of jobs) {
-        const result = await this.archiveIssuedInvoiceDocumentsForCompany(companyId, job.invoiceId);
+        // Dispatch par motif : même outbox, même worker, deux pièces à figer (facture émise,
+        // contrat signé) — jamais deux systèmes d'archivage parallèles.
+        const result =
+          job.reason === 'quote-signed'
+            ? await this.archiveSignedQuoteDocumentsForCompany(companyId, job.pieceId)
+            : await this.archiveIssuedInvoiceDocumentsForCompany(companyId, job.pieceId);
         if (result.ok) {
           await this.p.documentArchiveJobs.markDone(job.id, this.clock.now());
           archived += result.value.created;
           this.logger.audit('document.archive_job.done', {
             companyId,
-            invoiceId: job.invoiceId,
+            pieceId: job.pieceId,
+            reason: job.reason,
             created: result.value.created,
             skipped: result.value.skipped,
           });
@@ -4940,7 +5650,7 @@ export class BackendService {
             appErrorSummary(result.error),
           );
           this.logger.warn(
-            `Archivage facture en retry: ${appErrorSummary(result.error)}`,
+            `Archivage ${job.reason === 'quote-signed' ? 'devis signé' : 'facture'} en retry: ${appErrorSummary(result.error)}`,
             'documents',
           );
         }
@@ -6567,17 +7277,40 @@ export class BackendService {
 
   /** Édition post-création (C13/C40 TODO partagé) — la fiche mobile permet de compléter/corriger
    * ce que la création MINIMALE (nom + type) n'a pas saisi. Remplacement complet revalidé par
-   * Customer.of (mêmes invariants qu'à la création), scopé au tenant courant. */
+   * Customer.of (mêmes invariants qu'à la création), scopé au tenant courant.
+   * A8 — BARRIÈRE D'ARCHIVES : les données du client (nom, type, SIREN, adresse) sont relues au
+   * RENDU des originaux (quotePdfData/renderInvoicePdf) par les jobs d'archivage — tant qu'un
+   * ordre d'archivage (devis signé OU facture émise) n'est pas abouti, l'édition fabriquerait
+   * une archive différente du document signé/émis (art. 1366-1367 c. civ.) : même doctrine que
+   * updateCompanyProfile/updateCompanyLegal, appliquée aux éditions du CLIENT.
+   * A3/A4 — la garde du TYPE (immuable dès qu'une pièce signée/émise existe) vit dans le use
+   * case pur UpdateCustomer (@bob/core). */
   async updateCustomer(
     id: string,
     input: Omit<CustomerProps, 'id' | 'companyId'>,
   ): Promise<Result<{ id: string }, AppError>> {
-    const r = await new UpdateCustomer({ customers: this.p.customers }).execute({
-      id,
-      companyId: this.companyId(),
-      ...input,
+    const companyId = this.companyId();
+    const r = await this.p.runInTransaction(async (): Promise<Result<{ id: string }, AppError>> => {
+      // Ordre global anti-deadlock : Company FOR UPDATE avant toute autre ligne (même ordre que
+      // updateCompanyProfile) — sérialise l'édition avec les signatures/émissions en cours.
+      const company = await this.p.companies.lockById(companyId);
+      if (!company) return err(appNotFound('company', companyId));
+      if (company.isClosed()) return err(appForbidden('Compte clôturé.'));
+      const quoteArchiveReady = await this.assertSignedQuoteArchivesComplete(companyId);
+      if (!quoteArchiveReady.ok) return quoteArchiveReady;
+      const invoiceArchiveReady = await this.assertIssuedInvoiceArchivesComplete(companyId);
+      if (!invoiceArchiveReady.ok) return invoiceArchiveReady;
+      return new UpdateCustomer({
+        customers: this.p.customers,
+        quotes: this.p.quotes,
+        invoices: this.p.invoices,
+      }).execute({
+        id,
+        companyId,
+        ...input,
+      });
     });
-    if (r.ok) this.logger.audit('customer.updated', { id, companyId: this.companyId() });
+    if (r.ok) this.logger.audit('customer.updated', { id, companyId });
     return r;
   }
 }

@@ -2,6 +2,9 @@ import { type Company } from '../company/company';
 import { type Customer } from '../customer/customer';
 import { type LineCategory } from '../billing/shared/line-item';
 import { type VatRate } from '../billing/shared/vat-rate';
+import { type DateOnly } from '../../shared-kernel/time';
+import { frenchVatNumber } from '../compliance/facturx';
+import { formatEUR } from '../../format/money';
 
 export type OperationNature = 'biens' | 'services' | 'mixte';
 
@@ -52,16 +55,67 @@ export interface BuildMentionsInput {
    * — et NE PAS imprimer la mention ferait perdre le taux réduit en contrôle (l'objet même de P11).
    */
   reducedVatEligibility?: ReducedVatEligibility;
+  /**
+   * A1 — date d'établissement du devis (Quote.issuedAt), mention « Devis établi le … »
+   * (arrêté du 24 janvier 2017 relatif à la publicité des prix des prestations de dépannage,
+   * réparation et entretien dans le secteur du bâtiment : le devis porte sa date d'établissement).
+   * Null/absent = brouillon ou devis legacy envoyé avant l'ajout du champ : mention OMISE,
+   * jamais rétro-datée.
+   */
+  establishedOn?: DateOnly | null;
+  /**
+   * A1 — date limite de validité (Quote.validUntil) pour le rendu d'un devis EXISTANT, quand la
+   * durée en jours n'est pas connue au point d'appel. `validUntilDays` (création) reste prioritaire.
+   */
+  validUntil?: DateOnly | null;
+}
+
+/** SIREN lisible pour le bloc émetteur : 732829320 → « 732 829 320 » (groupes de 3 chiffres). */
+function sirenLisible(siren: string): string {
+  const v = siren.replace(/\s/g, '');
+  return `${v.slice(0, 3)} ${v.slice(3, 6)} ${v.slice(6, 9)}`;
 }
 
 export function buildMentions(input: BuildMentionsInput): string[] {
   const { company, customer, kind } = input;
   const m: string[] = [];
-  m.push(`${company.name} — ${company.address.line1}, ${company.address.zip} ${company.address.city}`);
+  // A6 — dénomination + forme juridique du bloc émetteur :
+  // • sociétés commerciales : dénomination précédée ou suivie de la forme ET énonciation du
+  //   capital social sur tout document destiné aux tiers (art. R123-238 du code de commerce).
+  //   Capital jamais inventé : forme seule tant qu'il n'a pas été saisi (données honnêtes) ;
+  // • entrepreneur individuel (EI comme micro) : dénomination suivie immédiatement des initiales
+  //   « EI » sur tous les documents professionnels (art. R526-27 du code de commerce, décret
+  //   n° 2022-725 du 28 avril 2022).
+  const forme = company.isSociete()
+    ? company.capitalSocialCents !== undefined
+      ? `${company.legalForm} au capital de ${formatEUR(company.capitalSocialCents)}`
+      : company.legalForm
+    : 'EI';
+  m.push(`${company.name}, ${forme} — ${company.address.line1}, ${company.address.zip} ${company.address.city}`);
+  // A6 — numéro unique d'identification (SIREN) de l'émetteur sur ses documents commerciaux
+  // (art. R123-237 du code de commerce), en complément du RCS/RM ci-dessous.
+  m.push(`SIREN ${sirenLisible(company.siren)}`);
   if (company.rcsOrRm) m.push(company.rcsOrRm);
+  // A6 — n° de TVA intracommunautaire du vendeur dès lors que la TVA est facturée (art. 242
+  // nonies A, I-3° de l'annexe II au CGI). Franchise en base : TVA non applicable, numéro omis —
+  // cohérent avec le XML Factur-X qui omet BT-31 en franchise. Valeur du profil quand elle a été
+  // saisie, sinon dérivation déterministe depuis le SIREN (même algorithme que le XML, BT-31).
+  if (!company.isVatFranchise()) {
+    m.push(`TVA intracommunautaire : ${company.tvaIntracom ?? frenchVatNumber(company.siren)}`);
+  }
 
   // Réforme 2026/2027 : le SIREN du client (assujetti) devient une mention obligatoire en B2B/B2G.
   if (customer.type !== 'b2c' && customer.siren) m.push(`Client — SIREN ${customer.siren}`);
+  // A2 — médiateur de la consommation : mention obligatoire envers les CONSOMMATEURS sur devis
+  // et factures (art. L616-1 c. conso : communication du nom et des coordonnées du ou des
+  // médiateurs dont relève le professionnel ; adhésion obligatoire, art. L612-1 c. conso).
+  // Non renseigné = mention ABSENTE (le nudge « as-tu un médiateur ? » relève des réglages/UI) —
+  // jamais un médiateur inventé.
+  if (customer.type === 'b2c' && company.mediateurConso) {
+    m.push(
+      `Médiateur de la consommation : ${company.mediateurConso.nom} — ${company.mediateurConso.coordonnees} (art. L612-1 et L616-1 du code de la consommation).`,
+    );
+  }
   // Nature des opérations (livraison de biens / prestation de services) — obligatoire sur facture.
   if (kind === 'invoice' && input.operationNature) m.push(`Nature de l'opération : ${NATURE_LABEL[input.operationNature]}`);
 
@@ -72,7 +126,15 @@ export function buildMentions(input: BuildMentionsInput): string[] {
     const cibs = input.asOf >= '2026-09-01';
     m.push(cibs ? 'TVA non applicable — franchise en base (CIBS)' : 'TVA non applicable, art. 293 B du CGI');
   }
-  if (company.requiresAutoliquidation({ type: customer.type, isSubcontractingBtp: customer.isSubcontractingBtp })) {
+  // A4 — la FRANCHISE EN BASE PRIME sur l'autoliquidation : le sous-traitant en franchise
+  // facture sous l'art. 293 B CGI (mention ci-dessus), il n'est pas concerné par le dispositif
+  // d'autoliquidation (BOI-TVA-DECLA-10-10-20) — même préséance que facturXDataFromInvoice
+  // (catégorie E, jamais AE) et IssueInvoice : le PDF ne porte JAMAIS les deux mentions
+  // fiscales contradictoires (« TVA non applicable » + « Autoliquidation ») sur la même pièce.
+  if (
+    !company.isVatFranchise()
+    && company.requiresAutoliquidation({ type: customer.type, isSubcontractingBtp: customer.isSubcontractingBtp })
+  ) {
     m.push('Autoliquidation de la TVA (sous-traitance BTP, art. 283-2 nonies du CGI)');
   }
 
@@ -111,15 +173,33 @@ export function buildMentions(input: BuildMentionsInput): string[] {
   if (company.isBtp() && company.decennale) {
     const d = company.decennale;
     m.push(`Assurance decennale : ${d.insurer}, police n°${d.policyNo}, couverture ${d.coverage}.`);
+  } else if (company.isBtp() && kind === 'quote') {
+    // A1 — métier BTP SANS décennale renseignée : rappel HONNÊTE sur le devis. L'art. L243-2
+    // du code des assurances impose aux assujettis à l'obligation d'assurance (art. L241-1 s.)
+    // de mentionner sur leurs devis et factures l'assurance souscrite, les coordonnées de
+    // l'assureur et la couverture géographique — on n'invente JAMAIS une police absente : on
+    // imprime l'état réel et le renvoi au texte, à charge pour l'entreprise de compléter son profil.
+    m.push(
+      "Assurance professionnelle obligatoire : non renseignée par l'entreprise à ce jour. La mention de l'assurance de responsabilité décennale, des coordonnées de l'assureur et de la couverture géographique est requise sur les devis et factures (art. L243-2 du code des assurances).",
+    );
   }
 
-  // À COMPLÉTER (réforme) quand les champs existeront au modèle : adresse de livraison si distincte de
-  // la facturation, et option « TVA sur les débits » si l'entreprise l'a exercée. Conservation légale
-  // des factures émises/reçues = 10 ans (règle d'archivage, hors mention imprimée).
+  // A7 — l'adresse de livraison/chantier et la date de prestation sont désormais portées par la
+  // pièce elle-même (Invoice.servicePeriod/deliveryAddress, figées à l'émission) : imprimées dans
+  // la zone références du PDF (pdf-renderer) et injectées au XML Factur-X (BT-72/BG-14/BG-13) —
+  // pas une mention de ce bloc. À COMPLÉTER (réforme) : option « TVA sur les débits » si
+  // l'entreprise l'a exercée. Conservation légale des factures émises/reçues = 10 ans (règle
+  // d'archivage, hors mention imprimée).
 
   if (kind === 'quote') {
+    // A1 — arrêté du 24 janvier 2017 (art. 2) : le devis des prestations de dépannage,
+    // réparation et entretien (bâtiment) porte sa DATE D'ÉTABLISSEMENT et le CARACTÈRE
+    // GRATUIT OU PAYANT du devis. La date est celle dérivée à l'envoi (Quote.issuedAt) —
+    // omise pour un brouillon ou un devis legacy (jamais rétro-datée).
+    if (input.establishedOn) m.push(`Devis établi le ${input.establishedOn}.`);
     m.push('Devis gratuit.');
     if (input.validUntilDays) m.push(`Devis valable ${input.validUntilDays} jours.`);
+    else if (input.validUntil) m.push(`Devis valable jusqu'au ${input.validUntil}.`);
     m.push('Bon pour accord (date + signature) :');
   }
   return m;

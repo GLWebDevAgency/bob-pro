@@ -58,6 +58,37 @@ describe('Quote', () => {
     expect(q.status).toBe('signed');
     expect(q.signature?.signerName).toBe('Martin');
   });
+
+  describe('date d’établissement (A1, arrêté du 24/01/2017)', () => {
+    it('null en brouillon, dérivée au jour métier Paris à l’envoi', () => {
+      const q = freshQuote();
+      q.addLine(line('l1'));
+      q.assignNumber(DocNumber.format('D', 2026, 1), AT);
+      expect(q.issuedAt).toBeNull();
+      expect(q.send(AT).ok).toBe(true);
+      expect(q.issuedAt).toBe('2026-06-01');
+    });
+    it('jour métier Paris, pas l’UTC brut : un envoi à 23h30 UTC est daté du lendemain français', () => {
+      // 2026-06-01T22:30Z = 2026-06-02 00:30 heure de Paris (CEST, UTC+2).
+      const q = freshQuote();
+      q.addLine(line('l1'));
+      q.assignNumber(DocNumber.format('D', 2026, 1), AT);
+      expect(q.send('2026-06-01T22:30:00.000Z').ok).toBe(true);
+      expect(q.issuedAt).toBe('2026-06-02');
+    });
+    it('roundtrip snapshot + compat legacy : jamais rétro-datée', () => {
+      const q = freshQuote();
+      q.addLine(line('l1'));
+      q.assignNumber(DocNumber.format('D', 2026, 1), AT);
+      q.send(AT);
+      const snapshot = q.toSnapshot();
+      expect(snapshot.issuedAt).toBe('2026-06-01');
+      expect(Quote.rehydrate(snapshot).issuedAt).toBe('2026-06-01');
+      // Devis legacy envoyé AVANT l'ajout du champ : snapshot sans issuedAt -> null honnête.
+      const { issuedAt: _legacy, ...legacySnapshot } = snapshot;
+      expect(Quote.rehydrate(legacySnapshot).issuedAt).toBeNull();
+    });
+  });
   it('transition invalide (draft->signed direct)', () => {
     expect(freshQuote().sign(sig, AT).ok).toBe(false);
   });
@@ -219,6 +250,46 @@ describe('Quote', () => {
       const r = q.removeLine('missing');
       expect(r.ok).toBe(false);
       if (!r.ok) expect(r.error).toEqual({ code: 'VALIDATION', field: 'lineId', message: 'Ligne introuvable.' });
+    });
+  });
+
+  // —— A3 : rétractation en ligne du consommateur (art. L221-21 c. conso) ——
+  describe('retract (rétractation en ligne L221-21)', () => {
+    const signedQuote = (): Quote => {
+      const q = freshQuote();
+      q.addLine(line('l1'));
+      q.assignNumber(DocNumber.format('D', 2026, 9), AT);
+      q.send(AT);
+      q.sign(sig, AT);
+      return q;
+    };
+
+    it('enregistre le fait horodaté sur un devis signé (une seule fois)', () => {
+      const q = signedQuote();
+      expect(q.retractedAt).toBeNull();
+      const r = q.retract('2026-06-10T12:00:00.000Z');
+      expect(r.ok).toBe(true);
+      expect(q.retractedAt).toBe('2026-06-10T12:00:00.000Z');
+      // Le statut ne change pas : le devis signé reste le contrat archivé (pièce immuable),
+      // la rétractation est un événement postérieur.
+      expect(q.status).toBe('signed');
+      const again = q.retract('2026-06-11T12:00:00.000Z');
+      expect(again.ok).toBe(false);
+      expect(q.retractedAt).toBe('2026-06-10T12:00:00.000Z');
+    });
+
+    it('refuse la rétractation d’un devis non signé (aucun contrat)', () => {
+      const q = freshQuote();
+      expect(q.retract(AT).ok).toBe(false);
+    });
+
+    it('survit au cycle snapshot → rehydrate (compat ascendante : absent = null)', () => {
+      const q = signedQuote();
+      q.retract('2026-06-10T12:00:00.000Z');
+      const rehydrated = Quote.rehydrate(q.toSnapshot());
+      expect(rehydrated.retractedAt).toBe('2026-06-10T12:00:00.000Z');
+      const { retractedAt: _omitted, ...legacy } = q.toSnapshot();
+      expect(Quote.rehydrate(legacy).retractedAt).toBeNull();
     });
   });
 });

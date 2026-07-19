@@ -70,6 +70,7 @@ import type {
   PurchaseOrderRef,
   PurchaseOrderRefInput,
   PurchaseOrderMutationView,
+  CreditNoteSourceSnapshot,
 } from '@bob/core';
 
 export interface QuoteView {
@@ -117,6 +118,11 @@ export interface InvoiceView {
   purchaseOrder?: PurchaseOrderRef | null;
   /** Révision optimiste des mutations de bon de commande — absent ⇒ 1 (normalisé par le codec). */
   revision?: number;
+  /** E3 : identité FIGÉE de la facture annulée par cet AVOIR (CreditNoteSourceSnapshot du
+   *  domaine) — nav croisée inverse avoir → facture d'origine. Optionnel (compat ascendante des
+   *  serveurs antérieurs) ; le codec HTTP normalise TOUJOURS (absent ⇒ null, présent difforme ⇒
+   *  échec fermé), le client local le fournit depuis l'agrégat. Null = pièce ordinaire. */
+  creditNoteSource?: CreditNoteSourceSnapshot | null;
 }
 
 /** Encaissement daté (E3) — la matière du CA encaissé annuel et du lettrage à venir. */
@@ -880,6 +886,14 @@ export interface BobClient {
     iban?: string | null;
     bic?: string | null;
   }): Promise<Result<CompanyProps, AppError>>;
+  /** PATCH /company/legal (Réglages entreprise §Identité légale) : capital social en CENTIMES
+   * (A6, art. R123-238 c. com. — sociétés uniquement, le domaine rejette EI/micro) et médiateur
+   * de la consommation (A2, art. L612-1/L616-1 c. conso). MÊME sémantique partielle que
+   * /company/billing : champ omis = inchangé, `null` = effacé explicitement. */
+  updateCompanyLegal(input: {
+    capitalSocialCents?: number | null;
+    mediateurConso?: { nom: string; coordonnees: string } | null;
+  }): Promise<Result<CompanyProps, AppError>>;
   /** Réglages PostgreSQL du tenant. Aucune valeur de repli n'est autorisée côté client. */
   getCompanyBillingSettings(): Promise<Result<CompanyBillingSettings, AppError>>;
   updateCompanyBillingSettings(input: {
@@ -1116,11 +1130,15 @@ export interface BobClient {
   createQuoteViewLink(quoteId: string): Promise<Result<CreateDocumentViewLinkOutput, AppError>>;
   /** R4 : `proofDataUrl` = tracé du pad (dataURL) — le SERVEUR calcule le SHA-256 de preuve ;
    * le dataURL n'est jamais persisté tel quel. Absent = signature sans capture (preuve absente,
-   * jamais fabriquée). */
+   * jamais fabriquée).
+   * A3 : `earlyExecutionRequested` = case « exécution immédiate des travaux » cochée par le
+   * client PARTICULIER au moment de signer (art. L221-25 c. conso) — tracée et horodatée
+   * serveur, ignorée pour un professionnel ; elle lève le gel de rétractation de la finale. */
   signQuote(input: {
     quoteId: string;
     signerName: string;
     proofDataUrl?: string;
+    earlyExecutionRequested?: boolean;
   }): Promise<Result<{ status: string }, AppError>>;
   refuseQuote(quoteId: string): Promise<Result<{ status: string }, AppError>>;
   generateInvoice(input: {

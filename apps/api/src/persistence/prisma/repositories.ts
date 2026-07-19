@@ -261,8 +261,20 @@ export class PrismaQuoteRepository implements QuoteRepository {
       number: s.number,
       depositPct: s.depositPct,
       validUntil: s.validUntil ? new Date(s.validUntil) : null,
+      // A1 : date d'établissement dérivée à l'envoi par l'agrégat — NULL tant que brouillon.
+      issuedAt: s.issuedAt ? new Date(s.issuedAt) : null,
       signerName: s.signature?.signerName ?? null,
       signedAt: s.signature ? new Date(s.signature.signedAt) : null,
+      // A3 — demande d'exécution anticipée (L221-25) : horodatage serveur tracé à la signature,
+      // NULL si jamais demandée — le gel de rétractation de la facture finale en dépend.
+      earlyExecutionRequestedAt: s.signature?.earlyExecution
+        ? new Date(s.signature.earlyExecution.requestedAt)
+        : null,
+      // A3 — qualité du client figée à la conclusion (SignQuote) ; NULL pour les signatures
+      // antérieures au figeage — jamais rétro-rempli depuis la fiche courante.
+      signatureCustomerType: s.signature?.customerType ?? null,
+      // A3 — rétractation en ligne (L221-21) : fait horodaté serveur, NULL = jamais exercée.
+      retractedAt: s.retractedAt ? new Date(s.retractedAt) : null,
       signatureProof:
         signatureProof === null
           ? Prisma.DbNull
@@ -360,6 +372,10 @@ export class PrismaInvoiceRepository implements InvoiceRepository {
       number: s.number,
       issuedAt: s.issuedAt ? new Date(s.issuedAt) : null,
       dueAt: s.dueAt ? new Date(s.dueAt) : null,
+      // A7 : figés à l'émission par le domaine (le trigger legal_traceability les verrouille).
+      servicePeriodStart: s.servicePeriod ? new Date(s.servicePeriod.start) : null,
+      servicePeriodEnd: s.servicePeriod?.end ? new Date(s.servicePeriod.end) : null,
+      deliveryAddress: s.deliveryAddress ?? null,
       parentQuoteId: s.parentQuoteId,
       sourceInvoiceId: s.sourceInvoiceId ?? null,
       sourceInvoiceKind: s.sourceInvoiceKind ? invoiceKindToDocKind(s.sourceInvoiceKind) : null,
@@ -375,6 +391,9 @@ export class PrismaInvoiceRepository implements InvoiceRepository {
       totalsNetToPay: totals.netToPay,
       vatByRate: totals.vatByRate as Record<string, number>,
       legalMentions: s.mentions,
+      // A4 : régime de TVA constaté et figé à l'émission (IssueInvoice) — NULL avant émission
+      // et pour les pièces émises avant le figeage.
+      vatTreatmentAtIssuance: s.vatTreatmentAtIssuance ?? null,
       // B8 : bon de commande (repris du devis ou attaché en brouillon) + révision optimiste.
       ...purchaseOrderToPersistence(s.purchaseOrder),
       revision: s.revision ?? 1,
@@ -990,8 +1009,10 @@ function archiveJobRowToView(row: {
   return {
     id: row.id,
     companyId: row.companyId,
-    invoiceId: row.invoiceId,
-    reason: 'invoice-issued',
+    // Colonne historique `invoiceId` = id de la pièce cible (facture OU devis selon reason) —
+    // le renommage de colonne serait une migration non additive, interdite.
+    pieceId: row.invoiceId,
+    reason: row.reason === 'quote-signed' ? 'quote-signed' : 'invoice-issued',
     status: row.status as DocumentArchiveJob['status'],
     attempts: row.attempts,
     nextAttemptAt: row.nextAttemptAt.toISOString(),
@@ -1009,7 +1030,7 @@ export class PrismaDocumentArchiveJobRepository implements DocumentArchiveJobRep
       where: {
         uniq_document_archive_job: {
           companyId: input.companyId,
-          invoiceId: input.invoiceId,
+          invoiceId: input.pieceId,
           reason: input.reason,
         },
       },
@@ -1027,12 +1048,29 @@ export class PrismaDocumentArchiveJobRepository implements DocumentArchiveJobRep
       data: {
         id: input.id,
         companyId: input.companyId,
-        invoiceId: input.invoiceId,
+        invoiceId: input.pieceId,
         reason: input.reason,
         status: 'pending',
         attempts: 0,
         nextAttemptAt: new Date(input.now),
       },
+    });
+  }
+
+  async findByPiece(
+    companyId: string,
+    pieceId: string,
+    reason: DocumentArchiveJob['reason'],
+  ): Promise<DocumentArchiveJob | null> {
+    const row = await this.prisma.client().documentArchiveJob.findUnique({
+      where: { uniq_document_archive_job: { companyId, invoiceId: pieceId, reason } },
+    });
+    return row === null ? null : archiveJobRowToView(row);
+  }
+
+  async countIncomplete(companyId: string, reason: DocumentArchiveJob['reason']): Promise<number> {
+    return this.prisma.client().documentArchiveJob.count({
+      where: { companyId, reason, status: { not: 'done' } },
     });
   }
 

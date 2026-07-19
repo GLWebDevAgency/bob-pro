@@ -42,19 +42,42 @@ describe('Flux Devis -> signature -> facture -> paiement (intégration)', () => 
     expect(sent.ok).toBe(true);
     if (sent.ok) expect(sent.value.number).toBe('D-2026-0001');
 
+    // Signature À DISTANCE (lien public → contrat à distance, art. L221-1, I-1°) : l'acompte
+    // est immédiatement facturable — l'interdiction de paiement de 7 jours (art. L221-10
+    // c. conso) ne vise que le contrat HORS ÉTABLISSEMENT (signature sur place, cf.
+    // generate-invoice-from-quote.test.ts pour ce régime).
+    const grant = await env.publicAccessTokens.create({
+      companyId: env.company.id,
+      resourceType: 'quote',
+      resourceId: quoteId,
+      scope: 'quote_signature',
+      expiresAt: '2026-06-02T09:00:00.000Z',
+    });
     const signed = await new SignQuote({
       companies: env.companyRepo,
+      customers: env.customerRepo,
       quotes: env.quoteRepo,
       publicAccessTokens: env.publicAccessTokens,
       uow: env.uow,
       clock: env.clock,
-    }).execute({ quoteId, signerName: 'M. Bernard' });
+    }).execute({
+      quoteId,
+      signerName: 'M. Bernard',
+      remoteGrant: { token: grant.token, grantId: grant.id },
+    });
     expect(signed.ok).toBe(true);
+    // A3/L221-21 : la signature B2C ouvre la fonctionnalité de rétractation en ligne (jeton
+    // dédié, valable toute la durée du délai) — le contrat à distance y est strictement tenu.
+    if (signed.ok) expect(signed.value.retractation?.token).toBeTruthy();
 
+    // A3 : M. Bernard est un consommateur (b2c) — l'ACOMPTE reste facturable pendant le délai
+    // de rétractation d'un contrat à distance (seule la FINALE est gelée).
     const gen = await new GenerateInvoiceFromQuote({
       quotes: env.quoteRepo,
       invoices: env.invoiceRepo,
+      customers: env.customerRepo,
       ids: env.ids,
+      clock: env.clock,
     }).execute({ quoteId, mode: 'deposit' });
     expect(gen.ok).toBe(true);
     if (!gen.ok) return;
@@ -64,6 +87,7 @@ describe('Flux Devis -> signature -> facture -> paiement (intégration)', () => 
       invoices: env.invoiceRepo,
       companies: env.companyRepo,
       customers: env.customerRepo,
+      quotes: env.quoteRepo,
       counters: env.counters,
       uow: env.uow,
       clock: env.clock,

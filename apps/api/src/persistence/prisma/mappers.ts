@@ -81,6 +81,10 @@ interface CompanyRow {
   customerPortfolio: string | null;
   tvaIntracom: string | null; dateCreation: Date | null;
   natureJuridiqueCode: string | null; estRge: boolean | null;
+  capitalSocialCents: bigint | null;
+  mediateurConsoNom: string | null; mediateurConsoCoordonnees: string | null;
+  /** A3 — coordonnées de l'entreprise (modèles R221-1/R221-3, décret 2022-424). NULL = jamais saisies. */
+  email: string | null; phone: string | null;
   iban: string | null; bic: string | null; insurerName: string | null; policyNo: string | null;
   coverage: string | null; policyExpiresAt: Date | null;
   closedAt: Date | null; closureReason: string | null;
@@ -105,6 +109,17 @@ export function companyRowToProps(row: CompanyRow): CompanyProps {
   if (row.natureJuridiqueCode) props.natureJuridiqueCode = row.natureJuridiqueCode;
   // `false` est une donnée réelle (« pas RGE à l'annuaire ») — seul NULL signifie « jamais fourni ».
   if (row.estRge !== null) props.estRge = row.estRge;
+  // A6 : BIGINT → number. Une valeur hors entier sûr JS produirait un montant faux : Company.of
+  // la rejette (Number.isSafeInteger) et la réhydratation échoue — fail-closed, jamais arrondi.
+  if (row.capitalSocialCents !== null) props.capitalSocialCents = Number(row.capitalSocialCents);
+  // A2 : les deux colonnes vont ensemble (CHECK SQL) — une moitié seule serait une corruption,
+  // honnêtement réhydratée « jamais saisi » plutôt qu'un médiateur incomplet imprimable.
+  if (row.mediateurConsoNom !== null && row.mediateurConsoCoordonnees !== null) {
+    props.mediateurConso = { nom: row.mediateurConsoNom, coordonnees: row.mediateurConsoCoordonnees };
+  }
+  // A3 : coordonnées de l'entreprise pour les modèles de rétractation — NULL = jamais saisies.
+  if (row.email) props.email = row.email;
+  if (row.phone) props.phone = row.phone;
   if (row.iban) props.iban = row.iban;
   if (row.bic) props.bic = row.bic;
   if (row.insurerName && row.policyNo && row.coverage && row.policyExpiresAt) {
@@ -139,6 +154,11 @@ export function companyPropsToCreate(p: CompanyProps) {
     dateCreation: p.dateCreation ? new Date(p.dateCreation) : null,
     natureJuridiqueCode: p.natureJuridiqueCode ?? null,
     estRge: p.estRge ?? null,
+    capitalSocialCents: p.capitalSocialCents === undefined ? null : BigInt(p.capitalSocialCents),
+    mediateurConsoNom: p.mediateurConso?.nom ?? null,
+    mediateurConsoCoordonnees: p.mediateurConso?.coordonnees ?? null,
+    email: p.email ?? null,
+    phone: p.phone ?? null,
     iban: p.iban ?? null,
     bic: p.bic ?? null,
     insurerName: p.decennale?.insurer ?? null,
@@ -299,8 +319,15 @@ export function expensePropsToPersistence(p: ExpenseProps) {
 
 interface QuoteRow {
   id: string; companyId: string; customerId: string; status: string; number: string | null;
+  issuedAt: Date | null;
   validUntil: Date | null; depositPct: number | null; signerName: string | null; signedAt: Date | null;
   signatureProof: unknown;
+  /** A3 — horodatage serveur de la demande d'exécution anticipée (L221-25), NULL = jamais demandée. */
+  earlyExecutionRequestedAt: Date | null;
+  /** A3 — qualité du client figée à la conclusion (SignQuote). NULL = signature antérieure au figeage. */
+  signatureCustomerType: string | null;
+  /** A3 — rétractation en ligne exercée (L221-21). NULL = jamais exercée. */
+  retractedAt: Date | null;
   purchaseOrderNumber: string | null;
   purchaseOrderReceivedAt: Date | null;
   purchaseOrderDocumentId: string | null;
@@ -369,9 +396,30 @@ function parsePersistedSignatureProof(value: unknown): PersistedSignatureProof |
  * une ligne historique sans preuve redevient `legacy_declared` (méthode inconnue, jamais
  * réinventée) et `proof` n'existe que si un hash de tracé a réellement été enregistré.
  */
-function signatureFromQuoteRow(row: Pick<QuoteRow, 'signerName' | 'signedAt' | 'signatureProof'>): Signature | null {
+const SIGNATURE_CUSTOMER_TYPES = new Set(['b2c', 'b2b', 'b2g']);
+
+function signatureFromQuoteRow(
+  row: Pick<
+    QuoteRow,
+    'signerName' | 'signedAt' | 'signatureProof' | 'earlyExecutionRequestedAt' | 'signatureCustomerType'
+  >,
+): Signature | null {
   if (!row.signerName || !row.signedAt) return null;
-  const base = { signerName: row.signerName, signedAt: row.signedAt.toISOString(), accepted: true as const };
+  const base = {
+    signerName: row.signerName,
+    signedAt: row.signedAt.toISOString(),
+    accepted: true as const,
+    // A3 — demande d'exécution anticipée (L221-25) : réhydratée depuis son horodatage persisté,
+    // ABSENTE si NULL — jamais fabriquée (une signature legacy sans demande reste gelable).
+    ...(row.earlyExecutionRequestedAt
+      ? { earlyExecution: { requestedAt: row.earlyExecutionRequestedAt.toISOString() } }
+      : {}),
+    // A3 — qualité du client FIGÉE à la conclusion : réhydratée telle quelle, ABSENTE si NULL
+    // (signature antérieure au figeage — les gardes retombent sur le type courant, jamais inventé).
+    ...(row.signatureCustomerType !== null && SIGNATURE_CUSTOMER_TYPES.has(row.signatureCustomerType)
+      ? { customerType: row.signatureCustomerType as Signature['customerType'] }
+      : {}),
+  };
   const persisted = parsePersistedSignatureProof(row.signatureProof);
   if (!persisted) return { ...base, method: 'legacy_declared' };
   return {
@@ -402,7 +450,11 @@ export function quoteRowToSnapshot(row: QuoteRow): QuoteSnapshot {
     number: row.number,
     depositPct: row.depositPct,
     validUntil: toDateOnly(row.validUntil),
+    // A1 : date d'établissement dérivée à l'envoi — NULL honnête pour les devis legacy.
+    issuedAt: toDateOnly(row.issuedAt),
     signature: signatureFromQuoteRow(row),
+    // A3 : rétractation en ligne (L221-21) — NULL honnête pour les devis jamais rétractés.
+    retractedAt: row.retractedAt ? row.retractedAt.toISOString() : null,
     purchaseOrder: purchaseOrderFromRow(row),
     revision: row.revision,
   };
@@ -411,11 +463,14 @@ export function quoteRowToSnapshot(row: QuoteRow): QuoteSnapshot {
 interface InvoiceRow {
   id: string; companyId: string; customerId: string; kind: string; status: string; number: string | null;
   issuedAt: Date | null; dueAt: Date | null; parentQuoteId: string | null; depositPct: number | null;
+  servicePeriodStart: Date | null; servicePeriodEnd: Date | null; deliveryAddress: string | null;
   sourceInvoiceId: string | null; sourceInvoiceKind: string | null; sourceInvoiceNumber: string | null;
   sourceInvoiceIssuedAt: Date | null;
   depositDeductionCents: number; depositInvoiceId: string | null;
   paidCents: number; totalsHt: number; totalsVat: number; totalsTtc: number; totalsNetToPay: number;
   vatByRate: unknown; legalMentions: string[];
+  /** A4 — régime de TVA figé à l'émission. NULL = pièce émise avant le figeage. */
+  vatTreatmentAtIssuance: string | null;
   purchaseOrderNumber: string | null;
   purchaseOrderReceivedAt: Date | null;
   purchaseOrderDocumentId: string | null;
@@ -448,6 +503,21 @@ export function invoiceRowToSnapshot(row: InvoiceRow): InvoiceSnapshot {
     mentions: row.legalMentions,
     issuedAt: toDateOnly(row.issuedAt),
     dueAt: toDateOnly(row.dueAt),
+    // A7 : période de prestation (fin NULL = jour unique) + adresse de chantier/livraison —
+    // une fin sans début serait une corruption (CHECK SQL), réhydratée null fail-closed.
+    servicePeriod:
+      row.servicePeriodStart === null
+        ? null
+        : { start: row.servicePeriodStart.toISOString().slice(0, 10), end: toDateOnly(row.servicePeriodEnd) },
+    deliveryAddress: row.deliveryAddress,
+    // A4 : régime figé à l'émission — une valeur hors référentiel serait une corruption (CHECK
+    // SQL), réhydratée null fail-closed (dérivation dynamique, jamais un régime inventé).
+    vatTreatmentAtIssuance:
+      row.vatTreatmentAtIssuance === 'standard'
+      || row.vatTreatmentAtIssuance === 'franchise'
+      || row.vatTreatmentAtIssuance === 'autoliquidation'
+        ? row.vatTreatmentAtIssuance
+        : null,
     paid: row.paidCents,
     depositPct: row.depositPct,
     parentQuoteId: row.parentQuoteId,

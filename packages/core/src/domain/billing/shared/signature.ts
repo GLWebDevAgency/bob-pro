@@ -1,4 +1,5 @@
 import { type Instant } from '../../../shared-kernel/time';
+import { type CustomerType } from '../../customer/customer';
 
 /** Comment le devis a réellement été signé — jamais inféré, toujours porté par l'appelant. */
 export type SignatureMethod = 'onsite_draw' | 'remote_link';
@@ -18,6 +19,16 @@ export interface SignatureProof {
   capturedAt: Instant;
 }
 
+/**
+ * A3 — demande EXPRESSE d'exécution anticipée des travaux avant la fin du délai de rétractation
+ * (art. L221-25 du code de la consommation), cochée par le CLIENT au moment de signer et
+ * horodatée serveur. Présente uniquement pour un client consommateur (b2c) qui l'a réellement
+ * demandée — jamais fabriquée, jamais déduite (un droit qui n'existe pas ne se renonce pas).
+ */
+export interface EarlyExecutionRequest {
+  requestedAt: Instant;
+}
+
 export interface Signature {
   signerName: string;
   signedAt: Instant;
@@ -30,4 +41,15 @@ export interface Signature {
   accepted: true;
   /** Présent uniquement quand un tracé a réellement été reçu et haché. */
   proof?: SignatureProof;
+  /** A3 — présent uniquement si le client a demandé l'exécution anticipée en signant (L221-25). */
+  earlyExecution?: EarlyExecutionRequest;
+  /**
+   * A3 — qualité du client FIGÉE à la CONCLUSION du contrat (SignQuote la lit dans la même
+   * transaction que la signature) : la qualité de consommateur s'apprécie au jour de la
+   * conclusion (art. liminaire et L221-1 c. conso) — une édition ultérieure de la fiche client
+   * (b2c↔b2b) ne peut ni lever ni créer rétroactivement le droit de rétractation ou
+   * l'interdiction de paiement L221-10. Absente = signature antérieure au figeage : les gardes
+   * retombent honnêtement sur le type courant de la fiche (jamais un backfill inventé).
+   */
+  customerType?: CustomerType;
 }

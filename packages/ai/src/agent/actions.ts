@@ -121,6 +121,10 @@ export interface InvoiceableQuote {
   /** B8 (OPTIONNEL, rétro-compatible) : bon de commande déjà attaché au devis — null si aucun,
    * absent chez un hôte historique. Permet à lier_bon_commande d'annoncer un remplacement. */
   purchaseOrder?: { number: string; receivedAt: string | null; documentId: string | null } | null;
+  /** A3 (OPTIONNEL, rétro-compatible) : gel de rétractation B2C ACTIF sur la facture finale —
+   * premier jour (YYYY-MM-DD) où elle devient possible ; null/absent = aucun gel. Le flow
+   * generer_facture l'annonce HONNÊTEMENT au lieu de proposer une finale vouée au refus. */
+  finalBlockedUntil?: string | null;
 }
 
 /** Outil lier_bon_commande (B8) : attache le NUMÉRO d'engagement d'un bon de commande à un

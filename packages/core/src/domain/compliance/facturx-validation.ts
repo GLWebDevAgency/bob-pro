@@ -61,6 +61,16 @@ export function validateFacturXBasic(d: FacturXInvoiceData): FacturXValidationRe
       if (b.ratePct !== 0) fail('BR-AE-05', 'Catégorie AE : taux 0 requis.');
       if (b.vatCents !== 0) fail('BR-AE-09', 'Catégorie AE : montant de TVA 0 requis (autoliquidation preneur).');
       if (!b.exemptionReason) fail('BR-AE-10', 'Catégorie AE : mention « Autoliquidation » requise.');
+      // BR-AE-2 (EN 16931) : une pièce en autoliquidation DOIT identifier fiscalement le vendeur
+      // (BT-31/BT-32) ET le preneur (BT-48). Lecture « Schematron lite » assumée : le n° TVA, à
+      // défaut l'identifiant légal (SIREN, BT-30/BT-47), suffit ici — une facture ENTRANTE de
+      // sous-traitance identifiée par SIREN (réception C-EXP6b) n'est pas rejetée ; le Schematron
+      // officiel EN 16931 reste la référence stricte en aval (cf. en-tête). À l'ÉMISSION,
+      // facturXDataFromInvoice dérive systématiquement le BT-48 du SIREN du preneur.
+      if (!d.seller.vatId && !d.seller.legalId)
+        fail('BR-AE-02', 'Catégorie AE : identification fiscale du vendeur requise (n° TVA BT-31, à défaut SIREN).');
+      if (!d.buyer.vatId && !d.buyer.legalId)
+        fail('BR-AE-02', 'Catégorie AE : identification fiscale du preneur requise (n° TVA BT-48, à défaut SIREN).');
     } else {
       if (b.ratePct !== 0) fail('BR-Z-05', 'Catégorie Z : taux 0 requis.');
       if (b.vatCents !== 0) fail('BR-Z-09', 'Catégorie Z : montant de TVA 0 requis.');

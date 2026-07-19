@@ -69,25 +69,9 @@ const FISCAL = { mutating: true, outbound: false, riskTier: 'fiscal' } as const;
  * action sensible (miroir du safety floor de Bob), avec verrou anti-double-tap.
  */
 
-export type BadgeTone = 'b2b' | 'b2g' | 'particulier' | 'success' | 'warning' | 'danger' | 'ai';
-
-// Statut -> pastille (label FR + ton DA). Records exhaustifs : ajouter un statut oblige à le mapper.
-export const QUOTE_BADGE: Record<QuoteView['status'], { label: string; tone: BadgeTone }> = {
-  draft: { label: 'Brouillon', tone: 'warning' },
-  sent: { label: 'Envoyé', tone: 'b2b' },
-  viewed: { label: 'Vu', tone: 'b2b' },
-  signed: { label: 'Signé', tone: 'success' },
-  refused: { label: 'Refusé', tone: 'danger' },
-  expired: { label: 'Expiré', tone: 'danger' },
-};
-export const INVOICE_BADGE: Record<InvoiceView['status'], { label: string; tone: BadgeTone }> = {
-  draft: { label: 'Brouillon', tone: 'warning' },
-  issued: { label: 'Émise', tone: 'b2b' },
-  partially_paid: { label: 'Partielle', tone: 'warning' },
-  paid: { label: 'Payée', tone: 'success' },
-  late: { label: 'En retard', tone: 'danger' },
-  cancelled: { label: 'Annulée', tone: 'danger' },
-};
+// Badges de statut (E5 : dérivés par kind — avoir masculin/ambre) : logique PURE extraite dans
+// invoice-badge.logic.ts (testable en node, aucun import RN) — re-export pour les appelants.
+export { QUOTE_BADGE, INVOICE_BADGE, invoiceBadgeFor, type BadgeTone } from './invoice-badge.logic';
 
 // Un document terminal (devis refusé/expiré, facture payée/annulée) n'a plus d'action -> permet au parent
 // de ne pas réserver d'espace inutile. Source unique : ces prédicats et les composants restent alignés.

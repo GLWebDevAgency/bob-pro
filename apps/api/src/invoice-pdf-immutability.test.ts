@@ -206,6 +206,7 @@ describe('facture PDF émise — original immuable', () => {
           invoices: persistence.invoices,
           companies: persistence.companies,
           customers: persistence.customers,
+          quotes: persistence.quotes,
           counters: persistence.counters,
           uow: persistence,
           clock: {

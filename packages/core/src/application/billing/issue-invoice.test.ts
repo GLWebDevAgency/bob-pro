@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { IssueInvoice } from './issue-invoice';
 import { Invoice } from '../../domain/billing/invoice/invoice';
+import { Quote } from '../../domain/billing/quote/quote';
 import { Company } from '../../domain/company/company';
 import { Customer } from '../../domain/customer/customer';
 import { DocNumber } from '../../domain/billing/shared/doc-number';
@@ -110,6 +111,8 @@ function makeDeps(invoice: Invoice) {
     invoices,
     companies,
     customers: customerRepo,
+    // Pièces composées librement (parentQuoteId null) : la revérification A3 ne lit jamais ce repo.
+    quotes: { findById: async () => null },
     counters,
     uow,
     clock,
@@ -191,6 +194,7 @@ describe('IssueInvoice', () => {
       invoices,
       companies,
       customers: customerRepo,
+      quotes: { findById: async () => null },
       counters,
       uow: { runInTransaction: (fn) => fn() },
       clock,
@@ -297,5 +301,271 @@ describe('IssueInvoice', () => {
       'customer:read',
     ]);
     expect(env.counts()).toEqual({ allocations: 0, saves: 0 });
+  });
+
+  it('A7 : fige période de prestation + adresse de chantier transmises à l’émission', async () => {
+    const invoice = draftInvoice();
+    const env = makeDeps(invoice);
+
+    const result = await env.usecase.execute({
+      invoiceId: 'inv-1',
+      terms,
+      servicePeriod: { start: '2026-06-10', end: '2026-06-24' },
+      deliveryAddress: '12 rue des Acacias, 92310 Sèvres',
+    });
+
+    expect(result.ok && result.value.number).toBe('F-2026-0001');
+    expect(invoice.servicePeriod).toEqual({ start: '2026-06-10', end: '2026-06-24' });
+    expect(invoice.deliveryAddress).toBe('12 rue des Acacias, 92310 Sèvres');
+  });
+
+  it('A7 : une période invalide annule la transaction — aucun numéro consommé', async () => {
+    const invoice = draftInvoice();
+    const env = makeDeps(invoice);
+
+    const result = await env.usecase.execute({
+      invoiceId: 'inv-1',
+      terms,
+      servicePeriod: { start: '2026-06-24', end: '2026-06-10' },
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { kind: 'domain', error: { code: 'VALIDATION', field: 'servicePeriod' } },
+    });
+    // Le compteur A ÉTÉ sollicité avant le verdict domaine, mais la transaction annulée ne
+    // consomme pas le numéro (rollback UoW) : la preuve observable est l'absence de save.
+    expect(env.counts().saves).toBe(0);
+    expect(invoice.status).toBe('draft');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A4 — garde d'émission autoliquidation + régime de TVA figé à l'émission
+// ─────────────────────────────────────────────────────────────────────────────
+describe('IssueInvoice — A4 : autoliquidation constatée et FIGÉE à l’émission', () => {
+  function subcontractingCustomer(withSiren = true): Customer {
+    const { siren, ...withoutSiren } = seedCustomers()[1]!.toProps();
+    const r = Customer.of({
+      ...withoutSiren,
+      ...(withSiren && siren !== undefined ? { siren } : {}),
+      isSubcontractingBtp: true,
+    });
+    if (!r.ok) throw new Error('customer');
+    return r.value;
+  }
+
+  it('lignes à 20 % avec client sous-traitant BTP → émission REFUSÉE (BR-AE-5, PDF≠XML sinon)', async () => {
+    const invoice = draftInvoice(); // ligne à 20 %
+    const env = makeDeps(invoice);
+    env.replaceCustomers([subcontractingCustomer()]);
+    const r = await env.usecase.execute({ invoiceId: 'inv-1', terms });
+    expect(r.ok).toBe(false);
+    if (!r.ok && r.error.kind === 'validation')
+      expect(r.error.issues[0]?.message).toContain('autoliquidation');
+    expect(env.counts().saves).toBe(0);
+    expect(invoice.status).toBe('draft');
+  });
+
+  function zeroRatedDraft(): Invoice {
+    const company = seedCompany();
+    const customer = seedCustomers()[1]!;
+    const created = Invoice.composeStandalone({ id: 'inv-1', companyId: company.id, customerId: customer.id });
+    if (!created.ok) throw new Error('invoice');
+    const added = created.value.addLine({
+      id: 'line-1',
+      label: 'Sous-traitance plomberie',
+      category: 'labor',
+      qty: 1,
+      unitPriceHT: 100000,
+      vatRate: 0,
+    });
+    if (!added.ok) throw new Error('line');
+    return created.value;
+  }
+
+  it('client sous-traitant SANS SIREN → émission REFUSÉE (BR-AE-2 : identification du preneur)', async () => {
+    const invoice = zeroRatedDraft();
+    const env = makeDeps(invoice);
+    env.replaceCustomers([subcontractingCustomer(false)]);
+    const r = await env.usecase.execute({ invoiceId: 'inv-1', terms });
+    expect(r.ok).toBe(false);
+    if (!r.ok && r.error.kind === 'validation')
+      expect(r.error.issues[0]?.message).toContain('SIREN');
+    expect(env.counts().saves).toBe(0);
+  });
+
+  it('lignes à 0 % + SIREN preneur → émise, régime « autoliquidation » FIGÉ dans la pièce', async () => {
+    const invoice = zeroRatedDraft();
+    const env = makeDeps(invoice);
+    env.replaceCustomers([subcontractingCustomer()]);
+    const r = await env.usecase.execute({ invoiceId: 'inv-1', terms });
+    expect(r.ok).toBe(true);
+    expect(invoice.vatTreatmentAtIssuance).toBe('autoliquidation');
+  });
+
+  it('client ordinaire → régime « standard » figé (le fait fiscal de la pièce est explicite)', async () => {
+    const invoice = draftInvoice();
+    const env = makeDeps(invoice);
+    const r = await env.usecase.execute({ invoiceId: 'inv-1', terms });
+    expect(r.ok).toBe(true);
+    expect(invoice.vatTreatmentAtIssuance).toBe('standard');
+  });
+
+  it('société en FRANCHISE + client sous-traitant → la franchise PRIME (BOI-TVA-DECLA-10-10-20) : régime « franchise », aucune exigence AE', async () => {
+    const invoice = draftInvoice();
+    const env = makeDeps(invoice);
+    const franchiseProps = { ...seedCompany().toProps(), vatRegime: 'franchise' as const };
+    const franchise = Company.of(franchiseProps);
+    if (!franchise.ok) throw new Error('company');
+    env.replaceCompany(franchise.value);
+    env.replaceCustomers([subcontractingCustomer()]);
+    const r = await env.usecase.execute({ invoiceId: 'inv-1', terms });
+    expect(r.ok).toBe(true);
+    expect(invoice.vatTreatmentAtIssuance).toBe('franchise');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A3 — revérification des gardes légales à l'ÉMISSION (pièces dérivées d'un devis)
+// ─────────────────────────────────────────────────────────────────────────────
+describe('IssueInvoice — A3 : gel/embargo revérifiés à l’émission', () => {
+  function quoteEnv(options: {
+    mode: 'deposit' | 'final';
+    method?: 'onsite_draw' | 'remote_link';
+    now: string;
+    customerType?: 'b2c' | 'b2b';
+    retractedAt?: string;
+    earlyExecution?: boolean;
+    quoteMissing?: boolean;
+  }) {
+    const company = seedCompany();
+    const quote = Quote.rehydrate({
+      id: 'quote-1',
+      companyId: company.id,
+      customerId: 'cust-x',
+      status: 'signed',
+      number: 'D-2026-0001',
+      depositPct: options.mode === 'deposit' ? 30 : null,
+      validUntil: null,
+      signature: {
+        signerName: 'M. Bernard',
+        signedAt: '2026-06-01T09:00:00.000Z',
+        method: options.method ?? 'onsite_draw',
+        accepted: true,
+        ...(options.earlyExecution ? { earlyExecution: { requestedAt: '2026-06-01T09:00:00.000Z' } } : {}),
+      },
+      retractedAt: options.retractedAt ?? null,
+      lines: [
+        { id: 'line-1', label: 'Intervention', category: 'labor', qty: 1, unitPriceHT: 100000, vatRate: 20 },
+      ],
+    });
+    const created = Invoice.fromSignedQuote(quote, options.mode, 'inv-1');
+    if (!created.ok) throw new Error('invoice');
+    let invoice = created.value;
+    const customerR = Customer.of({
+      id: 'cust-x',
+      companyId: company.id,
+      type: options.customerType ?? 'b2c',
+      name: 'M. Bernard',
+      address: { line1: '8 allée des Roses', zip: '92190', city: 'Meudon' },
+    });
+    if (!customerR.ok) throw new Error('customer');
+    let saves = 0;
+    const localClock = { now: () => options.now, today: () => options.now.slice(0, 10) };
+    const usecase = new IssueInvoice({
+      invoices: {
+        findById: async () => invoice,
+        lockById: async () => invoice,
+        findByParentQuoteId: async () => null,
+        findCreditNoteBySourceInvoiceId: async () => null,
+        listByCompany: async () => [invoice],
+        save: async (i) => {
+          saves += 1;
+          invoice = i;
+        },
+        deleteById: async () => {},
+      },
+      companies: {
+        findById: async () => company,
+        lockById: async () => company,
+        lockForShareById: async () => company,
+        list: async () => [company],
+        save: async () => {},
+      },
+      customers: {
+        findById: async () => customerR.value,
+        listByCompany: async () => [customerR.value],
+        save: async () => {},
+      },
+      quotes: { findById: async () => (options.quoteMissing ? null : quote) },
+      counters: {
+        allocate: async () => ({ sequence: 1, formatted: DocNumber.format('F', 2026, 1) }),
+      },
+      uow: { runInTransaction: (fn) => fn() },
+      clock: localClock,
+    });
+    return { usecase, invoice: () => invoice, counts: () => ({ saves }) };
+  }
+
+  it('acompte b2c signé SUR PLACE, émis pendant les 7 jours → refus L221-10 (brouillon dormant compris)', async () => {
+    const env = quoteEnv({ mode: 'deposit', now: '2026-06-03T09:00:00.000Z' });
+    const r = await env.usecase.execute({ invoiceId: 'inv-1', terms });
+    expect(r.ok).toBe(false);
+    if (!r.ok && r.error.kind === 'domain')
+      expect(r.error.error.code).toBe('OFF_PREMISES_PAYMENT_EMBARGO');
+    expect(env.counts().saves).toBe(0);
+    expect(env.invoice().status).toBe('draft');
+  });
+
+  it('finale b2c émise pendant le délai de rétractation (sans exécution anticipée) → refus, même si le brouillon préexistait', async () => {
+    const env = quoteEnv({ mode: 'final', method: 'remote_link', now: '2026-06-10T09:00:00.000Z' });
+    const r = await env.usecase.execute({ invoiceId: 'inv-1', terms });
+    expect(r.ok).toBe(false);
+    if (!r.ok && r.error.kind === 'domain')
+      expect(r.error.error.code).toBe('RETRACTATION_PERIOD_ACTIVE');
+    expect(env.counts().saves).toBe(0);
+  });
+
+  it('finale b2c AVEC exécution anticipée (L221-25), contrat à distance → émission possible', async () => {
+    const env = quoteEnv({
+      mode: 'final',
+      method: 'remote_link',
+      now: '2026-06-10T09:00:00.000Z',
+      earlyExecution: true,
+    });
+    const r = await env.usecase.execute({ invoiceId: 'inv-1', terms });
+    expect(r.ok).toBe(true);
+  });
+
+  it('devis RÉTRACTÉ (L221-21) → émission refusée quelle que soit la pièce', async () => {
+    const env = quoteEnv({
+      mode: 'deposit',
+      method: 'remote_link',
+      now: '2026-07-15T09:00:00.000Z',
+      retractedAt: '2026-06-05T10:00:00.000Z',
+    });
+    const r = await env.usecase.execute({ invoiceId: 'inv-1', terms });
+    expect(r.ok).toBe(false);
+    if (!r.ok && r.error.kind === 'domain' && r.error.error.code === 'VALIDATION')
+      expect(r.error.error.message).toContain('rétractation');
+  });
+
+  it('devis parent introuvable → fail-closed : émission refusée', async () => {
+    const env = quoteEnv({ mode: 'deposit', now: '2026-07-15T09:00:00.000Z', quoteMissing: true });
+    const r = await env.usecase.execute({ invoiceId: 'inv-1', terms });
+    expect(r.ok).toBe(false);
+  });
+
+  it('fenêtres écoulées (b2c, sur place, J+45) → émission normale', async () => {
+    const env = quoteEnv({ mode: 'deposit', now: '2026-07-15T09:00:00.000Z' });
+    const r = await env.usecase.execute({ invoiceId: 'inv-1', terms });
+    expect(r.ok).toBe(true);
+  });
+
+  it('professionnel (b2b) : aucune des deux gardes ne s’applique', async () => {
+    const env = quoteEnv({ mode: 'deposit', now: '2026-06-03T09:00:00.000Z', customerType: 'b2b' });
+    const r = await env.usecase.execute({ invoiceId: 'inv-1', terms });
+    expect(r.ok).toBe(true);
   });
 });

@@ -115,6 +115,125 @@ describe('HttpBobClient — coordonnées bancaires (RIB)', () => {
   });
 });
 
+describe('HttpBobClient — identité légale (A6 capital, A2 médiateur conso)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('écrit capital + médiateur sur le tenant authentifié (PATCH /company/legal)', async () => {
+    const company = {
+      id: 'company-owner',
+      legalForm: 'SARL',
+      capitalSocialCents: 1000000,
+      mediateurConso: { nom: 'CM2C', coordonnees: '14 rue Saint-Jean, 75017 Paris' },
+    };
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      expect(String(url)).toBe('https://api.bob.test/company/legal');
+      expect(init?.method).toBe('PATCH');
+      expect(JSON.parse(String(init?.body))).toEqual({
+        capitalSocialCents: 1000000,
+        mediateurConso: { nom: 'CM2C', coordonnees: '14 rue Saint-Jean, 75017 Paris' },
+      });
+      const headers = new Headers(init?.headers);
+      expect(headers.get('authorization')).toBe('Bearer owner-token');
+      return new Response(JSON.stringify(company), {
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({
+      baseUrl: 'https://api.bob.test',
+      companyId: 'company-owner',
+      getToken: async () => 'owner-token',
+    });
+
+    const result = await client.updateCompanyLegal({
+      capitalSocialCents: 1000000,
+      mediateurConso: { nom: 'CM2C', coordonnees: '14 rue Saint-Jean, 75017 Paris' },
+    });
+
+    expect(result).toEqual({ ok: true, value: company });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('effacement explicite : `null` part dans le corps, un champ omis n’y figure pas', async () => {
+    const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      expect(JSON.parse(String(init?.body))).toEqual({ mediateurConso: null });
+      return new Response(JSON.stringify({ id: 'company-owner' }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({
+      baseUrl: 'https://api.bob.test',
+      companyId: 'company-owner',
+      getToken: async () => 'owner-token',
+    });
+
+    await client.updateCompanyLegal({ mediateurConso: null });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('ne transforme pas un refus serveur (EI sans capital) en confirmation locale', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              error: {
+                kind: 'domain',
+                error: { code: 'VALIDATION', field: 'capitalSocialCents' },
+              },
+            }),
+            { status: 422, headers: { 'content-type': 'application/json' } },
+          ),
+      ),
+    );
+    const client = new HttpBobClient({
+      baseUrl: 'https://api.bob.test',
+      companyId: 'company-owner',
+      getToken: async () => 'owner-token',
+    });
+
+    const result = await client.updateCompanyLegal({ capitalSocialCents: 500000 });
+    expect(result).toEqual({
+      ok: false,
+      error: { kind: 'domain', error: { code: 'VALIDATION', field: 'capitalSocialCents' } },
+    });
+  });
+});
+
+describe('HttpBobClient — inputs d’émission A7 (POST /invoices/:id/issue)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('transmet période de prestation + adresse de chantier dans le corps d’émission', async () => {
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      expect(String(url)).toBe('https://api.bob.test/invoices/inv-1/issue');
+      expect(init?.method).toBe('POST');
+      expect(JSON.parse(String(init?.body))).toEqual({
+        invoiceId: 'inv-1',
+        servicePeriod: { start: '2026-06-02', end: '2026-06-13' },
+        deliveryAddress: 'Chantier — 8 allée des Roses, 92190 Meudon',
+      });
+      return new Response(JSON.stringify({ number: 'F-2026-0001' }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new HttpBobClient({
+      baseUrl: 'https://api.bob.test',
+      companyId: 'company-owner',
+      getToken: async () => 'owner-token',
+    });
+
+    const result = await client.issueInvoice({
+      invoiceId: 'inv-1',
+      servicePeriod: { start: '2026-06-02', end: '2026-06-13' },
+      deliveryAddress: 'Chantier — 8 allée des Roses, 92190 Meudon',
+    });
+    expect(result).toEqual({ ok: true, value: { number: 'F-2026-0001' } });
+  });
+});
+
 describe('HttpBobClient — réglages facturation BDD', () => {
   afterEach(() => vi.unstubAllGlobals());
 

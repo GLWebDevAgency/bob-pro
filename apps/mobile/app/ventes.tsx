@@ -19,10 +19,12 @@ import {
   InvoiceActions,
   hasQuoteActions,
   hasInvoiceActions,
+  invoiceBadgeFor,
   QUOTE_BADGE,
   INVOICE_BADGE,
   type QuoteLinkedInvoices,
 } from '../src/components/DocumentActions';
+import { pieceDetail } from '@bob/tokens';
 import { useBobAwareScrollInsets } from '../src/components/use-bob-aware-scroll-insets';
 import { useConfirm } from '../src/components/ConfirmSheet';
 import { hasMeaningfulQuoteDraft, useQuoteDraft } from '../src/quote-draft';
@@ -267,6 +269,20 @@ export default function Ventes() {
     };
   };
   const quoteOf = (inv: InvoiceView) => (quotes.data ?? []).find((q) => q.id === inv.parentQuoteId) ?? null;
+  // E6 : factures CRÉDITÉES — dérivé en UNE passe des avoirs déjà chargés dans la liste
+  // (identité figée creditNoteSource, jamais le devis parent ambigu, jamais de N+1). Seul un
+  // avoir réellement ÉMIS marque sa source (un brouillon d'avoir n'annule encore rien).
+  const creditedInvoiceIds = new Set(
+    (invoices.data ?? [])
+      .filter(
+        (i) =>
+          i.kind === 'credit_note' &&
+          i.status !== 'draft' &&
+          i.status !== 'cancelled' &&
+          i.creditNoteSource != null,
+      )
+      .map((i) => i.creditNoteSource!.invoiceId),
+  );
   const kindChip = (inv: InvoiceView): string => {
     if (inv.kind === 'deposit') {
       const pct = quoteOf(inv)?.depositPct ?? null;
@@ -799,7 +815,8 @@ export default function Ventes() {
             ) : (
               <FadeIn index={1} style={{ gap: 10 }}>
                   {sortedInvoices.map((inv) => {
-                    const badge = INVOICE_BADGE[inv.status];
+                    // E5 : badge dérivé par kind — avoir émis = « Émis » AMBRE (masculin).
+                    const badge = invoiceBadgeFor(inv, personality);
                     // Assiette = netToPay (acompte si depositPct) : montant réellement encaissable sur la facture.
                     const remaining = Math.max(0, inv.totals.netToPay - inv.paid);
                     const showRemaining = remaining > 0 && remaining !== inv.totals.netToPay;
@@ -842,6 +859,24 @@ export default function Ventes() {
                                   {kindChip(inv)}
                                 </Text>
                               </View>
+                              {/* E6 : la facture CRÉDITÉE se reconnaît d'un coup d'œil — tag
+                                  ambre « Avoir émis » (mêmes tokens que la carte avoir). */}
+                              {inv.kind !== 'credit_note' && creditedInvoiceIds.has(inv.id) ? (
+                                <View
+                                  style={{
+                                    borderWidth: 1,
+                                    borderColor: pieceDetail.creditBorder,
+                                    backgroundColor: semantic.warningBg,
+                                    borderRadius: 999,
+                                    paddingHorizontal: 8,
+                                    paddingVertical: 3,
+                                  }}
+                                >
+                                  <Text style={[font('meta'), { fontSize: 11, fontWeight: '600', color: pieceDetail.creditInk }]}>
+                                    {t('ventes.tagAvoirEmis', { personality })}
+                                  </Text>
+                                </View>
+                              ) : null}
                               {quoteOf(inv) !== null ? (
                                 <Pressable
                                   accessibilityRole="button"

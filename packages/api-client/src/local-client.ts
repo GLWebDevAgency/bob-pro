@@ -987,6 +987,9 @@ export class LocalBobClient implements BobClient {
       // B8 : parité serveur — bon de commande + révision toujours présents en local.
       purchaseOrder: i.purchaseOrder ? { ...i.purchaseOrder } : null,
       revision: i.revision,
+      // E3 : parité serveur — snapshot « facture annulée » de l'avoir depuis l'agrégat
+      // (le getter du domaine clone déjà ; null = pièce ordinaire).
+      creditNoteSource: i.creditNoteSource,
     };
   }
 
@@ -1212,6 +1215,43 @@ export class LocalBobClient implements BobClient {
         : input.bic === null
           ? {}
           : { bic: input.bic }),
+    });
+    if (!updated.ok) return err(appDomain(updated.error));
+    await this.companies.save(updated.value);
+    return ok(updated.value.toProps());
+  }
+
+  /** Adaptateur local (démo) — mêmes règles que le serveur (PATCH /company/legal) : capital
+   * social (A6) et médiateur conso (A2), partiel, `null` = effacement, validation Company.of. */
+  async updateCompanyLegal(input: {
+    capitalSocialCents?: number | null;
+    mediateurConso?: { nom: string; coordonnees: string } | null;
+  }): Promise<Result<CompanyProps, AppError>> {
+    const current = await this.companies.findById(this.companyId);
+    if (current === null) return err(appNotFound('company', this.companyId));
+    if (current.isClosed()) return err(appForbidden('Compte clôturé.'));
+    const props = current.toProps();
+    const {
+      capitalSocialCents: currentCapital,
+      mediateurConso: currentMediateur,
+      ...requiredProps
+    } = props;
+    const updated = Company.of({
+      ...requiredProps,
+      ...(input.capitalSocialCents === undefined
+        ? currentCapital === undefined
+          ? {}
+          : { capitalSocialCents: currentCapital }
+        : input.capitalSocialCents === null
+          ? {}
+          : { capitalSocialCents: input.capitalSocialCents }),
+      ...(input.mediateurConso === undefined
+        ? currentMediateur === undefined
+          ? {}
+          : { mediateurConso: currentMediateur }
+        : input.mediateurConso === null
+          ? {}
+          : { mediateurConso: input.mediateurConso }),
     });
     if (!updated.ok) return err(appDomain(updated.error));
     await this.companies.save(updated.value);
@@ -2332,12 +2372,17 @@ export class LocalBobClient implements BobClient {
     return ok({ id });
   }
 
-  /** Édition post-création — même chemin que PATCH /customers/:id côté serveur. */
+  /** Édition post-création — même chemin que PATCH /customers/:id côté serveur (garde du TYPE
+   *  comprise : la qualité du client s'apprécie à la conclusion du contrat, A3/A4). */
   async updateCustomer(
     id: string,
     input: UpdateCustomerClientInput,
   ): Promise<Result<{ id: string }, AppError>> {
-    return new UpdateCustomer({ customers: this.customers }).execute({
+    return new UpdateCustomer({
+      customers: this.customers,
+      quotes: this.quotes,
+      invoices: this.invoices,
+    }).execute({
       id,
       companyId: this.companyId,
       ...input,
@@ -3208,19 +3253,28 @@ export class LocalBobClient implements BobClient {
     quoteId: string;
     signerName: string;
     proofDataUrl?: string;
+    /** A3 — case « exécution immédiate des travaux » cochée par le client B2C au pad (L221-25
+     *  c. conso) : tracée et horodatée par SignQuote, ignorée pour un professionnel. */
+    earlyExecutionRequested?: boolean;
   }): Promise<Result<{ status: string }, AppError>> {
     await this.ready;
     return this.signQuoteInternal(input);
   }
 
   private signQuoteInternal(
-    input: { quoteId: string; signerName: string; proofDataUrl?: string },
+    input: {
+      quoteId: string;
+      signerName: string;
+      proofDataUrl?: string;
+      earlyExecutionRequested?: boolean;
+    },
     clock: ClockPort = this.clock,
   ): Promise<Result<{ status: string }, AppError>> {
     // R4 : même règle que l'API — le tracé est haché (sha256Hex, pur TS : tourne on-device),
     // jamais stocké tel quel ; absent = preuve absente, jamais fabriquée.
     return new SignQuote({
       companies: this.companies,
+      customers: this.customers,
       quotes: this.quotes,
       publicAccessTokens: this.publicAccessTokens,
       uow: this.uow,
@@ -3229,6 +3283,7 @@ export class LocalBobClient implements BobClient {
       quoteId: input.quoteId,
       signerName: input.signerName,
       ...(input.proofDataUrl ? { proofSha256: sha256Hex(input.proofDataUrl) } : {}),
+      ...(input.earlyExecutionRequested ? { earlyExecutionRequested: true } : {}),
     });
   }
 
@@ -3254,10 +3309,14 @@ export class LocalBobClient implements BobClient {
     quoteId: string;
     mode: 'deposit' | 'final';
   }): Promise<Result<{ invoiceId: string }, AppError>> {
+    // A3 : le gel de rétractation B2C (facture finale sous 14 jours, L221-18 s.) est porté par
+    // le use case core — le client local le fait respecter EXACTEMENT comme le serveur (parité).
     return new GenerateInvoiceFromQuote({
       quotes: this.quotes,
       invoices: this.invoices,
+      customers: this.customers,
       ids: this.ids,
+      clock: this.clock,
     }).execute(input);
   }
 
@@ -3367,7 +3426,9 @@ export class LocalBobClient implements BobClient {
       input.terms !== undefined || paymentTermsDays === null
         ? input
         : {
-            invoiceId: input.invoiceId,
+            // A7 : période de prestation / adresse de chantier de l'appelant préservées —
+            // seules les conditions de paiement sont complétées depuis les réglages.
+            ...input,
             terms: {
               days: paymentTermsDays,
               endOfMonth: false,
@@ -3378,6 +3439,8 @@ export class LocalBobClient implements BobClient {
       invoices: this.invoices,
       companies: this.companies,
       customers: this.customers,
+      // A3 — revérification du gel/embargo à l'émission (pièces dérivées d'un devis).
+      quotes: this.quotes,
       counters: this.counters,
       uow: this.uow,
       clock,
@@ -4137,6 +4200,7 @@ export class LocalBobClient implements BobClient {
           quotes: this.quotes,
           invoices: this.invoices,
           customers: this.customers,
+          clock: this.clock,
         }).execute({ companyId: this.companyId });
       },
       listIssuableInvoices: async () => {
@@ -4205,6 +4269,7 @@ export class LocalBobClient implements BobClient {
           quotes: this.quotes,
           invoices: this.invoices,
           customers: this.customers,
+          clock: this.clock,
         }).execute({ companyId: this.companyId });
         return ok({
           quoteId: attached.value.targetId,

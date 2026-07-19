@@ -82,13 +82,59 @@ describe('LocalBobClient (couche data hors-ligne)', () => {
     const billing = await client.updateCompanyBilling({
       iban: 'FR7630006000011234567890189',
     });
+    const legal = await client.updateCompanyLegal({
+      mediateurConso: { nom: 'CM2C', coordonnees: 'cm2c.net' },
+    });
     const settings = await client.updateCompanyBillingSettings({
       expectedRevision: 1,
       patch: { defaultDepositPercent: 42 },
     });
-    for (const mutation of [profile, billing, settings]) {
+    for (const mutation of [profile, billing, legal, settings]) {
       expect(mutation).toMatchObject({ ok: false, error: { kind: 'forbidden' } });
     }
+  });
+
+  it('A2/A6 (adaptateur démo) : médiateur conso écrit/effacé, capital refusé pour l’EI seedée', async () => {
+    const client = makeClient();
+
+    const written = await client.updateCompanyLegal({
+      mediateurConso: { nom: 'CM2C', coordonnees: '14 rue Saint-Jean, 75017 Paris — cm2c.net' },
+    });
+    expect(written.ok && written.value.mediateurConso?.nom).toBe('CM2C');
+    const reread = await client.getCompanyMe();
+    expect(reread.ok && reread.value.mediateurConso?.coordonnees).toBe(
+      '14 rue Saint-Jean, 75017 Paris — cm2c.net',
+    );
+
+    // A6 fail-closed : Mercier Plomberie est une EI — pas de capital social hors société
+    // (art. R123-238 c. com. ne vise que les sociétés). Mêmes règles que le serveur.
+    const rejected = await client.updateCompanyLegal({ capitalSocialCents: 500_000 });
+    expect(rejected).toMatchObject({ ok: false, error: { kind: 'domain' } });
+
+    // Effacement explicite (null) ; un champ omis reste inchangé.
+    const erased = await client.updateCompanyLegal({ mediateurConso: null });
+    expect(erased.ok && erased.value.mediateurConso).toBeUndefined();
+  });
+
+  it('A7 (adaptateur démo) : période de prestation + adresse de chantier figées à l’émission', async () => {
+    const client = makeClient();
+    const quotes = await client.listQuotes();
+    expect(quotes.ok).toBe(true);
+    if (!quotes.ok) return;
+    const signed = quotes.value.find((quote) => quote.status === 'signed');
+    expect(signed).toBeTruthy();
+    if (!signed) return;
+
+    const generated = await client.generateInvoice({ quoteId: signed.id, mode: 'final' });
+    expect(generated.ok).toBe(true);
+    if (!generated.ok) return;
+
+    const issued = await client.issueInvoice({
+      invoiceId: generated.value.invoiceId,
+      servicePeriod: { start: '2026-06-02', end: '2026-06-13' },
+      deliveryAddress: 'Chantier — 8 allée des Roses, 92190 Meudon',
+    });
+    expect(issued.ok).toBe(true);
   });
 
   it('DELETE /account (démo) : confirmationText EXACT (nom de la société seedée) → clôture, mêmes règles que le serveur', async () => {
@@ -1627,8 +1673,21 @@ describe('coffre de démo + classement (A1-C14)', () => {
 });
 
 describe('flow corrélé devis → acompte → FINALE (A2-C16)', () => {
+  /** Horloge mobile déplaçable : le flow légal b2c « sur place » impose d'attendre la fin de
+   *  l'embargo de paiement de 7 jours (art. L221-10 c. conso) avant toute pièce exigible. */
+  class FlowClock {
+    constructor(public day: string) {}
+    now(): string {
+      return `${this.day}T09:00:00.000Z`;
+    }
+    today(): string {
+      return this.day;
+    }
+  }
+
   it('la facture finale déduit l’acompte émis : netToPay = solde, traçabilité posée', async () => {
-    const client = makeClient();
+    const clock = new FlowClock('2026-06-01');
+    const client = new LocalBobClient({ clock });
     const quote = await client.createQuote({
       customerId: 'cust-durand',
       depositPct: 30,
@@ -1637,7 +1696,16 @@ describe('flow corrélé devis → acompte → FINALE (A2-C16)', () => {
     expect(quote.ok).toBe(true);
     if (!quote.ok) return;
     await client.sendQuote(quote.value.quoteId);
-    await client.signQuote({ quoteId: quote.value.quoteId, signerName: 'Mme Durand' });
+    // A3 — cust-durand est un PARTICULIER signé SUR PLACE (contrat hors établissement) : le
+    // client demande l'exécution anticipée (L221-25) pour lever le gel de rétractation de la
+    // finale — mais AUCUN paiement ne peut être demandé avant 7 jours (art. L221-10, acompte
+    // compris) : la facturation attend la fin de l'embargo (signé le 01/06 → libre le 09/06).
+    await client.signQuote({
+      quoteId: quote.value.quoteId,
+      signerName: 'Mme Durand',
+      earlyExecutionRequested: true,
+    });
+    clock.day = '2026-06-10';
 
     const acompte = await client.generateInvoice({ quoteId: quote.value.quoteId, mode: 'deposit' });
     expect(acompte.ok).toBe(true);
@@ -1656,6 +1724,35 @@ describe('flow corrélé devis → acompte → FINALE (A2-C16)', () => {
     expect(view.value.totals.netToPay).toBe(113960);
     expect(view.value.depositDeductionCents).toBe(48840);
     expect(view.value.depositInvoiceId).toBe(acompte.value.invoiceId);
+  });
+
+  it('A3 : b2c signé SANS exécution anticipée → finale GELÉE 14 jours (parité stricte avec le serveur), acompte possible après l’embargo L221-10', async () => {
+    const clock = new FlowClock('2026-06-01');
+    const client = new LocalBobClient({ clock });
+    const quote = await client.createQuote({
+      customerId: 'cust-durand',
+      depositPct: 30,
+      lines: [{ label: 'Chantier test', category: 'labor', qty: 1, unitPriceHT: 100000, vatRate: 20 }],
+    });
+    expect(quote.ok).toBe(true);
+    if (!quote.ok) return;
+    await client.sendQuote(quote.value.quoteId);
+    await client.signQuote({ quoteId: quote.value.quoteId, signerName: 'Mme Durand' });
+    // Embargo L221-10 écoulé (7 jours après le 01/06) — le délai de rétractation court encore.
+    clock.day = '2026-06-10';
+
+    const finale = await client.generateInvoice({ quoteId: quote.value.quoteId, mode: 'final' });
+    expect(finale.ok).toBe(false);
+    if (finale.ok) return;
+    expect(finale.error.kind).toBe('domain');
+    if (finale.error.kind !== 'domain') return;
+    expect(finale.error.error.code).toBe('RETRACTATION_PERIOD_ACTIVE');
+    if (finale.error.error.code !== 'RETRACTATION_PERIOD_ACTIVE') return;
+    expect(finale.error.error.message).toContain('rétractation');
+    expect(finale.error.error.message).toContain('L221-18');
+
+    const acompte = await client.generateInvoice({ quoteId: quote.value.quoteId, mode: 'deposit' });
+    expect(acompte.ok).toBe(true);
   });
 });
 

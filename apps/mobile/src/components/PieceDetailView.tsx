@@ -424,11 +424,35 @@ export function PieceDetailView({
               {view.number ?? t('piece.draftNumber', { personality })}
             </Text>
           </View>
-          <StatusBadge label={t(STATUS_KEY[view.status.key], { personality })} variant={view.status.tone === 'warning' ? 'particulier' : view.status.tone === 'b2b' ? 'b2b' : view.status.tone} />
+          {/* Un avoir n'est jamais « Émise » bleue : badge dédié ambre, cohérent avec la liste (E5). */}
+          {view.kind === 'avoir' && (view.status.key === 'issued' || view.status.key === 'cancelled') ? (
+            <StatusBadge
+              label={t(view.status.key === 'issued' ? 'ventes.badgeAvoirEmis' : 'ventes.badgeAvoirAnnule', { personality })}
+              variant={view.status.key === 'issued' ? 'warning' : 'danger'}
+            />
+          ) : (
+            <StatusBadge label={t(STATUS_KEY[view.status.key], { personality })} variant={view.status.tone === 'warning' ? 'particulier' : view.status.tone === 'b2b' ? 'b2b' : view.status.tone} />
+          )}
         </View>
 
         <View style={{ paddingHorizontal: 18, paddingTop: 16 }}>
           {/* Nav croisée */}
+          {/* E3 — écran d'un AVOIR : carte ambre INVERSE « Annule la facture · F-XXXX »
+              (snapshot figé du domaine), placée AVANT la carte devis parent. */}
+          {view.sourceInvoice ? (
+            <LinkedCard
+              bg={semantic.warningBg}
+              border={pieceDetail.creditBorder}
+              chipBg={pieceDetail.creditChipBg}
+              icon={<RotateIcon color={pieceDetail.creditInk} />}
+              label={t('piece.linkedCreditSource', { personality })}
+              labelColor={pieceDetail.creditInk}
+              value={view.sourceInvoice.number ?? ''}
+              valueColor={pieceDetail.creditInkStrong}
+              chevronColor={pieceDetail.creditInk}
+              {...(onOpenInvoice ? { onPress: () => onOpenInvoice(view.sourceInvoice!) } : {})}
+            />
+          ) : null}
           {view.linkedQuote ? (
             <LinkedCard
               gradient={[conformityCard.bgTop, conformityCard.bgBottom]}
@@ -443,29 +467,45 @@ export function PieceDetailView({
               {...(onOpenQuote ? { onPress: () => onOpenQuote(view.linkedQuote!) } : {})}
             />
           ) : null}
-          {view.linkedInvoices.map((linked) => (
-            <LinkedCard
-              key={linked.id}
-              gradient={[conformityCard.bgTop, conformityCard.bgBottom]}
-              border={conformityCard.border}
-              chipBg={semantic.b2gBg}
-              icon={<ReturnArrowIcon color={semantic.b2g} />}
-              label={
-                linked.kind === 'deposit'
-                  ? t('piece.kindAcompte', { personality })
-                  : linked.kind === 'credit_note'
-                    ? t('piece.kindAvoir', { personality })
+          {view.linkedInvoices.map((linked) =>
+            // E4 — un AVOIR est AMBRE partout : côté devis aussi, la carte bascule sur les
+            // tokens pieceDetail.credit* + RotateIcon (montant crédité affiché en négatif).
+            linked.kind === 'credit_note' ? (
+              <LinkedCard
+                key={linked.id}
+                bg={semantic.warningBg}
+                border={pieceDetail.creditBorder}
+                chipBg={pieceDetail.creditChipBg}
+                icon={<RotateIcon color={pieceDetail.creditInk} />}
+                label={t('piece.kindAvoir', { personality })}
+                labelColor={pieceDetail.creditInk}
+                value={`${linked.number ?? ''}${linked.ttcCents !== undefined ? ` · −${formatEUR(Math.abs(linked.ttcCents))}` : ''}`}
+                valueColor={pieceDetail.creditInkStrong}
+                chevronColor={pieceDetail.creditInk}
+                {...(onOpenInvoice ? { onPress: () => onOpenInvoice(linked) } : {})}
+              />
+            ) : (
+              <LinkedCard
+                key={linked.id}
+                gradient={[conformityCard.bgTop, conformityCard.bgBottom]}
+                border={conformityCard.border}
+                chipBg={semantic.b2gBg}
+                icon={<ReturnArrowIcon color={semantic.b2g} />}
+                label={
+                  linked.kind === 'deposit'
+                    ? t('piece.kindAcompte', { personality })
                     : linked.kind === 'situation'
                       ? t('piece.kindSituation', { personality })
                       : t('piece.linkedInvoice', { personality })
-              }
-              labelColor={pieceDetail.linkedLabelInk}
-              value={`${linked.number ?? ''}${linked.ttcCents !== undefined ? ` · ${formatEUR(linked.ttcCents)}` : ''}`}
-              valueColor={semantic.aiInk}
-              chevronColor={semantic.b2g}
-              {...(onOpenInvoice ? { onPress: () => onOpenInvoice(linked) } : {})}
-            />
-          ))}
+                }
+                labelColor={pieceDetail.linkedLabelInk}
+                value={`${linked.number ?? ''}${linked.ttcCents !== undefined ? ` · ${formatEUR(linked.ttcCents)}` : ''}`}
+                valueColor={semantic.aiInk}
+                chevronColor={semantic.b2g}
+                {...(onOpenInvoice ? { onPress: () => onOpenInvoice(linked) } : {})}
+              />
+            ),
+          )}
           {view.depositDeduction?.invoiceRef ? (
             <LinkedCard
               gradient={[conformityCard.bgTop, conformityCard.bgBottom]}

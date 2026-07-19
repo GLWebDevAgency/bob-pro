@@ -224,6 +224,74 @@ describe('CompanyLookupController — coordonnées bancaires (RIB)', () => {
   });
 });
 
+describe('CompanyLookupController — identité légale (A6 capital, A2 médiateur conso)', () => {
+  it('refuse tout champ hors contrat', async () => {
+    const updateCompanyLegal = vi.fn();
+    const value = controller({ updateCompanyLegal } as never);
+
+    await expect(
+      value.updateLegal({ capitalSocialCents: 500000, iban: 'FR76...' }),
+    ).rejects.toMatchObject({ status: 422 });
+    expect(updateCompanyLegal).not.toHaveBeenCalled();
+  });
+
+  it.each([0, -1, 12.5, '5000', Number.MAX_SAFE_INTEGER + 1])(
+    'refuse un capital non entier sûr ou ≤ 0 (%s)',
+    async (capitalSocialCents) => {
+      const updateCompanyLegal = vi.fn();
+      const value = controller({ updateCompanyLegal } as never);
+
+      await expect(value.updateLegal({ capitalSocialCents })).rejects.toMatchObject({
+        status: 422,
+      });
+      expect(updateCompanyLegal).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    { nom: '', coordonnees: 'cm2c.net' },
+    { nom: 'CM2C', coordonnees: '   ' },
+    { nom: 'X'.repeat(201), coordonnees: 'cm2c.net' },
+    { nom: 'CM2C', coordonnees: 'X'.repeat(501) },
+    { nom: 'CM2C', coordonnees: 'cm2c.net', siret: 'forgé' },
+    'CM2C',
+  ])('refuse un médiateur incomplet, hors bornes ou hors contrat', async (mediateurConso) => {
+    const updateCompanyLegal = vi.fn();
+    const value = controller({ updateCompanyLegal } as never);
+
+    await expect(value.updateLegal({ mediateurConso })).rejects.toMatchObject({ status: 422 });
+    expect(updateCompanyLegal).not.toHaveBeenCalled();
+  });
+
+  it('normalise (trim) puis transmet capital et médiateur validés', async () => {
+    const updateCompanyLegal = vi.fn(async () => ({
+      ok: true as const,
+      value: { capitalSocialCents: 500000 },
+    }));
+    const value = controller({ updateCompanyLegal } as never);
+
+    await value.updateLegal({
+      capitalSocialCents: 500000,
+      mediateurConso: { nom: '  CM2C  ', coordonnees: '  14 rue Saint-Jean, 75017 Paris  ' },
+    });
+    expect(updateCompanyLegal).toHaveBeenCalledWith({
+      capitalSocialCents: 500000,
+      mediateurConso: { nom: 'CM2C', coordonnees: '14 rue Saint-Jean, 75017 Paris' },
+    });
+  });
+
+  it('accepte un effacement explicite (null) sans toucher au champ non transmis', async () => {
+    const updateCompanyLegal = vi.fn(async () => ({ ok: true as const, value: {} }));
+    const value = controller({ updateCompanyLegal } as never);
+
+    await value.updateLegal({ mediateurConso: null });
+    expect(updateCompanyLegal).toHaveBeenCalledWith({
+      capitalSocialCents: undefined,
+      mediateurConso: null,
+    });
+  });
+});
+
 describe('CompanyLookupController — réglages facturation canoniques', () => {
   it('refuse toujours un logo sans stockage objet et un ancien format de conditions', async () => {
     const updateCompanyBillingSettings = vi.fn();

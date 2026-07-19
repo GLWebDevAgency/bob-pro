@@ -293,7 +293,7 @@ describe('PublicSignatureController runtime boundary', () => {
     const controller = new PublicSignatureController(backend as unknown as BackendService);
 
     await expect(controller.sign('opaque-token', { signerName: '  Mme   Durand  ' })).resolves.toEqual({ status: 'signed' });
-    expect(backend.publicSignQuote).toHaveBeenCalledWith('opaque-token', 'Mme Durand', undefined);
+    expect(backend.publicSignQuote).toHaveBeenCalledWith('opaque-token', 'Mme Durand', undefined, undefined);
   });
 
   it('R4 : la voie publique transmet aussi un tracé optionnel (dataURL) — hash côté backend', async () => {
@@ -304,7 +304,49 @@ describe('PublicSignatureController runtime boundary', () => {
     const proofDataUrl = 'data:image/svg+xml;utf8,%3Csvg%3E%3C/svg%3E';
 
     await expect(controller.sign('opaque-token', { signerName: 'Mme Durand', proofDataUrl })).resolves.toEqual({ status: 'signed' });
-    expect(backend.publicSignQuote).toHaveBeenCalledWith('opaque-token', 'Mme Durand', proofDataUrl);
+    expect(backend.publicSignQuote).toHaveBeenCalledWith('opaque-token', 'Mme Durand', proofDataUrl, undefined);
+  });
+
+  it('A3 : la case « exécution immédiate » cochée est transmise UNIQUEMENT en booléen strict', async () => {
+    const backend = {
+      publicSignQuote: vi.fn(async () => ({ ok: true as const, value: { status: 'signed' } })),
+    };
+    const controller = new PublicSignatureController(backend as unknown as BackendService);
+
+    await expect(
+      controller.sign('opaque-token', { signerName: 'Mme Durand', earlyExecutionRequested: true }),
+    ).resolves.toEqual({ status: 'signed' });
+    expect(backend.publicSignQuote).toHaveBeenCalledWith('opaque-token', 'Mme Durand', undefined, true);
+  });
+
+  it.each([['oui'], [1], [{}]])(
+    'A3 : earlyExecutionRequested non booléen (%j) → 422, un consentement légal ne se devine pas',
+    async (earlyExecutionRequested) => {
+      const backend = { publicSignQuote: vi.fn() };
+      const controller = new PublicSignatureController(backend as unknown as BackendService);
+
+      let thrown: unknown;
+      try {
+        await controller.sign('opaque-token', { signerName: 'Mme Durand', earlyExecutionRequested });
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(HttpException);
+      expect((thrown as HttpException).getStatus()).toBe(422);
+      expect(backend.publicSignQuote).not.toHaveBeenCalled();
+    },
+  );
+
+  it('A3 : case décochée (false) → aucune demande transmise, jamais un faux consentement', async () => {
+    const backend = {
+      publicSignQuote: vi.fn(async () => ({ ok: true as const, value: { status: 'signed' } })),
+    };
+    const controller = new PublicSignatureController(backend as unknown as BackendService);
+
+    await expect(
+      controller.sign('opaque-token', { signerName: 'Mme Durand', earlyExecutionRequested: false }),
+    ).resolves.toEqual({ status: 'signed' });
+    expect(backend.publicSignQuote).toHaveBeenCalledWith('opaque-token', 'Mme Durand', undefined, undefined);
   });
 });
 

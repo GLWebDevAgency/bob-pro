@@ -1,4 +1,4 @@
-import { type Result, ok, err, type AppError, type ExpenseCategory, type FiscalDeadline, type PaymentMethod, formatEUR, parisDateOnly, PLAN_CATALOG, type SubscriptionStatusView } from '@bob/core';
+import { type Result, ok, err, type AppError, type ExpenseCategory, type FiscalDeadline, type PaymentMethod, formatEUR, parisDateOnly, PLAN_CATALOG, retractationFreezeMessage, type SubscriptionStatusView } from '@bob/core';
 import { ModelRouter, type ModelChoice } from '../router/model-router';
 import { renderWithGuard } from '../guardrails/money-guard';
 import { naturalizeReply, type NaturalizeTone } from '../guardrails/naturalize';
@@ -3711,6 +3711,44 @@ export class BobAgent {
       const wantsDeposit = /acompte/.test(normalizedMessage);
       const wantsFinal = /(finale?|solde|totalite)/.test(normalizedMessage);
       let mode: 'deposit' | 'final' | null = wantsDeposit && !wantsFinal ? 'deposit' : wantsFinal ? 'final' : null;
+
+      // A3 — gel de rétractation B2C : la facture FINALE est légalement bloquée pendant le
+      // délai de 14 jours (art. L221-18 s. c. conso) tant que le client n'a pas demandé
+      // l'exécution anticipée (art. L221-25). Bob l'annonce HONNÊTEMENT — pourquoi, jusqu'à
+      // quand, ce qui reste possible — au lieu de proposer une finale vouée au refus du
+      // domaine (GenerateInvoiceFromQuote renverrait RETRACTATION_PERIOD_ACTIVE). Le message
+      // vient de la SOURCE UNIQUE @bob/core (retractationFreezeMessage) ; seul l'ACOMPTE,
+      // jamais gelé, reste proposé quand le devis en prévoit un non encore facturé.
+      const finalBlockedUntil = quote.finalBlockedUntil ?? null;
+      if (finalBlockedUntil !== null && mode !== 'deposit') {
+        const ref = displayRef(quote);
+        const depositPossible = quote.depositPct !== null && !quote.depositInvoiced;
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: [
+            'Identifier le devis signé',
+            'Vérifier le délai légal de rétractation (14 jours, client particulier)',
+            'Expliquer honnêtement le gel et la date de déblocage',
+          ],
+          card: {
+            title: 'Facture finale : pas encore possible',
+            body: `Devis ${ref} (${quote.customerName}) — ${retractationFreezeMessage(finalBlockedUntil)}`,
+          },
+          ...(depositPossible
+            ? {
+                choices: [
+                  {
+                    label: `Facture d'acompte (${quote.depositPct} %)`,
+                    value: `Fais la facture d'acompte du devis ${ref}`,
+                  },
+                ],
+              }
+            : {}),
+        });
+      }
+
       if (mode === null) {
         if (quote.depositPct !== null && !quote.depositInvoiced) {
           // LA question de précision : deux voies légitimes, montants exacts au diff de

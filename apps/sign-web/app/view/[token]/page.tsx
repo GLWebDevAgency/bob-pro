@@ -28,7 +28,7 @@ interface DocumentTotalsView {
 type DocumentPublicView =
   | {
       kind: 'quote';
-      number: string | null;
+      number: string;
       companyName: string;
       customerName: string;
       status: string;
@@ -39,7 +39,7 @@ type DocumentPublicView =
     }
   | {
       kind: 'invoice';
-      number: string | null;
+      number: string;
       companyName: string;
       customerName: string;
       status: string;
@@ -189,7 +189,7 @@ export default function ViewPage({ params }: { params: Promise<{ token: string }
         <span style={badge(tone)}>{statusLabel}</span>
       </div>
       <h1 style={{ fontSize: 24, margin: '4px 0 2px' }}>
-        {title} {doc.number ?? ''}
+        {title} {doc.number}
       </h1>
       <p style={{ color: '#5B6B7B', marginTop: 0 }}>Pour {doc.customerName}</p>
 

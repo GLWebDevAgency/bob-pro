@@ -2,7 +2,10 @@ import { type Totals } from '../../domain/billing/shared/totals';
 import { type QuoteLine } from '../../domain/billing/shared/line';
 import { type LineCategory } from '../../domain/billing/shared/line-item';
 import { type PurchaseOrderRef } from '../../domain/billing/shared/purchase-order-ref';
-import { type InvoiceKind } from '../../domain/billing/invoice/invoice';
+import {
+  type CreditNoteSourceSnapshot,
+  type InvoiceKind,
+} from '../../domain/billing/invoice/invoice';
 import { type InvoiceStatus, type QuoteStatus } from '../../domain/billing/shared/state-machines';
 import { einvoiceChannelFor, type EinvoiceChannel } from '../../domain/services/einvoice-for';
 
@@ -32,6 +35,9 @@ export interface PieceInvoiceData {
   depositInvoiceId?: string | null;
   /** B8 : bon de commande client (numéro d'engagement) — optionnel : projections antérieures OK. */
   purchaseOrder?: PurchaseOrderRef | null;
+  /** E3 : identité FIGÉE de la facture annulée par cet AVOIR (snapshot du domaine, jamais le seul
+   * devis parent) — optionnel : projections antérieures OK ; null/absent = pièce ordinaire. */
+  creditNoteSource?: CreditNoteSourceSnapshot | null;
 }
 
 export interface PieceQuoteData {
@@ -150,6 +156,10 @@ export interface PieceView {
   /** TOUTES les factures liées au devis (acompte, finale, situations…), ordre de facturation. */
   linkedInvoices: PieceLinkedRef[];
   creditNote: PieceLinkedRef | null;
+  /** E3 — AVOIR uniquement : la facture d'origine annulée (nav croisée inverse « Annule la
+   * facture · F-XXXX »), dérivée du snapshot creditNoteSource figé par le domaine. Null pour
+   * toute autre pièce ET pour les projections antérieures sans snapshot (jamais inventée). */
+  sourceInvoice: PieceLinkedRef | null;
   situation: PieceLinkedRef | null;
   primaryAction: PiecePrimaryAction;
 }
@@ -287,6 +297,7 @@ export function buildPieceView(input: BuildPieceViewInput): PieceView {
       linkedInvoice: (input.linkedInvoices?.[0] ?? input.finalInvoice) ?? null,
       linkedInvoices: input.linkedInvoices ?? (input.finalInvoice ? [input.finalInvoice] : []),
       creditNote: null,
+      sourceInvoice: null,
       situation: null,
       primaryAction: quotePrimaryAction(q),
     };
@@ -362,6 +373,16 @@ export function buildPieceView(input: BuildPieceViewInput): PieceView {
     linkedInvoice: null,
     linkedInvoices: [],
     creditNote: input.creditNote ?? null,
+    // E3 : l'avoir montre SA facture d'origine — identité/numéro/type depuis le snapshot figé
+    // (creditNoteFor) uniquement. Jamais rempli pour une autre pièce, jamais inventé sans snapshot.
+    sourceInvoice:
+      isCredit && inv.creditNoteSource
+        ? {
+            id: inv.creditNoteSource.invoiceId,
+            number: inv.creditNoteSource.number,
+            kind: inv.creditNoteSource.kind,
+          }
+        : null,
     situation: input.situation ?? null,
     primaryAction: invoicePrimaryAction(inv),
   };

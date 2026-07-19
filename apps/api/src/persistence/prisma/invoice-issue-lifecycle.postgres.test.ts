@@ -204,6 +204,7 @@ async function runIssueInvoice(input: {
       invoices: input.persistence.invoices,
       companies: input.companies ?? input.persistence.companies,
       customers: input.persistence.customers,
+      quotes: input.persistence.quotes,
       counters: input.persistence.counters,
       uow: input.persistence,
       clock,

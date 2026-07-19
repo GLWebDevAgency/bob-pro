@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { GenerateInvoiceFromQuote } from './generate-invoice-from-quote';
 import { Invoice } from '../../domain/billing/invoice/invoice';
-import { type Quote } from '../../domain/billing/quote/quote';
+import { Customer } from '../../domain/customer/customer';
+import { type Quote, type QuoteSnapshot } from '../../domain/billing/quote/quote';
 import { Quote as QuoteAggregate } from '../../domain/billing/quote/quote';
 import { type InvoiceRepository, type QuoteRepository } from '../ports/repositories';
 
-function signedQuote(depositPct: number | null = 30): Quote {
+function signedQuote(depositPct: number | null = 30, over: Partial<QuoteSnapshot> = {}): Quote {
   return QuoteAggregate.rehydrate({
     id: 'quote-1',
     companyId: 'co-1',
@@ -30,14 +31,33 @@ function signedQuote(depositPct: number | null = 30): Quote {
         vatRate: 20,
       },
     ],
+    ...over,
   });
 }
 
-function makeEnv(input: { quote?: Quote; failSaveWithConcurrentInvoice?: boolean } = {}) {
+function makeEnv(
+  input: {
+    quote?: Quote;
+    failSaveWithConcurrentInvoice?: boolean;
+    /** A3 — type du client (défaut b2b : le gel de rétractation ne concerne que le b2c). */
+    customerType?: 'b2c' | 'b2b' | 'b2g';
+    customerMissing?: boolean;
+    /** A3 — « maintenant » injecté (défaut : bien APRÈS le délai du devis par défaut). */
+    now?: string;
+  } = {},
+) {
   const quote = input.quote ?? signedQuote();
   const invoices = new Map<string, Invoice>();
   let idCounter = 0;
   let saveCalls = 0;
+  const customerR = Customer.of({
+    id: quote.customerId,
+    companyId: quote.companyId,
+    type: input.customerType ?? 'b2b',
+    name: 'Client Test',
+    address: { line1: '8 allée des Roses', zip: '92190', city: 'Meudon' },
+  });
+  if (!customerR.ok) throw new Error('customer');
 
   const quotes: QuoteRepository = {
     findById: async (id) => (id === quote.id ? quote : null),
@@ -72,11 +92,19 @@ function makeEnv(input: { quote?: Quote; failSaveWithConcurrentInvoice?: boolean
     usecase: new GenerateInvoiceFromQuote({
       quotes,
       invoices: invoiceRepo,
+      customers: {
+        findById: async (id) =>
+          input.customerMissing === true || id !== quote.customerId ? null : customerR.value,
+      },
       ids: {
         newId: () => {
           idCounter += 1;
           return `invoice-${idCounter}`;
         },
+      },
+      clock: {
+        now: () => input.now ?? '2026-07-15T09:00:00.000Z',
+        today: () => (input.now ?? '2026-07-15T09:00:00.000Z').slice(0, 10),
       },
     }),
     counts: () => ({ saveCalls }),
@@ -299,4 +327,233 @@ describe('GenerateInvoiceFromQuote', () => {
     expect(replay.value.invoiceId).toBe(created.value.invoiceId);
     expect(env.counts()).toEqual({ saveCalls: 1 });
   });
+
+  // ── A3 : GEL de la facture FINALE pendant le délai de rétractation B2C (L221-18 s.) ──
+  // Devis par défaut signé le 01/06/2026 (lundi) → délai jusqu'au 16/06/2026 00:00 Paris.
+
+  it('A3 : b2c pendant le délai → finale REFUSÉE avec dates et message honnêtes', async () => {
+    const env = makeEnv({ customerType: 'b2c', now: '2026-06-10T09:00:00.000Z' });
+
+    const r = await env.usecase.execute({ quoteId: env.quote.id, mode: 'final' });
+
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.kind).toBe('domain');
+    if (r.error.kind !== 'domain') return;
+    expect(r.error.error).toMatchObject({
+      code: 'RETRACTATION_PERIOD_ACTIVE',
+      quoteId: 'quote-1',
+      expiresAt: '2026-06-15T22:00:00.000Z',
+      availableFrom: '2026-06-16',
+    });
+    if (r.error.error.code === 'RETRACTATION_PERIOD_ACTIVE') {
+      expect(r.error.error.message).toContain('16/06/2026');
+      expect(r.error.error.message).toContain('L221-18');
+    }
+    expect(await env.invoices.listByCompany(env.quote.companyId)).toHaveLength(0);
+  });
+
+  it("A3 : b2c pendant le délai → l'ACOMPTE reste facturable (jamais gelé)", async () => {
+    const env = makeEnv({ customerType: 'b2c', now: '2026-06-10T09:00:00.000Z' });
+
+    const r = await env.usecase.execute({ quoteId: env.quote.id, mode: 'deposit' });
+
+    expect(r.ok).toBe(true);
+    expect((await env.invoices.listByCompany(env.quote.companyId)).map((i) => i.kind)).toEqual([
+      'deposit',
+    ]);
+  });
+
+  it('A3 : b2c avec exécution anticipée demandée à la signature → AUCUN gel (L221-25)', async () => {
+    const quote = signedQuote(30, {
+      signature: {
+        signerName: 'Ada Lovelace',
+        signedAt: '2026-06-01T09:00:00.000Z',
+        method: 'remote_link',
+        accepted: true,
+        earlyExecution: { requestedAt: '2026-06-01T09:00:00.000Z' },
+      },
+    });
+    const env = makeEnv({ quote, customerType: 'b2c', now: '2026-06-10T09:00:00.000Z' });
+
+    const r = await env.usecase.execute({ quoteId: quote.id, mode: 'final' });
+
+    expect(r.ok).toBe(true);
+  });
+
+  it('A3 : b2c APRÈS l’expiration du délai → finale possible (déblocage automatique)', async () => {
+    const env = makeEnv({ customerType: 'b2c', now: '2026-06-15T22:00:00.000Z' });
+
+    const r = await env.usecase.execute({ quoteId: env.quote.id, mode: 'final' });
+
+    expect(r.ok).toBe(true);
+  });
+
+  it.each(['b2b', 'b2g'] as const)('A3 : %s → rien ne change, finale immédiate', async (customerType) => {
+    const env = makeEnv({ customerType, now: '2026-06-01T10:00:00.000Z' });
+
+    const r = await env.usecase.execute({ quoteId: env.quote.id, mode: 'final' });
+
+    expect(r.ok).toBe(true);
+  });
+
+  it('A3 : signature legacy (méthode inconnue) b2c → même présomption, gel pendant le délai', async () => {
+    const quote = signedQuote(null, {
+      signature: {
+        signerName: 'Ada Lovelace',
+        signedAt: '2026-06-01T09:00:00.000Z',
+        method: 'legacy_declared',
+        accepted: true,
+      },
+    });
+    const env = makeEnv({ quote, customerType: 'b2c', now: '2026-06-10T09:00:00.000Z' });
+
+    const r = await env.usecase.execute({ quoteId: quote.id, mode: 'final' });
+
+    expect(r.ok).toBe(false);
+    if (!r.ok && r.error.kind === 'domain')
+      expect(r.error.error.code).toBe('RETRACTATION_PERIOD_ACTIVE');
+  });
+
+  it('A3 : une finale DÉJÀ existante est renvoyée telle quelle (idempotence avant gel)', async () => {
+    // Une finale née AVANT le gel (données antérieures à A3) reste la vérité : rejouer la
+    // demande pendant le délai renvoie l'EXISTANTE — on ne crée rien, on ne refuse rien.
+    const env = makeEnv({ customerType: 'b2c', now: '2026-06-10T09:00:00.000Z' });
+    await env.invoices.save(invoiceFromQuote(env.quote, 'final', 'final-legacy'));
+
+    const replay = await env.usecase.execute({ quoteId: env.quote.id, mode: 'final' });
+
+    expect(replay.ok).toBe(true);
+    if (replay.ok) expect(replay.value.invoiceId).toBe('final-legacy');
+    expect(await env.invoices.listByCompany(env.quote.companyId)).toHaveLength(1);
+  });
+
+  it('A3 : client introuvable au moment de la finale → refus fail-closed', async () => {
+    const env = makeEnv({ customerMissing: true, now: '2026-07-15T09:00:00.000Z' });
+
+    const r = await env.usecase.execute({ quoteId: env.quote.id, mode: 'final' });
+
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.kind).toBe('not_found');
+    expect(await env.invoices.listByCompany(env.quote.companyId)).toHaveLength(0);
+  });
+});
+
+describe('GenerateInvoiceFromQuote — embargo de paiement L221-10 (contrat hors établissement)', () => {
+  // Devis signé SUR PLACE le 01/06/2026 → embargo jusqu'au 09/06 00:00 Paris (08/06 22:00 UTC).
+  const duringEmbargo = '2026-06-03T09:00:00.000Z';
+
+  it.each(['deposit', 'final'] as const)(
+    'b2c signé sur place, pendant les 7 jours → %s BLOQUÉ (aucun paiement exigible, L221-10)',
+    async (mode) => {
+      const env = makeEnv({ customerType: 'b2c', now: duringEmbargo });
+      const r = await env.usecase.execute({ quoteId: env.quote.id, mode });
+      expect(r.ok).toBe(false);
+      if (r.ok || r.error.kind !== 'domain') throw new Error('erreur domaine attendue');
+      expect(r.error.error).toMatchObject({
+        code: 'OFF_PREMISES_PAYMENT_EMBARGO',
+        quoteId: 'quote-1',
+        expiresAt: '2026-06-08T22:00:00.000Z',
+        availableFrom: '2026-06-09',
+      });
+      if (r.error.error.code === 'OFF_PREMISES_PAYMENT_EMBARGO') {
+        expect(r.error.error.message).toContain('L221-10');
+        expect(r.error.error.message).toContain('09/06/2026');
+      }
+      expect(await env.invoices.listByCompany(env.quote.companyId)).toHaveLength(0);
+    },
+  );
+
+  it("l'exécution anticipée (L221-25) ne lève PAS l'embargo : elle autorise les travaux, jamais le paiement", async () => {
+    const quote = signedQuote(30, {
+      signature: {
+        signerName: 'Ada Lovelace',
+        signedAt: '2026-06-01T09:00:00.000Z',
+        method: 'onsite_draw',
+        accepted: true,
+        earlyExecution: { requestedAt: '2026-06-01T09:00:00.000Z' },
+      },
+    });
+    const env = makeEnv({ quote, customerType: 'b2c', now: duringEmbargo });
+    const r = await env.usecase.execute({ quoteId: quote.id, mode: 'deposit' });
+    expect(r.ok).toBe(false);
+    if (!r.ok && r.error.kind === 'domain')
+      expect(r.error.error.code).toBe('OFF_PREMISES_PAYMENT_EMBARGO');
+  });
+
+  it('contrat À DISTANCE (remote_link) : pas d’embargo — acompte immédiatement facturable', async () => {
+    const quote = signedQuote(30, {
+      signature: {
+        signerName: 'Ada Lovelace',
+        signedAt: '2026-06-01T09:00:00.000Z',
+        method: 'remote_link',
+        accepted: true,
+      },
+    });
+    const env = makeEnv({ quote, customerType: 'b2c', now: duringEmbargo });
+    const r = await env.usecase.execute({ quoteId: quote.id, mode: 'deposit' });
+    expect(r.ok).toBe(true);
+  });
+
+  it('professionnel (b2b) signé sur place : hors champ L221-10 — jamais bloqué', async () => {
+    const env = makeEnv({ customerType: 'b2b', now: duringEmbargo });
+    const r = await env.usecase.execute({ quoteId: env.quote.id, mode: 'deposit' });
+    expect(r.ok).toBe(true);
+  });
+
+  it('embargo expiré (J+8) : acompte facturable — la fenêtre est bornée', async () => {
+    const env = makeEnv({ customerType: 'b2c', now: '2026-06-09T09:00:00.000Z' });
+    const r = await env.usecase.execute({ quoteId: env.quote.id, mode: 'deposit' });
+    expect(r.ok).toBe(true);
+  });
+
+  it('qualité FIGÉE à la conclusion : fiche passée b2b après signature b2c → embargo maintenu', async () => {
+    const quote = signedQuote(30, {
+      signature: {
+        signerName: 'Ada Lovelace',
+        signedAt: '2026-06-01T09:00:00.000Z',
+        method: 'onsite_draw',
+        accepted: true,
+        customerType: 'b2c',
+      },
+    });
+    // La fiche client est aujourd'hui b2b : le contrat a pourtant été conclu avec un consommateur.
+    const env = makeEnv({ quote, customerType: 'b2b', now: duringEmbargo });
+    const r = await env.usecase.execute({ quoteId: quote.id, mode: 'deposit' });
+    expect(r.ok).toBe(false);
+    if (!r.ok && r.error.kind === 'domain')
+      expect(r.error.error.code).toBe('OFF_PREMISES_PAYMENT_EMBARGO');
+  });
+
+  it('qualité FIGÉE à la conclusion : fiche passée b2c après signature b2b → aucun gel rétroactif', async () => {
+    const quote = signedQuote(30, {
+      signature: {
+        signerName: 'Ada Lovelace',
+        signedAt: '2026-06-01T09:00:00.000Z',
+        method: 'onsite_draw',
+        accepted: true,
+        customerType: 'b2b',
+      },
+    });
+    const env = makeEnv({ quote, customerType: 'b2c', now: duringEmbargo });
+    const r = await env.usecase.execute({ quoteId: quote.id, mode: 'deposit' });
+    expect(r.ok).toBe(true);
+  });
+});
+
+describe('GenerateInvoiceFromQuote — contrat rétracté (fonctionnalité en ligne L221-21)', () => {
+  it.each(['deposit', 'final'] as const)(
+    'devis rétracté → %s refusé (le contrat ne produit plus aucune pièce)',
+    async (mode) => {
+      const quote = signedQuote(30, { retractedAt: '2026-06-05T10:00:00.000Z' });
+      const env = makeEnv({ quote, customerType: 'b2c', now: '2026-07-15T09:00:00.000Z' });
+      const r = await env.usecase.execute({ quoteId: quote.id, mode });
+      expect(r.ok).toBe(false);
+      if (r.ok || r.error.kind !== 'domain') throw new Error('erreur domaine attendue');
+      expect(r.error.error.code).toBe('QUOTE_RETRACTED');
+      if (r.error.error.code === 'QUOTE_RETRACTED')
+        expect(r.error.error.message).toContain('rétractation');
+      expect(await env.invoices.listByCompany(quote.companyId)).toHaveLength(0);
+    },
+  );
 });

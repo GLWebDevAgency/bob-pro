@@ -7,7 +7,14 @@ import { DocNumber } from '../billing/shared/doc-number';
 import { PaymentTerms } from '../../shared-kernel/payment-terms';
 import { seedCompany, MERCIER_PROPS } from '../../application/fixtures/index';
 
-function issueForFacturX(invoice: Invoice, sequence: number): void {
+function issueForFacturX(
+  invoice: Invoice,
+  sequence: number,
+  emission?: {
+    servicePeriod?: { start: string; end: string | null } | null;
+    deliveryAddress?: string | null;
+  },
+): void {
   const assigned = invoice.assignNumber(
     DocNumber.format('F', 2026, sequence),
     '2026-06-29T10:00:00Z',
@@ -20,6 +27,7 @@ function issueForFacturX(invoice: Invoice, sequence: number): void {
     terms: terms.value,
     issuedAt: '2026-06-29',
     at: '2026-06-29T10:00:00Z',
+    ...(emission ?? {}),
   });
   if (!issued.ok) throw new Error('Facture de test non émise.');
 }
@@ -92,6 +100,49 @@ describe('buildFacturXBasicXml — sérialisation CII BASIC', () => {
     expect(buildFacturXBasicXml(baseData())).not.toContain('BuyerOrderReferencedDocument');
   });
 
+  // —— A7 : BT-72 (livraison jour unique), BG-14 (période) et BG-13 (adresse de chantier) ——
+  it('A7 — prestation d’UN jour (end null) : BT-72 ActualDeliverySupplyChainEvent, pas de BG-14', () => {
+    const xml = buildFacturXBasicXml({ ...baseData(), servicePeriod: { start: '2026-06-02', end: null } });
+    expect(xml).toContain('<ram:ActualDeliverySupplyChainEvent>');
+    expect(xml).toContain('<udt:DateTimeString format="102">20260602</udt:DateTimeString>');
+    expect(xml).not.toContain('BillingSpecifiedPeriod');
+    expect(xml).not.toContain('<ram:ApplicableHeaderTradeDelivery />');
+  });
+
+  it('A7 — période multi-jours : BG-14 BillingSpecifiedPeriod (BT-73/BT-74) au règlement, pas de BT-72', () => {
+    const xml = buildFacturXBasicXml({
+      ...baseData(),
+      servicePeriod: { start: '2026-06-02', end: '2026-06-13' },
+    });
+    expect(xml).toContain('<ram:BillingSpecifiedPeriod>');
+    expect(xml).toContain('<udt:DateTimeString format="102">20260602</udt:DateTimeString>');
+    expect(xml).toContain('<udt:DateTimeString format="102">20260613</udt:DateTimeString>');
+    expect(xml).not.toContain('ActualDeliverySupplyChainEvent');
+    // La délivraison reste vide (l'adresse n'est pas fournie ici) : élément auto-fermé conservé.
+    expect(xml).toContain('<ram:ApplicableHeaderTradeDelivery />');
+    // Ordre CII : BillingSpecifiedPeriod AVANT SpecifiedTradePaymentTerms.
+    expect(xml.indexOf('BillingSpecifiedPeriod')).toBeLessThan(xml.indexOf('SpecifiedTradePaymentTerms'));
+  });
+
+  it('A7 — adresse de chantier : BG-13 ShipToTradeParty (texte libre en LineOne, pays BT-80 FR), échappée', () => {
+    const xml = buildFacturXBasicXml({
+      ...baseData(),
+      deliveryAddress: 'Chantier <bât. B> — 8 allée des Roses, 92190 Meudon',
+    });
+    expect(xml).toContain('<ram:ShipToTradeParty>');
+    expect(xml).toContain('<ram:LineOne>Chantier &lt;bât. B&gt; — 8 allée des Roses, 92190 Meudon</ram:LineOne>');
+    expect(xml).toContain('<ram:CountryID>FR</ram:CountryID>');
+    expect(xml).not.toContain('<ram:ApplicableHeaderTradeDelivery />');
+  });
+
+  it('A7 — sans période ni adresse : ApplicableHeaderTradeDelivery reste vide (aucune donnée inventée)', () => {
+    const xml = buildFacturXBasicXml(baseData());
+    expect(xml).toContain('<ram:ApplicableHeaderTradeDelivery />');
+    expect(xml).not.toContain('ShipToTradeParty');
+    expect(xml).not.toContain('ActualDeliverySupplyChainEvent');
+    expect(xml).not.toContain('BillingSpecifiedPeriod');
+  });
+
   it('franchise en base : catégorie E + motif 293 B, pas de TVA', () => {
     const d = baseData();
     delete d.seller.vatId;
@@ -113,6 +164,10 @@ describe('frenchVatNumber', () => {
   });
 });
 
+/** A4 — faits fiscaux d'un preneur particulier : jamais d'autoliquidation (art. 283, 2 nonies
+ *  du CGI ne vise que le preneur assujetti b2b sous-traitance BTP). */
+const B2C = { type: 'b2c', isSubcontractingBtp: false } as const;
+
 describe('facturXDataFromInvoice — mapping depuis l’agrégat', () => {
   it('dérive ventilation TVA, totaux et identifiants vendeur (régime réel)', () => {
     const company = seedCompany();
@@ -121,7 +176,7 @@ describe('facturXDataFromInvoice — mapping depuis l’agrégat', () => {
     inv.addLine({ id: 'l2', label: 'Joint', category: 'supply', qty: 1, unitPriceHT: 5000, vatRate: 10 });
     issueForFacturX(inv, 1);
 
-    const data = facturXDataFromInvoice(inv, company, { name: 'Client Test', address: { line1: '1 av', zip: '75001', city: 'Paris' } });
+    const data = facturXDataFromInvoice(inv, company, { name: 'Client Test', ...B2C, address: { line1: '1 av', zip: '75001', city: 'Paris' } });
 
     expect(data.lineTotalHTCents).toBe(25000);
     expect(data.taxTotalCents).toBe(4500);
@@ -146,7 +201,7 @@ describe('facturXDataFromInvoice — mapping depuis l’agrégat', () => {
     inv.addLine({ id: 'l1', label: 'Prestation', category: 'labor', qty: 1, unitPriceHT: 10000, vatRate: 20 });
     issueForFacturX(inv, 2);
 
-    const data = facturXDataFromInvoice(inv, company, { name: 'Client', address: { line1: 'x', zip: '75001', city: 'Paris' } });
+    const data = facturXDataFromInvoice(inv, company, { name: 'Client', ...B2C, address: { line1: 'x', zip: '75001', city: 'Paris' } });
 
     expect(data.taxTotalCents).toBe(0); // jamais de TVA en franchise
     expect(data.grandTotalCents).toBe(10000); // total = HT
@@ -169,7 +224,7 @@ describe('facturXDataFromInvoice — mapping depuis l’agrégat', () => {
     if (!attached.ok) throw new Error('Attachement de test refusé.');
     issueForFacturX(inv, 9);
 
-    const data = facturXDataFromInvoice(inv, company, { name: 'RATP', address: { line1: '54 quai de la Rapée', zip: '75012', city: 'Paris' } });
+    const data = facturXDataFromInvoice(inv, company, { name: 'RATP', ...B2C, address: { line1: '54 quai de la Rapée', zip: '75012', city: 'Paris' } });
     expect(data.purchaseOrderReference).toBe('4500123');
     expect(buildFacturXBasicXml(data)).toContain('<ram:IssuerAssignedID>4500123</ram:IssuerAssignedID>');
 
@@ -177,8 +232,43 @@ describe('facturXDataFromInvoice — mapping depuis l’agrégat', () => {
     const bare = (Invoice.composeStandalone({ id: 'inv-sans-po', companyId: company.id, customerId: 'cust1' }) as { ok: true; value: Invoice }).value;
     bare.addLine({ id: 'l1', label: 'Joint', category: 'supply', qty: 1, unitPriceHT: 5000, vatRate: 10 });
     issueForFacturX(bare, 10);
-    const bareData = facturXDataFromInvoice(bare, company, { name: 'Client', address: { line1: 'x', zip: '75001', city: 'Paris' } });
+    const bareData = facturXDataFromInvoice(bare, company, { name: 'Client', ...B2C, address: { line1: 'x', zip: '75001', city: 'Paris' } });
     expect(bareData.purchaseOrderReference).toBeUndefined();
+  });
+
+  it('A7 : période de prestation + adresse de chantier figées à l’émission voyagent dans les données puis le XML', () => {
+    const company = seedCompany();
+    const inv = (Invoice.composeStandalone({ id: 'inv-a7', companyId: company.id, customerId: 'cust1' }) as { ok: true; value: Invoice }).value;
+    inv.addLine({ id: 'l1', label: 'Rénovation SDB', category: 'labor', qty: 1, unitPriceHT: 180_000, vatRate: 20 });
+    issueForFacturX(inv, 11, {
+      servicePeriod: { start: '2026-06-02', end: '2026-06-13' },
+      deliveryAddress: 'Chantier — 8 allée des Roses, 92190 Meudon',
+    });
+
+    const data = facturXDataFromInvoice(inv, company, { name: 'M. Bernard', ...B2C, address: { line1: '8 allée des Roses', zip: '92190', city: 'Meudon' } });
+    expect(data.servicePeriod).toEqual({ start: '2026-06-02', end: '2026-06-13' });
+    expect(data.deliveryAddress).toBe('Chantier — 8 allée des Roses, 92190 Meudon');
+    const xml = buildFacturXBasicXml(data);
+    expect(xml).toContain('<ram:BillingSpecifiedPeriod>');
+    expect(xml).toContain('<ram:LineOne>Chantier — 8 allée des Roses, 92190 Meudon</ram:LineOne>');
+
+    // Jour unique : BT-72 émis, pas de BG-14.
+    const single = (Invoice.composeStandalone({ id: 'inv-a7-jour', companyId: company.id, customerId: 'cust1' }) as { ok: true; value: Invoice }).value;
+    single.addLine({ id: 'l1', label: 'Dépannage fuite', category: 'labor', qty: 1, unitPriceHT: 12_000, vatRate: 20 });
+    issueForFacturX(single, 12, { servicePeriod: { start: '2026-06-02', end: null } });
+    const singleXml = buildFacturXBasicXml(
+      facturXDataFromInvoice(single, company, { name: 'Client', ...B2C, address: { line1: 'x', zip: '75001', city: 'Paris' } }),
+    );
+    expect(singleXml).toContain('<ram:ActualDeliverySupplyChainEvent>');
+    expect(singleXml).not.toContain('BillingSpecifiedPeriod');
+
+    // Sans données A7 : AUCUN élément émis (null honnête des pièces legacy).
+    const bare = (Invoice.composeStandalone({ id: 'inv-a7-bare', companyId: company.id, customerId: 'cust1' }) as { ok: true; value: Invoice }).value;
+    bare.addLine({ id: 'l1', label: 'Joint', category: 'supply', qty: 1, unitPriceHT: 5000, vatRate: 10 });
+    issueForFacturX(bare, 13);
+    const bareData = facturXDataFromInvoice(bare, company, { name: 'Client', ...B2C, address: { line1: 'x', zip: '75001', city: 'Paris' } });
+    expect(bareData.servicePeriod).toBeUndefined();
+    expect(bareData.deliveryAddress).toBeUndefined();
   });
 
   it('refuse une facture brouillon au lieu de fabriquer un numéro et une date', () => {
@@ -192,8 +282,149 @@ describe('facturXDataFromInvoice — mapping depuis l’agrégat', () => {
     expect(() =>
       facturXDataFromInvoice(inv, company, {
         name: 'Client',
+        ...B2C,
         address: { line1: 'x', zip: '75001', city: 'Paris' },
       }),
     ).toThrowError('FACTURX_ISSUED_INVOICE_REQUIRED');
+  });
+
+  // —— A4 : autoliquidation sous-traitance BTP (art. 283, 2 nonies du CGI ; EN 16931 BR-AE) ——
+  it('A4 — facture autoliquidée (BTP, b2b sous-traitance) : catégorie AE, mention 283, 2 nonies, TVA 0', () => {
+    const company = seedCompany(); // plombier (BTP), régime réel
+    const inv = (Invoice.composeStandalone({ id: 'inv-ae', companyId: company.id, customerId: 'cust-do' }) as { ok: true; value: Invoice }).value;
+    // Taux 0 sur les lignes : c'est ce que suggestVatRate impose à la création d'une pièce autoliquidée.
+    inv.addLine({ id: 'l1', label: 'Lot plomberie — sous-traitance', category: 'labor', qty: 1, unitPriceHT: 250_000, vatRate: 0 });
+    inv.addLine({ id: 'l2', label: 'Fournitures incorporées', category: 'supply', qty: 1, unitPriceHT: 50_000, vatRate: 0 });
+    issueForFacturX(inv, 20);
+
+    const data = facturXDataFromInvoice(inv, company, {
+      name: 'BTP Grand Œuvre (donneur d’ordre)',
+      siren: '821503642',
+      type: 'b2b',
+      isSubcontractingBtp: true,
+      address: { line1: 'ZA des Bruyères', zip: '92140', city: 'Clamart' },
+    });
+
+    // Lignes ET ventilation en AE, taux 0 (BR-AE-5), TVA 0 (BR-AE-8/9).
+    expect(data.lines.every((l) => l.vatCategory === 'AE' && l.vatRatePct === 0)).toBe(true);
+    expect(data.vatBreakdown).toHaveLength(1);
+    const b0 = data.vatBreakdown[0]!;
+    expect(b0).toMatchObject({ category: 'AE', ratePct: 0, vatCents: 0, basisCents: 300_000 });
+    // BR-AE-10 : mention obligatoire, fondée sur l'art. 283, 2 nonies du CGI.
+    expect(b0.exemptionReason).toContain('Autoliquidation');
+    expect(b0.exemptionReason).toContain('283, 2 nonies');
+    // Total TVA 0 : la pièce ne collecte JAMAIS de TVA, le preneur autoliquide.
+    expect(data.taxTotalCents).toBe(0);
+    expect(data.grandTotalCents).toBe(300_000);
+    expect(data.duePayableCents).toBe(300_000);
+    // BR-AE-2 : identifiants TVA du vendeur (BT-31) et du preneur (BT-48, dérivé du SIREN).
+    expect(data.seller.vatId).toBeDefined();
+    expect(data.buyer.vatId).toBe(frenchVatNumber('821503642'));
+
+    const xml = buildFacturXBasicXml(data);
+    expect(xml).toContain('<ram:CategoryCode>AE</ram:CategoryCode>');
+    expect(xml).toContain('<ram:ExemptionReason>Autoliquidation — art. 283, 2 nonies du CGI</ram:ExemptionReason>');
+    expect(xml).toContain('<ram:TaxTotalAmount currencyID="EUR">0.00</ram:TaxTotalAmount>');
+  });
+
+  it('A4 — facture normale (b2b NON sous-traitant) : inchangée — catégories S, TVA facturée, jamais d’AE', () => {
+    const company = seedCompany();
+    const inv = (Invoice.composeStandalone({ id: 'inv-normale', companyId: company.id, customerId: 'cust-b2b' }) as { ok: true; value: Invoice }).value;
+    inv.addLine({ id: 'l1', label: 'Entretien chaudière', category: 'labor', qty: 1, unitPriceHT: 20_000, vatRate: 20 });
+    issueForFacturX(inv, 21);
+
+    const data = facturXDataFromInvoice(inv, company, {
+      name: 'Boulangerie Lefèvre',
+      siren: '402118553',
+      type: 'b2b',
+      isSubcontractingBtp: false,
+      address: { line1: '3 place du Marché', zip: '92310', city: 'Sèvres' },
+    });
+
+    expect(data.lines[0]!).toMatchObject({ vatCategory: 'S', vatRatePct: 20 });
+    expect(data.vatBreakdown).toEqual([{ category: 'S', ratePct: 20, basisCents: 20_000, vatCents: 4_000 }]);
+    expect(data.taxTotalCents).toBe(4_000);
+    expect(data.grandTotalCents).toBe(24_000);
+    // Hors autoliquidation, le BT-48 du preneur n'est pas dérivé (comportement inchangé).
+    expect(data.buyer.vatId).toBeUndefined();
+    expect(buildFacturXBasicXml(data)).not.toContain('<ram:CategoryCode>AE</ram:CategoryCode>');
+  });
+
+  it('A4 — franchise en base PRIME sur l’autoliquidation : catégorie E + motif 293 B, jamais AE', () => {
+    // Un sous-traitant en franchise facture sous l'art. 293 B du CGI : il n'est pas concerné
+    // par le dispositif d'autoliquidation (BOI-TVA-DECLA-10-10-20) — préséance de suggestVatRate.
+    const company = (Company.of({ ...MERCIER_PROPS, vatRegime: 'franchise' }) as { ok: true; value: Company }).value;
+    const inv = (Invoice.composeStandalone({ id: 'inv-fr-ae', companyId: company.id, customerId: 'cust-do' }) as { ok: true; value: Invoice }).value;
+    inv.addLine({ id: 'l1', label: 'Lot plomberie — sous-traitance', category: 'labor', qty: 1, unitPriceHT: 100_000, vatRate: 0 });
+    issueForFacturX(inv, 22);
+
+    const data = facturXDataFromInvoice(inv, company, {
+      name: 'BTP Grand Œuvre (donneur d’ordre)',
+      siren: '821503642',
+      type: 'b2b',
+      isSubcontractingBtp: true,
+      address: { line1: 'ZA des Bruyères', zip: '92140', city: 'Clamart' },
+    });
+
+    expect(data.vatBreakdown).toHaveLength(1);
+    expect(data.vatBreakdown[0]!).toMatchObject({ category: 'E', ratePct: 0, vatCents: 0 });
+    expect(data.vatBreakdown[0]!.exemptionReason).toContain('293 B');
+    expect(data.lines[0]!).toMatchObject({ vatCategory: 'E', vatRatePct: 0 });
+    expect(buildFacturXBasicXml(data)).not.toContain('<ram:CategoryCode>AE</ram:CategoryCode>');
+  });
+
+  // —— A4 : le régime FIGÉ à l'émission PRIME sur l'état courant (mutable) du client ——
+  it('A4 — régime figé « standard » : un client flaggé sous-traitant APRÈS l’émission ne bascule jamais le XML en AE', () => {
+    const company = seedCompany();
+    const inv = (Invoice.composeStandalone({ id: 'inv-frozen', companyId: company.id, customerId: 'cust-do' }) as { ok: true; value: Invoice }).value;
+    inv.addLine({ id: 'l1', label: 'Prestation', category: 'labor', qty: 1, unitPriceHT: 100_000, vatRate: 20 });
+    issueForFacturX(inv, 30);
+    // Émission sous régime standard, FIGÉ dans la pièce (IssueInvoice → Invoice.issue).
+    const frozen = Invoice.rehydrate({ ...inv.toSnapshot(), vatTreatmentAtIssuance: 'standard' });
+    // La fiche client est ENSUITE éditée : b2b + sous-traitance BTP. Le XML régénéré doit
+    // rester identique à la pièce émise (TVA collectée), jamais AE/TVA 0.
+    const data = facturXDataFromInvoice(frozen, company, {
+      name: 'Client devenu sous-traitant',
+      siren: '821503642',
+      type: 'b2b',
+      isSubcontractingBtp: true,
+      address: { line1: 'x', zip: '75001', city: 'Paris' },
+    });
+    expect(data.lines.every((l) => l.vatCategory === 'S' && l.vatRatePct === 20)).toBe(true);
+    expect(data.taxTotalCents).toBe(20_000);
+    expect(buildFacturXBasicXml(data)).not.toContain('<ram:CategoryCode>AE</ram:CategoryCode>');
+  });
+
+  it('A4 — régime figé « autoliquidation » : une fiche repassée « non sous-traitant » ne réécrit pas la pièce AE', () => {
+    const company = seedCompany();
+    const inv = (Invoice.composeStandalone({ id: 'inv-frozen-ae', companyId: company.id, customerId: 'cust-do' }) as { ok: true; value: Invoice }).value;
+    inv.addLine({ id: 'l1', label: 'Sous-traitance', category: 'labor', qty: 1, unitPriceHT: 100_000, vatRate: 0 });
+    issueForFacturX(inv, 31);
+    const frozen = Invoice.rehydrate({ ...inv.toSnapshot(), vatTreatmentAtIssuance: 'autoliquidation' });
+    const data = facturXDataFromInvoice(frozen, company, {
+      name: 'Donneur d’ordre',
+      siren: '821503642',
+      type: 'b2b',
+      isSubcontractingBtp: false, // fiche éditée après coup
+      address: { line1: 'x', zip: '75001', city: 'Paris' },
+    });
+    expect(data.vatBreakdown[0]!).toMatchObject({ category: 'AE', ratePct: 0, vatCents: 0 });
+    expect(data.buyer.vatId).toBe(frenchVatNumber('821503642'));
+  });
+
+  it('A4 — pièce legacy SANS régime figé : dérivation dynamique conservée (compat honnête)', () => {
+    const company = seedCompany();
+    const inv = (Invoice.composeStandalone({ id: 'inv-legacy', companyId: company.id, customerId: 'cust-do' }) as { ok: true; value: Invoice }).value;
+    inv.addLine({ id: 'l1', label: 'Prestation', category: 'labor', qty: 1, unitPriceHT: 100_000, vatRate: 0 });
+    issueForFacturX(inv, 32);
+    expect(inv.vatTreatmentAtIssuance).toBeNull();
+    const data = facturXDataFromInvoice(inv, company, {
+      name: 'Donneur d’ordre',
+      siren: '821503642',
+      type: 'b2b',
+      isSubcontractingBtp: true,
+      address: { line1: 'x', zip: '75001', city: 'Paris' },
+    });
+    expect(data.vatBreakdown[0]!.category).toBe('AE');
   });
 });

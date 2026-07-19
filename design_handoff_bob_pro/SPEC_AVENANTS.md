@@ -264,6 +264,25 @@ Compléments impératifs :
 2. **La voix dit et montre, le tap écrit** (plancher R7) : les affordances vocales ouvrent les Sheets préremplies ; seul le tap Confirmer/Envoyer déclenche le use case.
 3. **Parité humain↔Bob** : chaque action a son outil typé (`packages/ai/src/tools/registry.ts`) qui délègue au MÊME use case `@bob/core` — zéro logique métier dans l'outil.
 4. **Le marché est une VUE agrégée, jamais un document.**
+5. **LIENS CROISÉS ENTRE PIÈCES (exigence fondateur 19/07, référence proto F-2026-118)** : le
+   pattern visuel des pièces liées est un CONTRAT — carte VIOLETTE (famille `semantic.ai`,
+   icône lien) pour la filiation devis↔facture (« Issue du devis D-2026-014 », et côté devis :
+   « Facture émise F-2026-118 ») ; carte AMBRE (famille warning, icône flèche-retour circulaire)
+   pour les pièces rectificatives (« Avoir émis sur cette facture — AV-… · −montant »).
+   Les AVENANTS suivent le MÊME système dans le devis parent : carte(s) « Avenant n°N — {état} ·
+   {±montant} » avec le récapitulatif « Marché : devis + N avenants = X € » au-dessus, chaque
+   carte navigue vers l'avenant ; et l'avenant affiche sa carte retour « Avenant au devis D-… ».
+   COULEURS DISTINCTES D'UN COUP D'ŒIL (décision fondateur 19/07) : trois familles jamais
+   confondables — filiation devis↔facture = VIOLET/indigo (`semantic.ai`, inchangé) ;
+   AVOIR sur facture = AMBRE chaud (famille warning du proto — rectification, argent rendu) ;
+   AVENANT sur devis = TEAL/vert sarcelle (NOUVEAU token `piece.avenant*` à créer dans
+   packages/tokens — évolution du contrat, ni une filiation ni une rectification). L'icône
+   diffère aussi : lien (filiation), flèche-retour circulaire (avoir), plus/delta contractuel
+   (avenant). Test de conformité : les trois cartes côte à côte doivent être identifiables
+   sans lire le texte.
+   LISTES devis/factures : tags/badges complétés — un devis avec avenant(s) porte le tag
+   « Avenant ×N », une facture avec avoir porte le tag « Avoir », un avoir en liste est
+   identifiable (badge dédié) — mêmes composants Badge/tones que les statuts existants.
 
 ### 4.2 Entrée manuelle — depuis le devis signé (`/devis/[id]`)
 

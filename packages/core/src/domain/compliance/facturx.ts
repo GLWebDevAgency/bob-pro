@@ -1,4 +1,5 @@
 import { type Company } from '../company/company';
+import { type CustomerType } from '../customer/customer';
 import { type Invoice, type InvoiceKind } from '../billing/invoice/invoice';
 
 /**
@@ -49,6 +50,19 @@ export interface FacturXInvoiceData {
   /** BT-13 — numéro d'engagement du bon de commande client (B8) : les grands comptes et
    * Chorus Pro lisent la donnée STRUCTURÉE (BuyerOrderReferencedDocument), jamais le PDF. */
   purchaseOrderReference?: string;
+  /**
+   * A7 — date/période de la prestation figée à l'émission (art. 242 nonies A, I-8° annexe II
+   * CGI). `end` null = jour unique → BT-72 (date de livraison effective,
+   * ActualDeliverySupplyChainEvent) ; `end` non null = période → BG-14 (BT-73/BT-74,
+   * BillingSpecifiedPeriod). Absent = non renseignée, aucun élément émis.
+   */
+  servicePeriod?: { start: string; end: string | null };
+  /**
+   * A7 — adresse de chantier/livraison si distincte de la facturation → BG-13 (ShipToTradeParty)
+   * avec l'adresse libre en BT-75 (LineOne) et le pays BT-80 (obligatoire dans BG-15) = FR.
+   * Absent = adresse de facturation, aucun élément émis.
+   */
+  deliveryAddress?: string;
   seller: FacturXParty;
   buyer: FacturXParty;
   lines: FacturXLine[];
@@ -62,6 +76,16 @@ export interface FacturXInvoiceData {
 }
 
 const FR_293B = 'TVA non applicable, art. 293 B du CGI';
+
+/**
+ * A4 — mention d'autoliquidation portée en BT-120 (ExemptionReason) pour la catégorie AE :
+ * • fondement fiscal : art. 283, 2 nonies du CGI (sous-traitance BTP — la TVA est acquittée
+ *   par le preneur assujetti) ;
+ * • mention « Autoliquidation » obligatoire sur la facture : art. 242 nonies A, I-13° de
+ *   l'annexe II au CGI ;
+ * • exigence EN 16931 : BR-AE-10 (une ventilation AE DOIT porter un motif d'exonération).
+ */
+const FR_AUTOLIQUIDATION_283_2_NONIES = 'Autoliquidation — art. 283, 2 nonies du CGI';
 
 const KIND_TO_TYPECODE: Record<InvoiceKind, string> = {
   final: '380',
@@ -189,8 +213,33 @@ export function buildFacturXBasicXml(d: FacturXInvoiceData): string {
   }
   L.push('    </ram:ApplicableHeaderTradeAgreement>');
 
-  // Livraison (vide en BASIC)
-  L.push('    <ram:ApplicableHeaderTradeDelivery />');
+  // Livraison — vide par défaut (BASIC). A7 y insère, dans l'ordre CII (ShipToTradeParty puis
+  // ActualDeliverySupplyChainEvent) : l'adresse de chantier/livraison (BG-13, texte libre en
+  // BT-75/LineOne + pays BT-80 obligatoire) et la date de livraison/prestation effective (BT-72)
+  // pour une prestation d'UN jour (end null). Une PÉRIODE va en BG-14 (règlement, plus bas).
+  const period = d.servicePeriod;
+  const singleDayDelivery = period && period.end === null ? period.start : null;
+  if (d.deliveryAddress || singleDayDelivery) {
+    L.push('    <ram:ApplicableHeaderTradeDelivery>');
+    if (d.deliveryAddress) {
+      L.push('      <ram:ShipToTradeParty>');
+      L.push('        <ram:PostalTradeAddress>');
+      L.push(`          <ram:LineOne>${xmlEscape(d.deliveryAddress)}</ram:LineOne>`);
+      L.push('          <ram:CountryID>FR</ram:CountryID>');
+      L.push('        </ram:PostalTradeAddress>');
+      L.push('      </ram:ShipToTradeParty>');
+    }
+    if (singleDayDelivery) {
+      L.push('      <ram:ActualDeliverySupplyChainEvent>');
+      L.push('        <ram:OccurrenceDateTime>');
+      L.push(`          <udt:DateTimeString format="102">${dateCII(singleDayDelivery)}</udt:DateTimeString>`);
+      L.push('        </ram:OccurrenceDateTime>');
+      L.push('      </ram:ActualDeliverySupplyChainEvent>');
+    }
+    L.push('    </ram:ApplicableHeaderTradeDelivery>');
+  } else {
+    L.push('    <ram:ApplicableHeaderTradeDelivery />');
+  }
 
   // Règlement
   L.push('    <ram:ApplicableHeaderTradeSettlement>');
@@ -204,6 +253,19 @@ export function buildFacturXBasicXml(d: FacturXInvoiceData): string {
     L.push(`        <ram:CategoryCode>${b.category}</ram:CategoryCode>`);
     L.push(`        <ram:RateApplicablePercent>${pct(b.ratePct)}</ram:RateApplicablePercent>`);
     L.push('      </ram:ApplicableTradeTax>');
+  }
+  // A7 — BG-14 (BT-73/BT-74) : période de facturation quand la prestation s'étend sur PLUSIEURS
+  // jours (end non null). Un jour unique est déjà porté par BT-72 (livraison, ci-dessus).
+  // Position CII : après ApplicableTradeTax, avant SpecifiedTradePaymentTerms (EN 16931, CII).
+  if (period && period.end !== null) {
+    L.push('      <ram:BillingSpecifiedPeriod>');
+    L.push('        <ram:StartDateTime>');
+    L.push(`          <udt:DateTimeString format="102">${dateCII(period.start)}</udt:DateTimeString>`);
+    L.push('        </ram:StartDateTime>');
+    L.push('        <ram:EndDateTime>');
+    L.push(`          <udt:DateTimeString format="102">${dateCII(period.end)}</udt:DateTimeString>`);
+    L.push('        </ram:EndDateTime>');
+    L.push('      </ram:BillingSpecifiedPeriod>');
   }
   if (d.dueDate) {
     L.push('      <ram:SpecifiedTradePaymentTerms>');
@@ -231,6 +293,15 @@ export interface FacturXBuyer {
   name: string;
   siren?: string;
   address: { line1: string; zip: string; city: string };
+  /**
+   * A4 — faits fiscaux du preneur, lus de l'agrégat Customer (jamais déduits ici) : ils pilotent
+   * l'autoliquidation via Company.requiresAutoliquidation (BTP + b2b + sous-traitance,
+   * art. 283, 2 nonies du CGI). Champs REQUIS : chaque appelant doit énoncer l'état réel du
+   * client — aucun défaut implicite qui ferait retomber en silence une pièce autoliquidée
+   * dans la catégorie Z/S (TVA facturée à tort).
+   */
+  type: CustomerType;
+  isSubcontractingBtp: boolean;
 }
 
 /**
@@ -248,9 +319,28 @@ export function facturXDataFromInvoice(invoice: Invoice, company: Company, buyer
   const number = invoice.number;
   const issueDate = invoice.issuedAt;
   const totals = invoice.totals();
-  const franchise = company.isVatFranchise();
+  // A4 — le régime de TVA est lu EN PRIORITÉ depuis le fait FIGÉ à l'émission
+  // (Invoice.vatTreatmentAtIssuance, constaté par IssueInvoice dans la transaction d'émission,
+  // repris de la source pour un avoir) : le XML régénéré plus tard reste identique à la pièce
+  // émise même si la fiche client (type, isSubcontractingBtp) ou la société a changé depuis —
+  // jamais deux représentations fiscales divergentes de la MÊME pièce. Fallback honnête pour
+  // les pièces émises AVANT le figeage : dérivation dynamique historique.
+  const frozenTreatment = invoice.vatTreatmentAtIssuance;
+  const franchise =
+    frozenTreatment !== null ? frozenTreatment === 'franchise' : company.isVatFranchise();
+  // Autoliquidation de la TVA en sous-traitance BTP (art. 283, 2 nonies du CGI) : la pièce est
+  // émise SANS TVA et porte la catégorie AE (EN 16931, BR-AE-1 à BR-AE-10) — le preneur
+  // autoliquide. La franchise en base PRIME : le sous-traitant en franchise facture sous
+  // l'art. 293 B (catégorie E), il n'est pas concerné par le dispositif d'autoliquidation
+  // (BOI-TVA-DECLA-10-10-20) — même préséance que suggestVatRate et IssueInvoice.
+  const autoliquidation =
+    frozenTreatment !== null
+      ? frozenTreatment === 'autoliquidation'
+      : !franchise
+        && company.requiresAutoliquidation({ type: buyer.type, isSubcontractingBtp: buyer.isSubcontractingBtp });
 
-  // Lignes : en franchise, la TVA est inapplicable -> catégorie E, taux 0 (BR-E-5).
+  // Lignes : en franchise, la TVA est inapplicable -> catégorie E, taux 0 (BR-E-5) ;
+  // en autoliquidation -> catégorie AE, taux 0 (BR-AE-5).
   const lines: FacturXLine[] = invoice.lines.map((l, i) => ({
     id: l.id || String(i + 1),
     name: l.label,
@@ -258,8 +348,8 @@ export function facturXDataFromInvoice(invoice: Invoice, company: Company, buyer
     unitCode: 'C62',
     unitPriceHTCents: l.unitPriceHT,
     netAmountCents: Math.round(l.qty * l.unitPriceHT),
-    vatCategory: franchise ? 'E' : l.vatRate > 0 ? 'S' : 'Z',
-    vatRatePct: franchise ? 0 : l.vatRate,
+    vatCategory: franchise ? 'E' : autoliquidation ? 'AE' : l.vatRate > 0 ? 'S' : 'Z',
+    vatRatePct: franchise || autoliquidation ? 0 : l.vatRate,
   }));
 
   let vatBreakdown: FacturXVatBreakdown[];
@@ -270,6 +360,17 @@ export function facturXDataFromInvoice(invoice: Invoice, company: Company, buyer
   if (franchise) {
     // Franchise en base : un seul groupe E, taux 0, TVA 0 (BR-E-5/6/9). Total = HT, jamais de TVA.
     vatBreakdown = [{ category: 'E', ratePct: 0, basisCents: totals.ht, vatCents: 0, exemptionReason: FR_293B }];
+    taxTotalCents = 0;
+    grandTotalCents = totals.ht;
+    duePayableCents = totals.ttc > 0 ? Math.round((totals.ht * totals.netToPay) / totals.ttc) : totals.ht;
+  } else if (autoliquidation) {
+    // A4 — autoliquidation : un seul groupe AE, taux 0, TVA 0 (BR-AE-5/8/9), mention
+    // « Autoliquidation » obligatoire en BT-120 (BR-AE-10 ; art. 242 nonies A, I-13° de
+    // l'annexe II au CGI). Total = HT : la TVA est déclarée par le preneur (art. 283,
+    // 2 nonies du CGI), jamais collectée par l'émetteur.
+    vatBreakdown = [
+      { category: 'AE', ratePct: 0, basisCents: totals.ht, vatCents: 0, exemptionReason: FR_AUTOLIQUIDATION_283_2_NONIES },
+    ];
     taxTotalCents = 0;
     grandTotalCents = totals.ht;
     duePayableCents = totals.ttc > 0 ? Math.round((totals.ht * totals.netToPay) / totals.ttc) : totals.ht;
@@ -303,6 +404,13 @@ export function facturXDataFromInvoice(invoice: Invoice, company: Company, buyer
   const buyerParty: FacturXParty = {
     name: buyer.name,
     ...(buyer.siren ? { legalId: buyer.siren } : {}),
+    // BR-AE-2 : une pièce portant la catégorie AE DOIT identifier le preneur par son n° de TVA
+    // (BT-48). Dérivation déterministe depuis le SIREN français (même algorithme que BT-31 côté
+    // vendeur) — jamais inventé. Depuis la garde A4, IssueInvoice REFUSE d'émettre une pièce
+    // autoliquidée sans SIREN preneur : un BT-48 absent ici ne peut venir que d'une pièce émise
+    // avant la garde (legacy) ou d'un rendu dynamique — la violation reste alors visible via
+    // validateFacturXBasic (exécuté à l'import), jamais masquée.
+    ...(autoliquidation && buyer.siren ? { vatId: frenchVatNumber(buyer.siren) } : {}),
     address: { line1: buyer.address.line1, postcode: buyer.address.zip, city: buyer.address.city, countryCode: 'FR' },
   };
 
@@ -315,6 +423,10 @@ export function facturXDataFromInvoice(invoice: Invoice, company: Company, buyer
     // B8 — BT-13 : le numéro d'engagement porté par la facture (repris du devis) est émis dans
     // le XML structuré, à l'identique de la mention PDF. Jamais inventé : absent sans BC.
     ...(invoice.purchaseOrder !== null ? { purchaseOrderReference: invoice.purchaseOrder.number } : {}),
+    // A7 — période de prestation (BT-72 jour unique / BG-14 période) et adresse de chantier
+    // (BG-13) figées à l'émission par le domaine (Invoice.issue) — jamais complétées ici.
+    ...(invoice.servicePeriod !== null ? { servicePeriod: invoice.servicePeriod } : {}),
+    ...(invoice.deliveryAddress !== null ? { deliveryAddress: invoice.deliveryAddress } : {}),
     seller,
     buyer: buyerParty,
     lines,

@@ -91,6 +91,10 @@ enum PaymentMethod {
 enum PublicAccessScope {
   quote_signature
   document_view
+  // A3 — fonctionnalité de rétractation en ligne du consommateur (art. L221-21 dernier al. et
+  // D221-5 c. conso) : créé à la SIGNATURE d'un devis B2C, valable toute la durée du délai de
+  // rétractation, révoqué à l'exercice de la rétractation (ou clôture du compte).
+  quote_retractation
 }
 
 enum PublicAccessResourceType {
@@ -292,6 +296,20 @@ model Company {
   natureJuridiqueCode     String?
   /// Qualification RGE à l'annuaire au provisioning (Pack BTP) — NULL = jamais interrogée, aucun rétro-remplissage.
   estRge                  Boolean?
+  /// A6 — Capital social en CENTIMES (art. R123-238 code de commerce : forme + capital sur les
+  /// documents des sociétés). Additif, NULL = jamais saisi — sociétés uniquement (garde domaine
+  /// Company.of + CHECK > 0) ; aucun backfill inventé.
+  capitalSocialCents      BigInt?
+  /// A2 — Médiateur de la consommation (art. L612-1 et L616-1 code de la consommation).
+  /// Les deux colonnes vont ensemble (CHECK both-or-neither) ; NULL = jamais saisi.
+  mediateurConsoNom       String?
+  mediateurConsoCoordonnees String?
+  /// A3 — coordonnées DE L'ENTREPRISE requises par les modèles types de rétractation en vigueur
+  /// (formulaire annexe R221-1 : adresse électronique ; avis annexe R221-3, instruction (2) :
+  /// téléphone ET adresse électronique — décret n° 2022-424 du 25/03/2022). Additives, NULL =
+  /// jamais saisies (réglages entreprise) — aucun backfill inventé.
+  email                   String?
+  phone                   String?
   iban                    String?
   bic                     String?
   insurerName             String?
@@ -554,6 +572,10 @@ model Quote {
   // Lecture seule côté domaine (non threadé dans l'agrégat Quote, hors invariants métier).
   createdAt        DateTime               @default(now())
   validUntil       DateTime?
+  /// A1 — date d'établissement du devis (arrêté du 24/01/2017), dérivée à l'envoi au jour métier
+  /// Paris par l'agrégat Quote. NULL = brouillon, ou devis legacy envoyé avant l'ajout du champ
+  /// (jamais rétro-daté depuis createdAt).
+  issuedAt         DateTime?              @db.Date
   depositPct       Int?
   signerName       String?
   signedAt         DateTime?
@@ -561,6 +583,18 @@ model Quote {
   // NULL = ligne historique (méthode réelle inconnue, réhydratée 'legacy_declared', jamais réinventée).
   // V1 : hash + méta uniquement ; l'archivage de l'image du tracé est l'évolution suivante.
   signatureProof   Json?
+  /// A3 — demande EXPRESSE d'exécution anticipée des travaux (art. L221-25 code conso), cochée
+  /// par le client CONSOMMATEUR au moment de signer et horodatée SERVEUR : elle lève le gel de
+  /// rétractation de la facture finale. NULL = jamais demandée (B2B, case non cochée, ou ligne
+  /// historique antérieure au champ — jamais rétro-remplie).
+  earlyExecutionRequestedAt DateTime? @db.Timestamptz(6)
+  /// A3 — qualité du client FIGÉE à la CONCLUSION du contrat (SignQuote, même transaction que
+  /// la signature) : décide du droit de rétractation et de l'embargo L221-10 même si la fiche
+  /// client change ensuite. NULL = signature antérieure au figeage (fallback : type courant).
+  signatureCustomerType CustomerType?
+  /// A3 — rétractation du consommateur exercée via la fonctionnalité en ligne (art. L221-21
+  /// dernier al. c. conso). NULL = jamais exercée ; horodatée SERVEUR, jamais réécrite.
+  retractedAt      DateTime?              @db.Timestamptz(6)
   totalsHt         Int                    @default(0)
   totalsVat        Int                    @default(0)
   totalsTtc        Int                    @default(0)
@@ -608,6 +642,13 @@ model Invoice {
   number                String?
   issuedAt              DateTime?
   dueAt                 DateTime?
+  /// A7 — date/période de la prestation si distincte de l'émission (art. 242 nonies A CGI,
+  /// L441-9 c. com.) — FIGÉE à l'émission (trigger invoices_legal_traceability). NULL = non
+  /// renseignée ; servicePeriodEnd NULL = prestation ponctuelle d'un seul jour.
+  servicePeriodStart    DateTime?     @db.Date
+  servicePeriodEnd      DateTime?     @db.Date
+  /// A7 — adresse de chantier/livraison si distincte de la facturation — FIGÉE à l'émission.
+  deliveryAddress       String?
   parentQuoteId         String?
   parentQuote           Quote?        @relation("QuoteGeneratedInvoices", fields: [parentQuoteId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict)
   // Trace légale immuable de la facture exacte annulée par un avoir total.
@@ -631,6 +672,11 @@ model Invoice {
   totalsNetToPay        Int           @default(0)
   vatByRate             Json          @default("{}")
   legalMentions         String[]      @default([])
+  /// A4 — régime de TVA de la pièce, CONSTATÉ par IssueInvoice et FIGÉ à l'émission (franchise
+  /// 293 B / autoliquidation 283, 2 nonies / standard) — le XML Factur-X régénéré le lit en
+  /// priorité, plus jamais l'état mutable de la fiche client. NULL = pièce émise avant le
+  /// figeage (dérivation dynamique honnête, jamais rétro-déduite).
+  vatTreatmentAtIssuance String?
   // B8 — bon de commande repris du devis à la dérivation (ou attaché en brouillon), FIGÉ à
   // l'émission (trigger invoices_legal_traceability). FK composite anti-IDOR comme sur quotes.
   purchaseOrderNumber     String?

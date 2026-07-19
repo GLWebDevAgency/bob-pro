@@ -154,6 +154,7 @@ import {
   decodePurchaseOrderCarrierView,
   decodePurchaseOrderMutation,
 } from './purchase-order-codec';
+import { decodeInvoiceView, decodeInvoiceViewList } from './credit-note-source-codec';
 import { decodeQuoteCreation } from './quote-idempotency';
 import {
   decodeQuoteDraftDeletion,
@@ -1599,6 +1600,14 @@ export class HttpBobClient implements BobClient {
   updateCompanyBilling(input: { iban?: string | null; bic?: string | null }) {
     return this.req<CompanyProps>('PATCH', '/company/billing', input);
   }
+  /** A6/A2 — identité légale imprimable (capital social, médiateur conso) : PATCH partiel,
+   * `null` = effacement explicite, champ omis = inchangé (jamais réinjecté par accident). */
+  updateCompanyLegal(input: {
+    capitalSocialCents?: number | null;
+    mediateurConso?: { nom: string; coordonnees: string } | null;
+  }) {
+    return this.req<CompanyProps>('PATCH', '/company/legal', input);
+  }
   getCompanyBillingSettings() {
     return this.req<CompanyBillingSettings>(
       'GET',
@@ -2486,10 +2495,17 @@ export class HttpBobClient implements BobClient {
       `/quotes/${encodeURIComponent(quoteId)}/view-link`,
     );
   }
-  signQuote(input: { quoteId: string; signerName: string; proofDataUrl?: string }) {
+  signQuote(input: {
+    quoteId: string;
+    signerName: string;
+    proofDataUrl?: string;
+    earlyExecutionRequested?: boolean;
+  }) {
     return this.req<{ status: string }>('POST', `/quotes/${input.quoteId}/sign`, {
       signerName: input.signerName,
       ...(input.proofDataUrl !== undefined ? { proofDataUrl: input.proofDataUrl } : {}),
+      // A3 — la demande d'exécution anticipée (L221-25) ne part que réellement cochée.
+      ...(input.earlyExecutionRequested === true ? { earlyExecutionRequested: true } : {}),
     });
   }
   refuseQuote(quoteId: string) {
@@ -2680,9 +2696,9 @@ export class HttpBobClient implements BobClient {
     );
   }
   getInvoice(id: string) {
-    return this.req<InvoiceView>('GET', `/invoices/${id}`, undefined, undefined, (value) =>
-      decodePurchaseOrderCarrierView<InvoiceView>(value),
-    );
+    // B8 + E3 : codec défensif — purchaseOrder/creditNoteSource absents ⇒ null (serveur
+    // antérieur), présents mais difformes ⇒ échec fermé (rupture de contrat).
+    return this.req<InvoiceView>('GET', `/invoices/${id}`, undefined, undefined, decodeInvoiceView);
   }
   invoiceAccountingPreview(invoiceId: string) {
     return this.req<InvoiceAccountingPreview>(
@@ -2711,9 +2727,7 @@ export class HttpBobClient implements BobClient {
     );
   }
   listInvoices() {
-    return this.req<InvoiceView[]>('GET', '/invoices', undefined, undefined, (value) =>
-      decodePurchaseOrderCarrierList<InvoiceView>(value),
-    );
+    return this.req<InvoiceView[]>('GET', '/invoices', undefined, undefined, decodeInvoiceViewList);
   }
   searchSalesDocuments(input: SearchSalesDocumentsClientInput) {
     const params = new URLSearchParams();

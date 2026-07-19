@@ -102,7 +102,21 @@ export class PdfRenderer implements PdfRendererPort {
       y -= size + 6;
     };
 
-    draw(`Facture ${data.number}`, 22, bold, accent);
+    // A5 — une pièce rectificative s'intitule « Avoir », jamais « Facture » : le titre suit
+    // data.kind (le domaine ne fabrique que des avoirs TOTAUX, Invoice.creditNoteFor).
+    const isCreditNote = data.kind === 'credit_note';
+    draw(`${isCreditNote ? 'Avoir' : 'Facture'} ${data.number}`, 22, bold, accent);
+    if (isCreditNote && data.creditNoteSource) {
+      // A5 — référence OBLIGATOIRE à la facture initiale sur la pièce rectificative
+      // (art. 242 nonies A, I de l'annexe II au CGI) ; c'est aussi la condition de récupération
+      // de la TVA par l'émetteur (art. 272, 1 du CGI). L'avoir du domaine étant total, la
+      // formulation est « annule totalement » — jamais « remplace » : rien n'est réémis.
+      draw(
+        `Annule totalement la facture n° ${data.creditNoteSource.number} du ${data.creditNoteSource.issuedAt}`,
+        10,
+        bold,
+      );
+    }
     y -= 8;
     draw(data.companyName, 12, bold);
     draw(data.companyAddress);
@@ -111,7 +125,22 @@ export class PdfRenderer implements PdfRendererPort {
     draw(`Client : ${data.customerName}`, 11, bold);
     draw(data.customerAddress);
     if (data.issuedAt) draw(`Emise le ${data.issuedAt}`);
-    if (data.dueAt) draw(`Echeance : ${data.dueAt}`);
+    // A5 — pas d'« échéance » sur un avoir : rien n'est dû par le client sur cette pièce.
+    if (data.dueAt && !isCreditNote) draw(`Echeance : ${data.dueAt}`);
+    // A7 — date de la vente/prestation quand distincte de l'émission (art. L441-9 code de
+    // commerce ; art. 242 nonies A, I-8° annexe II CGI). Période inclusive, end null = jour
+    // unique. Null legacy (pièces émises avant le champ) : rien d'imprimé, jamais inventé.
+    if (data.servicePeriod) {
+      draw(
+        data.servicePeriod.end === null
+          ? `Prestation realisee le ${data.servicePeriod.start}`
+          : `Prestation du ${data.servicePeriod.start} au ${data.servicePeriod.end}`,
+      );
+    }
+    // A7 — adresse de chantier/livraison si distincte de la facturation (242 nonies A CGI).
+    if (data.deliveryAddress) {
+      for (const chunk of wrap(`Adresse de chantier / livraison : ${data.deliveryAddress}`, 100)) draw(chunk);
+    }
     // B8 — numéro d'engagement du client (bon de commande) : exigence de paiement des grands
     // comptes et obligation Chorus Pro. Zone références, sobre, avec la date de réception si connue.
     if (data.purchaseOrder) {
@@ -127,10 +156,20 @@ export class PdfRenderer implements PdfRendererPort {
       draw(`${l.label}  -  ${l.qty} x ${money(l.unitPriceHT)} HT  (TVA ${l.vatRate} %)`);
     }
     y -= 10;
-    draw(`Total HT : ${money(data.totals.ht)}`, 11);
-    draw(`TVA : ${money(data.totals.vat)}`, 11);
-    draw(`Total TTC : ${money(data.totals.ttc)}`, 13, bold);
-    draw(`Net a payer : ${money(data.totals.netToPay)}`, 13, bold);
+    if (isCreditNote) {
+      // A5 — formulation CRÉDITRICE : le domaine fige des montants POSITIFS (miroir exact de la
+      // facture annulée, Invoice.creditNoteFor) ; le PDF les présente comme un crédit au client,
+      // jamais comme un « net à payer » — lisibilité juridique de la pièce rectificative.
+      draw(`Total HT credite : ${money(data.totals.ht)}`, 11);
+      draw(`TVA creditee : ${money(data.totals.vat)}`, 11);
+      draw(`Total TTC credite : ${money(data.totals.ttc)}`, 13, bold);
+      draw(`Net a crediter au client : ${money(data.totals.netToPay)}`, 13, bold);
+    } else {
+      draw(`Total HT : ${money(data.totals.ht)}`, 11);
+      draw(`TVA : ${money(data.totals.vat)}`, 11);
+      draw(`Total TTC : ${money(data.totals.ttc)}`, 13, bold);
+      draw(`Net a payer : ${money(data.totals.netToPay)}`, 13, bold);
+    }
     y -= 16;
 
     if (data.billingPresentation.rib) {
@@ -216,8 +255,64 @@ export class PdfRenderer implements PdfRendererPort {
     }
     y -= 8;
 
+    // A1 — bloc mentions légales du devis : MÊME pattern que la facture. Fournies par l'appelant
+    // (buildMentions kind 'quote') : bloc émetteur A6, décennale L243-2 ou rappel honnête,
+    // franchise 293 B, médiateur conso B2C (A2), date d'établissement + gratuité (arrêté du
+    // 24/01/2017), validité, « Bon pour accord ».
+    if (data.mentions.length > 0) {
+      draw('Mentions legales', 9, bold);
+      for (const m of data.mentions) {
+        for (const chunk of wrap(m, 100)) draw(chunk, 7, font, slate);
+      }
+      y -= 8;
+    }
+
     if (data.signedBy) {
       draw(`Signe par ${data.signedBy}`, 9, bold, accent);
+    }
+
+    // A3 — devis B2C : bloc d'INFORMATION sur le droit de rétractation (avis type, annexe art.
+    // R221-3 c. conso — fourni correctement rempli, il vaut respect de l'obligation
+    // d'information, sinon délai porté à 12 mois, art. L221-20) + FORMULAIRE DÉTACHABLE de
+    // rétractation (modèle type, annexe art. R221-1 — le contrat doit en être accompagné,
+    // art. L221-5 et L221-9). Le formulaire occupe une PAGE DÉDIÉE : détachable physiquement.
+    // Textes réglementaires servis par l'appelant (@bob/core retractation.ts), jamais réécrits.
+    if (data.retractation) {
+      const infoPage = doc.addPage([595, 842]);
+      let yInfo = 800;
+      const drawInfo = (text: string, size = 9, f: PDFFont = font, color = ink): void => {
+        infoPage.drawText(sanitize(text), { x: 40, y: yInfo, size, font: f, color });
+        yInfo -= size + 5;
+      };
+      const [noticeTitle, ...noticeBody] = data.retractation.noticeLines;
+      if (noticeTitle) drawInfo(noticeTitle, 13, bold, accent);
+      yInfo -= 6;
+      for (const line of noticeBody) {
+        // « Effets de rétractation » est un intertitre du modèle réglementaire.
+        if (line === 'Effets de rétractation') {
+          yInfo -= 4;
+          drawInfo(line, 11, bold);
+          continue;
+        }
+        for (const chunk of wrap(line, 110)) drawInfo(chunk, 9, font, slate);
+        yInfo -= 3;
+      }
+
+      const formPage = doc.addPage([595, 842]);
+      let yForm = 800;
+      const drawForm = (text: string, size = 9, f: PDFFont = font, color = ink): void => {
+        formPage.drawText(sanitize(text), { x: 40, y: yForm, size, font: f, color });
+        yForm -= size + 6;
+      };
+      // Trait de découpe symbolique en tête de page (formulaire détachable).
+      formPage.drawText(sanitize('- '.repeat(80)), { x: 40, y: 826, size: 8, font, color: slate });
+      const [formTitle, ...formBody] = data.retractation.formLines;
+      if (formTitle) drawForm(formTitle, 13, bold, accent);
+      yForm -= 6;
+      for (const line of formBody) {
+        for (const chunk of wrap(line, 110)) drawForm(chunk, 9, font, slate);
+        yForm -= 4;
+      }
     }
 
     return doc.save();

@@ -145,7 +145,15 @@ export default function FactureDetail() {
           (i) => i.parentQuoteId === inv.parentQuoteId && i.id !== inv.id,
         )
       : [];
-    const credit = siblings.find((i) => i.kind === 'credit_note');
+    // E3 : l'avoir qui annule CETTE facture — identité FIGÉE creditNoteSource d'abord (précis :
+    // l'avoir d'une pièce sœur ne s'affiche plus ici, et les factures hors devis sont couvertes) ;
+    // repli siblings pour les projections antérieures sans snapshot (compat ascendante).
+    // La réf inverse (avoir → facture d'origine) voyage, elle, DANS inv.creditNoteSource :
+    // buildPieceView en dérive view.sourceInvoice sans recalcul côté écran.
+    const credit =
+      (invoices.data ?? []).find(
+        (i) => i.kind === 'credit_note' && i.creditNoteSource?.invoiceId === inv.id,
+      ) ?? siblings.find((i) => i.kind === 'credit_note' && i.creditNoteSource == null);
     const situation = siblings.find((i) => i.kind === 'situation');
     const deposit = siblings.find((i) => i.kind === 'deposit');
     const hasFinalInvoice = siblings.some((i) => i.kind === 'final');

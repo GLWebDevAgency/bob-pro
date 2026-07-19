@@ -1,6 +1,6 @@
 import { AggregateRoot } from '../../../shared-kernel/aggregate';
 import { type DomainResult, ok, err } from '../../../shared-kernel/result';
-import { type Instant, type DateOnly } from '../../../shared-kernel/time';
+import { type Instant, type DateOnly, parisDateOnly } from '../../../shared-kernel/time';
 import { Percentage } from '../../../shared-kernel/percentage';
 import { DocNumber } from '../shared/doc-number';
 import { type QuoteLine } from '../shared/line';
@@ -44,6 +44,15 @@ export class Quote extends AggregateRoot<string> {
   private _signature: Signature | null = null;
   /** Bon de commande client (B8) — null par défaut : compat ascendante totale. */
   private _purchaseOrder: PurchaseOrderRef | null = null;
+  /** A1 — date d'établissement du devis, dérivée à l'envoi (jour métier Paris). */
+  private _issuedAt: DateOnly | null = null;
+  /**
+   * A3 — rétractation du CONSOMMATEUR exercée via la fonctionnalité en ligne (art. L221-21
+   * dernier al. c. conso). Fait ADDITIF horodaté serveur, jamais déduit : null = jamais
+   * exercée. Le devis signé reste le contrat archivé (immutabilité des pièces) — la
+   * rétractation est un événement postérieur qui gèle toute facturation dérivée.
+   */
+  private _retractedAt: Instant | null = null;
   /** Révision optimiste — incrémentée par les mutations post-signature (bon de commande). */
   private _revision = 1;
 
@@ -77,8 +86,22 @@ export class Quote extends AggregateRoot<string> {
   get validUntil(): DateOnly | null {
     return this._validUntil;
   }
+  /**
+   * A1 — date d'établissement du devis (arrêté du 24 janvier 2017 relatif à la publicité des
+   * prix des prestations de dépannage/réparation/entretien : le devis porte sa date
+   * d'établissement ; exigence générale d'ordre probatoire pour tout devis signé).
+   * Null = brouillon jamais envoyé, ou devis legacy envoyé avant l'ajout du champ — JAMAIS
+   * rétro-daté : on n'invente pas une date d'établissement a posteriori.
+   */
+  get issuedAt(): DateOnly | null {
+    return this._issuedAt;
+  }
   get signature(): Signature | null {
     return this._signature;
+  }
+  /** A3 — instant de la rétractation en ligne du consommateur (null = jamais exercée). */
+  get retractedAt(): Instant | null {
+    return this._retractedAt;
   }
   get purchaseOrder(): PurchaseOrderRef | null {
     return this._purchaseOrder;
@@ -263,6 +286,10 @@ export class Quote extends AggregateRoot<string> {
     if (this._lines.length === 0)
       return err({ code: 'VALIDATION', field: 'lines', message: 'Au moins une ligne requise.' });
     this._status = 'sent';
+    // A1 : la date d'établissement est DÉRIVÉE de l'instant d'envoi, au jour métier
+    // Europe/Paris (même calendrier que l'exercice de numérotation, cf. SendQuote) —
+    // jamais saisie librement, jamais réécrite (send n'est atteignable qu'une fois).
+    this._issuedAt = parisDateOnly(at);
     this.record({ type: 'QuoteSent', occurredAt: at, version: 1 });
     return ok(undefined);
   }
@@ -281,6 +308,22 @@ export class Quote extends AggregateRoot<string> {
     this._status = 'signed';
     this._signature = signature;
     this.record({ type: 'QuoteSigned', occurredAt: at, version: 1 });
+    return ok(undefined);
+  }
+
+  /**
+   * A3 — enregistre la rétractation du consommateur (fonctionnalité en ligne, L221-21). Ne vaut
+   * que pour un devis SIGNÉ (le droit naît de la conclusion du contrat) et une seule fois.
+   * La validation du délai (L221-18/L221-19) et de la qualité de consommateur appartient au use
+   * case (onlineRetractationAvailability) : l'agrégat n'enregistre qu'un fait déjà validé.
+   */
+  retract(at: Instant): DomainResult<void> {
+    if (this._status !== 'signed' || this._signature === null)
+      return err({ code: 'VALIDATION', field: 'status', message: 'Seul un devis signé peut être rétracté.' });
+    if (this._retractedAt !== null)
+      return err({ code: 'VALIDATION', field: 'retractedAt', message: 'Rétractation déjà enregistrée.' });
+    this._retractedAt = at;
+    this.record({ type: 'QuoteRetracted', occurredAt: at, version: 1 });
     return ok(undefined);
   }
 
@@ -311,7 +354,9 @@ export class Quote extends AggregateRoot<string> {
       number: this._number?.value ?? null,
       depositPct: this._depositPct?.value ?? null,
       validUntil: this._validUntil,
+      issuedAt: this._issuedAt,
       signature: this._signature,
+      retractedAt: this._retractedAt,
       purchaseOrder: this._purchaseOrder ? clonePurchaseOrderRef(this._purchaseOrder) : null,
       revision: this._revision,
     };
@@ -324,6 +369,9 @@ export class Quote extends AggregateRoot<string> {
     // Compat ascendante : les snapshots antérieurs à B8 n'ont ni purchaseOrder ni revision.
     q._purchaseOrder = s.purchaseOrder ? clonePurchaseOrderRef(s.purchaseOrder) : null;
     q._revision = s.revision ?? 1;
+    // Compat ascendante A1 : un devis envoyé avant l'ajout du champ reste sans date
+    // d'établissement (null honnête, jamais rétro-daté depuis createdAt).
+    q._issuedAt = s.issuedAt ?? null;
     if (s.number) {
       const n = DocNumber.of(s.number);
       if (n.ok) q._number = n.value;
@@ -333,6 +381,8 @@ export class Quote extends AggregateRoot<string> {
       if (p.ok) q._depositPct = p.value;
     }
     q._signature = s.signature;
+    // Compat ascendante A3 : snapshots antérieurs sans rétractation en ligne (null honnête).
+    q._retractedAt = s.retractedAt ?? null;
     return q;
   }
 }
@@ -350,4 +400,8 @@ export interface QuoteSnapshot {
   /** B8 — optionnels : les snapshots antérieurs restent lisibles (compat ascendante). */
   purchaseOrder?: PurchaseOrderRef | null;
   revision?: number;
+  /** A1 — optionnel : date d'établissement absente des snapshots antérieurs (jamais rétro-datée). */
+  issuedAt?: DateOnly | null;
+  /** A3 — optionnel : rétractation en ligne absente des snapshots antérieurs (jamais inventée). */
+  retractedAt?: Instant | null;
 }

@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { buildMentions, operationNatureOf, type BuildMentionsInput } from './build-mentions';
 import { Company, type CompanyProps } from '../company/company';
 import { Customer, type CustomerProps } from '../customer/customer';
+import { frenchVatNumber } from '../compliance/facturx';
+import { formatEUR } from '../../format/money';
 
 const baseCompany: CompanyProps = {
   id: 'c1',
@@ -55,6 +57,26 @@ describe('buildMentions', () => {
   it('devis => Bon pour accord', () => {
     const m = mentions({ kind: 'quote', validUntilDays: 30 });
     expect(m.some((s) => s.toLowerCase().includes('bon pour accord'))).toBe(true);
+  });
+
+  // —— A4 : mention « Autoliquidation » (art. 242 nonies A, I-13° annexe II CGI ; fondement
+  // art. 283, 2 nonies CGI) — le pendant PDF de la catégorie AE du XML Factur-X. ——
+  it('A4 — sous-traitance BTP b2b : mention « Autoliquidation » avec l’art. 283-2 nonies', () => {
+    const m = mentions({ customer: customer({ type: 'b2b', siren: '552081317', isSubcontractingBtp: true }) });
+    const mention = m.find((s) => s.includes('Autoliquidation'));
+    expect(mention).toBe('Autoliquidation de la TVA (sous-traitance BTP, art. 283-2 nonies du CGI)');
+  });
+  it('A4 — client b2b NON sous-traitant ou b2c : jamais de mention d’autoliquidation', () => {
+    expect(mentions({ customer: b2b() }).some((s) => s.includes('Autoliquidation'))).toBe(false);
+    expect(mentions().some((s) => s.includes('Autoliquidation'))).toBe(false);
+  });
+  it('A4 — FRANCHISE EN BASE + sous-traitance BTP : la franchise PRIME (BOI-TVA-DECLA-10-10-20) — mention 293 B seule, JAMAIS les deux mentions contradictoires', () => {
+    const m = mentions({
+      company: company({ vatRegime: 'franchise' }),
+      customer: customer({ type: 'b2b', siren: '552081317', isSubcontractingBtp: true }),
+    });
+    expect(m.some((s) => s.includes('293 B'))).toBe(true);
+    expect(m.some((s) => s.includes('Autoliquidation'))).toBe(false);
   });
 
   // —— P14 (C-EXP1) : mentions L441-9/L441-10 réservées aux ventes entre PROFESSIONNELS ——
@@ -145,8 +167,10 @@ describe('buildMentions', () => {
     const m = mentions({ customer: b2b() });
     expect(m.some((s) => s.includes('SIREN 552081317'))).toBe(true);
   });
-  it('B2C => pas de SIREN client', () => {
-    expect(mentions().some((s) => s.includes('SIREN'))).toBe(false);
+  it('B2C => pas de SIREN client (le SIREN émetteur A6 reste, lui, toujours présent)', () => {
+    const m = mentions();
+    expect(m.some((s) => s.includes('Client — SIREN'))).toBe(false);
+    expect(m.some((s) => s === 'SIREN 732 829 320')).toBe(true);
   });
   it('nature des opérations sur facture', () => {
     const m = mentions({ operationNature: 'services' });
@@ -158,6 +182,122 @@ describe('buildMentions', () => {
     const after = mentions({ company: company({ vatRegime: 'franchise' }), asOf: '2026-09-01' });
     expect(after.some((s) => s.includes('CIBS'))).toBe(true);
     expect(after.some((s) => s.includes('293 B'))).toBe(false);
+  });
+
+  // —— A6 : bloc émetteur complet (SIREN, TVA intracom, forme + capital, suffixe « EI ») ——
+  describe('A6 — bloc émetteur', () => {
+    it('entrepreneur individuel (EI comme micro) : dénomination suivie de « EI » (décret 2022-725)', () => {
+      const ei = mentions();
+      expect(ei[0]).toBe('Mercier Plomberie, EI — 1 rue X, 92000 Nanterre');
+      const micro = mentions({ company: company({ legalForm: 'micro' }) });
+      expect(micro[0]).toBe('Mercier Plomberie, EI — 1 rue X, 92000 Nanterre');
+    });
+
+    it('société avec capital saisi : forme + capital en euros (art. R123-238 c. com., centimes convertis)', () => {
+      const m = mentions({ company: company({ legalForm: 'SARL', capitalSocialCents: 1_000_000 }) });
+      // formatEUR : séparateurs U+202F (espace fine insécable) — 1 000 000 centimes = 10 000,00 €.
+      expect(m[0]).toBe(
+        `Mercier Plomberie, SARL au capital de ${formatEUR(1_000_000)} — 1 rue X, 92000 Nanterre`,
+      );
+      expect(formatEUR(1_000_000).normalize('NFKC')).toBe('10 000,00 €');
+      expect(m[0]).not.toContain(' EI ');
+    });
+
+    it('société SANS capital saisi : forme seule, capital jamais inventé', () => {
+      const m = mentions({ company: company({ legalForm: 'SASU' }) });
+      expect(m[0]).toBe('Mercier Plomberie, SASU — 1 rue X, 92000 Nanterre');
+      expect(m.some((s) => s.includes('capital'))).toBe(false);
+    });
+
+    it('SIREN émetteur lisible en groupes de 3 (art. R123-237 c. com.)', () => {
+      expect(mentions().some((s) => s === 'SIREN 732 829 320')).toBe(true);
+    });
+
+    it('TVA intracom : valeur du profil si saisie, sinon dérivée du SIREN (même algorithme que le XML BT-31)', () => {
+      const fromProfile = mentions({ company: company({ tvaIntracom: 'FR44732829320' }) });
+      expect(fromProfile.some((s) => s === 'TVA intracommunautaire : FR44732829320')).toBe(true);
+      const derived = mentions();
+      expect(derived.some((s) => s === `TVA intracommunautaire : ${frenchVatNumber('732829320')}`)).toBe(true);
+    });
+
+    it('franchise en base : AUCUN n° TVA intracom (TVA non applicable — cohérent avec le XML)', () => {
+      const m = mentions({ company: company({ vatRegime: 'franchise' }) });
+      expect(m.some((s) => s.includes('TVA intracommunautaire'))).toBe(false);
+    });
+  });
+
+  // —— A2 : médiateur de la consommation (L612-1/L616-1 c. conso), B2C uniquement ——
+  describe('A2 — médiateur de la consommation', () => {
+    const mediateur = { nom: 'CM2C', coordonnees: '14 rue Saint-Jean, 75017 Paris — cm2c.net' };
+
+    it('B2C + médiateur renseigné : mention nom + coordonnées, sur facture ET devis', () => {
+      for (const kind of ['invoice', 'quote'] as const) {
+        const m = mentions({ company: company({ mediateurConso: mediateur }), kind });
+        expect(
+          m.some(
+            (s) =>
+              s ===
+              'Médiateur de la consommation : CM2C — 14 rue Saint-Jean, 75017 Paris — cm2c.net (art. L612-1 et L616-1 du code de la consommation).',
+          ),
+        ).toBe(true);
+      }
+    });
+
+    it('B2C sans médiateur renseigné : mention ABSENTE (jamais inventée — le nudge relève des réglages)', () => {
+      expect(mentions().some((s) => s.includes('Médiateur'))).toBe(false);
+    });
+
+    it('client professionnel (B2B/B2G) : pas de mention médiateur même si renseigné', () => {
+      const m = mentions({ company: company({ mediateurConso: mediateur }), customer: b2b() });
+      expect(m.some((s) => s.includes('Médiateur'))).toBe(false);
+    });
+  });
+
+  // —— A1 : mentions du devis (arrêté du 24/01/2017, L243-2) ——
+  describe('A1 — mentions du devis', () => {
+    it('date d’établissement imprimée quand connue (Quote.issuedAt), jamais rétro-datée quand null', () => {
+      const dated = mentions({ kind: 'quote', establishedOn: '2026-06-01' });
+      expect(dated.some((s) => s === 'Devis établi le 2026-06-01.')).toBe(true);
+      const legacy = mentions({ kind: 'quote', establishedOn: null });
+      expect(legacy.some((s) => s.includes('établi'))).toBe(false);
+    });
+
+    it('caractère gratuit + validité : jours à la création, date limite au rendu (validUntilDays prioritaire)', () => {
+      const days = mentions({ kind: 'quote', validUntilDays: 30, validUntil: '2026-06-30' });
+      expect(days.some((s) => s === 'Devis gratuit.')).toBe(true);
+      expect(days.some((s) => s === 'Devis valable 30 jours.')).toBe(true);
+      expect(days.some((s) => s.includes("jusqu'au"))).toBe(false);
+      const byDate = mentions({ kind: 'quote', validUntil: '2026-06-30' });
+      expect(byDate.some((s) => s === "Devis valable jusqu'au 2026-06-30.")).toBe(true);
+    });
+
+    it('la date d’établissement ne s’imprime jamais sur une facture', () => {
+      expect(mentions({ establishedOn: '2026-06-01' }).some((s) => s.includes('établi'))).toBe(false);
+    });
+
+    // exactOptionalPropertyTypes : l'absence de décennale se modélise en OMETTANT la clé.
+    const companySansDecennale = (over: Partial<CompanyProps> = {}): Company => {
+      const { decennale: _decennale, ...props } = { ...baseCompany, ...over };
+      const r = Company.of(props);
+      if (!r.ok) throw new Error('company de test invalide');
+      return r.value;
+    };
+
+    it('BTP sans décennale : rappel honnête L243-2 sur le DEVIS uniquement, jamais une police inventée', () => {
+      const sansDecennale = companySansDecennale();
+      const quote = mentions({ company: sansDecennale, kind: 'quote' });
+      const rappel = quote.find((s) => s.includes('L243-2'));
+      expect(rappel).toContain('non renseignée');
+      expect(quote.some((s) => s.startsWith('Assurance decennale :'))).toBe(false);
+      const invoice = mentions({ company: sansDecennale, kind: 'invoice' });
+      expect(invoice.some((s) => s.includes('L243-2'))).toBe(false);
+    });
+
+    it('métier hors BTP sans décennale : aucun rappel L243-2', () => {
+      const consultant = companySansDecennale({ trade: 'consultant' });
+      const m = mentions({ company: consultant, kind: 'quote' });
+      expect(m.some((s) => s.includes('L243-2'))).toBe(false);
+    });
   });
 });
 

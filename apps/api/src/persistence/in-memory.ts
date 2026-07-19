@@ -536,7 +536,7 @@ export class InMemoryDocumentArchiveJobRepository implements DocumentArchiveJobR
     const existing = [...this.map.values()].find(
       (job) =>
         job.companyId === input.companyId &&
-        job.invoiceId === input.invoiceId &&
+        job.pieceId === input.pieceId &&
         job.reason === input.reason,
     );
     if (existing) {
@@ -553,7 +553,7 @@ export class InMemoryDocumentArchiveJobRepository implements DocumentArchiveJobR
     this.map.set(input.id, {
       id: input.id,
       companyId: input.companyId,
-      invoiceId: input.invoiceId,
+      pieceId: input.pieceId,
       reason: input.reason,
       status: 'pending',
       attempts: 0,
@@ -562,6 +562,26 @@ export class InMemoryDocumentArchiveJobRepository implements DocumentArchiveJobR
       createdAt: input.now,
       updatedAt: input.now,
     });
+  }
+
+  async findByPiece(
+    companyId: string,
+    pieceId: string,
+    reason: DocumentArchiveJob['reason'],
+  ): Promise<DocumentArchiveJob | null> {
+    const job = [...this.map.values()].find(
+      (candidate) =>
+        candidate.companyId === companyId &&
+        candidate.pieceId === pieceId &&
+        candidate.reason === reason,
+    );
+    return job ? { ...job } : null;
+  }
+
+  async countIncomplete(companyId: string, reason: DocumentArchiveJob['reason']): Promise<number> {
+    return [...this.map.values()].filter(
+      (job) => job.companyId === companyId && job.reason === reason && job.status !== 'done',
+    ).length;
   }
 
   async listDue(companyId: string, now: string, limit: number): Promise<DocumentArchiveJob[]> {

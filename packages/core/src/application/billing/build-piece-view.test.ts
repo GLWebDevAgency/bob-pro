@@ -97,6 +97,46 @@ describe('buildPieceView — avoir, situation, frise, mentions figées', () => {
     expect(v.signedAmountCents).toBe(-48840);
     expect(v.suivi).toBeNull();
     expect(v.primaryAction).toBeNull();
+    // E3 : sans snapshot creditNoteSource (projection antérieure), rien n'est inventé.
+    expect(v.sourceInvoice).toBeNull();
+  });
+
+  it('E3 — avoir avec creditNoteSource : sourceInvoice = identité FIGÉE de la facture annulée', () => {
+    const v = buildPieceView({
+      source: 'invoice',
+      invoice: invoice({
+        kind: 'credit_note',
+        number: 'A-2026-004',
+        totals: { ht: 40700, vatByRate: { '20': 8140 }, vat: 8140, ttc: 48840, netToPay: 48840 },
+        creditNoteSource: {
+          invoiceId: 'i-source',
+          kind: 'final',
+          number: 'F-2026-118',
+          issuedAt: '2026-06-12',
+        },
+      }),
+      customer: MARTIN,
+    });
+    expect(v.sourceInvoice).toEqual({ id: 'i-source', number: 'F-2026-118', kind: 'final' });
+  });
+
+  it('E3 — sourceInvoice reste null pour toute pièce NON avoir, même si la projection porte un snapshot parasite', () => {
+    const v = buildPieceView({
+      source: 'invoice',
+      invoice: invoice({
+        creditNoteSource: {
+          invoiceId: 'i-x',
+          kind: 'final',
+          number: 'F-2026-001',
+          issuedAt: '2026-06-01',
+        },
+      }),
+      customer: MARTIN,
+    });
+    expect(v.kind).toBe('acompte');
+    expect(v.sourceInvoice).toBeNull();
+    const quote = buildPieceView({ source: 'quote', quote: goldenQuote(), customer: MARTIN });
+    expect(quote.sourceInvoice).toBeNull();
   });
 
   it('situation : % d’avancement = ttc situation / ttc devis parent', () => {

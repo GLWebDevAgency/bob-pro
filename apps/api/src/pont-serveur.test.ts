@@ -150,10 +150,18 @@ async function issueFinalInvoice(
   if (!quote.ok) throw new Error('fixture: createQuote KO');
   const sent = await service.sendQuote(quote.value.quoteId);
   if (!sent.ok) throw new Error('fixture: sendQuote KO');
-  const signed = await service.signQuote({
-    quoteId: quote.value.quoteId,
-    signerName: 'Signataire Test',
-  });
+  // A3 — la finale part le jour même de la signature : pour un client PARTICULIER, seule la
+  // voie du contrat À DISTANCE (lien public → L221-1, I-1°) le permet légalement — une
+  // signature SUR PLACE (hors établissement) déclencherait l'interdiction de percevoir tout
+  // paiement pendant 7 jours (art. L221-10, embargo revérifié à l'émission). Le gel de
+  // rétractation de la finale est levé par la demande d'exécution anticipée du client
+  // (L221-25), tracée à la signature ; pour un pro les deux gardes sont ignorées.
+  const link = await service.createQuoteSignatureLink(quote.value.quoteId);
+  if (!link.ok) throw new Error('fixture: createQuoteSignatureLink KO');
+  const signToken = decodeURIComponent(
+    new URL(link.value.signatureUrl).pathname.split('/').pop() ?? '',
+  );
+  const signed = await service.publicSignQuote(signToken, 'Signataire Test', undefined, true);
   if (!signed.ok) throw new Error('fixture: signQuote KO');
   const generated = await service.generateInvoice({ quoteId: quote.value.quoteId, mode: 'final' });
   if (!generated.ok) throw new Error('fixture: generateInvoice KO');

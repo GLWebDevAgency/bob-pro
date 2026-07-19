@@ -1,6 +1,7 @@
 import { AggregateRoot } from '../../../shared-kernel/aggregate';
 import { type DomainResult, ok, err } from '../../../shared-kernel/result';
-import { type Instant, type DateOnly } from '../../../shared-kernel/time';
+import { type Instant, type DateOnly, isValidDateOnly } from '../../../shared-kernel/time';
+import { hasBillingControlCharacter } from '../shared/line-item';
 import { Percentage } from '../../../shared-kernel/percentage';
 import { type PaymentTerms } from '../../../shared-kernel/payment-terms';
 import { DocNumber } from '../shared/doc-number';
@@ -27,11 +28,45 @@ export interface CreditNoteSourceSnapshot {
   issuedAt: DateOnly;
 }
 
+/**
+ * A7 — Date/période de la prestation ou de la vente quand elle diffère de la date d'émission
+ * (art. 242 nonies A, I-8° annexe II CGI et art. L441-9 code de commerce : « la date de la vente
+ * ou de la prestation de services » est une mention obligatoire de la facture). `end` null =
+ * prestation ponctuelle d'un seul jour ; une période s'étend de `start` à `end` inclus.
+ */
+export interface ServicePeriod {
+  start: DateOnly;
+  end: DateOnly | null;
+}
+
+const DELIVERY_ADDRESS_MAX = 500;
+
+/**
+ * A4 — régime de TVA de la pièce, FIGÉ à l'émission (fait fiscal de la pièce, plus jamais
+ * recalculé depuis l'état MUTABLE de la fiche client/société) :
+ *  • `franchise` : TVA non applicable, art. 293 B CGI (catégorie E du XML Factur-X) ;
+ *  • `autoliquidation` : sous-traitance BTP, art. 283, 2 nonies CGI (catégorie AE) — la
+ *    franchise PRIME quand les deux s'appliquent (BOI-TVA-DECLA-10-10-20) ;
+ *  • `standard` : TVA facturée aux taux des lignes (catégories S/Z).
+ */
+export type VatTreatment = 'standard' | 'franchise' | 'autoliquidation';
+
 export interface IssueInvoiceArgs {
   mentions: string[];
   terms: PaymentTerms;
   issuedAt: DateOnly;
   at: Instant;
+  /** A7 — date de la prestation si distincte de l'émission ; null/absent = non renseignée
+   *  (l'émission reste légale : la date de la pièce vaut alors date d'opération). */
+  servicePeriod?: ServicePeriod | null;
+  /** A7 — adresse de chantier/livraison si DISTINCTE de l'adresse de facturation du client
+   *  (art. 242 nonies A CGI, donnée renforcée par la réforme e-invoicing 2026). Texte libre,
+   *  même forme que Chantier.address ; null/absent = adresse de facturation. */
+  deliveryAddress?: string | null;
+  /** A4 — régime de TVA constaté PAR LE USE CASE à l'émission (company + customer relus dans la
+   *  même transaction), FIGÉ ici. Absent = appelant antérieur : la pièce reste sans fait figé
+   *  (le rendu Factur-X retombe sur la dérivation dynamique, honnêtement). */
+  vatTreatment?: VatTreatment | null;
 }
 
 /**
@@ -48,6 +83,11 @@ export class Invoice extends AggregateRoot<string> {
   private _mentions: string[] = [];
   private _issuedAt: DateOnly | null = null;
   private _dueAt: DateOnly | null = null;
+  /** A7 — figés à l'émission (mêmes garanties d'immuabilité que mentions/totaux). */
+  private _servicePeriod: ServicePeriod | null = null;
+  private _deliveryAddress: string | null = null;
+  /** A4 — régime de TVA figé à l'émission ; null = pièce émise avant le figeage (legacy). */
+  private _vatTreatmentAtIssuance: VatTreatment | null = null;
   private _paid = 0; // centimes cumulés
   private _cancelReason: string | null = null;
   /** Bon de commande client (B8) — repris du devis à la dérivation, figé à l'émission. */
@@ -152,6 +192,15 @@ export class Invoice extends AggregateRoot<string> {
     creditNote._depositDeductionCents = source._depositDeductionCents;
     creditNote._depositInvoiceId = source._depositInvoiceId;
     creditNote._frozenTotals = cloneTotals(source._frozenTotals);
+    // A7 : l'avoir rectifie la MÊME opération — il reprend la période de prestation et l'adresse
+    // de chantier de la pièce annulée (art. 242 nonies A CGI : la pièce rectificative fait
+    // référence aux éléments de la facture initiale), jamais des valeurs nouvelles.
+    creditNote._servicePeriod = source._servicePeriod ? { ...source._servicePeriod } : null;
+    creditNote._deliveryAddress = source._deliveryAddress;
+    // A4 : l'avoir rectifie la MÊME opération sous le MÊME régime de TVA (art. 272 CGI — la
+    // TVA récupérée est celle de la facture initiale) : le fait figé est REPRIS de la source,
+    // jamais recalculé depuis l'état courant du client/de la société.
+    creditNote._vatTreatmentAtIssuance = source._vatTreatmentAtIssuance;
     // B8 : l'avoir cite le même numéro d'engagement que la pièce annulée (compta client grands comptes).
     creditNote._purchaseOrder = source._purchaseOrder
       ? clonePurchaseOrderRef(source._purchaseOrder)
@@ -176,6 +225,18 @@ export class Invoice extends AggregateRoot<string> {
   }
   get dueAt(): DateOnly | null {
     return this._dueAt;
+  }
+  /** A7 — date/période de la prestation figée à l'émission ; null = non renseignée. */
+  get servicePeriod(): ServicePeriod | null {
+    return this._servicePeriod ? { ...this._servicePeriod } : null;
+  }
+  /** A7 — adresse de chantier/livraison figée à l'émission ; null = adresse de facturation. */
+  get deliveryAddress(): string | null {
+    return this._deliveryAddress;
+  }
+  /** A4 — régime de TVA figé à l'émission ; null = pièce émise avant le figeage (legacy). */
+  get vatTreatmentAtIssuance(): VatTreatment | null {
+    return this._vatTreatmentAtIssuance;
   }
   get paid(): number {
     return this._paid;
@@ -290,10 +351,51 @@ export class Invoice extends AggregateRoot<string> {
     if (!this._number) return err({ code: 'VALIDATION', field: 'number', message: 'Numero requis avant emission.' });
     if (this._lines.length === 0)
       return err({ code: 'VALIDATION', field: 'lines', message: 'Au moins une ligne requise.' });
+    // A7 : un avoir total rectifie la MÊME opération — sa période de prestation et son adresse
+    // de chantier sont REPRISES de la pièce annulée à la création (creditNoteFor) et ne se
+    // saisissent jamais à son émission (miroir exact exigé aussi par le trigger SQL).
+    if (this.kind === 'credit_note' && (args.servicePeriod != null || args.deliveryAddress != null))
+      return err({
+        code: 'VALIDATION',
+        field: 'servicePeriod',
+        message: 'La période de prestation et l’adresse d’un avoir sont figées depuis la facture source.',
+      });
+    // A7 : validation AVANT toute mutation — un rejet laisse la facture intacte (le use case
+    // annule alors la transaction, aucun numéro consommé).
+    const servicePeriod = args.servicePeriod ?? null;
+    if (servicePeriod !== null) {
+      if (!isValidDateOnly(servicePeriod.start))
+        return err({ code: 'VALIDATION', field: 'servicePeriod', message: 'Date de prestation invalide (AAAA-MM-JJ requis).' });
+      if (servicePeriod.end !== null) {
+        if (!isValidDateOnly(servicePeriod.end))
+          return err({ code: 'VALIDATION', field: 'servicePeriod', message: 'Fin de période de prestation invalide (AAAA-MM-JJ requis).' });
+        if (servicePeriod.end < servicePeriod.start)
+          return err({ code: 'VALIDATION', field: 'servicePeriod', message: 'La fin de la période de prestation précède son début.' });
+      }
+    }
+    const deliveryAddressRaw = args.deliveryAddress ?? null;
+    const deliveryAddress = deliveryAddressRaw === null ? null : deliveryAddressRaw.trim();
+    if (deliveryAddress !== null) {
+      if (
+        deliveryAddress.length === 0
+        || deliveryAddress.length > DELIVERY_ADDRESS_MAX
+        || hasBillingControlCharacter(deliveryAddress)
+      )
+        return err({ code: 'VALIDATION', field: 'deliveryAddress', message: 'Adresse de chantier/livraison invalide (500 caractères max).' });
+    }
     this._frozenTotals = this.totals();
     this._mentions = [...args.mentions];
     this._issuedAt = args.issuedAt;
     this._dueAt = args.terms.dueDateFrom(args.issuedAt);
+    // A4 — le régime de TVA constaté à l'émission devient un fait de la pièce (jamais réécrit).
+    // Un AVOIR conserve le régime REPRIS de sa facture source (creditNoteFor, art. 272 CGI) —
+    // l'émission ne le réécrit pas depuis l'état courant.
+    if (this.kind !== 'credit_note') this._vatTreatmentAtIssuance = args.vatTreatment ?? null;
+    // Un avoir CONSERVE la période/adresse reprises de sa source (jamais réécrites ici).
+    if (this.kind !== 'credit_note') {
+      this._servicePeriod = servicePeriod === null ? null : { ...servicePeriod };
+      this._deliveryAddress = deliveryAddress;
+    }
     this._status = 'issued';
     this.record({ type: 'InvoiceIssued', occurredAt: args.at, version: 1 });
     return ok(undefined);
@@ -351,6 +453,9 @@ export class Invoice extends AggregateRoot<string> {
       mentions: [...this._mentions],
       issuedAt: this._issuedAt,
       dueAt: this._dueAt,
+      servicePeriod: this._servicePeriod ? { ...this._servicePeriod } : null,
+      deliveryAddress: this._deliveryAddress,
+      vatTreatmentAtIssuance: this._vatTreatmentAtIssuance,
       paid: this._paid,
       depositPct: this._depositPct?.value ?? null,
       parentQuoteId: this.parentQuoteId,
@@ -391,6 +496,12 @@ export class Invoice extends AggregateRoot<string> {
     inv._mentions = [...s.mentions];
     inv._issuedAt = s.issuedAt;
     inv._dueAt = s.dueAt;
+    // Compat ascendante A7 : snapshots antérieurs sans période de prestation ni adresse de
+    // livraison — jamais rétro-remplis (la pièce émise reste exactement ce qu'elle était).
+    inv._servicePeriod = s.servicePeriod ? { ...s.servicePeriod } : null;
+    inv._deliveryAddress = s.deliveryAddress ?? null;
+    // Compat ascendante A4 : pièces émises avant le figeage du régime de TVA (null honnête).
+    inv._vatTreatmentAtIssuance = s.vatTreatmentAtIssuance ?? null;
     inv._paid = s.paid;
     inv._depositDeductionCents = s.depositDeductionCents ?? 0;
     inv._depositInvoiceId = s.depositInvoiceId ?? null;
@@ -413,6 +524,11 @@ export interface InvoiceSnapshot {
   mentions: string[];
   issuedAt: DateOnly | null;
   dueAt: DateOnly | null;
+  /** A7 — optionnels : les snapshots antérieurs restent lisibles (compat ascendante). */
+  servicePeriod?: ServicePeriod | null;
+  deliveryAddress?: string | null;
+  /** A4 — optionnel : régime de TVA figé absent des snapshots antérieurs (jamais rétro-déduit). */
+  vatTreatmentAtIssuance?: VatTreatment | null;
   paid: number;
   depositPct: number | null;
   parentQuoteId: string | null;

@@ -44,15 +44,22 @@ function invoice(over: Partial<InvoiceSnapshot> = {}): Invoice {
   });
 }
 
-function makeEnv(input: { quotes?: Quote[]; invoices?: Invoice[] } = {}) {
+function makeEnv(
+  input: {
+    quotes?: Quote[];
+    invoices?: Invoice[];
+    customerType?: 'b2c' | 'b2b' | 'b2g';
+    now?: string;
+  } = {},
+) {
   const quotes = input.quotes ?? [quote()];
   const invoices = input.invoices ?? [];
   const customerR = Customer.of({
     id: 'cus-1',
     companyId: 'co-1',
     name: 'RATP Infrastructures',
-    type: 'b2b',
-    siren: '412280737',
+    type: input.customerType ?? 'b2b',
+    ...(input.customerType === 'b2c' ? {} : { siren: '412280737' }),
     address: { line1: '54 quai de la Rapée', zip: '75012', city: 'Paris' },
   });
   if (!customerR.ok) throw new Error('customer');
@@ -62,6 +69,10 @@ function makeEnv(input: { quotes?: Quote[]; invoices?: Invoice[] } = {}) {
       listByCompany: async (companyId) => invoices.filter((i) => i.companyId === companyId),
     },
     customers: { listByCompany: async () => [customerR.value] },
+    clock: {
+      now: () => input.now ?? '2026-08-01T09:00:00.000Z',
+      today: () => (input.now ?? '2026-08-01T09:00:00.000Z').slice(0, 10),
+    },
   });
 }
 
@@ -80,6 +91,7 @@ describe('ListInvoiceableQuotes (ASK-2 / B8)', () => {
         depositPct: 30,
         depositInvoiced: false,
         purchaseOrder: PO,
+        finalBlockedUntil: null,
       },
     ]);
   });
@@ -125,5 +137,50 @@ describe('ListInvoiceableQuotes (ASK-2 / B8)', () => {
     const r = await usecase.execute({ companyId: 'co-1' });
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.value).toEqual([]);
+  });
+
+  // ── A3 : le gel de rétractation est ANNONCÉ par la liste (finalBlockedUntil) ──
+  // Devis signé le 10/07/2026 (vendredi) → J+14 = 24/07 (vendredi) → délai jusqu'au 25/07 00:00 Paris.
+
+  it('A3 : b2c pendant le délai → finalBlockedUntil = premier jour où la finale est possible', async () => {
+    const usecase = makeEnv({ customerType: 'b2c', now: '2026-07-15T09:00:00.000Z' });
+    const r = await usecase.execute({ companyId: 'co-1' });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value[0]?.finalBlockedUntil).toBe('2026-07-25');
+  });
+
+  it('A3 : b2c après le délai → null (déblocage automatique)', async () => {
+    const usecase = makeEnv({ customerType: 'b2c', now: '2026-07-26T09:00:00.000Z' });
+    const r = await usecase.execute({ companyId: 'co-1' });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value[0]?.finalBlockedUntil).toBeNull();
+  });
+
+  it('A3 : b2c avec exécution anticipée tracée → null (aucun gel, L221-25)', async () => {
+    const usecase = makeEnv({
+      customerType: 'b2c',
+      now: '2026-07-15T09:00:00.000Z',
+      quotes: [
+        quote({
+          signature: {
+            signerName: 'Ada',
+            signedAt: AT,
+            method: 'remote_link',
+            accepted: true,
+            earlyExecution: { requestedAt: AT },
+          },
+        }),
+      ],
+    });
+    const r = await usecase.execute({ companyId: 'co-1' });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value[0]?.finalBlockedUntil).toBeNull();
+  });
+
+  it('A3 : b2b pendant la même fenêtre → null (droit inapplicable)', async () => {
+    const usecase = makeEnv({ customerType: 'b2b', now: '2026-07-15T09:00:00.000Z' });
+    const r = await usecase.execute({ companyId: 'co-1' });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value[0]?.finalBlockedUntil).toBeNull();
   });
 });

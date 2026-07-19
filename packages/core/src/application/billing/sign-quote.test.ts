@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { SignQuote } from './sign-quote';
 import { type Company } from '../../domain/company/company';
+import { Customer } from '../../domain/customer/customer';
 import { Quote } from '../../domain/billing/quote/quote';
 import { DocNumber } from '../../domain/billing/shared/doc-number';
 import { type CompanyRepository, type QuoteRepository } from '../ports/repositories';
@@ -28,12 +29,30 @@ function sentQuote(): Quote {
   return q.value;
 }
 
+function testCustomer(type: 'b2c' | 'b2b' | 'b2g'): Customer {
+  const r = Customer.of({
+    id: 'cust-1',
+    companyId: 'co-1',
+    type,
+    name: type === 'b2c' ? 'M. Bernard' : 'SARL Martin',
+    address: { line1: '8 allée des Roses', zip: '92190', city: 'Meudon' },
+  });
+  if (!r.ok) throw new Error('customer');
+  return r.value;
+}
+
 function makeDeps(
   quote: Quote | null,
-  options: { activeGrant?: PublicAccessGrant | null; companyClosed?: boolean } = {},
+  options: {
+    activeGrant?: PublicAccessGrant | null;
+    companyClosed?: boolean;
+    customerType?: 'b2c' | 'b2b' | 'b2g';
+    customerMissing?: boolean;
+  } = {},
 ) {
   let saves = 0;
   const revokeActiveCalls: { companyId: string; resourceId: string }[] = [];
+  const createCalls: { scope: string; expiresAt: string }[] = [];
   let findActiveCalls = 0;
   const uow = { runInTransaction: <T>(fn: () => Promise<T>): Promise<T> => fn() };
   const company = {
@@ -56,7 +75,10 @@ function makeDeps(
     },
   };
   const publicAccessTokens: PublicAccessTokenRepository = {
-    create: async () => ({ id: 'grant-x', token: 'pst_new' }),
+    create: async (input) => {
+      createCalls.push({ scope: input.scope, expiresAt: input.expiresAt });
+      return { id: 'grant-x', token: 'pst_new' };
+    },
     findActive: async () => {
       findActiveCalls++;
       return options.activeGrant ?? null;
@@ -68,9 +90,14 @@ function makeDeps(
     },
     revokeAllForCompany: async () => undefined,
   };
+  const customers = {
+    findById: async () =>
+      options.customerMissing === true ? null : testCustomer(options.customerType ?? 'b2c'),
+  };
   return {
-    deps: { companies, quotes, publicAccessTokens, uow, clock },
+    deps: { companies, customers, quotes, publicAccessTokens, uow, clock },
     counts: () => ({ saves, revokeActiveCalls: revokeActiveCalls.length, findActiveCalls }),
+    createCalls,
   };
 }
 
@@ -227,6 +254,61 @@ describe('SignQuote', () => {
     expect(counts()).toEqual({ saves: 0, revokeActiveCalls: 0, findActiveCalls: 1 });
   });
 
+  // ── A3 — demande d'exécution anticipée (art. L221-25 c. conso) tracée dans la signature ──
+
+  it('A3 : b2c + case cochée → renonciation tracée et horodatée dans la signature', async () => {
+    const quote = sentQuote();
+    const { deps } = makeDeps(quote, { customerType: 'b2c' });
+    const r = await new SignQuote(deps).execute({
+      quoteId: quote.id,
+      signerName: 'M. Bernard',
+      earlyExecutionRequested: true,
+    });
+
+    expect(r.ok).toBe(true);
+    expect(quote.signature?.earlyExecution).toEqual({ requestedAt: AT });
+  });
+
+  it('A3 : b2c sans case cochée → aucune renonciation fabriquée', async () => {
+    const quote = sentQuote();
+    const { deps } = makeDeps(quote, { customerType: 'b2c' });
+    const r = await new SignQuote(deps).execute({ quoteId: quote.id, signerName: 'M. Bernard' });
+
+    expect(r.ok).toBe(true);
+    expect(quote.signature?.earlyExecution).toBeUndefined();
+  });
+
+  it.each(['b2b', 'b2g'] as const)(
+    'A3 : %s + case cochée → drapeau IGNORÉ (aucun droit de rétractation à renoncer)',
+    async (customerType) => {
+      const quote = sentQuote();
+      const { deps } = makeDeps(quote, { customerType });
+      const r = await new SignQuote(deps).execute({
+        quoteId: quote.id,
+        signerName: 'Acheteur Pro',
+        earlyExecutionRequested: true,
+      });
+
+      expect(r.ok).toBe(true);
+      expect(quote.signature).not.toBeNull();
+      expect(quote.signature?.earlyExecution).toBeUndefined();
+    },
+  );
+
+  it('A3 : case cochée mais client introuvable → refus fail-closed, aucune mutation', async () => {
+    const quote = sentQuote();
+    const { deps, counts } = makeDeps(quote, { customerMissing: true });
+    const r = await new SignQuote(deps).execute({
+      quoteId: quote.id,
+      signerName: 'M. Bernard',
+      earlyExecutionRequested: true,
+    });
+
+    expect(r.ok).toBe(false);
+    expect(quote.signature).toBeNull();
+    expect(counts()).toEqual({ saves: 0, revokeActiveCalls: 0, findActiveCalls: 0 });
+  });
+
   it('refuse une signature distante dont le grant revalidé pointe vers un autre devis (mismatch)', async () => {
     const quote = sentQuote();
     const foreignGrant: PublicAccessGrant = {
@@ -249,5 +331,49 @@ describe('SignQuote', () => {
     if (!r.ok) expect(r.error.kind).toBe('domain');
     expect(quote.signature).toBeNull();
     expect(counts()).toEqual({ saves: 0, revokeActiveCalls: 0, findActiveCalls: 1 });
+  });
+});
+
+describe('SignQuote — A3 : qualité figée + fonctionnalité de rétractation en ligne (L221-21)', () => {
+  it('la qualité du client est FIGÉE dans la signature (customerType lu en transaction)', async () => {
+    const quote = sentQuote();
+    const { deps } = makeDeps(quote, { customerType: 'b2c' });
+    const r = await new SignQuote(deps).execute({ quoteId: quote.id, signerName: 'M. Bernard' });
+    expect(r.ok).toBe(true);
+    expect(quote.signature?.customerType).toBe('b2c');
+  });
+
+  it('client B2C → jeton de rétractation créé DANS la transaction, valable toute la durée du délai', async () => {
+    const quote = sentQuote();
+    const { deps, createCalls } = makeDeps(quote, { customerType: 'b2c' });
+    const r = await new SignQuote(deps).execute({ quoteId: quote.id, signerName: 'M. Bernard' });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    // Signé le 01/06/2026 → délai jusqu'au 16/06 00:00 Paris = 15/06 22:00 UTC (L221-19).
+    expect(r.value.retractation).toEqual({ token: 'pst_new', expiresAt: '2026-06-15T22:00:00.000Z' });
+    expect(createCalls).toEqual([{ scope: 'quote_retractation', expiresAt: '2026-06-15T22:00:00.000Z' }]);
+  });
+
+  it.each(['b2b', 'b2g'] as const)(
+    'client %s → AUCUN jeton de rétractation (pas de droit, jamais de fonctionnalité fantôme)',
+    async (customerType) => {
+      const quote = sentQuote();
+      const { deps, createCalls } = makeDeps(quote, { customerType });
+      const r = await new SignQuote(deps).execute({ quoteId: quote.id, signerName: 'SARL Martin' });
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.value.retractation).toBeNull();
+      expect(createCalls).toEqual([]);
+      expect(quote.signature?.customerType).toBe(customerType);
+    },
+  );
+
+  it('client introuvable → signature REFUSÉE (fail-closed : régime légal inconnaissable)', async () => {
+    const quote = sentQuote();
+    const { deps, counts } = makeDeps(quote, { customerMissing: true });
+    const r = await new SignQuote(deps).execute({ quoteId: quote.id, signerName: 'M. Bernard' });
+    expect(r.ok).toBe(false);
+    expect(quote.signature).toBeNull();
+    expect(counts().saves).toBe(0);
   });
 });

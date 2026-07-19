@@ -101,6 +101,7 @@ describe('deriveTodayPriorities', () => {
     });
     const sign = new SignQuote({
       companies: env.companyRepo,
+      customers: env.customerRepo,
       quotes: env.quoteRepo,
       publicAccessTokens: env.publicAccessTokens,
       uow: env.uow,
@@ -109,16 +110,37 @@ describe('deriveTodayPriorities', () => {
     const generate = new GenerateInvoiceFromQuote({
       quotes: env.quoteRepo,
       invoices: env.invoiceRepo,
+      customers: env.customerRepo,
       ids: env.ids,
+      clock: env.clock,
     });
     const issue = new IssueInvoice({
       invoices: env.invoiceRepo,
       companies: env.companyRepo,
       customers: env.customerRepo,
+      quotes: env.quoteRepo,
       counters: env.counters,
       uow: env.uow,
       clock: env.clock,
     });
+    // Signature À DISTANCE (contrat à distance, art. L221-1, I-1°) : l'interdiction de paiement
+    // de 7 jours (art. L221-10 c. conso) ne vise que le contrat HORS ÉTABLISSEMENT — le
+    // scénario « facturé/émis le 01/06, jour de la signature » n'est légal que par ce canal.
+    const signRemotely = async (quoteId: string, signerName: string, earlyExecutionRequested?: boolean) => {
+      const grant = await env.publicAccessTokens.create({
+        companyId: env.company.id,
+        resourceType: 'quote',
+        resourceId: quoteId,
+        scope: 'quote_signature',
+        expiresAt: '2026-06-02T09:00:00.000Z',
+      });
+      return sign.execute({
+        quoteId,
+        signerName,
+        remoteGrant: { token: grant.token, grantId: grant.id },
+        ...(earlyExecutionRequested ? { earlyExecutionRequested: true } : {}),
+      });
+    };
 
     // Devis A (Durand, acompte 30 %) : signé → facture d'acompte émise et PAYÉE, pas de facture finale.
     const quoteA = await create.execute({
@@ -134,9 +156,7 @@ describe('deriveTodayPriorities', () => {
     expect(quoteA.ok).toBe(true);
     if (!quoteA.ok) return;
     expect((await send.execute({ quoteId: quoteA.value.quoteId })).ok).toBe(true);
-    expect(
-      (await sign.execute({ quoteId: quoteA.value.quoteId, signerName: 'Mme Durand' })).ok,
-    ).toBe(true);
+    expect((await signRemotely(quoteA.value.quoteId, 'Mme Durand')).ok).toBe(true);
     const depositA = await generate.execute({ quoteId: quoteA.value.quoteId, mode: 'deposit' });
     expect(depositA.ok).toBe(true);
     if (!depositA.ok) return;
@@ -168,9 +188,9 @@ describe('deriveTodayPriorities', () => {
     expect(quoteB.ok).toBe(true);
     if (!quoteB.ok) return;
     expect((await send.execute({ quoteId: quoteB.value.quoteId })).ok).toBe(true);
-    expect(
-      (await sign.execute({ quoteId: quoteB.value.quoteId, signerName: 'M. Bernard' })).ok,
-    ).toBe(true);
+    // A3 : M. Bernard (b2c) demande l'exécution anticipée en signant (L221-25) — sans elle, la
+    // facture FINALE serait légalement gelée 14 jours et le scénario « émise le 01/06 » impossible.
+    expect((await signRemotely(quoteB.value.quoteId, 'M. Bernard', true)).ok).toBe(true);
     const finalB = await generate.execute({ quoteId: quoteB.value.quoteId, mode: 'final' });
     expect(finalB.ok).toBe(true);
     if (!finalB.ok) return;

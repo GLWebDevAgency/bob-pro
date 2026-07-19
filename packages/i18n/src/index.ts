@@ -2725,6 +2725,11 @@ const legacyFr = {
   'ventes.chipAcompteSimple': { pote: 'Acompte', pro: 'Acompte', direct: 'Acompte' },
   'ventes.chipFinale': { pote: 'Facture finale', pro: 'Facture finale', direct: 'Finale' },
   'ventes.chipAvoir': { pote: 'Avoir', pro: 'Avoir', direct: 'Avoir' },
+  // E5 — badge de statut d'un AVOIR (masculin, ambre à l'émission) : « Émis », jamais « Émise ».
+  'ventes.badgeAvoirEmis': { pote: 'Émis', pro: 'Émis', direct: 'Émis' },
+  'ventes.badgeAvoirAnnule': { pote: 'Annulé', pro: 'Annulé', direct: 'Annulé' },
+  // E6 — tag ambre sur la ligne d'une facture CRÉDITÉE : visible d'un coup d'œil en liste.
+  'ventes.tagAvoirEmis': { pote: 'Avoir émis', pro: 'Avoir émis', direct: 'Avoir émis' },
   'ventes.chipSituation': { pote: 'Situation', pro: 'Situation', direct: 'Situation' },
   'ventes.voiceFiltered': {
     pote: 'Je filtre sur « {query} » — {count} résultat(s) à l’écran.',
@@ -4013,6 +4018,12 @@ const legacyFr = {
     pote: 'Avoir émis sur cette facture',
     pro: 'Avoir émis sur cette facture',
     direct: 'Avoir émis',
+  },
+  // E3 — carte inverse sur l'écran d'un AVOIR : « Annule la facture · F-XXXX ».
+  'piece.linkedCreditSource': {
+    pote: 'Annule la facture',
+    pro: 'Annule la facture',
+    direct: 'Annule',
   },
   'piece.linkedSituation': {
     pote: 'Situation de travaux',

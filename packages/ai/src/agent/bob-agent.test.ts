@@ -285,6 +285,68 @@ describe('BobAgent (démo)', () => {
     expect(question?.options[0]?.description).toContain('acompte 40 % prévu');
   });
 
+  // A3 — gel de rétractation B2C (art. L221-18 s. c. conso) : Bob explique le gel avec la
+  // date de déblocage au lieu de proposer une finale vouée au refus du domaine.
+  describe('A3 — generer_facture pendant le délai de rétractation B2C', () => {
+    const gelActions = (quote: Record<string, unknown>) => ({
+      ...actions,
+      listInvoiceableQuotes: async () =>
+        ok([
+          {
+            id: 'sign-b2c',
+            number: 'D2026-032',
+            customerName: 'Mme Petit',
+            totalTtcCents: 480000,
+            depositPct: 30,
+            depositInvoiced: false,
+            finalBlockedUntil: '2026-08-04',
+            ...quote,
+          } as never,
+        ]),
+    });
+    const agentWith = (quote: Record<string, unknown> = {}) =>
+      new BobAgent({ router: new ModelRouter({ hasClaudeKey: false, hasGlmKey: false }), actions: gelActions(quote) });
+
+    it('finale demandée explicitement → réponse honnête (pourquoi, date, acompte possible), rien de généré', async () => {
+      const r = await agentWith().ask('Fais la facture finale du devis D2026-032');
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.value.intent).toBe('generer_facture');
+      expect(r.value.kind).toBe('answer');
+      expect(r.value.card.body).toContain('rétractation');
+      expect(r.value.card.body).toContain('04/08/2026');
+      expect(r.value.card.body).toContain('L221-18');
+      // L'acompte prévu (jamais gelé) reste proposé en un geste.
+      expect(r.value.choices?.[0]?.value).toBe("Fais la facture d'acompte du devis D2026-032");
+      expect(r.value.pending).toBeUndefined();
+    });
+
+    it('sans mode précisé → le gel est expliqué D’ABORD, jamais la question acompte/solde avec une finale bloquée', async () => {
+      const r = await agentWith().ask('Fais la facture du devis D2026-032');
+      expect(r.ok && r.value.kind).toBe('answer');
+      expect(r.ok && (r.value.ask ?? []).length).toBe(0);
+      expect(r.ok && r.value.card.body).toContain('04/08/2026');
+    });
+
+    it('l’acompte d’un devis gelé reste facturable → proposition normale (le gel ne vise que la finale)', async () => {
+      const r = await agentWith().ask("Fais la facture d'acompte du devis D2026-032");
+      expect(r.ok && r.value.kind).toBe('proposed');
+      expect(r.ok && r.value.pending?.args).toMatchObject({ quoteId: 'sign-b2c', mode: 'deposit' });
+    });
+
+    it('devis gelé SANS acompte prévu → gel expliqué, aucune fausse alternative proposée', async () => {
+      const r = await agentWith({ depositPct: null }).ask('Fais la facture finale du devis D2026-032');
+      expect(r.ok && r.value.kind).toBe('answer');
+      expect(r.ok && (r.value.choices ?? []).length).toBe(0);
+    });
+
+    it('aucun gel (finalBlockedUntil absent — hôte historique) → flow inchangé, question acompte/solde', async () => {
+      const r = await agentWith({ finalBlockedUntil: undefined }).ask('Fais la facture du devis D2026-032');
+      expect(r.ok && r.value.kind).toBe('answer');
+      expect(r.ok && r.value.ask?.[0]?.id).toBe('generer_facture.mode');
+    });
+  });
+
   it('envoyer un devis : sortant client -> propose toujours une confirmation', async () => {
     const r = await makeAgent().ask('envoie le devis 2026-014 au client', { autonomy: 'auto' });
     expect(r.ok && r.value.intent).toBe('envoyer_devis');
@@ -1933,7 +1995,9 @@ describe('classer_document — DOCUMENT_ALREADY_LINKED : réponse honnête, jama
       message: 'Ce document est déjà rattaché à chantier/ch-2 ; rattachement demandé : chantier/ch-1. Délier d’abord le lien existant.',
     },
   };
-  const docActions = (fileDocument: BobActions['fileDocument']): BobActions => ({
+  // NonNullable : sous exactOptionalPropertyTypes, passer explicitement `fileDocument: undefined`
+  // n'est pas assignable à la propriété OPTIONNELLE de BobActions — et aucun appelant ne le fait.
+  const docActions = (fileDocument: NonNullable<BobActions['fileDocument']>): BobActions => ({
     ...actions,
     listDocuments: async () =>
       ok([

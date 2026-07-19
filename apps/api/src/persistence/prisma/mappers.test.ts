@@ -23,11 +23,18 @@ const baseRow = {
   customerId: 'cust-1',
   status: 'signed',
   number: 'D-2026-0001',
+  // A1 — ligne historique SANS date d'établissement (jamais rétro-datée, compat ascendante).
+  issuedAt: null,
   validUntil: null,
   depositPct: null,
   signerName: 'Mme Durand',
   signedAt: new Date('2026-07-14T10:00:00.000Z'),
   signatureProof: null as unknown,
+  // A3 — ligne historique SANS demande d'exécution anticipée (jamais rétro-remplie).
+  earlyExecutionRequestedAt: null as Date | null,
+  // A3 — ligne historique SANS qualité figée ni rétractation (compat ascendante honnête).
+  signatureCustomerType: null as string | null,
+  retractedAt: null as Date | null,
   lines: [],
   // B8 — colonnes bon de commande : ligne historique SANS bon de commande (compat ascendante).
   purchaseOrderNumber: null,
@@ -98,6 +105,31 @@ describe('quoteRowToSnapshot — signature honnête (R4)', () => {
     });
     expect(snapshot.signature).toBeNull();
   });
+
+  it('A3 : demande d’exécution anticipée persistée → réhydratée horodatée (L221-25)', () => {
+    const snapshot = quoteRowToSnapshot({
+      ...baseRow,
+      signatureProof: { method: 'remote_link' },
+      earlyExecutionRequestedAt: new Date('2026-07-14T10:00:00.000Z'),
+    });
+    expect(snapshot.signature?.earlyExecution).toEqual({ requestedAt: '2026-07-14T10:00:00.000Z' });
+  });
+
+  it('A3 : colonne NULL → AUCUNE demande fabriquée (le gel de rétractation reste dû)', () => {
+    const snapshot = quoteRowToSnapshot({ ...baseRow, signatureProof: { method: 'remote_link' } });
+    expect(snapshot.signature?.earlyExecution).toBeUndefined();
+  });
+
+  it('A3 : signature legacy (preuve NULL) avec demande persistée → la demande survit', () => {
+    // Le canal peut être inconnu (legacy_declared) sans invalider un consentement réellement
+    // enregistré : les deux faits sont indépendants — on ne jette jamais une donnée légale.
+    const snapshot = quoteRowToSnapshot({
+      ...baseRow,
+      earlyExecutionRequestedAt: new Date('2026-07-14T10:00:00.000Z'),
+    });
+    expect(snapshot.signature?.method).toBe('legacy_declared');
+    expect(snapshot.signature?.earlyExecution).toEqual({ requestedAt: '2026-07-14T10:00:00.000Z' });
+  });
 });
 
 describe('signatureProofToPersistence — write-side symétrique', () => {
@@ -154,6 +186,15 @@ describe('companyRowToProps / companyPropsToCreate — clôture de compte (close
     addrCity: MERCIER_PROPS.address.city,
     tvaIntracom: null,
     dateCreation: null,
+    natureJuridiqueCode: null,
+    estRge: null as boolean | null,
+    // A6/A2 — colonnes fiche légale : NULL = jamais saisi (aucune valeur inventée).
+    capitalSocialCents: null as bigint | null,
+    mediateurConsoNom: null as string | null,
+    mediateurConsoCoordonnees: null as string | null,
+    // A3 — coordonnées de l'entreprise (modèles R221-1/R221-3) : NULL = jamais saisies.
+    email: null as string | null,
+    phone: null as string | null,
     iban: MERCIER_PROPS.iban ?? null,
     bic: MERCIER_PROPS.bic ?? null,
     insurerName: MERCIER_PROPS.decennale?.insurer ?? null,

@@ -11,6 +11,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PrismaService } from './prisma.service';
 import {
   PrismaCompanyRepository,
+  PrismaCustomerRepository,
   PrismaPublicAccessTokenRepository,
   PrismaQuoteRepository,
 } from './repositories';
@@ -244,6 +245,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
       const signPromise = firstWorker.withTenant(companyId, async () => {
         return new SignQuote({
           companies: signCompanies,
+          customers: new PrismaCustomerRepository(firstWorker),
           quotes: gatedSignQuotes,
           publicAccessTokens: signTokens,
           uow: firstWorker,
@@ -395,6 +397,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         signingPid.resolve(await backendPid(secondWorker));
         return new SignQuote({
           companies: signCompanies,
+          customers: new PrismaCustomerRepository(secondWorker),
           quotes: signQuotes,
           publicAccessTokens: signTokens,
           uow: secondWorker,

@@ -14,6 +14,45 @@ export type DomainError =
       message: string;
     }
   | { code: 'QUOTE_ALREADY_SIGNED'; quoteId: string }
+  | {
+      /**
+       * A3 — gel légal : la facture FINALE d'un devis B2C signé est bloquée pendant le délai de
+       * rétractation de 14 jours (art. L221-18 s. c. conso) tant que le client n'a pas demandé
+       * l'exécution anticipée des travaux (art. L221-25). `message` est le texte honnête à
+       * afficher tel quel (mobile, vocal) ; les dates permettent tout affichage structuré.
+       */
+      code: 'RETRACTATION_PERIOD_ACTIVE';
+      quoteId: string;
+      /** Fin exacte du délai (instant ISO — calcul art. L221-19 / règlement CEE 1182/71). */
+      expiresAt: string;
+      /** Premier jour calendaire (Europe/Paris) où la facture finale devient possible. */
+      availableFrom: string;
+      message: string;
+    }
+  | {
+      /**
+       * A3/L221-10 — contrat HORS ÉTABLISSEMENT avec un consommateur : AUCUN paiement (acompte
+       * compris) ne peut être reçu pendant 7 jours à compter de la conclusion — l'émission de
+       * toute pièce exigible est bloquée pendant la fenêtre (sanction : nullité du contrat,
+       * art. L242-1 c. conso ; Civ. 1re, 20/12/2023, n° 22-13.014).
+       */
+      code: 'OFF_PREMISES_PAYMENT_EMBARGO';
+      quoteId: string;
+      /** Fin exacte de l'interdiction (instant ISO — même computation que L221-19). */
+      expiresAt: string;
+      /** Premier jour calendaire (Europe/Paris) où la facturation devient possible. */
+      availableFrom: string;
+      message: string;
+    }
+  | {
+      /**
+       * A3/L221-21 — le consommateur a exercé sa rétractation (fonctionnalité en ligne) :
+       * le contrat ne produit plus aucune pièce de facturation.
+       */
+      code: 'QUOTE_RETRACTED';
+      quoteId: string;
+      message: string;
+    }
   | { code: 'MISSING_SIREN_FOR_EINVOICE'; customerId: string }
   | { code: 'CABINET_MEMBER_ALREADY_EXISTS'; cabinetId: string; userId: string }
   | { code: 'CABINET_LAST_ADMIN_REQUIRED'; cabinetId: string }

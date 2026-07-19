@@ -131,13 +131,28 @@ const CREATE_QUOTE_LINE_FIELDS = new Set([
 const CREATE_QUOTE_CONTEXT_FIELDS = new Set(['housingOlderThan2y', 'energyRenovation']);
 const INVOICE_GENERATION_FIELDS = new Set(['mode']);
 const QUOTE_LINE_PATCH_FIELDS = new Set(['label', 'qty', 'unitPriceHT', 'vatRate']);
-const SIGN_QUOTE_FIELDS = new Set(['signerName', 'proofDataUrl']);
+const SIGN_QUOTE_FIELDS = new Set(['signerName', 'proofDataUrl', 'earlyExecutionRequested']);
 const CATALOGUE_ITEM_FIELDS = new Set(['label', 'category', 'unit', 'unitPriceHT', 'vatRate']);
 const CATALOGUE_ITEM_UPDATE_FIELDS = new Set([...CATALOGUE_ITEM_FIELDS, 'expectedRevision']);
 const COMPANY_PROFILE_FIELDS = new Set(['trade', 'vatRegime', 'customerPortfolio']);
 /** Réglages facturation §Coordonnées bancaires (RIB) — champs déjà persistés (CompanyProps.iban/
  * bic) mais jusqu'ici jamais éditables : seul endpoint qui les écrit après l'onboarding. */
 const COMPANY_BILLING_FIELDS = new Set(['iban', 'bic']);
+/** Réglages entreprise §Identité légale (A6 capital social, A2 médiateur conso) — seul endpoint
+ * qui les écrit (jamais /onboarding/company : contrat d'inscription volontairement fermé). */
+// A3 : email/phone = coordonnées DE L'ENTREPRISE exigées par les modèles types de rétractation
+// en vigueur (formulaire annexe R221-1 : adresse électronique ; avis annexe R221-3, instruction
+// (2) : téléphone + adresse électronique — décret n° 2022-424 du 25/03/2022).
+const COMPANY_LEGAL_FIELDS = new Set(['capitalSocialCents', 'mediateurConso', 'email', 'phone']);
+const MEDIATEUR_CONSO_FIELDS = new Set(['nom', 'coordonnees']);
+/** A7 — inputs d'émission de facture (POST /invoices/:id/issue) : période de prestation et
+ * adresse de chantier/livraison, validés puis FIGÉS par le domaine (Invoice.issue).
+ * `invoiceId` et `terms` sont TOLÉRÉS mais ignorés : les clients déployés envoient depuis
+ * toujours l'input complet en corps (le serveur ne lisait pas le corps) — l'id fait foi par le
+ * chemin (mismatch rejeté) et les conditions de paiement restent décidées par les réglages
+ * serveur, jamais par le client. */
+const INVOICE_ISSUE_FIELDS = new Set(['servicePeriod', 'deliveryAddress', 'invoiceId', 'terms']);
+const SERVICE_PERIOD_FIELDS = new Set(['start', 'end']);
 const COMPANY_BILLING_SETTINGS_FIELDS = new Set([
   'expectedRevision',
   'showRibOnInvoices',
@@ -752,6 +767,7 @@ function parsePurchaseOrderDetachBody(body: Record<string, unknown>): {
 function parseSignQuoteBody(body: Record<string, unknown>): {
   signerName: string;
   proofDataUrl?: string;
+  earlyExecutionRequested?: boolean;
 } {
   const issues: ValidationIssue[] = [];
   for (const field of Object.keys(body)) {
@@ -782,10 +798,18 @@ function parseSignQuoteBody(body: Record<string, unknown>): {
       issues.push({ field: 'proofDataUrl', message: 'Tracé de signature invalide.' });
     }
   }
+  // A3 — case « exécution immédiate des travaux » (art. L221-25 c. conso), OPTIONNELLE et
+  // strictement booléenne : cochée = true. Toute autre forme est rejetée — un consentement
+  // légal ne se devine pas depuis une valeur ambiguë.
+  const earlyExecution = body['earlyExecutionRequested'];
+  if (earlyExecution !== undefined && typeof earlyExecution !== 'boolean') {
+    issues.push({ field: 'earlyExecutionRequested', message: 'Valeur invalide.' });
+  }
   if (issues.length > 0) throwValidationIssues(issues);
   return {
     signerName: (value as string).trim().replace(/\s+/g, ' '),
     ...(proof !== undefined ? { proofDataUrl: proof as string } : {}),
+    ...(earlyExecution === true ? { earlyExecutionRequested: true } : {}),
   };
 }
 
@@ -1688,6 +1712,97 @@ export class CompanyLookupController {
     return unwrap(await this.backend.updateCompanyBilling({ iban, bic }));
   }
 
+  /** PATCH /company/legal — Réglages entreprise §Identité légale : capital social en centimes
+   * (A6, art. R123-238 c. com. — sociétés uniquement, garde domaine) et médiateur de la
+   * consommation (A2, art. L612-1/L616-1 c. conso). Partiel : champ absent = inchangé, `null`
+   * explicite = effacé. La mention imprimée (bloc émetteur, mention B2C) relève de buildMentions
+   * (lot Rendus) — ici on ne fait que porter la donnée. */
+  @Patch('legal')
+  async updateLegal(@Body() body: unknown) {
+    assertJsonObjectBody(body);
+    const unknownField = Object.keys(body).find((field) => !COMPANY_LEGAL_FIELDS.has(field));
+    if (unknownField !== undefined) {
+      throwValidationIssues([{ field: unknownField, message: 'Champ non autorisé.' }]);
+    }
+    const issues: ValidationIssue[] = [];
+    let capitalSocialCents: number | null | undefined;
+    if ('capitalSocialCents' in body) {
+      if (body.capitalSocialCents === null) {
+        capitalSocialCents = null;
+      } else if (
+        typeof body.capitalSocialCents === 'number' &&
+        Number.isSafeInteger(body.capitalSocialCents) &&
+        body.capitalSocialCents > 0
+      ) {
+        capitalSocialCents = body.capitalSocialCents;
+      } else {
+        issues.push({
+          field: 'capitalSocialCents',
+          message: 'Capital social invalide (centimes entiers > 0, ou null).',
+        });
+      }
+    }
+    let mediateurConso: { nom: string; coordonnees: string } | null | undefined;
+    if ('mediateurConso' in body) {
+      if (body.mediateurConso === null) {
+        mediateurConso = null;
+      } else if (
+        body.mediateurConso !== null &&
+        typeof body.mediateurConso === 'object' &&
+        !Array.isArray(body.mediateurConso)
+      ) {
+        const nested = body.mediateurConso as Record<string, unknown>;
+        const unknownNested = Object.keys(nested).find((field) => !MEDIATEUR_CONSO_FIELDS.has(field));
+        const nom = typeof nested.nom === 'string' ? nested.nom.trim() : '';
+        const coordonnees = typeof nested.coordonnees === 'string' ? nested.coordonnees.trim() : '';
+        if (
+          unknownNested !== undefined ||
+          nom.length === 0 ||
+          nom.length > 200 ||
+          coordonnees.length === 0 ||
+          coordonnees.length > 500
+        ) {
+          issues.push({
+            field: 'mediateurConso',
+            message: 'Médiateur invalide : nom (≤ 200) et coordonnées (≤ 500) requis.',
+          });
+        } else {
+          mediateurConso = { nom, coordonnees };
+        }
+      } else {
+        issues.push({
+          field: 'mediateurConso',
+          message: 'Médiateur invalide : objet { nom, coordonnees } ou null requis.',
+        });
+      }
+    }
+    // A3 — coordonnées de l'entreprise pour les modèles R221-1/R221-3 : chaîne non vide ou null
+    // (effacement explicite). La validation de FORME fine (format e-mail/téléphone) appartient
+    // au domaine (Company.of) — ici seule la structure est contrôlée.
+    let email: string | null | undefined;
+    if ('email' in body) {
+      if (body.email === null) email = null;
+      else if (typeof body.email === 'string' && body.email.trim().length > 0 && body.email.length <= 254) {
+        email = body.email.trim();
+      } else {
+        issues.push({ field: 'email', message: 'Adresse électronique invalide (chaîne non vide ou null).' });
+      }
+    }
+    let phone: string | null | undefined;
+    if ('phone' in body) {
+      if (body.phone === null) phone = null;
+      else if (typeof body.phone === 'string' && body.phone.trim().length > 0 && body.phone.length <= 30) {
+        phone = body.phone.trim();
+      } else {
+        issues.push({ field: 'phone', message: 'Téléphone invalide (chaîne non vide ou null).' });
+      }
+    }
+    if (issues.length > 0) throwValidationIssues(issues);
+    return unwrap(
+      await this.backend.updateCompanyLegal({ capitalSocialCents, mediateurConso, email, phone }),
+    );
+  }
+
   @Get('billing-settings')
   async billingSettings() {
     return unwrap(await this.backend.getCompanyBillingSettings());
@@ -1963,9 +2078,69 @@ export class InvoicesController {
       }),
     );
   }
+  /** A7 — corps OPTIONNEL (compat clients existants sans corps) : période de prestation si
+   * distincte de l'émission + adresse de chantier/livraison si distincte de la facturation
+   * (art. L441-9 c. com., 242 nonies A CGI). Validé ici en forme, puis revalidé et FIGÉ par le
+   * domaine (Invoice.issue) — un rejet n'consomme aucun numéro. */
   @Post(':id/issue')
-  async issue(@Param('id') id: string) {
-    return unwrap(await this.backend.issueInvoice({ invoiceId: id }));
+  async issue(@Param('id') id: string, @Body() body?: unknown) {
+    const input: {
+      invoiceId: string;
+      servicePeriod?: { start: string; end: string | null };
+      deliveryAddress?: string;
+    } = { invoiceId: id };
+    if (body !== undefined && body !== null) {
+      assertJsonObjectBody(body);
+      const unknownField = Object.keys(body).find((field) => !INVOICE_ISSUE_FIELDS.has(field));
+      if (unknownField !== undefined) {
+        throwValidationIssues([{ field: unknownField, message: 'Champ non autorisé.' }]);
+      }
+      // L'id du chemin fait foi : un corps qui en désigne un AUTRE est une incohérence rejetée.
+      if ('invoiceId' in body && body.invoiceId !== id) {
+        throwValidationIssues([
+          { field: 'invoiceId', message: 'Identifiant du corps incohérent avec le chemin.' },
+        ]);
+      }
+      const issues: ValidationIssue[] = [];
+      if ('servicePeriod' in body && body.servicePeriod !== null) {
+        if (typeof body.servicePeriod !== 'object' || Array.isArray(body.servicePeriod)) {
+          issues.push({ field: 'servicePeriod', message: 'Période de prestation invalide.' });
+        } else {
+          const nested = body.servicePeriod as Record<string, unknown>;
+          const unknownNested = Object.keys(nested).find(
+            (field) => !SERVICE_PERIOD_FIELDS.has(field),
+          );
+          const start = typeof nested.start === 'string' ? nested.start : '';
+          const end = nested.end === undefined || nested.end === null ? null : nested.end;
+          if (
+            unknownNested !== undefined ||
+            !isValidDateOnly(start) ||
+            (end !== null && (typeof end !== 'string' || !isValidDateOnly(end)))
+          ) {
+            issues.push({
+              field: 'servicePeriod',
+              message: 'Période de prestation invalide ({ start: AAAA-MM-JJ, end: AAAA-MM-JJ | null }).',
+            });
+          } else {
+            input.servicePeriod = { start, end: end as string | null };
+          }
+        }
+      }
+      if ('deliveryAddress' in body && body.deliveryAddress !== null) {
+        const deliveryAddress =
+          typeof body.deliveryAddress === 'string' ? body.deliveryAddress.trim() : '';
+        if (deliveryAddress.length === 0 || deliveryAddress.length > 500) {
+          issues.push({
+            field: 'deliveryAddress',
+            message: 'Adresse de chantier/livraison invalide (texte non vide, 500 caractères max).',
+          });
+        } else {
+          input.deliveryAddress = deliveryAddress;
+        }
+      }
+      if (issues.length > 0) throwValidationIssues(issues);
+    }
+    return unwrap(await this.backend.issueInvoice(input));
   }
   /** R6 : suppression définitive d'une facture BROUILLON (erreur détectée après génération). */
   @Delete(':id/draft')
@@ -2335,7 +2510,13 @@ export class PublicSignatureController {
     assertJsonObjectBody(body);
     const parsed = parseSignQuoteBody(body);
     return unwrap(
-      await this.backend.publicSignQuote(token, parsed.signerName, parsed.proofDataUrl),
+      await this.backend.publicSignQuote(
+        token,
+        parsed.signerName,
+        parsed.proofDataUrl,
+        // A3 — demande d'exécution anticipée cochée par le client B2C (L221-25), tracée serveur.
+        parsed.earlyExecutionRequested,
+      ),
     );
   }
 }
@@ -2367,6 +2548,48 @@ export class PublicDocumentViewController {
       type: 'application/pdf',
       disposition: 'inline; filename="document.pdf"',
     });
+  }
+}
+
+/** POST /public/retract/:token — déclaration de rétractation en ligne (D221-5, II c. conso). */
+const RETRACTATION_EXERCISE_FIELDS = new Set(['declarantName', 'acknowledgmentEmail']);
+
+/**
+ * A3 — Fonctionnalité de RÉTRACTATION en ligne du consommateur (art. L221-21 dernier al.
+ * c. conso, ordonnance n° 2026-2 du 05/01/2026 ; modalités art. D221-5, décret n° 2026-3 — en
+ * vigueur depuis le 19/06/2026) : « Renoncer au contrat ici », accessible SANS FRAIS pendant
+ * toute la durée du délai de rétractation, déclaration soumise via « Confirmer la
+ * rétractation », accusé de réception sur support durable. Mêmes headers durcis et même
+ * doctrine anti-énumération que la signature publique.
+ */
+@Controller('public/retract')
+export class PublicRetractationController {
+  constructor(private readonly backend: BackendService) {}
+  @Get(':token')
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @Header('Cache-Control', 'no-store')
+  @Header('Referrer-Policy', 'no-referrer')
+  @Header('X-Robots-Tag', 'noindex, nofollow')
+  async get(@Param('token') token: string) {
+    return unwrap(await this.backend.publicRetractationView(token));
+  }
+  @Post(':token')
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Header('Cache-Control', 'no-store')
+  @Header('Referrer-Policy', 'no-referrer')
+  @Header('X-Robots-Tag', 'noindex, nofollow')
+  async exercise(@Param('token') token: string, @Body() body: unknown) {
+    assertJsonObjectBody(body);
+    const unknownField = Object.keys(body).find((field) => !RETRACTATION_EXERCISE_FIELDS.has(field));
+    if (unknownField !== undefined) {
+      throwValidationIssues([{ field: unknownField, message: 'Champ non autorisé.' }]);
+    }
+    const declarantName = typeof body.declarantName === 'string' ? body.declarantName : '';
+    const acknowledgmentEmail =
+      typeof body.acknowledgmentEmail === 'string' ? body.acknowledgmentEmail : '';
+    // La validation de FOND (nom, format e-mail, fenêtre légale) appartient au use case pur
+    // ExerciseRetractation — ici seule la structure du corps est contrôlée.
+    return unwrap(await this.backend.publicExerciseRetractation(token, { declarantName, acknowledgmentEmail }));
   }
 }
 
