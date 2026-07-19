@@ -155,6 +155,17 @@ meilleures apps mondiales du genre.
   garantie 5 %, débours, garde-fou étranger) + canal de facturation.
 
 ### RESTE AVANT SIGNATURE PUBLIABLE (les deux signent)
-Avenants (après DEC GPT) · crash reporting (webhook à fournir fondateur) · matrice flags · renommage
-NICO (bundle id = décision identité fondateur) · cold onboarding re-certifié · lanes GPT à intégrer
-(Mistral v2 dfe38b46) · grille tarifaire hors iOS · build groupé de validation fondateur (SUR GO).
+Avenants (après DEC GPT) · crash reporting (webhook à fournir fondateur) · renommage
+NICO (bundle id = décision identité fondateur) · cold onboarding re-certifié · grille tarifaire
+hors iOS · build groupé de validation fondateur (SUR GO) · incohérence Stripe/release-gate à acter
+(MATRICE_FLAGS_V1 n°1 — bloquant première release via workflow).
+
+### MAJ 20/07 — MATRICE FLAGS ✓ LIVRÉE · lane GPT Mistral v2 intégrée ✓
+- **MATRICE FLAGS V1 FIGÉE** : `MATRICE_FLAGS_V1.md` (10 familles, 37 flags figés machine-readable,
+  gardes boot documentées fichier:ligne) + test anti-drift `apps/api/src/flags-matrix-v1.test.ts`
+  (13 tests : défauts env.ts + liste de noms verrouillée + eas.json 2 profils + MUSTANG_VERSION ci).
+  Toute modification = accord Claude+GPT. 15 incohérences documentées (n°1 Stripe/gate = bloquante
+  release), 12 points « À confirmer » (fondateur/prod/GPT).
+- Lane GPT Mistral v2 (dfe38b46) : intégrée ET déployée le 19/07 au soir (merge 25adfddb) —
+  challenge adversarial Claude 20/07 : GO_AVEC_CORRECTIFS, garde liveness `nextServerSequence`
+  (jamais flipper les flags v2 avant le fix GPT — verrouillé par le test anti-drift).
