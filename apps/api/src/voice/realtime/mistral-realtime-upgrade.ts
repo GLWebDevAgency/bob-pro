@@ -2,7 +2,13 @@ import type { IncomingMessage, Server as HttpServer } from 'node:http';
 import { isIP } from 'node:net';
 import type { Duplex } from 'node:stream';
 import type { TLSSocket } from 'node:tls';
+import { MISTRAL_CONVERSATION_PROTOCOL } from '@bob/ai';
 import WebSocket, { WebSocketServer, type RawData } from 'ws';
+import {
+  serveMistralConversationGatewayV2,
+  type MistralConversationGatewayV2Dependencies,
+  type MistralConversationGatewayV2Socket,
+} from './mistral-conversation-gateway-v2';
 import {
   MISTRAL_PCM_GATEWAY_PROTOCOL,
   serveMistralRealtimeGateway,
@@ -41,9 +47,18 @@ type RawErrorListener = (error: Error) => void;
 
 export type MistralRealtimeGatewayDependenciesFactory = () => MistralRealtimeGatewayDependencies;
 
+export type MistralConversationGatewayV2DependenciesFactory = (
+) => MistralConversationGatewayV2Dependencies;
+
 export type MistralRealtimeGatewayServe = (
   socket: MistralRealtimeGatewaySocket,
   dependencies: MistralRealtimeGatewayDependencies,
+  input?: { readonly signal?: AbortSignal },
+) => Promise<void>;
+
+export type MistralConversationGatewayV2Serve = (
+  socket: MistralConversationGatewayV2Socket,
+  dependencies: MistralConversationGatewayV2Dependencies,
   input?: { readonly signal?: AbortSignal },
 ) => Promise<void>;
 
@@ -56,10 +71,18 @@ export interface MistralRealtimeUpgradeSettings {
   readonly shutdownGraceMs?: number;
 }
 
+export interface MistralRealtimeUpgradeConversationV2Dependencies {
+  readonly createGatewayDependencies: MistralConversationGatewayV2DependenciesFactory;
+  /** Injection réservée aux tests; la production utilise le noyau conversationnel v2 canonique. */
+  readonly serveGateway?: MistralConversationGatewayV2Serve;
+}
+
 export interface MistralRealtimeUpgradeDependencies {
   readonly createGatewayDependencies: MistralRealtimeGatewayDependenciesFactory;
   /** Injection réservée aux tests de l'adapter; la production utilise le noyau canonique. */
   readonly serveGateway?: MistralRealtimeGatewayServe;
+  /** Active explicitement `bob.mistral-pcm.v2` sur le même listener et le même chemin WSS. */
+  readonly conversationV2?: MistralRealtimeUpgradeConversationV2Dependencies;
   /**
    * Hook pour un terminateur TLS de confiance. Par défaut, seuls TLS direct et loopback clair
    * sont admis. Le hook ne reçoit jamais le ticket, qui voyage dans la première frame WSS.
@@ -207,7 +230,7 @@ function popListener<K, V>(map: Map<K, V[]>, listener: K): V | null {
   return wrapper;
 }
 
-class NodeWsGatewaySocket implements MistralRealtimeGatewaySocket {
+class NodeWsGatewaySocket implements MistralRealtimeGatewaySocket, MistralConversationGatewayV2Socket {
   private readonly messageListeners = new Map<GatewayMessageListener, RawMessageListener[]>();
   private readonly closeListeners = new Map<GatewayCloseListener, RawCloseListener[]>();
   private readonly errorListeners = new Map<GatewayErrorListener, RawErrorListener[]>();
@@ -324,6 +347,11 @@ interface SessionRecord {
   finalized: boolean;
 }
 
+interface ConversationV2Runtime {
+  readonly createGatewayDependencies: MistralConversationGatewayV2DependenciesFactory;
+  readonly serveGateway: MistralConversationGatewayV2Serve;
+}
+
 function rejectUpgrade(socket: Duplex): void {
   if (socket.destroyed) return;
   const destroy = (): void => {
@@ -392,6 +420,7 @@ class SecureMistralRealtimeUpgradeAdapter implements MistralRealtimeUpgradeAdapt
   private readonly shutdownGraceMs: number;
   private readonly createGatewayDependencies: MistralRealtimeGatewayDependenciesFactory;
   private readonly serveGateway: MistralRealtimeGatewayServe;
+  private readonly conversationV2: ConversationV2Runtime | null;
   private readonly isSecureRequest: (request: IncomingMessage) => boolean;
   private readonly websocketServer: WebSocketServer;
   private readonly sessions = new Set<SessionRecord>();
@@ -463,6 +492,17 @@ class SecureMistralRealtimeUpgradeAdapter implements MistralRealtimeUpgradeAdapt
       || (dependencies.serveGateway !== undefined && typeof dependencies.serveGateway !== 'function')
       || (dependencies.isSecureRequest !== undefined && typeof dependencies.isSecureRequest !== 'function')
     ) throw new MistralRealtimeUpgradeConfigurationError('invalid_dependencies');
+    const conversationV2 = dependencies.conversationV2;
+    if (
+      conversationV2 !== undefined
+      && (
+        !conversationV2
+        || typeof conversationV2 !== 'object'
+        || typeof conversationV2.createGatewayDependencies !== 'function'
+        || (conversationV2.serveGateway !== undefined
+          && typeof conversationV2.serveGateway !== 'function')
+      )
+    ) throw new MistralRealtimeUpgradeConfigurationError('invalid_dependencies');
 
     this.path = path;
     this.allowedBrowserOrigins = new Set(settings.allowedBrowserOrigins);
@@ -470,6 +510,12 @@ class SecureMistralRealtimeUpgradeAdapter implements MistralRealtimeUpgradeAdapt
     this.shutdownGraceMs = shutdownGraceMs;
     this.createGatewayDependencies = dependencies.createGatewayDependencies;
     this.serveGateway = dependencies.serveGateway ?? serveMistralRealtimeGateway;
+    this.conversationV2 = conversationV2
+      ? {
+          createGatewayDependencies: conversationV2.createGatewayDependencies,
+          serveGateway: conversationV2.serveGateway ?? serveMistralConversationGatewayV2,
+        }
+      : null;
     this.isSecureRequest = dependencies.isSecureRequest ?? defaultSecureRequest;
     this.websocketServer = new WebSocketServer({
       noServer: true,
@@ -477,11 +523,13 @@ class SecureMistralRealtimeUpgradeAdapter implements MistralRealtimeUpgradeAdapt
       maxPayload: MISTRAL_REALTIME_MAX_PAYLOAD_BYTES,
       perMessageDeflate: false,
       skipUTF8Validation: false,
-      handleProtocols: (protocols) => (
-        protocols.size === 1 && protocols.has(MISTRAL_PCM_GATEWAY_PROTOCOL)
-          ? MISTRAL_PCM_GATEWAY_PROTOCOL
-          : false
-      ),
+      handleProtocols: (protocols) => {
+        if (protocols.size !== 1) return false;
+        if (protocols.has(MISTRAL_PCM_GATEWAY_PROTOCOL)) return MISTRAL_PCM_GATEWAY_PROTOCOL;
+        return this.conversationV2 && protocols.has(MISTRAL_CONVERSATION_PROTOCOL)
+          ? MISTRAL_CONVERSATION_PROTOCOL
+          : false;
+      },
     });
     this.websocketServer.on('wsClientError', (_error, clientSocket) => {
       rejectUpgrade(clientSocket);
@@ -538,7 +586,10 @@ class SecureMistralRealtimeUpgradeAdapter implements MistralRealtimeUpgradeAdapt
       || connection.length !== 1
       || connection[0]?.toLowerCase() !== 'upgrade'
       || protocol.length !== 1
-      || protocol[0] !== MISTRAL_PCM_GATEWAY_PROTOCOL
+      || (
+        protocol[0] !== MISTRAL_PCM_GATEWAY_PROTOCOL
+        && (protocol[0] !== MISTRAL_CONVERSATION_PROTOCOL || !this.conversationV2)
+      )
       || extensions.length !== 0
       || key.length !== 1
       || !canonicalWebSocketKey(key[0] ?? '')
@@ -571,8 +622,22 @@ class SecureMistralRealtimeUpgradeAdapter implements MistralRealtimeUpgradeAdapt
   private async runSession(record: SessionRecord): Promise<void> {
     let succeeded = false;
     try {
-      const dependencies = this.createGatewayDependencies();
-      await this.serveGateway(record.port, dependencies, { signal: record.abort.signal });
+      if (record.socket.protocol === MISTRAL_PCM_GATEWAY_PROTOCOL) {
+        const dependencies = this.createGatewayDependencies();
+        await this.serveGateway(record.port, dependencies, { signal: record.abort.signal });
+      } else if (
+        record.socket.protocol === MISTRAL_CONVERSATION_PROTOCOL
+        && this.conversationV2
+      ) {
+        const dependencies = this.conversationV2.createGatewayDependencies();
+        await this.conversationV2.serveGateway(
+          record.port,
+          dependencies,
+          { signal: record.abort.signal },
+        );
+      } else {
+        throw new Error('unsupported_websocket_protocol');
+      }
       succeeded = true;
     } catch {
       // Le noyau ferme la session avec ses codes publics; aucune erreur interne ne remonte au wire.
