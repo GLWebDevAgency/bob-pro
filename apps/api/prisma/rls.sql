@@ -47,6 +47,7 @@ BEGIN
     'realtime_session_leases',
     'realtime_mistral_ingress_tickets',
     'realtime_mistral_conversation_missions',
+    'realtime_mistral_conversation_resume_tickets',
     'realtime_mistral_conversation_outbox',
     'realtime_mistral_conversation_commands',
     'realtime_speech_artifacts',
@@ -284,6 +285,24 @@ CREATE POLICY realtime_mistral_conversation_mission_insert
   WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
 CREATE POLICY realtime_mistral_conversation_mission_update
   ON realtime_mistral_conversation_missions FOR UPDATE
+  USING ("companyId" = current_setting('app.current_company_id', true))
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+
+DROP POLICY IF EXISTS tenant_isolation ON realtime_mistral_conversation_resume_tickets;
+DROP POLICY IF EXISTS realtime_mistral_conversation_resume_ticket_select
+  ON realtime_mistral_conversation_resume_tickets;
+DROP POLICY IF EXISTS realtime_mistral_conversation_resume_ticket_insert
+  ON realtime_mistral_conversation_resume_tickets;
+DROP POLICY IF EXISTS realtime_mistral_conversation_resume_ticket_update
+  ON realtime_mistral_conversation_resume_tickets;
+CREATE POLICY realtime_mistral_conversation_resume_ticket_select
+  ON realtime_mistral_conversation_resume_tickets FOR SELECT
+  USING ("companyId" = current_setting('app.current_company_id', true));
+CREATE POLICY realtime_mistral_conversation_resume_ticket_insert
+  ON realtime_mistral_conversation_resume_tickets FOR INSERT
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+CREATE POLICY realtime_mistral_conversation_resume_ticket_update
+  ON realtime_mistral_conversation_resume_tickets FOR UPDATE
   USING ("companyId" = current_setting('app.current_company_id', true))
   WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
 

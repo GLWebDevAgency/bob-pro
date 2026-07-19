@@ -40,6 +40,7 @@ FROM :"app_role";
 REVOKE DELETE ON TABLE public.companies FROM :"app_role";
 REVOKE DELETE ON TABLE
   public.realtime_mistral_conversation_missions,
+  public.realtime_mistral_conversation_resume_tickets,
   public.realtime_speech_artifacts,
   public.stripe_subscription_invoices
 FROM :"app_role";

@@ -331,6 +331,7 @@ model Company {
   realtimeSessionLeases   RealtimeSessionLease[]
   realtimeMistralTickets  RealtimeMistralIngressTicket[]
   realtimeMistralMissions RealtimeMistralConversationMission[]
+  realtimeMistralResumeTickets RealtimeMistralConversationResumeTicket[]
   realtimeSpeechArtifacts RealtimeSpeechArtifact[]
   realtimeControlGrants   RealtimeControlGrant[]
   realtimeControlUses     RealtimeControlConsumption[]
@@ -1200,6 +1201,9 @@ model RealtimeMistralConversationMission {
   companyId                  String                                   @db.Text
   company                    Company                                  @relation(fields: [companyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   initialBootstrapId         String                                   @unique(map: "realtime_mistral_conversation_missions_bootstrap_key") @db.Uuid
+  // Référence typée au bail d'admission initial. Nullable uniquement pour les missions v2
+  // historiques créées avant le déploiement des capacités de reprise : elles échouent fermées.
+  admissionSessionId         String?                                  @unique(map: "realtime_mistral_conversation_missions_admission_session_key") @db.Uuid
   protocol                   String                                   @db.Text
   subjectHash                String                                   @db.Char(64)
   subjectKeyVersion          Int
@@ -1234,12 +1238,60 @@ model RealtimeMistralConversationMission {
   updatedAt                  DateTime                                 @db.Timestamptz(6)
   outbox                     RealtimeMistralConversationOutboxEvent[]
   commands                   RealtimeMistralConversationCommand[]
+  resumeTickets              RealtimeMistralConversationResumeTicket[]
 
   @@unique([companyId, sessionHandle], map: "realtime_mistral_conversation_missions_session_key")
   @@unique([id, companyId, sessionHandle], map: "realtime_mistral_conversation_missions_tenant_binding")
+  @@unique([id, companyId, sessionHandle, admissionSessionId], map: "realtime_mistral_conversation_missions_admission_binding")
   @@index([companyId, phase, hardExpiresAt], map: "realtime_mistral_conversation_missions_tenant_reaper_idx")
   @@index([retentionExpiresAt], map: "realtime_mistral_conversation_missions_retention_idx")
   @@map("realtime_mistral_conversation_missions")
+}
+
+/// Capacité HTTP -> WSS one-shot dédiée à la reprise Mistral v2. Le ticket brut et le token de
+/// connexion ne sont jamais persistés : seuls leurs SHA-256 vivent ici. Une consommation réussie
+/// est atomique avec le takeover ou le replay terminal de la mission liée.
+model RealtimeMistralConversationResumeTicket {
+  id                                   String                             @id @default(uuid()) @db.Uuid
+  companyId                            String                             @db.Text
+  company                              Company                            @relation(fields: [companyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  missionId                            String                             @db.Uuid
+  mission                              RealtimeMistralConversationMission @relation(fields: [missionId, companyId, sessionHandle, admissionSessionId], references: [id, companyId, sessionHandle, admissionSessionId], onDelete: Cascade, onUpdate: Cascade)
+  sessionHandle                        String                             @db.Text
+  admissionSessionId                   String                             @db.Uuid
+  ticketHash                           String                             @unique(map: "realtime_mistral_conversation_resume_tickets_hash_key") @db.Char(64)
+  protocol                             String                             @db.Text
+  scope                                String                             @db.Text
+  state                                String                             @db.Text
+  subjectHash                          String                             @db.Char(64)
+  subjectKeyVersion                    Int
+  plan                                 String                             @db.Text
+  expectedMissionConnectionEpoch       Int
+  clientAcceptedMissionConnectionEpoch Int
+  resumeNextServerSequence             BigInt
+  contextRevision                      Int
+  contextDigest                        String                             @db.Char(64)
+  routeMode                            String                             @db.Text
+  fullDuplexCertified                  Boolean
+  maxMissionAudioBytes                 Int
+  hardExpiresAt                        DateTime                           @db.Timestamptz(6)
+  replayGraceExpiresAt                 DateTime                           @db.Timestamptz(6)
+  issuedAt                             DateTime                           @db.Timestamptz(6)
+  expiresAt                            DateTime                           @db.Timestamptz(6)
+  consumedAt                           DateTime?                          @db.Timestamptz(6)
+  consumedMissionConnectionEpoch       Int?
+  replayConnectionId                   String?                            @unique(map: "mistral_resume_tickets_replay_connection_key") @db.Uuid
+  connectionLeaseTokenHash             String?                            @unique(map: "mistral_resume_tickets_connection_token_key") @db.Char(64)
+  connectionLeaseExpiresAt             DateTime?                          @db.Timestamptz(6)
+  maxAcknowledgableServerSequence      BigInt?
+  retentionExpiresAt                   DateTime                           @db.Timestamptz(6)
+  version                              Int                                @default(1)
+
+  @@index([companyId, missionId, state, expiresAt], map: "realtime_mistral_conversation_resume_tickets_mission_state_idx")
+  @@index([companyId, ticketHash, protocol], map: "realtime_mistral_conversation_resume_tickets_lookup_idx")
+  @@index([companyId, subjectHash, missionId, state, expiresAt], map: "realtime_mistral_conversation_resume_tickets_subject_state_idx")
+  @@index([companyId, retentionExpiresAt], map: "realtime_mistral_conversation_resume_tickets_retention_idx")
+  @@map("realtime_mistral_conversation_resume_tickets")
 }
 
 /// Événement wire v2 rejouable. Le JSON canonique, qui peut contenir un transcript, est chiffré
