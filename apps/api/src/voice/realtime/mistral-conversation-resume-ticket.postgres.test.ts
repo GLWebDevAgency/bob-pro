@@ -952,6 +952,36 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
       ).resolves.toEqual({ status: 'replayed' });
     }, 30_000);
 
+    it('confirme le terminal acquitté sans émettre une nouvelle capability', async () => {
+      const closed = await closeMission('terminal_complete');
+      const ticket = await issueTerminal(resumeAuthorities[0], closed.grant, closed.snapshot);
+      const replay = await redeemTerminal(resumeAuthorities[0], ticket);
+      terminalReplay(replay);
+
+      await expect(resumeAuthorities[0].acknowledgeTerminal({
+        companyId,
+        subjectHash: closed.grant.subjectHash,
+        sessionHandle: closed.grant.sessionHandle,
+        missionConnectionEpoch: replay.snapshot.missionConnectionEpoch,
+        replayConnectionId: replay.terminalAcknowledgement.replayConnectionId,
+        connectionLeaseToken: replay.terminalAcknowledgement.connectionLeaseToken,
+        nextServerSequence: replay.snapshot.nextServerSequence,
+        signal: new AbortController().signal,
+      })).resolves.toEqual({ status: 'applied' });
+
+      const ticketsBefore = await ticketEvidence(closed.grant.sessionHandle);
+      await expect(resumeAuthorities[1].issue({
+        companyId,
+        subjectHash: closed.grant.subjectHash,
+        subjectKeyVersion: closed.grant.subjectKeyVersion,
+        sessionHandle: closed.grant.sessionHandle,
+        clientAcceptedMissionConnectionEpoch: replay.snapshot.missionConnectionEpoch,
+        resumeNextServerSequence: replay.snapshot.nextServerSequence,
+        signal: new AbortController().signal,
+      })).resolves.toEqual({ status: 'terminal_complete' });
+      expect(await ticketEvidence(closed.grant.sessionHandle)).toEqual(ticketsBefore);
+    }, 30_000);
+
     it('expire la capacité ACK selon l’horloge PostgreSQL sans avancer le curseur', async () => {
       const shortPolicy = {
         ...DEFAULT_MISTRAL_CONVERSATION_RESUME_TICKET_POLICY,

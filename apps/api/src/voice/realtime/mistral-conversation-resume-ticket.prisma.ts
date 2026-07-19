@@ -281,6 +281,15 @@ implements MistralConversationResumeAuthority {
         if (input.resumeNextServerSequence > nextServerSequence) {
           return { status: 'invalid_cursor' as const };
         }
+        // Seule cette preuve BDD autorise le mobile à supprimer son checkpoint. Une fermeture
+        // WebSocket 1000 ne suffit pas : la capacité ACK peut avoir expiré entre l'envoi du
+        // terminal et sa consommation. Aucun ticket n'est créé lorsque le terminal est déjà
+        // intégralement acquitté et que le client présente exactement le curseur final.
+        if (
+          mission.phase === 'closed'
+          && input.resumeNextServerSequence === nextServerSequence
+          && acknowledgedServerSequence === nextServerSequence
+        ) return { status: 'terminal_complete' as const };
         const replayFrom = Math.min(
           input.resumeNextServerSequence,
           acknowledgedServerSequence,

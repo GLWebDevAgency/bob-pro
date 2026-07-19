@@ -118,6 +118,7 @@ export interface MistralConversationResumeTicketBootstrap {
 
 export type MistralConversationResumeTicketIssueResult =
   | { readonly status: 'issued'; readonly bootstrap: MistralConversationResumeTicketBootstrap }
+  | { readonly status: 'terminal_complete' }
   | {
       readonly status:
         | 'invalid'
