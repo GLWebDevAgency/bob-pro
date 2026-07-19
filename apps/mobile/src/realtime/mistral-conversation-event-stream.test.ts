@@ -159,19 +159,36 @@ describe('MistralConversationServerEventStream', () => {
     expect(stream.nextServerSequence).toBe(4);
   });
 
-  it('rend la fermeture terminale, tout en tolérant les replays antérieurs', () => {
+  it('rend la fermeture terminale, ACKe son curseur final et tolère les replays antérieurs', () => {
     const stream = new MistralConversationServerEventStream();
     stream.accept(wire(ready()));
     stream.accept(wire(closeEvent(1)));
 
+    const terminalAcknowledgement = {
+      type: 'events.ack' as const,
+      missionConnectionEpoch: 1,
+      nextServerSequence: 2,
+    };
+
     expect(stream.closed).toBe(true);
+    expect(stream.acknowledgement()).toEqual(terminalAcknowledgement);
     expect(stream.accept(wire(closeEvent(1)))).toEqual({
       kind: 'duplicate',
       serverSequence: 1,
     });
+    expect(stream.accept(wire(ready()))).toEqual({
+      kind: 'duplicate',
+      serverSequence: 0,
+    });
+    expect(stream.acknowledgement()).toEqual(terminalAcknowledgement);
     expect(() => stream.accept(wire(errorEvent(2)))).toThrowError(
       expect.objectContaining({ code: 'server_event_after_close' }),
     );
+    expect(() => stream.accept(wire(errorEvent(3)))).toThrowError(
+      expect.objectContaining({ code: 'server_sequence_gap' }),
+    );
+    expect(stream.nextServerSequence).toBe(2);
+    expect(stream.acknowledgement()).toEqual(terminalAcknowledgement);
     expect(stream.snapshot()).toEqual({
       nextServerSequence: 2,
       sessionReadyAccepted: true,
@@ -179,7 +196,35 @@ describe('MistralConversationServerEventStream', () => {
       missionConnectionEpoch: 1,
       closed: true,
     });
-    expect(stream.acknowledgement()).toBeNull();
+  });
+
+  it('reconstruit un terminal avec le même ACK exact, sans autoriser de second effet métier', () => {
+    const snapshot = {
+      nextServerSequence: 2,
+      sessionReadyAccepted: true as const,
+      sessionHandle: SESSION_HANDLE,
+      missionConnectionEpoch: 1,
+      closed: true,
+    };
+    const resumed = new MistralConversationServerEventStream(snapshot);
+    const expectedAcknowledgement = {
+      type: 'events.ack' as const,
+      missionConnectionEpoch: 1,
+      nextServerSequence: 2,
+    };
+
+    expect(resumed.closed).toBe(true);
+    expect(resumed.acknowledgement()).toEqual(expectedAcknowledgement);
+    expect(resumed.acknowledgement()).toEqual(expectedAcknowledgement);
+    expect(resumed.accept(wire(closeEvent(1)))).toEqual({
+      kind: 'duplicate',
+      serverSequence: 1,
+    });
+    expect(() => resumed.accept(wire(phase(2)))).toThrowError(
+      expect.objectContaining({ code: 'server_event_after_close' }),
+    );
+    expect(resumed.snapshot()).toEqual(snapshot);
+    expect(resumed.acknowledgement()).toEqual(expectedAcknowledgement);
   });
 
   it('diffère l’ACK pendant un takeover puis adopte strictement le nouvel owner', () => {
