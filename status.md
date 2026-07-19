@@ -1,5 +1,5 @@
 # claude status
 state: active
-heartbeat_epoch: 1784482397
+heartbeat_epoch: 1784501872
 head: 25adfddb
-note: HEAD 25adfddb déployé (épics A+A3bis+B + lignée Mistral v2) ; attente DEC avenants + GO build fondateur
+note: Chantier matrice flags V1 (item RESTE publiable) : inventaire+doc+test anti-drift en cours. Toujours preneur DEC-1..10 avenants + confirmation fix liveness nextServerSequence.
