@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { loadEnv, resolveBobLiveEnv } from './env';
+import {
+  loadEnv,
+  resolveBobLiveEnv,
+  resolveMistralConversationPersistenceKeyRing,
+} from './env';
 
 function validRealtimeEnv(): void {
   vi.stubEnv('DEMO_MODE', 'true');
@@ -121,7 +125,61 @@ describe('Bob Live — validation de la politique d’admission', () => {
       gatewayMaxConnections: 500,
       gatewayShutdownGraceMs: 1_500,
       gatewayTlsMode: 'direct',
+      mistralV2TerminalReplayEnabled: false,
     });
+  });
+
+  it('active le replay terminal v2 avec un keyring canonique et conserve les anciennes versions', () => {
+    validMistralRealtimeEnv();
+    const first = Buffer.alloc(32, 1).toString('base64url');
+    const current = Buffer.alloc(32, 2).toString('base64url');
+    vi.stubEnv('BOB_LIVE_MISTRAL_V2_TERMINAL_REPLAY_ENABLED', 'true');
+    vi.stubEnv('BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION', '2');
+    vi.stubEnv('BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING', JSON.stringify({ 1: first, 2: current }));
+
+    const env = loadEnv();
+    const keys = resolveMistralConversationPersistenceKeyRing(env);
+    expect(resolveBobLiveEnv(env).mistralV2TerminalReplayEnabled).toBe(true);
+    expect(keys?.currentVersion).toBe(2);
+    expect(Buffer.from(keys?.secret(1) ?? []).toString('base64url')).toBe(first);
+    expect(Buffer.from(keys?.secret(2) ?? []).toString('base64url')).toBe(current);
+    expect(keys?.secret(3)).toBeNull();
+  });
+
+  it('refuse toute configuration partielle ou dormante du keyring v2', () => {
+    validMistralRealtimeEnv();
+    vi.stubEnv('BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION', '1');
+    expect(() => loadEnv()).toThrow(/désactivé/i);
+
+    vi.stubEnv('BOB_LIVE_MISTRAL_V2_TERMINAL_REPLAY_ENABLED', 'true');
+    expect(() => loadEnv()).toThrow(/keyring.*incomplet/i);
+  });
+
+  it('refuse le replay terminal v2 avec OpenAI ou un keyring corrompu', () => {
+    validRealtimeEnv();
+    vi.stubEnv('BOB_LIVE_MISTRAL_V2_TERMINAL_REPLAY_ENABLED', 'true');
+    vi.stubEnv('BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION', '1');
+    vi.stubEnv(
+      'BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING',
+      JSON.stringify({ 1: Buffer.alloc(32, 1).toString('base64url') }),
+    );
+    expect(() => loadEnv()).toThrow(/PROVIDER=mistral/i);
+
+    validMistralRealtimeEnv();
+    vi.stubEnv('BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING', '{"1":"not-a-key"}');
+    expect(() => loadEnv()).toThrow(/version ou une clé invalide/i);
+  });
+
+  it('refuse une version absente et la réutilisation d’une même clé v2', () => {
+    validMistralRealtimeEnv();
+    const secret = Buffer.alloc(32, 3).toString('base64url');
+    vi.stubEnv('BOB_LIVE_MISTRAL_V2_TERMINAL_REPLAY_ENABLED', 'true');
+    vi.stubEnv('BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION', '2');
+    vi.stubEnv('BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING', JSON.stringify({ 1: secret }));
+    expect(() => loadEnv()).toThrow(/version courante/i);
+
+    vi.stubEnv('BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING', JSON.stringify({ 1: secret, 2: secret }));
+    expect(() => loadEnv()).toThrow(/version ou une clé invalide/i);
   });
 
   it('active OpenAI Realtime et son TTS sans aucune clé Mistral', () => {

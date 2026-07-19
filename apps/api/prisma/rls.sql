@@ -50,6 +50,8 @@ BEGIN
     'realtime_mistral_conversation_resume_tickets',
     'realtime_mistral_conversation_outbox',
     'realtime_mistral_conversation_commands',
+    'realtime_mistral_conversation_key_version_floors',
+    'realtime_mistral_conversation_key_bindings',
     'realtime_speech_artifacts',
     'realtime_control_grants',
     'realtime_control_consumptions',
@@ -327,6 +329,39 @@ CREATE POLICY realtime_mistral_conversation_command_select
 CREATE POLICY realtime_mistral_conversation_command_insert
   ON realtime_mistral_conversation_commands FOR INSERT
   WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+
+-- Singleton global sans secret ni donnée tenant. Le runtime peut seulement lire la plage admise ;
+-- DIRECT_URL prépare puis retire les versions pendant le protocole CD en deux phases.
+DROP POLICY IF EXISTS realtime_mistral_conversation_key_version_floor_select
+  ON realtime_mistral_conversation_key_version_floors;
+CREATE POLICY realtime_mistral_conversation_key_version_floor_select
+  ON realtime_mistral_conversation_key_version_floors FOR SELECT
+  USING (true);
+DROP POLICY IF EXISTS realtime_mistral_conversation_key_version_floor_direct_insert
+  ON realtime_mistral_conversation_key_version_floors;
+CREATE POLICY realtime_mistral_conversation_key_version_floor_direct_insert
+  ON realtime_mistral_conversation_key_version_floors FOR INSERT
+  TO CURRENT_USER
+  WITH CHECK (true);
+DROP POLICY IF EXISTS realtime_mistral_conversation_key_version_floor_direct_update
+  ON realtime_mistral_conversation_key_version_floors;
+CREATE POLICY realtime_mistral_conversation_key_version_floor_direct_update
+  ON realtime_mistral_conversation_key_version_floors FOR UPDATE
+  TO CURRENT_USER
+  USING (true)
+  WITH CHECK (true);
+
+DROP POLICY IF EXISTS realtime_mistral_conversation_key_binding_select
+  ON realtime_mistral_conversation_key_bindings;
+CREATE POLICY realtime_mistral_conversation_key_binding_select
+  ON realtime_mistral_conversation_key_bindings FOR SELECT
+  USING (true);
+DROP POLICY IF EXISTS realtime_mistral_conversation_key_binding_direct_insert
+  ON realtime_mistral_conversation_key_bindings;
+CREATE POLICY realtime_mistral_conversation_key_binding_direct_insert
+  ON realtime_mistral_conversation_key_bindings FOR INSERT
+  TO CURRENT_USER
+  WITH CHECK (true);
 
 DROP POLICY IF EXISTS tenant_isolation ON realtime_speech_artifacts;
 DROP POLICY IF EXISTS realtime_speech_artifact_select ON realtime_speech_artifacts;

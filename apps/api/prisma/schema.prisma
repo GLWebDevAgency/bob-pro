@@ -1372,6 +1372,31 @@ model RealtimeMistralConversationCommand {
   @@map("realtime_mistral_conversation_commands")
 }
 
+/// Registre global (non tenant, sans secret) de la version de clé de persistance Mistral la plus
+/// élevée déjà activée. Les triggers SQL imposent la monotonie et interdisent toute suppression.
+model RealtimeMistralConversationKeyVersionFloor {
+  keySpace        String   @id(map: "mistral_key_floor_pkey") @db.VarChar(64)
+  minimumVersion  Int
+  highestVersion  Int
+  createdAt       DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime @default(now()) @db.Timestamptz(6)
+
+  @@map("realtime_mistral_conversation_key_version_floors")
+}
+
+/// Engagement SHA-256 append-only du matériau associé à chaque version. L'empreinte n'est pas un
+/// secret ; elle empêche en revanche toute réutilisation silencieuse d'un numéro avec une autre clé.
+model RealtimeMistralConversationKeyBinding {
+  keySpace       String   @db.VarChar(64)
+  keyVersion     Int
+  keyFingerprint String   @db.Char(64)
+  createdAt      DateTime @default(now()) @db.Timestamptz(6)
+
+  @@id([keySpace, keyVersion], name: "mistral_key_binding_pkey")
+  @@unique([keySpace, keyFingerprint], map: "mistral_key_binding_fingerprint_key")
+  @@map("realtime_mistral_conversation_key_bindings")
+}
+
 /// Segment audio Bob Live rendu hors du canal WebRTC descendant. La base ne conserve ni texte,
 /// ni transcription, ni audio : seulement des HMAC de preuve et la clé d'un objet privé éphémère.
 /// Les transitions et l'immuabilité des preuves sont imposées par triggers SQL.

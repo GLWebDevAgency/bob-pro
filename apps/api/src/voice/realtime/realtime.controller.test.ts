@@ -5,7 +5,7 @@ import type { AppError, Result } from '@bob/core';
 import { requestContext } from '../../observability/logger';
 import { RealtimeVoiceController } from './realtime.controller';
 import type { RealtimeVoiceService } from './realtime.service';
-import type { RealtimeCallBootstrap } from './realtime.types';
+import type { RealtimeCallBootstrap, RealtimeVoiceResumeTicket } from './realtime.types';
 import type { RealtimeApprovedAgentControl } from './realtime-sideband';
 import type { RealtimeSpeechDeliveryService } from './realtime-speech-delivery';
 
@@ -23,12 +23,18 @@ function serviceStub(input: {
     body: unknown,
     signal?: AbortSignal,
   ) => Promise<Result<RealtimeApprovedAgentControl, AppError>>;
+  requestResumeTicket?: (
+    sessionHandle: string,
+    body: unknown,
+    signal: AbortSignal,
+  ) => Promise<Result<RealtimeVoiceResumeTicket, AppError>>;
 }): RealtimeVoiceService {
   return {
     publicConfig: vi.fn(),
     createCall: vi.fn(input.createCall),
     hangup: vi.fn(input.hangup),
     acknowledgeControl: vi.fn(input.acknowledgeControl),
+    requestResumeTicket: vi.fn(input.requestResumeTicket),
   } as unknown as RealtimeVoiceService;
 }
 
@@ -74,6 +80,47 @@ describe('RealtimeVoiceController', () => {
     finish({ ok: false, error: { kind: 'unavailable', service: 'bob-live', retryAfterSeconds: 10 } });
     await expect(running).rejects.toBeInstanceOf(HttpException);
     expect(request.listenerCount('aborted')).toBe(0);
+  });
+
+  it('propage l’abandon HTTP au ticket de reprise et applique Retry-After', async () => {
+    let receivedSignal: AbortSignal | undefined;
+    let finish!: (value: Result<RealtimeVoiceResumeTicket, AppError>) => void;
+    const gate = new Promise<Result<RealtimeVoiceResumeTicket, AppError>>((resolve) => {
+      finish = resolve;
+    });
+    const requestResumeTicket = vi.fn(async (
+      _sessionHandle: string,
+      _body: unknown,
+      signal: AbortSignal,
+    ) => {
+      receivedSignal = signal;
+      return gate;
+    });
+    const controller = new RealtimeVoiceController(serviceStub({ requestResumeTicket }));
+    const request = new EventEmitter();
+    const response = responseStub();
+    const running = controller.requestResumeTicket(
+      'mistral_resume_session_0001',
+      { missionConnectionEpoch: 1, nextServerSequence: 0 },
+      request as never,
+      response,
+    );
+    await vi.waitFor(() => expect(receivedSignal).toBeDefined());
+
+    request.emit('aborted');
+    expect(receivedSignal?.aborted).toBe(true);
+    finish({
+      ok: false,
+      error: { kind: 'unavailable', service: 'bob-live-mistral-resume', retryAfterSeconds: 5 },
+    });
+    await expect(running).rejects.toBeInstanceOf(HttpException);
+    expect(response.setHeader).toHaveBeenCalledWith('Retry-After', '5');
+    expect(request.listenerCount('aborted')).toBe(0);
+    expect(requestResumeTicket).toHaveBeenCalledWith(
+      'mistral_resume_session_0001',
+      { missionConnectionEpoch: 1, nextServerSequence: 0 },
+      receivedSignal,
+    );
   });
 
   it('expose un hangup opaque idempotent', async () => {

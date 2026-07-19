@@ -188,7 +188,7 @@ jobs:
           echo "api_base_url=$API_BASE_URL" >> "$GITHUB_OUTPUT"
           echo "release_sha=$EXPECTED_RELEASE_SHA" >> "$GITHUB_OUTPUT"
           echo "release_environment=$EXPECTED_RELEASE_ENVIRONMENT" >> "$GITHUB_OUTPUT"
-      - name: Activate notification outbox v2 and certify the contract
+      - name: Retire the previous Mistral key, activate outbox v2 and certify the contract
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           RAILWAY_SERVICE: ${{ inputs.service }}
@@ -197,5 +197,6 @@ jobs:
         # En cas d'échec avant cette étape, N-1 continue les écritures métier et les messages
         # restent différés. Après activation, le fence RLS bloque toute révision sans protocole v2.
         run: |
+          railway run --service "$RAILWAY_SERVICE" --environment "$RAILWAY_ENV" node apps/api/scripts/manage-mistral-conversation-key-version.mjs retire
           railway run --service "$RAILWAY_SERVICE" --environment "$RAILWAY_ENV" sh apps/api/scripts/activate-notification-outbox-v2.sh
           railway run --service "$RAILWAY_SERVICE" --environment "$RAILWAY_ENV" sh apps/api/scripts/release.sh

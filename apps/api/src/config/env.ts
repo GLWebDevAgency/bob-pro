@@ -1,5 +1,8 @@
 import { z } from 'zod';
 
+const MISTRAL_V2_PERSISTENCE_SECRET = /^[A-Za-z0-9_-]{43}$/u;
+const MISTRAL_V2_MAX_PERSISTENCE_KEYS = 8;
+
 const schema = z.object({
   PORT: z.coerce.number().default(3000),
   // Relâche uniquement les dépendances externes obligatoires dans certains tests de composition.
@@ -27,6 +30,17 @@ const schema = z.object({
     .min(1)
     .max(2_147_483_647)
     .optional(),
+  // Canary strictement limité au replay terminal v2. Aucun flag ne permet le takeover live.
+  BOB_LIVE_MISTRAL_V2_TERMINAL_REPLAY_ENABLED: z.enum(['true', 'false']).default('false'),
+  BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(2_147_483_647)
+    .optional(),
+  // Objet JSON {"version":"clé-base64url-32-octets"}. Les anciennes versions restent
+  // présentes jusqu'à expiration de la dernière mission scellée avec elles.
+  BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING: z.string().trim().min(1).max(4_096).optional(),
   BOB_LIVE_PROVIDER_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(10_000).optional(),
   BOB_LIVE_CONTROL_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(5_000).optional(),
   BOB_LIVE_MAX_SESSION_SECONDS: z.coerce.number().int().min(60).max(900).optional(),
@@ -193,6 +207,84 @@ export interface ResolvedBobLiveEnv {
   localAuditToken: string | null;
   mistralTargetDelayMs: number;
   mistralWebsocketUrl: string;
+  mistralV2TerminalReplayEnabled: boolean;
+}
+
+export interface ResolvedMistralConversationPersistenceKeyRing {
+  readonly currentVersion: number;
+  /** Retourne toujours une copie : aucune dépendance ne peut muter le secret partagé. */
+  secret(version: number): Uint8Array | null;
+}
+
+function parseMistralConversationPersistenceSecrets(
+  raw: string,
+): ReadonlyMap<number, Uint8Array> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error('BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING doit être un objet JSON valide.');
+  }
+  if (
+    parsed === null
+    || typeof parsed !== 'object'
+    || Array.isArray(parsed)
+    || Object.getPrototypeOf(parsed) !== Object.prototype
+  ) {
+    throw new Error('BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING doit être un objet JSON.');
+  }
+  const entries = Object.entries(parsed as Record<string, unknown>);
+  if (entries.length < 1 || entries.length > MISTRAL_V2_MAX_PERSISTENCE_KEYS) {
+    throw new Error(
+      `BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING doit contenir entre 1 et ${MISTRAL_V2_MAX_PERSISTENCE_KEYS} clés.`,
+    );
+  }
+  const secrets = new Map<number, Uint8Array>();
+  const seenSecrets = new Set<string>();
+  for (const [rawVersion, rawSecret] of entries) {
+    const version = Number(rawVersion);
+    if (
+      !/^[1-9][0-9]{0,9}$/u.test(rawVersion)
+      || !Number.isSafeInteger(version)
+      || version > 2_147_483_647
+      || typeof rawSecret !== 'string'
+      || !MISTRAL_V2_PERSISTENCE_SECRET.test(rawSecret)
+      || seenSecrets.has(rawSecret)
+    ) {
+      throw new Error('BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING contient une version ou une clé invalide.');
+    }
+    const decoded = Buffer.from(rawSecret, 'base64url');
+    if (decoded.byteLength !== 32 || decoded.toString('base64url') !== rawSecret) {
+      throw new Error('Chaque clé Mistral v2 doit encoder exactement 32 octets en base64url canonique.');
+    }
+    secrets.set(version, Uint8Array.from(decoded));
+    seenSecrets.add(rawSecret);
+  }
+  return secrets;
+}
+
+export function resolveMistralConversationPersistenceKeyRing(
+  env: Env,
+): ResolvedMistralConversationPersistenceKeyRing | null {
+  if (env.BOB_LIVE_MISTRAL_V2_TERMINAL_REPLAY_ENABLED !== 'true') return null;
+  const currentVersion = env.BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION;
+  const raw = env.BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING;
+  if (currentVersion === undefined || raw === undefined) {
+    throw new Error(
+      'Replay terminal Mistral v2 activé mais keyring de persistance versionné incomplet.',
+    );
+  }
+  const secrets = parseMistralConversationPersistenceSecrets(raw);
+  if (!secrets.has(currentVersion)) {
+    throw new Error('La version courante Mistral v2 doit exister dans le keyring de persistance.');
+  }
+  return Object.freeze({
+    currentVersion,
+    secret: (version: number) => {
+      const secret = secrets.get(version);
+      return secret ? Uint8Array.from(secret) : null;
+    },
+  });
 }
 
 export function resolveBobLiveEnv(env: Env): ResolvedBobLiveEnv {
@@ -249,6 +341,8 @@ export function resolveBobLiveEnv(env: Env): ResolvedBobLiveEnv {
     localAuditToken: env.BOB_LIVE_LOCAL_AUDIT_TOKEN ?? null,
     mistralTargetDelayMs: env.MISTRAL_REALTIME_TARGET_DELAY_MS,
     mistralWebsocketUrl: env.BOB_LIVE_MISTRAL_WEBSOCKET_URL,
+    mistralV2TerminalReplayEnabled:
+      env.BOB_LIVE_MISTRAL_V2_TERMINAL_REPLAY_ENABLED === 'true',
   };
 }
 
@@ -384,6 +478,22 @@ export function loadEnv(): Env {
     );
   }
   const bobLive = resolveBobLiveEnv(parsed.data);
+  const mistralV2PersistenceConfigured =
+    parsed.data.BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION !== undefined
+    || parsed.data.BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING !== undefined;
+  if (!bobLive.mistralV2TerminalReplayEnabled && mistralV2PersistenceConfigured) {
+    throw new Error(
+      'Le keyring Mistral v2 ne peut pas être configuré lorsque le replay terminal est désactivé.',
+    );
+  }
+  if (bobLive.mistralV2TerminalReplayEnabled) {
+    if (!bobLive.enabled || bobLive.provider !== 'mistral') {
+      throw new Error(
+        'Le replay terminal Mistral v2 exige BOB_LIVE_ENABLED=true et BOB_LIVE_PROVIDER=mistral.',
+      );
+    }
+    resolveMistralConversationPersistenceKeyRing(parsed.data);
+  }
   if (bobLive.enabled) {
     const explicitProviderNeutralConfig = parsed.data.BOB_LIVE_ENABLED !== undefined;
     const providerKeyName = bobLive.provider === 'mistral' ? 'MISTRAL_API_KEY' : 'OPENAI_API_KEY';
@@ -430,6 +540,11 @@ export function loadEnv(): Env {
       bobLive.controlEncryptionSecret,
       ...(parsed.data.BOB_LIVE_USAGE_HMAC_SECRET ? [parsed.data.BOB_LIVE_USAGE_HMAC_SECRET] : []),
       ...(bobLive.localAuditToken ? [bobLive.localAuditToken] : []),
+      ...(bobLive.mistralV2TerminalReplayEnabled
+        ? [...parseMistralConversationPersistenceSecrets(
+            parsed.data.BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING as string,
+          ).values()].map((secret) => Buffer.from(secret).toString('base64url'))
+        : []),
     ];
     if (new Set(dedicatedSecrets).size !== dedicatedSecrets.length) {
       throw new Error(

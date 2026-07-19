@@ -73,6 +73,10 @@ export function isMistralConversationResumeTicket(value: unknown): value is stri
   return typeof value === 'string' && RESUME_TICKET.test(value);
 }
 
+export function isMistralConversationSessionHandle(value: unknown): value is string {
+  return typeof value === 'string' && SESSION_HANDLE.test(value);
+}
+
 export function validateMistralConversationResumeTicketPolicy(
   policy: MistralConversationResumeTicketPolicy,
 ): void {

@@ -45,6 +45,8 @@ import {
   DisabledRealtimeControlRepository,
   type RealtimeControlRepositoryPort,
 } from '../voice/realtime/realtime-control.repository';
+import type { MistralConversationPersistenceKeyRing } from '../voice/realtime/mistral-conversation-outbox-seal';
+import type { MistralConversationTerminalReplayAuthorities } from '../voice/realtime/mistral-conversation-terminal-replay';
 import {
   InMemoryCompanyRepository,
   InMemoryCustomerRepository,
@@ -132,6 +134,12 @@ export class InMemoryPersistence implements Persistence {
     _identityKeys: MistralRealtimeIngressIdentityKeyRing,
   ): MistralRealtimeIngressTicketAuthority {
     return new DisabledMistralRealtimeIngressTicketAuthority();
+  }
+  createMistralConversationTerminalReplayAuthorities(
+    _keys: MistralConversationPersistenceKeyRing,
+  ): MistralConversationTerminalReplayAuthorities | null {
+    // Le harness mémoire ne fabrique jamais de mission, ticket ou outbox v2.
+    return null;
   }
 
   async runInTransaction<T>(fn: () => Promise<T>): Promise<T> {

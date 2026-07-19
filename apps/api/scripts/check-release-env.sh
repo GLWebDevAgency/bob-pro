@@ -99,6 +99,37 @@ if (!(process.env.MISTRAL_API_KEY ?? '').trim() && !(process.env.ANTHROPIC_API_K
   fail('MISTRAL_API_KEY or ANTHROPIC_API_KEY is required for live OCR');
 }
 
+const mistralV2TerminalReplay =
+  process.env.BOB_LIVE_MISTRAL_V2_TERMINAL_REPLAY_ENABLED ?? 'false';
+if (!['true', 'false'].includes(mistralV2TerminalReplay)) {
+  fail('BOB_LIVE_MISTRAL_V2_TERMINAL_REPLAY_ENABLED must be true or false');
+}
+if (mistralV2TerminalReplay === 'true') {
+  const version = process.env.BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION ?? '';
+  if (!/^[1-9][0-9]*$/.test(version) || Number(version) > 2_147_483_647) {
+    fail('BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION must be a PostgreSQL positive integer');
+  }
+  present('BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING');
+} else if (
+  process.env.BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION !== undefined
+  || process.env.BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING !== undefined
+) {
+  fail('Mistral v2 persistence keys are forbidden while terminal replay is disabled');
+}
+
+// Ces flags lancent des suites qui écrivent, suppriment et tronquent volontairement des données.
+// Ils appartiennent exclusivement au PostgreSQL éphémère de CI et sont interdits dans tout
+// environnement Railway, même si une variable de service obsolète les a laissés à `true`.
+for (const name of [
+  'RUN_POSTGRES_MISTRAL_CONVERSATION_MUTATION_CERT',
+  'RUN_POSTGRES_MISTRAL_KEY_ROTATION_MUTATION_CERT',
+]) {
+  const value = process.env[name];
+  if (value !== undefined && value !== 'false') {
+    fail(`${name} must be absent or false for a live release`);
+  }
+}
+
 if (process.env.RUN_RLS_CERT !== 'true') {
   fail("RUN_RLS_CERT must be 'true' for a live release");
 }

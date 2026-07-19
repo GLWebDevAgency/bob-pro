@@ -24,7 +24,8 @@ grant_app_role() {
     return 0
   fi
 
-  psql "$DIRECT_URL" -X -v ON_ERROR_STOP=1 -v app_role="$APP_DATABASE_ROLE" <<'SQL'
+  psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 \
+    -v app_role="$APP_DATABASE_ROLE" <<'SQL'
 GRANT USAGE ON SCHEMA public TO :"app_role";
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO :"app_role";
 -- Ces registres sont append-only pour le role runtime. Les policies RLS seules ne
@@ -52,6 +53,12 @@ REVOKE UPDATE, DELETE ON TABLE
   public.realtime_voice_usage_events
 FROM :"app_role";
 REVOKE INSERT, UPDATE, DELETE ON TABLE public.realtime_voice_usage_daily FROM :"app_role";
+-- Le registre global des versions de clé est monotone et append-only. Le runtime peut seulement
+-- le lire ; seul DIRECT_URL prépare ou retire une version pendant le déploiement.
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE
+  public.realtime_mistral_conversation_key_version_floors,
+  public.realtime_mistral_conversation_key_bindings
+FROM :"app_role";
 GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO :"app_role";
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO :"app_role";
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO :"app_role";
@@ -154,6 +161,7 @@ command -v psql >/dev/null 2>&1 || { echo "psql is required" >&2; exit 1; }
 command -v node >/dev/null 2>&1 || { echo "node is required" >&2; exit 1; }
 
 pnpm --filter @bob/api exec prisma migrate deploy
+node apps/api/scripts/manage-mistral-conversation-key-version.mjs stage
 grant_app_role
 psql "$DIRECT_URL" -X --single-transaction -v ON_ERROR_STOP=1 -f apps/api/prisma/rls.sql
 
@@ -186,6 +194,8 @@ RUN_POSTGRES_INVOICE_ISSUE_LIFECYCLE_CERT=true \
   pnpm --filter @bob/api exec vitest run src/persistence/prisma/invoice-issue-lifecycle.postgres.test.ts
 RUN_POSTGRES_STRIPE_INVOICES_CERT=true \
   pnpm --filter @bob/api exec vitest run src/persistence/prisma/stripe-subscription-invoices.postgres.test.ts
+RUN_POSTGRES_MISTRAL_CONVERSATION_MUTATION_CERT=false \
+RUN_POSTGRES_MISTRAL_KEY_ROTATION_MUTATION_CERT=false \
 DATABASE_URL="$DATABASE_URL" DIRECT_URL="$DIRECT_URL" \
   sh apps/api/scripts/certify-mistral-conversation-authority.sh
 cleanup_rls_cert

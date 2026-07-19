@@ -59,6 +59,11 @@ jobs:
       CABINET_INVITATION_WORKER_ENABLED: "false"
       RUN_RLS_CERT: "true"
       RLS_CERT_CLEANUP: "true"
+      # Clés déterministes réservées à la base PostgreSQL éphémère de CI. Elles arment le même
+      # protocole prepare/retire que la production sans dépendre d'un secret externe.
+      BOB_LIVE_MISTRAL_V2_TERMINAL_REPLAY_ENABLED: "true"
+      BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION: "1"
+      BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEYRING: '{"1":"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE","2":"AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI"}'
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -88,6 +93,19 @@ jobs:
         run: |
           sh apps/api/scripts/activate-notification-outbox-v2.sh
           sh apps/api/scripts/release.sh
+      - name: Certify Mistral durable authority on the ephemeral mixed-key range
+        run: |
+          BOB_LIVE_MISTRAL_V2_PERSISTENCE_KEY_VERSION=2 \
+            node apps/api/scripts/manage-mistral-conversation-key-version.mjs stage
+          RUN_POSTGRES_MISTRAL_CONVERSATION_MUTATION_CERT=true \
+            sh apps/api/scripts/certify-mistral-conversation-authority.sh
+      - name: Certify Mistral key rotation and an observed retire-versus-writer race
+        env:
+          RUN_POSTGRES_MISTRAL_KEY_ROTATION_MUTATION_CERT: "true"
+          BOB_LIVE_MISTRAL_KEY_ROTATION_CERT_BASE_VERSION: "2"
+        run: >-
+          pnpm --filter @bob/api exec vitest run
+          src/voice/realtime/mistral-conversation-key-version-lifecycle.postgres.test.ts
       - name: Certify notification outbox concurrency and fencing on PostgreSQL
         env:
           RUN_POSTGRES_OUTBOX_CERT: "true"

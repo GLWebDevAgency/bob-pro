@@ -76,6 +76,37 @@ export class RealtimeVoiceController {
     }
   }
 
+  @Post('calls/:sessionHandle/resume-tickets')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  @WithoutTenantPersistenceTransaction()
+  @Header('Cache-Control', 'no-store, private, max-age=0')
+  @Header('Pragma', 'no-cache')
+  @Header('Expires', '0')
+  @Header('Vary', 'Authorization')
+  @Header('Referrer-Policy', 'no-referrer')
+  async requestResumeTicket(
+    @Param('sessionHandle') sessionHandle: string,
+    @Body() body: unknown,
+    @Req() request: AbortAwareRequest,
+    @Res({ passthrough: true }) response: HeaderResponse,
+  ) {
+    const controller = new AbortController();
+    const abort = (): void => controller.abort();
+    request.once('aborted', abort);
+    try {
+      const result = await this.realtime.requestResumeTicket(
+        sessionHandle,
+        body,
+        controller.signal,
+      );
+      this.applyRetryAfter(result, response);
+      return unwrap(result);
+    } finally {
+      request.removeListener('aborted', abort);
+    }
+  }
+
   @Delete('calls/:sessionHandle')
   @HttpCode(HttpStatus.OK)
   @Throttle({ default: { limit: 60, ttl: 60_000 } })

@@ -90,6 +90,24 @@ export interface MistralRealtimeCallBootstrap extends RealtimeCallBootstrapCommo
 
 export type RealtimeCallBootstrap = OpenAiRealtimeCallBootstrap | MistralRealtimeCallBootstrap;
 
+export interface RealtimeVoiceResumeTicketIssued {
+  readonly status: 'issued';
+  readonly websocketUrl: string;
+  readonly companyId: string;
+  readonly sessionHandle: string;
+  readonly ticket: string;
+  readonly protocol: 'bob.mistral-pcm.v2';
+  readonly scope: 'terminal_replay';
+  readonly ticketExpiresAt: string;
+  readonly expectedMissionConnectionEpoch: number;
+  readonly clientAcceptedMissionConnectionEpoch: number;
+  readonly resumeNextServerSequence: number;
+}
+
+export type RealtimeVoiceResumeTicket =
+  | RealtimeVoiceResumeTicketIssued
+  | { readonly status: 'terminal_complete' };
+
 export interface OpenAiRealtimeCallInput {
   offerSdp: string;
   safetyIdentifier: string;

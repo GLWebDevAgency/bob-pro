@@ -2,7 +2,12 @@ import { Module, type Provider } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { buildRealtimeSpeechAuditStt, buildRealtimeSpeechTts } from '../../ai/providers';
 import { BackendService } from '../../backend.service';
-import { loadEnv, resolveBobLiveEnv, type Env } from '../../config/env';
+import {
+  loadEnv,
+  resolveBobLiveEnv,
+  resolveMistralConversationPersistenceKeyRing,
+  type Env,
+} from '../../config/env';
 import { allowedCorsOrigins } from '../../config/cors';
 import { AppLogger } from '../../observability/logger';
 import { Metrics } from '../../observability/metrics';
@@ -60,6 +65,11 @@ import {
   isSecureMistralRequestBehindTrustedProxy,
 } from './mistral-realtime-upgrade';
 import {
+  createMistralConversationTerminalReplayRuntime,
+  type MistralConversationTerminalReplayRuntime,
+} from './mistral-conversation-terminal-replay';
+import { DisabledMistralConversationResumeAuthority } from './mistral-conversation-resume-ticket';
+import {
   ActiveMistralRealtimeIngressRuntime,
   DisabledMistralRealtimeIngressRuntime,
 } from './mistral-realtime-runtime';
@@ -67,6 +77,8 @@ import {
   MISTRAL_REALTIME_INGRESS_TICKETS,
   MISTRAL_REALTIME_INGRESS_RUNTIME,
   MISTRAL_REALTIME_TERMINATION_AUTHORITY,
+  MISTRAL_CONVERSATION_RESUME_AUTHORITY,
+  MISTRAL_CONVERSATION_TERMINAL_REPLAY_RUNTIME,
   OPENAI_REALTIME_CALL_PROVIDER,
   REALTIME_ADMISSION,
   REALTIME_AGENT_TURN,
@@ -271,6 +283,38 @@ const realtimeDurableControlProvider: Provider = {
     speech?.controls ?? new DisabledRealtimeDurableControlAuthority(),
 };
 
+export async function buildMistralConversationTerminalReplayRuntime(
+  persistence: Pick<Persistence, 'createMistralConversationTerminalReplayAuthorities'>,
+  env: Env = loadEnv(),
+): Promise<MistralConversationTerminalReplayRuntime | null> {
+  const live = resolveBobLiveEnv(env);
+  if (!live.mistralV2TerminalReplayEnabled) return null;
+  const keys = resolveMistralConversationPersistenceKeyRing(env);
+  if (!keys) throw new Error('Mistral conversation persistence keyring is unavailable.');
+  const authorities = persistence.createMistralConversationTerminalReplayAuthorities(keys);
+  if (!authorities) {
+    throw new Error('Mistral conversation PostgreSQL terminal replay authority is unavailable.');
+  }
+  await authorities.assertCurrentKeyVersion();
+  return createMistralConversationTerminalReplayRuntime(authorities);
+}
+
+const mistralConversationTerminalReplayRuntimeProvider: Provider = {
+  provide: MISTRAL_CONVERSATION_TERMINAL_REPLAY_RUNTIME,
+  inject: [PERSISTENCE],
+  useFactory: (
+    persistence: Persistence,
+  ): Promise<MistralConversationTerminalReplayRuntime | null> =>
+    buildMistralConversationTerminalReplayRuntime(persistence),
+};
+
+const mistralConversationResumeAuthorityProvider: Provider = {
+  provide: MISTRAL_CONVERSATION_RESUME_AUTHORITY,
+  inject: [MISTRAL_CONVERSATION_TERMINAL_REPLAY_RUNTIME],
+  useFactory: (runtime: MistralConversationTerminalReplayRuntime | null) =>
+    runtime?.resume ?? new DisabledMistralConversationResumeAuthority(),
+};
+
 const mistralRealtimeIngressRuntimeProvider: Provider = {
   provide: MISTRAL_REALTIME_INGRESS_RUNTIME,
   inject: [
@@ -280,6 +324,7 @@ const mistralRealtimeIngressRuntimeProvider: Provider = {
     REALTIME_AGENT_TURN,
     REALTIME_SPEECH_RUNTIME,
     MISTRAL_REALTIME_TERMINATION_AUTHORITY,
+    MISTRAL_CONVERSATION_TERMINAL_REPLAY_RUNTIME,
   ],
   useFactory: (
     settings: RealtimeVoiceSettings,
@@ -288,6 +333,7 @@ const mistralRealtimeIngressRuntimeProvider: Provider = {
     agentTurns: RealtimeBobAgentTurnAdapter,
     speech: RealtimeSpeechRuntime | null,
     terminations: MistralRealtimeTerminationAuthority | null,
+    terminalReplay: MistralConversationTerminalReplayRuntime | null,
   ) => {
     if (!settings.enabled || settings.provider !== 'mistral') {
       return new DisabledMistralRealtimeIngressRuntime();
@@ -314,6 +360,13 @@ const mistralRealtimeIngressRuntimeProvider: Provider = {
       },
       {
         createGatewayDependencies: () => ({ tickets, provider, terminations, sink }),
+        ...(terminalReplay
+          ? {
+              conversationV2: {
+                createGatewayDependencies: () => terminalReplay.gatewayDependencies,
+              },
+            }
+          : {}),
         ...(live.gatewayTlsMode === 'trusted-proxy'
           ? { isSecureRequest: isSecureMistralRequestBehindTrustedProxy }
           : {}),
@@ -427,6 +480,8 @@ const realtimeSpeechSourcePolicyProvider: Provider = {
     mistralIngressTicketProvider,
     realtimeSpeechRuntimeProvider,
     realtimeDurableControlProvider,
+    mistralConversationTerminalReplayRuntimeProvider,
+    mistralConversationResumeAuthorityProvider,
     realtimeAgentTurnProvider,
     realtimeEntitlementProvider,
     sidebandProvider,

@@ -1,6 +1,6 @@
 import { createHmac } from 'node:crypto';
 import { Inject, Injectable, Optional } from '@nestjs/common';
-import { isAllowedAgentNavigationRoute } from '@bob/ai';
+import { MISTRAL_CONVERSATION_PROTOCOL, isAllowedAgentNavigationRoute } from '@bob/ai';
 import {
   appConflict,
   appForbidden,
@@ -36,6 +36,7 @@ import {
   REALTIME_DURABLE_CONTROLS,
   REALTIME_PROVIDER_TERMINATION_REGISTRY,
   MISTRAL_REALTIME_INGRESS_TICKETS,
+  MISTRAL_CONVERSATION_RESUME_AUTHORITY,
   REALTIME_SIDEBAND,
   REALTIME_VOICE_SETTINGS,
   REALTIME_SPEECH_SOURCE_POLICY,
@@ -49,6 +50,7 @@ import {
   BOB_REALTIME_CONFIG_VERSION,
   type OpenAiRealtimeCallProvider,
   type RealtimeCallBootstrap,
+  type RealtimeVoiceResumeTicket,
   type RealtimeVoicePublicConfig,
   type RealtimeVoiceSettings,
 } from './realtime.types';
@@ -73,11 +75,18 @@ import type {
   RealtimeSpeechSourcePolicy,
   RealtimeSpeechSourcePolicyPort,
 } from './realtime-speech-storage';
+import {
+  DisabledMistralConversationResumeAuthority,
+  isMistralConversationSessionHandle,
+  type MistralConversationResumeAuthority,
+} from './mistral-conversation-resume-ticket';
 
 const MAX_OFFER_SDP_CHARS = 64 * 1024;
 const REALTIME_CONTROL_CONTEXT_TIMEOUT_MS = 1_000;
 const REALTIME_TURN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const REALTIME_CONTEXT_DIGEST = /^[a-f0-9]{64}$/;
+const MISTRAL_CONVERSATION_MAX_EPOCH = 0x7fff_ffff;
+const MISTRAL_CONVERSATION_CURSOR_END = 0x1_0000_0000;
 
 export function safetyIdentifier(secret: string, userId: string): string {
   const digest = createHmac('sha256', secret)
@@ -148,6 +157,43 @@ export function parseMistralRealtimeCallBody(
   return ok({
     context: context.value,
     ...(sessionHandle === undefined ? {} : { sessionHandle }),
+  });
+}
+
+export function parseRealtimeResumeTicketBody(
+  body: unknown,
+): Result<{ missionConnectionEpoch: number; nextServerSequence: number }, AppError> {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+    return {
+      ok: false,
+      error: { kind: 'validation', issues: [{ field: 'body', message: 'Objet requis.' }] },
+    };
+  }
+  const value = body as Record<string, unknown>;
+  const allowed = new Set(['missionConnectionEpoch', 'nextServerSequence']);
+  if (
+    Object.keys(value).length !== allowed.size
+    || Object.keys(value).some((key) => !allowed.has(key))
+    || !Number.isSafeInteger(value.missionConnectionEpoch)
+    || Object.is(value.missionConnectionEpoch, -0)
+    || (value.missionConnectionEpoch as number) < 1
+    || (value.missionConnectionEpoch as number) > MISTRAL_CONVERSATION_MAX_EPOCH
+    || !Number.isSafeInteger(value.nextServerSequence)
+    || Object.is(value.nextServerSequence, -0)
+    || (value.nextServerSequence as number) < 0
+    || (value.nextServerSequence as number) > MISTRAL_CONVERSATION_CURSOR_END
+  ) {
+    return {
+      ok: false,
+      error: {
+        kind: 'validation',
+        issues: [{ field: 'resume', message: 'Epoch ou curseur de reprise invalide.' }],
+      },
+    };
+  }
+  return ok({
+    missionConnectionEpoch: value.missionConnectionEpoch as number,
+    nextServerSequence: value.nextServerSequence as number,
   });
 }
 
@@ -367,6 +413,10 @@ export class RealtimeVoiceService {
     @Optional()
     @Inject(REALTIME_SPEECH_SOURCE_POLICY)
     private readonly speechSourcePolicy: RealtimeSpeechSourcePolicyPort | null = null,
+    @Optional()
+    @Inject(MISTRAL_CONVERSATION_RESUME_AUTHORITY)
+    private readonly conversationResume: MistralConversationResumeAuthority =
+      new DisabledMistralConversationResumeAuthority(),
   ) {
     // Les tests unitaires et les compositions historiques construisent encore le service
     // directement. Le fallback doit capturer le paramètre `provider` déjà initialisé : une
@@ -632,6 +682,98 @@ export class RealtimeVoiceService {
         cause: errorClass,
       });
     }
+  }
+
+  async requestResumeTicket(
+    sessionHandle: string,
+    body: unknown,
+    signal: AbortSignal,
+  ): Promise<Result<RealtimeVoiceResumeTicket, AppError>> {
+    if (!isMistralConversationSessionHandle(sessionHandle)) {
+      return {
+        ok: false,
+        error: {
+          kind: 'validation',
+          issues: [{ field: 'sessionHandle', message: 'Session de reprise invalide.' }],
+        },
+      };
+    }
+    const parsed = parseRealtimeResumeTicketBody(body);
+    if (!parsed.ok) return parsed;
+    const principal = getPrincipal();
+    if (!principal?.userId || !principal.companyId) {
+      return { ok: false, error: appForbidden('Session utilisateur et espace de travail requis.') };
+    }
+    if (
+      !this.settings.enabled
+      || this.settings.provider !== 'mistral'
+      || !this.settings.safetySecret
+      || signal.aborted
+    ) return { ok: false, error: appUnavailable('bob-live-mistral-resume', 5) };
+
+    const issued = await this.conversationResume.issue({
+      companyId: principal.companyId,
+      subjectHash: admissionSubjectHash(
+        this.settings.safetySecret,
+        principal.companyId,
+        principal.userId,
+      ),
+      subjectKeyVersion: this.settings.subjectKeyVersion,
+      sessionHandle,
+      clientAcceptedMissionConnectionEpoch: parsed.value.missionConnectionEpoch,
+      resumeNextServerSequence: parsed.value.nextServerSequence,
+      signal,
+    });
+    if (issued.status === 'terminal_complete') {
+      this.logger.audit('bob.live.mistral.resume.terminal_complete', { sessionHandle });
+      return ok({ status: 'terminal_complete' });
+    }
+    if (issued.status === 'issued') {
+      const bootstrap = issued.bootstrap;
+      if (
+        bootstrap.companyId !== principal.companyId
+        || bootstrap.sessionHandle !== sessionHandle
+        || bootstrap.protocol !== MISTRAL_CONVERSATION_PROTOCOL
+        || bootstrap.scope !== 'terminal_replay'
+        || bootstrap.clientAcceptedMissionConnectionEpoch
+          !== parsed.value.missionConnectionEpoch
+        || bootstrap.resumeNextServerSequence !== parsed.value.nextServerSequence
+      ) return { ok: false, error: appUnavailable('bob-live-mistral-resume', 5) };
+      this.logger.audit('bob.live.mistral.resume.ticket_issued', {
+        sessionHandle,
+        scope: bootstrap.scope,
+      });
+      return ok({
+        status: 'issued',
+        websocketUrl: this.settings.mistralWebsocketUrl,
+        ...bootstrap,
+        scope: 'terminal_replay',
+      });
+    }
+    if (issued.status === 'not_found' || issued.status === 'forbidden') {
+      return { ok: false, error: appNotFound('realtime_session', sessionHandle) };
+    }
+    if (
+      issued.status === 'expired'
+      || issued.status === 'stale_epoch'
+      || issued.status === 'invalid_cursor'
+      || issued.status === 'history_unavailable'
+    ) {
+      return {
+        ok: false,
+        error: appConflict('realtime_session_resume', `Reprise impossible (${issued.status}).`),
+      };
+    }
+    if (issued.status === 'invalid') {
+      return {
+        ok: false,
+        error: {
+          kind: 'validation',
+          issues: [{ field: 'resume', message: 'Demande de reprise invalide.' }],
+        },
+      };
+    }
+    return { ok: false, error: appUnavailable('bob-live-mistral-resume', 5) };
   }
 
   async hangup(sessionHandle: string): Promise<Result<{ ended: true }, AppError>> {

@@ -9,5 +9,11 @@ cd "$ROOT_DIR"
 
 RUN_POSTGRES_MISTRAL_CONVERSATION_CERT=true \
   pnpm --filter @bob/api exec vitest run \
-    src/voice/realtime/mistral-conversation-authority.postgres.test.ts \
-    src/voice/realtime/mistral-conversation-resume-ticket.postgres.test.ts
+    src/voice/realtime/mistral-conversation-key-version.postgres.test.ts
+
+if [ "${RUN_POSTGRES_MISTRAL_CONVERSATION_MUTATION_CERT:-false}" = "true" ]; then
+  RUN_POSTGRES_MISTRAL_CONVERSATION_CERT=true \
+    pnpm --filter @bob/api exec vitest run \
+      src/voice/realtime/mistral-conversation-authority.postgres.test.ts \
+      src/voice/realtime/mistral-conversation-resume-ticket.postgres.test.ts
+fi

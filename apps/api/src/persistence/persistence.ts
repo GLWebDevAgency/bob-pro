@@ -39,6 +39,8 @@ import type {
   RealtimeAdmissionPolicy,
   RealtimeAdmissionPort,
 } from '../voice/realtime/realtime-admission';
+import type { MistralConversationPersistenceKeyRing } from '../voice/realtime/mistral-conversation-outbox-seal';
+import type { MistralConversationTerminalReplayAuthorities } from '../voice/realtime/mistral-conversation-terminal-replay';
 import type { RealtimeControlRepositoryPort } from '../voice/realtime/realtime-control.repository';
 import type { RealtimeSidebandOwnerPort } from '../voice/realtime/realtime-sideband-owner';
 import type { RealtimeSpeechDeliveryRepositoryPort } from '../voice/realtime/realtime-speech-delivery.repository';
@@ -133,6 +135,13 @@ export interface Persistence {
     policy: MistralRealtimeIngressTicketPolicy,
     identityKeys: MistralRealtimeIngressIdentityKeyRing,
   ): MistralRealtimeIngressTicketAuthority;
+  /**
+   * Factory serveur uniquement. `null` signifie que l'adapter de persistance ne sait pas fournir
+   * l'autorité PostgreSQL réelle ; l'appelant doit alors refuser le démarrage du canary v2.
+   */
+  createMistralConversationTerminalReplayAuthorities(
+    keys: MistralConversationPersistenceKeyRing,
+  ): MistralConversationTerminalReplayAuthorities | null;
   runInTransaction<T>(fn: () => Promise<T>): Promise<T>;
   runWithTenant<T>(companyId: string, fn: () => Promise<T>): Promise<T>;
   runWithIdentity<T>(userId: string, fn: () => Promise<T>): Promise<T>;
