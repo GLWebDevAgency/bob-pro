@@ -9,3 +9,4 @@ Pilier 3 assets store (icon/splash)	1784022551	apps/mobile/assets/**	28800
 Pilier 2 gouvernance pression (refus vocal)	1784022551	apps/mobile/src/monetization/**	28800
 Chantier états/skeletons: socle partagé	1784025372	apps/mobile/src/components/ui-states/**	28800
 matrice flags V1 (doc)	1784501871	design_handoff_bob_pro/MATRICE_FLAGS_V1.md	3600
+test anti-drift matrice flags	1784501872	apps/api/src/flags-matrix-v1.test.ts	3600
