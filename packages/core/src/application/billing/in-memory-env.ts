@@ -85,6 +85,20 @@ export function makeEnv() {
         );
         if (existing && existing.id !== i.id) return;
       }
+      // B2 — émulation FIDÈLE de l'index unique partiel Postgres
+      // uniq_invoice_parent_quote_situation_order : un n° d'ordre de situation ne s'insère
+      // jamais deux fois sur un même devis (backstop des générations concurrentes).
+      if (i.kind === 'situation' && i.parentQuoteId !== null && i.situationOrder !== null) {
+        const clash = [...invoicesMap.values()].find(
+          (other) =>
+            other.id !== i.id &&
+            other.kind === 'situation' &&
+            other.companyId === i.companyId &&
+            other.parentQuoteId === i.parentQuoteId &&
+            other.situationOrder === i.situationOrder,
+        );
+        if (clash) throw new Error('uniq_invoice_parent_quote_situation_order');
+      }
       invoicesMap.set(i.id, i);
     },
     deleteById: async (id) => {

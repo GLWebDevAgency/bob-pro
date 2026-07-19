@@ -43,6 +43,13 @@ export interface BuildMentionsInput {
   /** Nature des opérations (obligatoire sur facture dès la réforme). */
   operationNature?: OperationNature;
   /**
+   * B3 — la pièce porte des réductions de prix (remise de ligne et/ou remise globale) :
+   * déclenche la mention « rabais, remises, ristournes » (art. L441-9 du code de commerce ;
+   * art. 242 nonies A, I-8° de l'annexe II au CGI — réductions acquises et chiffrables lors de
+   * l'opération, directement liées à elle). Absent/false = aucune réduction, mention omise.
+   */
+  hasPriceReductions?: boolean;
+  /**
    * Taux de TVA portés par les lignes de la pièce — déclenchent la mention certifiée taux réduits
    * (P11, art. 41 LF 2025 : remplace l'attestation Cerfa depuis le 16/2/2025).
    */
@@ -118,6 +125,15 @@ export function buildMentions(input: BuildMentionsInput): string[] {
   }
   // Nature des opérations (livraison de biens / prestation de services) — obligatoire sur facture.
   if (kind === 'invoice' && input.operationNature) m.push(`Nature de l'opération : ${NATURE_LABEL[input.operationNature]}`);
+  // B3 — rabais, remises et ristournes ACQUIS à la date de l'opération et directement liés à
+  // elle : mention obligatoire de la facture (art. L441-9 du code de commerce ; art. 242
+  // nonies A, I-8° de l'annexe II au CGI). Les montants exacts sont détaillés sur les lignes
+  // et le total de la pièce (grossHt/discountCents figés) — jamais une mention sans support.
+  if (kind === 'invoice' && input.hasPriceReductions === true) {
+    m.push(
+      'Rabais, remises et ristournes acquis à la date de la vente ou de la prestation et directement liés à cette opération : détaillés sur les lignes et le total de la présente facture (art. L441-9 du code de commerce).',
+    );
+  }
 
   if (company.isVatFranchise()) {
     // Réforme : à compter du 1er sept. 2026, la franchise en base relève du CIBS (Code des impositions

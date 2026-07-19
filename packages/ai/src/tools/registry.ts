@@ -3,16 +3,20 @@ import {
   ok,
   err,
   type AppError,
+  type Discount,
   type LineInput,
   type LineCategory,
   type ExpenseCategory,
   type FiscalDeadline,
+  type SituationAmountInput,
   type SubscriptionStatusView,
   EXPENSE_PAYMENT_PROOF_DOCUMENT_ID_MAX_LENGTH,
   EXPENSE_PAYMENT_REFERENCE_MAX_LENGTH,
+  PaymentTerms,
   isValidDateOnly,
   isVatRate,
   makePurchaseOrderRef,
+  validateDiscount,
   validateDocumentDisplayName,
 } from '@bob/core';
 import { type AnyTool, type Tool, type ToolPublicResult } from './tool';
@@ -37,6 +41,11 @@ import {
   type RecordExpenseActionInput,
   type RecordExpenseSettlementDeclaration,
   type GenerateInvoiceActionInput,
+  type ComposeStandaloneInvoiceActionInput,
+  type ComposeStandaloneInvoiceActionOutput,
+  type GenerateSituationActionInput,
+  type SetCustomerPaymentTermsActionInput,
+  type SetCustomerPaymentTermsActionOutput,
   type ScheduleEmbargoPaymentActionInput,
   type ScheduleEmbargoPaymentActionOutput,
   type ExportFecActionInput,
@@ -58,9 +67,31 @@ const INVOICE_MODES: readonly NonNullable<GenerateInvoiceActionInput['mode']>[] 
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
+/** Remise STRUCTURELLE (B3) validée par l'AUTORITÉ du domaine (validateDiscount @bob/core) —
+ * le plafond « montant ≤ base » reste jugé par l'agrégat qui connaît la base, jamais ici. */
+function parseDiscount(raw: unknown, field: string): Result<Discount, AppError> {
+  const d = raw as { type?: unknown; value?: unknown; cents?: unknown };
+  if (typeof d !== 'object' || d === null || Array.isArray(d))
+    return err(appValidation(field, 'Remise invalide.'));
+  const candidate =
+    d.type === 'percent'
+      ? ({ type: 'percent', value: d.value as number } as Discount)
+      : d.type === 'amount'
+        ? ({ type: 'amount', cents: d.cents as number } as Discount)
+        : null;
+  if (candidate === null) return err(appValidation(field, 'Type de remise inconnu (percent | amount).'));
+  const validated = validateDiscount(candidate, field);
+  if (!validated.ok) {
+    return err(
+      appValidation(field, 'message' in validated.error ? validated.error.message : 'Remise invalide.'),
+    );
+  }
+  return ok(validated.value);
+}
+
 /** Valide strictement une ligne de devis dictée/planifiée par l'agent (anti-hallucination d'arguments). */
 function parseLine(raw: unknown, index: number): Result<LineInput, AppError> {
-  const l = raw as { label?: unknown; category?: unknown; qty?: unknown; unitPriceHT?: unknown; vatRate?: unknown };
+  const l = raw as { label?: unknown; category?: unknown; qty?: unknown; unitPriceHT?: unknown; vatRate?: unknown; discount?: unknown };
   if (typeof l?.label !== 'string' || l.label.trim().length === 0)
     return err(appValidation(`lines[${index}].label`, 'Libellé manquant.'));
   if (typeof l.category !== 'string' || !(LINE_CATEGORIES as readonly string[]).includes(l.category))
@@ -71,12 +102,20 @@ function parseLine(raw: unknown, index: number): Result<LineInput, AppError> {
     return err(appValidation(`lines[${index}].unitPriceHT`, 'Prix unitaire HT (centimes) invalide.'));
   if (typeof l.vatRate !== 'number' || !isVatRate(l.vatRate))
     return err(appValidation(`lines[${index}].vatRate`, 'Taux de TVA invalide.'));
+  // B3 (additif) — remise DE LIGNE optionnelle : structure jugée par le domaine, plafond par l'agrégat.
+  let discount: Discount | undefined;
+  if (l.discount !== undefined && l.discount !== null) {
+    const parsed = parseDiscount(l.discount, `lines[${index}].discount`);
+    if (!parsed.ok) return parsed;
+    discount = parsed.value;
+  }
   return ok({
     label: l.label.trim(),
     category: l.category as LineCategory,
     qty: l.qty,
     unitPriceHT: l.unitPriceHT,
     vatRate: l.vatRate,
+    ...(discount !== undefined ? { discount } : {}),
   });
 }
 
@@ -239,7 +278,7 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
       // Brouillon interne réversible : pas de plancher — la sortie vers le client reste envoyer_devis.
       riskTier: 'draft',
       parse: (raw): Result<CreateQuoteActionInput, AppError> => {
-        const r = raw as { customerId?: unknown; lines?: unknown; depositPct?: unknown };
+        const r = raw as { customerId?: unknown; lines?: unknown; depositPct?: unknown; globalDiscount?: unknown };
         if (typeof r?.customerId !== 'string' || r.customerId.length === 0)
           return err(appValidation('customerId', 'Client manquant.'));
         if (!Array.isArray(r.lines) || r.lines.length === 0)
@@ -252,10 +291,18 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
         }
         if (r.depositPct !== undefined && (typeof r.depositPct !== 'number' || r.depositPct <= 0 || r.depositPct >= 100))
           return err(appValidation('depositPct', 'Pourcentage d’acompte invalide.'));
+        // B3 (additif) — remise globale dictée : structure jugée par le domaine (validateDiscount).
+        let globalDiscount: Discount | undefined;
+        if (r.globalDiscount !== undefined && r.globalDiscount !== null) {
+          const parsed = parseDiscount(r.globalDiscount, 'globalDiscount');
+          if (!parsed.ok) return parsed;
+          globalDiscount = parsed.value;
+        }
         return ok({
           customerId: r.customerId,
           lines,
           ...(typeof r.depositPct === 'number' ? { depositPct: r.depositPct } : {}),
+          ...(globalDiscount !== undefined ? { globalDiscount } : {}),
         });
       },
       run: (input) => createQuoteAction(input),
@@ -382,6 +429,209 @@ export function buildBobTools(actions: BobActions): AnyTool[] {
       run: (input) => generateInvoiceAction(input),
     };
     tools.push(genererFacture as AnyTool);
+  }
+
+  // —— Outil OPTIONNEL facturer_situation (B2) : « facture une situation de 40 % sur le chantier
+  // Durand » — MÊME use case GenerateInvoiceFromQuote (mode 'situation') que l'UI, via la MÊME
+  // action generateInvoice. Le montant est TOUJOURS le choix de l'artisan ; la garde de CUMUL
+  // (acompte + situations ≤ marché), le gel de rétractation A3 et la retenue de garantie B5
+  // vivent au domaine — leurs refus sont restitués VERBATIM (mêmes messages que l'UI).
+  if (generateInvoiceAction) {
+    const facturerSituation: Tool<GenerateSituationActionInput, { invoiceId: string }> = {
+      name: 'facturer_situation',
+      description:
+        'Génère une SITUATION DE TRAVAUX (facture d’avancement) d’un devis signé : % du marché ou montant HT en centimes — la pratique des marchés privés stipule les situations en HT. Même use case GenerateInvoiceFromQuote que l’UI ; cumul acompte + situations plafonné au marché (garde du domaine) ; la retenue de garantie stipulée au devis est déduite du net à payer. Si le serveur refuse pour embargo L221-10 ou gel de rétractation, explique le refus honnête (mêmes messages que l’écran).',
+      mutating: true,
+      outbound: false,
+      compliance: 'high',
+      // Palier fiscal : la situation entre dans la chaîne de facturation légale -> toujours confirmer.
+      safetyFloor: true,
+      riskTier: 'fiscal',
+      parse: (raw): Result<GenerateSituationActionInput, AppError> => {
+        if (typeof raw !== 'object' || raw === null || Array.isArray(raw))
+          return err(appValidation('situation', 'Situation invalide.'));
+        const r = raw as Record<string, unknown>;
+        const allowed = new Set(['quoteId', 'situation', 'embargoOverride']);
+        if (Object.keys(r).some((key) => !allowed.has(key)))
+          return err(appValidation('situation', 'Champ de situation inconnu.'));
+        if (typeof r.quoteId !== 'string' || r.quoteId.length === 0 || r.quoteId.length > 200)
+          return err(appValidation('quoteId', 'Devis manquant.'));
+        const s = r.situation as { percent?: unknown; amountHtCents?: unknown } | null | undefined;
+        if (typeof s !== 'object' || s === null || Array.isArray(s))
+          return err(appValidation('situation', 'Montant de situation requis ({ percent } | { amountHtCents }).'));
+        // Formes EXCLUSIVES — la cohérence fine (0 < % ≤ 100, cumul) reste jugée par le domaine.
+        let situation: SituationAmountInput;
+        if (s.percent !== undefined && s.amountHtCents === undefined) {
+          if (typeof s.percent !== 'number' || !Number.isFinite(s.percent) || s.percent <= 0 || s.percent > 100)
+            return err(appValidation('situation.percent', "Pourcentage d'avancement invalide (0 < % ≤ 100)."));
+          situation = { percent: s.percent };
+        } else if (s.amountHtCents !== undefined && s.percent === undefined) {
+          if (typeof s.amountHtCents !== 'number' || !Number.isSafeInteger(s.amountHtCents) || s.amountHtCents <= 0)
+            return err(appValidation('situation.amountHtCents', 'Montant HT de situation invalide (centimes entiers > 0).'));
+          situation = { amountHtCents: s.amountHtCents };
+        } else {
+          return err(appValidation('situation', 'Montant de situation requis ({ percent } OU { amountHtCents }, exclusifs).'));
+        }
+        // Override L221-10 : booléen strict — seul `true` traverse (jamais par truthiness).
+        if (r.embargoOverride !== undefined && typeof r.embargoOverride !== 'boolean')
+          return err(appValidation('embargoOverride', 'Booléen attendu.'));
+        return ok({
+          quoteId: r.quoteId,
+          situation,
+          ...(r.embargoOverride === true ? { embargoOverride: true } : {}),
+        });
+      },
+      run: (input) =>
+        generateInvoiceAction({
+          quoteId: input.quoteId,
+          mode: 'situation',
+          situation: input.situation,
+          ...(input.embargoOverride === true ? { embargoOverride: true } : {}),
+        }),
+    };
+    tools.push(facturerSituation as AnyTool);
+  }
+
+  // —— Outil OPTIONNEL facture_directe (B1) : « facture 380 € à Mme Girard pour le dépannage »
+  // — MÊME use case ComposeStandaloneInvoice (@bob/core) que POST /invoices. Brouillon `final`
+  // standalone (parentQuoteId null) ; l'émission suit ensuite le MÊME IssueInvoice que toute
+  // facture. Les gardes fail-closed du domaine (B6 pro étranger, A3bis urgence b2c) sont
+  // restituées VERBATIM — jamais contournées, jamais reformulées.
+  const composeStandaloneAction = actions.composeStandaloneInvoice?.bind(actions);
+  if (composeStandaloneAction) {
+    const factureDirecte: Tool<ComposeStandaloneInvoiceActionInput, ComposeStandaloneInvoiceActionOutput> = {
+      name: 'facture_directe',
+      description:
+        'Crée une FACTURE DIRECTE sans devis signé (brouillon) : dépannage urgent facturé sur place, régie (TJM × jours), facturation syndic/B2B récurrente. Client particulier (b2c) : UNIQUEMENT pour une intervention urgente à domicile expressément demandée par le client (art. L221-10, al. 2 c. conso) — « urgentOnSiteRepair: true » strict après confirmation du fait ; sans urgence, le devis signé reste le chemin (refus honnête du domaine, à restituer tel quel). Client pro étranger : émission bloquée (B6, fail-closed). La TVA de chaque ligne est re-jugée par le domaine (franchise, débours, autoliquidation, taux réduits travaux).',
+      mutating: true,
+      outbound: false,
+      compliance: 'high',
+      // Palier fiscal (mission B1) : entre dans la chaîne de facturation légale -> toujours confirmer.
+      safetyFloor: true,
+      riskTier: 'fiscal',
+      parse: (raw): Result<ComposeStandaloneInvoiceActionInput, AppError> => {
+        if (typeof raw !== 'object' || raw === null || Array.isArray(raw))
+          return err(appValidation('invoice', 'Facture directe invalide.'));
+        const r = raw as Record<string, unknown>;
+        const allowed = new Set(['customerId', 'lines', 'globalDiscount', 'context', 'urgentOnSiteRepair']);
+        if (Object.keys(r).some((key) => !allowed.has(key)))
+          return err(appValidation('invoice', 'Champ de facture directe inconnu.'));
+        if (typeof r.customerId !== 'string' || r.customerId.length === 0 || r.customerId.length > 200)
+          return err(appValidation('customerId', 'Client manquant.'));
+        if (!Array.isArray(r.lines) || r.lines.length === 0)
+          return err(appValidation('lines', 'Au moins une ligne chiffrée est requise.'));
+        const lines: LineInput[] = [];
+        for (let i = 0; i < r.lines.length; i += 1) {
+          const parsed = parseLine(r.lines[i], i);
+          if (!parsed.ok) return parsed;
+          lines.push(parsed.value);
+        }
+        let globalDiscount: Discount | undefined;
+        if (r.globalDiscount !== undefined && r.globalDiscount !== null) {
+          const parsed = parseDiscount(r.globalDiscount, 'globalDiscount');
+          if (!parsed.ok) return parsed;
+          globalDiscount = parsed.value;
+        }
+        // Éligibilité taux réduits travaux : booléens STRICTS, jamais déduits d'un truthy.
+        let context: { housingOlderThan2y?: boolean; energyRenovation?: boolean } | undefined;
+        if (r.context !== undefined && r.context !== null) {
+          const c = r.context as { housingOlderThan2y?: unknown; energyRenovation?: unknown };
+          if (typeof c !== 'object' || Array.isArray(c))
+            return err(appValidation('context', 'Contexte travaux invalide.'));
+          if (c.housingOlderThan2y !== undefined && typeof c.housingOlderThan2y !== 'boolean')
+            return err(appValidation('context.housingOlderThan2y', 'Booléen attendu.'));
+          if (c.energyRenovation !== undefined && typeof c.energyRenovation !== 'boolean')
+            return err(appValidation('context.energyRenovation', 'Booléen attendu.'));
+          context = {
+            ...(c.housingOlderThan2y === true ? { housingOlderThan2y: true } : {}),
+            ...(c.energyRenovation === true ? { energyRenovation: true } : {}),
+          };
+        }
+        // A3bis : booléen strict — seul `true` (fait confirmé par l'artisan) traverse.
+        if (r.urgentOnSiteRepair !== undefined && typeof r.urgentOnSiteRepair !== 'boolean')
+          return err(appValidation('urgentOnSiteRepair', 'Booléen attendu.'));
+        return ok({
+          customerId: r.customerId,
+          lines,
+          ...(globalDiscount !== undefined ? { globalDiscount } : {}),
+          ...(context !== undefined ? { context } : {}),
+          ...(r.urgentOnSiteRepair === true ? { urgentOnSiteRepair: true } : {}),
+        });
+      },
+      projectPublicResult: (output): ToolPublicResult => ({
+        invoiceId: output.invoiceId,
+        totalTtcCents: output.totalTtcCents,
+        netToPayCents: output.netToPayCents,
+      }),
+      run: (input) => composeStandaloneAction(input),
+    };
+    tools.push(factureDirecte as AnyTool);
+  }
+
+  // —— Outil OPTIONNEL definir_conditions_paiement (B4) : « Durand paie à 45 jours fin de
+  // mois » — pose les conditions PROPRES au client (Customer.paymentTerms), MÊME chemin
+  // UpdateCustomer que la fiche client. La structure est jugée par PaymentTerms.of (@bob/core)
+  // et le plafond légal L441-10 (pro : 60 j / 45 j fin de mois) par le domaine à
+  // l'enregistrement — son refus est restitué VERBATIM (même message que l'UI).
+  const setCustomerPaymentTermsAction = actions.setCustomerPaymentTerms?.bind(actions);
+  if (setCustomerPaymentTermsAction) {
+    const definirConditions: Tool<SetCustomerPaymentTermsActionInput, SetCustomerPaymentTermsActionOutput> = {
+      name: 'definir_conditions_paiement',
+      description:
+        'Enregistre les conditions de paiement PROPRES à un client (« Durand paie à 45 jours fin de mois ») : elles pilotent l’échéance des prochaines factures émises pour ce client. Plafond légal entre professionnels : 60 jours, ou 45 jours fin de mois (art. L441-10 du code de commerce) — jugé par le domaine, refus à restituer tel quel. Ne modifie aucune facture déjà émise.',
+      mutating: true,
+      outbound: false,
+      compliance: 'medium',
+      // Fait DÉCLARÉ par l'artisan qui conditionne les échéances légales des prochaines pièces,
+      // sans commande d'annulation vocale : plancher de consentement, même en autonomie 'auto'.
+      safetyFloor: true,
+      riskTier: 'reversible',
+      parse: (raw): Result<SetCustomerPaymentTermsActionInput, AppError> => {
+        if (typeof raw !== 'object' || raw === null || Array.isArray(raw))
+          return err(appValidation('paymentTerms', 'Conditions de paiement invalides.'));
+        const r = raw as Record<string, unknown>;
+        const allowed = new Set(['customerId', 'days', 'endOfMonth', 'label']);
+        if (Object.keys(r).some((key) => !allowed.has(key)))
+          return err(appValidation('paymentTerms', 'Champ de conditions inconnu.'));
+        if (typeof r.customerId !== 'string' || r.customerId.length === 0 || r.customerId.length > 200)
+          return err(appValidation('customerId', 'Client manquant.'));
+        if (typeof r.days !== 'number' || !Number.isInteger(r.days) || r.days < 0 || r.days > 365)
+          return err(appValidation('days', 'Délai en jours invalide (entier 0..365).'));
+        if (typeof r.endOfMonth !== 'boolean')
+          return err(appValidation('endOfMonth', 'Booléen « fin de mois » requis.'));
+        // Libellé imprimable : celui fourni, sinon la forme canonique — VALIDÉ par l'autorité
+        // du domaine (PaymentTerms.of), jamais par une règle locale divergente.
+        const label =
+          typeof r.label === 'string' && r.label.trim().length > 0
+            ? r.label.trim()
+            : r.endOfMonth
+              ? `${r.days} jours fin de mois`
+              : `Paiement à ${r.days} jours`;
+        if (r.label !== undefined && typeof r.label !== 'string')
+          return err(appValidation('label', 'Libellé invalide.'));
+        if (label.length > 120)
+          return err(appValidation('label', 'Libellé des conditions limité à 120 caractères.'));
+        const structural = PaymentTerms.of({ days: r.days, endOfMonth: r.endOfMonth, label });
+        if (!structural.ok) {
+          return err(
+            appValidation(
+              'paymentTerms',
+              'message' in structural.error ? structural.error.message : 'Conditions de paiement invalides.',
+            ),
+          );
+        }
+        return ok({ customerId: r.customerId, days: r.days, endOfMonth: r.endOfMonth, label });
+      },
+      projectPublicResult: (output): ToolPublicResult => ({
+        customerId: output.customerId,
+        customerName: output.customerName,
+        days: output.days,
+        endOfMonth: output.endOfMonth,
+        label: output.label,
+      }),
+      run: (input) => setCustomerPaymentTermsAction(input),
+    };
+    tools.push(definirConditions as AnyTool);
   }
 
   // —— Outil OPTIONNEL programmer_encaissement_embargo : le DÉFAUT LÉGAL du refus L221-10 est

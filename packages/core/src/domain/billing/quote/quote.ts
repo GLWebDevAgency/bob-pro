@@ -16,9 +16,17 @@ import {
   purchaseOrderRefEquals,
   clonePurchaseOrderRef,
 } from '../shared/purchase-order-ref';
+import {
+  type Discount,
+  cloneDiscount,
+  discountEquals,
+  validateDiscount,
+  validateLineDiscount,
+} from '../shared/discount';
 import { isVatRate } from '../shared/vat-rate';
 import { Quantity } from '../shared/quantity';
-import { computeTotals } from '../../services/compute-totals';
+import { computeTotals, discountableNetHtCents } from '../../services/compute-totals';
+import { validateRetenueGarantiePct } from '../../services/retenue-garantie';
 import { assertTransition, type QuoteStatus, QUOTE_TRANSITIONS } from '../shared/state-machines';
 import { type UrgentRepairRequest } from '../../compliance/retractation';
 
@@ -52,6 +60,13 @@ export class Quote extends AggregateRoot<string> {
   private _signature: Signature | null = null;
   /** Bon de commande client (B8) — null par défaut : compat ascendante totale. */
   private _purchaseOrder: PurchaseOrderRef | null = null;
+  /** B3 — remise GLOBALE du devis (% ou montant HT), null par défaut : compat ascendante. */
+  private _globalDiscount: Discount | null = null;
+  /**
+   * B5 — taux de retenue de garantie du devis-chantier (marché privé de travaux, loi 71-584),
+   * OPTIONNEL et jamais imposé : null = aucune retenue. Reprise par les situations et la finale.
+   */
+  private _retenueGarantiePct: number | null = null;
   /** A1 — date d'établissement du devis, dérivée à l'envoi (jour métier Paris). */
   private _issuedAt: DateOnly | null = null;
   /**
@@ -128,6 +143,14 @@ export class Quote extends AggregateRoot<string> {
   get purchaseOrder(): PurchaseOrderRef | null {
     return this._purchaseOrder;
   }
+  /** B3 — remise globale du devis (copie défensive) ; null = aucune. */
+  get globalDiscount(): Discount | null {
+    return this._globalDiscount ? cloneDiscount(this._globalDiscount) : null;
+  }
+  /** B5 — taux de retenue de garantie (loi 71-584) ; null = aucune retenue stipulée. */
+  get retenueGarantiePct(): number | null {
+    return this._retenueGarantiePct;
+  }
   get revision(): number {
     return this._revision;
   }
@@ -145,6 +168,16 @@ export class Quote extends AggregateRoot<string> {
     if (!q.ok) return q;
     if (!isVatRate(line.vatRate))
       return err({ code: 'VALIDATION', field: 'vatRate', message: 'Taux TVA non autorise.' });
+    // B3 — remise de ligne validée contre SA base HT (structure + plafond, jamais négative) ;
+    // B9 — refusée sur un débours (art. 267, II-2° CGI : remboursement à l'euro près).
+    if (line.discount !== undefined) {
+      const discount = validateLineDiscount(
+        line.discount,
+        Math.round(line.qty * line.unitPriceHT),
+        line.category,
+      );
+      if (!discount.ok) return discount;
+    }
     this._lines.push(line);
     return ok(undefined);
   }
@@ -159,13 +192,16 @@ export class Quote extends AggregateRoot<string> {
   }
 
   /**
-   * R6 : édition d'une ligne EXISTANTE (label/qty/unitPriceHT/vatRate), draft uniquement — un
-   * devis signé est un contrat (assertDraft, même garde qu'addLine/removeLine). Patch partiel :
-   * seuls les champs fournis sont revalidés/remplacés, les autres restent inchangés.
+   * R6 : édition d'une ligne EXISTANTE (label/qty/unitPriceHT/vatRate/discount), draft
+   * uniquement — un devis signé est un contrat (assertDraft, même garde qu'addLine/removeLine).
+   * Patch partiel : seuls les champs fournis sont revalidés/remplacés, les autres restent
+   * inchangés. B3 : `discount: null` RETIRE la remise de ligne ; absent = inchangée.
    */
   updateLine(
     lineId: string,
-    patch: Partial<Pick<LineInput, 'label' | 'qty' | 'unitPriceHT' | 'vatRate'>>,
+    patch: Partial<Pick<LineInput, 'label' | 'qty' | 'unitPriceHT' | 'vatRate'>> & {
+      discount?: Discount | null;
+    },
   ): DomainResult<void> {
     const d = this.assertDraft();
     if (!d.ok) return d;
@@ -173,7 +209,7 @@ export class Quote extends AggregateRoot<string> {
     const current = index === -1 ? undefined : this._lines[index];
     if (index === -1 || current === undefined)
       return err({ code: 'VALIDATION', field: 'lineId', message: 'Ligne introuvable.' });
-    const allowed = new Set(['label', 'qty', 'unitPriceHT', 'vatRate']);
+    const allowed = new Set(['label', 'qty', 'unitPriceHT', 'vatRate', 'discount']);
     if (Object.keys(patch).length === 0 || Object.keys(patch).some((key) => !allowed.has(key)))
       return err({
         code: 'VALIDATION',
@@ -211,7 +247,25 @@ export class Quote extends AggregateRoot<string> {
       ...(current.unit !== undefined ? { unit: current.unit } : {}),
       unitPriceHT: patch.unitPriceHT !== undefined ? patch.unitPriceHT : current.unitPriceHT,
       vatRate: patch.vatRate !== undefined ? patch.vatRate : current.vatRate,
+      ...(patch.discount === undefined
+        ? current.discount !== undefined
+          ? { discount: current.discount }
+          : {}
+        : patch.discount === null
+          ? {}
+          : { discount: patch.discount }),
     };
+    // B3 — la remise (nouvelle OU conservée) est revalidée contre la base HT RÉSULTANTE de la
+    // ligne : baisser qty/prix ne laisse jamais une remise en montant dépasser la nouvelle base.
+    // B9 — toujours refusée sur un débours (art. 267, II-2° CGI).
+    if (candidate.discount !== undefined) {
+      const discount = validateLineDiscount(
+        candidate.discount,
+        Math.round(candidate.qty * candidate.unitPriceHT),
+        candidate.category,
+      );
+      if (!discount.ok) return discount;
+    }
     const nextLines = this._lines.map((line, lineIndex) =>
       lineIndex === index ? candidate : line,
     );
@@ -239,6 +293,56 @@ export class Quote extends AggregateRoot<string> {
     const p = Percentage.of(pct);
     if (!p.ok) return p;
     this._depositPct = p.value;
+    return ok(undefined);
+  }
+
+  /**
+   * B3 — remise GLOBALE du devis (% du HT net de lignes, ou montant HT en centimes), draft
+   * uniquement (un devis signé est un contrat). `null` retire la remise. Une remise en montant
+   * est validée contre le HT net COURANT ; la garde est revérifiée à l'envoi (les lignes
+   * peuvent encore bouger en draft — fail-closed au moment où la pièce devient réelle).
+   */
+  setGlobalDiscount(discount: Discount | null): DomainResult<void> {
+    const d = this.assertDraft();
+    if (!d.ok) return d;
+    if (discount === null) {
+      this._globalDiscount = null;
+      return ok(undefined);
+    }
+    const structural = validateDiscount(discount, 'globalDiscount');
+    if (!structural.ok) return structural;
+    if (discountEquals(this._globalDiscount, discount)) return ok(undefined);
+    if (discount.type === 'amount') {
+      // B9 — plafond sur le HT REMISABLE : les débours (art. 267, II-2° CGI) sont hors remise.
+      const netHt = discountableNetHtCents(this._lines);
+      if (discount.cents > netHt)
+        return err({
+          code: 'VALIDATION',
+          field: 'globalDiscount',
+          message:
+            'Remise globale supérieure au HT remisable du devis (après remises de ligne, hors débours).',
+        });
+    }
+    this._globalDiscount = cloneDiscount(discount);
+    return ok(undefined);
+  }
+
+  /**
+   * B5 — retenue de garantie du devis-chantier (marché privé de travaux, loi n° 71-584 du
+   * 16 juillet 1971), OPTIONNELLE et posée en draft : 0 < taux ≤ 5 % (plafond d'ordre public).
+   * `null` retire la stipulation. Reprise par les situations et la finale dérivées, jamais par
+   * l'acompte (il précède l'exécution que la retenue garantit).
+   */
+  setRetenueGarantie(pct: number | null): DomainResult<void> {
+    const d = this.assertDraft();
+    if (!d.ok) return d;
+    if (pct === null) {
+      this._retenueGarantiePct = null;
+      return ok(undefined);
+    }
+    const validated = validateRetenueGarantiePct(pct);
+    if (!validated.ok) return validated;
+    this._retenueGarantiePct = validated.value;
     return ok(undefined);
   }
 
@@ -285,10 +389,10 @@ export class Quote extends AggregateRoot<string> {
   }
 
   totals(): Totals {
-    return computeTotals(
-      [...this._lines],
-      this._depositPct ? { depositPct: this._depositPct.value } : undefined,
-    );
+    return computeTotals([...this._lines], {
+      ...(this._depositPct ? { depositPct: this._depositPct.value } : {}),
+      ...(this._globalDiscount ? { globalDiscount: this._globalDiscount } : {}),
+    });
   }
 
   /** Pure : valide et fige le numéro alloué par le use case (no-gap garanti côté infra). */
@@ -307,6 +411,19 @@ export class Quote extends AggregateRoot<string> {
       return err({ code: 'VALIDATION', field: 'number', message: 'Numero requis avant envoi.' });
     if (this._lines.length === 0)
       return err({ code: 'VALIDATION', field: 'lines', message: 'Au moins une ligne requise.' });
+    // B3 — garde AUTORITAIRE au moment où la pièce devient réelle : une remise globale en
+    // montant ne peut excéder le HT REMISABLE (les lignes ont pu bouger depuis la saisie ;
+    // B9 — les débours, art. 267, II-2° CGI, restent hors remise).
+    if (this._globalDiscount?.type === 'amount') {
+      const netHt = discountableNetHtCents(this._lines);
+      if (this._globalDiscount.cents > netHt)
+        return err({
+          code: 'VALIDATION',
+          field: 'globalDiscount',
+          message:
+            'Remise globale supérieure au HT remisable du devis (après remises de ligne, hors débours).',
+        });
+    }
     this._status = 'sent';
     // A1 : la date d'établissement est DÉRIVÉE de l'instant d'envoi, au jour métier
     // Europe/Paris (même calendrier que l'exercice de numérotation, cf. SendQuote) —
@@ -381,6 +498,8 @@ export class Quote extends AggregateRoot<string> {
       retractedAt: this._retractedAt,
       urgentRepair: this._urgentRepair ? { ...this._urgentRepair } : null,
       purchaseOrder: this._purchaseOrder ? clonePurchaseOrderRef(this._purchaseOrder) : null,
+      globalDiscount: this._globalDiscount ? cloneDiscount(this._globalDiscount) : null,
+      retenueGarantiePct: this._retenueGarantiePct,
       revision: this._revision,
     };
   }
@@ -391,6 +510,9 @@ export class Quote extends AggregateRoot<string> {
     q._lines = s.lines.map((l) => ({ ...l }));
     // Compat ascendante : les snapshots antérieurs à B8 n'ont ni purchaseOrder ni revision.
     q._purchaseOrder = s.purchaseOrder ? clonePurchaseOrderRef(s.purchaseOrder) : null;
+    // Compat ascendante B3/B5 : snapshots antérieurs sans remise globale ni retenue (null honnête).
+    q._globalDiscount = s.globalDiscount ? cloneDiscount(s.globalDiscount) : null;
+    q._retenueGarantiePct = s.retenueGarantiePct ?? null;
     q._revision = s.revision ?? 1;
     // Compat ascendante A1 : un devis envoyé avant l'ajout du champ reste sans date
     // d'établissement (null honnête, jamais rétro-daté depuis createdAt).
@@ -425,6 +547,10 @@ export interface QuoteSnapshot {
   signature: Signature | null;
   /** B8 — optionnels : les snapshots antérieurs restent lisibles (compat ascendante). */
   purchaseOrder?: PurchaseOrderRef | null;
+  /** B3 — optionnel : remise globale absente des snapshots antérieurs (compat ascendante). */
+  globalDiscount?: Discount | null;
+  /** B5 — optionnel : taux de retenue de garantie absent des snapshots antérieurs. */
+  retenueGarantiePct?: number | null;
   revision?: number;
   /** A1 — optionnel : date d'établissement absente des snapshots antérieurs (jamais rétro-datée). */
   issuedAt?: DateOnly | null;

@@ -98,6 +98,7 @@ import { useFiscalProfileFlow } from '../../src/fiscal/use-fiscal-profile-flow';
 import { useOwnerPayGuidance } from '../../src/fiscal/use-owner-pay-guidance';
 import { useBobAwareScrollInsets } from '../../src/components/use-bob-aware-scroll-insets';
 import { BankBalanceSheet } from '../../src/components/BankBalanceSheet';
+import { RetenueSuiviCard } from '../../src/components/RetenueSuiviCard';
 import { hasBlockingAuthoritativeDataError } from '../../src/data/authoritative-query-state';
 import {
   isBankBalanceQualificationError,
@@ -1178,6 +1179,12 @@ export default function Argent() {
               </Text>
             </Card>
           ) : null}
+
+          {/* ── B5 — Retenue de garantie à récupérer (loi 71-584) : créance SUIVIE du tenant,
+               dérivée des factures émises porteuses — la carte se tait sans retenue. ── */}
+          <View style={{ marginTop: 14 }}>
+            <RetenueSuiviCard />
+          </View>
 
           {/* ── Prévision de tréso (scénarios × horizons LIVE) ──────────────── */}
           <Card radius={22} padding={16} elevation="e2" style={{ marginTop: 14 }}>

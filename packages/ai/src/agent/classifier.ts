@@ -231,6 +231,45 @@ export const LLM_TOOL_SPECS: LlmToolSpec[] = [
     },
   },
   {
+    name: 'facture_directe',
+    description:
+      'Créer une FACTURE DIRECTE sans devis signé (« facture 380 € à Mme Girard pour le dépannage », « facture directe de 2 jours de régie à la SCI Bellevue ») : dépannage urgent facturé sur place, régie, facturation récurrente B2B/syndic. Brouillon — l’émission reste un geste séparé. PAS pour facturer un devis signé (generer_facture_devis), PAS pour émettre un brouillon existant (emettre_facture), PAS pour une situation de travaux (facturer_situation).',
+    parameters: {
+      type: 'object',
+      properties: {
+        reference: { type: 'string', description: 'Ce qui a été dit : client, montant, prestation (ex. « 380 € à Mme Girard, dépannage »)' },
+      },
+      required: [],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'facturer_situation',
+    description:
+      'Générer une SITUATION DE TRAVAUX (facture d’avancement) d’un devis signé (« facture une situation de 40 % sur le chantier Durand », « situation de 12 000 € HT sur le devis Martin ») : % du marché ou montant HT. PAS pour l’acompte ou la facture finale (generer_facture_devis), PAS pour une facture sans devis (facture_directe).',
+    parameters: {
+      type: 'object',
+      properties: {
+        reference: { type: 'string', description: 'Devis, chantier ou client visé et avancement dit (ex. « chantier Durand, 40 % »)' },
+      },
+      required: [],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'definir_conditions_paiement',
+    description:
+      'Enregistrer les conditions de paiement PROPRES à un client (« Durand paie à 45 jours fin de mois », « mets la RATP à 60 jours ») : elles pilotent l’échéance des prochaines factures de ce client. PAS pour encaisser, PAS pour le délai moyen constaté (delai_paiement), PAS pour relancer.',
+    parameters: {
+      type: 'object',
+      properties: {
+        reference: { type: 'string', description: 'Client et délai dits (ex. « Durand, 45 jours fin de mois »)' },
+      },
+      required: [],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'resultat_provisoire',
     description:
       'Résultat provisoire de l’activité : produits moins charges au grand-livre réel (balance générale). Répond à « combien je gagne ? », « je suis en bénéfice ? ».',
@@ -313,6 +352,9 @@ const TOOL_TO_INTENT: Record<string, BobIntent> = {
   renommer_document: 'renommer_document',
   chercher_document: 'chercher_document',
   lier_bon_commande: 'lier_bon_commande',
+  facture_directe: 'facture_directe',
+  facturer_situation: 'facturer_situation',
+  definir_conditions_paiement: 'conditions_paiement',
   resultat_provisoire: 'resultat',
   mon_bilan: 'bilan',
   generer_facture_devis: 'generer_facture',

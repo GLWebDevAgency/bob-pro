@@ -6,6 +6,9 @@ import {
   customerRowToProps,
   expensePropsToPersistence,
   expenseRowToProps,
+  invoiceRowToSnapshot,
+  lineRowToQuoteLine,
+  quoteLineToCreate,
   quoteRowToSnapshot,
   signatureProofToPersistence,
 } from './mappers';
@@ -42,6 +45,10 @@ const baseRow = {
   purchaseOrderNumber: null,
   purchaseOrderReceivedAt: null,
   purchaseOrderDocumentId: null,
+  // B3/B5 — ligne historique SANS remise globale ni retenue (compat ascendante honnête).
+  globalDiscountPercent: null,
+  globalDiscountAmountCents: null,
+  retenueGarantiePct: null,
   revision: 1,
 };
 
@@ -264,6 +271,14 @@ describe('customer mappers — aucune métrique synthétique persistée', () => 
     phone: null,
     contactName: null,
     ptLabel: null,
+    // B4 — fiche historique SANS conditions de paiement propres ni canal de facturation.
+    paymentTermsDays: null,
+    paymentTermsEndOfMonth: null,
+    paymentTermsLabel: null,
+    billingChannelType: null,
+    billingChorusServiceCode: null,
+    billingPortailNom: null,
+    billingPortailUrl: null,
     isSubcontractingBtp: false,
   };
 
@@ -372,5 +387,213 @@ describe('expense payment mappers — preuve BDD ou historique explicite', () =>
       paymentEvidenceLegacyUnverified: false,
     });
     expect(persisted).not.toHaveProperty('paymentEvidence');
+  });
+});
+
+// ─── ÉPIC « facturation terrain » (B1/B2/B3/B5 + canal de facturation) ───────────────────────
+
+describe('B3 — remise de ligne : round-trip colonnes ↔ QuoteLine', () => {
+  const lineRow = {
+    id: 'line-1',
+    label: 'Rénovation fournil',
+    category: 'labor',
+    qty: 1,
+    unit: null,
+    unitPriceHt: 200_000,
+    vatRate: 20,
+    discountPercent: null as { toString(): string } | null,
+    discountAmountCents: null as number | null,
+  };
+
+  it('sans remise : NULL/NULL, la ligne réhydratée ne porte AUCUN champ discount', () => {
+    const line = lineRowToQuoteLine(lineRow);
+    expect(line).not.toHaveProperty('discount');
+    const created = quoteLineToCreate(line, { quoteId: 'q-1' }, 0);
+    expect(created).toMatchObject({ discountPercent: null, discountAmountCents: null });
+  });
+
+  it('percent et amount : round-trip exact', () => {
+    const percent = lineRowToQuoteLine({ ...lineRow, discountPercent: 12.5 });
+    expect(percent.discount).toEqual({ type: 'percent', value: 12.5 });
+    expect(quoteLineToCreate(percent, { quoteId: 'q-1' }, 0)).toMatchObject({
+      discountPercent: 12.5,
+      discountAmountCents: null,
+    });
+    const amount = lineRowToQuoteLine({ ...lineRow, discountAmountCents: 25_000 });
+    expect(amount.discount).toEqual({ type: 'amount', cents: 25_000 });
+    expect(quoteLineToCreate(amount, { invoiceId: 'i-1' }, 0)).toMatchObject({
+      discountPercent: null,
+      discountAmountCents: 25_000,
+    });
+  });
+
+  it('corruption (percent ET amount) : échec de lecture EXPLICITE, jamais une remise réinventée', () => {
+    expect(() =>
+      lineRowToQuoteLine({ ...lineRow, discountPercent: 10, discountAmountCents: 500 }),
+    ).toThrow(/Corrupted discount/);
+  });
+});
+
+describe('B4/canal — customer mappers : conditions de paiement + canal de facturation', () => {
+  const row = {
+    id: 'customer-1',
+    companyId: 'company-1',
+    type: 'b2b',
+    name: 'Boulangerie Lefèvre',
+    siren: '402118553',
+    isInternational: false,
+    addrLine1: '3 place du Marché',
+    addrZip: '92310',
+    addrCity: 'Sèvres',
+    email: null,
+    phone: null,
+    contactName: null,
+    ptLabel: null,
+    paymentTermsDays: 45 as number | null,
+    paymentTermsEndOfMonth: true as boolean | null,
+    paymentTermsLabel: '45 jours fin de mois' as string | null,
+    billingChannelType: 'chorus' as string | null,
+    billingChorusServiceCode: 'SERV-42' as string | null,
+    billingPortailNom: null as string | null,
+    billingPortailUrl: null as string | null,
+    isSubcontractingBtp: false,
+  };
+
+  it('round-trip fidèle : paymentTerms + billingChannel chorus', () => {
+    const props = customerRowToProps(row);
+    expect(props.paymentTerms).toEqual({ days: 45, endOfMonth: true, label: '45 jours fin de mois' });
+    expect(props.billingChannel).toEqual({ type: 'chorus', chorusServiceCode: 'SERV-42' });
+    expect(customerPropsToCreate(props)).toMatchObject({
+      paymentTermsDays: 45,
+      paymentTermsEndOfMonth: true,
+      paymentTermsLabel: '45 jours fin de mois',
+      billingChannelType: 'chorus',
+      billingChorusServiceCode: 'SERV-42',
+      billingPortailNom: null,
+      billingPortailUrl: null,
+    });
+  });
+
+  it('conditions INCOMPLÈTES (corruption partielle) : réhydratées « défaut société », jamais inventées', () => {
+    const props = customerRowToProps({ ...row, paymentTermsLabel: null });
+    expect(props).not.toHaveProperty('paymentTerms');
+  });
+
+  it('type de canal hors référentiel : réhydraté « email par défaut » fail-closed', () => {
+    const props = customerRowToProps({ ...row, billingChannelType: 'fax' });
+    expect(props).not.toHaveProperty('billingChannel');
+  });
+
+  it('champs annexes d’un AUTRE type ignorés à la lecture (jamais un code service sur portail)', () => {
+    const props = customerRowToProps({
+      ...row,
+      billingChannelType: 'portail',
+      billingChorusServiceCode: 'SERV-42',
+      billingPortailNom: 'Portail Vinci',
+      billingPortailUrl: 'https://f.vinci.com',
+    });
+    expect(props.billingChannel).toEqual({
+      type: 'portail',
+      portailNom: 'Portail Vinci',
+      portailUrl: 'https://f.vinci.com',
+    });
+  });
+});
+
+describe('B1/B2/B3/B5 — invoiceRowToSnapshot : nouveaux faits + compléments de totaux', () => {
+  const invoiceRow = {
+    id: 'inv-1',
+    companyId: 'company-1',
+    customerId: 'customer-1',
+    kind: 'situation',
+    status: 'issued',
+    number: 'F-2026-0042',
+    issuedAt: new Date('2026-07-19T00:00:00.000Z'),
+    dueAt: new Date('2026-08-18T00:00:00.000Z'),
+    servicePeriodStart: null,
+    servicePeriodEnd: null,
+    deliveryAddress: null,
+    parentQuoteId: 'q-1',
+    depositPct: null,
+    sourceInvoiceId: null,
+    sourceInvoiceKind: null,
+    sourceInvoiceNumber: null,
+    sourceInvoiceIssuedAt: null,
+    depositDeductionCents: 0,
+    depositInvoiceId: null,
+    paidCents: 0,
+    totalsHt: 300_000,
+    totalsVat: 60_000,
+    totalsTtc: 360_000,
+    totalsNetToPay: 342_000,
+    vatByRate: { '20': 60_000 },
+    legalMentions: [],
+    totalsGrossHt: null as number | null,
+    totalsDiscountCents: null as number | null,
+    totalsRetenueGarantieCents: 18_000 as number | null,
+    situationOrder: 2 as number | null,
+    situationDeductionCents: 0,
+    globalDiscountPercent: null as { toString(): string } | null,
+    globalDiscountAmountCents: null as number | null,
+    retenueGarantiePct: 5 as { toString(): string } | null,
+    urgentRepairRequestedAt: null as Date | null,
+    transmissionDepositedAt: new Date('2026-07-21T00:00:00.000Z') as Date | null,
+    transmissionAcceptedAt: null as Date | null,
+    vatTreatmentAtIssuance: 'standard',
+    purchaseOrderNumber: null,
+    purchaseOrderReceivedAt: null,
+    purchaseOrderDocumentId: null,
+    revision: 1,
+    lines: [],
+  };
+
+  it('situation émise avec retenue : faits + complément de totaux réhydratés', () => {
+    const snapshot = invoiceRowToSnapshot(invoiceRow);
+    expect(snapshot.kind).toBe('situation');
+    expect(snapshot.situationOrder).toBe(2);
+    expect(snapshot.retenueGarantiePct).toBe(5);
+    expect(snapshot.frozenTotals).toMatchObject({
+      ht: 300_000,
+      netToPay: 342_000,
+      retenueGarantieCents: 18_000,
+    });
+    // Compléments ABSENTS quand NULL — les totaux des pièces antérieures restent identiques.
+    expect(snapshot.frozenTotals).not.toHaveProperty('grossHt');
+    expect(snapshot.frozenTotals).not.toHaveProperty('discountCents');
+    expect(snapshot.transmission).toEqual({ depositedAt: '2026-07-21', acceptedAt: null });
+  });
+
+  it('ligne historique : aucun fait inventé (nulls honnêtes, transmission absente)', () => {
+    const snapshot = invoiceRowToSnapshot({
+      ...invoiceRow,
+      kind: 'invoice',
+      situationOrder: null,
+      retenueGarantiePct: null,
+      totalsRetenueGarantieCents: null,
+      transmissionDepositedAt: null,
+    });
+    expect(snapshot.situationOrder).toBeNull();
+    expect(snapshot.retenueGarantiePct).toBeNull();
+    expect(snapshot.globalDiscount).toBeNull();
+    expect(snapshot.urgentRepair).toBeNull();
+    expect(snapshot.transmission).toBeNull();
+    expect(snapshot.frozenTotals).not.toHaveProperty('retenueGarantieCents');
+  });
+
+  it('remise globale en montant + urgence : réhydratées exactement', () => {
+    const snapshot = invoiceRowToSnapshot({
+      ...invoiceRow,
+      kind: 'invoice',
+      situationOrder: null,
+      globalDiscountAmountCents: 20_000,
+      retenueGarantiePct: null,
+      totalsRetenueGarantieCents: null,
+      totalsGrossHt: 320_000,
+      totalsDiscountCents: 20_000,
+      urgentRepairRequestedAt: new Date('2026-07-19T08:30:00.000Z'),
+    });
+    expect(snapshot.globalDiscount).toEqual({ type: 'amount', cents: 20_000 });
+    expect(snapshot.urgentRepair).toEqual({ requestedAt: '2026-07-19T08:30:00.000Z' });
+    expect(snapshot.frozenTotals).toMatchObject({ grossHt: 320_000, discountCents: 20_000 });
   });
 });

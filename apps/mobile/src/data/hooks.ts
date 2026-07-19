@@ -24,6 +24,9 @@ import type {
   CustomerPortfolio,
   CompanyBillingSettingsPatch,
   DiagnosticAssessmentWriteRequest,
+  SituationAmountInput,
+  LineInput,
+  Discount,
 } from '@bob/core';
 import type {
   AssignExpenseChantierClientInput,
@@ -1227,7 +1230,11 @@ export function useGenerateInvoice() {
   return useMutation({
     mutationFn: async (input: {
       quoteId: string;
-      mode: 'deposit' | 'final';
+      mode: 'deposit' | 'final' | 'situation';
+      /** B2 — REQUIS avec le mode situation (interdit sinon, garde serveur) : % du marché ou
+       *  montant HT en centimes. Chaque appel en mode situation crée une NOUVELLE situation
+       *  (n° d'ordre suivant — pas d'idempotence par nature). */
+      situation?: SituationAmountInput;
       /** Override RESPONSABILISÉ de l'embargo L221-10 — `true` strict, après la feuille de
        *  confirmation dédiée (risque concret) ; journalisé serveur. Jamais implicite. */
       embargoOverride?: boolean;
@@ -1245,6 +1252,62 @@ export function useGenerateInvoice() {
       // auto-émise). Coût nul : re-fetch d'une donnée inchangée.
       void qc.invalidateQueries({ queryKey: ['cashflow'] });
       void qc.invalidateQueries({ queryKey: ['accounting-entries'] });
+    },
+  });
+}
+
+/**
+ * B1 — Facture DIRECTE sans devis signé (POST /invoices) : brouillon composé librement, émis
+ * ensuite par issueInvoice (aucun chemin parallèle). Fail-closed si le transport ne
+ * l'implémente pas (méthode OPTIONNELLE du contrat — Http et Local l'ont tous les deux).
+ */
+export function useComposeStandaloneInvoice() {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: {
+      customerId: string;
+      lines: LineInput[];
+      globalDiscount?: Discount | null;
+      context?: { housingOlderThan2y?: boolean; energyRenovation?: boolean };
+      /** A3bis — `true` STRICT uniquement (client B2C, dépannage urgent sollicité). */
+      urgentOnSiteRepair?: boolean;
+    }) => {
+      if (client.composeStandaloneInvoice === undefined) {
+        throw { kind: 'unavailable', service: 'compose-standalone-invoice' };
+      }
+      const r = await client.composeStandaloneInvoice(input);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: () => void qc.invalidateQueries({ queryKey: keys.invoices }),
+  });
+}
+
+/**
+ * Canal de facturation — suivi MANUEL de transmission d'une pièce ÉMISE
+ * (PATCH /invoices/:id/transmission) : dates de dépôt/acceptation DÉCLARÉES par l'artisan
+ * (champ absent = inchangé, null = effacé). Fail-closed si le transport ne l'implémente pas.
+ */
+export function useRecordInvoiceTransmission() {
+  const client = useBobClient();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: {
+      invoiceId: string;
+      depositedAt?: string | null;
+      acceptedAt?: string | null;
+    }) => {
+      if (client.recordInvoiceTransmission === undefined) {
+        throw { kind: 'unavailable', service: 'invoice-transmission' };
+      }
+      const r = await client.recordInvoiceTransmission(input);
+      if (!r.ok) throw r.error;
+      return r.value;
+    },
+    onSuccess: (_data, input) => {
+      void qc.invalidateQueries({ queryKey: keys.invoices });
+      void qc.invalidateQueries({ queryKey: keys.invoice(input.invoiceId) });
     },
   });
 }

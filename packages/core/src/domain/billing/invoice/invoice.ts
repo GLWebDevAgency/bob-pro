@@ -12,11 +12,24 @@ import {
   purchaseOrderRefEquals,
   clonePurchaseOrderRef,
 } from '../shared/purchase-order-ref';
+import {
+  type Discount,
+  cloneDiscount,
+  validateDiscount,
+  validateLineDiscount,
+} from '../shared/discount';
 import { isVatRate } from '../shared/vat-rate';
 import { Quantity } from '../shared/quantity';
-import { computeTotals } from '../../services/compute-totals';
+import {
+  allocateByLargestRemainder,
+  computeLineBases,
+  computeTotals,
+  discountableNetHtCents,
+} from '../../services/compute-totals';
+import { retenueGarantieCents } from '../../services/retenue-garantie';
 import { assertTransition, type InvoiceStatus, INVOICE_TRANSITIONS } from '../shared/state-machines';
 import { type Quote } from '../quote/quote';
+import { type UrgentRepairRequest } from '../../compliance/retractation';
 
 export type InvoiceKind = 'final' | 'deposit' | 'credit_note' | 'situation';
 export type CreditedInvoiceKind = Exclude<InvoiceKind, 'credit_note'>;
@@ -40,6 +53,18 @@ export interface ServicePeriod {
 }
 
 const DELIVERY_ADDRESS_MAX = 500;
+
+/**
+ * Suivi MANUEL de transmission d'une facture émise vers le canal de facturation du client
+ * (Chorus Pro / portail fournisseur) : dates DÉCLARÉES par l'artisan (jamais un accusé de
+ * plateforme inventé — le raccordement PA réel est l'item B8, hors V1). Additif : null =
+ * jamais suivi ; `acceptedAt` suppose un dépôt antérieur ou simultané (jamais une acceptation
+ * sans dépôt). Mutable APRÈS émission : c'est un suivi opérationnel, pas un fait de la pièce.
+ */
+export interface InvoiceTransmissionStatus {
+  depositedAt: DateOnly | null;
+  acceptedAt: DateOnly | null;
+}
 
 /**
  * A4 — régime de TVA de la pièce, FIGÉ à l'émission (fait fiscal de la pièce, plus jamais
@@ -77,7 +102,27 @@ export class Invoice extends AggregateRoot<string> {
   private _status: InvoiceStatus = 'draft';
   private _lines: QuoteLine[] = [];
   private _depositDeductionCents = 0;
+  /**
+   * B2 — part de `_depositDeductionCents` provenant de SITUATIONS émises (le reste vient de
+   * l'acompte). Nécessaire à la comptabilité de la finale : les situations ont déjà constaté
+   * leur CA (70x), l'acompte est en avances (4191) — la reprise miroir ne porte que sur la
+   * part acompte, le CA de la finale est réduit de la part situations (jamais compté deux fois).
+   */
+  private _situationDeductionCents = 0;
   private _depositInvoiceId: string | null = null;
+  /** B3 — remise GLOBALE (reprise du devis à la dérivation, ou saisie sur facture directe). */
+  private _globalDiscount: Discount | null = null;
+  /** B5 — taux de retenue de garantie (loi 71-584), repris du devis (situations + finale). */
+  private _retenueGarantiePct: number | null = null;
+  /** B2 — n° d'ordre de la situation SUR SON DEVIS (1, 2, 3…) ; null hors kind 'situation'. */
+  private _situationOrder: number | null = null;
+  /**
+   * B1/A3bis — facture DIRECTE B2C : intervention urgente à domicile expressément sollicitée
+   * (art. L221-10, al. 2 et L221-28, 8° c. conso), fait posé À LA COMPOSITION, horodaté
+   * serveur, IMMUABLE (aucun mutateur). Null = jamais sollicitée — fail-closed : sans cette
+   * trace, aucune facture directe à un consommateur (les protections passent par le devis signé).
+   */
+  private _urgentRepair: UrgentRepairRequest | null = null;
   private _number: DocNumber | null = null;
   private _frozenTotals: Totals | null = null;
   private _mentions: string[] = [];
@@ -89,6 +134,8 @@ export class Invoice extends AggregateRoot<string> {
   /** A4 — régime de TVA figé à l'émission ; null = pièce émise avant le figeage (legacy). */
   private _vatTreatmentAtIssuance: VatTreatment | null = null;
   private _paid = 0; // centimes cumulés
+  /** Suivi manuel de transmission (canal de facturation) ; null = jamais suivi. */
+  private _transmission: InvoiceTransmissionStatus | null = null;
   private _cancelReason: string | null = null;
   /** Bon de commande client (B8) — repris du devis à la dérivation, figé à l'émission. */
   private _purchaseOrder: PurchaseOrderRef | null = null;
@@ -116,6 +163,9 @@ export class Invoice extends AggregateRoot<string> {
        *  jamais de double facturation. invoiceId = la pièce source si UNIQUE, null si la
        *  déduction est composite (acompte + situations, A5). */
       depositDeduction?: { amountCents: number; invoiceId: string | null };
+      /** B2 — part de la déduction provenant des SITUATIONS émises (≤ amountCents) : pilote la
+       *  comptabilité de la finale (CA des situations jamais compté deux fois). */
+      situationDeductionCents?: number;
     },
   ): DomainResult<Invoice> {
     if (quote.status !== 'signed')
@@ -133,21 +183,118 @@ export class Invoice extends AggregateRoot<string> {
     // suit la facture dérivée — le numéro d'engagement figurera sur la facture émise.
     const po = quote.purchaseOrder;
     inv._purchaseOrder = po ? clonePurchaseOrderRef(po) : null;
+    // B3 — la remise globale NÉGOCIÉE au devis suit la pièce dérivée (source unique du marché).
+    const discount = quote.globalDiscount;
+    inv._globalDiscount = discount ? cloneDiscount(discount) : null;
+    // B5 — la retenue de garantie stipulée au devis s'applique aux situations et à la FINALE,
+    // jamais à l'acompte (il précède l'exécution que la retenue garantit).
+    if (mode === 'final') inv._retenueGarantiePct = quote.retenueGarantiePct;
     if (mode === 'final' && opts?.depositDeduction) {
       const { amountCents, invoiceId } = opts.depositDeduction;
       if (!Number.isSafeInteger(amountCents) || amountCents < 0)
         return err({ code: 'VALIDATION', field: 'depositDeduction', message: 'Déduction d’acompte invalide (centimes entiers ≥ 0 requis).' });
+      const situationCents = opts.situationDeductionCents ?? 0;
+      if (!Number.isSafeInteger(situationCents) || situationCents < 0 || situationCents > amountCents)
+        return err({
+          code: 'VALIDATION',
+          field: 'situationDeductionCents',
+          message: 'Part des situations invalide (centimes entiers, 0 ≤ part ≤ déduction totale).',
+        });
       const ttc = inv.totals().ttc;
       if (amountCents > ttc)
         return err({ code: 'VALIDATION', field: 'depositDeduction', message: 'Déduction d’acompte supérieure au TTC du chantier.' });
       inv._depositDeductionCents = amountCents;
+      inv._situationDeductionCents = situationCents;
       inv._depositInvoiceId = invoiceId;
     }
     return ok(inv);
   }
 
-  static composeStandalone(input: { id: string; companyId: string; customerId: string }): DomainResult<Invoice> {
-    return ok(new Invoice(input.id, input.companyId, input.customerId, 'final', null, null, null));
+  /**
+   * B2 — SITUATION DE TRAVAUX n° `order` d'un devis signé : facture intermédiaire d'avancement.
+   * Les lignes de la situation SONT l'avancement — chaque poste du devis est proraté (bases HT
+   * NETTES après remises B3, réparties au plus fort reste pour totaliser EXACTEMENT
+   * `targetHtCents`) : la TVA est due par taux sur l'avancement facturé, la compta crédite les
+   * mêmes comptes 70x que les postes d'origine, et le TTC de la pièce est le montant de la
+   * situation. La retenue de garantie du devis (B5) s'y applique. La garde de CUMUL
+   * (acompte + situations ≤ marché) appartient au use case — elle lit les pièces sœurs.
+   */
+  static situationFromSignedQuote(
+    quote: Quote,
+    id: string,
+    input: { order: number; targetHtCents: number },
+  ): DomainResult<Invoice> {
+    if (quote.status !== 'signed')
+      return err({ code: 'VALIDATION', field: 'quote', message: 'Le devis doit etre signe.' });
+    if (!Number.isSafeInteger(input.order) || input.order < 1)
+      return err({ code: 'VALIDATION', field: 'order', message: 'Numéro d’ordre de situation invalide (entier ≥ 1).' });
+    if (!Number.isSafeInteger(input.targetHtCents) || input.targetHtCents <= 0)
+      return err({
+        code: 'VALIDATION',
+        field: 'situation',
+        message: 'Montant HT de situation invalide (centimes entiers > 0 requis).',
+      });
+    const { netLineBases } = computeLineBases(quote.lines, { globalDiscount: quote.globalDiscount });
+    const netHt = netLineBases.reduce((sum, base) => sum + base, 0);
+    if (input.targetHtCents > netHt)
+      return err({
+        code: 'VALIDATION',
+        field: 'situation',
+        message: 'Montant de situation supérieur au montant HT du marché.',
+      });
+    const inv = new Invoice(id, quote.companyId, quote.customerId, 'situation', null, quote.id, null);
+    const allocated = allocateByLargestRemainder(netLineBases, input.targetHtCents);
+    for (const [i, line] of quote.lines.entries()) {
+      const portion = allocated[i] ?? 0;
+      if (portion <= 0) continue; // poste sans avancement facturé : jamais de ligne à zéro.
+      // Ligne d'avancement : même identifiant/poste/catégorie/taux que le devis (traçabilité),
+      // base HT = quote-part NETTE (remises déjà imputées — la ligne n'en reporte aucune).
+      inv._lines.push({
+        id: line.id,
+        label: line.label,
+        category: line.category,
+        qty: 1,
+        unitPriceHT: portion,
+        vatRate: line.vatRate,
+      });
+    }
+    if (inv._lines.length === 0)
+      return err({
+        code: 'VALIDATION',
+        field: 'situation',
+        message: 'Montant de situation trop faible : aucun poste à facturer.',
+      });
+    inv._situationOrder = input.order;
+    const po = quote.purchaseOrder;
+    inv._purchaseOrder = po ? clonePurchaseOrderRef(po) : null;
+    inv._retenueGarantiePct = quote.retenueGarantiePct;
+    return ok(inv);
+  }
+
+  /**
+   * B1 — FACTURE DIRECTE sans devis signé (dépannage urgent facturé sur place, régie TJM×jours,
+   * syndics/B2B). `urgentRepair` : qualification A3bis d'une facture directe à un CONSOMMATEUR —
+   * intervention urgente à domicile expressément sollicitée (exception L221-10, al. 2 et
+   * L221-28, 8° c. conso), horodatée serveur À LA COMPOSITION, immuable, événement dédié.
+   */
+  static composeStandalone(input: {
+    id: string;
+    companyId: string;
+    customerId: string;
+    urgentRepair?: UrgentRepairRequest | null;
+  }): DomainResult<Invoice> {
+    const inv = new Invoice(input.id, input.companyId, input.customerId, 'final', null, null, null);
+    if (input.urgentRepair) {
+      inv._urgentRepair = { requestedAt: input.urgentRepair.requestedAt };
+      // Même doctrine que Quote.compose : le fait légal qui fonde l'exception est journalisé
+      // à sa naissance, jamais ajouté après coup.
+      inv.record({
+        type: 'InvoiceUrgentRepairDeclared',
+        occurredAt: input.urgentRepair.requestedAt,
+        version: 1,
+      });
+    }
+    return ok(inv);
   }
 
   /**
@@ -190,7 +337,13 @@ export class Invoice extends AggregateRoot<string> {
     );
     for (const line of source.lines) creditNote._lines.push({ ...line });
     creditNote._depositDeductionCents = source._depositDeductionCents;
+    creditNote._situationDeductionCents = source._situationDeductionCents;
     creditNote._depositInvoiceId = source._depositInvoiceId;
+    // B3/B5/B2 — l'avoir rectifie la MÊME opération : remise globale, retenue de garantie et
+    // n° d'ordre de situation sont REPRIS de la pièce annulée (miroir exact, jamais recalculés).
+    creditNote._globalDiscount = source._globalDiscount ? cloneDiscount(source._globalDiscount) : null;
+    creditNote._retenueGarantiePct = source._retenueGarantiePct;
+    creditNote._situationOrder = source._situationOrder;
     creditNote._frozenTotals = cloneTotals(source._frozenTotals);
     // A7 : l'avoir rectifie la MÊME opération — il reprend la période de prestation et l'adresse
     // de chantier de la pièce annulée (art. 242 nonies A CGI : la pièce rectificative fait
@@ -245,9 +398,33 @@ export class Invoice extends AggregateRoot<string> {
   get depositDeductionCents(): number {
     return this._depositDeductionCents;
   }
+  /** B2 — part de la déduction provenant des situations émises (0 = aucune). */
+  get situationDeductionCents(): number {
+    return this._situationDeductionCents;
+  }
   /** Facture d'acompte déduite (traçabilité + nav croisée). */
   get depositInvoiceId(): string | null {
     return this._depositInvoiceId;
+  }
+  /** B3 — remise globale de la pièce (copie défensive) ; null = aucune. */
+  get globalDiscount(): Discount | null {
+    return this._globalDiscount ? cloneDiscount(this._globalDiscount) : null;
+  }
+  /** B5 — taux de retenue de garantie applicable à cette pièce ; null = aucune. */
+  get retenueGarantiePct(): number | null {
+    return this._retenueGarantiePct;
+  }
+  /** B2 — n° d'ordre de la situation sur son devis ; null hors kind 'situation'. */
+  get situationOrder(): number | null {
+    return this._situationOrder;
+  }
+  /** B1/A3bis — intervention urgente tracée à la composition (facture directe B2C) ; null sinon. */
+  get urgentRepair(): UrgentRepairRequest | null {
+    return this._urgentRepair ? { ...this._urgentRepair } : null;
+  }
+  /** Suivi manuel de transmission (copie défensive) ; null = jamais suivi. */
+  get transmission(): InvoiceTransmissionStatus | null {
+    return this._transmission ? { ...this._transmission } : null;
   }
   /** Identité légale immuable de la facture annulée par cet avoir total. */
   get creditNoteSource(): CreditNoteSourceSnapshot | null {
@@ -320,20 +497,95 @@ export class Invoice extends AggregateRoot<string> {
         field: 'lines',
         message: 'Les lignes d’un avoir total sont figées depuis la facture source.',
       });
+    // B2 — les lignes d'une situation SONT l'avancement proraté du devis : figées à la création.
+    if (this._situationOrder !== null)
+      return err({
+        code: 'VALIDATION',
+        field: 'lines',
+        message: 'Les lignes d’une situation sont dérivées du devis — elles ne s’éditent pas.',
+      });
     const q = Quantity.of(line.qty);
     if (!q.ok) return q;
     if (!isVatRate(line.vatRate))
       return err({ code: 'VALIDATION', field: 'vatRate', message: 'Taux TVA non autorise.' });
+    // B3 — remise de ligne validée contre SA base HT (structure + plafond, jamais négative) ;
+    // B9 — refusée sur un débours (art. 267, II-2° CGI : remboursement à l'euro près).
+    if (line.discount !== undefined) {
+      const discount = validateLineDiscount(
+        line.discount,
+        Math.round(line.qty * line.unitPriceHT),
+        line.category,
+      );
+      if (!discount.ok) return discount;
+    }
     this._lines.push(line);
+    return ok(undefined);
+  }
+
+  /**
+   * B3 — remise GLOBALE d'une facture DIRECTE (composeStandalone) uniquement, en brouillon :
+   * les pièces dérivées d'un devis reprennent la remise NÉGOCIÉE au devis (source unique du
+   * marché — la modifier sur la facture ferait diverger la pièce du contrat signé), un avoir
+   * est figé, une situation est déjà nette de remises.
+   */
+  setGlobalDiscount(discount: Discount | null): DomainResult<void> {
+    if (this._status !== 'draft')
+      return err({ code: 'INVALID_TRANSITION', from: this._status, to: 'draft' });
+    if (this.kind === 'credit_note' || this.parentQuoteId !== null)
+      return err({
+        code: 'VALIDATION',
+        field: 'globalDiscount',
+        message:
+          'La remise globale se saisit sur une facture directe uniquement — une pièce dérivée reprend celle du devis.',
+      });
+    if (discount === null) {
+      this._globalDiscount = null;
+      return ok(undefined);
+    }
+    const structural = validateDiscount(discount, 'globalDiscount');
+    if (!structural.ok) return structural;
+    if (discount.type === 'amount') {
+      // B9 — plafond sur le HT REMISABLE : les débours (art. 267, II-2° CGI) sont hors remise.
+      const netHt = discountableNetHtCents(this._lines);
+      if (discount.cents > netHt)
+        return err({
+          code: 'VALIDATION',
+          field: 'globalDiscount',
+          message:
+            'Remise globale supérieure au HT remisable de la facture (après remises de ligne, hors débours).',
+        });
+    }
+    this._globalDiscount = cloneDiscount(discount);
     return ok(undefined);
   }
 
   totals(): Totals {
     if (this._frozenTotals) return this._frozenTotals;
-    const base = computeTotals([...this._lines], this._depositPct ? { depositPct: this._depositPct.value } : undefined);
-    if (this._depositDeductionCents > 0) {
-      // Facture finale après acompte : le net à payer est LE SOLDE (ttc − acompte facturé).
-      return { ...base, netToPay: Math.max(0, base.ttc - this._depositDeductionCents) };
+    const base = computeTotals([...this._lines], {
+      ...(this._depositPct ? { depositPct: this._depositPct.value } : {}),
+      ...(this._globalDiscount ? { globalDiscount: this._globalDiscount } : {}),
+    });
+    // B2 — situation : les lignes SONT l'avancement (ttc = montant de la situation) ; la
+    // retenue de garantie (B5) se déduit du NET À PAYER, jamais de la TVA due (la TVA est
+    // facturée sur l'avancement plein, seul l'encaissement de la retenue est différé).
+    if (this.kind === 'situation') {
+      const retenue = retenueGarantieCents(base.ttc, this._retenueGarantiePct);
+      return {
+        ...base,
+        ...(retenue > 0 ? { retenueGarantieCents: retenue } : {}),
+        netToPay: base.ttc - retenue,
+      };
+    }
+    if (this._depositDeductionCents > 0 || (this.kind === 'final' && this._retenueGarantiePct !== null)) {
+      // Facture finale : le net à payer est LE SOLDE (ttc − déjà facturé), amputé de la
+      // retenue de garantie stipulée au devis (B5, assise sur le solde effectivement appelé).
+      const solde = Math.max(0, base.ttc - this._depositDeductionCents);
+      const retenue = this.kind === 'final' ? retenueGarantieCents(solde, this._retenueGarantiePct) : 0;
+      return {
+        ...base,
+        ...(retenue > 0 ? { retenueGarantieCents: retenue } : {}),
+        netToPay: Math.max(0, solde - retenue),
+      };
     }
     return base;
   }
@@ -383,6 +635,19 @@ export class Invoice extends AggregateRoot<string> {
       )
         return err({ code: 'VALIDATION', field: 'deliveryAddress', message: 'Adresse de chantier/livraison invalide (500 caractères max).' });
     }
+    // B3 — garde AUTORITAIRE au figeage : une remise globale en montant ne peut excéder le HT
+    // REMISABLE (les lignes d'une facture directe ont pu bouger depuis la saisie ; B9 — les
+    // débours, art. 267, II-2° CGI, restent hors remise).
+    if (this.kind !== 'credit_note' && this._globalDiscount?.type === 'amount') {
+      const netHt = discountableNetHtCents(this._lines);
+      if (this._globalDiscount.cents > netHt)
+        return err({
+          code: 'VALIDATION',
+          field: 'globalDiscount',
+          message:
+            'Remise globale supérieure au HT remisable de la facture (après remises de ligne, hors débours).',
+        });
+    }
     this._frozenTotals = this.totals();
     this._mentions = [...args.mentions];
     this._issuedAt = args.issuedAt;
@@ -398,6 +663,42 @@ export class Invoice extends AggregateRoot<string> {
     }
     this._status = 'issued';
     this.record({ type: 'InvoiceIssued', occurredAt: args.at, version: 1 });
+    return ok(undefined);
+  }
+
+  /**
+   * Suivi MANUEL de transmission d'une pièce ÉMISE (canal de facturation du client) :
+   * l'artisan déclare la date de dépôt (Chorus/portail) puis la date d'acceptation. Honnêteté
+   * structurelle : jamais d'acceptation sans dépôt, jamais d'acceptation antérieure au dépôt.
+   * Corrigeable (suivi opérationnel déclaratif, pas un fait légal de la pièce) ; `null` efface.
+   */
+  recordTransmission(status: InvoiceTransmissionStatus, at: Instant): DomainResult<void> {
+    if (this._status === 'draft' || this._status === 'cancelled')
+      return err({
+        code: 'VALIDATION',
+        field: 'transmission',
+        message: 'Le suivi de transmission ne concerne qu’une pièce émise.',
+      });
+    const depositedAt = status.depositedAt ?? null;
+    const acceptedAt = status.acceptedAt ?? null;
+    if (depositedAt !== null && !isValidDateOnly(depositedAt))
+      return err({ code: 'VALIDATION', field: 'transmission.depositedAt', message: 'Date de dépôt invalide (AAAA-MM-JJ).' });
+    if (acceptedAt !== null && !isValidDateOnly(acceptedAt))
+      return err({ code: 'VALIDATION', field: 'transmission.acceptedAt', message: 'Date d’acceptation invalide (AAAA-MM-JJ).' });
+    if (acceptedAt !== null && depositedAt === null)
+      return err({
+        code: 'VALIDATION',
+        field: 'transmission.acceptedAt',
+        message: 'Une acceptation suppose un dépôt : renseigne d’abord la date de dépôt.',
+      });
+    if (acceptedAt !== null && depositedAt !== null && acceptedAt < depositedAt)
+      return err({
+        code: 'VALIDATION',
+        field: 'transmission.acceptedAt',
+        message: 'La date d’acceptation précède la date de dépôt.',
+      });
+    this._transmission = depositedAt === null && acceptedAt === null ? null : { depositedAt, acceptedAt };
+    this.record({ type: 'InvoiceTransmissionRecorded', occurredAt: at, version: 1 });
     return ok(undefined);
   }
 
@@ -460,7 +761,13 @@ export class Invoice extends AggregateRoot<string> {
       depositPct: this._depositPct?.value ?? null,
       parentQuoteId: this.parentQuoteId,
       depositDeductionCents: this._depositDeductionCents,
+      situationDeductionCents: this._situationDeductionCents,
       depositInvoiceId: this._depositInvoiceId,
+      globalDiscount: this._globalDiscount ? cloneDiscount(this._globalDiscount) : null,
+      retenueGarantiePct: this._retenueGarantiePct,
+      situationOrder: this._situationOrder,
+      urgentRepair: this._urgentRepair ? { ...this._urgentRepair } : null,
+      transmission: this._transmission ? { ...this._transmission } : null,
       sourceInvoiceId: this._creditNoteSource?.invoiceId ?? null,
       sourceInvoiceKind: this._creditNoteSource?.kind ?? null,
       sourceInvoiceNumber: this._creditNoteSource?.number ?? null,
@@ -505,6 +812,16 @@ export class Invoice extends AggregateRoot<string> {
     inv._paid = s.paid;
     inv._depositDeductionCents = s.depositDeductionCents ?? 0;
     inv._depositInvoiceId = s.depositInvoiceId ?? null;
+    // Compat ascendante B2/B3/B5 : snapshots antérieurs sans situations, remises ni retenue.
+    inv._situationDeductionCents = s.situationDeductionCents ?? 0;
+    inv._globalDiscount = s.globalDiscount ? cloneDiscount(s.globalDiscount) : null;
+    inv._retenueGarantiePct = s.retenueGarantiePct ?? null;
+    inv._situationOrder = s.situationOrder ?? null;
+    // Compat ascendante B1/A3bis : facture directe antérieure sans qualification (null honnête —
+    // fail-closed : jamais une urgence inventée).
+    inv._urgentRepair = s.urgentRepair ? { requestedAt: s.urgentRepair.requestedAt } : null;
+    // Compat ascendante transmission : suivi absent des snapshots antérieurs (null honnête).
+    inv._transmission = s.transmission ? { ...s.transmission } : null;
     // Compat ascendante B8 : snapshots antérieurs sans bon de commande ni révision.
     inv._purchaseOrder = s.purchaseOrder ? clonePurchaseOrderRef(s.purchaseOrder) : null;
     inv._revision = s.revision ?? 1;
@@ -534,7 +851,19 @@ export interface InvoiceSnapshot {
   parentQuoteId: string | null;
   /** Acompte déjà facturé déduit de la finale — optionnels : snapshots antérieurs compatibles. */
   depositDeductionCents?: number;
+  /** B2 — part de la déduction provenant des situations émises (compat ascendante). */
+  situationDeductionCents?: number;
   depositInvoiceId?: string | null;
+  /** B3 — optionnel : remise globale absente des snapshots antérieurs (compat ascendante). */
+  globalDiscount?: Discount | null;
+  /** B5 — optionnel : taux de retenue de garantie absent des snapshots antérieurs. */
+  retenueGarantiePct?: number | null;
+  /** B2 — optionnel : n° d'ordre de situation absent des snapshots antérieurs. */
+  situationOrder?: number | null;
+  /** B1/A3bis — optionnel : qualification urgence absente des snapshots antérieurs (jamais inventée). */
+  urgentRepair?: UrgentRepairRequest | null;
+  /** Optionnel : suivi manuel de transmission absent des snapshots antérieurs (null honnête). */
+  transmission?: InvoiceTransmissionStatus | null;
   /** Trace légale de la facture exacte annulée. Optionnelle pour relire les snapshots legacy. */
   sourceInvoiceId?: string | null;
   sourceInvoiceKind?: CreditedInvoiceKind | null;

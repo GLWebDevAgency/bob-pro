@@ -1,5 +1,5 @@
 import { PDFDocument, StandardFonts, rgb, AFRelationship, PDFName, type PDFFont, type PDFPage } from 'pdf-lib';
-import { formatEUR, type PdfRendererPort, type InvoicePdfData, type QuotePdfData } from '@bob/core';
+import { formatEUR, type Discount, type PdfRendererPort, type InvoicePdfData, type QuotePdfData } from '@bob/core';
 
 export const PDF_RENDERER = Symbol('PDF_RENDERER');
 
@@ -12,6 +12,10 @@ const sanitize = (s: string): string =>
     .replace(/[\u2013\u2014]/g, '-');
 
 const money = (cents: number): string => sanitize(formatEUR(cents));
+
+/** B3 — libellé imprimable d'une remise (« remise 10 % » | « remise 25,00 € »). */
+const discountLabel = (d: Discount): string =>
+  d.type === 'percent' ? `remise ${d.value} %` : `remise ${money(d.cents)}`;
 
 function accentColor(accent: InvoicePdfData['billingPresentation']['accentColor']) {
   switch (accent) {
@@ -106,6 +110,17 @@ export class PdfRenderer implements PdfRendererPort {
     // data.kind (le domaine ne fabrique que des avoirs TOTAUX, Invoice.creditNoteFor).
     const isCreditNote = data.kind === 'credit_note';
     draw(`${isCreditNote ? 'Avoir' : 'Facture'} ${data.number}`, 22, bold, accent);
+    // B2 — situation de travaux : sous-titre « Situation n°N — avancement X % » (l'avancement
+    // n'est imprimé que s'il a pu être dérivé du devis parent — jamais inventé).
+    if (data.situation) {
+      draw(
+        data.situation.advancementPct === null
+          ? `Situation n°${data.situation.order}`
+          : `Situation n°${data.situation.order} — avancement ${data.situation.advancementPct} % du marché`,
+        12,
+        bold,
+      );
+    }
     if (isCreditNote && data.creditNoteSource) {
       // A5 — référence OBLIGATOIRE à la facture initiale sur la pièce rectificative
       // (art. 242 nonies A, I de l'annexe II au CGI) ; c'est aussi la condition de récupération
@@ -153,9 +168,19 @@ export class PdfRenderer implements PdfRendererPort {
 
     draw('Designation', 10, bold);
     for (const l of data.lines) {
-      draw(`${l.label}  -  ${l.qty} x ${money(l.unitPriceHT)} HT  (TVA ${l.vatRate} %)`);
+      // B3 — remise de ligne VISIBLE à côté de la ligne (rabais/remises détaillés, L441-9).
+      const discount = l.discount ? `  -  ${discountLabel(l.discount)}` : '';
+      draw(`${l.label}  -  ${l.qty} x ${money(l.unitPriceHT)} HT  (TVA ${l.vatRate} %)${discount}`);
     }
     y -= 10;
+    // B3 — récapitulatif des remises quand elles existent : HT brut, total remisé, HT net —
+    // le total HT imprimé reste le NET (assiette réelle de la TVA), jamais réécrit.
+    const hasDiscountRecap =
+      data.totals.grossHt !== undefined && data.totals.discountCents !== undefined;
+    if (hasDiscountRecap && !isCreditNote) {
+      draw(`Total HT brut : ${money(data.totals.grossHt!)}`, 10, font, slate);
+      draw(`Rabais, remises et ristournes : -${money(data.totals.discountCents!)}`, 10, font, slate);
+    }
     if (isCreditNote) {
       // A5 — formulation CRÉDITRICE : le domaine fige des montants POSITIFS (miroir exact de la
       // facture annulée, Invoice.creditNoteFor) ; le PDF les présente comme un crédit au client,
@@ -165,9 +190,15 @@ export class PdfRenderer implements PdfRendererPort {
       draw(`Total TTC credite : ${money(data.totals.ttc)}`, 13, bold);
       draw(`Net a crediter au client : ${money(data.totals.netToPay)}`, 13, bold);
     } else {
-      draw(`Total HT : ${money(data.totals.ht)}`, 11);
+      draw(`Total HT${hasDiscountRecap ? ' net' : ''} : ${money(data.totals.ht)}`, 11);
       draw(`TVA : ${money(data.totals.vat)}`, 11);
       draw(`Total TTC : ${money(data.totals.ttc)}`, 13, bold);
+      // B5 — ligne DÉDIÉE de la retenue de garantie (loi 71-584) : déduite du net à payer,
+      // jamais de la TVA (la mention de restitution voyage dans le bloc mentions légales).
+      if (data.totals.retenueGarantieCents !== undefined) {
+        const pct = data.retenueGarantiePct != null ? ` (${data.retenueGarantiePct} %)` : '';
+        draw(`Retenue de garantie${pct} : -${money(data.totals.retenueGarantieCents)}`, 11);
+      }
       draw(`Net a payer : ${money(data.totals.netToPay)}`, 13, bold);
     }
     y -= 16;
@@ -244,10 +275,19 @@ export class PdfRenderer implements PdfRendererPort {
 
     draw('Designation', 10, bold);
     for (const l of data.lines) {
-      draw(`${l.label}  -  ${l.qty} x ${money(l.unitPriceHT)} HT  (TVA ${l.vatRate} %)`);
+      // B3 — remise de ligne visible sur la proposition (le devis EST la négociation).
+      const discount = l.discount ? `  -  ${discountLabel(l.discount)}` : '';
+      draw(`${l.label}  -  ${l.qty} x ${money(l.unitPriceHT)} HT  (TVA ${l.vatRate} %)${discount}`);
     }
     y -= 10;
-    draw(`Total HT : ${money(data.totals.ht)}`, 11);
+    // B3 — récapitulatif des remises quand elles existent (HT brut, total remisé, HT net).
+    const quoteHasDiscountRecap =
+      data.totals.grossHt !== undefined && data.totals.discountCents !== undefined;
+    if (quoteHasDiscountRecap) {
+      draw(`Total HT brut : ${money(data.totals.grossHt!)}`, 10, font, slate);
+      draw(`Rabais, remises et ristournes : -${money(data.totals.discountCents!)}`, 10, font, slate);
+    }
+    draw(`Total HT${quoteHasDiscountRecap ? ' net' : ''} : ${money(data.totals.ht)}`, 11);
     draw(`TVA : ${money(data.totals.vat)}`, 11);
     draw(`Total TTC : ${money(data.totals.ttc)}`, 13, bold);
     if (data.depositPct !== null) {

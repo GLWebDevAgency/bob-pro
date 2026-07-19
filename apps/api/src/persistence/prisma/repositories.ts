@@ -73,6 +73,7 @@ import type {
 import type { AgentJournalRepository } from '../agent-journal';
 import { newAgentJournalEntryId } from '../agent-journal';
 import { DuplicateExpenseInvoiceError } from '../expense-duplicate-error';
+import { SituationOrderConflictError } from '../situation-order-conflict-error';
 import type { SupplierMemoryProfile, SupplierMemoryRepository } from '../supplier-memory';
 import type { PrismaService } from './prisma.service';
 import {
@@ -88,6 +89,7 @@ import {
   purchaseOrderToPersistence,
   expenseRowToProps,
   expensePropsToPersistence,
+  discountToColumns,
 } from './mappers';
 
 const LINES_INCLUDE = { lines: { orderBy: { position: 'asc' as const } } };
@@ -289,6 +291,10 @@ export class PrismaQuoteRepository implements QuoteRepository {
       // B8 : bon de commande + révision optimiste (le CAS final est porté par lockById
       // dans la transaction tenant de l'adaptateur appelant).
       ...purchaseOrderToPersistence(s.purchaseOrder),
+      // B3/B5 : remise globale (exclusive % OU montant) et retenue de garantie stipulée.
+      globalDiscountPercent: discountToColumns(s.globalDiscount).percent,
+      globalDiscountAmountCents: discountToColumns(s.globalDiscount).amountCents,
+      retenueGarantiePct: s.retenueGarantiePct ?? null,
       revision: s.revision ?? 1,
     };
     const lines = s.lines.map((l, i) => quoteLineToCreate(l, { quoteId: s.id }, i));
@@ -392,6 +398,27 @@ export class PrismaInvoiceRepository implements InvoiceRepository {
       totalsTtc: totals.ttc,
       totalsNetToPay: totals.netToPay,
       vatByRate: totals.vatByRate as Record<string, number>,
+      // B3/B5 : compléments de totaux PRÉSENTS uniquement quand le fait existe (NULL sinon —
+      // les pièces antérieures restent identiques au centime).
+      totalsGrossHt: totals.grossHt ?? null,
+      totalsDiscountCents: totals.discountCents ?? null,
+      totalsRetenueGarantieCents: totals.retenueGarantieCents ?? null,
+      // B2 : situation de travaux (n° d'ordre) + part « situations » de la déduction de la finale.
+      situationOrder: s.situationOrder ?? null,
+      situationDeductionCents: s.situationDeductionCents ?? 0,
+      // B3/B5 : remise globale (exclusive % OU montant) et retenue de garantie de la pièce.
+      globalDiscountPercent: discountToColumns(s.globalDiscount).percent,
+      globalDiscountAmountCents: discountToColumns(s.globalDiscount).amountCents,
+      retenueGarantiePct: s.retenueGarantiePct ?? null,
+      // B1/A3bis : qualification d'urgence posée à la composition, immuable.
+      urgentRepairRequestedAt: s.urgentRepair ? new Date(s.urgentRepair.requestedAt) : null,
+      // Suivi MANUEL de transmission — mutable après émission (hors liste du trigger).
+      transmissionDepositedAt: s.transmission?.depositedAt
+        ? new Date(s.transmission.depositedAt)
+        : null,
+      transmissionAcceptedAt: s.transmission?.acceptedAt
+        ? new Date(s.transmission.acceptedAt)
+        : null,
       legalMentions: s.mentions,
       // A4 : régime de TVA constaté et figé à l'émission (IssueInvoice) — NULL avant émission
       // et pour les pièces émises avant le figeage.
@@ -423,7 +450,24 @@ export class PrismaInvoiceRepository implements InvoiceRepository {
             await tx.lineItem.createMany({ data: lines });
           return;
         }
-        await tx.invoice.create({ data: { id: s.id, ...base } });
+        try {
+          await tx.invoice.create({ data: { id: s.id, ...base } });
+        } catch (cause) {
+          // B2 — index unique partiel uniq_invoice_parent_quote_situation_order : deux
+          // générations CONCURRENTES de situation calculent le même n° d'ordre (max + 1) —
+          // la base tranche, la sentinelle typée remonte en conflit 409 rejouable (jamais
+          // un 500 ni un duplicata de « Situation n°N » imprimé).
+          if (
+            cause instanceof Prisma.PrismaClientKnownRequestError &&
+            cause.code === 'P2002' &&
+            s.kind === 'situation' &&
+            s.parentQuoteId !== null &&
+            typeof s.situationOrder === 'number'
+          ) {
+            throw new SituationOrderConflictError(s.companyId, s.parentQuoteId, s.situationOrder);
+          }
+          throw cause;
+        }
         if (lines.length > 0) await tx.lineItem.createMany({ data: lines });
         return;
       }

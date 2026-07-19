@@ -10,6 +10,10 @@ import {
   deriveCustomerFinancialMetrics,
   type PaymentHistoryStatus,
 } from '../clients/derive-customer-financial-metrics';
+import {
+  type CustomerBillingChannel,
+  type CustomerPaymentTerms,
+} from '../../domain/customer/customer';
 
 export interface CustomerListItem {
   id: string;
@@ -38,6 +42,20 @@ export interface CustomerListItem {
   /** Coordonnées pour les actions device tel:/mailto: (fiche C13) — null si non renseignées. */
   email: string | null;
   phone: string | null;
+  /** B4 — conditions de paiement PROPRES au client ; null = suit le défaut société.
+   *  Optionnel (compat serveurs antérieurs) : les codecs normalisent absent ⇒ null. */
+  paymentTerms?: CustomerPaymentTerms | null;
+  /** Canal de facturation déclaré (email | chorus | portail) ; null = email par défaut.
+   *  Optionnel (compat serveurs antérieurs) : les codecs normalisent absent ⇒ null. */
+  billingChannel?: CustomerBillingChannel | null;
+  /** B7 — client établi à l'étranger (garde-fou TVA intracom/export) ; absent ⇒ false. */
+  isInternational?: boolean;
+  /** Libellé décoratif historique — exposé pour que l'édition (remplacement complet) ne le
+   *  perde jamais silencieusement. Absent ⇒ null. */
+  paymentTermsLabel?: string | null;
+  /** A4 — sous-traitance BTP (autoliquidation) ; absent ⇒ false. Même raison : un remplacement
+   *  complet depuis la fiche ne doit jamais effacer un fait fiscal. */
+  isSubcontractingBtp?: boolean;
 }
 
 export class ListCustomers {
@@ -111,6 +129,13 @@ export class ListCustomers {
         settledInvoiceCount: metrics.settledInvoiceCount,
         email: customer.email ?? null,
         phone: customer.phone ?? null,
+        // B4/B6/B7 — la fiche client mobile lit ces faits pour les afficher/éditer sans jamais
+        // les perdre lors d'un remplacement complet (UpdateCustomer revalide via Customer.of).
+        paymentTerms: customer.paymentTerms ?? null,
+        billingChannel: customer.billingChannel ?? null,
+        isInternational: customer.isInternational(),
+        paymentTermsLabel: customer.toProps().paymentTermsLabel ?? null,
+        isSubcontractingBtp: customer.isSubcontractingBtp,
       });
     }
     return ok(items);

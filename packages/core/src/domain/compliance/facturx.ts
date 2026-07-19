@@ -1,6 +1,7 @@
 import { type Company } from '../company/company';
 import { type CustomerType } from '../customer/customer';
 import { type Invoice, type InvoiceKind } from '../billing/invoice/invoice';
+import { computeLineBases } from '../services/compute-totals';
 
 /**
  * Factur-X — facture électronique hybride (PDF/A-3 + XML CII embarqué), profil BASIC.
@@ -27,7 +28,14 @@ export interface FacturXLine {
   qty: number;
   unitCode: string; // UNECE Rec 20 (C62 = unité)
   unitPriceHTCents: number;
-  netAmountCents: number; // total HT de la ligne
+  netAmountCents: number; // total HT NET de la ligne (remises B3 déduites)
+  /**
+   * B3 — remise de la ligne (BG-27, ChargeIndicator false) : remise de ligne + quote-part de
+   * remise globale allouée (même politique que computeLineBases). BR-24 : le montant net de
+   * ligne = qty × prix − allowance — sans cet élément, un XML remisé serait incohérent.
+   * Absent/0 = aucune remise, aucun élément émis.
+   */
+  allowanceCents?: number;
   vatCategory: VatCategory;
   vatRatePct: number;
 }
@@ -192,6 +200,18 @@ export function buildFacturXBasicXml(d: FacturXInvoiceData): string {
     L.push(`          <ram:CategoryCode>${line.vatCategory}</ram:CategoryCode>`);
     L.push(`          <ram:RateApplicablePercent>${pct(line.vatRatePct)}</ram:RateApplicablePercent>`);
     L.push('        </ram:ApplicableTradeTax>');
+    // B3 — remise de ligne (BG-27) : ChargeIndicator false + montant réel — le montant net de
+    // ligne (BT-131) reste cohérent avec qty × prix (BR-24), et le total HT du document avec
+    // la somme des lignes nettes (BR-CO-10).
+    if (line.allowanceCents !== undefined && line.allowanceCents > 0) {
+      L.push('        <ram:SpecifiedTradeAllowanceCharge>');
+      L.push('          <ram:ChargeIndicator>');
+      L.push('            <udt:Indicator>false</udt:Indicator>');
+      L.push('          </ram:ChargeIndicator>');
+      L.push(`          <ram:ActualAmount>${eur(line.allowanceCents)}</ram:ActualAmount>`);
+      L.push('          <ram:Reason>Remise</ram:Reason>');
+      L.push('        </ram:SpecifiedTradeAllowanceCharge>');
+    }
     L.push('        <ram:SpecifiedTradeSettlementLineMonetarySummation>');
     L.push(`          <ram:LineTotalAmount>${eur(line.netAmountCents)}</ram:LineTotalAmount>`);
     L.push('        </ram:SpecifiedTradeSettlementLineMonetarySummation>');
@@ -341,16 +361,25 @@ export function facturXDataFromInvoice(invoice: Invoice, company: Company, buyer
 
   // Lignes : en franchise, la TVA est inapplicable -> catégorie E, taux 0 (BR-E-5) ;
   // en autoliquidation -> catégorie AE, taux 0 (BR-AE-5).
-  const lines: FacturXLine[] = invoice.lines.map((l, i) => ({
-    id: l.id || String(i + 1),
-    name: l.label,
-    qty: l.qty,
-    unitCode: 'C62',
-    unitPriceHTCents: l.unitPriceHT,
-    netAmountCents: Math.round(l.qty * l.unitPriceHT),
-    vatCategory: franchise ? 'E' : autoliquidation ? 'AE' : l.vatRate > 0 ? 'S' : 'Z',
-    vatRatePct: franchise || autoliquidation ? 0 : l.vatRate,
-  }));
+  // B3 — bases NETTES par ligne (remise de ligne + quote-part de remise globale, MÊME politique
+  // d'allocation que computeTotals) : le XML porte les montants réellement facturés — sans quoi
+  // BR-CO-10 (somme des lignes = total HT) serait violée sur toute pièce remisée.
+  const { netLineBases } = computeLineBases(invoice.lines, { globalDiscount: invoice.globalDiscount });
+  const lines: FacturXLine[] = invoice.lines.map((l, i) => {
+    const gross = Math.round(l.qty * l.unitPriceHT);
+    const net = netLineBases[i] ?? gross;
+    return {
+      id: l.id || String(i + 1),
+      name: l.label,
+      qty: l.qty,
+      unitCode: 'C62',
+      unitPriceHTCents: l.unitPriceHT,
+      netAmountCents: net,
+      ...(gross - net > 0 ? { allowanceCents: gross - net } : {}),
+      vatCategory: franchise ? 'E' : autoliquidation ? 'AE' : l.vatRate > 0 ? 'S' : 'Z',
+      vatRatePct: franchise || autoliquidation ? 0 : l.vatRate,
+    };
+  });
 
   let vatBreakdown: FacturXVatBreakdown[];
   let taxTotalCents: number;
@@ -375,10 +404,11 @@ export function facturXDataFromInvoice(invoice: Invoice, company: Company, buyer
     grandTotalCents = totals.ht;
     duePayableCents = totals.ttc > 0 ? Math.round((totals.ht * totals.netToPay) / totals.ttc) : totals.ht;
   } else {
-    // Base HT par taux (somme arrondie par ligne, identique au domaine). VAT depuis totals().
+    // Base HT par taux (somme des bases NETTES par ligne, identique au domaine — B3 : l'assiette
+    // de TVA est prise APRÈS remises, cf. computeTotals). VAT depuis totals().
     const basisByRate = new Map<number, number>();
-    for (const l of invoice.lines) {
-      const base = Math.round(l.qty * l.unitPriceHT);
+    for (const [i, l] of invoice.lines.entries()) {
+      const base = netLineBases[i] ?? Math.round(l.qty * l.unitPriceHT);
       basisByRate.set(l.vatRate, (basisByRate.get(l.vatRate) ?? 0) + base);
     }
     vatBreakdown = [...basisByRate.entries()]

@@ -2,10 +2,10 @@ import type { I18nKey } from '@bob/i18n';
 import type { QuickActionTone } from '@bob/ui';
 
 export type TodayQuickAction = Readonly<{
-  id: 'quote' | 'scan' | 'collect' | 'catalogue';
+  id: 'quote' | 'invoice' | 'scan' | 'collect' | 'catalogue';
   labelKey: I18nKey;
-  route: '/devis/new' | '/scan-document' | '/ventes' | '/catalogue';
-  icon: 'file' | 'camera' | 'credit-card' | 'book';
+  route: '/devis/new' | '/facture/new' | '/scan-document' | '/ventes' | '/catalogue';
+  icon: 'file' | 'file-plus' | 'camera' | 'credit-card' | 'book';
   tone: Extract<QuickActionTone, 'b2b' | 'ai' | 'warning' | 'success'>;
 }>;
 
@@ -21,6 +21,15 @@ export const TODAY_QUICK_ACTIONS: readonly TodayQuickAction[] = Object.freeze([
     route: '/devis/new',
     icon: 'file',
     tone: 'b2b',
+  }),
+  // B1 : la facture DIRECTE (sans devis signé) a sa place dans « Vite fait » — le dépannage
+  // urgent et la fin de mois de régie se facturent en trois étapes depuis la Home.
+  Object.freeze({
+    id: 'invoice',
+    labelKey: 'today.quickInvoice',
+    route: '/facture/new',
+    icon: 'file-plus',
+    tone: 'success',
   }),
   Object.freeze({
     id: 'scan',

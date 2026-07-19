@@ -158,4 +158,35 @@ describe('RecordIssuedInvoiceAccountingEntry', () => {
     if (!r.ok) expect(r.error).toMatchObject({ kind: 'domain' });
     expect(entries.saved).toHaveLength(0);
   });
+
+  it('B2 — finale SOLDÉE par les situations seules : ok sans écriture (jamais un rollback d’émission)', async () => {
+    // Scénario du finding : devis 148 000 HT / 162 800 TTC, situation 100 % émise, finale à 0.
+    const final = Invoice.fromSignedQuote(signedQuote(), 'final', 'inv-1', {
+      depositDeduction: { amountCents: 162800, invoiceId: null },
+      situationDeductionCents: 162800,
+    });
+    if (!final.ok) throw new Error('final');
+    final.value.assignNumber(DocNumber.format('F', 2026, 9), AT);
+    const issued = final.value.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT });
+    if (!issued.ok) throw new Error('issue');
+
+    const entries = new MemoryEntries();
+    const useCase = new RecordIssuedInvoiceAccountingEntry({
+      invoices: new MemoryInvoices(final.value),
+      entries,
+    });
+    const r = await useCase.execute({ invoiceId: 'inv-1' });
+
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value).toEqual({
+        id: issuedInvoiceAccountingEntryId('inv-1'),
+        created: false,
+        totalDebitCents: 0,
+        totalCreditCents: 0,
+      });
+    }
+    // Aucune écriture fantôme : le journal des ventes reste vierge pour cette pièce.
+    expect(entries.saved).toHaveLength(0);
+  });
 });

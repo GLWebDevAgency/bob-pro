@@ -919,12 +919,14 @@ export default function Aujourdhui() {
           {cockpit ? (
             <View>
               <SectionHeader title={t('today.sectionQuick', { personality })} />
-              {/* Section statique : entre dans la même cascade sobre que le reste du briefing. */}
-              <FadeIn index={2} style={{ flexDirection: 'row', gap: 10 }}>
+              {/* Section statique : entre dans la même cascade sobre que le reste du briefing.
+                  5 actions (B1 ajoute la facture directe) : grille qui respire (wrap 3+2)
+                  plutôt qu'une rangée écrasée. */}
+              <FadeIn index={2} style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
                 {TODAY_QUICK_ACTIONS.map((action) => (
                   <QuickAction
                     key={action.id}
-                    style={{ flex: 1 }}
+                    style={{ flexGrow: 1, flexBasis: '30%' }}
                     label={t(action.labelKey, { personality })}
                     tone={action.tone}
                     icon={<Feather name={action.icon} size={18} color={semantic[action.tone]} />}

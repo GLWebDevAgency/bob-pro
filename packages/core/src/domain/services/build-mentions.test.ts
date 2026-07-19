@@ -312,3 +312,20 @@ describe('operationNatureOf', () => {
     expect(operationNatureOf([{ category: 'labor' }, { category: 'disbursement' }])).toBe('services');
   });
 });
+
+describe('buildMentions — remises B3 (L441-9)', () => {
+  it('facture AVEC réductions : mention « rabais, remises, ristournes » présente', () => {
+    const m = mentions({ hasPriceReductions: true });
+    const mention = m.find((x) => x.includes('Rabais, remises et ristournes'));
+    expect(mention).toBeDefined();
+    expect(mention).toContain('L441-9');
+  });
+  it('facture SANS réduction : mention omise (jamais une mention sans support)', () => {
+    expect(mentions().some((x) => x.includes('Rabais'))).toBe(false);
+    expect(mentions({ hasPriceReductions: false }).some((x) => x.includes('Rabais'))).toBe(false);
+  });
+  it('devis : la mention est propre à la FACTURE (L441-9), omise sur devis', () => {
+    const m = mentions({ kind: 'quote', hasPriceReductions: true });
+    expect(m.some((x) => x.includes('Rabais'))).toBe(false);
+  });
+});

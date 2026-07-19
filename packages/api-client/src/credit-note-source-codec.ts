@@ -3,6 +3,7 @@ import {
   decodePurchaseOrderCarrierList,
   decodePurchaseOrderCarrierView,
 } from './purchase-order-codec';
+import { normalizeBillingTerrainCarrier } from './billing-terrain-codec';
 import type { InvoiceView } from './client';
 
 /**
@@ -54,11 +55,14 @@ export function normalizeCreditNoteSourceCarrier<T extends { creditNoteSource?: 
   return { ...view, creditNoteSource };
 }
 
-/** InvoiceView complète : champs B8 (bon de commande/révision) PUIS snapshot E3 — fail-closed. */
+/** InvoiceView complète : champs B8 (bon de commande/révision), snapshot E3, PUIS champs
+ *  « facturation terrain » (B1/B2/B3/B5 + transmission) — fail-closed à chaque étage. */
 export function decodeInvoiceView(value: unknown): InvoiceView | null {
   const view = decodePurchaseOrderCarrierView<InvoiceView>(value);
   if (view === null) return null;
-  return normalizeCreditNoteSourceCarrier(view) as InvoiceView | null;
+  const withSource = normalizeCreditNoteSourceCarrier(view) as InvoiceView | null;
+  if (withSource === null) return null;
+  return normalizeBillingTerrainCarrier(withSource) as InvoiceView | null;
 }
 
 /** Liste d'InvoiceView — un seul élément difforme rompt tout le contrat (fail-closed). */
@@ -69,7 +73,9 @@ export function decodeInvoiceViewList(value: unknown): InvoiceView[] | null {
   for (const item of views) {
     const view = normalizeCreditNoteSourceCarrier(item) as InvoiceView | null;
     if (view === null) return null;
-    decoded.push(view);
+    const normalized = normalizeBillingTerrainCarrier(view) as InvoiceView | null;
+    if (normalized === null) return null;
+    decoded.push(normalized);
   }
   return decoded;
 }

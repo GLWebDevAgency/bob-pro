@@ -57,6 +57,7 @@ import {
   useWorksitePhotoUrl,
 } from '../../src/data/hooks';
 import { chantierExpensesTotalCents, expensesForChantier } from '../../src/expenses/chantier-expenses';
+import { RetenueSuiviCard } from '../../src/components/RetenueSuiviCard';
 import { useConfirm } from '../../src/components/ConfirmSheet';
 import { usePublishAgentContext, type AgentContext, type AgentSurface } from '../../src/agent';
 import { CameraIcon, ChevronLeftIcon, CloseIcon, TrashIcon } from '../../src/components/icons';
@@ -495,6 +496,14 @@ export default function ChantierDetail() {
           {uploadPhoto.isPending ? (
             <View style={{ marginTop: 10 }}>
               <Skeleton height={13} width="50%" radius={6} />
+            </View>
+          ) : null}
+
+          {/* ── B5 — Retenue de garantie à récupérer (loi 71-584) : créance suivie du CLIENT
+               du chantier — la carte se tait quand aucune retenue n'est constituée. ── */}
+          {chantier.customerId !== null ? (
+            <View style={{ marginTop: 24 }}>
+              <RetenueSuiviCard customerId={chantier.customerId} />
             </View>
           ) : null}
 

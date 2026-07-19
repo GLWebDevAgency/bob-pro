@@ -24,6 +24,9 @@ import {
   type Signature,
   type SignatureMethod,
   type PurchaseOrderRef,
+  type Discount,
+  type CustomerBillingChannel,
+  type CustomerBillingChannelType,
 } from '@bob/core';
 
 const toDateOnly = (d: Date | null): string | null => (d ? d.toISOString().slice(0, 10) : null);
@@ -45,6 +48,40 @@ interface LineRow {
   unit: string | null;
   unitPriceHt: number;
   vatRate: { toString(): string };
+  /** B3 — remise de ligne (exclusive : % OU montant, CHECK SQL). NULL/NULL = aucune. */
+  discountPercent: { toString(): string } | null;
+  discountAmountCents: number | null;
+}
+
+/** Colonnes communes d'une remise (ligne, devis, facture) — deux formes EXCLUSIVES (CHECK SQL). */
+interface DiscountColumns {
+  percent: { toString(): string } | null;
+  amountCents: number | null;
+}
+
+/**
+ * Réhydratation d'une remise persistée. Les deux colonnes ensemble seraient une corruption de
+ * stockage (le CHECK l'empêche) : échec de lecture EXPLICITE plutôt qu'une remise réinventée —
+ * sur un brouillon, choisir une des deux formes changerait silencieusement les totaux.
+ */
+function discountFromColumns(cols: DiscountColumns, context: string): Discount | undefined {
+  if (cols.percent !== null && cols.amountCents !== null) {
+    throw new Error(`Corrupted discount state for ${context}: percent and amount are both set.`);
+  }
+  if (cols.percent !== null) return { type: 'percent', value: Number(cols.percent.toString()) };
+  if (cols.amountCents !== null) return { type: 'amount', cents: cols.amountCents };
+  return undefined;
+}
+
+/** Écriture write-side d'une remise — NULL/NULL quand absente (lignes antérieures inchangées). */
+export function discountToColumns(discount: Discount | null | undefined): {
+  percent: number | null;
+  amountCents: number | null;
+} {
+  if (!discount) return { percent: null, amountCents: null };
+  return discount.type === 'percent'
+    ? { percent: discount.value, amountCents: null }
+    : { percent: null, amountCents: discount.cents };
 }
 
 export function lineRowToQuoteLine(row: LineRow): QuoteLine {
@@ -57,10 +94,16 @@ export function lineRowToQuoteLine(row: LineRow): QuoteLine {
     vatRate: Number(row.vatRate.toString()) as VatRate,
   };
   if (row.unit !== null) line.unit = row.unit;
+  const discount = discountFromColumns(
+    { percent: row.discountPercent, amountCents: row.discountAmountCents },
+    `line ${row.id}`,
+  );
+  if (discount !== undefined) line.discount = discount;
   return line;
 }
 
 export function quoteLineToCreate(l: QuoteLine, owner: { quoteId?: string; invoiceId?: string }, position: number) {
+  const discount = discountToColumns(l.discount);
   // id généré par la base (@default(uuid)) : évite la collision lignes devis ↔ facture (copie).
   return {
     quoteId: owner.quoteId ?? null,
@@ -72,6 +115,8 @@ export function quoteLineToCreate(l: QuoteLine, owner: { quoteId?: string; invoi
     unit: l.unit ?? null,
     unitPriceHt: l.unitPriceHT,
     vatRate: l.vatRate,
+    discountPercent: discount.percent,
+    discountAmountCents: discount.amountCents,
   };
 }
 
@@ -175,7 +220,18 @@ interface CustomerRow {
   addrLine1: string; addrZip: string; addrCity: string; email: string | null; phone: string | null;
   contactName: string | null;
   ptLabel: string | null; isSubcontractingBtp: boolean;
+  /** B4 — conditions de paiement du client : les TROIS colonnes vont ensemble (CHECK SQL). */
+  paymentTermsDays: number | null;
+  paymentTermsEndOfMonth: boolean | null;
+  paymentTermsLabel: string | null;
+  /** Canal de facturation — NULL = email (défaut honnête, jamais un canal inventé). */
+  billingChannelType: string | null;
+  billingChorusServiceCode: string | null;
+  billingPortailNom: string | null;
+  billingPortailUrl: string | null;
 }
+
+const BILLING_CHANNEL_TYPES = new Set<CustomerBillingChannelType>(['email', 'chorus', 'portail']);
 
 export function customerRowToProps(row: CustomerRow): CustomerProps {
   const props: CustomerProps = {
@@ -192,10 +248,37 @@ export function customerRowToProps(row: CustomerRow): CustomerProps {
   if (row.phone) props.phone = row.phone;
   if (row.contactName) props.contactName = row.contactName;
   if (row.ptLabel) props.paymentTermsLabel = row.ptLabel;
+  // B4 : les trois colonnes vont ensemble (CHECK SQL) — une moitié seule serait une corruption,
+  // réhydratée « défaut société » plutôt qu'une échéance incomplète inventée.
+  if (
+    row.paymentTermsDays !== null
+    && row.paymentTermsEndOfMonth !== null
+    && row.paymentTermsLabel !== null
+  ) {
+    props.paymentTerms = {
+      days: row.paymentTermsDays,
+      endOfMonth: row.paymentTermsEndOfMonth,
+      label: row.paymentTermsLabel,
+    };
+  }
+  // Canal de facturation : un type hors référentiel serait une corruption (CHECK SQL),
+  // réhydraté « email par défaut » fail-closed (jamais un canal inventé).
+  if (row.billingChannelType !== null && BILLING_CHANNEL_TYPES.has(row.billingChannelType as CustomerBillingChannelType)) {
+    const type = row.billingChannelType as CustomerBillingChannelType;
+    const channel: CustomerBillingChannel = { type };
+    if (type === 'chorus' && row.billingChorusServiceCode !== null)
+      channel.chorusServiceCode = row.billingChorusServiceCode;
+    if (type === 'portail') {
+      if (row.billingPortailNom !== null) channel.portailNom = row.billingPortailNom;
+      if (row.billingPortailUrl !== null) channel.portailUrl = row.billingPortailUrl;
+    }
+    props.billingChannel = channel;
+  }
   return props;
 }
 
 export function customerPropsToCreate(p: CustomerProps) {
+  const channel = p.billingChannel ?? null;
   return {
     id: p.id,
     companyId: p.companyId,
@@ -210,6 +293,13 @@ export function customerPropsToCreate(p: CustomerProps) {
     phone: p.phone ?? null,
     contactName: p.contactName ?? null,
     ptLabel: p.paymentTermsLabel ?? null,
+    paymentTermsDays: p.paymentTerms?.days ?? null,
+    paymentTermsEndOfMonth: p.paymentTerms?.endOfMonth ?? null,
+    paymentTermsLabel: p.paymentTerms?.label ?? null,
+    billingChannelType: channel?.type ?? null,
+    billingChorusServiceCode: channel?.type === 'chorus' ? (channel.chorusServiceCode ?? null) : null,
+    billingPortailNom: channel?.type === 'portail' ? (channel.portailNom ?? null) : null,
+    billingPortailUrl: channel?.type === 'portail' ? (channel.portailUrl ?? null) : null,
     isSubcontractingBtp: p.isSubcontractingBtp ?? false,
   };
 }
@@ -333,6 +423,11 @@ interface QuoteRow {
   purchaseOrderNumber: string | null;
   purchaseOrderReceivedAt: Date | null;
   purchaseOrderDocumentId: string | null;
+  /** B3 — remise globale (exclusive : % OU montant, CHECK SQL). NULL/NULL = aucune. */
+  globalDiscountPercent: { toString(): string } | null;
+  globalDiscountAmountCents: number | null;
+  /** B5 — retenue de garantie stipulée (loi 71-584). NULL = aucune. */
+  retenueGarantiePct: { toString(): string } | null;
   revision: number;
   lines: LineRow[];
 }
@@ -462,6 +557,14 @@ export function quoteRowToSnapshot(row: QuoteRow): QuoteSnapshot {
       ? { requestedAt: row.urgentRepairRequestedAt.toISOString() }
       : null,
     purchaseOrder: purchaseOrderFromRow(row),
+    // B3/B5 : remise globale et retenue de garantie — undefined (jamais inventées) quand NULL.
+    globalDiscount:
+      discountFromColumns(
+        { percent: row.globalDiscountPercent, amountCents: row.globalDiscountAmountCents },
+        `quote ${row.id}`,
+      ) ?? null,
+    retenueGarantiePct:
+      row.retenueGarantiePct === null ? null : Number(row.retenueGarantiePct.toString()),
     revision: row.revision,
   };
 }
@@ -475,6 +578,23 @@ interface InvoiceRow {
   depositDeductionCents: number; depositInvoiceId: string | null;
   paidCents: number; totalsHt: number; totalsVat: number; totalsTtc: number; totalsNetToPay: number;
   vatByRate: unknown; legalMentions: string[];
+  /** B3/B5 — compléments de totaux : présents UNIQUEMENT quand le fait existe (NULL sinon). */
+  totalsGrossHt: number | null;
+  totalsDiscountCents: number | null;
+  totalsRetenueGarantieCents: number | null;
+  /** B2 — situation de travaux : n° d'ordre + part « situations » de la déduction de la finale. */
+  situationOrder: number | null;
+  situationDeductionCents: number;
+  /** B3 — remise globale (exclusive : % OU montant). NULL/NULL = aucune. */
+  globalDiscountPercent: { toString(): string } | null;
+  globalDiscountAmountCents: number | null;
+  /** B5 — retenue de garantie applicable. NULL = aucune. */
+  retenueGarantiePct: { toString(): string } | null;
+  /** B1/A3bis — qualification d'urgence de la facture directe B2C. NULL = jamais sollicitée. */
+  urgentRepairRequestedAt: Date | null;
+  /** Suivi MANUEL de transmission (mutable après émission). NULL = jamais suivi. */
+  transmissionDepositedAt: Date | null;
+  transmissionAcceptedAt: Date | null;
   /** A4 — régime de TVA figé à l'émission. NULL = pièce émise avant le figeage. */
   vatTreatmentAtIssuance: string | null;
   purchaseOrderNumber: string | null;
@@ -496,6 +616,13 @@ export function invoiceRowToSnapshot(row: InvoiceRow): InvoiceSnapshot {
           ttc: row.totalsTtc,
           netToPay: row.totalsNetToPay,
           vatByRate: (row.vatByRate as Record<string, number>) ?? {},
+          // B3/B5 : compléments PRÉSENTS uniquement quand le fait a été figé (NULL honnête
+          // sinon — les totaux des pièces antérieures restent identiques au centime).
+          ...(row.totalsGrossHt !== null ? { grossHt: row.totalsGrossHt } : {}),
+          ...(row.totalsDiscountCents !== null ? { discountCents: row.totalsDiscountCents } : {}),
+          ...(row.totalsRetenueGarantieCents !== null
+            ? { retenueGarantieCents: row.totalsRetenueGarantieCents }
+            : {}),
         };
   return {
     id: row.id,
@@ -529,6 +656,29 @@ export function invoiceRowToSnapshot(row: InvoiceRow): InvoiceSnapshot {
     parentQuoteId: row.parentQuoteId,
     depositDeductionCents: row.depositDeductionCents ?? 0,
     depositInvoiceId: row.depositInvoiceId ?? null,
+    // B2/B3/B5 : situation, remise globale et retenue — NULL honnête (jamais rétro-remplis).
+    situationDeductionCents: row.situationDeductionCents ?? 0,
+    situationOrder: row.situationOrder,
+    globalDiscount:
+      discountFromColumns(
+        { percent: row.globalDiscountPercent, amountCents: row.globalDiscountAmountCents },
+        `invoice ${row.id}`,
+      ) ?? null,
+    retenueGarantiePct:
+      row.retenueGarantiePct === null ? null : Number(row.retenueGarantiePct.toString()),
+    // B1/A3bis : qualification d'urgence réhydratée depuis son horodatage — jamais inventée.
+    urgentRepair: row.urgentRepairRequestedAt
+      ? { requestedAt: row.urgentRepairRequestedAt.toISOString() }
+      : null,
+    // Suivi de transmission : une acceptation sans dépôt serait une corruption (CHECK SQL),
+    // réhydratée null fail-closed (jamais un suivi incohérent présenté à l'artisan).
+    transmission:
+      row.transmissionDepositedAt === null
+        ? null
+        : {
+            depositedAt: row.transmissionDepositedAt.toISOString().slice(0, 10),
+            acceptedAt: toDateOnly(row.transmissionAcceptedAt),
+          },
     sourceInvoiceId: row.sourceInvoiceId,
     sourceInvoiceKind:
       row.sourceInvoiceKind === null

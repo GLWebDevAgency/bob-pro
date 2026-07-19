@@ -53,6 +53,13 @@ import type {
   CatalogueItemWriteInput,
   CatalogueDeletionView,
   QualifiedBankBalanceSnapshot,
+  Totals,
+  Discount,
+  LineInput,
+  SituationAmountInput,
+  InvoiceTransmissionStatus,
+  CustomerPaymentTerms,
+  CustomerBillingChannel,
 } from '@bob/core';
 import type {
   BobClient,
@@ -155,6 +162,7 @@ import {
   decodePurchaseOrderMutation,
 } from './purchase-order-codec';
 import { decodeInvoiceView, decodeInvoiceViewList } from './credit-note-source-codec';
+import { decodeTransmission } from './billing-terrain-codec';
 import { decodeQuoteCreation } from './quote-idempotency';
 import {
   decodeQuoteDraftDeletion,
@@ -319,6 +327,67 @@ const CUSTOMER_LIST_ITEM_FIELDS = [
   'phone',
 ] as const;
 
+/** B4/B6/B7 — champs ADDITIFS de la fiche (serveurs antérieurs : absents ⇒ normalisés). */
+const CUSTOMER_LIST_ITEM_OPTIONAL_FIELDS = [
+  'paymentTerms',
+  'billingChannel',
+  'isInternational',
+  'paymentTermsLabel',
+  'isSubcontractingBtp',
+] as const;
+
+/** Clés de base toutes présentes + uniquement des clés connues (base ∪ optionnelles). */
+function hasBaseKeysWithOptional(
+  value: Record<string, unknown>,
+  base: readonly string[],
+  optional: readonly string[],
+): boolean {
+  const keys = Object.keys(value);
+  return (
+    base.every((key) => keys.includes(key)) &&
+    keys.every((key) => base.includes(key) || optional.includes(key))
+  );
+}
+
+/** B4 — { days, endOfMonth, label } strict ; null difforme (fail-closed, jamais casté). */
+function decodeCustomerPaymentTerms(value: unknown): CustomerPaymentTerms | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ['days', 'endOfMonth', 'label']) ||
+    !Number.isSafeInteger(value.days) ||
+    (value.days as number) < 0 ||
+    typeof value.endOfMonth !== 'boolean' ||
+    typeof value.label !== 'string'
+  )
+    return null;
+  return { days: value.days as number, endOfMonth: value.endOfMonth, label: value.label };
+}
+
+/** Canal de facturation — champs annexes liés à LEUR type uniquement ; null difforme. */
+function decodeCustomerBillingChannel(value: unknown): CustomerBillingChannel | null {
+  if (!isRecord(value)) return null;
+  if (value.type !== 'email' && value.type !== 'chorus' && value.type !== 'portail') return null;
+  const allowed =
+    value.type === 'chorus'
+      ? ['type', 'chorusServiceCode']
+      : value.type === 'portail'
+        ? ['type', 'portailNom', 'portailUrl']
+        : ['type'];
+  if (!Object.keys(value).every((key) => allowed.includes(key))) return null;
+  if (value.chorusServiceCode !== undefined && typeof value.chorusServiceCode !== 'string')
+    return null;
+  if (value.portailNom !== undefined && typeof value.portailNom !== 'string') return null;
+  if (value.portailUrl !== undefined && typeof value.portailUrl !== 'string') return null;
+  return {
+    type: value.type,
+    ...(value.chorusServiceCode !== undefined
+      ? { chorusServiceCode: value.chorusServiceCode }
+      : {}),
+    ...(value.portailNom !== undefined ? { portailNom: value.portailNom } : {}),
+    ...(value.portailUrl !== undefined ? { portailUrl: value.portailUrl } : {}),
+  };
+}
+
 function isCustomerAddress(value: unknown): value is { line1: string; zip: string; city: string } {
   return (
     isRecord(value) &&
@@ -330,7 +399,11 @@ function isCustomerAddress(value: unknown): value is { line1: string; zip: strin
 }
 
 function decodeCustomerListItem(value: unknown): CustomerListItem | null {
-  if (!isRecord(value) || !hasExactKeys(value, CUSTOMER_LIST_ITEM_FIELDS)) return null;
+  if (
+    !isRecord(value) ||
+    !hasBaseKeysWithOptional(value, CUSTOMER_LIST_ITEM_FIELDS, CUSTOMER_LIST_ITEM_OPTIONAL_FIELDS)
+  )
+    return null;
   if (
     typeof value.id !== 'string' ||
     value.id.length === 0 ||
@@ -375,7 +448,37 @@ function decodeCustomerListItem(value: unknown): CustomerListItem | null {
   )
     return null;
 
-  return value as unknown as CustomerListItem;
+  // B4/B6/B7 — normalisation ADDITIVE : absent ⇒ null/false ; présent difforme ⇒ échec fermé
+  // (jamais une condition de paiement ou un canal castés en aveugle).
+  let paymentTerms: CustomerPaymentTerms | null = null;
+  if (value.paymentTerms !== undefined && value.paymentTerms !== null) {
+    paymentTerms = decodeCustomerPaymentTerms(value.paymentTerms);
+    if (paymentTerms === null) return null;
+  }
+  let billingChannel: CustomerBillingChannel | null = null;
+  if (value.billingChannel !== undefined && value.billingChannel !== null) {
+    billingChannel = decodeCustomerBillingChannel(value.billingChannel);
+    if (billingChannel === null) return null;
+  }
+  if (value.isInternational !== undefined && typeof value.isInternational !== 'boolean')
+    return null;
+  if (
+    value.paymentTermsLabel !== undefined &&
+    value.paymentTermsLabel !== null &&
+    typeof value.paymentTermsLabel !== 'string'
+  )
+    return null;
+  if (value.isSubcontractingBtp !== undefined && typeof value.isSubcontractingBtp !== 'boolean')
+    return null;
+
+  return {
+    ...(value as unknown as CustomerListItem),
+    paymentTerms,
+    billingChannel,
+    isInternational: value.isInternational === true,
+    paymentTermsLabel: (value.paymentTermsLabel as string | null | undefined) ?? null,
+    isSubcontractingBtp: value.isSubcontractingBtp === true,
+  };
 }
 
 function decodeCustomerList(value: unknown): CustomerListItem[] | null {
@@ -404,6 +507,15 @@ function customerClientBody(
     ...(input.contactName !== undefined ? { contactName: input.contactName } : {}),
     ...(input.paymentTermsLabel !== undefined
       ? { paymentTermsLabel: input.paymentTermsLabel }
+      : {}),
+    // B4/B6 — allowlist EXPLICITE (copies profondes) : sans elle, les conditions de paiement et
+    // le canal déclarés depuis la fiche mobile n'atteignaient jamais l'API (champ silencieusement
+    // perdu à chaque remplacement complet).
+    ...(input.paymentTerms !== undefined
+      ? { paymentTerms: { ...input.paymentTerms } }
+      : {}),
+    ...(input.billingChannel !== undefined
+      ? { billingChannel: { ...input.billingChannel } }
       : {}),
     ...(input.isInternational !== undefined ? { isInternational: input.isInternational } : {}),
     ...(input.isSubcontractingBtp !== undefined
@@ -527,6 +639,19 @@ function isCanonicalDateOnly(value: unknown): value is string {
 
 function isNonEmptyCanonicalString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.trim() === value;
+}
+
+/** Réponse de PATCH /invoices/:id/transmission — fail-closed sur toute forme inattendue. */
+function decodeTransmissionEnvelope(
+  value: unknown,
+): { transmission: InvoiceTransmissionStatus | null } | null {
+  if (!isRecord(value)) return null;
+  if (value.transmission === null || value.transmission === undefined) {
+    return { transmission: null };
+  }
+  const transmission = decodeTransmission(value.transmission);
+  if (transmission === null) return null;
+  return { transmission };
 }
 
 function decodeInvoiceAccountingPreview(
@@ -2421,9 +2546,19 @@ export class HttpBobClient implements BobClient {
         ...(line.unit !== undefined ? { unit: line.unit } : {}),
         unitPriceHT: line.unitPriceHT,
         vatRate: line.vatRate,
+        // B3 — remise DE LIGNE (copie défensive) : sans elle, la remise négociée n'atteindrait
+        // jamais le serveur (perte silencieuse d'un fait commercial de la pièce).
+        ...(line.discount !== undefined ? { discount: { ...line.discount } } : {}),
       })),
       ...(input.idempotencyKey !== undefined ? { idempotencyKey: input.idempotencyKey } : {}),
       ...(input.depositPct !== undefined ? { depositPct: input.depositPct } : {}),
+      // B3/B5 — remise globale et retenue de garantie du devis-chantier (loi 71-584).
+      ...(input.globalDiscount !== undefined && input.globalDiscount !== null
+        ? { globalDiscount: { ...input.globalDiscount } }
+        : {}),
+      ...(input.retenueGarantiePct !== undefined && input.retenueGarantiePct !== null
+        ? { retenueGarantiePct: input.retenueGarantiePct }
+        : {}),
       ...(input.validUntil !== undefined ? { validUntil: input.validUntil } : {}),
       // Exception dépannage urgent (L221-10, al. 2) : le fait légal fonde l'absence d'embargo
       // ET la mention datée du PDF — il DOIT atteindre le serveur (`true` strict uniquement,
@@ -2526,14 +2661,51 @@ export class HttpBobClient implements BobClient {
   }
   generateInvoice(input: {
     quoteId: string;
-    mode: 'deposit' | 'final';
+    mode: 'deposit' | 'final' | 'situation';
+    situation?: SituationAmountInput;
     embargoOverride?: boolean;
   }) {
     return this.req<{ invoiceId: string }>('POST', `/quotes/${input.quoteId}/invoice`, {
       mode: input.mode,
+      // B2 — le montant de situation n'accompagne QUE son mode (cohérence gardée serveur).
+      ...(input.situation !== undefined ? { situation: input.situation } : {}),
       // Override L221-10 : contrat HTTP `override: true` EXPLICITE — jamais envoyé sinon.
       ...(input.embargoOverride === true ? { override: true } : {}),
     });
+  }
+  /** B1 : POST /invoices — facture DIRECTE sans devis signé (brouillon composé librement). */
+  composeStandaloneInvoice(input: {
+    customerId: string;
+    lines: LineInput[];
+    globalDiscount?: Discount | null;
+    context?: { housingOlderThan2y?: boolean; energyRenovation?: boolean };
+    urgentOnSiteRepair?: boolean;
+  }) {
+    return this.req<{ invoiceId: string; totals: Totals }>('POST', '/invoices', {
+      customerId: input.customerId,
+      lines: input.lines,
+      ...(input.globalDiscount !== undefined ? { globalDiscount: input.globalDiscount } : {}),
+      ...(input.context !== undefined ? { context: input.context } : {}),
+      // A3bis — booléen STRICT : seul `true` voyage (jamais un flag implicite).
+      ...(input.urgentOnSiteRepair === true ? { urgentOnSiteRepair: true } : {}),
+    });
+  }
+  /** Suivi MANUEL de transmission (PATCH /invoices/:id/transmission) — réponse décodée fail-closed. */
+  recordInvoiceTransmission(input: {
+    invoiceId: string;
+    depositedAt?: string | null;
+    acceptedAt?: string | null;
+  }) {
+    return this.req<{ transmission: InvoiceTransmissionStatus | null }>(
+      'PATCH',
+      `/invoices/${encodeURIComponent(input.invoiceId)}/transmission`,
+      {
+        ...(input.depositedAt !== undefined ? { depositedAt: input.depositedAt } : {}),
+        ...(input.acceptedAt !== undefined ? { acceptedAt: input.acceptedAt } : {}),
+      },
+      undefined,
+      decodeTransmissionEnvelope,
+    );
   }
   updateQuoteLine(input: UpdateQuoteLineInput) {
     return this.req<{ status: string }>(

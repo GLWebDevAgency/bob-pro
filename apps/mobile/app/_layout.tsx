@@ -208,7 +208,9 @@ export default function RootLayout() {
                               <Stack.Screen name="auth/callback" />
                               <Stack.Screen name="devis/new" options={{ presentation: 'modal' }} />
                               <Stack.Screen name="devis/[id]" />
+                              <Stack.Screen name="facture/new" options={{ presentation: 'modal' }} />
                               <Stack.Screen name="facture/[id]" />
+                              <Stack.Screen name="facture/transmission/[id]" />
                               <Stack.Screen name="client/[id]" />
                               <Stack.Screen name="compte" />
                               <Stack.Screen name="profil-fiscal" />

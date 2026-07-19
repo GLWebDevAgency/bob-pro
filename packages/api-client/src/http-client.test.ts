@@ -1615,7 +1615,70 @@ describe('HttpBobClient — assistant Bob (C40 ⑧ : ask/confirm/journal serveur
     vi.stubGlobal('fetch', vi.fn(async () =>
       new Response(JSON.stringify([item]), { headers: { 'content-type': 'application/json' } })));
     const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-mercier' });
-    await expect(client.listCustomers()).resolves.toEqual({ ok: true, value: [item] });
+    // B4/B6/B7 — normalisation ADDITIVE (serveur antérieur sans les champs) : absent ⇒
+    // null/false, jamais un échec ni une valeur inventée au-delà du défaut honnête.
+    await expect(client.listCustomers()).resolves.toEqual({
+      ok: true,
+      value: [
+        {
+          ...item,
+          paymentTerms: null,
+          billingChannel: null,
+          isInternational: false,
+          paymentTermsLabel: null,
+          isSubcontractingBtp: false,
+        },
+      ],
+    });
+  });
+
+  it('listCustomers décode les conditions de paiement et le canal déclarés (B4/B6) — difforme ⇒ échec fermé', async () => {
+    const base = {
+      id: 'cust-42',
+      name: 'Mairie de Sèvres',
+      type: 'b2g',
+      address: { line1: '1 Grande Rue', zip: '92310', city: 'Sèvres' },
+      contactName: null,
+      score: null,
+      scoreBand: null,
+      scoreStatus: 'model_not_ratified',
+      grossReceivableCents: 0,
+      issuedCreditCents: 0,
+      outstandingCents: 0,
+      customerCreditCents: 0,
+      siren: '130025265',
+      avgDelayDays: null,
+      paidOnTimeRatio: null,
+      paymentHistoryStatus: 'insufficient_history',
+      settledInvoiceCount: 0,
+      email: null,
+      phone: null,
+    };
+    const rich = {
+      ...base,
+      paymentTerms: { days: 45, endOfMonth: true, label: '45 jours fin de mois' },
+      billingChannel: { type: 'chorus', chorusServiceCode: 'SERV-42' },
+      isInternational: false,
+      paymentTermsLabel: null,
+      isSubcontractingBtp: false,
+    };
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(JSON.stringify([rich]), { headers: { 'content-type': 'application/json' } })));
+    const client = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-mercier' });
+    await expect(client.listCustomers()).resolves.toEqual({ ok: true, value: [rich] });
+
+    // Difforme (jours non entiers / canal inconnu) ⇒ échec FERMÉ, jamais un cast aveugle.
+    for (const bad of [
+      { ...base, paymentTerms: { days: 'trente', endOfMonth: true, label: 'x' } },
+      { ...base, billingChannel: { type: 'pigeon' } },
+      { ...base, billingChannel: { type: 'email', chorusServiceCode: 'SERV-42' } },
+    ]) {
+      vi.stubGlobal('fetch', vi.fn(async () =>
+        new Response(JSON.stringify([bad]), { headers: { 'content-type': 'application/json' } })));
+      const failing = new HttpBobClient({ baseUrl: 'https://api.bob.test', companyId: 'company-mercier' });
+      const result = await failing.listCustomers();
+      expect(result.ok).toBe(false);
+    }
   });
 
   it.each([

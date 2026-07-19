@@ -1,10 +1,10 @@
-import { type Result, ok, err, type AppError, type ExpenseCategory, type FiscalDeadline, type PaymentMethod, formatEUR, parisDateOnly, PLAN_CATALOG, retractationFreezeMessage, type SubscriptionStatusView } from '@bob/core';
+import { type Result, ok, err, type AppError, type Discount, type ExpenseCategory, type FiscalDeadline, type PaymentMethod, type SituationAmountInput, formatEUR, isVatRate, parisDateOnly, PLAN_CATALOG, retractationFreezeMessage, STANDALONE_B2C_REQUIRES_URGENT_REPAIR_MESSAGE, validateProPaymentTermsCeiling, type SubscriptionStatusView } from '@bob/core';
 import { ModelRouter, type ModelChoice } from '../router/model-router';
 import { renderWithGuard } from '../guardrails/money-guard';
 import { naturalizeReply, type NaturalizeTone } from '../guardrails/naturalize';
 import { redactPII } from '../guardrails/pii-redaction';
 import { type LlmPort } from '../llm/port';
-import { type AgentDocument, type AgentExpense, type BobActions, type IssuableInvoice, type PayableInvoice, type SendableQuote } from './actions';
+import { type AgentDocument, type AgentExpense, type BillableCustomer, type BobActions, type InvoiceableQuote, type IssuableInvoice, type PayableInvoice, type SendableQuote } from './actions';
 import { buildBobTools } from '../tools/registry';
 import { type AnyTool } from '../tools/tool';
 import { type AgentAutonomy, DEFAULT_AUTONOMY, requiresConfirmation } from './autonomy';
@@ -793,6 +793,210 @@ export function purchaseOrderLinkedRun(input: {
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// B1/B2/B4 — Facturation terrain à la voix : facture directe, situation de
+// travaux, conditions de paiement client. Extraction déterministe + commandes
+// canoniques (les followUps des questions renvoient la commande COMPLÈTE :
+// chaque tour reparse tout, garantie de re-classification du bon intent).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Mots du GESTE de facturation directe / conditions client — neutralisés avant le ciblage du
+ * client par jetons : « facture 380 € à Mme Girard » ne cible que par « girard ». */
+const BILLING_GESTURE_WORDS: ReadonlySet<string> = new Set([
+  'facture', 'factures', 'facturer', 'factureras', 'facturez', 'directe', 'direct', 'fais',
+  'faire', 'cree', 'creer', 'genere', 'generer', 'prepare', 'preparer', 'etablis', 'etablir',
+  'euros', 'euro', 'eur', 'ttc', 'hors', 'taxe', 'taxes', 'tva', 'taux', 'remise', 'remises',
+  'client', 'clients', 'madame', 'monsieur', 'mme', 'pour', 'avec', 'sans', 'chez', 'dans',
+  'sur', 'urgence', 'urgent', 'urgente', 'depannage', 'intervention', 'demandee', 'demande',
+  'logement', 'plus', 'ans', 'renovation', 'energetique', 'jours', 'jour', 'fin', 'mois',
+  'paie', 'paient', 'payent', 'paye', 'payes', 'paiera', 'regle', 'reglent', 'conditions',
+  'condition', 'paiement', 'delai', 'delais', 'mets', 'met', 'mettre', 'passe', 'passer',
+  'bascule', 'basculer', 'situation', 'situations', 'avancement', 'chantier', 'chantiers',
+  'devis', 'marche', 'prestation', 'peux', 'veux', 'voudrais', 'plait', 'merci', 'stp',
+  'cette', 'cet', 'celle', 'celui', 'mon', 'mes', 'ton', 'tes', 'ses', 'les', 'des', 'une',
+]);
+
+/** Pourcentage de SITUATION dit (« 40 % », « 12,5 pour cent ») — les segments TVA/remise sont
+ * écartés d'abord : leur % n'est jamais promu avancement. Null si absent ou hors bornes. */
+function extractSituationPercent(text: string): number | null {
+  const cleaned = normalized(text)
+    .replace(/tva\s*(?:a|de|au taux de)?\s*\d{1,2}(?:[.,]\d{1,2})?\s*(?:%|pour ?cent)/g, ' ')
+    .replace(/\d{1,3}(?:[.,]\d{1,2})?\s*(?:%|pour ?cent)\s*(?:de\s*)?(?:remise|tva|acompte)/g, ' ')
+    .replace(/remise\s*(?:globale\s*)?(?:de\s*)?\d{1,3}(?:[.,]\d{1,2})?\s*(?:%|pour ?cent)/g, ' ')
+    .replace(/acompte\s*(?:de\s*)?\d{1,3}(?:[.,]\d{1,2})?\s*(?:%|pour ?cent)/g, ' ');
+  const m = /(\d{1,3}(?:[.,]\d{1,2})?)\s*(?:%|pour ?cent)/.exec(cleaned);
+  if (m?.[1] === undefined) return null;
+  const value = Number(m[1].replace(',', '.'));
+  return Number.isFinite(value) && value > 0 && value <= 100 ? value : null;
+}
+
+/** Base du montant dicté : « 380 € HT » / « 500 € TTC » — adjacence d'abord, marqueur global
+ * ensuite. Null = non dit (la question HT/TTC se pose : jamais une base devinée). */
+function extractSpokenAmountBasis(text: string): 'ht' | 'ttc' | null {
+  const norm = normalized(text);
+  const adjacent = /\d\s*(?:€|euros?|eur)\s*(ht|ttc)\b/.exec(norm);
+  if (adjacent?.[1] === 'ht' || adjacent?.[1] === 'ttc') return adjacent[1];
+  if (/\bhors taxes?\b|\bht\b/.test(norm)) return 'ht';
+  if (/\bttc\b|toutes taxes/.test(norm)) return 'ttc';
+  return null;
+}
+
+/** Taux de TVA dit avec son MARQUEUR explicite (« TVA 10 % », « 20 % de TVA ») — null si
+ * absent ou hors de l'ensemble fermé du domaine (isVatRate) : la question se pose alors. */
+function extractSpokenVatRate(text: string): number | null {
+  const norm = normalized(text);
+  const m =
+    /tva\s*(?:a|de|au taux de)?\s*(\d{1,2}(?:[.,]\d)?)\s*(?:%|pour ?cent)/.exec(norm)
+    ?? /(\d{1,2}(?:[.,]\d)?)\s*(?:%|pour ?cent)\s*de\s*tva/.exec(norm);
+  if (m?.[1] === undefined) return null;
+  const value = Number(m[1].replace(',', '.'));
+  return isVatRate(value) && value > 0 ? value : null;
+}
+
+/** Remise dictée (« 10 % de remise », « remise de 50 € ») — structure Discount du domaine,
+ * null si absente. Le plafond (montant ≤ base) reste jugé par l'agrégat qui connaît la base. */
+function extractSpokenDiscount(text: string): Discount | null {
+  const norm = normalized(text);
+  const pct =
+    /remise\s*(?:globale\s*)?(?:de\s*)?(\d{1,2}(?:[.,]\d{1,2})?)\s*(?:%|pour ?cent)/.exec(norm)
+    ?? /(\d{1,2}(?:[.,]\d{1,2})?)\s*(?:%|pour ?cent)\s*de\s*remise/.exec(norm);
+  if (pct?.[1] !== undefined) {
+    const value = Number(pct[1].replace(',', '.'));
+    return Number.isFinite(value) && value > 0 && value <= 100 ? { type: 'percent', value } : null;
+  }
+  const amount =
+    /remise\s*(?:de\s*)?(\d+(?:[.,]\d{1,2})?)\s*(?:€|euros?)/.exec(norm)
+    ?? /(\d+(?:[.,]\d{1,2})?)\s*(?:€|euros?)\s*de\s*remise/.exec(norm);
+  if (amount?.[1] !== undefined) {
+    const cents = Math.round(Number(amount[1].replace(',', '.')) * 100);
+    return Number.isSafeInteger(cents) && cents > 0 ? { type: 'amount', cents } : null;
+  }
+  return null;
+}
+
+/** Prestation dictée (« pour le dépannage de la chaudière ») — texte BRUT (casse conservée),
+ * borné à la ponctuation et à la parenthèse des précisions canoniques. `raw` = segment complet
+ * apparié, à écarter du texte de ciblage client. Null si rien d'exploitable. */
+function extractSpokenServiceLabel(text: string): { label: string; raw: string } | null {
+  const m = /\bpour\s+(?:le\s+|la\s+|l['’]\s*|les\s+|un\s+|une\s+)?([^,;.!?()]+?)(?=\s*[,;.!?(]|$)/iu.exec(text);
+  if (m?.[1] === undefined) return null;
+  const label = m[1].replace(/\s+/g, ' ').trim();
+  // « pour le chantier Durand » désigne un lieu, jamais une prestation.
+  if (label.length < 2 || /^chantiers?\b/i.test(label)) return null;
+  return { label, raw: m[0] };
+}
+
+/** Rendu parlé d'un taux (« 5,5 % ») — re-parsable par extractSpokenVatRate. */
+function spokenRateLabel(rate: number): string {
+  return `${String(rate).replace('.', ',')} %`;
+}
+
+/** Commande CANONIQUE de la facture directe (B1) — les followUps ASK la renvoient VERBATIM :
+ * chaque tour reparse la commande complète, garantie de re-classification facture_directe. */
+function dictatedDirectInvoiceCommand(parts: {
+  amountCents: number;
+  basis: 'ht' | 'ttc' | null;
+  customerName: string;
+  label: string | null;
+  vatRate: number | null;
+  housingOlderThan2y?: boolean;
+  energyRenovation?: boolean;
+  urgent?: boolean;
+  discount?: Discount | null;
+}): string {
+  const extras: string[] = [];
+  if (parts.vatRate !== null) extras.push(`TVA ${spokenRateLabel(parts.vatRate)}`);
+  if (parts.housingOlderThan2y === true) extras.push('logement de plus de 2 ans');
+  if (parts.energyRenovation === true) extras.push('rénovation énergétique');
+  if (parts.urgent === true) extras.push('intervention urgente demandée par le client');
+  if (parts.discount) {
+    extras.push(
+      parts.discount.type === 'percent'
+        ? `avec ${String(parts.discount.value).replace('.', ',')} % de remise`
+        : `avec une remise de ${spokenAmountLabel(parts.discount.cents)}`,
+    );
+  }
+  return (
+    `Facture ${spokenAmountLabel(parts.amountCents)}${parts.basis !== null ? ` ${parts.basis.toUpperCase()}` : ''}`
+    + ` à ${parts.customerName}`
+    + (parts.label !== null ? ` pour ${parts.label}` : '')
+    + (extras.length > 0 ? ` (${extras.join(', ')})` : '')
+  );
+}
+
+/** Commande CANONIQUE d'une situation de travaux (B2) — re-classifiée facturer_situation. */
+function situationCommand(ref: string, amount: SituationAmountInput | null): string {
+  if (amount === null) return `Facture une situation sur le devis ${ref}`;
+  return 'percent' in amount
+    ? `Facture une situation de ${String(amount.percent).replace('.', ',')} % sur le devis ${ref}`
+    : `Facture une situation de ${spokenAmountLabel(amount.amountHtCents)} HT sur le devis ${ref}`;
+}
+
+/** Commande CANONIQUE des conditions de paiement client (B4) — re-classifiée conditions_paiement. */
+function paymentTermsCommand(customerName: string, days: number, endOfMonth: boolean): string {
+  return `Le client ${customerName} paie à ${days} jours${endOfMonth ? ' fin de mois' : ''}`;
+}
+
+/** Libellé imprimable des conditions — même forme canonique que le défaut du registre. */
+function paymentTermsLabel(days: number, endOfMonth: boolean): string {
+  return endOfMonth ? `${days} jours fin de mois` : `Paiement à ${days} jours`;
+}
+
+/** Carte HONNÊTE d'un refus du domaine (garde-fou pro étranger B6, urgence b2c A3bis, cumul de
+ * situations B2, plafond L441-10 B4, retenue B5…) : le MESSAGE DU DOMAINE, verbatim — la même
+ * substance que l'UI, jamais reformulée, jamais un code technique brut. Null si l'erreur ne
+ * porte pas de message humain (elle suit alors le chemin d'erreur ordinaire). Exportée pour
+ * que tout hôte qui confirme via son propre runtime (HTTP /ai/confirm) restitue le MÊME refus. */
+export function domainGuardCard(error: AppError): ActionCard | null {
+  if (error.kind === 'domain') {
+    const e = error.error as { message?: unknown };
+    if (typeof e.message === 'string' && e.message.trim().length > 0) {
+      return {
+        title: 'Refusé — rien n’a été modifié',
+        body: e.message.trim(),
+      };
+    }
+    return null;
+  }
+  if (error.kind === 'validation' && error.issues.length > 0) {
+    return {
+      title: 'Refusé — rien n’a été modifié',
+      body: error.issues.map((issue) => issue.message).join('\n'),
+    };
+  }
+  return null;
+}
+
+/** Outils du lot facturation terrain (B1/B2/B4) dont les refus du domaine se restituent en
+ * carte honnête — à la proposition ET à la confirmation (l'état a pu changer entre les deux).
+ * Exporté : l'hôte HTTP (/ai/confirm, runtime journalisé) applique la MÊME restitution. */
+export const FACTURATION_TERRAIN_TOOLS: ReadonlySet<string> = new Set([
+  'facture_directe',
+  'facturer_situation',
+  'definir_conditions_paiement',
+]);
+
+/** Ciblage d'un client par jetons SIGNIFICATIFS (mêmes règles que les devis/factures) : toute
+ * ambiguïté redevient une question, jamais un choix deviné. */
+function matchCustomersByTokens(conversation: string, customers: readonly BillableCustomer[]): BillableCustomer[] {
+  const conversationTokens = new Set(
+    normalized(conversation)
+      .split(/[^a-z0-9]+/)
+      .filter((word) => word.length >= 3 && !BILLING_GESTURE_WORDS.has(word)),
+  );
+  return customers.filter((customer) =>
+    significantNameWords(normalized(customer.name)).some((word) => conversationTokens.has(word)),
+  );
+}
+
+/** Ligne(s) descriptives de la retenue de garantie (B5) d'un devis facturable — même substance
+ * que la mention UI (loi n° 71-584) ; chaîne vide sans retenue stipulée. */
+function retenueNote(quote: Pick<InvoiceableQuote, 'retenueGarantiePct'>): string {
+  const pct = quote.retenueGarantiePct ?? null;
+  if (pct === null) return '';
+  return ` La retenue de garantie de ${String(pct).replace('.', ',')} % (loi n° 71-584 du 16 juillet 1971) sera déduite du net à payer — libérée un an après la réception des travaux.`;
+}
+
 /** Ligne d'échéance fiscale, sobre (C-EXP5b) : date FR, libellé, « à confirmer » sur les
  * hypothèses ('assumed'), puis l'explication du use case — jamais un montant (v1 n'en émet pas). */
 function fiscalDeadlineLine(d: FiscalDeadline): string {
@@ -859,6 +1063,9 @@ export function intentForTool(tool: string): BobIntent {
   if (tool === 'renommer_document') return 'renommer_document';
   if (tool === 'chercher_document') return 'chercher_document';
   if (tool === 'lier_bon_commande') return 'lier_bon_commande';
+  if (tool === 'facture_directe') return 'facture_directe';
+  if (tool === 'facturer_situation') return 'facturer_situation';
+  if (tool === 'definir_conditions_paiement') return 'conditions_paiement';
   if (tool === 'resultat_provisoire') return 'resultat';
   if (tool === 'mon_bilan') return 'bilan';
   if (tool === 'generer_facture' || tool === 'generer_facture_devis') return 'generer_facture';
@@ -987,6 +1194,23 @@ export class BobAgent {
     const isDictatedExpenseContinuation = lastBobTurn !== undefined
       && /(fournisseur|montant|moyen|cat[ée]gorie|date).{0,50}d[ée]pense|d[ée]pense.{0,50}(fournisseur|montant|moyen|cat[ée]gorie|date)/i.test(lastBobTurn.text)
       && recentUserTurns.some((turn) => /j\W{0,3}ai d[ée]pens[ée]|\d\s*(?:€|euros?)|d[ée]pense/i.test(turn.text));
+    // B1 — continuité de la facture directe : après une question Bob du parcours (« … de cette
+    // facture directe »), la réponse courte (« 380 € », « pour le dépannage ») poursuit le
+    // parcours au lieu de ressusciter un autre intent.
+    const isDirectInvoiceContinuation = lastBobTurn !== undefined
+      && /facture directe/i.test(lastBobTurn.text)
+      && recentUserTurns.some((turn) => /factur/i.test(turn.text));
+    // B2 — continuité de la situation : après la question d'avancement (« … de cette
+    // situation »), la réponse courte (« 40 % », « 12 000 € HT ») poursuit le parcours.
+    const isSituationContinuation = lastBobTurn !== undefined
+      && /situation/i.test(lastBobTurn.text)
+      && /avancement|montant|pourcentage/i.test(lastBobTurn.text)
+      && recentUserTurns.some((turn) => /situation/i.test(turn.text));
+    // B4 — continuité des conditions de paiement : après la question du délai ou du client
+    // (« … conditions de paiement »), la réponse courte (« 45 jours fin de mois ») poursuit.
+    const isPaymentTermsContinuation = lastBobTurn !== undefined
+      && /conditions de paiement/i.test(lastBobTurn.text)
+      && recentUserTurns.some((turn) => /paie|paye|r[èe]gle|jours|conditions/i.test(turn.text));
     // B8 — passerelle d'enchaînement : après « Bon de commande lié ✓ », un OUI franc délègue au
     // flow generer_facture_devis EXISTANT via sa commande canonique VERBATIM ; un NON franc clôt
     // proprement (le lien, lui, est déjà fait). Jamais d'action sur une réponse ambiguë.
@@ -1010,7 +1234,12 @@ export class BobAgent {
       ? `Fais la facture du devis ${invoiceChainRef}`
       : null;
     const classificationMessage = chainCommand
-      ?? (isExpensePaymentContinuation || isPurchaseOrderContinuation || isDictatedExpenseContinuation
+      ?? (isExpensePaymentContinuation
+        || isPurchaseOrderContinuation
+        || isDictatedExpenseContinuation
+        || isDirectInvoiceContinuation
+        || isSituationContinuation
+        || isPaymentTermsContinuation
         ? `${recentUserTurns.map((turn) => turn.text).join(' ')} ${userMessage}`
         : userMessage);
     // Le message des handlers : la commande canonique quand l'enchaînement a été accepté,
@@ -3639,6 +3868,775 @@ export class BobAgent {
       return ok(purchaseOrderLinkedRun({ intent, model, label, output: run.value }));
     }
 
+    if (intent === 'facturer_situation') {
+      // B2 — SITUATION DE TRAVAUX (« facture une situation de 40 % sur le chantier Durand ») :
+      // MÊME use case GenerateInvoiceFromQuote (mode 'situation') que l'UI, via l'outil dédié.
+      // Le montant est TOUJOURS le choix de l'artisan ; l'avancement des tâches ne fait que
+      // PROPOSER (proposeSituationFromChantier, consultatif). Les gardes du domaine (cumul,
+      // gel de rétractation, embargo, retenue) sont restituées VERBATIM — jamais contournées.
+      const list = this.deps.actions.listInvoiceableQuotes?.bind(this.deps.actions);
+      const tool = this.tool('facturer_situation');
+      if (!list || !tool) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier la capacité de l’hôte'],
+          card: {
+            title: 'Situation de travaux',
+            body: 'Je n’ai pas accès aux situations de travaux sur cet appareil — passe par l’écran Ventes. Rien n’a été créé.',
+          },
+        });
+      }
+      const r = await list();
+      if (!r.ok) return err(r.error);
+      if (r.value.length === 0) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Chercher les devis signés facturables'],
+          card: {
+            title: 'Situation de travaux',
+            body: 'Aucun devis signé en attente de facturation : une situation s’appuie toujours sur un devis signé. Rien n’a été créé.',
+          },
+        });
+      }
+      // Historique court : la réponse courte (« 40 % ») poursuit la question d'avancement.
+      const conversation = [
+        ...(history ?? []).slice(-4).filter((turn) => turn.role === 'user').map((turn) => turn.text),
+        message,
+        reference ?? '',
+      ].join(' ');
+      // Un MONTANT dicté (« 4500 € ») ne doit jamais devenir une référence de devis : la
+      // référence extraite n'est gardée que si elle ne recopie pas les chiffres du montant.
+      const amountDigits = /(\d+(?:[.,]\d{1,2})?)\s*(?:€|euros?\b|eur\b)/i.exec(conversation)?.[1] ?? null;
+      const targetReference = reference !== null && reference !== amountDigits ? reference : null;
+      const resolved = resolveDocumentTarget({
+        message: conversation,
+        reference: targetReference,
+        documents: r.value,
+        ...(context !== undefined ? { context } : {}),
+        type: 'quote',
+        capability: 'quote.invoice.generate',
+      });
+      const quote = resolved.target;
+      if (!quote) {
+        const options = [...resolved.choices];
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Lever l’ambiguïté du devis'],
+          card: {
+            title: 'Quel devis ?',
+            body: unresolvedTargetBody({
+              ...(resolved.unactionableLabel !== undefined ? { unactionableLabel: resolved.unactionableLabel } : {}),
+              hasOptions: options.length > 0,
+              ask: 'Précise le devis signé de la situation :',
+              empty: 'Aucun devis signé à facturer.',
+            }),
+          },
+          choices: options.map((q) => ({
+            label: `${displayRef(q)} — ${q.customerName} · ${formatEUR(q.totalTtcCents)}`,
+            value: situationCommand(displayRef(q), null),
+          })),
+          ask: [
+            askToPick({
+              id: 'facturer_situation.cible',
+              question: 'Sur quel devis signé porter la situation ?',
+              header: 'Devis',
+              items: options.map((q) => ({
+                value: displayRef(q),
+                label: displayRef(q),
+                description: `${q.customerName} · ${formatEUR(q.totalTtcCents)}`,
+                followUp: situationCommand(displayRef(q), null),
+              })),
+            }),
+          ],
+        });
+      }
+
+      const ref = displayRef(quote);
+      // A3 — gel de rétractation B2C : une situation demande le paiement de travaux EXÉCUTÉS —
+      // gelée AU MÊME TITRE que la finale pendant le délai (lecture prudente du domaine,
+      // GenerateInvoiceFromQuote renverrait RETRACTATION_PERIOD_ACTIVE). Message SOURCE UNIQUE.
+      const situationBlockedUntil = quote.finalBlockedUntil ?? null;
+      if (situationBlockedUntil !== null) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: [
+            'Identifier le devis signé',
+            'Vérifier le délai légal de rétractation (14 jours, client particulier)',
+            'Expliquer honnêtement le gel et la date de déblocage',
+          ],
+          card: {
+            title: 'Situation : pas encore possible',
+            body: `Devis ${ref} (${quote.customerName}) — ${retractationFreezeMessage(situationBlockedUntil)} La situation, comme la finale, attend cette date.`,
+          },
+        });
+      }
+
+      // Montant CHOISI par l'artisan : % dit, ou montant HT dit (la pratique des marchés privés
+      // stipule les situations en HT — un montant TTC dicté redevient une question honnête).
+      const percent = extractSituationPercent(conversation);
+      const amountCents = percent === null ? extractSpokenAmountCents(conversation) : null;
+      const basis = extractSpokenAmountBasis(conversation);
+      let situation: SituationAmountInput | null = null;
+      if (percent !== null) situation = { percent };
+      else if (amountCents !== null) {
+        if (basis === 'ttc') {
+          return ok({
+            kind: 'answer',
+            intent,
+            model,
+            plan: ['Contrôler la base du montant'],
+            card: {
+              title: 'Montant HT requis',
+              body: `Les situations de travaux se stipulent hors taxes (la TVA en découle par taux). Redis-moi le montant HT de cette situation (« ${situationCommand(ref, { amountHtCents: amountCents })} ») ou un pourcentage. Rien n’a été créé.`,
+            },
+          });
+        }
+        situation = { amountHtCents: amountCents };
+      }
+      if (situation === null) {
+        // % PROPOSÉ des tâches du chantier si l'hôte sait le dériver — consultatif, jamais
+        // imposé : l'artisan choisit toujours (proposeSituationFromChantier @bob/core).
+        const propose = this.deps.actions.proposeSituationAdvancement?.bind(this.deps.actions);
+        const proposal = propose ? await propose({ quoteId: quote.id }) : null;
+        const proposed = proposal !== null && proposal.ok ? proposal.value : null;
+        if (proposed !== null) {
+          return ok({
+            kind: 'answer',
+            intent,
+            model,
+            plan: ['Identifier le devis signé', 'Proposer l’avancement des tâches', 'Laisser le choix du montant'],
+            card: {
+              title: 'Quel avancement pour cette situation ?',
+              body:
+                `Devis ${ref} (${quote.customerName}, marché ${formatEUR(quote.totalTtcCents)} TTC). `
+                + `D’après les tâches du chantier (${proposed.doneCount}/${proposed.totalCount} terminées), je te propose ${proposed.percent} % — c’est toi qui décides : dis-moi un autre pourcentage ou un montant HT si tu préfères.`,
+            },
+            choices: [
+              {
+                label: `Situation de ${proposed.percent} % (avancement des tâches)`,
+                value: situationCommand(ref, { percent: proposed.percent }),
+              },
+            ],
+          });
+        }
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Identifier le devis signé', 'Demander l’avancement (jamais deviné)'],
+          card: {
+            title: 'Quel avancement pour cette situation ?',
+            body: `Devis ${ref} (${quote.customerName}, marché ${formatEUR(quote.totalTtcCents)} TTC). Dis-moi l’avancement de la situation : un pourcentage (« situation de 40 % ») ou un montant HT (« situation de 12000 € HT »). Rien n’a été créé.`,
+          },
+        });
+      }
+
+      const args = { quoteId: quote.id, situation };
+      const parsed = tool.parse(args);
+      if (!parsed.ok) return err(parsed.error);
+      const amountLabel =
+        'percent' in situation
+          ? `${String(situation.percent).replace('.', ',')} % du marché`
+          : `${formatEUR(situation.amountHtCents)} HT`;
+      const label = `Générer la situation de ${amountLabel} du devis ${ref} — ${quote.customerName} (marché ${formatEUR(quote.totalTtcCents)} TTC)`;
+      if (requiresConfirmation(tool, autonomy)) {
+        return ok({
+          kind: 'proposed',
+          intent,
+          model,
+          plan: ['Identifier le devis signé', 'Préparer la situation (même use case que l’écran)', 'Attendre ta confirmation'],
+          card: {
+            title: 'Situation à confirmer',
+            body: `${label}.${retenueNote(quote)} Le cumul acompte + situations reste plafonné au marché (garde du domaine). Je la génère en brouillon ?`,
+          },
+          pending: { tool: tool.name, args, label },
+          spokenPrompt: buildSpokenConfirmation(label),
+        });
+      }
+      const run = await tool.run(parsed.value);
+      if (!run.ok) {
+        // Gardes du domaine (cumul dépassé, gel, embargo) : restitution VERBATIM, jamais un
+        // message technique brut — mêmes messages que l'UI.
+        const guard = domainGuardCard(run.error);
+        if (guard) {
+          return ok({ kind: 'answer', intent, model, plan: ['Restituer le refus du domaine'], card: guard });
+        }
+        return err(run.error);
+      }
+      return ok({
+        kind: 'done',
+        intent,
+        model,
+        plan: ['Générer la situation'],
+        card: { title: 'Situation générée ✓', body: `${label} — brouillon créé, à émettre quand tu veux.${retenueNote(quote)}` },
+      });
+    }
+
+    if (intent === 'facture_directe') {
+      // B1 — FACTURE DIRECTE sans devis signé (« facture 380 € à Mme Girard pour le
+      // dépannage ») : MÊME use case ComposeStandaloneInvoice (@bob/core) que POST /invoices.
+      // Client/montant/prestation/TVA extraits du message ; tout champ manquant redevient une
+      // QUESTION structurée — jamais un défaut inventé, jamais un taux de TVA deviné. Client
+      // b2c : la qualification d'urgence A3bis est DEMANDÉE — sans elle, refus honnête du
+      // domaine (le devis signé reste le chemin), restitué verbatim.
+      const compose = this.deps.actions.composeStandaloneInvoice?.bind(this.deps.actions);
+      const listCustomers = this.deps.actions.listBillableCustomers?.bind(this.deps.actions);
+      const tool = this.tool('facture_directe');
+      if (!compose || !listCustomers || !tool) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier la capacité de l’hôte'],
+          card: {
+            title: 'Facture directe',
+            body: 'Je ne peux pas créer de facture directe sur cet appareil pour le moment. Rien n’a été créé — passe par l’écran Ventes.',
+          },
+        });
+      }
+      const conversation = [
+        ...(history ?? []).slice(-6).filter((turn) => turn.role === 'user').map((turn) => turn.text),
+        message,
+        reference ?? '',
+      ].join(' ');
+      const normalizedConversation = normalized(conversation);
+      const customersResult = await listCustomers();
+      if (!customersResult.ok) return err(customersResult.error);
+      const customers = customersResult.value;
+
+      const amountCents = extractSpokenAmountCents(conversation);
+      const basis = extractSpokenAmountBasis(conversation);
+      const vatRate = extractSpokenVatRate(conversation);
+      const discount = extractSpokenDiscount(conversation);
+      const service = extractSpokenServiceLabel(conversation);
+      const housingOlderThan2y = /logement (?:de )?plus de 2 ans|logement ancien/.test(normalizedConversation);
+      const energyRenovation = /renovation energetique/.test(normalizedConversation);
+      const urgency: 'declared' | 'denied' | null = /\bsans urgence\b|\bpas urgente?\b|\bnon urgente?\b/.test(normalizedConversation)
+        ? 'denied'
+        : /\burgen/.test(normalizedConversation)
+          ? 'declared'
+          : null;
+
+      // Ciblage du CLIENT : le segment prestation (« pour le dépannage ») est écarté d'abord —
+      // ses mots ne ciblent jamais un client, et un nom dit mais inconnu = refus honnête.
+      const resolutionText = service !== null ? conversation.replace(service.raw, ' ') : conversation;
+      const matched = matchCustomersByTokens(resolutionText, customers);
+      if (matched.length === 0) {
+        const knownTokens = new Set(
+          customers.flatMap((customer) => significantNameWords(normalized(customer.name))),
+        );
+        const leftover = normalized(resolutionText)
+          .split(/[^a-z0-9]+/)
+          .filter(
+            (word) => word.length >= 3 && !BILLING_GESTURE_WORDS.has(word) && !knownTokens.has(word) && !/^\d+$/.test(word),
+          );
+        if (leftover.length > 0) {
+          const leftoverSet = new Set(leftover);
+          const said = conversation
+            .split(/[^\p{L}\p{N}-]+/u)
+            .filter((word) => leftoverSet.has(normalized(word)))
+            .slice(0, 4)
+            .join(' ');
+          return ok({
+            kind: 'answer',
+            intent,
+            model,
+            plan: ['Chercher le client dans la liste réelle'],
+            card: {
+              title: 'Client introuvable',
+              body: `Je ne trouve pas de client « ${said.length > 0 ? said : 'ce nom'} » dans ton carnet. Rien n’a été créé — crée d’abord sa fiche (« crée le client ${said.length > 0 ? said : '…'} »), ou redis le nom exact de cette facture directe.`,
+            },
+          });
+        }
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Demander le client de la facture directe'],
+          card: {
+            title: 'Pour quel client ?',
+            body: `Il me manque le client de cette facture directe${amountCents !== null ? ` de ${spokenAmountLabel(amountCents)}` : ''}. Dis-le-moi (« à Mme Girard ») — rien n’a été créé.`,
+          },
+        });
+      }
+      if (matched.length > 1) {
+        const options = matched.slice(0, 4);
+        const followUpFor = (customer: BillableCustomer): string =>
+          amountCents !== null
+            ? dictatedDirectInvoiceCommand({
+                amountCents,
+                basis,
+                customerName: customer.name,
+                label: service?.label ?? null,
+                vatRate,
+                housingOlderThan2y,
+                energyRenovation,
+                urgent: urgency === 'declared',
+                discount,
+              })
+            : `Facture directe pour ${customer.name}`;
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Lever l’ambiguïté du client'],
+          card: {
+            title: 'Quel client ?',
+            body: `Plusieurs clients correspondent pour cette facture directe — lequel ?`,
+          },
+          choices: options.map((customer) => ({ label: customer.name, value: followUpFor(customer) })),
+          ask: [
+            askToPick({
+              id: 'facture_directe.client',
+              question: 'Pour quel client est cette facture directe ?',
+              header: 'Client',
+              items: options.map((customer) => ({
+                value: customer.id,
+                label: customer.name,
+                followUp: followUpFor(customer),
+              })),
+            }),
+          ],
+        });
+      }
+      const customer = matched[0]!;
+      // La prestation ne doit jamais être le nom du client capturé par « pour … ».
+      const customerTokens = new Set(significantNameWords(normalized(customer.name)));
+      const serviceLabel =
+        service !== null
+          && !normalized(service.label)
+            .split(/[^a-z0-9]+/)
+            .filter((word) => word.length >= 3)
+            .every((word) => customerTokens.has(word))
+          ? service.label
+          : null;
+
+      const command = (over: {
+        basis?: 'ht' | 'ttc' | null;
+        vatRate?: number | null;
+        housingOlderThan2y?: boolean;
+        energyRenovation?: boolean;
+        urgent?: boolean;
+        label?: string | null;
+      } = {}): string =>
+        dictatedDirectInvoiceCommand({
+          amountCents: amountCents ?? 0,
+          basis: over.basis !== undefined ? over.basis : basis,
+          customerName: customer.name,
+          label: over.label !== undefined ? over.label : serviceLabel,
+          vatRate: over.vatRate !== undefined ? over.vatRate : vatRate,
+          housingOlderThan2y: over.housingOlderThan2y ?? housingOlderThan2y,
+          energyRenovation: over.energyRenovation ?? energyRenovation,
+          urgent: over.urgent ?? (urgency === 'declared'),
+          discount,
+        });
+
+      if (amountCents === null) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Demander le montant de la facture directe'],
+          card: {
+            title: 'Quel montant ?',
+            body: `Il me manque le montant de cette facture directe pour ${customer.name}. Dis-le-moi (« 380 € HT ») — rien n’a été créé.`,
+          },
+        });
+      }
+      if (serviceLabel === null) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Demander la prestation facturée'],
+          card: {
+            title: 'Quelle prestation ?',
+            body: `Il me manque la prestation de cette facture directe de ${spokenAmountLabel(amountCents)} pour ${customer.name}. Dis-le-moi (« pour le dépannage de la chaudière ») — le libellé figurera sur la facture. Rien n’a été créé.`,
+          },
+        });
+      }
+      if (vatRate === null) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Demander le taux de TVA (jamais deviné)'],
+          card: {
+            title: 'Quel taux de TVA ?',
+            body: `${customer.name} · ${serviceLabel} · ${spokenAmountLabel(amountCents)} — quel taux de TVA pour cette facture directe ? Je ne le devine pas : c’est un choix fiscal.`,
+          },
+          choices: [
+            { label: 'TVA 20 % (taux normal)', value: command({ vatRate: 20 }) },
+            { label: 'TVA 10 % (logement > 2 ans)', value: command({ vatRate: 10, housingOlderThan2y: true }) },
+            { label: 'TVA 5,5 % (rénov. énergétique)', value: command({ vatRate: 5.5, housingOlderThan2y: true, energyRenovation: true }) },
+          ],
+          ask: [
+            askToPick({
+              id: 'facture_directe.tva',
+              question: 'Quel taux de TVA appliquer ?',
+              header: 'TVA',
+              items: [
+                { value: '20', label: '20 %', description: 'Taux normal.', followUp: command({ vatRate: 20 }) },
+                {
+                  value: '10',
+                  label: '10 %',
+                  description: 'Travaux dans un logement achevé depuis plus de 2 ans.',
+                  followUp: command({ vatRate: 10, housingOlderThan2y: true }),
+                },
+                {
+                  value: '5.5',
+                  label: '5,5 %',
+                  description: 'Rénovation énergétique d’un logement de plus de 2 ans.',
+                  followUp: command({ vatRate: 5.5, housingOlderThan2y: true, energyRenovation: true }),
+                },
+              ],
+            }),
+          ],
+        });
+      }
+      // Taux réduits travaux : l'éligibilité ne se fabrique jamais en silence (suggestVatRate
+      // la refuse) — la question se pose si le taux a été dicté sans son contexte.
+      if ((vatRate === 10 && !housingOlderThan2y) || (vatRate === 5.5 && !(housingOlderThan2y && energyRenovation))) {
+        const condition = vatRate === 10
+          ? 'un logement achevé depuis plus de 2 ans'
+          : 'une rénovation énergétique dans un logement de plus de 2 ans';
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier l’éligibilité au taux réduit'],
+          card: {
+            title: `TVA ${spokenRateLabel(vatRate)} : conditions à confirmer`,
+            body: `Le taux de ${spokenRateLabel(vatRate)} suppose ${condition}. C’est le cas pour cette facture directe ?`,
+          },
+          choices: [
+            {
+              label: 'Oui — conditions remplies',
+              value: command({ housingOlderThan2y: true, energyRenovation: vatRate === 5.5 ? true : energyRenovation }),
+            },
+            { label: 'Non — TVA 20 %', value: command({ vatRate: 20 }) },
+          ],
+          ask: [
+            askToPick({
+              id: 'facture_directe.eligibilite',
+              question: `Les conditions du taux à ${spokenRateLabel(vatRate)} sont-elles remplies ?`,
+              header: 'TVA',
+              items: [
+                {
+                  value: 'oui',
+                  label: 'Oui',
+                  description: `${condition.charAt(0).toUpperCase()}${condition.slice(1)}.`,
+                  followUp: command({ housingOlderThan2y: true, energyRenovation: vatRate === 5.5 ? true : energyRenovation }),
+                },
+                { value: 'non', label: 'Non — 20 %', followUp: command({ vatRate: 20 }) },
+              ],
+            }),
+          ],
+        });
+      }
+      if (basis === null) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Demander la base du montant (jamais devinée)'],
+          card: {
+            title: 'HT ou TTC ?',
+            body: `${spokenAmountLabel(amountCents)} pour cette facture directe : c’est hors taxes ou toutes taxes comprises ? Je ne le devine pas.`,
+          },
+          choices: [
+            { label: `${spokenAmountLabel(amountCents)} HT`, value: command({ basis: 'ht' }) },
+            { label: `${spokenAmountLabel(amountCents)} TTC`, value: command({ basis: 'ttc' }) },
+          ],
+          ask: [
+            askToPick({
+              id: 'facture_directe.base',
+              question: `${spokenAmountLabel(amountCents)}, en HT ou en TTC ?`,
+              header: 'Montant',
+              items: [
+                { value: 'ht', label: 'HT', followUp: command({ basis: 'ht' }) },
+                { value: 'ttc', label: 'TTC', followUp: command({ basis: 'ttc' }) },
+              ],
+            }),
+          ],
+        });
+      }
+      if (customer.type === 'b2c') {
+        // A3bis — un particulier sans devis signé : SEULE l'intervention urgente à domicile
+        // expressément demandée par le client ouvre la facture directe (art. L221-10, al. 2).
+        if (urgency === 'denied') {
+          return ok({
+            kind: 'answer',
+            intent,
+            model,
+            plan: ['Appliquer la protection du consommateur (refus honnête du domaine)'],
+            card: {
+              title: 'Refusé — rien n’a été créé',
+              // SOURCE UNIQUE @bob/core : le même message que l'API et l'écran, jamais reformulé.
+              body: STANDALONE_B2C_REQUIRES_URGENT_REPAIR_MESSAGE,
+            },
+            choices: [{ label: 'Faire un devis à la place', value: `Fais un devis pour ${customer.name}` }],
+          });
+        }
+        if (urgency === null) {
+          return ok({
+            kind: 'answer',
+            intent,
+            model,
+            plan: ['Qualifier l’exception d’urgence (client particulier)'],
+            card: {
+              title: 'Dépannage urgent demandé par le client ?',
+              body: `${customer.name} est un particulier : une facture directe sans devis signé n’est possible que pour une intervention urgente à domicile expressément demandée par le client (art. L221-10, al. 2 du code de la consommation). C’était le cas ?`,
+            },
+            choices: [
+              { label: 'Oui — intervention urgente demandée', value: command({ urgent: true }) },
+              { label: 'Non', value: `${command({ urgent: false })} — sans urgence` },
+            ],
+            ask: [
+              askToPick({
+                id: 'facture_directe.urgence',
+                question: 'L’intervention était-elle urgente et demandée par le client ?',
+                header: 'Urgence',
+                items: [
+                  {
+                    value: 'oui',
+                    label: 'Oui',
+                    description: 'Dépannage urgent à domicile, expressément sollicité par le client.',
+                    followUp: command({ urgent: true }),
+                  },
+                  {
+                    value: 'non',
+                    label: 'Non',
+                    description: 'Hors urgence, le devis signé reste le chemin.',
+                    followUp: `${command({ urgent: false })} — sans urgence`,
+                  },
+                ],
+              }),
+            ],
+          });
+        }
+      }
+
+      // Base HT de la ligne : dictée HT telle quelle ; dictée TTC convertie au taux confirmé —
+      // les totaux exacts (TTC, net à payer) restent calculés par le DOMAINE à la création.
+      const unitPriceHT = basis === 'ht' ? amountCents : Math.round(amountCents / (1 + vatRate / 100));
+      const lineLabel = serviceLabel.charAt(0).toUpperCase() + serviceLabel.slice(1);
+      const args = {
+        customerId: customer.id,
+        lines: [{ label: lineLabel, category: 'labor', qty: 1, unitPriceHT, vatRate }],
+        ...(discount !== null ? { globalDiscount: discount } : {}),
+        ...(housingOlderThan2y || energyRenovation
+          ? {
+              context: {
+                ...(housingOlderThan2y ? { housingOlderThan2y: true } : {}),
+                ...(energyRenovation ? { energyRenovation: true } : {}),
+              },
+            }
+          : {}),
+        ...(customer.type === 'b2c' && urgency === 'declared' ? { urgentOnSiteRepair: true } : {}),
+      };
+      const parsed = tool.parse(args);
+      if (!parsed.ok) return err(parsed.error);
+      const discountNote =
+        discount !== null
+          ? discount.type === 'percent'
+            ? `, remise ${String(discount.value).replace('.', ',')} %`
+            : `, remise ${formatEUR(discount.cents)}`
+          : '';
+      const urgentNote = customer.type === 'b2c' && urgency === 'declared' ? ' · intervention urgente demandée par le client' : '';
+      const basisNote = basis === 'ttc' ? ` (${spokenAmountLabel(amountCents)} TTC dit)` : '';
+      const label = `Facture directe ${customer.name} — ${lineLabel} · ${formatEUR(unitPriceHT)} HT, TVA ${spokenRateLabel(vatRate)}${discountNote}${basisNote}${urgentNote}`;
+      if (requiresConfirmation(tool, autonomy)) {
+        return ok({
+          kind: 'proposed',
+          intent,
+          model,
+          plan: ['Identifier le client', 'Contrôler montant, TVA et qualification', 'Attendre ta confirmation'],
+          card: {
+            title: 'Facture directe à confirmer',
+            body: `${label}.\nJe la crée en brouillon (sans devis signé) — l’émission restera un geste séparé. Je confirme ?`,
+          },
+          pending: { tool: tool.name, args, label },
+          spokenPrompt: buildSpokenConfirmation(label),
+        });
+      }
+      const run = await tool.run(parsed.value);
+      if (!run.ok) {
+        // Gardes du domaine (B6 pro étranger, A3bis urgence, TVA non applicable) : restitution
+        // VERBATIM — mêmes messages que l'UI, jamais un code technique brut.
+        const guard = domainGuardCard(run.error);
+        if (guard) {
+          return ok({ kind: 'answer', intent, model, plan: ['Restituer le refus du domaine'], card: guard });
+        }
+        return err(run.error);
+      }
+      // Sortie brute de l'outil (AnyTool) : lecture STRICTE du total — le montant annoncé est
+      // celui du DOMAINE ou rien, jamais un chiffre reconstruit.
+      const output = run.value as { totalTtcCents?: unknown };
+      const totalTtc = typeof output?.totalTtcCents === 'number' ? output.totalTtcCents : null;
+      return ok({
+        kind: 'done',
+        intent,
+        model,
+        plan: ['Créer la facture directe'],
+        card: {
+          title: 'Facture directe créée ✓',
+          body: `${label}${totalTtc !== null ? ` — total ${formatEUR(totalTtc)} TTC (calcul du domaine)` : ''}. Brouillon créé, à émettre quand tu veux.`,
+        },
+      });
+    }
+
+    if (intent === 'conditions_paiement') {
+      // B4 — CONDITIONS DE PAIEMENT propres au client (« Durand paie à 45 jours fin de
+      // mois ») : MÊME chemin UpdateCustomer que la fiche client. Le plafond légal L441-10
+      // (pro : 60 j / 45 j fin de mois) est jugé par le MÊME service pur que le domaine
+      // (validateProPaymentTermsCeiling @bob/core) — refus restitué verbatim, jamais contourné.
+      const setTerms = this.deps.actions.setCustomerPaymentTerms?.bind(this.deps.actions);
+      const listCustomers = this.deps.actions.listBillableCustomers?.bind(this.deps.actions);
+      const tool = this.tool('definir_conditions_paiement');
+      if (!setTerms || !listCustomers || !tool) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Vérifier la capacité de l’hôte'],
+          card: {
+            title: 'Conditions de paiement',
+            body: 'Je ne peux pas modifier les conditions de paiement d’un client sur cet appareil. Rien n’a été modifié — passe par la fiche client.',
+          },
+        });
+      }
+      const conversation = [
+        ...(history ?? []).slice(-4).filter((turn) => turn.role === 'user').map((turn) => turn.text),
+        message,
+        reference ?? '',
+      ].join(' ');
+      const normalizedConversation = normalized(conversation);
+      const customersResult = await listCustomers();
+      if (!customersResult.ok) return err(customersResult.error);
+      const customers = customersResult.value;
+      const daysMatch = /(\d{1,3})\s*jours?\b/.exec(normalizedConversation);
+      const days = daysMatch?.[1] !== undefined ? Number(daysMatch[1]) : null;
+      const endOfMonth = /fin de mois/.test(normalizedConversation);
+
+      const matched = matchCustomersByTokens(conversation, customers);
+      if (matched.length !== 1) {
+        const options = matched.length > 1 ? matched.slice(0, 4) : customers.slice(0, 4);
+        const followUpFor = (customer: BillableCustomer): string =>
+          days !== null
+            ? paymentTermsCommand(customer.name, days, endOfMonth)
+            : `Conditions de paiement du client ${customer.name}`;
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: [matched.length > 1 ? 'Lever l’ambiguïté du client' : 'Demander le client concerné'],
+          card: {
+            title: 'Quel client ?',
+            body:
+              matched.length > 1
+                ? 'Plusieurs clients correspondent — pour lequel changer les conditions de paiement ?'
+                : `Pour quel client poser ces conditions de paiement${days !== null ? ` (${days} jours${endOfMonth ? ' fin de mois' : ''})` : ''} ? Rien n’a été modifié.`,
+          },
+          choices: options.map((customer) => ({ label: customer.name, value: followUpFor(customer) })),
+          ...(options.length >= 2
+            ? {
+                ask: [
+                  askToPick({
+                    id: 'conditions_paiement.client',
+                    question: 'Pour quel client poser ces conditions de paiement ?',
+                    header: 'Client',
+                    items: options.map((customer) => ({
+                      value: customer.id,
+                      label: customer.name,
+                      followUp: followUpFor(customer),
+                    })),
+                  }),
+                ],
+              }
+            : {}),
+        });
+      }
+      const customer = matched[0]!;
+      if (days === null) {
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Demander le délai en jours'],
+          card: {
+            title: 'Quel délai ?',
+            body: `Quelles conditions de paiement pour ${customer.name} ? Dis-moi un délai en jours (« ${paymentTermsCommand(customer.name, 45, true)} »). Rien n’a été modifié.`,
+          },
+        });
+      }
+      // Plafond légal L441-10 (débiteur professionnel) : MÊME service pur que le domaine —
+      // refus AVANT toute proposition, message verbatim + les maxima légaux en choix.
+      const ceiling = validateProPaymentTermsCeiling(customer.type, { days, endOfMonth });
+      if (!ceiling.ok) {
+        const ceilingMessage = 'message' in ceiling.error ? ceiling.error.message : 'Délai de paiement hors plafond légal.';
+        return ok({
+          kind: 'answer',
+          intent,
+          model,
+          plan: ['Appliquer le plafond légal L441-10 (refus honnête du domaine)'],
+          card: { title: 'Refusé — rien n’a été modifié', body: ceilingMessage },
+          choices: [
+            { label: '60 jours (plafond légal)', value: paymentTermsCommand(customer.name, 60, false) },
+            { label: '45 jours fin de mois', value: paymentTermsCommand(customer.name, 45, true) },
+          ],
+        });
+      }
+      const label = paymentTermsLabel(days, endOfMonth);
+      const args = { customerId: customer.id, days, endOfMonth, label };
+      const parsed = tool.parse(args);
+      if (!parsed.ok) return err(parsed.error);
+      // b2g : conseil honnête (délai réglementaire de la commande publique) — jamais un blocage
+      // inventé (le domaine ne bloque pas ; art. R2192-10 du code de la commande publique).
+      const publicNote =
+        customer.type === 'b2g' && days > 30
+          ? ' NB acheteur public : le délai réglementaire de paiement est de 30 jours (art. R2192-10 du code de la commande publique).'
+          : '';
+      const actionLabel = `Conditions de paiement de ${customer.name} : ${label}`;
+      if (requiresConfirmation(tool, autonomy)) {
+        return ok({
+          kind: 'proposed',
+          intent,
+          model,
+          plan: ['Identifier le client', 'Contrôler le plafond légal', 'Attendre ta confirmation'],
+          card: {
+            title: 'Conditions de paiement à confirmer',
+            body: `${actionLabel}. Elles s’appliqueront à l’échéance des prochaines factures émises pour ce client — les factures déjà émises ne changent pas.${publicNote} Je confirme ?`,
+          },
+          pending: { tool: tool.name, args, label: actionLabel },
+          spokenPrompt: buildSpokenConfirmation(actionLabel),
+        });
+      }
+      const run = await tool.run(parsed.value);
+      if (!run.ok) {
+        const guard = domainGuardCard(run.error);
+        if (guard) {
+          return ok({ kind: 'answer', intent, model, plan: ['Restituer le refus du domaine'], card: guard });
+        }
+        return err(run.error);
+      }
+      return ok({
+        kind: 'done',
+        intent,
+        model,
+        plan: ['Enregistrer les conditions de paiement'],
+        card: { title: 'Conditions enregistrées ✓', body: `${actionLabel} — c’est noté pour les prochaines factures.` },
+      });
+    }
+
     if (intent === 'generer_facture') {
       // ASK-2 : générer la facture d'un devis SIGNÉ — le mode (acompte/solde) est une vraie
       // décision de facturation : quand le devis prévoit un acompte non encore facturé et que
@@ -4282,6 +5280,21 @@ export class BobAgent {
           });
         }
       }
+      // B1/B2/B4 — gardes du domaine (pro étranger B6, urgence b2c A3bis, cumul de situations,
+      // plafond L441-10) : l'état a pu changer entre la proposition et la confirmation — le
+      // MESSAGE DU DOMAINE est restitué verbatim (mêmes messages que l'UI), jamais un code brut.
+      if (FACTURATION_TERRAIN_TOOLS.has(pending.tool)) {
+        const guard = domainGuardCard(run.error);
+        if (guard) {
+          return ok({
+            kind: 'answer',
+            intent: intentForTool(pending.tool),
+            model,
+            plan: ['Restituer le refus du domaine'],
+            card: guard,
+          });
+        }
+      }
       return err(run.error);
     }
     if (pending.tool === 'marquer_notifications_lues') {
@@ -4328,6 +5341,40 @@ export class BobAgent {
           output: run.value,
         }),
       );
+    }
+    // B1 — la facture directe confirmée annonce le TOTAL calculé par le DOMAINE (sortie du use
+    // case), jamais un montant reconstruit côté agent.
+    if (pending.tool === 'facture_directe') {
+      const output = run.value as { totalTtcCents?: unknown };
+      const ttc = typeof output?.totalTtcCents === 'number' ? output.totalTtcCents : null;
+      return ok({
+        kind: 'done',
+        intent: 'facture_directe',
+        model,
+        plan: ['Créer la facture directe confirmée'],
+        card: {
+          title: 'Facture directe créée ✓',
+          body: `${pending.label}${ttc !== null ? ` — total ${formatEUR(ttc)} TTC (calcul du domaine)` : ''}. Brouillon créé, à émettre quand tu veux.`,
+        },
+      });
+    }
+    if (pending.tool === 'facturer_situation') {
+      return ok({
+        kind: 'done',
+        intent: 'facturer_situation',
+        model,
+        plan: ['Générer la situation confirmée'],
+        card: { title: 'Situation générée ✓', body: `${pending.label} — brouillon créé, à émettre quand tu veux.` },
+      });
+    }
+    if (pending.tool === 'definir_conditions_paiement') {
+      return ok({
+        kind: 'done',
+        intent: 'conditions_paiement',
+        model,
+        plan: ['Enregistrer les conditions confirmées'],
+        card: { title: 'Conditions enregistrées ✓', body: `${pending.label} — c’est noté pour les prochaines factures.` },
+      });
     }
     return ok({
       kind: 'done',

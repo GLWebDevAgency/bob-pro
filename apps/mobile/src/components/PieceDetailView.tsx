@@ -175,7 +175,7 @@ function LineRowContent({
   last: boolean;
   action?: ReactNode;
 }) {
-  const { colors, controls } = useTheme();
+  const { colors, controls, semantic } = useTheme();
   return (
     <View style={{ paddingVertical: 12, backgroundColor: colors.surface, borderBottomWidth: last ? 0 : 1, borderBottomColor: colors.lineSoft }}>
       <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
@@ -208,8 +208,30 @@ function LineRowContent({
         </View>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
           <View style={{ alignItems: 'flex-end' }}>
+          {/* B3 — remise DE LIGNE : avant/après élégant (brut barré subtil, remise en vert),
+              données de la pièce (buildPieceView) — jamais recalculées ici. */}
+          {line.discount !== null ? (
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+              <Text
+                style={{
+                  ...font('meta', 500),
+                  fontSize: 11.5,
+                  color: colors.slate300,
+                  textDecorationLine: 'line-through',
+                  fontVariant: ['tabular-nums'],
+                }}
+              >
+                {formatEUR(line.totalHTCents)}
+              </Text>
+              <Text style={{ ...font('meta', 700), fontSize: 11.5, color: semantic.success }}>
+                {line.discount.type === 'percent'
+                  ? `−${String(line.discount.value).replace('.', ',')} %`
+                  : `−${formatEUR(line.discount.cents)}`}
+              </Text>
+            </View>
+          ) : null}
           <Text style={{ ...font('body', 700), fontSize: 14, color: colors.ink800, fontVariant: ['tabular-nums'] }}>
-            {formatEUR(line.totalHTCents)}
+            {formatEUR(line.discount !== null ? line.netHTCents : line.totalHTCents)}
           </Text>
           <Text style={{ ...font('meta', 500), fontSize: 11.5, color: colors.slate500 }}>
             {t('piece.vatPerLine', { personality, params: { rate: line.vatRatePct } })}
@@ -603,6 +625,35 @@ export function PieceDetailView({
                 />
               ))}
               <View style={{ paddingTop: 12, borderTopWidth: view.lines.length > 0 ? 1 : 0, borderTopColor: colors.lineSoft }}>
+                {(view.totals.discountCents ?? 0) > 0 ? (
+                  // B3 — l'avant/après des remises : HT brut barré subtil, remise en vert
+                  // success (mention L441-9 imprimée par le serveur sur la pièce).
+                  <>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 3 }}>
+                      <Text style={[font('sub'), { color: colors.slate500 }]}>
+                        {t('discount.recapGross', { personality })}
+                      </Text>
+                      <Text
+                        style={{
+                          ...font('sub', 500),
+                          color: colors.slate300,
+                          textDecorationLine: 'line-through',
+                          fontVariant: ['tabular-nums'],
+                        }}
+                      >
+                        {formatEUR(view.totals.grossHt ?? view.totals.ht)}
+                      </Text>
+                    </View>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 3 }}>
+                      <Text style={[font('sub'), { color: colors.slate500 }]}>
+                        {t('discount.recapSaved', { personality })}
+                      </Text>
+                      <Text style={{ ...font('sub', 700), color: semantic.success, fontVariant: ['tabular-nums'] }}>
+                        −{formatEUR(view.totals.discountCents ?? 0)}
+                      </Text>
+                    </View>
+                  </>
+                ) : null}
                 <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 3 }}>
                   <Text style={[font('sub'), { color: colors.slate500 }]}>{t('piece.totalHt', { personality })}</Text>
                   <Text style={{ ...font('sub', 600), color: colors.ink800, fontVariant: ['tabular-nums'] }}>
@@ -639,6 +690,18 @@ export function PieceDetailView({
                     </Text>
                     <Text style={{ ...font('sub', 700), color: semantic.success, fontVariant: ['tabular-nums'] }}>
                       −{formatEUR(view.depositDeduction.amountCents)}
+                    </Text>
+                  </View>
+                ) : null}
+                {(view.totals.retenueGarantieCents ?? 0) > 0 ? (
+                  // B5 — ligne DÉDIÉE de la retenue de garantie (loi 71-584) : déduite du net
+                  // à payer, figée avec les totaux — la restitution est une créance suivie.
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 3 }}>
+                    <Text style={[font('sub'), { color: colors.slate500 }]}>
+                      {t('retenue.totalsRow', { personality })}
+                    </Text>
+                    <Text style={{ ...font('sub', 700), color: semantic.warning, fontVariant: ['tabular-nums'] }}>
+                      −{formatEUR(view.totals.retenueGarantieCents ?? 0)}
                     </Text>
                   </View>
                 ) : null}

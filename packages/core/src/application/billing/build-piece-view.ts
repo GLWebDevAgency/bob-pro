@@ -2,6 +2,7 @@ import { type Totals } from '../../domain/billing/shared/totals';
 import { type QuoteLine } from '../../domain/billing/shared/line';
 import { type LineCategory } from '../../domain/billing/shared/line-item';
 import { type PurchaseOrderRef } from '../../domain/billing/shared/purchase-order-ref';
+import { type Discount, discountAmountCents } from '../../domain/billing/shared/discount';
 import {
   type CreditNoteSourceSnapshot,
   type InvoiceKind,
@@ -99,7 +100,12 @@ export interface PieceLineView {
   unit: string | null;
   unitPriceHTCents: number;
   vatRatePct: number;
+  /** Base HT BRUTE de la ligne (qty × PU) — inchangée pour les clients existants. */
   totalHTCents: number;
+  /** B3 — remise DE LIGNE affichée (« −10 % » / « −50,00 € ») ; null = aucune. Additif. */
+  discount: Discount | null;
+  /** B3 — HT net de la ligne APRÈS sa remise (avant remise globale). Additif : = totalHTCents sans remise. */
+  netHTCents: number;
 }
 
 export type PieceTransmissionStepState = 'done' | 'current' | 'todo';
@@ -204,16 +210,22 @@ export function buildPartyLine(customer: PieceCustomerData | null): string | nul
 }
 
 function toLineViews(lines: readonly QuoteLine[]): PieceLineView[] {
-  return lines.map((l) => ({
-    id: l.id,
-    label: l.label,
-    category: l.category,
-    qty: l.qty,
-    unit: l.unit ?? null,
-    unitPriceHTCents: l.unitPriceHT,
-    vatRatePct: l.vatRate,
-    totalHTCents: Math.round(l.qty * l.unitPriceHT),
-  }));
+  return lines.map((l) => {
+    const gross = Math.round(l.qty * l.unitPriceHT);
+    return {
+      id: l.id,
+      label: l.label,
+      category: l.category,
+      qty: l.qty,
+      unit: l.unit ?? null,
+      unitPriceHTCents: l.unitPriceHT,
+      vatRatePct: l.vatRate,
+      totalHTCents: gross,
+      // B3 — la remise de ligne est une donnée d'affichage de la pièce (jamais recalculée côté client).
+      discount: l.discount ?? null,
+      netHTCents: gross - discountAmountCents(gross, l.discount ?? null),
+    };
+  });
 }
 
 const TRANSMISSION_KEYS = ['emise', 'transmise', 'recue', 'acceptee', 'payee'] as const;

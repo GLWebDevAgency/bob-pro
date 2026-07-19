@@ -7,13 +7,14 @@
  * L'aperçu comptable (fonctionnalité réelle antérieure) est conservé sous les mentions.
  */
 import { useMemo, useRef, useState } from 'react';
-import { Alert, Linking, Share, Text, View } from 'react-native';
+import { Alert, Linking, Pressable, Share, Text, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { buildPieceView, normalizeVoiceText, type PieceLinkedRef, type PurchaseOrderRefInput } from '@bob/core';
+import { buildPieceView, formatDateOnlyFr, normalizeVoiceText, type PieceLinkedRef, type PurchaseOrderRefInput } from '@bob/core';
 import { challengeFor } from '@bob/ai';
 import { t } from '@bob/i18n';
-import { Card, ErrorRetry, SectionHeader, Skeleton, SkeletonCard, SkeletonHeader, font, useTheme } from '@bob/ui';
+import { Card, ErrorRetry, SectionHeader, Skeleton, SkeletonCard, SkeletonHeader, StatusBadge, font, useTheme } from '@bob/ui';
 import { Button } from '@bob/ui';
+import { dueLineForInvoice } from '../../src/components/customer-terms.logic';
 import {
   useAttachInvoicePurchaseOrder,
   useCreateInvoiceViewLink,
@@ -420,6 +421,20 @@ export default function FactureDetail() {
     );
   }
   const inv = invoice.data;
+  // B4 — échéance dérivée AFFICHÉE à l'émission : date SERVEUR (inv.dueAt) + libellé des
+  // conditions du client (« Échéance : 12/09/2026 — 45 jours fin de mois »). Jamais sur un
+  // brouillon (pas d'échéance avant émission).
+  const invoiceCustomer = (customers.data ?? []).find((c) => c.id === inv.customerId) ?? null;
+  const dueLine =
+    inv.status !== 'draft' && inv.status !== 'cancelled'
+      ? dueLineForInvoice(inv.dueAt, invoiceCustomer?.paymentTerms ?? null, personality)
+      : null;
+  // Canal de facturation : guide de dépôt (chorus/portail) embarqué par GET /invoices/:id
+  // d'une pièce émise — l'entrée n'existe que si le serveur a fourni le guide (état honnête).
+  const transmissionGuide =
+    inv.transmissionGuide !== undefined && inv.transmissionGuide.channel !== 'email'
+      ? inv.transmissionGuide
+      : null;
   // B8 : réassurance à l'étape « Facturer le solde » — le devis parent porte un bon de
   // commande, il sera repris sur la facture générée (aucune re-saisie).
   const nextStepPurchaseOrder = view.nextStep
@@ -486,6 +501,66 @@ export default function FactureDetail() {
       }
       extra={
         <>
+        {dueLine !== null ? (
+          // B4 — l'échéance dérivée des conditions du client, visible dès l'émission.
+          <Card>
+            <Text style={{ ...font('sub', 700), color: colors.ink800, fontVariant: ['tabular-nums'] }}>
+              {dueLine}
+            </Text>
+          </Card>
+        ) : null}
+        {transmissionGuide !== null ? (
+          // Canal chorus/portail : ENTRÉE du guide de dépôt pas-à-pas + état du suivi déclaré.
+          <Card>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t('guide.entryTitle', { personality })}
+              onPress={() => router.push(`/facture/transmission/${id}`)}
+              style={({ pressed }) => ({
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 12,
+                minHeight: 44,
+                opacity: pressed ? 0.7 : 1,
+              })}
+            >
+              <View style={{ flex: 1 }}>
+                <Text style={[font('cardTitle'), { fontSize: 15, color: colors.ink900 }]}>
+                  {t('guide.entryTitle', { personality })}
+                </Text>
+                <Text style={[font('meta', 500), { fontSize: 12.5, color: colors.slate400, marginTop: 2 }]}>
+                  {t(
+                    transmissionGuide.channel === 'chorus'
+                      ? 'guide.entrySubtitleChorus'
+                      : 'guide.entrySubtitlePortail',
+                    { personality },
+                  )}
+                </Text>
+                {inv.transmission?.depositedAt != null ? (
+                  <Text style={[font('meta', 700), { fontSize: 12, color: semantic.success, marginTop: 4 }]}>
+                    {inv.transmission.acceptedAt != null
+                      ? t('guide.acceptedOn', {
+                          personality,
+                          params: { date: formatDateOnlyFr(inv.transmission.acceptedAt) },
+                        })
+                      : t('guide.depositedOn', {
+                          personality,
+                          params: { date: formatDateOnlyFr(inv.transmission.depositedAt) },
+                        })}
+                  </Text>
+                ) : null}
+              </View>
+              <StatusBadge
+                label={
+                  transmissionGuide.channel === 'chorus'
+                    ? t('canal.chorus', { personality })
+                    : t('canal.portail', { personality })
+                }
+                variant="b2g"
+              />
+            </Pressable>
+          </Card>
+        ) : null}
         {/* B8 : section « Bon de commande » — éditable sur BROUILLON (hors avoir), lecture
             seule dès l'émission (mention « figé à l'émission » visible). */}
         {poEditable || inv.purchaseOrder != null ? (

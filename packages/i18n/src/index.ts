@@ -8,6 +8,7 @@ import { cabinetFr } from './catalogs/cabinet';
 import { monetizationFr } from './catalogs/monetization';
 import { fiscalFr } from './catalogs/fiscal';
 import { legalFr } from './catalogs/legal';
+import { billingTerrainFr } from './catalogs/billing-terrain';
 
 export type Personality = 'pote' | 'pro' | 'direct';
 
@@ -7651,6 +7652,7 @@ const fr = {
   ...monetizationFr,
   ...fiscalFr,
   ...legalFr,
+  ...billingTerrainFr,
 } as const satisfies Record<string, Copy>;
 
 export type I18nKey = keyof typeof fr;

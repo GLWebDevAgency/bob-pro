@@ -88,3 +88,46 @@ describe('suggestVatRate', () => {
     expect(zero.ok).toBe(false);
   });
 });
+
+describe('suggestVatRate — débours B9 (art. 267, II-2° CGI)', () => {
+  it('régime RÉEL : débours à 0 % ACCEPTÉ (hors base TVA)', () => {
+    const r = suggestVatRate({
+      company: company(),
+      customer: customer(),
+      category: 'disbursement',
+      requestedRate: 0,
+    });
+    expect(r.ok && r.value).toBe(0);
+  });
+  it('régime RÉEL : débours à taux > 0 REFUSÉ (la pièce serait fiscalement fausse)', () => {
+    for (const rate of [5.5, 10, 20] as const) {
+      const r = suggestVatRate({
+        company: company(),
+        customer: customer(),
+        category: 'disbursement',
+        requestedRate: rate,
+      });
+      expect(r.ok).toBe(false);
+      if (!r.ok)
+        expect(r.error).toMatchObject({ code: 'VAT_RATE_NOT_APPLICABLE', reason: 'disbursement_267' });
+    }
+  });
+  it('franchise : débours à 0 % accepté (la règle franchise prime, même verdict)', () => {
+    const r = suggestVatRate({
+      company: company({ vatRegime: 'franchise' }),
+      customer: customer(),
+      category: 'disbursement',
+      requestedRate: 0,
+    });
+    expect(r.ok && r.value).toBe(0);
+  });
+  it('cohérence interne : les autres catégories gardent leur régime (0 refusé au réel)', () => {
+    const r = suggestVatRate({
+      company: company(),
+      customer: customer(),
+      category: 'labor',
+      requestedRate: 0,
+    });
+    expect(r.ok).toBe(false);
+  });
+});

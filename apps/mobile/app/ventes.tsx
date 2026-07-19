@@ -790,7 +790,35 @@ export default function Ventes() {
 
         {kindFilter !== 'quotes' ? (
           <View>
-            <SectionHeader title="Factures" />
+            <SectionHeader
+              title="Factures"
+              action={
+                // B1 : entrée du flux « facture directe » là où le flux naturel l'attend —
+                // wizard allégé client → lignes → récap (facture SANS devis signé).
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={t('fd.entryVentes', { personality })}
+                  onPress={() => router.push('/facture/new')}
+                  style={({ pressed }) => ({
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 5,
+                    minHeight: 44,
+                    paddingHorizontal: 12,
+                    borderRadius: 999,
+                    borderWidth: 1,
+                    borderColor: semantic.ai,
+                    backgroundColor: semantic.aiBg,
+                    opacity: pressed ? 0.7 : 1,
+                  })}
+                >
+                  <Ionicons name="add" size={15} color={semantic.aiInk} />
+                  <Text style={[font('meta'), { fontWeight: '700', color: semantic.aiInk }]}>
+                    {t('fd.entryVentes', { personality })}
+                  </Text>
+                </Pressable>
+              }
+            />
             {queryState.loading || (hasServerFilters && serverSearch.isLoading) ? (
               <View style={{ gap: 10 }}>
                 <SkeletonRow lines={2} trailing="text" />

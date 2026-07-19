@@ -63,6 +63,8 @@ import {
   computeTotals,
   formatEUR,
   searchCatalogue,
+  RETENUE_GARANTIE_MAX_PCT,
+  type Discount,
   DEVIS_STEPS,
   type CataloguePrestation,
   type CustomerListItem,
@@ -133,6 +135,7 @@ import {
   type QuoteDraftError,
   type QuoteDraftProposal,
 } from '../../src/quote-draft';
+import { parseDiscountInput } from '../../src/facture-directe/facture-directe-model';
 
 /** Profil de risque du recap (envoi du devis, éventuellement signature) — même palier
  * OUTBOUND que le bouton « Envoyer » de DocumentActions/C20. Ce n'est plus un acte fiscal :
@@ -320,6 +323,16 @@ export default function DevisNew() {
   const [exitSheetOpen, setExitSheetOpen] = useState(false);
   const [exitActionBusy, setExitActionBusy] = useState(false);
   const [shareLinkBusy, setShareLinkBusy] = useState(false);
+  // B3/B5 — clauses chiffrées de l'étape acompte : remise GLOBALE (« je t'arrondis à… ») et
+  // retenue de garantie (loi 71-584, option du devis-chantier). État d'ÉCRAN passé tel quel à
+  // CreateQuote — les règles (plafonds, assiettes) restent au domaine, revalidées serveur.
+  // NB : non porté par le slot de brouillon serveur (QuoteDraftPayloadV1 ne les connaît pas
+  // encore) — une reprise de brouillon repart sans remise/retenue, jamais avec une inventée.
+  const [wizardDiscKind, setWizardDiscKind] = useState<'percent' | 'amount'>('percent');
+  const [wizardDiscRaw, setWizardDiscRaw] = useState('');
+  const [wizardDiscError, setWizardDiscError] = useState(false);
+  const [wizardGlobalDiscount, setWizardGlobalDiscount] = useState<Discount | null>(null);
+  const [retenueGarantie, setRetenueGarantie] = useState(false);
 
   // Saisie non validée : hors contenu financier, mais conservée par le provider pour la reprise.
   const lineLabel = quoteDraft.state.lineForm.label;
@@ -374,7 +387,10 @@ export default function DevisNew() {
   const vatChoice = vatChoiceOf(draft.tvaContext, draft.vatRate, vatChoices);
   // Un changement de régime société invalide honnêtement un ancien choix qui n'existe plus.
   const currentRate = vatChoice === null ? null : draft.vatRate;
-  const totals = computeTotals([...draft.lines], { depositPct: draft.depositPct });
+  const totals = computeTotals([...draft.lines], {
+    depositPct: draft.depositPct,
+    globalDiscount: wizardGlobalDiscount,
+  });
   // Vue « client » sur navy UNIQUEMENT quand le pad est effectivement montré (mode sur place
   // choisi) — le choix du mode et l'envoi à distance restent sur le thème clair habituel.
   const dark = flow.step === 'signature' && draft.signMode === 'onsite';
@@ -1127,6 +1143,21 @@ export default function DevisNew() {
     },
   };
 
+  // ── B3 : remise globale (étape acompte) — parseur PUR partagé avec la facture directe,
+  //    plafond contre le HT net de lignes (avant remise globale), règles domaine. ──
+  const applyWizardDiscount = (raw: string, kind: 'percent' | 'amount'): void => {
+    setWizardDiscRaw(raw);
+    setWizardDiscKind(kind);
+    const netAfterLines = computeTotals([...draft.lines]).ht;
+    const parsed = parseDiscountInput(kind, raw, netAfterLines);
+    if (!parsed.ok) {
+      setWizardDiscError(true);
+      return;
+    }
+    setWizardDiscError(false);
+    setWizardGlobalDiscount(parsed.discount);
+  };
+
   // ── Étape 3 : choix TVA = contexte + taux, appliqué à tout le devis ────────
   const selectVat = (choice: VatChoiceOption): void => {
     quoteDraft.applyAtRevision(
@@ -1183,6 +1214,10 @@ export default function DevisNew() {
               && d.tvaContext.housingOlderThan2y === true,
           },
           ...(d.depositPct > 0 ? { depositPct: d.depositPct } : {}),
+          // B3/B5 — remise globale et retenue de garantie : clauses chiffrées confirmées à
+          // l'étape acompte, revalidées par CreateQuote (plafonds domaine, fail-closed).
+          ...(wizardGlobalDiscount !== null ? { globalDiscount: wizardGlobalDiscount } : {}),
+          ...(retenueGarantie ? { retenueGarantiePct: RETENUE_GARANTIE_MAX_PCT } : {}),
           validUntil,
           // Exception dépannage urgent : reprise UNIQUEMENT pour un client PARTICULIER (le
           // serveur horodate et refuse tout autre régime) — jamais un flag orphelin d'un
@@ -1230,7 +1265,10 @@ export default function DevisNew() {
         setError(t('devis.errAction', { personality }));
         return;
       }
-      const finalTotals = computeTotals([...d.lines], { depositPct: d.depositPct });
+      const finalTotals = computeTotals([...d.lines], {
+        depositPct: d.depositPct,
+        globalDiscount: wizardGlobalDiscount,
+      });
       setQuoteResult({
         id: quoteId,
         number,
@@ -2332,6 +2370,103 @@ export default function DevisNew() {
                   />
                 ))}
               </View>
+              {/* B3 — remise GLOBALE (« je t'arrondis à… ») : discrète, % ou €, avant/après
+                  élégant (brut barré subtil, remise en vert success). Validée par les règles
+                  domaine (parseDiscountInput → validateLineDiscount), revalidée par CreateQuote. */}
+              <Card radius={18} padding={16}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <Text style={[font('label', 700), { fontSize: 12, color: colors.slate400, flex: 1 }]}>
+                    {t('discount.globalTitle', { personality }).toUpperCase()}
+                  </Text>
+                  <Chip
+                    label={t('discount.typePercent', { personality })}
+                    active={wizardDiscKind === 'percent'}
+                    onPress={() => applyWizardDiscount(wizardDiscRaw, 'percent')}
+                  />
+                  <Chip
+                    label={t('discount.typeAmount', { personality })}
+                    active={wizardDiscKind === 'amount'}
+                    onPress={() => applyWizardDiscount(wizardDiscRaw, 'amount')}
+                  />
+                  <TextInput
+                    value={wizardDiscRaw}
+                    onChangeText={(v) => applyWizardDiscount(v, wizardDiscKind)}
+                    keyboardType="decimal-pad"
+                    placeholder={t('discount.linePlaceholder', { personality })}
+                    placeholderTextColor={colors.slate400}
+                    accessibilityLabel={t('discount.globalTitle', { personality })}
+                    style={[
+                      font('body'),
+                      {
+                        width: 84,
+                        minHeight: 44,
+                        color: colors.ink900,
+                        borderWidth: 1,
+                        borderColor: wizardDiscError ? semantic.danger : colors.line,
+                        borderRadius: 12,
+                        paddingHorizontal: 12,
+                      },
+                    ]}
+                  />
+                </View>
+                {wizardDiscError ? (
+                  <Text accessibilityRole="alert" style={[font('meta', 500), { fontSize: 12, color: semantic.danger, marginTop: 6 }]}>
+                    {t('discount.invalid', { personality })}
+                  </Text>
+                ) : (totals.discountCents ?? 0) > 0 ? (
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8 }}>
+                    <Text
+                      style={{
+                        ...font('sub', 500),
+                        color: colors.slate300,
+                        textDecorationLine: 'line-through',
+                        fontVariant: ['tabular-nums'],
+                      }}
+                    >
+                      {formatEUR(totals.grossHt ?? totals.ht)}
+                    </Text>
+                    <Text style={{ ...font('sub', 700), color: semantic.success, fontVariant: ['tabular-nums'] }}>
+                      −{formatEUR(totals.discountCents ?? 0)}
+                    </Text>
+                    <Text style={[font('meta', 500), { fontSize: 12, color: colors.slate400, flex: 1 }]}>
+                      {t('discount.globalHint', { personality })}
+                    </Text>
+                  </View>
+                ) : null}
+              </Card>
+              {/* B5 — retenue de garantie : OPTION du devis-chantier (jamais imposée), plafond
+                  légal 5 % (loi 71-584) porté par le domaine — LegalHint bénéfice. */}
+              <Card radius={18} padding={16}>
+                <Text style={[font('cardTitle'), { fontSize: 15.5, color: colors.ink900, marginBottom: 8 }]}>
+                  {t('retenue.toggleTitle', { personality })}
+                </Text>
+                <View style={{ flexDirection: 'row', gap: 8, marginBottom: 8 }}>
+                  {/* Libellé DÉDIÉ « Sans retenue » (jamais « Sans acompte » : l'acompte a sa
+                      propre carte sur ce même écran — une clause légale ne s'étiquette pas
+                      avec les mots d'une autre). */}
+                  <Chip
+                    label={t('retenue.none', { personality })}
+                    active={!retenueGarantie}
+                    onPress={() => setRetenueGarantie(false)}
+                  />
+                  <Chip
+                    label={`${RETENUE_GARANTIE_MAX_PCT} %`}
+                    active={retenueGarantie}
+                    onPress={() => setRetenueGarantie(true)}
+                  />
+                </View>
+                {retenueGarantie ? (
+                  <Text style={[font('sub'), { color: colors.slate500, lineHeight: 19, marginBottom: 6 }]}>
+                    {t('retenue.toggleHint', { personality, params: { pct: RETENUE_GARANTIE_MAX_PCT } })}
+                  </Text>
+                ) : null}
+                <LegalHint
+                  label={t('legal.retenue.inline', { personality })}
+                  lawKey="legal.retenue.law"
+                  whyKey="legal.retenue.why"
+                  source="loi n° 71-584 du 16 juillet 1971, art. 1er et 2"
+                />
+              </Card>
               <Card radius={18} padding={16}>
                 <Text style={[font('label', 600), { fontSize: 12.5, color: colors.slate400, marginBottom: 6 }]}>
                   {draft.depositPct > 0

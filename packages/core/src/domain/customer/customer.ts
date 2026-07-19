@@ -1,7 +1,104 @@
 import { type DomainResult, err, ok } from '../../shared-kernel/result';
 import { type Address } from '../../shared-kernel/contact';
+import { PaymentTerms } from '../../shared-kernel/payment-terms';
+import { validateProPaymentTermsCeiling } from '../services/payment-terms-legal';
 
 export type CustomerType = 'b2c' | 'b2b' | 'b2g';
+
+/**
+ * B4 — conditions de paiement PROPRES au client (mêmes champs que PaymentTerms) : `days` +
+ * `endOfMonth` (« 45 jours fin de mois ») + `label` imprimable. Nullable/absent = le client
+ * suit le défaut des réglages société — `paymentTermsLabel` historique reste purement
+ * décoratif, seul CE champ pilote l'échéance dérivée à l'émission (IssueInvoice).
+ */
+export interface CustomerPaymentTerms {
+  days: number;
+  endOfMonth: boolean;
+  label: string;
+}
+
+/**
+ * Canal de FACTURATION du client (validé fondateur) : comment la facture émise lui parvient.
+ *  • `email`  : envoi direct (défaut de tout client sans canal déclaré) ;
+ *  • `chorus` : dépôt sur Chorus Pro (obligatoire pour la sphère publique, ordonnance
+ *    n° 2014-697 du 26/06/2014 et art. L2192-1 s. code de la commande publique) —
+ *    `chorusServiceCode` = code service exigé par certaines entités ;
+ *  • `portail` : portail fournisseur privé du donneur d'ordre (grands comptes) —
+ *    `portailNom`/`portailUrl` = mémo de dépôt affiché à l'artisan.
+ * Nullable/absent = email (défaut honnête, jamais un canal inventé).
+ */
+export type CustomerBillingChannelType = 'email' | 'chorus' | 'portail';
+
+export interface CustomerBillingChannel {
+  type: CustomerBillingChannelType;
+  /** Chorus Pro uniquement : code service du destinataire (exigé par certaines entités). */
+  chorusServiceCode?: string;
+  /** Portail privé uniquement : nom du portail (mémo de dépôt). */
+  portailNom?: string;
+  /** Portail privé uniquement : URL du portail (mémo de dépôt). */
+  portailUrl?: string;
+}
+
+const BILLING_CHANNEL_TYPES: readonly CustomerBillingChannelType[] = ['email', 'chorus', 'portail'];
+
+/**
+ * Validation STRUCTURELLE du canal de facturation : les champs annexes n'existent que pour LEUR
+ * type (un code service sur un canal email serait un état sans sens, refusé fail-closed).
+ * Retourne la forme normalisée (trims, champs annexes seulement quand pertinents).
+ */
+export function validateBillingChannel(
+  channel: CustomerBillingChannel,
+): DomainResult<CustomerBillingChannel> {
+  if (channel === null || typeof channel !== 'object')
+    return err({ code: 'VALIDATION', field: 'billingChannel', message: 'Canal de facturation invalide.' });
+  if (!BILLING_CHANNEL_TYPES.includes(channel.type))
+    return err({
+      code: 'VALIDATION',
+      field: 'billingChannel.type',
+      message: 'Canal de facturation inconnu (email | chorus | portail).',
+    });
+  const chorusServiceCode = channel.chorusServiceCode?.trim();
+  const portailNom = channel.portailNom?.trim();
+  const portailUrl = channel.portailUrl?.trim();
+  if (channel.type !== 'chorus' && chorusServiceCode !== undefined)
+    return err({
+      code: 'VALIDATION',
+      field: 'billingChannel.chorusServiceCode',
+      message: 'Le code service ne concerne que le canal Chorus Pro.',
+    });
+  if (channel.type !== 'portail' && (portailNom !== undefined || portailUrl !== undefined))
+    return err({
+      code: 'VALIDATION',
+      field: 'billingChannel.portailNom',
+      message: 'Le nom et l’URL de portail ne concernent que le canal portail.',
+    });
+  if (chorusServiceCode !== undefined && (chorusServiceCode.length === 0 || chorusServiceCode.length > 100))
+    return err({
+      code: 'VALIDATION',
+      field: 'billingChannel.chorusServiceCode',
+      message: 'Code service Chorus invalide (1 à 100 caractères).',
+    });
+  if (portailNom !== undefined && (portailNom.length === 0 || portailNom.length > 200))
+    return err({
+      code: 'VALIDATION',
+      field: 'billingChannel.portailNom',
+      message: 'Nom de portail invalide (1 à 200 caractères).',
+    });
+  if (portailUrl !== undefined) {
+    if (portailUrl.length === 0 || portailUrl.length > 500 || !/^https?:\/\//i.test(portailUrl))
+      return err({
+        code: 'VALIDATION',
+        field: 'billingChannel.portailUrl',
+        message: 'URL de portail invalide (http(s)://…, 500 caractères max).',
+      });
+  }
+  return ok({
+    type: channel.type,
+    ...(chorusServiceCode !== undefined ? { chorusServiceCode } : {}),
+    ...(portailNom !== undefined ? { portailNom } : {}),
+    ...(portailUrl !== undefined ? { portailUrl } : {}),
+  });
+}
 
 export interface CustomerProps {
   id: string;
@@ -15,6 +112,10 @@ export interface CustomerProps {
   /** Contact chez le client entreprise/public (raison sociale ≠ personne physique jointe). */
   contactName?: string;
   paymentTermsLabel?: string;
+  /** B4 — conditions de paiement du client ; undefined = défaut société à l'émission. */
+  paymentTerms?: CustomerPaymentTerms;
+  /** Canal de facturation du client ; undefined = email (défaut, jamais un canal inventé). */
+  billingChannel?: CustomerBillingChannel;
   isInternational?: boolean;
   isSubcontractingBtp?: boolean;
 }
@@ -43,6 +144,28 @@ export class Customer {
       return err({ code: 'VALIDATION', field: 'siren', message: 'SIREN invalide : 9 chiffres requis.' });
     if (p.contactName !== undefined && p.contactName.trim().length > 200)
       return err({ code: 'VALIDATION', field: 'contactName', message: 'Nom du contact limité à 200 caractères.' });
+    // B4 — conditions de paiement du client : structure (PaymentTerms) + plafond légal L441-10
+    // pour un débiteur professionnel (60 j / 45 j fin de mois) validés À L'ENREGISTREMENT — une
+    // échéance illégale fausserait les relances et pénalités dès le premier cycle.
+    if (p.paymentTerms !== undefined) {
+      const structural = PaymentTerms.of(p.paymentTerms);
+      if (!structural.ok) return structural;
+      const ceiling = validateProPaymentTermsCeiling(p.type, p.paymentTerms);
+      if (!ceiling.ok) return ceiling;
+      // Bornes PROPRES à la fiche client (miroir exact du CHECK SQL customers_payment_terms_shape) :
+      // un délai > 365 j ou un libellé > 120 caractères n'est pas une condition de paiement réelle.
+      if (p.paymentTerms.days > 365)
+        return err({ code: 'VALIDATION', field: 'paymentTerms.days', message: 'Délai de paiement client invalide (365 jours maximum).' });
+      if (p.paymentTerms.label.trim().length > 120)
+        return err({ code: 'VALIDATION', field: 'paymentTerms.label', message: 'Libellé des conditions limité à 120 caractères.' });
+    }
+    // Canal de facturation : forme validée et NORMALISÉE (champs annexes liés à leur type).
+    let billingChannel: CustomerBillingChannel | undefined;
+    if (p.billingChannel !== undefined) {
+      const channel = validateBillingChannel(p.billingChannel);
+      if (!channel.ok) return channel;
+      billingChannel = channel.value;
+    }
 
     // Projection exacte : même si un appelant JavaScript injecte d'anciens champs
     // `score`/`avgDelayDays`/`outstanding`, ils ne deviennent jamais un état métier.
@@ -58,6 +181,8 @@ export class Customer {
       ...(p.phone !== undefined ? { phone: p.phone } : {}),
       ...(contactName ? { contactName } : {}),
       ...(p.paymentTermsLabel !== undefined ? { paymentTermsLabel: p.paymentTermsLabel } : {}),
+      ...(p.paymentTerms !== undefined ? { paymentTerms: { ...p.paymentTerms, label: p.paymentTerms.label.trim() } } : {}),
+      ...(billingChannel !== undefined ? { billingChannel } : {}),
       ...(p.isInternational !== undefined ? { isInternational: p.isInternational } : {}),
       ...(p.isSubcontractingBtp !== undefined ? { isSubcontractingBtp: p.isSubcontractingBtp } : {}),
     };
@@ -88,6 +213,14 @@ export class Customer {
   get contactName(): string | undefined {
     return this.p.contactName;
   }
+  /** B4 — conditions de paiement du client (copie défensive) ; undefined = défaut société. */
+  get paymentTerms(): CustomerPaymentTerms | undefined {
+    return this.p.paymentTerms ? { ...this.p.paymentTerms } : undefined;
+  }
+  /** Canal de facturation du client (copie défensive) ; undefined = email par défaut. */
+  get billingChannel(): CustomerBillingChannel | undefined {
+    return this.p.billingChannel ? { ...this.p.billingChannel } : undefined;
+  }
   get address(): Address {
     return { ...this.p.address };
   }
@@ -107,6 +240,11 @@ export class Customer {
   }
   /** Snapshot de persistance (réhydratation via Customer.of). */
   toProps(): CustomerProps {
-    return { ...this.p, address: { ...this.p.address } };
+    return {
+      ...this.p,
+      address: { ...this.p.address },
+      ...(this.p.paymentTerms ? { paymentTerms: { ...this.p.paymentTerms } } : {}),
+      ...(this.p.billingChannel ? { billingChannel: { ...this.p.billingChannel } } : {}),
+    };
   }
 }

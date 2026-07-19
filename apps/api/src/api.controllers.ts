@@ -39,6 +39,11 @@ import type {
   ExpensePaymentEvidenceInput,
   LegalForm,
   PurchaseOrderRefInput,
+  Discount,
+  LineInput,
+  SituationAmountInput,
+  CustomerPaymentTerms,
+  CustomerBillingChannel,
 } from '@bob/core';
 import {
   Iban,
@@ -122,6 +127,9 @@ const CREATE_QUOTE_FIELDS = new Set([
   // Exception dépannage urgent (L221-10, al. 2 / L221-28, 8°) — posée À LA CRÉATION (wizard
   // B2C), jamais rétroactive : aucun endpoint de mutation ne l'accepte après coup.
   'urgentRepairRequested',
+  // B3/B5 — remise globale négociée et retenue de garantie stipulée au devis-chantier.
+  'globalDiscount',
+  'retenueGarantiePct',
 ]);
 const CREATE_QUOTE_LINE_FIELDS = new Set([
   'label',
@@ -130,11 +138,28 @@ const CREATE_QUOTE_LINE_FIELDS = new Set([
   'unit',
   'unitPriceHT',
   'vatRate',
+  // B3 — remise de ligne ({ type: 'percent', value } | { type: 'amount', cents }).
+  'discount',
 ]);
 const CREATE_QUOTE_CONTEXT_FIELDS = new Set(['housingOlderThan2y', 'energyRenovation']);
 // `override` : override RESPONSABILISÉ de l'embargo L221-10 — le serveur refuse par défaut,
 // n'accepte que le flag EXPLICITE true (jamais implicite) et le journalise (payment.embargo_overridden).
-const INVOICE_GENERATION_FIELDS = new Set(['mode', 'override']);
+// B2 : `situation` accompagne le mode situation ({ percent } OU { amountHtCents }, exclusifs).
+const INVOICE_GENERATION_FIELDS = new Set(['mode', 'override', 'situation']);
+const SITUATION_PERCENT_FIELDS = new Set(['percent']);
+const SITUATION_AMOUNT_FIELDS = new Set(['amountHtCents']);
+/** B1 — POST /invoices (facture directe sans devis signé) : composition libre de lignes. */
+const COMPOSE_INVOICE_FIELDS = new Set([
+  'customerId',
+  'lines',
+  'globalDiscount',
+  'context',
+  // A3bis — qualification d'urgence OBLIGATOIRE pour un client B2C (booléen strict).
+  'urgentOnSiteRepair',
+]);
+const DISCOUNT_FIELDS = new Set(['type', 'value', 'cents']);
+/** Suivi MANUEL de transmission (PATCH /invoices/:id/transmission) : dates déclarées. */
+const INVOICE_TRANSMISSION_FIELDS = new Set(['depositedAt', 'acceptedAt']);
 const QUOTE_LINE_PATCH_FIELDS = new Set(['label', 'qty', 'unitPriceHT', 'vatRate']);
 const SIGN_QUOTE_FIELDS = new Set(['signerName', 'proofDataUrl', 'earlyExecutionRequested']);
 const CATALOGUE_ITEM_FIELDS = new Set(['label', 'category', 'unit', 'unitPriceHT', 'vatRate']);
@@ -188,8 +213,19 @@ const CREATE_CUSTOMER_FIELDS = new Set([
   'phone',
   'contactName',
   'paymentTermsLabel',
+  // B4 — conditions de paiement propres au client (jours + fin de mois + libellé imprimable).
+  'paymentTerms',
+  // Canal de facturation (email | chorus | portail) — guide de transmission dérivé à l'émission.
+  'billingChannel',
   'isInternational',
   'isSubcontractingBtp',
+]);
+const CUSTOMER_PAYMENT_TERMS_FIELDS = new Set(['days', 'endOfMonth', 'label']);
+const CUSTOMER_BILLING_CHANNEL_FIELDS = new Set([
+  'type',
+  'chorusServiceCode',
+  'portailNom',
+  'portailUrl',
 ]);
 const CUSTOMER_ADDRESS_FIELDS = new Set(['line1', 'zip', 'city']);
 const COMPANY_REGISTRATION_FIELDS = new Set([
@@ -596,6 +632,62 @@ function parseCustomerBody(body: Record<string, unknown>): Omit<CustomerProps, '
   ) {
     throwValidationIssues([{ field: 'body', message: 'Fiche client invalide.' }]);
   }
+  // B4 — conditions de paiement du client : FORME gardée ici ({ days, endOfMonth, label } ou
+  // null = défaut société) ; plafond légal L441-10 et structure fine = autorité de Customer.of.
+  let paymentTerms: CustomerPaymentTerms | undefined;
+  if (body.paymentTerms !== undefined && body.paymentTerms !== null) {
+    if (!isJsonRecord(body.paymentTerms)) {
+      throwValidationIssues([{ field: 'paymentTerms', message: 'Conditions de paiement objet requises.' }]);
+    }
+    const terms = body.paymentTerms;
+    const unknownTermsField = Object.keys(terms).find((f) => !CUSTOMER_PAYMENT_TERMS_FIELDS.has(f));
+    if (
+      unknownTermsField !== undefined ||
+      !Number.isSafeInteger(terms.days) ||
+      typeof terms.endOfMonth !== 'boolean' ||
+      typeof terms.label !== 'string'
+    ) {
+      throwValidationIssues([
+        { field: 'paymentTerms', message: 'Conditions de paiement invalides ({ days, endOfMonth, label }).' },
+      ]);
+    }
+    paymentTerms = {
+      days: terms.days as number,
+      endOfMonth: terms.endOfMonth as boolean,
+      label: terms.label as string,
+    };
+  }
+  // Canal de facturation : FORME gardée ici ; cohérence champs↔type = autorité de Customer.of
+  // (validateBillingChannel). `null` = retour au défaut email (champ absent côté domaine).
+  let billingChannel: CustomerBillingChannel | undefined;
+  if (body.billingChannel !== undefined && body.billingChannel !== null) {
+    if (!isJsonRecord(body.billingChannel)) {
+      throwValidationIssues([{ field: 'billingChannel', message: 'Canal de facturation objet requis.' }]);
+    }
+    const channel = body.billingChannel;
+    const unknownChannelField = Object.keys(channel).find(
+      (f) => !CUSTOMER_BILLING_CHANNEL_FIELDS.has(f),
+    );
+    if (
+      unknownChannelField !== undefined ||
+      typeof channel.type !== 'string' ||
+      !validOptionalString(channel.chorusServiceCode) ||
+      !validOptionalString(channel.portailNom) ||
+      !validOptionalString(channel.portailUrl)
+    ) {
+      throwValidationIssues([
+        { field: 'billingChannel', message: 'Canal de facturation invalide ({ type, chorusServiceCode?, portailNom?, portailUrl? }).' },
+      ]);
+    }
+    billingChannel = {
+      type: channel.type as CustomerBillingChannel['type'],
+      ...(channel.chorusServiceCode !== undefined
+        ? { chorusServiceCode: channel.chorusServiceCode as string }
+        : {}),
+      ...(channel.portailNom !== undefined ? { portailNom: channel.portailNom as string } : {}),
+      ...(channel.portailUrl !== undefined ? { portailUrl: channel.portailUrl as string } : {}),
+    };
+  }
   return {
     type: body.type,
     name: body.name,
@@ -611,6 +703,8 @@ function parseCustomerBody(body: Record<string, unknown>): Omit<CustomerProps, '
     ...(body.paymentTermsLabel !== undefined
       ? { paymentTermsLabel: body.paymentTermsLabel as string }
       : {}),
+    ...(paymentTerms !== undefined ? { paymentTerms } : {}),
+    ...(billingChannel !== undefined ? { billingChannel } : {}),
     ...(body.isInternational !== undefined
       ? { isInternational: body.isInternational as boolean }
       : {}),
@@ -674,9 +768,11 @@ function hasForbiddenSignerCharacter(value: string): boolean {
   });
 }
 
-function parseInvoiceGenerationBody(
-  body: Record<string, unknown>,
-): { mode: 'deposit' | 'final'; embargoOverride?: boolean } {
+function parseInvoiceGenerationBody(body: Record<string, unknown>): {
+  mode: 'deposit' | 'final' | 'situation';
+  situation?: SituationAmountInput;
+  embargoOverride?: boolean;
+} {
   const issues: ValidationIssue[] = [];
   for (const field of Object.keys(body)) {
     if (!INVOICE_GENERATION_FIELDS.has(field)) {
@@ -684,8 +780,43 @@ function parseInvoiceGenerationBody(
     }
   }
   const mode = body['mode'];
-  if (mode !== 'deposit' && mode !== 'final') {
-    issues.push({ field: 'mode', message: 'Mode de facture requis (deposit | final).' });
+  if (mode !== 'deposit' && mode !== 'final' && mode !== 'situation') {
+    issues.push({ field: 'mode', message: 'Mode de facture requis (deposit | final | situation).' });
+  }
+  // B2 — montant de la situation : { percent } OU { amountHtCents }, formes exclusives. La
+  // cohérence mode↔montant (requis avec situation, interdit sinon) et les bornes métier
+  // (0 < % ≤ 100, cumul ≤ marché) restent l'autorité du use case GenerateInvoiceFromQuote.
+  let situation: SituationAmountInput | undefined;
+  const rawSituation = body['situation'];
+  if (rawSituation !== undefined) {
+    if (!isJsonRecord(rawSituation)) {
+      issues.push({
+        field: 'situation',
+        message: 'Montant de situation objet requis ({ percent } | { amountHtCents }).',
+      });
+    } else if ('percent' in rawSituation) {
+      const unknownField = Object.keys(rawSituation).find((f) => !SITUATION_PERCENT_FIELDS.has(f));
+      if (unknownField !== undefined || typeof rawSituation.percent !== 'number' || !Number.isFinite(rawSituation.percent)) {
+        issues.push({ field: 'situation.percent', message: "Pourcentage d'avancement invalide." });
+      } else {
+        situation = { percent: rawSituation.percent };
+      }
+    } else if ('amountHtCents' in rawSituation) {
+      const unknownField = Object.keys(rawSituation).find((f) => !SITUATION_AMOUNT_FIELDS.has(f));
+      if (unknownField !== undefined || !Number.isSafeInteger(rawSituation.amountHtCents)) {
+        issues.push({
+          field: 'situation.amountHtCents',
+          message: 'Montant HT de situation invalide (centimes entiers requis).',
+        });
+      } else {
+        situation = { amountHtCents: rawSituation.amountHtCents as number };
+      }
+    } else {
+      issues.push({
+        field: 'situation',
+        message: 'Montant de situation requis ({ percent } | { amountHtCents }).',
+      });
+    }
   }
   // Override L221-10 : `true` strict uniquement — toute autre valeur est un refus explicite
   // (jamais un contournement par truthiness) ; absent = comportement légal par défaut.
@@ -695,8 +826,218 @@ function parseInvoiceGenerationBody(
   }
   if (issues.length > 0) throwValidationIssues(issues);
   return {
-    mode: mode as 'deposit' | 'final',
+    mode: mode as 'deposit' | 'final' | 'situation',
+    ...(situation !== undefined ? { situation } : {}),
     ...(override === true ? { embargoOverride: true } : {}),
+  };
+}
+
+/**
+ * B1 — POST /invoices (facture DIRECTE sans devis signé) : mêmes contraintes de forme que les
+ * lignes de devis (500 caractères, TVA du référentiel, 100 lignes max, plafond HT), remise de
+ * ligne et remise globale B3 comprises. La substance (client du tenant, urgence B2C A3bis,
+ * garde-fou pro étranger B6, TVA suggérée) reste l'autorité du use case ComposeStandaloneInvoice.
+ */
+function parseComposeInvoiceBody(body: Record<string, unknown>): {
+  customerId: string;
+  lines: LineInput[];
+  globalDiscount?: Discount | null;
+  context?: { housingOlderThan2y?: boolean; energyRenovation?: boolean };
+  urgentOnSiteRepair?: boolean;
+} {
+  const issues: ValidationIssue[] = [];
+  for (const field of Object.keys(body)) {
+    if (!COMPOSE_INVOICE_FIELDS.has(field)) {
+      issues.push({ field: 'body', message: `Champ non autorisé : ${field}.` });
+    }
+  }
+  const customerId = body['customerId'];
+  if (
+    typeof customerId !== 'string' ||
+    customerId.length === 0 ||
+    customerId.length > 240 ||
+    customerId !== customerId.trim() ||
+    hasControlCharacter(customerId)
+  ) {
+    issues.push({ field: 'customerId', message: 'Identifiant client invalide.' });
+  }
+  const rawLines = body['lines'];
+  const lines: LineInput[] = [];
+  let totalHtCents = 0;
+  if (!Array.isArray(rawLines) || rawLines.length === 0 || rawLines.length > MAX_QUOTE_LINES) {
+    issues.push({
+      field: 'lines',
+      message: `Tableau de lignes requis (1 à ${MAX_QUOTE_LINES} lignes).`,
+    });
+  } else {
+    rawLines.forEach((rawLine, index) => {
+      const prefix = `lines.${index}`;
+      if (!isJsonRecord(rawLine)) {
+        issues.push({ field: prefix, message: 'Ligne objet requise.' });
+        return;
+      }
+      const line = rawLine;
+      for (const field of Object.keys(line)) {
+        if (!CREATE_QUOTE_LINE_FIELDS.has(field)) {
+          issues.push({ field: prefix, message: `Champ non autorisé : ${field}.` });
+        }
+      }
+      const label = line['label'];
+      if (
+        typeof label !== 'string' ||
+        label.trim().length === 0 ||
+        label.length > 500 ||
+        hasControlCharacter(label)
+      ) {
+        issues.push({ field: `${prefix}.label`, message: 'Libellé requis (500 caractères maximum).' });
+      }
+      const category = line['category'];
+      if (typeof category !== 'string' || !QUOTE_LINE_CATEGORIES.has(category)) {
+        issues.push({ field: `${prefix}.category`, message: 'Catégorie de ligne invalide.' });
+      }
+      const qty = line['qty'];
+      if (
+        typeof qty !== 'number' ||
+        !Number.isFinite(qty) ||
+        qty <= 0 ||
+        qty > 1_000_000 ||
+        Math.round(qty * 1_000) !== qty * 1_000
+      ) {
+        issues.push({ field: `${prefix}.qty`, message: 'Quantité positive avec 3 décimales maximum requise.' });
+      }
+      const unit = line['unit'];
+      if (
+        unit !== undefined &&
+        (typeof unit !== 'string' || unit.trim().length === 0 || unit.length > 80 || hasControlCharacter(unit))
+      ) {
+        issues.push({ field: `${prefix}.unit`, message: 'Unité invalide (80 caractères maximum).' });
+      }
+      const unitPriceHT = line['unitPriceHT'];
+      if (
+        !Number.isSafeInteger(unitPriceHT) ||
+        (unitPriceHT as number) < 0 ||
+        (unitPriceHT as number) > MAX_QUOTE_HT_CENTS
+      ) {
+        issues.push({ field: `${prefix}.unitPriceHT`, message: 'Prix HT en centimes invalide.' });
+      }
+      const vatRate = line['vatRate'];
+      if (typeof vatRate !== 'number' || !QUOTE_VAT_RATES.has(vatRate)) {
+        issues.push({ field: `${prefix}.vatRate`, message: 'Taux de TVA invalide.' });
+      }
+      if (
+        typeof qty === 'number' &&
+        Number.isFinite(qty) &&
+        Number.isSafeInteger(unitPriceHT) &&
+        (unitPriceHT as number) >= 0
+      ) {
+        totalHtCents += Math.round(qty * (unitPriceHT as number));
+      }
+      const rawDiscount = line['discount'];
+      let discount: Discount | undefined;
+      if (rawDiscount !== undefined) {
+        const parsed = parseDiscountField(rawDiscount, `${prefix}.discount`, issues);
+        if (parsed !== undefined && parsed !== null) discount = parsed;
+      }
+      if (
+        typeof label === 'string' &&
+        typeof category === 'string' &&
+        QUOTE_LINE_CATEGORIES.has(category) &&
+        typeof qty === 'number' &&
+        Number.isFinite(qty) &&
+        Number.isSafeInteger(unitPriceHT) &&
+        typeof vatRate === 'number' &&
+        QUOTE_VAT_RATES.has(vatRate)
+      ) {
+        lines.push({
+          label,
+          category: category as LineInput['category'],
+          qty,
+          ...(typeof unit === 'string' ? { unit } : {}),
+          unitPriceHT: unitPriceHT as number,
+          vatRate: vatRate as LineInput['vatRate'],
+          ...(discount !== undefined ? { discount } : {}),
+        });
+      }
+    });
+  }
+  if (totalHtCents > MAX_QUOTE_HT_CENTS) {
+    issues.push({ field: 'lines', message: 'Montant total HT de la facture hors limite.' });
+  }
+  let globalDiscount: Discount | null | undefined;
+  if (body['globalDiscount'] !== undefined) {
+    globalDiscount = parseDiscountField(body['globalDiscount'], 'globalDiscount', issues);
+  }
+  const rawContext = body['context'];
+  let context: { housingOlderThan2y?: boolean; energyRenovation?: boolean } | undefined;
+  if (rawContext !== undefined) {
+    if (!isJsonRecord(rawContext)) {
+      issues.push({ field: 'context', message: 'Contexte objet requis.' });
+    } else {
+      const unknownField = Object.keys(rawContext).find((f) => !CREATE_QUOTE_CONTEXT_FIELDS.has(f));
+      if (unknownField !== undefined) {
+        issues.push({ field: 'context', message: `Champ non autorisé : ${unknownField}.` });
+      }
+      for (const field of CREATE_QUOTE_CONTEXT_FIELDS) {
+        if (rawContext[field] !== undefined && typeof rawContext[field] !== 'boolean') {
+          issues.push({ field: `context.${field}`, message: 'Booléen attendu.' });
+        }
+      }
+      context = {
+        ...(typeof rawContext['housingOlderThan2y'] === 'boolean'
+          ? { housingOlderThan2y: rawContext['housingOlderThan2y'] }
+          : {}),
+        ...(typeof rawContext['energyRenovation'] === 'boolean'
+          ? { energyRenovation: rawContext['energyRenovation'] }
+          : {}),
+      };
+    }
+  }
+  // A3bis — booléen STRICT : seul `true` porte la qualification (jamais par truthiness).
+  const urgentOnSiteRepair = body['urgentOnSiteRepair'];
+  if (urgentOnSiteRepair !== undefined && typeof urgentOnSiteRepair !== 'boolean') {
+    issues.push({ field: 'urgentOnSiteRepair', message: 'Booléen attendu.' });
+  }
+  if (issues.length > 0) throwValidationIssues(issues);
+  return {
+    customerId: customerId as string,
+    lines,
+    ...(globalDiscount !== undefined ? { globalDiscount } : {}),
+    ...(context !== undefined ? { context } : {}),
+    ...(urgentOnSiteRepair === true ? { urgentOnSiteRepair: true } : {}),
+  };
+}
+
+/** Suivi MANUEL de transmission : champ absent = inchangé, null = effacé, sinon AAAA-MM-JJ. */
+function parseInvoiceTransmissionBody(body: Record<string, unknown>): {
+  depositedAt?: string | null;
+  acceptedAt?: string | null;
+} {
+  const issues: ValidationIssue[] = [];
+  const knownFields = Object.keys(body).filter((field) => INVOICE_TRANSMISSION_FIELDS.has(field));
+  for (const field of Object.keys(body)) {
+    if (!INVOICE_TRANSMISSION_FIELDS.has(field)) {
+      issues.push({ field: 'body', message: `Champ non autorisé : ${field}.` });
+    }
+  }
+  if (knownFields.length === 0) {
+    issues.push({ field: 'body', message: 'Au moins un champ requis (depositedAt | acceptedAt).' });
+  }
+  const parseDate = (field: 'depositedAt' | 'acceptedAt'): string | null | undefined => {
+    if (!(field in body)) return undefined;
+    const value = body[field];
+    if (value === null) return null;
+    if (typeof value !== 'string' || !isValidDateOnly(value)) {
+      issues.push({ field, message: 'Date invalide (AAAA-MM-JJ ou null).' });
+      return undefined;
+    }
+    return value;
+  };
+  const depositedAt = parseDate('depositedAt');
+  const acceptedAt = parseDate('acceptedAt');
+  if (issues.length > 0) throwValidationIssues(issues);
+  return {
+    ...(depositedAt !== undefined ? { depositedAt } : {}),
+    ...(acceptedAt !== undefined ? { acceptedAt } : {}),
   };
 }
 
@@ -963,6 +1304,45 @@ function optionalExpenseInteger(
   return value as number;
 }
 
+/**
+ * B3 — parse de FORME d'une remise ({ type: 'percent', value } | { type: 'amount', cents }).
+ * Les bornes métier (0 < % ≤ 100 deux décimales, centimes entiers > 0, plafond de base) restent
+ * l'autorité du domaine (validateDiscount/validateLineDiscount) — ici seule la forme est gardée.
+ * Retourne undefined si invalide (l'issue est poussée), null si `null` explicite (retrait).
+ */
+function parseDiscountField(
+  value: unknown,
+  field: string,
+  issues: ValidationIssue[],
+): Discount | null | undefined {
+  if (value === null) return null;
+  if (!isJsonRecord(value)) {
+    issues.push({ field, message: 'Remise objet requise ({ type, value | cents }).' });
+    return undefined;
+  }
+  const unknownField = Object.keys(value).find((key) => !DISCOUNT_FIELDS.has(key));
+  if (unknownField !== undefined) {
+    issues.push({ field, message: `Champ non autorisé : ${unknownField}.` });
+    return undefined;
+  }
+  if (value.type === 'percent') {
+    if (typeof value.value !== 'number' || !Number.isFinite(value.value) || 'cents' in value) {
+      issues.push({ field, message: 'Remise en pourcentage invalide ({ type: "percent", value }).' });
+      return undefined;
+    }
+    return { type: 'percent', value: value.value };
+  }
+  if (value.type === 'amount') {
+    if (!Number.isSafeInteger(value.cents) || 'value' in value) {
+      issues.push({ field, message: 'Remise en montant invalide ({ type: "amount", cents }).' });
+      return undefined;
+    }
+    return { type: 'amount', cents: value.cents as number };
+  }
+  issues.push({ field, message: 'Type de remise inconnu (percent | amount).' });
+  return undefined;
+}
+
 function parseCreateQuoteBody(body: Record<string, unknown>): Omit<CreateQuoteInput, 'companyId'> {
   const issues: ValidationIssue[] = [];
   for (const field of Object.keys(body)) {
@@ -1078,6 +1458,14 @@ function parseCreateQuoteBody(body: Record<string, unknown>): Omit<CreateQuoteIn
       ) {
         totalHtCents += Math.round(qty * (unitPriceHT as number));
       }
+      // B3 — remise de ligne : forme gardée ici, bornes et plafond validés par le domaine.
+      const rawDiscount = line['discount'];
+      let discount: Discount | undefined;
+      if (rawDiscount !== undefined) {
+        const parsed = parseDiscountField(rawDiscount, `${prefix}.discount`, issues);
+        // `null` explicite à la CRÉATION = absence de remise (idempotent avec le champ absent).
+        if (parsed !== undefined && parsed !== null) discount = parsed;
+      }
       if (
         typeof label === 'string' &&
         typeof category === 'string' &&
@@ -1095,6 +1483,7 @@ function parseCreateQuoteBody(body: Record<string, unknown>): Omit<CreateQuoteIn
           ...(typeof unit === 'string' ? { unit } : {}),
           unitPriceHT: unitPriceHT as number,
           vatRate: vatRate as CreateQuoteInput['lines'][number]['vatRate'],
+          ...(discount !== undefined ? { discount } : {}),
         });
       }
     });
@@ -1164,6 +1553,21 @@ function parseCreateQuoteBody(body: Record<string, unknown>): Omit<CreateQuoteIn
     issues.push({ field: 'urgentRepairRequested', message: 'Booléen attendu.' });
   }
 
+  // B3 — remise GLOBALE négociée au devis (source unique du marché, reprise sur les dérivées).
+  let globalDiscount: Discount | null | undefined;
+  if (body['globalDiscount'] !== undefined) {
+    globalDiscount = parseDiscountField(body['globalDiscount'], 'globalDiscount', issues);
+  }
+  // B5 — retenue de garantie stipulée (forme : nombre fini ; borne 0 < taux ≤ 5 = domaine).
+  const retenueGarantiePct = body['retenueGarantiePct'];
+  if (
+    retenueGarantiePct !== undefined &&
+    retenueGarantiePct !== null &&
+    (typeof retenueGarantiePct !== 'number' || !Number.isFinite(retenueGarantiePct))
+  ) {
+    issues.push({ field: 'retenueGarantiePct', message: 'Taux de retenue de garantie invalide.' });
+  }
+
   if (issues.length > 0) throwValidationIssues(issues);
   return {
     customerId: customerId as string,
@@ -1173,6 +1577,10 @@ function parseCreateQuoteBody(body: Record<string, unknown>): Omit<CreateQuoteIn
     ...(typeof validUntil === 'string' ? { validUntil } : {}),
     ...(context !== undefined ? { context } : {}),
     ...(urgentRepairRequested === true ? { urgentRepairRequested: true } : {}),
+    ...(globalDiscount !== undefined ? { globalDiscount } : {}),
+    ...(retenueGarantiePct !== undefined
+      ? { retenueGarantiePct: retenueGarantiePct as number | null }
+      : {}),
   };
 }
 
@@ -2086,6 +2494,26 @@ export class InvoicesController {
   @Get()
   async list() {
     return unwrap(await this.backend.listInvoices());
+  }
+  /** B1 : facture DIRECTE sans devis signé (brouillon composé librement — dépannage urgent B2C
+   * qualifié A3bis, régie TJM × jours, syndic/B2B). L'émission passe ensuite par POST :id/issue
+   * (numéro, mentions, échéance B4, A7/A4) — aucun chemin parallèle. */
+  @Post()
+  async compose(@Body() body: unknown) {
+    assertJsonObjectBody(body);
+    return unwrap(await this.backend.composeStandaloneInvoice(parseComposeInvoiceBody(body)));
+  }
+  /** Suivi MANUEL de transmission d'une pièce ÉMISE vers le canal de facturation du client
+   * (dates de dépôt/acceptation DÉCLARÉES — suivi honnête, additif, corrigeable). */
+  @Patch(':id/transmission')
+  async recordTransmission(@Param('id') id: string, @Body() body: unknown) {
+    assertJsonObjectBody(body);
+    return unwrap(
+      await this.backend.recordInvoiceTransmission({
+        invoiceId: id,
+        ...parseInvoiceTransmissionBody(body),
+      }),
+    );
   }
   /** C25 ② : envoi RÉEL d'une relance ciblée (ton du plan @bob/core, mise en demeure incluse —
    * le geste utilisateur EST la validation). Throttlé : action sortante vers un tiers. */

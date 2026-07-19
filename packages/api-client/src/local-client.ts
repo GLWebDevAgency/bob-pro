@@ -5,6 +5,9 @@ import {
   pendingToInvocations,
   purchaseOrderLinkedRun,
   intentForTool,
+  // B1/B2/B4 — parité de la confirmation locale : mêmes refus honnêtes et mêmes cartes que
+  // BobAgent.confirm et que le serveur pour les outils de facturation terrain.
+  FACTURATION_TERRAIN_TOOLS,
   type BobActions,
   type AgentRun,
   type AgentAutonomy,
@@ -28,6 +31,9 @@ import {
   RefuseQuote,
   CreateCreditNote,
   GenerateInvoiceFromQuote,
+  ComposeStandaloneInvoice,
+  RecordInvoiceTransmission,
+  deriveTransmissionGuide,
   AttachPurchaseOrderToQuote,
   AttachPurchaseOrderToInvoice,
   DetachPurchaseOrder,
@@ -107,6 +113,7 @@ import {
   Customer,
   UpdateCustomer,
   deriveRelancePlan,
+  formatEUR,
   ok,
   err,
   appUnavailable,
@@ -118,6 +125,9 @@ import {
   offPremisesPaymentEmbargo,
   deriveRetractation,
   retractationFreeze,
+  // B2 — avancement PROPOSÉ d'une situation (consultatif) : règle PURE du domaine — aucune
+  // tâche de chantier persistée en démo : proposition null honnête (parité serveur stricte).
+  proposeSituationFromChantier,
   parseQuoteDraftPayload,
   QUOTE_DRAFT_PAYLOAD_VERSION,
   type ClockPort,
@@ -176,6 +186,10 @@ import {
   type CatalogueItemWriteInput,
   type CatalogueItemView,
   type CatalogueDeletionView,
+  type Discount,
+  type LineInput,
+  type SituationAmountInput,
+  type InvoiceTransmissionStatus,
 } from '@bob/core';
 import {
   CASH_SNAPSHOT,
@@ -1018,6 +1032,13 @@ export class LocalBobClient implements BobClient {
       // E3 : parité serveur — snapshot « facture annulée » de l'avoir depuis l'agrégat
       // (le getter du domaine clone déjà ; null = pièce ordinaire).
       creditNoteSource: i.creditNoteSource,
+      // B2/B3/B5/B1 : parité serveur — faits de la pièce depuis les getters défensifs.
+      situationOrder: i.situationOrder,
+      situationDeductionCents: i.situationDeductionCents,
+      globalDiscount: i.globalDiscount,
+      retenueGarantiePct: i.retenueGarantiePct,
+      urgentRepair: i.urgentRepair,
+      transmission: i.transmission,
     };
   }
 
@@ -3327,11 +3348,44 @@ export class LocalBobClient implements BobClient {
 
   async generateInvoice(input: {
     quoteId: string;
-    mode: 'deposit' | 'final';
+    mode: 'deposit' | 'final' | 'situation';
+    situation?: SituationAmountInput;
     embargoOverride?: boolean;
   }): Promise<Result<{ invoiceId: string }, AppError>> {
     await this.ready;
     return this.generateInvoiceInternal(input);
+  }
+
+  /** B1 : facture DIRECTE sans devis signé — MÊME use case core que POST /invoices (parité). */
+  async composeStandaloneInvoice(input: {
+    customerId: string;
+    lines: LineInput[];
+    globalDiscount?: Discount | null;
+    context?: { housingOlderThan2y?: boolean; energyRenovation?: boolean };
+    urgentOnSiteRepair?: boolean;
+  }): Promise<Result<{ invoiceId: string; totals: Totals }, AppError>> {
+    await this.ready;
+    return new ComposeStandaloneInvoice({
+      invoices: this.invoices,
+      companies: this.companies,
+      customers: this.customers,
+      ids: this.ids,
+      clock: this.clock,
+    }).execute({ companyId: this.companyId, ...input });
+  }
+
+  /** Suivi MANUEL de transmission — MÊME use case core que PATCH /invoices/:id/transmission. */
+  async recordInvoiceTransmission(input: {
+    invoiceId: string;
+    depositedAt?: string | null;
+    acceptedAt?: string | null;
+  }): Promise<Result<{ transmission: InvoiceTransmissionStatus | null }, AppError>> {
+    await this.ready;
+    return new RecordInvoiceTransmission({
+      invoices: this.invoices,
+      uow: this.uow,
+      clock: this.clock,
+    }).execute(input);
   }
 
   /** Embargo L221-10 — parité serveur du DÉFAUT légal : encaissement programmé à J+7 (la démo
@@ -3404,7 +3458,8 @@ export class LocalBobClient implements BobClient {
 
   private generateInvoiceInternal(input: {
     quoteId: string;
-    mode: 'deposit' | 'final';
+    mode: 'deposit' | 'final' | 'situation';
+    situation?: SituationAmountInput;
     embargoOverride?: boolean;
   }): Promise<Result<{ invoiceId: string }, AppError>> {
     // A3 : le gel de rétractation B2C (facture finale sous 14 jours, L221-18 s.) est porté par
@@ -3420,6 +3475,8 @@ export class LocalBobClient implements BobClient {
     }).execute({
       quoteId: input.quoteId,
       mode: input.mode,
+      // B2 : le montant de situation n'accompagne que son mode (garde du use case, parité).
+      ...(input.situation !== undefined ? { situation: input.situation } : {}),
       embargoOverride: input.embargoOverride === true,
     });
   }
@@ -3848,7 +3905,19 @@ export class LocalBobClient implements BobClient {
     await this.ready;
     const i = await this.invoices.findById(id);
     if (!i) return err(appNotFound('invoice', id));
-    return ok(this.mapInvoice(i));
+    const view = this.mapInvoice(i);
+    // Guide de transmission (parité serveur) : dérivé du canal du client, pièce ÉMISE uniquement.
+    if (i.status !== 'draft' && i.status !== 'cancelled') {
+      const customer = await this.customers.findById(i.customerId);
+      if (customer && customer.companyId === i.companyId) {
+        view.transmissionGuide = deriveTransmissionGuide({
+          billingChannel: customer.billingChannel ?? null,
+          customer: { siren: customer.siren ?? null, email: customer.email ?? null },
+          invoice: { purchaseOrderNumber: i.purchaseOrder?.number ?? null },
+        });
+      }
+    }
+    return ok(view);
   }
 
   async invoiceAccountingPreview(
@@ -4302,12 +4371,72 @@ export class LocalBobClient implements BobClient {
       // (numéro d'engagement) AVANT émission. Plus aucune dérivation inline dupliquée.
       listInvoiceableQuotes: async (): Promise<Result<InvoiceableQuote[], AppError>> => {
         await this.ready;
-        return new ListInvoiceableQuotes({
+        const base = await new ListInvoiceableQuotes({
           quotes: this.quotes,
           invoices: this.invoices,
           customers: this.customers,
           clock: this.clock,
         }).execute({ companyId: this.companyId });
+        if (!base.ok) return base;
+        // B5 (additif, parité serveur) — retenue de garantie stipulée au devis : le flow
+        // facturer_situation l'annonce avant confirmation, null honnête sans stipulation.
+        const quotes = await this.quotes.listByCompany(this.companyId);
+        const retenueById = new Map(quotes.map((quote) => [quote.id, quote.retenueGarantiePct]));
+        return ok(
+          base.value.map((quote) => ({
+            ...quote,
+            retenueGarantiePct: retenueById.get(quote.id) ?? null,
+          })),
+        );
+      },
+      // B1 — clients FACTURABLES (id + nom + type) : matière de résolution de facture_directe
+      // et definir_conditions_paiement — MÊME lecture ListCustomers que l'écran (parité serveur).
+      listBillableCustomers: async () => {
+        const customers = await this.listCustomers();
+        if (!customers.ok) return customers;
+        return ok(customers.value.map((c) => ({ id: c.id, name: c.name, type: c.type })));
+      },
+      // B2 — avancement PROPOSÉ d'une situation : règle PURE proposeSituationFromChantier
+      // (@bob/core). Aucune tâche de chantier persistée en démo : liste vide → proposition
+      // null HONNÊTE — parité serveur stricte, jamais un avancement inventé.
+      proposeSituationAdvancement: async () => {
+        const proposal = proposeSituationFromChantier({ tasks: [] });
+        if (!proposal.ok) return err(appDomain(proposal.error));
+        return ok(proposal.value);
+      },
+      // B1 — outil vocal facture_directe : PURE délégation au MÊME chemin que le miroir de
+      // POST /invoices (composeStandaloneInvoice : use case ComposeStandaloneInvoice @bob/core,
+      // gardes B6/A3bis fail-closed) — parité serveur stricte, totaux CEUX du domaine.
+      composeStandaloneInvoice: async (input) => {
+        const r = await this.composeStandaloneInvoice(input);
+        if (!r.ok) return r;
+        return ok({
+          invoiceId: r.value.invoiceId,
+          totalTtcCents: r.value.totals.ttc,
+          netToPayCents: r.value.totals.netToPay,
+        });
+      },
+      // B4 — outil vocal definir_conditions_paiement : MÊME chemin UpdateCustomer que le
+      // miroir de PATCH /customers/:id (garde du type + plafond L441-10 au domaine). Seules
+      // les conditions changent — le reste de la fiche est relu puis réécrit à l'identique.
+      setCustomerPaymentTerms: async (input) => {
+        await this.ready;
+        const customer = await this.customers.findById(input.customerId);
+        if (!customer || customer.companyId !== this.companyId)
+          return err(appNotFound('customer', input.customerId));
+        const { id: _id, companyId: _companyId, ...props } = customer.toProps();
+        const updated = await this.updateCustomer(input.customerId, {
+          ...props,
+          paymentTerms: { days: input.days, endOfMonth: input.endOfMonth, label: input.label },
+        });
+        if (!updated.ok) return updated;
+        return ok({
+          customerId: input.customerId,
+          customerName: customer.name,
+          days: input.days,
+          endOfMonth: input.endOfMonth,
+          label: input.label,
+        });
       },
       listIssuableInvoices: async () => {
         const [inv, cust] = await Promise.all([this.listInvoices(), this.listCustomers()]);
@@ -4430,6 +4559,8 @@ export class LocalBobClient implements BobClient {
         this.generateInvoice({
           quoteId: input.quoteId,
           mode: input.mode,
+          // B2 — le montant de situation accompagne SON mode (garde du use case core).
+          ...(input.situation !== undefined ? { situation: input.situation } : {}),
           // Sans ce passage, l'override confirmé à la voix serait silencieusement ignoré.
           ...(input.embargoOverride === true ? { embargoOverride: true } : {}),
         }),
@@ -4515,6 +4646,24 @@ export class LocalBobClient implements BobClient {
     if (blocked) {
       if (blocked.status === 'denied')
         return err(appForbidden(blocked.reason ?? 'Action refusée par la policy.'));
+      // B1/B2/B4 — refus du DOMAINE sur un outil de facturation terrain : restitution HONNÊTE
+      // du message (mêmes messages que l'UI et que le serveur), jamais un code technique brut.
+      // Le runtime journalise la raison en `domain:CODE message` (describeError).
+      const domainMessage =
+        pending.batch === undefined
+        && FACTURATION_TERRAIN_TOOLS.has(pending.tool)
+        && typeof blocked.reason === 'string'
+          ? (/^domain:[A-Z_]*\s+([\s\S]+)$/.exec(blocked.reason)?.[1] ?? null)
+          : null;
+      if (domainMessage !== null) {
+        return ok({
+          kind: 'answer',
+          intent: intentForTool(pending.tool),
+          model: 'agent-runtime',
+          plan: ['Restituer le refus du domaine'],
+          card: { title: 'Refusé — rien n’a été modifié', body: domainMessage.trim() },
+        });
+      }
       return err({
         kind: 'dependency',
         port: 'agent-runtime',
@@ -4536,6 +4685,55 @@ export class LocalBobClient implements BobClient {
           output: purchaseOrderOutcome.result,
         }),
       );
+    }
+    // B1/B2/B4 — MÊMES cartes que BobAgent.confirm et que le serveur (parité des hôtes) : le
+    // total annoncé de la facture directe est CELUI du domaine (projection publique).
+    const standaloneInvoiceOutcome = record.outcomes.find(
+      (o) => o.tool === 'facture_directe' && o.status === 'executed',
+    );
+    if (!isBatch && standaloneInvoiceOutcome) {
+      const ttcRaw = standaloneInvoiceOutcome.result?.totalTtcCents;
+      const ttc = typeof ttcRaw === 'number' ? ttcRaw : null;
+      return ok({
+        kind: 'done',
+        intent: 'facture_directe',
+        model: 'agent-runtime',
+        plan: record.outcomes.map((o) => o.label),
+        card: {
+          title: 'Facture directe créée ✓',
+          body: `${pending.label}${ttc !== null ? ` — total ${formatEUR(ttc)} TTC (calcul du domaine)` : ''}. Brouillon créé, à émettre quand tu veux.`,
+        },
+      });
+    }
+    const situationOutcome = record.outcomes.find(
+      (o) => o.tool === 'facturer_situation' && o.status === 'executed',
+    );
+    if (!isBatch && situationOutcome) {
+      return ok({
+        kind: 'done',
+        intent: 'facturer_situation',
+        model: 'agent-runtime',
+        plan: record.outcomes.map((o) => o.label),
+        card: {
+          title: 'Situation générée ✓',
+          body: `${pending.label} — brouillon créé, à émettre quand tu veux.`,
+        },
+      });
+    }
+    const paymentTermsOutcome = record.outcomes.find(
+      (o) => o.tool === 'definir_conditions_paiement' && o.status === 'executed',
+    );
+    if (!isBatch && paymentTermsOutcome) {
+      return ok({
+        kind: 'done',
+        intent: 'conditions_paiement',
+        model: 'agent-runtime',
+        plan: record.outcomes.map((o) => o.label),
+        card: {
+          title: 'Conditions enregistrées ✓',
+          body: `${pending.label} — c’est noté pour les prochaines factures.`,
+        },
+      });
     }
     return ok({
       kind: 'done',

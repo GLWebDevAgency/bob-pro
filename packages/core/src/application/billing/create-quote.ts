@@ -1,10 +1,7 @@
 import { type Result, ok, err } from '../../shared-kernel/result';
 import { type AppError, appDomain, appNotFound } from '../result';
-import {
-  hasBillingControlCharacter,
-  MAX_BILLING_AMOUNT_CENTS,
-  type LineInput,
-} from '../../domain/billing/shared/line-item';
+import { type LineInput } from '../../domain/billing/shared/line-item';
+import { type Discount } from '../../domain/billing/shared/discount';
 import { type Totals } from '../../domain/billing/shared/totals';
 import { Quote } from '../../domain/billing/quote/quote';
 import { suggestVatRate } from '../../domain/services/suggest-vat-rate';
@@ -15,8 +12,7 @@ import {
 } from '../ports/repositories';
 import { type IdGeneratorPort, type ClockPort } from '../ports/services';
 import { isValidDateOnly } from '../../shared-kernel/time';
-
-const MAX_QUOTE_LINES = 100;
+import { validateLineInputs } from './line-input-validation';
 
 export interface CreateQuoteInput {
   companyId: string;
@@ -29,6 +25,10 @@ export interface CreateQuoteInput {
   customerId: string;
   lines: LineInput[];
   depositPct?: number;
+  /** B3 — remise globale du devis (% du HT net de lignes, ou montant HT en centimes). */
+  globalDiscount?: Discount | null;
+  /** B5 — retenue de garantie du devis-chantier (0 < taux ≤ 5, loi 71-584) ; absent = aucune. */
+  retenueGarantiePct?: number | null;
   validUntil?: string;
   context?: { housingOlderThan2y?: boolean; energyRenovation?: boolean };
   /**
@@ -71,8 +71,11 @@ export function canonicalCreateQuotePayload(input: Omit<CreateQuoteInput, 'compa
       unit: line.unit ?? null,
       unitPriceHT: line.unitPriceHT,
       vatRate: line.vatRate,
+      discount: line.discount ?? null,
     })),
     depositPct: input.depositPct ?? null,
+    globalDiscount: input.globalDiscount ?? null,
+    retenueGarantiePct: input.retenueGarantiePct ?? null,
     validUntil: input.validUntil ?? null,
     context: {
       housingOlderThan2y: input.context?.housingOlderThan2y ?? false,
@@ -96,61 +99,8 @@ export class CreateQuote {
         }),
       );
     }
-    if (!Array.isArray(input.lines) || input.lines.length > MAX_QUOTE_LINES) {
-      return err(
-        appDomain({ code: 'VALIDATION', field: 'lines', message: 'Nombre de lignes invalide.' }),
-      );
-    }
-    let totalHtCents = 0;
-    for (const line of input.lines) {
-      if (
-        typeof line.label !== 'string' ||
-        line.label.trim().length === 0 ||
-        line.label.length > 500 ||
-        hasBillingControlCharacter(line.label)
-      ) {
-        return err(
-          appDomain({ code: 'VALIDATION', field: 'label', message: 'Libellé de ligne invalide.' }),
-        );
-      }
-      if (
-        line.unit !== undefined &&
-        (typeof line.unit !== 'string' ||
-          line.unit.trim().length === 0 ||
-          line.unit.length > 80 ||
-          hasBillingControlCharacter(line.unit))
-      ) {
-        return err(
-          appDomain({ code: 'VALIDATION', field: 'unit', message: 'Unité de ligne invalide.' }),
-        );
-      }
-      if (
-        !Number.isSafeInteger(line.unitPriceHT) ||
-        line.unitPriceHT < 0 ||
-        line.unitPriceHT > MAX_BILLING_AMOUNT_CENTS
-      ) {
-        return err(
-          appDomain({ code: 'VALIDATION', field: 'unitPriceHT', message: 'Prix HT invalide.' }),
-        );
-      }
-      if (
-        !Number.isFinite(line.qty) ||
-        line.qty <= 0 ||
-        Math.round(line.qty * 1_000) !== line.qty * 1_000
-      ) {
-        return err(appDomain({ code: 'VALIDATION', field: 'qty', message: 'Quantité invalide.' }));
-      }
-      totalHtCents += Math.round(line.qty * line.unitPriceHT);
-      if (!Number.isSafeInteger(totalHtCents) || totalHtCents > MAX_BILLING_AMOUNT_CENTS) {
-        return err(
-          appDomain({
-            code: 'VALIDATION',
-            field: 'lines',
-            message: 'Montant total HT hors limite.',
-          }),
-        );
-      }
-    }
+    const lineError = validateLineInputs(input.lines);
+    if (lineError) return err(lineError);
     const company = await this.deps.companies.findById(input.companyId);
     if (!company) return err(appNotFound('company', input.companyId));
     const customer = await this.deps.customers.findById(input.customerId);
@@ -201,6 +151,18 @@ export class CreateQuote {
     if (input.depositPct !== undefined) {
       const dep = quote.setDeposit(input.depositPct);
       if (!dep.ok) return err(appDomain(dep.error));
+    }
+
+    // B3 — remise globale négociée (« je vous arrondis à… ») posée à la création.
+    if (input.globalDiscount !== undefined && input.globalDiscount !== null) {
+      const discount = quote.setGlobalDiscount(input.globalDiscount);
+      if (!discount.ok) return err(appDomain(discount.error));
+    }
+
+    // B5 — retenue de garantie stipulée au devis-chantier (marché privé de travaux, loi 71-584).
+    if (input.retenueGarantiePct !== undefined && input.retenueGarantiePct !== null) {
+      const retenue = quote.setRetenueGarantie(input.retenueGarantiePct);
+      if (!retenue.ok) return err(appDomain(retenue.error));
     }
 
     await this.deps.quotes.save(quote);

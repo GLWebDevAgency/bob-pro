@@ -112,7 +112,7 @@ function makeDeps(invoice: Invoice) {
     companies,
     customers: customerRepo,
     // Pièces composées librement (parentQuoteId null) : la revérification A3 ne lit jamais ce repo.
-    quotes: { findById: async () => null },
+    quotes: { findById: async () => null, lockById: async () => null },
     counters,
     uow,
     clock,
@@ -194,7 +194,7 @@ describe('IssueInvoice', () => {
       invoices,
       companies,
       customers: customerRepo,
-      quotes: { findById: async () => null },
+      quotes: { findById: async () => null, lockById: async () => null },
       counters,
       uow: { runInTransaction: (fn) => fn() },
       clock,
@@ -498,7 +498,10 @@ describe('IssueInvoice — A3 : gel/embargo revérifiés à l’émission', () =
         listByCompany: async () => [customerR.value],
         save: async () => {},
       },
-      quotes: { findById: async () => (options.quoteMissing ? null : quote) },
+      quotes: {
+        findById: async () => (options.quoteMissing ? null : quote),
+        lockById: async () => (options.quoteMissing ? null : quote),
+      },
       counters: {
         allocate: async () => ({ sequence: 1, formatted: DocNumber.format('F', 2026, 1) }),
       },

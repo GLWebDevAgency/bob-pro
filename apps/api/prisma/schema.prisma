@@ -462,6 +462,20 @@ model Customer {
   /// Nom du contact chez le client entreprise/public (raison sociale ≠ personne physique jointe).
   contactName         String?
   ptLabel             String?
+  /// B4 — conditions de paiement PROPRES au client (jours + fin de mois + libellé imprimable),
+  /// pilotant l'échéance dérivée à l'émission (IssueInvoice, priorité 2 après le choix explicite).
+  /// Les TROIS colonnes vont ensemble (CHECK SQL) ; NULL = défaut société. `ptLabel` historique
+  /// reste purement décoratif.
+  paymentTermsDays       Int?
+  paymentTermsEndOfMonth Boolean?
+  paymentTermsLabel      String?
+  /// Canal de FACTURATION du client (email | chorus | portail) — NULL = email (défaut honnête).
+  /// Champs annexes liés à LEUR type par CHECK SQL (un code service hors Chorus est un état
+  /// sans sens). Le guide de transmission de la facture émise en dérive (deriveTransmissionGuide).
+  billingChannelType       String?
+  billingChorusServiceCode String?
+  billingPortailNom        String?
+  billingPortailUrl        String?
   isSubcontractingBtp Boolean      @default(false)
   chantiers           Chantier[]
   quotes              Quote[]
@@ -613,6 +627,13 @@ model Quote {
   purchaseOrderReceivedAt DateTime?       @db.Timestamptz(6)
   purchaseOrderDocumentId String?
   purchaseOrderDocument   StoredDocument? @relation("QuotePurchaseOrderDocument", fields: [companyId, purchaseOrderDocumentId], references: [companyId, id], onDelete: Restrict, onUpdate: Cascade)
+  // B3 — remise GLOBALE du devis (négociée UNE FOIS, reprise sur les pièces dérivées) :
+  // pourcentage OU montant HT centimes, exclusifs (CHECK SQL). NULL/NULL = aucune remise.
+  globalDiscountPercent     Decimal? @db.Decimal(5, 2)
+  globalDiscountAmountCents Int?
+  // B5 — retenue de garantie stipulée au devis (loi n° 71-584, ≤ 5 %) : s'applique aux
+  // situations et à la finale dérivées. NULL = aucune retenue.
+  retenueGarantiePct        Decimal? @db.Decimal(5, 2)
   // Révision optimiste (B8) : incrémentée par les mutations de bon de commande — le CAS final
   // en base est porté par le verrou de ligne (lockById) dans la transaction tenant.
   revision         Int                    @default(1)
@@ -677,6 +698,30 @@ model Invoice {
   totalsTtc             Int           @default(0)
   totalsNetToPay        Int           @default(0)
   vatByRate             Json          @default("{}")
+  /// B3/B5 — compléments de totaux PRÉSENTS UNIQUEMENT quand le fait existe (Totals.grossHt?/
+  /// discountCents?/retenueGarantieCents?) : les pièces antérieures restent identiques au centime.
+  totalsGrossHt              Int?
+  totalsDiscountCents        Int?
+  totalsRetenueGarantieCents Int?
+  /// B2 — situation de travaux : n° d'ordre sur SON devis (1, 2, 3…) ; part de la déduction de
+  /// la finale provenant des situations émises (compta : CA jamais compté deux fois).
+  situationOrder          Int?
+  situationDeductionCents Int           @default(0)
+  /// B3 — remise globale de la pièce (reprise du devis à la dérivation, ou saisie sur facture
+  /// directe) : % OU montant HT centimes, exclusifs (CHECK SQL).
+  globalDiscountPercent     Decimal? @db.Decimal(5, 2)
+  globalDiscountAmountCents Int?
+  /// B5 — taux de retenue de garantie applicable à la pièce (situations + finale). NULL = aucune.
+  retenueGarantiePct        Decimal? @db.Decimal(5, 2)
+  /// B1/A3bis — facture DIRECTE B2C : intervention urgente à domicile expressément sollicitée
+  /// (art. L221-10, al. 2 et L221-28, 8° c. conso), horodatée SERVEUR à la composition,
+  /// IMMUABLE. NULL = jamais sollicitée (fail-closed).
+  urgentRepairRequestedAt DateTime?     @db.Timestamptz(6)
+  /// Suivi MANUEL de transmission (canal de facturation du client) : dates DÉCLARÉES par
+  /// l'artisan (dépôt Chorus/portail puis acceptation) — mutables APRÈS émission (suivi
+  /// opérationnel, pas un fait légal de la pièce). NULL = jamais suivi.
+  transmissionDepositedAt DateTime?     @db.Date
+  transmissionAcceptedAt  DateTime?     @db.Date
   legalMentions         String[]      @default([])
   /// A4 — régime de TVA de la pièce, CONSTATÉ par IssueInvoice et FIGÉ à l'émission (franchise
   /// 293 B / autoliquidation 283, 2 nonies / standard) — le XML Factur-X régénéré le lit en
@@ -726,6 +771,11 @@ model LineItem {
   unit        String?
   unitPriceHt Int
   vatRate     Decimal      @db.Decimal(4, 2)
+  /// B3 — remise DE LIGNE, EXCLUSIVE : pourcentage (0 < % ≤ 100, 2 déc.) OU montant HT en
+  /// centimes (> 0, plafonné par la base de la ligne côté domaine). CHECK SQL d'exclusivité.
+  /// NULL/NULL = aucune remise (lignes antérieures inchangées au centime).
+  discountPercent     Decimal? @db.Decimal(5, 2)
+  discountAmountCents Int?
 
   @@index([quoteId])
   @@index([invoiceId])

@@ -37,6 +37,7 @@ import {
   type QuoteInvoiceLinksState,
 } from './quote-invoice-actions.logic';
 import { SignOnsiteSheet } from './SignOnsiteSheet';
+import { SituationSheet } from './SituationSheet';
 import { resolveCollectAccountingPreview } from './collect-accounting-preview';
 import { isPaymentLinkEligible } from '../lib/payment-link-affordance';
 
@@ -327,6 +328,9 @@ export const QuoteActions = forwardRef<
   // idempotent par parentQuoteId+kind) ; `linkedInvoices` est la source DURABLE (survit au re-render).
   const [localLinked, setLocalLinked] = useState<QuoteLinkedInvoices>(NO_LINKED_INVOICES);
   const [choiceOpen, setChoiceOpen] = useState(false);
+  // B2 : feuille « Facturer une situation » — devis signé sans facture finale (le solde final
+  // déduit automatiquement acompte + situations émises, GenerateInvoiceFromQuote).
+  const [situationOpen, setSituationOpen] = useState(false);
   // R4 : choix de signature (Sur place / Envoyer le lien) puis, si « Sur place », le pad lui-même.
   const [signChoiceOpen, setSignChoiceOpen] = useState(false);
   const [onsiteOpen, setOnsiteOpen] = useState(false);
@@ -768,6 +772,21 @@ export const QuoteActions = forwardRef<
             disabled={!!busy}
             onPress={() => void generateInvoice('final')}
           />
+          {/* B2 : entre l'acompte et le solde, chaque avancement se facture en situation —
+              la finale déduira automatiquement acompte + situations émises. */}
+          <View style={{ marginTop: 8 }}>
+            <Button
+              title={t('situation.action', { personality })}
+              variant="secondary"
+              disabled={!!busy}
+              onPress={() => setSituationOpen(true)}
+            />
+          </View>
+          <SituationSheet
+            visible={situationOpen}
+            quote={quote}
+            onClose={() => setSituationOpen(false)}
+          />
           {embargoSheet}
         </View>
       );
@@ -780,6 +799,9 @@ export const QuoteActions = forwardRef<
       ...(quote.depositPct !== null
         ? [{ value: 'deposit', label: `Facture d'acompte (${quote.depositPct} %)` }]
         : []),
+      // B2 : la situation vit dans le MÊME choix que l'acompte et la finale — un seul geste,
+      // la feuille dédiée règle le % (marché déjà facturé visible, garde cumul au serveur).
+      { value: 'situation', label: t('situation.action', { personality }) },
     ];
     return (
       <>
@@ -801,8 +823,17 @@ export const QuoteActions = forwardRef<
           onOther={() => setChoiceOpen(false)}
           onSelect={(values) => {
             setChoiceOpen(false);
+            if (values[0] === 'situation') {
+              setSituationOpen(true);
+              return;
+            }
             void generateInvoice(values[0] === 'deposit' ? 'deposit' : 'final');
           }}
+        />
+        <SituationSheet
+          visible={situationOpen}
+          quote={quote}
+          onClose={() => setSituationOpen(false)}
         />
         {embargoSheet}
       </>

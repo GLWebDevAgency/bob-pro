@@ -1,5 +1,7 @@
 // Ports de sortie : génération de document & notification. Adapters côté infra (apps/api).
 
+import { type Discount } from '../../domain/billing/shared/discount';
+
 export interface InvoicePdfData {
   number: string;
   companyName: string;
@@ -10,9 +12,35 @@ export interface InvoicePdfData {
   issuedAt: string | null;
   dueAt: string | null;
   kind: string;
-  lines: { label: string; qty: number; unitPriceHT: number; vatRate: number }[];
-  totals: { ht: number; vat: number; ttc: number; netToPay: number };
+  /**
+   * B3 — `discount` optionnel par ligne (compat ascendante) : le renderer imprime la remise à
+   * côté de la ligne (« rabais, remises, ristournes » détaillés, art. L441-9 c. com.).
+   */
+  lines: { label: string; qty: number; unitPriceHT: number; vatRate: number; discount?: Discount | null }[];
+  /**
+   * B3/B5 — compléments optionnels PRÉSENTS uniquement quand le fait existe (mêmes clés que
+   * Totals) : HT brut + total remisé (récapitulatif L441-9), retenue de garantie déduite du
+   * net à payer (loi 71-584 — la mention de restitution voyage dans `mentions`).
+   */
+  totals: {
+    ht: number;
+    vat: number;
+    ttc: number;
+    netToPay: number;
+    grossHt?: number;
+    discountCents?: number;
+    retenueGarantieCents?: number;
+  };
   mentions: string[];
+  /**
+   * B2 — situation de travaux : n° d'ordre sur son devis + avancement facturé en % du marché
+   * HT NET (dérivé par l'appelant depuis le devis parent ; null = marché non résolvable,
+   * l'avancement n'est alors pas imprimé — jamais inventé). Optionnel (compat ascendante) ;
+   * absent ou null = pièce ordinaire.
+   */
+  situation?: { order: number; advancementPct: number | null } | null;
+  /** B5 — taux de retenue de garantie imprimé sur la ligne dédiée ; absent/null = aucune. */
+  retenueGarantiePct?: number | null;
   /**
    * B8 — bon de commande client (numéro d'engagement grands comptes/Chorus Pro) : imprimé dans
    * la zone références quand présent. Optionnel (compat ascendante des adapters existants) ;
@@ -65,8 +93,10 @@ export interface QuotePdfData {
   customerName: string;
   customerAddress: string;
   validUntil: string | null;
-  lines: { label: string; qty: number; unitPriceHT: number; vatRate: number }[];
-  totals: { ht: number; vat: number; ttc: number; netToPay: number };
+  /** B3 — `discount` optionnel par ligne (compat ascendante) : remise imprimée à côté de la ligne. */
+  lines: { label: string; qty: number; unitPriceHT: number; vatRate: number; discount?: Discount | null }[];
+  /** B3 — compléments optionnels (HT brut + total remisé) présents uniquement quand une remise existe. */
+  totals: { ht: number; vat: number; ttc: number; netToPay: number; grossHt?: number; discountCents?: number };
   depositPct: number | null;
   signedBy: string | null;
   /**

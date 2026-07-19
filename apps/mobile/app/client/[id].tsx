@@ -98,6 +98,7 @@ import { useBobClient } from '../../src/data/client';
 import { hasBlockingAuthoritativeDataError } from '../../src/data/authoritative-query-state';
 import { usePublishAgentContext, type AgentContext, type AgentAccessLayout } from '../../src/agent';
 import { CustomerForm, type CustomerFormInitial } from '../../src/components/customer-form';
+import { CustomerBillingSections } from '../../src/components/CustomerBillingSections';
 import {
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -602,8 +603,17 @@ export default function ClientDetail() {
   const submitEdit = (payload: UpdateCustomerClientInput): void => {
     if (!customerFresh || customer === null) return;
     setEditError(false);
+    // Remplacement complet SANS PERTE (B4/B6) : le formulaire général ne connaît ni les
+    // conditions de paiement, ni le canal, ni les faits fiscaux — ils repartent tels quels.
+    const preserved: Partial<UpdateCustomerClientInput> = {
+      ...(customer.paymentTermsLabel != null ? { paymentTermsLabel: customer.paymentTermsLabel } : {}),
+      ...(customer.paymentTerms != null ? { paymentTerms: customer.paymentTerms } : {}),
+      ...(customer.billingChannel != null ? { billingChannel: customer.billingChannel } : {}),
+      ...(customer.isInternational === true ? { isInternational: true } : {}),
+      ...(customer.isSubcontractingBtp === true ? { isSubcontractingBtp: true } : {}),
+    };
     updateCustomer.mutate(
-      { id, patch: payload },
+      { id, patch: { ...preserved, ...payload } },
       {
         onSuccess: () => {
           setEditOpen(false);
@@ -1425,37 +1435,47 @@ export default function ClientDetail() {
                     )}
                   </View>
                 )
-              ) : infoRows.length === 0 ? (
-                <Card>
-                  <EmptyState body={t(TAB_EMPTY.infos, { personality })} />
-                </Card>
               ) : (
-                <Card radius={18} padding={0} style={{ paddingHorizontal: 14 }}>
-                  {infoRows.map((row, index) => (
-                    <View
-                      key={row.key}
-                      style={{
-                        flexDirection: 'row',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        gap: 12,
-                        paddingVertical: 12,
-                        borderBottomWidth: index < infoRows.length - 1 ? 1 : 0,
-                        borderBottomColor: colors.lineSoft,
-                      }}
-                    >
-                      <Text style={[font('meta'), { color: colors.slate400 }]}>
-                        {t(row.key, { personality })}
-                      </Text>
-                      <Text
-                        style={{ ...font('sub', 600), color: colors.ink800, flexShrink: 1 }}
-                        numberOfLines={1}
-                      >
-                        {row.value}
-                      </Text>
-                    </View>
-                  ))}
-                </Card>
+                <View style={{ gap: 16 }}>
+                  {infoRows.length === 0 ? (
+                    <Card>
+                      <EmptyState body={t(TAB_EMPTY.infos, { personality })} />
+                    </Card>
+                  ) : (
+                    <Card radius={18} padding={0} style={{ paddingHorizontal: 14 }}>
+                      {infoRows.map((row, index) => (
+                        <View
+                          key={row.key}
+                          style={{
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            gap: 12,
+                            paddingVertical: 12,
+                            borderBottomWidth: index < infoRows.length - 1 ? 1 : 0,
+                            borderBottomColor: colors.lineSoft,
+                          }}
+                        >
+                          <Text style={[font('meta'), { color: colors.slate400 }]}>
+                            {t(row.key, { personality })}
+                          </Text>
+                          <Text
+                            style={{ ...font('sub', 600), color: colors.ink800, flexShrink: 1 }}
+                            numberOfLines={1}
+                          >
+                            {row.value}
+                          </Text>
+                        </View>
+                      ))}
+                    </Card>
+                  )}
+                  {/* B4 + canal : conditions de paiement (LegalHint L441-10) et « comment ce
+                      client reçoit ses factures » — visibles uniquement sur données fraîches
+                      (une édition sur snapshot périmé perdrait des faits). */}
+                  {customer !== null && customerFresh ? (
+                    <CustomerBillingSections customer={customer} />
+                  ) : null}
+                </View>
               )}
             </>
           )}

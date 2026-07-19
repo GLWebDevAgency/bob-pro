@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { buildFacturXBasicXml, facturXDataFromInvoice, frenchVatNumber, type FacturXInvoiceData } from './facturx';
 import { makePurchaseOrderRef } from '../billing/shared/purchase-order-ref';
 import { Invoice } from '../billing/invoice/invoice';
+import { Quote } from '../billing/quote/quote';
+import { validateFacturXBasic } from './facturx-validation';
 import { Company } from '../company/company';
 import { DocNumber } from '../billing/shared/doc-number';
 import { PaymentTerms } from '../../shared-kernel/payment-terms';
@@ -426,5 +428,57 @@ describe('facturXDataFromInvoice — mapping depuis l’agrégat', () => {
       address: { line1: 'x', zip: '75001', city: 'Paris' },
     });
     expect(data.vatBreakdown[0]!.category).toBe('AE');
+  });
+});
+
+describe('facturXDataFromInvoice — remises B3 et situations B2', () => {
+  it('facture remisée : lignes NETTES + BG-27, XML valide (BR-CO-10/13 tiennent)', () => {
+    const company = seedCompany();
+    const inv = (Invoice.composeStandalone({ id: 'inv-rem', companyId: company.id, customerId: 'cust1' }) as { ok: true; value: Invoice }).value;
+    inv.addLine({ id: 'l1', label: 'Pose', category: 'labor', qty: 1, unitPriceHT: 100000, vatRate: 20, discount: { type: 'percent', value: 10 } });
+    inv.addLine({ id: 'l2', label: 'Fourniture', category: 'supply', qty: 1, unitPriceHT: 50000, vatRate: 10 });
+    const globalDiscount = inv.setGlobalDiscount({ type: 'amount', cents: 10000 });
+    if (!globalDiscount.ok) throw new Error('remise globale de test invalide');
+    issueForFacturX(inv, 90);
+
+    const data = facturXDataFromInvoice(inv, company, { name: 'Client', ...B2C, address: { line1: 'x', zip: '75001', city: 'Paris' } });
+    // HT net : 150 000 − 10 000 (ligne) − 10 000 (globale) = 130 000, identique au domaine.
+    expect(data.lineTotalHTCents).toBe(inv.totals().ht);
+    const lineSum = data.lines.reduce((s, l) => s + l.netAmountCents, 0);
+    expect(lineSum).toBe(data.lineTotalHTCents);
+    // Chaque ligne remisée porte son allowance (remise de ligne + quote-part globale).
+    const totalAllowance = data.lines.reduce((s, l) => s + (l.allowanceCents ?? 0), 0);
+    expect(totalAllowance).toBe(20000);
+    // Ventilation par taux = bases nettes.
+    const basisSum = data.vatBreakdown.reduce((s, b) => s + b.basisCents, 0);
+    expect(basisSum).toBe(data.taxBasisTotalCents);
+    // Le garde-fou EN 16931 « Schematron lite » ne relève AUCUNE violation.
+    const validation = validateFacturXBasic(data);
+    expect(validation.violations).toEqual([]);
+    // L'élément BG-27 est émis dans le XML.
+    const xml = buildFacturXBasicXml(data);
+    expect(xml).toContain('SpecifiedTradeAllowanceCharge');
+    expect(xml).toContain('<udt:Indicator>false</udt:Indicator>');
+  });
+  it('situation de travaux : typeCode 380, montants d’avancement, XML valide', () => {
+    const company = seedCompany();
+    const q = Quote.compose({ id: 'q-fx', companyId: company.id, customerId: 'cust1', at: '2026-06-01T09:00:00Z' });
+    if (!q.ok) throw new Error('quote');
+    q.value.addLine({ id: 'l1', label: 'Gros œuvre', category: 'labor', qty: 1, unitPriceHT: 148000, vatRate: 10 });
+    q.value.setRetenueGarantie(5);
+    q.value.assignNumber(DocNumber.format('D', 2026, 90), '2026-06-01T09:00:00Z');
+    q.value.send('2026-06-01T09:00:00Z');
+    q.value.sign({ signerName: 'Martin', signedAt: '2026-06-01T09:00:00Z', method: 'remote_link', accepted: true }, '2026-06-01T09:00:00Z');
+    const situation = Invoice.situationFromSignedQuote(q.value, 'inv-sit', { order: 1, targetHtCents: 44400 });
+    if (!situation.ok) throw new Error('situation');
+    issueForFacturX(situation.value, 91);
+
+    const data = facturXDataFromInvoice(situation.value, company, { name: 'Client', ...B2C, address: { line1: 'x', zip: '75001', city: 'Paris' } });
+    expect(data.typeCode).toBe('380');
+    expect(data.lineTotalHTCents).toBe(44400);
+    expect(data.grandTotalCents).toBe(48840);
+    // La retenue (2 442) diffère l'encaissement : net à payer 46 398, arithmétique BR-CO-16 exacte.
+    expect(data.duePayableCents).toBe(46398);
+    expect(validateFacturXBasic(data).violations).toEqual([]);
   });
 });

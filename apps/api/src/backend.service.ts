@@ -6,6 +6,10 @@ import {
   RefuseQuote,
   ExpireQuote,
   GenerateInvoiceFromQuote,
+  ComposeStandaloneInvoice,
+  RecordInvoiceTransmission,
+  deriveTransmissionGuide,
+  computeLineBases,
   UpdateQuoteLine,
   RemoveQuoteLine,
   DeleteDraftInvoice,
@@ -111,6 +115,10 @@ import {
   AttachPurchaseOrderToInvoice,
   DetachPurchaseOrder,
   ListInvoiceableQuotes,
+  // B2 — avancement PROPOSÉ d'une situation (consultatif, jamais imposé) : règle PURE du
+  // domaine — l'hôte lui fournit les tâches RÉELLES du chantier (aucune persistée à ce jour :
+  // proposition null honnête, jamais un avancement inventé).
+  proposeSituationFromChantier,
   type PurchaseOrderRef,
   type PurchaseOrderRefInput,
   type PurchaseOrderMutationView,
@@ -164,6 +172,12 @@ import {
   type QuoteLine,
   type UpdateQuoteLineInput,
   type Totals,
+  type LineInput,
+  type Discount,
+  type SituationAmountInput,
+  type ComposeStandaloneInvoiceOutput,
+  type InvoiceTransmissionStatus,
+  type TransmissionGuide,
   type TodayInvoiceData,
   type PlanTier,
   type PaymentGatewayPort,
@@ -240,6 +254,10 @@ import {
   type ReadContextEntityInput,
   type RuntimeInvocation,
   purchaseOrderLinkedRun,
+  // B1/B2/B4 — parité de la confirmation HTTP : mêmes refus honnêtes et mêmes intents que
+  // BobAgent.confirm local pour les outils de facturation terrain.
+  FACTURATION_TERRAIN_TOOLS,
+  intentForTool,
   redactPII,
   accountingJournalLabel,
   chantierStatusLabel,
@@ -290,6 +308,7 @@ import { NotificationDeliveryService } from './jobs/notification-delivery.servic
 // Clé de déduplication du job « encaissement programmé » (embargo L221-10) — source unique
 // partagée entre la programmation, l'annulation à la rétractation et la garde de livraison.
 import { embargoScheduledPaymentDedupeKey } from './persistence/notification-jobs';
+import { SituationOrderConflictError } from './persistence/situation-order-conflict-error';
 // Import circulaire assumé (RelanceService ↔ BackendService) : résolu par forwardRef des deux
 // côtés — l'action Bob envoyer_relance délègue au MÊME service que POST /invoices/:id/relance.
 import { RelanceService } from './jobs/relance.service';
@@ -341,6 +360,21 @@ export interface InvoiceView {
   /** E3 : identité FIGÉE de la facture annulée par cet AVOIR (snapshot du domaine) — nav
    * croisée inverse avoir → facture d'origine. Null = pièce ordinaire. */
   creditNoteSource: { invoiceId: string; kind: string; number: string; issuedAt: string } | null;
+  /** B2 : n° d'ordre de la situation sur son devis ; null hors kind 'situation' (et son avoir). */
+  situationOrder: number | null;
+  /** B2 : part de la déduction de la finale provenant des situations émises (0 = aucune). */
+  situationDeductionCents: number;
+  /** B3 : remise globale de la pièce (reprise du devis ou saisie sur facture directe) ; null = aucune. */
+  globalDiscount: Discount | null;
+  /** B5 : taux de retenue de garantie applicable (loi 71-584) ; null = aucune. */
+  retenueGarantiePct: number | null;
+  /** B1/A3bis : intervention urgente tracée à la composition (facture directe B2C) ; null sinon. */
+  urgentRepair: { requestedAt: string } | null;
+  /** Suivi MANUEL de transmission (canal de facturation) ; null = jamais suivi. */
+  transmission: InvoiceTransmissionStatus | null;
+  /** Guide de transmission dérivé du canal du client — UNIQUEMENT sur GET /invoices/:id d'une
+   * pièce émise (absent des listes : dérivation par client). */
+  transmissionGuide?: TransmissionGuide;
 }
 
 /** Encaissement daté du tenant (E3 — PONT-SERVEUR v1) : miroir du PaymentView du client. */
@@ -1131,6 +1165,13 @@ export class BackendService {
       revision: i.revision,
       // E3 : le getter du domaine clone déjà le snapshot ; null = pièce ordinaire.
       creditNoteSource: i.creditNoteSource,
+      // B2/B3/B5/B1 : faits de la pièce exposés tels quels (getters défensifs du domaine).
+      situationOrder: i.situationOrder,
+      situationDeductionCents: i.situationDeductionCents,
+      globalDiscount: i.globalDiscount,
+      retenueGarantiePct: i.retenueGarantiePct,
+      urgentRepair: i.urgentRepair,
+      transmission: i.transmission,
     };
   }
 
@@ -1531,7 +1572,11 @@ export class BackendService {
   }
   async generateInvoice(input: {
     quoteId: string;
-    mode: 'deposit' | 'final';
+    mode: 'deposit' | 'final' | 'situation';
+    /** B2 — REQUIS avec le mode situation (interdit sinon, garde du use case) : avancement en
+     *  % du marché ({ percent }) ou montant HT en centimes ({ amountHtCents }) — les situations
+     *  se stipulent en HT (pratique des marchés privés), la TVA en découle par taux. */
+    situation?: SituationAmountInput;
     /** Override RESPONSABILISÉ de l'embargo L221-10 — flag EXPLICITE `true` uniquement (jamais
      *  implicite) : le serveur refuse toujours par défaut ; l'override est journalisé
      *  (payment.embargo_overridden) AVANT de produire la pièce, sinon l'action échoue. */
@@ -1539,21 +1584,51 @@ export class BackendService {
   }) {
     if (!(await this.ownedQuote(input.quoteId)))
       return { ok: false as const, error: appNotFound('quote', input.quoteId) };
-    return new GenerateInvoiceFromQuote({
-      quotes: this.p.quotes,
-      invoices: this.p.invoices,
-      // A3 — gel de rétractation : le use case relit le client (b2c ?) et compare le délai
-      // L221-18 à l'horloge injectée avant d'autoriser la facture FINALE.
-      customers: this.p.customers,
-      ids: this.ids,
-      clock: this.clock,
-      audit: this.embargoOverrideAudit(),
-    }).execute({
-      quoteId: input.quoteId,
-      mode: input.mode,
-      // Jamais implicite : seul `true` strict traverse (tout autre payload est ignoré).
-      embargoOverride: input.embargoOverride === true,
-    });
+    let r: Result<{ invoiceId: string }, AppError>;
+    try {
+      r = await new GenerateInvoiceFromQuote({
+        quotes: this.p.quotes,
+        invoices: this.p.invoices,
+        // A3 — gel de rétractation : le use case relit le client (b2c ?) et compare le délai
+        // L221-18 à l'horloge injectée avant d'autoriser la facture FINALE.
+        customers: this.p.customers,
+        ids: this.ids,
+        clock: this.clock,
+        audit: this.embargoOverrideAudit(),
+      }).execute({
+        quoteId: input.quoteId,
+        mode: input.mode,
+        ...(input.situation !== undefined ? { situation: input.situation } : {}),
+        // Jamais implicite : seul `true` strict traverse (tout autre payload est ignoré).
+        embargoOverride: input.embargoOverride === true,
+      });
+    } catch (cause) {
+      // B2 — backstop base (index unique du n° d'ordre de situation) : une génération
+      // CONCURRENTE a gagné la course. Erreur métier rejouable, jamais un 500 ni un duplicata.
+      if (cause instanceof SituationOrderConflictError) {
+        return {
+          ok: false as const,
+          error: {
+            kind: 'validation' as const,
+            issues: [
+              {
+                field: 'situation',
+                message:
+                  'Une autre situation vient d’être créée sur ce devis (action simultanée) : ' +
+                  'réessaie — le n° d’ordre et le reste facturable seront recalculés.',
+              },
+            ],
+          },
+        };
+      }
+      throw cause;
+    }
+    if (r.ok && input.mode === 'situation')
+      this.logger.audit('invoice.situation_generated', {
+        quoteId: input.quoteId,
+        invoiceId: r.value.invoiceId,
+      });
+    return r;
   }
 
   /**
@@ -1882,9 +1957,13 @@ export class BackendService {
           ...(input.servicePeriod === undefined ? {} : { servicePeriod: input.servicePeriod }),
           ...(input.deliveryAddress === undefined ? {} : { deliveryAddress: input.deliveryAddress }),
         };
+        // B4 — le défaut société passe par `defaultTerms` (priorité 3), JAMAIS par `terms`
+        // (choix explicite de l'utilisateur, priorité 1 — non exposé par cette frontière à ce
+        // jour) : les conditions du CLIENT (Customer.paymentTerms, priorité 2) s'appliquent
+        // désormais réellement à l'émission, y compris « fin de mois ».
         const issueInput: {
           invoiceId: string;
-          terms?: { days: number; endOfMonth: boolean; label: string };
+          defaultTerms?: { days: number; endOfMonth: boolean; label: string };
           servicePeriod?: { start: string; end: string | null };
           deliveryAddress?: string;
           embargoOverride?: boolean;
@@ -1894,7 +1973,7 @@ export class BackendService {
             : {
                 invoiceId: input.invoiceId,
                 ...emissionData,
-                terms: {
+                defaultTerms: {
                   days: paymentTermsDays,
                   endOfMonth: false,
                   label: `Paiement à ${paymentTermsDays} jours`,
@@ -1916,7 +1995,7 @@ export class BackendService {
         }).execute(issueInput);
         if (!issued.ok) {
           const missingTerms =
-            issueInput.terms === undefined &&
+            issueInput.defaultTerms === undefined &&
             issued.error.kind === 'validation' &&
             issued.error.issues.some((issue) => issue.field === 'paymentTerms');
           if (missingTerms && settings === null) {
@@ -2045,7 +2124,78 @@ export class BackendService {
   async getInvoice(id: string): Promise<Result<InvoiceView, AppError>> {
     const i = await this.ownedInvoice(id);
     if (!i) return { ok: false, error: appNotFound('invoice', id) };
-    return ok(this.mapInvoice(i));
+    const view = this.mapInvoice(i);
+    // Guide de TRANSMISSION dérivé du canal de facturation du client (fiche client) — pièce
+    // ÉMISE uniquement (un brouillon n'a rien à transmettre) : chorus → checklist Factur-X +
+    // SIRET + n° d'engagement (B8) + code service ; portail → mémo nom/URL ; email par défaut.
+    if (i.status !== 'draft' && i.status !== 'cancelled') {
+      const customer = await this.p.customers.findById(i.customerId);
+      if (customer && customer.companyId === i.companyId) {
+        view.transmissionGuide = deriveTransmissionGuide({
+          billingChannel: customer.billingChannel ?? null,
+          customer: { siren: customer.siren ?? null, email: customer.email ?? null },
+          invoice: { purchaseOrderNumber: i.purchaseOrder?.number ?? null },
+        });
+      }
+    }
+    return ok(view);
+  }
+
+  /**
+   * PATCH /invoices/:id/transmission — suivi MANUEL de transmission d'une pièce ÉMISE vers le
+   * canal de facturation du client (dates de dépôt/acceptation DÉCLARÉES par l'artisan, suivi
+   * honnête et additif — jamais un accusé de plateforme inventé). Champ absent = inchangé,
+   * null = effacé (fusion sous verrou dans le use case).
+   */
+  async recordInvoiceTransmission(input: {
+    invoiceId: string;
+    depositedAt?: string | null;
+    acceptedAt?: string | null;
+  }): Promise<Result<{ transmission: InvoiceTransmissionStatus | null }, AppError>> {
+    if (!(await this.ownedInvoice(input.invoiceId)))
+      return { ok: false as const, error: appNotFound('invoice', input.invoiceId) };
+    const r = await new RecordInvoiceTransmission({
+      invoices: this.p.invoices,
+      uow: this.p,
+      clock: this.clock,
+    }).execute(input);
+    if (r.ok)
+      this.logger.audit('invoice.transmission_recorded', {
+        invoiceId: input.invoiceId,
+        depositedAt: r.value.transmission?.depositedAt ?? null,
+        acceptedAt: r.value.transmission?.acceptedAt ?? null,
+      });
+    return r;
+  }
+
+  /**
+   * POST /invoices — B1 : FACTURE DIRECTE sans devis signé (brouillon `final` standalone) :
+   * dépannage urgent facturé sur place (client B2C : qualification d'urgence A3bis OBLIGATOIRE,
+   * fail-closed), régie TJM × jours, facturation syndic/B2B. Même use case pur pour toutes les
+   * surfaces (parité humain↔Bob) ; l'émission passe ensuite par POST /invoices/:id/issue
+   * (IssueInvoice — numéro, mentions, échéance B4, A7, régime de TVA A4 : aucun chemin parallèle).
+   */
+  async composeStandaloneInvoice(input: {
+    customerId: string;
+    lines: LineInput[];
+    globalDiscount?: Discount | null;
+    context?: { housingOlderThan2y?: boolean; energyRenovation?: boolean };
+    urgentOnSiteRepair?: boolean;
+  }): Promise<Result<ComposeStandaloneInvoiceOutput, AppError>> {
+    const r = await new ComposeStandaloneInvoice({
+      invoices: this.p.invoices,
+      companies: this.p.companies,
+      customers: this.p.customers,
+      ids: this.ids,
+      clock: this.clock,
+    }).execute({ companyId: this.companyId(), ...input });
+    if (r.ok)
+      this.logger.audit('invoice.standalone_composed', {
+        invoiceId: r.value.invoiceId,
+        customerId: input.customerId,
+        urgentOnSiteRepair: input.urgentOnSiteRepair === true,
+      });
+    return r;
   }
 
   async invoiceAccountingPreview(
@@ -2071,6 +2221,17 @@ export class BackendService {
         invoiceId,
         available: false,
         reason: detail || 'Aperçu comptable indisponible.',
+      });
+    }
+    // B2 — finale à 0 soldée par les situations seules : AUCUNE écriture à passer (le CA et la
+    // TVA sont déjà constatés situation par situation) — aperçu honnête, jamais une erreur.
+    if (entry.value === null) {
+      return ok({
+        invoiceId,
+        available: false,
+        reason:
+          'Aucune écriture à passer : le solde est entièrement couvert par les situations émises ' +
+          '(chiffre d’affaires et TVA déjà constatés à chaque situation).',
       });
     }
     const props = entry.value.toProps();
@@ -3284,14 +3445,75 @@ export class BackendService {
       // (depositInvoiced) et le bon de commande (numéro d'engagement) est exposé AVANT émission.
       // SOURCE UNIQUE : use case core ListInvoiceableQuotes, le même que le client local —
       // parité stricte des trois implémentations, plus aucune dérivation inline.
-      listInvoiceableQuotes: async () =>
-        new ListInvoiceableQuotes({
+      listInvoiceableQuotes: async () => {
+        const base = await new ListInvoiceableQuotes({
           quotes: this.p.quotes,
           invoices: this.p.invoices,
           customers: this.p.customers,
           // A3 — le gel de rétractation (finalBlockedUntil) se calcule contre l'horloge injectée.
           clock: this.clock,
-        }).execute({ companyId: this.companyId() }),
+        }).execute({ companyId: this.companyId() });
+        if (!base.ok) return base;
+        // B5 (additif) — retenue de garantie stipulée au devis (agrégat Quote, la même vérité
+        // que l'écran) : le flow facturer_situation l'ANNONCE avant confirmation (net à payer
+        // amputé) — jamais un taux inventé, null sans stipulation.
+        const quotes = await this.p.quotes.listByCompany(this.companyId());
+        const retenueById = new Map(quotes.map((quote) => [quote.id, quote.retenueGarantiePct]));
+        return ok(
+          base.value.map((quote) => ({
+            ...quote,
+            retenueGarantiePct: retenueById.get(quote.id) ?? null,
+          })),
+        );
+      },
+      // B1 — clients FACTURABLES (id + nom + type) : matière de résolution de facture_directe
+      // et definir_conditions_paiement. MÊME lecture ListCustomers que l'écran Clients.
+      listBillableCustomers: async () => {
+        const customers = await this.listCustomers();
+        if (!customers.ok) return customers;
+        return ok(customers.value.map((c) => ({ id: c.id, name: c.name, type: c.type })));
+      },
+      // B2 — avancement PROPOSÉ d'une situation : règle PURE proposeSituationFromChantier
+      // (@bob/core). Aucune tâche de chantier n'est persistée côté serveur à ce jour : liste
+      // vide → proposition null HONNÊTE (Bob demande le % au lieu d'inventer un avancement).
+      proposeSituationAdvancement: async () => {
+        const proposal = proposeSituationFromChantier({ tasks: [] });
+        if (!proposal.ok) return err(appDomain(proposal.error));
+        return ok(proposal.value);
+      },
+      // B1 — outil vocal facture_directe : PURE délégation au MÊME chemin que POST /invoices
+      // (composeStandaloneInvoice : use case ComposeStandaloneInvoice @bob/core, gardes B6/A3bis
+      // fail-closed, audit invoice.standalone_composed). Les totaux annoncés sont CEUX du domaine.
+      composeStandaloneInvoice: async (input) => {
+        const r = await this.composeStandaloneInvoice(input);
+        if (!r.ok) return r;
+        return ok({
+          invoiceId: r.value.invoiceId,
+          totalTtcCents: r.value.totals.ttc,
+          netToPayCents: r.value.totals.netToPay,
+        });
+      },
+      // B4 — outil vocal definir_conditions_paiement : MÊME chemin UpdateCustomer que
+      // PATCH /customers/:id (barrière d'archives + garde du type + plafond L441-10 au domaine).
+      // Seules les conditions changent — le reste de la fiche est RELU puis réécrit à l'identique.
+      setCustomerPaymentTerms: async (input) => {
+        const customer = await this.p.customers.findById(input.customerId);
+        if (!customer || customer.companyId !== this.companyId())
+          return err(appNotFound('customer', input.customerId));
+        const { id: _id, companyId: _companyId, ...props } = customer.toProps();
+        const updated = await this.updateCustomer(input.customerId, {
+          ...props,
+          paymentTerms: { days: input.days, endOfMonth: input.endOfMonth, label: input.label },
+        });
+        if (!updated.ok) return updated;
+        return ok({
+          customerId: input.customerId,
+          customerName: customer.name,
+          days: input.days,
+          endOfMonth: input.endOfMonth,
+          label: input.label,
+        });
+      },
       listIssuableInvoices: async () => {
         const [invoices, cust] = await Promise.all([this.listInvoices(), this.listCustomers()]);
         if (!invoices.ok) return invoices;
@@ -4312,6 +4534,26 @@ export class BackendService {
             ok: false,
             error: appForbidden(blocked.reason ?? 'Action refusée par la policy.'),
           };
+        // B1/B2/B4 — refus du DOMAINE sur un outil de facturation terrain (garde-fou pro
+        // étranger B6, urgence b2c A3bis, cumul de situations, plafond L441-10) : restitution
+        // HONNÊTE du message — MÊME carte que BobAgent.confirm local et mêmes messages que
+        // l'UI, jamais un code technique brut. Le runtime journalise la raison en
+        // `domain:CODE message` (describeError) : le message est extrait, verbatim.
+        const domainMessage =
+          planned.length === 1
+          && FACTURATION_TERRAIN_TOOLS.has(planned[0]!.tool)
+          && typeof blocked.reason === 'string'
+            ? (/^domain:[A-Z_]*\s+([\s\S]+)$/.exec(blocked.reason)?.[1] ?? null)
+            : null;
+        if (domainMessage !== null) {
+          return ok({
+            kind: 'answer',
+            intent: intentForTool(planned[0]!.tool),
+            model: 'agent-runtime',
+            plan: ['Restituer le refus du domaine'],
+            card: { title: 'Refusé — rien n’a été modifié', body: domainMessage.trim() },
+          });
+        }
         return {
           ok: false,
           error: {
@@ -4333,6 +4575,15 @@ export class BackendService {
       );
       const relanceOutcome = record.outcomes.find(
         (outcome) => outcome.tool === 'envoyer_relance' && outcome.status === 'executed',
+      );
+      const standaloneInvoiceOutcome = record.outcomes.find(
+        (outcome) => outcome.tool === 'facture_directe' && outcome.status === 'executed',
+      );
+      const situationOutcome = record.outcomes.find(
+        (outcome) => outcome.tool === 'facturer_situation' && outcome.status === 'executed',
+      );
+      const paymentTermsOutcome = record.outcomes.find(
+        (outcome) => outcome.tool === 'definir_conditions_paiement' && outcome.status === 'executed',
       );
       const quoteDeliveryStatus = quoteOutcome?.result?.deliveryStatus;
       if (!isBatch && purchaseOrderOutcome) {
@@ -4384,6 +4635,46 @@ export class BackendService {
           model: 'agent-runtime',
           plan: record.outcomes.map((outcome) => outcome.label),
           card: { title: 'Relance envoyée ✓', body: `${planned[0]!.label} — c’est parti.` },
+        });
+      }
+      // B1/B2/B4 — MÊMES cartes que BobAgent.confirm local (parité humain↔voix des hôtes) :
+      // le total annoncé de la facture directe est CELUI du domaine (projection publique).
+      if (!isBatch && standaloneInvoiceOutcome) {
+        const ttcRaw = standaloneInvoiceOutcome.result?.totalTtcCents;
+        const ttc = typeof ttcRaw === 'number' ? ttcRaw : null;
+        return ok({
+          kind: 'done',
+          intent: 'facture_directe',
+          model: 'agent-runtime',
+          plan: record.outcomes.map((outcome) => outcome.label),
+          card: {
+            title: 'Facture directe créée ✓',
+            body: `${planned[0]!.label}${ttc !== null ? ` — total ${formatEUR(ttc)} TTC (calcul du domaine)` : ''}. Brouillon créé, à émettre quand tu veux.`,
+          },
+        });
+      }
+      if (!isBatch && situationOutcome) {
+        return ok({
+          kind: 'done',
+          intent: 'facturer_situation',
+          model: 'agent-runtime',
+          plan: record.outcomes.map((outcome) => outcome.label),
+          card: {
+            title: 'Situation générée ✓',
+            body: `${planned[0]!.label} — brouillon créé, à émettre quand tu veux.`,
+          },
+        });
+      }
+      if (!isBatch && paymentTermsOutcome) {
+        return ok({
+          kind: 'done',
+          intent: 'conditions_paiement',
+          model: 'agent-runtime',
+          plan: record.outcomes.map((outcome) => outcome.label),
+          card: {
+            title: 'Conditions enregistrées ✓',
+            body: `${planned[0]!.label} — c’est noté pour les prochaines factures.`,
+          },
         });
       }
       if (!isBatch && quoteDeliveryStatus === 'queued') {
@@ -5363,6 +5654,22 @@ export class BackendService {
     return ok(undefined);
   }
 
+  /**
+   * B2 — avancement facturé par une situation, en % du marché HT NET (bases après remises B3,
+   * mêmes règles que la création de la situation). Null HONNÊTE quand le devis parent n'est pas
+   * résolvable ou que son marché est nul — l'avancement n'est alors pas imprimé, jamais inventé.
+   */
+  private async situationAdvancementPct(inv: Invoice): Promise<number | null> {
+    if (inv.parentQuoteId === null) return null;
+    const quote = await this.p.quotes.findById(inv.parentQuoteId);
+    if (!quote || quote.companyId !== inv.companyId) return null;
+    const { netLineBases } = computeLineBases(quote.lines, { globalDiscount: quote.globalDiscount });
+    const marcheHt = netLineBases.reduce((sum, base) => sum + base, 0);
+    if (marcheHt <= 0) return null;
+    // Une décimale : lisible sur la pièce, sans fausse précision.
+    return Math.round((inv.totals().ht / marcheHt) * 1000) / 10;
+  }
+
   private async renderInvoicePdf(inv: Invoice): Promise<Result<Uint8Array, AppError>> {
     const company = await this.p.companies.findById(inv.companyId);
     const customer = await this.p.customers.findById(inv.customerId);
@@ -5388,8 +5695,32 @@ export class BackendService {
         qty: l.qty,
         unitPriceHT: l.unitPriceHT,
         vatRate: l.vatRate,
+        // B3 : remise de ligne imprimée à côté de la ligne (L441-9 — détaillée, jamais cachée).
+        ...(l.discount !== undefined ? { discount: l.discount } : {}),
       })),
-      totals: { ht: totals.ht, vat: totals.vat, ttc: totals.ttc, netToPay: totals.netToPay },
+      totals: {
+        ht: totals.ht,
+        vat: totals.vat,
+        ttc: totals.ttc,
+        netToPay: totals.netToPay,
+        // B3/B5 : compléments présents UNIQUEMENT quand le fait existe (pièces antérieures
+        // imprimées à l'identique).
+        ...(totals.grossHt !== undefined ? { grossHt: totals.grossHt } : {}),
+        ...(totals.discountCents !== undefined ? { discountCents: totals.discountCents } : {}),
+        ...(totals.retenueGarantieCents !== undefined
+          ? { retenueGarantieCents: totals.retenueGarantieCents }
+          : {}),
+      },
+      // B2 : sous-titre « Situation n°N — avancement X % » (avancement dérivé du devis parent).
+      situation:
+        inv.kind === 'situation' && inv.situationOrder !== null
+          ? {
+              order: inv.situationOrder,
+              advancementPct: await this.situationAdvancementPct(inv),
+            }
+          : null,
+      // B5 : taux imprimé sur la ligne dédiée de retenue (le montant vient des totaux figés).
+      retenueGarantiePct: inv.retenueGarantiePct,
       mentions: [...inv.mentions],
       // B8 : le numéro d'engagement du client (bon de commande) figure sur la pièce émise —
       // exigence de paiement grands comptes + Chorus Pro. Zone références de l'en-tête.
@@ -5475,8 +5806,18 @@ export class BackendService {
         qty: l.qty,
         unitPriceHT: l.unitPriceHT,
         vatRate: l.vatRate,
+        // B3 : la remise de ligne négociée est imprimée sur la proposition.
+        ...(l.discount !== undefined ? { discount: l.discount } : {}),
       })),
-      totals: { ht: totals.ht, vat: totals.vat, ttc: totals.ttc, netToPay: totals.netToPay },
+      totals: {
+        ht: totals.ht,
+        vat: totals.vat,
+        ttc: totals.ttc,
+        netToPay: totals.netToPay,
+        // B3 : récapitulatif HT brut / total remisé — présents uniquement quand une remise existe.
+        ...(totals.grossHt !== undefined ? { grossHt: totals.grossHt } : {}),
+        ...(totals.discountCents !== undefined ? { discountCents: totals.discountCents } : {}),
+      },
       depositPct: q.depositPct,
       signedBy: q.signature?.signerName ?? null,
       mentions: this.quoteMentions(q, company, customer),

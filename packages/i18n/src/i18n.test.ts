@@ -1282,4 +1282,83 @@ describe('catalogue legal (LegalHint — protections légales ×3 tons)', () => 
       expect(banner.toLowerCase()).toContain('acompte');
     }
   });
+
+  // ── Épic B — facturation terrain (catalogue billing-terrain) ────────────────
+  it('facture directe : badge, garde b2c et blocage pro étranger existent sur les 3 humeurs', () => {
+    for (const personality of ['pote', 'pro', 'direct'] as const) {
+      for (const key of [
+        'fd.title',
+        'fd.badge',
+        'fd.urgentQuestion',
+        'fd.urgentRequiredBody',
+        'fd.intlBlockedTitle',
+        'fd.intlBlockedBody',
+        'legal.fdUrgent.law',
+        'legal.intl.law',
+      ] as const) {
+        expect(t(key, { personality }).length).toBeGreaterThan(0);
+      }
+    }
+    // Le blocage B7 nomme les DEUX régimes réels — jamais un refus inexpliqué.
+    expect(t('legal.intl.law', { personality: 'pro' })).toContain('autoliquide');
+    expect(t('legal.intl.law', { personality: 'pro' })).toContain('export');
+  });
+
+  it('situations : cumul, reste et confirmation interpolent leurs paramètres ×3', () => {
+    for (const personality of ['pote', 'pro', 'direct'] as const) {
+      expect(
+        t('situation.alreadyInvoiced', { personality, params: { amount: '500,00 €', pct: 50 } }),
+      ).toContain('500,00 €');
+      expect(
+        t('situation.confirmBody', {
+          personality,
+          params: { pct: 30, amount: '488,40 €', number: 'D-2026-0001' },
+        }),
+      ).toContain('D-2026-0001');
+      expect(t('situation.remaining', { personality, params: { amount: '100,00 €' } })).toContain(
+        '100,00 €',
+      );
+    }
+  });
+
+  it('conditions de paiement : « fin de mois » et l’échéance dérivée interpolent ×3', () => {
+    for (const personality of ['pote', 'pro', 'direct'] as const) {
+      expect(t('terms.daysEom', { personality, params: { days: 45 } })).toContain('45');
+      expect(t('terms.daysEom', { personality, params: { days: 45 } }).toLowerCase()).toContain(
+        'fin de mois',
+      );
+      expect(
+        t('terms.dueAtIssued', { personality, params: { date: '12/09/2026', label: '45 jours fin de mois' } }),
+      ).toContain('12/09/2026');
+      // Le LegalHint des plafonds cite les deux bornes légales L441-10.
+      const law = t('legal.terms.law', { personality });
+      expect(law).toContain('60');
+      expect(law).toContain('45');
+    }
+  });
+
+  it('retenue de garantie : la loi 71-584 est expliquée (5 %, un an après réception) ×3', () => {
+    for (const personality of ['pote', 'pro', 'direct'] as const) {
+      const law = t('legal.retenue.law', { personality });
+      expect(law).toContain('5 %');
+      expect(law.toLowerCase()).toContain('réception');
+      expect(t('retenue.toggleHint', { personality, params: { pct: 5 } })).toContain('5');
+      expect(t('retenue.suiviTitle', { personality }).length).toBeGreaterThan(0);
+    }
+  });
+
+  it('canal de facturation : guide et suivi déclaré interpolent leurs dates ×3', () => {
+    for (const personality of ['pote', 'pro', 'direct'] as const) {
+      expect(t('guide.depositedOn', { personality, params: { date: '19/07/2026' } })).toContain(
+        '19/07/2026',
+      );
+      expect(t('guide.acceptedOn', { personality, params: { date: '20/07/2026' } })).toContain(
+        '20/07/2026',
+      );
+      expect(t('guide.actionOpenPortal', { personality, params: { name: 'Coupa' } })).toContain(
+        'Coupa',
+      );
+      expect(t('canal.sectionTitle', { personality }).length).toBeGreaterThan(0);
+    }
+  });
 });

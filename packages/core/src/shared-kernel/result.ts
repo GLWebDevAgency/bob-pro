@@ -2,7 +2,12 @@ export type Result<T, E> = { ok: true; value: T } | { ok: false; error: E };
 
 export type DomainError =
   | { code: 'VALIDATION'; field: string; message: string }
-  | { code: 'VAT_RATE_NOT_APPLICABLE'; rate: number; reason: 'franchise_293B' | 'autoliquidation' | 'unknown' }
+  | {
+      /** `disbursement_267` (B9) : un débours est HORS base TVA (art. 267, II-2° du CGI) — taux 0 obligatoire. */
+      code: 'VAT_RATE_NOT_APPLICABLE';
+      rate: number;
+      reason: 'franchise_293B' | 'autoliquidation' | 'disbursement_267' | 'unknown';
+    }
   | { code: 'INVALID_TRANSITION'; from: string; to: string }
   | { code: 'DOCUMENT_NUMBER_GAP'; expected: string; got: string }
   | {

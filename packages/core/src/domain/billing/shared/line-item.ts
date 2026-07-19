@@ -1,4 +1,5 @@
 import { type VatRate } from './vat-rate';
+import { type Discount } from './discount';
 
 export type LineCategory = 'labor' | 'supply' | 'travel' | 'disbursement' | 'subscription';
 
@@ -22,4 +23,10 @@ export interface LineInput {
   unit?: string;
   unitPriceHT: number; // centimes
   vatRate: VatRate;
+  /**
+   * B3 — remise DE LIGNE (% ou montant HT en centimes), optionnelle et additive : les pièces
+   * antérieures restent lisibles sans elle. La remise s'impute sur la base HT de la ligne
+   * (qty × unitPriceHT arrondi) AVANT le calcul de la TVA (assiette par taux après remises).
+   */
+  discount?: Discount;
 }

@@ -71,6 +71,11 @@ import type {
   PurchaseOrderRefInput,
   PurchaseOrderMutationView,
   CreditNoteSourceSnapshot,
+  Discount,
+  LineInput,
+  SituationAmountInput,
+  InvoiceTransmissionStatus,
+  TransmissionGuide,
 } from '@bob/core';
 
 export interface QuoteView {
@@ -127,6 +132,21 @@ export interface InvoiceView {
    *  serveurs antérieurs) ; le codec HTTP normalise TOUJOURS (absent ⇒ null, présent difforme ⇒
    *  échec fermé), le client local le fournit depuis l'agrégat. Null = pièce ordinaire. */
   creditNoteSource?: CreditNoteSourceSnapshot | null;
+  /** B2 : n° d'ordre de la situation sur son devis — absent ⇒ null (codec), null hors situation. */
+  situationOrder?: number | null;
+  /** B2 : part de la déduction de la finale provenant des situations émises — absent ⇒ 0. */
+  situationDeductionCents?: number;
+  /** B3 : remise globale de la pièce — absent ⇒ null (codec défensif, jamais inventée). */
+  globalDiscount?: Discount | null;
+  /** B5 : taux de retenue de garantie (loi 71-584) — absent ⇒ null. */
+  retenueGarantiePct?: number | null;
+  /** B1/A3bis : intervention urgente tracée à la composition (facture directe B2C) — absent ⇒ null. */
+  urgentRepair?: { requestedAt: string } | null;
+  /** Suivi MANUEL de transmission (canal de facturation) — absent ⇒ null. */
+  transmission?: InvoiceTransmissionStatus | null;
+  /** Guide de transmission dérivé du canal du client — UNIQUEMENT sur GET /invoices/:id d'une
+   *  pièce émise (absent des listes) ; absent difforme ⇒ retiré (jamais un guide corrompu). */
+  transmissionGuide?: TransmissionGuide;
 }
 
 /** Encaissement daté (E3) — la matière du CA encaissé annuel et du lettrage à venir. */
@@ -201,6 +221,7 @@ export interface DetachInvoicePurchaseOrderClientInput {
 }
 
 export type { PurchaseOrderRef, PurchaseOrderRefInput, PurchaseOrderMutationView };
+export type { Discount, LineInput, SituationAmountInput, InvoiceTransmissionStatus, TransmissionGuide };
 
 export interface SendQuoteOutput {
   number: string;
@@ -1158,12 +1179,40 @@ export interface BobClient {
   >;
   generateInvoice(input: {
     quoteId: string;
-    mode: 'deposit' | 'final';
+    mode: 'deposit' | 'final' | 'situation';
+    /** B2 — REQUIS avec le mode situation (interdit sinon, garde serveur) : avancement en % du
+     *  marché ({ percent }) ou montant HT en centimes ({ amountHtCents }) — les situations se
+     *  stipulent en HT, la TVA en découle par taux. Chaque appel en mode situation crée une
+     *  NOUVELLE situation (n° d'ordre suivant — pas d'idempotence par nature). */
+    situation?: SituationAmountInput;
     /** Override RESPONSABILISÉ de l'embargo L221-10 — `true` strict UNIQUEMENT, après la
      *  feuille de confirmation dédiée (risque concret reformulé) ; le serveur journalise
      *  payment.embargo_overridden avant de produire la pièce. Jamais implicite. */
     embargoOverride?: boolean;
   }): Promise<Result<{ invoiceId: string }, AppError>>;
+  /** B1 : facture DIRECTE sans devis signé (POST /invoices — brouillon composé librement :
+   * dépannage urgent B2C qualifié A3bis obligatoire fail-closed, régie TJM × jours, syndic/B2B).
+   * L'émission passe ensuite par issueInvoice (aucun chemin parallèle). OPTIONNELLE (compat
+   * transports existants) — le client HTTP et le client local de démo l'implémentent tous
+   * les deux (parité stricte). */
+  composeStandaloneInvoice?(input: {
+    customerId: string;
+    lines: LineInput[];
+    /** B3 — remise globale (% du HT net de lignes, ou montant HT en centimes). */
+    globalDiscount?: Discount | null;
+    context?: { housingOlderThan2y?: boolean; energyRenovation?: boolean };
+    /** A3bis — booléen STRICT : seul `true` porte la qualification d'urgence (client B2C). */
+    urgentOnSiteRepair?: boolean;
+  }): Promise<Result<{ invoiceId: string; totals: Totals }, AppError>>;
+  /** Suivi MANUEL de transmission d'une pièce ÉMISE (PATCH /invoices/:id/transmission) : dates
+   * de dépôt/acceptation DÉCLARÉES (champ absent = inchangé, null = effacé). OPTIONNELLE (compat
+   * transports existants) — le client HTTP et le client local de démo l'implémentent tous
+   * les deux (parité stricte). */
+  recordInvoiceTransmission?(input: {
+    invoiceId: string;
+    depositedAt?: string | null;
+    acceptedAt?: string | null;
+  }): Promise<Result<{ transmission: InvoiceTransmissionStatus | null }, AppError>>;
   /** R6 : édition d'une ligne de devis BROUILLON (PATCH /quotes/:id/lines/:lineId) — draft only,
    * un devis signé est un contrat (l'agrégat garde assertDraft). */
   updateQuoteLine(input: UpdateQuoteLineInput): Promise<Result<{ status: string }, AppError>>;

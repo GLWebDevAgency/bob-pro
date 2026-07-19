@@ -1,9 +1,12 @@
 import {
   type Result,
   type AppError,
+  type Discount,
   type LineInput,
   type ExpenseCategory,
   type FiscalDeadline,
+  type SituationAmountInput,
+  type SituationProposal,
   type VatPosition,
   type AgedBalance,
   type TrialBalance,
@@ -125,6 +128,10 @@ export interface InvoiceableQuote {
    * premier jour (YYYY-MM-DD) où elle devient possible ; null/absent = aucun gel. Le flow
    * generer_facture l'annonce HONNÊTEMENT au lieu de proposer une finale vouée au refus. */
   finalBlockedUntil?: string | null;
+  /** B5 (OPTIONNEL, rétro-compatible) : retenue de garantie stipulée au devis-chantier (loi
+   * n° 71-584 du 16/07/1971, 0 < taux ≤ 5) — null/absent = aucune. Le flow facturer_situation
+   * l'ANNONCE honnêtement (net à payer amputé de la retenue), même substance que la mention UI. */
+  retenueGarantiePct?: number | null;
 }
 
 /** Outil lier_bon_commande (B8) : attache le NUMÉRO d'engagement d'un bon de commande à un
@@ -292,6 +299,9 @@ export interface CreateQuoteActionInput {
   customerId: string;
   lines: LineInput[];
   depositPct?: number;
+  /** B3 (additif) — remise globale dictée (« mets 10 % de remise ») : % du HT net de lignes ou
+   * montant HT en centimes — MÊME champ que CreateQuote (@bob/core), plafond validé au domaine. */
+  globalDiscount?: Discount | null;
 }
 
 /** Règlement DÉJÀ effectué déclaré à la création (M4 — dépense dictée « j'ai dépensé 89 € chez
@@ -322,8 +332,14 @@ export interface RecordExpenseActionInput {
 /** Outil generer_facture (parité C15 TODO ⑤) — même use case GenerateInvoiceFromQuote que l'UI. */
 export interface GenerateInvoiceActionInput {
   quoteId: string;
-  /** Choix explicite obligatoire : une relance réseau ne doit jamais changer le type de facture. */
-  mode: 'deposit' | 'final';
+  /** Choix explicite obligatoire : une relance réseau ne doit jamais changer le type de facture.
+   * B2 (additif) — `situation` : situation de travaux d'avancement, portée par l'outil DÉDIÉ
+   * facturer_situation (le registre garde generer_facture sur deposit|final). */
+  mode: 'deposit' | 'final' | 'situation';
+  /** B2 (additif) — REQUIS avec le mode situation (interdit sinon, garde du use case core) :
+   * avancement en % du marché ({ percent }) ou montant HT en centimes ({ amountHtCents }) —
+   * les situations des marchés privés se stipulent en HT, la TVA en découle par taux. */
+  situation?: SituationAmountInput;
   /**
    * Override RESPONSABILISÉ de l'embargo L221-10 (contrat hors établissement B2C) — `true`
    * strict UNIQUEMENT, jamais implicite : Bob reformule d'abord le risque concret (le refus
@@ -331,6 +347,80 @@ export interface GenerateInvoiceActionInput {
    * (safetyFloor du tool). L'événement payment.embargo_overridden est journalisé serveur.
    */
   embargoOverride?: boolean;
+}
+
+/** Client FACTURABLE du tenant (B1 — matière de facture_directe) : la SEULE liste contre
+ * laquelle un nom dicté (« Mme Girard ») se résout — jamais un id inventé par le LLM. Le
+ * type décide des protections légales (b2c : qualification d'urgence A3bis obligatoire). */
+export interface BillableCustomer {
+  id: string;
+  name: string;
+  type: 'b2c' | 'b2b' | 'b2g';
+}
+
+/** Outil facture_directe (B1) : facture SANS devis signé (brouillon `final` standalone) —
+ * MÊME use case ComposeStandaloneInvoice (@bob/core) que POST /invoices et l'écran. Couvre le
+ * dépannage urgent facturé sur place (exception au devis, arrêté du 24/01/2017), la régie
+ * (TJM × jours) et la facturation syndic/B2B récurrente. L'émission suit ensuite le MÊME
+ * chemin IssueInvoice que toute facture — aucun chemin parallèle. */
+export interface ComposeStandaloneInvoiceActionInput {
+  customerId: string;
+  /** Lignes dictées/planifiées (1..100) — TVA de chaque ligne re-jugée par suggestVatRate. */
+  lines: LineInput[];
+  /** B3 — remise globale dictée (« avec 10 % de remise »). */
+  globalDiscount?: Discount | null;
+  /** Taux réduits travaux : mêmes booléens d'éligibilité que CreateQuote (jamais déduits). */
+  context?: { housingOlderThan2y?: boolean; energyRenovation?: boolean };
+  /** A3bis — OBLIGATOIRE pour un client b2c : intervention urgente à domicile expressément
+   * demandée par le client (art. L221-10, al. 2 c. conso). `true` strict = fait déclaré par
+   * l'artisan (confirmé), horodaté serveur par le use case. Absent + b2c → refus fail-closed. */
+  urgentOnSiteRepair?: boolean;
+}
+
+export interface ComposeStandaloneInvoiceActionOutput {
+  invoiceId: string;
+  /** Totaux calculés par le DOMAINE (jamais recalculés côté agent) — la vérité du récap. */
+  totalTtcCents: number;
+  netToPayCents: number;
+}
+
+/** Outil facturer_situation (B2) : situation de travaux d'un devis SIGNÉ — MÊME use case
+ * GenerateInvoiceFromQuote (mode 'situation') que l'UI. Le montant est TOUJOURS le choix de
+ * l'artisan ({ percent } ou { amountHtCents }) ; l'avancement des tâches du chantier ne fait
+ * que PROPOSER (proposeSituationFromChantier — consultatif, jamais imposé). */
+export interface GenerateSituationActionInput {
+  quoteId: string;
+  situation: SituationAmountInput;
+  /** Override L221-10 responsabilisé — mêmes règles strictes que generer_facture. */
+  embargoOverride?: boolean;
+}
+
+/** Proposition d'avancement (lecture PURE) pour un devis signé : dérivée des tâches réelles du
+ * chantier via proposeSituationFromChantier (@bob/core). `null` HONNÊTE sans tâches — Bob ne
+ * propose rien plutôt que d'inventer un avancement. */
+export interface ProposeSituationActionInput {
+  quoteId: string;
+}
+
+/** Outil definir_conditions_paiement (B4) : « Durand paie à 45 jours fin de mois » — pose les
+ * conditions de paiement PROPRES au client (Customer.paymentTerms), MÊME chemin UpdateCustomer
+ * (@bob/core) que la fiche client. Elles pilotent l'échéance dérivée à l'émission
+ * (IssueInvoice) ; le plafond légal L441-10 (pro : 60 j / 45 j fin de mois) est jugé par le
+ * domaine — jamais re-décidé ici. */
+export interface SetCustomerPaymentTermsActionInput {
+  customerId: string;
+  days: number;
+  endOfMonth: boolean;
+  /** Libellé imprimable (ex. « 45 jours fin de mois ») — validé par PaymentTerms.of (core). */
+  label: string;
+}
+
+export interface SetCustomerPaymentTermsActionOutput {
+  customerId: string;
+  customerName: string;
+  days: number;
+  endOfMonth: boolean;
+  label: string;
 }
 
 /** Outil programmer_encaissement_embargo — DÉFAUT légal du refus d'encaissement L221-10 :
@@ -398,6 +488,14 @@ export interface BobActions {
   /** Devis signés facturables (ASK-2, optionnelle) — cible de generer_facture ; le handler
    * pose la question acompte/solde quand le devis prévoit un acompte non encore facturé. */
   listInvoiceableQuotes?(): Promise<Result<InvoiceableQuote[], AppError>>;
+  /** B1 — clients FACTURABLES du tenant (id + nom + type) : la matière de résolution de
+   * facture_directe et definir_conditions_paiement. Lecture pure, jamais un client inventé. */
+  listBillableCustomers?(): Promise<Result<BillableCustomer[], AppError>>;
+  /** B2 — avancement PROPOSÉ (jamais imposé) d'un devis signé, dérivé des tâches réelles du
+   * chantier via proposeSituationFromChantier (@bob/core). `null` honnête sans tâches. */
+  proposeSituationAdvancement?(
+    input: ProposeSituationActionInput,
+  ): Promise<Result<SituationProposal | null, AppError>>;
   listDocuments(): Promise<Result<AgentDocument[], AppError>>;
   // —— Lecture, OPTIONNELLE (C-EXP5b) ——
   /** Échéances fiscales à venir (TVA/URSSAF/IS/CFE/comptes annuels) — MÊME use case
@@ -462,6 +560,17 @@ export interface BobActions {
   createQuote?(input: CreateQuoteActionInput): Promise<Result<{ quoteId: string }, AppError>>;
   recordExpense?(input: RecordExpenseActionInput): Promise<Result<{ id: string }, AppError>>;
   generateInvoice?(input: GenerateInvoiceActionInput): Promise<Result<{ invoiceId: string }, AppError>>;
+  /** B1 — « facture 380 € à Mme Girard pour le dépannage » : MÊME use case
+   * ComposeStandaloneInvoice (@bob/core) que POST /invoices (parité humain↔Bob). Fail-closed :
+   * les gardes du domaine (B6 pro étranger, A3bis urgence b2c) sont restituées, jamais contournées. */
+  composeStandaloneInvoice?(
+    input: ComposeStandaloneInvoiceActionInput,
+  ): Promise<Result<ComposeStandaloneInvoiceActionOutput, AppError>>;
+  /** B4 — « Durand paie à 45 jours fin de mois » : MÊME chemin UpdateCustomer (@bob/core) que
+   * la fiche client — seules les conditions changent, le reste de la fiche est relu à l'identique. */
+  setCustomerPaymentTerms?(
+    input: SetCustomerPaymentTermsActionInput,
+  ): Promise<Result<SetCustomerPaymentTermsActionOutput, AppError>>;
   /** Embargo L221-10 — DÉFAUT légal du refus d'encaissement, exécutable à la voix (hiérarchie
    * doctrine fondateur : le chemin sûr d'ABORD ; l'override reste le second niveau). MÊME
    * endpoint que le bouton « Programmer l'encaissement » (POST …/embargo-scheduled-payment). */

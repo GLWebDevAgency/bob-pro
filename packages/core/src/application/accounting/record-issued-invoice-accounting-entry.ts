@@ -57,6 +57,12 @@ export class RecordIssuedInvoiceAccountingEntry {
       ...(chart ? { chart } : {}),
     });
     if (!entry.ok) return err(appDomain(entry.error));
+    // B2 — facture FINALE à 0 entièrement couverte par les situations émises : AUCUN fait
+    // comptable (CA/TVA déjà constatés situation par situation) — rien à poster, l'émission
+    // continue. Jamais un rollback pour une écriture qui n'a pas lieu d'exister.
+    if (entry.value === null) {
+      return ok({ id, created: false, totalDebitCents: 0, totalCreditCents: 0 });
+    }
 
     await this.deps.entries.save(entry.value);
     return ok({

@@ -633,3 +633,151 @@ describe('chercher_document — recherche réelle devis & factures, lecture pure
     expect(calls).toEqual([{ query: 'radiateur', scope: 'invoice', from: '2026-03-01', to: '2026-03-31' }]);
   });
 });
+
+describe('facturation terrain B1/B2/B4 — facture_directe, facturer_situation, definir_conditions_paiement', () => {
+  const terrainActions = (calls: Record<string, unknown[]>): BobActions => {
+    const track = (name: string, input: unknown) => {
+      calls[name] = [...(calls[name] ?? []), input];
+    };
+    return {
+      ...baseActions,
+      generateInvoice: async (input) => (track('generateInvoice', input), ok({ invoiceId: 'inv-9' })),
+      composeStandaloneInvoice: async (input) => (
+        track('composeStandaloneInvoice', input),
+        ok({ invoiceId: 'inv-10', totalTtcCents: 60000, netToPayCents: 60000 })
+      ),
+      setCustomerPaymentTerms: async (input) => (
+        track('setCustomerPaymentTerms', input),
+        ok({ customerId: 'cus-1', customerName: 'Durand SARL', days: input.days, endOfMonth: input.endOfMonth, label: input.label })
+      ),
+    };
+  };
+
+  it('capacités : les trois outils n’existent que si l’hôte fournit leurs actions (rétro-compat)', () => {
+    const names = buildBobTools(baseActions).map((t) => t.name);
+    expect(names).not.toContain('facture_directe');
+    expect(names).not.toContain('facturer_situation');
+    expect(names).not.toContain('definir_conditions_paiement');
+    const full = buildBobTools(terrainActions({})).map((t) => t.name);
+    expect(full).toContain('facture_directe');
+    expect(full).toContain('facturer_situation');
+    expect(full).toContain('definir_conditions_paiement');
+  });
+
+  it('facture_directe : plancher FISCAL (confirmée même en auto), parse strict, remise et urgence bornées', async () => {
+    const calls: Record<string, unknown[]> = {};
+    const t = tool(terrainActions(calls), 'facture_directe')!;
+    expect(riskTierOf(t)).toBe('fiscal');
+    expect(isSafetyFloor(t)).toBe(true);
+    expect(requiresConfirmation(t, 'auto')).toBe(true);
+
+    const line = { label: 'Dépannage', category: 'labor', qty: 1, unitPriceHT: 38000, vatRate: 10 };
+    expect(t.parse({ lines: [line] }).ok).toBe(false); // client manquant
+    expect(t.parse({ customerId: 'cus-1', lines: [] }).ok).toBe(false); // aucune ligne
+    expect(t.parse({ customerId: 'cus-1', lines: [line], extra: true }).ok).toBe(false); // champ inconnu
+    // Urgence A3bis : booléen STRICT — jamais par truthiness.
+    expect(t.parse({ customerId: 'cus-1', lines: [line], urgentOnSiteRepair: 'oui' }).ok).toBe(false);
+    // Remise : structure jugée par le domaine (validateDiscount).
+    expect(t.parse({ customerId: 'cus-1', lines: [line], globalDiscount: { type: 'percent', value: 250 } }).ok).toBe(false);
+    expect(t.parse({ customerId: 'cus-1', lines: [{ ...line, discount: { type: 'amount', cents: 0 } }] }).ok).toBe(false);
+
+    const parsed = t.parse({
+      customerId: 'cus-1',
+      lines: [{ ...line, discount: { type: 'amount', cents: 500 } }],
+      globalDiscount: { type: 'percent', value: 10 },
+      context: { housingOlderThan2y: true },
+      urgentOnSiteRepair: true,
+    });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const run = await t.run(parsed.value);
+    expect(run.ok).toBe(true);
+    expect(calls.composeStandaloneInvoice?.[0]).toMatchObject({
+      customerId: 'cus-1',
+      urgentOnSiteRepair: true,
+      globalDiscount: { type: 'percent', value: 10 },
+      lines: [{ label: 'Dépannage', discount: { type: 'amount', cents: 500 } }],
+    });
+    // Projection publique : totaux du domaine, jamais le payload brut complet.
+    expect(t.projectPublicResult?.(run.ok ? run.value : {})).toEqual({
+      invoiceId: 'inv-10',
+      totalTtcCents: 60000,
+      netToPayCents: 60000,
+    });
+  });
+
+  it('facturer_situation : formes EXCLUSIVES ({percent} XOR {amountHtCents}), délégation au MÊME generateInvoice (mode situation)', async () => {
+    const calls: Record<string, unknown[]> = {};
+    const t = tool(terrainActions(calls), 'facturer_situation')!;
+    expect(riskTierOf(t)).toBe('fiscal');
+    expect(requiresConfirmation(t, 'auto')).toBe(true);
+
+    expect(t.parse({ quoteId: 'q-1' }).ok).toBe(false); // montant manquant
+    expect(t.parse({ quoteId: 'q-1', situation: {} }).ok).toBe(false);
+    expect(t.parse({ quoteId: 'q-1', situation: { percent: 40, amountHtCents: 100 } }).ok).toBe(false); // exclusifs
+    expect(t.parse({ quoteId: 'q-1', situation: { percent: 0 } }).ok).toBe(false);
+    expect(t.parse({ quoteId: 'q-1', situation: { percent: 101 } }).ok).toBe(false);
+    expect(t.parse({ quoteId: 'q-1', situation: { amountHtCents: 12.5 } }).ok).toBe(false);
+    expect(t.parse({ quoteId: 'q-1', situation: { percent: 40 }, embargoOverride: 'oui' }).ok).toBe(false);
+
+    const parsed = t.parse({ quoteId: 'q-1', situation: { percent: 40 } });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    await t.run(parsed.value);
+    expect(calls.generateInvoice).toEqual([{ quoteId: 'q-1', mode: 'situation', situation: { percent: 40 } }]);
+  });
+
+  it('definir_conditions_paiement : PaymentTerms.of (autorité domaine), libellé canonique par défaut, plancher de consentement', async () => {
+    const calls: Record<string, unknown[]> = {};
+    const t = tool(terrainActions(calls), 'definir_conditions_paiement')!;
+    expect(isSafetyFloor(t)).toBe(true);
+    expect(requiresConfirmation(t, 'auto')).toBe(true);
+    expect(riskTierOf(t)).toBe('reversible');
+
+    expect(t.parse({ days: 45, endOfMonth: true }).ok).toBe(false); // client manquant
+    expect(t.parse({ customerId: 'cus-1', days: 45.5, endOfMonth: true }).ok).toBe(false);
+    expect(t.parse({ customerId: 'cus-1', days: 400, endOfMonth: false }).ok).toBe(false); // > 365
+    expect(t.parse({ customerId: 'cus-1', days: 45, endOfMonth: 'oui' }).ok).toBe(false);
+    expect(t.parse({ customerId: 'cus-1', days: 45, endOfMonth: true, autre: 1 }).ok).toBe(false);
+
+    const parsed = t.parse({ customerId: 'cus-1', days: 45, endOfMonth: true });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    // AnyTool : la valeur parsée traverse en unknown — lecture typée locale pour l'assertion.
+    expect((parsed.value as { label: string }).label).toBe('45 jours fin de mois');
+    const plain = t.parse({ customerId: 'cus-1', days: 30, endOfMonth: false });
+    expect(plain.ok && (plain.value as { label: string }).label).toBe('Paiement à 30 jours');
+    await t.run(parsed.value);
+    expect(calls.setCustomerPaymentTerms).toEqual([
+      { customerId: 'cus-1', days: 45, endOfMonth: true, label: '45 jours fin de mois' },
+    ]);
+  });
+
+  it('creer_devis (B3, additif) : remise globale et remises de ligne dictées traversent vers CreateQuote', async () => {
+    const calls: Record<string, unknown[]> = {};
+    const actions: BobActions = {
+      ...baseActions,
+      createQuote: async (input) => {
+        calls.createQuote = [...(calls.createQuote ?? []), input];
+        return ok({ quoteId: 'q-1' });
+      },
+    };
+    const t = tool(actions, 'creer_devis')!;
+    const parsed = t.parse({
+      customerId: 'cus-1',
+      lines: [
+        { label: 'Pose', category: 'labor', qty: 1, unitPriceHT: 100000, vatRate: 20, discount: { type: 'percent', value: 5 } },
+      ],
+      globalDiscount: { type: 'amount', cents: 2000 },
+    });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    await t.run(parsed.value);
+    expect(calls.createQuote?.[0]).toMatchObject({
+      globalDiscount: { type: 'amount', cents: 2000 },
+      lines: [{ discount: { type: 'percent', value: 5 } }],
+    });
+    // Structure de remise invalide : refusée par l'autorité du domaine (validateDiscount).
+    expect(t.parse({ customerId: 'cus-1', lines: [{ label: 'x', category: 'labor', qty: 1, unitPriceHT: 100, vatRate: 20 }], globalDiscount: { type: 'percent', value: 0 } }).ok).toBe(false);
+  });
+});

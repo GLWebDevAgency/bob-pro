@@ -26,6 +26,9 @@ export type BobIntent =
   | 'renommer_document' // « renomme-le facture matériaux salle de bain » — RenameDocument, nom humain prioritaire (LOT 5)
   | 'chercher_document' // « retrouve la facture du radiateur de mars » — recherche réelle devis & factures, lecture (LOT 5)
   | 'lier_bon_commande' // « la RATP m'a envoyé un bon de commande n° 4500123 » — numéro d'engagement attaché au devis (B8)
+  | 'facture_directe' // « facture 380 € à Mme Girard pour le dépannage » — facture SANS devis signé (B1, ComposeStandaloneInvoice)
+  | 'facturer_situation' // « facture une situation de 40 % sur le chantier Durand » — situation de travaux d'un devis signé (B2)
+  | 'conditions_paiement' // « Durand paie à 45 jours fin de mois » — conditions de paiement propres au client (B4)
   | 'resultat' // résultat provisoire (produits − charges du grand-livre) — lecture, BOB-2
   | 'bilan' // bilan simplifié actif/passif — lecture, BOB-4
   | 'revue_cloture' // « mon dossier est-il prêt pour le comptable ? » — verdict de revue, DOSSIER-2
@@ -107,6 +110,48 @@ export function detectIntent(message: string): BobIntent {
     )
   )
     return 'lier_depense_chantier';
+  // B2 — SITUATION DE TRAVAUX (« facture une situation de 40 % sur le chantier Durand ») :
+  // AVANT facture_directe (« facture … € » y collisionne), AVANT voir_chantiers (« chantier »),
+  // generer_facture et nouveau_devis (« devis »). « la situation de ma trésorerie » ne matche
+  // pas : le mot situation seul ne suffit jamais — il faut la facturation, l'avancement ou un
+  // pourcentage adjacent. Négation ⇒ rien.
+  if (
+    (/\bfactur\w*\b.{0,40}\bsituations?\b|\bsituations?\b.{0,40}\bfactur\w*\b/.test(normalizedMessage) ||
+      /\bsituations?\b\s+(d.avancement|de travaux)\b/.test(normalizedMessage) ||
+      /\b(fais|faire|genere|generer|generes|cree|creer|crees|prepare|preparer|etablis|etablir|lance|lancer)\b.{0,30}\bsituations?\b.{0,40}(\d{1,3}(?:[.,]\d{1,2})?\s*(%|pour ?cent)|\bchantiers?\b|\bdevis\b|\bmarches?\b)/.test(
+        normalizedMessage,
+      ) ||
+      /\bsituations?\b.{0,20}\bde\b.{0,10}\d{1,3}(?:[.,]\d{1,2})?\s*(%|pour ?cent)/.test(normalizedMessage)) &&
+    !/\b(ne|n|pas|jamais|surtout pas)\b.{0,24}\b(facture|facturer|fais|genere|cree|prepare|etablis|lance)\b|\b(facture|facturer|fais|genere|cree|prepare|etablis|lance)\b.{0,30}\bpas\b/.test(
+      normalizedMessage,
+    )
+  )
+    return 'facturer_situation';
+  // B1 — FACTURE DIRECTE sans devis signé (« facture 380 € à Mme Girard pour le dépannage ») :
+  // AVANT depense_dictee (« 45 € de dépannage » y collisionnerait) et AVANT les intents facture
+  // génériques. Les gestes documentaires (ranger/chercher la facture), l'encaissement, la
+  // relance, l'émission d'un brouillon existant et la chaîne devis (acompte/solde) restent
+  // exclus — jamais de mutation sur une intention ambiguë. Négation ⇒ rien.
+  if (
+    (/\bfactur\w*\b(?:[- ](?:moi|nous|lui))?\s*(?:de\s+|d\W)?\d+(?:[.,]\d{1,2})?\s*(?:€|euros?\b|eur\b)/.test(
+      normalizedMessage,
+    ) ||
+      /\b(fais|faire|cree|creer|genere|generer|prepare|preparer|etablis|etablir)\b.{0,24}\bfacture\b.{0,50}\d+(?:[.,]\d{1,2})?\s*(?:€|euros?\b|eur\b)/.test(
+        normalizedMessage,
+      ) ||
+      /\bfacture directe\b/.test(normalizedMessage)) &&
+    !/\bdevis\b/.test(normalizedMessage) &&
+    !/\bsituations?\b/.test(normalizedMessage) &&
+    !/\bdepens/.test(normalizedMessage) &&
+    !/\b(acompte|solde|finale?)\b/.test(normalizedMessage) &&
+    !/\b(range|ranger|classe|classer|deplace|deplacer|renomme|renommer|cherche|chercher|retrouve|retrouver|trouve|trouver|recherche|rechercher|scanne|scanner|valide|valider|encaisse|encaisser|paie|paye|payer|regle|regler|relance|relancer|emets|emettre|emet|numerote|envoie|envoyer)\b/.test(
+      normalizedMessage,
+    ) &&
+    !/\b(ne|n|pas|jamais|surtout pas)\b.{0,24}\b(facture|fais|cree|genere|prepare|etablis)\b|\b(facture|fais|cree|genere|prepare|etablis)\b.{0,30}\bpas\b/.test(
+      normalizedMessage,
+    )
+  )
+    return 'facture_directe';
   // M4 — dépense DICTÉE (« j'ai dépensé 89 € chez Leroy Merlin en carte », « 45 € de gasoil ce
   // matin ») : création vocale, DISTINCTE du scanner (« scanne ce ticket » reste scan) et du
   // règlement d'une dépense EXISTANTE (« j'ai payé la dépense EDF » reste payer_depense).
@@ -128,6 +173,26 @@ export function detectIntent(message: string): BobIntent {
   // BOB-1 : régler une DÉPENSE/FOURNISSEUR — AVANT « encaisser » (« règle », « payé » collisionnent).
   if (/(pai|pay|regl|sold).*(depense|fournisseur)|(depense|fournisseur).*(pai|pay|regl|sold)/.test(normalizedMessage))
     return 'payer_depense';
+  // B4 — CONDITIONS DE PAIEMENT d'un client (« Durand paie à 45 jours fin de mois », « mets
+  // Durand à 60 jours », « conditions de paiement de Durand ») : AVANT dso (« délai de
+  // paiement » y collisionne) et AVANT encaisser (« paie » y collisionne). « on me paie en
+  // 30 jours » (constat DSO) reste exclu : « me paie » ne cible jamais un client. Négation ⇒ rien.
+  if (
+    (/\b(paie|paient|payent|paye|payes|paiera|paieront|regle|reglent|reglera)\b.{0,24}\b(a|en|sous)?\s*\d{1,3}\s*jours?\b/.test(
+      normalizedMessage,
+    ) ||
+      /\bconditions? de (paiement|reglement)\b/.test(normalizedMessage) ||
+      /\bdelais? de (paiement|reglement)\b.{0,30}\b\d{1,3}\s*jours?\b/.test(normalizedMessage) ||
+      /\b(mets|met|mettre|passe|passer|bascule|basculer)\b.{0,40}\b(a|en)\s+\d{1,3}\s*jours?\b/.test(
+        normalizedMessage,
+      )) &&
+    !/\bme (paie|paient|payent|paye)\b/.test(normalizedMessage) &&
+    !/\b(moyen|moyenne|combien|dso)\b/.test(normalizedMessage) &&
+    !/\b(ne|n|pas|jamais|surtout pas)\b.{0,24}\b(paie|paye|regle|mets|met|passe|bascule|change)\b|\b(paie|paye|regle|mets|met|passe|bascule|change)\b.{0,30}\bpas\b/.test(
+      normalizedMessage,
+    )
+  )
+    return 'conditions_paiement';
   // DSO (BA-3) : AVANT « encaisser » (« me paient », « temps pour encaisser » y collisionnent).
   if (/(me paie(nt)?|me payent|d[ée]lai.*(paiement|encaissement|r[èe]glement)|jours? pour ([êe]tre )?pay|\bdso\b|temps.*(encaiss|pay[ée]))/.test(m))
     return 'dso';

@@ -234,6 +234,8 @@ export const FRENCH_OPERATIONAL_PCG_ACCOUNTS: readonly AccountingAccountInput[] 
   { code: '4091', label: 'Fournisseurs - avances et acomptes verses', kind: 'asset', parentCode: '40' },
   { code: '41', label: 'Clients et comptes rattaches', kind: 'asset', parentCode: '4', postingAllowed: false },
   { code: '411', label: 'Clients', kind: 'asset', parentCode: '41' },
+  // B5 — retenue de garantie (loi 71-584) : creance client differee jusqu'a reception + 1 an.
+  { code: '4117', label: 'Clients - retenues de garantie', kind: 'asset', parentCode: '41' },
   { code: '4181', label: 'Clients - factures a etablir', kind: 'asset', parentCode: '41' },
   { code: '4191', label: 'Clients - avances et acomptes recus', kind: 'liability', parentCode: '41' },
   { code: '42', label: 'Personnel et comptes rattaches', kind: 'liability', parentCode: '4', postingAllowed: false },

@@ -392,3 +392,62 @@ describe('detectIntent — aide (découvrabilité S9 : catalogue des capacités)
     expect(detectIntent('Raconte-moi une blague')).toBe('unknown');
   });
 });
+
+describe('detectIntent — B1/B2/B4 (facturation terrain vocale)', () => {
+  it('facture_directe : « facture X € à … » (B1) — avant les intents facture/dépense génériques', () => {
+    for (const m of [
+      'Facture 380 € à Mme Girard pour le dépannage',
+      'Facture 380 € TTC à Mme Girard pour dépannage de la chaudière (TVA 10 %, logement de plus de 2 ans)',
+      'Fais une facture de 500 € à Durand pour la maintenance',
+      'Facture 45 € de dépannage à Girard',
+      'Fais une facture directe pour Mme Girard',
+    ]) {
+      expect(detectIntent(m)).toBe('facture_directe');
+    }
+  });
+
+  it('facture_directe ne détourne NI la chaîne devis, NI les gestes documentaires, NI la dépense dictée', () => {
+    expect(detectIntent('Fais la facture du devis D2026-030')).toBe('generer_facture');
+    expect(detectIntent("Facture l'acompte du devis Martin")).toBe('generer_facture');
+    expect(detectIntent('Range la facture de 45 € dans frais généraux')).toBe('classer_document');
+    expect(detectIntent('Retrouve la facture du radiateur de mars')).toBe('chercher_document');
+    expect(detectIntent('J’ai dépensé 89 € chez Leroy Merlin en carte')).toBe('depense_dictee');
+    expect(detectIntent('Encaisse la facture 2026-014')).toBe('encaisser');
+    expect(detectIntent('Ne facture pas 300 € à Durand')).not.toBe('facture_directe');
+  });
+
+  it('facturer_situation : « situation de X % » (B2) — avant chantiers/devis/facture_directe', () => {
+    for (const m of [
+      'Facture une situation de 40 % sur le chantier Durand',
+      'Facture une situation de 4500 € HT sur le devis D-2026-0031',
+      'Fais une situation de 30 % sur le devis Martin',
+      'Génère une situation d’avancement pour le chantier Sèvres',
+      'Facture une situation sur le devis D-2026-0031',
+    ]) {
+      expect(detectIntent(m)).toBe('facturer_situation');
+    }
+  });
+
+  it('le mot « situation » seul ne suffit jamais (trésorerie, point d’étape…)', () => {
+    expect(detectIntent('Quelle est la situation de ma trésorerie ?')).not.toBe('facturer_situation');
+    expect(detectIntent('Fais le point sur la situation')).not.toBe('facturer_situation');
+    expect(detectIntent('Ouvre mes chantiers')).toBe('voir_chantiers');
+  });
+
+  it('conditions_paiement : « X paie à N jours (fin de mois) » (B4) — avant DSO/encaisser', () => {
+    for (const m of [
+      'Durand paie à 45 jours fin de mois',
+      'Le client Durand SARL paie à 60 jours',
+      'Mets la RATP à 60 jours',
+      'Conditions de paiement de Durand : 30 jours',
+    ]) {
+      expect(detectIntent(m)).toBe('conditions_paiement');
+    }
+  });
+
+  it('conditions_paiement ne détourne ni le DSO (constat) ni le règlement fournisseur', () => {
+    expect(detectIntent('On me paie en combien de temps ?')).toBe('dso');
+    expect(detectIntent('Quel est mon délai de paiement moyen ?')).toBe('dso');
+    expect(detectIntent('J’ai payé la dépense EDF hier')).toBe('payer_depense');
+  });
+});

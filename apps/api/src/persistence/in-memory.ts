@@ -69,6 +69,7 @@ import type {
   RevokeDeviceThroughInput,
 } from './devices';
 import { DuplicateExpenseInvoiceError } from './expense-duplicate-error';
+import { SituationOrderConflictError } from './situation-order-conflict-error';
 
 /**
  * Adapters in-memory (stockent les objets de domaine directement — aucune réhydratation requise).
@@ -236,6 +237,22 @@ export class InMemoryInvoiceRepository implements InvoiceRepository {
     if (i.kind === 'credit_note' && sourceId) {
       const existing = await this.findCreditNoteBySourceInvoiceId(i.companyId, sourceId);
       if (existing && existing.id !== i.id) return;
+    }
+    // B2 — garde FIDÈLE de l'index unique partiel uniq_invoice_parent_quote_situation_order
+    // (Postgres) : un n° d'ordre de situation ne se crée jamais deux fois sur un même devis —
+    // deux générations concurrentes voient la seconde échouer, comme en production.
+    if (i.kind === 'situation' && i.parentQuoteId !== null && i.situationOrder !== null) {
+      const clash = [...this.map.values()].find(
+        (other) =>
+          other.id !== i.id &&
+          other.kind === 'situation' &&
+          other.companyId === i.companyId &&
+          other.parentQuoteId === i.parentQuoteId &&
+          other.situationOrder === i.situationOrder,
+      );
+      if (clash) {
+        throw new SituationOrderConflictError(i.companyId, i.parentQuoteId, i.situationOrder);
+      }
     }
     this.map.set(i.id, i);
   }

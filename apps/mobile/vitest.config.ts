@@ -12,6 +12,7 @@ export default defineConfig({
       'src/data/**/*.test.ts',
       'src/documents/**/*.test.ts',
       'src/expenses/**/*.test.ts',
+      'src/facture-directe/**/*.test.ts',
       'src/assistant/**/*.test.ts',
       'src/voice-flow/**/*.test.ts',
       'src/fiscal/**/*.test.ts',

@@ -54,8 +54,8 @@ describe('buildIssuedInvoiceAccountingEntry', () => {
     if (!chart.ok) return;
     const r = buildIssuedInvoiceAccountingEntry({ entryId: 'ae-1', invoice: issuedInvoice('final'), chart: chart.value });
 
-    expect(r.ok).toBe(true);
-    if (r.ok) {
+    expect(r.ok && r.value !== null).toBe(true);
+    if (r.ok && r.value !== null) {
       expect(r.value.totalDebitCents).toBe(162800);
       expect(r.value.totalCreditCents).toBe(162800);
       expect(r.value.lines).toEqual([
@@ -73,8 +73,8 @@ describe('buildIssuedInvoiceAccountingEntry', () => {
     if (!chart.ok) return;
     const r = buildIssuedInvoiceAccountingEntry({ entryId: 'ae-1', invoice: issuedInvoice('deposit'), chart: chart.value });
 
-    expect(r.ok).toBe(true);
-    if (r.ok) {
+    expect(r.ok && r.value !== null).toBe(true);
+    if (r.ok && r.value !== null) {
       expect(r.value.totalDebitCents).toBe(48840);
       expect(r.value.totalCreditCents).toBe(48840);
       expect(r.value.lines).toEqual([
@@ -91,7 +91,7 @@ describe('buildIssuedInvoiceAccountingEntry', () => {
     const r = buildIssuedInvoiceAccountingEntry({ entryId: 'ae-credit-deposit', invoice: credit });
 
     expect(r.ok).toBe(true);
-    if (!r.ok) return;
+    if (!r.ok || r.value === null) return;
     expect(credit.totals()).toEqual(source.totals());
     expect(r.value.lines).toEqual([
       { account: '4191', label: 'Avoir A-2026-0001', debitCents: 44400, creditCents: 0 },
@@ -128,8 +128,8 @@ describe('buildIssuedInvoiceAccountingEntry', () => {
     // Acompte 30 % du proto : 48 840 ventilé 44 400 (HT) + 4 440 (TVA) — cf. test acompte.
     const r = buildIssuedInvoiceAccountingEntry({ entryId: 'ae-2', invoice: issuedFinalAfterDeposit(48840), chart: chart.value });
 
-    expect(r.ok).toBe(true);
-    if (r.ok) {
+    expect(r.ok && r.value !== null).toBe(true);
+    if (r.ok && r.value !== null) {
       expect(r.value.totalDebitCents).toBe(162800);
       expect(r.value.totalCreditCents).toBe(162800);
       expect(r.value.lines).toEqual([
@@ -152,6 +152,7 @@ describe('buildIssuedInvoiceAccountingEntry', () => {
     expect(sourceEntry.ok).toBe(true);
     expect(creditEntry.ok).toBe(true);
     if (!sourceEntry.ok || !creditEntry.ok) return;
+    if (sourceEntry.value === null || creditEntry.value === null) throw new Error("entree attendue");
     expect(credit.totals()).toEqual(source.totals());
     expect(credit.depositDeductionCents).toBe(48840);
 
@@ -195,7 +196,7 @@ describe('buildIssuedInvoiceAccountingEntry', () => {
     dep.value.issue({ mentions: [], terms, issuedAt: ISSUED, at: AT });
     const depositEntry = buildIssuedInvoiceAccountingEntry({ entryId: 'ae-1', invoice: dep.value, chart: chart.value });
     expect(depositEntry.ok).toBe(true);
-    if (!depositEntry.ok) return;
+    if (!depositEntry.ok || depositEntry.value === null) return;
 
     const finalEntry = buildIssuedInvoiceAccountingEntry({
       entryId: 'ae-2',
@@ -203,7 +204,7 @@ describe('buildIssuedInvoiceAccountingEntry', () => {
       chart: chart.value,
     });
     expect(finalEntry.ok).toBe(true);
-    if (!finalEntry.ok) return;
+    if (!finalEntry.ok || finalEntry.value === null) return;
 
     expect(finalEntry.value.totalDebitCents).toBe(finalEntry.value.totalCreditCents);
     const balance4191 = [...depositEntry.value.lines, ...finalEntry.value.lines]
@@ -223,8 +224,8 @@ describe('buildIssuedInvoiceAccountingEntry', () => {
     if (!chart.ok) return;
     const r = buildIssuedInvoiceAccountingEntry({ entryId: 'ae-2', invoice: issuedFinalAfterDeposit(162800), chart: chart.value });
 
-    expect(r.ok).toBe(true);
-    if (r.ok) {
+    expect(r.ok && r.value !== null).toBe(true);
+    if (r.ok && r.value !== null) {
       expect(r.value.totalDebitCents).toBe(162800);
       expect(r.value.totalCreditCents).toBe(162800);
       expect(r.value.lines.some((line) => line.account === '411')).toBe(false);
@@ -233,8 +234,8 @@ describe('buildIssuedInvoiceAccountingEntry', () => {
 
   it('refuse une facture non emise', () => {
     const inv = Invoice.fromSignedQuote(signedQuote(null), 'final', 'inv-1');
-    expect(inv.ok).toBe(true);
-    if (inv.ok) {
+    expect(inv.ok && inv.value !== null).toBe(true);
+    if (inv.ok && inv.value !== null) {
       const r = buildIssuedInvoiceAccountingEntry({ entryId: 'ae-1', invoice: inv.value });
       expect(r.ok).toBe(false);
     }
@@ -257,8 +258,8 @@ describe('buildInvoiceAccountingPreviewEntry', () => {
       chart: chart.value,
     });
 
-    expect(r.ok).toBe(true);
-    if (r.ok) {
+    expect(r.ok && r.value !== null).toBe(true);
+    if (r.ok && r.value !== null) {
       expect(inv.value.number).toBeNull();
       expect(r.value.reference).toBe('a-emettre');
       expect(r.value.entryDate).toBe(ISSUED);
@@ -287,8 +288,8 @@ describe('buildInvoiceAccountingPreviewEntry', () => {
       chart: chart.value,
     });
 
-    expect(r.ok).toBe(true);
-    if (r.ok) {
+    expect(r.ok && r.value !== null).toBe(true);
+    if (r.ok && r.value !== null) {
       expect(r.value.totalDebitCents).toBe(48840);
       expect(r.value.lines.map((line) => line.account)).toEqual(['411', '4191', '44571']);
     }
