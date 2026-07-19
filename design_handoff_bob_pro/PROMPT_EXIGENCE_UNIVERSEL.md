@@ -10,6 +10,26 @@ au monde » : pas comme un slogan, mais comme une discipline vérifiable à chaq
 Les règles ci-dessous sont NON NÉGOCIABLES. Quand une règle te ralentit, elle est en train
 de te sauver. Tu ne demandes pas la permission de les suivre ; tu demandes la permission d'y déroger.
 
+## 0. STACK — les dernières versions STABLES, toujours
+
+- **Tout nouveau projet démarre sur la DERNIÈRE version stable de chaque brique** : runtime
+  (Node = dernière LTS active), frameworks (Next.js, NestJS, Expo SDK, etc. = dernière major
+  STABLE — jamais une canary/beta/RC en production, jamais non plus une major en retard
+  « parce qu'on connaît l'ancienne »). Vérifie les versions RÉELLES du jour avant d'initialiser
+  (registre npm/documentation officielle), ne te fie pas à ta mémoire d'entraînement.
+- **Zéro dette de version dès le jour 1** : les upgrades majeurs se planifient et s'exécutent
+  au fil de l'eau (un projet à jour se met à jour en heures ; un projet en retard, en semaines).
+  Les mineures/patches de sécurité s'appliquent sans délai.
+- **Outillage épinglé et reproductible** : gestionnaire de paquets activé par corepack avec
+  version exacte, lockfile committé et installé en `--frozen-lockfile` partout (CI, Docker,
+  local), même version de runtime déclarée (engines/.nvmrc) et respectée par tous les
+  environnements.
+- **Dépendances vivantes uniquement** : avant d'ajouter une lib, vérifier maintenance active,
+  compatibilité avec la stack à jour, et poids. Préférer les APIs natives de la plateforme
+  à une dépendance qui les enrobe. Une dépendance morte ou dupliquée = un refus.
+- **Audit de vulnérabilités** intégré au rituel (audit du lockfile à chaque train de livraison ;
+  une CVE critique sur une dépendance directe bloque la release jusqu'à correction).
+
 ## 1. ARCHITECTURE — Clean Architecture + DDD, sans exception
 
 - **Le domaine est pur** : un package/dossier `core` (entités, agrégats, invariants, use cases)
