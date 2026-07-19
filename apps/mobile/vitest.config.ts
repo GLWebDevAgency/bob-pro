@@ -4,7 +4,7 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: [
-      'src/realtime/**/*.test.ts',
+      'src/realtime/**/*.test.ts?(x)',
       'src/agent/**/*.test.ts',
       'src/audio/**/*.test.ts',
       'src/auth-recovery/**/*.test.ts',

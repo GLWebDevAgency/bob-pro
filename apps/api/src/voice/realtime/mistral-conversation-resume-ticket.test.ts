@@ -10,6 +10,7 @@ import {
   isMistralConversationReplayConnectionId,
   isMistralConversationResumeIssueInput,
   isMistralConversationResumeTicket,
+  isMistralConversationTerminalReceipt,
   secureMistralConversationResumeTicketEntropy,
   validateMistralConversationResumeTicketPolicy,
   type MistralConversationResumeTicketIssueInput,
@@ -102,12 +103,146 @@ describe('Mistral conversation resume tickets — contrat fail-closed', () => {
       ...ISSUE_INPUT,
       resumeNextServerSequence: 0x1_0000_0001,
     })).toBe(false);
+    expect(isMistralConversationResumeIssueInput({
+      ...ISSUE_INPUT,
+      historicalSubjectBindings: [{
+        subjectHash: 'b'.repeat(64),
+        subjectKeyVersion: 2,
+      }],
+    })).toBe(true);
+    expect(isMistralConversationResumeIssueInput({
+      ...ISSUE_INPUT,
+      historicalSubjectBindings: [{
+        subjectHash: 'b'.repeat(64),
+        subjectKeyVersion: ISSUE_INPUT.subjectKeyVersion,
+      }],
+    })).toBe(false);
+    expect(isMistralConversationResumeIssueInput({
+      ...ISSUE_INPUT,
+      historicalSubjectBindings: [{
+        subjectHash: ISSUE_INPUT.subjectHash,
+        subjectKeyVersion: 2,
+      }],
+    })).toBe(false);
+  });
+
+  it('valide strictement la projection publique du reçu terminal', () => {
+    const receipt = {
+      companyId: 'company-1',
+      sessionHandle: ISSUE_INPUT.sessionHandle,
+      protocol: MISTRAL_CONVERSATION_PROTOCOL,
+      missionConnectionEpoch: 4,
+      nextServerSequence: 12,
+      reason: 'user' as const,
+      closedAt: '2026-07-19T12:00:00.000Z',
+    };
+    expect(isMistralConversationTerminalReceipt(receipt)).toBe(true);
+    expect(isMistralConversationTerminalReceipt({
+      ...receipt,
+      nextServerSequence: 2,
+    })).toBe(false);
+    expect(isMistralConversationTerminalReceipt({
+      ...receipt,
+      missionConnectionEpoch: -0,
+    })).toBe(false);
+    expect(isMistralConversationTerminalReceipt({
+      ...receipt,
+      closedAt: '2026-07-19T12:00:00Z',
+    })).toBe(false);
+    expect(isMistralConversationTerminalReceipt({
+      ...receipt,
+      reason: 'invented' as 'user',
+    })).toBe(false);
   });
 
   it('échoue fermé quand l’autorité est désactivée', async () => {
     const disabled = new DisabledMistralConversationResumeAuthority();
     await expect(disabled.issue()).resolves.toEqual({ status: 'unavailable' });
+    await expect(disabled.reconcileInitialBootstrap()).resolves.toEqual({ status: 'unavailable' });
     await expect(disabled.redeemAndOpen()).resolves.toEqual({ status: 'unavailable' });
+  });
+
+  it('retrouve après purge uniquement le reçu terminal owner-bound et monotone', async () => {
+    const receiptRow = {
+      companyId: ISSUE_INPUT.companyId,
+      sessionHandle: ISSUE_INPUT.sessionHandle,
+      subjectHash: ISSUE_INPUT.subjectHash,
+      subjectKeyVersion: ISSUE_INPUT.subjectKeyVersion,
+      protocol: MISTRAL_CONVERSATION_PROTOCOL,
+      missionConnectionEpoch: 4,
+      nextServerSequence: 12n,
+      terminalReason: 'user',
+      closedAt: new Date('2026-07-19T12:00:00.000Z'),
+    };
+    const issue = async (
+      overrides: Partial<MistralConversationResumeTicketIssueInput> = {},
+      row: typeof receiptRow = receiptRow,
+    ) => {
+      const tx = {
+        $executeRaw: vi.fn(async () => 0),
+        $queryRaw: vi.fn()
+          .mockResolvedValueOnce([])
+          .mockResolvedValueOnce([row]),
+      };
+      const prisma = {
+        inTransaction: vi.fn(() => false),
+        withTenant: vi.fn(async (_companyId: string, work: (client: unknown) => unknown) =>
+          work(tx)),
+      } as unknown as PrismaService;
+      const authority = new PrismaMistralConversationResumeAuthority(
+        prisma,
+        {} as PrismaMistralConversationDurableAuthority,
+      );
+      return authority.issue({ ...ISSUE_INPUT, ...overrides });
+    };
+
+    await expect(issue({
+      clientAcceptedMissionConnectionEpoch: 2,
+      resumeNextServerSequence: 8,
+    })).resolves.toEqual({
+      status: 'terminal_complete',
+      receipt: {
+        companyId: ISSUE_INPUT.companyId,
+        sessionHandle: ISSUE_INPUT.sessionHandle,
+        protocol: MISTRAL_CONVERSATION_PROTOCOL,
+        missionConnectionEpoch: 4,
+        nextServerSequence: 12,
+        reason: 'user',
+        closedAt: '2026-07-19T12:00:00.000Z',
+      },
+    });
+    await expect(issue({ subjectHash: 'b'.repeat(64) })).resolves.toEqual({
+      status: 'forbidden',
+    });
+    await expect(issue({
+      subjectHash: 'b'.repeat(64),
+      subjectKeyVersion: 2,
+      historicalSubjectBindings: [{
+        subjectHash: ISSUE_INPUT.subjectHash,
+        subjectKeyVersion: ISSUE_INPUT.subjectKeyVersion,
+      }],
+    })).resolves.toMatchObject({ status: 'terminal_complete' });
+    await expect(issue({
+      subjectHash: 'b'.repeat(64),
+      subjectKeyVersion: 2,
+      historicalSubjectBindings: [{
+        subjectHash: ISSUE_INPUT.subjectHash,
+        subjectKeyVersion: 3,
+      }],
+    })).resolves.toEqual({ status: 'forbidden' });
+    await expect(issue({ clientAcceptedMissionConnectionEpoch: 5 })).resolves.toEqual({
+      status: 'stale_epoch',
+    });
+    await expect(issue({ resumeNextServerSequence: 13 })).resolves.toEqual({
+      status: 'invalid_cursor',
+    });
+    await expect(issue({
+      clientAcceptedMissionConnectionEpoch: 3,
+      resumeNextServerSequence: 12,
+    })).resolves.toEqual({ status: 'unavailable' });
+    await expect(issue({}, { ...receiptRow, terminalReason: 'invented' })).resolves.toEqual({
+      status: 'unavailable',
+    });
   });
 
   it('refuse une transaction ambiante et un scope absent sans aucune I/O SQL', async () => {

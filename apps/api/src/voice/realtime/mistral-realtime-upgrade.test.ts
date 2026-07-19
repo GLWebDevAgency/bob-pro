@@ -2,8 +2,10 @@ import { randomBytes } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import type { IncomingMessage } from 'node:http';
 import { connect } from 'node:net';
+import { MISTRAL_CONVERSATION_PROTOCOL } from '@bob/ai';
 import WebSocket, { type ClientOptions } from 'ws';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { MistralConversationGatewayV2Dependencies } from './mistral-conversation-gateway-v2';
 import {
   MISTRAL_PCM_GATEWAY_PROTOCOL,
   type MistralRealtimeGatewayDependencies,
@@ -13,6 +15,7 @@ import {
   isSecureMistralRequestBehindTrustedProxy,
   MISTRAL_REALTIME_MAX_PAYLOAD_BYTES,
   MISTRAL_REALTIME_UPGRADE_PATH,
+  type MistralConversationGatewayV2Serve,
   type MistralRealtimeGatewayServe,
   type MistralRealtimeUpgradeAdapter,
 } from './mistral-realtime-upgrade';
@@ -39,6 +42,10 @@ const UNUSED_GATEWAY_DEPENDENCIES: MistralRealtimeGatewayDependencies = {
   },
 };
 
+const CONVERSATION_V2_DEPENDENCIES_SENTINEL = Object.freeze(
+  {},
+) as MistralConversationGatewayV2Dependencies;
+
 interface MessageObservation {
   readonly data: Uint8Array;
   readonly isBinary: boolean;
@@ -54,8 +61,14 @@ interface LoopbackHarness {
 
 const harnesses: LoopbackHarness[] = [];
 
-function holdingServe(observations: MessageObservation[] = []): MistralRealtimeGatewayServe {
-  return async (socket, _dependencies, input = {}) => new Promise<void>((resolve) => {
+type HoldableGatewaySocket = Parameters<MistralRealtimeGatewayServe>[0];
+
+function holdGatewaySocket(
+  socket: HoldableGatewaySocket,
+  signal: AbortSignal | undefined,
+  observations: MessageObservation[],
+): Promise<void> {
+  return new Promise<void>((resolve) => {
     let settled = false;
     const finish = (): void => {
       if (settled) return;
@@ -63,7 +76,7 @@ function holdingServe(observations: MessageObservation[] = []): MistralRealtimeG
       socket.off('message', onMessage);
       socket.off('close', onClose);
       socket.off('error', onError);
-      input.signal?.removeEventListener('abort', onAbort);
+      signal?.removeEventListener('abort', onAbort);
       resolve();
     };
     const onMessage = (data: string | Uint8Array | ArrayBuffer, isBinary: boolean): void => {
@@ -80,9 +93,23 @@ function holdingServe(observations: MessageObservation[] = []): MistralRealtimeG
     socket.on('message', onMessage);
     socket.on('close', onClose);
     socket.on('error', onError);
-    if (input.signal?.aborted) finish();
-    else input.signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) finish();
+    else signal?.addEventListener('abort', onAbort, { once: true });
   });
+}
+
+function holdingServe(observations: MessageObservation[] = []): MistralRealtimeGatewayServe {
+  return async (socket, _dependencies, input = {}) => (
+    holdGatewaySocket(socket, input.signal, observations)
+  );
+}
+
+function holdingConversationV2Serve(
+  observations: MessageObservation[] = [],
+): MistralConversationGatewayV2Serve {
+  return async (socket, _dependencies, input = {}) => (
+    holdGatewaySocket(socket, input.signal, observations)
+  );
 }
 
 async function createHarness(input: {
@@ -91,6 +118,11 @@ async function createHarness(input: {
   serveGateway?: MistralRealtimeGatewayServe;
   useCanonicalServe?: boolean;
   createDependencies?: () => MistralRealtimeGatewayDependencies;
+  conversationV2?: {
+    serveGateway?: MistralConversationGatewayV2Serve;
+    useCanonicalServe?: boolean;
+    createDependencies?: () => MistralConversationGatewayV2Dependencies;
+  };
 } = {}): Promise<LoopbackHarness> {
   const server = createServer((_request, response) => {
     response.writeHead(404, { 'content-length': '0' });
@@ -103,6 +135,15 @@ async function createHarness(input: {
   }, {
     createGatewayDependencies: input.createDependencies ?? (() => UNUSED_GATEWAY_DEPENDENCIES),
     serveGateway: input.useCanonicalServe ? undefined : input.serveGateway ?? holdingServe(),
+    conversationV2: input.conversationV2
+      ? {
+          createGatewayDependencies: input.conversationV2.createDependencies
+            ?? (() => CONVERSATION_V2_DEPENDENCIES_SENTINEL),
+          serveGateway: input.conversationV2.useCanonicalServe
+            ? undefined
+            : input.conversationV2.serveGateway ?? holdingConversationV2Serve(),
+        }
+      : undefined,
   });
   adapter.attach(server);
   await new Promise<void>((resolve, reject) => {
@@ -341,6 +382,104 @@ describe('Mistral realtime HTTP Upgrade adapter', () => {
     await closeClient(accepted);
   });
 
+  it('préserve le routage v1 et garde v2 dormant sans opt-in explicite', async () => {
+    const createDependencies = vi.fn(() => UNUSED_GATEWAY_DEPENDENCIES);
+    const serveGateway = vi.fn(holdingServe());
+    const harness = await createHarness({ createDependencies, serveGateway });
+    const url = `${harness.origin}${MISTRAL_REALTIME_UPGRADE_PATH}`;
+
+    await expect(rejectedClient(url, MISTRAL_CONVERSATION_PROTOCOL)).resolves.toBe(404);
+    expect(createDependencies).not.toHaveBeenCalled();
+    expect(serveGateway).not.toHaveBeenCalled();
+
+    const client = await openClient(url, MISTRAL_PCM_GATEWAY_PROTOCOL);
+    await waitFor(() => serveGateway.mock.calls.length === 1);
+    expect(client.protocol).toBe(MISTRAL_PCM_GATEWAY_PROTOCOL);
+    expect(createDependencies).toHaveBeenCalledTimes(1);
+    expect(serveGateway.mock.calls[0]?.[1]).toBe(UNUSED_GATEWAY_DEPENDENCIES);
+    expect(serveGateway.mock.calls[0]?.[2]?.signal).toBeInstanceOf(AbortSignal);
+    await closeClient(client);
+  });
+
+  it('active v2 sur le listener unique et route chaque protocole vers sa propre factory', async () => {
+    const createV1Dependencies = vi.fn(() => UNUSED_GATEWAY_DEPENDENCIES);
+    const createV2Dependencies = vi.fn(() => CONVERSATION_V2_DEPENDENCIES_SENTINEL);
+    const serveV1 = vi.fn(holdingServe());
+    const serveV2 = vi.fn(holdingConversationV2Serve());
+    const harness = await createHarness({
+      createDependencies: createV1Dependencies,
+      serveGateway: serveV1,
+      conversationV2: {
+        createDependencies: createV2Dependencies,
+        serveGateway: serveV2,
+      },
+    });
+    const url = `${harness.origin}${MISTRAL_REALTIME_UPGRADE_PATH}`;
+
+    expect(harness.server.listenerCount('upgrade')).toBe(1);
+    await expect(rejectedClient(url, [
+      MISTRAL_PCM_GATEWAY_PROTOCOL,
+      MISTRAL_CONVERSATION_PROTOCOL,
+    ])).resolves.toBe(404);
+    await expect(rejectedClient(url, MISTRAL_CONVERSATION_PROTOCOL, {
+      origin: 'https://evil.bob.test',
+    })).resolves.toBe(404);
+    expect(createV1Dependencies).not.toHaveBeenCalled();
+    expect(createV2Dependencies).not.toHaveBeenCalled();
+
+    const v2 = await openClient(url, MISTRAL_CONVERSATION_PROTOCOL, { origin: ALLOWED_ORIGIN });
+    await waitFor(() => serveV2.mock.calls.length === 1);
+    expect(v2.protocol).toBe(MISTRAL_CONVERSATION_PROTOCOL);
+    expect(createV2Dependencies).toHaveBeenCalledTimes(1);
+    expect(createV1Dependencies).not.toHaveBeenCalled();
+    expect(serveV2.mock.calls[0]?.[1]).toBe(CONVERSATION_V2_DEPENDENCIES_SENTINEL);
+    expect(serveV2.mock.calls[0]?.[2]?.signal).toBeInstanceOf(AbortSignal);
+    expect(serveV1).not.toHaveBeenCalled();
+
+    const v1 = await openClient(url, MISTRAL_PCM_GATEWAY_PROTOCOL);
+    await waitFor(() => serveV1.mock.calls.length === 1);
+    expect(v1.protocol).toBe(MISTRAL_PCM_GATEWAY_PROTOCOL);
+    expect(createV1Dependencies).toHaveBeenCalledTimes(1);
+    expect(createV2Dependencies).toHaveBeenCalledTimes(1);
+    expect(serveV1.mock.calls[0]?.[1]).toBe(UNUSED_GATEWAY_DEPENDENCIES);
+    expect(serveV2).toHaveBeenCalledTimes(1);
+
+    await Promise.all([closeClient(v1), closeClient(v2)]);
+    await waitFor(() => harness.adapter.state().activeConnections === 0);
+  });
+
+  it('utilise le noyau conversationnel v2 canonique par défaut sans fallback v1', async () => {
+    const createV1Dependencies = vi.fn(() => UNUSED_GATEWAY_DEPENDENCIES);
+    const createV2Dependencies = vi.fn(() => CONVERSATION_V2_DEPENDENCIES_SENTINEL);
+    const serveV1 = vi.fn(holdingServe());
+    const harness = await createHarness({
+      createDependencies: createV1Dependencies,
+      serveGateway: serveV1,
+      conversationV2: {
+        createDependencies: createV2Dependencies,
+        useCanonicalServe: true,
+      },
+    });
+    const client = webSocket(
+      `${harness.origin}${MISTRAL_REALTIME_UPGRADE_PATH}`,
+      MISTRAL_CONVERSATION_PROTOCOL,
+    );
+    client.on('error', () => undefined);
+    const opened = new Promise<void>((resolve, reject) => {
+      client.once('open', resolve);
+      client.once('error', reject);
+    });
+    const closed = new Promise<number>((resolve) => {
+      client.once('close', (code) => resolve(code));
+    });
+
+    await opened;
+    await expect(closed).resolves.toBe(1011);
+    expect(createV2Dependencies).toHaveBeenCalledTimes(1);
+    expect(createV1Dependencies).not.toHaveBeenCalled();
+    expect(serveV1).not.toHaveBeenCalled();
+  });
+
   it('applique une allowlist Origin exacte mais accepte le client natif sans Origin', async () => {
     const harness = await createHarness();
     const url = `${harness.origin}${MISTRAL_REALTIME_UPGRADE_PATH}`;
@@ -401,28 +540,53 @@ describe('Mistral realtime HTTP Upgrade adapter', () => {
     await waitFor(() => harness.adapter.state().activeConnections === 0);
   });
 
-  it('réserve atomiquement le budget de connexions avant l’upgrade', async () => {
-    const createDependencies = vi.fn(() => UNUSED_GATEWAY_DEPENDENCIES);
-    const harness = await createHarness({ maxConnections: 1, createDependencies });
+  it('partage atomiquement le même budget de connexions entre v1 et v2', async () => {
+    const createV1Dependencies = vi.fn(() => UNUSED_GATEWAY_DEPENDENCIES);
+    const createV2Dependencies = vi.fn(() => CONVERSATION_V2_DEPENDENCIES_SENTINEL);
+    const harness = await createHarness({
+      maxConnections: 1,
+      createDependencies: createV1Dependencies,
+      conversationV2: { createDependencies: createV2Dependencies },
+    });
     const url = `${harness.origin}${MISTRAL_REALTIME_UPGRADE_PATH}`;
-    const first = await openClient(url);
+    const first = await openClient(url, MISTRAL_CONVERSATION_PROTOCOL);
     expect(harness.adapter.state().activeConnections).toBe(1);
-    await expect(rejectedClient(url)).resolves.toBe(404);
-    expect(createDependencies).toHaveBeenCalledTimes(1);
+    await expect(rejectedClient(url, MISTRAL_PCM_GATEWAY_PROTOCOL)).resolves.toBe(404);
+    expect(createV2Dependencies).toHaveBeenCalledTimes(1);
+    expect(createV1Dependencies).not.toHaveBeenCalled();
     await closeClient(first);
+    await waitFor(() => harness.adapter.state().activeConnections === 0);
+
+    const second = await openClient(url, MISTRAL_PCM_GATEWAY_PROTOCOL);
+    expect(createV1Dependencies).toHaveBeenCalledTimes(1);
+    await closeClient(second);
     await waitFor(() => harness.adapter.state().activeConnections === 0);
   });
 
-  it('borne le shutdown même si une dépendance ignore AbortSignal', async () => {
-    const neverSettles: MistralRealtimeGatewayServe = async (socket) => {
+  it('partage un shutdown borné entre v1 et v2 même si les noyaux ignorent AbortSignal', async () => {
+    const neverSettlesV1: MistralRealtimeGatewayServe = async (socket) => {
       socket.on('message', () => undefined);
       socket.on('close', () => undefined);
       socket.on('error', () => undefined);
       await new Promise<void>(() => undefined);
     };
-    const harness = await createHarness({ shutdownGraceMs: 30, serveGateway: neverSettles });
-    const client = await openClient(`${harness.origin}${MISTRAL_REALTIME_UPGRADE_PATH}`);
-    const closed = new Promise<number>((resolve) => client.once('close', (code) => resolve(code)));
+    const neverSettlesV2: MistralConversationGatewayV2Serve = async (socket) => {
+      socket.on('message', () => undefined);
+      socket.on('close', () => undefined);
+      socket.on('error', () => undefined);
+      await new Promise<void>(() => undefined);
+    };
+    const harness = await createHarness({
+      shutdownGraceMs: 30,
+      serveGateway: neverSettlesV1,
+      conversationV2: { serveGateway: neverSettlesV2 },
+    });
+    const url = `${harness.origin}${MISTRAL_REALTIME_UPGRADE_PATH}`;
+    const v1 = await openClient(url, MISTRAL_PCM_GATEWAY_PROTOCOL);
+    const v2 = await openClient(url, MISTRAL_CONVERSATION_PROTOCOL);
+    const v1Closed = new Promise<number>((resolve) => v1.once('close', (code) => resolve(code)));
+    const v2Closed = new Promise<number>((resolve) => v2.once('close', (code) => resolve(code)));
+    expect(harness.adapter.state().activeConnections).toBe(2);
     const startedAt = Date.now();
     await harness.adapter.shutdown();
     expect(Date.now() - startedAt).toBeLessThan(500);
@@ -432,7 +596,7 @@ describe('Mistral realtime HTTP Upgrade adapter', () => {
       activeConnections: 0,
     });
     expect(harness.server.listenerCount('upgrade')).toBe(0);
-    await expect(closed).resolves.toBe(1006);
+    await expect(Promise.all([v1Closed, v2Closed])).resolves.toEqual([1006, 1006]);
   });
 
   it('nettoie listeners et compteurs après des cycles attach/session/detach', async () => {

@@ -48,6 +48,10 @@ function harness(
       | { ok: false; error: { kind: 'dependency'; port: string; cause: string } }
     >;
     allowMicrophoneActivation?: () => Promise<boolean>;
+    synchronizeContext?: (
+      fence: import('./realtime-driver').RealtimePublishedFence,
+    ) => Promise<boolean>;
+    emitCommitOnFinish?: boolean;
   } = {},
 ) {
   const log: string[] = [];
@@ -80,9 +84,24 @@ function harness(
       },
       finishUserInput: async () => {
         trace('finish-input');
+        if (input.emitCommitOnFinish === true) {
+          emit({ type: 'transport', event: { type: 'state', state: readyState } });
+          emit({
+            type: 'transport',
+            event: { type: 'user_input_committed', turnId: 'manual-turn' },
+          });
+        }
         return true;
       },
       getSessionHandle: () => handle,
+      ...(input.synchronizeContext === undefined ? {} : {
+        synchronizePublishedContext: async (
+          fence: import('./realtime-driver').RealtimePublishedFence,
+        ) => {
+          trace(`sync:r${fence.contextRevision}`);
+          return input.synchronizeContext!(fence);
+        },
+      }),
     };
   };
   const transport = createTransport(null, input.handle !== undefined ? input.handle : 'h-42');
@@ -312,17 +331,78 @@ describe('RealtimeSessionController — l’ORDRE du contrat monobrain', () => {
     expect(failing.log).not.toContain('mic:true');
   });
 
+  it('attend la fence WSS après le PUT et échoue fermé avant le micro si elle est refusée', async () => {
+    const synchronized = harness({ synchronizeContext: async () => true });
+    await synchronized.controller.start();
+    synchronized.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(synchronized.log.indexOf('publish:h-42:r1')).toBeLessThan(
+      synchronized.log.indexOf('sync:r1'),
+    );
+    expect(synchronized.log.indexOf('sync:r1')).toBeLessThan(
+      synchronized.log.indexOf('mic:true'),
+    );
+
+    const refused = harness({ synchronizeContext: async () => false });
+    await refused.controller.start();
+    refused.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(refused.log).toContain('sync:r1');
+    expect(refused.log).not.toContain('mic:true');
+    expect(refused.log).toContain('orchestrator:stop');
+    expect(refused.log.some((entry) => entry.startsWith('fallback:'))).toBe(true);
+  });
+
   it('commit semi-duplex : finalise l’utterance sans stopper puis passe en traitement', async () => {
-    const h = harness();
+    const h = harness({ emitCommitOnFinish: true });
     await h.controller.start();
     h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
     await new Promise((resolve) => setTimeout(resolve, 0));
     h.log.length = 0;
 
     await expect(h.controller.finishUserInput()).resolves.toBe(true);
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await Promise.resolve();
 
-    expect(h.log).toEqual(['finish-input', 'phase:thinking']);
+    expect(h.log).toEqual(['finish-input', 'phase:listening', 'phase:thinking']);
     expect(h.log).not.toContain('orchestrator:stop');
+  });
+
+  it('passe en traitement sur le commit VAD autoritatif sans action manuelle', async () => {
+    const h = harness();
+    await h.controller.start();
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    h.log.length = 0;
+
+    h.emit({
+      type: 'transport',
+      event: {
+        type: 'state',
+        state: { ...readyState, phase: 'user_speaking' },
+      },
+    });
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    h.emit({
+      type: 'transport',
+      event: { type: 'user_input_committed', turnId: 'vad-turn' },
+    });
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await Promise.resolve();
+
+    expect(h.log).toEqual([
+      'phase:listening',
+      'phase:listening',
+      'phase:thinking',
+    ]);
+
+    h.emit({
+      type: 'transport',
+      event: { type: 'state', state: { ...readyState, phase: 'bob_speaking' } },
+    });
+    h.emit({ type: 'transport', event: { type: 'state', state: readyState } });
+    await Promise.resolve();
+    expect(h.log.slice(-2)).toEqual(['phase:speaking', 'phase:listening']);
   });
 
   it('fin one-shot : ferme avant la proposition et ne republie jamais sur le ticket terminal', async () => {

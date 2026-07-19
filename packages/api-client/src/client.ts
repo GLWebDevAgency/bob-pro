@@ -1,4 +1,11 @@
-import type { AgentContext, AgentRun, AskOptions, JournalEntry, PendingAction } from '@bob/ai';
+import type {
+  AgentContext,
+  AgentRun,
+  AskOptions,
+  JournalEntry,
+  MistralConversationSessionEndReason,
+  PendingAction,
+} from '@bob/ai';
 import type {
   ValueDigest,
   Result,
@@ -445,6 +452,11 @@ export interface RealtimeVoiceConfig {
   requiresDevelopmentBuild: true;
   maxSessionSeconds: number;
   speechDelivery: 'audited-signed-url-v1';
+  /**
+   * Contrat PCM annoncé par le serveur. Absent uniquement pour WebRTC ou pour compatibilité
+   * avec un serveur Mistral antérieur à la négociation v2 ; le mobile traite alors Mistral en v1.
+   */
+  protocol?: 'bob.mistral-pcm.v1' | 'bob.mistral-pcm.v2';
 }
 
 export interface RealtimeVoiceSpeechSourcePolicy {
@@ -480,7 +492,89 @@ export interface RealtimeVoiceMistralPcmCall extends RealtimeVoiceCallCommon {
   contextDigest: string;
 }
 
-export type RealtimeVoiceCall = RealtimeVoiceWebRtcCall | RealtimeVoiceMistralPcmCall;
+export interface RealtimeVoiceMistralConversationCall extends RealtimeVoiceCallCommon {
+  transport: 'mistral-pcm';
+  websocketUrl: string;
+  companyId: string;
+  ticket: string;
+  protocol: 'bob.mistral-pcm.v2';
+  ticketExpiresAt: string;
+  maxMissionAudioBytes: number;
+  contextRevision: number;
+  contextDigest: string;
+  routeMode: 'push_to_talk';
+  fullDuplexCertified: false;
+}
+
+export type RealtimeVoiceCall =
+  | RealtimeVoiceWebRtcCall
+  | RealtimeVoiceMistralPcmCall
+  | RealtimeVoiceMistralConversationCall;
+
+/** Preuve locale minimale permettant de reprendre une mission Mistral v2 sans nouvelle admission. */
+export interface RealtimeVoiceResumeTicketInput {
+  /** Dernier epoch de connexion effectivement appliqué par le mobile. */
+  readonly missionConnectionEpoch: number;
+  /** Première séquence serveur dont les effets ne sont pas encore appliqués localement. */
+  readonly nextServerSequence: number;
+}
+
+export interface RealtimeVoiceIssuedResumeTicket {
+  readonly status: 'issued';
+  readonly websocketUrl: string;
+  readonly companyId: string;
+  readonly sessionHandle: string;
+  readonly ticket: string;
+  readonly protocol: 'bob.mistral-pcm.v2';
+  readonly scope: 'terminal_replay';
+  readonly ticketExpiresAt: string;
+  readonly expectedMissionConnectionEpoch: number;
+  readonly clientAcceptedMissionConnectionEpoch: number;
+  readonly resumeNextServerSequence: number;
+}
+
+/** Preuve serveur complète qu'une mission Mistral v2 est définitivement terminée. */
+export interface RealtimeVoiceTerminalCompleteReceipt {
+  readonly status: 'terminal_complete';
+  readonly companyId: string;
+  readonly sessionHandle: string;
+  readonly protocol: 'bob.mistral-pcm.v2';
+  readonly missionConnectionEpoch: number;
+  readonly nextServerSequence: number;
+  readonly reason: MistralConversationSessionEndReason;
+  readonly closedAt: string;
+}
+
+export type RealtimeVoiceResumeTicketResult =
+  | RealtimeVoiceIssuedResumeTicket
+  | RealtimeVoiceTerminalCompleteReceipt;
+
+/** Capacité initiale gardée uniquement en mémoire jusqu'à `session.ready`. */
+export interface RealtimeVoiceBootstrapReconciliationInput {
+  readonly protocol: 'bob.mistral-pcm.v2';
+  readonly bootstrapTicket: string;
+  /** Tentative monotone : une capability consommée impose la tentative suivante. */
+  readonly attempt: number;
+}
+
+export interface RealtimeVoiceIssuedBootstrapReconciliation {
+  readonly status: 'issued';
+  readonly websocketUrl: string;
+  readonly companyId: string;
+  readonly sessionHandle: string;
+  readonly ticket: string;
+  readonly protocol: 'bob.mistral-pcm.v2';
+  readonly scope: 'live_takeover' | 'terminal_replay';
+  readonly ticketExpiresAt: string;
+  readonly expectedMissionConnectionEpoch: number;
+  readonly clientAcceptedMissionConnectionEpoch: 0;
+  readonly resumeNextServerSequence: 0;
+}
+
+export type RealtimeVoiceBootstrapReconciliationResult =
+  | RealtimeVoiceIssuedBootstrapReconciliation
+  | { readonly status: 'retry_initial' }
+  | { readonly status: 'attempt_consumed' };
 
 export interface RealtimeVoiceContextUpdate {
   version: 1;
@@ -490,7 +584,18 @@ export interface RealtimeVoiceContextUpdate {
 
 export type RealtimeVoiceCallInput =
   | { transport?: 'webrtc'; sdp: string; sessionHandle?: string }
-  | { transport: 'mistral-pcm'; context: RealtimeVoiceContextUpdate; sessionHandle?: string };
+  | {
+      transport: 'mistral-pcm';
+      protocol?: 'bob.mistral-pcm.v1';
+      context: RealtimeVoiceContextUpdate;
+      sessionHandle?: string;
+    }
+  | {
+      transport: 'mistral-pcm';
+      protocol: 'bob.mistral-pcm.v2';
+      context: RealtimeVoiceContextUpdate;
+      sessionHandle?: string;
+    };
 
 export interface RealtimeVoiceControlReference {
   turnId: string;
@@ -945,6 +1050,24 @@ export interface BobClient {
     input: RealtimeVoiceCallInput,
     signal?: AbortSignal,
   ): Promise<Result<RealtimeVoiceCall, AppError>>;
+  /**
+   * Demande une capability one-shot pour rejouer exclusivement le terminal Mistral v2.
+   * `terminal_complete` est la seule preuve autorisant le mobile à supprimer son checkpoint.
+   */
+  requestRealtimeVoiceResumeTicket(
+    sessionHandle: string,
+    input: RealtimeVoiceResumeTicketInput,
+    signal?: AbortSignal,
+  ): Promise<Result<RealtimeVoiceResumeTicketResult, AppError>>;
+  /**
+   * Répare uniquement un bootstrap v2 commité dont la réponse WSS a été perdue.
+   * Cette méthode ne persiste jamais le ticket initial ni la capability retournée.
+   */
+  reconcileRealtimeVoiceBootstrap(
+    sessionHandle: string,
+    input: RealtimeVoiceBootstrapReconciliationInput,
+    signal?: AbortSignal,
+  ): Promise<Result<RealtimeVoiceBootstrapReconciliationResult, AppError>>;
   hangupRealtimeVoiceCall(
     sessionHandle: string,
     signal?: AbortSignal,

@@ -44,6 +44,8 @@ import {
 import { PASSWORD_RECOVERY_ROUTE } from '../src/auth-recovery/password-recovery';
 import { EMAIL_CONFIRMATION_ROUTE } from '../src/auth-confirmation/email-confirmation';
 import { useLegacyCatalogueProtection } from '../src/data/catalogue';
+import { MistralConversationCheckpointProvider } from '../src/realtime/mistral-conversation-checkpoint-provider';
+import { authenticatedRuntimeBoundaryKey } from '../src/data/authenticated-runtime-boundary';
 
 // Garde le splash NATIF visible pendant le chargement critique. L'appel au scope module est
 // volontaire : exécuté avant que React puisse rendre une frame blanche.
@@ -151,8 +153,13 @@ function AuthGate({ children }: { children: ReactNode }) {
   if (enabled && session && shouldRouteToProvisioning({ companyId, serverReportsNoCompany })) {
     return <ProvisioningScreen />;
   }
+  const runtimeKey = enabled && session && companyId
+    ? authenticatedRuntimeBoundaryKey({ subjectId: session.user.id, companyId })
+    : 'local-runtime';
   // C24 : session persistée + opt-in biométrie → Face ID/Touch ID avant l'app (dégradé honnête).
-  return <BiometricGate>{children}</BiometricGate>;
+  // Cette cle porte l'owner COMPLET. Un changement de tenant pour le meme subject doit demonter
+  // AgentSession synchronement : une socket, un micro ou un transcript de A ne survit jamais dans B.
+  return <BiometricGate key={runtimeKey}>{children}</BiometricGate>;
 }
 
 export default function RootLayout() {
@@ -193,53 +200,55 @@ export default function RootLayout() {
               {/* C24 : le client data vit AU-DESSUS de la porte d'auth — l'inscription
                   (lookup SIRET public) en a besoin AVANT toute session. */}
               <BobClientProvider>
-                <AppReadyGate fontsReady={fontsReady}>
-                  {/* Racine durable : reste montée sur login/logout pour rejouer les tombstones
-                      publics et invalider l'ancien owner avant tout nouveau tenant. */}
-                  <PushNotificationsBridge />
-                  <AuthGate>
-                    <QuoteDraftProvider>
-                      <AgentContextProvider>
-                        <AgentSessionProvider>
-                          <ConfirmProvider>
-                            <Stack screenOptions={{ headerShown: false }}>
-                              <Stack.Screen name="(tabs)" />
-                              <Stack.Screen name="auth/recovery" />
-                              <Stack.Screen name="auth/callback" />
-                              <Stack.Screen name="devis/new" options={{ presentation: 'modal' }} />
-                              <Stack.Screen name="devis/[id]" />
-                              <Stack.Screen name="facture/new" options={{ presentation: 'modal' }} />
-                              <Stack.Screen name="facture/[id]" />
-                              <Stack.Screen name="facture/transmission/[id]" />
-                              <Stack.Screen name="client/[id]" />
-                              <Stack.Screen name="compte" />
-                              <Stack.Screen name="profil-fiscal" />
-                              <Stack.Screen name="catalogue" />
-                              <Stack.Screen name="reglages-facturation" />
-                              <Stack.Screen name="diagnostic" />
-                              <Stack.Screen name="notifications" />
-                              <Stack.Screen name="onboarding" />
-                              <Stack.Screen
-                                name="scan-document"
-                                options={{ presentation: 'modal' }}
-                              />
-                              <Stack.Screen name="documents/[id]" />
-                              <Stack.Screen name="documents/folder/[id]" />
-                              <Stack.Screen name="voix" options={{ presentation: 'modal' }} />
-                              <Stack.Screen name="chantiers" />
-                              <Stack.Screen name="chantier/[id]" />
-                              <Stack.Screen name="ventes" />
-                              <Stack.Screen name="comptabilite" />
-                              <Stack.Screen name="cloture" />
-                              <Stack.Screen name="pilotage" />
-                            </Stack>
-                            <GlobalBobAccess />
-                          </ConfirmProvider>
-                        </AgentSessionProvider>
-                      </AgentContextProvider>
-                    </QuoteDraftProvider>
-                  </AuthGate>
-                </AppReadyGate>
+                <MistralConversationCheckpointProvider>
+                  <AppReadyGate fontsReady={fontsReady}>
+                    {/* Racine durable : reste montée sur login/logout pour rejouer les tombstones
+                        publics et invalider l'ancien owner avant tout nouveau tenant. */}
+                    <PushNotificationsBridge />
+                    <AuthGate>
+                      <QuoteDraftProvider>
+                        <AgentContextProvider>
+                          <AgentSessionProvider>
+                            <ConfirmProvider>
+                              <Stack screenOptions={{ headerShown: false }}>
+                                <Stack.Screen name="(tabs)" />
+                                <Stack.Screen name="auth/recovery" />
+                                <Stack.Screen name="auth/callback" />
+                                <Stack.Screen name="devis/new" options={{ presentation: 'modal' }} />
+                                <Stack.Screen name="devis/[id]" />
+                                <Stack.Screen name="facture/new" options={{ presentation: 'modal' }} />
+                                <Stack.Screen name="facture/[id]" />
+                                <Stack.Screen name="facture/transmission/[id]" />
+                                <Stack.Screen name="client/[id]" />
+                                <Stack.Screen name="compte" />
+                                <Stack.Screen name="profil-fiscal" />
+                                <Stack.Screen name="catalogue" />
+                                <Stack.Screen name="reglages-facturation" />
+                                <Stack.Screen name="diagnostic" />
+                                <Stack.Screen name="notifications" />
+                                <Stack.Screen name="onboarding" />
+                                <Stack.Screen
+                                  name="scan-document"
+                                  options={{ presentation: 'modal' }}
+                                />
+                                <Stack.Screen name="documents/[id]" />
+                                <Stack.Screen name="documents/folder/[id]" />
+                                <Stack.Screen name="voix" options={{ presentation: 'modal' }} />
+                                <Stack.Screen name="chantiers" />
+                                <Stack.Screen name="chantier/[id]" />
+                                <Stack.Screen name="ventes" />
+                                <Stack.Screen name="comptabilite" />
+                                <Stack.Screen name="cloture" />
+                                <Stack.Screen name="pilotage" />
+                              </Stack>
+                              <GlobalBobAccess />
+                            </ConfirmProvider>
+                          </AgentSessionProvider>
+                        </AgentContextProvider>
+                      </QuoteDraftProvider>
+                    </AuthGate>
+                  </AppReadyGate>
+                </MistralConversationCheckpointProvider>
               </BobClientProvider>
             </AuthProvider>
           </ThemeProvider>

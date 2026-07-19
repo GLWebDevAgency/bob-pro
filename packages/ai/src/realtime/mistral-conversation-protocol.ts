@@ -65,6 +65,7 @@ export type MistralConversationCancelReason =
   | 'timeout';
 
 export type MistralConversationRouteMode = 'push_to_talk' | 'full_duplex';
+export type MistralConversationResumeScope = 'live_takeover' | 'terminal_replay';
 
 /** Raisons qu'un client est autorisé à déclarer lui-même. Les causes serveur restent serveur. */
 export type MistralConversationClientSessionEndReason =
@@ -79,6 +80,8 @@ export type MistralConversationClientControl =
       readonly protocol: typeof MISTRAL_CONVERSATION_PROTOCOL;
       readonly companyId: string;
       readonly ticket: string;
+      /** Absent pour le bootstrap initial ; obligatoire pour toute capacité de reprise `r2_`. */
+      readonly resumeScope?: MistralConversationResumeScope;
       /** Première séquence serveur qui n'a encore produit aucun effet local. */
       readonly resumeNextServerSequence: number;
     }
@@ -404,12 +407,27 @@ export function decodeMistralConversationClientControl(raw: unknown): MistralCon
   switch (value.type) {
     case 'authenticate':
       if (
-        !hasExactKeys(value, ['type', 'protocol', 'companyId', 'ticket', 'resumeNextServerSequence'])
+        !(
+          hasExactKeys(value, ['type', 'protocol', 'companyId', 'ticket', 'resumeNextServerSequence'])
+          || hasExactKeys(value, [
+            'type',
+            'protocol',
+            'companyId',
+            'ticket',
+            'resumeScope',
+            'resumeNextServerSequence',
+          ])
+        )
         || value.protocol !== MISTRAL_CONVERSATION_PROTOCOL
         || typeof value.companyId !== 'string'
         || !TENANT_ID.test(value.companyId)
         || typeof value.ticket !== 'string'
         || !CAPABILITY.test(value.ticket)
+        || (
+          value.resumeScope !== undefined
+          && value.resumeScope !== 'live_takeover'
+          && value.resumeScope !== 'terminal_replay'
+        )
         || !isServerSequenceCursor(value.resumeNextServerSequence)
       ) fail('invalid_message');
       return {
@@ -417,6 +435,7 @@ export function decodeMistralConversationClientControl(raw: unknown): MistralCon
         protocol: MISTRAL_CONVERSATION_PROTOCOL,
         companyId: value.companyId,
         ticket: value.ticket,
+        ...(value.resumeScope === undefined ? {} : { resumeScope: value.resumeScope }),
         resumeNextServerSequence: value.resumeNextServerSequence,
       };
     case 'turn.start':

@@ -278,14 +278,14 @@ enum BankBalanceReconciliationStatus {
 }
 
 model Company {
-  id                      String                         @id
-  name                    String
-  legalForm               LegalForm
-  siren                   String                         @db.Char(9)
-  siret                   String                         @unique @db.Char(14)
-  apeCode                 String?
-  trade                   String
-  vatRegime               VatRegime
+  id                                          String                                       @id
+  name                                        String
+  legalForm                                   LegalForm
+  siren                                       String                                       @db.Char(9)
+  siret                                       String                                       @unique @db.Char(14)
+  apeCode                                     String?
+  trade                                       String
+  vatRegime                                   VatRegime
   /// Clientèle principale confirmée par le propriétaire. NULL tant que la question n'a pas été répondue.
   customerPortfolio       CustomerPortfolio?
   rcsOrRm                 String?
@@ -324,47 +324,49 @@ model Company {
   // régénération d'une pièce déjà émise (factures/devis), la rétention légale de 10 ans (Code de
   // commerce) l'exige. L'identité PERSONNELLE de l'utilisateur (prénom, email, téléphone) ne vit
   // jamais ici : elle est entièrement dans Supabase Auth, supprimée via l'admin API en parallèle.
-  closedAt                DateTime?
-  closureReason           String?
-  customers               Customer[]
-  quotes                  Quote[]
-  invoices                Invoice[]
-  payments                Payment[]
-  publicAccessTokens      PublicAccessToken[]
-  expenses                Expense[]
-  expenseCreationRequests ExpenseCreationRequest[]
-  quoteCreationRequests   QuoteCreationRequest[]
-  quoteDraftSlots         QuoteDraftSlot[]
-  documents               StoredDocument[]
-  documentFolders         DocumentFolder[]
-  folderDeletionPlans     DocumentFolderDeletionPlan[]
-  documentArchiveJobs     DocumentArchiveJob[]
-  notificationJobs        NotificationJob[]
-  devices                 Device[]
-  agentJournalEntries     AgentJournalEntry[]
-  accountingAccounts      AccountingAccount[]
-  accountingEntries       AccountingEntry[]
-  supplierMemory          SupplierMemoryProfile[]
-  cataloguePrestations    CataloguePrestation[]
-  chantiers               Chantier[]
-  chantierNotes           ChantierNote[]
-  chantierPhotos          ChantierPhoto[]
-  bankBalanceSnapshots    BankBalanceSnapshot[]
-  counters                DocumentCounter[]
-  realtimeAdmissionEvents RealtimeAdmissionEvent[]
-  realtimeSessionLeases   RealtimeSessionLease[]
-  realtimeMistralTickets  RealtimeMistralIngressTicket[]
-  realtimeMistralMissions RealtimeMistralConversationMission[]
-  realtimeMistralResumeTickets RealtimeMistralConversationResumeTicket[]
-  realtimeSpeechArtifacts RealtimeSpeechArtifact[]
-  realtimeControlGrants   RealtimeControlGrant[]
-  realtimeControlUses     RealtimeControlConsumption[]
-  realtimeVoiceUsage      RealtimeVoiceUsageEvent[]
-  realtimeVoiceUsageDaily RealtimeVoiceUsageDaily[]
-  subscription            Subscription?
-  fiscalProfile           FiscalProfile?
-  billingSettings         CompanyBillingSettings?
-  diagnosticAssessment    CompanyDiagnosticAssessment?
+  closedAt                                    DateTime?
+  closureReason                               String?
+  customers                                   Customer[]
+  quotes                                      Quote[]
+  invoices                                    Invoice[]
+  payments                                    Payment[]
+  publicAccessTokens                          PublicAccessToken[]
+  expenses                                    Expense[]
+  expenseCreationRequests                     ExpenseCreationRequest[]
+  quoteCreationRequests                       QuoteCreationRequest[]
+  quoteDraftSlots                             QuoteDraftSlot[]
+  documents                                   StoredDocument[]
+  documentFolders                             DocumentFolder[]
+  folderDeletionPlans                         DocumentFolderDeletionPlan[]
+  documentArchiveJobs                         DocumentArchiveJob[]
+  notificationJobs                            NotificationJob[]
+  devices                                     Device[]
+  agentJournalEntries                         AgentJournalEntry[]
+  accountingAccounts                          AccountingAccount[]
+  accountingEntries                           AccountingEntry[]
+  supplierMemory                              SupplierMemoryProfile[]
+  cataloguePrestations                        CataloguePrestation[]
+  chantiers                                   Chantier[]
+  chantierNotes                               ChantierNote[]
+  chantierPhotos                              ChantierPhoto[]
+  bankBalanceSnapshots                        BankBalanceSnapshot[]
+  counters                                    DocumentCounter[]
+  realtimeAdmissionEvents                     RealtimeAdmissionEvent[]
+  realtimeSessionLeases                       RealtimeSessionLease[]
+  realtimeMistralTickets                      RealtimeMistralIngressTicket[]
+  realtimeMistralConversationBootstrapTickets RealtimeMistralConversationBootstrapTicket[]
+  realtimeMistralMissions                     RealtimeMistralConversationMission[]
+  realtimeMistralTerminalReceipts             RealtimeMistralConversationTerminalReceipt[]
+  realtimeMistralResumeTickets                RealtimeMistralConversationResumeTicket[]
+  realtimeSpeechArtifacts                     RealtimeSpeechArtifact[]
+  realtimeControlGrants                       RealtimeControlGrant[]
+  realtimeControlUses                         RealtimeControlConsumption[]
+  realtimeVoiceUsage                          RealtimeVoiceUsageEvent[]
+  realtimeVoiceUsageDaily                     RealtimeVoiceUsageDaily[]
+  subscription                                Subscription?
+  fiscalProfile                               FiscalProfile?
+  billingSettings                             CompanyBillingSettings?
+  diagnosticAssessment                        CompanyDiagnosticAssessment?
 
   @@map("companies")
 }
@@ -373,18 +375,18 @@ model Company {
 /// société ; le mobile ne possède aucun fallback local. `revision` protège les mises à jour
 /// concurrentes entre appareils par compare-and-swap.
 model CompanyBillingSettings {
-  companyId                String                @id
-  company                  Company               @relation(fields: [companyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  showRibOnInvoices        Boolean               @default(false)
-  showInsuranceOnInvoices  Boolean               @default(true)
-  pdfAccentColor           InvoicePdfAccentColor @default(navy)
-  defaultQuoteValidityDays Int                   @default(30)
-  defaultDepositPercent    Int                   @default(30)
+  companyId                      String                @id
+  company                        Company               @relation(fields: [companyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  showRibOnInvoices              Boolean               @default(false)
+  showInsuranceOnInvoices        Boolean               @default(true)
+  pdfAccentColor                 InvoicePdfAccentColor @default(navy)
+  defaultQuoteValidityDays       Int                   @default(30)
+  defaultDepositPercent          Int                   @default(30)
   /// Null jusqu'au choix explicite du propriétaire : l'émission ne suppose jamais 30 jours.
   defaultInvoicePaymentTermsDays Int?
-  revision                 Int                   @default(1)
-  createdAt                DateTime              @default(now()) @db.Timestamptz(6)
-  updatedAt                DateTime              @updatedAt @db.Timestamptz(6)
+  revision                       Int                   @default(1)
+  createdAt                      DateTime              @default(now()) @db.Timestamptz(6)
+  updatedAt                      DateTime              @updatedAt @db.Timestamptz(6)
 
   @@map("company_billing_settings")
 }
@@ -576,13 +578,13 @@ model ChantierPhoto {
 }
 
 model Quote {
-  id               String                 @id
-  companyId        String
-  company          Company                @relation(fields: [companyId], references: [id])
-  customerId       String
-  customer         Customer               @relation(fields: [customerId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict)
-  status           QuoteStatus            @default(draft)
-  number           String?
+  id                      String                 @id
+  companyId               String
+  company                 Company                @relation(fields: [companyId], references: [id])
+  customerId              String
+  customer                Customer               @relation(fields: [customerId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict)
+  status                  QuoteStatus            @default(draft)
+  number                  String?
   // B9 — un devis n'a pas de date métier propre (contrairement à Invoice.issuedAt) : createdAt
   // tient lieu de date de référence pour la recherche/le tri par période ("le mois dernier").
   // Lecture seule côté domaine (non threadé dans l'agrégat Quote, hors invariants métier).
@@ -624,7 +626,7 @@ model Quote {
   // sur le devis puis repris sur la facture dérivée. Anti-IDOR : le document du coffre lié est
   // contraint au MÊME tenant par la FK composite (companyId, purchaseOrderDocumentId).
   purchaseOrderNumber     String?
-  purchaseOrderReceivedAt DateTime?       @db.Timestamptz(6)
+  purchaseOrderReceivedAt DateTime?              @db.Timestamptz(6)
   purchaseOrderDocumentId String?
   purchaseOrderDocument   StoredDocument? @relation("QuotePurchaseOrderDocument", fields: [companyId, purchaseOrderDocumentId], references: [companyId, id], onDelete: Restrict, onUpdate: Cascade)
   // B3 — remise GLOBALE du devis (négociée UNE FOIS, reprise sur les pièces dérivées) :
@@ -636,10 +638,10 @@ model Quote {
   retenueGarantiePct        Decimal? @db.Decimal(5, 2)
   // Révision optimiste (B8) : incrémentée par les mutations de bon de commande — le CAS final
   // en base est porté par le verrou de ligne (lockById) dans la transaction tenant.
-  revision         Int                    @default(1)
-  lines            LineItem[]             @relation("QuoteLines")
-  creationRequests QuoteCreationRequest[]
-  generatedInvoices Invoice[]             @relation("QuoteGeneratedInvoices")
+  revision                Int                    @default(1)
+  lines                   LineItem[]             @relation("QuoteLines")
+  creationRequests        QuoteCreationRequest[]
+  generatedInvoices       Invoice[]              @relation("QuoteGeneratedInvoices")
 
   @@unique([companyId, number], name: "uniq_quote_number")
   @@unique([id, companyId], name: "uniq_quote_id_company", map: "uniq_quote_id_company")
@@ -680,13 +682,13 @@ model Invoice {
   parentQuote           Quote?        @relation("QuoteGeneratedInvoices", fields: [parentQuoteId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict)
   // Trace légale immuable de la facture exacte annulée par un avoir total.
   // Les quatre champs sont tous NULL hors avoir et tous renseignés pour tout nouvel avoir.
-  sourceInvoiceId       String?
-  sourceInvoiceKind     DocKind?
-  sourceInvoiceNumber   String?
-  sourceInvoiceIssuedAt DateTime?
-  sourceInvoice         Invoice?      @relation("InvoiceCreditNotes", fields: [sourceInvoiceId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict)
-  creditNotes           Invoice[]     @relation("InvoiceCreditNotes")
-  depositPct            Int?
+  sourceInvoiceId         String?
+  sourceInvoiceKind       DocKind?
+  sourceInvoiceNumber     String?
+  sourceInvoiceIssuedAt   DateTime?
+  sourceInvoice           Invoice?        @relation("InvoiceCreditNotes", fields: [sourceInvoiceId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Restrict)
+  creditNotes             Invoice[]       @relation("InvoiceCreditNotes")
+  depositPct              Int?
   // Acompte déjà facturé, déduit du net à payer d'une finale (A2-C16).
   depositDeductionCents Int           @default(0)
   depositInvoiceId      String?
@@ -731,13 +733,13 @@ model Invoice {
   // B8 — bon de commande repris du devis à la dérivation (ou attaché en brouillon), FIGÉ à
   // l'émission (trigger invoices_legal_traceability). FK composite anti-IDOR comme sur quotes.
   purchaseOrderNumber     String?
-  purchaseOrderReceivedAt DateTime?     @db.Timestamptz(6)
+  purchaseOrderReceivedAt DateTime?       @db.Timestamptz(6)
   purchaseOrderDocumentId String?
   purchaseOrderDocument   StoredDocument? @relation("InvoicePurchaseOrderDocument", fields: [companyId, purchaseOrderDocumentId], references: [companyId, id], onDelete: Restrict, onUpdate: Cascade)
   // Révision optimiste (B8) — mutations de bon de commande uniquement à ce jour.
-  revision              Int           @default(1)
-  lines                 LineItem[]    @relation("InvoiceLines")
-  payments              Payment[]
+  revision                Int             @default(1)
+  lines                   LineItem[]      @relation("InvoiceLines")
+  payments                Payment[]
 
   @@unique([companyId, number], name: "uniq_invoice_number")
   @@unique([id, companyId], name: "uniq_invoice_id_company", map: "uniq_invoice_id_company")
@@ -922,42 +924,46 @@ model SupplierMemoryProfile {
 }
 
 model StoredDocument {
-  id                   String                          @id
-  companyId            String
-  company              Company                         @relation(fields: [companyId], references: [id])
-  kind                 StoredDocumentKind
-  origin               StoredDocumentOrigin
-  status               StoredDocumentStatus            @default(active)
-  filename             String
-  /** Libellé d'affichage renommable (« Facture Leroy Merlin — 184,90 € »). NULL = lignes
-   * historiques : le domaine retombe sur le filename, aucune valeur n'est rétro-remplie. */
-  displayName          String?
-  mimeType             String
-  byteSize             Int
-  sha256               String                          @db.Char(64)
-  storageKey           String                          @unique
-  folderId             String?
-  folder               DocumentFolder?                 @relation("StoredDocumentFolder", fields: [companyId, folderId], references: [companyId, id], onDelete: Restrict, onUpdate: Cascade)
-  revision             Int                             @default(1)
-  linkedEntityType     StoredDocumentLinkedEntityType?
-  linkedEntityId       String?
-  documentDate         String?
-  issuedAt             String?
-  createdAt            DateTime
-  createdBy            String?
-  retentionUntil       String
-  deletedAt            DateTime?
-  /** Confirmation humaine (« c'est bon, je valide ») d'un document scanné — humain ou Bob,
+  id                    String                          @id
+  companyId             String
+  company               Company                         @relation(fields: [companyId], references: [id])
+  kind                  StoredDocumentKind
+  origin                StoredDocumentOrigin
+  status                StoredDocumentStatus            @default(active)
+  filename              String
+  /**
+   * Libellé d'affichage renommable (« Facture Leroy Merlin — 184,90 € »). NULL = lignes
+   * historiques : le domaine retombe sur le filename, aucune valeur n'est rétro-remplie.
+   */
+  displayName           String?
+  mimeType              String
+  byteSize              Int
+  sha256                String                          @db.Char(64)
+  storageKey            String                          @unique
+  folderId              String?
+  folder                DocumentFolder?                 @relation("StoredDocumentFolder", fields: [companyId, folderId], references: [companyId, id], onDelete: Restrict, onUpdate: Cascade)
+  revision              Int                             @default(1)
+  linkedEntityType      StoredDocumentLinkedEntityType?
+  linkedEntityId        String?
+  documentDate          String?
+  issuedAt              String?
+  createdAt             DateTime
+  createdBy             String?
+  retentionUntil        String
+  deletedAt             DateTime?
+  /**
+   * Confirmation humaine (« c'est bon, je valide ») d'un document scanné — humain ou Bob,
    * parité voix. NULL = jamais validé : un doc rangé (folderId non nul) SANS validation reste
-   * « à valider ». La première validation fait foi (latch), jamais réécrite. */
-  reviewedAt           DateTime?
-  tags                 String[]                        @default([])
-  versions             StoredDocumentVersion[]
-  analyses             DocumentAnalysisCache[]         @relation("StoredDocumentAnalyses")
-  expensePaymentProofs Expense[]                       @relation("ExpensePaymentProof")
+   * « à valider ». La première validation fait foi (latch), jamais réécrite.
+   */
+  reviewedAt            DateTime?
+  tags                  String[]                        @default([])
+  versions              StoredDocumentVersion[]
+  analyses              DocumentAnalysisCache[]         @relation("StoredDocumentAnalyses")
+  expensePaymentProofs  Expense[]                       @relation("ExpensePaymentProof")
   // B8 — bons de commande scannés référencés par devis/factures (FK composite anti-IDOR).
-  purchaseOrderQuotes   Quote[]                        @relation("QuotePurchaseOrderDocument")
-  purchaseOrderInvoices Invoice[]                      @relation("InvoicePurchaseOrderDocument")
+  purchaseOrderQuotes   Quote[]                         @relation("QuotePurchaseOrderDocument")
+  purchaseOrderInvoices Invoice[]                       @relation("InvoicePurchaseOrderDocument")
 
   @@unique([companyId, id], name: "uniq_stored_document_company_id", map: "uniq_stored_document_company_id")
   @@index([companyId, kind])
@@ -1335,53 +1341,102 @@ model RealtimeMistralIngressTicket {
   @@map("realtime_mistral_ingress_tickets")
 }
 
+/// Capacité initiale HTTP -> WSS de Bob Live Mistral v2. Le ticket brut et le userId sont absents
+/// de la base : seuls un hash domain-separated et une identité AEAD liée au bail sont persistés.
+/// Le seul update runtime autorisé est issued(v1) -> consumed(v2), après création atomique de la
+/// Mission et de son événement `session.ready` par l'autorité PostgreSQL.
+model RealtimeMistralConversationBootstrapTicket {
+  id                           String                                    @id @default(uuid()) @db.Uuid
+  companyId                    String                                    @db.Text
+  company                      Company                                   @relation(fields: [companyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  admissionSessionId           String                                    @unique(map: "mistral_conversation_bootstrap_admission_key") @db.Uuid
+  sessionHandle                String                                    @db.Text
+  subjectHash                  String                                    @db.Char(64)
+  subjectKeyVersion            Int
+  admissionLeaseTokenHash      String                                    @db.Char(64)
+  ticketHash                   String                                    @unique(map: "mistral_conversation_bootstrap_ticket_hash_key") @db.Char(64)
+  protocol                     String                                    @db.Text
+  state                        String                                    @db.Text
+  plan                         String                                    @db.Text
+  contextSchemaVersion         Int
+  contextRevision              Int
+  contextSnapshot              Json
+  contextDigest                String                                    @db.Char(64)
+  userIdentityCiphertext       Bytes
+  userIdentityNonce            Bytes
+  userIdentityTag              Bytes
+  identityEncryptionKeyVersion Int
+  routeMode                    String                                    @db.Text
+  fullDuplexCertified          Boolean
+  maxMissionAudioBytes         Int
+  issuedAt                     DateTime                                  @db.Timestamptz(6)
+  ticketExpiresAt              DateTime                                  @db.Timestamptz(6)
+  leaseExpiresAt               DateTime                                  @db.Timestamptz(6)
+  hardExpiresAt                DateTime                                  @db.Timestamptz(6)
+  consumedAt                   DateTime?                                 @db.Timestamptz(6)
+  retentionExpiresAt           DateTime                                  @db.Timestamptz(6)
+  version                      Int                                       @default(1)
+  updatedAt                    DateTime                                  @default(now()) @db.Timestamptz(6)
+  reconciliationResumeTickets  RealtimeMistralConversationResumeTicket[] @relation("MistralBootstrapReconciliationResumeTickets")
+  mission                      RealtimeMistralConversationMission?       @relation("MistralMissionInitialBootstrap")
+
+  @@unique([id, companyId], map: "mistral_conversation_bootstrap_tenant_binding")
+  @@unique([companyId, ticketHash], map: "mistral_conversation_bootstrap_tenant_ticket_key")
+  @@index([companyId, issuedAt], map: "mistral_conversation_bootstrap_tenant_issued_idx")
+  @@index([companyId, subjectHash, issuedAt], map: "mistral_conversation_bootstrap_subject_issued_idx")
+  @@index([companyId, retentionExpiresAt], map: "mistral_conversation_bootstrap_retention_idx")
+  @@map("realtime_mistral_conversation_bootstrap_tickets")
+}
+
 /// Snapshot transactionnel de la mission conversationnelle Mistral v2. Les compteurs wire
 /// utilisent BIGINT car le curseur terminal UINT32_MAX + 1 dépasse un INTEGER PostgreSQL.
 /// Le token d'owner 256 bits ne quitte jamais le processus : seule son empreinte SHA-256 vit ici.
 model RealtimeMistralConversationMission {
-  id                         String                                   @id @default(uuid()) @db.Uuid
-  companyId                  String                                   @db.Text
-  company                    Company                                  @relation(fields: [companyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  initialBootstrapId         String                                   @unique(map: "realtime_mistral_conversation_missions_bootstrap_key") @db.Uuid
+  id                         String                                     @id @default(uuid()) @db.Uuid
+  companyId                  String                                     @db.Text
+  company                    Company                                    @relation(fields: [companyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  initialBootstrapId         String                                     @unique(map: "realtime_mistral_conversation_missions_bootstrap_key") @db.Uuid
+  initialBootstrap           RealtimeMistralConversationBootstrapTicket @relation("MistralMissionInitialBootstrap", fields: [initialBootstrapId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Cascade)
   // Référence typée au bail d'admission initial. Nullable uniquement pour les missions v2
   // historiques créées avant le déploiement des capacités de reprise : elles échouent fermées.
-  admissionSessionId         String?                                  @unique(map: "realtime_mistral_conversation_missions_admission_session_key") @db.Uuid
-  protocol                   String                                   @db.Text
-  subjectHash                String                                   @db.Char(64)
+  admissionSessionId         String?                                    @unique(map: "realtime_mistral_conversation_missions_admission_session_key") @db.Uuid
+  protocol                   String                                     @db.Text
+  subjectHash                String                                     @db.Char(64)
   subjectKeyVersion          Int
-  plan                       String                                   @db.Text
-  sessionHandle              String                                   @db.Text
-  ownerTokenHash             String                                   @unique(map: "realtime_mistral_conversation_missions_owner_token_key") @db.Char(64)
-  ownerAcquiredAt            DateTime                                 @db.Timestamptz(6)
+  plan                       String                                     @db.Text
+  sessionHandle              String                                     @db.Text
+  ownerTokenHash             String                                     @unique(map: "realtime_mistral_conversation_missions_owner_token_key") @db.Char(64)
+  ownerAcquiredAt            DateTime                                   @db.Timestamptz(6)
   missionConnectionEpoch     Int
-  version                    BigInt                                   @default(1)
-  acknowledgedServerSequence BigInt                                   @default(0)
-  retainedFromServerSequence BigInt                                   @default(0)
+  version                    BigInt                                     @default(1)
+  acknowledgedServerSequence BigInt                                     @default(0)
+  retainedFromServerSequence BigInt                                     @default(0)
   nextServerSequence         BigInt
-  nextProviderSequence       BigInt                                   @default(0)
-  snapshotSchemaVersion      Int                                      @default(1)
-  phase                      String                                   @db.Text
+  nextProviderSequence       BigInt                                     @default(0)
+  snapshotSchemaVersion      Int                                        @default(1)
+  phase                      String                                     @db.Text
   contextRevision            Int
-  contextDigest              String                                   @db.Char(64)
-  routeMode                  String                                   @db.Text
+  contextDigest              String                                     @db.Char(64)
+  routeMode                  String                                     @db.Text
   fullDuplexCertified        Boolean
   maxMissionAudioBytes       Int
-  audioBytes                 Int                                      @default(0)
+  audioBytes                 Int                                        @default(0)
   missionState               Json
   turnState                  Json?
-  finalTranscriptRecorded    Boolean                                  @default(false)
-  terminalReason             String?                                  @db.Text
+  finalTranscriptRecorded    Boolean                                    @default(false)
+  terminalReason             String?                                    @db.Text
   terminalServerSequence     BigInt?
-  closedAt                   DateTime?                                @db.Timestamptz(6)
-  hardExpiresAt              DateTime                                 @db.Timestamptz(6)
-  replayGraceExpiresAt       DateTime                                 @db.Timestamptz(6)
-  retentionExpiresAt         DateTime                                 @db.Timestamptz(6)
-  createdAt                  DateTime                                 @db.Timestamptz(6)
-  updatedAt                  DateTime                                 @db.Timestamptz(6)
+  closedAt                   DateTime?                                  @db.Timestamptz(6)
+  hardExpiresAt              DateTime                                   @db.Timestamptz(6)
+  replayGraceExpiresAt       DateTime                                   @db.Timestamptz(6)
+  retentionExpiresAt         DateTime                                   @db.Timestamptz(6)
+  createdAt                  DateTime                                   @db.Timestamptz(6)
+  updatedAt                  DateTime                                   @db.Timestamptz(6)
   outbox                     RealtimeMistralConversationOutboxEvent[]
   commands                   RealtimeMistralConversationCommand[]
   resumeTickets              RealtimeMistralConversationResumeTicket[]
 
+  @@unique([initialBootstrapId, companyId], map: "mistral_conversation_mission_bootstrap_tenant_key")
   @@unique([companyId, sessionHandle], map: "realtime_mistral_conversation_missions_session_key")
   @@unique([id, companyId, sessionHandle], map: "realtime_mistral_conversation_missions_tenant_binding")
   @@unique([id, companyId, sessionHandle, admissionSessionId], map: "realtime_mistral_conversation_missions_admission_binding")
@@ -1390,45 +1445,72 @@ model RealtimeMistralConversationMission {
   @@map("realtime_mistral_conversation_missions")
 }
 
+/// Preuve terminale minimale, immuable et sans contenu utilisateur. Elle survit à la purge de la
+/// Mission afin qu'une reprise tardive puisse distinguer une fermeture certaine d'une session
+/// inconnue. Seule la suppression de la Company entraîne sa suppression en cascade.
+model RealtimeMistralConversationTerminalReceipt {
+  companyId              String   @db.Text
+  company                Company  @relation(fields: [companyId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  sessionHandle          String   @db.Text
+  subjectHash            String   @db.Char(64)
+  subjectKeyVersion      Int
+  protocol               String   @db.Text
+  missionConnectionEpoch Int
+  nextServerSequence     BigInt
+  terminalReason         String   @db.Text
+  closedAt               DateTime @db.Timestamptz(6)
+  createdAt              DateTime @default(now()) @db.Timestamptz(6)
+
+  @@id([companyId, sessionHandle], map: "mistral_terminal_receipt_pkey")
+  @@map("realtime_mistral_conversation_terminal_receipts")
+}
+
 /// Capacité HTTP -> WSS one-shot dédiée à la reprise Mistral v2. Le ticket brut et le token de
 /// connexion ne sont jamais persistés : seuls leurs SHA-256 vivent ici. Une consommation réussie
 /// est atomique avec le takeover ou le replay terminal de la mission liée.
 model RealtimeMistralConversationResumeTicket {
-  id                                   String                             @id @default(uuid()) @db.Uuid
-  companyId                            String                             @db.Text
-  company                              Company                            @relation(fields: [companyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  missionId                            String                             @db.Uuid
-  mission                              RealtimeMistralConversationMission @relation(fields: [missionId, companyId, sessionHandle, admissionSessionId], references: [id, companyId, sessionHandle, admissionSessionId], onDelete: Cascade, onUpdate: Cascade)
-  sessionHandle                        String                             @db.Text
-  admissionSessionId                   String                             @db.Uuid
-  ticketHash                           String                             @unique(map: "realtime_mistral_conversation_resume_tickets_hash_key") @db.Char(64)
-  protocol                             String                             @db.Text
-  scope                                String                             @db.Text
-  state                                String                             @db.Text
-  subjectHash                          String                             @db.Char(64)
+  id                                   String                                      @id @default(uuid()) @db.Uuid
+  companyId                            String                                      @db.Text
+  company                              Company                                     @relation(fields: [companyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  missionId                            String                                      @db.Uuid
+  mission                              RealtimeMistralConversationMission          @relation(fields: [missionId, companyId, sessionHandle, admissionSessionId], references: [id, companyId, sessionHandle, admissionSessionId], onDelete: Cascade, onUpdate: Cascade)
+  purpose                              String                                      @default("standard_resume") @db.Text
+  initialBootstrapId                   String?                                     @db.Uuid
+  initialBootstrap                     RealtimeMistralConversationBootstrapTicket? @relation("MistralBootstrapReconciliationResumeTickets", fields: [initialBootstrapId, companyId], references: [id, companyId], onDelete: Restrict, onUpdate: Cascade)
+  reconciliationAttempt                Int?
+  reconciliationKeyVersion             Int?
+  sessionHandle                        String                                      @db.Text
+  admissionSessionId                   String                                      @db.Uuid
+  ticketHash                           String                                      @unique(map: "realtime_mistral_conversation_resume_tickets_hash_key") @db.Char(64)
+  protocol                             String                                      @db.Text
+  scope                                String                                      @db.Text
+  state                                String                                      @db.Text
+  subjectHash                          String                                      @db.Char(64)
   subjectKeyVersion                    Int
-  plan                                 String                             @db.Text
+  plan                                 String                                      @db.Text
   expectedMissionConnectionEpoch       Int
   clientAcceptedMissionConnectionEpoch Int
   resumeNextServerSequence             BigInt
   contextRevision                      Int
-  contextDigest                        String                             @db.Char(64)
-  routeMode                            String                             @db.Text
+  contextDigest                        String                                      @db.Char(64)
+  routeMode                            String                                      @db.Text
   fullDuplexCertified                  Boolean
   maxMissionAudioBytes                 Int
-  hardExpiresAt                        DateTime                           @db.Timestamptz(6)
-  replayGraceExpiresAt                 DateTime                           @db.Timestamptz(6)
-  issuedAt                             DateTime                           @db.Timestamptz(6)
-  expiresAt                            DateTime                           @db.Timestamptz(6)
-  consumedAt                           DateTime?                          @db.Timestamptz(6)
+  hardExpiresAt                        DateTime                                    @db.Timestamptz(6)
+  replayGraceExpiresAt                 DateTime                                    @db.Timestamptz(6)
+  issuedAt                             DateTime                                    @db.Timestamptz(6)
+  expiresAt                            DateTime                                    @db.Timestamptz(6)
+  consumedAt                           DateTime?                                   @db.Timestamptz(6)
   consumedMissionConnectionEpoch       Int?
-  replayConnectionId                   String?                            @unique(map: "mistral_resume_tickets_replay_connection_key") @db.Uuid
-  connectionLeaseTokenHash             String?                            @unique(map: "mistral_resume_tickets_connection_token_key") @db.Char(64)
-  connectionLeaseExpiresAt             DateTime?                          @db.Timestamptz(6)
+  replayConnectionId                   String?                                     @unique(map: "mistral_resume_tickets_replay_connection_key") @db.Uuid
+  connectionLeaseTokenHash             String?                                     @unique(map: "mistral_resume_tickets_connection_token_key") @db.Char(64)
+  connectionLeaseExpiresAt             DateTime?                                   @db.Timestamptz(6)
   maxAcknowledgableServerSequence      BigInt?
-  retentionExpiresAt                   DateTime                           @db.Timestamptz(6)
-  version                              Int                                @default(1)
+  retentionExpiresAt                   DateTime                                    @db.Timestamptz(6)
+  version                              Int                                         @default(1)
 
+  @@unique([companyId, initialBootstrapId, reconciliationAttempt], map: "mistral_resume_reconciliation_attempt_key")
+  @@index([companyId, initialBootstrapId, state, expiresAt], map: "mistral_resume_reconciliation_state_idx")
   @@index([companyId, missionId, state, expiresAt], map: "realtime_mistral_conversation_resume_tickets_mission_state_idx")
   @@index([companyId, ticketHash, protocol], map: "realtime_mistral_conversation_resume_tickets_lookup_idx")
   @@index([companyId, subjectHash, missionId, state, expiresAt], map: "realtime_mistral_conversation_resume_tickets_subject_state_idx")
@@ -1482,6 +1564,55 @@ model RealtimeMistralConversationCommand {
   @@index([missionId, companyId, sessionHandle], map: "realtime_mistral_conversation_commands_mission_idx")
   @@index([retentionExpiresAt], map: "realtime_mistral_conversation_commands_retention_idx")
   @@map("realtime_mistral_conversation_commands")
+}
+
+/// Registre global (non tenant, sans secret) des plages de clés de persistance Mistral et HMAC
+/// sujet Bob Live. Chaque famille reste isolée par keySpace et monotone sous triggers SQL.
+model RealtimeMistralConversationKeyVersionFloor {
+  keySpace       String   @id(map: "mistral_key_floor_pkey") @db.VarChar(64)
+  minimumVersion Int
+  highestVersion Int
+  createdAt      DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime @default(now()) @db.Timestamptz(6)
+
+  @@map("realtime_mistral_conversation_key_version_floors")
+}
+
+/// Engagement SHA-256 append-only du matériau associé à chaque version et keySpace. L'empreinte
+/// n'est pas un secret ; elle empêche toute réutilisation silencieuse d'un numéro avec une autre clé.
+model RealtimeMistralConversationKeyBinding {
+  keySpace       String   @db.VarChar(64)
+  keyVersion     Int
+  keyFingerprint String   @db.Char(64)
+  createdAt      DateTime @default(now()) @db.Timestamptz(6)
+
+  @@id([keySpace, keyVersion], name: "mistral_key_binding_pkey")
+  @@unique([keySpace, keyFingerprint], map: "mistral_key_binding_fingerprint_key")
+  @@map("realtime_mistral_conversation_key_bindings")
+}
+
+/// Plage globale des versions AEAD admises pour toute nouvelle preuve bootstrap. Le registre est
+/// distinct de la persistance Mission/r2 afin que leurs writers et rétentions restent indépendants.
+model RealtimeMistralConversationIdentityKeyVersionFloor {
+  keySpace       String   @id(map: "mistral_identity_key_floor_pkey") @db.VarChar(64)
+  minimumVersion Int
+  highestVersion Int
+  createdAt      DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime @default(now()) @db.Timestamptz(6)
+
+  @@map("realtime_mistral_conversation_identity_key_version_floors")
+}
+
+/// Engagement SHA-256 append-only d'une version de clé identité. Aucun secret n'est stocké.
+model RealtimeMistralConversationIdentityKeyBinding {
+  keySpace       String   @db.VarChar(64)
+  keyVersion     Int
+  keyFingerprint String   @db.Char(64)
+  createdAt      DateTime @default(now()) @db.Timestamptz(6)
+
+  @@id([keySpace, keyVersion], name: "mistral_identity_key_binding_pkey")
+  @@unique([keySpace, keyFingerprint], map: "mistral_identity_key_binding_fingerprint_key")
+  @@map("realtime_mistral_conversation_identity_key_bindings")
 }
 
 /// Segment audio Bob Live rendu hors du canal WebRTC descendant. La base ne conserve ni texte,
@@ -1900,7 +2031,7 @@ model Subscription {
   stripeCustomerId     String?
   stripeSubscriptionId String?
   stripeLastEventId    String?
-  stripeLastSyncedAt   DateTime?           @db.Timestamptz(6)
+  stripeLastSyncedAt   DateTime?          @db.Timestamptz(6)
   createdAt            DateTime           @default(now())
   updatedAt            DateTime           @updatedAt
 

@@ -33,6 +33,19 @@ import {
   validateMistralConversationPersistenceKeyRing,
   type MistralConversationPersistenceKeyRing,
 } from './mistral-conversation-outbox-seal';
+import {
+  hashRealtimeLeaseToken,
+  isRealtimeCompanyId,
+  isRealtimeDatabaseHardExpiryProof,
+  isRealtimeSessionId,
+  isRealtimeSubjectHash,
+} from './realtime-admission';
+import { parseMistralConversationProviderCallId } from './mistral-conversation-admission';
+import type {
+  MistralConversationReaperTerminationAuthority,
+  MistralConversationReaperTerminationResult,
+} from './mistral-conversation-reaper-termination';
+import type { RealtimeProviderTerminationRequest } from './realtime-provider-registry';
 
 const INT32_MAX = 0x7fff_ffff;
 const UINT32_MAX_PLUS_ONE = 0x1_0000_0000;
@@ -109,6 +122,19 @@ interface CommandRow {
   readonly missionConnectionEpoch: number;
   readonly firstServerSequence: bigint;
   readonly eventCount: number;
+}
+
+interface ReapingLeaseRow {
+  readonly companyId: string;
+  readonly subjectHash: string;
+  readonly sessionId: string;
+  readonly state: string;
+  readonly providerId: string | null;
+  readonly providerCallId: string | null;
+  readonly reaperTokenHash: string | null;
+  readonly leaseExpiresAt: Date;
+  readonly hardExpiresAt: Date;
+  readonly version: number;
 }
 
 interface ReplaySlice {
@@ -331,7 +357,8 @@ function closeDurably(
  * Autorité Mistral v2 PostgreSQL. Aucun fallback mémoire : corruption, clé absente ou erreur SQL
  * retourne `unavailable`. Tous les succès passent par une transaction tenant et un verrou mission.
  */
-export class PrismaMistralConversationDurableAuthority implements MistralConversationDurableAuthority {
+export class PrismaMistralConversationDurableAuthority
+implements MistralConversationDurableAuthority, MistralConversationReaperTerminationAuthority {
   private readonly replayGraceMs: number;
   private readonly missionId: () => string;
   private readonly recoveryCancellationId: () => string;
@@ -613,6 +640,7 @@ export class PrismaMistralConversationDurableAuthority implements MistralConvers
     if (this.prisma.inTransaction()) return { status: 'unavailable' };
     try {
       return await this.prisma.withTenant(input.companyId, async (tx) => {
+        await this.lockMissionKey(tx, input.companyId, input.sessionHandle);
         const row = await this.lockMission(tx, input.companyId, input.sessionHandle);
         if (!row) return { status: 'not_found' as const };
         const current = snapshotFromRow(row);
@@ -623,7 +651,8 @@ export class PrismaMistralConversationDurableAuthority implements MistralConvers
           || row.missionConnectionEpoch !== input.missionConnectionEpoch
         ) return { status: 'not_owner' as const };
 
-        const databaseNow = await this.databaseNow(tx);
+        const admissionFence = await this.inspectBootstrapAdmission(tx, row);
+        const databaseNow = admissionFence.databaseNow;
         if (row.replayGraceExpiresAt.getTime() <= databaseNow.getTime()) {
           return { status: 'expired' as const };
         }
@@ -632,6 +661,13 @@ export class PrismaMistralConversationDurableAuthority implements MistralConvers
           || input.command.type === 'close'
           || (input.command.type === 'drain' && input.command.reason === 'expired');
         if (hardExpired && !terminalGraceCommand) return { status: 'expired' as const };
+        // Après H, le bail d'admission n'est plus actif par définition. La classification
+        // temporelle doit donc gagner sur `not_owner`, tandis que seules les commandes
+        // strictement terminales restent admises durant la grâce de replay. Avant H, le fence
+        // d'admission reste obligatoire et aucune mutation live ne peut survivre à sa perte.
+        if (!hardExpired && !admissionFence.active) {
+          return { status: 'not_owner' as const };
+        }
 
         // Pendant la grâce terminale, l'idempotence d'un ACK est portée par le curseur monotone
         // lui-même. Ne pas la déléguer au ledger : celui-ci ne possède pas le delta précédent et
@@ -773,6 +809,108 @@ export class PrismaMistralConversationDurableAuthority implements MistralConvers
     }
   }
 
+  async terminateReaping(
+    request: RealtimeProviderTerminationRequest,
+  ): Promise<MistralConversationReaperTerminationResult> {
+    const bootstrapId = parseMistralConversationProviderCallId(request.providerCallId);
+    const reaperLeaseExpiresAt = canonicalDate(request.reaperLeaseExpiresAt);
+    if (
+      bootstrapId === null
+      || request.providerId !== 'mistral'
+      || !isRealtimeCompanyId(request.companyId)
+      || !isRealtimeSubjectHash(request.subjectHash)
+      || !isRealtimeSessionId(request.sessionId)
+      || request.sessionId !== request.sessionId.toLowerCase()
+      || !/^[A-Za-z0-9_-]{32,128}$/u.test(request.reaperToken)
+      || reaperLeaseExpiresAt === null
+    ) return { status: 'invalid' };
+    if (this.prisma.inTransaction()) return { status: 'unavailable' };
+    try {
+      return await this.prisma.withTenant(request.companyId, async (tx) => {
+        // Ordre commun v2 : advisory Mission -> Mission -> admission.
+        await this.lockMissionKey(tx, request.companyId, request.sessionId);
+        const row = await this.lockMission(tx, request.companyId, request.sessionId);
+        if (
+          !row
+          || row.initialBootstrapId !== bootstrapId
+          || row.admissionSessionId !== request.sessionId
+          || row.subjectHash.trim() !== request.subjectHash
+        ) return { status: 'invalid' as const };
+        const [lease] = await tx.$queryRaw<ReapingLeaseRow[]>`
+          SELECT "companyId", "subjectHash", "sessionId", state, "providerId", "providerCallId",
+                 "reaperTokenHash", "leaseExpiresAt", "hardExpiresAt", version
+            FROM realtime_session_leases
+           WHERE "companyId" = ${request.companyId}
+             AND "subjectHash" = ${request.subjectHash}
+             AND "sessionId" = ${request.sessionId}::uuid
+           FOR UPDATE
+        `;
+        const databaseNow = await this.databaseNow(tx);
+        if (
+          !lease
+          || lease.companyId !== request.companyId
+          || lease.subjectHash.trim() !== request.subjectHash
+          || lease.sessionId !== request.sessionId
+          || lease.state !== 'reaping'
+          || lease.providerId !== 'mistral'
+          || lease.providerCallId !== request.providerCallId
+          || lease.reaperTokenHash?.trim() !== hashRealtimeLeaseToken(request.reaperToken)
+          || lease.leaseExpiresAt.toISOString() !== request.reaperLeaseExpiresAt
+          || lease.leaseExpiresAt.getTime() <= databaseNow.getTime()
+          || lease.hardExpiresAt.getTime() !== row.hardExpiresAt.getTime()
+          || row.replayGraceExpiresAt.getTime() <= databaseNow.getTime()
+        ) return { status: 'stale_fence' as const };
+        if (request.hardExpiryProof !== null) {
+          const proof = request.hardExpiryProof;
+          if (
+            !isRealtimeDatabaseHardExpiryProof(proof)
+            || proof.companyId !== request.companyId
+            || proof.subjectHash !== request.subjectHash
+            || proof.sessionId !== request.sessionId
+            || proof.providerId !== 'mistral'
+            || proof.providerCallId !== request.providerCallId
+            || proof.hardExpiresAt !== lease.hardExpiresAt.toISOString()
+            || proof.leaseVersion !== lease.version
+            || Date.parse(proof.databaseObservedAt) < lease.hardExpiresAt.getTime()
+          ) return { status: 'invalid' as const };
+        }
+
+        const current = snapshotFromRow(row);
+        if (current.mission.phase === 'closed') return { status: 'replayed' as const };
+        const reason: MistralConversationSessionEndReason = request.terminationCause === 'explicit_hangup'
+          ? 'user'
+          : request.hardExpiryProof !== null
+            ? 'expired'
+            : 'fatal_error';
+        const terminalized = closeDurably(current, reason);
+        let persistenceRow = row;
+        for (const step of terminalized.steps) {
+          await this.appendEvents(tx, {
+            companyId: row.companyId,
+            missionId: row.id,
+            sessionHandle: row.sessionHandle,
+            retentionExpiresAt: row.retentionExpiresAt,
+            events: step.events,
+          });
+          if (!await this.updateMissionUnderReaperFence(
+            tx,
+            persistenceRow,
+            step.snapshot,
+            lease,
+            request,
+          )) throw new Error('Mistral conversation reaper fence lost.');
+          persistenceRow = {
+            ...persistenceRow,
+            version: BigInt(step.snapshot.version),
+          };
+        }
+        return { status: 'terminated' as const };
+      });
+    } catch {
+      return { status: 'unavailable' };
+    }
+  }
+
   /**
    * Reclasse une erreur SQL qui a franchi H après le premier clock check. La lecture se fait dans
    * une nouvelle transaction racine, donc après rollback certain des événements/side-effects de
@@ -853,6 +991,56 @@ export class PrismaMistralConversationDurableAuthority implements MistralConvers
        FOR UPDATE
     `;
     return row ?? null;
+  }
+
+  private async inspectBootstrapAdmission(
+    tx: Prisma.TransactionClient,
+    row: MissionRow,
+  ): Promise<{ readonly active: boolean; readonly databaseNow: Date }> {
+    const [bootstrap] = await tx.$queryRaw<Array<{ state: string }>>`
+      SELECT state
+        FROM realtime_mistral_conversation_bootstrap_tickets
+       WHERE "companyId" = ${row.companyId}
+         AND id = ${row.initialBootstrapId}::uuid
+       LIMIT 1
+    `;
+    // Missions v2 antérieures au bootstrap atomique : replay terminal uniquement. Leur reprise
+    // live reste désactivée ailleurs ; ne pas rendre leur clôture historique impossible.
+    if (!bootstrap) {
+      return { active: true, databaseNow: await this.databaseNow(tx) };
+    }
+    if (bootstrap.state !== 'consumed' || row.admissionSessionId === null) {
+      return { active: false, databaseNow: await this.databaseNow(tx) };
+    }
+    const [admission] = await tx.$queryRaw<Array<{
+      readonly state: string;
+      readonly providerId: string | null;
+      readonly providerCallId: string | null;
+      readonly leaseExpiresAt: Date;
+      readonly hardExpiresAt: Date;
+    }>>`
+      SELECT state, "providerId", "providerCallId", "leaseExpiresAt", "hardExpiresAt"
+        FROM realtime_session_leases
+       WHERE "companyId" = ${row.companyId}
+         AND "subjectHash" = ${row.subjectHash.trim()}
+         AND "sessionId" = ${row.admissionSessionId}::uuid
+       FOR UPDATE
+    `;
+    // L'horloge autoritative est lue après le verrou d'admission. Un reaper ne peut donc pas
+    // déplacer le bail vers `reaping` entre la preuve temporelle et la décision de mutation.
+    const databaseNow = await this.databaseNow(tx);
+    return {
+      active: Boolean(
+        admission
+        && admission.state === 'active'
+        && admission.providerId === 'mistral'
+        && admission.providerCallId === `mcv2:${row.initialBootstrapId}`
+        && admission.leaseExpiresAt.getTime() > databaseNow.getTime()
+        && admission.hardExpiresAt.getTime() > databaseNow.getTime()
+        && admission.hardExpiresAt.getTime() === row.hardExpiresAt.getTime(),
+      ),
+      databaseNow,
+    };
   }
 
   private async insertMission(
@@ -946,6 +1134,68 @@ export class PrismaMistralConversationDurableAuthority implements MistralConvers
          AND (
            (${allowDuringReplayGrace} AND "replayGraceExpiresAt" > clock_timestamp())
            OR (NOT ${allowDuringReplayGrace} AND "hardExpiresAt" > clock_timestamp())
+         )
+    `;
+    return updated === 1;
+  }
+
+  private async updateMissionUnderReaperFence(
+    tx: Prisma.TransactionClient,
+    row: MissionRow,
+    snapshot: MistralConversationDurableSnapshot,
+    lease: ReapingLeaseRow,
+    request: RealtimeProviderTerminationRequest,
+  ): Promise<boolean> {
+    const missionJson = JSON.stringify(snapshot.mission);
+    const turnJson = snapshot.turn === null ? null : JSON.stringify(snapshot.turn);
+    const terminalServerSequence = snapshot.mission.phase === 'closed'
+      ? BigInt(snapshot.nextServerSequence - 1)
+      : null;
+    const updated = await tx.$executeRaw`
+      UPDATE realtime_mistral_conversation_missions AS mission
+         SET version = ${BigInt(snapshot.version)},
+             "acknowledgedServerSequence" = ${BigInt(snapshot.acknowledgedServerSequence)},
+             "nextServerSequence" = ${BigInt(snapshot.nextServerSequence)},
+             "nextProviderSequence" = ${BigInt(snapshot.nextProviderSequence)},
+             "contextRevision" = ${snapshot.mission.contextRevision},
+             "contextDigest" = ${snapshot.mission.contextDigest},
+             "routeMode" = ${snapshot.mission.routeMode},
+             "fullDuplexCertified" = ${snapshot.mission.fullDuplexCertified},
+             "audioBytes" = ${snapshot.mission.audioBytes},
+             "missionState" = ${missionJson}::jsonb,
+             "turnState" = ${turnJson}::jsonb,
+             "finalTranscriptRecorded" = ${snapshot.finalTranscriptRecorded},
+             phase = ${snapshot.mission.phase},
+             "terminalReason" = ${snapshot.mission.drainReason},
+             "terminalServerSequence" = ${terminalServerSequence},
+             "closedAt" = CASE
+               WHEN ${snapshot.mission.phase} = 'closed'
+                 THEN COALESCE(mission."closedAt", clock_timestamp())
+               ELSE NULL
+             END,
+             "updatedAt" = clock_timestamp()
+       WHERE mission.id = ${row.id}::uuid
+         AND mission."companyId" = ${row.companyId}
+         AND mission."sessionHandle" = ${row.sessionHandle}
+         AND mission.version = ${row.version}
+         AND mission."missionConnectionEpoch" = ${row.missionConnectionEpoch}
+         AND mission."ownerTokenHash" = ${row.ownerTokenHash.trim()}
+         AND mission."replayGraceExpiresAt" > clock_timestamp()
+         AND EXISTS (
+           SELECT 1
+             FROM realtime_session_leases AS admission
+            WHERE admission."companyId" = ${request.companyId}
+              AND admission."subjectHash" = ${request.subjectHash}
+              AND admission."sessionId" = ${request.sessionId}::uuid
+              AND admission.state = 'reaping'
+              AND admission."providerId" = 'mistral'
+              AND admission."providerCallId" = ${request.providerCallId}
+              AND admission."reaperTokenHash" = ${hashRealtimeLeaseToken(request.reaperToken)}
+              -- Le token hash + la version constituent le fence exact. Ne jamais réinjecter ici
+              -- le timestamptz lu en JS : PostgreSQL conserve les microsecondes, JS Date seulement
+              -- les millisecondes, ce qui ferait perdre un CAS pourtant légitime.
+              AND admission."leaseExpiresAt" > clock_timestamp()
+              AND admission.version = ${lease.version}
          )
     `;
     return updated === 1;

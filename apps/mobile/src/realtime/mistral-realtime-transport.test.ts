@@ -127,6 +127,7 @@ function harness(
     permission?: boolean;
     capture?: boolean;
     mismatch?: boolean;
+    protocolV2?: boolean;
     createCallGate?: Promise<void>;
     captureGate?: Promise<void>;
     stopCapture?: () => Promise<void>;
@@ -159,6 +160,32 @@ function harness(
   const createCall = vi.fn(async (request: RealtimeVoiceCallInput) => {
     if (request.transport !== 'mistral-pcm') throw new Error('unexpected transport');
     await input.createCallGate;
+    if (input.protocolV2) {
+      return ok({
+        transport: 'mistral-pcm' as const,
+        websocketUrl: 'wss://api.bob.test/v1/voice/realtime/mistral',
+        companyId: 'company-1',
+        ticket: `b2_${Buffer.alloc(32, 4).toString('base64url')}`,
+        protocol: 'bob.mistral-pcm.v2' as const,
+        ticketExpiresAt: new Date(NOW + 30_000).toISOString(),
+        maxMissionAudioBytes: 1_920_000,
+        contextRevision: request.context.revision,
+        contextDigest: CONTEXT_DIGEST,
+        routeMode: 'push_to_talk' as const,
+        fullDuplexCertified: false as const,
+        sessionHandle: request.sessionHandle ?? SESSION,
+        hardExpiresAt: new Date(NOW + 60_000).toISOString(),
+        model: NEGOTIATION.model,
+        voice: NEGOTIATION.voice,
+        configVersion: NEGOTIATION.configVersion,
+        maxSessionSeconds: NEGOTIATION.maxSessionSeconds,
+        speechSourcePolicy: {
+          mode: 'signed-url-v1' as const,
+          allowedOrigin: 'https://project.supabase.co',
+          allowedPathPrefix: `/storage/v1/object/sign/bob-live-audio/companies/company-1/bob-live/${SESSION}/`,
+        },
+      });
+    }
     return ok({
       transport: 'mistral-pcm' as const,
       websocketUrl: 'wss://api.bob.test/v1/voice/realtime/mistral',
@@ -292,6 +319,16 @@ describe('MistralRealtimeTransport', () => {
     });
     expect(mismatch.hangup).toHaveBeenCalledWith(SESSION);
     expect(mismatch.startCapture).not.toHaveBeenCalled();
+  });
+
+  it('refuse explicitement v2 dans le transport v1 historique', async () => {
+    const h = harness({ protocolV2: true });
+
+    await expect(h.transport.connect()).rejects.toMatchObject({ reason: 'bootstrap_failed' });
+
+    expect(h.hangup).toHaveBeenCalledWith(SESSION);
+    expect(h.startCapture).not.toHaveBeenCalled();
+    expect(h.socket.sent).toHaveLength(0);
   });
 
   it('navigation pendant un ticket lié au contexte ferme et émet un seul repli', async () => {

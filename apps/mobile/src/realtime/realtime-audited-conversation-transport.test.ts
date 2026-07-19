@@ -14,6 +14,7 @@ import type {
   RealtimeTransportMetrics,
   RealtimeTransportState,
 } from './realtime-transport';
+import type { RealtimePublishedContextFence } from './realtime-control-gate';
 
 const SESSION = '00000000-0000-4000-8000-000000000001';
 const TURN = '00000000-0000-4000-8000-000000000002';
@@ -59,6 +60,7 @@ class FakeUplink implements RealtimeAuditedUplinkTransport {
   sessionHandle: string | null = SESSION;
   lease: ProcessAudioLease | null = LEASE;
   policy = POLICY as typeof POLICY | null;
+  emitCommitOnFinish = false;
 
   subscribe(listener: (event: RealtimeTransportEvent) => void): () => void {
     this.listeners.add(listener);
@@ -76,8 +78,15 @@ class FakeUplink implements RealtimeAuditedUplinkTransport {
 
   sendUserText(): boolean { return true; }
   setMicrophoneEnabled(enabled: boolean): void { this.log.push(`mic:${enabled}`); }
+  async synchronizePublishedContext(fence: RealtimePublishedContextFence): Promise<boolean> {
+    this.log.push(`context:r${fence.contextRevision}`);
+    return true;
+  }
   async finishUserInput(): Promise<boolean> {
     this.log.push('uplink:finish');
+    if (this.emitCommitOnFinish) {
+      this.emit({ type: 'user_input_committed', turnId: TURN });
+    }
     return true;
   }
   interrupt(reason: 'user_speech' | 'tap' | 'navigation'): boolean {
@@ -96,9 +105,13 @@ class FakeUplink implements RealtimeAuditedUplinkTransport {
   }
 }
 
-function harness(input: { readonly oneShot?: boolean } = {}) {
+function harness(input: {
+  readonly oneShot?: boolean;
+  readonly emitCommitOnFinish?: boolean;
+} = {}) {
   const uplink = new FakeUplink();
   uplink.completesConversationAfterAuditedSpeech = input.oneShot === true;
+  uplink.emitCommitOnFinish = input.emitCommitOnFinish === true;
   const playerListeners = new Set<(event: RealtimeAuditedSpeechPlayerEvent) => void>();
   const log = uplink.log;
   let dependencies: RealtimeAuditedSpeechPlayerDependencies | null = null;
@@ -227,6 +240,29 @@ describe('RealtimeAuditedConversationTransport', () => {
     ]);
   });
 
+  it('synchronise la fence WSS et garde le micro coupé pendant toute sortie auditée', async () => {
+    const value = harness();
+    await value.transport.connect();
+    await expect(value.transport.synchronizePublishedContext({
+      sessionHandle: SESSION,
+      contextRevision: 2,
+      contextDigest: DIGEST,
+    })).resolves.toBe(true);
+    value.transport.setMicrophoneEnabled(true);
+    value.emitPlayer({ type: 'speech_started', sequence: 1, atMs: 10 });
+    value.transport.setMicrophoneEnabled(true);
+    value.emitPlayer({ type: 'speech_completed', sequence: 1, atMs: 11 });
+
+    expect(value.log).toEqual([
+      'uplink:connect',
+      'player:start',
+      'context:r2',
+      'mic:true',
+      'mic:false',
+      'mic:true',
+    ]);
+  });
+
   it('conserve l’uplink et son lease si le player ne confirme pas son arrêt', async () => {
     const value = harness();
     await value.transport.connect();
@@ -286,6 +322,101 @@ describe('RealtimeAuditedConversationTransport', () => {
       expect(events.filter((event) => event.type === 'fallback')).toEqual([
         { type: 'fallback', reason: 'provider_error' },
       ]);
+      await value.transport.close('fallback');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('arme le watchdog sur le commit VAD autoritatif sans appel manuel', async () => {
+    vi.useFakeTimers();
+    try {
+      const value = harness();
+      const events: RealtimeTransportEvent[] = [];
+      value.transport.subscribe((event) => events.push(event));
+      await value.transport.connect();
+
+      value.uplink.emit({ type: 'user_input_committed', turnId: TURN });
+      expect(vi.getTimerCount()).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      expect(events).toContainEqual({ type: 'user_input_committed', turnId: TURN });
+      expect(events).toContainEqual({ type: 'error', code: 'audited_speech_response_timeout' });
+      await value.transport.close('fallback');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('ne double pas le watchdog quand finishUserInput relaie aussi le commit autoritatif', async () => {
+    vi.useFakeTimers();
+    try {
+      const value = harness({ emitCommitOnFinish: true });
+      await value.transport.connect();
+
+      await expect(value.transport.finishUserInput()).resolves.toBe(true);
+
+      expect(vi.getTimerCount()).toBe(1);
+      expect(value.log.filter((entry) => entry === 'uplink:finish')).toHaveLength(1);
+      await value.transport.close('user');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('n’arme rien sur annulation et annule le watchdog courant sur navigation', async () => {
+    vi.useFakeTimers();
+    try {
+      const value = harness();
+      const events: RealtimeTransportEvent[] = [];
+      value.transport.subscribe((event) => events.push(event));
+      await value.transport.connect();
+      value.uplink.emit({
+        type: 'state',
+        state: { ...value.uplink.state, phase: 'user_speaking' },
+      });
+      value.uplink.emit({
+        type: 'state',
+        state: { ...value.uplink.state, phase: 'ready' },
+      });
+      expect(vi.getTimerCount()).toBe(0);
+
+      value.uplink.emit({ type: 'user_input_committed', turnId: TURN });
+      expect(vi.getTimerCount()).toBe(1);
+
+      value.transport.interrupt('navigation');
+      value.uplink.emit({
+        type: 'state',
+        state: { ...value.uplink.state, phase: 'ready' },
+      });
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      expect(events).not.toContainEqual({
+        type: 'error',
+        code: 'audited_speech_response_timeout',
+      });
+      await value.transport.close('navigation');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('borne aussi une réponse continue qui ne produit aucun son audité', async () => {
+    vi.useFakeTimers();
+    try {
+      const value = harness();
+      const events: RealtimeTransportEvent[] = [];
+      value.transport.subscribe((event) => events.push(event));
+      await value.transport.connect();
+      value.transport.setMicrophoneEnabled(true);
+      await value.transport.finishUserInput();
+
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      expect(events).toContainEqual({ type: 'error', code: 'audited_speech_response_timeout' });
+      expect(value.log.at(-1)).toBe('mic:false');
       await value.transport.close('fallback');
     } finally {
       vi.useRealTimers();

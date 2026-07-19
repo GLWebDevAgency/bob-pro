@@ -275,11 +275,17 @@ export class MistralConversationServerEventStream {
   }
 
   /**
-   * ACK uniquement à un point stable : jamais au milieu du batch de takeover, ni après close.
+   * ACK uniquement à un point stable : jamais au milieu du batch de takeover.
+   *
+   * `session.closed` ferme définitivement l'entrée métier, mais son curseur terminal doit encore
+   * être ACKé : une reprise `replay_only` attend précisément cette preuve avant de libérer sa
+   * capability one-shot. L'ACK reste une projection pure et idempotente du curseur ; un retry
+   * produit donc exactement la même trame, sans rouvrir le flux ni avancer la séquence.
+   *
    * L'appelant doit l'émettre après avoir réduit l'événement accepté dans sa projection locale.
    */
   acknowledgement(): Extract<MistralConversationClientControl, { readonly type: 'events.ack' }> | null {
-    if (!this.readyAccepted || this.recoveryPending || this.terminal || this.activeMissionConnectionEpoch < 1) {
+    if (!this.readyAccepted || this.recoveryPending || this.activeMissionConnectionEpoch < 1) {
       return null;
     }
     return {

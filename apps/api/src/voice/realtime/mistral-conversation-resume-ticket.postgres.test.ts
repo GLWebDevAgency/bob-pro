@@ -1,4 +1,4 @@
-import { randomInt, randomUUID } from 'node:crypto';
+import { createHash, randomInt, randomUUID } from 'node:crypto';
 import { PrismaClient, type Prisma } from '@prisma/client';
 import {
   MISTRAL_CONVERSATION_PROTOCOL,
@@ -28,7 +28,6 @@ import {
 } from './mistral-conversation-resume-ticket';
 
 const RUN_POSTGRES_CERT = process.env.RUN_POSTGRES_MISTRAL_CONVERSATION_CERT === 'true';
-const SUBJECT_HASH = 'd'.repeat(64);
 const CONTEXT_DIGEST = 'a'.repeat(64);
 const MAX_REPLAY_EVENTS = 256;
 const MAX_REPLAY_BYTES = 240 * 1024;
@@ -120,18 +119,25 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
       };
     }
 
+    function digest(label: string): string {
+      return createHash('sha256')
+        .update(`mistral-resume-cert:${suffix}:${label}`, 'utf8')
+        .digest('hex');
+    }
+
     function grant(
       label: string,
-      options: { readonly tenant?: string; readonly hardExpiresAt?: string } = {},
+      options: { readonly hardExpiresAt?: string; readonly subjectHash?: string } = {},
     ): MistralConversationBootstrapGrant {
+      const admissionSessionId = randomUUID().toLowerCase();
       return {
         bootstrapId: randomUUID(),
-        admissionSessionId: randomUUID(),
-        companyId: options.tenant ?? companyId,
-        subjectHash: SUBJECT_HASH,
+        admissionSessionId,
+        companyId,
+        subjectHash: options.subjectHash ?? digest(`subject:${label}`),
         subjectKeyVersion: 1,
         plan: 'pro',
-        sessionHandle: `mistral_${suffix}_${label}`,
+        sessionHandle: admissionSessionId,
         hardExpiresAt: options.hardExpiresAt
           ?? new Date(Date.now() + 15 * 60_000).toISOString(),
         contextRevision: 1,
@@ -140,6 +146,160 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         fullDuplexCertified: false,
         maxMissionAudioBytes: 320_000,
       };
+    }
+
+    async function seedGrantEvidence(
+      missionGrant: MistralConversationBootstrapGrant,
+    ): Promise<void> {
+      const now = Date.now();
+      const hardExpiresAt = new Date(missionGrant.hardExpiresAt);
+      if (
+        !Number.isFinite(hardExpiresAt.getTime())
+        || hardExpiresAt.getTime() <= now
+        || missionGrant.sessionHandle !== missionGrant.admissionSessionId.toLowerCase()
+      ) throw new Error('Invalid exact Mistral resume certification grant.');
+      const issuedAt = new Date(now - 1_000);
+      const ticketExpiresAt = new Date(Math.min(now + 60_000, hardExpiresAt.getTime()));
+      const retentionExpiresAt = new Date(hardExpiresAt.getTime() + 24 * 60 * 60_000);
+      const leaseTokenHash = digest(`lease:${missionGrant.bootstrapId}`);
+      const ticketHash = digest(`ticket:${missionGrant.bootstrapId}`);
+      const providerCallId = `mcv2:${missionGrant.bootstrapId}`;
+      const [identityRange] = await admin.$queryRaw<Array<{ minimumVersion: number }>>`
+        SELECT "minimumVersion"
+          FROM realtime_mistral_conversation_identity_key_version_floors
+         WHERE "keySpace" = 'mistral-conversation-bootstrap-identity-v1'
+      `;
+      if (!identityRange || identityRange.minimumVersion < 1) {
+        throw new Error('Mistral identity key range missing for resume certification.');
+      }
+
+      await admin.$transaction(async (tx) => {
+        await tx.$executeRaw`
+          INSERT INTO realtime_session_leases (
+            "companyId", "subjectHash", "sessionId", "leaseTokenHash", state,
+            "providerId", "providerCallId", "reservedAt", "leaseExpiresAt", "hardExpiresAt",
+            "activatedAt", "contextSchemaVersion", "contextRevision", "contextPayload",
+            "contextDigest", "contextUpdatedAt", "updatedAt", version
+          ) VALUES (
+            ${missionGrant.companyId}, ${missionGrant.subjectHash},
+            ${missionGrant.admissionSessionId}::uuid, ${leaseTokenHash}, 'active', 'mistral',
+            ${providerCallId}, ${issuedAt}, ${hardExpiresAt}, ${hardExpiresAt}, ${issuedAt}, 1,
+            ${missionGrant.contextRevision}, ${JSON.stringify({ screen: { name: '/certification' } })}::jsonb,
+            ${missionGrant.contextDigest}, ${issuedAt}, ${issuedAt}, 3
+          )
+          ON CONFLICT ("companyId", "subjectHash") DO NOTHING
+        `;
+        const [lease] = await tx.$queryRaw<Array<{
+          sessionId: string;
+          leaseTokenHash: string;
+          state: string;
+          providerId: string | null;
+          providerCallId: string | null;
+          hardExpiresAt: Date;
+        }>>`
+          SELECT "sessionId"::text AS "sessionId", btrim("leaseTokenHash") AS "leaseTokenHash",
+                 state, "providerId", "providerCallId", "hardExpiresAt"
+            FROM realtime_session_leases
+           WHERE "companyId" = ${missionGrant.companyId}
+             AND "subjectHash" = ${missionGrant.subjectHash}
+        `;
+        if (
+          !lease
+          || lease.sessionId !== missionGrant.admissionSessionId
+          || lease.leaseTokenHash !== leaseTokenHash
+          || lease.state !== 'active'
+          || lease.providerId !== 'mistral'
+          || lease.providerCallId !== providerCallId
+          || lease.hardExpiresAt.toISOString() !== missionGrant.hardExpiresAt
+        ) throw new Error('Mistral resume certification lease diverged.');
+
+        await tx.$executeRaw`
+          INSERT INTO realtime_mistral_conversation_bootstrap_tickets (
+            id, "companyId", "admissionSessionId", "sessionHandle", "subjectHash",
+            "subjectKeyVersion", "admissionLeaseTokenHash", "ticketHash", protocol, state, plan,
+            "contextSchemaVersion", "contextRevision", "contextSnapshot", "contextDigest",
+            "userIdentityCiphertext", "userIdentityNonce", "userIdentityTag",
+            "identityEncryptionKeyVersion", "routeMode", "fullDuplexCertified",
+            "maxMissionAudioBytes", "issuedAt", "ticketExpiresAt", "leaseExpiresAt",
+            "hardExpiresAt", "consumedAt", "retentionExpiresAt", version, "updatedAt"
+          ) VALUES (
+            ${missionGrant.bootstrapId}::uuid, ${missionGrant.companyId},
+            ${missionGrant.admissionSessionId}::uuid, ${missionGrant.sessionHandle},
+            ${missionGrant.subjectHash}, ${missionGrant.subjectKeyVersion}, ${leaseTokenHash},
+            ${ticketHash}, ${MISTRAL_CONVERSATION_PROTOCOL}, 'issued', ${missionGrant.plan}, 1,
+            ${missionGrant.contextRevision},
+            ${JSON.stringify({ version: 1, revision: missionGrant.contextRevision, context: {} })}::jsonb,
+            ${missionGrant.contextDigest}, decode('aa', 'hex'), decode(repeat('11', 12), 'hex'),
+            decode(repeat('22', 16), 'hex'), ${identityRange.minimumVersion},
+            ${missionGrant.routeMode}, ${missionGrant.fullDuplexCertified},
+            ${missionGrant.maxMissionAudioBytes}, ${issuedAt}, ${ticketExpiresAt},
+            ${hardExpiresAt}, ${hardExpiresAt}, NULL, ${retentionExpiresAt}, 1, ${issuedAt}
+          )
+          ON CONFLICT (id) DO NOTHING
+        `;
+        const [bootstrap] = await tx.$queryRaw<Array<{
+          companyId: string;
+          admissionSessionId: string;
+          sessionHandle: string;
+          subjectHash: string;
+          subjectKeyVersion: number;
+          state: string;
+          hardExpiresAt: Date;
+        }>>`
+          SELECT "companyId", "admissionSessionId"::text AS "admissionSessionId",
+                 "sessionHandle", btrim("subjectHash") AS "subjectHash", "subjectKeyVersion",
+                 state, "hardExpiresAt"
+            FROM realtime_mistral_conversation_bootstrap_tickets
+           WHERE id = ${missionGrant.bootstrapId}::uuid
+        `;
+        if (
+          !bootstrap
+          || bootstrap.companyId !== missionGrant.companyId
+          || bootstrap.admissionSessionId !== missionGrant.admissionSessionId
+          || bootstrap.sessionHandle !== missionGrant.sessionHandle
+          || bootstrap.subjectHash !== missionGrant.subjectHash
+          || bootstrap.subjectKeyVersion !== missionGrant.subjectKeyVersion
+          || !['issued', 'consumed'].includes(bootstrap.state)
+          || bootstrap.hardExpiresAt.toISOString() !== missionGrant.hardExpiresAt
+        ) throw new Error('Mistral resume certification bootstrap diverged.');
+      });
+    }
+
+    async function consumeGrantEvidence(
+      missionGrant: MistralConversationBootstrapGrant,
+    ): Promise<void> {
+      await admin.$transaction(async (tx) => {
+        const [mission] = await tx.$queryRaw<Array<{ exists: boolean }>>`
+          SELECT EXISTS (
+            SELECT 1
+              FROM realtime_mistral_conversation_missions
+             WHERE "companyId" = ${missionGrant.companyId}
+               AND "initialBootstrapId" = ${missionGrant.bootstrapId}::uuid
+          ) AS "exists"
+        `;
+        if (!mission?.exists) return;
+        await tx.$executeRaw`
+          UPDATE realtime_mistral_conversation_bootstrap_tickets
+             SET state = 'consumed', "consumedAt" = clock_timestamp(), version = 2,
+                 "updatedAt" = clock_timestamp()
+           WHERE id = ${missionGrant.bootstrapId}::uuid
+             AND "companyId" = ${missionGrant.companyId}
+             AND state = 'issued'
+        `;
+        const [bootstrap] = await tx.$queryRaw<Array<{
+          state: string;
+          version: number;
+          consumedAt: Date | null;
+        }>>`
+          SELECT state, version, "consumedAt"
+            FROM realtime_mistral_conversation_bootstrap_tickets
+           WHERE id = ${missionGrant.bootstrapId}::uuid
+             AND "companyId" = ${missionGrant.companyId}
+        `;
+        if (bootstrap?.state !== 'consumed' || bootstrap.version !== 2 || !bootstrap.consumedAt) {
+          throw new Error('Mistral resume certification bootstrap was not consumed exactly.');
+        }
+      });
     }
 
     function owner(label: string): string {
@@ -151,7 +311,8 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
       missionGrant: MistralConversationBootstrapGrant,
       ownerLeaseToken: string,
     ): Promise<MistralConversationDurableOpenResult> {
-      return authority.open({
+      await seedGrantEvidence(missionGrant);
+      const result = await authority.open({
         grant: missionGrant,
         ownerLeaseToken,
         resumeNextServerSequence: 0,
@@ -159,6 +320,8 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         maxReplayBytes: MAX_REPLAY_BYTES,
         signal: new AbortController().signal,
       });
+      await consumeGrantEvidence(missionGrant);
+      return result;
     }
 
     async function transition(
@@ -380,6 +543,14 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
               DELETE FROM realtime_mistral_conversation_missions
                WHERE "companyId" IN (${companyId}, ${otherCompanyId})
             `;
+            await tx.$executeRaw`
+              DELETE FROM realtime_mistral_conversation_bootstrap_tickets
+               WHERE "companyId" IN (${companyId}, ${otherCompanyId})
+            `;
+            await tx.$executeRaw`
+              DELETE FROM realtime_session_leases
+               WHERE "companyId" IN (${companyId}, ${otherCompanyId})
+            `;
           }).catch(() => undefined);
           await admin.company.deleteMany({
             where: { id: { in: [companyId, otherCompanyId] } },
@@ -490,26 +661,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         },
       );
       const prepareLiveTicket = async (label: string, subjectHash: string) => {
-        const missionGrant = {
-          ...grant(label),
-          subjectHash,
-        };
-        const leaseTokenHash = randomUUID().replaceAll('-', '').repeat(2);
-        await admin.$executeRaw`
-          INSERT INTO realtime_session_leases (
-            "companyId", "subjectHash", "sessionId", "leaseTokenHash", state,
-            "providerId", "providerCallId", "reservedAt", "leaseExpiresAt", "hardExpiresAt",
-            "activatedAt", "contextSchemaVersion", "contextRevision", "contextPayload",
-            "contextDigest", "contextUpdatedAt", "updatedAt", version
-          ) VALUES (
-            ${companyId}, ${subjectHash}, ${missionGrant.admissionSessionId}::uuid,
-            ${leaseTokenHash}, 'active', 'mistral', ${`resume-cert-${label}`},
-            clock_timestamp(), clock_timestamp() + interval '5 minutes',
-            ${missionGrant.hardExpiresAt}::timestamptz, clock_timestamp(), 1,
-            ${missionGrant.contextRevision}, ${JSON.stringify({ screen: { name: 'Certification' } })}::jsonb,
-            ${missionGrant.contextDigest}, clock_timestamp(), clock_timestamp(), 1
-          )
-        `;
+        const missionGrant = grant(label, { subjectHash });
         const created = await openMission(
           durableAuthorities[0],
           missionGrant,
@@ -950,6 +1102,52 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
       await expect(
         resumeAuthorities[0].acknowledgeTerminal(acknowledgementInput),
       ).resolves.toEqual({ status: 'replayed' });
+    }, 30_000);
+
+    it('confirme le terminal acquitté sans émettre une nouvelle capability', async () => {
+      const closed = await closeMission('terminal_complete');
+      const ticket = await issueTerminal(resumeAuthorities[0], closed.grant, closed.snapshot);
+      const replay = await redeemTerminal(resumeAuthorities[0], ticket);
+      terminalReplay(replay);
+
+      await expect(resumeAuthorities[0].acknowledgeTerminal({
+        companyId,
+        subjectHash: closed.grant.subjectHash,
+        sessionHandle: closed.grant.sessionHandle,
+        missionConnectionEpoch: replay.snapshot.missionConnectionEpoch,
+        replayConnectionId: replay.terminalAcknowledgement.replayConnectionId,
+        connectionLeaseToken: replay.terminalAcknowledgement.connectionLeaseToken,
+        nextServerSequence: replay.snapshot.nextServerSequence,
+        signal: new AbortController().signal,
+      })).resolves.toEqual({ status: 'applied' });
+
+      const ticketsBefore = await ticketEvidence(closed.grant.sessionHandle);
+      const terminalComplete = await resumeAuthorities[1].issue({
+        companyId,
+        subjectHash: closed.grant.subjectHash,
+        subjectKeyVersion: closed.grant.subjectKeyVersion,
+        sessionHandle: closed.grant.sessionHandle,
+        clientAcceptedMissionConnectionEpoch: replay.snapshot.missionConnectionEpoch,
+        resumeNextServerSequence: replay.snapshot.nextServerSequence,
+        signal: new AbortController().signal,
+      });
+      expect(terminalComplete).toMatchObject({
+        status: 'terminal_complete',
+        receipt: {
+          companyId,
+          sessionHandle: closed.grant.sessionHandle,
+          protocol: MISTRAL_CONVERSATION_PROTOCOL,
+          missionConnectionEpoch: replay.snapshot.missionConnectionEpoch,
+          nextServerSequence: replay.snapshot.nextServerSequence,
+          reason: 'user',
+        },
+      });
+      if (terminalComplete.status !== 'terminal_complete') {
+        throw new Error('Expected terminal receipt proof.');
+      }
+      expect(new Date(terminalComplete.receipt.closedAt).toISOString())
+        .toBe(terminalComplete.receipt.closedAt);
+      expect(await ticketEvidence(closed.grant.sessionHandle)).toEqual(ticketsBefore);
     }, 30_000);
 
     it('expire la capacité ACK selon l’horloge PostgreSQL sans avancer le curseur', async () => {

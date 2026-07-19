@@ -46,10 +46,16 @@ BEGIN
     'realtime_admission_events',
     'realtime_session_leases',
     'realtime_mistral_ingress_tickets',
+    'realtime_mistral_conversation_bootstrap_tickets',
     'realtime_mistral_conversation_missions',
+    'realtime_mistral_conversation_terminal_receipts',
     'realtime_mistral_conversation_resume_tickets',
     'realtime_mistral_conversation_outbox',
     'realtime_mistral_conversation_commands',
+    'realtime_mistral_conversation_key_version_floors',
+    'realtime_mistral_conversation_key_bindings',
+    'realtime_mistral_conversation_identity_key_version_floors',
+    'realtime_mistral_conversation_identity_key_bindings',
     'realtime_speech_artifacts',
     'realtime_control_grants',
     'realtime_control_consumptions',
@@ -271,6 +277,24 @@ CREATE POLICY tenant_isolation ON realtime_mistral_ingress_tickets
   USING ("companyId" = current_setting('app.current_company_id', true))
   WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
 
+DROP POLICY IF EXISTS tenant_isolation ON realtime_mistral_conversation_bootstrap_tickets;
+DROP POLICY IF EXISTS realtime_mistral_conversation_bootstrap_select
+  ON realtime_mistral_conversation_bootstrap_tickets;
+DROP POLICY IF EXISTS realtime_mistral_conversation_bootstrap_insert
+  ON realtime_mistral_conversation_bootstrap_tickets;
+DROP POLICY IF EXISTS realtime_mistral_conversation_bootstrap_update
+  ON realtime_mistral_conversation_bootstrap_tickets;
+CREATE POLICY realtime_mistral_conversation_bootstrap_select
+  ON realtime_mistral_conversation_bootstrap_tickets FOR SELECT
+  USING ("companyId" = current_setting('app.current_company_id', true));
+CREATE POLICY realtime_mistral_conversation_bootstrap_insert
+  ON realtime_mistral_conversation_bootstrap_tickets FOR INSERT
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+CREATE POLICY realtime_mistral_conversation_bootstrap_update
+  ON realtime_mistral_conversation_bootstrap_tickets FOR UPDATE
+  USING ("companyId" = current_setting('app.current_company_id', true))
+  WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+
 -- Mission v2 mutable uniquement par CAS. L'absence volontaire de policy DELETE réserve la purge
 -- post-rétention au reaper privilégié ; l'owner brut n'est jamais présent dans cette table.
 DROP POLICY IF EXISTS tenant_isolation ON realtime_mistral_conversation_missions;
@@ -287,6 +311,21 @@ CREATE POLICY realtime_mistral_conversation_mission_update
   ON realtime_mistral_conversation_missions FOR UPDATE
   USING ("companyId" = current_setting('app.current_company_id', true))
   WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+
+-- Reçu terminal append-only, sans payload utilisateur. Le tenant peut uniquement le relire ;
+-- son écriture est réservée au propriétaire de la fonction trigger SECURITY DEFINER.
+DROP POLICY IF EXISTS tenant_isolation ON realtime_mistral_conversation_terminal_receipts;
+DROP POLICY IF EXISTS realtime_mistral_terminal_receipt_select
+  ON realtime_mistral_conversation_terminal_receipts;
+DROP POLICY IF EXISTS realtime_mistral_terminal_receipt_direct_insert
+  ON realtime_mistral_conversation_terminal_receipts;
+CREATE POLICY realtime_mistral_terminal_receipt_select
+  ON realtime_mistral_conversation_terminal_receipts FOR SELECT
+  USING ("companyId" = current_setting('app.current_company_id', true));
+CREATE POLICY realtime_mistral_terminal_receipt_direct_insert
+  ON realtime_mistral_conversation_terminal_receipts FOR INSERT
+  TO CURRENT_USER
+  WITH CHECK (true);
 
 DROP POLICY IF EXISTS tenant_isolation ON realtime_mistral_conversation_resume_tickets;
 DROP POLICY IF EXISTS realtime_mistral_conversation_resume_ticket_select
@@ -327,6 +366,297 @@ CREATE POLICY realtime_mistral_conversation_command_select
 CREATE POLICY realtime_mistral_conversation_command_insert
   ON realtime_mistral_conversation_commands FOR INSERT
   WITH CHECK ("companyId" = current_setting('app.current_company_id', true));
+
+-- Autorité globale de rétention Mistral v2. Le rôle NOLOGIN n'obtient aucun contexte tenant :
+-- il ne voit que les groupes arrivés après grâce + rétention. SELECT/lock voit volontairement
+-- tous les enfants d'une Mission éligible afin qu'une rétention enfant plus longue bloque la
+-- purge atomique ; DELETE reste strictement limité aux enfants eux-mêmes expirés.
+DROP POLICY IF EXISTS realtime_mistral_conversation_bootstrap_reaper_select
+  ON realtime_mistral_conversation_bootstrap_tickets;
+DROP POLICY IF EXISTS realtime_mistral_conversation_bootstrap_reaper_lock
+  ON realtime_mistral_conversation_bootstrap_tickets;
+DROP POLICY IF EXISTS realtime_mistral_conversation_bootstrap_reaper_delete
+  ON realtime_mistral_conversation_bootstrap_tickets;
+CREATE POLICY realtime_mistral_conversation_bootstrap_reaper_select
+  ON realtime_mistral_conversation_bootstrap_tickets FOR SELECT
+  USING (
+    current_user = 'bob_mistral_bootstrap_reaper'
+    AND "retentionExpiresAt" <= clock_timestamp()
+  );
+CREATE POLICY realtime_mistral_conversation_bootstrap_reaper_lock
+  ON realtime_mistral_conversation_bootstrap_tickets FOR UPDATE
+  USING (
+    current_user = 'bob_mistral_bootstrap_reaper'
+    AND "retentionExpiresAt" <= clock_timestamp()
+  )
+  WITH CHECK (false);
+CREATE POLICY realtime_mistral_conversation_bootstrap_reaper_delete
+  ON realtime_mistral_conversation_bootstrap_tickets FOR DELETE
+  USING (
+    current_user = 'bob_mistral_bootstrap_reaper'
+    AND "retentionExpiresAt" <= clock_timestamp()
+  );
+
+DROP POLICY IF EXISTS realtime_mistral_conversation_mission_reaper_select
+  ON realtime_mistral_conversation_missions;
+DROP POLICY IF EXISTS realtime_mistral_conversation_mission_reaper_lock
+  ON realtime_mistral_conversation_missions;
+DROP POLICY IF EXISTS realtime_mistral_conversation_mission_reaper_delete
+  ON realtime_mistral_conversation_missions;
+CREATE POLICY realtime_mistral_conversation_mission_reaper_select
+  ON realtime_mistral_conversation_missions FOR SELECT
+  USING (
+    current_user = 'bob_mistral_bootstrap_reaper'
+    AND "replayGraceExpiresAt" <= clock_timestamp()
+    AND "retentionExpiresAt" <= clock_timestamp()
+  );
+CREATE POLICY realtime_mistral_conversation_mission_reaper_lock
+  ON realtime_mistral_conversation_missions FOR UPDATE
+  USING (
+    current_user = 'bob_mistral_bootstrap_reaper'
+    AND phase = 'closed'
+    AND "replayGraceExpiresAt" <= clock_timestamp()
+    AND "retentionExpiresAt" <= clock_timestamp()
+  )
+  WITH CHECK (false);
+CREATE POLICY realtime_mistral_conversation_mission_reaper_delete
+  ON realtime_mistral_conversation_missions FOR DELETE
+  USING (
+    current_user = 'bob_mistral_bootstrap_reaper'
+    AND phase = 'closed'
+    AND "replayGraceExpiresAt" <= clock_timestamp()
+    AND "retentionExpiresAt" <= clock_timestamp()
+  );
+
+DROP POLICY IF EXISTS realtime_mistral_terminal_receipt_reaper_select
+  ON realtime_mistral_conversation_terminal_receipts;
+CREATE POLICY realtime_mistral_terminal_receipt_reaper_select
+  ON realtime_mistral_conversation_terminal_receipts FOR SELECT
+  USING (
+    current_user = 'bob_mistral_bootstrap_reaper'
+    AND EXISTS (
+      SELECT 1
+        FROM public.realtime_mistral_conversation_missions AS mission
+       WHERE mission."companyId" =
+             realtime_mistral_conversation_terminal_receipts."companyId"
+         AND mission."sessionHandle" =
+             realtime_mistral_conversation_terminal_receipts."sessionHandle"
+         AND mission.phase = 'closed'
+         AND mission."replayGraceExpiresAt" <= clock_timestamp()
+         AND mission."retentionExpiresAt" <= clock_timestamp()
+    )
+  );
+
+DROP POLICY IF EXISTS realtime_mistral_conversation_resume_reaper_select
+  ON realtime_mistral_conversation_resume_tickets;
+DROP POLICY IF EXISTS realtime_mistral_conversation_resume_reaper_lock
+  ON realtime_mistral_conversation_resume_tickets;
+DROP POLICY IF EXISTS realtime_mistral_conversation_resume_reaper_delete
+  ON realtime_mistral_conversation_resume_tickets;
+CREATE POLICY realtime_mistral_conversation_resume_reaper_select
+  ON realtime_mistral_conversation_resume_tickets FOR SELECT
+  USING (
+    current_user = 'bob_mistral_bootstrap_reaper'
+    AND EXISTS (
+      SELECT 1
+        FROM public.realtime_mistral_conversation_missions AS mission
+       WHERE mission.id = realtime_mistral_conversation_resume_tickets."missionId"
+         AND mission."companyId" = realtime_mistral_conversation_resume_tickets."companyId"
+         AND mission."sessionHandle" = realtime_mistral_conversation_resume_tickets."sessionHandle"
+         AND mission.phase = 'closed'
+         AND mission."replayGraceExpiresAt" <= clock_timestamp()
+         AND mission."retentionExpiresAt" <= clock_timestamp()
+    )
+  );
+CREATE POLICY realtime_mistral_conversation_resume_reaper_lock
+  ON realtime_mistral_conversation_resume_tickets FOR UPDATE
+  USING (
+    current_user = 'bob_mistral_bootstrap_reaper'
+    AND EXISTS (
+      SELECT 1
+        FROM public.realtime_mistral_conversation_missions AS mission
+       WHERE mission.id = realtime_mistral_conversation_resume_tickets."missionId"
+         AND mission."companyId" = realtime_mistral_conversation_resume_tickets."companyId"
+         AND mission."sessionHandle" = realtime_mistral_conversation_resume_tickets."sessionHandle"
+         AND mission.phase = 'closed'
+         AND mission."replayGraceExpiresAt" <= clock_timestamp()
+         AND mission."retentionExpiresAt" <= clock_timestamp()
+    )
+  )
+  WITH CHECK (false);
+CREATE POLICY realtime_mistral_conversation_resume_reaper_delete
+  ON realtime_mistral_conversation_resume_tickets FOR DELETE
+  USING (
+    current_user = 'bob_mistral_bootstrap_reaper'
+    AND realtime_mistral_conversation_resume_tickets."retentionExpiresAt" <= clock_timestamp()
+    AND EXISTS (
+      SELECT 1
+        FROM public.realtime_mistral_conversation_missions AS mission
+       WHERE mission.id = realtime_mistral_conversation_resume_tickets."missionId"
+         AND mission."companyId" = realtime_mistral_conversation_resume_tickets."companyId"
+         AND mission."sessionHandle" = realtime_mistral_conversation_resume_tickets."sessionHandle"
+         AND mission.phase = 'closed'
+         AND mission."replayGraceExpiresAt" <= clock_timestamp()
+         AND mission."retentionExpiresAt" <= clock_timestamp()
+    )
+  );
+
+DROP POLICY IF EXISTS realtime_mistral_conversation_outbox_reaper_select
+  ON realtime_mistral_conversation_outbox;
+DROP POLICY IF EXISTS realtime_mistral_conversation_outbox_reaper_delete
+  ON realtime_mistral_conversation_outbox;
+CREATE POLICY realtime_mistral_conversation_outbox_reaper_select
+  ON realtime_mistral_conversation_outbox FOR SELECT
+  USING (
+    current_user = 'bob_mistral_bootstrap_reaper'
+    AND EXISTS (
+      SELECT 1
+        FROM public.realtime_mistral_conversation_missions AS mission
+       WHERE mission.id = realtime_mistral_conversation_outbox."missionId"
+         AND mission."companyId" = realtime_mistral_conversation_outbox."companyId"
+         AND mission."sessionHandle" = realtime_mistral_conversation_outbox."sessionHandle"
+         AND mission.phase = 'closed'
+         AND mission."replayGraceExpiresAt" <= clock_timestamp()
+         AND mission."retentionExpiresAt" <= clock_timestamp()
+    )
+  );
+CREATE POLICY realtime_mistral_conversation_outbox_reaper_delete
+  ON realtime_mistral_conversation_outbox FOR DELETE
+  USING (
+    current_user = 'bob_mistral_bootstrap_reaper'
+    AND realtime_mistral_conversation_outbox."retentionExpiresAt" <= clock_timestamp()
+    AND EXISTS (
+      SELECT 1
+        FROM public.realtime_mistral_conversation_missions AS mission
+       WHERE mission.id = realtime_mistral_conversation_outbox."missionId"
+         AND mission."companyId" = realtime_mistral_conversation_outbox."companyId"
+         AND mission."sessionHandle" = realtime_mistral_conversation_outbox."sessionHandle"
+         AND mission.phase = 'closed'
+         AND mission."replayGraceExpiresAt" <= clock_timestamp()
+         AND mission."retentionExpiresAt" <= clock_timestamp()
+    )
+  );
+
+DROP POLICY IF EXISTS realtime_mistral_conversation_command_reaper_select
+  ON realtime_mistral_conversation_commands;
+DROP POLICY IF EXISTS realtime_mistral_conversation_command_reaper_delete
+  ON realtime_mistral_conversation_commands;
+CREATE POLICY realtime_mistral_conversation_command_reaper_select
+  ON realtime_mistral_conversation_commands FOR SELECT
+  USING (
+    current_user = 'bob_mistral_bootstrap_reaper'
+    AND EXISTS (
+      SELECT 1
+        FROM public.realtime_mistral_conversation_missions AS mission
+       WHERE mission.id = realtime_mistral_conversation_commands."missionId"
+         AND mission."companyId" = realtime_mistral_conversation_commands."companyId"
+         AND mission."sessionHandle" = realtime_mistral_conversation_commands."sessionHandle"
+         AND mission.phase = 'closed'
+         AND mission."replayGraceExpiresAt" <= clock_timestamp()
+         AND mission."retentionExpiresAt" <= clock_timestamp()
+    )
+  );
+CREATE POLICY realtime_mistral_conversation_command_reaper_delete
+  ON realtime_mistral_conversation_commands FOR DELETE
+  USING (
+    current_user = 'bob_mistral_bootstrap_reaper'
+    AND realtime_mistral_conversation_commands."retentionExpiresAt" <= clock_timestamp()
+    AND EXISTS (
+      SELECT 1
+        FROM public.realtime_mistral_conversation_missions AS mission
+       WHERE mission.id = realtime_mistral_conversation_commands."missionId"
+         AND mission."companyId" = realtime_mistral_conversation_commands."companyId"
+         AND mission."sessionHandle" = realtime_mistral_conversation_commands."sessionHandle"
+         AND mission.phase = 'closed'
+         AND mission."replayGraceExpiresAt" <= clock_timestamp()
+         AND mission."retentionExpiresAt" <= clock_timestamp()
+    )
+  );
+
+DROP POLICY IF EXISTS realtime_session_lease_mistral_retention_reaper_select
+  ON realtime_session_leases;
+CREATE POLICY realtime_session_lease_mistral_retention_reaper_select
+  ON realtime_session_leases FOR SELECT
+  USING (
+    current_user = 'bob_mistral_bootstrap_reaper'
+    AND EXISTS (
+      SELECT 1
+        FROM public.realtime_mistral_conversation_bootstrap_tickets AS bootstrap
+        JOIN public.realtime_mistral_conversation_missions AS mission
+          ON mission."companyId" = bootstrap."companyId"
+         AND mission."initialBootstrapId" = bootstrap.id
+       WHERE bootstrap."admissionSessionId" = realtime_session_leases."sessionId"
+         AND bootstrap."companyId" = realtime_session_leases."companyId"
+         AND mission."replayGraceExpiresAt" <= clock_timestamp()
+         AND mission."retentionExpiresAt" <= clock_timestamp()
+    )
+  );
+
+-- Registres globaux sans secret ni donnée tenant, isolés par keySpace (persistance et HMAC sujet).
+-- Le runtime peut seulement lire ; DIRECT_URL prépare/retire pendant le protocole CD en deux phases.
+DROP POLICY IF EXISTS realtime_mistral_conversation_key_version_floor_select
+  ON realtime_mistral_conversation_key_version_floors;
+CREATE POLICY realtime_mistral_conversation_key_version_floor_select
+  ON realtime_mistral_conversation_key_version_floors FOR SELECT
+  USING (true);
+DROP POLICY IF EXISTS realtime_mistral_conversation_key_version_floor_direct_insert
+  ON realtime_mistral_conversation_key_version_floors;
+CREATE POLICY realtime_mistral_conversation_key_version_floor_direct_insert
+  ON realtime_mistral_conversation_key_version_floors FOR INSERT
+  TO CURRENT_USER
+  WITH CHECK (true);
+DROP POLICY IF EXISTS realtime_mistral_conversation_key_version_floor_direct_update
+  ON realtime_mistral_conversation_key_version_floors;
+CREATE POLICY realtime_mistral_conversation_key_version_floor_direct_update
+  ON realtime_mistral_conversation_key_version_floors FOR UPDATE
+  TO CURRENT_USER
+  USING (true)
+  WITH CHECK (true);
+
+DROP POLICY IF EXISTS realtime_mistral_conversation_key_binding_select
+  ON realtime_mistral_conversation_key_bindings;
+CREATE POLICY realtime_mistral_conversation_key_binding_select
+  ON realtime_mistral_conversation_key_bindings FOR SELECT
+  USING (true);
+DROP POLICY IF EXISTS realtime_mistral_conversation_key_binding_direct_insert
+  ON realtime_mistral_conversation_key_bindings;
+CREATE POLICY realtime_mistral_conversation_key_binding_direct_insert
+  ON realtime_mistral_conversation_key_bindings FOR INSERT
+  TO CURRENT_USER
+  WITH CHECK (true);
+
+-- Le key-space AEAD identité est indépendant mais possède la même frontière de privilèges :
+-- lecture globale sans secret pour le runtime, stage/retire exclusivement via DIRECT_URL.
+DROP POLICY IF EXISTS realtime_mistral_identity_key_floor_select
+  ON realtime_mistral_conversation_identity_key_version_floors;
+CREATE POLICY realtime_mistral_identity_key_floor_select
+  ON realtime_mistral_conversation_identity_key_version_floors FOR SELECT
+  USING (true);
+DROP POLICY IF EXISTS realtime_mistral_identity_key_floor_direct_insert
+  ON realtime_mistral_conversation_identity_key_version_floors;
+CREATE POLICY realtime_mistral_identity_key_floor_direct_insert
+  ON realtime_mistral_conversation_identity_key_version_floors FOR INSERT
+  TO CURRENT_USER
+  WITH CHECK (true);
+DROP POLICY IF EXISTS realtime_mistral_identity_key_floor_direct_update
+  ON realtime_mistral_conversation_identity_key_version_floors;
+CREATE POLICY realtime_mistral_identity_key_floor_direct_update
+  ON realtime_mistral_conversation_identity_key_version_floors FOR UPDATE
+  TO CURRENT_USER
+  USING (true)
+  WITH CHECK (true);
+
+DROP POLICY IF EXISTS realtime_mistral_identity_key_binding_select
+  ON realtime_mistral_conversation_identity_key_bindings;
+CREATE POLICY realtime_mistral_identity_key_binding_select
+  ON realtime_mistral_conversation_identity_key_bindings FOR SELECT
+  USING (true);
+DROP POLICY IF EXISTS realtime_mistral_identity_key_binding_direct_insert
+  ON realtime_mistral_conversation_identity_key_bindings;
+CREATE POLICY realtime_mistral_identity_key_binding_direct_insert
+  ON realtime_mistral_conversation_identity_key_bindings FOR INSERT
+  TO CURRENT_USER
+  WITH CHECK (true);
 
 DROP POLICY IF EXISTS tenant_isolation ON realtime_speech_artifacts;
 DROP POLICY IF EXISTS realtime_speech_artifact_select ON realtime_speech_artifacts;

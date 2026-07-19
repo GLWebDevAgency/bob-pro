@@ -10,6 +10,9 @@ const BINDING = {
   companyId: 'company-1',
   subjectHash: 'a'.repeat(64),
   sessionId: '11111111-1111-4111-8111-111111111111',
+  reaperToken: 'R'.repeat(43),
+  reaperLeaseExpiresAt: '2026-07-14T10:00:30.000Z',
+  terminationCause: 'lease_expired',
 } as const;
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
@@ -128,6 +131,38 @@ describe('Bob Live — registre de terminaison provider', () => {
     await expect(Promise.all([first, retry])).resolves.toEqual([undefined, undefined]);
   });
 
+  it('ne coalesce jamais deux fences reaper distinctes pour le même call fournisseur', async () => {
+    const firstGate = deferred();
+    const hangupCall = vi.fn((input: Parameters<RealtimeProviderTerminationAdapter['hangupCall']>[0]) => (
+      input.reaperToken === BINDING.reaperToken ? firstGate.promise : Promise.resolve()
+    ));
+    const registry = new RealtimeProviderTerminationRegistry([{
+      providerId: 'mistral',
+      hangupCall,
+    }]);
+
+    const first = registry.hangupCall({
+      ...BINDING,
+      providerId: 'mistral',
+      providerCallId: 'mcv2:30000000-0000-4000-8000-000000000001',
+      hardExpiryProof: null,
+    });
+    const nextFence = registry.hangupCall({
+      ...BINDING,
+      providerId: 'mistral',
+      providerCallId: 'mcv2:30000000-0000-4000-8000-000000000001',
+      reaperToken: 'S'.repeat(43),
+      reaperLeaseExpiresAt: '2026-07-14T10:01:30.000Z',
+      hardExpiryProof: null,
+    });
+    await Promise.resolve();
+    await nextFence;
+
+    expect(hangupCall).toHaveBeenCalledTimes(2);
+    firstGate.resolve();
+    await first;
+  });
+
   it('valide aussi les adapters non typés à la frontière runtime', () => {
     const invalid = { providerId: 'unknown', hangupCall: vi.fn() } as unknown as RealtimeProviderTerminationAdapter;
     expect(() => new RealtimeProviderTerminationRegistry([invalid]))
@@ -147,7 +182,10 @@ describe('Bob Live — registre de terminaison provider', () => {
     await registry.hangupCall({
       ...BINDING, providerId: 'openai', providerCallId: 'rtc_immutable', hardExpiryProof: null,
     });
-    expect(original).toHaveBeenCalledWith('rtc_immutable');
+    expect(original).toHaveBeenCalledWith(expect.objectContaining({
+      providerCallId: 'rtc_immutable',
+      reaperToken: BINDING.reaperToken,
+    }));
     expect(replacement).not.toHaveBeenCalled();
   });
 });

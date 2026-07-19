@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { MISTRAL_CONVERSATION_PROTOCOL } from '@bob/ai';
 import { Metrics } from '../../observability/metrics';
 import { requestContext, setPrincipal, type AppLogger } from '../../observability/logger';
 import { InMemoryRealtimeAdmission } from './realtime-admission.testing';
@@ -13,6 +14,7 @@ import {
   parseRealtimeCallBody,
   parseRealtimeControlAcknowledgementBody,
   parseRealtimeContextBody,
+  parseRealtimeResumeTicketBody,
   safetyIdentifier,
 } from './realtime.service';
 import { RealtimeProviderCallCompensatedError } from './openai-realtime-call.adapter';
@@ -21,8 +23,13 @@ import type { RealtimeDurableControlPort } from './realtime-control';
 import type { RealtimeAgentTurnPort } from './realtime-agent-turn';
 import type { OpenAiRealtimeCallProvider, RealtimeVoiceSettings } from './realtime.types';
 import type { MistralRealtimeIngressTicketAuthority } from './realtime-mistral-ingress-ticket';
-import { RealtimeProviderTerminationRegistry } from './realtime-provider-registry';
+import {
+  RealtimeProviderTerminationRegistry,
+  realtimeProviderTerminationAdapter,
+} from './realtime-provider-registry';
 import { MistralRealtimeTerminationAuthority } from './mistral-realtime-termination';
+import type { MistralConversationResumeAuthority } from './mistral-conversation-resume-ticket';
+import type { MistralConversationBootstrapTicketAuthority } from './mistral-conversation-bootstrap-ticket';
 
 const OFFER_SDP = 'v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n';
 const SETTINGS: RealtimeVoiceSettings = {
@@ -44,6 +51,7 @@ const SETTINGS: RealtimeVoiceSettings = {
   localAuditToken: null,
   mistralTargetDelayMs: 240,
   mistralWebsocketUrl: 'ws://127.0.0.1:3000/v1/voice/realtime/mistral',
+  mistralV2InitialBootstrapEnabled: false,
 };
 
 const MISTRAL_SETTINGS: RealtimeVoiceSettings = {
@@ -54,6 +62,7 @@ const MISTRAL_SETTINGS: RealtimeVoiceSettings = {
   apiKey: 'mistral-server-only-key',
   subjectKeyVersion: 7,
   mistralWebsocketUrl: 'wss://api.bob.example/v1/voice/realtime/mistral',
+  mistralV2InitialBootstrapEnabled: false,
 };
 
 const ADMISSION_POLICY: RealtimeAdmissionPolicy = {
@@ -77,6 +86,17 @@ function loggerStub(): AppLogger {
 
 function entitled() {
   return { check: vi.fn(async () => ({ allowed: true, plan: 'business' as const })) };
+}
+
+function resumeAuthority(
+  issue: MistralConversationResumeAuthority['issue'],
+): MistralConversationResumeAuthority {
+  return {
+    issue,
+    reconcileInitialBootstrap: vi.fn(async () => ({ status: 'unavailable' as const })),
+    redeemAndOpen: vi.fn(async () => ({ status: 'unavailable' as const })),
+    acknowledgeTerminal: vi.fn(async () => ({ status: 'unavailable' as const })),
+  };
 }
 
 const TEST_SPEECH_SOURCE_POLICY = {
@@ -149,6 +169,284 @@ function successfulProviderCreate(callId: string) {
 }
 
 describe('RealtimeVoiceService', () => {
+  it('valide strictement l’epoch et le curseur du ticket de reprise', () => {
+    expect(parseRealtimeResumeTicketBody({
+      missionConnectionEpoch: 3,
+      nextServerSequence: 42,
+    })).toEqual({
+      ok: true,
+      value: { missionConnectionEpoch: 3, nextServerSequence: 42 },
+    });
+    for (const body of [
+      null,
+      { missionConnectionEpoch: 0, nextServerSequence: 0 },
+      { missionConnectionEpoch: 1, nextServerSequence: -0 },
+      { missionConnectionEpoch: 1, nextServerSequence: 0, companyId: 'attacker' },
+      { missionConnectionEpoch: 1, nextServerSequence: 0x1_0000_0001 },
+    ]) expect(parseRealtimeResumeTicketBody(body)).toMatchObject({
+      ok: false,
+      error: { kind: 'validation' },
+    });
+  });
+
+  it('émet uniquement une capacité terminale liée au principal et atteste sa completion', async () => {
+    const sessionHandle = 'mistral_resume_session_0001';
+    const issue = vi.fn<MistralConversationResumeAuthority['issue']>(async (input) => ({
+      status: 'issued',
+      bootstrap: {
+        companyId: input.companyId,
+        sessionHandle: input.sessionHandle,
+        ticket: `r2_${'R'.repeat(43)}`,
+        protocol: MISTRAL_CONVERSATION_PROTOCOL,
+        scope: 'terminal_replay',
+        ticketExpiresAt: '2026-07-19T12:00:30.000Z',
+        expectedMissionConnectionEpoch: 4,
+        clientAcceptedMissionConnectionEpoch: input.clientAcceptedMissionConnectionEpoch,
+        resumeNextServerSequence: input.resumeNextServerSequence,
+      },
+    }));
+    const authority = resumeAuthority(issue);
+    const logger = loggerStub();
+    const service = new RealtimeVoiceService(
+      MISTRAL_SETTINGS,
+      { createCall: vi.fn(), hangupCall: vi.fn(async () => undefined) },
+      admission(),
+      sidebandStub(),
+      new Metrics(),
+      logger,
+      undefined,
+      entitled(),
+      undefined,
+      undefined,
+      undefined,
+      TEST_SPEECH_SOURCE_POLICY,
+      authority,
+    );
+    const signal = new AbortController().signal;
+
+    await expect(runAsPrincipal(() => service.requestResumeTicket(sessionHandle, {
+      missionConnectionEpoch: 3,
+      nextServerSequence: 8,
+    }, signal))).resolves.toEqual({
+      ok: true,
+      value: {
+        status: 'issued',
+        websocketUrl: MISTRAL_SETTINGS.mistralWebsocketUrl,
+        companyId: 'company-1',
+        sessionHandle,
+        ticket: `r2_${'R'.repeat(43)}`,
+        protocol: MISTRAL_CONVERSATION_PROTOCOL,
+        scope: 'terminal_replay',
+        ticketExpiresAt: '2026-07-19T12:00:30.000Z',
+        expectedMissionConnectionEpoch: 4,
+        clientAcceptedMissionConnectionEpoch: 3,
+        resumeNextServerSequence: 8,
+      },
+    });
+    expect(issue).toHaveBeenCalledWith(expect.objectContaining({
+      companyId: 'company-1',
+      subjectHash: admissionSubjectHash(
+        MISTRAL_SETTINGS.safetySecret!,
+        'company-1',
+        'user-1',
+      ),
+      subjectKeyVersion: MISTRAL_SETTINGS.subjectKeyVersion,
+      sessionHandle,
+      clientAcceptedMissionConnectionEpoch: 3,
+      resumeNextServerSequence: 8,
+      signal,
+    }));
+
+    issue.mockResolvedValueOnce({
+      status: 'terminal_complete',
+      receipt: {
+        companyId: 'company-1',
+        sessionHandle,
+        protocol: MISTRAL_CONVERSATION_PROTOCOL,
+        missionConnectionEpoch: 4,
+        nextServerSequence: 12,
+        reason: 'user',
+        closedAt: '2026-07-19T12:00:00.000Z',
+      },
+    });
+    await expect(runAsPrincipal(() => service.requestResumeTicket(sessionHandle, {
+      missionConnectionEpoch: 4,
+      nextServerSequence: 12,
+    }, signal))).resolves.toEqual({
+      ok: true,
+      value: {
+        status: 'terminal_complete',
+        companyId: 'company-1',
+        sessionHandle,
+        protocol: MISTRAL_CONVERSATION_PROTOCOL,
+        missionConnectionEpoch: 4,
+        nextServerSequence: 12,
+        reason: 'user',
+        closedAt: '2026-07-19T12:00:00.000Z',
+      },
+    });
+    expect(logger.audit).toHaveBeenCalledWith(
+      'bob.live.mistral.resume.terminal_complete',
+      { sessionHandle },
+    );
+
+    issue.mockResolvedValueOnce({
+      status: 'terminal_complete',
+      receipt: {
+        companyId: 'company-2',
+        sessionHandle,
+        protocol: MISTRAL_CONVERSATION_PROTOCOL,
+        missionConnectionEpoch: 4,
+        nextServerSequence: 12,
+        reason: 'user',
+        closedAt: '2026-07-19T12:00:00.000Z',
+      },
+    });
+    await expect(runAsPrincipal(() => service.requestResumeTicket(sessionHandle, {
+      missionConnectionEpoch: 4,
+      nextServerSequence: 12,
+    }, signal))).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'unavailable', service: 'bob-live-mistral-resume' },
+    });
+    issue.mockResolvedValueOnce({
+      status: 'terminal_complete',
+      receipt: {
+        companyId: 'company-1',
+        sessionHandle,
+        protocol: MISTRAL_CONVERSATION_PROTOCOL,
+        missionConnectionEpoch: 5,
+        nextServerSequence: 12,
+        reason: 'user',
+        closedAt: '2026-07-19T12:00:00.000Z',
+      },
+    });
+    await expect(runAsPrincipal(() => service.requestResumeTicket(sessionHandle, {
+      missionConnectionEpoch: 4,
+      nextServerSequence: 12,
+    }, signal))).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'unavailable', service: 'bob-live-mistral-resume' },
+    });
+  });
+
+  it('authentifie un reçu historique avec le keyring sujet après rotation', async () => {
+    const sessionHandle = 'mistral_resume_rotated_0001';
+    const previousSecret = 'previous-subject-secret-at-least-32-chars';
+    const currentSecret = 'current-subject-secret-at-least-32-chars!!';
+    const rotatedSettings: RealtimeVoiceSettings = {
+      ...MISTRAL_SETTINGS,
+      safetySecret: currentSecret,
+      subjectKeyVersion: 8,
+      subjectHmacKeyRing: [
+        { version: 7, secret: previousSecret },
+        { version: 8, secret: currentSecret },
+      ],
+    };
+    const issue = vi.fn<MistralConversationResumeAuthority['issue']>(async (input) => {
+      expect(input.subjectHash).toBe(admissionSubjectHash(
+        currentSecret,
+        'company-1',
+        'user-1',
+      ));
+      expect(input.subjectKeyVersion).toBe(8);
+      expect(input.historicalSubjectBindings).toEqual([{
+        subjectHash: admissionSubjectHash(previousSecret, 'company-1', 'user-1'),
+        subjectKeyVersion: 7,
+      }]);
+      return {
+        status: 'terminal_complete',
+        receipt: {
+          companyId: 'company-1',
+          sessionHandle,
+          protocol: MISTRAL_CONVERSATION_PROTOCOL,
+          missionConnectionEpoch: 4,
+          nextServerSequence: 12,
+          reason: 'user',
+          closedAt: '2026-07-19T12:00:00.000Z',
+        },
+      };
+    });
+    const service = new RealtimeVoiceService(
+      rotatedSettings,
+      { createCall: vi.fn(), hangupCall: vi.fn(async () => undefined) },
+      admission(),
+      sidebandStub(),
+      new Metrics(),
+      loggerStub(),
+      undefined,
+      entitled(),
+      undefined,
+      undefined,
+      undefined,
+      TEST_SPEECH_SOURCE_POLICY,
+      resumeAuthority(issue),
+    );
+
+    await expect(runAsPrincipal(() => service.requestResumeTicket(sessionHandle, {
+      missionConnectionEpoch: 4,
+      nextServerSequence: 12,
+    }, new AbortController().signal))).resolves.toMatchObject({
+      ok: true,
+      value: { status: 'terminal_complete', sessionHandle },
+    });
+    expect(issue).toHaveBeenCalledOnce();
+  });
+
+  it('refuse toute capacité live, toute fuite inter-tenant et le provider non Mistral', async () => {
+    const sessionHandle = 'mistral_resume_session_0002';
+    const issue = vi.fn<MistralConversationResumeAuthority['issue']>(async (input) => ({
+      status: 'issued',
+      bootstrap: {
+        companyId: input.companyId,
+        sessionHandle: input.sessionHandle,
+        ticket: `r2_${'L'.repeat(43)}`,
+        protocol: MISTRAL_CONVERSATION_PROTOCOL,
+        scope: 'live_takeover',
+        ticketExpiresAt: '2026-07-19T12:00:30.000Z',
+        expectedMissionConnectionEpoch: 4,
+        clientAcceptedMissionConnectionEpoch: input.clientAcceptedMissionConnectionEpoch,
+        resumeNextServerSequence: input.resumeNextServerSequence,
+      },
+    }));
+    const authority = resumeAuthority(issue);
+    const createService = (settings: RealtimeVoiceSettings) => new RealtimeVoiceService(
+      settings,
+      { createCall: vi.fn(), hangupCall: vi.fn(async () => undefined) },
+      admission(),
+      sidebandStub(),
+      new Metrics(),
+      loggerStub(),
+      undefined,
+      entitled(),
+      undefined,
+      undefined,
+      undefined,
+      TEST_SPEECH_SOURCE_POLICY,
+      authority,
+    );
+    const body = { missionConnectionEpoch: 3, nextServerSequence: 8 };
+
+    await expect(runAsPrincipal(() => createService(MISTRAL_SETTINGS).requestResumeTicket(
+      sessionHandle,
+      body,
+      new AbortController().signal,
+    ))).resolves.toMatchObject({ ok: false, error: { kind: 'unavailable' } });
+
+    issue.mockResolvedValueOnce({ status: 'forbidden' });
+    await expect(runAsPrincipal(() => createService(MISTRAL_SETTINGS).requestResumeTicket(
+      sessionHandle,
+      body,
+      new AbortController().signal,
+    ))).resolves.toMatchObject({ ok: false, error: { kind: 'not_found' } });
+
+    await expect(runAsPrincipal(() => createService(SETTINGS).requestResumeTicket(
+      sessionHandle,
+      body,
+      new AbortController().signal,
+    ))).resolves.toMatchObject({ ok: false, error: { kind: 'unavailable' } });
+  });
+
   it('ferme une connexion Mistral locale lors du hangup explicite', async () => {
     const now = Date.parse('2026-07-14T10:00:00.000Z');
     const durable = admission(3, () => now);
@@ -173,7 +471,9 @@ describe('RealtimeVoiceService', () => {
       connection: { providerSessionId, close },
       hardExpiresAt: reserved.lease.hardExpiresAt,
     });
-    const registry = new RealtimeProviderTerminationRegistry([terminations]);
+    const registry = new RealtimeProviderTerminationRegistry([
+      realtimeProviderTerminationAdapter('mistral', terminations),
+    ]);
     const service = new RealtimeVoiceService(
       MISTRAL_SETTINGS,
       { createCall: vi.fn(), hangupCall: vi.fn(async () => undefined) },
@@ -214,7 +514,9 @@ describe('RealtimeVoiceService', () => {
     now = Date.parse(stale.lease.hardExpiresAt);
 
     const terminations = new MistralRealtimeTerminationAuthority(() => now);
-    const registry = new RealtimeProviderTerminationRegistry([terminations]);
+    const registry = new RealtimeProviderTerminationRegistry([
+      realtimeProviderTerminationAdapter('mistral', terminations),
+    ]);
     const issue = vi.fn<MistralRealtimeIngressTicketAuthority['issue']>(async (input) => ({
       ok: true,
       bootstrap: {
@@ -316,7 +618,11 @@ describe('RealtimeVoiceService', () => {
       context,
     }));
 
-    expect(config).toMatchObject({ available: true, transport: 'mistral-pcm' });
+    expect(config).toMatchObject({
+      available: true,
+      transport: 'mistral-pcm',
+      protocol: 'bob.mistral-pcm.v1',
+    });
     expect(result).toMatchObject({
       ok: true,
       value: {
@@ -347,11 +653,196 @@ describe('RealtimeVoiceService', () => {
     expect(sideband.attach).not.toHaveBeenCalled();
   });
 
+  it('émet le bootstrap v2 durable explicite sans traverser le ticket v1', async () => {
+    const settings: RealtimeVoiceSettings = {
+      ...MISTRAL_SETTINGS,
+      mistralV2InitialBootstrapEnabled: true,
+    };
+    const provider: OpenAiRealtimeCallProvider = {
+      createCall: vi.fn(),
+      hangupCall: vi.fn(async () => undefined),
+    };
+    const v1Issue = vi.fn<MistralRealtimeIngressTicketAuthority['issue']>();
+    const ticket = `b2_${Buffer.alloc(32, 1).toString('base64url')}`;
+    const issue = vi.fn<MistralConversationBootstrapTicketAuthority['issue']>(async (input) => ({
+      status: 'issued',
+      bootstrap: {
+        companyId: input.lease.companyId,
+        sessionHandle: input.lease.sessionId,
+        ticket,
+        protocol: MISTRAL_CONVERSATION_PROTOCOL,
+        ticketExpiresAt: '2026-07-19T10:00:30.000Z',
+        hardExpiresAt: input.lease.hardExpiresAt,
+        contextRevision: input.contextRevision,
+        contextDigest: 'e'.repeat(64),
+        routeMode: 'push_to_talk',
+        fullDuplexCertified: false,
+        maxMissionAudioBytes: 28_800_000,
+      },
+    }));
+    const bootstrap = {
+      issue,
+      redeemAndOpenInitial: vi.fn(async () => ({ status: 'unavailable' as const })),
+    } satisfies MistralConversationBootstrapTicketAuthority;
+    const service = new RealtimeVoiceService(
+      settings,
+      provider,
+      admission(),
+      sidebandStub(),
+      new Metrics(),
+      loggerStub(),
+      undefined,
+      entitled(),
+      { issue: v1Issue } as unknown as MistralRealtimeIngressTicketAuthority,
+      undefined,
+      undefined,
+      TEST_SPEECH_SOURCE_POLICY,
+      undefined,
+      bootstrap,
+      { liveTurnsAvailable: true },
+    );
+    const context = {
+      version: 1 as const,
+      revision: 4,
+      context: {
+        screen: { name: '/devis/new', instanceId: 'quote-new-v2' },
+        entities: [],
+        capabilities: ['screen.read'],
+      },
+    };
+
+    const result = await runAsPrincipal(() => service.createCall({
+      protocol: MISTRAL_CONVERSATION_PROTOCOL,
+      sessionHandle: '00000000-0000-4000-8000-000000000033',
+      context,
+    }));
+
+    await expect(runAsPrincipal(() => service.publicConfig())).resolves.toMatchObject({
+      transport: 'mistral-pcm',
+      protocol: MISTRAL_CONVERSATION_PROTOCOL,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        transport: 'mistral-pcm',
+        protocol: MISTRAL_CONVERSATION_PROTOCOL,
+        ticket,
+        sessionHandle: '00000000-0000-4000-8000-000000000033',
+        contextRevision: 4,
+        contextDigest: 'e'.repeat(64),
+        routeMode: 'push_to_talk',
+        fullDuplexCertified: false,
+      },
+    });
+    expect(issue).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 'user-1',
+      subjectKeyVersion: 7,
+      plan: 'business',
+      contextSchemaVersion: 1,
+      contextRevision: 4,
+      context: context.context,
+    }));
+    expect(v1Issue).not.toHaveBeenCalled();
+    expect(provider.createCall).not.toHaveBeenCalled();
+  });
+
+  it('refuse le protocole v2 avant admission quand le canary initial est désactivé', async () => {
+    const durable = admission();
+    const reserve = vi.spyOn(durable, 'reserve');
+    const entitlement = entitled();
+    const bootstrapIssue = vi.fn<MistralConversationBootstrapTicketAuthority['issue']>();
+    const service = new RealtimeVoiceService(
+      MISTRAL_SETTINGS,
+      { createCall: vi.fn(), hangupCall: vi.fn(async () => undefined) },
+      durable,
+      sidebandStub(),
+      new Metrics(),
+      loggerStub(),
+      undefined,
+      entitlement,
+      undefined,
+      undefined,
+      undefined,
+      TEST_SPEECH_SOURCE_POLICY,
+      undefined,
+      {
+        issue: bootstrapIssue,
+        redeemAndOpenInitial: vi.fn(async () => ({ status: 'unavailable' as const })),
+      },
+    );
+
+    await expect(runAsPrincipal(() => service.createCall({
+      protocol: MISTRAL_CONVERSATION_PROTOCOL,
+      context: { version: 1, revision: 1, context: {} },
+    }))).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'unavailable', service: 'bob-live-mistral-v2-live-runtime' },
+    });
+    expect(entitlement.check).not.toHaveBeenCalled();
+    expect(reserve).not.toHaveBeenCalled();
+    expect(bootstrapIssue).not.toHaveBeenCalled();
+  });
+
+  it('n’annonce ni n’émet v2 quand seule la composition replay terminal est disponible', async () => {
+    const settings: RealtimeVoiceSettings = {
+      ...MISTRAL_SETTINGS,
+      mistralV2InitialBootstrapEnabled: true,
+    };
+    const durable = admission();
+    const reserve = vi.spyOn(durable, 'reserve');
+    const entitlement = entitled();
+    const bootstrapIssue = vi.fn<MistralConversationBootstrapTicketAuthority['issue']>();
+    const service = new RealtimeVoiceService(
+      settings,
+      { createCall: vi.fn(), hangupCall: vi.fn(async () => undefined) },
+      durable,
+      sidebandStub(),
+      new Metrics(),
+      loggerStub(),
+      undefined,
+      entitlement,
+      undefined,
+      undefined,
+      undefined,
+      TEST_SPEECH_SOURCE_POLICY,
+      undefined,
+      {
+        issue: bootstrapIssue,
+        redeemAndOpenInitial: vi.fn(async () => ({ status: 'unavailable' as const })),
+      },
+      { liveTurnsAvailable: false },
+    );
+
+    await expect(runAsPrincipal(() => service.createCall({
+      protocol: MISTRAL_CONVERSATION_PROTOCOL,
+      context: { version: 1, revision: 1, context: {} },
+    }))).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'unavailable', service: 'bob-live-mistral-v2-live-runtime' },
+    });
+    expect(entitlement.check).not.toHaveBeenCalled();
+    expect(reserve).not.toHaveBeenCalled();
+    expect(bootstrapIssue).not.toHaveBeenCalled();
+    await expect(runAsPrincipal(() => service.publicConfig())).resolves.toMatchObject({
+      transport: 'mistral-pcm',
+      protocol: 'bob.mistral-pcm.v1',
+    });
+  });
+
   it('rejette un bootstrap Mistral sans contexte exact et libère le bail si le ticket échoue', async () => {
     expect(parseMistralRealtimeCallBody({ sdp: OFFER_SDP, context: {} }))
       .toMatchObject({ ok: false, error: { kind: 'validation' } });
     expect(parseMistralRealtimeCallBody({ context: { version: 1, revision: 1, context: {} }, model: 'evil' }))
       .toMatchObject({ ok: false, error: { kind: 'validation' } });
+    expect(parseMistralRealtimeCallBody({
+      protocol: MISTRAL_CONVERSATION_PROTOCOL,
+      context: { version: 1, revision: 1, context: {} },
+    })).toMatchObject({ ok: true, value: { protocol: MISTRAL_CONVERSATION_PROTOCOL } });
+    expect(parseMistralRealtimeCallBody({
+      protocol: 'bob.mistral-pcm.v3',
+      context: { version: 1, revision: 1, context: {} },
+    })).toMatchObject({ ok: false, error: { kind: 'validation' } });
 
     const durable = admission();
     const release = vi.spyOn(durable, 'release');

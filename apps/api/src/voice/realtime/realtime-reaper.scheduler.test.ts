@@ -115,7 +115,9 @@ describe('Bob Live — reaper multi-réplique', () => {
 
     const result = await scheduler({
       admission,
-      provider: new RealtimeProviderTerminationRegistry([authority]),
+      provider: new RealtimeProviderTerminationRegistry([
+        realtimeProviderTerminationAdapter('mistral', authority),
+      ]),
       selectedProvider: 'mistral',
     }).sweep();
 
@@ -135,7 +137,9 @@ describe('Bob Live — reaper multi-réplique', () => {
 
     const result = await scheduler({
       admission,
-      provider: new RealtimeProviderTerminationRegistry([remoteReplica]),
+      provider: new RealtimeProviderTerminationRegistry([
+        realtimeProviderTerminationAdapter('mistral', remoteReplica),
+      ]),
       selectedProvider: 'mistral',
     }).sweep();
 
@@ -169,7 +173,9 @@ describe('Bob Live — reaper multi-réplique', () => {
 
     const result = await scheduler({
       admission,
-      provider: new RealtimeProviderTerminationRegistry([remoteReplica]),
+      provider: new RealtimeProviderTerminationRegistry([
+        realtimeProviderTerminationAdapter('mistral', remoteReplica),
+      ]),
       selectedProvider: 'mistral',
     }).sweep();
 

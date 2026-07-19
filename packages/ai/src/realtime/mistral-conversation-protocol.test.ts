@@ -138,6 +138,14 @@ describe('Bob Mistral conversation v2 — contrôles client stricts', () => {
       ticket: 'A'.repeat(32),
       resumeNextServerSequence: 0,
     },
+    {
+      type: 'authenticate',
+      protocol: MISTRAL_CONVERSATION_PROTOCOL,
+      companyId: 'company-42',
+      ticket: `r2_${'B'.repeat(43)}`,
+      resumeScope: 'terminal_replay',
+      resumeNextServerSequence: 7,
+    },
     startControl(),
     {
       type: 'turn.commit',
@@ -189,6 +197,17 @@ describe('Bob Mistral conversation v2 — contrôles client stricts', () => {
         protocol: 'bob.mistral-pcm.v1',
         companyId: 'company-42',
         ticket: 'A'.repeat(32),
+        resumeNextServerSequence: 0,
+      })),
+      'invalid_message',
+    );
+    expectProtocolError(
+      () => decodeMistralConversationClientControl(JSON.stringify({
+        type: 'authenticate',
+        protocol: MISTRAL_CONVERSATION_PROTOCOL,
+        companyId: 'company-42',
+        ticket: `r2_${'B'.repeat(43)}`,
+        resumeScope: 'admin_override',
         resumeNextServerSequence: 0,
       })),
       'invalid_message',

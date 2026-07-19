@@ -1,19 +1,37 @@
 import { createHash } from 'node:crypto';
 import type { Prisma } from '@prisma/client';
 import { MISTRAL_CONVERSATION_PROTOCOL } from '@bob/ai';
+import type { PlanTier } from '@bob/core';
 import { PrismaService } from '../../persistence/prisma/prisma.service';
 import { PrismaMistralConversationDurableAuthority } from './mistral-conversation-authority.prisma';
+import {
+  hashMistralConversationBootstrapTicket,
+  isMistralConversationBootstrapTicket,
+} from './mistral-conversation-bootstrap-ticket';
+import {
+  openMistralRealtimeUserIdentity,
+  validateMistralRealtimeIngressIdentityKeyRing,
+  type MistralRealtimeIdentityBinding,
+  type MistralRealtimeIngressIdentityKeyRing,
+} from './realtime-mistral-ingress-ticket';
+import {
+  validateMistralConversationPersistenceKeyRing,
+  type MistralConversationPersistenceKeyRing,
+} from './mistral-conversation-outbox-seal';
 import type { MistralConversationBootstrapGrant } from './mistral-conversation-gateway-v2';
 import {
   DEFAULT_MISTRAL_CONVERSATION_RESUME_TICKET_POLICY,
   MISTRAL_CONVERSATION_MIN_TERMINAL_CAPABILITY_MS,
+  hashMistralConversationResumeTicket,
   isMistralConversationConnectionLeaseToken,
   isMistralConversationReplayConnectionId,
   isMistralConversationResumeIssueInput,
   isMistralConversationResumeTicket,
+  isMistralConversationTerminalReceipt,
   secureMistralConversationResumeTicketEntropy,
   validateMistralConversationResumeTicketPolicy,
   type MistralConversationRedeemAndOpenResult,
+  type MistralConversationBootstrapReconciliationResult,
   type MistralConversationResumeAuthority,
   type MistralConversationResumeScope,
   type MistralConversationResumeTicketEntropy,
@@ -21,7 +39,13 @@ import {
   type MistralConversationResumeTicketIssueResult,
   type MistralConversationResumeTicketPolicy,
   type MistralConversationTerminalAcknowledgementResult,
+  type MistralConversationTerminalReceipt,
 } from './mistral-conversation-resume-ticket';
+import {
+  areMistralConversationBootstrapReconciliationTicketHashesEqual,
+  deriveMistralConversationBootstrapReconciliationCapability,
+  isMistralConversationBootstrapReconciliationAttempt,
+} from './mistral-conversation-bootstrap-reconciliation';
 
 const INT32_MAX = 0x7fff_ffff;
 const UINT32_CURSOR_END = 0x1_0000_0000;
@@ -31,8 +55,8 @@ const COMPANY_ID = /^[A-Za-z0-9-]{1,64}$/u;
 const SUBJECT_HASH = /^[a-f0-9]{64}$/u;
 const SESSION_HANDLE = /^[A-Za-z0-9_-]{16,128}$/u;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const PLANS = new Set<PlanTier>(['free', 'solo', 'pro', 'business']);
 
-const TICKET_HASH_DOMAIN = 'bob-pro:mistral-v2-resume-ticket:v1\0';
 const TERMINAL_CONNECTION_HASH_DOMAIN = 'bob-pro:mistral-v2-terminal-ack:v1\0';
 
 interface MissionRow {
@@ -56,9 +80,23 @@ interface MissionRow {
   readonly fullDuplexCertified: boolean;
   readonly maxMissionAudioBytes: number;
   readonly phase: string;
+  readonly terminalReason: string | null;
+  readonly closedAt: Date | null;
   readonly hardExpiresAt: Date;
   readonly replayGraceExpiresAt: Date;
   readonly retentionExpiresAt: Date;
+}
+
+interface TerminalReceiptRow {
+  readonly companyId: string;
+  readonly sessionHandle: string;
+  readonly subjectHash: string;
+  readonly subjectKeyVersion: number;
+  readonly protocol: string;
+  readonly missionConnectionEpoch: number;
+  readonly nextServerSequence: bigint;
+  readonly terminalReason: string;
+  readonly closedAt: Date;
 }
 
 interface ResumeTicketRow {
@@ -67,6 +105,7 @@ interface ResumeTicketRow {
   readonly missionId: string;
   readonly sessionHandle: string;
   readonly admissionSessionId: string;
+  readonly ticketHash: string;
   readonly protocol: string;
   readonly scope: MistralConversationResumeScope;
   readonly state: string;
@@ -92,14 +131,51 @@ interface ResumeTicketRow {
   readonly maxAcknowledgableServerSequence: bigint | null;
   readonly retentionExpiresAt: Date;
   readonly version: number;
+  readonly purpose: 'standard_resume' | 'initial_bootstrap_reconciliation';
+  readonly initialBootstrapId: string | null;
+  readonly reconciliationAttempt: number | null;
+  readonly reconciliationKeyVersion: number | null;
+}
+
+interface BootstrapReconciliationRow {
+  readonly id: string;
+  readonly companyId: string;
+  readonly admissionSessionId: string;
+  readonly sessionHandle: string;
+  readonly subjectHash: string;
+  readonly subjectKeyVersion: number;
+  readonly admissionLeaseTokenHash: string;
+  readonly protocol: string;
+  readonly state: string;
+  readonly plan: string;
+  readonly contextRevision: number;
+  readonly contextDigest: string;
+  readonly userIdentityCiphertext: Uint8Array;
+  readonly userIdentityNonce: Uint8Array;
+  readonly userIdentityTag: Uint8Array;
+  readonly identityEncryptionKeyVersion: number;
+  readonly routeMode: string;
+  readonly fullDuplexCertified: boolean;
+  readonly maxMissionAudioBytes: number;
+  readonly ticketExpiresAt: Date;
+  readonly hardExpiresAt: Date;
+  readonly consumedAt: Date | null;
+  readonly retentionExpiresAt: Date;
 }
 
 interface TerminalCapabilityRow extends ResumeTicketRow {
   readonly connectionLeaseTokenHash: string | null;
 }
 
+interface ResumeTicketPurposeRow {
+  readonly purpose: 'standard_resume' | 'initial_bootstrap_reconciliation';
+  readonly initialBootstrapId: string | null;
+}
+
 interface AdmissionLeaseRow {
   readonly state: string;
+  readonly providerId: string | null;
+  readonly providerCallId: string | null;
   readonly leaseExpiresAt: Date;
   readonly hardExpiresAt: Date;
 }
@@ -109,6 +185,9 @@ interface ResumeAuthorityOptions {
   readonly entropy?: MistralConversationResumeTicketEntropy;
   /** Failpoint déterministe : toute erreur doit rollback mission, outbox et ticket ensemble. */
   readonly beforeTicketConsume?: () => void | Promise<void>;
+  /** Requis avec identityKeys pour réparer uniquement les commits initiaux tardifs. */
+  readonly reconciliationKeys?: MistralConversationPersistenceKeyRing;
+  readonly reconciliationIdentityKeys?: MistralRealtimeIngressIdentityKeyRing;
 }
 
 class ResumeAtomicAbort extends Error {
@@ -127,10 +206,6 @@ class ResumeExpiredAbort extends Error {
 
 function domainHash(domain: string, secret: string): string {
   return createHash('sha256').update(domain, 'utf8').update(secret, 'utf8').digest('hex');
-}
-
-function ticketHash(ticket: string): string {
-  return domainHash(TICKET_HASH_DOMAIN, ticket);
 }
 
 function terminalConnectionHash(token: string): string {
@@ -162,6 +237,29 @@ function validRedeemInput(
     && isIntegerBetween(input.maxReplayBytes, 1, MAX_REPLAY_BYTES);
 }
 
+function containsAsciiControlCharacter(value: string): boolean {
+  for (const character of value) {
+    const codePoint = character.codePointAt(0);
+    if (codePoint !== undefined && (codePoint <= 0x1f || codePoint === 0x7f)) return true;
+  }
+  return false;
+}
+
+function validBootstrapReconciliationInput(
+  input: Parameters<MistralConversationResumeAuthority['reconcileInitialBootstrap']>[0],
+): boolean {
+  return COMPANY_ID.test(input.companyId)
+    && typeof input.userId === 'string'
+    && input.userId.length >= 1
+    && input.userId.length <= 256
+    && Buffer.byteLength(input.userId, 'utf8') <= 512
+    && !containsAsciiControlCharacter(input.userId)
+    && SESSION_HANDLE.test(input.sessionHandle)
+    && input.protocol === MISTRAL_CONVERSATION_PROTOCOL
+    && isMistralConversationBootstrapTicket(input.bootstrapTicket)
+    && isMistralConversationBootstrapReconciliationAttempt(input.attempt);
+}
+
 function validTerminalAcknowledgementInput(
   input: Parameters<MistralConversationResumeAuthority['acknowledgeTerminal']>[0],
 ): boolean {
@@ -191,6 +289,149 @@ function exactMissionBinding(ticket: ResumeTicketRow, mission: MissionRow): bool
     && mission.hardExpiresAt.getTime() === ticket.hardExpiresAt.getTime()
     && mission.replayGraceExpiresAt.getTime() === ticket.replayGraceExpiresAt.getTime()
     && mission.retentionExpiresAt.getTime() === ticket.retentionExpiresAt.getTime();
+}
+
+function terminalReceiptFromRow(
+  row: TerminalReceiptRow,
+): MistralConversationTerminalReceipt | null {
+  const nextServerSequence = safeNumber(row.nextServerSequence);
+  if (
+    nextServerSequence === null
+    || !(row.closedAt instanceof Date)
+    || Number.isNaN(row.closedAt.getTime())
+  ) return null;
+  const receipt: MistralConversationTerminalReceipt = {
+    companyId: row.companyId,
+    sessionHandle: row.sessionHandle,
+    protocol: MISTRAL_CONVERSATION_PROTOCOL,
+    missionConnectionEpoch: row.missionConnectionEpoch,
+    nextServerSequence,
+    reason: row.terminalReason as MistralConversationTerminalReceipt['reason'],
+    closedAt: row.closedAt.toISOString(),
+  };
+  return row.protocol === MISTRAL_CONVERSATION_PROTOCOL
+    && isMistralConversationTerminalReceipt(receipt)
+    ? Object.freeze(receipt)
+    : null;
+}
+
+function exactTerminalReceiptMissionBinding(
+  receipt: TerminalReceiptRow,
+  mission: MissionRow,
+): boolean {
+  return mission.phase === 'closed'
+    && mission.terminalReason !== null
+    && mission.closedAt instanceof Date
+    && receipt.companyId === mission.companyId
+    && receipt.sessionHandle === mission.sessionHandle
+    && receipt.subjectHash.trim() === mission.subjectHash.trim()
+    && receipt.subjectKeyVersion === mission.subjectKeyVersion
+    && receipt.protocol === mission.protocol
+    && receipt.missionConnectionEpoch === mission.missionConnectionEpoch
+    && receipt.nextServerSequence === mission.nextServerSequence
+    && receipt.terminalReason === mission.terminalReason
+    && receipt.closedAt.getTime() === mission.closedAt.getTime();
+}
+
+function inputOwnsSubject(
+  input: MistralConversationResumeTicketIssueInput,
+  subjectHash: string,
+  subjectKeyVersion: number,
+): boolean {
+  const normalizedHash = subjectHash.trim();
+  return (
+    normalizedHash === input.subjectHash
+    && subjectKeyVersion === input.subjectKeyVersion
+  ) || (input.historicalSubjectBindings ?? []).some((binding) => (
+    normalizedHash === binding.subjectHash
+    && subjectKeyVersion === binding.subjectKeyVersion
+  ));
+}
+
+function terminalReceiptIssueResult(
+  row: TerminalReceiptRow,
+  input: MistralConversationResumeTicketIssueInput,
+): MistralConversationResumeTicketIssueResult {
+  const receipt = terminalReceiptFromRow(row);
+  if (receipt === null) return { status: 'unavailable' };
+  if (!inputOwnsSubject(input, row.subjectHash, row.subjectKeyVersion)) {
+    return { status: 'forbidden' };
+  }
+  if (input.clientAcceptedMissionConnectionEpoch > receipt.missionConnectionEpoch) {
+    return { status: 'stale_epoch' };
+  }
+  if (input.resumeNextServerSequence > receipt.nextServerSequence) {
+    return { status: 'invalid_cursor' };
+  }
+  if (
+    receipt.missionConnectionEpoch > input.clientAcceptedMissionConnectionEpoch
+    && receipt.nextServerSequence <= input.resumeNextServerSequence
+  ) return { status: 'unavailable' };
+  return { status: 'terminal_complete', receipt };
+}
+
+function exactResumePurposeBinding(ticket: ResumeTicketRow, mission: MissionRow): boolean {
+  if (ticket.purpose === 'standard_resume') {
+    return ticket.initialBootstrapId === null
+      && ticket.reconciliationAttempt === null
+      && ticket.reconciliationKeyVersion === null
+      && ticket.clientAcceptedMissionConnectionEpoch >= 1;
+  }
+  return ticket.purpose === 'initial_bootstrap_reconciliation'
+    && ticket.initialBootstrapId === mission.initialBootstrapId
+    && ticket.reconciliationAttempt !== null
+    && isMistralConversationBootstrapReconciliationAttempt(ticket.reconciliationAttempt)
+    && ticket.reconciliationKeyVersion !== null
+    && isIntegerBetween(ticket.reconciliationKeyVersion, 1, INT32_MAX)
+    && ticket.clientAcceptedMissionConnectionEpoch === 0
+    && ticket.resumeNextServerSequence === 0n;
+}
+
+function exactBootstrapMissionBinding(
+  bootstrap: BootstrapReconciliationRow,
+  mission: MissionRow,
+): boolean {
+  return mission.initialBootstrapId === bootstrap.id
+    && mission.companyId === bootstrap.companyId
+    && mission.admissionSessionId === bootstrap.admissionSessionId
+    && mission.sessionHandle === bootstrap.sessionHandle
+    && mission.protocol === bootstrap.protocol
+    && mission.subjectHash.trim() === bootstrap.subjectHash.trim()
+    && mission.subjectKeyVersion === bootstrap.subjectKeyVersion
+    && mission.plan === bootstrap.plan
+    && mission.contextRevision === bootstrap.contextRevision
+    && mission.contextDigest.trim() === bootstrap.contextDigest.trim()
+    && mission.routeMode === bootstrap.routeMode
+    && mission.fullDuplexCertified === bootstrap.fullDuplexCertified
+    && mission.maxMissionAudioBytes === bootstrap.maxMissionAudioBytes
+    && mission.hardExpiresAt.getTime() === bootstrap.hardExpiresAt.getTime()
+    // Les deux autorités utilisent aujourd'hui la même fenêtre H→G (24 h). Une divergence de
+    // politique doit échouer fermée avant l'INSERT, puis être arbitrée explicitement.
+    && mission.retentionExpiresAt.getTime() === bootstrap.retentionExpiresAt.getTime();
+}
+
+function bootstrapIdentityBinding(
+  bootstrap: BootstrapReconciliationRow,
+): MistralRealtimeIdentityBinding | null {
+  if (
+    !UUID.test(bootstrap.id)
+    || !UUID.test(bootstrap.admissionSessionId)
+    || !PLANS.has(bootstrap.plan as PlanTier)
+    || !SUBJECT_HASH.test(bootstrap.subjectHash.trim())
+    || !isIntegerBetween(bootstrap.subjectKeyVersion, 1, INT32_MAX)
+    || !isIntegerBetween(bootstrap.contextRevision, 1, INT32_MAX)
+    || !SUBJECT_HASH.test(bootstrap.contextDigest.trim())
+  ) return null;
+  return {
+    companyId: bootstrap.companyId,
+    subjectHash: bootstrap.subjectHash.trim(),
+    subjectKeyVersion: bootstrap.subjectKeyVersion,
+    sessionId: bootstrap.admissionSessionId.toLowerCase(),
+    redemptionId: bootstrap.id.toLowerCase(),
+    plan: bootstrap.plan as PlanTier,
+    contextRevision: bootstrap.contextRevision,
+    contextDigest: bootstrap.contextDigest.trim(),
+  };
 }
 
 function grantFromMission(mission: MissionRow): MistralConversationBootstrapGrant | null {
@@ -225,15 +466,17 @@ function grantFromMission(mission: MissionRow): MistralConversationBootstrapGran
 }
 
 /**
- * Autorité PostgreSQL des capacités de reprise v2. Elle reste non composée dans le runtime actif :
- * le live takeover ne pourra être activé qu'avec le lease/reaper provider-neutral décrit dans
- * l'ADR. Les tests PostgreSQL peuvent néanmoins certifier le protocole atomique sous gate explicite.
+ * Autorité PostgreSQL des capacités de reprise v2. La reprise live générale reste désactivée.
+ * Seule une capacité portant la preuve `initial_bootstrap_reconciliation` peut récupérer un
+ * commit initial dont la réponse WSS a été perdue ; elle conserve les mêmes fences lease/reaper.
  */
 export class PrismaMistralConversationResumeAuthority
 implements MistralConversationResumeAuthority {
   private readonly policy: MistralConversationResumeTicketPolicy;
   private readonly entropy: MistralConversationResumeTicketEntropy;
   private readonly beforeTicketConsume: () => void | Promise<void>;
+  private readonly reconciliationKeys: MistralConversationPersistenceKeyRing | null;
+  private readonly reconciliationIdentityKeys: MistralRealtimeIngressIdentityKeyRing | null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -244,6 +487,18 @@ implements MistralConversationResumeAuthority {
     validateMistralConversationResumeTicketPolicy(this.policy);
     this.entropy = options.entropy ?? secureMistralConversationResumeTicketEntropy;
     this.beforeTicketConsume = options.beforeTicketConsume ?? (() => undefined);
+    const reconciliationConfigured = options.reconciliationKeys !== undefined
+      || options.reconciliationIdentityKeys !== undefined;
+    if (
+      reconciliationConfigured
+      && (!options.reconciliationKeys || !options.reconciliationIdentityKeys)
+    ) throw new Error('Incomplete Mistral bootstrap reconciliation keyrings.');
+    if (options.reconciliationKeys && options.reconciliationIdentityKeys) {
+      validateMistralConversationPersistenceKeyRing(options.reconciliationKeys);
+      validateMistralRealtimeIngressIdentityKeyRing(options.reconciliationIdentityKeys);
+    }
+    this.reconciliationKeys = options.reconciliationKeys ?? null;
+    this.reconciliationIdentityKeys = options.reconciliationIdentityKeys ?? null;
   }
 
   async issue(
@@ -257,16 +512,25 @@ implements MistralConversationResumeAuthority {
       return await this.prisma.withTenant(input.companyId, async (tx) => {
         await this.lockMissionKey(tx, input.companyId, input.sessionHandle);
         const mission = await this.lockMission(tx, input.companyId, input.sessionHandle);
-        if (!mission) return { status: 'not_found' as const };
+        if (!mission) {
+          const receipt = await this.inspectTerminalReceipt(
+            tx,
+            input.companyId,
+            input.sessionHandle,
+          );
+          return receipt === null
+            ? { status: 'not_found' as const }
+            : terminalReceiptIssueResult(receipt, input);
+        }
         let databaseNow = await this.databaseNow(tx);
         if (
           mission.admissionSessionId === null
-          || mission.subjectHash.trim() !== input.subjectHash
-          || mission.subjectKeyVersion !== input.subjectKeyVersion
+          || !inputOwnsSubject(
+            input,
+            mission.subjectHash,
+            mission.subjectKeyVersion,
+          )
         ) return { status: 'forbidden' as const };
-        if (mission.replayGraceExpiresAt.getTime() <= databaseNow.getTime()) {
-          return { status: 'expired' as const };
-        }
         if (input.clientAcceptedMissionConnectionEpoch > mission.missionConnectionEpoch) {
           return { status: 'stale_epoch' as const };
         }
@@ -280,6 +544,32 @@ implements MistralConversationResumeAuthority {
         ) return { status: 'unavailable' as const };
         if (input.resumeNextServerSequence > nextServerSequence) {
           return { status: 'invalid_cursor' as const };
+        }
+        // Seul le reçu immuable créé avec la fermeture BDD autorise la convergence mobile. Tant
+        // que le replay reste possible, un client en retard le consomme encore normalement. Une
+        // fois G dépassé, le reçu devient l'unique projection non sensible conservée après purge.
+        if (
+          mission.phase === 'closed'
+          && (
+            (
+              input.resumeNextServerSequence === nextServerSequence
+              && acknowledgedServerSequence === nextServerSequence
+            )
+            || mission.replayGraceExpiresAt.getTime() <= databaseNow.getTime()
+          )
+        ) {
+          const receipt = await this.inspectTerminalReceipt(
+            tx,
+            input.companyId,
+            input.sessionHandle,
+          );
+          if (receipt === null || !exactTerminalReceiptMissionBinding(receipt, mission)) {
+            return { status: 'unavailable' as const };
+          }
+          return terminalReceiptIssueResult(receipt, input);
+        }
+        if (mission.replayGraceExpiresAt.getTime() <= databaseNow.getTime()) {
+          return { status: 'expired' as const };
         }
         const replayFrom = Math.min(
           input.resumeNextServerSequence,
@@ -360,7 +650,7 @@ implements MistralConversationResumeAuthority {
             "replayGraceExpiresAt", "issuedAt", "expiresAt", "retentionExpiresAt", version
           ) VALUES (
             ${id}::uuid, ${mission.companyId}, ${mission.id}::uuid, ${mission.sessionHandle},
-            ${mission.admissionSessionId}::uuid, ${ticketHash(ticket)}, ${MISTRAL_CONVERSATION_PROTOCOL},
+            ${mission.admissionSessionId}::uuid, ${hashMistralConversationResumeTicket(ticket)}, ${MISTRAL_CONVERSATION_PROTOCOL},
             ${scope}, 'issued', ${mission.subjectHash.trim()}, ${mission.subjectKeyVersion},
             ${mission.plan}, ${mission.missionConnectionEpoch},
             ${input.clientAcceptedMissionConnectionEpoch}, ${BigInt(input.resumeNextServerSequence)},
@@ -392,6 +682,281 @@ implements MistralConversationResumeAuthority {
     }
   }
 
+  async reconcileInitialBootstrap(
+    input: Parameters<MistralConversationResumeAuthority['reconcileInitialBootstrap']>[0],
+  ): Promise<MistralConversationBootstrapReconciliationResult> {
+    if (!validBootstrapReconciliationInput(input)) return { status: 'invalid' };
+    if (input.signal.aborted) return { status: 'unavailable' };
+    const reconciliationKeys = this.reconciliationKeys;
+    const reconciliationIdentityKeys = this.reconciliationIdentityKeys;
+    if (
+      this.prisma.inTransaction()
+      || !reconciliationKeys
+      || !reconciliationIdentityKeys
+    ) return { status: 'unavailable' };
+
+    let rawBootstrapTicket = input.bootstrapTicket;
+    try {
+      return await this.prisma.withTenant(input.companyId, async (tx) => {
+        // Ordre canonique : bootstrap -> tentative r2 -> clé mission -> mission -> admission -> DB.
+        const bootstrap = await this.lockBootstrapForReconciliation(
+          tx,
+          input.companyId,
+          hashMistralConversationBootstrapTicket(rawBootstrapTicket),
+        );
+        if (!bootstrap) return { status: 'not_found' as const };
+        if (
+          bootstrap.companyId !== input.companyId
+          || bootstrap.sessionHandle !== input.sessionHandle
+          || bootstrap.protocol !== input.protocol
+        ) return { status: 'forbidden' as const };
+
+        const identityBinding = bootstrapIdentityBinding(bootstrap);
+        const storedUserId = identityBinding && openMistralRealtimeUserIdentity({
+          ciphertext: Uint8Array.from(bootstrap.userIdentityCiphertext),
+          nonce: Uint8Array.from(bootstrap.userIdentityNonce),
+          tag: Uint8Array.from(bootstrap.userIdentityTag),
+          keyVersion: bootstrap.identityEncryptionKeyVersion,
+        }, identityBinding, reconciliationIdentityKeys);
+        if (storedUserId === null || storedUserId !== input.userId) {
+          return { status: 'forbidden' as const };
+        }
+
+        if (bootstrap.state === 'issued') {
+          const databaseNow = await this.databaseNow(tx);
+          if (
+            bootstrap.ticketExpiresAt.getTime() <= databaseNow.getTime()
+            || bootstrap.hardExpiresAt.getTime() <= databaseNow.getTime()
+          ) return { status: 'expired' as const };
+          // Le COMMIT initial n'a pas eu lieu : le même b2 reste le seul geste autorisé.
+          return { status: 'retry_initial' as const };
+        }
+        if (bootstrap.state !== 'consumed' || bootstrap.consumedAt === null) {
+          return { status: 'unavailable' as const };
+        }
+
+        const existing = await this.lockReconciliationAttempt(
+          tx,
+          input.companyId,
+          bootstrap.id,
+          input.attempt,
+        );
+        await this.lockMissionKey(tx, input.companyId, input.sessionHandle);
+        const mission = await this.lockMission(tx, input.companyId, input.sessionHandle);
+        if (!mission || !exactBootstrapMissionBinding(bootstrap, mission)) {
+          return { status: 'unavailable' as const };
+        }
+        const admission = await this.lockAdmission(tx, mission);
+        const databaseNow = await this.databaseNow(tx);
+        if (
+          mission.replayGraceExpiresAt.getTime() <= databaseNow.getTime()
+          || bootstrap.hardExpiresAt.getTime() !== mission.hardExpiresAt.getTime()
+          || mission.retainedFromServerSequence !== 0n
+          || !(await this.hasInitialReadyProof(tx, mission))
+        ) return { status: 'expired' as const };
+
+        if (existing) {
+          const keyVersion = existing.reconciliationKeyVersion;
+          if (keyVersion === null) return { status: 'unavailable' as const };
+          const secret = reconciliationKeys.secret(keyVersion);
+          if (!(secret instanceof Uint8Array) || secret.byteLength !== 32) {
+            return { status: 'unavailable' as const };
+          }
+          const secretCopy = Uint8Array.from(secret);
+          const capability = (() => {
+            try {
+              return deriveMistralConversationBootstrapReconciliationCapability({
+                secret: secretCopy,
+                keyVersion,
+                companyId: input.companyId,
+                subjectHash: mission.subjectHash.trim(),
+                initialBootstrapId: bootstrap.id,
+                sessionHandle: input.sessionHandle,
+                attempt: input.attempt,
+              });
+            } finally {
+              secretCopy.fill(0);
+            }
+          })();
+          if (
+            existing.id !== capability.ticketId
+            || !areMistralConversationBootstrapReconciliationTicketHashesEqual(
+              existing.ticketHash,
+              capability.ticketHash,
+            )
+            || !exactMissionBinding(existing, mission)
+            || !exactResumePurposeBinding(existing, mission)
+          ) return { status: 'unavailable' as const };
+          if (
+            existing.state === 'consumed'
+            || existing.expiresAt.getTime() <= databaseNow.getTime()
+            || existing.expectedMissionConnectionEpoch !== mission.missionConnectionEpoch
+          ) {
+            return { status: 'attempt_consumed' as const };
+          }
+          if (existing.state !== 'issued' || existing.version !== 1) {
+            return { status: 'unavailable' as const };
+          }
+          if (
+            existing.scope === 'live_takeover'
+            && (
+              databaseNow.getTime() >= mission.hardExpiresAt.getTime()
+              || mission.phase === 'draining'
+              || mission.phase === 'closed'
+              || mission.phase === 'recovering_route'
+              || !this.reconciliationAdmissionIsLive(admission, bootstrap, databaseNow)
+            )
+          ) return { status: 'unavailable' as const };
+          if (
+            existing.scope === 'terminal_replay'
+            && databaseNow.getTime() < mission.hardExpiresAt.getTime()
+            && mission.phase !== 'draining'
+            && mission.phase !== 'closed'
+          ) return { status: 'unavailable' as const };
+          return {
+            status: 'issued' as const,
+            bootstrap: this.reconciliationBootstrap(existing, capability.ticket),
+          };
+        }
+
+        const latest = await this.lockLatestReconciliationAttempt(
+          tx,
+          input.companyId,
+          bootstrap.id,
+        );
+        const latestAttempt = latest?.reconciliationAttempt ?? null;
+        if (
+          (input.attempt === 1 && latest !== null)
+          || (input.attempt > 1 && latestAttempt !== input.attempt - 1)
+          || (
+            latest !== null
+            && latest.state === 'issued'
+            && latest.expiresAt.getTime() > databaseNow.getTime()
+            && latest.expectedMissionConnectionEpoch === mission.missionConnectionEpoch
+          )
+        ) return { status: 'unavailable' as const };
+
+        const terminalWindow = mission.phase === 'draining'
+          || mission.phase === 'closed'
+          || databaseNow.getTime() >= mission.hardExpiresAt.getTime();
+        const scope: MistralConversationResumeScope = terminalWindow
+          ? 'terminal_replay'
+          : 'live_takeover';
+        if (scope === 'live_takeover') {
+          if (
+            mission.phase === 'recovering_route'
+            || mission.missionConnectionEpoch >= INT32_MAX
+            || !this.reconciliationAdmissionIsLive(admission, bootstrap, databaseNow)
+          ) return { status: 'unavailable' as const };
+        } else if (
+          mission.replayGraceExpiresAt.getTime() - databaseNow.getTime()
+            < MISTRAL_CONVERSATION_MIN_TERMINAL_CAPABILITY_MS
+        ) return { status: 'expired' as const };
+
+        const absoluteBoundary = scope === 'live_takeover'
+          ? mission.hardExpiresAt
+          : mission.replayGraceExpiresAt;
+        const expiresAt = new Date(Math.min(
+          databaseNow.getTime() + this.policy.ticketTtlSeconds * 1_000,
+          absoluteBoundary.getTime(),
+        ));
+        if (expiresAt.getTime() <= databaseNow.getTime()) return { status: 'expired' as const };
+
+        const keyVersion = reconciliationKeys.currentVersion;
+        const secret = reconciliationKeys.secret(keyVersion);
+        if (!(secret instanceof Uint8Array) || secret.byteLength !== 32) {
+          return { status: 'unavailable' as const };
+        }
+        const secretCopy = Uint8Array.from(secret);
+        const capability = (() => {
+          try {
+            return deriveMistralConversationBootstrapReconciliationCapability({
+              secret: secretCopy,
+              keyVersion,
+              companyId: input.companyId,
+              subjectHash: mission.subjectHash.trim(),
+              initialBootstrapId: bootstrap.id,
+              sessionHandle: input.sessionHandle,
+              attempt: input.attempt,
+            });
+          } finally {
+            secretCopy.fill(0);
+          }
+        })();
+        if (input.signal.aborted) throw new ResumeAtomicAbort();
+        const inserted = await tx.$executeRaw`
+          INSERT INTO realtime_mistral_conversation_resume_tickets (
+            id, "companyId", "missionId", "sessionHandle", "admissionSessionId",
+            "ticketHash", protocol, purpose, "initialBootstrapId", "reconciliationAttempt",
+            "reconciliationKeyVersion", scope, state, "subjectHash", "subjectKeyVersion", plan,
+            "expectedMissionConnectionEpoch", "clientAcceptedMissionConnectionEpoch",
+            "resumeNextServerSequence", "contextRevision", "contextDigest", "routeMode",
+            "fullDuplexCertified", "maxMissionAudioBytes", "hardExpiresAt",
+            "replayGraceExpiresAt", "issuedAt", "expiresAt", "retentionExpiresAt", version
+          ) VALUES (
+            ${capability.ticketId}::uuid, ${mission.companyId}, ${mission.id}::uuid,
+            ${mission.sessionHandle}, ${mission.admissionSessionId}::uuid,
+            ${capability.ticketHash}, ${MISTRAL_CONVERSATION_PROTOCOL},
+            'initial_bootstrap_reconciliation', ${bootstrap.id}::uuid, ${input.attempt},
+            ${keyVersion}, ${scope}, 'issued', ${mission.subjectHash.trim()},
+            ${mission.subjectKeyVersion}, ${mission.plan}, ${mission.missionConnectionEpoch},
+            0, 0, ${mission.contextRevision}, ${mission.contextDigest.trim()},
+            ${mission.routeMode}, ${mission.fullDuplexCertified}, ${mission.maxMissionAudioBytes},
+            ${mission.hardExpiresAt}, ${mission.replayGraceExpiresAt}, ${databaseNow}, ${expiresAt},
+            ${mission.retentionExpiresAt}, 1
+          )
+        `;
+        if (inserted !== 1) throw new ResumeAtomicAbort();
+        if (input.signal.aborted) throw new ResumeAtomicAbort();
+        const persisted: ResumeTicketRow = {
+          id: capability.ticketId,
+          companyId: mission.companyId,
+          missionId: mission.id,
+          sessionHandle: mission.sessionHandle,
+          admissionSessionId: mission.admissionSessionId ?? '',
+          ticketHash: capability.ticketHash,
+          protocol: MISTRAL_CONVERSATION_PROTOCOL,
+          purpose: 'initial_bootstrap_reconciliation',
+          initialBootstrapId: bootstrap.id,
+          reconciliationAttempt: input.attempt,
+          reconciliationKeyVersion: keyVersion,
+          scope,
+          state: 'issued',
+          subjectHash: mission.subjectHash.trim(),
+          subjectKeyVersion: mission.subjectKeyVersion,
+          plan: mission.plan,
+          expectedMissionConnectionEpoch: mission.missionConnectionEpoch,
+          clientAcceptedMissionConnectionEpoch: 0,
+          resumeNextServerSequence: 0n,
+          contextRevision: mission.contextRevision,
+          contextDigest: mission.contextDigest.trim(),
+          routeMode: mission.routeMode,
+          fullDuplexCertified: mission.fullDuplexCertified,
+          maxMissionAudioBytes: mission.maxMissionAudioBytes,
+          hardExpiresAt: mission.hardExpiresAt,
+          replayGraceExpiresAt: mission.replayGraceExpiresAt,
+          issuedAt: databaseNow,
+          expiresAt,
+          consumedAt: null,
+          consumedMissionConnectionEpoch: null,
+          replayConnectionId: null,
+          connectionLeaseExpiresAt: null,
+          maxAcknowledgableServerSequence: null,
+          retentionExpiresAt: mission.retentionExpiresAt,
+          version: 1,
+        };
+        return {
+          status: 'issued' as const,
+          bootstrap: this.reconciliationBootstrap(persisted, capability.ticket),
+        };
+      });
+    } catch {
+      return { status: 'unavailable' };
+    } finally {
+      rawBootstrapTicket = '';
+    }
+  }
+
   async redeemAndOpen(
     input: Parameters<MistralConversationResumeAuthority['redeemAndOpen']>[0],
   ): Promise<MistralConversationRedeemAndOpenResult> {
@@ -401,12 +966,42 @@ implements MistralConversationResumeAuthority {
     let rawTicket = input.ticket;
     try {
       return await this.prisma.withTenant(input.companyId, async (tx) => {
-        const ticket = await this.lockTicket(tx, input.companyId, ticketHash(rawTicket));
+        const rawTicketHash = hashMistralConversationResumeTicket(rawTicket);
+        const inspectedPurpose = await this.inspectTicketPurpose(
+          tx,
+          input.companyId,
+          rawTicketHash,
+        );
+        if (!inspectedPurpose) return { status: 'invalid' as const };
+        if (inspectedPurpose.purpose === 'initial_bootstrap_reconciliation') {
+          if (
+            inspectedPurpose.initialBootstrapId === null
+            || !UUID.test(inspectedPurpose.initialBootstrapId)
+            || !(await this.lockBootstrapEvidenceById(
+              tx,
+              input.companyId,
+              inspectedPurpose.initialBootstrapId,
+            ))
+          ) return { status: 'unavailable' as const };
+        }
+        const ticket = await this.lockTicket(
+          tx,
+          input.companyId,
+          rawTicketHash,
+        );
         if (!ticket) return { status: 'invalid' as const };
+        if (
+          ticket.purpose !== inspectedPurpose.purpose
+          || ticket.initialBootstrapId !== inspectedPurpose.initialBootstrapId
+        ) return { status: 'unavailable' as const };
         if (ticket.scope !== input.expectedScope) return { status: 'scope_mismatch' as const };
         await this.lockMissionKey(tx, ticket.companyId, ticket.sessionHandle);
         const mission = await this.lockMission(tx, ticket.companyId, ticket.sessionHandle);
-        if (!mission || !exactMissionBinding(ticket, mission)) {
+        if (
+          !mission
+          || !exactMissionBinding(ticket, mission)
+          || !exactResumePurposeBinding(ticket, mission)
+        ) {
           return { status: 'unavailable' as const };
         }
         const admission = ticket.scope === 'live_takeover'
@@ -424,7 +1019,12 @@ implements MistralConversationResumeAuthority {
           return { status: 'invalid_cursor' as const };
         }
         if (ticket.scope === 'live_takeover') {
-          if (!this.policy.liveTakeoverEnabled || !this.admissionIsLive(admission, databaseNow)) {
+          const reconciliationLiveTakeover = ticket.purpose
+            === 'initial_bootstrap_reconciliation';
+          if (
+            (!this.policy.liveTakeoverEnabled && !reconciliationLiveTakeover)
+            || !this.admissionIsLive(admission, databaseNow)
+          ) {
             return { status: 'unavailable' as const };
           }
           if (
@@ -589,7 +1189,11 @@ implements MistralConversationResumeAuthority {
         if (!capability) return { status: 'invalid' as const };
         await this.lockMissionKey(tx, capability.companyId, capability.sessionHandle);
         const mission = await this.lockMission(tx, capability.companyId, capability.sessionHandle);
-        if (!mission || !exactMissionBinding(capability, mission)) {
+        if (
+          !mission
+          || !exactMissionBinding(capability, mission)
+          || !exactResumePurposeBinding(capability, mission)
+        ) {
           return { status: 'unavailable' as const };
         }
         const databaseNow = await this.databaseNow(tx);
@@ -712,11 +1316,28 @@ implements MistralConversationResumeAuthority {
              "missionConnectionEpoch", version, "acknowledgedServerSequence",
              "retainedFromServerSequence", "nextServerSequence", "contextRevision",
              "contextDigest", "routeMode", "fullDuplexCertified", "maxMissionAudioBytes",
-             phase, "hardExpiresAt", "replayGraceExpiresAt", "retentionExpiresAt"
+             phase, "terminalReason", "closedAt", "hardExpiresAt",
+             "replayGraceExpiresAt", "retentionExpiresAt"
         FROM realtime_mistral_conversation_missions
        WHERE "companyId" = ${companyId}
          AND "sessionHandle" = ${sessionHandle}
        FOR UPDATE
+    `;
+    return row ?? null;
+  }
+
+  private async inspectTerminalReceipt(
+    tx: Prisma.TransactionClient,
+    companyId: string,
+    sessionHandle: string,
+  ): Promise<TerminalReceiptRow | null> {
+    const [row] = await tx.$queryRaw<TerminalReceiptRow[]>`
+      SELECT "companyId", "sessionHandle", "subjectHash", "subjectKeyVersion", protocol,
+             "missionConnectionEpoch", "nextServerSequence", "terminalReason", "closedAt"
+        FROM realtime_mistral_conversation_terminal_receipts
+       WHERE "companyId" = ${companyId}
+         AND "sessionHandle" = ${sessionHandle}
+       LIMIT 1
     `;
     return row ?? null;
   }
@@ -727,8 +1348,9 @@ implements MistralConversationResumeAuthority {
     hash: string,
   ): Promise<ResumeTicketRow | null> {
     const [row] = await tx.$queryRaw<ResumeTicketRow[]>`
-      SELECT id, "companyId", "missionId", "sessionHandle", "admissionSessionId", protocol,
-             scope, state, "subjectHash", "subjectKeyVersion", plan,
+      SELECT id, "companyId", "missionId", "sessionHandle", "admissionSessionId", "ticketHash", protocol,
+             purpose, "initialBootstrapId", "reconciliationAttempt",
+             "reconciliationKeyVersion", scope, state, "subjectHash", "subjectKeyVersion", plan,
              "expectedMissionConnectionEpoch", "clientAcceptedMissionConnectionEpoch",
              "resumeNextServerSequence", "contextRevision", "contextDigest", "routeMode",
              "fullDuplexCertified", "maxMissionAudioBytes", "hardExpiresAt",
@@ -745,6 +1367,37 @@ implements MistralConversationResumeAuthority {
     return row ?? null;
   }
 
+  private async inspectTicketPurpose(
+    tx: Prisma.TransactionClient,
+    companyId: string,
+    hash: string,
+  ): Promise<ResumeTicketPurposeRow | null> {
+    const [row] = await tx.$queryRaw<ResumeTicketPurposeRow[]>`
+      SELECT purpose, "initialBootstrapId"
+        FROM realtime_mistral_conversation_resume_tickets
+       WHERE "companyId" = ${companyId}
+         AND "ticketHash" = ${hash}
+         AND protocol = ${MISTRAL_CONVERSATION_PROTOCOL}
+       LIMIT 1
+    `;
+    return row ?? null;
+  }
+
+  private async lockBootstrapEvidenceById(
+    tx: Prisma.TransactionClient,
+    companyId: string,
+    initialBootstrapId: string,
+  ): Promise<boolean> {
+    const [row] = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT id
+        FROM realtime_mistral_conversation_bootstrap_tickets
+       WHERE "companyId" = ${companyId}
+         AND id = ${initialBootstrapId}::uuid
+       FOR UPDATE
+    `;
+    return row?.id === initialBootstrapId;
+  }
+
   private async lockTerminalCapability(
     tx: Prisma.TransactionClient,
     companyId: string,
@@ -752,8 +1405,9 @@ implements MistralConversationResumeAuthority {
     connectionLeaseTokenHash: string,
   ): Promise<TerminalCapabilityRow | null> {
     const [row] = await tx.$queryRaw<TerminalCapabilityRow[]>`
-      SELECT id, "companyId", "missionId", "sessionHandle", "admissionSessionId", protocol,
-             scope, state, "subjectHash", "subjectKeyVersion", plan,
+      SELECT id, "companyId", "missionId", "sessionHandle", "admissionSessionId", "ticketHash", protocol,
+             purpose, "initialBootstrapId", "reconciliationAttempt",
+             "reconciliationKeyVersion", scope, state, "subjectHash", "subjectKeyVersion", plan,
              "expectedMissionConnectionEpoch", "clientAcceptedMissionConnectionEpoch",
              "resumeNextServerSequence", "contextRevision", "contextDigest", "routeMode",
              "fullDuplexCertified", "maxMissionAudioBytes", "hardExpiresAt",
@@ -775,12 +1429,8 @@ implements MistralConversationResumeAuthority {
     mission: MissionRow,
   ): Promise<AdmissionLeaseRow | null> {
     if (mission.admissionSessionId === null) return null;
-    const [row] = await tx.$queryRaw<Array<{
-      state: string;
-      leaseExpiresAt: Date;
-      hardExpiresAt: Date;
-    }>>`
-      SELECT state, "leaseExpiresAt", "hardExpiresAt"
+    const [row] = await tx.$queryRaw<AdmissionLeaseRow[]>`
+      SELECT state, "providerId", "providerCallId", "leaseExpiresAt", "hardExpiresAt"
         FROM realtime_session_leases
        WHERE "companyId" = ${mission.companyId}
          AND "subjectHash" = ${mission.subjectHash.trim()}
@@ -790,11 +1440,135 @@ implements MistralConversationResumeAuthority {
     return row ?? null;
   }
 
+  private async lockBootstrapForReconciliation(
+    tx: Prisma.TransactionClient,
+    companyId: string,
+    bootstrapTicketHash: string,
+  ): Promise<BootstrapReconciliationRow | null> {
+    const [row] = await tx.$queryRaw<BootstrapReconciliationRow[]>`
+      SELECT id, "companyId", "admissionSessionId", "sessionHandle", "subjectHash",
+             "subjectKeyVersion", "admissionLeaseTokenHash", protocol, state, plan,
+             "contextRevision", "contextDigest", "userIdentityCiphertext",
+             "userIdentityNonce", "userIdentityTag", "identityEncryptionKeyVersion",
+             "routeMode", "fullDuplexCertified", "maxMissionAudioBytes",
+             "ticketExpiresAt", "hardExpiresAt", "consumedAt", "retentionExpiresAt"
+        FROM realtime_mistral_conversation_bootstrap_tickets
+       WHERE "companyId" = ${companyId}
+         AND "ticketHash" = ${bootstrapTicketHash}
+         AND protocol = ${MISTRAL_CONVERSATION_PROTOCOL}
+       FOR UPDATE
+    `;
+    return row ?? null;
+  }
+
+  private async lockReconciliationAttempt(
+    tx: Prisma.TransactionClient,
+    companyId: string,
+    initialBootstrapId: string,
+    attempt: number,
+  ): Promise<ResumeTicketRow | null> {
+    const [row] = await tx.$queryRaw<ResumeTicketRow[]>`
+      SELECT id, "companyId", "missionId", "sessionHandle", "admissionSessionId", "ticketHash", protocol,
+             purpose, "initialBootstrapId", "reconciliationAttempt",
+             "reconciliationKeyVersion", scope, state, "subjectHash", "subjectKeyVersion", plan,
+             "expectedMissionConnectionEpoch", "clientAcceptedMissionConnectionEpoch",
+             "resumeNextServerSequence", "contextRevision", "contextDigest", "routeMode",
+             "fullDuplexCertified", "maxMissionAudioBytes", "hardExpiresAt",
+             "replayGraceExpiresAt", "issuedAt", "expiresAt", "consumedAt",
+             "consumedMissionConnectionEpoch", "replayConnectionId",
+             "connectionLeaseExpiresAt", "maxAcknowledgableServerSequence",
+             "retentionExpiresAt", version
+        FROM realtime_mistral_conversation_resume_tickets
+       WHERE "companyId" = ${companyId}
+         AND "initialBootstrapId" = ${initialBootstrapId}::uuid
+         AND "reconciliationAttempt" = ${attempt}
+         AND purpose = 'initial_bootstrap_reconciliation'
+       FOR UPDATE
+    `;
+    return row ?? null;
+  }
+
+  private async lockLatestReconciliationAttempt(
+    tx: Prisma.TransactionClient,
+    companyId: string,
+    initialBootstrapId: string,
+  ): Promise<ResumeTicketRow | null> {
+    const [row] = await tx.$queryRaw<ResumeTicketRow[]>`
+      SELECT id, "companyId", "missionId", "sessionHandle", "admissionSessionId", "ticketHash", protocol,
+             purpose, "initialBootstrapId", "reconciliationAttempt",
+             "reconciliationKeyVersion", scope, state, "subjectHash", "subjectKeyVersion", plan,
+             "expectedMissionConnectionEpoch", "clientAcceptedMissionConnectionEpoch",
+             "resumeNextServerSequence", "contextRevision", "contextDigest", "routeMode",
+             "fullDuplexCertified", "maxMissionAudioBytes", "hardExpiresAt",
+             "replayGraceExpiresAt", "issuedAt", "expiresAt", "consumedAt",
+             "consumedMissionConnectionEpoch", "replayConnectionId",
+             "connectionLeaseExpiresAt", "maxAcknowledgableServerSequence",
+             "retentionExpiresAt", version
+        FROM realtime_mistral_conversation_resume_tickets
+       WHERE "companyId" = ${companyId}
+         AND "initialBootstrapId" = ${initialBootstrapId}::uuid
+         AND purpose = 'initial_bootstrap_reconciliation'
+       ORDER BY "reconciliationAttempt" DESC
+       LIMIT 1
+       FOR UPDATE
+    `;
+    return row ?? null;
+  }
+
+  private async hasInitialReadyProof(
+    tx: Prisma.TransactionClient,
+    mission: MissionRow,
+  ): Promise<boolean> {
+    const [row] = await tx.$queryRaw<Array<{ ready: boolean }>>`
+      SELECT EXISTS (
+        SELECT 1
+          FROM realtime_mistral_conversation_outbox AS outbox
+         WHERE outbox."companyId" = ${mission.companyId}
+           AND outbox."missionId" = ${mission.id}::uuid
+           AND outbox."sessionHandle" = ${mission.sessionHandle}
+           AND outbox."serverSequence" = 0
+           AND outbox."eventType" = 'session.ready'
+      ) AS ready
+    `;
+    return row?.ready === true;
+  }
+
   private admissionIsLive(admission: AdmissionLeaseRow | null, observedNow: Date): boolean {
     return admission !== null
       && admission.state === 'active'
       && admission.leaseExpiresAt.getTime() > observedNow.getTime()
       && admission.hardExpiresAt.getTime() > observedNow.getTime();
+  }
+
+  private reconciliationAdmissionIsLive(
+    admission: AdmissionLeaseRow | null,
+    bootstrap: BootstrapReconciliationRow,
+    observedNow: Date,
+  ): boolean {
+    return this.admissionIsLive(admission, observedNow)
+      && admission?.providerId === 'mistral'
+      && admission.providerCallId === `mcv2:${bootstrap.id}`
+      && admission.hardExpiresAt.getTime() === bootstrap.hardExpiresAt.getTime();
+  }
+
+  private reconciliationBootstrap(
+    ticket: ResumeTicketRow,
+    rawTicket: string,
+  ): Extract<
+  MistralConversationBootstrapReconciliationResult,
+  { readonly status: 'issued' }
+  >['bootstrap'] {
+    return Object.freeze({
+      companyId: ticket.companyId,
+      sessionHandle: ticket.sessionHandle,
+      ticket: rawTicket,
+      protocol: MISTRAL_CONVERSATION_PROTOCOL,
+      scope: ticket.scope,
+      ticketExpiresAt: ticket.expiresAt.toISOString(),
+      expectedMissionConnectionEpoch: ticket.expectedMissionConnectionEpoch,
+      clientAcceptedMissionConnectionEpoch: 0,
+      resumeNextServerSequence: 0,
+    });
   }
 
   private async consumeLiveTicket(
