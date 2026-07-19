@@ -199,6 +199,7 @@ import {
   type AgentAskPayload,
   type AgentRun,
   type AgentAutonomy,
+  type BatchItem,
   type PendingAction,
   type JournalEntry,
   type ContextEntitySummary,
@@ -3139,7 +3140,7 @@ export class BackendService {
         execution?.signal?.throwIfAborted();
         const proposal = await agent.dryRun(
           r.value.pending.batch?.length
-            ? r.value.pending.batch.map((item) => ({
+            ? r.value.pending.batch.map((item: BatchItem) => ({
                 tool: item.tool,
                 args: item.args,
                 label: item.label,

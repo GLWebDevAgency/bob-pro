@@ -9,6 +9,7 @@ import {
   encodeMistralConversationAudioFrame,
   encodeMistralConversationClientControl,
   encodeMistralConversationServerEvent,
+  reduceMistralConversationMissionState,
   type MistralConversationClientControl,
   type MistralConversationServerEvent,
 } from '@bob/ai';
@@ -34,9 +35,14 @@ import {
   type MistralConversationProviderConnection,
   type MistralConversationProviderEvent,
 } from './mistral-conversation-gateway-v2';
+import type {
+  MistralConversationRedeemAndOpenResult,
+  MistralConversationResumeAuthority,
+} from './mistral-conversation-resume-ticket';
 
 const NOW = 1_000_000;
 const TICKET = 'A'.repeat(43);
+const RESUME_TICKET = `r2_${'R'.repeat(43)}`;
 const DIGEST_1 = 'a'.repeat(64);
 const DIGEST_2 = 'b'.repeat(64);
 const DIGEST_3 = 'c'.repeat(64);
@@ -50,6 +56,7 @@ const UINT32_MAX = 0xffff_ffff;
 
 const BASE_GRANT: MistralConversationBootstrapGrant = {
   bootstrapId: '30000000-0000-4000-8000-000000000001',
+  admissionSessionId: '30000000-0000-4000-8000-000000000002',
   companyId: 'company-1',
   subjectHash: 'd'.repeat(64),
   subjectKeyVersion: 2,
@@ -607,12 +614,16 @@ function harness(input: {
   };
 }
 
-function authenticate(socket: FakeSocket, resumeNextServerSequence = 0): void {
+function authenticate(
+  socket: FakeSocket,
+  resumeNextServerSequence = 0,
+  ticket = TICKET,
+): void {
   socket.clientControl({
     type: 'authenticate',
     protocol: MISTRAL_CONVERSATION_PROTOCOL,
     companyId: BASE_GRANT.companyId,
-    ticket: TICKET,
+    ticket,
     resumeNextServerSequence,
   });
 }
@@ -756,6 +767,34 @@ function terminalReplayFixture(
       replayGraceExpiresAt,
     },
     events: [...created.events, ...drained.events, ...closed.events],
+  };
+}
+
+function resumedTerminalReplayFixture(
+  h: Harness,
+): Extract<MistralConversationRedeemAndOpenResult, { readonly status: 'terminal_replay' }> {
+  const terminal = terminalReplayFixture(h);
+  return {
+    ...terminal,
+    grant: h.grant,
+    terminalAcknowledgement: {
+      replayConnectionId: '60000000-0000-4000-8000-000000000001',
+      connectionLeaseToken: 'Z'.repeat(43),
+      expiresAt: new Date(NOW + 6_000).toISOString(),
+    },
+  };
+}
+
+function resumeAuthority(
+  result: MistralConversationRedeemAndOpenResult,
+): MistralConversationResumeAuthority & {
+  readonly redeemAndOpen: ReturnType<typeof vi.fn>;
+  readonly acknowledgeTerminal: ReturnType<typeof vi.fn>;
+} {
+  return {
+    issue: vi.fn(async () => ({ status: 'unavailable' as const })),
+    redeemAndOpen: vi.fn(async () => result),
+    acknowledgeTerminal: vi.fn(async () => ({ status: 'applied' as const })),
   };
 }
 
@@ -1603,6 +1642,28 @@ describe('Bob Mistral conversation gateway v2 — mission WSS durable', () => {
     })).toThrow();
   });
 
+  it('refuse un second takeover tant que recovering_route n’a pas un suffixe certifié', () => {
+    const h = harness();
+    const created = createMistralConversationDurableSession({
+      grant: h.grant,
+      missionConnectionEpoch: 1,
+    });
+    const recovering = {
+      ...created.snapshot,
+      mission: reduceMistralConversationMissionState(created.snapshot.mission, {
+        type: 'ROUTE_RECOVERY_STARTED',
+        cancellation: null,
+      }),
+    };
+
+    expect(() => recoverMistralConversationDurableSession(recovering, {
+      newMissionConnectionEpoch: 2,
+      cancellationId: CANCEL_1,
+      routeMode: h.grant.routeMode,
+      fullDuplexCertified: h.grant.fullDuplexCertified,
+    })).toThrow(expect.objectContaining({ code: 'invalid_state' }));
+  });
+
   it('réserve deux versions durables pour drain puis close', () => {
     const h = harness();
     const created = createMistralConversationDurableSession({ grant: h.grant, missionConnectionEpoch: 1 });
@@ -2256,6 +2317,465 @@ describe('Bob Mistral conversation gateway v2 — mission WSS durable', () => {
     expect(h.socket.closes).toEqual([{ code: 1000, reason: 'session_closed' }]);
     expect(h.provider.openTurn).not.toHaveBeenCalled();
     expect(h.authority.snapshot?.mission.lastTurnOrdinal).toBe(0);
+  });
+
+  it('route un ticket r2 uniquement vers la reprise atomique et ACK le replay terminal', async () => {
+    const h = harness();
+    const terminal = resumedTerminalReplayFixture(h);
+    const resume = resumeAuthority(terminal);
+    h.socket.onServerEvent = (event) => {
+      if (event.type !== 'session.closed') return;
+      h.socket.clientControl({
+        type: 'events.ack',
+        missionConnectionEpoch: terminal.snapshot.missionConnectionEpoch,
+        nextServerSequence: terminal.snapshot.nextServerSequence,
+      });
+    };
+
+    const run = serveMistralConversationGatewayV2(h.socket, {
+      ...h.dependencies,
+      resume,
+      replayTimeoutMs: 25,
+    });
+    authenticate(h.socket, 0, RESUME_TICKET);
+    await run;
+
+    expect(resume.redeemAndOpen).toHaveBeenCalledWith(expect.objectContaining({
+      companyId: h.grant.companyId,
+      ticket: RESUME_TICKET,
+      protocol: MISTRAL_CONVERSATION_PROTOCOL,
+      expectedScope: 'terminal_replay',
+      resumeNextServerSequence: 0,
+    }));
+    expect(resume.acknowledgeTerminal).toHaveBeenCalledWith(expect.objectContaining({
+      companyId: h.grant.companyId,
+      subjectHash: h.grant.subjectHash,
+      sessionHandle: h.grant.sessionHandle,
+      missionConnectionEpoch: terminal.snapshot.missionConnectionEpoch,
+      replayConnectionId: terminal.terminalAcknowledgement.replayConnectionId,
+      connectionLeaseToken: terminal.terminalAcknowledgement.connectionLeaseToken,
+      nextServerSequence: terminal.snapshot.nextServerSequence,
+    }));
+    expect(h.consume).not.toHaveBeenCalled();
+    expect(h.authority.openInputs).toEqual([]);
+    expect(h.provider.openTurn).not.toHaveBeenCalled();
+    expect(h.pipeline.reason).not.toHaveBeenCalled();
+    expect(h.contextAuthorize).not.toHaveBeenCalled();
+    const wire = h.socket.sent.join('\n');
+    expect(wire).not.toContain(RESUME_TICKET);
+    expect(wire).not.toContain(terminal.terminalAcknowledgement.replayConnectionId);
+    expect(wire).not.toContain(terminal.terminalAcknowledgement.connectionLeaseToken);
+    expect(h.socket.closes).toEqual([{ code: 1000, reason: 'session_closed' }]);
+  });
+
+  it('traite un ACK terminal reçu pendant que redeemAndOpen détient encore ses verrous', async () => {
+    const h = harness();
+    const terminal = resumedTerminalReplayFixture(h);
+    const opened = deferred<MistralConversationRedeemAndOpenResult>();
+    const resume = resumeAuthority({ status: 'unavailable' });
+    resume.redeemAndOpen.mockImplementationOnce(async () => opened.promise);
+
+    const run = serveMistralConversationGatewayV2(h.socket, {
+      ...h.dependencies,
+      resume,
+      replayTimeoutMs: 25,
+    });
+    authenticate(h.socket, 0, RESUME_TICKET);
+    await waitFor(() => resume.redeemAndOpen.mock.calls.length === 1);
+    h.socket.clientControl({
+      type: 'events.ack',
+      missionConnectionEpoch: terminal.snapshot.missionConnectionEpoch,
+      nextServerSequence: terminal.snapshot.nextServerSequence,
+    });
+    opened.resolve(terminal);
+    await run;
+
+    expect(resume.acknowledgeTerminal).toHaveBeenCalledTimes(1);
+    expect(h.consume).not.toHaveBeenCalled();
+    expect(h.authority.openInputs).toEqual([]);
+  });
+
+  it('aborte un redeem non authentifié si un ACK syntaxique est suivi d’une fermeture', async () => {
+    const h = harness();
+    const resume = resumeAuthority({ status: 'unavailable' });
+    let redeemWasAborted = false;
+    resume.redeemAndOpen.mockImplementationOnce(async (input) => {
+      return new Promise<MistralConversationRedeemAndOpenResult>((resolve) => {
+        if (input.signal.aborted) {
+          redeemWasAborted = true;
+          resolve({ status: 'aborted' });
+          return;
+        }
+        input.signal.addEventListener('abort', () => {
+          redeemWasAborted = true;
+          resolve({ status: 'aborted' });
+        }, { once: true });
+      });
+    });
+
+    const run = serveMistralConversationGatewayV2(h.socket, {
+      ...h.dependencies,
+      resume,
+      replayTimeoutMs: 25,
+    });
+    authenticate(h.socket, 0, RESUME_TICKET);
+    await waitFor(() => resume.redeemAndOpen.mock.calls.length === 1);
+    h.socket.clientControl({
+      type: 'events.ack',
+      missionConnectionEpoch: 1,
+      nextServerSequence: 0,
+    });
+    h.socket.terminate();
+    await run;
+
+    expect(redeemWasAborted).toBe(true);
+    expect(resume.acknowledgeTerminal).not.toHaveBeenCalled();
+    expect(h.provider.openTurn).not.toHaveBeenCalled();
+  });
+
+  it('accepte plusieurs ACK cumulatifs en FIFO jusqu’au curseur terminal final', async () => {
+    const h = harness();
+    const terminal = resumedTerminalReplayFixture(h);
+    const resume = resumeAuthority(terminal);
+    h.socket.onServerEvent = (event) => {
+      if (event.type !== 'session.closed') return;
+      h.socket.clientControl({
+        type: 'events.ack',
+        missionConnectionEpoch: terminal.snapshot.missionConnectionEpoch,
+        nextServerSequence: 1,
+      });
+      h.socket.clientControl({
+        type: 'events.ack',
+        missionConnectionEpoch: terminal.snapshot.missionConnectionEpoch,
+        nextServerSequence: terminal.snapshot.nextServerSequence,
+      });
+    };
+
+    const run = serveMistralConversationGatewayV2(h.socket, {
+      ...h.dependencies,
+      resume,
+      replayTimeoutMs: 25,
+    });
+    authenticate(h.socket, 0, RESUME_TICKET);
+    await run;
+
+    expect(resume.acknowledgeTerminal.mock.calls.map(([input]) => (
+      (input as { readonly nextServerSequence: number }).nextServerSequence
+    ))).toEqual([1, terminal.snapshot.nextServerSequence]);
+  });
+
+  it('persiste un ACK final accepté avant de propager la trame invalide suivante', async () => {
+    const h = harness();
+    const terminal = resumedTerminalReplayFixture(h);
+    const resume = resumeAuthority(terminal);
+    h.socket.onServerEvent = (event) => {
+      if (event.type !== 'session.closed') return;
+      h.socket.clientControl({
+        type: 'events.ack',
+        missionConnectionEpoch: terminal.snapshot.missionConnectionEpoch,
+        nextServerSequence: terminal.snapshot.nextServerSequence,
+      });
+      h.socket.clientBinary(audioFrame(1, 0));
+      h.socket.clientControl({
+        type: 'events.ack',
+        missionConnectionEpoch: terminal.snapshot.missionConnectionEpoch,
+        nextServerSequence: terminal.snapshot.nextServerSequence,
+      });
+    };
+
+    const run = serveMistralConversationGatewayV2(h.socket, {
+      ...h.dependencies,
+      resume,
+      replayTimeoutMs: 25,
+    });
+    authenticate(h.socket, 0, RESUME_TICKET);
+    await expect(run).rejects.toMatchObject({ code: 'protocol_error' });
+
+    expect(resume.acknowledgeTerminal).toHaveBeenCalledTimes(1);
+    expect(resume.acknowledgeTerminal).toHaveBeenCalledWith(expect.objectContaining({
+      nextServerSequence: terminal.snapshot.nextServerSequence,
+    }));
+    expect(h.provider.openTurn).not.toHaveBeenCalled();
+  });
+
+  it('persiste un ACK terminal déjà admis malgré la fermeture immédiate du transport', async () => {
+    const h = harness();
+    const terminal = resumedTerminalReplayFixture(h);
+    const resume = resumeAuthority(terminal);
+    h.socket.onServerEvent = (event) => {
+      if (event.type !== 'session.closed') return;
+      h.socket.clientControl({
+        type: 'events.ack',
+        missionConnectionEpoch: terminal.snapshot.missionConnectionEpoch,
+        nextServerSequence: terminal.snapshot.nextServerSequence,
+      });
+      h.socket.terminate();
+    };
+
+    const run = serveMistralConversationGatewayV2(h.socket, {
+      ...h.dependencies,
+      resume,
+      replayTimeoutMs: 25,
+    });
+    authenticate(h.socket, 0, RESUME_TICKET);
+    await run;
+
+    expect(resume.acknowledgeTerminal).toHaveBeenCalledTimes(1);
+    expect(resume.acknowledgeTerminal).toHaveBeenCalledWith(expect.objectContaining({
+      nextServerSequence: terminal.snapshot.nextServerSequence,
+    }));
+    expect(h.provider.openTurn).not.toHaveBeenCalled();
+  });
+
+  it('conserve protocol_error si le timeout auth survient après une trame de reprise invalide', async () => {
+    vi.useFakeTimers();
+    const h = harness({ authTimeoutMs: 1_000 });
+    const opened = deferred<MistralConversationRedeemAndOpenResult>();
+    const resume = resumeAuthority({ status: 'unavailable' });
+    resume.redeemAndOpen.mockImplementationOnce(async () => opened.promise);
+    const run = serveMistralConversationGatewayV2(h.socket, {
+      ...h.dependencies,
+      resume,
+      replayTimeoutMs: 25,
+    });
+    const assertion = expect(run).rejects.toMatchObject({ code: 'protocol_error' });
+    authenticate(h.socket, 0, RESUME_TICKET);
+    for (let attempt = 0; attempt < 10 && resume.redeemAndOpen.mock.calls.length === 0; attempt += 1) {
+      await Promise.resolve();
+    }
+    expect(resume.redeemAndOpen).toHaveBeenCalledTimes(1);
+    h.socket.clientBinary(audioFrame(1, 0));
+    await vi.advanceTimersByTimeAsync(1_001);
+    await assertion;
+
+    expect(resume.acknowledgeTerminal).not.toHaveBeenCalled();
+    expect(h.socket.closes.at(-1)).toEqual({ code: 4400, reason: 'protocol_error' });
+  });
+
+  it('refuse le replay avant envoi si une réponse lente a mangé la réserve d’ACK', async () => {
+    const h = harness();
+    const terminal = resumedTerminalReplayFixture(h);
+    const opened = deferred<MistralConversationRedeemAndOpenResult>();
+    const resume = resumeAuthority({ status: 'unavailable' });
+    resume.redeemAndOpen.mockImplementationOnce(async () => opened.promise);
+    let clock = NOW;
+
+    const run = serveMistralConversationGatewayV2(h.socket, {
+      ...h.dependencies,
+      resume,
+      now: () => clock,
+      replayTimeoutMs: 10_000,
+    });
+    authenticate(h.socket, 0, RESUME_TICKET);
+    await waitFor(() => resume.redeemAndOpen.mock.calls.length === 1);
+    clock += 2_001;
+    opened.resolve(terminal);
+    await expect(run).rejects.toMatchObject({ code: 'temporarily_unavailable' });
+
+    expect(h.socket.events()).toEqual([]);
+    expect(resume.acknowledgeTerminal).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['replayed', null],
+    ['expired', null],
+    ['aborted', null],
+    ['invalid', 'temporarily_unavailable'],
+    ['unavailable', 'temporarily_unavailable'],
+  ] as const)(
+    'mappe le statut ACK terminal %s sans accuser à tort le client',
+    async (status, expectedError) => {
+      const h = harness();
+      const terminal = resumedTerminalReplayFixture(h);
+      const resume = resumeAuthority(terminal);
+      resume.acknowledgeTerminal.mockResolvedValue({ status });
+      h.socket.onServerEvent = (event) => {
+        if (event.type !== 'session.closed') return;
+        h.socket.clientControl({
+          type: 'events.ack',
+          missionConnectionEpoch: terminal.snapshot.missionConnectionEpoch,
+          nextServerSequence: terminal.snapshot.nextServerSequence,
+        });
+      };
+
+      const run = serveMistralConversationGatewayV2(h.socket, {
+        ...h.dependencies,
+        resume,
+        replayTimeoutMs: 25,
+      });
+      authenticate(h.socket, 0, RESUME_TICKET);
+      if (expectedError) await expect(run).rejects.toMatchObject({ code: expectedError });
+      else await run;
+
+      expect(resume.acknowledgeTerminal).toHaveBeenCalledTimes(1);
+      expect(h.socket.closes.at(-1)).toMatchObject({
+        code: expectedError ? 1011 : 1000,
+      });
+    },
+  );
+
+  it('rejette une capacité ACK serveur mal formée avant de rejouer le moindre événement', async () => {
+    const h = harness();
+    const terminal = resumedTerminalReplayFixture(h);
+    const resume = resumeAuthority({
+      ...terminal,
+      terminalAcknowledgement: {
+        ...terminal.terminalAcknowledgement,
+        connectionLeaseToken: 'court',
+      },
+    });
+    const run = serveMistralConversationGatewayV2(h.socket, {
+      ...h.dependencies,
+      resume,
+      replayTimeoutMs: 25,
+    });
+    authenticate(h.socket, 0, RESUME_TICKET);
+    await expect(run).rejects.toMatchObject({ code: 'temporarily_unavailable' });
+
+    expect(h.socket.events()).toEqual([]);
+    expect(resume.acknowledgeTerminal).not.toHaveBeenCalled();
+  });
+
+  it('rejette une capacité ACK au-delà de trente secondes et du skew NTP avant tout replay', async () => {
+    const h = harness();
+    const terminal = resumedTerminalReplayFixture(h);
+    const resume = resumeAuthority({
+      ...terminal,
+      terminalAcknowledgement: {
+        ...terminal.terminalAcknowledgement,
+        expiresAt: new Date(NOW + 31_001).toISOString(),
+      },
+    });
+    const run = serveMistralConversationGatewayV2(h.socket, {
+      ...h.dependencies,
+      resume,
+      replayTimeoutMs: 25,
+    });
+    authenticate(h.socket, 0, RESUME_TICKET);
+    await expect(run).rejects.toMatchObject({ code: 'temporarily_unavailable' });
+
+    expect(h.socket.events()).toEqual([]);
+    expect(resume.acknowledgeTerminal).not.toHaveBeenCalled();
+  });
+
+  it('tolère un skew NTP borné avec le TTL ACK maximal configuré en base', async () => {
+    const h = harness();
+    const terminal = resumedTerminalReplayFixture(h);
+    const skewedTerminal = {
+      ...terminal,
+      terminalAcknowledgement: {
+        ...terminal.terminalAcknowledgement,
+        expiresAt: new Date(NOW + 30_500).toISOString(),
+      },
+    };
+    const resume = resumeAuthority(skewedTerminal);
+    h.socket.onServerEvent = (event) => {
+      if (event.type !== 'session.closed') return;
+      h.socket.clientControl({
+        type: 'events.ack',
+        missionConnectionEpoch: skewedTerminal.snapshot.missionConnectionEpoch,
+        nextServerSequence: skewedTerminal.snapshot.nextServerSequence,
+      });
+    };
+    const run = serveMistralConversationGatewayV2(h.socket, {
+      ...h.dependencies,
+      resume,
+      replayTimeoutMs: 25,
+    });
+    authenticate(h.socket, 0, RESUME_TICKET);
+    await run;
+
+    expect(resume.acknowledgeTerminal).toHaveBeenCalledTimes(1);
+  });
+
+  it('soustrait le skew BDD du replay et conserve trois secondes autoritaires pour l’ACK', async () => {
+    vi.useFakeTimers({ now: NOW });
+    const h = harness();
+    const terminal = resumedTerminalReplayFixture(h);
+    const expiry = NOW + 7_000;
+    const resume = resumeAuthority({
+      ...terminal,
+      terminalAcknowledgement: {
+        ...terminal.terminalAcknowledgement,
+        // BDD à +1 s, capability minimale de 6 s : deadline absolue à appNow + 7 s.
+        expiresAt: new Date(expiry).toISOString(),
+      },
+    });
+    h.socket.hangSends = true;
+    let clock = NOW;
+    const run = serveMistralConversationGatewayV2(h.socket, {
+      ...h.dependencies,
+      resume,
+      now: () => clock,
+      replayTimeoutMs: 10_000,
+    });
+    const assertion = expect(run).rejects.toMatchObject({ code: 'backpressure' });
+    authenticate(h.socket, 0, RESUME_TICKET);
+    for (let attempt = 0; attempt < 10 && resume.redeemAndOpen.mock.calls.length === 0; attempt += 1) {
+      await Promise.resolve();
+    }
+    expect(resume.redeemAndOpen).toHaveBeenCalledTimes(1);
+
+    clock = NOW + 2_999;
+    await vi.advanceTimersByTimeAsync(2_999);
+    expect(resume.acknowledgeTerminal).not.toHaveBeenCalled();
+    clock = NOW + 3_000;
+    await vi.advanceTimersByTimeAsync(1);
+    await assertion;
+
+    // À la deadline de replay, expiry - (appNow + skew BDD) vaut exactement la réserve 3 s.
+    expect(expiry - (clock + 1_000)).toBe(3_000);
+    expect(resume.acknowledgeTerminal).not.toHaveBeenCalled();
+  });
+
+  it('ferme normalement sans ACK terminal et permet une reprise ultérieure', async () => {
+    const h = harness();
+    const resume = resumeAuthority(resumedTerminalReplayFixture(h));
+    const run = serveMistralConversationGatewayV2(h.socket, {
+      ...h.dependencies,
+      resume,
+      replayTimeoutMs: 25,
+    });
+    authenticate(h.socket, 0, RESUME_TICKET);
+    await run;
+
+    expect(resume.acknowledgeTerminal).not.toHaveBeenCalled();
+    expect(h.socket.closes).toEqual([{ code: 1000, reason: 'session_closed' }]);
+    expect(h.socket.events().at(-1)).toMatchObject({ type: 'session.closed' });
+  });
+
+  it('refuse audio et commandes métier en replay_only sans ouvrir le provider', async () => {
+    const h = harness();
+    const terminal = resumedTerminalReplayFixture(h);
+    const resume = resumeAuthority(terminal);
+    h.socket.onServerEvent = (event) => {
+      if (event.type === 'session.closed') h.socket.clientBinary(audioFrame(1, 0));
+    };
+    const run = serveMistralConversationGatewayV2(h.socket, {
+      ...h.dependencies,
+      resume,
+      replayTimeoutMs: 25,
+    });
+    authenticate(h.socket, 0, RESUME_TICKET);
+    await expect(run).rejects.toMatchObject({ code: 'protocol_error' });
+
+    expect(resume.acknowledgeTerminal).not.toHaveBeenCalled();
+    expect(h.consume).not.toHaveBeenCalled();
+    expect(h.authority.openInputs).toEqual([]);
+    expect(h.provider.openTurn).not.toHaveBeenCalled();
+  });
+
+  it('refuse un ticket r2 sans port resume et ne le rabat jamais vers le bootstrap', async () => {
+    const h = harness();
+    const run = serveMistralConversationGatewayV2(h.socket, h.dependencies);
+    authenticate(h.socket, 0, RESUME_TICKET);
+    await expect(run).rejects.toMatchObject({ code: 'temporarily_unavailable' });
+
+    expect(h.consume).not.toHaveBeenCalled();
+    expect(h.authority.openInputs).toEqual([]);
+    expect(h.socket.events()).toEqual([
+      expect.objectContaining({ type: 'error', code: 'temporarily_unavailable' }),
+    ]);
   });
 
   it('reste fail-closed après H tant que la capacité de reprise atomique n’existe pas', async () => {

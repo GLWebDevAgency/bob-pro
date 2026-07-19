@@ -1,6 +1,9 @@
 import { randomInt, randomUUID } from 'node:crypto';
 import { PrismaClient, type Prisma } from '@prisma/client';
-import { MISTRAL_CONVERSATION_AUDIO_QUANTUM_BYTES } from '@bob/ai';
+import {
+  MISTRAL_CONVERSATION_AUDIO_QUANTUM_BYTES,
+  reduceMistralConversationMissionState,
+} from '@bob/ai';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PrismaService } from '../../persistence/prisma/prisma.service';
 import { PrismaMistralConversationDurableAuthority } from './mistral-conversation-authority.prisma';
@@ -109,6 +112,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
     function grant(label: string, tenant = companyId): MistralConversationBootstrapGrant {
       return {
         bootstrapId: randomUUID(),
+        admissionSessionId: randomUUID(),
         companyId: tenant,
         subjectHash: SUBJECT_HASH,
         subjectKeyVersion: 1,
@@ -412,54 +416,63 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
 
       const oversizedMissionId = randomUUID();
       const oversizedBootstrapId = randomUUID();
+      const oversizedAdmissionSessionId = randomUUID();
       const oversizedSessionHandle = `mistral_${suffix}_oversized_replay_grace`;
       const oversizedHardExpiresAt = new Date(Date.now() + 24 * 60 * 60_000).toISOString();
       const oversizedReplayGraceExpiresAt = new Date(
         Date.parse(oversizedHardExpiresAt) + 7 * 24 * 60 * 60_000 + 1_000,
       ).toISOString();
-      await expect(workers[0].withTenant(companyId, async (tx) => {
-        await tx.$executeRaw`
-          INSERT INTO realtime_mistral_conversation_missions (
-            id, "companyId", "initialBootstrapId", protocol, "subjectHash",
-            "subjectKeyVersion", plan, "sessionHandle", "ownerTokenHash",
-            "missionConnectionEpoch", version, "acknowledgedServerSequence",
-            "retainedFromServerSequence", "nextServerSequence", "nextProviderSequence",
-            "contextRevision", "contextDigest", "routeMode", "fullDuplexCertified",
-            "maxMissionAudioBytes", "missionState", "turnState", "audioBytes",
-            "finalTranscriptRecorded", phase, "terminalReason", "terminalServerSequence",
-            "ownerAcquiredAt", "closedAt", "hardExpiresAt", "replayGraceExpiresAt",
-            "retentionExpiresAt", "createdAt", "updatedAt"
-          )
-          SELECT ${oversizedMissionId}::uuid, mission."companyId",
-                 ${oversizedBootstrapId}::uuid, mission.protocol, mission."subjectHash",
-                 mission."subjectKeyVersion", mission.plan, ${oversizedSessionHandle},
-                 mission."ownerTokenHash", mission."missionConnectionEpoch", mission.version,
-                 mission."acknowledgedServerSequence", mission."retainedFromServerSequence",
-                 mission."nextServerSequence", mission."nextProviderSequence",
-                 mission."contextRevision", mission."contextDigest", mission."routeMode",
-                 mission."fullDuplexCertified", mission."maxMissionAudioBytes",
-                 jsonb_set(
+      const insertOversizedMission = (admissionSessionId: string | null) => (
+        workers[0].withTenant(companyId, async (tx) => {
+          await tx.$executeRaw`
+            INSERT INTO realtime_mistral_conversation_missions (
+              id, "companyId", "initialBootstrapId", "admissionSessionId",
+              protocol, "subjectHash",
+              "subjectKeyVersion", plan, "sessionHandle", "ownerTokenHash",
+              "missionConnectionEpoch", version, "acknowledgedServerSequence",
+              "retainedFromServerSequence", "nextServerSequence", "nextProviderSequence",
+              "contextRevision", "contextDigest", "routeMode", "fullDuplexCertified",
+              "maxMissionAudioBytes", "missionState", "turnState", "audioBytes",
+              "finalTranscriptRecorded", phase, "terminalReason", "terminalServerSequence",
+              "ownerAcquiredAt", "closedAt", "hardExpiresAt", "replayGraceExpiresAt",
+              "retentionExpiresAt", "createdAt", "updatedAt"
+            )
+            SELECT ${oversizedMissionId}::uuid, mission."companyId",
+                   ${oversizedBootstrapId}::uuid, ${admissionSessionId}::uuid,
+                   mission.protocol, mission."subjectHash",
+                   mission."subjectKeyVersion", mission.plan, ${oversizedSessionHandle},
+                   mission."ownerTokenHash", mission."missionConnectionEpoch", mission.version,
+                   mission."acknowledgedServerSequence", mission."retainedFromServerSequence",
+                   mission."nextServerSequence", mission."nextProviderSequence",
+                   mission."contextRevision", mission."contextDigest", mission."routeMode",
+                   mission."fullDuplexCertified", mission."maxMissionAudioBytes",
                    jsonb_set(
-                     mission."missionState",
-                     '{sessionHandle}',
-                     to_jsonb(${oversizedSessionHandle}::text),
+                     jsonb_set(
+                       mission."missionState",
+                       '{sessionHandle}',
+                       to_jsonb(${oversizedSessionHandle}::text),
+                       true
+                     ),
+                     '{expiresAt}',
+                     to_jsonb(${oversizedHardExpiresAt}::text),
                      true
                    ),
-                   '{expiresAt}',
-                   to_jsonb(${oversizedHardExpiresAt}::text),
-                   true
-                 ),
-                 mission."turnState", mission."audioBytes", mission."finalTranscriptRecorded",
-                 mission.phase, mission."terminalReason", mission."terminalServerSequence",
-                 statement_timestamp(), NULL, ${oversizedHardExpiresAt}::timestamptz,
-                 ${oversizedReplayGraceExpiresAt}::timestamptz,
-                 ${oversizedReplayGraceExpiresAt}::timestamptz,
-                 statement_timestamp(), statement_timestamp()
-            FROM realtime_mistral_conversation_missions AS mission
-           WHERE mission."companyId" = ${companyId}
-             AND mission."sessionHandle" = ${missionGrant.sessionHandle}
-        `;
-      })).rejects.toThrow(
+                   mission."turnState", mission."audioBytes", mission."finalTranscriptRecorded",
+                   mission.phase, mission."terminalReason", mission."terminalServerSequence",
+                   statement_timestamp(), NULL, ${oversizedHardExpiresAt}::timestamptz,
+                   ${oversizedReplayGraceExpiresAt}::timestamptz,
+                   ${oversizedReplayGraceExpiresAt}::timestamptz,
+                   statement_timestamp(), statement_timestamp()
+              FROM realtime_mistral_conversation_missions AS mission
+             WHERE mission."companyId" = ${companyId}
+               AND mission."sessionHandle" = ${missionGrant.sessionHandle}
+          `;
+        })
+      );
+      // Prisma normalise volontairement le message du trigger 23502 en erreur NOT NULL ; le
+      // code SQLSTATE est la preuve stable que tout nouvel INSERT sans bail est refusé.
+      await expect(insertOversizedMission(null)).rejects.toThrow(/23502|Null constraint failed/u);
+      await expect(insertOversizedMission(oversizedAdmissionSessionId)).rejects.toThrow(
         'realtime_mistral_conversation_missions_replay_grace_max_check',
       );
 
@@ -497,6 +510,42 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
            AND "sessionHandle" = ${missionGrant.sessionHandle}
       `;
       expect(persisted).toEqual({ epoch: 1, version: 1n });
+    });
+
+    it('ne reprend ni ne mute une mission déjà en recovering_route', async () => {
+      const missionGrant = grant('recovering_route_guard');
+      const created = await openMission(
+        authorities[0],
+        missionGrant,
+        owner('recovering_route_guard_a'),
+      );
+      opened(created);
+      const recovering = reduceMistralConversationMissionState(created.snapshot.mission, {
+        type: 'ROUTE_RECOVERY_STARTED',
+        cancellation: null,
+      });
+
+      // Fixture d'état intermédiaire issue du réducteur pur. L'appel certifié qui suit
+      // repasse par le rôle runtime, FORCE RLS, les verrous et l'horloge PostgreSQL réels.
+      await admin.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe('SET LOCAL session_replication_role = replica');
+        await tx.$executeRaw`
+          UPDATE realtime_mistral_conversation_missions
+             SET phase = ${recovering.phase},
+                 "missionState" = ${JSON.stringify(recovering)}::jsonb,
+                 "updatedAt" = clock_timestamp()
+           WHERE "companyId" = ${companyId}
+             AND "sessionHandle" = ${missionGrant.sessionHandle}
+        `;
+      });
+      const before = await missionEvidence(missionGrant.sessionHandle);
+
+      await expect(openMission(
+        authorities[1],
+        missionGrant,
+        owner('recovering_route_guard_b'),
+      )).resolves.toEqual({ status: 'unavailable' });
+      expect(await missionEvidence(missionGrant.sessionHandle)).toEqual(before);
     });
 
     it('sérialise deux répliques, fence l’ancien owner et impose CAS + idempotence', async () => {
@@ -582,7 +631,6 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
       const routeOwner = owner('concurrency_route_change');
       const routeGrant: MistralConversationBootstrapGrant = {
         ...missionGrant,
-        bootstrapId: randomUUID(),
         routeMode: 'full_duplex',
         fullDuplexCertified: true,
       };
@@ -591,17 +639,22 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         routeGrant,
         routeOwner,
       );
-      expect(routeRecovery.status).toBe('recovered');
-      if (routeRecovery.status !== 'recovered') throw new Error('Route recovery missing.');
-      expect(routeRecovery.snapshot).toMatchObject({
+      expect(routeRecovery).toEqual({ status: 'conflict' });
+
+      // Route et certification sont figées par le bootstrap initial. Une évolution future devra
+      // passer par une attestation serveur explicite, jamais par un grant reconstruit au reconnect.
+      const sameRouteRecovery = await openMission(authorities[0], missionGrant, routeOwner);
+      expect(sameRouteRecovery.status).toBe('recovered');
+      if (sameRouteRecovery.status !== 'recovered') throw new Error('Route recovery missing.');
+      expect(sameRouteRecovery.snapshot).toMatchObject({
         missionConnectionEpoch: 3,
-        mission: { routeMode: 'full_duplex', fullDuplexCertified: true },
+        mission: { routeMode: 'push_to_talk', fullDuplexCertified: false },
       });
       await expect(transition(
         authorities[1],
-        routeGrant,
+        missionGrant,
         routeOwner,
-        routeRecovery.snapshot,
+        sameRouteRecovery.snapshot,
         commands[winnerIndex]!,
       )).resolves.toEqual({ status: 'rejected', reason: 'invalid_state' });
     }, 30_000);
@@ -886,7 +939,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
 
       const first = await openMission(
         authorities[0],
-        { ...missionGrant, bootstrapId: randomUUID() },
+        missionGrant,
         owner('hard_expiry_terminal_resume_a'),
       );
       expect(first.status).toBe('terminal_replay');
@@ -928,7 +981,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
 
       const second = await openMission(
         authorities[1],
-        { ...missionGrant, bootstrapId: randomUUID() },
+        missionGrant,
         owner('hard_expiry_terminal_resume_b'),
       );
       expect(second.status).toBe('terminal_replay');
@@ -987,7 +1040,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
 
       const terminal = await openMission(
         authorities[1],
-        { ...missionGrant, bootstrapId: randomUUID() },
+        missionGrant,
         owner('active_turn_expiry_resume'),
       );
       expect(terminal.status).toBe('terminal_replay');
@@ -1054,7 +1107,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
 
       const terminal = await openMission(
         authorities[1],
-        { ...missionGrant, bootstrapId: randomUUID() },
+        missionGrant,
         owner('user_drain_expiry_resume'),
       );
       expect(terminal.status).toBe('terminal_replay');
@@ -1078,14 +1131,14 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
 
       const replayed = await openMission(
         authorities[0],
-        { ...missionGrant, bootstrapId: randomUUID() },
+        missionGrant,
         owner('user_drain_expiry_replay'),
       );
       expect(replayed.status).toBe('terminal_replay');
       expect(await missionEvidence(missionGrant.sessionHandle)).toEqual(afterExpiry);
     }, 30_000);
 
-    it('autorise après H uniquement l’ACK exact d’un snapshot fermé et le rejoue sans événement', async () => {
+    it('refuse après H tout ACK fermé dépourvu de capacité terminale dédiée', async () => {
       const hardExpiresAt = new Date(Date.now() + 1_200).toISOString();
       const missionGrant = { ...grant('terminal_ack'), hardExpiresAt };
       const missionOwner = owner('terminal_ack');
@@ -1095,7 +1148,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
 
       const terminal = await openMission(
         authorities[0],
-        { ...missionGrant, bootstrapId: randomUUID() },
+        missionGrant,
         owner('terminal_ack_resume'),
       );
       expect(terminal.status).toBe('terminal_replay');
@@ -1137,28 +1190,8 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
         terminal.snapshot,
         ackCommand,
       );
-      applied(ack);
-      expect(ack.events).toEqual([]);
-      const afterAck = await missionEvidence(missionGrant.sessionHandle);
-      expect(afterAck).toEqual({
-        ...beforeAck,
-        version: beforeAck.version + 1n,
-        acknowledgedServerSequence: beforeAck.nextServerSequence,
-      });
-
-      const replayed = await transition(
-        authorities[0],
-        missionGrant,
-        missionOwner,
-        terminal.snapshot,
-        ackCommand,
-      );
-      expect(replayed).toMatchObject({
-        status: 'replayed',
-        snapshot: { version: Number(afterAck.version) },
-        events: [],
-      });
-      expect(await missionEvidence(missionGrant.sessionHandle)).toEqual(afterAck);
+      expect(ack).toEqual({ status: 'expired' });
+      expect(await missionEvidence(missionGrant.sessionHandle)).toEqual(beforeAck);
     }, 30_000);
 
     it('terminalise à H même si le curseur de reprise est invalide', async () => {
@@ -1172,7 +1205,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
 
       await expect(openMission(
         authorities[1],
-        { ...missionGrant, bootstrapId: randomUUID() },
+        missionGrant,
         owner('terminal_invalid_cursor_resume'),
         999,
       )).resolves.toEqual({ status: 'invalid_cursor' });
@@ -1188,7 +1221,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
       });
       const replay = await openMission(
         authorities[0],
-        { ...missionGrant, bootstrapId: randomUUID() },
+        missionGrant,
         owner('terminal_invalid_cursor_valid_resume'),
       );
       expect(replay.status).toBe('terminal_replay');
@@ -1237,7 +1270,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
 
       await expect(openMission(
         authorities[1],
-        { ...shiftedGrant, bootstrapId: randomUUID() },
+        shiftedGrant,
         owner('replay_grace_elapsed_resume'),
       )).resolves.toEqual({ status: 'expired' });
       await expect(transition(
@@ -1291,7 +1324,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
       try {
         await expect(openMission(
           authorities[1],
-          { ...shiftedGrant, bootstrapId: randomUUID() },
+          shiftedGrant,
           owner('replay_grace_append_race_resume'),
         )).resolves.toEqual({ status: 'expired' });
       } finally {
@@ -1312,7 +1345,7 @@ describe.skipIf(!RUN_POSTGRES_CERT)(
       opened(created);
 
       const terminal = await authorities[1].open({
-        grant: { ...missionGrant, bootstrapId: randomUUID() },
+        grant: missionGrant,
         ownerLeaseToken: owner('terminal_fallback_b'),
         resumeNextServerSequence: 0,
         maxReplayEvents: 5,
